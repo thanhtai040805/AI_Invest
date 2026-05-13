@@ -1,0 +1,105 @@
+import { create } from 'zustand';
+import { StockQuote } from '@/types/stock';
+
+interface StockState {
+  stocks: StockQuote[];
+  searchQuery: string;
+  setStocks: (stocks: StockQuote[]) => void;
+  updateStock: (symbol: string, updates: Partial<StockQuote>) => void;
+  setSearchQuery: (query: string) => void;
+}
+
+export const useStockStore = create<StockState>((set) => ({
+  stocks: [
+    {
+      symbol: 'VNM',
+      name: 'Vinamilk',
+      price: 68.5,
+      change: 0.8,
+      changePercent: 1.2,
+      volume: 1250000,
+      tradingValue: 85600000000,
+      open: 67.7,
+      high: 69.0,
+      low: 67.5,
+      prevClose: 67.7,
+      ceiling: 72.4,
+      floor: 63.0,
+      avgVolume: 1100000,
+      marketCap: 143200000000000,
+      foreignNetBuy: 12500000000,
+      signal: 'MUA',
+      trend: 'up',
+      lastUpdate: new Date().toISOString(),
+    },
+    {
+      symbol: 'FPT',
+      name: 'FPT Corp',
+      price: 114.2,
+      change: 3.8,
+      changePercent: 3.5,
+      volume: 2800000,
+      tradingValue: 319000000000,
+      open: 110.4,
+      high: 115.0,
+      low: 110.4,
+      prevClose: 110.4,
+      ceiling: 118.1,
+      floor: 102.7,
+      avgVolume: 2200000,
+      marketCap: 154000000000000,
+      foreignNetBuy: -5200000000,
+      signal: 'MUA',
+      trend: 'up',
+      lastUpdate: new Date().toISOString(),
+    },
+    {
+      symbol: 'VIC',
+      name: 'Vingroup',
+      price: 42.1,
+      change: -0.35,
+      changePercent: -0.8,
+      volume: 3500000,
+      tradingValue: 147000000000,
+      open: 42.45,
+      high: 42.6,
+      low: 42.0,
+      prevClose: 42.45,
+      ceiling: 45.4,
+      floor: 39.5,
+      avgVolume: 3800000,
+      marketCap: 161000000000000,
+      foreignNetBuy: 2100000000,
+      signal: 'THEO DÕI',
+      trend: 'down',
+      lastUpdate: new Date().toISOString(),
+    },
+    {
+      symbol: 'SSI',
+      name: 'SSI Securities',
+      price: 36.8,
+      change: 0.75,
+      changePercent: 2.1,
+      volume: 12400000,
+      tradingValue: 456000000000,
+      open: 36.05,
+      high: 37.2,
+      low: 36.0,
+      prevClose: 36.05,
+      ceiling: 38.5,
+      floor: 33.6,
+      avgVolume: 10500000,
+      marketCap: 55200000000000,
+      foreignNetBuy: 18400000000,
+      signal: 'MUA',
+      trend: 'up',
+      lastUpdate: new Date().toISOString(),
+    },
+  ],
+  searchQuery: '',
+  setStocks: (stocks) => set({ stocks }),
+  updateStock: (symbol, updates) => set((state) => ({
+    stocks: state.stocks.map((s) => s.symbol === symbol ? { ...s, ...updates } : s)
+  })),
+  setSearchQuery: (searchQuery) => set({ searchQuery }),
+}));
