@@ -9,18 +9,20 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@klinecharts/pro": "^0.1.1",
     "@tanstack/react-query": "^5.100.10",
     "axios": "^1.16.0",
     "boneyard-js": "^1.8.1",
     "clsx": "^2.1.1",
     "framer-motion": "^12.38.0",
-    "klinecharts": "^9.8.12",
+    "klinecharts": "^9.8.6",
     "lightweight-charts": "^5.2.0",
     "lucide-react": "^1.14.0",
     "next": "16.2.6",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "recharts": "^3.8.1",
+    "socket.io-client": "^4.8.3",
     "tailwind-merge": "^3.6.0",
     "zustand": "^5.0.13"
   },

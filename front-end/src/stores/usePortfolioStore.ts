@@ -8,29 +8,20 @@ interface PortfolioState {
   setAssets: (assets: AssetPosition[]) => void;
 }
 
+const emptySummary: PortfolioStats = {
+  totalEquity: 0,
+  totalProfit: 0,
+  totalProfitPercent: 0,
+  dailyPnL: 0,
+  dailyPnLPercent: 0,
+  buyingPower: 0,
+  assetsCount: 0,
+  holdings: [],
+};
+
 export const usePortfolioStore = create<PortfolioState>((set) => ({
-  summary: {
-    totalEquity: 1245800000,
-    totalProfit: 14500000,
-    totalProfitPercent: 1.2,
-    dailyPnL: 5200000,
-    dailyPnLPercent: 0.42,
-    buyingPower: 450200000,
-    assetsCount: 3,
-    holdings: ['FPT', 'VCB', 'HPG'],
-  },
-  assets: [
-    {
-      symbol: 'FPT',
-      quantity: 1000,
-      avgPrice: 110200,
-      currentPrice: 114200,
-      currentValue: 114200000,
-      profit: 4000000,
-      profitPercent: 3.63,
-    },
-    // More positions...
-  ],
+  summary: emptySummary,
+  assets: [],
   setSummary: (summary) => set({ summary }),
   setAssets: (assets) => set({ assets }),
 }));

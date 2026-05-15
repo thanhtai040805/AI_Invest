@@ -1,0 +1,78 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    container_name: aiinvest-db
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: aiinvest
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-aiinvest123}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: aiinvest-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  ai-engine:
+    build:
+      context: ./ai-engine
+      dockerfile: Dockerfile
+    container_name: aiinvest-ai
+    ports:
+      - "8000:8000"
+    environment:
+      - DNSE_ENABLED=${DNSE_ENABLED:-true}
+      - DNSE_API_KEY=${DNSE_API_KEY:-}
+      - DNSE_API_SECRET=${DNSE_API_SECRET:-}
+      - DNSE_ACCOUNT_NO=${DNSE_ACCOUNT_NO:-}
+      - DNSE_BASE_URL=${DNSE_BASE_URL:-https://openapi.dnse.com.vn}
+      - REDIS_URL=redis://redis:6379
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./back-end
+      dockerfile: Dockerfile
+    container_name: aiinvest-api
+    ports:
+      - "3001:3001"
+    environment:
+      - DATABASE_URL=postgresql://postgres:${DB_PASSWORD:-aiinvest123}@postgres:5432/aiinvest
+      - REDIS_URL=redis://redis:6379
+      - AI_ENGINE_URL=http://ai-engine:8000
+      - DNSE_ENABLED=${DNSE_ENABLED:-true}
+      - DNSE_REDIS_CHANNEL_PREFIX=${DNSE_REDIS_CHANNEL_PREFIX:-dnse:event}
+      - JWT_SECRET=${JWT_SECRET:-change-me-in-production}
+      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:3000}
+      - PORT=3001
+      - NODE_ENV=production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ai-engine:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  pgdata:

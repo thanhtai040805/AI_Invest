@@ -8,6 +8,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Cell,
   LineChart, Line, ScatterChart, Scatter, ZAxis
 } from 'recharts';
+import { useRouter } from "next/navigation";
 
 // ... (existing data stays the same) ...
 
@@ -20,7 +21,8 @@ export function MarketBubbleMap({ sector }: { sector: string }) {
       x: Math.random() * 100, // Random X for spread
       y: c.change
     }))
-  ).filter(d => sector === 'All' || d.sector === sector);
+    ).filter(d => sector === 'All' || d.sector === sector);
+  const router = useRouter();
 
   return (
     <div className="h-[550px] w-full">
@@ -42,7 +44,11 @@ export function MarketBubbleMap({ sector }: { sector: string }) {
             cursor={{ strokeDasharray: '3 3' }}
             contentStyle={{ backgroundColor: 'rgba(23, 23, 23, 0.9)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px' }}
           />
-          <Scatter name="Stocks" data={flatData}>
+          <Scatter 
+            name="Stocks" 
+            data={flatData}
+            onClick={(data) => router.push(`/stock/${data.name}`)}
+          >
             {flatData.map((entry, index) => (
               <Cell 
                 key={`cell-${index}`} 
@@ -153,7 +159,7 @@ const liquidityData = [
 // --- COMPONENTS ---
 
 const CustomizedContent = (props: any) => {
-  const { root, depth, x, y, width, height, index, payload, colors, rank, name, change } = props;
+  const { root, depth, x, y, width, height, index, payload, colors, rank, name, change, router } = props;
 
   const getColor = (val: number) => {
     if (val > 2) return '#10b981'; // Strong Green
@@ -176,6 +182,8 @@ const CustomizedContent = (props: any) => {
           strokeWidth: 2 / (depth + 1),
           strokeOpacity: 1 / (depth + 1),
         }}
+        onClick={() => name && router?.push(`/stock/${name}`)}
+        className="cursor-pointer hover:brightness-110 transition-all"
       />
       {width > 25 && height > 25 && (
         <text
@@ -208,6 +216,7 @@ const CustomizedContent = (props: any) => {
 };
 
 export function MarketTreemap({ sector }: { sector: string }) {
+  const router = useRouter();
   const filteredData = treemapData.filter(item => 
     sector === 'All' || item.name === sector
   );
@@ -220,7 +229,7 @@ export function MarketTreemap({ sector }: { sector: string }) {
           dataKey="size"
           aspectRatio={4 / 3}
           stroke="#fff"
-          content={<CustomizedContent />}
+          content={<CustomizedContent router={router} />}
         >
            <Tooltip 
              contentStyle={{ backgroundColor: 'rgba(23, 23, 23, 0.9)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px' }}

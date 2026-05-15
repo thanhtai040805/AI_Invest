@@ -9,7 +9,7 @@ import { ChatMessage } from '@/types/chat';
 import { Skeleton } from 'boneyard-js/react';
 
 export default function Page() {
-  const { messages, addMessage, isTyping, setTyping } = useChatStore();
+  const { messages, addMessage, updateMessage, isTyping, setTyping } = useChatStore();
   const { isLoading } = useUIStore();
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -20,7 +20,7 @@ export default function Page() {
 
   useEffect(scrollToBottom, [messages]);
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!input.trim()) return;
     
     const userMsg: ChatMessage = {
@@ -35,18 +35,65 @@ export default function Page() {
     setInput('');
     setTyping(true);
     
-    // Simulate AI response
-    setTimeout(() => {
-      const assistantMsg: ChatMessage = {
-        id: (Date.now() + 1).toString(),
+    // Wire up to backend SSE
+    try {
+      const response = await fetch('/api/v1/ai/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: input })
+      });
+
+      if (!response.ok) throw new Error('Network response was not ok');
+
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('No reader available');
+
+      setTyping(false);
+      
+      const assistantMsgId = (Date.now() + 1).toString();
+      let assistantMsgContent = '';
+      
+      addMessage({
+        id: assistantMsgId,
         role: 'assistant',
-        content: `Tôi đã nhận được yêu cầu về "${input}". Hệ thống đang xử lý phân tích dữ liệu thời gian thực cho bạn...`,
+        content: '',
         type: 'text',
         timestamp: new Date().toISOString()
-      };
-      addMessage(assistantMsg);
+      });
+
+      const decoder = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
+        
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (data.content) {
+                assistantMsgContent += data.content;
+                updateMessage(assistantMsgId, assistantMsgContent);
+              }
+            } catch (e) {
+              console.error('Error parsing SSE data', e);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching AI chat:', error);
       setTyping(false);
-    }, 1500);
+      addMessage({
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content: 'Xin lỗi, hệ thống AI đang gặp sự cố. Vui lòng thử lại sau.',
+        type: 'text',
+        timestamp: new Date().toISOString()
+      });
+    }
   };
 
   return (

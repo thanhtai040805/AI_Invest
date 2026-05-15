@@ -1,0 +1,11 @@
+.agent
+.agent/chat_history.json
+.agent/plan.json
+.agent/tools.json
+.agent/workspace/
+
+graphify-out/
+
+scratch/
+
+stitch_screens

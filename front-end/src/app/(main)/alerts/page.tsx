@@ -16,13 +16,27 @@ interface Alert {
   createdAt: string;
 }
 
+import { useAlertStore } from "@/stores/useAlertStore";
+
 export default function AlertsPage() {
-  const [alerts, setAlerts] = useState<Alert[]>([
-    { id: '1', symbol: 'VHM', type: 'Price', condition: 'Above', value: '48.5', status: 'Active', createdAt: '2026-05-12' },
-    { id: '2', symbol: 'TCB', type: 'Indicator', condition: 'RSI Crosses Below', value: '30', status: 'Active', createdAt: '2026-05-10' },
-    { id: '3', symbol: 'FPT', type: 'News', condition: 'Keyword Match', value: 'AI Expansion', status: 'Triggered', createdAt: '2026-05-13' },
-    { id: '4', symbol: 'HPG', type: 'Price', condition: 'Below', value: '25.0', status: 'Paused', createdAt: '2026-05-11' },
-  ]);
+  const { alerts, addAlert, updateAlert, removeAlert } = useAlertStore();
+  const [showCreate, setShowCreate] = useState(false);
+  const [newSymbol, setNewSymbol] = useState("");
+  const [newPrice, setNewPrice] = useState("");
+  const [newCondition, setNewCondition] = useState<"Above" | "Below">("Above");
+
+  const handleCreate = () => {
+    if (!newSymbol || !newPrice) return;
+    addAlert({
+      symbol: newSymbol.toUpperCase(),
+      type: "Price",
+      condition: newCondition,
+      value: newPrice,
+    });
+    setShowCreate(false);
+    setNewSymbol("");
+    setNewPrice("");
+  };
 
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-[#050505]">
@@ -32,10 +46,58 @@ export default function AlertsPage() {
            <h1 className="text-xl font-black text-primary tracking-tighter uppercase">Smart Alert System</h1>
            <Badge variant="outline" className="text-[10px] font-black">{alerts.filter(a => a.status === 'Active').length} ACTIVE</Badge>
         </div>
-        <button className="bg-primary text-white px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:shadow-lg hover:shadow-primary/20 transition-all">
+        <button 
+          onClick={() => setShowCreate(true)}
+          className="bg-primary text-white px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:shadow-lg hover:shadow-primary/20 transition-all"
+        >
            + Create Alert
         </button>
       </div>
+
+      <AnimatePresence>
+        {showCreate && (
+          <motion.div 
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            className="px-xl py-md bg-[#0a0a0a] border-b border-white/5 overflow-hidden flex gap-md items-center"
+          >
+            <input 
+              className="bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-xs" 
+              placeholder="Symbol (e.g. VNM)" 
+              value={newSymbol}
+              onChange={e => setNewSymbol(e.target.value)}
+            />
+            <select 
+              className="bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-xs"
+              value={newCondition}
+              onChange={e => setNewCondition(e.target.value as "Above" | "Below")}
+            >
+              <option value="Above">Above</option>
+              <option value="Below">Below</option>
+            </select>
+            <input 
+              type="number"
+              className="bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-xs" 
+              placeholder="Price" 
+              value={newPrice}
+              onChange={e => setNewPrice(e.target.value)}
+            />
+            <button 
+              onClick={handleCreate}
+              className="bg-secondary text-[#000] px-4 py-2 rounded-xl text-xs font-bold"
+            >
+              Save
+            </button>
+            <button 
+              onClick={() => setShowCreate(false)}
+              className="text-on-surface-variant px-4 py-2 text-xs"
+            >
+              Cancel
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <div className="flex-1 overflow-y-auto no-scrollbar p-xl grid grid-cols-12 gap-xl">
         
@@ -79,10 +141,16 @@ export default function AlertsPage() {
                             </span>
                          </div>
                          <div className="flex gap-md">
-                            <button className="w-8 h-8 rounded-lg bg-white/5 flex items-center justify-center opacity-40 hover:opacity-100 hover:bg-white/10 transition-all">
-                               <span className="material-symbols-outlined text-sm">pause</span>
+                            <button 
+                              onClick={() => updateAlert(alert.id, { status: alert.status === 'Paused' ? 'Active' : 'Paused' })}
+                              className="w-8 h-8 rounded-lg bg-white/5 flex items-center justify-center opacity-40 hover:opacity-100 hover:bg-white/10 transition-all"
+                            >
+                               <span className="material-symbols-outlined text-sm">{alert.status === 'Paused' ? 'play_arrow' : 'pause'}</span>
                             </button>
-                            <button className="w-8 h-8 rounded-lg bg-white/5 flex items-center justify-center opacity-40 hover:opacity-100 hover:text-error transition-all">
+                            <button 
+                              onClick={() => removeAlert(alert.id)}
+                              className="w-8 h-8 rounded-lg bg-white/5 flex items-center justify-center opacity-40 hover:opacity-100 hover:text-error transition-all"
+                            >
                                <span className="material-symbols-outlined text-sm">delete</span>
                             </button>
                          </div>

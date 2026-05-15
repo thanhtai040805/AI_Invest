@@ -1,0 +1,72 @@
+# ==========================================
+# 1. BẢO MẬT (QUAN TRỌNG NHẤT)
+# ==========================================
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+# Chứa API Keys (OpenAI, Anthropic, Pinecone, v.v.)
+**/credentials.json
+**/secrets.py
+
+# ==========================================
+# 2. AI AGENT & MACHINE LEARNING SPECIFIC
+# ==========================================
+# Các folder chứa vector database local
+/chroma_db/
+/pinecone/
+/faiss_index/
+/milvus/
+
+# Cache của mô hình và thư viện
+.cache/
+__pycache__/
+.ipynb_checkpoints
+.pytest_cache
+
+# File dữ liệu nặng và mô hình tải về
+*.pth
+*.onnx
+*.bin
+*.model
+*.weights
+/models/
+/checkpoints/
+
+# Metadata từ các công cụ AI (như Graphify, Antigravity)
+.graphify/
+.antigravity/
+index_data/
+semantic_cache/
+
+# ==========================================
+# 3. FULL-STACK (NODE/REACT/PRISMA)
+# ==========================================
+node_modules/
+/dist
+/build
+.eslintcache
+
+# Prisma
+/prisma/migrations-backup/
+.prisma/
+
+# ==========================================
+# 4. LOGS & MONITORING
+# ==========================================
+*.log
+# Log của các framework AI (như LangChain, CrewAI)
+logs/
+wandb/
+mlruns/
+
+# ==========================================
+# 5. OS & IDE (ASUS ZENBOOK/WINDOWS/CURSOR)
+# ==========================================
+.vscode/
+.cursor/
+# Tránh đẩy file backup của Windows/Mac
+Thumbs.db
+desktop.ini
+.DS_Store

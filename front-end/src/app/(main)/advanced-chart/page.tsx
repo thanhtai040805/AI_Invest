@@ -1,14 +1,22 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { motion } from 'framer-motion';
 import { PageHeader } from '@/components/layout/PageHeader';
-import { SmartInsights } from '@/components/feature/stock/SmartInsights';
-import PriceChart from '@/components/feature/stock/PriceChart';
+import '@klinecharts/pro/dist/klinecharts-pro.css'
+
+const PriceChart = dynamic(
+  () => import('@/components/feature/stock/PriceChart'),
+  {
+    ssr: false,
+    loading: () => <div className="w-full h-full bg-black animate-pulse" />
+  }
+);
 
 export default function Page() {
   return (
     <div className="flex h-screen overflow-hidden">
-      <motion.div 
+      <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         className="flex-1 flex flex-col overflow-hidden"
@@ -41,21 +49,19 @@ export default function Page() {
         </div>
 
         <div className="flex-1 bg-[#050505] relative p-4 flex flex-col">
-          <PriceChart height={750} />
-          
+          <PriceChart />
+          {/* 
           <div className="absolute bottom-12 left-1/2 -translate-x-1/2 flex justify-center pointer-events-none z-30">
-             <div className="glass-card p-xs rounded-full flex gap-xs pointer-events-auto border border-white/10 shadow-2xl">
-                {['M1', 'M5', 'M15', 'H1', 'H4', 'D1', 'W1'].map(t => (
-                  <button key={t} className={`px-md py-xs rounded-full text-xs font-data-mono transition-all ${t === 'H4' ? 'bg-primary text-on-primary' : 'hover:bg-white/5'}`}>
-                    {t}
-                  </button>
-                ))}
-             </div>
-          </div>
+            <div className="glass-card p-xs rounded-full flex gap-xs pointer-events-auto border border-white/10 shadow-2xl">
+              {['M1', 'M5', 'M15', 'H1', 'H4', 'D1', 'W1'].map(t => (
+                <button key={t} className={`px-md py-xs rounded-full text-xs font-data-mono transition-all ${t === 'H4' ? 'bg-primary text-on-primary' : 'hover:bg-white/5'}`}>
+                  {t}
+                </button>
+              ))}
+            </div>
+          </div> */}
         </div>
       </motion.div>
-
-      <SmartInsights />
     </div>
   );
 }

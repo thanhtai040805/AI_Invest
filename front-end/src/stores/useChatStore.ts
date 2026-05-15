@@ -7,6 +7,7 @@ interface ChatState {
   addMessage: (message: ChatMessage) => void;
   clearChat: () => void;
   setTyping: (isTyping: boolean) => void;
+  updateMessage: (id: string, newContent: string) => void;
 }
 
 export const useChatStore = create<ChatState>((set) => ({
@@ -25,4 +26,9 @@ export const useChatStore = create<ChatState>((set) => ({
   })),
   clearChat: () => set({ messages: [] }),
   setTyping: (isTyping) => set({ isTyping }),
+  updateMessage: (id, newContent) => set((state) => ({
+    messages: state.messages.map(msg => 
+      msg.id === id ? { ...msg, content: newContent } : msg
+    )
+  })),
 }));

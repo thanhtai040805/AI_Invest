@@ -3,9 +3,22 @@
 import { GlassCard } from "@/components/ui/GlassCard";
 import { cn } from "@/lib/utils";
 import { useMarketStore } from "@/stores/useMarketStore";
+import { useRouter } from "next/navigation";
 
 export function MarketHeatmap() {
   const sectors = useMarketStore((state) => state.sectors);
+  const router = useRouter();
+
+  if (!sectors.length) {
+    return (
+      <GlassCard className="p-xl border-white/5">
+        <h3 className="font-label-caps text-[10px] tracking-widest opacity-60 uppercase">
+          Biến động Nhóm ngành
+        </h3>
+        <p className="text-xs opacity-40 mt-md">Đang tải heatmap...</p>
+      </GlassCard>
+    );
+  }
 
   return (
     <GlassCard className="p-xl border-white/5">
@@ -18,6 +31,7 @@ export function MarketHeatmap() {
         {sectors.map((sector, i) => (
           <div 
             key={i}
+            onClick={() => router.push(`/screener?sector=${encodeURIComponent(sector.name)}`)}
             className={cn(
               "p-3 rounded-xl flex flex-col justify-between min-h-[70px] transition-all cursor-pointer hover:brightness-110 active:scale-95",
               sector.color,

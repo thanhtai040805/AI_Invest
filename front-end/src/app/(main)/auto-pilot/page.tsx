@@ -4,7 +4,7 @@ import { motion } from 'framer-motion';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { GlassCard } from '@/components/ui/GlassCard';
 import { Badge } from '@/components/ui/Badge';
-import { AutoPilotStats, RiskScore } from '@/components/feature/stock/AutoPilotModules';
+import { AutoPilotStats, RiskScore, BacktestWidget, BacktestHistory } from '@/components/feature/stock/AutoPilotModules';
 
 export default function Page() {
   return (
@@ -88,6 +88,9 @@ export default function Page() {
         <div className="lg:col-span-4 flex flex-col gap-lg">
           <RiskScore score={8.5} />
           
+          <BacktestWidget />
+          <BacktestHistory />
+
           <GlassCard className="flex-1 flex flex-col gap-lg overflow-hidden">
              <div className="flex justify-between items-center">
                 <h3 className="font-title-md">Auto-Pilot Log</h3>

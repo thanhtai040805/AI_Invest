@@ -3,9 +3,15 @@ import { motion } from "framer-motion";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { formatCurrency } from "@/lib/market-utils";
 import { usePortfolioStore } from "@/stores/usePortfolioStore";
+import { usePortfolioSummary } from "@/hooks/usePortfolio";
 import { cn } from "@/lib/utils";
 
+function hasAuthToken() {
+  return typeof window !== "undefined" && !!localStorage.getItem("aiinvest_access_token");
+}
+
 export function PortfolioSummary() {
+  usePortfolioSummary(hasAuthToken());
   const stats = usePortfolioStore((state) => state.summary);
 
   return (

@@ -45,12 +45,12 @@ export default function Home() {
                                 Kết hợp giao dịch chứng khoán chuyên nghiệp, trợ lý AI thông minh và cộng đồng đầu tư xã hội hàng đầu Việt Nam.
                             </p>
                             <div className="flex flex-col sm:flex-row items-center gap-md justify-center lg:justify-start pt-md">
-                                <button className="px-xl py-md bg-primary-container text-on-primary-container font-title-md text-title-md rounded-xl hover:scale-105 transition-all shadow-lg ai-glow">
+                                <Link href="/auth" className="px-xl py-md bg-primary-container text-on-primary-container font-title-md text-title-md rounded-xl hover:scale-105 transition-all shadow-lg ai-glow inline-flex items-center justify-center">
                                     Bắt đầu ngay
-                                </button>
-                                <button className="px-xl py-md glass-card text-on-surface font-title-md text-title-md rounded-xl hover:bg-white/10 transition-all">
+                                </Link>
+                                <Link href="/dashboard" className="px-xl py-md glass-card text-on-surface font-title-md text-title-md rounded-xl hover:bg-white/10 transition-all inline-flex items-center justify-center">
                                     Xem Dashboard
-                                </button>
+                                </Link>
                             </div>
                             <div className="flex items-center gap-xl pt-lg justify-center lg:justify-start opacity-70">
                                 <div className="flex flex-col">

@@ -1,168 +1,117 @@
 "use client";
 
-import { useEffect, useRef, useMemo, useState } from "react";
-import { init, dispose, Chart, KLineData, OverlayCreate, CandleType } from "klinecharts";
+import { useEffect, useRef, useMemo } from "react";
+import { KLineChartPro } from "@klinecharts/pro";
+import "@klinecharts/pro/dist/klinecharts-pro.css";
+import { useStockOHLCV } from "@/hooks/useMarketData";
 
-interface PriceChartProps {
-  height?: number;
+interface CustomKLineData {
+  timestamp: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume?: number;
 }
 
-export default function PriceChart({ height = 500 }: PriceChartProps) {
-  const chartContainerRef = useRef<HTMLDivElement>(null);
-  const chartRef = useRef<Chart | null>(null);
-  const [activeTool, setActiveTool] = useState<string>("cursor");
+interface PriceChartProps {
+  symbol: string;
+  interval?: string;
+}
 
-  // Generate Dummy Data
-  const fullData = useMemo(() => {
-    let base = 110;
-    const now = Date.now();
-    return Array.from({ length: 300 }).map((_, i) => {
-      const open = base + (Math.random() * 2 - 1);
-      const close = open + (Math.random() * 2 - 1);
-      const high = Math.max(open, close) + Math.random();
-      const low = Math.min(open, close) - Math.random();
-      base = close;
-      return {
-        timestamp: now - (300 - i) * 60 * 1000,
-        open,
-        high,
-        low,
-        close,
-        volume: Math.floor(Math.random() * 1000000),
-      };
-    });
-  }, []);
+export default function PriceChart({ symbol, interval = "1D" }: PriceChartProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<{ dispose?: () => void } | null>(null);
+  const { data: ohlcvData } = useStockOHLCV(symbol, interval);
+
+  const klineData = useMemo((): CustomKLineData[] => {
+    const rows = ohlcvData?.data ?? [];
+    return rows.map((c: { time: string; open: number; high: number; low: number; close: number; volume?: number }) => ({
+      timestamp: new Date(c.time).getTime(),
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+      volume: c.volume,
+    }));
+  }, [ohlcvData]);
 
   useEffect(() => {
-    if (!chartContainerRef.current) return;
+    if (!containerRef.current || !symbol) return;
 
-    const chart = init(chartContainerRef.current, {
-        styles: {
-            grid: {
-                show: true,
-                horizontal: { color: 'rgba(255, 255, 255, 0.05)' },
-                vertical: { color: 'rgba(255, 255, 255, 0.05)' }
-            },
-            candle: {
-                type: CandleType.CandleSolid,
-                bar: {
-                    upColor: '#10b981',
-                    downColor: '#ef4444',
-                    noChangeColor: '#888888'
-                }
-            },
-            indicator: {
-                ohlc: {
-                    upColor: '#10b981',
-                    downColor: '#ef4444'
-                }
-            }
-        }
-    });
+    containerRef.current.innerHTML = "";
 
-    if (!chart) return;
-    chartRef.current = chart;
-
-    // Stable v9 API
-    try {
-      chart.applyNewData(fullData as KLineData[]);
-      
-      // Add Indicators
-      chart.createIndicator('MA', true, { id: 'pane_1' });
-      chart.createIndicator('VOL', false, { height: 80 });
-    } catch (err) {
-      console.error("KLineChart Initialization Error:", err);
-    }
-
-    const handleResize = () => {
-      chart.resize();
+    const options = {
+      container: containerRef.current,
+      locale: "vi-VN",
+      timezone: "Asia/Ho_Chi_Minh",
+      symbol: {
+        ticker: symbol,
+        name: symbol,
+        exchange: "HOSE",
+        market: "stocks",
+        priceCurrency: "vnd",
+        type: "stock",
+      },
+      period: {
+        multiplier: interval === "1D" ? 1 : 15,
+        timespan: interval === "1D" ? "day" : "minute",
+        text: interval,
+      },
+      mainIndicators: ["MA"],
+      subIndicators: ["VOL"],
+      datafeed: {
+        searchSymbols: async () => [{ ticker: symbol, name: symbol, exchange: "HOSE", market: "stocks" }],
+        getHistoryKLineData: async () => (klineData.length ? klineData : []),
+        subscribe: (_sym: unknown, _period: unknown, callback: (d: CustomKLineData) => void) => {
+          if (klineData.length) callback(klineData[klineData.length - 1]);
+          return "0";
+        },
+        unsubscribe: () => { },
+      },
     };
 
-    window.addEventListener("resize", handleResize);
+    chartRef.current = new KLineChartPro(options as Parameters<typeof KLineChartPro>[0]);
+
+    // Load saved drawings if available
+    const savedDrawings = localStorage.getItem(`drawings_${symbol}_${interval}`);
+    if (savedDrawings && chartRef.current) {
+      try {
+        const drawings = JSON.parse(savedDrawings);
+        // Note: Specific implementation depends on KLineChart API to restore overlays.
+        // Assuming we could restore if KLineChartPro exposes the underlying chart instance.
+        const chart = (chartRef.current as any).getChart?.() ?? chartRef.current;
+        if (chart && typeof chart.createOverlay === 'function') {
+          drawings.forEach((d: any) => chart.createOverlay(d));
+        }
+      } catch (e) {
+        console.warn("Failed to load saved drawings", e);
+      }
+    }
+
+    // Auto-save drawings periodically
+    const saveInterval = setInterval(() => {
+      const chart = (chartRef.current as any)?.getChart?.() ?? chartRef.current;
+      if (chart && typeof chart.getOverlayIds === 'function' && typeof chart.getOverlayById === 'function') {
+        const overlayIds = chart.getOverlayIds() || [];
+        const drawings = overlayIds.map((id: string) => chart.getOverlayById(id)).filter(Boolean);
+        if (drawings.length > 0) {
+          localStorage.setItem(`drawings_${symbol}_${interval}`, JSON.stringify(drawings));
+        }
+      }
+    }, 5000);
 
     return () => {
-      window.removeEventListener("resize", handleResize);
-      if (chartContainerRef.current) {
-        dispose(chartContainerRef.current);
+      clearInterval(saveInterval);
+      try {
+        chartRef.current?.dispose?.();
+      } catch {
+        /* ignore */
       }
+      chartRef.current = null;
+      if (containerRef.current) containerRef.current.innerHTML = "";
     };
-  }, [fullData]);
+  }, [symbol, interval, klineData]);
 
-  // Drawing Tool Handler
-  const selectTool = (name: string) => {
-    setActiveTool(name);
-    if (!chartRef.current) return;
-
-    if (name === "cursor") {
-      // Logic for default cursor is handled by library
-    } else if (name === "eraser") {
-      chartRef.current.removeOverlay();
-    } else {
-      chartRef.current.createOverlay({
-        name: name,
-        extendData: 'extended data',
-        onDrawEnd: () => {
-            // Can switch back to cursor after drawing if desired
-            // setActiveTool("cursor");
-            return true;
-        }
-      });
-    }
-  };
-
-  const tools = [
-    { id: 'cursor', icon: 'near_me', label: 'Cursor' },
-    { id: 'trendLine', icon: 'show_chart', label: 'Trendline' },
-    { id: 'horizontalLine', icon: 'horizontal_rule', label: 'Horz Line' },
-    { id: 'verticalLine', icon: 'vertical_align_center', label: 'Vert Line' },
-    { id: 'rayLine', icon: 'trending_flat', label: 'Ray' },
-    { id: 'fibonacciRetracement', icon: 'format_overline', label: 'Fibonacci' },
-    { id: 'rect', icon: 'rectangle', label: 'Rectangle' },
-    { id: 'eraser', icon: 'delete', label: 'Clear All' },
-  ];
-
-  return (
-    <div className="w-full h-full flex bg-[#050505] rounded-xl border border-white/5 overflow-hidden">
-      {/* LEFT TOOLBAR */}
-      <div className="w-12 border-r border-white/5 flex flex-col items-center py-4 gap-4 bg-[#0a0a0a]">
-        {tools.map((tool) => (
-          <button
-            key={tool.id}
-            title={tool.label}
-            onClick={() => selectTool(tool.id)}
-            className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all ${
-              activeTool === tool.id 
-                ? 'bg-primary text-on-primary shadow-lg shadow-primary/20' 
-                : 'text-on-surface-variant/40 hover:text-white hover:bg-white/5'
-            }`}
-          >
-            <span className="material-symbols-outlined text-[18px]">{tool.icon}</span>
-          </button>
-        ))}
-      </div>
-
-      {/* CHART AREA */}
-      <div className="flex-1 relative">
-        <div className="absolute top-4 left-4 z-20 pointer-events-none">
-            <div className="flex items-center gap-2">
-                <span className="text-xl font-black text-white italic tracking-tighter opacity-60">AIINVEST PRO</span>
-                <span className="px-2 py-0.5 rounded bg-primary/20 text-primary text-[8px] font-bold">K-LINE CORE</span>
-            </div>
-        </div>
-        
-        <div 
-          ref={chartContainerRef} 
-          style={{ height: height }}
-          className="w-full"
-        />
-
-        {/* TOOL TIP */}
-        {activeTool !== 'cursor' && activeTool !== 'eraser' && (
-           <div className="absolute top-4 right-4 z-20 bg-primary/20 backdrop-blur border border-primary/30 px-3 py-1 rounded-full text-[10px] text-primary font-bold animate-pulse uppercase tracking-widest">
-              Drawing Mode: {activeTool}
-           </div>
-        )}
-      </div>
-    </div>
-  );
+  return <div ref={containerRef} className="w-full h-[600px]" />;
 }
