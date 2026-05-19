@@ -27,19 +27,19 @@ export function StatCard({
   const isNegative = trendType === 'negative';
 
   return (
-    <GlassCard className={cn("flex flex-col gap-base group relative", className)} interactive={true}>
+    <GlassCard className={cn("flex flex-col gap-base group relative border-white/5", className)} interactive={true}>
       {/* Label with subtle animation */}
-      <span className="font-label-caps text-label-caps text-on-surface-variant group-hover:text-primary transition-colors duration-300">
+      <span className="font-label-caps text-[10px] font-black opacity-45 uppercase tracking-widest group-hover:text-[#e8a940] transition-colors duration-300">
         {label}
       </span>
       
       {/* Value with emphasis */}
       <div className="flex items-baseline gap-xs">
-        <span className="font-headline-lg text-headline-lg text-on-surface group-hover:scale-[1.02] transition-transform duration-500 origin-left">
+        <span className="text-3xl font-black font-data-mono text-on-surface group-hover:scale-[1.02] transition-transform duration-500 origin-left">
           {value}
         </span>
         {unit && (
-          <span className="text-body-sm font-data-mono text-on-surface-variant uppercase">
+          <span className="text-[10px] font-data-mono font-bold text-on-surface-variant uppercase ml-1 opacity-60">
             {unit}
           </span>
         )}
@@ -51,9 +51,9 @@ export function StatCard({
           initial={{ opacity: 0, x: -5 }}
           animate={{ opacity: 1, x: 0 }}
           className={cn(
-            "mt-xs px-sm py-0.5 rounded-full w-fit font-data-mono text-[11px] flex items-center gap-1 border",
-            isPositive ? 'text-secondary bg-secondary/10 border-secondary/20 shadow-[0_0_10px_rgba(52,211,153,0.1)]' : 
-            isNegative ? 'text-error bg-error/10 border-error/20 shadow-[0_0_10px_rgba(248,113,113,0.1)]' : 
+            "mt-xs px-2.5 py-1 rounded-lg w-fit font-data-mono text-[10px] font-bold flex items-center gap-1 border",
+            isPositive ? 'text-[#2dbd7e] bg-[#2dbd7e]/10 border-[#2dbd7e]/20' : 
+            isNegative ? 'text-[#f87171] bg-[#f87171]/10 border-[#f87171]/20' : 
             'text-on-surface-variant bg-white/5 border-white/10'
           )}
         >
@@ -66,16 +66,16 @@ export function StatCard({
 
       {/* Description */}
       {description && (
-        <p className="mt-xs text-on-surface-variant font-body-sm text-[11px] opacity-60 leading-relaxed italic group-hover:opacity-80 transition-opacity">
+        <p className="mt-xs text-on-surface-variant text-[11px] opacity-60 leading-relaxed italic group-hover:opacity-80 transition-opacity">
           {description}
         </p>
       )}
 
       {/* Decorative accent icon on hover */}
-      <div className="absolute top-lg right-lg opacity-0 group-hover:opacity-20 transition-all duration-500 translate-x-2 group-hover:translate-x-0">
-         <span className="material-symbols-outlined text-primary text-[24px]">
-           {isPositive ? 'query_stats' : 'analytics'}
-         </span>
+      <div className="absolute top-lg right-lg opacity-0 group-hover:opacity-25 transition-all duration-500 translate-x-2 group-hover:translate-x-0 pointer-events-none">
+        <span className="material-symbols-outlined text-[#e8a940] text-[24px]">
+          {isPositive ? 'query_stats' : 'analytics'}
+        </span>
       </div>
     </GlassCard>
   );

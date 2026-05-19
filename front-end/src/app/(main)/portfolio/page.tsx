@@ -16,8 +16,16 @@ import {
   usePortfolioPerformance,
   usePortfolioRiskMetrics,
 } from "@/hooks/usePortfolio";
+import Link from "next/link";
 
-const COLORS = ['#adff2f', '#00e5ff', '#ff4d4d', '#ffab00', '#7c4dff'];
+// Curated premium financial palette matching warm zinc / amber theme
+const CHROME_PALETTE = [
+  "#e8a940", // Amber / Gold
+  "#2dbd7e", // Emerald / Gain
+  "#7bbcee", // Slate-blue / Info
+  "#f87171", // Rose / Loss
+  "#a78bfa", // Lavendar / Alt
+];
 
 function hasAuthToken() {
   return typeof window !== 'undefined' && !!localStorage.getItem('aiinvest_access_token');
@@ -47,150 +55,204 @@ export default function PortfolioAnalysisPage() {
 
   if (!authed) {
     return (
-      <div className="flex flex-col h-screen items-center justify-center bg-[#050505] p-xl text-center">
-        <p className="text-lg font-bold text-primary mb-md">Đăng nhập để xem danh mục</p>
-        <p className="text-sm opacity-50 max-w-md">
-          Portfolio mô phỏng yêu cầu JWT. Đăng ký/đăng nhập qua API{' '}
-          <code className="text-secondary">/api/v1/auth</code> và lưu Access token vào{' '}
-          <code className="text-secondary">localStorage.aiinvest_access_token</code>.
-        </p>
+      <div className="flex flex-col min-h-[80dvh] items-center justify-center p-xl text-center">
+        <GlassCard className="p-xl border-[#e8a940]/10 shadow-[0_24px_48px_rgba(0,0,0,0.5)]">
+          <div className="w-12 h-12 rounded-full bg-[#e8a940]/10 flex items-center justify-center text-[#e8a940] mx-auto mb-lg">
+            <span className="material-symbols-outlined text-[24px]">lock</span>
+          </div>
+          <p className="text-lg font-bold text-[#e8a940] mb-md uppercase tracking-wider">Đăng nhập để xem danh mục</p>
+          <p className="text-xs text-on-surface-variant leading-relaxed opacity-70 mb-lg">
+            Hệ thống Portfolio mô phỏng yêu cầu xác thực bảo mật.
+          </p>
+          <Link href="/auth" className="px-xl py-2 bg-primary text-on-primary rounded-xl font-bold hover:bg-primary/80 transition-all">Đăng nhập</Link>
+        </GlassCard>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden bg-[#050505]">
-      <div className="h-16 border-b border-white/5 flex items-center justify-between px-xl bg-[#0a0a0a]">
-        <div className="flex items-center gap-xl">
-          <h1 className="text-xl font-black text-primary tracking-tighter uppercase">Portfolio Intelligence</h1>
-          <Badge variant="secondary" className="bg-secondary/10 text-secondary">SIMULATED</Badge>
+    <div className="pb-xl space-y-lg px-xl pt-lg">
+      {/* Header Dashboard section */}
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-md border-b border-white/5 pb-lg">
+        <div className="flex items-center gap-md">
+          <div className="w-10 h-10 rounded-xl bg-[#e8a940]/10 flex items-center justify-center text-[#e8a940] border border-[#e8a940]/20">
+            <span className="material-symbols-outlined text-[20px]">donut_large</span>
+          </div>
+          <div>
+            <h1 className="text-2xl font-black text-[#e8a940] tracking-tighter uppercase leading-none">Portfolio Intelligence</h1>
+            <p className="text-xs text-on-surface-variant mt-1">Phân tích danh mục, quản trị rủi ro & hiệu suất tài sản trực quan.</p>
+          </div>
         </div>
-        <div className="flex items-center gap-lg">
+        <div className="flex items-center gap-lg bg-white/4 border border-white/5 p-3 rounded-xl">
           <div className="text-right">
-            <p className="text-[10px] font-bold opacity-40 uppercase">Total Equity</p>
-            <p className="text-lg font-black font-data-mono">{formatCurrency(summary.totalEquity, 'VND')}</p>
+            <p className="text-[9px] font-bold opacity-40 uppercase tracking-wider">Tài sản ròng (NAV)</p>
+            <p className="text-lg font-black font-data-mono tracking-tight">{formatCurrency(summary.totalEquity, 'VND')}</p>
           </div>
           <div className="h-8 w-[1px] bg-white/10" />
           <div className="text-right">
-            <p className="text-[10px] font-bold opacity-40 uppercase">Total P&L</p>
-            <p className={cn("text-lg font-black font-data-mono", summary.totalProfit >= 0 ? "text-secondary" : "text-error")}>
+            <p className="text-[9px] font-bold opacity-40 uppercase tracking-wider">Lợi nhuận ròng</p>
+            <p className={cn("text-lg font-black font-data-mono tracking-tight", summary.totalProfit >= 0 ? "text-secondary" : "text-error")}>
               {summary.totalProfit >= 0 ? '+' : ''}{formatCurrency(summary.totalProfit, 'VND')} ({summary.totalProfitPercent.toFixed(2)}%)
             </p>
           </div>
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto no-scrollbar p-xl space-y-xl">
-        <div className="grid grid-cols-12 gap-xl">
-          <div className="col-span-8">
-            <GlassCard className="p-xl h-[400px] flex flex-col bg-[#0a0a0a]">
-              <h3 className="text-[10px] font-black opacity-30 uppercase tracking-widest mb-xl">Equity Curve</h3>
-              <div className="flex-1">
-                {isClient && (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={performanceData}>
-                      <defs>
-                        <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="var(--primary)" stopOpacity={0.3} />
-                          <stop offset="95%" stopColor="var(--primary)" stopOpacity={0} />
-                        </linearGradient>
-                      </defs>
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255,255,255,0.03)" />
-                      <XAxis dataKey="date" hide />
-                      <YAxis hide />
-                      <Tooltip
-                        contentStyle={{ backgroundColor: '#0a0a0a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px' }}
-                        formatter={(value: number) => [formatCurrency(value, 'VND'), 'Equity']}
-                      />
-                      <Area type="monotone" dataKey="value" stroke="var(--primary)" strokeWidth={3} fill="url(#colorValue)" />
-                    </AreaChart>
-                  </ResponsiveContainer>
-                )}
+      {/* Equity & Allocation asymmetric grids */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-lg">
+        <div className="lg:col-span-8">
+          <GlassCard className="p-xl h-[420px] flex flex-col border-white/5">
+            <div className="flex justify-between items-center mb-xl">
+              <div className="flex items-center gap-xs">
+                <span className="material-symbols-outlined text-[#e8a940] text-sm">show_chart</span>
+                <h3 className="text-[10px] font-black opacity-45 uppercase tracking-widest">Đường cong tài sản (Equity Curve)</h3>
               </div>
-            </GlassCard>
-          </div>
-          <div className="col-span-4">
-            <GlassCard className="p-xl h-[400px] flex flex-col bg-[#0a0a0a]">
-              <h3 className="text-[10px] font-black opacity-30 uppercase tracking-widest mb-xl">Asset Allocation</h3>
-              <div className="flex-1 relative">
-                {isClient && allocationData.length > 0 && (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie data={allocationData} innerRadius={60} outerRadius={100} paddingAngle={5} dataKey="value">
-                        {allocationData.map((_, index) => (
-                          <Cell key={index} fill={COLORS[index % COLORS.length]} />
-                        ))}
-                      </Pie>
-                      <Tooltip />
-                    </PieChart>
-                  </ResponsiveContainer>
-                )}
-                <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                  <span className="text-[10px] font-bold opacity-40 uppercase">Assets</span>
-                  <span className="text-lg font-black">{assets.length}</span>
+              <Badge variant="outline">1D INTERVAL</Badge>
+            </div>
+            <div className="flex-1 w-full min-h-0 text-[10px] font-data-mono">
+              {isClient && (
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={performanceData}>
+                    <defs>
+                      <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#e8a940" stopOpacity={0.2} />
+                        <stop offset="95%" stopColor="#e8a940" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255,255,255,0.02)" />
+                    <XAxis dataKey="date" stroke="rgba(255,255,255,0.3)" />
+                    <YAxis
+                      stroke="rgba(255,255,255,0.3)"
+                      tickFormatter={(v) => (v / 1_000_000).toLocaleString() + "M"}
+                    />
+                    <Tooltip
+                      contentStyle={{
+                        backgroundColor: '#111112',
+                        border: '1px solid rgba(255,255,255,0.08)',
+                        borderRadius: '12px',
+                        fontFamily: 'JetBrains Mono',
+                        fontSize: '11px'
+                      }}
+                      labelClassName="text-on-surface-variant"
+                      itemStyle={{ color: '#e8a940' }}
+                      formatter={(value: number) => [formatCurrency(value, 'VND'), 'Tài sản']}
+                    />
+                    <Area type="monotone" dataKey="value" stroke="#e8a940" strokeWidth={2} fill="url(#colorValue)" />
+                  </AreaChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+          </GlassCard>
+        </div>
+
+        <div className="lg:col-span-4">
+          <GlassCard className="p-xl h-[420px] flex flex-col border-white/5">
+            <div className="flex items-center gap-xs mb-xl">
+              <span className="material-symbols-outlined text-[#e8a940] text-sm">pie_chart</span>
+              <h3 className="text-[10px] font-black opacity-45 uppercase tracking-widest">Phân bổ tài sản (Allocation)</h3>
+            </div>
+            <div className="flex-1 relative min-h-0">
+              {isClient && allocationData.length > 0 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie data={allocationData} innerRadius={70} outerRadius={105} paddingAngle={4} dataKey="value">
+                      {allocationData.map((_, index) => (
+                        <Cell key={index} fill={CHROME_PALETTE[index % CHROME_PALETTE.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip
+                      contentStyle={{
+                        backgroundColor: '#111112',
+                        border: '1px solid rgba(255,255,255,0.08)',
+                        borderRadius: '12px',
+                        fontFamily: 'JetBrains Mono',
+                        fontSize: '11px'
+                      }}
+                    />
+                  </PieChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="h-full flex items-center justify-center text-center opacity-40 text-xs italic">
+                  Chưa có phân bổ vị thế
                 </div>
+              )}
+              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                <span className="text-[9px] font-bold opacity-45 uppercase tracking-wider">Cổ phiếu</span>
+                <span className="text-2xl font-black font-data-mono text-on-surface">{assets.length}</span>
               </div>
-            </GlassCard>
-          </div>
+            </div>
+          </GlassCard>
         </div>
+      </div>
 
-        <div className="grid grid-cols-4 gap-xl">
-          {[
-            { label: 'Sharpe Ratio', value: risk?.sharpe, suffix: '', desc: 'Risk-adjusted return' },
-            { label: 'Max Drawdown', value: risk?.maxDrawdown, suffix: '%', desc: 'Peak to trough' },
-            { label: 'Alpha (ann.)', value: risk?.alpha, suffix: '%', desc: 'Excess return' },
-            { label: 'Beta', value: risk?.beta, suffix: '', desc: 'Market sensitivity' },
-          ].map((m) => (
-            <GlassCard key={m.label} className="p-xl bg-[#0a0a0a]">
-              <p className="text-[9px] font-black opacity-30 uppercase tracking-widest mb-2">{m.label}</p>
-              <p className="text-2xl font-black font-data-mono text-primary">
-                {m.value != null ? `${m.value}${m.suffix}` : '—'}
-              </p>
-              <p className="text-[10px] opacity-40 mt-1">{m.desc}</p>
-            </GlassCard>
-          ))}
-        </div>
+      {/* Risk Metrics */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-lg">
+        {[
+          { label: 'Sharpe Ratio', value: risk?.sharpe, suffix: '', desc: 'Lợi nhuận điều chỉnh rủi ro' },
+          { label: 'Max Drawdown', value: risk?.maxDrawdown, suffix: '%', desc: 'Mức sụt giảm tối đa từ đỉnh' },
+          { label: 'Alpha (Niên độ)', value: risk?.alpha, suffix: '%', desc: 'Hiệu suất vượt trội thị trường' },
+          { label: 'Beta Hệ số', value: risk?.beta, suffix: '', desc: 'Độ nhạy biến động thị trường' },
+        ].map((m) => (
+          <GlassCard key={m.label} className="p-xl border-white/5 transition-all hover:-translate-y-1 duration-300">
+            <p className="text-[9px] font-black opacity-45 uppercase tracking-widest mb-2">{m.label}</p>
+            <p className="text-3xl font-black font-data-mono text-[#e8a940]">
+              {m.value != null ? `${m.value}${m.suffix}` : '—'}
+            </p>
+            <p className="text-[10px] opacity-50 mt-2 font-medium">{m.desc}</p>
+          </GlassCard>
+        ))}
+      </div>
 
-        <GlassCard className="p-0 border-white/5 overflow-hidden bg-[#0a0a0a]">
-          <div className="p-xl border-b border-white/5">
-            <h3 className="text-[10px] font-black opacity-30 uppercase tracking-widest">Holdings</h3>
+      {/* Positions Table */}
+      <GlassCard className="p-0 border-white/5 overflow-hidden shadow-2xl">
+        <div className="p-xl border-b border-white/5 flex items-center justify-between">
+          <div className="flex items-center gap-xs">
+            <span className="material-symbols-outlined text-[#e8a940] text-sm">toc</span>
+            <h3 className="text-[10px] font-black opacity-45 uppercase tracking-widest">Danh mục Vị thế hiện tại</h3>
           </div>
-          {assets.length === 0 ? (
-            <p className="p-xl text-sm opacity-40 text-center">Chưa có vị thế. Đặt lệnh mô phỏng từ trang cổ phiếu.</p>
-          ) : (
-            <table className="w-full text-left font-data-mono">
+          <Badge variant="outline" dot>{assets.length} VỊ THẾ</Badge>
+        </div>
+        {assets.length === 0 ? (
+          <div className="p-xl text-center">
+            <p className="text-sm opacity-45 italic">Chưa có vị thế trong tài khoản. Hãy đặt lệnh mô phỏng từ trang Chi tiết cổ phiếu.</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse min-w-[1000px] font-data-mono">
               <thead>
-                <tr className="text-[9px] font-black opacity-30 uppercase border-b border-white/5">
-                  <th className="py-4 px-xl">Symbol</th>
-                  <th className="py-4 px-xl text-right">Avg</th>
-                  <th className="py-4 px-xl text-right">Market</th>
-                  <th className="py-4 px-xl text-right">Qty</th>
-                  <th className="py-4 px-xl text-right">Value</th>
-                  <th className="py-4 px-xl text-right">P&L %</th>
-                  <th className="py-4 px-xl text-right">Weight</th>
+                <tr className="text-[10px] font-black opacity-45 uppercase border-b border-white/5 bg-white/[0.01]">
+                  <th className="py-4 px-xl">Mã</th>
+                  <th className="py-4 px-xl text-right">Giá vốn</th>
+                  <th className="py-4 px-xl text-right">Giá hiện tại</th>
+                  <th className="py-4 px-xl text-right">Khối lượng</th>
+                  <th className="py-4 px-xl text-right">Giá trị vị thế</th>
+                  <th className="py-4 px-xl text-right">Lợi nhuận (P&L)</th>
+                  <th className="py-4 px-xl text-right">Tỷ trọng</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody className="divide-y divide-white/[0.02]">
                 {assets.map((a) => (
-                  <tr key={a.symbol} className="border-b border-white/[0.02] hover:bg-white/[0.02]">
-                    <td className="py-4 px-xl font-black text-primary">{a.symbol}</td>
-                    <td className="py-4 px-xl text-right text-xs opacity-60">{a.avgPrice.toLocaleString()}</td>
+                  <tr key={a.symbol} className="border-b border-white/[0.01] hover:bg-white/[0.02] transition-colors">
+                    <td className="py-4 px-xl">
+                      <span className="font-black text-[#e8a940] text-sm">{a.symbol}</span>
+                    </td>
+                    <td className="py-4 px-xl text-right text-xs opacity-80">{a.avgPrice.toLocaleString()}</td>
                     <td className="py-4 px-xl text-right text-xs">{a.currentPrice.toLocaleString()}</td>
                     <td className="py-4 px-xl text-right text-xs">{a.quantity.toLocaleString()}</td>
-                    <td className="py-4 px-xl text-right text-xs">{formatCurrency(a.currentValue, 'VND')}</td>
+                    <td className="py-4 px-xl text-right text-xs font-semibold">{formatCurrency(a.currentValue, 'VND')}</td>
                     <td className={cn("py-4 px-xl text-right text-xs font-black", a.profit >= 0 ? "text-secondary" : "text-error")}>
-                      {a.profitPercent.toFixed(2)}%
+                      {a.profitPercent >= 0 ? '+' : ''}{a.profitPercent.toFixed(2)}%
                     </td>
-                    <td className="py-4 px-xl text-right text-xs opacity-40">
+                    <td className="py-4 px-xl text-right text-xs opacity-50">
                       {((a.currentValue / totalEquity) * 100).toFixed(1)}%
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          )}
-        </GlassCard>
-      </div>
+          </div>
+        )}
+      </GlassCard>
     </div>
   );
 }

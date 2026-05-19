@@ -113,7 +113,36 @@ export const marketAPI = {
   getSnapshot: (exchange?: string) =>
     apiClient.get('/market/snapshot', { params: { exchange } }).then(r => r.data),
   getHeatmap: () => apiClient.get('/market/heatmap').then(r => r.data),
+  getNews: (params?: { symbol?: string; limit?: number }) =>
+    apiClient.get('/market/news', { params }).then(r => r.data),
   search: (q: string) => apiClient.get('/market/search', { params: { q } }).then(r => r.data),
+};
+
+// ── Community API ────────────────────────────────────
+
+export interface CreatePostParams {
+  content: string;
+  taggedSymbols?: string[];
+}
+
+export interface AddCommentParams {
+  content: string;
+  parentCommentId?: string;
+}
+
+export const communityAPI = {
+  getPosts: (params?: { limit?: number; cursor?: string }) =>
+    apiClient.get('/community/posts', { params }).then(r => r.data),
+  createPost: (post: CreatePostParams) =>
+    apiClient.post('/community/posts', post).then(r => r.data),
+  getPost: (id: string) =>
+    apiClient.get(`/community/posts/${id}`).then(r => r.data),
+  addComment: (postId: string, comment: AddCommentParams) =>
+    apiClient.post(`/community/posts/${postId}/comments`, comment).then(r => r.data),
+  toggleReaction: (postId: string) =>
+    apiClient.post(`/community/posts/${postId}/react`).then(r => r.data),
+  toggleCommentReaction: (commentId: string) =>
+    apiClient.post(`/community/comments/${commentId}/react`).then(r => r.data),
 };
 
 // ── Stock Detail API ─────────────────────────────────

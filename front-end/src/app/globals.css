@@ -1,97 +1,185 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: var(--font-inter);
-  --font-inter: var(--font-inter);
-  --font-hanken-grotesk: var(--font-hanken-grotesk);
+  --font-sans: var(--font-outfit);
+  --font-display: var(--font-outfit);
+  --font-mono: var(--font-jetbrains);
 
-  --color-surface: #131313;
-  --color-surface-dim: #131313;
-  --color-surface-bright: #393939;
-  --color-surface-container-lowest: #0e0e0e;
-  --color-surface-container-low: #1c1b1b;
-  --color-surface-container: #20201f;
-  --color-surface-container-high: #2a2a2a;
-  --color-surface-container-highest: #353535;
-  --color-on-surface: #e5e2e1;
-  --color-on-surface-variant: #c2c6d6;
-  --color-inverse-surface: #e5e2e1;
-  --color-inverse-on-surface: #313030;
-  --color-outline: #8c909f;
-  --color-outline-variant: #424754;
-  --color-surface-tint: #adc6ff;
-  --color-primary: #adc6ff;
-  --color-on-primary: #002e6a;
-  --color-primary-container: #4d8eff;
-  --color-on-primary-container: #00285d;
-  --color-inverse-primary: #005ac2;
-  --color-secondary: #4edea3;
-  --color-on-secondary: #003824;
-  --color-secondary-container: #00a572;
-  --color-on-secondary-container: #00311f;
-  --color-tertiary: #ffb95f;
-  --color-on-tertiary: #472a00;
-  --color-tertiary-container: #ca8100;
-  --color-on-tertiary-container: #3e2400;
-  --color-error: #ffb4ab;
-  --color-on-error: #690005;
-  --color-error-container: #93000a;
-  --color-on-error-container: #ffdad6;
-  --color-primary-fixed: #d8e2ff;
-  --color-primary-fixed-dim: #adc6ff;
-  --color-on-primary-fixed: #001a42;
-  --color-on-primary-fixed-variant: #004395;
-  --color-secondary-fixed: #6ffbbe;
-  --color-secondary-fixed-dim: #4edea3;
-  --color-on-secondary-fixed: #002113;
-  --color-on-secondary-fixed-variant: #005236;
-  --color-tertiary-fixed: #ffddb8;
-  --color-tertiary-fixed-dim: #ffb95f;
-  --color-on-tertiary-fixed: #2a1700;
-  --color-on-tertiary-fixed-variant: #653e00;
-  --color-background: #131313;
-  --color-on-background: #e5e2e1;
+  /* ── Warm Zinc palette – no AI blue ── */
+  --color-background:                  #09090a;
+  --color-surface:                     #111112;
+  --color-surface-dim:                 #0d0d0e;
+  --color-surface-bright:              #272729;
+  --color-surface-container-lowest:   #070708;
+  --color-surface-container-low:      #151517;
+  --color-surface-container:          #1b1b1d;
+  --color-surface-container-high:     #222224;
+  --color-surface-container-highest:  #2c2c2f;
+  --color-on-surface:                  #eeedf0;
+  --color-on-surface-variant:         #9998a0;
+  --color-inverse-surface:             #eeedf0;
+  --color-inverse-on-surface:         #2c2c2f;
+  --color-outline:                     #555560;
+  --color-outline-variant:            #33333d;
 
-  --spacing-base: 4px;
-  --spacing-xs: 8px;
-  --spacing-sm: 12px;
-  --spacing-md: 16px;
-  --spacing-lg: 24px;
-  --spacing-xl: 40px;
+  /* Primary: Amber/Gold – premium financial feel */
+  --color-primary:                     #e8a940;
+  --color-on-primary:                  #1a0d00;
+  --color-primary-container:          #b87822;
+  --color-on-primary-container:       #fff0d4;
+  --color-primary-fixed:              #ffdea3;
+  --color-primary-fixed-dim:          #e8a940;
+  --color-on-primary-fixed:           #170900;
+  --color-on-primary-fixed-variant:   #8a5500;
+  --color-inverse-primary:            #8a5500;
+  --color-surface-tint:               var(--color-primary);
+
+  /* Secondary: Emerald – gains / positive */
+  --color-secondary:                   #2dbd7e;
+  --color-on-secondary:                #001f11;
+  --color-secondary-container:        #00915a;
+  --color-on-secondary-container:     #001a0f;
+  --color-secondary-fixed:            #60f5b0;
+  --color-secondary-fixed-dim:        #2dbd7e;
+  --color-on-secondary-fixed:         #001a0f;
+  --color-on-secondary-fixed-variant: #005233;
+
+  /* Tertiary: Slate-blue – neutral info */
+  --color-tertiary:                    #7bbcee;
+  --color-on-tertiary:                #001e30;
+  --color-tertiary-container:         #2e7db0;
+  --color-on-tertiary-container:      #001928;
+  --color-tertiary-fixed:             #b6daff;
+  --color-tertiary-fixed-dim:         #7bbcee;
+  --color-on-tertiary-fixed:          #001928;
+  --color-on-tertiary-fixed-variant:  #005989;
+
+  /* Error: Rose */
+  --color-error:                       #f87171;
+  --color-on-error:                    #4a0010;
+  --color-error-container:            #c0364a;
+  --color-on-error-container:         #ffd9de;
+
+  /* Spacing */
+  --spacing-base:          4px;
+  --spacing-xs:            8px;
+  --spacing-sm:            12px;
+  --spacing-md:            16px;
+  --spacing-lg:            24px;
+  --spacing-xl:            40px;
   --spacing-container-max: 1280px;
-  --spacing-gutter: 24px;
+  --spacing-gutter:        24px;
 
-  --radius-sm: 0.25rem;
-  --radius-md: 0.75rem;
-  --radius-lg: 1rem;
-  --radius-xl: 1.5rem;
+  /* Radii – varied, not uniform */
+  --radius-sm:  0.375rem;
+  --radius-md:  0.625rem;
+  --radius-lg:  1rem;
+  --radius-xl:  1.5rem;
+  --radius-2xl: 2rem;
 }
 
 @layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
   body {
     background-color: var(--color-background);
-    color: var(--color-on-background);
-    font-family: var(--font-inter);
+    color: var(--color-on-surface);
+    font-family: var(--font-outfit), system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
 
   h1, h2, h3, h4, h5, h6 {
-    font-family: var(--font-hanken-grotesk);
+    font-family: var(--font-outfit), system-ui, sans-serif;
+    letter-spacing: -0.025em;
+    text-wrap: balance;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar        { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track  { background: transparent; }
+  ::-webkit-scrollbar-thumb  { background: rgba(255,255,255,0.08); border-radius: 2px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.15); }
+
+  /* Focus ring */
+  :focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+    border-radius: 4px;
   }
 }
 
 @layer utilities {
+  /* True glass – inner border + diffusion shadow */
   .glass-card {
-    background: rgba(26, 26, 26, 0.4);
-    backdrop-filter: blur(12px);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(17, 17, 19, 0.72);
+    backdrop-filter: blur(20px) saturate(1.4);
+    -webkit-backdrop-filter: blur(20px) saturate(1.4);
+    border: 1px solid rgba(255, 255, 255, 0.055);
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.06),
+      0 8px 32px rgba(0,0,0,0.35),
+      0 2px 8px rgba(0,0,0,0.2);
   }
-  .ai-glow {
-    box-shadow: 0px 0px 30px rgba(59, 130, 246, 0.15);
+
+  /* Grain noise overlay – subtle texture over flat surfaces */
+  .grain-overlay::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: 9998;
+    pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    background-size: 180px 180px;
+    opacity: 0.028;
+    mix-blend-mode: overlay;
   }
+
+  /* Scrollbar hider */
+  .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+
+  /* Monospace data – tabular numbers */
+  .font-data-mono {
+    font-family: var(--font-jetbrains), 'JetBrains Mono', 'Courier New', monospace;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+  }
+
+  /* Premium text gradient – amber only, not AI blue */
   .text-gradient-primary {
-    background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-secondary) 100%);
+    background: linear-gradient(135deg, #e8a940 0%, #f5c46e 50%, #e8a940 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Amber glow – replaces ai-glow */
+  .amber-glow {
+    box-shadow: 0 0 24px rgba(232, 169, 64, 0.12);
+  }
+
+  /* Colored tinted shadows */
+  .shadow-primary-tint {
+    box-shadow: 0 8px 32px rgba(232, 169, 64, 0.08), 0 2px 8px rgba(0,0,0,0.3);
+  }
+
+  /* Spotlight top-edge line */
+  .edge-highlight::before {
+    content: '';
+    position: absolute;
+    inset-x: 0;
+    top: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.07), transparent);
+    pointer-events: none;
+  }
+
+  /* Aura glow (used by brand logo) */
+  .aura-glow {
+    background: linear-gradient(135deg, rgba(232,169,64,0.2), rgba(232,169,64,0.08));
+    box-shadow: 0 0 20px rgba(232,169,64,0.2), inset 0 1px 0 rgba(255,255,255,0.1);
   }
 }
-

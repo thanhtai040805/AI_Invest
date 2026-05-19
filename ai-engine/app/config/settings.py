@@ -5,7 +5,10 @@ Application settings — DNSE Open API credentials and feature flags.
 import os
 from dataclasses import dataclass
 from functools import lru_cache
+from dotenv import load_dotenv
 
+# Load .env file variables into environment
+load_dotenv()
 
 @dataclass(frozen=True)
 class Settings:

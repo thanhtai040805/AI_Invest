@@ -11,14 +11,14 @@ export function AutoPilotStats() {
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-md">
       {[
-        { label: 'DAILY ROI', value: '+1.25%', trend: 'up', color: 'text-secondary' },
-        { label: 'MAX DRAWDOWN', value: '-4.8%', trend: 'down', color: 'text-error' },
+        { label: 'DAILY ROI', value: '+1.25%', trend: 'up', color: 'text-[#2dbd7e]' },
+        { label: 'MAX DRAWDOWN', value: '-4.8%', trend: 'down', color: 'text-[#f87171]' },
         { label: 'WIN RATE', value: '78.5%', trend: 'up', color: 'text-on-surface' },
-        { label: 'VOLATILITY', value: 'LOW', trend: 'neutral', color: 'text-primary' },
+        { label: 'VOLATILITY', value: 'THẤP', trend: 'neutral', color: 'text-[#7bbcee]' },
       ].map((stat, i) => (
-        <GlassCard key={i} className="flex flex-col gap-xs p-xl">
-          <span className="font-label-caps text-[10px] text-on-surface-variant tracking-[0.2em]">{stat.label}</span>
-          <span className={cn("font-headline-sm text-headline-sm", stat.color)}>{stat.value}</span>
+        <GlassCard key={i} className="flex flex-col gap-xs p-xl border-white/5 bg-white/[0.01]">
+          <span className="font-label-caps text-[9px] text-on-surface-variant tracking-[0.2em] opacity-45">{stat.label}</span>
+          <span className={cn("text-2xl font-black font-data-mono tracking-tight", stat.color)}>{stat.value}</span>
         </GlassCard>
       ))}
     </div>
@@ -30,7 +30,7 @@ export function RiskScore({ score }: { score: number }) {
   const strokeDashoffset = strokeDasharray - (strokeDasharray * (score / 10));
 
   return (
-    <GlassCard className="flex flex-col items-center justify-center text-center p-xl h-full">
+    <GlassCard className="flex flex-col items-center justify-center text-center p-xl h-full border-white/5">
       <div className="relative w-32 h-32 mb-lg flex items-center justify-center">
         <svg className="w-full h-full transform -rotate-90 overflow-visible">
           <circle className="text-white/5" cx="64" cy="64" fill="transparent" r="58" stroke="currentColor" strokeWidth="8"></circle>
@@ -38,7 +38,7 @@ export function RiskScore({ score }: { score: number }) {
             initial={{ strokeDashoffset: strokeDasharray }}
             animate={{ strokeDashoffset }}
             transition={{ duration: 1.5, ease: "easeOut" }}
-            className="text-primary" 
+            className="text-[#e8a940]" 
             cx="64" cy="64" fill="transparent" r="58" 
             stroke="currentColor" 
             strokeDasharray={strokeDasharray}
@@ -47,13 +47,13 @@ export function RiskScore({ score }: { score: number }) {
           />
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <p className="text-headline-lg font-headline-lg text-on-surface">{score}</p>
-          <p className="font-label-caps text-[9px] text-on-surface-variant uppercase tracking-widest">Risk Score</p>
+          <p className="text-3xl font-black font-data-mono text-on-surface leading-none mb-1">{score}</p>
+          <p className="font-label-caps text-[9px] text-[#e8a940] uppercase tracking-widest font-black">MỨC RỦI RO</p>
         </div>
       </div>
-      <h3 className="font-title-md text-on-surface mb-xs">Balanced Strategy</h3>
+      <h3 className="font-black text-sm text-[#e8a940] uppercase tracking-wider mb-2">Chiến lược Cân bằng</h3>
       <p className="text-[11px] text-on-surface-variant leading-relaxed opacity-70">
-        AI đang ưu tiên tích lũy cổ phiếu cơ bản và phòng vệ trước biến động thị trường.
+        AI đang ưu tiên tích lũy các cổ phiếu cơ bản chất lượng cao và phòng vệ trước biến động thị trường Việt Nam.
       </p>
     </GlassCard>
   );
@@ -106,37 +106,51 @@ export function BacktestWidget() {
   };
 
   return (
-    <GlassCard className="flex flex-col gap-lg">
-      <h3 className="font-title-md">Backtest Strategy</h3>
+    <GlassCard className="flex flex-col gap-lg border-white/5">
+      <div className="flex items-center gap-xs">
+        <span className="material-symbols-outlined text-[#e8a940] text-sm">science</span>
+        <h3 className="text-[10px] font-black opacity-45 uppercase tracking-widest">Thử nghiệm chiến lược (Backtest)</h3>
+      </div>
+      
       <div className="grid grid-cols-2 gap-md">
         <input 
-          className="bg-white/5 border border-white/10 rounded-xl p-2 text-xs font-data-mono uppercase"
+          className="bg-white/5 border border-white/10 rounded-xl p-3 text-xs font-data-mono uppercase text-on-surface focus:outline-none focus:border-[#e8a940]/50 placeholder:opacity-30"
           value={symbol}
           onChange={e => setSymbol(e.target.value)}
-          placeholder="Symbol (e.g. VNM)"
+          placeholder="Mã (VNM, HPG...)"
         />
         <select 
-          className="bg-white/5 border border-white/10 rounded-xl p-2 text-xs font-data-mono"
+          className="bg-white/5 border border-white/10 rounded-xl p-3 text-xs font-data-mono text-on-surface focus:outline-none focus:border-[#e8a940]/50 appearance-none cursor-pointer"
           value={strategy}
           onChange={e => setStrategy(e.target.value)}
         >
-          <option value="MACD_CROSSOVER">MACD Crossover</option>
-          <option value="RSI_REVERSION">RSI Reversion</option>
+          <option value="MACD_CROSSOVER" className="bg-[#111112]">MACD Crossover</option>
+          <option value="RSI_REVERSION" className="bg-[#111112]">RSI Reversion</option>
         </select>
       </div>
+      
       <button 
         onClick={handleRun}
         disabled={status === "running"}
-        className="w-full py-2 bg-primary text-on-primary rounded-xl font-bold text-xs disabled:opacity-50"
+        className="w-full py-3 bg-[#e8a940] hover:bg-[#e8a940]/90 text-black rounded-xl font-black text-[11px] uppercase tracking-wider transition-all disabled:opacity-50 active:scale-98 shadow-lg shadow-[#e8a940]/10"
       >
-        {status === "running" ? "Running..." : "Run Backtest"}
+        {status === "running" ? "ĐANG THỬ NGHIỆM..." : "BẮT ĐẦU BACKTEST"}
       </button>
 
       {result && (
-        <div className="mt-md p-md bg-white/5 rounded-xl text-xs space-y-2">
-          <div className="flex justify-between"><span className="opacity-60">Total Return</span><span className="font-bold text-secondary">{result.totalReturn}%</span></div>
-          <div className="flex justify-between"><span className="opacity-60">Max Drawdown</span><span className="font-bold text-error">{result.maxDrawdown}%</span></div>
-          <div className="flex justify-between"><span className="opacity-60">Win Rate</span><span className="font-bold">{result.winRate}%</span></div>
+        <div className="mt-md p-md bg-white/[0.02] border border-white/5 rounded-xl text-xs space-y-2 font-data-mono">
+          <div className="flex justify-between">
+            <span className="opacity-60">Lợi nhuận tổng</span>
+            <span className="font-bold text-[#2dbd7e]">{result.totalReturn}%</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="opacity-60">Sụt giảm tối đa</span>
+            <span className="font-bold text-[#f87171]">{result.maxDrawdown}%</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="opacity-60">Tỷ lệ thắng</span>
+            <span className="font-bold">{result.winRate}%</span>
+          </div>
         </div>
       )}
     </GlassCard>
@@ -154,37 +168,42 @@ export function BacktestHistory() {
       .finally(() => setIsLoading(false));
   }, []);
 
-  if (isLoading) return <div className="opacity-40 text-[10px] uppercase font-bold text-center py-xl">Loading History...</div>;
+  if (isLoading) {
+    return <div className="opacity-45 text-[10px] uppercase font-bold text-center py-xl tracking-widest font-data-mono">Đang tải lịch sử...</div>;
+  }
 
   return (
-    <GlassCard className="flex flex-col gap-md">
-      <div className="flex justify-between items-center">
-        <h3 className="font-title-md uppercase tracking-wider">Backtest History</h3>
-        <Badge variant="outline" className="opacity-40">{history.length}</Badge>
+    <GlassCard className="flex flex-col gap-md border-white/5">
+      <div className="flex justify-between items-center pb-2 border-b border-white/5">
+        <div className="flex items-center gap-xs">
+          <span className="material-symbols-outlined text-[#e8a940] text-sm">history</span>
+          <h3 className="text-[10px] font-black opacity-45 uppercase tracking-widest">Lịch sử Backtest</h3>
+        </div>
+        <Badge variant="outline" className="font-data-mono text-[9px]">{history.length}</Badge>
       </div>
-      <div className="space-y-md max-h-[400px] overflow-y-auto no-scrollbar">
+      <div className="space-y-md max-h-[400px] overflow-y-auto no-scrollbar font-data-mono">
         {history.length > 0 ? history.map((item, i) => (
-          <div key={i} className="p-md bg-white/[0.02] border border-white/5 rounded-xl space-y-2 hover:bg-white/[0.04] transition-all">
+          <div key={i} className="p-md bg-white/[0.01] border border-white/5 rounded-xl space-y-2 hover:bg-white/[0.03] transition-all">
             <div className="flex justify-between items-center">
-              <span className="font-bold text-primary">{item.symbol}</span>
-              <span className="text-[10px] opacity-40 font-data-mono">{new Date(item.createdAt).toLocaleDateString()}</span>
+              <span className="font-black text-sm text-[#e8a940]">{item.symbol}</span>
+              <span className="text-[10px] opacity-40">{new Date(item.createdAt).toLocaleDateString()}</span>
             </div>
             <div className="text-[10px] font-bold opacity-60 uppercase">{item.strategy.replace('_', ' ')}</div>
             <div className="flex gap-lg mt-2">
               <div className="flex flex-col">
-                <span className="text-[9px] opacity-40 uppercase">Return</span>
-                <span className={cn("text-xs font-bold", item.result?.totalReturn >= 0 ? "text-secondary" : "text-error")}>
+                <span className="text-[8px] opacity-40 uppercase">TSSL</span>
+                <span className={cn("text-xs font-black", item.result?.totalReturn >= 0 ? "text-[#2dbd7e]" : "text-[#f87171]")}>
                   {item.result?.totalReturn}%
                 </span>
               </div>
               <div className="flex flex-col">
-                <span className="text-[9px] opacity-40 uppercase">Drawdown</span>
-                <span className="text-xs font-bold text-error">{item.result?.maxDrawdown}%</span>
+                <span className="text-[8px] opacity-40 uppercase">MDD</span>
+                <span className="text-xs font-black text-[#f87171]">{item.result?.maxDrawdown}%</span>
               </div>
             </div>
           </div>
         )) : (
-          <div className="text-center py-xl opacity-20 text-[10px] font-bold uppercase italic">No history found</div>
+          <div className="text-center py-xl opacity-20 text-[10px] font-bold uppercase italic">Chưa có lịch sử backtest</div>
         )}
       </div>
     </GlassCard>

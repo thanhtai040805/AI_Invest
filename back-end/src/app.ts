@@ -13,6 +13,7 @@ import { initScheduler, shutdownScheduler } from './services/scheduler.service';
 import { dnseRelayService } from './services/dnseRelay.service';
 
 // Route modules
+// Auto-trigger reload for DNSE environment updates
 import authRoutes from './modules/auth/auth.routes';
 import marketRoutes from './modules/market/market.routes';
 import stockRoutes from './modules/stock/stock.routes';

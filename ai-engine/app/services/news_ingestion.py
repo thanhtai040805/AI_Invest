@@ -29,7 +29,7 @@ CAFEF_CATEGORIES = {
 
 BACKEND_API_URL = os.getenv("BACKEND_API_URL", "http://localhost:3001/api/v1/community/news/ingest")
 BACKEND_BOT_POST_URL = os.getenv("BACKEND_BOT_POST_URL", "http://localhost:3001/api/v1/community/bot/posts")
-
+logger = logging.getLogger(__name__)
 
 class NewsIngestionService:
     def __init__(self):
@@ -62,17 +62,19 @@ class NewsIngestionService:
         all_news_payload = []
 
         try:
-            from playwright.sync_api import sync_playwright
+            # Swapped to async_playwright
+            from playwright.async_api import async_playwright
             
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                context = browser.new_context(viewport={"width": 1280, "height": 800})
-                page = context.new_page()
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                context = await browser.new_context(viewport={"width": 1280, "height": 800})
+                page = await context.new_page()
 
                 for cat_name, url in CAFEF_CATEGORIES.items():
                     try:
                         logger.info(f"Fetching top 5 from category: {cat_name}")
-                        article_links = self._get_top_5_links(page, url, cat_name)
+                        # Awaited the async helper method
+                        article_links = await self._get_top_10_links(page, url, cat_name)
                         logger.info(f"  {cat_name}: got {len(article_links)} links")
 
                         for link in article_links:
@@ -81,7 +83,8 @@ class NewsIngestionService:
                             if news_rag_svc.has_article(news_id):
                                 continue
 
-                            crawled_article = self._crawl_article_content(page, link, cat_name)
+                            # Awaited the async crawler method
+                            crawled_article = await self._crawl_article_content(page, link, cat_name)
                             if crawled_article:
                                 crawled_article['newsId'] = news_id
 
@@ -99,7 +102,7 @@ class NewsIngestionService:
                     except Exception as e:
                         logger.error(f"Error processing category {cat_name}: {e}")
 
-                browser.close()
+                await browser.close()
 
         except Exception as e:
             logger.error(f"Failed to launch Playwright: {e}")
@@ -111,22 +114,24 @@ class NewsIngestionService:
         else:
             logger.info("Finished scheduled news scan. No new items found.")
 
-    def _get_top_5_links(self, page, url: str, cat_name: str) -> List[str]:
+    # Converted to async def
+    async def _get_top_10_links(self, page, url: str, cat_name: str) -> List[str]:
         links = set()
         base_url = "https://cafef.vn"
 
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            time.sleep(2)
+            # Added await to page actions
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(2)  # Changed non-blocking sleep instead of time.sleep
 
-            html_content = page.content()
+            html_content = await page.content()
             soup = BeautifulSoup(html_content, "html.parser")
 
             flex_items = soup.select(".tlitem a")
             
             count = 0
             for el in flex_items:
-                if count >= 5:
+                if count >= 10:
                     break
                 href = el.get("href")
                 if href and ".chn" in href:
@@ -139,19 +144,17 @@ class NewsIngestionService:
 
         return list(links)[:5]
 
-    def parse_paragraph_with_links(p_tag):
+    def parse_paragraph_with_links(self, p_tag):
         """
         Phân tách nội dung của một thẻ <p> thành một danh sách các node text và link xen kẽ nhau.
         """
         parts = []
         
-        # Duyệt qua từng phần tử con (chữ thường hoặc thẻ <a>) bên trong thẻ <p>
         for child in p_tag.contents:
             if child.name == 'a':
                 href = child.get("href", "")
                 text = child.get_text()
                 
-                # Nếu là link điều hướng hợp lệ (không phải link ảnh bọc)
                 if href.startswith("http") and text.strip() and not any(ext in href.lower() for ext in ['.png', '.jpg', '.jpeg', '.gif', '.avif']):
                     parts.append({
                         "type": "link",
@@ -159,11 +162,9 @@ class NewsIngestionService:
                         "url": href.strip()
                     })
                 else:
-                    # Nếu là link ảnh bọc rác thì hạ cấp nó về text thường
                     if text.strip():
                         parts.append({"type": "text", "text": text})
             else:
-                # Là chuỗi văn bản thường (NavigableString)
                 text = str(child)
                 if text.strip():
                     parts.append({
@@ -172,18 +173,19 @@ class NewsIngestionService:
                     })
         return parts
 
-    def _crawl_article_content(self, page, url: str, category: str) -> Optional[Dict]:
+    # Converted to async def
+    async def _crawl_article_content(self, page, url: str, category: str) -> Optional[Dict]:
         try:
-            # Sử dụng Regex bóc newsId trực tiếp từ đuôi URL của CaféF (Ví dụ: ...188260518200410614.chn)
             match = re.search(r'(\d+)\.chn$', url)
             if not match:
-                logging.warning(f"Không thể trích xuất ID từ URL bài viết này: {url}")
+                logger.warning(f"Không thể trích xuất ID từ URL bài viết này: {url}")
                 return None
             
-            news_id = match.group(1) # Lưu chuỗi số ID độc nhất này lại
+            news_id = match.group(1)
             
-            page.goto(url, wait_until="domcontentloaded", timeout=20000)
-            html_content = page.content()
+            # Added await to page actions
+            await page.goto(url, wait_until="domcontentloaded", timeout=20000)
+            html_content = await page.content()
             soup = BeautifulSoup(html_content, "html.parser")
 
             title_tag = soup.select_one("h1.title") or soup.select_one(".title")
@@ -204,39 +206,37 @@ class NewsIngestionService:
             structured_content = []
 
             if content_div:
-                # Lấy tất cả các tag con trực tiếp nhằm bảo toàn thứ tự từ trên xuống
                 elements = content_div.find_all(['p', 'figure', 'div'], recursive=False)
                 
                 for el in elements:
-                    # 1. XỬ LÝ KHỐI ẢNH (figure hoặc div chứa img)
+                    # 1. XỬ LÝ KHỐI ẢNH
                     img_tag = el.find("img")
                     if img_tag:
                         img_url = img_tag.get("data-src") or img_tag.get("src")
                         if img_url and "avatar" not in img_url and not img_url.startswith("data:"):
                             structured_content.append({
                                 "type": "image",
-                            "data": img_url.strip()
-                        })
-                    continue
+                                "data": img_url.strip()
+                            })
+                        continue  # Fixed structural indentation here
                 
-                # 2. XỬ LÝ KHỐI VĂN BẢN (thẻ <p>) - Có bóc tách link inline lồng bên trong
-                if el.name == 'p' and el.text.strip():
-                    p_parts = self.parse_paragraph_with_links(el)
-                    if p_parts:
-                        structured_content.append({
-                            "type": "text",
-                            "data": p_parts  # Gán mảng các mảnh text/link vào đây
-                        })
-                        
-                # 3. XỬ LÝ KHỐI ĐOẠN CHỮ PHỤ (thẻ <div> không chứa ảnh)
-                elif el.name == 'div' and el.text.strip():
-                    if len(el.find_all()) == 0:
-                        structured_content.append({
-                            "type": "text",
-                            "data": [{"type": "text", "text": el.text.strip()}]
-                        })
+                    # 2. XỬ LÝ KHỐI VĂN BẢN (Added self. reference)
+                    if el.name == 'p' and el.text.strip():
+                        p_parts = self.parse_paragraph_with_links(el)
+                        if p_parts:
+                            structured_content.append({
+                                "type": "text",
+                                "data": p_parts
+                            })
+                            
+                    # 3. XỬ LÝ KHỐI ĐOẠN CHỮ PHỤ
+                    elif el.name == 'div' and el.text.strip():
+                        if len(el.find_all()) == 0:
+                            structured_content.append({
+                                "type": "text",
+                                "data": [{"type": "text", "text": el.text.strip()}]
+                            })
 
-            # Chuỗi hóa toàn bộ mảng hỗn hợp này thành một String JSON duy nhất
             content_json_string = json.dumps(structured_content, ensure_ascii=False)    
 
             return {
@@ -357,7 +357,7 @@ Bản tin phải có 3 phần:
             ai_response = ai_svc._generate_analysis(prompt, {"indices": []})
 
             post_payload = {
-                "content": f"🌅 **BẢN TIN TRƯỚC GIỜ MỞ CỬA** 🌅\n\n{ai_response}",
+                "content": f"**BẢN TIN TRƯỚC GIỜ MỞ CỬA**\n\n{ai_response}",
                 "taggedSymbols": ["VNINDEX"]
             }
             await self._post_to_community(post_payload)

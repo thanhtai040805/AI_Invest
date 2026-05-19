@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { config } from '../../config';
 import { aiEngineService } from '../../services/aiEngine.service';
 import { cached } from '../../utils/cache';
+import prisma from '../../config/database';
 
 const router = Router();
 
@@ -49,6 +50,18 @@ router.get('/heatmap', (req, res, next) =>
     cached('market:heatmap', config.cacheTtl.snapshot, () => aiEngineService.getHeatmap()),
   ),
 );
+
+router.get('/news', (req, res, next) => {
+  const symbol = req.query.symbol as string | undefined;
+  const limit = parseInt(req.query.limit as string, 10) || 30;
+  return handle(req, res, next, () =>
+    prisma.news.findMany({
+      where: symbol ? { symbol: symbol.toUpperCase() } : {},
+      orderBy: { publishDate: 'desc' },
+      take: limit,
+    })
+  );
+});
 
 router.get('/search', (req, res, next) => {
   const q = (req.query.q as string) ?? '';

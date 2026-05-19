@@ -1,7 +1,6 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { PageHeader } from "@/components/layout/PageHeader";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { Badge } from "@/components/ui/Badge";
 import { MarketTable } from "@/components/feature/stock/MarketTable";
@@ -36,50 +35,61 @@ export default function Page() {
           initial={{ opacity: 0, y: 15 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4, ease: "easeOut" }}
-          className="space-y-lg pb-xl"
+          className="pb-xl space-y-lg px-xl pt-lg"
         >
-          <PageHeader
-            title="Bảng Điện Trực Tuyến"
-            subtitle="Dữ liệu giao dịch thời gian thực. Theo dõi biến động thị trường & quản lý danh mục chuyên nghiệp."
-            extra={
+          {/* Header Area */}
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-md border-b border-white/5 pb-lg">
+            <div className="flex flex-col md:flex-row items-start md:items-center gap-lg">
               <div className="flex items-center gap-md">
-                <div className="hidden lg:flex items-center gap-lg px-md py-sm bg-white/5 border border-white/10 rounded-xl">
-                  {displayIndices.map((idx, i) => (
-                    <div
-                      key={i}
-                      className="flex items-center gap-sm border-r last:border-0 border-white/10 pr-lg last:pr-0"
-                    >
-                      <span className="text-[10px] font-bold opacity-60 uppercase">{idx.name}</span>
-                      <span className="font-data-mono text-sm font-bold">
-                        {idx.value.toLocaleString("vi-VN")}
-                      </span>
-                      <span
-                        className={cn(
-                          "text-[10px] font-bold",
-                          idx.trend === "up" ? "text-secondary" : "text-error",
-                        )}
-                      >
-                        {idx.trend === "up" ? "▲" : "▼"} {idx.changePercent}%
-                      </span>
-                    </div>
-                  ))}
+                <div className="w-10 h-10 rounded-xl bg-[#e8a940]/10 flex items-center justify-center text-[#e8a940] border border-[#e8a940]/20">
+                  <span className="material-symbols-outlined text-[20px]">analytics</span>
                 </div>
-                <Badge variant="secondary" dot>
-                  Phát trực tiếp
-                </Badge>
+                <div>
+                  <h1 className="text-2xl font-black text-[#e8a940] tracking-tighter uppercase leading-none">Bảng Điện Trực Tuyến</h1>
+                  <p className="text-xs text-on-surface-variant mt-1">Dữ liệu giao dịch thời gian thực. Theo dõi biến động thị trường & quản lý danh mục chuyên nghiệp.</p>
+                </div>
               </div>
-            }
-          />
 
+              <div className="hidden lg:flex items-center gap-lg px-4 py-2 bg-white/4 border border-white/5 rounded-xl font-data-mono">
+                {displayIndices.map((idx, i) => (
+                  <div
+                    key={i}
+                    className="flex items-center gap-sm border-r last:border-0 border-white/10 pr-lg last:pr-0"
+                  >
+                    <span className="text-[9px] font-black opacity-45 uppercase">{idx.name}</span>
+                    <span className="text-xs font-bold text-on-surface">
+                      {idx.value.toLocaleString("vi-VN")}
+                    </span>
+                    <span
+                      className={cn(
+                        "text-[10px] font-black",
+                        idx.trend === "up" ? "text-secondary" : "text-error",
+                      )}
+                    >
+                      {idx.trend === "up" ? "▲" : "▼"} {idx.changePercent}%
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            
+            <div className="flex items-center gap-md">
+              <Badge variant="secondary" dot className="text-[9px] font-black uppercase tracking-wider">
+                PHÁT TRỰC TIẾP
+              </Badge>
+            </div>
+          </div>
+
+          {/* Main Content Grid */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-lg">
             <div className="lg:col-span-9 flex flex-col gap-lg">
-              <GlassCard className="flex-1 overflow-hidden p-0 border-primary/10 shadow-2xl">
-                <div className="flex justify-between items-center p-lg border-b border-white/5 bg-white/[0.01]">
+              <GlassCard className="flex-1 overflow-hidden p-0 border-white/5 shadow-2xl">
+                <div className="flex justify-between items-center p-xl border-b border-white/5 bg-white/[0.01]">
                   <div className="flex items-center gap-md">
-                    <div className="w-8 h-8 rounded-lg bg-primary/20 flex items-center justify-center text-primary">
-                      <span className="material-symbols-outlined text-[18px]">list_alt</span>
+                    <div className="w-8 h-8 rounded-lg bg-[#e8a940]/10 flex items-center justify-center text-[#e8a940] border border-[#e8a940]/20">
+                      <span className="material-symbols-outlined text-[16px]">list_alt</span>
                     </div>
-                    <h3 className="font-title-md uppercase tracking-wider">Danh mục Theo dõi</h3>
+                    <h3 className="text-[10px] font-black opacity-45 uppercase tracking-widest">Danh mục Theo dõi</h3>
                   </div>
                   <div className="flex gap-md">
                     <div className="relative">
@@ -91,7 +101,7 @@ export default function Page() {
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
                         placeholder="Tìm mã cổ phiếu..."
-                        className="bg-white/5 border border-white/10 rounded-lg pl-9 pr-md py-1.5 text-xs focus:outline-none focus:border-primary/50 w-48 transition-all"
+                        className="bg-white/5 border border-white/10 rounded-xl pl-9 pr-md py-2 text-xs focus:outline-none focus:border-[#e8a940]/50 w-48 transition-all font-sans"
                       />
                     </div>
                   </div>
@@ -99,23 +109,24 @@ export default function Page() {
                 <div className="max-h-[850px] overflow-y-auto no-scrollbar">
                   <MarketTable />
                 </div>
-                <div className="p-md bg-white/[0.02] border-t border-white/5 flex justify-between items-center text-[10px] opacity-40 font-data-mono">
+                <div className="p-xl bg-white/[0.01] border-t border-white/5 flex justify-between items-center text-[8px] opacity-40 font-data-mono font-bold tracking-widest">
                   <span>NGUỒN DỮ LIỆU: VNSTOCK / AIINVEST</span>
-                  <span>LIVE</span>
+                  <span>LIVE CONNECTION</span>
                 </div>
               </GlassCard>
             </div>
 
             <div className="lg:col-span-3 flex flex-col gap-lg">
               <PortfolioSummary />
+              
               <GlassCard className="p-xl border-white/5">
-                <h3 className="font-label-caps text-[10px] tracking-widest opacity-60 mb-lg uppercase">
+                <h3 className="font-label-caps text-[10px] tracking-widest opacity-60 mb-xl uppercase">
                   Độ rộng thị trường
                 </h3>
                 <div className="space-y-md">
                   <div className="flex justify-between items-end mb-1">
-                    <span className="text-[10px] text-secondary font-bold">TĂNG: {breadth.advancers}</span>
-                    <span className="text-[10px] text-on-surface-variant opacity-40">{advPct}%</span>
+                    <span className="text-[10px] text-secondary font-black font-data-mono">TĂNG: {breadth.advancers}</span>
+                    <span className="text-[10px] text-on-surface-variant opacity-40 font-data-mono font-bold">{advPct}%</span>
                   </div>
                   <div className="flex h-2.5 w-full rounded-full overflow-hidden bg-white/5">
                     <div className="h-full bg-secondary" style={{ width: `${advPct}%` }} />
@@ -123,13 +134,14 @@ export default function Page() {
                     <div className="h-full bg-error" style={{ width: `${decPct}%` }} />
                   </div>
                   <div className="flex justify-between items-start mt-1">
-                    <span className="text-[10px] text-error font-bold">GIẢM: {breadth.decliners}</span>
-                    <span className="text-[10px] text-on-surface-variant opacity-40">
-                      {breadth.unchanged} đứng giá
+                    <span className="text-[10px] text-error font-black font-data-mono">GIẢM: {breadth.decliners}</span>
+                    <span className="text-[10px] text-on-surface-variant opacity-45 font-data-mono font-bold">
+                      {breadth.unchanged} không đổi
                     </span>
                   </div>
                 </div>
               </GlassCard>
+              
               <LiquidityComparison />
               <MarketHeatmap />
             </div>

@@ -48,7 +48,7 @@ export default function AuthPage() {
               Bảo mật token kép
             </span>
             <h1 className="font-headline-lg text-headline-lg">Đăng nhập hoặc đăng ký để bắt đầu đầu tư thông minh.</h1>
-            <p className="max-w-xl text-on-surface-variant text-body-md">
+            <p className="text-on-surface-variant text-body-md">
               Hệ thống sử dụng Access token 30 phút và Refresh token 30 ngày. Sau khi đăng nhập, token được lưu trữ an toàn và làm mới tự động khi cần.
             </p>
           </div>
