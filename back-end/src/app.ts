@@ -20,6 +20,7 @@ import stockAdminRoutes from './modules/stock/stock.admin.routes';
 import screenerRoutes from './modules/screener/screener.routes';
 import portfolioRoutes from './modules/portfolio/portfolio.routes';
 import aiRoutes from './modules/ai/ai.routes';
+import communityRoutes from './modules/community/community.routes';
 
 const app = express();
 const server = http.createServer(app);
@@ -50,6 +51,7 @@ app.use('/api/v1/stock', stockAdminRoutes);
 app.use('/api/v1/screener', screenerRoutes);
 app.use('/api/v1/portfolio', portfolioRoutes);
 app.use('/api/v1/ai', aiRoutes);
+app.use('/api/v1/community', communityRoutes);
 
 // ── Error Handler ─────────────────────────────────────
 app.use(errorHandler);

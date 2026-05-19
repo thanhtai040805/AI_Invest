@@ -47,7 +47,7 @@ export function MarketBubbleMap({ sector }: { sector: string }) {
           <Scatter 
             name="Stocks" 
             data={flatData}
-            onClick={(data) => router.push(`/stock/${data.name}`)}
+            onClick={(data: any) => router.push(`/stock/${data.name}`)}
           >
             {flatData.map((entry, index) => (
               <Cell 

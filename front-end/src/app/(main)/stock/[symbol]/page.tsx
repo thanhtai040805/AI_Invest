@@ -46,6 +46,7 @@ export default function StockDetailPage() {
          signal: "THEO DÕI" as const,
          trend: "steady" as const,
          lastUpdate: new Date().toISOString(),
+         marketCap: 0,
       };
    }, [fromStore, symbol, profile]);
 

@@ -4,15 +4,7 @@ import { useEffect, useRef, useMemo } from "react";
 import { KLineChartPro } from "@klinecharts/pro";
 import "@klinecharts/pro/dist/klinecharts-pro.css";
 import { useStockOHLCV } from "@/hooks/useMarketData";
-
-interface CustomKLineData {
-  timestamp: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume?: number;
-}
+import { KLineData } from "@/types/stock";
 
 interface PriceChartProps {
   symbol: string;
@@ -21,10 +13,10 @@ interface PriceChartProps {
 
 export default function PriceChart({ symbol, interval = "1D" }: PriceChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const chartRef = useRef<{ dispose?: () => void } | null>(null);
+  const chartRef = useRef<any>(null);
   const { data: ohlcvData } = useStockOHLCV(symbol, interval);
 
-  const klineData = useMemo((): CustomKLineData[] => {
+  const klineData = useMemo((): KLineData[] => {
     const rows = ohlcvData?.data ?? [];
     return rows.map((c: { time: string; open: number; high: number; low: number; close: number; volume?: number }) => ({
       timestamp: new Date(c.time).getTime(),
@@ -63,7 +55,7 @@ export default function PriceChart({ symbol, interval = "1D" }: PriceChartProps)
       datafeed: {
         searchSymbols: async () => [{ ticker: symbol, name: symbol, exchange: "HOSE", market: "stocks" }],
         getHistoryKLineData: async () => (klineData.length ? klineData : []),
-        subscribe: (_sym: unknown, _period: unknown, callback: (d: CustomKLineData) => void) => {
+        subscribe: (_sym: unknown, _period: unknown, callback: (d: KLineData) => void) => {
           if (klineData.length) callback(klineData[klineData.length - 1]);
           return "0";
         },
@@ -71,7 +63,7 @@ export default function PriceChart({ symbol, interval = "1D" }: PriceChartProps)
       },
     };
 
-    chartRef.current = new KLineChartPro(options as Parameters<typeof KLineChartPro>[0]);
+    chartRef.current = new KLineChartPro(options as any);
 
     // Load saved drawings if available
     const savedDrawings = localStorage.getItem(`drawings_${symbol}_${interval}`);
@@ -113,5 +105,5 @@ export default function PriceChart({ symbol, interval = "1D" }: PriceChartProps)
     };
   }, [symbol, interval, klineData]);
 
-  return <div ref={containerRef} className="w-full h-[600px]" />;
+  return <div ref={containerRef} className="w-full h-full min-h-[400px]" />;
 }

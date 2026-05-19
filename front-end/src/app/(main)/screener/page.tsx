@@ -1,6 +1,5 @@
 "use client";
 
-import { useState, useMemo } from "react";
 import { cn } from "@/lib/utils";
 import { formatVolume, formatCurrency, getPriceColor } from "@/lib/market-utils";
 import Link from "next/link";
@@ -8,11 +7,11 @@ import { Badge } from "@/components/ui/Badge";
 import { ScreenerFilters } from "@/services/api";
 import { useScreenerFilter, useBuiltinPresets, exportScreenerCsv } from "@/hooks/useScreener";
 import { useSearchParams } from "next/navigation";
-import { useEffect } from "react";
+import { Suspense, useEffect, useState, useMemo } from "react";
 
 const DEFAULT_FILTERS: ScreenerFilters = { limit: 100, sort: "changePercent", sortDir: "desc" };
 
-export default function ScreenerPage() {
+function ScreenerContent() {
   const searchParams = useSearchParams();
   const sectorParam = searchParams.get("sector");
 
@@ -87,7 +86,7 @@ export default function ScreenerPage() {
           {filters.exchange && (
             <Badge variant="secondary" className="bg-primary/20 text-primary border-primary/10 rounded-full py-1">
               Sector: {filters.exchange}
-              <button 
+              <button
                 onClick={() => setFilters(prev => ({ ...prev, exchange: undefined }))}
                 className="ml-2 hover:text-white transition-colors"
               >
@@ -211,5 +210,13 @@ export default function ScreenerPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function ScreenerPage() {
+  return (
+    <Suspense fallback={<div className="h-screen w-screen flex items-center justify-center bg-[#050505] text-primary">Loading...</div>}>
+      <ScreenerContent />
+    </Suspense>
   );
 }

@@ -22,6 +22,10 @@ model User {
   presets       ScreenerPreset[]
   chartDrawings ChartDrawing[]
   watchlists    Watchlist[]
+  posts         Post[]
+  comments      Comment[]
+  reactions     Reaction[]
+  refreshTokens RefreshToken[]
 
   @@map("users")
 }
@@ -180,4 +184,72 @@ model Ohlcv {
   @@id([time, symbol])
   @@index([symbol, time(sort: Desc)])
   @@map("ohlcv")
+}
+
+model Post {
+  id             String    @id @default(uuid())
+  authorId       String    @map("author_id")
+  content        String
+  taggedSymbols  String[]  @map("tagged_symbols")
+  likesCount     Int       @default(0) @map("likes_count")
+  commentsCount  Int       @default(0) @map("comments_count")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  author         User      @relation(fields: [authorId], references: [id])
+  comments       Comment[]
+  reactions      Reaction[]
+
+  @@map("posts")
+}
+
+model Comment {
+  id               String    @id @default(uuid())
+  postId           String    @map("post_id")
+  parentCommentId  String?   @map("parent_comment_id")
+  authorId         String    @map("author_id")
+  content          String
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  post             Post      @relation(fields: [postId], references: [id])
+  author           User      @relation(fields: [authorId], references: [id])
+  parentComment    Comment?  @relation("CommentToComment", fields: [parentCommentId], references: [id])
+  replies          Comment[] @relation("CommentToComment")
+  reactions        Reaction[]
+
+  @@map("comments")
+}
+
+model Reaction {
+  id         String   @id @default(uuid())
+  userId     String   @map("user_id")
+  targetId   String   @map("target_id")
+  targetType String   @map("target_type") // POST or COMMENT
+  type       String   @default("LIKE")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user       User     @relation(fields: [userId], references: [id])
+  post       Post?    @relation(fields: [targetId], references: [id], map: "reaction_post_fkey")
+  comment    Comment? @relation(fields: [targetId], references: [id], map: "reaction_comment_fkey")
+
+  @@unique([userId, targetId, targetType])
+  @@map("reactions")
+}
+
+model News {
+  id              String   @id @default(uuid())
+  newsId          String   @unique @map("news_id") // From vnstock
+  symbol          String
+  title           String
+  url             String
+  content         String?
+  publishDate     DateTime @map("publish_date")
+  friendlyKeyword String?  @map("friendly_keyword")
+  sentimentLabel  String?  @map("sentiment_label") // POSITIVE, NEGATIVE, NEUTRAL
+  sentimentScore  Float?   @map("sentiment_score") // -1 to 1
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@index([symbol, publishDate(sort: Desc)])
+  @@map("news")
 }

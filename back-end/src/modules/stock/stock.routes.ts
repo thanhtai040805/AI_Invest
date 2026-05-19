@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { config } from '../../config';
 import { aiEngineService } from '../../services/aiEngine.service';
 import { cached } from '../../utils/cache';
+import prisma from '../../config/database';
 
 const router = Router();
 
@@ -21,6 +22,17 @@ async function handle(
     next(err);
   }
 }
+
+router.get('/:symbol/news', (req, res, next) => {
+  const symbol = symbolParam(req);
+  return handle(req, res, next, () =>
+    prisma.news.findMany({
+      where: { symbol },
+      orderBy: { publishDate: 'desc' },
+      take: 20
+    })
+  );
+});
 
 router.get('/:symbol/profile', (req, res, next) => {
   const symbol = symbolParam(req);

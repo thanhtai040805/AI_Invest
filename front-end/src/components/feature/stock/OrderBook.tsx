@@ -34,7 +34,7 @@ export function OrderBook({ symbol }: OrderBookProps) {
           time: data.time ?? new Date().toLocaleTimeString(),
           price: data.price!,
           volume: data.volume ?? 0,
-          side: data.side === "sell" ? "sell" : "buy",
+          side: (data.side === "sell" ? "sell" : "buy") as "buy" | "sell",
         },
         ...prev,
       ].slice(0, 30));
