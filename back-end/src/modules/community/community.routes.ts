@@ -16,5 +16,7 @@ router.get('/posts/:id', communityController.getPost);
 router.post('/posts/:id/comments', authMiddleware, communityController.addComment);
 router.post('/posts/:id/react', authMiddleware, communityController.toggleReaction);
 router.post('/comments/:id/react', authMiddleware, communityController.toggleCommentReaction);
+router.get('/insights', communityController.getInsights);
+router.get('/experts/top', communityController.getTopExperts);
 
 export default router;

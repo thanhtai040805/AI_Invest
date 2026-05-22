@@ -144,7 +144,10 @@ export const communityController = {
         include: {
           author: { select: { id: true, displayName: true } },
           comments: {
-            include: { author: { select: { id: true, displayName: true } } },
+            include: {
+              author: { select: { id: true, displayName: true } },
+              _count: { select: { reactions: true } }
+            },
             orderBy: { createdAt: 'asc' }
           },
           _count: { select: { reactions: true } }
@@ -264,6 +267,84 @@ export const communityController = {
       }
 
       res.json({ success: true, action: existingReaction ? 'removed' : 'added' });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  async getInsights(req: Request, res: Response, next: NextFunction) {
+    try {
+      const breadth = await prisma.$queryRaw`
+        SELECT 
+          COUNT(*) FILTER (WHERE o.close > o.open) as advancers,
+          COUNT(*) FILTER (WHERE o.close < o.open) as decliners,
+          COUNT(*) FILTER (WHERE o.close = o.open) as unchanged
+        FROM ohlcv o
+        WHERE o.time >= NOW() - INTERVAL '1 day'
+        AND o.time = (SELECT MAX(time) FROM ohlcv o2 WHERE o2.symbol = o.symbol AND o2.time >= NOW() - INTERVAL '1 day')
+      ` as any[];
+
+      const topSectors = await prisma.$queryRaw`
+        SELECT s.industry, AVG(s.ref_price) as avg_price, COUNT(*) as stock_count
+        FROM stocks s
+        WHERE s.industry IS NOT NULL
+        GROUP BY s.industry
+        ORDER BY stock_count DESC
+        LIMIT 3
+      ` as any[];
+
+      const hotSector = topSectors[0]?.industry || 'Đa ngành';
+      const advancers = Number(breadth[0]?.advancers || 0);
+      const decliners = Number(breadth[0]?.decliners || 0);
+      const total = advancers + decliners;
+      const trend = advancers > decliners ? 'TĂNG' : decliners > advancers ? 'GIẢM' : 'ĐI NGANG';
+      const volumeChange = total > 0 ? Math.round(((advancers - decliners) / total) * 1000) / 10 : 0;
+
+      const content = advancers > decliners
+        ? `Phe mua đang chiếm ưu thế với ${advancers} mã tăng so với ${decliners} mã giảm. Dòng tiền tập trung vào nhóm ${hotSector}.`
+        : `Phe bán đang chiếm ưu thế với ${decliners} mã giảm so với ${advancers} mã tăng. Nhà đầu tư thận trọng với nhóm ${hotSector}.`;
+
+      res.json({
+        id: 'insight-live',
+        title: 'AI Nhận Định Thị Trường',
+        content,
+        trend,
+        hotSector,
+        volumeChange,
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  async getTopExperts(req: Request, res: Response, next: NextFunction) {
+    try {
+      const experts = await prisma.$queryRaw`
+        SELECT 
+          u.id,
+          u.display_name as "displayName",
+          u.win_rate as "winRate",
+          COUNT(DISTINCT r.id) as reaction_count,
+          COUNT(DISTINCT p.id) as post_count
+        FROM users u
+        LEFT JOIN posts p ON p.author_id = u.id
+        LEFT JOIN reactions r ON r.target_id = p.id AND r.target_type = 'POST'
+        WHERE u.display_name IS NOT NULL
+        GROUP BY u.id, u.display_name, u.win_rate
+        ORDER BY reaction_count DESC, post_count DESC
+        LIMIT 5
+      ` as any[];
+
+      const ranked = experts.map((e: any, i: number) => ({
+        id: e.id,
+        displayName: e.displayName,
+        winRate: Number(e.winRate || 0),
+        reactionCount: Number(e.reactionCount || 0),
+        postCount: Number(e.postCount || 0),
+        rank: i === 0 ? 'Elite' : i < 3 ? 'Pro' : 'Member',
+      }));
+
+      res.json(ranked);
     } catch (error) {
       next(error);
     }

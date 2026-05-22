@@ -1,13 +1,14 @@
 "use client";
 
 import { GlassCard } from "@/components/ui/GlassCard";
-import { useMarketStore } from "@/stores/useMarketStore";
+import { useLiquidityStore } from "@/stores/useLiquidityStore";
 import { cn } from "@/lib/utils";
+import { formatVolume } from "@/lib/market-utils";
 
 export function LiquidityComparison() {
-  const liquidity = useMarketStore((state) => state.liquidity);
+  const liquidity = useLiquidityStore((state) => state.data);
 
-  if (!liquidity.length) {
+  if (!liquidity) {
     return (
       <GlassCard className="p-xl border-white/5">
         <h3 className="font-label-caps text-[10px] tracking-widest opacity-60 mb-xl uppercase">
@@ -18,51 +19,44 @@ export function LiquidityComparison() {
     );
   }
 
-  const maxVal = Math.max(...liquidity.map((d) => Math.max(d.today, d.yesterday)), 1);
+  const topStocks = liquidity.topByVolume?.slice(0, 8) ?? [];
 
   return (
     <GlassCard className="p-xl border-white/5">
       <div className="flex justify-between items-center mb-xl">
-        <h3 className="font-label-caps text-[10px] tracking-widest opacity-60 uppercase">
-          Thanh khoản (Tỷ đồng)
-        </h3>
-        <div className="flex items-center gap-2 text-[9px] font-bold opacity-60 uppercase">
-          <div className="flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-white/30" />
-            <span>Hôm qua</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#e8a940]" />
-            <span>Hôm nay</span>
-          </div>
+        <div>
+          <h3 className="font-label-caps text-[10px] tracking-widest opacity-60 uppercase">
+            Thanh khoản
+          </h3>
+          <p className="text-lg font-bold font-data-mono mt-1">
+            {liquidity.totalValueBillion.toLocaleString()} <span className="text-[10px] opacity-40">tỷ đồng</span>
+          </p>
+        </div>
+        <div className="text-right">
+          <p className="text-[9px] opacity-40 uppercase">{liquidity.stockCount} mã giao dịch</p>
+          <p className="text-[9px] opacity-30 font-data-mono">{liquidity.lastUpdate ? new Date(liquidity.lastUpdate).toLocaleTimeString() : '--:--:--'}</p>
         </div>
       </div>
 
-      {/* Side-by-side comparative column chart */}
-      <div className="flex items-end justify-between h-36 gap-3 px-1">
-        {liquidity.map((data, i) => (
-          <div key={i} className="flex-1 flex items-end gap-[2px] h-full group relative">
-            {/* Yesterday bar */}
-            <div
-              className="flex-1 bg-white/10 rounded-t-sm transition-all duration-300 group-hover:bg-white/20"
-              style={{ height: `${(data.yesterday / maxVal) * 100}%` }}
-              title={`Hôm qua: ${data.yesterday.toLocaleString()} tỷ`}
-            />
-            {/* Today bar */}
-            <div
-              className="flex-1 bg-[#e8a940]/80 rounded-t-sm transition-all duration-300 group-hover:bg-[#e8a940]"
-              style={{ height: `${(data.today / maxVal) * 100}%` }}
-              title={`Hôm nay: ${data.today.toLocaleString()} tỷ`}
-            />
-          </div>
-        ))}
-      </div>
-
-      <div className="flex justify-between mt-md px-1 opacity-40 text-[8px] font-data-mono font-bold tracking-widest">
-        <span>{liquidity[0]?.time}</span>
-        <span>{liquidity[Math.floor(liquidity.length / 2)]?.time}</span>
-        <span>{liquidity[liquidity.length - 1]?.time}</span>
-      </div>
+      {topStocks.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-[9px] font-bold opacity-30 uppercase tracking-widest">Top KL giao dịch</p>
+          {topStocks.map((stock, i) => (
+            <div key={stock.symbol} className="flex items-center justify-between py-1 border-b border-white/5 last:border-0">
+              <div className="flex items-center gap-2">
+                <span className="text-[9px] opacity-20 font-data-mono w-4">{i + 1}</span>
+                <span className="text-[11px] font-bold font-data-mono">{stock.symbol}</span>
+              </div>
+              <div className="flex items-center gap-4 text-[10px] font-data-mono">
+                <span className="opacity-60">{formatVolume(stock.volume)}</span>
+                <span className="text-on-surface-variant w-20 text-right">
+                  {(stock.tradingValue / 1e9).toFixed(1)} tỷ
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </GlassCard>
   );
 }

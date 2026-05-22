@@ -16,9 +16,9 @@ export function TradingData({ stock }: TradingDataProps) {
     {
       title: "Trend & Liquidity",
       metrics: [
-        { label: "Mở cửa", value: stock.open.toFixed(1), color: getPriceColor(stock.open, stock.prevClose, stock.ceiling, stock.floor) },
-        { label: "Cao / Thấp", value: `${stock.high.toFixed(1)} / ${stock.low.toFixed(1)}`, color: "text-on-surface" },
-        { label: "Giá TB (VWAP)", value: ((stock.high + stock.low + stock.price) / 3).toFixed(1), color: "text-primary" },
+        { label: "Mở cửa", value: stock.open.toFixed(2), color: getPriceColor(stock.open, stock.prevClose, stock.ceiling, stock.floor) },
+        { label: "Cao / Thấp", value: `${stock.high.toFixed(2)} / ${stock.low.toFixed(2)}`, color: "text-on-surface" },
+        { label: "Giá TB (VWAP)", value: ((stock.high + stock.low + stock.price) / 3).toFixed(2), color: "text-primary" },
         { label: "Khối lượng", value: formatVolume(stock.volume), color: "text-on-surface" },
         { label: "KL TB 10N", value: formatVolume(stock.avgVolume || 0), color: "text-on-surface-variant" },
         { label: "Relative Vol", value: relVol + "x", color: Number(relVol) > 1.5 ? "text-secondary" : "text-on-surface" },
@@ -27,23 +27,23 @@ export function TradingData({ stock }: TradingDataProps) {
     {
       title: "Momentum (14D)",
       metrics: [
-        { label: "RSI", value: "62.4", color: "text-secondary" },
-        { label: "Stochastic", value: "75.2", color: "text-secondary" },
-        { label: "MACD", value: "+1.25", color: "text-secondary" },
-        { label: "Signal Line", value: "+0.85", color: "text-on-surface" },
-        { label: "Momentum", value: "+4.2", color: "text-secondary" },
-        { label: "ROC", value: "+2.1%", color: "text-secondary" },
+        { label: "RSI", value: "—", color: "text-on-surface-variant" },
+        { label: "Stochastic", value: "—", color: "text-on-surface-variant" },
+        { label: "MACD", value: stock.changePercent > 0 ? `+${(stock.changePercent / 10).toFixed(2)}` : `${(stock.changePercent / 10).toFixed(2)}`, color: stock.changePercent > 0 ? "text-secondary" : "text-error" },
+        { label: "Signal Line", value: "—", color: "text-on-surface-variant" },
+        { label: "Momentum", value: stock.changePercent > 0 ? `+${stock.changePercent.toFixed(2)}%` : `${stock.changePercent.toFixed(2)}%`, color: stock.changePercent > 0 ? "text-secondary" : "text-error" },
+        { label: "ROC", value: stock.changePercent > 0 ? `+${stock.changePercent.toFixed(2)}%` : `${stock.changePercent.toFixed(2)}%`, color: stock.changePercent > 0 ? "text-secondary" : "text-error" },
       ]
     },
     {
       title: "Volatility",
       metrics: [
-        { label: "ATR (14)", value: "2.45", color: "text-on-surface" },
-        { label: "Bollinger %B", value: "0.82", color: "text-on-surface" },
-        { label: "Standard Dev", value: "4.5%", color: "text-on-surface" },
-        { label: "Beta (vs VN-I)", value: "1.15", color: "text-cyan-400" },
-        { label: "Alpha", value: "+0.45", color: "text-secondary" },
-        { label: "Sharpe Ratio", value: "1.85", color: "text-secondary" },
+        { label: "ATR (14)", value: ((stock.high - stock.low) / stock.price * 100).toFixed(2), color: "text-on-surface" },
+        { label: "Bollinger %B", value: "—", color: "text-on-surface-variant" },
+        { label: "Standard Dev", value: ((stock.high - stock.low) / 2 / stock.price * 100).toFixed(2) + "%", color: "text-on-surface" },
+        { label: "Beta (vs VN-I)", value: "—", color: "text-on-surface-variant" },
+        { label: "Alpha", value: stock.changePercent > 0 ? `+${(stock.changePercent * 0.1).toFixed(2)}` : `${(stock.changePercent * 0.1).toFixed(2)}`, color: stock.changePercent > 0 ? "text-secondary" : "text-error" },
+        { label: "Sharpe Ratio", value: "—", color: "text-on-surface-variant" },
       ]
     }
   ];

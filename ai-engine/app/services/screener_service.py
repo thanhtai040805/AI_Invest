@@ -5,7 +5,7 @@ Multi-criteria stock screener — enriches snapshot with fundamentals and filter
 import hashlib
 from typing import Any, Dict, List, Optional
 
-from app.services.market_data_service import market_data_svc, MOCK_STOCKS
+from app.services.market_data_service import market_data_svc
 
 
 def _mock_fundamentals(symbol: str) -> Dict[str, float]:
@@ -71,7 +71,7 @@ BUILTIN_PRESETS: List[Dict[str, Any]] = [
 class ScreenerService:
     async def screen(self, filters: Dict[str, Any]) -> Dict[str, Any]:
         snap = await market_data_svc.get_snapshot(filters.get("exchange"))
-        rows = snap.get("stocks") or MOCK_STOCKS
+        rows = snap.get("stocks")
         enriched: List[Dict[str, Any]] = []
 
         for row in rows:

@@ -4,6 +4,7 @@ import "./globals.css";
 import { QueryProvider } from "@/providers/QueryProvider";
 import { RealtimeProvider } from "@/providers/RealtimeProvider";
 import { NotificationProvider } from "@/components/ui/NotificationProvider";
+import { ConnectionStatus } from "@/components/ui/ConnectionStatus";
 
 const outfit = Outfit({
   variable: "--font-outfit",
@@ -52,7 +53,10 @@ export default function RootLayout({
       <body className="grain-overlay min-h-full flex flex-col bg-[var(--color-background)] text-[var(--color-on-surface)]">
         <QueryProvider>
           <RealtimeProvider>
-            <NotificationProvider>{children}</NotificationProvider>
+            <NotificationProvider>
+              {children}
+              <ConnectionStatus />
+            </NotificationProvider>
           </RealtimeProvider>
         </QueryProvider>
       </body>

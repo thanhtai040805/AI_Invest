@@ -37,3 +37,12 @@ export interface MarketInsight {
   hotSector: string;
   volumeChange: number;
 }
+
+export interface Expert {
+  id: string;
+  displayName: string;
+  winRate: number;
+  reactionCount: number;
+  postCount: number;
+  rank: 'Elite' | 'Pro' | 'Member';
+}

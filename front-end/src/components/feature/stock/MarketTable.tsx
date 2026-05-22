@@ -70,13 +70,13 @@ export function MarketTable() {
                   </Link>
                 </td>
                 <td className="px-md py-2 text-right text-yellow-400 opacity-80">
-                  {stock.prevClose.toFixed(1)}
+                  {stock.prevClose.toFixed(2)}
                 </td>
                 <td className="px-md py-2 text-right text-purple-500 opacity-80">
-                  {stock.ceiling.toFixed(1)}
+                  {stock.ceiling.toFixed(2)}
                 </td>
                 <td className="px-md py-2 text-right text-cyan-400 opacity-80">
-                  {stock.floor.toFixed(1)}
+                  {stock.floor.toFixed(2)}
                 </td>
                 <td
                   className={cn(
@@ -84,7 +84,7 @@ export function MarketTable() {
                     getPriceColor(stock.open, stock.prevClose, stock.ceiling, stock.floor),
                   )}
                 >
-                  {stock.open.toFixed(1)}
+                  {stock.open.toFixed(2)}
                 </td>
                 <td
                   className={cn(
@@ -92,7 +92,7 @@ export function MarketTable() {
                     getPriceColor(stock.high, stock.prevClose, stock.ceiling, stock.floor),
                   )}
                 >
-                  {stock.high.toFixed(1)}
+                  {stock.high.toFixed(2)}
                 </td>
                 <td
                   className={cn(
@@ -100,7 +100,7 @@ export function MarketTable() {
                     getPriceColor(stock.low, stock.prevClose, stock.ceiling, stock.floor),
                   )}
                 >
-                  {stock.low.toFixed(1)}
+                  {stock.low.toFixed(2)}
                 </td>
                 <td className="px-md py-2 text-right bg-white/[0.02]">
                   <span
@@ -109,7 +109,7 @@ export function MarketTable() {
                       getPriceColor(stock.price, stock.prevClose, stock.ceiling, stock.floor),
                     )}
                   >
-                    {stock.price.toFixed(1)}
+                    {stock.price.toFixed(2)}
                   </span>
                 </td>
                 <td
@@ -119,13 +119,13 @@ export function MarketTable() {
                   )}
                 >
                   {stock.changePercent > 0 ? "+" : ""}
-                  {stock.changePercent.toFixed(1)}%
+                  {stock.changePercent.toFixed(2)}%
                 </td>
                 <td className="px-md py-2 text-right text-on-surface-variant">
                   {formatVolume(stock.volume)}
                 </td>
                 <td className="px-md py-2 text-right text-on-surface-variant">
-                  {(stock.tradingValue / 1_000_000_000).toFixed(1)}
+                  {(stock.tradingValue / 1_000_000_000).toFixed(2)}
                 </td>
               </motion.tr>
             ))

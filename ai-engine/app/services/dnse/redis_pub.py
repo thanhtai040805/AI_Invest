@@ -1,31 +1,63 @@
 """Publish DNSE market events to Redis for the Node.js backend relay."""
 
 import json
+import time
 from typing import Any, Optional, List
 
 import redis
 
-from app.config import REDIS_URL, REDIS_CHANNEL_PREFIX
+from app.config.settings import get_settings
+from app.services.dnse.rate_limiter import RateLimitedPublisher
 
 _client: Optional[redis.Redis] = None
+_rate_limiter: Optional[RateLimitedPublisher] = None
 
 
 def _channel(suffix: str) -> str:
-    return f"{REDIS_CHANNEL_PREFIX}:{suffix}"
+    return f"{get_settings().redis_channel_prefix}:{suffix}"
 
 
 def get_redis() -> redis.Redis:
     global _client
     if _client is None:
-        _client = redis.from_url(REDIS_URL, decode_responses=True)
+        _client = redis.from_url(get_settings().redis_url, decode_responses=True)
     return _client
 
 
-def publish_json(suffix: str, payload: Any) -> None:
+def get_rate_limiter() -> RateLimitedPublisher:
+    global _rate_limiter
+    if _rate_limiter is None:
+        _rate_limiter = RateLimitedPublisher(
+            high_freq_rate=10.0,
+            high_freq_capacity=20.0,
+            low_freq_rate=2.0,
+            low_freq_capacity=5.0,
+        )
+    return _rate_limiter
+
+
+def publish_json(suffix: str, payload: Any, bypass_rate_limit: bool = False) -> None:
     try:
+        if not bypass_rate_limit:
+            if not get_rate_limiter().should_publish(suffix):
+                return
         get_redis().publish(_channel(suffix), json.dumps(payload, default=str))
     except Exception as e:
         print(f"[DNSE Redis] publish {suffix} failed: {e}")
+
+
+def publish_batch(items: list[tuple[str, Any]]) -> None:
+    """Publish multiple events atomically via pipeline."""
+    try:
+        r = get_redis()
+        pipe = r.pipeline()
+        for suffix, payload in items:
+            channel = _channel(suffix)
+            if get_rate_limiter().should_publish(suffix):
+                pipe.publish(channel, json.dumps(payload, default=str))
+        pipe.execute()
+    except Exception as e:
+        print(f"[DNSE Redis] batch publish failed: {e}")
 
 
 def set_cache(key: str, payload: Any, ttl: int = 5) -> None:
@@ -126,3 +158,12 @@ def trim_sorted_set_by_score(key: str, max_score: float, min_score: float = "-in
         r.zremrangebyscore(key, min_score, max_score)
     except Exception as e:
         print(f"[DNSE Redis] zremrangebyscore {key} failed: {e}")
+
+
+def add_to_stream(key: str, payload: Any, max_len: int = 10000) -> None:
+    """Add event to Redis Stream for durable replay."""
+    try:
+        r = get_redis()
+        r.xadd(key, payload, maxlen=max_len, approximate=True)
+    except Exception as e:
+        print(f"[DNSE Redis] xadd {key} failed: {e}")

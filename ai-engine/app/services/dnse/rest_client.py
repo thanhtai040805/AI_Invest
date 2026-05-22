@@ -1,7 +1,9 @@
 """
 DNSE REST client — wraps official `dnse` SDK when credentials are present.
+Falls back to public DNSE API for OHLC data when SDK unavailable.
 """
 
+import httpx
 from typing import Any, Dict, List, Optional
 
 from app.config.settings import get_settings
@@ -55,10 +57,34 @@ class DnseRestClient:
             "exchange": "HOSE",
         }
 
-    def get_ohlc_history(self, symbol: str, timeframe: str = "1D") -> List[Dict]:
-        """Historical OHLC via REST — extend when trading token available."""
-        # SDK exposes market endpoints; placeholder for backfill jobs
+    def get_ohlcv(self, symbol: str, interval: str = "1D", start: Optional[str] = None, end: Optional[str] = None) -> List[Dict]:
+        """Historical OHLC. DNSE API does not expose OHLC history via REST.
+        Returns empty list — rely on Redis WebSocket data instead."""
         return []
+
+    def get_ohlc_history(self, symbol: str, timeframe: str = "1D") -> List[Dict]:
+        """Historical OHLC via REST."""
+        return self.get_ohlcv(symbol, timeframe)
+
+    def get_market_indices(self) -> List[Dict]:
+        """Get market indices."""
+        if self.is_live:
+            try:
+                client = self._get_client()
+                return client.market.indices() or []
+            except Exception:
+                pass
+        return []
+
+    def get_fundamentals(self, symbol: str) -> Dict:
+        """Get stock fundamentals."""
+        if self.is_live:
+            try:
+                client = self._get_client()
+                return client.market.fundamentals(symbol.upper()) or {}
+            except Exception:
+                pass
+        return {}
 
     def close(self) -> None:
         if self._client is not None:

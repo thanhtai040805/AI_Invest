@@ -1,104 +1,64 @@
 """
-Unified market data facade — DNSE WebSocket hub (primary) + REST fallback.
-Replaces vnstock_service.py for all router imports.
+Unified market data facade — DNSE WebSocket hub (primary) + PostgreSQL + REST fallback.
+
+NO mock data merged with live data. Mock mode is separate (DNSE_ENABLED=false).
+Data sources: PostgreSQL (historical daily) → Redis (recent 1-min) → in-memory hub (live) → DNSE REST API.
 """
 
-from datetime import datetime, timedelta
+import os
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from app.config.settings import get_settings
 from app.services.dnse.stream_hub import get_stream_hub
 from app.services.dnse.rest_client import get_rest_client
+from app.services.dnse.redis_pub import (
+    get_redis,
+    get_list_range,
+    get_sorted_set_range,
+)
 
-MOCK_STOCKS = [
-    {"symbol": "ACB", "name": "Ngân hàng ACB", "exchange": "HOSE", "price": 27.2, "change": 0.3, "changePercent": 1.1,
-     "volume": 6800000, "open": 26.9, "high": 27.3, "low": 26.85, "prevClose": 26.9, "ceiling": 28.75, "floor": 25.05,
-     "industry": "Ngân hàng", "marketCap": 105000000000000, "tradingValue": 184960000000},
-    {"symbol": "BCM", "name": "Becamex IDC", "exchange": "HOSE", "price": 54.0, "change": -0.5, "changePercent": -0.9,
-     "volume": 120000, "open": 54.5, "high": 54.8, "low": 53.8, "prevClose": 54.5, "ceiling": 58.3, "floor": 50.7,
-     "industry": "Bất động sản KCN", "marketCap": 56000000000000, "tradingValue": 6480000000},
-    {"symbol": "BID", "name": "Ngân hàng BIDV", "exchange": "HOSE", "price": 49.5, "change": 0.5, "changePercent": 1.0,
-     "volume": 1500000, "open": 49.0, "high": 50.1, "low": 48.8, "prevClose": 49.0, "ceiling": 52.4, "floor": 45.6,
-     "industry": "Ngân hàng", "marketCap": 280000000000000, "tradingValue": 74250000000},
-    {"symbol": "BVH", "name": "Tập đoàn Bảo Việt", "exchange": "HOSE", "price": 40.5, "change": 0.2, "changePercent": 0.5,
-     "volume": 250000, "open": 40.3, "high": 40.8, "low": 40.1, "prevClose": 40.3, "ceiling": 43.1, "floor": 37.5,
-     "industry": "Bảo hiểm", "marketCap": 30000000000000, "tradingValue": 10125000000},
-    {"symbol": "CTG", "name": "VietinBank", "exchange": "HOSE", "price": 32.5, "change": -0.1, "changePercent": -0.3,
-     "volume": 4200000, "open": 32.6, "high": 32.8, "low": 32.2, "prevClose": 32.6, "ceiling": 34.85, "floor": 30.35,
-     "industry": "Ngân hàng", "marketCap": 174000000000000, "tradingValue": 136500000000},
-    {"symbol": "FPT", "name": "Tập đoàn FPT", "exchange": "HOSE", "price": 114.2, "change": 3.8, "changePercent": 3.5,
-     "volume": 2800000, "open": 110.4, "high": 115.0, "low": 110.4, "prevClose": 110.4, "ceiling": 118.1, "floor": 102.7,
-     "industry": "Công nghệ", "marketCap": 145000000000000, "tradingValue": 319760000000},
-    {"symbol": "GAS", "name": "PV Gas", "exchange": "HOSE", "price": 75.8, "change": 1.2, "changePercent": 1.6,
-     "volume": 850000, "open": 74.6, "high": 76.2, "low": 74.5, "prevClose": 74.6, "ceiling": 79.8, "floor": 69.4,
-     "industry": "Dầu khí", "marketCap": 182000000000000, "tradingValue": 64430000000},
-    {"symbol": "GVR", "name": "Tập đoàn Cao su", "exchange": "HOSE", "price": 28.5, "change": 0.4, "changePercent": 1.4,
-     "volume": 1800000, "open": 28.1, "high": 28.8, "low": 28.0, "prevClose": 28.1, "ceiling": 30.05, "floor": 26.15,
-     "industry": "Hóa chất/Cao su", "marketCap": 114000000000000, "tradingValue": 51300000000},
-    {"symbol": "HDB", "name": "HDBank", "exchange": "HOSE", "price": 21.8, "change": 0.15, "changePercent": 0.7,
-     "volume": 3200000, "open": 21.65, "high": 22.0, "low": 21.5, "prevClose": 21.65, "ceiling": 23.15, "floor": 20.15,
-     "industry": "Ngân hàng", "marketCap": 63000000000000, "tradingValue": 69760000000},
-    {"symbol": "HPG", "name": "Thép Hòa Phát", "exchange": "HOSE", "price": 28.35, "change": 0.45, "changePercent": 1.6,
-     "volume": 18500000, "open": 27.9, "high": 28.5, "low": 27.8, "prevClose": 27.9, "ceiling": 29.85, "floor": 25.95,
-     "industry": "Thép", "marketCap": 164000000000000, "tradingValue": 524475000000},
-    {"symbol": "MBB", "name": "Ngân hàng MBB", "exchange": "HOSE", "price": 21.25, "change": 0.25, "changePercent": 1.2,
-     "volume": 12500000, "open": 21.0, "high": 21.4, "low": 20.95, "prevClose": 21.0, "ceiling": 22.45, "floor": 19.55,
-     "industry": "Ngân hàng", "marketCap": 110000000000000, "tradingValue": 265625000000},
-    {"symbol": "MSN", "name": "Tập đoàn Masan", "exchange": "HOSE", "price": 68.0, "change": -0.8, "changePercent": -1.2,
-     "volume": 1800000, "open": 68.8, "high": 69.2, "low": 67.8, "prevClose": 68.8, "ceiling": 73.6, "floor": 64.0,
-     "industry": "Bán lẻ", "marketCap": 97000000000000, "tradingValue": 122400000000},
-    {"symbol": "MWG", "name": "Thế Giới Di Động", "exchange": "HOSE", "price": 52.3, "change": 1.1, "changePercent": 2.1,
-     "volume": 5800000, "open": 51.2, "high": 52.7, "low": 51.0, "prevClose": 51.2, "ceiling": 54.7, "floor": 47.7,
-     "industry": "Bán lẻ", "marketCap": 76000000000000, "tradingValue": 303340000000},
-    {"symbol": "PLX", "name": "Petrolimex", "exchange": "HOSE", "price": 36.5, "change": 0.3, "changePercent": 0.8,
-     "volume": 600000, "open": 36.2, "high": 36.8, "low": 36.0, "prevClose": 36.2, "ceiling": 38.7, "floor": 33.7,
-     "industry": "Dầu khí", "marketCap": 47000000000000, "tradingValue": 21900000000},
-    {"symbol": "POW", "name": "PV Power", "exchange": "HOSE", "price": 11.2, "change": 0.05, "changePercent": 0.4,
-     "volume": 2400000, "open": 11.15, "high": 11.3, "low": 11.1, "prevClose": 11.15, "ceiling": 11.9, "floor": 10.4,
-     "industry": "Điện/Năng lượng", "marketCap": 26000000000000, "tradingValue": 26880000000},
-    {"symbol": "SAB", "name": "Sabeco", "exchange": "HOSE", "price": 56.5, "change": -0.5, "changePercent": -0.9,
-     "volume": 150000, "open": 57.0, "high": 57.2, "low": 56.1, "prevClose": 57.0, "ceiling": 60.9, "floor": 53.1,
-     "industry": "Thực phẩm & Đồ uống", "marketCap": 72000000000000, "tradingValue": 8475000000},
-    {"symbol": "SHB", "name": "Ngân hàng SHB", "exchange": "HOSE", "price": 11.35, "change": 0.1, "changePercent": 0.9,
-     "volume": 8400000, "open": 11.25, "high": 11.45, "low": 11.2, "prevClose": 11.25, "ceiling": 12.0, "floor": 10.5,
-     "industry": "Ngân hàng", "marketCap": 41000000000000, "tradingValue": 95340000000},
-    {"symbol": "SSB", "name": "SeABank", "exchange": "HOSE", "price": 22.0, "change": -0.2, "changePercent": -0.9,
-     "volume": 500000, "open": 22.2, "high": 22.3, "low": 21.9, "prevClose": 22.2, "ceiling": 23.75, "floor": 20.65,
-     "industry": "Ngân hàng", "marketCap": 55000000000000, "tradingValue": 11000000000},
-    {"symbol": "SSI", "name": "Chứng khoán SSI", "exchange": "HOSE", "price": 36.8, "change": 0.75, "changePercent": 2.1,
-     "volume": 12400000, "open": 36.05, "high": 37.2, "low": 36.0, "prevClose": 36.05, "ceiling": 38.5, "floor": 33.6,
-     "industry": "Dịch vụ tài chính", "marketCap": 58000000000000, "tradingValue": 456320000000},
-    {"symbol": "STB", "name": "Sacombank", "exchange": "HOSE", "price": 28.5, "change": 0.3, "changePercent": 1.1,
-     "volume": 9500000, "open": 28.2, "high": 28.7, "low": 28.1, "prevClose": 28.2, "ceiling": 30.15, "floor": 26.25,
-     "industry": "Ngân hàng", "marketCap": 53000000000000, "tradingValue": 270750000000},
-    {"symbol": "TCB", "name": "Techcombank", "exchange": "HOSE", "price": 45.2, "change": 0.8, "changePercent": 1.8,
-     "volume": 7500000, "open": 44.4, "high": 45.5, "low": 44.25, "prevClose": 44.4, "ceiling": 47.5, "floor": 41.3,
-     "industry": "Ngân hàng", "marketCap": 158000000000000, "tradingValue": 339000000000},
-    {"symbol": "TPB", "name": "TPBank", "exchange": "HOSE", "price": 18.25, "change": 0.15, "changePercent": 0.8,
-     "volume": 3800000, "open": 18.1, "high": 18.35, "low": 18.05, "prevClose": 18.1, "ceiling": 19.35, "floor": 16.85,
-     "industry": "Ngân hàng", "marketCap": 40000000000000, "tradingValue": 69350000000},
-    {"symbol": "VCB", "name": "Vietcombank", "exchange": "HOSE", "price": 92.5, "change": 1.5, "changePercent": 1.6,
-     "volume": 980000, "open": 91.0, "high": 93.0, "low": 90.8, "prevClose": 91.0, "ceiling": 97.3, "floor": 84.7,
-     "industry": "Ngân hàng", "marketCap": 510000000000000, "tradingValue": 90650000000},
-    {"symbol": "VHM", "name": "Vinhomes", "exchange": "HOSE", "price": 38.5, "change": -0.6, "changePercent": -1.5,
-     "volume": 4800000, "open": 39.1, "high": 39.3, "low": 38.2, "prevClose": 39.1, "ceiling": 41.8, "floor": 36.4,
-     "industry": "Bất động sản", "marketCap": 167000000000000, "tradingValue": 184800000000},
-    {"symbol": "VIC", "name": "Vingroup", "exchange": "HOSE", "price": 42.1, "change": -0.35, "changePercent": -0.8,
-     "volume": 3500000, "open": 42.45, "high": 42.6, "low": 42.0, "prevClose": 42.45, "ceiling": 45.4, "floor": 39.5,
-     "industry": "Bất động sản", "marketCap": 161000000000000, "tradingValue": 147350000000},
-    {"symbol": "VJC", "name": "Vietjet Air", "exchange": "HOSE", "price": 103.5, "change": 0.5, "changePercent": 0.5,
-     "volume": 350000, "open": 103.0, "high": 104.2, "low": 102.8, "prevClose": 103.0, "ceiling": 110.2, "floor": 95.8,
-     "industry": "Hàng không", "marketCap": 56000000000000, "tradingValue": 36225000000},
-    {"symbol": "VNM", "name": "Vinamilk", "exchange": "HOSE", "price": 68.5, "change": 0.8, "changePercent": 1.2,
-     "volume": 1250000, "open": 67.7, "high": 69.0, "low": 67.5, "prevClose": 67.7, "ceiling": 72.4, "floor": 63.0,
-     "industry": "Thực phẩm & Đồ uống", "marketCap": 143000000000000, "tradingValue": 85625000000},
-    {"symbol": "VPB", "name": "VPBank", "exchange": "HOSE", "price": 18.7, "change": 0.2, "changePercent": 1.1,
-     "volume": 14500000, "open": 18.5, "high": 18.8, "low": 18.4, "prevClose": 18.5, "ceiling": 19.8, "floor": 17.2,
-     "industry": "Ngân hàng", "marketCap": 148000000000000, "tradingValue": 271150000000},
-    {"symbol": "VRE", "name": "Vincom Retail", "exchange": "HOSE", "price": 22.4, "change": -0.3, "changePercent": -1.3,
-     "volume": 3800000, "open": 22.7, "high": 22.9, "low": 22.25, "prevClose": 22.7, "ceiling": 24.3, "floor": 21.1,
-     "industry": "Bất động sản", "marketCap": 51000000000000, "tradingValue": 85120000000}
-]
+_PG_URL = os.getenv("DATABASE_URL", "postgresql://postgres:123@localhost:5432/aiinvest")
+
+
+def _query_pg_ohlcv(symbol: str, start: Optional[str] = None, end: Optional[str] = None) -> List[Dict]:
+    """Query daily OHLCV from PostgreSQL."""
+    try:
+        import psycopg2
+        conn = psycopg2.connect(_PG_URL)
+        cur = conn.cursor()
+        where = "symbol = %s"
+        params: list = [symbol]
+        if start:
+            where += " AND time >= %s::timestamptz"
+            params.append(start)
+        if end:
+            where += " AND time <= %s::timestamptz"
+            params.append(end)
+        cur.execute(
+            f"SELECT time, open, high, low, close, volume FROM ohlcv WHERE {where} ORDER BY time",
+            params,
+        )
+        rows = []
+        for r in cur.fetchall():
+            ts = r[0]
+            if isinstance(ts, datetime):
+                ts_str = ts.strftime("%Y-%m-%dT%H:%M:%S%z")
+            else:
+                ts_str = str(ts)[:10]
+            rows.append({
+                "time": ts_str,
+                "open": float(r[1]),
+                "high": float(r[2]),
+                "low": float(r[3]),
+                "close": float(r[4]),
+                "volume": int(r[5]),
+            })
+        cur.close()
+        conn.close()
+        return rows
+    except Exception:
+        return []
 
 
 class MarketDataService:
@@ -107,49 +67,115 @@ class MarketDataService:
         self._rest = get_rest_client()
 
     async def get_indices(self) -> Dict:
-        return {
-            "indices": [
-                {"name": "VN-INDEX", "value": 1284.5, "change": 12.4, "changePercent": 1.02, "volume": 842100000, "trend": "up"},
-                {"name": "VN30", "value": 1302.1, "change": 15.2, "changePercent": 1.18, "volume": 245600000, "trend": "up"},
-                {"name": "HNX", "value": 242.8, "change": -0.4, "changePercent": -0.16, "volume": 98400000, "trend": "down"},
-            ],
-            "source": "dnse",
-        }
+        """Return live indices from hub or Redis. Fallback to REST."""
+        try:
+            r = get_redis()
+            cached = r.get("market:indices")
+            if cached:
+                import json
+                return {**json.loads(cached), "source": "redis"}
+        except Exception:
+            pass
+
+        with self._hub._lock:
+            indices = list(self._hub._market_index.values())
+
+        if indices:
+            return {"indices": indices, "source": "dnse-ws"}
+
+        if self._rest.is_live:
+            try:
+                rest_indices = self._rest.get_market_indices()
+                if rest_indices:
+                    return {"indices": rest_indices, "source": "dnse-rest"}
+            except Exception:
+                pass
+
+        return {"indices": [], "source": "empty"}
 
     async def get_breadth(self) -> Dict:
+        """Calculate breadth from live snapshot."""
+        try:
+            r = get_redis()
+            cached = r.get("market:breadth")
+            if cached:
+                import json
+                return {**json.loads(cached), "source": "redis"}
+        except Exception:
+            pass
+
         snap = await self.get_snapshot()
         stocks = snap.get("stocks", [])
         adv = sum(1 for s in stocks if s.get("changePercent", 0) > 0)
         dec = sum(1 for s in stocks if s.get("changePercent", 0) < 0)
         return {
-            "advancers": adv or 0,
-            "decliners": dec or 0,
+            "advancers": adv,
+            "decliners": dec,
             "unchanged": len(stocks) - adv - dec,
             "lastUpdate": datetime.now().isoformat(),
-            "source": "dnse",
+            "source": snap.get("source", "computed"),
         }
 
     async def get_snapshot(self, exchange: Optional[str] = None) -> Dict:
-        # Merge live stream ticks dynamically with full VN30 master list
-        merged_stocks = []
-        for base in MOCK_STOCKS:
-            sym = base["symbol"]
-            quote = self._hub.get_quote(sym)
-            if quote:
-                merged = {**base, **quote}
-            else:
-                merged = base
-            
-            if exchange and merged.get("exchange", "").upper() != exchange.upper():
-                continue
-            merged_stocks.append(merged)
-            
-        return {
-            "stocks": merged_stocks,
-            "total": len(merged_stocks),
-            "source": "dnse-ws" if self._hub.mode == "live" else "mock"
-        }
+        """Return ALL stocks from DNSE hub.
+        
+        Strategy:
+        1. Get ALL symbols from DNSE REST (if not cached)
+        2. Merge with live data from Redis/hub
+        3. Filter by exchange if requested
+        """
+        import json
 
+        live_stocks: Dict[str, Dict] = {}
+
+        # 1. Try Redis snapshot cache first (fastest)
+        try:
+            r = get_redis()
+            cached = r.get("market:snapshot")
+            if cached:
+                snap = json.loads(cached)
+                for s in snap.get("stocks", []):
+                    if s.get("symbol"):
+                        live_stocks[s["symbol"]] = s
+        except Exception:
+            pass
+
+        # 2. Enrich with live hub data (most recent ticks)
+        with self._hub._lock:
+            hub_quotes = dict(self._hub._quotes)
+            hub_sec_def = dict(self._hub._sec_def)
+
+        for sym, quote in hub_quotes.items():
+            if sym in live_stocks:
+                live_stocks[sym] = {**live_stocks[sym], **quote}
+            else:
+                live_stocks[sym] = quote
+
+        # 3. If still no data, fetch symbol list from REST and merge with hub
+        if not live_stocks:
+            all_symbols = self._hub._subscribed if self._hub._subscribed else self._hub._get_core_symbols()
+            for sym in all_symbols:
+                sym = sym.upper()
+                quote = hub_quotes.get(sym)
+                sec_def = hub_sec_def.get(sym)
+                merged = {}
+                if sec_def:
+                    merged.update(sec_def)
+                if quote:
+                    merged.update(quote)
+                if merged:
+                    live_stocks[sym] = merged
+
+        stocks = list(live_stocks.values())
+
+        if exchange:
+            stocks = [s for s in stocks if s.get("exchange", "HOSE").upper() == exchange.upper()]
+
+        return {
+            "stocks": stocks,
+            "total": len(stocks),
+            "source": "dnse-ws" if live_stocks else "empty",
+        }
 
     async def get_stock_list(self, exchange: Optional[str] = None) -> Dict:
         return await self.get_snapshot(exchange)
@@ -168,128 +194,353 @@ class MarketDataService:
         quote = self._hub.get_quote(sym)
         if quote:
             return {"symbol": sym, "name": quote.get("name", sym), "exchange": quote.get("exchange", "HOSE")}
+
+        try:
+            r = get_redis()
+            cached = r.get(f"stock:{sym}:sec_def")
+            if cached:
+                import json
+                return json.loads(cached)
+        except Exception:
+            pass
+
         if self._rest.is_live:
             try:
                 return self._rest.get_security_info(sym)
             except Exception:
                 pass
+
         return {"symbol": sym, "name": sym}
 
     async def get_ohlcv(self, symbol: str, interval: str = "1D", start: Optional[str] = None, end: Optional[str] = None) -> Dict:
+        import logging
+        logger = logging.getLogger("ai_engine.market_data")
+        
         sym = symbol.upper()
-        mock_stock = next((s for s in MOCK_STOCKS if s["symbol"] == sym), None)
-        base_price = mock_stock["price"] if mock_stock else 30.0
-        
-        # Parse interval to timedelta
-        import random
-        delta = timedelta(days=1)
-        int_upper = interval.upper()
-        if "1M" in int_upper:
-            delta = timedelta(minutes=1)
-        elif "15M" in int_upper:
-            delta = timedelta(minutes=15)
-        elif "1H" in int_upper:
-            delta = timedelta(hours=1)
-        elif "1D" in int_upper or "D" in int_upper:
-            delta = timedelta(days=1)
-            
-        now = datetime.now()
-        data = []
-        curr_price = base_price
-        
-        # Generate 100 historical points backwards, then reverse
-        for i in range(100):
-            t = now - (100 - i) * delta
-            # Random walk
-            change = random.uniform(-0.015, 0.015) * curr_price
-            open_p = curr_price
-            close_p = curr_price + change
-            high_p = max(open_p, close_p) + random.uniform(0, 0.008) * curr_price
-            low_p = min(open_p, close_p) - random.uniform(0, 0.008) * curr_price
-            vol = random.randint(10000, 500000)
-            
-            data.append({
-                "time": t.isoformat(),
-                "open": round(open_p, 2),
-                "high": round(high_p, 2),
-                "low": round(low_p, 2),
-                "close": round(close_p, 2),
-                "volume": vol
-            })
-            curr_price = close_p
+        resolution = "1D" if "D" in interval.upper() else "1"
 
-        return {
-            "symbol": sym,
-            "interval": interval,
-            "data": data,
-            "source": "mock-walk"
-        }
+        # 1. For 1-minute interval: read from Redis 1-min sorted set + live candle
+        if resolution == "1":
+            key = f"ohlc_closed:{sym}:1"
+            try:
+                hist = get_sorted_set_range(key)
+                if hist:
+                    logger.info(f"OHLCV {sym} {interval}: got {len(hist)} 1-min candles from Redis")
+            except Exception as e:
+                logger.warning(f"OHLCV {sym} {interval}: Redis error: {e}")
+                hist = []
 
+            # Append live candle
+            try:
+                live = self._hub.get_ohlc_live(sym)
+                if live and live.get("resolution") == "1":
+                    live_candle = {
+                        "time": live.get("timestamp") or live.get("lastUpdate"),
+                        "open": float(live.get("open", 0) or 0),
+                        "high": float(live.get("high", 0) or 0),
+                        "low": float(live.get("low", 0) or 0),
+                        "close": float(live.get("close", 0) or 0),
+                        "volume": int(live.get("volume", 0) or 0),
+                    }
+                    if hist:
+                        last_ts = hist[-1].get("timestamp") or hist[-1].get("lastUpdate", "")
+                        live_ts = live.get("timestamp") or live.get("lastUpdate", "")
+                        if last_ts == live_ts:
+                            hist[-1] = live_candle
+                        else:
+                            hist.append(live_candle)
+                    else:
+                        hist.append(live_candle)
+            except Exception as e:
+                logger.warning(f"OHLCV {sym} {interval}: live candle error: {e}")
+
+            if hist:
+                data = [{"time": pt.get("timestamp") or pt.get("lastUpdate"), "open": pt.get("open", 0), "high": pt.get("high", 0), "low": pt.get("low", 0), "close": pt.get("close", 0), "volume": pt.get("volume", 0)} for pt in hist]
+                return {"symbol": sym, "interval": interval, "data": data, "source": "dnse-ws"}
+
+            # Fallback to REST for 1-min
+            rest_data = await self._fetch_rest_ohlcv(sym, interval, start, end, logger)
+            if rest_data:
+                return rest_data
+            return {"symbol": sym, "interval": interval, "data": [], "source": "empty"}
+
+        # 2. For daily interval: PostgreSQL (historical) + Redis 1-min (today's live)
+        if resolution == "1D":
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            historical_data: List[Dict] = []
+            today_candle: Optional[Dict] = None
+
+            # 2a. Get historical daily candles from PostgreSQL (faster + persistent)
+            try:
+                pg_rows = _query_pg_ohlcv(sym, start, end)
+                if pg_rows:
+                    historical_data = pg_rows
+                    logger.info(f"OHLCV {sym} {interval}: got {len(historical_data)} candles from PostgreSQL")
+            except Exception as e:
+                logger.warning(f"OHLCV {sym} {interval}: PostgreSQL error: {e}")
+
+            # 2b. Fallback to REST if PostgreSQL is empty
+            if not historical_data:
+                rest_data = await self._fetch_rest_ohlcv(sym, interval, start, end, logger)
+                if rest_data:
+                    historical_data = rest_data.get("data", [])
+                    logger.info(f"OHLCV {sym} {interval}: got {len(historical_data)} candles from REST fallback")
+
+            # 2c. Get today's candle from Redis 1-min aggregation (overrides PostgreSQL today)
+            try:
+                min_key = f"ohlc_closed:{sym}:1"
+                min_hist = get_sorted_set_range(min_key)
+                if min_hist:
+                    live = self._hub.get_ohlc_live(sym)
+                    if live and live.get("resolution") == "1":
+                        live_candle = {
+                            "time": live.get("timestamp") or live.get("lastUpdate"),
+                            "open": float(live.get("open", 0) or 0),
+                            "high": float(live.get("high", 0) or 0),
+                            "low": float(live.get("low", 0) or 0),
+                            "close": float(live.get("close", 0) or 0),
+                            "volume": int(live.get("volume", 0) or 0),
+                        }
+                        last_ts = min_hist[-1].get("timestamp") or min_hist[-1].get("lastUpdate", "")
+                        live_ts = live.get("timestamp") or live.get("lastUpdate", "")
+                        if last_ts != live_ts:
+                            min_hist.append(live_candle)
+                        else:
+                            min_hist[-1] = live_candle
+
+                    daily = self._aggregate_to_daily(min_hist)
+                    for d in daily:
+                        d_time = d.get("time", "")
+                        d_date = d_time[:10] if "T" in d_time else d_time[:10]
+                        if d_date == today_str:
+                            today_candle = d
+                            break
+                    if today_candle:
+                        logger.info(f"OHLCV {sym} {interval}: got today's candle from Redis 1-min aggregation")
+            except Exception as e:
+                logger.warning(f"OHLCV {sym} {interval}: aggregation error: {e}")
+
+            # 2d. Merge: PostgreSQL historical + today's Redis candle (replace if same day)
+            merged = list(historical_data)
+            today_replaced = False
+            for i, h in enumerate(merged):
+                h_time = h.get("time", "")
+                h_date = h_time[:10] if "T" in h_time else h_time[:10]
+                if h_date == today_str and today_candle:
+                    merged[i] = today_candle
+                    today_replaced = True
+                    break
+            if today_candle and not today_replaced:
+                merged.append(today_candle)
+
+            if merged:
+                merged.sort(key=lambda x: x.get("time", ""))
+                return {"symbol": sym, "interval": interval, "data": merged, "source": "pg+redis"}
+
+            # 2e. Final fallback: Redis closed 1D candles
+            try:
+                key_1d = f"ohlc_closed:{sym}:1D"
+                hist_1d = get_sorted_set_range(key_1d)
+                if hist_1d:
+                    data = [{"time": pt.get("timestamp") or pt.get("lastUpdate"), "open": pt.get("open", 0), "high": pt.get("high", 0), "low": pt.get("low", 0), "close": pt.get("close", 0), "volume": pt.get("volume", 0)} for pt in hist_1d]
+                    return {"symbol": sym, "interval": interval, "data": data, "source": "dnse-ws-1d"}
+            except Exception:
+                pass
+
+            return {"symbol": sym, "interval": interval, "data": [], "source": "empty"}
+
+        # 3. Other intervals: fallback to REST
+        rest_data = await self._fetch_rest_ohlcv(sym, interval, start, end, logger)
+        if rest_data:
+            return rest_data
+        return {"symbol": sym, "interval": interval, "data": [], "source": "empty"}
+
+    async def _fetch_rest_ohlcv(self, symbol: str, interval: str, start: Optional[str], end: Optional[str], logger: Any) -> Optional[Dict]:
+        """Fetch OHLCV from DNSE REST API or public fallback."""
+        if self._rest.is_live:
+            try:
+                logger.info(f"OHLCV {symbol} {interval}: fetching from DNSE REST")
+                rest_ohlcv = self._rest.get_ohlcv(symbol, interval, start, end)
+                if rest_ohlcv:
+                    return {"symbol": symbol, "interval": interval, "data": rest_ohlcv, "source": "dnse-rest"}
+            except Exception as e:
+                logger.warning(f"OHLCV {symbol} {interval}: DNSE REST error: {e}")
+        else:
+            try:
+                rest_ohlcv = self._rest.get_ohlcv(symbol, interval, start, end)
+                if rest_ohlcv:
+                    return {"symbol": symbol, "interval": interval, "data": rest_ohlcv, "source": "dnse-public"}
+            except Exception as e:
+                logger.warning(f"OHLCV {symbol} {interval}: public API error: {e}")
+        return None
+
+    def _aggregate_to_daily(self, minute_candles: List[Dict]) -> List[Dict]:
+        """Aggregate 1-minute candles into daily candles."""
+        from collections import defaultdict
+        daily: Dict[str, Dict] = {}
+        
+        for pt in minute_candles:
+            ts = pt.get("timestamp") or pt.get("lastUpdate", "")
+            if not ts:
+                continue
+            # Extract date part
+            if "T" in ts:
+                date_str = ts.split("T")[0]
+            elif len(ts) >= 10:
+                date_str = ts[:10]
+            else:
+                continue
+            
+            o = float(pt.get("open", 0) or 0)
+            h = float(pt.get("high", 0) or 0)
+            l = float(pt.get("low", 0) or 0)
+            c = float(pt.get("close", 0) or 0)
+            v = int(pt.get("volume", 0) or 0)
+            
+            if date_str not in daily:
+                daily[date_str] = {
+                    "time": ts,
+                    "open": o,
+                    "high": h,
+                    "low": l if l > 0 else o,
+                    "close": c,
+                    "volume": v,
+                }
+            else:
+                d = daily[date_str]
+                d["high"] = max(d["high"], h)
+                if l > 0:
+                    d["low"] = min(d["low"], l)
+                d["close"] = c
+                d["volume"] += v
+        
+        return sorted(daily.values(), key=lambda x: x["time"])
 
     async def get_quote(self, symbol: str) -> Dict:
         sym = symbol.upper()
         self._hub.subscribe_symbols([sym])
+
+        try:
+            r = get_redis()
+            cached = r.get(f"stock:{sym}:quote")
+            if cached:
+                import json
+                return json.loads(cached)
+        except Exception:
+            pass
+
         cached = self._hub.get_quote(sym)
         if cached:
             return cached
+
         if self._rest.is_live:
             try:
                 return self._rest.get_security_info(sym)
             except Exception:
                 pass
-        mock = next((s for s in MOCK_STOCKS if s["symbol"] == sym), None)
-        return mock or {"symbol": sym, "price": 0}
+
+        return {"symbol": sym, "price": 0}
 
     async def get_order_book(self, symbol: str) -> Dict:
         sym = symbol.upper()
         self._hub.subscribe_symbols([sym])
+
         cached = self._hub.get_orderbook(sym)
         if cached:
             return cached
-        quote = await self.get_quote(sym)
-        price = quote.get("price", 0) or 10000
-        bids = [{"price": price - i * 100, "volume": 1000 * (11 - i)} for i in range(1, 11)]
-        asks = [{"price": price + i * 100, "volume": 1000 * (11 - i)} for i in range(1, 11)]
-        return {"symbol": sym, "bids": bids, "asks": asks, "lastUpdate": datetime.now().isoformat()}
+
+        try:
+            r = get_redis()
+            ob_cached = r.get(f"stock:{sym}:orderbook")
+            if ob_cached:
+                import json
+                return json.loads(ob_cached)
+        except Exception:
+            pass
+
+        return {"symbol": sym, "bids": [], "asks": [], "lastUpdate": datetime.now().isoformat()}
 
     async def get_trades(self, symbol: str) -> Dict:
-        return {"symbol": symbol.upper(), "trades": [], "source": "dnse-ws"}
+        sym = symbol.upper()
+        self._hub.subscribe_symbols([sym])
+
+        try:
+            trades = get_list_range(f"trade_extra:{sym}", 0, 50)
+            if not trades:
+                trades = get_list_range(f"trade:{sym}", 0, 50)
+            if trades:
+                return {"symbol": sym, "trades": trades, "source": "dnse-ws"}
+        except Exception:
+            pass
+
+        return {"symbol": sym, "trades": [], "source": "empty"}
 
     async def get_fundamentals(self, symbol: str) -> Dict:
-        return {"symbol": symbol.upper(), "pe": 0, "pb": 0, "roe": 0, "eps": 0, "source": "pending"}
+        sym = symbol.upper()
+        if self._rest.is_live:
+            try:
+                return self._rest.get_fundamentals(sym)
+            except Exception:
+                pass
+        return {"symbol": sym, "pe": 0, "pb": 0, "roe": 0, "eps": 0, "source": "pending"}
 
     async def get_liquidity(self) -> Dict:
+        """Return live liquidity from Redis or compute from snapshot."""
+        try:
+            r = get_redis()
+            cached = r.get("market:liquidity")
+            if cached:
+                import json
+                return {**json.loads(cached), "source": "redis"}
+        except Exception:
+            pass
+
+        snap = await self.get_snapshot()
+        stocks = snap.get("stocks", [])
+        total_value = sum(s.get("tradingValue", 0) for s in stocks) / 1e9
+        top_by_volume = sorted(stocks, key=lambda s: s.get("volume", 0), reverse=True)[:10]
+
         return {
-            "points": [
-                {"time": "9:15", "today": 1200, "yesterday": 1000},
-                {"time": "10:00", "today": 3500, "yesterday": 3100},
-                {"time": "11:00", "today": 8200, "yesterday": 7500},
-                {"time": "13:30", "today": 11500, "yesterday": 10500},
-                {"time": "14:15", "today": 18200, "yesterday": 16800},
-                {"time": "14:45", "today": 21450, "yesterday": 19500},
-            ],
-            "source": "dnse",
+            "totalValueBillion": round(total_value, 2),
+            "stockCount": len(stocks),
+            "topByVolume": top_by_volume,
+            "lastUpdate": datetime.now().isoformat(),
+            "source": "computed",
         }
 
     async def get_heatmap(self) -> Dict:
+        """Compute heatmap from live snapshot."""
+        try:
+            r = get_redis()
+            cached = r.get("market:heatmap")
+            if cached:
+                import json
+                return {**json.loads(cached), "source": "redis"}
+        except Exception:
+            pass
+
         snap = await self.get_snapshot()
         sector_map: Dict[str, Dict] = {}
         for s in snap.get("stocks", []):
-            name = s.get("industry", "Khác")
+            name = s.get("industry", s.get("sector", "Khác"))
             if name not in sector_map:
-                sector_map[name] = {"name": name, "change": 0.0, "count": 0}
+                sector_map[name] = {"name": name, "change": 0.0, "count": 0, "totalVol": 0}
             sector_map[name]["change"] += s.get("changePercent", 0)
             sector_map[name]["count"] += 1
-        sectors = [
-            {
+            sector_map[name]["totalVol"] += s.get("volume", 0)
+
+        sectors = []
+        for n, d in sector_map.items():
+            avg_change = round(d["change"] / max(d["count"], 1), 2)
+            sectors.append({
                 "name": n,
-                "change": round(d["change"] / max(d["count"], 1), 2),
+                "change": avg_change,
                 "weight": d["count"],
-                "color": "bg-secondary" if d["change"] >= 0 else "bg-error",
-            }
-            for n, d in sector_map.items()
-        ]
-        return {"sectors": sectors, "source": "dnse"}
+                "totalVolume": d["totalVol"],
+                "color": "bg-secondary" if avg_change >= 0 else "bg-error",
+            })
+
+        return {"sectors": sectors, "source": "computed"}
 
     async def screen_stocks(self, filters: Dict) -> Dict:
         from app.services.screener_service import screener_svc

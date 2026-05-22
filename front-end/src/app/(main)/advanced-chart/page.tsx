@@ -4,7 +4,11 @@ import dynamic from "next/dynamic";
 import { motion } from 'framer-motion';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense } from 'react';
-import '@klinecharts/pro/dist/klinecharts-pro.css'
+import { useStockStore } from '@/stores/useStockStore';
+import { useStockQuote } from '@/hooks/useMarketData';
+import { getPriceColor, formatVolume } from '@/lib/market-utils';
+import { cn } from '@/lib/utils';
+import '@klinecharts/pro/dist/klinecharts-pro.css';
 
 const PriceChart = dynamic(
   () => import('@/components/feature/stock/PriceChart'),
@@ -19,9 +23,24 @@ function AdvancedChartContent() {
   const searchParams = useSearchParams();
   const symbol = searchParams.get('symbol') || 'HPG';
 
+  // Live quote from store (updated by useStockQuote via socket)
+  useStockQuote(symbol);
+  const stocks = useStockStore((s) => s.stocks);
+  const stock = stocks.find((s) => s.symbol === symbol.toUpperCase());
+
+  const price = stock?.price ?? 0;
+  const change = stock?.change ?? 0;
+  const changePercent = stock?.changePercent ?? 0;
+  const volume = stock?.volume ?? 0;
+  const name = stock?.name ?? symbol;
+  const prevClose = stock?.prevClose ?? 0;
+  const ceiling = stock?.ceiling ?? 0;
+  const floor = stock?.floor ?? 0;
+  const trend = stock?.trend ?? 'steady';
+
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-8 md:p-12 bg-[#050505]/60 backdrop-blur-md">
-      {/* Click outside to close (optional, but good UX) */}
+      {/* Click outside to close */}
       <div className="absolute inset-0 cursor-pointer" onClick={() => router.back()} />
       
       <motion.div
@@ -36,10 +55,21 @@ function AdvancedChartContent() {
           <div className="flex items-center gap-8">
             <div>
               <div className="flex items-baseline gap-3">
-                <h2 className="text-3xl font-bold tracking-tight text-white uppercase">{symbol}<span className="text-sm text-white/40 font-medium ml-1">HOSE</span></h2>
-                <span className="border border-secondary/20 text-secondary bg-secondary/5 font-data-mono px-2 py-0.5 rounded text-sm">+1.25%</span>
+                <h2 className="text-3xl font-bold tracking-tight text-white uppercase">
+                  {symbol}<span className="text-sm text-white/40 font-medium ml-1">HOSE</span>
+                </h2>
+                <span className={cn(
+                  "border font-data-mono px-2 py-0.5 rounded text-sm",
+                  trend === 'up'
+                    ? "border-secondary/20 text-secondary bg-secondary/5"
+                    : trend === 'down'
+                      ? "border-error/20 text-error bg-error/5"
+                      : "border-white/10 text-white/60 bg-white/5"
+                )}>
+                  {changePercent > 0 ? '+' : ''}{changePercent.toFixed(2)}%
+                </span>
               </div>
-              <p className="text-xs text-white/40 uppercase tracking-widest mt-1">Company Name</p>
+              <p className="text-xs text-white/40 uppercase tracking-widest mt-1">{name}</p>
             </div>
             
             <div className="h-10 w-px bg-white/10 mx-2"></div>
@@ -47,11 +77,21 @@ function AdvancedChartContent() {
             <div className="flex gap-8">
               <div>
                 <p className="text-[10px] text-white/40 font-bold uppercase tracking-widest mb-1">LAST PRICE</p>
-                <p className="font-data-mono text-white text-lg font-medium">28.450</p>
+                <p className={cn("font-data-mono text-lg font-medium", getPriceColor(price, prevClose, ceiling, floor))}>
+                  {price > 0 ? price.toFixed(2) : '—'}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] text-white/40 font-bold uppercase tracking-widest mb-1">CHANGE</p>
+                <p className={cn("font-data-mono text-lg font-medium", trend === 'up' ? 'text-secondary' : trend === 'down' ? 'text-error' : 'text-white/60')}>
+                  {change > 0 ? '+' : ''}{change.toFixed(2)}
+                </p>
               </div>
               <div>
                 <p className="text-[10px] text-white/40 font-bold uppercase tracking-widest mb-1">VOLUME</p>
-                <p className="font-data-mono text-white text-lg font-medium">12.4M</p>
+                <p className="font-data-mono text-white text-lg font-medium">
+                  {volume > 0 ? formatVolume(volume) : '—'}
+                </p>
               </div>
             </div>
           </div>

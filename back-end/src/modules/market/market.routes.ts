@@ -3,6 +3,7 @@ import { config } from '../../config';
 import { aiEngineService } from '../../services/aiEngine.service';
 import { cached } from '../../utils/cache';
 import prisma from '../../config/database';
+import { autoBackfillIfNeeded, getBackfillHistory } from '../../services/backfill.service';
 
 const router = Router();
 
@@ -70,6 +71,25 @@ router.get('/search', (req, res, next) => {
     return;
   }
   return handle(req, res, next, () => aiEngineService.searchSymbols(q));
+});
+
+router.post('/backfill/trigger', async (req, res, next) => {
+  try {
+    const result = await autoBackfillIfNeeded();
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/backfill/history', async (req, res, next) => {
+  try {
+    const limit = parseInt(req.query.limit as string, 10) || 30;
+    const history = await getBackfillHistory(limit);
+    res.json(history);
+  } catch (err) {
+    next(err);
+  }
 });
 
 export default router;

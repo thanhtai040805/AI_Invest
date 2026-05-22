@@ -4,8 +4,10 @@ import { motion } from "framer-motion";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/Badge";
-import { useState, useEffect, useMemo } from "react";
-import { useStockOrderBook, useStockRealtime } from "@/hooks/useMarketData";
+import { useState, useMemo } from "react";
+import { useStockOrderBook, useStockTrades } from "@/hooks/useMarketData";
+import { useOrderBookStore } from "@/stores/useOrderBookStore";
+import { useTradesStore } from "@/stores/useTradesStore";
 
 interface OrderBookLevel {
   price: number;
@@ -18,28 +20,13 @@ interface OrderBookProps {
 
 export function OrderBook({ symbol }: OrderBookProps) {
   const [activeTab, setActiveTab] = useState<"DOM" | "Tape">("DOM");
-  const [liveBook, setLiveBook] = useState<{ bids: OrderBookLevel[]; asks: OrderBookLevel[] } | null>(null);
-  const [trades, setTrades] = useState<Array<{ time: string; price: number; volume: number; side: "buy" | "sell" }>>([]);
 
   const { data: orderbook } = useStockOrderBook(symbol);
+  const { data: tradesData } = useStockTrades(symbol);
 
-  useStockRealtime(symbol, {
-    onOrderBook: (data: { bids?: OrderBookLevel[]; asks?: OrderBookLevel[] }) => {
-      if (data?.bids && data?.asks) setLiveBook({ bids: data.bids, asks: data.asks });
-    },
-    onTrade: (data: { time?: string; price?: number; volume?: number; side?: string }) => {
-      if (!data?.price) return;
-      setTrades((prev) => [
-        {
-          time: data.time ?? new Date().toLocaleTimeString(),
-          price: data.price!,
-          volume: data.volume ?? 0,
-          side: (data.side === "sell" ? "sell" : "buy") as "buy" | "sell",
-        },
-        ...prev,
-      ].slice(0, 30));
-    },
-  });
+  const liveBook = useOrderBookStore((s) => s.getOrderBook(symbol));
+  const allTrades = useTradesStore((s) => s.trades);
+  const trades = useMemo(() => allTrades[symbol.toUpperCase()] ?? [], [allTrades, symbol]);
 
   const book = liveBook ?? orderbook;
   const asks = useMemo(() => [...(book?.asks ?? [])].reverse().slice(0, 10), [book]);
@@ -59,6 +46,8 @@ export function OrderBook({ symbol }: OrderBookProps) {
   const totalVol = cumAsk + cumBid || 1;
   const midPrice = asks.length && bids.length ? (asks[asks.length - 1].price + bids[0].price) / 2 : 0;
   const spread = asks.length && bids.length ? asks[asks.length - 1].price - bids[0].price : 0;
+
+  const displayTrades = trades.length > 0 ? trades : (tradesData?.trades ?? []);
 
   return (
     <GlassCard className="p-0 border-white/5 overflow-hidden flex flex-col h-full shadow-2xl bg-[#0a0a0a]">
@@ -80,7 +69,7 @@ export function OrderBook({ symbol }: OrderBookProps) {
         <div className="flex items-center gap-sm text-[10px] font-data-mono">
           <span className="opacity-40">SPREAD:</span>
           <span className="text-on-surface font-bold text-secondary">
-            {spread.toFixed(1)} ({midPrice > 0 ? ((spread / midPrice) * 100).toFixed(2) : 0}%)
+            {spread.toFixed(2)} ({midPrice > 0 ? ((spread / midPrice) * 100).toFixed(2) : 0}%)
           </span>
         </div>
       </div>
@@ -102,21 +91,21 @@ export function OrderBook({ symbol }: OrderBookProps) {
                     <span className="text-error font-bold">{(level.volume / 1000).toFixed(1)}k</span>
                   </td>
                   <td className="py-1 px-md text-center text-error font-black bg-error/[0.02] border-x border-white/5">
-                    {level.price.toFixed(1)}
+                    {level.price.toFixed(2)}
                   </td>
                   <td className="py-1 px-md text-right opacity-10">---</td>
                 </tr>
               ))}
               <tr className="bg-white/5 border-y border-white/10">
                 <td colSpan={3} className="py-1 px-md text-center text-xs font-black">
-                  {midPrice.toFixed(1)}
+                  {midPrice.toFixed(2)}
                 </td>
               </tr>
               {bids.map((level, i) => (
                 <tr key={`bid-${i}`} className="group hover:bg-white/[0.02] relative">
                   <td className="py-1 px-md text-left opacity-10">---</td>
                   <td className="py-1 px-md text-center text-secondary font-black bg-secondary/[0.02] border-x border-white/5">
-                    {level.price.toFixed(1)}
+                    {level.price.toFixed(2)}
                   </td>
                   <td className="py-1 px-md text-right">
                     <span className="text-secondary font-bold">{(level.volume / 1000).toFixed(1)}k</span>
@@ -127,10 +116,10 @@ export function OrderBook({ symbol }: OrderBookProps) {
           </table>
         ) : (
           <div className="p-md space-y-1">
-            {trades.length === 0 ? (
+            {displayTrades.length === 0 ? (
               <p className="text-[10px] opacity-40 text-center py-md">Chờ khớp lệnh...</p>
             ) : (
-              trades.map((trade, i) => (
+              displayTrades.slice(0, 30).map((trade: any, i: number) => (
                 <motion.div
                   key={i}
                   initial={{ x: -10, opacity: 0 }}
@@ -139,7 +128,7 @@ export function OrderBook({ symbol }: OrderBookProps) {
                 >
                   <span className="opacity-30">{trade.time}</span>
                   <span className={cn("font-bold", trade.side === "buy" ? "text-secondary" : "text-error")}>
-                    {trade.price.toFixed(1)}
+                    {trade.price.toFixed(2)}
                   </span>
                   <span className="font-bold">{(trade.volume / 1000).toFixed(1)}k</span>
                   <Badge variant="outline" className={cn("text-[8px] px-1 py-0 h-4 border-none bg-white/5", trade.side === "buy" ? "text-secondary" : "text-error")}>

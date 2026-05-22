@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { motion } from "framer-motion";
 import { 
@@ -9,77 +9,13 @@ import {
   LineChart, Line, ScatterChart, Scatter, ZAxis
 } from 'recharts';
 import { useRouter } from "next/navigation";
+import { useMarketSnapshot } from "@/hooks/useMarketData";
+import { useStockStore } from "@/stores/useStockStore";
 
-// ... (existing data stays the same) ...
-
-export function MarketBubbleMap({ sector }: { sector: string }) {
-  // Flatten data for bubble chart
-  const flatData = treemapData.flatMap(s => 
-    s.children.map(c => ({
-      ...c,
-      sector: s.name,
-      x: Math.random() * 100, // Random X for spread
-      y: c.change
-    }))
-    ).filter(d => sector === 'All' || d.sector === sector);
-  const router = useRouter();
-
-  return (
-    <div className="h-[550px] w-full">
-      <ResponsiveContainer width="100%" height="100%">
-        <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-          <XAxis type="number" dataKey="x" name="Spread" hide />
-          <YAxis 
-            type="number" 
-            dataKey="y" 
-            name="Change" 
-            unit="%" 
-            stroke="rgba(255,255,255,0.4)" 
-            fontSize={10}
-            domain={['auto', 'auto']}
-          />
-          <ZAxis type="number" dataKey="size" range={[100, 2000]} name="Volume" />
-          <Tooltip 
-            cursor={{ strokeDasharray: '3 3' }}
-            contentStyle={{ backgroundColor: 'rgba(23, 23, 23, 0.9)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px' }}
-          />
-          <Scatter 
-            name="Stocks" 
-            data={flatData}
-            onClick={(data: any) => router.push(`/stock/${data.name}`)}
-          >
-            {flatData.map((entry, index) => (
-              <Cell 
-                key={`cell-${index}`} 
-                fill={entry.change > 0 ? '#10b981' : '#ef4444'} 
-                fillOpacity={0.6}
-                stroke={entry.change > 0 ? '#10b981' : '#ef4444'}
-              />
-            ))}
-          </Scatter>
-          {/* Labels for bubbles */}
-          {flatData.filter(d => d.size > 200).map((d, i) => (
-            <text 
-              key={i} 
-              x={0} 
-              y={0} 
-              fontSize={10} 
-              fill="#fff" 
-              textAnchor="middle"
-            >
-              {d.name}
-            </text>
-          ))}
-        </ScatterChart>
-      </ResponsiveContainer>
-    </div>
-  );
-}
 import { cn } from "@/lib/utils";
 
-// --- MOCK DATA: Đầy đủ các nhóm ngành ---
-const treemapData = [
+// --- MOCK DATA ---
+const mockTreemapData = [
   {
     name: 'Banking',
     children: [
@@ -138,7 +74,7 @@ const treemapData = [
   },
 ];
 
-const sectorFlowData = [
+const mockSectorFlowData = [
   { name: 'Banking', flow: 850, color: '#10b981' },
   { name: 'Real Estate', flow: -430, color: '#ef4444' },
   { name: 'Technology', flow: 620, color: '#10b981' },
@@ -147,7 +83,7 @@ const sectorFlowData = [
   { name: 'Energy', flow: -120, color: '#ef4444' },
 ];
 
-const liquidityData = [
+const mockLiquidityData = [
   { time: '9:00', current: 1200, prev: 1000 },
   { time: '10:00', current: 4500, prev: 4200 },
   { time: '11:00', current: 8900, prev: 7500 },
@@ -155,6 +91,65 @@ const liquidityData = [
   { time: '14:00', current: 18500, prev: 16000 },
   { time: '15:00', current: 21450, prev: 19500 },
 ];
+
+export function MarketBubbleMap({ sector }: { sector: string }) {
+  const router = useRouter();
+  const { data: stocks } = useMarketSnapshot();
+  const stockStore = useStockStore((s) => s.stocks);
+
+  const displayStocks = stocks && stocks.length > 0 ? stocks : stockStore;
+
+  const bubbleData = useMemo(() => {
+    const data = displayStocks.flatMap(s => ({
+      name: s.symbol,
+      size: Math.max(s.volume / 100000, 50),
+      change: s.changePercent || 0,
+      industry: s.industry || 'Other',
+      x: Math.random() * 100,
+      y: s.changePercent || 0,
+    }));
+    return sector === 'All' ? data : data.filter(d => d.industry === sector);
+  }, [displayStocks, sector]);
+
+  return (
+    <div className="h-[550px] w-full">
+      <ResponsiveContainer width="100%" height="100%">
+        <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+          <XAxis type="number" dataKey="x" name="Spread" hide />
+          <YAxis
+            type="number"
+            dataKey="y"
+            name="Change"
+            unit="%"
+            stroke="rgba(255,255,255,0.4)"
+            fontSize={10}
+            domain={['auto', 'auto']}
+          />
+          <ZAxis type="number" dataKey="size" range={[100, 2000]} name="Volume" />
+          <Tooltip
+            cursor={{ strokeDasharray: '3 3' }}
+            contentStyle={{ backgroundColor: 'rgba(23, 23, 23, 0.9)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px' }}
+          />
+          <Scatter
+            name="Stocks"
+            data={bubbleData}
+            onClick={(data: any) => router.push(`/stock/${data.name}`)}
+          >
+            {bubbleData.map((entry, index) => (
+              <Cell
+                key={`cell-${index}`}
+                fill={entry.change > 0 ? '#10b981' : '#ef4444'}
+                fillOpacity={0.6}
+                stroke={entry.change > 0 ? '#10b981' : '#ef4444'}
+              />
+            ))}
+          </Scatter>
+        </ScatterChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
 
 // --- COMPONENTS ---
 
@@ -217,6 +212,31 @@ const CustomizedContent = (props: any) => {
 
 export function MarketTreemap({ sector }: { sector: string }) {
   const router = useRouter();
+  const { data: stocks } = useMarketSnapshot();
+  const stockStore = useStockStore((s) => s.stocks);
+
+  const displayStocks = stocks && stocks.length > 0 ? stocks : stockStore;
+
+  const treemapData = useMemo(() => {
+    const sectorMap = displayStocks.reduce((acc, stock) => {
+      const sec = stock.industry || 'Other';
+      if (!acc[sec]) {
+        acc[sec] = [];
+      }
+      acc[sec].push({
+        name: stock.symbol,
+        size: Math.max(stock.volume / 100000, 50),
+        change: stock.changePercent || 0,
+      });
+      return acc;
+    }, {} as Record<string, Array<{ name: string; size: number; change: number }>>);
+
+    return Object.entries(sectorMap).map(([name, children]) => ({
+      name,
+      children,
+    }));
+  }, [displayStocks]);
+
   const filteredData = treemapData.filter(item => 
     sector === 'All' || item.name === sector
   );
@@ -241,6 +261,29 @@ export function MarketTreemap({ sector }: { sector: string }) {
 }
 
 export function SectorFlowMatrix() {
+  const { data: stocks } = useMarketSnapshot();
+  const stockStore = useStockStore((s) => s.stocks);
+
+  const displayStocks = stocks && stocks.length > 0 ? stocks : stockStore;
+
+  const sectorFlowData = useMemo(() => {
+    const sectorMap = displayStocks.reduce((acc, stock) => {
+      const sec = stock.industry || 'Other';
+      if (!acc[sec]) {
+        acc[sec] = { change: 0, volume: 0 };
+      }
+      acc[sec].change += stock.changePercent || 0;
+      acc[sec].volume += stock.volume || 0;
+      return acc;
+    }, {} as Record<string, { change: number; volume: number }>);
+
+    return Object.entries(sectorMap).map(([name, data]) => ({
+      name,
+      flow: data.change * data.volume / 1000000,
+      color: data.change > 0 ? '#10b981' : '#ef4444',
+    }));
+  }, [displayStocks]);
+
   return (
     <div className="h-[400px] w-full mt-lg">
       <ResponsiveContainer width="100%" height="100%">
@@ -272,6 +315,23 @@ export function SectorFlowMatrix() {
 }
 
 export function LiquidityChart() {
+  const { data: stocks } = useMarketSnapshot();
+  const stockStore = useStockStore((s) => s.stocks);
+
+  const displayStocks = stocks && stocks.length > 0 ? stocks : stockStore;
+
+  const liquidityData = useMemo(() => {
+    const totalVolume = displayStocks.reduce((sum, s) => sum + (s.volume || 0), 0);
+    return [
+      { time: '9:00', current: totalVolume * 0.1, prev: totalVolume * 0.08 },
+      { time: '10:00', current: totalVolume * 0.3, prev: totalVolume * 0.25 },
+      { time: '11:00', current: totalVolume * 0.5, prev: totalVolume * 0.45 },
+      { time: '13:00', current: totalVolume * 0.7, prev: totalVolume * 0.65 },
+      { time: '14:00', current: totalVolume * 0.9, prev: totalVolume * 0.8 },
+      { time: '15:00', current: totalVolume, prev: totalVolume * 0.9 },
+    ];
+  }, [displayStocks]);
+
   return (
     <div className="h-[150px] w-full">
       <ResponsiveContainer width="100%" height="100%">

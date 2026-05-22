@@ -19,7 +19,8 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   useEffect(() => {
     // 1. Listen for backend triggered alerts
     const unsubSocket = socketClient.subscribeAlerts((data) => {
-      addToast(data.alert, data.price);
+      const d = data as any;
+      if (d?.alert) addToast(d.alert, d.price);
     });
 
     // 2. Listen for frontend triggered alerts

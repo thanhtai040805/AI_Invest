@@ -1,60 +1,109 @@
 import { create } from 'zustand';
+import { communityAPI } from '@/services/api';
 import { Post, MarketInsight } from '@/types/community';
+
+interface Expert {
+  id: string;
+  displayName: string;
+  winRate: number;
+  reactionCount: number;
+  postCount: number;
+  rank: 'Elite' | 'Pro' | 'Member';
+}
 
 interface CommunityState {
   posts: Post[];
   insights: MarketInsight | null;
-  addPost: (post: Post) => void;
-  likePost: (postId: string) => void;
-  setInsights: (insights: MarketInsight) => void;
+  experts: Expert[];
+  loading: boolean;
+  nextCursor: string | null;
+  fetchPosts: () => Promise<void>;
+  fetchInsights: () => Promise<void>;
+  fetchTopExperts: () => Promise<void>;
+  likePost: (postId: string) => Promise<void>;
+  addPost: (content: string, taggedSymbols?: string[]) => Promise<void>;
 }
 
-export const useCommunityStore = create<CommunityState>((set) => ({
-  posts: [
-    {
-      id: 'p1',
-      author: {
-        id: 'u1',
-        name: 'Quốc Huy Investor',
-        avatar: 'https://lh3.googleusercontent.com/...',
-        rank: 'Elite',
-      },
-      content: 'Đã gia tăng tỷ trọng HPG sau khi vượt cản chéo. Kỳ vọng vào phục hồi ngành thép trong Q3.',
-      timestamp: '2 giờ trước',
-      strategy: 'Chiến lược Tăng trưởng',
-      symbol: 'HPG',
-      pnl: 15.42,
-      status: 'Đang giữ',
-      likes: 128,
-      commentCount: 42,
+function mapPost(raw: any): Post {
+  return {
+    id: raw.id,
+    author: {
+      id: raw.author?.id || 'unknown',
+      name: raw.author?.displayName || 'Ẩn danh',
+      avatar: '',
+      rank: 'Member',
     },
-    {
-      id: 'p2',
-      author: {
-        id: 'u2',
-        name: 'Minh Anh Trading',
-        avatar: 'https://lh3.googleusercontent.com/...',
-        rank: 'Pro',
-      },
-      content: 'VHM đang cho tín hiệu tạo đáy 2. Khối ngoại bắt đầu quay lại mua ròng.',
-      timestamp: '4 giờ trước',
-      symbol: 'VHM',
-      image: 'https://lh3.googleusercontent.com/...',
-      likes: 85,
-      commentCount: 15,
-    },
-  ],
-  insights: {
-    id: 'i1',
-    title: 'AI Nhận Định Thị Trường',
-    content: 'Dòng tiền đang đổ mạnh vào nhóm cổ phiếu Ngân hàng (VCB, BID) và Bất động sản (VHM).',
-    trend: 'TĂNG',
-    hotSector: 'HOSE',
-    volumeChange: 12.5,
+    content: raw.content,
+    timestamp: new Date(raw.createdAt).toLocaleString('vi-VN'),
+    symbol: raw.taggedSymbols?.[0] || undefined,
+    likes: raw._count?.reactions || 0,
+    commentCount: raw._count?.comments || 0,
+  };
+}
+
+export const useCommunityStore = create<CommunityState>((set, get) => ({
+  posts: [],
+  insights: null,
+  experts: [],
+  loading: false,
+  nextCursor: null,
+
+  fetchPosts: async () => {
+    set({ loading: true });
+    try {
+      const res = await communityAPI.getPosts({ limit: 20 });
+      set({
+        posts: res.posts.map(mapPost),
+        nextCursor: res.nextCursor,
+        loading: false,
+      });
+    } catch {
+      set({ loading: false });
+    }
   },
-  addPost: (post) => set((state) => ({ posts: [post, ...state.posts] })),
-  likePost: (postId) => set((state) => ({
-    posts: state.posts.map(p => p.id === postId ? { ...p, likes: p.likes + 1 } : p)
-  })),
-  setInsights: (insights) => set({ insights }),
+
+  fetchInsights: async () => {
+    try {
+      const data = await communityAPI.getInsights();
+      set({ insights: data });
+    } catch {
+      // keep existing insights or null
+    }
+  },
+
+  fetchTopExperts: async () => {
+    try {
+      const data = await communityAPI.getTopExperts();
+      set({ experts: data });
+    } catch {
+      set({ experts: [] });
+    }
+  },
+
+  likePost: async (postId: string) => {
+    set((state) => ({
+      posts: state.posts.map((p) =>
+        p.id === postId ? { ...p, likes: p.likes + 1 } : p
+      ),
+    }));
+    try {
+      await communityAPI.toggleReaction(postId);
+    } catch {
+      set((state) => ({
+        posts: state.posts.map((p) =>
+          p.id === postId ? { ...p, likes: p.likes - 1 } : p
+        ),
+      }));
+    }
+  },
+
+  addPost: async (content: string, taggedSymbols?: string[]) => {
+    try {
+      const raw = await communityAPI.createPost({ content, taggedSymbols });
+      const post = mapPost(raw);
+      set((state) => ({ posts: [post, ...state.posts] }));
+    } catch {
+      // handled by caller
+    }
+  },
 }));

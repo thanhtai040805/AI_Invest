@@ -13,6 +13,7 @@ model User {
   passwordHash String   @map("password_hash")
   displayName  String?  @map("display_name")
   cashBalance  Decimal  @default(1000000000) @map("cash_balance") @db.Decimal(18, 2)
+  winRate      Float?   @default(0) @map("win_rate")
   createdAt    DateTime @default(now()) @map("created_at")
 
   positions     Position[]
@@ -252,4 +253,20 @@ model News {
 
   @@index([symbol, publishDate(sort: Desc)])
   @@map("news")
+}
+
+/// Tracks which trading days have been backfilled.
+/// Idempotency check: on server startup, skip backfill if today's session is already logged.
+model MarketSessionLog {
+  id          String   @id @default(uuid())
+  sessionDate DateTime @map("session_date") // Date only (no time)
+  status      String   @default("PENDING")  // PENDING, BACKFILLING, COMPLETED, FAILED
+  stockCount  Int      @default(0) @map("stock_count")
+  ohlcvCount  Int      @default(0) @map("ohlcv_count")
+  error       String?
+  startedAt   DateTime @default(now()) @map("started_at")
+  completedAt DateTime? @map("completed_at")
+
+  @@unique([sessionDate])
+  @@map("market_session_logs")
 }

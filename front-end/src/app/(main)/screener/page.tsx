@@ -240,7 +240,7 @@ function ScreenerContent() {
                           </p>
                         </td>
                         <td className={cn("py-4 px-md text-right text-xs font-bold", Number(s.changePercent) >= 0 ? "text-secondary" : "text-error")}>
-                          {Number(s.price).toFixed(1)}
+                          {Number(s.price).toFixed(2)}
                         </td>
                         <td className={cn("py-4 px-md text-right text-xs font-black", Number(s.changePercent) >= 0 ? "text-secondary" : "text-error")}>
                           {Number(s.changePercent) > 0 ? "+" : ""}

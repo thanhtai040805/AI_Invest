@@ -19,6 +19,9 @@ export interface StockQuote {
   avgVolume?: number;
   marketCap?: number;
   foreignNetBuy?: number;
+  industry?: string;
+  exchange?: string;
+  sector?: string;
   signal: AISignal;
   trend: MarketTrend;
   lastUpdate: string;

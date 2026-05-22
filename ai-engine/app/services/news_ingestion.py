@@ -1,4 +1,5 @@
 import asyncio
+import sys
 import logging
 import httpx
 import os
@@ -14,6 +15,10 @@ from app.services.sentiment_scorer import sentiment_scorer
 from app.services.news_rag import news_rag_svc
 from app.services.market_data_service import market_data_svc
 from app.services.ai_service import ai_svc
+
+# Fix Playwright subprocess error on Windows
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 logger = logging.getLogger("ai_engine.news_ingestion")
 

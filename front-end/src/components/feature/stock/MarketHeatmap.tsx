@@ -4,17 +4,36 @@ import { GlassCard } from "@/components/ui/GlassCard";
 import { Badge } from "@/components/ui/Badge";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
-
-const sectors = [
-  { name: "Financials", value: "+2.1%", trend: "up", span: "col-span-12 md:col-span-5" },
-  { name: "Real Estate", value: "-1.4%", trend: "down", span: "col-span-12 md:col-span-3" },
-  { name: "Materials", value: "+0.8%", trend: "up", span: "col-span-6 md:col-span-2" },
-  { name: "IT Services", value: "+4.2%", trend: "up", span: "col-span-6 md:col-span-2" },
-  { name: "Energy", value: "0.0%", trend: "neutral", span: "col-span-6 md:col-span-4" },
-  { name: "Consumer", value: "+1.2%", trend: "up", span: "col-span-6 md:col-span-8" },
-];
+import { useMarketSnapshot } from "@/hooks/useMarketData";
+import { useStockStore } from "@/stores/useStockStore";
 
 export function MarketHeatmap() {
+  const { data: stocks } = useMarketSnapshot();
+  const stockStore = useStockStore((s) => s.stocks);
+
+  const displayStocks = stocks && stocks.length > 0 ? stocks : stockStore;
+
+  const sectorMap = displayStocks.reduce((acc, stock) => {
+    const sector = stock.industry || 'Other';
+    if (!acc[sector]) {
+      acc[sector] = { totalChange: 0, count: 0, stocks: [] };
+    }
+    acc[sector].totalChange += stock.changePercent || 0;
+    acc[sector].count += 1;
+    acc[sector].stocks.push(stock);
+    return acc;
+  }, {} as Record<string, { totalChange: number; count: number; stocks: typeof displayStocks }>);
+
+  const sectors = Object.entries(sectorMap)
+    .map(([name, data]) => ({
+      name,
+      value: data.count > 0 ? (data.totalChange / data.count) : 0,
+      trend: data.totalChange > 0 ? 'up' : data.totalChange < 0 ? 'down' : 'neutral' as 'up' | 'down' | 'neutral',
+      span: 'col-span-6 md:col-span-4',
+    }))
+    .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
+    .slice(0, 6);
+
   return (
     <GlassCard className="p-xl border-white/5 shadow-2xl overflow-hidden relative" interactive={false}>
       <div className="flex justify-between items-center mb-xl">
@@ -70,7 +89,7 @@ export function MarketHeatmap() {
                 "font-data-mono text-headline-lg",
                 sector.trend === 'up' ? "text-secondary" : sector.trend === 'down' ? "text-error" : "text-on-surface"
               )}>
-                {sector.value}
+                {sector.value > 0 ? '+' : ''}{sector.value.toFixed(2)}%
               </span>
             </div>
           </motion.div>

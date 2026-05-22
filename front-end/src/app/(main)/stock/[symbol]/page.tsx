@@ -8,7 +8,7 @@ import { useStockStore } from "@/stores/useStockStore";
 import { getPriceColor, formatCurrency } from "@/lib/market-utils";
 import { cn } from "@/lib/utils";
 import { OrderBook } from "@/components/feature/stock/OrderBook";
-import PriceChart from "@/components/feature/stock/PriceChart";
+import dynamic from "next/dynamic";
 import { FundamentalData } from "@/components/feature/stock/FundamentalData";
 import { SentimentAnalysis } from "@/components/feature/stock/SentimentAnalysis";
 import { TradingData } from "@/components/feature/stock/TradingData";
@@ -16,6 +16,11 @@ import { NewsList } from "@/components/feature/stock/NewsList";
 import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import { useState, useMemo } from "react";
 import { useStockQuote, useStockProfile, useStockFundamentals, useAIConsensus } from "@/hooks/useMarketData";
+
+const PriceChart = dynamic(
+  () => import("@/components/feature/stock/PriceChart"),
+  { ssr: false, loading: () => <div className="w-full h-full min-h-[400px] bg-[#050505] animate-pulse" /> }
+);
 export default function StockDetailPage() {
    const { symbol: rawSymbol } = useParams();
    const symbol = String(rawSymbol ?? "").toUpperCase();
@@ -70,7 +75,7 @@ export default function StockDetailPage() {
                   <div className="h-6 w-[1px] bg-white/10" />
                   <div className="flex items-baseline gap-md">
                      <span className={cn("text-lg font-bold font-data-mono", getPriceColor(stock.price, stock.prevClose, stock.ceiling, stock.floor))}>
-                        {stock.price.toFixed(1)}
+                        {stock.price.toFixed(2)}
                      </span>
                      <span className={cn("text-[10px] font-bold", stock.trend === 'up' ? 'text-secondary' : 'text-error')}>
                         {stock.change > 0 ? '+' : ''}{stock.change} ({stock.changePercent.toFixed(2)}%)

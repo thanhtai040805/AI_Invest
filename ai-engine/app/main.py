@@ -4,6 +4,7 @@ AIInvest AI Engine — FastAPI + DNSE Open API (WebSocket market data).
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from datetime import datetime
 
 from app.core.lifespan import lifespan
 from app.config.settings import get_settings
@@ -37,6 +38,24 @@ async def health():
             "enabled": settings.dnse_enabled,
             "configured": settings.dnse_configured,
             "stream": hub.status(),
+        },
+    }
+
+
+@app.get("/health/detailed")
+async def health_detailed():
+    from app.services.dnse.redis_pub import get_rate_limiter
+    hub = get_stream_hub()
+    limiter = get_rate_limiter()
+    return {
+        "status": "ok",
+        "timestamp": datetime.now().isoformat(),
+        "stream_hub": hub.status(),
+        "rate_limiter": limiter.stats,
+        "market_session": {
+            "state": hub._session_mgr.get_market_state().value,
+            "is_open": hub._session_mgr.is_market_open(),
+            "is_connected": hub._session_mgr.is_connected(),
         },
     }
 

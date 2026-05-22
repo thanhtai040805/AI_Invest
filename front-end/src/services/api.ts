@@ -143,6 +143,10 @@ export const communityAPI = {
     apiClient.post(`/community/posts/${postId}/react`).then(r => r.data),
   toggleCommentReaction: (commentId: string) =>
     apiClient.post(`/community/comments/${commentId}/react`).then(r => r.data),
+  getInsights: () =>
+    apiClient.get('/community/insights').then(r => r.data),
+  getTopExperts: (limit = 5) =>
+    apiClient.get('/community/experts/top', { params: { limit } }).then(r => r.data),
 };
 
 // ── Stock Detail API ─────────────────────────────────

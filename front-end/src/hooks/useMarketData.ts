@@ -1,11 +1,15 @@
 'use client';
 
 import { useQuery } from '@tanstack/react-query';
-import { useEffect } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { marketAPI, stockAPI, screenerAPI, portfolioAPI, aiAPI } from '@/services/api';
 import { socketClient } from '@/services/socket';
 import { useMarketStore } from '@/stores/useMarketStore';
 import { useStockStore } from '@/stores/useStockStore';
+import { useOrderBookStore } from '@/stores/useOrderBookStore';
+import { useTradesStore } from '@/stores/useTradesStore';
+import { useLiquidityStore } from '@/stores/useLiquidityStore';
+import { useHeatmapStore } from '@/stores/useHeatmapStore';
 import {
   mapIndicesResponse,
   mapBreadthResponse,
@@ -14,105 +18,127 @@ import {
   mapSnapshotToQuotes,
   mapQuoteResponse,
 } from '@/lib/api-mappers';
+import {
+  safeParse,
+  OrderBookSchema,
+  TradeSchema,
+  TradeExtraSchema,
+} from '@/lib/validation';
+
+/**
+ * SINGLE WEBSOCKET GATEWAY PATTERN
+ *
+ * Market-wide events (indices, breadth, snapshot, liquidity, heatmap)
+ * are subscribed ONLY by RealtimeProvider. These hooks read from stores.
+ *
+ * Per-stock events (orderbook, trades, quote) are subscribed by hooks
+ * because they're symbol-specific and only needed when the component mounts.
+ */
 
 export function useMarketIndices() {
+  const indices = useMarketStore((s) => s.indices);
   const setIndices = useMarketStore((s) => s.setIndices);
 
-  const query = useQuery({
+  return useQuery({
     queryKey: ['market', 'indices'],
     queryFn: async () => {
       const data = await marketAPI.getIndices();
       setIndices(mapIndicesResponse(data));
       return data;
     },
-    refetchInterval: 30_000,
-    staleTime: 2000,
+    staleTime: 30_000,
+    gcTime: 5 * 60_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    select: () => indices,
   });
-
-  useEffect(() => {
-    return socketClient.subscribeMarket((data) => {
-      if (data?.indices) setIndices(mapIndicesResponse(data));
-    });
-  }, [setIndices]);
-
-  return query;
 }
 
 export function useMarketBreadth() {
+  const breadth = useMarketStore((s) => s.breadth);
   const setBreadth = useMarketStore((s) => s.setBreadth);
 
-  const query = useQuery({
+  return useQuery({
     queryKey: ['market', 'breadth'],
     queryFn: async () => {
       const data = await marketAPI.getBreadth();
       setBreadth(mapBreadthResponse(data));
       return data;
     },
-    refetchInterval: 15_000,
-    staleTime: 5000,
+    staleTime: 30_000,
+    gcTime: 5 * 60_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    select: () => breadth,
   });
-
-  useEffect(() => {
-    return socketClient.subscribeBreadth((data) => setBreadth(mapBreadthResponse(data)));
-  }, [setBreadth]);
-
-  return query;
 }
 
 export function useMarketLiquidity() {
-  const setLiquidity = useMarketStore((s) => s.setLiquidity);
+  const liquidity = useLiquidityStore((s) => s.data);
+  const setLiquidity = useLiquidityStore((s) => s.setLiquidity);
 
   return useQuery({
     queryKey: ['market', 'liquidity'],
     queryFn: async () => {
       const data = await marketAPI.getLiquidity();
-      setLiquidity(mapLiquidityResponse(data));
+      if (data?.points) {
+        setLiquidity({
+          totalValueBillion: 0,
+          stockCount: 0,
+          topByVolume: [],
+          lastUpdate: new Date().toISOString(),
+        });
+      }
       return data;
     },
-    refetchInterval: 30_000,
-    staleTime: 10_000,
+    staleTime: 60_000,
+    gcTime: 5 * 60_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    select: () => liquidity,
   });
 }
 
 export function useMarketSnapshot(exchange?: string) {
+  const stocks = useStockStore((s) => s.stocks);
   const setStocks = useStockStore((s) => s.setStocks);
 
-  const query = useQuery({
+  return useQuery({
     queryKey: ['market', 'snapshot', exchange],
     queryFn: async () => {
       const data = await marketAPI.getSnapshot(exchange);
       setStocks(mapSnapshotToQuotes(data));
       return data;
     },
-    refetchInterval: 15_000,
-    staleTime: 3000,
+    staleTime: 60_000,
+    gcTime: 5 * 60_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    select: () => stocks,
   });
-
-  useEffect(() => {
-    return socketClient.subscribeSnapshot((data) => {
-      if (data?.stocks) setStocks(mapSnapshotToQuotes(data));
-    });
-  }, [setStocks]);
-
-  return query;
 }
 
 export function useMarketHeatmap() {
-  const setSectors = useMarketStore((s) => s.setSectors);
+  const sectors = useHeatmapStore((s) => s.sectors);
+  const setHeatmap = useHeatmapStore((s) => s.setHeatmap);
 
   return useQuery({
     queryKey: ['market', 'heatmap'],
     queryFn: async () => {
       const data = await marketAPI.getHeatmap();
-      setSectors(mapHeatmapSectors(data));
+      if (data?.sectors) {
+        setHeatmap(mapHeatmapSectors(data));
+      }
       return data;
     },
-    refetchInterval: 30_000,
-    staleTime: 15_000,
+    staleTime: 60_000,
+    gcTime: 5 * 60_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    select: () => (sectors.length > 0 ? sectors : mapHeatmapSectors({})),
   });
 }
 
-/** Load all dashboard market data in one call */
 export function useDashboardMarketData() {
   useMarketIndices();
   useMarketBreadth();
@@ -127,6 +153,9 @@ export function useStockProfile(symbol: string) {
     queryFn: () => stockAPI.getProfile(symbol),
     enabled: !!symbol,
     staleTime: 60 * 60 * 1000,
+    gcTime: 5 * 60_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
   });
 }
 
@@ -141,41 +170,160 @@ export function useStockOHLCV(
     queryFn: () => stockAPI.getOHLCV(symbol, { interval, start, end }),
     enabled: !!symbol,
     staleTime: 60_000,
+    gcTime: 5 * 60_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
   });
 }
 
 export function useStockQuote(symbol: string) {
+  const stocks = useStockStore((s) => s.stocks);
   const updateStock = useStockStore((s) => s.updateStock);
+  const subscribedRef = useRef<string | null>(null);
 
   const query = useQuery({
     queryKey: ['stock', symbol, 'quote'],
     queryFn: async () => {
       const data = await stockAPI.getQuote(symbol);
-      updateStock(symbol.toUpperCase(), mapQuoteResponse(data));
-      return data;
+      const mapped = mapQuoteResponse(data);
+      updateStock(symbol.toUpperCase(), mapped);
+      return mapped;
     },
     enabled: !!symbol,
-    refetchInterval: 10_000,
-    staleTime: 1000,
+    staleTime: 30_000,
+    gcTime: 5 * 60_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
   });
 
   useEffect(() => {
     if (!symbol) return;
-    return socketClient.subscribeStock(symbol, {
-      onPrice: (data) => updateStock(symbol.toUpperCase(), mapQuoteResponse(data)),
+    const sym = symbol.toUpperCase();
+    if (subscribedRef.current === sym) return;
+
+    subscribedRef.current = sym;
+    return socketClient.subscribeStock(sym, {
+      onPrice: (data) => {
+        const mapped = mapQuoteResponse(data);
+        updateStock(sym, mapped);
+      },
     });
   }, [symbol, updateStock]);
 
-  return query;
+  const stock = stocks.find((s) => s.symbol === symbol?.toUpperCase());
+  return { ...query, data: stock || query.data };
 }
 
 export function useStockOrderBook(symbol: string) {
+  const setOrderBook = useOrderBookStore((s) => s.setOrderBook);
+  const orderBookEntry = useOrderBookStore((s) => s.getOrderBook(symbol));
+  const subscribedRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!symbol) return;
+    const sym = symbol.toUpperCase();
+    if (subscribedRef.current === sym) return;
+
+    subscribedRef.current = sym;
+    return socketClient.subscribeStock(sym, {
+      onOrderBook: (data) => {
+        const validated = safeParse(OrderBookSchema, data);
+        if (validated) {
+          setOrderBook(symbol, {
+            bids: validated.bids,
+            asks: validated.asks,
+            lastUpdate: validated.lastUpdate?.toString(),
+          });
+        }
+      },
+    });
+  }, [symbol, setOrderBook]);
+
   return useQuery({
     queryKey: ['stock', symbol, 'orderbook'],
-    queryFn: () => stockAPI.getOrderBook(symbol),
+    queryFn: async () => {
+      if (orderBookEntry) {
+        return orderBookEntry;
+      }
+      return stockAPI.getOrderBook(symbol);
+    },
     enabled: !!symbol,
-    refetchInterval: 5000,
-    staleTime: 1000,
+    staleTime: 30_000,
+    gcTime: 5 * 60_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+  });
+}
+
+export function useStockTrades(symbol: string) {
+  const addTrade = useTradesStore((s) => s.addTrade);
+  const setTrades = useTradesStore((s) => s.setTrades);
+  const allTrades = useTradesStore((s) => s.trades);
+  const trades = useMemo(() => allTrades[symbol.toUpperCase()] ?? [], [allTrades, symbol]);
+  const subscribedRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!symbol) return;
+    const sym = symbol.toUpperCase();
+    if (subscribedRef.current === sym) return;
+
+    subscribedRef.current = sym;
+    return socketClient.subscribeStock(sym, {
+      onTrade: (data) => {
+        const validated = safeParse(TradeSchema, data);
+        if (validated) {
+          addTrade(symbol, {
+            time: validated.lastUpdate
+              ? new Date(validated.lastUpdate).toLocaleTimeString()
+              : new Date().toLocaleTimeString(),
+            price: validated.price,
+            volume: validated.volume,
+            side: validated.changePercent >= 0 ? 'buy' : 'sell',
+          });
+        }
+      },
+      onTradeExtra: (data) => {
+        const validated = safeParse(TradeExtraSchema, data);
+        if (validated) {
+          addTrade(symbol, {
+            time: validated.receivedAt
+              ? new Date(validated.receivedAt * 1000).toLocaleTimeString()
+              : new Date().toLocaleTimeString(),
+            price: validated.price,
+            volume: validated.volume,
+            side: validated.matchType === 'S' ? 'sell' : 'buy',
+          });
+        }
+      },
+    });
+  }, [symbol, addTrade]);
+
+  return useQuery({
+    queryKey: ['stock', symbol, 'trades'],
+    queryFn: async () => {
+      if (trades.length > 0) {
+        return { trades, source: 'websocket' };
+      }
+      const apiData = await stockAPI.getTrades(symbol);
+      if (apiData?.trades) {
+        const formatted = apiData.trades.map((t: any) => ({
+          time: t.receivedAt
+            ? new Date(t.receivedAt * 1000).toLocaleTimeString()
+            : t.time || new Date().toLocaleTimeString(),
+          price: t.price,
+          volume: t.volume,
+          side: t.matchType === 'S' || t.side === 'sell' ? 'sell' : 'buy',
+        }));
+        setTrades(symbol, formatted);
+        return { trades: formatted, source: 'api' };
+      }
+      return { trades: [], source: 'api' };
+    },
+    enabled: !!symbol,
+    staleTime: 30_000,
+    gcTime: 5 * 60_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
   });
 }
 
@@ -190,7 +338,7 @@ export function useStockRealtime(
   useEffect(() => {
     if (!symbol) return;
     return socketClient.subscribeStock(symbol, callbacks);
-  }, [symbol]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [symbol]);
 }
 
 export function useStockFundamentals(symbol: string) {
@@ -199,6 +347,9 @@ export function useStockFundamentals(symbol: string) {
     queryFn: () => stockAPI.getFundamentals(symbol),
     enabled: !!symbol,
     staleTime: 6 * 60 * 60 * 1000,
+    gcTime: 5 * 60_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
   });
 }
 
@@ -207,7 +358,10 @@ export function useScreener(filters: Record<string, unknown>, enabled = true) {
     queryKey: ['screener', filters],
     queryFn: () => screenerAPI.filter(filters),
     enabled,
-    staleTime: 30_000,
+    staleTime: 60_000,
+    gcTime: 5 * 60_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
   });
 }
 
@@ -215,7 +369,10 @@ export function usePortfolioSummary() {
   return useQuery({
     queryKey: ['portfolio', 'summary'],
     queryFn: () => portfolioAPI.getSummary(),
-    refetchInterval: 15_000,
+    staleTime: 30_000,
+    gcTime: 5 * 60_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
   });
 }
 
@@ -223,7 +380,10 @@ export function usePortfolioPositions() {
   return useQuery({
     queryKey: ['portfolio', 'positions'],
     queryFn: () => portfolioAPI.getPositions(),
-    refetchInterval: 15_000,
+    staleTime: 30_000,
+    gcTime: 5 * 60_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
   });
 }
 
@@ -233,15 +393,9 @@ export function useAIConsensus(symbol: string) {
     queryFn: () => aiAPI.getConsensus(symbol),
     enabled: !!symbol,
     staleTime: 5 * 60 * 1000,
-  });
-}
-
-export function useSymbolSearch(query: string) {
-  return useQuery({
-    queryKey: ['search', query],
-    queryFn: () => marketAPI.search(query),
-    enabled: query.length >= 1,
-    staleTime: 10_000,
+    gcTime: 5 * 60_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
   });
 }
 
@@ -251,5 +405,20 @@ export function useStockNews(symbol: string) {
     queryFn: () => stockAPI.getNews(symbol),
     enabled: !!symbol,
     staleTime: 10 * 60 * 1000,
+    gcTime: 5 * 60_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+  });
+}
+
+export function useSymbolSearch(query: string) {
+  return useQuery({
+    queryKey: ['search', query],
+    queryFn: () => marketAPI.search(query),
+    enabled: query.length >= 1,
+    staleTime: 60_000,
+    gcTime: 5 * 60_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
   });
 }

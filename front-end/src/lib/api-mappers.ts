@@ -13,20 +13,26 @@ function signalFromChange(pct: number): AISignal {
   return 'THEO DÕI';
 }
 
-export function mapIndicesResponse(data: { indices?: MarketIndex[] } | MarketIndex[]): MarketIndex[] {
-  const list = Array.isArray(data) ? data : data?.indices ?? [];
-  return list.map((idx) => ({
+export function mapIndicesResponse(data: unknown): MarketIndex[] {
+  if (!data || typeof data !== 'object') return [];
+  const d = data as { indices?: MarketIndex[] };
+  const list = Array.isArray(d) ? d : d?.indices ?? [];
+  return list.map((idx: MarketIndex) => ({
     ...idx,
     trend: idx.trend ?? trendFromChange(idx.changePercent ?? 0),
   }));
 }
 
-export function mapBreadthResponse(data: MarketBreadth): MarketBreadth {
+export function mapBreadthResponse(data: unknown): MarketBreadth {
+  if (!data || typeof data !== 'object') {
+    return { advancers: 0, decliners: 0, unchanged: 0, lastUpdate: new Date().toISOString() };
+  }
+  const d = data as Partial<MarketBreadth>;
   return {
-    advancers: data.advancers ?? 0,
-    decliners: data.decliners ?? 0,
-    unchanged: data.unchanged ?? 0,
-    lastUpdate: data.lastUpdate ?? new Date().toISOString(),
+    advancers: d.advancers ?? 0,
+    decliners: d.decliners ?? 0,
+    unchanged: d.unchanged ?? 0,
+    lastUpdate: d.lastUpdate ?? new Date().toISOString(),
   };
 }
 
@@ -49,40 +55,49 @@ export function mapHeatmapSectors(data: {
   }));
 }
 
-export function mapSnapshotToQuotes(data: { stocks?: Record<string, unknown>[] }): StockQuote[] {
-  return (data.stocks ?? []).map(mapRowToQuote).filter((q) => q.symbol);
+export function mapSnapshotToQuotes(data: unknown): StockQuote[] {
+  if (!data || typeof data !== 'object') return [];
+  const d = data as { stocks?: Record<string, unknown>[] };
+  return (d.stocks ?? []).map(mapRowToQuote).filter((q) => q.symbol);
 }
 
-export function mapRowToQuote(row: Record<string, unknown>): StockQuote {
-  const price = Number(row.price ?? 0);
-  const change = Number(row.change ?? 0);
-  const changePercent = Number(row.changePercent ?? 0);
-  const prevClose = Number(row.prevClose ?? price - change);
-  const volume = Number(row.volume ?? 0);
+export function mapRowToQuote(row: unknown): StockQuote {
+  if (!row || typeof row !== 'object') {
+    return { symbol: '', name: '', price: 0, change: 0, changePercent: 0, volume: 0, tradingValue: 0, open: 0, high: 0, low: 0, prevClose: 0, ceiling: 0, floor: 0, avgVolume: 0, marketCap: 0, foreignNetBuy: 0, industry: '', exchange: '', sector: '', signal: 'THEO DÕI', trend: 'steady', lastUpdate: '' };
+  }
+  const r = row as Record<string, unknown>;
+  const price = Number(r.price ?? 0);
+  const change = Number(r.change ?? 0);
+  const changePercent = Number(r.changePercent ?? 0);
+  const prevClose = Number(r.prevClose ?? price - change);
+  const volume = Number(r.volume ?? 0);
 
   return {
-    symbol: String(row.symbol ?? ''),
-    name: String(row.name ?? row.symbol ?? ''),
+    symbol: String(r.symbol ?? ''),
+    name: String(r.name ?? r.symbol ?? ''),
     price,
     change,
     changePercent,
     volume,
-    tradingValue: Number(row.tradingValue ?? price * volume),
-    open: Number(row.open ?? price),
-    high: Number(row.high ?? price),
-    low: Number(row.low ?? price),
+    tradingValue: Number(r.tradingValue ?? price * volume),
+    open: Number(r.open ?? price),
+    high: Number(r.high ?? price),
+    low: Number(r.low ?? price),
     prevClose,
-    ceiling: Number(row.ceiling ?? 0),
-    floor: Number(row.floor ?? 0),
-    avgVolume: Number(row.avgVolume ?? volume),
-    marketCap: Number(row.marketCap ?? 0),
-    foreignNetBuy: Number(row.foreignNetBuy ?? 0),
+    ceiling: Number(r.ceiling ?? 0),
+    floor: Number(r.floor ?? 0),
+    avgVolume: Number(r.avgVolume ?? volume),
+    marketCap: Number(r.marketCap ?? 0),
+    foreignNetBuy: Number(r.foreignNetBuy ?? 0),
+    industry: String(r.industry ?? r.sector ?? ''),
+    exchange: String(r.exchange ?? ''),
+    sector: String(r.sector ?? r.industry ?? ''),
     signal: signalFromChange(changePercent),
     trend: trendFromChange(changePercent),
-    lastUpdate: String(row.lastUpdate ?? new Date().toISOString()),
+    lastUpdate: String(r.lastUpdate ?? new Date().toISOString()),
   };
 }
 
-export function mapQuoteResponse(row: Record<string, unknown>): StockQuote {
+export function mapQuoteResponse(row: unknown): StockQuote {
   return mapRowToQuote(row);
 }
