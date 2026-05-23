@@ -28,6 +28,21 @@ class Settings:
     llm_api_key: str
     llm_provider: str
 
+    # AI Multi-Model Configuration
+    llm_gemini_key: str
+    llm_gemini_model: str
+    llm_groq_key: str
+    llm_groq_model: str
+    llm_openrouter_key: str
+    llm_openrouter_model: str
+    llm_routing_mode: str
+    llm_fallback_hardcoded: bool
+
+    # Multi-Model Routing Configuration
+    enable_fallback: bool
+    confidence_threshold: float
+    max_parallel_calls: int
+
     @property
     def dnse_configured(self) -> bool:
         return bool(self.dnse_api_key and self.dnse_api_secret)
@@ -47,6 +62,21 @@ def get_settings() -> Settings:
         redis_channel_prefix=os.getenv("DNSE_REDIS_CHANNEL_PREFIX", "dnse:event"),
         llm_api_key=os.getenv("LLM_API_KEY", ""),
         llm_provider=os.getenv("LLM_PROVIDER", "openai"),
+        
+        # AI Multi-Model env loaders (supports standard names and shorthand variables)
+        llm_gemini_key=os.getenv("GEMINI_API_KEY", os.getenv("GEMINI", "")),
+        llm_gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.0-flash-exp"),
+        llm_groq_key=os.getenv("GROQ_API_KEY", os.getenv("GROQ", "")),
+        llm_groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+        llm_openrouter_key=os.getenv("OPENROUTER_API_KEY", os.getenv("OPENROUTER", "")),
+        llm_openrouter_model=os.getenv("OPENROUTER_MODEL", "anthropic/claude-3.5-sonnet"),
+        llm_routing_mode=os.getenv("LLM_ROUTING_MODE", "auto"),
+        llm_fallback_hardcoded=os.getenv("LLM_FALLBACK_HARDCODED", "true").lower() in ("1", "true", "yes"),
+
+        # Multi-Model Routing Configuration
+        enable_fallback=os.getenv("ENABLE_FALLBACK", "true").lower() in ("1", "true", "yes"),
+        confidence_threshold=float(os.getenv("CONFIDENCE_THRESHOLD", "0.75")),
+        max_parallel_calls=int(os.getenv("MAX_PARALLEL_CALLS", "3")),
     )
 
 

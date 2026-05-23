@@ -1,19 +1,19 @@
 """
-AIInvest AI Engine — FastAPI + DNSE Open API (WebSocket market data).
+AIInvest AI Engine — FastAPI + DNSE + Vibe-Trading Backtest
 """
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
 
-from app.core.lifespan import lifespan
+from app.brain.lifespan import lifespan
 from app.config.settings import get_settings
 from app.services.dnse.stream_hub import get_stream_hub
-from app.routers import market_data, stock_data, screener, ai_chat, stream
+from app.routers import market_data, stock_data, screener, stream, backtest, agent, swarm, skills, trading_agents, shadow_account, factors, tools, session, providers, config, memory, dataflows, graph, core, llm_clients, security, hypotheses, preflight, ui_services, vibe_routes, runs
 
 app = FastAPI(
     title="AIInvest AI Engine",
-    description="Vietnam Stock Market — DNSE Open API + AI Analysis",
+    description="Vietnam Stock Market — DNSE + AI Analysis",
     version="2.0.0",
     lifespan=lifespan,
 )
@@ -60,8 +60,30 @@ async def health_detailed():
     }
 
 
+# Include DNSE market data routes
 app.include_router(stream.router, prefix="/api/stream", tags=["DNSE Stream"])
 app.include_router(market_data.router, prefix="/api/market", tags=["Market Data"])
 app.include_router(stock_data.router, prefix="/api/stock", tags=["Stock Data"])
 app.include_router(screener.router, prefix="/api/screener", tags=["Screener"])
-app.include_router(ai_chat.router, prefix="/api/ai", tags=["AI"])
+app.include_router(backtest.router, prefix="/api/backtest", tags=["Backtest"])
+app.include_router(agent.router, prefix="/api/agent", tags=["Agent"])
+app.include_router(swarm.router, prefix="/api/swarm", tags=["Swarm"])
+app.include_router(skills.router, prefix="/api/skills", tags=["Skills"])
+app.include_router(trading_agents.router, prefix="/api/trading-agents", tags=["TradingAgents"])
+app.include_router(shadow_account.router, prefix="/api/shadow-account", tags=["ShadowAccount"])
+app.include_router(factors.router, prefix="/api/factors", tags=["Factors"])
+app.include_router(tools.router, prefix="/api/tools", tags=["Tools"])
+app.include_router(session.router, prefix="/api/session", tags=["Session"])
+app.include_router(providers.router, prefix="/api/providers", tags=["Providers"])
+app.include_router(config.router, prefix="/api/config", tags=["Config"])
+app.include_router(memory.router, prefix="/api/memory", tags=["Memory"])
+app.include_router(dataflows.router, prefix="/api/dataflows", tags=["Dataflows"])
+app.include_router(graph.router, prefix="/api/graph", tags=["Graph"])
+app.include_router(core.router, prefix="/api/core", tags=["Core"])
+app.include_router(llm_clients.router, prefix="/api/llm-clients", tags=["LLMClients"])
+app.include_router(security.router, prefix="/api/security", tags=["Security"])
+app.include_router(hypotheses.router, prefix="/api/hypotheses", tags=["Hypotheses"])
+app.include_router(preflight.router, prefix="/api/preflight", tags=["Preflight"])
+app.include_router(ui_services.router, prefix="/api/ui-services", tags=["UIServices"])
+app.include_router(vibe_routes.router, prefix="/api/vibe-api", tags=["VibeAPI"])
+app.include_router(runs.router, prefix="/api", tags=["Runs"])

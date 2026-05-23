@@ -70,3 +70,8 @@ mlruns/
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# UI TEMPLATE
+ui-template/
+
+*.stackdump

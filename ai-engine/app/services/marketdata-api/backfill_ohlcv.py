@@ -4,12 +4,19 @@ Backfill historical OHLCV data from DNSE API into PostgreSQL.
 Fetches OHLCV for ALL real stocks from HOSE/HNX/UPCoM.
 
 Usage:
-  python backfill_ohlcv.py                          # all exchanges
+  python backfill_ohlcv.py                          # all exchanges (with rate limiting)
   python backfill_ohlcv.py --exchange STO           # HOSE only
   python backfill_ohlcv.py --exchange STX           # HNX only
   python backfill_ohlcv.py --exchange STO,STX       # HOSE + HNX
   python backfill_ohlcv.py --dry-run                # preview
-  python backfill_ohlcv.py --fast                   # no sleep (rate-limit aggressive)
+  python backfill_ohlcv.py --fast                   # reduce sleep (still rate-limited)
+  python backfill_ohlcv.py --no-rate-limit          # disable rate limiting (not recommended)
+  python backfill_ohlcv.py --max 50                 # process only 50 symbols
+  python backfill_ohlcv.py --skip-existing           # skip symbols already in DB
+
+Rate Limiting:
+  By default, respects 1000 requests/hour limit with sliding window tracking.
+  The script will automatically sleep when approaching the limit.
 """
 import os
 import sys
@@ -30,9 +37,42 @@ DB_URL = os.getenv("DATABASE_URL", "postgresql://postgres:123@localhost:5432/aii
 TZ_VN = timezone(timedelta(hours=7))
 STEP_DAYS = 365
 RATE_LIMIT_SLEEP = 0.15
+RATE_LIMIT_REQUESTS_PER_HOUR = 1000
 
 CW_PATTERN = re.compile(r'^C[A-Z]{2,4}\d{4,6}$')
 ETF_PREFIXES = ('FUE', 'FU_', 'E1', 'KIS', 'SSI')
+
+
+class RateLimiter:
+    def __init__(self, max_requests_per_hour: int):
+        self.max_requests = max_requests_per_hour
+        self.requests = []
+    
+    def wait_if_needed(self):
+        now = time.time()
+        hour_ago = now - 3600
+        
+        # Remove requests older than 1 hour
+        self.requests = [t for t in self.requests if t > hour_ago]
+        
+        # If we're at the limit, sleep until we can make another request
+        if len(self.requests) >= self.max_requests:
+            oldest = self.requests[0]
+            sleep_time = oldest + 3600 - now
+            if sleep_time > 0:
+                print(f"  [Rate Limit] At {len(self.requests)}/{self.max_requests} requests, sleeping {sleep_time:.1f}s...")
+                time.sleep(sleep_time)
+                # Clean up old requests after sleeping
+                now = time.time()
+                hour_ago = now - 3600
+                self.requests = [t for t in self.requests if t > hour_ago]
+        
+        # If we're close to the limit (80%), add small delay to spread requests
+        elif len(self.requests) >= self.max_requests * 0.8:
+            time.sleep(1)
+    
+    def record_request(self):
+        self.requests.append(time.time())
 
 
 def is_real_stock(sym: str) -> bool:
@@ -102,7 +142,10 @@ def upsert_ohlcv(cur, rows):
     """, rows)
 
 
-def fetch_ohlcv(client, symbol, from_ts, to_ts):
+def fetch_ohlcv(client, symbol, from_ts, to_ts, rate_limiter=None):
+    if rate_limiter:
+        rate_limiter.wait_if_needed()
+    
     for attempt in range(3):
         try:
             status, body = client.get_ohlc(
@@ -115,9 +158,13 @@ def fetch_ohlcv(client, symbol, from_ts, to_ts):
                 },
                 dry_run=False,
             )
+            
+            if rate_limiter:
+                rate_limiter.record_request()
+            
             if status == 429:
-                print(f"  [429] Rate limited, sleeping 5s...")
-                time.sleep(5)
+                print(f"  [429] Rate limited, sleeping 30s...")
+                time.sleep(30)
                 continue
             if status == 200 and body:
                 if isinstance(body, str):
@@ -133,7 +180,7 @@ def fetch_ohlcv(client, symbol, from_ts, to_ts):
             return None
 
 
-def process_symbol(client, symbol: str, start_date: str, dry_run: bool, fast: bool):
+def process_symbol(client, symbol: str, start_date: str, dry_run: bool, fast: bool, rate_limiter=None):
     sleep_time = 0.05 if fast else RATE_LIMIT_SLEEP
 
     conn = get_db_conn()
@@ -169,7 +216,7 @@ def process_symbol(client, symbol: str, start_date: str, dry_run: bool, fast: bo
             current = chunk_end
             continue
 
-        result = fetch_ohlcv(client, symbol, current, chunk_end)
+        result = fetch_ohlcv(client, symbol, current, chunk_end, rate_limiter)
         time.sleep(sleep_time)
 
         if result and result.get('t'):
@@ -216,6 +263,7 @@ def main():
     parser.add_argument("--fast", action="store_true", help="Reduce sleep for speed")
     parser.add_argument("--max", type=int, default=0, help="Max symbols to process (0 = all)")
     parser.add_argument("--skip-existing", action="store_true", help="Skip symbols already in DB")
+    parser.add_argument("--no-rate-limit", action="store_true", help="Disable rate limiting (not recommended)")
     args = parser.parse_args()
 
     settings = get_settings()
@@ -224,6 +272,11 @@ def main():
         api_secret=settings.dnse_api_secret,
         base_url=settings.dnse_base_url,
     )
+    
+    rate_limiter = None
+    if not args.no_rate_limit:
+        rate_limiter = RateLimiter(RATE_LIMIT_REQUESTS_PER_HOUR)
+        print(f"Rate limiting enabled: {RATE_LIMIT_REQUESTS_PER_HOUR} requests/hour")
 
     if args.symbols:
         symbols = [s.strip().upper() for s in args.symbols.split(",")]
@@ -267,7 +320,7 @@ def main():
         print(f"\n[{count}/{len(symbol_map)}] {sym} (listed={start_date}) "
               f"[{rate:.1f}/s, ETA {eta:.0f}s]")
 
-        rows = process_symbol(client, sym, start_date, dry_run=args.dry_run, fast=args.fast)
+        rows = process_symbol(client, sym, start_date, dry_run=args.dry_run, fast=args.fast, rate_limiter=rate_limiter)
 
         if rows:
             total_rows += rows
