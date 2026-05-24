@@ -17,6 +17,7 @@ class SocketClient {
   private subscribedMarket = false;
   private symbolRefCounts = new Map<string, number>();
   private marketRefCount = 0;
+  private _indexListeners = new Set<EventCallback>();
 
   get status(): ConnectionStatus {
     return this._status;
@@ -72,6 +73,13 @@ class SocketClient {
 
     this.socket.on('error', (error) => {
       console.error('[Socket] Error:', error);
+    });
+
+    // Capture market:index:* events for individual index updates
+    this.socket.onAny((event, ...args) => {
+      if (event.startsWith('market:index:')) {
+        this._indexListeners.forEach((cb) => cb({ name: event.replace('market:index:', ''), data: args[0] }));
+      }
     });
   }
 
@@ -237,6 +245,28 @@ class SocketClient {
     return () => {
       this.socket?.off('market:heatmap', handler);
       this.removeListener('market:heatmap', handler);
+      this.marketRefCount--;
+      if (this.marketRefCount <= 0) {
+        this.marketRefCount = 0;
+        this.subscribedMarket = false;
+        this.socket?.emit('unsubscribe:market');
+      }
+    };
+  }
+
+  subscribeIndexUpdates(callback: (update: { name: string; data: unknown }) => void): () => void {
+    this.connect();
+
+    this.marketRefCount++;
+    if (!this.subscribedMarket) {
+      this.subscribedMarket = true;
+      this.socket?.emit('subscribe:market');
+    }
+
+    this._indexListeners.add(callback);
+    this.marketRefCount++;
+    return () => {
+      this._indexListeners.delete(callback);
       this.marketRefCount--;
       if (this.marketRefCount <= 0) {
         this.marketRefCount = 0;

@@ -68,6 +68,15 @@ router.post('/backtest', authMiddleware, async (req: AuthRequest, res: Response,
   }
 });
 
+router.get('/backtest/history', authMiddleware, async (req, res, next) => {
+  try {
+    const result = await aiEngineService.getBacktestHistory();
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get('/backtest/:id/status', authMiddleware, async (req, res, next) => {
   try {
     const result = await aiEngineService.getBacktestStatus(req.params.id);

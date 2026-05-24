@@ -158,6 +158,13 @@ class AIEngineService {
     });
   }
 
+  async getBacktestHistory() {
+    return this.circuitBreaker.execute(async () => {
+      const { data } = await this.client.get('/api/ai/backtest/history');
+      return data;
+    });
+  }
+
   async subscribeStreamSymbols(symbols: string[]) {
     return this.circuitBreaker.execute(async () => {
       const { data } = await this.client.post('/api/stream/subscribe', { symbols });

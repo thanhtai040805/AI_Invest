@@ -48,6 +48,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
   const reconnectTimestampRef = useRef<number>(0);
 
   const setIndices = useMarketStore((s) => s.setIndices);
+  const updateIndex = useMarketStore((s) => s.updateIndex);
   const setBreadth = useMarketStore((s) => s.setBreadth);
   const updateStock = useStockStore((s) => s.updateStock);
   const setStocks = useStockStore((s) => s.setStocks);
@@ -117,6 +118,16 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       }
     });
 
+    const unsubIndexUpdates = socketClient.subscribeIndexUpdates((update) => {
+      if (update && typeof update === 'object' && 'name' in update && 'data' in update) {
+        const { name, data: indexData } = update as { name: string; data: Record<string, unknown> };
+        if (indexData && typeof indexData === 'object') {
+          updateIndex(name, indexData as Partial<import('@/types/market').MarketIndex>);
+          queryClient.setQueryData(['market', 'index', name.toUpperCase()], indexData);
+        }
+      }
+    });
+
     return () => {
       unsubStatus();
       unsubIndices();
@@ -124,8 +135,9 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       unsubSnapshot();
       unsubLiquidity();
       unsubHeatmap();
+      unsubIndexUpdates();
     };
-  }, [queryClient, setIndices, setBreadth, setStocks, updateStock, setLiquidity, setHeatmap, invalidateStaleQueries]);
+  }, [queryClient, setIndices, updateIndex, setBreadth, setStocks, updateStock, setLiquidity, setHeatmap, invalidateStaleQueries]);
 
   const handleStockPrice = useCallback(
     (symbol: string, data: unknown) => {

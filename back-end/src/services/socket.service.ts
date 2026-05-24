@@ -191,6 +191,10 @@ class SocketService {
     this.io.to(`user:${userId}`).emit('alert:triggered', data);
   }
 
+  emitSystemAlert(data: unknown): void {
+    this.io.to('market:overview').emit('alert:triggered', data);
+  }
+
   shutdown(): void {
     this.io?.close();
     this.socketMeta.clear();

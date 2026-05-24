@@ -100,6 +100,13 @@ export function initScheduler(): void {
 
   marketWorker.on('failed', (job, err) => {
     console.error(`[Scheduler] market-sync job ${job?.id} failed:`, err.message);
+    socketService.emitSystemAlert({
+      type: 'market-sync',
+      severity: 'error',
+      jobId: job?.id,
+      message: `Market sync failed: ${err.message}`,
+      timestamp: new Date().toISOString(),
+    });
   });
 
   scheduleRecurringJobs();

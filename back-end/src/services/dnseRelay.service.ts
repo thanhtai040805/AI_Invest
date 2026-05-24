@@ -150,6 +150,7 @@ class DnseRelayService {
       case suffix.startsWith('trade:'): {
         const symbol = suffix.replace('trade:', '').toUpperCase();
         socketService.emitStockPrice(symbol, data);
+        socketService.emitTrade(symbol, data);
         void redisService.setCache(`stock:${symbol}:quote`, data, CACHE_TTL.trade);
         break;
       }
