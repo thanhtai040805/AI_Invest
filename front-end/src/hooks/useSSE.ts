@@ -2,7 +2,7 @@
  * SSE Hook — auto-reconnect + exponential backoff + LRU dedup + Last-Event-ID resume.
  */
 
-import { useCallback, useRef } from "react";
+import { useCallback, useRef, useEffect } from "react";
 
 type EventHandler = (data: Record<string, unknown>) => void;
 type Handlers = Record<string, EventHandler>;
@@ -66,6 +66,24 @@ export function useSSE(config?: SSEConfig) {
     return baseUrl;
   }, []);
 
+  const doConnectRef = useRef<() => void>(() => {});
+
+  const scheduleReconnect = useCallback(() => {
+    if (closedRef.current) return;
+    retryCountRef.current += 1;
+    const delay = Math.min(
+      opts.initialRetryMs * Math.pow(opts.backoffFactor, retryCountRef.current - 1),
+      opts.maxRetryMs,
+    );
+    setStatus("reconnecting");
+    handlersRef.current["reconnect"]?.({ attempt: retryCountRef.current, delayMs: delay });
+
+    retryTimerRef.current = setTimeout(() => {
+      retryTimerRef.current = null;
+      doConnectRef.current();
+    }, delay);
+  }, [opts.initialRetryMs, opts.backoffFactor, opts.maxRetryMs, setStatus]);
+
   const doConnect = useCallback(() => {
     if (closedRef.current) return;
 
@@ -112,23 +130,11 @@ export function useSSE(config?: SSEConfig) {
       sourceRef.current = null;
       scheduleReconnect();
     };
-  }, [buildUrl, trackEventId, setStatus]);
+  }, [buildUrl, trackEventId, setStatus, scheduleReconnect]);
 
-  const scheduleReconnect = useCallback(() => {
-    if (closedRef.current) return;
-    retryCountRef.current += 1;
-    const delay = Math.min(
-      opts.initialRetryMs * Math.pow(opts.backoffFactor, retryCountRef.current - 1),
-      opts.maxRetryMs,
-    );
-    setStatus("reconnecting");
-    handlersRef.current["reconnect"]?.({ attempt: retryCountRef.current, delayMs: delay });
-
-    retryTimerRef.current = setTimeout(() => {
-      retryTimerRef.current = null;
-      doConnect();
-    }, delay);
-  }, [opts.initialRetryMs, opts.backoffFactor, opts.maxRetryMs, setStatus, doConnect]);
+  useEffect(() => {
+    doConnectRef.current = doConnect;
+  }, [doConnect]);
 
   const connect = useCallback((url: string, handlers: Handlers) => {
     closedRef.current = true;

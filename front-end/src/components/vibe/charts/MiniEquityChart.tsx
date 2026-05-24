@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { echarts } from "@/lib/echarts";
-import { getChartThemeEx } from "@/lib/chart-theme";
+import { getChartTheme } from "@/lib/chart-theme";
 import { useDarkMode } from "@/hooks/useDarkMode";
 
 interface Props {
@@ -14,7 +14,7 @@ export function MiniEquityChart({ data, height = 80 }: Props) {
 
   useEffect(() => {
     if (!ref.current || data.length < 2) return;
-    const t = getChartThemeEx();
+    const t = getChartTheme();
     const chart = echarts.init(ref.current);
 
     const values = data.map(d => Number(d.equity));

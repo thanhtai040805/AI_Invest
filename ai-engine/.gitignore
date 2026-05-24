@@ -75,3 +75,6 @@ desktop.ini
 ui-template/
 
 *.stackdump
+
+#runs folder
+runs/

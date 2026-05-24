@@ -58,7 +58,7 @@ export function SentimentAnalysis() {
         {/* AI Insight */}
         <div className="p-md rounded-xl bg-primary/5 border border-primary/10">
            <p className="text-[11px] leading-relaxed italic opacity-80">
-             "Dòng tiền từ khối ngoại đang có dấu hiệu xoay vòng sang nhóm ngành của cổ phiếu này, tạo lực đỡ tâm lý mạnh mẽ cho các phiên tới."
+              &quot;Dòng tiền từ khối ngoại đang có dấu hiệu xoay vòng sang nhóm ngành của cổ phiếu này, tạo lực đỡ tâm lý mạnh mẽ cho các phiên tới.&quot;
            </p>
         </div>
       </div>

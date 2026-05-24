@@ -117,7 +117,7 @@ export default function Page() {
       <div className="flex-1 w-full max-w-4xl overflow-y-auto px-lg py-xl space-y-xl no-scrollbar">
         <Skeleton name="chat-history" loading={isLoading}>
           {messages.map((msg) => (
-            <ChatMessageComponent key={msg.id} role={msg.role} content={msg.content} type={msg.type as any} />
+            <ChatMessageComponent key={msg.id} role={msg.role} content={msg.content} type={msg.type} />
           ))}
           {isTyping && (
             <div className="flex gap-md opacity-40 animate-pulse">

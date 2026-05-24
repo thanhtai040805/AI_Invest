@@ -57,7 +57,7 @@ apiClient.interceptors.request.use((config) => {
 apiClient.interceptors.response.use(
   (response) => response,
   async (error) => {
-    const originalRequest = error.config as any;
+    const originalRequest = error.config as { _retry?: boolean; url?: string; headers?: Record<string, string> } & Record<string, unknown>;
     if (!originalRequest || originalRequest._retry || !error.response || error.response.status !== 401) {
       return Promise.reject(error);
     }
@@ -229,7 +229,7 @@ export const aiAPI = {
   },
   getConsensus: (symbol: string) =>
     apiClient.get(`/ai/consensus/${symbol}`).then(r => r.data),
-  submitBacktest: (params: { symbol: string; strategy: string; startDate: string; endDate: string; params?: Record<string, any> }) =>
+  submitBacktest: (params: { symbol: string; strategy: string; startDate: string; endDate: string; params?: Record<string, unknown> }) =>
     apiClient.post('/ai/backtest', params).then(r => r.data),
   getBacktestStatus: (jobId: string) =>
     apiClient.get(`/ai/backtest/${jobId}/status`).then(r => r.data),

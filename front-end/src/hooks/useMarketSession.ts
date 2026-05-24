@@ -98,7 +98,6 @@ export function useMarketSession(): MarketSessionInfo {
   }, []);
 
   useEffect(() => {
-    update();
     const interval = setInterval(update, 30_000);
     return () => clearInterval(interval);
   }, [update]);

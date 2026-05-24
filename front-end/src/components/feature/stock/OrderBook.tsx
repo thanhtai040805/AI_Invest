@@ -119,7 +119,7 @@ export function OrderBook({ symbol }: OrderBookProps) {
             {displayTrades.length === 0 ? (
               <p className="text-[10px] opacity-40 text-center py-md">Chờ khớp lệnh...</p>
             ) : (
-              displayTrades.slice(0, 30).map((trade: any, i: number) => (
+              displayTrades.slice(0, 30).map((trade: { time: string; price: number; volume: number; side: string }, i: number) => (
                 <motion.div
                   key={i}
                   initial={{ x: -10, opacity: 0 }}

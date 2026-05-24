@@ -15,10 +15,14 @@ const navItems = [
   { name: "Trợ lý AI",    href: "/ai-assistant",      icon: "auto_awesome" },
   { name: "Danh mục",     href: "/portfolio",         icon: "account_balance_wallet" },
   { name: "Auto-Pilot",   href: "/auto-pilot",        icon: "rocket_launch" },
+  { name: "So sánh",      href: "/compare",           icon: "compare_arrows" },
+  { name: "Tương quan",   href: "/correlation",       icon: "analytics" },
+  { name: "Alpha Zoo",    href: "/alpha-zoo",         icon: "psychology" },
 ];
 
 const bottomItems = [
   { name: "Mô phỏng", href: "/simulator", icon: "science" },
+  { name: "Cài đặt",  href: "/settings",  icon: "settings" },
 ];
 
 export default function Sidebar() {
@@ -102,16 +106,9 @@ export default function Sidebar() {
               className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-white/25 hover:text-white/55 hover:bg-white/[0.03] transition-all duration-150"
             >
               <span className="material-symbols-outlined text-[20px] shrink-0">{item.icon}</span>
-              <span className="text-[13px] font-medium hidden lg:inline">Mô phỏng</span>
+              <span className="text-[13px] font-medium hidden lg:inline">{item.name}</span>
             </Link>
           ))}
-          <Link
-            href="#"
-            className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-white/25 hover:text-white/55 hover:bg-white/[0.03] transition-all duration-150"
-          >
-            <span className="material-symbols-outlined text-[20px] shrink-0">settings</span>
-            <span className="text-[13px] font-medium hidden lg:inline">Cài đặt</span>
-          </Link>
           <Link
             href="#"
             className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-white/25 hover:text-rose-400 hover:bg-rose-500/5 transition-all duration-150"

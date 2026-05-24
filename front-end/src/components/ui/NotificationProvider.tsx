@@ -16,28 +16,33 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   const [toasts, setToasts] = useState<Toast[]>([]);
   const checkPriceAlerts = useAlertStore((s) => s.checkPriceAlerts);
 
+  const addToast = (alert: Alert, price?: number) => {
+    const id = Math.random().toString(36).substring(7);
+    setToasts((prev) => [...prev, { id, alert, price }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 5000);
+  };
+
   useEffect(() => {
     // 1. Listen for backend triggered alerts
     const unsubSocket = socketClient.subscribeAlerts((data) => {
-      const d = data as any;
+      const d = data as { alert?: Alert; price?: number };
       if (d?.alert) addToast(d.alert, d.price);
     });
 
     // 2. Listen for frontend triggered alerts
-    const handleFrontendAlert = (e: any) => {
-      const { alert, currentPrice } = e.detail;
+    const handleFrontendAlert = (e: Event) => {
+      const { alert, currentPrice } = (e as CustomEvent<{ alert: Alert; currentPrice: number }>).detail;
       addToast(alert, currentPrice);
     };
 
     window.addEventListener("alert-triggered", handleFrontendAlert);
 
     // 3. Listen to market updates to check frontend alerts
-    // For simplicity, we'll check alerts when a symbol we are interested in updates.
-    // In a real app, you might listen to a global 'market:snapshot'
     const unsubMarket = socketClient.subscribeSnapshot((data) => {
-      // data is often an array of quotes
       if (Array.isArray(data)) {
-        data.forEach((quote: any) => {
+        data.forEach((quote: { symbol: string; price: number }) => {
           if (quote.symbol && quote.price) {
             checkPriceAlerts(quote.symbol, quote.price);
           }
@@ -50,15 +55,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       unsubMarket();
       window.removeEventListener("alert-triggered", handleFrontendAlert);
     };
-  }, [checkPriceAlerts]);
-
-  const addToast = (alert: Alert, price?: number) => {
-    const id = Math.random().toString(36).substring(7);
-    setToasts((prev) => [...prev, { id, alert, price }]);
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 5000);
-  };
+  }, [checkPriceAlerts, addToast]);
 
   return (
     <>

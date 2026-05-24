@@ -24,11 +24,33 @@ function normalizeTimestamp(timeStr: string, interval: string): number {
   return ts;
 }
 
+interface CandleData {
+  timestamp: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+interface DatafeedSymbol {
+  ticker: string;
+  name: string;
+  exchange: string;
+  market: string;
+}
+
+interface DatafeedPeriod {
+  multiplier: number;
+  timespan: string;
+  text: string;
+}
+
 export default function PriceChart({ symbol, interval = "1D" }: PriceChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const chartRef = useRef<any>(null);
-  const cachedDataRef = useRef<Map<string, any[]>>(new Map());
-  const lastCandleRef = useRef<any>(null);
+  const chartRef = useRef<KLineChartPro | null>(null);
+  const cachedDataRef = useRef<Map<string, CandleData[]>>(new Map());
+  const lastCandleRef = useRef<CandleData | null>(null);
   const hasReturnedEmptyRef = useRef(false);
 
   const fetchData = useCallback(async (from: number, to: number) => {
@@ -51,11 +73,9 @@ export default function PriceChart({ symbol, interval = "1D" }: PriceChartProps)
       });
 
       const rows = response?.data ?? [];
-      console.log(`[PriceChart] REST ${symbol} ${interval}: source=${response?.source} count=${rows.length} range=${startDate}→${endDate}`);
 
       if (rows.length === 0) {
         hasReturnedEmptyRef.current = true;
-        console.log(`[PriceChart] No data, returning [] to stop loop`);
         return [];
       }
 
@@ -79,12 +99,9 @@ export default function PriceChart({ symbol, interval = "1D" }: PriceChartProps)
       }
       const unique = Array.from(deduped.values()).sort((a, b) => a.timestamp - b.timestamp);
 
-      console.log(`[PriceChart] Mapped ${unique.length} unique candles. First: ${new Date(unique[0].timestamp).toISOString().split('T')[0]}, Last: ${new Date(unique[unique.length-1].timestamp).toISOString().split('T')[0]}`);
-
       // If chart requests historical range but we only got today's candle → return [] to stop loop
       if (to < todayStart && unique.length === 1 && unique[0].timestamp >= todayStart) {
         hasReturnedEmptyRef.current = true;
-        console.log(`[PriceChart] Historical request but only got today's candle → returning [] to stop loop`);
         return [];
       }
 
@@ -100,10 +117,11 @@ export default function PriceChart({ symbol, interval = "1D" }: PriceChartProps)
   }, [symbol, interval]);
 
   useEffect(() => {
-    if (!containerRef.current || !symbol) return;
+    const container = containerRef.current;
+    if (!container || !symbol) return;
 
     hasReturnedEmptyRef.current = false;
-    containerRef.current.innerHTML = "";
+    container.innerHTML = "";
 
     const getPeriodConfig = (int: string) => {
       switch (int) {
@@ -120,7 +138,7 @@ export default function PriceChart({ symbol, interval = "1D" }: PriceChartProps)
     const periodConfig = getPeriodConfig(interval);
 
     const options = {
-      container: containerRef.current,
+      container: container,
       locale: "vi-VN",
       timezone: "Asia/Ho_Chi_Minh",
       symbol: {
@@ -140,20 +158,18 @@ export default function PriceChart({ symbol, interval = "1D" }: PriceChartProps)
       subIndicators: ["VOL"],
       datafeed: {
         searchSymbols: async () => [{ ticker: symbol, name: symbol, exchange: "HOSE", market: "stocks" }],
-        getHistoryKLineData: async (_symbol: any, _period: any, from: number, to: number) => {
+        getHistoryKLineData: async (_symbol: DatafeedSymbol, _period: DatafeedPeriod, from: number, to: number) => {
           const data = await fetchData(from, to);
-          console.log(`[PriceChart] getHistoryKLineData: from=${new Date(from).toISOString().split('T')[0]} to=${new Date(to).toISOString().split('T')[0]} count=${data.length}`);
           return data;
         },
-        subscribe: (_symbol: any, _period: any, callback: any) => {
-          console.log(`[PriceChart] Subscribing to OHLC WebSocket for ${symbol} ${interval}`);
+        subscribe: (_symbol: DatafeedSymbol, _period: DatafeedPeriod, callback: (candle: CandleData) => void) => {
           const unsub = socketClient.subscribeStock(symbol, {
-            onOhlc: (data: any) => {
-              let ts = new Date(data.lastUpdate || data.timestamp).getTime();
+            onOhlc: (data: Record<string, unknown>) => {
+              let ts = new Date((data.lastUpdate || data.timestamp) as string).getTime();
               if (interval === "1D" || interval === "W") {
                 ts = startOfDay(ts);
               }
-              const candle = {
+              const candle: CandleData = {
                 timestamp: ts,
                 open: Number(data.open),
                 high: Number(data.high),
@@ -161,16 +177,15 @@ export default function PriceChart({ symbol, interval = "1D" }: PriceChartProps)
                 close: Number(data.close),
                 volume: Number(data.volume ?? 0),
               };
-              console.log(`[PriceChart] WS onOhlc → ts=${ts} date=${new Date(ts).toISOString().split('T')[0]} O=${candle.open} C=${candle.close}`);
               lastCandleRef.current = candle;
               callback(candle);
             },
-            onOhlcClosed: (data: any) => {
-              let ts = new Date(data.lastUpdate || data.timestamp).getTime();
+            onOhlcClosed: (data: Record<string, unknown>) => {
+              let ts = new Date((data.lastUpdate || data.timestamp) as string).getTime();
               if (interval === "1D" || interval === "W") {
                 ts = startOfDay(ts);
               }
-              const candle = {
+              const candle: CandleData = {
                 timestamp: ts,
                 open: Number(data.open),
                 high: Number(data.high),
@@ -178,7 +193,6 @@ export default function PriceChart({ symbol, interval = "1D" }: PriceChartProps)
                 close: Number(data.close),
                 volume: Number(data.volume ?? 0),
               };
-              console.log(`[PriceChart] WS onOhlcClosed → ts=${ts} date=${new Date(ts).toISOString().split('T')[0]} O=${candle.open} C=${candle.close}`);
               lastCandleRef.current = candle;
               callback(candle);
             },
@@ -189,16 +203,16 @@ export default function PriceChart({ symbol, interval = "1D" }: PriceChartProps)
       },
     };
 
-    chartRef.current = new KLineChartPro(options as any);
+    chartRef.current = new KLineChartPro(options);
 
     return () => {
       try {
-        chartRef.current?.dispose?.();
+        (chartRef.current as unknown as { dispose?: () => void })?.dispose?.();
       } catch {
         /* ignore */
       }
       chartRef.current = null;
-      if (containerRef.current) containerRef.current.innerHTML = "";
+      if (container) container.innerHTML = "";
     };
   }, [symbol, interval, fetchData]);
 

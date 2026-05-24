@@ -14,6 +14,11 @@ import {
   GridComponent,
   DataZoomComponent,
   LegendComponent,
+  MarkPointComponent,
+  ToolboxComponent,
+  MarkLineComponent,
+  MarkAreaComponent,
+  VisualMapComponent,
 } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 
@@ -28,7 +33,23 @@ echarts.use([
   GridComponent,
   DataZoomComponent,
   LegendComponent,
+  MarkPointComponent,
+  ToolboxComponent,
+  MarkLineComponent,
+  MarkAreaComponent,
+  VisualMapComponent,
   CanvasRenderer,
 ]);
+
+export const CHART_GROUP = "aiinvest";
+
+let _connected = false;
+
+export function connectCharts() {
+  if (!_connected) {
+    echarts.connect(CHART_GROUP);
+    _connected = true;
+  }
+}
 
 export { echarts };

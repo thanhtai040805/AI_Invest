@@ -63,7 +63,7 @@ export function SymbolSearch({ className }: { className?: string }) {
           >
             {results && results.length > 0 ? (
               <ul className="max-h-[300px] overflow-y-auto py-2 scrollbar-thin">
-                {results.map((item: any) => (
+                {results.map((item: { symbol: string; companyName?: string; exchange?: string }) => (
                   <li key={item.symbol}>
                     <button
                       onClick={() => handleSelect(item.symbol)}
@@ -84,7 +84,7 @@ export function SymbolSearch({ className }: { className?: string }) {
               </ul>
             ) : !isLoading ? (
               <div className="p-4 text-center text-sm text-on-surface-variant">
-                No symbols found for "{query}"
+                No symbols found for &quot;{query}&quot;
               </div>
             ) : null}
           </motion.div>

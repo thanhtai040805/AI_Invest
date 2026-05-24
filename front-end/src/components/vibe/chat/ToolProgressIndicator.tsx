@@ -1,4 +1,4 @@
-import { useRef, type JSX } from "react";
+import { type JSX } from "react";
 import { Loader2, CheckCircle2, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
@@ -18,13 +18,6 @@ function useLocalizedToolName(): (tool: string) => string {
     if (key === tool) return tool;
     return (t as Record<string, string>)[key] || tool;
   };
-}
-
-/* ---------- ETA tracking (per-tool) ---------- */
-interface EtaSample {
-  stage: string;
-  current: number;
-  suppressed: boolean;
 }
 
 /* ---------- Determinate progress ring ---------- */
@@ -158,9 +151,6 @@ interface Props {
 const MAX_VISIBLE = 3;
 
 export function ToolProgressIndicator({ toolCalls }: Props): JSX.Element | null {
-  // Per-tool ETA samples (mutable across renders, not state to avoid re-renders).
-  const etaSamplesRef = useRef<Map<string, EtaSample>>(new Map());
-
   const running = toolCalls.filter((tc) => tc.status === "running");
   if (running.length === 0) return null;
 
@@ -171,24 +161,6 @@ export function ToolProgressIndicator({ toolCalls }: Props): JSX.Element | null 
     const p = tc.progress;
     if (!p || typeof p.current !== "number" || typeof p.total !== "number") return null;
     if (p.total <= 0) return null;
-    const stage = p.stage || "";
-    const samples = etaSamplesRef.current;
-    const prev = samples.get(tc.tool);
-
-    // Out-of-order: current decreased → suppress for the rest of the run.
-    if (prev && p.current < prev.current) {
-      samples.set(tc.tool, { stage, current: p.current, suppressed: true });
-      return null;
-    }
-    if (prev?.suppressed && prev.stage === stage) {
-      // Update tracking but keep suppressed.
-      samples.set(tc.tool, { stage, current: p.current, suppressed: true });
-      return null;
-    }
-    samples.set(tc.tool, { stage, current: p.current, suppressed: false });
-
-    // Need a stable stage and enough samples to extrapolate.
-    if (!prev || prev.stage !== stage) return null;
     if (p.current < 3) return null;
     if (p.current < p.total * 0.1) return null;
     if (tc.elapsed_s == null || tc.elapsed_s <= 0) return null;
@@ -198,11 +170,12 @@ export function ToolProgressIndicator({ toolCalls }: Props): JSX.Element | null 
     return Math.round(eta);
   };
 
+  const etaMap = new Map<string, number | null>();
+  for (const tc of running) {
+    etaMap.set(tc.id, computeEta(tc));
+  }
+
   /* ---------- aggregate icon state for the header row ---------- */
-  // (Used when 2+ tools are running — header shows multi-tool aggregate.)
-  // Note: filtered list is `running` so all are still running by construction.
-  // We still inspect entire toolCalls so an earlier error in this turn shows
-  // through the aggregate.
   const anyError = toolCalls.some((tc) => tc.status === "error");
   const aggregateIcon = anyError
     ? <XCircle className="h-3 w-3 text-danger shrink-0" />
@@ -216,7 +189,7 @@ export function ToolProgressIndicator({ toolCalls }: Props): JSX.Element | null 
   /* ---------- render ---------- */
   if (running.length === 1) {
     const only = running[0];
-    const eta = computeEta(only);
+    const eta = etaMap.get(only.id) ?? null;
     return (
       <div
         role="status"
@@ -256,7 +229,7 @@ export function ToolProgressIndicator({ toolCalls }: Props): JSX.Element | null 
             stepIndex={toolCalls.indexOf(tc) + 1}
             totalSteps={running.length}
             connector={i === rows.length - 1 && overflow === 0 ? "end" : "branch"}
-            eta={computeEta(tc)}
+            eta={etaMap.get(tc.id) ?? null}
           />
         ))}
         {overflow > 0 && (

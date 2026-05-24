@@ -31,8 +31,9 @@ export default function AuthPage() {
 
       setAccessToken(result.accessToken);
       router.push('/dashboard');
-    } catch (err: any) {
-      setError(err?.response?.data?.error || 'Không thể kết nối với máy chủ. Vui lòng thử lại.');
+    } catch (err: unknown) {
+      const axiosErr = err as { response?: { data?: { error?: string } } } | null;
+      setError(axiosErr?.response?.data?.error || 'Không thể kết nối với máy chủ. Vui lòng thử lại.');
     } finally {
       setLoading(false);
     }

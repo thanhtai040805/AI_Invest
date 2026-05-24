@@ -14,84 +14,6 @@ import { useStockStore } from "@/stores/useStockStore";
 
 import { cn } from "@/lib/utils";
 
-// --- MOCK DATA ---
-const mockTreemapData = [
-  {
-    name: 'Banking',
-    children: [
-      { name: 'VCB', size: 450, change: 1.2 },
-      { name: 'BID', size: 380, change: -0.5 },
-      { name: 'TCB', size: 320, change: 2.4 },
-      { name: 'MBB', size: 280, change: 0.8 },
-      { name: 'CTG', size: 260, change: -1.1 },
-      { name: 'STB', size: 220, change: 3.5 },
-    ],
-  },
-  {
-    name: 'Real Estate',
-    children: [
-      { name: 'VHM', size: 400, change: -2.4 },
-      { name: 'VIC', size: 380, change: -1.8 },
-      { name: 'DXG', size: 180, change: 4.5 },
-      { name: 'NLG', size: 160, change: 2.1 },
-      { name: 'NVL', size: 140, change: -6.8 },
-      { name: 'KBC', size: 130, change: 1.5 },
-    ],
-  },
-  {
-    name: 'Steel & Resources',
-    children: [
-      { name: 'HPG', size: 420, change: 2.1 },
-      { name: 'HSG', size: 120, change: 1.8 },
-      { name: 'NKG', size: 100, change: 2.5 },
-    ],
-  },
-  {
-    name: 'Consumer & Retail',
-    children: [
-      { name: 'MSN', size: 250, change: 0.5 },
-      { name: 'MWG', size: 240, change: 2.8 },
-      { name: 'PNJ', size: 150, change: 1.2 },
-      { name: 'VRE', size: 140, change: -1.5 },
-    ],
-  },
-  {
-    name: 'Energy & Chemicals',
-    children: [
-      { name: 'GAS', size: 300, change: -0.2 },
-      { name: 'PLX', size: 180, change: 0.5 },
-      { name: 'DPM', size: 120, change: 3.2 },
-      { name: 'DCM', size: 110, change: 2.8 },
-    ],
-  },
-  {
-    name: 'Technology',
-    children: [
-      { name: 'FPT', size: 480, change: 3.2 },
-      { name: 'CMG', size: 90, change: 1.5 },
-      { name: 'ELC', size: 70, change: 0.2 },
-    ],
-  },
-];
-
-const mockSectorFlowData = [
-  { name: 'Banking', flow: 850, color: '#10b981' },
-  { name: 'Real Estate', flow: -430, color: '#ef4444' },
-  { name: 'Technology', flow: 620, color: '#10b981' },
-  { name: 'Steel', flow: 380, color: '#10b981' },
-  { name: 'Retail', flow: 150, color: '#10b981' },
-  { name: 'Energy', flow: -120, color: '#ef4444' },
-];
-
-const mockLiquidityData = [
-  { time: '9:00', current: 1200, prev: 1000 },
-  { time: '10:00', current: 4500, prev: 4200 },
-  { time: '11:00', current: 8900, prev: 7500 },
-  { time: '13:00', current: 12000, prev: 11000 },
-  { time: '14:00', current: 18500, prev: 16000 },
-  { time: '15:00', current: 21450, prev: 19500 },
-];
-
 export function MarketBubbleMap({ sector }: { sector: string }) {
   const router = useRouter();
   const { data: stocks } = useMarketSnapshot();
@@ -105,7 +27,7 @@ export function MarketBubbleMap({ sector }: { sector: string }) {
       size: Math.max(s.volume / 100000, 50),
       change: s.changePercent || 0,
       industry: s.industry || 'Other',
-      x: Math.random() * 100,
+      x: ((s.symbol.length * 37 + 13) % 100),
       y: s.changePercent || 0,
     }));
     return sector === 'All' ? data : data.filter(d => d.industry === sector);
@@ -134,7 +56,10 @@ export function MarketBubbleMap({ sector }: { sector: string }) {
           <Scatter
             name="Stocks"
             data={bubbleData}
-            onClick={(data: any) => router.push(`/stock/${data.name}`)}
+            onClick={(data) => {
+              const d = data as { name?: string };
+              if (d.name) router.push(`/stock/${d.name}`);
+            }}
           >
             {bubbleData.map((entry, index) => (
               <Cell
@@ -153,8 +78,24 @@ export function MarketBubbleMap({ sector }: { sector: string }) {
 
 // --- COMPONENTS ---
 
-const CustomizedContent = (props: any) => {
-  const { root, depth, x, y, width, height, index, payload, colors, rank, name, change, router } = props;
+interface CustomContentProps {
+  root?: unknown;
+  depth?: number;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  index?: number;
+  payload?: Record<string, unknown>;
+  colors?: unknown[];
+  rank?: unknown;
+  name?: string;
+  change?: number;
+  router?: ReturnType<typeof useRouter>;
+}
+
+const CustomizedContent = (props: CustomContentProps) => {
+  const { depth, x, y, width, height, name, change, router } = props;
 
   const getColor = (val: number) => {
     if (val > 2) return '#10b981'; // Strong Green

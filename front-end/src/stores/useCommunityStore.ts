@@ -24,7 +24,16 @@ interface CommunityState {
   addPost: (content: string, taggedSymbols?: string[]) => Promise<void>;
 }
 
-function mapPost(raw: any): Post {
+interface RawPost {
+  id: string;
+  author?: { id: string; displayName?: string };
+  content: string;
+  createdAt: string;
+  taggedSymbols?: string[];
+  _count?: { reactions?: number; comments?: number };
+}
+
+function mapPost(raw: RawPost): Post {
   return {
     id: raw.id,
     author: {

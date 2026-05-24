@@ -10,6 +10,9 @@ import { useOrderBookStore } from '@/stores/useOrderBookStore';
 import { useTradesStore } from '@/stores/useTradesStore';
 import { useLiquidityStore } from '@/stores/useLiquidityStore';
 import { useHeatmapStore } from '@/stores/useHeatmapStore';
+import { useOhlcStore } from '@/stores/useOhlcStore';
+import { useForeignStore } from '@/stores/useForeignStore';
+import { useExpectedPriceStore } from '@/stores/useExpectedPriceStore';
 import {
   mapIndicesResponse,
   mapBreadthResponse,
@@ -23,6 +26,10 @@ import {
   OrderBookSchema,
   TradeSchema,
   TradeExtraSchema,
+  SecurityDefSchema,
+  OhlcSchema,
+  ForeignTradingSchema,
+  ExpectedPriceSchema,
 } from '@/lib/validation';
 
 /**
@@ -306,7 +313,7 @@ export function useStockTrades(symbol: string) {
       }
       const apiData = await stockAPI.getTrades(symbol);
       if (apiData?.trades) {
-        const formatted = apiData.trades.map((t: any) => ({
+        const formatted = apiData.trades.map((t: { receivedAt?: number; time?: string; price: number; volume: number; matchType?: string; side?: string }) => ({
           time: t.receivedAt
             ? new Date(t.receivedAt * 1000).toLocaleTimeString()
             : t.time || new Date().toLocaleTimeString(),
@@ -327,12 +334,113 @@ export function useStockTrades(symbol: string) {
   });
 }
 
+export function useStockSecurityDef(symbol: string) {
+  const updateStock = useStockStore((s) => s.updateStock);
+
+  useEffect(() => {
+    if (!symbol) return;
+    const sym = symbol.toUpperCase();
+    return socketClient.subscribeStock(sym, {
+      onSecDef: (data) => {
+        const validated = safeParse(SecurityDefSchema, data);
+        if (validated) {
+          updateStock(sym, {
+            name: validated.name || '',
+            exchange: validated.exchange || '',
+            ceiling: validated.ceiling,
+            floor: validated.floor,
+            prevClose: validated.prevClose,
+          });
+        }
+      },
+    });
+  }, [symbol, updateStock]);
+}
+
+export function useStockLiveOhlc(symbol: string) {
+  const setBar = useOhlcStore((s) => s.setBar);
+  const closeBar = useOhlcStore((s) => s.closeBar);
+
+  useEffect(() => {
+    if (!symbol) return;
+    const sym = symbol.toUpperCase();
+    return socketClient.subscribeStock(sym, {
+      onOhlc: (data) => {
+        const validated = safeParse(OhlcSchema, data);
+        if (validated) {
+          setBar(sym, {
+            timestamp: validated.timestamp,
+            open: validated.open,
+            high: validated.high,
+            low: validated.low,
+            close: validated.close,
+            volume: validated.volume,
+            resolution: validated.resolution || '1',
+          });
+        }
+      },
+      onOhlcClosed: (data) => {
+        const validated = safeParse(OhlcSchema, data);
+        if (validated) {
+          closeBar(sym, {
+            timestamp: validated.timestamp,
+            open: validated.open,
+            high: validated.high,
+            low: validated.low,
+            close: validated.close,
+            volume: validated.volume,
+            resolution: validated.resolution || '1',
+          });
+        }
+      },
+    });
+  }, [symbol, setBar, closeBar]);
+}
+
+export function useStockForeignTrading(symbol: string) {
+  const setForeign = useForeignStore((s) => s.setForeign);
+
+  useEffect(() => {
+    if (!symbol) return;
+    const sym = symbol.toUpperCase();
+    return socketClient.subscribeStock(sym, {
+      onForeign: (data) => {
+        const validated = safeParse(ForeignTradingSchema, data);
+        if (validated) {
+          setForeign(sym, validated);
+        }
+      },
+    });
+  }, [symbol, setForeign]);
+}
+
+export function useStockExpectedPrice(symbol: string) {
+  const setExpectedPrice = useExpectedPriceStore((s) => s.setExpectedPrice);
+
+  useEffect(() => {
+    if (!symbol) return;
+    const sym = symbol.toUpperCase();
+    return socketClient.subscribeStock(sym, {
+      onExpectedPrice: (data) => {
+        const validated = safeParse(ExpectedPriceSchema, data);
+        if (validated) {
+          setExpectedPrice(sym, validated);
+        }
+      },
+    });
+  }, [symbol, setExpectedPrice]);
+}
+
 export function useStockRealtime(
   symbol: string,
   callbacks: {
     onPrice?: (data: unknown) => void;
     onOrderBook?: (data: unknown) => void;
     onTrade?: (data: unknown) => void;
+    onOhlc?: (data: unknown) => void;
+    onForeign?: (data: unknown) => void;
+    onSecDef?: (data: unknown) => void;
+    onExpectedPrice?: (data: unknown) => void;
   },
 ) {
   useEffect(() => {

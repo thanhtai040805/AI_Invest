@@ -33,15 +33,13 @@ function hasAuthToken() {
 
 export default function PortfolioAnalysisPage() {
   const { summary, assets } = usePortfolioStore();
-  const [isClient, setIsClient] = useState(false);
+  const [isClient] = useState(() => typeof window !== 'undefined');
   const authed = hasAuthToken();
 
   usePortfolioSummary(authed);
   usePortfolioPositions(authed);
   const { data: perf } = usePortfolioPerformance(authed);
   const { data: risk } = usePortfolioRiskMetrics(authed);
-
-  useEffect(() => setIsClient(true), []);
 
   const performanceData = perf?.equityCurve?.length
     ? perf.equityCurve.map((p: { date: string; value: number }) => ({ date: p.date, value: p.value }))

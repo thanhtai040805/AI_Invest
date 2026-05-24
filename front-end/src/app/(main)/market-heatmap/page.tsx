@@ -34,7 +34,7 @@ export default function Page() {
                   ].map((mode) => (
                      <button
                         key={mode.id}
-                        onClick={() => setViewMode(mode.id as any)}
+                        onClick={() => setViewMode(mode.id as 'market' | 'bubble' | 'sector' | 'foreign')}
                         className={cn(
                            "flex items-center gap-xs px-md py-1.5 rounded-lg text-[10px] font-bold tracking-widest transition-all",
                            viewMode === mode.id

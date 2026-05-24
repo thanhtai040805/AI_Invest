@@ -6,7 +6,10 @@ Enums use str+Enum to ensure JSON-serialization compatibility.
 
 from __future__ import annotations
 
+import uuid
+from datetime import datetime, timezone
 from enum import Enum
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -212,3 +215,81 @@ class WorkerResult(BaseModel):
     error: str | None = None
     input_tokens: int = 0
     output_tokens: int = 0
+
+
+# ── Session / Attempt / Message ──
+
+
+class SessionStatus(str, Enum):
+    """Session lifecycle status."""
+
+    active = "active"
+    archived = "archived"
+
+
+class AttemptStatus(str, Enum):
+    """Attempt lifecycle status.
+
+    Transitions:
+        pending -> running -> completed | failed
+    """
+
+    pending = "pending"
+    running = "running"
+    completed = "completed"
+    failed = "failed"
+
+
+class Session(BaseModel):
+    """A chat session that groups messages and attempts."""
+
+    session_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
+    title: str = ""
+    config: Dict[str, Any] = Field(default_factory=dict)
+    last_attempt_id: Optional[str] = None
+    status: SessionStatus = SessionStatus.active
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
+class Message(BaseModel):
+    """A single message in a session."""
+
+    message_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:16])
+    session_id: str = ""
+    role: str = "user"
+    content: str = ""
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    linked_attempt_id: Optional[str] = None
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
+class Attempt(BaseModel):
+    """A single agent execution attempt triggered by a user message."""
+
+    attempt_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:16])
+    session_id: str = ""
+    parent_attempt_id: Optional[str] = None
+    prompt: str = ""
+    status: AttemptStatus = AttemptStatus.pending
+    summary: Optional[str] = None
+    error: Optional[str] = None
+    run_dir: Optional[str] = None
+    metrics: Optional[Dict[str, Any]] = None
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+
+    def mark_running(self) -> None:
+        self.status = AttemptStatus.running
+        self.started_at = datetime.now(timezone.utc).isoformat()
+
+    def mark_completed(self, summary: str = "") -> None:
+        self.status = AttemptStatus.completed
+        self.completed_at = datetime.now(timezone.utc).isoformat()
+        self.summary = summary
+
+    def mark_failed(self, error: str = "") -> None:
+        self.status = AttemptStatus.failed
+        self.completed_at = datetime.now(timezone.utc).isoformat()
+        self.error = error

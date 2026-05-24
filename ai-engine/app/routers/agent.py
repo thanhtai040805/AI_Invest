@@ -1,117 +1,165 @@
 """
-Agent Router - Uses Vibe-Trading agent loop with VN adapters
+Agent Router — wired to SessionService + AgentLoop for chat + backtest runs.
 """
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
-from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any, List
+from __future__ import annotations
+
+import json
 import uuid
-import asyncio
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+
+from app.brain.lifespan import get_session_service
+from app.brain.state.service import SessionService
 
 router = APIRouter(tags=["Agent"])
 
 
-class AgentRequest(BaseModel):
-    """Agent analysis request."""
-    
-    query: str = Field(..., description="User query about stock")
-    symbol: Optional[str] = Field(None, description="Stock symbol (e.g., VCB)")
-    context: Optional[Dict[str, Any]] = Field(None, description="Additional context")
+# ── Request / Response models ──
 
 
-class AgentResponse(BaseModel):
-    """Agent analysis response."""
-    
+class AgentRunRequest(BaseModel):
+    input: str = Field(..., description="User message")
+    stream: bool = False
+    session_id: Optional[str] = Field(None, description="Existing session ID (omit to create new)")
+
+
+class AgentRunResponse(BaseModel):
     session_id: str
     status: str
-    message: Optional[str] = None
-    analysis: Optional[Dict[str, Any]] = None
-    tool_calls: Optional[List[Dict[str, Any]]] = None
+    message_id: Optional[str] = None
+    attempt_id: Optional[str] = None
 
 
-# In-memory session storage (in production, use database)
-sessions: Dict[str, Dict[str, Any]] = {}
+class CancelResponse(BaseModel):
+    status: str
+    cancelled: bool
 
 
-@router.post("/analyze", response_model=AgentResponse)
-async def analyze_stock(request: AgentRequest, background_tasks: BackgroundTasks):
-    """
-    Run agent analysis using Vibe-Trading agent loop with VN adapters.
-    
-    Args:
-        request: Agent request with query and optional symbol
-        
-    Returns:
-        Agent analysis result
-    """
+class UploadResponse(BaseModel):
+    filename: str
+    file_path: str
+    size: int
+
+
+class FileUploadResponse(BaseModel):
+    filename: str
+    file_path: str
+    size: int
+
+
+# ── Dependency ──
+
+
+def _svc(request: Request) -> SessionService:
+    svc: SessionService = request.app.state.session_service
+    if svc is None:
+        raise HTTPException(status_code=503, detail="SessionService not initialized")
+    return svc
+
+
+# ── Endpoints ──
+
+
+@router.post("/run", response_model=AgentRunResponse)
+async def agent_run(body: AgentRunRequest, request: Request):
+    """Create or reuse a session, send a message, and trigger agent execution."""
+    svc = _svc(request)
     try:
-        session_id = str(uuid.uuid4())
-        
-        # Initialize session
-        sessions[session_id] = {
-            "id": session_id,
-            "query": request.query,
-            "symbol": request.symbol,
-            "status": "running",
-            "messages": [],
-            "tool_calls": [],
-        }
-        
-        # Import Vibe-Trading agent components
-        from app.brain.agents.core.loop import AgentLoop
-        from app.brain.agents.core.context import ContextBuilder
-        from app.brain.tools import build_registry
-        
-        # Build tool registry with VN adapters
-        tool_registry = build_registry(
+        if body.session_id:
+            session = svc.get_session(body.session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail=f"Session {body.session_id} not found")
+            session_id = body.session_id
+        else:
+            session = svc.create_session(title=body.input[:60])
+            session_id = session.session_id
+
+        result = await svc.send_message(
+            session_id=session_id,
+            content=body.input,
+            role="user",
             include_shell_tools=False,
         )
-        
-        # Create context builder
-        context_builder = ContextBuilder()
-        
-        # For now, return a placeholder response
-        # In production, this would actually run the agent loop
-        sessions[session_id]["status"] = "completed"
-        sessions[session_id]["message"] = f"Analysis for {request.symbol or 'market'}: {request.query}"
-        
-        return AgentResponse(
+        return AgentRunResponse(
             session_id=session_id,
-            status="completed",
-            message=sessions[session_id]["message"],
-            analysis={},
-            tool_calls=[],
+            status="streaming",
+            message_id=result.get("message_id"),
+            attempt_id=result.get("attempt_id"),
         )
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.get("/session/{session_id}")
-async def get_session(session_id: str):
-    """Get agent session status."""
-    if session_id not in sessions:
+@router.get("/run/{session_id}/stream")
+async def agent_stream(session_id: str, request: Request):
+    """SSE stream for a session's agent execution events."""
+    svc = _svc(request)
+    session = svc.get_session(session_id)
+    if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    return sessions[session_id]
 
+    last_event_id: Optional[str] = request.headers.get("last-event-id")
 
-@router.get("/session/{session_id}/stream")
-async def stream_session(session_id: str):
-    """Stream agent session updates via SSE."""
-    from fastapi.responses import StreamingResponse
-    
     async def event_generator():
-        if session_id not in sessions:
-            yield f"event: error\ndata: {{\"error\": \"Session not found\"}}\n\n"
-            return
-        
-        session = sessions[session_id]
-        
-        # Send initial status
-        yield f"event: status\ndata: {{\"status\": \"{session['status']}\"}}\n\n"
-        
-        # In production, this would stream real-time updates
-        # For now, just send completion
-        yield f"event: done\ndata: {{\"status\": \"{session['status']}\"}}\n\n"
-    
+        async for event in svc.event_bus.subscribe(session_id, last_event_id=last_event_id):
+            yield event.to_sse()
+
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@router.post("/cancel/{session_id}", response_model=CancelResponse)
+async def agent_cancel(session_id: str, request: Request):
+    """Cancel the currently running agent loop for a session."""
+    svc = _svc(request)
+    cancelled = svc.cancel_current(session_id)
+    return CancelResponse(status="ok" if cancelled else "no_active_loop", cancelled=cancelled)
+
+
+@router.get("/sessions/{session_id}/messages")
+async def agent_session_messages(session_id: str, request: Request):
+    """Return message history for a session."""
+    svc = _svc(request)
+    session = svc.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    messages = svc.get_messages(session_id)
+    # Serialize to dict for JSON response
+    return [m.model_dump() for m in messages]
+
+
+@router.post("/upload", response_model=UploadResponse)
+async def agent_upload(request: Request, file: UploadFile = File(...)):
+    """Upload a file (PDF, CSV, etc.) for the agent to use."""
+    svc = _svc(request)
+    upload_dir = svc.runs_dir / ".uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = f"{uuid.uuid4().hex[:12]}_{file.filename or 'file'}"
+    dest = upload_dir / safe_name
+
+    content = await file.read()
+    dest.write_bytes(content)
+
+    return UploadResponse(
+        filename=file.filename or safe_name,
+        file_path=str(dest),
+        size=len(content),
+    )
+
+
+@router.get("/sessions", response_model=List[Dict[str, Any]])
+async def list_sessions(request: Request):
+    """Return all active sessions."""
+    svc = _svc(request)
+    sessions = svc.list_sessions(limit=50)
+    result = []
+    for s in sessions:
+        d = s.model_dump()
+        d["message_count"] = len(svc.get_messages(s.session_id, limit=1))
+        result.append(d)
+    return result

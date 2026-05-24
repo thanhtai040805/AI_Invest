@@ -6,6 +6,7 @@ import { socketClient, ConnectionStatus } from '@/services/socket';
 import { useMarketStore } from '@/stores/useMarketStore';
 import { useStockStore } from '@/stores/useStockStore';
 import { useLiquidityStore } from '@/stores/useLiquidityStore';
+import type { LiquidityData } from '@/stores/useLiquidityStore';
 import { useHeatmapStore } from '@/stores/useHeatmapStore';
 import {
   mapIndicesResponse,
@@ -104,14 +105,14 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
 
     const unsubLiquidity = socketClient.subscribeLiquidity((data) => {
       if (data && typeof data === 'object') {
-        setLiquidity(data as any);
+        setLiquidity(data as unknown as LiquidityData);
         queryClient.setQueryData(['market', 'liquidity'], data);
       }
     });
 
     const unsubHeatmap = socketClient.subscribeHeatmap((data) => {
       if (data && typeof data === 'object' && 'sectors' in data) {
-        setHeatmap(mapHeatmapSectors(data as any));
+        setHeatmap(mapHeatmapSectors(data as Record<string, unknown>));
         queryClient.setQueryData(['market', 'heatmap'], data);
       }
     });

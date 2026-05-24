@@ -30,7 +30,7 @@ export function NewsList({ symbol }: { symbol: string }) {
 
   return (
     <div className="space-y-md">
-      {news.map((item: any, i: number) => {
+      {news.map((item: { id: string; url?: string; title: string; sentimentLabel?: string; friendlyKeyword?: string; publishDate?: string }, i: number) => {
         const formattedDate = item.publishDate
           ? new Date(item.publishDate).toLocaleString("vi-VN", {
               hour: "2-digit",

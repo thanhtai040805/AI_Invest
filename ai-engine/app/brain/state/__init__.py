@@ -1,69 +1,64 @@
 """
 Graph - LangGraph debate flow for trading analysis
+
+Uses lazy imports via __getattr__ to avoid triggering the Gemini
+client initialisation chain at package-import time.
 """
 
-from .state import GraphState, NodeOutput, AgentRole, DecisionType
-from .nodes import GraphNodes, graph_nodes
-from .edges import (
-    should_continue_debate,
-    should_continue_risk_analysis,
-    CONDITIONAL_EDGES,
-    route_after_market_analysis,
-    route_after_fund_analysis,
-    route_after_bull_thesis,
-    route_after_bear_thesis,
-    route_after_portfolio_manager,
-    route_after_risk_gate,
-    route_after_aggressive_analyst,
-    route_after_conservative_analyst,
-    route_after_neutral_analyst,
-)
-from .reflection import Reflector, reflector
-from .signal_processing import SignalProcessor, signal_processor
-from .checkpointer import Checkpointer, checkpointer
-from .concurrency import (
-    ConcurrencyManager,
-    concurrency_manager,
-    AnalystType,
-    AnalystSpec,
-    ExecutionPlan,
-)
+from __future__ import annotations
 
-__all__ = [
-    # State
-    "GraphState",
-    "NodeOutput",
-    "AgentRole",
-    "DecisionType",
-    # Nodes
-    "GraphNodes",
-    "graph_nodes",
-    # Edges
-    "should_continue_debate",
-    "should_continue_risk_analysis",
-    "CONDITIONAL_EDGES",
-    "route_after_market_analysis",
-    "route_after_fund_analysis",
-    "route_after_bull_thesis",
-    "route_after_bear_thesis",
-    "route_after_portfolio_manager",
-    "route_after_risk_gate",
-    "route_after_aggressive_analyst",
-    "route_after_conservative_analyst",
-    "route_after_neutral_analyst",
-    # Reflection
-    "Reflector",
-    "reflector",
-    # Signal Processing
-    "SignalProcessor",
-    "signal_processor",
-    # Checkpointer
-    "Checkpointer",
-    "checkpointer",
-    # Concurrency
-    "ConcurrencyManager",
-    "concurrency_manager",
-    "AnalystType",
-    "AnalystSpec",
-    "ExecutionPlan",
-]
+import importlib
+from typing import Any
+
+_LAZY_MAP: dict[str, str] = {
+    # state
+    "GraphState": ".state",
+    "NodeOutput": ".state",
+    "AgentRole": ".state",
+    "DecisionType": ".state",
+    # nodes
+    "GraphNodes": ".nodes",
+    "graph_nodes": ".nodes",
+    # edges
+    "should_continue_debate": ".edges",
+    "should_continue_risk_analysis": ".edges",
+    "CONDITIONAL_EDGES": ".edges",
+    "route_after_market_analysis": ".edges",
+    "route_after_fund_analysis": ".edges",
+    "route_after_bull_thesis": ".edges",
+    "route_after_bear_thesis": ".edges",
+    "route_after_portfolio_manager": ".edges",
+    "route_after_risk_gate": ".edges",
+    "route_after_aggressive_analyst": ".edges",
+    "route_after_conservative_analyst": ".edges",
+    "route_after_neutral_analyst": ".edges",
+    # reflection
+    "Reflector": ".reflection",
+    "reflector": ".reflection",
+    # signal processing
+    "SignalProcessor": ".signal_processing",
+    "signal_processor": ".signal_processing",
+    # checkpointer
+    "Checkpointer": ".checkpointer",
+    "checkpointer": ".checkpointer",
+    # concurrency
+    "ConcurrencyManager": ".concurrency",
+    "concurrency_manager": ".concurrency",
+    "AnalystType": ".concurrency",
+    "AnalystSpec": ".concurrency",
+    "ExecutionPlan": ".concurrency",
+}
+
+
+def __getattr__(name: str) -> Any:
+    """Lazy-load module attributes."""
+    if name in _LAZY_MAP:
+        mod = importlib.import_module(_LAZY_MAP[name], __package__)
+        attr = getattr(mod, name)
+        # Cache on the package module for subsequent fast access
+        globals()[name] = attr
+        return attr
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+__all__ = list(_LAZY_MAP.keys())

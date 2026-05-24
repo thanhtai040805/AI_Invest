@@ -173,7 +173,7 @@ export default function AlertsPage() {
                  <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
                     <div className="h-full bg-secondary" style={{ width: '65%' }} />
                  </div>
-                 <p className="text-[10px] opacity-40 leading-relaxed italic">"Hầu hết các cảnh báo của bạn được kích hoạt bởi các vùng kháng cự mạnh của nhóm VN30."</p>
+                  <p className="text-[10px] opacity-40 leading-relaxed italic">&quot;Hầu hết các cảnh báo của bạn được kích hoạt bởi các vùng kháng cự mạnh của nhóm VN30.&quot;</p>
               </div>
            </GlassCard>
 

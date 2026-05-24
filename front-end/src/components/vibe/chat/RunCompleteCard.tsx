@@ -24,7 +24,7 @@ export const RunCompleteCard = memo(function RunCompleteCard({ msg }: Props) {
     if (!curve && msg.runId) {
       api.getRun(msg.runId).then(r => {
         if (r.equity_curve) setCurve(r.equity_curve.map(e => ({ time: e.time, equity: e.equity })));
-      }).catch(() => {});
+      }).catch((e: unknown) => console.error('Failed to load equity curve', e));
     }
   }, [msg.runId, curve]);
 
@@ -41,7 +41,7 @@ export const RunCompleteCard = memo(function RunCompleteCard({ msg }: Props) {
           setPineExists(true);
           setPineCode(r.content);
         }
-      }).catch(() => { setPineChecked(true); });
+      }).catch((e: unknown) => { console.error('Failed to load pine script', e); setPineChecked(true); });
     }
   }, [msg.runId, pineChecked]);
 

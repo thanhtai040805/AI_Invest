@@ -9,7 +9,7 @@ export interface ChatMessage {
   timestamp: string;
   metadata?: {
     symbol?: string;
-    chartData?: any;
+    chartData?: unknown;
     recommendation?: string;
   };
 }

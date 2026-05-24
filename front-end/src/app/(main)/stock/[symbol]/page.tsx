@@ -85,10 +85,10 @@ export default function StockDetailPage() {
 
                <div className="flex items-center gap-lg">
                   <div className="flex gap-1 bg-white/5 p-0.5 rounded-lg border border-white/10">
-                     {['1x1', '2x2', '3x1'].map(l => (
-                        <button
-                           key={l}
-                           onClick={() => setLayout(l as any)}
+                   {(['1x1', '2x2', '3x1'] as const).map(l => (
+                         <button
+                            key={l}
+                            onClick={() => setLayout(l)}
                            className={cn(
                               "px-2 py-1 text-[9px] font-black rounded transition-all",
                               layout === l ? "bg-secondary text-white" : "opacity-40 hover:bg-white/10"

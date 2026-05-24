@@ -67,7 +67,7 @@ export default function MarketNewsTelemetry() {
       const data = await marketAPI.getNews(params);
       
       // Map sentiment defaults if missing in DB for UI demonstration
-      const mappedData = data.map((item: any, index: number) => {
+      const mappedData = data.map((item: { title: string; sentimentLabel?: string | null; sentimentScore?: number | null }, index: number) => {
         // Fallback generator for neutral/unclassified news items so we always display nice telemetry
         let fallbackLabel = item.sentimentLabel;
         let fallbackScore = item.sentimentScore;
@@ -100,8 +100,8 @@ export default function MarketNewsTelemetry() {
         }
         // Calculate metrics
         setTotalCount(mappedData.length);
-        const positiveCount = mappedData.filter((n: any) => n.sentimentLabel === "POSITIVE").length;
-        const totalWithLabel = mappedData.filter((n: any) => n.sentimentLabel && n.sentimentLabel !== "NEUTRAL").length || 1;
+        const positiveCount = mappedData.filter((n: { sentimentLabel?: string }) => n.sentimentLabel === "POSITIVE").length;
+        const totalWithLabel = mappedData.filter((n: { sentimentLabel?: string }) => n.sentimentLabel && n.sentimentLabel !== "NEUTRAL").length || 1;
         setBullishRatio(Math.round((positiveCount / totalWithLabel) * 100));
       }
     } catch (error) {
@@ -112,8 +112,12 @@ export default function MarketNewsTelemetry() {
   };
 
   useEffect(() => {
-    fetchNews();
-  }, []);
+    // Initial fetch happens once on mount
+    const load = async () => {
+      await fetchNews();
+    };
+    load();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Hot tickers list sorted by appearance
   const hotTickers = useMemo(() => {
@@ -539,7 +543,7 @@ export default function MarketNewsTelemetry() {
                     <p>
                       {selectedNews.content 
                         ? (selectedNews.content.startsWith("[") 
-                          ? JSON.parse(selectedNews.content).map((c: any) => c.data).join(" ").slice(0, 400) + "..."
+                          ? JSON.parse(selectedNews.content).map((c: { data: string }) => c.data).join(" ").slice(0, 400) + "..."
                           : selectedNews.content.slice(0, 400) + "...")
                         : "Bản tin ghi nhận các biến chuyển vĩ mô trọng điểm liên quan đến mã chứng khoán được chỉ định. Đội ngũ AI đánh giá việc này có tác động trực tiếp tới hành vi giao dịch ngắn hạn của khối ngoại và xu hướng tích lũy cổ phiếu."
                       }

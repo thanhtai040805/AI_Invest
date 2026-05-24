@@ -147,11 +147,7 @@ export function RiskRadar() {
 }
 
 export function HoldingsTable() {
-  const [isMounted, setIsMounted] = React.useState(false);
-
-  React.useEffect(() => {
-    setIsMounted(true);
-  }, []);
+  const [isMounted] = React.useState(() => typeof window !== 'undefined');
 
   if (!isMounted) return <div className="h-48 animate-pulse bg-white/5 rounded-xl" />;
 

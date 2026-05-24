@@ -8,7 +8,7 @@ import { GlassCard } from "@/components/ui/GlassCard";
 import { ScreenerFilters } from "@/services/api";
 import { useScreenerFilter, useBuiltinPresets, exportScreenerCsv } from "@/hooks/useScreener";
 import { useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useState, useMemo } from "react";
+import { Suspense, useState, useMemo } from "react";
 
 const DEFAULT_FILTERS: ScreenerFilters = { limit: 100, sort: "changePercent", sortDir: "desc" };
 
@@ -16,15 +16,10 @@ function ScreenerContent() {
   const searchParams = useSearchParams();
   const sectorParam = searchParams.get("sector");
 
-  const [filters, setFilters] = useState<ScreenerFilters>(DEFAULT_FILTERS);
+  const [filters, setFilters] = useState<ScreenerFilters>(() =>
+    sectorParam ? { ...DEFAULT_FILTERS, exchange: sectorParam } : DEFAULT_FILTERS
+  );
   const [activePreset, setActivePreset] = useState("custom");
-
-  useEffect(() => {
-    if (sectorParam) {
-      setFilters(prev => ({ ...prev, exchange: sectorParam }));
-      setActivePreset("custom");
-    }
-  }, [sectorParam]);
 
   const [peMax, setPeMax] = useState(20);
   const [roeMin, setRoeMin] = useState(10);
@@ -229,7 +224,7 @@ function ScreenerContent() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/[0.02]">
-                    {stocks.map((s: Record<string, any>) => (
+                    {stocks.map((s: Record<string, unknown>) => (
                       <tr key={String(s.symbol)} className="border-b border-white/[0.01] hover:bg-white/[0.02] transition-colors">
                         <td className="py-4 px-md">
                           <Link href={`/stock/${s.symbol}`} className="font-black text-[#e8a940] text-sm">

@@ -8,7 +8,7 @@ import { motion } from "framer-motion";
 interface ChatMessageProps {
   role: 'assistant' | 'user';
   content: string;
-  type?: 'text' | 'analysis';
+  type?: 'text' | 'analysis' | 'suggestion';
 }
 
 export function ChatMessage({ role, content, type = 'text' }: ChatMessageProps) {

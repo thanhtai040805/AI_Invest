@@ -1,93 +1,85 @@
 """
-Session Router - Uses Vibe-Trading session management
+Session Router — delegates to the shared SessionService singleton.
 """
 
-from fastapi import APIRouter, HTTPException
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any, List
-import uuid
+
+from app.brain.lifespan import get_session_service
+from app.brain.state.models import Session
 
 router = APIRouter(tags=["Session"])
 
 
-class SessionRequest(BaseModel):
-    """Session creation request."""
-    
+class SessionCreateRequest(BaseModel):
     user_id: Optional[str] = Field(None, description="User ID")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Session metadata")
 
 
-class SessionResponse(BaseModel):
-    """Session response."""
-    
+class SessionCreateResponse(BaseModel):
     session_id: str
     status: str
     user_id: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
 
 
-# In-memory session storage (in production, use database)
-sessions: Dict[str, Dict[str, Any]] = {}
+def _svc(request: Request):
+    svc = request.app.state.session_service
+    if svc is None:
+        raise HTTPException(status_code=503, detail="SessionService not initialized")
+    return svc
 
 
-@router.post("/create", response_model=SessionResponse)
-async def create_session(request: SessionRequest):
-    """
-    Create a new session.
-    
-    Args:
-        request: Session creation request
-        
-    Returns:
-        Created session
-    """
-    try:
-        session_id = str(uuid.uuid4())
-        
-        # Initialize session
-        sessions[session_id] = {
-            "id": session_id,
-            "user_id": request.user_id,
-            "metadata": request.metadata or {},
-            "status": "active",
-            "created_at": "2026-05-23T00:00:00Z",
-            "messages": [],
-        }
-        
-        return SessionResponse(
-            session_id=session_id,
-            status="active",
-            user_id=request.user_id,
-            metadata=request.metadata,
-        )
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+@router.post("/create", response_model=SessionCreateResponse)
+async def create_session(body: SessionCreateRequest, request: Request):
+    svc = _svc(request)
+    config = body.metadata or {}
+    session = svc.create_session(title="", config=config)
+    return SessionCreateResponse(
+        session_id=session.session_id,
+        status=session.status.value,
+        user_id=body.user_id,
+        metadata=config,
+    )
 
 
 @router.get("/{session_id}")
-async def get_session(session_id: str):
-    """Get session details."""
-    if session_id not in sessions:
+async def get_session(session_id: str, request: Request):
+    svc = _svc(request)
+    session = svc.get_session(session_id)
+    if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    return sessions[session_id]
+    return session.model_dump()
 
 
 @router.get("/{session_id}/messages")
-async def get_session_messages(session_id: str):
-    """Get session messages."""
-    if session_id not in sessions:
+async def get_session_messages(session_id: str, request: Request):
+    svc = _svc(request)
+    session = svc.get_session(session_id)
+    if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+    msgs = svc.get_messages(session_id)
     return {
         "session_id": session_id,
-        "messages": sessions[session_id]["messages"],
+        "messages": [m.model_dump() for m in msgs],
     }
 
 
 @router.delete("/{session_id}")
-async def delete_session(session_id: str):
-    """Delete a session."""
-    if session_id not in sessions:
+async def delete_session(session_id: str, request: Request):
+    svc = _svc(request)
+    ok = svc.delete_session(session_id)
+    if not ok:
         raise HTTPException(status_code=404, detail="Session not found")
-    del sessions[session_id]
     return {"status": "deleted"}
+
+
+@router.get("/", response_model=List[Dict[str, Any]])
+async def list_sessions(request: Request):
+    svc = _svc(request)
+    sessions = svc.list_sessions(limit=50)
+    return [s.model_dump() for s in sessions]

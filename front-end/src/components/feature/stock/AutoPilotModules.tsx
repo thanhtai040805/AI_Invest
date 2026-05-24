@@ -64,7 +64,12 @@ export function BacktestWidget() {
   const [strategy, setStrategy] = useState("MACD_CROSSOVER");
   const [status, setStatus] = useState<string | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
-  const [result, setResult] = useState<any>(null);
+  interface BacktestResult {
+    totalReturn: number;
+    maxDrawdown: number;
+    winRate: number;
+  }
+  const [result, setResult] = useState<BacktestResult | null>(null);
 
   useEffect(() => {
     let interval: NodeJS.Timeout;
@@ -158,7 +163,13 @@ export function BacktestWidget() {
 }
 
 export function BacktestHistory() {
-  const [history, setHistory] = useState<any[]>([]);
+  interface BacktestHistoryItem {
+    symbol: string;
+    createdAt: string;
+    strategy: string;
+    result?: { totalReturn: number; maxDrawdown: number };
+  }
+  const [history, setHistory] = useState<BacktestHistoryItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {

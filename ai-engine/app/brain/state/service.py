@@ -22,7 +22,7 @@ from app.brain.state.models import (
     Session,
 )
 from app.brain.state.search import get_shared_index
-from app.brain.state.store import SessionStore
+from app.brain.state.session_store import SessionStore
 
 
 class SessionService:
