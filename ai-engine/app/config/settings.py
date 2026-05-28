@@ -29,12 +29,14 @@ class Settings:
     llm_provider: str
 
     # AI Multi-Model Configuration
-    llm_gemini_key: str
-    llm_gemini_model: str
+    llm_nvidia_key: str
+    llm_nvidia_model: str
     llm_groq_key: str
+    llm_groq_key0: str
+    llm_groq_key1: str
     llm_groq_model: str
-    llm_openrouter_key: str
-    llm_openrouter_model: str
+    llm_groq_model0: str
+    llm_groq_model1: str
     llm_routing_mode: str
     llm_fallback_hardcoded: bool
 
@@ -64,12 +66,14 @@ def get_settings() -> Settings:
         llm_provider=os.getenv("LLM_PROVIDER", "openai"),
         
         # AI Multi-Model env loaders (supports standard names and shorthand variables)
-        llm_gemini_key=os.getenv("GEMINI_API_KEY", os.getenv("GEMINI", "")),
-        llm_gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.0-flash-exp"),
-        llm_groq_key=os.getenv("GROQ_API_KEY", os.getenv("GROQ", "")),
-        llm_groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
-        llm_openrouter_key=os.getenv("OPENROUTER_API_KEY", os.getenv("OPENROUTER", "")),
-        llm_openrouter_model=os.getenv("OPENROUTER_MODEL", "anthropic/claude-3.5-sonnet"),
+        llm_nvidia_key=os.getenv("NVDIA", os.getenv("NVIDIA_API_KEY", "")),
+        llm_nvidia_model=os.getenv("NVIDIA_MODEL", "minimaxai/minimax-m2.7"),
+        llm_groq_key=os.getenv("GROQ_API_KEY0", os.getenv("GROQ_API_KEY", "")),
+        llm_groq_key0=os.getenv("GROQ_API_KEY0", os.getenv("GROQ_API_KEY", "")),
+        llm_groq_key1=os.getenv("GROQ_API_KEY1", os.getenv("GROQ_API_KEY", "")),
+        llm_groq_model=os.getenv("GROQ_MODEL0", os.getenv("GROQ_MODEL", "qwen/qwen3-32b")),
+        llm_groq_model0=os.getenv("GROQ_MODEL0", os.getenv("GROQ_MODEL", "qwen/qwen3-32b")),
+        llm_groq_model1=os.getenv("GROQ_MODEL1", "qwen/qwen3-32b"),
         llm_routing_mode=os.getenv("LLM_ROUTING_MODE", "auto"),
         llm_fallback_hardcoded=os.getenv("LLM_FALLBACK_HARDCODED", "true").lower() in ("1", "true", "yes"),
 

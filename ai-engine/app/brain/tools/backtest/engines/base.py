@@ -11,19 +11,13 @@ from __future__ import annotations
 import importlib
 import json
 import logging
-import re as _re
 import sys
 from abc import ABC, abstractmethod
-from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 import pandas as pd
 
-from backtest.loaders.tushare_fundamentals import (
-    TushareFundamentalProvider,
-    enrich_price_frames_with_fundamentals,
-)
 from backtest.metrics import (
     by_exit_reason_stats,
     by_symbol_stats,
@@ -52,17 +46,9 @@ def _run_card_data_sources(config: Dict[str, Any], loader: Any) -> List[str]:
 
 # ─── Market detection (lightweight, for signal alignment only) ───
 
-_CRYPTO_RE = _re.compile(r"^[A-Z]+-USDT$|^[A-Z]+/USDT$", _re.I)
-_FOREX_RE = _re.compile(r"^[A-Z]{3}/[A-Z]{3}$|^[A-Z]{6}\.FX$")
-
-
 def _detect_market_for_align(code: str) -> str:
     """Lightweight market detection for ffill_limit calculation."""
-    if _CRYPTO_RE.match(code):
-        return "crypto"
-    if _FOREX_RE.match(code):
-        return "forex"
-    return "equity"
+    return "vn_equity"
 
 
 # ─── Signal alignment (reused from daily_portfolio logic) ───
@@ -149,57 +135,6 @@ def _load_optimizer(config: Dict[str, Any]) -> Optional[Callable]:
     except (ImportError, AttributeError) as e:
         print(f"[WARN] Failed to load optimizer '{opt_name}': {e}, falling back to equal weight")
         return None
-
-
-def _normalise_fundamental_fields(config: Dict[str, Any]) -> dict[str, list[str]]:
-    """Read the optional statement-table field map from backtest config."""
-    raw_fields = config.get("fundamental_fields")
-    if raw_fields in (None, {}):
-        return {}
-    if not isinstance(raw_fields, dict):
-        raise ValueError("fundamental_fields must map table names to field-name lists")
-
-    normalized: dict[str, list[str]] = {}
-    for table, fields in raw_fields.items():
-        if not isinstance(table, str) or not table.strip():
-            raise ValueError("fundamental_fields table names must be non-empty strings")
-        if fields is None:
-            continue
-        if isinstance(fields, str) or not isinstance(fields, Iterable):
-            raise ValueError(f"fundamental_fields[{table!r}] must be a list of field names")
-
-        field_list = list(fields)
-        if not field_list:
-            continue
-        invalid = [field for field in field_list if not isinstance(field, str) or not field.strip()]
-        if invalid:
-            raise ValueError(f"fundamental_fields[{table!r}] contains invalid field names")
-        normalized[table.strip()] = field_list
-    return normalized
-
-
-def _maybe_enrich_fundamentals(
-    data_map: Dict[str, pd.DataFrame],
-    config: Dict[str, Any],
-) -> Dict[str, pd.DataFrame]:
-    """Attach configured Tushare statement fields before signal generation."""
-    fields_by_table = _normalise_fundamental_fields(config)
-    if not fields_by_table:
-        return data_map
-
-    try:
-        provider = TushareFundamentalProvider()
-        return enrich_price_frames_with_fundamentals(
-            data_map,
-            provider,
-            fields_by_table,
-            as_of=config.get("end_date", ""),
-            periods=config.get("fundamental_periods"),
-        )
-    except Exception as exc:
-        raise RuntimeError(
-            f"fundamental_fields requested but Tushare enrichment failed: {exc}"
-        ) from exc
 
 
 # ─── Base Engine ───
@@ -347,7 +282,6 @@ class BaseEngine(ABC):
         if not data_map:
             print(json.dumps({"error": "No data fetched"}))
             sys.exit(1)
-        data_map = _maybe_enrich_fundamentals(data_map, config)
 
         # 2. Generate signals
         signal_map = signal_engine.generate(data_map)

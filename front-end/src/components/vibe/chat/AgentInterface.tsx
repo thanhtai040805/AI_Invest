@@ -648,12 +648,6 @@ export function AgentInterface() {
                 el.style.height = "auto";
                 el.style.height = el.scrollHeight + "px";
               }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  runPrompt(input.trim());
-                }
-              }}
               placeholder="Nhập câu hỏi của bạn..."
               className="flex-1 px-4 py-2.5 rounded-xl border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 transition-shadow resize-none max-h-32 overflow-y-auto"
               disabled={status === "streaming"}

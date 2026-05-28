@@ -7,9 +7,12 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 # Dedicated thread pool limited to four concurrent agents to avoid exhausting the default executor.
 _AGENT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="agent")
@@ -148,6 +151,10 @@ class SessionService:
         attempt.mark_running()
         self.store.update_attempt(attempt)
         self.event_bus.emit(session.session_id, "attempt.started", {"attempt_id": attempt.attempt_id})
+        logger.info("=" * 60)
+        logger.info(f"[ATTEMPT START] session={session.session_id[:12]} attempt={attempt.attempt_id[:12]}")
+        logger.info(f"[ATTEMPT PROMPT] {attempt.prompt[:200]}")
+        logger.info("=" * 60)
 
         try:
             messages = self.store.get_messages(session.session_id)
@@ -179,14 +186,21 @@ class SessionService:
             )
             self.store.append_message(reply)
             self._search_index.index_message(session.session_id, "assistant", reply.content)
+
+            summary_preview = (attempt.summary or "")[:200].replace("\n", " ")
+            logger.info("-" * 60)
+            logger.info(f"[ATTEMPT END]   session={session.session_id[:12]} status={attempt.status.value}")
+            logger.info(f"[ATTEMPT REPLY] {summary_preview}")
+            logger.info("-" * 60)
             self.event_bus.emit(
                 session.session_id,
-                "attempt.completed" if attempt.status == AttemptStatus.COMPLETED else "attempt.failed",
+                "attempt.completed" if attempt.status == AttemptStatus.completed else "attempt.failed",
                 {"attempt_id": attempt.attempt_id, "status": attempt.status.value,
                  "summary": attempt.summary, "error": attempt.error, "run_dir": attempt.run_dir},
             )
 
         except Exception as exc:
+            logger.error(f"[ATTEMPT ERROR] session={session.session_id[:12]} error={exc}", exc_info=True)
             attempt.mark_failed(error=str(exc))
             self.store.update_attempt(attempt)
             self.event_bus.emit(session.session_id, "attempt.failed", {"attempt_id": attempt.attempt_id, "error": str(exc)})
@@ -344,6 +358,6 @@ class SessionService:
     @staticmethod
     def _format_result_message(attempt: Attempt) -> str:
         """Format the final execution result message."""
-        if attempt.status == AttemptStatus.COMPLETED:
+        if attempt.status == AttemptStatus.completed:
             return attempt.summary or "Strategy execution completed."
         return f"Execution failed: {attempt.error or 'unknown error'}"

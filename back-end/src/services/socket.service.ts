@@ -187,14 +187,6 @@ class SocketService {
     this.io.to('market:overview').emit(`market:index:${name.toUpperCase()}`, data);
   }
 
-  emitAlert(userId: string, data: unknown): void {
-    this.io.to(`user:${userId}`).emit('alert:triggered', data);
-  }
-
-  emitSystemAlert(data: unknown): void {
-    this.io.to('market:overview').emit('alert:triggered', data);
-  }
-
   shutdown(): void {
     this.io?.close();
     this.socketMeta.clear();

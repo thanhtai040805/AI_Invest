@@ -34,11 +34,11 @@ joblib>=1.3.0
 smartmoneyconcepts>=0.0.1
 pyharmonics>=1.5.0
 
-# Data Providers (VN-specific: DNSE, others optional)
+# Data Providers (VN-specific: DNSE, VietFin, others optional)
 tushare>=1.2.89
 yfinance>=0.2.30
 akshare>=1.12.0
-ccxt>=4.0.0
+vietfin>=0.2.0
 
 # REST API & SSE
 fastapi>=0.104.0

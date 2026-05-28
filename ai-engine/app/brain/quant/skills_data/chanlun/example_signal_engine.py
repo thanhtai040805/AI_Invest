@@ -190,23 +190,7 @@ class SignalEngine:
 if __name__ == "__main__":
     import requests
 
-    BASE_URL = "https://www.okx.com/api/v5"
 
-    # 获取 BTC 日线数据
-    resp = requests.get(f"{BASE_URL}/market/candles", params={
-        "instId": "BTC-USDT", "bar": "1D", "limit": "300"
-    })
-    candles = resp.json()["data"]
-
-    # 转为 DataFrame
-    columns = ["ts", "open", "high", "low", "close", "vol", "volCcy", "volCcyQuote", "confirm"]
-    df = pd.DataFrame(reversed(candles), columns=columns)
-    df["ts"] = pd.to_datetime(df["ts"].astype("int64"), unit="ms")
-    df = df.set_index("ts")
-    for col in ["open", "high", "low", "close"]:
-        df[col] = df[col].astype(float)
-    df["volume"] = df["vol"].astype(float)
-    df["amount"] = df["volCcy"].astype(float)
 
     # 运行信号引擎
     engine = SignalEngine(freq=Freq.D)

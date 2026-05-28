@@ -162,17 +162,17 @@ export function WelcomeScreen({ onExample }: Props) {
         </div>
         <div>
           <h2 className="text-2xl font-bold tracking-tight">Vibe-Trading</h2>
-          <p className="text-xs text-muted-foreground mt-1 max-w-sm mx-auto leading-relaxed">
+          <p className="text-xs text-muted-foreground mt-1 mx-auto leading-relaxed">
             vibe trading with your professional financial agent team
           </p>
-          <p className="text-sm text-muted-foreground mt-2 max-w-md leading-relaxed mx-auto">
+          <p className="text-sm text-muted-foreground mt-2 leading-relaxed mx-auto">
             {t.describeStrategy}
           </p>
         </div>
       </div>
 
       {/* Capability chips */}
-      <div className="flex flex-wrap justify-center gap-2 max-w-lg">
+      <div className="flex flex-wrap justify-center gap-2">
         {CAPABILITY_CHIPS.map((chip) => (
           <span
             key={chip}

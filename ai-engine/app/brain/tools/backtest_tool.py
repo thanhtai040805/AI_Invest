@@ -36,9 +36,9 @@ def run_backtest(run_dir: str) -> str:
         return json.dumps({"status": "error", "error": f"config.json parse error: {e}"}, ensure_ascii=False)
 
     if "source" not in config:
-        return json.dumps({"status": "error", "error": "config.json missing 'source' field (tushare/okx/yfinance)"}, ensure_ascii=False)
+        return json.dumps({"status": "error", "error": "config.json missing 'source' field (tushare/yfinance)"}, ensure_ascii=False)
 
-    valid_sources = {"tushare", "okx", "yfinance", "akshare", "ccxt", "dnse", "auto"}
+    valid_sources = {"tushare", "yfinance", "akshare", "dnse", "vietfin", "auto"}
     if config["source"] not in valid_sources:
         return json.dumps({"status": "error", "error": f"source must be one of {valid_sources}, got: {config['source']}"}, ensure_ascii=False)
 
@@ -47,7 +47,7 @@ def run_backtest(run_dir: str) -> str:
         return json.dumps({"status": "error", "error": "code/signal_engine.py not found"}, ensure_ascii=False)
 
     agent_root = Path(__file__).resolve().parents[2]
-    entry_script = agent_root / "core" / "backtest" / "runner.py"
+    entry_script = agent_root / "brain" / "tools" / "backtest" / "runner.py"
 
     source = config.get("source", "?")
     emit_progress(
@@ -55,6 +55,7 @@ def run_backtest(run_dir: str) -> str:
         message=f"running backtest engine (source={source})",
     )
     runner = Runner(timeout=300)
+
     result = runner.execute(
         entry_script,
         run_path,

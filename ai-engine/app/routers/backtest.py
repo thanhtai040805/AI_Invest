@@ -87,6 +87,12 @@ async def get_backtest_status(run_id: str):
     return {"run_id": run_id, "status": "completed"}
 
 
+@router.get("/history")
+async def get_backtest_history():
+    """Get backtest history."""
+    return {"runs": []}
+
+
 @router.get("/results/{run_id}")
 async def get_backtest_results(run_id: str):
     """Get backtest results."""

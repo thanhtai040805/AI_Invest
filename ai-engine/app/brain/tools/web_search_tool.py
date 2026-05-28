@@ -68,6 +68,7 @@ class WebSearchTool(BaseTool):
             with DDGS() as ddgs:
                 raw = list(ddgs.text(query, max_results=max_results))
 
+            _BLOCKED_DOMAINS = {"investing.com", "www.investing.com"}
             results = [
                 {
                     "title": r.get("title", ""),
@@ -75,6 +76,7 @@ class WebSearchTool(BaseTool):
                     "snippet": r.get("body", ""),
                 }
                 for r in raw
+                if not any(d in (r.get("href", "") or "") for d in _BLOCKED_DOMAINS)
             ]
             payload = {"status": "ok", "query": query, "results": results}
             payload = with_security_warnings(

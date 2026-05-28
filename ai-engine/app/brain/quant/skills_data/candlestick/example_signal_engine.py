@@ -532,35 +532,7 @@ class SignalEngine:
 # ---------------------------------------------------------------------------
 
 
-def _fetch_okx(inst_id: str, bar: str = "1D", limit: int = 300) -> pd.DataFrame:
-    """从 OKX 获取K线数据。
 
-    Args:
-        inst_id: 交易对，如 "BTC-USDT"。
-        bar: K线周期，默认 "1D"。
-        limit: 获取数量，默认 300。
-
-    Returns:
-        包含 open/high/low/close/volume 列的 DataFrame，index 为 datetime。
-
-    Raises:
-        KeyError: 当 API 返回格式异常时。
-    """
-    import requests
-
-    resp = requests.get("https://www.okx.com/api/v5/market/candles", params={
-        "instId": inst_id, "bar": bar, "limit": str(limit)
-    })
-    candles = resp.json()["data"]
-    columns = ["ts", "open", "high", "low", "close",
-               "vol", "volCcy", "volCcyQuote", "confirm"]
-    df = pd.DataFrame(reversed(candles), columns=columns)
-    df["ts"] = pd.to_datetime(df["ts"].astype("int64"), unit="ms")
-    df = df.set_index("ts")
-    for col in ["open", "high", "low", "close"]:
-        df[col] = df[col].astype(float)
-    df["volume"] = df["vol"].astype(float)
-    return df
 
 
 if __name__ == "__main__":
@@ -568,7 +540,7 @@ if __name__ == "__main__":
     data_map = {}
     for sym in symbols:
         print(f"Fetching {sym} ...")
-        data_map[sym] = _fetch_okx(sym)
+
 
     engine = SignalEngine()
     signals = engine.generate(data_map)

@@ -2,7 +2,7 @@
  * API client for the AIInvest backend
  * Connects to the FastAPI backend with multi-model orchestration
  */
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const AI_ENGINE_URL = process.env.NEXT_PUBLIC_AI_ENGINE_URL || "http://localhost:8000";
 
 // --- Error handling ---
 
@@ -43,7 +43,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
       mergedHeaders[key] = value;
     });
   }
-  const res = await fetch(`${API_BASE_URL}${path}`, {
+  const res = await fetch(`${AI_ENGINE_URL}${path}`, {
     ...rest,
     headers: mergedHeaders,
   });
@@ -377,7 +377,7 @@ export interface AlphaBenchResult {
 async function uploadFileHandler(file: File): Promise<UploadResult> {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch(`${API_BASE_URL}/agent/upload`, {
+  const res = await fetch(`${AI_ENGINE_URL}/api/agent/upload`, {
     method: "POST",
     body: form,
   });
@@ -392,90 +392,90 @@ export const api = {
 
   // --- Agent methods (keep existing paths) ---
   sendMessage: (sessionId: string, message: string) =>
-    request<Record<string, unknown>>("/agent/run", {
+    request<Record<string, unknown>>("/api/agent/run", {
       method: "POST",
       body: JSON.stringify({ input: message, stream: true, session_id: sessionId }),
     }),
-
-  sseUrl: (sessionId: string) =>
-    `${API_BASE_URL}/agent/run/${sessionId}/stream`,
-
-  createSession: (initialPrompt: string) =>
-    request<{ session_id: string }>("/agent/run", {
-      method: "POST",
-      body: JSON.stringify({ input: initialPrompt, stream: true }),
-    }),
-
-  cancelSession: (sessionId: string) =>
-    request<Record<string, unknown>>(`/agent/cancel/${sessionId}`, { method: "POST" }),
-
-  getSessionMessages: (sessionId: string) =>
-    request<MessageItem[]>(`/agent/sessions/${sessionId}/messages`),
-
-  getRun: (runId: string) =>
-    request<RunData>(`/api/runs/${runId}`),
-
-  getRunPine: (runId: string) =>
-    request<PineScriptResult>(`/api/runs/${runId}/pine`),
-
-  // --- Run methods ---
-  listRuns: () => request<RunListItem[]>("/api/runs"),
-  getRunCode: (id: string) => request<Record<string, string>>(`/api/runs/${id}/code`),
-
-  // --- Session methods ---
-  listSessions: () => request<SessionItem[]>("/agent/sessions"),
-  deleteSession: (sid: string) =>
-    request<{ status: string }>(`/agent/sessions/${sid}`, { method: "DELETE" }),
-  renameSession: (sid: string, title: string) =>
-    request<{ status: string }>(`/agent/sessions/${sid}`, {
-      method: "PATCH",
-      body: JSON.stringify({ title }),
-    }),
-
-  // --- Swarm API ---
-  listSwarmPresets: () => request<SwarmPreset[]>("/swarm/presets"),
-  createSwarmRun: (preset_name: string, user_vars: Record<string, string>) =>
-    request<{ id: string; status: string }>("/swarm/runs", {
-      method: "POST",
-      body: JSON.stringify({ preset_name, user_vars }),
-    }),
-  listSwarmRuns: () => request<SwarmRunSummary[]>("/swarm/runs"),
-  getSwarmRun: (id: string) => request<Record<string, unknown>>(`/swarm/runs/${id}`),
-  swarmSseUrl: (id: string) => `${API_BASE_URL}/swarm/runs/${id}/events`,
-  cancelSwarmRun: (id: string) =>
-    request<{ status: string }>(`/swarm/runs/${id}/cancel`, { method: "POST" }),
-
-  // --- Settings API ---
-  getLLMSettings: () => request<LLMSettings>("/settings/llm"),
-  updateLLMSettings: (settings: UpdateLLMSettingsRequest) =>
-    request<LLMSettings>("/settings/llm", {
-      method: "PUT",
-      body: JSON.stringify(settings),
-    }),
-  getDataSourceSettings: () => request<DataSourceSettings>("/settings/data-sources"),
-  updateDataSourceSettings: (settings: UpdateDataSourceSettingsRequest) =>
-    request<DataSourceSettings>("/settings/data-sources", {
-      method: "PUT",
-      body: JSON.stringify(settings),
-    }),
-
-  // --- Alpha Zoo API ---
-  listAlphas: (params: AlphaListParams = {}) => {
-    const q = new URLSearchParams();
-    if (params.zoo) q.set("zoo", params.zoo);
-    if (params.theme) q.set("theme", params.theme);
-    if (params.universe) q.set("universe", params.universe);
-    if (params.limit !== undefined) q.set("limit", String(params.limit));
-    const qs = q.toString();
-    return request<AlphaListResponse>(`/alpha/list${qs ? `?${qs}` : ""}`);
-  },
-  getAlpha: (alphaId: string) =>
-    request<AlphaDetailResponse>(`/alpha/${encodeURIComponent(alphaId)}`),
-  createAlphaBench: (body: AlphaBenchRequest) =>
-    request<{ status: string; job_id: string }>("/alpha/bench", {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-  alphaBenchStreamUrl: (jobId: string) =>
-    `${API_BASE_URL}/alpha/bench/${encodeURIComponent(jobId)}/stream`,
+ 
+   sseUrl: (sessionId: string) =>
+     `${AI_ENGINE_URL}/api/agent/run/${sessionId}/stream`,
+ 
+   createSession: (initialPrompt: string) =>
+     request<{ session_id: string }>("/api/agent/run", {
+       method: "POST",
+       body: JSON.stringify({ input: initialPrompt, stream: true }),
+     }),
+ 
+   cancelSession: (sessionId: string) =>
+     request<Record<string, unknown>>(`/api/agent/cancel/${sessionId}`, { method: "POST" }),
+ 
+   getSessionMessages: (sessionId: string) =>
+     request<MessageItem[]>(`/api/agent/sessions/${sessionId}/messages`),
+ 
+   getRun: (runId: string) =>
+     request<RunData>(`/api/runs/${runId}`),
+ 
+   getRunPine: (runId: string) =>
+     request<PineScriptResult>(`/api/runs/${runId}/pine`),
+ 
+   // --- Run methods ---
+   listRuns: () => request<RunListItem[]>("/api/runs"),
+   getRunCode: (id: string) => request<Record<string, string>>(`/api/runs/${id}/code`),
+ 
+   // --- Session methods ---
+   listSessions: () => request<SessionItem[]>("/api/agent/sessions"),
+   deleteSession: (sid: string) =>
+     request<{ status: string }>(`/api/agent/sessions/${sid}`, { method: "DELETE" }),
+   renameSession: (sid: string, title: string) =>
+     request<{ status: string }>(`/api/agent/sessions/${sid}`, {
+       method: "PATCH",
+       body: JSON.stringify({ title }),
+     }),
+ 
+   // --- Swarm API ---
+   listSwarmPresets: () => request<SwarmPreset[]>("/api/swarm/presets"),
+   createSwarmRun: (preset_name: string, user_vars: Record<string, string>) =>
+     request<{ id: string; status: string }>("/api/swarm/runs", {
+       method: "POST",
+       body: JSON.stringify({ preset_name, user_vars }),
+     }),
+   listSwarmRuns: () => request<SwarmRunSummary[]>("/api/swarm/runs"),
+   getSwarmRun: (id: string) => request<Record<string, unknown>>(`/api/swarm/runs/${id}`),
+   swarmSseUrl: (id: string) => `${AI_ENGINE_URL}/api/swarm/runs/${id}/events`,
+   cancelSwarmRun: (id: string) =>
+     request<{ status: string }>(`/api/swarm/runs/${id}/cancel`, { method: "POST" }),
+ 
+   // --- Settings API ---
+   getLLMSettings: () => request<LLMSettings>("/api/settings/llm"),
+   updateLLMSettings: (settings: UpdateLLMSettingsRequest) =>
+     request<LLMSettings>("/api/settings/llm", {
+       method: "PUT",
+       body: JSON.stringify(settings),
+     }),
+   getDataSourceSettings: () => request<DataSourceSettings>("/api/settings/data-sources"),
+   updateDataSourceSettings: (settings: UpdateDataSourceSettingsRequest) =>
+     request<DataSourceSettings>("/api/settings/data-sources", {
+       method: "PUT",
+       body: JSON.stringify(settings),
+     }),
+ 
+   // --- Alpha Zoo API ---
+   listAlphas: (params: AlphaListParams = {}) => {
+     const q = new URLSearchParams();
+     if (params.zoo) q.set("zoo", params.zoo);
+     if (params.theme) q.set("theme", params.theme);
+     if (params.universe) q.set("universe", params.universe);
+     if (params.limit !== undefined) q.set("limit", String(params.limit));
+     const qs = q.toString();
+     return request<AlphaListResponse>(`/api/alpha/list${qs ? `?${qs}` : ""}`);
+   },
+   getAlpha: (alphaId: string) =>
+     request<AlphaDetailResponse>(`/api/alpha/${encodeURIComponent(alphaId)}`),
+   createAlphaBench: (body: AlphaBenchRequest) =>
+     request<{ status: string; job_id: string }>("/api/alpha/bench", {
+       method: "POST",
+       body: JSON.stringify(body),
+     }),
+   alphaBenchStreamUrl: (jobId: string) =>
+     `${AI_ENGINE_URL}/api/alpha/bench/${encodeURIComponent(jobId)}/stream`,
 };

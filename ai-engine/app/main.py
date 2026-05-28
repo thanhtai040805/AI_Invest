@@ -6,10 +6,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
 
-from app.brain.lifespan import lifespan
+from app.lifespan import lifespan
 from app.config.settings import get_settings
 from app.services.dnse.stream_hub import get_stream_hub
-from app.routers import market_data, stock_data, screener, stream, backtest, agent, swarm, skills, trading_agents, shadow_account, factors, tools, session, providers, config, memory, dataflows, graph, core, llm_clients, security, hypotheses, preflight, ui_services, vibe_routes, runs
+from app.routers import market_data, stock_data, screener, stream, backtest, agent, swarm, skills, trading_agents, shadow_account, factors, tools, session, providers, config, memory, dataflows, graph, core, llm_clients, security, hypotheses, preflight, ui_services, vibe_routes, runs, ai_routes, admin
 
 app = FastAPI(
     title="AIInvest AI Engine",
@@ -85,5 +85,25 @@ app.include_router(security.router, prefix="/api/security", tags=["Security"])
 app.include_router(hypotheses.router, prefix="/api/hypotheses", tags=["Hypotheses"])
 app.include_router(preflight.router, prefix="/api/preflight", tags=["Preflight"])
 app.include_router(ui_services.router, prefix="/api/ui-services", tags=["UIServices"])
+app.include_router(ai_routes.router, prefix="/api/ai", tags=["AI Bridge"])
 app.include_router(vibe_routes.router, prefix="/api/vibe-api", tags=["VibeAPI"])
 app.include_router(runs.router, prefix="/api", tags=["Runs"])
+app.include_router(admin.router, prefix="/api", tags=["Admin"])
+
+# Stub routes for frontend-compat — delegate to existing handlers
+@app.get("/api/alpha/list")
+async def alpha_list():
+    from app.brain.quant.factors.registry import get_default_registry
+    registry = get_default_registry()
+    manifest = registry.export_manifest()
+    factors = []
+    for zoo in manifest.get("zoos", []):
+        for alpha in zoo.get("alphas", []):
+            meta = alpha.get("meta", {})
+            factors.append({
+                "alpha_id": alpha["id"],
+                "zoo": zoo["zoo_id"],
+                "theme": meta.get("theme", []),
+                "nickname": meta.get("nickname", ""),
+            })
+    return {"factors": factors}

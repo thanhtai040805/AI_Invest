@@ -406,18 +406,6 @@ def _fetch_sp500_constituents() -> list[str]:
     return []
 
 
-def _load_btc_panel(start: str, end: str) -> dict[str, pd.DataFrame]:
-    """Single-instrument BTC-USDT panel via OKX. Adds vwap = typical price."""
-    from backtest.loaders.registry import resolve_loader
-
-    loader = resolve_loader("crypto")
-    fetched = _retry(lambda: loader.fetch(["BTC-USDT"], start, end)) or {}
-    panel = _wide_from_fetched(fetched, include_amount=False)
-    if all(k in panel for k in ("open", "high", "low", "close")):
-        panel["vwap"] = (panel["open"] + panel["high"] + panel["low"] + panel["close"]) / 4.0
-    return panel
-
-
 def _wide_from_fetched(
     fetched: dict[str, pd.DataFrame], *, include_amount: bool
 ) -> dict[str, pd.DataFrame]:

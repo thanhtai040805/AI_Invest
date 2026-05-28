@@ -22,35 +22,7 @@ import pandas as pd
 from smartmoneyconcepts import smc
 
 
-def _fetch_okx(inst_id: str, bar: str = "1D", limit: int = 300) -> pd.DataFrame:
-    """从 OKX 获取K线数据。
 
-    Args:
-        inst_id: 交易对，如 "BTC-USDT"。
-        bar: K线周期，默认日线。
-        limit: 获取K线数量。
-
-    Returns:
-        包含 open/high/low/close/volume 列的 DataFrame，index 为 datetime。
-    """
-    import requests
-
-    resp = requests.get(
-        "https://www.okx.com/api/v5/market/candles",
-        params={"instId": inst_id, "bar": bar, "limit": str(limit)},
-    )
-    candles = resp.json()["data"]
-    columns = [
-        "ts", "open", "high", "low", "close",
-        "vol", "volCcy", "volCcyQuote", "confirm",
-    ]
-    df = pd.DataFrame(reversed(candles), columns=columns)
-    df["ts"] = pd.to_datetime(df["ts"].astype("int64"), unit="ms")
-    df = df.set_index("ts")
-    for col in ["open", "high", "low", "close"]:
-        df[col] = df[col].astype(float)
-    df["volume"] = df["vol"].astype(float)
-    return df
 
 
 class SignalEngine:
@@ -163,7 +135,7 @@ if __name__ == "__main__":
     for inst in instruments:
         print(f"\n获取 {inst} 日线数据...")
         try:
-            data_map[inst] = _fetch_okx(inst, bar="1D", limit=300)
+
             print(f"  {inst}: {len(data_map[inst])} 根K线")
         except Exception as e:
             print(f"  {inst} 获取失败: {e}")

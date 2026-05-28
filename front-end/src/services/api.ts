@@ -227,8 +227,6 @@ export const aiAPI = {
     });
     return response;
   },
-  getConsensus: (symbol: string) =>
-    apiClient.get(`/ai/consensus/${symbol}`).then(r => r.data),
   submitBacktest: (params: { symbol: string; strategy: string; startDate: string; endDate: string; params?: Record<string, unknown> }) =>
     apiClient.post('/ai/backtest', params).then(r => r.data),
   getBacktestStatus: (jobId: string) =>

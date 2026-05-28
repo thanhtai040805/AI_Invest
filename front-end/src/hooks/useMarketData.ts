@@ -495,18 +495,6 @@ export function usePortfolioPositions() {
   });
 }
 
-export function useAIConsensus(symbol: string) {
-  return useQuery({
-    queryKey: ['ai', 'consensus', symbol],
-    queryFn: () => aiAPI.getConsensus(symbol),
-    enabled: !!symbol,
-    staleTime: 5 * 60 * 1000,
-    gcTime: 5 * 60_000,
-    refetchOnMount: false,
-    refetchOnWindowFocus: false,
-  });
-}
-
 export function useStockNews(symbol: string) {
   return useQuery({
     queryKey: ['stock', symbol, 'news'],

@@ -35,9 +35,9 @@ async def get_config():
         return {
             "dnse_enabled": settings.dnse_enabled,
             "dnse_configured": settings.dnse_configured,
-            "gemini_api_key_configured": bool(settings.gemini_api_key),
-            "groq_api_key_configured": bool(settings.groq_api_key),
-            "openrouter_api_key_configured": bool(settings.openrouter_api_key),
+            "nvidia_configured": bool(settings.llm_nvidia_key),
+            "groq0_configured": bool(settings.llm_groq_key0),
+            "groq1_configured": bool(settings.llm_groq_key1),
         }
         
     except Exception as e:

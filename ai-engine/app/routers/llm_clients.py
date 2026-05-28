@@ -4,22 +4,22 @@ LLM Clients Router - AI Agents integration
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 
 router = APIRouter(tags=["LLMClients"])
 
 
 class LLMClientRequest(BaseModel):
     """LLM client request."""
-    
-    client_name: str = Field(..., description="Client name")
+
+    client_name: str = Field(..., description="Client name (groq0, groq1, nvidia)")
     prompt: str = Field(..., description="Prompt to send")
     parameters: Optional[Dict[str, Any]] = Field(None, description="Client parameters")
 
 
 class LLMClientResponse(BaseModel):
     """LLM client response."""
-    
+
     client_name: str
     status: str
     response: Optional[str] = None
@@ -29,31 +29,29 @@ class LLMClientResponse(BaseModel):
 @router.get("/list")
 async def list_llm_clients():
     """List available LLM clients from AI agents."""
-    from app.brain.providers import GeminiAgent, GroqAgent, OpenRouterAgent, OpenAIAgent
-    
+    from app.brain.providers.groq_client import GroqAgent
+
     clients = [
         {
-            "name": "gemini",
-            "description": "Google Gemini - Document reader/analyst for long content",
-            "role": "deep_analysis",
-        },
-        {
-            "name": "openai",
-            "description": "OpenAI - Reasoning/judge for stable synthesis",
+            "name": "groq0",
+            "description": "Groq llama-3.3-70b-versatile - Reasoning sâu, tổng hợp, chốt luận điểm",
             "role": "reasoning",
+            "model": "llama-3.3-70b-versatile",
         },
         {
-            "name": "groq",
-            "description": "Groq - Fast realtime tasks and signal scoring",
-            "role": "realtime",
+            "name": "groq1",
+            "description": "Groq qwen/qwen3-32b - Structured output, JSON, classification, cross-check",
+            "role": "structured_output",
+            "model": "qwen/qwen3-32b",
         },
         {
-            "name": "openrouter",
-            "description": "OpenRouter - Routing/fallback gateway",
-            "role": "routing",
+            "name": "nvidia",
+            "description": "NVIDIA minimaxai/minimax-m2.7 - Document reader/analyst cho news và báo cáo",
+            "role": "document_analysis",
+            "model": "minimaxai/minimax-m2.7",
         },
     ]
-    
+
     return {"clients": clients}
 
 
@@ -61,48 +59,53 @@ async def list_llm_clients():
 async def chat_with_client(request: LLMClientRequest):
     """
     Chat with an LLM client using AI agents.
-    
+
     Args:
         request: LLM client request
-        
+
     Returns:
         LLM client response
     """
     try:
-        from app.brain.providers import GeminiAgent, GroqAgent, OpenRouterAgent, OpenAIAgent
-        import os
-        
-        # Map client name to agent class
-        agent_classes = {
-            "gemini": (GeminiAgent, "GEMINI_API_KEY", "gemini-1.5-flash"),
-            "openai": (OpenAIAgent, "OPENAI_API_KEY", "gpt-4o-mini"),
-            "groq": (GroqAgent, "GROQ_API_KEY", "llama3-70b-8192"),
-            "openrouter": (OpenRouterAgent, "OPENROUTER_API_KEY", "deepseek/deepseek-v4-flash:free"),
-        }
-        
-        if request.client_name not in agent_classes:
+        from app.brain.providers.groq_client import GroqAgent
+        from app.config.settings import get_settings
+        from openai import OpenAI
+        s = get_settings()
+
+        if request.client_name == "groq0":
+            agent = GroqAgent(
+                api_key=s.llm_groq_key0,
+                model=s.llm_groq_model0,
+            )
+        elif request.client_name == "groq1":
+            agent = GroqAgent(
+                api_key=s.llm_groq_key1,
+                model=s.llm_groq_model1,
+            )
+        elif request.client_name == "nvidia":
+            client = OpenAI(base_url="https://integrate.api.nvidia.com/v1", api_key=s.llm_nvidia_key)
+            response = client.chat.completions.create(
+                model=s.llm_nvidia_model,
+                messages=[{"role": "user", "content": request.prompt}],
+                max_tokens=2048,
+            )
+            return LLMClientResponse(
+                client_name=request.client_name,
+                status="success",
+                response=response.choices[0].message.content,
+            )
+        else:
             raise HTTPException(status_code=404, detail=f"Client {request.client_name} not found")
-        
-        agent_class, api_key_env, default_model = agent_classes[request.client_name]
-        api_key = os.getenv(api_key_env)
-        
-        if not api_key:
-            raise HTTPException(status_code=400, detail=f"API key for {request.client_name} not configured")
-        
-        # Initialize agent
-        agent = agent_class(
-            api_key=api_key,
-            model=request.parameters.get("model", default_model) if request.parameters else default_model,
-        )
-        
-        # Send prompt
+
         response = await agent.analyze(request.prompt)
-        
+
         return LLMClientResponse(
             client_name=request.client_name,
             status="success",
             response=response.get("content"),
         )
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

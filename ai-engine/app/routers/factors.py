@@ -104,13 +104,18 @@ async def list_factors():
     """List all registered factors grouped by zoo."""
     registry = get_default_registry()
     manifest = registry.export_manifest()
-    return {
-        "factors": [
-            {"alpha_id": aid, "zoo": info["zoo"], "theme": info.get("theme", []),
-             "nickname": info.get("nickname", ""), "universe": info.get("universe", [])}
-            for aid, info in manifest["alphas"].items()
-        ]
-    }
+    factors = []
+    for zoo in manifest.get("zoos", []):
+        for alpha in zoo.get("alphas", []):
+            meta = alpha.get("meta", {})
+            factors.append({
+                "alpha_id": alpha["id"],
+                "zoo": zoo["zoo_id"],
+                "theme": meta.get("theme", []),
+                "nickname": meta.get("nickname", ""),
+                "universe": meta.get("universe", []),
+            })
+    return {"factors": factors}
 
 
 @router.get("/info/{alpha_id}", response_model=FactorMetaResponse)

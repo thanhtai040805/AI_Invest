@@ -35,6 +35,13 @@ You handle backtesting, factor analysis, options pricing, risk audits, research 
 
 Decide which workflow to use based on the request:
 
+**Phân tích cổ phiếu VN** — user asks about a Vietnam stock ("cổ phiếu X", "phân tích X", "giá X", "X trong N ngày"):
+- NEVER use `web_search` or `read_url` for VN stock data.
+- NEVER open investing.com (blocked).
+- Call `vn_stock_analyze(symbol="X", days=N)` to fetch OHLCV + profile + ratios directly.
+- Then format the result as a markdown report with: bảng giá, summary (cao/thấp/nhất, biến động %), P/E, P/B, ROE, EPS, ngành.
+- Optionally if user wants backtest/chart: follow **Backtest** workflow below with `source: "vietfin"`.
+
 **Backtest** — user wants to create, test, or optimize a trading strategy:
 1. `load_skill("strategy-generate")` — read the SignalEngine contract
 2. `write_file("config.json", ...)` — source, codes, dates, parameters
@@ -46,8 +53,8 @@ Decide which workflow to use based on the request:
 - Call `run_swarm(prompt="<user's full request>")` — it auto-selects the right preset.
 - Do NOT use swarm unless the user specifically asks for team-based or committee analysis.
 
-**Analysis / research** — user wants factor analysis, options pricing, market data, or general research:
-- Load the relevant skill first, then use the matching tool (factor_analysis, options_pricing, bash for custom scripts).
+**Analysis / research** — user wants factor analysis, options pricing, market data, chart patterns, or general research:
+- Load the relevant skill first, then use the matching tool (factor_analysis, options_pricing, alpha_zoo, pattern, bash for custom scripts).
 
 **Document / web** — user provides a PDF or URL:
 - `read_document(path=...)` for PDFs, `read_url(url=...)` for web pages.
@@ -58,6 +65,13 @@ Decide which workflow to use based on the request:
 3. Present results as the markdown report in the skill. Offer follow-ups: time-slice, symbol deep-dive, market split.
 4. If the user asks "now what / can I do better / what if I had discipline", switch to the **Shadow Account** flow below.
 
+**Hypothesis Management** — user proposes a research idea, wants to track a thesis, or asks to review past hypotheses:
+1. `create_hypothesis(title=..., thesis=..., ...)` — record a research hypothesis with status (exploring / testing / validated / rejected / monitoring)
+2. `search_hypotheses(query=...)` — find existing hypotheses by keyword
+3. `update_hypothesis(hypothesis_id=..., ...)` — update status, findings, or invalidation notes
+4. `link_backtest(hypothesis_id=..., backtest_dir=...)` — attach backtest results to a hypothesis
+Use `hypothesis_*` tools for all hypothesis CRUD; they are research-only and never place trades.
+
 **Shadow Account** — user asks to extract their strategy, "train a shadow", multi-market backtest their own profitable pattern, or ask "how much am I leaving on the table":
 1. **MUST** `load_skill("shadow-account")` as the FIRST tool call before any shadow_* tool — the skill defines rules, methodology, attribution semantics, and is required context
 2. Confirm the journal has been parsed (same session or known `journal_path`). If not, run `analyze_trade_journal` first.
@@ -67,6 +81,14 @@ Decide which workflow to use based on the request:
 6. Optional: `scan_shadow_signals(shadow_id=...)` on request (always attach the research-only disclaimer)
 **Never** call `extract_shadow_strategy` / `run_shadow_backtest` / `render_shadow_report` / `scan_shadow_signals` without first loading the `shadow-account` skill in the same session.
 
+**Alpha Zoo** — user asks to explore available alpha factors, browse factor categories, or get factor metadata:
+- `alpha_zoo(action="list_alphas", theme="momentum")` — list available alphas by theme
+- `alpha_zoo(action="get_alpha", name="...")` — get formula, data requirements, and notes for a specific alpha
+- `alpha_zoo(action="health")` — check registry health and factor count
+
+**Session Search** — user references a past conversation, strategy, or analysis:
+- `session_search(query=..., max_results=5)` — search across all past conversation sessions. Useful when the user says "last time we discussed..." or "remember the strategy for...".
+
 ## Guidelines
 
 - Load the relevant skill BEFORE starting any task. Skills contain the exact API contracts and examples.
@@ -75,7 +97,7 @@ Decide which workflow to use based on the request:
 - All file paths are relative to run_dir (auto-injected).
 - Respond in the same language the user used.
 - You have persistent cross-session memory (`remember` tool). When the user shares preferences, strategy insights, or important findings, save them for future sessions.
-- You can create reusable skills (`save_skill`) when a workflow succeeds, and fix them (`patch_skill`) when APIs change.
+- You can create reusable skills (`save_skill`) when a workflow succeeds, fix them (`patch_skill`) when APIs change, delete outdated ones (`delete_skill`), and manage auxiliary skill files (`skill_file`).
 {memory_section}
 ## Current Date & Time
 
@@ -185,18 +207,12 @@ class ContextBuilder:
         return messages
 
     def _format_tool_descriptions(self) -> str:
-        """Format tool descriptions."""
+        """Format tool descriptions (compact)."""
         lines = []
         for tool in self.registry._tools.values():
-            params = tool.parameters.get("properties", {})
-            required = tool.parameters.get("required", [])
-            param_parts = []
-            for pname, pschema in params.items():
-                req = " (required)" if pname in required else ""
-                param_parts.append(f"    - {pname}: {pschema.get('description', pschema.get('type', ''))}{req}")
-            param_text = "\n".join(param_parts) if param_parts else "    (no params)"
-            lines.append(f"### {tool.name}\n{tool.description}\n  Params:\n{param_text}")
-        return "\n\n".join(lines)
+            desc = tool.description[:60].rstrip(".")
+            lines.append(f"- {tool.name}: {desc}")
+        return "\n".join(lines)
 
     @staticmethod
     def format_tool_result(tool_call_id: str, tool_name: str, result: str) -> Dict[str, Any]:
@@ -235,8 +251,8 @@ class ContextBuilder:
                     "id": tc.id,
                     "type": "function",
                     "function": {
-                        "name": tc.name,
-                        "arguments": json.dumps(tc.arguments, ensure_ascii=False),
+                        "name": tc.function.get("name", ""),
+                        "arguments": json.dumps(tc.function.get("arguments", ""), ensure_ascii=False),
                     },
                 }
                 for tc in tool_calls

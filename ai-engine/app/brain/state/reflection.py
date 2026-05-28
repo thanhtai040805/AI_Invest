@@ -3,8 +3,7 @@ Reflection - Reflect on trading decisions to learn from outcomes
 """
 import logging
 from typing import Dict, Any, Optional
-from ..agents.openai_client import OpenAIAgent
-from ..orchestrator import graph_orchestrator
+from ..providers.orchestrator import graph_orchestrator
 
 logger = logging.getLogger(__name__)
 

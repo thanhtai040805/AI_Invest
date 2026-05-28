@@ -171,41 +171,26 @@ class AIService:
         )
 
     async def _call_llm_api(self, prompt: str) -> Optional[str]:
-        """Perform direct HTTPS API call to OpenAI or Gemini based on settings."""
+        """Use NVIDIA (minimaxai/minimax-m2.7) for document/news analysis via OpenAI-compatible API."""
+        from app.config.settings import get_settings
         settings = get_settings()
-        if not settings.llm_api_key:
-            logger.warning("LLM API Key not configured. Using high-quality rule fallback.")
+        if not settings.llm_nvidia_key:
+            logger.warning("NVIDIA API Key not configured. Using high-quality rule fallback.")
             return None
 
-        provider = settings.llm_provider.lower().strip()
         try:
-            async with httpx.AsyncClient() as client:
-                if provider == "openai":
-                    resp = await client.post(
-                        "https://api.openai.com/v1/chat/completions",
-                        headers={"Authorization": f"Bearer {settings.llm_api_key}"},
-                        json={
-                            "model": "gpt-4o-mini",
-                            "messages": [{"role": "user", "content": prompt}],
-                            "temperature": 0.3
-                        },
-                        timeout=30.0
-                    )
-                    if resp.status_code == 200:
-                        return resp.json()["choices"][0]["message"]["content"].strip()
-                elif provider == "gemini":
-                    resp = await client.post(
-                        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={settings.llm_api_key}",
-                        json={
-                            "contents": [{"parts": [{"text": prompt}]}]
-                        },
-                        timeout=30.0
-                    )
-                    if resp.status_code == 200:
-                        return resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            from openai import OpenAI
+            client = OpenAI(base_url="https://integrate.api.nvidia.com/v1", api_key=settings.llm_nvidia_key)
+            response = client.chat.completions.create(
+                model=settings.llm_nvidia_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=2048,
+            )
+            return response.choices[0].message.content.strip()
         except Exception as e:
-            logger.error(f"LLM API call failed: {e}")
-        return None
+            logger.error(f"NVIDIA API call failed: {e}")
+            return None
 
     def _generate_analysis(self, prompt: str, context: Dict) -> str:
         """Fallback synchronous handler for background tasks calling _generate_analysis."""

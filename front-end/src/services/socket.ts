@@ -341,17 +341,6 @@ class SocketClient {
     };
   }
 
-  subscribeAlerts(callback: EventCallback): () => void {
-    this.connect();
-    const handler = (data: unknown) => callback(data);
-    this.socket?.on('alert:triggered', handler);
-    this.registerListener('alert:triggered', handler);
-    return () => {
-      this.socket?.off('alert:triggered', handler);
-      this.removeListener('alert:triggered', handler);
-    };
-  }
-
   private registerListener(event: string, callback: EventCallback) {
     if (!this.listeners.has(event)) {
       this.listeners.set(event, new Set());

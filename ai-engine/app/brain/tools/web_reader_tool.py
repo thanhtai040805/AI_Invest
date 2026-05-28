@@ -38,6 +38,8 @@ def _url_allowed(url: str) -> tuple[bool, str]:
     host = parsed.hostname.rstrip(".").lower()
     if host == "localhost" or host.endswith(".localhost") or host.endswith(".local"):
         return False, "target URL is not allowed"
+    if host == "investing.com" or host.endswith(".investing.com"):
+        return False, "investing.com is not allowed"
 
     ip_host = host.split("%", 1)[0]
     try:

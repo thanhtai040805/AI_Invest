@@ -143,6 +143,12 @@ class EventBus:
             data=data or {},
             session_id=session_id,
         )
+        # Log key events for AI flow visibility
+        if event_type in ("attempt.started", "attempt.completed", "attempt.failed", "attempt.error",
+                          "text_delta", "thinking_done", "tool_call", "tool_result", "tool_progress",
+                          "message.received"):
+            preview = json.dumps(data or {}, ensure_ascii=False)[:200]
+            logger.info(f"[SSE] {session_id[:12]} | {event_type} | {preview}")
         self.publish(event)
         return event
 

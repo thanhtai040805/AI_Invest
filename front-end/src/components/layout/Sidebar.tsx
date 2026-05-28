@@ -10,9 +10,8 @@ const navItems = [
   { name: "Tin tức AI",   href: "/market-news",     icon: "newspaper" },
   { name: "Lọc cổ phiếu", href: "/screener",         icon: "filter_list" },
   { name: "Biểu đồ",      href: "/advanced-chart",   icon: "candlestick_chart" },
-  { name: "Cảnh báo",     href: "/alerts",            icon: "notifications" },
   { name: "Cộng đồng",    href: "/community",         icon: "groups" },
-  { name: "Trợ lý AI",    href: "/ai-assistant",      icon: "auto_awesome" },
+  { name: "Trợ lý AI",    href: "/agent",      icon: "auto_awesome" },
   { name: "Danh mục",     href: "/portfolio",         icon: "account_balance_wallet" },
   { name: "Auto-Pilot",   href: "/auto-pilot",        icon: "rocket_launch" },
   { name: "So sánh",      href: "/compare",           icon: "compare_arrows" },
@@ -21,7 +20,6 @@ const navItems = [
 ];
 
 const bottomItems = [
-  { name: "Mô phỏng", href: "/simulator", icon: "science" },
   { name: "Cài đặt",  href: "/settings",  icon: "settings" },
 ];
 

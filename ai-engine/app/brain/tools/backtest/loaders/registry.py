@@ -1,10 +1,9 @@
-"""Loader registry with market-level fallback chains.
+"""Loader registry with Vietnam market fallback chain.
 
 Loaders self-register via the ``@register`` decorator when their module is
-first imported.  The ``_ensure_registered()`` helper lazily imports every
+first imported. The ``_ensure_registered()`` helper lazily imports every
 known loader module so that callers of ``resolve_loader`` /
-``get_loader_cls_with_fallback`` never see an empty registry — regardless
-of import order.
+``get_loader_cls_with_fallback`` never see an empty registry.
 """
 
 from __future__ import annotations
@@ -16,43 +15,26 @@ from backtest.loaders.base import NoAvailableSourceError
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Global registry: source_name -> loader class
-# ---------------------------------------------------------------------------
-
 LOADER_REGISTRY: dict[str, Type[Any]] = {}
 
 _registered = False
 
 
 def register(cls: Type[Any]) -> Type[Any]:
-    """Class decorator: register a loader into the global registry.
-
-    The class must have a ``name`` class attribute.
-    """
+    """Class decorator: register a loader into the global registry."""
     LOADER_REGISTRY[cls.name] = cls
     return cls
 
 
 def _ensure_registered() -> None:
-    """Import every known loader module so ``@register`` decorators fire.
-
-    Safe to call multiple times — only runs the imports once.
-    Loaders whose dependencies are missing (e.g. ``akshare`` not installed)
-    are silently skipped.
-    """
+    """Import every known loader module so ``@register`` decorators fire."""
     global _registered
     if _registered:
         return
     _registered = True
 
     _loader_modules = [
-        "backtest.loaders.tushare",
-        "backtest.loaders.okx",
-        "backtest.loaders.yfinance_loader",
-        "backtest.loaders.akshare_loader",
-        "backtest.loaders.ccxt_loader",
-        "backtest.loaders.futu",
+        "backtest.loaders.vietfin_loader",
         "backtest.loaders.dnse_loader",
     ]
     import importlib
@@ -63,31 +45,16 @@ def _ensure_registered() -> None:
             pass
 
 
-# ---------------------------------------------------------------------------
-# Fallback chains: market_type -> ordered list of source names
-# ---------------------------------------------------------------------------
-
 FALLBACK_CHAINS: dict[str, list[str]] = {
-    "a_share":   ["tushare", "akshare"],
-    "vn_equity": ["dnse"],
-    "us_equity": ["yfinance", "akshare"],
-    "hk_equity": ["yfinance", "futu", "akshare"],
-    "crypto":    ["okx", "ccxt"],
-    "futures":   ["tushare", "akshare"],
-    "fund":      ["tushare", "akshare"],
-    "macro":     ["akshare", "tushare"],
-    "forex":     ["akshare", "yfinance"],
+    "vn_equity": ["dnse", "vietfin"],
 }
 
 
 def resolve_loader(market: str) -> Any:
     """Return the first *available* loader instance for *market*.
 
-    Walks the fallback chain and returns the first loader whose
-    ``is_available()`` returns ``True``.
-
     Args:
-        market: Market type key (e.g. ``"a_share"``, ``"crypto"``).
+        market: Market type key (e.g. ``"vn_equity"``).
 
     Returns:
         A loader instance.
@@ -102,9 +69,6 @@ def resolve_loader(market: str) -> Any:
         if name not in LOADER_REGISTRY:
             continue
         tried.append(name)
-        # Issue #50 — some loaders (e.g. Tushare) call into the SDK during
-        # __init__ and raise on missing credentials. Treat that the same as
-        # is_available()=False so the fallback chain keeps walking.
         try:
             loader = LOADER_REGISTRY[name]()
         except Exception as exc:

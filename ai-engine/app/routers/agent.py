@@ -83,7 +83,7 @@ async def agent_run(body: AgentRunRequest, request: Request):
             session_id=session_id,
             content=body.input,
             role="user",
-            include_shell_tools=False,
+            include_shell_tools=True,
         )
         return AgentRunResponse(
             session_id=session_id,

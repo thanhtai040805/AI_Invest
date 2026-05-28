@@ -1,14 +1,16 @@
 'use client';
 
+import { useState } from 'react';
 import { useRealtimeContext } from '@/providers/RealtimeProvider';
 import { useMarketSession } from '@/hooks/useMarketSession';
 import { cn } from '@/lib/utils';
 
 export function ConnectionStatus() {
+  const [dismissed, setDismissed] = useState(false);
   const { status, isReconnecting, lastReconnectAt } = useRealtimeContext();
   const { isOpen, state, nextEvent, timeUntilNextEvent } = useMarketSession();
 
-  if (status === 'connected' && isOpen) {
+  if ((status === 'connected' && isOpen) || dismissed) {
     return null;
   }
 
@@ -67,6 +69,12 @@ export function ConnectionStatus() {
         )} />
       </span>
       <span>{info.text}</span>
+      <button
+        onClick={() => setDismissed(true)}
+        className="ml-2 inline-flex items-center justify-center rounded-md px-1.5 py-0.5 text-[11px] font-medium text-white/70 hover:bg-white/20 hover:text-white transition-colors"
+      >
+        ✕
+      </button>
     </div>
   );
 }

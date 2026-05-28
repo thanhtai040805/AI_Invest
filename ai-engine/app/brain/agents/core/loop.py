@@ -379,7 +379,7 @@ class AgentLoop:
                     logger.info(f"Auto compact triggered: {tokens} tokens > {TOKEN_THRESHOLD}")
                     self._auto_compact(messages, run_dir, trace)
 
-                logger.info(f"ReAct iteration {iteration}/{self.max_iterations}")
+                logger.info(f"ReAct iteration {iteration}/{self.max_iterations} | messages={len(messages)} | tokens~{estimate_tokens(messages)}")
 
                 # Streaming output + collect thinking text
                 thinking_chunks: List[str] = []
@@ -396,20 +396,24 @@ class AgentLoop:
 
                 thinking_text = "".join(thinking_chunks)
                 if thinking_text:
+                    logger.info(f"  [THINK]  iter={iteration} {thinking_text[:300]}")
                     trace.write({"type": "thinking", "iter": iteration, "content": thinking_text[:2000]})
                     self._emit("thinking_done", {"iter": iteration, "content": thinking_text[:500]})
 
                 if not response.has_tool_calls:
                     final_content = response.content or ""
+                    logger.info(f"  [ANSWER] iter={iteration} {final_content[:300]}")
                     trace.write({"type": "answer", "iter": iteration, "content": final_content[:2000]})
                     react_trace.append({"type": "answer", "content": final_content[:500]})
                     break
 
+                tool_names = [tc.function.get("name", "?") for tc in response.tool_calls]
+                logger.info(f"  [TOOLS]  iter={iteration} calls={tool_names}")
                 messages.append(
                     context.format_assistant_tool_calls(
                         response.tool_calls,
                         content=response.content,
-                        reasoning_content=response.reasoning_content or thinking_text or None,
+                        reasoning_content=response.reasoning_content,
                     )
                 )
 
@@ -731,6 +735,8 @@ class AgentLoop:
         truncated = result[:TOOL_RESULT_LIMIT]
         messages.append(context.format_tool_result(tc.id, tc.name, truncated))
 
+        result_preview = result[:200].replace("\n", " ")
+        logger.info(f"  [TOOL_RESULT] {tc.name} status={status} elapsed={elapsed_ms}ms preview={result_preview[:150]}")
         trace.write({"type": "tool_result", "iter": iteration, "tool": tc.name, "status": status, "elapsed_ms": elapsed_ms, "preview": result[:200]})
         react_trace.append({"type": "tool_call", "tool": tc.name, "result_preview": result[:200]})
         self._emit("tool_result", {"tool": tc.name, "status": status, "elapsed_ms": elapsed_ms, "preview": result[:200]})

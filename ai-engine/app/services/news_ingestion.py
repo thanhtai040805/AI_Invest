@@ -18,7 +18,7 @@ from app.services.ai_service import ai_svc
 
 # Fix Playwright subprocess error on Windows
 if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 logger = logging.getLogger("ai_engine.news_ingestion")
 
@@ -40,8 +40,6 @@ class NewsIngestionService:
     def __init__(self):
         self._running = False
         self._task = None
-        self.last_premarket_date: Optional[str] = None
-        self.last_eod_date: Optional[str] = None
 
     def start(self):
         if not self._running:
@@ -329,19 +327,30 @@ Vui lòng phân tích dựa trên sự kiện này và xuất ra bản nhận đ
                 logger.error(f"AI analysis failed for {item.get('title', 'unknown')}: {e}")
 
     async def _check_and_run_scheduled_reports(self):
+        from app.services.job_state_service import is_job_completed_today, set_running, set_failed
+
         vn_tz = timezone(timedelta(hours=7))
         now_vn = datetime.now(timezone.utc).astimezone(vn_tz)
-        today_str = now_vn.strftime("%Y-%m-%d")
 
-        if now_vn.hour == 8 and now_vn.minute >= 30:
-            if self.last_premarket_date != today_str:
-                self.last_premarket_date = today_str
-                asyncio.create_task(self._generate_premarket_report())
+        for job_name, hour, minute, gen_fn in [
+            ("report_premarket", 8, 30, self._generate_premarket_report),
+            ("report_midday", 11, 0, self._generate_midday_report),
+            ("report_eod", 15, 15, self._generate_eod_report),
+        ]:
+            if now_vn.hour == hour and now_vn.minute >= minute:
+                if not is_job_completed_today(job_name):
+                    set_running(job_name, {"triggered_at": now_vn.isoformat()})
+                    asyncio.create_task(self._run_report(job_name, gen_fn))
 
-        if now_vn.hour == 15 and now_vn.minute >= 15:
-            if self.last_eod_date != today_str:
-                self.last_eod_date = today_str
-                asyncio.create_task(self._generate_eod_report())
+    async def _run_report(self, job_name: str, gen_fn):
+        from app.services.job_state_service import set_completed, set_failed
+        try:
+            await gen_fn()
+            set_completed(job_name)
+            logger.info(f"[Report] {job_name} completed")
+        except Exception as e:
+            logger.error(f"[Report] {job_name} failed: {e}")
+            set_failed(job_name, str(e))
 
     async def _generate_premarket_report(self):
         logger.info("Generating Pre-market outlook report...")
@@ -369,6 +378,44 @@ Bản tin phải có 3 phần:
             logger.info("Pre-market outlook report posted successfully.")
         except Exception as e:
             logger.error(f"Failed to generate Pre-market report: {e}")
+
+    async def _generate_midday_report(self):
+        logger.info("Generating Midday market report...")
+        try:
+            indices_data = await market_data_svc.get_indices()
+            indices_text = "\n".join([f"- {idx.get('name')}: {idx.get('value')} ({idx.get('changePercent'):+.2f}%)" for idx in indices_data.get("indices", [])])
+
+            snapshot = await market_data_svc.get_snapshot()
+            stocks = snapshot.get("stocks", [])
+            advancers = sum(1 for s in stocks if s.get("changePercent", 0) > 0)
+            decliners = sum(1 for s in stocks if s.get("changePercent", 0) < 0)
+            top_gainers = sorted(stocks, key=lambda s: s.get("changePercent", 0), reverse=True)[:5]
+            top_gainers_text = "\n".join([f"- {s['symbol']}: {s.get('changePercent', 0):+.2f}%" for s in top_gainers])
+
+            prompt = f"""
+Bạn là một Giám đốc phân tích định lượng chuyên nghiệp. Hãy tạo "Bản Tin Giữa Phiên" cho thị trường chứng khoán Việt Nam.
+Dữ liệu thị trường hiện tại:
+{indices_text}
+
+Tương quan thị trường: {advancers} mã tăng / {decliners} mã giảm
+Top mã tăng mạnh nhất:
+{top_gainers_text}
+
+Bản tin phải có 3 phần:
+1. **Diễn Biến Đầu Phiên**: Tóm tắt diễn biến từ đầu phiên sáng đến nay.
+2. **Dòng Tiền & Nhóm Ngành**: Nhóm ngành nào đang dẫn dắt thị trường.
+3. **Kỳ Vọng Phiên Chiều**: Xu hướng và kịch bản cho phiên chiều.
+"""
+            ai_response = ai_svc._generate_analysis(prompt, {"indices": []})
+
+            post_payload = {
+                "content": f"**BẢN TIN GIỮA PHIÊN**\n\n{ai_response}",
+                "taggedSymbols": ["VNINDEX"]
+            }
+            await self._post_to_community(post_payload)
+            logger.info("Midday market report posted successfully.")
+        except Exception as e:
+            logger.error(f"Failed to generate Midday report: {e}")
 
     async def _generate_eod_report(self):
         logger.info("Generating End-of-Day recap report...")

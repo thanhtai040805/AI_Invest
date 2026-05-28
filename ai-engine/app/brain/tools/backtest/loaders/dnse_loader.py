@@ -8,18 +8,18 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import List, Optional
 
 import pandas as pd
 
-from .base import BaseLoader
+from .base import DataLoaderProtocol, NoAvailableSourceError, validate_date_range
 from .registry import register
 
 logger = logging.getLogger(__name__)
 
 
 @register
-class DNSELoader(BaseLoader):
+class DNSELoader:
     """DNSE data loader for Vietnam market.
 
     Uses VN adapters to fetch OHLCV data, indicators, and fundamentals.
@@ -30,7 +30,6 @@ class DNSELoader(BaseLoader):
 
     def __init__(self):
         """Initialize DNSE loader."""
-        super().__init__()
         # Import VN adapters
         from app.brain.dataflows.vendors.vn.ohlcv_tool import OHLCVTool
         from app.brain.dataflows.vendors.vn.indicators_tool import IndicatorsTool
@@ -52,6 +51,47 @@ class DNSELoader(BaseLoader):
             return settings.dnse_enabled and settings.dnse_configured
         except Exception:
             return False
+
+    def fetch(
+        self,
+        codes: list[str],
+        start_date: str,
+        end_date: str,
+        *,
+        interval: str = "1D",
+        fields: list[str] | None = None,
+    ) -> dict[str, pd.DataFrame]:
+        """Fetch OHLCV data for multiple symbols.
+
+        Args:
+            codes: List of stock symbols.
+            start_date: Start date in YYYY-MM-DD format.
+            end_date: End date in YYYY-MM-DD format.
+            interval: Bar interval (1D/1W/1M).
+            fields: Ignored; OHLCV always returned.
+
+        Returns:
+            Mapping {symbol: DataFrame}.
+        """
+        validate_date_range(start_date, end_date)
+        freq_map = {"1D": "daily", "1W": "weekly", "1M": "monthly"}
+        frequency = freq_map.get(interval, "daily")
+
+        result: dict[str, pd.DataFrame] = {}
+        for symbol in codes:
+            try:
+                df = self.fetch_ohlcv(symbol, start_date, end_date, frequency=frequency)
+                if not df.empty:
+                    result[symbol] = df
+            except Exception as exc:
+                logger.error("DNSE fetch failed for %s: %s", symbol, exc)
+                continue
+
+        if not result:
+            raise NoAvailableSourceError(
+                f"DNSE returned no data for any symbol in {codes}"
+            )
+        return result
 
     def fetch_ohlcv(
         self,

@@ -15,11 +15,11 @@ import { TradingData } from "@/components/feature/stock/TradingData";
 import { NewsList } from "@/components/feature/stock/NewsList";
 import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import { useState, useMemo } from "react";
-import { useStockQuote, useStockProfile, useStockFundamentals, useAIConsensus } from "@/hooks/useMarketData";
+import { useStockQuote, useStockProfile, useStockFundamentals } from "@/hooks/useMarketData";
 
 const PriceChart = dynamic(
-  () => import("@/components/feature/stock/PriceChart"),
-  { ssr: false, loading: () => <div className="w-full h-full min-h-[400px] bg-[#050505] animate-pulse" /> }
+   () => import("@/components/feature/stock/PriceChart"),
+   { ssr: false, loading: () => <div className="w-full h-full min-h-[400px] bg-[#050505] animate-pulse" /> }
 );
 export default function StockDetailPage() {
    const { symbol: rawSymbol } = useParams();
@@ -30,7 +30,6 @@ export default function StockDetailPage() {
    useStockQuote(symbol);
    const { data: profile } = useStockProfile(symbol);
    const { data: fundamentals } = useStockFundamentals(symbol);
-   const { data: consensus } = useAIConsensus(symbol);
 
    const stock = useMemo(() => {
       if (fromStore) return fromStore;
@@ -85,10 +84,10 @@ export default function StockDetailPage() {
 
                <div className="flex items-center gap-lg">
                   <div className="flex gap-1 bg-white/5 p-0.5 rounded-lg border border-white/10">
-                   {(['1x1', '2x2', '3x1'] as const).map(l => (
-                         <button
-                            key={l}
-                            onClick={() => setLayout(l)}
+                     {(['1x1', '2x2', '3x1'] as const).map(l => (
+                        <button
+                           key={l}
+                           onClick={() => setLayout(l)}
                            className={cn(
                               "px-2 py-1 text-[9px] font-black rounded transition-all",
                               layout === l ? "bg-secondary text-white" : "opacity-40 hover:bg-white/10"
@@ -236,32 +235,11 @@ export default function StockDetailPage() {
                      <h4 className="text-[9px] font-black uppercase tracking-widest opacity-40">Pro Insights & News</h4>
                   </div>
                   <div className="flex-1 overflow-y-auto p-md space-y-lg no-scrollbar">
-                     <GlassCard className="bg-primary/5 border-primary/10 p-md">
-                        <div className="flex items-center gap-md mb-md">
-                           <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-white">
-                              <span className="material-symbols-outlined text-sm">auto_awesome</span>
-                           </div>
-                           <span className="text-[10px] font-black uppercase tracking-widest">Aura Consensus</span>
-                        </div>
-                        <p className="text-xs leading-relaxed opacity-80 italic">
-                           {consensus?.summary ?? "Đang phân tích..."}
-                        </p>
-                        <div className="mt-md flex justify-between items-end">
-                           <span className="text-[9px] font-bold opacity-40">
-                              {consensus?.technical?.confidence
-                                 ? `CONFIDENCE: ${Math.round(consensus.technical.confidence * 100)}%`
-                                 : "AI ANALYSIS"}
-                           </span>
-                           <Badge variant="secondary">{consensus?.consensus ?? "—"}</Badge>
-                        </div>
-                     </GlassCard>
-
                      <div className="space-y-md">
                         <h5 className="text-[10px] font-black opacity-40 uppercase tracking-widest border-l-2 border-primary pl-2">Tin tức liên quan</h5>
                         <NewsList symbol={symbol} />
                      </div>
                   </div>
-
                   <div className="p-md border-t border-white/5 bg-[#0a0a0a]">
                      <button className="w-full py-3 rounded-xl bg-white/5 border border-white/10 text-[10px] font-black uppercase tracking-widest hover:bg-white/10 transition-all">Xem toàn bộ lịch sử</button>
                   </div>

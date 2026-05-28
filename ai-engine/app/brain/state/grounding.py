@@ -134,7 +134,7 @@ def fetch_grounding_data(
     # to dispatch the same shapes we extract here, so reusing it keeps the
     # routing identical to the rest of the codebase.
     from backtest.loaders.registry import resolve_loader
-    from backtest.runner import _detect_market
+    from backtest.engines._market_hooks import _detect_market
 
     out: dict[str, list[dict]] = {}
     for code in symbols_list:

@@ -4,24 +4,23 @@ Providers Router - LLM provider management
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 
 router = APIRouter(tags=["Providers"])
 
 
 class ProviderConfig(BaseModel):
     """LLM provider configuration."""
-    
-    provider: str = Field(..., description="Provider name (gemini, groq, openrouter)")
+
+    provider: str = Field(..., description="Provider name (groq0, groq1, nvidia)")
     model: str = Field(..., description="Model name")
     api_key: Optional[str] = Field(None, description="API key")
-    base_url: Optional[str] = Field(None, description="Base URL")
     temperature: Optional[float] = Field(0.0, description="Temperature")
 
 
 class ProviderResponse(BaseModel):
     """Provider response."""
-    
+
     provider: str
     status: str
     configured: bool
@@ -33,31 +32,25 @@ async def list_providers():
     """List available LLM providers."""
     providers = [
         {
-            "name": "gemini",
-            "description": "Google Gemini - Document reader/analyst for long content",
-            "role": "deep_analysis",
-            "models": ["gemini-1.5-flash", "gemini-1.5-pro"],
-        },
-        {
-            "name": "openai",
-            "description": "OpenAI - Reasoning/judge for stable synthesis",
+            "name": "groq0",
+            "description": "Groq llama-3.3-70b-versatile - Reasoning sâu, tổng hợp tín hiệu, chốt luận điểm",
             "role": "reasoning",
-            "models": ["gpt-4o-mini", "gpt-4o"],
+            "models": ["llama-3.3-70b-versatile", "qwen/qwen3-32b"],
         },
         {
-            "name": "groq",
-            "description": "Groq - Fast realtime tasks and signal scoring",
-            "role": "realtime",
-            "models": ["llama3-70b-8192", "llama3-8b-8192", "mixtral-8x7b-32768"],
+            "name": "groq1",
+            "description": "Groq qwen/qwen3-32b - Structured output, JSON, classification, cross-check",
+            "role": "structured_output",
+            "models": ["qwen/qwen3-32b"],
         },
         {
-            "name": "openrouter",
-            "description": "OpenRouter - Routing/fallback gateway",
-            "role": "routing",
-            "models": ["deepseek/deepseek-v4-flash:free", "anthropic/claude-3.5-sonnet"],
+            "name": "nvidia",
+            "description": "NVIDIA minimaxai/minimax-m2.7 - Document reader/analyst cho news và báo cáo",
+            "role": "document_analysis",
+            "models": ["minimaxai/minimax-m2.7"],
         },
     ]
-    
+
     return {"providers": providers}
 
 
@@ -65,35 +58,32 @@ async def list_providers():
 async def configure_provider(config: ProviderConfig):
     """
     Configure an LLM provider.
-    
+
     Args:
         config: Provider configuration
-        
+
     Returns:
         Configuration result
     """
+    from app.config.settings import get_settings
+    import os
+
     try:
-        from app.brain.providers import GeminiAgent, GroqAgent, OpenRouterAgent, OpenAIAgent
-        import os
-        
-        # Set environment variable for API key if provided
         if config.api_key:
-            if config.provider == "gemini":
-                os.environ["GEMINI_API_KEY"] = config.api_key
-            elif config.provider == "groq":
-                os.environ["GROQ_API_KEY"] = config.api_key
-            elif config.provider == "openrouter":
-                os.environ["OPENROUTER_API_KEY"] = config.api_key
-            elif config.provider == "openai":
-                os.environ["OPENAI_API_KEY"] = config.api_key
-        
+            if config.provider == "groq0":
+                os.environ["GROQ_API_KEY0"] = config.api_key
+            elif config.provider == "groq1":
+                os.environ["GROQ_API_KEY1"] = config.api_key
+            elif config.provider == "nvidia":
+                os.environ["NVDIA"] = config.api_key
+
         return ProviderResponse(
             provider=config.provider,
             status="configured",
             configured=True,
             model=config.model,
         )
-        
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -101,24 +91,17 @@ async def configure_provider(config: ProviderConfig):
 @router.get("/{provider}/status")
 async def get_provider_status(provider: str):
     """Get provider configuration status."""
-    try:
-        import os
-        
-        # Check if provider is configured via environment variables
-        is_configured = False
-        if provider == "gemini":
-            is_configured = bool(os.getenv("GEMINI_API_KEY"))
-        elif provider == "groq":
-            is_configured = bool(os.getenv("GROQ_API_KEY"))
-        elif provider == "openrouter":
-            is_configured = bool(os.getenv("OPENROUTER_API_KEY"))
-        elif provider == "openai":
-            is_configured = bool(os.getenv("OPENAI_API_KEY"))
-        
-        return {
-            "provider": provider,
-            "configured": is_configured,
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    import os
+
+    is_configured = False
+    if provider == "groq0":
+        is_configured = bool(os.getenv("GROQ_API_KEY0"))
+    elif provider == "groq1":
+        is_configured = bool(os.getenv("GROQ_API_KEY1"))
+    elif provider == "nvidia":
+        is_configured = bool(os.getenv("NVDIA"))
+
+    return {
+        "provider": provider,
+        "configured": is_configured,
+    }

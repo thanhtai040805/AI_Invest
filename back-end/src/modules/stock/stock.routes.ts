@@ -46,8 +46,8 @@ router.get('/:symbol/profile', (req, res, next) => {
 router.get('/:symbol/ohlcv', (req, res, next) => {
   const symbol = symbolParam(req);
   const interval = (req.query.interval as string) ?? '1D';
-  const start = req.query.from as string | undefined;
-  const end = req.query.to as string | undefined;
+  const start = req.query.start as string | undefined;
+  const end = req.query.end as string | undefined;
   const cacheKey = `stock:${symbol}:ohlcv:${interval}:${start ?? ''}:${end ?? ''}`;
 
   return handle(req, res, next, () =>

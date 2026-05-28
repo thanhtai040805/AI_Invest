@@ -13,9 +13,8 @@ export default function Home() {
                 <nav className="hidden md:flex items-center gap-lg">
                     <Link className="text-primary border-b-2 border-primary pb-1 font-title-md text-title-md" href="/dashboard">Dashboard</Link>
                     <Link className="text-on-surface-variant hover:text-on-surface transition-colors font-title-md text-title-md" href="/advanced-chart">Trading</Link>
-                    <Link className="text-on-surface-variant hover:text-on-surface transition-colors font-title-md text-title-md" href="/ai-assistant">AI Assistant</Link>
+                    <Link className="text-on-surface-variant hover:text-on-surface transition-colors font-title-md text-title-md" href="/agent">AI Agent</Link>
                     <Link className="text-on-surface-variant hover:text-on-surface transition-colors font-title-md text-title-md" href="/community">Community</Link>
-                    <Link className="text-on-surface-variant hover:text-on-surface transition-colors font-title-md text-title-md" href="/simulator">Simulator</Link>
                 </nav>
                 <div className="flex items-center gap-md">
                     <button className="material-symbols-outlined text-on-surface-variant hover:bg-white/5 transition-all p-2 rounded-full">notifications</button>

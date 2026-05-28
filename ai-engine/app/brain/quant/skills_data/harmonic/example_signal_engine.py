@@ -423,40 +423,7 @@ class SignalEngine:
 # ========================== OKX 数据获取 ====================================
 
 
-def _fetch_okx(
-    inst_id: str, bar: str = "1D", limit: int = 300
-) -> pd.DataFrame:
-    """从 OKX API 获取K线数据。
 
-    Args:
-        inst_id: 交易对标识，如 "BTC-USDT"。
-        bar: K线周期，默认 "1D"。
-        limit: 获取数量，默认 300。
-
-    Returns:
-        OHLCV DataFrame，index 为 datetime。
-
-    Raises:
-        KeyError: API 返回格式异常时。
-    """
-    import requests
-
-    resp = requests.get(
-        "https://www.okx.com/api/v5/market/candles",
-        params={"instId": inst_id, "bar": bar, "limit": str(limit)},
-    )
-    candles = resp.json()["data"]
-    columns = [
-        "ts", "open", "high", "low", "close",
-        "vol", "volCcy", "volCcyQuote", "confirm",
-    ]
-    df = pd.DataFrame(reversed(candles), columns=columns)
-    df["ts"] = pd.to_datetime(df["ts"].astype("int64"), unit="ms")
-    df = df.set_index("ts")
-    for col in ["open", "high", "low", "close"]:
-        df[col] = df[col].astype(float)
-    df["volume"] = df["vol"].astype(float)
-    return df
 
 
 # ========================== 主入口 ==========================================
@@ -469,7 +436,7 @@ if __name__ == "__main__":
 
     for sym in symbols:
         print(f"获取 {sym} 数据...")
-        data_map[sym] = _fetch_okx(sym, bar="1D", limit=300)
+
         print(
             f"  {len(data_map[sym])} 根K线, "
             f"{data_map[sym].index[0]:%Y-%m-%d} ~ "
