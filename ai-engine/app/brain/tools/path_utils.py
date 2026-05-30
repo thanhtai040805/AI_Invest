@@ -56,7 +56,7 @@ def safe_path(p: str, workdir: Path) -> Path:
 
 def _agent_root() -> Path:
     """Return the agent package root."""
-    return Path(__file__).resolve().parents[2]
+    return Path(__file__).resolve().parents[1]
 
 
 def _configured_file_roots() -> list[Path]:

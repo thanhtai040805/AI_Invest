@@ -54,6 +54,7 @@ class SessionService:
         self.event_bus = event_bus
         self.runs_dir = runs_dir
         self._active_loops: Dict[str, "AgentLoop"] = {}
+        self._session_locks: Dict[str, asyncio.Lock] = {}
         self._search_index = get_shared_index()
 
     def create_session(self, title: str = "", config: Optional[Dict[str, Any]] = None) -> Session:
@@ -104,28 +105,36 @@ class SessionService:
         Returns:
             Dictionary containing message_id and attempt_id.
         """
-        session = self.store.get_session(session_id)
-        if not session:
-            raise ValueError(f"Session {session_id} not found")
+        lock = self._session_locks.setdefault(session_id, asyncio.Lock())
+        async with lock:
+            session = self.store.get_session(session_id)
+            if not session:
+                raise ValueError(f"Session {session_id} not found")
 
-        message = Message(session_id=session_id, role=role, content=content)
-        self.store.append_message(message)
-        self._search_index.index_message(session_id, role, content)
-        self.event_bus.emit(session_id, "message.received", {"message_id": message.message_id, "role": role, "content": content})
+            message = Message(session_id=session_id, role=role, content=content)
+            self.store.append_message(message)
+            self._search_index.index_message(session_id, role, content)
+            self.event_bus.emit(session_id, "message.received", {"message_id": message.message_id, "role": role, "content": content})
 
-        if role != "user":
-            return {"message_id": message.message_id}
+            if role != "user":
+                return {"message_id": message.message_id}
 
-        attempt = Attempt(session_id=session_id, parent_attempt_id=session.last_attempt_id, prompt=content)
-        self.store.create_attempt(attempt)
-        session.config["include_shell_tools"] = include_shell_tools
-        session.last_attempt_id = attempt.attempt_id
-        session.updated_at = datetime.now().isoformat()
-        self.store.update_session(session)
-        self.event_bus.emit(session_id, "attempt.created", {"attempt_id": attempt.attempt_id, "prompt": content})
+            # Cancel any existing active loop before starting a new attempt
+            existing = self._active_loops.get(session_id)
+            if existing is not None:
+                logger.warning("Cancelling existing active loop for session %s before new attempt", session_id[:12])
+                existing.cancel()
 
-        asyncio.create_task(self._run_attempt(session, attempt, include_shell_tools=include_shell_tools))
-        return {"message_id": message.message_id, "attempt_id": attempt.attempt_id}
+            attempt = Attempt(session_id=session_id, parent_attempt_id=session.last_attempt_id, prompt=content)
+            self.store.create_attempt(attempt)
+            session.config["include_shell_tools"] = include_shell_tools
+            session.last_attempt_id = attempt.attempt_id
+            session.updated_at = datetime.now().isoformat()
+            self.store.update_session(session)
+            self.event_bus.emit(session_id, "attempt.created", {"attempt_id": attempt.attempt_id, "prompt": content})
+
+            asyncio.create_task(self._run_attempt(session, attempt, include_shell_tools=include_shell_tools))
+            return {"message_id": message.message_id, "attempt_id": attempt.attempt_id}
 
     def get_messages(self, session_id: str, limit: int = 100) -> list[Message]:
         """Return the message history."""

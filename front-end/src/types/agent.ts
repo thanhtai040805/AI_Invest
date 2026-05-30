@@ -8,6 +8,15 @@ export type AgentMessageType =
   | "compact"
   | "run_complete";
 
+export interface PriceBar {
+  time: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
 export interface AgentMessage {
   id: string;
   type: AgentMessageType;
@@ -20,6 +29,7 @@ export interface AgentMessage {
   runId?: string;
   metrics?: Record<string, number>;
   equityCurve?: Array<{ time: string; equity: number }>;
+  priceSeries?: Record<string, PriceBar[]>;
   shadowId?: string;
 }
 

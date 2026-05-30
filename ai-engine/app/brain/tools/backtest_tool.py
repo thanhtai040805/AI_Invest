@@ -28,7 +28,16 @@ def run_backtest(run_dir: str) -> str:
 
     config_path = run_path / "config.json"
     if not config_path.exists():
-        return json.dumps({"status": "error", "error": "config.json not found"}, ensure_ascii=False)
+        return json.dumps({
+            "status": "error",
+            "error": "config.json not found",
+            "hint": (
+                "Create config.json first using write_file:\n"
+                'write_file(path="config.json", content=\'{"source": "vietfin", '
+                '"codes": ["FPT"], "start_date": "2020-01-01", "end_date": "2024-12-31"}\')\n'
+                "Then create code/signal_engine.py (SignalEngine class with generate() method)."
+            ),
+        }, ensure_ascii=False)
 
     try:
         config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -36,7 +45,11 @@ def run_backtest(run_dir: str) -> str:
         return json.dumps({"status": "error", "error": f"config.json parse error: {e}"}, ensure_ascii=False)
 
     if "source" not in config:
-        return json.dumps({"status": "error", "error": "config.json missing 'source' field (tushare/yfinance)"}, ensure_ascii=False)
+        return json.dumps({
+            "status": "error",
+            "error": "config.json missing 'source' field",
+            "hint": "Add 'source' field: one of tushare, yfinance, akshare, dnse, vietfin, auto",
+        }, ensure_ascii=False)
 
     valid_sources = {"tushare", "yfinance", "akshare", "dnse", "vietfin", "auto"}
     if config["source"] not in valid_sources:
@@ -44,7 +57,21 @@ def run_backtest(run_dir: str) -> str:
 
     signal_path = run_path / "code" / "signal_engine.py"
     if not signal_path.exists():
-        return json.dumps({"status": "error", "error": "code/signal_engine.py not found"}, ensure_ascii=False)
+        return json.dumps({
+            "status": "error",
+            "error": "code/signal_engine.py not found",
+            "hint": (
+                "Create code/signal_engine.py first using write_file:\n"
+                'write_file(path="code/signal_engine.py", content="""\n'
+                "from signal_engine import SignalEngine\n\n"
+                "class MySignal(SignalEngine):\n"
+                "    def generate(self, df):\n"
+                '        df[\"signal\"] = 0\n'
+                "        return df\n"
+                '""")\n'
+                "See load_skill('strategy-generate') for the full SignalEngine contract."
+            ),
+        }, ensure_ascii=False)
 
     agent_root = Path(__file__).resolve().parents[2]
     entry_script = agent_root / "brain" / "tools" / "backtest" / "runner.py"

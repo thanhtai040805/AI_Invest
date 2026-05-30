@@ -118,11 +118,10 @@ class GroqChatLLM:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
-        try:
-            stream = self._client.chat.completions.create(**kwargs)
-        except Exception as exc:
-            logger.error(f"Groq stream_chat error: {exc}")
-            return LLMResponse(content=f"Error: {exc}")
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+
+        stream = self._client.chat.completions.create(**kwargs)
 
         content_chunks: List[str] = []
         tool_call_chunks: Dict[int, Dict[str, Any]] = {}
@@ -168,8 +167,9 @@ class GroqChatLLM:
             if tc["function"]["name"]:
                 try:
                     tc["function"]["arguments"] = json.loads(tc["function"]["arguments"])
-                except (json.JSONDecodeError, TypeError):
-                    pass
+                except (json.JSONDecodeError, TypeError) as parse_err:
+                    logger.warning("Failed to parse tool call args for %s: %s — raw: %r", tc["function"]["name"], parse_err, tc["function"]["arguments"][:200])
+                    tc["function"]["arguments"] = {}
                 tool_calls.append(ToolCall(
                     id=tc["id"],
                     type=tc["type"],
@@ -202,14 +202,18 @@ class GroqChatLLM:
         if not self._client:
             return LLMResponse(content="LLM not configured — check GROQ_API_KEY0")
 
+        kwargs: Dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "stream": False,
+        }
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+
         try:
-            response = self._client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                max_tokens=self.max_tokens,
-                temperature=self.temperature,
-                stream=False,
-            )
+            response = self._client.chat.completions.create(**kwargs)
         except Exception as exc:
             logger.error(f"Groq chat error: {exc}")
             return LLMResponse(content=f"Error: {exc}")

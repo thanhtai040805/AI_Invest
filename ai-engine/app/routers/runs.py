@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from datetime import datetime as dt
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -74,6 +75,28 @@ async def get_run(run_id: str):
         status = str(state_data.get("status") or "unknown").lower()
         reason = state_data.get("reason")
 
+    price_series: Optional[Dict[str, List[Dict[str, Any]]]] = None
+    if artifacts.exists():
+        ohlcv_files = sorted(artifacts.glob("ohlcv_*.csv"))
+        if ohlcv_files:
+            price_series = {}
+            for f in ohlcv_files:
+                match = re.search(r"ohlcv_(.+)\.csv$", f.name)
+                symbol = match.group(1).upper() if match else "unknown"
+                raw = _load_csv(f)
+                if raw:
+                    price_series[symbol] = [
+                        {
+                            "time": r.get("date", r.get("time", "")),
+                            "open": float(r.get("open", 0)),
+                            "high": float(r.get("high", 0)),
+                            "low": float(r.get("low", 0)),
+                            "close": float(r.get("close", 0)),
+                            "volume": float(r.get("volume", 0)),
+                        }
+                        for r in raw
+                    ]
+
     artifact_list: List[Dict[str, Any]] = []
     if artifacts.exists():
         for f in artifacts.iterdir():
@@ -93,6 +116,8 @@ async def get_run(run_id: str):
     }
     if equity_curve:
         result["equity_curve"] = equity_curve
+    if price_series:
+        result["price_series"] = price_series
     if metrics:
         result["metrics"] = metrics
     if trades:

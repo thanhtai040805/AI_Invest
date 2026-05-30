@@ -58,6 +58,7 @@ export function AgentInterface() {
   const [showUploadMenu, setShowUploadMenu] = useState(false);
   const uploadMenuRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const sendingRef = useRef(false);
   const [swarmPreset, setSwarmPreset] = useState<{ name: string; title: string } | null>(null);
 
   const messages = useAgentStore(s => s.messages);
@@ -234,7 +235,7 @@ export function AgentInterface() {
         const completedTools = s.toolCalls;
         if (completedTools.length > 0) {
           for (const tc of completedTools) {
-            s.addMessage({ id: tc.id + "_call", type: "tool_call", content: "", tool: tc.tool, args: tc.arguments, status: tc.status || "ok", timestamp: tc.timestamp });
+            s.addMessage({ id: `${tc.tool}_call_${tc.timestamp}`, type: "tool_call", content: "", tool: tc.tool, args: tc.arguments, status: tc.status || "ok", timestamp: tc.timestamp });
             if (tc.elapsed_ms != null) {
               s.addMessage({ id: "", type: "tool_result", content: tc.preview || "", tool: tc.tool, status: tc.status || "ok", elapsed_ms: tc.elapsed_ms, timestamp: tc.timestamp + 1 });
             }
@@ -257,16 +258,18 @@ export function AgentInterface() {
         const shadowMatch = shadowCall?.preview?.match(/"shadow_id"\s*:\s*"(shadow_[A-Za-z0-9_]+)"/);
         const shadowId = shadowMatch?.[1];
 
-        // Show RunCompleteCard when the turn produced backtest metrics or a shadow report
+        // Show RunCompleteCard when the turn produced backtest metrics, price data, or a shadow report
         if (runId) {
           try {
             const runData = await api.getRun(runId);
             const hasMetrics = runData.metrics && Object.keys(runData.metrics).length > 0;
-            if (hasMetrics || shadowId) {
+            const hasPriceSeries = runData.price_series && Object.keys(runData.price_series).length > 0;
+            if (hasMetrics || hasPriceSeries || shadowId) {
               s.addMessage({
                 id: "", type: "run_complete", content: "", runId,
                 metrics: hasMetrics ? runData.metrics : undefined,
                 equityCurve: runData.equity_curve?.map(e => ({ time: e.time, equity: e.equity })),
+                priceSeries: hasPriceSeries ? runData.price_series : undefined,
                 shadowId,
                 timestamp: Date.now(),
               });
@@ -293,7 +296,7 @@ export function AgentInterface() {
         scrollToBottom();
       },
 
-      heartbeat: () => {},
+      heartbeat: () => { },
       reconnect: (d) => { act().setSseStatus("reconnecting", Number(d.attempt ?? 0)); },
     });
   }, [connect, disconnect, scrollToBottom]);
@@ -338,6 +341,8 @@ export function AgentInterface() {
 
   const runPrompt = async (prompt: string) => {
     if (!prompt.trim() || status === "streaming") return;
+    if (sendingRef.current) return;
+    sendingRef.current = true;
 
     let finalPrompt = prompt;
 
@@ -360,10 +365,13 @@ export function AgentInterface() {
     try {
       let sid = act().sessionId;
       if (!sid) {
-        const session = await api.createSession(prompt.slice(0, 50));
+        const session = await api.createSession(finalPrompt);
         sid = session.session_id;
         act().setSessionId(sid);
         router.push(`?session=${sid}`, { scroll: false });
+        // createSession already triggered execution — skip sendMessage
+        setupSSE(sid);
+        return;
       }
       setupSSE(sid);
       await api.sendMessage(sid, finalPrompt);
@@ -371,6 +379,8 @@ export function AgentInterface() {
       act().setStatus("error");
       toast.error("Failed to send message");
       act().addMessage({ id: "", type: "error", content: "Failed to send message", timestamp: Date.now() });
+    } finally {
+      sendingRef.current = false;
     }
   };
 
@@ -674,7 +684,7 @@ export function AgentInterface() {
             ) : (
               <button
                 type="submit"
-                disabled={!input.trim() && !attachment}
+                disabled={(!input.trim() && !attachment) || status === "streaming"}
                 className="px-4 py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-medium disabled:opacity-40 hover:opacity-90 transition-opacity"
               >
                 <Send className="h-4 w-4" />

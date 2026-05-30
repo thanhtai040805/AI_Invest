@@ -44,7 +44,7 @@ const nextId = () => String(++_id);
 export const useAgentStore = create<AgentState>((set) => ({
   messages: [],
   sessionId: null,
-  status: "idle",
+  status: "idle" as "idle" | "streaming" | "error",
   streamingText: "",
   toolCalls: [],
   sseStatus: "disconnected",

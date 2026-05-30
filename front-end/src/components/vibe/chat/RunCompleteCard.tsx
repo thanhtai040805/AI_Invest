@@ -5,8 +5,9 @@ import { api } from "@/lib/api";
 import { AgentAvatar } from "./AgentAvatar";
 import { MetricsCard } from "./MetricsCard";
 import { MiniEquityChart } from "../charts/MiniEquityChart";
+import { CandlestickChart } from "../charts/CandlestickChart";
 import { PineScriptViewer } from "./PineScriptViewer";
-import type { AgentMessage } from "@/types/agent";
+import type { AgentMessage, PriceBar } from "@/types/agent";
 
 interface Props {
   msg: AgentMessage;
@@ -14,6 +15,7 @@ interface Props {
 
 export const RunCompleteCard = memo(function RunCompleteCard({ msg }: Props) {
   const [curve, setCurve] = useState(msg.equityCurve);
+  const [priceSeries, setPriceSeries] = useState<Record<string, PriceBar[]> | undefined>(msg.priceSeries);
   const [pineCode, setPineCode] = useState<string | null>(null);
   const [pineLoading, setPineLoading] = useState(false);
   const [showPine, setShowPine] = useState(false);
@@ -27,6 +29,17 @@ export const RunCompleteCard = memo(function RunCompleteCard({ msg }: Props) {
       }).catch((e: unknown) => console.error('Failed to load equity curve', e));
     }
   }, [msg.runId, curve]);
+
+  // Load price_series from run if not passed in msg
+  useEffect(() => {
+    if (!priceSeries && msg.runId) {
+      api.getRun(msg.runId).then(r => {
+        if (r.price_series && Object.keys(r.price_series).length > 0) {
+          setPriceSeries(r.price_series as Record<string, PriceBar[]>);
+        }
+      }).catch((e: unknown) => console.error('Failed to load price series', e));
+    }
+  }, [msg.runId, priceSeries]);
 
   // Check if Pine Script exists for this run (skip for shadow-only cards with no runId)
   useEffect(() => {
@@ -72,6 +85,9 @@ export const RunCompleteCard = memo(function RunCompleteCard({ msg }: Props) {
         )}
         {curve && curve.length > 1 && (
           <MiniEquityChart data={curve} height={80} />
+        )}
+        {priceSeries && Object.keys(priceSeries).length > 0 && (
+          <CandlestickChart data={Object.values(priceSeries)[0]} height={320} />
         )}
         <div className="flex items-center gap-3 flex-wrap">
           {msg.runId && (

@@ -30,7 +30,7 @@ from app.brain.tools.framework.state import RunStateStore
 from app.brain.providers.chat import ChatLLM
 from app.brain.tools.background_tools import get_background_manager
 
-RUNS_DIR = Path(__file__).resolve().parents[2] / "runs"
+RUNS_DIR = Path(__file__).resolve().parents[3] / "runs"
 TOKEN_THRESHOLD = int(os.getenv("TOKEN_THRESHOLD", "40000"))
 KEEP_RECENT = 3
 TOOL_RESULT_LIMIT = 10_000
@@ -388,11 +388,21 @@ class AgentLoop:
                     thinking_chunks.append(delta)
                     self._emit("text_delta", {"delta": delta, "iter": iteration})
 
-                response = self.llm.stream_chat(
-                    messages,
-                    tools=self.registry.get_definitions(),
-                    on_text_chunk=_on_text_chunk,
-                )
+                # Retry once on API error (Groq sometimes emits malformed tool calls)
+                for attempt in range(2):
+                    try:
+                        response = self.llm.stream_chat(
+                            messages,
+                            tools=self.registry.get_definitions(),
+                            on_text_chunk=_on_text_chunk,
+                        )
+                        break
+                    except Exception as retry_err:
+                        logger.warning("stream_chat attempt %d failed: %s", attempt + 1, retry_err)
+                        if attempt == 0:
+                            _time.sleep(1)
+                            continue
+                        raise
 
                 thinking_text = "".join(thinking_chunks)
                 if thinking_text:
@@ -531,6 +541,22 @@ class AgentLoop:
 
             to_execute.append(tc)
 
+        # Deduplicate calls with identical (tool, args) within the same batch
+        seen_calls: set[str] = set()
+        deduped: list = []
+        for tc in to_execute:
+            fingerprint = f"{tc.name}::{json.dumps(tc.arguments, sort_keys=True, default=str)}"
+            if fingerprint in seen_calls:
+                logger.warning("Deduped duplicate call: %s (same args)", tc.name)
+                skip_msg = json.dumps({"skipped": True, "reason": f"{tc.name} already called with identical args in this turn."})
+                messages.append(context.format_tool_result(tc.id, tc.name, skip_msg))
+                trace.write({"type": "tool_skipped", "iter": iteration, "tool": tc.name})
+                react_trace.append({"type": "tool_skipped", "tool": tc.name})
+                continue
+            seen_calls.add(fingerprint)
+            deduped.append(tc)
+        to_execute = deduped
+
         if not to_execute:
             return compact_requested, focus_topic
 
@@ -610,6 +636,7 @@ class AgentLoop:
         runnable: list[tuple] = []
         for tc in tool_calls:
             args = _normalize_tool_run_dir(tc.arguments, self.memory.run_dir)
+            args = self._coerce_tool_args(args)
             self._emit("tool_call", {"tool": tc.name, "arguments": {k: str(v)[:200] for k, v in args.items()}, "iter": iteration})
             trace.write({"type": "tool_call", "iter": iteration, "tool": tc.name, "args": {k: str(v)[:200] for k, v in args.items()}})
             runnable.append((tc, args))
@@ -654,6 +681,7 @@ class AgentLoop:
             iteration: Current iteration.
         """
         args = _normalize_tool_run_dir(tc.arguments, self.memory.run_dir)
+        args = self._coerce_tool_args(args)
 
         self._emit("tool_call", {"tool": tc.name, "arguments": {k: str(v)[:200] for k, v in args.items()}, "iter": iteration})
         trace.write({"type": "tool_call", "iter": iteration, "tool": tc.name, "args": {k: str(v)[:200] for k, v in args.items()}})
@@ -662,6 +690,25 @@ class AgentLoop:
         result, elapsed_ms = self._invoke_tool(tc.name, args)
 
         self._finalize_tool_result(tc, result, elapsed_ms, context, messages, trace, react_trace, iteration)
+
+    @staticmethod
+    def _coerce_tool_args(args: Dict[str, Any]) -> Dict[str, Any]:
+        """Coerce malformed tool call arguments (e.g. ``{}`` → default, ``[]`` → default).
+
+        The Groq model sometimes emits ``"days": {}`` or ``"symbol": {}``
+        instead of proper values. This replaces such non-primitive values
+        with ``None`` so downstream tools apply their defaults.
+        """
+        coerced = {}
+        changed = False
+        for k, v in args.items():
+            if isinstance(v, (dict, list)) and not v:
+                coerced[k] = None
+                changed = True
+                logger.warning("Coerced empty %s for arg '%s' to None", type(v).__name__, k)
+            else:
+                coerced[k] = v
+        return coerced if changed else args
 
     def _invoke_tool(self, tool_name: str, args: Dict[str, Any]) -> tuple[str, int]:
         """Execute a tool with heartbeat + structured progress emission.
