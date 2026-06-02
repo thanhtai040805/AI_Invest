@@ -10,7 +10,7 @@ __alpha_meta__ = {
     'theme': ['reversal'],
     'formula_latex': '\\\\mathrm{CNTP}_30 - \\\\mathrm{CNTN}_30',
     'columns_required': ['close'],
-    'universe': ['equity_us', 'equity_cn', 'equity_hk'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 30,
     'min_warmup_bars': 30,

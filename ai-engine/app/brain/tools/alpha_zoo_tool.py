@@ -177,7 +177,7 @@ class AlphaZooTool(BaseTool):
             },
             "universe": {
                 "type": "string",
-                "description": "Optional universe filter (equity_us, equity_cn, crypto, ...).",
+                "description": "Optional universe filter (equity_vn only).",
             },
             "limit": {
                 "type": "integer",

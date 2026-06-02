@@ -37,7 +37,7 @@ __alpha_meta__ = {
     'formula_latex': 'see body',
     'columns_required': ['open', 'high', 'low', 'close', 'volume', 'amount'],
     'extras_required': [],
-    'universe': ['equity_cn'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 40,
     'min_warmup_bars': 60,
@@ -57,7 +57,7 @@ def compute(panel):
     h = panel["high"]
     l = panel["low"]
     v = panel["volume"]
-    vw = vwap(panel, "equity_cn")
+    vw = vwap(panel)
 
     num = rank(decay_linear(ts_corr((h + l) / 2.0, ts_mean(v, 40), 9), 10))
     den = rank(decay_linear(ts_corr(rank(vw), rank(v), 7), 3))

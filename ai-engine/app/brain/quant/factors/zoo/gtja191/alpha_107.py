@@ -36,7 +36,7 @@ __alpha_meta__ = {
     'formula_latex': '-1*rank(open-delay(high,1))*rank(open-delay(close,1))*rank(open-delay(low,1))',
     'columns_required': ['open', 'high', 'low', 'close'],
     'extras_required': [],
-    'universe': ['equity_cn'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 1,
     'min_warmup_bars': 2,

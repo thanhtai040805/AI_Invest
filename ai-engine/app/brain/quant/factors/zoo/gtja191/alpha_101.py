@@ -36,7 +36,7 @@ __alpha_meta__ = {
     'formula_latex': '((rank(ts\\_corr(close, sum(ts\\_mean(volume,30),37), 15)) < rank(ts\\_corr(rank(high), rank(ts\\_mean(volume,10)), 11))) * -1)',
     'columns_required': ['open', 'high', 'low', 'close', 'volume', 'amount'],
     'extras_required': [],
-    'universe': ['equity_cn'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 15,
     'min_warmup_bars': 80,

@@ -92,7 +92,7 @@ agents:
 
       Use load_skill for global macro and commodity analysis (commodity currencies).
     tools: [bash, read_file, write_file, load_skill, read_url]
-    skills: [global-macro, macro-analysis, yfinance]
+    skills: [global-macro, macro-analysis]
     max_iterations: 50
     timeout_seconds: 1800
     max_retries: 1

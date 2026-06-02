@@ -36,7 +36,7 @@ __alpha_meta__ = {
     'formula_latex': 'cumprod(1 + (c/delay(c,1)-1) if c>delay(c,1) else 0)',
     'columns_required': ['close'],
     'extras_required': [],
-    'universe': ['equity_cn'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 1,
     'min_warmup_bars': 2,

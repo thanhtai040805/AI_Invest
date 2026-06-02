@@ -37,7 +37,7 @@ __alpha_meta__ = {
     'formula_latex': '(close-vwap)/decay_linear(rank(tsmax(close,30)),2)',
     'columns_required': ['open', 'high', 'low', 'close', 'volume', 'amount'],
     'extras_required': [],
-    'universe': ['equity_cn'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 30,
     'min_warmup_bars': 32,
@@ -55,7 +55,7 @@ def compute(panel):
         pd.DataFrame with index = panel["close"].index, columns = panel["close"].columns.
     """
     c = panel["close"]
-    vw = vwap(panel, "equity_cn")
+    vw = vwap(panel)
 
     out = safe_div(c - vw, decay_linear(rank(ts_max(c, 30)), 2))
     return out

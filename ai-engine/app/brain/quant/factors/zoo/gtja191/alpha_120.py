@@ -37,7 +37,7 @@ __alpha_meta__ = {
     'formula_latex': 'rank(vwap-close)/rank(vwap+close)',
     'columns_required': ['open', 'high', 'low', 'close', 'volume', 'amount'],
     'extras_required': [],
-    'universe': ['equity_cn'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 1,
     'min_warmup_bars': 1,
@@ -55,7 +55,7 @@ def compute(panel):
         pd.DataFrame with index = panel["close"].index, columns = panel["close"].columns.
     """
     c = panel["close"]
-    vw = vwap(panel, "equity_cn")
+    vw = vwap(panel)
 
     out = safe_div(rank(vw - c), rank(vw + c))
     return out

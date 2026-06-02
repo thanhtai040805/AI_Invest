@@ -36,7 +36,7 @@ __alpha_meta__ = {
     'formula_latex': 'sum(abs(c-delay(c,1)) if dc<0 else 0,12)',
     'columns_required': ['close'],
     'extras_required': [],
-    'universe': ['equity_cn'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 12,
     'min_warmup_bars': 13,

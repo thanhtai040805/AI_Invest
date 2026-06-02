@@ -63,10 +63,10 @@ agents:
       4. **Liquidity and Premium/Discount Monitoring** — 20-day premium/discount distribution for candidate ETFs; flag products with abnormal premium/discounts; assess transaction cost risk
       5. **Best ETF Recommendation per Asset Class** — Final recommendation of 1–2 ETFs per asset class (primary + backup), with rationale and applicable scenarios
 
-      Use load_skill("etf-analysis") for ETF research methodology; load_skill("fund-analysis") for fund product evaluation; load_skill("tushare") for A-share ETF data.
+      Use load_skill("etf-analysis") for ETF research methodology; load_skill("fund-analysis") for fund product evaluation.
       Use the factor_analysis tool for ETF tracking error and factor exposure analysis.
     tools: [bash, read_file, write_file, load_skill, factor_analysis]
-    skills: [etf-analysis, fund-analysis, tushare]
+    skills: [etf-analysis, fund-analysis]
     max_iterations: 50
     timeout_seconds: 1800
     max_retries: 1

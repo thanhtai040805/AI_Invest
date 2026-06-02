@@ -36,7 +36,7 @@ __alpha_meta__ = {
     'formula_latex': '(h-l-sma(h-l,11,2))/sma(h-l,11,2)*100',
     'columns_required': ['close', 'high', 'low'],
     'extras_required': [],
-    'universe': ['equity_cn'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 11,
     'min_warmup_bars': 13,

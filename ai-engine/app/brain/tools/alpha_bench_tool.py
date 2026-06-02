@@ -1,25 +1,11 @@
 """Alpha bench orchestrator: registry → universe panel → IC/IR → HTML report.
 
-W2 scaffold: implements the orchestration shape and HTML rendering. Universe
-loaders that need network calls return a clean "not yet implemented" envelope —
-the full universe wiring lands in W4. The HTML path is autoescaped via Jinja2,
-with manual ``html.escape`` fallback when Jinja2 is absent, plus a strict CSP
-``<meta>`` so the report cannot fetch or execute external resources.
-
 Output contract — JSON envelope:
     {"status": "ok"|"error",
      "report_path": str | None,
      "n_alphas_tested": int,
      "n_skipped": int,
      "top": [{"id": ..., "ic_mean": ..., "ir": ..., ...}, ...]}
-
-Cache integrity note: the universe panel cache lives in ``~/.vibe-trading/cache/``
-as pickle blobs. Each pickle is paired with a ``<name>.sha256`` sidecar; on
-load we recompute the digest and refuse the cache on mismatch. This guards
-against accidental corruption (truncated writes, partial syncs) — it is NOT a
-defence against an attacker with local write access (they can rewrite both
-files). Cache files are user-local; if shared across machines they can be
-tampered with and the sha256 sidecar is only an integrity check, not authenticity.
 """
 
 from __future__ import annotations
@@ -28,9 +14,7 @@ import hashlib
 import html
 import json
 import logging
-import os
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -40,14 +24,6 @@ import pandas as pd
 from app.brain.agents.core.tools import BaseTool
 
 logger = logging.getLogger(__name__)
-
-# Date the SP500 constituent list was sampled from Wikipedia (best-effort label
-# for the survivorship-bias warning in the bench summary's ``meta`` block).
-_SP500_CONSTITUENT_SOURCE_DATE = "2026-05-17"
-
-# Concurrent Tushare ``pro.daily`` fetches when building CSI300. Free tier
-# allows ~200 calls/min; 4 workers stays well under that with a 300-name list.
-_CSI300_FETCH_WORKERS = 4
 
 
 # ---------------------------------------------------------------------------
@@ -60,10 +36,19 @@ _PERIOD_DATE = re.compile(r"^(\d{4}-\d{2}-\d{2})/(\d{4}-\d{2}-\d{2})$")
 # Universe → (market_key, universe_meta_tag). Only the listed universes have a
 # defined contract; everything else returns "not yet implemented".
 _UNIVERSE_TAG = {
-    "csi300": "equity_cn",
-    "sp500": "equity_us",
-    "btc-usdt": "crypto",
+    "vn-index": "equity_vn",
 }
+
+# Hand-picked VN30 representatives (fallback when Listing API is unavailable).
+_VN30_FALLBACK_CODES = [
+    "VCB", "BID", "CTG", "VPB", "TCB", "MBB", "STB", "ACB", "HDB", "TPB",
+    "VNM", "HPG", "VHM", "VIC", "VRE", "MSN", "FPT", "MWG", "PNJ", "SAB",
+    "GAS", "PLX", "POW", "BVH", "SSI", "VND", "HCM", "KBC", "NVL", "KDH",
+]
+
+# Maximum symbols per vnstock batch OHLCV call (split into chunks to avoid
+# server-side timeouts / URI length limits with the full HOSE universe).
+_VN_BATCH_SIZE = 50
 
 
 def _parse_period(period: str) -> tuple[str, str]:
@@ -91,7 +76,7 @@ def _load_universe_panel(
     with one column per instrument.
 
     Args:
-        universe: ``csi300`` | ``sp500`` | ``btc-usdt``.
+        universe: ``vn-index`` (full HOSE via vnstock).
         period: ``YYYY-YYYY`` or ``YYYY-MM-DD/YYYY-MM-DD``.
         use_cache: When True (default) reuse a pickle in
             ``~/.vibe-trading/cache/`` if the same universe+period was fetched
@@ -99,7 +84,7 @@ def _load_universe_panel(
 
     Raises:
         ValueError: unknown universe or bad period.
-        RuntimeError: ``TUSHARE_TOKEN`` unset when csi300 is requested.
+        RuntimeError: vnstock fetch failed.
     """
     if universe not in _UNIVERSE_TAG:
         raise ValueError(
@@ -115,12 +100,8 @@ def _load_universe_panel(
             logger.info("universe %s: loaded from cache %s", universe, cache_path)
             return cached
 
-    if universe == "csi300":
-        panel = _load_csi300_panel(start, end)
-    elif universe == "sp500":
-        panel = _load_sp500_panel(start, end)
-    elif universe == "btc-usdt":
-        panel = _load_btc_panel(start, end)
+    if universe == "vn-index":
+        panel = _load_vn_index_panel(start, end)
     else:  # pragma: no cover — guarded above
         raise ValueError(f"unhandled universe {universe!r}")
 
@@ -128,17 +109,6 @@ def _load_universe_panel(
         raise RuntimeError(
             f"universe {universe!r} produced empty panel for {start}..{end}; "
             "check network / token / date range"
-        )
-
-    # btc-usdt loader returns a single-column close (one instrument). Cross-
-    # sectional IC needs >= 2 instruments — short-circuit with a clean error
-    # that propagates to API (400) and CLI.
-    close_df = panel["close"]
-    if universe == "btc-usdt" and close_df.shape[1] < 2:
-        raise ValueError(
-            "btc-usdt is single-asset; cross-sectional IC needs >=2 instruments. "
-            "Use a multi-symbol crypto basket (e.g. multiple OKX pairs) for "
-            "meaningful results."
         )
 
     if use_cache:
@@ -221,189 +191,121 @@ def _hashes_equal(a: str, b: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-_CSI300_FALLBACK_CODES = [
-    # Blue-chip A-share representatives — used only when index_weight fails.
-    # Hand-picked across sectors so a degraded run still gives diverse signal.
-    "600519.SH", "601318.SH", "600036.SH", "000333.SZ", "000858.SZ",
-    "601166.SH", "600276.SH", "601398.SH", "601288.SH", "600030.SH",
-    "600887.SH", "601012.SH", "601888.SH", "000651.SZ", "600028.SH",
-    "601628.SH", "600000.SH", "601088.SH", "601857.SH", "600009.SH",
-    "601899.SH", "002594.SZ", "600585.SH", "300750.SZ", "601658.SH",
-    "600048.SH", "601138.SH", "601668.SH", "000001.SZ", "000002.SZ",
-]
 
 
-# Hand-picked US large-cap representatives. Used when Wikipedia fetch fails.
-_SP500_FALLBACK_CODES = [
-    "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "BRK-B",
-    "JPM", "JNJ", "V", "PG", "UNH", "MA", "HD", "XOM", "LLY", "MRK",
-    "PEP", "KO", "ABBV", "AVGO", "CVX", "WMT", "COST", "ADBE", "MCD",
-    "CRM", "ACN", "BAC", "TMO", "ORCL", "CSCO", "ABT", "WFC", "DHR",
-    "VZ", "PFE", "INTC", "DIS", "CMCSA", "AMD", "TXN", "PM", "QCOM",
-    "NEE", "RTX", "HON", "T", "IBM",
-]
 
-
-def _load_csi300_panel(start: str, end: str) -> dict[str, pd.DataFrame]:
-    """CSI 300 panel via Tushare. Includes ``amount`` (required by gtja191).
-
-    Constituents are taken from the most recent ``index_weight`` snapshot in
-    the requested window; if that call fails we degrade to a 30-name
-    blue-chip fallback so the bench still runs.
-    """
-    token = os.getenv("TUSHARE_TOKEN", "").strip()
-    if not token or token == "your-tushare-token":
-        raise RuntimeError(
-            "TUSHARE_TOKEN not in agent/.env or environment; required for csi300 universe"
-        )
-
+def _fetch_vn30_constituents() -> list[str]:
+    """Pull VN30 constituent symbols from vnstock Listing API. Returns [] on failure."""
     try:
-        import tushare as ts
-    except ImportError as exc:
-        raise RuntimeError(f"tushare not installed: {exc}") from exc
+        from vnstock.api.listing import Listing
+        lst = Listing()
+        df = lst.symbols_by_group("VN30")
+        if df is not None and not df.empty and "symbol" in df.columns:
+            symbols = df["symbol"].astype(str).str.strip().tolist()
+            logger.info("vn30: %d constituents from Listing API", len(symbols))
+            return symbols
+    except Exception as exc:
+        logger.warning("vn30 Listing API failed: %s", exc)
+    return []
 
-    pro = ts.pro_api(token)
-    sd = start.replace("-", "")
-    ed = end.replace("-", "")
 
-    codes: list[str] = []
+def _fetch_vn_index_constituents() -> list[str]:
+    """Pull all HOSE-listed symbols (VN-Index) from vnstock Listing API."""
     try:
-        weights = pro.index_weight(
-            index_code="399300.SZ", start_date=sd, end_date=ed
-        )
-        if weights is not None and not weights.empty:
-            latest_date = weights["trade_date"].max()
-            codes = (
-                weights[weights["trade_date"] == latest_date]["con_code"]
-                .drop_duplicates()
-                .tolist()
-            )
-            logger.info("csi300: %d constituents from index_weight @ %s", len(codes), latest_date)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("csi300 index_weight failed (%s); using fallback list", exc)
+        from vnstock.api.listing import Listing
+        lst = Listing()
+        df = lst.symbols_by_exchange("HOSE")
+        if df is not None and not df.empty and "symbol" in df.columns:
+            symbols = df["symbol"].astype(str).str.strip().tolist()
+            logger.info("vn-index: %d constituents from Listing HOSE", len(symbols))
+            return symbols
+    except Exception as exc:
+        logger.warning("vn-index Listing API failed: %s", exc)
+    return []
 
-    if not codes:
-        codes = list(_CSI300_FALLBACK_CODES)
-        logger.warning("csi300: using %d-name fallback (degraded run)", len(codes))
 
-    # Fetch raw daily in parallel — we need ``amount`` which the standard
-    # loader drops. Tushare's free tier permits ~200 calls/min so 4 concurrent
-    # workers is comfortably under the rate limit even for a full 300-name list.
-    def _fetch_one(code: str) -> tuple[str, pd.DataFrame | None]:
-        df = _retry(lambda: pro.daily(ts_code=code, start_date=sd, end_date=ed))
-        if df is None or df.empty:
-            return code, None
-        df = df.sort_values("trade_date").copy()
-        df["trade_date"] = pd.to_datetime(df["trade_date"])
-        df = df.set_index("trade_date")
-        df = df.rename(columns={"vol": "volume"})
-        for col in ("open", "high", "low", "close", "volume", "amount"):
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-        keep = [c for c in ("open", "high", "low", "close", "volume", "amount") if c in df.columns]
-        return code, df[keep].dropna(subset=["open", "high", "low", "close"])
+def _batch_fetch_vn_ohlcv(
+    codes: list[str], start: str, end: str
+) -> dict[str, pd.DataFrame]:
+    """Fetch OHLCV for multiple VN symbols via vnstock, split into batches."""
+    from vnstock import Vnstock
 
+    stock = Vnstock().stock(symbol=codes[0], source="KBS")
     fetched: dict[str, pd.DataFrame] = {}
-    with ThreadPoolExecutor(max_workers=_CSI300_FETCH_WORKERS) as pool:
-        futures = [pool.submit(_fetch_one, code) for code in codes]
-        for fut in as_completed(futures):
-            try:
-                code, frame = fut.result()
-            except Exception as exc:  # noqa: BLE001 — _retry already logged
-                logger.warning("csi300 fetch worker raised: %s", exc)
+
+    for i in range(0, len(codes), _VN_BATCH_SIZE):
+        batch = codes[i : i + _VN_BATCH_SIZE]
+        try:
+            raw = stock.quote.history(
+                symbol=",".join(batch),
+                start_date=start,
+                end_date=end,
+                type="stock",
+            )
+        except Exception as exc:
+            logger.warning("vnstock batch [%d:%d] failed: %s", i, i + _VN_BATCH_SIZE, exc)
+            continue
+
+        if raw is None or raw.empty:
+            continue
+
+        raw = raw.copy()
+        raw["time"] = pd.to_datetime(raw["time"])
+        raw = raw.rename(columns={"time": "date"})
+
+        for code in batch:
+            mask = raw["ticker"] == code
+            if not mask.any():
                 continue
-            if frame is not None and not frame.empty:
-                fetched[code] = frame
+            df = raw[mask].sort_values("date").set_index("date")
+            for col in ("open", "high", "low", "close", "volume"):
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            keep = [c for c in ("open", "high", "low", "close", "volume") if c in df.columns]
+            df = df[keep].dropna(subset=["open", "high", "low", "close"])
+            if not df.empty:
+                fetched[code] = df
 
-    panel = _wide_from_fetched(fetched, include_amount=True)
-    # CN equity vwap: Tushare ``amount`` is in 千元, ``volume`` in 手. True VWAP
-    # = (amount * 1000 CNY) / (volume * 100 shares). Matches
-    # ``src.factors.base.vwap(EQUITY_CN)``.
-    if "amount" in panel and "volume" in panel:
-        from app.brain.quant.factors.base import safe_div
-
-        panel["vwap"] = safe_div(
-            panel["amount"] * 1000.0, panel["volume"] * 100.0 + 1.0
-        )
-    return panel
+    return fetched
 
 
-def _load_sp500_panel(start: str, end: str) -> dict[str, pd.DataFrame]:
-    """SP500 panel via yfinance. Adds vwap = (O+H+L+C)/4 fallback for alpha101.
-
-    Survivorship-bias warning: ``_fetch_sp500_constituents`` returns Wikipedia's
-    *current* member list, not a point-in-time snapshot. Names that dropped out
-    of the index during ``start..end`` (delistings, mergers, downgrades) are
-    silently excluded — so IC stats are biased upward. The caller (bench
-    runner) surfaces this in the bench summary's ``meta`` block via the
-    ``_meta`` panel key set below.
-    """
-    codes = _fetch_sp500_constituents()
-    constituent_source = "wikipedia"
+def _load_vn_index_panel(start: str, end: str) -> dict[str, pd.DataFrame]:
+    """Full HOSE panel (VN-Index constituents) via vnstock ~400 stocks."""
+    codes = _fetch_vn_index_constituents()
     if not codes:
-        codes = list(_SP500_FALLBACK_CODES)
-        constituent_source = "hand-picked fallback"
-        logger.warning("sp500: using %d-name fallback (degraded run)", len(codes))
+        logger.warning("vn-index: falling back to VN30 (%d names)", len(_VN30_FALLBACK_CODES))
+        codes = list(_VN30_FALLBACK_CODES)
 
-    logger.warning(
-        "SP500 universe uses current constituents (%s @ %s) → survivorship-biased",
-        constituent_source, _SP500_CONSTITUENT_SOURCE_DATE,
-    )
-
-    # yfinance loader expects project-style symbols (``AAPL.US``).
-    project_codes = [f"{c}.US" for c in codes]
-    from backtest.loaders.registry import resolve_loader
-
-    loader = resolve_loader("us_equity")
-    fetched = _retry(lambda: loader.fetch(project_codes, start, end)) or {}
+    fetched = _batch_fetch_vn_ohlcv(codes, start, end)
+    if not fetched:
+        raise RuntimeError("vnstock returned empty data for vn-index")
 
     panel = _wide_from_fetched(fetched, include_amount=False)
-    # Synthetic vwap for alpha101 alphas that require it on US universe
+    if "close" in panel and "volume" in panel:
+        panel["amount"] = panel["close"] * panel["volume"]
     if all(k in panel for k in ("open", "high", "low", "close")):
         panel["vwap"] = (panel["open"] + panel["high"] + panel["low"] + panel["close"]) / 4.0
 
-    # Attach a non-DataFrame metadata blob. Registry.compute() only iterates
-    # required column names, so this extra key is ignored by the compute path.
-    panel["_meta"] = {
-        "universe": "sp500",
-        "survivorship_bias": True,
-        "constituent_source": constituent_source,
-        "constituent_source_date": _SP500_CONSTITUENT_SOURCE_DATE,
-        "constituent_count": len(codes),
-    }
     return panel
 
 
-def _fetch_sp500_constituents() -> list[str]:
-    """Pull current S&P 500 tickers from Wikipedia. Returns [] on any failure."""
-    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-    try:
-        import io
+def _load_vn30_panel(start: str, end: str) -> dict[str, pd.DataFrame]:
+    """VN30 panel via vnstock (30 blue-chip stocks, fast for quick tests)."""
+    codes = _fetch_vn30_constituents()
+    if not codes:
+        codes = list(_VN30_FALLBACK_CODES)
+        logger.warning("vn30: using %d-name fallback (degraded run)", len(codes))
 
-        import requests
+    fetched = _batch_fetch_vn_ohlcv(codes, start, end)
+    if not fetched:
+        raise RuntimeError("vnstock returned empty data for VN30")
 
-        resp = requests.get(
-            url,
-            headers={
-                "User-Agent": (
-                    "Vibe-Trading/0.1 (research bench; "
-                    "https://github.com/HKUDS/Vibe-Trading)"
-                )
-            },
-            timeout=20,
-        )
-        resp.raise_for_status()
-        tables = pd.read_html(io.StringIO(resp.text))
-        for tbl in tables:
-            if "Symbol" in tbl.columns:
-                tickers = tbl["Symbol"].astype(str).str.strip().tolist()
-                # yfinance prefers ``BRK-B`` over ``BRK.B`` — normalise
-                tickers = [t.replace(".", "-") for t in tickers if t and t != "nan"]
-                logger.info("sp500: %d tickers from Wikipedia", len(tickers))
-                return tickers
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("sp500 Wikipedia fetch failed: %s", exc)
-    return []
+    panel = _wide_from_fetched(fetched, include_amount=False)
+    if "close" in panel and "volume" in panel:
+        panel["amount"] = panel["close"] * panel["volume"]
+    if all(k in panel for k in ("open", "high", "low", "close")):
+        panel["vwap"] = (panel["open"] + panel["high"] + panel["low"] + panel["close"]) / 4.0
+
+    return panel
 
 
 def _wide_from_fetched(
@@ -807,7 +709,7 @@ class AlphaBenchTool(BaseTool):
             },
             "universe": {
                 "type": "string",
-                "description": "csi300 | sp500 | btc-usdt (resolved via existing data tools).",
+                "description": "vn-index (full HOSE ~400 stocks via vnstock, IC-ready cross-section).",
             },
             "period": {
                 "type": "string",

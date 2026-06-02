@@ -36,7 +36,7 @@ __alpha_meta__ = {
     'formula_latex': 'sqrt(mean((100*(c-tsmax(c,12))/tsmax(c,12))^2,12))',
     'columns_required': ['close'],
     'extras_required': [],
-    'universe': ['equity_cn'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 12,
     'min_warmup_bars': 24,

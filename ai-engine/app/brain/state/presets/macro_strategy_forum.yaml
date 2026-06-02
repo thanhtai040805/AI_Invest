@@ -65,7 +65,7 @@ agents:
 
       ### Domestic activity
       - Use load_skill("macro-analysis") for domestic macro framework
-      - Use load_skill("tushare") for data-access patterns
+      - Use load_skill for data-access patterns
       - GDP: contributions and trends in consumption / investment / exports
       - Inflation: CPI subcomponents (food vs core), PPI, deflation risk
       - Labor: surveyed urban unemployment, youth employment, labor balance
@@ -99,7 +99,7 @@ agents:
 
       Prefer fresh macro data via Tushare patterns; every judgment needs a data hook.
     tools: [bash, read_file, write_file, load_skill, read_url]
-    skills: [macro-analysis, tushare]
+    skills: [macro-analysis]
     max_iterations: 50
     timeout_seconds: 1800
     max_retries: 1

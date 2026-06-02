@@ -37,7 +37,7 @@ __alpha_meta__ = {
     'formula_latex': 'see body',
     'columns_required': ['open', 'high', 'low', 'close', 'volume', 'amount'],
     'extras_required': [],
-    'universe': ['equity_cn'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 20,
     'min_warmup_bars': 21,
@@ -57,7 +57,7 @@ def compute(panel):
     c = panel["close"]
     h = panel["high"]
     v = panel["volume"]
-    vw = vwap(panel, "equity_cn")
+    vw = vwap(panel)
 
     a = safe_div(rank(safe_div(pd.DataFrame(1.0, index=c.index, columns=c.columns), c)) * v, ts_mean(v, 20))
     b = safe_div(h * rank(h - c), c.rolling(5).sum() / 5.0)

@@ -36,7 +36,7 @@ __alpha_meta__ = {
     'formula_latex': '(mean(v,9)-mean(v,26))/mean(v,12)*100',
     'columns_required': ['close', 'volume'],
     'extras_required': [],
-    'universe': ['equity_cn'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 26,
     'min_warmup_bars': 26,

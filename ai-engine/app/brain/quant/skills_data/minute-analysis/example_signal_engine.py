@@ -1,17 +1,57 @@
 """分钟级数据分析工具。
 
-通过 OKX API 获取分钟 K 线，计算 VWAP/TWAP/成交量分布等日内指标。
-仅供分析输出，不可用于回测引擎（仅支持日线）。
+支持 DNSE (VN stocks) / OKX (crypto) / yfinance (HK/US) 分钟 K 线。
+计算 VWAP/TWAP/成交量分布等日内指标。
 """
 
+import requests
 from typing import Optional
 
 import numpy as np
 import pandas as pd
-import requests
+import yfinance as yf
 
 
-BASE_URL = "https://www.okx.com/api/v5"
+BASE_URL = "https://query1.finance.yahoo.com/v8/finance/chart"
+
+
+def fetch_dnse_minute_candles(
+    symbol: str, bar: str = "5m", days: int = 5
+) -> Optional[pd.DataFrame]:
+    """从 DNSE REST API 获取越南股票分钟级 K 线数据。
+
+    Args:
+        symbol: 股票代码，如 "VIC"。
+        bar: K 线周期（1m/5m/15m/30m/1H）。
+        days: 获取最近多少天的数据。
+
+    Returns:
+        OHLCV DataFrame，index 为 datetime。None 表示获取失败。
+    """
+    from datetime import datetime, timedelta, timezone
+    from app.services.dnse.intraday_tool import get_intraday_tool
+
+    TZ_VN = timezone(timedelta(hours=7))
+    now = datetime.now(TZ_VN)
+    from_ts = int((now - timedelta(days=days)).timestamp())
+    to_ts = int(now.timestamp())
+
+    resolution_map = {"1m": "1", "5m": "5", "15m": "15", "30m": "30", "1H": "1H"}
+    res = resolution_map.get(bar, "5")
+
+    tool = get_intraday_tool()
+    candles = tool.fetch(symbol.upper(), resolution=res, from_ts=from_ts, to_ts=to_ts)
+    if not candles:
+        print(f"[WARN] DNSE 获取失败: {symbol}")
+        return None
+
+    df = pd.DataFrame(candles)
+    df["time"] = pd.to_datetime(df["time"])
+    df = df.set_index("time")
+    for col in ["open", "high", "low", "close"]:
+        df[col] = df[col].astype(float)
+    df["volume"] = df["volume"].astype(float)
+    return df
 
 
 def fetch_minute_candles(

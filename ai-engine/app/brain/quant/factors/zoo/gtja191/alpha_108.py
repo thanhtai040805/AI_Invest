@@ -37,7 +37,7 @@ __alpha_meta__ = {
     'formula_latex': '(rank(high-min(high,2))^rank(corr(vwap,mean(volume,120),6)))*-1',
     'columns_required': ['open', 'high', 'low', 'close', 'volume', 'amount'],
     'extras_required': [],
-    'universe': ['equity_cn'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 6,
     'min_warmup_bars': 125,
@@ -56,7 +56,7 @@ def compute(panel):
     """
     h = panel["high"]
     v = panel["volume"]
-    vw = vwap(panel, "equity_cn")
+    vw = vwap(panel)
 
     left = rank(h - ts_min(h, 2))
     right = rank(ts_corr(vw, ts_mean(v, 120), 6))

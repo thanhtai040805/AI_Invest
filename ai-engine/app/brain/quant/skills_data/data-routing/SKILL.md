@@ -1,69 +1,50 @@
 ---
 name: data-routing
 category: data-source
-description: Data source selection decision tree. Load this skill BEFORE any backtest or data-fetching task to choose the best available data source.
+description: Data source selection — VN-only. All data comes from vnstock (fundamentals + OHLCV) and VietFin DNSE (OHLCV fallback).
 ---
 
 ## Data Source Overview
 
-| Source | Markets | Auth Required | Network | Skill |
-|--------|---------|---------------|---------|-------|
-| tushare | A-shares, funds, futures, macro | Yes (`TUSHARE_TOKEN`) | China network | tushare |
-| akshare | A-shares, US, HK, futures, macro, forex | No | Unrestricted | akshare |
-| yfinance | US stocks, HK stocks, ETFs | No | Needs Yahoo Finance access | yfinance |
-| okx | Crypto (OKX exchange) | No | Needs okx.com access | okx-market |
-| ccxt | Crypto (100+ exchanges) | No | Needs exchange access | ccxt |
+| Source | Markets | Auth Required | How |
+|--------|---------|---------------|-----|
+| vnstock | VN equities, indices, ETFs, futures | Optional (`VN_STOCK_KEY` in .env) | Tool: `vn_stock_analyze`, `vn_factor_data`, `alpha_bench(universe="vn-index")` |
+| VietFin DNSE | VN OHLCV | No | Backend fallback for OHLCV (used automatically by loaders) |
+| DNSE REST API | VN equities intraday | DNSE_API_KEY + DNSE_API_SECRET | Direct REST call — independent of WebSocket; supports 1m/5m/15m/30m/1H/1D |
 
-## Decision Tree
+## Tool Routing
 
-### Backtest Scenario (writing config.json)
+| Use Case | Tool | Example |
+|----------|------|---------|
+| Single stock analysis | `vn_stock_analyze(symbol="VCB", days=365)` | Price + profile + ratios + financials |
+| Multi-stock factor data | `vn_factor_data(universe="vn-index", factor="pe", period="2024-2025")` | Factor CSV + return CSV → `factor_analysis` |
+| Alpha zoo benchmark | `alpha_bench(universe="vn-index", zoo="gtja191", period="2024-2025")` | Bench 191 alphas on full HOSE → HTML IC/IR report |
+| Backtest | `backtest(run_dir=...)` with `config.json` `source: "vietfin"` or `"auto"` | Backtest signal engine on VN stocks |
+| Market index | `vn_index(symbol="VNINDEX", days=365)` | Index OHLCV |
+| Mutual funds | `vn_fund_search()` + `vn_fund_history()` | Fund NAV data |
+| **Intraday OHLCV** | `GET /api/stock/intraday/{symbol}?resolution=5&start=...&end=...` | Direct REST: **DNSE REST API**, resolutions: 1, 5, 15, 30, 1H, 1D |
+| **Minute analysis** | `vn_intraday_analysis(symbol="VIC", resolution="5m", days=5)` | Intraday VWAP/TWAP/volume profile via DNSE REST |
 
-Use `source: "auto"` — the runner automatically routes by symbol pattern and falls back to alternative sources if the primary one is unavailable.
+## config.json Source Field
 
-You do NOT need to specify a concrete data source in config.json unless the user explicitly asks for one.
+For backtest config.json:
 
-### Analysis / Research Scenario (writing Python scripts)
+- `"source": "vietfin"` — VietFin data (vnstock fundamentals fallback)
+- `"source": "dnse"` — DNSE broker data (supports intraday intervals: `"interval": "5m"`)
+- `"source": "auto"` — automatic routing (recommended)
 
-1. Identify the market type from the user's request
-2. Pick the source by priority:
+For minute-level backtests, use `"interval"` in config.json:
 
-**A-shares**: tushare (if TUSHARE_TOKEN is set) > akshare (free fallback)
-**US stocks**: yfinance > akshare
-**HK stocks**: yfinance > akshare
-**Crypto**: okx (single exchange) > ccxt (multi-exchange)
-**Futures**: tushare > akshare
-**Macro / economics**: akshare > tushare
-**Forex**: akshare > yfinance
-
-3. Load the corresponding skill for API details: `load_skill("akshare")`
-
-### Availability Check
-
-- **tushare**: check if `TUSHARE_TOKEN` environment variable exists
-- **yfinance / okx / ccxt / akshare**: free but may have network restrictions
-- If the user reports "connection timeout" or "cannot access", switch to the same-market fallback
-
-## Symbol Format Reference
-
-| Market | Format | Examples |
-|--------|--------|---------|
-| A-shares | `NNNNNN.SZ/SH/BJ` | 000001.SZ, 600000.SH |
-| US stocks | `TICKER.US` | AAPL.US, MSFT.US |
-| HK stocks | `NNN(N).HK` | 700.HK, 9988.HK |
-| Crypto | `SYMBOL-USDT` | BTC-USDT, ETH-USDT |
-| Futures | `XXNNNN.EXCHANGE` | CU2406.SHFE |
-| Forex | `XXX/YYY` | USD/CNY, EUR/USD |
-
-## Fallback Chain (Runner Layer)
-
-The backtest runner implements automatic fallback at the market level:
-
-```
-User requests 000001.SZ (A-share)
-  -> detect market: a_share
-  -> try tushare: TUSHARE_TOKEN missing -> skip
-  -> try akshare: available -> use akshare
-  -> success (zero config required)
+```json
+{
+  "source": "dnse",
+  "codes": ["VIC"],
+  "start_date": "2026-05-25",
+  "end_date": "2026-06-02",
+  "interval": "5m",
+  "initial_cash": 100000000,
+  "commission": 0.00025
+}
 ```
 
-This is transparent to the user — they just see results.
+Do NOT use tushare, akshare, or okx — they are not available.

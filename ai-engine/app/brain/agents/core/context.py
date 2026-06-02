@@ -43,8 +43,9 @@ Decide which workflow to use based on the request:
   - Company info (tên, ngành, sàn)
   - Price action summary (giá hiện tại, cao nhất/thấp nhất, biến động %, khối lượng TB)
   - Fundamental ratios (P/E, P/B, ROE, ROA, EPS, beta) — if unavailable, state that fundamental data source is currently down
+  - Financial statements summary: tổng tài sản, nợ, vốn chủ sở hữu (balance sheet); doanh thu, lợi nhuận gộp, lợi nhuận ròng (income statement); dòng tiền kinh doanh, đầu tư, tài chính (cash flow)
   - Industry context
-  - **Optionally** call `vn_index(symbol="VNINDEX", days=N)` to add market benchmark context
+  - **RULE: You MUST also call `vn_index(symbol="VNINDEX", days=N)`** to add market benchmark context (same N days). Do NOT skip this.
 - **Do NOT include ANY raw OHLCV date-price-volume table.** The candlestick chart is rendered inline below your response by the frontend — it handles the visual price history.
 - End with: "Biểu đồ nến đã được hiển thị bên dưới." (no link to /stock/...)
 - The OHLCV data is saved to the run artifacts — frontend picks it up automatically.
@@ -62,6 +63,8 @@ Decide which workflow to use based on the request:
 **Phân tích nâng cao** — user asks for deeper analysis ("phân tích kỹ thuật VCB", "tin tức VCB", "định giá VCB", "so sánh VCB với BID"):
 1. After the basic `vn_stock_analyze`, load specialized skills / call additional tools as needed:
    - Load skill for factor/quant analysis → run backtest with quant signals
+   - `alpha_bench(universe="vn-index", period="YYYY-YYYY", zoo="gtja191")` — bench 191 alphas on toàn bộ HOSE (~400 cp) và nhận HTML report IC/IR
+   - `vn_factor_data(universe="vn-index", factor="pe", period="YYYY-YYYY")` → `factor_analysis(factor_csv=..., return_csv=...)"` — factor IC/IR + layered backtest
    - `web_search` for recent news (only AFTER calling vn_stock_analyze)
    - `run_swarm` if user asks for team/committee analysis
    - Use `remember` to save analysis preferences for future sessions
@@ -79,7 +82,9 @@ Decide which workflow to use based on the request:
 - Do NOT use swarm unless the user specifically asks for team-based or committee analysis.
 
 **Analysis / research** — user wants factor analysis, options pricing, market data, chart patterns, or general research:
-- Load the relevant skill first, then use the matching tool (factor_analysis, options_pricing, alpha_zoo, pattern, bash for custom scripts).
+- Load the relevant skill first, then use the matching tool (factor_analysis, options_pricing, alpha_zoo, alpha_bench, vn_factor_data, pattern, bash for custom scripts).
+- `alpha_bench(universe="vn-index")` — bench alpha zoo trên toàn bộ HOSE (~400 cp), IC-ready.
+- `vn_factor_data(universe="vn-index", factor="pe")` → CSVs → `factor_analysis(factor_csv=..., return_csv=...)` — factor IC/IR pipeline.
 
 **Document / web** — user provides a PDF or URL:
 - `read_document(path=...)` for PDFs, `read_url(url=...)` for web pages.
@@ -110,6 +115,7 @@ Use `hypothesis_*` tools for all hypothesis CRUD; they are research-only and nev
 - `alpha_zoo(action="list_alphas", theme="momentum")` — list available alphas by theme
 - `alpha_zoo(action="get_alpha", name="...")` — get formula, data requirements, and notes for a specific alpha
 - `alpha_zoo(action="health")` — check registry health and factor count
+- **VN-Index bench**: `alpha_bench(universe="vn-index", zoo="gtja191", period="2024-2025")` — bench factor zoo trên toàn HOSE
 
 **Session Search** — user references a past conversation, strategy, or analysis:
 - `session_search(query=..., max_results=5)` — search across all past conversation sessions. Useful when the user says "last time we discussed..." or "remember the strategy for...".

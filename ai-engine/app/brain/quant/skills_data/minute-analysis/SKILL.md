@@ -33,9 +33,34 @@ For minute-level backtests, simply add the `interval` field in `config.json`:
 
 | Data Source | Supported Intervals | Notes |
 |--------|---------|------|
+| **DNSE REST** | 1m/5m/15m/30m/1H | **Vietnam stocks** — directly via the DNSE Open API; requires DNSE_API_KEY + DNSE_API_SECRET in .env |
 | OKX | 1m/5m/15m/30m/1H/4H | Cryptocurrency, trades 7x24 |
 | Tushare | 1m/5m/15m/30m/1H | China A-shares, requires score >= 2000 |
 | yfinance | 1m/5m/15m/30m/1H | Hong Kong / US equities (free, no key required) |
+
+## DNSE Intraday API (Vietnam Stocks)
+
+```python
+from app.services.dnse.intraday_tool import get_intraday_tool
+
+tool = get_intraday_tool()
+# Fetch 5-minute bars for VIC (last 5 trading days)
+from datetime import datetime, timedelta, timezone
+TZ_VN = timezone(timedelta(hours=7))
+now = datetime.now(TZ_VN)
+from_ts = int((now - timedelta(days=5)).timestamp())
+to_ts = int(now.timestamp())
+
+candles = tool.fetch("VIC", resolution="5", from_ts=from_ts, to_ts=to_ts)
+# Returns [{time, open, high, low, close, volume}, ...]
+```
+
+The DNSE REST endpoint (`GET /price/ohlc`) returns TradingView-format arrays (`t, o, h, l, c, v`) and supports resolutions `1`, `5`, `15`, `30`, `1H`, `1D`. Use the `DnseIntradayTool` for direct access independent of the WebSocket stream hub.
+
+You can also call the FastAPI endpoint directly:
+```
+GET /api/stock/intraday/VIC?resolution=5&start=2026-05-28&end=2026-06-02
+```
 
 ## OKX Minute Candlestick API
 

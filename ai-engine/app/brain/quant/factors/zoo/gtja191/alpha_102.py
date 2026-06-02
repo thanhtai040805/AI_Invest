@@ -36,7 +36,7 @@ __alpha_meta__ = {
     'formula_latex': 'sma(max(volume-delay(volume,1),0),6,1)/sma(abs(volume-delay(volume,1)),6,1)*100',
     'columns_required': ['close', 'volume'],
     'extras_required': [],
-    'universe': ['equity_cn'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 6,
     'min_warmup_bars': 7,

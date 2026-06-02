@@ -36,7 +36,7 @@ __alpha_meta__ = {
     'formula_latex': '((20-lowday(low,20))/20)*100',
     'columns_required': ['close', 'low'],
     'extras_required': [],
-    'universe': ['equity_cn'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 20,
     'min_warmup_bars': 20,

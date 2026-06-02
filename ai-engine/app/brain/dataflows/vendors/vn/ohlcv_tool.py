@@ -48,12 +48,15 @@ class OHLCVTool:
             if not start_date:
                 start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
             
-            # Call DNSE service
-            data = await self.market_service.get_historical_data(
+            # Call DNSE service with timeframe
+            data = await self.market_service.get_ohlcv(
                 symbol=symbol,
-                start_date=start_date,
-                end_date=end_date,
+                interval=timeframe,
+                start=start_date,
+                end=end_date,
             )
+            if isinstance(data, dict):
+                data = data.get("data", [])
             
             # Format data
             formatted_data = []

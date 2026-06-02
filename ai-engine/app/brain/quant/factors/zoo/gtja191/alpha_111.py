@@ -36,7 +36,7 @@ __alpha_meta__ = {
     'formula_latex': 'sma(v*((c-l)-(h-c))/(h-l),11,2)-sma(v*((c-l)-(h-c))/(h-l),4,2)',
     'columns_required': ['open', 'high', 'low', 'close', 'volume'],
     'extras_required': [],
-    'universe': ['equity_cn'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 11,
     'min_warmup_bars': 12,

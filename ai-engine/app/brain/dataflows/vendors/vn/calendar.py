@@ -3,7 +3,7 @@ VN Calendar - Vietnam market calendar and trading rules
 Handles ATO/ATC, T+2 settlement, price limits, and trading hours
 """
 import logging
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union
 from datetime import datetime, time, timedelta
 from enum import Enum
 
@@ -28,6 +28,7 @@ class BoardType(str, Enum):
 class VNCalendar:
     """
     Vietnam market calendar and trading rules
+    Fetches real working dates from DNSE API (with caching) for holiday-aware checks.
     """
     
     # Trading hours
@@ -57,27 +58,73 @@ class VNCalendar:
     
     def __init__(self):
         """Initialize VN Calendar"""
+        self._working_dates: set[str] = set()
+        self._last_fetch_time: float = 0.0
         logger.info("VN Calendar initialized")
     
-    def is_trading_day(self, date: Optional[datetime] = None) -> bool:
+    def _fetch_working_dates(self) -> set[str]:
+        """Fetch working dates from DNSE REST API with caching (1 hour)."""
+        now = datetime.now().timestamp()
+        if self._working_dates and (now - self._last_fetch_time) < 3600:
+            return self._working_dates
+
+        try:
+            from app.config.settings import get_settings
+            from app.services.dnse.api.client import DNSEClient
+
+            settings = get_settings()
+            if not settings.dnse_configured:
+                return self._working_dates
+
+            client = DNSEClient(
+                api_key=settings.dnse_api_key,
+                api_secret=settings.dnse_api_secret,
+                base_url=settings.dnse_base_url,
+            )
+            status, body = client.get_working_dates()
+            if status == 200 and body:
+                import json
+                data = json.loads(body) if isinstance(body, str) else body
+                dates = data if isinstance(data, list) else data.get("workingDates", data.get("data", []))
+                for entry in dates:
+                    date_str = entry.get("date", "")[:10] if isinstance(entry, dict) else str(entry)[:10]
+                    if date_str:
+                        self._working_dates.add(date_str)
+                self._last_fetch_time = now
+                logger.info("VNCalendar: fetched %d working dates from DNSE", len(self._working_dates))
+        except Exception as e:
+            logger.warning("VNCalendar: DNSE working dates fetch failed: %s", e)
+
+        return self._working_dates
+
+    def is_trading_day(self, date: Optional[Union[str, datetime]] = None) -> bool:
         """
         Check if a date is a trading day
         
         Args:
-            date: Date to check (default: today)
+            date: Date to check (default: today). Can be string "YYYY-MM-DD" or datetime.
             
         Returns:
             bool: True if trading day
         """
         if date is None:
             date = datetime.now()
+        elif isinstance(date, str):
+            date = datetime.strptime(date, "%Y-%m-%d")
         
         # Check if weekday
         if date.weekday() not in self.TRADING_DAYS:
             return False
         
-        # TODO: Check for holidays
-        # For now, assume all weekdays are trading days
+        # Check against DNSE working dates (covers Vietnamese holidays)
+        try:
+            working = self._fetch_working_dates()
+            date_str = date.strftime("%Y-%m-%d")
+            if working and date_str not in working:
+                return False
+        except Exception:
+            pass  # If DNSE fetch fails, fall through to weekday-only check
+        
         return True
     
     def is_trading_time(self, dt: Optional[datetime] = None) -> bool:

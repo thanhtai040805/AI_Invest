@@ -86,9 +86,9 @@ agents:
       5. **Margin risk** — financing balance historical percentile; estimate margin-call pressure if market falls X%
       6. **Reliability caveats** — lags, data limits, misread risks
 
-      Use load_skill("tushare"), load_skill("sentiment-analysis").
+      Use load_skill("sentiment-analysis").
     tools: [bash, read_file, write_file, load_skill]
-    skills: [tushare, sentiment-analysis]
+    skills: [sentiment-analysis]
     max_iterations: 50
     timeout_seconds: 1800
     max_retries: 1

@@ -241,7 +241,7 @@ eurusd = yf.download("EURUSD=X", start="2025-01-01", end="2026-01-01", progress=
 }
 ```
 
-`source: "auto"` routes automatically by ticker format: A-shares → tushare, HK/US stocks → yfinance, crypto → OKX.
+`source: "auto"` routes automatically: `.VN` tickers → yfinance, others fall through to DNSE/VietFin.
 
 ## Notes
 

@@ -36,7 +36,7 @@ __alpha_meta__ = {
     'formula_latex': '(c-delay(c,1))/delay(c,1)*v',
     'columns_required': ['close', 'volume'],
     'extras_required': [],
-    'universe': ['equity_cn'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 1,
     'min_warmup_bars': 2,

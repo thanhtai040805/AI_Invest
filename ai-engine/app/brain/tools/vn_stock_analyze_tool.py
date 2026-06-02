@@ -18,7 +18,10 @@ logger = logging.getLogger(__name__)
 
 
 def _analyze_vn_stock(symbol: str, days: int = 30) -> dict[str, Any]:
-    """Fetch OHLCV + fundamentals for a Vietnam stock via VietFin.
+    """Fetch OHLCV + fundamentals for a Vietnam stock.
+
+    Uses VietFin for price.historical (DNSE still works).
+    Uses vnstock for company profile + fundamental ratios (VietFin TCBS APIs are dead).
 
     Args:
         symbol: Stock symbol (e.g. "VIX", "VCB", "VNM").
@@ -30,13 +33,14 @@ def _analyze_vn_stock(symbol: str, days: int = 30) -> dict[str, Any]:
     from vietfin import vf
 
     sym_lower = symbol.lower()
+    sym_upper = symbol.upper()
     end = datetime.now()
     start = end - timedelta(days=days)
     start_str = start.strftime("%Y-%m-%d")
     end_str = end.strftime("%Y-%m-%d")
 
     result: dict[str, Any] = {
-        "symbol": symbol.upper(),
+        "symbol": sym_upper,
         "days": days,
         "start_date": start_str,
         "end_date": end_str,
@@ -72,54 +76,173 @@ def _analyze_vn_stock(symbol: str, days: int = 30) -> dict[str, Any]:
                 "trading_days": len(closes),
             }
 
+    _fetch_profile(result, sym_upper)
+    _fetch_ratios(result, sym_upper)
+    _fetch_financials(result, sym_upper)
+
+    return result
+
+
+def _fetch_profile(result: dict[str, Any], symbol: str) -> None:
+    """Fetch company profile via vnstock."""
     try:
-        profile = vf.equity.profile(symbol=sym_lower)
-        profile_data = profile.to_dict()
-        if profile_data:
-            if isinstance(profile_data, list):
-                profile_data = profile_data[0]
+        from vnstock import Vnstock
+        stock = Vnstock().stock(symbol=symbol, source="KBS")
+        profile = stock.company.overview()
+        if profile is not None and not profile.empty:
+            row = profile.iloc[0].to_dict()
+            # Get clean short name from new Company API if available
+            short_name = ""
+            try:
+                from vnstock.api.company import Company as CompanyAPI
+                ci = CompanyAPI(symbol=symbol, source="VCI").overview()
+                if ci is not None and not ci.empty:
+                    short_name = ci.iloc[0].get("organ_name", "")
+            except Exception:
+                pass
             result["profile"] = {
-                "name": profile_data.get("name", ""),
-                "legal_name": profile_data.get("legal_name", ""),
-                "exchange": profile_data.get("stock_exchange", ""),
-                "industry": profile_data.get("industry_category", ""),
-                "employees": profile_data.get("employees"),
-                "website": str(profile_data.get("company_url", "")),
+                "name": short_name or symbol,
+                "legal_name": row.get("symbol", ""),
+                "exchange": row.get("exchange", ""),
+                "industry": row.get("company_type", ""),
+                "employees": row.get("number_of_employees"),
+                "website": str(row.get("website", "")),
             }
+        else:
+            result["profile"] = {"error": "profile data unavailable"}
     except Exception as exc:
         logger.warning("Profile fetch failed for %s: %s", symbol, exc)
         result["profile"] = {"error": "profile data unavailable"}
 
+
+def _fetch_ratios(result: dict[str, Any], symbol: str) -> None:
+    """Fetch fundamental ratios via vnstock."""
     try:
-        ratios = vf.equity.fundamental.ratios(symbol=sym_lower)
-        ratios_df = ratios.to_df()
-        if not ratios_df.empty:
-            latest = ratios_df.iloc[-1].to_dict() if len(ratios_df) > 0 else {}
-            result["ratios"] = {
-                k: v for k, v in latest.items()
-                if k.lower() in ("pe", "pb", "roe", "roa", "eps", "beta", "price_to_book", "dividend_yield")
-            }
+        from vnstock.api.financial import Finance
+        f = Finance(symbol=symbol, source="KBS")
+        ratios = f.ratio()
+        if ratios is not None and not ratios.empty:
+            period_cols = [c for c in ratios.columns if c not in ("item", "item_en", "item_id")]
+            if period_cols:
+                latest = period_cols[-1]
+                raw = {}
+                for _, row in ratios.iterrows():
+                    item = str(row["item"]).strip()
+                    val = row[latest]
+                    if not isinstance(val, (int, float)):
+                        continue
+                    raw[item] = val
+
+                RATIO_MAP: dict[str, str] = {
+                    "P/E": "pe",
+                    "P/B": "pb",
+                    "EPS": "eps",
+                    "Beta": "beta",
+                    "ROE": "roe",
+                    "ROA": "roa",
+                    "Tỷ suất cổ tức": "dividend_yield",
+                    "Giá trị sổ sách của cổ phiếu (BVPS)": "price_to_book",
+                }
+                mapped = {}
+                for vn_name, eng_name in RATIO_MAP.items():
+                    for k, v in raw.items():
+                        if vn_name in k:
+                            mapped[eng_name] = v
+                            break
+                if mapped:
+                    result["ratios"] = mapped
+                    return
+        result["ratios"] = {"error": "fundamental ratios unavailable"}
     except Exception as exc:
         logger.warning("Ratios fetch failed for %s: %s", symbol, exc)
         result["ratios"] = {"error": "fundamental ratios unavailable"}
 
-    return result
+
+def _extract_fin_item(df, period_cols, keywords):
+    """Extract latest value from a financial DataFrame by item name keywords."""
+    if df is None or df.empty or not period_cols:
+        return None
+    latest = period_cols[-1]
+    for _, row in df.iterrows():
+        item = str(row["item"]).strip()
+        if any(kw in item for kw in keywords):
+            val = row[latest]
+            if isinstance(val, (int, float)):
+                return val
+    return None
+
+
+def _fetch_financials(result: dict[str, Any], symbol: str) -> None:
+    """Fetch balance sheet, income statement, and cash flow via vnstock."""
+    try:
+        from vnstock.api.financial import Finance
+        f = Finance(symbol=symbol, source="KBS")
+
+        bs = f.balance_sheet()
+        inc = f.income_statement()
+        cf = f.cash_flow()
+
+        bs_cols = [c for c in bs.columns if c not in ("item", "item_en", "item_id")] if bs is not None else []
+        inc_cols = [c for c in inc.columns if c not in ("item", "item_en", "item_id")] if inc is not None else []
+        cf_cols = [c for c in cf.columns if c not in ("item", "item_en", "item_id")] if cf is not None else []
+
+        result["financials"] = {}
+
+        if bs_cols:
+            bs_latest = bs_cols[-1]
+            assets = _extract_fin_item(bs, bs_cols, ["TỔNG CỘNG TÀI SẢN"])
+            liab = _extract_fin_item(bs, bs_cols, ["TỔNG NỢ PHẢI TRẢ"])
+            equity = assets - liab if assets is not None and liab is not None else None
+            result["financials"]["balance_sheet"] = {
+                "period": bs_latest,
+                "total_assets": assets,
+                "total_liabilities": liab,
+                "total_equity": equity,
+            }
+
+        if inc_cols:
+            inc_latest = inc_cols[-1]
+            result["financials"]["income_statement"] = {
+                "period": inc_latest,
+                "revenue": (_extract_fin_item(inc, inc_cols, ["Doanh thu thuần"])
+                            or _extract_fin_item(inc, inc_cols, ["Thu nhập lãi thuần"])),
+                "gross_profit": (_extract_fin_item(inc, inc_cols, ["Lợi nhuận gộp"])
+                                 or _extract_fin_item(inc, inc_cols, ["Lãi/lỗ thuần từ hoạt động dịch vụ"])),
+                "net_profit": _extract_fin_item(inc, inc_cols, ["Lợi nhuận sau thuế"]),
+            }
+
+        if cf_cols:
+            cf_latest = cf_cols[-1]
+            result["financials"]["cash_flow"] = {
+                "period": cf_latest,
+                "operating": _extract_fin_item(cf, cf_cols, ["Lưu chuyển tiền thuần từ hoạt động kinh doanh"]),
+                "investing": _extract_fin_item(cf, cf_cols, ["Lưu chuyển tiền thuần từ hoạt động đầu tư"]),
+                "financing": _extract_fin_item(cf, cf_cols, ["Lưu chuyển tiền thuần từ hoạt động tài chính"]),
+                "net_cf": _extract_fin_item(cf, cf_cols, ["Lưu chuyển tiền thuần trong kỳ"]),
+            }
+
+        if not result["financials"]:
+            result.pop("financials")
+    except Exception as exc:
+        logger.warning("Financials fetch failed for %s: %s", symbol, exc)
 
 
 def _check_vietfin() -> bool:
     try:
         import vietfin  # noqa: F401
+        import vnstock  # noqa: F401
         return True
     except ImportError:
         return False
 
 
 class VNStockAnalyzeTool(BaseTool):
-    """Analyze a Vietnam stock: fetch OHLCV, profile, and fundamental ratios via VietFin."""
+    """Analyze a Vietnam stock: OHLCV (VietFin DNSE), profile + ratios + financials (vnstock)."""
 
     name = "vn_stock_analyze"
     description = (
         "Fetch OHLCV price history + company profile + fundamental ratios "
+        "+ balance sheet + income statement + cash flow "
         "for a Vietnam stock (HOSE/HNX/UPCOM). No API key needed. "
         "Use this INSTEAD of web_search when the user asks about a VN stock."
     )
@@ -181,7 +304,7 @@ class VNStockAnalyzeTool(BaseTool):
         except ImportError:
             return json.dumps({
                 "status": "error",
-                "error": "vietfin package not installed. Run: pip install vietfin",
+                "error": "Required packages not installed. Run: pip install vietfin vnstock",
             }, ensure_ascii=False)
         except Exception as exc:
             logger.warning("vn_stock_analyze failed for %s: %s", symbol, exc)

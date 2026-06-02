@@ -36,7 +36,7 @@ __alpha_meta__ = {
     'formula_latex': 'sum(h-o,20)/sum(o-l,20)*100',
     'columns_required': ['open', 'high', 'low', 'close'],
     'extras_required': [],
-    'universe': ['equity_cn'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 20,
     'min_warmup_bars': 20,

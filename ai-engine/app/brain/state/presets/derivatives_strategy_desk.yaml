@@ -42,7 +42,7 @@ agents:
         - High vol + inverted → sell volatility (iron condor / calendar)
         - Steep skew + low IV Premium → directionally biased strategy
 
-      Use load_skill("volatility") for volatility analysis standards; load_skill("options-advanced") for advanced options analysis methods.
+      Use load_skill("volatility") for volatility analysis standards.
       Use the options_pricing tool for volatility calculations and surface modeling.
 
       ## Output Requirements
@@ -53,7 +53,7 @@ agents:
       5. **Skew Characteristics Analysis** — Put skew and risk reversal current levels; compare vs. historical median; assess market sentiment bias
       6. **Volatility Strategy Direction Recommendation** — Based on the above, explicitly recommend "long volatility / short volatility / directional bias / calendar spread"; include confidence level
     tools: [bash, read_file, write_file, load_skill, options_pricing]
-    skills: [volatility, options-advanced]
+    skills: [volatility]
     max_iterations: 50
     timeout_seconds: 1800
     max_retries: 1
@@ -107,7 +107,7 @@ agents:
       - **Stop-Loss Rule**: Mandatory exit when loss exceeds 200% of maximum risk
       - **Time Stop**: Roll or close when <7 DTE
 
-      Use load_skill("options-strategy") for strategy selection framework; load_skill("options-advanced") for advanced options knowledge; load_skill("hedging-strategy") for hedging standards.
+      Use load_skill("hedging-strategy") for hedging standards.
       Use the options_pricing tool to compute theoretical option values and Greeks for each strategy leg.
 
       ## Output Requirements
@@ -118,7 +118,7 @@ agents:
       5. **Entry and Exit Rules** — Entry trigger conditions, profit-taking rules, stop-loss rules, time stop rules; specific and actionable
       6. **Strategy Applicability and Failure Scenarios** — Under what conditions the strategy is effective; under what conditions it fails (requiring prompt adjustment)
     tools: [bash, read_file, write_file, load_skill, options_pricing]
-    skills: [options-strategy, options-advanced, hedging-strategy, options-payoff]
+    skills: [hedging-strategy]
     max_iterations: 50
     timeout_seconds: 1800
     max_retries: 1
@@ -168,7 +168,7 @@ agents:
       - **Volatility Collapse**: Portfolio value change when IV drops 30% within one week
       - **Liquidity Risk**: Exit cost when bid-ask spreads widen to 3× normal levels
 
-      Use load_skill("options-advanced") for advanced Greeks calculation standards; load_skill("risk-analysis") for risk management standards; load_skill("volatility") for Vega and volatility risk understanding.
+      Use load_skill("risk-analysis") for risk management standards; load_skill("volatility") for Vega and volatility risk understanding.
       Use the options_pricing tool to compute portfolio Greeks and the scenario analysis matrix.
 
       ## Output Requirements
@@ -179,7 +179,7 @@ agents:
       5. **Stress Test Results** — Historical extreme scenario and single-day shock test results; provide maximum expected shortfall (ES / CVaR)
       6. **Dynamic Adjustment Recommendations** — At what price / time / IV level should the strategy be adjusted (Delta rebalancing trigger, roll timing, stop-loss exit conditions)
     tools: [bash, read_file, write_file, load_skill, options_pricing]
-    skills: [options-advanced, risk-analysis, volatility, options-payoff]
+    skills: [risk-analysis, volatility]
     max_iterations: 50
     timeout_seconds: 1800
     max_retries: 1

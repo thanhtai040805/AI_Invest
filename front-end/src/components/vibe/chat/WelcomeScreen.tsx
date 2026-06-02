@@ -30,11 +30,7 @@ const CATEGORIES: Category[] = [
         desc: "Minute-level crypto backtest with real-time OKX data",
         prompt: "Backtest BTC-USDT 5-minute MACD strategy, fast=12 slow=26 signal=9, last 30 days",
       },
-      {
-        title: "US Tech Max Diversification",
-        desc: "Portfolio optimizer across FAANG+ via yfinance",
-        prompt: "Backtest AAPL, MSFT, GOOGL, AMZN, NVDA with max_diversification portfolio optimizer, full-year 2024",
-      },
+
     ],
   },
   {

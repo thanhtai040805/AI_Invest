@@ -1,8 +1,7 @@
-"""VietFin loader for Vietnam stock market data.
+"""VietFin + vnstock loader for Vietnam stock market data.
 
-VietFin (https://github.com/vietfin/vietfin) is an open-source Python package
-that scrapes publicly available APIs from Vietnamese brokerage firms (TCBS, SSI, DNSE, VND, etc.)
-No API token required.
+Uses VietFin for OHLCV (DNSE provider still works).
+Uses vnstock for fundamentals (profile, ratios, income) since VietFin TCBS APIs are dead.
 """
 
 from __future__ import annotations
@@ -27,7 +26,7 @@ _INTERVAL_MAP = {
 
 @register
 class VietFinLoader:
-    """VietFin OHLCV + fundamentals loader for Vietnam equity."""
+    """VietFin OHLCV + vnstock fundamentals loader for Vietnam equity."""
 
     name = "vietfin"
     markets = {"vn_equity"}
@@ -45,6 +44,7 @@ class VietFinLoader:
     def is_available(self) -> bool:
         try:
             import vietfin  # noqa: F401
+            import vnstock  # noqa: F401
             return True
         except ImportError:
             return False
@@ -117,61 +117,81 @@ class VietFinLoader:
     def fetch_fundamentals(self, symbol: str) -> dict:
         """Fetch fundamental data for a Vietnam stock.
 
+        Uses vnstock for profile, ratios, income (VietFin TCBS APIs are dead).
+        Dividends have no replacement API — skipped with warning.
+
         Args:
             symbol: Stock symbol (e.g. "VCB").
 
         Returns:
-            Dict with profile, ratios, and financial data.
+            Dict with profile, ratios, and income data.
         """
-        vf = self._get_vf()
-        sym_lower = symbol.lower()
+        from vnstock import Vnstock
+        from vnstock.api.financial import Finance
+
+        sym_upper = symbol.upper()
         data = {}
 
         try:
-            profile = vf.equity.profile(symbol=sym_lower)
-            data["profile"] = profile.to_dict()
+            stock = Vnstock().stock(symbol=sym_upper, source="KBS")
+            profile = stock.company.overview()
+            if profile is not None and not profile.empty:
+                data["profile"] = profile.iloc[0].to_dict()
         except Exception as exc:
-            logger.warning("VietFin profile failed for %s: %s", symbol, exc)
+            logger.warning("vnstock profile failed for %s: %s", symbol, exc)
 
         try:
-            ratios = vf.equity.fundamental.ratios(symbol=sym_lower)
-            data["ratios"] = ratios.to_dict()
+            f = Finance(symbol=sym_upper, source="KBS")
+            ratios = f.ratio()
+            if ratios is not None and not ratios.empty:
+                period_cols = [c for c in ratios.columns if c not in ("item", "item_en", "item_id")]
+                if period_cols:
+                    latest = period_cols[-1]
+                    # Convert to dict with item names as keys
+                    ratio_dict = {}
+                    for _, row in ratios.iterrows():
+                        val = row[latest]
+                        if isinstance(val, (int, float)):
+                            ratio_dict[row["item"].strip()] = val
+                    data["ratios"] = ratio_dict
         except Exception as exc:
-            logger.warning("VietFin ratios failed for %s: %s", symbol, exc)
+            logger.warning("vnstock ratios failed for %s: %s", symbol, exc)
 
         try:
-            income = vf.equity.fundamental.income(symbol=sym_lower)
-            data["income"] = income.to_dict()
+            inc = f.income_statement()
+            if inc is not None and not inc.empty:
+                period_cols = [c for c in inc.columns if c not in ("item", "item_en", "item_id")]
+                if period_cols:
+                    latest = period_cols[-1]
+                    inc_dict = {}
+                    for _, row in inc.iterrows():
+                        val = row[latest]
+                        if isinstance(val, (int, float)):
+                            inc_dict[row["item"].strip()] = val
+                    data["income"] = inc_dict
         except Exception as exc:
-            logger.warning("VietFin income failed for %s: %s", symbol, exc)
+            logger.warning("vnstock income failed for %s: %s", symbol, exc)
 
-        try:
-            dividends = vf.equity.fundamental.dividends(symbol=sym_lower)
-            data["dividends"] = dividends.to_dict()
-        except Exception as exc:
-            logger.warning("VietFin dividends failed for %s: %s", symbol, exc)
+        logger.info("Dividends data unavailable — no replacement API for VietFin dividends endpoint")
 
         return data
 
     def get_universe(self) -> list[str]:
         """Get list of all available Vietnam stock symbols.
 
+        Uses vnstock Listing API (VietFin equity.search is dead — SSI Cloudflare 403).
+
         Returns:
             List of uppercase stock symbols.
         """
-        vf = self._get_vf()
         try:
-            resp = vf.equity.search()
-            results = resp.to_dict()
-            if isinstance(results, list):
-                symbols = []
-                for r in results:
-                    sym = r.get("symbol", "")
-                    if sym:
-                        symbols.append(sym.upper())
-                return sorted(symbols)
+            from vnstock.api.listing import Listing
+            l = Listing()
+            syms = l.all_symbols()
+            if syms is not None and not syms.empty and "symbol" in syms.columns:
+                return sorted(syms["symbol"].dropna().unique().tolist())
         except Exception as exc:
-            logger.warning("VietFin search failed: %s", exc)
+            logger.warning("vnstock all_symbols failed: %s", exc)
 
         # Fallback: common VN stocks
         return [

@@ -520,77 +520,48 @@ A股：沪深300ETF 510300 / 中证500ETF 510500
 
 ---
 
-## 7. 数据分析方法
+## 7. 数据分析方法（Vietnam Edition）
 
-### 7.1 用 Tushare 获取 ETF 数据
+### 7.1 用 vnstock 获取越南 ETF / 基金数据
 
 ```python
-import tushare as ts
+from vnstock import Vnstock
 import pandas as pd
 
-def get_etf_list(pro: ts.pro_api) -> pd.DataFrame:
+stock = Vnstock().stock(symbol="VNM", source="KBS")
+
+# 获取基金列表
+def get_vn_fund_list() -> pd.DataFrame:
     """
-    获取全市场ETF列表。
+    获取越南市场基金列表。
+    """
+    df = stock.listing.funds()
+    return df[['symbol', 'name', 'fund_type', 'management_company']]
+
+# 获取基金净值历史
+def get_fund_nav(symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+    """
+    获取基金净值历史。
 
     Args:
-        pro: tushare pro_api 实例
-
-    Returns:
-        ETF基本信息 DataFrame
+        symbol: 基金代码 (e.g., "FUEVFVND")
+        start_date, end_date: YYYY-MM-DD
     """
-    df = pro.fund_basic(market='E', status='L')  # E=ETF, L=上市中
-    return df[['ts_code', 'name', 'management', 'found_date', 'issue_date']]
+    stock = Vnstock().stock(symbol=symbol, source="KBS")
+    df = stock.funds.nav_history(symbol, start=start_date, end=end_date)
+    return df[['date', 'nav', 'accum_nav']]
 
-
-def get_etf_nav(pro: ts.pro_api, ts_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+# 获取基金持仓
+def get_fund_holdings(symbol: str, report_date: str) -> pd.DataFrame:
     """
-    获取ETF净值数据（IOPV）。
+    获取基金持仓明细。
 
     Args:
-        pro: tushare pro_api 实例
-        ts_code: ETF代码，如 '510300.SH'
-        start_date: 开始日期 'YYYYMMDD'
-        end_date: 结束日期 'YYYYMMDD'
-
-    Returns:
-        包含 trade_date, nav, accum_nav 的 DataFrame
+        symbol: 基金代码
+        report_date: 报告日期 YYYY-MM-DD
     """
-    df = pro.fund_nav(ts_code=ts_code, start_date=start_date, end_date=end_date)
-    return df.sort_values('end_date').reset_index(drop=True)
-
-
-def get_etf_daily(pro: ts.pro_api, ts_code: str, start_date: str, end_date: str) -> pd.DataFrame:
-    """
-    获取ETF场内日行情（市价）。
-
-    Args:
-        pro: tushare pro_api 实例
-        ts_code: ETF代码
-        start_date: 开始日期
-        end_date: 结束日期
-
-    Returns:
-        包含 trade_date, open, high, low, close, vol, amount 的 DataFrame
-    """
-    df = pro.fund_daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
-    return df.sort_values('trade_date').reset_index(drop=True)
-
-
-def get_index_daily(pro: ts.pro_api, index_code: str, start_date: str, end_date: str) -> pd.DataFrame:
-    """
-    获取基准指数日行情（用于计算跟踪误差）。
-
-    Args:
-        pro: tushare pro_api 实例
-        index_code: 指数代码，如 '000300.SH'（沪深300）
-        start_date: 开始日期
-        end_date: 结束日期
-
-    Returns:
-        包含 trade_date, close 的 DataFrame
-    """
-    df = pro.index_daily(ts_code=index_code, start_date=start_date, end_date=end_date)
-    return df[['trade_date', 'close', 'pct_chg']].sort_values('trade_date').reset_index(drop=True)
+    df = stock.funds.holdings(symbol, report_date=report_date)
+    return df[['symbol', 'stock_name', 'volume', 'market_value', 'ratio']]
 ```
 
 ### 7.2 跟踪误差计算代码模板
@@ -639,36 +610,46 @@ def calc_tracking_error(
 
 def compare_etfs_same_index(
     etf_codes: list[str],
-    index_code: str,
-    pro,
+    index_symbol: str,
     start_date: str,
     end_date: str
 ) -> pd.DataFrame:
     """
-    比较追踪同一指数的多只ETF的跟踪表现。
+    比较追踪同一指数的多只越南ETF的跟踪表现。
 
     Args:
-        etf_codes: ETF代码列表
-        index_code: 基准指数代码
-        pro: tushare pro_api 实例
-        start_date: 开始日期
-        end_date: 结束日期
+        etf_codes: ETF代码列表 (e.g., ["FUEVFVND", "FUESSVFL"])
+        index_symbol: 基准指数代码 (e.g., "VNINDEX")
+        start_date, end_date: YYYY-MM-DD
 
     Returns:
         各ETF的跟踪误差比较 DataFrame
     """
-    index_df = get_index_daily(pro, index_code, start_date, end_date)
-    index_prices = index_df.set_index('trade_date')['close']
+    from app.services.dnse.intraday_tool import get_intraday_tool
+    from datetime import datetime, timezone, timedelta
+
+    tool = get_intraday_tool()
+
+    # Fetch index data
+    TZ_VN = timezone(timedelta(hours=7))
+    from_dt = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=TZ_VN)
+    to_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=TZ_VN)
+    index_candles = tool.fetch(index_symbol, resolution="1D",
+                               from_ts=int(from_dt.timestamp()),
+                               to_ts=int(to_dt.timestamp()))
+    index_prices = pd.Series({c["time"][:10]: float(c["close"]) for c in index_candles})
 
     results = []
     for code in etf_codes:
-        nav_df = get_etf_nav(pro, code, start_date, end_date)
-        etf_prices = nav_df.set_index('end_date')['nav']
-        te_result = calc_tracking_error(etf_prices, index_prices)
-        te_result['ts_code'] = code
+        fund_candles = tool.fetch(code, resolution="1D",
+                                  from_ts=int(from_dt.timestamp()),
+                                  to_ts=int(to_dt.timestamp()))
+        fund_prices = pd.Series({c["time"][:10]: float(c["close"]) for c in fund_candles})
+        te_result = calc_tracking_error(fund_prices, index_prices)
+        te_result['symbol'] = code
         results.append(te_result)
 
-    return pd.DataFrame(results).set_index('ts_code').sort_values('tracking_error')
+    return pd.DataFrame(results).set_index('symbol').sort_values('tracking_error')
 ```
 
 ### 7.3 折溢价率监控
@@ -679,11 +660,11 @@ def calc_premium_discount(
     iopv: float
 ) -> dict:
     """
-    计算ETF折溢价率及套利信号。
+    计算越南ETF折溢价率及套利信号。
 
     Args:
         market_price: ETF场内市价
-        iopv: 实时净值（IOPV）
+        iopv: 参考净值（IOPV）
 
     Returns:
         包含 premium_pct, signal, arbitrage_feasible 的字典
@@ -691,132 +672,60 @@ def calc_premium_discount(
     premium_pct = (market_price - iopv) / iopv * 100
 
     if premium_pct > 0.3:
-        signal = 'PREMIUM_HIGH'   # 溢价：卖出ETF或申购套利
-        feasible = premium_pct > 0.5  # 扣除成本后是否可套利
+        signal = 'PREMIUM_HIGH'
+        feasible = premium_pct > 0.5
     elif premium_pct < -0.3:
-        signal = 'DISCOUNT_HIGH'  # 折价：买入ETF或赎回套利
+        signal = 'DISCOUNT_HIGH'
         feasible = premium_pct < -0.5
     else:
         signal = 'NORMAL'
         feasible = False
 
     return {
-        'premium_pct': round(premium_pct, 4),
+        'premium_pct': round(premium_pct, 2),
         'signal': signal,
         'arbitrage_feasible': feasible
     }
-
-
-def monitor_qdii_premium(pro, qdii_codes: list[str], date: str) -> pd.DataFrame:
-    """
-    监控QDII ETF溢价率（溢价过高时发出预警）。
-
-    Args:
-        pro: tushare pro_api 实例
-        qdii_codes: QDII ETF代码列表
-        date: 查询日期 'YYYYMMDD'
-
-    Returns:
-        各QDII ETF的溢价率和风险等级 DataFrame
-    """
-    results = []
-    for code in qdii_codes:
-        # 获取市价
-        price_df = pro.fund_daily(ts_code=code, trade_date=date)
-        # 获取净值
-        nav_df = pro.fund_nav(ts_code=code, end_date=date)
-
-        if not price_df.empty and not nav_df.empty:
-            market_price = price_df.iloc[0]['close']
-            nav = nav_df.iloc[0]['nav']
-            premium_pct = (market_price - nav) / nav * 100
-            risk_level = (
-                'HIGH' if premium_pct > 5
-                else 'MEDIUM' if premium_pct > 2
-                else 'LOW'
-            )
-            results.append({
-                'ts_code': code,
-                'market_price': market_price,
-                'nav': nav,
-                'premium_pct': round(premium_pct, 2),
-                'risk_level': risk_level
-            })
-
-    return pd.DataFrame(results).sort_values('premium_pct', ascending=False)
 ```
 
-### 7.4 资金流入流出分析
+### 7.4 越南基金净值历史
 
 ```python
-def etf_fund_flow_analysis(
-    pro,
-    ts_code: str,
+from vnstock import Vnstock
+import pandas as pd
+
+
+def get_fund_nav_history(
+    symbol: str,
     start_date: str,
     end_date: str
 ) -> pd.DataFrame:
     """
-    分析ETF规模变化与资金净流入/流出。
+    获取越南基金净值历史数据。
 
     Args:
-        pro: tushare pro_api 实例
-        ts_code: ETF代码
+        symbol: 基金代码 (e.g., "FUEVFVND", "FUESSVFL")
         start_date: 开始日期
         end_date: 结束日期
 
     Returns:
-        包含规模变化和资金流向估算的 DataFrame
+        DataFrame 包含日期、净值、累计净值
     """
-    nav_df = get_etf_nav(pro, ts_code, start_date, end_date)
-    nav_df['end_date'] = pd.to_datetime(nav_df['end_date'])
-    nav_df = nav_df.sort_values('end_date')
-
-    # 规模（单位亿元）
-    nav_df['scale'] = nav_df['unit_nav'] * nav_df['fund_share'] / 1e8
-
-    # 净值变动引起的规模变化（被动）
-    nav_df['nav_return'] = nav_df['unit_nav'].pct_change()
-    nav_df['passive_change'] = nav_df['scale'].shift(1) * nav_df['nav_return']
-
-    # 资金净流入 ≈ 规模变化 - 净值带来的被动变化
-    nav_df['net_flow'] = nav_df['scale'].diff() - nav_df['passive_change']
-
-    # 统计区间
-    summary = {
-        'total_net_flow': nav_df['net_flow'].sum(),       # 区间总净流入（亿元）
-        'avg_daily_flow': nav_df['net_flow'].mean(),      # 日均净流入
-        'inflow_days': (nav_df['net_flow'] > 0).sum(),    # 净流入天数
-        'outflow_days': (nav_df['net_flow'] < 0).sum(),   # 净流出天数
-        'current_scale': nav_df['scale'].iloc[-1]          # 最新规模
-    }
-
-    return nav_df[['end_date', 'unit_nav', 'scale', 'net_flow']], summary
+    stock = Vnstock().stock(symbol=symbol, source="KBS")
+    df = stock.funds.nav_history(symbol, start=start_date, end=end_date)
+    return df[['date', 'nav', 'accum_nav']]
 
 
-def cross_etf_flow_comparison(
-    pro,
-    etf_codes: list[str],
-    start_date: str,
-    end_date: str
-) -> pd.DataFrame:
+def list_vn_funds() -> pd.DataFrame:
     """
-    比较同类ETF的资金流向，判断资金偏好。
-
-    Args:
-        pro: tushare pro_api 实例
-        etf_codes: 同类ETF代码列表
-        start_date: 开始日期
-        end_date: 结束日期
+    列出越南市场所有基金。
 
     Returns:
-        各ETF资金流向汇总对比 DataFrame
+        DataFrame 包含基金代码、名称、类型、管理公司
     """
-    rows = []
-    for code in etf_codes:
-        _, summary = etf_fund_flow_analysis(pro, code, start_date, end_date)
-        summary['ts_code'] = code
-        rows.append(summary)
-    return pd.DataFrame(rows).set_index('ts_code').sort_values('total_net_flow', ascending=False)
+    from vnstock import Vnstock
+    stock = Vnstock().stock(symbol="VNM", source="KBS")
+    return stock.listing.funds()
 ```
 
 ---

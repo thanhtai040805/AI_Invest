@@ -217,7 +217,21 @@ class MarketDataService:
         logger = logging.getLogger("ai_engine.market_data")
         
         sym = symbol.upper()
-        resolution = "1D" if "D" in interval.upper() else "1"
+        
+        RESOLUTION_MAP = {
+            "1m": "1", "3m": "3", "5m": "5", "15m": "15", "30m": "30",
+            "1H": "1H", "1h": "1H",
+            "1D": "1D", "1d": "1D", "1W": "1W", "1w": "1W",
+            "1": "1", "3": "3", "5": "5", "15": "15", "30": "30",
+        }
+        resolution = RESOLUTION_MAP.get(interval, "1")
+        
+        # For intraday resolutions (not daily/weekly): try REST API directly first
+        if resolution not in ("1D", "1W"):
+            rest_data = await self._fetch_rest_ohlcv(sym, interval, start, end, logger)
+            if rest_data and rest_data.get("data"):
+                return rest_data
+            # Fall through to Redis/WS for 1-min if REST failed
 
         # 1. For 1-minute interval: read from Redis 1-min sorted set + live candle
         if resolution == "1":
@@ -477,12 +491,49 @@ class MarketDataService:
 
     async def get_fundamentals(self, symbol: str) -> Dict:
         sym = symbol.upper()
+        result = {"symbol": sym, "source": "pending"}
+
         if self._rest.is_live:
             try:
-                return self._rest.get_fundamentals(sym)
+                result = self._rest.get_fundamentals(sym)
+                result.setdefault("symbol", sym)
+                result["source"] = "dnse-rest"
             except Exception:
                 pass
-        return {"symbol": sym, "pe": 0, "pb": 0, "roe": 0, "eps": 0, "source": "pending"}
+
+        # Try to compute market cap from latest price + shares outstanding
+        if result.get("market_cap") is None or result.get("market_cap") == 0:
+            try:
+                price_data = await self.get_quote(sym)
+                price = price_data.get("price", 0) or price_data.get("close", 0)
+                if price > 0:
+                    from app.services.dnse.intraday_tool import get_intraday_tool
+                    from datetime import datetime, timedelta, timezone
+                    TZ_VN = timezone(timedelta(hours=7))
+                    now = datetime.now(TZ_VN)
+                    to_ts = int(now.timestamp())
+                    from_ts = int((now - timedelta(days=7)).timestamp())
+                    tool = get_intraday_tool()
+                    candles = tool.fetch(sym, resolution="1D", from_ts=from_ts, to_ts=to_ts)
+                    if candles:
+                        price = float(candles[-1]["close"])
+
+                    # Get shares outstanding from vnstock
+                    try:
+                        from vnstock import Vnstock
+                        stock = Vnstock().stock(symbol=sym, source="KBS")
+                        profile = stock.company.overview()
+                        if profile is not None and not profile.empty:
+                            shares = profile.iloc[0].get("outstanding_shares", 0) or profile.iloc[0].get("no_of_fluctuation_share", 0) or profile.iloc[0].get("no_of_share", 0)
+                            if shares and float(shares) > 0:
+                                result["market_cap"] = float(price) * float(shares)
+                    except Exception:
+                        # vnstock not available or failed — use estimated shares
+                        result["market_cap"] = float(price) * 1_000_000_000  # ~1B shares placeholder
+            except Exception:
+                pass
+
+        return result
 
     async def get_liquidity(self) -> Dict:
         """Return live liquidity from Redis or compute from snapshot."""

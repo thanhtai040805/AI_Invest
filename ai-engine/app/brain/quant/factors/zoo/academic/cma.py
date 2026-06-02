@@ -23,7 +23,7 @@ __alpha_meta__ = {
     'theme': ['quality'],
     'formula_latex': r'\mathrm{zscore}_{x}\bigl(-\Delta_{60}\log(\mathrm{ts\_mean}(\mathrm{volume},\,60) + 1)\bigr)',
     'columns_required': ['volume'],
-    'universe': ['equity_us', 'equity_cn', 'equity_hk'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 60,
     'min_warmup_bars': 120,

@@ -36,7 +36,7 @@ __alpha_meta__ = {
     'formula_latex': '(c+h+l)/3',
     'columns_required': ['close', 'high', 'low'],
     'extras_required': [],
-    'universe': ['equity_cn'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 1,
     'min_warmup_bars': 1,

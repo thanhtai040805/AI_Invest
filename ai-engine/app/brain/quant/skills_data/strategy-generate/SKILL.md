@@ -1,6 +1,6 @@
 ---
 name: strategy-generate
-description: Create, modify, and optimize quantitative trading strategies, then backtest and evaluate them.
+description: Create, modify, and optimize quantitative trading strategies for Vietnam stocks, then backtest and evaluate them.
 category: strategy
 ---
 
@@ -19,14 +19,13 @@ category: strategy
 ## Requirements Parsing
 
 Extract the following from the user's description:
-- **Instrument codes**: process them according to the normalization rules below
-- **Time range**: if the user does not specify dates, default to **10 years back from today** (for example, if today is `2026-03-18`, then `start_date=2016-03-18`, `end_date=2026-03-18`)
+- **Instrument codes**: Vietnam stock symbols (e.g. VCB, VNM, FPT, HPG)
+- **Time range**: if the user does not specify dates, default to **5 years back from today**
 - **Strategy logic**: entry / exit conditions and indicator parameters
 
 **If critical information is missing, you must ask the user instead of guessing:**
-- Instrument not specified → ask which instrument they want to backtest (offer several popular suggestions)
-- Strategy description is vague (for example, "help me build a strategy") → provide 2-3 strategy directions for the user to choose from
-- Mixed markets but not clearly specified → confirm the data source
+- Instrument not specified → ask which stock they want to backtest (offer several popular VN suggestions)
+- Strategy description is vague → provide 2-3 strategy directions for the user to choose from
 
 **Write `config.json` first, then write code.** `config.json` must be placed in the root of `run_dir`.
 
@@ -34,13 +33,11 @@ Extract the following from the user's description:
 
 Before writing code, think through these 5 questions:
 
-1. **Data requirements**: what fields are needed (basic OHLCV only, daily valuation fields such as `pe/pb/roe`, or statement fields such as `income_total_revenue` / `fina_indicator_roe`?), data frequency (daily), and market (which determines the data source)
-2. **Signal logic**: what are the entry conditions? What are the exit conditions? Direction (long / short / long-short)? Are there filters (volume, trend confirmation, and so on)?
-3. **Position management**: equal-weight allocation or scaling in/out? Risk control (stop-loss, maximum position)? In portfolio strategies, once top N names are selected, each weight = 1/N
+1. **Data requirements**: basic OHLCV (open, high, low, close, volume). For fundamental factors, use `vn_factor_data` first then pass CSVs to `factor_analysis`.
+2. **Signal logic**: what are the entry conditions? What are the exit conditions? Direction (long / short / long-short)? Are there filters?
+3. **Position management**: equal-weight allocation or scaling in/out? Risk control (stop-loss, maximum position)?
 4. **Backtest parameters**: time range, initial capital (default 1,000,000), commission (default 0.1%)
-5. **Validation checklist**: signal consistency (no NaN signals), position check (normalized to prevent leverage), and completeness of generated artifacts
-
-There is no need to output a JSON design document. Express these design decisions directly in code.
+5. **Validation checklist**: signal consistency (no NaN signals), position check, and completeness of generated artifacts
 
 ## `SignalEngine` Contract
 
@@ -50,14 +47,11 @@ class SignalEngine:
         """
         Args:
             data_map: code -> DataFrame (columns: open, high, low, close, volume, DatetimeIndex)
-                     If config.extra_fields is specified, pe, pb, roe, and similar daily_basic columns will also be present.
-                     If config.fundamental_fields is specified, PIT-safe statement columns such as
-                     income_total_revenue, income_n_income, and fina_indicator_roe will also be present.
         Returns:
             code -> signal Series, value range [-1.0, 1.0]
             1.0 = fully long, 0.5 = half position, 0.0 = flat, -1.0 = fully short
-            Portfolio strategy: selected stocks split weights equally (for example top 10 -> each 0.1)
-            Legacy integer signals {-1, 0, 1} remain compatible (treated as -100% / 0% / 100%)
+            Portfolio strategy: selected stocks split weights equally (e.g. top 10 -> each 0.1)
+            Legacy integer signals {-1, 0, 1} remain compatible
         """
 ```
 
@@ -76,46 +70,33 @@ Self-check after writing `signal_engine.py`:
 - [ ] No undefined variables
 - [ ] Signal logic is consistent with the strategy description
 - [ ] Boundary handling: for empty data or insufficient history before the lookback window, use `fillna(0)` or skip
-- [ ] Portfolio strategy: once N stocks are selected, each weight = 1/N (for example top 10 → each 0.1), unselected names = 0
+- [ ] Portfolio strategy: once N stocks are selected, each weight = 1/N (e.g. top 10 → each 0.1), unselected names = 0
 - [ ] Signal values stay within `[-1.0, 1.0]`
 
-## Instrument Code Normalization
+## Instrument Codes
 
-- 6-digit China A-share codes → automatically append suffix: codes starting with `600/601/603` → `.SH`, all others → `.SZ`
-- US stocks: uppercase letters + `.US`, such as `AAPL.US` (`yfinance` converts automatically)
-- Hong Kong stocks: digits + `.HK`, such as `700.HK` (`yfinance` converts automatically)
-- Cryptocurrencies: `BTC-USDT` format (OKX spot pairs, **must use the hyphen `-`, not slash `/`**)
-  - The user may write `BTC/USDT`, but `config.json` must use `"BTC-USDT"`
+- Vietnam stocks on HOSE/HNX/UPCOM: simple uppercase symbols, e.g. VCB, VNM, FPT, HPG, VIC
+- No suffix or prefix needed
+- Recommended minimum 5 years of history for meaningful backtest
 
-## Cryptocurrency Notes
+## Data Sources
 
-- **Code format**: must be `XXX-USDT` (uppercase + hyphen), such as `BTC-USDT` and `ETH-USDT`
-- **source**: must be set to `"okx"`
-- **extra_fields**: must be `null` (OKX does not support fundamentals)
-- **Data format**: `DataLoader` has already normalized the output to match China A-shares exactly: `open, high, low, close, volume` + `DatetimeIndex`
-- **No special handling needed in strategy code**: `signal_engine.py` should be written the same way as for China A-shares; do not add extra data conversion for OKX
+| Source | Config value | How |
+|--------|-------------|-----|
+| VietFin (vnstock fallback) | `"vietfin"` | Primary source for VN OHLCV + fundamentals |
+| DNSE (broker) | `"dnse"` | Alternative VN OHLCV source |
+| Auto | `"auto"` | Recommended — auto-selects best available source |
 
-## Market Detection and Data Sources
-
-| Pattern | Market | source | Extra Fields |
-|------|------|--------|----------|
-| `^\d{6}\.(SZ\|SH\|BJ)$` | China A-shares | tushare | `extra_fields`: pe, pb, pe_ttm, ps_ttm, dv_ttm, total_mv, circ_mv, roe; `fundamental_fields`: income/balancesheet/cashflow/fina_indicator |
-| `^[A-Z]+\.US$` | US stocks | yfinance | - |
-| `^\d{3,5}\.HK$` | Hong Kong stocks | yfinance | - |
-| `^[A-Z]+-USDT$` | Cryptocurrency | okx | - |
-
-**`extra_fields` selection logic**: only China A-shares (`tushare`) support daily valuation fields. If the strategy needs `PE/PB/ROE` and similar daily_basic fields, specify them in `config.json.extra_fields` and `DataLoader` will retrieve them automatically. Hong Kong stocks, US stocks, and crypto do not support `extra_fields`.
-
-**`fundamental_fields` selection logic**: use this for China A-share financial statement pre-filters. The runner queries `income`, `balancesheet`, `cashflow`, and/or `fina_indicator` through the Tushare fundamental provider, then merges rows into daily bars only after their announcement/disclosure date. Output columns are prefixed by table name, for example `income_total_revenue`, `income_n_income`, `balancesheet_total_hldr_eqy_exc_min_int`, and `fina_indicator_roe`.
+Do NOT use tushare, akshare, or okx — they are not supported.
 
 ## `config.json` Format
 
 ```json
 {
   "source": "auto",
-  "codes": ["000001.SZ"],
-  "start_date": "2016-03-18",
-  "end_date": "2026-03-18",
+  "codes": ["VCB"],
+  "start_date": "2020-01-01",
+  "end_date": "2025-12-31",
   "interval": "1D",
   "initial_cash": 1000000,
   "commission": 0.001,
@@ -128,32 +109,18 @@ Self-check after writing `signal_engine.py`:
 }
 ```
 
-- `source`: `"auto"` (recommended, auto-select by code format) / `"tushare"` / `"yfinance"` / `"okx"` / `"akshare"` / `"ccxt"`
-  - `"auto"` supports mixed instruments. For example, `["000001.SZ", "BTC-USDT"]` will be automatically routed to `tushare` and `okx`
-  - Futures codes (e.g. `"IF2406.CFFEX"`, `"ESZ4"`) and forex pairs (e.g. `"EUR/USD"`) are also auto-routed
-- `interval`: candlestick interval, default `"1D"`. Supported values: `"1m"` / `"5m"` / `"15m"` / `"30m"` / `"1H"` / `"4H"` / `"1D"`
-  - The annualization factor for minute backtests is inferred automatically from `source` (252 trading days for China A-shares, 365 calendar days for crypto)
-  - Minute backtests can be very data-heavy. Recommended limits are no more than 30 days for `1m`, or 1 year for `1H`
-- `extra_fields`: China A-shares can use values such as `["pe", "pb", "roe"]`; other markets should use `null`
-- `fundamental_fields`: optional China A-share statement fields, such as `{"income": ["total_revenue", "n_income"], "fina_indicator": ["roe"]}`; use `null` unless the strategy needs financial statement pre-filtering
+- `source`: `"auto"` (recommended) / `"vietfin"` / `"dnse"`
+- `interval`: candlestick interval, default `"1D"`
+- `extra_fields`: not supported for VN (use `vn_factor_data` tool instead)
+- `fundamental_fields`: not supported (use `vn_factor_data` instead)
 - `optimizer`: optional, one of `"equal_volatility"` / `"risk_parity"` / `"mean_variance"` / `"max_diversification"` / `null` (equal-weight by default)
-- `optimizer_params`: optimizer parameters, such as `{"lookback": 60}`. `mean_variance` additionally supports `{"risk_free": 0.0}`
-- `engine`: backtest engine, default `"daily"`. For options strategies, set `"options"` (requires `OptionsSignalEngine`)
+- `optimizer_params`: optimizer parameters, such as `{"lookback": 60}`
+- `engine`: backtest engine, default `"daily"`
 - `initial_cash`: default 1,000,000
 - `commission`: default 0.1%
-- `validation`: optional statistical validation after backtest completes. Omit to skip. Example:
-  ```json
-  "validation": {
-    "monte_carlo": {"n_simulations": 1000},
-    "bootstrap": {"n_bootstrap": 1000, "confidence": 0.95},
-    "walk_forward": {"n_windows": 5}
-  }
-  ```
-  - `monte_carlo`: permutation test — shuffles trade order to compute p-value (is Sharpe significantly better than random?)
-  - `bootstrap`: resamples daily returns to compute Sharpe 95% confidence interval
-  - `walk_forward`: splits equity curve into N windows, checks performance consistency
-  - Each key is optional — include only the validations you want
-  - Can also run standalone on past results: `python -m backtest.validation <run_dir>`
+- `validation`: optional statistical validation
+
+For factor-based strategies: first call `vn_factor_data(universe="vn-index", factor="pe")`, then use the output CSVs with `factor_analysis` tool.
 
 ## Review Criteria
 
@@ -187,15 +154,7 @@ If improvements are needed after evaluation, write `action_items`:
 - Examples:
   - `"Change short MA from 5 to 10 days to reduce whipsaw signals"`
   - `"Add stop-loss: force close when loss exceeds 5%"`
-  - `"Add volume filter in signal_engine.py: only trigger buy on high volume"`
-
-## Cross-Market Strategies
-
-When the user requests a backtest with codes from **different markets** (e.g. `["000001.SZ", "BTC-USDT"]`):
-- Set `source: "auto"` in `config.json`
-- The `CompositeEngine` handles calendar alignment, shared capital, and per-market rules automatically
-- Use volatility-adjusted weights so high-vol assets (crypto) don't dominate the risk budget
-- See the [cross-market-strategy](../cross-market-strategy/SKILL.md) skill for per-market parameters, vol-adjustment, and example code
+  - `"Add volume filter: only trigger buy on high volume days"`
 
 ## Supporting Files
 

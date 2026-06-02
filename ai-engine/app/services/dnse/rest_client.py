@@ -46,7 +46,7 @@ class DnseRestClient:
         if not secs:
             return {"symbol": symbol}
         s = secs[0]
-        ref = float(getattr(s, "ref_price", 0) or getattr(s, "reference_price", 0) or 0)
+        ref = float(getattr(s, "basic_price", 0) or getattr(s, "ref_price", 0) or getattr(s, "reference_price", 0) or 0)
         return {
             "symbol": symbol.upper(),
             "name": getattr(s, "symbol", symbol),
@@ -58,9 +58,41 @@ class DnseRestClient:
         }
 
     def get_ohlcv(self, symbol: str, interval: str = "1D", start: Optional[str] = None, end: Optional[str] = None) -> List[Dict]:
-        """Historical OHLC. DNSE API does not expose OHLC history via REST.
-        Returns empty list — rely on Redis WebSocket data instead."""
-        return []
+        """Historical OHLC via DNSE REST API.
+
+        Supports resolutions: 1, 5, 15, 30, 1H, 1D.
+        Falls back to DNSE REST API (not WebSocket/Redis).
+        """
+        from datetime import datetime, timezone, timedelta
+        from app.services.dnse.intraday_tool import get_intraday_tool
+
+        tool = get_intraday_tool()
+        TZ_VN = timezone(timedelta(hours=7))
+
+        now = datetime.now(TZ_VN)
+        from_dt: Optional[datetime] = None
+        to_dt: Optional[datetime] = None
+
+        if start:
+            try:
+                from_dt = datetime.fromisoformat(start.replace("Z", "+00:00")).astimezone(TZ_VN)
+            except ValueError:
+                from_dt = None
+        if end:
+            try:
+                to_dt = datetime.fromisoformat(end.replace("Z", "+00:00")).astimezone(TZ_VN)
+            except ValueError:
+                to_dt = None
+
+        if from_dt is None:
+            from_dt = now - timedelta(days=30)
+        if to_dt is None:
+            to_dt = now
+
+        from_ts = int(from_dt.timestamp())
+        to_ts = int(to_dt.timestamp())
+
+        return tool.fetch(symbol, resolution=interval, from_ts=from_ts, to_ts=to_ts)
 
     def get_ohlc_history(self, symbol: str, timeframe: str = "1D") -> List[Dict]:
         """Historical OHLC via REST."""
@@ -77,11 +109,12 @@ class DnseRestClient:
         return []
 
     def get_fundamentals(self, symbol: str) -> Dict:
-        """Get stock fundamentals."""
+        """Get stock fundamentals from security info."""
         if self.is_live:
             try:
-                client = self._get_client()
-                return client.market.fundamentals(symbol.upper()) or {}
+                info = self.get_security_info(symbol.upper())
+                if info.get("price", 0) > 0:
+                    return info
             except Exception:
                 pass
         return {}

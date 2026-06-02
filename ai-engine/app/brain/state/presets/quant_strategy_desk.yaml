@@ -22,7 +22,7 @@ agents:
       Use factor_analysis for factor-based screening. Use alpha_zoo to browse the factor library.
       Use load_skill for data access patterns.
     tools: [bash, read_file, write_file, load_skill, factor_analysis, alpha_zoo]
-    skills: [tushare, fundamental-filter]
+    skills: [fundamental-filter]
     max_iterations: 50
     timeout_seconds: 1800
     max_retries: 1

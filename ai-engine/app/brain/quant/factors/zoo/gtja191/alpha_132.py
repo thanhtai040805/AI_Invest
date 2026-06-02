@@ -36,7 +36,7 @@ __alpha_meta__ = {
     'formula_latex': 'mean(amount,20)',
     'columns_required': ['close', 'amount'],
     'extras_required': [],
-    'universe': ['equity_cn'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 20,
     'min_warmup_bars': 20,

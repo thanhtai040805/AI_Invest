@@ -84,10 +84,10 @@ agents:
       4. **Time Decay Alert** — Theta sensitivity analysis for convertibles with less than 1 year to maturity; highlight holding cost implications
       5. **Option Value Ranking** — Composite option value score based on relative implied volatility underpricing and Greeks; output Top 30 with trading rationale
 
-      Use load_skill("options-strategy") for option analysis methodology; load_skill("volatility") for volatility analysis support; load_skill("convertible-bond") for convertible option pricing knowledge.
+      Use load_skill("volatility") for volatility analysis support; load_skill("convertible-bond") for convertible option pricing knowledge.
       Use the options_pricing tool for precise option pricing calculations.
     tools: [bash, read_file, write_file, load_skill, options_pricing]
-    skills: [options-strategy, volatility, convertible-bond, options-payoff]
+    skills: [volatility, convertible-bond]
     max_iterations: 50
     timeout_seconds: 1800
     max_retries: 1

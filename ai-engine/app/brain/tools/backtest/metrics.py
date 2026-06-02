@@ -113,6 +113,64 @@ def by_exit_reason_stats(trades: List[TradeRecord]) -> Dict[str, Dict[str, Any]]
     return result
 
 
+def estimate_garch_volatility(returns: pd.Series, spy: int = 252) -> float:
+    """Estimate annualised dynamic volatility using a GARCH(1,1) model.
+
+    If optimization fails or returns series is too short, falls back to standard volatility.
+    """
+    import scipy.optimize as opt
+
+    n = len(returns)
+    if n < 10:
+        return float(returns.std() * np.sqrt(spy))
+
+    r = returns.values - returns.mean()
+    var_init = np.var(r)
+    if var_init < 1e-12:
+        return 0.0
+
+    def garch_nll(params):
+        omega, alpha, beta = params
+        sigma2 = np.zeros(n)
+        sigma2[0] = var_init
+        for t in range(1, n):
+            sigma2[t] = omega + alpha * (r[t-1] ** 2) + beta * sigma2[t-1]
+
+        if np.any(sigma2 <= 0):
+            return 1e10
+
+        return 0.5 * np.sum(np.log(sigma2) + (r ** 2) / sigma2)
+
+    bounds = ((1e-8, 1.0), (0.0, 1.0), (0.0, 1.0))
+
+    def constraint(params):
+        return 0.999 - (params[1] + params[2])
+
+    x0 = np.array([var_init * 0.05, 0.05, 0.90])
+
+    try:
+        res = opt.minimize(
+            garch_nll,
+            x0,
+            bounds=bounds,
+            constraints={"type": "ineq", "fun": constraint},
+            method="SLSQP",
+            options={"maxiter": 100},
+        )
+        if res.success:
+            omega, alpha, beta = res.x
+            sigma2 = np.zeros(n)
+            sigma2[0] = var_init
+            for t in range(1, n):
+                sigma2[t] = omega + alpha * (r[t-1] ** 2) + beta * sigma2[t-1]
+            mean_vol = np.mean(np.sqrt(sigma2))
+            return float(mean_vol * np.sqrt(spy))
+    except Exception:
+        pass
+
+    return float(returns.std() * np.sqrt(spy))
+
+
 def calc_metrics(
     equity_curve: pd.Series,
     trades: List[TradeRecord],
@@ -120,7 +178,7 @@ def calc_metrics(
     bars_per_year: Optional[int] = 252,
     bench_ret: Optional[pd.Series] = None,
 ) -> Dict[str, Any]:
-    """Full set of performance metrics.
+    """Full set of performance metrics including advanced risk metrics.
 
     Args:
         equity_curve: Equity time series.
@@ -162,6 +220,14 @@ def calc_metrics(
     downside_std = float(downside.std()) if len(downside) > 1 else 1e-10
     sortino = float(port_ret.mean() / (downside_std + 1e-10) * np.sqrt(bpy))
 
+    # Historical VaR 95% and CVaR 95%
+    var_95 = float(-np.percentile(port_ret, 5)) if len(port_ret) > 0 else 0.0
+    below_var = port_ret[port_ret <= np.percentile(port_ret, 5)] if len(port_ret) > 0 else []
+    cvar_95 = float(-np.mean(below_var)) if len(below_var) > 0 else 0.0
+
+    # GARCH Volatility
+    garch_vol = estimate_garch_volatility(port_ret, bpy)
+
     trade_stats = win_rate_and_stats(trades)
 
     bench_return = 0.0
@@ -191,6 +257,9 @@ def calc_metrics(
         "benchmark_return": round(bench_return, 6),
         "excess_return": round(excess, 6),
         "information_ratio": round(ir, 4),
+        "var_95": round(var_95, 6),
+        "cvar_95": round(cvar_95, 6),
+        "garch_vol": round(garch_vol, 6),
     }
 
 
@@ -198,9 +267,22 @@ def _empty_metrics(initial_cash: float) -> Dict[str, Any]:
     """Return zero-valued metrics when no data is available."""
     return {
         "final_value": initial_cash,
-        "total_return": 0, "annual_return": 0, "max_drawdown": 0,
-        "sharpe": 0, "calmar": 0, "sortino": 0,
-        "win_rate": 0, "profit_loss_ratio": 0, "profit_factor": 0,
-        "max_consecutive_loss": 0, "avg_holding_days": 0, "trade_count": 0,
-        "benchmark_return": 0, "excess_return": 0, "information_ratio": 0,
+        "total_return": 0,
+        "annual_return": 0,
+        "max_drawdown": 0,
+        "sharpe": 0,
+        "calmar": 0,
+        "sortino": 0,
+        "win_rate": 0,
+        "profit_loss_ratio": 0,
+        "profit_factor": 0,
+        "max_consecutive_loss": 0,
+        "avg_holding_days": 0,
+        "trade_count": 0,
+        "benchmark_return": 0,
+        "excess_return": 0,
+        "information_ratio": 0,
+        "var_95": 0,
+        "cvar_95": 0,
+        "garch_vol": 0,
     }

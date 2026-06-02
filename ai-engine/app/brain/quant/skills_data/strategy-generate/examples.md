@@ -1,14 +1,14 @@
 # Strategy Generate — Examples
 
-## Example 1: A-share dual MA crossover (tushare)
+## Example 1: VN stock dual MA crossover (vietfin)
 
-User: "用000001.SZ做双均线金叉策略，短期5日长期20日，回测2024年"
+User: "用VIC做双均线金叉策略，短期5日长期20日，回测2024年"
 
 Tool call sequence:
 1. load_skill("strategy-generate") → 获得工作流指引
 2. write_file("config.json") → 配置标的/日期/参数
    ```json
-   {"source": "tushare", "codes": ["000001.SZ"], "start_date": "2024-01-01", "end_date": "2024-12-31", "initial_cash": 1000000, "commission": 0.001, "extra_fields": null}
+   {"source": "vietfin", "codes": ["VIC"], "start_date": "2024-01-01", "end_date": "2024-12-31", "initial_cash": 1000000, "commission": 0.001, "extra_fields": null}
    ```
 3. write_file("code/signal_engine.py") → 双均线策略代码
 4. bash("python -c \"import ast; ast.parse(open('code/signal_engine.py').read()); print('OK')\"") → AST 语法检查

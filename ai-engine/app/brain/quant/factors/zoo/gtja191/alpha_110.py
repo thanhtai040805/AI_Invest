@@ -36,7 +36,7 @@ __alpha_meta__ = {
     'formula_latex': 'sum(max(0,high-delay(close,1)),20)/sum(max(0,delay(close,1)-low),20)*100',
     'columns_required': ['close', 'high', 'low'],
     'extras_required': [],
-    'universe': ['equity_cn'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 20,
     'min_warmup_bars': 21,

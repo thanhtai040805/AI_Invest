@@ -292,8 +292,6 @@ export interface UpdateLLMSettingsRequest {
 // --- Data Source types ---
 
 export interface DataSourceSettings {
-  tushare_token_configured: boolean;
-  tushare_token_hint?: string | null;
   baostock_supported: boolean;
   baostock_installed: boolean;
   baostock_message: string;
@@ -301,8 +299,6 @@ export interface DataSourceSettings {
 }
 
 export interface UpdateDataSourceSettingsRequest {
-  tushare_token?: string;
-  clear_tushare_token?: boolean;
 }
 
 // --- Alpha Zoo types ---

@@ -36,7 +36,7 @@ __alpha_meta__ = {
     'formula_latex': 'sma(v,13,2)-sma(v,27,2)-sma(sma(v,13,2)-sma(v,27,2),10,2)',
     'columns_required': ['close', 'volume'],
     'extras_required': [],
-    'universe': ['equity_cn'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 27,
     'min_warmup_bars': 40,

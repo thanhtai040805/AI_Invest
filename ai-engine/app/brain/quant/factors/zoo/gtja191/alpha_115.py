@@ -36,7 +36,7 @@ __alpha_meta__ = {
     'formula_latex': 'rank(corr(0.9h+0.1c,mean(v,30),10))^rank(corr(tsrank((h+l)/2,4),tsrank(v,10),7))',
     'columns_required': ['open', 'high', 'low', 'close', 'volume'],
     'extras_required': [],
-    'universe': ['equity_cn'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 30,
     'min_warmup_bars': 40,

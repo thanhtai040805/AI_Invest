@@ -39,8 +39,8 @@ def validate_date_range(start_date: str, end_date: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Bounded retry / budget helpers (shared by ccxt_loader, okx, and any future
-# loader calling a flaky external API).
+# Bounded retry / budget helpers (shared by loaders calling flaky external
+# APIs).
 # ---------------------------------------------------------------------------
 
 DEFAULT_BACKOFF: tuple[float, ...] = (0.5, 1.5, 4.0)
@@ -56,7 +56,7 @@ def check_budget(deadline: float, label: str, budget_s: float | None = None) -> 
     Args:
         deadline: ``time.monotonic()`` instant past which we abort.
         label: Free-form label used in the exception message
-            (e.g. ``"ccxt fetch for BTC/USDT"``).
+            (e.g. ``"fetch for symbol"``).
         budget_s: Original budget in seconds, included verbatim in the
             message when present.
     """

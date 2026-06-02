@@ -11,7 +11,7 @@ __alpha_meta__ = {
     'theme': ['momentum'],
     'formula_latex': '(\\\\mathrm{close} - \\\\mathrm{ts\\\\_min}(\\\\mathrm{low}, 30)) / (\\\\mathrm{ts\\\\_max}(\\\\mathrm{high}, 30) - \\\\mathrm{ts\\\\_min}(\\\\mathrm{low}, 30))',
     'columns_required': ['high', 'low', 'close'],
-    'universe': ['equity_us', 'equity_cn', 'equity_hk'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 30,
     'min_warmup_bars': 30,

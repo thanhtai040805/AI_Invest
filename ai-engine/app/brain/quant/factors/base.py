@@ -15,21 +15,10 @@ Lookahead ban: ``delta(df, d)`` requires ``d >= 1``; the negative-shift
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 import pandas as pd
-
-
-class Market(str, Enum):
-    """Market identifier used by ``vwap`` for market-specific formulas."""
-
-    EQUITY_US = "equity_us"
-    EQUITY_CN = "equity_cn"
-    EQUITY_HK = "equity_hk"
-    CRYPTO = "crypto"
-    FUTURES = "futures"
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,35 +228,15 @@ def safe_div(a: pd.DataFrame, b: pd.DataFrame, eps: float = 1e-12) -> pd.DataFra
     return result.replace([np.inf, -np.inf], np.nan)
 
 
-def vwap(panel: dict[str, pd.DataFrame], market: Market | str) -> pd.DataFrame:
-    """Market-aware VWAP-equivalent reference price.
+def vwap(panel: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """VWAP-equivalent reference price.
 
-    - ``equity_cn``: ``(amount * 1000) / (volume * 100 + 1)`` — Tushare's
-      ``daily.amount`` is in **千元 (thousand CNY)** and ``daily.vol`` is in
-      **手 (100 shares)**. Probe 2026-05-17 against ``000001.SZ`` shows
-      ``amount/(vol*100) ≈ 0.0093`` for a close of 9.27 — confirming the 1000x
-      scale. We multiply ``amount`` by 1000 (CNY) and divide by
-      ``volume * 100`` (shares); ``+1`` keeps the denominator positive on
-      suspended bars.
-    - ``equity_us`` / ``equity_hk`` / ``futures``: typical price ``(H + L + C + O) / 4``
-      when ``panel["vwap"]`` is absent.
-    - ``crypto``: prefer ``panel["vwap"]`` if provided, else typical price.
-
-    Any missing required column → NaN propagation; never silent zero.
+    Uses typical price ``(O + H + L + C) / 4`` when panel ``vwap`` is absent.
     """
-    if isinstance(market, str):
-        market = Market(market)
-
     if "vwap" in panel:
         return panel["vwap"]
-
-    if market is Market.EQUITY_CN:
-        if "amount" not in panel or "volume" not in panel:
-            raise KeyError("vwap(equity_cn) requires panel['amount'] and panel['volume']")
-        return safe_div(panel["amount"] * 1000.0, panel["volume"] * 100.0 + 1.0)
-
     required = ("open", "high", "low", "close")
     missing = [k for k in required if k not in panel]
     if missing:
-        raise KeyError(f"vwap({market.value}) requires panel keys {required}; missing {missing}")
+        raise KeyError(f"vwap requires panel keys {required}; missing {missing}")
     return (panel["open"] + panel["high"] + panel["low"] + panel["close"]) / 4.0

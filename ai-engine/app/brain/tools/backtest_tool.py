@@ -48,10 +48,10 @@ def run_backtest(run_dir: str) -> str:
         return json.dumps({
             "status": "error",
             "error": "config.json missing 'source' field",
-            "hint": "Add 'source' field: one of tushare, yfinance, akshare, dnse, vietfin, auto",
+            "hint": "Add 'source' field: one of vietfin, dnse, auto",
         }, ensure_ascii=False)
 
-    valid_sources = {"tushare", "yfinance", "akshare", "dnse", "vietfin", "auto"}
+    valid_sources = {"vietfin", "dnse", "auto"}
     if config["source"] not in valid_sources:
         return json.dumps({"status": "error", "error": f"source must be one of {valid_sources}, got: {config['source']}"}, ensure_ascii=False)
 

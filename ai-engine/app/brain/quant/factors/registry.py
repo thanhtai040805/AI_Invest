@@ -61,7 +61,7 @@ Theme = Literal[
 
 PanelColumn = Literal["open", "high", "low", "close", "volume", "vwap", "amount"]
 
-Universe = Literal["equity_us", "equity_cn", "equity_hk", "equity_vn", "crypto", "futures"]
+Universe = Literal["equity_vn"]
 
 
 class AlphaMeta(BaseModel):

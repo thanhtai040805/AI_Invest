@@ -38,8 +38,8 @@ Select two highly correlated instruments (such as stocks from the same industry 
 
 ```json
 {
-  "source": "tushare",
-  "codes": ["601318.SH", "601628.SH"],
+  "source": "vietfin",
+  "codes": ["VIC", "VHM"],
   "start_date": "2023-01-01",
   "end_date": "2024-12-31",
   "initial_cash": 1000000,

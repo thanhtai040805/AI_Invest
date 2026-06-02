@@ -8,7 +8,6 @@ and reports which models are OK, slow, or failing.
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 import time
 from dataclasses import dataclass
@@ -120,49 +119,16 @@ def _check_groq1() -> CheckResult:
 
 # ── Data-Source Checks ───────────────────────────────────────────────────────
 
-
-
-
-
-def _check_yfinance() -> CheckResult:
-    try:
-        import yfinance
-    except ImportError:
-        return CheckResult("yfinance", "skipped", "package not installed", "US/HK equity backtest unavailable")
-    try:
-        import yfinance as yf
-        ticker = yf.Ticker("AAPL")
-        info = ticker.fast_info
-        return CheckResult("yfinance", "ready", "reachable", "")
-    except Exception as exc:
-        return CheckResult("yfinance", "error", f"{type(exc).__name__}: {str(exc)[:100]}", "US/HK equity backtest unavailable")
-
-
-def _check_tushare() -> CheckResult:
-    token = os.getenv("TUSHARE_TOKEN", "").strip()
-    if not token or token == "your-tushare-token":
-        return CheckResult("Tushare", "not_configured", "TUSHARE_TOKEN not set (optional)", "A-share data unavailable")
-    try:
-        import tushare
-    except ImportError:
-        return CheckResult("Tushare", "skipped", "package not installed", "A-share data unavailable")
-    return CheckResult("Tushare", "ready", "token configured", "")
-
-
-def _check_akshare() -> CheckResult:
-    if find_spec("akshare") is None:
-        return CheckResult("akshare", "skipped", "package not installed", "A-share/forex fallback unavailable")
-    return CheckResult("akshare", "ready", "installed", "")
-
-
 def _check_vietfin() -> CheckResult:
     if find_spec("vietfin") is None:
         return CheckResult("VietFin", "skipped", "package not installed", "VN equity backtest unavailable")
     return CheckResult("VietFin", "ready", "installed", "")
 
 
-
-
+def _check_vnstock() -> CheckResult:
+    if find_spec("vnstock") is None:
+        return CheckResult("VnStock", "skipped", "package not installed", "VN fundamental data unavailable")
+    return CheckResult("VnStock", "ready", "installed", "")
 
 # -- Status icons and colors --------------------------------------------------
 
@@ -207,10 +173,8 @@ def run_preflight(console: Optional[Console] = None) -> List[CheckResult]:
 
     # Data-source checks (sync)
     data_checks: List[CheckResult] = [
-        _check_yfinance(),
-        _check_tushare(),
-        _check_akshare(),
         _check_vietfin(),
+        _check_vnstock(),
     ]
 
     all_results: List[CheckResult] = model_results + data_checks

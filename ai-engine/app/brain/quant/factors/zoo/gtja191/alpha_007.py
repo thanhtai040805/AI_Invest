@@ -32,11 +32,11 @@ __alpha_meta__ = {
     "columns_required": ['close', 'volume', 'amount'],
     "extras_required": [],
     "requires_sector": False,
-    "universe": ["equity_cn"],
+    "universe": ["equity_vn"],
     "frequency": ["1d"],
     "decay_horizon": 3,
     "min_warmup_bars": 4,
-    "notes": 'VWAP via A-share amount/volume (equity_cn convention).',
+    "notes": 'VWAP via typical price (H+L+O+C)/4 for VN stocks.',
 }
 
 def compute(panel: dict) -> pd.DataFrame:

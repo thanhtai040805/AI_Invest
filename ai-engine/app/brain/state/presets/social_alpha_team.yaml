@@ -114,10 +114,10 @@ agents:
       4. **Alpha lead list** — 2–5 Telegram leads with source, content, confidence, expected impact; flag uncertainty
       5. **Environment scorecard** — Overall signal/noise; dense-signal vs noise-dominated regime
 
-      Use load_skill("social-media-intelligence"), load_skill("sentiment-analysis"), load_skill("onchain-analysis").
+      Use load_skill("social-media-intelligence"), load_skill("sentiment-analysis").
       Use read_url for Telegram and Nansen/Dune.
     tools: [bash, read_file, write_file, load_skill, read_url]
-    skills: [social-media-intelligence, sentiment-analysis, onchain-analysis]
+    skills: [social-media-intelligence, sentiment-analysis]
     max_iterations: 50
     timeout_seconds: 1800
     max_retries: 1

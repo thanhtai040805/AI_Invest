@@ -32,7 +32,7 @@ __alpha_meta__ = {
     "columns_required": ['open', 'volume'],
     "extras_required": [],
     "requires_sector": False,
-    "universe": ["equity_cn"],
+    "universe": ["equity_vn"],
     "frequency": ["1d"],
     "decay_horizon": 15,
     "min_warmup_bars": 25,

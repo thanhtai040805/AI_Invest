@@ -36,7 +36,7 @@ __alpha_meta__ = {
     'formula_latex': '(sum_up(12)-sum_down(12))/(sum_up(12)+sum_down(12))*100',
     'columns_required': ['close'],
     'extras_required': [],
-    'universe': ['equity_cn'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 12,
     'min_warmup_bars': 13,

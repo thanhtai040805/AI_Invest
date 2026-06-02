@@ -250,5 +250,5 @@ Watch the risk of excessive small-cap exposure (`SMB beta=0.25`).
 3. **Data frequency**: daily attribution is noisy, monthly attribution is more stable but has fewer samples; recommended workflow is daily computation with monthly reporting
 4. **Survivorship bias**: delisted stocks may be excluded in backtests, creating false alpha
 5. **Multiple-testing problem**: if you test 100 strategies, about 5 may appear significant by chance (`p=0.05`); use multiple-comparison correction
-6. **Factor data requirement**: factor attribution requires factor return data, which can be obtained from `tushare` or self-constructed
+6. **Factor data requirement**: factor attribution requires factor return data, which can be obtained from DNSE API or self-constructed
 7. **Attribution in backtest reports**: `metrics.csv` already provides basic metrics after a backtest; this skill adds deeper attribution analysis

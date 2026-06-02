@@ -76,11 +76,7 @@ const translations = {
   // --- Data Source Settings ---
   dataSourceSettings: "Cài đặt nguồn dữ liệu",
   dataSourceSettingsDesc: "Cấu hình thông tin xác thực nguồn dữ liệu thị trường tùy chọn cho backtest.",
-  tushareToken: "Tushare token",
-  tushareTokenConfigured: "Đã cấu hình",
-  tushareTokenPlaceholder: "Để trống để giữ token hiện tại",
-  tushareTokenHint: "Dùng cho dữ liệu cổ phiếu A, tương lai, quỹ và vĩ mô Trung Quốc.",
-  clearTushareToken: "Xoá token Tushare",
+
   baostockStatus: "BaoStock",
   baostockSupported: "Loader khả dụng",
   baostockNotSupported: "Không có loader",

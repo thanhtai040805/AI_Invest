@@ -122,7 +122,7 @@ agents:
       ## Framework
 
       ### Northbound
-      - load_skill("tushare")
+      - load_skill for data access
       - Weekly/monthly net buy by sector; concentration of holdings
       - Rotation signals add vs trim
       - Sectors near foreign ownership caps (28%)—scarcity
@@ -159,7 +159,7 @@ agents:
 
       Prefer last 20 trading days; emphasize freshness.
     tools: [bash, read_file, write_file, load_skill]
-    skills: [tushare, sentiment-analysis]
+    skills: [sentiment-analysis]
     max_iterations: 50
     timeout_seconds: 1800
     max_retries: 1

@@ -88,7 +88,7 @@ _VALID_THEMES = {
     "momentum", "reversal", "volume", "volatility", "quality", "value",
     "liquidity", "microstructure", "sentiment", "growth", "leverage",
 }
-_VALID_UNIVERSES = {"equity_us", "equity_cn", "equity_hk", "crypto", "futures"}
+_VALID_UNIVERSES = {"equity_vn"}
 
 
 def _now_iso() -> str:

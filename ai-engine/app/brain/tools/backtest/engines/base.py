@@ -108,7 +108,15 @@ def _align(
     ret = close.pct_change().fillna(0.0)
 
     if optimizer is not None:
-        pos = optimizer(ret, pos, dates)
+        # Pre-clean/winsorize returns for the optimizer to avoid outlier-distorted covariance estimation
+        try:
+            from app.brain.quant.pipeline import winsorize_panel, impute_panel
+            ret_cleaned = impute_panel(ret, method="ffill_bfill")
+            ret_cleaned = winsorize_panel(ret_cleaned, lower_quantile=0.01, upper_quantile=0.01)
+        except Exception as e:
+            logger.warning("Failed to clean returns panel for optimizer: %s", e)
+            ret_cleaned = ret
+        pos = optimizer(ret_cleaned, pos, dates)
 
     scale = pos.abs().sum(axis=1).clip(lower=1.0)
     pos = pos.div(scale, axis=0)
@@ -316,7 +324,7 @@ class BaseEngine(ABC):
             from backtest.benchmark import resolve_benchmark
             bench_result = resolve_benchmark(
                 strategy_codes=codes,
-                source=config.get("source", "yfinance"),
+                source=config.get("source", "vietfin"),
                 start_date=config.get("start_date", ""),
                 end_date=config.get("end_date", ""),
                 interval=interval,

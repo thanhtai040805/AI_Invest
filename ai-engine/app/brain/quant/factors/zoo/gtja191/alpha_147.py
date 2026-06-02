@@ -36,7 +36,7 @@ __alpha_meta__ = {
     'formula_latex': 'regbeta(mean(close,12),sequence(12))',
     'columns_required': ['close'],
     'extras_required': [],
-    'universe': ['equity_cn'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 12,
     'min_warmup_bars': 24,

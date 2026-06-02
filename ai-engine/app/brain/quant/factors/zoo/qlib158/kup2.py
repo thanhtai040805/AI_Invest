@@ -11,7 +11,7 @@ __alpha_meta__ = {
     'theme': ['microstructure'],
     'formula_latex': '(\\\\mathrm{high} - \\\\max(\\\\mathrm{open}, \\\\mathrm{close})) / (\\\\mathrm{high} - \\\\mathrm{low})',
     'columns_required': ['open', 'high', 'low', 'close'],
-    'universe': ['equity_us', 'equity_cn', 'equity_hk'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 1,
     'min_warmup_bars': 1,

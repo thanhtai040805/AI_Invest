@@ -1,8 +1,8 @@
 """基本面因子过滤选股信号引擎。
 
-基于 PE/PB/ROE 等财务指标对 A 股进行价值筛选，
-满足全部条件的股票等权做多。支持 tushare `extra_fields`
-以及 `fundamental_fields` 注入的财务报表字段。
+基于 PE/PB/ROE 等财务指标对股票进行价值筛选，
+满足全部条件的股票等权做多。支持 `fundamental_fields`
+注入的财务报表字段。
 """
 
 from typing import Dict, List

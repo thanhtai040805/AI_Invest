@@ -37,7 +37,7 @@ __alpha_meta__ = {
     'formula_latex': 'see body',
     'columns_required': ['open', 'high', 'low', 'close', 'volume', 'amount'],
     'extras_required': [],
-    'universe': ['equity_cn'],
+    'universe': ["equity_vn"],
     'frequency': ['1d'],
     'decay_horizon': 5,
     'min_warmup_bars': 10,
@@ -56,7 +56,7 @@ def compute(panel):
     """
     o = panel["open"]
     l = panel["low"]
-    vw = vwap(panel, "equity_cn")
+    vw = vwap(panel)
 
     a = rank(decay_linear(delta(vw, 5), 3))
     mix = o * 0.15 + l * 0.85

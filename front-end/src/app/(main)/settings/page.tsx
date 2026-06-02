@@ -39,8 +39,7 @@ export default function Settings() {
   const [form, setForm] = useState<LLMFormState | null>(null);
   const [apiKey, setApiKey] = useState("");
   const [clearApiKey, setClearApiKey] = useState(false);
-  const [tushareToken, setTushareToken] = useState("");
-  const [clearTushareToken, setClearTushareToken] = useState(false);
+
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [dataSaving, setDataSaving] = useState(false);
@@ -123,13 +122,7 @@ export default function Settings() {
     event.preventDefault();
     setDataSaving(true);
     try {
-      const updated = await api.updateDataSourceSettings({
-        tushare_token: tushareToken.trim() || undefined,
-        clear_tushare_token: clearTushareToken,
-      });
-      setDataSettings(updated);
-      setTushareToken("");
-      setClearTushareToken(false);
+      const updated = await api.updateDataSourceSettings({});
       setSuccessMessage(t.dataSourceSettingsSaved);
       setTimeout(() => setSuccessMessage(null), 3000);
     } catch (error) {
@@ -172,9 +165,7 @@ export default function Settings() {
         ? t.llmOauthRequired.replace("{command}", selectedProvider.login_command)
         : t.llmNoApiKeyRequired;
   const apiKeyDisabled = !selectedProvider?.api_key_required || clearApiKey;
-  const tushareStatus = dataSettings.tushare_token_configured
-    ? t.tushareTokenConfigured
-    : t.tushareTokenPlaceholder;
+
 
   return (
     <div className="mx-auto max-w-5xl space-y-6 p-6">
@@ -375,36 +366,6 @@ export default function Settings() {
 
         <div className="grid gap-5 lg:grid-cols-[minmax(0,1.1fr)_minmax(280px,0.9fr)]">
           <div className="grid gap-4">
-            <label className="grid gap-2">
-              <span className={labelClass}>{t.tushareToken}</span>
-              <div className="relative">
-                <KeyRound className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
-                <input
-                  type="password"
-                  value={tushareToken}
-                  onChange={(event) => setTushareToken(event.target.value)}
-                  className={`${fieldClass} pl-9`}
-                  placeholder={tushareStatus}
-                  autoComplete="current-password"
-                  disabled={clearTushareToken}
-                />
-              </div>
-              <div className="flex items-center justify-between gap-3">
-                <span className={hintClass}>{t.tushareTokenHint}</span>
-                <label className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
-                  <input
-                    type="checkbox"
-                    checked={clearTushareToken}
-                    onChange={(event) => {
-                      setClearTushareToken(event.target.checked);
-                      if (event.target.checked) setTushareToken("");
-                    }}
-                    className="h-3.5 w-3.5 accent-primary"
-                  />
-                  {t.clearTushareToken}
-                </label>
-              </div>
-            </label>
 
             <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
               <span className="font-medium text-foreground">{t.llmEnvPath}: </span>
