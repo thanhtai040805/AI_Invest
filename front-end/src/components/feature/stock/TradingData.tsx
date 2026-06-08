@@ -1,15 +1,20 @@
 "use client";
-
 import { GlassCard } from "@/components/ui/GlassCard";
 import { cn } from "@/lib/utils";
 import { getPriceColor, formatVolume } from "@/lib/market-utils";
 import { StockQuote } from "@/types/stock";
+import { useStockTechnicalIndicators, useStockFundamentals } from "@/hooks/useMarketData";
 
 interface TradingDataProps {
   stock: StockQuote;
 }
 
 export function TradingData({ stock }: TradingDataProps) {
+  const { data: techData } = useStockTechnicalIndicators(stock.symbol);
+  const { data: fundData } = useStockFundamentals(stock.symbol);
+  
+  const tech = techData?.indicators || {};
+  const ratios = fundData?.ratios || {};
   const relVol = stock.avgVolume ? (stock.volume / stock.avgVolume).toFixed(2) : "1.00";
   
   const indicatorGroups = [
@@ -18,7 +23,7 @@ export function TradingData({ stock }: TradingDataProps) {
       metrics: [
         { label: "Mở cửa", value: stock.open.toFixed(2), color: getPriceColor(stock.open, stock.prevClose, stock.ceiling, stock.floor) },
         { label: "Cao / Thấp", value: `${stock.high.toFixed(2)} / ${stock.low.toFixed(2)}`, color: "text-on-surface" },
-        { label: "Giá TB (VWAP)", value: ((stock.high + stock.low + stock.price) / 3).toFixed(2), color: "text-primary" },
+        { label: "Giá TB (VWAP)", value: tech.vwap ? tech.vwap.toFixed(2) : ((stock.high + stock.low + stock.price) / 3).toFixed(2), color: "text-primary" },
         { label: "Khối lượng", value: formatVolume(stock.volume), color: "text-on-surface" },
         { label: "KL TB 10N", value: formatVolume(stock.avgVolume || 0), color: "text-on-surface-variant" },
         { label: "Relative Vol", value: relVol + "x", color: Number(relVol) > 1.5 ? "text-secondary" : "text-on-surface" },
@@ -27,23 +32,23 @@ export function TradingData({ stock }: TradingDataProps) {
     {
       title: "Momentum (14D)",
       metrics: [
-        { label: "RSI", value: "—", color: "text-on-surface-variant" },
-        { label: "Stochastic", value: "—", color: "text-on-surface-variant" },
-        { label: "MACD", value: stock.changePercent > 0 ? `+${(stock.changePercent / 10).toFixed(2)}` : `${(stock.changePercent / 10).toFixed(2)}`, color: stock.changePercent > 0 ? "text-secondary" : "text-error" },
-        { label: "Signal Line", value: "—", color: "text-on-surface-variant" },
-        { label: "Momentum", value: stock.changePercent > 0 ? `+${stock.changePercent.toFixed(2)}%` : `${stock.changePercent.toFixed(2)}%`, color: stock.changePercent > 0 ? "text-secondary" : "text-error" },
-        { label: "ROC", value: stock.changePercent > 0 ? `+${stock.changePercent.toFixed(2)}%` : `${stock.changePercent.toFixed(2)}%`, color: stock.changePercent > 0 ? "text-secondary" : "text-error" },
+        { label: "RSI", value: tech.rsi_14 ? tech.rsi_14.toFixed(2) : "—", color: tech.rsi_14 > 70 ? "text-error" : tech.rsi_14 < 30 ? "text-secondary" : "text-on-surface" },
+        { label: "Stochastic", value: tech.stoch_k ? `${tech.stoch_k.toFixed(1)} / ${tech.stoch_d?.toFixed(1)}` : "—", color: "text-on-surface-variant" },
+        { label: "MACD", value: tech.macd ? tech.macd.toFixed(2) : "—", color: tech.macd > 0 ? "text-secondary" : "text-error" },
+        { label: "Signal Line", value: tech.macd_signal ? tech.macd_signal.toFixed(2) : "—", color: "text-on-surface-variant" },
+        { label: "Momentum", value: tech.momentum_1m ? `${tech.momentum_1m.toFixed(2)}%` : "—", color: tech.momentum_1m > 0 ? "text-secondary" : "text-error" },
+        { label: "ROC", value: tech.momentum_5d ? `${tech.momentum_5d.toFixed(2)}%` : "—", color: tech.momentum_5d > 0 ? "text-secondary" : "text-error" },
       ]
     },
     {
       title: "Volatility",
       metrics: [
-        { label: "ATR (14)", value: ((stock.high - stock.low) / stock.price * 100).toFixed(2), color: "text-on-surface" },
-        { label: "Bollinger %B", value: "—", color: "text-on-surface-variant" },
-        { label: "Standard Dev", value: ((stock.high - stock.low) / 2 / stock.price * 100).toFixed(2) + "%", color: "text-on-surface" },
-        { label: "Beta (vs VN-I)", value: "—", color: "text-on-surface-variant" },
-        { label: "Alpha", value: stock.changePercent > 0 ? `+${(stock.changePercent * 0.1).toFixed(2)}` : `${(stock.changePercent * 0.1).toFixed(2)}`, color: stock.changePercent > 0 ? "text-secondary" : "text-error" },
-        { label: "Sharpe Ratio", value: "—", color: "text-on-surface-variant" },
+        { label: "ATR (14)", value: tech.atr_14 ? tech.atr_14.toFixed(2) : "—", color: "text-on-surface" },
+        { label: "Bollinger %B", value: tech.bb_pct ? (tech.bb_pct * 100).toFixed(1) + "%" : "—", color: "text-on-surface-variant" },
+        { label: "Standard Dev", value: tech.volatility_20d ? tech.volatility_20d.toFixed(2) + "%" : "—", color: "text-on-surface" },
+        { label: "Beta (vs VN-I)", value: ratios.beta ? ratios.beta.toFixed(2) : "—", color: "text-on-surface-variant" },
+        { label: "Alpha", value: ratios.alpha_1y ? ratios.alpha_1y.toFixed(2) : "—", color: ratios.alpha_1y > 0 ? "text-secondary" : "text-error" },
+        { label: "Sharpe Ratio", value: ratios.sharpe_ratio_1y ? ratios.sharpe_ratio_1y.toFixed(2) : "—", color: "text-on-surface-variant" },
       ]
     }
   ];

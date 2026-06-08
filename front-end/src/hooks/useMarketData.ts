@@ -461,6 +461,18 @@ export function useStockFundamentals(symbol: string) {
   });
 }
 
+export function useStockTechnicalIndicators(symbol: string) {
+  return useQuery({
+    queryKey: ['stock', symbol, 'technical-indicators'],
+    queryFn: () => stockAPI.getTechnicalIndicators(symbol),
+    enabled: !!symbol,
+    staleTime: 60 * 1000,
+    gcTime: 5 * 60_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+  });
+}
+
 export function useScreener(filters: Record<string, unknown>, enabled = true) {
   return useQuery({
     queryKey: ['screener', filters],

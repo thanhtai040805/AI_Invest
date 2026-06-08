@@ -164,6 +164,8 @@ export const stockAPI = {
     apiClient.get(`/stock/${symbol}/trades`).then(r => r.data),
   getFundamentals: (symbol: string) =>
     apiClient.get(`/stock/${symbol}/fundamentals`).then(r => r.data),
+  getTechnicalIndicators: (symbol: string) =>
+    apiClient.get(`/stock/${symbol}/technical-indicators`).then(r => r.data),
   getNews: (symbol: string) =>
     apiClient.get(`/stock/${symbol}/news`).then(r => r.data),
 };

@@ -116,7 +116,7 @@ def sync_stocks(
         base_url=settings.dnse_base_url,
     )
 
-    exchanges = exchanges or ["STO", "STX", "UPX"]
+    exchanges = exchanges or ["STO"]
     print(f"[SyncStocks] Fetching stocks from: {exchanges}...")
     all_instruments = get_all_stocks(client, exchanges)
 
@@ -217,7 +217,7 @@ def run_daily_backfill(
         base_url=settings.dnse_base_url,
     )
 
-    exchanges = exchanges or ["STO", "STX", "UPX"]
+    exchanges = exchanges or ["STO"]
     print(f"[DailyBackfill] Fetching stocks from: {exchanges}...")
     all_stocks = get_all_stocks(client, exchanges)
     real = {s['symbol']: s.get('listedDate', '') for s in all_stocks if is_real_stock(s['symbol'])}
@@ -246,7 +246,7 @@ def run_daily_backfill(
 
         rows = []
         for i in range(len(result['t'])):
-            candle_time = datetime.fromtimestamp(result['t'][i], tz=timezone.utc)
+            candle_time = datetime.fromtimestamp(result['t'][i], tz=TZ_VN)
             rows.append((
                 candle_time, sym,
                 result.get('o', [0])[i],

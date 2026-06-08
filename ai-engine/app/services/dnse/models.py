@@ -65,6 +65,8 @@ class ValidatedForeignTrading(BaseModel):
     buy_value: float = Field(default=0, alias="buyValue")
     sell_value: float = Field(default=0, alias="sellValue")
     net_value: float = Field(default=0, alias="netValue")
+    room_limit: Optional[int] = Field(default=None, alias="roomLimit")
+    room_remaining: Optional[int] = Field(default=None, alias="roomRemaining")
     last_update: Optional[str] = Field(default=None, alias="lastUpdate")
 
 

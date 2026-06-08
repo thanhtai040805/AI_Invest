@@ -138,7 +138,7 @@ def process_symbol(client, symbol, start_date):
         if result and result.get('t'):
             rows = []
             for i in range(len(result['t'])):
-                ts = datetime.fromtimestamp(result['t'][i], tz=timezone.utc)
+                ts = datetime.fromtimestamp(result['t'][i], tz=TZ_VN)
                 if ts in existing:
                     continue
                 rows.append((

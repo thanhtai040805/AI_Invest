@@ -24,6 +24,7 @@ from __future__ import annotations
 import ast
 import importlib
 import importlib.util
+import json
 import logging
 import re
 import sys
@@ -62,6 +63,8 @@ Theme = Literal[
 PanelColumn = Literal["open", "high", "low", "close", "volume", "vwap", "amount"]
 
 Universe = Literal["equity_vn"]
+
+ICVerdict = Literal["ALIVE", "REVERSED", "MARGINAL", "DEAD", "NO_DATA"]
 
 
 class AlphaMeta(BaseModel):
@@ -170,6 +173,7 @@ class Registry:
         self._py_paths: dict[str, Path] = {}
         self._alphas: dict[str, Alpha] = {}
         self._load_errors: list[_LoadError] = []
+        self._ic_verdicts: dict[str, ICVerdict] = {}
         self._scan()
 
     # ------------------------- scanning -------------------------
@@ -218,24 +222,6 @@ class Registry:
         self._py_paths[alpha.id] = py_file
 
     # ------------------------- public API -------------------------
-
-    def list(
-        self,
-        zoo: str | None = None,
-        theme: str | None = None,
-        universe: str | None = None,
-    ) -> list[str]:
-        """Return alpha IDs matching the (optional) filters."""
-        out: list[str] = []
-        for a in self._alphas.values():
-            if zoo is not None and a.zoo != zoo:
-                continue
-            if theme is not None and theme not in a.meta.get("theme", []):
-                continue
-            if universe is not None and universe not in a.meta.get("universe", []):
-                continue
-            out.append(a.id)
-        return sorted(out)
 
     def get(self, alpha_id: str) -> Alpha:
         if alpha_id not in self._alphas:
@@ -353,6 +339,99 @@ class Registry:
         if nan_ratio > 0.95:
             raise RegistryError(f"{alpha_id}: output >95% NaN (nan_ratio={nan_ratio:.3f})")
         return result
+
+    # ------------------------- IC verdicts -------------------------
+
+    def load_ic_verdicts(self, json_path: str | Path) -> int:
+        """Load IC verdicts from zoo_ic_results_structured.json into registry.
+
+        Builds a dict ``{alpha_id: verdict}`` from the structured verdict file.
+        Returns the number of verdicts loaded. Only verdicts for registered
+        alphas are stored; unknown IDs are silently skipped.
+        """
+        path = Path(json_path).resolve()
+        if not path.is_file():
+            raise RegistryError(f"IC verdicts file not found: {path}")
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        by_zoo = raw.get("by_zoo", {})
+        verdicts: dict[str, str] = {}
+
+        for zoo_key, zoo_data in by_zoo.items():
+            if not isinstance(zoo_data, dict):
+                continue
+            for vid in ("alive", "reversed", "marginal"):
+                verdict_label = vid.upper()
+                for aid in zoo_data.get(f"{vid}_ids", []):
+                    verdicts[aid] = verdict_label
+
+        for aid in raw.get("dead_ids", []):
+            verdicts[aid] = "DEAD"
+        for aid in raw.get("nodata_ids", []):
+            verdicts[aid] = "NO_DATA"
+
+        # Only keep verdicts for alphas that are actually registered.
+        stored = 0
+        for aid, v in verdicts.items():
+            if aid in self._alphas:
+                self._ic_verdicts[aid] = v
+                stored += 1
+        return stored
+
+    def list(
+        self,
+        zoo: str | None = None,
+        theme: str | None = None,
+        universe: str | None = None,
+        ic_verdict: str | list[str] | None = None,
+    ) -> list[str]:
+        """Return alpha IDs matching the (optional) filters.
+
+        Args:
+            zoo: Filter by zoo name (e.g. ``"gtja191"``).
+            theme: Filter by theme tag.
+            universe: Filter by universe tag.
+            ic_verdict: Filter by IC verdict(s). Accepts a single verdict
+                string or a list. Verdicts are ``"ALIVE"``, ``"REVERSED"``,
+                ``"MARGINAL"``, ``"DEAD"``, ``"NO_DATA"``. Alphas without a
+                loaded verdict are excluded when this filter is applied.
+        """
+        out: list[str] = []
+        for a in self._alphas.values():
+            if zoo is not None and a.zoo != zoo:
+                continue
+            if theme is not None and theme not in a.meta.get("theme", []):
+                continue
+            if universe is not None and universe not in a.meta.get("universe", []):
+                continue
+            if ic_verdict is not None:
+                v = self._ic_verdicts.get(a.id)
+                if v is None:
+                    continue
+                if isinstance(ic_verdict, list):
+                    if v not in ic_verdict:
+                        continue
+                elif v != ic_verdict:
+                    continue
+            out.append(a.id)
+        return sorted(out)
+
+    def list_active(
+        self,
+        zoo: str | None = None,
+        theme: str | None = None,
+        universe: str | None = None,
+    ) -> list[str]:
+        """Return alpha IDs with non-DEAD IC verdicts (ALIVE / REVERSED / MARGINAL).
+
+        Convenience wrapper around ``list(ic_verdict=...)``. Alphas without a
+        loaded verdict are excluded.
+        """
+        return self.list(
+            zoo=zoo,
+            theme=theme,
+            universe=universe,
+            ic_verdict=["ALIVE", "REVERSED", "MARGINAL"],
+        )
 
     def export_manifest(self) -> dict[str, Any]:
         """Return a JSON-serialisable snapshot for wiki rendering."""

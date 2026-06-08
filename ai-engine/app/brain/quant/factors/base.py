@@ -21,6 +21,22 @@ import numpy as np
 import pandas as pd
 
 
+class Market:
+    """Panel-backed market data accessor for zoo alpha functions.
+    
+    Wraps a panel dict {field: wide_df} so alpha code can write e.g.
+    ``market.close`` or ``market["close"]``.
+    """
+    def __init__(self, panel: dict[str, pd.DataFrame] | None = None):
+        self._panel = panel or {}
+    def __getattr__(self, name: str) -> pd.DataFrame:
+        if name in self._panel:
+            return self._panel[name]
+        raise AttributeError(f"Market has no field {name!r}")
+    def __getitem__(self, name: str) -> pd.DataFrame:
+        return self.__getattr__(name)
+
+
 @dataclass(frozen=True, slots=True)
 class Alpha:
     """Lightweight handle for a registered alpha (registry-owned)."""

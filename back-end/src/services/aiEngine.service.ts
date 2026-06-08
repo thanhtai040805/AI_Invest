@@ -115,6 +115,13 @@ class AIEngineService {
     });
   }
 
+  async getTechnicalIndicators(symbol: string) {
+    return this.circuitBreaker.execute(async () => {
+      const { data } = await this.client.get(`/api/stock/${symbol}/technical-indicators`);
+      return data;
+    });
+  }
+
   async screenStocks(filters: Record<string, unknown>) {
     return this.circuitBreaker.execute(async () => {
       const { data } = await this.client.post('/api/screener/filter', filters);
@@ -174,6 +181,55 @@ class AIEngineService {
 
   get circuitBreakerStats() {
     return this.circuitBreaker.stats;
+  }
+
+  async getAIContext(symbol: string) {
+    return this.circuitBreaker.execute(async () => {
+      const { data } = await this.client.get(`/api/stock/${symbol}/ai-context`, { timeout: 60_000 });
+      return data;
+    });
+  }
+
+  async getFactorScores(symbol: string) {
+    return this.circuitBreaker.execute(async () => {
+      const { data } = await this.client.get(`/api/stock/${symbol}/factor-scores`);
+      return data;
+    });
+  }
+
+  async getForeignFlow(symbol: string) {
+    return this.circuitBreaker.execute(async () => {
+      const { data } = await this.client.get(`/api/stock/${symbol}/foreign-flow`);
+      return data;
+    });
+  }
+
+  async getDividends(symbol: string) {
+    return this.circuitBreaker.execute(async () => {
+      const { data } = await this.client.get(`/api/stock/${symbol}/dividends`);
+      return data;
+    });
+  }
+
+  async getMarketExtras(symbol: string) {
+    return this.circuitBreaker.execute(async () => {
+      const { data } = await this.client.get(`/api/stock/${symbol}/market-extras`);
+      return data;
+    });
+  }
+
+  async getSentiment(symbol: string) {
+    return this.circuitBreaker.execute(async () => {
+      const { data } = await this.client.get(`/api/stock/${symbol}/sentiment`);
+      return data;
+    });
+  }
+
+  async getMacro() {
+    return this.circuitBreaker.execute(async () => {
+      const { data } = await this.client.get('/api/stock/macro');
+      return data;
+    });
   }
 }
 

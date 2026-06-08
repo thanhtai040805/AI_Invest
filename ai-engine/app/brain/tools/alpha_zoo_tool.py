@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 from app.brain.agents.core.tools import BaseTool
@@ -52,7 +53,17 @@ def _get_registry() -> Any:
     until the agent actually calls it."""
     from app.brain.quant.factors.registry import Registry  # local import; intentional
 
-    return Registry()
+    reg = Registry()
+    # Auto-load IC verdicts so list_active() works without explicit load.
+    if getattr(reg, "_ic_verdicts", None) is None or len(reg._ic_verdicts) == 0:
+        for p in (
+            Path("zoo_ic_results_structured.json"),
+            Path(__file__).parent.parent.parent.parent / "zoo_ic_results_structured.json",
+        ):
+            if p.is_file():
+                reg.load_ic_verdicts(str(p))
+                break
+    return reg
 
 
 def _alpha_summary(registry: Any, alpha_id: str) -> dict[str, Any]:
@@ -73,7 +84,7 @@ def _action_list(
     universe: str | None,
     limit: int,
 ) -> dict[str, Any]:
-    all_ids = registry.list(zoo=zoo, theme=theme, universe=universe)
+    all_ids = registry.list_active(zoo=zoo, theme=theme, universe=universe)
     total = len(all_ids)
     truncated = total > limit
     items = [_alpha_summary(registry, aid) for aid in all_ids[:limit]]

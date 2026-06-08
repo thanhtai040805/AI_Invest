@@ -279,14 +279,23 @@ class DnseStreamHub:
 
     def _map_foreign(self, data: Any) -> Dict[str, Any]:
         sym = str(getattr(data, "symbol", "") or "").upper()
+        # ForeignInvestor fields are camelCase; map safely
+        buy_vol = int(getattr(data, "buyVolume", 0) or 0)
+        sell_vol = int(getattr(data, "sellVolume", 0) or 0)
+        buy_val = float(getattr(data, "buyValue", 0) or 0)
+        sell_val = float(getattr(data, "sellValue", 0) or 0)
+        room_limit = int(getattr(data, "foreignerOrderLimitQuantity", 0) or 0)
+        room_remaining = int(getattr(data, "foreignerBuyPossibleQuantity", 0) or 0)
         return {
             "symbol": sym,
-            "buyVolume": int(getattr(data, "buy_volume", 0) or 0),
-            "sellVolume": int(getattr(data, "sell_volume", 0) or 0),
-            "netVolume": int(getattr(data, "net_volume", 0) or 0),
-            "buyValue": float(getattr(data, "buy_value", 0) or 0),
-            "sellValue": float(getattr(data, "sell_value", 0) or 0),
-            "netValue": float(getattr(data, "net_value", 0) or 0),
+            "buyVolume": buy_vol,
+            "sellVolume": sell_vol,
+            "netVolume": buy_vol - sell_vol,
+            "buyValue": buy_val,
+            "sellValue": sell_val,
+            "netValue": buy_val - sell_val,
+            "roomLimit": room_limit,
+            "roomRemaining": room_remaining,
             "lastUpdate": datetime.now().isoformat(),
         }
 
@@ -567,7 +576,7 @@ class DnseStreamHub:
             base_url=self._settings.dnse_base_url,
         )
         core_symbols = []
-        for market in ["STO", "HNX"]:
+        for market in ["STO"]:
             page = 1
             while True:
                 status, body = client.get_instruments(

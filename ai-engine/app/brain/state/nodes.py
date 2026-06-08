@@ -321,54 +321,61 @@ Format as JSON with keys: decision, confidence, thesis, reasons, risk_level, rat
     
     async def risk_gate_node(self, state: GraphState) -> GraphState:
         """
-        Risk Gate node - Final risk assessment and validation
+        Risk Gate node — queries risk_flags table for real computed flags.
+        Replaces the old LLM-confidence-only check with actual risk data.
         
-        Args:
-            state: Current graph state
-            
-        Returns:
-            Updated graph state
+        HARD flags (CANH_BAO_TC, CHAM_BAO_TC) → force HOLD, block BUY.
+        SOFT flags (8 remaining) → add to risk_factors, ≥3 = HIGH risk.
         """
         logger.info(f"Risk Gate node executing for {state['symbol']}")
-        
+
         try:
-            # Assess risk level
-            confidence = state.get("confidence", 0.75)
-            decision = state.get("decision", "HOLD")
-            
-            # Risk assessment logic
-            if confidence < 0.5:
+            from app.services.risk_flags_v2 import get_active_flags
+
+            symbol = state.get("symbol", "")
+            flags = get_active_flags(symbol)
+
+            hard_flags = [f for f in flags if f["flag_type"] in {"CANH_BAO_TC", "CHAM_BAO_TC"}]
+            soft_flags = [f for f in flags if f["flag_type"] not in {"CANH_BAO_TC", "CHAM_BAO_TC"}]
+
+            risk_factors = []
+            soft_count = len(soft_flags)
+
+            # HARD block
+            if hard_flags:
+                risk_level = "HARD"
+                for f in hard_flags:
+                    risk_factors.append(f"HARD BLOCK — {f['flag_type']}: {f['description']}")
+                state["hard_blocked"] = True
+
+                if state.get("decision_type") == DecisionType.AUTO_TRADE:
+                    logger.warning("HARD block for %s, downgrading to HOLD", symbol)
+                    state["decision"] = "HOLD"
+                    state["warnings"].append(f"Hard blocked by {', '.join(f['flag_type'] for f in hard_flags)}")
+            elif soft_count >= 3:
                 risk_level = "HIGH"
-                risk_factors = ["Low confidence in analysis"]
-            elif confidence < 0.7:
+                for f in soft_flags:
+                    risk_factors.append(f"{f['flag_type']}: {f['description']}")
+                risk_factors.append(f"{soft_count} active risk flags")
+            elif soft_count >= 1:
                 risk_level = "MEDIUM"
-                risk_factors = ["Moderate confidence in analysis"]
+                for f in soft_flags:
+                    risk_factors.append(f"{f['flag_type']}: {f['description']}")
             else:
                 risk_level = "LOW"
                 risk_factors = []
-            
-            # Additional risk factors based on decision type
-            if decision == "BUY":
-                risk_factors.append("Long position risk")
-            elif decision == "SELL":
-                risk_factors.append("Short position risk")
-            
+
             state["risk_level"] = risk_level
             state["risk_factors"] = risk_factors
-            
-            # For high-risk decisions, downgrade to HOLD
-            if risk_level == "HIGH" and state["decision_type"] == DecisionType.AUTO_TRADE:
-                logger.warning(f"High risk detected, downgrading decision to HOLD")
-                state["decision"] = "HOLD"
-                state["warnings"].append("Decision downgraded to HOLD due to high risk")
-            
-            logger.info(f"Risk Gate node completed for {state['symbol']}: {risk_level}")
-            
+            state["risk_flags"] = flags
+
+            logger.info("Risk Gate completed for %s: %s (%d flags)", symbol, risk_level, len(flags))
+
         except Exception as e:
-            logger.error(f"Risk Gate node failed: {str(e)}")
+            logger.error("Risk Gate node failed: %s", str(e))
             state["errors"].append(f"Risk Gate error: {str(e)}")
             state["risk_level"] = "HIGH"
-        
+
         return state
     
     async def aggressive_analyst_node(self, state: GraphState) -> GraphState:

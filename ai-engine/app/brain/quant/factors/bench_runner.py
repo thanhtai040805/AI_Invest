@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+from pathlib import Path
 from typing import Any, Callable
 
 from app.brain.quant.factors.factor_analysis_core import compute_ic_series
@@ -107,7 +108,18 @@ def run_bench(
     }
 
     reg = registry if registry is not None else get_default_registry()
-    alpha_ids = reg.list(zoo=zoo)
+    if hasattr(reg, "list_active"):
+        if getattr(reg, "_ic_verdicts", None) is None or len(reg._ic_verdicts) == 0:
+            for p in (
+                Path("zoo_ic_results_structured.json"),
+                Path(__file__).parent.parent.parent.parent / "zoo_ic_results_structured.json",
+            ):
+                if p.is_file():
+                    reg.load_ic_verdicts(str(p))
+                    break
+        alpha_ids = reg.list_active(zoo=zoo)
+    else:
+        alpha_ids = reg.list(zoo=zoo)
     if not alpha_ids:
         entry["status"] = "error"
         entry["error"] = f"no alphas registered under zoo={zoo!r}"

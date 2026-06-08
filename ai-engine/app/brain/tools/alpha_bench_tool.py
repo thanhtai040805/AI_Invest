@@ -37,6 +37,7 @@ _PERIOD_DATE = re.compile(r"^(\d{4}-\d{2}-\d{2})/(\d{4}-\d{2}-\d{2})$")
 # defined contract; everything else returns "not yet implemented".
 _UNIVERSE_TAG = {
     "vn-index": "equity_vn",
+    "vn-db": "equity_vn",
 }
 
 # Hand-picked VN30 representatives (fallback when Listing API is unavailable).
@@ -102,6 +103,8 @@ def _load_universe_panel(
 
     if universe == "vn-index":
         panel = _load_vn_index_panel(start, end)
+    elif universe == "vn-db":
+        panel = _load_vn_db_panel(start, end)
     else:  # pragma: no cover — guarded above
         raise ValueError(f"unhandled universe {universe!r}")
 
@@ -288,6 +291,72 @@ def _load_vn_index_panel(start: str, end: str) -> dict[str, pd.DataFrame]:
     return panel
 
 
+def _load_vn_db_panel(start: str, end: str) -> dict[str, pd.DataFrame]:
+    """Load OHLCV panel from the local database (ohlcv table), not vnstock.
+
+    Query the DB, pivot to wide format indexed by date, with one column per
+    symbol for each field. Computes approximated amount and vwap to match the
+    zoo factor panel contract.
+
+    Raises:
+        RuntimeError: DB query returned empty data.
+    """
+    from app.services.pg_pool import get_cursor
+
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT symbol, time::date AS trade_date,
+                   open, high, low, close, volume
+            FROM ohlcv
+            WHERE time >= %s::date AND time <= %s::date
+            ORDER BY time, symbol
+            """,
+            (start, end),
+        )
+        rows = cur.fetchall()
+
+    if not rows:
+        raise RuntimeError(
+            f"vn-db: no data for {start}..{end}; check DB / backfill"
+        )
+
+    records: dict[str, dict[str, list]] = {}
+    for row in rows:
+        symbol, d, open_v, high_v, low_v, close_v, volume_v = row
+        r = records.setdefault(symbol, {"dates": [], "open": [], "high": [], "low": [], "close": [], "volume": []})
+        r["dates"].append(d)
+        r["open"].append(float(open_v))
+        r["high"].append(float(high_v))
+        r["low"].append(float(low_v))
+        r["close"].append(float(close_v))
+        r["volume"].append(float(volume_v))
+
+    all_dates = sorted(set().union(*(r["dates"] for r in records.values())))
+    if not all_dates:
+        raise RuntimeError("vn-db: date union is empty")
+    date_index = pd.DatetimeIndex(all_dates)
+    all_symbols = sorted(records.keys())
+
+    panel: dict[str, pd.DataFrame] = {}
+    for field in ("open", "high", "low", "close", "volume"):
+        data: dict[str, pd.Series] = {}
+        for sym in all_symbols:
+            rec = records[sym]
+            series = pd.Series(
+                rec[field],
+                index=pd.DatetimeIndex(rec["dates"]),
+            )
+            data[sym] = series
+        wide = pd.concat(data, axis=1)
+        wide = wide.reindex(index=date_index, columns=all_symbols)
+        panel[field] = wide.astype(float)
+
+    panel["amount"] = panel["close"] * panel["volume"]
+    panel["vwap"] = (panel["open"] + panel["high"] + panel["low"] + panel["close"]) / 4.0
+    return panel
+
+
 def _load_vn30_panel(start: str, end: str) -> dict[str, pd.DataFrame]:
     """VN30 panel via vnstock (30 blue-chip stocks, fast for quick tests)."""
     codes = _fetch_vn30_constituents()
@@ -407,6 +476,18 @@ def _bench_one_alpha(
     }
 
 
+def _ensure_zoo_verdicts(registry: Any) -> None:
+    """Load IC verdicts from the default structured-results file if not yet loaded."""
+    if getattr(registry, "_ic_verdicts", None) is None or len(registry._ic_verdicts) == 0:
+        for p in (
+            Path("zoo_ic_results_structured.json"),
+            Path(__file__).parent.parent.parent.parent / "zoo_ic_results_structured.json",
+        ):
+            if p.is_file():
+                registry.load_ic_verdicts(str(p))
+                break
+
+
 def _select_alpha_ids(
     registry: Any, *, alpha_id: str | None, zoo: str | None
 ) -> list[str]:
@@ -415,9 +496,10 @@ def _select_alpha_ids(
     if alpha_id:
         registry.get(alpha_id)  # raises KeyError if unknown
         return [alpha_id]
+    _ensure_zoo_verdicts(registry)
     if zoo:
-        return registry.list(zoo=zoo)
-    return registry.list()
+        return registry.list_active(zoo=zoo)
+    return registry.list_active()
 
 
 # ---------------------------------------------------------------------------
@@ -709,7 +791,7 @@ class AlphaBenchTool(BaseTool):
             },
             "universe": {
                 "type": "string",
-                "description": "vn-index (full HOSE ~400 stocks via vnstock, IC-ready cross-section).",
+                "description": "vn-index (full HOSE ~400 stocks via vnstock) or vn-db (local DB ohlcv table, same stocks).",
             },
             "period": {
                 "type": "string",

@@ -87,4 +87,75 @@ router.get('/:symbol/fundamentals', (req, res, next) => {
   );
 });
 
+router.get('/:symbol/technical-indicators', (req, res, next) => {
+  const symbol = symbolParam(req);
+  return handle(req, res, next, () =>
+    cached(`stock:${symbol}:technical`, 60, () =>
+      aiEngineService.getTechnicalIndicators(symbol),
+    ),
+  );
+});
+
+router.get('/:symbol/ai-context', (req, res, next) => {
+  const symbol = symbolParam(req);
+  return handle(req, res, next, () =>
+    cached(`stock:${symbol}:ai-context`, 120, () =>
+      aiEngineService.getAIContext(symbol),
+    ),
+  );
+});
+
+router.get('/:symbol/factor-scores', (req, res, next) => {
+  const symbol = symbolParam(req);
+  return handle(req, res, next, () =>
+    cached(`stock:${symbol}:factor-scores`, 300, () =>
+      aiEngineService.getFactorScores(symbol),
+    ),
+  );
+});
+
+router.get('/:symbol/foreign-flow', (req, res, next) => {
+  const symbol = symbolParam(req);
+  return handle(req, res, next, () =>
+    cached(`stock:${symbol}:foreign-flow`, 60, () =>
+      aiEngineService.getForeignFlow(symbol),
+    ),
+  );
+});
+
+router.get('/:symbol/dividends', (req, res, next) => {
+  const symbol = symbolParam(req);
+  return handle(req, res, next, () =>
+    cached(`stock:${symbol}:dividends`, 3600, () =>
+      aiEngineService.getDividends(symbol),
+    ),
+  );
+});
+
+router.get('/:symbol/market-extras', (req, res, next) => {
+  const symbol = symbolParam(req);
+  return handle(req, res, next, () =>
+    cached(`stock:${symbol}:market-extras`, 60, () =>
+      aiEngineService.getMarketExtras(symbol),
+    ),
+  );
+});
+
+router.get('/:symbol/sentiment', (req, res, next) => {
+  const symbol = symbolParam(req);
+  return handle(req, res, next, () =>
+    cached(`stock:${symbol}:sentiment`, 300, () =>
+      aiEngineService.getSentiment(symbol),
+    ),
+  );
+});
+
+router.get('/macro', (req, res, next) => {
+  return handle(req, res, next, () =>
+    cached('stock:macro', 600, () =>
+      aiEngineService.getMacro(),
+    ),
+  );
+});
+
 export default router;

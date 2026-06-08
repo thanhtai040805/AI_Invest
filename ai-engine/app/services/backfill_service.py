@@ -1,4 +1,6 @@
-"""Daily backfill orchestration — fetch today's OHLCV from DNSE REST, save to PG."""
+"""Daily backfill orchestration — fetch today's OHLCV from DNSE REST, save to PG.
+Triggers macro_indicators ETL after successful OHLCV backfill.
+"""
 
 import asyncio
 import logging
@@ -42,6 +44,19 @@ def is_trading_day() -> bool:
     return now_vn.strftime("%Y-%m-%d") not in holidays
 
 
+async def _run_macro_etl():
+    """Run macro_indicators ETL step after backfill."""
+    try:
+        from app.services.macro_service import refresh_macro, clear_cache
+        clear_cache()
+        data = refresh_macro()
+        logger.info("[Backfill] Macro ETL done: %d indicators", len(data))
+        return data
+    except Exception as e:
+        logger.warning("[Backfill] Macro ETL failed (non-fatal): %s", e)
+        return {}
+
+
 async def auto_run():
     """Run daily backfill if: trading day + market closed + not yet completed today."""
     if not is_trading_day():
@@ -65,17 +80,20 @@ async def auto_run():
     try:
         stock_count = await asyncio.to_thread(
             sync_stocks,
-            exchanges=["STO", "STX", "UPX"],
+            exchanges=["STO"],
         )
 
         ohlcv_result = await asyncio.to_thread(
             run_daily_backfill,
-            exchanges=["STO", "STX", "UPX"],
+            exchanges=["STO"],
         )
+
+        macro_result = await _run_macro_etl()
 
         result = {
             "stocks_upserted": stock_count,
             **ohlcv_result,
+            "macro_indicators": len(macro_result),
         }
         set_completed(JOB_NAME, result)
         logger.info(f"[Backfill] Done: {result}")
@@ -85,19 +103,24 @@ async def auto_run():
 
 
 async def trigger_run():
-    """Force re-run daily backfill (admin API)."""
+    """Force re-run daily backfill + macro ETL (admin API)."""
     logger.info("[Backfill] Manual trigger...")
     set_running(JOB_NAME, {"start_reason": "manual_trigger"})
     try:
         stock_count = await asyncio.to_thread(
             sync_stocks,
-            exchanges=["STO", "STX", "UPX"],
+            exchanges=["STO"],
         )
         ohlcv_result = await asyncio.to_thread(
             run_daily_backfill,
-            exchanges=["STO", "STX", "UPX"],
+            exchanges=["STO"],
         )
-        result = {"stocks_upserted": stock_count, **ohlcv_result}
+        macro_result = await _run_macro_etl()
+        result = {
+            "stocks_upserted": stock_count,
+            **ohlcv_result,
+            "macro_indicators": len(macro_result),
+        }
         set_completed(JOB_NAME, result)
         logger.info(f"[Backfill] Done: {result}")
         return result
