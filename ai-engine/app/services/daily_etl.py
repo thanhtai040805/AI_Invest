@@ -2,16 +2,17 @@
 
 Runs at 18:00-20:00 VN time, sequentially:
   18:00 → OHLCV backfill (from DNSE, adj_close = close, split-adjusted)
-  18:05 → Technical indicators (40+ per symbol)
-  18:15 → Insider trades (CafeF API)
-  18:20 → Foreign flow (CafeF API)
-  18:30 → News events + sentiment (CafeF API)
-  18:45 → Financial ratios (AlphaStock API)
-  19:00 → Risk flags (10 computed flags from structured DB data)
-  19:15 → Factor scores (30 VN-core factors, cross-sectional ranking)
-  19:30 → Buy/Sell signals (composite + risk flags → BUY/HOLD/SELL)
-  19:40 → Screener presets cache
-  19:45 → Macro indicators (SBV, vi.money, yfinance, VietFin)
+   18:05 → Technical indicators (40+ per symbol)
+   18:15 → Insider trades (CafeF API)
+   18:20 → Foreign flow (CafeF API)
+   18:30 → News events + sentiment (CafeF API)
+   18:45 → Financial ratios (AlphaStock API)
+   19:00 → Risk flags (10 computed flags from structured DB data)
+   19:15 → Factor scores (8 VN-core factors, cross-sectional ranking)
+   19:25 → Composite scoring (IC-weighted Z-score + risk gate + portfolio weights)
+   19:30 → Buy/Sell signals (composite + risk flags → BUY/HOLD/SELL)
+   19:40 → Screener presets cache
+   19:45 → Macro indicators (SBV, vi.money, yfinance, VietFin)
 
 Each step is independently runnable via the CLI/API.
 adj_close is not computed separately — DNSE returns split-adjusted prices so
@@ -88,8 +89,9 @@ class DailyETLPipeline:
                 ("foreign_flow", self.step_foreign_flow()),
                 ("news_events", self.step_news_events()),
                 ("financial_ratios", self.step_financial_ratios()),
-                ("risk_flags", self.step_risk_flags()),
+                ("risk_assessment", self.step_risk_assessment()),
                 ("factor_scores", self.step_factor_scores()),
+                ("composite_scoring", self.step_composite_scoring()),
                 ("signals", self.step_signals()),
                 ("screener_cache", self.step_screener_cache()),
                 ("macro_indicators", self.step_macro_indicators()),
@@ -189,18 +191,18 @@ class DailyETLPipeline:
             logger.error("ETL: financial_ratios failed: %s", e)
             return {"status": "failed", "error": str(e)}
 
-    # ── Step: Risk Flags V2 ───────────────────────────────────────────
+    # ── Step: CRS 7-Tầng Risk Assessment ───────────────────────────────
 
-    async def step_risk_flags(self) -> Dict[str, Any]:
-        """Compute 10 risk flags from structured data (batch)."""
-        logger.info("ETL: risk_flags — computing 10 batch flags...")
+    async def step_risk_assessment(self) -> Dict[str, Any]:
+        """Compute CRS 7-tầng risk scores and upsert to risk_assessments."""
+        logger.info("ETL: risk_assessment — computing CRS 7 tầng...")
         try:
-            from app.services.risk_flags_v2 import refresh_incremental
-            result = await asyncio.to_thread(refresh_incremental)
-            logger.info("ETL: risk_flags — %d flags", result.get("flags", 0))
+            from app.services.risk_assessment_etl import run_assessment
+            result = await asyncio.to_thread(run_assessment, self.trade_date)
+            logger.info("ETL: risk_assessment — %s assessments", result.get("assessments", 0))
             return {"status": "success", **result}
         except Exception as e:
-            logger.error("ETL: risk_flags failed: %s", e)
+            logger.error("ETL: risk_assessment failed: %s", e)
             return {"status": "failed", "error": str(e)}
 
     # ── Step: Factor Scores ───────────────────────────────────────────
@@ -215,6 +217,20 @@ class DailyETLPipeline:
             return {"status": "success", **result}
         except Exception as e:
             logger.error("ETL: factor_scores failed: %s", e)
+            return {"status": "failed", "error": str(e)}
+
+    # ── Step: Composite Scoring ─────────────────────────────────────
+
+    async def step_composite_scoring(self) -> Dict[str, Any]:
+        """IC-weighted Z-score composite + risk gate + portfolio construction."""
+        logger.info("ETL: composite_scoring — running IC-weighted pipeline...")
+        try:
+            from app.brain.dataflows.vendors.vn.composite_pipeline import run_composite_pipeline
+            result = await asyncio.to_thread(run_composite_pipeline, self.trade_date)
+            logger.info("ETL: composite_scoring — %s", result.get("status", "unknown"))
+            return {"status": "success", **result}
+        except Exception as e:
+            logger.error("ETL: composite_scoring failed: %s", e)
             return {"status": "failed", "error": str(e)}
 
     # ── Step: Signals ────────────────────────────────────────────

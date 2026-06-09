@@ -23,6 +23,17 @@ import psycopg2
 from scipy import stats as scipy_stats
 
 from app.brain.dataflows.vendors.vn.sector_groups import classify, FINANCIALS, REAL_ESTATE, OTHERS
+from app.brain.dataflows.vendors.vn.sector_groups import (
+    FINANCIAL_SERVICES, CONSTRUCTION, CONSTRUCTION_MATERIALS,
+    BASIC_RESOURCES, CHEMICALS, OIL_GAS, FOOD_BEVERAGE,
+    TECHNOLOGY, INDUSTRIAL_GOODS, TRANSPORTATION, RETAIL_TRADE,
+    HEALTHCARE, UTILITIES, AGRICULTURE, BANKS, OTHER_INDUSTRIALS,
+)
+from app.brain.quant.factors.sector_neutralizer import (
+    KNOWN_FACTOR_CONFIGS,
+    prepare_factor_for_ic,
+    normalize_all_factors,
+)
 from app.services.pg_pool import DB_URL
 
 logger = logging.getLogger(__name__)
@@ -37,39 +48,56 @@ VN_CONSTRAINTS = {
     "min_dates": 20,
 }
 
+# ── HOSE price steps (VND) ─────────────────────────────────────────
+HOSE_PRICE_STEPS = [
+    (10_000, 10),
+    (50_000, 50),
+    (100_000, 100),
+    (200_000, 500),
+    (float("inf"), 1_000),
+]
+
+# ── Heuristic offset for financial statement release (look-ahead bias) ──
+FS_RELEASE_OFFSET_QUARTERLY = 20  # calendar days
+FS_RELEASE_OFFSET_ANNUAL = 30     # calendar days
+FS_STALE_THRESHOLD_DAYS = 180     # 2 quarters without data → tag for removal
+
+
+def _ceiling_price(prev_close: float) -> float:
+    """Dynamic HOSE ceiling price with correct price step rounding."""
+    step = 10
+    for threshold, s in HOSE_PRICE_STEPS:
+        if prev_close <= threshold:
+            step = s
+            break
+    raw_ceil = prev_close * 1.07
+    return math.floor(raw_ceil / step) * step
+
+
+def _effective_date(period_end: date) -> date:
+    """Estimated release date to prevent look-ahead bias."""
+    offset = FS_RELEASE_OFFSET_ANNUAL if period_end.month == 12 else FS_RELEASE_OFFSET_QUARTERLY
+    return period_end + timedelta(days=offset)
+
 VN_FACTORS = {
-    "MOM_3M":       {"group": "momentum", "direction": 1},
-    "MOM_6M":       {"group": "momentum", "direction": 1},
-    "COND_MOM":     {"group": "momentum", "direction": 1},
-    "AMIHUD":       {"group": "liquidity", "direction": -1},
-    "DVOL_TREND":   {"group": "liquidity", "direction": 1},
-    "PE_INV":       {"group": "value", "direction": 1},
-    "PB_INV":       {"group": "value", "direction": 1},
-    "EARN_YLD":     {"group": "value", "direction": 1},
-    "FCF_YLD":      {"group": "value", "direction": 1},
-    "EVEBITDA_INV": {"group": "value", "direction": 1},
-    "HML_REAL":     {"group": "value", "direction": 1},
-    "ACCRUAL":      {"group": "quality", "direction": 1},
-    "CFO_TO_NI":    {"group": "quality", "direction": 1},
-    "ROE_NORM":     {"group": "quality", "direction": 1},
-    "GM":           {"group": "quality", "direction": 1},
-    "NM":           {"group": "quality", "direction": 1},
-    "YOY_REV":      {"group": "quality", "direction": 1},
-    "YOY_EARN":     {"group": "quality", "direction": 1},
-    "PIOTROSKI_F":  {"group": "quality", "direction": 1},
-    "EARN_SURP":    {"group": "earnings", "direction": 1},
-    "ALTMAN_Z":     {"group": "distress", "direction": 1},
+    "SIZE":            {"group": "risk", "direction": -1},
+    "VOL_20D_ORTHO":   {"group": "risk", "direction": -1},
+    "EVEBITDA_INV":    {"group": "value", "direction": 1},
+    "HML_REAL":        {"group": "value", "direction": 1},
+    "ROE_NORM":        {"group": "quality", "direction": 1},
+    "NM":              {"group": "quality", "direction": 1},
+    "GM":              {"group": "quality", "direction": 1},
+    "YOY_REV":         {"group": "quality", "direction": 1},
+    "PIOTROSKI_F":     {"group": "quality", "direction": 1},
     "FOREIGN_NET_5D":  {"group": "flow", "direction": 1},
-    "FOREIGN_ACCUM":   {"group": "flow", "direction": 1},
-    "INSIDER_NET_30D": {"group": "flow", "direction": 1},
-    "FOREIGN_ROOM":    {"group": "flow", "direction": -1},
-    "TET_WINDOW":      {"group": "behavioral", "direction": 1},
+}
+
+# Event-study factors (computed but not in weekly IC pipeline)
+VN_EVENT_FACTORS = {
     "CEILING_STREAK":  {"group": "behavioral", "direction": -1},
-        "FORCED_SELLING":  {"group": "behavioral", "direction": 1},
-        "SIZE":            {"group": "risk", "direction": -1},
-        "VOL_20D":         {"group": "risk", "direction": -1},
-        "VOL_60D":         {"group": "risk", "direction": -1},
-    }
+    "TET_WINDOW":      {"group": "behavioral", "direction": 1},
+    "FORCED_SELLING":  {"group": "behavioral", "direction": 1},
+}
 
 # Symbols known to be banks (for foreign ownership limit rules)
 BANK_SYMBOLS = frozenset({
@@ -295,41 +323,7 @@ class VNICTester:
             row: dict[str, float] = {}
             nd = self.null_debug.setdefault(sym, {})
 
-            # Momentum
-            if n >= 21 and c0 > 0 and closes[-21] > 0:
-                mom3 = c0 / closes[-21] - 1
-                row["MOM_3M"] = mom3
-                row["COND_MOM"] = mom3
-            else:
-                nd["MOM_3M"] = f"n={n}, c0={c0}, c-21={'exists' if n>=21 else 'missing'}"
-                nd["COND_MOM"] = nd["MOM_3M"]
-            if n >= 61 and c0 > 0 and closes[-61] > 0:
-                row["MOM_6M"] = c0 / closes[-61] - 1
-            else:
-                nd["MOM_6M"] = f"n={n}, c0={c0}, c-61={'exists' if n>=61 else 'missing'}"
-
-            # Amihud illiquidity
-            if n >= 21:
-                rets = np.abs(np.diff(closes[-21:]) / np.maximum(closes[-21:-1], 1e-12))
-                dv = np.array([hist["value"].iloc[-i] if "value" in hist.columns else closes[-i] * volumes[-i] for i in range(1, 21)])
-                if dv.sum() > 0:
-                    illiq = float(np.nanmean(rets / dv))
-                    row["AMIHUD"] = illiq if math.isfinite(illiq) else np.nan
-                else:
-                    row["AMIHUD"] = np.nan
-                    nd["AMIHUD"] = "daily value sum=0"
-
-            # DVOL trend
-            if n >= 20:
-                dvol = np.array([hist["value"].iloc[-i] if "value" in hist.columns else closes[-i] * volumes[-i] for i in range(1, 21)])
-                avg_dvol = float(np.mean(dvol))
-                if avg_dvol > 0:
-                    row["DVOL_TREND"] = float(np.mean(dvol[-5:]) / avg_dvol - 1)
-                else:
-                    row["DVOL_TREND"] = np.nan
-                    nd["DVOL_TREND"] = "avg daily value=0"
-
-            # Volatility
+            # Volatility (kept for VOL_20D_ORTHO)
             if n >= 21:
                 ret_20d = np.diff(closes[-21:]) / np.maximum(closes[-21:-1], 1e-12)
                 row["VOL_20D"] = float(np.std(ret_20d) * np.sqrt(252))
@@ -345,13 +339,13 @@ class VNICTester:
             else:
                 row["TET_WINDOW"] = 0.0
 
+            row["_close"] = c0
             results[sym] = row
 
         # ── DB-pulled factors ─────────────────────────────────────
         fin = self._load_fundamentals(dt, list(ohlcv.keys()))
         meta = self._load_meta(list(ohlcv.keys()))
         foreign = self._load_foreign(dt, list(ohlcv.keys()))
-        insider = self._load_insider(dt, list(ohlcv.keys()))
         fin_st = self._load_financial_statements(dt, list(ohlcv.keys()))
 
         for sym in results:
@@ -362,64 +356,44 @@ class VNICTester:
             fs = fin_st.get(sym, {})
 
             # ---- Computed market data (historical, from BS + ohlcv) ----
+            close_price = row.get("_close", 0)
             shares_out = fs.get("bs", {}).get("shares_outstanding")
             computed_mcap = None
-            if shares_out is not None and shares_out > 0 and c0 > 0:
-                computed_mcap = shares_out * c0 * 1000  # c0 in thousands VND
-
-            # Use computed as primary, fallback to stocks.market_cap
+            if shares_out is not None and shares_out > 0 and close_price > 0:
+                computed_mcap = shares_out * close_price * 1000  # close in thousands VND
             mcap = computed_mcap if (computed_mcap is not None and computed_mcap > 0) else (m.get("mcap") if m else None)
-            # Use DB room_limit as primary (backfilled historical), fallback compute
-            room_limit = ff.get("room_limit", 0) or None
-            if room_limit is None or not (room_limit > 0):
-                if shares_out is not None and shares_out > 0:
-                    foreign_pct = FOREIGN_LIMIT_OVERRIDES.get(sym, 30 if sym in BANK_SYMBOLS else 49)
-                    room_limit = shares_out * foreign_pct / 100
 
-            # ---- Value factors (from financial_ratios) ----
-            pe = f.get("pe") if f and isinstance(f.get("pe"), (int, float)) else None
+            # ---- Value: PB_INV → HML_REAL ----
             pb = f.get("pb") if f and isinstance(f.get("pb"), (int, float)) else None
-            if pe is not None and pe > 0 and math.isfinite(pe):
-                row["PE_INV"] = 1.0 / pe
-            else:
-                nd["PE_INV"] = f"pe={'missing' if f is None else pe}"
             if pb is not None and pb > 0 and math.isfinite(pb):
                 row["PB_INV"] = 1.0 / pb
             else:
                 nd["PB_INV"] = f"pb={'missing' if f is None else pb}"
             row["HML_REAL"] = row.get("PB_INV", np.nan)
 
-            # ---- Quality factors ----
-            gm = f.get("gm") if f and isinstance(f.get("gm"), (int, float)) else None
-            nm = f.get("nm") if f and isinstance(f.get("nm"), (int, float)) else None
-            if gm is not None and math.isfinite(gm):
-                row["GM"] = gm / 100.0 if abs(gm) > 1 else gm  # handle % vs decimal
+            # ---- Quality: GM, NM, ROE_NORM ----
+            gm_val = f.get("gm") if f and isinstance(f.get("gm"), (int, float)) else None
+            if gm_val is not None and math.isfinite(gm_val):
+                row["GM"] = gm_val / 100.0 if abs(gm_val) > 1 else gm_val
             else:
-                nd["GM"] = f"gm={'missing' if f is None else gm}"
-            if nm is not None and math.isfinite(nm):
-                row["NM"] = nm / 100.0 if abs(nm) > 1 else nm
+                nd["GM"] = f"gm={'missing' if f is None else gm_val}"
+            nm_val = f.get("nm") if f and isinstance(f.get("nm"), (int, float)) else None
+            if nm_val is not None and math.isfinite(nm_val):
+                row["NM"] = nm_val / 100.0 if abs(nm_val) > 1 else nm_val
             else:
-                nd["NM"] = f"nm={'missing' if f is None else nm}"
-
+                nd["NM"] = f"nm={'missing' if f is None else nm_val}"
             roe = f.get("roe") if f and isinstance(f.get("roe"), (int, float)) else None
             if roe is not None and math.isfinite(roe):
                 row["ROE_NORM"] = roe / 100.0 if abs(roe) > 1 else roe
             else:
                 nd["ROE_NORM"] = f"roe={'missing' if f is None else roe}"
 
-            # ---- Growth factors ----
+            # ---- Growth: YOY_REV (top-line, harder to manipulate) ----
             yoy_rev = f.get("yoy_rev") if f and isinstance(f.get("yoy_rev"), (int, float)) else None
-            yoy_earn = f.get("yoy_earn") if f and isinstance(f.get("yoy_earn"), (int, float)) else None
             if yoy_rev is not None and math.isfinite(yoy_rev):
                 row["YOY_REV"] = yoy_rev / 100.0 if abs(yoy_rev) > 1 else yoy_rev
             else:
                 nd["YOY_REV"] = f"yoy_rev={'missing' if f is None else yoy_rev}"
-            if yoy_earn is not None and math.isfinite(yoy_earn):
-                row["YOY_EARN"] = yoy_earn / 100.0 if abs(yoy_earn) > 1 else yoy_earn
-                row["EARN_SURP"] = row["YOY_EARN"]
-            else:
-                nd["YOY_EARN"] = f"yoy_earn={'missing' if f is None else yoy_earn}"
-                nd["EARN_SURP"] = f"yoy_earn={'missing' if f is None else yoy_earn}"
 
             # ---- Piotroski F-score (basic 2-point) ----
             pf = 0
@@ -427,15 +401,8 @@ class VNICTester:
             if mcap is not None and mcap > 0: pf += 1
             row["PIOTROSKI_F"] = float(pf)
 
-            # ---- Yield factors ----
-            fcf_y = f.get("fcf_y") if f and isinstance(f.get("fcf_y"), (int, float)) else None
+            # ---- Value: EVEBITDA_INV ----
             eveb = f.get("ev_eb") if f and isinstance(f.get("ev_eb"), (int, float)) else None
-            if fcf_y is not None and math.isfinite(fcf_y):
-                row["EARN_YLD"] = fcf_y / 100.0 if abs(fcf_y) > 1 else fcf_y
-                row["FCF_YLD"] = row["EARN_YLD"]
-            else:
-                nd["EARN_YLD"] = f"fcf_y={'missing' if f is None else fcf_y}"
-                nd["FCF_YLD"] = nd["EARN_YLD"]
             if eveb is not None and eveb > 0 and math.isfinite(eveb):
                 row["EVEBITDA_INV"] = 1.0 / eveb
             else:
@@ -447,109 +414,85 @@ class VNICTester:
             else:
                 nd["SIZE"] = f"mcap={'missing' if m is None else mcap}"
 
-            # ---- Ceiling / Floor ----
-            ceiling = m.get("ceiling") if m else None
+            # ---- Event: CEILING_STREAK ----
+            if n >= 2:
+                streak = 0
+                for i in range(n - 1, 0, -1):
+                    prev_val = closes[i - 1]
+                    if prev_val <= 0:
+                        break
+                    p_ceil = _ceiling_price(prev_val)
+                    ret = closes[i] / prev_val - 1
+                    if ret >= 0.065 and closes[i] >= p_ceil * 0.995:
+                        streak += 1
+                    else:
+                        break
+                row["CEILING_STREAK"] = float(streak)
+
+            # ---- Event: FORCED_SELLING ----
             floor = m.get("floor") if m else None
-            if ceiling is not None and ceiling > 0 and n >= 10:
-                ceil_hits = sum(1 for i in range(min(10, n)) if closes[-(i+1)] >= ceiling)
-                row["CEILING_STREAK"] = ceil_hits / 10.0
-            else:
-                nd["CEILING_STREAK"] = f"ceiling={'missing' if m is None else ceiling}, n={n}"
             if floor is not None and floor > 0 and n >= 5:
                 floor_hits = sum(1 for i in range(5) if closes[-(i+1)] <= floor)
                 vol_5d = float(np.mean(volumes[-5:])) if len(volumes) >= 5 else 0.0
                 vol_20d = float(np.mean(volumes[-20:])) if n >= 20 else 1.0
                 row["FORCED_SELLING"] = 1.0 if floor_hits >= 2 and (vol_5d / max(vol_20d, 1e-12)) > 3 else 0.0
-            else:
-                nd["FORCED_SELLING"] = f"floor={'missing' if m is None else floor}, n={n}"
 
-            # ---- Foreign flow ----
+            # ---- Money flow: FOREIGN_NET_5D ----
             if mcap is not None and mcap > 0:
                 net_val = ff.get("net_value", 0)
                 if isinstance(net_val, (int, float)):
                     row["FOREIGN_NET_5D"] = net_val / mcap
             else:
                 nd.setdefault("FOREIGN_NET_5D", f"mcap={'missing' if m is None else mcap}")
-            room_rem = ff.get("room_remaining", 0)
-            if isinstance(room_limit, (int, float)) and room_limit > 0:
-                room_pct = room_rem / room_limit
-                row["FOREIGN_ROOM"] = -1.0 if room_pct < 0.05 else (0.5 if room_pct > 0.30 else 0.0)
-            else:
-                nd.setdefault("FOREIGN_ROOM", f"room_limit={room_limit}")
 
-            # ---- FOREIGN_ACCUM (cumulative 1Y net foreign flow / mcap) ----
-            ff_accum = self._load_foreign_accum(dt, [sym]).get(sym)
-            if ff_accum is not None and mcap is not None and mcap > 0:
-                row["FOREIGN_ACCUM"] = ff_accum / mcap
-            else:
-                nd.setdefault("FOREIGN_ACCUM", f"accum={'missing' if ff_accum is None else ff_accum}, mcap={mcap}")
+        # ── Post-processing: VOL_20D orthogonalization ──────────────
+        vol_20d_vals = {}
+        vol_60d_vals = {}
+        for sym, row in results.items():
+            v20 = row.get("VOL_20D")
+            v60 = row.get("VOL_60D")
+            if v20 is not None and v60 is not None and math.isfinite(v20) and math.isfinite(v60):
+                vol_20d_vals[sym] = v20
+                vol_60d_vals[sym] = v60
+        if len(vol_20d_vals) >= 10:
+            x = np.array(list(vol_60d_vals.values()))
+            y = np.array(list(vol_20d_vals.values()))
+            slope, intercept, _, _, _ = scipy_stats.linregress(x, y)
+            for sym in vol_20d_vals:
+                resid = vol_20d_vals[sym] - (intercept + slope * vol_60d_vals[sym])
+                results[sym]["VOL_20D_ORTHO"] = float(resid)
 
-            # ---- Insider ----
-            ins = insider.get(sym, 0)
-            if isinstance(ins, (int, float)) and mcap is not None and mcap > 0 and c0 > 0:
-                est_shares = mcap / c0
-                if est_shares > 0:
-                    row["INSIDER_NET_30D"] = ins / est_shares
-            else:
-                nd.setdefault("INSIDER_NET_30D", f"ins={ins}, mcap={mcap}, c0={c0}")
+        # ── Post-processing: TTM ROE_NORM & NM override ────────────
+        for sym, row in results.items():
+            ttm = fin_st.get(sym, {}).get("ttm")
+            if ttm and ttm.get("equity") and ttm["equity"] > 0 and ttm.get("net_income") is not None:
+                ttm_roe = ttm["net_income"] / ttm["equity"]
+                if math.isfinite(ttm_roe):
+                    row["ROE_NORM"] = ttm_roe
+                if ttm.get("revenue") and ttm["revenue"] != 0:
+                    ttm_nm = ttm["net_income"] / ttm["revenue"]
+                    if math.isfinite(ttm_nm):
+                        row["NM"] = ttm_nm
 
-            # ---- ACCRUAL (from financial_statements BS) ----
-            bs = fs.get("bs", {})
-            if bs:
-                ca = bs.get("current_assets")
-                cash = bs.get("cash")
-                cl = bs.get("current_liabilities")
-                std = bs.get("short_term_debt")
-                ni = bs.get("net_income")  # from IS
-                if all(v is not None for v in [ca, cash, cl, ni]) and ni != 0:
-                    delta_ca = ca - bs.get("prev_current_assets", ca)
-                    delta_cash = cash - bs.get("prev_cash", cash)
-                    delta_cl = cl - bs.get("prev_current_liabilities", cl)
-                    delta_std = (std or 0) - (bs.get("prev_short_term_debt", 0) or 0)
-                    accrual = (delta_ca - delta_cash - delta_cl + delta_std) / ni
-                    row["ACCRUAL"] = float(accrual) if math.isfinite(accrual) else np.nan
-                else:
-                    nd["ACCRUAL"] = f"ca={ca}, cash={cash}, cl={cl}, ni={ni}"
-            else:
-                nd["ACCRUAL"] = "no BS data"
+        # ── Post-processing: zero-fill FOREIGN_NET_5D ──────────────
+        for sym, row in results.items():
+            if "FOREIGN_NET_5D" not in row or row["FOREIGN_NET_5D"] is None or not math.isfinite(row["FOREIGN_NET_5D"]):
+                row["FOREIGN_NET_5D"] = 0.0
+                nd.setdefault(sym, {}).setdefault("FOREIGN_NET_5D", "zero-filled (no foreign activity)")
 
-            # ---- CFO_TO_NI (CFO / NI, from CF + IS) ----
-            cf = fs.get("cf", {})
-            if cf and bs:
-                cfo = cf.get("cfo")
-                ni = bs.get("net_income")
-                if cfo is not None and ni is not None and ni != 0:
-                    row["CFO_TO_NI"] = float(cfo / ni)
-                else:
-                    nd["CFO_TO_NI"] = f"cfo={cfo}, ni={ni}"
-            else:
-                nd["CFO_TO_NI"] = f"cf={'has' if cf else 'none'}, bs={'has' if bs else 'none'}"
-
-            # ---- ALTMAN_Z (from BS + IS + market_cap) ----
-            if bs:
-                ta = bs.get("total_assets")
-                ni = bs.get("net_income")
-                rev = bs.get("revenue")
-                tl = bs.get("total_liabilities")
-                wc = (bs.get("current_assets") or 0) - (bs.get("current_liabilities") or 0)
-                re_earn = bs.get("retained_earnings")
-                ebita = (bs.get("ebit") or 0) + (bs.get("depreciation") or 0)
-                if all(v is not None for v in [ta, ni, rev]) and ta > 0:
-                    mcap_val = mcap if (mcap is not None and mcap > 0) else 0
-                    x1 = wc / ta if ta != 0 else 0
-                    x2 = (re_earn or 0) / ta
-                    x3 = ebita / ta
-                    x4 = mcap_val / (tl or ta) if (tl or ta) > 0 else 0
-                    x5 = rev / ta
-                    altman = 1.2 * x1 + 1.4 * x2 + 3.3 * x3 + 0.6 * x4 + 1.0 * x5
-                    row["ALTMAN_Z"] = float(altman) if math.isfinite(altman) else np.nan
-                else:
-                    nd["ALTMAN_Z"] = f"ta={ta}, ni={'ok' if ni is not None else None}, rev={'ok' if rev is not None else None}"
-            else:
-                nd["ALTMAN_Z"] = "no BS data"
-
-        # Compute per-factor percentile ranks
+        # Compute per-factor ICB sector-neutral percentile ranks
         factor_ranks = {}
+        symbols_with_data = list(results.keys())
+        sector_map = getattr(self, "sector_map", None)
+        if sector_map is None:
+            # Fallback: load on the fly (e.g. when called outside run())
+            sector_map = self._load_sector_map(symbols_with_data)
+        if not sector_map:
+            sector_map = {s: OTHER_INDUSTRIALS for s in symbols_with_data}
+        sectors_series = pd.Series(
+            {s: sector_map.get(s, OTHER_INDUSTRIALS) for s in symbols_with_data}
+        )
+
         for factor_id, meta in VN_FACTORS.items():
             vals = {}
             for sym, row in results.items():
@@ -559,8 +502,23 @@ class VNICTester:
             if len(vals) < VN_CONSTRAINTS["min_stocks"]:
                 continue
             s = pd.Series(vals)
-            ascending = meta["direction"] == 1
-            rank = s.rank(pct=True, ascending=ascending, na_option="keep") * 100
+            asc = meta["direction"] == 1
+            # Build DataFrame for sector-aware transformation
+            df_f = pd.DataFrame({
+                "symbol": s.index,
+                "value": s.values,
+                "sector": sectors_series.reindex(s.index).values,
+            })
+            df_f["sector"] = df_f["sector"].fillna(OTHER_INDUSTRIALS)
+            df_f["value"] = pd.to_numeric(df_f["value"], errors="coerce")
+
+            # Use prepare_factor_for_ic (winsorize + sector Z-score + rank)
+            rank = prepare_factor_for_ic(
+                df_f, factor_id, "value", "sector",
+                direction=meta["direction"],
+            )
+            # Restore symbol index for IC computation
+            rank.index = df_f["symbol"].values
             factor_ranks[factor_id] = rank
         return factor_ranks
 
@@ -847,7 +805,9 @@ class VNICTester:
                     else:
                         km = key_map
 
-                    entries = [e for e in cache.get(sym, []) if e.get("dt") is not None and e["dt"] <= dt]
+                    entries = [e for e in cache.get(sym, [])
+                               if e.get("dt") is not None
+                               and _effective_date(e["dt"]) <= dt]
                     entries.sort(key=lambda x: x["dt"], reverse=True)
                     if sym not in result:
                         result[sym] = {}
@@ -873,6 +833,42 @@ class VNICTester:
                     elif stmt_type == "CF":
                         result[sym].setdefault("cf", {})
                         result[sym]["cf"] = parsed
+
+                    # Post-processing: compute TTM for each symbol from IS cache
+            if stmt_type == "IS":
+                for sym in symbols:
+                    if sym not in result:
+                        continue
+                    is_entries = [e for e in cache.get(sym, [])
+                                  if e.get("dt") is not None
+                                  and _effective_date(e["dt"]) <= dt]
+                    is_entries.sort(key=lambda x: x["dt"], reverse=True)
+                    is_bank_flag = _is_bank(sym)
+                    is_km = BANK_IS_KEYS if is_bank_flag else STATEMENT_IS_KEYS
+                    ttm_ni = 0.0
+                    ttm_rev = 0.0
+                    valid_quarters = 0
+                    latest_equity = None
+                    # Accumulate up to 4 most recent quarters of IS data
+                    for idx in range(min(4, len(is_entries))):
+                        ni = _pick_key(is_entries[idx], is_km.get("net_income", ()))
+                        rev = _pick_key(is_entries[idx], is_km.get("revenue", ()))
+                        if ni is not None and rev is not None:
+                            ttm_ni += float(ni)
+                            ttm_rev += float(rev)
+                            valid_quarters += 1
+                    # Equity từ BS đã parse
+                    bs_data = result[sym].get("bs", {})
+                    ta = bs_data.get("total_assets")
+                    tl = bs_data.get("total_liabilities")
+                    if ta is not None and tl is not None:
+                        latest_equity = float(ta) - float(tl)
+                    if valid_quarters >= 4 and ttm_rev != 0 and latest_equity is not None and latest_equity > 0:
+                        result[sym]["ttm"] = {
+                            "net_income": ttm_ni,
+                            "revenue": ttm_rev,
+                            "equity": latest_equity,
+                        }
         else:
             for stmt_type, key_map in [("BS", STATEMENT_BS_KEYS), ("IS", STATEMENT_IS_KEYS), ("CF", STATEMENT_CF_KEYS)]:
                 bank_key_map = {"BS": BANK_BS_KEYS, "IS": BANK_IS_KEYS, "CF": BANK_CF_KEYS}.get(stmt_type)
@@ -890,13 +886,18 @@ class VNICTester:
                     if sym not in result:
                         result[sym] = {}
                     km = bank_key_map if (bank_key_map and _is_bank(sym)) else key_map
+                    # Filter by look-ahead: chỉ dùng báo cáo có effective_date <= dt
+                    entries_filtered = [
+                        (pe, data) for pe, data in entries
+                        if _effective_date(pe) <= dt
+                    ]
                     parsed = {}
-                    if entries:
-                        latest = entries[0][1]
+                    if entries_filtered:
+                        latest = entries_filtered[0][1]
                         for out_key, candidates in km.items():
                             parsed[out_key] = _pick_key(latest, candidates)
-                        if len(entries) > 1:
-                            prev = entries[1][1]
+                        if len(entries_filtered) > 1:
+                            prev = entries_filtered[1][1]
                             for out_key, candidates in km.items():
                                 pk = _pick_key(prev, candidates)
                                 if pk is not None:
@@ -904,11 +905,35 @@ class VNICTester:
                     if stmt_type == "BS":
                         result[sym]["bs"] = parsed
                         result[sym]["bs"]["shares_outstanding"] = extract_shares_outstanding(
-                            latest, sym, _is_bank(sym)
+                            entries_filtered[0][1] if entries_filtered else {},
+                            sym, _is_bank(sym)
                         )
                     elif stmt_type == "IS":
                         result[sym].setdefault("bs", {})
                         result[sym]["bs"].update(parsed)
+                        # TTM: accumulate up to 4 quarters
+                        if entries_filtered:
+                            ttm_ni = 0.0
+                            ttm_rev = 0.0
+                            valid_q = 0
+                            for idx in range(min(4, len(entries_filtered))):
+                                ni = _pick_key(entries_filtered[idx][1], km.get("net_income", ()))
+                                rev = _pick_key(entries_filtered[idx][1], km.get("revenue", ()))
+                                if ni is not None and rev is not None:
+                                    ttm_ni += float(ni)
+                                    ttm_rev += float(rev)
+                                    valid_q += 1
+                            if valid_q >= 4 and ttm_rev != 0:
+                                if "ttm" not in result[sym]:
+                                    result[sym]["ttm"] = {}
+                                result[sym]["ttm"]["net_income"] = ttm_ni
+                                result[sym]["ttm"]["revenue"] = ttm_rev
+                                # Equity từ BS đã parse
+                                bs_data = result[sym].get("bs", {})
+                                ta = bs_data.get("total_assets")
+                                tl = bs_data.get("total_liabilities")
+                                if ta is not None and tl is not None:
+                                    result[sym]["ttm"]["equity"] = float(ta) - float(tl)
                     elif stmt_type == "CF":
                         result[sym].setdefault("cf", {})
                         result[sym]["cf"] = parsed
@@ -1121,10 +1146,13 @@ class VNICTester:
         # Load sector map once
         print(f"  Loading sector map...")
         self.sector_map = self._load_sector_map(all_symbols)
-        fin = sum(1 for s in self.sector_map.values() if s == FINANCIALS)
+        from collections import Counter
+        sec_counts = Counter(self.sector_map.values())
+        sec_summary = ", ".join(f"{k}={v}" for k, v in sorted(sec_counts.items()))
+        print(f"  ICB Sectors ({len(sec_counts)} groups): {sec_summary}")
+        fin = sum(1 for s in self.sector_map.values() if s in (FINANCIALS, BANKS, FINANCIAL_SERVICES))
         re_ = sum(1 for s in self.sector_map.values() if s == REAL_ESTATE)
-        other = len(self.sector_map) - fin - re_
-        print(f"  Sectors: FINANCIALS={fin}, REAL_ESTATE={re_}, OTHERS={other}")
+        print(f"  Legacy groups: FINANCIALS={fin}, REAL_ESTATE={re_}, OTHERS={len(self.sector_map)-fin-re_}")
 
         # Check data availability at sample date
         print(f"\n{'='*80}")

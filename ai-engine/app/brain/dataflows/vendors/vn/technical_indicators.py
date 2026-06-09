@@ -116,6 +116,10 @@ def compute_full_indicators(df: pd.DataFrame) -> pd.DataFrame:
     out["volatility_60d"] = pct_change.rolling(60).std() * np.sqrt(252) * 100
     out["volatility_252d"] = pct_change.rolling(min(252, len(pct_change))).std() * np.sqrt(252) * 100
 
+    # EWMA volatility (exponentially weighted — more responsive than rolling std)
+    out["volatility_ewma_20d"] = pct_change.ewm(span=20, adjust=False).std() * np.sqrt(252) * 100
+    out["volatility_ewma_60d"] = pct_change.ewm(span=60, adjust=False).std() * np.sqrt(252) * 100
+
     # Volume
     out["volume_ma5"] = volume.rolling(5).mean()
     out["volume_ma20"] = volume.rolling(20).mean()

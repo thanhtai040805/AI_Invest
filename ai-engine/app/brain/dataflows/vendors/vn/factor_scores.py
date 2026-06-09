@@ -26,8 +26,14 @@ import psycopg2.extras
 
 from app.services.pg_pool import DB_URL
 from app.brain.dataflows.vendors.vn.sector_groups import (
-    classify,
+    classify_major as classify,
     FINANCIALS, REAL_ESTATE, OTHERS,
+)
+from app.brain.quant.factors.factor_orthogonalization import (
+    FactorOrthogonalizer,
+    OrthogonalizationMethod,
+    DEFAULT_GROUP_MAP,
+    KNOWN_HIGH_CORR_PAIRS,
 )
 
 logger = logging.getLogger(__name__)
@@ -326,7 +332,12 @@ def compute_momentum_score(df: pd.DataFrame) -> pd.Series:
 
 # ── New Tier A factor computations ───────────────────────────────────
 
-def compute_factor_scores(symbols: list[str], score_date: date, cur) -> list[tuple]:
+def compute_factor_scores(
+    symbols: list[str],
+    score_date: date,
+    cur,
+    orthogonalizer: Optional[FactorOrthogonalizer] = None,
+) -> list[tuple]:
     """Compute VN-core factor scores with new Tier A factors."""
     # 1. Load technical indicators
     cur.execute(
@@ -963,12 +974,102 @@ def compute_factor_scores(symbols: list[str], score_date: date, cur) -> list[tup
             else:
                 factor_ranks[raw_col] = _rank_series(df[raw_col])
 
-    # ─── Compute group-level scores from ranked factors ─────────────
+    # ─── Build factor_id → raw_col map for all factors ──────────────
+    # Covers both new_factor_map and legacy factors
+    ALL_FACTOR_MAP: dict[str, str] = {
+        # Value
+        "EARN_YLD": "earnings_yield_raw",
+        "PE_INV": "pe_inv",
+        "PB_INV": "pb_inv",
+        "FCF_YLD": "fcf_yield",
+        "EVEBITDA_INV": "evebitda_inv",
+        "HML_REAL": "hml_real_raw",
+        # Quality
+        "ACCRUAL": "accrual_ratio_raw",
+        "CFO_TO_NI": "cfo_to_ni_raw",
+        "ROE_NORM": "roe_norm",
+        "GM": "gross_margin",
+        "NM": "net_margin",
+        "YOY_REV": "yoy_revenue_growth",
+        "YOY_EARN": "yoy_earnings_growth",
+        "PIOTROSKI_F": "piotroski_f_raw",
+        # Momentum
+        "MOM_3M": "momentum_3m_raw",
+        "MOM_6M": "momentum_6m_raw",
+        "COND_MOM": "conditional_mom_raw",
+        # Liquidity
+        "AMIHUD": "amihud_illiq",
+        "DVOL_TREND": "dollar_vol_trend_raw",
+        # Earnings
+        "EARN_SURP": "earnings_surprise_raw",
+        # Distress
+        "ALTMAN_Z": "altman_z_raw",
+        # Flow
+        "FOREIGN_NET_5D": "foreign_net_5d_raw",
+        "FOREIGN_ACCUM": "foreign_accum_raw",
+        "INSIDER_NET_30D": "insider_net_30d_raw",
+        "FOREIGN_ROOM": "foreign_room_raw",
+        # Behavioral
+        "TET_WINDOW": "tet_window_raw",
+        "CEILING_STREAK": "ceiling_streak_raw",
+        "FORCED_SELLING": "forced_selling_raw",
+        # Risk
+        "SIZE": "size_raw",
+        "VOL_20D": "volatility_20d",
+        "VOL_60D": "volatility_60d",
+        # Legacy aliases
+        "MOM_1M": "momentum_1m_raw",
+        "VOLUME_RATIO": "volume_ratio",
+    }
+
+    # ─── Apply factor orthogonalization (optional) ──────────────────
+    def _build_factor_matrix(
+        fr: dict[str, pd.Series],
+        fid_map: dict[str, str],
+    ) -> pd.DataFrame:
+        """Build a factor_id-columned DataFrame from factor_ranks dict."""
+        components: dict[str, pd.Series] = {}
+        for fid, raw_col in fid_map.items():
+            if raw_col in fr:
+                components[fid] = fr[raw_col]
+        if not components:
+            return pd.DataFrame()
+        return pd.DataFrame(components)
+
+    def _update_factor_ranks_from_matrix(
+        fr: dict[str, pd.Series],
+        orth_df: pd.DataFrame,
+        fid_map: dict[str, str],
+    ) -> dict[str, pd.Series]:
+        """Replace factor_ranks entries with orthogonalized values."""
+        rev_map = {raw: fid for fid, raw in fid_map.items()}
+        for raw_col in list(fr.keys()):
+            fid = rev_map.get(raw_col)
+            if fid and fid in orth_df.columns:
+                fr[raw_col] = orth_df[fid]
+        return fr
+
+    if orthogonalizer is not None:
+        factor_matrix = _build_factor_matrix(factor_ranks, ALL_FACTOR_MAP)
+        if not factor_matrix.empty:
+            # Ensure columns match what orthogonalizer expects (factor_ids)
+            available = [c for c in factor_matrix.columns if not factor_matrix[c].isna().all()]
+            if len(available) >= 3:
+                orth_matrix = orthogonalizer.transform(factor_matrix[available])
+                factor_ranks = _update_factor_ranks_from_matrix(
+                    factor_ranks, orth_matrix, ALL_FACTOR_MAP,
+                )
+                logger.info(
+                    "Orthogonalization applied: %d factors → %d columns",
+                    factor_matrix.shape[1], orth_matrix.shape[1],
+                )
+
+    # ─── Compute group-level scores from (orthogonalized) ranks ─────
     def group_mean_rank(factor_ids: list[str]) -> pd.Series:
         """Average percentile rank across a group of factors."""
         valid = []
         for fid in factor_ids:
-            raw_col = {v: k for k, v in new_factor_map.items()}.get(fid)
+            raw_col = ALL_FACTOR_MAP.get(fid) or {v: k for k, v in new_factor_map.items()}.get(fid)
             if raw_col and raw_col in factor_ranks:
                 valid.append(factor_ranks[raw_col])
         if not valid:
@@ -1154,7 +1255,10 @@ def compute_factor_scores(symbols: list[str], score_date: date, cur) -> list[tup
     return output_rows
 
 
-def refresh_all(score_date: Optional[date] = None) -> dict:
+def refresh_all(
+    score_date: Optional[date] = None,
+    orthogonalizer: Optional[FactorOrthogonalizer] = None,
+) -> dict:
     """Full refresh: compute factor scores for all HOSE symbols."""
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
@@ -1173,7 +1277,7 @@ def refresh_all(score_date: Optional[date] = None) -> dict:
         logger.info("  Deleted %d old factor scores", cur.rowcount)
         conn.commit()
 
-        rows = compute_factor_scores(symbols, score_date, cur)
+        rows = compute_factor_scores(symbols, score_date, cur, orthogonalizer=orthogonalizer)
         if not rows:
             logger.warning("No factor scores computed")
             return {"rows": 0, "symbols": 0}
@@ -1225,7 +1329,7 @@ def refresh_all(score_date: Optional[date] = None) -> dict:
             "rows": final_count,
             "symbols": len(rows),
             "score_date": str(score_date),
-            "factor_count": len(TIER_A_FACTORS),
+            "factor_count": len(rows[0]) if rows else 0,
         }
     finally:
         cur.close()

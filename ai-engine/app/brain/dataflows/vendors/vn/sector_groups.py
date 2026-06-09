@@ -1,154 +1,418 @@
-"""
-Sector Group Classification — 3 optimized groups based on NEU 2017 doctoral research.
+"""Sector Group Classification — 16 ICB Level-2 groups for VN market.
 
-Maps Vietnamese industry names from DB → FINANCIALS / REAL_ESTATE_CONSTRUCTION / OTHERS.
+Based on actual DB industry names from stocks table (398 symbols).
+Three-tier fallback:
+  - classify_icb(): returns 16-group ICB code
+  - classify_major(): returns 3-group (FINANCIALS / REAL_ESTATE / OTHERS) for backward compat
+  - classify_safe(): classifies with auto-fallback to OTHER_INDUSTRIALS if n<4 in eval context
 
-References:
-  - PGS.TS. Trần Hùng Thao & NCS. Phạm Lệ Mỹ (NEU 2017): "Mức độ phụ thuộc vào nhân tố
-    thị trường của nhóm Tài chính, Ngân hàng và Bảo hiểm là cao nhất. Mức độ phụ thuộc
-    ngành của nhóm Bất động sản và Xây dựng là cao nhất."
-  - Hair et al. (1998): each group needs n ≥ 30 for statistical power
-  - Tabachnick & Fidell (1996): n ≥ 5×m (m = observed variables)
+Merge policy:
+  - NEVER merge CONSTRUCTION into REAL_ESTATE (asset-light vs asset-heavy)
+  - Sectors with <4 symbols auto-downgrade to OTHER_INDUSTRIALS
 """
-import logging
+
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+# ── 16 ICB Sector Groups ─────────────────────────────────────────────
+BANKS                  = "BANKS"
+FINANCIAL_SERVICES     = "FINANCIAL_SERVICES"
+REAL_ESTATE            = "REAL_ESTATE"
+CONSTRUCTION           = "CONSTRUCTION"
+CONSTRUCTION_MATERIALS = "CONSTRUCTION_MATERIALS"
+BASIC_RESOURCES        = "BASIC_RESOURCES"
+CHEMICALS              = "CHEMICALS"
+OIL_GAS                = "OIL_GAS"
+FOOD_BEVERAGE          = "FOOD_BEVERAGE"
+TECHNOLOGY             = "TECHNOLOGY"
+INDUSTRIAL_GOODS       = "INDUSTRIAL_GOODS"
+TRANSPORTATION         = "TRANSPORTATION"
+RETAIL_TRADE           = "RETAIL_TRADE"
+HEALTHCARE             = "HEALTHCARE"
+UTILITIES              = "UTILITIES"
+AGRICULTURE            = "AGRICULTURE"
+OTHER_INDUSTRIALS      = "OTHER_INDUSTRIALS"
 
+# ── Backward-compat aliases ─────────────────────────────────────────
 FINANCIALS = "FINANCIALS"
-REAL_ESTATE = "REAL_ESTATE_CONSTRUCTION"
-OTHERS = "OTHERS"
+OTHERS     = "OTHERS"
 
-SECTOR_GROUPS = {FINANCIALS, REAL_ESTATE, OTHERS}
-
-# Full Vietnamese → group mapping (optimized for VN market)
-INDUSTRY_MAP = {
-    # ── FINANCIALS ──────────────────────────────────────────────
-    "ngân hàng":       FINANCIALS,
-    "ngan hang":       FINANCIALS,
-    "bảo hiểm":        FINANCIALS,
-    "bao hiem":        FINANCIALS,
-    "chứng khoán":     FINANCIALS,
-    "chung khoan":     FINANCIALS,
-    "dịch vụ tài chính":  FINANCIALS,
-    "dich vu tai chinh":  FINANCIALS,
-    "tài chính khác":  FINANCIALS,
-    "tai chinh khac":  FINANCIALS,
-    "tài chính":       FINANCIALS,
-    "tai chinh":       FINANCIALS,
-    "financial services": FINANCIALS,
-
-    # ── REAL ESTATE + CONSTRUCTION ─────────────────────────────
-    "bất động sản":            REAL_ESTATE,
-    "bat dong san":            REAL_ESTATE,
-    "bất động sản (trừ dịch vụ)": REAL_ESTATE,
-    "dịch vụ bất động sản":    REAL_ESTATE,
-    "dich vu bat dong san":    REAL_ESTATE,
-    "xây dựng":               REAL_ESTATE,
-    "xay dung":               REAL_ESTATE,
-    "vật liệu xây dựng":      REAL_ESTATE,
-    "vat lieu xay dung":      REAL_ESTATE,
-    "xd":                     REAL_ESTATE,
-    "construction":           REAL_ESTATE,
-    "real estate":            REAL_ESTATE,
+ICB_SECTORS = {
+    BANKS, FINANCIAL_SERVICES, REAL_ESTATE, CONSTRUCTION,
+    CONSTRUCTION_MATERIALS, BASIC_RESOURCES, CHEMICALS, OIL_GAS,
+    FOOD_BEVERAGE, TECHNOLOGY, INDUSTRIAL_GOODS, TRANSPORTATION,
+    RETAIL_TRADE, HEALTHCARE, UTILITIES, AGRICULTURE,
+    OTHER_INDUSTRIALS,
 }
 
-# Symbol-level overrides (when industry is empty or misclassified)
+# ── Vietnamese industry → ICB group mapping (keyword substring match) ──
+INDUSTRY_MAP: dict[str, str] = {
+    # BANKS
+    "ngân hàng":         BANKS,
+    "ngan hang":         BANKS,
+
+    # FINANCIAL_SERVICES
+    "chứng khoán":       FINANCIAL_SERVICES,
+    "chung khoan":       FINANCIAL_SERVICES,
+    "bảo hiểm":          FINANCIAL_SERVICES,
+    "bao hiem":          FINANCIAL_SERVICES,
+    "dịch vụ tài chính": FINANCIAL_SERVICES,
+    "dich vu tai chinh": FINANCIAL_SERVICES,
+    "tài chính khác":    FINANCIAL_SERVICES,
+    "tai chinh khac":    FINANCIAL_SERVICES,
+    "tài chính":         FINANCIAL_SERVICES,
+    "tai chinh":         FINANCIAL_SERVICES,
+
+    # REAL_ESTATE
+    "bất động sản":      REAL_ESTATE,
+    "bat dong san":      REAL_ESTATE,
+
+    # CONSTRUCTION_MATERIALS — must come BEFORE CONSTRUCTION
+    # because "vật liệu xây dựng" contains "xây dựng" as substring
+    "vật liệu xây dựng": CONSTRUCTION_MATERIALS,
+    "vat lieu xay dung": CONSTRUCTION_MATERIALS,
+
+    # CONSTRUCTION
+    "xây dựng":          CONSTRUCTION,
+    "xay dung":          CONSTRUCTION,
+    "xd":                CONSTRUCTION,
+
+    # BASIC_RESOURCES
+    "khai khoáng":         BASIC_RESOURCES,
+    "khai khoang":         BASIC_RESOURCES,
+    "sản phẩm cao su":     BASIC_RESOURCES,
+    "san pham cao su":     BASIC_RESOURCES,
+    "cao su":              BASIC_RESOURCES,
+    "thép":                BASIC_RESOURCES,
+    "thep":                BASIC_RESOURCES,
+    "tài nguyên":          BASIC_RESOURCES,
+    "tai nguyen":          BASIC_RESOURCES,
+
+    # CHEMICALS
+    "sx nhựa - hóa chất": CHEMICALS,
+    "nhựa - hóa chất":    CHEMICALS,
+    "nhua - hoa chat":    CHEMICALS,
+    "phân bón":           CHEMICALS,
+    "phan bon":           CHEMICALS,
+    "hóa chất":           CHEMICALS,
+    "hoa chat":           CHEMICALS,
+
+    # OIL_GAS
+    "dầu khí":            OIL_GAS,
+    "dau khi":            OIL_GAS,
+    "lọc hóa dầu":        OIL_GAS,
+
+    # FOOD_BEVERAGE
+    "thực phẩm":           FOOD_BEVERAGE,
+    "thuc pham":           FOOD_BEVERAGE,
+    "đồ uống":             FOOD_BEVERAGE,
+    "do uong":             FOOD_BEVERAGE,
+    "thực phẩm - đồ uống": FOOD_BEVERAGE,
+
+    # TECHNOLOGY
+    "công nghệ":            TECHNOLOGY,
+    "cong nghe":            TECHNOLOGY,
+    "công nghệ và thông tin": TECHNOLOGY,
+    "media":                TECHNOLOGY,
+    "phần mềm":             TECHNOLOGY,
+
+    # INDUSTRIAL_GOODS
+    "sx hàng gia dụng":      INDUSTRIAL_GOODS,
+    "sx phụ trợ":            INDUSTRIAL_GOODS,
+    "sx thiết bị, máy móc":  INDUSTRIAL_GOODS,
+    "thiết bị điện":         INDUSTRIAL_GOODS,
+    "thiết bị":              INDUSTRIAL_GOODS,
+    "sản xuất":              INDUSTRIAL_GOODS,
+    "hàng gia dụng":         INDUSTRIAL_GOODS,
+    "personal & household":  INDUSTRIAL_GOODS,
+    "dịch vụ tư vấn":        INDUSTRIAL_GOODS,
+    "dịch vụ hỗ trợ":        INDUSTRIAL_GOODS,
+
+    # TRANSPORTATION
+    "vận tải":                TRANSPORTATION,
+    "van tai":                TRANSPORTATION,
+    "kho bãi":                TRANSPORTATION,
+    "kho bai":                TRANSPORTATION,
+
+    # RETAIL_TRADE
+    "bán lẻ":                RETAIL_TRADE,
+    "ban le":                RETAIL_TRADE,
+    "bán buôn":              RETAIL_TRADE,
+    "ban buon":              RETAIL_TRADE,
+    "thương mại":            RETAIL_TRADE,
+    "thuong mai":            RETAIL_TRADE,
+
+    # HEALTHCARE
+    "chăm sóc sức khỏe":     HEALTHCARE,
+    "cham soc suc khoe":     HEALTHCARE,
+    "dược phẩm":             HEALTHCARE,
+    "duoc pham":             HEALTHCARE,
+    "y tế":                  HEALTHCARE,
+    "y te":                  HEALTHCARE,
+
+    # UTILITIES
+    "tiện ích":              UTILITIES,
+    "tien ich":              UTILITIES,
+    "điện":                  UTILITIES,
+    "dien":                  UTILITIES,
+    "nước":                  UTILITIES,
+    "nuoc":                  UTILITIES,
+    "gas":                   UTILITIES,
+
+    # AGRICULTURE
+    "thủy sản":              AGRICULTURE,
+    "thuy san":              AGRICULTURE,
+    "chế biến thủy sản":     AGRICULTURE,
+    "nông nghiệp":           AGRICULTURE,
+    "nông - lâm":            AGRICULTURE,
+    "nông lâm":              AGRICULTURE,
+}
+
+# ── Symbol-level overrides ──────────────────────────────────────────
+# Priority 1: fix misclassified industry names
+# Priority 2: fill empty/missing industry
 SYMBOL_OVERRIDES: dict[str, str] = {
-    # Banks
-    "ACB": FINANCIALS, "BAB": FINANCIALS, "BID": FINANCIALS, "CTG": FINANCIALS,
-    "EIB": FINANCIALS, "HDB": FINANCIALS, "KLB": FINANCIALS, "LPB": FINANCIALS,
-    "MBB": FINANCIALS, "MSB": FINANCIALS, "NAB": FINANCIALS, "NAM": FINANCIALS,
-    "NCB": FINANCIALS, "NVB": FINANCIALS, "OCB": FINANCIALS, "PGB": FINANCIALS,
-    "PVF": FINANCIALS, "SGB": FINANCIALS, "SHB": FINANCIALS, "SSB": FINANCIALS,
-    "STB": FINANCIALS, "TCB": FINANCIALS, "TPB": FINANCIALS, "VAB": FINANCIALS,
-    "VBB": FINANCIALS, "VCB": FINANCIALS, "VIB": FINANCIALS, "VPB": FINANCIALS,
-    # Insurance
-    "BMI": FINANCIALS, "BVH": FINANCIALS, "MIG": FINANCIALS, "PTI": FINANCIALS,
-    "PVI": FINANCIALS, "AIC": FINANCIALS, "BIC": FINANCIALS, "BLI": FINANCIALS,
-    "DNM": FINANCIALS, "PRE": FINANCIALS,
-    "VNR": FINANCIALS,
+    # ===== BANKS =====
+    "ACB": BANKS, "BAB": BANKS, "BID": BANKS, "CTG": BANKS,
+    "EIB": BANKS, "EVF": BANKS, "HDB": BANKS, "KLB": BANKS,
+    "LPB": BANKS, "MBB": BANKS, "MSB": BANKS, "NAB": BANKS,
+    "NAM": BANKS, "NCB": BANKS, "NVB": BANKS, "OCB": BANKS,
+    "PGB": BANKS, "PVF": BANKS, "SGB": BANKS, "SHB": BANKS,
+    "SSB": BANKS, "STB": BANKS, "TCB": BANKS, "TPB": BANKS,
+    "VAB": BANKS, "VBB": BANKS, "VCB": BANKS, "VIB": BANKS,
+    "VPB": BANKS,
+
+    # ===== FINANCIAL_SERVICES =====
     # Securities
-    "AGR": FINANCIALS, "APG": FINANCIALS, "ART": FINANCIALS, "BMS": FINANCIALS,
-    "BSI": FINANCIALS, "CTS": FINANCIALS, "DSC": FINANCIALS, "EVS": FINANCIALS,
-    "FTS": FINANCIALS, "HBS": FINANCIALS, "HCM": FINANCIALS, "IVS": FINANCIALS,
-    "MBS": FINANCIALS, "ORS": FINANCIALS, "PHS": FINANCIALS, "PIV": FINANCIALS,
-    "PSI": FINANCIALS, "SBS": FINANCIALS, "SHS": FINANCIALS, "SSI": FINANCIALS,
-    "TCI": FINANCIALS, "TVC": FINANCIALS, "TVB": FINANCIALS, "VCI": FINANCIALS,
-    "VDS": FINANCIALS, "VFS": FINANCIALS, "VIX": FINANCIALS, "WSS": FINANCIALS,
+    "AGR": FINANCIAL_SERVICES, "APG": FINANCIAL_SERVICES,
+    "ART": FINANCIAL_SERVICES, "BMS": FINANCIAL_SERVICES,
+    "BSI": FINANCIAL_SERVICES, "CTS": FINANCIAL_SERVICES,
+    "DSC": FINANCIAL_SERVICES, "DSE": FINANCIAL_SERVICES,
+    "EVS": FINANCIAL_SERVICES, "FTS": FINANCIAL_SERVICES,
+    "HBS": FINANCIAL_SERVICES, "HCM": FINANCIAL_SERVICES,
+    "IVS": FINANCIAL_SERVICES, "MBS": FINANCIAL_SERVICES,
+    "ORS": FINANCIAL_SERVICES, "PHS": FINANCIAL_SERVICES,
+    "PIV": FINANCIAL_SERVICES, "PSI": FINANCIAL_SERVICES,
+    "SBS": FINANCIAL_SERVICES, "SHS": FINANCIAL_SERVICES,
+    "SSI": FINANCIAL_SERVICES, "TCI": FINANCIAL_SERVICES,
+    "TCX": FINANCIAL_SERVICES, "TVC": FINANCIAL_SERVICES,
+    "TVB": FINANCIAL_SERVICES, "TVS": FINANCIAL_SERVICES,
+    "VCI": FINANCIAL_SERVICES, "VCK": FINANCIAL_SERVICES,
+    "VDS": FINANCIAL_SERVICES, "VFS": FINANCIAL_SERVICES,
+    "VIX": FINANCIAL_SERVICES, "VND": FINANCIAL_SERVICES,
+    "VPX": FINANCIAL_SERVICES, "WSS": FINANCIAL_SERVICES,
+    # Insurance
+    "BMI": FINANCIAL_SERVICES, "BVH": FINANCIAL_SERVICES,
+    "MIG": FINANCIAL_SERVICES, "PTI": FINANCIAL_SERVICES,
+    "PVI": FINANCIAL_SERVICES, "AIC": FINANCIAL_SERVICES,
+    "BIC": FINANCIAL_SERVICES, "BLI": FINANCIAL_SERVICES,
+    "DNM": FINANCIAL_SERVICES, "PRE": FINANCIAL_SERVICES,
+    "PGI": FINANCIAL_SERVICES, "VNR": FINANCIAL_SERVICES,
     # Other financial
-    "TIN": FINANCIALS, "VNF": FINANCIALS, "WTC": FINANCIALS,
-    # Real Estate
-    "AAM": REAL_ESTATE, "AGG": REAL_ESTATE, "ALS": REAL_ESTATE,
-    "API": REAL_ESTATE, "BCR": REAL_ESTATE, "BVL": REAL_ESTATE,
-    "C21": REAL_ESTATE, "CCI": REAL_ESTATE, "CIG": REAL_ESTATE,
-    "CLG": REAL_ESTATE, "CRE": REAL_ESTATE, "CSN": REAL_ESTATE,
-    "D2D": REAL_ESTATE, "DIG": REAL_ESTATE, "DTA": REAL_ESTATE,
-    "DXG": REAL_ESTATE, "DXS": REAL_ESTATE, "DXV": REAL_ESTATE,
-    "FDC": REAL_ESTATE, "FIR": REAL_ESTATE, "FIT": REAL_ESTATE,
-    "HDC": REAL_ESTATE, "HAR": REAL_ESTATE, "HQC": REAL_ESTATE,
-    "HSG": REAL_ESTATE, "HTN": REAL_ESTATE, "IDC": REAL_ESTATE,
-    "IDJ": REAL_ESTATE, "IJC": REAL_ESTATE, "ITC": REAL_ESTATE,
-    "KAC": REAL_ESTATE, "KBC": REAL_ESTATE, "KDH": REAL_ESTATE,
-    "KOS": REAL_ESTATE, "LDG": REAL_ESTATE, "LGL": REAL_ESTATE,
-    "LHC": REAL_ESTATE, "LHG": REAL_ESTATE, "LIX": REAL_ESTATE,
-    "L45": REAL_ESTATE, "MHL": REAL_ESTATE,
-    "MTH": REAL_ESTATE, "NLG": REAL_ESTATE, "NRC": REAL_ESTATE,
-    "NTL": REAL_ESTATE, "NVL": REAL_ESTATE, "NVT": REAL_ESTATE,
-    "PDR": REAL_ESTATE, "PFL": REAL_ESTATE,
-    "PTC": REAL_ESTATE, "PTL": REAL_ESTATE, "QCG": REAL_ESTATE,
-    "RCL": REAL_ESTATE, "SCR": REAL_ESTATE, "SGR": REAL_ESTATE,
-    "SJS": REAL_ESTATE, "SMC": REAL_ESTATE, "SNZ": REAL_ESTATE,
-    "SRA": REAL_ESTATE, "SZL": REAL_ESTATE, "TBC": REAL_ESTATE,
-    "TCH": REAL_ESTATE, "TDC": REAL_ESTATE, "TEG": REAL_ESTATE,
-    "TIX": REAL_ESTATE, "TLC": REAL_ESTATE, "TND": REAL_ESTATE,
-    "TNP": REAL_ESTATE, "TNT": REAL_ESTATE, "TSC": REAL_ESTATE,
-    "TYD": REAL_ESTATE, "UDC": REAL_ESTATE, "VHM": REAL_ESTATE,
-    "VIC": REAL_ESTATE, "VLC": REAL_ESTATE, "VPH": REAL_ESTATE,
-    "VPY": REAL_ESTATE, "VRC": REAL_ESTATE, "VRE": REAL_ESTATE,
+    "OGC": FINANCIAL_SERVICES, "TIN": FINANCIAL_SERVICES,
+    "VNF": FINANCIAL_SERVICES, "WTC": FINANCIAL_SERVICES,
+
+    # ===== BASIC_RESOURCES (Steel overrides) =====
+    # DB says "Vật liệu xây dựng" but are actually steel producers
+    "HPG": BASIC_RESOURCES, "HSG": BASIC_RESOURCES,
+    "NKG": BASIC_RESOURCES, "TLH": BASIC_RESOURCES,
+    "POM": BASIC_RESOURCES, "SMC": BASIC_RESOURCES,
+    "VIS": BASIC_RESOURCES, "VGS": BASIC_RESOURCES,
+
+    # ===== OIL_GAS =====
+    # DB misclassifies these as UTILITIES / INDUSTRIAL / MINING
+    "GAS": OIL_GAS,          # PetroVietnam Gas — DB says "Tiện ích"
+    "BSR": OIL_GAS,          # Binh Son Refining — DB says "SX Phụ trợ"
+    "PVD": OIL_GAS,          # PV Drilling — DB says "Khai khoáng"
+    "PVS": OIL_GAS,          # PV Services — DB says "Vận tải - kho bãi"
+    "PVT": TRANSPORTATION,   # PV Transport — oil transport but still transport
+    "POW": UTILITIES,        # PV Power — DB says "Tiện ích" (correct)
+    "PLX": RETAIL_TRADE,     # Petrolimex — DB says "Bán buôn" (correct as retail)
+
+    # ===== TECHNOLOGY overrides =====
+    "YEG": TECHNOLOGY,       # Yeah1 — empty industry
+    "FPT": TECHNOLOGY,       # DB says "Công nghệ và thông tin" (correct)
+    "CMG": TECHNOLOGY,       # DB says "Công nghệ và thông tin" (correct)
+    "ELC": TECHNOLOGY,       # DB says "Công nghệ và thông tin" (correct)
+    "ICT": TECHNOLOGY,       # Correct
+    "SGT": TECHNOLOGY,       # Correct
+
+    # ===== CONSTRUCTION overrides (DB misclassifications) =====
+    "TV2": CONSTRUCTION,     # Power engineering consulting — DB says "Dịch vụ tư vấn"
+    "LGC": CONSTRUCTION,     # DB says "Xây dựng" (correct)
+    "VCG": CONSTRUCTION,     # Correct
+    "PC1": CONSTRUCTION,     # DB says "Xây dựng" (correct, power construction)
+    "VNE": CONSTRUCTION,     # DB says "Xây dựng" (correct)
+    "CII": CONSTRUCTION,     # DB says "Xây dựng" (infrastructure investment)
+    "HTN": CONSTRUCTION,     # DB says "Xây dựng" (correct)
+    "HHV": CONSTRUCTION,     # DB says "Xây dựng" (highway construction)
+
+    # ===== REAL_ESTATE overrides (fix DB mis-sorts) =====
+    "NTC": REAL_ESTATE,      # Industrial park — DB says "Bất động sản" (correct)
+    "SZC": REAL_ESTATE,      # Sonadezi — correct
+    "TIP": REAL_ESTATE,      # Correct (industrial park)
+    "IDC": REAL_ESTATE,      # Correct
+    "SNZ": REAL_ESTATE,      # Correct
+    "KBC": REAL_ESTATE,      # Correct (industrial park developer)
+
+    # ===== AGRICULTURE overrides =====
+    "HAG": AGRICULTURE,      # DB says "Nông - Lâm - Ngư" (correct)
+    "HNG": AGRICULTURE,      # Correct
+    "NSC": AGRICULTURE,      # DB says "Nông - Lâm - Ngư" (correct)
+    "SSC": AGRICULTURE,      # DB says "Nông - Lâm - Ngư" (correct)
+    "HSL": AGRICULTURE,      # DB says "Nông - Lâm - Ngư" (correct)
+
+    # ===== FOOD_BEVERAGE overrides =====
+    "KDC": FOOD_BEVERAGE,    # Kido — correct
+    "MSN": FOOD_BEVERAGE,    # Masan — correct
+    "SAB": FOOD_BEVERAGE,    # Sabeco — correct
+    "BHN": FOOD_BEVERAGE,    # Habeco — correct
+    "VNM": FOOD_BEVERAGE,    # Vinamilk — correct
+    "VCF": FOOD_BEVERAGE,    # Vinacafe — correct
+    "MCH": FOOD_BEVERAGE,    # Masan Consumer — correct
+    "SBT": FOOD_BEVERAGE,    # Thanh Thanh Cong — correct (sugar)
+    "LSS": FOOD_BEVERAGE,    # La Ngan Sugar — correct
+
+    # ===== RETAIL_TRADE overrides =====
+    "MWG": RETAIL_TRADE,     # Mobile World — correct
+    "FRT": RETAIL_TRADE,     # FPT Retail — correct
+    "PNJ": RETAIL_TRADE,     # Phu Nhuan Jewelry — correct
+    "DGW": RETAIL_TRADE,     # Digiworld — DB says "Bán buôn" (distributor)
+    "PET": RETAIL_TRADE,     # Petrolimex IT — DB says "Bán buôn"
+    "COM": RETAIL_TRADE,     # Coma — DB says "Bán lẻ" (correct)
+
+    # ===== HEALTHCARE overrides =====
+    "DHG": HEALTHCARE,       # DHG Pharma — correct
+    "FIT": HEALTHCARE,       # DB says "Chăm sóc sức khỏe" (correct)
+    "IMP": HEALTHCARE,       # Correct
+    "TRA": HEALTHCARE,       # Correct
+    "DBD": HEALTHCARE,       # Correct
+    "DCL": HEALTHCARE,       # Correct
+    "OPC": HEALTHCARE,       # Correct
+    "SPM": HEALTHCARE,       # Correct
+    "TNH": HEALTHCARE,       # Correct
+    "VDP": HEALTHCARE,       # Correct
+
+    # ===== UTILITIES overrides =====
+    "BWE": UTILITIES,        # Binh Duong Water — correct
+    "REE": CONSTRUCTION,     # REE Corp — DB says "Xây dựng" but is M&E + power
+    "GEG": UTILITIES,        # Gia Lai Electricity — correct
+    "NT2": UTILITIES,        # Nhon Trach 2 Power — correct
+    "VSH": UTILITIES,        # Vinh Son Song Hinh — correct
+    "CHP": UTILITIES,        # Correct
+
+    # ===== INDUSTRIAL_GOODS overrides =====
+    "GEX": INDUSTRIAL_GOODS, # Gelex — DB says "Thiết bị điện" (electrical equip)
+    "REE": CONSTRUCTION,     # Already above
+
+    # ===== OTHER_INDUSTRIALS (hospitality, services) =====
+    "DAH": OTHER_INDUSTRIALS,  # DB says "Dịch vụ lưu trú, ăn uống"
+    "DSN": OTHER_INDUSTRIALS,  # Same
+    "NVT": OTHER_INDUSTRIALS,  # Same
+    "VNG": OTHER_INDUSTRIALS,  # Same
+    "VPL": OTHER_INDUSTRIALS,  # Same
+    "ADG": OTHER_INDUSTRIALS,  # Media — but let's keep as OTHER_INDUSTRIALS
 }
 
 
 def classify(industry: Optional[str], symbol: str) -> str:
-    """Classify a stock into one of 3 sector groups.
+    """Classify stock into 16-group ICB sector.
 
     Priority:
-      1. Symbol-level override (for empty/misclassified industries)
-      2. Industry name match (case-insensitive)
-      3. Default: OTHERS
+      1. Symbol-level override (fixes DB misclassifications)
+      2. Industry keyword match
+      3. Default: OTHER_INDUSTRIALS
     """
-    # 1. Symbol override
     if symbol in SYMBOL_OVERRIDES:
         return SYMBOL_OVERRIDES[symbol]
-
-    # 2. Industry name match
     if industry:
         ind_lower = industry.strip().lower()
-        for keyword, group in INDUSTRY_MAP.items():
+        for keyword, sector in INDUSTRY_MAP.items():
             if keyword in ind_lower:
-                return group
+                return sector
+    return OTHER_INDUSTRIALS
 
-    # 3. Default
-    return OTHERS
 
+# ── Backward-compat 3-group classification ─────────────────────────
+
+MAJOR_GROUP_MAP: dict[str, str] = {
+    BANKS:              FINANCIALS,
+    FINANCIAL_SERVICES: FINANCIALS,
+    REAL_ESTATE:        REAL_ESTATE,
+    CONSTRUCTION:       OTHERS,
+    CONSTRUCTION_MATERIALS: OTHERS,
+    BASIC_RESOURCES:    OTHERS,
+    CHEMICALS:          OTHERS,
+    OIL_GAS:            OTHERS,
+    FOOD_BEVERAGE:      OTHERS,
+    TECHNOLOGY:         OTHERS,
+    INDUSTRIAL_GOODS:   OTHERS,
+    TRANSPORTATION:     OTHERS,
+    RETAIL_TRADE:       OTHERS,
+    HEALTHCARE:         OTHERS,
+    UTILITIES:          OTHERS,
+    AGRICULTURE:        OTHERS,
+    OTHER_INDUSTRIALS:  OTHERS,
+}
+
+
+def classify_major(industry: Optional[str], symbol: str) -> str:
+    """Backward-compat: return FINANCIALS / REAL_ESTATE / OTHERS."""
+    icb = classify(industry, symbol)
+    return MAJOR_GROUP_MAP.get(icb, OTHERS)
+
+
+# ── Sector-group symbol lists (backward compat) ─────────────────────
 
 def get_group_symbols(cur) -> tuple[list[str], list[str], list[str]]:
-    """Get symbol lists for each sector group from the stocks table.
-
-    Returns:
-        (fin_symbols, re_symbols, other_symbols)
-    """
+    """Return (fin_symbols, re_symbols, other_symbols) for legacy code."""
     cur.execute("SELECT symbol, industry FROM stocks WHERE exchange IN ('HOSE','HSX') ORDER BY symbol")
     rows = cur.fetchall()
-
     fin, re, other = [], [], []
     for sym, ind in rows:
-        group = classify(ind, sym)
-        if group == FINANCIALS:
+        g = classify_major(ind, sym)
+        if g == FINANCIALS:
             fin.append(sym)
-        elif group == REAL_ESTATE:
+        elif g == REAL_ESTATE:
             re.append(sym)
         else:
             other.append(sym)
-
     return fin, re, other
+
+
+# ── New helper: safe ICB classification with min-size guard ─────────
+
+def classify_safe(industry: Optional[str], symbol: str,
+                  sector_counts: Optional[dict[str, int]] = None,
+                  min_size: int = 4) -> str:
+    """Classify with auto-fallback to OTHER_INDUSTRIALS if sector has <min_size members.
+
+    Args:
+        sector_counts: dict of {sector_name: count} for the evaluation date.
+                       If provided, sectors below min_size get merged.
+    """
+    icb = classify(industry, symbol)
+    if sector_counts is not None and icb in sector_counts:
+        if sector_counts[icb] < min_size and icb != OTHER_INDUSTRIALS:
+            return OTHER_INDUSTRIALS
+    return icb
+
+
+def compute_sector_counts(
+    symbols: list[str],
+    industries: Optional[dict[str, Optional[str]]] = None,
+) -> dict[str, int]:
+    """Compute count of symbols per ICB sector.
+
+    Args:
+        symbols: list of symbol strings
+        industries: dict of {symbol: industry_name}. If None, uses classify()
+                    with industry=None (falls back to symbol overrides).
+    Returns:
+        {sector_name: count}
+    """
+    counts: dict[str, int] = {}
+    for sym in symbols:
+        ind = industries.get(sym) if industries else None
+        sec = classify(ind, sym)
+        counts[sec] = counts.get(sec, 0) + 1
+    return counts
