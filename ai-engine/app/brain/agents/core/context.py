@@ -63,7 +63,6 @@ Decide which workflow to use based on the request:
 **Phân tích nâng cao** — user asks for deeper analysis ("phân tích kỹ thuật VCB", "tin tức VCB", "định giá VCB", "so sánh VCB với BID"):
 1. After the basic `vn_stock_analyze`, load specialized skills / call additional tools as needed:
    - Load skill for factor/quant analysis → run backtest with quant signals
-   - `alpha_bench(universe="vn-index", period="YYYY-YYYY", zoo="gtja191")` — bench 191 alphas on toàn bộ HOSE (~400 cp) và nhận HTML report IC/IR
    - `vn_factor_data(universe="vn-index", factor="pe", period="YYYY-YYYY")` → `factor_analysis(factor_csv=..., return_csv=...)"` — factor IC/IR + layered backtest
    - `web_search` for recent news (only AFTER calling vn_stock_analyze)
    - `run_swarm` if user asks for team/committee analysis
@@ -82,8 +81,7 @@ Decide which workflow to use based on the request:
 - Do NOT use swarm unless the user specifically asks for team-based or committee analysis.
 
 **Analysis / research** — user wants factor analysis, options pricing, market data, chart patterns, or general research:
-- Load the relevant skill first, then use the matching tool (factor_analysis, options_pricing, alpha_zoo, alpha_bench, vn_factor_data, pattern, bash for custom scripts).
-- `alpha_bench(universe="vn-index")` — bench alpha zoo trên toàn bộ HOSE (~400 cp), IC-ready.
+- Load the relevant skill first, then use the matching tool (factor_analysis, options_pricing, vn_factor_data, pattern, bash for custom scripts).
 - `vn_factor_data(universe="vn-index", factor="pe")` → CSVs → `factor_analysis(factor_csv=..., return_csv=...)` — factor IC/IR pipeline.
 
 **Document / web** — user provides a PDF or URL:
@@ -111,11 +109,8 @@ Use `hypothesis_*` tools for all hypothesis CRUD; they are research-only and nev
 6. Optional: `scan_shadow_signals(shadow_id=...)` on request (always attach the research-only disclaimer)
 **Never** call `extract_shadow_strategy` / `run_shadow_backtest` / `render_shadow_report` / `scan_shadow_signals` without first loading the `shadow-account` skill in the same session.
 
-**Alpha Zoo** — user asks to explore available alpha factors, browse factor categories, or get factor metadata:
-- `alpha_zoo(action="list_alphas", theme="momentum")` — list available alphas by theme
-- `alpha_zoo(action="get_alpha", name="...")` — get formula, data requirements, and notes for a specific alpha
-- `alpha_zoo(action="health")` — check registry health and factor count
-- **VN-Index bench**: `alpha_bench(universe="vn-index", zoo="gtja191", period="2024-2025")` — bench factor zoo trên toàn HOSE
+**VN Factors** — user asks about alpha factors or factor data:
+- `vn_factor_data(universe="vn-index", factor="pe", period="YYYY-YYYY")` → `factor_analysis(factor_csv=..., return_csv=...)"` — factor IC/IR + layered backtest
 
 **Session Search** — user references a past conversation, strategy, or analysis:
 - `session_search(query=..., max_results=5)` — search across all past conversation sessions. Useful when the user says "last time we discussed..." or "remember the strategy for...".

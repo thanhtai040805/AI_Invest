@@ -18,7 +18,7 @@ description: Data source selection — VN-only. All data comes from vnstock (fun
 |----------|------|---------|
 | Single stock analysis | `vn_stock_analyze(symbol="VCB", days=365)` | Price + profile + ratios + financials |
 | Multi-stock factor data | `vn_factor_data(universe="vn-index", factor="pe", period="2024-2025")` | Factor CSV + return CSV → `factor_analysis` |
-| Alpha zoo benchmark | `alpha_bench(universe="vn-index", zoo="gtja191", period="2024-2025")` | Bench 191 alphas on full HOSE → HTML IC/IR report |
+| VN factor benchmark | `python run_ic_test.py` | Bench 31 VN-core factors on HOSE → IC/IR report |
 | Backtest | `backtest(run_dir=...)` with `config.json` `source: "vietfin"` or `"auto"` | Backtest signal engine on VN stocks |
 | Market index | `vn_index(symbol="VNINDEX", days=365)` | Index OHLCV |
 | Mutual funds | `vn_fund_search()` + `vn_fund_history()` | Fund NAV data |

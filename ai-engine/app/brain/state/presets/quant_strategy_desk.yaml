@@ -19,9 +19,9 @@ agents:
       3. **Fundamental snapshot** — Core metrics per name (PE/PB/ROE/market cap, etc.)
       4. **Screening funnel stats** — Initial universe size → remaining count after each filtering step
 
-      Use factor_analysis for factor-based screening. Use alpha_zoo to browse the factor library.
+      Use factor_analysis for factor-based screening.
       Use load_skill for data access patterns.
-    tools: [bash, read_file, write_file, load_skill, factor_analysis, alpha_zoo]
+    tools: [bash, read_file, write_file, load_skill, factor_analysis]
     skills: [fundamental-filter]
     max_iterations: 50
     timeout_seconds: 1800
@@ -44,8 +44,8 @@ agents:
       4. **Factor combination** — Suggest equal-weight or optimized combo of 3–5 factors
       5. **Risk notes** — Factor-decay scenarios and cyclicality
 
-      Use factor_analysis for computations. Use alpha_zoo to browse the factor library for inspiration.
-    tools: [bash, read_file, write_file, load_skill, factor_analysis, alpha_zoo]
+      Use factor_analysis for computations.
+    tools: [bash, read_file, write_file, load_skill, factor_analysis]
     skills: [multi-factor, factor-research]
     max_iterations: 50
     timeout_seconds: 1800
@@ -69,7 +69,7 @@ agents:
       5. **Improvement ideas** — Potential optimizations
 
       You must run **backtest** with real outputs—do not fabricate numbers.
-    tools: [bash, read_file, write_file, edit_file, load_skill, backtest, alpha_zoo, create_hypothesis, search_hypotheses, update_hypothesis, link_backtest]
+    tools: [bash, read_file, write_file, edit_file, load_skill, backtest, create_hypothesis, search_hypotheses, update_hypothesis, link_backtest]
     skills: [strategy-generate, technical-basic]
     max_iterations: 50
     timeout_seconds: 1800

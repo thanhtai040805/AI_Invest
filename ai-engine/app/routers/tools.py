@@ -33,8 +33,6 @@ async def list_tools():
     
     # List tool files
     tool_files = [
-        "alpha_bench_tool.py",
-        "alpha_zoo_tool.py",
         "backtest_tool.py",
         "doc_reader_tool.py",
         "factor_analysis_tool.py",

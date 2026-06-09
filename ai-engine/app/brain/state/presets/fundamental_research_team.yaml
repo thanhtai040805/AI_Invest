@@ -42,7 +42,7 @@ agents:
       4. **Key Financial Metrics Table** — ROE / ROIC / gross margin / net margin / FCF margin / debt ratio and other core metrics, 3-year trend
       5. **Improvement / Deterioration Signals** — Significant changes in the past 1–2 years, trend direction assessment
       6. **Peer Comparison** — Key financial metrics vs industry average / sector leaders
-    tools: [bash, read_file, write_file, load_skill, factor_analysis, alpha_zoo, session_search, create_hypothesis, search_hypotheses, update_hypothesis]
+    tools: [bash, read_file, write_file, load_skill, factor_analysis, session_search, create_hypothesis, search_hypotheses, update_hypothesis]
     skills: [financial-statement, fundamental-filter]
     max_iterations: 50
     timeout_seconds: 1800
@@ -92,7 +92,7 @@ agents:
       4. **Historical Valuation Percentile** — Current P/E and P/B vs historical percentile, interpreted alongside fundamental changes
       5. **Target Price Calculation** — Weighted multi-method target price with 12-month upside/downside range
       6. **Valuation Catalysts** — 3–5 positive and negative catalysts that could drive re-rating
-    tools: [bash, read_file, write_file, load_skill, factor_analysis, alpha_zoo, session_search]
+    tools: [bash, read_file, write_file, load_skill, factor_analysis, session_search]
     skills: [valuation-model, earnings-forecast]
     max_iterations: 50
     timeout_seconds: 1800

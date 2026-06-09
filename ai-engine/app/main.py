@@ -90,20 +90,6 @@ app.include_router(vibe_routes.router, prefix="/api/vibe-api", tags=["VibeAPI"])
 app.include_router(runs.router, prefix="/api", tags=["Runs"])
 app.include_router(admin.router, prefix="/api", tags=["Admin"])
 
-# Stub routes for frontend-compat — delegate to existing handlers
 @app.get("/api/alpha/list")
 async def alpha_list():
-    from app.brain.quant.factors.registry import get_default_registry
-    registry = get_default_registry()
-    manifest = registry.export_manifest()
-    factors = []
-    for zoo in manifest.get("zoos", []):
-        for alpha in zoo.get("alphas", []):
-            meta = alpha.get("meta", {})
-            factors.append({
-                "alpha_id": alpha["id"],
-                "zoo": zoo["zoo_id"],
-                "theme": meta.get("theme", []),
-                "nickname": meta.get("nickname", ""),
-            })
-    return {"factors": factors}
+    return {"factors": []}

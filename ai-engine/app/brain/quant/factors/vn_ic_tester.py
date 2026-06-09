@@ -65,10 +65,22 @@ VN_FACTORS = {
     "FOREIGN_ROOM":    {"group": "flow", "direction": -1},
     "TET_WINDOW":      {"group": "behavioral", "direction": 1},
     "CEILING_STREAK":  {"group": "behavioral", "direction": -1},
-    "FORCED_SELLING":  {"group": "behavioral", "direction": 1},
-    "SIZE":            {"group": "risk", "direction": -1},
-    "VOL_20D":         {"group": "risk", "direction": -1},
-    "VOL_60D":         {"group": "risk", "direction": -1},
+        "FORCED_SELLING":  {"group": "behavioral", "direction": 1},
+        "SIZE":            {"group": "risk", "direction": -1},
+        "VOL_20D":         {"group": "risk", "direction": -1},
+        "VOL_60D":         {"group": "risk", "direction": -1},
+    }
+
+# Symbols known to be banks (for foreign ownership limit rules)
+BANK_SYMBOLS = frozenset({
+    "ACB", "BAB", "BID", "CTG", "EIB", "EVF", "HDB", "KLB", "LPB",
+    "MBB", "MSB", "NAB", "NAM", "NCB", "NVB", "OCB", "PGB", "PVF",
+    "SGB", "SHB", "SSB", "STB", "TCB", "TPB", "VAB", "VBB", "VCB", "VIB", "VPB",
+})
+
+# Foreign ownership limit overrides (%): default 49%, banks 30%
+FOREIGN_LIMIT_OVERRIDES: dict[str, int] = {
+    "FPT": 100,
 }
 
 _TET_DATES = {
@@ -349,6 +361,21 @@ class VNICTester:
             ff = foreign.get(sym, {})
             fs = fin_st.get(sym, {})
 
+            # ---- Computed market data (historical, from BS + ohlcv) ----
+            shares_out = fs.get("bs", {}).get("shares_outstanding")
+            computed_mcap = None
+            if shares_out is not None and shares_out > 0 and c0 > 0:
+                computed_mcap = shares_out * c0 * 1000  # c0 in thousands VND
+
+            # Use computed as primary, fallback to stocks.market_cap
+            mcap = computed_mcap if (computed_mcap is not None and computed_mcap > 0) else (m.get("mcap") if m else None)
+            # Use DB room_limit as primary (backfilled historical), fallback compute
+            room_limit = ff.get("room_limit", 0) or None
+            if room_limit is None or not (room_limit > 0):
+                if shares_out is not None and shares_out > 0:
+                    foreign_pct = FOREIGN_LIMIT_OVERRIDES.get(sym, 30 if sym in BANK_SYMBOLS else 49)
+                    room_limit = shares_out * foreign_pct / 100
+
             # ---- Value factors (from financial_ratios) ----
             pe = f.get("pe") if f and isinstance(f.get("pe"), (int, float)) else None
             pb = f.get("pb") if f and isinstance(f.get("pb"), (int, float)) else None
@@ -397,7 +424,7 @@ class VNICTester:
             # ---- Piotroski F-score (basic 2-point) ----
             pf = 0
             if row.get("ROE_NORM") is not None and math.isfinite(row.get("ROE_NORM", 0)) and row["ROE_NORM"] > 0: pf += 1
-            if m and m.get("mcap") and m["mcap"] > 0: pf += 1
+            if mcap is not None and mcap > 0: pf += 1
             row["PIOTROSKI_F"] = float(pf)
 
             # ---- Yield factors ----
@@ -415,7 +442,6 @@ class VNICTester:
                 nd["EVEBITDA_INV"] = f"ev_eb={'missing' if f is None else eveb}"
 
             # ---- Size ----
-            mcap = m.get("mcap") if m else None
             if mcap is not None and mcap > 0 and math.isfinite(mcap):
                 row["SIZE"] = np.log(mcap)
             else:
@@ -445,12 +471,11 @@ class VNICTester:
             else:
                 nd.setdefault("FOREIGN_NET_5D", f"mcap={'missing' if m is None else mcap}")
             room_rem = ff.get("room_remaining", 0)
-            room_lim = ff.get("room_limit", 0)
-            if isinstance(room_lim, (int, float)) and room_lim > 0:
-                room_pct = room_rem / room_lim
+            if isinstance(room_limit, (int, float)) and room_limit > 0:
+                room_pct = room_rem / room_limit
                 row["FOREIGN_ROOM"] = -1.0 if room_pct < 0.05 else (0.5 if room_pct > 0.30 else 0.0)
             else:
-                nd.setdefault("FOREIGN_ROOM", f"room_lim={room_lim}")
+                nd.setdefault("FOREIGN_ROOM", f"room_limit={room_limit}")
 
             # ---- FOREIGN_ACCUM (cumulative 1Y net foreign flow / mcap) ----
             ff_accum = self._load_foreign_accum(dt, [sym]).get(sym)
@@ -699,6 +724,8 @@ class VNICTester:
         }
 
         # Bank-specific key maps (completely different BS/IS structure)
+        # Banks use total assets/liabilities as proxies since they lack
+        # current-asset/liability distinction in VN reporting format.
         BANK_BS_KEYS = {
             "total_assets": ("tổng_cộng_tài_sản", "TỔNG CỘNG TÀI SẢN"),
             "total_liabilities": ("tổng_nợ_phải_trả", "TỔNG NỢ PHẢI TRẢ",
@@ -707,7 +734,10 @@ class VNICTester:
                      "1_tiền", "1. Tiền",
                      "tiền", "Tiền"),
             "short_term_debt": ("vay_ngắn_hạn", "Vay ngắn hạn"),
-            "current_liabilities": ("i_vốn_và_các_quỹ", "I. Vốn và các quỹ"),
+            "current_assets": ("tổng_cộng_tài_sản", "TỔNG CỘNG TÀI SẢN"),
+            "current_liabilities": ("tổng_nợ_phải_trả", "TỔNG NỢ PHẢI TRẢ"),
+            "retained_earnings": ("5_lợi_nhuận_chưa_phân_phối_lỗ_lũy_kế",
+                                  "5. Lợi nhuận chưa phân phối/Lỗ lũy kế"),
         }
         BANK_IS_KEYS = {
             "revenue": ("1_thu_nhập_lãi_và_các_khoản_thu_nhập_tương_tự",
@@ -715,7 +745,9 @@ class VNICTester:
                         "i_thu_nhập_lãi_thuần", "I. Thu nhập lãi thuần"),
             "net_income": ("xiii_lợi_nhuận_sau_thuế_xi_xii", "XIII. Lợi nhuận sau thuế (XI-XII)",
                            "xiii_lợi_nhuận_sau_thuế_xiii_xiv", "XIII. Lợi nhuận sau thuế (XIII-XIV)"),
-            "ebit": ("ix_lợi_nhuận_thuần_từ_hoạt_động_kinh_doanh_trước_chi_phí_dự_phòng_rủi_ro_tín_dụng",
+            "ebit": ("ix_lợi_nhuận_thuần_từ_hoạt_động_kinh_doanh_trước_chi_phí_dự_phòng_rủi_ro_tín_dụng_i_ii_iii_iv_v_vi_vii_viii",
+                     "IX. Lợi nhuận thuần từ hoạt động kinh doanh trước chi phí dự phòng rủi ro tín dụng (I+II+III+IV+V+VI+VII-VIII)",
+                     "ix_lợi_nhuận_thuần_từ_hoạt_động_kinh_doanh_trước_chi_phí_dự_phòng_rủi_ro_tín_dụng",
                      "IX. Lợi nhuận thuần từ hoạt động kinh doanh trước chi phí dự phòng rủi ro tín dụng",
                      "xi_tổng_lợi_nhuận_trước_thuế_ix_x", "XI. Tổng lợi nhuận trước thuế (IX-X)"),
         }
@@ -741,6 +773,52 @@ class VNICTester:
                             return fv
                     except (ValueError, TypeError):
                         continue
+            return None
+
+        def extract_shares_outstanding(bs_data: dict, symbol: str, is_bank: bool = False) -> float | None:
+            """Extract shares outstanding from BS data.
+            
+            VN law: par value = 10,000 VND/share.
+            Falls back through multiple key variants.
+            Returns number of shares or None.
+            """
+            PAR_VALUE = 10_000  # VND, per Vietnamese law
+
+            if is_bank:
+                for key in ("a_vốn_điều_lệ", "a. Vốn điều lệ",
+                            "vốn_điều_lệ", "Vốn điều lệ",
+                            "charter_capital"):
+                    if key in bs_data and bs_data[key] is not None:
+                        v = float(bs_data[key])
+                        if v > 1e9:
+                            return v / PAR_VALUE
+                return None
+
+            # Non-bank fallback chain (priority order)
+            for key in (
+                # Priority 1: Common shares (standard format)
+                "cổ_phiếu_phổ_thông_có_quyền_biểu_quyết",
+                "- Cổ phiếu phổ thông có quyền biểu quyết",
+                # Priority 2: Common shares (securities format)
+                "a_cổ_phiếu_phổ_thông",
+                "a. Cổ phiếu phổ thông",
+                # Priority 3: Contributed capital (securities sub-section)
+                "1_1_vốn_góp_của_chủ_sở_hữu",
+                "1.1. Vốn góp của chủ sở hữu",
+                # Priority 4: Contributed capital (standard)
+                "1_vốn_góp_của_chủ_sở_hữu",
+                "1. Vốn góp của chủ sở hữu",
+                "vốn_góp_của_chủ_sở_hữu",
+                "Vốn góp của chủ sở hữu",
+                # Priority 5: Charter capital (general fallback)
+                "vốn_điều_lệ",
+                "Vốn điều lệ",
+                "charter_capital",
+            ):
+                if key in bs_data and bs_data[key] is not None:
+                    v = float(bs_data[key])
+                    if v > 1e9:
+                        return v / PAR_VALUE
             return None
 
         result: dict[str, dict] = {}
@@ -786,6 +864,9 @@ class VNICTester:
                                     parsed[f"prev_{out_key}"] = pk
                     if stmt_type == "BS":
                         result[sym]["bs"] = parsed
+                        result[sym]["bs"]["shares_outstanding"] = extract_shares_outstanding(
+                            latest, sym, _is_bank(sym)
+                        )
                     elif stmt_type == "IS":
                         result[sym].setdefault("bs", {})
                         result[sym]["bs"].update(parsed)
@@ -822,6 +903,9 @@ class VNICTester:
                                     parsed[f"prev_{out_key}"] = pk
                     if stmt_type == "BS":
                         result[sym]["bs"] = parsed
+                        result[sym]["bs"]["shares_outstanding"] = extract_shares_outstanding(
+                            latest, sym, _is_bank(sym)
+                        )
                     elif stmt_type == "IS":
                         result[sym].setdefault("bs", {})
                         result[sym]["bs"].update(parsed)
@@ -898,14 +982,16 @@ class VNICTester:
             upper=r[common2].quantile(0.99),
         )
 
-        # Demean factor within sector
+        # Build sector groups once (O(n)), not per-symbol (O(n²))
         f_neutral = f[common2].copy()
+        sector_groups: dict[str, list[str]] = {}
         for sym in f_neutral.index:
-            sector = sector_map.get(sym, OTHERS)
-            sector_syms = [s for s in f_neutral.index if sector_map.get(s, OTHERS) == sector]
-            if len(sector_syms) >= 5:
-                sector_mean = f_neutral[sector_syms].mean()
-                f_neutral[sym] = f_neutral[sym] - sector_mean
+            sec = sector_map.get(sym, OTHERS)
+            sector_groups.setdefault(sec, []).append(sym)
+        for sec, syms in sector_groups.items():
+            if len(syms) >= 5:
+                sector_mean = f_neutral[syms].mean()
+                f_neutral[syms] -= sector_mean
 
         if len(np.unique(f_neutral)) < 2 or len(np.unique(r_vals)) < 2:
             return None
@@ -1085,14 +1171,27 @@ class VNICTester:
             for fid, rank in factor_ranks.items():
                 daily_coverage[fid].append(int(rank.dropna().shape[0]))
 
+            # Pre-compute forward data once per date (reused across holdings)
+            max_hold = max(holdings)
+            forward_future: dict[str, pd.DataFrame] = {}
+            for sym, df in filtered.items():
+                future = df[df.index > pd.Timestamp(dt)]
+                if len(future) >= 1 + max_hold:
+                    forward_future[sym] = future
+
             for hold in holdings:
-                fwd = self.compute_forward_returns(filtered, dt, holding=hold)
+                fwd = {}
+                for sym, future in forward_future.items():
+                    if len(future) >= 1 + hold:
+                        entry = future["close"].iloc[0]
+                        if entry > 0:
+                            exit_ = future["close"].iloc[hold]
+                            if exit_ is not None and exit_ > 0:
+                                fwd[sym] = exit_ / entry - 1
                 for fid, rank in factor_ranks.items():
-                    # Raw IC
                     ic = self.compute_daily_ic(rank, fwd)
                     if ic is not None:
                         all_ics[fid][hold]["raw"].append(ic)
-                    # Sector-neutral IC
                     ic_sn = self.compute_daily_ic_sector_neutral(rank, fwd, self.sector_map)
                     if ic_sn is not None:
                         all_ics[fid][hold]["sector_neutral"].append(ic_sn)
