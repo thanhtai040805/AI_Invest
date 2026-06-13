@@ -8,7 +8,7 @@ from app.brain.agents.utils.agent_utils import (
     get_insider_transactions,
     get_language_instruction,
 )
-from app.brain.dataflows.config import get_config
+from app.dataflows.config import get_config
 
 
 def create_fundamentals_analyst(llm):

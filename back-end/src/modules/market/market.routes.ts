@@ -54,14 +54,13 @@ router.get('/heatmap', (req, res, next) =>
 
 router.get('/news', (req, res, next) => {
   const symbol = req.query.symbol as string | undefined;
-  const limit = parseInt(req.query.limit as string, 10) || 30;
-  return handle(req, res, next, () =>
-    prisma.news.findMany({
-      where: symbol ? { symbol: symbol.toUpperCase() } : {},
-      orderBy: { publishDate: 'desc' },
-      take: limit,
-    })
-  );
+  const limit = Math.min(parseInt(req.query.limit as string, 10) || 30, 200);
+  return handle(req, res, next, async () => {
+    const where = symbol ? `WHERE symbol = $1` : ``;
+    const sql = `SELECT id, symbol, title, url, published_date, article_content, article_pdf_text, sentiment_score FROM news_events ${where} ORDER BY published_date DESC LIMIT $${symbol ? 2 : 1}::int`;
+    const params = symbol ? [symbol.toUpperCase(), limit] : [limit];
+    return prisma.$queryRawUnsafe(sql, ...params);
+  });
 });
 
 router.get('/search', (req, res, next) => {

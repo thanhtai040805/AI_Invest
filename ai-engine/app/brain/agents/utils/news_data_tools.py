@@ -1,6 +1,6 @@
 from langchain_core.tools import tool
 from typing import Annotated, Optional
-from app.brain.dataflows.interface import route_to_vendor
+from app.dataflows.interface import route_to_vendor
 
 @tool
 def get_news(

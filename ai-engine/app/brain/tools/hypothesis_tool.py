@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 from app.brain.agents.core.tools import BaseTool
-from app.brain.quant.hypotheses import HypothesisRegistry
+from app.quant.hypotheses import HypothesisRegistry
 
 
 def _ok(payload: dict[str, Any]) -> str:

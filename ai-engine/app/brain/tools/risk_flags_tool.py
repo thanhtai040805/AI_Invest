@@ -10,7 +10,7 @@ import json
 import logging
 
 from app.brain.agents.core.tools import BaseTool
-from app.services.risk_flags_v2 import get_active_flags, get_hard_blocked, get_soft_flag_count
+from app.brain.risk.queries import get_active_flags, get_hard_blocked, get_soft_flag_count
 
 logger = logging.getLogger(__name__)
 

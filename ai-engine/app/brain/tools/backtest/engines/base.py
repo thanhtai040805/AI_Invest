@@ -110,7 +110,7 @@ def _align(
     if optimizer is not None:
         # Pre-clean/winsorize returns for the optimizer to avoid outlier-distorted covariance estimation
         try:
-            from app.brain.quant.pipeline import winsorize_panel, impute_panel
+            from app.quant.pipeline import winsorize_panel, impute_panel
             ret_cleaned = impute_panel(ret, method="ffill_bfill")
             ret_cleaned = winsorize_panel(ret_cleaned, lower_quantile=0.01, upper_quantile=0.01)
         except Exception as e:

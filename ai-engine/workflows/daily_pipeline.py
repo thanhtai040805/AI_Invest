@@ -47,7 +47,7 @@ def task_backfill_ohlcv(symbols: List[str]) -> Dict[str, Any]:
 
 def task_compute_factors(universe: List[str]) -> Dict[str, Any]:
     """Compute VN-core factors for the universe."""
-    from app.brain.quant.factors.vn_ic_tester import VN_FACTORS
+    from app.quant.factors.vn_ic_tester import VN_FACTORS
     logger.info("VN-core factors: %d defined", len(VN_FACTORS))
     return {
         "task": "compute_factors",

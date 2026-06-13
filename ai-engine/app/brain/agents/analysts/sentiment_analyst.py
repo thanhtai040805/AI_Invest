@@ -27,8 +27,8 @@ from app.brain.agents.utils.agent_utils import (
     get_language_instruction,
     get_news,
 )
-from app.brain.dataflows.reddit import fetch_reddit_posts
-from app.brain.dataflows.stocktwits import fetch_stocktwits_messages
+from app.dataflows.reddit import fetch_reddit_posts
+from app.dataflows.stocktwits import fetch_stocktwits_messages
 
 
 def _seven_days_back(trade_date: str) -> str:

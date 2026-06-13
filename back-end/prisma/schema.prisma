@@ -238,22 +238,7 @@ model Reaction {
   @@map("reactions")
 }
 
-model News {
-  id              String   @id @default(uuid())
-  newsId          String   @unique @map("news_id") // From vnstock
-  symbol          String
-  title           String
-  url             String
-  content         String?
-  publishDate     DateTime @map("publish_date")
-  friendlyKeyword String?  @map("friendly_keyword")
-  sentimentLabel  String?  @map("sentiment_label") // POSITIVE, NEGATIVE, NEUTRAL
-  sentimentScore  Float?   @map("sentiment_score") // -1 to 1
-  createdAt       DateTime @default(now()) @map("created_at")
 
-  @@index([symbol, publishDate(sort: Desc)])
-  @@map("news")
-}
 
 /// Tracks which trading days have been backfilled.
 /// Idempotency check: on server startup, skip backfill if today's session is already logged.

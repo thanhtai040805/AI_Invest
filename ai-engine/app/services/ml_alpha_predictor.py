@@ -16,7 +16,6 @@ import json
 import logging
 import os
 import pickle
-import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -28,7 +27,8 @@ logger = logging.getLogger(__name__)
 
 TZ_VN = timezone(timedelta(hours=7))
 
-MODEL_DIR = Path(os.getenv("ML_MODEL_DIR", tempfile.gettempdir())) / "ml_alpha_models"
+_DEFAULT_MODEL_DIR = Path(__file__).resolve().parents[1] / "data" / "ml_alpha_models"
+MODEL_DIR = Path(os.getenv("ML_MODEL_DIR", str(_DEFAULT_MODEL_DIR)))
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -275,6 +275,33 @@ def train_model(
         pickle.dump(model, f)
     with open(feature_path, "w") as f:
         json.dump(feature_cols, f)
+
+    # Register with ModelRegistry for reproducibility
+    try:
+        from app.quant.data.mlops import ModelRecord, ModelRegistry
+
+        _registry = ModelRegistry()
+        _registry.register(ModelRecord(
+            model_id=f"{symbol}_{model_type}",
+            version=datetime.now(TZ_VN).strftime("%Y%m%d_%H%M%S"),
+            created_at=datetime.now(TZ_VN),
+            parameters={
+                "model_type": model_type,
+                "model_path": str(model_path),
+                "feature_path": str(feature_path),
+                "n_train": len(X_train),
+                "n_test": len(X_test),
+                "feature_count": len(feature_cols),
+            },
+            metrics_oos={
+                "mae": test_mae,
+                "rmse": test_rmse,
+                "r2": test_r2,
+            },
+            status="staging",
+        ))
+    except Exception as e:
+        logger.warning("Failed to register model with ModelRegistry: %s", e)
 
     return {
         "symbol": symbol,

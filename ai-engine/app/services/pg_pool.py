@@ -87,6 +87,7 @@ def migrate():
                 data            JSONB NOT NULL,
                 source          TEXT DEFAULT 'vnstock',
                 fetched_at      TIMESTAMPTZ DEFAULT NOW(),
+                published_date  DATE,
                 PRIMARY KEY (symbol, period_end, statement_type, frequency)
             )
         """)
@@ -109,6 +110,7 @@ def migrate():
                 debt_equity FLOAT, current_ratio FLOAT, gross_margin FLOAT,
                 net_margin  FLOAT, fcf_yield FLOAT, ev_ebitda FLOAT,
                 yoy_revenue_growth FLOAT, yoy_earnings_growth FLOAT,
+                published_date DATE,
                 updated_at  TIMESTAMPTZ DEFAULT NOW(),
                 PRIMARY KEY (symbol, ratio_date)
             )
@@ -257,10 +259,18 @@ def migrate():
                 ratio        FLOAT,
                 currency     TEXT DEFAULT 'VND',
                 source       TEXT DEFAULT 'vnstock',
+                record_date  DATE,
+                note         TEXT,
                 created_at   TIMESTAMPTZ DEFAULT NOW(),
                 PRIMARY KEY (symbol, action_date, action_type)
             )
         """)
+
+        for col in ["record_date DATE", "note TEXT"]:
+            try:
+                cur.execute(f"ALTER TABLE corporate_actions ADD COLUMN IF NOT EXISTS {col}")
+            except Exception:
+                pass
 
         cur.execute("""
             CREATE TABLE IF NOT EXISTS risk_assessments (

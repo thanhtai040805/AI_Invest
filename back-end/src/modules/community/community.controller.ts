@@ -3,18 +3,6 @@ import prisma from '../../config/database';
 import { AuthRequest } from '../../middleware/auth';
 import { z } from 'zod';
 
-const IngestNewsSchema = z.array(z.object({
-  newsId: z.string(),
-  symbol: z.string(),
-  title: z.string(),
-  url: z.string(),
-  content: z.string().optional().nullable(),
-  publishDate: z.string(), // ISO string
-  friendlyKeyword: z.string().optional().nullable(),
-  sentimentLabel: z.string().optional().nullable(),
-  sentimentScore: z.number().optional().nullable(),
-}));
-
 const CreatePostSchema = z.object({
   content: z.string().min(1).max(5000),
   taggedSymbols: z.array(z.string()).optional().default([]),
@@ -28,43 +16,35 @@ const AddCommentSchema = z.object({
 export const communityController = {
   async ingestNews(req: Request, res: Response, next: NextFunction) {
     try {
-      const data = IngestNewsSchema.parse(req.body);
-      
-      let insertedCount = 0;
-      const newlyInserted = [];
- 
+      const data = req.body as Array<{
+        symbol: string; title: string; url: string; content?: string;
+        articleContent?: string; articlePdfText?: string;
+        publishDate: string; sentimentScore?: number;
+      }>;
+
+      let inserted = 0;
+      const now = new Date().toISOString();
       for (const item of data) {
-        // Check if already exists
-        const existing = await prisma.news.findUnique({
-          where: { newsId: item.newsId }
-        });
- 
-        if (!existing) {
-          const result = await prisma.news.create({
-            data: {
-              newsId: item.newsId,
-              symbol: item.symbol,
-              title: item.title,
-              url: item.url,
-              content: item.content,
-              publishDate: new Date(item.publishDate),
-              friendlyKeyword: item.friendlyKeyword,
-              sentimentLabel: item.sentimentLabel,
-              sentimentScore: item.sentimentScore,
-            }
-          });
-          insertedCount++;
-          newlyInserted.push(result);
-        }
+        await prisma.$executeRawUnsafe(
+          `INSERT INTO news_events (symbol, title, url, content, article_content, article_pdf_text, published_date, sentiment_score, source)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'cafef')
+           ON CONFLICT (symbol, url) DO UPDATE SET
+             title = EXCLUDED.title,
+             article_content = COALESCE(EXCLUDED.article_content, news_events.article_content),
+             article_pdf_text = COALESCE(EXCLUDED.article_pdf_text, news_events.article_pdf_text)`,
+          item.symbol,
+          item.title,
+          item.url,
+          item.content ?? null,
+          item.articleContent ?? null,
+          item.articlePdfText ?? null,
+          new Date(item.publishDate),
+          item.sentimentScore ?? null,
+        );
+        inserted++;
       }
 
-      res.status(200).json({ 
-        success: true, 
-        message: `Processed ${data.length} items, inserted ${insertedCount}.`, 
-        count: data.length,
-        insertedCount,
-        newlyInserted 
-      });
+      res.status(200).json({ success: true, message: `Inserted/updated ${inserted} items.`, count: inserted });
     } catch (error) {
       next(error);
     }

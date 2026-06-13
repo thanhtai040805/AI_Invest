@@ -63,7 +63,7 @@ async def test_hypothesis(request: HypothesisRequest):
         Hypothesis test result
     """
     try:
-        from app.brain.quant.hypotheses import test_hypothesis
+        from app.quant.hypotheses import test_hypothesis
         
         # Test hypothesis
         result = test_hypothesis(

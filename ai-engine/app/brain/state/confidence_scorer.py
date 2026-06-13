@@ -8,10 +8,16 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# Optional ML-based calibrator
+try:
+    from app.ml.calibration import CalibratedConfidence
+except Exception:
+    CalibratedConfidence = None
+
 HARD_FLAGS = {
     "CANH_BAO_TC", "CHAM_BAO_TC",
     "DEBT_DANGER", "DEBT_DANGER_FIN",
-    "CAR_DANGER",
+    "CAR_DANGER", "CRS_HARD_BLOCK",
 }
 
 SOFT_FLAGS = {
@@ -36,6 +42,9 @@ class ConfidenceScorer:
 
     def __init__(self):
         logger.info("ConfidenceScorer initialized")
+        # If a pre-trained calibrator is available, instantiate it.
+        # The calibrator must be trained separately with historical VN data.
+        self.calibrator = CalibratedConfidence(method="isotonic") if CalibratedConfidence else None
 
     def score(
         self,
@@ -103,6 +112,14 @@ class ConfidenceScorer:
                 score = max(score - 0.1, 0.0)
 
         # ── Decision mapping ──
+        # Before mapping, optionally calibrate the score into a probability
+        if self.calibrator is not None:
+            try:
+                score = float(self.calibrator.predict_proba(score))
+            except Exception:
+                # Fall back to heuristic score if calibration fails
+                logger.debug("Calibrator predict_proba failed, using heuristic score")
+
         if score >= 0.65:
             decision = "BUY"
             rating = "Buy" if score >= 0.8 else "Overweight"

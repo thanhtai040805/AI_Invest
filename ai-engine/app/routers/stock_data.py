@@ -133,7 +133,7 @@ async def get_financials_extended(symbol: str):
 @router.get("/{symbol}/disclosures")
 async def get_disclosures(symbol: str):
     """Get regulatory disclosures and sanctions."""
-    from app.services.risk_flags_v2 import get_active_flags
+    from app.brain.risk.queries import get_active_flags
 
     flags = get_active_flags(symbol.upper())
     hard = [f for f in flags if f["flag_type"] in ("CANH_BAO_TC", "CHAM_BAO_TC")]

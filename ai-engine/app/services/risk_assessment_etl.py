@@ -10,8 +10,8 @@ import psycopg2.extras
 from psycopg2.extras import execute_values
 
 from app.services.pg_pool import DB_URL
-from app.brain.risk.composite_scorer import VNCompositeRiskScorer
-from app.brain.risk.layers import (
+from app.risk_vn.composite_scorer import VNCompositeRiskScorer
+from app.risk_vn.layers import (
     compute_quant_risk,
     compute_fundamental_risk,
     compute_market_structure_risk,
@@ -22,7 +22,7 @@ from app.brain.risk.layers import (
     fetch_cafef_news,
     map_news_to_symbols,
 )
-from app.brain.dataflows.vendors.vn.sector_groups import classify
+from app.dataflows.vendors.vn.sector_groups import classify
 
 logger = logging.getLogger(__name__)
 TZ_VN = timezone(timedelta(hours=7))
@@ -69,29 +69,22 @@ def run_assessment(calc_date: Optional[date] = None) -> dict:
         logger.info("  Computing 7 layers...")
         layer_results: dict[str, dict[str, dict]] = {}
         for layer_key, fn in LAYER_COMPUTE_FN.items():
-            kwargs = {"symbols": symbols, "sector_map": sector_map}
             if layer_key == "layer1_quant":
-                kwargs["ohlcv_data"] = ohlcv_data
-                kwargs["tech_data"] = tech_data
+                kwargs = {"symbols": symbols, "ohlcv_data": ohlcv_data, "tech_data": tech_data}
             elif layer_key == "layer2_fundamental":
-                kwargs["fs_data"] = fs_data
-                kwargs["fr_data"] = fr_data
+                kwargs = {"symbols": symbols, "fs_data": fs_data, "fr_data": fr_data}
             elif layer_key == "layer3_market_vn":
-                kwargs["tech_data"] = tech_data
-                kwargs["symbol_news"] = symbol_news
-                kwargs["sector_map"] = sector_map
+                kwargs = {"symbols": symbols, "tech_data": tech_data, "symbol_news": symbol_news}
             elif layer_key == "layer4_macro_vn":
-                kwargs["macro_data"] = macro_data
+                kwargs = {"symbols": symbols, "sector_map": sector_map, "macro_data": macro_data}
             elif layer_key == "layer5_global":
-                kwargs["macro_data"] = macro_data
+                kwargs = {"symbols": symbols, "sector_map": sector_map, "macro_data": macro_data}
             elif layer_key == "layer6_regulatory":
-                kwargs["symbol_news"] = symbol_news
-                kwargs["news_events"] = news_events
-                kwargs["sector_map"] = sector_map
+                kwargs = {"symbols": symbols, "sector_map": sector_map, "symbol_news": symbol_news, "news_events": news_events}
             elif layer_key == "layer7_behavioral":
-                kwargs["tech_data"] = tech_data
-                kwargs["news_events"] = news_events
-                kwargs["calc_date"] = calc_date
+                kwargs = {"symbols": symbols, "tech_data": tech_data, "news_events": news_events, "calc_date": calc_date}
+            else:
+                kwargs = {"symbols": symbols}
 
             layer_results[layer_key] = fn(**kwargs)
             logger.info("    %s done", layer_key)
@@ -162,16 +155,16 @@ def _load_symbols(cur) -> tuple[list[str], dict[str, str]]:
 def _load_ohlcv(cur, symbols: list[str], calc_date: date) -> dict[str, pd.DataFrame]:
     start = calc_date - timedelta(days=120)
     cur.execute(
-        """SELECT symbol, trade_date, adj_close, volume
+        """SELECT symbol, time, adj_close, volume
            FROM ohlcv
-           WHERE symbol = ANY(%s) AND trade_date >= %s
-           ORDER BY symbol, trade_date""",
+           WHERE symbol = ANY(%s) AND time >= %s
+           ORDER BY symbol, time ASC""",
         (symbols, start),
     )
-    df = pd.DataFrame(cur.fetchall(), columns=["symbol", "trade_date", "adj_close", "volume"])
+    df = pd.DataFrame(cur.fetchall(), columns=["symbol", "time", "adj_close", "volume"])
     result = {}
     for sym in symbols:
-        sub = df[df["symbol"] == sym][["trade_date", "adj_close", "volume"]].sort_values("trade_date")
+        sub = df[df["symbol"] == sym][["time", "adj_close", "volume"]].sort_values("time")
         if len(sub) >= 20:
             result[sym] = sub
     return result
@@ -211,7 +204,7 @@ def _load_financial_statements(cur, symbols: list[str]) -> dict[str, dict]:
 
 def _load_financial_ratios(cur, symbols: list[str]) -> dict[str, dict]:
     cur.execute(
-        """SELECT DISTINCT ON (symbol) symbol, debt_equity, piotroski_f, m_score, ratio_date
+        """SELECT DISTINCT ON (symbol) symbol, debt_equity
            FROM financial_ratios
            WHERE symbol = ANY(%s)
            ORDER BY symbol, ratio_date DESC""",
@@ -219,19 +212,14 @@ def _load_financial_ratios(cur, symbols: list[str]) -> dict[str, dict]:
     )
     result: dict[str, dict] = {}
     for row in cur.fetchall():
-        sym = row[0]
-        result[sym] = {
-            "debt_equity": row[1],
-            "piotroski_f": row[2],
-            "m_score": row[3],
-        }
+        result[row[0]] = {"debt_equity": row[1]}
     return result
 
 
 def _load_macro_indicators(cur, calc_date: date) -> dict[str, float]:
     start = calc_date - timedelta(days=365)
     cur.execute(
-        """SELECT indicator_name, indicator_value, indicator_date
+        """SELECT indicator_name, value, indicator_date
            FROM macro_indicators
            WHERE indicator_date >= %s
            ORDER BY indicator_name, indicator_date DESC""",
@@ -241,7 +229,10 @@ def _load_macro_indicators(cur, calc_date: date) -> dict[str, float]:
     seen: set = set()
     for name, val, _ in cur.fetchall():
         if val is not None and name not in seen:
-            result[name] = float(val)
+            try:
+                result[name] = float(val)
+            except (ValueError, TypeError):
+                pass
             seen.add(name)
     return result
 
@@ -249,17 +240,17 @@ def _load_macro_indicators(cur, calc_date: date) -> dict[str, float]:
 def _load_news_events(cur, symbols: list[str], calc_date: date) -> dict[str, list[dict]]:
     start = calc_date - timedelta(days=30)
     cur.execute(
-        """SELECT symbol, title, sentiment, published_date
+        """SELECT symbol, title, sentiment_score, published_date
            FROM news_events
            WHERE symbol = ANY(%s) AND published_date >= %s
            ORDER BY published_date DESC""",
         (symbols, start),
     )
     result: dict[str, list[dict]] = {}
-    for sym, title, sentiment, pub_date in cur.fetchall():
+    for sym, title, sentiment_score, pub_date in cur.fetchall():
         result.setdefault(sym, []).append({
             "title": title,
-            "sentiment": float(sentiment) if sentiment is not None else 0.0,
+            "sentiment": float(sentiment_score) if sentiment_score is not None else 0.0,
             "published_date": str(pub_date) if pub_date else "",
         })
     return result
@@ -327,8 +318,7 @@ def _upsert_assessments(cur, rows: list[tuple]):
                hard_flags = EXCLUDED.hard_flags,
                soft_flags = EXCLUDED.soft_flags,
                all_flags = EXCLUDED.all_flags,
-               detail = EXCLUDED.detail,
-               updated_at = NOW()""",
+               detail = EXCLUDED.detail""",
         rows,
         page_size=500,
     )

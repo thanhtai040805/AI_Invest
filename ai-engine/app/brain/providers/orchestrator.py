@@ -192,13 +192,7 @@ class GraphOrchestrator:
         return response
 
     def _calculate_confidence(self, response: Dict[str, Any]) -> float:
-        content = response.get("content", "")
-        confidence = 0.75
-        if any(char in content for char in ["{", "}", "[", "]"]):
-            confidence += 0.10
-        if len(content) > 100:
-            confidence += 0.05
-        return min(confidence, 1.0)
+        return 0.0  # KHÔNG dùng confidence giả. Dùng CalibratedConfidence từ ml/calibration.py
 
     async def _parallel_execution(
         self,

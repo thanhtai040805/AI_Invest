@@ -26,11 +26,14 @@ async function handle(
 router.get('/:symbol/news', (req, res, next) => {
   const symbol = symbolParam(req);
   return handle(req, res, next, () =>
-    prisma.news.findMany({
-      where: { symbol },
-      orderBy: { publishDate: 'desc' },
-      take: 20
-    })
+    prisma.$queryRawUnsafe(
+      `SELECT id, symbol, title, url, published_date, article_content, article_pdf_text, sentiment_score
+       FROM news_events
+       WHERE symbol = $1
+       ORDER BY published_date DESC
+       LIMIT 20`,
+      [symbol],
+    )
   );
 });
 

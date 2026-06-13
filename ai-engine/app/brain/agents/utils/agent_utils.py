@@ -29,7 +29,7 @@ def get_language_instruction() -> str:
     portfolio manager — so a non-English run produces a fully localized
     report rather than a mix of languages.
     """
-    from app.brain.dataflows.config import get_config
+    from app.dataflows.config import get_config
     lang = get_config().get("output_language", "English")
     if lang.strip().lower() == "english":
         return ""

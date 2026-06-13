@@ -20,6 +20,7 @@ from app.brain.agents.analysts.fundamentals_analyst import create_fundamentals_a
 from app.brain.agents.analysts.news_analyst import create_news_analyst
 from app.brain.agents.researchers.bull_researcher import create_bull_researcher
 from app.brain.agents.researchers.bear_researcher import create_bear_researcher
+from app.brain.state.signal_writer import create_signal_writer
 from app.brain.agents.debaters.aggressive_debator import create_aggressive_debator
 from app.brain.agents.debaters.conservative_debator import create_conservative_debator
 from app.brain.agents.debaters.neutral_debator import create_neutral_debator
@@ -63,9 +64,9 @@ def build_graph(llm: BaseChatModel, task_type: str = "full") -> StateGraph:
     builder.add_edge("fundamentals_analyst", "news_analyst")
     builder.add_edge("news_analyst", "bull_researcher")
 
-    # Research phase
-    builder.add_edge("bear_researcher", "bull_researcher")
-    builder.add_edge("bull_researcher", "research_manager")
+    # Research phase (bull first, then bear)
+    builder.add_edge("bull_researcher", "bear_researcher")
+    builder.add_edge("bear_researcher", "research_manager")
 
     # Decision phase
     builder.add_edge("research_manager", "trader")
@@ -77,7 +78,10 @@ def build_graph(llm: BaseChatModel, task_type: str = "full") -> StateGraph:
 
     # Final
     builder.add_edge("neutral_debator", "portfolio_manager")
-    builder.add_edge("portfolio_manager", END)
+    # Persist portfolio manager decision into ai_signals for downstream paper trading
+    builder.add_node("signal_writer", create_signal_writer())
+    builder.add_edge("portfolio_manager", "signal_writer")
+    builder.add_edge("signal_writer", END)
 
     memory = MemorySaver()
     return builder.compile(checkpointer=memory)

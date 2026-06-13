@@ -204,7 +204,10 @@ def _fetch_all_macro() -> Dict[str, Any]:
     # ── 4. SBV policy rates ─────────────────────────────────────────
     _fetch_sbv_rates(res)
 
-    # ── 5. Vimo MCP lending rates (optional) ────────────────────────
+    # ── 5. CafeF deposit rates (replaces hardcode) ───────────────────
+    _fetch_cafef_deposit_rates(res)
+
+    # ── 6. Vimo MCP lending rates (optional) ─────────────────────────
     _fetch_vimo_lending(res)
 
     # ── Fill fallbacks for any missing ───────────────────────────────
@@ -320,6 +323,61 @@ def _fetch_sbv_rates(res: Dict[str, Any]):
         pass
 
 
+def _fetch_cafef_deposit_rates(res: Dict[str, Any]):
+    """Scrape CafeF bank interest rate table for deposit rates.
+
+    Falls back silently — rates change slowly so hardcode fallback is OK.
+    """
+    try:
+        resp = httpx.get(
+            "https://cafef.vn/du-lieu/lai-suat-ngan-hang.chn",
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
+            follow_redirects=True,
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return
+
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # Look for the deposit rate table — usually a <table> with rate data
+        # CafeF structure: each row is a bank, columns are terms (1M, 3M, 6M, 12M, etc.)
+        tables = soup.find_all("table")
+        for table in tables:
+            rows = table.find_all("tr")
+            for row in rows:
+                cells = row.find_all("td")
+                if len(cells) >= 6:
+                    header_text = row.get_text(" ", strip=True).lower()
+                    if "kỳ hạn" in header_text or "ky han" in header_text:
+                        continue
+                    # Try to extract Big4 average rates from first data row
+                    texts = [c.get_text(strip=True) for c in cells]
+                    # Look for rows containing known bank names
+                    row_text = " ".join(texts).lower()
+                    if any(b in row_text for b in ["agribank", "vietcombank", "bidv", "vietinbank"]):
+                        continue  # Skip header-like rows
+        # If we got here without structured data, try regex from the article text
+        # Pattern: "kỳ hạn X tháng là Y%/năm"
+        import re
+        patterns = {
+            "deposit_1m":  r"kỳ\s*hạn\s*1\s*tháng[^0-9]*([\d,]+)\s*%",
+            "deposit_3m":  r"kỳ\s*hạn\s*3\s*tháng[^0-9]*([\d,]+)\s*%",
+            "deposit_6m":  r"kỳ\s*hạn\s*6\s*tháng[^0-9]*([\d,]+)\s*%",
+            "deposit_12m": r"kỳ\s*hạn\s*12\s*tháng[^0-9]*([\d,]+)\s*%",
+        }
+        for key, pat in patterns.items():
+            m = re.search(pat, resp.text, re.IGNORECASE | re.DOTALL)
+            if m:
+                res[key] = float(m.group(1).replace(",", "."))
+    except Exception:
+        pass
+
+
 def _fetch_vimo_lending(res: Dict[str, Any]):
     vimo_key = os.environ.get("VIMO_API_KEY", "")
     if not vimo_key:
@@ -357,13 +415,13 @@ _FALLBACKS: Dict[str, Any] = {
     "vnindex_return_3m": 5.67,
     "vnindex_return_1y": 12.50,
     "vnindex_last_close": 1300.0,
-    "interest_rate_cod": 4.75,
-    "interest_rate_on": 3.25,
-    "interest_rate_1w": 3.50,
-    "interest_rate_1m": 3.75,
-    "interest_rate_3m": 4.00,
-    "interest_rate_6m": 4.25,
-    "interest_rate_1y": 4.75,
+    "interest_rate_cod": 6.80,
+    "interest_rate_on": 4.75,
+    "interest_rate_1w": 4.75,
+    "interest_rate_1m": 4.75,
+    "interest_rate_3m": 4.75,
+    "interest_rate_6m": 6.60,
+    "interest_rate_1y": 6.80,
     "ppi": 2.1,
     "gdp_growth": 6.2,
     "inflation_rate": 3.2,

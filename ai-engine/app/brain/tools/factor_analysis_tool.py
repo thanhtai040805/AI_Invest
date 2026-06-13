@@ -9,7 +9,7 @@ from typing import Any
 import pandas as pd
 
 from app.brain.agents.core.tools import BaseTool
-from app.brain.quant.factors.factor_analysis_core import compute_ic_series, compute_group_equity
+from app.quant.factors.factor_analysis_core import compute_ic_series, compute_group_equity
 
 # Backward-compatible aliases for any external imports of the private names.
 _compute_ic_series = compute_ic_series

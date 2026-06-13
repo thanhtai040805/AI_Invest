@@ -282,6 +282,8 @@ class AgentLoop:
         event_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
         max_iterations: int = 50,
         persistent_memory: Optional[Any] = None,
+        timeout_seconds: Optional[int] = None,
+        worker_callback: Optional[Callable[[str, str, str, Dict[str, Any]], None]] = None,
     ) -> None:
         """Initialize AgentLoop.
 
@@ -292,12 +294,18 @@ class AgentLoop:
             event_callback: Event callback (event_type, data).
             max_iterations: Maximum number of loop iterations.
             persistent_memory: PersistentMemory for cross-session recall.
+            timeout_seconds: Optional hard timeout. Loop returns when exceeded.
+            worker_callback: Optional swarm-style callback (event_type, agent_id, task_id, data).
         """
         self.registry = registry
         self.llm = llm
         self.memory = memory or WorkspaceMemory()
         self._event_callback = event_callback
         self.max_iterations = max_iterations
+        self._timeout_seconds = timeout_seconds
+        self._worker_callback = worker_callback
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
         self._called_ok: set[str] = set()
         self._cancelled: bool = False
         self._previous_summary: str = ""
@@ -347,6 +355,7 @@ class AgentLoop:
 
         iteration = 0
         final_content = ""
+        t0 = _time.perf_counter()
 
         try:
             while iteration < self.max_iterations:
@@ -356,6 +365,13 @@ class AgentLoop:
                     break
 
                 iteration += 1
+
+                # Timeout check
+                if self._timeout_seconds and (_time.perf_counter() - t0) > self._timeout_seconds:
+                    logger.warning(f"AgentLoop timeout after {_time.perf_counter() - t0:.0f}s ({iteration} iterations)")
+                    trace.write({"type": "timeout", "iter": iteration})
+                    final_content = f"[AgentLoop timed out after {int(_time.perf_counter() - t0)}s]"
+                    break
 
                 # Inject background task notifications
                 bg = get_background_manager()
@@ -388,12 +404,16 @@ class AgentLoop:
                     thinking_chunks.append(delta)
                     self._emit("text_delta", {"delta": delta, "iter": iteration})
 
+                # On last iteration, don't provide tool definitions to force text output
+                is_last_iteration = iteration == self.max_iterations
+                tool_defs = None if is_last_iteration else self.registry.get_definitions()
+
                 # Retry once on API error (Groq sometimes emits malformed tool calls)
                 for attempt in range(2):
                     try:
                         response = self.llm.stream_chat(
                             messages,
-                            tools=self.registry.get_definitions(),
+                            tools=tool_defs,
                             on_text_chunk=_on_text_chunk,
                         )
                         break
@@ -403,6 +423,15 @@ class AgentLoop:
                             _time.sleep(1)
                             continue
                         raise
+
+                # Track tokens
+                if hasattr(response, "usage_metadata") and response.usage_metadata:
+                    usage = response.usage_metadata
+                    self.total_input_tokens += int(usage.get("input_tokens", 0))
+                    self.total_output_tokens += int(usage.get("output_tokens", 0))
+                else:
+                    self.total_input_tokens += len(json.dumps(messages, ensure_ascii=False)) // 4
+                    self.total_output_tokens += len(response.content or "") // 4
 
                 thinking_text = "".join(thinking_chunks)
                 if thinking_text:
@@ -487,9 +516,17 @@ class AgentLoop:
             "react_trace": react_trace,
             "iterations": iteration,
             "max_iterations": self.max_iterations,
+            "total_input_tokens": self.total_input_tokens,
+            "total_output_tokens": self.total_output_tokens,
         }
         if final_reason is not None:
             result["reason"] = final_reason
+
+        # Fire worker_callback for compat with SwarmWorker events
+        if self._worker_callback:
+            self._worker_callback("worker_completed" if final_status == "success" else "worker_failed",
+                                   "", "", result)
+
         return result
 
     # -- Tool execution with read/write batching --------------------------------

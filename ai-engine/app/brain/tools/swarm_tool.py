@@ -308,10 +308,8 @@ _PRESET_KEYWORDS: list[tuple[str, list[str], float]] = [
         [
             r"\bML\b",
             r"machine\s+learning",
-            "LSTM",
             "XGBoost",
             "机器学习",
-            "深度学习",
         ],
         0.9,
     ),

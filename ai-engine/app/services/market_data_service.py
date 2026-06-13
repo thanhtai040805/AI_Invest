@@ -231,7 +231,6 @@ class MarketDataService:
                 c["value"] = val
                 c["vwap"] = val / volume if volume > 0 else close
                 c["adj_close"] = c.get("adj_close", close)
-                c["nb_trades"] = c.get("nb_trades", int(100 + (volume % 500)))
         return res
 
     async def _get_ohlcv_raw(self, symbol: str, interval: str = "1D", start: Optional[str] = None, end: Optional[str] = None) -> Dict:

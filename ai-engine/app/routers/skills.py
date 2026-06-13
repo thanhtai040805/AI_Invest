@@ -31,7 +31,7 @@ class SkillResponse(BaseModel):
 @router.get("/list")
 async def list_skills():
     """List available skills for Vietnam market."""
-    from app.brain.quant.skills import SKILLS_DIR as skills_dir
+    from app.quant.skills import SKILLS_DIR as skills_dir
     
     # Filter skills relevant to stock trading
     vn_relevant_skills = [
@@ -74,7 +74,7 @@ async def execute_skill(request: SkillRequest):
     """
     try:
         # Import Vibe-Trading skill system
-        from app.brain.quant.skills import load_skill
+        from app.quant.skills import load_skill
         
         # Load and execute skill
         skill = load_skill(request.skill_name)

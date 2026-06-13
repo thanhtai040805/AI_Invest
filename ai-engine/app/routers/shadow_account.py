@@ -54,8 +54,8 @@ async def create_shadow_profile(request: ShadowProfileRequest):
         Created shadow profile
     """
     try:
-        from app.brain.tools.shadow_account.storage import new_shadow_id
-        from app.brain.tools.shadow_account.models import ShadowProfile
+        from app.shadow_account.storage import new_shadow_id
+        from app.shadow_account.models import ShadowProfile
         
         shadow_id = new_shadow_id()
         

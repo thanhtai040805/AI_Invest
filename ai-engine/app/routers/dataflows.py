@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import Any, Dict, List, Optional
 
-from app.brain.dataflows import TOOLS_CATEGORIES, route_to_vendor
+from app.dataflows import TOOLS_CATEGORIES, route_to_vendor
 
 router = APIRouter(tags=["Dataflows"])
 

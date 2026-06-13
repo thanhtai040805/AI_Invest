@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { marketAPI } from "@/services/api";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { Badge } from "@/components/ui/Badge";
+import { NewsModal } from "@/components/feature/news/NewsModal";
 
 // Helper to format date
 const formatTimestamp = (dateString: string) => {
@@ -31,6 +32,9 @@ interface NewsItem {
   title: string;
   url: string;
   content: string | null;
+  articleContent: string | null;
+  articlePdfText: string | null;
+  articlePdfLinks: string | null;
   publishDate: string;
   friendlyKeyword: string | null;
   sentimentLabel: string | null;
@@ -40,6 +44,7 @@ interface NewsItem {
 export default function MarketNewsTelemetry() {
   const [news, setNews] = useState<NewsItem[]>([]);
   const [selectedNews, setSelectedNews] = useState<NewsItem | null>(null);
+  const [modalNews, setModalNews] = useState<NewsItem | null>(null);
   const [selectedSymbol, setSelectedSymbol] = useState<string>("ALL");
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [scanTicker, setScanTicker] = useState<string>("");
@@ -386,16 +391,27 @@ export default function MarketNewsTelemetry() {
 
                         {/* Title text */}
                         <div className="col-span-7">
-                          <h2 className={cn(
-                            "text-sm font-semibold tracking-tight leading-snug transition-colors group-hover:text-white",
-                            isSelected ? "text-white font-extrabold" : "text-white/80"
-                          )}>
-                            {item.title}
-                          </h2>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setModalNews(item as any); }}
+                            className="text-left w-full"
+                          >
+                            <h2 className={cn(
+                              "text-sm font-semibold tracking-tight leading-snug transition-colors group-hover:text-white hover:text-[#e8a940]",
+                              isSelected ? "text-white font-extrabold" : "text-white/80"
+                            )}>
+                              {item.title}
+                            </h2>
+                          </button>
                           <div className="flex gap-2 items-center mt-1">
                             <span className="text-[10px] font-data-mono text-white/30 uppercase">
                               #{item.friendlyKeyword || "thi_truong"}
                             </span>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setModalNews(item as any); }}
+                              className="text-[9px] font-data-mono text-[#e8a940]/60 hover:text-[#e8a940] transition-colors ml-auto"
+                            >
+                              [XEM BÀI]
+                            </button>
                           </div>
                         </div>
 
@@ -580,6 +596,8 @@ export default function MarketNewsTelemetry() {
         </div>
 
       </div>
+      {/* ── News Content Modal ── */}
+      <NewsModal news={modalNews} onClose={() => setModalNews(null)} />
     </div>
   );
 }

@@ -75,13 +75,14 @@ def _clean_nan(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _upsert(cur, symbol: str, period_end: date, stmt_type: str, freq: str, data: dict):
+    published_date = period_end + timedelta(days=45 if freq == "quarterly" else 90)
     cur.execute(
         """INSERT INTO financial_statements
-           (symbol, period_end, statement_type, frequency, data, source)
-           VALUES (%s, %s, %s, %s, %s, %s)
+           (symbol, period_end, statement_type, frequency, data, source, published_date)
+           VALUES (%s, %s, %s, %s, %s, %s, %s)
            ON CONFLICT (symbol, period_end, statement_type, frequency)
-           DO UPDATE SET data = EXCLUDED.data, fetched_at = NOW()""",
-        (symbol, period_end, stmt_type, freq, Json(_clean_nan(data)), "alphastock"),
+           DO UPDATE SET data = EXCLUDED.data, fetched_at = NOW(), published_date = EXCLUDED.published_date""",
+        (symbol, period_end, stmt_type, freq, Json(_clean_nan(data)), "alphastock", published_date),
     )
 
 
@@ -358,12 +359,15 @@ def _store_derived_ratios(symbol: str, cur) -> None:
             if ni is not None and ni_prev is not None and ni_prev != 0:
                 yoy_ni = (ni - ni_prev) / abs(ni_prev)
 
+        freq = "yearly" if pe.month == 12 and pe.day == 31 else "quarterly"
+        published_date = pe + timedelta(days=90 if freq == "yearly" else 45)
+
         cur.execute(
             """INSERT INTO financial_ratios
                (symbol, ratio_date, pe, pb, roe, roa, debt_equity, current_ratio,
                 gross_margin, net_margin, fcf_yield, ev_ebitda,
-                yoy_revenue_growth, yoy_earnings_growth)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                yoy_revenue_growth, yoy_earnings_growth, published_date)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                ON CONFLICT (symbol, ratio_date)
                DO UPDATE SET
                    pe = EXCLUDED.pe, pb = EXCLUDED.pb,
@@ -376,9 +380,10 @@ def _store_derived_ratios(symbol: str, cur) -> None:
                    ev_ebitda = EXCLUDED.ev_ebitda,
                    yoy_revenue_growth = EXCLUDED.yoy_revenue_growth,
                    yoy_earnings_growth = EXCLUDED.yoy_earnings_growth,
+                   published_date = EXCLUDED.published_date,
                    updated_at = NOW()""",
              (symbol, pe, vn_pe, vn_pb, final_roe, final_roa, debt_equity, current_ratio,
-             final_gm, final_nm, fcf_yield, ev_ebitda, yoy_rev, yoy_ni),
+             final_gm, final_nm, fcf_yield, ev_ebitda, yoy_rev, yoy_ni, published_date),
         )
 
 

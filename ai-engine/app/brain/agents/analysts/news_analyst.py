@@ -5,7 +5,7 @@ from app.brain.agents.utils.agent_utils import (
     get_language_instruction,
     get_news,
 )
-from app.brain.dataflows.config import get_config
+from app.dataflows.config import get_config
 
 
 def create_news_analyst(llm):

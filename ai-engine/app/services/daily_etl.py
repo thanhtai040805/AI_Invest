@@ -85,14 +85,19 @@ class DailyETLPipeline:
             steps = [
                 ("ohlcv_backfill", self.step_ohlcv_backfill()),
                 ("technical_indicators", self.step_technical_indicators()),
+                ("garch_volatility", self.step_garch_volatility()),
+                ("beta_alpha", self.step_beta_alpha()),
                 ("insider_trades", self.step_insider_trades()),
                 ("foreign_flow", self.step_foreign_flow()),
                 ("news_events", self.step_news_events()),
+                ("deep_crawl_news", self.step_deep_crawl_news()),
                 ("financial_ratios", self.step_financial_ratios()),
                 ("risk_assessment", self.step_risk_assessment()),
                 ("factor_scores", self.step_factor_scores()),
                 ("composite_scoring", self.step_composite_scoring()),
                 ("signals", self.step_signals()),
+                ("signal_eval", self.step_signal_eval()),
+                ("paper_trading", self.step_paper_trading()),
                 ("screener_cache", self.step_screener_cache()),
                 ("macro_indicators", self.step_macro_indicators()),
             ]
@@ -123,11 +128,39 @@ class DailyETLPipeline:
 
     # ── Step: Technical Indicators ────────────────────────────────────
 
+    # ── Step: GARCH/EWMA Volatility ──────────────────────────────────
+
+    async def step_garch_volatility(self) -> Dict[str, Any]:
+        """GARCH(1,1) for top 50 liquid symbols; EWMA already in technical_indicators."""
+        logger.info("ETL: garch_volatility — computing for top 50 liquid symbols...")
+        try:
+            from app.services.volatility_etl import refresh_garch
+            result = await asyncio.to_thread(refresh_garch)
+            logger.info("ETL: garch_volatility — %s", result.get("status", "unknown"))
+            return {"status": "success", **result}
+        except Exception as e:
+            logger.error("ETL: garch_volatility failed: %s", e)
+            return {"status": "failed", "error": str(e)}
+
+    # ── Step: Beta/Alpha ────────────────────────────────────────────
+
+    async def step_beta_alpha(self) -> Dict[str, Any]:
+        """Compute real Beta/Alpha using VNINDEX covariance."""
+        logger.info("ETL: beta_alpha — computing market-relative risk metrics...")
+        try:
+            from app.services.beta_alpha_etl import refresh_beta_alpha
+            result = await asyncio.to_thread(refresh_beta_alpha)
+            logger.info("ETL: beta_alpha — %s", result.get("status", "unknown"))
+            return {"status": "success", **result}
+        except Exception as e:
+            logger.error("ETL: beta_alpha failed: %s", e)
+            return {"status": "failed", "error": str(e)}
+
     async def step_technical_indicators(self) -> Dict[str, Any]:
         """Pre-compute 40+ technical indicators — incremental update."""
         logger.info("ETL: technical_indicators — incremental update...")
         try:
-            from app.brain.dataflows.vendors.vn.technical_indicators import refresh_incremental
+            from app.dataflows.vendors.vn.technical_indicators import refresh_incremental
             result = await asyncio.to_thread(refresh_incremental)
             logger.info("ETL: technical_indicators — %d rows", result.get("rows", 0))
             return {"status": "success", **result}
@@ -141,7 +174,7 @@ class DailyETLPipeline:
         """Fetch insider trades from CafeF API — idempotent upsert."""
         logger.info("ETL: insider_trades — fetching from CafeF API...")
         try:
-            from app.brain.dataflows.vendors.vn.insider_trades import refresh_incremental
+            from app.dataflows.vendors.vn.insider_trades import refresh_incremental
             result = await asyncio.to_thread(refresh_incremental)
             logger.info("ETL: insider_trades — %d new rows", result.get("new_rows", 0))
             return {"status": "success", **result}
@@ -155,7 +188,7 @@ class DailyETLPipeline:
         """Pre-compute foreign trading flow from CafeF API."""
         logger.info("ETL: foreign_flow — fetching from CafeF API...")
         try:
-            from app.brain.dataflows.vendors.vn.foreign_flow import refresh_incremental
+            from app.dataflows.vendors.vn.foreign_flow import refresh_incremental
             result = await asyncio.to_thread(refresh_incremental)
             logger.info("ETL: foreign_flow — %d rows", result.get("rows", 0))
             return {"status": "success", **result}
@@ -166,15 +199,36 @@ class DailyETLPipeline:
     # ── Step: News Events ────────────────────────────────────────────
 
     async def step_news_events(self) -> Dict[str, Any]:
-        """Fetch news events from CafeF, compute sentiment, persist to news_events."""
-        logger.info("ETL: news_events — fetching from CafeF API...")
+        """Fetch news listing from all CafeF categories (4 cats, 10 pages deep for du-lieu)."""
+        logger.info("ETL: listing_crawl — fetching 4 CafeF categories...")
         try:
-            from app.brain.dataflows.vendors.vn.news_events import refresh_incremental
-            result = await asyncio.to_thread(refresh_incremental)
-            logger.info("ETL: news_events — %d new rows", result.get("new_rows", 0))
+            from app.dataflows.vendors.vn.cafef_listing_crawl import refresh_listing
+            result = await asyncio.to_thread(refresh_listing, 10)
+            logger.info("ETL: listing_crawl — %d inserted", result.get("inserted", 0))
             return {"status": "success", **result}
         except Exception as e:
-            logger.error("ETL: news_events failed: %s", e)
+            logger.error("ETL: listing_crawl failed: %s", e)
+            return {"status": "failed", "error": str(e)}
+
+    # ── Step: Deep Crawl News ─────────────────────────────────────────
+
+    async def step_deep_crawl_news(self) -> Dict[str, Any]:
+        """Fetch full article content for news_events missing content."""
+        logger.info("ETL: deep_crawl_news — fetching article content...")
+        try:
+            from app.dataflows.vendors.vn.deep_crawl_news import refresh_deep_crawl, count_missing_content
+            missing = await asyncio.to_thread(count_missing_content)
+            if missing == 0:
+                logger.info("ETL: deep_crawl_news — all articles have content")
+                return {"status": "no_content_needed", "crawled": 0}
+
+            result = await asyncio.to_thread(refresh_deep_crawl, limit=200)
+            after = await asyncio.to_thread(count_missing_content)
+            logger.info("ETL: deep_crawl_news — %d crawled, %d remaining, failed=%d",
+                        result.get("crawled", 0), after, result.get("failed", 0))
+            return {"status": "success", "before": missing, **result, "remaining": after}
+        except Exception as e:
+            logger.error("ETL: deep_crawl_news failed: %s", e)
             return {"status": "failed", "error": str(e)}
 
     # ── Step: Financial Ratios ────────────────────────────────────────
@@ -211,7 +265,7 @@ class DailyETLPipeline:
         """Cross-sectional ranking of VN-core factors for trade_date (25 Tier A factors)."""
         logger.info("ETL: factor_scores — computing cross-sectional ranking...")
         try:
-            from app.brain.dataflows.vendors.vn.factor_scores import refresh_all
+            from app.dataflows.vendors.vn.factor_scores import refresh_all
             result = await asyncio.to_thread(refresh_all, self.trade_date)
             logger.info("ETL: factor_scores — %d rows", result.get("rows", 0))
             return {"status": "success", **result}
@@ -225,7 +279,7 @@ class DailyETLPipeline:
         """IC-weighted Z-score composite + risk gate + portfolio construction."""
         logger.info("ETL: composite_scoring — running IC-weighted pipeline...")
         try:
-            from app.brain.dataflows.vendors.vn.composite_pipeline import run_composite_pipeline
+            from app.dataflows.vendors.vn.composite_pipeline import run_composite_pipeline
             result = await asyncio.to_thread(run_composite_pipeline, self.trade_date)
             logger.info("ETL: composite_scoring — %s", result.get("status", "unknown"))
             return {"status": "success", **result}
@@ -239,12 +293,52 @@ class DailyETLPipeline:
         """Compute buy/sell signals from factor scores + risk flags."""
         logger.info("ETL: signals — computing buy/sell recommendations...")
         try:
-            from app.brain.dataflows.vendors.vn.signals import refresh_all as signal_refresh
+            from app.dataflows.vendors.vn.signals import refresh_all as signal_refresh
             result = await asyncio.to_thread(signal_refresh, self.trade_date)
             logger.info("ETL: signals — %d rows", result.get("rows", 0))
             return {"status": "success", **result}
         except Exception as e:
             logger.error("ETL: signals failed: %s", e)
+            return {"status": "failed", "error": str(e)}
+
+    # ── Step: Signal Evaluation ───────────────────────────────────────
+
+    async def step_signal_eval(self) -> Dict[str, Any]:
+        """Evaluate pending signals, record outcomes in signal_log."""
+        logger.info("ETL: signal_eval — evaluating pending signals...")
+        try:
+            from app.eval.signal_tracker import SignalTracker
+            tracker = SignalTracker()
+            results = tracker.evaluate_pending(limit=200)
+            stats = tracker.get_stats(days=30)
+            logger.info("ETL: signal_eval — %d evaluated, win_rate=%.1f%%",
+                        len(results), stats.get("win_rate", 0) * 100)
+            return {
+                "status": "success",
+                "evaluated": len(results),
+                "win_rate": round(stats.get("win_rate", 0), 3),
+                "total_tracked": stats.get("total", 0),
+            }
+        except Exception as e:
+            logger.error("ETL: signal_eval failed: %s", e)
+            return {"status": "failed", "error": str(e)}
+
+    # ── Step: Paper Trading ──────────────────────────────────────────
+
+    async def step_paper_trading(self) -> Dict[str, Any]:
+        """Auto-trade today's signals into paper portfolio."""
+        logger.info("ETL: paper_trading — executing signals in paper mode...")
+        try:
+            from app.services.paper_trading_service import run_paper_trading
+            result = await asyncio.to_thread(
+                run_paper_trading, str(self.trade_date)
+            )
+            logger.info("ETL: paper_trading — %d buys, %d sells, value=%s",
+                        result.get("buys", 0), result.get("sells", 0),
+                        f"{result.get('total_value', 0):,.0f}")
+            return {"status": "success", **result}
+        except Exception as e:
+            logger.error("ETL: paper_trading failed: %s", e)
             return {"status": "failed", "error": str(e)}
 
     # ── Step: Screener Cache ──────────────────────────────────────────
