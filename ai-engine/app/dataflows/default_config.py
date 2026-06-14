@@ -5,7 +5,6 @@ DEFAULT_CONFIG = {
         "core_stock_apis": "yfinance",
         "technical_indicators": "yfinance",
         "fundamental_data": "yfinance",
-        "news_data": "yfinance",
     },
     "tool_vendors": {},
     "output_language": "English",

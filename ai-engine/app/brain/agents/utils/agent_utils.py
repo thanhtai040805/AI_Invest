@@ -14,9 +14,7 @@ from app.brain.agents.utils.fundamental_data_tools import (
     get_income_statement
 )
 from app.brain.agents.utils.news_data_tools import (
-    get_news,
     get_insider_transactions,
-    get_global_news
 )
 
 

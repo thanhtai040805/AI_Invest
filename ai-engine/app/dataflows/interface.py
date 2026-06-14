@@ -10,7 +10,6 @@ from .y_finance import (
     get_income_statement as get_yfinance_income_statement,
     get_insider_transactions as get_yfinance_insider_transactions,
 )
-from .yfinance_news import get_news_yfinance, get_global_news_yfinance
 
 # Configuration and routing logic
 from .config import get_config
@@ -41,8 +40,6 @@ TOOLS_CATEGORIES = {
     "news_data": {
         "description": "News and insider data",
         "tools": [
-            "get_news",
-            "get_global_news",
             "get_insider_transactions",
         ]
     }
@@ -76,12 +73,6 @@ VENDOR_METHODS = {
         "yfinance": get_yfinance_income_statement,
     },
     # news_data
-    "get_news": {
-        "yfinance": get_news_yfinance,
-    },
-    "get_global_news": {
-        "yfinance": get_global_news_yfinance,
-    },
     "get_insider_transactions": {
         "yfinance": get_yfinance_insider_transactions,
     },

@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from app.services.dnse.stream_hub import get_stream_hub
 from app.services.dnse.rest_client import get_rest_client
 from app.database.models import init_db
+from app.modules.news import news_module
 
 # ── Logging (attach to root so it survives uvicorn) ────────────────────
 root = logging.getLogger()
@@ -65,7 +66,7 @@ async def lifespan(app: FastAPI):
     hub = get_stream_hub()
 
     hub.start()
-    # NO auto news ingestion — on-demand tool only (saves LLM tokens)
+    news_module.start()
 
     # Wire SessionService into app.state
     svc = get_session_service()
@@ -75,6 +76,7 @@ async def lifespan(app: FastAPI):
     yield
 
     hub.stop()
+    news_module.stop()
     get_rest_client().close()
     # Clear any lingering SSE subscribers
     svc.event_bus.clear("__all__")
