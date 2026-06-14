@@ -104,6 +104,45 @@ def get_latest_macro(
     return dict(db_rows)
 
 
+def get_macro_snapshot(
+    target_date: date,
+    indicator_names: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Fetch macro indicators as available on a specific date."""
+    import psycopg2.extras
+
+    with _get_cursor() as cur:
+        if indicator_names:
+            placeholders = ",".join("%s" for _ in indicator_names)
+            cur.execute(
+                f"""SELECT DISTINCT ON (indicator_name)
+                        indicator_name, value, unit, source, indicator_date
+                    FROM macro_indicators
+                    WHERE indicator_name IN ({placeholders}) AND indicator_date <= %s
+                    ORDER BY indicator_name, indicator_date DESC""",
+                (*indicator_names, target_date),
+            )
+        else:
+            cur.execute(
+                """SELECT DISTINCT ON (indicator_name)
+                        indicator_name, value, unit, source, indicator_date
+                    FROM macro_indicators
+                    WHERE indicator_date <= %s
+                    ORDER BY indicator_name, indicator_date DESC""",
+                (target_date,)
+            )
+        rows = cur.fetchall()
+
+    result: Dict[str, Any] = {}
+    for r in rows:
+        name = r[0]
+        result[name] = float(r[1])
+        result[f"{name}_unit"] = r[2] or ""
+        result[f"{name}_source"] = r[3] or ""
+        result[f"{name}_date"] = r[4]
+    return result
+
+
 def refresh_macro() -> Dict[str, Any]:
     """Force-refresh macro data from sources and persist to DB."""
     global _read_cache, _read_cache_ts
@@ -203,6 +242,12 @@ def _fetch_all_macro() -> Dict[str, Any]:
 
     # ── 4. SBV policy rates ─────────────────────────────────────────
     _fetch_sbv_rates(res)
+
+    # ── 4b. Interbank rates ─────────────────────────────────────────
+    _fetch_interbank_rates(res)
+
+    # ── 4c. OMO & Bills ─────────────────────────────────────────────
+    _fetch_omo_bills(res)
 
     # ── 5. CafeF deposit rates (replaces hardcode) ───────────────────
     _fetch_cafef_deposit_rates(res)
@@ -319,6 +364,55 @@ def _fetch_sbv_rates(res: Dict[str, Any]):
             )
             if disc:
                 res["discount_rate"] = float(disc.group(1).replace(",", "."))
+    except Exception:
+        pass
+
+
+def _fetch_interbank_rates(res: Dict[str, Any]):
+    """Fetch interbank interest rates from SBV."""
+    try:
+        resp = httpx.get(
+            "https://sbv.gov.vn/webcenter/portal/vi/menu/trangchu/tk/ls",
+            headers={
+                "User-Agent": "Mozilla/5.0",
+            },
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            html = resp.text
+            # Regex for ON (Overnight) rate
+            on_rate = re.search(r"Qua\s*đêm\s*</td>\s*<td[^>]*>\s*([\d,]+)\s*%", html, re.IGNORECASE | re.DOTALL)
+            if on_rate:
+                res["interbank_on"] = float(on_rate.group(1).replace(",", "."))
+            # 1W rate
+            w1_rate = re.search(r"1\s*tuần\s*</td>\s*<td[^>]*>\s*([\d,]+)\s*%", html, re.IGNORECASE | re.DOTALL)
+            if w1_rate:
+                res["interbank_1w"] = float(w1_rate.group(1).replace(",", "."))
+    except Exception:
+        pass
+
+
+def _fetch_omo_bills(res: Dict[str, Any]):
+    """Fetch OMO (Open Market Operations) and SBV Bill data."""
+    try:
+        # SBV portal for OMO/Bills
+        resp = httpx.get(
+            "https://sbv.gov.vn/webcenter/portal/vi/menu/trangchu/tk/ttomobill",
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            html = resp.text
+            # Look for Bill matched volume (Khối lượng trúng thầu Tín phiếu)
+            # Pattern is often in a table row
+            bill_vol = re.search(r"Tín\s*phiếu\s*NHNN.*?([\d\.,]+)\s*tỷ\s*đồng", html, re.IGNORECASE | re.DOTALL)
+            if bill_vol:
+                res["sbv_bill_volume"] = float(bill_vol.group(1).replace(".", "").replace(",", "."))
+            
+            # Look for OMO matched volume (Khối lượng trúng thầu OMO)
+            omo_vol = re.search(r"Mua\s*kỳ\s*hạn.*?([\d\.,]+)\s*tỷ\s*đồng", html, re.IGNORECASE | re.DOTALL)
+            if omo_vol:
+                res["sbv_omo_volume"] = float(omo_vol.group(1).replace(".", "").replace(",", "."))
     except Exception:
         pass
 

@@ -4,12 +4,13 @@ Full refresh or incremental (idempotent ON CONFLICT DO NOTHING).
 import time
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 import httpx
-import psycopg2
-from psycopg2.extras import execute_values
 
 from app.services.pg_pool import DB_URL
+from app.ports.storage import StoragePort
+from app.adapters.postgres_adapter import PostgresAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -107,65 +108,58 @@ def _parse_rows(symbol: str, raw: list[dict]) -> list[tuple]:
     return rows
 
 
-def _process_symbols(symbols: list[str]) -> dict:
-    conn = psycopg2.connect(DB_URL)
-    cur = conn.cursor()
-    try:
-        total_new = 0
-        total_err = 0
-        for idx, sym in enumerate(symbols):
-            if idx > 0 and idx % BATCH_SIZE == 0:
-                conn.commit()
-                logger.info("  Progress: %d/%d, %d new rows", idx, len(symbols), total_new)
-                time.sleep(1)
-            try:
-                raw = _fetch_all_trades(sym)
-                if not raw:
-                    continue
-                rows = _parse_rows(sym, raw)
-                if not rows:
-                    continue
-                execute_values(
-                    cur,
-                    """INSERT INTO insider_trades
-                       (symbol, trade_date, trader_name, trader_position,
-                        related_man, related_man_position,
-                        trade_type, quantity,
-                        before_volume, after_volume, ownership_pct,
-                        plan_buy_volume, plan_sell_volume,
-                        plan_begin_date, plan_end_date, real_end_date)
-                       VALUES %s
-                       ON CONFLICT (symbol, trade_date, trader_name, quantity, trade_type) DO NOTHING""",
-                    rows,
-                    page_size=100,
-                )
-                total_new += len(rows)
-                time.sleep(RATE_LIMIT_DELAY)
-            except Exception as e:
-                logger.warning("Failed for %s: %s", sym, e)
-                total_err += 1
-                time.sleep(RATE_LIMIT_DELAY * 2)
-        conn.commit()
-        return {"new_rows": total_new, "errors": total_err, "symbols": len(symbols)}
-    finally:
-        cur.close()
-        conn.close()
+def _process_symbols(symbols: list[str], storage: StoragePort) -> dict:
+    total_new = 0
+    total_err = 0
+    for idx, sym in enumerate(symbols):
+        if idx > 0 and idx % BATCH_SIZE == 0:
+            logger.info("  Progress: %d/%d, %d new rows", idx, len(symbols), total_new)
+            time.sleep(1)
+        try:
+            raw = _fetch_all_trades(sym)
+            if not raw:
+                continue
+            rows = _parse_rows(sym, raw)
+            if not rows:
+                continue
+            
+            storage.execute_values(
+                """INSERT INTO insider_trades
+                   (symbol, trade_date, trader_name, trader_position,
+                    related_man, related_man_position,
+                    trade_type, quantity,
+                    before_volume, after_volume, ownership_pct,
+                    plan_buy_volume, plan_sell_volume,
+                    plan_begin_date, plan_end_date, real_end_date)
+                   VALUES %s
+                   ON CONFLICT (symbol, trade_date, trader_name, quantity, trade_type) DO NOTHING""",
+                rows,
+                page_size=100,
+            )
+            total_new += len(rows)
+            time.sleep(RATE_LIMIT_DELAY)
+        except Exception as e:
+            logger.warning("Failed for %s: %s", sym, e)
+            total_err += 1
+            time.sleep(RATE_LIMIT_DELAY * 2)
+    return {"new_rows": total_new, "errors": total_err, "symbols": len(symbols)}
 
 
-def refresh_all() -> dict:
+def refresh_all(storage: Optional[StoragePort] = None) -> dict:
     """Full refresh: fetch all insider trades for all HOSE symbols."""
-    conn = psycopg2.connect(DB_URL)
-    cur = conn.cursor()
+    if storage is None:
+        storage = PostgresAdapter(DB_URL)
+        
     try:
-        cur.execute("SELECT symbol FROM stocks WHERE exchange IN ('HOSE','HSX') ORDER BY symbol")
-        symbols = [r[0] for r in cur.fetchall()]
+        rows = storage.fetch_all("SELECT symbol FROM stocks WHERE exchange IN ('HOSE','HSX') ORDER BY symbol")
+        symbols = [r[0] for r in rows]
         logger.info("Insider trades full refresh: %d symbols", len(symbols))
-        result = _process_symbols(symbols)
+        result = _process_symbols(symbols, storage)
         logger.info("Insider trades done: %d new rows, %d errors", result["new_rows"], result["errors"])
         return result
-    finally:
-        cur.close()
-        conn.close()
+    except Exception as e:
+        logger.error(f"Error in insider trades refresh_all: {e}")
+        return {"new_rows": 0, "errors": 1, "symbols": 0}
 
 
 def refresh_incremental() -> dict:

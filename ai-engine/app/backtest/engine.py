@@ -17,6 +17,7 @@ import pandas as pd
 
 from app.backtest.cost_model import estimate_cost, round_to_lot
 from app.backtest.execution import HOSEExecutionModel, count_trading_days, is_trading_day
+from app.services.risk_engine import MacroRiskEngine
 
 logger = logging.getLogger(__name__)
 
@@ -120,11 +121,13 @@ class HOSEBacktestEngine:
         universe_func: Callable,
         feature_func: Callable,
         price_func: Callable,
+        use_macro_risk: bool = True,
     ):
         self.universe_func = universe_func
         self.feature_func = feature_func
         self.price_func = price_func
         self.execution = HOSEExecutionModel(reference_price_func=price_func)
+        self.risk_engine = MacroRiskEngine() if use_macro_risk else None
 
     def run(
         self,
@@ -143,10 +146,24 @@ class HOSEBacktestEngine:
                 current += timedelta(days=1)
                 continue
 
+            # 1. Macro Risk Multiplier
+            multiplier = 1.0
+            if self.risk_engine:
+                risk_data = self.risk_engine.calculate_risk_score(current)
+                multiplier = risk_data["risk_multiplier"]
+                if multiplier < 1.0:
+                    logger.debug(f"Risk Score {risk_data['risk_score']} on {current} -> multiplier {multiplier}")
+
             universe = self.universe_func(current)
             features = self.feature_func(universe, current)
             signals = strategy.generate_signals(features, current)
+            
+            # 2. Get Raw Target Weights
             target_weights = strategy.optimize(signals)
+            
+            # 3. Apply Macro Risk Shield (Scaling down all positions)
+            if multiplier < 1.0:
+                target_weights = {k: v * multiplier for k, v in target_weights.items()}
 
             for sym, target_weight in target_weights.items():
                 current_pos = portfolio.positions.get(sym)

@@ -125,6 +125,8 @@ def check_take_profit(
 # Position sizing
 # ---------------------------------------------------------------------------
 
+from app.core.position_sizing.sizing import volatility_targeted_size
+
 def calc_position_size(
     symbol: str,
     price: float,
@@ -132,26 +134,25 @@ def calc_position_size(
     max_pct_per_position: float = 0.10,
     atr: Optional[float] = None,
     risk_per_trade_pct: float = 0.02,
+    adv_20d_volume: Optional[float] = None,
+    max_adv_pct: float = 0.05,
 ) -> Tuple[int, str]:
-    """Calculate position size using volatility-adjusted or fixed-fraction method.
+    """Calculate position size using volatility-adjusted or fixed-fraction method,
+    with an optional cap based on Average Daily Volume (ADV).
 
     Returns:
         (quantity, method_description)
     """
-    max_value = portfolio_value * max_pct_per_position
-
-    if atr is not None and atr > 0:
-        # Volatility-adjusted: risk no more than risk_per_trade of portfolio
-        risk_amount = portfolio_value * risk_per_trade_pct
-        raw_size = risk_amount / atr
-        method = f"volatility_adjusted (ATR={atr:,.0f}, risk={risk_per_trade_pct*100:.1f}%)"
-    else:
-        # Fixed fraction of portfolio
-        raw_size = max_value / price if price > 0 else 0
-        method = f"fixed_fraction ({max_pct_per_position*100:.0f}%)"
-
-    quantity = max(int(raw_size / 100) * 100, 0)  # round down to 100-share lots
-    return quantity, method
+    return volatility_targeted_size(
+        symbol=symbol,
+        price=price,
+        portfolio_value=portfolio_value,
+        target_vol_pct=risk_per_trade_pct,
+        atr=atr,
+        adv_20d_volume=adv_20d_volume,
+        max_adv_pct=max_adv_pct,
+        max_pct_per_position=max_pct_per_position
+    )
 
 
 # ---------------------------------------------------------------------------

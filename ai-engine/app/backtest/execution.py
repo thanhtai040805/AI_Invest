@@ -12,6 +12,7 @@ KHÔNG phải T+2 calendar days — phải tính T+2 TRADING days
 import logging
 from datetime import date, timedelta
 from typing import Optional
+from app.core.utils.market_utils import get_hose_price_step
 
 logger = logging.getLogger(__name__)
 
@@ -71,20 +72,6 @@ def count_trading_days(start: date, end: date) -> int:
             count += 1
         current += timedelta(days=1)
     return count
-
-
-def get_hose_price_step(price: float) -> float:
-    """Lấy bước giá HOSE cho mức giá hiện tại."""
-    if price <= 10_000:
-        return 10
-    elif price <= 50_000:
-        return 50
-    elif price <= 100_000:
-        return 100
-    elif price <= 200_000:
-        return 500
-    else:
-        return 1_000
 
 
 class HOSEExecutionModel:

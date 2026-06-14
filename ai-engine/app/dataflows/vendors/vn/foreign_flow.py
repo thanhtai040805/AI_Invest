@@ -8,16 +8,14 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
-import psycopg2
-from psycopg2.extras import execute_values
 
 from app.services.pg_pool import DB_URL
+from app.ports.storage import StoragePort
+from app.adapters.postgres_adapter import PostgresAdapter
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 _REQUEST_DELAY = 0.15
-
 API_URL = "https://cafef.vn/du-lieu/Ajax/PageNew/DataGDNN/GDNuocNgoai.ashx"
 TZ_VN = timezone(timedelta(hours=7))
 
@@ -41,10 +39,7 @@ def _parse_response_date(val: str) -> Optional[date]:
 
 
 def fetch_foreign_flow(trade_date: date) -> tuple[Optional[date], list[dict]]:
-    """Fetch foreign flow for HOSE stocks.
-    Returns (actual_trade_date_from_response, raw_stocks_list).
-    The response Data.Date is the real trading day, not the parameter.
-    """
+    """Fetch foreign flow for HOSE stocks."""
     date_str = trade_date.strftime("%d/%m/%Y")
     with httpx.Client(headers=_HEADERS, timeout=15) as client:
         resp = client.get(API_URL, params={"TradeCenter": "HOSE", "Date": date_str})
@@ -61,10 +56,7 @@ def fetch_foreign_flow(trade_date: date) -> tuple[Optional[date], list[dict]]:
         stocks = raw_data.get("ListDataNN", [])
 
         if actual_date and actual_date != trade_date:
-            logger.info(
-                "  Requested %s, API returned data for %s",
-                trade_date, actual_date,
-            )
+            logger.info("  Requested %s, API returned data for %s", trade_date, actual_date)
         return (actual_date, stocks)
 
 
@@ -90,54 +82,53 @@ def parse_rows(raw_stocks: list[dict], trade_date: date) -> list[tuple]:
     return rows
 
 
-def refresh_for_date(trade_date: date) -> dict:
+def refresh_for_date(trade_date: date, storage: Optional[StoragePort] = None) -> dict:
     """Fetch foreign flow — uses actual trading date from API response."""
-    actual_date, raw = fetch_foreign_flow(trade_date)
+    if storage is None:
+        storage = PostgresAdapter(DB_URL)
 
+    actual_date, raw = fetch_foreign_flow(trade_date)
     logger.info("Foreign flow: %d stocks for trade_date=%s", len(raw), actual_date)
+    
     rows = parse_rows(raw, actual_date)
     if not rows:
         return {"rows": 0, "trade_date": str(actual_date), "stocks": 0}
 
-    conn = psycopg2.connect(DB_URL)
-    cur = conn.cursor()
+    query = """
+        INSERT INTO foreign_flow
+        (symbol, trade_date, buy_volume, sell_volume, buy_value, sell_value,
+         net_volume, net_value, room_remaining, room_limit, ownership_pct)
+        VALUES %s
+        ON CONFLICT (symbol, trade_date)
+        DO UPDATE SET
+            buy_volume     = EXCLUDED.buy_volume,
+            sell_volume    = EXCLUDED.sell_volume,
+            buy_value      = EXCLUDED.buy_value,
+            sell_value     = EXCLUDED.sell_value,
+            net_volume     = EXCLUDED.net_volume,
+            net_value      = EXCLUDED.net_value,
+            room_remaining = EXCLUDED.room_remaining,
+            room_limit     = EXCLUDED.room_limit,
+            ownership_pct  = EXCLUDED.ownership_pct,
+            source         = 'cafef'
+    """
     try:
-        execute_values(
-            cur,
-            """INSERT INTO foreign_flow
-               (symbol, trade_date, buy_volume, sell_volume, buy_value, sell_value,
-                net_volume, net_value, room_remaining, room_limit, ownership_pct)
-               VALUES %s
-               ON CONFLICT (symbol, trade_date)
-               DO UPDATE SET
-                   buy_volume     = EXCLUDED.buy_volume,
-                   sell_volume    = EXCLUDED.sell_volume,
-                   buy_value      = EXCLUDED.buy_value,
-                   sell_value     = EXCLUDED.sell_value,
-                   net_volume     = EXCLUDED.net_volume,
-                   net_value      = EXCLUDED.net_value,
-                   room_remaining = EXCLUDED.room_remaining,
-                   room_limit     = EXCLUDED.room_limit,
-                   ownership_pct  = EXCLUDED.ownership_pct,
-                   source         = 'cafef'""",
-            rows,
-            page_size=100,
-        )
-        conn.commit()
+        storage.execute_values(query, rows, page_size=100)
         logger.info("Foreign flow: %d rows for %s", len(rows), actual_date)
         return {"rows": len(rows), "trade_date": str(actual_date), "stocks": len(rows)}
-    finally:
-        cur.close()
-        conn.close()
+    except Exception as e:
+        logger.error(f"Failed to persist foreign flow: {e}")
+        return {"rows": 0, "error": str(e)}
 
 
 def refresh_incremental() -> dict:
     """Incremental: fetch latest available foreign flow data."""
     today = datetime.now(TZ_VN).date()
+    storage = PostgresAdapter(DB_URL)
     for i in range(7):
         d = today - timedelta(days=i)
         if d.weekday() < 5:
-            result = refresh_for_date(d)
+            result = refresh_for_date(d, storage=storage)
             if result["rows"] > 0:
                 return result
     return {"rows": 0, "note": "No data found for last 7 trading days"}
@@ -146,6 +137,7 @@ def refresh_incremental() -> dict:
 def refresh_all(years: int = 3) -> dict:
     """Backfill foreign flow for all trading days in the last N years."""
     from app.services.daily_etl import is_trading_day
+    storage = PostgresAdapter(DB_URL)
 
     end = datetime.now(TZ_VN).date()
     start = end - timedelta(days=int(years * 365.25) + 60)
@@ -155,7 +147,7 @@ def refresh_all(years: int = 3) -> dict:
     d = start
     while d <= end:
         if is_trading_day(d):
-            result = refresh_for_date(d)
+            result = refresh_for_date(d, storage=storage)
             if result["rows"] > 0:
                 total_rows += result["rows"]
                 total_days += 1
@@ -164,8 +156,5 @@ def refresh_all(years: int = 3) -> dict:
             time.sleep(_REQUEST_DELAY)
         d += timedelta(days=1)
 
-    logger.info(
-        "Foreign flow backfill done: %d trading days, %d rows",
-        total_days, total_rows,
-    )
+    logger.info("Foreign flow backfill done: %d trading days, %d rows", total_days, total_rows)
     return {"rows": total_rows, "trading_days": total_days, "years": years}

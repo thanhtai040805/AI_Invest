@@ -21,6 +21,7 @@ class BacktestRequest(BaseModel):
     end_date: str = Field(..., description="End date (YYYY-MM-DD)")
     strategy_config: Dict[str, Any] = Field(..., description="Strategy configuration")
     source: str = Field(default="dnse", description="Data source: dnse, vietfin, auto")
+    use_macro_risk: bool = Field(default=True, description="Enable Institutional Macro Risk Shield")
 
 
 _SIGNAL_TEMPLATE = '''"""Signal engine for {symbol} — auto-generated from strategy config."""
@@ -135,6 +136,7 @@ async def run_backtest_route(request: BacktestRequest):
             "start_date": request.start_date,
             "end_date": request.end_date,
             "interval": "1D",
+            "use_macro_risk": request.use_macro_risk,
         }
         (runs_root / "config.json").write_text(
             json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8"

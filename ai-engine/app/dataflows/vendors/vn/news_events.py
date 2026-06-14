@@ -9,10 +9,10 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
-import psycopg2
-from psycopg2.extras import execute_values
 
 from app.services.pg_pool import DB_URL
+from app.ports.storage import StoragePort
+from app.adapters.postgres_adapter import PostgresAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -151,69 +151,64 @@ def fetch_for_symbol(
     return all_items
 
 
-def _process_symbols(symbols: list[tuple[str, str]]) -> dict:
+def _process_symbols(symbols: list[tuple[str, str]], storage: Optional[StoragePort] = None) -> dict:
     """Process symbols list of (symbol, exchange) tuples."""
-    conn = psycopg2.connect(DB_URL)
-    cur = conn.cursor()
-    try:
-        total_new = 0
-        total_err = 0
-        for idx, (sym, exchange) in enumerate(symbols):
-            if idx > 0 and idx % BATCH_SIZE == 0:
-                conn.commit()
-                logger.info("  Progress: %d/%d, %d new rows", idx, len(symbols), total_new)
-                time.sleep(1)
-            try:
-                floor_id = _get_floor_id(exchange)
-                items = fetch_for_symbol(sym, floor_id)
-                if not items:
-                    continue
-                rows = []
-                for item in items:
-                    rows.append((
-                        item["symbol"],
-                        item["published_date"],
-                        item["title"],
-                        item["url"],
-                        item["source"],
-                        item["config_id"],
-                        item["sentiment_score"],
-                    ))
-                execute_values(
-                    cur,
-                    """INSERT INTO news_events
-                       (symbol, published_date, title, url, source, config_id, sentiment_score)
-                       VALUES %s
-                       ON CONFLICT (symbol, url) DO NOTHING""",
-                    rows,
-                    page_size=100,
-                )
-                total_new += len(rows)
-            except Exception as e:
-                logger.warning("Failed for %s: %s", sym, e)
-                total_err += 1
-                time.sleep(RATE_LIMIT_DELAY * 3)
-        conn.commit()
-        return {"new_rows": total_new, "errors": total_err, "symbols": len(symbols)}
-    finally:
-        cur.close()
-        conn.close()
+    if storage is None:
+        storage = PostgresAdapter(DB_URL)
+
+    total_new = 0
+    total_err = 0
+    for idx, (sym, exchange) in enumerate(symbols):
+        if idx > 0 and idx % BATCH_SIZE == 0:
+            logger.info("  Progress: %d/%d, %d new rows", idx, len(symbols), total_new)
+            time.sleep(1)
+        try:
+            floor_id = _get_floor_id(exchange)
+            items = fetch_for_symbol(sym, floor_id)
+            if not items:
+                continue
+            rows = []
+            for item in items:
+                rows.append((
+                    item["symbol"],
+                    item["published_date"],
+                    item["title"],
+                    item["url"],
+                    item["source"],
+                    item["config_id"],
+                    item["sentiment_score"],
+                ))
+            
+            storage.execute_values(
+                """INSERT INTO news_events
+                   (symbol, published_date, title, url, source, config_id, sentiment_score)
+                   VALUES %s
+                   ON CONFLICT (symbol, url) DO NOTHING""",
+                rows,
+                page_size=100,
+            )
+            total_new += len(rows)
+        except Exception as e:
+            logger.warning("Failed for %s: %s", sym, e)
+            total_err += 1
+            time.sleep(RATE_LIMIT_DELAY * 3)
+
+    return {"new_rows": total_new, "errors": total_err, "symbols": len(symbols)}
 
 
-def refresh_all() -> dict:
+def refresh_all(storage: Optional[StoragePort] = None) -> dict:
     """Full refresh: fetch news events for all HOSE symbols."""
-    conn = psycopg2.connect(DB_URL)
-    cur = conn.cursor()
+    if storage is None:
+        storage = PostgresAdapter(DB_URL)
     try:
-        cur.execute("SELECT symbol, exchange FROM stocks WHERE exchange IN ('HOSE','HSX') ORDER BY symbol")
-        symbols = cur.fetchall()
+        symbols = storage.fetch_all("SELECT symbol, exchange FROM stocks WHERE exchange IN ('HOSE','HSX') ORDER BY symbol")
         logger.info("News events full refresh: %d symbols", len(symbols))
-        result = _process_symbols(symbols)
+        result = _process_symbols(symbols, storage=storage)
         logger.info("News events done: %d new rows, %d errors", result["new_rows"], result["errors"])
         return result
-    finally:
-        cur.close()
-        conn.close()
+    except Exception as e:
+        logger.error(f"Error in refresh_all: {e}")
+        return {"new_rows": 0, "errors": 1, "symbols": 0}
 
 
 def refresh_incremental() -> dict:

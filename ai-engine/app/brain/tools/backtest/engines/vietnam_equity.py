@@ -1,9 +1,9 @@
-"""Vietnam equity backtest engine — delegates to new quant modules.
+"""Vietnam equity backtest engine — strictly HOSE market rules.
 
 Market rules:
   - T+2: can sell shares on T+2 via HOSEExecutionModel
   - No short selling for retail investors
-  - Board-based price limits: HOSE ±7%, HNX ±10%, UPCoM ±15%
+  - Board-based price limits: HOSE ±7%
   - Minimum lot: 100 shares via round_to_lot
   - Cost via estimate_cost (brokerage + tax + slippage)
 """
@@ -13,58 +13,15 @@ from __future__ import annotations
 import pandas as pd
 
 from backtest.engines.base import BaseEngine
+from backtest.models import EquitySnapshot
 from app.backtest.cost_model import estimate_cost, round_to_lot, snap_to_price_step
 from app.backtest.execution import HOSEExecutionModel
+from app.services.risk_engine import MacroRiskEngine
 
 VN_TIMEZONE = "Asia/Ho_Chi_Minh"
 
-_VN_BOARDS = {
-    "HOSE": {"price_limit": 0.07},
-    "HNX":  {"price_limit": 0.10},
-    "UPC":  {"price_limit": 0.15},
-}
-
-_VN_SYMBOL_BOARD: dict[str, str] = {
-    "VCB": "HOSE", "HPG": "HOSE", "VNM": "HOSE", "VIC": "HOSE",
-    "MSN": "HOSE", "BID": "HOSE", "CTG": "HOSE", "FPT": "HOSE",
-    "MBB": "HOSE", "TCB": "HOSE", "ACB": "HOSE", "VIB": "HOSE",
-    "VPB": "HOSE", "HDB": "HOSE", "STB": "HOSE", "SSI": "HOSE",
-    "VHC": "HOSE", "PNJ": "HOSE", "MWG": "HOSE", "GAS": "HOSE",
-    "PLX": "HOSE", "POW": "HOSE", "SAB": "HOSE", "BVH": "HOSE",
-    "VRE": "HOSE", "KDH": "HOSE", "NVL": "HOSE", "DXG": "HOSE",
-    "DIG": "HOSE", "GEX": "HOSE", "HSG": "HOSE", "NKG": "HOSE",
-    "LPB": "HOSE", "OCB": "HOSE", "MSB": "HOSE", "EIB": "HOSE",
-    "TPB": "HOSE", "SHI": "HOSE", "DPM": "HOSE", "DCM": "HOSE",
-    "PVS": "HNX", "SHB": "HNX", "SHS": "HNX", "MBS": "HNX",
-    "TNG": "HNX", "VIF": "HNX", "NVB": "HNX", "VCS": "HNX",
-    "PVI": "HNX", "PVC": "HNX", "PVB": "HNX", "HUT": "HNX",
-    "CEO": "HNX", "IDJ": "HNX", "VGS": "HNX", "LHC": "HNX",
-    "BVS": "HNX", "ART": "HNX",
-    "BSR": "UPC", "MCH": "UPC", "VEA": "UPC", "VID": "UPC",
-    "ACV": "UPC", "OIL": "UPC", "VTP": "UPC", "CVN": "UPC",
-    "BAB": "UPC", "ABI": "UPC", "DPP": "UPC",
-}
-
-
-def _detect_vn_board(symbol: str) -> str:
-    parts = symbol.upper().split(".")
-    if len(parts) == 2 and parts[1] in _VN_BOARDS:
-        return parts[1]
-    code = parts[0] if len(parts) == 1 else parts[0]
-    return _VN_SYMBOL_BOARD.get(code, "HOSE")
-
-
-def _vn_price_limit(symbol: str) -> float:
-    return _VN_BOARDS[_detect_vn_board(symbol)]["price_limit"]
-
-
-def _vn_ceiling_price(symbol: str, ref_price: float) -> float:
-    return ref_price * (1 + _vn_price_limit(symbol))
-
-
-def _vn_floor_price(symbol: str, ref_price: float) -> float:
-    return ref_price * (1 - _vn_price_limit(symbol))
-
+# Strictly HOSE (±7%)
+HOSE_PRICE_LIMIT = 0.07
 
 def is_vn_market_open(dt: pd.Timestamp | None = None) -> bool:
     if dt is None:
@@ -80,7 +37,7 @@ def is_vn_market_open(dt: pd.Timestamp | None = None) -> bool:
 
 
 class VietnamEquityEngine(BaseEngine):
-    """Vietnam equity market engine — delegates to new quant modules."""
+    """Vietnam equity market engine — strictly HOSE-only rules."""
 
     def __init__(self, config: dict):
         config = {**config, "leverage": 1.0}
@@ -89,31 +46,98 @@ class VietnamEquityEngine(BaseEngine):
         self.sell_tax: float = config.get("sell_tax", 0.001)
         self.slippage_rate: float = config.get("slippage", 0.001)
         self._execution = HOSEExecutionModel(reference_price_func=None)
+        
+        self.use_macro_risk = config.get("use_macro_risk", True)
+        self.risk_engine = MacroRiskEngine() if self.use_macro_risk else None
+
+    def _execute_bars(
+        self,
+        dates: pd.DatetimeIndex,
+        data_map: dict[str, pd.DataFrame],
+        close_df: pd.DataFrame,
+        target_pos: pd.DataFrame,
+        codes: list[str],
+    ) -> None:
+        """Bar-by-bar execution with Macro-Risk multiplier logic."""
+        import logging
+        logger = logging.getLogger(__name__)
+
+        for i, ts in enumerate(dates):
+            self._bar_idx = i
+            
+            # 1. Calculate Macro Risk Multiplier for this date
+            multiplier = 1.0
+            if self.risk_engine:
+                try:
+                    risk_data = self.risk_engine.calculate_risk_score(ts.date())
+                    multiplier = risk_data["risk_multiplier"]
+                    if multiplier < 1.0:
+                        logger.info(f"Day {ts.date()}: Risk Score {risk_data['risk_score']} -> scaling positions by {multiplier}")
+                except Exception as e:
+                    logger.debug(f"Risk engine failed for {ts}: {e}")
+
+            # a. Per-bar hooks
+            for c in codes:
+                if ts in data_map[c].index:
+                    self.on_bar(c, data_map[c].loc[ts], ts)
+
+            # b. Rebalance each symbol to target weight (SCALED by multiplier)
+            equity = self._calc_equity(close_df, ts)
+            for c in codes:
+                try:
+                    raw_w = float(target_pos.at[ts, c]) if ts in target_pos.index else 0.0
+                    target_w = raw_w * multiplier
+                    self._rebalance(c, target_w, data_map.get(c), ts, equity)
+                except Exception as exc:
+                    logger.warning("Rebalance failed for %s at %s: %s", c, ts, exc)
+
+            # c. Record equity snapshot
+            snap_equity = self._calc_equity(close_df, ts)
+            total_unrealized = 0.0
+            for p in self.positions.values():
+                cp = self._safe_price(close_df, ts, p.symbol, p.entry_price)
+                total_unrealized += self._calc_pnl(p.symbol, p.direction, p.size, p.entry_price, cp)
+            self.equity_snapshots.append(EquitySnapshot(
+                timestamp=ts,
+                capital=self.capital,
+                unrealized=total_unrealized,
+                equity=snap_equity,
+                positions=len(self.positions),
+            ))
 
     def can_execute(self, symbol: str, direction: int, bar: pd.Series) -> bool:
-        if direction == -1:
+        """Vietnam market rules: No shorting, T+2 settlement for sells."""
+        if direction == -1: # No shorting
             return False
-        if direction == 0:
+        if direction == 0: # Closing long position
             pos = self.positions.get(symbol)
             if pos is not None:
                 bar_date = _bar_date(bar)
                 if bar_date is not None and hasattr(pos.entry_time, "date"):
+                    # Check if settlement cycle (T+2) is complete
                     return self._execution.can_sell(symbol, pos.entry_time.date(), bar_date)
         return True
 
     def round_size(self, raw_size: float, price: float = 0) -> float:
-        return round_to_lot(raw_size)
+        """HOSE minimum lot is 100 shares."""
+        return float(round_to_lot(raw_size))
 
     def calc_commission(self, size: float, price: float, _direction: int, is_open: bool) -> float:
+        """Estimate trading costs including tax for sells."""
         side = "SELL" if not is_open else "BUY"
-        cost = estimate_cost(side, price, size, brokerage_rate=self.brokerage_rate, sell_tax=self.sell_tax)
+        cost = estimate_cost(side, price, int(size))
         return cost["total_cost"]
 
     def apply_slippage(self, price: float, direction: int) -> float:
-        return snap_to_price_step(price * (1 + direction * self.slippage_rate), direction)
+        """Snap price to valid HOSE price steps after applying slippage."""
+        # direction is 1 (buy) or -1 (sell)
+        side = "BUY" if direction > 0 else "SELL"
+        slipped_price = price * (1 + direction * self.slippage_rate)
+        return snap_to_price_step(slipped_price, side=side)
 
 
 def _bar_date(bar: pd.Series):
+    """Extract date from bar series."""
     for col in ("trade_date", "date"):
         if col in bar.index:
             val = bar[col]
