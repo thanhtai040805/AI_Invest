@@ -182,15 +182,4 @@ def run_all_health_checks() -> Dict[str, Any]:
     }
 
 
-def add_risk_flag_alert_handler() -> None:
-    """Register handler that creates alerts for HIGH risk flags."""
-    def _handle_high_risk(alert: Alert) -> None:
-        if alert.severity == "CRITICAL" and alert.source == "risk_flags":
-            from app.services.news_rag import news_rag_svc
-            # Log to monitoring system
-            logger.info("HIGH risk flag alert: %s", alert.message)
-
-    monitoring_svc.add_alert_handler(_handle_high_risk)
-
-
-add_risk_flag_alert_handler()
+# Risk alerts handled by CRS 7-layer risk_assessments (see daily_etl)

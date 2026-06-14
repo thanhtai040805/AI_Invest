@@ -291,23 +291,39 @@ def upsert_news(items: List[Dict[str, Any]]) -> Dict[str, int]:
 def refresh_listing(
     max_pages: int = 1,
     categories: Optional[List[str]] = None,
+    deep_crawl: bool = True,
 ) -> Dict[str, Any]:
-    """Full flow: fetch listing → upsert → return stats.
+    """Full flow: fetch listing → upsert → deep crawl new URLs → return stats.
     
     Args:
         max_pages: 1 for cron, 50 for backfill.
         categories: None = all, or list of keys from CATEGORIES.
+        deep_crawl: If True, fetch full article content for new URLs immediately.
     """
     items = fetch_listing(max_pages=max_pages, categories=categories)
     if not items:
         return {"status": "no_items", "total": 0, "inserted": 0}
 
     stats = upsert_news(items)
-    return {
+
+    result: Dict[str, Any] = {
         "status": "success",
         "total": len(items),
         **stats,
     }
+
+    if deep_crawl and stats.get("inserted", 0) > 0:
+        try:
+            from app.dataflows.vendors.vn.deep_crawl_news import refresh_deep_crawl
+            import asyncio
+            deep_result = asyncio.run(refresh_deep_crawl(limit=stats["inserted"] * 5))
+            result["deep_crawl"] = deep_result
+            logger.info("Deep crawl result: %s", deep_result)
+        except Exception as e:
+            logger.warning("Deep crawl failed: %s", e)
+            result["deep_crawl"] = {"status": "error", "error": str(e)}
+
+    return result
 
 
 def refresh_single_category(

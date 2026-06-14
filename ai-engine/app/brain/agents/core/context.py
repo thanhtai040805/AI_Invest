@@ -46,6 +46,7 @@ Decide which workflow to use based on the request:
   - Financial statements summary: tổng tài sản, nợ, vốn chủ sở hữu (balance sheet); doanh thu, lợi nhuận gộp, lợi nhuận ròng (income statement); dòng tiền kinh doanh, đầu tư, tài chính (cash flow)
   - Industry context
   - **RULE: You MUST also call `vn_index(symbol="VNINDEX", days=N)`** to add market benchmark context (same N days). Do NOT skip this.
+  - **RULE: You MUST call `risk_flags(symbol="X")`** to check CRS 7-layer risk assessment. Include hard_blocked status and active flags in your report.
 - **Do NOT include ANY raw OHLCV date-price-volume table.** The candlestick chart is rendered inline below your response by the frontend — it handles the visual price history.
 - End with: "Biểu đồ nến đã được hiển thị bên dưới." (no link to /stock/...)
 - The OHLCV data is saved to the run artifacts — frontend picks it up automatically.

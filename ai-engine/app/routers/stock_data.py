@@ -132,20 +132,19 @@ async def get_financials_extended(symbol: str):
 
 @router.get("/{symbol}/disclosures")
 async def get_disclosures(symbol: str):
-    """Get regulatory disclosures and sanctions."""
-    from app.brain.risk.queries import get_active_flags
+    """Get regulatory disclosures and sanctions (CRS 7-layer)."""
+    from app.brain.risk.queries import get_active_flags, get_hard_blocked
 
-    flags = get_active_flags(symbol.upper())
-    hard = [f for f in flags if f["flag_type"] in ("CANH_BAO_TC", "CHAM_BAO_TC")]
-    soft = [f for f in flags if f["flag_type"] not in ("CANH_BAO_TC", "CHAM_BAO_TC")]
+    sym = symbol.upper()
+    flags = get_active_flags(sym)
+    hard_blocked = get_hard_blocked(sym)
     return {
-        "symbol": symbol.upper(),
+        "symbol": sym,
         "disclosures": flags,
         "totalDisclosures": len(flags),
-        "criticalCount": len(hard),
-        "warningCount": len(soft),
-        "hasRedFlags": len(hard) > 0,
-        "summary": f"{len(hard)} hard + {len(soft)} soft flag(s)",
+        "hard_blocked": hard_blocked,
+        "hasRedFlags": hard_blocked,
+        "summary": f"{'HARD BLOCKED' if hard_blocked else 'No hard blocks'} | {len(flags)} active flag(s)",
     }
 
 

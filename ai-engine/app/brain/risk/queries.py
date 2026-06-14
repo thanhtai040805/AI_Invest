@@ -1,4 +1,4 @@
-"""Query helpers — CRS assessment data access for agents & routers."""
+"""Query helpers — CRS 7-layer risk assessment data for agents & routers."""
 import logging
 from typing import Optional
 
@@ -10,14 +10,9 @@ logger = logging.getLogger(__name__)
 
 
 def get_active_flags(symbol: str, cur=None) -> list[dict]:
-    """Get active risk flags from both risk_flags and risk_assessments tables.
+    """Get CRS 7-layer risk flags for a symbol from risk_assessments.
 
-    Merges:
-      - Hard flags from risk_flags (CANH_BAO_TC, CHAM_BAO_TC, DEBT_DANGER, etc.)
-      - Soft flags from risk_flags (FLOOR_TRAP, SHARP_DROP, etc.)
-      - CRS layer names from risk_assessments.all_flags
-
-    Returns list of dicts with flag_type, effective_date, description, source.
+    Returns list of dicts with flag_type, risk_level, crs_score, source.
     """
     own_conn = False
     if cur is None:
@@ -27,23 +22,6 @@ def get_active_flags(symbol: str, cur=None) -> list[dict]:
     try:
         flags = []
 
-        # 1. risk_flags table — real HARD/SOFT flags
-        cur.execute(
-            """SELECT flag_type, effective_date, description
-               FROM risk_flags
-               WHERE symbol = %s AND is_active = TRUE
-               ORDER BY effective_date DESC NULLS LAST""",
-            (symbol,),
-        )
-        for row in cur.fetchall():
-            flags.append({
-                "flag_type": row[0],
-                "effective_date": str(row[1]) if row[1] else "",
-                "description": row[2] or "",
-                "source": "risk_flags",
-            })
-
-        # 2. risk_assessments table — CRS layer names + hard/soft flags
         cur.execute(
             """SELECT all_flags, hard_flags, soft_flags, risk_level, crs_score, hard_blocked
                FROM risk_assessments
@@ -61,38 +39,29 @@ def get_active_flags(symbol: str, cur=None) -> list[dict]:
             crs_score = row[4]
             hard_blocked = row[5]
 
-            # Add CRS-specific flags
-            added = {f["flag_type"] for f in flags}
             for f in all_flags:
-                if f not in added:
-                    flags.append({
-                        "flag_type": f,
-                        "effective_date": "",
-                        "description": f"CRS layer flag, risk_level={risk_level}, CRS={crs_score}",
-                        "source": "risk_assessments",
-                    })
-                    added.add(f)
+                flags.append({
+                    "flag_type": f,
+                    "effective_date": "",
+                    "description": f"CRS layer flag, risk_level={risk_level}, CRS={crs_score}",
+                    "source": "risk_assessments",
+                })
             for f in hard_flags:
-                if f not in added:
-                    flags.append({
-                        "flag_type": f,
-                        "effective_date": "",
-                        "description": f"Hard flag from CRS, risk_level={risk_level}",
-                        "source": "risk_assessments",
-                    })
-                    added.add(f)
+                flags.append({
+                    "flag_type": f,
+                    "effective_date": "",
+                    "description": f"Hard flag from CRS, risk_level={risk_level}",
+                    "source": "risk_assessments",
+                })
             for f in soft_flags:
-                if f not in added:
-                    flags.append({
-                        "flag_type": f,
-                        "effective_date": "",
-                        "description": f"Soft flag from CRS, risk_level={risk_level}",
-                        "source": "risk_assessments",
-                    })
-                    added.add(f)
+                flags.append({
+                    "flag_type": f,
+                    "effective_date": "",
+                    "description": f"Soft flag from CRS, risk_level={risk_level}",
+                    "source": "risk_assessments",
+                })
 
-            # Add a synthetic CRS flag if hard_blocked
-            if hard_blocked and "CRS_HARD_BLOCK" not in added:
+            if hard_blocked and "CRS_HARD_BLOCK" not in {f["flag_type"] for f in flags}:
                 flags.append({
                     "flag_type": "CRS_HARD_BLOCK",
                     "effective_date": "",

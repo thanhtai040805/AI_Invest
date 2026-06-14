@@ -158,24 +158,7 @@ def migrate():
             except Exception:
                 pass  # table might not exist yet
 
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS risk_flags (
-                id           SERIAL PRIMARY KEY,
-                symbol       TEXT NOT NULL,
-                flag_type    TEXT NOT NULL,
-                effective_date DATE,
-                lifted_date  DATE,
-                description  TEXT,
-                source_url   TEXT,
-                is_active    BOOLEAN DEFAULT TRUE,
-                created_at   TIMESTAMPTZ DEFAULT NOW(),
-                UNIQUE (symbol, flag_type, effective_date)
-            )
-        """)
-        cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_risk_flags_symbol
-            ON risk_flags(symbol) WHERE is_active = TRUE
-        """)
+        cur.execute("DROP TABLE IF EXISTS risk_flags CASCADE")
 
         cur.execute("""
             CREATE TABLE IF NOT EXISTS insider_trades (
@@ -249,6 +232,10 @@ def migrate():
             CREATE INDEX IF NOT EXISTS idx_news_events_symbol_date
             ON news_events(symbol, published_date DESC)
         """)
+        cur.execute("ALTER TABLE news_events ADD COLUMN IF NOT EXISTS article_content TEXT")
+        cur.execute("ALTER TABLE news_events ADD COLUMN IF NOT EXISTS article_pdf_text TEXT")
+        cur.execute("ALTER TABLE news_events ADD COLUMN IF NOT EXISTS content_fetched_at TIMESTAMPTZ")
+        conn.commit()
 
         cur.execute("""
             CREATE TABLE IF NOT EXISTS corporate_actions (

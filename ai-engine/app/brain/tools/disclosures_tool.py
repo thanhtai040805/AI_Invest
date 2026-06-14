@@ -1,7 +1,7 @@
-"""Disclosures Tool — retrieves risk flags for Vietnamese stocks.
+"""Disclosures Tool — CRS 7-layer risk assessment for Vietnamese stocks.
 
-Agent-facing interface around :mod:`app.services.risk_flags_v2`.
-Uses pre-computed flags from batch ETL — no per-symbol API calls.
+Queries the risk_assessments table for pre-computed CRS scores.
+No per-symbol API calls — all layers are computed during daily ETL.
 """
 from __future__ import annotations
 
@@ -15,21 +15,18 @@ logger = logging.getLogger(__name__)
 
 
 class DisclosuresTool(BaseTool):
-    """Retrieve risk flags and regulatory disclosures for a Vietnamese stock.
+    """Retrieve CRS 7-layer risk flags for a Vietnamese stock.
 
-    Reads from the pre-computed `risk_flags` table (batch ETL).
-    Includes: CANH_BAO_TC, CHAM_BAO_TC, FLOOR_TRAP, SHARP_DROP,
-    KHOI_LUONG_BAT_THUONG, FOREIGN_FLOW_ANOMALY, INSIDER_SELLING_ANOMALY,
-    GOVERNANCE_SHOCK, M-Score, F-Score.
-
-    Use this to check red flags before making investment decisions.
+    Reads from the `risk_assessments` table (batch ETL).
+    7 layers: quant, fundamental, market, macro, global, regulatory, behavioral.
+    Returns hard_blocked status and active flags with descriptions.
     """
 
     name = "disclosures"
     description = (
-        "Retrieve risk flags and regulatory disclosures for a Vietnamese stock symbol. "
-        "Returns active flags from the daily pre-computed risk engine. "
-        "HARD flags (CANH_BAO_TC, CHAM_BAO_TC) indicate critical issues. "
+        "Retrieve CRS 7-layer risk flags for a Vietnamese stock symbol. "
+        "Returns active flags from the daily pre-computed CRS risk engine. "
+        "hard_blocked=true indicates critical risk that blocks trading. "
         "Use this to check red flags before making investment decisions."
     )
     parameters = {

@@ -210,39 +210,30 @@ def compute_composite_scores(
 
 def apply_risk_gate(
     composite_scores: dict[str, dict],
-    risk_flags: dict[str, list[str]],
     crs_scores: Optional[dict[str, dict]] = None,
     technical_data: Optional[dict[str, bool]] = None,
     foreign_flow_data: Optional[dict[str, float]] = None,
 ) -> dict[str, dict]:
-    """Run CRS-aware risk gate on all symbols.
-
-    Uses CRS scores from risk_assessments as primary gate,
-    falls back to binary risk_flags for hard-block override.
+    """Run CRS risk gate on all symbols using risk_assessments 7-layer scores.
     Returns updated composite_scores with confidence, decision, flags.
     """
     scorer = ConfidenceScorer()
     results = {}
     for sym, data in composite_scores.items():
         comp = data["composite"]
-        flags = risk_flags.get(sym, [])
         percentile = max(0, min(100, (comp + 3) / 6 * 100))
 
         crs = crs_scores.get(sym) if crs_scores else None
 
-        if crs:
-            score_result = scorer.score_crs(
-                crs_result=crs,
-                factor_percentile=percentile,
-                technical_aligned=technical_data.get(sym, False) if technical_data else False,
-            )
-        else:
-            score_result = scorer.score(
-                factor_percentile=percentile,
-                active_flags=flags,
-                technical_aligned=technical_data.get(sym, False) if technical_data else False,
-                foreign_flow_net=foreign_flow_data.get(sym) if foreign_flow_data else None,
-            )
+        score_result = scorer.score_crs(
+            crs_result=crs,
+            factor_percentile=percentile,
+            technical_aligned=technical_data.get(sym, False) if technical_data else False,
+        ) if crs else scorer.score(
+            factor_percentile=percentile,
+            technical_aligned=technical_data.get(sym, False) if technical_data else False,
+            foreign_flow_net=foreign_flow_data.get(sym) if foreign_flow_data else None,
+        )
 
         data["confidence"] = score_result["confidence"]
         data["decision"] = score_result["decision"]
@@ -349,22 +340,6 @@ def load_factor_details(score_date: date, symbols: Optional[list[str]] = None, c
         if close_conn:
             cur.close()
             conn.close()
-
-
-def load_risk_flags(score_date: date, cur) -> dict[str, list[str]]:
-    """Load active risk flags for all symbols on given date (backward compat)."""
-    cur.execute(
-        """SELECT symbol, flag_type
-           FROM risk_flags
-           WHERE effective_date <= %s
-             AND (lifted_date IS NULL OR lifted_date > %s)
-             AND is_active = TRUE""",
-        (score_date, score_date),
-    )
-    result: dict[str, list[str]] = {}
-    for sym, flag in cur.fetchall():
-        result.setdefault(sym, []).append(flag)
-    return result
 
 
 def load_crs_scores(score_date: date, cur) -> dict[str, dict]:
@@ -586,18 +561,16 @@ def run_composite_pipeline(
         scores = compute_composite_scores(score_date, factor_details, sectors)
         logger.info("  Computed composite scores for %d symbols", len(scores))
 
-        # 5. Load CRS scores (primary) and risk flags (backup)
+        # 5. Load CRS 7-layer scores
         crs_scores = load_crs_scores(score_date, cur)
-        risk_flags = load_risk_flags(score_date, cur)
-        logger.info("  Loaded CRS scores for %d symbols, risk flags for %d symbols",
-                     len(crs_scores), len(risk_flags))
+        logger.info("  Loaded CRS scores for %d symbols", len(crs_scores))
 
         # 6. Load foreign flow for risk gate
         foreign_flow_5d = load_foreign_flow_5d(score_date, symbols, cur)
 
-        # 7. Apply risk gate (CRS-aware)
+        # 7. Apply CRS risk gate
         scores = apply_risk_gate(
-            scores, risk_flags,
+            scores,
             crs_scores=crs_scores,
             foreign_flow_data=foreign_flow_5d,
         )

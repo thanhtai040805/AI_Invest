@@ -1,4 +1,4 @@
-"""FastAPI lifespan — start/stop DNSE WebSocket hub + SessionService."""
+"""FastAPI lifespan — start/stop DNSE WebSocket hub + SessionService + News scheduler."""
 
 from __future__ import annotations
 
@@ -13,8 +13,6 @@ from fastapi import FastAPI
 from app.services.dnse.stream_hub import get_stream_hub
 from app.services.dnse.rest_client import get_rest_client
 from app.database.models import init_db
-from app.modules.news import news_module
-
 # ── Logging (attach to root so it survives uvicorn) ────────────────────
 root = logging.getLogger()
 root.setLevel(logging.INFO)
@@ -66,7 +64,26 @@ async def lifespan(app: FastAPI):
     hub = get_stream_hub()
 
     hub.start()
-    news_module.start()
+
+    # ── Start news background scheduler (15-min interval) ─────────────
+    _news_task: asyncio.Task | None = None
+
+    async def _news_loop():
+        """Fetch new CafeF news listing + deep crawl content every 15 minutes."""
+        log = logging.getLogger("ai_engine.news_scheduler")
+        log.info("News scheduler started (15-min interval)")
+        while True:
+            try:
+                from app.dataflows.vendors.vn.cafef_listing_crawl import refresh_listing
+                result = await asyncio.to_thread(refresh_listing, max_pages=1, deep_crawl=True)
+                inserted = result.get("inserted", 0)
+                deep = result.get("deep_crawl", {})
+                log.info("Listing: %d new | Deep: %s", inserted, deep.get("crawled", "N/A"))
+            except Exception as e:
+                log.warning("News scheduler cycle failed: %s", e)
+            await asyncio.sleep(900)  # 15 min
+
+    _news_task = asyncio.create_task(_news_loop())
 
     # Wire SessionService into app.state
     svc = get_session_service()
@@ -75,8 +92,9 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    if _news_task is not None:
+        _news_task.cancel()
     hub.stop()
-    news_module.stop()
     get_rest_client().close()
     # Clear any lingering SSE subscribers
     svc.event_bus.clear("__all__")

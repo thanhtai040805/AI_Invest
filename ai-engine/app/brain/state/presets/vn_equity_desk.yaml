@@ -1,6 +1,6 @@
 name: vn_equity_desk
 title: "VN Equity Desk"
-description: "VN market equity research desk — factor IC signals → sector rotation → stock selection → risk-gated report. Uses 10 VN-core factors, ICB sector classification, and VN-specific risk flags."
+description: "VN market equity research desk — factor IC signals → sector rotation → stock selection → risk-gated report. Uses 10 VN-core factors, ICB sector classification, and CRS 7-layer risk assessment."
 
 agents:
   - id: vn_data_analyst
@@ -17,7 +17,7 @@ agents:
       - `factor_scores` table: cross-sectional percentile ranks for 10 VN-core factors (SIZE, VOL_20D_ORTHO, EVEBITDA_INV, HML_REAL, ROE_NORM, NM, GM, YOY_REV, PIOTROSKI_F, FOREIGN_NET_5D)
       - `technical_indicators` table: 40+ indicators per symbol/date
       - `financial_ratios` table: PE, PB, ROE, ROA, debt_equity, etc.
-      - `risk_flags` table: 10 computed risk flags (hard/soft)
+      - `risk_assessments` table: CRS 7-layer risk scores (quant, fundamental, market, macro, global, regulatory, behavioral)
       - `macro_indicators` table: VN-specific macro (CPI, PMI, credit growth, SBV rates)
 
       ## Output Requirements
@@ -30,7 +30,7 @@ agents:
 
       Use load_skill("vn-trading-rules") for VN market rule context.
       Use load_skill("vn-sector-analysis") for sector classification context.
-    tools: [bash, read_file, write_file, load_skill, session_search]
+    tools: [bash, read_file, write_file, load_skill, session_search, risk_flags, disclosures]
     skills: [vn-trading-rules, vn-sector-analysis, factor-research]
     max_iterations: 30
     timeout_seconds: 600
@@ -62,7 +62,7 @@ agents:
 
       Use load_skill("vn-sector-analysis") for detailed sector behavior.
       Use load_skill("vn-macro-calendar") for macro event context.
-    tools: [bash, read_file, write_file, load_skill, session_search]
+    tools: [bash, read_file, write_file, load_skill, session_search, risk_flags, disclosures]
     skills: [vn-sector-analysis, vn-macro-calendar, sector-rotation]
     max_iterations: 30
     timeout_seconds: 600
@@ -71,36 +71,37 @@ agents:
   - id: vn_signal_analyst
     role: VN Signal Integration Analyst
     system_prompt: |
-      You are a signal integration analyst who combines factor signals, technical indicators, risk flags, and foreign flow data for the VN market.
+      You are a signal integration analyst who combines factor signals, technical indicators, CRS 7-layer risk scores, and foreign flow data for the VN market.
 
       ## Task
-      Generate specific BUY/HOLD/SELL recommendations for individual stocks, gated by VN risk flags.
+      Generate specific BUY/HOLD/SELL recommendations for individual stocks, gated by CRS risk assessment.
 
       {upstream_context}
 
       ## Signal Sources
       1. **10 VN-core factor composite** (from factor_scores table)
       2. **Technical indicators** (support/resistance, volume, momentum)
-      3. **Risk flags** (hard flags = DO_NOT_TRADE, soft flags = size adjustment)
+      3. **CRS risk assessment** — 7 layers (call `risk_flags` tool to check per symbol)
       4. **Foreign flow** (net buying/selling by foreign investors)
       5. **Insider trades** (recent insider buying/selling)
 
-      ## Risk Gate Rules
-      - HARD flags => DO_NOT_TRADE regardless of factor score
-      - SOFT flags => reduce position size by 50%
+      ## Risk Gate Rules (CRS 7-layer)
+      - `hard_blocked = true` => DO_NOT_TRADE regardless of factor score
+      - `soft_blocked` with >= 3 soft flags => reduce position size by 50%
       - No flags + factor percentile > 80 => BUY signal
       - No flags + factor percentile < 20 => SELL signal
       - Otherwise => HOLD (or no signal)
 
       ## Output Requirements
-      1. **BUY List** — Symbols passing risk gate with strong factor composite
-      2. **SELL List** — Symbols with weak factor composite, no hard flags
-      3. **BLOCKED List** — Symbols with active hard flags (DO_NOT_TRADE)
+      1. **BUY List** — Symbols passing CRS risk gate with strong factor composite
+      2. **SELL List** — Symbols with weak factor composite, no hard block
+      3. **BLOCKED List** — Symbols with active hard block (DO_NOT_TRADE)
       4. **Foreign Flow Watch** — Symbols with extreme foreign buying/selling
-      5. **Portfolio Sizing** — Suggested position sizes based on risk flags
+      5. **Portfolio Sizing** — Suggested position sizes based on CRS risk level
 
       Use load_skill("vn-trading-rules") for position sizing constraints (T+2, lot sizes).
-    tools: [bash, read_file, write_file, load_skill, session_search, create_hypothesis, search_hypotheses, update_hypothesis]
+      Use the `risk_flags` tool to query CRS risk for any symbol before recommending.
+    tools: [bash, read_file, write_file, load_skill, session_search, create_hypothesis, search_hypotheses, update_hypothesis, risk_flags, disclosures]
     skills: [vn-trading-rules, risk-analysis, factor-research]
     max_iterations: 30
     timeout_seconds: 600
@@ -125,9 +126,9 @@ agents:
       5. **Risk Dashboard** — Active risk flags, foreign flow warnings
       6. **Position Sizing** — Suggested portfolio allocation with T+2 settlement consideration
 
-      Ensure the report uses VND-denominated prices and references VN-specific concepts correctly (T+2, price limits, lot sizes).
+       Ensure the report uses VND-denominated prices and references VN-specific concepts correctly (T+2, price limits, lot sizes).
 
-    tools: [bash, read_file, write_file, session_search, create_hypothesis, search_hypotheses, update_hypothesis]
+    tools: [bash, read_file, write_file, session_search, create_hypothesis, search_hypotheses, update_hypothesis, risk_flags, disclosures]
     skills: [vn-trading-rules, vn-sector-analysis, report-generate]
     max_iterations: 30
     timeout_seconds: 600
