@@ -14,7 +14,7 @@ from typing import Any
 import psycopg2
 import psycopg2.extras
 
-from app.services.pg_pool import DB_URL
+from app.infrastructure.database.pg_pool import DB_URL
 
 logger = logging.getLogger(__name__)
 

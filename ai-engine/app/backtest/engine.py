@@ -17,7 +17,7 @@ import pandas as pd
 
 from app.backtest.cost_model import estimate_cost, round_to_lot
 from app.backtest.execution import HOSEExecutionModel, count_trading_days, is_trading_day
-from app.services.risk_engine import MacroRiskEngine
+from app.domain.rules.risk.risk_engine import MacroRiskEngine
 
 logger = logging.getLogger(__name__)
 

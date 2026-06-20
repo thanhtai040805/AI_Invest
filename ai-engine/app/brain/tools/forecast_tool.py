@@ -1,6 +1,6 @@
 """Time Series Forecast Tool — ARIMA/SARIMA forecasting.
 
-Agent-facing interface around :mod:`app.services.time_series_forecast`.
+Agent-facing interface around :mod:`app.domain.services.time_series_forecast`.
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ class ForecastTool(BaseTool):
     repeatable = True
 
     def execute(self, **kwargs: str) -> str:
-        from app.services.time_series_forecast import forecast_arima
+        from app.domain.services.time_series_forecast import forecast_arima
 
         symbol = kwargs.get("symbol", "")
         horizon = int(kwargs.get("horizon", 20))

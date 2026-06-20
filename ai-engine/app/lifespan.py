@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.brain.lifespan import lifespan as brain_lifespan
-from app.services.pg_pool import migrate as pg_migrate
+from app.infrastructure.database.pg_pool import migrate as pg_migrate
 
 logger = logging.getLogger("ai_engine.lifespan")
 

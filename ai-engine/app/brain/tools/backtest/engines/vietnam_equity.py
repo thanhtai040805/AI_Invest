@@ -16,7 +16,7 @@ from backtest.engines.base import BaseEngine
 from backtest.models import EquitySnapshot
 from app.backtest.cost_model import estimate_cost, round_to_lot, snap_to_price_step
 from app.backtest.execution import HOSEExecutionModel
-from app.services.risk_engine import MacroRiskEngine
+from app.domain.rules.risk.risk_engine import MacroRiskEngine
 
 VN_TIMEZONE = "Asia/Ho_Chi_Minh"
 

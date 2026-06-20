@@ -12,7 +12,7 @@ import pypdfium2 as pdfium
 
 from app.brain.agents.core.progress import emit_progress
 from app.brain.agents.core.tools import BaseTool
-from app.services.news_rag import news_rag_svc
+from app.infrastructure.llm.news_rag import news_rag_svc
 
 logger = logging.getLogger(__name__)
 

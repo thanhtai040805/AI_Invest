@@ -1,11 +1,11 @@
-"""Mean-variance (max Sharpe) optimizer — delegates to app.quant.risk.portfolio."""
+"""Mean-variance (max Sharpe) optimizer — delegates to app.domain.services.quant.risk.portfolio."""
 from typing import Any, Dict, List
 
 import numpy as np
 import pandas as pd
 
 from backtest.optimizers.base import BaseOptimizer
-from app.quant.risk.portfolio import max_sharpe_weights
+from app.domain.services.quant.risk.portfolio import max_sharpe_weights
 
 
 class MeanVarianceOptimizer(BaseOptimizer):

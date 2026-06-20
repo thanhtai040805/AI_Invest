@@ -20,14 +20,14 @@ def main():
     parser.add_argument("--symbol", type=str, default=None, help="Single symbol to rebuild")
     args = parser.parse_args()
 
-    from app.dataflows.vendors.vn.adj_close import (
+    from app.infrastructure.vendors.vn.adj_close import (
         refresh_all,
         refresh_incremental,
         compute_adj_for_symbol,
         get_hose_symbols,
     )
     import psycopg2
-    from app.services.pg_pool import DB_URL
+    from app.infrastructure.database.pg_pool import DB_URL
 
     if args.incremental:
         logger.info("Running incremental adj_close refresh...")

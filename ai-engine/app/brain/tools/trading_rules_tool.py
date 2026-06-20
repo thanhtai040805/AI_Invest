@@ -1,7 +1,7 @@
 """Trading Rules Tool — configurable stop-loss, take-profit, position sizing,
 and portfolio constraint checking for Vietnamese equities.
 
-Agent-facing interface around :mod:`app.services.trading_rules`.
+Agent-facing interface around :mod:`app.domain.services.trading_rules`.
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ class TradingRulesTool(BaseTool):
     repeatable = True
 
     def execute(self, **kwargs: str) -> str:
-        from app.services.trading_rules import (
+        from app.domain.services.trading_rules import (
             TradingRulesConfig,
             PortfolioState,
             PositionInfo,

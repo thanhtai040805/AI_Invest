@@ -6,7 +6,7 @@ import pandas as pd
 # Add paths
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from app.services.factor_service import FactorService
+from app.domain.services.factor_service import FactorService
 
 def verify_factor_engine():
     print("--- Verification: Factor Engine (Z-Score Ranking) ---")
@@ -16,7 +16,7 @@ def verify_factor_engine():
     
     # 2. Check for latest data date
     import psycopg2
-    from app.services.pg_pool import DB_URL
+    from app.infrastructure.database.pg_pool import DB_URL
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
     cur.execute("SELECT MAX(calc_date) FROM technical_indicators")

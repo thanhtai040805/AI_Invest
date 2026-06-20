@@ -6,8 +6,8 @@ import pandas as pd
 # Add paths
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from app.services.portfolio_service import PortfolioOptimizer
-from app.services.factor_service import FactorService
+from app.domain.services.portfolio_service import PortfolioOptimizer
+from app.domain.services.factor_service import FactorService
 
 def verify_portfolio_construction():
     print("--- Verification: Portfolio Construction (Allocation Optimizer) ---")
@@ -17,7 +17,7 @@ def verify_portfolio_construction():
     
     # 2. Fetch Alpha data (using date from factor engine)
     import psycopg2
-    from app.services.pg_pool import DB_URL
+    from app.infrastructure.database.pg_pool import DB_URL
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
     

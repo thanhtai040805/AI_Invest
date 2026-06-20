@@ -8,8 +8,8 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 sys.path.append(str(Path(__file__).resolve().parents[1] / "app" / "brain" / "tools"))
 
 from app.brain.tools.backtest.engines.vietnam_equity import VietnamEquityEngine
-from app.services.risk_engine import MacroRiskEngine
-from app.services.macro_service import _persist_macro
+from app.domain.rules.risk.risk_engine import MacroRiskEngine
+from app.domain.rules.market.macro_service import _persist_macro
 
 def verify_macro_backtest():
     print("--- Verification: Macro-Aware Backtest ---")
@@ -35,7 +35,7 @@ def verify_macro_backtest():
     # Normally _persist_macro takes a single dict for latest. 
     # Let's use a direct SQL insert for historical.
     import psycopg2
-    from app.services.pg_pool import DB_URL
+    from app.infrastructure.database.pg_pool import DB_URL
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
     for r in rows:

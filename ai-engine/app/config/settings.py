@@ -96,7 +96,7 @@ def get_dnse_client():
 
 
 def get_ws_client():
-    from app.services.dnse.websocket.client import TradingClient
+    from app.infrastructure.external_api.dnse.websocket.client import TradingClient
     settings = get_settings()
 
     return TradingClient(

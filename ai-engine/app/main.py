@@ -8,8 +8,8 @@ from datetime import datetime
 
 from app.lifespan import lifespan
 from app.config.settings import get_settings
-from app.services.dnse.stream_hub import get_stream_hub
-from app.routers import market_data, stock_data, screener, stream, backtest, agent, swarm, skills, trading_agents, shadow_account, factors, tools, session, providers, config, memory, dataflows, graph, core, llm_clients, security, hypotheses, preflight, ui_services, vibe_routes, runs, ai_routes, admin
+from app.infrastructure.external_api.dnse.stream_hub import get_stream_hub
+from app.presentation.api import market_data, stock_data, screener, stream, backtest, agent, swarm, skills, factors, tools, session, providers, config, memory, dataflows, core, llm_clients, security, preflight, ui_services, runs, ai_routes, admin
 
 app = FastAPI(
     title="AIInvest AI Engine",
@@ -44,7 +44,7 @@ async def health():
 
 @app.get("/health/detailed")
 async def health_detailed():
-    from app.services.dnse.redis_pub import get_rate_limiter
+    from app.infrastructure.external_api.dnse.redis_pub import get_rate_limiter
     hub = get_stream_hub()
     limiter = get_rate_limiter()
     return {
@@ -69,8 +69,6 @@ app.include_router(backtest.router, prefix="/api/backtest", tags=["Backtest"])
 app.include_router(agent.router, prefix="/api/agent", tags=["Agent"])
 app.include_router(swarm.router, prefix="/api/swarm", tags=["Swarm"])
 app.include_router(skills.router, prefix="/api/skills", tags=["Skills"])
-app.include_router(trading_agents.router, prefix="/api/trading-agents", tags=["TradingAgents"])
-app.include_router(shadow_account.router, prefix="/api/shadow-account", tags=["ShadowAccount"])
 app.include_router(factors.router, prefix="/api/factors", tags=["Factors"])
 app.include_router(tools.router, prefix="/api/tools", tags=["Tools"])
 app.include_router(session.router, prefix="/api/session", tags=["Session"])
@@ -78,15 +76,12 @@ app.include_router(providers.router, prefix="/api/providers", tags=["Providers"]
 app.include_router(config.router, prefix="/api/config", tags=["Config"])
 app.include_router(memory.router, prefix="/api/memory", tags=["Memory"])
 app.include_router(dataflows.router, prefix="/api/dataflows", tags=["Dataflows"])
-app.include_router(graph.router, prefix="/api/graph", tags=["Graph"])
 app.include_router(core.router, prefix="/api/core", tags=["Core"])
 app.include_router(llm_clients.router, prefix="/api/llm-clients", tags=["LLMClients"])
 app.include_router(security.router, prefix="/api/security", tags=["Security"])
-app.include_router(hypotheses.router, prefix="/api/hypotheses", tags=["Hypotheses"])
 app.include_router(preflight.router, prefix="/api/preflight", tags=["Preflight"])
 app.include_router(ui_services.router, prefix="/api/ui-services", tags=["UIServices"])
 app.include_router(ai_routes.router, prefix="/api/ai", tags=["AI Bridge"])
-app.include_router(vibe_routes.router, prefix="/api/vibe-api", tags=["VibeAPI"])
 app.include_router(runs.router, prefix="/api", tags=["Runs"])
 app.include_router(admin.router, prefix="/api", tags=["Admin"])
 

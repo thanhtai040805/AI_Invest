@@ -31,9 +31,9 @@ class DNSELoader:
     def __init__(self):
         """Initialize DNSE loader."""
         # Import VN adapters
-        from app.dataflows.vendors.vn.ohlcv_tool import OHLCVTool
-        from app.dataflows.vendors.vn.indicators_tool import IndicatorsTool
-        from app.dataflows.vendors.vn.fundamentals_tool import FundamentalsTool
+        from app.infrastructure.vendors.vn.ohlcv_tool import OHLCVTool
+        from app.infrastructure.vendors.vn.indicators_tool import IndicatorsTool
+        from app.infrastructure.vendors.vn.fundamentals_tool import FundamentalsTool
 
         self.ohlcv_tool = OHLCVTool()
         self.indicators_tool = IndicatorsTool()
@@ -194,7 +194,7 @@ class DNSELoader:
         """
         # For now, return a placeholder
         # In production, this should use VNCalendar
-        from app.dataflows.vendors.vn.calendar import VNCalendar
+        from app.infrastructure.vendors.vn.calendar import VNCalendar
 
         calendar = VNCalendar()
         dates = []

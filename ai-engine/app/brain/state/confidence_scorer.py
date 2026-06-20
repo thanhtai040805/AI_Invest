@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 # Optional ML-based calibrator
 try:
-    from app.ml.calibration import CalibratedConfidence
+    from app.domain.services.ml.calibration import CalibratedConfidence
 except Exception:
     CalibratedConfidence = None
 

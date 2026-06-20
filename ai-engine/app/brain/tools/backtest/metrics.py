@@ -3,7 +3,7 @@
 Provides:
 - calc_bars_per_year (VN-specific)
 - win_rate_and_stats, by_symbol_stats, by_exit_reason_stats (trade-level)
-- calc_metrics (wraps new app.backtest.metrics + app.quant.risk.risk_model)
+- calc_metrics (wraps new app.backtest.metrics + app.domain.services.quant.risk.risk_model)
 - estimate_garch_volatility (unique, kept here)
 """
 
@@ -16,7 +16,7 @@ import pandas as pd
 
 from backtest.models import TradeRecord
 from app.backtest.metrics import compute_sharpe, compute_sortino, compute_max_drawdown, compute_calmar_ratio, compute_hit_rate, compute_profit_factor, compute_deflated_sharpe, compute_alpha_beta
-from app.quant.risk.risk_model import compute_var, compute_cvar
+from app.domain.services.quant.risk.risk_model import compute_var, compute_cvar
 
 _TRADING_DAYS = {"vietfin": 252, "dnse": 252}
 _BARS_PER_DAY = {

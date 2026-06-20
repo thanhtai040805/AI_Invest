@@ -1,6 +1,6 @@
 """Seasonality Analysis Tool — VN market calendar effects.
 
-Agent-facing interface around :mod:`app.services.seasonality`.
+Agent-facing interface around :mod:`app.domain.services.seasonality`.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ class SeasonalityTool(BaseTool):
     repeatable = True
 
     def execute(self, **kwargs: str) -> str:
-        from app.services.seasonality import analyze_all
+        from app.domain.services.seasonality import analyze_all
 
         symbol = kwargs.get("symbol", "VNINDEX")
         try:

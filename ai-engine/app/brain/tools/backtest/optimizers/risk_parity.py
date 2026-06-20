@@ -1,11 +1,11 @@
-"""Risk parity — delegates to app.quant.risk.portfolio."""
+"""Risk parity — delegates to app.domain.services.quant.risk.portfolio."""
 from typing import Any, Dict
 
 import numpy as np
 import pandas as pd
 
 from backtest.optimizers.base import BaseOptimizer
-from app.quant.risk.portfolio import risk_parity_weights
+from app.domain.services.quant.risk.portfolio import risk_parity_weights
 
 
 class RiskParityOptimizer(BaseOptimizer):

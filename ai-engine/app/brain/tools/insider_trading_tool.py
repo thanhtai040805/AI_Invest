@@ -1,6 +1,6 @@
 """Insider Trading Tool — retrieves insider trading data for Vietnamese stocks.
 
-Agent-facing interface around :mod:`app.services.scraper_insider`.
+Agent-facing interface around :mod:`app.infrastructure.data_pipelines.scraper_insider`.
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ class InsiderTradingTool(BaseTool):
 
         symbol = kwargs["symbol"]
         try:
-            from app.services.scraper_insider import get_insider_data
+            from app.infrastructure.data_pipelines.scraper_insider import get_insider_data
             result = asyncio.run(get_insider_data(symbol))
             return json.dumps(result, ensure_ascii=False, indent=2)
         except Exception as e:

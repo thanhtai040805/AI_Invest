@@ -10,9 +10,9 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from app.services.dnse.stream_hub import get_stream_hub
-from app.services.dnse.rest_client import get_rest_client
-from app.database.models import init_db
+from app.infrastructure.external_api.dnse.stream_hub import get_stream_hub
+from app.infrastructure.external_api.dnse.rest_client import get_rest_client
+from app.infrastructure.database.models import init_db
 # ── Logging (attach to root so it survives uvicorn) ────────────────────
 root = logging.getLogger()
 root.setLevel(logging.INFO)
@@ -74,7 +74,7 @@ async def lifespan(app: FastAPI):
         log.info("News scheduler started (15-min interval)")
         while True:
             try:
-                from app.dataflows.vendors.vn.cafef_listing_crawl import refresh_listing
+                from app.infrastructure.vendors.vn.cafef_listing_crawl import refresh_listing
                 result = await asyncio.to_thread(refresh_listing, max_pages=1, deep_crawl=True)
                 inserted = result.get("inserted", 0)
                 deep = result.get("deep_crawl", {})
