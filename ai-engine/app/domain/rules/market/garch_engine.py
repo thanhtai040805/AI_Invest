@@ -70,6 +70,9 @@ class GARCHCashEngine:
         if len(returns) < 20:
             return returns.std() if not returns.empty else 0.02 # Fallback 2%
             
+        # Fit model parameters dynamically on historical returns
+        self.fit_from_data(returns)
+        
         r = returns.values - np.mean(returns.values)
         n = len(r)
         

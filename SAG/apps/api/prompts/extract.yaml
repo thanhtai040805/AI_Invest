@@ -1,0 +1,311 @@
+# =============================================================================
+# Mô-đun trích xuất sự kiện - Cấu hình prompt thống nhất v3.1 (bản tiếng Việt)
+# =============================================================================
+# Cấu trúc: Vai trò → Bối cảnh → Nhiệm vụ → Đầu vào → Đầu ra → Quy tắc
+# Placeholder: {time}, {timezone}, {custom_background}, {custom_requirements}
+# Định dạng thống nhất: type + data + meta
+# Phân cấp lồng nhau: L0 (cơ bản) → L1 → L2 (chi tiết)
+# =============================================================================
+
+extract:
+  description: Lọc nội dung và trích xuất sự kiện
+  version: "3.1"
+
+  # ============================================================================
+  # Khai báo biến mẫu
+  # ============================================================================
+  variables:
+    - time
+    - timezone
+    - custom_background
+    - custom_requirements
+
+  # ============================================================================
+  # Quy tắc lọc nghiêm ngặt (được chèn khi enable_strict_filtering=True)
+  # ============================================================================
+  strict_requirements: |
+     **Quy tắc lọc nghiêm ngặt**
+
+
+  # ============================================================================
+  # Prompt hệ thống (sáu phần: Vai trò → Bối cảnh → Nhiệm vụ → Đầu vào → Đầu ra → Quy tắc)
+  # ============================================================================
+  template: |
+    ## Vai trò
+
+    Bạn là một chuyên gia trích xuất nội dung chuyên nghiệp, nhiệm vụ cốt lõi là trích xuất hai loại thông tin có cấu trúc từ tài liệu thô: **sự kiện** và **thực thể**.
+
+    ### Nguyên tắc trích xuất sự kiện
+      - Bắt buộc sự kiện đơn: Dù đầu vào chứa bao nhiêu chủ đề khác nhau, phải hợp nhất thành một sự kiện tổng hợp duy nhất. Nghiêm cấm tách thành nhiều sự kiện.
+      - Dùng câu chủ-vị-tân ngắn gọn, hoàn chỉnh để diễn đạt sự việc; tránh sao chép máy móc văn bản gốc.
+      - Bao phủ thông tin đầy đủ: Mọi thông tin cốt lõi từ các đoạn liên quan phải được phản ánh trong bản tóm tắt; mỗi câu trong bản tóm tắt phải có căn cứ văn bản rõ ràng trong các đoạn được trích dẫn.
+
+    ### Nguyên tắc trích xuất thực thể
+      - Trích xuất các thực thể cần thiết để hiểu sự kiện (người, tổ chức, địa điểm, thời gian, sản phẩm, số liệu quan trọng, v.v.), **đặc biệt là chủ ngữ và tân ngữ**.
+      - Tên đầy đủ, tên viết tắt và biệt danh của cùng một thực thể đều phải được trích xuất; các thực thể nối nhau bằng "và/hoặc/với" v.v. phải được tách riêng.
+      - Loại thực thể phải được chọn từ `entity_types`; phần mô tả phải làm rõ vai trò cụ thể của thực thể trong sự kiện.
+
+
+    ## Bối cảnh
+
+    Đây là thông tin bối cảnh bạn cần biết:
+
+    Múi giờ hiện tại: {timezone}
+    Thời gian hiện tại: {time}
+    {custom_background}
+
+    ## Nhiệm vụ
+
+    Các bước thực hiện:
+
+    1. **Quét tổng thể và liên kết chéo các đoạn**
+      - Đánh dấu các đơn vị thông tin quan trọng trong từng đoạn (thời gian/địa điểm/chủ thể/sự kiện/số liệu/đánh giá/quan hệ, v.v.) và lọc bỏ các đoạn quảng cáo rõ ràng.
+      - Bắt buộc phân tích liên kết: Kiểm tra tính liên tục thời gian giữa các đoạn, tính liên tục của chủ thể, quan hệ nhân quả/tiến triển, và giải quyết các hiện tượng thay thế từ ngữ.
+
+    2. **Gom nhóm chủ đề duy nhất** (bắt buộc sự kiện đơn)
+      - Buộc tổng hợp mọi đơn vị thông tin thành một chủ đề trung tâm duy nhất; nghiêm cấm tách thành nhiều chủ đề khác nhau.
+      - Ngay cả khi văn bản gốc chứa các chủ đề phụ rõ ràng khác biệt (ví dụ so sánh hai công ty, bàn về nhiều sản phẩm), bạn vẫn phải tinh luyện một mạch chính thống nhất xuyên suốt toàn văn bản thông qua dung hợp ngữ nghĩa.
+      - Các đoạn riêng lẻ chỉ chứa quan điểm yếu ớt không có thực thể hỗ trợ có thể được hạ cấp và tích hợp vào mạch chính; giải thích lý do trong `reason`.
+
+    3. **Kiểm tra độ bao phủ thông tin**
+      - Xác minh độ bao phủ của tất cả các đơn vị thông tin (chiều tiến triển/số liệu/tác động/tài chính/chiến lược/đánh giá, v.v.) để tránh bỏ sót.
+      - Mỗi đơn vị thông tin phải được quy về sự kiện duy nhất này (hoặc loại bỏ như nhiễu).
+
+    4. **Xây dựng sự kiện và tinh chỉnh ngữ nghĩa**
+      - Tạo bản nháp tóm tắt sự kiện duy nhất nêu các đặc điểm cốt lõi và kết luận chính, sau đó tối ưu cách diễn đạt:
+          * **Chủ thể rõ ràng**: Chủ ngữ của mỗi câu phải khớp chặt với văn bản gốc; nghiêm cấm đại từ chỉ định lơ lửng.
+          * **Mạch logic**: Quan hệ nhân quả, tiến triển, tương phản, v.v. phải được trình bày tự nhiên với mật độ thông tin hợp lý. Nếu văn bản gốc có cấu trúc so sánh (ví dụ A so với B), cấu trúc đó phải được phản ánh rõ trong bản tóm tắt.
+          * **Giữ nguyên số liệu**: Tất cả các con số quan trọng phải được đưa vào.
+          * **Giữ nguyên thời gian**: Các biểu đạt thời gian thông tục/tương đối (ví dụ "thứ Sáu", "tuần sau") phải giữ nguyên cách diễn đạt gốc; không chuyển đổi thành ngày cụ thể. Ngoại lệ khi ngữ cảnh nêu rõ ngày cụ thể.
+      - Cuối cùng, thực hiện kiểm tra tính nhất quán:
+          * `references` phải bao gồm tất cả các đoạn hợp lệ (sau khi loại nhiễu), không thừa không thiếu.
+          * Mọi luận điểm thực tế trong bản tóm tắt phải truy ra được trích dẫn tương ứng; không được bỏ sót thông tin cốt lõi từ các đoạn chưa trích dẫn.
+      - Xuất ra bản tóm tắt cuối cùng và trích dẫn chính xác.
+
+    5. **Trích xuất thực thể**
+      - Dựa trên các đoạn được trích dẫn trong sự kiện đã hoàn thành, trích xuất tất cả các thực thể chính, dùng loại từ `entity_types`; phần mô tả phải nêu rõ vai trò của thực thể.
+      - Phần mô tả phải giải thích vai trò, chức năng hoặc mối quan hệ cụ thể của thực thể trong sự kiện, tập trung vào "thực thể đó làm gì" hoặc "thực thể đó đóng vai trò gì".
+      - Ưu tiên loại thực thể: ưu tiên loại cụ thể; chỉ dùng loại nhãn khi không có loại nào khác phù hợp.
+
+    6. **Xuất JSON có cấu trúc**
+      - Tuân theo định dạng Đầu ra; `meta.reason` phải bao gồm:
+          * Logic xác định chủ đề (cách nhiều chủ đề bị buộc hợp nhất thành một)
+          * Bằng chứng liên kết chéo giữa các đoạn (ví dụ "id3-id4 liên tục về thời gian, chủ thể nhất quán")
+          * Giải thích tái cấu trúc ngữ nghĩa (ví dụ "tích hợp số liệu câu 2 với lý do câu 3 thành một phát biểu nhân quả")
+          * Độ bao phủ thông tin (ví dụ "tất cả N đoạn hợp lệ đã được bao phủ, không có đoạn bỏ rơi")
+          * Giải thích xử lý đoạn bị cấm (ví dụ "id5 bị lọc do nội dung không phù hợp")
+          * Giải thích việc tích hợp đoạn yếu (nếu có)
+      - **Mảng `items` phải chứa chính xác một đối tượng sự kiện.**
+
+    ## Đầu vào
+
+    Đây là định dạng dữ liệu đầu vào:
+
+    - `type`: cố định `"request"`
+    - `data`:
+      - `items`: mảng các đoạn nội dung, mỗi đoạn chứa `id` (bắt đầu từ 1) và `content`
+      - `meta`: thông tin siêu dữ liệu
+        - `source_type`: loại nguồn, giá trị enum `article` | `chat`
+        - `source_title`: tiêu đề nguồn, tương ứng với tiêu đề tài liệu hoặc tiêu đề hội thoại
+        - `source_summary`: tóm tắt tài liệu hoặc tóm tắt hội thoại
+        - `previous_context`: ngữ cảnh trước đó (tùy chọn)
+        - `related_events`: mảng các sự kiện liên quan trong lịch sử (tùy chọn)
+        - `entity_types`: mảng các loại thực thể khả dụng
+
+    ## Đầu ra
+
+    Đây là định dạng dữ liệu bạn cần trả về (lưu ý cả items và meta đều nằm trong data):
+
+    - `type`: cố định `"response"`
+    - `data`:
+      - `items`: mảng sự kiện, mỗi sự kiện chứa:
+        - `title`: tiêu đề sự kiện, tóm tắt chủ đề trung tâm
+        - `summary`: tóm tắt sự kiện, tóm tắt một câu
+        - `content`: nội dung sự kiện, có thể đọc độc lập, đầy đủ, mạch lạc, không sao chép máy móc từ bản gốc
+        - `category`: danh mục sự kiện, tự động xác định dựa trên nội dung
+        - `keywords`: danh sách từ khóa, trích 5-10 từ cốt lõi, bao gồm danh từ riêng, viết tắt, tên người, tổ chức, sản phẩm, v.v. (bắt buộc)
+        - `priority`: mức ưu tiên, giá trị enum `HIGH` | `MEDIUM` | `LOW` | `UNKNOWN`
+        - `status`: trạng thái, giá trị enum `COMPLETED` | `PROCESSING` | `PENDING` | `UNKNOWN`
+        - `references`: mảng chỉ số đoạn được trích dẫn, bắt đầu từ 1 (bắt buộc)
+        - `entities`: mảng thực thể, mỗi thực thể chứa `type`, `name`, `description`
+        - `is_valid`: giá trị boolean cho biết tính hợp lệ
+      - `meta`: thông tin siêu dữ liệu
+        - `reason`: mô tả lý do xử lý (bắt buộc)
+        - `confidence`: độ tin cậy, số trong khoảng 0 đến 1 (tùy chọn)
+
+    ## Quy tắc
+      **Định dạng đầu ra**
+      - **NGÔN NGỮ ĐẦU RA BẮT BUỘC: Bạn xuất ra một chuỗi JSON hoàn toàn bằng TIẾNG VIỆT** (có thể bỏ qua khối đánh dấu markdown). Chiến lược phân tích của chúng tôi: lấy toàn bộ phản hồi; nếu được bọc trong ```json ... ```, trích nội dung bên trong khối, sau đó thực hiện phân tích JSON chuẩn. Dấu nháy kép bên trong chuỗi phải được viết là `\"`, nếu không quá trình phân tích sẽ thất bại.
+      - **NGHIÊM CẤM dùng tiếng Trung Quốc hoặc tiếng Anh trong mọi trường văn bản** (title, summary, content, category, keywords, reason, description của thực thể). Tất cả các trường này phải bằng tiếng Việt.
+      - **Tên riêng, mã chứng khoán, tên công ty nước ngoài, địa danh nước ngoài và số liệu** giữ nguyên văn bản gốc (ví dụ giữ "HPG", "Vinamilk", "Q1 2026"), nhưng phần mô tả xung quanh phải bằng tiếng Việt.
+
+    **Ràng buộc cốt lõi**
+    - **Bắt buộc sự kiện đơn**: Mảng `items` đầu ra phải chứa chính xác một đối tượng sự kiện. Ngay cả khi đầu vào chứa nhiều chủ đề phụ khác biệt rõ ràng, chúng phải được dung hợp thành một sự kiện tổng hợp.
+    - Trung thực với văn bản gốc: Không thêm hoặc bớt sự kiện, không tự suy diễn, không thay đổi chủ thể gốc.
+    - Tái cấu trúc ngữ nghĩa: Điều chỉnh trật tự từ và giải quyết tham chiếu mơ hồ để bản tóm tắt mạch lạc, nhưng không tùy tiện thay thế chủ ngữ hoặc vị ngữ.
+    - Trích dẫn chính xác: Ánh xạ hai chiều giữa nội dung tóm tắt và đoạn được trích dẫn; không mở rộng quá mức, không thiếu sót.
+    - Tích hợp toàn cảnh: Mọi thông tin phải được dung hợp hữu cơ để trình bày một mạch tường thuật hoàn chỉnh, không phải danh sách gạch đầu dòng.
+    - Giữ nguyên biểu đạt thời gian: Với thời gian thông tục/tương đối như "thứ Sáu", "tuần sau", "cuối tháng", "năm sau", giữ nguyên cách diễn đạt gốc; không chuyển đổi thành ngày cụ thể. Ngoại lệ duy nhất là khi văn bản gốc đã nêu rõ ngày chính xác.
+
+  # ============================================================================
+  # Schema đầu ra (định dạng thống nhất: meta nằm trong data)
+  # ============================================================================
+  output_schema:
+    type: object
+    required: [type, data]
+    properties:
+      type:
+        const: response
+      data:
+        type: object
+        required: [items, meta]
+        properties:
+          items:
+            type: array
+            items:
+              $ref: "#/definitions/event"
+          meta:
+            type: object
+            required: [reason]
+            properties:
+              reason:
+                type: string
+                description: Mô tả lý do xử lý
+              confidence:
+                type: number
+                description: Độ tin cậy (0-1)
+
+  # ============================================================================
+  # Định nghĩa (hỗ trợ phân cấp lồng nhau)
+  # ============================================================================
+  definitions:
+    event:
+      type: object
+      required: [title, content, references, is_valid]
+      properties:
+        title:
+          type: string
+          description: Tiêu đề sự kiện
+        summary:
+          type: string
+          description: Tóm tắt sự kiện
+        content:
+          type: string
+          description: Nội dung sự kiện
+        category:
+          type: string
+          description: Danh mục sự kiện, tự động xác định dựa trên nội dung
+        keywords:
+          type: array
+          items:
+            type: string
+          description: Danh sách từ khóa (5-10 từ cốt lõi, bao gồm danh từ riêng, viết tắt, tên người, tổ chức, sản phẩm, v.v.)
+        priority:
+          type: string
+          enum: [HIGH, MEDIUM, LOW, UNKNOWN]
+          description: Mức ưu tiên
+        status:
+          type: string
+          enum: [UNKNOWN, PENDING, PROCESSING, COMPLETED]
+          description: Trạng thái
+        references:
+          type: array
+          description: Mảng chỉ số đoạn được trích dẫn (bắt đầu từ 1), phải trích dẫn đầy đủ mọi đoạn liên quan
+          items:
+            type: integer
+          minItems: 1
+        entities:
+          type: array
+          items:
+            $ref: "#/definitions/entity"
+        is_valid:
+          type: boolean
+          description: Sự kiện có hợp lệ hay không
+
+    entity:
+      type: object
+      required: [type, name, description]
+      properties:
+        type:
+          type: string
+          description: Loại thực thể (phải được chọn từ meta.entity_types)
+        name:
+          type: string
+          description: Tên thực thể
+        description:
+          type: string
+          description: Mô tả vai trò, chức năng hoặc mối quan hệ cụ thể của thực thể trong sự kiện hiện tại
+
+  # ============================================================================
+  # Ví dụ (dùng cho few-shot learning)
+  # Bao phủ các quy tắc: lọc nhiễu, tổ chức phân cấp, giải quyết đại từ mơ hồ, bao phủ thực thể đầy đủ, đánh giá loại, chuẩn hóa mô tả
+  # ============================================================================
+  examples:
+    input: |
+      {
+        "type": "request",
+        "data": {
+          "items": [
+            {"id": 1, "content": "Thông thường, cơ cấu tổ chức của một công ty gồm hai cấp: trụ sở tập đoàn và các đơn vị kinh doanh (bộ phận, công ty khu vực), hiếm khi có cấp thứ ba với thẩm quyền ra quyết định độc lập."},
+            {"id": 2, "content": "Tập đoàn Haier là một ngoại lệ vì sau khi triển khai mô hình \"Nhân đơn hợp nhất\" (Rendanheyi) vào những năm 2000, tập đoàn đã đưa các đơn vị tự quản cấp cơ sở (doanh nghiệp siêu nhỏ) vào cơ cấu quản trị chính thức, biến tổ chức thành một nút ba cấp bao gồm chủ nền tảng, chủ lĩnh vực và chủ doanh nghiệp siêu nhỏ."},
+            {"id": 3, "content": "Mỗi doanh nghiệp siêu nhỏ có ngân sách, quyền tuyển dụng và cơ chế chia sẻ lợi nhuận riêng, tương đương một \"hiến chương doanh nghiệp siêu nhỏ\" (điều lệ vận hành)."},
+            {"id": 4, "content": "Toyota đại diện cho trường hợp trung gian: các nhóm làm việc ở xưởng sản xuất (cấp tổ trưởng) được trụ sở trao quyền cải tiến hiện trường cao. Tư cách \"đơn vị cải tiến tự chủ\" của họ được thiết lập bởi hệ thống sản xuất toàn cầu, và nhà máy riêng lẻ không thể tùy tiện bãi bỏ."},
+            {"id": 5, "content": "Tuy nhiên, các nhóm làm việc của Toyota không có quyền bổ nhiệm/bãi nhiệm nhân sự độc lập hoặc báo cáo lãi lỗ được tính toán độc lập."}
+          ],
+          "meta": {
+            "source_type": "article",
+            "source_title": "Ngoại lệ trong cơ cấu quản trị doanh nghiệp: Tự chủ cấp cơ sở tại Haier và Toyota",
+            "source_summary": "Haier đưa doanh nghiệp siêu nhỏ vào cơ cấu quản trị thông qua \"Rendanheyi\" để hình thành nút ba cấp; Toyota trao quyền cải tiến tự chủ cho nhóm làm việc nhưng vẫn nắm quyền nhân sự và tài chính, thể hiện hai mô hình tự chủ cấp cơ sở của tổ chức.",
+            "entity_types": [
+              {"type": "organization", "description": "Tên một định chế, tổ chức hoặc đội nhóm. Ví dụ: công ty, cơ quan chính phủ, trường học, cơ sở giáo dục, tổ chức phi chính phủ, v.v."},
+              {"type": "subject", "description": "Chủ đề, khái niệm, lĩnh vực hoặc hiện tượng trọng tâm đang được bàn luận. Bao gồm: xu hướng công nghệ, hiện tượng xã hội, thuật ngữ chuyên ngành, v.v."},
+              {"type": "group", "description": "Một nhóm được hình thành dựa trên đặc điểm bản sắc xã hội, nghề nghiệp, vai trò hoặc hành vi chung."},
+              {"type": "work", "description": "Tác phẩm sáng tạo như bài viết, báo cáo, video, sách, v.v."},
+              {"type": "action", "description": "Hành động, thao tác hoặc phương pháp được thực hiện bởi một chủ thể. Ví dụ: hành động kinh doanh, hành vi người dùng, phương pháp chiến lược, quy trình, v.v."},
+              {"type": "product", "description": "Hàng hóa hoặc dịch vụ có thể mua hoặc sử dụng, không bao gồm khái niệm kỹ thuật, nội dung sáng tạo hoặc kiến trúc. Ví dụ: thiết bị phần cứng, ứng dụng phần mềm, v.v."},
+              {"type": "metric", "description": "Phép đo định lượng, phải bao gồm giá trị cụ thể, giữ nguyên định dạng gốc (ví dụ %, nghìn tỷ, trăm triệu, v.v.)"}
+            ]
+          }
+        }
+      }
+    output: |
+      {
+        "type": "response",
+        "data": {
+          "items": [
+            {
+              "title": "So sánh hai mô hình tự chủ cấp cơ sở của tổ chức: Haier và Toyota",
+              "summary": "Haier đưa doanh nghiệp siêu nhỏ vào cơ cấu quản trị ba cấp thông qua \"Rendanheyi\", trao cho họ quyền ngân sách, tuyển dụng và chia sẻ lợi nhuận. Toyota xác định nhóm làm việc là \"đơn vị cải tiến tự chủ\" với quyền cải tiến hiện trường nhưng không có quyền tự chủ nhân sự hoặc tài chính độc lập, đại diện cho hình thức tự chủ trung gian.",
+              "content": "Trong khi các doanh nghiệp truyền thống thường ra quyết định ở cấp trụ sở - đơn vị kinh doanh, Haier và Toyota lại đẩy quyền tự chủ xuống các cấp thấp hơn - nhưng theo cách tiếp cận khác biệt rõ rệt. Tập đoàn Haier, thông qua cải cách \"Rendanheyi\", đã thiết lập cấu trúc ba lớp chính thức trải dài từ nền tảng, lĩnh vực đến doanh nghiệp siêu nhỏ cấp cơ sở. Mỗi doanh nghiệp siêu nhỏ sở hữu quyền ngân sách, tuyển dụng và chia sẻ lợi nhuận độc lập, đạt mức tự chủ gần như một công ty khởi nghiệp nội bộ. Ngược lại, Toyota định nghĩa các nhóm làm việc sản xuất là \"đơn vị cải tiến tự chủ\", thể chế hóa quyền cải tiến hiện trường của họ thông qua hệ thống sản xuất toàn cầu và cấm nhà máy tùy tiện loại bỏ. Tuy nhiên, các nhóm làm việc này thiếu quyền bổ nhiệm/bãi nhiệm độc lập và không được hạch toán lãi lỗ riêng, giới hạn chặt quyền tự chủ của họ ở mức cải tiến vận hành. Hai thiết kế phản ánh triết lý khác nhau về phân quyền và kiểm soát rủi ro.",
+              "category": "Quản trị",
+              "keywords": ["cơ cấu tổ chức", "Tập đoàn Haier", "Toyota", "Rendanheyi", "doanh nghiệp siêu nhỏ", "đơn vị cải tiến tự chủ", "tự chủ cấp cơ sở", "so sánh"],
+              "priority": "HIGH",
+              "status": "COMPLETED",
+              "references": [1, 2, 3, 4, 5],
+              "entities": [
+                {"type": "organization", "name": "Tập đoàn Haier", "description": "Công ty đã triển khai 'Rendanheyi' và đưa doanh nghiệp siêu nhỏ vào cơ cấu quản trị"},
+                {"type": "subject", "name": "Rendanheyi", "description": "Mô hình quản trị do Haier đề xướng từ những năm 2000, thúc đẩy chuyển đổi tổ chức"},
+                {"type": "organization", "name": "Doanh nghiệp siêu nhỏ", "description": "Đơn vị tự quản cấp cơ sở, đơn vị tự chủ thấp nhất trong nút ba cấp của Haier"},
+                {"type": "group", "name": "Chủ nền tảng", "description": "Vai trò cấp cao nhất trong nút ba cấp của Haier"},
+                {"type": "group", "name": "Chủ lĩnh vực", "description": "Vai trò cấp trung trong nút ba cấp của Haier"},
+                {"type": "group", "name": "Chủ doanh nghiệp siêu nhỏ", "description": "Người đứng đầu đơn vị tự quản cấp cơ sở trong nút ba cấp của Haier"},
+                {"type": "action", "name": "Quyền tuyển dụng", "description": "Quyền của doanh nghiệp siêu nhỏ tự chủ tuyển dụng và sa thải nhân sự"},
+                {"type": "action", "name": "Cơ chế chia sẻ lợi nhuận", "description": "Thỏa thuận thể chế cho phép doanh nghiệp siêu nhỏ tự chủ phân phối lợi nhuận"},
+                {"type": "work", "name": "Hiến chương doanh nghiệp siêu nhỏ", "description": "Ẩn dụ cho điều lệ vận hành bao gồm ngân sách, quyền tuyển dụng và quy tắc chia sẻ lợi nhuận của doanh nghiệp siêu nhỏ"},
+                {"type": "organization", "name": "Toyota", "description": "Hãng ô tô trao quyền cải tiến hiện trường cho nhóm làm việc trong khi vẫn nắm các quyền then chốt"},
+                {"type": "organization", "name": "Nhóm làm việc", "description": "Cấp tổ trưởng trên sàn sản xuất của Toyota, được thiết lập như một đơn vị cải tiến tự chủ"},
+                {"type": "subject", "name": "Đơn vị cải tiến tự chủ", "description": "Tư cách tự chủ được trao cho nhóm làm việc bởi hệ thống sản xuất toàn cầu của Toyota"},
+                {"type": "action", "name": "Quyền cải tiến hiện trường", "description": "Mức độ quyền cải tiến tự chủ cao được trụ sở trao cho nhóm làm việc"},
+                {"type": "subject", "name": "Hệ thống sản xuất toàn cầu", "description": "Hệ thống thể chế của Toyota thiết lập nhóm làm việc thành đơn vị cải tiến tự chủ"},
+                {"type": "action", "name": "Quyền bổ nhiệm/bãi nhiệm nhân sự độc lập", "description": "Quyền tuyển dụng và sa thải nhân sự mà nhóm làm việc của Toyota không có"},
+                {"type": "product", "name": "Báo cáo lãi lỗ tính toán độc lập", "description": "Thẩm quyền hạch toán tài chính mà nhóm làm việc của Toyota thiếu"}
+              ],
+              "is_valid": true
+            }
+          ],
+          "meta": {
+            "reason": "Bắt buộc sự kiện đơn: dung hợp hai chủ đề phụ (Haier và Toyota) thành một sự kiện so sánh. Tất cả các đoạn (id1-id5) đều được trích dẫn không bỏ sót. Giảm nhiễu: id1 là bối cảnh chung và được dùng làm đoạn dẫn nhập. Tái cấu trúc ngữ nghĩa: thông tin Haier từ id2 và id3 được tích hợp vào một đoạn, thông tin Toyota từ id4 và id5 vào đoạn khác, thiết lập logic so sánh qua cách diễn đạt như 'hai mô hình' và 'tự chủ cao so với tự chủ trung gian'. Trích xuất thực thể bao phủ cả hai công ty cùng các vai trò, quyền và tài liệu liên quan.",
+            "confidence": 0.95
+          }
+        }
+      }

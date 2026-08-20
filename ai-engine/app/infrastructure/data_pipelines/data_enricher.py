@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import hashlib
+import math
 import os
 import numpy as np
 import pandas as pd
@@ -952,11 +953,14 @@ class DataEnricher:
     ) -> Dict[str, Any]:
         """Compute rolling sentiment averages and news counts for 1d/5d/10d windows.
         
-        Each news_item should have: publish_date (str/datetime), sentiment_score (float).
+        Each news_item should have: publish_date/published_date, sentiment_score (float),
+        and optionally: investment_impact, materiality, materiality_score, persistence, persistence_score, novelty.
         """
         res: Dict[str, Any] = {
             'sentiment_1d': 0.0, 'sentiment_5d': 0.0, 'sentiment_10d': 0.0,
-            'news_count_1d': 0, 'news_count_5d': 0, 'news_count_10d': 0
+            'news_count_1d': 0, 'news_count_5d': 0, 'news_count_10d': 0,
+            'impact_5d': 0.0, 'materiality_5d': 0.0,
+            'positive_news_ratio': 0.0, 'negative_news_ratio': 0.0, 'news_count': 0
         }
         if not news_items:
             return res
@@ -964,10 +968,10 @@ class DataEnricher:
         try:
             now = current_date or datetime.now(TZ_VN)
             
-            for window_days, suffix in [(1, '1d'), (5, '5d'), (10, '10d')]:
+            # --- 1. Compute Legacy Arithmetic averages for 1d and 10d ---
+            for window_days, suffix in [(1, '1d'), (10, '10d')]:
                 cutoff = now - timedelta(days=window_days)
-                window_items = []
-                
+                items = []
                 for item in news_items:
                     pub = item.get('publish_date') or item.get('published_date')
                     if pub:
@@ -979,12 +983,99 @@ class DataEnricher:
                         if pub >= cutoff:
                             score = item.get('sentiment_score', 0.0)
                             if isinstance(score, (int, float)):
-                                window_items.append(score)
+                                items.append(score)
+                res[f'news_count_{suffix}'] = len(items)
+                res[f'sentiment_{suffix}'] = round(sum(items) / len(items), 4) if items else 0.0
+
+            # --- 2. Compute Production Multi-Dimensional 5-Day Weighted averages ---
+            cutoff_5d = now - timedelta(days=5)
+            valid_5d = []
+            for item in news_items:
+                pub = item.get('publish_date') or item.get('published_date')
+                if pub:
+                    if isinstance(pub, str):
+                        try:
+                            pub = datetime.fromisoformat(pub.replace('Z', '+00:00'))
+                        except ValueError:
+                            continue
+                    if pub >= cutoff_5d:
+                        # compute age in days (as float)
+                        age_days = max(0.0, (now - pub).total_seconds() / 86400.0)
+                        item_copy = dict(item)
+                        item_copy['age_days'] = age_days
+                        valid_5d.append(item_copy)
+
+            total_weight = 0.0
+            weighted_sentiment_sum = 0.0
+            weighted_impact_sum = 0.0
+            weighted_materiality_sum = 0.0
+            
+            pos_count = 0
+            neg_count = 0
+            news_count = 0
+            
+            for item in valid_5d:
+                news_count += 1
+                sentiment_score = float(item.get("sentiment_score") or 0.0)
+                if sentiment_score > 0.15:
+                    pos_count += 1
+                elif sentiment_score < -0.15:
+                    neg_count += 1
+                    
+                # 1) Materiality Score
+                mat_score = item.get("materiality_score")
+                if mat_score is None:
+                    mat = str(item.get("materiality") or "LOW").upper()
+                    mat_score = 1.0 if mat == "HIGH" else 0.6 if mat == "MEDIUM" else 0.2
                 
-                res[f'news_count_{suffix}'] = len(window_items)
-                res[f'sentiment_{suffix}'] = round(
-                    sum(window_items) / len(window_items), 4
-                ) if window_items else 0.0
+                # 2) Source Score
+                src = item.get("source") or "cafef"
+                source_lower = str(src).lower()
+                if any(k in source_lower for k in ["ubcknn", "ssc", "hose", "hnx"]):
+                    src_score = 1.0
+                elif any(k in source_lower for k in ["reuters", "bloomberg"]):
+                    src_score = 0.95
+                elif any(k in source_lower for k in ["cafef", "vneconomy", "vietstock"]):
+                    src_score = 0.90
+                elif any(k in source_lower for k in ["broker", "ctck", "report"]):
+                    src_score = 0.80
+                elif any(k in source_lower for k in ["facebook", "social", "f319"]):
+                    src_score = 0.20
+                else:
+                    src_score = 0.40
+
+                # 3) Recency Weight with Exponential Persistence Decay
+                t = item["age_days"]
+                pers = str(item.get("persistence") or "MEDIUM").upper()
+                ps = float(item.get("persistence_score") or 0.5)
+                if pers == "HIGH" or ps > 0.8:
+                    lam = 0.05
+                elif pers == "LOW" or ps < 0.4:
+                    lam = 0.5
+                else:
+                    lam = 0.2
+                rec_weight = math.exp(-lam * t)
+                
+                # 4) Novelty Score
+                nov = item.get("novelty")
+                if nov is None:
+                    app_nov = str(item.get("apparent_novelty") or "MEDIUM").upper()
+                    nov = 1.0 if app_nov == "HIGH" else 0.5 if app_nov == "MEDIUM" else 0.1
+
+                w = float(mat_score) * float(src_score) * float(rec_weight) * float(nov)
+                
+                total_weight += w
+                weighted_sentiment_sum += sentiment_score * w
+                weighted_impact_sum += float(item.get("investment_impact") or 0.0) * w
+                weighted_materiality_sum += float(mat_score) * w
+                
+            res['sentiment_5d'] = round(weighted_sentiment_sum / total_weight, 4) if total_weight > 0 else 0.0
+            res['impact_5d'] = round(weighted_impact_sum / total_weight, 4) if total_weight > 0 else 0.0
+            res['materiality_5d'] = round(weighted_materiality_sum / total_weight, 4) if total_weight > 0 else 0.0
+            res['positive_news_ratio'] = round(pos_count / news_count, 4) if news_count > 0 else 0.0
+            res['negative_news_ratio'] = round(neg_count / news_count, 4) if news_count > 0 else 0.0
+            res['news_count'] = news_count
+            res['news_count_5d'] = news_count
 
         except Exception as e:
             logger.warning("Failed to compute sentiment rolling: %s", e)
@@ -1311,6 +1402,47 @@ class DataEnricher:
             risk_flags = DataEnricher.evaluate_risk_flags(symbol, financials, news_items or [])
             ctx['sections']['risk_flags'] = risk_flags
 
+            # --- Compute dominant_event, bullish_driver, bearish_driver, consensus_state ---
+            dominant_event = "None"
+            bullish_driver = "None"
+            bearish_driver = "None"
+            
+            if news_items:
+                now_vn = datetime.now(TZ_VN)
+                cutoff_5d = now_vn - timedelta(days=5)
+                valid_5d = []
+                for item in news_items:
+                    pub = item.get('publish_date') or item.get('published_date')
+                    if pub:
+                        if isinstance(pub, str):
+                            try:
+                                pub = datetime.fromisoformat(pub.replace('Z', '+00:00'))
+                            except ValueError:
+                                continue
+                        if pub >= cutoff_5d:
+                            valid_5d.append(item)
+                
+                if valid_5d:
+                    # Find dominant event
+                    events = [item.get("primary_event") or item.get("event_type") for item in valid_5d if item.get("primary_event") or item.get("event_type")]
+                    if events:
+                        dominant_event = max(set(events), key=events.count)
+                    
+                    # Find bullish driver (highest impact > 0)
+                    pos_items = [item for item in valid_5d if float(item.get("investment_impact") or 0.0) > 0.0]
+                    if pos_items:
+                        best_pos = max(pos_items, key=lambda x: float(x.get("investment_impact", 0.0)))
+                        bullish_driver = best_pos.get("summary") or best_pos.get("title") or "None"
+                        
+                    # Find bearish driver (lowest impact < 0)
+                    neg_items = [item for item in valid_5d if float(item.get("investment_impact") or 0.0) < 0.0]
+                    if neg_items:
+                        worst_neg = min(neg_items, key=lambda x: float(x.get("investment_impact", 0.0)))
+                        bearish_driver = worst_neg.get("summary") or worst_neg.get("title") or "None"
+            
+            avg_impact = sentiment.get("impact_5d", 0.0)
+            consensus_state = "Bullish" if avg_impact > 0.15 else "Bearish" if avg_impact < -0.15 else "Neutral"
+
             # ── AI Summary (compact key metrics for prompt injection) ──
             r = financials.get('ratios', {})
             ctx['ai_summary'] = {
@@ -1326,7 +1458,15 @@ class DataEnricher:
                 'total_score': factor_scores.get('total_factor_score'),
                 'risk_flag_count': len(risk_flags),
                 'sentiment_5d': sentiment.get('sentiment_5d'),
-                'news_count_5d': sentiment.get('news_count_5d'),
+                'impact_5d': sentiment.get('impact_5d'),
+                'materiality_5d': sentiment.get('materiality_5d'),
+                'news_count': sentiment.get('news_count'),
+                'positive_ratio': sentiment.get('positive_news_ratio'),
+                'negative_ratio': sentiment.get('negative_news_ratio'),
+                'dominant_event': dominant_event,
+                'bullish_driver': bullish_driver,
+                'bearish_driver': bearish_driver,
+                'consensus_state': consensus_state,
                 'foreign_net': foreign.get('net_foreign_value'),
             }
 

@@ -74,7 +74,7 @@ async def lifespan(app: FastAPI):
         log.info("News scheduler started (15-min interval)")
         while True:
             try:
-                from app.infrastructure.vendors.vn.cafef_listing_crawl import refresh_listing
+                from app.infrastructure.knowledge_base.crawlers.vn.cafef_listing_crawl import refresh_listing
                 result = await asyncio.to_thread(refresh_listing, max_pages=1, deep_crawl=True)
                 inserted = result.get("inserted", 0)
                 deep = result.get("deep_crawl", {})

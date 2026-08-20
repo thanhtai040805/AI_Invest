@@ -392,7 +392,7 @@ def compute_factor_scores(
     logger.info("  Loaded financial ratios for %d symbols", len(fin_map))
 
     # 4. Load news sentiment
-    from app.infrastructure.vendors.vn.news_events import compute_sentiment_5d
+    from app.infrastructure.knowledge_base.crawlers.vn.sentiment_analyzer import compute_sentiment_5d
     news_sentiment = compute_sentiment_5d(symbols, score_date, cur)
     logger.info("  Loaded news sentiment for %d symbols", len(news_sentiment))
 

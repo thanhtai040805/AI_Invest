@@ -32,8 +32,19 @@ def get_config_candidates(config_path: Path | None = None) -> list[Path]:
     """
     if config_path is not None:
         return [config_path.expanduser()]
-    root = get_runtime_root()
-    return [root / filename for filename in _DEFAULT_FILENAMES]
+    
+    project_root = Path(__file__).parent.parent.parent.parent
+    app_config = project_root / "app" / "config"
+    user_root = get_runtime_root()
+
+    candidates: list[Path] = []
+    for filename in _DEFAULT_FILENAMES:
+        candidates.append(app_config / filename)
+        candidates.append(project_root / filename)
+    for filename in _DEFAULT_FILENAMES:
+        candidates.append(user_root / filename)
+
+    return candidates
 
 
 def get_config_path(config_path: Path | None = None) -> Path:

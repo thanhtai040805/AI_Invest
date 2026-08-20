@@ -59,10 +59,21 @@ def task_compute_factors(universe: List[str]) -> Dict[str, Any]:
 
 
 def task_train_ml_models(symbols: List[str]) -> Dict[str, Any]:
-    """Train/update cross-sectional ML alpha prediction models."""
+    """Train/update cross-sectional ML alpha prediction models and HMM market regime model."""
     from app.domain.services.ml.ml_alpha_predictor import train_panel_model
-    logger.info("Training cross-sectional ML panel model for %d symbols", len(symbols))
+    from app.domain.rules.market.hmm_classifier import hmm_classifier
+    
     results = {}
+    
+    logger.info("Training HMM market regime model...")
+    try:
+        hmm_success = hmm_classifier.train_hmm_model()
+        results["hmm_model"] = "trained" if hmm_success else "failed"
+    except Exception as e:
+        logger.error("HMM training failed: %s", e)
+        results["hmm_model"] = f"error: {e}"
+
+    logger.info("Training cross-sectional ML panel model for %d symbols", len(symbols))
     try:
         r = train_panel_model(symbols, model_type="xgboost")
         if "error" in r:

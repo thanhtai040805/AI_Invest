@@ -1,0 +1,456 @@
+"""Shared bounded retrieval, reranking, and evidence-grounded search answers."""
+
+from __future__ import annotations
+
+import asyncio
+import re
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from typing import Any, Awaitable, Callable, Literal, Protocol, cast
+
+from sag_api.core.config import settings
+from sag_api.core.logging import get_logger
+from sag_api.sag import RetrievedSection, SearchOutcome
+
+log = get_logger("retrieval")
+
+
+class SearchSource(Protocol):
+    id: str
+    name: str
+    sag_source_config_id: str
+
+
+EventScoreMap = dict[tuple[str, str], float]
+
+
+_QUERY_NOISE = (
+    "kho tri thức",
+    "kho tài liệu",
+    "trong tài liệu",
+    "trong văn bản",
+    "hãy cho tôi biết",
+    "giúp tôi tra",
+    "tìm kiếm",
+    "truy vấn",
+    "xin hỏi",
+    "về",
+    "mới nhất",
+    "gần đây",
+    "động thái",
+    "tin nhắn",
+    "tin tức",
+    "nội dung",
+    "tài liệu",
+    "một chút",
+    "là gì",
+    "có những gì",
+    "có gì",
+)
+_BOILERPLATE = (
+    "Trang chủ Sina",
+    "Tuyên bố bảo vệ quyền",
+    "Bảng xếp hạng đọc",
+    "Bảng xếp hạng bình luận",
+    "Bấm để tải thêm",
+    "Tuyên bố miễn trừ trách nhiệm",
+)
+_CITATION_RE = re.compile(r"\[(\d+)]")
+
+
+def _normalized(value: str) -> str:
+    return "".join(re.findall(r"[a-z0-9\u3400-\u9fff]+", value.lower()))
+
+
+def query_terms(query: str) -> list[str]:
+    """Extract a small, deterministic lexical signal without pretending to segment Chinese."""
+
+    cleaned = query.strip().lower()
+    for phrase in _QUERY_NOISE:
+        cleaned = cleaned.replace(phrase, " ")
+    candidates = re.findall(
+        r"[a-z0-9][a-z0-9_.+-]{1,31}|[\u3400-\u9fff]{2,16}",
+        cleaned,
+    )
+    terms: list[str] = []
+    for candidate in candidates:
+        value = candidate.strip()
+        if value and not value.isdigit() and value not in terms:
+            terms.append(value)
+    return terms[:4]
+
+
+def _section_key(section: RetrievedSection) -> tuple[str, str]:
+    source = (section.source_config_id or section.source_id or "").strip()
+    chunk = (section.chunk_id or "").strip()
+    if chunk:
+        return source, chunk
+    fingerprint = _normalized(f"{section.heading}\n{section.content}")[:240]
+    return source, fingerprint
+
+
+def _lexical_relevance(query: str, section: RetrievedSection) -> float:
+    heading = _normalized(section.heading)
+    content = _normalized(section.content)
+    text = f"{heading}{content}"
+    if not text:
+        return 0.0
+
+    terms = [_normalized(term) for term in query_terms(query)]
+    terms = [term for term in terms if term]
+    cleaned_query = query
+    for phrase in _QUERY_NOISE:
+        cleaned_query = cleaned_query.replace(phrase, " ")
+    phrase = _normalized(cleaned_query)
+
+    score = 0.0
+    if phrase and len(phrase) >= 2 and phrase in text:
+        score += 0.55
+        if phrase in heading:
+            score += 0.2
+    if terms:
+        matched = sum(term in text for term in terms)
+        heading_matched = sum(term in heading for term in terms)
+        score += 0.35 * matched / len(terms)
+        score += 0.15 * heading_matched / len(terms)
+    return min(1.0, score)
+
+
+def _is_boilerplate(section: RetrievedSection) -> bool:
+    text = f"{section.heading}\n{section.content}"
+    return sum(marker in text for marker in _BOILERPLATE) >= 2
+
+
+@dataclass(frozen=True, slots=True)
+class RerankResult:
+    sections: list[RetrievedSection]
+    candidate_count: int
+    relevant_count: int
+    filtered_count: int
+    lexical_count: int
+
+
+def rerank_sections(
+    query: str,
+    semantic: list[RetrievedSection],
+    *,
+    lexical: list[RetrievedSection] | None = None,
+    limit: int,
+) -> RerankResult:
+    """Hybrid rerank with an explicit relevance gate before anything reaches an answer."""
+
+    lexical = lexical or []
+    exact_keys = {_section_key(section) for section in lexical}
+    merged: dict[tuple[str, str], tuple[RetrievedSection, int]] = {}
+    for index, section in enumerate([*semantic, *lexical]):
+        key = _section_key(section)
+        if not key[1]:
+            continue
+        previous = merged.get(key)
+        if previous is None:
+            merged[key] = (section, index)
+            continue
+        previous_section, previous_index = previous
+        chosen = section if len(section.content.strip()) > len(previous_section.content.strip()) else previous_section
+        merged[key] = (
+            chosen.model_copy(update={"score": max(float(previous_section.score), float(section.score))}),
+            min(previous_index, index),
+        )
+
+    candidates = list(merged.items())
+    if not candidates:
+        return RerankResult([], 0, 0, 0, len(lexical))
+
+    raw_scores = [max(0.0, float(item[1][0].score or 0.0)) for item in candidates]
+    top_raw = max(raw_scores, default=0.0)
+    semantic_floor = max(0.35, top_raw * 0.68)
+    denominator = max(1, len(candidates) - 1)
+    lexical_scores = {key: _lexical_relevance(query, section) for key, (section, _index) in candidates}
+    has_lexical_signal = any(key in exact_keys or score >= 0.2 for key, score in lexical_scores.items())
+    ranked: list[tuple[float, float, int, RetrievedSection]] = []
+
+    for position, (key, (section, original_index)) in enumerate(candidates):
+        raw = max(0.0, min(1.0, float(section.score or 0.0)))
+        lexical_score = lexical_scores[key]
+        exact = key in exact_keys
+        if _is_boilerplate(section) and not exact and lexical_score < 0.35:
+            continue
+        rank_score = 1.0 - position / denominator
+        combined = min(
+            1.0,
+            raw * 0.5 + rank_score * 0.2 + lexical_score * 0.3 + (0.15 if exact else 0.0),
+        )
+        if has_lexical_signal:
+            relevant = exact or lexical_score >= 0.2
+        else:
+            relevant = raw >= semantic_floor
+        if not relevant:
+            continue
+        ranked.append((combined, raw, original_index, section))
+
+    ranked.sort(key=lambda item: (-item[0], -item[1], item[2], _section_key(item[3])))
+    selected = [
+        section.model_copy(update={"score": round(score, 6), "rank": index})
+        for index, (score, _raw, _original, section) in enumerate(ranked[: max(1, limit)])
+    ]
+    return RerankResult(
+        sections=selected,
+        candidate_count=len(candidates),
+        relevant_count=len(ranked),
+        filtered_count=len(candidates) - len(ranked),
+        lexical_count=len(lexical),
+    )
+
+
+async def _lexical_sections(
+    engine_manager: Any,
+    sources: list[SearchSource],
+    query: str,
+) -> list[RetrievedSection]:
+    grep_chunks = getattr(engine_manager, "grep_chunks", None)
+    terms = query_terms(query)
+    if not callable(grep_chunks) or not terms:
+        return []
+
+    semaphore = asyncio.Semaphore(max(1, settings.search_source_concurrency))
+
+    async def one(source: SearchSource, term: str) -> list[RetrievedSection]:
+        async with semaphore:
+            try:
+                rows = await cast(
+                    Awaitable[Any],
+                    grep_chunks(
+                        source.sag_source_config_id,
+                        term,
+                        source=source,
+                        limit=2,
+                    ),
+                )
+            except Exception:  # noqa: BLE001
+                return []
+        return [
+            RetrievedSection(
+                chunk_id=row.get("chunk_id"),
+                heading=row.get("heading") or "Khớp chính xác",
+                content=row.get("snippet") or "",
+                score=max(0.8, 1.0 - index * 0.02),
+                rank=index,
+                source_config_id=source.sag_source_config_id,
+            )
+            for index, row in enumerate(rows)
+        ]
+
+    groups = await asyncio.gather(*(one(source, term) for source in sources for term in terms))
+    return [section for group in groups for section in group]
+
+
+async def retrieve_relevant_sections(
+    engine_manager: Any,
+    sources: list[SearchSource],
+    query: str,
+    *,
+    strategy: str | None = None,
+    top_k: int | None = None,
+) -> SearchOutcome:
+    """One retrieval contract for search UI and the Agent's search_context tool."""
+
+    requested_limit = max(1, min(int(top_k or settings.search_top_k), 50))
+    candidate_limit = min(50, max(requested_limit * 3, requested_limit + 8))
+    targets = [(source.sag_source_config_id, source) for source in sources]
+    outcome, lexical = await asyncio.gather(
+        engine_manager.search_many(
+            targets,
+            query,
+            strategy=strategy,
+            top_k=candidate_limit,
+        ),
+        _lexical_sections(engine_manager, sources, query),
+    )
+    reranked = rerank_sections(
+        query,
+        outcome.sections,
+        lexical=lexical,
+        limit=requested_limit,
+    )
+    stats = {
+        **outcome.stats,
+        "requested_top_k": requested_limit,
+        "candidate_top_k": candidate_limit,
+        "candidates": reranked.candidate_count,
+        "relevant": reranked.relevant_count,
+        "filtered_irrelevant": reranked.filtered_count,
+        "lexical_candidates": reranked.lexical_count,
+        "has_more": reranked.relevant_count > len(reranked.sections),
+    }
+    return SearchOutcome(
+        query=outcome.query or query,
+        sections=reranked.sections,
+        stats=stats,
+    )
+
+
+async def recall_event_scores(
+    engine_manager: Any,
+    query: str,
+    sources_by_config: dict[str, SearchSource],
+    *,
+    limit: int | None = None,
+) -> EventScoreMap:
+    """Best-effort direct event recall shared by Search and the Agent.
+
+    Chunks remain the traceable evidence path.  Event recall supplies the
+    semantic result layer (title + summary) so a long document does not lose
+    its extracted events merely because the best matching chunks are located
+    elsewhere in the document.
+    """
+
+    search = getattr(engine_manager, "search_event_scores", None)
+    if not callable(search):
+        return {}
+    try:
+        result = await cast(Awaitable[Any], search(query, sources_by_config, limit=limit))
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:  # noqa: BLE001
+        log.warning("Truy hồi vector sự kiện thất bại, tiếp tục dùng kết quả khối nguyên văn: %s", error)
+        return {}
+    if not isinstance(result, dict):
+        return {}
+
+    scores: EventScoreMap = {}
+    for raw_key, raw_score in result.items():
+        if not isinstance(raw_key, tuple) or len(raw_key) != 2:
+            continue
+        source_config_id = str(raw_key[0] or "").strip()
+        event_id = str(raw_key[1] or "").strip()
+        if not source_config_id or not event_id:
+            continue
+        try:
+            score = float(raw_score)
+        except (TypeError, ValueError):
+            continue
+        scores[(source_config_id, event_id)] = max(0.0, min(1.0, score))
+    return scores
+
+
+def _best_excerpt(query: str, section: RetrievedSection, limit: int = 260) -> str:
+    content = re.sub(r"\s+", " ", section.content).strip()
+    if not content:
+        return section.heading.strip()
+    sentences = [part.strip() for part in re.split(r"(?<=[。！？.!?])", content) if part.strip()]
+    terms = [_normalized(term) for term in query_terms(query)]
+    best = max(
+        sentences or [content],
+        key=lambda sentence: sum(term in _normalized(sentence) for term in terms),
+    )
+    return best[:limit] + ("…" if len(best) > limit else "")
+
+
+def fallback_search_answer(query: str, sections: list[RetrievedSection]) -> str:
+    if not sections:
+        return ""
+    lines = [f"- {_best_excerpt(query, section)} [{index}]" for index, section in enumerate(sections[:4], 1)]
+    return "Dựa trên các bằng chứng liên quan trực tiếp đến câu hỏi:\n" + "\n".join(lines)
+
+
+def _validated_answer(answer: str, section_count: int) -> str | None:
+    text = answer.strip()
+    if not text:
+        return None
+    references = [int(value) for value in _CITATION_RE.findall(text)]
+    if not references or any(value < 1 or value > section_count for value in references):
+        return None
+    return text
+
+
+@dataclass(frozen=True, slots=True)
+class SearchAnswerUpdate:
+    kind: Literal["delta", "completed"]
+    text: str
+
+
+def _search_answer_messages(
+    query: str,
+    sections: list[RetrievedSection],
+) -> tuple[list[dict[str, str]], int]:
+    evidence_blocks: list[str] = []
+    used = 0
+    for index, section in enumerate(sections, 1):
+        block = f"[{index}] {section.heading or 'Tài liệu liên quan'}\n{section.content.strip()}"
+        remaining = 12000 - used
+        if remaining <= 0:
+            break
+        block = block[:remaining]
+        evidence_blocks.append(block)
+        used += len(block)
+    return (
+        [
+            {
+                "role": "system",
+                "content": (
+                    "Bạn là bộ trả lời kết quả truy vấn. Chỉ trả lời câu hỏi cụ thể người dùng nêu ra, đừng tóm tắt tập ứng viên."
+                    "Chỉ được dùng bằng chứng đã cho; bỏ qua nội dung không liên quan đến câu hỏi. Mỗi kết luận dựa trên sự kiện phải ghi"
+                    "số [số thứ tự] tương ứng, số chỉ được lấy từ bằng chứng. Khi bằng chứng không đủ phải nói rõ là thiếu, không bổ sung"
+                    "kiến thức thường hoặc suy đoán. Trả lời ngắn gọn, trực tiếp."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (f"Câu hỏi: {query}\n\nBằng chứng đã xếp hạng lại theo mức độ liên quan:\n" + "\n\n".join(evidence_blocks)),
+            },
+        ],
+        len(evidence_blocks),
+    )
+
+
+async def synthesize_search_answer(
+    query: str,
+    sections: list[RetrievedSection],
+    *,
+    llm: Any | None,
+) -> str:
+    """Answer the actual question from selected evidence; never summarize the raw candidate pool."""
+
+    fallback = fallback_search_answer(query, sections)
+    if not sections or llm is None or not getattr(llm, "configured", False):
+        return fallback
+
+    messages, evidence_count = _search_answer_messages(query, sections)
+    try:
+        answer = await llm.complete(messages)
+    except Exception as error:  # noqa: BLE001
+        log.warning("Tạo câu trả lời tìm kiếm thất bại, quay lại tóm tắt bằng chứng: %s", error)
+        return fallback
+    return _validated_answer(answer, evidence_count) or fallback
+
+
+async def stream_synthesize_search_answer(
+    query: str,
+    sections: list[RetrievedSection],
+    *,
+    llm: Any | None,
+) -> AsyncIterator[SearchAnswerUpdate]:
+    """Yield true provider deltas followed by one citation-validated answer."""
+
+    fallback = fallback_search_answer(query, sections)
+    if not sections or llm is None or not getattr(llm, "configured", False):
+        yield SearchAnswerUpdate(kind="completed", text=fallback)
+        return
+
+    messages, evidence_count = _search_answer_messages(query, sections)
+    parts: list[str] = []
+    try:
+        async for delta in llm.stream_complete(messages):
+            if not delta:
+                continue
+            parts.append(delta)
+            yield SearchAnswerUpdate(kind="delta", text=delta)
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:  # noqa: BLE001
+        log.warning("Tạo luồng câu trả lời tìm kiếm thất bại, quay lại tóm tắt bằng chứng: %s", error)
+        yield SearchAnswerUpdate(kind="completed", text=fallback)
+        return
+
+    answer = _validated_answer("".join(parts), evidence_count) or fallback
+    yield SearchAnswerUpdate(kind="completed", text=answer)

@@ -215,28 +215,71 @@ def migrate():
         """)
 
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS news_events (
+            CREATE TABLE IF NOT EXISTS knowledge_documents (
                 id              SERIAL PRIMARY KEY,
                 symbol          TEXT NOT NULL,
+                doc_type        TEXT NOT NULL DEFAULT 'news',
                 published_date  TIMESTAMPTZ NOT NULL,
                 title           TEXT NOT NULL,
                 url             TEXT,
                 source          TEXT DEFAULT 'cafef',
                 config_id       INT DEFAULT 0,
                 sentiment_score FLOAT,
+                article_content TEXT,
+                article_pdf_text TEXT,
+                article_images  TEXT[],
+                article_pdf_urls TEXT[],
+                graph_nodes     JSONB,
+                content_fetched_at TIMESTAMPTZ,
                 created_at      TIMESTAMPTZ DEFAULT NOW(),
                 UNIQUE (symbol, url)
             )
         """)
         cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_news_events_symbol_date
-            ON news_events(symbol, published_date DESC)
+            CREATE INDEX IF NOT EXISTS idx_knowledge_symbol_date
+            ON knowledge_documents(symbol, published_date DESC)
         """)
-        cur.execute("ALTER TABLE news_events ADD COLUMN IF NOT EXISTS article_content TEXT")
-        cur.execute("ALTER TABLE news_events ADD COLUMN IF NOT EXISTS article_pdf_text TEXT")
-        cur.execute("ALTER TABLE news_events ADD COLUMN IF NOT EXISTS article_images TEXT[]")
-        cur.execute("ALTER TABLE news_events ADD COLUMN IF NOT EXISTS article_pdf_urls TEXT[]")
-        cur.execute("ALTER TABLE news_events ADD COLUMN IF NOT EXISTS content_fetched_at TIMESTAMPTZ")
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_knowledge_symbol_type
+            ON knowledge_documents(symbol, doc_type)
+        """)
+
+        # Dynamically add new Document Intelligence columns if they do not exist
+        for col_name, col_type in [
+            ("direction", "TEXT"),
+            ("magnitude", "INT"),
+            ("investment_impact", "FLOAT"),
+            ("materiality", "TEXT"),
+            ("materiality_score", "FLOAT"),
+            ("surprise_score", "FLOAT"),
+            ("business_horizon", "TEXT"),
+            ("pricing_horizon", "TEXT"),
+            ("persistence", "TEXT"),
+            ("persistence_score", "FLOAT"),
+            ("reversibility", "BOOLEAN"),
+            ("apparent_novelty", "TEXT"),
+            ("novelty", "FLOAT"),
+            ("evidence_strength", "TEXT"),
+            ("credibility", "FLOAT"),
+            ("affected_entities", "JSONB"),
+            ("event_type", "TEXT"),
+            ("severity", "TEXT"),
+            ("ai_sentiment_score", "FLOAT"),
+            ("ai_summary", "TEXT"),
+            ("triaged_at", "TIMESTAMPTZ")
+        ]:
+            cur.execute(f"""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 
+                        FROM information_schema.columns 
+                        WHERE table_name='knowledge_documents' AND column_name='{col_name}'
+                    ) THEN
+                        ALTER TABLE knowledge_documents ADD COLUMN {col_name} {col_type};
+                    END IF;
+                END $$;
+            """)
 
         cur.execute("""
             CREATE TABLE IF NOT EXISTS corporate_actions (

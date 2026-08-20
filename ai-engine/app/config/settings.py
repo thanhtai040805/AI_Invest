@@ -27,6 +27,7 @@ class Settings:
     redis_channel_prefix: str
     llm_api_key: str
     llm_provider: str
+    evomap_api_key: str
 
     # AI Multi-Model Configuration
     llm_nvidia_key: str
@@ -64,6 +65,7 @@ def get_settings() -> Settings:
         redis_channel_prefix=os.getenv("DNSE_REDIS_CHANNEL_PREFIX", "dnse:event"),
         llm_api_key=os.getenv("LLM_API_KEY", ""),
         llm_provider=os.getenv("LLM_PROVIDER", "openai"),
+        evomap_api_key=os.getenv("EVOMAP_API_KEY", ""),
         
         # AI Multi-Model env loaders (supports standard names and shorthand variables)
         llm_nvidia_key=os.getenv("NVDIA", os.getenv("NVIDIA_API_KEY", "")),
@@ -105,3 +107,28 @@ def get_ws_client():
         base_url=settings.dnse_ws_url,
         encoding=settings.encoding,
     )
+
+
+def get_evomap_client():
+    from openai import OpenAI
+    settings = get_settings()
+    key = settings.evomap_api_key
+    if key and not key.startswith("sk-evomap-"):
+        key = f"sk-evomap-{key}"
+    return OpenAI(
+        base_url="https://api.evomap.ai/v1",
+        api_key=key,
+    )
+
+
+def get_async_evomap_client():
+    from openai import AsyncOpenAI
+    settings = get_settings()
+    key = settings.evomap_api_key
+    if key and not key.startswith("sk-evomap-"):
+        key = f"sk-evomap-{key}"
+    return AsyncOpenAI(
+        base_url="https://api.evomap.ai/v1",
+        api_key=key,
+    )
+

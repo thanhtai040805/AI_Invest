@@ -66,10 +66,15 @@ class HMMRegimeClassifier:
                 
                 model = model_data["model"]
                 state_mapping = model_data["state_mapping"] # map từ hidden_state index sang MarketRegime
+                scaler = model_data.get("scaler")
                 
                 # Predict proba
                 obs = np.array([[vni_vs_ma50, breadth_20d, vol_trend]])
-                posteriors = model.predict_proba(obs)[0]
+                if scaler is not None:
+                    obs_scaled = scaler.transform(obs)
+                else:
+                    obs_scaled = obs
+                posteriors = model.predict_proba(obs_scaled)[0]
                 
                 probs = {}
                 for i, state_prob in enumerate(posteriors):
@@ -164,9 +169,14 @@ class HMMRegimeClassifier:
             
             X = np.column_stack([vni_vs_ma50, breadth, vol_trend])
             
+            # Scale features to prevent higher variance features (like breadth) from dominating HMM
+            from sklearn.preprocessing import StandardScaler
+            scaler = StandardScaler()
+            X_scaled = scaler.fit_transform(X)
+            
             # 3. Fit Model
             model = hmm.GaussianHMM(n_components=4, covariance_type="diag", n_iter=1000, random_state=42)
-            model.fit(X)
+            model.fit(X_scaled)
             
             # 4. Map hidden states to MarketRegime
             # Tính mean của vni_vs_ma50 cho mỗi state
@@ -195,6 +205,7 @@ class HMMRegimeClassifier:
             with open(HMM_MODEL_PATH, "wb") as f:
                 pickle.dump({
                     "model": model,
+                    "scaler": scaler,
                     "state_mapping": state_mapping,
                     "trained_at": date.today().isoformat(),
                     "samples": len(X)

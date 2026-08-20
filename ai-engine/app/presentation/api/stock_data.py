@@ -175,8 +175,25 @@ async def get_ai_context(symbol: str):
             if col in ohlcv_df.columns:
                 ohlcv_df[col] = pd.to_numeric(ohlcv_df[col], errors="coerce")
 
-    # TODO: fetch real news from DB for sentiment rolling
+    # Fetch real news from DB for sentiment rolling
+    from app.infrastructure.database.pg_pool import get_cursor
     news_items = []
+    try:
+        with get_cursor() as cur:
+            cur.execute("""
+                SELECT published_date, sentiment_score, investment_impact, materiality,
+                       materiality_score, surprise_score, business_horizon, pricing_horizon,
+                       persistence, persistence_score, reversibility, apparent_novelty,
+                       novelty, evidence_strength, credibility, event_type, severity, source
+                FROM knowledge_documents
+                WHERE symbol = %s AND triaged_at IS NOT NULL
+                ORDER BY published_date DESC
+                LIMIT 100
+            """, (symbol.upper(),))
+            cols = [desc[0] for desc in cur.description]
+            news_items = [dict(zip(cols, row)) for row in cur.fetchall()]
+    except Exception:
+        pass
 
     ctx = await DataEnricher.build_ai_context(symbol.upper(), ohlcv_df, news_items)
     return ctx
@@ -264,8 +281,25 @@ async def get_market_extras(symbol: str):
 async def get_sentiment(symbol: str):
     """Get rolling sentiment scores and news counts (1d/5d/10d)."""
     from app.infrastructure.data_pipelines.data_enricher import DataEnricher
-    # TODO: fetch real news from DB by symbol
+    # Fetch real news from DB by symbol
+    from app.infrastructure.database.pg_pool import get_cursor
     news_items = []
+    try:
+        with get_cursor() as cur:
+            cur.execute("""
+                SELECT published_date, sentiment_score, investment_impact, materiality,
+                       materiality_score, surprise_score, business_horizon, pricing_horizon,
+                       persistence, persistence_score, reversibility, apparent_novelty,
+                       novelty, evidence_strength, credibility, event_type, severity, source
+                FROM knowledge_documents
+                WHERE symbol = %s AND triaged_at IS NOT NULL
+                ORDER BY published_date DESC
+                LIMIT 100
+            """, (symbol.upper(),))
+            cols = [desc[0] for desc in cur.description]
+            news_items = [dict(zip(cols, row)) for row in cur.fetchall()]
+    except Exception:
+        pass
     sentiment = DataEnricher.compute_sentiment_rolling(news_items)
     return {"symbol": symbol.upper(), "sentiment": sentiment}
 

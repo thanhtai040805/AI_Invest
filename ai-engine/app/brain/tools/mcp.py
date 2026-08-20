@@ -910,22 +910,37 @@ def _format_exception_message(exc: Exception) -> str:
     return str(exc) or type(exc).__name__
 
 
-def _make_jsonable(value: Any) -> Any:
+def _make_jsonable(value: Any, seen: set[int] | None = None) -> Any:
     """Convert FastMCP response payloads into JSON-serializable objects.
 
     Args:
         value: Arbitrary response value.
+        seen: Track visited object IDs to prevent circular references.
 
     Returns:
         JSON-serializable equivalent.
     """
+    if isinstance(value, (str, int, float, bool, type(None))):
+        return value
+
+    if seen is None:
+        seen = set()
+
+    val_id = id(value)
+    if val_id in seen:
+        return str(value)
+    seen.add(val_id)
+
     if hasattr(value, "model_dump"):
-        return value.model_dump(mode="json", by_alias=True, exclude_none=True)
+        try:
+            return _make_jsonable(value.model_dump(mode="json", by_alias=True, exclude_none=True), seen)
+        except Exception:
+            return str(value)
     if isinstance(value, list):
-        return [_make_jsonable(item) for item in value]
+        return [_make_jsonable(item, seen) for item in value]
     if isinstance(value, dict):
-        return {str(key): _make_jsonable(item) for key, item in value.items()}
-    return value
+        return {str(key): _make_jsonable(item, seen) for key, item in value.items()}
+    return str(value)
 
 
 def _json_default(value: Any) -> Any:

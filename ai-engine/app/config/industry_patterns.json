@@ -1,0 +1,62 @@
+{
+    "BANKING": {
+        "RESEARCH": ["nợ xấu", "dư nợ cho vay", "casa", "nim", "an toàn vốn", "npl", "huy động", "tín dụng", "tiền gửi"],
+        "RISK": ["nợ nhóm 3", "nợ nhóm 4", "nợ nhóm 5", "trái phiếu doanh nghiệp", "quá hạn"]
+    },
+    "INSURANCE": {
+        "RESEARCH": ["phí bảo hiểm", "combined ratio", "tỷ lệ kết hợp", "tái bảo hiểm", "bồi thường", "dự phòng nghiệp vụ"],
+        "RISK": ["bồi thường bảo hiểm", "suy giảm giá trị đầu tư"]
+    },
+    "SECURITIES": {
+        "RESEARCH": ["margin", "cho vay ký quỹ", "môi giới", "tự doanh", "fvtpl", "afs", "htm", "bảo lãnh phát hành", "phí giao dịch"]
+    },
+    "PORTS_LOGISTICS": {
+        "RESEARCH": ["sản lượng thông qua", "teu", "lượt tàu", "giá cước", "bốc xếp", "cảng biển", "logistics", "kho bãi", "icd", "cầu cảng"]
+    },
+    "OIL_GAS": {
+        "RESEARCH": ["giàn khoan", "sản lượng khai thác", "mỏ dầu", "giá dầu brent", "pvd", "khoan", "mỏ khí", "đường ống", "khí tự nhiên", "lọc dầu", "xăng dầu"]
+    },
+    "RETAIL": {
+        "RESEARCH": ["chuỗi cửa hàng", "mở mới", "doanh thu bình quân", "bách hóa xanh", "thế giới di động", "pnj gold", "điểm bán", "lượt khách", "diện tích sàn"]
+    },
+    "REAL_ESTATE": {
+        "RESEARCH": ["khu đô thị", "căn hộ", "biệt thự", "phân khu", "quỹ đất", "bàn giao"],
+        "RISK": ["quy hoạch", "1/500", "đền bù", "giải phóng mặt bằng", "vướng pháp lý", "chưa cấp phép"]
+    },
+    "REAL_ESTATE_INDUSTRIAL": {
+        "RESEARCH": ["diện tích cho thuê", "kcn", "đất công nghiệp", "tỷ lệ lấp đầy", "giá thuê", "thuê đất", "nhà xưởng xây sẵn"]
+    },
+    "STEEL_METALS": {
+        "RESEARCH": ["thép xây dựng", "hrc", "phôi thép", "quặng sắt", "than cốc", "cuộn cán nóng", "tôn mạ", "sản lượng sản xuất", "lò cao"]
+    },
+    "AGRICULTURE_LIVESTOCK": {
+        "RESEARCH": ["chuỗi 3f", "thức ăn chăn nuôi", "heo thịt", "gà giống", "trang trại", "vắc xin", "đàn heo", "giá heo hơi"]
+    },
+    "AQUACULTURE": {
+        "RESEARCH": ["vùng nuôi", "ao nuôi", "cá tra", "fillet", "kim ngạch xuất khẩu", "tự chủ nguyên liệu", "tôm giống"]
+    },
+    "TEXTILE_GARMENT": {
+        "RESEARCH": ["đơn hàng", "gia công", "fob", "cmt", "sợi dệt", "may mặc", "dệt nhuộm", "xưởng may"]
+    },
+    "CHEMICALS_FERTILIZERS": {
+        "RESEARCH": ["phốt pho vàng", "axit phosphoric", "phân bón", "ure", "dap", "npk", "hóa chất", "soda", "clo"]
+    },
+    "AVIATION": {
+        "RESEARCH": ["ghế luân chuyển", "ask", "rpk", "load factor", "hệ số sử dụng ghế", "đội tàu bay", "jet a1", "lượt khách"]
+    },
+    "PHARMACEUTICALS": {
+        "RESEARCH": ["nhà máy gmp", "dược phẩm", "thuốc", "tá dược", "kênh bệnh viện", "etc", "otc", "nhà thuốc", "số đăng ký"]
+    },
+    "BUILDING_MATERIALS": {
+        "RESEARCH": ["clinker", "xi măng", "ống nhựa", "nhựa pvc", "gạch men", "đá xây dựng", "bê tông tươi"]
+    },
+    "CONSUMER_GOODS": {
+        "RESEARCH": ["sữa tươi", "sữa bột", "trang trại bò sữa", "kênh phân phối", "sản lượng sữa", "đàn bò"]
+    },
+    "TECHNOLOGY": {
+        "RESEARCH": ["phần mềm", "xuất khẩu phần mềm", "trung tâm dữ liệu", "data center", "chuyển đổi số", "ai", "trí tuệ nhân tạo", "cloud", "điện toán đám mây", "bán dẫn", "chip bán dẫn"]
+    },
+    "UTILITIES_CONSTRUCTION": {
+        "RESEARCH": ["tổng thầu", "cơ điện", "m&e", "thủy điện", "nhiệt điện", "điện gió", "điện mặt trời", "ppa", "công suất lắp đặt", "văn phòng cho thuê"]
+    }
+}

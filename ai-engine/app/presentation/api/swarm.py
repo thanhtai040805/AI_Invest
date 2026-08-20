@@ -36,9 +36,9 @@ def get_swarm_runtime():
     global _swarm_runtime
     if _swarm_runtime is None:
         from app.brain.state.runtime import SwarmRuntime
-        from app.brain.state.store import SwarmStore
+        from app.brain.state.store import SwarmStore, swarm_runs_root
         
-        store = SwarmStore()
+        store = SwarmStore(swarm_runs_root())
         _swarm_runtime = SwarmRuntime(store)
     return _swarm_runtime
 

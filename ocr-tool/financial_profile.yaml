@@ -1,0 +1,125 @@
+# Configuration Profile for Financial OCR Pipeline (BCTC Việt Nam)
+
+version: "1.0"
+
+page_classifier:
+  skip_page_types:
+    - balance_sheet         # Bảng cân đối kế toán / Báo cáo tình hình tài chính
+    - income_statement      # Báo cáo kết quả hoạt động kinh doanh / Báo cáo kết quả hoạt động
+    - cash_flow             # Báo cáo lưu chuyển tiền tệ
+    - cover_page            # Trang bìa
+    - english_translation   # Bản dịch tiếng Anh (trùng nội dung, phát hiện tự động)
+
+  keep_page_types:
+    - audit_report          # Báo cáo kiểm toán
+    - directors_report      # Báo cáo của Ban Giám đốc
+    - footnote              # Thuyết minh báo cáo tài chính
+    - governance            # Báo cáo quản trị doanh nghiệp
+
+  signatures:
+    balance_sheet:
+      - "B 01 CTCK"
+      - "B01 CTCK"
+      - "B 01 NH"
+      - "B01 NH"
+      - "B 01 DN"
+      - "B01 DN"
+      - "B 01"
+      - "B01"
+      - "BAO CAO TINH HINH TAI CHINH HOP NHAT"
+      - "BAO CAO TINH HINH TAI CHINH RIENG"
+      - "BAO CAO TINH HINH TAI CHINH"
+      - "TINH HINH TAI CHINH HOP NHAT"
+      - "TINH HINH TAI CHINH RIENG"
+      - "TINH HINH TAI CHINH"
+      - "BANG CAN DOI KE TOAN HOP NHAT"
+      - "BANG CAN DOI KE TOAN RIENG"
+      - "BANG CAN DOI KE TOAN"
+      - "CAN DOI KE TOAN"
+      - "BANG CAN DOI"
+    income_statement:
+      - "B 02 CTCK"
+      - "B02 CTCK"
+      - "B 02 NH"
+      - "B02 NH"
+      - "B 02 DN"
+      - "B02 DN"
+      - "B 02"
+      - "B02"
+      - "BAO CAO KET QUA HOAT DONG KINH DOANH HOP NHAT"
+      - "BAO CAO KET QUA HOAT DONG KINH DOANH RIENG"
+      - "BAO CAO KET QUA HOAT DONG KINH DOANH"
+      - "BAO CAO KET QUA HOAT DONG HOP NHAT"
+      - "BAO CAO KET QUA HOAT DONG RIENG"
+      - "BAO CAO KET QUA HOAT DONG"
+      - "KET QUA HOAT DONG KINH DOANH"
+      - "KET QUA HOAT DONG HOP NHAT"
+      - "KET QUA HOAT DONG RIENG"
+      - "KET QUA HOAT DONG"
+      - "KET QUA KINH DOANH"
+    cash_flow:
+      - "B 03 CTCK"
+      - "B03 CTCK"
+      - "B 03 NH"
+      - "B03 NH"
+      - "B 03 DN"
+      - "B03 DN"
+      - "B 03"
+      - "B03"
+      - "BAO CAO LUU CHUYEN TIEN TE HOP NHAT"
+      - "BAO CAO LUU CHUYEN TIEN TE RIENG"
+      - "BAO CAO LUU CHUYEN TIEN TE"
+      - "LUU CHUYEN TIEN TE HOP NHAT"
+      - "LUU CHUYEN TIEN TE RIENG"
+      - "LUU CHUYEN TIEN TE"
+      - "LUU CHUYEN TIEN"
+    english_translation:
+      - "STATEMENT OF FINANCIAL POSITION"
+      - "INCOME STATEMENT"
+      - "CASH FLOW STATEMENT"
+      - "NOTES TO THE FINANCIAL STATEMENTS"
+      - "INDEPENDENT AUDITOR S REPORT"
+      - "JOINT STOCK COMPANY"
+      - "THE SOCIALIST REPUBLIC OF VIETNAM"
+    audit_report:
+      - "BAO CAO KIEM TOAN DOC LAP"
+      - "BAO CAO KIEM TOAN"
+      - "Y KIEN CUA KIEM TOAN VIEN"
+      - "Y KIEN KIEM TOAN"
+      - "KIEM TOAN DOC LAP"
+    directors_report:
+      - "BAO CAO CUA BAN GIAM DOC"
+      - "BAO CAO HOI DONG QUAN TRI"
+    footnote:
+      - "B 09 CTCK"
+      - "B09 CTCK"
+      - "B 09 NH"
+      - "B09 NH"
+      - "B 09 DN"
+      - "B09 DN"
+      - "B 09"
+      - "B09"
+      - "THUYET MINH BAO CAO TAI CHINH"
+      - "THUYET MINH BCTC"
+      - "THUYET MINH CHON LOC"
+      - "THUYET MINH"
+
+region_classifier:
+  skip_region_keywords:
+    - "SO LIEU SO SANH LUA CHON"
+  keep_region_keywords:
+    - "BEN LIEN QUAN"
+    - "GIAO DICH VOI CAC BEN LIEN QUAN"
+    - "PHAI THU CUA BEN LIEN QUAN"
+    - "PHAI TRA CHO BEN LIEN QUAN"
+    - "CONG TY CON"
+    - "CONG TY LIEN KET"
+    - "VAY VA NO THUE TAI CHINH"
+    - "TRAI PHIEU"
+    - "CAM KET"
+    - "NO TIEM TANG"
+    - "BAO LANH"
+    - "KIEN TUNG"
+    - "TRANH CHAP"
+    - "DU PHONG NO PHAI THU KHO DOI"
+    - "PHAN TICH THEO TUOI NO"

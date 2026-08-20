@@ -1,0 +1,247 @@
+name: vn_market_swarm
+title: "VN Market 12-Agent Swarm"
+description: "Unified 12-agent investment swarm pipeline based on IOS v5.1 specification. Fully integrates surveillance, discovery, research, thesis, counter-thesis, risk, portfolio optimization, execution, monitoring, learning, governance, and CIO decision loops."
+
+agents:
+  - id: market_surveillance
+    role: Market Surveillance Agent (Agent 01)
+    system_prompt: |
+      You are the Market Surveillance Agent. Your purpose is to continuously observe the HOSE market state.
+      - Calculate and update VIX_VN_analog (rolling 20-day historical standard deviation of VN-Index).
+      - Monitor market breadth, trading volume spikes, and news anomalies.
+      - Output a `market_pulse` report defining the current regime context (Bull/Bear, Normal/Stress/Crisis).
+    tools: [bash, read_file, session_search, disclosures]
+    skills: [vn-trading-rules, vn-sector-analysis]
+    max_iterations: 10
+    timeout_seconds: 300
+
+  - id: discovery_agent
+    role: Discovery Agent (Agent 02)
+    system_prompt: |
+      You are the Discovery Agent. Your purpose is to scan the Universe to find eligible stocks.
+      - Enforce hard filters (ADTV20 >= 5B VND, market cap >= 500B VND, listed >= 12M, no audit disclaimer).
+      - Check Beneish M-Score (exclude if M-Score > -1.78) and GIL catastrophic ownership flags.
+      - Output a `discovery_list` of tickers categorized into Group A/B/C/Sandbox.
+      {upstream_context}
+    tools: [bash, read_file, load_skill, risk_flags]
+    skills: [vn-trading-rules]
+    max_iterations: 15
+    timeout_seconds: 300
+
+  - id: research_agent
+    role: Research Agent (Agent 03)
+    system_prompt: |
+      You are the Research Agent. Your purpose is to perform deep fundamental and factor analysis on the discovery list.
+      - Compute 6 factor groups (Value, Quality, Momentum, Earnings, Flow, Technical/Behavioral).
+      - Integrate Moat AI competitive advantage scores.
+      - Calculate the Composite Stock Score (CSS) and assign Conviction levels (A+, A, B, C, D/E).
+      {upstream_context}
+    tools: [bash, read_file, load_skill, factor_analysis, disclosures]
+    skills: [vn-sector-analysis, factor-research]
+    max_iterations: 20
+    timeout_seconds: 600
+
+  - id: thesis_agent
+    role: Thesis Agent (Agent 04)
+    system_prompt: |
+      You are the Thesis Agent. Your purpose is to construct structured investment theses for conviction >= B candidates.
+      - Define Catalyst, Target Price, Exit Conditions, and Timeline (1M, 3M, 6M).
+      - Ensure at least 3 independent confirming signals are present (Hard Law Rule of Three).
+      - Answer: Why now? Why this stock? How can I be wrong?
+      {upstream_context}
+    tools: [bash, read_file, session_search]
+    skills: [vn-trading-rules, report-generate]
+    max_iterations: 15
+    timeout_seconds: 300
+
+  - id: counter_thesis_agent
+    role: Counter Thesis Agent (Agent 05)
+    system_prompt: |
+      You are the Counter Thesis Agent (Devil's Advocate). Your purpose is to actively attempt to disprove investment theses.
+      - Assess Counter-Thesis Score (CTS).
+      - Verify GIL cross-ownership cycles and corporate governance flags.
+      - Output a verdict of PROCEED, CONDITIONAL, or BLOCK.
+      {upstream_context}
+    tools: [bash, read_file, load_skill, risk_flags]
+    skills: [risk-analysis]
+    max_iterations: 15
+    timeout_seconds: 300
+
+  - id: risk_agent
+    role: Risk Agent (Agent 06)
+    system_prompt: |
+      You are the Risk Agent. Your purpose is to evaluate risk at position and portfolio levels.
+      - Calculate Expected Shortfall (ES 97.5%) using historical simulation.
+      - Check concentration limits (15% single stock, 35% sector) and Drawdown tier.
+      - Ensure no proposed transaction violates the 2% NAV single-position loss limit (Hard Law 1).
+      {upstream_context}
+    tools: [bash, read_file, load_skill]
+    skills: [risk-analysis, volatility]
+    max_iterations: 10
+    timeout_seconds: 300
+
+  - id: portfolio_agent
+    role: Portfolio Agent (Agent 07)
+    system_prompt: |
+      You are the Portfolio Agent. Your purpose is to allocate capital and generate order instructions.
+      - Use Quarter Kelly sizing scaled by current market regime.
+      - Optimize portfolio holdings to ensure average pairwise correlation < 0.5.
+      - Produce clear `order_instruction` details.
+      {upstream_context}
+    tools: [bash, read_file, load_skill, factor_analysis]
+    skills: [asset-allocation]
+    max_iterations: 15
+    timeout_seconds: 300
+
+  - id: execution_agent
+    role: Execution Agent (Agent 08)
+    system_prompt: |
+      You are the Execution Agent. Your purpose is to determine optimal order execution.
+      - Choose execution mode (NORMAL, STRESS, CRISIS) based on spread, volume, and urgency.
+      - Use VWAP logic for large orders and respect the 20% ADTV20 limit.
+      - Record and output slippage metrics.
+      {upstream_context}
+    tools: [bash, read_file]
+    skills: [execution-model, market-microstructure]
+    max_iterations: 10
+    timeout_seconds: 300
+
+  - id: monitoring_agent
+    role: Monitoring Agent (Agent 09)
+    system_prompt: |
+      You are the Monitoring Agent. Your purpose is to track active positions and manage exits.
+      - Track P&L of open positions.
+      - Check thesis invalidation events and target price breaches.
+      - Issue stop-loss orders directly if unrealized loss >= 2% NAV.
+      {upstream_context}
+    tools: [bash, read_file, session_search]
+    skills: [vn-trading-rules]
+    max_iterations: 10
+    timeout_seconds: 300
+
+  - id: learning_agent
+    role: Learning Agent (Agent 10)
+    system_prompt: |
+      You are the Learning Agent. Your purpose is to evaluate system performance and model decay.
+      - Calculate rolling factor Information Coefficients (IC) per regime.
+      - Diagnose factor decay causes (DATA_ERROR, REGIME_MISMATCH, etc.) and propose weight adjustments.
+      - Monitor actual slippage vs baseline to trigger CDC.
+      {upstream_context}
+    tools: [bash, read_file, load_skill]
+    skills: [performance-attribution]
+    max_iterations: 15
+    timeout_seconds: 300
+
+  - id: governance_agent
+    role: Governance Agent (Agent 11)
+    system_prompt: |
+      You are the Governance Agent. Your purpose is to maintain system integrity.
+      - Audit all agent activities and maintain the immutable audit trail.
+      - Review and log changes to factor weights, sizing multipliers, and thresholds.
+      {upstream_context}
+    tools: [bash, read_file]
+    skills: [risk-analysis]
+    max_iterations: 10
+    timeout_seconds: 300
+
+  - id: cio_agent
+    role: CIO Agent (Agent 12)
+    system_prompt: |
+      You are the Chief Investment Officer (CIO) Agent. Your purpose is to oversee the entire loop.
+      - Resolve conflicts between Portfolio and Risk agents.
+      - Authorize exceptions, approve IOS updates, or issue system halt directives.
+      {upstream_context}
+    tools: [bash, read_file]
+    skills: [asset-allocation]
+    max_iterations: 10
+    timeout_seconds: 300
+
+tasks:
+  - id: task-surveillance
+    agent_id: market_surveillance
+    prompt_template: "Analyze the current HOSE market state, including VIX_VN_analog and breadth for {market}."
+    depends_on: []
+
+  - id: task-discovery
+    agent_id: discovery_agent
+    prompt_template: "Identify and filter candidate stocks from the HOSE Universe, ensuring Beneish and GIL compliance."
+    depends_on: [task-surveillance]
+    input_from:
+      surveillance_context: task-surveillance
+
+  - id: task-research
+    agent_id: research_agent
+    prompt_template: "Calculate factor scores and CSS for the discovered candidates."
+    depends_on: [task-discovery]
+    input_from:
+      discovery_context: task-discovery
+
+  - id: task-thesis
+    agent_id: thesis_agent
+    prompt_template: "Construct structured investment theses with 3 confirming signals for high-conviction stocks."
+    depends_on: [task-research]
+    input_from:
+      research_context: task-research
+
+  - id: task-counter-thesis
+    agent_id: counter_thesis_agent
+    prompt_template: "Perform Devil's Advocate review on the theses and output clear Proceed, Conditional, or Block verdicts."
+    depends_on: [task-thesis]
+    input_from:
+      thesis_context: task-thesis
+
+  - id: task-risk
+    agent_id: risk_agent
+    prompt_template: "Evaluate concentration and Expected Shortfall limits for the proceed list."
+    depends_on: [task-counter-thesis]
+    input_from:
+      verdict_context: task-counter-thesis
+
+  - id: task-portfolio
+    agent_id: portfolio_agent
+    prompt_template: "Optimize capital allocation and size positions using Quarter Kelly."
+    depends_on: [task-risk]
+    input_from:
+      risk_context: task-risk
+      verdict_context: task-counter-thesis
+
+  - id: task-execution
+    agent_id: execution_agent
+    prompt_template: "Translate allocations into detailed EAE order instructions."
+    depends_on: [task-portfolio]
+    input_from:
+      portfolio_context: task-portfolio
+
+  - id: task-monitoring
+    agent_id: monitoring_agent
+    prompt_template: "Monitor open positions for target price hits, thesis invalidation, and stop-loss events."
+    depends_on: [task-execution]
+    input_from:
+      execution_context: task-execution
+
+  - id: task-learning
+    agent_id: learning_agent
+    prompt_template: "Collect execution logs, calculate rolling factor ICs, and check for model decay."
+    depends_on: [task-monitoring]
+    input_from:
+      monitoring_context: task-monitoring
+      execution_context: task-execution
+
+  - id: task-governance
+    agent_id: governance_agent
+    prompt_template: "Create weekly compliance audit logs for the session's decisions."
+    depends_on: [task-learning]
+    input_from:
+      learning_context: task-learning
+
+  - id: task-cio
+    agent_id: cio_agent
+    prompt_template: "Review compliance audit, authorize updates, and issue final directives."
+    depends_on: [task-governance]
+    input_from:
+      governance_context: task-governance
+
+variables:
+  - name: market
+    description: "Market to analyze (e.g.: HOSE)"
+    required: true

@@ -201,7 +201,7 @@ class DailyETLPipeline:
         """Fetch news listing from all CafeF categories (4 cats, 10 pages deep for du-lieu)."""
         logger.info("ETL: listing_crawl — fetching 4 CafeF categories...")
         try:
-            from app.infrastructure.vendors.vn.cafef_listing_crawl import refresh_listing
+            from app.infrastructure.knowledge_base.crawlers.vn.cafef_listing_crawl import refresh_listing
             result = await asyncio.to_thread(refresh_listing, 10)
             logger.info("ETL: listing_crawl — %d inserted", result.get("inserted", 0))
             return {"status": "success", **result}
@@ -215,7 +215,7 @@ class DailyETLPipeline:
         """Fetch news listing from Vietstock channels (chung-khoan + doanh-nghiep)."""
         logger.info("ETL: vietstock_news — fetching from Vietstock...")
         try:
-            from app.infrastructure.vendors.vn.vietstock_news_crawl import refresh_listing
+            from app.infrastructure.knowledge_base.crawlers.vn.vietstock_news_crawl import refresh_listing
             result = await asyncio.to_thread(refresh_listing, 100, [144, 733], True)
             logger.info("ETL: vietstock_news — %d inserted", result.get("inserted", 0))
             return {"status": "success", **result}
@@ -229,7 +229,7 @@ class DailyETLPipeline:
         """Fetch full article content for news_events missing content."""
         logger.info("ETL: deep_crawl_news — fetching article content...")
         try:
-            from app.infrastructure.vendors.vn.deep_crawl_news import refresh_deep_crawl, count_missing_content
+            from app.infrastructure.knowledge_base.crawlers.vn.deep_crawl_news import refresh_deep_crawl, count_missing_content
             missing = await asyncio.to_thread(count_missing_content)
             if missing == 0:
                 logger.info("ETL: deep_crawl_news — all articles have content")

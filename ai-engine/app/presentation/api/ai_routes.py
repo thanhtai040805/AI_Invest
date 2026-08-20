@@ -66,25 +66,78 @@ async def get_institutional_recommendation(
                 "price": r[3], "adv_20d": r[4], "atr_14": r[5]
             })
 
-        # 4. Optimize Allocation
+        # 4. Integrate Swarm Agent Loop
+        from app.brain.state.orchestrator import swarm_orchestrator
+        import re
+
+        swarm_data = swarm_orchestrator.get_latest_swarm_recommendation(target_date)
+        swarm_integrated = False
+        swarm_run_id = None
+        investment_thesis = None
+        blocked_tickers = []
+
+        if swarm_data:
+            swarm_integrated = True
+            swarm_run_id = swarm_data["run_id"]
+            investment_thesis = swarm_data["final_report"]
+            
+            # Extract blocked tickers from Counter-Thesis report summary if present
+            ct_summary = swarm_data["tasks_summary"].get("task-counter-thesis", "")
+            if ct_summary:
+                # Find ticker names that are explicitly blocked
+                # e.g., "BLOCK VCB", "Blocked: VCB", "verdict = BLOCK for VCB"
+                found_blocks = re.findall(r"\b(?:BLOCK|Blocked|blocked)\b[:\s]*([A-Z]{3})", ct_summary)
+                blocked_tickers = list(set(found_blocks))
+                
+            # Filter candidates based on Counter-Thesis blocks
+            if blocked_tickers:
+                alpha_data = [a for a in alpha_data if a["symbol"] not in blocked_tickers]
+
+        # 5. Optimize Allocation
         allocation = optimizer.optimize_allocation(alpha_data, portfolio_value)
+
+        # Fallback thesis if swarm is not available
+        if not investment_thesis:
+            investment_thesis = (
+                f"Market is currently in {risk_data['regime']} regime. "
+                f"Institutional exposure is set to {sum(a['suggested_weight'] for a in allocation)*100:.1f}% "
+                f"based on a Risk Score of {risk_data['risk_score']}. "
+                f"Focusing on high-alpha candidates with liquidity-capped sizing. (Fallback mode: Swarm not available)"
+            )
 
         return {
             "committee_date": str(target_date),
             "macro_risk": risk_data,
             "portfolio_allocation": allocation,
             "total_exposure": sum(a["suggested_weight"] for a in allocation),
-            "investment_thesis": (
-                f"Market is currently in {risk_data['regime']} regime. "
-                f"Institutional exposure is set to {sum(a['suggested_weight'] for a in allocation)*100:.1f}% "
-                f"based on a Risk Score of {risk_data['risk_score']}. "
-                f"Focusing on high-alpha candidates with liquidity-capped sizing."
-            )
+            "investment_thesis": investment_thesis,
+            "swarm_integrated": swarm_integrated,
+            "swarm_run_id": swarm_run_id,
+            "blocked_tickers": blocked_tickers
         }
 
     except Exception as e:
         import traceback
         print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/committee/run-swarm")
+async def trigger_daily_swarm(
+    market: str = Query("HOSE", description="Market to run swarm for")
+):
+    """
+    Triggers the 12-agent daily swarm pipeline in the background.
+    """
+    try:
+        from app.brain.state.orchestrator import swarm_orchestrator
+        run_id = swarm_orchestrator.run_daily_pipeline(market=market)
+        return {
+            "status": "success",
+            "message": f"Daily 12-agent swarm started for {market}",
+            "run_id": run_id
+        }
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 

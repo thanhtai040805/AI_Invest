@@ -1,0 +1,343 @@
+# =============================================================================
+# Mô-đun trích xuất sự kiện - Trích xuất bộ ba nguyên tử v4.0 (bản tiếng Việt)
+# =============================================================================
+# Thay đổi cốt lõi: từ tổng hợp một sự kiện phức hợp duy nhất sang trích nhiều
+# sự kiện quan hệ nguyên tử (mỗi sự kiện chỉ chứa hai thực thể)
+# Cấu trúc: Vai trò → Bối cảnh → Nhiệm vụ → Đầu vào → Đầu ra → Quy tắc
+# =============================================================================
+
+test_extract:
+  description: Trích xuất quan hệ nguyên tử (dạng bộ ba)
+  version: "4.0"
+
+  variables:
+    - time
+    - timezone
+    - custom_background
+    - custom_requirements
+
+  strict_requirements: |
+     **Quy tắc lọc nghiêm ngặt**
+
+  template: |
+    ## Vai trò
+    Bạn là một chuyên gia xây dựng đồ thị tri thức. Nhiệm vụ cốt lõi của bạn là trích xuất các **bộ ba tri thức** từ văn bản được cung cấp, sau đó chuyển mỗi bộ ba thành một **sự kiện nguyên tử**.
+
+    Một bộ ba gồm:
+    - Chủ thể (Subject): một thực thể (người, địa điểm, sự vật, khái niệm, v.v.)
+    - Vị ngữ (Predicate): mối quan hệ giữa chủ thể và tân ngữ
+    - Tân ngữ (Object): một thực thể khác
+
+    Sự kiện nguyên tử: một biểu diễn hoàn chỉnh của một bộ ba đơn lẻ, chứa bối cảnh và siêu dữ liệu phong phú.
+
+    ### Quy tắc trích xuất (Bộ ba)
+    Trích xuất tất cả các mối quan hệ có ý nghĩa từ văn bản
+    Giữ thực thể ngắn gọn nhưng đầy đủ (ví dụ: dùng "Johann Bernoulli" thay vì chỉ "Johann")
+    Dùng vị ngữ rõ ràng, cụ thể (ví dụ: dùng "sinh tại" thay vì "liên quan đến")
+    Trích xuất cả quan hệ tường minh lẫn quan hệ ngầm
+    Đảm bảo bộ ba chính xác về mặt sự thật dựa trên văn bản
+    Không suy diễn quan hệ không được văn bản hỗ trợ
+
+    ## Quy tắc xây dựng sự kiện nguyên tử
+    - Mỗi sự kiện nguyên tử tương ứng với **chính xác một bộ ba**; không hợp nhất nhiều mối quan hệ.
+    - Tiêu đề sự kiện `title` nên dùng dạng câu ngắn "Chủ thể Vị ngữ Tân ngữ" (bằng tiếng Việt).
+    - Trường `relation` ghi lại vị ngữ quan hệ được trích xuất (động từ hoặc cụm danh từ).
+    - Trường `content` mô tả bộ ba bằng ngôn ngữ tự nhiên, bổ sung ngữ cảnh cần thiết (thời gian, địa điểm, cách thức, v.v.) hiện có trong văn bản gốc, nhưng không được thêm thông tin ngoài bản gốc.
+    - Mảng `entities` phải có độ dài **chính xác là 2**, tương ứng với chủ thể và tân ngữ. Mỗi thực thể chứa:
+      - `type`: chọn từ `entity_types` được cung cấp.
+      - `name`: từ gốc trong văn bản; trích xuất riêng tên đầy đủ, viết tắt và biệt danh.
+      - `description`: mô tả vai trò của thực thể trong quan hệ này (chủ thể/tân ngữ/chịu tác động, v.v.).
+    - Hướng của quan hệ phải rõ ràng, làm nổi bật "ai đã làm gì với ai / cái gì là cái gì" trong nội dung.
+    - Tất cả chỉ số đoạn nguồn (bắt đầu từ 1) hỗ trợ sự kiện này phải được đặt trong mảng `references`; một đoạn có thể được tham chiếu bởi nhiều sự kiện.
+
+    ### Yêu cầu đầu ra
+    **Xuất JSON có cấu trúc**
+       - Tuân theo định dạng Đầu ra
+
+    ## Đầu vào
+
+    Đây là định dạng dữ liệu đầu vào của người dùng:
+
+    - `type`: cố định `"request"`
+    - `data`:
+      - `items`: mảng các đoạn nội dung, mỗi đoạn chứa `id` (bắt đầu từ 1) và `content`
+      - `meta`: thông tin siêu dữ liệu
+        - `source_type`: loại nguồn, enum `article` | `chat`
+        - `source_title`: tiêu đề nguồn
+        - `source_summary`: tóm tắt tài liệu hoặc tóm tắt hội thoại
+        - `previous_context`: ngữ cảnh trước đó (tùy chọn)
+        - `related_events`: mảng các sự kiện liên quan trong lịch sử (tùy chọn)
+        - `entity_types`: mảng các loại thực thể khả dụng
+
+    ## Đầu ra
+
+    Đây là định dạng dữ liệu phản hồi bạn cần trả về (lưu ý cả items và meta đều nằm trong data):
+
+    - `type`: cố định `"response"`
+    - `data`:
+      - `items`: mảng sự kiện, mỗi sự kiện chứa:
+        - `title`: tiêu đề sự kiện, dạng ngắn "Chủ thể Vị ngữ Tân ngữ"
+        - `relation`: cụm quan hệ (động từ hoặc cụm danh từ, ví dụ: "mua lại", "người sáng lập", "đặt tại")
+        - `content`: biểu đạt hoàn chỉnh của quan hệ, bao gồm các bổ sung thời gian/địa điểm/số lượng cần thiết, có thể đọc độc lập
+        - `category`: danh mục sự kiện, tự động xác định từ nội dung
+        - `keywords`: danh sách từ khóa, 2-3 từ cốt lõi, bao gồm danh từ riêng, viết tắt, tên người, tổ chức, v.v. (bắt buộc)
+        - `priority`: mức ưu tiên, enum `HIGH` | `MEDIUM` | `LOW` | `UNKNOWN`
+        - `status`: trạng thái, enum `COMPLETED` | `PROCESSING` | `PENDING` | `UNKNOWN`
+        - `references`: mảng chỉ số đoạn nguồn (bắt đầu từ 1), phải chứa tất cả các đoạn hỗ trợ quan hệ
+        - `entities`: mảng thực thể, **chính xác 2** đối tượng, mỗi đối tượng chứa `type`, `name`, `description`
+        - `is_valid`: boolean
+      - `meta`: thông tin siêu dữ liệu
+        - `reason`: mô tả lý do xử lý (bắt buộc)
+        - `confidence`: độ tin cậy, số trong khoảng 0-1 (tùy chọn)
+
+    ## Quy tắc
+      **Định dạng đầu ra**
+      - **NGÔN NGỮ ĐẦU RA BẮT BUỘC: Xuất ra một chuỗi JSON thuần túy hoàn toàn bằng TIẾNG VIỆT.** Nếu được bọc trong ```json ... ```, nó vẫn có thể được trích xuất bình thường.
+      - **NGHIÊM CẤM dùng tiếng Trung Quốc hoặc tiếng Anh trong mọi trường văn bản** (title, relation, summary, content, category, keywords, reason, description của thực thể).
+      - **Tên riêng, mã chứng khoán, tên công ty nước ngoài, địa danh nước ngoài và số liệu** giữ nguyên văn bản gốc (ví dụ giữ "HPG", "Vinamilk", "Q1 2026"), nhưng phần mô tả xung quanh phải bằng tiếng Việt.
+      - Dấu nháy kép trong chuỗi phải được thoát là `\"`.
+
+      **Ràng buộc cốt lõi**
+      - **Tuân thủ tính nguyên tử**: mỗi sự kiện chỉ chứa hai thực thể, mô tả một quan hệ trực tiếp duy nhất. Nghiêm cấm hợp nhất nhiều bộ ba.
+      - Trung thực với văn bản gốc: không thêm hoặc bớt sự kiện, không thay đổi chủ thể hoặc hướng của quan hệ.
+      - Trích dẫn chính xác: mọi luận điểm thực tế trong một bộ ba phải truy ra được từ `references` của nó.
+      - Giữ nguyên biểu đạt thời gian: thời gian thông tục/tương đối ("thứ Sáu", "tuần sau") phải giữ nguyên cách diễn đạt gốc; nghiêm cấm chuyển đổi thành ngày cụ thể.
+
+  # ============================================================================
+  # Schema đầu ra (thay đổi cốt lõi: items có thể chứa nhiều mục, entities giới hạn 2)
+  # ============================================================================
+  output_schema:
+    type: object
+    required: [type, data]
+    properties:
+      type:
+        const: response
+      data:
+        type: object
+        required: [items, meta]
+        properties:
+          items:
+            type: array
+            items:
+              $ref: "#/definitions/atomic_event"
+          meta:
+            type: object
+            required: [reason]
+            properties:
+              reason:
+                type: string
+              confidence:
+                type: number
+
+  definitions:
+    atomic_event:
+      type: object
+      required: [title, relation, content, references, entities, is_valid]
+      properties:
+        title:
+          type: string
+          description: Tiêu đề bộ ba, dạng gợi ý "Chủ thể Vị ngữ Tân ngữ"
+        relation:
+          type: string
+          description: Cụm quan hệ cốt lõi, ví dụ "mua lại", "người sáng lập", "đặt tại"
+        content:
+          type: string
+          description: Mô tả hoàn chỉnh bằng ngôn ngữ tự nhiên của quan hệ
+        category:
+          type: string
+        keywords:
+          type: array
+          items:
+            type: string
+        priority:
+          type: string
+          enum: [HIGH, MEDIUM, LOW, UNKNOWN]
+        status:
+          type: string
+          enum: [UNKNOWN, PENDING, PROCESSING, COMPLETED]
+        references:
+          type: array
+          description: Chỉ số đoạn hỗ trợ quan hệ này
+          items:
+            type: integer
+          minItems: 1
+        entities:
+          type: array
+          description: Giới hạn hai thực thể, tương ứng với chủ thể và tân ngữ
+          items:
+            $ref: "#/definitions/entity"
+          minItems: 2
+          maxItems: 2
+        is_valid:
+          type: boolean
+
+    entity:
+      type: object
+      required: [type, name, description]
+      properties:
+        type:
+          type: string
+          description: Loại thực thể (chọn từ entity_types)
+        name:
+          type: string
+        description:
+          type: string
+          description: Vai trò của thực thể trong quan hệ này (chủ thể/tân ngữ/thuộc tính, v.v.)
+
+  # ============================================================================
+  # Ví dụ (ví dụ đầu ra nguyên tử)
+  # ============================================================================
+  examples:
+    input: |
+      {
+        "type": "request",
+        "data": {
+          "items": [
+            {"id": 1, "content": "Albert Einstein sinh ra tại Ulm, Đức vào năm 1879."},
+            {"id": 2, "content": "Ông đã phát triển thuyết tương đối, lý thuyết đã cách mạng hóa ngành vật lý."},
+            {"id": 3, "content": "Einstein làm việc tại Viện Nghiên cứu Cao cấp ở Princeton."}
+          ],
+          "meta": {
+            "source_type": "article",
+            "source_title": "Tiểu sử Einstein",
+            "entity_types": [
+              {"type": "person", "description": "Người"},
+              {"type": "location", "description": "Địa điểm"},
+              {"type": "organization", "description": "Tổ chức"},
+              {"type": "subject", "description": "Khái niệm hoặc lý thuyết"}
+            ]
+          }
+        }
+      }
+    output: |
+      {
+        "type": "response",
+        "data": {
+          "items": [
+            {
+              "title": "Albert Einstein – sinh tại – Ulm, Đức",
+              "relation": "sinh tại",
+              "summary": "Albert Einstein sinh ra tại Ulm, Đức vào năm 1879.",
+              "content": "Albert Einstein sinh ra tại Ulm, Đức vào năm 1879.",
+              "category": "Nhân vật",
+              "keywords": ["Albert Einstein", "sinh tại", "Ulm", "1879"],
+              "priority": "MEDIUM",
+              "status": "COMPLETED",
+              "references": [1],
+              "entities": [
+                {
+                  "type": "person",
+                  "name": "Albert Einstein",
+                  "description": "Người sinh ra tại Ulm, Đức (1879)."
+                },
+                {
+                  "type": "location",
+                  "name": "Ulm, Đức",
+                  "description": "Nơi sinh của Albert Einstein, tọa lạc tại Đức."
+                }
+              ],
+              "is_valid": true
+            },
+            {
+              "title": "Albert Einstein – phát triển – thuyết tương đối",
+              "relation": "phát triển",
+              "summary": "Einstein đã phát triển thuyết tương đối, lý thuyết sau này hoàn toàn cách mạng hóa ngành vật lý.",
+              "content": "Ông đã phát triển thuyết tương đối, lý thuyết đã cách mạng hóa ngành vật lý.",
+              "category": "Khoa học",
+              "keywords": ["Albert Einstein", "thuyết tương đối", "vật lý"],
+              "priority": "HIGH",
+              "status": "COMPLETED",
+              "references": [2],
+              "entities": [
+                {
+                  "type": "person",
+                  "name": "Albert Einstein",
+                  "description": "Người phát triển thuyết tương đối."
+                },
+                {
+                  "type": "subject",
+                  "name": "thuyết tương đối",
+                  "description": "Lý thuyết vật lý do Einstein đề xuất."
+                }
+              ],
+              "is_valid": true
+            },
+            {
+              "title": "thuyết tương đối – cách mạng hóa – vật lý",
+              "relation": "cách mạng hóa",
+              "summary": "Thuyết tương đối đã thay đổi căn bản lĩnh vực vật lý.",
+              "content": "Thuyết tương đối đã cách mạng hóa ngành vật lý.",
+              "category": "Khoa học",
+              "keywords": ["thuyết tương đối", "vật lý", "cách mạng hóa"],
+              "priority": "MEDIUM",
+              "status": "COMPLETED",
+              "references": [2],
+              "entities": [
+                {
+                  "type": "subject",
+                  "name": "thuyết tương đối",
+                  "description": "Lý thuyết gây ra cuộc cách mạng trong ngành vật lý."
+                },
+                {
+                  "type": "subject",
+                  "name": "vật lý",
+                  "description": "Lĩnh vực bị thuyết tương đối làm biến đổi sâu sắc."
+                }
+              ],
+              "is_valid": true
+            },
+            {
+              "title": "Albert Einstein – làm việc tại – Viện Nghiên cứu Cao cấp",
+              "relation": "làm việc tại",
+              "summary": "Einstein làm việc tại Viện Nghiên cứu Cao cấp ở Princeton.",
+              "content": "Einstein làm việc tại Viện Nghiên cứu Cao cấp ở Princeton.",
+              "category": "Sự nghiệp",
+              "keywords": ["Albert Einstein", "Viện Nghiên cứu Cao cấp", "Princeton"],
+              "priority": "MEDIUM",
+              "status": "COMPLETED",
+              "references": [3],
+              "entities": [
+                {
+                  "type": "person",
+                  "name": "Albert Einstein",
+                  "description": "Người làm việc tại Viện Nghiên cứu Cao cấp."
+                },
+                {
+                  "type": "organization",
+                  "name": "Viện Nghiên cứu Cao cấp",
+                  "description": "Viện nghiên cứu nơi Einstein làm việc."
+                }
+              ],
+              "is_valid": true
+            },
+            {
+              "title": "Viện Nghiên cứu Cao cấp – tọa lạc tại – Princeton",
+              "relation": "tọa lạc tại",
+              "summary": "Viện Nghiên cứu Cao cấp tọa lạc tại Princeton.",
+              "content": "Viện Nghiên cứu Cao cấp tọa lạc tại Princeton.",
+              "category": "Địa lý",
+              "keywords": ["Viện Nghiên cứu Cao cấp", "Princeton", "tọa lạc"],
+              "priority": "LOW",
+              "status": "COMPLETED",
+              "references": [3],
+              "entities": [
+                {
+                  "type": "organization",
+                  "name": "Viện Nghiên cứu Cao cấp",
+                  "description": "Viện nghiên cứu tọa lạc tại Princeton."
+                },
+                {
+                  "type": "location",
+                  "name": "Princeton",
+                  "description": "Thành phố nơi Viện Nghiên cứu Cao cấp đặt trụ sở."
+                }
+              ],
+              "is_valid": true
+            }
+          ],
+          "meta": {
+            "reason": "Đã trích xuất các sự kiện nguyên tử từ ba đoạn độc lập: id1 cho ra quan hệ sinh ra; id2 cho ra quan hệ phát triển và quan hệ cách mạng hóa (đại từ 'Ông' được quy về Albert Einstein); id3 cho ra quan hệ làm việc và quan hệ tọa lạc. Tóm tắt mỗi sự kiện là một câu ngắn gọn; references khớp chính xác với chỉ số đoạn.",
+            "confidence": 0.96
+          }
+        }
+      }
