@@ -23,6 +23,7 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from sag_api.core.model_providers import ModelProviderId, get_model_provider
 from sag_api.enums import SearchStrategy, normalize_search_strategy
 
+_PLACEHOLDER = "not-configured"
 _DEFAULT_LLM_PROVIDER = get_model_provider("openai")
 
 
@@ -135,6 +136,11 @@ class Settings(BaseSettings):
     extraction_llm_base_url: str | None = None
     extraction_llm_api_key: str | None = None
 
+    # ── Model Agent suy luận riêng (tùy chọn; mặc định tái dùng llm_model) ────────
+    agent_llm_model: str | None = None
+    agent_llm_base_url: str | None = None
+    agent_llm_api_key: str | None = None
+
     # ── Embedding (tương thích OpenAI; chỉ provider OpenAI mới tái dùng được cấu hình sinh) ───────
     embedding_model: str = "bge-large-en-v1.5"
     embedding_base_url: str | None = "https://api.302ai.cn/v1"
@@ -232,7 +238,7 @@ class Settings(BaseSettings):
     @property
     def routed_extraction_llm_model(self) -> str:
         """Tên route LiteLLM dùng cho trích xuất Graph."""
-        model = self.extraction_llm_model or self.llm_model
+        model = self.extraction_llm_model if (self.extraction_llm_model and self.extraction_llm_model != _PLACEHOLDER) else self.llm_model
         return get_model_provider(self.llm_provider).route_model(model)
 
     @property
@@ -241,7 +247,25 @@ class Settings(BaseSettings):
 
     @property
     def effective_extraction_llm_api_key(self) -> str | None:
-        return self.extraction_llm_api_key or self.llm_api_key
+        if self.extraction_llm_api_key and self.extraction_llm_api_key != _PLACEHOLDER:
+            return self.extraction_llm_api_key
+        return self.llm_api_key
+
+    @property
+    def routed_agent_llm_model(self) -> str:
+        """Tên route LiteLLM dùng cho Agent suy luận."""
+        model = self.agent_llm_model if (self.agent_llm_model and self.agent_llm_model != _PLACEHOLDER and "YOUR_TENCENT" not in self.agent_llm_model) else self.llm_model
+        return get_model_provider(self.llm_provider).route_model(model)
+
+    @property
+    def effective_agent_llm_base_url(self) -> str | None:
+        return self.agent_llm_base_url or self.llm_base_url
+
+    @property
+    def effective_agent_llm_api_key(self) -> str | None:
+        if self.agent_llm_api_key and self.agent_llm_api_key != _PLACEHOLDER and "YOUR_TENCENT" not in self.agent_llm_api_key:
+            return self.agent_llm_api_key
+        return self.llm_api_key
 
     @property
     def effective_llm_temperature(self) -> float:

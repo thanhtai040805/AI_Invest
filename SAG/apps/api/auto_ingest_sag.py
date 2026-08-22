@@ -39,10 +39,16 @@ class SAGIngestPipeline:
         self.close()
 
     def check_health(self) -> dict[str, Any]:
-        """Kiểm tra trạng thái sẵn sàng của SAG Service."""
+        """Kiểm tra trạng thái sẵn sàng của SAG Service và tự động xác thực."""
         try:
             res = self.client.get(f"{self.api_base}/system/health")
             if res.status_code == 200:
+                # Tự động đăng nhập / xác thực dev local
+                login_res = self.client.post(f"{self.api_base}/auth/login", json={"name": "admin"})
+                if login_res.status_code == 200:
+                    token = login_res.json().get("access_token")
+                    if token:
+                        self.client.headers["Authorization"] = f"Bearer {token}"
                 return res.json()
         except Exception as err:
             raise RuntimeError(
@@ -64,7 +70,7 @@ class SAGIngestPipeline:
         # Tạo mới nếu chưa tồn tại
         create_payload = {
             "name": source_name,
-            "connector_kind": "upload",
+            "connector_kind": "file_upload",
             "description": description or f"Nguồn tài liệu BCTC hợp nhất cho mã cổ phiếu {ticker.upper()}",
         }
         res_create = self.client.post(f"{self.api_base}/sources", json=create_payload)

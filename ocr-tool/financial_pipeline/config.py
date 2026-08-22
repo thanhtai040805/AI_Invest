@@ -22,10 +22,27 @@ class RegionClassifierConfig:
 
 
 @dataclass
+class MinerUConfig:
+    enabled: bool = True
+    api_key_env: str = "MINERU_API_KEY"
+    api_base_url: str = "https://mineru.net/api/v4"
+    timeout_seconds: int = 180
+    fallback_to_modal: bool = True
+
+
+@dataclass
+class PipelineConfig:
+    max_cpu_workers: int = 10
+
+
+@dataclass
 class FinancialProfileConfig:
     version: str = "1.0"
     page_classifier: PageClassifierConfig = field(default_factory=PageClassifierConfig)
     region_classifier: RegionClassifierConfig = field(default_factory=RegionClassifierConfig)
+    mineru: MinerUConfig = field(default_factory=MinerUConfig)
+    pipeline: PipelineConfig = field(default_factory=PipelineConfig)
+
 
 
 def load_profile(yaml_path: str = "financial_profile.yaml") -> FinancialProfileConfig:
@@ -62,8 +79,26 @@ def load_profile(yaml_path: str = "financial_profile.yaml") -> FinancialProfileC
         keep_region_keywords=rc_data.get("keep_region_keywords", [])
     )
 
+    m_data = data.get("mineru", {})
+    mineru_config = MinerUConfig(
+        enabled=bool(m_data.get("enabled", True)),
+        api_key_env=str(m_data.get("api_key_env", "MINERU_API_KEY")),
+        api_base_url=str(m_data.get("api_base_url", "https://mineru.net/api/v4")),
+        timeout_seconds=int(m_data.get("timeout_seconds", 180)),
+        fallback_to_modal=bool(m_data.get("fallback_to_modal", True))
+    )
+
+    pip_data = data.get("pipeline", {})
+    pipeline_config = PipelineConfig(
+        max_cpu_workers=int(pip_data.get("max_cpu_workers", 10))
+    )
+
     return FinancialProfileConfig(
         version=str(data.get("version", "1.0")),
         page_classifier=page_config,
-        region_classifier=region_config
+        region_classifier=region_config,
+        mineru=mineru_config,
+        pipeline=pipeline_config
     )
+
+

@@ -123,3 +123,15 @@ region_classifier:
     - "TRANH CHAP"
     - "DU PHONG NO PHAI THU KHO DOI"
     - "PHAN TICH THEO TUOI NO"
+
+mineru:
+  enabled: true
+  api_key_env: "MINERU_API_KEY"
+  api_base_url: "https://mineru.net/api/v4"
+  timeout_seconds: 180
+  fallback_to_modal: true
+
+pipeline:
+  max_cpu_workers: 10
+
+

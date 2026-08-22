@@ -95,7 +95,7 @@ class LLMClient:
 
     @property
     def configured(self) -> bool:
-        return self._settings.llm_configured
+        return bool(self._settings.effective_agent_llm_api_key or self._settings.llm_api_key)
 
     def _ensure_configured(self) -> None:
         if not self.configured:
@@ -110,8 +110,8 @@ class LLMClient:
         tool_choice: str | dict | None = None,
     ) -> Any:
         request: dict[str, Any] = {
-            "model": self._settings.routed_llm_model,
-            "api_key": self._settings.llm_api_key,
+            "model": self._settings.routed_agent_llm_model,
+            "api_key": self._settings.effective_agent_llm_api_key,
             "timeout": self._settings.llm_timeout_ms / 1000,
             "num_retries": self._settings.llm_max_retries,
             "messages": messages,
@@ -123,8 +123,8 @@ class LLMClient:
             request["tools"] = tools
             if tool_choice is not None:
                 request["tool_choice"] = tool_choice
-        if self._settings.llm_base_url:
-            request["api_base"] = self._settings.llm_base_url
+        if self._settings.effective_agent_llm_base_url:
+            request["api_base"] = self._settings.effective_agent_llm_base_url
         request = apply_litellm_completion_policy(self._settings, request)
         return await _litellm_completion(**request)
 

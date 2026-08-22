@@ -19,7 +19,9 @@ class PipelineMetrics:
     total_elapsed_sec: float
     markdown_char_count: int
     estimated_tokens: int
+    ocr_provider: str = "modal_gpu"
     modal_gpu: str = "L40S"
+
 
 
 class BenchmarkTracker:
@@ -29,6 +31,7 @@ class BenchmarkTracker:
         self.document_id = document_id
         self.filename = filename
         self.pdf_size_bytes = 0
+        self.ocr_provider = "modal_gpu"
         
         self.start_time = time.time()
         self.t_classification_start = 0.0
@@ -52,8 +55,9 @@ class BenchmarkTracker:
         self.retained_pages = retained_pages
         self.skipped_pages = total_pages - retained_pages
 
-    def start_modal_ocr(self):
+    def start_modal_ocr(self, provider: str = "modal_gpu"):
         self.t_modal_start = time.time()
+        self.ocr_provider = provider
 
     def end_modal_ocr(self):
         self.t_modal_end = time.time()
@@ -89,7 +93,8 @@ class BenchmarkTracker:
             time_region_filtering_sec=round(time_region, 3),
             total_elapsed_sec=round(total_elapsed, 3),
             markdown_char_count=self.markdown_char_count,
-            estimated_tokens=estimated_tokens
+            estimated_tokens=estimated_tokens,
+            ocr_provider=self.ocr_provider
         )
 
     def print_summary_report(self) -> PipelineMetrics:
@@ -117,13 +122,15 @@ class BenchmarkTracker:
             time_region_filtering_sec=round(time_region, 3),
             total_elapsed_sec=round(total_elapsed, 3),
             markdown_char_count=self.markdown_char_count,
-            estimated_tokens=estimated_tokens
+            estimated_tokens=estimated_tokens,
+            ocr_provider=self.ocr_provider
         )
 
         print("\n" + "=" * 65)
         print(" 📊 BÁO CÁO BENCHMARK FINANCIAL OCR PIPELINE (BCTC VIỆT NAM)")
         print("=" * 65)
         print(f" 📄 File kiểm tra         : {metrics.filename}")
+        print(f" ⚙️ OCR Provider           : {metrics.ocr_provider.upper()}")
         print(f" 📦 Kích thước PDF        : {metrics.pdf_size_bytes / (1024*1024):.2f} MB")
         print(f" 📑 Tổng số trang PDF     : {metrics.total_pdf_pages} trang")
         print(f" ✂️ Trang được lọc (KEEP) : {metrics.retained_pages} trang")
@@ -131,7 +138,7 @@ class BenchmarkTracker:
         print("-" * 65)
         print(" ⏱️  THỜI GIAN XỬ LÝ (LATENCY):")
         print(f"   • Page Classifier (CPU) : {metrics.time_page_classification_sec:.3f} s")
-        print(f"   • Modal GPU Worker      : {metrics.time_modal_ocr_sec:.3f} s")
+        print(f"   • OCR Engine ({metrics.ocr_provider}) : {metrics.time_modal_ocr_sec:.3f} s")
         print(f"   • Region Filtering      : {metrics.time_region_filtering_sec:.3f} s")
         print(f"   • TỔNG THỜI GIAN        : {metrics.total_elapsed_sec:.3f} s")
         print("-" * 65)
@@ -141,3 +148,4 @@ class BenchmarkTracker:
         print("=" * 65 + "\n")
 
         return metrics
+

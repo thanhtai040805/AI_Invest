@@ -1,10 +1,7 @@
-"""OCR model identifiers used by the local vLLM server.
+import os
 
-Qwen2.5-VL-7B-Instruct is used for recognition: unlike GLM-OCR it was trained
-on multilingual OCR data that includes Vietnamese, so it preserves Vietnamese
-diacritics instead of dropping them and confusing visually similar Cyrillic/
-CJK glyphs.
-"""
+# Mô hình OCR nhận diện chữ: Mặc định chuyển sang GLM-OCR (THUDM/glm-4v-9b) theo yêu cầu kiểm thử tốc độ.
+# Có thể override bằng biến môi trường CHEAP_OCR_MODEL (vd: Qwen/Qwen2.5-VL-7B-Instruct)
+OCR_MODEL = os.getenv("CHEAP_OCR_MODEL", "THUDM/glm-4v-9b")
+SERVED_MODEL_NAME = os.getenv("CHEAP_OCR_SERVED_NAME", "glm-ocr")
 
-OCR_MODEL = "Qwen/Qwen2.5-VL-7B-Instruct"
-SERVED_MODEL_NAME = "qwen25-vl-7b"

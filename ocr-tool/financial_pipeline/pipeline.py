@@ -19,14 +19,15 @@ from .config import FinancialProfileConfig, load_profile
 from .page_classifier import PageClassifier, PageClassificationResult, PageMeta
 from .region_classifier import RegionClassifier
 from .benchmarking import BenchmarkTracker, PipelineMetrics
+from .mineru_client import MinerUClient, MinerUQuotaExceededError
 
 
 class FinancialOcrPipeline:
     """Financial OCR Pipeline cho Báo cáo tài chính doanh nghiệp Việt Nam (Dự án AIInvest HOSE).
 
     Kiến trúc Hybrid Ingestion:
-    1. Standard BCTC (≤ 40 trang): Document-level Batching (GpuWorker.process_batch.map)
-    2. Large Documents (> 40 trang): Semantic Chunking Router
+    1. MinerU Cloud API (Primary - Free Tier) với tự động Fallback sang Modal GPU (GLM-OCR / Qwen2.5-VL)
+    2. Standard BCTC (≤ 40 trang): Document-level Batching (GpuWorker.process_batch.map)
     3. CPU PageClassifier & RegionClassifier filtering
     """
 
@@ -34,6 +35,11 @@ class FinancialOcrPipeline:
         self.config = load_profile(profile_path)
         self.page_classifier = PageClassifier(self.config)
         self.region_classifier = RegionClassifier(self.config)
+        self.mineru_client = MinerUClient(
+            api_key=os.getenv(self.config.mineru.api_key_env, ""),
+            api_base_url=self.config.mineru.api_base_url,
+            timeout_seconds=self.config.mineru.timeout_seconds
+        )
 
     def process_pdf_bytes(
         self,
@@ -71,10 +77,25 @@ class FinancialOcrPipeline:
             retained_pages=class_result.retained_pages_count
         )
 
-        # Giai đoạn 2: Gọi Modal GPU Worker
-        tracker.start_modal_ocr()
-        raw_markdown = self._call_modal_gpu_ocr(target_pdf_bytes, filename=filename, uri=uri)
+        # Giai đoạn 2: Gọi OCR Provider (Thử MinerU -> Fallback Modal GPU)
+        raw_markdown = None
+        if self.config.mineru.enabled and self.mineru_client.is_configured:
+            tracker.start_modal_ocr(provider="mineru")
+            try:
+                print(f"[+] 🚀 Gửi file '{filename}' tới MinerU Cloud API (Free Quota)...")
+                raw_markdown = self.mineru_client.extract_pdf_bytes(target_pdf_bytes, filename=filename)
+            except MinerUQuotaExceededError as q_err:
+                print(f"[!] ⚠️ MinerU Quota Limit: {q_err} -> Tự động chuyển (Fallback) sang Modal Serverless GPU!")
+            except Exception as err:
+                print(f"[!] ⚠️ Lỗi MinerU API: {err} -> Chuyển (Fallback) sang Modal Serverless GPU!")
+
+        if not raw_markdown:
+            tracker.start_modal_ocr(provider="modal_gpu")
+            print(f"[+] ⚡ Đang thực thi Modal GPU Worker (GLM-OCR)...")
+            raw_markdown = self._call_modal_gpu_ocr(target_pdf_bytes, filename=filename, uri=uri)
+
         tracker.end_modal_ocr()
+
 
         # Giai đoạn 3: Region Classifier & Markdown Post-Processing
         tracker.start_region_filtering()
@@ -132,13 +153,15 @@ class FinancialOcrPipeline:
         class_results = []
         trackers = []
 
-        # 1. Pre-filtering hàng loạt trên CPU (siêu nhanh)
-        for idx, url in enumerate(pdf_urls):
+        # 1. Pre-filtering hàng loạt trên CPU SONG SONG ĐA LUỒNG (16 workers tận dụng hết CPU Cores)
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _process_one_cpu(item_tuple):
+            idx, url = item_tuple
             filename = url.split("/")[-1].split("?")[0] or f"document_{idx+1}.pdf"
             if not filename.endswith(".pdf"):
                 filename += ".pdf"
 
-            print(f"[+] [{idx+1}/{len(pdf_urls)}] Tải & Phân loại trang CPU: {filename}...")
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req) as resp:
                 pdf_bytes = resp.read()
@@ -165,9 +188,21 @@ class FinancialOcrPipeline:
                 relative_path=filename,
                 data=target_bytes
             )
-            doc_inputs.append(doc_input)
-            class_results.append(c_res)
-            trackers.append(tracker)
+            return idx, doc_input, c_res, tracker
+
+        workers = getattr(self.config.pipeline, "max_cpu_workers", 10)
+        print(f"[+] ⚡ Chạy CPU Classify SONG SONG cho {len(pdf_urls)} file (ThreadPool {workers} Cores)...")
+        indexed_urls = list(enumerate(pdf_urls))
+        with ThreadPoolExecutor(max_workers=min(workers, len(pdf_urls))) as executor:
+            cpu_outputs = list(executor.map(_process_one_cpu, indexed_urls))
+
+
+        # Sắp xếp lại theo đúng thứ tự ban đầu
+        cpu_outputs.sort(key=lambda x: x[0])
+        doc_inputs = [x[1] for x in cpu_outputs]
+        class_results = [x[2] for x in cpu_outputs]
+        trackers = [x[3] for x in cpu_outputs]
+
 
         # 2. Gọi Modal GpuWorker.process_batch.map() song song N GPU Containers
         print(f"\n⚡ Đang kích hoạt Modal GPU Map cho {len(doc_inputs)} container GPU L40S song song...")

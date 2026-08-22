@@ -28,7 +28,8 @@ def _llm_model_name(client: Any) -> str:
 
 
 def _uses_deepseek(client: Any) -> bool:
-    return "deepseek" in _llm_model_name(client).rsplit("/", 1)[-1].casefold()
+    name = _llm_model_name(client).rsplit("/", 1)[-1].casefold()
+    return "deepseek" in name or "kira" in name
 
 
 def _is_json_schema_response_format_unsupported(error: Exception) -> bool:
@@ -173,13 +174,27 @@ def install_zleap_sag_extract_compat() -> None:
         active_schema = schema
         if _looks_like_extract_response_schema(schema):
             active_schema = _relax_extract_schema(schema)
+        import litellm
+        litellm.request_timeout = 300.0
+        if hasattr(getattr(self.llm_client, "config", None), "timeout"):
+            self.llm_client.config.timeout = 300.0
         if _uses_deepseek(self.llm_client):
-            log.info("DeepSeek luôn dùng response_format=json_object")
-            result = await self.llm_client.chat_with_schema(
-                messages,
-                response_schema=None,
-                response_format={"type": "json_object"},
-            )
+            log.info("Mô hình dùng response_format=json_object với timeout=300s và retry tự động")
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    result = await self.llm_client.chat_with_schema(
+                        messages,
+                        response_schema=None,
+                        response_format={"type": "json_object"},
+                    )
+                    break
+                except Exception as err:
+                    if attempt == max_retries - 1:
+                        raise
+                    log.warning("Lỗi tạm thời từ API LLM (thử %d/%d): %s. Đang chờ thử lại...", attempt + 1, max_retries, err)
+                    import asyncio
+                    await asyncio.sleep(3 * (attempt + 1))
             _validate_response_schema(result, active_schema)
         else:
             try:
@@ -295,8 +310,8 @@ def _install_vietnamese_entity_types_seed() -> None:
     original = DataEngine._seed_entity_types
     vi_map = {t: (name, desc) for t, name, desc in _VIETNAMESE_DEFAULT_ENTITY_TYPES}
 
-    async def _patched_seed(specs: list[tuple[str, str, str]], only_if_empty: bool) -> None:
-        await original(specs, only_if_empty)
+    async def _patched_seed(specs: list[tuple[str, str, str]], only_if_empty: bool = True) -> None:
+        await original(specs, only_if_empty=only_if_empty)
         try:
             from sqlalchemy import select
 
@@ -327,7 +342,7 @@ def _install_vietnamese_entity_types_seed() -> None:
             log.warning("Cập nhật entity types tiếng Việt thất bại", exc_info=True)
 
     _patched_seed._sag_api_vi_entity_types = True  # type: ignore[attr-defined]
-    DataEngine._seed_entity_types = _patched_seed
+    DataEngine._seed_entity_types = staticmethod(_patched_seed)
 
 
 def install_zleap_sag_vietnamese() -> None:
