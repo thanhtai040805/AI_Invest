@@ -1,126 +1,77 @@
-"""Calibrated Confidence — Platt Scaling, Isotonic Regression.
-
-Confidence phải map ra xác suất thắng thực nghiệm.
-Vd: confidence=0.60 phải có hit rate lịch sử 60% ở bin [0.55, 0.65].
 """
-import warnings
-from typing import Optional
+Conformal Prediction Calibration
+Provides theoretically guaranteed confidence intervals for ML predictions.
+Replaces legacy Platt Scaling with distribution-free Conformal Predictors.
+"""
 
 import numpy as np
 import pandas as pd
+from typing import Tuple, List
 
-warnings.filterwarnings("ignore", category=FutureWarning)
-
-
-class CalibratedConfidence:
-    """Calibrated probability from raw model scores.
-
-    Methods:
-        - Platt Scaling (sigmoid) — for ML model outputs
-        - Isotonic Regression — flexible, for ensemble output
-        - Reliability diagram — visualize calibration
-        - Brier Score — measure calibration quality (lower = better)
+class ConformalPredictor:
     """
-
-    def __init__(self, method: str = "platt"):
-        if method not in ("platt", "isotonic"):
-            raise ValueError(f"Method must be 'platt' or 'isotonic', got {method}")
-        self.method = method
-        self.calibrator = None
-
-    def calibrate(self, raw_scores: np.ndarray, outcomes: np.ndarray) -> None:
-        """Fit calibration model on out-of-sample data.
-
+    Split Conformal Prediction for classification (Inductive Conformal Prediction).
+    Guarantees that the true label is within the predicted set with probability 1-alpha,
+    regardless of the underlying distribution or model accuracy.
+    """
+    def __init__(self, alpha: float = 0.1):
+        """
         Args:
-            raw_scores: Raw model scores/probabilities (any range)
-            outcomes: Binary outcomes (0 or 1)
+            alpha: Significance level (e.g., 0.1 means 90% confidence).
         """
-        from sklearn.calibration import CalibratedClassifierCV
-        from sklearn.isotonic import IsotonicRegression
-        from sklearn.linear_model import LogisticRegression
-
-        scores = np.array(raw_scores).reshape(-1, 1).astype(np.float64)
-        outcomes = np.array(outcomes).astype(np.int32)
-
-        if self.method == "platt":
-            base = LogisticRegression(C=1e10, solver="lbfgs")
-            self.calibrator = CalibratedClassifierCV(base, method="sigmoid", cv=3)
-            dummy_X = np.hstack([scores, np.random.randn(len(scores), 1)])
-            self.calibrator.fit(dummy_X, outcomes)
-        else:
-            self.calibrator = IsotonicRegression(out_of_bounds="clip")
-            self.calibrator.fit(scores.flatten(), outcomes)
-
-    def predict_proba(self, raw_score: float) -> float:
-        """Trả về calibrated probability [0, 1]."""
-        if self.calibrator is None:
-            return float(np.clip(raw_score, 0, 1))
-        if self.method == "platt":
-            dummy = np.array([[raw_score, 0.0]])
-            return float(self.calibrator.predict_proba(dummy)[0, 1])
-        else:
-            return float(self.calibrator.predict([raw_score])[0])
-
-    def reliability_diagram(
-        self, raw_scores: np.ndarray, outcomes: np.ndarray, n_bins: int = 10
-    ) -> dict:
-        """Compute calibration curve data for reliability diagram.
-
+        self.alpha = alpha
+        self.q_hat = None
+        self.is_calibrated = False
+        
+    def calibrate(self, calib_probs: np.ndarray, calib_labels: np.ndarray):
+        """
+        Calibrate using a held-out calibration set.
+        
+        Args:
+            calib_probs: Predicted probabilities for the calibration set (shape: N x n_classes).
+            calib_labels: True integer labels for the calibration set (shape: N).
+        """
+        n = len(calib_labels)
+        
+        # Calculate non-conformity scores
+        # Score = 1 - predicted probability of the true class
+        scores = np.zeros(n)
+        for i in range(n):
+            true_class = int(calib_labels[i])
+            scores[i] = 1.0 - calib_probs[i, true_class]
+            
+        # We want the ceil((n+1)(1-alpha))/n empirical quantile
+        val = np.ceil((n + 1) * (1 - self.alpha)) / n
+        
+        # If val > 1, we can't guarantee coverage with this n and alpha
+        if val > 1.0:
+            val = 1.0
+            
+        self.q_hat = np.quantile(scores, val, method='higher')
+        self.is_calibrated = True
+        
+    def predict_set(self, test_probs: np.ndarray) -> List[List[int]]:
+        """
+        Returns a prediction set for each test instance.
+        
+        Args:
+            test_probs: Predicted probabilities (shape: M x n_classes).
+            
         Returns:
-            dict with bin_centers, fraction_of_positives, bin_counts
+            List of lists containing the classes in the prediction set.
+            If the set is empty (rare but possible), it means the model is very unconfident.
         """
-        from sklearn.calibration import calibration_curve
+        if not self.is_calibrated:
+            raise ValueError("ConformalPredictor must be calibrated before predicting.")
+            
+        prediction_sets = []
+        for i in range(len(test_probs)):
+            # Include class c if its non-conformity score (1 - prob) is <= q_hat
+            # Which is equivalent to prob >= 1 - q_hat
+            valid_classes = np.where(test_probs[i] >= 1.0 - self.q_hat)[0].tolist()
+            prediction_sets.append(valid_classes)
+            
+        return prediction_sets
 
-        prob_true, prob_pred = calibration_curve(
-            outcomes, raw_scores, n_bins=n_bins, strategy="uniform"
-        )
-        return {
-            "bin_centers": prob_pred.tolist(),
-            "fraction_of_positives": prob_true.tolist(),
-            "perfect_calibration": list(np.linspace(0, 1, len(prob_pred))),
-        }
-
-    @staticmethod
-    def brier_score(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-        """Brier Score: mean squared error between predicted proba and outcome.
-
-        Lower = better calibration. < 0.25 is good, < 0.10 is excellent.
-        """
-        from sklearn.metrics import brier_score_loss
-        return float(brier_score_loss(y_true, y_pred))
-
-
-def compute_ensemble_confidence(
-    factor_score: float,
-    ml_proba: float,
-    signal_strength: float,
-    agreement: float,
-) -> float:
-    """Confidence = weighted average of calibrated probabilities + signal strength.
-
-    KHÔNG có magic number hardcode.
-
-    Args:
-        factor_score: IC-weighted factor composite [-3, 3]
-        ml_proba: Calibrated ML probability [0, 1]
-        signal_strength: Normalized magnitude [0, 1]
-        agreement: Degree of consensus across models [0, 1]
-
-    Returns:
-        Calibrated confidence [0, 1]
-    """
-    factor_conf = np.clip((factor_score + 3) / 6, 0, 1)
-
-    w_factor = 0.30
-    w_ml = 0.30
-    w_signal = 0.20
-    w_agreement = 0.20
-
-    confidence = (
-        w_factor * factor_conf
-        + w_ml * ml_proba
-        + w_signal * signal_strength
-        + w_agreement * agreement
-    )
-
-    return float(np.clip(confidence, 0, 1))
+# Singleton instance
+conformal_predictor = ConformalPredictor(alpha=0.1) # 90% confidence
