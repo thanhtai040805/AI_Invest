@@ -112,21 +112,43 @@ class FeatureForge:
         return out
         
     def _compute_hose_limits(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Features tracking consecutive ceiling/floor hits."""
+        """
+        Features tracking consecutive ceiling/floor hits on HOSE.
+        HOSE price band is ±7% from previous closing price, rounded to tick size.
+        Post-KRX tick sizes:
+          - < 10,000 VND: 10 VND
+          - 10,000 - 49,950 VND: 50 VND
+          - >= 50,000 VND: 100 VND
+        """
         out = pd.DataFrame(index=df.index)
         
+        prev_close = df['close'].shift(1)
         ret = df['close'].pct_change()
         
-        # Ceiling is ~6.8% on HOSE
-        is_ceiling = (ret > 0.065).astype(int)
-        is_floor = (ret < -0.065).astype(int)
+        # Calculate dynamic tick size for each row
+        tick_size = pd.Series(100.0, index=df.index)
+        tick_size[prev_close < 50000] = 50.0
+        tick_size[prev_close < 10000] = 10.0
+        
+        # Exact HOSE ceiling and floor calculations
+        ceil_price = np.floor((prev_close * 1.07) / tick_size) * tick_size
+        floor_price = np.ceil((prev_close * 0.93) / tick_size) * tick_size
+        
+        # Mark ceiling/floor hits (with tolerance of 0.5 * tick_size for rounding)
+        is_ceiling = ((df['close'] >= (ceil_price - 0.5 * tick_size)) & (prev_close > 0)).astype(int)
+        is_floor = ((df['close'] <= (floor_price + 0.5 * tick_size)) & (prev_close > 0)).astype(int)
+        
+        # Fallback to percentage threshold (6.8% - 7.2%) if prev_close calculation has NaNs
+        fallback_ceil = (ret >= 0.068).astype(int)
+        fallback_floor = (ret <= -0.068).astype(int)
+        
+        is_ceiling = is_ceiling.where(prev_close.notna(), fallback_ceil)
+        is_floor = is_floor.where(prev_close.notna(), fallback_floor)
         
         # Calculate streaks
-        # Ceiling streak
         ceil_streak = is_ceiling.groupby((is_ceiling != is_ceiling.shift()).cumsum()).cumsum()
-        out['ceiling_streak'] = ceil_streak * is_ceiling # Mask non-ceilings to 0
+        out['ceiling_streak'] = ceil_streak * is_ceiling  # Mask non-ceilings to 0
         
-        # Floor streak
         floor_streak = is_floor.groupby((is_floor != is_floor.shift()).cumsum()).cumsum()
         out['floor_streak'] = floor_streak * is_floor
         

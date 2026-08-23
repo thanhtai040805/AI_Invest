@@ -295,14 +295,12 @@
 - `risk_dashboard` — ES, drawdown, cash target, protocol tier, exposure summary (cập nhật mỗi phiên)
 - `position_risk_check` — kết quả kiểm tra trước khi mỗi lệnh được thực thi
 - `cdc_signal` — khi CDC trigger điều kiện
-- `hedge_recommendation` — khi cần Short VN30F
 - `drawdown_action` — ALERT / YELLOW / ORANGE / RED kèm hành động cụ thể
 
 **Decisions Allowed:**
 - Kích hoạt Drawdown Protocol (YELLOW/ORANGE/RED)
 - Yêu cầu tăng cash target
-- Recommend VN30F hedge
-- Kích hoạt CDC
+- Kích hoạt CDC (Capital Degradation Control)
 
 **Decisions Forbidden:**
 - Không được override Hard Stop 2% NAV (zero exception)

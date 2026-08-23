@@ -107,31 +107,75 @@ class RegimeEngineV2:
         self.is_trained = False
         
     def _extract_features(self, df: pd.DataFrame) -> np.ndarray:
-        """Extract the 12+ observation features for HMM."""
+        """Extract the 10 observation features for HMM tailored for HOSE."""
         feats = []
-        # Require VNI, Volume, Breadth in df
         
-        # 1. Trend
+        # 1. Trend Features
         if "close" in df and "ma50" in df:
-            feats.append((df["close"] / df["ma50"] - 1).fillna(0).values)
+            feats.append((df["close"] / df["ma50"] - 1.0).fillna(0.0).values)
+        else:
+            feats.append(np.zeros(len(df)))
+
         if "close" in df and "ma200" in df:
-            feats.append((df["close"] / df["ma200"] - 1).fillna(0).values)
-            
-        # 2. Breadth
+            feats.append((df["close"] / df["ma200"] - 1.0).fillna(0.0).values)
+        else:
+            feats.append(np.zeros(len(df)))
+
+        # 2. Market Breadth Feature
         if "breadth_ma50" in df:
             feats.append((df["breadth_ma50"] / 100.0).fillna(0.5).values)
-            
-        # 3. Volume Trend
+        else:
+            feats.append(np.full(len(df), 0.5))
+
+        # 3. Volume Trend Feature
         if "volume" in df and "vol_ma20" in df:
-            feats.append((df["volume"] / df["vol_ma20"] - 1).fillna(0).values)
-            
-        # 4. Volatility (proxy for VIX VN)
+            feats.append((df["volume"] / df["vol_ma20"] - 1.0).fillna(0.0).values)
+        elif "volume" in df:
+            vol_ma = df["volume"].rolling(20, min_periods=1).mean()
+            feats.append((df["volume"] / (vol_ma + 1e-8) - 1.0).fillna(0.0).values)
+        else:
+            feats.append(np.zeros(len(df)))
+
+        # 4. Volatility Feature (VIX VN Analog)
         if "close" in df:
             ret = df["close"].pct_change().fillna(0)
-            vol20 = ret.rolling(20).std().fillna(0.015).values
+            vol20 = ret.rolling(20, min_periods=1).std().fillna(0.015).values
             feats.append(vol20)
-            
+        else:
+            feats.append(np.full(len(df), 0.015))
+
+        # 5. Proprietary Desk Flow Feature (Tự doanh CTCK)
+        if "net_prop_flow_bil" in df:
+            feats.append((df["net_prop_flow_bil"] / 100.0).fillna(0.0).values)
+        else:
+            feats.append(np.zeros(len(df)))
+
+        # 6. Margin Debt Proxy Feature
+        if "margin_debt_change_pct" in df:
+            feats.append(df["margin_debt_change_pct"].fillna(0.0).values)
+        else:
+            feats.append(np.zeros(len(df)))
+
+        # 7. Intermarket USD/VND Rate Change Feature
+        if "usdvnd_change_pct" in df:
+            feats.append(df["usdvnd_change_pct"].fillna(0.0).values)
+        else:
+            feats.append(np.zeros(len(df)))
+
+        # 8. CSAD Herding Score Feature
+        if "csad_score" in df:
+            feats.append(df["csad_score"].fillna(0.02).values)
+        else:
+            feats.append(np.full(len(df), 0.02))
+
+        # 9. Sector Dispersion Feature
+        if "sector_dispersion" in df:
+            feats.append(df["sector_dispersion"].fillna(0.01).values)
+        else:
+            feats.append(np.full(len(df), 0.01))
+
         X = np.column_stack(feats)
+        
         # Standardize features
         self.feature_means = np.mean(X, axis=0)
         self.feature_stds = np.std(X, axis=0) + 1e-8

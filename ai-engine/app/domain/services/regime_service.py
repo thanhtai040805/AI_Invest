@@ -70,14 +70,42 @@ class RegimeService:
         flow_rows = self.storage.fetch_all(flow_query, (target_date,))
         net_foreign = flow_rows[0][0] or 0.0
         
-        # Determine regime label
-        label = "SIDEWAYS"
-        if ma50 > 60 and ma200 > 50:
-            label = "BULL"
-        elif ma50 < 40 and ma200 < 40:
-            label = "BEAR"
-        elif rsi_os > 20:
-            label = "VOLATILE"
+        # Determine regime label via HMM Engine (fallback to rule-based if HMM unavailable)
+        label = "RANGE_BOUND"
+        try:
+            from app.domain.rules.market.hmm_regime_engine import hmm_engine, MarketRegimeV2
+            if hmm_engine.is_trained:
+                # Build minimal DataFrame for daily inference if needed
+                import pandas as pd
+                dummy_df = pd.DataFrame([{
+                    "close": 1200.0,
+                    "ma50": 1200.0 * (1.0 + (ma50 - 50) / 100.0),
+                    "ma200": 1200.0 * (1.0 + (ma200 - 50) / 100.0),
+                    "breadth_ma50": ma50,
+                    "volume": 1e8,
+                    "vol_ma20": 1e8
+                }])
+                probs = hmm_engine.infer_daily(dummy_df)
+                if probs:
+                    label = max(probs, key=probs.get)
+            else:
+                # Rule-based fallback mapped to 6 HMM states
+                if ma50 > 60 and ma200 > 50:
+                    label = "BULL_MOMENTUM"
+                elif ma50 > 50 and ma200 <= 50:
+                    label = "BULL_DISTRIBUTION"
+                elif ma50 < 40 and ma200 < 40:
+                    label = "BEAR_PANIC" if rsi_os > 20 else "BEAR_GRINDING"
+                elif rsi_os > 15:
+                    label = "RECOVERY_EARLY"
+                else:
+                    label = "RANGE_BOUND"
+        except Exception as e:
+            logger.warning(f"Failed to infer regime via HMM engine, using fallback: {e}")
+            if ma50 > 60:
+                label = "BULL_MOMENTUM"
+            elif ma50 < 40:
+                label = "BEAR_GRINDING"
 
         insert_query = """
         INSERT INTO market_regime (date, breadth_ma50, breadth_ma200, breadth_rsi_oversold, breadth_rsi_overbought, net_foreign_flow_bil, regime_label)
