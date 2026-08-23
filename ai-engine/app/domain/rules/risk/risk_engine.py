@@ -65,6 +65,13 @@ class MacroRiskEngine:
         else:
             multiplier = 1.0 - (score - 40) / (90 - 40) * 0.9
 
+        # --- Drawdown Protocol Bắt buộc (Force Sell Protection) ---
+        # Khi Regime = BEAR hoặc Breadth < 10%, bắt buộc Hard Cash Target > 70% (tức là multiplier <= 0.3)
+        if regime_label == "BEAR" or breadth < 10.0:
+            if multiplier > 0.3:
+                multiplier = 0.3
+                reasons.append("DRAWDOWN PROTOCOL ACTIVE: Hard Cash Target > 70% (Max Exposure 30%) due to Bear Regime or Breadth < 10%")
+
         return {
             "risk_score": round(score, 1),
             "risk_multiplier": round(multiplier, 2),

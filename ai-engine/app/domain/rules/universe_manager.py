@@ -34,7 +34,7 @@ class UniverseManager:
         self.settings = get_settings()
         self.db_url = os.getenv("DATABASE_URL", "postgresql://postgres:123@localhost:5432/aiinvest")
 
-    def classify_universe(self, tickers: List[str], target_date: Optional[datetime.date] = None) -> Dict[str, Any]:
+    def classify_universe(self, tickers: List[str], target_date: Optional[datetime.date] = None, strategy_mode: str = "Quant") -> Dict[str, Any]:
         """Phân loại danh sách cổ phiếu vào các nhóm Universe."""
         if target_date is None:
             target_date = datetime.now().date()
@@ -55,7 +55,7 @@ class UniverseManager:
             # 2. Lấy dữ liệu cần thiết: trading_status, adtv20_continuous, market_cap, audit_opinion, etc.
             # (Giả định table 'stocks' và 'market_data_daily' đã có data)
             cur.execute("""
-                SELECT s.symbol, s.trading_status, s.market_cap as stock_mcap, 
+                SELECT s.symbol, s.trading_status, s.market_cap as stock_mcap, s.listed_date,
                        m.adtv20_continuous, m.market_cap as market_mcap,
                        s.audit_opinion, s.beneish_status, s.gil_flag
                 FROM stocks s
@@ -73,14 +73,30 @@ class UniverseManager:
             mcap = data.get("market_mcap") or data.get("stock_mcap") or 0
             beneish = data.get("beneish_status", "PENDING")
             gil = data.get("gil_flag", "PASS")
+            audit = data.get("audit_opinion", "UNQUALIFIED").upper()
+            
+            listed_date = data.get("listed_date")
+            listed_months = 0
+            if listed_date:
+                # target_date is datetime.date, listed_date is datetime.date
+                listed_months = (target_date - listed_date).days / 30.0
             
             group = UniverseGroup.B # Mặc định
             reason = ""
             
             # --- Hard Filters (Điều kiện loại trừ) ---
-            if status != "NORMAL":
+            if audit != "UNQUALIFIED":
+                group = UniverseGroup.EXCLUDED
+                reason = f"Audit Opinion: {audit}"
+            elif status != "NORMAL":
                 group = UniverseGroup.EXCLUDED
                 reason = f"Trading status: {status}"
+            elif adtv20 < 15_000_000_000:
+                group = UniverseGroup.EXCLUDED
+                reason = "ADTV20 < 15B"
+            elif strategy_mode == "Quant" and listed_months < 12:
+                group = UniverseGroup.EXCLUDED
+                reason = "Listed < 12 months for Quant strategy"
             elif beneish == "FAIL":
                 group = UniverseGroup.EXCLUDED
                 reason = "Beneish M-Score: FAIL"
@@ -98,13 +114,13 @@ class UniverseManager:
                 elif adtv20 >= 50_000_000_000 and mcap >= 10_000_000_000_000: # Ví dụ: ADTV > 50 tỷ, Cap > 10k tỷ
                     group = UniverseGroup.A
                 
-                # Group C: Cổ phiếu rác hoặc quá nhỏ
-                elif adtv20 < 1_000_000_000 or mcap < 100_000_000_000: # Ví dụ: ADTV < 1 tỷ hoặc Cap < 100 tỷ
+                # Bỏ điều kiện Market Cap để ko loại cổ phiếu vốn hóa nhỏ nhưng cơ bản tốt
+                # Group C: Cổ phiếu thanh khoản thấp (nhưng vẫn >= 15B)
+                elif adtv20 < 20_000_000_000:
                     group = UniverseGroup.C
                 
                 # Sandbox Logic (4 điều kiện đồng thời)
-                # ADTV20 ≥ 2 tỷ, vốn hóa ≥ 300 tỷ, revenue growth > 25% (3 quý), net_debt/equity < 15%
-                # (Revenue growth và debt/equity cần data từ TASK-104)
+                # ADTV20 ≥ 15 tỷ (đã lọc), vốn hóa ≥ 300 tỷ, revenue growth > 25% (3 quý), net_debt/equity < 15%
                 if self._check_sandbox_criteria(cur, ticker, adtv20, mcap):
                     group = UniverseGroup.SANDBOX
 

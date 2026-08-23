@@ -20,27 +20,40 @@ class BeneishMScoreEngine:
 
     def calculate_m_score(self, ticker: str, target_date: date) -> Dict[str, Any]:
         """Tính toán M-Score cho một ticker dựa trên BCTC 2 năm gần nhất."""
+        EXCLUDED_SECTORS = ["Ngân hàng", "Bất động sản", "Chứng khoán", "Bảo hiểm"]
+        
         import psycopg2
         from psycopg2.extras import RealDictCursor
         
         conn = psycopg2.connect(self.db_url)
         cur = conn.cursor(cursor_factory=RealDictCursor)
         
-        # 1. Lấy BCTC năm hiện tại (t) và năm trước (t-1)
+        # 1. Lấy BCTC năm hiện tại (t) và năm trước (t-1) cùng với thông tin ngành
         # Ưu tiên báo cáo năm (yearly) để có độ chính xác cao nhất
         cur.execute("""
-            SELECT symbol, period_end, data
-            FROM financial_statements
-            WHERE symbol = %s 
-              AND period_end <= %s
-              AND frequency = 'yearly'
-            ORDER BY period_end DESC
+            SELECT fs.symbol, fs.period_end, fs.data, s.sector
+            FROM financial_statements fs
+            JOIN stocks s ON fs.symbol = s.symbol
+            WHERE fs.symbol = %s 
+              AND fs.period_end <= %s
+              AND fs.frequency = 'yearly'
+            ORDER BY fs.period_end DESC
             LIMIT 2
         """, (ticker, target_date))
         
         fs_rows = cur.fetchall()
         conn.close()
         
+        if len(fs_rows) > 0:
+            sector = fs_rows[0].get('sector', '')
+            if sector in EXCLUDED_SECTORS:
+                return {
+                    "ticker": ticker,
+                    "m_score": 0.0,
+                    "status": "PASS",
+                    "reason": f"Bypass M-Score for sector: {sector}"
+                }
+
         if len(fs_rows) < 2:
             return {
                 "ticker": ticker,
