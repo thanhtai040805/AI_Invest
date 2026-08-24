@@ -38,7 +38,7 @@ class RLExecutionAgent:
         except Exception as e:
             logger.error(f"Failed to load RL Execution ONNX model: {e}")
 
-    def compute_optimal_split(self, target_volume: int, current_bid_ask_spread: float, time_to_close_mins: float, is_atc_phase: bool) -> int:
+    def compute_optimal_split(self, target_volume: int, current_bid_ask_spread: float, time_to_close_mins: float, is_atc_phase: bool, volume_imbalance: float) -> int:
         """
         Determines the optimal chunk size to execute right now, based on the RL policy.
         """
@@ -48,13 +48,13 @@ class RLExecutionAgent:
 
         try:
             # RL State Vector: [remaining_volume, spread, time_left, is_atc, volume_imbalance]
-            # volume_imbalance is mocked here; in prod it reads real-time Level-2 data
+            # THEO MANDATE: volume_imbalance phải lấy thật từ sổ lệnh
             state_vector = np.array([[
                 float(target_volume),
                 float(current_bid_ask_spread),
                 float(time_to_close_mins),
                 1.0 if is_atc_phase else 0.0,
-                0.0 # Mocked imbalance
+                float(volume_imbalance)
             ]], dtype=np.float32)
 
             ort_inputs = {"state": state_vector}

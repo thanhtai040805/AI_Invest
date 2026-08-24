@@ -75,19 +75,8 @@ class RegimeService:
         try:
             from app.domain.rules.market.hmm_regime_engine import hmm_engine, MarketRegimeV2
             if hmm_engine.is_trained:
-                # Build minimal DataFrame for daily inference if needed
-                import pandas as pd
-                dummy_df = pd.DataFrame([{
-                    "close": 1200.0,
-                    "ma50": 1200.0 * (1.0 + (ma50 - 50) / 100.0),
-                    "ma200": 1200.0 * (1.0 + (ma200 - 50) / 100.0),
-                    "breadth_ma50": ma50,
-                    "volume": 1e8,
-                    "vol_ma20": 1e8
-                }])
-                probs = hmm_engine.infer_daily(dummy_df)
-                if probs:
-                    label = max(probs, key=probs.get)
+                # Require actual data to be passed in from DB, do NOT use mock data
+                raise ValueError("infer_daily requires real market metrics from the database.")
             else:
                 # Rule-based fallback mapped to 6 HMM states
                 if ma50 > 60 and ma200 > 50:

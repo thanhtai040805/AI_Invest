@@ -2,30 +2,9 @@
 Multi-criteria stock screener — enriches snapshot with fundamentals and filters.
 """
 
-import hashlib
 from typing import Any, Dict, List, Optional
 
 from app.infrastructure.external_api.market_data_service import market_data_svc
-
-
-def _mock_fundamentals(symbol: str) -> Dict[str, float]:
-    h = int(hashlib.md5(symbol.encode()).hexdigest()[:8], 16)
-    return {
-        "pe": 5 + (h % 25),
-        "pb": 0.5 + (h % 40) / 10,
-        "roe": 5 + (h % 30),
-        "de": (h % 20) / 10,
-        "eps": 1000 + (h % 9000),
-        "rsi": 20 + (h % 60),
-    }
-
-
-def _estimate_rsi(change_pct: float) -> float:
-    if change_pct > 3:
-        return min(85, 55 + change_pct * 5)
-    if change_pct < -3:
-        return max(15, 45 + change_pct * 5)
-    return 50 + change_pct * 3
 
 
 def _passes(row: Dict[str, Any], f: Dict[str, Any]) -> bool:
@@ -79,9 +58,11 @@ class ScreenerService:
             if not sym:
                 continue
             fund = await market_data_svc.get_fundamentals(sym)
-            if not fund.get("pe"):
-                fund = _mock_fundamentals(sym)
-            rsi = fund.get("rsi") or _estimate_rsi(row.get("changePercent", 0))
+            
+            # THEO MANDATE: Bắt buộc loại bỏ cổ phiếu nếu không có dữ liệu tài chính (KHÔNG DÙNG MOCK)
+            if not fund.get("pe") or not fund.get("rsi"):
+                continue
+                
             item = {
                 **row,
                 "pe": float(fund.get("pe", 0) or 0),
@@ -89,7 +70,7 @@ class ScreenerService:
                 "roe": float(fund.get("roe", 0) or 0),
                 "de": float(fund.get("de", 0) or 0),
                 "eps": float(fund.get("eps", 0) or 0),
-                "rsi": float(rsi),
+                "rsi": float(fund.get("rsi", 0) or 0),
                 "signal": row.get("signal", "THEO DÕI"),
             }
             if _passes(item, filters):

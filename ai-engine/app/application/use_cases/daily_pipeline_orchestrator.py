@@ -12,7 +12,7 @@ from app.domain.rules.risk.data_quality import run_all_checks
 from app.infrastructure.data_pipelines.ohlcv_ingestion_service import ohlcv_ingestion_svc
 from app.domain.rules.universe_manager import universe_manager
 from app.domain.rules.market.hmm_classifier import hmm_classifier
-from app.domain.rules.garch_engine import garch_engine
+from app.domain.rules.market.garch_engine import garch_engine
 from app.domain.rules.hard_laws import hard_law_engine
 from app.domain.rules.execution.eae import eae_engine
 from app.domain.rules.execution.hedge_controller import hedge_controller
@@ -21,9 +21,9 @@ logger = logging.getLogger(__name__)
 
 class DailyInvestmentPipeline:
     def __init__(self):
-        self.nav = 1_000_000_000 # Mock NAV, nên lấy từ Broker API
+        pass
 
-    async def run(self, target_date: date):
+    async def run(self, target_date: date, current_nav: float, vn30_index: float):
         """Chạy pipeline cho một ngày giao dịch."""
         logger.info(f"Starting Investment Pipeline for {target_date}")
         
@@ -58,8 +58,8 @@ class DailyInvestmentPipeline:
         vni_row = hmm_classifier.get_market_metrics(target_date) # Reusing for simplicity
         # market_breadth is metrics[1]
         hedge_res = hedge_controller.calculate_hedge_requirement(
-            portfolio_value=self.nav * (1 - cash_ratio),
-            vn30_index=1200.0, # Mock
+            portfolio_value=current_nav * (1 - cash_ratio),
+            vn30_index=vn30_index,
             hmm_bear_prob=posterior.get(hmm_classifier.states[2], 0.0),
             market_breadth=metrics[1],
             regime=regime

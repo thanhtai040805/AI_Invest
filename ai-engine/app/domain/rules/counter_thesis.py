@@ -83,19 +83,9 @@ class CounterThesisEngine:
             else:
                 # THEO MANDATE: Không dùng mock/fallback data
                 logger.error("LLM client not configured for CounterThesisEngine")
-                return CounterThesisReport(
-                    verdict=Verdict.REJECT,
-                    holes=["Lỗi hệ thống: LLM client chưa được cấu hình."],
-                    rule_of_three_passed=True,
-                    rationale="Không thể thực hiện phản biện mà không có LLM."
-                )
+                raise RuntimeError("LLM client not configured for CounterThesisEngine")
         except Exception as e:
             logger.error(f"Error in LLM Counter Thesis: {e}")
-            return CounterThesisReport(
-                verdict=Verdict.NEEDS_REVISION,
-                holes=[f"Lỗi hệ thống LLM: {str(e)}"],
-                rule_of_three_passed=True,
-                rationale="Cần kiểm tra lại do lỗi kỹ thuật."
-            )
+            raise RuntimeError(f"Error in LLM Counter Thesis: {e}")
 
 counter_thesis_engine = CounterThesisEngine()

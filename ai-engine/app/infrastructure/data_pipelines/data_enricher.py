@@ -38,39 +38,7 @@ def _cache_set(key: str, value: Any, ttl_minutes: int = 1440):
     _class_cache_ttl[key] = datetime.now() + timedelta(minutes=ttl_minutes)
 
 
-def _macro_inline_fallback() -> Dict[str, Any]:
-    """Inline macro fetch if macro_service is unavailable (import error, etc.)."""
-    res: Dict[str, Any] = {}
-    try:
-        import yfinance as yf
-        for k, ticker in [("oil_price_brent","BZ=F"),("usd_index","DX-Y.NYB"),
-                          ("usd_10y_yield","^TNX"),("vix","^VIX"),
-                          ("usd_vnd_exchange","VND=X")]:
-            try:
-                h = yf.Ticker(ticker).history(period="5d")
-                if not h.empty:
-                    res[k] = float(h["Close"].iloc[-1])
-            except Exception:
-                pass
-        try:
-            g = yf.Ticker("GC=F").history(period="5d")
-            if not g.empty:
-                res["gold_price_vnd"] = float(g["Close"].iloc[-1]) * res.get("usd_vnd_exchange", 25450) * 1.21528
-        except Exception:
-            pass
-    except Exception:
-        pass
-    for k, v in [("oil_price_brent",78.5),("usd_index",104.2),("usd_10y_yield",4.25),
-                 ("vix",14.2),("usd_vnd_exchange",25450.0),("cpi",3.45),
-                 ("gold_price_vnd",85_000_000),("refinancing_rate",4.5),("discount_rate",3.0),
-                 ("lending_rate_12m_big4",9.9),("lending_rate_12m_commercial",12.4),
-                 ("interest_rate_cod",4.75),("interest_rate_on",3.25),("interest_rate_1w",3.50),
-                 ("interest_rate_1m",3.75),("interest_rate_3m",4.00),("interest_rate_6m",4.25),
-                 ("interest_rate_1y",4.75),("ppi",2.1),("gdp_growth",6.2),("inflation_rate",3.2),
-                 ("unemployment_rate",2.3),("vnindex_return_1d",0.45),("vnindex_return_1m",2.34),
-                 ("vnindex_return_3m",5.67),("vnindex_return_1y",12.50)]:
-        res.setdefault(k, v)
-    return res
+
 
 class DataEnricher:
     @staticmethod
@@ -288,17 +256,11 @@ class DataEnricher:
             res['cvar_95'] = float(sorted_returns[sorted_returns <= sorted_returns.quantile(0.05)].mean() * 100)
             res['garch_vol'] = float(ann_vol * 100)  # simple daily standard deviation proxy
 
-            # Beta / Alpha (Fallback: simulate vs VNINDEX)
-            # Generate a consistent beta/alpha using symbol hash to be deterministic but realistic
-            h = int(hashlib.md5(symbol.encode()).hexdigest()[:8], 16)
-            sim_beta_1y = 0.5 + (h % 15) / 10.0
-            sim_beta_3y = 0.6 + ((h + 5) % 12) / 10.0
-            sim_alpha_1y = -2.0 + (h % 20) / 2.0
-            
-            res['beta_1y'] = sim_beta_1y
-            res['beta_3y'] = sim_beta_3y
-            res['alpha_1y'] = sim_alpha_1y
-            res['treynor_ratio_1y'] = float((res['return_1y'] - 5.0) / sim_beta_1y) if sim_beta_1y > 0 else 0.0
+            # Beta / Alpha
+            res['beta_1y'] = None
+            res['beta_3y'] = None
+            res['alpha_1y'] = None
+            res['treynor_ratio_1y'] = None
             res['information_ratio'] = float(excess_returns.tail(252).mean() / excess_returns.tail(252).std() * np.sqrt(252)) if ann_vol > 0 else 0.0
 
             return {k: (0.0 if np.isnan(v) or np.isinf(v) else v) for k, v in res.items()}
@@ -465,148 +427,7 @@ class DataEnricher:
 
         except Exception as e:
             logger.warning("vnstock financials fetch failed for %s: %s", symbol, e)
-
-        # Fallback & Mock Enrichment
-        h = int(hashlib.md5(symbol.encode()).hexdigest()[:8], 16)
-        
-        # Merge defaults
-        res["ratios"].setdefault("pe_ratio", 6 + (h % 15))
-        res["ratios"].setdefault("pb_ratio", 0.6 + (h % 30) / 10.0)
-        res["ratios"].setdefault("roe", 8 + (h % 25))
-        res["ratios"].setdefault("roa", 2 + (h % 10))
-        res["ratios"].setdefault("dividend_yield", (h % 8))
-        res["ratios"].setdefault("bvps", 10000 + (h % 30000))
-        res["ratios"].setdefault("beta", 0.8 + (h % 6) / 10.0)
-
-        # 2D. Computed Indicators from Statement
-        rev = res["income_statement"].get("revenue", 1e11 + (h % 900) * 1e9)
-        cost = res["income_statement"].get("cost_of_revenue", rev * 0.7)
-        gp = res["income_statement"].get("gross_profit", rev - cost)
-        net = res["income_statement"].get("net_income", rev * 0.1)
-        op = res["income_statement"].get("operating_income", rev * 0.15)
-        ebitda = res["income_statement"].get("ebitda", net * 1.3)
-        cfo = res["cash_flow"].get("CFO", net * 0.9)
-        capex = res["cash_flow"].get("capital_expenditures", rev * 0.05)
-        div = res["cash_flow"].get("dividends_paid", net * 0.3)
-        
-        assets = res["balance_sheet"].get("total_assets", rev * 1.5)
-        liab = res["balance_sheet"].get("total_liabilities", assets * 0.5)
-        equity = res["balance_sheet"].get("total_equity", assets - liab)
-        cash = res["balance_sheet"].get("cash_and_equivalents", assets * 0.1)
-        inv = res["balance_sheet"].get("inventory", assets * 0.15)
-        rec = res["balance_sheet"].get("receivables", assets * 0.1)
-        
-        # Fallback values
-        res["income_statement"].setdefault("revenue", rev)
-        res["income_statement"].setdefault("cost_of_revenue", cost)
-        res["income_statement"].setdefault("gross_profit", gp)
-        res["income_statement"].setdefault("operating_income", op)
-        res["income_statement"].setdefault("net_income", net)
-        res["income_statement"].setdefault("ebitda", ebitda)
-        res["income_statement"].setdefault("interest_expense", rev * 0.02)
-        res["income_statement"].setdefault("income_tax", net * 0.2)
-        res["income_statement"].setdefault("eps_basic", net / 1e7)
-        res["income_statement"].setdefault("eps_diluted", net / 1.05e7)
-
-        res["balance_sheet"].setdefault("total_assets", assets)
-        res["balance_sheet"].setdefault("total_liabilities", liab)
-        res["balance_sheet"].setdefault("total_equity", equity)
-        res["balance_sheet"].setdefault("cash_and_equivalents", cash)
-        res["balance_sheet"].setdefault("inventory", inv)
-        res["balance_sheet"].setdefault("receivables", rec)
-        res["balance_sheet"].setdefault("payables", assets * 0.1)
-        res["balance_sheet"].setdefault("short_term_debt", liab * 0.4)
-        res["balance_sheet"].setdefault("long_term_debt", liab * 0.6)
-        res["balance_sheet"].setdefault("shares_outstanding", int(equity / 10000))
-
-        res["cash_flow"].setdefault("CFO", cfo)
-        res["cash_flow"].setdefault("CFI", -capex)
-        res["cash_flow"].setdefault("CFF", -div)
-        res["cash_flow"].setdefault("capital_expenditures", capex)
-        res["cash_flow"].setdefault("dividends_paid", div)
-
-        # Margins & Calculated indicators
-        res["ratios"]["gross_margin"] = (gp / rev * 100) if rev else 0.0
-        res["ratios"]["net_margin"] = (net / rev * 100) if rev else 0.0
-        res["ratios"]["ebitda_margin"] = (ebitda / rev * 100) if rev else 0.0
-        res["ratios"]["free_cash_flow"] = cfo - capex
-        res["ratios"]["fcfe"] = cfo - capex + (liab * 0.05)
-        res["ratios"]["fcff"] = (op * 0.8) + (rev * 0.03) - capex - (rev * 0.02)
-        # Real YoY growth from multi-period financial data (if available)
-        inc_periods = [c for c in inc.columns if c not in ("item", "item_en", "item_id")] if (inc is not None and not inc.empty) else []
-        if len(inc_periods) >= 4:
-            try:
-                latest_p = str(inc_periods[-1])
-                # Find same quarter last year
-                parts = latest_p.split("-Q")
-                if len(parts) == 2:
-                    year, q = parts
-                    prev_year = str(int(year) - 1)
-                    prev_p = f"{prev_year}-Q{q}"
-                    # Try exact match, then with _1 suffix
-                    candidates = [prev_p, f"{prev_p}_1"]
-                    for p_prev in candidates:
-                        if p_prev in inc_periods:
-                            p_prev_idx = inc_periods.index(p_prev)
-                            p_cur_idx = inc_periods.index(latest_p)
-                            def get_val_for_period(row, per):
-                                try:
-                                    v = row.get(per, 0)
-                                    return float(v) if isinstance(v, (int, float)) else 0.0
-                                except Exception:
-                                    return 0.0
-                            rev_cur = None
-                            ni_cur = None
-                            for _, row in inc.iterrows():
-                                item_name = str(row["item"]).strip()
-                                if any(k in item_name for k in ["Doanh thu thuần", "Thu nhập lãi thuần"]):
-                                    rev_cur = get_val_for_period(row, latest_p)
-                                    rev_prev = get_val_for_period(row, p_prev)
-                                if any(k in item_name for k in ["Lợi nhuận sau thuế"]):
-                                    ni_cur = get_val_for_period(row, latest_p)
-                                    ni_prev = get_val_for_period(row, p_prev)
-                            if rev_cur and rev_prev and rev_prev != 0:
-                                res["ratios"]["revenue_yoy"] = round((rev_cur / rev_prev - 1) * 100, 2)
-                            if ni_cur and ni_prev and ni_prev != 0:
-                                res["ratios"]["net_income_yoy"] = round((ni_cur / ni_prev - 1) * 100, 2)
-                            # EPS: use net_income / shares
-                            shares = res["balance_sheet"].get("shares_outstanding", 1)
-                            if ni_cur and ni_prev and shares > 0:
-                                eps_cur = ni_cur / shares
-                                eps_prev = ni_prev / shares
-                                if eps_prev != 0:
-                                    res["ratios"]["eps_yoy"] = round((eps_cur / eps_prev - 1) * 100, 2)
-                            break
-            except Exception:
-                pass
-
-        # Fallback hash-based YoY if real data not available
-        res["ratios"].setdefault("revenue_yoy", 5.0 + (h % 15))
-        res["ratios"].setdefault("net_income_yoy", 3.0 + (h % 25))
-        res["ratios"].setdefault("eps_yoy", 2.0 + (h % 22))
-
-        # Ratios (Section 3)
-        res["ratios"]["pe_ratio_ttm"] = res["ratios"]["pe_ratio"]
-        res["ratios"]["ps_ratio"] = (equity * res["ratios"]["pb_ratio"]) / rev if rev else 1.0
-        res["ratios"]["peg_ratio"] = res["ratios"]["pe_ratio"] / max(0.1, res["ratios"]["eps_yoy"])
-        res["ratios"]["ev_ebitda"] = (equity + liab - cash) / ebitda if ebitda else 5.0
-        res["ratios"]["payout_ratio"] = (div / net * 100) if net else 30.0
-        res["ratios"]["roic"] = (op * 0.8) / (liab + equity) * 100 if (liab + equity) else 10.0
-        res["ratios"]["current_ratio"] = (cash + inv + rec) / (liab * 0.4) if liab else 1.5
-        res["ratios"]["quick_ratio"] = (cash + rec) / (liab * 0.4) if liab else 1.0
-        res["ratios"]["debt_to_equity"] = liab / equity if equity else 0.5
-        res["ratios"]["net_debt_to_ebitda"] = (liab - cash) / ebitda if ebitda else 1.0
-        res["ratios"]["interest_coverage"] = op / (res["income_statement"]["interest_expense"]) if res["income_statement"]["interest_expense"] else 10.0
-        res["ratios"]["quality_of_earnings"] = cfo / net if net else 1.0
-        res["ratios"]["fcf_yield"] = (cfo - capex) / (equity * res["ratios"]["pb_ratio"]) * 100 if equity else 5.0
-        
-        # CAGR growth
-        res["ratios"]["revenue_growth_1y"] = res["ratios"]["revenue_yoy"]
-        res["ratios"]["revenue_growth_3y"] = res["ratios"]["revenue_yoy"] * 0.9
-        res["ratios"]["revenue_growth_5y"] = res["ratios"]["revenue_yoy"] * 0.8
-        res["ratios"]["eps_growth_1y"] = res["ratios"]["eps_yoy"]
-        res["ratios"]["eps_growth_3y"] = res["ratios"]["eps_yoy"] * 0.9
-        res["ratios"]["eps_growth_5y"] = res["ratios"]["eps_yoy"] * 0.8
+            return None
 
         return res
 
@@ -644,31 +465,7 @@ class DataEnricher:
                     "currency": "VND"
                 }
         except Exception:
-            pass
-
-        # Fallback profile
-        h = int(hashlib.md5(symbol.encode()).hexdigest()[:8], 16)
-        res.setdefault("symbol", symbol.upper())
-        res.setdefault("name", f"Công ty Cổ phần {symbol.upper()}")
-        res.setdefault("exchange", "HOSE")
-        res.setdefault("industry", "Tài chính" if h % 3 == 0 else "Bất động sản" if h % 3 == 1 else "Công nghệ")
-        res.setdefault("sector", res["industry"])
-        res.setdefault("employees", 100 + (h % 9000))
-        res.setdefault("website", f"https://www.{symbol.lower()}.com.vn")
-        res.setdefault("description", f"Mô tả hoạt động kinh doanh của doanh nghiệp {symbol.upper()}.")
-        res.setdefault("founded_year", 1990 + (h % 30))
-        res.setdefault("headquarters", "Thành phố Hồ Chí Minh, Việt Nam" if h % 2 == 0 else "Hà Nội, Việt Nam")
-        res.setdefault("ceo", "Nguyễn Văn Phú" if h % 3 == 0 else "Lê Hoàng Nam" if h % 3 == 1 else "Trần Minh Quân")
-        res.setdefault("cfo", "Nguyễn Thị Mai")
-        res.setdefault("board_chairman", "Trần Đình Long" if h % 4 == 0 else "Trương Gia Bình" if h % 4 == 1 else "Phạm Nhật Vượng")
-        res.setdefault("listing_date", f"{2005 + (h % 20)}-0{1 + (h % 9)}-{10 + (h % 15)}")
-        res.setdefault("isin", f"VN0000{h % 100000:06d}{symbol.upper()}")
-        res.setdefault("lot_size", 100)
-        res.setdefault("tick_size", 10 if h % 2 == 0 else 50)
-        res.setdefault("free_float", 30.0 + (h % 50))
-        res.setdefault("shares_outstanding", 50_000_000 + (h % 950) * 1_000_000)
-        res.setdefault("shares_float", int(res["shares_outstanding"] * (res["free_float"] / 100.0)))
-        res.setdefault("currency", "VND")
+            return None
         
         return res
 
@@ -688,9 +485,9 @@ class DataEnricher:
                     continue
                 res[k] = v
             return res
-        except Exception:
-            logger.warning("macro_service unavailable, using inline fallback")
-            return _macro_inline_fallback()
+        except Exception as e:
+            logger.warning(f"macro_service unavailable: {e}")
+            return {}
 
     @staticmethod
     def evaluate_risk_flags(symbol: str, fundamentals: Dict[str, Any], news_flags: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

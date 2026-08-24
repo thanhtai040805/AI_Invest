@@ -9,7 +9,7 @@ from datetime import datetime
 from app.lifespan import lifespan
 from app.config.settings import get_settings
 from app.infrastructure.external_api.dnse.stream_hub import get_stream_hub
-from app.presentation.api import market_data, stock_data, screener, stream, backtest, agent, swarm, skills, factors, tools, session, providers, config, memory, dataflows, core, llm_clients, security, preflight, ui_services, runs, ai_routes, admin
+from app.presentation.api import market_data, stock_data, screener, stream, backtest, factors, config, core, security, admin
 
 app = FastAPI(
     title="AIInvest AI Engine",
@@ -66,23 +66,10 @@ app.include_router(market_data.router, prefix="/api/market", tags=["Market Data"
 app.include_router(stock_data.router, prefix="/api/stock", tags=["Stock Data"])
 app.include_router(screener.router, prefix="/api/screener", tags=["Screener"])
 app.include_router(backtest.router, prefix="/api/backtest", tags=["Backtest"])
-app.include_router(agent.router, prefix="/api/agent", tags=["Agent"])
-app.include_router(swarm.router, prefix="/api/swarm", tags=["Swarm"])
-app.include_router(skills.router, prefix="/api/skills", tags=["Skills"])
 app.include_router(factors.router, prefix="/api/factors", tags=["Factors"])
-app.include_router(tools.router, prefix="/api/tools", tags=["Tools"])
-app.include_router(session.router, prefix="/api/session", tags=["Session"])
-app.include_router(providers.router, prefix="/api/providers", tags=["Providers"])
 app.include_router(config.router, prefix="/api/config", tags=["Config"])
-app.include_router(memory.router, prefix="/api/memory", tags=["Memory"])
-app.include_router(dataflows.router, prefix="/api/dataflows", tags=["Dataflows"])
 app.include_router(core.router, prefix="/api/core", tags=["Core"])
-app.include_router(llm_clients.router, prefix="/api/llm-clients", tags=["LLMClients"])
 app.include_router(security.router, prefix="/api/security", tags=["Security"])
-app.include_router(preflight.router, prefix="/api/preflight", tags=["Preflight"])
-app.include_router(ui_services.router, prefix="/api/ui-services", tags=["UIServices"])
-app.include_router(ai_routes.router, prefix="/api/ai", tags=["AI Bridge"])
-app.include_router(runs.router, prefix="/api", tags=["Runs"])
 app.include_router(admin.router, prefix="/api", tags=["Admin"])
 
 @app.get("/api/alpha/list")

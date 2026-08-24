@@ -119,7 +119,7 @@ class MoatAIEngine:
         except Exception as e:
             logger.error(f"Error querying document from DB for {ticker}: {e}")
 
-        return f"Fallback: Dummy cleaned text for {ticker} from {doc_path}"
+        raise ValueError(f"No document text found in DB for {ticker}")
 
     async def calculate_moat_score(self, ticker: str, doc_text: str) -> MoatAnalysis:
         """Sử dụng LLM để phân tích Moat (Lợi thế cạnh tranh)."""
@@ -158,9 +158,9 @@ class MoatAIEngine:
             else:
                 # THEO MANDATE: Không dùng mock data
                 logger.error("LLM client not configured for MoatAIEngine")
-                return MoatAnalysis(0.0, {}, [], "HIGH")
+                raise RuntimeError("LLM client not configured for MoatAIEngine")
         except Exception as e:
             logger.error(f"Error in Moat AI Scoring: {e}")
-            return MoatAnalysis(0.0, {}, [], "HIGH")
+            raise
 
 moat_ai_engine = MoatAIEngine()
