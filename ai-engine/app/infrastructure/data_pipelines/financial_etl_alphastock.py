@@ -38,7 +38,7 @@ _CLIENT = httpx.Client(headers=_HEADERS, timeout=60)
 def _get_workspace(symbol: str) -> Optional[dict]:
     """Fetch financial report workspace from AlphaStock API."""
     url = f"{API_BASE}/api/v1/financials/report-workspace"
-    params = {"symbol": symbol, "quarter_limit": 24, "annual_limit": 15}
+    params = {"symbol": symbol, "quarter_limit": 40, "annual_limit": 15}
     try:
         r = _CLIENT.get(url, params=params)
         r.raise_for_status()

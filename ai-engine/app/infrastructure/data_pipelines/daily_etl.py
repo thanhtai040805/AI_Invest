@@ -3,8 +3,8 @@
 Runs at 18:00-20:00 VN time, sequentially:
   18:00 → OHLCV backfill (from DNSE, adj_close = close, split-adjusted)
    18:05 → Technical indicators (40+ per symbol)
-   18:15 → Insider trades (CafeF API)
-   18:20 → Foreign flow (CafeF API)
+   18:15 → Insider trades (Vietstock API)
+   18:20 → Foreign flow (Vietstock API)
    18:30 → News events + sentiment (CafeF API)
    18:45 → Financial ratios (AlphaStock API)
    19:00 → Risk flags (10 computed flags from structured DB data)
@@ -184,8 +184,8 @@ class DailyETLPipeline:
     # ── Step: Foreign Flow ───────────────────────────────────────────
 
     async def step_foreign_flow(self) -> Dict[str, Any]:
-        """Pre-compute foreign trading flow from CafeF API."""
-        logger.info("ETL: foreign_flow — fetching from CafeF API...")
+        """Pre-compute foreign trading flow from Vietstock API."""
+        logger.info("ETL: foreign_flow — fetching from Vietstock API...")
         try:
             from app.infrastructure.vendors.vn.foreign_flow import refresh_incremental
             result = await asyncio.to_thread(refresh_incremental)

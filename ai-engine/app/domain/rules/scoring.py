@@ -6,6 +6,7 @@ Phân loại Conviction Level (A+, A, B, C, D).
 """
 
 import logging
+import os
 import pandas as pd
 from typing import List, Dict, Any, Optional
 from enum import Enum
@@ -23,6 +24,7 @@ class ConvictionLevel(Enum):
 
 class CSSScoringEngine:
     def __init__(self):
+        self.enable_ml_meta_labeling = os.getenv("ENABLE_ML_META_LABELING", "False").lower() in ("true", "1", "yes")
         # REGIME_WEIGHTS định nghĩa trong IOS/Blueprint
         self.regime_weights = {
             MarketRegime.BULL_TRENDING: {
@@ -75,8 +77,19 @@ class CSSScoringEngine:
         
         factor_scores['css'] = factor_scores['base_css'] * factor_scores['moat_multiplier']
         
-        # Xác định Conviction Level kèm theo Gatekeeper
+        # Xác định Conviction Level kèm theo Gatekeeper (Rule-based)
         factor_scores['conviction'] = factor_scores.apply(self._apply_gatekeeper, axis=1)
+        
+        # ==========================================
+        # META-LABELING: ML Alpha Conviction Booster
+        # ==========================================
+        if 'ml_alpha_score' in factor_scores.columns:
+            # Lưu lại hạng gốc
+            factor_scores['conviction_pre_ml'] = factor_scores['conviction']
+            
+            # Chỉ áp dụng Booster/Veto nếu công tắc bật
+            if self.enable_ml_meta_labeling:
+                factor_scores['conviction'] = factor_scores.apply(self._apply_meta_labeling, axis=1)
         
         return factor_scores
 
@@ -114,5 +127,29 @@ class CSSScoringEngine:
         if css >= 60: return ConvictionLevel.B.value
         if css >= 45: return ConvictionLevel.C.value
         return ConvictionLevel.D.value
+
+    def _apply_meta_labeling(self, row: pd.Series) -> str:
+        """Dùng điểm ML để Veto (hạ bậc) hoặc Boost (Nâng bậc) Conviction."""
+        conviction = row['conviction']
+        ml_alpha = row.get('ml_alpha_score')
+        
+        if pd.isna(ml_alpha):
+            return conviction
+            
+        # 1. VETO (Phủ quyết)
+        if ml_alpha <= 0.35:
+            if conviction in [ConvictionLevel.A_PLUS.value, ConvictionLevel.A.value, ConvictionLevel.B.value, ConvictionLevel.C.value]:
+                return ConvictionLevel.D.value
+        
+        # 2. BOOSTER (Khuếch đại)
+        elif ml_alpha >= 0.70 and conviction != ConvictionLevel.D.value and conviction != ConvictionLevel.E.value:
+            if conviction == ConvictionLevel.A.value:
+                return ConvictionLevel.A_PLUS.value
+            elif conviction == ConvictionLevel.B.value:
+                return ConvictionLevel.A.value
+            elif conviction == ConvictionLevel.C.value:
+                return ConvictionLevel.B.value
+                
+        return conviction
 
 css_scoring_engine = CSSScoringEngine()

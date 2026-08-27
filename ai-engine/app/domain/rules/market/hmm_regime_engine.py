@@ -17,7 +17,9 @@ from typing import Dict, Any, List, Optional
 import numpy as np
 import pandas as pd
 from hmmlearn import hmm
+import warnings
 from scipy.special import softmax
+from app.domain.services.ml.frac_diff import frac_diff_ffd
 
 logger = logging.getLogger(__name__)
 
@@ -27,19 +29,14 @@ os.makedirs(MODEL_DIR, exist_ok=True)
 HMM_MODEL_PATH = os.path.join(MODEL_DIR, "hmm_regime_v2.pkl")
 
 class MarketRegimeV2:
-    BULL_MOMENTUM = "BULL_MOMENTUM"
-    BULL_DISTRIBUTION = "BULL_DISTRIBUTION"
+    BULL_MARKET = "BULL_MARKET"
     RANGE_BOUND = "RANGE_BOUND"
-    BEAR_PANIC = "BEAR_PANIC"
-    BEAR_GRINDING = "BEAR_GRINDING"
-    RECOVERY_EARLY = "RECOVERY_EARLY"
+    BEAR_MARKET = "BEAR_MARKET"
     
     @classmethod
     def get_all(cls):
         return [
-            cls.BULL_MOMENTUM, cls.BULL_DISTRIBUTION, 
-            cls.RANGE_BOUND, cls.BEAR_PANIC, 
-            cls.BEAR_GRINDING, cls.RECOVERY_EARLY
+            cls.BULL_MARKET, cls.RANGE_BOUND, cls.BEAR_MARKET
         ]
 
 class RSGARCH:
@@ -88,15 +85,17 @@ class RSGARCH:
         return vols
 
 class RegimeEngineV2:
-    def __init__(self, n_components: int = 6):
+    def __init__(self, n_components: int = 3):
         self.n_components = n_components
         # Sticky transition prior: diagonal is heavy to prevent whipsaw
-        self.transmat_prior = np.eye(n_components) * 0.9 + np.ones((n_components, n_components)) * 0.02
+        # Ensure self-transitions are highly probable (stickiness)
+        self.transmat_prior = np.ones((n_components, n_components)) * 0.01
+        np.fill_diagonal(self.transmat_prior, 0.95)
         self.transmat_prior /= self.transmat_prior.sum(axis=1)[:, np.newaxis]
         
         self.model = hmm.GaussianHMM(
             n_components=n_components, 
-            covariance_type="diag", 
+            covariance_type="spherical", 
             n_iter=100, 
             random_state=42,
             init_params="mc" # We provide explicit transmat
@@ -107,25 +106,24 @@ class RegimeEngineV2:
         self.is_trained = False
         
     def _extract_features(self, df: pd.DataFrame) -> np.ndarray:
-        """Extract the 10 observation features for HMM tailored for HOSE."""
+        """Extract the observation features for HMM tailored for HOSE, using FracDiff."""
         feats = []
         
-        # 1. Trend Features
-        if "close" in df and "ma50" in df:
-            feats.append((df["close"] / df["ma50"] - 1.0).fillna(0.0).values)
+        # 1. Trend Feature (FracDiff of log prices)
+        if "close" in df:
+            log_close = np.log(df["close"].replace(0, np.nan).ffill().bfill())
+            fd = frac_diff_ffd(log_close, d=0.4, threshold=1e-4).fillna(0.0)
+            feats.append(fd.values)
         else:
             feats.append(np.zeros(len(df)))
 
-        if "close" in df and "ma200" in df:
-            feats.append((df["close"] / df["ma200"] - 1.0).fillna(0.0).values)
+        # 2. Medium-term Momentum (Close vs MA20) - Fast reaction
+        if "close" in df:
+            ma20 = df["close"].rolling(window=20, min_periods=1).mean()
+            momentum = (df["close"] / ma20) - 1
+            feats.append(momentum.fillna(0.0).values)
         else:
             feats.append(np.zeros(len(df)))
-
-        # 2. Market Breadth Feature
-        if "breadth_ma50" in df:
-            feats.append((df["breadth_ma50"] / 100.0).fillna(0.5).values)
-        else:
-            feats.append(np.full(len(df), 0.5))
 
         # 3. Volume Trend Feature
         if "volume" in df and "vol_ma20" in df:
@@ -136,59 +134,114 @@ class RegimeEngineV2:
         else:
             feats.append(np.zeros(len(df)))
 
-        # 4. Volatility Feature (VIX VN Analog)
+        # 4. Volatility Feature (Rolling Z-Score)
         if "close" in df:
             ret = df["close"].pct_change().fillna(0)
-            vol20 = ret.rolling(20, min_periods=1).std().fillna(0.015).values
-            feats.append(vol20)
-        else:
-            feats.append(np.full(len(df), 0.015))
-
-        # 5. Proprietary Desk Flow Feature (Tự doanh CTCK)
-        if "net_prop_flow_bil" in df:
-            feats.append((df["net_prop_flow_bil"] / 100.0).fillna(0.0).values)
-        else:
-            feats.append(np.zeros(len(df)))
-
-        # 6. Margin Debt Proxy Feature
-        if "margin_debt_change_pct" in df:
-            feats.append(df["margin_debt_change_pct"].fillna(0.0).values)
+            vol20 = ret.rolling(20, min_periods=1).std().fillna(0.015)
+            # Normalize volatility using a 1-year (252 days) rolling window to handle structural shifts
+            vol_mean_252 = vol20.rolling(252, min_periods=1).mean()
+            vol_std_252 = vol20.rolling(252, min_periods=1).std().fillna(0.001)
+            vol_std_252 = np.where(vol_std_252 == 0, 0.001, vol_std_252)
+            vol_zscore = (vol20 - vol_mean_252) / vol_std_252
+            feats.append(vol_zscore.fillna(0.0).values)
         else:
             feats.append(np.zeros(len(df)))
 
-        # 7. Intermarket USD/VND Rate Change Feature
-        if "usdvnd_change_pct" in df:
-            feats.append(df["usdvnd_change_pct"].fillna(0.0).values)
+        # 5. Foreign Flow Z-Score Feature
+        if "net_foreign_value" in df and "vol_ma20" in df:
+            ff = df["net_foreign_value"].fillna(0)
+            ff_mean = ff.rolling(252, min_periods=1).mean()
+            ff_std = ff.rolling(252, min_periods=1).std().fillna(1e6)
+            ff_std = np.where(ff_std == 0, 1e6, ff_std)
+            ff_zscore = (ff - ff_mean) / ff_std
+            feats.append(ff_zscore.fillna(0.0).values)
         else:
             feats.append(np.zeros(len(df)))
 
-        # 8. CSAD Herding Score Feature
-        if "csad_score" in df:
-            feats.append(df["csad_score"].fillna(0.02).values)
+        # 6. Interbank Rate Feature (FracDiff)
+        if "vninbr_interbank_rate" in df:
+            rate = df["vninbr_interbank_rate"].ffill().bfill().fillna(0.0)
+            rate_fd = frac_diff_ffd(rate, d=0.4, threshold=1e-4).fillna(0.0)
+            feats.append(rate_fd.values)
         else:
-            feats.append(np.full(len(df), 0.02))
-
-        # 9. Sector Dispersion Feature
-        if "sector_dispersion" in df:
-            feats.append(df["sector_dispersion"].fillna(0.01).values)
-        else:
-            feats.append(np.full(len(df), 0.01))
+            feats.append(np.zeros(len(df)))
 
         X = np.column_stack(feats)
         
         # Standardize features
         self.feature_means = np.mean(X, axis=0)
         self.feature_stds = np.std(X, axis=0) + 1e-8
-        return (X - self.feature_means) / self.feature_stds
+        X_scaled = (X - self.feature_means) / self.feature_stds
+        
+        # Clip outliers to prevent GaussianHMM from allocating entire clusters to a few extreme points
+        return np.clip(X_scaled, -3.0, 3.0)
 
     def fit(self, df: pd.DataFrame):
         """Monthly retraining routine."""
         X = self._extract_features(df)
         
-        # Fit HMM
-        self.model.fit(X)
+        # MUST exclude the 252-day warmup period because features like rolling 252 
+        # contain garbage/NaNs filled with 0s, which destroys HMM clustering and state mapping!
+        warmup = 252
+        X_fit = X[warmup:] if len(X) > warmup else X
+        returns_fit = df["close"].pct_change().fillna(0).values[warmup:] if len(df) > warmup else df["close"].pct_change().fillna(0).values
+        best_model = None
         
-        # Decode historical states
+        # Multi-seed initialization for EM to avoid local optima
+        best_score = -np.inf
+        best_model = None
+        
+        seeds = [42, 100, 200, 300, 400]
+        for seed in seeds:
+            # If we are using the standard 3-state, 6-feature setup, use explicit mean initialization
+            # AND tied covariance to prevent Variance Domination. Tied covariance forces the HMM 
+            # to cluster strictly by distance to the mean, rather than inflating a state's variance 
+            # to swallow all extreme outliers (bubbles and crashes alike).
+            if self.n_components == 3 and X_fit.shape[1] == 6:
+                model = hmm.GaussianHMM(
+                    n_components=self.n_components, 
+                    covariance_type="tied", 
+                    n_iter=100, 
+                    random_state=seed,
+                    init_params="c", # Only initialize covariance
+                    params="stmc"
+                )
+                model.startprob_ = np.array([1/3, 1/3, 1/3])
+                model.transmat_ = self.transmat_prior.copy()
+                
+                # Features: FracDiff, Momentum, Vol_Trend, Vol_ZScore, Foreign_ZScore, Interbank_FD
+                model.means_ = np.array([
+                    [ 0.5,  0.5,  0.0, -0.5,  0.0, -0.2], # Bull (Pos Trend, Low/Med Vol)
+                    [ 0.0,  0.0, -0.5, -0.5,  0.0,  0.0], # Range (Zero Trend, Low Vol)
+                    [-0.5, -0.5,  0.5,  1.0, -0.5,  0.5]  # Bear (Neg Trend, High Vol)
+                ])
+            else:
+                model = hmm.GaussianHMM(
+                    n_components=self.n_components, 
+                    covariance_type="tied", 
+                    n_iter=100, 
+                    random_state=seed,
+                    init_params="mc", 
+                    params="stmc"
+                )
+                model.startprob_ = np.ones(self.n_components) / self.n_components
+                model.transmat_ = self.transmat_prior.copy()
+                
+            try:
+                model.fit(X_fit)
+                score = model.score(X_fit)
+                if score > best_score:
+                    best_score = score
+                    best_model = model
+            except Exception as e:
+                logger.warning(f"HMM fit failed for seed {seed}: {e}")
+                
+        if best_model is None:
+            raise RuntimeError("HMM fitting failed for all seeds.")
+            
+        self.model = best_model
+        
+        # Decode historical states for full sample (for API consistency)
         hidden_states = self.model.predict(X)
         state_probs = self.model.predict_proba(X)
         
@@ -197,44 +250,41 @@ class RegimeEngineV2:
         self.rs_garch.fit(returns, state_probs)
         
         # Map states to economic regimes (VN heuristics)
-        # We look at average VNI/MA50 and Volatility in each state
+        # MUST use clean data (without warmup garbage) to calculate statistics, 
+        # otherwise the state mapping will be completely inverted!
+        clean_hidden_states = self.model.predict(X_fit)
         state_stats = []
         for i in range(self.n_components):
-            mask = (hidden_states == i)
+            mask = (clean_hidden_states == i)
             if not np.any(mask):
                 continue
-            avg_trend = np.mean(X[mask, 0]) # vni_ma50_dist
-            avg_vol = np.mean(X[mask, -1])  # vol20
-            avg_breadth = np.mean(X[mask, 2]) if X.shape[1] > 2 else 0
-            state_stats.append((i, avg_trend, avg_vol, avg_breadth))
             
-        # Sort by trend (high to low)
+            # Use actual market returns (without garbage) for state labeling
+            avg_return = np.mean(returns_fit[mask])
+            avg_vol = np.std(returns_fit[mask])
+            state_stats.append((i, avg_return, avg_vol))
+            
+        # Sort by actual mean return (high to low)
         state_stats.sort(key=lambda x: x[1], reverse=True)
         
-        # Assign mapping
-        # 0: Bull Momentum (High trend, high breadth)
-        # 1: Bull Distribution (High trend, lower breadth)
-        # 2: Range Bound (Neutral trend, low vol)
-        # 3: Recovery Early (Negative trend but rising breadth)
-        # 4: Bear Grinding (Negative trend, low vol)
-        # 5: Bear Panic (Very negative trend, high vol)
+        # Assign mapping for 3 states
+        # 0: Bull Market (Highest return)
+        # 1: Range Bound (Middle return)
+        # 2: Bear Market (Lowest return)
         
         mapping = {}
-        if len(state_stats) == 6:
-            mapping[state_stats[0][0]] = MarketRegimeV2.BULL_MOMENTUM
-            mapping[state_stats[1][0]] = MarketRegimeV2.BULL_DISTRIBUTION
-            
-            # Differentiate range vs panic vs grind vs recovery by vol and breadth
-            rem = state_stats[2:]
-            rem.sort(key=lambda x: x[2]) # sort by vol (low to high)
-            mapping[rem[0][0]] = MarketRegimeV2.RANGE_BOUND
-            mapping[rem[1][0]] = MarketRegimeV2.BEAR_GRINDING
-            
-            high_vol = rem[2:]
-            high_vol.sort(key=lambda x: x[1]) # sort by trend (lowest to highest)
-            mapping[high_vol[0][0]] = MarketRegimeV2.BEAR_PANIC
-            mapping[high_vol[1][0]] = MarketRegimeV2.RECOVERY_EARLY
-            
+        if len(state_stats) >= 1:
+            mapping[state_stats[0][0]] = MarketRegimeV2.BULL_MARKET
+        if len(state_stats) >= 2:
+            mapping[state_stats[1][0]] = MarketRegimeV2.RANGE_BOUND
+        if len(state_stats) >= 3:
+            mapping[state_stats[2][0]] = MarketRegimeV2.BEAR_MARKET
+        
+        # Fallback for any remaining unmapped states
+        for i in range(self.n_components):
+            if i not in mapping:
+                mapping[i] = MarketRegimeV2.RANGE_BOUND
+                
         self.state_map = mapping
         self.is_trained = True
         

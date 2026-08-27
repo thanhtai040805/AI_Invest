@@ -41,9 +41,62 @@ class OHLCVIngestionService:
         end_date: date
     ) -> List[Dict[str, Any]]:
         """Lấy dữ liệu OHLCV cho một ticker trong khoảng thời gian."""
+        if symbol.upper() == 'VNINDEX':
+            return self._fetch_vnindex_from_vietfin(start_date, end_date)
+            
         # CHỈ lấy từ DNSE (Primary) - Theo mandate: Không dùng fallback data
         data = self._fetch_from_dnse(symbol, start_date, end_date)
         return data
+
+    def _fetch_vnindex_from_vietfin(self, start_date: date, end_date: date) -> List[Dict[str, Any]]:
+        """Lấy dữ liệu VNINDEX từ thư viện vietfin (bao bọc API DNSE)."""
+        try:
+            from vietfin import vf
+            import math
+            
+            res = vf.index.price.historical(
+                symbol='vnindex', 
+                start_date=start_date.strftime('%Y-%m-%d'), 
+                end_date=end_date.strftime('%Y-%m-%d'), 
+                interval='1d', 
+                provider='dnse'
+            )
+            df = res.to_df()
+            if df is None or df.empty:
+                return []
+                
+            df = df.reset_index()
+            results = []
+            
+            for _, row in df.iterrows():
+                close_val = float(row['close']) if not math.isnan(row.get('close', 0)) else 0.0
+                open_val = float(row.get('open', close_val))
+                high_val = float(row.get('high', close_val))
+                low_val = float(row.get('low', close_val))
+                vol = int(row.get('volume', 0))
+                
+                # df['date'] might be string or timestamp, convert to date
+                if hasattr(row['date'], 'date'):
+                    dt = row['date'].date()
+                elif isinstance(row['date'], str):
+                    dt = datetime.strptime(row['date'][:10], '%Y-%m-%d').date()
+                else:
+                    dt = row['date']
+                    
+                results.append({
+                    "ticker": 'VNINDEX',
+                    "date": dt,
+                    "open": open_val,
+                    "high": high_val,
+                    "low": low_val,
+                    "close": close_val,
+                    "volume_total": vol,
+                    "data_source": "vietfin"
+                })
+            return results
+        except Exception as e:
+            logger.error(f"Error fetching VNINDEX from vietfin: {e}")
+            return []
 
     def _fetch_from_dnse(self, symbol: str, start_date: date, end_date: date) -> List[Dict[str, Any]]:
         """Lấy dữ liệu từ DNSE REST API."""

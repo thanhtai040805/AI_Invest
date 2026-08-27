@@ -14,6 +14,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
+import pandas as pd
 import yfinance as yf
 
 logger = logging.getLogger(__name__)
@@ -234,6 +235,9 @@ def _fetch_all_macro() -> Dict[str, Any]:
     # ── 1. yfinance global ──────────────────────────────────────────
     _fetch_yfinance(res)
 
+    # ── 1b. TradingView VNINTR ──────────────────────────────────────
+    _fetch_tradingview(res)
+
     # ── 2. VietFin VNINDEX returns ──────────────────────────────────
     _fetch_vnindex_returns(res)
 
@@ -255,9 +259,6 @@ def _fetch_all_macro() -> Dict[str, Any]:
     # ── 6. Vimo MCP lending rates (optional) ─────────────────────────
     _fetch_vimo_lending(res)
 
-    # ── Fill fallbacks for any missing ───────────────────────────────
-    _apply_fallbacks(res)
-
     return res
 
 
@@ -277,6 +278,22 @@ def _fetch_yfinance(res: Dict[str, Any]):
                 res[k] = float(hist["Close"].iloc[-1])
         except Exception:
             pass
+
+
+def _fetch_tradingview(res: Dict[str, Any]):
+    """Fetch Vietnam Interest Rate from TradingView."""
+    try:
+        from tvDatafeed import TvDatafeed, Interval
+        tv = TvDatafeed()
+        df_intr = tv.get_hist(symbol='VNINTR', exchange='ECONOMICS', interval=Interval.in_daily, n_bars=5)
+        if df_intr is not None and not df_intr.empty:
+            res["vnintr_interest_rate"] = float(df_intr['close'].iloc[-1])
+            
+        df_inbr = tv.get_hist(symbol='VNINBR', exchange='ECONOMICS', interval=Interval.in_daily, n_bars=5)
+        if df_inbr is not None and not df_inbr.empty:
+            res["vninbr_interbank_rate"] = float(df_inbr['close'].iloc[-1])
+    except Exception as e:
+        logger.warning(f"Failed to fetch TradingView: {e}")
 
     try:
         gold = yf.Ticker("GC=F")
@@ -492,36 +509,6 @@ def _fetch_vimo_lending(res: Dict[str, Any]):
         pass
 
 
-_FALLBACKS: Dict[str, Any] = {
-    "oil_price_brent": 78.5,
-    "usd_index": 104.2,
-    "usd_10y_yield": 4.25,
-    "vix": 14.2,
-    "usd_vnd_exchange": 25450.0,
-    "refinancing_rate": 4.5,
-    "discount_rate": 3.0,
-    "lending_rate_12m_big4": 9.9,
-    "lending_rate_12m_commercial": 12.4,
-    "cpi": 3.45,
-    "gold_price_vnd": 85_000_000,
-    "vnindex_return_1d": 0.45,
-    "vnindex_return_1m": 2.34,
-    "vnindex_return_3m": 5.67,
-    "vnindex_return_1y": 12.50,
-    "vnindex_last_close": 1300.0,
-    "interest_rate_cod": 6.80,
-    "interest_rate_on": 4.75,
-    "interest_rate_1w": 4.75,
-    "interest_rate_1m": 4.75,
-    "interest_rate_3m": 4.75,
-    "interest_rate_6m": 6.60,
-    "interest_rate_1y": 6.80,
-    "ppi": 2.1,
-    "gdp_growth": 6.2,
-    "inflation_rate": 3.2,
-    "unemployment_rate": 2.3,
-}
-
 _UNITS: Dict[str, str] = {
     "oil_price_brent": "USD/bbl",
     "usd_index": "index",
@@ -545,6 +532,8 @@ _UNITS: Dict[str, str] = {
     "gdp_growth": "%",
     "inflation_rate": "%",
     "unemployment_rate": "%",
+    "vnintr_interest_rate": "%",
+    "vninbr_interbank_rate": "%",
 }
 
 _SOURCES: Dict[str, str] = {
@@ -554,6 +543,8 @@ _SOURCES: Dict[str, str] = {
     "vix": "yfinance",
     "usd_vnd_exchange": "yfinance",
     "gold_price_vnd": "yfinance",
+    "vnintr_interest_rate": "tvDatafeed",
+    "vninbr_interbank_rate": "tvDatafeed",
     "cpi": "vi.money (GSO)",
     "cpi_headline_index": "vi.money (GSO)",
     "cpi_mom_pct": "vi.money (GSO)",
@@ -571,13 +562,6 @@ _SOURCES: Dict[str, str] = {
 }
 
 _READ_ONLY_KEYS = {"cpi_year", "cpi_month"}
-
-
-def _apply_fallbacks(res: Dict[str, Any]):
-    for k, default in _FALLBACKS.items():
-        if k not in res:
-            res[k] = default
-
 
 # ── Internal: Persist to DB ──────────────────────────────────────────────
 
@@ -625,3 +609,91 @@ def clear_cache():
     global _read_cache, _read_cache_ts
     _read_cache = {}
     _read_cache_ts = None
+
+# ── Deep Backfill (10 Years) ──────────────────────────────────────────────
+
+def backfill_historical_macro_10y():
+    """
+    Fetch 10 years of historical data from yfinance and tvDatafeed
+    and insert into macro_indicators table.
+    """
+    logger.info("Starting 10-year Macro Deep Backfill...")
+    rows: List[Tuple[date, str, float, str, str]] = []
+    
+    # 1. Fetch yfinance history (10y)
+    tickers = {
+        "oil_price_brent": "BZ=F",
+        "usd_index": "DX-Y.NYB",
+        "usd_10y_yield": "^TNX",
+        "vix": "^VIX",
+        "usd_vnd_exchange": "VND=X",
+    }
+    for k, ticker in tickers.items():
+        try:
+            logger.info(f"Fetching 10y history for yfinance {ticker}...")
+            obj = yf.Ticker(ticker)
+            hist = obj.history(period="10y")
+            if not hist.empty:
+                for idx, row in hist.iterrows():
+                    d = idx.date()
+                    val = float(row["Close"])
+                    if pd.notna(val):
+                        unit = _UNITS.get(k, "")
+                        source = _SOURCES.get(k, "yfinance")
+                        rows.append((d, k, val, unit, source))
+        except Exception as e:
+            logger.error(f"Failed to fetch history for {ticker}: {e}")
+
+    # 2. Fetch tvDatafeed history (3000 bars ~ 10+ years)
+    try:
+        from tvDatafeed import TvDatafeed, Interval
+        logger.info("Fetching 10y history for TradingView VNINTR & VNINBR...")
+        tv = TvDatafeed()
+        
+        # Policy Rate
+        df_intr = tv.get_hist(symbol='VNINTR', exchange='ECONOMICS', interval=Interval.in_daily, n_bars=3000)
+        if df_intr is not None and not df_intr.empty:
+            k = "vnintr_interest_rate"
+            for idx, row in df_intr.iterrows():
+                d = idx.date()
+                val = float(row['close'])
+                if pd.notna(val):
+                    unit = _UNITS.get(k, "")
+                    source = _SOURCES.get(k, "tvDatafeed")
+                    rows.append((d, k, val, unit, source))
+                    
+        # Interbank Rate
+        df_inbr = tv.get_hist(symbol='VNINBR', exchange='ECONOMICS', interval=Interval.in_daily, n_bars=3000)
+        if df_inbr is not None and not df_inbr.empty:
+            k = "vninbr_interbank_rate"
+            for idx, row in df_inbr.iterrows():
+                d = idx.date()
+                val = float(row['close'])
+                if pd.notna(val):
+                    unit = _UNITS.get(k, "")
+                    source = _SOURCES.get(k, "tvDatafeed")
+                    rows.append((d, k, val, unit, source))
+                    
+    except Exception as e:
+        logger.error(f"Failed to fetch history for TradingView: {e}")
+
+    if not rows:
+        logger.warning("No macro data fetched for backfill.")
+        return
+
+    # Insert into DB
+    try:
+        with _get_cursor() as cur:
+            cur.executemany(
+                """INSERT INTO macro_indicators (indicator_date, indicator_name, value, unit, source)
+                   VALUES (%s, %s, %s, %s, %s)
+                   ON CONFLICT (indicator_date, indicator_name)
+                   DO UPDATE SET value = EXCLUDED.value,
+                                 unit = EXCLUDED.unit,
+                                 source = EXCLUDED.source,
+                                 created_at = NOW()""",
+                rows,
+            )
+        logger.info("Successfully persisted %d historical macro indicators.", len(rows))
+    except Exception as e:
+        logger.error("Failed to persist historical macro indicators: %s", e)

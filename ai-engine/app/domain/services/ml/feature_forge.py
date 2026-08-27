@@ -22,6 +22,8 @@ class FeatureForge:
         self.use_frac_diff = use_frac_diff
         # Cache for optimal d values per ticker to avoid recalculating on every run
         self._optimal_d_cache = {}
+        # Cache for VN-Index data
+        self._vnindex_df = None
         
     def _compute_price_momentum(self, df: pd.DataFrame) -> pd.DataFrame:
         """Standard and Idiosyncratic Momentum."""
@@ -39,7 +41,21 @@ class FeatureForge:
         roll_mean = df['close'].rolling(20).mean()
         roll_std = df['close'].rolling(20).std()
         out['z_score_20d'] = (df['close'] - roll_mean) / (roll_std + 1e-8)
-        out['extreme_reversal_signal'] = (out['z_score_20d'] < -3.0).astype(int) - (out['z_score_20d'] > 3.0).astype(int)
+        out['extreme_reversal_signal'] = (out['z_score_20d'] < -2.0).astype(int) - (out['z_score_20d'] > 2.0).astype(int)
+        
+        # 3. MACD
+        ema_12 = df['close'].ewm(span=12, adjust=False).mean()
+        ema_26 = df['close'].ewm(span=26, adjust=False).mean()
+        out['macd'] = ema_12 - ema_26
+        out['macd_signal'] = out['macd'].ewm(span=9, adjust=False).mean()
+        out['macd_hist'] = out['macd'] - out['macd_signal']
+        
+        # 4. RSI (14d)
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / (loss + 1e-8)
+        out['rsi_14d'] = 100 - (100 / (1 + rs))
         
         return out
         
@@ -51,6 +67,12 @@ class FeatureForge:
         # Here we approximate with rolling Volume / Avg Volume
         vol_ma60 = df['volume'].rolling(60).mean()
         out['turnover_anomaly'] = df['volume'] / (vol_ma60 + 1e-8)
+        
+        # Volume Profile Proxy (VWAP Anomaly)
+        # Using Typical Price = (High + Low + Close) / 3
+        typical_price = (df['high'] + df['low'] + df['close']) / 3
+        vwap_20d = (typical_price * df['volume']).rolling(20).sum() / (df['volume'].rolling(20).sum() + 1e-8)
+        out['price_to_vwap_20d'] = df['close'] / (vwap_20d + 1e-8)
         
         # Amihud Illiquidity (Absolute Return / Volume)
         ret_abs = df['close'].pct_change().abs()
@@ -125,25 +147,11 @@ class FeatureForge:
         prev_close = df['close'].shift(1)
         ret = df['close'].pct_change()
         
-        # Calculate dynamic tick size for each row
-        tick_size = pd.Series(100.0, index=df.index)
-        tick_size[prev_close < 50000] = 50.0
-        tick_size[prev_close < 10000] = 10.0
-        
-        # Exact HOSE ceiling and floor calculations
-        ceil_price = np.floor((prev_close * 1.07) / tick_size) * tick_size
-        floor_price = np.ceil((prev_close * 0.93) / tick_size) * tick_size
-        
-        # Mark ceiling/floor hits (with tolerance of 0.5 * tick_size for rounding)
-        is_ceiling = ((df['close'] >= (ceil_price - 0.5 * tick_size)) & (prev_close > 0)).astype(int)
-        is_floor = ((df['close'] <= (floor_price + 0.5 * tick_size)) & (prev_close > 0)).astype(int)
-        
-        # Fallback to percentage threshold (6.8% - 7.2%) if prev_close calculation has NaNs
-        fallback_ceil = (ret >= 0.068).astype(int)
-        fallback_floor = (ret <= -0.068).astype(int)
-        
-        is_ceiling = is_ceiling.where(prev_close.notna(), fallback_ceil)
-        is_floor = is_floor.where(prev_close.notna(), fallback_floor)
+        # Use percentage thresholds for ceiling/floor because adjusted prices
+        # invalidate the exact absolute price tick calculations.
+        # HOSE is 7%, HNX is 10%, UPCOM is 15%. We use 6.8% to catch rounding.
+        is_ceiling = (ret >= 0.068).astype(int)
+        is_floor = (ret <= -0.068).astype(int)
         
         # Calculate streaks
         ceil_streak = is_ceiling.groupby((is_ceiling != is_ceiling.shift()).cumsum()).cumsum()
@@ -152,6 +160,126 @@ class FeatureForge:
         floor_streak = is_floor.groupby((is_floor != is_floor.shift()).cumsum()).cumsum()
         out['floor_streak'] = floor_streak * is_floor
         
+        return out
+
+    def _compute_fundamental_flow(self, df: pd.DataFrame, ticker: str) -> pd.DataFrame:
+        """Fetch and inject Foreign Flow, Insider Trades, and Financial Ratios."""
+        import psycopg2
+        from app.infrastructure.database.pg_pool import DB_URL
+        
+        out = pd.DataFrame(index=df.index)
+        if ticker == "UNKNOWN":
+            return out
+            
+        try:
+            conn = psycopg2.connect(DB_URL)
+            
+            # 1. Foreign Flow
+            q_ff = f"SELECT trade_date as date, net_volume FROM foreign_flow WHERE symbol = '{ticker}'"
+            ff_df = pd.read_sql(q_ff, conn)
+            if not ff_df.empty:
+                ff_df['date'] = pd.to_datetime(ff_df['date'])
+                ff_df = ff_df.set_index('date').sort_index()
+                # Join and calculate rolling ratio
+                temp = df[['volume']].join(ff_df, how='left').fillna(0)
+                net_vol_20d = temp['net_volume'].rolling(20, min_periods=1).sum()
+                total_vol_20d = temp['volume'].rolling(20, min_periods=1).sum()
+                out['foreign_flow_ratio_20d'] = (net_vol_20d / (total_vol_20d + 1e-8)).fillna(0)
+            else:
+                out['foreign_flow_ratio_20d'] = 0.0
+
+            # 2. Insider Trades (Net shares bought in last 90 days)
+            q_in = f"SELECT trade_date as date, trade_type, quantity FROM insider_trades WHERE symbol = '{ticker}'"
+            in_df = pd.read_sql(q_in, conn)
+            if not in_df.empty:
+                in_df['date'] = pd.to_datetime(in_df['date'])
+                # MUA or BUY
+                in_df['net_qty'] = in_df.apply(lambda row: row['quantity'] if str(row['trade_type']).upper() in ['MUA', 'BUY'] else -row['quantity'], axis=1)
+                daily_in = in_df.groupby('date')['net_qty'].sum()
+                temp_in = pd.DataFrame(index=df.index).join(daily_in, how='left').fillna(0)
+                net_90d = temp_in['net_qty'].rolling(90, min_periods=1).sum()
+                vol_90d = df['volume'].rolling(90, min_periods=1).sum()
+                out['insider_net_90d'] = (net_90d / (vol_90d + 1e-8)).fillna(0)
+                # Sign function to make it a clear signal (-1, 0, 1)
+                out['insider_signal'] = np.sign(net_90d)
+            else:
+                out['insider_net_90d'] = 0.0
+                out['insider_signal'] = 0.0
+
+            # 3. Financial Ratios
+            q_fin = f"SELECT published_date as date, pe, pb, roe FROM financial_ratios WHERE symbol = '{ticker}' AND published_date IS NOT NULL"
+            fin_df = pd.read_sql(q_fin, conn)
+            if not fin_df.empty:
+                fin_df['date'] = pd.to_datetime(fin_df['date'])
+                fin_df = fin_df.set_index('date').sort_index()
+                # Merge ASOF with aligned datetime types
+                left_df = pd.DataFrame({'date': pd.to_datetime(df.index)}).sort_values('date')
+                merged = pd.merge_asof(
+                    left_df, 
+                    fin_df.reset_index(), 
+                    on='date', 
+                    direction='backward'
+                ).set_index('date')
+                merged.index = df.index
+                out['pe'] = merged['pe']
+                out['pb'] = merged['pb']
+                out['roe'] = merged['roe']
+            else:
+                out['pe'] = np.nan
+                out['pb'] = np.nan
+                out['roe'] = np.nan
+                
+            conn.close()
+        except Exception as e:
+            logger.error(f"Error fetching fundamentals for {ticker}: {e}")
+            out['foreign_flow_ratio_20d'] = 0.0
+            out['insider_net_90d'] = 0.0
+            out['insider_signal'] = 0.0
+            out['pe'] = np.nan
+            out['pb'] = np.nan
+            out['roe'] = np.nan
+
+        return out
+        
+    def _compute_relative_strength(self, df: pd.DataFrame, ticker: str) -> pd.DataFrame:
+        """Calculate RS and Correlation against VN-Index"""
+        import psycopg2
+        from app.infrastructure.database.pg_pool import DB_URL
+        
+        out = pd.DataFrame(index=df.index)
+        
+        if self._vnindex_df is None:
+            try:
+                conn = psycopg2.connect(DB_URL)
+                q_vn = "SELECT date, close_adj FROM market_data_daily WHERE ticker='VNINDEX'"
+                vn_df = pd.read_sql(q_vn, conn)
+                conn.close()
+                if not vn_df.empty:
+                    vn_df['date'] = pd.to_datetime(vn_df['date'])
+                    self._vnindex_df = vn_df.set_index('date').sort_index()
+            except Exception as e:
+                logger.error(f"Failed to fetch VNINDEX for relative strength: {e}")
+                self._vnindex_df = pd.DataFrame()
+                
+        if self._vnindex_df is not None and not self._vnindex_df.empty:
+            # Join VNINDEX close
+            temp = df[['close']].join(self._vnindex_df['close_adj'].rename('vn_close'), how='left').ffill()
+            ticker_ret = temp['close'].pct_change()
+            vn_ret = temp['vn_close'].pct_change()
+            
+            # RS: (1 + ticker_ret) / (1 + vn_ret) over N days
+            for window in [10, 20, 60]:
+                ticker_cum = (1 + ticker_ret).rolling(window).apply(np.prod, raw=True) - 1
+                vn_cum = (1 + vn_ret).rolling(window).apply(np.prod, raw=True) - 1
+                out[f'rs_vnindex_{window}d'] = ticker_cum - vn_cum
+                
+                # Correlation
+                out[f'corr_vnindex_{window}d'] = ticker_ret.rolling(window).corr(vn_ret)
+        else:
+            for window in [10, 20, 60]:
+                out[f'rs_vnindex_{window}d'] = 0.0
+                out[f'corr_vnindex_{window}d'] = 0.0
+                
         return out
 
     def generate(self, df: pd.DataFrame, ticker: str = "UNKNOWN") -> pd.DataFrame:
@@ -167,15 +295,17 @@ class FeatureForge:
             self._compute_liquidity_turnover(df),
             self._compute_microstructure(df),
             self._compute_frac_diff_features(df, ticker),
-            self._compute_hose_limits(df)
+            self._compute_hose_limits(df),
+            self._compute_fundamental_flow(df, ticker),
+            self._compute_relative_strength(df, ticker)
         ]
         
         # Concat all features
         features = pd.concat(dfs, axis=1)
         
-        # Forward fill NaNs created by rolling windows where appropriate, but initially just drop or fill 0
+        # Forward fill NaNs created by rolling windows, but keep fundamental NaNs instead of zero-filling
         features = features.replace([np.inf, -np.inf], np.nan)
-        features = features.ffill().fillna(0.0)
+        features = features.ffill()
         
         return features
 
