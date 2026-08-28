@@ -19,7 +19,8 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
 
 import psycopg2
-from app.infrastructure.database.pg_pool import get_conn
+# pyrefly: ignore [missing-import]
+from app.infrastructure.database.connection import get_db_url, get_raw_connection
 
 
 def run_migration() -> bool:
@@ -36,11 +37,14 @@ def run_migration() -> bool:
         sql_script = f.read()
 
     try:
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                print(" Connected to PostgreSQL database.")
-                print(" Đang thực thi DDL tạo 33 bảng...")
-                cur.execute(sql_script)
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        print(" Connected to PostgreSQL database.")
+        print(" Đang thực thi DDL tạo 33 bảng...")
+        cur.execute(sql_script)
+        conn.commit()
+        cur.close()
+        conn.close()
         print("✅ MIGRATION THÀNH CÔNG: Đã khởi tạo đầy đủ 21 Bảng Nghiệp Vụ & 12 Bảng Log!")
         return True
     except Exception as e:

@@ -21,21 +21,10 @@ sys.path.insert(0, str(AI_ENGINE_DIR))
 # Đảm bảo UTF-8 output trên Windows terminal
 sys.stdout.reconfigure(encoding="utf-8")
 
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
-
-
-@dataclass
-class MCPServerConfig:
-    type: str = "stdio"
-    command: str = ""
-    args: List[str] = field(default_factory=list)
-    env: Dict[str, str] = field(default_factory=dict)
-
-
-@dataclass
-class AgentConfig:
-    mcp_servers: Dict[str, MCPServerConfig] = field(default_factory=dict)
+# pyrefly: ignore [missing-import]
+from app.brain.config.schema import AgentConfig, MCPServerConfig
+# pyrefly: ignore [missing-import]
+from app.brain.tools import build_registry
 
 
 async def wire_and_test_sag_mcp(source_config_id: str | None = None) -> None:
