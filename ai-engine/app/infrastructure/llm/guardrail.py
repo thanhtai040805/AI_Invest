@@ -106,6 +106,14 @@ class LLMOutputGuardrail:
                 return True
             if isinstance(v, (int, float)) and str(v) == number_str:
                 return True
-            if isinstance(v, dict) and self._is_in_dict(number_str, v):
-                return True
         return False
+
+
+Guardrail = LLMOutputGuardrail
+GuardrailResult = ValidationResult
+
+
+class GuardrailViolationError(Exception):
+    """Raised when LLM output violates guardrail constraints."""
+    pass
+

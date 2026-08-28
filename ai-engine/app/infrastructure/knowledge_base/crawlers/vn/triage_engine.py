@@ -219,17 +219,7 @@ def tf_cosine_similarity(vec1: Dict[str, int], vec2: Dict[str, int]) -> float:
 class DocumentIntelligenceEngine:
     def __init__(self):
         self.settings = get_settings()
-        if self.settings.evomap_api_key:
-            self.use_evomap = True
-            self.evomap_client = get_async_evomap_client()
-        else:
-            self.use_evomap = False
-            from app.brain.providers.groq_client import GroqAgent
-            self.agent = GroqAgent(
-                api_key=self.settings.llm_groq_key1,
-                model=self.settings.llm_groq_model1 or "qwen-2.5-32b",
-                max_retries=3,
-            )
+        self.use_evomap = bool(getattr(self.settings, "evomap_api_key", None))
 
     # ── Public Static Helpers (also called internally & testable directly) ──
 

@@ -9,7 +9,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
 from app.application.use_cases.daily_pipeline_orchestrator import pipeline
 
-async def test_live_pipeline():
+async def _run_live_pipeline():
     test_dates = [
         date(2025, 8, 15), # Bull market
         date(2026, 6, 30), # Recent session
@@ -43,5 +43,11 @@ async def test_live_pipeline():
     print("\n" + "=" * 80)
     print("ALL TESTS PASSED! Multi-Agent and Standalone ML Book are fully validated.")
 
+
+def test_live_pipeline():
+    asyncio.run(_run_live_pipeline())
+
+
 if __name__ == "__main__":
-    asyncio.run(test_live_pipeline())
+    test_live_pipeline()
+

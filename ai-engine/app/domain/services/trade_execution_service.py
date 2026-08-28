@@ -28,7 +28,7 @@ from app.domain.services.trading_rules import (
     TradingRulesConfig, calc_position_size, check_all_rules,
     PortfolioState, PositionInfo,
 )
-from app.brain.state.confidence_scorer import HARD_FLAGS
+from app.domain.rules.risk.confidence_scorer import HARD_FLAGS
 
 logger = logging.getLogger(__name__)
 
@@ -230,23 +230,24 @@ class TradeExecutionService:
 
 
 def auto_pilot(trade_date_str: Optional[str] = None, mode: str = "paper") -> Dict[str, Any]:
-    """One-shot: read today's signals → execute → update portfolio."""
-    from app.application.use_cases.paper_trading_service import PaperTradingService
+    """One-shot: read today's signals → execute → update portfolio via PortfolioRepository."""
+    from app.domain.repositories.portfolio_repository import PortfolioRepository
 
     d = date.fromisoformat(trade_date_str) if trade_date_str else date.today()
     exec_mode = ExecutionMode.LIVE if mode == "live" else ExecutionMode.PAPER
 
-    svc = PaperTradingService()
-    svc_results = svc.process_today_signals(d)
+    p_repo = PortfolioRepository()
+    signals = p_repo.get_active_signals(str(d))
+    portfolio_state = p_repo.get_account_state()
+    portfolio_value = portfolio_state.get("total_nav", 100_000_000.0)
 
     exec_svc = TradeExecutionService(mode=exec_mode)
-    portfolio_value = svc_results.get("total_value", 100_000_000)
     safety = exec_svc.update_daily_pnl(0, portfolio_value)
 
     return {
         "trade_date": d.isoformat(),
         "mode": exec_mode.value,
-        "signals_processed": svc_results.get("buys", 0) + svc_results.get("sells", 0),
+        "signals_processed": len(signals),
         "portfolio_value": portfolio_value,
         "safety": safety,
     }

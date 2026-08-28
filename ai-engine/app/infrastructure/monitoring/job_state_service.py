@@ -86,6 +86,9 @@ def list_jobs() -> list[dict]:
         ]
 
 
+get_all_jobs = list_jobs
+
+
 def is_job_completed_today(job_name: str) -> bool:
     """Check if a job completed today (VN timezone)."""
     from datetime import timedelta

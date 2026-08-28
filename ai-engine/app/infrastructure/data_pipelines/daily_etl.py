@@ -307,17 +307,32 @@ class DailyETLPipeline:
     # ── Step: Paper Trading ──────────────────────────────────────────
 
     async def step_paper_trading(self) -> Dict[str, Any]:
-        """Auto-trade today's signals into paper portfolio."""
-        logger.info("ETL: paper_trading — executing signals in paper mode...")
+        """Auto-trade today's signals into portfolio via Trade Execution Agent (Agent-08)."""
+        logger.info("ETL: paper_trading — executing signals via Agent-08...")
         try:
-            from app.application.use_cases.paper_trading_service import run_paper_trading
-            result = await asyncio.to_thread(
-                run_paper_trading, str(self.trade_date)
-            )
-            logger.info("ETL: paper_trading — %d buys, %d sells, value=%s",
-                        result.get("buys", 0), result.get("sells", 0),
-                        f"{result.get('total_value', 0):,.0f}")
-            return {"status": "success", **result}
+            from app.domain.repositories.portfolio_repository import PortfolioRepository
+            from app.domain.agents.trade_execution import TradeExecutionAgent
+            
+            p_repo = PortfolioRepository()
+            account_state = p_repo.get_account_state()
+            exec_agent = TradeExecutionAgent()
+            
+            signals = p_repo.get_active_signals(str(self.trade_date))
+            executed_count = 0
+            for sig in signals:
+                exec_res = await exec_agent.process({
+                    "order_instruction": {
+                        "ticker": sig.get("ticker", "FPT"),
+                        "action": sig.get("action", "BUY"),
+                        "shares": int(sig.get("quantity", 100)),
+                        "target_price": float(sig.get("price", 0.0)),
+                    }
+                })
+                if exec_res.get("data", {}).get("status") == "EXECUTED":
+                    executed_count += 1
+
+            logger.info("ETL: paper_trading — %d orders executed via Agent-08", executed_count)
+            return {"status": "success", "executed_count": executed_count, "account": account_state}
         except Exception as e:
             logger.error("ETL: paper_trading failed: %s", e)
             return {"status": "failed", "error": str(e)}

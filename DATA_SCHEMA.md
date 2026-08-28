@@ -250,9 +250,9 @@ FactorScore {
   f1_value    : Decimal  [null nếu không tính được]
   f2_quality  : Decimal
   f3_momentum : Decimal
-  f4_sentiment : Decimal
-  f5_technical : Decimal
-  f6_altdata  : Decimal
+  f4_earnings : Decimal
+  f5_flow     : Decimal
+  f6_technical : Decimal
 
   // Composite
   css         : Decimal  [0–100]
@@ -496,9 +496,9 @@ PerformanceMetric {
   ic_f1_value     : Decimal  [Information Coefficient]
   ic_f2_quality   : Decimal
   ic_f3_momentum  : Decimal
-  ic_f4_sentiment : Decimal
-  ic_f5_technical : Decimal
-  ic_f6_altdata   : Decimal
+  ic_f4_earnings  : Decimal
+  ic_f5_flow      : Decimal
+  ic_f6_technical : Decimal
   ic_composite    : Decimal
 
   // By Regime (chỉ relevant periods)

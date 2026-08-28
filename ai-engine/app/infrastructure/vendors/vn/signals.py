@@ -16,8 +16,8 @@ from typing import Optional
 import psycopg2
 import psycopg2.extras
 
-from app.infrastructure.database.pg_pool import DB_URL
-from app.brain.risk.queries import get_hard_blocked, get_soft_flag_count
+from app.infrastructure.database.pg_pool import DB_URL, get_conn, get_cursor
+from app.domain.rules.risk.risk_queries import get_hard_blocked, get_soft_flag_count
 from app.infrastructure.vendors.vn.sector_groups import classify
 
 logger = logging.getLogger(__name__)

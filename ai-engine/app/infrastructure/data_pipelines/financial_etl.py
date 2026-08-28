@@ -39,8 +39,8 @@ def _period_to_date(period: str) -> Optional[date]:
     return None
 
 
-def _parse_dataframe(df, exclude_cols: set[str]) -> list[tuple[str, date, str, dict]]:
-    """Parse a vnstock financial DataFrame into (symbol, period_end, statement_type, data) tuples.
+def _parse_dataframe(df, exclude_cols: set[str]) -> list[tuple[str, date, dict[str, Any]]]:
+    """Parse a vnstock financial DataFrame into (period, period_end, data) tuples.
 
     Assumes df has columns: item, item_en, item_id, plus period columns.
     Returns one tuple per period column found.
@@ -51,7 +51,7 @@ def _parse_dataframe(df, exclude_cols: set[str]) -> list[tuple[str, date, str, d
     if not period_cols:
         return []
 
-    rows: list[tuple[str, date, str, dict]] = []
+    rows: list[tuple[str, date, dict[str, Any]]] = []
     for period in period_cols:
         period_end = _period_to_date(period)
         if period_end is None:
@@ -67,13 +67,7 @@ def _parse_dataframe(df, exclude_cols: set[str]) -> list[tuple[str, date, str, d
     return rows
 
 
-def _clean_nan(data: dict[str, Any]) -> dict[str, Any]:
-    """Replace NaN/Inf in dict values with None for safe JSON serialization."""
-    import math
-    return {
-        k: (None if isinstance(v, float) and (math.isnan(v) or math.isinf(v)) else v)
-        for k, v in data.items()
-    }
+from app.core.common import clean_nan as _clean_nan
 
 
 def fetch_and_store_financials(symbol: str, cur) -> dict[str, Any]:

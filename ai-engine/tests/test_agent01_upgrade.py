@@ -134,7 +134,7 @@ class TestAgent01Upgrade(unittest.TestCase):
         }, index=dates)
 
         X = hmm_engine._extract_features(df)
-        self.assertEqual(X.shape[1], 10)  # Exactly 10 features
+        self.assertEqual(X.shape[1], 6)  # Exactly 6 features in RegimeEngineV2
 
 
 if __name__ == "__main__":

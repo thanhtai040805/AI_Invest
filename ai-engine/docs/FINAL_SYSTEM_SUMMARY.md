@@ -13,7 +13,7 @@ Hệ thống AI Investment v5.1 đã hoàn thành việc triển khai toàn bộ
 ### Phase 2: Signal & Alpha
 - **Universe Manager:** Phân loại A/B/C/Sandbox/Excluded.
 - **Factor Groups (F1-F6):** 
-    - F1 (Value), F2 (Quality), F3 (Momentum), F4 (Sentiment/Foreign), F6 (Altdata/Insider).
+    - F1 (Value), F2 (Quality), F3 (Momentum), F4 (Earnings), F5 (Flow/Foreign/Insider), F6 (Technical/Structure).
 - **Beneish & GIL:** Lọc rủi ro gian lận và rủi ro hệ thống (Sở hữu chéo).
 - **Moat AI:** Sử dụng LLM phân tích lợi thế cạnh tranh phi cấu trúc.
 - **Scoring Engine:** Tổng hợp CSS và Conviction Level theo Market Regime.

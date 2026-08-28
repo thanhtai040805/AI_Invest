@@ -17,8 +17,8 @@ class CatalystValidator:
         """
         Kiểm tra rò rỉ thông tin trước báo cáo (Pre-Earnings Accumulation Index).
         """
-        if not volume_data_3w or not price_data_3w:
-            return "BUY" # Thiếu data thì mặc định theo SUE
+        if not volume_data_3w or not price_data_3w or price_data_3w[0] <= 0:
+            return "BUY" # Thiếu data hoặc giá không hợp lệ thì mặc định theo SUE
             
         avg_vol = sum(volume_data_3w) / len(volume_data_3w)
         max_vol = max(volume_data_3w)

@@ -35,6 +35,21 @@ services:
       timeout: 5s
       retries: 5
 
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: aiinvest-rabbitmq
+    ports:
+      - "5672:5672"     # AMQP Protocol
+      - "15672:15672"   # Management Dashboard UI
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-guest}
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   ai-engine:
     build:
       context: ./ai-engine
@@ -49,8 +64,16 @@ services:
       - DNSE_ACCOUNT_NO=${DNSE_ACCOUNT_NO:-}
       - DNSE_BASE_URL=${DNSE_BASE_URL:-https://openapi.dnse.com.vn}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-aiinvest_redis_secret}@redis:6379
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
       - LLM_API_KEY=${LLM_API_KEY:-}
       - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     restart: unless-stopped
 
   backend:
@@ -63,6 +86,7 @@ services:
     environment:
       - DATABASE_URL=postgresql://postgres:${DB_PASSWORD:-aiinvest123}@postgres:5432/aiinvest
       - REDIS_URL=redis://:${REDIS_PASSWORD:-aiinvest_redis_secret}@redis:6379
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
       - AI_ENGINE_URL=http://ai-engine:8000
       - DNSE_ENABLED=${DNSE_ENABLED:-true}
       - DNSE_REDIS_CHANNEL_PREFIX=${DNSE_REDIS_CHANNEL_PREFIX:-dnse:event}
@@ -76,6 +100,8 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
       ai-engine:
         condition: service_started

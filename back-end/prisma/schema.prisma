@@ -8,56 +8,62 @@ datasource db {
 }
 
 model User {
-  id           String   @id @default(uuid())
-  email        String   @unique
-  passwordHash String   @map("password_hash")
-  displayName  String?  @map("display_name")
-  cashBalance  Decimal  @default(1000000000) @map("cash_balance") @db.Decimal(18, 2)
-  winRate      Float?   @default(0) @map("win_rate")
-  createdAt    DateTime @default(now()) @map("created_at")
-
-  positions     Position[]
-  orders        Order[]
-  chatSessions  ChatSession[]
+  id            String           @id @default(uuid())
+  email         String           @unique
+  passwordHash  String           @map("password_hash")
+  displayName   String?          @map("display_name")
+  createdAt     DateTime         @default(now()) @map("created_at")
+  cashBalance   Decimal          @default(1000000000) @map("cash_balance") @db.Decimal(18, 2)
+  winRate       Float?           @default(0) @map("win_rate")
   alerts        Alert[]
-  presets       ScreenerPreset[]
   chartDrawings ChartDrawing[]
-  watchlists    Watchlist[]
-  posts         Post[]
+  chatSessions  ChatSession[]
   comments      Comment[]
+  orders        Order[]
+  positions     Position[]
+  posts         Post[]
   reactions     Reaction[]
   refreshTokens RefreshToken[]
+  presets       ScreenerPreset[]
+  watchlists    Watchlist[]
 
   @@map("users")
 }
 
 model Stock {
-  symbol    String   @id
-  name      String
-  exchange  String   // HOSE, HNX, UPCOM
-  industry  String?
-  marketCap BigInt?  @map("market_cap")
-  ceiling   Decimal? @db.Decimal(12, 2)
-  floor     Decimal? @db.Decimal(12, 2)
-  refPrice  Decimal? @map("ref_price") @db.Decimal(12, 2)
-  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
-
-  positions Position[]
-  orders    Order[]
+  symbol           String     @id
+  name             String
+  exchange         String
+  industry         String?
+  marketCap        BigInt?    @map("market_cap")
+  ceiling          Decimal?   @db.Decimal(12, 2)
+  floor            Decimal?   @db.Decimal(12, 2)
+  refPrice         Decimal?   @map("ref_price") @db.Decimal(12, 2)
+  updatedAt        DateTime   @default(now()) @updatedAt @map("updated_at")
+  universe_group   String?    @default("B") @db.VarChar(20)
+  group_updated_at DateTime?  @db.Timestamp(6)
+  trading_status   String?    @default("NORMAL") @db.VarChar(20)
+  beneish_status   String?    @default("PENDING") @db.VarChar(20)
+  beneish_score    Decimal?   @db.Decimal
+  beneish_updated  DateTime?  @db.Date
+  gil_flag         String?    @default("PASS") @db.VarChar(20)
+  audit_opinion    String?    @default("UNQUALIFIED") @db.VarChar(20)
+  audit_year       Int?
+  orders           Order[]
+  positions        Position[]
 
   @@map("stocks")
 }
 
 model Position {
-  id        String   @id @default(uuid())
-  userId    String   @map("user_id")
-  symbol    String
-  quantity  Int
-  avgPrice  Decimal  @map("avg_price") @db.Decimal(12, 2)
-  openedAt  DateTime @default(now()) @map("opened_at")
-
-  user  User  @relation(fields: [userId], references: [id])
-  stock Stock @relation(fields: [symbol], references: [symbol])
+  id       String   @id @default(uuid())
+  userId   String   @map("user_id")
+  symbol   String
+  quantity Int
+  avgPrice Decimal  @map("avg_price") @db.Decimal(12, 2)
+  openedAt DateTime @default(now()) @map("opened_at")
+  stock    Stock    @relation(fields: [symbol], references: [symbol])
+  user     User     @relation(fields: [userId], references: [id])
 
   @@map("positions")
 }
@@ -66,41 +72,38 @@ model Order {
   id        String   @id @default(uuid())
   userId    String   @map("user_id")
   symbol    String
-  side      String   // BUY, SELL
-  orderType String   @map("order_type") // LO, ATO, ATC, MP
+  side      String
+  orderType String   @map("order_type")
   price     Decimal? @db.Decimal(12, 2)
   quantity  Int
-  status    String   @default("PENDING") // PENDING, FILLED, CANCELLED
+  status    String   @default("PENDING")
   createdAt DateTime @default(now()) @map("created_at")
-
-  user  User  @relation(fields: [userId], references: [id])
-  stock Stock @relation(fields: [symbol], references: [symbol])
+  stock     Stock    @relation(fields: [symbol], references: [symbol])
+  user      User     @relation(fields: [userId], references: [id])
 
   @@map("orders")
 }
 
 model ChatSession {
-  id        String   @id @default(uuid())
-  userId    String   @map("user_id")
+  id        String        @id @default(uuid())
+  userId    String        @map("user_id")
   title     String?
-  createdAt DateTime @default(now()) @map("created_at")
-
-  user     User          @relation(fields: [userId], references: [id])
-  messages ChatMessage[]
+  createdAt DateTime      @default(now()) @map("created_at")
+  messages  ChatMessage[]
+  user      User          @relation(fields: [userId], references: [id])
 
   @@map("chat_sessions")
 }
 
 model ChatMessage {
-  id        String   @id @default(uuid())
-  sessionId String   @map("session_id")
-  role      String   // user, assistant
+  id        String      @id @default(uuid())
+  sessionId String      @map("session_id")
+  role      String
   content   String
-  type      String   @default("text") // text, analysis, suggestion
+  type      String      @default("text")
   metadata  Json?
-  createdAt DateTime @default(now()) @map("created_at")
-
-  session ChatSession @relation(fields: [sessionId], references: [id])
+  createdAt DateTime    @default(now()) @map("created_at")
+  session   ChatSession @relation(fields: [sessionId], references: [id])
 
   @@map("chat_messages")
 }
@@ -109,13 +112,12 @@ model Alert {
   id          String    @id @default(uuid())
   userId      String    @map("user_id")
   symbol      String
-  condition   String    // ABOVE, BELOW, CROSS
+  condition   String
   targetValue Decimal   @map("target_value") @db.Decimal(12, 2)
   isActive    Boolean   @default(true) @map("is_active")
   triggeredAt DateTime? @map("triggered_at")
   createdAt   DateTime  @default(now()) @map("created_at")
-
-  user User @relation(fields: [userId], references: [id])
+  user        User      @relation(fields: [userId], references: [id])
 
   @@map("alerts")
 }
@@ -126,8 +128,7 @@ model ScreenerPreset {
   name      String
   filters   Json
   createdAt DateTime @default(now()) @map("created_at")
-
-  user User @relation(fields: [userId], references: [id])
+  user      User     @relation(fields: [userId], references: [id])
 
   @@map("screener_presets")
 }
@@ -139,8 +140,7 @@ model ChartDrawing {
   timeframe String
   drawings  Json
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
-
-  user User @relation(fields: [userId], references: [id])
+  user      User     @relation(fields: [userId], references: [id])
 
   @@unique([userId, symbol, timeframe])
   @@map("chart_drawings")
@@ -152,35 +152,33 @@ model Watchlist {
   name      String
   symbols   String[]
   createdAt DateTime @default(now()) @map("created_at")
-
-  user User @relation(fields: [userId], references: [id])
+  user      User     @relation(fields: [userId], references: [id])
 
   @@map("watchlists")
 }
 
 model RefreshToken {
-  id         String   @id @default(uuid())
-  tokenId    String   @unique @map("token_id")
-  userId     String   @map("user_id")
-  isRevoked  Boolean  @default(false) @map("is_revoked")
-  expiresAt  DateTime @map("expires_at")
-  createdAt  DateTime @default(now()) @map("created_at")
-
-  user User @relation(fields: [userId], references: [id])
+  id        String   @id @default(uuid())
+  tokenId   String   @unique @map("token_id")
+  userId    String   @map("user_id")
+  isRevoked Boolean  @default(false) @map("is_revoked")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id])
 
   @@map("refresh_tokens")
 }
 
-/// OHLCV time-series — enable TimescaleDB hypertable via migration:
-/// SELECT create_hypertable('ohlcv', 'time', if_not_exists => TRUE);
 model Ohlcv {
-  time     DateTime @db.Timestamptz
-  symbol   String
-  open     Decimal  @db.Decimal(12, 2)
-  high     Decimal  @db.Decimal(12, 2)
-  low      Decimal  @db.Decimal(12, 2)
-  close    Decimal  @db.Decimal(12, 2)
-  volume   BigInt
+  time       DateTime @db.Date
+  symbol     String
+  open       Decimal  @db.Decimal(12, 2)
+  high       Decimal  @db.Decimal(12, 2)
+  low        Decimal  @db.Decimal(12, 2)
+  close      Decimal  @db.Decimal(12, 2)
+  volume     BigInt
+  adj_close  Float?
+  adj_factor Float?   @default(1.0)
 
   @@id([time, symbol])
   @@index([symbol, time(sort: Desc)])
@@ -188,36 +186,34 @@ model Ohlcv {
 }
 
 model Post {
-  id             String    @id @default(uuid())
-  authorId       String    @map("author_id")
-  content        String
-  taggedSymbols  String[]  @map("tagged_symbols")
-  likesCount     Int       @default(0) @map("likes_count")
-  commentsCount  Int       @default(0) @map("comments_count")
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
-
-  author         User      @relation(fields: [authorId], references: [id])
-  comments       Comment[]
-  reactions      Reaction[]
+  id            String     @id @default(uuid())
+  authorId      String     @map("author_id")
+  content       String
+  taggedSymbols String[]   @map("tagged_symbols")
+  likesCount    Int        @default(0) @map("likes_count")
+  commentsCount Int        @default(0) @map("comments_count")
+  createdAt     DateTime   @default(now()) @map("created_at")
+  updatedAt     DateTime   @updatedAt @map("updated_at")
+  comments      Comment[]
+  author        User       @relation(fields: [authorId], references: [id])
+  reactions     Reaction[]
 
   @@map("posts")
 }
 
 model Comment {
-  id               String    @id @default(uuid())
-  postId           String    @map("post_id")
-  parentCommentId  String?   @map("parent_comment_id")
-  authorId         String    @map("author_id")
-  content          String
-  createdAt        DateTime  @default(now()) @map("created_at")
-  updatedAt        DateTime  @updatedAt @map("updated_at")
-
-  post             Post      @relation(fields: [postId], references: [id])
-  author           User      @relation(fields: [authorId], references: [id])
-  parentComment    Comment?  @relation("CommentToComment", fields: [parentCommentId], references: [id])
-  replies          Comment[] @relation("CommentToComment")
-  reactions        Reaction[]
+  id              String     @id @default(uuid())
+  postId          String     @map("post_id")
+  parentCommentId String?    @map("parent_comment_id")
+  authorId        String     @map("author_id")
+  content         String
+  createdAt       DateTime   @default(now()) @map("created_at")
+  updatedAt       DateTime   @updatedAt @map("updated_at")
+  author          User       @relation(fields: [authorId], references: [id])
+  parentComment   Comment?   @relation("CommentToComment", fields: [parentCommentId], references: [id])
+  replies         Comment[]  @relation("CommentToComment")
+  post            Post       @relation(fields: [postId], references: [id])
+  reactions       Reaction[]
 
   @@map("comments")
 }
@@ -226,32 +222,754 @@ model Reaction {
   id         String   @id @default(uuid())
   userId     String   @map("user_id")
   targetId   String   @map("target_id")
-  targetType String   @map("target_type") // POST or COMMENT
+  targetType String   @map("target_type")
   type       String   @default("LIKE")
   createdAt  DateTime @default(now()) @map("created_at")
-
-  user       User     @relation(fields: [userId], references: [id])
-  post       Post?    @relation(fields: [targetId], references: [id], map: "reaction_post_fkey")
   comment    Comment? @relation(fields: [targetId], references: [id], map: "reaction_comment_fkey")
+  post       Post?    @relation(fields: [targetId], references: [id], map: "reaction_post_fkey")
+  user       User     @relation(fields: [userId], references: [id])
 
   @@unique([userId, targetId, targetType])
   @@map("reactions")
 }
 
-
-
-/// Tracks which trading days have been backfilled.
-/// Idempotency check: on server startup, skip backfill if today's session is already logged.
 model MarketSessionLog {
-  id          String   @id @default(uuid())
-  sessionDate DateTime @map("session_date") // Date only (no time)
-  status      String   @default("PENDING")  // PENDING, BACKFILLING, COMPLETED, FAILED
-  stockCount  Int      @default(0) @map("stock_count")
-  ohlcvCount  Int      @default(0) @map("ohlcv_count")
+  id          String    @id @default(uuid())
+  sessionDate DateTime  @unique @map("session_date")
+  status      String    @default("PENDING")
+  stockCount  Int       @default(0) @map("stock_count")
+  ohlcvCount  Int       @default(0) @map("ohlcv_count")
   error       String?
-  startedAt   DateTime @default(now()) @map("started_at")
+  startedAt   DateTime  @default(now()) @map("started_at")
   completedAt DateTime? @map("completed_at")
 
-  @@unique([sessionDate])
   @@map("market_session_logs")
+}
+
+model FactorScore {
+  symbol                  String
+  score_date              DateTime  @db.Date
+  value_score             Float?
+  quality_score           Float?
+  momentum_1m             Float?
+  momentum_3m             Float?
+  momentum_12m            Float?
+  size_score              Float?
+  volatility_score        Float?
+  liquidity_score         Float?
+  composite_score         Float?
+  percentile              Float?
+  updated_at              DateTime? @default(now()) @db.Timestamptz(6)
+  earnings_yield_score    Float?
+  accrual_score           Float?
+  foreign_flow_score      Float?
+  insider_score           Float?
+  conditional_mom_score   Float?
+  earnings_surprise_score Float?
+  distress_score          Float?
+  piotroski_score         Float?
+  factor_details          Json?     @default("{}")
+
+  @@id([symbol, score_date])
+  @@index([symbol, score_date], map: "idx_factor_scores_symbol_date")
+  @@map("factor_scores")
+}
+
+model alpha_signals {
+  symbol          String
+  signal_date     DateTime @db.Date
+  alpha_id        String
+  raw_value       Float?
+  ranked_value    Float?
+  ic_trailing_20d Float?
+
+  @@id([symbol, signal_date, alpha_id])
+}
+
+model corporate_actions {
+  symbol            String
+  action_date       DateTime  @db.Date
+  action_type       String
+  value             Float?    @default(0)
+  ratio             Float?
+  currency          String?   @default("VND")
+  source            String?   @default("yfinance")
+  created_at        DateTime? @default(now()) @db.Timestamptz(6)
+  record_date       DateTime? @db.Date
+  note              String?
+  applied           Boolean?  @default(false)
+  adjustment_factor Float?
+
+  @@id([symbol, action_date, action_type])
+}
+
+model financial_ratios {
+  symbol              String
+  ratio_date          DateTime  @db.Date
+  pe                  Float?
+  pb                  Float?
+  roe                 Float?
+  roa                 Float?
+  debt_equity         Float?
+  current_ratio       Float?
+  gross_margin        Float?
+  net_margin          Float?
+  fcf_yield           Float?
+  ev_ebitda           Float?
+  yoy_revenue_growth  Float?
+  yoy_earnings_growth Float?
+  updated_at          DateTime? @default(now()) @db.Timestamptz(6)
+  published_date      DateTime? @db.Date
+
+  @@id([symbol, ratio_date])
+}
+
+model financial_statements {
+  symbol         String
+  period_end     DateTime  @db.Date
+  statement_type String
+  frequency      String
+  data           Json
+  source         String?   @default("vnstock")
+  fetched_at     DateTime? @default(now()) @db.Timestamptz(6)
+  published_date DateTime? @db.Date
+
+  @@id([symbol, period_end, statement_type, frequency])
+}
+
+model foreign_flow {
+  symbol         String
+  trade_date     DateTime  @db.Date
+  buy_volume     BigInt?   @default(0)
+  sell_volume    BigInt?   @default(0)
+  buy_value      Float?    @default(0)
+  sell_value     Float?    @default(0)
+  net_volume     BigInt?   @default(0)
+  net_value      Float?    @default(0)
+  room_remaining BigInt?   @default(0)
+  room_limit     BigInt?   @default(0)
+  ownership_pct  Float?    @default(0)
+  source         String?   @default("cafef")
+  created_at     DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@id([symbol, trade_date])
+}
+
+model insider_trades {
+  id                   Int       @id @default(autoincrement())
+  symbol               String
+  trade_date           DateTime  @db.Date
+  trader_name          String?
+  trader_position      String?
+  trade_type           String?
+  quantity             BigInt?
+  created_at           DateTime? @default(now()) @db.Timestamptz(6)
+  related_man          String?
+  related_man_position String?
+  before_volume        BigInt?
+  after_volume         BigInt?
+  ownership_pct        Float?
+  plan_buy_volume      BigInt?
+  plan_sell_volume     BigInt?
+  plan_begin_date      DateTime? @db.Date
+  plan_end_date        DateTime? @db.Date
+  real_end_date        DateTime? @db.Date
+
+  @@unique([symbol, trade_date, trader_name, quantity, trade_type], map: "insider_trades_unique")
+}
+
+model instrument_master {
+  symbol             String    @id
+  isin               String?
+  name               String?
+  first_listed       DateTime? @db.Date
+  delist_date        DateTime? @db.Date
+  free_float         Decimal?  @db.Decimal
+  shares_outstanding Decimal?  @db.Decimal
+  metadata           Json?
+  corporate_actions  Json?
+  updated_at         DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model job_states {
+  job_name     String    @id
+  status       String    @default("pending")
+  started_at   DateTime? @db.Timestamptz(6)
+  completed_at DateTime? @db.Timestamptz(6)
+  metadata     Json?     @default("{}")
+  error        String?
+}
+
+model knowledge_documents {
+  id                    Int       @id(map: "news_events_pkey") @default(autoincrement())
+  symbol                String
+  published_date        DateTime  @db.Timestamptz(6)
+  title                 String
+  url                   String?
+  source                String?   @default("cafef")
+  config_id             Int?      @default(0)
+  sentiment_score       Float?
+  created_at            DateTime? @default(now()) @db.Timestamptz(6)
+  article_content       String?
+  content_fetched_at    DateTime? @db.Timestamptz(6)
+  article_pdf_text      String?
+  article_images        String[]
+  article_pdf_urls      String[]
+  doc_type              String?   @default("news")
+  graph_nodes           Json?
+  event_type            String?
+  severity              String?
+  ai_sentiment_score    Float?
+  ai_summary            String?
+  triaged_at            DateTime? @db.Timestamptz(6)
+  direction             String?
+  magnitude             Int?
+  investment_impact     Float?
+  materiality           String?
+  materiality_score     Float?
+  surprise_score        Float?
+  business_horizon      String?
+  pricing_horizon       String?
+  persistence           String?
+  persistence_score     Float?
+  reversibility         Boolean?
+  apparent_novelty      String?
+  novelty               Float?
+  evidence_strength     String?
+  credibility           Float?
+  affected_entities     Json?
+  novelty_raw_score     Float?
+  prev_similar_docs_ref String[]
+
+  @@unique([symbol, url], map: "news_events_symbol_url_key")
+  @@index([symbol, published_date(sort: Desc)], map: "idx_knowledge_symbol_date")
+  @@index([symbol, doc_type], map: "idx_knowledge_symbol_type")
+}
+
+model macro_indicators {
+  indicator_date DateTime  @db.Date
+  indicator_name String
+  value          Float
+  unit           String?
+  source         String?
+  created_at     DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@id([indicator_date, indicator_name])
+}
+
+model market_data_daily {
+  ticker               String
+  date                 DateTime  @db.Date
+  open_adj             Float?
+  high_adj             Float?
+  low_adj              Float?
+  close_adj            Float?
+  close_unadj          Float?
+  vwap                 Float?
+  volume_continuous    BigInt?   @default(0)
+  volume_atc           BigInt?   @default(0)
+  volume_ato           BigInt?   @default(0)
+  volume_total         BigInt?   @default(0)
+  foreign_buy_vol      BigInt?   @default(0)
+  foreign_sell_vol     BigInt?   @default(0)
+  foreign_net_vol      BigInt?   @default(0)
+  is_etf_rebalance_day Boolean?  @default(false)
+  adtv20_continuous    Float?
+  market_cap           Float?
+  adj_factor           Float?    @default(1.0)
+  data_source          String?   @default("manual")
+  created_at           DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@id([ticker, date])
+  @@index([date(sort: Desc)], map: "idx_market_data_daily_date")
+  @@index([ticker, date(sort: Desc)], map: "idx_market_data_daily_ticker")
+}
+
+model market_regime {
+  date                      DateTime  @id @db.Date
+  breadth_ma50              Float?
+  breadth_ma200             Float?
+  breadth_rsi_oversold      Float?
+  breadth_rsi_overbought    Float?
+  market_volume_sma20_ratio Float?
+  net_foreign_flow_bil      Float?
+  net_prop_flow_bil         Float?
+  regime_label              String?   @db.VarChar(50)
+  created_at                DateTime? @default(now()) @db.Timestamp(6)
+}
+
+model mral_metrics {
+  id              Int       @id @default(autoincrement())
+  metric_type     String    @db.VarChar(50)
+  metric_date     DateTime  @db.Date
+  ticker          String?   @db.VarChar(20)
+  predicted_value String?   @db.VarChar(100)
+  realized_value  String?   @db.VarChar(100)
+  numeric_value   Float?
+  metadata        Json?     @default("{}")
+  created_at      DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@index([metric_date], map: "idx_mral_metric_date")
+  @@index([metric_type], map: "idx_mral_metric_type")
+}
+
+model paper_trades {
+  id            Int       @id @default(autoincrement())
+  ticker        String
+  action        String
+  price         Float
+  date          DateTime  @default(now()) @db.Timestamp(6)
+  confidence    Float?    @default(0.0)
+  thesis        String?
+  pnl           Float?
+  status        String?   @default("OPEN")
+  resolve_price Float?
+  resolved_at   DateTime? @db.Timestamp(6)
+  quantity      Int?      @default(0)
+  created_at    DateTime? @default(now()) @db.Timestamp(6)
+}
+
+model portfolio_weights {
+  score_date DateTime  @db.Date
+  symbol     String
+  weight     Float?
+  composite  Float?
+  confidence Float?
+  decision   String?
+  updated_at DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@id([score_date, symbol])
+}
+
+model risk_assessments {
+  id                Int       @id @default(autoincrement())
+  symbol            String
+  assessment_date   DateTime  @db.Date
+  sector            String?
+  crs_score         Float?
+  risk_level        String?
+  hard_blocked      Boolean?  @default(false)
+  soft_blocked      Boolean?  @default(false)
+  recommendation    String?
+  score_quant       Float?
+  score_fundamental Float?
+  score_market_vn   Float?
+  score_macro_vn    Float?
+  score_global      Float?
+  score_regulatory  Float?
+  score_behavioral  Float?
+  hard_flags        String[]
+  soft_flags        String[]
+  all_flags         String[]
+  detail            Json?
+  created_at        DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@unique([symbol, assessment_date])
+  @@index([assessment_date(sort: Desc)], map: "idx_risk_date")
+}
+
+model signal_log {
+  id               Int       @id @default(autoincrement())
+  symbol           String
+  signal_date      DateTime  @db.Date
+  direction        String
+  confidence       Float?    @db.Real
+  entry_price      Float?    @db.Real
+  target_price     Float?    @db.Real
+  stop_loss        Float?    @db.Real
+  holding_period   Int?      @default(5)
+  source           String?
+  source_agents    String[]
+  factors_used     String[]
+  hypothesis_id    String?
+  hypothesis_title String?
+  created_at       DateTime? @default(now()) @db.Timestamptz(6)
+  evaluated_at     DateTime? @db.Timestamptz(6)
+  exit_price       Float?    @db.Real
+  actual_return    Float?    @db.Real
+  hit              Boolean?
+  hit_pct          Float?    @db.Real
+  max_favorable    Float?    @db.Real
+  max_adverse      Float?    @db.Real
+  eval_status      String?   @default("pending")
+
+  @@index([eval_status], map: "idx_signal_log_eval_status")
+  @@index([symbol, signal_date], map: "idx_signal_log_symbol_date")
+}
+
+model signals {
+  symbol         String
+  signal_date    DateTime  @db.Date
+  signal         String
+  composite_rank Float?    @db.Real
+  hard_flags     Int?      @default(0)
+  soft_flags     Int?      @default(0)
+  sector_group   String?
+  created_at     DateTime? @default(now()) @db.Timestamp(6)
+
+  @@id([symbol, signal_date])
+}
+
+model technical_indicators {
+  symbol     String
+  calc_date  DateTime  @db.Date
+  indicators Json
+  updated_at DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@id([symbol, calc_date])
+}
+
+model audit_reports {
+  report_id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  audit_date       DateTime  @db.Date
+  integrity_status String    @db.VarChar(16)
+  violations_count Int?      @default(0)
+  summary          String
+  created_at       DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model beneish_results {
+  ticker       String   @db.VarChar(16)
+  quarter_date DateTime @db.Date
+  dsri         Decimal? @db.Decimal(8, 4)
+  gmi          Decimal? @db.Decimal(8, 4)
+  aqi          Decimal? @db.Decimal(8, 4)
+  sgi          Decimal? @db.Decimal(8, 4)
+  depi         Decimal? @db.Decimal(8, 4)
+  sgai         Decimal? @db.Decimal(8, 4)
+  tata         Decimal? @db.Decimal(8, 4)
+  lvgi         Decimal? @db.Decimal(8, 4)
+  m_score      Decimal  @db.Decimal(8, 4)
+  status       String   @db.VarChar(16)
+
+  @@id([ticker, quarter_date])
+}
+
+model cio_resolutions {
+  resolution_id    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  thesis_id        String    @db.Uuid
+  debate_summary   String
+  final_resolution String    @db.VarChar(16)
+  created_at       DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model counter_thesis_verdicts {
+  thesis_id         String            @id @db.Uuid
+  ticker            String            @db.VarChar(16)
+  cts_score         Decimal           @db.Decimal(6, 2)
+  verdict           String            @db.VarChar(16)
+  block_reasons     Json?
+  evaluated_at      DateTime?         @default(now()) @db.Timestamptz(6)
+  investment_theses investment_theses @relation(fields: [thesis_id], references: [thesis_id], onDelete: NoAction, onUpdate: NoAction)
+}
+
+model factor_ic_history {
+  date           DateTime @db.Date
+  factor_name    String   @db.VarChar(32)
+  rolling_20d_ic Decimal  @db.Decimal(8, 4)
+  rolling_60d_ic Decimal  @db.Decimal(8, 4)
+  cdc_decay_flag Boolean? @default(false)
+
+  @@id([date, factor_name])
+}
+
+model governance_rules {
+  rule_id       String    @id @db.VarChar(32)
+  rule_name     String    @db.VarChar(128)
+  rule_category String    @db.VarChar(32)
+  is_active     Boolean?  @default(true)
+  parameters    Json
+  updated_at    DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model investment_theses {
+  thesis_id               String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ticker                  String                   @db.VarChar(16)
+  created_at              DateTime?                @default(now()) @db.Timestamptz(6)
+  catalyst_type           String?                  @db.VarChar(64)
+  target_price_range      Json?
+  confirming_signals      Json
+  invalidation_conditions Json
+  status                  String?                  @default("ACTIVE") @db.VarChar(16)
+  counter_thesis_verdicts counter_thesis_verdicts?
+
+  @@index([status], map: "idx_theses_status")
+}
+
+model kelly_win_rate_matrix {
+  regime          String    @db.VarChar(32)
+  conviction_tier String    @db.VarChar(8)
+  win_rate_p      Decimal   @db.Decimal(6, 4)
+  payoff_ratio_b  Decimal   @db.Decimal(6, 4)
+  sample_count    Int
+  updated_at      DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@id([regime, conviction_tier])
+}
+
+model log_counter_thesis {
+  id                    BigInt    @id @default(autoincrement())
+  thesis_id             String    @db.Uuid
+  ticker                String    @db.VarChar(16)
+  debate_challenge_text String
+  llm_prompt_response   Json
+  verdict               String    @db.VarChar(16)
+  created_at            DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model log_equity_research {
+  id                      BigInt    @id @default(autoincrement())
+  ticker                  String    @db.VarChar(16)
+  date                    DateTime  @db.Date
+  factor_raw_metrics      Json
+  moat_citations_evidence Json
+  llm_prompt_tokens       Int?
+  created_at              DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model log_investment_thesis {
+  id                   BigInt    @id @default(autoincrement())
+  thesis_id            String    @db.Uuid
+  ticker               String    @db.VarChar(16)
+  pre_mortem_scenarios Json
+  thesis_text          String
+  created_at           DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model log_market_surveillance {
+  id                BigInt    @id @default(autoincrement())
+  date              DateTime  @db.Date
+  inputs            Json
+  computation_trace Json
+  outputs           Json
+  created_at        DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model log_portfolio_allocation {
+  id                   BigInt    @id @default(autoincrement())
+  ticker               String    @db.VarChar(16)
+  kelly_math_steps     Json
+  allocated_weight_pct Decimal   @db.Decimal(6, 2)
+  rationale            String
+  created_at           DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model log_portfolio_risk {
+  id                BigInt    @id @default(autoincrement())
+  date              DateTime  @db.Date
+  es_97_5_inputs    Json
+  covariance_matrix Json?
+  garch_cash_trace  Json
+  created_at        DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model log_position_monitoring {
+  id                  BigInt    @id @default(autoincrement())
+  ticker              String    @db.VarChar(16)
+  pnl_pct             Decimal   @db.Decimal(6, 2)
+  stop_loss_triggered Boolean?  @default(false)
+  thesis_invalidated  Boolean?  @default(false)
+  created_at          DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model log_reinforcement_learning {
+  id                    BigInt    @id @default(autoincrement())
+  date                  DateTime  @db.Date
+  ic_rolling_scores     Json
+  reward_signals        Json
+  policy_weight_updates Json
+  created_at            DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model log_strategy_cio {
+  id                 BigInt    @id @default(autoincrement())
+  trigger_type       String    @db.VarChar(64)
+  debate_synthesis   String
+  resolution_payload Json
+  created_at         DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model log_system_governance {
+  id                       BigInt    @id @default(autoincrement())
+  rule_id                  String?   @db.VarChar(32)
+  action_type              String    @db.VarChar(64)
+  audit_trail_verification Json
+  created_at               DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model log_trade_execution {
+  id                       BigInt    @id @default(autoincrement())
+  order_id                 String    @db.Uuid
+  ticker                   String    @db.VarChar(16)
+  slicing_schedule         Json
+  orderbook_depth_snapshot Json?
+  created_at               DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model log_universe_discovery {
+  id              BigInt    @id @default(autoincrement())
+  date            DateTime  @db.Date
+  filtered_counts Json
+  beneish_trace   Json
+  exclusion_log   Json
+  created_at      DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model market_anomalies {
+  id           BigInt    @id @default(autoincrement())
+  date         DateTime  @db.Date
+  anomaly_type String    @db.VarChar(64)
+  severity     String    @db.VarChar(16)
+  description  String
+  created_at   DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model market_regimes {
+  date                   DateTime  @id @db.Date
+  current_regime         String    @db.VarChar(32)
+  vix_vn_analog          Decimal?  @db.Decimal(8, 2)
+  breadth_above_ma50_pct Decimal?  @db.Decimal(6, 2)
+  hmm_posteriors         Json
+  updated_at             DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model moat_profiles {
+  ticker                String    @id @db.VarChar(16)
+  fiscal_year           Int       @default(2025)
+  report_type           String    @default("ANNUAL_REPORT") @db.VarChar(32)
+  moat_score            Decimal   @db.Decimal(6, 2)
+  intangibles_score     Decimal?  @db.Decimal(6, 2)
+  switching_costs_score Decimal?  @db.Decimal(6, 2)
+  network_effect_score  Decimal?  @db.Decimal(6, 2)
+  cost_advantage_score  Decimal?  @db.Decimal(6, 2)
+  efficient_scale_score Decimal?  @db.Decimal(6, 2)
+  evidence_summary      Json      @default("{}")
+  source_sag_doc_id     String?   @db.VarChar(128)
+  extracted_at          DateTime? @default(now()) @db.Timestamptz(6)
+  is_stale              Boolean?  @default(false)
+
+  @@index([ticker], map: "idx_moat_profiles_ticker")
+}
+
+model order_executions {
+  order_id       String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ticker         String    @db.VarChar(16)
+  action         String    @db.VarChar(8)
+  shares         Int
+  executed_price Decimal   @db.Decimal(12, 2)
+  target_price   Decimal   @db.Decimal(12, 2)
+  slippage_bps   Decimal   @db.Decimal(8, 2)
+  execution_mode String    @db.VarChar(16)
+  executed_at    DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@index([executed_at], map: "idx_executions_date")
+}
+
+model portfolio_account {
+  account_id    String    @id @default("MAIN_FUND") @db.VarChar(32)
+  cash_balance  Decimal   @db.Decimal(18, 2)
+  total_nav     Decimal   @db.Decimal(18, 2)
+  peak_nav      Decimal   @db.Decimal(18, 2)
+  drawdown_tier String?   @default("GREEN") @db.VarChar(16)
+  updated_at    DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model portfolio_decisions {
+  decision_id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  date                 DateTime  @db.Date
+  ticker               String    @db.VarChar(16)
+  action               String    @db.VarChar(16)
+  target_shares        Int
+  allocated_weight_pct Decimal   @db.Decimal(6, 2)
+  rationale            String
+  created_at           DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model portfolio_positions {
+  ticker        String    @id @db.VarChar(16)
+  shares        Int
+  average_price Decimal   @db.Decimal(12, 2)
+  current_price Decimal   @db.Decimal(12, 2)
+  market_value  Decimal   @db.Decimal(18, 2)
+  weight_pct    Decimal   @db.Decimal(6, 2)
+  updated_at    DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@index([ticker], map: "idx_positions_ticker")
+}
+
+model position_health_ticks {
+  ticker                    String    @id @db.VarChar(16)
+  current_pnl_pct           Decimal   @db.Decimal(6, 2)
+  distance_to_stop_loss_pct Decimal   @db.Decimal(6, 2)
+  thesis_health_status      String    @db.VarChar(16)
+  last_updated              DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model risk_limits {
+  limit_type           String    @id @db.VarChar(32)
+  max_single_stock_pct Decimal   @default(15.0) @db.Decimal(6, 2)
+  max_sector_pct       Decimal   @default(35.0) @db.Decimal(6, 2)
+  hard_stop_loss_pct   Decimal   @default(2.0) @db.Decimal(6, 2)
+  updated_at           DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model risk_snapshots {
+  date                   DateTime  @id @db.Date
+  es_97_5                Decimal   @db.Decimal(6, 2)
+  garch_cash_target      Decimal   @db.Decimal(6, 2)
+  drawdown_tier          String    @db.VarChar(16)
+  max_drawdown_from_peak Decimal   @db.Decimal(6, 2)
+  cdc_active             Boolean?  @default(false)
+  updated_at             DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model rl_factor_weights {
+  regime              String    @id @db.VarChar(32)
+  f1_value_weight     Decimal   @db.Decimal(6, 4)
+  f2_quality_weight   Decimal   @db.Decimal(6, 4)
+  f3_momentum_weight  Decimal   @db.Decimal(6, 4)
+  f4_earnings_weight  Decimal   @db.Decimal(6, 4)
+  f5_flow_weight      Decimal   @db.Decimal(6, 4)
+  f6_technical_weight Decimal   @db.Decimal(6, 4)
+  learning_epoch      Int
+  updated_at          DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model slippage_records {
+  id                    BigInt   @id @default(autoincrement())
+  ticker                String   @db.VarChar(16)
+  date                  DateTime @db.Date
+  adtv20_bucket         String   @db.VarChar(16)
+  actual_slippage_bps   Decimal  @db.Decimal(8, 2)
+  expected_slippage_bps Decimal  @db.Decimal(8, 2)
+  mode                  String   @db.VarChar(16)
+}
+
+model stop_loss_events {
+  event_id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ticker          String    @db.VarChar(16)
+  triggered_price Decimal   @db.Decimal(12, 2)
+  loss_pct_nav    Decimal   @db.Decimal(6, 2)
+  bypass_order_id String?   @db.Uuid
+  triggered_at    DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model strategic_allocations {
+  allocation_id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  date                 DateTime  @db.Date
+  macro_view           String
+  cash_target_override Decimal?  @db.Decimal(6, 2)
+  sector_focus         Json?
+  created_at           DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model universe_securities {
+  ticker         String    @id @db.VarChar(16)
+  universe_group String    @db.VarChar(16)
+  trading_status String    @db.VarChar(16)
+  beneish_status String    @db.VarChar(16)
+  gil_flag       String    @db.VarChar(16)
+  updated_at     DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@index([universe_group], map: "idx_universe_group")
 }

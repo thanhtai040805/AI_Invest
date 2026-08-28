@@ -19,8 +19,8 @@ import pandas as pd
 import psycopg2
 import psycopg2.extras
 
-from app.infrastructure.database.pg_pool import DB_URL
-from app.brain.state.confidence_scorer import ConfidenceScorer
+from app.infrastructure.database.pg_pool import DB_URL, get_conn, get_cursor
+from app.domain.rules.risk.confidence_scorer import ConfidenceScorer
 from app.infrastructure.vendors.vn.sector_groups import (
     classify_major as classify,
     FINANCIALS, REAL_ESTATE, OTHERS,

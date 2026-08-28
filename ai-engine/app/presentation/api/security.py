@@ -37,10 +37,14 @@ async def validate_security(request: SecurityRequest):
         Security validation result
     """
     try:
-        from app.brain.security import validate_input
+        from app.core.common import sanitize_input, validate_ticker
         
         if request.action == "validate_input":
-            result = validate_input(**(request.parameters or {}))
+            text = (request.parameters or {}).get("text", "")
+            result = {"is_valid": True, "sanitized": sanitize_input(text)}
+        elif request.action == "validate_ticker":
+            ticker = (request.parameters or {}).get("ticker", "")
+            result = {"is_valid": True, "ticker": validate_ticker(ticker)}
         else:
             raise HTTPException(status_code=400, detail=f"Unknown action: {request.action}")
         
@@ -66,7 +70,7 @@ async def get_security_status():
 @router.get("/risk-flags/{symbol}")
 async def get_risk_flags(symbol: str):
     """Detect warning/risk signals for a stock symbol (v2 computed flags)."""
-    from app.brain.risk.queries import get_active_flags, get_hard_blocked, get_soft_flag_count
+    from app.domain.rules.risk.risk_queries import get_active_flags, get_hard_blocked, get_soft_flag_count
 
     try:
         flags = get_active_flags(symbol)

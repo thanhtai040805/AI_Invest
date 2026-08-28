@@ -9,6 +9,7 @@ page_classifier:
     - cash_flow             # Báo cáo lưu chuyển tiền tệ
     - cover_page            # Trang bìa
     - english_translation   # Bản dịch tiếng Anh (trùng nội dung, phát hiện tự động)
+    - blank_page            # Trang trắng / rỗng nội dung
 
   keep_page_types:
     - audit_report          # Báo cáo kiểm toán

@@ -27,15 +27,14 @@
   * Rất thích việc sửa đổi F2.2 Gross Profit Margin sang YoY quarterly để tránh oan sai cho các doanh nghiệp có tính chu kỳ/mùa vụ mạnh tại Việt Nam.
   * Đồng ý với việc thêm fallback SUE_proxy (F3.2) khi Group B thiếu hụt consensus trầm trọng.
   * Rất ấn tượng với Lớp Thực thi Thích ứng (Execution Adaptation Engine) có khả năng tự động chuyển trạng thái lệnh (Normal/Stress/Crisis) để tránh trượt giá lớn.
-  * **Hào hứng với việc tích hợp Alternative Data Alpha Layer**: Việc sử dụng dữ liệu phi truyền thống giúp AI có thể phát hiện điểm xoay chiều hoạt động kinh doanh trước khi số liệu tài chính lên trang giấy.
 * **Không đồng ý điểm nào:**
   * Các tiêu chí thanh khoản của Group A vẫn có thể khiến AI bỏ lỡ một số doanh nghiệp siêu tăng trưởng quy mô siêu nhỏ.
 * **Chỉ ra rủi ro:**
-  * Rủi ro dữ liệu thay thế có độ nhiễu cao, dễ tạo tín hiệu giả mạo nếu không được chuẩn hóa tốt.
+  * Rủi ro thanh khoản cạn kiệt đột ngột tại nhóm vốn hóa vừa và nhỏ khi thị trường chịu cú sốc vĩ mô.
 * **Chỉ ra giả định yếu:**
-  * Giả định rằng lượt tìm kiếm Google Trends luôn đồng biến với doanh thu.
+  * Giả định rằng tốc độ tăng trưởng doanh thu quá khứ luôn duy trì được trong 4 quý tiếp theo.
 * **Chỉ ra phần cần nghiên cứu thêm:**
-  * Xây dựng bộ lọc phân tách cảm xúc cho Google Trends và tin tức mạng xã hội.
+  * Xây dựng bộ lọc đánh giá chu kỳ kinh doanh theo từng phân ngành chuyên biệt.
 
 ### 1.3 Quant Investor (Trường phái Toán định lượng & Hệ thống)
 * **Đồng ý điểm nào:**
@@ -43,15 +42,15 @@
   * Đồng ý dùng HMM để phân loại Regime tự động dựa trên biến quan sát.
   * Rất hài lòng với việc chuyển đổi sang Rolling Window Walk-Forward Testing thay vì phân tách tĩnh 70/15/15.
   * Đặc biệt đánh giá cao việc tích hợp Ledoit-Wolf Shrinkage thay thế cho Bayesian Shrinkage.
-  * **Đánh giá cao kiến trúc Unified Intelligence Layer (UIL)**: Việc hợp nhất toàn bộ luồng xử lý từ dữ liệu thô, dữ liệu thay thế, phân tích đồ thị đến ra quyết định và thực thi là chuẩn mực cao nhất của hệ thống định lượng hiện đại.
+  * **Đánh giá cao kiến trúc Unified Intelligence Layer (UIL)**: Việc hợp nhất toàn bộ luồng xử lý từ dữ liệu BCTC thô, phân tích đồ thị quan hệ GIL, NLP Moat đến ra quyết định và thực thi là chuẩn mực cao nhất của hệ thống định lượng hiện đại.
 * **Không đồng ý điểm nào:**
   * Lo ngại về khối lượng tính toán và độ trễ khi chạy đồng thời Graph Database và NLP trên dữ liệu real-time.
 * **Chỉ ra rủi ro:**
-  * Rủi ro nghẽn cổ chai tính toán trong phiên giao dịch khi hệ thống phải xử lý dữ liệu thay thế và cấu trúc đồ thị quá lớn.
+  * Rủi ro nghẽn cổ chai tính toán trong phiên giao dịch khi hệ thống phải xử lý cấu trúc đồ thị quá lớn.
 * **Chỉ ra giả định yếu:**
-  * Giả định rằng mối quan hệ giữa Alternative Data và giá cổ phiếu là ổn định qua thời gian.
+  * Giả định rằng ma trận hiệp phương sai giữa các cổ phiếu là ổn định qua các chu kỳ thị trường.
 * **Chỉ ra phần cần nghiên cứu thêm:**
-  * Áp dụng các thuật toán Dimensionality Reduction như PCA hoặc t-SNE để giảm số chiều của Alternative Data trước khi chấm điểm.
+  * Tối ưu hóa hiệu năng tính toán ma trận tương quan bằng kỹ thuật vectorization và caching.
 
 ### 1.4 Risk Manager (Trường phái Quản trị rủi ro & Bảo toàn vốn)
 * **Đồng ý điểm nào:**
@@ -77,7 +76,7 @@
   * Cực kỳ tán đồng mô hình chi phí T+1.5 và việc hạ sizing xuống Quarter Kelly.
   * **Ủng hộ sự ra đời của Graph Intelligence Layer (GIL)**: Khả năng bóc tách cấu trúc sở hữu chéo, phát hiện giao dịch bên liên quan lòng vòng và dòng tiền ảo giúp người quản lý danh mục tránh doanh nghiệp rỗng ruột.
 * **Không đồng ý điểm nào:**
-  * Lo ngại việc đưa Alternative Data vào có thể làm tăng đáng kể tần suất quay vòng danh mục.
+  * Vẫn cần giám sát chặt chẽ chi phí trượt giá khi tái cân bằng danh mục tần suất cao.
 * **Chỉ ra rủi ro:**
   * Rủi ro "nghẽn vốn kép" khi vừa bị kẹt T+1.5 ở cơ sở, vừa phải duy trì tỷ lệ ký quỹ cho vị thế phòng vệ VN30F.
 * **Chỉ ra giả định yếu:**
@@ -109,7 +108,7 @@
 | **DEC-16** | **Hội đồng** | Tích hợp hệ thống quản trị rủi ro tác nghiệp và vận hành thế hệ mới. | **ACCEPT** | Kiến tạo Operational & Execution Failsafe Engine (EFE) với Heartbeat, Failsafe Execution Layer và rủi ro không thể đặt lệnh được đưa vào Expected Shortfall. |
 | **DEC-17** | **Hội đồng** | Tích hợp Lớp định lượng Moat dựa trên NLP và mô hình ngôn ngữ lớn. | **ACCEPT** | Nâng cấp Mục 8.1 - Lớp 3 với Moat AI (NLP-based Competitive Advantage Engine), tự động đọc tài liệu phi cấu trúc để chuyển đổi Moat định tính thành Moat Score định lượng 0-100. |
 | **DEC-18** | **Hội đồng** | Tích hợp phân tích hệ sinh thái phức tạp và chống gian lận cấu trúc qua Graph Database. | **ACCEPT** | Kiến thiết Mục 5.7: Graph Intelligence Layer (GIL) để quét cấu trúc sở hữu chéo, RPT, dòng tiền vòng và kết nối trực tiếp với Counter-Thesis Engine. |
-| **DEC-19** | **Hội đồng** | Tích hợp nguồn dữ liệu phi truyền thống để tối ưu hóa khả năng dự báo sớm. | **ACCEPT** | Thiết lập Mục 5.8: Alternative Data Factors (Nhóm 6), đưa Google Trends, điện năng, logistics và hành vi người dùng thành tín hiệu Nowcasting. |
+| **DEC-19** | **Hội đồng** | Tích hợp nguồn dữ liệu phi truyền thống (Alternative Data). | **REJECT** | Loại bỏ hoàn toàn Alternative Data (Google Trends, tiêu thụ điện, logistics ngoại lai) do độ nhiễu cao, phân rã nhanh và thiếu độ tin cậy chuẩn hóa trên TTCK VN. Hệ thống tập trung chuẩn hóa 6 nhóm Factor cốt lõi dựa trên Dữ liệu Tài chính, Định giá và Cấu trúc Giao dịch/Dòng tiền. |
 | **DEC-20** | **Hội đồng** | Hợp nhất các module nâng cấp vào một kiến trúc xử lý dữ liệu và vận hành thống nhất. | **ACCEPT** | Thiết lập Mục 18: Unified Intelligence Layer (UIL) Architecture, chuẩn hóa luồng chạy từ Data Layer -> Signal Layer -> Decision Layer -> Execution Layer -> Failsafe. |
 
 ---
@@ -382,22 +381,20 @@ Hệ thống chính thức tích hợp cơ sở dữ liệu đồ thị phi cấ
 * Nếu tổng tỷ trọng giao dịch chu trình vượt quá 15% doanh thu hoặc tài sản ngắn hạn, hệ thống gán cảnh báo Catastrophic.
 * Nếu \(OCR > 3.0\), cổ phiếu tự động bị xếp loại rủi ro cực cao.
 
-### 5.8 Alternative Data Factors (Nhóm 6)
-Để tối ưu hóa khả năng nhận diện điểm xoay chiều kinh doanh trước khi BCTC công bố, IOS v5.1 tích hợp nhóm nhân tố thay thế:
+### 5.8 Technical Structure & Volume Profile Factors (Nhóm 6)
+Nhằm hoàn thiện bức tranh định lượng mà không phụ thuộc vào dữ liệu thay thế (Alternative Data) có độ nhiễu cao, IOS v5.1 tập trung chuẩn hóa nhóm nhân tố Cấu trúc Kỹ thuật & Hành vi Khối lượng:
 
-**F6.1 — Google Trends Search Volume Index (SVI) Growth**
-* Đo lường mức độ quan tâm của người tiêu dùng thực tế đối với sản phẩm hoặc thương hiệu cốt lõi.
-* Công thức:
+**F6.1 — Trend Strength vs MA200**
+* Đo lường sức mạnh xu hướng trung-dài hạn so với đường trung bình động MA200:
 \[
-SVI\_Signal_t = \frac{SVI_{t, 20} - \mu(SVI_{20})}{\sigma(SVI_{20})} \times \text{Polarity\_Score}
+\text{Raw\_Tech}_i = \frac{\text{Close}_i}{\text{MA200}_i} - 1.0
 \]
 
-**F6.2 — Industrial Power Consumption Nowcasting (IPCN)**
-* Đo lường tiêu thụ điện năng thực tế từ trạm biến áp, EVN địa phương, hoặc ước lượng qua ảnh vệ tinh độ sáng ban đêm.
+**F6.2 — Volatility Contraction & Volume Profile (VCP)**
+* Đo lường sự thu hẹp độ biến động kết hợp cạn kiệt khối lượng trước khi bứt phá.
 
-**F6.3 — Logistics & Port Throughput Velocity (LPTV)**
-* Đo lường tốc độ quay vòng hàng hóa tại các cảng biển và kho logistics.
-* Suy giảm tần suất tàu cập bến hoặc tăng thời gian lưu kho là tín hiệu sớm của quý kinh doanh yếu.
+**F6.3 — Volume-Price Spread Analysis**
+* Xác nhận tính bền vững của dòng tiền tổ chức qua tương quan giữa biến động giá và khối lượng giao dịch.
 
 ---
 
@@ -638,7 +635,7 @@ Walk-Forward Testing: huấn luyện rolling 5 năm, test out-of-sample 1 năm, 
 ## 18. UNIFIED INTELLIGENCE LAYER (UIL) ARCHITECTURE
 
 ```text
-[ TẦNG 1: Alternative Data + Graph GIL + NLP Moat AI + Market Data (OHLCV) ]
+[ TẦNG 1: Dữ liệu BCTC + Graph GIL + NLP Moat AI + Market Data (OHLCV) ]
                                       │
                                       ▼
 [ TẦNG 2: Signal Layer (Factor Scoring + Spearman Rank Correlation + Ledoit-Wolf) ]
@@ -651,10 +648,10 @@ Walk-Forward Testing: huấn luyện rolling 5 năm, test out-of-sample 1 năm, 
 ```
 
 ### 18.1 Tầng 1 — Unified Data Layer (UDL)
-* Đồng bộ và làm sạch dữ liệu đầu vào.
+* Đồng bộ và làm sạch dữ liệu đầu vào (BCTC, Corporate Actions, Market Data).
 * Tiền xử lý dữ liệu phi cấu trúc từ Moat AI.
 * Cập nhật cấu trúc đồ thị của GIL.
-* Đồng bộ các chỉ báo sớm của Alternative Data cùng với dữ liệu thị trường.
+* Chuẩn hóa và đồng bộ các chuỗi thời gian OHLCV đã điều chỉnh.
 
 ### 18.2 Tầng 2 — Signal & Factor Engine (SFE)
 * Chuẩn hóa dữ liệu thô thành điểm số percentile rank từ 0-100.
@@ -698,8 +695,8 @@ Nếu không trả lời được rõ ràng cả ba — **Không hành động**
 
 # PHẦN XI: VẤN ĐỀ CHƯA GIẢI QUYẾT (UNRESOLVED ISSUES — PHIÊN BẢN v5.1)
 
-1. **Dữ liệu thay thế (Alternative Data) bị phân rã nhanh:** Tốc độ phản hồi của Google Trends hoặc dữ liệu tiêu thụ điện có thể suy giảm hiệu quả dự báo khi thị trường chuyển sang trạng thái bão hòa thông tin.
-2. **Sự biến tướng của giao dịch RPT qua các công ty nước ngoài:** Nhiều doanh nghiệp sử dụng công ty trung gian thành lập tại nước ngoài để thực hiện giao dịch lòng vòng, vượt ngoài phạm vi thu thập dữ liệu của đồ thị GIL nội địa.
+1. **Sự biến tướng của giao dịch RPT qua các công ty nước ngoài:** Nhiều doanh nghiệp sử dụng công ty trung gian thành lập tại nước ngoài để thực hiện giao dịch lòng vòng, vượt ngoài phạm vi thu thập dữ liệu của đồ thị GIL nội địa.
+2. **Hiện tượng nghẽn thanh khoản bất cân xứng trong các pha sập sàn:** Tình trạng "trắng bên mua" tại sàn HOSE khi thị trường có biến cố lớn khiến việc khớp lệnh cắt lỗ theo giá thị trường bị trễ.
 
 ---
 
@@ -710,7 +707,7 @@ Nếu không trả lời được rõ ràng cả ba — **Không hành động**
        ↓
 Ưu tiên 2: Moat AI & Graph Intelligence Layer
        ↓
-Ưu tiên 3: Alternative Data Alpha & GARCH Nowcasting
+Ưu tiên 3: Factor Engine & GARCH Volatility Nowcasting
        ↓
 Ưu tiên 4: Unified Intelligence Layer (UIL) Integration
        ↓

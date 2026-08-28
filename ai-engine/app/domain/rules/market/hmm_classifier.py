@@ -13,11 +13,14 @@ logger = logging.getLogger(__name__)
 
 class MarketRegime:
     """Standardized Market Regimes for IOS v5.1."""
+    BULL = MarketRegimeV2.BULL_MARKET
     BULL_TRENDING = MarketRegimeV2.BULL_MARKET
     BULL_CHOPPY = MarketRegimeV2.BULL_MARKET
+    BEAR = MarketRegimeV2.BEAR_MARKET
     BEAR_TRENDING = MarketRegimeV2.BEAR_MARKET
     BEAR_BOUNCE = MarketRegimeV2.RANGE_BOUND
     RANGE_BOUND = MarketRegimeV2.RANGE_BOUND
+    SIDEWAYS = MarketRegimeV2.RANGE_BOUND
     BEAR_PANIC = MarketRegimeV2.BEAR_MARKET
 
 class HMMClassifier:

@@ -90,36 +90,32 @@ def _get_vnstock_ownership(symbol: str) -> List[Dict[str, Any]]:
 
 
 async def _search_cafef_insider_news(symbol: str, max_results: int = 10) -> List[Dict[str, Any]]:
-    """Search CafeF via news RAG for insider transaction announcements."""
-    from app.infrastructure.llm.news_rag import news_rag_svc
+    """Search CafeF / knowledge_documents for insider transaction announcements."""
+    from app.infrastructure.database.pg_pool import get_cursor
 
-    keywords = [
-        f"{symbol} đăng ký bán",
-        f"{symbol} đăng ký mua",
-        f"{symbol} thoái vốn",
-        f"{symbol} nội bộ",
-        f"{symbol} cổ đông lớn",
-        f"{symbol} giao dịch",
-    ]
-
-    seen: set = set()
     results: List[Dict[str, Any]] = []
-    for kw in keywords:
-        hits = news_rag_svc.query(kw, symbol=symbol, top_k=5)
-        for h in hits:
-            nid = h.get("newsId", "")
-            if nid and nid not in seen:
-                seen.add(nid)
+    try:
+        with get_cursor() as cur:
+            cur.execute(
+                """SELECT title, article_content, url, published_date
+                   FROM knowledge_documents
+                   WHERE symbol = %s
+                     AND (title ILIKE '%%bán%%' OR title ILIKE '%%mua%%' OR title ILIKE '%%thoái vốn%%' OR title ILIKE '%%nội bộ%%' OR title ILIKE '%%cổ đông lớn%%')
+                   ORDER BY published_date DESC
+                   LIMIT %s""",
+                (symbol.upper(), max_results),
+            )
+            for row in cur.fetchall():
                 results.append({
                     "type": "INSIDER_NEWS",
-                    "newsId": nid,
-                    "title": h.get("title", ""),
-                    "content": (h.get("content", "") or "")[:500],
-                    "similarityScore": h.get("similarityScore", 0),
-                    "source": "cafef-rag",
+                    "title": row[0],
+                    "content": (row[1] or "")[:500],
+                    "url": row[2],
+                    "publishedDate": row[3].isoformat() if hasattr(row[3], "isoformat") else str(row[3]),
+                    "source": "knowledge_documents",
                 })
-        if len(results) >= max_results:
-            break
+    except Exception as e:
+        logger.debug("insider news query failed for %s: %s", symbol, e)
 
     return results[:max_results]
 

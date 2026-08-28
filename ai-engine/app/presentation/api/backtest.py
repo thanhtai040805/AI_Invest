@@ -150,7 +150,7 @@ async def run_backtest_route(request: BacktestRequest):
         (code_dir / "signal_engine.py").write_text(signal_source, encoding="utf-8")
 
         # Run backtest in a thread (it's synchronous)
-        from app.brain.tools.backtest_tool import run_backtest
+        from app.backtest.engine import run_backtest
 
         loop = asyncio.get_event_loop()
         result_json = await loop.run_in_executor(None, run_backtest, str(runs_root))

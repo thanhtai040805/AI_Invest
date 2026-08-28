@@ -55,7 +55,8 @@ class DualTierSniperEngine:
         if vnindex_df is None or vnindex_df.empty:
             return "BULL_EXPANSION"
             
-        sub = vnindex_df.loc[:current_date]
+        ts_date = pd.to_datetime(current_date)
+        sub = vnindex_df.loc[:ts_date]
         if len(sub) < 50:
             return "BULL_EXPANSION"
             

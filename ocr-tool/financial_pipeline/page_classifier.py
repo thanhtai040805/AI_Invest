@@ -179,63 +179,57 @@ class PageClassifier:
                 f"bỏ {total_pages - eng_from} trang trùng ({100.0 * (total_pages - eng_from) / total_pages:.0f}% GPU)."
             )
 
-        # === Scanned PDF: bỏ qua classify, giữ toàn bộ (trừ đuôi tiếng Anh) ===
+        # === Scanned PDF: bỏ qua classify, giữ toàn bộ (trừ đuôi tiếng Anh & trang trắng) ===
         if pdf_type == "scanned":
-            if eng_from < total_pages:
-                pages_meta = [
-                    PageMeta(
-                        page_number=i + 1,
-                        page_type="unknown",
-                        matched_signature="",
-                        decision="KEEP",
-                        snippet="[scanned-no-text-layer]"
-                    )
-                    for i in range(eng_from)
-                ]
-                pages_meta += [
-                    PageMeta(
+            pages_meta = []
+            retained_indices = []
+            for i in range(total_pages):
+                page = doc[i]
+                if i >= eng_from:
+                    pages_meta.append(PageMeta(
                         page_number=i + 1,
                         page_type="english_translation",
                         matched_signature="[english-section]",
                         decision="SKIP",
                         snippet="[english-duplicate]"
-                    )
-                    for i in range(eng_from, total_pages)
-                ]
-                retained_indices = list(range(eng_from))
-                new_doc = fitz.open()
-                for idx in retained_indices:
-                    new_doc.insert_pdf(doc, from_page=idx, to_page=idx)
-                pruned_bytes = new_doc.tobytes()
-                new_doc.close()
-                doc.close()
-                return PageClassificationResult(
-                    total_pages=total_pages,
-                    retained_pages_count=len(retained_indices),
-                    skipped_pages_count=total_pages - len(retained_indices),
-                    pages_meta=pages_meta,
-                    retained_page_indices=retained_indices,
-                    pruned_pdf_bytes=pruned_bytes,
-                )
-            print(f"  [CLASSIFIER] Phát hiện Fully Scanned PDF ({total_pages} trang) → Bỏ qua Tesseract, giữ toàn bộ gửi Modal GPU.")
-            pages_meta = [
-                PageMeta(
-                    page_number=i + 1,
-                    page_type="unknown",
-                    matched_signature="",
-                    decision="KEEP",
-                    snippet="[scanned-no-text-layer]"
-                )
-                for i in range(total_pages)
-            ]
+                    ))
+                elif self._is_blank_page(page, ""):
+                    pages_meta.append(PageMeta(
+                        page_number=i + 1,
+                        page_type="blank_page",
+                        matched_signature="[blank-page]",
+                        decision="SKIP",
+                        snippet="[empty-blank-page]"
+                    ))
+                else:
+                    pages_meta.append(PageMeta(
+                        page_number=i + 1,
+                        page_type="unknown",
+                        matched_signature="",
+                        decision="KEEP",
+                        snippet="[scanned-no-text-layer]"
+                    ))
+                    retained_indices.append(i)
+
+            print(f"  [CLASSIFIER] Phát hiện Fully Scanned PDF ({total_pages} trang) → Giữ {len(retained_indices)} trang có nội dung gửi Modal GPU.")
+            if not retained_indices:
+                retained_indices = list(range(total_pages))
+                for meta in pages_meta:
+                    meta.decision = "KEEP"
+
+            new_doc = fitz.open()
+            for idx in retained_indices:
+                new_doc.insert_pdf(doc, from_page=idx, to_page=idx)
+            pruned_bytes = new_doc.tobytes()
+            new_doc.close()
             doc.close()
             return PageClassificationResult(
                 total_pages=total_pages,
-                retained_pages_count=total_pages,
-                skipped_pages_count=0,
+                retained_pages_count=len(retained_indices),
+                skipped_pages_count=total_pages - len(retained_indices),
                 pages_meta=pages_meta,
-                retained_page_indices=list(range(total_pages)),
-                pruned_pdf_bytes=pdf_bytes  # Trả lại nguyên bản, không tốn thêm thời gian
+                retained_page_indices=retained_indices,
+                pruned_pdf_bytes=pruned_bytes
             )
 
         # === Digital / Hybrid PDF: Classify từng trang ===
@@ -265,6 +259,18 @@ class PageClassifier:
                 continue
 
             text = page.get_text("text") or ""
+            
+            # Trang trắng tinh: không có chữ, không có ảnh/drawing thật -> SKIP ngay lập tức
+            if self._is_blank_page(page, text):
+                pages_meta.append(PageMeta(
+                    page_number=page_idx + 1,
+                    page_type="blank_page",
+                    matched_signature="[blank-page]",
+                    decision="SKIP",
+                    snippet="[empty-blank-page]"
+                ))
+                continue
+
             is_scanned = len(text.strip()) < self.TEXT_CHAR_THRESHOLD
 
             # Hybrid: OCR top-band của MỌI trang không có text layer (không giới hạn 8 trang
@@ -364,26 +370,51 @@ class PageClassifier:
         )
 
     def _extract_header_ocr(self, page: fitz.Page) -> str:
-        """Cắt top 35% trang và chạy tesseract OCR siêu nhanh trên CPU."""
+        """Cắt top 35% trang và chạy tesseract OCR siêu nhanh trên CPU, tự động xử lý trang xoay (Landscape/Rotated)."""
         if not HAS_PYTESSERACT:
             return page.get_text("text") or ""
 
         try:
             rect = page.rect
+            # Cắt 35% theo chiều cao hiển thị của trang
             header_clip = fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y0 + rect.height * 0.35)
             pix = page.get_pixmap(dpi=130, clip=header_clip)
             img = Image.open(io.BytesIO(pix.tobytes("png")))
 
+            text = ""
             try:
-                text = pytesseract.image_to_string(img, lang="vie+eng")
+                text = pytesseract.image_to_string(img, lang="vie+eng").strip()
             except Exception:
-                text = pytesseract.image_to_string(img)
+                text = pytesseract.image_to_string(img).strip()
+
+            # Nếu trang bị xoay ngang (Landscape) hoặc scan lệch góc khiến không nhận diện được chữ
+            if len(text) < 10:
+                try:
+                    osd = pytesseract.image_to_osd(img)
+                    match = re.search(r'(?i)Rotate:\s*(\d+)', osd)
+                    if match:
+                        rotate_angle = int(match.group(1))
+                        if rotate_angle in (90, 180, 270):
+                            rotated_img = img.rotate(-rotate_angle, expand=True)
+                            try:
+                                text = pytesseract.image_to_string(rotated_img, lang="vie+eng").strip()
+                            except Exception:
+                                text = pytesseract.image_to_string(rotated_img).strip()
+                except Exception:
+                    # Fallback xoay thử 90 độ nếu trang là Landscape (W > H)
+                    if rect.width > rect.height:
+                        try:
+                            rotated_img = img.rotate(-90, expand=True)
+                            text = pytesseract.image_to_string(rotated_img, lang="vie+eng").strip()
+                        except Exception:
+                            pass
+
             return text or ""
         except Exception:
             return page.get_text("text") or ""
 
     def _page_ocr_text(self, doc: fitz.Document, page_idx: int) -> str:
-        """Lấy toàn văn một trang: text layer nếu có, nếu không thì OCR full-page 100 DPI."""
+        """Lấy toàn văn một trang: text layer nếu có, nếu không thì OCR full-page 100 DPI có auto-rotate."""
         text = doc[page_idx].get_text("text") or ""
         if len(text.strip()) >= self.TEXT_CHAR_THRESHOLD:
             return text
@@ -391,9 +422,26 @@ class PageClassifier:
             pix = doc[page_idx].get_pixmap(dpi=100)
             img = Image.open(io.BytesIO(pix.tobytes("png")))
             try:
-                return pytesseract.image_to_string(img, lang="vie+eng") or ""
+                raw_text = pytesseract.image_to_string(img, lang="vie+eng") or ""
             except Exception:
-                return pytesseract.image_to_string(img) or ""
+                raw_text = pytesseract.image_to_string(img) or ""
+
+            if len(raw_text.strip()) < 15:
+                try:
+                    osd = pytesseract.image_to_osd(img)
+                    match = re.search(r'(?i)Rotate:\s*(\d+)', osd)
+                    if match:
+                        rotate_angle = int(match.group(1))
+                        if rotate_angle in (90, 180, 270):
+                            rotated_img = img.rotate(-rotate_angle, expand=True)
+                            try:
+                                raw_text = pytesseract.image_to_string(rotated_img, lang="vie+eng") or ""
+                            except Exception:
+                                raw_text = pytesseract.image_to_string(rotated_img) or ""
+                except Exception:
+                    pass
+
+            return raw_text
         except Exception:
             return text
 
@@ -410,9 +458,9 @@ class PageClassifier:
         """Tìm chỉ số (0-based) của trang tiếng Anh đầu tiên trong phần đuôi tiếng Anh.
 
         Phần tiếng Anh là một khối liên tục ở cuối tài liệu (bản dịch BCTC).
-        Dùng binary search trên ngôn ngữ từng trang (text layer nếu có, OCR nếu scan)
-        nên chỉ cần ~log2(N) lần OCR thay vì OCR toàn bộ. Trả về ``total_pages``
-        nếu không có phần tiếng Anh.
+        Dùng binary search trên ngôn ngữ từng trang kèm bước xác thực đa điểm chống nhận diện sai
+        (tránh nhầm lẫn trang bảng số scan hoặc trang giới thiệu hãng kiểm toán lẻ ở cuối).
+        Trả về ``total_pages`` nếu không có phần tiếng Anh.
         """
         total = len(doc)
         if total == 0:
@@ -427,9 +475,32 @@ class PageClassifier:
                 hi = mid
             else:
                 lo = mid + 1
-        # An toàn: tài liệu gần như toàn tiếng Anh là bất thường → không skip.
+
+        # An toàn 1: Nếu phần "tiếng Anh" bắt đầu từ đầu tài liệu (< 3 trang) -> giữ nguyên
         if lo < self.ENGLISH_MIN_START_PAGE:
             return total
+
+        # An toàn 2: Nếu khối tiếng Anh chỉ có < 5 trang lẻ (như trang EY/PwC profile) -> không phải bản dịch BCTC
+        if (total - lo) < 5:
+            return total
+
+        # An toàn 3: Xác minh khối tiếng Anh - lấy mẫu kiểm tra các trang trong đoạn [lo, total-1]
+        # Nếu có bất kỳ trang nào chứa tiếng Việt hoặc tiêu đề BCTC tiếng Việt -> HỦY BỎ (giữ nguyên toàn bộ)
+        sample_check_indices = [
+            lo,
+            lo + (total - lo) // 4,
+            lo + (total - lo) // 2,
+            lo + (total - lo) * 3 // 4
+        ]
+        for chk_idx in set(sample_check_indices):
+            if chk_idx < total - 1:
+                # Nếu một trong các trang ở giữa là tiếng Việt -> Binary Search bị nhầm do trang bảng số
+                if not self._is_english_page(doc, chk_idx):
+                    return total
+                norm = self._normalize_text(self._page_ocr_text(doc, chk_idx))
+                if any(kw in norm for kw in ("THUYET MINH", "BAO CAO", "HOP NHAT", "TAI CHINH", "TONG CONG", "BANG CAN DOI")):
+                    return total
+
         return lo
 
     def _has_strong_title(self, norm_text: str) -> bool:
@@ -440,6 +511,25 @@ class PageClassifier:
             return True
         return any(t in norm_text for t in self.STRONG_TITLES)
 
+    def _is_blank_page(self, page: fitz.Page, text: str) -> bool:
+        """Kiểm tra trang có phải là trang trắng (không có text, không có ảnh/drawing/pixel) hay không."""
+        if len(text.strip()) > 0:
+            return False
+        # Nếu không có ảnh và không có nét vẽ vector
+        if len(page.get_images()) == 0 and len(page.get_drawings()) == 0:
+            return True
+        # Nếu có drawing hoặc image nhưng có thể là nền trắng/vô hình, sample pixmap siêu nhanh ở 30 DPI
+        try:
+            pix = page.get_pixmap(dpi=30)
+            samples = pix.samples
+            # Nếu có bất kỳ pixel nào đậm màu (ngưỡng < 240) thì không phải trang trắng
+            for b in samples[::10]:
+                if b < 240:
+                    return False
+            return True
+        except Exception:
+            return False
+
     def _normalize_text(self, text: str) -> str:
         """Chuẩn hóa viết hoa, xóa dấu tiếng Việt và thay thế ký tự đặc biệt bằng khoảng trắng."""
         if not text:
@@ -448,3 +538,4 @@ class PageClassifier:
         clean_text = "".join([c for c in nfkd_form if not unicodedata.combining(c)])
         clean_text = re.sub(r"[^\w\s]", " ", clean_text)
         return " ".join(clean_text.split())
+

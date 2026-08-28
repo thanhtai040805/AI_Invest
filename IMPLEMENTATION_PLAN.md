@@ -1,28 +1,51 @@
 # IMPLEMENTATION_PLAN.md — IOS v5.1
-## Kế Hoạch Triển Khai Kỹ Thuật
+## Kế Hoạch Triển Khai Kỹ Thuật (Chuẩn Hóa 12 Agents, Tích Hợp SAG MCP Engine & Database Matrix)
 
-> **Mục đích:** AI Coding Agent đọc file này và bắt đầu code ngay theo từng Task, theo thứ tự. Không cần suy luận thêm về nghiệp vụ đầu tư. Mọi logic đã được định nghĩa trong AGENTS.md, DATA_SCHEMA.md, SYSTEM_SPEC.md.
-
-> **Nguyên tắc coding:**
-> 1. Không thay đổi logic đầu tư trong IOS
-> 2. Không tạo rule mới không có trong IOS
-> 3. Nếu thiếu thông tin kỹ thuật → tạo TODO comment, không tự suy luận
-> 4. Sau mỗi Task: sinh code + test + technical doc
+Tài liệu này là **Bản Đặc Tả Kỹ Thuật Chính Thức** của hệ thống AI Invest v5.1.
 
 ---
 
-## PHASE 1 — NỀN TẢNG AN TOÀN
-*Mục tiêu: Hệ thống có thể đứng vững và không bao giờ gây hại trước khi làm bất kỳ thứ gì khác.*
+## 1. PHÂN CHIA KIẾN TRÚC GIỮA `SAG` VÀ `AI-ENGINE`
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                      PHÂN HỆ 1: d:\AIInvest\SAG (HẠ TẦNG TRI THỨC PHI CẤU TRÚC & ĐỒ THỊ)        │
+├─────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ • Ingest & Parse PDF: MinerU, MarkItDown (BCTC, Báo cáo thường niên, Nghị quyết ĐHCĐ).          │
+│ • Graph & Entity Engine: Bóc tách sở hữu chéo, vòng giao dịch RPT (GIL).                        │
+│ • Dịch vụ RAG Moat AI: Tìm kiếm RAG trên tài liệu, trích xuất 5 trụ cột Moat kèm trích dẫn.     │
+│ • FastMCP Server: Cung cấp API / Prompt-based Retrieval (`mcp_sag_search`, `mcp_sag_get_entity`) │
+│ • Kết quả Moat được ai-engine lưu cố định vào bảng `moat_profiles` để phục vụ tính toán F2/CSS.  │
+└───────────────────────────────────────────────┬─────────────────────────────────────────────────┘
+                                                │ (FastMCP Protocol)
+                                                ▼
+┌─────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                 PHÂN HỆ 2: d:\AIInvest\ai-engine (BỘ MÁY ĐỊNH LƯỢNG & ĐIỀU PHỐI 12 AGENTS)      │
+├─────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ • Định lượng toán học (F1-F6, HMM, GARCH, Kelly Sizing, Risk ES 97.5%, Khớp lệnh EAE)           │
+│ • Quản lý 12 Agents nghiệp vụ độc lập (Plug-and-Play), 21 Bảng Nghiệp vụ, 12 Bảng Log riêng.   │
+│ • Không tự chạy GNN hay OCR trùng lặp, chỉ tiêu thụ tri thức từ SAG để ra quyết định.           │
+└─────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-### EPIC 1.1 — DATA FOUNDATION
+## 2. MA TRẬN 12 AGENTS, 21 BẢNG NGHIỆP VỤ & 12 BẢNG LOG RIÊNG BIỆT
 
-#### TASK-101: Data Quality Check Engine
-
-| Field | Value |
-|:---|:---|
-| **Objective** | Xây dựng module kiểm tra chất lượng dữ liệu, chạy trước mỗi pipeline |
+| # | Semantic Agent Name | Bản Chất Kỹ Thuật | Kết Nối SAG | Bảng Dữ Liệu Nghiệp Vụ Sở Hữu (Domain State) | Bảng Log Tư Duy Riêng Biệt (Audit Trace) | Tần Suất Chạy |
+| :---: | :--- | :--- | :--- | :--- | :--- | :--- |
+| **1** | **`market_surveillance`** | Toán / GARCH / HMM | Không | • `market_regimes`<br>• `market_anomalies` | `log_market_surveillance` | 1 lần EOD (15:00) / Real-time khi có sốc |
+| **2** | **`universe_discovery`** | Rule-based / GIL | **Có** (Hỏi SAG cờ GIL) | • `universe_securities`<br>• `beneish_results` | `log_universe_discovery` | 1 lần/ngày (06:00 sáng) |
+| **3** | **`equity_research`** | Hybrid (Math + Moat) | **Có** (Hỏi SAG Moat AI)| • `factor_scores`<br>• `moat_profiles` | `log_equity_research` | Khi có mã qua lọc / Có BCTC mới |
+| **4** | **`investment_thesis`** | LLM Reasoner | **Có** (Đọc catalyst)   | • `investment_theses` | `log_investment_thesis` | Khi có mã đạt Conviction $\ge$ B |
+| **5** | **`counter_thesis`** | LLM Adversarial | **Có** (Hỏi SAG RPT rủi ro) | • `counter_thesis_verdicts` | `log_counter_thesis` | Khi nhận được Thesis cần phản biện |
+| **6** | **`portfolio_risk`** | Toán Rủi Ro (ES 97.5%) | Không | • `risk_snapshots`<br>• `risk_limits` | `log_portfolio_risk` | 1 lần EOD / Trước mỗi lệnh mua |
+| **7** | **`portfolio_allocation`**| Toán Tối Ưu (Kelly) | Không | • `portfolio_account`<br>• `portfolio_positions`<br>• `portfolio_decisions` | `log_portfolio_allocation` | Pre-market (08:30) / Khi Rebalance |
+| **8** | **`trade_execution`** | Thuật toán Khớp Lệnh | Không | • `order_executions`<br>• `slippage_records` | `log_trade_execution` | Khi thực thi lệnh trong phiên |
+| **9** | **`position_monitoring`**| Real-time Watchdog | Không | • `position_health_ticks`<br>• `stop_loss_events` | `log_position_monitoring` | Mỗi 5 phút / Khi chạm Stop-loss |
+| **10**| **`reinforcement_learning`**| Học Tăng Cường (RL) | Không | • `rl_factor_weights`<br>• `kelly_win_rate_matrix`<br>• `factor_ic_history` | `log_reinforcement_learning` | EOD / Cuối tuần / Cuối quý |
+| **11**| **`system_governance`** | Policy / Compliance | Không | • `governance_rules`<br>• `audit_reports` | `log_system_governance` | Khi có sửa đổi / Kiểm toán định kỳ |
+| **12**| **`strategy_cio`** | LLM Meta-Strategy | **Có** (Tra cứu tài liệu khi Chatbot hỏi)| • `strategic_allocations`<br>• `cio_resolutions` | `log_strategy_cio` | Khi có tranh luận / Khi Chatbot hỏi |jective** | Xây dựng module kiểm tra chất lượng dữ liệu, chạy trước mỗi pipeline |
 | **Inputs** | Raw OHLCV data, BCTC data, Universe list |
 | **Outputs** | `DataQualityReport` (pass/fail per check, overall status) |
 | **Dependencies** | None (task đầu tiên) |
@@ -210,16 +233,16 @@ CHECK-08: Point-in-time integrity — không có data future-dated
 
 ---
 
-#### TASK-214: Factor Engine — Sentiment & Altdata Groups (F4, F6)
+#### TASK-214: Factor Engine — Flow & Technical Groups (F5, F6)
 
 | Field | Value |
 |:---|:---|
-| **Objective** | Tính Foreign Flow Momentum, Insider Signal, Google Trends SVI |
-| **Inputs** | Foreign flow data, Insider transactions, Google Trends API |
-| **Outputs** | `FactorScore.f4_sentiment`, `FactorScore.f6_altdata` |
-| **Dependencies** | TASK-103, DATA_REQUIREMENTS Groups 5, 7 |
-| **Acceptance Criteria** | (1) F4.1: loại ngày `is_etf_rebalance_day = true`. (2) F4.3: chỉ dùng BUY_MARKET, SELL_MARKET, BUY_AGREEMENT, SELL_AGREEMENT — loại TRANSFER_INTERNAL, ESOP. (3) Signal date = `disclosure_date` (không phải `transaction_date`). (4) F6.1: `svi_signal = svi_zscore × polarity_score`, không dùng khi `polarity_score = null` |
-| **Definition of Done** | Code + test case: ETF rebalance day → F4.1 không thay đổi |
+| **Objective** | Tính Flow (Foreign Momentum, Insider Signal) và Technical Structure Score |
+| **Inputs** | Foreign flow data, Insider transactions, Technical OHLCV / Moving Averages |
+| **Outputs** | `FactorScore.f5_flow`, `FactorScore.f6_technical` |
+| **Dependencies** | TASK-103, DATA_REQUIREMENTS Groups 1, 5 |
+| **Acceptance Criteria** | (1) F5: loại ngày `is_etf_rebalance_day = true`. (2) F5: chỉ dùng BUY_MARKET, SELL_MARKET, BUY_AGREEMENT, SELL_AGREEMENT — loại TRANSFER_INTERNAL, ESOP. (3) Signal date = `disclosure_date` (không phải `transaction_date`). (4) F6: tính Z-Score kỹ thuật chuẩn hóa, loại bỏ hoàn toàn Alternative Data signals ngoại lai. |
+| **Definition of Done** | Code + test case: ETF rebalance day → F5 Flow không bị méo mó |
 
 ---
 
@@ -242,25 +265,25 @@ CHECK-08: Point-in-time integrity — không có data future-dated
 
 | Field | Value |
 |:---|:---|
-| **Objective** | Thu thập và parse tài liệu phi cấu trúc (annual reports, IR docs) |
-| **Inputs** | Ticker list, document URLs hoặc PDF files |
-| **Outputs** | Cleaned text per document, stored với ticker và doc_date |
-| **Dependencies** | TASK-201 |
-| **Acceptance Criteria** | (1) Support PDF và HTML. (2) Dedup: không process lại doc đã có. (3) Incremental: chỉ fetch doc mới. (4) Store raw text + metadata (ticker, doc_type, doc_date) |
-| **Definition of Done** | Code + test với sample PDF |
+| **Objective** | Tích hợp SAG FastMCP Client để truy vấn tài liệu phi cấu trúc và đồ thị GIL |
+| **Inputs** | Ticker list, SAG FastMCP endpoint (`mcp_sag_search`, `mcp_sag_get_entity`) |
+| **Outputs** | Dữ liệu trích xuất từ SAG (MinerU / Graph Entities / Documents) |
+| **Dependencies** | SAG FastMCP Server (`d:/AIInvest/SAG`) |
+| **Acceptance Criteria** | (1) Kết nối thành công FastMCP stdio/HTTP. (2) Truy vấn đúng tài liệu BCTC/BCTN theo ticker. (3) Lấy thông tin quan hệ sở hữu chéo GIL từ SAG Graph. |
+| **Definition of Done** | Chạy `scripts/wire_sag_mcp.py` test thành công |
 
 ---
 
-#### TASK-222: Moat AI — LLM Scoring
+#### TASK-222: Moat AI — SAG Scoring & Moat Profiles Persistence
 
 | Field | Value |
 |:---|:---|
-| **Objective** | Gọi LLM để phân tích tài liệu và sinh Moat Score |
-| **Inputs** | Cleaned document text từ TASK-221 |
-| **Outputs** | `moat_score` (0–100), `moat_breakdown` (4 dimensions), `hallucination_risk` |
-| **Dependencies** | TASK-221 |
-| **Acceptance Criteria** | (1) Prompt template đúng như trong Blueprint (strict JSON output). (2) Parse JSON response, handle malformed output gracefully. (3) `hallucination_risk = HIGH` khi model không có evidence trích dẫn. (4) Khi `hallucination_risk = HIGH`: giảm weight Moat xuống 50% trong CSS. (5) Không dùng Moat Score khi không có document |
-| **Definition of Done** | Code + test với mock LLM response (valid JSON, malformed JSON, missing evidence) |
+| **Objective** | Gửi prompt đánh giá Moat sang SAG và lưu điểm số vào bảng `moat_profiles` |
+| **Inputs** | Ticker, Core Sector Metric, SAG Generation API / FastMCP |
+| **Outputs** | `moat_score` (0–100), `evidence_summary`, bản ghi trong `moat_profiles` |
+| **Dependencies** | TASK-221, SAG FastMCP |
+| **Acceptance Criteria** | (1) Gửi Rubric 100đ sang SAG. (2) Yêu cầu bắt buộc trích dẫn bằng chứng (Kill-switch: nếu không có bằng chứng $\rightarrow$ `moat_score = 0`). (3) Lưu kết quả vào bảng `moat_profiles` và bảng log `log_equity_research`. (4) Áp dụng multiplier vào CSS. |
+| **Definition of Done** | Test truy vấn Moat FPT qua SAG và lưu thành công vào PostgreSQL `moat_profiles` |
 
 ---
 

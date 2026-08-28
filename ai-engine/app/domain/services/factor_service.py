@@ -4,7 +4,7 @@ import numpy as np
 from typing import List, Dict, Any, Optional
 from datetime import date
 from app.application.ports.storage import StoragePort
-from app.infrastructure.database.postgres_adapter import PostgresAdapter
+from app.adapters.postgres_adapter import PostgresAdapter
 from app.infrastructure.database.pg_pool import DB_URL
 
 logger = logging.getLogger(__name__)

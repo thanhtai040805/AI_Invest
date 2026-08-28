@@ -37,22 +37,21 @@ async def execute_core_action(request: CoreRequest):
         Core action result
     """
     try:
-        from app.brain.tools.framework.runner import Runner
-        from app.brain.tools.framework.state import RunStateStore
+        from app.core.registry import AgentRegistry
+        from app.infrastructure.monitoring.job_state_service import get_all_jobs
         
         if request.action == "run_backtest":
-            # Run backtest using core runner
-            runner = Runner(timeout=300)
             result = {
                 "status": "success",
-                "message": "Backtest executed",
+                "message": "Backtest runner active",
             }
         elif request.action == "get_state":
-            # Get state from state store
-            store = RunStateStore()
             result = {
                 "status": "success",
-                "state": store.get_state(),
+                "state": {
+                    "agents": AgentRegistry.list_agents(),
+                    "jobs": get_all_jobs(),
+                },
             }
         else:
             raise HTTPException(status_code=400, detail=f"Unknown action: {request.action}")
@@ -71,13 +70,12 @@ async def execute_core_action(request: CoreRequest):
 async def get_core_status():
     """Get core system status."""
     try:
-        from app.brain.tools.framework.state import RunStateStore
-        
-        store = RunStateStore()
+        from app.core.registry import AgentRegistry
         
         return {
             "status": "ok",
             "state_store": "active",
+            "agents_registered": len(AgentRegistry.list_agents()),
         }
         
     except Exception as e:

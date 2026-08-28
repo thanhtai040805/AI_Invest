@@ -115,7 +115,7 @@
 
 **Responsibilities:**
 - Tính toán đầy đủ 6 nhóm Factor Score (F1–F6) cho từng ticker
-- Chạy Moat AI Engine: đọc tài liệu phi cấu trúc, sinh Moat Score định lượng
+- Truy vấn Dịch vụ RAG Moat AI từ phân hệ SAG: nhận điểm số định lượng 5 trụ cột và lưu vào bảng `moat_profiles`
 - Chuẩn hóa factor scores thành percentile rank trong Universe
 - Tổng hợp CSS (Composite Stock Score) theo regime hiện tại
 - Sinh Research Report cho mỗi ticker đủ ngưỡng
@@ -123,15 +123,14 @@
 **Inputs:**
 - `discovery_list` từ Discovery Agent
 - BCTC đầy đủ (Groups 2.1–2.4)
-- Annual reports, IR docs, AGM transcripts (cho Moat AI)
-- Alternative data signals (Groups 7.1–7.3)
+- Moat Profile & RAG response từ phân hệ SAG qua FastMCP
 - `current_regime` từ Decision Layer
 - Insider transaction data (Group 5)
 - Foreign flow data (Group 1.3)
 
 **Outputs:**
 - `research_report` — hồ sơ đầy đủ mỗi ticker: factor breakdown, moat score, CSS, conviction level
-- `factor_scores_db` — toàn bộ factor scores lưu vào database để Learning Agent học
+- `factor_scores` & `moat_profiles` — lưu trực tiếp vào PostgreSQL để các Agent khác và Chatbot truy vấn O(1)
 - `data_quality_flags` — các field data bị thiếu hoặc nghi ngờ
 
 **Decisions Allowed:**
@@ -159,9 +158,9 @@
 - Consensus analyst không có cho Group B → dùng SUE_proxy, ghi flag
 - LLM hallucination trong Moat AI → `hallucination_risk = HIGH`, giảm weight Moat xuống 50%
 
-**Related IOS Sections:** Mục 5 (Factor Engine), Mục 8.1 (Moat AI), Mục 6 (Alternative Data)
+**Related IOS Sections:** Mục 5 (Factor Engine), Mục 8.1 (Moat AI)
 
-**Required Data:** Groups 2, 5, 7 (từ DATA_REQUIREMENTS.md)
+**Required Data:** Groups 1, 2, 5 (từ DATA_REQUIREMENTS.md)
 
 ---
 
