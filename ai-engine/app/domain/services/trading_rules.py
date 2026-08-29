@@ -125,7 +125,7 @@ def check_take_profit(
 # Position sizing
 # ---------------------------------------------------------------------------
 
-from app.core.position_sizing.sizing import volatility_targeted_size
+from app.domain.rules.position_sizing import volatility_targeted_size
 
 def calc_position_size(
     symbol: str,

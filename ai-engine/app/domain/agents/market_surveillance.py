@@ -97,11 +97,41 @@ class MarketSurveillanceAgent(BaseAgent):
         if isinstance(stock_returns_df, pd.DataFrame) and not stock_returns_df.empty:
             csad_score = self.csad_calculator.compute_csad(stock_returns_df, vni_return)
 
-        # 5. Phân loại Market Regime & Tính VIX VN Analog (GARCH)
+        # 5. Phân loại Market Regime & Tính VIX VN Analog (GARCH & HMM)
         breadth_pct = market_pulse.get("breadth_above_ma50_pct", 65.0)
-        vix_analog = 18.5  # GARCH-based annualized volatility
+
+        # 5.1 Dự báo biến động VIX VN Analog bằng mô hình GJR-GARCH(1,1)
+        index_returns = event_data.get("index_returns")
+        if index_returns is None or (isinstance(index_returns, pd.Series) and index_returns.empty):
+            try:
+                index_returns = self.garch_engine.get_index_returns(target_d)
+            except Exception as e:
+                logger.warning(f"Failed to fetch index returns for GARCH: {e}")
+                index_returns = pd.Series()
+
+        if isinstance(index_returns, pd.Series) and len(index_returns) >= 20:
+            ann_vol = self.garch_engine.forecast_volatility(index_returns)
+            vix_analog = round(float(ann_vol * 100.0), 2)
+            garch_cash_target = round(float(self.garch_engine.calculate_cash_allocation(ann_vol) * 100.0), 2)
+        else:
+            vix_analog = 18.5  # Fallback an toàn nếu chưa đủ dữ liệu chuỗi lịch sử
+            garch_cash_target = 15.0
+
+        # 5.2 Phân loại Regime bằng Sticky HMM (RegimeEngineV2)
+        df_vni = event_data.get("df_vni")
+        hmm_probs = {}
+        if isinstance(df_vni, pd.DataFrame) and not df_vni.empty and len(df_vni) >= 30:
+            try:
+                hmm_probs = self.hmm_engine.infer_daily(df_vni)
+                # Lấy trạng thái có xác suất hậu nghiệm cao nhất
+                regime_label = max(hmm_probs.items(), key=lambda x: x[1])[0]
+            except Exception as e:
+                logger.warning(f"HMM infer_daily failed: {e}")
+                regime_label = "BULL_MARKET"
+        else:
+            regime_label = event_data.get("regime_override", "BULL_MARKET")
         
-        # Xác định Session Context (Normal / Stress / Crisis)
+        # 5.3 Xác định Session Context (Normal / Stress / Crisis)
         is_stress = (breadth_pct < 20.0) or (len(atc_anomalies) > 3) or distortion_result.get("is_distorted", False)
         is_crisis = (breadth_pct < 10.0) or (vni_return < -0.03)
 
@@ -111,11 +141,10 @@ class MarketSurveillanceAgent(BaseAgent):
             alert_level = "CRITICAL"
         elif is_stress:
             session_context = "Stress"
-            regime_label = "RANGE_BOUND"
+            regime_label = "RANGE_BOUND" if regime_label == "BULL_MARKET" else regime_label
             alert_level = "WARNING"
         else:
             session_context = "Normal"
-            regime_label = "BULL_MARKET"
             alert_level = "INFO"
 
         market_pulse_out = {
@@ -123,6 +152,8 @@ class MarketSurveillanceAgent(BaseAgent):
             "session_context": session_context,
             "current_regime": regime_label,
             "vix_vn_analog": vix_analog,
+            "garch_cash_target_pct": garch_cash_target,
+            "hmm_probabilities": hmm_probs,
             "breadth_above_ma50_pct": breadth_pct,
             "is_derivatives_expiry": is_expiry,
             "alert_level": alert_level,

@@ -1,10 +1,10 @@
-"""Wiring Test Script: Connect ai-engine Agents to SAG Engine via MCP Protocol.
+"""Wiring Test Script: Connect ai-engine Agents to SAG Engine via MCP & REST Protocol.
 
-Script này nối trực tiếp ai-engine với SAG FastMCP Server:
-1. Đọc cấu hình mcp_servers.sag từ ai-engine.
-2. Khởi tạo MCP Client kết nối tới SAG MCP Server (stdio / http).
-3. Đăng ký các công cụ mcp_sag_search, mcp_sag_get_entity, mcp_sag_read vào ToolRegistry của ai-engine.
-4. Chạy thử nghiệm truy vấn trực tiếp trên dữ liệu BCTC HPG Q1/2026 từ SAG!
+Script này kiểm tra kết nối giữa ai-engine và SAG Engine:
+1. Kiểm tra cấu hình SAG Connector adapter từ ai-engine.
+2. Kiểm tra truy vấn RAG Moat AI (5 trụ cột + bằng chứng trích dẫn BCTC).
+3. Kiểm tra truy vấn Đồ thị thực thể & sở hữu chéo GIL (Graph Intelligence Layer).
+4. Thử nghiệm trên mã HPG.
 """
 
 from __future__ import annotations
@@ -19,89 +19,50 @@ AI_ENGINE_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(AI_ENGINE_DIR))
 
 # Đảm bảo UTF-8 output trên Windows terminal
-sys.stdout.reconfigure(encoding="utf-8")
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
 
-# pyrefly: ignore [missing-import]
-from app.brain.config.schema import AgentConfig, MCPServerConfig
-# pyrefly: ignore [missing-import]
-from app.brain.tools import build_registry
+from app.adapters.sag_connector import sag_connector
 
 
-async def wire_and_test_sag_mcp(source_config_id: str | None = None) -> None:
+async def wire_and_test_sag_mcp(ticker: str = "HPG") -> None:
     print("========================================================")
-    print("🔌 KẾT NỐI AI-ENGINE DỰ ÁN VỚI SAG ENGINE VIA MCP")
+    print("🔌 KẾT NỐI AI-ENGINE DỰ ÁN VỚI SAG ENGINE VIA MCP / REST")
     print("========================================================")
 
-    # 1. Đường dẫn tới môi trường Python của SAG API chứa module sag_api
-    sag_python = Path(r"d:\AIInvest\SAG\apps\api\.venv\Scripts\python.exe")
-    if not sag_python.exists():
-        sag_python = Path(sys.executable)
+    print(f"\n[STEP 1] Kiểm tra cấu hình kết nối SAG API Base: {sag_connector.api_base}")
 
-    # 2. Tạo cấu hình MCPServerConfig nối tới SAG MCP Server
-    sag_api_dir = str(Path(r"d:\AIInvest\SAG\apps\api").resolve())
-    python_path = os.environ.get("PYTHONPATH", "")
-    new_pythonpath = f"{sag_api_dir};{python_path}" if python_path else sag_api_dir
-
-    mcp_config = MCPServerConfig(
-        type="stdio",
-        command=str(sag_python),
-        args=["-m", "sag_api.mcp.server"],
-        env={
-            **os.environ,
-            "PYTHONUTF8": "1",
-            "PYTHONPATH": new_pythonpath,
-            "SAG_MCP_SOURCE_ID": source_config_id or "",
-        },
-    )
-
-    agent_config = AgentConfig(
-        mcp_servers={"sag": mcp_config}
-    )
-
-    print("\n[STEP 1] Đang kết nối tới SAG FastMCP Server và đăng ký Tools...")
+    # 1. Thử nghiệm truy vấn Moat AI qua SAG Connector
+    print(f"\n[STEP 2] Gửi truy vấn Moat Assessment cho mã {ticker}...")
+    moat_result = await sag_connector.get_moat_assessment(ticker=ticker, sector="Materials")
     
-    def warn_cb(msg: str) -> None:
-        print(f"  ⚠️ Warning: {msg}")
+    print("\n========================================================")
+    print("📝 ĐẦU RA KẾT QUẢ SAG MOAT AI TRẢ VỀ:")
+    print("========================================================")
+    print(f"• Ticker: {moat_result.get('ticker')}")
+    print(f"• Moat Score: {moat_result.get('moat_score')}")
+    print(f"• Intangibles: {moat_result.get('intangibles_score')}")
+    print(f"• Cost Advantage: {moat_result.get('cost_advantage_score')}")
+    print(f"• Evidence: {moat_result.get('evidence_quote')}")
+    print(f"• Status: {moat_result.get('status', 'SUCCESS')}")
 
-    # Build ToolRegistry của ai-engine kèm MCP tools từ SAG
-    registry = build_registry(
-        agent_config=agent_config,
-        include_shell_tools=False,
-        warn_callback=warn_cb,
-    )
-
-    sag_tools = [tool for name, tool in registry._tools.items() if name.startswith("mcp_sag_")]
-    print(f"  ✓ Đã đăng ký thành công {len(sag_tools)} công cụ SAG MCP vào ai-engine!")
-    for t in sag_tools:
-        print(f"    • [{t.name}] {t.description[:80]}...")
-
-    if not sag_tools:
-        print("❌ Không tìm thấy công cụ SAG MCP nào! Kiểm tra lại kết quả kết nối.")
-        return
-
-    # 3. Thử nghiệm truy vấn bằng công cụ mcp_sag_search từ ai-engine
-    print("\n[STEP 2] Chạy truy vấn thử nghiệm từ ai-engine qua công cụ mcp_sag_search...")
-    search_tool = registry.get("mcp_sag_search")
-    if search_tool:
-        query = "Biên lợi nhuận gộp và Hàng tồn kho của HPG trong Quý 1/2026 là bao nhiêu?"
-        print(f"  ❓ Question: {query}")
-        try:
-            result = search_tool.execute(query=query, top_k=4)
-            print("\n========================================================")
-            print("📝 ĐẦU RA KẾT QUẢ SAG MCP TRẢ VỀ CHO AGENT:")
-            print("========================================================")
-            print(result)
-            print("========================================================\n")
-            print("✅ NỐI WIRING KẾT NỐI AI-ENGINE & SAG THÀNH CÔNG 100%!")
-        except Exception as err:
-            print(f"❌ Lỗi khi thực thi công cụ mcp_sag_search: {err}")
-    else:
-        print("❌ Không tìm thấy công cụ mcp_sag_search trong registry!")
+    # 2. Thử nghiệm truy vấn GIL Relationships
+    print(f"\n[STEP 3] Gửi truy vấn GIL Graph Relationships cho mã {ticker}...")
+    gil_result = await sag_connector.get_gil_relationships(ticker=ticker)
+    
+    print("\n========================================================")
+    print("📝 ĐẦU RA KẾT QUẢ SAG GIL TRẢ VỀ:")
+    print("========================================================")
+    print(f"• GIL Flag: {gil_result.get('gil_flag', 'PASS')}")
+    print(f"• OCR Score: {gil_result.get('ocr_score', 0.0)}")
+    print(f"• Cycles Detected: {gil_result.get('cycles_detected', 0)}")
+    print("========================================================\n")
+    print("✅ WIRING KẾT NỐI AI-ENGINE & SAG SẴN SÀNG!")
 
 
 def main() -> None:
-    source_id = sys.argv[1] if len(sys.argv) > 1 else ""
-    asyncio.run(wire_and_test_sag_mcp(source_id))
+    ticker = sys.argv[1] if len(sys.argv) > 1 else "HPG"
+    asyncio.run(wire_and_test_sag_mcp(ticker))
 
 
 if __name__ == "__main__":

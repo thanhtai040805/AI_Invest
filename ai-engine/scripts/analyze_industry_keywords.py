@@ -5,11 +5,34 @@ Trích xuất các câu Fact chất lượng cao cào được để làm căn c
 
 import os
 import json
+import re
 import logging
-from app.infrastructure.knowledge_base.engines.sentence_classifier import sentence_classifier
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("analyze_industry")
+
+class SimpleSentenceClassifier:
+    """Trích xuất câu chứa thông tin định tính tài chính quan trọng."""
+    KEYWORDS = ["doanh thu", "lợi nhuận", "thị phần", "công suất", "dự án", "đầu tư", "kế hoạch", "biên lợi nhuận"]
+    
+    @classmethod
+    def locate_valuable_sentences(cls, text: str):
+        sentences = re.split(r'[.\n]+', text)
+        results = []
+        for s in sentences:
+            s_clean = s.strip()
+            if len(s_clean) < 20:
+                continue
+            matched = [k for k in cls.KEYWORDS if k in s_clean.lower()]
+            if matched:
+                results.append({
+                    "agent_type": "FUNDAMENTAL_RESEARCH",
+                    "density_score": round(len(matched) / (len(s_clean.split()) + 1e-6) * 10, 2),
+                    "sentence": s_clean
+                })
+        return results
+
+sentence_classifier = SimpleSentenceClassifier()
 
 def analyze_all_sectors():
     test_data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tests", "test_data"))

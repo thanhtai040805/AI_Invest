@@ -19,7 +19,6 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
 
 import psycopg2
-# pyrefly: ignore [missing-import]
 from app.infrastructure.database.connection import get_db_url, get_raw_connection
 
 

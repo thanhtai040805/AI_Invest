@@ -44,7 +44,6 @@ class RabbitMQEventBus(EventBusPort):
     async def connect(self) -> None:
         """Thử kết nối đến RabbitMQ thật qua aio_pika nếu có sẵn, ngược lại dùng In-Memory Bus."""
         try:
-            # pyrefly: ignore [missing-import]
             import aio_pika
             connection = await aio_pika.connect_robust(self.rabbitmq_url, timeout=2.0)
             self._is_connected = True
