@@ -248,3 +248,85 @@ class IntelligenceRepository:
         except Exception as e:
             logger.warning(f"Lỗi khi lưu investment_theses ({e})")
             return False
+
+    def save_counter_thesis_verdict(self, verdict_data: Dict[str, Any]) -> bool:
+        """Lưu phán quyết phản biện từ Counter Thesis Agent."""
+        thesis_id = verdict_data.get("thesis_id")
+        ticker = verdict_data.get("ticker")
+        if not ticker or not thesis_id:
+            raise ValueError("[IntelligenceRepository] Thiếu 'ticker' hoặc 'thesis_id' trong verdict_data.")
+        ticker = str(ticker).upper().strip()
+        query = """
+            INSERT INTO counter_thesis_verdicts (
+                thesis_id, ticker, base_cts, interaction_multiplier, regime_multiplier,
+                cts_score, verdict, rule_of_three_passed, is_capitulation_rebound,
+                block_reasons, holes, execution_constraints, rationale, evaluated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (thesis_id) DO UPDATE SET
+                cts_score = EXCLUDED.cts_score,
+                verdict = EXCLUDED.verdict,
+                block_reasons = EXCLUDED.block_reasons,
+                execution_constraints = EXCLUDED.execution_constraints,
+                rationale = EXCLUDED.rationale,
+                evaluated_at = EXCLUDED.evaluated_at
+        """
+        now = datetime.now()
+        try:
+            self.storage.execute(
+                query,
+                (
+                    thesis_id,
+                    ticker,
+                    float(verdict_data.get("base_cts", 0.0)),
+                    float(verdict_data.get("interaction_multiplier", 1.0)),
+                    float(verdict_data.get("regime_multiplier", 1.0)),
+                    float(verdict_data.get("cts_score", 0.0)),
+                    str(verdict_data.get("verdict", "PROCEED")),
+                    bool(verdict_data.get("rule_of_three_passed", True)),
+                    bool(verdict_data.get("is_capitulation_rebound", False)),
+                    json.dumps(verdict_data.get("block_reasons", []), ensure_ascii=False, default=str),
+                    json.dumps(verdict_data.get("holes", []), ensure_ascii=False, default=str),
+                    json.dumps(verdict_data.get("execution_constraints") or {}, ensure_ascii=False, default=str),
+                    str(verdict_data.get("rationale", "")),
+                    now,
+                ),
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"Lỗi khi lưu counter_thesis_verdicts ({e})")
+            return False
+
+    def get_counter_thesis_verdict(self, thesis_id: str) -> Optional[Dict[str, Any]]:
+        """Lấy phán quyết phản biện theo thesis_id."""
+        query = """
+            SELECT thesis_id, ticker, base_cts, interaction_multiplier, regime_multiplier,
+                   cts_score, verdict, rule_of_three_passed, is_capitulation_rebound,
+                   block_reasons, holes, execution_constraints, rationale, evaluated_at
+            FROM counter_thesis_verdicts
+            WHERE thesis_id = %s
+            LIMIT 1
+        """
+        try:
+            rows = self.storage.fetch_all(query, (thesis_id,))
+            if rows and len(rows) > 0:
+                r = rows[0]
+                return {
+                    "thesis_id": str(r[0]),
+                    "ticker": str(r[1]),
+                    "base_cts": float(r[2]) if r[2] is not None else 0.0,
+                    "interaction_multiplier": float(r[3]) if r[3] is not None else 1.0,
+                    "regime_multiplier": float(r[4]) if r[4] is not None else 1.0,
+                    "cts_score": float(r[5]) if r[5] is not None else 0.0,
+                    "verdict": str(r[6]),
+                    "rule_of_three_passed": bool(r[7]),
+                    "is_capitulation_rebound": bool(r[8]),
+                    "block_reasons": r[9] if isinstance(r[9], list) else [],
+                    "holes": r[10] if isinstance(r[10], list) else [],
+                    "execution_constraints": r[11] if isinstance(r[11], dict) else {},
+                    "rationale": str(r[12]),
+                    "evaluated_at": r[13].isoformat() if hasattr(r[13], "isoformat") else str(r[13]),
+                }
+        except Exception as e:
+            logger.warning(f"Lỗi khi đọc counter_thesis_verdicts cho {thesis_id} ({e})")
+        return None
+

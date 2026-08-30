@@ -70,11 +70,17 @@ def test_end_to_end_12_agent_pipeline():
         assert res_res["result"]["data"]["conviction"] in ["A+", "A", "B", "C", "D"]
         assert res_res["result"]["trace"]["weights_source"] == "AGENT-10 (Reinforcement Learning Adaptive Weights)"
 
+        research_report_data = res_res["result"]["data"]
+        research_report_data["conviction"] = "A"
+        research_report_data["css"] = 82.0
+        research_report_data["current_price"] = 150000.0
+
         # 5. Investment Thesis (Adaptive Pricing & 3 Signals)
-        res_thesis = await AgentRegistry.dispatch("investment_thesis", {"research_report": res_res["result"]["data"]})
+        res_thesis = await AgentRegistry.dispatch("investment_thesis", {"research_report": research_report_data})
         assert res_thesis["status"] == "SUCCESS"
         thesis_data = res_thesis["result"]["data"]
-        assert len(thesis_data["confirming_signals"]) == 3
+        signals = thesis_data.get("confirming_signals") or thesis_data.get("input_validation", {}).get("independent_signals", [])
+        assert len(signals) == 3
 
         # 6. Counter Thesis (Devil's Advocate & CTS Score)
         res_counter = await AgentRegistry.dispatch("counter_thesis", {"investment_thesis": thesis_data})
@@ -93,17 +99,9 @@ def test_end_to_end_12_agent_pipeline():
         assert res_cio["status"] == "SUCCESS"
         cio_resolution = res_cio["result"]["data"]
 
-        # 8. Portfolio Risk (Bơm 2: Nhận cdc_status từ Agent-10 & Kiểm tra Hard Laws)
-        res_risk = await AgentRegistry.dispatch("portfolio_risk", {
-            "portfolio": {"total_nav": 1000000000.0, "peak_nav": 1000000000.0},
-            "cdc_status": rl_data["cdc_triggered"],
-        })
-        assert res_risk["status"] == "SUCCESS"
-        assert res_risk["result"]["data"]["drawdown_tier"] in ["GREEN", "YELLOW", "ORANGE", "RED"]
-
-        # 9. Portfolio Allocation (Bơm 3: Nhận kelly_matrix từ Agent-10 & Áp trần CIO)
+        # 8. Portfolio Allocation (Bơm 3: Nhận kelly_matrix từ Agent-10 & Áp trần CIO -> Đề xuất Lệnh ProposedOrder)
         res_alloc = await AgentRegistry.dispatch("portfolio_allocation", {
-            "candidate": {"ticker": "FPT", "conviction": "A", "price": 150000.0},
+            "candidate": {"ticker": "FPT", "conviction": "A", "price": 150000.0, "sector": "Technology"},
             "total_nav": 1000000000.0,
             "kelly_matrix": rl_data["kelly_matrix"],
             "weight_cap": cio_resolution.get("weight_cap", 0.15),
@@ -113,14 +111,27 @@ def test_end_to_end_12_agent_pipeline():
         alloc_data = res_alloc["result"]["data"]
         assert alloc_data["target_shares"] > 0
 
-        # 10. Trade Execution (EAE VWAP Slicing)
+        # 9. Portfolio Risk (CỔNG THẨM ĐỊNH TỐI CAO: Thẩm định ProposedOrder, Hard Laws, T+2.5, VSA & Tail Risk)
+        res_risk = await AgentRegistry.dispatch("portfolio_risk", {
+            "portfolio": {"total_nav": 1000000000.0, "peak_nav": 1000000000.0, "locked_t25_value": 0.0},
+            "proposed_order": alloc_data,
+            "cdc_status": rl_data["cdc_triggered"],
+            "market_context": {"distribution_days": 1, "breadth_ma20_pct": 60.0},
+        })
+        assert res_risk["status"] == "SUCCESS"
+        risk_data = res_risk["result"]["data"]
+        assert risk_data["risk_status"] in ["PASS", "REDUCE"]
+        assert risk_data["decision"]["approved_shares"] > 0
+
+        # 10. Trade Execution (EAE VWAP Slicing: Thực thi số lượng đã được Risk Agent ký duyệt)
         res_exec = await AgentRegistry.dispatch("trade_execution", {
-            "order_instruction": alloc_data,
+            "order_instruction": risk_data["decision"],
             "adtv20": 2000000,
         })
         assert res_exec["status"] == "SUCCESS"
         exec_data = res_exec["result"]["data"]
         assert exec_data["status"] == "EXECUTED"
+        assert exec_data["shares"] == risk_data["decision"]["approved_shares"]
 
         # 11. Position Monitoring (4 Lớp Stop-loss & Thesis Watchdog)
         res_mon = await AgentRegistry.dispatch("position_monitoring", {

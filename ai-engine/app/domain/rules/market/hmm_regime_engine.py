@@ -33,6 +33,38 @@ class MarketRegimeV2:
     RANGE_BOUND = "RANGE_BOUND"
     BEAR_MARKET = "BEAR_MARKET"
     
+    # 6 Sub-regimes chuẩn hóa theo IOS v5.1 cho Counter Thesis Multipliers
+    BULL_LOW_VOL = "Bull Low Vol"
+    BULL_HIGH_VOL = "Bull High Vol"
+    SIDEWAYS = "Sideways"
+    CORRECTION = "Correction"
+    BEAR_TRENDING = "Bear Trending"
+    BEAR_PANIC = "Bear Panic"
+    
+    REGIME_MULTIPLIERS = {
+        BULL_LOW_VOL: 0.90,
+        BULL_HIGH_VOL: 1.00,
+        SIDEWAYS: 1.00,
+        RANGE_BOUND: 1.00,
+        BULL_MARKET: 0.95,
+        CORRECTION: 1.15,
+        BEAR_TRENDING: 1.30,
+        BEAR_MARKET: 1.30,
+        BEAR_PANIC: 1.50,
+    }
+    
+    @classmethod
+    def get_multiplier(cls, regime_name: str, is_capitulation: bool = False) -> float:
+        """Lấy hệ số nhân môi trường, có hỗ trợ ngoại lệ Bắt đáy Capitulation (Bẫy 3)."""
+        reg_upper = str(regime_name).strip()
+        if is_capitulation and ("PANIC" in reg_upper.upper() or "BEAR" in reg_upper.upper()):
+            return 1.10 # Ưu đãi Bắt đáy khoa học thay vì phạt 1.5x
+            
+        for key, mult in cls.REGIME_MULTIPLIERS.items():
+            if key.lower() in reg_upper.lower() or reg_upper.lower() in key.lower():
+                return mult
+        return 1.00
+
     @classmethod
     def get_all(cls):
         return [

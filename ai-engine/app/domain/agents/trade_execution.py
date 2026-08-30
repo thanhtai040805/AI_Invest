@@ -37,7 +37,7 @@ class TradeExecutionAgent(BaseAgent):
         ticker = str(ticker).upper().strip()
 
         action = decision.get("action", "BUY")
-        shares = int(decision.get("target_shares", decision.get("shares", 0)))
+        shares = int(decision.get("approved_shares", decision.get("target_shares", decision.get("shares", 0))))
         if shares <= 0:
             logger.info(f"[TradeExecutionAgent] Số lượng cổ phiếu = 0 cho {ticker}. Bỏ qua thực thi.")
             return {
