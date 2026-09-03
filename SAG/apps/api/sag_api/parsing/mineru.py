@@ -8,6 +8,7 @@ trước, rồi tạo task phân tích và polling. Tài liệu chính thức kh
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import ipaddress
 import json
@@ -69,10 +70,16 @@ class MinerUClient:
         self._api_key = str(settings.mineru_api_key)
         self._version = settings.mineru_version
         self._parse_method = settings.mineru_parse_method
+        self._language = getattr(settings, "mineru_language", "vi")
+        self._mode = getattr(settings, "mineru_mode", "precision")
+        self._layout_model = getattr(settings, "mineru_layout_model", "doclayout_yolo")
+        self._enable_table = getattr(settings, "mineru_enable_table", True)
+        self._enable_formula = getattr(settings, "mineru_enable_formula", True)
         self._request_timeout = max(1.0, settings.mineru_request_timeout)
         self._poll_interval = max(0.05, settings.mineru_poll_interval)
         self._poll_timeout = max(self._poll_interval, settings.mineru_poll_timeout)
         self._result_limit = max(1, settings.mineru_result_max_mb) * 1024 * 1024
+        self._is_opendatalab = "mineru.net" in self._base_url or "opendatalab" in self._base_url
 
     @property
     def signature(self) -> str:
@@ -86,6 +93,151 @@ class MinerUClient:
         return {"Authorization": f"Bearer {self._api_key}"}
 
     async def parse(
+        self,
+        path: str,
+        *,
+        state: dict[str, Any] | None = None,
+        on_state: StateCallback | None = None,
+    ) -> str:
+        if self._is_opendatalab:
+            return await self._parse_opendatalab(path, state=state, on_state=on_state)
+        return await self._parse_302(path, state=state, on_state=on_state)
+
+    async def _parse_opendatalab(
+        self,
+        path: str,
+        *,
+        state: dict[str, Any] | None = None,
+        on_state: StateCallback | None = None,
+    ) -> str:
+        state = dict(state or {})
+        batch_id = state.get("batch_id") or state.get("task_id")
+        if not isinstance(batch_id, str) or not batch_id.strip():
+            batch_id = await self._upload_and_create_batch_opendatalab(path)
+            state["task_id"] = batch_id
+            state["batch_id"] = batch_id
+            if on_state:
+                await on_state(dict(state))
+
+        markdown = await self._poll_opendatalab(str(batch_id))
+        if on_state:
+            await on_state({**state, "status": "done"})
+        return markdown
+
+    async def _upload_and_create_batch_opendatalab(self, path: str) -> str:
+        try:
+            if not os.path.isfile(path):
+                raise UpstreamError(f"Không tìm thấy file PDF: {path}")
+            if os.path.getsize(path) > 200 * 1024 * 1024:
+                raise ValidationError("File PDF vượt quá giới hạn 200MB của OpenDataLab MinerU")
+        except OSError as exc:
+            raise UpstreamError(f"Không thể đọc PDF cần phân tích: {exc}") from exc
+
+        file_name = os.path.basename(path)
+        data_id = f"doc_{hashlib.md5(path.encode()).hexdigest()[:8]}"
+        is_ocr = self._parse_method == "ocr" or self._mode == "precision"
+
+        file_config = {
+            "name": file_name,
+            "data_id": data_id,
+            "is_ocr": is_ocr,
+            "language": self._language,
+            "enable_table": self._enable_table,
+            "enable_formula": self._enable_formula,
+            "layout_model": self._layout_model,
+        }
+        payload = {
+            "files": [file_config],
+            "is_ocr": is_ocr,
+            "language": self._language,
+            "enable_table": self._enable_table,
+            "version": "v4",
+        }
+
+        batch_url_path = "/api/v4/file-urls/batch" if not self._base_url.endswith("/api/v4") else "/file-urls/batch"
+        try:
+            async with httpx.AsyncClient(timeout=self._request_timeout) as client:
+                resp = await client.post(
+                    self._url(batch_url_path),
+                    headers=self._headers,
+                    json=payload,
+                )
+        except httpx.TimeoutException as exc:
+            raise ServiceUnavailableError("Đăng ký batch tải file lên MinerU hết thời gian") from exc
+        except httpx.RequestError as exc:
+            raise ServiceUnavailableError(f"Không thể kết nối tới OpenDataLab MinerU: {exc}") from exc
+
+        resp = self._checked(resp, "Đăng ký batch OpenDataLab")
+        res_data = _response_payload(resp)
+        if isinstance(res_data, dict) and res_data.get("code") not in (0, 200, None):
+            raise UpstreamError(f"MinerU từ chối đăng ký batch: {res_data.get('msg')}")
+
+        data_obj = res_data.get("data") if isinstance(res_data, dict) and isinstance(res_data.get("data"), dict) else res_data
+        batch_id = data_obj.get("batch_id") if isinstance(data_obj, dict) else None
+        file_urls = data_obj.get("file_urls") if isinstance(data_obj, dict) else None
+        if not batch_id or not file_urls or not isinstance(file_urls, list) or not file_urls[0]:
+            raise UpstreamError(f"OpenDataLab không trả về batch_id hoặc OSS Presigned URL hợp lệ: {res_data}")
+
+        upload_url = file_urls[0]
+
+        try:
+            with open(path, "rb") as source:
+                file_bytes = source.read()
+            async with httpx.AsyncClient(timeout=self._request_timeout) as client:
+                put_resp = await client.put(
+                    upload_url,
+                    content=file_bytes,
+                )
+                if put_resp.status_code not in (200, 201):
+                    raise UpstreamError(f"Upload PDF lên OSS MinerU thất bại (HTTP {put_resp.status_code})")
+        except OSError as exc:
+            raise UpstreamError(f"Không thể đọc file PDF để upload: {exc}") from exc
+        except httpx.TimeoutException as exc:
+            raise ServiceUnavailableError("Upload PDF lên OSS MinerU hết thời gian") from exc
+        except httpx.RequestError as exc:
+            raise ServiceUnavailableError(f"Không thể kết nối tới OSS MinerU: {exc}") from exc
+
+        return str(batch_id)
+
+    async def _poll_opendatalab(self, batch_id: str) -> str:
+        deadline = time.monotonic() + self._poll_timeout
+        results_url_path = f"/api/v4/extract-results/batch/{batch_id}" if not self._base_url.endswith("/api/v4") else f"/extract-results/batch/{batch_id}"
+        while True:
+            try:
+                async with httpx.AsyncClient(timeout=self._request_timeout) as client:
+                    resp = await client.get(
+                        self._url(results_url_path),
+                        headers=self._headers,
+                    )
+            except httpx.TimeoutException as exc:
+                raise ServiceUnavailableError("Truy vấn trạng thái phân tích MinerU hết thời gian") from exc
+            except httpx.RequestError as exc:
+                raise ServiceUnavailableError(f"Không thể truy vấn trạng thái MinerU: {exc}") from exc
+
+            resp = self._checked(resp, "Truy vấn kết quả OpenDataLab")
+            res_data = _response_payload(resp)
+            data_obj = res_data.get("data") if isinstance(res_data, dict) and isinstance(res_data.get("data"), dict) else res_data
+            extract_results = data_obj.get("extract_result") if isinstance(data_obj, dict) else None
+
+            if isinstance(extract_results, list) and extract_results:
+                first_item = extract_results[0]
+                state = first_item.get("state", "").lower()
+                if state == "done":
+                    full_zip_url = first_item.get("full_zip_url")
+                    if not full_zip_url:
+                        raise UpstreamError("MinerU báo done nhưng không có full_zip_url")
+                    return await self._download_markdown(full_zip_url)
+                if state in {"failed", "error"}:
+                    err_msg = first_item.get("err_msg") or first_item.get("message") or "Lỗi xử lý file PDF"
+                    raise UpstreamError(f"MinerU phân tích thất bại: {err_msg}")
+
+            if time.monotonic() >= deadline:
+                raise ServiceUnavailableError(
+                    f"MinerU chờ phân tích hết thời gian (batch {batch_id}), nền sẽ tiếp tục thử lại"
+                )
+            await asyncio.sleep(self._poll_interval)
+
+    async def _parse_302(
         self,
         path: str,
         *,

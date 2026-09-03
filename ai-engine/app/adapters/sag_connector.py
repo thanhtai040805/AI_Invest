@@ -93,24 +93,85 @@ Trả về kết quả dưới định dạng JSON với các keys:
 
         return default_result
 
-    async def get_gil_relationships(self, ticker: str) -> Dict[str, Any]:
-        """Truy vấn đồ thị sở hữu chéo và giao dịch bất thường (GIL) từ SAG."""
+    async def get_gil_relationships(
+        self, ticker: str, equity_vnd: float = 0.0, source_id: str | None = None
+    ) -> Dict[str, Any]:
+        """Truy vấn đồ thị sở hữu chéo và rủi ro quan hệ bên liên quan (GIL) từ SAG."""
+        ticker_clean = ticker.upper().strip()
+        target_source = source_id or f"source_{ticker_clean.lower()}"
         try:
-            timeout_config = httpx.Timeout(connect=1.0, read=5.0, write=5.0, pool=2.0)
+            timeout_config = httpx.Timeout(connect=1.0, read=10.0, write=5.0, pool=2.0)
             async with httpx.AsyncClient(timeout=timeout_config) as client:
-                res = await client.get(f"{self.api_base}/entities/{ticker.upper()}/graph")
+                res = await client.get(
+                    f"{self.api_base}/gil/sources/{target_source}",
+                    params={"equity_vnd": equity_vnd},
+                )
                 if res.status_code == 200:
                     return res.json()
         except Exception as e:
             logger.warning(f"Lỗi truy vấn GIL Graph từ SAG cho {ticker}: {e}")
 
         return {
-            "ticker": ticker.upper(),
+            "ticker": ticker_clean,
             "gil_flag": "PASS",
-            "ocr_score": 0.0,
+            "risk_level": "LOW",
+            "rpt_ratio": 0.0,
+            "total_rpt_exposure_vnd": 0.0,
+            "equity_vnd": equity_vnd,
             "cycles_detected": 0,
+            "cycle_paths": [],
+            "reasons": ["Chưa kết nối được SAG hoặc chưa có dữ liệu đồ thị, fallback an toàn."],
             "status": "FALLBACK",
+        }
+
+    async def ingest_bctc_document(
+        self,
+        ticker: str,
+        title: str,
+        text_content: str,
+        doc_role: str = "LATEST_QUARTER",
+        is_active: bool = True,
+        fiscal_year: Optional[int] = None,
+        fiscal_quarter: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Bắn nội dung Markdown BCTC đã cắt tỉa sang SAG Backend qua endpoint by-ticker.
+        
+        SAG sẽ tự động:
+        1. Tạo Source BCTC_{TICKER} nếu chưa có.
+        2. Lưu Document và tự động lưu kho (ARCHIVED) quý cũ nếu doc_role='LATEST_QUARTER'.
+        3. Kích hoạt bóc tách Graph và Vector Indexing.
+        """
+        ticker_clean = ticker.upper().strip()
+        payload = {
+            "title": title,
+            "text": text_content,
+            "doc_role": doc_role,
+            "is_active": is_active,
+            "fiscal_year": fiscal_year,
+            "fiscal_quarter": fiscal_quarter,
+        }
+
+        try:
+            timeout_config = httpx.Timeout(connect=2.0, read=30.0, write=10.0, pool=2.0)
+            async with httpx.AsyncClient(timeout=timeout_config) as client:
+                res = await client.post(
+                    f"{self.api_base}/sources/by-ticker/{ticker_clean}/documents/ingest",
+                    json=payload,
+                )
+                if res.status_code in (200, 201):
+                    return res.json()
+                logger.warning(f"SAG ingest trả về mã {res.status_code}: {res.text}")
+        except Exception as e:
+            logger.error(f"Lỗi khi gửi tài liệu BCTC của {ticker_clean} sang SAG: {e}")
+
+        return {
+            "status": "FAILED",
+            "ticker": ticker_clean,
+            "title": title,
+            "doc_role": doc_role,
+            "error": "Không thể kết nối hoặc nạp tài liệu vào SAG API",
         }
 
 
 sag_connector = SAGConnector()
+

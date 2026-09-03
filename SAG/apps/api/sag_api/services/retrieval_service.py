@@ -11,6 +11,8 @@ from typing import Any, Awaitable, Callable, Literal, Protocol, cast
 from sag_api.core.config import settings
 from sag_api.core.logging import get_logger
 from sag_api.sag import RetrievedSection, SearchOutcome
+from sag_api.sag.financial_ontology import extract_fiscal_metadata, resolve_canonical_entity
+from sag_api.sag.universe_registry import universe_registry
 
 log = get_logger("retrieval")
 
@@ -113,6 +115,44 @@ def _lexical_relevance(query: str, section: RetrievedSection) -> float:
         heading_matched = sum(term in heading for term in terms)
         score += 0.35 * matched / len(terms)
         score += 0.15 * heading_matched / len(terms)
+
+    # ── Pre-retrieval Entity Resolution & Brand / Subsidiary / Project Boost ──
+    entity_res = universe_registry.resolve(query)
+    if entity_res and entity_res.confidence >= 0.70:
+        # Khớp Ticker mẹ hoặc Ticker niêm yết
+        if entity_res.primary_ticker:
+            c_ticker = _normalized(entity_res.primary_ticker)
+            if c_ticker in text:
+                score += 0.20
+                if c_ticker in heading:
+                    score += 0.15
+
+        # Nếu hỏi cụ thể về BRAND / SUBSIDIARY / PROJECT (vd: Long Châu, Bách Hóa Xanh, Gemalink, Dung Quất)
+        if entity_res.entity_type in ("BRAND", "SUBSIDIARY", "PROJECT", "FACILITY"):
+            matched_alias_norm = _normalized(entity_res.matched_alias)
+            if matched_alias_norm and matched_alias_norm in text:
+                score += 0.25
+                if matched_alias_norm in heading:
+                    score += 0.20
+
+    # ── Financial Temporal & Fiscal Period Relevance Boost ──
+    q_meta = extract_fiscal_metadata(query)
+    # Khớp Năm tài chính
+    if q_meta.get("fiscal_year"):
+        y_str = str(q_meta["fiscal_year"])
+        if y_str in text:
+            score += 0.15
+            if y_str in heading:
+                score += 0.10
+    # Khớp Quý tài chính (VD: Q1, Q4)
+    if q_meta.get("fiscal_quarter"):
+        q_str = f"q{q_meta['fiscal_quarter']}"
+        quy_str = f"quy{q_meta['fiscal_quarter']}"
+        if q_str in text or quy_str in text:
+            score += 0.15
+            if q_str in heading or quy_str in heading:
+                score += 0.10
+
     return min(1.0, score)
 
 
@@ -169,6 +209,12 @@ def rerank_sections(
     has_lexical_signal = any(key in exact_keys or score >= 0.2 for key, score in lexical_scores.items())
     ranked: list[tuple[float, float, int, RetrievedSection]] = []
 
+    q_meta = extract_fiscal_metadata(query)
+    is_asking_current = any(
+        kw in query.lower()
+        for kw in ("hiện tại", "hien tai", "mới nhất", "moi nhat", "gần nhất", "gan nhat", "bây giờ", "bay gio", "quý này", "quy nay", "năm nay", "nam nay")
+    )
+
     for position, (key, (section, original_index)) in enumerate(candidates):
         raw = max(0.0, min(1.0, float(section.score or 0.0)))
         lexical_score = lexical_scores[key]
@@ -180,11 +226,34 @@ def rerank_sections(
             1.0,
             raw * 0.5 + rank_score * 0.2 + lexical_score * 0.3 + (0.15 if exact else 0.0),
         )
+
+        # ── Time-Decay & Document Freshness Penalty ──
+        sec_text = f"{section.heading}\n{section.content}"
+        sec_meta = extract_fiscal_metadata(sec_text)
+        staleness = sec_meta.get("staleness_tier", "UNKNOWN")
+
+        freshness_multiplier = 1.0
+        if is_asking_current:
+            if staleness == "FRESH":
+                freshness_multiplier = 1.15  # Ưu tiên dữ liệu mới nhất
+            elif staleness == "ACTIVE":
+                freshness_multiplier = 0.90
+            elif staleness == "HISTORICAL":
+                freshness_multiplier = 0.40  # Phạt nặng dữ liệu 1-3 năm khi hỏi hiện tại
+            elif staleness == "EXPIRED":
+                freshness_multiplier = 0.10  # Gần như loại bỏ dữ liệu > 3 năm
+
+        # Nếu người dùng hỏi rõ một năm cụ thể (VD: 2024), không phạt năm đó
+        if q_meta.get("fiscal_year") and sec_meta.get("fiscal_year") == q_meta["fiscal_year"]:
+            freshness_multiplier = 1.25
+
+        combined = min(1.0, combined * freshness_multiplier)
+
         if has_lexical_signal:
             relevant = exact or lexical_score >= 0.2
         else:
             relevant = raw >= semantic_floor
-        if not relevant:
+        if not relevant or (is_asking_current and staleness == "EXPIRED" and len(candidates) > 3):
             continue
         ranked.append((combined, raw, original_index, section))
 

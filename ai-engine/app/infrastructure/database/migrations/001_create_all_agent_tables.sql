@@ -376,3 +376,53 @@ CREATE INDEX IF NOT EXISTS idx_universe_group ON universe_securities (universe_g
 CREATE INDEX IF NOT EXISTS idx_theses_status ON investment_theses (status);
 CREATE INDEX IF NOT EXISTS idx_positions_ticker ON portfolio_positions (ticker);
 CREATE INDEX IF NOT EXISTS idx_executions_date ON order_executions (executed_at);
+
+-- ============================================================================
+-- 13. BCTC PIPELINE RECORDS & R2 DEDUPLICATION TRACKER (IOS v5.1)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS bctc_pipeline_records (
+    id VARCHAR(64) PRIMARY KEY,
+    ticker VARCHAR(16) NOT NULL,
+    fiscal_year INT NOT NULL,
+    fiscal_quarter INT NOT NULL,
+    report_scope VARCHAR(16) NOT NULL DEFAULT 'CONSOLIDATED',
+    
+    -- Status flags
+    is_classified BOOLEAN DEFAULT FALSE,
+    classifier_status VARCHAR(32) DEFAULT 'PENDING',
+    total_raw_pages INT,
+    retained_pages INT,
+    
+    -- Cloudflare R2 PDF flags
+    r2_pdf_uploaded BOOLEAN DEFAULT FALSE,
+    r2_pdf_key VARCHAR(256),
+    r2_pdf_url TEXT,
+    pdf_sha256 VARCHAR(64),
+    
+    -- SAG OCR flags
+    is_ocr_completed BOOLEAN DEFAULT FALSE,
+    ocr_status VARCHAR(32) DEFAULT 'PENDING',
+    r2_md_uploaded BOOLEAN DEFAULT FALSE,
+    r2_md_key VARCHAR(256),
+    r2_md_url TEXT,
+    
+    -- Audit & Temporal details
+    is_audited BOOLEAN DEFAULT FALSE,
+    auditor_name VARCHAR(128),
+    audit_opinion VARCHAR(32),
+    announcement_date DATE,
+    
+    -- SAG Active Window Lifecycle (IOS v5.1)
+    is_active_for_sag BOOLEAN DEFAULT FALSE,
+    sag_doc_role VARCHAR(32) DEFAULT NULL, -- 'ANNUAL_BACKBONE' | 'LATEST_QUARTER' | 'ARCHIVED'
+    
+    -- Timestamps
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    
+    UNIQUE (ticker, fiscal_year, fiscal_quarter, report_scope)
+);
+CREATE INDEX IF NOT EXISTS idx_bctc_pipeline_ticker ON bctc_pipeline_records(ticker, fiscal_year, fiscal_quarter);
+CREATE INDEX IF NOT EXISTS idx_bctc_pipeline_flags ON bctc_pipeline_records(is_classified, r2_pdf_uploaded, is_ocr_completed);
+CREATE INDEX IF NOT EXISTS idx_bctc_pipeline_sag_active ON bctc_pipeline_records(ticker, is_active_for_sag);
+

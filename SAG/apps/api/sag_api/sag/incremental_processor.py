@@ -22,7 +22,7 @@ from zleap.sag.modules.load.parser import MarkdownParser
 
 from sag_api.core.logging import get_logger
 from sag_api.sag.dto import ProcessCheckpoint, ProcessOutcome
-from sag_api.sag.financial_ontology import get_financial_extraction_prompt, infer_doc_type
+from sag_api.sag.financial_ontology import extract_fiscal_metadata, get_financial_extraction_prompt, infer_doc_type
 
 
 CheckpointCallback = Callable[[ProcessCheckpoint], Awaitable[None]]
@@ -297,6 +297,7 @@ class IncrementalDocumentProcessor:
         self._document_title = (document_title or "").strip()
         self._enable_strict_filtering = enable_strict_filtering
         self._doc_type = doc_type or infer_doc_type(document_title)
+        self._fiscal_meta = extract_fiscal_metadata(self._document_title)
 
 
     async def process(
@@ -485,7 +486,17 @@ class IncrementalDocumentProcessor:
 
 
         chat_owner.chat = tracked_chat
-        prompt_requirements = f"{_KNOWLEDGE_EVENT_REQUIREMENTS}\n\n{get_financial_extraction_prompt(self._doc_type)}"
+        meta_hints = []
+        if getattr(self, "_fiscal_meta", None):
+            if self._fiscal_meta.get("ticker"):
+                meta_hints.append(f"Mã Ticker niêm yết: {self._fiscal_meta['ticker']}")
+            if self._fiscal_meta.get("period_label"):
+                meta_hints.append(f"Kỳ báo cáo: {self._fiscal_meta['period_label']}")
+            if self._fiscal_meta.get("report_scope"):
+                meta_hints.append(f"Loại BCTC: {self._fiscal_meta['report_scope']}")
+        meta_context = ("\n[BỐI CẢNH BÁO CÁO TÀI CHÍNH]\n" + "\n".join(f"- {h}" for h in meta_hints)) if meta_hints else ""
+
+        prompt_requirements = f"{_KNOWLEDGE_EVENT_REQUIREMENTS}{meta_context}\n\n{get_financial_extraction_prompt(self._doc_type)}"
         try:
             events = await extractor.extract(
                 ExtractConfig(

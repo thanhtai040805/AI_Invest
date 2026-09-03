@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import BigInteger, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import BigInteger, Boolean, ForeignKey, Index, Integer, String, Text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -35,3 +35,9 @@ class Document(IDMixin, TimestampMixin, Base):
     error_stage: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # source_id do zleap-sag ingest trả về (dùng để truy vết)
     sag_source_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # Phân loại vai trò tài liệu trong Cửa sổ trượt (IOS v5.1 Sliding Window)
+    doc_role: Mapped[str | None] = mapped_column(String(32), nullable=True, default=None)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    fiscal_year: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    fiscal_quarter: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)

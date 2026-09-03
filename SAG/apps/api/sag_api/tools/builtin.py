@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+from collections.abc import Awaitable
 from datetime import UTC, datetime
 from ipaddress import ip_address
 from typing import Any
@@ -21,6 +22,7 @@ from sag_api.core.config import settings
 from sag_api.core.logging import get_logger
 from sag_api.generation import build_citations
 from sag_api.sag import RetrievedSection
+from sag_api.sag.financial_ontology import normalize_entity_text, resolve_canonical_entity
 from sag_api.services.retrieval_service import recall_event_scores, retrieve_relevant_sections
 from sag_api.tools.base import Tool, ToolContext, ToolMeta, ToolResult
 
@@ -136,7 +138,7 @@ async def _prioritize_event_evidence(
         if len(ordered_keys) >= limit:
             break
 
-    get_chunk = getattr(engine_manager, "get_chunk", None)
+    get_chunk: Any = getattr(engine_manager, "get_chunk", None)
     missing_keys = [key for key in ordered_keys if key not in existing]
 
     async def load(key: tuple[str, str]) -> tuple[tuple[str, str], RetrievedSection | None]:
@@ -144,11 +146,12 @@ async def _prioritize_event_evidence(
             return key, None
         source_config_id, chunk_id = key
         try:
-            chunk = await get_chunk(
+            res = get_chunk(
                 source_config_id,
                 chunk_id,
                 source=sources_by_config.get(source_config_id),
             )
+            chunk = await res if isinstance(res, Awaitable) else res
         except asyncio.CancelledError:
             raise
         except Exception as error:  # noqa: BLE001
@@ -243,9 +246,10 @@ class SearchContextTool(Tool):
             ),
         )
         sections = outcome.sections
-        graph_for_sections = getattr(ctx.engine_manager, "graph_for_sections", None)
-        graph = (
-            await graph_for_sections(
+        graph_for_sections: Any = getattr(ctx.engine_manager, "graph_for_sections", None)
+        graph = None
+        if (sections or event_scores) and callable(graph_for_sections):
+            graph_res = graph_for_sections(
                 sections,
                 sources_by_config,
                 # graph_for_sections allocates the first event of each chunk
@@ -255,9 +259,7 @@ class SearchContextTool(Tool):
                 entity_limit=36,
                 event_scores=event_scores,
             )
-            if (sections or event_scores) and callable(graph_for_sections)
-            else None
-        )
+            graph = await graph_res if isinstance(graph_res, Awaitable) else graph_res
         if graph is not None and graph.events:
             sections = await _prioritize_event_evidence(
                 ctx.engine_manager,
@@ -305,21 +307,49 @@ class GetEntityTool(Tool):
         name = (args.get("name") or "").strip()
         if not name or not ctx.sources:
             return ToolResult(content="（Không tìm thấy thực thể này）")
-        lowered = name.lower()
+        
+        canonical_name, canonical_type = resolve_canonical_entity(name)
+        norm_name = normalize_entity_text(name)
+        norm_canonical = normalize_entity_text(canonical_name)
+        
         for source in ctx.sources:
             scid = source.sag_source_config_id
-            entities = await ctx.engine_manager.list_entities(scid, source=source, limit=200)
-            match = next((e for e in entities if (e.name or "").lower() == lowered), None)
+            entities = await ctx.engine_manager.list_entities(scid, source=source, limit=250)
+            
+            # 1. Khớp chính xác tên chuẩn / Canonical Ticker
+            match = next(
+                (e for e in entities if normalize_entity_text(e.name) in (norm_canonical, norm_name)),
+                None,
+            )
+            # 2. Khớp chuỗi con hoặc alias
             if match is None:
-                match = next((e for e in entities if lowered in (e.name or "").lower()), None)
+                match = next(
+                    (
+                        e for e in entities
+                        if norm_canonical in normalize_entity_text(e.name)
+                        or norm_name in normalize_entity_text(e.name)
+                        or (e.name and normalize_entity_text(e.name) in norm_name)
+                    ),
+                    None,
+                )
+            # 3. Khớp qua Description nếu có
+            if match is None:
+                match = next(
+                    (
+                        e for e in entities
+                        if norm_canonical in normalize_entity_text(getattr(e, "description", "") or "")
+                    ),
+                    None,
+                )
+
             if match is not None:
                 snippets = await ctx.engine_manager.entity_context(scid, match.id, source=source, limit=6)
                 body = "\n\n".join(snippets) if snippets else match.description or ""
                 return ToolResult(
                     content=f"Thực thể「{match.name}」（{match.type}）：\n{body}".strip(),
-                    data={"entity_id": match.id, "source_id": source.id},
+                    data={"entity_id": match.id, "source_id": source.id, "canonical_ticker": canonical_name},
                 )
-        return ToolResult(content="（Không tìm thấy thực thể này）")
+        return ToolResult(content=f"（Không tìm thấy thực thể「{name}」trong dữ liệu đã nạp）")
 
 
 class GetTimeTool(Tool):

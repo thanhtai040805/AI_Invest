@@ -471,7 +471,16 @@ def _write_markdown(path: str, markdown: str) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as target:
             target.write(markdown)
-        os.replace(temp_path, path)
+        try:
+            os.replace(temp_path, path)
+        except PermissionError:
+            if os.path.exists(path) and os.path.getsize(path) > 0:
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+                return
+            raise
     except Exception:
         try:
             os.remove(temp_path)

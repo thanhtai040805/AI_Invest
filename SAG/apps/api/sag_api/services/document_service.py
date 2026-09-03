@@ -38,6 +38,10 @@ async def create_document_from_upload(
     data: bytes,
     upload_dir: str,
     job_queue: JobQueue,
+    doc_role: str | None = None,
+    is_active: bool = True,
+    fiscal_year: int | None = None,
+    fiscal_quarter: int | None = None,
 ) -> tuple[Document, Job]:
     doc_id = new_id()
     safe_name = os.path.basename(filename) or "upload"
@@ -55,6 +59,10 @@ async def create_document_from_upload(
         size_bytes=len(data),
         storage_path=storage_path,
         status=DocumentStatus.PENDING,
+        doc_role=doc_role,
+        is_active=is_active,
+        fiscal_year=fiscal_year,
+        fiscal_quarter=fiscal_quarter,
     )
     session.add(document)
     await session.execute(
@@ -70,6 +78,19 @@ async def create_document_from_upload(
     await session.commit()
     await session.refresh(document)
     await session.refresh(job)
+
+    # Nếu đây là LATEST_QUARTER mới, tự động chuyển các quý trước thành ARCHIVED
+    if doc_role == "LATEST_QUARTER":
+        await session.execute(
+            update(Document)
+            .where(
+                Document.source_id == source.id,
+                Document.doc_role == "LATEST_QUARTER",
+                Document.id != doc_id,
+            )
+            .values(doc_role="ARCHIVED", is_active=False)
+        )
+        await session.commit()
 
     await job_queue.enqueue(job.id)
     return document, job
@@ -93,6 +114,10 @@ async def ingest_content(
     messages: list[dict] | None = None,
     upload_dir: str,
     job_queue: JobQueue,
+    doc_role: str | None = None,
+    is_active: bool = True,
+    fiscal_year: int | None = None,
+    fiscal_quarter: int | None = None,
 ) -> Document:
     """Ghi thống nhất: đưa văn bản / một loạt tin nhắn về dạng tài liệu → tái sử dụng pipeline ingest/extract (ghi liên tục)."""
     from sag_api.core.errors import ValidationError
@@ -114,6 +139,10 @@ async def ingest_content(
         data=content.encode("utf-8"),
         upload_dir=upload_dir,
         job_queue=job_queue,
+        doc_role=doc_role,
+        is_active=is_active,
+        fiscal_year=fiscal_year,
+        fiscal_quarter=fiscal_quarter,
     )
     return document
 

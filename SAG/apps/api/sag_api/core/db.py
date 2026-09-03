@@ -64,6 +64,10 @@ _COLUMN_UPGRADES: dict[str, dict[str, str]] = {
         "token_usage": "BIGINT NOT NULL DEFAULT 0",
         "error_layer": "VARCHAR(16)",
         "error_stage": "VARCHAR(16)",
+        "doc_role": "VARCHAR(32)",
+        "is_active": "BOOLEAN NOT NULL DEFAULT 1",
+        "fiscal_year": "INTEGER",
+        "fiscal_quarter": "INTEGER",
     },
     "threads": {"archived": "BOOLEAN NOT NULL DEFAULT 0"},
     "messages": {

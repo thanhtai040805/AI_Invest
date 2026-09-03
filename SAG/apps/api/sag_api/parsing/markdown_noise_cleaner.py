@@ -50,6 +50,85 @@ _POLICY_CHANGE_KEYWORDS = (
 )
 
 
+_IMAGE_RE = re.compile(r"!\[.*?\]\(.*?\)")
+_FORM_CODE_RE = re.compile(
+    r"^\s*(?:Mẫu\s*số\s*)?B\s*\d{1,3}\s*[-–/]\s*(?:DN|CT|HN|VN|TT\d+|QĐ\d+)(?:\s*/\s*HN)?\s*$",
+    re.IGNORECASE,
+)
+_PAGE_NUM_RE = re.compile(r"^\s*(?:Trang\s*)?\d{1,3}(?:\s*/\s*\d{1,3})?\s*$", re.IGNORECASE)
+_STAMP_SYMBOLS_RE = re.compile(r"^[\d\s./\-+*★\^\\_\|~©®:]{2,}$")
+_STAMP_NOISE_RE = re.compile(
+    r"^\s*(?:M\.?S\.?D\.?N|C\.?T\.?T?\.?N\.?H\.?H|C\.?I\.?T|C\.?T\.?N|C\.?T\.?I\.?NG|"
+    r"ERNST\s*&\s*YOUNG|KPMG|PWC|DELOITTE|PHÒNG|VIETNAM|"
+    r"YOUN|YOUNG|NAM|HÔ\s*CHÍ|HỒ\s*CHÍ|CHÍ\s*MINH|OB11|302-C|08118|11802|03008|RNST|PHÔT|PHÓH|THÁT|"
+    r"C\.\s*UNG\s*M\s*HiN|Z\.?H\.?H\.?\s*★?|MINH\s*★|N\.?H\.?H\s*★?)\b.*$",
+    re.IGNORECASE,
+)
+_GARBLED_HEADING_RE = re.compile(r"^#{1,6}\s*(?:[^\w\s]+|cn\s+n\s+anh)\s*$", re.IGNORECASE)
+
+
+from html.parser import HTMLParser
+
+_HTML_TABLE_BLOCK_RE = re.compile(r"<table\b[^>]*>.*?</table>", re.IGNORECASE | re.DOTALL)
+
+
+class HTMLTableToMarkdownParser(HTMLParser):
+    """Parser bóc tách bảng HTML sang ma trận các ô văn bản chuẩn."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.rows: list[list[str]] = []
+        self.current_row: list[str] | None = None
+        self.current_cell: list[str] | None = None
+        self.in_cell = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        t = tag.lower()
+        if t == "tr":
+            self.current_row = []
+        elif t in ("th", "td"):
+            self.current_cell = []
+            self.in_cell = True
+        elif t == "br" and self.in_cell and self.current_cell is not None:
+            self.current_cell.append(" ")
+
+    def handle_endtag(self, tag: str) -> None:
+        t = tag.lower()
+        if t in ("th", "td"):
+            cell_text = "".join(self.current_cell or []).replace("\n", " ").strip()
+            cell_text = cell_text.replace("|", "\\|")
+            if self.current_row is not None:
+                self.current_row.append(cell_text)
+            self.current_cell = None
+            self.in_cell = False
+        elif t == "tr":
+            if self.current_row is not None and any(c.strip() for c in self.current_row):
+                self.rows.append(self.current_row)
+            self.current_row = None
+
+    def handle_data(self, data: str) -> None:
+        if self.in_cell and self.current_cell is not None:
+            self.current_cell.append(data)
+
+
+def _table_html_to_markdown(html_table: str) -> str:
+    """Chuyển đổi 1 bảng HTML sang bảng Markdown (GFM) tối ưu cho RAG/LLM."""
+    parser = HTMLTableToMarkdownParser()
+    parser.feed(html_table)
+    if not parser.rows:
+        return ""
+    max_cols = max(len(r) for r in parser.rows)
+    if max_cols == 0:
+        return ""
+    norm_rows = [r + [""] * (max_cols - len(r)) for r in parser.rows]
+    header = norm_rows[0]
+    sep = [":---"] * max_cols
+    lines = ["| " + " | ".join(header) + " |", "| " + " | ".join(sep) + " |"]
+    for r in norm_rows[1:]:
+        lines.append("| " + " | ".join(r) + " |")
+    return "\n" + "\n".join(lines) + "\n"
+
+
 @dataclass(frozen=True, slots=True)
 class CleanStats:
     lines_in: int = 0
@@ -61,12 +140,27 @@ class CleanStats:
     accounting_policy_sections: int = 0
     signature_lines: int = 0
     latex_junk: int = 0
+    images_removed: int = 0
+    stamps_removed: int = 0
+    tables_converted: int = 0
 
 
 def clean_markdown(markdown: str) -> tuple[str, CleanStats]:
     """Làm sạch Markdown OCR BCTC, trả về (nội dung sạch, thống kê)."""
+    # 1. Chuyển đổi các khối bảng HTML sang Markdown Table trước khi tách dòng
+    converted_tables = 0
+    if "<table" in markdown.lower():
+        def _repl(match: re.Match[str]) -> str:
+            nonlocal converted_tables
+            converted_tables += 1
+            return _table_html_to_markdown(match.group(0))
+
+        markdown = _HTML_TABLE_BLOCK_RE.sub(_repl, markdown)
+
     lines = markdown.splitlines()
-    stats = CleanStats(lines_in=len(lines))
+    stats = CleanStats(lines_in=len(lines), tables_converted=converted_tables)
+    lines, stats = _strip_images(lines, stats)
+    lines, stats = _strip_audit_stamps_and_form_codes(lines, stats)
     lines, stats = _strip_html_comments(lines, stats)
     lines, stats = _strip_repeated_headings(lines, stats)
     lines, stats = _strip_toc(lines, stats)
@@ -76,6 +170,68 @@ def clean_markdown(markdown: str) -> tuple[str, CleanStats]:
     lines, stats = _strip_latex_junk(lines, stats)
     lines = _normalize_blank_lines(lines)
     return "\n".join(lines).strip() + "\n", replace(stats, lines_out=len(lines))
+
+
+def _strip_images(lines: list[str], stats: CleanStats) -> tuple[list[str], CleanStats]:
+    out: list[str] = []
+    removed = 0
+    for line in lines:
+        if _IMAGE_RE.search(line):
+            cleaned_line = _IMAGE_RE.sub("", line)
+            cleaned_line = re.sub(r"[ \t]{2,}", " ", cleaned_line).strip()
+            removed += 1
+            if cleaned_line:
+                out.append(cleaned_line)
+            continue
+        out.append(line)
+    return out, replace(stats, images_removed=stats.images_removed + removed)
+
+
+def _strip_audit_stamps_and_form_codes(lines: list[str], stats: CleanStats) -> tuple[list[str], CleanStats]:
+    out: list[str] = []
+    removed = 0
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            out.append(line)
+            continue
+
+        # Không lọc dòng Markdown heading hoặc bảng
+        if stripped.startswith(("#", "|", "-", "*", ">")):
+            # Chỉ loại bỏ garbled heading
+            if _GARBLED_HEADING_RE.match(stripped):
+                removed += 1
+                continue
+            out.append(line)
+            continue
+
+        # Form codes (B09-DN/HN, v.v.)
+        if _FORM_CODE_RE.match(stripped):
+            removed += 1
+            continue
+
+        # Standalone Page numbers
+        if _PAGE_NUM_RE.match(stripped):
+            removed += 1
+            continue
+
+        # Stamp symbols (like 'Z.H.H. ★', '46', v.v.)
+        if _STAMP_SYMBOLS_RE.match(stripped):
+            removed += 1
+            continue
+
+        # Stamp text fragments (like '302-C. TY H YOUN...', 'C.T.N.H.H', v.v.)
+        if _STAMP_NOISE_RE.match(stripped):
+            removed += 1
+            continue
+
+        # Isolated 1-3 letter uppercase fragments that are noise lines (e.g. 'TY', 'H', '03')
+        if re.match(r"^[A-Z0-9.\s]{1,3}$", stripped):
+            removed += 1
+            continue
+
+        out.append(line)
+    return out, replace(stats, stamps_removed=stats.stamps_removed + removed)
 
 
 def _strip_html_comments(lines: list[str], stats: CleanStats) -> list[str]:

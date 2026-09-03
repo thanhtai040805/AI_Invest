@@ -124,3 +124,69 @@ def test_accounting_policy_with_change_keywords_is_preserved():
     assert "TÓM TẮT CÁC CHÍNH SÁCH KẾ TOÁN CHỦ YẾU" in cleaned
     assert "Thông tư 99/2025/TT-BTC" in cleaned
     assert stats.accounting_policy_sections == 1
+
+
+def test_images_and_cdn_urls_are_removed():
+    markdown = (
+        "# Thuyết minh BCTC\n"
+        "![image](https://cdn-mineru.openxlab.org.cn/result/2026/test.jpg)\n"
+        "Dòng chữ có ![inline](http://example.com/logo.png) inline image\n"
+        "![](https://mineru.net/img.png)\n"
+    )
+    cleaned, stats = clean_markdown(markdown)
+    assert "cdn-mineru" not in cleaned
+    assert "http://example.com/logo.png" not in cleaned
+    assert "Dòng chữ có inline image" in cleaned
+    assert stats.images_removed == 3
+
+
+def test_form_codes_and_audit_stamp_noise_are_stripped():
+    markdown = (
+        "302-C.\n"
+        "TY\n"
+        "H YOUN NAM\n"
+        "B09-DN/HN\n"
+        "# Công ty Cổ phần Nhựa An Phát Xanh\n"
+        "13\n"
+        "## 1. THÔNG TIN VỀ CÔNG TY\n"
+        "Nội dung công ty hợp lệ\n"
+        "C.T.T.N.H.H\n"
+        "ERNST & YOUNG VIETNAM\n"
+        "Z.H.H. ★\n"
+        "## 2. DOANH THU\n"
+    )
+    cleaned, stats = clean_markdown(markdown)
+    assert "B09-DN/HN" not in cleaned
+    assert "302-C." not in cleaned
+    assert "ERNST & YOUNG" not in cleaned
+    assert "Z.H.H." not in cleaned
+    assert "13\n" not in cleaned
+    assert "# Công ty Cổ phần Nhựa An Phát Xanh" in cleaned
+    assert "## 2. DOANH THU" in cleaned
+    assert stats.stamps_removed >= 5
+
+
+def test_html_tables_are_converted_to_gfm_markdown_tables():
+    markdown = (
+        "## 5. TIỀN VÀ TƯƠNG ĐƯƠNG TIỀN\n\n"
+        '<table class="tb-note">\n'
+        "  <thead>\n"
+        "    <tr><th>Khoản mục</th><th>Cuối năm<br>(VND)</th><th>Đầu năm</th></tr>\n"
+        "  </thead>\n"
+        "  <tbody>\n"
+        "    <tr><td>Tiền mặt tại quỹ</td><td>15.000.000.000</td><td>10.000.000.000</td></tr>\n"
+        "    <tr><td>Tiền gửi ngân hàng | không kỳ hạn</td><td>200.000.000.000</td><td>150.000.000.000</td></tr>\n"
+        "  </tbody>\n"
+        "</table>\n\n"
+        "Nội dung sau bảng\n"
+    )
+    cleaned, stats = clean_markdown(markdown)
+    assert "<table" not in cleaned
+    assert "</table>" not in cleaned
+    assert "<tbody>" not in cleaned
+    assert "| Khoản mục | Cuối năm (VND) | Đầu năm |" in cleaned
+    assert "| :--- | :--- | :--- |" in cleaned
+    assert "| Tiền mặt tại quỹ | 15.000.000.000 | 10.000.000.000 |" in cleaned
+    assert "| Tiền gửi ngân hàng \\| không kỳ hạn | 200.000.000.000 | 150.000.000.000 |" in cleaned
+    assert "Nội dung sau bảng" in cleaned
+    assert stats.tables_converted == 1

@@ -90,10 +90,11 @@ async def create_source(
     await session.refresh(source)
 
     # Dựng trước engine schema (idempotent); lỗi không chặn việc tạo, khi xử lý tài liệu sẽ thử lại
-    try:
-        await engine_manager.provision(source.sag_source_config_id, source)
-    except ApiError as e:
-        log.warning("Dựng trước engine nguồn thất bại %s: %s", source.sag_source_config_id, e.message)
+    if engine_manager:
+        try:
+            await engine_manager.provision(source.sag_source_config_id, source)
+        except ApiError as e:
+            log.warning("Dựng trước engine nguồn thất bại %s: %s", source.sag_source_config_id, e.message)
     return source
 
 
@@ -171,3 +172,27 @@ async def sync_source(session: AsyncSession, source_id: str, *, job_queue: JobQu
     await session.refresh(job)
     await job_queue.enqueue(job.id)
     return job
+
+
+async def get_or_create_source_by_ticker(
+    session: AsyncSession,
+    ticker: str,
+    *,
+    engine_manager: EngineManager | None = None,
+) -> Source:
+    """Tìm hoặc tự động khởi tạo Nguồn tri thức riêng cho mã cổ phiếu (ví dụ BCTC_HPG)."""
+    ticker_clean = ticker.upper().strip()
+    source_name = f"BCTC_{ticker_clean}"
+
+    rows = await session.execute(select(Source).where(Source.name == source_name))
+    source = rows.scalar_one_or_none()
+    if source:
+        return source
+
+    body = SourceCreate(
+        name=source_name,
+        connector_kind="file_upload",
+        description=f"Nguồn tri thức BCTC & Báo cáo Quản trị mã {ticker_clean}",
+    )
+    return await create_source(session, body, engine_manager=engine_manager)
+

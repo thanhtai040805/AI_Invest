@@ -102,6 +102,10 @@ async def ingest(
         messages=[m.model_dump() for m in body.messages] if body.messages else None,
         upload_dir=settings.upload_dir,
         job_queue=job_queue,
+        doc_role=body.doc_role,
+        is_active=body.is_active,
+        fiscal_year=body.fiscal_year,
+        fiscal_quarter=body.fiscal_quarter,
     )
     return DocumentOut.model_validate(document)
 

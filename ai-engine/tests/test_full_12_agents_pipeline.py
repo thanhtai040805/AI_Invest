@@ -36,7 +36,10 @@ def test_end_to_end_12_agent_pipeline():
         # 1. Market Surveillance
         res_surv = await AgentRegistry.dispatch("market_surveillance", {"date": "2026-08-28"})
         assert res_surv["status"] == "SUCCESS"
-        regime = res_surv["result"]["data"]["current_regime"]
+        surv_data = res_surv["result"]["data"]
+        regime = surv_data["current_regime"]
+        session_context = surv_data.get("session_context", "Normal")
+        halted_tickers = surv_data.get("halted_tickers", [])
         assert regime in ["BULL_MARKET", "BEAR_MARKET", "RANGE_BOUND"]
 
         # 2. Reinforcement Learning (Chạy trước để nạp tham số động cho Agent 03, 06, 07)
@@ -51,9 +54,12 @@ def test_end_to_end_12_agent_pipeline():
         assert "policy_weights" in rl_data
         assert "kelly_matrix" in rl_data
 
-        # 3. Universe Discovery (Lớp 0 Beneish & GIL Check)
+        # 3. Universe Discovery (Lớp 0 Beneish & GIL Check, nhận tín hiệu từ Agent-01)
         res_disc = await AgentRegistry.dispatch("universe_discovery", {
             "tickers": ["FPT", "VNM", "HPG"],
+            "session_context": session_context,
+            "current_regime": regime,
+            "halted_tickers": halted_tickers,
             "beneish_overrides": {"FPT": -2.45, "VNM": -2.60, "HPG": -2.30},
         })
         assert res_disc["status"] == "SUCCESS"
@@ -197,4 +203,42 @@ def test_reinforcement_learning_real_ic_calculation():
         assert data["ic_by_factor"]["F1_Value"] > 0.5
 
     asyncio.run(_test())
+
+
+def test_agent_01_to_agent_02_crisis_freeze():
+    """Kiểm tra Agent-02 tự động đóng van Discovery Freeze khi Agent-01 phát hiện bối cảnh Crisis."""
+    async def _test():
+        res = await AgentRegistry.dispatch("universe_discovery", {
+            "tickers": ["FPT", "VNM", "HPG"],
+            "session_context": "Crisis",
+            "current_regime": "BEAR_MARKET",
+        })
+        assert res["status"] == "SUCCESS"
+        data = res["result"]["data"]
+        # Đóng van bảo toàn vốn: eligible_count bắt buộc phải bằng 0!
+        assert data["eligible_count"] == 0
+        assert data["exclusion_log"][0]["reason"] == "MARKET_CRISIS_DISCOVERY_FREEZE"
+
+    asyncio.run(_test())
+
+
+def test_agent_02_halted_stock_exclusion():
+    """Kiểm tra Agent-02 loại bỏ ngay lập tức cổ phiếu bị tạm ngừng giao dịch trong phiên (Halt/Suspended)."""
+    async def _test():
+        res = await AgentRegistry.dispatch("universe_discovery", {
+            "tickers": ["FPT", "NVL", "HPG"],
+            "session_context": "Normal",
+            "current_regime": "BULL_MARKET",
+            "halted_tickers": ["NVL"],  # NVL bị tạm ngừng giao dịch trong phiên
+            "beneish_overrides": {"FPT": -2.45, "HPG": -2.30},
+        })
+        assert res["status"] == "SUCCESS"
+        data = res["result"]["data"]
+        excluded_tickers = [x["ticker"] for x in data["exclusion_log"]]
+        assert "NVL" in excluded_tickers
+        nvl_exclusion = next(x for x in data["exclusion_log"] if x["ticker"] == "NVL")
+        assert nvl_exclusion["reason"] == "TRADING_STATUS_HALTED_INTRADAY"
+
+    asyncio.run(_test())
+
 

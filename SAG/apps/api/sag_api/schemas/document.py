@@ -21,6 +21,10 @@ class IngestRequest(BaseModel):
     text: str | None = None
     title: str | None = None
     messages: list[MessageItem] | None = Field(default=None)
+    doc_role: str | None = None  # "ANNUAL_BACKBONE" | "LATEST_QUARTER" | "GOVERNANCE_REPORT" | "ARCHIVED"
+    is_active: bool = True
+    fiscal_year: int | None = None
+    fiscal_quarter: int | None = None
 
 
 class DocumentOut(BaseModel):
@@ -39,6 +43,10 @@ class DocumentOut(BaseModel):
     error: str | None
     error_layer: str | None = None
     error_stage: str | None = None
+    doc_role: str | None = None
+    is_active: bool = True
+    fiscal_year: int | None = None
+    fiscal_quarter: int | None = None
     created_at: datetime
     updated_at: datetime
 

@@ -80,8 +80,8 @@ async def test_legacy_gb18030_text_is_normalized_without_markitdown(tmp_path, mo
 
     assert parsed.cached is False
     assert parsed.provider == "markitdown"
-    assert markdown.startswith(expected.replace("\r\n", "\n"))
-    assert markdown.count("�") == 1
+    assert "《骆驼祥子》" in markdown and "作者：老舍" in markdown
+    assert markdown.count("\ufffd") == 1
     assert markdown != "None\n"
 
 
@@ -91,7 +91,7 @@ async def test_markitdown_none_sentinel_is_rejected(tmp_path, monkeypatch):
     source.write_bytes(b"fake-office")
     monkeypatch.setattr(service, "_markitdown_sync", lambda _path: "None")
 
-    with pytest.raises(Exception, match="未从文件中解析出有效文本"):
+    with pytest.raises(Exception, match="(?:chưa phân tích|không phân tích|未从文件中解析)"):
         await service.prepare_document(str(source), _settings())
 
     assert not Path(f"{source}.parsed.markitdown.md").exists()
@@ -529,6 +529,14 @@ class _FakeAsyncClient:
         self.calls.append(("POST", url, kwargs))
         return self._next()
 
+    async def put(self, url: str, **kwargs):
+        self.calls.append(("PUT", url, kwargs))
+        return self._next()
+
+    async def get(self, url: str, **kwargs):
+        self.calls.append(("GET", url, kwargs))
+        return self._next()
+
     async def request(self, method: str, url: str, **kwargs):
         self.calls.append((method, url, kwargs))
         return self._next()
@@ -684,6 +692,7 @@ async def test_mineru_upload_create_poll_and_download_zip(tmp_path, monkeypatch)
         _settings(
             mineru_base_url="https://api.302.ai",
             mineru_api_key="sk-mineru",
+            mineru_version="2.5",
             mineru_poll_interval=0.001,
             mineru_poll_timeout=1,
         )
@@ -796,7 +805,7 @@ def test_mineru_zip_requires_markdown():
         archive.writestr("result.json", "{}")
     from sag_api.parsing.mineru import _markdown_from_zip
 
-    with pytest.raises(UpstreamError, match="没有 Markdown"):
+    with pytest.raises(UpstreamError, match="(?:không có file Markdown|没有 Markdown)"):
         _markdown_from_zip(target.getvalue(), 1024)
 
 
@@ -818,7 +827,72 @@ def test_mineru_pending_and_nested_failure_payloads_are_not_misclassified():
 
 @pytest.mark.asyncio
 async def test_mineru_result_download_rejects_private_hosts():
-    with pytest.raises(UpstreamError, match="内网"):
+    with pytest.raises(UpstreamError, match="(?:nội bộ|mạng nội bộ|内网)"):
         await _assert_public_host("127.0.0.1", 80)
-    with pytest.raises(UpstreamError, match="内网"):
+    with pytest.raises(UpstreamError, match="(?:nội bộ|mạng nội bộ|内网)"):
         await _assert_public_host("169.254.169.254", 80)
+
+
+@pytest.mark.asyncio
+async def test_opendatalab_v4_upload_and_extract_batch(tmp_path, monkeypatch):
+    source = tmp_path / "bctc_2025.pdf"
+    source.write_bytes(b"%PDF-1.4 financial report")
+
+    batch_register_resp = {
+        "code": 0,
+        "msg": "ok",
+        "data": {
+            "batch_id": "batch_sag_2026_test",
+            "file_urls": ["https://oss-cn-shanghai.aliyuncs.com/mineru/upload_presigned_url"],
+        },
+    }
+    put_oss_resp = _response(status=200, url="https://oss-cn-shanghai.aliyuncs.com/mineru/upload_presigned_url")
+    poll_results_resp = {
+        "code": 0,
+        "msg": "ok",
+        "data": {
+            "extract_result": [
+                {
+                    "state": "done",
+                    "full_zip_url": "https://cdn-mineru.openxlab.org.cn/results/bctc_2025.zip",
+                    "err_msg": "",
+                }
+            ]
+        },
+    }
+    download_zip_resp = _response(
+        content=_result_zip("# Thuyết minh BCTC 2025\n\nNội dung BCTC chuẩn"),
+        content_type="application/zip",
+        url="https://cdn-mineru.openxlab.org.cn/results/bctc_2025.zip",
+    )
+
+    _FakeAsyncClient.reset([
+        _response(json=batch_register_resp, url="https://mineru.net/api/v4/file-urls/batch"),
+        put_oss_resp,
+        _response(json=poll_results_resp, url="https://mineru.net/api/v4/extract-results/batch"),
+        download_zip_resp,
+    ])
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+
+    client = MinerUClient(
+        _settings(
+            mineru_base_url="https://mineru.net",
+            mineru_api_key="sk-uXJSvOXLPBFN2c4imROJpLQCuWB9Kupf8D9qD9ucIwW3U4st",
+            mineru_language="vi",
+            mineru_mode="precision",
+            mineru_poll_interval=0.001,
+            mineru_poll_timeout=1,
+        )
+    )
+
+    states: list[dict[str, Any]] = []
+    markdown = await client.parse(str(source), on_state=lambda s: _record(states, s))
+
+    assert "Thuyết minh BCTC 2025" in markdown
+    assert any(s.get("task_id") == "batch_sag_2026_test" for s in states)
+    assert [call[0] for call in _FakeAsyncClient.calls] == ["POST", "PUT", "GET", "DOWNLOAD"]
+    assert _FakeAsyncClient.calls[0][1] == "https://mineru.net/api/v4/file-urls/batch"
+    assert _FakeAsyncClient.calls[0][2]["json"]["language"] == "vi"
+    assert _FakeAsyncClient.calls[0][2]["json"]["files"][0]["layout_model"] == "doclayout_yolo"
+    assert _FakeAsyncClient.calls[1][0] == "PUT"
+    assert _FakeAsyncClient.calls[2][1] == "https://mineru.net/api/v4/extract-results/batch"

@@ -46,9 +46,16 @@ class UniverseDiscoveryAgent(BaseAgent):
             - tickers: Optional[List[str]] (danh sách mã cần quét, nếu không truyền sẽ lấy toàn bộ sàn HOSE)
             - target_date: date (ngày chốt BCTC/thanh khoản)
             - strategy_mode: str ("Quant" / "Fundamental")
+            - session_context: str ("Normal" / "Stress" / "Crisis") từ Agent-01
+            - current_regime: str ("BULL_MARKET" / "BEAR_MARKET" / "RANGE_BOUND") từ Agent-01
+            - halted_tickers: List[str] (mã bị tạm ngừng giao dịch realtime) từ Agent-01
         """
         target_date: date = event_data.get("target_date", date.today())
         tickers: Optional[List[str]] = event_data.get("tickers")
+        session_context: str = str(event_data.get("session_context", "Normal"))
+        current_regime: str = str(event_data.get("current_regime", "BULL_MARKET"))
+        halted_tickers_raw = event_data.get("halted_tickers", [])
+        halted_tickers: set[str] = {str(t).upper().strip() for t in halted_tickers_raw if t}
 
         # 1. Nếu không truyền tickers, tự động lấy danh sách cổ phiếu HOSE từ CSDL
         if not tickers:
@@ -71,6 +78,47 @@ class UniverseDiscoveryAgent(BaseAgent):
                 "trace": {"reason": "EMPTY_UNIVERSE"},
             }
 
+        # 2. Hard Law: Chế độ Khủng hoảng (Crisis Discovery Freeze)
+        # Nếu Agent-01 báo thị trường đang sập / hoảng loạn, đóng van tìm kiếm mua mới lập tức
+        if session_context == "Crisis":
+            logger.warning("[UniverseDiscoveryAgent] Thị trường trong trạng thái CRISIS. Kích hoạt Discovery Freeze!")
+            return {
+                "data": {
+                    "target_date": str(target_date),
+                    "scanned_count": len(tickers),
+                    "eligible_count": 0,
+                    "excluded_count": len(tickers),
+                    "discovery_list": [],
+                    "exclusion_log": [{
+                        "ticker": "ALL_MARKET",
+                        "reason": "MARKET_CRISIS_DISCOVERY_FREEZE",
+                        "detail": "Bối cảnh thị trường sụp đổ/hoảng loạn cực độ, đóng van đề xuất mua mới để bảo toàn vốn.",
+                    }],
+                },
+                "trace": {
+                    "session_context": session_context,
+                    "current_regime": current_regime,
+                    "action": "DISCOVERY_FREEZE",
+                },
+            }
+
+        # 3. Lấy thông tin trading_status thực tế từ Database cho các mã
+        db_trading_statuses: Dict[str, str] = {}
+        try:
+            from app.infrastructure.database.connection import get_raw_connection
+            conn = get_raw_connection()
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT symbol, trading_status FROM stocks WHERE symbol = ANY(%s)",
+                    (tickers,),
+                )
+                for row in cur.fetchall():
+                    if row and row[0]:
+                        db_trading_statuses[str(row[0]).upper().strip()] = str(row[1] or "NORMAL").upper().strip()
+            conn.close()
+        except Exception as e:
+            logger.debug(f"[UniverseDiscoveryAgent] Không thể load trading_status từ DB: {e}")
+
         discovery_list: List[Dict[str, Any]] = []
         exclusion_log: List[Dict[str, Any]] = []
         beneish_summary: List[Dict[str, Any]] = []
@@ -82,7 +130,26 @@ class UniverseDiscoveryAgent(BaseAgent):
             if not symbol:
                 continue
 
-            # 2. Kiểm tra cờ GIL (Graph Intelligence Layer) qua SAG FastMCP Adapter
+            # 4.1 Kiểm tra Trading Status Real-time (Websocket / Redis từ Agent-01)
+            if symbol in halted_tickers:
+                exclusion_log.append({
+                    "ticker": symbol,
+                    "reason": "TRADING_STATUS_HALTED_INTRADAY",
+                    "detail": "Cổ phiếu bị tạm ngừng giao dịch hoặc đình chỉ trong phiên (Phát hiện từ Agent-01).",
+                })
+                continue
+
+            # 4.2 Kiểm tra Trading Status Pháp lý từ Database
+            db_status = db_trading_statuses.get(symbol, "NORMAL")
+            if db_status not in ("NORMAL", ""):
+                exclusion_log.append({
+                    "ticker": symbol,
+                    "reason": f"TRADING_STATUS_{db_status}",
+                    "detail": f"Trạng thái niêm yết vi phạm quy định Sở GDCK: {db_status}",
+                })
+                continue
+
+            # 4.3 Kiểm tra cờ GIL (Graph Intelligence Layer) qua SAG FastMCP Adapter
             try:
                 gil_data = await sag_connector.get_gil_relationships(symbol)
                 gil_flag = gil_data.get("gil_flag", "PASS")
@@ -98,7 +165,7 @@ class UniverseDiscoveryAgent(BaseAgent):
                 })
                 continue
 
-            # 3. Chạy bộ lọc Lớp 0: Beneish M-Score 8 biến
+            # 4.4 Chạy bộ lọc Lớp 0: Beneish M-Score 8 biến
             beneish_overrides = event_data.get("beneish_overrides", {})
             if symbol in beneish_overrides:
                 m_score = float(beneish_overrides[symbol])
@@ -141,13 +208,24 @@ class UniverseDiscoveryAgent(BaseAgent):
                 })
                 continue
 
-            # 4. Phân nhóm Universe động: VN30 -> Group A, Khác -> Group B
-            u_group = UniverseGroup.A.value if symbol in vn30_set else UniverseGroup.B.value
+            # 4.5 Phân nhóm Universe động & Thích ứng Regime
+            if symbol in vn30_set:
+                u_group = UniverseGroup.A.value
+            else:
+                # Nếu thị trường Gấu (Bear Market), Hard Law cấm mở rộng sang các mã rủi ro/đầu cơ ngoài Group A
+                if current_regime == "BEAR_MARKET":
+                    exclusion_log.append({
+                        "ticker": symbol,
+                        "reason": "BEAR_REGIME_EXCLUSION",
+                        "detail": "Chế độ Bear Market: Tự động loại bỏ cổ phiếu ngoài Group A để phòng thủ vốn.",
+                    })
+                    continue
+                u_group = UniverseGroup.B.value
 
             discovery_list.append({
                 "ticker": symbol,
                 "universe_group": u_group,
-                "trading_status": TradingStatus.NORMAL.value,
+                "trading_status": db_status if db_status else TradingStatus.NORMAL.value,
                 "beneish_status": b_status,
                 "m_score": m_score,
                 "gil_flag": gil_flag,
@@ -167,6 +245,9 @@ class UniverseDiscoveryAgent(BaseAgent):
             "universe_manager": self.universe_manager.__class__.__name__,
             "beneish_engine": self.beneish_engine.__class__.__name__,
             "gil_source": "SAG Knowledge Graph (sag_connector)",
+            "session_context": session_context,
+            "current_regime": current_regime,
+            "halted_tickers_count": len(halted_tickers),
             "beneish_details": beneish_summary,
         }
 

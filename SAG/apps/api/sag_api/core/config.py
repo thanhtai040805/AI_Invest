@@ -150,10 +150,15 @@ class Settings(BaseSettings):
     # ── Phân tích tài liệu (chuyển thống nhất sang Markdown trước khi vào zleap-sag) ─────────────────
     # auto: PDF ưu tiên MinerU, khi chưa cấu hình hoặc MinerU lỗi thì quay lại MarkItDown cục bộ.
     document_parser: Literal["auto", "markitdown", "mineru"] = "auto"
-    mineru_base_url: str | None = "https://api.302ai.cn"
+    mineru_base_url: str | None = "https://mineru.net"
     mineru_api_key: str | None = None
-    mineru_version: Literal["2.0", "2.5"] = "2.5"
-    mineru_parse_method: Literal["auto", "txt", "ocr"] = "auto"
+    mineru_version: str = "4.0"
+    mineru_parse_method: Literal["auto", "txt", "ocr"] = "ocr"
+    mineru_language: str = "vi"
+    mineru_mode: Literal["precision", "flash"] = "precision"
+    mineru_layout_model: str = "doclayout_yolo"
+    mineru_enable_table: bool = True
+    mineru_enable_formula: bool = True
     mineru_request_timeout: float = 60.0
     mineru_poll_interval: float = 2.0
     mineru_poll_timeout: float = 300.0

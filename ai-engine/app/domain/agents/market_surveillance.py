@@ -71,7 +71,35 @@ class MarketSurveillanceAgent(BaseAgent):
         session = self.session_manager.get_session(now)
         session_code = session.value
 
-        # 2. Phát hiện bất thường phiên ATC / Volume Spike
+        # 2. Phát hiện cổ phiếu bị Tạm ngừng / Đình chỉ giao dịch (Halt / Suspended)
+        # Nguồn 1: Intraday WebSocket/Redis (truyền trong event_data hoặc order_book)
+        # Nguồn 2: Database stocks.trading_status
+        halted_tickers: List[str] = list(event_data.get("halted_tickers", []))
+        for sym, ob in order_book.items():
+            sym_clean = str(sym).upper().strip()
+            ob_status = str(ob.get("status", "")).upper()
+            if ob_status in ("HALT", "HALTED", "SUSPENDED", "CONTROLLED"):
+                if sym_clean not in halted_tickers:
+                    halted_tickers.append(sym_clean)
+
+        if event_data.get("check_db_status", True):
+            try:
+                from app.infrastructure.database.connection import get_raw_connection
+                conn = get_raw_connection()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT symbol FROM stocks WHERE trading_status IS NOT NULL AND UPPER(trading_status) != 'NORMAL'"
+                    )
+                    for r in cur.fetchall():
+                        if r and r[0]:
+                            s_db = str(r[0]).upper().strip()
+                            if s_db not in halted_tickers:
+                                halted_tickers.append(s_db)
+                conn.close()
+            except Exception as e:
+                logger.debug(f"Không thể query trading_status từ DB trong market_surveillance: {e}")
+
+        # 3. Phát hiện bất thường phiên ATC / Volume Spike
         target_d = now.date() if isinstance(now, datetime) else date.today()
         is_expiry = self.atc_detector.is_derivatives_expiry(target_d)
         
@@ -87,7 +115,7 @@ class MarketSurveillanceAgent(BaseAgent):
                     "reason": "ATC_VOLUME_SPIKE_NON_EXPIRY"
                 })
 
-        # 3. Phân tích méo mó chỉ số VN30
+        # 4. Phân tích méo mó chỉ số VN30
         distortion_result = self.distortion_monitor.analyze_distortion(vn30_returns, vn30_weights)
 
         # 4. Đo lường tâm lý bầy đàn qua CSAD
@@ -160,6 +188,7 @@ class MarketSurveillanceAgent(BaseAgent):
             "atc_anomalies_count": len(atc_anomalies),
             "vn30_distortion": distortion_result.get("is_distorted", False),
             "csad_score": round(csad_score, 4),
+            "halted_tickers": halted_tickers,
         }
 
         trace = {

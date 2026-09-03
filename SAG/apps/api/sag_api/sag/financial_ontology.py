@@ -405,3 +405,240 @@ def infer_doc_type(title_or_path: str | None) -> str | None:
         return "social_media"
     return None
 
+
+# ── Từ điển Ánh xạ Thực thể Chuẩn hóa (Canonical Entity & Alias Resolution) ──
+# Ánh xạ toàn bộ các biến thể tên gọi thường gặp của doanh nghiệp về Canonical Ticker & Tên chuẩn
+CANONICAL_TICKER_ALIASES: dict[str, tuple[str, str]] = {
+    # Thép & Vật liệu
+    "hpg": ("HPG", "TICKER"),
+    "hòa phát": ("HPG", "TICKER"),
+    "tập đoàn hòa phát": ("HPG", "TICKER"),
+    "ctcp tập đoàn hòa phát": ("HPG", "TICKER"),
+    "công ty cổ phần tập đoàn hòa phát": ("HPG", "TICKER"),
+    "thép hòa phát": ("HPG", "TICKER"),
+    "hoa phat group": ("HPG", "TICKER"),
+    "hsg": ("HSG", "TICKER"),
+    "hoa sen": ("HSG", "TICKER"),
+    "tập đoàn hoa sen": ("HSG", "TICKER"),
+    "ctcp tập đoàn hoa sen": ("HSG", "TICKER"),
+    "nkg": ("NKG", "TICKER"),
+    "nam kim": ("NKG", "TICKER"),
+    "thép nam kim": ("NKG", "TICKER"),
+    "ctcp thép nam kim": ("NKG", "TICKER"),
+
+    # Chứng khoán
+    "fts": ("FTS", "TICKER"),
+    "chứng khoán fpt": ("FTS", "TICKER"),
+    "ctcp chứng khoán fpt": ("FTS", "TICKER"),
+    "fpt securities": ("FTS", "TICKER"),
+    "vci": ("VCI", "TICKER"),
+    "vietcap": ("VCI", "TICKER"),
+    "chứng khoán vietcap": ("VCI", "TICKER"),
+    "chứng khoán bản việt": ("VCI", "TICKER"),
+    "ctcp chứng khoán vietcap": ("VCI", "TICKER"),
+    "vnd": ("VND", "TICKER"),
+    "vndirect": ("VND", "TICKER"),
+    "chứng khoán vndirect": ("VND", "TICKER"),
+    "ctcp chứng khoán vndirect": ("VND", "TICKER"),
+    "hcm": ("HCM", "TICKER"),
+    "hsc": ("HCM", "TICKER"),
+    "chứng khoán hcm": ("HCM", "TICKER"),
+    "chứng khoán tp hcm": ("HCM", "TICKER"),
+    "ctcp chứng khoán thành phố hồ chí minh": ("HCM", "TICKER"),
+    "ssi": ("SSI", "TICKER"),
+    "chứng khoán ssi": ("SSI", "TICKER"),
+    "ctcp chứng khoán ssi": ("SSI", "TICKER"),
+
+    # Ngân hàng
+    "vcb": ("VCB", "TICKER"),
+    "vietcombank": ("VCB", "TICKER"),
+    "ngân hàng ngoại thương": ("VCB", "TICKER"),
+    "ngân hàng tmcp ngoại thương việt nam": ("VCB", "TICKER"),
+    "tcb": ("TCB", "TICKER"),
+    "techcombank": ("TCB", "TICKER"),
+    "ngân hàng kỹ thương": ("TCB", "TICKER"),
+    "ngân hàng tmcp kỹ thương việt nam": ("TCB", "TICKER"),
+    "mbb": ("MBB", "TICKER"),
+    "mb bank": ("MBB", "TICKER"),
+    "ngân hàng quân đội": ("MBB", "TICKER"),
+    "ngân hàng tmcp quân đội": ("MBB", "TICKER"),
+    "acb": ("ACB", "TICKER"),
+    "ngân hàng á châu": ("ACB", "TICKER"),
+    "ngân hàng tmcp á châu": ("ACB", "TICKER"),
+    "bid": ("BID", "TICKER"),
+    "bidv": ("BID", "TICKER"),
+    "ngân hàng đầu tư và phát triển việt nam": ("BID", "TICKER"),
+    "ctg": ("CTG", "TICKER"),
+    "vietinbank": ("CTG", "TICKER"),
+    "ngân hàng công thương": ("CTG", "TICKER"),
+    "vpbank": ("VPB", "TICKER"),
+    "vpb": ("VPB", "TICKER"),
+
+    # Công nghệ & Viễn thông
+    "fpt": ("FPT", "TICKER"),
+    "tập đoàn fpt": ("FPT", "TICKER"),
+    "ctcp fpt": ("FPT", "TICKER"),
+    "công ty cổ phần fpt": ("FPT", "TICKER"),
+
+    # Bán lẻ & Tiêu dùng
+    "mwg": ("MWG", "TICKER"),
+    "thế giới di động": ("MWG", "TICKER"),
+    "ctcp đầu tư thế giới di động": ("MWG", "TICKER"),
+    "bách hóa xanh": ("MWG", "TICKER"),
+    "điện máy xanh": ("MWG", "TICKER"),
+    "vnm": ("VNM", "TICKER"),
+    "vinamilk": ("VNM", "TICKER"),
+    "sữa việt nam": ("VNM", "TICKER"),
+    "ctcp sữa việt nam": ("VNM", "TICKER"),
+    "msn": ("MSN", "TICKER"),
+    "masan": ("MSN", "TICKER"),
+    "tập đoàn masan": ("MSN", "TICKER"),
+    "ctcp tập đoàn masan": ("MSN", "TICKER"),
+
+    # Bất động sản
+    "vhm": ("VHM", "TICKER"),
+    "vinhomes": ("VHM", "TICKER"),
+    "ctcp vinhomes": ("VHM", "TICKER"),
+    "vic": ("VIC", "TICKER"),
+    "vingroup": ("VIC", "TICKER"),
+    "tập đoàn vingroup": ("VIC", "TICKER"),
+    "kdh": ("KDH", "TICKER"),
+    "khang điền": ("KDH", "TICKER"),
+    "nhà khang điền": ("KDH", "TICKER"),
+    "pdr": ("PDR", "TICKER"),
+    "phát đạt": ("PDR", "TICKER"),
+    "bất động sản phát đạt": ("PDR", "TICKER"),
+    "dxg": ("DXG", "TICKER"),
+    "đất xanh": ("DXG", "TICKER"),
+    "tập đoàn đất xanh": ("DXG", "TICKER"),
+    "nvl": ("NVL", "TICKER"),
+    "novaland": ("NVL", "TICKER"),
+    "tập đoàn novaland": ("NVL", "TICKER"),
+}
+
+
+def normalize_entity_text(value: str) -> str:
+    """Chuẩn hóa chuỗi văn bản thực thể để tìm kiếm và so khớp."""
+    if not value:
+        return ""
+    import re
+    cleaned = value.strip().lower()
+    cleaned = re.sub(r"[,\-_/\\.]+", " ", cleaned)
+    return " ".join(cleaned.split())
+
+
+from sag_api.sag.universe_registry import EntityResolutionResult, universe_registry
+
+
+def resolve_canonical_entity(name: str, entity_type: str | None = None) -> tuple[str, str]:
+    """Chuẩn hóa một thực thể về Canonical Ticker hoặc Tên chuẩn trong hệ thống.
+    
+    Sử dụng CanonicalEntityRegistry toàn diện với phân loại Company/Brand/Subsidiary/Project.
+    Returns:
+        (canonical_name, canonical_type)
+    """
+    raw_name = (name or "").strip()
+    if not raw_name:
+        return "", entity_type or "ENTITY"
+
+    # 1. Tra cứu qua Dynamic Canonical Entity Registry
+    res = universe_registry.resolve(raw_name)
+    if res and res.confidence >= 0.70:
+        return res.primary_ticker or res.canonical_name, res.entity_type
+
+    # 2. Fallback cho chuỗi 3 ký tự viết hoa toàn bộ -> Coi là TICKER
+    if len(raw_name) == 3 and raw_name.isalpha() and raw_name.isupper():
+        return raw_name, "TICKER"
+
+    return raw_name, entity_type or "COMPANY"
+
+
+def extract_fiscal_metadata(text_or_title: str, reference_year: int = 2026) -> dict[str, Any]:
+    """Bóc tách metadata tài chính (Năm, Quý, Loại BCTC, Ticker, Staleness Tier) từ tiêu đề hoặc text."""
+    import re
+    if not text_or_title:
+        return {}
+
+    text_clean = text_or_title.strip()
+    # Thay thế dấu gạch dưới, gạch ngang, dấu chấm bằng khoảng trắng để regex nhận diện word boundaries chuẩn xác
+    text_normalized = re.sub(r"[_./\\-]+", " ", text_clean)
+    text_lower = text_normalized.lower()
+
+    # 1. Bóc tách Ticker qua Universe Registry
+    ticker = None
+    res = universe_registry.resolve(text_normalized)
+    if res and res.confidence >= 0.70:
+        ticker = res.primary_ticker
+    else:
+        ticker_match = re.search(r"\b([A-Z]{3})\b", text_normalized)
+        if ticker_match:
+            cand = ticker_match.group(1)
+            cand_res = universe_registry.resolve(cand)
+            if cand_res and cand_res.confidence >= 0.70:
+                ticker = cand_res.primary_ticker
+
+    # 2. Bóc tách Năm tài chính (2010 -> 2030)
+    year_match = re.search(r"\b(20[1-2][0-9]|2030)\b", text_normalized)
+    fiscal_year = int(year_match.group(1)) if year_match else None
+
+    # 3. Bóc tách Quý tài chính (Q1, Q2, Q3, Q4, Quý 1, Quý I...)
+    fiscal_quarter = None
+    q_match = re.search(r"\b(?:q|quý|quy)\s*([1-4]|i{1,3}|iv)\b", text_lower)
+    if q_match:
+        q_val = q_match.group(1).lower()
+        q_map = {"1": 1, "2": 2, "3": 3, "4": 4, "i": 1, "ii": 2, "iii": 3, "iv": 4}
+        fiscal_quarter = q_map.get(q_val)
+
+    # 4. Bóc tách Loại Báo cáo (Hợp nhất / Riêng / Soát xét / Kiểm toán)
+    report_scope = "CONSOLIDATED"  # Mặc định hợp nhất nếu không ghi rõ
+    if any(k in text_lower for k in ("riêng", "mẹ", "công ty mẹ", "cong ty me", "separate", "parent")):
+        report_scope = "SEPARATE"
+    elif any(k in text_lower for k in ("hợp nhất", "hop nhat", "consolidated")):
+        report_scope = "CONSOLIDATED"
+
+    is_audited = any(k in text_lower for k in ("kiểm toán", "kiem toan", "audited"))
+    is_reviewed = any(k in text_lower for k in ("soát xét", "soat xet", "reviewed", "giữa niên độ", "giua nien do"))
+
+    period_label = ""
+    if fiscal_quarter and fiscal_year:
+        period_label = f"Q{fiscal_quarter}.{fiscal_year}"
+    elif fiscal_year:
+        period_label = f"Năm {fiscal_year}"
+
+    # 5. Phân loại Vòng đời Tài liệu (Staleness Tier & Freshness Score)
+    # Quy định: Tài liệu > 1 năm (4 quý) sẽ mất tính chất thời sự, chuyển sang HISTORICAL
+    staleness_tier = "UNKNOWN"
+    freshness_score = 0.70
+
+    if fiscal_year:
+        year_diff = reference_year - fiscal_year
+        if year_diff == 0:
+            # Cùng năm hiện hành
+            staleness_tier = "FRESH"
+            freshness_score = 1.0
+        elif year_diff == 1:
+            # 1 năm trước (4 quý gần nhất)
+            staleness_tier = "ACTIVE"
+            freshness_score = 0.85
+        elif 2 <= year_diff <= 3:
+            # 2 đến 3 năm (Dữ liệu Lịch sử đối chiếu)
+            staleness_tier = "HISTORICAL"
+            freshness_score = 0.40
+        else:
+            # > 3 năm (Hết hạn hiệu lực phân tích hiện tại)
+            staleness_tier = "EXPIRED"
+            freshness_score = 0.10
+
+    return {
+        "ticker": ticker,
+        "fiscal_year": fiscal_year,
+        "fiscal_quarter": fiscal_quarter,
+        "report_scope": report_scope,
+        "is_audited": is_audited,
+        "is_reviewed": is_reviewed,
+        "period_label": period_label,
+        "staleness_tier": staleness_tier,
+        "freshness_score": freshness_score,
+    }
+
+
