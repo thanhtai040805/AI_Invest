@@ -49,8 +49,13 @@ cấm viết loại thực thể thành tên trường, ví dụ không được
 class _FallbackTitleMarkdownParser(MarkdownParser):
     """Preserve Muse's logical filename when converted Markdown has no H1."""
 
-    def __init__(self, fallback_title: str) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        fallback_title: str,
+        max_tokens: int = 1_000_000,
+        chunk_mode: str = "standard",
+    ) -> None:
+        super().__init__(max_tokens=max_tokens, chunk_mode=chunk_mode)
         self._fallback_title = fallback_title.strip()
 
     def extract_title(self, content: str) -> str:
@@ -283,8 +288,8 @@ class IncrementalDocumentProcessor:
         source_config_id: str,
         *,
         max_concurrency: int,
-        chunk_max_tokens: int = 1_000,
-        chunk_mode: Literal["standard", "heading_strict"] = "standard",
+        chunk_max_tokens: int = 1_000_000,
+        chunk_mode: Literal["standard", "heading_strict", "full"] = "full",
         document_title: str | None = None,
         enable_strict_filtering: bool = False,
         doc_type: str | None = None,
@@ -315,21 +320,41 @@ class IncrementalDocumentProcessor:
                 raise RuntimeError("Tài liệu chưa được chia chunk, không thể tiếp tục từ điểm dừng")
             if on_stage:
                 await on_stage("loading")
-            loader = (
-                DocumentLoader(parser=_FallbackTitleMarkdownParser(self._document_title))
+            
+            is_full = self._chunk_mode == "full" or self._chunk_max_tokens >= 200_000
+            effective_chunk_mode = "standard" if is_full else self._chunk_mode
+            effective_max_tokens = max(self._chunk_max_tokens, 2_000_000) if is_full else self._chunk_max_tokens
+
+            parser_inst = (
+                _FallbackTitleMarkdownParser(
+                    self._document_title,
+                    max_tokens=effective_max_tokens,
+                    chunk_mode=effective_chunk_mode,
+                )
                 if self._document_title
-                else DocumentLoader()
+                else MarkdownParser(
+                    max_tokens=effective_max_tokens,
+                    chunk_mode=effective_chunk_mode,
+                )
             )
+            loader = DocumentLoader(parser=parser_inst)
             loaded = await loader.load(
                 DocumentLoadConfig(
                     path=str(path),
                     source_config_id=self._source_config_id,
-                    max_tokens=self._chunk_max_tokens,
-                    chunk_mode=self._chunk_mode,
+                    max_tokens=effective_max_tokens,
+                    chunk_mode=effective_chunk_mode,
                 )
             )
             current.source_id = getattr(loaded, "source_id", None)
             current.chunk_ids = list(getattr(loaded, "chunk_ids", []) or [])
+            log.info(
+                "Đã tải tài liệu thành công: source_id=%s, chunk_count=%d (mode=%s, is_full=%s)",
+                current.source_id,
+                len(current.chunk_ids),
+                self._chunk_mode,
+                is_full,
+            )
             current.processed_chunk_ids = []
             current.event_count = 0
             current.event_ids = []
@@ -496,7 +521,11 @@ class IncrementalDocumentProcessor:
                 meta_hints.append(f"Loại BCTC: {self._fiscal_meta['report_scope']}")
         meta_context = ("\n[BỐI CẢNH BÁO CÁO TÀI CHÍNH]\n" + "\n".join(f"- {h}" for h in meta_hints)) if meta_hints else ""
 
-        prompt_requirements = f"{_KNOWLEDGE_EVENT_REQUIREMENTS}{meta_context}\n\n{get_financial_extraction_prompt(self._doc_type)}"
+        is_full = self._chunk_mode == "full" or self._chunk_max_tokens >= 200_000
+        prompt_requirements = (
+            f"{_KNOWLEDGE_EVENT_REQUIREMENTS}{meta_context}\n\n"
+            f"{get_financial_extraction_prompt(self._doc_type, is_full_document=is_full)}"
+        )
         try:
             events = await extractor.extract(
                 ExtractConfig(

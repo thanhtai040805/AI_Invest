@@ -122,4 +122,5 @@ class DocumentClassifierService:
             "r2_key": upload_res["key"],
             "r2_url": upload_res["url"],
             "pdf_sha256": upload_res["sha256"],
+            "pruned_bytes": result.pruned_pdf_bytes,
         }

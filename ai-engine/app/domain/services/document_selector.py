@@ -93,6 +93,24 @@ class ActiveDocumentSelector:
                 LIMIT 1;
             """, (ticker,))
             row_ann = cur.fetchone()
+            if not row_ann:
+                # Fallback cho doanh nghiệp/ngân hàng không dùng tiêu đề riêng/công ty mẹ
+                cur.execute("""
+                    SELECT id, title, doc_type, published_date, article_pdf_urls
+                    FROM knowledge_documents
+                    WHERE symbol = %s
+                      AND doc_type = 'financial_statement'
+                      AND (
+                          LOWER(title) LIKE '%%kiểm toán%%'
+                          OR LOWER(title) LIKE '%%kiem toan%%'
+                          OR LOWER(title) LIKE '%%audited%%'
+                          OR LOWER(title) LIKE '%%cả năm%%'
+                      )
+                    ORDER BY published_date DESC NULLS LAST, id DESC
+                    LIMIT 1;
+                """, (ticker,))
+                row_ann = cur.fetchone()
+
             if row_ann:
                 url_ann = row_ann["article_pdf_urls"][0] if row_ann.get("article_pdf_urls") else ""
                 annual_doc = ActiveDocument(
@@ -125,6 +143,19 @@ class ActiveDocumentSelector:
                 LIMIT 1;
             """, (ticker, annual_date, annual_id))
             row_q = cur.fetchone()
+            if not row_q:
+                # Fallback nếu không có tiêu đề riêng/công ty mẹ
+                cur.execute("""
+                    SELECT id, title, doc_type, published_date, article_pdf_urls
+                    FROM knowledge_documents
+                    WHERE symbol = %s
+                      AND doc_type = 'financial_statement'
+                      AND published_date >= %s
+                      AND id != %s
+                    ORDER BY published_date DESC NULLS LAST, id DESC
+                    LIMIT 1;
+                """, (ticker, annual_date, annual_id))
+                row_q = cur.fetchone()
             if row_q:
                 url_q = row_q["article_pdf_urls"][0] if row_q.get("article_pdf_urls") else ""
                 quarter_doc = ActiveDocument(

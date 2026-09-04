@@ -5,23 +5,18 @@ API: GET /du-lieu/Ajax/PageNew/FileBCTC.ashx?Symbol={symbol}&Type={type}&Year=0
 
 Type → doc_type mapping:
   1 → financial_statement    (BCTC: balance sheet, P&L, cash flow PDFs)
-  3 → annual_report          (annual reports, prospectus, charter)
-  4 → agm_resolution         (AGM + BOD resolutions)
-  5 → governance_report      (corporate governance reports)
+  3 → annual_report          (annual reports, prospectus, charter PDFs)
+  4 → agm_resolution         (AGM + BOD resolutions PDFs)
+  5 → governance_report      (corporate governance reports PDFs)
 
-Pipeline:
-  1. Load symbol list from stocks table
-  2. For each symbol, call API for each type
-  3. Deduplicate by (symbol, Link)
-  4. Upsert to knowledge_documents
-  5. (Optional) Deep crawl PDF content via pdf_parser.async_download_pdf_text
+Lưu ý:
+  - Báo chí (News) là HTML thuần túy, được cào và parse riêng bởi cafef_listing_crawl / html_parser.
+  - File này chỉ cào và lập chỉ mục metadata + URL file PDF gốc của Doanh nghiệp.
+  - Nội dung PDF sẽ được tải và chuyển đổi thành Markdown bởi PageClassifier & MinerU trong SAG pipeline.
 
 Usage:
   python -m app.infrastructure.knowledge_base.crawlers.vn.cafef_document_crawl
-  python -m app.infrastructure.knowledge_base.crawlers.vn.cafef_document_crawl --deep
-  python -m app.infrastructure.knowledge_base.crawlers.vn.cafef_document_crawl --type 1
-  python -m app.infrastructure.knowledge_base.crawlers.vn.cafef_document_crawl --type 4
-  python -m app.infrastructure.knowledge_base.crawlers.vn.cafef_document_crawl --type 1,3,4,5
+  python -m app.infrastructure.knowledge_base.crawlers.vn.cafef_document_crawl --type 1,5
 """
 from __future__ import annotations
 
@@ -244,7 +239,9 @@ def filter_master_financial_statements(docs: List[Dict[str, Any]]) -> List[Dict[
             month = pub_date.month
         else:
             year, month = 0, 0
-        key = (d.get("symbol"), year, month)
+        title_lower = (d.get("title") or "").lower()
+        is_parent = any(k in title_lower for k in ["công ty mẹ", "riêng", "cong ty me", "don the"])
+        key = (d.get("symbol"), year, month, is_parent)
         grouped[key].append(d)
 
     selected_bctc = []
@@ -269,79 +266,20 @@ def upsert_documents(documents: List[Dict[str, Any]]) -> int:
     return upsert_articles(documents, source="cafef_docs")
 
 
-# ── Deep crawl (PDF download + text extraction) ───────────────────────────
-
-async def deep_crawl_pdfs(client: httpx.AsyncClient, documents: List[Dict[str, Any]], sem: asyncio.Semaphore) -> int:
-    """Download PDFs and extract text for documents that don't have content yet."""
-    from app.infrastructure.knowledge_base.crawlers.vn.pdf_parser import async_download_pdf_text
-    from app.infrastructure.knowledge_base.crawlers.vn.news_repo import batch_has_content
-
-    # Check what already has content
-    has_content = batch_has_content(documents)
-    to_fetch = [(i, d) for i, d in enumerate(documents) if not has_content[i]]
-
-    if not to_fetch:
-        return 0
-
-    logger.info("Deep crawl: %d/%d documents need PDF content", len(to_fetch), len(documents))
-    with_content = 0
-
-    async def fetch_one(idx: int, doc: dict) -> Optional[str]:
-        async with sem:
-            pdf_urls = doc.get("article_pdf_urls") or []
-            for pdf_url in pdf_urls:
-                text = await async_download_pdf_text(client, pdf_url, timeout_sec=30)
-                if text:
-                    return text
-            # if PDF download fails, try direct URL
-            text = await async_download_pdf_text(client, doc["url"], timeout_sec=30)
-            if text:
-                return text
-            return None
-
-    pdf_texts = await asyncio.gather(*[fetch_one(idx, doc) for idx, doc in to_fetch])
-
-    from app.infrastructure.database.pg_pool import get_cursor
-
-    updated = 0
-    for (idx, doc), pdf_text in zip(to_fetch, pdf_texts):
-        if pdf_text:
-            documents[idx]["article_pdf_text"] = pdf_text
-            documents[idx]["article_content"] = pdf_text  # store PDF text as content too
-            with_content += 1
-            # Immediate update for this specific doc
-            with get_cursor() as cur:
-                cur.execute(
-                    """UPDATE knowledge_documents SET
-                       article_content = COALESCE(article_content, %s),
-                       article_pdf_text = %s,
-                       content_fetched_at = NOW()
-                       WHERE symbol = %s AND url = %s
-                       AND (article_content IS NULL OR article_content = '')""",
-                    (pdf_text, pdf_text, doc["symbol"], doc["url"]),
-                )
-                updated += cur.rowcount
-
-    logger.info("Deep crawl: %d/%d PDFs extracted (%d updated DB)", with_content, len(to_fetch), updated)
-    return with_content
-
-
 # ── Main entry point ───────────────────────────────────────────────────────
 
 async def run(
     types: Optional[List[int]] = None,
     symbols: Optional[List[str]] = None,
     exchange: Optional[str] = None,
-    deep: bool = False,
     max_years: int = 5,
 ) -> Dict[str, Any]:
-    """Run the document crawl pipeline.
+    """Run the corporate document crawl pipeline.
 
     Args:
         types: List of type IDs to crawl. Default all (1, 3, 4, 5).
         symbols: Specific symbols to crawl. If None, load from stocks table.
         exchange: Filter symbols by exchange (e.g. 'HOSE'). Only used when symbols=None.
-        deep: Download and extract PDF text.
         max_years: Max age of documents to keep (0 = keep all). Default 5 years.
 
     Returns:
@@ -361,7 +299,7 @@ async def run(
     if not symbols:
         return {"status": "error", "error": "No symbols to crawl"}
 
-    logger.info("Cafef Document Crawl: %d symbols, types=%s, deep=%s", len(symbols), types, deep)
+    logger.info("Cafef Document Crawl: %d symbols, types=%s", len(symbols), types)
 
     # Phase 2: fetch API for each symbol + type
     all_docs: List[Dict[str, Any]] = []
@@ -403,23 +341,14 @@ async def run(
     logger.info("Master BCTC filter: selected %d master documents from %d total", len(all_docs), before_master)
 
     # Phase 3: upsert
-
     inserted = upsert_documents(all_docs)
     logger.info("Upsert: %d/%d new (others existed)", inserted, len(all_docs))
-
-    # Phase 4: deep crawl PDFs
-    deep_crawled = 0
-    if deep and inserted > 0:
-        sem = asyncio.Semaphore(CONCURRENT)
-        async with httpx.AsyncClient(limits=limits, timeout=30) as client:
-            deep_crawled = await deep_crawl_pdfs(client, all_docs, sem)
 
     return {
         "status": "success",
         "symbols": len(symbols),
         "total": len(all_docs),
         "inserted": inserted,
-        "deep_crawled": deep_crawled,
     }
 
 
@@ -427,11 +356,10 @@ def crawl(
     types: Optional[List[int]] = None,
     symbols: Optional[List[str]] = None,
     exchange: Optional[str] = None,
-    deep: bool = False,
     max_years: int = 5,
 ) -> Dict[str, Any]:
     """Sync entry point."""
-    return asyncio.run(run(types=types, symbols=symbols, exchange=exchange, deep=deep, max_years=max_years))
+    return asyncio.run(run(types=types, symbols=symbols, exchange=exchange, max_years=max_years))
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────
@@ -445,7 +373,6 @@ if __name__ == "__main__":
     )
 
     args = sys.argv[1:]
-    deep = "--deep" in args
     types = None
     exchange = None
     max_years = 5
@@ -457,9 +384,7 @@ if __name__ == "__main__":
             exchange = a.split("=", 1)[1].upper()
         elif a.startswith("--max-years="):
             max_years = int(a.split("=", 1)[1])
-        elif a == "--deep":
-            pass
 
     logger.info("=== CafeF Document Crawl (max_years=%d) ===", max_years)
-    result = crawl(types=types, exchange=exchange, deep=deep, max_years=max_years)
+    result = crawl(types=types, exchange=exchange, max_years=max_years)
     logger.info("Result: %s", result)

@@ -294,7 +294,7 @@ DOMAIN_EVENT_TYPES: dict[int, tuple[FinancialEventType, ...]] = {
 
 
 @cache
-def get_financial_extraction_prompt(doc_type: str | None = None) -> str:
+def get_financial_extraction_prompt(doc_type: str | None = None, is_full_document: bool = True) -> str:
     """Trả về Extraction Prompt được tinh gọn theo loại tài liệu (doc_type). Cache RAM 100%."""
     if doc_type and doc_type in DOC_TYPE_DOMAINS:
         domains = DOC_TYPE_DOMAINS[doc_type]
@@ -314,10 +314,17 @@ def get_financial_extraction_prompt(doc_type: str | None = None) -> str:
     )
     event_lines = ", ".join(e.value for e in event_types)
 
+    if is_full_document:
+        instructions = """Nhiệm vụ của bạn là phân tích TOÀN BỘ tài liệu này (Thuyết minh Báo cáo Tài chính hoặc Báo cáo Quản trị / Báo cáo Thường niên) và trích xuất TOÀN DIỆN:
+1. Danh sách TẤT CẢ các Sự kiện tài chính & quản trị trọng yếu (Events) xuất hiện trong tài liệu (gồm: Thuyết minh Nợ vay & Ngân hàng chủ nợ, Giao dịch các bên liên quan RPT, Danh mục đầu tư/Tự doanh FVTPL, Đầu tư công ty con/liên kết, Chi phí XDCB dở dang / Dự án CapEx, Cơ cấu cổ đông, Nghị quyết & Giao dịch người nội bộ/HĐQT, v.v.).
+2. Danh sách ĐẦY ĐỦ các Thực thể (Entities) và Quan hệ (Relations) với số tiền VND và chiều mũi tên quan hệ chuẩn xác phục vụ phân tích cấu trúc sở hữu, dòng tiền và rủi ro bên liên quan cho đồ thị GIL."""
+    else:
+        instructions = """Nhiệm vụ của bạn là phân tích đoạn văn bản Thuyết minh BCTC / Báo cáo Quản trị này và trích xuất:
+1. Một Event chính đại diện cho ngữ cảnh đầy đủ của đoạn văn bản hoặc bảng số liệu.
+2. Các Entity chỉ mục liên quan theo bộ Taxonomy tinh gọn sau:"""
+
     return f"""Bạn là Chuyên gia Phân tích Tài chính & Senior Broker hàng đầu tại Thị trường Chứng khoán Việt Nam.
-Nhiệm vụ của bạn là phân tích văn bản tài chính (loại: {doc_type or 'tổng hợp'}) và trích xuất:
-1. Một Event chính đại diện cho ngữ cảnh đầy đủ của văn bản hoặc bảng HTML.
-2. Các Entity chỉ mục liên quan theo bộ Taxonomy tinh gọn sau:
+{instructions}
 
 [CÁC LOẠI THỰC THỂ (ENTITY TYPES)]
 {entity_lines}
@@ -325,9 +332,10 @@ Nhiệm vụ của bạn là phân tích văn bản tài chính (loại: {doc_ty
 [CÁC LOẠI SỰ KIỆN (EVENT TYPES)]
 {event_lines}
 
-LƯU Ý ĐẶC BIỆT KHI XỬ LÝ BẢNG HTML (TABLES):
-- Đọc kỹ các ô trong <table> để nhận diện danh mục tự doanh (FVTPL), công ty con (kèm % sở hữu), nhóm nợ (1-5) và số dư Margin.
-- Kết nối thông tin Tên cổ phiếu/dự án với số liệu liên quan.
+LƯU Ý ĐẶC BIỆT KHI XỬ LÝ BẢNG BIỂU & SỐ LIỆU TÀI CHÍNH:
+- Đọc kỹ các bảng số liệu để nhận diện danh mục tự doanh (FVTPL), công ty con (kèm % sở hữu), nhóm nợ (1-5), số dư Margin và giao dịch bên liên quan (RPT).
+- Bắt buộc chuẩn hóa số tiền về đơn vị VND đầy đủ (ví dụ: '500 triệu đồng' -> 500,000,000; '120 tỷ đồng' -> 120,000,000,000).
+- Kết nối chính xác tên cổ phiếu, dự án, bên vay và bên cho vay.
 
 Hãy trả về kết quả định dạng JSON khớp với schema yêu cầu.
 """

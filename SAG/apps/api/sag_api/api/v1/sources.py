@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.connectors import registry
@@ -61,6 +61,48 @@ async def ingest_by_ticker(
         fiscal_quarter=body.fiscal_quarter,
     )
     return DocumentOut.model_validate(document)
+
+
+@router.post("/by-ticker/{ticker}/documents/upload", response_model=DocumentOut, status_code=201)
+async def upload_by_ticker(
+    ticker: str,
+    file: UploadFile = File(...),
+    doc_role: str = Form("LATEST_QUARTER"),
+    is_active: bool = Form(True),
+    fiscal_year: int | None = Form(None),
+    fiscal_quarter: int | None = Form(None),
+    _user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+    engine_manager: EngineManager = Depends(get_engine_manager),
+    job_queue: JobQueue = Depends(get_job_queue),
+) -> DocumentOut:
+    """Tải lên file PDF trực tiếp theo mã cổ phiếu để chạy MinerU OCR và xây dựng cây tài liệu."""
+    from sag_api.core.config import settings
+    from sag_api.core.errors import ValidationError
+    from sag_api.services.document_service import create_document_from_upload
+
+    source = await get_or_create_source_by_ticker(session, ticker, engine_manager=engine_manager)
+    data = await file.read()
+    if not data:
+        raise ValidationError("Nội dung file rỗng")
+    if len(data) > settings.max_upload_mb * 1024 * 1024:
+        raise ValidationError(f"File vượt giới hạn {settings.max_upload_mb}MB")
+
+    document, _job = await create_document_from_upload(
+        session,
+        source,
+        filename=file.filename or "bctc.pdf",
+        content_type=file.content_type or "application/pdf",
+        data=data,
+        upload_dir=settings.upload_dir,
+        job_queue=job_queue,
+        doc_role=doc_role,
+        is_active=is_active,
+        fiscal_year=fiscal_year,
+        fiscal_quarter=fiscal_quarter,
+    )
+    return DocumentOut.model_validate(document)
+
 
 
 @router.get("", response_model=list[SourceOut])

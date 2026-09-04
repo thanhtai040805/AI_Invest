@@ -62,8 +62,8 @@ class Settings(BaseSettings):
     max_upload_mb: int = 25  # giới hạn upload mỗi file
     job_concurrency: int = 2  # độ đồng thời xử lý nền
     document_extract_concurrency: int = Field(default=30, ge=1, le=50)  # độ đồng thời trích xuất chunk cho mỗi tài liệu
-    document_chunk_max_tokens: int = Field(default=12_000, ge=100, le=100_000)
-    document_chunk_mode: Literal["standard", "heading_strict"] = "standard"
+    document_chunk_max_tokens: int = Field(default=1_000_000, ge=100, le=2_000_000)
+    document_chunk_mode: Literal["standard", "heading_strict", "full"] = "full"
 
 
     # Tài liệu upload đã có yêu cầu lọc theo loại tri thức riêng; mặc định tắt bộ lọc nghiêm ngặt dựa trên tiêu đề/tóm tắt của thượng nguồn,

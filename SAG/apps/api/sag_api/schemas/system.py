@@ -61,8 +61,8 @@ class ModelConfigUpdate(BaseModel):
     mineru_api_key: str | None = Field(default=None, max_length=500)
     mineru_version: Literal["2.0", "2.5"] | None = None
     document_extract_concurrency: int | None = Field(default=None, ge=1, le=50)
-    document_chunk_max_tokens: int | None = Field(default=None, ge=100, le=100_000)
-    document_chunk_mode: Literal["standard", "heading_strict"] | None = None
+    document_chunk_max_tokens: int | None = Field(default=None, ge=100, le=2_000_000)
+    document_chunk_mode: Literal["standard", "heading_strict", "full"] | None = None
 
     search_strategy: SearchStrategy | None = None
     search_top_k: int | None = Field(default=None, ge=1, le=50)
