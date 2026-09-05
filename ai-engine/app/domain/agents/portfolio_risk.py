@@ -91,6 +91,30 @@ class PortfolioRiskAgent(BaseAgent):
         persistence_sessions = int(model_risk.get("persistence_sessions", 0))
         actual_slippage_pct = float(model_risk.get("actual_slippage_pct", 0.003))
 
+        # Tự động tra cứu CSDL factor_ic_history nếu event_data không truyền model_risk/cdc_status
+        if not model_risk and "cdc_status" not in event_data:
+            try:
+                from app.adapters.postgres_adapter import PostgresAdapter
+                storage = PostgresAdapter()
+                rows_ic = storage.fetch_all(
+                    """
+                    SELECT cdc_decay_flag, rolling_20d_ic, rolling_60d_ic
+                    FROM factor_ic_history
+                    ORDER BY date DESC LIMIT 6
+                    """
+                )
+                if rows_ic:
+                    decay_flags = [bool(r[0]) for r in rows_ic if r[0] is not None]
+                    if any(decay_flags):
+                        ic_decay_pct = 0.55
+                        persistence_sessions = sum(1 for f in decay_flags if f)
+                        logger.warning(
+                            f"[PortfolioRiskAgent] Tự động phát hiện cdc_decay_flag = True từ DB factor_ic_history! "
+                            f"Kích hoạt CDC Guard ({persistence_sessions} factors cảnh báo)."
+                        )
+            except Exception as e_ic:
+                logger.debug(f"Không thể tra cứu factor_ic_history từ CSDL: {e_ic}")
+
         observation_days = int(event_data.get("observation_days_below_threshold", 2))
 
         # =========================================================================

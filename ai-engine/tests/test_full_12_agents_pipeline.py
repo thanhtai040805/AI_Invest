@@ -33,6 +33,21 @@ def test_all_12_agents_registered():
 def test_end_to_end_12_agent_pipeline():
     """Chạy mô phỏng tuần tự luồng dữ liệu khép kín (Closed-Loop) qua toàn bộ 12 Agents."""
     async def _test():
+        # Clean up any leftover test state in DB to ensure deterministic test run
+        try:
+            from app.infrastructure.database.pg_pool import get_conn
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM positions WHERE symbol = 'FPT';")
+                    cur.execute("DELETE FROM paper_trades WHERE ticker = 'FPT';")
+                    cur.execute("DELETE FROM order_executions WHERE ticker = 'FPT';")
+                    cur.execute("DELETE FROM investment_theses WHERE ticker = 'FPT';")
+                    cur.execute("DELETE FROM portfolio_campaigns WHERE ticker = 'FPT';")
+                    cur.execute("UPDATE users SET cash_balance = 1000000000.00 WHERE id = '940b0c70-2010-42f3-b947-797e6419b794';")
+                conn.commit()
+        except Exception:
+            pass
+
         # 1. Market Surveillance
         res_surv = await AgentRegistry.dispatch("market_surveillance", {"date": "2026-08-28"})
         assert res_surv["status"] == "SUCCESS"

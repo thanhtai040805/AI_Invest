@@ -53,6 +53,7 @@ class BaseAgent(abc.ABC):
         logger.info(f"[{self.agent_name}] Bắt đầu thực thi sự kiện...")
 
         try:
+            event_data["_from_run_event"] = True
             result = await self.process(event_data)
             
             # Ghi log độc lập vào bảng log riêng

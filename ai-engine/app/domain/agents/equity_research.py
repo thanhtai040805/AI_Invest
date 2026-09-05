@@ -71,9 +71,42 @@ class EquityResearchAgent(BaseAgent):
             moat_score = 65.0
             moat_multiplier = 1.0
 
+        # Tích hợp trực tiếp Hiệu chuẩn Moat từ Agent-10 (Triệt tiêu Ảo giác Moat AI)
+        data_quality_flag = "VERIFIED"
+        moat_calibrations = event_data.get("moat_calibrations", {})
+        if ticker in moat_calibrations:
+            m_calib = moat_calibrations[ticker]
+            moat_score = float(m_calib.get("calibrated_moat_score", moat_score))
+            moat_multiplier = float(m_calib.get("calibrated_multiplier", moat_multiplier))
+            data_quality_flag = f"MOAT_CALIBRATED_AGENT10_{m_calib.get('hallucination_risk', 'NORMAL')}"
+        else:
+            # Tự động tra cứu lịch sử hiệu chuẩn Moat từ CSDL mral_metrics
+            try:
+                from app.adapters.postgres_adapter import PostgresAdapter
+                storage = PostgresAdapter()
+                rows_flag = storage.fetch_all(
+                    """
+                    SELECT numeric_value, metadata
+                    FROM mral_metrics
+                    WHERE ticker = %s AND metric_type = 'MOAT_CALIBRATION'
+                    ORDER BY metric_date DESC LIMIT 1
+                    """,
+                    (ticker,)
+                )
+                if rows_flag and rows_flag[0][0] is not None:
+                    calib_score = float(rows_flag[0][0])
+                    meta = rows_flag[0][1] if isinstance(rows_flag[0][1], dict) else {}
+                    if calib_score < moat_score:
+                        moat_score = calib_score
+                        moat_multiplier = float(meta.get("calibrated_multiplier", 0.70))
+                        data_quality_flag = f"MOAT_CALIBRATED_DB_{meta.get('hallucination_risk', 'CRITICAL')}"
+            except Exception as e_mc:
+                logger.debug(f"Không thể tra cứu mral_metrics cho Moat {ticker}: {e_mc}")
+
         # 2. Tính toán / Nạp 6 nhóm Factor Scores (F1 - F6)
         factor_overrides = event_data.get("factor_overrides", {})
-        data_quality_flag = "VERIFIED"
+        if "MOAT_CALIBRATED" not in data_quality_flag:
+            data_quality_flag = "VERIFIED"
 
         if factor_overrides:
             f1_value = float(factor_overrides.get("f1_value", 65.0))
@@ -103,9 +136,36 @@ class EquityResearchAgent(BaseAgent):
                 f4_earnings = 65.0
                 f5_flow = 55.0
                 f6_technical = 60.0
-                data_quality_flag = "ESTIMATED_BASELINE"
+                data_quality_flag = f"{data_quality_flag}|ESTIMATED_BASELINE" if "MOAT_CALIBRATED" in data_quality_flag else "ESTIMATED_BASELINE"
 
-        # 3. Tính điểm CSS qua Trọng số Thích ứng (Dynamic Weights từ Agent-10 RL hoặc Fallback theo Regime)
+        # 3. Tính điểm CSS qua Trọng số Thích ứng (Dynamic Weights từ Agent-10 RL hoặc CSDL PostgreSQL)
+        if not policy_weights:
+            # Tự động tra cứu bảng rl_factor_weights do Agent-10 huấn luyện lưu trong PostgreSQL
+            try:
+                from app.adapters.postgres_adapter import PostgresAdapter
+                storage = PostgresAdapter()
+                clean_regime = "BULL_MARKET" if "BULL" in regime_str else ("BEAR_MARKET" if "BEAR" in regime_str else "RANGE_BOUND")
+                query = """
+                    SELECT f1_value_weight, f2_quality_weight, f3_momentum_weight,
+                           f4_earnings_weight, f5_flow_weight, f6_technical_weight
+                    FROM rl_factor_weights
+                    WHERE regime = %s OR regime = %s
+                    ORDER BY updated_at DESC LIMIT 1
+                """
+                rows = storage.fetch_all(query, (regime_str, clean_regime))
+                if rows and len(rows) > 0:
+                    policy_weights = {
+                        "f1_value": float(rows[0][0]),
+                        "f2_quality": float(rows[0][1]),
+                        "f3_momentum": float(rows[0][2]),
+                        "f4_earnings": float(rows[0][3]),
+                        "f5_flow": float(rows[0][4]),
+                        "f6_technical": float(rows[0][5]),
+                    }
+                    weights_source = f"AGENT-10 (PostgreSQL rl_factor_weights - {clean_regime})"
+            except Exception as e_pw:
+                logger.debug(f"Không thể tải rl_factor_weights từ DB ({e_pw})")
+
         if policy_weights:
             w1 = float(policy_weights.get("f1_value", 0.15))
             w2 = float(policy_weights.get("f2_quality", 0.20))
@@ -113,7 +173,8 @@ class EquityResearchAgent(BaseAgent):
             w4 = float(policy_weights.get("f4_earnings", 0.15))
             w5 = float(policy_weights.get("f5_flow", 0.10))
             w6 = float(policy_weights.get("f6_technical", 0.10))
-            weights_source = "AGENT-10 (Reinforcement Learning Adaptive Weights)"
+            if "weights_source" not in locals():
+                weights_source = "AGENT-10 (Reinforcement Learning Adaptive Weights)"
         elif "BEAR" in regime_str:
             w1, w2, w3, w4, w5, w6 = 0.25, 0.35, 0.05, 0.10, 0.15, 0.10
             weights_source = "RULE_BASED (Bear Market Defensive Profile)"

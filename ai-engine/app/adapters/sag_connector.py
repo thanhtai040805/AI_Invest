@@ -71,7 +71,7 @@ Trả về kết quả dưới định dạng JSON với các keys:
         }
 
         try:
-            timeout_config = httpx.Timeout(connect=2.0, read=60.0, write=10.0, pool=5.0)
+            timeout_config = httpx.Timeout(connect=1.0, read=5.0, write=5.0, pool=2.0)
             async with httpx.AsyncClient(timeout=timeout_config) as client:
                 res = await client.post(f"{self.api_base}/generation", json=payload)
                 if res.status_code == 200:

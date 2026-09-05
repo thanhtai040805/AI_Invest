@@ -113,8 +113,79 @@ class MRALEngine:
         except Exception as e:
             logger.error(f"Failed to persist IC decay log: {e}")
 
+    def log_metric(
+        self,
+        metric_type: str,
+        metric_date: date,
+        ticker: Optional[str] = None,
+        predicted_value: Optional[str] = None,
+        realized_value: Optional[str] = None,
+        numeric_value: Optional[float] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Ghi nhận một bản ghi đo lường sai lệch vào bảng mral_metrics."""
+        try:
+            conn = psycopg2.connect(DB_URL)
+            cur = conn.cursor()
+            meta_json = json.dumps(metadata or {}, ensure_ascii=False, default=str)
+            cur.execute("""
+                INSERT INTO mral_metrics (metric_type, metric_date, ticker, predicted_value, realized_value, numeric_value, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (
+                metric_type,
+                metric_date,
+                ticker,
+                str(predicted_value) if predicted_value is not None else None,
+                str(realized_value) if realized_value is not None else None,
+                float(numeric_value) if numeric_value is not None else None,
+                meta_json
+            ))
+            conn.commit()
+            cur.close()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to log MRAL metric [{metric_type}] for ticker {ticker}: {e}")
+            return False
+
+    def log_metrics_batch(self, records: List[Dict[str, Any]]) -> int:
+        """Ghi nhận nhiều bản ghi theo lô (Bulk Insert) tối ưu vào mral_metrics."""
+        if not records:
+            return 0
+        try:
+            conn = psycopg2.connect(DB_URL)
+            cur = conn.cursor()
+            values = [
+                (
+                    r.get("metric_type", "GENERAL"),
+                    r.get("metric_date", date.today()),
+                    r.get("ticker"),
+                    str(r["predicted_value"]) if r.get("predicted_value") is not None else None,
+                    str(r["realized_value"]) if r.get("realized_value") is not None else None,
+                    float(r["numeric_value"]) if r.get("numeric_value") is not None else None,
+                    json.dumps(r.get("metadata", {}), ensure_ascii=False, default=str),
+                )
+                for r in records
+            ]
+            from psycopg2.extras import execute_values
+            execute_values(
+                cur,
+                """
+                INSERT INTO mral_metrics (metric_type, metric_date, ticker, predicted_value, realized_value, numeric_value, metadata)
+                VALUES %s
+                """,
+                values
+            )
+            conn.commit()
+            cur.close()
+            conn.close()
+            return len(records)
+        except Exception as e:
+            logger.error(f"Failed to batch log {len(records)} MRAL metrics: {e}")
+            return 0
+
     def check_and_trigger_retrain(self, factor_name: str) -> bool:
-        """Kiểm tra xem rolling IC có bị giảm mạnh (decay) không và kích hoạt retrain nếu cần."""
+        """Kiểm tra rolling IC và phát sinh đề xuất Retrain (Proposal) cho Governance Agent thẩm định."""
         if factor_name != "panel_xgboost":
             return False
             
@@ -140,25 +211,28 @@ class MRALEngine:
             
             THRESHOLD = 0.02
             if rolling_ic < THRESHOLD:
-                logger.warning(f"MRAL Trigger: Rolling 20-day IC for {factor_name} is {rolling_ic:.4f} (under threshold {THRESHOLD}). Triggering auto-retrain!")
-                
-                # Gọi hàm retrain từ ml_alpha_predictor
-                from app.domain.services.ml.ml_alpha_predictor import train_panel_model
-                from app.infrastructure.database.pg_pool import DB_URL as PG_DB_URL
-                
-                # Use stable symbols with long history to avoid embargo split failures
-                symbols = [
-                    "VCB", "HPG", "VNM", "VIC", "MSN", "BID", "CTG", "FPT",
-                    "MBB", "TCB", "ACB", "VIB", "VPB", "HDB", "STB", "SSI",
-                    "VHC", "PNJ", "MWG", "GAS", "PLX", "POW", "SAB", "BVH"
-                ]
-                
-                if symbols:
-                    res = train_panel_model(symbols, force_retrain=True)
-                    logger.info(f"MRAL Auto-retrain completed: {res}")
-                    return True
+                logger.warning(
+                    f"MRAL Trigger: Rolling 20-day IC for {factor_name} is {rolling_ic:.4f} (< {THRESHOLD}). "
+                    f"Submitting Retrain Proposal to Governance Agent instead of auto-overwriting production!"
+                )
+                # Thay vì tự đè vào production, ghi nhận Model Proposal có kiểm định vào mral_metrics
+                self.log_metric(
+                    metric_type="RETRAIN_PROPOSAL_GENERATED",
+                    metric_date=date.today(),
+                    ticker=factor_name,
+                    predicted_value=f"ROLLING_IC:{rolling_ic:.4f}",
+                    realized_value="THRESHOLD_BREACHED",
+                    numeric_value=rolling_ic,
+                    metadata={
+                        "target_model": "panel_xgboost",
+                        "status": "PENDING_GOVERNANCE_APPROVAL",
+                        "threshold": THRESHOLD,
+                        "action": "REQUIRE_OOS_WALK_FORWARD_BEFORE_DEPLOY"
+                    }
+                )
+                return True
         except Exception as e:
-            logger.error(f"Failed to check or execute auto-retrain: {e}")
+            logger.error(f"Failed to check or execute proposal for retrain: {e}")
             
         return False
 

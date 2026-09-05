@@ -75,24 +75,55 @@ CREATE TABLE IF NOT EXISTS moat_profiles (
 
 -- 4. investment_thesis
 CREATE TABLE IF NOT EXISTS investment_theses (
-    thesis_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    thesis_id VARCHAR(64) PRIMARY KEY,
     ticker VARCHAR(16) NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     catalyst_type VARCHAR(64),
-    target_price_range JSONB,
+    catalyst_description TEXT,
+    timeline_months INTEGER DEFAULT 3,
+    target_price NUMERIC(15,2),
+    entry_price_estimated NUMERIC(15,2),
     confirming_signals JSONB NOT NULL,
     invalidation_conditions JSONB NOT NULL,
-    status VARCHAR(16) DEFAULT 'ACTIVE'
+    pre_mortem_scenarios JSONB,
+    target_price_range JSONB,
+    status VARCHAR(16) DEFAULT 'ACTIVE',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
 -- 5. counter_thesis
 CREATE TABLE IF NOT EXISTS counter_thesis_verdicts (
-    thesis_id UUID PRIMARY KEY REFERENCES investment_theses(thesis_id),
+    thesis_id VARCHAR(64) PRIMARY KEY REFERENCES investment_theses(thesis_id) ON DELETE CASCADE,
     ticker VARCHAR(16) NOT NULL,
     cts_score NUMERIC(6,2) NOT NULL,
+    base_cts NUMERIC(6,2),
+    interaction_multiplier NUMERIC(6,2),
+    ocr_penalty NUMERIC(6,2),
+    macro_penalty NUMERIC(6,2),
+    regime_multiplier NUMERIC(6,2) DEFAULT 1.0,
     verdict VARCHAR(16) NOT NULL,
+    rule_of_three_passed BOOLEAN DEFAULT TRUE,
+    is_capitulation_rebound BOOLEAN DEFAULT FALSE,
     block_reasons JSONB,
+    holes JSONB,
+    execution_constraints JSONB,
+    rationale TEXT,
     evaluated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 5.1 governance_escalation
+CREATE TABLE IF NOT EXISTS violation_reports (
+    report_id VARCHAR(64) PRIMARY KEY,
+    timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    ticker VARCHAR(16),
+    issuing_agent VARCHAR(64) NOT NULL,
+    violated_rule VARCHAR(64) NOT NULL,
+    risk_level VARCHAR(32) NOT NULL,
+    reason TEXT NOT NULL,
+    order_payload JSONB,
+    escalated_to VARCHAR(64) DEFAULT 'strategy_cio',
+    resolution_status VARCHAR(32) DEFAULT 'PENDING',
+    cio_resolution_id VARCHAR(64),
+    resolved_at TIMESTAMP WITH TIME ZONE
 );
 
 -- 6. portfolio_risk
@@ -123,16 +154,7 @@ CREATE TABLE IF NOT EXISTS portfolio_account (
     drawdown_tier VARCHAR(16) DEFAULT 'GREEN',
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
-
-CREATE TABLE IF NOT EXISTS portfolio_positions (
-    ticker VARCHAR(16) PRIMARY KEY,
-    shares INTEGER NOT NULL,
-    average_price NUMERIC(12,2) NOT NULL,
-    current_price NUMERIC(12,2) NOT NULL,
-    market_value NUMERIC(18,2) NOT NULL,
-    weight_pct NUMERIC(6,2) NOT NULL,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
+-- Ghi chú: Danh mục vị thế thực tế được chuẩn hóa lưu trữ duy nhất tại bảng 'positions' (Prisma / T+2.5)
 
 CREATE TABLE IF NOT EXISTS portfolio_decisions (
     decision_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -289,7 +311,7 @@ CREATE TABLE IF NOT EXISTS log_equity_research (
 
 CREATE TABLE IF NOT EXISTS log_investment_thesis (
     id BIGSERIAL PRIMARY KEY,
-    thesis_id UUID NOT NULL,
+    thesis_id VARCHAR(64) NOT NULL,
     ticker VARCHAR(16) NOT NULL,
     pre_mortem_scenarios JSONB NOT NULL,
     thesis_text TEXT NOT NULL,
@@ -298,7 +320,7 @@ CREATE TABLE IF NOT EXISTS log_investment_thesis (
 
 CREATE TABLE IF NOT EXISTS log_counter_thesis (
     id BIGSERIAL PRIMARY KEY,
-    thesis_id UUID NOT NULL,
+    thesis_id VARCHAR(64) NOT NULL,
     ticker VARCHAR(16) NOT NULL,
     debate_challenge_text TEXT NOT NULL,
     llm_prompt_response JSONB NOT NULL,
@@ -374,7 +396,6 @@ CREATE INDEX IF NOT EXISTS idx_factor_scores_symbol_date ON factor_scores (symbo
 CREATE INDEX IF NOT EXISTS idx_moat_profiles_ticker ON moat_profiles (ticker);
 CREATE INDEX IF NOT EXISTS idx_universe_group ON universe_securities (universe_group);
 CREATE INDEX IF NOT EXISTS idx_theses_status ON investment_theses (status);
-CREATE INDEX IF NOT EXISTS idx_positions_ticker ON portfolio_positions (ticker);
 CREATE INDEX IF NOT EXISTS idx_executions_date ON order_executions (executed_at);
 
 -- ============================================================================

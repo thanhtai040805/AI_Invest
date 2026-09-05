@@ -222,7 +222,7 @@ class DailyInvestmentPipeline:
                     tier=inst.tier,
                     z_score=inst.z_score,
                     pred_score=inst.pred_score,
-                    target_weight_pct=0.20 if inst.tier == "TIER_A_PLUS" else 0.10, # 20% for A+
+                    target_weight_pct=0.15 if inst.tier == "TIER_A_PLUS" else 0.10, # Cap at 15% NAV strictly enforcing Điều 4 Hard Law
                     execution_mode=inst.execution_mode,
                     breakeven_trigger_pct=inst.breakeven_trigger_pct,
                     hard_stop_pct=inst.hard_stop_pct,

@@ -20,11 +20,11 @@ def reset_test_db(repo: PortfolioRepository):
         )
         # Xóa các vị thế test
         repo.storage.execute(
-            "DELETE FROM positions WHERE symbol IN ('FPT', 'VNM')",
+            "DELETE FROM positions WHERE symbol IN ('FPT', 'VNM', 'HPG')",
         )
         # Xóa các orders test
         repo.storage.execute(
-            "DELETE FROM orders WHERE symbol IN ('FPT', 'VNM')",
+            "DELETE FROM orders WHERE symbol IN ('FPT', 'VNM', 'HPG')",
         )
     except Exception:
         pass

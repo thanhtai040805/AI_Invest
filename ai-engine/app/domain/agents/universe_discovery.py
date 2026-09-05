@@ -190,12 +190,12 @@ class UniverseDiscoveryAgent(BaseAgent):
             })
 
             # Hard Law: Loại bỏ nếu M-Score > -1.78 hoặc Thiếu BCTC
-            if b_status == "DATA_MISSING":
+            if b_status in ("DATA_MISSING", "PENDING") or m_score is None:
                 exclusion_log.append({
                     "ticker": symbol,
                     "reason": "DATA_MISSING",
                     "m_score": None,
-                    "detail": "Thiếu dữ liệu BCTC để tính Beneish M-Score.",
+                    "detail": f"Thiếu dữ liệu BCTC để tính Beneish M-Score ({b_reason}).",
                 })
                 continue
 

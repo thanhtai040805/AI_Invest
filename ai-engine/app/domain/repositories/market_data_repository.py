@@ -247,3 +247,72 @@ class MarketDataRepository:
         except Exception as e:
             logger.warning(f"Không thể lưu market_regime ({e})")
             return False
+
+    def get_realtime_or_latest_price(
+        self,
+        symbol: str,
+        allow_eod_fallback: bool = True,
+    ) -> Optional[float]:
+        """
+        Lấy giá thị trường:
+        1. Ưu tiên 1: Giá khớp realtime từ DNSE WebSocket Stream Hub (lưu trong Redis `stock:{symbol}:quote`).
+        2. Ưu tiên 2: Giá nến 1 phút realtime gần nhất từ DNSE REST API (DnseIntradayTool).
+        3. Ưu tiên 3 (Ngoài giờ giao dịch): Giá đóng cửa ngày hôm qua từ CSDL (market_data_daily / ohlcv).
+        """
+        symbol_clean = str(symbol).upper().strip()
+
+        # 1. DNSE Realtime WebSocket qua Redis Cache
+        try:
+            from app.infrastructure.external_api.dnse.redis_pub import get_redis
+            import json
+            r = get_redis()
+            cached_data = r.get(f"stock:{symbol_clean}:quote")
+            if cached_data:
+                quote = json.loads(cached_data)
+                price = float(quote.get("price", 0.0))
+                if price > 0:
+                    logger.debug(f"[DNSE Realtime] Lấy giá khớp realtime từ Redis cho {symbol_clean}: {price:,} VND")
+                    return price
+        except Exception as e:
+            logger.debug(f"Không thể đọc quote realtime từ Redis ({e})")
+
+        # 2. DNSE REST API Intraday (Nến 1m)
+        try:
+            from app.infrastructure.external_api.dnse.intraday_tool import DnseIntradayTool
+            tool = DnseIntradayTool()
+            intraday_candles = tool.fetch(symbol_clean, resolution="1")
+            if intraday_candles and len(intraday_candles) > 0:
+                latest_candle = intraday_candles[-1]
+                price = float(latest_candle.get("close", 0.0))
+                if price > 0:
+                    logger.debug(f"[DNSE REST] Lấy giá 1m realtime từ DNSE REST cho {symbol_clean}: {price:,} VND")
+                    return price
+        except Exception as e:
+            logger.debug(f"Không thể đọc intraday từ DNSE REST ({e})")
+
+        # 3. Fallback: Giá đóng cửa ngày hôm qua từ PostgreSQL
+        if allow_eod_fallback:
+            daily = self.get_market_data_daily(symbol_clean, limit=1)
+            if daily:
+                if daily[0].get("close_adj") and float(daily[0]["close_adj"]) > 0:
+                    price = float(daily[0]["close_adj"])
+                    if price < 1000.0:  # Chuẩn hóa đơn vị nghìn đồng sàn HOSE sang VND
+                        price = price * 1000.0
+                    logger.info(f"[EOD Fallback] Sử dụng giá đóng cửa ngày hôm qua (close_adj={price:,.0f} VND) cho {symbol_clean}.")
+                    return price
+                elif daily[0].get("close") and float(daily[0]["close"]) > 0:
+                    price = float(daily[0]["close"])
+                    if price < 1000.0:
+                        price = price * 1000.0
+                    logger.info(f"[EOD Fallback] Sử dụng giá đóng cửa ngày hôm qua (close={price:,.0f} VND) cho {symbol_clean}.")
+                    return price
+
+            ohlcv_rows = self.get_ohlcv(symbol_clean, limit=1)
+            if ohlcv_rows and ohlcv_rows[0].get("close") and float(ohlcv_rows[0]["close"]) > 0:
+                price = float(ohlcv_rows[0]["close"])
+                if price < 1000.0:
+                    price = price * 1000.0
+                logger.info(f"[EOD Fallback] Sử dụng giá nến OHLCV gần nhất ({price:,.0f} VND) cho {symbol_clean}.")
+                return price
+
+        return None

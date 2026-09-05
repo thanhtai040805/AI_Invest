@@ -31,9 +31,9 @@ class BeneishMScoreEngine:
         # 1. Lấy BCTC năm hiện tại (t) và năm trước (t-1) cùng với thông tin ngành
         # Ưu tiên báo cáo năm (yearly) để có độ chính xác cao nhất
         cur.execute("""
-            SELECT fs.symbol, fs.period_end, fs.data, s.sector
+            SELECT fs.symbol, fs.period_end, fs.data, COALESCE(s.sector, '') as sector
             FROM financial_statements fs
-            JOIN stocks s ON fs.symbol = s.symbol
+            LEFT JOIN stocks s ON fs.symbol = s.symbol
             WHERE fs.symbol = %s 
               AND fs.period_end <= %s
               AND fs.frequency = 'yearly'

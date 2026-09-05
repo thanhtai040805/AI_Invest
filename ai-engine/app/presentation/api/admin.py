@@ -30,6 +30,28 @@ async def trigger_backfill():
     return {"message": "Backfill triggered, running in background"}
 
 
+@router.post("/admin/eod-pipeline/trigger")
+async def trigger_eod_pipeline(
+    target_date: Optional[str] = Query(None, description="Ngày chạy định dạng YYYY-MM-DD (mặc định hôm nay)"),
+    force: bool = Query(False, description="Bắt buộc chạy lại nếu đã chạy trong ngày"),
+):
+    """Kích hoạt thủ công quy trình EOD Causal Learning & Paper Trades Settlement."""
+    from app.infrastructure.workers.eod_learning_daemon import eod_daemon
+    res = await eod_daemon.trigger_manual(target_date=target_date, force=force)
+    return {
+        "message": f"EOD Pipeline completed for date {res.get('run_date')}",
+        "status": res.get("status"),
+        "result": res,
+    }
+
+
+@router.get("/admin/eod-pipeline/status")
+async def get_eod_pipeline_status():
+    """Kiểm tra trạng thái EOD Learning Daemon và lần chạy gần nhất."""
+    from app.infrastructure.workers.eod_learning_daemon import eod_daemon
+    return eod_daemon.status
+
+
 @router.get("/admin/monitoring/health")
 async def get_monitoring_health():
     """Get complete aggregated system health status."""
