@@ -20,7 +20,12 @@ def _channel(suffix: str) -> str:
 def get_redis() -> redis.Redis:
     global _client
     if _client is None:
-        _client = redis.from_url(get_settings().redis_url, decode_responses=True)
+        _client = redis.from_url(
+            get_settings().redis_url,
+            decode_responses=True,
+            socket_timeout=1.0,
+            socket_connect_timeout=1.0,
+        )
     return _client
 
 

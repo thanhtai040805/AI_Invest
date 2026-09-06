@@ -9,7 +9,6 @@ Chức năng:
 
 import asyncio
 import logging
-import time
 from datetime import datetime
 from typing import Optional
 

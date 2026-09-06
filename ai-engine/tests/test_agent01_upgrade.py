@@ -117,7 +117,7 @@ class TestAgent01Upgrade(unittest.TestCase):
         self.assertGreater(res["concentration_ratio"], 0.70)
 
     def test_hmm_feature_extraction_count(self):
-        """Test HMM feature extraction outputs 10 features."""
+        """Test HMM feature extraction outputs 6 features."""
         dates = pd.date_range("2026-01-01", periods=50, freq="B")
         df = pd.DataFrame({
             "close": np.linspace(1000, 1200, 50),
@@ -135,6 +135,52 @@ class TestAgent01Upgrade(unittest.TestCase):
 
         X = hmm_engine._extract_features(df)
         self.assertEqual(X.shape[1], 6)  # Exactly 6 features in RegimeEngineV2
+
+    def test_vn30_xanh_vo_do_long_distortion(self):
+        """Test HOSE Radar: Index up but market breadth collapsed (A/D < 0.45)."""
+        monitor = VN30DistortionMonitor()
+        stock_returns = {"VIC": 0.065, "VHM": 0.060, "VCB": 0.045, "TCB": -0.01, "MBB": -0.02}
+        stock_weights = {"VIC": 0.35, "VHM": 0.35, "VCB": 0.20, "TCB": 0.05, "MBB": 0.05}
+
+        res = monitor.analyze_distortion(
+            stock_returns=stock_returns,
+            stock_weights=stock_weights,
+            market_adv_decl_ratio=0.22,  # 78% of market is RED
+            vni_return=0.015  # VNINDEX up +1.5% due to VIC/VHM
+        )
+        self.assertTrue(res["is_distorted"])
+        self.assertIn("GREEN_EXTERIOR_RED_CORE", res["distortion_type"])
+        self.assertIn("Xanh vỏ đỏ lòng", res["reason"])
+
+    def test_market_surveillance_full_pipeline_run(self):
+        """Test live dispatch of MarketSurveillanceAgent with autonomous data hydration."""
+        import asyncio
+        from app.core.registry import AgentRegistry
+        import app.domain.agents
+
+        async def _run():
+            res = await AgentRegistry.dispatch("market_surveillance", {"date": "2026-08-24"})
+            self.assertEqual(res["status"], "SUCCESS")
+            data = res["result"]["data"]
+            self.assertIn(data["current_regime"], ["BULL_MARKET", "BEAR_MARKET", "RANGE_BOUND"])
+            self.assertIn(data["session_context"], ["Normal", "Stress", "Crisis"])
+            self.assertGreater(data["vix_vn_analog"], 0.0)
+            self.assertGreater(data["breadth_above_ma50_pct"], 0.0)
+            self.assertIn("floor_locked_count", data)
+            self.assertIn("adv_decl_ratio", data)
+            self.assertIn("herding_status", data)
+
+        asyncio.run(_run())
+
+    def test_market_surveillance_state_tables_written(self):
+        """Verify market_regimes table has records after execution."""
+        from app.infrastructure.database.pg_pool import get_conn
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT current_regime, vix_vn_analog FROM market_regimes WHERE date = '2026-08-24'")
+                row = cur.fetchone()
+                self.assertIsNotNone(row)
+                self.assertIn(row[0], ["BULL_MARKET", "BEAR_MARKET", "RANGE_BOUND"])
 
 
 if __name__ == "__main__":

@@ -113,14 +113,14 @@ Trả về kết quả dưới định dạng JSON với các keys:
 
         return {
             "ticker": ticker_clean,
-            "gil_flag": "PASS",
-            "risk_level": "LOW",
+            "gil_flag": "DATA_ERROR",
+            "risk_level": "UNKNOWN",
             "rpt_ratio": 0.0,
             "total_rpt_exposure_vnd": 0.0,
             "equity_vnd": equity_vnd,
             "cycles_detected": 0,
             "cycle_paths": [],
-            "reasons": ["Chưa kết nối được SAG hoặc chưa có dữ liệu đồ thị, fallback an toàn."],
+            "reasons": ["Chưa kết nối được SAG FastMCP hoặc chưa có dữ liệu đồ thị sở hữu chéo. Gán cờ DATA_ERROR bảo vệ rủi ro theo IOS v5.1."],
             "status": "FALLBACK",
         }
 

@@ -227,6 +227,25 @@ class StrategyCIOAgent(BaseAgent):
 
         return decision_hash
 
+    async def _publish_cio_event(self, payload: Dict[str, Any], decision_type: str = "CIO_RESOLUTION") -> None:
+        """Bắn sự kiện CIO_RESOLUTION lên RabbitMQ Event Bus."""
+        try:
+            from app.core.event_topics import EventTopics
+            await self.publish_event(
+                topic=EventTopics.CIO_RESOLUTION,
+                payload={
+                    "resolution_id": str(payload.get("resolution_id") or payload.get("halt_id") or payload.get("directive_id") or uuid.uuid4()),
+                    "decision_type": str(payload.get("decision_type", decision_type)),
+                    "ticker": payload.get("ticker"),
+                    "final_resolution": str(payload.get("final_resolution", "")),
+                    "decision_hash": payload.get("decision_hash", self.last_decision_hash),
+                    "executive_rationale": str(payload.get("executive_rationale") or payload.get("rationale", "")),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+        except Exception as e_pub:
+            logger.warning(f"[StrategyCIOAgent] Lỗi bắn sự kiện CIO_RESOLUTION: {e_pub}")
+
     def _update_violation_report_in_db(self, report_id: str, resolution_id: str, status: str) -> None:
         """Cập nhật trạng thái xử lý trong bảng violation_reports."""
         from app.infrastructure.database.pg_pool import get_conn
@@ -307,7 +326,7 @@ class StrategyCIOAgent(BaseAgent):
         }
 
         # Lưu sổ cái mật mã bất biến và cập nhật violation_reports
-        self._persist_audit_record(
+        dec_hash = self._persist_audit_record(
             resolution_id=resolution_id,
             decision_type="GOVERNANCE_ESCALATION",
             ticker=ticker,
@@ -315,7 +334,9 @@ class StrategyCIOAgent(BaseAgent):
             payload=payload,
             summary=exec_rationale,
         )
+        payload["decision_hash"] = dec_hash
         self._update_violation_report_in_db(report_id, resolution_id, final_res)
+        await self._publish_cio_event(payload, decision_type="GOVERNANCE_ESCALATION")
 
         return payload
 
@@ -349,33 +370,6 @@ class StrategyCIOAgent(BaseAgent):
             "BENEISH_FAIL" in counter_verdict
         )
 
-        # ---------------------------------------------------------------------
-        # TẦNG 1: HARD LAW (Hiến pháp Đầu tư — Bất khả Xâm phạm)
-        # ---------------------------------------------------------------------
-        if has_hard_law_violation:
-            final_res = "UPHOLD_BLOCK"
-            rationale = (
-                f"CIO phán quyết [TẦNG 1 - HARD LAW]: Giữ nguyên phán quyết BLOCK đối với mã {ticker}. "
-                f"Phát hiện vi phạm nghiêm trọng Điều luật Hiến pháp ({violated_rule or 'HARD_LAW_BREACH'}). "
-                f"Theo Nguyên tắc Bất biến số 2: CIO tuyệt đối không có thẩm quyền override Hard Laws."
-            )
-            weight_cap = 0.0
-            conditions = ["NO_NEW_BUY_ORDERS", "CANCEL_PROPOSED_ORDER", "PERMANENT_REJECTION"]
-            severity_tier = "TIER_1_HARD_LAW_INVARIANT"
-
-        # ---------------------------------------------------------------------
-        # TẦNG 2: CRITICAL TAIL RISK (Rủi ro Khẩn cấp Cận biên Thảm họa)
-        # ---------------------------------------------------------------------
-        elif cts_score >= 80.0 or counter_verdict == "BLOCK" or "CRITICAL" in counter_verdict:
-            final_res = "DISCRETIONARY_BLOCK"
-            rationale = (
-                f"CIO phán quyết [TẦNG 2 - CRITICAL TAIL RISK]: Kích hoạt quyền phủ quyết chiến lược (Discretionary Block) đối với {ticker}. "
-                f"Điểm phản biện Counter-Thesis Score ({cts_score:.1f}/100) hoặc rủi ro thảm họa quá cao: {block_reasons}. "
-                f"Chặn giải ngân để bảo toàn vốn trước nguy cơ sập gãy thanh khoản hoặc quản trị mờ ám."
-            )
-            weight_cap = 0.0
-            conditions = ["RETURN_TO_RESEARCH_QUEUE", "SUSPEND_PURCHASE_UNTIL_AUDITED"]
-            severity_tier = "TIER_2_CRITICAL_TAIL_RISK"
 
         # ---------------------------------------------------------------------
         # TẦNG 1: HARD LAW (Hiến pháp Đầu tư — Bất khả Xâm phạm)
@@ -458,6 +452,7 @@ class StrategyCIOAgent(BaseAgent):
             summary=rationale,
         )
         resolution_payload["decision_hash"] = dec_hash
+        await self._publish_cio_event(resolution_payload, decision_type="CONFLICT_RESOLUTION")
 
         return resolution_payload
 
@@ -527,6 +522,7 @@ class StrategyCIOAgent(BaseAgent):
             gov_cosign=gov_cosign,
         )
         verdict_payload["decision_hash"] = dec_hash
+        await self._publish_cio_event(verdict_payload, decision_type="EXCEPTION_APPROVAL")
         return verdict_payload
 
     # =========================================================================
@@ -649,6 +645,7 @@ class StrategyCIOAgent(BaseAgent):
         directive_payload["macro_view"] = rationale
         directive_payload["cash_target_override"] = cash_target
         directive_payload["sector_focus"] = [s for s, t in sector_tilt.items() if t == "OVERWEIGHT"]
+        await self._publish_cio_event(directive_payload, decision_type="STRATEGIC_DIRECTIVE")
 
         return directive_payload
 
@@ -700,6 +697,7 @@ class StrategyCIOAgent(BaseAgent):
             summary=rationale,
         )
         verdict_payload["decision_hash"] = dec_hash
+        await self._publish_cio_event(verdict_payload, decision_type="MAJOR_CHANGE_APPROVAL")
         return verdict_payload
 
     # =========================================================================
@@ -754,6 +752,7 @@ class StrategyCIOAgent(BaseAgent):
             summary=rationale,
         )
         halt_payload["decision_hash"] = dec_hash
+        await self._publish_cio_event(halt_payload, decision_type="EMERGENCY_SYSTEM_HALT")
         return halt_payload
 
     # =========================================================================

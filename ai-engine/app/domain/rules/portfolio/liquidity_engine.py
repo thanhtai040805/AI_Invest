@@ -36,7 +36,7 @@ class LiquidityResult:
 class LiquidityEngine:
     def __init__(
         self,
-        max_session_participation_pct: float = 0.20,
+        max_session_participation_pct: float = 0.15,
         max_cumulative_capacity_pct: float = 0.25,
     ):
         self.max_session_participation_pct = max_session_participation_pct

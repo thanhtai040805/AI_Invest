@@ -111,26 +111,35 @@ class GARCHCashEngine:
             return min(0.80, 0.30 + (forecasted_vol - 0.25) * 3.0)
 
     def get_index_returns(self, target_date: date, window: int = 504) -> pd.Series:
-        """Lấy chuỗi lợi nhuận VNINDEX từ DB (mặc định 504 phiên = 2 năm cho GARCH)."""
-        import psycopg2
-        from app.infrastructure.database.pg_pool import DB_URL
+        """Lấy chuỗi lợi nhuận VNINDEX từ DB qua Connection Pool (mặc định 504 phiên = 2 năm cho GARCH)."""
+        from app.infrastructure.database.pg_pool import get_conn
         
-        conn = psycopg2.connect(DB_URL)
-        cur = conn.cursor()
-        
-        cur.execute("""
-            SELECT close_adj FROM market_data_daily
-            WHERE ticker = 'VNINDEX' AND date <= %s
-            ORDER BY date DESC LIMIT %s
-        """, (target_date, window + 1))
-        
-        rows = cur.fetchall()
-        conn.close()
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT close_adj FROM market_data_daily
+                        WHERE ticker = 'VNINDEX' AND date <= %s
+                        ORDER BY date DESC LIMIT %s
+                    """, (target_date, window + 1))
+                    rows = cur.fetchall()
+                    
+                    # Fallback nếu target_date chưa có dữ liệu (lấy snapshot gần nhất)
+                    if len(rows) < 20:
+                        cur.execute("""
+                            SELECT close_adj FROM market_data_daily
+                            WHERE ticker = 'VNINDEX'
+                            ORDER BY date DESC LIMIT %s
+                        """, (window + 1,))
+                        rows = cur.fetchall()
+        except Exception as e:
+            logger.warning(f"Lỗi truy vấn VNINDEX returns cho GARCH: {e}")
+            return pd.Series()
         
         if len(rows) < 2:
             return pd.Series()
             
-        prices = [r[0] for r in rows][::-1] # Đảo ngược về trình tự thời gian
+        prices = [r[0] for r in rows][::-1]  # Đảo ngược về trình tự thời gian
         return pd.Series(prices).pct_change().dropna()
 
 garch_engine = GARCHCashEngine()

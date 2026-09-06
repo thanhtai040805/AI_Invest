@@ -209,9 +209,13 @@ class CounterThesisEngine:
         """Phân loại phán quyết cuối cùng và sinh ràng buộc thực thi."""
         block_reasons = []
 
-        # Hard Law: GIL CATASTROPHIC
-        if str(gil_flag).upper() == "CATASTROPHIC":
+        # Hard Law: GIL CATASTROPHIC hoặc DATA_ERROR (Mục Failure Modes IOS v5.1)
+        gil_clean = str(gil_flag).upper().strip()
+        if gil_clean == "CATASTROPHIC":
             block_reasons.append("Hard Law Veto: Phát hiện rủi ro sở hữu chéo và kiệt quệ tài chính GIL CATASTROPHIC.")
+            return Verdict.BLOCK, block_reasons, None
+        elif gil_clean == "DATA_ERROR":
+            block_reasons.append("Hard Law Veto: Lỗi dữ liệu đồ thị sở hữu chéo (GIL) từ SAG Backend -> Default BLOCK theo Hiến pháp IOS v5.1.")
             return Verdict.BLOCK, block_reasons, None
 
         if final_cts > 60.0:
@@ -310,11 +314,30 @@ class CounterThesisEngine:
         """
         ticker_clean = str(ticker).upper().strip()
         thesis_id = str(thesis_payload.get("thesis_id", f"THESIS_{ticker_clean}"))
-        signals = [
-            f"{k}: {v}" for k, v in thesis_payload.get("input_validation", {}).get("independent_signals", {}).items()
-        ]
-        if not signals:
-            signals = [str(s) for s in thesis_payload.get("confirming_signals", [])]
+        
+        # Trích xuất và xác thực tín hiệu độc lập (Hỗ trợ dict, list, input_validation, metadata)
+        raw_signals = (
+            thesis_payload.get("confirming_signals")
+            or thesis_payload.get("input_validation", {}).get("independent_signals")
+            or thesis_payload.get("metadata", {}).get("independent_signals")
+            or []
+        )
+        
+        passed_signals: List[str] = []
+        if isinstance(raw_signals, dict):
+            for k, v in raw_signals.items():
+                v_str = str(v).strip()
+                if v_str.upper().startswith("PASS") or v_str.upper().startswith("TRUE") or "PASS" in v_str.upper():
+                    passed_signals.append(f"{k}: {v_str}")
+                elif not (v_str.upper().startswith("FAIL") or v_str.upper().startswith("FALSE")):
+                    passed_signals.append(f"{k}: {v_str}")
+        elif isinstance(raw_signals, list):
+            for s in raw_signals:
+                s_str = str(s).strip()
+                if not (s_str.upper().startswith("FAIL") or s_str.upper().startswith("FALSE")):
+                    passed_signals.append(s_str)
+
+        signals = passed_signals
 
         # 1. Gọi LLM Devil's Advocate để thẩm định ngữ cảnh & tính độc lập thực sự
         llm_indep, llm_blindspot_penalty, fatal_flaw, llm_holes, llm_rationale = await self.analyze_thesis_with_llm(
@@ -328,8 +351,8 @@ class CounterThesisEngine:
         rule_of_three_passed = (unique_signals >= 3) and llm_indep
 
         # 3. Kiểm tra cờ GIL
-        gil_status = str(risk_features.get("gil_status") or thesis_payload.get("input_validation", {}).get("gil_status", "PASS")).upper()
-        if gil_status == "CATASTROPHIC":
+        gil_status = str(risk_features.get("gil_status") or thesis_payload.get("input_validation", {}).get("gil_status", "PASS")).upper().strip()
+        if gil_status in ["CATASTROPHIC", "DATA_ERROR"]:
             risk_features["gil_risk"] = 100.0
 
         # 4. Kiểm tra ngoại lệ Bắt đáy Capitulation (Bẫy 3)
@@ -344,7 +367,7 @@ class CounterThesisEngine:
         regime_multiplier = self.get_regime_multiplier(regime_label, is_capitulation=is_capitulation)
 
         # Tính Final CTS
-        if gil_status == "CATASTROPHIC" or fatal_flaw:
+        if gil_status in ["CATASTROPHIC", "DATA_ERROR"] or fatal_flaw:
             final_cts = 100.0
         elif not rule_of_three_passed:
             final_cts = max(65.0, base_cts * interaction_multiplier * regime_multiplier)

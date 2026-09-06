@@ -17,7 +17,7 @@ from typing import Dict, List, Tuple, Optional
 from sklearn.linear_model import Ridge
 import lightgbm as lgb
 
-from app.infrastructure.database.pg_pool import DB_URL
+from app.infrastructure.database.pg_pool import get_conn
 
 logger = logging.getLogger(__name__)
 
@@ -34,17 +34,16 @@ class BeneishMScoreEngine:
             return pd.DataFrame()
             
         try:
-            conn = psycopg2.connect(DB_URL)
-            query_ratios = f"""
-                SELECT symbol as ticker, ratio_date, published_date,
-                       gross_margin, net_margin, current_ratio, debt_equity,
-                       yoy_revenue_growth, yoy_earnings_growth, roe, roa
-                FROM financial_ratios
-                WHERE symbol IN ({','.join([f"'{t}'" for t in tickers])})
-                ORDER BY symbol, ratio_date;
-            """
-            df_r = pd.read_sql(query_ratios, conn)
-            conn.close()
+            with get_conn() as conn:
+                query_ratios = """
+                    SELECT symbol as ticker, ratio_date, published_date,
+                           gross_margin, net_margin, current_ratio, debt_equity,
+                           yoy_revenue_growth, yoy_earnings_growth, roe, roa
+                    FROM financial_ratios
+                    WHERE symbol = ANY(%s)
+                    ORDER BY symbol, ratio_date;
+                """
+                df_r = pd.read_sql(query_ratios, conn, params=(list(tickers),))
         except Exception as e:
             logger.error(f"Error fetching financial ratios: {e}")
             return pd.DataFrame()

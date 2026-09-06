@@ -13,7 +13,8 @@ from app.domain.services.r2_storage import R2StorageService
 
 def test_db_flags_deduplication_lifecycle():
     repo = BctcPipelineRepository()
-    r2 = R2StorageService()
+    # Cách ly hoàn toàn môi trường test: dùng bucket aiinvest-bctc-test
+    r2 = R2StorageService(bucket_name="aiinvest-bctc-test")
 
     ticker = f"TCK_{uuid.uuid4().hex[:6].upper()}"
     year = 2025
@@ -80,11 +81,19 @@ def test_db_flags_deduplication_lifecycle():
         assert repo.should_skip_ocr(ticker, year, quarter, scope) is True
 
     finally:
-        # [TEARDOWN] Dọn sạch dữ liệu test trong Database để không làm ô nhiễm DB
+        # [TEARDOWN] Dọn sạch dữ liệu test trong Database và Cloudflare R2 để không làm ô nhiễm môi trường
         try:
             repo.storage.execute(
                 "DELETE FROM bctc_pipeline_records WHERE ticker = %s;",
                 (ticker,),
             )
         except Exception as e:
-            print(f"Warning cleaning test ticker {ticker}: {e}")
+            print(f"Warning cleaning test ticker {ticker} in DB: {e}")
+
+        try:
+            if "upload_res" in locals() and upload_res and "key" in upload_res:
+                r2.delete_object(upload_res["key"])
+            if "upload_md_res" in locals() and upload_md_res and "key" in upload_md_res:
+                r2.delete_object(upload_md_res["key"])
+        except Exception as e:
+            print(f"Warning cleaning test files on R2 for {ticker}: {e}")

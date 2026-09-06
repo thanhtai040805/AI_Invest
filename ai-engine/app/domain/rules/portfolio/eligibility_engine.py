@@ -68,10 +68,15 @@ class EligibilityEngine:
                 thesis_data.get("confirming_signals")
                 or thesis_data.get("input_validation", {}).get("independent_signals", [])
             )
-            if str(t_status).upper() == "REJECTED":
+            if str(t_status).upper() in ["REJECTED", "REJECT"]:
                 thesis_verdict = "REJECTED"
                 rejections.append("Investment Thesis bị từ chối.")
-            elif isinstance(signals, list) and len(signals) < 3 and len(signals) > 0:
+            elif isinstance(signals, dict):
+                passed_count = sum(1 for v in signals.values() if str(v).startswith("PASS"))
+                if passed_count < 3:
+                    thesis_verdict = "INSUFFICIENT_SIGNALS"
+                    rejections.append(f"Thesis không đủ 3 tín hiệu xác nhận độc lập (Hiện đạt: {passed_count}/3).")
+            elif isinstance(signals, list) and len(signals) < 3:
                 thesis_verdict = "INSUFFICIENT_SIGNALS"
                 rejections.append(f"Thesis không đủ 3 tín hiệu xác nhận độc lập (Hiện có: {len(signals)}).")
         thesis_status = thesis_verdict

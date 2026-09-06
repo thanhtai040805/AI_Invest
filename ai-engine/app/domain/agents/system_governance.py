@@ -218,16 +218,38 @@ class SystemGovernanceAgent(BaseAgent):
             sector=sector,
         )
 
-        nav = float(raw_portfolio.get("total_nav") or raw_portfolio.get("nav") or 1_000_000_000.0)
-        positions = raw_portfolio.get("positions", {})
-        sector_exposure = raw_portfolio.get("sector_exposure", {})
-        locked_t25 = float(raw_portfolio.get("locked_t25_value", 0.0))
+        nav = float(raw_portfolio.get("total_nav") or raw_portfolio.get("nav") or event_data.get("nav") or event_data.get("total_nav") or 0.0)
+        positions = raw_portfolio.get("positions")
+        sector_exposure = raw_portfolio.get("sector_exposure")
+        locked_t25 = raw_portfolio.get("locked_t25_value")
+
+        if nav <= 0.0 or positions is None:
+            try:
+                from app.domain.repositories.portfolio_repository import PortfolioRepository
+                p_repo = PortfolioRepository()
+                acc_st = p_repo.get_account_state()
+                if nav <= 0.0:
+                    nav = float(acc_st.get("total_nav", 1_000_000_000.0))
+                if positions is None:
+                    db_positions = p_repo.get_open_positions()
+                    positions = {p["ticker"]: p.get("shares", 0) for p in db_positions}
+            except Exception as e:
+                logger.debug(f"[SystemGovernanceAgent] Auto-hydration portfolio state gặp lỗi: {e}")
+                if nav <= 0.0:
+                    nav = 1_000_000_000.0
+                if positions is None:
+                    positions = {}
+
+        if sector_exposure is None:
+            sector_exposure = {}
+        if locked_t25 is None:
+            locked_t25 = 0.0
 
         portfolio_state = PortfolioState(
             nav=nav,
             positions=positions,
             sector_exposure=sector_exposure,
-            locked_t25_value=locked_t25,
+            locked_t25_value=float(locked_t25),
         )
 
         adtv20 = float(event_data.get("adtv20", 2_000_000.0))
@@ -457,6 +479,34 @@ class SystemGovernanceAgent(BaseAgent):
                 "DIEU_6_GIL_CATASTROPHIC_ZERO_TOLERANCE",
             ],
         }
+
+        # Bắn sự kiện lên RabbitMQ Event Bus
+        try:
+            from app.core.event_topics import EventTopics
+            if failsafe_active:
+                await self.publish_event(
+                    topic=EventTopics.GOVERNANCE_FAILSAFE,
+                    payload={
+                        "report_id": report_id,
+                        "failsafe_status": self.failsafe_engine.status.value,
+                        "failsafe_reason": failsafe_reason,
+                        "broker_latency_ms": latency_ms,
+                        "timestamp": datetime.now().isoformat(),
+                    },
+                )
+            await self.publish_event(
+                topic=EventTopics.AUDIT_LOG_ENTRY,
+                payload={
+                    "report_id": report_id,
+                    "system_status": governance_report["system_status"],
+                    "chain_integrity_valid": is_valid,
+                    "audited_actions_logged": audited_records_count,
+                    "current_hash": self.audit_trail.last_hash,
+                    "timestamp": datetime.now().isoformat(),
+                },
+            )
+        except Exception as e_ev:
+            logger.warning(f"[SystemGovernanceAgent] Lỗi bắn sự kiện RabbitMQ: {e_ev}")
 
         # Lưu báo cáo kiểm toán vào bảng audit_reports trong PostgreSQL
         self._save_audit_report_to_db(governance_report)

@@ -79,7 +79,8 @@ class PortfolioAllocationAgent(BaseAgent):
             raise ValueError("[PortfolioAllocationAgent] Thiếu mã cổ phiếu (ticker) trong candidate/event_data.")
         ticker = str(ticker).upper().strip()
 
-        conviction = str(candidate.get("conviction") or event_data.get("conviction", "A")).upper().strip()
+        conviction_raw = candidate.get("conviction") or event_data.get("conviction")
+        conviction = str(conviction_raw).upper().strip() if conviction_raw else ""
         sector = str(candidate.get("sector") or event_data.get("sector", "General")).strip()
         regime_str = str(event_data.get("regime") or candidate.get("regime", "BULL_MARKET")).upper().strip()
         weight_cap = float(event_data.get("weight_cap", candidate.get("weight_cap", 0.15)))
@@ -115,7 +116,13 @@ class PortfolioAllocationAgent(BaseAgent):
         cash_balance = float(event_data.get("cash_balance", account_state.get("cash_balance", nav)))
 
         # C. Nạp toàn bộ Vị thế Hiện Hữu (Khắc phục Portfolio Blindness)
-        existing_positions = self.repository.get_open_positions()
+        existing_positions = (
+            event_data["positions"] if "positions" in event_data and event_data["positions"] is not None
+            else (
+                event_data["existing_positions"] if "existing_positions" in event_data and event_data["existing_positions"] is not None
+                else self.repository.get_open_positions()
+            )
+        )
         pos_current = next((p for p in existing_positions if p["ticker"] == ticker), None)
         current_shares = int(pos_current.get("shares", 0)) if pos_current else 0
         available_shares = int(pos_current.get("available_shares", current_shares)) if pos_current else 0
@@ -139,11 +146,51 @@ class PortfolioAllocationAgent(BaseAgent):
             adtv20 = 500000.0
 
         # =========================================================================
-        # 1. ENGINE 1: ELIGIBILITY ENGINE
+        # 1. ENGINE 1: ELIGIBILITY ENGINE (VỚI AUTO-HYDRATION TỪ CSDL)
         # =========================================================================
         research_data = event_data.get("research_report") or candidate.get("research_report")
         thesis_data = event_data.get("investment_thesis") or candidate.get("investment_thesis")
         counter_data = event_data.get("counter_thesis") or candidate.get("counter_thesis")
+
+        # Tự động tra cứu Luận điểm Đầu tư & Phản biện từ CSDL nếu chưa được truyền
+        try:
+            from app.domain.repositories.intelligence_repository import IntelligenceRepository
+            intel_repo = IntelligenceRepository()
+
+            if not thesis_data:
+                db_thesis = intel_repo.get_latest_investment_thesis(ticker)
+                if db_thesis:
+                    thesis_data = db_thesis
+                    logger.info(f"[PortfolioAllocationAgent] Tự động nạp Investment Thesis từ CSDL cho {ticker} ({thesis_data.get('thesis_id')})")
+
+            if not counter_data and thesis_data:
+                t_id = thesis_data.get("thesis_id")
+                db_counter = intel_repo.get_latest_counter_thesis_verdict(ticker)
+                if not db_counter and t_id:
+                    db_counter = intel_repo.get_counter_thesis_verdict(t_id)
+                if db_counter:
+                    counter_data = db_counter
+                    logger.info(f"[PortfolioAllocationAgent] Tự động nạp Counter Thesis Verdict từ CSDL cho {ticker} (Verdict: {counter_data.get('verdict')})")
+
+            # Tự động cập nhật Conviction và Sector nếu payload bị thiếu
+            if not conviction or conviction == "UNKNOWN":
+                if thesis_data and thesis_data.get("conviction"):
+                    conviction = str(thesis_data.get("conviction")).upper().strip()
+                elif research_data and research_data.get("conviction"):
+                    conviction = str(research_data.get("conviction")).upper().strip()
+                else:
+                    conviction = "B"
+
+            candidate["conviction"] = conviction
+
+            if sector == "General" and thesis_data and thesis_data.get("sector"):
+                sector = str(thesis_data.get("sector")).strip()
+            candidate["sector"] = sector
+        except Exception as e_hydra:
+            logger.debug(f"[PortfolioAllocationAgent] Lỗi khi auto-hydrate Thesis/Counter từ DB: {e_hydra}")
+            if not conviction:
+                conviction = "B"
+            candidate["conviction"] = conviction
 
         eligibility_res = self.eligibility_engine.evaluate(
             ticker=ticker,
@@ -231,10 +278,25 @@ class PortfolioAllocationAgent(BaseAgent):
         )
 
         # =========================================================================
-        # 5. ENGINE 5: DYNAMIC ALLOCATION ENGINE (CASH TARGET)
+        # 5. ENGINE 5: DYNAMIC ALLOCATION ENGINE (CASH TARGET & DRAWDOWN HYDRATION)
         # =========================================================================
         cio_cash_override = float(event_data.get("cash_target_override", 0.0))
         drawdown_tier = str(event_data.get("drawdown_tier") or account_state.get("drawdown_tier", "GREEN"))
+
+        # Tự động nạp khuyến nghị tiền mặt tối thiểu và Drawdown Tier từ Agent-06 (bảng risk_snapshots)
+        if cio_cash_override <= 0 or "drawdown_tier" not in event_data:
+            try:
+                from app.domain.repositories.intelligence_repository import IntelligenceRepository
+                intel_repo = IntelligenceRepository()
+                risk_snap = intel_repo.get_latest_risk_snapshot()
+                if risk_snap:
+                    if "drawdown_tier" not in event_data and risk_snap.get("drawdown_tier"):
+                        drawdown_tier = str(risk_snap.get("drawdown_tier"))
+                    if cio_cash_override <= 0 and risk_snap.get("garch_cash_target"):
+                        cio_cash_override = float(risk_snap.get("garch_cash_target"))
+            except Exception as e_snap:
+                logger.debug(f"[PortfolioAllocationAgent] Không thể nạp risk_snapshots từ DB: {e_snap}")
+
         dynamic_res = self.dynamic_engine.evaluate_allocation(
             portfolio_target=construction_res.portfolio_target,
             ticker=ticker,
@@ -301,6 +363,48 @@ class PortfolioAllocationAgent(BaseAgent):
 
         # Tự động lưu quyết định phân bổ vốn vào CSDL PostgreSQL (bảng portfolio_decisions)
         self.repository.save_decision(output["data"])
+
+        # Bắn sự kiện lên RabbitMQ Topic Exchange (EventTopics.ORDER_INSTRUCTION & REBALANCE_PLANNED)
+        try:
+            from app.core.event_topics import EventTopics
+            out_data = output.get("data", {})
+            inc_shares = out_data.get("capital_allocation", {}).get("incremental_shares", 0)
+            act = str(out_data.get("action", "HOLD")).upper()
+
+            if act in ("BUY", "SELL", "REBALANCE") and abs(inc_shares) > 0:
+                await self.publish_event(
+                    topic=EventTopics.ORDER_INSTRUCTION,
+                    payload={
+                        "decision_id": out_data.get("decision_id"),
+                        "ticker": ticker,
+                        "action": act,
+                        "side": out_data.get("side", "HOLD"),
+                        "shares": abs(inc_shares),
+                        "target_shares": out_data.get("target_shares", 0),
+                        "price": price,
+                        "allocated_amount_vnd": out_data.get("allocated_amount_vnd", 0.0),
+                        "allocated_weight_pct": out_data.get("allocated_weight_pct", 0.0),
+                        "execution_urgency": out_data.get("portfolio_decision", {}).get("execution_urgency", "NORMAL"),
+                        "rationale": out_data.get("rationale", ""),
+                        "campaign": out_data.get("campaign"),
+                        "timestamp": out_data.get("timestamp"),
+                    },
+                )
+            elif act == "REBALANCE":
+                await self.publish_event(
+                    topic=EventTopics.REBALANCE_PLANNED,
+                    payload={
+                        "decision_id": out_data.get("decision_id"),
+                        "ticker": ticker,
+                        "portfolio_target": out_data.get("capital_allocation", {}).get("portfolio_target", 0.0),
+                        "executable_target": out_data.get("capital_allocation", {}).get("executable_target", 0.0),
+                        "incremental_shares": inc_shares,
+                        "rebalance_reasons": out_data.get("decision_log", {}).get("reason", []),
+                        "timestamp": out_data.get("timestamp"),
+                    },
+                )
+        except Exception as e_pub:
+            logger.warning(f"[PortfolioAllocationAgent] Không thể phát sự kiện phân bổ vốn lên RabbitMQ ({e_pub})")
 
         # Đảm bảo ghi audit log vào log_portfolio_allocation ngay cả khi gọi trực tiếp qua process()
         if not event_data.get("_from_run_event"):

@@ -1,6 +1,12 @@
-"""
-Standalone Agent 01 (Market Surveillance Agent) Runner Script
-Allows testing and demonstrating Agent 01 independently without needing downstream agents.
+"""Standalone Agent 01 (Market Surveillance Agent) Production Runner Script
+
+Cho phép chạy và kiểm thử độc lập Agent 01 với CSDL thực tế, kiểm tra toàn bộ 6 tầng radar:
+1. HOSE Session Context
+2. ATC Closing Auction Anomaly
+3. CSAD Herding Behavior (Panic vs Rotation vs FOMO)
+4. VN30 Index Distortion ("Xanh vỏ đỏ lòng")
+5. Sticky HMM 3-State Regime & GJR-GARCH(1,1) VIX VN Analog
+6. State Tables Persistence (market_regimes & market_anomalies)
 
 Usage:
     python scripts/run_agent01_standalone.py
@@ -8,6 +14,7 @@ Usage:
 
 import sys
 import os
+import asyncio
 from datetime import datetime, date
 import json
 import pandas as pd
@@ -16,30 +23,34 @@ import numpy as np
 # Ensure project root is in sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from app.domain.rules.market.session_context_manager import session_context_manager
-from app.domain.rules.market.atc_anomaly_detector import atc_anomaly_detector
-from app.domain.rules.market.csad_calculator import csad_calculator
-from app.domain.rules.market.vn30_distortion import vn30_distortion_monitor
-from app.domain.services.ml.feature_forge import feature_forge
-from app.domain.rules.market.hmm_regime_engine import hmm_engine
-from app.domain.services.regime_service import RegimeService
+from app.core.registry import AgentRegistry
+import app.domain.agents
+from app.domain.rules.market.session_context_manager import SessionContextManager
+from app.domain.rules.market.atc_anomaly_detector import ATCAnomalyDetector
+from app.domain.rules.market.csad_calculator import CSADCalculator
+from app.domain.rules.market.vn30_distortion import VN30DistortionMonitor
 
 
-def run_agent01_standalone():
+async def run_agent01_standalone():
     """Generates an independent Agent 01 Market Pulse & Surveillance Report."""
     now = datetime.now()
     today = now.date()
 
-    print("=" * 70)
-    print(f"[AGENT 01: MARKET SURVEILLANCE] -- STANDALONE EXECUTION RUN")
+    print("=" * 75)
+    print(f"[AGENT 01: MARKET SURVEILLANCE] -- STANDALONE PRODUCTION RUN")
     print(f"Timestamp: {now.strftime('%Y-%m-%d %H:%M:%S')}")
-    print("=" * 70)
+    print("=" * 75)
+
+    session_mgr = SessionContextManager()
+    atc_det = ATCAnomalyDetector()
+    csad_calc = CSADCalculator()
+    dist_mon = VN30DistortionMonitor()
 
     # 1. Session Context
-    current_session = session_context_manager.get_session(now)
-    is_active = session_context_manager.is_trading_active(current_session)
-    pause_polling = session_context_manager.should_pause_polling(current_session)
-    thresholds = session_context_manager.get_session_anomaly_thresholds(current_session)
+    current_session = session_mgr.get_session(now)
+    is_active = session_mgr.is_trading_active(current_session)
+    pause_polling = session_mgr.should_pause_polling(current_session)
+    thresholds = session_mgr.get_session_anomaly_thresholds(current_session)
 
     print("\n1. HOSE SESSION CONTEXT:")
     print(f"   * Current Session: {current_session.value}")
@@ -47,64 +58,45 @@ def run_agent01_standalone():
     print(f"   * Polling Paused (Lunch/Closed): {pause_polling}")
     print(f"   * Session Anomaly Drop Limit (30m): {thresholds.get('max_index_drop_30m', -0.03):.1%}")
 
-    # 2. ATC Anomaly Detector
-    atc_result = atc_anomaly_detector.evaluate_atc_session(
-        target_date=today,
-        atc_volume=1200000,
-        continuous_avg_volume=500000,
-        atc_price_change_pct=-0.015,
-        is_etf_rebalance=False
-    )
-    print("\n2. ATC CLOSING AUCTION EVALUATION:")
-    print(f"   * ATC Status: {atc_result['status']}")
-    print(f"   * ATC Volume Ratio: {atc_result['volume_ratio']}x vs Continuous Avg")
-    print(f"   * Expiry Thursday: {atc_result['is_expiry']}")
-    print(f"   * Reason: {atc_result['reason']}")
+    # 2. Dispatch Live MarketSurveillanceAgent with Autonomous Data Hydration
+    print("\n2. EXECUTING LIVE AGENT-01 SURVEILLANCE PIPELINE...")
+    res = await AgentRegistry.dispatch("market_surveillance", {"date": str(today)})
+    
+    if res["status"] != "SUCCESS":
+        print(f"   [ERROR] Agent 01 execution failed: {res}")
+        return
 
-    # 3. CSAD Herding Behavior
-    sample_df = pd.DataFrame(np.random.normal(0, 0.015, (60, 30)))
-    sample_mkt = pd.Series(np.random.normal(-0.005, 0.01, 60))
-    csad_res = csad_calculator.analyze_herding(sample_df, sample_mkt)
+    data = res["result"]["data"]
+    trace = res["result"]["trace"]
 
-    print("\n3. CSAD HERDING BEHAVIOR ANALYSIS:")
-    print(f"   * CSAD Metric: {csad_res['csad']}")
-    print(f"   * Non-linear Beta 2: {csad_res['beta_2']}")
-    print(f"   * Herding Status: {csad_res['herding_status']}")
-    print(f"   * Alert Level: {csad_res['alert_level']}")
+    print("\n3. RADAR HOSE & MARKET REGIME SYNTHESIS:")
+    print(f"   * Effective Trading Date: {data.get('effective_date')}")
+    print(f"   * Market Regime (Sticky HMM): {data.get('current_regime')}")
+    print(f"   * Session Context: {data.get('session_context')}")
+    print(f"   * System Alert Level: {data.get('alert_level')}")
+    print(f"   * VIX VN Analog (GJR-GARCH): {data.get('vix_vn_analog')}")
+    print(f"   * GARCH Recommended Cash Target: {data.get('garch_cash_target_pct')}%")
+    print(f"   * Market Breadth (% > MA50): {data.get('breadth_above_ma50_pct')}%")
+    print(f"   * Advance/Decline Ratio: {data.get('adv_decl_ratio')}")
+    print(f"   * Floor Locked Stocks (Múa bên trăng): {data.get('floor_locked_count')}")
+    print(f"   * Ceiling Stocks: {data.get('ceiling_count')}")
+    print(f"   * CSAD Herding Status: {data.get('herding_status')} (CSAD: {data.get('csad_score')})")
+    print(f"   * VN30 Index Distortion: {data.get('vn30_distortion')} ({data.get('vn30_distortion_type') or 'NORMAL'})")
+    print(f"   * ATC Anomalies Count: {data.get('atc_anomalies_count')}")
+    print(f"   * Halted Tickers Count: {len(data.get('halted_tickers', []))}")
 
-    # 4. VN30 Index Distortion
-    sample_rets = {"VIC": 0.068, "VHM": 0.052, "VCB": 0.041, "TCB": -0.005, "MBB": -0.01}
-    sample_weights = {"VIC": 0.12, "VHM": 0.10, "VCB": 0.10, "TCB": 0.06, "MBB": 0.05}
-    distortion_res = vn30_distortion_monitor.analyze_distortion(sample_rets, sample_weights)
+    print("\n4. ANOMALIES DETECTED FOR PERSISTENCE:")
+    anomalies = trace.get("anomalies_detected", [])
+    if anomalies:
+        for a in anomalies:
+            print(f"   - [{a['severity']}] {a['type']}: {a['description']}")
+    else:
+        print("   (No critical market anomalies detected for this session)")
 
-    print("\n4. VN30 INDEX DISTORTION MONITOR:")
-    print(f"   * Is Index Distorted: {distortion_res['is_distorted']}")
-    print(f"   * Top 3 Concentration Ratio: {distortion_res['concentration_ratio']:.1%}")
-    print(f"   * Reason: {distortion_res['reason']}")
-
-    # 5. Market Pulse & Regime Signal
-    regime_service = RegimeService()
-    latest_regime = regime_service.get_latest_regime()
-
-    market_pulse_report = {
-        "agent": "AGENT_01_MARKET_SURVEILLANCE",
-        "timestamp": now.isoformat(),
-        "market_session": current_session.value,
-        "regime_label": latest_regime.get("regime_label", "BULL_MOMENTUM"),
-        "breadth_ma50": latest_regime.get("breadth_ma50", 55.0),
-        "atc_surveillance": atc_result,
-        "csad_herding": csad_res,
-        "vn30_distortion": distortion_res,
-        "t2_5_settlement": {
-            "day_of_week": now.strftime("%A"),
-            "settlement_days_remaining": 2.5
-        }
-    }
-
-    print("\n5. FINAL AGENT 01 MARKET PULSE REPORT (JSON Output):")
-    print(json.dumps(market_pulse_report, indent=2))
-    print("=" * 70)
+    print("\n5. FINAL AGENT 01 MARKET PULSE PAYLOAD (O(1) Memory & Downstream Delivery):")
+    print(json.dumps(data, indent=2, default=str))
+    print("=" * 75)
 
 
 if __name__ == "__main__":
-    run_agent01_standalone()
+    asyncio.run(run_agent01_standalone())

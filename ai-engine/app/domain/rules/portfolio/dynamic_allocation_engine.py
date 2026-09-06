@@ -93,7 +93,7 @@ class DynamicAllocationEngine:
         existing_other_stocks_val = sum(
             float(p.get("market_value", 0.0))
             for p in existing_positions
-            if p["ticker"] != ticker
+            if p.get("ticker", p.get("symbol", "")) != ticker
         )
         existing_equity_pct = (existing_other_stocks_val / total_nav) if total_nav > 0 else 0.0
 

@@ -63,7 +63,18 @@ class EODPipelineRunner:
                     eod_data_available = True
                     logger.info(f"[EOD Pipeline - Pha 1] Tìm thấy {cnt} mã có dữ liệu nến EOD ngày {run_date}.")
                 else:
-                    logger.warning(f"[EOD Pipeline - Pha 1] Chưa có nến EOD ngày {run_date} trong market_data_daily. Sử dụng snapshot gần nhất.")
+                    logger.info(f"[EOD Pipeline - Pha 1] Chưa có nến EOD ngày {run_date} trong market_data_daily. Tự động kích hoạt nạp nến ngày từ DNSE...")
+                    try:
+                        from app.infrastructure.data_pipelines.ohlcv_backfill import run_daily_backfill
+                        res_bf = await asyncio.to_thread(run_daily_backfill, exchanges=["STO"])
+                        cnt_new = res_bf.get("total_rows", 0)
+                        if cnt_new > 0:
+                            eod_data_available = True
+                            logger.info(f"[EOD Pipeline - Pha 1] Nạp thành công {cnt_new} nến EOD vào market_data_daily.")
+                        else:
+                            logger.warning(f"[EOD Pipeline - Pha 1] Không có nến mới từ DNSE. Sử dụng snapshot gần nhất.")
+                    except Exception as e_bf:
+                        logger.warning(f"[EOD Pipeline - Pha 1] Tự động nạp nến thất bại: {e_bf}. Sử dụng snapshot gần nhất.")
             except Exception as e_p1:
                 logger.warning(f"[EOD Pipeline - Pha 1] Lỗi kiểm tra nến EOD: {e_p1}")
 

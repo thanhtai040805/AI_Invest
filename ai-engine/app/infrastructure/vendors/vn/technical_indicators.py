@@ -193,7 +193,8 @@ def compute_for_symbol(cur, symbol: str) -> int:
                     clean[k] = float(v)
             except (TypeError, ValueError):
                 clean[k] = float(v) if v is not None else None
-        insert_rows.append((symbol, dt.date(), json.dumps(clean)))
+        calc_d = dt.date() if hasattr(dt, "date") else dt
+        insert_rows.append((symbol, calc_d, json.dumps(clean)))
 
     if not insert_rows:
         return 0

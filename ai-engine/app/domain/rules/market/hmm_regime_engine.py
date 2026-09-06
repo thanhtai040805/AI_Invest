@@ -136,39 +136,51 @@ class RegimeEngineV2:
         self.rs_garch = RSGARCH(n_components)
         self.state_map = {} # Map from HMM hidden state index to MarketRegimeV2 string
         self.is_trained = False
+        self.feature_means = None
+        self.feature_stds = None
+
+        if os.path.exists(HMM_MODEL_PATH):
+            self.load(HMM_MODEL_PATH)
         
-    def _extract_features(self, df: pd.DataFrame) -> np.ndarray:
+    def _extract_features(self, df: pd.DataFrame, fit_scaler: bool = False) -> np.ndarray:
         """Extract the observation features for HMM tailored for HOSE, using FracDiff."""
         feats = []
         
+        # Ensure float types across all expected columns to avoid Decimal vs float operator errors
+        close_s = pd.to_numeric(df["close"], errors="coerce") if "close" in df else None
+        vol_s = pd.to_numeric(df["volume"], errors="coerce") if "volume" in df else None
+        vol_ma_s = pd.to_numeric(df["vol_ma20"], errors="coerce") if "vol_ma20" in df else None
+        ff_s = pd.to_numeric(df["net_foreign_value"], errors="coerce") if "net_foreign_value" in df else None
+        rate_s = pd.to_numeric(df["vninbr_interbank_rate"], errors="coerce") if "vninbr_interbank_rate" in df else None
+
         # 1. Trend Feature (FracDiff of log prices)
-        if "close" in df:
-            log_close = np.log(df["close"].replace(0, np.nan).ffill().bfill())
+        if close_s is not None:
+            log_close = np.log(close_s.replace(0, np.nan).ffill().bfill())
             fd = frac_diff_ffd(log_close, d=0.4, threshold=1e-4).fillna(0.0)
             feats.append(fd.values)
         else:
             feats.append(np.zeros(len(df)))
 
         # 2. Medium-term Momentum (Close vs MA20) - Fast reaction
-        if "close" in df:
-            ma20 = df["close"].rolling(window=20, min_periods=1).mean()
-            momentum = (df["close"] / ma20) - 1
+        if close_s is not None:
+            ma20 = close_s.rolling(window=20, min_periods=1).mean()
+            momentum = (close_s / ma20) - 1.0
             feats.append(momentum.fillna(0.0).values)
         else:
             feats.append(np.zeros(len(df)))
 
         # 3. Volume Trend Feature
-        if "volume" in df and "vol_ma20" in df:
-            feats.append((df["volume"] / df["vol_ma20"] - 1.0).fillna(0.0).values)
-        elif "volume" in df:
-            vol_ma = df["volume"].rolling(20, min_periods=1).mean()
-            feats.append((df["volume"] / (vol_ma + 1e-8) - 1.0).fillna(0.0).values)
+        if vol_s is not None and vol_ma_s is not None:
+            feats.append((vol_s / (vol_ma_s + 1e-8) - 1.0).fillna(0.0).values)
+        elif vol_s is not None:
+            vol_ma = vol_s.rolling(20, min_periods=1).mean()
+            feats.append((vol_s / (vol_ma + 1e-8) - 1.0).fillna(0.0).values)
         else:
             feats.append(np.zeros(len(df)))
 
         # 4. Volatility Feature (Rolling Z-Score)
-        if "close" in df:
-            ret = df["close"].pct_change().fillna(0)
+        if close_s is not None:
+            ret = close_s.pct_change().fillna(0)
             vol20 = ret.rolling(20, min_periods=1).std().fillna(0.015)
             # Normalize volatility using a 1-year (252 days) rolling window to handle structural shifts
             vol_mean_252 = vol20.rolling(252, min_periods=1).mean()
@@ -180,8 +192,8 @@ class RegimeEngineV2:
             feats.append(np.zeros(len(df)))
 
         # 5. Foreign Flow Z-Score Feature
-        if "net_foreign_value" in df and "vol_ma20" in df:
-            ff = df["net_foreign_value"].fillna(0)
+        if ff_s is not None:
+            ff = ff_s.fillna(0)
             ff_mean = ff.rolling(252, min_periods=1).mean()
             ff_std = ff.rolling(252, min_periods=1).std().fillna(1e6)
             ff_std = np.where(ff_std == 0, 1e6, ff_std)
@@ -191,8 +203,8 @@ class RegimeEngineV2:
             feats.append(np.zeros(len(df)))
 
         # 6. Interbank Rate Feature (FracDiff)
-        if "vninbr_interbank_rate" in df:
-            rate = df["vninbr_interbank_rate"].ffill().bfill().fillna(0.0)
+        if rate_s is not None:
+            rate = rate_s.ffill().bfill().fillna(0.0)
             rate_fd = frac_diff_ffd(rate, d=0.4, threshold=1e-4).fillna(0.0)
             feats.append(rate_fd.values)
         else:
@@ -200,9 +212,11 @@ class RegimeEngineV2:
 
         X = np.column_stack(feats)
         
-        # Standardize features
-        self.feature_means = np.mean(X, axis=0)
-        self.feature_stds = np.std(X, axis=0) + 1e-8
+        # Standardize features using learned parameters during inference, or compute during fit
+        if fit_scaler or getattr(self, "feature_means", None) is None or getattr(self, "feature_stds", None) is None:
+            self.feature_means = np.mean(X, axis=0)
+            self.feature_stds = np.std(X, axis=0) + 1e-8
+
         X_scaled = (X - self.feature_means) / self.feature_stds
         
         # Clip outliers to prevent GaussianHMM from allocating entire clusters to a few extreme points
@@ -210,7 +224,7 @@ class RegimeEngineV2:
 
     def fit(self, df: pd.DataFrame):
         """Monthly retraining routine."""
-        X = self._extract_features(df)
+        X = self._extract_features(df, fit_scaler=True)
         
         # MUST exclude the 252-day warmup period because features like rolling 252 
         # contain garbage/NaNs filled with 0s, which destroys HMM clustering and state mapping!
@@ -337,7 +351,7 @@ class RegimeEngineV2:
             return {r: 1.0/self.n_components for r in MarketRegimeV2.get_all()}
             
         # We need a small window to compute features
-        X = self._extract_features(df)
+        X = self._extract_features(df, fit_scaler=False)
         
         # Get posterior probability of the last observation
         probs = self.model.predict_proba(X)[-1]

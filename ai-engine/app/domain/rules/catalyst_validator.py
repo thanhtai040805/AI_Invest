@@ -10,7 +10,11 @@ class CatalystValidator:
     VALID_CATALYST_TYPES = [
         "Sự kiện tài chính", # M&A, Thoái vốn, Chuyển sàn
         "Đảo chiều chu kỳ", # Macro_Price_Turnaround
-        "Mở rộng công suất" # Capacity Expansion
+        "Mở rộng công suất", # Capacity Expansion
+        "Earnings Expansion", # Tăng trưởng lợi nhuận đột biến (F4)
+        "Sector Rotation", # Dòng tiền & xoay vòng ngành (F5/F3)
+        "Undervaluation", # Định giá rẻ sâu (F1/F2)
+        "Value Unlock", # Tái cấu trúc mở khóa giá trị
     ]
     
     def check_peai_accumulation(self, volume_data_3w: List[float], price_data_3w: List[float], sue_score: float) -> str:

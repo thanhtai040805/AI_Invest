@@ -49,6 +49,7 @@ model Stock {
   gil_flag         String?    @default("PASS") @db.VarChar(20)
   audit_opinion    String?    @default("UNQUALIFIED") @db.VarChar(20)
   audit_year       Int?
+  sector           String?    @db.VarChar
   orders           Order[]
   positions        Position[]
 
@@ -636,20 +637,41 @@ model beneish_results {
 
 model cio_resolutions {
   resolution_id    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  thesis_id        String    @db.Uuid
+  thesis_id        String?   @db.VarChar(64)
   debate_summary   String
   final_resolution String    @db.VarChar(16)
   created_at       DateTime? @default(now()) @db.Timestamptz(6)
+  decision_type    String?   @default("CONFLICT_RESOLUTION") @db.VarChar(64)
+  ticker           String?   @db.VarChar(16)
+  verdict_payload  Json?     @default("{}")
+  previous_hash    String?   @default("0000000000000000000000000000000000000000000000000000000000000000") @db.VarChar(64)
+  decision_hash    String?   @db.VarChar(64)
+  governance_cosign Boolean? @default(false)
+
+  @@index([created_at(sort: Desc)], map: "idx_cio_resolutions_created_at")
+  @@index([decision_hash], map: "idx_cio_resolutions_hash")
 }
 
 model counter_thesis_verdicts {
-  thesis_id         String            @id @db.Uuid
-  ticker            String            @db.VarChar(16)
-  cts_score         Decimal           @db.Decimal(6, 2)
-  verdict           String            @db.VarChar(16)
-  block_reasons     Json?
-  evaluated_at      DateTime?         @default(now()) @db.Timestamptz(6)
-  investment_theses investment_theses @relation(fields: [thesis_id], references: [thesis_id], onDelete: NoAction, onUpdate: NoAction)
+  thesis_id               String            @id @db.VarChar(64)
+  ticker                  String            @db.VarChar(16)
+  cts_score               Decimal           @db.Decimal(6, 2)
+  verdict                 String            @db.VarChar(16)
+  block_reasons           Json?
+  evaluated_at            DateTime?         @default(now()) @db.Timestamptz(6)
+  base_cts                Decimal?          @db.Decimal(6, 2)
+  interaction_multiplier  Decimal?          @db.Decimal(6, 2)
+  ocr_penalty             Decimal?          @db.Decimal(6, 2)
+  macro_penalty           Decimal?          @db.Decimal(6, 2)
+  regime_multiplier       Decimal?          @default(1.0) @db.Decimal(6, 2)
+  rule_of_three_passed    Boolean?          @default(true)
+  is_capitulation_rebound  Boolean?          @default(false)
+  holes                   Json?             @default("[]")
+  execution_constraints   Json?             @default("{}")
+  rationale               String?           @default("")
+  investment_theses       investment_theses @relation(fields: [thesis_id], references: [thesis_id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([ticker, evaluated_at(sort: Desc)], map: "idx_counter_verdicts_ticker_eval")
 }
 
 model factor_ic_history {
@@ -672,17 +694,23 @@ model governance_rules {
 }
 
 model investment_theses {
-  thesis_id               String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  thesis_id               String                   @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(64)
   ticker                  String                   @db.VarChar(16)
   created_at              DateTime?                @default(now()) @db.Timestamptz(6)
   catalyst_type           String?                  @db.VarChar(64)
   target_price_range      Json?
   confirming_signals      Json
   invalidation_conditions Json
-  status                  String?                  @default("ACTIVE") @db.VarChar(16)
+  status                  String?                  @default("ACTIVE") @db.VarChar(64)
+  catalyst_description    String?
+  timeline_months         Int?                     @default(3)
+  target_price            Decimal?                 @db.Decimal(15, 2)
+  entry_price_estimated   Decimal?                 @db.Decimal(15, 2)
+  pre_mortem_scenarios    Json?
   counter_thesis_verdicts counter_thesis_verdicts?
 
   @@index([status], map: "idx_theses_status")
+  @@index([ticker, created_at(sort: Desc)], map: "idx_theses_ticker_created")
 }
 
 model kelly_win_rate_matrix {
@@ -950,4 +978,121 @@ model universe_securities {
   updated_at     DateTime? @default(now()) @db.Timestamptz(6)
 
   @@index([universe_group], map: "idx_universe_group")
+}
+
+model audit_logs {
+  id            Int      @id @default(autoincrement())
+  timestamp     String?  @default(dbgenerated("CURRENT_TIMESTAMP")) @db.VarChar
+  agent_id      String   @db.VarChar(64)
+  event_type    String   @db.VarChar(64)
+  details       Json?
+  previous_hash String?  @db.VarChar(64)
+  current_hash  String?  @db.VarChar(64)
+}
+
+model bctc_pipeline_records {
+  id                String    @id @db.VarChar
+  ticker            String    @db.VarChar(16)
+  fiscal_year       Int
+  fiscal_quarter    Int
+  report_scope      String    @default("CONSOLIDATED") @db.VarChar(32)
+  is_classified     Boolean?  @default(false)
+  classifier_status String?   @default("PENDING") @db.VarChar(32)
+  total_raw_pages   Int?
+  retained_pages    Int?
+  r2_pdf_uploaded   Boolean?  @default(false)
+  r2_pdf_key        String?   @db.VarChar
+  r2_pdf_url        String?
+  pdf_sha256        String?   @db.VarChar
+  is_ocr_completed  Boolean?  @default(false)
+  ocr_status        String?   @default("PENDING") @db.VarChar(32)
+  r2_md_uploaded    Boolean?  @default(false)
+  r2_md_key         String?   @db.VarChar
+  r2_md_url         String?
+  is_audited        Boolean?  @default(false)
+  auditor_name      String?   @db.VarChar
+  audit_opinion     String?   @db.VarChar
+  announcement_date DateTime? @db.Date
+  created_at        DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime? @default(now()) @db.Timestamptz(6)
+  is_active_for_sag Boolean?  @default(false)
+  sag_doc_role      String?   @db.VarChar
+
+  @@unique([ticker, fiscal_year, fiscal_quarter, report_scope], map: "bctc_pipeline_records_ticker_fiscal_year_fiscal_quarter_rep_key")
+  @@index([is_classified, r2_pdf_uploaded, is_ocr_completed], map: "idx_bctc_pipeline_flags")
+  @@index([ticker, is_active_for_sag], map: "idx_bctc_pipeline_sag_active")
+  @@index([ticker, fiscal_year, fiscal_quarter], map: "idx_bctc_pipeline_ticker")
+}
+
+model cio_strategic_directives {
+  directive_id                 String    @id @db.VarChar(64)
+  policy_version               String    @default("v5.1_IOS") @db.VarChar(32)
+  effective_from               DateTime  @db.Date
+  effective_until              DateTime? @db.Date
+  status                       String    @default("ACTIVE") @db.VarChar(16)
+  macro_regime                 String    @db.VarChar(32)
+  risk_appetite                String    @db.VarChar(32)
+  strategic_cash_target_pct   Decimal   @db.Decimal(5, 2)
+  sector_tilt                  Json      @default("{}")
+  flash_invalidation_thresholds Json?    @default("{}")
+  rationale                    String
+  decision_hash                String?   @db.VarChar(64)
+  created_at                   DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@index([effective_from, effective_until], map: "idx_cio_directives_effective")
+  @@index([status], map: "idx_cio_directives_status")
+}
+
+model portfolio_campaigns {
+  campaign_id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ticker                      String    @db.VarChar(16)
+  direction                   String    @db.VarChar(16)
+  final_target_weight         Decimal   @db.Decimal(6, 4)
+  current_weight              Decimal   @db.Decimal(6, 4)
+  session_incremental_weight  Decimal   @db.Decimal(6, 4)
+  remaining_weight            Decimal   @db.Decimal(6, 4)
+  target_shares               Int
+  accumulated_shares          Int       @default(0)
+  status                      String    @default("IN_PROGRESS") @db.VarChar(32)
+  created_at                  DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at                  DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@index([ticker, status], map: "idx_campaigns_ticker_status")
+}
+
+model standalone_ml_predictions {
+  id                    Int       @id @default(autoincrement())
+  predict_date          DateTime  @db.Date
+  ticker                String    @db.VarChar(16)
+  rank_pred             Float?
+  mom_pred              Float?
+  surv_prob             Float?
+  pred_score_z          Float?
+  shares                Int?
+  price                 Float?
+  target_weight_pct     Float?
+  execution_mode        String?   @db.VarChar(32)
+  realized_min_lock_ret Float?
+  realized_3d_ret       Float?
+  survival_outcome      Boolean?
+  accuracy_evaluated_at DateTime? @db.Timestamptz(6)
+  created_at            DateTime? @default(now()) @db.Timestamptz(6)
+  account_id            String    @default("standalone-pure-ml-fund-account") @db.VarChar(64)
+
+  @@unique([predict_date, ticker, account_id], map: "standalone_ml_predictions_predict_date_ticker_account_id_key")
+}
+
+model violation_reports {
+  report_id          String    @id @db.VarChar(64)
+  timestamp          DateTime? @default(now()) @db.Timestamptz(6)
+  ticker             String?   @db.VarChar(16)
+  issuing_agent      String    @db.VarChar(64)
+  violated_rule      String    @db.VarChar(64)
+  risk_level         String    @db.VarChar(16)
+  reason             String
+  order_payload      Json?
+  escalated_to       String?   @default("strategy_cio") @db.VarChar(64)
+  resolution_status  String?   @default("PENDING") @db.VarChar(32)
+  cio_resolution_id  String?   @db.VarChar(64)
+  resolved_at        DateTime? @db.Timestamptz(6)
 }

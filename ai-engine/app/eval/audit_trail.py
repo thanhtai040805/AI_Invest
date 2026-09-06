@@ -73,7 +73,7 @@ class AuditTrailEngine:
         try:
             with get_conn() as conn:
                 with conn.cursor() as cur:
-                    # Khóa bảng để đảm bảo không bị xung đột / phân nhánh chuỗi băm (Forking)
+                    # Dùng Advisory Transaction Lock để đồng bộ chuỗi hash chaining an toàn mà không khóa chết bảng
                     cur.execute("""
                         CREATE TABLE IF NOT EXISTS audit_logs (
                             id SERIAL PRIMARY KEY,
@@ -84,7 +84,7 @@ class AuditTrailEngine:
                             previous_hash VARCHAR(64),
                             current_hash VARCHAR(64)
                         );
-                        LOCK TABLE audit_logs IN EXCLUSIVE MODE;
+                        SELECT pg_advisory_xact_lock(hashtext('audit_logs'));
                         SELECT current_hash FROM audit_logs ORDER BY id DESC LIMIT 1;
                     """)
                     row = cur.fetchone()

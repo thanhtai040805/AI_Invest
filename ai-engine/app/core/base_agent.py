@@ -144,8 +144,13 @@ class BaseAgent(abc.ABC):
                 params = (ticker, json.dumps(output_data, default=str), json.dumps(computation_trace, default=str), 0)
             elif self.log_table == "log_investment_thesis":
                 thesis_id = output_data.get("thesis_id") or str(uuid.uuid4())
+                pre_mortem = (
+                    output_data.get("pre_mortem_scenarios")
+                    or (output_data.get("thesis_body", {}).get("pre_mortem") if isinstance(output_data.get("thesis_body"), dict) else [])
+                    or []
+                )
                 sql = "INSERT INTO log_investment_thesis (thesis_id, ticker, pre_mortem_scenarios, thesis_text, created_at) VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)"
-                params = (thesis_id, ticker, json.dumps(output_data.get("pre_mortem_scenarios", []), default=str), json.dumps(output_data, default=str))
+                params = (thesis_id, ticker, json.dumps(pre_mortem, default=str), json.dumps(output_data, default=str))
             elif self.log_table == "log_counter_thesis":
                 thesis_id = output_data.get("thesis_id") or str(uuid.uuid4())
                 verdict = str(output_data.get("verdict", "PROCEED"))[:16]

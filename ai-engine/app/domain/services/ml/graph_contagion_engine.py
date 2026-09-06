@@ -2,6 +2,7 @@
 Graph Intelligence & Ecosystem Contagion Engine for HOSE.
 Implements Directed Graph Shock Propagation, Leader-Follower Divergence Catch-up,
 and Conglomerate Cluster Spillover Momentum.
+Covering 100% of HOSE Listed Stocks (406 symbols) with ICB Granular Taxonomies.
 """
 
 import numpy as np
@@ -11,56 +12,97 @@ from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# 1. GRANULAR SECTOR TAXONOMY FOR HOSE TOP UNIVERSE
+# 1. GRANULAR SECTOR TAXONOMY COVERING ALL 406 HOSE LISTED STOCKS
 SECTOR_MAP: Dict[str, str] = {
-    # Banking
-    "VCB": "BANKING", "BID": "BANKING", "CTG": "BANKING", "TCB": "BANKING",
-    "MBB": "BANKING", "VPB": "BANKING", "ACB": "BANKING", "STB": "BANKING",
-    "HDB": "BANKING", "TPB": "BANKING", "VIB": "BANKING", "MSB": "BANKING",
-    "OCB": "BANKING", "LPB": "BANKING", "EIB": "BANKING", "SHB": "BANKING",
-    "SSB": "BANKING",
-    
-    # Securities / Brokerage
-    "SSI": "SECURITIES", "VND": "SECURITIES", "VCI": "SECURITIES", "HCM": "SECURITIES",
-    "VIX": "SECURITIES", "FTS": "SECURITIES", "BSI": "SECURITIES", "CTS": "SECURITIES",
-    "AGR": "SECURITIES", "ORS": "SECURITIES", "VDS": "SECURITIES", "APG": "SECURITIES",
-    
-    # Real Estate (Residential & Commercial)
-    "VHM": "REAL_ESTATE", "NVL": "REAL_ESTATE", "PDR": "REAL_ESTATE", "DIG": "REAL_ESTATE",
-    "DXG": "REAL_ESTATE", "KDH": "REAL_ESTATE", "NLG": "REAL_ESTATE", "KBC": "REAL_ESTATE",
-    "HDC": "REAL_ESTATE", "TCH": "REAL_ESTATE", "SCR": "REAL_ESTATE", "VIC": "REAL_ESTATE",
-    "VRE": "REAL_ESTATE", "NBB": "REAL_ESTATE", "DXS": "REAL_ESTATE", "KHG": "REAL_ESTATE",
-    "HQC": "REAL_ESTATE", "IJC": "REAL_ESTATE", "LDG": "REAL_ESTATE", "AGG": "REAL_ESTATE",
-    "CEO": "REAL_ESTATE", "PDR": "REAL_ESTATE",
-    
-    # Steel & Materials
-    "HPG": "STEEL", "HSG": "STEEL", "NKG": "STEEL", "TLH": "STEEL",
-    
-    # Oil & Gas / Energy
-    "GAS": "ENERGY", "PLX": "ENERGY", "PVD": "ENERGY", "PVT": "ENERGY",
-    "POW": "ENERGY", "NT2": "ENERGY", "GEG": "ENERGY", "PC1": "ENERGY",
-    "REE": "ENERGY", "HDG": "ENERGY", "PVS": "ENERGY",
-    
-    # Retail & Consumer Goods
-    "MWG": "RETAIL", "FRT": "RETAIL", "PNJ": "RETAIL", "DGW": "RETAIL",
-    "MSN": "CONSUMER", "VNM": "CONSUMER", "SAB": "CONSUMER", "KDC": "CONSUMER",
-    "SBT": "CONSUMER", "BAF": "CONSUMER", "DBC": "CONSUMER",
-    
-    # Technology & Telecom
-    "FPT": "TECH", "CTR": "TECH", "CMG": "TECH", "ELC": "TECH", "VTP": "TECH",
-    
-    # Chemicals, Fertilizer & Rubber
-    "DGC": "CHEMICALS", "DCM": "CHEMICALS", "DPM": "CHEMICALS", "CSV": "CHEMICALS",
-    "BFC": "CHEMICALS", "GVR": "RUBBER", "PHR": "RUBBER", "DPR": "RUBBER",
-    
-    # Industrial Parks & Logistics
-    "SZC": "INDUSTRIAL_PARK", "BCM": "INDUSTRIAL_PARK", "SIP": "INDUSTRIAL_PARK",
-    "GMD": "LOGISTICS", "HAH": "LOGISTICS", "VSC": "LOGISTICS", "VOS": "LOGISTICS",
-    
-    # Construction & Infrastructure
-    "VCG": "CONSTRUCTION", "CTD": "CONSTRUCTION", "HHV": "CONSTRUCTION",
-    "CII": "CONSTRUCTION", "LCG": "CONSTRUCTION", "FCN": "CONSTRUCTION",
-    "KSB": "CONSTRUCTION", "HT1": "CONSTRUCTION", "BCC": "CONSTRUCTION"
+    # --- AGRICULTURE (16 mã) ---
+    "AAM": "AGRICULTURE", "AAN": "AGRICULTURE", "ABT": "AGRICULTURE", "ACL": "AGRICULTURE", "ANV": "AGRICULTURE", "ASM": "AGRICULTURE", "CMX": "AGRICULTURE", "DAT": "AGRICULTURE",
+    "FMC": "AGRICULTURE", "HAG": "AGRICULTURE", "HPA": "AGRICULTURE", "HSL": "AGRICULTURE", "IDI": "AGRICULTURE", "NSC": "AGRICULTURE", "SSC": "AGRICULTURE", "VHC": "AGRICULTURE",
+
+    # --- BANKING (23 mã) ---
+    "ACB": "BANKING", "BID": "BANKING", "BVB": "BANKING", "CTG": "BANKING", "EIB": "BANKING", "EVF": "BANKING", "HDB": "BANKING", "KLB": "BANKING",
+    "LPB": "BANKING", "MBB": "BANKING", "MSB": "BANKING", "NAB": "BANKING", "OCB": "BANKING", "SHB": "BANKING", "SSB": "BANKING", "STB": "BANKING",
+    "TCB": "BANKING", "TPB": "BANKING", "VAB": "BANKING", "VBB": "BANKING", "VCB": "BANKING", "VIB": "BANKING", "VPB": "BANKING",
+
+    # --- CHEMICALS (25 mã) ---
+    "AAA": "CHEMICALS", "ABS": "CHEMICALS", "ADP": "CHEMICALS", "APH": "CHEMICALS", "BFC": "CHEMICALS", "BMP": "CHEMICALS", "CSV": "CHEMICALS", "DCM": "CHEMICALS",
+    "DGC": "CHEMICALS", "DPM": "CHEMICALS", "DPR": "CHEMICALS", "DTT": "CHEMICALS", "GVR": "CHEMICALS", "HCD": "CHEMICALS", "HII": "CHEMICALS", "HRC": "CHEMICALS",
+    "LIX": "CHEMICALS", "PHR": "CHEMICALS", "PLP": "CHEMICALS", "SFG": "CHEMICALS", "TDP": "CHEMICALS", "TNC": "CHEMICALS", "TPC": "CHEMICALS", "TRC": "CHEMICALS",
+    "VPS": "CHEMICALS",
+
+    # --- CONSTRUCTION (44 mã) ---
+    "ACC": "CONSTRUCTION", "C47": "CONSTRUCTION", "CCC": "CONSTRUCTION", "CII": "CONSTRUCTION", "CRC": "CONSTRUCTION", "CTD": "CONSTRUCTION", "CTI": "CONSTRUCTION", "CVT": "CONSTRUCTION",
+    "DC4": "CONSTRUCTION", "DPG": "CONSTRUCTION", "DTL": "CONSTRUCTION", "DXV": "CONSTRUCTION", "FCM": "CONSTRUCTION", "FCN": "CONSTRUCTION", "GMH": "CONSTRUCTION", "HAS": "CONSTRUCTION",
+    "HHV": "CONSTRUCTION", "HT1": "CONSTRUCTION", "HTI": "CONSTRUCTION", "HTN": "CONSTRUCTION", "HUB": "CONSTRUCTION", "HVH": "CONSTRUCTION", "L10": "CONSTRUCTION", "LBM": "CONSTRUCTION",
+    "LCG": "CONSTRUCTION", "LGC": "CONSTRUCTION", "LM8": "CONSTRUCTION", "PC1": "CONSTRUCTION", "PHC": "CONSTRUCTION", "PTC": "CONSTRUCTION", "REE": "CONSTRUCTION", "SC5": "CONSTRUCTION",
+    "SRF": "CONSTRUCTION", "TCR": "CONSTRUCTION", "TEG": "CONSTRUCTION", "THG": "CONSTRUCTION", "TSA": "CONSTRUCTION", "TV2": "CONSTRUCTION", "VCA": "CONSTRUCTION", "VCG": "CONSTRUCTION",
+    "VGC": "CONSTRUCTION", "VNE": "CONSTRUCTION", "VSI": "CONSTRUCTION", "YBM": "CONSTRUCTION",
+
+    # --- CONSUMER (18 mã) ---
+    "AFX": "CONSUMER", "ANT": "CONSUMER", "BAF": "CONSUMER", "BHN": "CONSUMER", "DBC": "CONSUMER", "KDC": "CONSUMER", "LAF": "CONSUMER", "LSS": "CONSUMER",
+    "MCH": "CONSUMER", "MCM": "CONSUMER", "MSN": "CONSUMER", "NAF": "CONSUMER", "PAN": "CONSUMER", "SAB": "CONSUMER", "SBT": "CONSUMER", "SMB": "CONSUMER",
+    "VCF": "CONSUMER", "VNM": "CONSUMER",
+
+    # --- ENERGY (35 mã) ---
+    "ASP": "ENERGY", "BSR": "ENERGY", "BTP": "ENERGY", "BWE": "ENERGY", "CHP": "ENERGY", "CLW": "ENERGY", "CNG": "ENERGY", "DRL": "ENERGY",
+    "GAS": "ENERGY", "GEG": "ENERGY", "GHC": "ENERGY", "HID": "ENERGY", "HNA": "ENERGY", "KHP": "ENERGY", "NT2": "ENERGY", "PGC": "ENERGY",
+    "PGD": "ENERGY", "PGV": "ENERGY", "POW": "ENERGY", "PPC": "ENERGY", "PVD": "ENERGY", "S4A": "ENERGY", "SBA": "ENERGY", "SHP": "ENERGY",
+    "SIP": "ENERGY", "SJD": "ENERGY", "TBC": "ENERGY", "TDM": "ENERGY", "TDW": "ENERGY", "TMP": "ENERGY", "TTA": "ENERGY", "TTE": "ENERGY",
+    "UIC": "ENERGY", "VPD": "ENERGY", "VSH": "ENERGY",
+
+    # --- HEALTHCARE (12 mã) ---
+    "DBD": "HEALTHCARE", "DBT": "HEALTHCARE", "DCL": "HEALTHCARE", "DHG": "HEALTHCARE", "DMC": "HEALTHCARE", "FIT": "HEALTHCARE", "IMP": "HEALTHCARE", "OPC": "HEALTHCARE",
+    "SPM": "HEALTHCARE", "TNH": "HEALTHCARE", "TRA": "HEALTHCARE", "VDP": "HEALTHCARE",
+
+    # --- INDUSTRIAL_GOODS (44 mã) ---
+    "AAT": "INDUSTRIAL_GOODS", "ACG": "INDUSTRIAL_GOODS", "ADS": "INDUSTRIAL_GOODS", "BKG": "INDUSTRIAL_GOODS", "DHC": "INDUSTRIAL_GOODS", "DLG": "INDUSTRIAL_GOODS", "DQC": "INDUSTRIAL_GOODS", "EVE": "INDUSTRIAL_GOODS",
+    "GDT": "INDUSTRIAL_GOODS", "GEE": "INDUSTRIAL_GOODS", "GEX": "INDUSTRIAL_GOODS", "GIL": "INDUSTRIAL_GOODS", "GTA": "INDUSTRIAL_GOODS", "HAP": "INDUSTRIAL_GOODS", "HHP": "INDUSTRIAL_GOODS", "HTG": "INDUSTRIAL_GOODS",
+    "KMR": "INDUSTRIAL_GOODS", "MCP": "INDUSTRIAL_GOODS", "MSH": "INDUSTRIAL_GOODS", "MZG": "INDUSTRIAL_GOODS", "NAV": "INDUSTRIAL_GOODS", "NHH": "INDUSTRIAL_GOODS", "NHT": "INDUSTRIAL_GOODS", "PAC": "INDUSTRIAL_GOODS",
+    "PTB": "INDUSTRIAL_GOODS", "RAL": "INDUSTRIAL_GOODS", "RYG": "INDUSTRIAL_GOODS", "SAM": "INDUSTRIAL_GOODS", "SAV": "INDUSTRIAL_GOODS", "SBG": "INDUSTRIAL_GOODS", "SBV": "INDUSTRIAL_GOODS", "SHA": "INDUSTRIAL_GOODS",
+    "SHI": "INDUSTRIAL_GOODS", "STK": "INDUSTRIAL_GOODS", "SVD": "INDUSTRIAL_GOODS", "SVT": "INDUSTRIAL_GOODS", "TCM": "INDUSTRIAL_GOODS", "TLD": "INDUSTRIAL_GOODS", "TLG": "INDUSTRIAL_GOODS", "TMT": "INDUSTRIAL_GOODS",
+    "TTF": "INDUSTRIAL_GOODS", "TVT": "INDUSTRIAL_GOODS", "TYA": "INDUSTRIAL_GOODS", "VTB": "INDUSTRIAL_GOODS",
+
+    # --- LOGISTICS (35 mã) ---
+    "ASG": "LOGISTICS", "AST": "LOGISTICS", "CLL": "LOGISTICS", "DVP": "LOGISTICS", "GMD": "LOGISTICS", "GSP": "LOGISTICS", "HAH": "LOGISTICS", "HTV": "LOGISTICS",
+    "HVN": "LOGISTICS", "ILB": "LOGISTICS", "MHC": "LOGISTICS", "NCT": "LOGISTICS", "PDN": "LOGISTICS", "PDV": "LOGISTICS", "PJT": "LOGISTICS", "PVP": "LOGISTICS",
+    "PVT": "LOGISTICS", "QNP": "LOGISTICS", "SCS": "LOGISTICS", "SFI": "LOGISTICS", "SGN": "LOGISTICS", "SKG": "LOGISTICS", "STG": "LOGISTICS", "TCL": "LOGISTICS",
+    "TCO": "LOGISTICS", "TCT": "LOGISTICS", "TMS": "LOGISTICS", "VIP": "LOGISTICS", "VJC": "LOGISTICS", "VNL": "LOGISTICS", "VNS": "LOGISTICS", "VOS": "LOGISTICS",
+    "VSC": "LOGISTICS", "VTO": "LOGISTICS", "VTP": "LOGISTICS",
+
+    # --- OTHER_INDUSTRIALS (7 mã) ---
+    "ADG": "OTHER_INDUSTRIALS", "CLC": "OTHER_INDUSTRIALS", "DAH": "OTHER_INDUSTRIALS", "DSN": "OTHER_INDUSTRIALS", "NVT": "OTHER_INDUSTRIALS", "VNG": "OTHER_INDUSTRIALS", "VPL": "OTHER_INDUSTRIALS",
+
+    # --- REAL_ESTATE (60 mã) ---
+    "AGG": "REAL_ESTATE", "BCE": "REAL_ESTATE", "BCM": "REAL_ESTATE", "CCL": "REAL_ESTATE", "CDC": "REAL_ESTATE", "CIG": "REAL_ESTATE", "CKG": "REAL_ESTATE", "CRE": "REAL_ESTATE",
+    "CRV": "REAL_ESTATE", "D2D": "REAL_ESTATE", "DIG": "REAL_ESTATE", "DRH": "REAL_ESTATE", "DTA": "REAL_ESTATE", "DXG": "REAL_ESTATE", "DXS": "REAL_ESTATE", "EVG": "REAL_ESTATE",
+    "FDC": "REAL_ESTATE", "FIR": "REAL_ESTATE", "HAR": "REAL_ESTATE", "HDC": "REAL_ESTATE", "HDG": "REAL_ESTATE", "HPX": "REAL_ESTATE", "HQC": "REAL_ESTATE", "HU1": "REAL_ESTATE",
+    "IJC": "REAL_ESTATE", "ITC": "REAL_ESTATE", "KBC": "REAL_ESTATE", "KDH": "REAL_ESTATE", "KHG": "REAL_ESTATE", "KOS": "REAL_ESTATE", "LDG": "REAL_ESTATE", "LGL": "REAL_ESTATE",
+    "LHG": "REAL_ESTATE", "NBB": "REAL_ESTATE", "NHA": "REAL_ESTATE", "NLG": "REAL_ESTATE", "NTC": "REAL_ESTATE", "NTL": "REAL_ESTATE", "NVL": "REAL_ESTATE", "PDR": "REAL_ESTATE",
+    "PTL": "REAL_ESTATE", "QCG": "REAL_ESTATE", "SCR": "REAL_ESTATE", "SGR": "REAL_ESTATE", "SJS": "REAL_ESTATE", "SZC": "REAL_ESTATE", "SZL": "REAL_ESTATE", "TAL": "REAL_ESTATE",
+    "TCH": "REAL_ESTATE", "TDC": "REAL_ESTATE", "TDH": "REAL_ESTATE", "TIP": "REAL_ESTATE", "TIX": "REAL_ESTATE", "TN1": "REAL_ESTATE", "VHM": "REAL_ESTATE", "VIC": "REAL_ESTATE",
+    "VPH": "REAL_ESTATE", "VPI": "REAL_ESTATE", "VRC": "REAL_ESTATE", "VRE": "REAL_ESTATE",
+
+    # --- RETAIL (34 mã) ---
+    "BTT": "RETAIL", "CCI": "RETAIL", "CMV": "RETAIL", "COM": "RETAIL", "CTF": "RETAIL", "DGW": "RETAIL", "DMX": "RETAIL", "FRT": "RETAIL",
+    "GEL": "RETAIL", "HAX": "RETAIL", "HHS": "RETAIL", "HMC": "RETAIL", "HTL": "RETAIL", "JVC": "RETAIL", "MWG": "RETAIL", "NO1": "RETAIL",
+    "PET": "RETAIL", "PIT": "RETAIL", "PLX": "RETAIL", "PMG": "RETAIL", "PNC": "RETAIL", "PNJ": "RETAIL", "SFC": "RETAIL", "SMA": "RETAIL",
+    "ST8": "RETAIL", "SVC": "RETAIL", "TDG": "RETAIL", "TNI": "RETAIL", "TSC": "RETAIL", "VFG": "RETAIL", "VID": "RETAIL", "VMD": "RETAIL",
+    "VPG": "RETAIL", "VVS": "RETAIL",
+
+    # --- SECURITIES (27 mã) ---
+    "AGR": "SECURITIES", "APG": "SECURITIES", "BIC": "SECURITIES", "BMI": "SECURITIES", "BSI": "SECURITIES", "BVH": "SECURITIES", "CTS": "SECURITIES", "DSC": "SECURITIES",
+    "DSE": "SECURITIES", "FTS": "SECURITIES", "HCM": "SECURITIES", "LPS": "SECURITIES", "MIG": "SECURITIES", "OGC": "SECURITIES", "ORS": "SECURITIES", "PGI": "SECURITIES",
+    "SSI": "SECURITIES", "TCI": "SECURITIES", "TCX": "SECURITIES", "TVB": "SECURITIES", "TVS": "SECURITIES", "VCI": "SECURITIES", "VCK": "SECURITIES", "VDS": "SECURITIES",
+    "VIX": "SECURITIES", "VND": "SECURITIES", "VPX": "SECURITIES",
+
+    # --- STEEL (17 mã) ---
+    "BMC": "STEEL", "BRC": "STEEL", "C32": "STEEL", "CSM": "STEEL", "DHA": "STEEL", "DHM": "STEEL", "DRC": "STEEL", "HPG": "STEEL",
+    "HSG": "STEEL", "KSB": "STEEL", "MDG": "STEEL", "NKG": "STEEL", "NNC": "STEEL", "SMC": "STEEL", "SRC": "STEEL", "TLH": "STEEL",
+    "TNT": "STEEL",
+
+    # --- TECH (9 mã) ---
+    "ABR": "TECH", "CMG": "TECH", "CTR": "TECH", "ELC": "TECH", "FPT": "TECH", "ICT": "TECH", "ITD": "TECH", "SGT": "TECH",
+    "YEG": "TECH",
+
 }
 
 # 2. CONGLOMERATE / SYNDICATE ECOSYSTEM GROUPS (Đặc thù thị trường VN)
@@ -74,28 +116,45 @@ ECOSYSTEM_MAP: Dict[str, str] = {
     # DGC Ecosystem
     "DGC": "DGC_GROUP", "CSV": "DGC_GROUP", "PAT": "DGC_GROUP",
     
-    # Tuấn Mượt / EIB Ecosystem
+    # Eximbank / Novaland Ecosystem
     "EIB": "EXIM_ECOSYSTEM", "NVL": "NOVALAND_ECOSYSTEM",
     
     # Hoang Huy Group
-    "TCH": "HOANG_HUY", "HHS": "HOANG_HUY",
+    "TCH": "HOANG_HUY", "HHS": "HOANG_HUY", "CRV": "HOANG_HUY",
     
     # CII Infrastructure
-    "CII": "CII_GROUP", "NBB": "CII_GROUP"
+    "CII": "CII_GROUP", "NBB": "CII_GROUP",
+
+    # Bamboo Capital
+    "BCG": "BAMBOO_CAPITAL", "TCD": "BAMBOO_CAPITAL",
+
+    # Becamex Group
+    "BCM": "BECAMEX_GROUP", "IJC": "BECAMEX_GROUP", "TDC": "BECAMEX_GROUP",
+
+    # Dat Xanh Group
+    "DXG": "DAT_XANH_GROUP", "DXS": "DAT_XANH_GROUP",
+
+    # Masan Group
+    "MSN": "MASAN_GROUP", "MCH": "MASAN_GROUP", "MCM": "MASAN_GROUP",
 }
 
-# 3. DESIGNATED HUB / LEADER NODES
+# 3. DESIGNATED HUB / LEADER NODES FOR ALL 15 SECTORS
 SECTOR_LEADERS: Dict[str, str] = {
     "BANKING": "VCB",
     "SECURITIES": "SSI",
-    "STEEL": "HPG",
     "REAL_ESTATE": "DIG",
+    "STEEL": "HPG",
     "ENERGY": "PVD",
     "RETAIL": "MWG",
+    "CONSUMER": "VNM",
     "TECH": "FPT",
     "CHEMICALS": "DGC",
     "LOGISTICS": "GMD",
-    "CONSTRUCTION": "VCG"
+    "CONSTRUCTION": "VCG",
+    "AGRICULTURE": "VHC",
+    "HEALTHCARE": "DHG",
+    "INDUSTRIAL_GOODS": "GEX",
+    "OTHER_INDUSTRIALS": "DSN",
 }
 
 ECOSYSTEM_LEADERS: Dict[str, str] = {
@@ -103,7 +162,11 @@ ECOSYSTEM_LEADERS: Dict[str, str] = {
     "GELEX_GROUP": "GEX",
     "DGC_GROUP": "DGC",
     "HOANG_HUY": "TCH",
-    "CII_GROUP": "CII"
+    "CII_GROUP": "CII",
+    "BAMBOO_CAPITAL": "BCG",
+    "BECAMEX_GROUP": "BCM",
+    "DAT_XANH_GROUP": "DXG",
+    "MASAN_GROUP": "MSN",
 }
 
 
@@ -113,11 +176,47 @@ class GraphContagionEngine:
     Constructs high-dimensional graph propagation features across sectors and conglomerates.
     """
     
-    def __init__(self):
-        self.sector_map = SECTOR_MAP
-        self.ecosystem_map = ECOSYSTEM_MAP
-        self.sector_leaders = SECTOR_LEADERS
-        self.ecosystem_leaders = ECOSYSTEM_LEADERS
+    def __init__(self, dynamic_hydrate: bool = True):
+        self.sector_map = dict(SECTOR_MAP)
+        self.ecosystem_map = dict(ECOSYSTEM_MAP)
+        self.sector_leaders = dict(SECTOR_LEADERS)
+        self.ecosystem_leaders = dict(ECOSYSTEM_LEADERS)
+        if dynamic_hydrate:
+            self._hydrate_from_db()
+
+    def _hydrate_from_db(self):
+        """Tự động nạp bổ sung ngành từ PostgreSQL stocks table cho các mã mới niêm yết."""
+        try:
+            from app.infrastructure.database.pg_pool import get_conn
+            from app.infrastructure.vendors.vn.sector_groups import classify
+            ICB_TO_SECTOR = {
+                'BANKS': 'BANKING',
+                'FINANCIAL_SERVICES': 'SECURITIES',
+                'REAL_ESTATE': 'REAL_ESTATE',
+                'BASIC_RESOURCES': 'STEEL',
+                'OIL_GAS': 'ENERGY',
+                'RETAIL_TRADE': 'RETAIL',
+                'FOOD_BEVERAGE': 'CONSUMER',
+                'TECHNOLOGY': 'TECH',
+                'CHEMICALS': 'CHEMICALS',
+                'CONSTRUCTION': 'CONSTRUCTION',
+                'CONSTRUCTION_MATERIALS': 'CONSTRUCTION',
+                'TRANSPORTATION': 'LOGISTICS',
+                'UTILITIES': 'ENERGY',
+                'AGRICULTURE': 'AGRICULTURE',
+                'HEALTHCARE': 'HEALTHCARE',
+                'INDUSTRIAL_GOODS': 'INDUSTRIAL_GOODS',
+                'OTHER_INDUSTRIALS': 'OTHER_INDUSTRIALS'
+            }
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT symbol, industry FROM stocks WHERE exchange ILIKE 'HOSE' OR exchange ILIKE 'hose';")
+                    for sym, ind in cur.fetchall():
+                        if sym not in self.sector_map or self.sector_map[sym] == "OTHER":
+                            icb = classify(ind, sym)
+                            self.sector_map[sym] = ICB_TO_SECTOR.get(icb, "OTHER_INDUSTRIALS")
+        except Exception as e:
+            logger.debug(f"Dynamic sector hydration skipped: {e}")
 
     def extract_graph_contagion_signals(self, market_data_dict: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
         """
@@ -190,7 +289,15 @@ class GraphContagionEngine:
                 
             ret = df_returns[ticker]
             features = pd.DataFrame(index=df.index)
-            sector = self.sector_map.get(ticker, "OTHER")
+            sector = self.sector_map.get(ticker)
+            if not sector:
+                try:
+                    from app.infrastructure.vendors.vn.sector_groups import classify
+                    sector = classify(None, ticker)
+                    self.sector_map[ticker] = sector
+                except Exception:
+                    sector = "OTHER_INDUSTRIALS"
+
             eco = self.ecosystem_map.get(ticker, "NONE")
             
             # --- FEATURE 1: Sector Relative Strength (5d & 20d) ---
@@ -220,12 +327,9 @@ class GraphContagionEngine:
                 features['sec_hub_shock_2d'] = 0.0
                 
             # --- FEATURE 3: Leader-Follower Divergence Catch-up Potential (3d Catch-up) ---
-            # If Sector or Ecosystem has gained +5% in 3d, but this stock is lagging behind (consolidating),
-            # this represents a coiled spring breakout opportunity.
             if sector in sector_mean_df.columns:
                 sec_cum_3d = (1 + sector_mean_df[sector]).rolling(3).apply(np.prod, raw=True) - 1
                 stock_cum_3d = (1 + ret).rolling(3).apply(np.prod, raw=True) - 1
-                # Lag by 1 to make it a pure predictive signal
                 divergence = (sec_cum_3d - stock_cum_3d).shift(1)
                 features['sector_divergence_catchup_3d'] = divergence.fillna(0.0)
             else:
@@ -245,7 +349,6 @@ class GraphContagionEngine:
                 eco_shock = eco_lead_ret * np.log1p(np.maximum(0, eco_lead_vr))
                 features['ecosystem_hub_shock_1d'] = eco_shock.shift(1).fillna(0.0)
                 
-                # Ecosystem divergence
                 eco_cum_3d = (1 + eco_mean_df[eco]).rolling(3).apply(np.prod, raw=True) - 1
                 stock_cum_3d = (1 + ret).rolling(3).apply(np.prod, raw=True) - 1
                 features['ecosystem_divergence_catchup'] = (eco_cum_3d - stock_cum_3d).shift(1).fillna(0.0)

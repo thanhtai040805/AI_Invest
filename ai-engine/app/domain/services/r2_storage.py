@@ -59,7 +59,16 @@ class R2StorageService:
             or os.getenv("R2_TOKEN", "")
             or os.getenv("CLOUDFLARE_API_TOKEN", "")
         ).strip()
-        self.bucket_name = (bucket_name or os.getenv("R2_BUCKET_NAME", "aiinvest-bctc")).strip()
+        env_name = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "")).lower().strip()
+        is_test = env_name in ("test", "testing")
+        if not bucket_name:
+            if is_test:
+                self.bucket_name = (os.getenv("R2_TEST_BUCKET_NAME") or "aiinvest-bctc-test").strip()
+            else:
+                # Mặc định Local và PROD dùng chung bucket aiinvest-bctc-prod để khai thác chung kho BCTC thật
+                self.bucket_name = (os.getenv("R2_BUCKET_NAME") or "aiinvest-bctc-prod").strip()
+        else:
+            self.bucket_name = bucket_name.strip()
         self._s3_client: Any = None
 
     @property
@@ -214,6 +223,32 @@ class R2StorageService:
                 return resp.content
 
         raise RuntimeError("R2 chưa được cấu hình credentials")
+
+    def delete_object(self, s3_key: str, bucket_name: Optional[str] = None) -> bool:
+        """Xóa 1 object trên R2 Storage (dành cho cleanup/teardown hoặc thay thế tài liệu)."""
+        bucket = bucket_name or self.bucket_name
+        if self.auth_mode == "s3":
+            client = self.get_s3_client()
+            try:
+                client.delete_object(Bucket=bucket, Key=s3_key)
+                logger.info("🗑️ Deleted object qua S3 -> r2://%s/%s", bucket, s3_key)
+                return True
+            except Exception as e:
+                logger.error("Lỗi khi xóa object S3 r2://%s/%s: %s", bucket, s3_key, e)
+                return False
+
+        if self.auth_mode == "rest_token":
+            url = f"https://api.cloudflare.com/client/v4/accounts/{self.account_id}/r2/buckets/{bucket}/objects/{s3_key}"
+            headers = {"Authorization": f"Bearer {self.api_token}"}
+            with httpx.Client(timeout=60.0) as client:
+                resp = client.delete(url, headers=headers)
+                if resp.status_code in (200, 204):
+                    logger.info("🗑️ Deleted object qua REST Token -> r2://%s/%s", bucket, s3_key)
+                    return True
+                logger.error("Lỗi khi xóa object REST r2://%s/%s (%d): %s", bucket, s3_key, resp.status_code, resp.text)
+                return False
+
+        return False
 
     def upload_bctc_pruned_pdf(
         self,

@@ -261,7 +261,21 @@ class MarketDataRepository:
         """
         symbol_clean = str(symbol).upper().strip()
 
-        # 1. DNSE Realtime WebSocket qua Redis Cache
+        # 1. DNSE WebSocket Stream Hub In-Memory Cache (0ms latency)
+        try:
+            from app.infrastructure.external_api.dnse.stream_hub import get_stream_hub
+            hub = get_stream_hub()
+            quote = hub.get_quote(symbol_clean)
+            if quote:
+                price_raw = float(quote.get("price", 0.0) or quote.get("matchPrice", 0.0) or 0.0)
+                if price_raw > 0:
+                    price = price_raw * 1000.0 if price_raw < 1000.0 else price_raw
+                    logger.debug(f"[DNSE StreamHub] Lấy giá realtime từ In-Memory Hub cho {symbol_clean}: {price:,.0f} VND")
+                    return price
+        except Exception as e:
+            logger.debug(f"Không thể đọc quote từ StreamHub ({e})")
+
+        # 2. DNSE Realtime WebSocket qua Redis Cache
         try:
             from app.infrastructure.external_api.dnse.redis_pub import get_redis
             import json
@@ -276,7 +290,21 @@ class MarketDataRepository:
         except Exception as e:
             logger.debug(f"Không thể đọc quote realtime từ Redis ({e})")
 
-        # 2. DNSE REST API Intraday (Nến 1m)
+        # 2. DNSE OpenAPI Security Info (Trực tiếp từ openapi.dnse.com.vn, phản hồi ~20ms)
+        try:
+            from app.infrastructure.external_api.dnse.rest_client import get_rest_client
+            rc = get_rest_client()
+            if rc.is_live:
+                info = rc.get_security_info(symbol_clean)
+                price_raw = float(info.get("price", 0.0) or 0.0)
+                if price_raw > 0:
+                    price = price_raw * 1000.0 if price_raw < 1000.0 else price_raw
+                    logger.debug(f"[DNSE OpenAPI] Lấy giá khớp realtime trực tiếp từ DNSE cho {symbol_clean}: {price:,.0f} VND")
+                    return price
+        except Exception as e:
+            logger.debug(f"Không thể đọc security_info từ DNSE OpenAPI ({e})")
+
+        # 3. DNSE REST API Intraday (Nến 1m)
         try:
             from app.infrastructure.external_api.dnse.intraday_tool import DnseIntradayTool
             tool = DnseIntradayTool()
@@ -285,6 +313,7 @@ class MarketDataRepository:
                 latest_candle = intraday_candles[-1]
                 price = float(latest_candle.get("close", 0.0))
                 if price > 0:
+                    price = price * 1000.0 if price < 1000.0 else price
                     logger.debug(f"[DNSE REST] Lấy giá 1m realtime từ DNSE REST cho {symbol_clean}: {price:,} VND")
                     return price
         except Exception as e:

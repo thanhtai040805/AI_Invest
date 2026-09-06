@@ -4,7 +4,7 @@ import os
 import time
 import json
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from app.config.settings import get_settings
@@ -51,11 +51,14 @@ def get_all_stocks(client, market_ids: list[str]) -> list[dict]:
     return items
 
 
-def fetch_today_ohlcv(client, symbol: str) -> Optional[dict]:
-    """Fetch today's daily OHLCV from DNSE REST API."""
+def fetch_today_ohlcv(client, symbol: str, target_date: Optional[date] = None, days_back: int = 14) -> Optional[dict]:
+    """Fetch daily OHLCV from DNSE REST API up to target_date (or today)."""
     now_vn = datetime.now(TZ_VN)
-    today_start = now_vn.replace(hour=0, minute=0, second=0, microsecond=0)
-    today_end = now_vn
+    if target_date:
+        t_end = datetime(target_date.year, target_date.month, target_date.day, 23, 59, 59, tzinfo=TZ_VN)
+    else:
+        t_end = now_vn
+    t_start = t_end - timedelta(days=days_back)
 
     for attempt in range(3):
         try:
@@ -64,8 +67,8 @@ def fetch_today_ohlcv(client, symbol: str) -> Optional[dict]:
                 query={
                     "symbol": symbol,
                     "resolution": "1D",
-                    "from": int(today_start.timestamp()),
-                    "to": int(today_end.timestamp()),
+                    "from": int(t_start.timestamp()),
+                    "to": int(t_end.timestamp()),
                 },
                 dry_run=False,
             )
@@ -100,6 +103,41 @@ def upsert_today(cur, rows: list[tuple]):
             close = EXCLUDED.close,
             volume = EXCLUDED.volume
     """, rows)
+
+    # Đồng bộ sang bảng market_data_daily cho toàn bộ 12 Agents và EOD Pipeline
+    mkt_rows = [
+        (
+            r[1],  # ticker
+            r[0].date() if hasattr(r[0], "date") else r[0],  # date
+            float(r[2]),  # open_adj
+            float(r[3]),  # high_adj
+            float(r[4]),  # low_adj
+            float(r[5]),  # close_adj
+            float(r[5]),  # close_unadj
+            float(r[5]),  # vwap
+            int(r[6]),    # volume_continuous
+            int(r[6]),    # volume_total
+            "dnse_daily", # data_source
+        )
+        for r in rows
+    ]
+    cur.executemany("""
+        INSERT INTO market_data_daily (
+            ticker, date, open_adj, high_adj, low_adj, close_adj, close_unadj,
+            vwap, volume_continuous, volume_total, data_source
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (ticker, date) DO UPDATE SET
+            open_adj = EXCLUDED.open_adj,
+            high_adj = EXCLUDED.high_adj,
+            low_adj = EXCLUDED.low_adj,
+            close_adj = EXCLUDED.close_adj,
+            close_unadj = EXCLUDED.close_unadj,
+            vwap = EXCLUDED.vwap,
+            volume_continuous = EXCLUDED.volume_continuous,
+            volume_total = EXCLUDED.volume_total,
+            data_source = EXCLUDED.data_source
+    """, mkt_rows)
 
 
 def sync_stocks(
@@ -205,6 +243,8 @@ def run_daily_backfill(
     exchanges: Optional[list[str]] = None,
     max_symbols: int = 0,
     progress_callback=None,
+    target_date: Optional[date] = None,
+    days_back: int = 14,
 ) -> dict:
     """Fetch today's OHLCV for all symbols from DNSE REST API and save to PostgreSQL.
 
@@ -240,7 +280,7 @@ def run_daily_backfill(
         eta = remaining / rate if rate > 0 else 0
         print(f"  [{count}/{len(symbol_map)}] {sym} [{rate:.1f}/s, ETA {eta:.0f}s]")
 
-        result = fetch_today_ohlcv(client, sym)
+        result = fetch_today_ohlcv(client, sym, target_date=target_date, days_back=days_back)
         if not result or not result.get('t'):
             continue
 
@@ -265,11 +305,57 @@ def run_daily_backfill(
             conn.close()
             total_rows += len(rows)
             if rows:
-                print(f"    ✓ {len(rows)} rows")
+                print(f"    [OK] {len(rows)} rows")
 
         if progress_callback:
             progress_callback(sym, count, len(symbol_map))
 
     duration = time.time() - start_time
+
+    # Sync VNINDEX index candle for Agent-01 Market Regime
+    try:
+        now_vn = datetime.now(TZ_VN)
+        if target_date:
+            idx_end = datetime(target_date.year, target_date.month, target_date.day, 23, 59, 59, tzinfo=TZ_VN)
+        else:
+            idx_end = now_vn
+        idx_start = idx_end - timedelta(days=days_back)
+        status, body = client.get_ohlc(
+            bar_type="INDEX",
+            query={
+                "symbol": "VNINDEX",
+                "resolution": "1D",
+                "from": int(idx_start.timestamp()),
+                "to": int(idx_end.timestamp()),
+            },
+            dry_run=False,
+        )
+        if status == 200 and body:
+            data_idx = json.loads(body) if isinstance(body, str) else body
+            if isinstance(data_idx, dict) and data_idx.get("t"):
+                v_rows = [
+                    (
+                        datetime.fromtimestamp(data_idx["t"][i], tz=TZ_VN),
+                        "VNINDEX",
+                        data_idx.get("o", [0])[i],
+                        data_idx.get("h", [0])[i],
+                        data_idx.get("l", [0])[i],
+                        data_idx.get("c", [0])[i],
+                        int(data_idx.get("v", [0])[i]),
+                    )
+                    for i in range(len(data_idx["t"]))
+                ]
+                if v_rows:
+                    conn = get_db_conn()
+                    cur = conn.cursor()
+                    upsert_today(cur, v_rows)
+                    conn.commit()
+                    cur.close()
+                    conn.close()
+                    print("  [DailyBackfill] [OK] VNINDEX synced into ohlcv and market_data_daily")
+    except Exception as e_idx:
+        print(f"  [DailyBackfill] Warning: Failed to sync VNINDEX: {e_idx}")
+
     print(f"[DailyBackfill] DONE: {count} symbols, {total_rows} rows in {duration:.0f}s")
     return {"total_symbols": count, "total_rows": total_rows, "duration_seconds": duration}
+

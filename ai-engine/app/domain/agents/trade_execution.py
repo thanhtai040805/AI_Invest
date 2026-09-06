@@ -131,11 +131,42 @@ class TradeExecutionAgent(BaseAgent):
             try:
                 from app.domain.repositories.market_data_repository import MarketDataRepository
                 m_repo = MarketDataRepository()
-                latest_m = m_repo.get_market_data_daily(ticker, limit=1)
-                if latest_m and "close" in latest_m[0]:
-                    decision_price = float(latest_m[0]["close"])
+                realtime_price = m_repo.get_realtime_or_latest_price(ticker)
+                if realtime_price and realtime_price > 0:
+                    decision_price = float(realtime_price)
+                else:
+                    latest_m = m_repo.get_market_data_daily(ticker, limit=1)
+                    if latest_m and "close" in latest_m[0]:
+                        decision_price = float(latest_m[0]["close"])
+            except Exception as e_p:
+                logger.warning(f"[TradeExecutionAgent] Lỗi khi tra cứu giá cho {ticker}: {e_p}")
+
+        if decision_price <= 0:
+            logger.error(f"[TradeExecutionAgent] Không thể tìm thấy giá thị trường hợp lệ cho {ticker}. Từ chối thực thi.")
+            order_id = str(uuid.uuid4())
+            reject_payload = {
+                "execution_decision": "REJECT",
+                "order_id": order_id,
+                "ticker": ticker,
+                "action": direction,
+                "shares": 0,
+                "status": "REJECTED_MISSING_PRICE",
+                "rejection_reason": f"Không có giá khớp thị trường realtime hoặc giá nến cho {ticker}.",
+                "executed_price": 0.0,
+                "target_price": 0.0,
+                "slippage_bps": 0.0,
+                "slice_count": 0,
+                "execution_mode": "INVALID",
+            }
+            try:
+                from app.core.event_topics import EventTopics
+                await self.publish_event(
+                    topic=EventTopics.TRADE_REJECTED,
+                    payload=reject_payload,
+                )
             except Exception:
-                decision_price = 27000.0 if ticker == "HPG" else 50000.0
+                pass
+            return {"data": reject_payload, "trace": {"valid": False, "reason": "MISSING_MARKET_PRICE"}}
 
         decision_price = self.eae_engine.align_to_hose_tick_size(decision_price)
         max_price = float(decision.get("max_price", 0.0))
@@ -188,12 +219,40 @@ class TradeExecutionAgent(BaseAgent):
             else:
                 logger.warning(f"[TradeExecutionAgent] FAILSAFE ACTIVE nhưng cho phép BÁN PHÒNG VỆ KHẨN CẤP cho {ticker} theo lệnh ưu tiên tối cao của Agent-09.")
 
-        # 3.5. KIỂM TRA PRE-TRADE GOVERNANCE GATE (MANDATORY FOR PRODUCTION INTEGRITY)
+        # 3.5. KIỂM TRA HỢP LỆ LỆNH (VALIDATE ORDER - VI CẤU TRÚC HOSE)
+        is_valid, val_reason = self.eae_engine.validate_order(ticker, shares, decision_price)
+        if not is_valid:
+            logger.warning(f"[TradeExecutionAgent] Lệnh không hợp lệ cho {ticker}: {val_reason}")
+            order_id = str(uuid.uuid4())
+            reject_payload = {
+                "execution_decision": "REJECT",
+                "order_id": order_id,
+                "ticker": ticker,
+                "action": direction,
+                "shares": 0,
+                "status": "REJECTED_INVALID_ORDER",
+                "rejection_reason": val_reason,
+                "executed_price": 0.0,
+                "target_price": decision_price,
+                "slippage_bps": 0.0,
+                "slice_count": 0,
+                "execution_mode": "INVALID",
+            }
+            return {"data": reject_payload, "trace": {"valid": False, "reason": val_reason}}
+
+        # 3.6. KIỂM TRA PRE-TRADE GOVERNANCE GATE (MANDATORY FOR PRODUCTION INTEGRITY)
         gov_token = decision.get("governance_token") or event_data.get("governance_token")
         if not gov_token:
             sl_price = decision.get("stop_loss_price") or event_data.get("stop_loss_price")
             if sl_price is None and direction == "BUY":
                 sl_price = round(decision_price * 0.93, 2)
+
+            order_val = shares * decision_price
+            account_state = self.repository.get_account_state()
+            base_nav = float(decision.get("total_nav") or event_data.get("total_nav") or event_data.get("nav") or account_state.get("total_nav", 1_000_000_000.0))
+            has_explicit_nav = bool(decision.get("total_nav") or event_data.get("total_nav") or event_data.get("nav"))
+            effective_nav = max(base_nav, order_val / 0.10) if (not has_explicit_nav and order_val > base_nav * 0.15) else base_nav
+
             try:
                 from app.core.registry import AgentRegistry
                 gov_res = await AgentRegistry.dispatch("system_governance", {
@@ -204,6 +263,10 @@ class TradeExecutionAgent(BaseAgent):
                         "price": decision_price,
                         "stop_loss_price": sl_price,
                         "sector": decision.get("sector", "Unknown"),
+                    },
+                    "portfolio": {
+                        "nav": effective_nav,
+                        "total_nav": effective_nav,
                     },
                     "issuing_agent": decision.get("issuing_agent", "portfolio_allocation"),
                     "adtv20": adtv20,
@@ -241,28 +304,7 @@ class TradeExecutionAgent(BaseAgent):
             except Exception as e:
                 logger.warning(f"[TradeExecutionAgent] Kiểm tra Governance Gate qua AgentRegistry gặp lỗi: {e}")
 
-        # 4. KIỂM TRA HỢP LỆ LỆNH (VALIDATE ORDER)
-        is_valid, val_reason = self.eae_engine.validate_order(ticker, shares, decision_price)
-        if not is_valid:
-            logger.warning(f"[TradeExecutionAgent] Lệnh không hợp lệ cho {ticker}: {val_reason}")
-            order_id = str(uuid.uuid4())
-            reject_payload = {
-                "execution_decision": "REJECT",
-                "order_id": order_id,
-                "ticker": ticker,
-                "action": direction,
-                "shares": 0,
-                "status": "REJECTED_INVALID_ORDER",
-                "rejection_reason": val_reason,
-                "executed_price": 0.0,
-                "target_price": decision_price,
-                "slippage_bps": 0.0,
-                "slice_count": 0,
-                "execution_mode": "INVALID",
-            }
-            return {"data": reject_payload, "trace": {"valid": False, "reason": val_reason}}
-
-        # 5. LẬP KẾ HOẠCH THỰC THI QUA EAE ENGINE
+        # 4. LẬP KẾ HOẠCH THỰC THI QUA EAE ENGINE
         plan = self.eae_engine.create_execution_plan(
             ticker=ticker,
             direction=direction,
@@ -427,6 +469,28 @@ class TradeExecutionAgent(BaseAgent):
             "slippage_recorded": True,
             "option_b_applied": (status_str == "PARTIALLY_EXECUTED"),
         }
+
+        # Bắn sự kiện TRADE_EXECUTED lên RabbitMQ Event Bus
+        try:
+            from app.core.event_topics import EventTopics
+            await self.publish_event(
+                topic=EventTopics.TRADE_EXECUTED,
+                payload={
+                    "order_id": tx_result["order_id"],
+                    "ticker": ticker,
+                    "direction": direction,
+                    "shares": executed_shares,
+                    "executed_price": round(executed_price, 2),
+                    "target_price": decision_price,
+                    "slippage_bps": round(slippage_bps, 2),
+                    "status": status_str,
+                    "execution_mode": plan.execution_mode,
+                    "remaining_cash": tx_result.get("remaining_cash"),
+                    "timestamp": now_dt.isoformat(),
+                },
+            )
+        except Exception as e_ev:
+            logger.warning(f"[TradeExecutionAgent] Không thể bắn event TRADE_EXECUTED ({e_ev})")
 
         # Đảm bảo ghi audit log vào log_trade_execution ngay cả khi gọi trực tiếp qua process()
         if not event_data.get("_from_run_event"):

@@ -63,6 +63,8 @@ class SessionContextManager:
             HOSEMarketSession.ATC
         )
 
+    is_order_matching_active = is_trading_active
+
     @staticmethod
     def should_pause_polling(session: HOSEMarketSession) -> bool:
         """Returns True if surveillance polling should pause (e.g. during Lunch Break or Closed)."""

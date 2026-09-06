@@ -51,9 +51,24 @@ class CSSScoringEngine:
             "f4_earnings": 0.05, "f5_flow": 0.40, "f6_technical": 0.10
         }
 
-    def calculate_css(self, factor_scores: pd.DataFrame, regime: MarketRegime) -> pd.DataFrame:
-        """Tính CSS dựa trên trọng số regime."""
-        weights = self.regime_weights.get(regime, self.regime_weights.get(MarketRegime.SIDEWAYS, self.regime_weights["DEFAULT"]))
+    def calculate_css(
+        self,
+        factor_scores: pd.DataFrame,
+        regime: Any = MarketRegime.SIDEWAYS,
+        custom_weights: Optional[Dict[str, float]] = None
+    ) -> pd.DataFrame:
+        """Tính CSS dựa trên trọng số regime hoặc custom weights."""
+        if custom_weights:
+            weights = custom_weights
+        else:
+            reg_str = str(regime).upper()
+            if "BULL" in reg_str:
+                regime_key = MarketRegime.BULL_TRENDING
+            elif "BEAR" in reg_str:
+                regime_key = MarketRegime.BEAR_TRENDING
+            else:
+                regime_key = MarketRegime.SIDEWAYS
+            weights = self.regime_weights.get(regime_key, self.regime_weights.get(MarketRegime.SIDEWAYS, self.regime_weights["DEFAULT"]))
         
         # Hàm áp dụng trọng số dựa trên sector
         def apply_weights(row):

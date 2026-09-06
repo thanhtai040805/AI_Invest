@@ -62,22 +62,73 @@ class InvestmentThesisAgent(BaseAgent):
         seq_num = int(event_data.get("seq_num", 1))
         custom_catalyst_desc = event_data.get("custom_catalyst_desc")
 
-        # 1. Truy vấn giá hiện tại nếu chưa có
+        # 1. Sàng lọc sớm Hard Filter Lớp 0 (GIL CATASTROPHIC) & Ngưỡng Conviction tối thiểu
+        gil_status = str(research_report.get("gil_status") or market_context.get("gil_status", "PASS")).upper()
+        if gil_status == "CATASTROPHIC":
+            logger.info(f"[InvestmentThesisAgent] Ticker {ticker} bị REJECT do vi phạm GIL CATASTROPHIC.")
+            return {
+                "data": {
+                    "ticker": ticker,
+                    "status": "REJECTED",
+                    "reason": "REJECT: Vi phạm Hard Filter Lớp 0 (GIL == CATASTROPHIC).",
+                },
+                "trace": {
+                    "thesis_engine": self.thesis_engine.__class__.__name__,
+                    "decision": "SKIP_THESIS",
+                }
+            }
+
+        css_score = float(research_report.get("css", 0.0))
+        conviction = str(research_report.get("conviction", "D")).upper()
+        if css_score < 60.0 or conviction in ["C", "D", "E"]:
+            logger.info(f"[InvestmentThesisAgent] Ticker {ticker} không đủ ngưỡng Conviction B: CSS={css_score:.1f}, Conviction={conviction}")
+            return {
+                "data": {
+                    "ticker": ticker,
+                    "status": "WAIT_OR_SKIP",
+                    "reason": f"WAIT / SKIP: CSS ({css_score:.1f}) hoặc Conviction ({conviction}) chưa đạt ngưỡng B.",
+                },
+                "trace": {
+                    "thesis_engine": self.thesis_engine.__class__.__name__,
+                    "decision": "SKIP_THESIS",
+                }
+            }
+
+        # 2. Truy vấn giá hiện tại từ research_report, market_context hoặc CSDL OHLCV
         current_price = float(research_report.get("current_price") or market_context.get("current_price", 0.0))
-        if current_price <= 0:
-            try:
-                from app.domain.repositories.market_data_repository import MarketDataRepository
-                m_repo = MarketDataRepository()
+        ohlcv_3w: List[Dict[str, Any]] = []
+        try:
+            from app.domain.repositories.market_data_repository import MarketDataRepository
+            m_repo = MarketDataRepository()
+            ohlcv_3w = m_repo.get_ohlcv(ticker, limit=15)
+            if current_price <= 0 and ohlcv_3w and "close" in ohlcv_3w[0]:
+                current_price = float(ohlcv_3w[0]["close"])
+            if current_price <= 0:
                 latest_m = m_repo.get_market_data_daily(ticker, limit=1)
                 if latest_m and "close" in latest_m[0]:
                     current_price = float(latest_m[0]["close"])
-            except Exception:
-                pass
-            if current_price <= 0:
-                current_price = 10000.0
-            research_report["current_price"] = current_price
+        except Exception as e_m:
+            logger.debug(f"Không thể tải dữ liệu thị trường cho {ticker}: {e_m}")
 
-        # 2. Xây dựng structured thesis qua ThesisEngine
+        if 0 < current_price < 1000.0:
+            current_price *= 1000.0
+
+        if current_price <= 0:
+            logger.warning(f"[InvestmentThesisAgent] Không tìm thấy dữ liệu giá hiện tại cho {ticker}. Từ chối tạo thesis.")
+            return {
+                "data": {
+                    "ticker": ticker,
+                    "status": "REJECTED",
+                    "reason": f"DATA_MISSING: Không có dữ liệu giá giao dịch hiện tại cho {ticker}.",
+                },
+                "trace": {
+                    "thesis_engine": self.thesis_engine.__class__.__name__,
+                    "decision": "ABORT_NO_PRICE_DATA",
+                }
+            }
+        research_report["current_price"] = current_price
+
+        # 3. Xây dựng structured thesis qua ThesisEngine
         is_eligible, structured_payload, message = self.thesis_engine.build_structured_thesis_output(
             ticker=ticker,
             research_report=research_report,
@@ -102,18 +153,30 @@ class InvestmentThesisAgent(BaseAgent):
                 }
             }
 
-        # 3. Kiểm tra rò rỉ tin tức PEAI qua CatalystValidator
-        volume_data_3w = event_data.get("volume_data_3w", [300000.0] * 15)
-        price_data_3w = event_data.get("price_data_3w", [current_price * 0.98, current_price * 0.99, current_price])
-        peai_status = self.catalyst_validator.check_peai_accumulation(volume_data_3w, price_data_3w, sue_score=2.0)
+        # 3. Kiểm tra rò rỉ tin tức PEAI & Bẫy phá vỡ giả qua CatalystValidator
+        if "volume_data_3w" in event_data and "price_data_3w" in event_data:
+            volume_data_3w = list(event_data["volume_data_3w"])
+            price_data_3w = list(event_data["price_data_3w"])
+        elif ohlcv_3w and len(ohlcv_3w) >= 3:
+            chronological = list(reversed(ohlcv_3w))
+            volume_data_3w = [float(x.get("volume", 0.0)) for x in chronological]
+            price_data_3w = [
+                float(x.get("close", current_price)) * (1000.0 if 0 < float(x.get("close", current_price)) < 1000.0 else 1.0)
+                for x in chronological
+            ]
+        else:
+            volume_data_3w = [300000.0] * 15
+            price_data_3w = [current_price * 0.98, current_price * 0.99, current_price]
 
+        sue_val = float(research_report.get("f4_earnings", 50.0)) / 25.0
+        peai_status = self.catalyst_validator.check_peai_accumulation(volume_data_3w, price_data_3w, sue_score=sue_val)
         structured_payload["input_validation"]["peai_status"] = peai_status
 
         # 4. Lưu luận điểm đầu tư vào CSDL qua IntelligenceRepository
         try:
             from app.domain.repositories.intelligence_repository import IntelligenceRepository
             intel_repo = IntelligenceRepository()
-            intel_repo.save_investment_thesis({
+            save_ok = intel_repo.save_investment_thesis({
                 "thesis_id": structured_payload["thesis_id"],
                 "ticker": ticker,
                 "catalyst_type": structured_payload["thesis_body"]["catalyst"]["primary_type"],
@@ -124,10 +187,24 @@ class InvestmentThesisAgent(BaseAgent):
                 "confirming_signals": structured_payload["input_validation"]["independent_signals"],
                 "invalidation_conditions": structured_payload["thesis_body"]["exit_conditions"]["invalidation_triggers"],
                 "pre_mortem_scenarios": structured_payload["thesis_body"]["pre_mortem"],
+                "target_price_range": structured_payload["thesis_body"]["price_target"]["target_range"],
                 "status": "PENDING_COUNTER_ANALYSIS",
             })
+            if not save_ok:
+                logger.error(f"[InvestmentThesisAgent] CSDL không thể lưu thesis_id: {structured_payload['thesis_id']}")
         except Exception as e:
-            logger.warning(f"Không thể lưu thesis {structured_payload['thesis_id']} vào DB: {e}")
+            logger.error(f"Không thể lưu thesis {structured_payload['thesis_id']} vào DB: {e}", exc_info=True)
+
+        # 5. Phát sự kiện EventTopics.THESIS_CREATED lên RabbitMQ Topic Exchange
+        try:
+            from app.core.event_topics import EventTopics
+            await self.publish_event(
+                topic=EventTopics.THESIS_CREATED,
+                payload=structured_payload,
+                correlation_id=structured_payload["thesis_id"],
+            )
+        except Exception as e_pub:
+            logger.debug(f"Không thể publish event THESIS_CREATED: {e_pub}")
 
         trace = {
             "thesis_engine": self.thesis_engine.__class__.__name__,

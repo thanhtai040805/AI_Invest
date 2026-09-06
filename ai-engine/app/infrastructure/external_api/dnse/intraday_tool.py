@@ -78,11 +78,13 @@ class DnseIntradayTool:
             List of {time, open, high, low, close, volume}
         """
         res = RESOLUTION_MAP.get(resolution, resolution)
-        query: Dict[str, Any] = {"symbol": symbol.upper(), "resolution": res}
-        if from_ts is not None:
-            query["from"] = from_ts
-        if to_ts is not None:
-            query["to"] = to_ts
+        if to_ts is None:
+            to_ts = int(time.time())
+        if from_ts is None:
+            lookback = 86400 if str(res) in ("1", "3", "5", "15", "30", "1H") else 30 * 86400
+            from_ts = to_ts - lookback
+
+        query: Dict[str, Any] = {"symbol": symbol.upper(), "resolution": res, "from": from_ts, "to": to_ts}
 
         self._rate_limit()
         client = self._get_client()

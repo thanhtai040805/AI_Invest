@@ -30,6 +30,31 @@ async def trigger_backfill():
     return {"message": "Backfill triggered, running in background"}
 
 
+@router.post("/admin/daily-pipeline/trigger")
+async def trigger_daily_pipeline(
+    target_date: Optional[str] = Query(None, description="Ngày chạy định dạng YYYY-MM-DD (mặc định hôm nay)"),
+    force: bool = Query(False, description="Bắt buộc chạy lại nếu đã chạy trong ngày"),
+):
+    """Kích hoạt thủ công chu trình Daily Investment Pipeline (12 Agents + Standalone ML)."""
+    from app.infrastructure.workers.daily_pipeline_daemon import daily_daemon
+    res = await daily_daemon.trigger_manual(target_date=target_date, force=force)
+    return {
+        "message": f"Daily Pipeline completed for date {res.get('date')}",
+        "status": res.get("status"),
+        "multi_agent_orders": len(res.get("multi_agent_instructions", [])),
+        "standalone_ml_orders": len(res.get("standalone_ml_instructions", [])),
+        "governance_status": res.get("governance_status"),
+        "audit_sha256": res.get("audit_sha256"),
+    }
+
+
+@router.get("/admin/daily-pipeline/status")
+async def get_daily_pipeline_status():
+    """Kiểm tra trạng thái Daily Pipeline Daemon và lần chạy sáng gần nhất."""
+    from app.infrastructure.workers.daily_pipeline_daemon import daily_daemon
+    return daily_daemon.status
+
+
 @router.post("/admin/eod-pipeline/trigger")
 async def trigger_eod_pipeline(
     target_date: Optional[str] = Query(None, description="Ngày chạy định dạng YYYY-MM-DD (mặc định hôm nay)"),
@@ -50,6 +75,28 @@ async def get_eod_pipeline_status():
     """Kiểm tra trạng thái EOD Learning Daemon và lần chạy gần nhất."""
     from app.infrastructure.workers.eod_learning_daemon import eod_daemon
     return eod_daemon.status
+
+
+@router.post("/admin/daily-etl/trigger")
+async def trigger_daily_etl(
+    target_date: Optional[str] = Query(None, description="Ngày chạy định dạng YYYY-MM-DD (mặc định hôm nay)"),
+):
+    """Kích hoạt thủ công quy trình Daily ETL (OHLCV, indicators, foreign flow, factor scores)."""
+    from app.infrastructure.workers.daily_etl_daemon import etl_daemon
+    res = await etl_daemon.trigger_manual(target_date=target_date)
+    return {
+        "message": f"Daily ETL completed for date {target_date or 'today'}",
+        "status": res.get("status"),
+        "result": res,
+    }
+
+
+@router.get("/admin/daily-etl/status")
+async def get_daily_etl_status():
+    """Kiểm tra trạng thái Daily ETL Daemon và lần chạy gần nhất."""
+    from app.infrastructure.workers.daily_etl_daemon import etl_daemon
+    return etl_daemon.status
+
 
 
 @router.get("/admin/monitoring/health")

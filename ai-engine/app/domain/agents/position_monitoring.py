@@ -479,6 +479,39 @@ class PositionMonitoringAgent(BaseAgent):
             "is_past_14h": is_past_14h,
         }
 
+        # 7.5 BẮN SỰ KIỆN LÊN RABBITMQ EVENT BUS
+        try:
+            from app.core.event_topics import EventTopics
+            if stop_loss_orders:
+                for slo in stop_loss_orders:
+                    await self.publish_event(
+                        topic=EventTopics.STOP_LOSS_EMERGENCY,
+                        payload={
+                            "ticker": slo.get("ticker"),
+                            "action": slo.get("action", "SELL"),
+                            "urgency": slo.get("urgency", "EMERGENCY"),
+                            "rule_level": slo.get("rule_level"),
+                            "quantity": slo.get("quantity", 0),
+                            "price": slo.get("price"),
+                            "reason": slo.get("reason"),
+                            "current_pnl_pct": slo.get("current_pnl_pct"),
+                            "current_pnl_nav_pct": slo.get("current_pnl_nav_pct"),
+                            "monitored_at": eval_dt.isoformat(),
+                        },
+                    )
+            await self.publish_event(
+                topic=EventTopics.POSITION_HEALTH_TICK,
+                payload={
+                    "monitored_at": eval_dt.isoformat(),
+                    "monitored_count": len(monitored_positions),
+                    "stop_loss_triggered": len(stop_loss_orders) > 0,
+                    "avg_pnl_pct": avg_pnl,
+                    "failsafe_active": failsafe_active,
+                },
+            )
+        except Exception as e_ev:
+            logger.warning(f"[PositionMonitoringAgent] Lỗi bắn sự kiện RabbitMQ: {e_ev}")
+
         return {"data": output_data, "trace": trace}
 
 

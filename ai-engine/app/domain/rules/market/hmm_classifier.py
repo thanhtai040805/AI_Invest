@@ -53,7 +53,7 @@ class HMMClassifier:
 
     def train_hmm_model(self, days_history: int = 1500) -> bool:
         """
-        Triggers the monthly retraining of RegimeEngineV2.
+        Triggers the monthly retraining of RegimeEngineV2 on historical market data.
         """
         import psycopg2
         import pandas as pd
@@ -61,7 +61,8 @@ class HMMClassifier:
         
         try:
             conn = psycopg2.connect(DB_URL)
-            query = """
+            limit_clause = "LIMIT %s" if days_history else ""
+            query = f"""
                 WITH vni AS (
                     SELECT date, close_adj as close, volume_total as volume,
                            AVG(close_adj) OVER(ORDER BY date ROWS BETWEEN 49 PRECEDING AND CURRENT ROW) as ma50,
@@ -92,9 +93,10 @@ class HMMClassifier:
                 LEFT JOIN macro ON vni.date = macro.date
                 LEFT JOIN ff ON vni.date = ff.date
                 ORDER BY vni.date DESC
-                LIMIT %s
+                {limit_clause}
             """
-            df = pd.read_sql(query, conn, params=(days_history,))
+            params = (days_history,) if days_history else ()
+            df = pd.read_sql(query, conn, params=params)
             conn.close()
             
             df = df.sort_values("date").reset_index(drop=True)

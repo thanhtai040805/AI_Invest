@@ -193,7 +193,7 @@ class ReinforcementLearningAgent(BaseAgent):
                 missing_flags.append(f"DB_TRADES_FETCH_ERROR: {e}")
 
         if not factor_preds:
-            # Tra cứu từ bảng factor_scores (tương thích cả symbol và ticker)
+            # Tra cứu từ bảng factor_scores (chuẩn PostgreSQL / Prisma schema)
             try:
                 rows_factors = self.storage.fetch_all(
                     """
@@ -215,23 +215,8 @@ class ReinforcementLearningAgent(BaseAgent):
                         }
                 else:
                     missing_flags.append("NO_FACTOR_SCORES_IN_DB")
-            except Exception:
-                try:
-                    rows_alt = self.storage.fetch_all(
-                        "SELECT ticker, f1_value, f2_quality, f3_momentum, f4_earnings, f5_flow, f6_technical, css FROM factor_scores ORDER BY date DESC LIMIT 50"
-                    )
-                    for r in rows_alt:
-                        factor_preds[str(r[0])] = {
-                            "f1_value": float(r[1] or 50.0),
-                            "f2_quality": float(r[2] or 50.0),
-                            "f3_momentum": float(r[3] or 50.0),
-                            "f4_earnings": float(r[4] or 50.0),
-                            "f5_flow": float(r[5] or 50.0),
-                            "f6_technical": float(r[6] or 50.0),
-                            "css": float(r[7] or 50.0),
-                        }
-                except Exception as e:
-                    missing_flags.append(f"DB_FACTORS_FETCH_ERROR: {e}")
+            except Exception as e:
+                missing_flags.append(f"DB_FACTORS_FETCH_ERROR: {e}")
 
         # -------------------------------------------------------------
         # 2. Ghi nhận sai lệch Dự báo vs Thực tế vào bảng mral_metrics (100% CSDL)
@@ -490,5 +475,35 @@ class ReinforcementLearningAgent(BaseAgent):
             "calibration_timestamp": datetime.now().isoformat(),
             "db_persistence": "100%_COMMITTED_POSTGRESQL",
         }
+
+        # Bắn sự kiện lên RabbitMQ Event Bus
+        try:
+            from app.core.event_topics import EventTopics
+            if gov_approved and policy_weights:
+                await self.publish_event(
+                    topic=EventTopics.POLICY_WEIGHTS,
+                    payload={
+                        "target_date": str(target_date),
+                        "regime": regime,
+                        "policy_weights": policy_weights,
+                        "rolling_ic_20d": round(avg_ic_20d, 4),
+                        "gov_approved": gov_approved,
+                        "timestamp": datetime.now().isoformat(),
+                    },
+                )
+            if cdc_triggered:
+                await self.publish_event(
+                    topic=EventTopics.CDC_TRIGGERED,
+                    payload={
+                        "target_date": str(target_date),
+                        "regime": regime,
+                        "ic_decay_pct": round(ic_decay_pct, 2),
+                        "decay_diagnosis": decay_diagnosis,
+                        "detail": decay_res.get("detail", ""),
+                        "timestamp": datetime.now().isoformat(),
+                    },
+                )
+        except Exception as e_ev:
+            logger.warning(f"[ReinforcementLearningAgent] Không thể bắn event RabbitMQ ({e_ev})")
 
         return {"data": rl_output, "trace": trace}

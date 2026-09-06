@@ -65,25 +65,165 @@ class PortfolioRiskAgent(BaseAgent):
         """
         Thẩm định rủi ro thể chế và phê duyệt/điều chỉnh/hủy lệnh đề xuất:
         - event_data:
-            - portfolio: {total_nav, peak_nav, cash_vnd, positions, sector_exposure, locked_t25_value, returns_series}
+            - portfolio: {total_nav, peak_nav, cash_vnd, positions, sector_exposure, locked_t25_value, returns_series} (tùy chọn, tự động nạp DB nếu thiếu)
             - proposed_order: {ticker, side, quantity/target_shares, price, stop_loss_price, sector, adtv20, candle, ma20_volume} (tùy chọn)
-            - market_context: {distribution_days, breadth_ma20_pct, vnindex_change_pct, market_beta}
-            - model_risk: {ic_decay_pct, persistence_sessions, actual_slippage_pct}
+            - market_context: {distribution_days, breadth_ma20_pct, vnindex_change_pct, market_beta} (tùy chọn)
+            - model_risk: {ic_decay_pct, persistence_sessions, actual_slippage_pct} (tùy chọn)
         """
-        portfolio = event_data.get("portfolio", {})
-        nav = float(portfolio.get("total_nav", 1000000000.0))
-        peak_nav = float(portfolio.get("peak_nav", nav))
-        positions = portfolio.get("positions", {})
-        sector_exposure = portfolio.get("sector_exposure", {})
-        locked_t25_value = float(portfolio.get("locked_t25_value", 0.0))
-        returns_series = portfolio.get("returns_series", [])
+        # =========================================================================
+        # 0. NẠP DỮ LIỆU THỰC TẾ (PORTFOLIO, RISK LIMITS, MARKET CONTEXT)
+        # =========================================================================
+        user_id = event_data.get("user_id")
+        portfolio_input = event_data.get("portfolio")
 
+        # 0.1 Nạp hạn mức rủi ro thể chế từ bảng risk_limits CSDL
+        risk_limits: Dict[str, float] = {
+            "limit_type": "HOSE_EQUITY",
+            "max_single_stock_pct": 15.0,
+            "max_sector_pct": 35.0,
+            "hard_stop_loss_pct": 2.0,
+        }
+        try:
+            from app.domain.repositories.intelligence_repository import IntelligenceRepository
+            intel_repo = IntelligenceRepository()
+            db_limits = intel_repo.get_risk_limits("HOSE_EQUITY")
+            if db_limits:
+                risk_limits.update(db_limits)
+        except Exception as e_lim:
+            logger.debug(f"[PortfolioRiskAgent] Lỗi khi nạp risk_limits từ DB ({e_lim}), sử dụng mặc định IOS v5.1")
+
+        # 0.2 Hydrate Portfolio: Triệt tiêu bẫy Phantom Portfolio (Portfolio Blindness)
+        nav: float = 1000000000.0
+        peak_nav: float = 1000000000.0
+        cash_vnd: float = 1000000000.0
+        positions: Dict[str, Dict[str, Any]] = {}
+        sector_exposure: Dict[str, float] = {}
+        locked_t25_value: float = 0.0
+        returns_series: List[float] = []
+
+        is_estimated_nav: bool = False
+        if not portfolio_input or not isinstance(portfolio_input, dict) or "total_nav" not in portfolio_input:
+            try:
+                from app.domain.repositories.portfolio_repository import PortfolioRepository
+                portfolio_repo = PortfolioRepository()
+                acc_state = portfolio_repo.get_account_state(user_id=user_id)
+                if acc_state and "total_nav" in acc_state and float(acc_state.get("total_nav", 0)) > 0:
+                    nav = float(acc_state["total_nav"])
+                    peak_nav = float(acc_state.get("peak_nav", nav))
+                    cash_vnd = float(acc_state.get("cash_balance", nav))
+                else:
+                    is_estimated_nav = True
+                    logger.critical(
+                        "[PortfolioRiskAgent] CRITICAL: DB Account State trống và không có portfolio_input. "
+                        "Sử dụng NAV mặc định 1,000,000,000 VND (ESTIMATED mode)."
+                    )
+            except Exception as e_acc:
+                is_estimated_nav = True
+                logger.critical(
+                    f"[PortfolioRiskAgent] CRITICAL: Không thể nạp Account State ({e_acc}). "
+                    "Sử dụng NAV mặc định 1,000,000,000 VND (ESTIMATED mode)."
+                )
+
+                open_positions = portfolio_repo.get_open_positions(user_id=user_id)
+                for pos in open_positions:
+                    sym = str(pos.get("ticker", pos.get("symbol", ""))).upper().strip()
+                    if not sym:
+                        continue
+                    qty = int(pos.get("shares", pos.get("quantity", 0)))
+                    cur_p = float(pos.get("current_price", pos.get("average_price", 0.0)))
+                    avg_p = float(pos.get("average_price", cur_p))
+                    locked_shares = int(pos.get("locked_t25_shares", 0))
+                    sector = str(pos.get("sector", "Unknown"))
+
+                    positions[sym] = {
+                        "quantity": qty,
+                        "shares": qty,
+                        "current_price": cur_p,
+                        "price": cur_p,
+                        "average_price": avg_p,
+                        "locked_t25_shares": locked_shares,
+                        "sector": sector,
+                    }
+                    sector_exposure[sector] = sector_exposure.get(sector, 0.0) + (qty * cur_p)
+                    locked_t25_value += locked_shares * cur_p
+
+                logger.info(
+                    f"[PortfolioRiskAgent] Tự động nạp tài khoản thực tế: NAV={nav:,.0f} VND, "
+                    f"Cash={cash_vnd:,.0f} VND, {len(positions)} vị thế nắm giữ."
+                )
+            except Exception as e_port:
+                logger.warning(f"[PortfolioRiskAgent] Không thể nạp tài khoản từ DB ({e_port}), fallback in-memory")
+                if portfolio_input and isinstance(portfolio_input, dict):
+                    nav = float(portfolio_input.get("total_nav", 1000000000.0))
+                    peak_nav = float(portfolio_input.get("peak_nav", nav))
+                    positions = dict(portfolio_input.get("positions", {}))
+                    sector_exposure = dict(portfolio_input.get("sector_exposure", {}))
+                    locked_t25_value = float(portfolio_input.get("locked_t25_value", 0.0))
+                    returns_series = list(portfolio_input.get("returns_series", []))
+        else:
+            nav = float(portfolio_input.get("total_nav", 1000000000.0))
+            peak_nav = float(portfolio_input.get("peak_nav", nav))
+            cash_vnd = float(portfolio_input.get("cash_vnd", 1000000000.0))
+            positions_raw = portfolio_input.get("positions", {})
+            if isinstance(positions_raw, list):
+                for p in positions_raw:
+                    if isinstance(p, dict):
+                        sym = str(p.get("ticker", p.get("symbol", ""))).upper().strip()
+                        if sym:
+                            positions[sym] = dict(p)
+            elif isinstance(positions_raw, dict):
+                positions = dict(positions_raw)
+
+            sector_exposure = dict(portfolio_input.get("sector_exposure", {}))
+            locked_t25_value = float(portfolio_input.get("locked_t25_value", 0.0))
+            returns_series = list(portfolio_input.get("returns_series", []))
+
+        # 0.3 Nạp chuỗi returns lịch sử nếu chưa có (phục vụ Tail Risk EGARCH-t & ES 97.5%)
+        if not returns_series:
+            try:
+                from app.domain.repositories.market_data_repository import MarketDataRepository
+                market_repo = MarketDataRepository()
+                vnindex_bars = market_repo.get_ohlcv("VNINDEX", limit=60)
+                if vnindex_bars and len(vnindex_bars) > 1:
+                    # Chuẩn hóa về chuỗi thời gian tăng dần (chronological ASC) trước khi tính lợi suất
+                    bars_asc = list(reversed(vnindex_bars)) if (
+                        "time" in vnindex_bars[0] and "time" in vnindex_bars[-1]
+                        and str(vnindex_bars[0].get("time")) > str(vnindex_bars[-1].get("time"))
+                    ) else list(vnindex_bars)
+                    closes = [float(b.get("close", 0.0)) for b in bars_asc]
+                    returns_series = [
+                        (closes[i] - closes[i - 1]) / closes[i - 1]
+                        for i in range(1, len(closes))
+                        if closes[i - 1] > 0
+                    ]
+            except Exception as e_ret:
+                logger.debug(f"[PortfolioRiskAgent] Không thể nạp returns_series từ VNINDEX: {e_ret}")
+
+        # 0.4 Nạp Market Context (Breadth, Regime)
         market_ctx = event_data.get("market_context", {})
+        if not market_ctx:
+            try:
+                from app.domain.repositories.market_data_repository import MarketDataRepository
+                market_repo = MarketDataRepository()
+                regime_data = market_repo.get_latest_market_regime()
+                if regime_data:
+                    b_ratio = float(regime_data.get("breadth_ratio", 0.55))
+                    market_ctx = {
+                        "distribution_days": 0,
+                        "breadth_ma20_pct": round(b_ratio * 100, 1),
+                        "vnindex_change_pct": 0.0,
+                        "market_beta": 1.10,
+                        "regime": regime_data.get("regime", "UNKNOWN"),
+                    }
+            except Exception as e_mkt:
+                logger.debug(f"[PortfolioRiskAgent] Không thể nạp market_regime: {e_mkt}")
+
         distribution_days = int(market_ctx.get("distribution_days", 0))
         breadth_ma20_pct = float(market_ctx.get("breadth_ma20_pct", 55.0))
         vnindex_change_pct = float(market_ctx.get("vnindex_change_pct", 0.0))
         market_beta = float(market_ctx.get("market_beta", 1.10))
 
+        # 0.5 Giám sát Model Risk & CDC
         model_risk = event_data.get("model_risk", {})
         ic_decay_pct = float(model_risk.get("ic_decay_pct", 0.0))
         if "cdc_status" in event_data and event_data["cdc_status"]:
@@ -203,15 +343,20 @@ class PortfolioRiskAgent(BaseAgent):
                 sector=order_sector,
             )
 
-            # A. Kiểm tra Hard Laws (Lớp 1)
-            hl_check: HardLawCheck = self.hard_law_engine.check_order(p_order, p_state, adtv20)
+            # A. Kiểm tra Hard Laws (Lớp 1) kèm Dynamic risk_limits
+            hl_check: HardLawCheck = self.hard_law_engine.check_order(
+                p_order, p_state, adtv20, risk_limits=risk_limits
+            )
             if not hl_check.passed:
                 hard_law_status_map["all_passed"] = False
-                if "Single" in str(hl_check.violated_law) or "15%" in hl_check.reason:
+                reason_lower = hl_check.reason.lower()
+                law_str = str(hl_check.violated_law).lower()
+
+                if "cổ phiếu" in reason_lower or "single" in law_str or "single_stock" in reason_lower:
                     hard_law_status_map["single_stock"] = "BLOCK"
-                elif "ngành" in str(hl_check.violated_law) or "35%" in hl_check.reason:
+                elif "ngành" in reason_lower or "sector" in law_str or "sector" in reason_lower:
                     hard_law_status_map["sector"] = "BLOCK"
-                elif "Thanh Khoản" in str(hl_check.violated_law) or "ADTV20" in hl_check.reason:
+                elif "thanh khoản" in law_str or "adtv" in reason_lower:
                     hard_law_status_map["liquidity_limit"] = "BLOCK"
                 else:
                     hard_law_status_map["position_risk"] = "BLOCK"
@@ -230,12 +375,47 @@ class PortfolioRiskAgent(BaseAgent):
                 hard_law_status_map["t25_capacity"] = "BLOCK" if t25_check.max_safe_shares == 0 else "WARNING"
                 reasons_list.append(f"T+2.5 RISK: {t25_check.reason}")
 
-            # C. Kiểm tra Cảm biến Dị thường Giá & Volume VSA (Lớp 3)
+            # C. Kiểm tra Cảm biến Dị thường Giá & Volume VSA (Lớp 3) - Tự động nạp CSDL nếu thiếu
             candle_data = proposed_order_raw.get("candle") or proposed_order_raw.get("current_candle")
+            ma20_vol = float(proposed_order_raw.get("ma20_volume", adtv20))
+            ma20_pr = float(proposed_order_raw.get("ma20_price", 0.0)) or None
+            swing_low_pr = float(proposed_order_raw.get("swing_low_price", 0.0)) or None
+
+            if not candle_data and order_ticker and order_ticker != "UNKNOWN":
+                try:
+                    from app.domain.repositories.market_data_repository import MarketDataRepository
+                    market_repo = MarketDataRepository()
+                    ohlcv_bars = market_repo.get_ohlcv(order_ticker, limit=20)
+                    if ohlcv_bars and len(ohlcv_bars) > 0:
+                        # Nhận diện nến gần nhất: Nếu DB trả về time DESC (mới nhất ở [0]), lấy [0]
+                        # Nếu mock/list không có time hoặc time ASC, lấy [-1]
+                        if len(ohlcv_bars) > 1 and "time" in ohlcv_bars[0] and "time" in ohlcv_bars[-1]:
+                            if str(ohlcv_bars[0].get("time")) > str(ohlcv_bars[-1].get("time")):
+                                last_bar = ohlcv_bars[0]
+                            else:
+                                last_bar = ohlcv_bars[-1]
+                        else:
+                            last_bar = ohlcv_bars[-1]
+                        candle_data = {
+                            "open": float(last_bar.get("open", order_price)),
+                            "high": float(last_bar.get("high", order_price)),
+                            "low": float(last_bar.get("low", order_price)),
+                            "close": float(last_bar.get("close", order_price)),
+                            "volume": float(last_bar.get("volume", 0.0)),
+                        }
+                        vols = [float(b.get("volume", 0.0)) for b in ohlcv_bars if b.get("volume")]
+                        if vols:
+                            ma20_vol = sum(vols) / len(vols)
+                        closes = [float(b.get("close", 0.0)) for b in ohlcv_bars if b.get("close")]
+                        if closes:
+                            ma20_pr = sum(closes) / len(closes)
+                        lows = [float(b.get("low", 0.0)) for b in ohlcv_bars if b.get("low")]
+                        if lows:
+                            swing_low_pr = min(lows)
+                except Exception as e_tape_db:
+                    logger.debug(f"[PortfolioRiskAgent] Không thể nạp OHLCV cho {order_ticker}: {e_tape_db}")
+
             if candle_data:
-                ma20_vol = float(proposed_order_raw.get("ma20_volume", adtv20))
-                ma20_pr = float(proposed_order_raw.get("ma20_price", 0.0)) or None
-                swing_low_pr = float(proposed_order_raw.get("swing_low_price", 0.0)) or None
                 tape_res: TapeAnomalyResult = self.tape_anomaly_detector.analyze_candle(
                     candle=candle_data,
                     ma20_volume=ma20_vol,
@@ -323,7 +503,7 @@ class PortfolioRiskAgent(BaseAgent):
             },
             "concentration": {
                 "stock_weight_post": round((order_price * approved_shares) / nav, 4) if nav > 0 else 0.0,
-                "sector_weight_post": round(sector_exposure.get(proposed_order_raw.get("sector", ""), 0.0) / nav, 4) if nav > 0 else 0.0,
+                "sector_weight_post": round(sector_exposure.get(proposed_order_raw.get("sector", "") if proposed_order_raw else "", 0.0) / nav, 4) if nav > 0 else 0.0,
                 "avg_correlation": 0.44,
             },
             "market_breadth": {
@@ -375,8 +555,76 @@ class PortfolioRiskAgent(BaseAgent):
                 "model_version": "VIETNAM_INSTITUTIONAL_RISK_vNext",
                 "policy_version": "HOSE_SPOT_EQUITY_RISK_POLICY_2026",
                 "asset_scope": "100% SPOT EQUITY HOSE (NO DERIVATIVES)",
+                "risk_limits": risk_limits,
+                "is_estimated_nav": is_estimated_nav,
             },
         }
+
+        # Tự động lưu risk snapshot vào CSDL risk_snapshots
+        try:
+            from datetime import date as dt_date
+            from app.domain.repositories.intelligence_repository import IntelligenceRepository
+            intel_repo = IntelligenceRepository()
+            intel_repo.save_risk_snapshot({
+                "date": dt_date.today(),
+                "es_97_5": risk_output["es_97_5_pct"],
+                "garch_cash_target": min_cash_target,
+                "drawdown_tier": dd_eval.tier.value,
+                "max_drawdown_from_peak": dd_eval.current_drawdown_pct,
+                "cdc_active": cdc_eval.is_cdc_active,
+            })
+        except Exception as e_snap:
+            logger.warning(f"Không thể lưu risk_snapshot vào DB: {e_snap}")
+
+        # Bắn sự kiện lên RabbitMQ Event Bus
+        try:
+            from app.core.event_topics import EventTopics
+            # 1. Sự kiện Drawdown Tier thay đổi nếu phát hiện drawdown cấp thiết
+            if dd_eval.tier in (DrawdownTier.YELLOW, DrawdownTier.ORANGE, DrawdownTier.RED):
+                await self.publish_event(
+                    topic=EventTopics.DRAWDOWN_TIER_CHANGED,
+                    payload={
+                        "decision_id": decision_id,
+                        "tier": dd_eval.tier.value,
+                        "current_drawdown_pct": dd_eval.current_drawdown_pct,
+                        "action_description": dd_eval.action_description,
+                        "min_cash_target_pct": min_cash_target,
+                        "timestamp": datetime.now().isoformat(),
+                    },
+                )
+
+            # 2. Sự kiện lệnh được Phê duyệt / Điều chỉnh quy mô (PASS / REDUCE) hoặc Cảnh báo Vi phạm (BLOCK)
+            if action in ("PASS", "REDUCE") and approved_shares > 0:
+                await self.publish_event(
+                    topic=EventTopics.RISK_APPROVED,
+                    payload={
+                        "decision_id": decision_id,
+                        "ticker": order_ticker,
+                        "risk_status": action,
+                        "side": "BUY",
+                        "approved_shares": approved_shares,
+                        "approved_price": order_price,
+                        "approved_weight_pct": risk_output["decision"]["approved_weight_pct"],
+                        "min_cash_target_pct": min_cash_target,
+                        "timestamp": datetime.now().isoformat(),
+                    },
+                )
+            elif action == "BLOCK" and proposed_order_raw:
+                await self.publish_event(
+                    topic=EventTopics.RISK_BREACH_ALERT,
+                    payload={
+                        "decision_id": decision_id,
+                        "ticker": order_ticker,
+                        "risk_status": action,
+                        "side": proposed_order_raw.get("side", "BUY"),
+                        "requested_shares": original_shares,
+                        "reasons": reasons_list,
+                        "hard_laws": hard_law_status_map,
+                        "timestamp": datetime.now().isoformat(),
+                    },
+                )
+        except Exception as e_pub:
+            logger.warning(f"[PortfolioRiskAgent] Không thể phát sự kiện Risk lên RabbitMQ ({e_pub})")
 
         trace = {
             "risk_gateway": "Sovereign Institutional Pre-Trade Gateway",
@@ -389,6 +637,7 @@ class PortfolioRiskAgent(BaseAgent):
                 "6. Capital Degradation Controller (CDC)",
             ],
             "asset_scope": "100% Cổ phiếu cơ sở giao ngay (Spot Equity)",
+            "risk_limits": risk_limits,
         }
 
         return {"data": risk_output, "trace": trace}

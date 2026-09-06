@@ -7,6 +7,7 @@ và Lịch sử khớp lệnh (bảng orders & order_executions) kết nối Pos
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -28,9 +29,10 @@ class PortfolioRepository:
 
     def __init__(self, storage: Optional[PostgresAdapter] = None):
         self.storage = storage or PostgresAdapter()
+        self.account_id = os.getenv("MULTI_AGENT_ACCOUNT_ID", "940b0c70-2010-42f3-b947-797e6419b794")
         # Bộ nhớ tạm in-memory fallback phòng khi chạy unit test độc lập
         self._in_memory_account: Dict[str, Any] = {
-            "account_id": "940b0c70-2010-42f3-b947-797e6419b794",
+            "account_id": self.account_id,
             "cash_balance": 1000000000.0,
             "total_nav": 1000000000.0,
             "peak_nav": 1000000000.0,
@@ -44,12 +46,16 @@ class PortfolioRepository:
 
     def get_account_state(self, user_id: Optional[str] = None) -> Dict[str, Any]:
         """Lấy số dư tiền mặt từ bảng users và tính tổng NAV danh mục từ CSDL."""
+        target_uid = user_id or self.account_id or self._in_memory_account.get("account_id")
         try:
             # 1. Đọc số dư tiền mặt từ bảng users
-            if user_id:
+            if target_uid:
                 query_user = "SELECT id, cash_balance, win_rate FROM users WHERE id = %s"
-                rows_user = self.storage.fetch_all(query_user, (user_id,))
+                rows_user = self.storage.fetch_all(query_user, (target_uid,))
             else:
+                rows_user = []
+
+            if not rows_user:
                 query_user = "SELECT id, cash_balance, win_rate FROM users ORDER BY created_at ASC LIMIT 1"
                 rows_user = self.storage.fetch_all(query_user)
 
@@ -74,21 +80,22 @@ class PortfolioRepository:
                 }
                 return self._in_memory_account
         except Exception as e:
-            logger.warning(f"Không thể đọc users/positions từ DB ({e}), sử dụng in-memory state")
+            logger.warning(f"Không thể đọc account_state từ DB ({e}), dùng in-memory fallback")
 
         return self._in_memory_account
 
     def get_open_positions(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Lấy toàn bộ các vị thế cổ phiếu đang nắm giữ kèm phân tách hàng khả dụng T+2.5."""
+        target_uid = user_id or self.account_id or self._in_memory_account.get("account_id")
         try:
-            if user_id:
+            if target_uid:
                 query = """
                     SELECT symbol, quantity, avg_price, opened_at
                     FROM positions
                     WHERE user_id = %s AND quantity > 0
                     ORDER BY quantity DESC
                 """
-                rows = self.storage.fetch_all(query, (user_id,))
+                rows = self.storage.fetch_all(query, (target_uid,))
             else:
                 query = """
                     SELECT symbol, quantity, avg_price, opened_at
@@ -98,13 +105,24 @@ class PortfolioRepository:
                 """
                 rows = self.storage.fetch_all(query)
 
-            if rows:
+            if rows is not None:
                 results = []
+                # Tính tổng NAV để tính % tỷ trọng từng vị thế
+                tot_pos_val = sum(int(r[1]) * float(r[2]) for r in rows)
+                try:
+                    cash_row = self.storage.fetch_all("SELECT cash_balance FROM users WHERE id = %s", (target_uid,)) if target_uid else None
+                    cash_val = float(cash_row[0][0]) if cash_row and cash_row[0][0] is not None else 0.0
+                    tot_nav = cash_val + tot_pos_val
+                except Exception:
+                    tot_nav = tot_pos_val
+
                 now = datetime.now()
                 for r in rows:
                     total_shares = int(r[1])
+                    avg_p = float(r[2])
                     opened_at = r[3] if len(r) > 3 and r[3] else None
-                    # Kiểm tra chu kỳ T+2.5 (2 ngày làm việc)
+                    
+                    # Kiểm tra chu kỳ T+2.5 (2 ngày làm việc) cho từng vị thế
                     is_locked = False
                     if opened_at:
                         try:
@@ -112,24 +130,33 @@ class PortfolioRepository:
                                 opened_dt = datetime.fromisoformat(opened_at)
                             else:
                                 opened_dt = opened_at
+                            if hasattr(opened_dt, "tzinfo") and opened_dt.tzinfo is not None:
+                                now_dt = datetime.now(opened_dt.tzinfo)
+                            else:
+                                now_dt = now
                             # Nếu mở trong vòng 2 ngày (48h), coi như chưa về hết
-                            if (now - opened_dt).total_seconds() < 2 * 86400:
+                            if (now_dt - opened_dt).total_seconds() < 2 * 86400:
                                 is_locked = True
                         except Exception:
                             pass
 
                     available_shares = 0 if is_locked else total_shares
                     locked_shares = total_shares if is_locked else 0
+                    mkt_val = total_shares * avg_p
+                    w_pct = round((mkt_val / tot_nav) * 100.0, 1) if tot_nav > 0 else 0.0
 
                     results.append({
                         "ticker": str(r[0]),
+                        "symbol": str(r[0]),
                         "shares": total_shares,
+                        "quantity": total_shares,
                         "available_shares": available_shares,
                         "locked_t25_shares": locked_shares,
-                        "average_price": float(r[2]),
-                        "current_price": float(r[2]),
-                        "market_value": total_shares * float(r[2]),
-                        "weight_pct": 0.0,
+                        "average_price": avg_p,
+                        "avg_price": avg_p,
+                        "current_price": avg_p,
+                        "market_value": mkt_val,
+                        "weight_pct": w_pct,
                     })
                 return results
         except Exception as e:
@@ -306,7 +333,17 @@ class PortfolioRepository:
                     del self._in_memory_positions[ticker]
 
         # 2. Cập nhật CSDL PostgreSQL thực tế
-        target_uid = user_id or self._in_memory_account.get("account_id") or "940b0c70-2010-42f3-b947-797e6419b794"
+        target_uid = user_id or self._in_memory_account.get("account_id") or os.getenv("DEFAULT_PORTFOLIO_USER_ID")
+        if not target_uid:
+            try:
+                first_u = self.storage.fetch_all("SELECT id FROM users ORDER BY created_at ASC LIMIT 1")
+                if first_u and first_u[0]:
+                    target_uid = str(first_u[0][0])
+            except Exception:
+                pass
+        if not target_uid:
+            logger.warning("[PortfolioRepository] Không tìm thấy user_id hợp lệ để ghi nhận lệnh/vị thế.")
+            return order_id
         try:
             # 2.1 Cập nhật số dư tiền mặt trong bảng users
             if action == "BUY":
@@ -489,7 +526,18 @@ class PortfolioRepository:
             """
             now = datetime.now()
             target_date = now.date()
-            did = decision.get("decision_id") or str(uuid.uuid4())
+            did_raw = decision.get("decision_id")
+            try:
+                if did_raw:
+                    uuid.UUID(str(did_raw))
+                    did = str(did_raw)
+                else:
+                    did = str(uuid.uuid4())
+            except Exception:
+                # Nếu không phải UUID chuẩn, sinh UUID mới để tránh lỗi DB
+                did = str(uuid.uuid4())
+                decision["decision_id"] = did
+
             ticker = str(decision.get("ticker", "UNKNOWN")).upper().strip()[:16]
             action = str(decision.get("action", "HOLD")).upper().strip()[:16]
             target_shares = int(decision.get("target_shares", 0))
@@ -503,4 +551,89 @@ class PortfolioRepository:
         except Exception as e:
             logger.debug(f"Lỗi khi lưu portfolio_decisions: {e}")
             return False
+
+    def get_latest_decision(self, ticker: str) -> Optional[Dict[str, Any]]:
+        """Lấy quyết định phân bổ vốn mới nhất của một cổ phiếu từ bảng portfolio_decisions."""
+        try:
+            ticker_clean = str(ticker).upper().strip()[:16]
+            query = """
+                SELECT decision_id, date, ticker, action, target_shares, allocated_weight_pct, rationale, created_at
+                FROM portfolio_decisions
+                WHERE ticker = %s
+                ORDER BY created_at DESC
+                LIMIT 1
+            """
+            rows = self.storage.fetch_all(query, (ticker_clean,))
+            if rows and len(rows) > 0:
+                r = rows[0]
+                if isinstance(r, dict):
+                    return {
+                        "decision_id": str(r.get("decision_id")),
+                        "date": str(r.get("date")),
+                        "ticker": str(r.get("ticker")),
+                        "action": str(r.get("action")),
+                        "target_shares": int(r.get("target_shares", 0)),
+                        "allocated_weight_pct": float(r.get("allocated_weight_pct", 0.0)),
+                        "rationale": str(r.get("rationale", "")),
+                        "created_at": r.get("created_at").isoformat() if hasattr(r.get("created_at"), "isoformat") else str(r.get("created_at")),
+                    }
+                else:
+                    did, d_date, sym, act, shares, weight, rat, cat = r
+                    return {
+                        "decision_id": str(did),
+                        "date": str(d_date),
+                        "ticker": str(sym),
+                        "action": str(act),
+                        "target_shares": int(shares) if shares is not None else 0,
+                        "allocated_weight_pct": float(weight) if weight is not None else 0.0,
+                        "rationale": str(rat or ""),
+                        "created_at": cat.isoformat() if hasattr(cat, "isoformat") else str(cat or ""),
+                    }
+        except Exception as e:
+            logger.warning(f"Lỗi khi đọc portfolio_decisions cho {ticker}: {e}")
+        return None
+
+    def get_decisions_by_date(self, target_date: Optional[Any] = None) -> List[Dict[str, Any]]:
+        """Lấy danh sách các quyết định phân bổ vốn theo ngày."""
+        try:
+            if not target_date:
+                target_date = datetime.now().date()
+            query = """
+                SELECT decision_id, date, ticker, action, target_shares, allocated_weight_pct, rationale, created_at
+                FROM portfolio_decisions
+                WHERE date = %s
+                ORDER BY created_at DESC
+            """
+            rows = self.storage.fetch_all(query, (target_date,))
+            results = []
+            if rows:
+                for r in rows:
+                    if isinstance(r, dict):
+                        results.append({
+                            "decision_id": str(r.get("decision_id")),
+                            "date": str(r.get("date")),
+                            "ticker": str(r.get("ticker")),
+                            "action": str(r.get("action")),
+                            "target_shares": int(r.get("target_shares", 0)),
+                            "allocated_weight_pct": float(r.get("allocated_weight_pct", 0.0)),
+                            "rationale": str(r.get("rationale", "")),
+                            "created_at": r.get("created_at").isoformat() if hasattr(r.get("created_at"), "isoformat") else str(r.get("created_at")),
+                        })
+                    else:
+                        did, d_date, sym, act, shares, weight, rat, cat = r
+                        results.append({
+                            "decision_id": str(did),
+                            "date": str(d_date),
+                            "ticker": str(sym),
+                            "action": str(act),
+                            "target_shares": int(shares) if shares is not None else 0,
+                            "allocated_weight_pct": float(weight) if weight is not None else 0.0,
+                            "rationale": str(rat or ""),
+                            "created_at": cat.isoformat() if hasattr(cat, "isoformat") else str(cat or ""),
+                        })
+            return results
+        except Exception as e:
+            logger.warning(f"Lỗi khi đọc portfolio_decisions theo ngày {target_date}: {e}")
+            return []
+
 

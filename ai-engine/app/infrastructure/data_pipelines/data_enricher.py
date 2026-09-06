@@ -498,10 +498,20 @@ class DataEnricher:
             # See risk_flags.py:check_all_flags() which calls scraper_ubcknn.py
             # for real regulatory disclosure detection via CafeF RAG + keyword search.
 
-            # 1. Delisting risk
-            pe = fundamentals.get("ratios", {}).get("pe_ratio", 15.0)
-            net_inc = fundamentals.get("income_statement", {}).get("net_income", 1e9)
-            if net_inc < 0 or pe < 0:
+            # 1. Delisting risk & missing disclosure
+            inc_stmt = fundamentals.get("income_statement")
+            cf_stmt = fundamentals.get("cash_flow")
+            if not inc_stmt and not cf_stmt:
+                flags.append({
+                    "flag": "MISSING_FINANCIALS",
+                    "severity": "MEDIUM",
+                    "details": "Chưa có báo cáo tài chính hoặc dữ liệu công bố chưa đầy đủ.",
+                    "source": "fundamental"
+                })
+
+            pe = fundamentals.get("ratios", {}).get("pe_ratio")
+            net_inc = inc_stmt.get("net_income") if inc_stmt else None
+            if (net_inc is not None and net_inc < 0) or (pe is not None and pe < 0):
                 flags.append({
                     "flag": "DELIST_RISK",
                     "severity": "HIGH",
@@ -510,7 +520,7 @@ class DataEnricher:
                 })
 
             # 4. Consecutive losses (quarterly)
-            if net_inc < 0:
+            if net_inc is not None and net_inc < 0:
                 flags.append({
                     "flag": "LOSS_CONSECUTIVE",
                     "severity": "HIGH",
@@ -519,8 +529,8 @@ class DataEnricher:
                 })
 
             # 5. Negative CFO
-            cfo = fundamentals.get("cash_flow", {}).get("CFO", 1e9)
-            if cfo < 0:
+            cfo = cf_stmt.get("CFO") if cf_stmt else None
+            if cfo is not None and cfo < 0:
                 flags.append({
                     "flag": "NEGATIVE_CFO",
                     "severity": "MEDIUM",
@@ -627,16 +637,21 @@ class DataEnricher:
                 return max(lo, min(hi, val))
 
             # ── Value Score: low PE, low PB, high dividend yield, low EV/EBITDA
-            pe = ratios.get("pe_ratio", 15)
-            pb = ratios.get("pb_ratio", 2.0)
-            dy = ratios.get("dividend_yield", 3.0)
-            ev_ebitda = ratios.get("ev_ebitda", 10.0)
+            has_fundamental_data = bool(ratios and any(ratios.get(k) is not None for k in ("pe_ratio", "pb_ratio", "roe", "roa")))
+            pe = ratios.get("pe_ratio")
+            pb = ratios.get("pb_ratio")
+            dy = ratios.get("dividend_yield")
+            ev_ebitda = ratios.get("ev_ebitda")
             
-            pe_score = clamp(100 - (pe - 3) / 47 * 100) if pe and pe > 0 else 50
-            pb_score = clamp(100 - (pb - 0.3) / 9.7 * 100) if pb and pb > 0 else 50
-            dy_score = clamp(dy / 12 * 100) if dy else 0
-            ev_score = clamp(100 - (ev_ebitda - 1) / 29 * 100) if ev_ebitda and ev_ebitda > 0 else 50
-            value_score = clamp((pe_score * 0.35 + pb_score * 0.25 + dy_score * 0.20 + ev_score * 0.20))
+            if has_fundamental_data:
+                pe_score = clamp(100 - (pe - 3) / 47 * 100) if pe and pe > 0 else (20 if pe and pe <= 0 else 40)
+                pb_score = clamp(100 - (pb - 0.3) / 9.7 * 100) if pb and pb > 0 else 40
+                dy_score = clamp(dy / 12 * 100) if dy else 0
+                ev_score = clamp(100 - (ev_ebitda - 1) / 29 * 100) if ev_ebitda and ev_ebitda > 0 else 40
+                value_score = clamp((pe_score * 0.35 + pb_score * 0.25 + dy_score * 0.20 + ev_score * 0.20))
+            else:
+                # Không tự động bịa số liệu BCTC đẹp nếu thiếu dữ liệu; gán điểm thận trọng 30
+                value_score = 30.0
 
             # ── Momentum Score: price momentum + RSI + MACD direction
             mom_6m = technical.get("momentum_6m", 0)
@@ -653,18 +668,21 @@ class DataEnricher:
             momentum_score = clamp(mom_6m_score * 0.30 + mom_1m_score * 0.20 + rsi_score * 0.15 + macd_score * 0.15 + trend_score * 0.20)
 
             # ── Quality Score: ROE, ROA, quality_of_earnings, current_ratio, interest_coverage
-            roe = ratios.get("roe", 15)
-            roa = ratios.get("roa", 5)
-            qoe = ratios.get("quality_of_earnings", 1.0)
-            cr = ratios.get("current_ratio", 1.5)
-            ic = ratios.get("interest_coverage", 5)
+            roe = ratios.get("roe")
+            roa = ratios.get("roa")
+            qoe = ratios.get("quality_of_earnings")
+            cr = ratios.get("current_ratio")
+            ic = ratios.get("interest_coverage")
             
-            roe_score = clamp(roe / 35 * 100) if roe and roe > 0 else 30
-            roa_score = clamp(roa / 20 * 100) if roa and roa > 0 else 30
-            qoe_score = clamp(qoe / 2.5 * 100) if qoe and qoe > 0 else 50
-            cr_score = clamp(cr / 4 * 100) if cr and cr > 0 else 50
-            ic_score = clamp(min(ic, 20) / 20 * 100) if ic and ic > 0 else 50
-            quality_score = clamp(roe_score * 0.30 + roa_score * 0.20 + qoe_score * 0.20 + cr_score * 0.15 + ic_score * 0.15)
+            if has_fundamental_data:
+                roe_score = clamp(roe / 35 * 100) if roe and roe > 0 else (10 if roe and roe <= 0 else 30)
+                roa_score = clamp(roa / 20 * 100) if roa and roa > 0 else (10 if roa and roa <= 0 else 30)
+                qoe_score = clamp(qoe / 2.5 * 100) if qoe and qoe > 0 else 40
+                cr_score = clamp(cr / 4 * 100) if cr and cr > 0 else 40
+                ic_score = clamp(min(ic, 20) / 20 * 100) if ic and ic > 0 else 40
+                quality_score = clamp(roe_score * 0.30 + roa_score * 0.20 + qoe_score * 0.20 + cr_score * 0.15 + ic_score * 0.15)
+            else:
+                quality_score = 30.0
 
             # ── Low Volatility Score: inverse of volatility and drawdown
             vol_20 = technical.get("volatility_20d", 25)

@@ -131,35 +131,106 @@ class UniverseRepository:
             logger.warning(f"Lỗi khi cập nhật compliance cho {symbol} ({e})")
             return False
 
-    def save_beneish_result(
+    def upsert_universe_security(
         self,
-        symbol: str,
-        fiscal_year: int,
-        fiscal_quarter: int,
-        m_score: float,
-        is_manipulator: bool,
-        sub_scores: Dict[str, Any],
+        ticker: str,
+        universe_group: str,
+        trading_status: str = "NORMAL",
+        beneish_status: str = "PASS",
+        gil_flag: str = "PASS",
     ) -> bool:
-        """Lưu kết quả phân tích kiểm toán gian lận báo cáo tài chính M-Score."""
-        import json
-        symbol = symbol.upper().strip()
+        """Lưu hoặc cập nhật trạng thái phân nhóm Universe của cổ phiếu vào bảng universe_securities."""
+        ticker = ticker.upper().strip()
         query = """
-            INSERT INTO beneish_results (
-                symbol, fiscal_year, fiscal_quarter, m_score, is_manipulator, sub_scores, calculated_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (symbol, fiscal_year, fiscal_quarter) DO UPDATE SET
-                m_score = EXCLUDED.m_score,
-                is_manipulator = EXCLUDED.is_manipulator,
-                sub_scores = EXCLUDED.sub_scores,
-                calculated_at = EXCLUDED.calculated_at
+            INSERT INTO universe_securities (
+                ticker, universe_group, trading_status, beneish_status, gil_flag, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (ticker) DO UPDATE SET
+                universe_group = EXCLUDED.universe_group,
+                trading_status = EXCLUDED.trading_status,
+                beneish_status = EXCLUDED.beneish_status,
+                gil_flag = EXCLUDED.gil_flag,
+                updated_at = NOW()
         """
-        now = datetime.now()
         try:
             self.storage.execute(
                 query,
-                (symbol, fiscal_year, fiscal_quarter, m_score, is_manipulator, json.dumps(sub_scores), now),
+                (ticker, universe_group, trading_status, beneish_status, gil_flag),
             )
             return True
         except Exception as e:
-            logger.warning(f"Lỗi khi lưu beneish_result cho {symbol} ({e})")
+            logger.warning(f"Lỗi khi upsert universe_securities cho {ticker} ({e})")
+            return False
+
+    def save_beneish_result(
+        self,
+        ticker: str,
+        quarter_date: Optional[Any] = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> bool:
+        """Lưu kết quả phân tích kiểm toán gian lận báo cáo tài chính M-Score vào bảng beneish_results."""
+        ticker = ticker.upper().strip()
+
+        # Xử lý tương thích cả 2 chuẩn gọi:
+        # Chuẩn mới: (ticker, quarter_date=date, m_score=float, status=str, variables=dict)
+        # Chuẩn cũ: (symbol, fiscal_year, fiscal_quarter, m_score, is_manipulator, sub_scores)
+        q_date = quarter_date
+        m_score = kwargs.get("m_score", 0.0)
+        status = kwargs.get("status")
+        vars_dict = kwargs.get("variables") or kwargs.get("sub_scores") or {}
+
+        if isinstance(quarter_date, int) and len(args) >= 1:
+            fiscal_year = quarter_date
+            fiscal_quarter = int(args[0])
+            m = max(1, min(12, fiscal_quarter * 3))
+            q_date = date(fiscal_year, m, 28)
+            if len(args) >= 2:
+                m_score = float(args[1])
+            if len(args) >= 3:
+                is_manip = bool(args[2])
+                status = "FAIL" if is_manip else "PASS"
+            if len(args) >= 4 and isinstance(args[3], dict):
+                vars_dict = args[3]
+
+        if q_date is None:
+            q_date = date.today()
+
+        if status is None:
+            status = "FAIL" if (m_score is not None and m_score > -1.78) else "PASS"
+
+        dsri = float(vars_dict.get("dsri", 1.0))
+        gmi = float(vars_dict.get("gmi", 1.0))
+        aqi = float(vars_dict.get("aqi", 1.0))
+        sgi = float(vars_dict.get("sgi", 1.0))
+        depi = float(vars_dict.get("depi", 1.0))
+        sgai = float(vars_dict.get("sgai", 1.0))
+        tata = float(vars_dict.get("tata", 0.0))
+        lvgi = float(vars_dict.get("lvgi", 1.0))
+        m_score_val = float(m_score) if m_score is not None else 0.0
+
+        query = """
+            INSERT INTO beneish_results (
+                ticker, quarter_date, dsri, gmi, aqi, sgi, depi, sgai, tata, lvgi, m_score, status
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (ticker, quarter_date) DO UPDATE SET
+                dsri = EXCLUDED.dsri,
+                gmi = EXCLUDED.gmi,
+                aqi = EXCLUDED.aqi,
+                sgi = EXCLUDED.sgi,
+                depi = EXCLUDED.depi,
+                sgai = EXCLUDED.sgai,
+                tata = EXCLUDED.tata,
+                lvgi = EXCLUDED.lvgi,
+                m_score = EXCLUDED.m_score,
+                status = EXCLUDED.status
+        """
+        try:
+            self.storage.execute(
+                query,
+                (ticker, q_date, dsri, gmi, aqi, sgi, depi, sgai, tata, lvgi, m_score_val, status),
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"Lỗi khi lưu beneish_result cho {ticker} ({e})")
             return False

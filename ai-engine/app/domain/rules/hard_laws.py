@@ -40,9 +40,14 @@ class HardLawEngine:
         self, 
         order: ProposedOrder, 
         portfolio: PortfolioState, 
-        adtv20_continuous: float
+        adtv20_continuous: float,
+        risk_limits: Optional[Dict[str, float]] = None,
     ) -> HardLawCheck:
         """Kiểm tra một lệnh đề xuất với các Hard Laws thể chế chuẩn sàn HOSE."""
+        # Nạp hạn mức động nếu có (fallback chuẩn IOS v5.1: 2% NAV risk, 15% Single Stock, 35% Sector)
+        max_stop_loss_pct = (float(risk_limits.get("hard_stop_loss_pct", 2.0)) / 100.0) if risk_limits else 0.02
+        max_stock_pct = (float(risk_limits.get("max_single_stock_pct", 15.0)) / 100.0) if risk_limits else 0.15
+        max_sector_pct = (float(risk_limits.get("max_sector_pct", 35.0)) / 100.0) if risk_limits else 0.35
         
         # 1. Kiểm tra Điều 1 (Luật Tồn Tại & Rủi ro kẹt hàng T+2.5) - Chỉ áp dụng cho lệnh BUY
         if order.side == "BUY":
@@ -54,13 +59,13 @@ class HardLawEngine:
             effective_downside_pct = max(stop_loss_pct, 0.1351)
             
             risk_amount = (order.price * effective_downside_pct) * order.quantity
-            max_allowed_risk = 0.02 * portfolio.nav
+            max_allowed_risk = max_stop_loss_pct * portfolio.nav
             
             if risk_amount > max_allowed_risk:
                 return HardLawCheck(
                     False, 
                     HardLaw.DIEU_1, 
-                    f"Rủi ro vị thế tính theo T+2.5 Floor Gap ({risk_amount:,.0f} VND) vượt trần 2% NAV ({max_allowed_risk:,.0f} VND)."
+                    f"Rủi ro vị thế tính theo T+2.5 Floor Gap ({risk_amount:,.0f} VND) vượt trần {max_stop_loss_pct*100:g}% NAV ({max_allowed_risk:,.0f} VND)."
                 )
 
         # 2. Kiểm tra Điều 2 (Luật Thanh Khoản: Lệnh phiên <= 15% ADTV20, Vị thế <= 25% ADTV20)
@@ -76,7 +81,9 @@ class HardLawEngine:
             # Kiểm tra tổng quy mô vị thế tích lũy
             total_quantity = order.quantity
             if order.ticker in portfolio.positions:
-                total_quantity += portfolio.positions[order.ticker].get("quantity", 0)
+                pos = portfolio.positions[order.ticker]
+                pos_qty = int(pos.get("quantity", pos.get("shares", 0))) if isinstance(pos, dict) else 0
+                total_quantity += pos_qty
                 
             if total_quantity > 0.25 * adtv20_continuous:
                 return HardLawCheck(
@@ -89,26 +96,29 @@ class HardLawEngine:
         if order.side == "BUY":
             order_value = order.price * order.quantity
             
-            # Single Stock limit (15% NAV)
+            # Single Stock limit (mặc định 15% NAV)
             current_stock_value = 0.0
             if order.ticker in portfolio.positions:
                 pos = portfolio.positions[order.ticker]
-                current_stock_value = pos.get("quantity", 0) * pos.get("current_price", order.price)
+                if isinstance(pos, dict):
+                    pos_qty = int(pos.get("quantity", pos.get("shares", 0)))
+                    pos_pr = float(pos.get("current_price", pos.get("price", pos.get("average_price", order.price))))
+                    current_stock_value = pos_qty * pos_pr
             
-            if (current_stock_value + order_value) > 0.15 * portfolio.nav:
+            if (current_stock_value + order_value) > max_stock_pct * portfolio.nav:
                 return HardLawCheck(
                     False, 
                     HardLaw.DIEU_4, 
-                    f"Tỷ trọng cổ phiếu {order.ticker} ({((current_stock_value + order_value)/portfolio.nav)*100:.1f}%) vượt trần 15% NAV."
+                    f"Tỷ trọng cổ phiếu {order.ticker} ({((current_stock_value + order_value)/portfolio.nav)*100:.1f}%) vượt trần {max_stock_pct*100:g}% NAV."
                 )
             
-            # Sector limit (35% NAV)
+            # Sector limit (mặc định 35% NAV)
             current_sector_value = portfolio.sector_exposure.get(order.sector, 0.0)
-            if (current_sector_value + order_value) > 0.35 * portfolio.nav:
+            if (current_sector_value + order_value) > max_sector_pct * portfolio.nav:
                 return HardLawCheck(
                     False, 
                     HardLaw.DIEU_4, 
-                    f"Tỷ trọng ngành {order.sector} ({((current_sector_value + order_value)/portfolio.nav)*100:.1f}%) vượt trần 35% NAV."
+                    f"Tỷ trọng ngành {order.sector} ({((current_sector_value + order_value)/portfolio.nav)*100:.1f}%) vượt trần {max_sector_pct*100:g}% NAV."
                 )
 
         return HardLawCheck(True, reason="Thỏa mãn 100% Hard Laws thể chế.")

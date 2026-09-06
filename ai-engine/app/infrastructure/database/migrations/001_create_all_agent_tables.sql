@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS investment_theses (
     invalidation_conditions JSONB NOT NULL,
     pre_mortem_scenarios JSONB,
     target_price_range JSONB,
-    status VARCHAR(16) DEFAULT 'ACTIVE',
+    status VARCHAR(64) DEFAULT 'ACTIVE',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS counter_thesis_verdicts (
     rationale TEXT,
     evaluated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX IF NOT EXISTS idx_counter_verdicts_ticker_eval ON counter_thesis_verdicts(ticker, evaluated_at DESC);
 
 -- 5.1 governance_escalation
 CREATE TABLE IF NOT EXISTS violation_reports (
@@ -144,6 +145,9 @@ CREATE TABLE IF NOT EXISTS risk_limits (
     hard_stop_loss_pct NUMERIC(6,2) NOT NULL DEFAULT 2.0,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+INSERT INTO risk_limits (limit_type, max_single_stock_pct, max_sector_pct, hard_stop_loss_pct, updated_at)
+VALUES ('HOSE_EQUITY', 15.0, 35.0, 2.0, CURRENT_TIMESTAMP)
+ON CONFLICT (limit_type) DO NOTHING;
 
 -- 7. portfolio_allocation
 CREATE TABLE IF NOT EXISTS portfolio_account (
@@ -166,6 +170,7 @@ CREATE TABLE IF NOT EXISTS portfolio_decisions (
     rationale TEXT NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX IF NOT EXISTS idx_portfolio_decisions_ticker_date ON portfolio_decisions(ticker, date DESC);
 
 -- 8. trade_execution
 CREATE TABLE IF NOT EXISTS order_executions (
@@ -327,6 +332,8 @@ CREATE TABLE IF NOT EXISTS log_counter_thesis (
     verdict VARCHAR(16) NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX IF NOT EXISTS idx_log_counter_thesis_ticker ON log_counter_thesis(ticker);
+CREATE INDEX IF NOT EXISTS idx_log_counter_thesis_thesis_id ON log_counter_thesis(thesis_id);
 
 CREATE TABLE IF NOT EXISTS log_portfolio_risk (
     id BIGSERIAL PRIMARY KEY,
@@ -336,6 +343,7 @@ CREATE TABLE IF NOT EXISTS log_portfolio_risk (
     garch_cash_trace JSONB NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX IF NOT EXISTS idx_log_portfolio_risk_date ON log_portfolio_risk(date);
 
 CREATE TABLE IF NOT EXISTS log_portfolio_allocation (
     id BIGSERIAL PRIMARY KEY,
@@ -345,6 +353,7 @@ CREATE TABLE IF NOT EXISTS log_portfolio_allocation (
     rationale TEXT NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX IF NOT EXISTS idx_log_portfolio_allocation_ticker ON log_portfolio_allocation(ticker);
 
 CREATE TABLE IF NOT EXISTS log_trade_execution (
     id BIGSERIAL PRIMARY KEY,
@@ -396,6 +405,9 @@ CREATE INDEX IF NOT EXISTS idx_factor_scores_symbol_date ON factor_scores (symbo
 CREATE INDEX IF NOT EXISTS idx_moat_profiles_ticker ON moat_profiles (ticker);
 CREATE INDEX IF NOT EXISTS idx_universe_group ON universe_securities (universe_group);
 CREATE INDEX IF NOT EXISTS idx_theses_status ON investment_theses (status);
+CREATE INDEX IF NOT EXISTS idx_theses_ticker_created ON investment_theses (ticker, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_log_thesis_id ON log_investment_thesis (thesis_id);
+CREATE INDEX IF NOT EXISTS idx_log_thesis_ticker ON log_investment_thesis (ticker);
 CREATE INDEX IF NOT EXISTS idx_executions_date ON order_executions (executed_at);
 
 -- ============================================================================

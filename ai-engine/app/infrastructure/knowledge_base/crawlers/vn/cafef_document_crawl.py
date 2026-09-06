@@ -256,14 +256,22 @@ def filter_master_financial_statements(docs: List[Dict[str, Any]]) -> List[Dict[
 
 # ── Upsert ─────────────────────────────────────────────────────────────────
 
-def upsert_documents(documents: List[Dict[str, Any]]) -> int:
-    """Upsert document batch into knowledge_documents. Returns count inserted."""
+def upsert_documents(documents: List[Dict[str, Any]]) -> tuple[int, List[str]]:
+    """Upsert document batch into knowledge_documents. Returns (count inserted, list of inserted symbols)."""
     if not documents:
-        return 0
+        return 0, []
 
-    from app.infrastructure.knowledge_base.crawlers.vn.news_repo import upsert_articles
+    from app.infrastructure.knowledge_base.crawlers.vn.news_repo import upsert_article
 
-    return upsert_articles(documents, source="cafef_docs")
+    inserted = 0
+    new_symbols = set()
+    for doc in documents:
+        if upsert_article(doc, source="cafef_docs"):
+            inserted += 1
+            sym = doc.get("symbol")
+            if sym:
+                new_symbols.add(sym.upper().strip())
+    return inserted, sorted(list(new_symbols))
 
 
 # ── Main entry point ───────────────────────────────────────────────────────
@@ -294,8 +302,7 @@ async def run(
 
     # Phase 1: load symbols
     if symbols is None:
-        symbols = load_symbols(exchange=exchange)
-
+        symbols = load_symbols(exchange)
     if not symbols:
         return {"status": "error", "error": "No symbols to crawl"}
 
@@ -325,13 +332,13 @@ async def run(
             logger.info("  Type=%d (%s): %d documents", doc_type, type_name, len(type_docs))
 
     if not all_docs:
-        return {"status": "ok", "total": 0, "inserted": 0}
+        return {"status": "ok", "total": 0, "inserted": 0, "new_symbols": []}
 
     # Phase 2b: filter by date cutoff
     if cutoff:
-        before = len(all_docs)
-        all_docs = [d for d in all_docs if d.get("published_date", datetime.max.replace(tzinfo=timezone.utc)) >= cutoff]
-        dropped = before - len(all_docs)
+        before_cutoff = len(all_docs)
+        all_docs = [d for d in all_docs if d.get("published_date") and d["published_date"] >= cutoff]
+        dropped = before_cutoff - len(all_docs)
         if dropped:
             logger.info("Date filter: dropped %d documents older than %d years", dropped, max_years)
 
@@ -341,14 +348,15 @@ async def run(
     logger.info("Master BCTC filter: selected %d master documents from %d total", len(all_docs), before_master)
 
     # Phase 3: upsert
-    inserted = upsert_documents(all_docs)
-    logger.info("Upsert: %d/%d new (others existed)", inserted, len(all_docs))
+    inserted, new_symbols = upsert_documents(all_docs)
+    logger.info("Upsert: %d/%d new (others existed), %d new symbols", inserted, len(all_docs), len(new_symbols))
 
     return {
         "status": "success",
         "symbols": len(symbols),
         "total": len(all_docs),
         "inserted": inserted,
+        "new_symbols": new_symbols,
     }
 
 

@@ -49,10 +49,16 @@ class BctcToSagPipeline:
         equity_vnd: float = 0.0,
         mock_markdowns: Optional[Dict[str, str]] = None,
         force_reprocess: bool = False,
+        ocr_only: bool = False,
     ) -> Dict[str, Any]:
-        """Thực thi toàn bộ chu trình nạp, lưu trữ R2, OCR và phân tích cho 1 mã cổ phiếu."""
+        """Thực thi chu trình nạp, lưu trữ R2, OCR và phân tích cho 1 mã cổ phiếu.
+        
+        Tham số:
+            ocr_only: Nếu True, chỉ chạy đến bước cắt tỉa + OCR và lưu trữ Markdown lên R2 & DB.
+                      Bỏ qua bước phân tích GIL và ghi universe_securities (dùng để cày quota OCR theo ngày).
+        """
         ticker_clean = ticker.upper().strip()
-        logger.info(f"==> Bắt đầu Full BCTC to SAG Pipeline cho mã {ticker_clean}")
+        logger.info(f"==> Bắt đầu BCTC to SAG Pipeline cho mã {ticker_clean} (ocr_only={ocr_only})")
 
         # 1. Tuyển chọn Bộ 3 tài liệu vàng từ PostgreSQL
         doc_set: TickerDocumentSet = self.selector.select_active_documents(ticker_clean)
@@ -215,6 +221,18 @@ class BctcToSagPipeline:
 
             ingested_docs.append(doc_info)
 
+        # Nếu chỉ chạy OCR (ocr_only=True): Dừng tại đây, bỏ qua phân tích GIL để tiết kiệm tài nguyên
+        if ocr_only:
+            logger.info(f"==> [OCR ONLY] Hoàn tất cắt tỉa và OCR cho {ticker_clean}. Markdown đã lưu R2 & CSDL. Bỏ qua bước GIL.")
+            return {
+                "ticker": ticker_clean,
+                "status": "OCR_COMPLETED",
+                "documents_count": len(ingested_docs),
+                "documents": ingested_docs,
+                "gil_result": None,
+                "gil_flag": "PENDING_GIL",
+                "db_updated": False,
+            }
 
         # 3. Kích hoạt đánh giá đồ thị thực thể & rủi ro GIL từ SAG
         gil_res = await self.connector.get_gil_relationships(
