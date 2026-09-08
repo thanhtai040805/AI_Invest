@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
+import hmac
+from typing import Any
+
 import jwt
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sag_agent import AgentRuntime
 from sag_api.core.db import get_session
 from sag_api.core.errors import AuthError
 from sag_api.core.security import decode_token
 from sag_api.db.models import User
-from sag_api.generation import LLMClient
-from sag_api.jobs import JobQueue
-from sag_api.sag import EngineManager
 from sag_api.services.auth_service import get_user
 
 _bearer = HTTPBearer(auto_error=False)
@@ -57,19 +56,19 @@ async def get_current_user(
     return user
 
 
-def get_engine_manager(request: Request) -> EngineManager:
+def get_engine_manager(request: Request) -> Any:
     return request.app.state.engine_manager
 
 
-def get_job_queue(request: Request) -> JobQueue:
+def get_job_queue(request: Request) -> Any:
     return request.app.state.job_queue
 
 
-def get_llm(request: Request) -> LLMClient:
+def get_llm(request: Request) -> Any:
     return request.app.state.llm
 
 
-def get_agent_runtime(request: Request) -> AgentRuntime:
+def get_agent_runtime(request: Request) -> Any:
     return request.app.state.agent_runtime
 
 
@@ -78,3 +77,23 @@ def get_tool_registry():
     from sag_api.tools import registry
 
     return registry
+
+
+async def require_service_or_admin(
+    request: Request,
+    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
+) -> None:
+    """Authenticate v2 internal/admin APIs without the generic web user model."""
+    from sag_api.core.config import settings
+
+    if settings.environment == "dev" or settings.debug:
+        if creds is None:
+            return
+    if creds is None:
+        raise AuthError("Thiếu token xác thực")
+    provided = creds.credentials
+    allowed = [token for token in (settings.service_token, settings.admin_token) if token]
+    if not allowed:
+        raise AuthError("SAG_SERVICE_TOKEN hoặc SAG_ADMIN_TOKEN chưa được cấu hình")
+    if not any(hmac.compare_digest(provided, token) for token in allowed):
+        raise AuthError("Token không hợp lệ")

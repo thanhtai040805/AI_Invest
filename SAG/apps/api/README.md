@@ -1,32 +1,83 @@
 # sag-api
 
-Dịch vụ backend của sag: FastAPI + `zleap-sag`.
+FastAPI backend cho SAG v2 Financial Evidence Engine. SAG v2 chỉ phục vụ ba loại tài liệu theo ticker:
 
-## Phân lớp
+- `ANNUAL_BACKBONE`
+- `LATEST_QUARTER`
+- `GOVERNANCE_REPORT`
 
-| Lớp | Thư mục | Trách nhiệm |
-|---|---|---|
-| Lớp thích ứng | `sag_api/sag/` | **Duy nhất** import `zleap-sag`; nguồn ↔ `DataEngine` |
-| Kết nối | `sag_api/connectors/` | Trừu tượng thu thập + registry (upload tệp → đồng bộ động) |
-| Phân tích tài liệu | `sag_api/parsing/` | Markdown thông thẳng; PDF ưu tiên MinerU, lỗi tự fallback; phần còn lại do MarkItDown chuyển đổi |
-| Hàng đợi tác vụ | `sag_api/jobs/` | Điều phối xử lý nền (máy trạng thái ingest → extract) |
-| Lớp sinh | `sag_api/generation/` | Kết quả truy vấn → LLM stream câu trả lời + trích dẫn |
-| Lớp công cụ | `sag_api/tools/` | Công cụ Agent: truy vấn/thực thể tích hợp + thích ứng MCP từ xa (giao diện `Tool` thống nhất) |
-| Agent Core | `sag_agent/` | Lõi điều phối độc lập: vòng đời, sự kiện, công cụ, phê duyệt, hủy, cổng lưu trữ |
-| Thích ứng Agent | `sag_api/services/agent_service.py` | Đưa model, công cụ, phiên SAG vào Agent Core |
-| MCP | `sag_api/mcp/` | Nguồn tức là MCP: FastMCP server + gắn Streamable-HTTP (`/mcp/`) + cổng stdio |
-| Dịch vụ miền | `sag_api/services/` | Logic nghiệp vụ thuần, không phụ thuộc FastAPI |
-| Giao diện | `sag_api/api/v1/` | Route HTTP, chỉ làm IO / kiểm tra / tuần tự hóa |
+Luồng runtime chính:
 
-## Chạy
+```text
+PDF/MD asset on R2
+  -> Markdown canonical
+  -> deterministic document tree
+  -> full-document extraction manifest
+  -> evidence spans, entities, facts, relations, moat signals
+  -> node/evidence embeddings
+  -> deterministic MOAT/GIL assessment
+  -> API v2 / Web admin / ai-engine projection
+```
+
+## Runtime database
+
+Runtime API/worker/E2E dùng PostgreSQL + pgvector.
+
+```env
+SAG_DATABASE_URL=postgresql+asyncpg://sag:sag@localhost:55432/sag
+SAG_ALLOW_SQLITE_RUNTIME=false
+```
+
+SQLite không còn là runtime mặc định. Chỉ bật `SAG_ALLOW_SQLITE_RUNTIME=true` cho test cô lập hoặc kiểm tra legacy snapshot export.
+
+## Local E2E environment
+
+E2E để kiểm output MOAT/GIL nên chạy với:
+
+- Docker/local PostgreSQL có `pgvector`, `unaccent`, `pg_trgm`.
+- R2 thật nhưng write prefix tách biệt, ví dụ `dev/<machine>/...`, hoặc bucket test.
+- LLM/extraction/embedding config thật nếu muốn kiểm extraction end-to-end; thiếu LLM/embedding phải fail stage, không sinh fallback.
+- Ba tài liệu active cho cùng ticker: annual, latest quarter, governance report.
+
+Embedding local hiện khuyến nghị dùng dimension `1536` để pgvector tạo được HNSW index:
+
+```env
+SAG_EMBEDDING_DIMENSIONS=1536
+```
+
+Nếu deployment dùng vector lớn hơn 2000 dimensions, SAG vẫn lưu được vector nhưng migration sẽ bỏ qua HNSW index vì giới hạn của pgvector.
+
+Khởi động DB E2E cục bộ:
 
 ```bash
-python -m venv .venv && . .venv/bin/activate
-pip install -e ".[dev]"
-cp .env.example .env
+docker compose -f ../../docker-compose.e2e.yml up -d sag-postgres
+alembic upgrade head
+```
+
+`SAG_DATABASE_URL` trong `.env` local mặc định khớp compose này:
+
+```env
+SAG_DATABASE_URL=postgresql+asyncpg://sag:sag@localhost:55432/sag
+```
+
+## Commands
+
+```bash
+pip install -e ".[dev,postgres]"
+alembic upgrade head
 uvicorn sag_api.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-UI tài liệu: http://localhost:8000/docs
+Worker:
 
-Cũng có thể chạy `make api` ở thư mục gốc repo. Server dev mặc định lắng nghe toàn bộ card mạng máy, tiện truy cập Web qua địa chỉ LAN; môi trường production hãy phơi dịch vụ qua reverse proxy và kiểm soát truy cập.
+```bash
+sag-worker
+```
+
+Snapshot tooling:
+
+```bash
+sagctl snapshot-export --sqlite-path <legacy.db> --objects-root <objects-dir> --out <snapshot-dir>
+sagctl snapshot-verify --snapshot <snapshot-dir>
+sagctl snapshot-import --snapshot <snapshot-dir> --target postgresql+asyncpg://...
+```

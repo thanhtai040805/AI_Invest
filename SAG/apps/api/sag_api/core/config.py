@@ -1,13 +1,9 @@
-"""Cấu hình ứng dụng (pydantic-settings).
+"""Application settings for SAG v2.
 
-Mọi mục cấu hình đều có thể ghi đè qua biến môi trường `SAG_*` hoặc `.env`. Về thiết kế phân biệt ba loại backend:
-
-- **Cơ sở dữ liệu meta của sag** (người dùng / nguồn / tài liệu / phiên hội thoại): `database_url`
-- **Lưu trữ zleap-sag** (chunk / vector / đồ thị sự kiện): `sag_*` + `data_dir`
-- **LLM / embedding** (trích xuất và sinh câu trả lời): `llm_*` / `embedding_*`
-- **Phân tích tài liệu** (PDF / Office... sang Markdown): `document_parser` / `mineru_*`
-
-Mặc định zero-dependency: metadata SQLite + LanceDB cục bộ của zleap-sag. Sản xuất có thể chuyển toàn bộ sang Postgres.
+SAG v2 is a financial evidence engine for three issuer document roles. Runtime
+API/worker deployments use PostgreSQL/pgvector. SQLite is only tolerated behind
+an explicit test/legacy flag for short-lived compatibility checks and snapshot
+export tooling.
 """
 
 from __future__ import annotations
@@ -17,7 +13,7 @@ from functools import lru_cache
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from sag_api.core.model_providers import ModelProviderId, get_model_provider
@@ -41,6 +37,8 @@ class Settings(BaseSettings):
     environment: Literal["dev", "prod"] = "dev"
     debug: bool = True
     secret_key: str = "dev-insecure-secret-change-me-in-production-0123456789"
+    service_token: str | None = None
+    admin_token: str | None = None
     access_token_expire_minutes: int = 60 * 24 * 7  # 7 ngày
     # Múi giờ hiển thị nghiệp vụ; timestamp cơ sở dữ liệu và API luôn dùng UTC.
     timezone: str = "Asia/Ho_Chi_Minh"
@@ -53,13 +51,19 @@ class Settings(BaseSettings):
     # Truy vấn Dify mặc định ưu tiên truy hồi vector độ trễ thấp; có thể đặt thành multi để bật mở rộng thực thể và xếp hạng lại bằng LLM.
     dify_search_strategy: SearchStrategy = "vector"
 
-    # ── Cơ sở dữ liệu meta của sag ───────────────────────────────────────────────────
-    database_url: str = "sqlite+aiosqlite:///./.data/sag.db"
+    # ── Database ───────────────────────────────────────────────────
+    database_url: str = "postgresql+asyncpg://sag:sag@localhost:5432/sag"
+    allow_sqlite_runtime: bool = False
 
-    # ── Lưu trữ ────────────────────────────────────────────────────────────
-    data_dir: str = "./.data/engine"  # zleap-sag data_dir (LanceDB + SQLite)
-    upload_dir: str = "./.data/uploads"  # ghi file gốc upload xuống đĩa
+    # ── Storage ────────────────────────────────────────────────────────────
+    data_dir: str = "./.data/engine"
+    upload_dir: str = "./.data/uploads"
+    r2_write_canonical_markdown: bool = False
+    r2_canonical_prefix: str = "dev/local/sag/canonical-markdown"
     max_upload_mb: int = 25  # giới hạn upload mỗi file
+    process_documents_inline: bool = True
+    processing_lease_seconds: int = Field(default=600, ge=30, le=7200)
+    worker_poll_seconds: float = Field(default=2.0, ge=0.1, le=60.0)
     job_concurrency: int = 2  # độ đồng thời xử lý nền
     document_extract_concurrency: int = Field(default=30, ge=1, le=50)  # độ đồng thời trích xuất chunk cho mỗi tài liệu
     document_chunk_max_tokens: int = Field(default=1_000_000, ge=100, le=2_000_000)
@@ -72,29 +76,16 @@ class Settings(BaseSettings):
     job_max_attempts: int = 3  # số lần thử tối đa cho lỗi có thể thử lại (gồm lần đầu)
     engine_cache_size: int = 16  # giới hạn LRU của slot engine (vượt giới hạn sẽ đuổi cái dùng lâu nhất)
     engine_warmup_count: int = 4  # số engine nguồn gần nhất được làm nóng lúc khởi động
-    # Danh sách trắng đuôi file được phép upload (chữ thường, có dấu chấm); tập rỗng nghĩa là không giới hạn
+    # SAG v2 chỉ nhận Markdown canonical hoặc PDF cần parse qua MinerU.
     allowed_upload_exts: set[str] = {
         ".md",
         ".markdown",
-        ".txt",
-        ".text",
         ".pdf",
-        ".docx",
-        ".pptx",
-        ".xls",
-        ".xlsx",
-        ".csv",
-        ".tsv",
-        ".html",
-        ".htm",
-        ".json",
-        ".epub",
     }
 
-    # ── Lựa chọn backend zleap-sag ─────────────────────────────────────────────
-    # None → không cơ sở hạ tầng (LanceDB + SQLite tích hợp, nằm trong data_dir)
-    sag_vector_provider: Literal["lancedb", "es", "pgvector", "oceanbase"] = "lancedb"
-    sag_relational_provider: Literal["sqlite", "postgres", "mysql", "oceanbase"] | None = None
+    # ── Production retrieval backend ───────────────────────────────────────
+    sag_vector_provider: Literal["pgvector", "es", "oceanbase"] = "pgvector"
+    sag_relational_provider: Literal["postgres", "mysql", "oceanbase"] | None = "postgres"
     sag_language: Literal["vi", "en", "zh"] = "vi"
 
     @field_validator("sag_language", mode="before")
@@ -107,7 +98,7 @@ class Settings(BaseSettings):
             return val
         return value
 
-    # Khi dùng một cơ sở dữ liệu sản xuất (pgvector) thì tái sử dụng cùng Postgres — lắp ghép từ các trường này
+    # PostgreSQL/pgvector connection details for deployments that compose DB URLs from fields.
     sag_pg_host: str = "localhost"
     sag_pg_port: int = 5432
     sag_pg_user: str = "sag"
@@ -147,14 +138,15 @@ class Settings(BaseSettings):
     embedding_api_key: str | None = None
     embedding_dimensions: int | None = None
 
-    # ── Phân tích tài liệu (chuyển thống nhất sang Markdown trước khi vào zleap-sag) ─────────────────
-    # auto: PDF ưu tiên MinerU, khi chưa cấu hình hoặc MinerU lỗi thì quay lại MarkItDown cục bộ.
+    # ── Phân tích tài liệu (chuyển thống nhất sang Markdown canonical trước khi phân tích) ─────────────────
+    # auto: PDF ưu tiên MinerU; production không được giả lập extraction khi parser/LLM thiếu cấu hình.
     document_parser: Literal["auto", "markitdown", "mineru"] = "auto"
     mineru_base_url: str | None = "https://mineru.net"
     mineru_api_key: str | None = None
     mineru_version: str = "4.0"
     mineru_parse_method: Literal["auto", "txt", "ocr"] = "ocr"
-    mineru_language: str = "vi"
+    mineru_model_version: Literal["pipeline", "vlm"] = "vlm"
+    mineru_language: str = "latin"
     mineru_mode: Literal["precision", "flash"] = "precision"
     mineru_layout_model: str = "doclayout_yolo"
     mineru_enable_table: bool = True
@@ -229,6 +221,24 @@ class Settings(BaseSettings):
         except (ZoneInfoNotFoundError, ValueError) as error:
             raise ValueError("timezone phải là múi giờ IANA hợp lệ") from error
         return normalized
+
+    @model_validator(mode="after")
+    def _validate_runtime_database(self) -> "Settings":
+        url = self.database_url.strip().lower()
+        if url.startswith("sqlite") and not self.allow_sqlite_runtime:
+            raise ValueError(
+                "SAG runtime no longer supports SQLite by default. "
+                "Use postgresql+asyncpg://... for API/worker/E2E. "
+                "Set SAG_ALLOW_SQLITE_RUNTIME=true only for isolated tests or legacy snapshot export checks."
+            )
+        if self.environment == "prod":
+            if url.startswith("sqlite"):
+                raise ValueError("SAG production requires PostgreSQL/pgvector; SQLite is not allowed in prod.")
+            if not url.startswith("postgresql+asyncpg://"):
+                raise ValueError("SAG production database_url must use postgresql+asyncpg://.")
+            if not self.service_token or len(self.service_token) < 32:
+                raise ValueError("SAG production requires a strong SAG_SERVICE_TOKEN with at least 32 characters.")
+        return self
 
     @property
     def llm_configured(self) -> bool:

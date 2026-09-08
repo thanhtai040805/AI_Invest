@@ -20,7 +20,7 @@ logger = logging.getLogger("sag.gil")
 @dataclass
 class GILAnalysisResult:
     ticker: str
-    gil_flag: str  # "PASS" | "WARNING" | "CATASTROPHIC"
+    gil_flag: str  # "PASS" | "WARNING" | "CATASTROPHIC" | "DATA_INSUFFICIENT"
     risk_level: str  # "LOW" | "HIGH" | "CRITICAL"
     rpt_ratio: float  # Tỷ lệ RPT Exposure / Equity
     total_rpt_exposure_vnd: float
@@ -31,10 +31,12 @@ class GILAnalysisResult:
     nodes_count: int
     edges_count: int
     summary: str
+    analysis_status: str = "COMPLETE"
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "ticker": self.ticker,
+            "analysis_status": self.analysis_status,
             "gil_flag": self.gil_flag,
             "risk_level": self.risk_level,
             "rpt_ratio": round(self.rpt_ratio, 4),
@@ -57,8 +59,6 @@ class GILGraphAnalyzer:
         "BORROWS_FROM",
         "RECEIVABLE_FROM",
         "PAYABLE_TO",
-        "GUARANTEES_FOR",
-        "TRANSACTS_WITH",
     }
 
     OWNERSHIP_RELATIONS = {
@@ -91,6 +91,7 @@ class GILGraphAnalyzer:
             rel_type = str(e.get("relation_type") or e.get("type") or "").strip().upper()
             amount = float(e.get("amount_vnd") or e.get("value") or 0.0)
             ownership_pct = float(e.get("ownership_pct") or e.get("pct") or 0.0)
+            verified = bool(e.get("verified", True))
 
             if source and target:
                 self.graph.add_edge(
@@ -99,7 +100,173 @@ class GILGraphAnalyzer:
                     relation_type=rel_type,
                     amount_vnd=amount,
                     ownership_pct=ownership_pct,
+                    verified=verified,
                 )
+
+    def build_from_source_graph(
+        self,
+        entities: list[Any],
+        events: list[Any],
+        associations: list[Any],
+        default_ticker: str | None = None,
+    ) -> None:
+        """Chiếu đồ thị lưỡng phân (Events - Mentions - Entities) thành đồ thị tài chính định hướng Entity-to-Entity."""
+        import re
+
+        ticker_symbol = (default_ticker or self.ticker).upper().strip()
+
+        # 1. Thêm các Entity thành Node
+        entity_by_id: dict[str, dict[str, str]] = {}
+        for ent in entities:
+            ent_id = getattr(ent, "id", None) or (ent.get("id") if isinstance(ent, dict) else None)
+            ent_name = getattr(ent, "name", None) or (ent.get("name") if isinstance(ent, dict) else None) or ent_id
+            ent_type = getattr(ent, "type", None) or (ent.get("type") if isinstance(ent, dict) else None) or "COMPANY"
+            if not ent_id:
+                continue
+            norm_name = str(ent_name).strip().upper()
+            entity_by_id[str(ent_id)] = {
+                "id": str(ent_id),
+                "name": str(ent_name),
+                "type": str(ent_type),
+                "norm_name": norm_name,
+            }
+            self.graph.add_node(norm_name, name=ent_name, entity_type=ent_type, id=ent_id)
+
+        # Xác định Node chủ thể chính (Main Ticker / Company)
+        subject_node = None
+        for data in entity_by_id.values():
+            if data["norm_name"] == ticker_symbol or ticker_symbol in data["norm_name"]:
+                subject_node = data["norm_name"]
+                break
+        if not subject_node:
+            subject_node = ticker_symbol
+            self.graph.add_node(subject_node, name=ticker_symbol, entity_type="TICKER")
+
+        # 2. Gom nhóm Associations theo Event ID
+        event_assocs: dict[str, list[Any]] = {}
+        for assoc in associations:
+            ev_id = (
+                getattr(assoc, "source_id", None)
+                or getattr(assoc, "event_id", None)
+                or (assoc.get("source_id") or assoc.get("event_id") if isinstance(assoc, dict) else None)
+            )
+            if ev_id:
+                event_assocs.setdefault(str(ev_id), []).append(assoc)
+
+        # 3. Phân tích ngữ cảnh từng Event để tạo quan hệ Entity -> Entity
+        for ev in events:
+            ev_id = str(getattr(ev, "id", None) or (ev.get("id") if isinstance(ev, dict) else "") or "")
+            ev_title = getattr(ev, "title", None) or (ev.get("title") if isinstance(ev, dict) else "") or ""
+            ev_category = str(getattr(ev, "category", None) or (ev.get("category") if isinstance(ev, dict) else "") or "").upper()
+            assocs = event_assocs.get(ev_id, [])
+            if not assocs:
+                continue
+
+            participating_entities: list[tuple[dict[str, str], str]] = []
+            for a in assocs:
+                target_id = str(
+                    getattr(a, "target_id", None)
+                    or getattr(a, "entity_id", None)
+                    or (a.get("target_id") or a.get("entity_id") if isinstance(a, dict) else None)
+                    or ""
+                )
+                desc = str(
+                    getattr(a, "description", None)
+                    or (a.get("description") if isinstance(a, dict) else "")
+                    or ""
+                )
+                if target_id in entity_by_id:
+                    participating_entities.append((entity_by_id[target_id], desc))
+
+            event_subject = subject_node
+            for p_ent, _ in participating_entities:
+                if p_ent["type"] in ("TICKER", "COMPANY") and (p_ent["norm_name"] == ticker_symbol or ticker_symbol in p_ent["norm_name"]):
+                    event_subject = p_ent["norm_name"]
+                    break
+
+            for p_ent, desc in participating_entities:
+                if p_ent["norm_name"] == event_subject:
+                    continue
+
+                p_type = p_ent["type"].upper()
+                desc_lower = desc.casefold()
+
+                # A. Quan hệ sở hữu (OWNS / SUBSIDIARY_OF)
+                pct_match = re.search(r"(\d+(?:[.,]\d+)?)\s*%", desc)
+                pct_val = float(pct_match.group(1).replace(",", ".")) if pct_match else 0.0
+
+                if (
+                    p_type == "SUBSIDIARY_AFFILIATE"
+                    or "công ty con" in desc_lower
+                    or "công ty liên kết" in desc_lower
+                    or ev_category in ("OWNERSHIP_CHANGE", "SUBSIDIARY_PROFIT_RECOGNITION")
+                ):
+                    self.graph.add_edge(
+                        event_subject,
+                        p_ent["norm_name"],
+                        relation_type="OWNS",
+                        ownership_pct=pct_val,
+                        amount_vnd=0.0,
+                        description=desc or f"Sở hữu {pct_val}%",
+                    )
+                    continue
+
+                # B. Quan hệ tài chính: Vay nợ, bảo lãnh, phải thu/phải trả
+                amt_match = re.search(r"(\d+(?:[.,]\d+)*)\s*(tỷ|triệu|nghìn|đồng|vnd)", desc, re.IGNORECASE)
+                amount_vnd = 0.0
+                if amt_match:
+                    num_str = amt_match.group(1).replace(".", "").replace(",", ".")
+                    unit = amt_match.group(2).lower()
+                    try:
+                        num = float(num_str)
+                        if "tỷ" in unit:
+                            amount_vnd = num * 1_000_000_000
+                        elif "triệu" in unit:
+                            amount_vnd = num * 1_000_000
+                        else:
+                            amount_vnd = num
+                    except ValueError:
+                        pass
+                elif re.search(r"\d{9,}", desc):
+                    raw_digits = re.search(r"\d{9,}", desc.replace(".", "").replace(",", ""))
+                    if raw_digits:
+                        amount_vnd = float(raw_digits.group(0))
+
+                if "cho vay" in desc_lower or "phải thu" in desc_lower:
+                    rel = "LOANS_TO" if "cho vay" in desc_lower else "RECEIVABLE_FROM"
+                    self.graph.add_edge(
+                        event_subject,
+                        p_ent["norm_name"],
+                        relation_type=rel,
+                        amount_vnd=amount_vnd,
+                        ownership_pct=0.0,
+                        description=desc,
+                    )
+                elif "vay" in desc_lower or "ngân hàng" in desc_lower or (p_type == "COMPANY" and ev_category == "DEBT_RESTRUCTURING"):
+                    self.graph.add_edge(
+                        event_subject,
+                        p_ent["norm_name"],
+                        relation_type="BORROWS_FROM",
+                        amount_vnd=amount_vnd,
+                        ownership_pct=0.0,
+                        description=desc,
+                    )
+                elif "bên liên quan" in desc_lower or p_type == "RELATED_PARTY" or ev_category == "RELATED_PARTY_TRANSACTION":
+                    rel = "TRANSACTS_WITH"
+                    if "bảo lãnh" in desc_lower:
+                        rel = "GUARANTEES_FOR"
+                    elif "phải trả" in desc_lower:
+                        rel = "PAYABLE_TO"
+                    elif "phải thu" in desc_lower:
+                        rel = "RECEIVABLE_FROM"
+                    self.graph.add_edge(
+                        event_subject,
+                        p_ent["norm_name"],
+                        relation_type=rel,
+                        amount_vnd=amount_vnd,
+                        ownership_pct=0.0,
+                        description=desc,
+                    )
 
     def detect_capital_tunneling_cycles(self) -> list[list[str]]:
         """Phát hiện các chu trình khép kín (A -> B -> C -> A) luân chuyển dòng vốn hoặc sở hữu."""
@@ -107,8 +274,11 @@ class GILGraphAnalyzer:
         sub_edges = [
             (u, v, d)
             for u, v, d in self.graph.edges(data=True)
-            if d.get("relation_type") in self.FINANCIAL_FLOW_RELATIONS
-            or d.get("relation_type") in self.OWNERSHIP_RELATIONS
+            if d.get("verified", True)
+            and (
+                d.get("relation_type") in self.FINANCIAL_FLOW_RELATIONS
+                or d.get("relation_type") in self.OWNERSHIP_RELATIONS
+            )
         ]
 
         sub_graph = nx.DiGraph()
@@ -140,6 +310,8 @@ class GILGraphAnalyzer:
             rel_type = d.get("relation_type", "")
             amount = float(d.get("amount_vnd", 0.0))
 
+            if not d.get("verified", True):
+                continue
             if rel_type in {"LOANS_TO", "GUARANTEES_FOR", "RECEIVABLE_FROM"} and amount > 0:
                 total_exposure += amount
                 exposure_details.append(f"{u} -> {rel_type} -> {v}: {amount:,.0f} VND")
@@ -151,8 +323,26 @@ class GILGraphAnalyzer:
         cycles = self.detect_capital_tunneling_cycles()
         total_rpt, details = self.calculate_rpt_exposure()
 
-        rpt_ratio = (total_rpt / self.equity_vnd) if self.equity_vnd > 0 else 0.0
         reasons: list[str] = []
+        if self.equity_vnd <= 0:
+            reasons.append("Thiếu vốn chủ sở hữu có provenance; GIL không được phép PASS khi mẫu số chưa xác minh.")
+            return GILAnalysisResult(
+                ticker=self.ticker,
+                gil_flag="DATA_INSUFFICIENT",
+                analysis_status="DATA_INSUFFICIENT",
+                risk_level="UNKNOWN",
+                rpt_ratio=0.0,
+                total_rpt_exposure_vnd=total_rpt,
+                equity_vnd=self.equity_vnd,
+                cycles_detected=len(cycles),
+                cycle_paths=cycles,
+                reasons=reasons,
+                nodes_count=self.graph.number_of_nodes(),
+                edges_count=self.graph.number_of_edges(),
+                summary="GIL DATA_INSUFFICIENT: thiếu vốn chủ sở hữu đã xác minh",
+            )
+
+        rpt_ratio = total_rpt / self.equity_vnd
 
         # Ma trận phán quyết cờ gil_flag (IOS v5.1 Hard Laws)
         if len(cycles) > 0:

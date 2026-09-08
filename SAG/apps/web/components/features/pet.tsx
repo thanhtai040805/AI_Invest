@@ -425,7 +425,7 @@ export function Pet({
   }, [appMode]);
 
   React.useEffect(() => {
-    const section = workspaceSection === "search" || workspaceSection === "answer"
+    const section = workspaceSection === "search"
       ? workspaceSection
       : null;
     const active = appMode === "explore"
@@ -565,9 +565,7 @@ export function Pet({
   const activeThread = activity.threadId
     ? threads.find((thread) => thread.id === activity.threadId) ?? null
     : null;
-  const answerVisible =
-    (appMode === "normal" && (pathname === "/chat" || pathname.startsWith("/chat/")))
-    || (appMode === "explore" && workspaceSection === "answer");
+  const answerVisible = appMode === "explore" && workspaceSection === "search";
   const canAct = !motionReduced && !activity.streaming && characterState.motion === "idle";
 
   const triggerWave = React.useCallback(() => {
@@ -1205,7 +1203,7 @@ export function Pet({
             onPointerDown={(event) => event.stopPropagation()}
             onClick={() =>
               characterState.speech?.threadId &&
-              router.push(`/chat/${characterState.speech.threadId}`)
+              router.push("/knowledge")
             }
             className={cn(
               "absolute flex w-60 max-w-[calc(100vw-2rem)] items-center gap-2 rounded-lg border bg-popover px-3 py-2 text-left shadow-lift",
@@ -1375,7 +1373,7 @@ export function Pet({
               label={t("toolbar.answer")}
               onClick={() => {
                 setCurious(false);
-                openMiniWorkspace("answer");
+                openMiniWorkspace("search");
               }}
             >
               <MessageCircle />
@@ -1447,7 +1445,7 @@ export function Pet({
                   onClick={() => {
                     setCurious(false);
                     setPetOverlay("none");
-                    openMiniWorkspace("answer");
+                    openMiniWorkspace("search");
                   }}
                 >
                   <MessageCircle />

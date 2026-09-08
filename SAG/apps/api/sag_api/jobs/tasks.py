@@ -24,6 +24,8 @@ from sag_api.jobs.control import JobPaused
 from sag_api.parsing import prepare_document
 from sag_api.sag import EngineManager
 from sag_api.sag.dto import ProcessCheckpoint, estimate_llm_cost
+from sag_api.services.document_service import activate_document_version
+from sag_api.services.document_structure_service import ACTIVE_DOCUMENT_ROLES, rebuild_document_v2
 
 
 log = get_logger("jobs")
@@ -138,6 +140,12 @@ async def process_document(
                     prepared.cached,
                     prepared.fallback_error,
                 )
+            try:
+                markdown = Path(prepared.path).read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                markdown = Path(prepared.path).read_text(encoding="utf-8-sig")
+            await rebuild_document_v2(session, source, document, markdown)
+            await session.commit()
         outcome = await engine_manager.process_document(
             source.sag_source_config_id,
             str(prepared.path) if prepared is not None else None,
@@ -175,6 +183,27 @@ async def process_document(
         await session.commit()
         raise
 
+    if (
+        getattr(document, "activation_requested", True)
+        and document.doc_role in ACTIVE_DOCUMENT_ROLES
+        and (
+            document.structure_status != "COMPLETE"
+            or document.extraction_status != "COMPLETE"
+            or document.embedding_status != "COMPLETE"
+        )
+    ):
+        document.status = DocumentStatus.FAILED
+        document.error = (
+            "SAG v2 processing incomplete: "
+            f"structure={document.structure_status}, "
+            f"extraction={document.extraction_status}, "
+            f"embedding={document.embedding_status}"
+        )
+        document.error_layer = ErrorLayer.ENGINE.value
+        document.error_stage = ErrorStage.EXTRACT.value
+        await session.commit()
+        raise RuntimeError(document.error)
+
     document.status = DocumentStatus.READY
     document.chunk_count = outcome.chunk_count
     document.event_count = outcome.event_count
@@ -182,6 +211,8 @@ async def process_document(
     document.progress = 100
     document.token_usage = outcome.token_usage
     document.error = None
+    if getattr(document, "activation_requested", True):
+        await activate_document_version(session, source.id, document)
     # Số đếm gộp của nguồn dùng SQL nguyên tử để cập nhật, tránh đọc-sửa-ghi lạc mất khi song song
     await session.execute(
         update(Source)

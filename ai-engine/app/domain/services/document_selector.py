@@ -13,12 +13,58 @@ Tự động thực hiện cơ chế Cửa sổ trượt (Sliding Window):
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, Union
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
 logger = logging.getLogger("ai_engine.services.document_selector")
+
+
+def parse_fiscal_period(
+    title: str, pub_date: Optional[str] = None, role: Optional[str] = None
+) -> Tuple[int, Union[int, str]]:
+    """Trích xuất chính xác fiscal_year và fiscal_quarter từ tiêu đề tài liệu.
+    
+    Quy tắc:
+    - BCTC Kiểm toán năm / Cả năm: Trích xuất năm chính xác, quarter = 'YEAR' (không phải Q4).
+    - BCTC Quý: Trích xuất năm và số quý tương ứng (1, 2, 3, 4).
+    - BCQT: Trích xuất năm và 6 tháng (Q2) hoặc cả năm ('YEAR').
+    """
+    t_lower = (title or "").lower()
+
+    # 1. Fiscal Year
+    year = None
+    m_year = re.search(r"(?:năm|nam)\s*(20\d{2})", t_lower)
+    if m_year:
+        year = int(m_year.group(1))
+    else:
+        m_4digit = re.search(r"\b(20[1-3]\d)\b", t_lower)
+        if m_4digit:
+            year = int(m_4digit.group(1))
+        elif pub_date:
+            m_date = re.search(r"(20\d{2})", str(pub_date))
+            if m_date:
+                year = int(m_date.group(1))
+    if not year:
+        from datetime import datetime
+        year = datetime.now().year
+
+    # 2. Fiscal Quarter
+    m_q = re.search(r"(?:quý|quy|q)\s*([1-4])", t_lower)
+    if m_q:
+        quarter = int(m_q.group(1))
+    elif any(k in t_lower for k in ("6 tháng", "6 thang", "bán niên", "ban nien", "nửa đầu năm", "nua dau nam")):
+        quarter = "6M" if role == "GOVERNANCE_REPORT" or "quản trị" in t_lower or "quan tri" in t_lower else 2
+    elif any(k in t_lower for k in ("9 tháng", "9 thang")):
+        quarter = 3
+    elif role == "ANNUAL_BACKBONE" or any(k in t_lower for k in ("kiểm toán", "kiem toan", "cả năm", "ca nam")):
+        quarter = "YEAR"
+    else:
+        quarter = "YEAR" if ("năm" in t_lower or "nam" in t_lower) else ("6M" if role == "GOVERNANCE_REPORT" else 2)
+
+    return year, quarter
 
 
 @dataclass(frozen=True)
@@ -31,7 +77,7 @@ class ActiveDocument:
     pdf_url: str
     role: str  # "ANNUAL_BACKBONE" | "LATEST_QUARTER" | "GOVERNANCE_REPORT"
     fiscal_year: Optional[int] = None
-    fiscal_quarter: Optional[int] = None
+    fiscal_quarter: Optional[Union[int, str]] = None
     scope: str = "SEPARATE"
 
 
@@ -113,6 +159,7 @@ class ActiveDocumentSelector:
 
             if row_ann:
                 url_ann = row_ann["article_pdf_urls"][0] if row_ann.get("article_pdf_urls") else ""
+                y_ann, q_ann = parse_fiscal_period(row_ann["title"], str(row_ann["published_date"]), "ANNUAL_BACKBONE")
                 annual_doc = ActiveDocument(
                     doc_id=row_ann["id"],
                     ticker=ticker,
@@ -121,6 +168,8 @@ class ActiveDocumentSelector:
                     published_date=str(row_ann["published_date"]),
                     pdf_url=url_ann,
                     role="ANNUAL_BACKBONE",
+                    fiscal_year=y_ann,
+                    fiscal_quarter=q_ann,
                     scope="SEPARATE",
                 )
 
@@ -158,6 +207,7 @@ class ActiveDocumentSelector:
                 row_q = cur.fetchone()
             if row_q:
                 url_q = row_q["article_pdf_urls"][0] if row_q.get("article_pdf_urls") else ""
+                y_q, q_q = parse_fiscal_period(row_q["title"], str(row_q["published_date"]), "LATEST_QUARTER")
                 quarter_doc = ActiveDocument(
                     doc_id=row_q["id"],
                     ticker=ticker,
@@ -166,6 +216,8 @@ class ActiveDocumentSelector:
                     published_date=str(row_q["published_date"]),
                     pdf_url=url_q,
                     role="LATEST_QUARTER",
+                    fiscal_year=y_q,
+                    fiscal_quarter=q_q,
                     scope="SEPARATE",
                 )
 
@@ -191,6 +243,7 @@ class ActiveDocumentSelector:
             row_gov = cur.fetchone()
             if row_gov:
                 url_gov = row_gov["article_pdf_urls"][0] if row_gov.get("article_pdf_urls") else ""
+                y_gov, q_gov = parse_fiscal_period(row_gov["title"], str(row_gov["published_date"]), "GOVERNANCE_REPORT")
                 gov_doc = ActiveDocument(
                     doc_id=row_gov["id"],
                     ticker=ticker,
@@ -199,6 +252,8 @@ class ActiveDocumentSelector:
                     published_date=str(row_gov["published_date"]),
                     pdf_url=url_gov,
                     role="GOVERNANCE_REPORT",
+                    fiscal_year=y_gov,
+                    fiscal_quarter=q_gov,
                     scope="GOVERNANCE",
                 )
 

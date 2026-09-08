@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from sag_api.api.v1 import (
     activity,
     agents,
+    analysis,
     attachments,
     auth,
     dify,
@@ -32,6 +33,7 @@ for _module in (
     jobs,
     search,
     agents,
+    analysis,
     openai,
     activity,
     attachments,

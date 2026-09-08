@@ -11,11 +11,15 @@ import type {
   BindingTargetType,
   Capabilities,
   Doc,
+  DocumentNodeContentResponse,
+  DocumentTreeResponse,
+  GilAssessment,
   MessagePage,
   ModelConfig,
   ModelConfigPatch,
   ModelProviderSpec,
   ModelSetupStatus,
+  MoatAssessment,
   KnowledgeMcpDescriptor,
   Persona,
   SearchResponse,
@@ -911,13 +915,64 @@ export const api = {
 
   // Siêu dữ liệu của tài liệu đơn lẻ + file gốc (lấy blob để xem trước, cần kèm Bearer)
   getDocument: (sid: string, did: string) =>
-    request<Doc>(`/api/v1/sources/${sid}/documents/${did}`),
+    request<Doc>(`/api/v2/documents/${did}`),
+  listTickerDocuments: (ticker: string, signal?: AbortSignal) =>
+    request<Doc[]>(
+      `/api/v2/tickers/${encodeURIComponent(ticker)}/documents`,
+      { signal },
+    ),
+  searchTickerEvidence: (ticker: string, query: string, topK = 8, signal?: AbortSignal) =>
+    request<{
+      query: string;
+      hits: Array<{
+        document_id: string;
+        doc_role: string;
+        node_id: string;
+        heading_path: string[];
+        line_span: [number, number];
+        score: number;
+        content: string;
+        quote_hash: string;
+      }>;
+    }>(
+      `/api/v2/tickers/${encodeURIComponent(ticker)}/search`,
+      {
+        method: "POST",
+        body: JSON.stringify({ query, top_k: topK }),
+        signal,
+      },
+    ),
   documentFileUrl: (sid: string, did: string) =>
     `${API_BASE}/api/v1/sources/${sid}/documents/${did}/file`,
   documentPreviewUrl: (sid: string, did: string) =>
     `${API_BASE}/api/v1/sources/${sid}/documents/${did}/preview`,
   documentParsedUrl: (sid: string, did: string) =>
     `${API_BASE}/api/v1/sources/${sid}/documents/${did}/parsed`,
+  getDocumentTreeByTicker: (ticker: string, did: string, signal?: AbortSignal) =>
+    request<DocumentTreeResponse>(
+      `/api/v2/documents/${did}/tree`,
+      { signal },
+    ),
+  getDocumentNodeContentByTicker: (
+    ticker: string,
+    did: string,
+    nodeId: string,
+    signal?: AbortSignal,
+  ) =>
+    request<DocumentNodeContentResponse>(
+      `/api/v2/documents/${did}/nodes/${encodeURIComponent(nodeId)}/content`,
+      { signal },
+    ),
+  getMoatByTicker: (ticker: string, signal?: AbortSignal) =>
+    request<MoatAssessment>(
+      `/api/v2/tickers/${encodeURIComponent(ticker)}/assessments/moat`,
+      { signal },
+    ),
+  getGilByTicker: (ticker: string, signal?: AbortSignal) =>
+    request<GilAssessment>(
+      `/api/v2/tickers/${encodeURIComponent(ticker)}/assessments/gil`,
+      { signal },
+    ),
 
   // Đính kèm ảnh trong hội thoại (≤10MB, png/jpg/webp/gif)
   uploadAttachment: (file: File) => {

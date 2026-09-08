@@ -16,7 +16,7 @@ import {
 
 import { api, ApiError } from "@/lib/api";
 import { getToken } from "@/lib/auth";
-import type { CitationEventRef, Doc } from "@/lib/types";
+import type { CitationEventRef, Doc, DocumentNodeContentResponse, DocumentTreeResponse, Source } from "@/lib/types";
 import { formatBytes, formatDate, formatTokenCount, relativeTime } from "@/lib/format";
 import { cleanCitationText, stripCitationTransportTokens } from "@/lib/citation-presentation";
 import { cn } from "@/lib/utils";
@@ -69,6 +69,25 @@ const Ctx = React.createContext<PanelCtx>({
 });
 
 const DEFAULT_PANEL_SIZE = 34;
+
+function tickerFromSource(source: Source | null): string | null {
+  const raw = source?.name?.trim();
+  if (!raw) return null;
+  const match = /^BCTC[_\s-]+([A-Z0-9]{2,12})$/i.exec(raw) ?? /^([A-Z0-9]{2,12})$/i.exec(raw);
+  return match?.[1]?.toUpperCase() ?? null;
+}
+
+function shortHash(value?: string | null): string | null {
+  if (!value) return null;
+  return value.length > 12 ? value.slice(0, 12) : value;
+}
+
+function formatCoverage(value?: number | { coverage_ratio?: number } | null): string | null {
+  const raw = typeof value === "number" ? value : value?.coverage_ratio;
+  if (raw == null || !Number.isFinite(raw)) return null;
+  const normalized = raw <= 1 ? raw * 100 : raw;
+  return `${Math.max(0, Math.min(100, normalized)).toFixed(0)}%`;
+}
 
 export function useDetailPanel() {
   return React.useContext(Ctx);
@@ -316,10 +335,17 @@ function OriginalDocumentPreview({ doc }: { doc: Doc }) {
   >({ phase: "loading" });
 
   const [textMode, setTextMode] = React.useState<"md" | "raw">("md");
-  const fileUrl = api.documentFileUrl(doc.source_id, doc.id);
-  const previewUrl = api.documentPreviewUrl(doc.source_id, doc.id);
+  const fileUrl = doc.source_id ? api.documentFileUrl(doc.source_id, doc.id) : null;
+  const previewUrl = doc.source_id ? api.documentPreviewUrl(doc.source_id, doc.id) : null;
 
   React.useEffect(() => {
+    if (!previewUrl) {
+      setState({
+        phase: doc.object_uri ? "text" : "none",
+        text: doc.object_uri ? `Object URI: ${doc.object_uri}\nSHA-256: ${doc.content_sha256 ?? "n/a"}` : undefined,
+      } as { phase: "text"; text: string } | { phase: "none" });
+      return;
+    }
     let alive = true;
     let objectUrl: string | null = null;
     setState({ phase: "loading" });
@@ -358,9 +384,10 @@ function OriginalDocumentPreview({ doc }: { doc: Doc }) {
       alive = false;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [doc.content_type, doc.id, doc.source_id, locale, previewUrl, t]);
+  }, [doc.content_sha256, doc.content_type, doc.id, doc.object_uri, doc.source_id, locale, previewUrl, t]);
 
   async function download() {
+    if (!fileUrl) return;
     try {
       const res = await fetch(fileUrl, {
         headers: {
@@ -372,7 +399,7 @@ function OriginalDocumentPreview({ doc }: { doc: Doc }) {
       const url = URL.createObjectURL(await res.blob());
       const a = document.createElement("a");
       a.href = url;
-      a.download = doc.filename;
+      a.download = doc.filename ?? doc.title ?? doc.id;
       a.click();
       URL.revokeObjectURL(url);
     } catch {
@@ -386,7 +413,7 @@ function OriginalDocumentPreview({ doc }: { doc: Doc }) {
         <span className="text-xs font-medium text-muted-foreground">{t("original.title")}</span>
         <span className="flex items-center gap-1.5">
           {state.phase === "text" && <RenderModeToggle mode={textMode} onChange={setTextMode} />}
-          <Button variant="ghost" size="sm" className="h-7 gap-1.5 px-2 text-xs" onClick={download}>
+          <Button variant="ghost" size="sm" className="h-7 gap-1.5 px-2 text-xs" onClick={download} disabled={!fileUrl}>
             <Download />
             {t("original.download")}
           </Button>
@@ -413,12 +440,12 @@ function OriginalDocumentPreview({ doc }: { doc: Doc }) {
         </div>
       )}
       {state.phase === "blob" && state.kind === "pdf" && (
-        <iframe title={doc.filename} src={state.url} className="min-h-0 flex-1 rounded-md border" />
+        <iframe title={doc.filename ?? doc.title ?? doc.id} src={state.url} className="min-h-0 flex-1 rounded-md border" />
       )}
       {state.phase === "blob" && state.kind === "image" && (
         <div className="min-h-0 flex-1 overflow-auto rounded-md border bg-muted/30 p-2">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={state.url} alt={doc.filename} className="mx-auto max-w-full" />
+          <img src={state.url} alt={doc.filename ?? doc.title ?? doc.id} className="mx-auto max-w-full" />
         </div>
       )}
     </div>
@@ -436,14 +463,22 @@ function ParsedDocumentPreview({ doc }: { doc: Doc }) {
   const t = useTranslations("DetailPanel");
   const [state, setState] = React.useState<ParsedPreviewState>({ phase: "loading" });
   const [textMode, setTextMode] = React.useState<"md" | "raw">("md");
-  const parsedUrl = api.documentParsedUrl(doc.source_id, doc.id);
+  const parsedUrl = doc.source_id ? api.documentParsedUrl(doc.source_id, doc.id) : null;
 
   React.useEffect(() => {
-    if (doc.status !== "ready") {
+    const status = String(doc.status ?? "").toUpperCase();
+    if (!parsedUrl) {
+      setState({
+        phase: "none",
+        message: "Parsed Markdown legacy chỉ dùng cho document v1; với v2 hãy dùng tab Tree để hydrate node.",
+      });
+      return;
+    }
+    if (status !== "READY") {
       setState({
         phase: "none",
         message:
-          doc.status === "failed"
+          status === "FAILED"
             ? doc.error || t("parsed.failed")
             : t("parsed.processing"),
       });
@@ -527,20 +562,147 @@ function ParsedDocumentPreview({ doc }: { doc: Doc }) {
   );
 }
 
-function DocumentPreview({ doc }: { doc: Doc }) {
+function DocumentV2Tree({ doc, ticker }: { doc: Doc; ticker: string | null }) {
+  const [tree, setTree] = React.useState<DocumentTreeResponse | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = React.useState<string | null>(null);
+  const [content, setContent] = React.useState<DocumentNodeContentResponse | null>(null);
+  const [state, setState] = React.useState<"idle" | "loading" | "ready" | "none" | "error">(
+    ticker ? "loading" : "none",
+  );
+  const [message, setMessage] = React.useState("");
+
+  React.useEffect(() => {
+    if (!ticker || String(doc.structure_status ?? "").toUpperCase() !== "COMPLETE") {
+      setTree(null);
+      setSelectedNodeId(null);
+      setState("none");
+      setMessage(!ticker ? "Tree v2 chỉ khả dụng cho source dạng BCTC_{ticker}." : "Cây v2 chưa sẵn sàng.");
+      return;
+    }
+    let alive = true;
+    const controller = new AbortController();
+    setState("loading");
+    setMessage("");
+    api
+      .getDocumentTreeByTicker(ticker, doc.id, controller.signal)
+      .then((result) => {
+        if (!alive) return;
+        setTree(result);
+        setSelectedNodeId(result.nodes[0]?.node_id ?? null);
+        setState("ready");
+      })
+      .catch((error) => {
+        if (!alive || controller.signal.aborted) return;
+        setState("error");
+        setMessage(error instanceof ApiError ? error.message : "Không tải được cây v2.");
+      });
+    return () => {
+      alive = false;
+      controller.abort();
+    };
+  }, [doc.id, doc.structure_status, ticker]);
+
+  React.useEffect(() => {
+    if (!ticker || !selectedNodeId) {
+      setContent(null);
+      return;
+    }
+    let alive = true;
+    const controller = new AbortController();
+    api
+      .getDocumentNodeContentByTicker(ticker, doc.id, selectedNodeId, controller.signal)
+      .then((result) => alive && setContent(result))
+      .catch(() => alive && setContent(null));
+    return () => {
+      alive = false;
+      controller.abort();
+    };
+  }, [doc.id, selectedNodeId, ticker]);
+
+  if (state === "loading") {
+    return (
+      <div className="grid flex-1 place-items-center rounded-md border">
+        <Spinner />
+      </div>
+    );
+  }
+  if (state === "none" || state === "error") {
+    return (
+      <p className={cn(
+        "rounded-md px-3 py-6 text-center text-sm",
+        state === "error" ? "bg-destructive/10 text-destructive" : "border border-dashed text-muted-foreground",
+      )}>
+        {message || "Cây v2 chưa khả dụng."}
+      </p>
+    );
+  }
+
+  return (
+    <div className="grid min-h-0 flex-1 gap-3 md:grid-cols-[minmax(220px,0.9fr)_minmax(0,1.1fr)]">
+      <div className="min-h-0 overflow-auto rounded-md border">
+        <div className="sticky top-0 border-b bg-background px-3 py-2 text-xs text-muted-foreground">
+          {tree?.nodes.length ?? 0} nodes · coverage {formatCoverage(tree?.coverage) ?? "n/a"}
+        </div>
+        <div className="p-1.5">
+          {tree?.nodes.map((node) => (
+            <button
+              key={node.node_id}
+              type="button"
+              onClick={() => setSelectedNodeId(node.node_id)}
+              className={cn(
+                "block w-full rounded px-2 py-1.5 text-left text-xs hover:bg-muted",
+                selectedNodeId === node.node_id && "bg-muted text-foreground",
+              )}
+              style={{ paddingLeft: `${Math.min(32, Math.max(0, node.level - 1) * 10 + 8)}px` }}
+              title={`${node.start_line}-${node.end_line}`}
+            >
+              <span className="line-clamp-2">{node.heading || "(root)"}</span>
+              <span className="text-[10px] text-muted-foreground">
+                L{node.start_line}-{node.end_line}
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="min-h-0 overflow-auto rounded-md border bg-muted/20 p-3">
+        <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+          <span>{ticker}</span>
+          <span>·</span>
+          <span>{doc.doc_role ?? tree?.doc_role ?? "NO_ROLE"}</span>
+          {content && (
+            <>
+              <span>·</span>
+              <span>L{content.start_line}-{content.end_line}</span>
+              <span>·</span>
+              <span>{shortHash(content.content_hash)}</span>
+            </>
+          )}
+        </div>
+        {content ? (
+          <TextBody text={content.content} mode="md" />
+        ) : (
+          <p className="text-sm text-muted-foreground">Chọn một node để hydrate nội dung nguyên văn.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DocumentPreview({ doc, ticker }: { doc: Doc; ticker: string | null }) {
   const t = useTranslations("DetailPanel");
-  const [previewMode, setPreviewMode] = React.useState<"parsed" | "original">(
+  const [previewMode, setPreviewMode] = React.useState<"parsed" | "original" | "tree">(
     doc.status === "ready" ? "parsed" : "original",
   );
 
   return (
     <Tabs
       value={previewMode}
-      onValueChange={(value) => setPreviewMode(value as "parsed" | "original")}
+      onValueChange={(value) => setPreviewMode(value as "parsed" | "original" | "tree")}
       className="flex min-h-0 flex-1 flex-col"
     >
-      <TabsList className="grid w-full grid-cols-2">
+      <TabsList className="grid w-full grid-cols-3">
         <TabsTrigger value="parsed">{t("tabs.parsed")}</TabsTrigger>
+        <TabsTrigger value="tree">Tree v2</TabsTrigger>
         <TabsTrigger value="original">{t("tabs.original")}</TabsTrigger>
       </TabsList>
       <TabsContent
@@ -548,6 +710,12 @@ function DocumentPreview({ doc }: { doc: Doc }) {
         className="mt-2 min-h-0 flex-1 data-[state=active]:flex data-[state=active]:flex-col"
       >
         <ParsedDocumentPreview doc={doc} />
+      </TabsContent>
+      <TabsContent
+        value="tree"
+        className="mt-2 min-h-0 flex-1 data-[state=active]:flex data-[state=active]:flex-col"
+      >
+        <DocumentV2Tree doc={doc} ticker={ticker} />
       </TabsContent>
       <TabsContent
         value="original"
@@ -571,16 +739,24 @@ export function DocumentDetailContent({
   const locale = useLocale();
   const t = useTranslations("DetailPanel");
   const [doc, setDoc] = React.useState<Doc | null>(null);
+  const [source, setSource] = React.useState<Source | null>(null);
   const [error, setError] = React.useState("");
   const { timezone } = useApp();
 
   React.useEffect(() => {
     let alive = true;
     setDoc(null);
+    setSource(null);
     setError("");
-    api
-      .getDocument(sourceId, documentId)
-      .then((d) => alive && setDoc(d))
+    Promise.all([
+      api.getDocument(sourceId, documentId),
+      api.getSource(sourceId).catch(() => null),
+    ])
+      .then(([d, s]) => {
+        if (!alive) return;
+        setDoc(d);
+        setSource(s);
+      })
       .catch((e) => alive && setError(e instanceof ApiError ? e.message : t("document.loadFailed")));
     return () => {
       alive = false;
@@ -598,6 +774,8 @@ export function DocumentDetailContent({
       </div>
     );
   }
+  const ticker = tickerFromSource(source);
+  const coverage = formatCoverage(doc.coverage);
   return (
     <TooltipProvider delayDuration={300}>
       <div className={cn("flex min-h-0 flex-1 flex-col", compact ? "gap-3" : "gap-4")}>
@@ -630,13 +808,38 @@ export function DocumentDetailContent({
             <span>·</span>
             <span>{relativeTime(doc.created_at, timezone, locale)}</span>
           </div>
+          {(doc.doc_role || doc.processing_version || doc.structure_status || doc.extraction_status || doc.embedding_status || doc.fact_count || coverage || doc.content_sha256) && (
+            <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+              {ticker && <span className="rounded bg-muted px-1.5 py-0.5">ticker {ticker}</span>}
+              {doc.doc_role && <span className="rounded bg-muted px-1.5 py-0.5">{doc.doc_role}</span>}
+              {doc.processing_version != null && (
+                <span className="rounded bg-muted px-1.5 py-0.5">pv{doc.processing_version}</span>
+              )}
+              {doc.structure_status && (
+                <span className="rounded bg-muted px-1.5 py-0.5">structure {doc.structure_status}</span>
+              )}
+              {doc.extraction_status && (
+                <span className="rounded bg-muted px-1.5 py-0.5">extraction {doc.extraction_status}</span>
+              )}
+              {doc.embedding_status && (
+                <span className="rounded bg-muted px-1.5 py-0.5">embedding {doc.embedding_status}</span>
+              )}
+              {doc.fact_count != null && (
+                <span className="rounded bg-muted px-1.5 py-0.5">facts {doc.fact_count}</span>
+              )}
+              {coverage && <span className="rounded bg-muted px-1.5 py-0.5">coverage {coverage}</span>}
+              {doc.content_sha256 && (
+                <span className="rounded bg-muted px-1.5 py-0.5">sha {shortHash(doc.content_sha256)}</span>
+              )}
+            </div>
+          )}
           {doc.error && (
             <p className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
               {doc.error}
             </p>
           )}
         </div>
-        <DocumentPreview doc={doc} />
+        <DocumentPreview doc={doc} ticker={ticker} />
       </div>
     </TooltipProvider>
   );

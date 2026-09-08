@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS universe_securities (
     universe_group VARCHAR(16) NOT NULL,
     trading_status VARCHAR(16) NOT NULL,
     beneish_status VARCHAR(16) NOT NULL,
-    gil_flag VARCHAR(16) NOT NULL,
+    gil_flag VARCHAR(32) NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS moat_profiles (
     ticker VARCHAR(16) PRIMARY KEY,
     fiscal_year INTEGER NOT NULL DEFAULT 2025,
     report_type VARCHAR(32) NOT NULL DEFAULT 'ANNUAL_REPORT',
-    moat_score NUMERIC(6,2) NOT NULL,
+    moat_score NUMERIC(6,2),
     intangibles_score NUMERIC(6,2),
     switching_costs_score NUMERIC(6,2),
     network_effect_score NUMERIC(6,2),
@@ -458,4 +458,3 @@ CREATE TABLE IF NOT EXISTS bctc_pipeline_records (
 CREATE INDEX IF NOT EXISTS idx_bctc_pipeline_ticker ON bctc_pipeline_records(ticker, fiscal_year, fiscal_quarter);
 CREATE INDEX IF NOT EXISTS idx_bctc_pipeline_flags ON bctc_pipeline_records(is_classified, r2_pdf_uploaded, is_ocr_completed);
 CREATE INDEX IF NOT EXISTS idx_bctc_pipeline_sag_active ON bctc_pipeline_records(ticker, is_active_for_sag);
-

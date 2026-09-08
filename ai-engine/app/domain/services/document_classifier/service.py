@@ -53,7 +53,17 @@ class DocumentClassifierService:
         """Quy trình trọn gói xử lý BCTC."""
         ticker = ticker.upper().strip()
         scope = scope.upper().strip()
-        q_label = f"Q{quarter}" if str(quarter).isdigit() else str(quarter).upper()
+        q_clean = str(quarter).upper().strip() if quarter is not None else ""
+        if q_clean in ("YEAR", "ANNUAL", "FY", "0") or quarter == 0:
+            q_label = "YEAR"
+        elif q_clean in ("6M", "H1", "6") or quarter == 6:
+            q_label = "6M"
+        elif q_clean.isdigit():
+            q_label = f"Q{q_clean}"
+        elif q_clean.startswith("Q"):
+            q_label = q_clean
+        else:
+            q_label = q_clean or "YEAR"
         pdf_path = Path(pdf_path)
 
         if not pdf_path.is_file():
@@ -101,7 +111,7 @@ class DocumentClassifierService:
         self.repo.save_classification_result(
             ticker=ticker,
             year=year,
-            quarter=int(quarter) if str(quarter).isdigit() else 4,
+            quarter=quarter,
             scope=scope,
             total_raw_pages=result.total_pages,
             retained_pages=result.retained_pages_count,

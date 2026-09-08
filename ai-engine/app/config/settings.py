@@ -28,6 +28,8 @@ class Settings:
     llm_api_key: str
     llm_provider: str
     evomap_api_key: str
+    sag_api_base: str
+    sag_service_token: str
 
     # AI Multi-Model Configuration
     llm_nvidia_key: str
@@ -66,6 +68,8 @@ def get_settings() -> Settings:
         llm_api_key=os.getenv("LLM_API_KEY", ""),
         llm_provider=os.getenv("LLM_PROVIDER", "openai"),
         evomap_api_key=os.getenv("EVOMAP_API_KEY", ""),
+        sag_api_base=os.getenv("SAG_API_BASE", "http://localhost:8000/api/v2"),
+        sag_service_token=os.getenv("SAG_SERVICE_TOKEN", ""),
         
         # AI Multi-Model env loaders (supports standard names and shorthand variables)
         llm_nvidia_key=os.getenv("NVDIA", os.getenv("NVIDIA_API_KEY", "")),
@@ -131,4 +135,4 @@ def get_async_evomap_client():
         base_url="https://api.evomap.ai/v1",
         api_key=key,
     )
-
+

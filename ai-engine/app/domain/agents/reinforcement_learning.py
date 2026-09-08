@@ -245,14 +245,23 @@ class ReinforcementLearningAgent(BaseAgent):
         # Đọc danh sách hồ sơ Moat từ CSDL nếu không truyền trong event
         if not moat_inputs:
             try:
-                rows_moat = self.storage.fetch_all("SELECT ticker, moat_score, evidence_summary FROM moat_profiles LIMIT 30")
+                rows_moat = self.storage.fetch_all(
+                    "SELECT ticker, moat_score, evidence_summary, assessment_status FROM moat_profiles LIMIT 30"
+                )
                 for r in rows_moat:
-                    moat_inputs[str(r[0])] = {"moat_score": float(r[1] or 50.0), "financial_ratios": {}}
+                    if r[1] is not None and str(r[3] or "").upper() == "COMPLETE":
+                        moat_inputs[str(r[0])] = {"moat_score": float(r[1]), "financial_ratios": {}}
             except Exception:
                 pass
 
         for m_ticker, m_info in moat_inputs.items():
-            llm_score = float(m_info.get("moat_score", 50.0))
+            if m_info.get("moat_score") is None:
+                moat_calibrations[m_ticker] = {
+                    "status": "DATA_INSUFFICIENT",
+                    "reason": "SAG moat_score is null or assessment is not COMPLETE",
+                }
+                continue
+            llm_score = float(m_info["moat_score"])
             fin_ratios = m_info.get("financial_ratios", {})
             calib_res = self.moat_calibrator.evaluate_moat(m_ticker, llm_score, fin_ratios)
             moat_calibrations[m_ticker] = {

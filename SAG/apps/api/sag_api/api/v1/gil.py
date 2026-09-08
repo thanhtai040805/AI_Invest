@@ -50,17 +50,13 @@ async def evaluate_source_gil(
         event_limit=2_000,
         entity_limit=2_000,
     )
-    nodes = [{"id": e.id, "name": e.name, "entity_type": e.type} for e in source_graph.entities]
-    edges = [
-        {
-            "source": r.source_id,
-            "target": r.target_id,
-            "relation_type": r.description or r.kind,
-            "amount_vnd": r.weight if r.weight > 1.0 else 0.0,
-        }
-        for r in source_graph.relations
-    ]
-    analyzer = GILGraphAnalyzer(ticker=source.name or source.id, equity_vnd=equity_vnd)
-    analyzer.build_graph(nodes, edges)
+    ticker = source.name or source.id
+    analyzer = GILGraphAnalyzer(ticker=ticker, equity_vnd=equity_vnd)
+    analyzer.build_from_source_graph(
+        entities=source_graph.entities,
+        events=source_graph.events,
+        associations=source_graph.relations,
+        default_ticker=ticker,
+    )
     result = analyzer.evaluate()
     return result.to_dict()

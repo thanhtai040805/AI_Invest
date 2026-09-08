@@ -48,7 +48,7 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 from app.domain.services.document_selector import ActiveDocumentSelector, TickerDocumentSet
-from app.domain.services.bctc_to_sag_pipeline import BctcToSagPipeline
+from app.domain.pipeline.bctc_to_sag_pipeline import BctcToSagPipeline
 from app.adapters.sag_connector import sag_connector
 from app.domain.repositories.universe_repository import UniverseRepository
 

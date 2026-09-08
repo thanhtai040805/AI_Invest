@@ -18,7 +18,7 @@ function SearchPageContent() {
       initialQuery={params.get("q")?.trim() ?? ""}
       initialSourceId={params.get("source")}
       showCancel
-      onCancel={() => (window.history.length > 1 ? router.back() : router.push("/chat"))}
+      onCancel={() => (window.history.length > 1 ? router.back() : router.push("/knowledge"))}
     />
   );
 }

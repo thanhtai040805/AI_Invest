@@ -20,6 +20,13 @@ import { useApp } from "@/components/features/app-shell";
 import { DocumentActivityBadge } from "@/components/features/status-badge";
 import { Button } from "@/components/ui/button";
 
+function formatCoverage(value?: number | { coverage_ratio?: number } | null): string | null {
+  const raw = typeof value === "number" ? value : value?.coverage_ratio;
+  if (raw == null || !Number.isFinite(raw)) return null;
+  const normalized = raw <= 1 ? raw * 100 : raw;
+  return `${Math.max(0, Math.min(100, normalized)).toFixed(0)}%`;
+}
+
 export function DocumentList({
   sourceId,
   documents,
@@ -161,6 +168,12 @@ export function DocumentList({
                     {document.filename}
                   </div>
                   <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 text-[11px] text-muted-foreground">
+                    {document.doc_role && (
+                      <>
+                        <span>{document.doc_role}</span>
+                        <span>·</span>
+                      </>
+                    )}
                     <span>{formatBytes(document.size_bytes, locale)}</span>
                     <span>·</span>
                     <span>{relativeTime(document.created_at, timezone, locale)}</span>
@@ -168,6 +181,12 @@ export function DocumentList({
                     <span>{activity.progress}%</span>
                     <span>·</span>
                     <span>{t("tokens", { count: formatTokenCount(document.token_usage, locale) })}</span>
+                    {document.fact_count != null && (
+                      <>
+                        <span>·</span>
+                        <span>{document.fact_count} facts</span>
+                      </>
+                    )}
                   </div>
                   {activity.error && (
                     <p className="mt-0.5 truncate text-[11px] text-destructive" title={activity.error}>
@@ -219,6 +238,12 @@ export function DocumentList({
                 {document.filename}
               </div>
               <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+                {document.doc_role && (
+                  <>
+                    <span>{document.doc_role}</span>
+                    <span>·</span>
+                  </>
+                )}
                 <span>{formatBytes(document.size_bytes, locale)}</span>
                 <span>·</span>
                 <span>{relativeTime(document.created_at, timezone, locale)}</span>
@@ -238,6 +263,19 @@ export function DocumentList({
                   {activity.progress}% ·{" "}
                   {t("tokens", { count: formatTokenCount(document.token_usage, locale) })}
                 </span>
+                {(document.structure_status || document.extraction_status || document.embedding_status || document.fact_count != null || document.coverage != null) && (
+                  <>
+                    <span>·</span>
+                    <span>
+                      v{document.processing_version ?? 1}
+                      {document.structure_status ? ` · structure ${document.structure_status}` : ""}
+                      {document.extraction_status ? ` · extraction ${document.extraction_status}` : ""}
+                      {document.embedding_status ? ` · embedding ${document.embedding_status}` : ""}
+                      {document.fact_count != null ? ` · ${document.fact_count} facts` : ""}
+                      {document.coverage != null ? ` · coverage ${formatCoverage(document.coverage)}` : ""}
+                    </span>
+                  </>
+                )}
                 {activity.error && (
                   <>
                     <span>·</span>

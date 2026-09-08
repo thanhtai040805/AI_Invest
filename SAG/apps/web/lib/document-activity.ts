@@ -31,7 +31,12 @@ export interface DocumentActivity {
 }
 
 export type DocumentActivityLabelKey =
-  | DocumentStatus
+  | "pending"
+  | "loading"
+  | "extracting"
+  | "paused"
+  | "ready"
+  | "failed"
   | "requeueing"
   | "pausing"
   | "resuming"
@@ -39,6 +44,8 @@ export type DocumentActivityLabelKey =
   | "waitingRetry";
 
 const PROCESSING_STATES = new Set<DocumentStatus>([
+  "QUEUED",
+  "PROCESSING",
   "pending",
   "loading",
   "extracting",
@@ -52,11 +59,16 @@ function clampProgress(value: number) {
 export function documentActivityLabelKey(
   phase: DocumentActivityPhase,
 ): DocumentActivityLabelKey {
+  if (phase === "QUEUED") return "pending";
+  if (phase === "PROCESSING") return "extracting";
+  if (phase === "READY") return "ready";
+  if (phase === "FAILED") return "failed";
+  if (phase === "CANCELLED") return "paused";
   return phase === "waiting-retry" ? "waitingRetry" : phase;
 }
 
 export function documentActivityShowsProgress(phase: DocumentActivityPhase) {
-  return phase !== "ready" && phase !== "deleting";
+  return phase !== "ready" && phase !== "READY" && phase !== "deleting";
 }
 
 export function beginDocumentMutation(
@@ -132,7 +144,7 @@ export function failedPollingDeadline(
   next: DocumentStatus,
   now = Date.now(),
 ) {
-  return previous && PROCESSING_STATES.has(previous) && next === "failed"
+  return previous && PROCESSING_STATES.has(previous) && (next === "failed" || next === "FAILED")
     ? now + FAILED_POLLING_WINDOW_MS
     : undefined;
 }
@@ -145,7 +157,9 @@ export function shouldPollDocument(
 ) {
   if (mutation && shouldKeepDocumentMutation(document, mutation)) return true;
   if (PROCESSING_STATES.has(document.status)) return true;
-  return document.status === "failed" && typeof failedUntil === "number" && failedUntil > now;
+  return (document.status === "failed" || document.status === "FAILED")
+    && typeof failedUntil === "number"
+    && failedUntil > now;
 }
 
 export function deriveDocumentActivity(

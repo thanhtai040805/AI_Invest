@@ -12,9 +12,9 @@ const nextConfig = {
   async redirects() {
     // Dạng client v0.3: route cũ → IA mới
     return [
-      { source: "/overview", destination: "/chat", permanent: false },
-      { source: "/assistants", destination: "/chat", permanent: false },
-      { source: "/assistants/:id", destination: "/chat", permanent: false },
+      { source: "/overview", destination: "/knowledge", permanent: false },
+      { source: "/assistants", destination: "/knowledge", permanent: false },
+      { source: "/assistants/:id", destination: "/knowledge", permanent: false },
       { source: "/sources", destination: "/knowledge", permanent: false },
       { source: "/sources/:id", destination: "/knowledge/:id", permanent: false },
     ];

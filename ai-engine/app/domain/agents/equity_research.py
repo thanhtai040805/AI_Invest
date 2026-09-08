@@ -27,6 +27,16 @@ from app.domain.rules.market.hmm_classifier import MarketRegime
 logger = logging.getLogger(__name__)
 
 
+def _pillar_score(moat_result: Dict[str, Any], pillar: str) -> Optional[float]:
+    pillars = moat_result.get("pillars")
+    if not isinstance(pillars, dict):
+        return None
+    payload = pillars.get(pillar)
+    if not isinstance(payload, dict) or payload.get("score") is None:
+        return None
+    return float(payload["score"])
+
+
 class EquityResearchAgent(BaseAgent):
     """
     AGENT-03: Chuyên viên Nghiên cứu & Định giá Cổ phiếu.
@@ -92,13 +102,14 @@ class EquityResearchAgent(BaseAgent):
         # Ưu tiên O(1) từ bảng moat_profiles trong CSDL; nếu chưa có, gọi SAG Moat AI
         # =========================================================================
         evidence_quote = ""
-        moat_score = 65.0
+        moat_score: float | None = None
         moat_multiplier = 1.0
-        moat_source = "DEFAULT"
+        moat_source = "DATA_INSUFFICIENT"
 
         cached_moat = self.intel_repo.get_moat_profile(ticker)
-        if cached_moat and not cached_moat.get("is_stale", False) and float(cached_moat.get("moat_score", 0.0)) > 0:
-            moat_score = float(cached_moat["moat_score"])
+        cached_score = cached_moat.get("moat_score") if cached_moat else None
+        if cached_moat and not cached_moat.get("is_stale", False) and cached_score is not None:
+            moat_score = float(cached_score)
             moat_multiplier = float(cached_moat.get("multiplier", 1.0))
             evidence_summary = cached_moat.get("evidence_summary") or {}
             evidence_quote = evidence_summary.get("evidence_quote", "")
@@ -106,43 +117,43 @@ class EquityResearchAgent(BaseAgent):
         else:
             try:
                 moat_result = await sag_connector.get_moat_assessment(ticker, sector)
-                moat_score = float(moat_result.get("moat_score", 70.0))
-                moat_multiplier = float(moat_result.get("multiplier", 1.0))
-                evidence_quote = str(moat_result.get("evidence_quote", ""))
-                moat_source = "SAG_FAST_MCP_RAG"
+                result_score = moat_result.get("moat_score")
+                if result_score is not None and moat_result.get("assessment_status") == "COMPLETE":
+                    moat_score = float(result_score)
+                    moat_multiplier = float(moat_result.get("multiplier") or 1.0)
+                    evidence_quote = str(moat_result.get("evidence_quote", ""))
+                    moat_source = "SAG_V2_EVIDENCE_GRAPH"
 
-                # Lưu vào bảng moat_profiles để tái sử dụng O(1)
-                self.intel_repo.save_moat_profile({
-                    "ticker": ticker,
-                    "moat_score": moat_score,
-                    "intangibles_score": moat_result.get("intangibles_score", 18.0),
-                    "switching_costs_score": moat_result.get("switching_costs_score", 18.0),
-                    "network_effect_score": moat_result.get("network_effect_score", 14.0),
-                    "cost_advantage_score": moat_result.get("cost_advantage_score", 13.0),
-                    "efficient_scale_score": moat_result.get("efficient_scale_score", 12.0),
-                    "evidence_summary": {"evidence_quote": evidence_quote},
-                    "source_sag_doc_id": moat_result.get("source_sag_doc_id"),
-                })
+                    self.intel_repo.save_moat_profile({
+                        "ticker": ticker,
+                        "moat_score": moat_score,
+                        "intangibles_score": _pillar_score(moat_result, "Intangibles"),
+                        "switching_costs_score": _pillar_score(moat_result, "Switching Costs"),
+                        "network_effect_score": _pillar_score(moat_result, "Network Effects"),
+                        "cost_advantage_score": _pillar_score(moat_result, "Cost Advantage"),
+                        "efficient_scale_score": _pillar_score(moat_result, "Efficient Scale"),
+                        "evidence_summary": {
+                            "assessment_status": moat_result.get("assessment_status"),
+                            "coverage_ratio": moat_result.get("coverage_ratio"),
+                            "pillars": moat_result.get("pillars", {}),
+                        },
+                        "source_sag_doc_id": moat_result.get("source_sag_doc_id"),
+                    })
+                else:
+                    moat_source = f"SAG_V2_{moat_result.get('assessment_status', 'INSUFFICIENT')}"
             except Exception as e:
                 logger.warning(f"SAG Moat AI query failed for {ticker}: {e}")
-                if cached_moat:
-                    moat_score = float(cached_moat.get("moat_score", 65.0))
-                    moat_multiplier = float(cached_moat.get("multiplier", 1.0))
-                    moat_source = "POSTGRES_FALLBACK"
-                else:
-                    moat_score = 65.0
-                    moat_multiplier = 1.0
-                    moat_source = "DEFAULT_FALLBACK"
+                moat_source = "SAG_V2_UNAVAILABLE"
 
         # Hiệu chuẩn Moat từ Agent-10 (Triệt tiêu Ảo giác Moat AI)
         data_quality_flag = "VERIFIED"
         moat_calibrations = event_data.get("moat_calibrations", {})
         if ticker in moat_calibrations:
             m_calib = moat_calibrations[ticker]
-            moat_score = float(m_calib.get("calibrated_moat_score", moat_score))
+            moat_score = float(m_calib["calibrated_moat_score"]) if m_calib.get("calibrated_moat_score") is not None else moat_score
             moat_multiplier = float(m_calib.get("calibrated_multiplier", moat_multiplier))
             data_quality_flag = f"MOAT_CALIBRATED_AGENT10_{m_calib.get('hallucination_risk', 'NORMAL')}"
-        else:
+        elif moat_score is not None:
             try:
                 storage = PostgresAdapter()
                 rows_flag = storage.fetch_all(
@@ -157,7 +168,7 @@ class EquityResearchAgent(BaseAgent):
                 if rows_flag and rows_flag[0][0] is not None:
                     calib_score = float(rows_flag[0][0])
                     meta = rows_flag[0][1] if isinstance(rows_flag[0][1], dict) else {}
-                    if calib_score < moat_score:
+                    if moat_score is not None and calib_score < moat_score:
                         moat_score = calib_score
                         moat_multiplier = float(meta.get("calibrated_multiplier", 0.70))
                         data_quality_flag = f"MOAT_CALIBRATED_DB_{meta.get('hallucination_risk', 'CRITICAL')}"
@@ -173,7 +184,7 @@ class EquityResearchAgent(BaseAgent):
 
         if factor_overrides:
             f1_value = float(factor_overrides.get("f1_value", 65.0))
-            f2_quality = float(factor_overrides.get("f2_quality", (0.5 * 70.0 + 0.5 * moat_score)))
+            f2_quality = float(factor_overrides.get("f2_quality", 65.0))
             f3_momentum = float(factor_overrides.get("f3_momentum", 65.0))
             f4_earnings = float(factor_overrides.get("f4_earnings", 65.0))
             f5_flow = float(factor_overrides.get("f5_flow", 65.0))
@@ -207,7 +218,7 @@ class EquityResearchAgent(BaseAgent):
                 f1_value = float(computed.get("f1_value", 50.0))
                 base_f2 = float(computed.get("f2_quality", 50.0))
                 # Tích hợp Moat vào F2 Quality theo rubric chuẩn IOS v5.1
-                f2_quality = round(0.5 * base_f2 + 0.5 * moat_score, 2)
+                f2_quality = round(0.5 * base_f2 + 0.5 * moat_score, 2) if moat_score is not None else base_f2
                 f3_momentum = float(computed.get("f3_momentum", 50.0))
                 f4_earnings = float(computed.get("f4_earnings", 50.0))
                 f5_flow = float(computed.get("f5_flow", 50.0))
@@ -279,7 +290,7 @@ class EquityResearchAgent(BaseAgent):
             "f6_technical": f6_technical,
             "moat_multiplier": moat_multiplier,
             "audit_opinion": event_data.get("audit_opinion", "UNQUALIFIED"),
-            "gil_flag": event_data.get("gil_flag", "PASS"),
+            "gil_flag": event_data.get("gil_flag") or "DATA_INSUFFICIENT",
         }])
 
         df_scored = self.scoring_engine.calculate_css(
@@ -304,7 +315,7 @@ class EquityResearchAgent(BaseAgent):
             "f4_earnings": round(f4_earnings, 2),
             "f5_flow": round(f5_flow, 2),
             "f6_technical": round(f6_technical, 2),
-            "moat_score": round(moat_score, 2),
+            "moat_score": round(moat_score, 2) if moat_score is not None else None,
             "moat_multiplier": round(moat_multiplier, 2),
             "base_css": round(base_css, 2),
             "css": round(css, 2),

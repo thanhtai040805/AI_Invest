@@ -209,13 +209,13 @@ class CounterThesisEngine:
         """Phân loại phán quyết cuối cùng và sinh ràng buộc thực thi."""
         block_reasons = []
 
-        # Hard Law: GIL CATASTROPHIC hoặc DATA_ERROR (Mục Failure Modes IOS v5.1)
+        # Hard Law: GIL CATASTROPHIC hoặc thiếu dữ liệu GIL đã xác minh.
         gil_clean = str(gil_flag).upper().strip()
         if gil_clean == "CATASTROPHIC":
             block_reasons.append("Hard Law Veto: Phát hiện rủi ro sở hữu chéo và kiệt quệ tài chính GIL CATASTROPHIC.")
             return Verdict.BLOCK, block_reasons, None
-        elif gil_clean == "DATA_ERROR":
-            block_reasons.append("Hard Law Veto: Lỗi dữ liệu đồ thị sở hữu chéo (GIL) từ SAG Backend -> Default BLOCK theo Hiến pháp IOS v5.1.")
+        elif gil_clean in {"DATA_ERROR", "DATA_INSUFFICIENT"}:
+            block_reasons.append("Hard Law Veto: Dữ liệu đồ thị sở hữu chéo (GIL) chưa đủ evidence từ SAG Backend.")
             return Verdict.BLOCK, block_reasons, None
 
         if final_cts > 60.0:

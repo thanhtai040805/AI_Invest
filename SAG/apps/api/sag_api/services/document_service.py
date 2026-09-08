@@ -9,10 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.core.errors import ConflictError, NotFoundError
 from sag_api.db.base import new_id
-from sag_api.db.models import Document, Job, Source
+from sag_api.db.models import Document, DocumentEvidenceChunk, Job, Source
 from sag_api.enums import DocumentStatus, JobStatus, JobType
 from sag_api.jobs import JobQueue
 from sag_api.sag import EngineManager
+from sag_api.services.document_structure_service import normalize_doc_role, sha256_text
 
 
 async def list_documents(session: AsyncSession, source_id: str) -> list[Document]:
@@ -42,7 +43,25 @@ async def create_document_from_upload(
     is_active: bool = True,
     fiscal_year: int | None = None,
     fiscal_quarter: int | None = None,
-) -> tuple[Document, Job]:
+) -> tuple[Document, Job | None]:
+    normalized_role = normalize_doc_role(doc_role)
+    content_sha256 = sha256_text(data)
+    if normalized_role:
+        existing = await session.scalar(
+            select(Document)
+            .where(
+                Document.source_id == source.id,
+                Document.doc_role == normalized_role,
+                Document.content_sha256 == content_sha256,
+            )
+            .order_by(Document.created_at.desc())
+            .limit(1)
+        )
+        if existing is not None:
+            if is_active and existing.status == DocumentStatus.READY:
+                await activate_document_version(session, source.id, existing)
+            return existing, None
+
     doc_id = new_id()
     safe_name = os.path.basename(filename) or "upload"
     dest_dir = os.path.join(upload_dir, source.id)
@@ -59,10 +78,13 @@ async def create_document_from_upload(
         size_bytes=len(data),
         storage_path=storage_path,
         status=DocumentStatus.PENDING,
-        doc_role=doc_role,
-        is_active=is_active,
+        doc_role=normalized_role,
+        is_active=False if normalized_role in {"ANNUAL_BACKBONE", "LATEST_QUARTER", "GOVERNANCE_REPORT"} else is_active,
+        activation_requested=is_active,
         fiscal_year=fiscal_year,
         fiscal_quarter=fiscal_quarter,
+        content_sha256=content_sha256,
+        processing_version=2,
     )
     session.add(document)
     await session.execute(
@@ -79,21 +101,57 @@ async def create_document_from_upload(
     await session.refresh(document)
     await session.refresh(job)
 
-    # Nếu đây là LATEST_QUARTER mới, tự động chuyển các quý trước thành ARCHIVED
-    if doc_role == "LATEST_QUARTER":
-        await session.execute(
-            update(Document)
-            .where(
-                Document.source_id == source.id,
-                Document.doc_role == "LATEST_QUARTER",
-                Document.id != doc_id,
-            )
-            .values(doc_role="ARCHIVED", is_active=False)
-        )
-        await session.commit()
-
     await job_queue.enqueue(job.id)
     return document, job
+
+
+async def activate_document_version(session: AsyncSession, source_id: str, document: Document) -> None:
+    role = normalize_doc_role(document.doc_role)
+    if role not in {"ANNUAL_BACKBONE", "LATEST_QUARTER", "GOVERNANCE_REPORT"}:
+        document.is_active = bool(document.activation_requested)
+        await session.execute(
+            update(DocumentEvidenceChunk)
+            .where(DocumentEvidenceChunk.document_id == document.id)
+            .values(active_version=document.is_active)
+        )
+        await session.commit()
+        return
+    old_ids = [
+        row[0]
+        for row in (
+            await session.execute(
+                select(Document.id).where(
+                    Document.source_id == source_id,
+                    Document.doc_role == role,
+                    Document.id != document.id,
+                )
+            )
+        ).all()
+    ]
+    await session.execute(
+        update(Document)
+        .where(
+            Document.source_id == source_id,
+            Document.doc_role == role,
+            Document.id != document.id,
+        )
+        .values(doc_role="ARCHIVED", is_active=False, activation_requested=False)
+    )
+    if old_ids:
+        await session.execute(
+            update(DocumentEvidenceChunk)
+            .where(DocumentEvidenceChunk.document_id.in_(old_ids))
+            .values(doc_role="ARCHIVED", active_version=False)
+        )
+    document.doc_role = role
+    document.is_active = True
+    document.activation_requested = True
+    await session.execute(
+        update(DocumentEvidenceChunk)
+        .where(DocumentEvidenceChunk.document_id == document.id)
+        .values(doc_role=role, active_version=True)
+    )
+    await session.commit()
 
 
 def _format_messages(messages: list[dict]) -> str:

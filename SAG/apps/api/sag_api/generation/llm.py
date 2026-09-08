@@ -11,6 +11,7 @@ import asyncio
 import inspect
 import json
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Any
 
 from sag_agent import CancellationToken, ModelChunk, ModelRequest, Usage
@@ -29,6 +30,13 @@ from sag_api.core.logging import get_logger
 log = get_logger("generation")
 
 Message = dict[str, Any]
+
+
+@dataclass(frozen=True)
+class CompletionResult:
+    content: str
+    finish_reason: str | None = None
+    usage: Usage | None = None
 
 
 async def _litellm_completion(**kwargs: Any) -> Any:
@@ -97,6 +105,10 @@ class LLMClient:
     def configured(self) -> bool:
         return bool(self._settings.effective_agent_llm_api_key or self._settings.llm_api_key)
 
+    @property
+    def extraction_configured(self) -> bool:
+        return bool(self._settings.effective_extraction_llm_api_key)
+
     def _ensure_configured(self) -> None:
         if not self.configured:
             raise ConfigurationError("Chưa cấu hình LLM（SAG_LLM_PROVIDER / SAG_LLM_API_KEY / SAG_LLM_MODEL）")
@@ -108,10 +120,12 @@ class LLMClient:
         stream: bool = False,
         tools: list[dict] | None = None,
         tool_choice: str | dict | None = None,
+        extraction: bool = False,
+        response_format: dict[str, Any] | None = None,
     ) -> Any:
         request: dict[str, Any] = {
-            "model": self._settings.routed_agent_llm_model,
-            "api_key": self._settings.effective_agent_llm_api_key,
+            "model": self._settings.routed_extraction_llm_model if extraction else self._settings.routed_agent_llm_model,
+            "api_key": self._settings.effective_extraction_llm_api_key if extraction else self._settings.effective_agent_llm_api_key,
             "timeout": self._settings.llm_timeout_ms / 1000,
             "num_retries": self._settings.llm_max_retries,
             "messages": messages,
@@ -123,10 +137,27 @@ class LLMClient:
             request["tools"] = tools
             if tool_choice is not None:
                 request["tool_choice"] = tool_choice
-        if self._settings.effective_agent_llm_base_url:
-            request["api_base"] = self._settings.effective_agent_llm_base_url
+        if response_format is not None:
+            request["response_format"] = response_format
+        api_base = self._settings.effective_extraction_llm_base_url if extraction else self._settings.effective_agent_llm_base_url
+        if api_base:
+            request["api_base"] = api_base
         request = apply_litellm_completion_policy(self._settings, request)
         return await _litellm_completion(**request)
+
+    @staticmethod
+    def _usage_from_response(resp: Any) -> Usage | None:
+        raw_usage = _attr(resp, "usage")
+        if raw_usage is None:
+            return None
+        prompt_details = _attr(raw_usage, "prompt_tokens_details")
+        completion_details = _attr(raw_usage, "completion_tokens_details")
+        return Usage(
+            input_tokens=int(_attr(raw_usage, "prompt_tokens", 0) or 0),
+            output_tokens=int(_attr(raw_usage, "completion_tokens", 0) or 0),
+            cached_tokens=int(_attr(prompt_details, "cached_tokens", 0) or 0),
+            reasoning_tokens=int(_attr(completion_details, "reasoning_tokens", 0) or 0),
+        )
 
     @staticmethod
     async def _close_stream(stream: Any) -> None:
@@ -254,6 +285,35 @@ class LLMClient:
             raise
         except Exception as e:  # noqa: BLE001
             raise _classify_llm_error(e, stage=ErrorStage.GENERATE) from e
+
+    async def complete_extraction_json(self, messages: list[Message]) -> CompletionResult:
+        if not self.extraction_configured:
+            raise ConfigurationError("Chưa cấu hình LLM extraction（SAG_EXTRACTION_LLM_* hoặc SAG_LLM_*）")
+        try:
+            resp = await self._create_completion(
+                messages,
+                extraction=True,
+                response_format={"type": "json_object"},
+            )
+            choices = _attr(resp, "choices", []) or []
+            if not choices:
+                raise UpstreamError(
+                    "Mô hình extraction không trả về ứng viên",
+                    code=ErrorCode.LLM_EMPTY_RESPONSE,
+                    layer=ErrorLayer.LLM,
+                    stage=ErrorStage.EXTRACT,
+                )
+            choice = choices[0]
+            content = _attr(_attr(choice, "message", {}), "content", "") or ""
+            return CompletionResult(
+                content=content,
+                finish_reason=_attr(choice, "finish_reason"),
+                usage=self._usage_from_response(resp),
+            )
+        except ApiError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            raise _classify_llm_error(e, stage=ErrorStage.EXTRACT) from e
 
     async def stream_complete(self, messages: list[Message]) -> AsyncIterator[str]:
         """Stream plain text completion deltas without the Agent/tool protocol."""

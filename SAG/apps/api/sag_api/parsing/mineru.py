@@ -70,7 +70,8 @@ class MinerUClient:
         self._api_key = str(settings.mineru_api_key)
         self._version = settings.mineru_version
         self._parse_method = settings.mineru_parse_method
-        self._language = getattr(settings, "mineru_language", "vi")
+        self._model_version = getattr(settings, "mineru_model_version", "vlm")
+        self._language = getattr(settings, "mineru_language", "latin")
         self._mode = getattr(settings, "mineru_mode", "precision")
         self._layout_model = getattr(settings, "mineru_layout_model", "doclayout_yolo")
         self._enable_table = getattr(settings, "mineru_enable_table", True)
@@ -83,7 +84,7 @@ class MinerUClient:
 
     @property
     def signature(self) -> str:
-        return f"mineru-{self._version}-{self._parse_method}"
+        return f"mineru-{self._version}-{self._parse_method}-{self._model_version}-{self._language}"
 
     def _url(self, path: str) -> str:
         return f"{self._base_url}/{path.lstrip('/')}"
@@ -145,12 +146,14 @@ class MinerUClient:
             "enable_table": self._enable_table,
             "enable_formula": self._enable_formula,
             "layout_model": self._layout_model,
+            "model_version": self._model_version,
         }
         payload = {
             "files": [file_config],
             "is_ocr": is_ocr,
             "language": self._language,
             "enable_table": self._enable_table,
+            "model_version": self._model_version,
             "version": "v4",
         }
 

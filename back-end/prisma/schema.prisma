@@ -46,7 +46,10 @@ model Stock {
   beneish_status   String?    @default("PENDING") @db.VarChar(20)
   beneish_score    Decimal?   @db.Decimal
   beneish_updated  DateTime?  @db.Date
-  gil_flag         String?    @default("PASS") @db.VarChar(20)
+  gil_flag         String?    @default("DATA_INSUFFICIENT") @db.VarChar(32)
+  gil_analysis_status String? @default("DATA_INSUFFICIENT") @db.VarChar(32)
+  gil_analysis_version String? @db.VarChar(64)
+  gil_assessed_at DateTime?  @db.Timestamptz(6)
   audit_opinion    String?    @default("UNQUALIFIED") @db.VarChar(20)
   audit_year       Int?
   sector           String?    @db.VarChar
@@ -852,16 +855,22 @@ model market_regimes {
 
 model moat_profiles {
   ticker                String    @id @db.VarChar(16)
-  fiscal_year           Int       @default(2025)
+  fiscal_year           Int?
   report_type           String    @default("ANNUAL_REPORT") @db.VarChar(32)
-  moat_score            Decimal   @db.Decimal(6, 2)
+  assessment_status     String    @default("INSUFFICIENT") @db.VarChar(32)
+  moat_score            Decimal?  @db.Decimal(6, 2)
   intangibles_score     Decimal?  @db.Decimal(6, 2)
   switching_costs_score Decimal?  @db.Decimal(6, 2)
   network_effect_score  Decimal?  @db.Decimal(6, 2)
   cost_advantage_score  Decimal?  @db.Decimal(6, 2)
   efficient_scale_score Decimal?  @db.Decimal(6, 2)
+  coverage_ratio        Decimal?  @db.Decimal(6, 4)
+  policy_version        String?   @db.VarChar(64)
+  document_ids          Json      @default("[]")
+  evidence_digest       String?   @db.VarChar(128)
   evidence_summary      Json      @default("{}")
   source_sag_doc_id     String?   @db.VarChar(128)
+  assessed_at           DateTime? @db.Timestamptz(6)
   extracted_at          DateTime? @default(now()) @db.Timestamptz(6)
   is_stale              Boolean?  @default(false)
 
@@ -970,12 +979,15 @@ model strategic_allocations {
 }
 
 model universe_securities {
-  ticker         String    @id @db.VarChar(16)
-  universe_group String    @db.VarChar(16)
-  trading_status String    @db.VarChar(16)
-  beneish_status String    @db.VarChar(16)
-  gil_flag       String    @db.VarChar(16)
-  updated_at     DateTime? @default(now()) @db.Timestamptz(6)
+  ticker              String    @id @db.VarChar(16)
+  universe_group      String    @db.VarChar(16)
+  trading_status      String    @db.VarChar(16)
+  beneish_status      String    @db.VarChar(16)
+  gil_flag            String    @default("DATA_INSUFFICIENT") @db.VarChar(32)
+  gil_analysis_status String?   @default("DATA_INSUFFICIENT") @db.VarChar(32)
+  gil_analysis_version String?  @db.VarChar(64)
+  gil_assessed_at     DateTime? @db.Timestamptz(6)
+  updated_at          DateTime? @default(now()) @db.Timestamptz(6)
 
   @@index([universe_group], map: "idx_universe_group")
 }

@@ -84,3 +84,49 @@ def test_gil_analyzer_high_exposure_without_cycle():
     assert result.rpt_ratio == 0.60
     assert result.cycles_detected == 0
     print("PASS high exposure test:", result.summary)
+
+
+def test_gil_missing_equity_is_data_insufficient():
+    analyzer = GILGraphAnalyzer(ticker="HPG", equity_vnd=0)
+    analyzer.build_graph(
+        [{"id": "HPG", "name": "HPG", "entity_type": "TICKER"}],
+        [{"source": "HPG", "target": "SUB", "relation_type": "LOANS_TO", "amount_vnd": 1_000_000_000, "verified": True}],
+    )
+
+    result = analyzer.evaluate()
+
+    assert result.gil_flag == "DATA_INSUFFICIENT"
+    assert result.analysis_status == "DATA_INSUFFICIENT"
+
+
+def test_gil_transaction_and_guarantee_do_not_create_capital_cycle():
+    analyzer = GILGraphAnalyzer(ticker="AAA", equity_vnd=10_000_000_000)
+    analyzer.build_graph(
+        [{"id": "AAA"}, {"id": "BBB"}],
+        [
+            {"source": "AAA", "target": "BBB", "relation_type": "TRANSACTS_WITH", "amount_vnd": 1_000_000_000, "verified": True},
+            {"source": "BBB", "target": "AAA", "relation_type": "GUARANTEES_FOR", "amount_vnd": 1_000_000_000, "verified": True},
+        ],
+    )
+
+    result = analyzer.evaluate()
+
+    assert result.cycles_detected == 0
+    assert result.gil_flag == "PASS"
+
+
+def test_gil_unverified_edges_ignored():
+    analyzer = GILGraphAnalyzer(ticker="AAA", equity_vnd=10_000_000_000)
+    analyzer.build_graph(
+        [{"id": "AAA"}, {"id": "BBB"}],
+        [
+            {"source": "AAA", "target": "BBB", "relation_type": "LOANS_TO", "amount_vnd": 9_000_000_000, "verified": False},
+            {"source": "BBB", "target": "AAA", "relation_type": "OWNS", "ownership_pct": 30.0, "verified": False},
+        ],
+    )
+
+    result = analyzer.evaluate()
+
+    assert result.cycles_detected == 0
+    assert result.total_rpt_exposure_vnd == 0
+    assert result.gil_flag == "PASS"

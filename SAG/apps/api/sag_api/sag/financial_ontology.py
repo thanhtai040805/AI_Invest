@@ -315,13 +315,33 @@ def get_financial_extraction_prompt(doc_type: str | None = None, is_full_documen
     event_lines = ", ".join(e.value for e in event_types)
 
     if is_full_document:
-        instructions = """Nhiệm vụ của bạn là phân tích TOÀN BỘ tài liệu này (Thuyết minh Báo cáo Tài chính hoặc Báo cáo Quản trị / Báo cáo Thường niên) và trích xuất TOÀN DIỆN:
-1. Danh sách TẤT CẢ các Sự kiện tài chính & quản trị trọng yếu (Events) xuất hiện trong tài liệu (gồm: Thuyết minh Nợ vay & Ngân hàng chủ nợ, Giao dịch các bên liên quan RPT, Danh mục đầu tư/Tự doanh FVTPL, Đầu tư công ty con/liên kết, Chi phí XDCB dở dang / Dự án CapEx, Cơ cấu cổ đông, Nghị quyết & Giao dịch người nội bộ/HĐQT, v.v.).
-2. Danh sách ĐẦY ĐỦ các Thực thể (Entities) và Quan hệ (Relations) với số tiền VND và chiều mũi tên quan hệ chuẩn xác phục vụ phân tích cấu trúc sở hữu, dòng tiền và rủi ro bên liên quan cho đồ thị GIL."""
+        instructions = """BẠN LÀ CHUYÊN GIA PHÂN TÍCH TÀI CHÍNH & SENIOR BROKER TẠI THỊ TRƯỜNG CHỨNG KHOÁN VIỆT NAM.
+Tài liệu bạn nhận được là toàn bộ nội dung Báo cáo Tài chính / Thuyết minh Báo cáo Tài chính / Báo cáo Thường niên / Báo cáo Quản trị.
+Toàn bộ tài liệu được phân tích trong DUY NHẤT 1 PROMPT để đảm bảo tầm nhìn toàn cục.
+
+QUY TẮC CỐT LÕI SAG v2: OUTPUT LÀ MANIFEST NGẮN, KHÔNG PHẢI BẢN SAO TÀI LIỆU
+- Không áp dụng quy tắc "1 heading = 1 event". Chỉ tạo event khi mục đó có fact định lượng, entity/relationship, tín hiệu MOAT hoặc rủi ro GIL rõ ràng.
+- Không chép lại toàn bộ nội dung hoặc toàn bộ bảng Markdown vào `content`. Markdown gốc được hệ thống hydrate bằng line span; output của bạn chỉ cần tóm tắt nghiệp vụ và evidence anchor.
+- Không tự tạo bằng chứng, không suy diễn quan hệ vốn từ giao dịch mơ hồ, không coi thiếu dữ liệu là PASS.
+- Dùng OTHER nếu taxonomy không khớp; không ép dữ liệu vào nhóm sai.
+
+QUY CÁCH DỮ LIỆU CHO TỪNG SỰ KIỆN:
+- `title`: Tên nghiệp vụ ngắn, kèm mã CP/kỳ nếu xác định được.
+- `content`: Tóm tắt ngắn dưới 600 ký tự, nêu line/evidence anchor nếu có trong văn bản.
+- `summary`: 1 câu tóm tắt biến động chính và con số trọng yếu nhất.
+- `category`: Tự động chọn 1 mã phân loại phù hợp nhất từ danh sách EVENT TYPES dưới đây.
+- `references`: Chỉ gán reference thật có trong request; nếu không chắc thì để rỗng và bỏ event mơ hồ.
+- `priority`: HIGH/MEDIUM/LOW theo trọng yếu, không gán cố định.
+- `status`: COMPLETED nếu evidence rõ, UNCERTAIN nếu cần kiểm chứng.
+- `is_valid`: Gán `true`.
+- `keywords`: 2 - 5 từ khóa cốt lõi.
+- `entities`: Trích xuất thực thể có evidence; description nêu vai trò và số liệu nếu có.
+- NGÔN NGỮ ĐẦU RA: 100% TIẾNG VIỆT CHUYÊN NGÀNH TÀI CHÍNH KẾ TOÁN (bao gồm cả title, summary, content, keywords, description)."""
     else:
         instructions = """Nhiệm vụ của bạn là phân tích đoạn văn bản Thuyết minh BCTC / Báo cáo Quản trị này và trích xuất:
 1. Một Event chính đại diện cho ngữ cảnh đầy đủ của đoạn văn bản hoặc bảng số liệu.
-2. Các Entity chỉ mục liên quan theo bộ Taxonomy tinh gọn sau:"""
+2. Các Entity chỉ mục liên quan theo bộ Taxonomy tinh gọn sau.
+3. Ngôn ngữ đầu ra: 100% Tiếng Việt."""
 
     return f"""Bạn là Chuyên gia Phân tích Tài chính & Senior Broker hàng đầu tại Thị trường Chứng khoán Việt Nam.
 {instructions}
@@ -335,7 +355,9 @@ def get_financial_extraction_prompt(doc_type: str | None = None, is_full_documen
 LƯU Ý ĐẶC BIỆT KHI XỬ LÝ BẢNG BIỂU & SỐ LIỆU TÀI CHÍNH:
 - Đọc kỹ các bảng số liệu để nhận diện danh mục tự doanh (FVTPL), công ty con (kèm % sở hữu), nhóm nợ (1-5), số dư Margin và giao dịch bên liên quan (RPT).
 - Bắt buộc chuẩn hóa số tiền về đơn vị VND đầy đủ (ví dụ: '500 triệu đồng' -> 500,000,000; '120 tỷ đồng' -> 120,000,000,000).
+- Giữ nguyên vẹn tỷ lệ phần trăm kể cả số lẻ (ví dụ: 84,5357%, 99,99%).
 - Kết nối chính xác tên cổ phiếu, dự án, bên vay và bên cho vay.
+- Không chép nguyên bảng dài vào output; chỉ trích xuất nhãn fact, số liệu, entity và quan hệ có hướng.
 
 Hãy trả về kết quả định dạng JSON khớp với schema yêu cầu.
 """
@@ -417,7 +439,9 @@ def infer_doc_type(title_or_path: str | None) -> str | None:
 # ── Từ điển Ánh xạ Thực thể Chuẩn hóa (Canonical Entity & Alias Resolution) ──
 # Ánh xạ toàn bộ các biến thể tên gọi thường gặp của doanh nghiệp về Canonical Ticker & Tên chuẩn
 CANONICAL_TICKER_ALIASES: dict[str, tuple[str, str]] = {
-    # Thép & Vật liệu
+    # ═══════════════════════════════════════════════════════════
+    # 1. THÉP & VẬT LIỆU XÂY DỰNG
+    # ═══════════════════════════════════════════════════════════
     "hpg": ("HPG", "TICKER"),
     "hòa phát": ("HPG", "TICKER"),
     "tập đoàn hòa phát": ("HPG", "TICKER"),
@@ -433,8 +457,114 @@ CANONICAL_TICKER_ALIASES: dict[str, tuple[str, str]] = {
     "nam kim": ("NKG", "TICKER"),
     "thép nam kim": ("NKG", "TICKER"),
     "ctcp thép nam kim": ("NKG", "TICKER"),
+    "tlh": ("TLH", "TICKER"),
+    "thép tiến lên": ("TLH", "TICKER"),
+    "ctcp tập đoàn thép tiến lên": ("TLH", "TICKER"),
+    "pom": ("POM", "TICKER"),
+    "pomina": ("POM", "TICKER"),
+    "thép pomina": ("POM", "TICKER"),
+    "ctcp thép pomina": ("POM", "TICKER"),
+    "tvn": ("TVN", "TICKER"),
+    "tổng công ty thép việt nam": ("TVN", "TICKER"),
+    "vnsteel": ("TVN", "TICKER"),
 
-    # Chứng khoán
+    # ═══════════════════════════════════════════════════════════
+    # 2. NGÂN HÀNG
+    # ═══════════════════════════════════════════════════════════
+    "vcb": ("VCB", "TICKER"),
+    "vietcombank": ("VCB", "TICKER"),
+    "ngân hàng ngoại thương": ("VCB", "TICKER"),
+    "ngân hàng tmcp ngoại thương việt nam": ("VCB", "TICKER"),
+    "tcb": ("TCB", "TICKER"),
+    "techcombank": ("TCB", "TICKER"),
+    "ngân hàng kỹ thương": ("TCB", "TICKER"),
+    "ngân hàng tmcp kỹ thương việt nam": ("TCB", "TICKER"),
+    "mbb": ("MBB", "TICKER"),
+    "mb bank": ("MBB", "TICKER"),
+    "mbbank": ("MBB", "TICKER"),
+    "ngân hàng quân đội": ("MBB", "TICKER"),
+    "ngân hàng tmcp quân đội": ("MBB", "TICKER"),
+    "acb": ("ACB", "TICKER"),
+    "ngân hàng á châu": ("ACB", "TICKER"),
+    "ngân hàng tmcp á châu": ("ACB", "TICKER"),
+    "bid": ("BID", "TICKER"),
+    "bidv": ("BID", "TICKER"),
+    "ngân hàng đầu tư và phát triển việt nam": ("BID", "TICKER"),
+    "ngân hàng tmcp đầu tư và phát triển việt nam": ("BID", "TICKER"),
+    "ctg": ("CTG", "TICKER"),
+    "vietinbank": ("CTG", "TICKER"),
+    "ngân hàng công thương": ("CTG", "TICKER"),
+    "ngân hàng tmcp công thương việt nam": ("CTG", "TICKER"),
+    "vpb": ("VPB", "TICKER"),
+    "vpbank": ("VPB", "TICKER"),
+    "ngân hàng việt nam thịnh vượng": ("VPB", "TICKER"),
+    "ngân hàng tmcp việt nam thịnh vượng": ("VPB", "TICKER"),
+    "hdb": ("HDB", "TICKER"),
+    "hdbank": ("HDB", "TICKER"),
+    "ngân hàng phát triển tp hcm": ("HDB", "TICKER"),
+    "ngân hàng tmcp phát triển thành phố hồ chí minh": ("HDB", "TICKER"),
+    "stb": ("STB", "TICKER"),
+    "sacombank": ("STB", "TICKER"),
+    "ngân hàng sài gòn thương tín": ("STB", "TICKER"),
+    "ngân hàng tmcp sài gòn thương tín": ("STB", "TICKER"),
+    "tpb": ("TPB", "TICKER"),
+    "tpbank": ("TPB", "TICKER"),
+    "ngân hàng tiên phong": ("TPB", "TICKER"),
+    "ngân hàng tmcp tiên phong": ("TPB", "TICKER"),
+    "lpb": ("LPB", "TICKER"),
+    "lienvietpostbank": ("LPB", "TICKER"),
+    "ngân hàng bưu điện liên việt": ("LPB", "TICKER"),
+    "ngân hàng tmcp bưu điện liên việt": ("LPB", "TICKER"),
+    "shb": ("SHB", "TICKER"),
+    "ngân hàng sài gòn hà nội": ("SHB", "TICKER"),
+    "ngân hàng tmcp sài gòn hà nội": ("SHB", "TICKER"),
+    "eib": ("EIB", "TICKER"),
+    "eximbank": ("EIB", "TICKER"),
+    "ngân hàng xuất nhập khẩu": ("EIB", "TICKER"),
+    "ngân hàng tmcp xuất nhập khẩu việt nam": ("EIB", "TICKER"),
+    "ocb": ("OCB", "TICKER"),
+    "ngân hàng phương đông": ("OCB", "TICKER"),
+    "ngân hàng tmcp phương đông": ("OCB", "TICKER"),
+    "msb": ("MSB", "TICKER"),
+    "ngân hàng hàng hải": ("MSB", "TICKER"),
+    "ngân hàng tmcp hàng hải việt nam": ("MSB", "TICKER"),
+    "maritime bank": ("MSB", "TICKER"),
+    "bvb": ("BVB", "TICKER"),
+    "viet capital bank": ("BVB", "TICKER"),
+    "ngân hàng bản việt": ("BVB", "TICKER"),
+    "ngân hàng tmcp bản việt": ("BVB", "TICKER"),
+    "vib": ("VIB", "TICKER"),
+    "ngân hàng quốc tế": ("VIB", "TICKER"),
+    "ngân hàng tmcp quốc tế việt nam": ("VIB", "TICKER"),
+    "vietnam international bank": ("VIB", "TICKER"),
+    "ssb": ("SSB", "TICKER"),
+    "seabank": ("SSB", "TICKER"),
+    "ngân hàng đông nam á": ("SSB", "TICKER"),
+    "ngân hàng tmcp đông nam á": ("SSB", "TICKER"),
+    "bab": ("BAB", "TICKER"),
+    "bac a bank": ("BAB", "TICKER"),
+    "ngân hàng bắc á": ("BAB", "TICKER"),
+    "ngân hàng tmcp bắc á": ("BAB", "TICKER"),
+    "nab": ("NAB", "TICKER"),
+    "nam a bank": ("NAB", "TICKER"),
+    "ngân hàng nam á": ("NAB", "TICKER"),
+    "ngân hàng tmcp nam á": ("NAB", "TICKER"),
+    "abbank": ("ABB", "TICKER"),
+    "abb": ("ABB", "TICKER"),
+    "ngân hàng an bình": ("ABB", "TICKER"),
+    "ngân hàng tmcp an bình": ("ABB", "TICKER"),
+    "pgb": ("PGB", "TICKER"),
+    "pgbank": ("PGB", "TICKER"),
+    "ngân hàng xăng dầu": ("PGB", "TICKER"),
+    "ngân hàng tmcp xăng dầu petrolimex": ("PGB", "TICKER"),
+    "klb": ("KLB", "TICKER"),
+    "kienlongbank": ("KLB", "TICKER"),
+    "ngân hàng kiên long": ("KLB", "TICKER"),
+    "ngân hàng tmcp kiên long": ("KLB", "TICKER"),
+
+    # ═══════════════════════════════════════════════════════════
+    # 3. CHỨNG KHOÁN
+    # ═══════════════════════════════════════════════════════════
     "fts": ("FTS", "TICKER"),
     "chứng khoán fpt": ("FTS", "TICKER"),
     "ctcp chứng khoán fpt": ("FTS", "TICKER"),
@@ -456,44 +586,69 @@ CANONICAL_TICKER_ALIASES: dict[str, tuple[str, str]] = {
     "ssi": ("SSI", "TICKER"),
     "chứng khoán ssi": ("SSI", "TICKER"),
     "ctcp chứng khoán ssi": ("SSI", "TICKER"),
+    "ags": ("AGS", "TICKER"),
+    "chứng khoán agribank": ("AGS", "TICKER"),
+    "ctcp chứng khoán agribank": ("AGS", "TICKER"),
+    "oks": ("ORS", "TICKER"),
+    "ors": ("ORS", "TICKER"),
+    "chứng khoán tiên phong": ("ORS", "TICKER"),
+    "tps": ("ORS", "TICKER"),
+    "cts": ("CTS", "TICKER"),
+    "chứng khoán vietinbank": ("CTS", "TICKER"),
+    "ctcp chứng khoán vietinbank": ("CTS", "TICKER"),
+    "mbs": ("MBS", "TICKER"),
+    "chứng khoán mb": ("MBS", "TICKER"),
+    "ctcp chứng khoán mb": ("MBS", "TICKER"),
+    "bsi": ("BSI", "TICKER"),
+    "chứng khoán bidv": ("BSI", "TICKER"),
+    "ctcp chứng khoán bidv": ("BSI", "TICKER"),
+    "tvs": ("TVS", "TICKER"),
+    "chứng khoán thiên việt": ("TVS", "TICKER"),
+    "ctcp chứng khoán thiên việt": ("TVS", "TICKER"),
+    "kafi": ("KAFI", "TICKER"),
+    "chứng khoán kafi": ("KAFI", "TICKER"),
+    "vds": ("VDS", "TICKER"),
+    "chứng khoán rồng việt": ("VDS", "TICKER"),
+    "ctcp chứng khoán rồng việt": ("VDS", "TICKER"),
+    "shs": ("SHS", "TICKER"),
+    "chứng khoán sài gòn hà nội": ("SHS", "TICKER"),
+    "ctcp chứng khoán sài gòn hà nội": ("SHS", "TICKER"),
+    "dsc": ("DSC", "TICKER"),
+    "chứng khoán dsc": ("DSC", "TICKER"),
 
-    # Ngân hàng
-    "vcb": ("VCB", "TICKER"),
-    "vietcombank": ("VCB", "TICKER"),
-    "ngân hàng ngoại thương": ("VCB", "TICKER"),
-    "ngân hàng tmcp ngoại thương việt nam": ("VCB", "TICKER"),
-    "tcb": ("TCB", "TICKER"),
-    "techcombank": ("TCB", "TICKER"),
-    "ngân hàng kỹ thương": ("TCB", "TICKER"),
-    "ngân hàng tmcp kỹ thương việt nam": ("TCB", "TICKER"),
-    "mbb": ("MBB", "TICKER"),
-    "mb bank": ("MBB", "TICKER"),
-    "ngân hàng quân đội": ("MBB", "TICKER"),
-    "ngân hàng tmcp quân đội": ("MBB", "TICKER"),
-    "acb": ("ACB", "TICKER"),
-    "ngân hàng á châu": ("ACB", "TICKER"),
-    "ngân hàng tmcp á châu": ("ACB", "TICKER"),
-    "bid": ("BID", "TICKER"),
-    "bidv": ("BID", "TICKER"),
-    "ngân hàng đầu tư và phát triển việt nam": ("BID", "TICKER"),
-    "ctg": ("CTG", "TICKER"),
-    "vietinbank": ("CTG", "TICKER"),
-    "ngân hàng công thương": ("CTG", "TICKER"),
-    "vpbank": ("VPB", "TICKER"),
-    "vpb": ("VPB", "TICKER"),
-
-    # Công nghệ & Viễn thông
+    # ═══════════════════════════════════════════════════════════
+    # 4. CÔNG NGHỆ & VIỄN THÔNG
+    # ═══════════════════════════════════════════════════════════
     "fpt": ("FPT", "TICKER"),
     "tập đoàn fpt": ("FPT", "TICKER"),
     "ctcp fpt": ("FPT", "TICKER"),
     "công ty cổ phần fpt": ("FPT", "TICKER"),
+    "fpt corporation": ("FPT", "TICKER"),
+    "fox": ("FOX", "TICKER"),
+    "fpt telecom": ("FOX", "TICKER"),
+    "viễn thông fpt": ("FOX", "TICKER"),
+    "ctcp viễn thông fpt": ("FOX", "TICKER"),
+    "frt": ("FRT", "TICKER"),
+    "fpt retail": ("FRT", "TICKER"),
+    "bán lẻ fpt": ("FRT", "TICKER"),
+    "ctcp bán lẻ kỹ thuật số fpt": ("FRT", "TICKER"),
+    "cmg": ("CMG", "TICKER"),
+    "cmc": ("CMG", "TICKER"),
+    "tập đoàn cmc": ("CMG", "TICKER"),
+    "ctcp tập đoàn công nghệ cmc": ("CMG", "TICKER"),
+    "elc": ("ELC", "TICKER"),
+    "elcom": ("ELC", "TICKER"),
+    "ctcp đầu tư phát triển công nghệ điện tử viễn thông": ("ELC", "TICKER"),
 
-    # Bán lẻ & Tiêu dùng
+    # ═══════════════════════════════════════════════════════════
+    # 5. BÁN LẺ & TIÊU DÙNG & THỰC PHẨM
+    # ═══════════════════════════════════════════════════════════
     "mwg": ("MWG", "TICKER"),
     "thế giới di động": ("MWG", "TICKER"),
     "ctcp đầu tư thế giới di động": ("MWG", "TICKER"),
     "bách hóa xanh": ("MWG", "TICKER"),
     "điện máy xanh": ("MWG", "TICKER"),
+    "mobile world": ("MWG", "TICKER"),
     "vnm": ("VNM", "TICKER"),
     "vinamilk": ("VNM", "TICKER"),
     "sữa việt nam": ("VNM", "TICKER"),
@@ -502,26 +657,385 @@ CANONICAL_TICKER_ALIASES: dict[str, tuple[str, str]] = {
     "masan": ("MSN", "TICKER"),
     "tập đoàn masan": ("MSN", "TICKER"),
     "ctcp tập đoàn masan": ("MSN", "TICKER"),
+    "masan group": ("MSN", "TICKER"),
+    "mch": ("MCH", "TICKER"),
+    "masan consumer": ("MCH", "TICKER"),
+    "hàng tiêu dùng masan": ("MCH", "TICKER"),
+    "ctcp hàng tiêu dùng masan": ("MCH", "TICKER"),
+    "pnj": ("PNJ", "TICKER"),
+    "phú nhuận": ("PNJ", "TICKER"),
+    "vàng bạc đá quý phú nhuận": ("PNJ", "TICKER"),
+    "ctcp vàng bạc đá quý phú nhuận": ("PNJ", "TICKER"),
+    "sab": ("SAB", "TICKER"),
+    "sabeco": ("SAB", "TICKER"),
+    "bia sài gòn": ("SAB", "TICKER"),
+    "tổng công ty bia rượu nước giải khát sài gòn": ("SAB", "TICKER"),
+    "bhd": ("BHN", "TICKER"),
+    "bhn": ("BHN", "TICKER"),
+    "habeco": ("BHN", "TICKER"),
+    "bia hà nội": ("BHN", "TICKER"),
+    "tổng công ty bia hà nội": ("BHN", "TICKER"),
+    "kdc": ("KDC", "TICKER"),
+    "kido": ("KDC", "TICKER"),
+    "tập đoàn kido": ("KDC", "TICKER"),
+    "ctcp tập đoàn kido": ("KDC", "TICKER"),
+    "qns": ("QNS", "TICKER"),
+    "đường quảng ngãi": ("QNS", "TICKER"),
+    "ctcp đường quảng ngãi": ("QNS", "TICKER"),
+    "sữa đậu nành việt nam": ("QNS", "TICKER"),
 
-    # Bất động sản
+    # ═══════════════════════════════════════════════════════════
+    # 6. BẤT ĐỘNG SẢN
+    # ═══════════════════════════════════════════════════════════
     "vhm": ("VHM", "TICKER"),
     "vinhomes": ("VHM", "TICKER"),
     "ctcp vinhomes": ("VHM", "TICKER"),
     "vic": ("VIC", "TICKER"),
     "vingroup": ("VIC", "TICKER"),
     "tập đoàn vingroup": ("VIC", "TICKER"),
+    "ctcp tập đoàn vingroup": ("VIC", "TICKER"),
     "kdh": ("KDH", "TICKER"),
     "khang điền": ("KDH", "TICKER"),
     "nhà khang điền": ("KDH", "TICKER"),
+    "ctcp đầu tư và kinh doanh nhà khang điền": ("KDH", "TICKER"),
     "pdr": ("PDR", "TICKER"),
     "phát đạt": ("PDR", "TICKER"),
     "bất động sản phát đạt": ("PDR", "TICKER"),
+    "ctcp phát triển bất động sản phát đạt": ("PDR", "TICKER"),
     "dxg": ("DXG", "TICKER"),
     "đất xanh": ("DXG", "TICKER"),
     "tập đoàn đất xanh": ("DXG", "TICKER"),
+    "ctcp tập đoàn đất xanh": ("DXG", "TICKER"),
     "nvl": ("NVL", "TICKER"),
     "novaland": ("NVL", "TICKER"),
     "tập đoàn novaland": ("NVL", "TICKER"),
+    "ctcp tập đoàn đầu tư địa ốc no va": ("NVL", "TICKER"),
+    "nlg": ("NLG", "TICKER"),
+    "nam long": ("NLG", "TICKER"),
+    "ctcp đầu tư nam long": ("NLG", "TICKER"),
+    "dxs": ("DXS", "TICKER"),
+    "đất xanh services": ("DXS", "TICKER"),
+    "dịch vụ đất xanh": ("DXS", "TICKER"),
+    "ctcp dịch vụ bất động sản đất xanh": ("DXS", "TICKER"),
+    "bcg": ("BCG", "TICKER"),
+    "bamboo capital": ("BCG", "TICKER"),
+    "tập đoàn bamboo capital": ("BCG", "TICKER"),
+    "ctcp bamboo capital": ("BCG", "TICKER"),
+    "hdg": ("HDG", "TICKER"),
+    "hà đô": ("HDG", "TICKER"),
+    "tập đoàn hà đô": ("HDG", "TICKER"),
+    "ctcp tập đoàn hà đô": ("HDG", "TICKER"),
+    "cii": ("CII", "TICKER"),
+    "hạ tầng kỹ thuật": ("CII", "TICKER"),
+    "ctcp đầu tư hạ tầng kỹ thuật tp hcm": ("CII", "TICKER"),
+    "sce": ("SCR", "TICKER"),
+    "scr": ("SCR", "TICKER"),
+    "tt capital": ("SCR", "TICKER"),
+    "ctcp địa ốc sài gòn thương tín": ("SCR", "TICKER"),
+    "dig": ("DIG", "TICKER"),
+    "đầu tư phát triển xây dựng": ("DIG", "TICKER"),
+    "ctcp đầu tư phát triển xây dựng": ("DIG", "TICKER"),
+    "dic group": ("DIG", "TICKER"),
+    "agi": ("AGI", "TICKER"),
+    "agriseco": ("AGI", "TICKER"),
+    "bds an gia": ("AGI", "TICKER"),
+
+    # ═══════════════════════════════════════════════════════════
+    # 7. DẦU KHÍ & HÓA CHẤT & PHÂN BÓN
+    # ═══════════════════════════════════════════════════════════
+    "gas": ("GAS", "TICKER"),
+    "pv gas": ("GAS", "TICKER"),
+    "khí việt nam": ("GAS", "TICKER"),
+    "tổng công ty khí việt nam": ("GAS", "TICKER"),
+    "pvd": ("PVD", "TICKER"),
+    "pv drilling": ("PVD", "TICKER"),
+    "khoan dầu khí": ("PVD", "TICKER"),
+    "tổng công ty khoan và dịch vụ khoan dầu khí": ("PVD", "TICKER"),
+    "pvs": ("PVS", "TICKER"),
+    "ptsc": ("PVS", "TICKER"),
+    "dịch vụ kỹ thuật dầu khí": ("PVS", "TICKER"),
+    "tổng công ty dịch vụ kỹ thuật dầu khí": ("PVS", "TICKER"),
+    "plx": ("PLX", "TICKER"),
+    "petrolimex": ("PLX", "TICKER"),
+    "xăng dầu": ("PLX", "TICKER"),
+    "tập đoàn xăng dầu việt nam": ("PLX", "TICKER"),
+    "oil": ("OIL", "TICKER"),
+    "pvn": ("OIL", "TICKER"),
+    "pvoil": ("OIL", "TICKER"),
+    "tổng công ty dầu việt nam": ("OIL", "TICKER"),
+    "pvt": ("PVT", "TICKER"),
+    "pvtrans": ("PVT", "TICKER"),
+    "vận tải dầu khí": ("PVT", "TICKER"),
+    "tổng công ty vận tải dầu khí": ("PVT", "TICKER"),
+    "bsr": ("BSR", "TICKER"),
+    "lọc hóa dầu bình sơn": ("BSR", "TICKER"),
+    "lọc dầu bình sơn": ("BSR", "TICKER"),
+    "ctcp lọc hóa dầu bình sơn": ("BSR", "TICKER"),
+    "nhà máy lọc dầu dung quất": ("BSR", "TICKER"),
+    "dgc": ("DGC", "TICKER"),
+    "đức giang": ("DGC", "TICKER"),
+    "hóa chất đức giang": ("DGC", "TICKER"),
+    "tập đoàn đức giang": ("DGC", "TICKER"),
+    "ctcp tập đoàn hóa chất đức giang": ("DGC", "TICKER"),
+    "dpm": ("DPM", "TICKER"),
+    "đạm phú mỹ": ("DPM", "TICKER"),
+    "phân bón dầu khí": ("DPM", "TICKER"),
+    "tổng công ty phân bón và hóa chất dầu khí": ("DPM", "TICKER"),
+    "dcm": ("DCM", "TICKER"),
+    "đạm cà mau": ("DCM", "TICKER"),
+    "phân bón cà mau": ("DCM", "TICKER"),
+    "ctcp phân bón dầu khí cà mau": ("DCM", "TICKER"),
+    "csv": ("CSV", "TICKER"),
+    "phân bón miền nam": ("CSV", "TICKER"),
+    "ctcp phân bón và hóa chất dầu khí miền nam": ("CSV", "TICKER"),
+
+    # ═══════════════════════════════════════════════════════════
+    # 8. ĐIỆN & NĂNG LƯỢNG
+    # ═══════════════════════════════════════════════════════════
+    "pow": ("POW", "TICKER"),
+    "pv power": ("POW", "TICKER"),
+    "điện lực dầu khí": ("POW", "TICKER"),
+    "tổng công ty điện lực dầu khí việt nam": ("POW", "TICKER"),
+    "ree": ("REE", "TICKER"),
+    "cơ điện lạnh": ("REE", "TICKER"),
+    "ctcp cơ điện lạnh": ("REE", "TICKER"),
+    "nt2": ("NT2", "TICKER"),
+    "nhiệt điện nhơn trạch 2": ("NT2", "TICKER"),
+    "ctcp điện lực dầu khí nhơn trạch 2": ("NT2", "TICKER"),
+    "geg": ("GEG", "TICKER"),
+    "điện gia lai": ("GEG", "TICKER"),
+    "ctcp điện gia lai": ("GEG", "TICKER"),
+    "pc1": ("PC1", "TICKER"),
+    "power construction 1": ("PC1", "TICKER"),
+    "ctcp tập đoàn pc1": ("PC1", "TICKER"),
+    "tập đoàn pc1": ("PC1", "TICKER"),
+    "btp": ("BTP", "TICKER"),
+    "nhiệt điện bà rịa": ("BTP", "TICKER"),
+    "ctcp nhiệt điện bà rịa": ("BTP", "TICKER"),
+
+    # ═══════════════════════════════════════════════════════════
+    # 9. CẢNG BIỂN & LOGISTICS & VẬN TẢI
+    # ═══════════════════════════════════════════════════════════
+    "gmd": ("GMD", "TICKER"),
+    "gemadept": ("GMD", "TICKER"),
+    "tập đoàn gemadept": ("GMD", "TICKER"),
+    "ctcp gemadept": ("GMD", "TICKER"),
+    "php": ("PHP", "TICKER"),
+    "cảng hải phòng": ("PHP", "TICKER"),
+    "ctcp cảng hải phòng": ("PHP", "TICKER"),
+    "sgp": ("SGP", "TICKER"),
+    "cảng sài gòn": ("SGP", "TICKER"),
+    "ctcp cảng sài gòn": ("SGP", "TICKER"),
+    "vtp": ("VTP", "TICKER"),
+    "viettel post": ("VTP", "TICKER"),
+    "bưu chính viettel": ("VTP", "TICKER"),
+    "ctcp bưu chính viettel": ("VTP", "TICKER"),
+    "vsn": ("VSN", "TICKER"),
+    "viscotrans": ("VSN", "TICKER"),
+    "vận tải vinaconex": ("VSN", "TICKER"),
+
+    # ═══════════════════════════════════════════════════════════
+    # 10. XÂY DỰNG & HẠ TẦNG
+    # ═══════════════════════════════════════════════════════════
+    "ctd": ("CTD", "TICKER"),
+    "coteccons": ("CTD", "TICKER"),
+    "xây dựng coteccons": ("CTD", "TICKER"),
+    "ctcp xây dựng coteccons": ("CTD", "TICKER"),
+    "hbc": ("HBC", "TICKER"),
+    "hòa bình": ("HBC", "TICKER"),
+    "xây dựng hòa bình": ("HBC", "TICKER"),
+    "ctcp tập đoàn xây dựng hòa bình": ("HBC", "TICKER"),
+    "vgc": ("VGC", "TICKER"),
+    "viglacera": ("VGC", "TICKER"),
+    "ctcp viglacera": ("VGC", "TICKER"),
+    "tổng công ty viglacera": ("VGC", "TICKER"),
+    "vcg": ("VCG", "TICKER"),
+    "vinaconex": ("VCG", "TICKER"),
+    "tổng công ty vinaconex": ("VCG", "TICKER"),
+    "ctcp vinaconex": ("VCG", "TICKER"),
+    "fcn": ("FCN", "TICKER"),
+    "fecon": ("FCN", "TICKER"),
+    "ctcp fecon": ("FCN", "TICKER"),
+    "csv": ("CSV", "TICKER"),
+
+    # ═══════════════════════════════════════════════════════════
+    # 11. BẢO HIỂM
+    # ═══════════════════════════════════════════════════════════
+    "bvh": ("BVH", "TICKER"),
+    "bảo việt": ("BVH", "TICKER"),
+    "tập đoàn bảo việt": ("BVH", "TICKER"),
+    "ctcp tập đoàn bảo việt": ("BVH", "TICKER"),
+    "pvi": ("PVI", "TICKER"),
+    "bảo hiểm pvi": ("PVI", "TICKER"),
+    "ctcp bảo hiểm pvi": ("PVI", "TICKER"),
+    "bme": ("BMI", "TICKER"),
+    "bmi": ("BMI", "TICKER"),
+    "bảo minh": ("BMI", "TICKER"),
+    "tổng công ty bảo minh": ("BMI", "TICKER"),
+    "ptg": ("PTI", "TICKER"),
+    "pti": ("PTI", "TICKER"),
+    "bảo hiểm bưu điện": ("PTI", "TICKER"),
+    "ctcp bảo hiểm bưu điện": ("PTI", "TICKER"),
+
+    # ═══════════════════════════════════════════════════════════
+    # 12. HÀNG KHÔNG & DU LỊCH
+    # ═══════════════════════════════════════════════════════════
+    "hvn": ("HVN", "TICKER"),
+    "vietnam airlines": ("HVN", "TICKER"),
+    "hàng không việt nam": ("HVN", "TICKER"),
+    "tổng công ty hàng không việt nam": ("HVN", "TICKER"),
+    "vjc": ("VJC", "TICKER"),
+    "vietjet": ("VJC", "TICKER"),
+    "vietjet air": ("VJC", "TICKER"),
+    "hàng không vietjet": ("VJC", "TICKER"),
+    "ctcp hàng không vietjet": ("VJC", "TICKER"),
+    "asg": ("ASG", "TICKER"),
+    "asean aviation": ("ASG", "TICKER"),
+    "scs": ("SCS", "TICKER"),
+    "scs": ("SCS", "TICKER"),
+    "dịch vụ hàng hóa sài gòn": ("SCS", "TICKER"),
+    "ctcp dịch vụ hàng hóa sài gòn": ("SCS", "TICKER"),
+    "aht": ("AHT", "TICKER"),
+    "dịch vụ hàng hóa tân sơn nhất": ("AHT", "TICKER"),
+    "nct": ("NCT", "TICKER"),
+    "dịch vụ hàng hóa nội bài": ("NCT", "TICKER"),
+
+    # ═══════════════════════════════════════════════════════════
+    # 13. NÔNG NGHIỆP & THỦY SẢN & LÂM NGHIỆP
+    # ═══════════════════════════════════════════════════════════
+    "vhc": ("VHC", "TICKER"),
+    "vĩnh hoàn": ("VHC", "TICKER"),
+    "ctcp vĩnh hoàn": ("VHC", "TICKER"),
+    "hag": ("HAG", "TICKER"),
+    "hoàng anh gia lai": ("HAG", "TICKER"),
+    "ctcp hoàng anh gia lai": ("HAG", "TICKER"),
+    "hagl": ("HAG", "TICKER"),
+    "dbc": ("DBC", "TICKER"),
+    "dabaco": ("DBC", "TICKER"),
+    "tập đoàn dabaco": ("DBC", "TICKER"),
+    "ctcp tập đoàn dabaco việt nam": ("DBC", "TICKER"),
+    "anh": ("ANV", "TICKER"),
+    "anv": ("ANV", "TICKER"),
+    "nam việt": ("ANV", "TICKER"),
+    "ctcp nam việt": ("ANV", "TICKER"),
+    "idp": ("IDP", "TICKER"),
+    "sữa quốc tế": ("IDP", "TICKER"),
+    "ctcp sữa quốc tế": ("IDP", "TICKER"),
+    "pht": ("PHR", "TICKER"),
+    "phr": ("PHR", "TICKER"),
+    "cao su phước hòa": ("PHR", "TICKER"),
+    "ctcp cao su phước hòa": ("PHR", "TICKER"),
+    "grr": ("GVR", "TICKER"),
+    "gvr": ("GVR", "TICKER"),
+    "cao su việt nam": ("GVR", "TICKER"),
+    "tập đoàn cao su việt nam": ("GVR", "TICKER"),
+    "tập đoàn công nghiệp cao su việt nam": ("GVR", "TICKER"),
+    "dpg": ("DPR", "TICKER"),
+    "dpr": ("DPR", "TICKER"),
+    "cao su đồng phú": ("DPR", "TICKER"),
+    "ctcp cao su đồng phú": ("DPR", "TICKER"),
+    "trc": ("TRC", "TICKER"),
+    "cao su tây ninh": ("TRC", "TICKER"),
+    "ctcp cao su tây ninh": ("TRC", "TICKER"),
+
+    # ═══════════════════════════════════════════════════════════
+    # 14. DỆT MAY & GIÀY DÉP
+    # ═══════════════════════════════════════════════════════════
+    "tcm": ("TCM", "TICKER"),
+    "dệt may thành công": ("TCM", "TICKER"),
+    "ctcp dệt may đầu tư thương mại thành công": ("TCM", "TICKER"),
+    "stk": ("STK", "TICKER"),
+    "sợi thế kỷ": ("STK", "TICKER"),
+    "ctcp sợi thế kỷ": ("STK", "TICKER"),
+    "vgt": ("VGT", "TICKER"),
+    "may việt tiến": ("VGT", "TICKER"),
+    "tổng công ty may việt tiến": ("VGT", "TICKER"),
+    "mshr": ("MSH", "TICKER"),
+    "msh": ("MSH", "TICKER"),
+    "may sông hồng": ("MSH", "TICKER"),
+    "ctcp may sông hồng": ("MSH", "TICKER"),
+
+    # ═══════════════════════════════════════════════════════════
+    # 15. DƯỢC PHẨM & Y TẾ
+    # ═══════════════════════════════════════════════════════════
+    "dhg": ("DHG", "TICKER"),
+    "dược hậu giang": ("DHG", "TICKER"),
+    "ctcp dược hậu giang": ("DHG", "TICKER"),
+    "dược phẩm hậu giang": ("DHG", "TICKER"),
+    "dmd": ("DMC", "TICKER"),
+    "dmc": ("DMC", "TICKER"),
+    "domesco": ("DMC", "TICKER"),
+    "dược phẩm domesco": ("DMC", "TICKER"),
+    "ctcp xuất nhập khẩu y tế domesco": ("DMC", "TICKER"),
+    "imp": ("IMP", "TICKER"),
+    "imexpharm": ("IMP", "TICKER"),
+    "dược phẩm imexpharm": ("IMP", "TICKER"),
+    "ctcp dược phẩm imexpharm": ("IMP", "TICKER"),
+    "tra": ("TRA", "TICKER"),
+    "traphaco": ("TRA", "TICKER"),
+    "dược phẩm traphaco": ("TRA", "TICKER"),
+    "ctcp traphaco": ("TRA", "TICKER"),
+    "dvn": ("DVN", "TICKER"),
+    "dược việt nam": ("DVN", "TICKER"),
+    "tổng công ty dược việt nam": ("DVN", "TICKER"),
+
+    # ═══════════════════════════════════════════════════════════
+    # 16. KHU CÔNG NGHIỆP
+    # ═══════════════════════════════════════════════════════════
+    "bcm": ("BCM", "TICKER"),
+    "becamex": ("BCM", "TICKER"),
+    "becamex idc": ("BCM", "TICKER"),
+    "tổng công ty becamex idc": ("BCM", "TICKER"),
+    "ctcp becamex idc": ("BCM", "TICKER"),
+    "idp": ("IDC", "TICKER"),
+    "idc": ("IDC", "TICKER"),
+    "idico": ("IDC", "TICKER"),
+    "tổng công ty idico": ("IDC", "TICKER"),
+    "ctcp đầu tư phát triển đô thị và khu công nghiệp": ("IDC", "TICKER"),
+    "shb": ("SZC", "TICKER"),
+    "szc": ("SZC", "TICKER"),
+    "sonadezi châu đức": ("SZC", "TICKER"),
+    "ctcp sonadezi châu đức": ("SZC", "TICKER"),
+    "kbc": ("KBC", "TICKER"),
+    "kinh bắc": ("KBC", "TICKER"),
+    "tổng công ty kinh bắc": ("KBC", "TICKER"),
+    "ctcp phát triển đô thị kinh bắc": ("KBC", "TICKER"),
+    "lhg": ("LHG", "TICKER"),
+    "long hậu": ("LHG", "TICKER"),
+    "ctcp long hậu": ("LHG", "TICKER"),
+    "sip": ("SIP", "TICKER"),
+    "khu công nghiệp sài gòn": ("SIP", "TICKER"),
+
+    # ═══════════════════════════════════════════════════════════
+    # 17. ĐA NGÀNH & KHÁC
+    # ═══════════════════════════════════════════════════════════
+    "vre": ("VRE", "TICKER"),
+    "vincom retail": ("VRE", "TICKER"),
+    "ctcp vincom retail": ("VRE", "TICKER"),
+    "trung tâm thương mại vincom": ("VRE", "TICKER"),
+    "vig": ("VEA", "TICKER"),
+    "vea": ("VEA", "TICKER"),
+    "tổng công ty máy động lực và máy nông nghiệp việt nam": ("VEA", "TICKER"),
+    "veam": ("VEA", "TICKER"),
+    "vnj": ("VNM", "TICKER"),
+    "cng": ("CNG", "TICKER"),
+    "khí nén": ("CNG", "TICKER"),
+    "ctcp cng việt nam": ("CNG", "TICKER"),
+    "scb": ("TCH", "TICKER"),
+    "tch": ("TCH", "TICKER"),
+    "hoàng huy": ("TCH", "TICKER"),
+    "tập đoàn hoàng huy": ("TCH", "TICKER"),
+    "ctcp đầu tư dịch vụ tài chính hoàng huy": ("TCH", "TICKER"),
+    "dat": ("DAT", "TICKER"),
+    "ctcp đầu tư du lịch và phát triển thủy sản": ("DAT", "TICKER"),
+    "ant": ("ANT", "TICKER"),
+    "rạng đông": ("ANT", "TICKER"),
+    "ctcp bóng đèn phích nước rạng đông": ("ANT", "TICKER"),
+    "ste": ("SBT", "TICKER"),
+    "sbt": ("SBT", "TICKER"),
+    "thành thành công biên hòa": ("SBT", "TICKER"),
+    "ctcp thành thành công biên hòa": ("SBT", "TICKER"),
+    "mía đường ttc": ("SBT", "TICKER"),
 }
 
 

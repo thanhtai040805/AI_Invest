@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.connectors import registry
 from sag_api.core.db import get_session
 from sag_api.core.deps import get_current_user, get_engine_manager, get_job_queue
 from sag_api.db.models import User
+from sag_api.db.models import DocumentTreeNode
 from sag_api.jobs import JobQueue
 from sag_api.mcp.server import MCP_TOOL_DETAILS, MCP_TOOL_NAMES
 from sag_api.sag import EngineManager
 from sag_api.schemas.common import Ok
 from sag_api.schemas.job import JobOut
 from sag_api.schemas.document import DocumentOut, IngestRequest
+from sag_api.schemas.document_v2 import DocumentTreeOut, NodeContentOut, TreeNodeOut
 from sag_api.schemas.source import ConnectorOut, SourceCreate, SourceOut, SourceUpdate
 from sag_api.services.source_service import (
     create_source,
@@ -23,8 +26,15 @@ from sag_api.services.source_service import (
     sync_source,
     update_source,
 )
+from sag_api.services.document_structure_service import hydrate_node_content
 
 router = APIRouter(prefix="/sources", tags=["sources"])
+
+
+def _heading_path(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [part.strip() for part in value.split(">") if part.strip()]
 
 
 # Lưu ý: route tĩnh phải được khai báo trước /{source_id}
@@ -44,8 +54,11 @@ async def ingest_by_ticker(
 ) -> DocumentOut:
     """Nạp tài liệu tự động theo mã cổ phiếu. Tự động khởi tạo Nguồn BCTC_{TICKER} nếu chưa có."""
     from sag_api.core.config import settings
+    from sag_api.core.errors import ValidationError
     from sag_api.services.document_service import ingest_content
 
+    if body.doc_role is None:
+        raise ValidationError("doc_role là bắt buộc khi nạp tài liệu theo ticker")
     source = await get_or_create_source_by_ticker(session, ticker, engine_manager=engine_manager)
     document = await ingest_content(
         session,
@@ -102,6 +115,107 @@ async def upload_by_ticker(
         fiscal_quarter=fiscal_quarter,
     )
     return DocumentOut.model_validate(document)
+
+
+@router.get("/by-ticker/{ticker}/documents/{document_id}/tree", response_model=DocumentTreeOut)
+async def get_document_tree_by_ticker(
+    ticker: str,
+    document_id: str,
+    _user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+    engine_manager: EngineManager = Depends(get_engine_manager),
+) -> DocumentTreeOut:
+    """Cây kiến trúc deterministic của một tài liệu v2, không phụ thuộc output LLM."""
+    from sag_api.core.errors import ConflictError, NotFoundError
+    from sag_api.services.document_service import get_document
+
+    source = await get_or_create_source_by_ticker(session, ticker, engine_manager=engine_manager)
+    document = await get_document(session, source, document_id)
+    if document.structure_status != "COMPLETE":
+        raise ConflictError("Cây tài liệu chưa sẵn sàng")
+    rows = (
+        await session.execute(
+            select(DocumentTreeNode)
+            .where(DocumentTreeNode.document_id == document.id)
+            .order_by(DocumentTreeNode.order_index)
+        )
+    ).scalars().all()
+    if not rows:
+        raise NotFoundError("Cây tài liệu không tồn tại")
+    return DocumentTreeOut(
+        document_id=document.id,
+        source_id=source.id,
+        ticker=ticker.upper().strip(),
+        doc_role=document.doc_role,
+        processing_version=document.processing_version,
+        structure_status=document.structure_status,
+        coverage=document.coverage or {},
+        nodes=[
+            TreeNodeOut(
+                node_id=row.node_id,
+                parent_id=row.parent_id,
+                level=row.level,
+                order=row.order_index,
+                heading=row.heading,
+                heading_path=_heading_path(row.heading_path),
+                node_kind=row.node_kind,
+                start_line=row.start_line,
+                end_line=row.end_line,
+                content_hash=row.content_hash,
+                summary=row.summary,
+                relevance=row.relevance_json or {},
+                metadata=row.metadata_json or {},
+            )
+            for row in rows
+        ],
+    )
+
+
+@router.get("/by-ticker/{ticker}/documents/{document_id}/nodes/{node_id}/content", response_model=NodeContentOut)
+async def get_document_node_content_by_ticker(
+    ticker: str,
+    document_id: str,
+    node_id: str,
+    _user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+    engine_manager: EngineManager = Depends(get_engine_manager),
+) -> NodeContentOut:
+    """Hydrate nội dung node nguyên văn từ Markdown bằng line span."""
+    from sag_api.core.errors import NotFoundError
+    from sag_api.parsing.text import read_text_file
+    from sag_api.services.document_service import get_document
+    from sag_api.services.document_structure_service import sha256_text
+
+    source = await get_or_create_source_by_ticker(session, ticker, engine_manager=engine_manager)
+    document = await get_document(session, source, document_id)
+    node = await session.scalar(
+        select(DocumentTreeNode).where(
+            DocumentTreeNode.document_id == document.id,
+            DocumentTreeNode.node_id == node_id,
+        )
+    )
+    if node is None:
+        raise NotFoundError("Node tài liệu không tồn tại")
+    markdown = None
+    if document.sag_source_id:
+        markdown = await engine_manager.get_document_markdown(
+            source.sag_source_config_id,
+            document.sag_source_id,
+            source=source,
+        )
+    if markdown is None:
+        markdown = read_text_file(document.storage_path).text
+    content = hydrate_node_content(markdown, node)
+    return NodeContentOut(
+        document_id=document.id,
+        node_id=node.node_id,
+        heading=node.heading,
+        heading_path=_heading_path(node.heading_path),
+        start_line=node.start_line,
+        end_line=node.end_line,
+        content_hash=sha256_text(content),
+        content=content,
+    )
 
 
 

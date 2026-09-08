@@ -674,7 +674,7 @@ export function PetMiniWorkspace({
       setAnswerHistoryOpen(false);
       setDetailTrail([]);
       setAnswerDraft({ id: target.request_id, text: target.prompt });
-      enterExploreMode("answer");
+      enterExploreMode("search");
     };
     const pending = takePendingUniverseAsk();
     if (pending) openAsk(pending);
@@ -829,7 +829,7 @@ export function PetMiniWorkspace({
         )[0]?.id
       : null;
     if (!preferredThreadId) {
-      if (workspaceSection === "answer" && !answerSessionId) {
+      if (workspaceSection === "search" && !answerSessionId) {
         setAnswerSessionId(conversationRuntime.createDraft({ activate: true }));
       }
       return;
@@ -839,7 +839,7 @@ export function PetMiniWorkspace({
   }, [answerSessionId, conversationRuntime, routeThreadId, threads, workspaceSection]);
 
   React.useEffect(() => {
-    if (workspaceSection !== "answer" || !answerSessionId) return;
+    if (workspaceSection !== "search" || !answerSessionId) return;
     conversationRuntime.activate(answerSessionId);
     void conversationRuntime.ensureHistory(answerSessionId);
   }, [answerSessionId, conversationRuntime, workspaceSection]);
@@ -1187,11 +1187,11 @@ export function PetMiniWorkspace({
           "min-h-0 flex-1",
           (panelView === "assistant-settings"
             || detailTarget
-            || workspaceSection !== "answer") && "hidden",
+            || workspaceSection !== "search") && "hidden",
         )}
         aria-hidden={panelView === "assistant-settings"
           || Boolean(detailTarget)
-          || workspaceSection !== "answer"}
+          || workspaceSection !== "search"}
       >
         <div className="relative flex h-full min-h-0 flex-col">
           <div className="flex h-11 shrink-0 items-center gap-1.5 border-b px-3">
@@ -1232,7 +1232,7 @@ export function PetMiniWorkspace({
                 sessionId={answerSessionId}
                 active={panelView === "workspace"
                   && !detailTarget
-                  && workspaceSection === "answer"}
+                  && workspaceSection === "search"}
                 showPromptPreview={false}
                 avatarNode={(
                   <PetHeadAvatar

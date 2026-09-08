@@ -7,6 +7,7 @@ working while waiting for upstream package releases.
 from __future__ import annotations
 
 import copy
+import json
 from typing import Any
 
 from sag_api.core.logging import get_logger
@@ -150,6 +151,127 @@ def _repair_extract_response(result: Any) -> set[str]:
     return repaired
 
 
+_VIETNAMESE_FINANCIAL_FEW_SHOT_INPUT = json.dumps(
+    {
+        "type": "request",
+        "data": {
+            "items": [
+                {
+                    "id": 1,
+                    "content": (
+                        "BÁO CÁO TÀI CHÍNH CÔNG TY CỔ PHẦN TẬP ĐOÀN ABC (MÃ CK: ABC)\n"
+                        "Thuyết minh 4: Đầu tư vào các công ty con và công ty liên kết\n"
+                        "Tại ngày 30/06/2026, Tập đoàn ABC sở hữu các công ty con sau:\n"
+                        "1. CTCP Công nghệ & Dịch vụ Số ABC-Tech: Tỷ lệ sở hữu 84,5357%, tỷ lệ biểu quyết 84,9992%, giá trị vốn góp 2.500.000.000.000 VND.\n"
+                        "2. CTCP Sản xuất & Phát triển Dự án ABC-Core: Tỷ lệ sở hữu 99,99%, tỷ lệ biểu quyết 99,99%, giá trị vốn góp 30.000.000.000.000 VND.\n\n"
+                        "Thuyết minh 15: Vay và nợ thuê tài chính\n"
+                        "- Vay ngắn hạn Ngân hàng Thương mại X: 5.200.000.000.000 VND, lãi suất 5,5%/năm, đảm bảo bằng tài sản tương đương.\n"
+                        "- Vay dài hạn Ngân hàng Thương mại Y: 8.500.000.000.000 VND phục vụ Dự án Trọng điểm ABC, thời hạn 7 năm.\n\n"
+                        "Thuyết minh 22: Kết quả kinh doanh\n"
+                        "- Doanh thu thuần: 39.500.000.000.000 VND (tăng 25% so với cùng kỳ).\n"
+                        "- Lợi nhuận sau thuế (LNST): 3.200.000.000.000 VND (tăng 38% so với cùng kỳ)."
+                    ),
+                }
+            ],
+            "meta": {
+                "source_type": "article",
+                "source_title": "BCTC Q2.2026 ABC - Thuyết minh Báo cáo Tài chính",
+                "source_summary": "Báo cáo tài chính quý 2 năm 2026 của Tập đoàn ABC",
+                "entity_types": [
+                    {"type": "TICKER", "description": "Mã cổ phiếu niêm yết"},
+                    {"type": "SUBSIDIARY_AFFILIATE", "description": "Công ty con, công ty liên kết"},
+                    {"type": "COMPANY", "description": "Ngân hàng, đối tác, pháp nhân"},
+                    {"type": "PROJECT_CAPACITY", "description": "Dự án năng lực sản xuất / công nghệ trọng điểm"},
+                    {"type": "FINANCIAL_METRIC", "description": "Chỉ số tài chính"},
+                ],
+            },
+        },
+    },
+    ensure_ascii=False,
+)
+
+_VIETNAMESE_FINANCIAL_FEW_SHOT_OUTPUT = json.dumps(
+    {
+        "type": "response",
+        "data": {
+            "items": [
+                {
+                    "title": "ABC - Cơ cấu Công ty con & Tỷ lệ Sở hữu/Biểu quyết Q2.2026",
+                    "summary": "Tập đoàn ABC nắm giữ 84,5357% vốn tại CTCP Công nghệ & Dịch vụ Số ABC-Tech và 99,99% tại CTCP Sản xuất & Phát triển Dự án ABC-Core",
+                    "content": (
+                        "Tại ngày 30/06/2026, Tập đoàn ABC sở hữu các công ty con trọng yếu:\n\n"
+                        "| Tên công ty con | Tỷ lệ sở hữu | Tỷ lệ biểu quyết | Giá trị vốn góp (VND) |\n"
+                        "| :--- | :--- | :--- | :--- |\n"
+                        "| CTCP Công nghệ & Dịch vụ Số ABC-Tech | 84,5357% | 84,9992% | 2.500.000.000.000 |\n"
+                        "| CTCP Sản xuất & Phát triển Dự án ABC-Core | 99,99% | 99,99% | 30.000.000.000.000 |"
+                    ),
+                    "category": "OWNERSHIP_CHANGE",
+                    "keywords": ["ABC", "Tập đoàn ABC", "ABC-Tech", "ABC-Core", "công ty con", "tỷ lệ sở hữu 84,5357%"],
+                    "priority": "HIGH",
+                    "status": "COMPLETED",
+                    "references": [1],
+                    "is_valid": True,
+                    "entities": [
+                        {"type": "TICKER", "name": "ABC", "description": "Công ty Cổ phần Tập đoàn ABC"},
+                        {"type": "SUBSIDIARY_AFFILIATE", "name": "CTCP Công nghệ & Dịch vụ Số ABC-Tech", "description": "Công ty con do ABC nắm giữ 84,5357% vốn, 84,9992% biểu quyết"},
+                        {"type": "SUBSIDIARY_AFFILIATE", "name": "CTCP Sản xuất & Phát triển Dự án ABC-Core", "description": "Công ty con do ABC nắm giữ 99,99% vốn"},
+                    ],
+                    "children": [],
+                },
+                {
+                    "title": "ABC - Thuyết minh Vay ngắn hạn và dài hạn Ngân hàng Q2.2026",
+                    "summary": "Dư nợ vay ngắn hạn 5.200 tỷ VND tại Ngân hàng Thương mại X và vay dài hạn 8.500 tỷ VND tại Ngân hàng Thương mại Y cho Dự án Trọng điểm ABC",
+                    "content": (
+                        "Tình hình nợ vay của ABC tại Q2.2026:\n"
+                        "- Vay ngắn hạn Ngân hàng Thương mại X: 5.200.000.000.000 VND, lãi suất 5,5%/năm.\n"
+                        "- Vay dài hạn Ngân hàng Thương mại Y: 8.500.000.000.000 VND, thời hạn 7 năm phục vụ Dự án Trọng điểm ABC."
+                    ),
+                    "category": "DEBT_RESTRUCTURING",
+                    "keywords": ["ABC", "vay nợ", "Ngân hàng Thương mại X", "Ngân hàng Thương mại Y", "Dự án Trọng điểm ABC", "lãi suất"],
+                    "priority": "HIGH",
+                    "status": "COMPLETED",
+                    "references": [1],
+                    "is_valid": True,
+                    "entities": [
+                        {"type": "TICKER", "name": "ABC", "description": "Bên đi vay"},
+                        {"type": "COMPANY", "name": "Ngân hàng Thương mại X", "description": "Ngân hàng cho vay ngắn hạn 5.200 tỷ VND"},
+                        {"type": "COMPANY", "name": "Ngân hàng Thương mại Y", "description": "Ngân hàng cho vay dài hạn 8.500 tỷ VND"},
+                        {"type": "PROJECT_CAPACITY", "name": "Dự án Trọng điểm ABC", "description": "Dự án nhận giải ngân vốn vay dài hạn"},
+                    ],
+                    "children": [],
+                },
+                {
+                    "title": "ABC - Kết quả Hoạt động Kinh doanh & Doanh thu - Lợi nhuận Q2.2026",
+                    "summary": "Doanh thu thuần đạt 39.500 tỷ VND (+25%), LNST đạt 3.200 tỷ VND (+38% so với cùng kỳ)",
+                    "content": (
+                        "Kết quả kinh doanh quý 2 năm 2026 của ABC ghi nhận tăng trưởng mạnh:\n"
+                        "- Doanh thu thuần: 39.500.000.000.000 VND (tăng trưởng 25% so với cùng kỳ).\n"
+                        "- Lợi nhuận sau thuế (LNST): 3.200.000.000.000 VND (tăng trưởng 38% so với cùng kỳ)."
+                    ),
+                    "category": "REVENUE_EBITDA_SHOCK",
+                    "keywords": ["ABC", "Doanh thu thuần", "LNST", "Lợi nhuận sau thuế", "Q2.2026"],
+                    "priority": "HIGH",
+                    "status": "COMPLETED",
+                    "references": [1],
+                    "is_valid": True,
+                    "entities": [
+                        {"type": "TICKER", "name": "ABC", "description": "Mã cổ phiếu công bố kết quả kinh doanh"},
+                        {"type": "FINANCIAL_METRIC", "name": "Doanh thu thuần", "description": "39.500 tỷ VND (+25%)"},
+                        {"type": "FINANCIAL_METRIC", "name": "LNST", "description": "Lợi nhuận sau thuế 3.200 tỷ VND (+38%)"},
+                    ],
+                    "children": [],
+                },
+            ],
+            "meta": {
+                "reason": "Phân rã thành 3 sự kiện tài chính độc lập trong data.items theo từng chủ đề nghiệp vụ cốt lõi: 1) Cơ cấu sở hữu và công ty con (giữ nguyên tỷ lệ 84,5357%); 2) Tình hình vay nợ ngân hàng; 3) Kết quả kinh doanh. Bảng biểu Markdown được giữ nguyên vẹn.",
+                "confidence": 0.98,
+            },
+        },
+    },
+    ensure_ascii=False,
+)
+
+
 def install_zleap_sag_extract_compat() -> None:
     """Allow event extraction to accept minor omissions in model output.
 
@@ -166,6 +288,64 @@ def install_zleap_sag_extract_compat() -> None:
 
     from zleap.sag.modules.extract.processor import EventProcessor
 
+    # 0. Patch EventSaver to expand embedding_max_length to 4000 chars (prevent table truncation in vector store)
+    try:
+        from zleap.sag.modules.extract.saver import EventSaver
+
+        if not getattr(EventSaver._batch_sync_events, "_sag_api_expand_embed_len", False):
+            orig_batch_sync_events = EventSaver._batch_sync_events
+
+            async def _patched_batch_sync_events(self: Any, events: list[Any], config: Any) -> dict[str, Any]:
+                if hasattr(config, "embedding_max_length"):
+                    object.__setattr__(config, "embedding_max_length", 4000)
+                return await orig_batch_sync_events(self, events, config)
+
+            _patched_batch_sync_events._sag_api_expand_embed_len = True  # type: ignore[attr-defined]
+            EventSaver._batch_sync_events = _patched_batch_sync_events
+    except Exception:  # pragma: no cover
+        pass
+
+    # 1. Patch _build_system_prompt to use pure Vietnamese Financial prompt if custom_requirements present
+    if not getattr(EventProcessor._build_system_prompt, "_sag_api_vi_sysprompt", False):
+        orig_build_system_prompt = EventProcessor._build_system_prompt
+
+        def _patched_build_system_prompt(self: Any) -> str:
+            custom_reqs = getattr(self.config, "custom_requirements", "") or ""
+            if (
+                "CHUYÊN GIA PHÂN TÍCH TÀI CHÍNH" in custom_reqs
+                or "QUY TẮC BẮT BUỘC" in custom_reqs
+                or "QUY TẮC SAG v2" in custom_reqs
+            ):
+                return (
+                    "## VAI TRÒ\n"
+                    "Bạn là Chuyên gia Phân tích Tài chính Cấp cao & Trưởng phòng Phân tích Chứng khoán (Senior Equity Research Analyst) "
+                    "hàng đầu tại Thị trường Chứng khoán Việt Nam.\n"
+                    "Nhiệm vụ: đọc tài liệu BCTC/BCQT đầy đủ và xuất manifest ngắn gồm sự kiện, thực thể, fact định lượng và quan hệ có evidence. "
+                    "Không chép lại toàn bộ Markdown hoặc bảng; nội dung gốc được SAG v2 hydrate bằng line span. "
+                    "Không ép một heading thành một event; chỉ tạo item khi có thông tin phân tích rõ. "
+                    "Không tự suy diễn điểm MOAT/GIL hoặc PASS khi thiếu evidence.\n\n"
+                    f"{custom_reqs}\n"
+                )
+            return orig_build_system_prompt(self)
+
+        _patched_build_system_prompt._sag_api_vi_sysprompt = True  # type: ignore[attr-defined]
+        EventProcessor._build_system_prompt = _patched_build_system_prompt
+
+    # 2. Patch _build_messages to remove few-shot anchoring for SAG v2 full-document extraction.
+    if not getattr(EventProcessor._build_messages, "_sag_api_vi_fewshot", False):
+        def _patched_build_messages(self: Any, system_prompt: str, user_input: dict[str, Any]) -> list[Any]:
+            from zleap.sag.core.ai.models import LLMMessage, LLMRole
+
+            messages = [
+                LLMMessage(role=LLMRole.SYSTEM, content=system_prompt),
+                LLMMessage(role=LLMRole.USER, content=json.dumps(user_input, ensure_ascii=False)),
+            ]
+            log.info("Xây dựng prompt SAG v2 không dùng few-shot tài chính 3 sự kiện")
+            return messages
+
+        _patched_build_messages._sag_api_vi_fewshot = True  # type: ignore[attr-defined]
+        EventProcessor._build_messages = _patched_build_messages
+
     current = EventProcessor._call_llm_with_retry
     if getattr(current, "_sag_api_extract_meta_compat", False):
         return
@@ -174,6 +354,21 @@ def install_zleap_sag_extract_compat() -> None:
         active_schema = schema
         if _looks_like_extract_response_schema(schema):
             active_schema = _relax_extract_schema(schema)
+
+        # Defensive check: Replace any remaining Chinese news few-shot with Vietnamese financial few-shot
+        from zleap.sag.core.ai.models import LLMMessage, LLMRole
+        cleaned_messages = []
+        for msg in messages:
+            content = getattr(msg, "content", "")
+            if isinstance(content, str) and ("AI大模型" in content or "OpenAI与谷歌" in content):
+                if msg.role == LLMRole.USER:
+                    cleaned_messages.append(LLMMessage(role=LLMRole.USER, content=_VIETNAMESE_FINANCIAL_FEW_SHOT_INPUT))
+                elif msg.role == LLMRole.ASSISTANT:
+                    cleaned_messages.append(LLMMessage(role=LLMRole.ASSISTANT, content=_VIETNAMESE_FINANCIAL_FEW_SHOT_OUTPUT))
+                continue
+            cleaned_messages.append(msg)
+        messages = cleaned_messages
+
         import litellm
         litellm.request_timeout = 300.0
         if hasattr(getattr(self.llm_client, "config", None), "timeout"):
@@ -225,7 +420,7 @@ def install_zleap_sag_extract_compat() -> None:
 # Entity types seeded by zleap-sag on a fresh database.  zleap-sag ships them
 # with Chinese descriptions; we override the module constant so new databases
 # seed Vietnamese labels/descriptions instead.
-_VIETNAMESE_DEFAULT_ENTITY_TYPES: list[tuple[str, str, str]] = [
+_BASE_ENTITY_TYPES: list[tuple[str, str, str]] = [
     ("person", "Người", "Người / cá nhân"),
     ("organization", "Tổ chức", "Tổ chức / cơ quan / công ty"),
     ("location", "Địa điểm", "Địa điểm / vị trí địa lý"),
@@ -237,6 +432,15 @@ _VIETNAMESE_DEFAULT_ENTITY_TYPES: list[tuple[str, str, str]] = [
     ("technology", "Công nghệ", "Công nghệ / phương pháp / công cụ"),
     ("metric", "Chỉ số", "Chỉ số / giá trị / thước đo"),
 ]
+
+from sag_api.sag.financial_ontology import FinancialEntityType, _ENTITY_TYPE_DESCRIPTIONS
+
+_FINANCIAL_ENTITY_TYPES: list[tuple[str, str, str]] = [
+    (e.value, e.value, _ENTITY_TYPE_DESCRIPTIONS.get(e.value, e.value))
+    for e in FinancialEntityType
+]
+
+_VIETNAMESE_DEFAULT_ENTITY_TYPES: list[tuple[str, str, str]] = _BASE_ENTITY_TYPES + _FINANCIAL_ENTITY_TYPES
 
 # Search-chain NER / rerank prompts are hardcoded English module constants in
 # zleap-sag.  We replace them with Vietnamese translations so every user-facing
@@ -329,13 +533,32 @@ def _install_vietnamese_entity_types_seed() -> None:
                     .scalars()
                     .all()
                 )
+                existing_types = {et.type: et for et in rows}
                 changed = False
-                for et in rows:
-                    target = vi_map.get(et.type)
-                    if target and (et.name != target[0] or et.description != target[1]):
-                        et.name = target[0]
-                        et.description = target[1]
+                import uuid
+                from decimal import Decimal
+                for t, name, desc in _VIETNAMESE_DEFAULT_ENTITY_TYPES:
+                    if t not in existing_types:
+                        session.add(
+                            EntityType(
+                                id=str(uuid.uuid4()),
+                                scope="global",
+                                type=t,
+                                name=name,
+                                description=desc,
+                                weight=Decimal("1.00"),
+                                similarity_threshold=Decimal("0.800"),
+                                is_active=True,
+                                is_default=True,
+                            )
+                        )
                         changed = True
+                    else:
+                        et = existing_types[t]
+                        if et.name != name or et.description != desc:
+                            et.name = name
+                            et.description = desc
+                            changed = True
                 if changed:
                     await session.commit()
         except Exception:  # pragma: no cover - best effort

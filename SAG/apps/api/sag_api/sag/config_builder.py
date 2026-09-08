@@ -20,10 +20,16 @@ _PLACEHOLDER = "not-configured"
 def build_engine_config(settings: Settings, *, overrides: dict[str, Any] | None = None) -> EngineConfig:
     overrides = overrides or {}
 
+    model_name = settings.routed_extraction_llm_model
+    for prefix in ("openai/", "azure/", "anthropic/", "gemini/"):
+        if model_name.startswith(prefix):
+            model_name = model_name[len(prefix):]
+            break
+
     llm = LLMConfig(
         api_key=settings.effective_extraction_llm_api_key or _PLACEHOLDER,
-        model=settings.routed_extraction_llm_model,
-        provider="litellm",
+        model=model_name,
+        provider="openai",
         base_url=settings.effective_extraction_llm_base_url,
         temperature=settings.effective_llm_temperature,
         max_tokens=settings.llm_max_tokens,

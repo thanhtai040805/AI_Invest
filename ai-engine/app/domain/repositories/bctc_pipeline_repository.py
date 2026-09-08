@@ -29,7 +29,17 @@ class BctcPipelineRepository:
 
     @staticmethod
     def make_record_id(ticker: str, year: int, quarter: Any, scope: str = "CONSOLIDATED") -> str:
-        q_str = f"Q{quarter}" if str(quarter).isdigit() else str(quarter).upper()
+        q_clean = str(quarter).upper().strip() if quarter is not None else ""
+        if q_clean in ("YEAR", "ANNUAL", "FY", "0") or quarter == 0:
+            q_str = "YEAR"
+        elif q_clean in ("6M", "H1", "6") or quarter == 6:
+            q_str = "6M"
+        elif q_clean.isdigit():
+            q_str = f"Q{q_clean}"
+        elif q_clean.startswith("Q"):
+            q_str = q_clean
+        else:
+            q_str = q_clean or "YEAR"
         return f"{ticker.upper().strip()}_{year}_{q_str}_{scope.upper().strip()}"
 
     def get_record(
@@ -119,7 +129,7 @@ class BctcPipelineRepository:
         self,
         ticker: str,
         year: int,
-        quarter: int,
+        quarter: Any,
         scope: str,
         total_raw_pages: int,
         retained_pages: int,
@@ -133,7 +143,17 @@ class BctcPipelineRepository:
     ) -> None:
         """Lưu hoặc cập nhật trạng thái sau khi Classifier cắt tỉa và upload PDF lên R2 thành công."""
         rec_id = self.make_record_id(ticker, year, quarter, scope)
-        q_num = int(quarter) if str(quarter).isdigit() else 4
+        q_clean = str(quarter).upper().strip() if quarter is not None else ""
+        if q_clean in ("YEAR", "ANNUAL", "FY", "0") or quarter == 0:
+            q_num = 0
+        elif q_clean in ("6M", "H1", "6") or quarter == 6:
+            q_num = 6
+        elif q_clean.isdigit():
+            q_num = int(q_clean)
+        elif q_clean.startswith("Q") and q_clean[1:].isdigit():
+            q_num = int(q_clean[1:])
+        else:
+            q_num = 0
 
         query = """
             INSERT INTO bctc_pipeline_records (
@@ -189,7 +209,7 @@ class BctcPipelineRepository:
         self,
         ticker: str,
         year: int,
-        quarter: int,
+        quarter: Any,
         scope: str,
         r2_md_key: str,
         r2_md_url: str,

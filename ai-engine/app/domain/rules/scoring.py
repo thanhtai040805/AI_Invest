@@ -111,9 +111,9 @@ class CSSScoringEngine:
     def _apply_gatekeeper(self, row: pd.Series) -> str:
         """Gatekeeper Rule: Check quality and audit/gil status before mapping to Conviction."""
         audit = row.get('audit_opinion', 'UNQUALIFIED')
-        gil = row.get('gil_flag', 'PASS')
+        gil = str(row.get('gil_flag') or 'DATA_INSUFFICIENT').upper()
         
-        if audit != 'UNQUALIFIED' or gil == 'CATASTROPHIC':
+        if audit != 'UNQUALIFIED' or gil in {'CATASTROPHIC', 'DATA_INSUFFICIENT', 'TECHNICAL_ERROR'}:
             return ConvictionLevel.E.value
             
         css = row['css']

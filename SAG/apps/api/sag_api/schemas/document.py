@@ -4,7 +4,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from sag_api.enums import DocumentStatus
+from sag_api.enums import DocumentRole, DocumentStatus
 
 
 class MessageItem(BaseModel):
@@ -21,10 +21,22 @@ class IngestRequest(BaseModel):
     text: str | None = None
     title: str | None = None
     messages: list[MessageItem] | None = Field(default=None)
-    doc_role: str | None = None  # "ANNUAL_BACKBONE" | "LATEST_QUARTER" | "GOVERNANCE_REPORT" | "ARCHIVED"
+    doc_role: DocumentRole | None = None
     is_active: bool = True
     fiscal_year: int | None = None
     fiscal_quarter: int | None = None
+
+    @field_validator("doc_role", mode="before")
+    @classmethod
+    def normalize_doc_role(cls, value: object) -> object:
+        if value is None or isinstance(value, DocumentRole):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().upper()
+            if not normalized:
+                return None
+            return normalized
+        return value
 
 
 class DocumentOut(BaseModel):
@@ -47,6 +59,13 @@ class DocumentOut(BaseModel):
     is_active: bool = True
     fiscal_year: int | None = None
     fiscal_quarter: int | None = None
+    content_sha256: str | None = None
+    processing_version: int = 1
+    structure_status: str = "PENDING"
+    extraction_status: str = "PENDING"
+    embedding_status: str = "PENDING"
+    fact_count: int = 0
+    coverage: dict | None = None
     created_at: datetime
     updated_at: datetime
 

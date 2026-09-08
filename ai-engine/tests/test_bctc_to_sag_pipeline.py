@@ -4,7 +4,7 @@ import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from app.domain.services.bctc_to_sag_pipeline import BctcToSagPipeline
+from app.domain.pipeline.bctc_to_sag_pipeline import BctcToSagPipeline
 from app.domain.services.document_selector import ActiveDocument, TickerDocumentSet
 
 
@@ -96,3 +96,46 @@ def test_bctc_to_sag_pipeline_mock_execution():
             pass
 
     asyncio.run(_test())
+
+
+def test_bctc_to_sag_pipeline_ocr_only():
+    """Kiểm tra Pipeline khi ocr_only=True: bỏ qua gọi GIL và không ghi cờ vào DB."""
+    async def _test():
+        ticker = "TEST_OCR_ONLY"
+
+        mock_selector = MagicMock()
+        mock_selector.select_active_documents.return_value = TickerDocumentSet(
+            ticker=ticker,
+            annual_audited=ActiveDocument(
+                doc_id=201,
+                ticker=ticker,
+                doc_type="financial_statement",
+                title="BCTC Kiểm Toán 2025",
+                published_date="2026-03-15",
+                pdf_url="https://r2.test/ann2.pdf",
+                role="ANNUAL_BACKBONE",
+                fiscal_year=2025,
+            ),
+        )
+
+        mock_connector = MagicMock()
+        mock_connector.ingest_bctc_document = AsyncMock(return_value={
+            "status": "SUCCESS",
+            "id": "doc_ocr_1",
+        })
+        mock_connector.get_gil_relationships = AsyncMock()
+
+        pipeline = BctcToSagPipeline(selector=mock_selector, connector=mock_connector)
+        result = await pipeline.process_ticker(
+            ticker=ticker,
+            mock_markdowns={"ANNUAL_BACKBONE": "# BCTC 2025 MD"},
+            ocr_only=True,
+        )
+
+        assert result["status"] == "OCR_COMPLETED"
+        assert result["gil_flag"] == "PENDING_GIL"
+        assert result["gil_result"] is None
+        assert mock_connector.get_gil_relationships.await_count == 0
+
+    asyncio.run(_test())
+

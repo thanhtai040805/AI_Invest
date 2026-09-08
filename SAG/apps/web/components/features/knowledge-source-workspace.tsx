@@ -5,6 +5,8 @@ import { ArrowLeft, FileText, Plus, RefreshCw, RotateCw } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { AnimatePresence, motion } from "motion/react";
 
+import { api, ApiError } from "@/lib/api";
+import type { GilAssessment, MoatAssessment, Source } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useApp } from "@/components/features/app-shell";
 import { CompactDocumentDetailWorkspace } from "@/components/features/document-detail-workspace";
@@ -16,6 +18,101 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 
 type SourceScreen = "documents" | "add";
+
+function tickerFromSource(source: Source | null): string | null {
+  const raw = source?.name?.trim();
+  if (!raw) return null;
+  const match = /^BCTC[_\s-]+([A-Z0-9]{2,12})$/i.exec(raw) ?? /^([A-Z0-9]{2,12})$/i.exec(raw);
+  return match?.[1]?.toUpperCase() ?? null;
+}
+
+function formatScore(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "n/a";
+  return value.toFixed(1);
+}
+
+function formatPercent(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "n/a";
+  const normalized = value <= 1 ? value * 100 : value;
+  return `${Math.max(0, Math.min(100, normalized)).toFixed(0)}%`;
+}
+
+function SourceV2Analysis({ source }: { source: Source | null }) {
+  const ticker = tickerFromSource(source);
+  const [moat, setMoat] = React.useState<MoatAssessment | null>(null);
+  const [gil, setGil] = React.useState<GilAssessment | null>(null);
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState("");
+
+  React.useEffect(() => {
+    if (!ticker) {
+      setMoat(null);
+      setGil(null);
+      setError("");
+      setLoading(false);
+      return;
+    }
+    let alive = true;
+    const controller = new AbortController();
+    setLoading(true);
+    setError("");
+    Promise.all([
+      api.getMoatByTicker(ticker, controller.signal),
+      api.getGilByTicker(ticker, controller.signal),
+    ])
+      .then(([nextMoat, nextGil]) => {
+        if (!alive) return;
+        setMoat(nextMoat);
+        setGil(nextGil);
+      })
+      .catch((reason) => {
+        if (!alive || controller.signal.aborted) return;
+        setMoat(null);
+        setGil(null);
+        setError(reason instanceof ApiError ? reason.message : "Không tải được MOAT/GIL v2.");
+      })
+      .finally(() => alive && setLoading(false));
+    return () => {
+      alive = false;
+      controller.abort();
+    };
+  }, [ticker]);
+
+  if (!ticker) return null;
+
+  return (
+    <div className="mb-2 rounded-lg border bg-card/80 p-2.5 text-xs">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="font-medium">SAG v2 · {ticker}</span>
+        {loading && <span className="text-muted-foreground">loading</span>}
+      </div>
+      {error ? (
+        <p className="text-destructive">{error}</p>
+      ) : (
+        <div className="grid gap-2 sm:grid-cols-2">
+          <div className="rounded-md bg-muted/50 p-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-muted-foreground">MOAT</span>
+              <span>{moat?.assessment_status ?? "n/a"}</span>
+            </div>
+            <div className="mt-1 text-[11px] text-muted-foreground">
+              score {formatScore(moat?.moat_score)} · coverage {formatPercent(moat?.coverage_ratio)}
+            </div>
+          </div>
+          <div className="rounded-md bg-muted/50 p-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-muted-foreground">GIL</span>
+              <span>{gil?.gil_flag ?? "n/a"}</span>
+            </div>
+            <div className="mt-1 text-[11px] text-muted-foreground">
+              status {gil?.analysis_status ?? "n/a"} · cycles {gil?.cycles_detected ?? 0} · RPT {formatPercent(gil?.rpt_ratio)}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function KnowledgeSourceWorkspace({
   sourceId,
@@ -201,6 +298,7 @@ export function KnowledgeSourceWorkspace({
                 )}
               </div>
             )}
+            <SourceV2Analysis source={source} />
             {notFound ? (
               <div className="flex min-h-48 flex-col items-center justify-center px-6 text-center">
                 <p className="text-sm font-medium">{t("sourceNotFound")}</p>

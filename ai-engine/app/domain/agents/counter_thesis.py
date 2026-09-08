@@ -136,14 +136,14 @@ class CounterThesisAgent(BaseAgent):
                 logger.warning(f"Lỗi hydrate volume/vol_ma20 cho {ticker}: {e}")
 
         # 1. Truy vấn Dữ liệu Sở hữu chéo & Đồ thị GIL từ SAG Connector
-        gil_flag = "PASS"
+        gil_flag = "DATA_INSUFFICIENT"
         ocr_score = 0.0
         cycles_detected = 0
         gil_error = None
 
         if "gil_info" in event_data or "gil_output" in event_data:
             gil_info = event_data.get("gil_info") or event_data.get("gil_output", {})
-            gil_flag = str(gil_info.get("gil_flag", "PASS")).upper()
+            gil_flag = str(gil_info.get("gil_flag") or "DATA_INSUFFICIENT").upper()
             ocr_score = float(gil_info.get("ocr_score", 0.0))
             cycles_detected = int(gil_info.get("cycles_detected", 0))
         elif "gil_status" in risk_overrides:
@@ -155,18 +155,18 @@ class CounterThesisAgent(BaseAgent):
         else:
             try:
                 gil_info = await sag_connector.get_gil_relationships(ticker)
-                status = str(gil_info.get("status", "")).upper()
-                flag = str(gil_info.get("gil_flag", "PASS")).upper()
-                if status == "FALLBACK" or flag == "DATA_ERROR":
-                    gil_flag = "DATA_ERROR"
-                    logger.warning(f"[CounterThesisAgent] Nhận trạng thái GIL FALLBACK/DATA_ERROR từ SAG cho {ticker}.")
+                status = str(gil_info.get("analysis_status") or gil_info.get("status") or "").upper()
+                flag = str(gil_info.get("gil_flag") or "DATA_INSUFFICIENT").upper()
+                if status in {"FALLBACK", "DATA_INSUFFICIENT"} or flag in {"DATA_ERROR", "DATA_INSUFFICIENT"}:
+                    gil_flag = "DATA_INSUFFICIENT"
+                    logger.warning(f"[CounterThesisAgent] Nhận trạng thái GIL thiếu dữ liệu từ SAG cho {ticker}.")
                 else:
                     gil_flag = flag
                     ocr_score = float(gil_info.get("ocr_score", 0.0))
                     cycles_detected = int(gil_info.get("cycles_detected", 0))
             except Exception as e:
                 logger.warning(f"Lỗi truy vấn GIL từ SAG cho {ticker}: {e}")
-                gil_flag = "DATA_ERROR"
+                gil_flag = "DATA_INSUFFICIENT"
                 gil_error = str(e)
 
         # 2. Truy vấn Beneish M-Score & Phải thu từ BeneishEngine
@@ -197,14 +197,14 @@ class CounterThesisAgent(BaseAgent):
 
         # 3. Chuẩn hóa Risk Features cho Base CTS (Đã loại bỏ Margin Tension)
         risk_features = {
-            "gil_risk": 100.0 if gil_flag in ["CATASTROPHIC", "DATA_ERROR"] else (60.0 if gil_flag == "WARNING" else ocr_score),
+            "gil_risk": 100.0 if gil_flag in ["CATASTROPHIC", "DATA_ERROR", "DATA_INSUFFICIENT"] else (60.0 if gil_flag == "WARNING" else ocr_score),
             "gil_status": gil_flag,
             "beneish_risk": float(risk_overrides.get("beneish_risk", beneish_risk)),
             "receivable_spike": float(risk_overrides.get("receivable_spike", receivable_spike)),
             "graph_rpt_risk": float(risk_overrides.get("graph_rpt_risk", 75.0 if cycles_detected > 0 else 20.0)),
             "macro_headwind": float(risk_overrides.get("macro_headwind", 40.0 if "BEAR" in str(market_data.get("current_regime", "")).upper() else 20.0)),
             "liquidity_stress": float(risk_overrides.get("liquidity_stress", 60.0 if float(market_data.get("breadth_above_ma50_pct", 50.0)) < 30.0 else 25.0)),
-            "missing_data": float(risk_overrides.get("missing_data", 80.0 if gil_flag == "DATA_ERROR" else 15.0)),
+            "missing_data": float(risk_overrides.get("missing_data", 80.0 if gil_flag in {"DATA_ERROR", "DATA_INSUFFICIENT"} else 15.0)),
         }
 
         # 4. Chạy toàn bộ quy trình phản biện qua CounterThesisEngine

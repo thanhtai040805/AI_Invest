@@ -458,7 +458,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     // A node click opens a detail preview inside the current exploration; it
     // must not silently switch the workspace to search/cumulative mode.
     const revealDetail = () => enterExploreMode();
-    const revealAsk = () => enterExploreMode("answer");
+    const revealAsk = () => enterExploreMode("search");
     window.addEventListener(UNIVERSE_DETAIL_EVENT, revealDetail);
     window.addEventListener(UNIVERSE_ASK_EVENT, revealAsk);
     return () => {
@@ -672,10 +672,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         enterExploreMode("search");
-      }
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "j") {
-        e.preventDefault();
-        enterExploreMode("answer");
       }
     };
     window.addEventListener("keydown", onKey);

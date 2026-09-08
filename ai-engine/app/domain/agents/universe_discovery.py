@@ -154,7 +154,7 @@ class UniverseDiscoveryAgent(BaseAgent):
                         str(r[0]).upper().strip(): {
                             "trading_status": str(r[1] or "NORMAL").upper().strip(),
                             "audit_opinion": str(r[2] or "UNQUALIFIED").upper().strip(),
-                            "gil_flag": str(r[3] or "PASS").upper().strip(),
+                            "gil_flag": str(r[3] or "DATA_INSUFFICIENT").upper().strip(),
                             "market_cap": float(r[4] or 0.0),
                             "industry": str(r[5] or "").strip(),
                         }
@@ -242,7 +242,7 @@ class UniverseDiscoveryAgent(BaseAgent):
                     "universe_group": UniverseGroup.EXCLUDED.value,
                     "trading_status": "HALTED",
                     "beneish_status": "UNKNOWN",
-                    "gil_flag": "UNKNOWN",
+                    "gil_flag": "DATA_INSUFFICIENT",
                 })
                 continue
 
@@ -260,7 +260,7 @@ class UniverseDiscoveryAgent(BaseAgent):
                     "universe_group": UniverseGroup.EXCLUDED.value,
                     "trading_status": db_status,
                     "beneish_status": "UNKNOWN",
-                    "gil_flag": "UNKNOWN",
+                    "gil_flag": "DATA_INSUFFICIENT",
                 })
                 continue
 
@@ -277,7 +277,7 @@ class UniverseDiscoveryAgent(BaseAgent):
                     "universe_group": UniverseGroup.EXCLUDED.value,
                     "trading_status": db_status,
                     "beneish_status": "UNKNOWN",
-                    "gil_flag": "UNKNOWN",
+                    "gil_flag": "DATA_INSUFFICIENT",
                 })
                 continue
 
@@ -296,7 +296,7 @@ class UniverseDiscoveryAgent(BaseAgent):
                     "universe_group": UniverseGroup.EXCLUDED.value,
                     "trading_status": db_status,
                     "beneish_status": "UNKNOWN",
-                    "gil_flag": "UNKNOWN",
+                    "gil_flag": "DATA_INSUFFICIENT",
                 })
                 continue
 
@@ -321,24 +321,24 @@ class UniverseDiscoveryAgent(BaseAgent):
                     "universe_group": UniverseGroup.EXCLUDED.value,
                     "trading_status": db_status,
                     "beneish_status": "UNKNOWN",
-                    "gil_flag": "UNKNOWN",
+                    "gil_flag": "DATA_INSUFFICIENT",
                 })
                 continue
 
             # 4.6 Kiểm tra cờ GIL (Graph Intelligence Layer)
-            gil_flag = meta.get("gil_flag", "PASS")
+            gil_flag = meta.get("gil_flag") or "DATA_INSUFFICIENT"
             if refresh_gil:
                 try:
                     gil_data = await sag_connector.get_gil_relationships(symbol)
-                    gil_flag = gil_data.get("gil_flag", gil_flag)
+                    gil_flag = gil_data.get("gil_flag") or gil_flag
                 except Exception as e:
                     logger.debug(f"Không thể refresh GIL từ SAG cho {symbol}: {e}")
 
-            if gil_flag == "CATASTROPHIC":
+            if gil_flag in {"CATASTROPHIC", "DATA_INSUFFICIENT", "TECHNICAL_ERROR"}:
                 exclusion_log.append({
                     "ticker": symbol,
-                    "reason": "GIL_CATASTROPHIC_CROSS_HOLDING",
-                    "detail": "Phát hiện chu trình sở hữu chéo hoặc rủi ro rút ruột vốn nghiêm trọng từ đồ thị GIL.",
+                    "reason": f"GIL_{gil_flag}",
+                    "detail": "GIL không đủ điều kiện để đưa vào universe mở vị thế mới.",
                 })
                 state_securities_to_save.append({
                     "ticker": symbol,
@@ -482,7 +482,7 @@ class UniverseDiscoveryAgent(BaseAgent):
                                 item["universe_group"][:16],
                                 item["trading_status"][:16],
                                 item["beneish_status"][:16],
-                                item["gil_flag"][:16],
+                                item["gil_flag"][:32],
                                 item["universe_group"][:16],
                                 item["ticker"][:16],
                             ),

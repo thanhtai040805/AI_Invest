@@ -27,7 +27,7 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
 
 function sectionLabel(
   pathname: string,
-  labels: { search: string; answer: string; knowledge: string; settings: string },
+  labels: { search: string; knowledge: string; settings: string },
 ): string {
   const workspaceSection = workspaceSectionFromPathname(pathname);
   if (workspaceSection) return labels[workspaceSection];
@@ -48,7 +48,6 @@ export function SiteHeader() {
   } = useApp();
   const label = sectionLabel(pathname, {
     search: nav("search"),
-    answer: nav("answer"),
     knowledge: nav("knowledge"),
     settings: nav("settings"),
   });
@@ -60,7 +59,7 @@ export function SiteHeader() {
         <BreadcrumbList>
           <BreadcrumbItem className="hidden sm:block">
             <BreadcrumbLink asChild>
-              <Link href="/chat">{PRODUCT_NAME}</Link>
+              <Link href="/knowledge">{PRODUCT_NAME}</Link>
             </BreadcrumbLink>
           </BreadcrumbItem>
           <BreadcrumbSeparator className="hidden sm:block" />

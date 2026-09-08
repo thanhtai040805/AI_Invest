@@ -17,12 +17,20 @@ from zleap.sag import DataEngine
 from zleap.sag.modules.extract.config import ExtractConfig
 from zleap.sag.modules.extract.extractor import EventExtractor
 from zleap.sag.modules.load.config import DocumentLoadConfig
+from zleap.sag.models.entity import CustomEntityType
 from zleap.sag.modules.load.loader import DocumentLoader
 from zleap.sag.modules.load.parser import MarkdownParser
+from zleap.sag.modules.load.chunking.types import ChunkDraft, ChunkingResult
 
 from sag_api.core.logging import get_logger
 from sag_api.sag.dto import ProcessCheckpoint, ProcessOutcome
-from sag_api.sag.financial_ontology import extract_fiscal_metadata, get_financial_extraction_prompt, infer_doc_type
+from sag_api.sag.financial_ontology import (
+    FinancialEntityType,
+    _ENTITY_TYPE_DESCRIPTIONS,
+    extract_fiscal_metadata,
+    get_financial_extraction_prompt,
+    infer_doc_type,
+)
 
 
 CheckpointCallback = Callable[[ProcessCheckpoint], Awaitable[None]]
@@ -35,19 +43,21 @@ _SQLITE_INTEGER_MIN = -(2**63)
 _SQLITE_INTEGER_MAX = 2**63 - 1
 
 _KNOWLEDGE_EVENT_REQUIREMENTS = """
-Đối với các tài liệu phi tin tức như sách, báo cáo, luận văn, "sự kiện" (观点、事实、定义) cũng bao gồm các quan điểm, sự kiện, định nghĩa,
-cơ chế, quan hệ nhân quả, luận chứng và kết luận có thể hiểu độc lập, không bắt buộc phải chứa ngày tháng, hành động nhân vật hay sự kiện tin tức.
-Chỉ các đoạn là mục lục, đầu trang/chân trang, quảng cáo, lỗi hiển thị, thuần liên kết, hoặc thực sự không liên quan đến chủ đề tài liệu mới có thể trả về kết quả rỗng;
-nội dung chính chỉ cần chứa tri thức dùng lại được là giữ ít nhất một sự kiện cấp cao hợp lệ.
-Mỗi thực thể phải dùng đúng {"type":"loại thực thể","name":"tên thực thể","description":"mô tả tác dụng"};
-cấm viết loại thực thể thành tên trường, ví dụ không được xuất
-{"location":"Trung Đông","name":"Trung Đông","description":"khu vực"}.
+QUY TẮC SAG v2 KHI TRÍCH XUẤT TÀI LIỆU BCTC/BCQT:
+1. Markdown gốc là nguồn dữ liệu bất biến. KHÔNG chép lại toàn bộ nội dung, KHÔNG chép lại toàn bộ bảng trong output.
+2. Output chỉ là manifest ngắn cho các facts/relations/entities quan trọng phục vụ MOAT và GIL. Trường content chỉ tóm tắt ngắn bằng tiếng Việt và nêu evidence anchor; nội dung chi tiết được hydrate bằng line span ở tầng SAG v2.
+3. Không bắt buộc một heading tạo một event. Chỉ tạo item khi có thông tin định lượng, quan hệ sở hữu/dòng vốn, giao dịch bên liên quan, quản trị, dự án/công suất, hoặc tín hiệu MOAT rõ ràng.
+4. Mỗi item phải có reference tới đoạn/mục thực tế trong tài liệu; nếu không xác minh được reference thì bỏ item đó.
+5. Taxonomy được phép dùng OTHER khi dữ liệu không khớp nhóm chuyên biệt; không ép dữ liệu mơ hồ thành quan hệ vốn.
+6. Không tự suy diễn điểm MOAT/GIL. Thiếu dữ liệu phải thể hiện là thiếu dữ liệu, không coi là PASS.
 """.strip()
 
 
 
 class _FallbackTitleMarkdownParser(MarkdownParser):
-    """Preserve Muse's logical filename when converted Markdown has no H1."""
+    """Preserve Muse's logical filename when converted Markdown has no H1.
+    Hỗ trợ chế độ 'full' gom toàn bộ tài liệu BCTC/BCQT thành ĐÚNG 1 CHUNK DUY NHẤT để xử lý 1 Prompt.
+    """
 
     def __init__(
         self,
@@ -55,14 +65,52 @@ class _FallbackTitleMarkdownParser(MarkdownParser):
         max_tokens: int = 1_000_000,
         chunk_mode: str = "standard",
     ) -> None:
-        super().__init__(max_tokens=max_tokens, chunk_mode=chunk_mode)
+        super().__init__(max_tokens=max_tokens, chunk_mode="standard")
         self._fallback_title = fallback_title.strip()
+        self._is_full_mode = (chunk_mode == "full" or max_tokens >= 200_000)
 
     def extract_title(self, content: str) -> str:
         title = super().extract_title(content)
         if title.strip().casefold() == "untitled" and self._fallback_title:
             return self._fallback_title
         return title
+
+    async def parse_content_with_plan_async(
+        self,
+        content: str,
+        source_path: Path | None = None,
+    ) -> ChunkingResult:
+        if self._is_full_mode:
+            result = await self.chunking_pipeline.run_async(content, source_path=source_path)
+            title = self.extract_title(content) or self._fallback_title or "Tài liệu tài chính"
+            all_section_indices = [s.order_index for s in result.article_sections]
+            full_chunk = ChunkDraft(
+                rank=0,
+                heading=title,
+                content=content,
+                raw_content=content,
+                chunk_type="FULL_DOCUMENT",
+                section_order_indices=all_section_indices,
+                metadata={"is_full_document": True, "title": title},
+            )
+            result.source_chunks = [full_chunk]
+            self._last_chunking_result = result
+            return result
+        elif self.chunk_mode == "heading_strict":
+            result = self._parse_content_heading_strict(content, source_path)
+        else:
+            result = await self.chunking_pipeline.run_async(content, source_path=source_path)
+        self._last_chunking_result = result
+        return result
+
+
+class _SAGDocumentLoader(DocumentLoader):
+    """DocumentLoader đảm bảo dùng đúng custom parser và không bị giới hạn hardcode 1000 tokens/chunk."""
+
+    async def load_file(self, *args: Any, **kwargs: Any) -> Any:
+        kwargs["max_tokens"] = None
+        kwargs["chunk_mode"] = None
+        return await super().load_file(*args, **kwargs)
 
 
 def _llm_chat_owner(client: Any) -> Any:
@@ -322,28 +370,18 @@ class IncrementalDocumentProcessor:
                 await on_stage("loading")
             
             is_full = self._chunk_mode == "full" or self._chunk_max_tokens >= 200_000
-            effective_chunk_mode = "standard" if is_full else self._chunk_mode
-            effective_max_tokens = max(self._chunk_max_tokens, 2_000_000) if is_full else self._chunk_max_tokens
+            parser_mode = "full" if is_full else self._chunk_mode
 
-            parser_inst = (
-                _FallbackTitleMarkdownParser(
-                    self._document_title,
-                    max_tokens=effective_max_tokens,
-                    chunk_mode=effective_chunk_mode,
-                )
-                if self._document_title
-                else MarkdownParser(
-                    max_tokens=effective_max_tokens,
-                    chunk_mode=effective_chunk_mode,
-                )
+            parser_inst = _FallbackTitleMarkdownParser(
+                fallback_title=self._document_title or "",
+                max_tokens=self._chunk_max_tokens,
+                chunk_mode=parser_mode,
             )
-            loader = DocumentLoader(parser=parser_inst)
+            loader = _SAGDocumentLoader(parser=parser_inst)
             loaded = await loader.load(
                 DocumentLoadConfig(
                     path=str(path),
                     source_config_id=self._source_config_id,
-                    max_tokens=effective_max_tokens,
-                    chunk_mode=effective_chunk_mode,
                 )
             )
             current.source_id = getattr(loaded, "source_id", None)
@@ -526,6 +564,14 @@ class IncrementalDocumentProcessor:
             f"{_KNOWLEDGE_EVENT_REQUIREMENTS}{meta_context}\n\n"
             f"{get_financial_extraction_prompt(self._doc_type, is_full_document=is_full)}"
         )
+        custom_entity_types = [
+            CustomEntityType(
+                type=e.value,
+                name=e.value,
+                description=_ENTITY_TYPE_DESCRIPTIONS.get(e.value, e.value),
+            )
+            for e in FinancialEntityType
+        ]
         try:
             events = await extractor.extract(
                 ExtractConfig(
@@ -533,6 +579,7 @@ class IncrementalDocumentProcessor:
                     chunk_ids=[chunk_id],
                     max_concurrency=1,
                     custom_requirements=prompt_requirements,
+                    custom_entity_types=custom_entity_types,
                     enable_strict_filtering=self._enable_strict_filtering,
                 )
             )

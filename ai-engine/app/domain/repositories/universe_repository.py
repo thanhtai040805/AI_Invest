@@ -66,7 +66,7 @@ class UniverseRepository:
                         "trading_status": str(r[6]) if r[6] else "NORMAL",
                         "beneish_status": str(r[7]) if r[7] else "PENDING",
                         "beneish_score": float(r[8]) if r[8] is not None else None,
-                        "gil_flag": str(r[9]) if r[9] else "PASS",
+                        "gil_flag": str(r[9]) if r[9] else "DATA_INSUFFICIENT",
                     }
                     for r in rows
                 ]
@@ -98,7 +98,7 @@ class UniverseRepository:
                     "trading_status": str(r[7]) if r[7] else "NORMAL",
                     "beneish_status": str(r[8]) if r[8] else "PENDING",
                     "beneish_score": float(r[9]) if r[9] is not None else None,
-                    "gil_flag": str(r[10]) if r[10] else "PASS",
+                    "gil_flag": str(r[10]) if r[10] else "DATA_INSUFFICIENT",
                 }
         except Exception as e:
             logger.warning(f"Lỗi khi đọc stock {symbol} ({e})")
@@ -137,7 +137,7 @@ class UniverseRepository:
         universe_group: str,
         trading_status: str = "NORMAL",
         beneish_status: str = "PASS",
-        gil_flag: str = "PASS",
+        gil_flag: str = "DATA_INSUFFICIENT",
     ) -> bool:
         """Lưu hoặc cập nhật trạng thái phân nhóm Universe của cổ phiếu vào bảng universe_securities."""
         ticker = ticker.upper().strip()

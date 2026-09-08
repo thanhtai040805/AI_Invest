@@ -1,0 +1,20 @@
+services:
+  sag-postgres:
+    image: pgvector/pgvector:pg16
+    container_name: sag-e2e-postgres
+    environment:
+      POSTGRES_DB: sag
+      POSTGRES_USER: sag
+      POSTGRES_PASSWORD: sag
+    ports:
+      - "55432:5432"
+    volumes:
+      - sag_e2e_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sag -d sag"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  sag_e2e_pgdata:

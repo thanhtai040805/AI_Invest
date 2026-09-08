@@ -26,11 +26,16 @@ const MAP: Record<
   }
 > = {
   pending: { variant: "outline", icon: CircleDashed },
+  QUEUED: { variant: "outline", icon: CircleDashed },
   loading: { variant: "secondary", icon: Loader2, spin: true },
   extracting: { variant: "secondary", icon: Loader2, spin: true },
+  PROCESSING: { variant: "secondary", icon: Loader2, spin: true },
   paused: { variant: "outline", icon: Pause },
   ready: { variant: "success", icon: Check },
+  READY: { variant: "success", icon: Check },
   failed: { variant: "destructive", icon: XCircle },
+  FAILED: { variant: "destructive", icon: XCircle },
+  CANCELLED: { variant: "outline", icon: XCircle },
   requeueing: { variant: "secondary", icon: RefreshCw, spin: true },
   pausing: { variant: "secondary", icon: Loader2, spin: true },
   resuming: { variant: "secondary", icon: Loader2, spin: true },

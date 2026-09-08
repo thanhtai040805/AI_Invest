@@ -41,12 +41,103 @@ class SourceStatus(StrEnum):
 
 
 class DocumentStatus(StrEnum):
-    PENDING = "pending"        # Đã đăng ký, chờ xử lý
-    LOADING = "loading"        # Đang ingest (phân tích → chia chunk → lưu trữ → vector)
-    EXTRACTING = "extracting"  # Đang extract (trích xuất sự kiện / thực thể)
-    PAUSED = "paused"          # Đã tạm dừng trích xuất, có thể tiếp tục từ điểm dừng chunk
-    READY = "ready"            # Xử lý xong, có thể truy vấn
-    FAILED = "failed"
+    QUEUED = "QUEUED"
+    PROCESSING = "PROCESSING"
+    READY = "READY"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+    # Legacy values kept only so old rows can still hydrate while v2 cuts over.
+    PENDING = "pending"
+    LOADING = "loading"
+    EXTRACTING = "extracting"
+    PAUSED = "paused"
+
+
+class DocumentRole(StrEnum):
+    ANNUAL_BACKBONE = "ANNUAL_BACKBONE"
+    LATEST_QUARTER = "LATEST_QUARTER"
+    GOVERNANCE_REPORT = "GOVERNANCE_REPORT"
+
+
+class ProcessingStageStatus(StrEnum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    COMPLETE = "COMPLETE"
+    INCOMPLETE = "INCOMPLETE"
+    EXTRACTION_INCOMPLETE = "EXTRACTION_INCOMPLETE"
+    FAILED = "FAILED"
+    SKIPPED_DUPLICATE = "SKIPPED_DUPLICATE"
+
+
+class EntityType(StrEnum):
+    ISSUER = "issuer"
+    SUBSIDIARY = "subsidiary"
+    AFFILIATE = "affiliate"
+    RELATED_PARTY = "related_party"
+    PERSON = "person"
+    BANK = "bank"
+    STATE_BODY = "state_body"
+    CUSTOMER = "customer"
+    SUPPLIER = "supplier"
+    PROJECT = "project"
+    BRAND = "brand"
+    OTHER = "other"
+
+
+class FactType(StrEnum):
+    EQUITY = "equity"
+    REVENUE = "revenue"
+    PROFIT = "profit"
+    CAPACITY = "capacity"
+    OWNERSHIP_BALANCE = "ownership_balance"
+    LOAN_BALANCE = "loan_balance"
+    RECEIVABLE_BALANCE = "receivable_balance"
+    PAYABLE_BALANCE = "payable_balance"
+    GUARANTEE_BALANCE = "guarantee_balance"
+    DIVIDEND = "dividend"
+    RELATED_PARTY_EXPOSURE = "related_party_exposure"
+    OTHER = "other"
+
+
+class RelationType(StrEnum):
+    OWNS = "owns"
+    INVESTS_IN = "invests_in"
+    LENDS_TO = "lends_to"
+    CREDITOR_OF = "creditor_of"
+    GUARANTEES_FOR = "guarantees_for"
+    TRANSACTS_WITH = "transacts_with"
+    MANAGES = "manages"
+    CONTROLS = "controls"
+    AFFILIATED_WITH = "affiliated_with"
+    OTHER = "other"
+
+
+class MoatPillar(StrEnum):
+    INTANGIBLES = "intangibles"
+    SWITCHING_COSTS = "switching_costs"
+    NETWORK_EFFECTS = "network_effects"
+    COST_ADVANTAGE = "cost_advantage"
+    EFFICIENT_SCALE = "efficient_scale"
+
+
+class AssessmentStatus(StrEnum):
+    COMPLETE = "COMPLETE"
+    PARTIAL = "PARTIAL"
+    INSUFFICIENT = "INSUFFICIENT"
+
+
+class GILFlag(StrEnum):
+    PASS = "PASS"
+    WARNING = "WARNING"
+    CATASTROPHIC = "CATASTROPHIC"
+    DATA_INSUFFICIENT = "DATA_INSUFFICIENT"
+
+
+class ValidationStatus(StrEnum):
+    PENDING = "PENDING"
+    VALIDATED = "VALIDATED"
+    REJECTED = "REJECTED"
+    NEEDS_REVIEW = "NEEDS_REVIEW"
 
 
 class JobType(StrEnum):

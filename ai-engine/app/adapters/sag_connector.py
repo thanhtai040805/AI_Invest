@@ -1,128 +1,84 @@
-"""SAG Connector Adapter (FastMCP & REST Bridge to d:/AIInvest/SAG)
+"""Typed SAG v2 REST connector.
 
 Module này chịu trách nhiệm:
-1. Kết nối an toàn sang phân hệ SAG (Smart Analytics & Graph).
-2. Thực hiện truy vấn RAG Moat AI (5 trụ cột + bằng chứng trích dẫn).
-3. Thực hiện truy vấn Đồ thị thực thể & sở hữu chéo GIL (Graph Intelligence Layer).
+Technical failures are surfaced as technical errors; only SAG itself may return
+DATA_INSUFFICIENT after it has read the evidence state.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-import re
 from typing import Any, Dict, Optional
 import httpx
+
+from app.config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
 
 class SAGConnector:
     def __init__(self, api_base: Optional[str] = None):
-        self.api_base = api_base or os.getenv("SAG_API_BASE", "http://localhost:8000/api/v1")
+        cfg = get_settings()
+        self.api_base = (api_base or cfg.sag_api_base or os.getenv("SAG_API_BASE", "http://localhost:8000/api/v2")).rstrip("/")
+        self.service_token = cfg.sag_service_token or os.getenv("SAG_SERVICE_TOKEN", "")
+
+    def _headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.service_token}"} if self.service_token else {}
+
+    @staticmethod
+    def _technical_error(ticker: str, kind: str, message: str) -> Dict[str, Any]:
+        return {
+            "ticker": ticker.upper().strip(),
+            "analysis_status": "TECHNICAL_ERROR",
+            "assessment_status": "TECHNICAL_ERROR",
+            "gil_flag": "DATA_INSUFFICIENT",
+            "moat_score": None,
+            "multiplier": None,
+            "coverage_ratio": 0.0,
+            "technical_error": {"kind": kind, "message": message},
+            "reasons": [message],
+        }
 
     async def get_moat_assessment(self, ticker: str, sector: str = "general") -> Dict[str, Any]:
-        """Truy vấn Dịch vụ RAG Moat AI từ SAG Backend.
-        
-        Rubric 100đ:
-        - Awareness (40đ): Ban lãnh đạo nhắc đến lợi thế cạnh tranh cốt lõi.
-        - Action (40đ): Hành động CapEx/R&D phát triển Moat.
-        - Intangible (20đ): Tài sản vô hình, thương hiệu, giấy phép.
-        Kill-switch: Bắt buộc có trích dẫn (evidence_quote).
-        """
-        prompt = f"""Hãy đánh giá Lợi thế cạnh tranh (Economic Moat) của mã {ticker.upper()} thuộc ngành {sector}.
-Chấm điểm theo Rubric 100 điểm:
-- Awareness (40đ): Ban lãnh đạo có nhắc đích danh đến lợi thế cạnh tranh trong tài liệu không?
-- Action (40đ): Doanh nghiệp có hành động (CapEx, R&D, mở rộng) để củng cố con hào này không?
-- Intangible (20đ): Có tài sản vô hình (Thương hiệu, bản quyền, vị trí độc tôn) không?
-
-LƯU Ý QUAN TRỌNG:
-Bắt buộc phải trích dẫn nguyên văn (evidence_quote) một đoạn trong tài liệu để chứng minh.
-Nếu không tìm thấy bất kỳ bằng chứng nào, điểm Moat tự động bằng 0.
-
-Trả về kết quả dưới định dạng JSON với các keys:
-- "moat_score" (số từ 0 đến 100)
-- "intangibles_score" (số từ 0 đến 100)
-- "switching_costs_score" (số từ 0 đến 100)
-- "network_effect_score" (số từ 0 đến 100)
-- "cost_advantage_score" (số từ 0 đến 100)
-- "efficient_scale_score" (số từ 0 đến 100)
-- "evidence_quote" (chuỗi trích dẫn nguyên văn)
-- "multiplier" (0.75 nếu moat_score=0; 1.0 nếu <=50; 1.2 nếu >50)
-"""
-        payload = {
-            "query": prompt,
-            "filter": {"ticker": ticker.upper()},
-            "stream": False,
-        }
-
-        default_result = {
-            "ticker": ticker.upper(),
-            "moat_score": 0.0,
-            "intangibles_score": 0.0,
-            "switching_costs_score": 0.0,
-            "network_effect_score": 0.0,
-            "cost_advantage_score": 0.0,
-            "efficient_scale_score": 0.0,
-            "evidence_quote": "Không tìm thấy bằng chứng trong kho SAG.",
-            "multiplier": 0.75,
-            "status": "FALLBACK",
-        }
-
+        """Truy vấn MOAT v2 evidence-first từ SAG. Không sinh điểm khi dữ liệu thiếu."""
+        ticker_clean = ticker.upper().strip()
         try:
-            timeout_config = httpx.Timeout(connect=1.0, read=5.0, write=5.0, pool=2.0)
+            timeout_config = httpx.Timeout(connect=2.0, read=30.0, write=5.0, pool=2.0)
             async with httpx.AsyncClient(timeout=timeout_config) as client:
-                res = await client.post(f"{self.api_base}/generation", json=payload)
+                res = await client.get(
+                    f"{self.api_base}/tickers/{ticker_clean}/assessments/moat",
+                    headers=self._headers(),
+                )
                 if res.status_code == 200:
-                    data = res.json()
-                    moat_data = data.get("response", {})
-                    if isinstance(moat_data, dict) and "moat_score" in moat_data:
-                        moat_data["ticker"] = ticker.upper()
-                        return moat_data
-
-                    # Parse JSON từ response text
-                    text_resp = data.get("text", "")
-                    match = re.search(r"\{.*\}", text_resp, re.DOTALL)
-                    if match:
-                        parsed = json.loads(match.group(0))
-                        parsed["ticker"] = ticker.upper()
-                        return parsed
+                    return res.json()
+                if res.status_code in (401, 403):
+                    return self._technical_error(ticker_clean, "AUTH", f"SAG auth failed: HTTP {res.status_code}")
+                return self._technical_error(ticker_clean, "HTTP", f"SAG moat returned HTTP {res.status_code}")
         except Exception as e:
             logger.warning(f"Không thể kết nối SAG API để lấy Moat cho {ticker}: {e}")
-
-        return default_result
+            return self._technical_error(ticker_clean, "NETWORK", str(e))
 
     async def get_gil_relationships(
         self, ticker: str, equity_vnd: float = 0.0, source_id: str | None = None
     ) -> Dict[str, Any]:
         """Truy vấn đồ thị sở hữu chéo và rủi ro quan hệ bên liên quan (GIL) từ SAG."""
         ticker_clean = ticker.upper().strip()
-        target_source = source_id or f"source_{ticker_clean.lower()}"
         try:
-            timeout_config = httpx.Timeout(connect=1.0, read=10.0, write=5.0, pool=2.0)
+            timeout_config = httpx.Timeout(connect=2.0, read=30.0, write=5.0, pool=2.0)
             async with httpx.AsyncClient(timeout=timeout_config) as client:
                 res = await client.get(
-                    f"{self.api_base}/gil/sources/{target_source}",
-                    params={"equity_vnd": equity_vnd},
+                    f"{self.api_base}/tickers/{ticker_clean}/assessments/gil",
+                    headers=self._headers(),
                 )
                 if res.status_code == 200:
                     return res.json()
+                if res.status_code in (401, 403):
+                    return self._technical_error(ticker_clean, "AUTH", f"SAG auth failed: HTTP {res.status_code}")
+                return self._technical_error(ticker_clean, "HTTP", f"SAG gil returned HTTP {res.status_code}")
         except Exception as e:
             logger.warning(f"Lỗi truy vấn GIL Graph từ SAG cho {ticker}: {e}")
-
-        return {
-            "ticker": ticker_clean,
-            "gil_flag": "DATA_ERROR",
-            "risk_level": "UNKNOWN",
-            "rpt_ratio": 0.0,
-            "total_rpt_exposure_vnd": 0.0,
-            "equity_vnd": equity_vnd,
-            "cycles_detected": 0,
-            "cycle_paths": [],
-            "reasons": ["Chưa kết nối được SAG FastMCP hoặc chưa có dữ liệu đồ thị sở hữu chéo. Gán cờ DATA_ERROR bảo vệ rủi ro theo IOS v5.1."],
-            "status": "FALLBACK",
-        }
+            return self._technical_error(ticker_clean, "NETWORK", str(e))
 
     async def ingest_bctc_document(
         self,
@@ -134,29 +90,25 @@ Trả về kết quả dưới định dạng JSON với các keys:
         fiscal_year: Optional[int] = None,
         fiscal_quarter: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Bắn nội dung Markdown BCTC đã cắt tỉa sang SAG Backend qua endpoint by-ticker.
-        
-        SAG sẽ tự động:
-        1. Tạo Source BCTC_{TICKER} nếu chưa có.
-        2. Lưu Document và tự động lưu kho (ARCHIVED) quý cũ nếu doc_role='LATEST_QUARTER'.
-        3. Kích hoạt bóc tách Graph và Vector Indexing.
-        """
+        """Send canonical Markdown to SAG v2 by ticker."""
         ticker_clean = ticker.upper().strip()
         payload = {
             "title": title,
-            "text": text_content,
+            "markdown": text_content,
             "doc_role": doc_role,
-            "is_active": is_active,
+            "activate": is_active,
             "fiscal_year": fiscal_year,
             "fiscal_quarter": fiscal_quarter,
+            "period_end": _period_end(fiscal_year, fiscal_quarter),
         }
 
         try:
             timeout_config = httpx.Timeout(connect=2.0, read=30.0, write=10.0, pool=2.0)
             async with httpx.AsyncClient(timeout=timeout_config) as client:
                 res = await client.post(
-                    f"{self.api_base}/sources/by-ticker/{ticker_clean}/documents/ingest",
+                    f"{self.api_base}/tickers/{ticker_clean}/documents",
                     json=payload,
+                    headers=self._headers(),
                 )
                 if res.status_code in (200, 201):
                     return res.json()
@@ -201,9 +153,10 @@ Trả về kết quả dưới định dạng JSON với các keys:
             timeout_config = httpx.Timeout(connect=5.0, read=60.0, write=30.0, pool=5.0)
             async with httpx.AsyncClient(timeout=timeout_config) as client:
                 res = await client.post(
-                    f"{self.api_base}/sources/by-ticker/{ticker_clean}/documents/upload",
+                    f"{self.api_base}/tickers/{ticker_clean}/documents/upload",
                     data=data,
                     files=files,
+                    headers=self._headers(),
                 )
                 if res.status_code in (200, 201):
                     return res.json()
@@ -224,7 +177,7 @@ Trả về kết quả dưới định dạng JSON với các keys:
         try:
             timeout_config = httpx.Timeout(connect=2.0, read=10.0, write=5.0, pool=2.0)
             async with httpx.AsyncClient(timeout=timeout_config) as client:
-                res = await client.get(f"{self.api_base}/sources/{source_id}/documents/{document_id}")
+                res = await client.get(f"{self.api_base}/documents/{document_id}", headers=self._headers())
                 if res.status_code == 200:
                     return res.json()
         except Exception as e:
@@ -236,9 +189,23 @@ Trả về kết quả dưới định dạng JSON với các keys:
         try:
             timeout_config = httpx.Timeout(connect=5.0, read=30.0, write=5.0, pool=5.0)
             async with httpx.AsyncClient(timeout=timeout_config) as client:
-                res = await client.get(f"{self.api_base}/sources/{source_id}/documents/{document_id}/parsed")
+                tree_res = await client.get(
+                    f"{self.api_base}/documents/{document_id}/tree",
+                    headers=self._headers(),
+                )
+                if tree_res.status_code != 200:
+                    return None
+                nodes = tree_res.json().get("nodes") or []
+                root = next((node for node in nodes if node.get("parent_id") is None), None)
+                if not root:
+                    return None
+                res = await client.get(
+                    f"{self.api_base}/documents/{document_id}/nodes/{root.get('node_id')}/content",
+                    headers=self._headers(),
+                )
                 if res.status_code == 200:
-                    return res.text
+                    body = res.json()
+                    return body.get("content") or res.text
         except Exception as e:
             logger.warning(f"Lỗi khi tải parsed markdown từ SAG ({document_id}): {e}")
         return None
@@ -247,3 +214,10 @@ Trả về kết quả dưới định dạng JSON với các keys:
 sag_connector = SAGConnector()
 
 
+def _period_end(fiscal_year: Optional[int], fiscal_quarter: Optional[int]) -> Optional[str]:
+    if not fiscal_year:
+        return None
+    if fiscal_quarter in (1, 2, 3, 4):
+        month_day = {1: "03-31", 2: "06-30", 3: "09-30", 4: "12-31"}[int(fiscal_quarter)]
+        return f"{fiscal_year}-{month_day}"
+    return f"{fiscal_year}-12-31"

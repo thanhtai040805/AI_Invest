@@ -9,7 +9,7 @@ export type ThemePreference = "light" | "dark" | "system";
 
 export const APP_INITIALIZATION_DEFAULTS = Object.freeze({
   appMode: "normal" as AppMode,
-  workspaceSection: "answer" as WorkspaceSection,
+  workspaceSection: "knowledge" as WorkspaceSection,
   petPresence: "always" as PetPresence,
   petCollapsed: true,
 });
@@ -132,7 +132,7 @@ export function readInitialAppState(
   return {
     mode,
     section: legacySection === "search" || legacySection === "answer"
-      ? legacySection
+      ? "search"
       : APP_INITIALIZATION_DEFAULTS.workspaceSection,
   };
 }

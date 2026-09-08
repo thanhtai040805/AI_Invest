@@ -31,7 +31,7 @@ export default function LaunchPage() {
       const response = await api.login({ name: nextName });
       setToken(response.access_token);
       toast.success(t("welcome", { name: response.user.name }));
-      router.replace("/chat");
+      router.replace("/knowledge");
     } catch (error) {
       const message = error instanceof ApiError ? error.message : t("failed");
       toast.error(message);

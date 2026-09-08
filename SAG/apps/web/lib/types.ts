@@ -17,6 +17,17 @@ export type SourceStatus = "active" | "paused" | "error";
 export type SourceType = "document" | "web" | "message" | "audio";
 export type DocumentParser = "auto" | "markitdown" | "mineru";
 export type EffectiveDocumentParser = Exclude<DocumentParser, "auto">;
+export type DocumentRole =
+  | "ANNUAL_BACKBONE"
+  | "LATEST_QUARTER"
+  | "GOVERNANCE_REPORT";
+export type ProcessingStageStatus =
+  | "PENDING"
+  | "RUNNING"
+  | "COMPLETE"
+  | "FAILED"
+  | "SKIPPED"
+  | "EXTRACTION_INCOMPLETE";
 export interface Source {
   id: string;
   name: string;
@@ -40,6 +51,11 @@ export interface Connector {
 }
 
 export type DocumentStatus =
+  | "QUEUED"
+  | "PROCESSING"
+  | "READY"
+  | "FAILED"
+  | "CANCELLED"
   | "pending"
   | "loading"
   | "extracting"
@@ -49,8 +65,10 @@ export type DocumentStatus =
 
 export interface Doc {
   id: string;
-  source_id: string;
-  filename: string;
+  source_id?: string;
+  ticker?: string;
+  title?: string;
+  filename?: string;
   content_type: string;
   size_bytes: number;
   status: DocumentStatus;
@@ -58,6 +76,16 @@ export interface Doc {
   event_count: number;
   progress: number;
   token_usage: number;
+  doc_role?: DocumentRole | string | null;
+  is_active?: boolean;
+  object_uri?: string | null;
+  content_sha256?: string | null;
+  processing_version?: number | null;
+  structure_status?: ProcessingStageStatus | string | null;
+  extraction_status?: ProcessingStageStatus | string | null;
+  embedding_status?: ProcessingStageStatus | string | null;
+  fact_count?: number | null;
+  coverage?: number | { coverage_ratio?: number; [key: string]: unknown } | null;
   error: string | null;
   /** Lớp chịu trách nhiệm khi thất bại (api / llm / engine / storage / network), chỉ có giá trị khi thất bại. */
   error_layer?: string | null;
@@ -65,6 +93,84 @@ export interface Doc {
   error_stage?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface DocumentTreeNode {
+  node_id: string;
+  parent_id: string | null;
+  level: number;
+  order: number;
+  heading: string;
+  heading_path: string[];
+  node_kind: string;
+  start_line: number;
+  end_line: number;
+  content_hash: string;
+  summary?: string | null;
+  relevance?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}
+
+export interface DocumentTreeResponse {
+  document_id: string;
+  source_id?: string;
+  ticker: string;
+  doc_role: DocumentRole | string | null;
+  processing_version: number | null;
+  structure_status: ProcessingStageStatus | string | null;
+  coverage: { coverage_ratio?: number; [key: string]: unknown };
+  nodes: DocumentTreeNode[];
+}
+
+export interface DocumentNodeContentResponse {
+  document_id: string;
+  node_id: string;
+  heading: string;
+  heading_path: string[];
+  start_line: number;
+  end_line: number;
+  content: string;
+  content_hash: string;
+}
+
+export interface MoatPillarAssessment {
+  pillar: string;
+  verdict: string;
+  score: number | null;
+  confidence: number;
+  evidence: Record<string, unknown>[];
+  counter_evidence: Record<string, unknown>[];
+}
+
+export interface MoatAssessment {
+  ticker: string;
+  assessment_status: "COMPLETE" | "PARTIAL" | "INSUFFICIENT" | string;
+  moat_score: number | null;
+  multiplier: number | null;
+  coverage_ratio: number;
+  active_roles: string[];
+  missing_roles: string[];
+  pillars: Record<string, MoatPillarAssessment>;
+  reasons: string[];
+}
+
+export interface GilAssessment {
+  ticker: string;
+  analysis_status: "COMPLETE" | "PARTIAL" | "DATA_INSUFFICIENT" | "TECHNICAL_ERROR" | string;
+  gil_flag: "PASS" | "WARNING" | "CATASTROPHIC" | "DATA_INSUFFICIENT" | string;
+  risk_level: string;
+  rpt_ratio: number | null;
+  total_rpt_exposure_vnd: number;
+  related_party_exposure_vnd?: number;
+  guarantee_exposure_vnd?: number;
+  equity_vnd: number | null;
+  cycles_detected: number;
+  cycle_paths: string[][];
+  capital_flow_cycles?: string[][];
+  cross_ownership_cycles?: string[][];
+  reasons: string[];
+  nodes_count: number;
+  edges_count: number;
 }
 
 export interface CitationEventRef {

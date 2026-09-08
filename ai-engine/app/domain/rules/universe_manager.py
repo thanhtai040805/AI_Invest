@@ -84,7 +84,7 @@ class UniverseManager:
                         "market_cap": float(r[2] or 0.0),
                         "audit_opinion": str(r[3] or "UNQUALIFIED").upper().strip(),
                         "beneish_status": str(r[4] or "PASS").upper().strip(),
-                        "gil_flag": str(r[5] or "PASS").upper().strip(),
+                        "gil_flag": str(r[5] or "DATA_INSUFFICIENT").upper().strip(),
                         "industry": str(r[6] or "").strip(),
                     }
                     for r in cur.fetchall()
@@ -144,7 +144,7 @@ class UniverseManager:
                     status = meta.get("trading_status", "NORMAL")
                     mcap = meta.get("market_cap", 0.0)
                     beneish = meta.get("beneish_status", "PASS")
-                    gil = meta.get("gil_flag", "PASS")
+                    gil = meta.get("gil_flag") or "DATA_INSUFFICIENT"
                     audit = meta.get("audit_opinion", "UNQUALIFIED")
 
                     liq_info = liquidity_map.get(sym, {})
@@ -252,7 +252,7 @@ class UniverseManager:
             ugroup = res["universe_group"]
             t_status = res.get("trading_status", "NORMAL")
             b_status = res.get("beneish_status", "PASS")
-            g_flag = res.get("gil_flag", "PASS")
+            g_flag = res.get("gil_flag") or "DATA_INSUFFICIENT"
 
             # 1. Update stocks table
             cur.execute(

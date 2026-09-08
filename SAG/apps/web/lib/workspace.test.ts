@@ -10,17 +10,16 @@ import {
 describe("workspace sections", () => {
   it("keeps normal and compact navigation on one ordered definition", () => {
     expect(WORKSPACE_SECTIONS.map((item) => item.id)).toEqual([
-      "search",
-      "answer",
       "knowledge",
+      "search",
     ]);
   });
 
   it.each([
     ["/search", "search"],
     ["/search/results", "search"],
-    ["/chat", "answer"],
-    ["/chat/thread-1", "answer"],
+    ["/chat", null],
+    ["/chat/thread-1", null],
     ["/knowledge", "knowledge"],
     ["/knowledge/source-1", "knowledge"],
     ["/settings", null],
@@ -30,10 +29,11 @@ describe("workspace sections", () => {
 
   it("validates persisted values and resolves section metadata", () => {
     expect(isWorkspaceSection("knowledge")).toBe(true);
+    expect(isWorkspaceSection("answer")).toBe(false);
     expect(isWorkspaceSection("explore")).toBe(false);
-    expect(workspaceSectionDefinition("answer")).toMatchObject({
-      id: "answer",
-      href: "/chat",
+    expect(workspaceSectionDefinition("knowledge")).toMatchObject({
+      id: "knowledge",
+      href: "/knowledge",
     });
   });
 });

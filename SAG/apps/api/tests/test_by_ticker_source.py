@@ -54,7 +54,8 @@ async def test_get_or_create_source_by_ticker(tmp_path):
         )
 
         assert doc.doc_role == "LATEST_QUARTER"
-        assert doc.is_active is True
+        assert doc.is_active is False
+        assert doc.activation_requested is True
         assert doc.fiscal_year == 2026
         assert doc.fiscal_quarter == 1
 

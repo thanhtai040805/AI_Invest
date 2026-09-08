@@ -99,6 +99,8 @@ async def fetch_documents(client: httpx.AsyncClient, symbol: str, doc_type: int,
             seen_links: set = set()
             for item in items:
                 link = (item.get("Link") or "").strip()
+                if "cafefnew.mediacdn.vn/download/" in link:
+                    link = link.replace("cafefnew.mediacdn.vn/download/", "cafef1.mediacdn.vn/download/")
                 name = (item.get("Name") or "").strip()
                 if not link or not name:
                     continue

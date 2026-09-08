@@ -77,78 +77,17 @@ class StrategyCIOAgent(BaseAgent):
         self._init_cio_tables()
 
     def _init_cio_tables(self) -> None:
-        """Đảm bảo bảng cio_resolutions, cio_strategic_directives và strategic_allocations có trường hash chain và audit mật mã."""
+        """Load latest CIO hash; schema is managed by Prisma/migrations, not runtime."""
         from app.infrastructure.database.pg_pool import get_conn
         try:
             with get_conn() as conn:
                 with conn.cursor() as cur:
-                    # 1. Bảng cio_resolutions
-                    cur.execute("""
-                        CREATE TABLE IF NOT EXISTS cio_resolutions (
-                            resolution_id UUID PRIMARY KEY,
-                            thesis_id UUID,
-                            decision_type VARCHAR(64) NOT NULL DEFAULT 'CONFLICT_RESOLUTION',
-                            ticker VARCHAR(16),
-                            debate_summary TEXT,
-                            final_resolution VARCHAR(64) NOT NULL,
-                            verdict_payload JSONB DEFAULT '{}'::jsonb,
-                            previous_hash VARCHAR(64) NOT NULL DEFAULT '0000000000000000000000000000000000000000000000000000000000000000',
-                            decision_hash VARCHAR(64),
-                            governance_cosign BOOLEAN DEFAULT FALSE,
-                            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                        );
-                        -- Tự phục hồi các cột nâng cấp nếu bảng đã tồn tại từ migration 001
-                        ALTER TABLE cio_resolutions ALTER COLUMN final_resolution TYPE VARCHAR(64);
-                        ALTER TABLE cio_resolutions ALTER COLUMN thesis_id DROP NOT NULL;
-                        ALTER TABLE cio_resolutions ADD COLUMN IF NOT EXISTS decision_type VARCHAR(64) DEFAULT 'CONFLICT_RESOLUTION';
-                        ALTER TABLE cio_resolutions ADD COLUMN IF NOT EXISTS ticker VARCHAR(16);
-                        ALTER TABLE cio_resolutions ADD COLUMN IF NOT EXISTS verdict_payload JSONB DEFAULT '{}'::jsonb;
-                        ALTER TABLE cio_resolutions ADD COLUMN IF NOT EXISTS previous_hash VARCHAR(64) DEFAULT '0000000000000000000000000000000000000000000000000000000000000000';
-                        ALTER TABLE cio_resolutions ADD COLUMN IF NOT EXISTS decision_hash VARCHAR(64);
-                        ALTER TABLE cio_resolutions ADD COLUMN IF NOT EXISTS governance_cosign BOOLEAN DEFAULT FALSE;
-                        CREATE INDEX IF NOT EXISTS idx_cio_resolutions_created ON cio_resolutions (created_at DESC);
-                        CREATE INDEX IF NOT EXISTS idx_cio_resolutions_hash ON cio_resolutions (decision_hash);
-                    """)
-
-                    # 2. Bảng cio_strategic_directives
-                    cur.execute("""
-                        CREATE TABLE IF NOT EXISTS cio_strategic_directives (
-                            directive_id VARCHAR(64) PRIMARY KEY,
-                            policy_version VARCHAR(32) NOT NULL DEFAULT 'v5.1_IOS',
-                            effective_from DATE NOT NULL,
-                            effective_until DATE,
-                            status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
-                            macro_regime VARCHAR(32) NOT NULL,
-                            risk_appetite VARCHAR(32) NOT NULL,
-                            strategic_cash_target_pct NUMERIC(6,2) NOT NULL,
-                            sector_tilt JSONB NOT NULL DEFAULT '{}'::jsonb,
-                            flash_invalidation_thresholds JSONB DEFAULT '{}'::jsonb,
-                            rationale TEXT NOT NULL,
-                            decision_hash VARCHAR(64),
-                            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                        );
-                        CREATE INDEX IF NOT EXISTS idx_cio_directives_status ON cio_strategic_directives (status);
-                        CREATE INDEX IF NOT EXISTS idx_cio_directives_effective ON cio_strategic_directives (effective_from, effective_until);
-                    """)
-
-                    # 3. Bảng strategic_allocations (tương thích ngược)
-                    cur.execute("""
-                        CREATE TABLE IF NOT EXISTS strategic_allocations (
-                            allocation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                            date DATE NOT NULL,
-                            macro_view TEXT NOT NULL,
-                            cash_target_override NUMERIC(6,2),
-                            sector_focus JSONB,
-                            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                        );
-                    """)
-
                     cur.execute("SELECT decision_hash FROM cio_resolutions WHERE decision_hash IS NOT NULL ORDER BY created_at DESC LIMIT 1;")
                     row = cur.fetchone()
                     if row and row[0]:
                         self.last_decision_hash = row[0]
         except Exception as e:
-            logger.warning(f"[StrategyCIOAgent] Lỗi tự phục hồi schema / nạp hash: {e}")
+            logger.warning(f"[StrategyCIOAgent] Không thể nạp hash CIO từ database: {e}")
 
     def _calculate_canonical_hash(self, payload: Dict[str, Any], previous_hash: str) -> str:
         """Tính mã băm SHA-256 bất biến dựa trên Canonical JSON."""

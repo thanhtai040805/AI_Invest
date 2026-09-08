@@ -250,6 +250,19 @@ class R2StorageService:
 
         return False
 
+    @staticmethod
+    def _make_q_label(quarter: Union[int, str, None]) -> str:
+        q_clean = str(quarter).upper().strip() if quarter is not None else ""
+        if q_clean in ("YEAR", "ANNUAL", "FY", "0") or quarter == 0:
+            return "YEAR"
+        if q_clean in ("6M", "H1", "6") or quarter == 6:
+            return "6M"
+        if q_clean.isdigit():
+            return f"Q{q_clean}"
+        if q_clean.startswith("Q"):
+            return q_clean
+        return q_clean or "YEAR"
+
     def upload_bctc_pruned_pdf(
         self,
         ticker: str,
@@ -262,7 +275,7 @@ class R2StorageService:
         """Upload duy nhất 1 file PDF đã cắt tỉa lên R2."""
         ticker = ticker.upper().strip()
         scope = scope.upper().strip()
-        q_label = f"Q{quarter}" if str(quarter).isdigit() else str(quarter).upper()
+        q_label = self._make_q_label(quarter)
 
         s3_key = f"bctc/{ticker}/{year}/{q_label}/{ticker}_{year}_{q_label}_{scope}_pruned.pdf"
         if isinstance(pdf_source, (str, Path)):
@@ -281,7 +294,7 @@ class R2StorageService:
         """Upload file Markdown sau OCR lên R2."""
         ticker = ticker.upper().strip()
         scope = scope.upper().strip()
-        q_label = f"Q{quarter}" if str(quarter).isdigit() else str(quarter).upper()
+        q_label = self._make_q_label(quarter)
 
         s3_key = f"bctc/{ticker}/{year}/{q_label}/{ticker}_{year}_{q_label}_{scope}_parsed.md"
         data = markdown_content.encode("utf-8")

@@ -242,14 +242,15 @@ class ThesisEngine:
         ticker_clean = str(ticker).upper().strip()
         css_score = float(research_report.get("css", 0.0))
         conviction = str(research_report.get("conviction", "D")).upper()
-        gil_status = str(research_report.get("gil_status") or market_context.get("gil_status", "PASS")).upper()
+        gil_status = str(
+            research_report.get("gil_status") or market_context.get("gil_status") or "DATA_INSUFFICIENT"
+        ).upper()
         sector = str(research_report.get("sector", "General"))
         regime_label = str(market_context.get("current_regime", "BULL_TRENDING"))
         current_price = float(research_report.get("current_price") or market_context.get("current_price", 0.0))
 
-        # 1. Check Hard Filter Lớp 0: GIL == CATASTROPHIC
-        if gil_status == "CATASTROPHIC":
-            return False, {}, "REJECT: Vi phạm Hard Filter Lớp 0 (GIL == CATASTROPHIC)."
+        if gil_status in {"CATASTROPHIC", "DATA_INSUFFICIENT", "TECHNICAL_ERROR"}:
+            return False, {}, f"REJECT: GIL không đủ điều kiện mở vị thế ({gil_status})."
 
         # 2. Check Conviction & CSS Score: CSS >= 65 (Conviction >= B)
         if css_score < 60.0 or conviction in ["C", "D", "E"]:
@@ -264,7 +265,9 @@ class ThesisEngine:
             "f5_flow": float(research_report.get("f5_flow", 50.0)),
             "f6_technical": float(research_report.get("f6_technical", 50.0)),
         }
-        moat_score = float(research_report.get("moat_score", 50.0))
+        if research_report.get("moat_score") is None:
+            return False, {}, "REJECT: SAG moat_score is null; assessment chưa COMPLETE."
+        moat_score = float(research_report["moat_score"])
 
         passed_all_signals, independent_signals, passed_signal_count = self.evaluate_independent_signals(
             factors=factors,

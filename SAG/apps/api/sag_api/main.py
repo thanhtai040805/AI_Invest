@@ -1,29 +1,22 @@
-"""Lối vào ứng dụng sag-api."""
+"""Lối vào ứng dụng sag-api v2 financial evidence service."""
 
 from __future__ import annotations
 
-import asyncio
 import os
-from contextlib import AsyncExitStack, asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from sag_agent import AgentRuntime
 from sag_api import __version__
-from sag_api.api.v1 import api_router
+from sag_api.api.v2 import api_router
 from sag_api.branding import PRODUCT_NAME
 from sag_api.core.config import settings
-from sag_api.core.db import SessionLocal, dispose_db, init_db
+from sag_api.core.db import dispose_db, init_db
 from sag_api.core.error_taxonomy import ErrorCode, ErrorLayer, ErrorStage
 from sag_api.core.errors import ApiError
-from sag_api.core.litellm_policy import install_litellm_policy, uninstall_litellm_policy
 from sag_api.core.logging import RequestContextMiddleware, configure_logging, get_logger
-from sag_api.generation import LLMClient
-from sag_api.jobs import InProcessAsyncQueue
-from sag_api.sag import EngineManager
-from sag_api.sag.compat import install_zleap_sag_extract_compat, install_zleap_sag_vietnamese
 
 log = get_logger("app")
 
@@ -48,101 +41,23 @@ async def lifespan(app: FastAPI):
 
     await init_db()
 
-    # Ghi đè cấu hình mô hình lưu trong DB lên singleton settings (trước khi xây LLM/engine)
-    from sag_api.services.settings_service import apply_startup_overrides
-
-    await apply_startup_overrides(SessionLocal)
-
-    # Gieo agent mặc định (lối vào hội thoại chính dùng ngay được; idempotent)
-    from sag_api.services.agent_domain import get_default_agent
-
-    async with SessionLocal() as _session:
-        await get_default_agent(_session)
-
-    # Bên trong zleap-sag cũng gọi LiteLLM; policy pre-call toàn cục để nó chia sẻ cùng tham số
-    # provider với chuỗi sinh của Muse, mà không sửa package phụ thuộc.
-    install_zleap_sag_extract_compat()
-    install_zleap_sag_vietnamese()
-    litellm_policy = install_litellm_policy(settings)
-    app.state.engine_manager = EngineManager(settings)
-    app.state.llm = LLMClient(settings)
-    app.state.agent_runtime = AgentRuntime()
-    await app.state.agent_runtime.start()
-    app.state.job_queue = InProcessAsyncQueue(
-        SessionLocal, app.state.engine_manager, concurrency=settings.job_concurrency
-    )
-    await app.state.job_queue.start()
-
-    # Làm nóng engine của nguồn được dùng gần đây ở hậu trường (không chặn khởi động; lỗi không ảnh hưởng dịch vụ)
-    warmup_task = asyncio.create_task(_warmup_engines(app.state.engine_manager))
-
     log.info(
-        "sag-api đã khởi động · env=%s · llm_configured=%s · vector=%s",
+        "sag-api v2 financial evidence service đã khởi động · env=%s · llm_configured=%s · embedding=%s",
         settings.environment,
         settings.llm_configured,
-        settings.sag_vector_provider,
+        settings.embedding_model,
     )
-    source_mcp = getattr(app.state, "source_mcp", None)
     try:
-        # Session manager của endpoint MCP cần chạy trong lifespan; lỗi chỉ đóng /mcp, không ảnh hưởng các dịch vụ còn lại
-        async with AsyncExitStack() as stack:
-            if source_mcp is not None:
-                try:
-                    await stack.enter_async_context(source_mcp.session_manager.run())
-                    log.info("Endpoint MCP đã sẵn sàng · /mcp/ (toàn kho) · tùy chọn ?source_id=<id nguồn>")
-                except Exception as e:  # noqa: BLE001
-                    log.warning("Khởi động session manager MCP thất bại (/mcp không khả dụng): %s", e)
-            yield
+        yield
     finally:
-        try:
-            warmup_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await warmup_task
-            await app.state.agent_runtime.stop()
-            await app.state.job_queue.stop()
-            await app.state.engine_manager.aclose_all()
-            await dispose_db()
-        finally:
-            uninstall_litellm_policy(litellm_policy)
-
-
-async def _warmup_engines(engine_manager: EngineManager) -> None:
-    """Làm nóng engine của nguồn cập nhật gần đây, rút ngắn thời gian chờ thao tác đầu tiên của người dùng."""
-    if settings.engine_warmup_count <= 0:
-        return
-    try:
-        from sqlalchemy import select
-
-        from sag_api.db.models import Source
-
-        async with SessionLocal() as session:
-            rows = (
-                (
-                    await session.execute(
-                        select(Source).order_by(Source.updated_at.desc()).limit(settings.engine_warmup_count)
-                    )
-                )
-                .scalars()
-                .all()
-            )
-        for source in rows:
-            try:
-                await engine_manager.provision(source.sag_source_config_id, source)
-            except Exception as e:  # noqa: BLE001
-                log.warning("Làm nóng engine thất bại source=%s: %s", source.id, e)
-        if rows:
-            log.info("Đã làm nóng %d engine nguồn", len(rows))
-    except asyncio.CancelledError:
-        raise
-    except Exception as e:  # noqa: BLE001
-        log.warning("Tác vụ làm nóng engine bất thường: %s", e)
+        await dispose_db()
 
 
 def create_app() -> FastAPI:
     app = FastAPI(
         title=f"{PRODUCT_NAME} API",
         version=__version__,
-        summary="Nền tảng kho kiến thức mã nguồn mở · từ nguồn thông tin đến hỏi đáp kiến thức",
+        summary="Financial evidence engine for MOAT/GIL",
         lifespan=lifespan,
     )
 
@@ -193,18 +108,26 @@ def create_app() -> FastAPI:
 
     app.include_router(api_router)
 
-    # Nguồn chính là MCP: gắn endpoint Streamable-HTTP (lỗi không chặn khởi động ứng dụng)
-    try:
-        from sag_api.mcp.mount import attach_source_mcp
-
-        app.state.source_mcp = attach_source_mcp(app)
-    except Exception as e:  # noqa: BLE001
-        app.state.source_mcp = None
-        log.warning("Gắn endpoint MCP thất bại: %s", e)
-
     @app.get("/", tags=["system"])
     async def root() -> dict:
-        return {"name": PRODUCT_NAME, "version": __version__, "docs": "/docs"}
+        return {"name": PRODUCT_NAME, "version": __version__, "api": "/api/v2", "docs": "/docs"}
+
+    @app.get("/health/live", tags=["system"])
+    async def health_live() -> dict:
+        return {"status": "ok"}
+
+    @app.get("/health/ready", tags=["system"])
+    async def health_ready() -> dict:
+        return {
+            "status": "ok",
+            "database": "configured",
+            "embedding_model": settings.embedding_model,
+            "llm_configured": settings.llm_configured,
+        }
+
+    @app.get("/metrics", tags=["system"])
+    async def metrics() -> dict:
+        return {"service": "sag-v2", "metrics": {}}
 
     return app
 
