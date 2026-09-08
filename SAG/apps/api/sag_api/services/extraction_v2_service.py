@@ -248,6 +248,28 @@ async def extract_and_persist_manifest(
             result = await llm.complete_extraction_json(messages)
             total_usage += _usage_total(result.usage)
             if result.finish_reason and result.finish_reason not in {"stop", "tool_calls"}:
+                if result.finish_reason == "length":
+                    # Option A: output bị cắt do vượt max_tokens — retry cùng prompt
+                    # chỉ làm dài thêm messages nên trả INCOMPLETE ngay, gợi ý
+                    # extraction theo cụm node thay vì retry nguyên document.
+                    return ExtractionResult(
+                        status=ProcessingStageStatus.INCOMPLETE.value,
+                        token_usage=total_usage,
+                        error=(
+                            "finish_reason=length: manifest vượt max_tokens "
+                            f"(doc_role={document.doc_role}, nodes={len(nodes)}). "
+                            "Gợi ý: tăng SAG_LLM_MAX_TOKENS cho ANNUAL_BACKBONE "
+                            "hoặc chạy extraction theo cụm node (chunked)."
+                        )[:2000],
+                        metadata={
+                            "mode": "llm_manifest",
+                            "attempts": attempt + 1,
+                            "finish_reason": "length",
+                            "suggested_action": "chunked_extraction",
+                            "prompt_version": EXTRACTION_PROMPT_VERSION,
+                            "taxonomy_version": TAXONOMY_VERSION,
+                        },
+                    )
                 raise ValueError(f"finish_reason={result.finish_reason}")
             manifest = ExtractionManifestIn.model_validate_json(result.content)
             _validate_manifest_shape_and_references(markdown, nodes, manifest)

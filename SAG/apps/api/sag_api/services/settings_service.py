@@ -82,9 +82,9 @@ QUICK_SETUP_302 = {
     "llm_context_window": _OPENAI_COMPATIBLE.default_context_window,
     "llm_timeout_ms": 60_000,
     "llm_max_retries": 2,
-    "embedding_model": "Qwen/Qwen3-Embedding-4B",
+    "embedding_model": "Qwen/Qwen3-Embedding-8B",
     "embedding_base_url": "https://api.302ai.cn/v1",
-    "embedding_dimensions": 1024,
+    "embedding_dimensions": 1536,
     "document_parser": "auto",
     "mineru_base_url": "https://api.302ai.cn",
     "mineru_version": "2.5",
@@ -121,6 +121,10 @@ def _normalize_overrides(overrides: dict) -> dict:
     elif strategy is not None and strategy not in SEARCH_STRATEGIES:
         normalized.pop("search_strategy", None)
         log.warning("Bỏ qua chiến lược tìm kiếm đã lưu không hợp lệ: %s", strategy)
+    dims = normalized.get("embedding_dimensions")
+    if dims in (1024, 4096):
+        normalized["embedding_dimensions"] = 1536
+        log.warning("Chuẩn hóa embedding_dimensions cũ %s -> 1536 (Qwen3-Embedding-8B)", dims)
     return normalized
 
 
@@ -168,6 +172,16 @@ async def apply_startup_overrides(session_factory: async_sessionmaker) -> None:
             row.value = overrides
             await session.commit()
         apply_overrides(_settings, overrides)
+        # Thứ tự ưu tiên: .env là default, row DB (nếu có) ghi đè singleton sau startup.
+        # Log rõ nguồn để debug case ".env đã cắm key/1536 nhưng runtime vẫn dùng giá trị cũ".
+        log.info(
+            "Cấu hình embedding hiệu lực: model=%s dims=%s key_set=%s (sources: model=%s dims=%s)",
+            _settings.embedding_model,
+            _settings.embedding_dimensions,
+            bool(_settings.embedding_api_key),
+            _MODEL_CONFIG_SOURCES.get("embedding_model"),
+            _MODEL_CONFIG_SOURCES.get("embedding_dimensions"),
+        )
         preferences = await _load_row(session, _PREFERENCES_KEY)
         preference_values = dict(preferences.value) if preferences and isinstance(preferences.value, dict) else {}
         timezone = preference_values.get("timezone")

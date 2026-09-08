@@ -7,6 +7,29 @@ import tempfile
 
 import pytest
 
+
+def _neutralize_dotenv_injection() -> None:
+    """Chặn dotenv.load_dotenv() bơm .env thật của máy dev vào os.environ.
+
+    litellm gọi load_dotenv() lúc import (kể cả import gián tiếp qua sag_api),
+    nạp mọi SAG_* chưa tồn tại từ .env thật (vd SAG_AGENT_LLM_MODEL=GLM,
+    SAG_LLM_TEMPERATURE=0.2) và làm unit test phụ thuộc máy chạy.
+    Chặn tại conftest (chạy trước mọi import litellm). pydantic-settings đọc
+    file .env bằng dotenv_values nên Settings runtime không bị ảnh hưởng.
+    """
+    try:
+        import dotenv as _dotenv
+    except ImportError:  # pragma: no cover - dotenv luôn có trong môi trường test
+        return
+
+    def _disabled_load_dotenv(*args: object, **kwargs: object) -> bool:
+        return False
+
+    _dotenv.load_dotenv = _disabled_load_dotenv  # type: ignore[method-assign]
+
+
+_neutralize_dotenv_injection()
+
 _TMP = tempfile.mkdtemp(prefix="sag-test-")
 os.environ.setdefault("SAG_DATABASE_URL", f"sqlite+aiosqlite:///{_TMP}/sag.db")
 os.environ.setdefault("SAG_ALLOW_SQLITE_RUNTIME", "true")
@@ -19,6 +42,18 @@ os.environ["SAG_SAG_RELATIONAL_PROVIDER"] = "postgres"
 # 强制离线：即使存在带真实 key 的 .env，也保证测试确定性（不发起 LLM 调用）
 os.environ["SAG_LLM_API_KEY"] = ""
 os.environ["SAG_LLM_BASE_URL"] = ""
+# llm_model không còn default trong code — test phải khai báo tường minh.
+os.environ["SAG_LLM_MODEL"] = "openai/test-model"
+# import litellm (trực tiếp hay gián tiếp qua sag_api) gọi load_dotenv() lúc import,
+# bơm toàn bộ .env thật vào os.environ cho các var chưa tồn tại. Khóa tường minh
+# các override model riêng để unit test độc lập với .env của máy dev
+# (trước đây SAG_AGENT_LLM_MODEL=GLM rò rỉ làm 6 test route sai model).
+os.environ["SAG_AGENT_LLM_MODEL"] = ""
+os.environ["SAG_AGENT_LLM_BASE_URL"] = ""
+os.environ["SAG_AGENT_LLM_API_KEY"] = ""
+os.environ["SAG_EXTRACTION_LLM_MODEL"] = ""
+os.environ["SAG_EXTRACTION_LLM_BASE_URL"] = ""
+os.environ["SAG_EXTRACTION_LLM_API_KEY"] = ""
 os.environ["SAG_EMBEDDING_API_KEY"] = ""
 os.environ["SAG_MINERU_API_KEY"] = ""
 os.environ["SAG_MINERU_BASE_URL"] = ""

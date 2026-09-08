@@ -110,7 +110,9 @@ class Settings(BaseSettings):
     llm_provider: ModelProviderId = _DEFAULT_LLM_PROVIDER.id
     llm_base_url: str | None = _DEFAULT_LLM_PROVIDER.default_base_url
     llm_api_key: str | None = None
-    llm_model: str = _DEFAULT_LLM_PROVIDER.default_model
+    # Không default: thiếu SAG_LLM_MODEL phải lỗi ngay lúc khởi động thay vì
+    # lặng lẽ chạy bằng model trong catalog.
+    llm_model: str = Field(description="Model LLM chung (vd openai/deepseek-ai/DeepSeek-V4-Flash)")
     llm_temperature: float = _DEFAULT_LLM_PROVIDER.default_temperature
     llm_max_tokens: int = 20_000
     llm_context_window: int = _DEFAULT_LLM_PROVIDER.default_context_window

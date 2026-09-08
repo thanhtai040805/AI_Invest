@@ -11,7 +11,7 @@ from sag_api.core.errors import ConflictError, NotFoundError
 from sag_api.db.base import new_id
 from sag_api.db.models import Document, DocumentEvidenceChunk, Job, Source
 from sag_api.enums import DocumentStatus, JobStatus, JobType
-from sag_api.jobs import JobQueue
+from sag_api.jobs.queue import JobQueue
 from sag_api.sag import EngineManager
 from sag_api.services.document_structure_service import normalize_doc_role, sha256_text
 

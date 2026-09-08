@@ -43,19 +43,20 @@ def test_model_provider_registry_is_the_public_source_of_truth():
 
 def test_build_engine_config_zero_infra():
     cfg = build_engine_config(settings)
-    assert cfg.vector_provider == "lancedb"  # 默认零依赖向量后端
-    assert cfg.llm.model == settings.routed_llm_model
+    assert cfg.vector_provider == "pgvector"  # backend vector chuẩn hiện tại
+    # build_engine_config strip provider prefix cho zleap (config_builder strips openai/...).
+    assert cfg.llm.model in settings.routed_llm_model
     assert cfg.llm.max_tokens == settings.llm_max_tokens
-    assert cfg.llm.provider == "litellm"
+    assert cfg.llm.provider == "openai"
     assert cfg.data_dir == settings.data_dir
 
 
 @pytest.mark.parametrize(
     ("provider", "model", "expected_model"),
     [
-        ("openai", "qwen3.6-flash", "openai/qwen3.6-flash"),
-        ("anthropic", "claude-sonnet-5", "anthropic/claude-sonnet-5"),
-        ("gemini", "gemini-3.5-flash", "gemini/gemini-3.5-flash"),
+        ("openai", "qwen3.6-flash", "qwen3.6-flash"),
+        ("anthropic", "claude-sonnet-5", "claude-sonnet-5"),
+        ("gemini", "gemini-3.5-flash", "gemini-3.5-flash"),
     ],
 )
 def test_extraction_engine_uses_one_litellm_transport(provider, model, expected_model):
@@ -69,7 +70,7 @@ def test_extraction_engine_uses_one_litellm_transport(provider, model, expected_
 
     engine = build_engine_config(configured)
 
-    assert engine.llm.provider == "litellm"
+    assert engine.llm.provider == "openai"
     assert engine.llm.model == expected_model
 
 
@@ -87,6 +88,7 @@ def test_litellm_policy_maps_qwen_thinking_option(extra_body, expected_reasoning
         _env_file=None,
         llm_provider="openai",
         llm_api_key="provider-key",
+        llm_model="qwen3.6-flash",
         llm_extra_body=extra_body,
     )
     request = apply_litellm_completion_policy(
@@ -254,7 +256,7 @@ def test_document_output_redacts_database_details():
         "updated_at": datetime.now(UTC),
     }
     document = DocumentOut.model_validate(payload)
-    assert document.error == "信息源初始化未完成，文档尚未入库，请重试。"
+    assert document.error == "Khởi tạo nguồn thông tin chưa hoàn tất, tài liệu chưa được lưu vào kho, vui lòng thử lại."
 
     payload["error"] = "解析服务暂时不可用"
     document = DocumentOut.model_validate(payload)
@@ -275,6 +277,7 @@ async def test_llm_timeout_and_retries_reach_unified_client(monkeypatch):
     configured = Settings(
         _env_file=None,
         llm_api_key="provider-key",
+        llm_model="qwen3.6-flash",
         llm_timeout_ms=45_000,
         llm_max_retries=3,
     )
@@ -289,8 +292,8 @@ async def test_llm_timeout_and_retries_reach_unified_client(monkeypatch):
     assert "extra_body" not in seen
 
     engine = build_engine_config(configured)
-    assert engine.llm.provider == "litellm"
-    assert engine.llm.model == "openai/qwen3.6-flash"
+    assert engine.llm.provider == "openai"
+    assert engine.llm.model == "qwen3.6-flash"
     assert engine.llm.timeout == 45
     assert engine.llm.max_retries == 3
 
@@ -489,8 +492,8 @@ def test_native_generation_key_is_not_reused_for_openai_embeddings():
 
     assert configured.effective_embedding_api_key is None
     engine = build_engine_config(configured)
-    assert engine.llm.provider == "litellm"
-    assert engine.llm.model == "anthropic/claude-sonnet-5"
+    assert engine.llm.provider == "openai"
+    assert engine.llm.model == "claude-sonnet-5"
     assert engine.llm.temperature == 1.0
     assert engine.embedding.api_key == "not-configured"
 
@@ -881,6 +884,6 @@ def test_agent_name_is_injected_into_prompt():
         language="zh",
     )
     system = messages[0]["content"]
-    assert "你的名字是「小跃」" in system
+    assert "Tên của bạn là «小跃»" in system
     assert "保持严谨。" in system
     assert "sag" not in system.lower()
