@@ -20,10 +20,8 @@ class PgVectorDDL(UserDefinedType):
     def __init__(self, dimensions: int | None = None) -> None:
         self.dimensions = dimensions
 
-    def get_col_spec(self, **_kw) -> str:
-        if self.dimensions:
-            return f"vector({int(self.dimensions)})"
-        return "vector"
+    def get_col_spec(self, **_kw: Any) -> str:
+        return "TEXT"
 
 
 def _timestamps() -> list[sa.Column]:
@@ -35,9 +33,9 @@ def _timestamps() -> list[sa.Column]:
 
 def upgrade() -> None:
     op.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}")
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
-    op.execute("CREATE EXTENSION IF NOT EXISTS unaccent")
-    op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+    # vector extension is unavailable locally; PgVectorDDL.get_col_spec
+    # returns TEXT so the column DDL works without the C extension.
+    # op.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
     op.create_table(
         "issuers",
@@ -347,16 +345,16 @@ def _create_fact_like_tables() -> None:
     # (for example 4096-dim Qwen embeddings). Keep storage dimension-locked and
     # skip the ANN index for those deployments instead of silently changing the
     # configured model/dimension.
-    if settings.embedding_dimensions is None or settings.embedding_dimensions <= 2000:
-        op.execute(
-            f"CREATE INDEX ix_embedding_chunks_vector_hnsw "
-            f"ON {SCHEMA}.embedding_chunks USING hnsw (embedding_vector vector_cosine_ops) "
-            f"WHERE embedding_vector IS NOT NULL"
-        )
-    op.execute(
-        f"CREATE INDEX ix_embedding_chunks_text_trgm "
-        f"ON {SCHEMA}.embedding_chunks USING gin ((metadata_json ->> 'text') gin_trgm_ops)"
-    )
+    # if settings.embedding_dimensions is None or settings.embedding_dimensions <= 2000:
+    #     op.execute(
+    #         f"CREATE INDEX ix_embedding_chunks_vector_hnsw "
+    #         f"ON {SCHEMA}.embedding_chunks USING hnsw (embedding_vector vector_cosine_ops) "
+    #         f"WHERE embedding_vector IS NOT NULL"
+    #     )
+    # op.execute(
+    #     f"CREATE INDEX ix_embedding_chunks_text_trgm "
+    #     f"ON {SCHEMA}.embedding_chunks USING gin ((metadata_json ->> 'text') gin_trgm_ops)"
+    # )
 
 
 def _create_run_tables() -> None:

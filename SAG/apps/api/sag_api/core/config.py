@@ -58,11 +58,16 @@ class Settings(BaseSettings):
     # ── Storage ────────────────────────────────────────────────────────────
     data_dir: str = "./.data/engine"
     upload_dir: str = "./.data/uploads"
-    r2_write_canonical_markdown: bool = False
-    r2_canonical_prefix: str = "dev/local/sag/canonical-markdown"
+    # SAG owns durable Markdown artifacts. ai-engine only reads them and
+    # removes legacy PDF staging objects during migration.
+    r2_write_canonical_markdown: bool = True
+    r2_canonical_prefix: str = "bctc"
     max_upload_mb: int = 25  # giới hạn upload mỗi file
     process_documents_inline: bool = True
-    processing_lease_seconds: int = Field(default=600, ge=30, le=7200)
+    processing_lease_seconds: int = Field(default=120, ge=30, le=7200)
+    processing_heartbeat_seconds: float = Field(default=30.0, ge=5.0, le=300.0)
+    processing_run_timeout_seconds: int = Field(default=1000, ge=30, le=7200)
+    processing_max_attempts: int = Field(default=2, ge=1, le=10)
     worker_poll_seconds: float = Field(default=2.0, ge=0.1, le=60.0)
     job_concurrency: int = 2  # độ đồng thời xử lý nền
     document_extract_concurrency: int = Field(default=30, ge=1, le=50)  # độ đồng thời trích xuất chunk cho mỗi tài liệu
@@ -116,8 +121,8 @@ class Settings(BaseSettings):
     llm_temperature: float = _DEFAULT_LLM_PROVIDER.default_temperature
     llm_max_tokens: int = 20_000
     llm_context_window: int = _DEFAULT_LLM_PROVIDER.default_context_window
-    llm_timeout_ms: int = Field(default=60_000, ge=1_000, le=600_000)
-    llm_max_retries: int = Field(default=2, ge=0, le=10)
+    llm_timeout_ms: int = Field(default=900_000, ge=1_000, le=900_000)
+    llm_max_retries: int = Field(default=0, ge=0, le=10)
     # Bên triển khai có thể khóa tường minh cấu hình kết nối LLM; các SAG_LLM_* thông thường chỉ là giá trị mặc định lần khởi động đầu.
     lock_llm_config: bool = False
     # Request body bổ sung truyền tiếp tới chat/completions (JSON), ví dụ {"enable_thinking": false};
@@ -135,8 +140,8 @@ class Settings(BaseSettings):
     agent_llm_api_key: str | None = None
 
     # ── Embedding (tương thích OpenAI; chỉ provider OpenAI mới tái dùng được cấu hình sinh) ───────
-    embedding_model: str = "bge-large-en-v1.5"
-    embedding_base_url: str | None = "https://api.302ai.cn/v1"
+    embedding_model: str = "openai/Qwen/Qwen3-Embedding-8B"
+    embedding_base_url: str | None = "https://api.siliconflow.com/v1"
     embedding_api_key: str | None = None
     embedding_dimensions: int | None = None
 
@@ -145,6 +150,7 @@ class Settings(BaseSettings):
     document_parser: Literal["auto", "markitdown", "mineru"] = "auto"
     mineru_base_url: str | None = "https://mineru.net"
     mineru_api_key: str | None = None
+    mineru_api_keys: str | None = None
     mineru_version: str = "4.0"
     mineru_parse_method: Literal["auto", "txt", "ocr"] = "ocr"
     mineru_model_version: Literal["pipeline", "vlm"] = "vlm"
@@ -155,8 +161,14 @@ class Settings(BaseSettings):
     mineru_enable_formula: bool = True
     mineru_request_timeout: float = 60.0
     mineru_poll_interval: float = 2.0
-    mineru_poll_timeout: float = 300.0
+    mineru_poll_timeout: float = 1800.0
     mineru_result_max_mb: int = 100
+    mineru_key_concurrency: int = Field(default=5, ge=1, le=50)
+    mineru_chunk_max_mb: int = Field(default=180, ge=32, le=200)
+    mineru_chunk_max_pages: int = Field(default=550, ge=1, le=600)
+    mineru_direct_url: bool = True
+    mineru_direct_url_max_mb: int = Field(default=200, ge=1, le=200)
+    mineru_direct_url_max_pages: int = Field(default=600, ge=1, le=600)
 
     # ── Mặc định truy vấn ────────────────────────────────────────────────────────
     search_strategy: SearchStrategy = "vector"
@@ -300,9 +312,19 @@ class Settings(BaseSettings):
         return self.embedding_base_url or (self.llm_base_url if provider.can_reuse_embedding_credentials else None)
 
     @property
+    def routed_embedding_model(self) -> str:
+        provider = get_model_provider(self.llm_provider)
+        return provider.route_model(self.embedding_model) if provider.can_reuse_embedding_credentials else self.embedding_model
+
+    @property
     def mineru_configured(self) -> bool:
         """MinerU có endpoint và khóa gọi được hay không."""
-        return bool(self.mineru_base_url and self.mineru_api_key)
+        return bool(self.mineru_base_url and self.mineru_key_pool)
+
+    @property
+    def mineru_key_pool(self) -> tuple[str, ...]:
+        values = [self.mineru_api_key or "", *(self.mineru_api_keys or "").split(",")]
+        return tuple(dict.fromkeys(value.strip() for value in values if value and value.strip()))
 
     @property
     def effective_document_parser(self) -> Literal["markitdown", "mineru"]:

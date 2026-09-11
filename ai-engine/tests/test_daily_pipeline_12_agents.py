@@ -2,7 +2,7 @@
 
 Kiểm tra toàn diện:
 1. Module Exports & Pipeline Aggregation: Cả 3 pipelines đều có thể import từ `app.domain.pipeline`.
-2. Backward Compatibility: Import từ `app.application.use_cases.daily_pipeline_orchestrator` và `app.infrastructure.data_pipelines.daily_etl` vẫn hoạt động 100%.
+2. Compatibility: Import từ các entrypoint public hiện hành vẫn hoạt động 100%.
 3. Full 12-Agent Pipeline Execution: Chạy chu trình khép kín 12 Pha trên ngày giao dịch thực tế.
 4. Bear Defense Mode: Tự động khóa 100% tiền mặt khi thị trường sập gãy.
 5. Governance Audit Trail: Sổ cái kiểm toán SHA-256 được Agent-11 thẩm định và cấp chứng nhận COMPLIANT.
@@ -19,10 +19,6 @@ from app.domain.pipeline import (
     EODPipelineRunner,
     DailyETLPipeline,
 )
-from app.application.use_cases.daily_pipeline_orchestrator import (
-    pipeline as compat_pipeline,
-    DailyInvestmentPipeline as CompatDailyInvestmentPipeline,
-)
 from app.infrastructure.data_pipelines.daily_etl import (
     DailyETLPipeline as CompatDailyETLPipeline,
 )
@@ -36,9 +32,7 @@ def test_pipeline_exports_and_backward_compatibility():
     assert EODPipelineRunner is not None
     assert DailyETLPipeline is not None
 
-    # Kiểm tra backward compatibility wrappers
-    assert compat_pipeline is not None
-    assert CompatDailyInvestmentPipeline is DailyInvestmentPipeline
+    # Infrastructure ETL wrapper remains the supported compatibility boundary.
     assert CompatDailyETLPipeline is DailyETLPipeline
 
 

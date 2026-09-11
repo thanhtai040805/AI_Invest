@@ -49,7 +49,6 @@ build-backend = "hatchling.build"
 packages = ["sag_api"]
 
 [tool.pytest.ini_options]
-addopts = "--basetemp=.pytest-tmp"
 pythonpath = ["."]
 markers = [
     "asyncio: async integration tests",

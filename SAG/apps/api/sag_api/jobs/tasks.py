@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING
 from pathlib import Path
 
 from sqlalchemy import update
@@ -22,13 +23,21 @@ from sag_api.db.models import Document, Job, Source
 from sag_api.enums import DocumentStatus, JobType
 from sag_api.jobs.control import JobPaused
 from sag_api.parsing import prepare_document
-from sag_api.sag import EngineManager
 from sag_api.sag.dto import ProcessCheckpoint, estimate_llm_cost
 from sag_api.services.document_service import activate_document_version
+from sag_api.services.financial_v2_service import (
+    create_financial_document,
+    mark_document_ocr_ready,
+    parse_pdf_object_to_markdown,
+)
+from sag_api.schemas.v2 import DocumentCreateIn
 from sag_api.services.document_structure_service import ACTIVE_DOCUMENT_ROLES, rebuild_document_v2
 
 
 log = get_logger("jobs")
+
+if TYPE_CHECKING:
+    from sag_api.sag import EngineManager
 
 TaskHandler = Callable[[AsyncSession, Job], Awaitable[None]]
 
@@ -64,10 +73,27 @@ async def process_document(
     document = await session.get(Document, job.document_id) if job.document_id else None
     if document is None:
         raise NotFoundError("Tài liệu không tồn tại")
+    checkpoint = ProcessCheckpoint.from_payload(job.payload)
+    ocr_only = str((job.payload or {}).get("processing_mode") or "FULL").upper() == "OCR_ONLY"
+
+    if ocr_only:
+        document.status = DocumentStatus.OCR_READY
+        document.progress = 20
+        document.structure_status = "PENDING"
+        document.extraction_status = "INCOMPLETE"
+        document.embedding_status = "INCOMPLETE"
+        document.error = None
+        document.coverage = {
+            "mode": "ocr_only",
+            "extraction": {"status": "NOT_RUN", "reason": "ocr_only"},
+            "embedding": {"status": "NOT_RUN", "reason": "ocr_only"},
+        }
+        await session.commit()
+        return
+
     source = await session.get(Source, document.source_id)
     if source is None:
         raise NotFoundError("Nguồn không tồn tại")
-    checkpoint = ProcessCheckpoint.from_payload(job.payload)
 
     # A worker retry reuses the document row. Clear the previous attempt's
     # failure before parsing can block for a long time, so active processing
@@ -286,8 +312,72 @@ async def sync_source(session: AsyncSession, job: Job, *, engine_manager=None, j
 
     job.progress = 1.0
     job.payload = {**(job.payload or {}), "discovered": len(discovered), "fetched": fetched}
+
+
+async def process_ocr_from_object(
+    session: AsyncSession, job: Job, *, engine_manager=None, job_queue=None
+) -> None:
+    """OCR one R2 PDF in the persistent SAG queue, then create the document."""
+    payload = dict(job.payload or {})
+    markdown = await parse_pdf_object_to_markdown(
+        payload["object_uri"], payload["title"], doc_role=payload.get("doc_role")
+    )
+    body = DocumentCreateIn(
+        title=payload["title"],
+        markdown=markdown,
+        object_uri=payload["object_uri"],
+        doc_role=payload["doc_role"],
+        fiscal_year=payload.get("fiscal_year"),
+        fiscal_quarter=payload.get("fiscal_quarter"),
+        period_start=payload.get("period_start"),
+        period_end=payload.get("period_end"),
+        activate=bool(payload.get("activate", False)),
+        processing_mode=payload.get("processing_mode", "OCR_ONLY"),
+        metadata=payload.get("metadata") or {},
+    )
+    document, _ = await create_financial_document(session, payload["ticker"], body)
+    job.document_id = document.id
+    job.progress = 1.0
+    job.payload = {**payload, "document_id": document.id, "ocr_completed": True}
+    if body.processing_mode == "OCR_ONLY":
+        mark_document_ocr_ready(document)
     await session.commit()
-    log.info("Đồng bộ hoàn thành source=%s phát hiện=%d lấy=%d", source.id, len(discovered), fetched)
+
+
+async def process_ocr_from_url(
+    session: AsyncSession, job: Job, *, engine_manager=None, job_queue=None
+) -> None:
+    """Fetch one source PDF directly in SAG, OCR it, and persist Markdown only."""
+    payload = dict(job.payload or {})
+    job.payload = {**payload, "stage": "FETCHING_SOURCE"}
+    job.progress = 0.05
+    await session.commit()
+    markdown = await parse_pdf_object_to_markdown(
+        payload["source_url"], payload["title"], doc_role=payload.get("doc_role")
+    )
+    job.payload = {**payload, "stage": "OCR_PROCESSING"}
+    job.progress = 0.75
+    await session.commit()
+    body = DocumentCreateIn(
+        title=payload["title"],
+        markdown=markdown,
+        object_uri=payload["source_url"],
+        doc_role=payload["doc_role"],
+        fiscal_year=payload.get("fiscal_year"),
+        fiscal_quarter=payload.get("fiscal_quarter"),
+        period_start=payload.get("period_start"),
+        period_end=payload.get("period_end"),
+        activate=bool(payload.get("activate", False)),
+        processing_mode=payload.get("processing_mode", "OCR_ONLY"),
+        metadata=payload.get("metadata") or {},
+    )
+    document, _ = await create_financial_document(session, payload["ticker"], body)
+    job.document_id = document.id
+    job.progress = 1.0
+    job.payload = {**payload, "document_id": document.id, "stage": "OCR_READY", "ocr_completed": True}
+    if body.processing_mode == "OCR_ONLY":
+        mark_document_ocr_ready(document)
+    await session.commit()
 
 
 async def index_universe(
@@ -310,6 +400,8 @@ async def index_universe(
 
 TASK_HANDLERS: dict[JobType, TaskHandler] = {
     JobType.PROCESS_DOCUMENT: process_document,
+    JobType.OCR_FROM_OBJECT: process_ocr_from_object,
+    JobType.OCR_FROM_URL: process_ocr_from_url,
     JobType.SYNC_SOURCE: sync_source,
     JobType.INDEX_UNIVERSE: index_universe,
 }

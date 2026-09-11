@@ -14,6 +14,7 @@ from sag_api.api.v2 import api_router
 from sag_api.branding import PRODUCT_NAME
 from sag_api.core.config import settings
 from sag_api.core.db import dispose_db, init_db
+from sag_api.core.db import SessionLocal
 from sag_api.core.error_taxonomy import ErrorCode, ErrorLayer, ErrorStage
 from sag_api.core.errors import ApiError
 from sag_api.core.logging import RequestContextMiddleware, configure_logging, get_logger
@@ -41,6 +42,15 @@ async def lifespan(app: FastAPI):
 
     await init_db()
 
+    # OCR jobs do not require the optional zleap engine. Keep the queue alive
+    # in the API process so URL/R2 OCR submissions are executable in dev and
+    # production without a second API-side scheduler process.
+    from sag_api.jobs.inproc import InProcessAsyncQueue
+
+    queue = InProcessAsyncQueue(SessionLocal, engine_manager=None, concurrency=settings.job_concurrency)
+    app.state.job_queue = queue
+    await queue.start()
+
     log.info(
         "sag-api v2 financial evidence service đã khởi động · env=%s · llm_configured=%s · embedding=%s",
         settings.environment,
@@ -50,6 +60,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        await queue.stop()
         await dispose_db()
 
 

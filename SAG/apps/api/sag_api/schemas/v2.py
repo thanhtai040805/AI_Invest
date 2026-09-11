@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -20,7 +20,44 @@ class DocumentCreateIn(BaseModel):
     period_start: date | None = None
     period_end: date | None = None
     activate: bool = True
+    processing_mode: Literal["FULL", "OCR_ONLY"] = "FULL"
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class DocumentObjectCreateIn(BaseModel):
+    """Create a document from a PDF object already stored in R2."""
+
+    title: str = Field(min_length=1, max_length=512)
+    object_uri: str = Field(min_length=1, max_length=1024)
+    doc_role: DocumentRole
+    fiscal_year: int | None = Field(default=None, ge=1900, le=2200)
+    fiscal_quarter: int | None = Field(default=None, ge=1, le=4)
+    period_start: date | None = None
+    period_end: date | None = None
+    activate: bool = False
+    processing_mode: Literal["FULL", "OCR_ONLY"] = "OCR_ONLY"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class DocumentSourceCreateIn(BaseModel):
+    """Queue OCR directly from a public source URL without storing the PDF."""
+
+    title: str = Field(min_length=1, max_length=512)
+    source_url: str = Field(min_length=8, max_length=4096)
+    doc_role: DocumentRole
+    fiscal_year: int | None = Field(default=None, ge=1900, le=2200)
+    fiscal_quarter: int | None = Field(default=None, ge=1, le=4)
+    period_start: date | None = None
+    period_end: date | None = None
+    activate: bool = False
+    processing_mode: Literal["FULL", "OCR_ONLY"] = "OCR_ONLY"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class DocumentObjectSubmitOut(BaseModel):
+    job_id: str
+    status: str
+    document_id: str | None = None
 
 
 class DocumentOutV2(BaseModel):
@@ -107,6 +144,43 @@ class EvidenceSearchHit(BaseModel):
 class EvidenceSearchOut(BaseModel):
     ticker: str
     hits: list[EvidenceSearchHit]
+
+
+class ObservationOutV2(BaseModel):
+    id: str
+    document_id: str
+    node_id: str
+    statement: str
+    subject: str | None = None
+    predicate: str
+    object: str | None = None
+    topic_tags: list[str] = Field(default_factory=list)
+    attributes: dict[str, Any] = Field(default_factory=dict)
+    period_start: date | None = None
+    period_end: date | None = None
+    as_of: date | None = None
+    confidence: float
+    normalization: dict[str, Any] = Field(default_factory=dict)
+    evidence: dict[str, Any]
+
+
+class DocumentFacetOutV2(BaseModel):
+    id: str
+    document_id: str
+    node_id: str
+    facet: str
+    confidence: float
+    source: str
+    evidence: dict[str, Any]
+
+
+class ObservationSearchIn(BaseModel):
+    facets: list[str] = Field(default_factory=list, max_length=12)
+    topic_tags: list[str] = Field(default_factory=list, max_length=12)
+    predicates: list[str] = Field(default_factory=list, max_length=12)
+    min_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    include_historical: bool = False
+    top_k: int = Field(default=50, ge=1, le=200)
 
 
 class PillarAssessmentOutV2(BaseModel):

@@ -22,11 +22,18 @@ _LATEX_JUNK_RE = re.compile(r"\\(frac|delta|partial|sum|theta|alpha|beta|omega)"
 
 _STATEMENT_PATTERNS = (
     "bảng cân đối kế toán",
+    "bang can doi ke toan",
+    "can doi ke toan",
     "báo cáo kết quả hoạt động kinh doanh",
+    "bao cao ket qua hoat dong kinh doanh",
     "báo cáo kết quả hoạt động",
+    "bao cao ket qua hoat dong",
     "báo cáo lưu chuyển tiền tệ",
+    "bao cao luu chuyen tien te",
     "báo cáo tình hình tài chính",
+    "bao cao tinh hinh tai chinh",
     "báo cáo thay đổi vốn chủ sở hữu",
+    "bao cao thay doi von chu so huu",
 )
 
 _ACCOUNTING_POLICY_PATTERNS = (
@@ -65,6 +72,13 @@ _STAMP_NOISE_RE = re.compile(
     re.IGNORECASE,
 )
 _GARBLED_HEADING_RE = re.compile(r"^#{1,6}\s*(?:[^\w\s]+|cn\s+n\s+anh)\s*$", re.IGNORECASE)
+_ENGLISH_DUPLICATE_RE = re.compile(
+    r"^\s*(?:State Securities Commission|Ho Chi Minh Stock Exchange|Ha Noi Stock Exchange|"
+    r"Name of organization:|Ticker symbol:|Address:|Tel\.:|E-mail:|Contents of disclosure|"
+    r"Disclosure of|This information was published|We certify|Attachment:|Report on|"
+    r"LEGAL REPRESENTATIVE|Sign, write|Chief Executive Officer)\b",
+    re.IGNORECASE,
+)
 
 
 from html.parser import HTMLParser
@@ -78,15 +92,37 @@ class HTMLTableToMarkdownParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.rows: list[list[str]] = []
-        self.current_row: list[str] | None = None
+        self.current_row: dict[int, str] | None = None
+        self._occupied: set[int] = set()
+        self._next_col = 0
+        self._rowspans: dict[int, tuple[str, int]] = {}
         self.current_cell: list[str] | None = None
         self.in_cell = False
+        self._cell_col = 0
+        self._cell_colspan = 1
+        self._cell_rowspan = 1
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         t = tag.lower()
         if t == "tr":
-            self.current_row = []
+            self.current_row = {column: value for column, (value, _remaining) in self._rowspans.items()}
+            self._occupied = set(self.current_row)
+            self._next_col = 0
         elif t in ("th", "td"):
+            if self.current_row is None:
+                return
+            while self._next_col in self._occupied:
+                self._next_col += 1
+            attr_map = {key.lower(): value for key, value in attrs}
+            try:
+                self._cell_colspan = max(1, int(attr_map.get("colspan") or "1"))
+            except ValueError:
+                self._cell_colspan = 1
+            try:
+                self._cell_rowspan = max(1, int(attr_map.get("rowspan") or "1"))
+            except ValueError:
+                self._cell_rowspan = 1
+            self._cell_col = self._next_col
             self.current_cell = []
             self.in_cell = True
         elif t == "br" and self.in_cell and self.current_cell is not None:
@@ -98,12 +134,23 @@ class HTMLTableToMarkdownParser(HTMLParser):
             cell_text = "".join(self.current_cell or []).replace("\n", " ").strip()
             cell_text = cell_text.replace("|", "\\|")
             if self.current_row is not None:
-                self.current_row.append(cell_text)
+                for column in range(self._cell_col, self._cell_col + self._cell_colspan):
+                    self.current_row[column] = cell_text if column == self._cell_col else ""
+                    self._occupied.add(column)
+                    if self._cell_rowspan > 1:
+                        self._rowspans[column] = (cell_text if column == self._cell_col else "", self._cell_rowspan)
+                self._next_col = self._cell_col + self._cell_colspan
             self.current_cell = None
             self.in_cell = False
         elif t == "tr":
-            if self.current_row is not None and any(c.strip() for c in self.current_row):
-                self.rows.append(self.current_row)
+            if self.current_row is not None and any(c.strip() for c in self.current_row.values()):
+                width = max(self.current_row) + 1 if self.current_row else 0
+                self.rows.append([self.current_row.get(column, "") for column in range(width)])
+            self._rowspans = {
+                column: (value, remaining - 1)
+                for column, (value, remaining) in self._rowspans.items()
+                if remaining > 1
+            }
             self.current_row = None
 
     def handle_data(self, data: str) -> None:
@@ -143,9 +190,14 @@ class CleanStats:
     images_removed: int = 0
     stamps_removed: int = 0
     tables_converted: int = 0
+    bilingual_duplicates_removed: int = 0
 
 
-def clean_markdown(markdown: str) -> tuple[str, CleanStats]:
+def clean_markdown(
+    markdown: str,
+    *,
+    doc_role: str | None = None,
+) -> tuple[str, CleanStats]:
     """Làm sạch Markdown OCR BCTC, trả về (nội dung sạch, thống kê)."""
     # 1. Chuyển đổi các khối bảng HTML sang Markdown Table trước khi tách dòng
     converted_tables = 0
@@ -160,16 +212,36 @@ def clean_markdown(markdown: str) -> tuple[str, CleanStats]:
     lines = markdown.splitlines()
     stats = CleanStats(lines_in=len(lines), tables_converted=converted_tables)
     lines, stats = _strip_images(lines, stats)
+    lines, stats = _strip_bilingual_duplicates(lines, stats)
     lines, stats = _strip_audit_stamps_and_form_codes(lines, stats)
     lines, stats = _strip_html_comments(lines, stats)
     lines, stats = _strip_repeated_headings(lines, stats)
     lines, stats = _strip_toc(lines, stats)
-    lines, stats = _strip_statement_leaks(lines, stats)
-    lines, stats = _strip_accounting_policy_boilerplate(lines, stats)
+    if str(doc_role or "").upper() in {"ANNUAL_BACKBONE", "LATEST_QUARTER"}:
+        lines, stats = _strip_statement_leaks(lines, stats)
+    # Accounting policies can explain restatements, estimates and risk. Keep
+    # them in the canonical analytical input; filtering belongs to retrieval.
     lines, stats = _strip_trailing_signature(lines, stats)
     lines, stats = _strip_latex_junk(lines, stats)
     lines = _normalize_blank_lines(lines)
     return "\n".join(lines).strip() + "\n", replace(stats, lines_out=len(lines))
+
+
+def _strip_bilingual_duplicates(
+    lines: list[str], stats: CleanStats
+) -> tuple[list[str], CleanStats]:
+    """Remove common English mirror lines without deleting English-only facts."""
+    out: list[str] = []
+    removed = 0
+    for line in lines:
+        stripped = line.strip()
+        previous = out[-1].strip() if out else ""
+        has_vietnamese_context = bool(re.search(r"[À-ỹĐđ]", previous))
+        if stripped and has_vietnamese_context and _ENGLISH_DUPLICATE_RE.match(stripped):
+            removed += 1
+            continue
+        out.append(line)
+    return out, replace(stats, bilingual_duplicates_removed=stats.bilingual_duplicates_removed + removed)
 
 
 def _strip_images(lines: list[str], stats: CleanStats) -> tuple[list[str], CleanStats]:
@@ -279,6 +351,7 @@ def _strip_toc(lines: list[str], stats: CleanStats) -> list[str]:
 def _strip_statement_leaks(lines: list[str], stats: CleanStats) -> list[str]:
     out: list[str] = []
     in_statement = False
+    statement_level = 0
     sections = 0
     for line in lines:
         match = _HEADING_RE.match(line)
@@ -289,13 +362,12 @@ def _strip_statement_leaks(lines: list[str], stats: CleanStats) -> list[str]:
                 and _is_statement_heading(match.group(2))
             ):
                 in_statement = True
+                statement_level = len(match.group(1))
                 sections += 1
                 continue
             out.append(line)
             continue
-        if match and (
-            _NUMBERED_HEADING_RE.match(line) or "thuyết minh" in match.group(2).casefold()
-        ):
+        if match and len(match.group(1)) <= statement_level:
             in_statement = False
             out.append(line)
             continue

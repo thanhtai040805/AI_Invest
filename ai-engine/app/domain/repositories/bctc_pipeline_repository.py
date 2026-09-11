@@ -2,11 +2,9 @@
 
 Quản lý bảng `bctc_pipeline_records` trong PostgreSQL:
 - Theo dõi cờ trạng thái:
-    + is_classified, classifier_status
     + r2_pdf_uploaded, r2_pdf_key, r2_pdf_url, pdf_sha256
     + is_ocr_completed, ocr_status, r2_md_uploaded, r2_md_key
 - Đảm bảo cơ chế Idempotent:
-    + should_skip_classification(): Không bao giờ cắt tỉa hay upload lại nếu file đã có.
     + should_skip_ocr(): Không bao giờ gọi lại OCR nếu Markdown đã được lưu trữ.
 """
 
@@ -95,21 +93,6 @@ class BctcPipelineRepository:
             logger.warning("Lỗi get_record %s: %s", rec_id, err)
         return None
 
-    def should_skip_classification(
-        self,
-        ticker: str,
-        year: int,
-        quarter: Any,
-        scope: str = "CONSOLIDATED",
-    ) -> bool:
-        """Kiểm tra xem BCTC này đã được cắt tỉa và upload PDF lên R2 chưa.
-        Nếu rồi -> BỎ QUA để tránh lãng phí CPU và băng thông.
-        """
-        rec = self.get_record(ticker, year, quarter, scope)
-        if not rec:
-            return False
-        return bool(rec.get("is_classified") and rec.get("r2_pdf_uploaded"))
-
     def should_skip_ocr(
         self,
         ticker: str,
@@ -125,86 +108,6 @@ class BctcPipelineRepository:
             return False
         return bool(rec.get("is_ocr_completed") and rec.get("r2_md_uploaded"))
 
-    def save_classification_result(
-        self,
-        ticker: str,
-        year: int,
-        quarter: Any,
-        scope: str,
-        total_raw_pages: int,
-        retained_pages: int,
-        r2_pdf_key: str,
-        r2_pdf_url: str,
-        pdf_sha256: str = "",
-        is_audited: bool = False,
-        auditor_name: str = "",
-        audit_opinion: str = "UNQUALIFIED",
-        announcement_date: Optional[str] = None,
-    ) -> None:
-        """Lưu hoặc cập nhật trạng thái sau khi Classifier cắt tỉa và upload PDF lên R2 thành công."""
-        rec_id = self.make_record_id(ticker, year, quarter, scope)
-        q_clean = str(quarter).upper().strip() if quarter is not None else ""
-        if q_clean in ("YEAR", "ANNUAL", "FY", "0") or quarter == 0:
-            q_num = 0
-        elif q_clean in ("6M", "H1", "6") or quarter == 6:
-            q_num = 6
-        elif q_clean.isdigit():
-            q_num = int(q_clean)
-        elif q_clean.startswith("Q") and q_clean[1:].isdigit():
-            q_num = int(q_clean[1:])
-        else:
-            q_num = 0
-
-        query = """
-            INSERT INTO bctc_pipeline_records (
-                id, ticker, fiscal_year, fiscal_quarter, report_scope,
-                is_classified, classifier_status, total_raw_pages, retained_pages,
-                r2_pdf_uploaded, r2_pdf_key, r2_pdf_url, pdf_sha256,
-                is_audited, auditor_name, audit_opinion, announcement_date,
-                updated_at
-            ) VALUES (
-                %s, %s, %s, %s, %s,
-                TRUE, 'SUCCESS', %s, %s,
-                TRUE, %s, %s, %s,
-                %s, %s, %s, %s,
-                CURRENT_TIMESTAMP
-            )
-            ON CONFLICT (id) DO UPDATE SET
-                is_classified = TRUE,
-                classifier_status = 'SUCCESS',
-                total_raw_pages = EXCLUDED.total_raw_pages,
-                retained_pages = EXCLUDED.retained_pages,
-                r2_pdf_uploaded = TRUE,
-                r2_pdf_key = EXCLUDED.r2_pdf_key,
-                r2_pdf_url = EXCLUDED.r2_pdf_url,
-                pdf_sha256 = EXCLUDED.pdf_sha256,
-                is_audited = EXCLUDED.is_audited,
-                auditor_name = EXCLUDED.auditor_name,
-                audit_opinion = EXCLUDED.audit_opinion,
-                announcement_date = EXCLUDED.announcement_date,
-                updated_at = CURRENT_TIMESTAMP;
-        """
-        self.storage.execute(
-            query,
-            (
-                rec_id,
-                ticker.upper().strip(),
-                year,
-                q_num,
-                scope.upper().strip(),
-                total_raw_pages,
-                retained_pages,
-                r2_pdf_key,
-                r2_pdf_url,
-                pdf_sha256,
-                is_audited,
-                auditor_name,
-                audit_opinion,
-                announcement_date,
-            ),
-        )
-        logger.info("Saved classification status for %s (r2_key=%s)", rec_id, r2_pdf_key)
-
     def save_ocr_result(
         self,
         ticker: str,
@@ -214,19 +117,41 @@ class BctcPipelineRepository:
         r2_md_key: str,
         r2_md_url: str,
     ) -> None:
-        """Lưu hoặc cập nhật trạng thái sau khi SAG OCR hoàn thành và cất file Markdown lên R2."""
+        """Upsert OCR state; the URL-first flow has no classifier row to update."""
         rec_id = self.make_record_id(ticker, year, quarter, scope)
+        q_clean = str(quarter).upper().strip() if quarter is not None else ""
+        if q_clean in ("YEAR", "ANNUAL", "FY", "0") or quarter == 0:
+            q_num = 0
+        elif q_clean in ("6M", "H1", "6") or quarter == 6:
+            q_num = 6
+        elif q_clean.startswith("Q"):
+            q_num = int(q_clean[1:]) if q_clean[1:].isdigit() else 0
+        elif q_clean.isdigit():
+            q_num = int(q_clean)
+        else:
+            q_num = 0
         query = """
-            UPDATE bctc_pipeline_records
-            SET is_ocr_completed = TRUE,
+            INSERT INTO bctc_pipeline_records (
+                id, ticker, fiscal_year, fiscal_quarter, report_scope,
+                is_classified, classifier_status, r2_pdf_uploaded,
+                is_ocr_completed, ocr_status, r2_md_uploaded, r2_md_key, r2_md_url,
+                updated_at
+            ) VALUES (
+                %s, %s, %s, %s, %s,
+                FALSE, 'SKIPPED', FALSE,
+                TRUE, 'SUCCESS', TRUE, %s, %s,
+                CURRENT_TIMESTAMP
+            )
+            ON CONFLICT (id) DO UPDATE SET
+                is_ocr_completed = TRUE,
                 ocr_status = 'SUCCESS',
                 r2_md_uploaded = TRUE,
                 r2_md_key = %s,
                 r2_md_url = %s,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE id = %s;
+            ;
         """
-        self.storage.execute(query, (r2_md_key, r2_md_url, rec_id))
+        self.storage.execute(query, (rec_id, ticker.upper().strip(), year, q_num, scope.upper().strip(), r2_md_key, r2_md_url, r2_md_key, r2_md_url))
         logger.info("Saved OCR status for %s (r2_md_key=%s)", rec_id, r2_md_key)
 
     def set_active_sag_role(
@@ -300,4 +225,3 @@ class BctcPipelineRepository:
                 "audit_opinion": r[10],
             })
         return result
-

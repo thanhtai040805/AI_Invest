@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.db.models import ProcessingRun
@@ -23,6 +24,22 @@ async def enqueue_processing_run(
         select(ProcessingRun).where(ProcessingRun.idempotency_key == idempotency_key).limit(1)
     )
     if existing is not None:
+        if existing.status in {
+            ProcessingStageStatus.COMPLETE.value,
+            ProcessingStageStatus.INCOMPLETE.value,
+            ProcessingStageStatus.FAILED.value,
+        }:
+            # Same canonical artifact may be explicitly ingested again after a
+            # validator/configuration fix. A terminal run must be revivable;
+            # only a live RUNNING lease remains deduplicated.
+            existing.status = ProcessingStageStatus.PENDING.value
+            existing.attempt = 0
+            existing.error = None
+            existing.lease_expires_at = None
+            existing.heartbeat_at = None
+            existing.metadata_json = {**(metadata or {}), "requeued": True}
+            await session.flush()
+            return existing, True
         return existing, False
     run = ProcessingRun(
         document_id=document_id,
@@ -33,8 +50,19 @@ async def enqueue_processing_run(
         idempotency_key=idempotency_key,
         metadata_json=metadata or {},
     )
-    session.add(run)
-    await session.flush()
+    try:
+        # The preliminary read is only an optimization. The unique index is
+        # authoritative when two requests enqueue the same artifact together.
+        async with session.begin_nested():
+            session.add(run)
+            await session.flush()
+    except IntegrityError:
+        existing = await session.scalar(
+            select(ProcessingRun).where(ProcessingRun.idempotency_key == idempotency_key).limit(1)
+        )
+        if existing is None:
+            raise
+        return existing, False
     return run, True
 
 

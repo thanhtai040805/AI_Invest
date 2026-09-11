@@ -76,6 +76,7 @@ class ActiveDocument:
     published_date: str
     pdf_url: str
     role: str  # "ANNUAL_BACKBONE" | "LATEST_QUARTER" | "GOVERNANCE_REPORT"
+    pdf_urls: tuple[str, ...] = ()
     fiscal_year: Optional[int] = None
     fiscal_quarter: Optional[Union[int, str]] = None
     scope: str = "SEPARATE"
@@ -158,7 +159,8 @@ class ActiveDocumentSelector:
                 row_ann = cur.fetchone()
 
             if row_ann:
-                url_ann = row_ann["article_pdf_urls"][0] if row_ann.get("article_pdf_urls") else ""
+                urls_ann = tuple(dict.fromkeys(str(u).strip() for u in (row_ann.get("article_pdf_urls") or []) if str(u).strip()))
+                url_ann = urls_ann[0] if urls_ann else ""
                 y_ann, q_ann = parse_fiscal_period(row_ann["title"], str(row_ann["published_date"]), "ANNUAL_BACKBONE")
                 annual_doc = ActiveDocument(
                     doc_id=row_ann["id"],
@@ -167,6 +169,7 @@ class ActiveDocumentSelector:
                     title=row_ann["title"],
                     published_date=str(row_ann["published_date"]),
                     pdf_url=url_ann,
+                    pdf_urls=urls_ann,
                     role="ANNUAL_BACKBONE",
                     fiscal_year=y_ann,
                     fiscal_quarter=q_ann,
@@ -206,7 +209,8 @@ class ActiveDocumentSelector:
                 """, (ticker, annual_date, annual_id))
                 row_q = cur.fetchone()
             if row_q:
-                url_q = row_q["article_pdf_urls"][0] if row_q.get("article_pdf_urls") else ""
+                urls_q = tuple(dict.fromkeys(str(u).strip() for u in (row_q.get("article_pdf_urls") or []) if str(u).strip()))
+                url_q = urls_q[0] if urls_q else ""
                 y_q, q_q = parse_fiscal_period(row_q["title"], str(row_q["published_date"]), "LATEST_QUARTER")
                 quarter_doc = ActiveDocument(
                     doc_id=row_q["id"],
@@ -215,6 +219,7 @@ class ActiveDocumentSelector:
                     title=row_q["title"],
                     published_date=str(row_q["published_date"]),
                     pdf_url=url_q,
+                    pdf_urls=urls_q,
                     role="LATEST_QUARTER",
                     fiscal_year=y_q,
                     fiscal_quarter=q_q,
@@ -242,7 +247,8 @@ class ActiveDocumentSelector:
             """, (ticker,))
             row_gov = cur.fetchone()
             if row_gov:
-                url_gov = row_gov["article_pdf_urls"][0] if row_gov.get("article_pdf_urls") else ""
+                urls_gov = tuple(dict.fromkeys(str(u).strip() for u in (row_gov.get("article_pdf_urls") or []) if str(u).strip()))
+                url_gov = urls_gov[0] if urls_gov else ""
                 y_gov, q_gov = parse_fiscal_period(row_gov["title"], str(row_gov["published_date"]), "GOVERNANCE_REPORT")
                 gov_doc = ActiveDocument(
                     doc_id=row_gov["id"],
@@ -251,6 +257,7 @@ class ActiveDocumentSelector:
                     title=row_gov["title"],
                     published_date=str(row_gov["published_date"]),
                     pdf_url=url_gov,
+                    pdf_urls=urls_gov,
                     role="GOVERNANCE_REPORT",
                     fiscal_year=y_gov,
                     fiscal_quarter=q_gov,

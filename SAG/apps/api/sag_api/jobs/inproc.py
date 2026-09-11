@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
 from datetime import UTC, datetime
 
 from sqlalchemy import select, update
@@ -21,7 +22,8 @@ from sag_api.enums import DocumentStatus, JobStatus, JobType
 from sag_api.jobs.control import JobPaused
 from sag_api.jobs.queue import JobQueue
 from sag_api.jobs.tasks import TASK_HANDLERS
-from sag_api.sag import EngineManager
+if TYPE_CHECKING:
+    from sag_api.sag import EngineManager
 
 log = get_logger("jobs")
 

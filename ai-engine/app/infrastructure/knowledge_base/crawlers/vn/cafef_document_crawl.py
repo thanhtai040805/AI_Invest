@@ -12,7 +12,7 @@ Type → doc_type mapping:
 Lưu ý:
   - Báo chí (News) là HTML thuần túy, được cào và parse riêng bởi cafef_listing_crawl / html_parser.
   - File này chỉ cào và lập chỉ mục metadata + URL file PDF gốc của Doanh nghiệp.
-  - Nội dung PDF sẽ được tải và chuyển đổi thành Markdown bởi PageClassifier & MinerU trong SAG pipeline.
+  - Nội dung PDF sẽ được tải và chuyển đổi thành Markdown bởi SAG/MinerU pipeline.
 
 Usage:
   python -m app.infrastructure.knowledge_base.crawlers.vn.cafef_document_crawl

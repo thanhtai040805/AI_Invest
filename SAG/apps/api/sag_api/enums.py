@@ -43,6 +43,7 @@ class SourceStatus(StrEnum):
 class DocumentStatus(StrEnum):
     QUEUED = "QUEUED"
     PROCESSING = "PROCESSING"
+    OCR_READY = "OCR_READY"
     READY = "READY"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
@@ -142,6 +143,8 @@ class ValidationStatus(StrEnum):
 
 class JobType(StrEnum):
     PROCESS_DOCUMENT = "process_document"
+    OCR_FROM_OBJECT = "ocr_from_object"
+    OCR_FROM_URL = "ocr_from_url"
     SYNC_SOURCE = "sync_source"
     INDEX_UNIVERSE = "index_universe"
 

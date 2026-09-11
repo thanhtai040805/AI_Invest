@@ -12,6 +12,16 @@ from typing import Any, Dict, Optional, Union
 import httpx
 
 try:
+    from dotenv import load_dotenv
+
+    # R2_* is intentionally unprefixed and therefore is not loaded by the
+    # SAG_* pydantic settings model. Load it for the storage adapter only;
+    # production environment variables still take precedence.
+    load_dotenv(".env", override=False)
+except ImportError:  # pragma: no cover - production images normally include it
+    pass
+
+try:
     import boto3
     from botocore.config import Config
     from botocore.exceptions import ClientError
@@ -99,7 +109,54 @@ class SagR2StorageClient:
 
         return False
 
+    def download_bctc_to_file(
+        self,
+        s3_key: str,
+        destination: Union[str, Path],
+    ) -> Dict[str, Any]:
+        """Stream an R2 object to disk while calculating its digest."""
+        target = Path(destination)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256()
+        size = 0
+
+        try:
+            if self.auth_mode == "s3":
+                response = self.get_s3_client().get_object(Bucket=self.bucket_name, Key=s3_key)
+                body = response["Body"]
+                with target.open("wb") as output:
+                    for chunk in body.iter_chunks(chunk_size=1024 * 1024):
+                        if chunk:
+                            output.write(chunk)
+                            digest.update(chunk)
+                            size += len(chunk)
+                body.close()
+                return {"sha256": digest.hexdigest(), "size": size}
+
+            if self.auth_mode == "rest_token":
+                url = f"https://api.cloudflare.com/client/v4/accounts/{self.account_id}/r2/buckets/{self.bucket_name}/objects/{s3_key}"
+                headers = {"Authorization": f"Bearer {self.api_token}"}
+                with httpx.stream("GET", url, headers=headers, timeout=120.0) as response:
+                    if response.status_code != 200:
+                        detail = response.read().decode("utf-8", errors="replace")
+                        raise UpstreamError(f"Không thể tải file từ R2 qua REST Token ({response.status_code}): {detail}")
+                    with target.open("wb") as output:
+                        for chunk in response.iter_bytes(chunk_size=1024 * 1024):
+                            if chunk:
+                                output.write(chunk)
+                                digest.update(chunk)
+                                size += len(chunk)
+                return {"sha256": digest.hexdigest(), "size": size}
+        except ClientError as err:
+            raise UpstreamError(f"Không thể tải file từ R2 ({s3_key}): {err}") from err
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
+
+        raise ConfigurationError("Cloudflare R2 chưa được cấu hình credentials hợp lệ")
+
     def download_bctc_bytes(self, s3_key: str) -> bytes:
+        """Tải file PDF hoặc Markdown từ R2 bucket (legacy/small-object path)."""
         """Tải file PDF hoặc Markdown từ R2 bucket."""
         if self.auth_mode == "s3":
             client = self.get_s3_client()

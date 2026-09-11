@@ -4,7 +4,8 @@ import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from app.domain.pipeline.bctc_to_sag_pipeline import BctcToSagPipeline
+from app.domain.pipeline.bctc_to_sag_pipeline import BctcToSagPipeline, _sag_fiscal_quarter
+from app.adapters.sag_connector import _period_end, _period_start
 from app.domain.services.document_selector import ActiveDocument, TickerDocumentSet
 
 
@@ -139,3 +140,15 @@ def test_bctc_to_sag_pipeline_ocr_only():
 
     asyncio.run(_test())
 
+
+def test_sag_fiscal_quarter_matches_api_contract():
+    assert _sag_fiscal_quarter("YEAR") is None
+    assert _sag_fiscal_quarter(0) is None
+    assert _sag_fiscal_quarter("6M") == 2
+    assert _sag_fiscal_quarter("Q3") == 3
+    assert _sag_fiscal_quarter(4) == 4
+
+
+def test_sag_connector_provides_complete_governance_period():
+    assert _period_start(2026, 2, "GOVERNANCE_REPORT") == "2026-01-01"
+    assert _period_end(2026, 2) == "2026-06-30"

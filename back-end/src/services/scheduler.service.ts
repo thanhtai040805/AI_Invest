@@ -6,11 +6,14 @@ import { socketService } from './socket.service';
 import { subscriptionService } from './subscription.service';
 import { syncStocksFromEngine, backfillOhlcv } from './stockSync.service';
 
-function parseRedisConnection(): { host: string; port: number } {
+function parseRedisConnection(): { host: string; port: number; username?: string; password?: string; db?: number } {
   const url = new URL(config.redisUrl);
   return {
     host: url.hostname || 'localhost',
     port: parseInt(url.port || '6379', 10),
+    username: url.username || undefined,
+    password: url.password ? decodeURIComponent(url.password) : undefined,
+    db: url.pathname.length > 1 ? Number(url.pathname.slice(1)) : undefined,
   };
 }
 

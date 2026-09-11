@@ -17,8 +17,9 @@ import re
 import socket
 import time
 import zipfile
+from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable
-from typing import Any, Literal, NoReturn
+from typing import Any, AsyncIterator, Literal, NoReturn
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -56,6 +57,56 @@ _RESULT_URL_KEYS = (
 )
 _MARKDOWN_KEYS = ("markdown", "md_content", "markdown_content", "content")
 
+_submit_windows: dict[str, deque[float]] = defaultdict(deque)
+_submit_window_lock: asyncio.Lock | None = None
+_key_semaphores: dict[str, asyncio.Semaphore] = {}
+_key_semaphore_lock: asyncio.Lock | None = None
+_key_pool_index = 0
+
+
+async def _wait_for_submit_slot(api_key: str) -> None:
+    """Throttle MinerU submit calls without slowing result polling."""
+    global _submit_window_lock
+    limit = max(1, int(os.getenv("MINERU_SUBMIT_RPM", "240")))
+    if _submit_window_lock is None:
+        _submit_window_lock = asyncio.Lock()
+    while True:
+        async with _submit_window_lock:
+            now = time.monotonic()
+            window = _submit_windows[hashlib.sha256(api_key.encode()).hexdigest()[:12]]
+            while window and now - window[0] >= 60.0:
+                window.popleft()
+            if len(window) < limit:
+                window.append(now)
+                return
+            wait_for = max(0.05, 60.0 - (now - window[0]))
+        await asyncio.sleep(wait_for)
+
+
+def _select_mineru_key(settings: Settings) -> str:
+    global _key_pool_index
+    pool = settings.mineru_key_pool
+    if not pool:
+        return ""
+    key = pool[_key_pool_index % len(pool)]
+    _key_pool_index += 1
+    return key
+
+
+async def _key_slot(api_key: str, concurrency: int | None = None) -> asyncio.Semaphore:
+    """Return the bounded concurrency slot for one MinerU account."""
+    global _key_semaphore_lock
+    if _key_semaphore_lock is None:
+        _key_semaphore_lock = asyncio.Lock()
+    key_id = hashlib.sha256(api_key.encode()).hexdigest()[:12]
+    limit = max(1, int(concurrency or os.getenv("MINERU_KEY_CONCURRENCY", "5")))
+    async with _key_semaphore_lock:
+        semaphore = _key_semaphores.get(key_id)
+        if semaphore is None:
+            semaphore = asyncio.Semaphore(limit)
+            _key_semaphores[key_id] = semaphore
+        return semaphore
+
 
 class MinerUClient:
     def __init__(self, settings: Settings):
@@ -67,7 +118,7 @@ class MinerUClient:
             raise ConfigurationError("MinerU Base URL phải là địa chỉ HTTP(S) hợp lệ")
         if parsed_base.hostname in {"api.302.ai", "api.302ai.cn"} and parsed_base.scheme != "https":
             raise ConfigurationError("302 MinerU Base URL phải dùng HTTPS")
-        self._api_key = str(settings.mineru_api_key)
+        self._api_key = _select_mineru_key(settings)
         self._version = settings.mineru_version
         self._parse_method = settings.mineru_parse_method
         self._model_version = getattr(settings, "mineru_model_version", "vlm")
@@ -80,6 +131,13 @@ class MinerUClient:
         self._poll_interval = max(0.05, settings.mineru_poll_interval)
         self._poll_timeout = max(self._poll_interval, settings.mineru_poll_timeout)
         self._result_limit = max(1, settings.mineru_result_max_mb) * 1024 * 1024
+        self._key_concurrency = max(
+            1,
+            int(getattr(settings, "mineru_key_concurrency", os.getenv("MINERU_KEY_CONCURRENCY", "5"))),
+        )
+        self._direct_url_enabled = bool(getattr(settings, "mineru_direct_url", True))
+        self._direct_url_max_mb = max(1, int(getattr(settings, "mineru_direct_url_max_mb", 200)))
+        self._direct_url_max_pages = max(1, int(getattr(settings, "mineru_direct_url_max_pages", 600)))
         self._is_opendatalab = "mineru.net" in self._base_url or "opendatalab" in self._base_url
 
     @property
@@ -100,9 +158,155 @@ class MinerUClient:
         state: dict[str, Any] | None = None,
         on_state: StateCallback | None = None,
     ) -> str:
-        if self._is_opendatalab:
-            return await self._parse_opendatalab(path, state=state, on_state=on_state)
-        return await self._parse_302(path, state=state, on_state=on_state)
+        semaphore = await _key_slot(self._api_key, self._key_concurrency)
+        async with semaphore:
+            if self._is_opendatalab:
+                return await self._parse_opendatalab(path, state=state, on_state=on_state)
+            return await self._parse_302(path, state=state, on_state=on_state)
+
+    async def parse_url(
+        self,
+        source_url: str,
+        filename: str = "document.pdf",
+        *,
+        state: dict[str, Any] | None = None,
+        on_state: StateCallback | None = None,
+    ) -> str:
+        """Submit a public PDF URL to MinerU Precision without staging the PDF locally."""
+        if not self._is_opendatalab:
+            raise ValidationError("MinerU direct URL chỉ được hỗ trợ bởi Precision API mineru.net")
+        if not self._direct_url_enabled:
+            raise ValidationError("MinerU direct URL đang bị tắt")
+        if not _is_http_url(source_url):
+            raise ValidationError("source_url phải là địa chỉ HTTP(S) hợp lệ")
+        semaphore = await _key_slot(self._api_key, self._key_concurrency)
+        async with semaphore:
+            return await self._parse_opendatalab_url(
+                source_url,
+                filename,
+                state=state,
+                on_state=on_state,
+            )
+
+    async def _parse_opendatalab_url(
+        self,
+        source_url: str,
+        filename: str,
+        *,
+        state: dict[str, Any] | None = None,
+        on_state: StateCallback | None = None,
+    ) -> str:
+        state = dict(state or {})
+        task_id = state.get("task_id")
+        if not isinstance(task_id, str) or not task_id.strip():
+            await _wait_for_submit_slot(self._api_key)
+            is_ocr = self._parse_method == "ocr" or self._mode == "precision"
+            payload = {
+                "url": source_url,
+                "model_version": self._model_version,
+                "is_ocr": is_ocr,
+                "enable_table": self._enable_table,
+                "enable_formula": self._enable_formula,
+                "language": self._language,
+            }
+            try:
+                async with httpx.AsyncClient(timeout=self._request_timeout) as client:
+                    response = await client.post(
+                        self._url("/api/v4/extract/task"),
+                        headers=self._headers,
+                        json=payload,
+                    )
+            except httpx.TimeoutException as exc:
+                raise ServiceUnavailableError(
+                    f"MinerU direct URL timeout source={source_url}"
+                ) from exc
+            except httpx.RequestError as exc:
+                raise ServiceUnavailableError(
+                    f"Không thể kết nối MinerU direct URL source={source_url}: {exc}"
+                ) from exc
+
+            response = self._checked(response, "Đăng ký MinerU direct URL")
+            response_payload = _response_payload(response)
+            task_id = _find_task_id(response_payload)
+            if not task_id:
+                raise UpstreamError(
+                    f"MinerU direct URL không trả về task_id source={source_url}: {response_payload}"
+                )
+            state["task_id"] = task_id
+            state["source_url"] = source_url
+            state["filename"] = filename
+            state["mineru_mode"] = "direct"
+            if on_state:
+                await on_state(dict(state))
+
+        markdown = await self._poll_opendatalab_url(
+            str(task_id), source_url=source_url, on_state=on_state
+        )
+        if on_state:
+            await on_state({**state, "status": "done", "mineru_mode": "direct"})
+        return markdown
+
+    async def _poll_opendatalab_url(
+        self,
+        task_id: str,
+        *,
+        source_url: str,
+        on_state: StateCallback | None = None,
+    ) -> str:
+        deadline = time.monotonic() + self._poll_timeout
+        task_url_path = f"/api/v4/extract/task/{task_id}"
+        last_status: str | None = None
+        started_at = time.monotonic()
+        while True:
+            try:
+                async with httpx.AsyncClient(timeout=self._request_timeout) as client:
+                    response = await client.get(self._url(task_url_path), headers=self._headers)
+            except httpx.TimeoutException as exc:
+                raise ServiceUnavailableError(
+                    f"MinerU direct URL poll timeout task={task_id} source={source_url}"
+                ) from exc
+            except httpx.RequestError as exc:
+                raise ServiceUnavailableError(
+                    f"Không thể poll MinerU direct URL task={task_id}: {exc}"
+                ) from exc
+
+            response = self._checked(response, "Poll MinerU direct URL")
+            payload = _response_payload(response)
+            data = payload.get("data") if isinstance(payload, dict) and isinstance(payload.get("data"), dict) else payload
+            if isinstance(data, dict):
+                status = str(data.get("state") or data.get("status") or "").strip().lower()
+                if status and status != last_status:
+                    last_status = status
+                    if on_state:
+                        await on_state(
+                            {
+                                "task_id": task_id,
+                                "source_url": source_url,
+                                "provider_state": status,
+                                "poll_elapsed_seconds": round(time.monotonic() - started_at, 1),
+                            }
+                        )
+                if status in _DONE_STATES:
+                    result_url = _find_http_url(data, preferred=_RESULT_URL_KEYS)
+                    if result_url:
+                        return await self._download_markdown(result_url)
+                    for key in _MARKDOWN_KEYS:
+                        if isinstance(data.get(key), str) and data[key].strip():
+                            return _require_markdown(data[key])
+                    raise UpstreamError(
+                        f"MinerU direct URL báo hoàn tất nhưng thiếu kết quả task={task_id}"
+                    )
+                if status in _FAILED_STATES:
+                    error = data.get("err_msg") or data.get("error") or data.get("message") or "Lỗi không xác định"
+                    raise UpstreamError(
+                        f"MinerU direct URL phân tích thất bại task={task_id} source={source_url}: {error}"
+                    )
+
+            if time.monotonic() >= deadline:
+                raise ServiceUnavailableError(
+                    f"MinerU direct URL chờ phân tích hết thời gian task={task_id} source={source_url}"
+                )
+            await asyncio.sleep(self._poll_interval)
 
     async def _parse_opendatalab(
         self,
@@ -159,6 +363,7 @@ class MinerUClient:
 
         batch_url_path = "/api/v4/file-urls/batch" if not self._base_url.endswith("/api/v4") else "/file-urls/batch"
         try:
+            await _wait_for_submit_slot(self._api_key)
             async with httpx.AsyncClient(timeout=self._request_timeout) as client:
                 resp = await client.post(
                     self._url(batch_url_path),
@@ -183,14 +388,17 @@ class MinerUClient:
 
         upload_url = file_urls[0]
 
-        try:
+        async def file_chunks() -> AsyncIterator[bytes]:
             with open(path, "rb") as source:
-                file_bytes = source.read()
+                while True:
+                    chunk = source.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
+
+        try:
             async with httpx.AsyncClient(timeout=self._request_timeout) as client:
-                put_resp = await client.put(
-                    upload_url,
-                    content=file_bytes,
-                )
+                put_resp = await client.put(upload_url, content=file_chunks())
                 if put_resp.status_code not in (200, 201):
                     raise UpstreamError(f"Upload PDF lên OSS MinerU thất bại (HTTP {put_resp.status_code})")
         except OSError as exc:

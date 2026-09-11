@@ -9,7 +9,7 @@ class AIEngineService {
   constructor() {
     this.client = axios.create({
       baseURL: config.aiEngineUrl,
-      timeout: 30_000,
+      timeout: 2_500,
       headers: { 'Content-Type': 'application/json' },
     });
 
@@ -146,21 +146,21 @@ class AIEngineService {
 
   async submitBacktest(body: Record<string, unknown>) {
     return this.circuitBreaker.execute(async () => {
-      const { data } = await this.client.post('/api/ai/backtest', body);
+      const { data } = await this.client.post('/api/backtest/run', body);
       return data;
     });
   }
 
   async getBacktestStatus(jobId: string) {
     return this.circuitBreaker.execute(async () => {
-      const { data } = await this.client.get(`/api/ai/backtest/${jobId}/status`);
+      const { data } = await this.client.get(`/api/backtest/status/${jobId}`);
       return data;
     });
   }
 
   async getBacktestHistory() {
     return this.circuitBreaker.execute(async () => {
-      const { data } = await this.client.get('/api/ai/backtest/history');
+      const { data } = await this.client.get('/api/backtest/history');
       return data;
     });
   }
@@ -228,6 +228,13 @@ class AIEngineService {
   async getMacro() {
     return this.circuitBreaker.execute(async () => {
       const { data } = await this.client.get('/api/stock/macro');
+      return data;
+    });
+  }
+
+  async getDailyPipelineStatus() {
+    return this.circuitBreaker.execute(async () => {
+      const { data } = await this.client.get('/api/admin/daily-pipeline/status');
       return data;
     });
   }

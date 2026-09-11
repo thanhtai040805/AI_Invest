@@ -177,6 +177,60 @@ def test_pdf_upload_requires_mineru_configuration(monkeypatch):
     asyncio.run(_test())
 
 
+def test_pdf_source_url_streams_to_temp_file_and_cleans_up(monkeypatch, tmp_path):
+    from sag_api.services import financial_v2_service as service
+
+    class FakeResponse:
+        status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def aiter_bytes(self, _size):
+            yield b"%PDF-1.7\n"
+            yield b"payload"
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def head(self, *_args, **_kwargs):
+            return type("Head", (), {"status_code": 200, "headers": {"content-length": "16"}})()
+
+        def stream(self, *_args, **_kwargs):
+            return FakeResponse()
+
+    async def _parse(_client, path):
+        assert open(path, "rb").read() == b"%PDF-1.7\npayload"
+        return "# streamed"
+
+    async def _test():
+        from sag_api.parsing.mineru import MinerUClient
+
+        monkeypatch.setattr(service.settings, "upload_dir", str(tmp_path / "uploads"))
+        monkeypatch.setattr(service.settings, "mineru_api_key", "test-key")
+        monkeypatch.setattr(service.settings, "mineru_base_url", "https://mineru.test")
+        monkeypatch.setattr(service.settings, "mineru_direct_url", False)
+        monkeypatch.setattr(service.httpx, "AsyncClient", FakeClient)
+        monkeypatch.setattr(MinerUClient, "parse", _parse)
+
+        result = await service.parse_pdf_object_to_markdown("https://example.test/file.pdf", "file.pdf")
+
+        assert result == "# streamed\n"
+        assert not list((tmp_path / "uploads" / "objects").glob("sag-pdf-*.pdf"))
+
+    asyncio.run(_test())
+
+
 def test_financial_v2_role_conflict_on_same_hash(tmp_path, monkeypatch):
     async def _test():
         pytest.importorskip("aiosqlite")
@@ -266,6 +320,81 @@ def test_financial_v2_assessments_are_insufficient_without_active_complete_docum
     asyncio.run(_test())
 
 
+def test_gil_uses_validated_evidence_not_document_role_gate(tmp_path):
+    async def _test():
+        pytest.importorskip("aiosqlite")
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        from sag_api.db.base import Base
+        from sag_api.db.models import Document, Fact, Issuer, Relation
+        from sag_api.services import financial_v2_service as service
+
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        async with session_factory() as session:
+            issuer = Issuer(ticker="BANK")
+            session.add(issuer)
+            await session.flush()
+            document = Document(
+                issuer_id=issuer.id,
+                filename="bank-q2.md",
+                storage_path="bank-q2.md",
+                doc_role="LATEST_QUARTER",
+                is_active=True,
+                extraction_status="COMPLETE",
+                embedding_status="COMPLETE",
+            )
+            session.add(document)
+            await session.flush()
+            session.add_all(
+                [
+                    Fact(
+                        issuer_id=issuer.id,
+                        document_id=document.id,
+                        node_id="n1",
+                        fact_type="equity",
+                        semantic_key="total_equity",
+                        label="Total equity",
+                        value_numeric=1000.0,
+                        validation_status="VALIDATED",
+                    ),
+                    Relation(
+                        issuer_id=issuer.id,
+                        document_id=document.id,
+                        node_id="n1",
+                        subject="Bank",
+                        object="Subsidiary",
+                        relation_type="owns",
+                        validation_status="VALIDATED",
+                    ),
+                    Relation(
+                        issuer_id=issuer.id,
+                        document_id=document.id,
+                        node_id="n1",
+                        subject="Bank",
+                        object="Related party",
+                        relation_type="transacts_with",
+                        amount_vnd=100.0,
+                        validation_status="VALIDATED",
+                    ),
+                ]
+            )
+            await session.commit()
+
+            result = await service.assess_gil(session, "BANK")
+            assert result["analysis_status"] == "COMPLETE"
+            assert result["gil_flag"] == "PASS"
+            assert result["rpt_ratio"] == 0.1
+            assert not any("tài liệu active" in reason for reason in result["reasons"])
+
+        await engine.dispose()
+
+    asyncio.run(_test())
+
+
 def test_financial_v2_prod_create_enqueues_without_inline_processing(tmp_path, monkeypatch):
     async def _test():
         pytest.importorskip("aiosqlite")
@@ -304,6 +433,51 @@ def test_financial_v2_prod_create_enqueues_without_inline_processing(tmp_path, m
             assert document.status.value == "QUEUED"
             assert document.structure_status == "PENDING"
             assert [run.stage for run in runs] == ["document"]
+
+        await engine.dispose()
+
+    asyncio.run(_test())
+
+
+def test_document_processing_run_idempotency_is_revivable(tmp_path):
+    async def _test():
+        pytest.importorskip("aiosqlite")
+        from sqlalchemy import select
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        from sag_api.db.base import Base
+        from sag_api.db.models import ProcessingRun
+        from sag_api.enums import ProcessingStageStatus
+        from sag_api.services.processing_run_service import enqueue_processing_run
+
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        async with session_factory() as session:
+            first, created = await enqueue_processing_run(
+                session,
+                document_id="doc-1",
+                stage="document",
+                processing_version=2,
+                idempotency_key="doc-1:2:document:hash",
+            )
+            assert created is True
+            first.status = ProcessingStageStatus.FAILED.value
+            await session.flush()
+
+            revived, requeued = await enqueue_processing_run(
+                session,
+                document_id="doc-1",
+                stage="document",
+                processing_version=2,
+                idempotency_key="doc-1:2:document:hash",
+            )
+            assert requeued is True
+            assert revived.id == first.id
+            assert revived.status == ProcessingStageStatus.PENDING.value
+            assert len((await session.execute(select(ProcessingRun))).scalars().all()) == 1
 
         await engine.dispose()
 

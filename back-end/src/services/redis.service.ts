@@ -8,12 +8,21 @@ class RedisService {
     if (this.client) return;
 
     this.client = new Redis(config.redisUrl, {
-      maxRetriesPerRequest: 3,
+      maxRetriesPerRequest: 1,
+      retryStrategy: () => null,
       lazyConnect: true,
+      enableOfflineQueue: false,
     });
 
-    await this.client.connect();
-    console.log('[Redis] Connected');
+    this.client.on('error', () => {});
+
+    try {
+      await this.client.connect();
+      console.log('[Redis] Connected');
+    } catch {
+      console.log('[Redis] Redis offline — running in direct PostgreSQL mode');
+      this.client = null;
+    }
   }
 
   getClient(): Redis {

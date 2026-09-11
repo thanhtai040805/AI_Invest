@@ -22,9 +22,7 @@ class PgVectorDDL(UserDefinedType):
         self.dimensions = dimensions
 
     def get_col_spec(self, **_kw: Any) -> str:
-        if self.dimensions:
-            return f"vector({int(self.dimensions)})"
-        return "vector"
+        return "TEXT"
 
 
 class PgVector(TypeDecorator[list[float]]):

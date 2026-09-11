@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,8 +13,10 @@ from sag_api.db.base import new_id
 from sag_api.db.models import Document, DocumentEvidenceChunk, Job, Source
 from sag_api.enums import DocumentStatus, JobStatus, JobType
 from sag_api.jobs.queue import JobQueue
-from sag_api.sag import EngineManager
 from sag_api.services.document_structure_service import normalize_doc_role, sha256_text
+
+if TYPE_CHECKING:
+    from sag_api.sag import EngineManager
 
 
 async def list_documents(session: AsyncSession, source_id: str) -> list[Document]:

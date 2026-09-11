@@ -10,6 +10,7 @@ import copy
 import json
 from typing import Any
 
+from sag_api.core.config import settings
 from sag_api.core.logging import get_logger
 
 log = get_logger("sag.compat")
@@ -369,13 +370,12 @@ def install_zleap_sag_extract_compat() -> None:
             cleaned_messages.append(msg)
         messages = cleaned_messages
 
-        import litellm
-        litellm.request_timeout = 300.0
+        timeout_seconds = settings.llm_timeout_ms / 1000
         if hasattr(getattr(self.llm_client, "config", None), "timeout"):
-            self.llm_client.config.timeout = 300.0
+            self.llm_client.config.timeout = timeout_seconds
         if _uses_deepseek(self.llm_client):
             log.info("Mô hình dùng response_format=json_object với timeout=300s và retry tự động")
-            max_retries = 3
+            max_retries = settings.llm_max_retries + 1
             for attempt in range(max_retries):
                 try:
                     result = await self.llm_client.chat_with_schema(

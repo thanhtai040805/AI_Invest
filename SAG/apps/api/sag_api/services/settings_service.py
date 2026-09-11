@@ -82,7 +82,7 @@ QUICK_SETUP_302 = {
     "llm_context_window": _OPENAI_COMPATIBLE.default_context_window,
     "llm_timeout_ms": 60_000,
     "llm_max_retries": 2,
-    "embedding_model": "Qwen/Qwen3-Embedding-8B",
+    "embedding_model": "openai/Qwen/Qwen3-Embedding-8B",
     "embedding_base_url": "https://api.302ai.cn/v1",
     "embedding_dimensions": 1536,
     "document_parser": "auto",

@@ -7,7 +7,7 @@ from datetime import date
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
-from app.application.use_cases.daily_pipeline_orchestrator import pipeline
+from app.domain.pipeline.daily_pipeline_orchestrator import pipeline
 
 async def _run_live_pipeline():
     test_dates = [
@@ -50,4 +50,3 @@ def test_live_pipeline():
 
 if __name__ == "__main__":
     test_live_pipeline()
-

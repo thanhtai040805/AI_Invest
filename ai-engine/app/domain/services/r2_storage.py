@@ -1,21 +1,10 @@
-"""Cloudflare R2 Object Storage Service (S3 & Direct REST API).
-
-Bảo vệ tài nguyên, chống upload trùng lặp (Anti-Duplicate & Deduplication):
-- Kiểm tra file_exists() trước khi gửi request upload.
-- Tham số overwrite=False mặc định ngăn chặn việc upload lại file đã tồn tại.
-- Cấu trúc lưu trữ BCTC chuẩn hóa O(1):
-    bctc/{TICKER}/{YEAR}/Q{QUARTER}/{TICKER}_{YEAR}_Q{Q}_{SCOPE}_pruned.pdf
-    bctc/{TICKER}/{YEAR}/Q{QUARTER}/{TICKER}_{YEAR}_Q{Q}_{SCOPE}_parsed.md
-"""
+"""Read/delete adapter for the SAG-owned Cloudflare R2 artifact store."""
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import os
-from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Optional
 
 import httpx
 
@@ -31,7 +20,12 @@ logger = logging.getLogger("ai_engine.services.r2_storage")
 
 
 class R2StorageService:
-    """Service kết nối và quản lý dữ liệu BCTC trên Cloudflare R2 với cơ chế chống trùng lặp."""
+    """Read/delete adapter for SAG-owned R2 artifacts.
+
+    Durable Markdown writes are performed by SAG. ai-engine retains only the
+    read path for extraction/cache reuse and the delete path for legacy PDF
+    staging cleanup.
+    """
 
     def __init__(
         self,
@@ -130,81 +124,6 @@ class R2StorageService:
 
         return False
 
-    def upload_bytes(
-        self,
-        data: bytes,
-        s3_key: str,
-        content_type: str = "application/octet-stream",
-        bucket_name: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Upload trực tiếp dữ liệu bytes lên R2 (Quyết định upload do Database Flag quản lý)."""
-        bucket = bucket_name or self.bucket_name
-        sha256_hash = hashlib.sha256(data).hexdigest()
-
-        if self.auth_mode == "s3":
-            client = self.get_s3_client()
-            client.put_object(
-                Bucket=bucket,
-                Key=s3_key,
-                Body=data,
-                ContentType=content_type,
-            )
-            logger.info("✅ Uploaded %d bytes qua S3 -> r2://%s/%s", len(data), bucket, s3_key)
-            return {
-                "status": "UPLOADED",
-                "key": s3_key,
-                "url": f"{self.endpoint_url}/{bucket}/{s3_key}",
-                "sha256": sha256_hash,
-                "bytes": len(data),
-            }
-
-        if self.auth_mode == "rest_token":
-            url = f"https://api.cloudflare.com/client/v4/accounts/{self.account_id}/r2/buckets/{bucket}/objects/{s3_key}"
-            headers = {
-                "Authorization": f"Bearer {self.api_token}",
-                "Content-Type": content_type,
-            }
-            with httpx.Client(timeout=60.0) as client:
-                resp = client.put(url, headers=headers, content=data)
-                if resp.status_code not in (200, 201):
-                    raise RuntimeError(f"Cloudflare R2 REST API Upload Error ({resp.status_code}): {resp.text}")
-            logger.info("✅ Uploaded %d bytes qua REST Token -> r2://%s/%s", len(data), bucket, s3_key)
-            return {
-                "status": "UPLOADED",
-                "key": s3_key,
-                "url": f"{self.endpoint_url}/{bucket}/{s3_key}",
-                "sha256": sha256_hash,
-                "bytes": len(data),
-            }
-
-        raise RuntimeError("R2 chưa được cấu hình credentials hợp lệ trong .env")
-
-    def upload_file(
-        self,
-        local_path: Union[str, Path],
-        s3_key: str,
-        content_type: Optional[str] = None,
-        bucket_name: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Upload file từ đĩa lên R2."""
-        local_path = Path(local_path)
-        if not local_path.is_file():
-            raise FileNotFoundError(f"Không tìm thấy file để upload: {local_path}")
-
-        ctype = content_type
-        if not ctype:
-            if local_path.suffix.lower() == ".pdf":
-                ctype = "application/pdf"
-            elif local_path.suffix.lower() == ".md":
-                ctype = "text/markdown; charset=utf-8"
-            elif local_path.suffix.lower() == ".json":
-                ctype = "application/json; charset=utf-8"
-            else:
-                ctype = "application/octet-stream"
-
-        data = local_path.read_bytes()
-        return self.upload_bytes(data, s3_key, content_type=ctype, bucket_name=bucket_name)
-
     def download_bytes(self, s3_key: str, bucket_name: Optional[str] = None) -> bytes:
         """Tải dữ liệu từ R2 dạng bytes."""
         bucket = bucket_name or self.bucket_name
@@ -223,6 +142,18 @@ class R2StorageService:
                 return resp.content
 
         raise RuntimeError("R2 chưa được cấu hình credentials")
+
+    @staticmethod
+    def object_key_from_uri(object_uri: Optional[str]) -> Optional[str]:
+        """Convert SAG's ``r2://bucket/key`` URI to an object key."""
+        if not object_uri:
+            return None
+        value = str(object_uri).strip()
+        if not value.startswith("r2://"):
+            return None
+        remainder = value[5:]
+        _, separator, key = remainder.partition("/")
+        return key if separator and key else None
 
     def delete_object(self, s3_key: str, bucket_name: Optional[str] = None) -> bool:
         """Xóa 1 object trên R2 Storage (dành cho cleanup/teardown hoặc thay thế tài liệu)."""
@@ -249,53 +180,3 @@ class R2StorageService:
                 return False
 
         return False
-
-    @staticmethod
-    def _make_q_label(quarter: Union[int, str, None]) -> str:
-        q_clean = str(quarter).upper().strip() if quarter is not None else ""
-        if q_clean in ("YEAR", "ANNUAL", "FY", "0") or quarter == 0:
-            return "YEAR"
-        if q_clean in ("6M", "H1", "6") or quarter == 6:
-            return "6M"
-        if q_clean.isdigit():
-            return f"Q{q_clean}"
-        if q_clean.startswith("Q"):
-            return q_clean
-        return q_clean or "YEAR"
-
-    def upload_bctc_pruned_pdf(
-        self,
-        ticker: str,
-        year: int,
-        quarter: Union[int, str],
-        scope: str,
-        pdf_source: Union[str, Path, bytes],
-        bucket_name: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Upload duy nhất 1 file PDF đã cắt tỉa lên R2."""
-        ticker = ticker.upper().strip()
-        scope = scope.upper().strip()
-        q_label = self._make_q_label(quarter)
-
-        s3_key = f"bctc/{ticker}/{year}/{q_label}/{ticker}_{year}_{q_label}_{scope}_pruned.pdf"
-        if isinstance(pdf_source, (str, Path)):
-            return self.upload_file(pdf_source, s3_key, content_type="application/pdf", bucket_name=bucket_name)
-        return self.upload_bytes(pdf_source, s3_key, content_type="application/pdf", bucket_name=bucket_name)
-
-    def upload_bctc_parsed_markdown(
-        self,
-        ticker: str,
-        year: int,
-        quarter: Union[int, str],
-        scope: str,
-        markdown_content: str,
-        bucket_name: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Upload file Markdown sau OCR lên R2."""
-        ticker = ticker.upper().strip()
-        scope = scope.upper().strip()
-        q_label = self._make_q_label(quarter)
-
-        s3_key = f"bctc/{ticker}/{year}/{q_label}/{ticker}_{year}_{q_label}_{scope}_parsed.md"
-        data = markdown_content.encode("utf-8")
-        return self.upload_bytes(data, s3_key, content_type="text/markdown; charset=utf-8", bucket_name=bucket_name)

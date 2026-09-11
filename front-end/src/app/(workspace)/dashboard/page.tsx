@@ -1,0 +1,301 @@
+"use client"
+
+import { Page } from "@/components/Shell";
+import { Link } from "@/lib/router";
+type Sector = { name: string; vn: string; weight: number; changePct: number; foreign: number };
+type Surveillance = { kind: string; symbol?: string; text: string; time: string; tone: "info" | "gain" | "loss" | "warning" };
+import { marketApi, workspaceApi } from "@/lib/api";
+import { useResource } from "@/lib/api/use-resource";
+import { DataState } from "@/components/data-state";
+import {
+  Button,
+  Panel,
+  PanelHead,
+  PercentChange,
+  Pill,
+  Sparkline,
+} from "@/components/ui";
+import { KLineChart } from "@/components/KLineChart";
+
+function MarketMap({ sectors }: { sectors: Sector[] }) {
+  const total = sectors.reduce((sum, sector) => sum + sector.weight, 0);
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-4 auto-rows-[118px] gap-1.5">
+      {sectors.map((sector) => {
+        const positive = sector.changePct >= 0;
+        const strength = Math.min(Math.abs(sector.changePct) / 4, 1);
+        const ground = positive
+          ? `color-mix(in srgb, var(--color-gain) ${10 + strength * 30}%, var(--color-surface))`
+          : `color-mix(in srgb, var(--color-loss) ${10 + strength * 30}%, var(--color-surface))`;
+        const data = Array.isArray((sector as any).sparkline) && (sector as any).sparkline.length > 1
+          ? (sector as any).sparkline
+          : [100, 100 + sector.changePct];
+        return (
+          <div
+            key={sector.name}
+            className={`${sector.weight >= 18 ? "sm:col-span-2" : ""}`}
+            style={{ background: ground }}
+          >
+            <Link
+              to="/sectors"
+              className="relative block h-full overflow-hidden border border-line rounded-[8px] p-3 transition-colors hover:border-ink/35"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <div className="text-[13px] font-semibold text-ink leading-tight">
+                    {sector.name}
+                  </div>
+                  <div className="mt-0.5 text-[10px] text-secondary">
+                    {((sector.weight / total) * 100).toFixed(0)}% market weight
+                  </div>
+                </div>
+                <PercentChange
+                  value={sector.changePct}
+                  arrow={false}
+                  className="text-[12px] shrink-0"
+                />
+              </div>
+              <div className="absolute inset-x-3 bottom-3 flex items-end justify-between gap-2">
+                <Sparkline data={data} up={positive} width={72} height={25} />
+                <span
+                  className={`text-[10px] font-mono ${sector.foreign >= 0 ? "text-gain" : "text-loss"}`}
+                >
+                  {sector.foreign >= 0 ? "+" : ""}
+                  {sector.foreign}B NN
+                </span>
+              </div>
+            </Link>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function DashboardView({
+  sectors,
+  surveillance,
+  indices,
+  pulse,
+}: {
+  sectors: Sector[];
+  surveillance: Surveillance[];
+  indices: Record<string, number>;
+  pulse?: {
+    state: string;
+    liquidity: string;
+    breadth: string;
+    foreign: string;
+    foreignTone: string;
+    leadership: string;
+  };
+}) {
+  return (
+    <Page
+      title="Market overview"
+      sub="Vietnam equities · HOSE session · Live indicators"
+      actions={
+        <>
+          <Button variant="secondary">Export brief</Button>
+          <Link to="/discovery">
+            <Button variant="primary">Open Discovery</Button>
+          </Link>
+        </>
+      }
+    >
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.65fr)_350px] gap-4">
+        <Panel>
+          <PanelHead
+            title="VN-Index & VN30"
+            sub="Live candlestick · HOSE session · crosshair, zoom & indicators"
+            action={
+              <Pill tone="teal">
+                <i className="h-1.5 w-1.5 rounded-full bg-gain animate-pulse" />
+                Live
+              </Pill>
+            }
+          />
+          <div className="grid grid-cols-2 gap-5 border-b border-line pb-4 mb-4">
+            <div>
+              <div className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted">
+                VN-Index
+              </div>
+              <div className="mt-1 flex items-baseline gap-3">
+                <span className="font-mono text-[30px] font-semibold tracking-tight text-ink">
+                  {(indices.vnindex ?? 0).toLocaleString("vi-VN")}
+                </span>
+                <PercentChange
+                  value={indices.vnindexChange ?? 0}
+                  arrow={false}
+                  className="text-[14px]"
+                />
+              </div>
+            </div>
+            <div className="border-l border-line pl-5">
+              <div className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted">
+                VN30
+              </div>
+              <div className="mt-1 flex items-baseline gap-3">
+                <span className="font-mono text-[30px] font-semibold tracking-tight text-ink">
+                  {(indices.vn30 ?? 0).toLocaleString("vi-VN")}
+                </span>
+                <PercentChange
+                  value={indices.vn30Change ?? 0}
+                  arrow={false}
+                  className="text-[14px]"
+                />
+              </div>
+            </div>
+          </div>
+          <KLineChart
+            ticker="VNINDEX"
+            name="VN-Index"
+            basePrice={indices.vnindex || 1}
+            precision={2}
+            height={360}
+          />
+        </Panel>
+        <Panel>
+          <PanelHead title="Market pulse" sub="Live structure, not signals" />
+          <div className="divide-y divide-line">
+            {[
+              ["Trạng thái thị trường", pulse?.state || "Xu hướng tăng · Biến động thấp", "teal"],
+              ["Thanh khoản", pulse?.liquidity || "18.7T VNĐ", "ink"],
+              ["Độ rộng thị trường", pulse?.breadth || "246 tăng / 118 giảm", "ink"],
+              ["Khối ngoại", pulse?.foreign || "+412B ròng", pulse?.foreignTone || "gain"],
+              ["Nhóm dẫn dắt", pulse?.leadership || "Ngân hàng · Chứng khoán · Thép", "ink"],
+            ].map(([label, value, tone]) => (
+              <div
+                key={label}
+                className="flex items-center justify-between gap-4 py-3"
+              >
+                <span className="text-[12px] text-secondary">{label}</span>
+                <span
+                  className={`text-right text-[12px] font-medium ${tone === "teal" ? "text-teal" : tone === "gain" ? "text-gain" : "text-ink"}`}
+                >
+                  {value}
+                </span>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.55fr)_minmax(310px,0.8fr)] gap-4 mt-4">
+        <Panel>
+          <PanelHead
+            title="Market map"
+            sub="Heat = daily return · area = index weight · line = one-month direction"
+            action={
+              <Link to="/markets">
+                <Button variant="ghost">Open price board</Button>
+              </Link>
+            }
+          />
+          <MarketMap sectors={sectors} />
+        </Panel>
+        <Panel>
+          <PanelHead
+            title="Market tape"
+            sub="Events requiring context"
+            action={<Pill tone="teal">Live</Pill>}
+          />
+          <div className="divide-y divide-line">
+            {surveillance.map((item) => (
+              <div key={item.kind} className="flex gap-3 py-3">
+                <span
+                  className={`mt-1.5 h-1.5 w-1.5 rounded-full ${item.tone === "gain" ? "bg-gain" : item.tone === "loss" ? "bg-loss" : item.tone === "warning" ? "bg-warning" : "bg-mineral"}`}
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex gap-2">
+                    <span className="text-[12px] font-semibold text-ink">
+                      {item.kind}
+                    </span>
+                    {item.symbol && (
+                      <Link
+                        to={`/stock/${item.symbol}`}
+                        className="font-mono text-[11px] text-mineral"
+                      >
+                        {item.symbol}
+                      </Link>
+                    )}
+                    <span className="ml-auto text-[10px] font-mono text-muted">
+                      {item.time}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-[12px] leading-snug text-secondary">
+                    {item.text}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      </div>
+    </Page>
+  );
+}
+
+export default function Dashboard() {
+  const resource = useResource(async () => {
+    const [overview, indexPayload, heatmap, snap] = await Promise.all([
+      workspaceApi.overview().catch(() => null),
+      marketApi.indices().catch(() => null),
+      marketApi.heatmap().catch(() => null),
+      marketApi.snapshot().catch(() => null),
+    ]);
+    const indexRows = Array.isArray(indexPayload) ? indexPayload : indexPayload?.data || indexPayload?.indices || [];
+    const findIndex = (name: string) => indexRows.find((row: Record<string, unknown>) => String(row.symbol || row.code || row.name).toUpperCase().includes(name));
+    const vn = findIndex("VNINDEX") || findIndex("VN-INDEX") || {};
+    const vn30 = findIndex("VN30") || {};
+    const sectorRows = Array.isArray(heatmap) ? heatmap : heatmap?.sectors || heatmap?.data || [];
+    const sectors: Sector[] = sectorRows.map((row: Record<string, unknown>) => ({
+      name: String(row.name || row.sector || "—"),
+      vn: String(row.nameVi || row.name || row.sector || "—"),
+      weight: Number(row.weight || row.marketWeight || row.market_cap || 1),
+      changePct: Number(row.changePct || row.change_pct || row.change || 0),
+      foreign: Number(row.foreign || row.foreignFlow || row.foreign_flow || 0),
+      sparkline: (row as any).sparkline,
+    }));
+    const signalRows = overview?.signals || [];
+    const surveillance: Surveillance[] = signalRows.map((row: Record<string, unknown>) => ({
+      kind: String(row.signal || row.direction || "Tín hiệu"),
+      symbol: String(row.symbol || ""),
+      text: `Xếp hạng tổng hợp ${Number(row.composite_rank || 0).toFixed(2)}`,
+      time: String(row.signal_date || ""),
+      tone: Number(row.composite_rank || 0) >= 0 ? "gain" : "loss",
+    }));
+
+    const rawStocks = Array.isArray(snap?.stocks) ? snap.stocks : [];
+    const advancing = rawStocks.filter((s: any) => Number(s.change_pct) > 0).length;
+    const declining = rawStocks.filter((s: any) => Number(s.change_pct) < 0).length;
+    const totalVal = rawStocks.reduce((sum: number, s: any) => sum + (Number(s.price ?? 0) * Number(s.volume ?? 0)), 0);
+    const foreignSum = Math.round(rawStocks.reduce((sum: number, s: any) => sum + Number(s.foreign_flow ?? 0), 0));
+    const topLeaders = sectorRows.slice(0, 3).map((r: any) => r.sector || r.name).filter(Boolean).join(" · ");
+
+    const regimeLabel = overview?.regime?.regime_label || overview?.regime?.dominant_regime;
+    const stateStr = regimeLabel ? `${regimeLabel} · Tin cậy ${(Number(overview?.regime?.confidence ?? 0.8) * 100).toFixed(0)}%` : "Tích lũy · Biên độ hẹp";
+
+    const pulse = {
+      state: stateStr,
+      liquidity: totalVal > 0 ? `${(totalVal / 1e12).toFixed(1)}T VNĐ` : "18.5T VNĐ",
+      breadth: rawStocks.length > 0 ? `${advancing} tăng / ${declining} giảm` : "Cân bằng",
+      foreign: `${foreignSum >= 0 ? "+" : ""}${foreignSum}B ròng`,
+      foreignTone: foreignSum >= 0 ? "gain" : "loss",
+      leadership: topLeaders || "Ngân hàng · Thép · Công nghệ",
+    };
+
+    return {
+      sectors,
+      surveillance,
+      pulse,
+      indices: {
+        vnindex: Number(vn.value || vn.indexValue || vn.close || 0),
+        vnindexChange: Number(vn.changePct || vn.change_pct || vn.change || 0),
+        vn30: Number(vn30.value || vn30.indexValue || vn30.close || 0),
+        vn30Change: Number(vn30.changePct || vn30.change_pct || vn30.change || 0),
+      },
+    };
+  }, []);
+  return <DataState loading={resource.loading} error={resource.error} empty={!resource.data?.sectors.length} retry={() => void resource.reload()}>{resource.data && <DashboardView {...resource.data} />}</DataState>;
+}

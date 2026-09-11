@@ -21,7 +21,7 @@ from sag_api.db.models import (
     DocumentTreeNode,
     Source,
 )
-from sag_api.enums import DocumentRole, ProcessingStageStatus
+from sag_api.enums import DocumentRole, DocumentStatus, ProcessingStageStatus
 
 
 ACTIVE_DOCUMENT_ROLES = (
@@ -501,6 +501,8 @@ async def rebuild_document_v2(
     source: Source,
     document: Document,
     markdown: str,
+    *,
+    ocr_only: bool = False,
 ) -> None:
     document.structure_status = ProcessingStageStatus.RUNNING.value
     document.extraction_status = ProcessingStageStatus.RUNNING.value
@@ -934,7 +936,7 @@ async def _embed_texts(texts: list[str]) -> list[list[float]]:
     from litellm import aembedding
 
     request: dict[str, Any] = {
-        "model": settings.embedding_model,
+        "model": settings.routed_embedding_model,
         "api_key": settings.effective_embedding_api_key,
         "input": texts,
         "timeout": settings.llm_timeout_ms / 1000,
@@ -943,6 +945,7 @@ async def _embed_texts(texts: list[str]) -> list[list[float]]:
         request["api_base"] = settings.effective_embedding_base_url
     if settings.embedding_dimensions:
         request["dimensions"] = settings.embedding_dimensions
+        request["allowed_openai_params"] = ["dimensions"]
     response = await aembedding(**request)
     data = response.get("data") if isinstance(response, dict) else getattr(response, "data", None)
     if not data or len(data) != len(texts):

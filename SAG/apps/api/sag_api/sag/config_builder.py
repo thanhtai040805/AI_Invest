@@ -37,7 +37,7 @@ def build_engine_config(settings: Settings, *, overrides: dict[str, Any] | None 
         max_retries=settings.llm_max_retries,
     )
     embedding = EmbeddingConfig(
-        model=settings.embedding_model,
+        model=settings.routed_embedding_model,
         base_url=settings.effective_embedding_base_url,
         api_key=settings.effective_embedding_api_key or _PLACEHOLDER,
         dimensions=settings.embedding_dimensions,

@@ -23,30 +23,13 @@ def test_r2_service_s3_mode(monkeypatch):
     mock_s3 = MagicMock()
     service._s3_client = mock_s3
 
-    results_pdf = service.upload_bctc_pruned_pdf(
-        ticker="AAA",
-        year=2025,
-        quarter=4,
-        scope="HN",
-        pdf_source=b"%PDF-test",
-    )
-    assert results_pdf["key"] == "bctc/AAA/2025/Q4/AAA_2025_Q4_HN_pruned.pdf"
-    assert results_pdf["status"] == "UPLOADED"
-
-    results_md = service.upload_bctc_parsed_markdown(
-        ticker="AAA",
-        year=2025,
-        quarter=4,
-        scope="HN",
-        markdown_content="# Header AAA 2025",
-    )
-    assert results_md["key"] == "bctc/AAA/2025/Q4/AAA_2025_Q4_HN_parsed.md"
-    assert results_md["status"] == "UPLOADED"
+    assert service.object_key_from_uri("r2://aiinvest-bctc-prod/bctc/AAA/hash.md") == "bctc/AAA/hash.md"
+    assert service.object_key_from_uri("https://example.invalid/file.md") is None
 
     # Test delete_object
-    deleted = service.delete_object(results_pdf["key"])
+    deleted = service.delete_object("bctc/legacy/AAA_pruned.pdf")
     assert deleted is True
-    mock_s3.delete_object.assert_called_once_with(Bucket=service.bucket_name, Key=results_pdf["key"])
+    mock_s3.delete_object.assert_called_once_with(Bucket=service.bucket_name, Key="bctc/legacy/AAA_pruned.pdf")
 
 
 def test_r2_service_token_mode(monkeypatch):

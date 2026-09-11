@@ -37,16 +37,30 @@ class DnseRelayService {
     }
 
     const url = new URL(config.redisUrl);
-    this.subscriber = new Redis({
-      host: url.hostname || 'localhost',
-      port: parseInt(url.port || '6379', 10),
-      maxRetriesPerRequest: 3,
-      lazyConnect: true,
-    });
+    try {
+      this.subscriber = new Redis({
+        host: url.hostname || 'localhost',
+        port: parseInt(url.port || '6379', 10),
+        username: url.username || undefined,
+        password: url.password ? decodeURIComponent(url.password) : undefined,
+        db: url.pathname.length > 1 ? Number(url.pathname.slice(1)) : undefined,
+        maxRetriesPerRequest: 1,
+        retryStrategy: () => null,
+        lazyConnect: true,
+        enableOfflineQueue: false,
+      });
 
-    this.subscriber.on('error', (err) => {
-      console.error('[DNSE Relay] Redis subscriber error:', err.message);
-    });
+      this.subscriber.on('error', () => {});
+      await this.subscriber.connect();
+      console.log('[DNSE Relay] Redis subscriber connected successfully');
+    } catch {
+      console.log('[DNSE Relay] Redis offline — WebSocket relay standing by');
+      if (this.subscriber) {
+        this.subscriber.disconnect();
+        this.subscriber = null;
+      }
+      return;
+    }
 
     await this.replayMissedStreams();
 

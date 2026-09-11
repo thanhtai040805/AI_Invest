@@ -33,6 +33,28 @@ def _settings(**overrides: Any) -> Settings:
     )
 
 
+def test_mineru_key_pool_round_robins_parallel_clients():
+    import sag_api.parsing.mineru as mineru
+
+    mineru._key_pool_index = 0
+    settings = _settings(
+        mineru_base_url="https://mineru.net",
+        mineru_api_key="sk-primary",
+        mineru_api_keys="sk-secondary",
+    )
+
+    first = MinerUClient(settings)
+    second = MinerUClient(settings)
+    third = MinerUClient(settings)
+
+    assert settings.mineru_key_pool == ("sk-primary", "sk-secondary")
+    assert (first._api_key, second._api_key, third._api_key) == (
+        "sk-primary",
+        "sk-secondary",
+        "sk-primary",
+    )
+
+
 @pytest.mark.asyncio
 async def test_parser_routes_markdown_and_markitdown_with_cache(tmp_path, monkeypatch):
     markdown = tmp_path / "already.md"
@@ -896,3 +918,47 @@ async def test_opendatalab_v4_upload_and_extract_batch(tmp_path, monkeypatch):
     assert _FakeAsyncClient.calls[0][2]["json"]["files"][0]["layout_model"] == "doclayout_yolo"
     assert _FakeAsyncClient.calls[1][0] == "PUT"
     assert _FakeAsyncClient.calls[2][1] == "https://mineru.net/api/v4/extract-results/batch"
+
+
+@pytest.mark.asyncio
+async def test_opendatalab_precision_direct_url_ingest(tmp_path, monkeypatch):
+    _FakeAsyncClient.reset(
+        [
+            _response(
+                json={"code": 0, "data": {"task_id": "direct-task-1"}},
+                url="https://mineru.net/api/v4/extract/task",
+            ),
+            _response(
+                json={
+                    "code": 0,
+                    "data": {
+                        "state": "done",
+                        "full_zip_url": "https://cdn-mineru.openxlab.org.cn/results/direct.zip",
+                    },
+                },
+                url="https://mineru.net/api/v4/extract/task/direct-task-1",
+            ),
+            _response(
+                content=_result_zip("# Direct URL result\n\nBCTC"),
+                content_type="application/zip",
+                url="https://cdn-mineru.openxlab.org.cn/results/direct.zip",
+            ),
+        ]
+    )
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+    client = MinerUClient(
+        _settings(
+            mineru_base_url="https://mineru.net",
+            mineru_api_key="sk-direct",
+            mineru_poll_interval=0.001,
+            mineru_poll_timeout=1,
+        )
+    )
+
+    markdown = await client.parse_url("https://cafef1.example/report.pdf", "report.pdf")
+
+    assert markdown.startswith("# Direct URL result")
+    assert [call[0] for call in _FakeAsyncClient.calls] == ["POST", "GET", "DOWNLOAD"]
+    assert _FakeAsyncClient.calls[0][1] == "https://mineru.net/api/v4/extract/task"
+    assert _FakeAsyncClient.calls[0][2]["json"]["url"] == "https://cafef1.example/report.pdf"
+    assert _FakeAsyncClient.calls[1][1].endswith("/api/v4/extract/task/direct-task-1")

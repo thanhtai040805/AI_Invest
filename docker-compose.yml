@@ -27,7 +27,7 @@ services:
       redis-server
       --requirepass ${REDIS_PASSWORD:-aiinvest_redis_secret}
       --maxmemory 512mb
-      --maxmemory-policy volatile-ttl
+      --maxmemory-policy noeviction
       --appendonly yes
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-aiinvest_redis_secret}", "ping"]

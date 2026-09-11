@@ -4,6 +4,10 @@ import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import compression from 'compression';
+
+(BigInt.prototype as any).toJSON = function () {
+  return Number(this);
+};
 import { config } from './config';
 import { errorHandler } from './middleware/errorHandler';
 import {
@@ -31,6 +35,7 @@ import screenerRoutes from './modules/screener/screener.routes';
 import portfolioRoutes from './modules/portfolio/portfolio.routes';
 import aiRoutes from './modules/ai/ai.routes';
 import communityRoutes from './modules/community/community.routes';
+import workspaceRoutes from './modules/workspace/workspace.routes';
 
 const app = express();
 const server = http.createServer(app);
@@ -118,6 +123,7 @@ app.use('/api/v1/screener', screenerLimiter, screenerRoutes);
 app.use('/api/v1/portfolio', portfolioLimiter, portfolioRoutes);
 app.use('/api/v1/ai', aiLimiter, aiRoutes);
 app.use('/api/v1/community', portfolioLimiter, communityRoutes);
+app.use('/api/v1/workspace', portfolioLimiter, workspaceRoutes);
 
 // ── Error Handler ─────────────────────────────────────
 app.use(errorHandler);

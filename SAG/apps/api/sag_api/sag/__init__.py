@@ -14,7 +14,12 @@ from sag_api.sag.dto import (
     SearchOutcome,
     SourceGraphInfo,
 )
-from sag_api.sag.engine_manager import EngineManager
+def __getattr__(name: str):
+    if name == "EngineManager":
+        from sag_api.sag.engine_manager import EngineManager
+
+        return EngineManager
+    raise AttributeError(name)
 
 __all__ = [
     "ChunkInfo",

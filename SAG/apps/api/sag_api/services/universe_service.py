@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
 import hashlib
 import json
 import math
@@ -35,7 +36,8 @@ from sag_api.db.models import (
 )
 from sag_api.enums import JobStatus, JobType
 from sag_api.jobs import JobQueue
-from sag_api.sag import EngineManager
+if TYPE_CHECKING:
+    from sag_api.sag import EngineManager
 
 _GOLDEN_ANGLE = math.pi * (3 - math.sqrt(5))
 _UNIVERSE_SCHEDULE_LOCKS: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}

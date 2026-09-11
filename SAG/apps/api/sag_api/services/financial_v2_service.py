@@ -1,21 +1,33 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import re
+import tempfile
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import delete, select, text
+import httpx
+
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.core.config import settings
-from sag_api.core.errors import ConflictError, NotFoundError, ValidationError
+from sag_api.core.errors import (
+    ConflictError,
+    NotFoundError,
+    ServiceUnavailableError,
+    UpstreamError,
+    ValidationError,
+)
 from sag_api.db.models import (
     AssessmentRun,
     Document,
     DocumentAsset,
+    DocumentFacet,
     DocumentTreeNode,
     EmbeddingChunk,
     EvidenceSpan,
@@ -34,6 +46,19 @@ from sag_api.services.document_structure_service import (
     normalize_doc_role,
     parse_markdown_tree,
 )
+
+
+def _is_mineru_size_or_page_limit_error(error: Exception) -> bool:
+    """Only explicit size/page-limit errors justify a local split fallback."""
+    message = str(error).lower().replace("_", " ").replace("-", " ")
+    markers = (
+        "200mb", "200 mb", "file too large", "file size limit", "size limit",
+        "600 pages", "600 page", "too many pages", "page limit", "page count limit",
+        "maximum pages", "max pages",
+    )
+    return any(marker in message for marker in markers) or (
+        "exceed" in message and "page" in message
+    )
 from sag_api.services.embedding_v2_service import build_embeddings_for_document
 from sag_api.services.extraction_v2_service import extract_and_persist_manifest
 from sag_api.services.processing_run_service import (
@@ -53,6 +78,16 @@ def canonicalize_markdown(markdown: str) -> str:
     return text if text.endswith("\n") else f"{text}\n"
 
 
+def clean_ocr_markdown(markdown: str, filename: str, *, doc_role: str | None = None) -> str:
+    """Remove OCR transport noise while preserving analytical document content."""
+    from sag_api.parsing.markdown_noise_cleaner import clean_markdown
+
+    cleaned, _stats = clean_markdown(markdown, doc_role=doc_role)
+    if not cleaned.strip():
+        raise ValidationError(f"Cleaner làm rỗng Markdown OCR cho {filename}")
+    return canonicalize_markdown(cleaned)
+
+
 def _ticker(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]", "", value.upper().strip())
     if not cleaned:
@@ -70,6 +105,17 @@ def _cache_path_for(content_hash: str, suffix: str) -> Path:
     return root / f"{content_hash}{suffix}"
 
 
+def _cleanup_stale_pdf_parts(root: Path, max_age_seconds: int = 3600) -> None:
+    """Remove interrupted streaming downloads left by a killed worker."""
+    cutoff = time.time() - max_age_seconds
+    for part in root.glob("sag-pdf-*.pdf"):
+        try:
+            if part.stat().st_mtime < cutoff:
+                part.unlink(missing_ok=True)
+        except OSError:
+            continue
+
+
 async def get_or_create_issuer(session: AsyncSession, ticker: str) -> Issuer:
     ticker_clean = _ticker(ticker)
     issuer = await session.scalar(select(Issuer).where(Issuer.ticker == ticker_clean))
@@ -84,7 +130,7 @@ async def get_or_create_issuer(session: AsyncSession, ticker: str) -> Issuer:
 async def _read_markdown_from_body(body: DocumentCreateIn) -> tuple[str, str, str, int, str]:
     if body.markdown is not None:
         raw_bytes = body.markdown.encode("utf-8")
-        uri = "inline://markdown"
+        uri = body.object_uri or "inline://markdown"
     elif body.object_uri:
         raw_bytes = await _read_object_uri(body.object_uri)
         uri = body.object_uri
@@ -140,9 +186,222 @@ async def parse_pdf_bytes_to_markdown(data: bytes, filename: str) -> str:
     if not pdf_path.exists():
         pdf_path.write_bytes(data)
     markdown = await MinerUClient(settings).parse(str(pdf_path))
-    if not markdown.strip():
-        raise ValidationError(f"MinerU trả về Markdown rỗng cho {filename}")
-    return markdown
+    return clean_ocr_markdown(markdown, filename)
+
+
+async def _parse_large_pdf_in_chunks(pdf_path: Path, filename: str) -> str:
+    """Split oversized PDFs on page boundaries and OCR chunks concurrently."""
+    import fitz
+
+    from sag_api.parsing.mineru import MinerUClient
+
+    chunk_limit = max(32, int(getattr(settings, "mineru_chunk_max_mb", 180))) * 1024 * 1024
+    page_limit = max(1, int(getattr(settings, "mineru_chunk_max_pages", 550)))
+    source = fitz.open(str(pdf_path))
+    chunk_paths: list[tuple[int, int, int, Path]] = []
+    chunk_doc = fitz.open()
+    chunk_start = 0
+    chunk_number = 0
+
+    def flush_chunk(doc: fitz.Document, start: int, end: int) -> None:
+        nonlocal chunk_number
+        if len(doc) == 0:
+            return
+        chunk_number += 1
+        fd, name = tempfile.mkstemp(prefix="sag-pdf-chunk-", suffix=".pdf", dir=str(pdf_path.parent))
+        os.close(fd)
+        chunk_path = Path(name)
+        chunk_path.write_bytes(doc.tobytes(garbage=4, deflate=True))
+        chunk_paths.append((chunk_number, start, end, chunk_path))
+
+    try:
+        for page_index in range(len(source)):
+            candidate = fitz.open()
+            candidate.insert_pdf(chunk_doc)
+            candidate.insert_pdf(source, from_page=page_index, to_page=page_index)
+            candidate_bytes = candidate.tobytes(garbage=4, deflate=True)
+            candidate.close()
+
+            if (len(candidate_bytes) > chunk_limit or len(chunk_doc) >= page_limit) and len(chunk_doc) > 0:
+                flush_chunk(chunk_doc, chunk_start, page_index)
+                chunk_doc.close()
+                chunk_doc = fitz.open()
+                chunk_start = page_index
+
+            chunk_doc.insert_pdf(source, from_page=page_index, to_page=page_index)
+
+        flush_chunk(chunk_doc, chunk_start, len(source))
+    finally:
+        chunk_doc.close()
+        source.close()
+
+    async def parse_chunk(item: tuple[int, int, int, Path]) -> tuple[int, str]:
+        number, start, end, path = item
+        try:
+            markdown = await MinerUClient(settings).parse(str(path))
+            text = markdown.strip()
+            return number, (f"\n\n<!-- SAG PDF CHUNK {number}: pages {start + 1}-{end} -->\n\n{text}" if text else "")
+        finally:
+            path.unlink(missing_ok=True)
+
+    parsed = await asyncio.gather(*(parse_chunk(item) for item in chunk_paths))
+    markdown_parts = [text for _, text in sorted(parsed) if text]
+    if not markdown_parts:
+        raise ValidationError(f"MinerU trả về Markdown rỗng cho các chunk của {filename}")
+    return "\n".join(markdown_parts).strip() + "\n"
+
+
+async def parse_pdf_object_to_markdown(
+    object_uri: str,
+    filename: str,
+    *,
+    doc_role: str | None = None,
+) -> str:
+    """Parse an R2/local PDF or use MinerU direct URL ingest when safe."""
+    from sag_api.core.errors import ConfigurationError
+    from sag_api.parsing.mineru import MinerUClient
+
+    if not settings.mineru_configured:
+        raise ConfigurationError("PDF object cần MinerU được cấu hình")
+
+    cache_root = (Path(settings.upload_dir).resolve() / "objects")
+    cache_root.mkdir(parents=True, exist_ok=True)
+    _cleanup_stale_pdf_parts(cache_root)
+    source_uri = object_uri.strip()
+    mineru_base = str(settings.mineru_base_url or "").lower()
+    direct_supported = "mineru.net" in mineru_base or "opendatalab" in mineru_base
+    if (
+        source_uri.startswith(("http://", "https://"))
+        and getattr(settings, "mineru_direct_url", True)
+        and direct_supported
+    ):
+        declared_size: int | None = None
+        try:
+            timeout = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
+            async with httpx.AsyncClient(
+                timeout=timeout,
+                follow_redirects=True,
+                headers={"User-Agent": "AIInvest-SAG/1.0"},
+            ) as client:
+                head = await client.head(source_uri)
+                raw_length = head.headers.get("content-length")
+                if head.status_code < 400 and raw_length and raw_length.isdigit():
+                    declared_size = int(raw_length)
+        except (httpx.TimeoutException, httpx.HTTPError):
+            declared_size = None
+
+        direct_limit = max(1, int(getattr(settings, "mineru_direct_url_max_mb", 200))) * 1024 * 1024
+        # Content-Length is advisory. A missing header must not force a
+        # duplicate local download; let MinerU inspect the URL first.
+        if declared_size is None or declared_size <= direct_limit:
+            try:
+                markdown = await MinerUClient(settings).parse_url(source_uri, filename)
+                return clean_ocr_markdown(markdown, filename, doc_role=doc_role)
+            except (ServiceUnavailableError, UpstreamError) as exc:
+                if not _is_mineru_size_or_page_limit_error(exc):
+                    raise
+                # The direct endpoint can reject a source after it inspects the
+                # document (for example page count); use the stream/chunk path.
+    temp_fd, temp_name = tempfile.mkstemp(prefix="sag-pdf-", suffix=".pdf", dir=cache_root)
+    os.close(temp_fd)
+    temp_path = Path(temp_name)
+    try:
+        stream_meta: dict[str, Any]
+        if object_uri.strip().startswith("r2://"):
+            from sag_api.services.r2_storage import SagR2StorageClient
+
+            without_scheme = object_uri.strip()[len("r2://") :]
+            if "/" not in without_scheme:
+                raise ValidationError("R2 URI phải có dạng r2://bucket/key")
+            bucket, key = without_scheme.split("/", 1)
+            client = SagR2StorageClient()
+            if bucket:
+                client.bucket_name = bucket
+            stream_meta = await asyncio.to_thread(client.download_bctc_to_file, key, temp_path)
+        elif object_uri.strip().startswith(("http://", "https://")):
+            source_url = object_uri.strip()
+            digest = hashlib.sha256()
+            size = 0
+            max_single_file_bytes = max(32, int(os.getenv("MINERU_CHUNK_MAX_MB", "180"))) * 1024 * 1024
+            timeout = httpx.Timeout(connect=15.0, read=120.0, write=30.0, pool=15.0)
+            try:
+                async with httpx.AsyncClient(
+                    timeout=timeout,
+                    follow_redirects=True,
+                    headers={"User-Agent": "AIInvest-SAG/1.0"},
+                ) as client:
+                    # HEAD is advisory only: some financial hosts omit or
+                    # falsify Content-Length. The streamed byte count remains
+                    # authoritative for deciding whether to chunk.
+                    declared_size: int | None = None
+                    try:
+                        head = await client.head(source_url)
+                        raw_length = head.headers.get("content-length")
+                        if head.status_code < 400 and raw_length and raw_length.isdigit():
+                            declared_size = int(raw_length)
+                    except (httpx.TimeoutException, httpx.HTTPError):
+                        declared_size = None
+                    async with client.stream("GET", source_url) as response:
+                        if response.status_code >= 400:
+                            raise ValidationError(
+                                f"source fetch failed: HTTP {response.status_code} url={source_url}"
+                            )
+                        with temp_path.open("wb") as output:
+                            async for chunk in response.aiter_bytes(1024 * 1024):
+                                if not chunk:
+                                    continue
+                                output.write(chunk)
+                                digest.update(chunk)
+                                size += len(chunk)
+            except ValidationError:
+                raise
+            except (httpx.TimeoutException, httpx.HTTPError) as exc:
+                raise ValidationError(f"source fetch failed: url={source_url}: {exc}") from exc
+            stream_meta = {
+                "sha256": digest.hexdigest(),
+                "size": size,
+                "declared_size": declared_size,
+                "chunked": size > max_single_file_bytes,
+                "source_url": source_url,
+            }
+        else:
+            source = Path(object_uri[len("file://") :] if object_uri.startswith("file://") else object_uri).resolve()
+            if not source.is_file():
+                raise ValidationError("object_uri local không tồn tại hoặc không phải file")
+            digest = hashlib.sha256()
+            size = 0
+            with source.open("rb") as source_file, temp_path.open("wb") as output:
+                for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
+                    output.write(chunk)
+                    digest.update(chunk)
+                    size += len(chunk)
+            stream_meta = {"sha256": digest.hexdigest(), "size": size}
+
+        with temp_path.open("rb") as pdf_file:
+            if pdf_file.read(4) != b"%PDF":
+                raise ValidationError("object_uri phải trỏ tới PDF hợp lệ")
+        # R2 is the durable source of truth. Keep this PDF only for the active
+        # MinerU call; do not accumulate a second long-lived PDF cache in SAG.
+        max_single_file_bytes = max(32, int(os.getenv("MINERU_CHUNK_MAX_MB", "180"))) * 1024 * 1024
+        needs_chunking = temp_path.stat().st_size > max_single_file_bytes
+        if not needs_chunking:
+            try:
+                import fitz
+                with fitz.open(str(temp_path)) as pdf:
+                    needs_chunking = len(pdf) > int(getattr(settings, "mineru_direct_url_max_pages", 600))
+            except Exception:
+                # Some upstream/test streams expose a valid PDF header before
+                # the full page tree is available.  Let MinerU validate those
+                # small files instead of turning an advisory page check into a
+                # local hard failure.
+                needs_chunking = False
+        if needs_chunking:
+            markdown = await _parse_large_pdf_in_chunks(temp_path, filename)
+        else:
+            markdown = await MinerUClient(settings).parse(str(temp_path))
+        return clean_ocr_markdown(markdown, filename, doc_role=doc_role)
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 async def _persist_canonical_markdown_uri(
@@ -204,16 +463,51 @@ async def create_financial_document(
     if conflict is not None:
         raise ConflictError("ROLE_CONFLICT: cùng hash đã được khai báo bằng role khác")
 
-    existing = await session.scalar(
-        select(Document).where(
+    existing_rows = (
+        await session.execute(
+            select(Document).where(
             Document.issuer_id == issuer.id,
             Document.doc_role == role,
             Document.fiscal_year == body.fiscal_year,
             Document.fiscal_quarter == body.fiscal_quarter,
             Document.content_sha256 == content_hash,
+            )
         )
+    ).scalars().all()
+    # Historical retries can leave duplicate rows for the same canonical
+    # artifact. A verified result is authoritative; never revive a failed or
+    # cancelled duplicate and pay for another LLM run.
+    existing = next(
+        (
+            row
+            for row in existing_rows
+            if _status_value(row.status) == DocumentStatus.READY.value
+            and _document_ready_for_activation(row)
+        ),
+        existing_rows[0] if existing_rows else None,
     )
     if existing is not None:
+        # A transport retry must be able to recover a failed inline run.  Keep
+        # READY/PROCESSING documents idempotent. OCR_ONLY also repairs a stale
+        # PROCESSING/PENDING row instead of waiting forever for an old job.
+        needs_ocr_rebuild = (
+            body.processing_mode == "OCR_ONLY"
+            and existing.structure_status != ProcessingStageStatus.COMPLETE.value
+        )
+        if needs_ocr_rebuild or _status_value(existing.status) in {DocumentStatus.FAILED.value, DocumentStatus.CANCELLED.value}:
+            existing.status = DocumentStatus.PROCESSING
+            existing.progress = 0
+            existing.error = None
+            existing.is_active = False
+            if settings.process_documents_inline and settings.environment != "prod":
+                if body.processing_mode == "OCR_ONLY":
+                    mark_document_ocr_ready(existing)
+                else:
+                    await rebuild_structure_and_embeddings(session, issuer, existing, canonical)
+                if body.activate and _document_ready_for_activation(existing):
+                    await activate_document(session, issuer.id, existing)
+            else:
+                await enqueue_document_processing(session, existing, processing_mode=body.processing_mode)
         return existing, True
 
     cache_path = _cache_path_for(content_hash, ".md")
@@ -274,16 +568,24 @@ async def create_financial_document(
     await session.flush()
 
     if settings.process_documents_inline and settings.environment != "prod":
-        await rebuild_structure_and_embeddings(session, issuer, document, canonical)
+        if body.processing_mode == "OCR_ONLY":
+            mark_document_ocr_ready(document)
+        else:
+            await rebuild_structure_and_embeddings(session, issuer, document, canonical)
         if body.activate and _document_ready_for_activation(document):
             await activate_document(session, issuer.id, document)
     else:
-        await enqueue_document_processing(session, document)
+        await enqueue_document_processing(session, document, processing_mode=body.processing_mode)
     await session.flush()
     return document, False
 
 
-async def enqueue_document_processing(session: AsyncSession, document: Document) -> None:
+async def enqueue_document_processing(
+    session: AsyncSession,
+    document: Document,
+    *,
+    processing_mode: str = "FULL",
+) -> None:
     document.status = DocumentStatus.QUEUED
     document.progress = 0
     document.error = None
@@ -297,8 +599,24 @@ async def enqueue_document_processing(session: AsyncSession, document: Document)
             "document_id": document.id,
             "doc_role": document.doc_role,
             "content_sha256": document.content_sha256,
+            "processing_mode": processing_mode,
         },
     )
+
+
+def mark_document_ocr_ready(document: Document) -> None:
+    """Stop after canonical Markdown persistence; tree belongs to analysis."""
+    document.status = DocumentStatus.OCR_READY
+    document.progress = 20
+    document.structure_status = ProcessingStageStatus.PENDING.value
+    document.extraction_status = ProcessingStageStatus.INCOMPLETE.value
+    document.embedding_status = ProcessingStageStatus.INCOMPLETE.value
+    document.error = None
+    document.coverage = {
+        "mode": "ocr_only",
+        "extraction": {"status": "NOT_RUN", "reason": "ocr_only"},
+        "embedding": {"status": "NOT_RUN", "reason": "ocr_only"},
+    }
 
 
 async def process_document_run(session: AsyncSession, run: ProcessingRun) -> None:
@@ -320,29 +638,66 @@ async def process_document_run(session: AsyncSession, run: ProcessingRun) -> Non
         markdown = await hydrate_markdown(document, asset, session)
         document.status = DocumentStatus.PROCESSING
         document.progress = 5
-        await rebuild_structure_and_embeddings(session, issuer, document, markdown)
+        # Do not hold a database transaction while waiting on LLM/extraction.
+        # Persist the state transition first so API polling and lease recovery
+        # observe PROCESSING rather than a stale terminal state from a retry.
+        await session.commit()
+        await asyncio.wait_for(
+            rebuild_structure_and_embeddings(session, issuer, document, markdown),
+            timeout=settings.processing_run_timeout_seconds,
+        )
         if document.activation_requested and _document_ready_for_activation(document):
             await activate_document(session, issuer.id, document)
-        status = (
-            ProcessingStageStatus.COMPLETE.value
-            if _document_ready_for_activation(document) or _status_value(document.status) == DocumentStatus.READY.value
-            else ProcessingStageStatus.INCOMPLETE.value
+        run_metadata = {
+            "document_status": document.status.value if hasattr(document.status, "value") else document.status,
+            "structure_status": document.structure_status,
+            "extraction_status": document.extraction_status,
+            "embedding_status": document.embedding_status,
+        }
+        if _document_ready_for_activation(document) or _status_value(document.status) == DocumentStatus.READY.value:
+            await complete_processing_run(session, run, metadata=run_metadata)
+        else:
+            # A completed worker run must never mask a document that could not
+            # produce a validated extraction and embedding set.
+            document.status = DocumentStatus.FAILED
+            await fail_processing_run(
+                session,
+                run,
+                error=document.error or "document_processing_incomplete",
+                retryable=False,
+                metadata=run_metadata,
+            )
+    except Exception as exc:  # noqa: BLE001
+        error = str(exc)[:2000] or type(exc).__name__
+        document.status = DocumentStatus.FAILED
+        document.error = error
+        document.error_layer = "PROCESSING"
+        document.error_stage = "DOCUMENT"
+        # An outer timeout cancels the active extraction coroutine before it can
+        # close its stage run. Close any remaining RUNNING telemetry so audits do
+        # not mistake an abandoned substage for live work.
+        await session.execute(
+            update(ProcessingRun)
+            .where(
+                ProcessingRun.document_id == document.id,
+                ProcessingRun.stage.in_(("structure", "extraction", "embedding")),
+                ProcessingRun.status == ProcessingStageStatus.RUNNING.value,
+            )
+            .values(
+                status=ProcessingStageStatus.FAILED.value,
+                error=error,
+                lease_expires_at=None,
+                heartbeat_at=datetime.now(UTC),
+            )
         )
-        await complete_processing_run(
+        retryable = int(run.attempt or 0) < int(settings.processing_max_attempts)
+        await fail_processing_run(
             session,
             run,
-            status=status,
-            metadata={
-                "document_status": document.status.value if hasattr(document.status, "value") else document.status,
-                "structure_status": document.structure_status,
-                "extraction_status": document.extraction_status,
-                "embedding_status": document.embedding_status,
-            },
+            error=error,
+            retryable=retryable,
+            metadata={"attempt_limit": settings.processing_max_attempts},
         )
-    except Exception as exc:  # noqa: BLE001
-        document.status = DocumentStatus.FAILED
-        document.error = str(exc)[:2000]
-        await fail_processing_run(session, run, error=str(exc)[:2000], retryable=True)
 
 
 async def rebuild_structure_and_embeddings(
@@ -363,6 +718,9 @@ async def rebuild_structure_and_embeddings(
     nodes, coverage = parse_markdown_tree(markdown, document_id=document.id, source_id=issuer.id, metadata=metadata)
     await session.execute(delete(DocumentTreeNode).where(DocumentTreeNode.document_id == document.id))
     await session.execute(delete(EmbeddingChunk).where(EmbeddingChunk.document_id == document.id))
+    # Make the old node identities disappear before inserting deterministic
+    # replacements with the same (document_id, node_id) unique key.
+    await session.flush()
     for node in nodes:
         node_meta = {**node.metadata}
         excluded, reason = _excluded_policy(node.heading_path)
@@ -402,52 +760,150 @@ async def rebuild_structure_and_embeddings(
     ).scalars().all()
 
     extraction_error_metadata = None
+    extraction_error: str | None = None
     try:
         extraction_run = _stage_run(document, "extraction", ProcessingStageStatus.RUNNING.value)
         session.add(extraction_run)
         extraction = await extract_and_persist_manifest(session, issuer, document, markdown, node_rows)
     except Exception as exc:  # noqa: BLE001
         extraction = None
+        extraction_error = str(exc)[:2000]
         extraction_error_metadata = {
             "mode": "llm_manifest",
             "error_type": type(exc).__name__,
-            "error": str(exc)[:2000],
+            "error": extraction_error,
         }
         document.extraction_status = ProcessingStageStatus.FAILED.value
-        document.error = f"EXTRACTION_FAILED: {str(exc)[:2000]}"
+        document.error = extraction_error
         if "extraction_run" in locals():
-            _complete_stage(extraction_run, extraction_error_metadata, status=ProcessingStageStatus.FAILED.value, error=str(exc))
+            _complete_stage(extraction_run, extraction_error_metadata, status=ProcessingStageStatus.FAILED.value, error=extraction_error)
     else:
         document.extraction_status = extraction.status
         document.fact_count = extraction.fact_count
         document.token_usage = int(document.token_usage or 0) + int(extraction.token_usage or 0)
         _complete_stage(extraction_run, extraction.metadata or {}, status=extraction.status, error=extraction.error)
+        if extraction.status != ProcessingStageStatus.COMPLETE.value:
+            # Propagate the exact LLM failure reason instead of a generic placeholder.
+            extraction_error = (extraction.error or "")[:2000] or extraction.status
+            document.error = extraction_error
 
     embedding = None
+    embedding_coverage: dict[str, Any] | None = None
     if document.extraction_status == ProcessingStageStatus.COMPLETE.value:
         embedding_run = _stage_run(document, "embedding", ProcessingStageStatus.RUNNING.value)
         session.add(embedding_run)
         embedding = await build_embeddings_for_document(session, issuer, document, markdown)
         document.embedding_status = embedding.status
         _complete_stage(embedding_run, embedding.metadata or {}, status=embedding.status, error=embedding.error)
+        embedding_coverage = embedding.metadata if embedding is not None else None
+        if embedding.status != ProcessingStageStatus.COMPLETE.value:
+            # Only report a provider/vector failure when embedding actually ran.
+            embedding_error = (embedding.error or "")[:2000]
+            if embedding_error:
+                suffix = embedding_error
+            else:
+                suffix = "EMBEDDING_INCOMPLETE: chưa có embedding provider/vector hợp lệ"
+            document.error = f"{document.error}; {suffix}" if document.error else suffix
     else:
         document.embedding_status = ProcessingStageStatus.INCOMPLETE.value
-    document.status = DocumentStatus.FAILED
-    if document.extraction_status != ProcessingStageStatus.COMPLETE.value and not document.error:
-        document.error = "EXTRACTION_INCOMPLETE: chưa có full-document LLM manifest hợp lệ"
-    if document.embedding_status != ProcessingStageStatus.COMPLETE.value:
-        suffix = "EMBEDDING_INCOMPLETE: chưa có embedding provider/vector hợp lệ"
-        document.error = f"{document.error}; {suffix}" if document.error else suffix
+        embedding_coverage = {
+            "status": ProcessingStageStatus.INCOMPLETE.value,
+            "reason": "skipped_because_extraction_incomplete",
+            "extraction_status": document.extraction_status,
+            "extraction_error": extraction_error,
+        }
+    if (
+        document.extraction_status == ProcessingStageStatus.COMPLETE.value
+        and document.embedding_status == ProcessingStageStatus.COMPLETE.value
+    ):
+        # Đủ điều kiện pipeline: để caller quyết activate (READY) sau.
+        # Không gán FAILED ở đây để phân biệt "complete nhưng chưa active"
+        # với "fail thật".
+        document.status = DocumentStatus.PROCESSING
+        document.error = None
+        document.progress = 80
+    else:
+        document.status = DocumentStatus.FAILED
+        document.progress = 60
+    extraction_coverage: dict[str, Any] | None
+    if extraction is not None:
+        extraction_coverage = dict(extraction.metadata or {})
+        extraction_coverage.setdefault("status", extraction.status)
+        if extraction.error:
+            extraction_coverage.setdefault("error", extraction.error)
+    else:
+        extraction_coverage = extraction_error_metadata
     document.coverage = {
         **coverage,
         "reference_validity": 1.0 if document.extraction_status == ProcessingStageStatus.COMPLETE.value else 0.0,
-        "extraction": extraction.metadata if extraction is not None else extraction_error_metadata,
-        "embedding": embedding.metadata if embedding is not None else None,
+        "extraction": extraction_coverage,
+        "embedding": embedding_coverage,
     }
     document.chunk_count = len(
         (await session.execute(select(EmbeddingChunk).where(EmbeddingChunk.document_id == document.id))).scalars().all()
     )
-    document.progress = 80 if document.extraction_status == ProcessingStageStatus.COMPLETE.value else 60
+
+
+async def rebuild_document_structure_only(
+    session: AsyncSession,
+    issuer: Issuer,
+    document: Document,
+    markdown: str,
+) -> None:
+    """Build OCR/tree artifacts without invoking extraction or embeddings."""
+    structure_run = _stage_run(document, "structure", ProcessingStageStatus.RUNNING.value)
+    session.add(structure_run)
+    metadata = {
+        "ticker": issuer.ticker,
+        "title": document.filename,
+        "doc_role": document.doc_role,
+        "fiscal_year": document.fiscal_year,
+        "fiscal_quarter": document.fiscal_quarter,
+    }
+    nodes, coverage = parse_markdown_tree(markdown, document_id=document.id, source_id=issuer.id, metadata=metadata)
+    await session.execute(delete(DocumentTreeNode).where(DocumentTreeNode.document_id == document.id))
+    await session.execute(delete(EmbeddingChunk).where(EmbeddingChunk.document_id == document.id))
+    await session.flush()
+    for node in nodes:
+        node_meta = {**node.metadata}
+        excluded, reason = _excluded_policy(node.heading_path)
+        node_meta["excluded_from_analysis"] = excluded
+        if reason:
+            node_meta["exclusion_reason"] = reason
+        session.add(
+            DocumentTreeNode(
+                document_id=document.id,
+                source_id=None,
+                issuer_id=issuer.id,
+                node_id=node.node_id,
+                parent_id=node.parent_id,
+                level=node.level,
+                order_index=node.order,
+                heading=node.heading,
+                heading_path=node.heading_path,
+                node_kind=node.node_kind,
+                start_line=node.start_line,
+                end_line=node.end_line,
+                content_hash=node.content_hash,
+                summary=None,
+                relevance_json={"relevance": "NONE"},
+                metadata_json=node_meta,
+            )
+        )
+    await session.flush()
+    document.structure_status = ProcessingStageStatus.COMPLETE.value
+    document.extraction_status = ProcessingStageStatus.INCOMPLETE.value
+    document.embedding_status = ProcessingStageStatus.INCOMPLETE.value
+    document.status = DocumentStatus.OCR_READY
+    document.progress = 40
+    document.error = None
+    document.coverage = {
+        **coverage,
+        "mode": "ocr_only",
+        "extraction": {"status": "NOT_RUN", "reason": "ocr_only"},
+        "embedding": {"status": "NOT_RUN", "reason": "ocr_only"},
+    }
+    _complete_stage(structure_run, coverage)
 
 
 def _stage_run(document: Document, stage: str, status: str) -> ProcessingRun:
@@ -525,6 +981,10 @@ async def activate_document(session: AsyncSession, issuer_id: str, document: Doc
     ).scalars()
     for row in rows:
         row.is_active = False
+    # PostgreSQL's partial unique index permits only one active document for an
+    # issuer/role. Flush the deactivations before activating a replacement so a
+    # retry cannot transiently violate that invariant during autoflush.
+    await session.flush()
     document.is_active = True
     document.status = DocumentStatus.READY
     document.progress = 100
@@ -541,6 +1001,25 @@ async def activate_document(session: AsyncSession, issuer_id: str, document: Doc
     ).scalars()
     for chunk in active_chunks:
         chunk.active_version = True
+    # A retry can leave a failed duplicate for the same reporting period. Once
+    # a replacement is verified READY, it has no analytical value and must not
+    # pollute audits or future benchmark inventories.
+    await session.execute(
+        update(Document)
+        .where(
+            Document.issuer_id == issuer_id,
+            Document.doc_role == document.doc_role,
+            Document.fiscal_year == document.fiscal_year,
+            Document.fiscal_quarter == document.fiscal_quarter,
+            Document.status == DocumentStatus.FAILED,
+            Document.id != document.id,
+        )
+        .values(
+            status=DocumentStatus.CANCELLED,
+            is_active=False,
+            error="superseded_by_verified_document",
+        )
+    )
 
 
 async def list_documents(session: AsyncSession, ticker: str) -> list[tuple[Document, DocumentAsset | None, Issuer]]:
@@ -872,11 +1351,10 @@ def _score_pillar(evidence: list[dict[str, Any]], counter: list[dict[str, Any]])
 
 async def assess_gil(session: AsyncSession, ticker: str) -> dict[str, Any]:
     issuer, docs = await active_documents(session, ticker)
-    active_roles = sorted({doc.doc_role for doc in docs if doc.doc_role})
-    missing = [role for role in ACTIVE_DOCUMENT_ROLES if role not in active_roles]
     doc_ids = [doc.id for doc in docs if doc.extraction_status == ProcessingStageStatus.COMPLETE.value]
     relations = []
     facts = []
+    facets = []
     if doc_ids:
         relations = (
             await session.execute(
@@ -896,12 +1374,40 @@ async def assess_gil(session: AsyncSession, ticker: str) -> dict[str, Any]:
                 )
             )
         ).scalars().all()
+        facets = (
+            await session.execute(
+                select(DocumentFacet).where(
+                    DocumentFacet.issuer_id == issuer.id,
+                    DocumentFacet.document_id.in_(doc_ids),
+                )
+            )
+        ).scalars().all()
     equity = _latest_equity(facts)
     reasons = []
-    if missing:
-        reasons.append(f"Thiếu tài liệu active: {', '.join(missing)}")
+    facet_names = {facet.facet for facet in facets}
+    structural_relations = {
+        RelationType.OWNS.value,
+        RelationType.CONTROLS.value,
+        RelationType.INVESTS_IN.value,
+    }
+    transaction_relations = {
+        RelationType.TRANSACTS_WITH.value,
+        RelationType.GUARANTEES_FOR.value,
+        RelationType.LENDS_TO.value,
+        RelationType.CREDITOR_OF.value,
+    }
+    has_structure = any(rel.relation_type in structural_relations for rel in relations) or bool(
+        facet_names.intersection({"corporate_structure", "ownership_structure", "investment_in_subsidiaries", "related_party"})
+    )
+    has_transaction_scope = any(rel.relation_type in transaction_relations for rel in relations) or bool(
+        facet_names.intersection({"related_party", "guarantees", "intercompany_financing"})
+    )
     if not equity:
         reasons.append("Thiếu vốn chủ sở hữu validated")
+    if not has_structure:
+        reasons.append("Thiếu evidence về cấu trúc sở hữu/đầu tư để dựng graph GIL")
+    if not has_transaction_scope:
+        reasons.append("Thiếu evidence về giao dịch liên quan, bảo lãnh hoặc tài trợ nội bộ")
     if any(doc.extraction_status != ProcessingStageStatus.COMPLETE.value for doc in docs):
         reasons.append("Extraction của bộ tài liệu active chưa COMPLETE")
     if reasons:
@@ -967,7 +1473,15 @@ def _latest_equity(facts: list[Fact]) -> float | None:
     equities = [fact for fact in facts if fact.fact_type == FactType.EQUITY.value and fact.value_numeric]
     if not equities:
         return None
-    equities.sort(key=lambda fact: (fact.as_of or fact.period_end or fact.period_start or ""), reverse=True)
+    # Prefer the total-equity fact over a component (e.g. contributed capital)
+    # when both are reported for the same balance-sheet date.
+    equities.sort(
+        key=lambda fact: (
+            1 if str(fact.semantic_key or "").startswith("total_equity") else 0,
+            fact.as_of or fact.period_end or fact.period_start or "",
+        ),
+        reverse=True,
+    )
     return float(equities[0].value_numeric or 0)
 
 

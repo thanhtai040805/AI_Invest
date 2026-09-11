@@ -131,8 +131,9 @@ async def build_embeddings_for_document(
 
     try:
         embedded = 0
-        for start in range(0, len(pending), 64):
-            batch = pending[start : start + 64]
+        # SiliconFlow embeddings API caps input at 32 items per request.
+        for start in range(0, len(pending), 32):
+            batch = pending[start : start + 32]
             vectors = await _embed_texts([text for _row, text in batch])
             for (row, _text), vector in zip(batch, vectors, strict=True):
                 row.embedding_vector = vector
@@ -208,7 +209,7 @@ async def _embed_texts(texts: list[str]) -> list[list[float]]:
     from litellm import aembedding
 
     request: dict[str, Any] = {
-        "model": settings.embedding_model,
+        "model": settings.routed_embedding_model,
         "api_key": settings.effective_embedding_api_key,
         "input": texts,
         "timeout": settings.llm_timeout_ms / 1000,
@@ -217,6 +218,7 @@ async def _embed_texts(texts: list[str]) -> list[list[float]]:
         request["api_base"] = settings.effective_embedding_base_url
     if settings.embedding_dimensions:
         request["dimensions"] = settings.embedding_dimensions
+        request["allowed_openai_params"] = ["dimensions"]
 
     response = await aembedding(**request)
     data = response.get("data") if isinstance(response, dict) else getattr(response, "data", None)

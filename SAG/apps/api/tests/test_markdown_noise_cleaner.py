@@ -41,7 +41,7 @@ def test_muc_luc_block_is_removed():
     assert stats.toc_blocks == 1
 
 
-def test_statement_leak_is_stripped_until_numbered_heading():
+def test_financial_statement_content_is_preserved_for_analysis():
     markdown = (
         "## 1. THÔNG TIN CHUNG\n"
         "## BÁO CÁO KẾT QUẢ HOẠT ĐỘNG KINH DOANH\n"
@@ -51,11 +51,11 @@ def test_statement_leak_is_stripped_until_numbered_heading():
         "## 21. TRÌNH BÀY TRONG BÁO CÁO TÌNH HÌNH TÀI CHÍNH\n"
     )
     cleaned, stats = clean_markdown(markdown)
-    assert "BÁO CÁO KẾT QUẢ HOẠT ĐỘNG KINH DOANH" not in cleaned
-    assert "BÁO CÁO LƯU CHUYỂN TIỀN TỆ" not in cleaned
-    assert "doanh thu" not in cleaned and "dòng tiền" not in cleaned
+    assert "BÁO CÁO KẾT QUẢ HOẠT ĐỘNG KINH DOANH" in cleaned
+    assert "BÁO CÁO LƯU CHUYỂN TIỀN TỆ" in cleaned
+    assert "doanh thu" in cleaned and "dòng tiền" in cleaned
     assert "## 21. TRÌNH BÀY TRONG BÁO CÁO TÌNH HÌNH TÀI CHÍNH" in cleaned
-    assert stats.statement_sections == 1
+    assert stats.statement_sections == 0
 
 
 def test_supplementary_notes_heading_survives_statement_filter():
@@ -63,6 +63,21 @@ def test_supplementary_notes_heading_survives_statement_filter():
     cleaned, stats = clean_markdown(markdown)
     assert "THÔNG TIN BỔ SUNG" in cleaned
     assert stats.statement_sections == 0
+
+
+def test_governance_tables_and_financial_tables_are_not_deleted_by_cleaner():
+    markdown = (
+        "## II. HỘI ĐỒNG QUẢN TRỊ\n"
+        "<table><tr><th>Thành viên</th><th>Chức vụ</th></tr>"
+        "<tr><td>Nguyễn A</td><td>Chủ tịch</td></tr></table>\n"
+        "## BÁO CÁO TÌNH HÌNH TÀI CHÍNH\n"
+        "<table><tr><th>Tài sản</th><th>Cuối kỳ</th></tr>"
+        "<tr><td>Tổng tài sản</td><td>100</td></tr></table>\n"
+    )
+    cleaned, stats = clean_markdown(markdown)
+    assert "Nguyễn A" in cleaned
+    assert "Tổng tài sản" in cleaned
+    assert stats.tables_converted == 2
 
 
 def test_trailing_signature_block_is_stripped():
@@ -95,7 +110,7 @@ def test_blank_lines_are_collapsed_and_output_trimmed():
     assert cleaned == "# A\n\nnội dung\n"
 
 
-def test_generic_accounting_policy_is_stripped():
+def test_accounting_policy_is_preserved_for_analysis():
     markdown = (
         "## 1. THÔNG TIN CHUNG\n"
         "nội dung công ty\n"
@@ -106,11 +121,11 @@ def test_generic_accounting_policy_is_stripped():
         "Tiền mặt: 100 tỷ\n"
     )
     cleaned, stats = clean_markdown(markdown)
-    assert "TÓM TẮT CÁC CHÍNH SÁCH KẾ TOÁN CHỦ YẾU" not in cleaned
-    assert "TSCĐ khấu hao đường thẳng" not in cleaned
+    assert "TÓM TẮT CÁC CHÍNH SÁCH KẾ TOÁN CHỦ YẾU" in cleaned
+    assert "TSCĐ khấu hao đường thẳng" in cleaned
     assert "## 1. THÔNG TIN CHUNG" in cleaned
     assert "## 5. TIỀN VÀ CÁC KHOẢN TƯƠNG ĐƯƠNG TIỀN" in cleaned
-    assert stats.accounting_policy_sections == 1
+    assert stats.accounting_policy_sections == 0
 
 
 def test_accounting_policy_with_change_keywords_is_preserved():
@@ -123,7 +138,7 @@ def test_accounting_policy_with_change_keywords_is_preserved():
     cleaned, stats = clean_markdown(markdown)
     assert "TÓM TẮT CÁC CHÍNH SÁCH KẾ TOÁN CHỦ YẾU" in cleaned
     assert "Thông tư 99/2025/TT-BTC" in cleaned
-    assert stats.accounting_policy_sections == 1
+    assert stats.accounting_policy_sections == 0
 
 
 def test_images_and_cdn_urls_are_removed():
@@ -138,6 +153,38 @@ def test_images_and_cdn_urls_are_removed():
     assert "http://example.com/logo.png" not in cleaned
     assert "Dòng chữ có inline image" in cleaned
     assert stats.images_removed == 3
+
+
+def test_common_english_mirror_lines_are_removed_but_unique_english_is_kept():
+    markdown = (
+        "Ủy ban Chứng Khoán Nhà Nước\n"
+        "State Securities Commission of Vietnam\n"
+        "Công ty có tên giao dịch quốc tế là BAF Vietnam Agriculture JSC\n"
+        "BAF Vietnam Agriculture JSC\n"
+    )
+    cleaned, stats = clean_markdown(markdown)
+    assert "State Securities Commission" not in cleaned
+    assert "BAF Vietnam Agriculture JSC" in cleaned
+    assert stats.bilingual_duplicates_removed == 1
+
+
+def test_financial_roles_can_drop_core_statement_sections_explicitly():
+    markdown = (
+        "## BÁO CÁO TÌNH HÌNH TÀI CHÍNH\n"
+        "| Tài sản | 100 |\n"
+        "## THUYẾT MINH\n"
+        "Nợ vay và kỳ hạn\n"
+        "## BÁO CÁO LƯU CHUYỂN TIỀN TỆ\n"
+        "| Dòng tiền | 50 |\n"
+        "## QUẢN TRỊ RỦI RO\n"
+        "Rủi ro thanh khoản\n"
+    )
+    cleaned, stats = clean_markdown(markdown, doc_role="LATEST_QUARTER")
+    assert "Tài sản" not in cleaned
+    assert "Dòng tiền" not in cleaned
+    assert "Nợ vay và kỳ hạn" in cleaned
+    assert "Rủi ro thanh khoản" in cleaned
+    assert stats.statement_sections == 2
 
 
 def test_form_codes_and_audit_stamp_noise_are_stripped():
@@ -190,3 +237,16 @@ def test_html_tables_are_converted_to_gfm_markdown_tables():
     assert "| Tiền gửi ngân hàng \\| không kỳ hạn | 200.000.000.000 | 150.000.000.000 |" in cleaned
     assert "Nội dung sau bảng" in cleaned
     assert stats.tables_converted == 1
+
+
+def test_html_table_rowspan_and_colspan_preserve_cell_positions():
+    markdown = (
+        '<table><tr><th rowspan="2">STT</th><th rowspan="2">Thành viên</th>'
+        '<th colspan="2">Ngày</th></tr>'
+        '<tr><th>Bổ nhiệm</th><th>Miễn nhiệm</th></tr>'
+        '<tr><td>1</td><td>Nguyễn A</td><td>01/01/2026</td><td></td></tr></table>'
+    )
+    cleaned, _stats = clean_markdown(markdown)
+    assert "| STT | Thành viên | Ngày |  |" in cleaned
+    assert "| STT | Thành viên | Bổ nhiệm | Miễn nhiệm |" in cleaned
+    assert "| 1 | Nguyễn A | 01/01/2026 |  |" in cleaned

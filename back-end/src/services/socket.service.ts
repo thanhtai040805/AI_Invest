@@ -3,6 +3,7 @@ import { Server, Socket } from 'socket.io';
 import { config } from '../config';
 import { subscriptionService } from './subscription.service';
 import { aiEngineService } from './aiEngine.service';
+import prisma from '../config/database';
 
 const MAX_SUBSCRIPTIONS_PER_SOCKET = 50;
 
@@ -15,6 +16,7 @@ interface SocketMetadata {
 class SocketService {
   private io!: Server;
   private socketMeta = new Map<string, SocketMetadata>();
+  private tickerInterval: NodeJS.Timeout | null = null;
 
   init(httpServer: HttpServer): Server {
     this.io = new Server(httpServer, {
@@ -53,6 +55,33 @@ class SocketService {
         currentMeta.subscribedSymbols.add(sym);
         await subscriptionService.addSymbol(sym);
 
+        // Immediately push latest quote from DB to this socket
+        prisma.market_data_daily.findFirst({
+          where: { ticker: sym },
+          orderBy: { date: 'desc' },
+        }).then((row) => {
+          if (row) {
+            const price = (row.close_adj ?? 0) * 1000;
+            const ref = (row.open_adj ?? row.close_adj ?? 0) * 1000;
+            const ceiling = (row.high_adj ?? row.close_adj ?? 0) * 1000;
+            const floor = (row.low_adj ?? row.close_adj ?? 0) * 1000;
+            const changePct = row.open_adj && row.open_adj !== 0
+              ? (((row.close_adj ?? 0) - row.open_adj) / row.open_adj) * 100
+              : 0;
+
+            socket.emit(`stock:price:${sym}`, {
+              symbol: sym,
+              price,
+              ref,
+              ceiling,
+              floor,
+              volume: Number(row.volume_total ?? 0),
+              change_pct: changePct,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        }).catch(() => {});
+
         if (config.dnse.enabled) {
           aiEngineService.subscribeStreamSymbols([sym]).catch((err) => {
             console.warn(`[Socket.IO] DNSE subscribe ${sym}:`, err.message);
@@ -79,6 +108,20 @@ class SocketService {
         }
         await subscriptionService.incrementMarketSubscribers();
         console.log(`[Socket.IO] ${socket.id} joined market:overview`);
+
+        // Immediately push latest indices from DB to this socket
+        prisma.$queryRaw<Array<Record<string, unknown>>>`
+          SELECT ticker AS symbol, date, close_adj AS value,
+                 CASE WHEN open_adj IS NOT NULL AND open_adj <> 0
+                   THEN ((close_adj - open_adj) / open_adj) * 100 ELSE 0 END AS change_pct
+          FROM market_data_daily
+          WHERE ticker IN ('VNINDEX', 'VN-INDEX', 'VN30', 'HNXINDEX', 'UPCOMINDEX')
+            AND date = (SELECT MAX(date) FROM market_data_daily WHERE ticker IN ('VNINDEX', 'VN-INDEX', 'VN30', 'HNXINDEX', 'UPCOMINDEX'))
+        `.then((indices) => {
+          if (indices.length > 0) {
+            socket.emit('market:indices', { indices, timestamp: new Date().toISOString() });
+          }
+        }).catch(() => {});
       });
 
       socket.on('unsubscribe:market', async () => {
@@ -107,7 +150,67 @@ class SocketService {
       });
     });
 
+    this.startTicker();
     return this.io;
+  }
+
+  private startTicker(): void {
+    if (this.tickerInterval) return;
+    this.tickerInterval = setInterval(async () => {
+      try {
+        const activeSymbols = new Set<string>();
+        let hasMarketSubscribers = false;
+
+        for (const meta of this.socketMeta.values()) {
+          for (const sym of meta.subscribedSymbols) activeSymbols.add(sym);
+          if (meta.subscribedMarket) hasMarketSubscribers = true;
+        }
+
+        if (hasMarketSubscribers) {
+          const indices = await prisma.$queryRaw<Array<Record<string, unknown>>>`
+            SELECT ticker AS symbol, date, close_adj AS value,
+                   CASE WHEN open_adj IS NOT NULL AND open_adj <> 0
+                     THEN ((close_adj - open_adj) / open_adj) * 100 ELSE 0 END AS change_pct
+            FROM market_data_daily
+            WHERE ticker IN ('VNINDEX', 'VN-INDEX', 'VN30', 'HNXINDEX', 'UPCOMINDEX')
+              AND date = (SELECT MAX(date) FROM market_data_daily WHERE ticker IN ('VNINDEX', 'VN-INDEX', 'VN30', 'HNXINDEX', 'UPCOMINDEX'))
+          `.catch(() => []);
+          if (indices.length > 0) {
+            this.emitMarketIndices({ indices, timestamp: new Date().toISOString() });
+          }
+        }
+
+        for (const sym of activeSymbols) {
+          const row = await prisma.market_data_daily.findFirst({
+            where: { ticker: sym },
+            orderBy: { date: 'desc' },
+          }).catch(() => null);
+
+          if (row) {
+            const price = (row.close_adj ?? 0) * 1000;
+            const ref = (row.open_adj ?? row.close_adj ?? 0) * 1000;
+            const ceiling = (row.high_adj ?? row.close_adj ?? 0) * 1000;
+            const floor = (row.low_adj ?? row.close_adj ?? 0) * 1000;
+            const changePct = row.open_adj && row.open_adj !== 0
+              ? (((row.close_adj ?? 0) - row.open_adj) / row.open_adj) * 100
+              : 0;
+
+            this.emitStockPrice(sym, {
+              symbol: sym,
+              price,
+              ref,
+              ceiling,
+              floor,
+              volume: Number(row.volume_total ?? 0),
+              change_pct: changePct,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        }
+      } catch {
+        // silent
+      }
+    }, 4000);
   }
 
   getIO(): Server {
@@ -188,6 +291,10 @@ class SocketService {
   }
 
   shutdown(): void {
+    if (this.tickerInterval) {
+      clearInterval(this.tickerInterval);
+      this.tickerInterval = null;
+    }
     this.io?.close();
     this.socketMeta.clear();
   }

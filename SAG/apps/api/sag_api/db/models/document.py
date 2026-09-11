@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import BigInteger, Boolean, Date, Float, ForeignKey, Index, Integer, JSON, String, Text
+from sqlalchemy import BigInteger, Boolean, Date, Float, ForeignKey, Index, Integer, JSON, String, Text, text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -232,6 +232,56 @@ class MoatSignal(IDMixin, TimestampMixin, Base):
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+class DocumentFacet(IDMixin, TimestampMixin, Base):
+    """An evidence-backed content capability detected in a document.
+
+    Facets are deliberately open strings (for example ``asset_quality`` or
+    ``production_capacity``), not document types or a closed sector taxonomy.
+    """
+
+    __tablename__ = "document_facets"
+    __table_args__ = (
+        Index("ix_document_facets_document_facet", "document_id", "facet"),
+        Index("ix_document_facets_issuer_facet", "issuer_id", "facet"),
+    )
+
+    issuer_id: Mapped[str | None] = mapped_column(ForeignKey("issuers.id", ondelete="CASCADE"), nullable=True, index=True)
+    document_id: Mapped[str] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
+    node_id: Mapped[str] = mapped_column(String(48), index=True)
+    evidence_span_id: Mapped[str | None] = mapped_column(ForeignKey("evidence_spans.id", ondelete="SET NULL"), nullable=True)
+    facet: Mapped[str] = mapped_column(String(128))
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    source: Mapped[str] = mapped_column(String(32), default="llm")
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class Observation(IDMixin, TimestampMixin, Base):
+    """Open semantic reading retained alongside normalized financial facts."""
+
+    __tablename__ = "observations"
+    __table_args__ = (
+        Index("ix_observations_document_node", "document_id", "node_id"),
+        Index("ix_observations_issuer_predicate", "issuer_id", "predicate"),
+    )
+
+    issuer_id: Mapped[str | None] = mapped_column(ForeignKey("issuers.id", ondelete="CASCADE"), nullable=True, index=True)
+    document_id: Mapped[str] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
+    node_id: Mapped[str] = mapped_column(String(48), index=True)
+    evidence_span_id: Mapped[str | None] = mapped_column(ForeignKey("evidence_spans.id", ondelete="SET NULL"), nullable=True)
+    statement: Mapped[str] = mapped_column(Text)
+    subject: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    predicate: Mapped[str] = mapped_column(String(256), default="observation")
+    object: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    topic_tags_json: Mapped[list] = mapped_column(JSON, default=list)
+    attributes_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    period_start: Mapped[object | None] = mapped_column(Date, nullable=True)
+    period_end: Mapped[object | None] = mapped_column(Date, nullable=True)
+    as_of: Mapped[object | None] = mapped_column(Date, nullable=True)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    normalization_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
 class EmbeddingChunk(IDMixin, TimestampMixin, Base):
     __tablename__ = "embedding_chunks"
     __table_args__ = (
@@ -265,14 +315,23 @@ class EmbeddingChunk(IDMixin, TimestampMixin, Base):
 
 class ProcessingRun(IDMixin, TimestampMixin, Base):
     __tablename__ = "processing_runs"
-    __table_args__ = (Index("ix_processing_runs_document_version", "document_id", "processing_version"),)
+    __table_args__ = (
+        Index("ix_processing_runs_document_version", "document_id", "processing_version"),
+        Index(
+            "uq_processing_runs_document_idempotency_key",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("stage = 'document'"),
+            sqlite_where=text("stage = 'document'"),
+        ),
+    )
 
     document_id: Mapped[str] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
     processing_version: Mapped[int] = mapped_column(Integer, default=2)
     stage: Mapped[str] = mapped_column(String(64), default="structure")
     status: Mapped[str] = mapped_column(String(32), default=ProcessingStageStatus.PENDING.value)
     attempt: Mapped[int] = mapped_column(Integer, default=0)
-    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     lease_expires_at: Mapped[object | None] = mapped_column(UTCDateTime(), nullable=True)
     heartbeat_at: Mapped[object | None] = mapped_column(UTCDateTime(), nullable=True)
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)

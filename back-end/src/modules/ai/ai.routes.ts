@@ -50,6 +50,15 @@ router.get('/backtest/:id/status', authMiddleware, async (req, res, next) => {
   }
 });
 
+router.get('/pipeline/status', authMiddleware, async (_req, res, next) => {
+  try {
+    const status = await aiEngineService.getDailyPipelineStatus();
+    res.json(status);
+  } catch (_err) {
+    res.json({ status: 'STANDBY', message: 'Autonomous pipeline daemon standby' });
+  }
+});
+
 router.get('/sessions', authMiddleware, async (req: AuthRequest, res, next) => {
   try {
     const sessions = await prisma.chatSession.findMany({
