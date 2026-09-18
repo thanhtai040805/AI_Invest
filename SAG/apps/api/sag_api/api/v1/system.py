@@ -32,6 +32,7 @@ def _capabilities() -> dict:
         "llm_model": settings.llm_model,
         "context_window": settings.llm_context_window,
         "embedding_model": settings.embedding_model,
+        "embedding_enabled": settings.embedding_enabled,
         "document_parser": settings.document_parser,
         "effective_document_parser": settings.effective_document_parser,
         "mineru_configured": settings.mineru_configured,

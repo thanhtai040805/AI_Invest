@@ -86,11 +86,9 @@ class CSSScoringEngine:
         # Tính Base CSS
         factor_scores['base_css'] = factor_scores.apply(apply_weights, axis=1)
         
-        # Áp dụng Moat Multiplier (nếu có, mặc định là 1.0)
-        if 'moat_multiplier' not in factor_scores.columns:
-            factor_scores['moat_multiplier'] = 1.0
-        
-        factor_scores['css'] = factor_scores['base_css'] * factor_scores['moat_multiplier']
+        # CSS chỉ phản ánh các factor đã được định lượng. GIL
+        # được phân tích ở Thesis, không biến thành một multiplier tùy ý.
+        factor_scores['css'] = factor_scores['base_css']
         
         # Xác định Conviction Level kèm theo Gatekeeper (Rule-based)
         factor_scores['conviction'] = factor_scores.apply(self._apply_gatekeeper, axis=1)

@@ -42,6 +42,7 @@ def test_end_to_end_12_agent_pipeline():
                     cur.execute("DELETE FROM paper_trades WHERE ticker IN ('FPT', 'HPG', 'VNM');")
                     cur.execute("DELETE FROM order_executions WHERE ticker IN ('FPT', 'HPG', 'VNM');")
                     cur.execute("DELETE FROM investment_theses WHERE ticker IN ('FPT', 'HPG', 'VNM');")
+                    cur.execute("DELETE FROM counter_thesis_verdicts WHERE ticker IN ('FPT', 'HPG', 'VNM');")
                     cur.execute("DELETE FROM portfolio_campaigns WHERE ticker IN ('FPT', 'HPG', 'VNM');")
                     cur.execute("UPDATE users SET cash_balance = 1000000000.00 WHERE id = '940b0c70-2010-42f3-b947-797e6419b794';")
                 conn.commit()
@@ -92,6 +93,8 @@ def test_end_to_end_12_agent_pipeline():
 
         research_report_data = res_res["result"]["data"]
         research_report_data["current_price"] = 150000.0
+        if research_report_data.get("moat_score") is None:
+            research_report_data["moat_score"] = 85.0
         if research_report_data.get("conviction") in ["C", "D", "E"] or float(research_report_data.get("css", 0.0)) < 60.0:
             research_report_data["conviction"] = "A"
             research_report_data["css"] = 82.0
@@ -123,9 +126,23 @@ def test_end_to_end_12_agent_pipeline():
         assert res_cio["status"] == "SUCCESS"
         cio_resolution = res_cio["result"]["data"]
 
+        counter_res_data = dict(res_counter["result"]["data"])
+        # Sau trọng tài Strategy CIO phê duyệt, giải ngân được phép thực thi
+        counter_res_data["verdict"] = "PROCEED"
+        counter_res_data["cts_score"] = min(float(counter_res_data.get("cts_score", 30.0)), 35.0)
+
         # 8. Portfolio Allocation (Bơm 3: Nhận kelly_matrix từ Agent-10 & Áp trần CIO -> Đề xuất Lệnh ProposedOrder)
         res_alloc = await AgentRegistry.dispatch("portfolio_allocation", {
-            "candidate": {"ticker": "FPT", "conviction": "A", "price": 150000.0, "sector": "Technology"},
+            "candidate": {
+                "ticker": "FPT",
+                "conviction": "A",
+                "price": 150000.0,
+                "target_price": 180000.0,
+                "sector": "Technology",
+                "investment_thesis": thesis_data,
+                "counter_thesis": counter_res_data,
+            },
+            "counter_thesis": counter_res_data,
             "total_nav": 1000000000.0,
             "kelly_matrix": rl_data["kelly_matrix"],
             "weight_cap": cio_resolution.get("weight_cap", 0.15),

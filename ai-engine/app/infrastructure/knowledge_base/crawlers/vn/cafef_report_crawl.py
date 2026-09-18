@@ -1,5 +1,5 @@
 """
-cafef_report_crawl.py — Scrape CafeF analyst/macro/industry reports for Moat AI.
+cafef_report_crawl.py — Scrape CafeF analyst/macro/industry reports for Business Quality evidence.
 
 Sources:
   cap-nhat-doanh-nghiep-khuyen-nghi → company analysis (24mo backfill)

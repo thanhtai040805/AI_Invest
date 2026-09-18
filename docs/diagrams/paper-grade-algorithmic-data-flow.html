@@ -1,0 +1,1835 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Paper-Grade Algorithmic &amp; Data Representation Flow · AIInvest</title>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&amp;family=Geist+Mono:wght@400;500;600;700&amp;family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&amp;display=swap"
+    rel="stylesheet" />
+  <style>
+    :root {
+      --color-paper: #fafafa;
+      --color-paper-2: #ffffff;
+      --color-ink: #0f172a;
+      --color-muted: #475569;
+      --color-soft: #64748b;
+      --color-rule: #cbd5e1;
+      --color-accent: #ea580c;
+      /* Coral focal (Focal 1: Hybrid Fusion) */
+      --color-link: #0284c7;
+      /* Dense vector cyan/blue */
+      --color-indigo: #7c3aed;
+      /* Hypergraph & Relational violet */
+      --color-emerald: #16a34a;
+      /* Verified Evidence Green (Focal 2) */
+      --color-rose: #e11d48;
+      /* Forensic Veto Crimson */
+      --font-serif: 'Newsreader', Georgia, serif;
+      --font-sans: 'Geist', -apple-system, system-ui, sans-serif;
+      --font-mono: 'Geist Mono', monospace;
+      --motion-step: 520ms;
+      --motion-hold: 720ms;
+      --motion-total: 4320ms;
+      --motion-ease: cubic-bezier(.2, .8, .2, 1);
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 40px 24px;
+      color: var(--color-ink);
+      background: var(--color-paper);
+      font-family: var(--font-sans);
+    }
+
+    .container {
+      width: min(100%, 1160px);
+    }
+
+    .header {
+      margin-bottom: 24px;
+    }
+
+    .eyebrow {
+      margin: 0 0 8px;
+      color: var(--color-muted);
+      font: 600 11px/1.4 var(--font-mono);
+      letter-spacing: .18em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font: 400 34px/1.15 var(--font-serif);
+      letter-spacing: -0.01em;
+      color: #0f172a;
+    }
+
+    .subtitle {
+      margin: 0;
+      font-size: 14px;
+      line-height: 1.55;
+      color: var(--color-muted);
+      max-width: 84ch;
+    }
+
+    .diagram-container {
+      background: var(--color-paper-2);
+      border-radius: 8px;
+      border: 1px solid var(--color-rule);
+      padding: 16px;
+      overflow-x: auto;
+      box-shadow: 0 4px 20px -2px rgba(15, 23, 42, 0.06);
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      min-width: 1100px;
+    }
+
+    /* Motion System & Instant Readability */
+    .motion-ready [data-motion-item] {
+      opacity: 1;
+      /* 100% visible and sharp when first opened */
+      transform: none;
+      transition: opacity var(--motion-step) var(--motion-ease),
+        filter var(--motion-step) var(--motion-ease);
+    }
+
+    /* Dim unreached items ONLY during active stepping or playback */
+    .motion-ready.is-playing [data-motion-item]:not(.is-visible),
+    .motion-ready[data-frame="step"] [data-motion-item]:not(.is-visible) {
+      opacity: 0.22;
+    }
+
+    .motion-ready [data-motion-item].is-visible,
+    .motion-ready[data-frame="end"] [data-motion-item],
+    .motion-ready[data-frame="static"] [data-motion-item],
+    .motion-ready[data-frame="start"]:not(.is-playing) [data-motion-item] {
+      opacity: 1 !important;
+      transform: none;
+    }
+
+    .motion-ready [data-motion-item].is-current {
+      opacity: 1 !important;
+      filter: drop-shadow(0 0 12px rgba(234, 88, 12, 0.45));
+    }
+
+    /* Dynamic Flow Connectors - Synchronized Opacity with Flow Steps */
+    .flow-step {
+      transition: opacity var(--motion-step) var(--motion-ease);
+    }
+
+    .flow-step .traveling-arrow {
+      transition: opacity var(--motion-step) var(--motion-ease);
+    }
+
+    /* Dim future connector steps when actively stepping or playing */
+    .motion-ready.is-playing .flow-step,
+    .motion-ready[data-frame="step"] .flow-step {
+      opacity: 0.16;
+    }
+
+    .motion-ready.is-playing .flow-step .traveling-arrow,
+    .motion-ready[data-frame="step"] .flow-step .traveling-arrow {
+      opacity: 0;
+    }
+
+    /* Cumulative step-by-step reveal of connector arrows */
+    [data-step-current="1"] .flow-step-1,
+    [data-step-current="2"] .flow-step-1,
+    [data-step-current="2"] .flow-step-2,
+    [data-step-current="3"] .flow-step-1,
+    [data-step-current="3"] .flow-step-2,
+    [data-step-current="3"] .flow-step-3,
+    [data-step-current="4"] .flow-step-1,
+    [data-step-current="4"] .flow-step-2,
+    [data-step-current="4"] .flow-step-3,
+    [data-step-current="4"] .flow-step-4,
+    [data-step-current="5"] .flow-step-1,
+    [data-step-current="5"] .flow-step-2,
+    [data-step-current="5"] .flow-step-3,
+    [data-step-current="5"] .flow-step-4,
+    [data-step-current="5"] .flow-step-5,
+    [data-step-current="6"] .flow-step,
+    [data-frame="end"] .flow-step,
+    [data-frame="static"] .flow-step,
+    [data-frame="start"]:not(.is-playing) .flow-step {
+      opacity: 1 !important;
+    }
+
+    [data-step-current="1"] .flow-step-1 .traveling-arrow,
+    [data-step-current="2"] .flow-step-1 .traveling-arrow,
+    [data-step-current="2"] .flow-step-2 .traveling-arrow,
+    [data-step-current="3"] .flow-step-1 .traveling-arrow,
+    [data-step-current="3"] .flow-step-2 .traveling-arrow,
+    [data-step-current="3"] .flow-step-3 .traveling-arrow,
+    [data-step-current="4"] .flow-step-1 .traveling-arrow,
+    [data-step-current="4"] .flow-step-2 .traveling-arrow,
+    [data-step-current="4"] .flow-step-3 .traveling-arrow,
+    [data-step-current="4"] .flow-step-4 .traveling-arrow,
+    [data-step-current="5"] .flow-step-1 .traveling-arrow,
+    [data-step-current="5"] .flow-step-2 .traveling-arrow,
+    [data-step-current="5"] .flow-step-3 .traveling-arrow,
+    [data-step-current="5"] .flow-step-4 .traveling-arrow,
+    [data-step-current="5"] .flow-step-5 .traveling-arrow,
+    [data-step-current="6"] .flow-step .traveling-arrow,
+    [data-frame="end"] .flow-step .traveling-arrow,
+    [data-frame="static"] .flow-step .traveling-arrow,
+    [data-frame="start"]:not(.is-playing) .flow-step .traveling-arrow {
+      opacity: 1 !important;
+    }
+
+    /* Active step glow */
+    [data-step-current="1"] .flow-step-1,
+    [data-step-current="2"] .flow-step-2,
+    [data-step-current="3"] .flow-step-3,
+    [data-step-current="4"] .flow-step-4,
+    [data-step-current="5"] .flow-step-5,
+    [data-step-current="6"] .flow-step-6 {
+      filter: drop-shadow(0 0 6px rgba(234, 88, 12, 0.4));
+    }
+
+    /* Vibrant Flow Streaming Lines */
+    @keyframes flowStream {
+      from {
+        stroke-dashoffset: 36;
+      }
+
+      to {
+        stroke-dashoffset: 0;
+      }
+    }
+
+    @keyframes beaconGlow {
+
+      0%,
+      100% {
+        filter: drop-shadow(0 0 2px rgba(234, 88, 12, 0.25));
+      }
+
+      50% {
+        filter: drop-shadow(0 0 8px rgba(234, 88, 12, 0.65));
+      }
+    }
+
+    @keyframes storePulseBlue {
+
+      0%,
+      100% {
+        filter: drop-shadow(0 0 2px rgba(2, 132, 199, 0.2));
+      }
+
+      50% {
+        filter: drop-shadow(0 0 8px rgba(2, 132, 199, 0.5));
+      }
+    }
+
+    @keyframes storePulsePurple {
+
+      0%,
+      100% {
+        filter: drop-shadow(0 0 2px rgba(124, 58, 237, 0.2));
+      }
+
+      50% {
+        filter: drop-shadow(0 0 8px rgba(124, 58, 237, 0.5));
+      }
+    }
+
+    .flow-active {
+      stroke-dasharray: 8 6;
+      animation: flowStream 0.85s linear infinite;
+    }
+
+    .flow-active-accent {
+      stroke-dasharray: 8 6;
+      animation: flowStream 0.75s linear infinite;
+      stroke: var(--color-accent) !important;
+    }
+
+    .flow-active-link {
+      stroke-dasharray: 8 6;
+      animation: flowStream 0.8s linear infinite;
+      stroke: var(--color-link) !important;
+    }
+
+    .flow-active-graph {
+      stroke-dasharray: 8 6;
+      animation: flowStream 0.8s linear infinite;
+      stroke: var(--color-indigo) !important;
+    }
+
+    .flow-active-emerald {
+      stroke-dasharray: 8 6;
+      animation: flowStream 0.8s linear infinite;
+      stroke: var(--color-emerald) !important;
+    }
+
+    .store-breathing {
+      animation: storePulseBlue 3.2s ease-in-out infinite;
+    }
+
+    .store-breathing-graph {
+      animation: storePulsePurple 3.2s ease-in-out infinite;
+    }
+
+    .pulse-focal {
+      animation: beaconGlow 2.5s ease-in-out infinite;
+    }
+
+    /* Traveling Arrow Particle Styling */
+    .traveling-arrow {
+      pointer-events: none;
+      filter: drop-shadow(0 0 2px rgba(15, 23, 42, 0.35));
+    }
+
+    /* Playback Controls */
+    [data-motion-controls] {
+      display: none;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid var(--color-rule);
+    }
+
+    .motion-ready [data-motion-controls] {
+      display: flex;
+    }
+
+    [data-motion-controls][hidden] {
+      display: none !important;
+    }
+
+    [data-motion-controls] button {
+      min-width: 44px;
+      min-height: 44px;
+      padding: 8px 14px;
+      border: 1px solid var(--color-muted);
+      border-radius: 4px;
+      color: var(--color-ink);
+      background: #ffffff;
+      font: 600 12px/1 var(--font-sans);
+      cursor: pointer;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+    }
+
+    [data-motion-controls] button:hover {
+      border-color: var(--color-accent);
+      color: var(--color-accent);
+    }
+
+    [data-motion-controls] button:focus-visible {
+      outline: 3px solid var(--color-accent);
+      outline-offset: 2px;
+    }
+
+    [data-motion-controls] button:disabled {
+      cursor: not-allowed;
+      opacity: .45;
+    }
+
+    .keyboard-help {
+      margin-left: 12px;
+      color: var(--color-soft);
+      font: 500 11px/1.4 var(--font-mono);
+    }
+
+    [data-motion-status-visible] {
+      margin-left: auto;
+      color: var(--color-ink);
+      font: 600 12px/1.4 var(--font-mono);
+    }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    noscript p {
+      margin: 12px 0 0;
+      color: var(--color-muted);
+      font: 500 12px/1.4 var(--font-mono);
+    }
+
+    /* Interactive Inspector Drawer & Backdrop */
+    .interactive-node {
+      cursor: pointer;
+      transition: transform 0.18s ease, filter 0.18s ease;
+    }
+
+    .interactive-node:hover {
+      filter: drop-shadow(0 4px 14px rgba(2, 132, 199, 0.35));
+    }
+
+    /* Slide-Over Inspector Drawer (:target based, zero JS) */
+    .inspector-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.35);
+      backdrop-filter: blur(4px);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s ease;
+      z-index: 998;
+    }
+
+    body:has(.inspector-drawer:target) .inspector-backdrop,
+    .inspector-drawer:target ~ .inspector-backdrop {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .inspector-drawer {
+      position: fixed;
+      top: 0;
+      right: -480px;
+      width: 450px;
+      max-width: 90vw;
+      height: 100vh;
+      background: #ffffff;
+      box-shadow: -8px 0 32px rgba(15, 23, 42, 0.15);
+      border-left: 1px solid var(--color-rule);
+      z-index: 999;
+      display: flex;
+      flex-direction: column;
+      transition: right 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .inspector-drawer:target {
+      right: 0;
+    }
+
+    .drawer-header {
+      padding: 20px 24px;
+      border-bottom: 1px solid var(--color-rule);
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      background: #f8fafc;
+    }
+
+    .drawer-badge {
+      display: inline-block;
+      font: 700 9px/1 var(--font-mono);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: #e0f2fe;
+      color: #0369a1;
+      margin-bottom: 8px;
+    }
+
+    .drawer-title {
+      margin: 0;
+      font: 700 17px/1.3 var(--font-sans);
+      color: #0f172a;
+    }
+
+    .drawer-close {
+      background: #f1f5f9;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      width: 32px;
+      height: 32px;
+      text-decoration: none;
+      color: #64748b;
+      font-size: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s ease;
+      flex-shrink: 0;
+      margin-left: 12px;
+    }
+
+    .drawer-close:hover {
+      background: #fee2e2;
+      color: #ef4444;
+      border-color: #fca5a5;
+    }
+
+    .drawer-body {
+      padding: 24px;
+      overflow-y: auto;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .drawer-section {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .drawer-label {
+      font: 700 10.5px/1 var(--font-mono);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #475569;
+    }
+
+    /* Strict Rule: Fresh light pastel background, NEVER black/dark background */
+    .drawer-code {
+      background: #f8fafc;
+      color: #0369a1;
+      padding: 12px 14px;
+      border-radius: 6px;
+      font: 600 12px/1.5 var(--font-mono);
+      overflow-x: auto;
+      margin: 0;
+      border: 1px solid #cbd5e1;
+      white-space: pre-wrap;
+    }
+
+    .drawer-text {
+      font: 400 13px/1.6 var(--font-sans);
+      color: #334155;
+      background: #f8fafc;
+      padding: 12px 14px;
+      border-radius: 6px;
+      border: 1px solid var(--color-rule);
+    }
+
+    .drawer-code-link {
+      font: 600 12px/1.4 var(--font-mono);
+      color: #0284c7;
+      word-break: break-all;
+      padding: 8px 12px;
+      background: #e0f2fe;
+      border-radius: 4px;
+      border: 1px solid #bae6fd;
+    }
+
+    .inspector-hint {
+      margin-top: 16px;
+      padding: 12px 16px;
+      background: #f0fdf4;
+      border: 1px solid #bbf7d0;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font: 500 12.5px/1.5 var(--font-sans);
+      color: #166534;
+    }
+
+    a.node-anchor {
+      text-decoration: none;
+      cursor: pointer;
+    }
+
+    a.node-anchor:focus {
+      outline: none;
+    }
+
+    a.node-anchor:focus rect,
+    a.node-anchor:hover rect {
+      filter: drop-shadow(0 4px 12px rgba(2, 132, 199, 0.3));
+    }
+
+    /* Dynamic Flow Opacity in Step Mode: Inactive paths dim to 0.14 */
+    [data-motion-root][data-frame="step"] [data-motion-item]:not(.is-current) {
+      opacity: 0.14 !important;
+      transition: opacity 0.28s ease;
+    }
+
+    [data-motion-root][data-frame="step"] [data-motion-item].is-current {
+      opacity: 1 !important;
+      transition: opacity 0.28s ease;
+    }
+
+    html[data-motion="static"] [data-motion-controls],
+    html[data-motion="static"] [data-motion-decorative] {
+      display: none !important;
+    }
+
+    html[data-motion="static"] [data-motion-item] {
+      opacity: 1 !important;
+      transform: none !important;
+      animation: none !important;
+      transition: none !important;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+
+      *,
+      *::before,
+      *::after {
+        animation-duration: .001ms !important;
+        animation-iteration-count: 1 !important;
+        scroll-behavior: auto !important;
+        transition-duration: .001ms !important;
+      }
+
+      [data-motion-item] {
+        opacity: 1 !important;
+        transform: none !important;
+      }
+
+      [data-motion-decorative] {
+        display: none !important;
+      }
+
+      [data-motion-controls] {
+        display: none !important;
+      }
+
+      .flow-active,
+      .flow-active-accent,
+      .flow-active-link,
+      .flow-active-graph,
+      .flow-active-emerald,
+      .store-breathing,
+      .store-breathing-graph,
+      .pulse-focal {
+        animation: none !important;
+        stroke-dasharray: none !important;
+      }
+
+      .traveling-arrow {
+        display: none !important;
+      }
+    }
+
+    @media print {
+
+      [data-motion-controls],
+      [data-motion-decorative] {
+        display: none !important;
+      }
+
+      [data-motion-item] {
+        opacity: 1 !important;
+        transform: none !important;
+        animation: none !important;
+        transition: none !important;
+      }
+
+      .traveling-arrow {
+        display: none !important;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <main data-motion-root data-motion-mode="step" data-step-count="6" data-step-current="6" data-frame="static"
+      data-static-frame="complete">
+      <div class="header">
+        <p class="eyebrow">NeurIPS / SIGMOD Scientific Methodology Format · AIInvest Research</p>
+        <h1>Paper-Grade Algorithmic &amp; Data Representation Flow</h1>
+        <p class="subtitle">Dual-phase mathematical transformation: Ingestion AST parsing, line-by-line SHA-256 quote
+          hashing, bipartite hypergraph projection, and fork-join hybrid retrieval with dynamic queue accumulation.</p>
+      </div>
+
+      <div class="diagram-container">
+        <svg viewBox="0 0 1140 920" xmlns="http://www.w3.org/2000/svg" role="img"
+          aria-labelledby="paper-flow-title paper-flow-desc">
+          <title id="paper-flow-title">Paper-Grade Algorithmic and Data Representation Flow</title>
+          <desc id="paper-flow-desc">Scientific methodology diagram displaying dual-phase data transformations from raw
+            financial PDF ingestion, AST decomposition, and dual-store embedding to online parallel fork-join retrieval,
+            forensic calculations, and verified evidence context.</desc>
+
+          <defs>
+            <marker id="paper-flow-arrow" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+              <polygon points="0 0, 9 3.5, 0 7" fill="#64748b" />
+            </marker>
+            <marker id="paper-flow-arrow-accent" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+              <polygon points="0 0, 9 3.5, 0 7" fill="#ea580c" />
+            </marker>
+            <marker id="paper-flow-arrow-link" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+              <polygon points="0 0, 9 3.5, 0 7" fill="#0284c7" />
+            </marker>
+            <marker id="paper-flow-arrow-graph" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+              <polygon points="0 0, 9 3.5, 0 7" fill="#7c3aed" />
+            </marker>
+            <marker id="paper-flow-arrow-emerald" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+              <polygon points="0 0, 9 3.5, 0 7" fill="#16a34a" />
+            </marker>
+          </defs>
+
+          <!-- Background Paper -->
+          <rect width="1140" height="920" fill="#f8fafc" />
+
+          <!-- ════════════════════════════════════════════════════════════════ -->
+          <!-- PHASE 1: OFFLINE INGESTION & ENCODING BOUNDARY (Upper Half)     -->
+          <!-- ════════════════════════════════════════════════════════════════ -->
+          <rect x="24" y="32" width="1092" height="376" rx="8" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.3"
+            stroke-dasharray="6,4" />
+          <rect x="40" y="40" width="460" height="20" rx="4" fill="#e2e8f0" stroke="#94a3b8" stroke-width="0.8" />
+          <text x="50" y="54" fill="#334155" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="700"
+            letter-spacing="0.14em">PHASE 1: OFFLINE INGESTION, STRUCTURAL PARSING &amp; DUAL-STORE ENCODING</text>
+
+          <!-- CONNECTORS: Phase 1 (Flow-Synchronized Connectors) -->
+          <!-- Step 1 Arrow: Node 1 -> Node 2 (Horizontal x=176 to x=232, y=148) -->
+          <g class="flow-step flow-step-1">
+            <path d="M176 148 H232" fill="none" stroke="rgba(148,163,184,0.3)" stroke-width="3" />
+            <path id="path-p1-1" class="flow-active" d="M176 148 H232" fill="none" stroke="#64748b" stroke-width="2.2"
+              marker-end="url(#paper-flow-arrow)" />
+            <rect x="180" y="130" width="48" height="13" rx="2" fill="#e2e8f0" stroke="#94a3b8" stroke-width="0.8" />
+            <text x="204" y="140" fill="#334155" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="600"
+              text-anchor="middle" letter-spacing="0.06em">[1:1 RAW]</text>
+            <g class="traveling-arrow">
+              <polygon points="-5 -4, 4 0, -5 4" fill="#64748b">
+                <animateMotion dur="1.1s" repeatCount="indefinite" path="M176 148 H232" rotate="auto" />
+              </polygon>
+            </g>
+          </g>
+
+          <!-- Step 2 Arrow: Node 2 -> Node 3 (Horizontal x=384 to x=440, y=148) -->
+          <g class="flow-step flow-step-2">
+            <path d="M384 148 H440" fill="none" stroke="rgba(192,132,252,0.25)" stroke-width="3" />
+            <path id="path-p1-2" class="flow-active" d="M384 148 H440" fill="none" stroke="#a855f7" stroke-width="2.2"
+              marker-end="url(#paper-flow-arrow)" />
+            <rect x="388" y="130" width="48" height="13" rx="2" fill="#f5d0fe" stroke="#c084fc" stroke-width="0.8" />
+            <text x="412" y="140" fill="#701a75" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="600"
+              text-anchor="middle" letter-spacing="0.06em">[1:N AST]</text>
+            <g class="traveling-arrow">
+              <polygon points="-5 -4, 4 0, -5 4" fill="#a855f7">
+                <animateMotion dur="1.1s" repeatCount="indefinite" path="M384 148 H440" rotate="auto" />
+              </polygon>
+            </g>
+          </g>
+
+          <!-- Step 3 Connectors: Dual-Store Split -->
+          <!-- Fork Path 1A: Node 3 -> Node 4A (Top Semantic Path) -->
+          <g class="flow-step flow-step-3">
+            <path d="M596 132 H624 Q632 132 632 124 V108 Q632 100 640 100 H668" fill="none" stroke="rgba(2,132,199,0.2)"
+              stroke-width="3" />
+            <path id="path-p1-3a" class="flow-active-link" d="M596 132 H624 Q632 132 632 124 V108 Q632 100 640 100 H668"
+              fill="none" stroke="#0284c7" stroke-width="2.2" marker-end="url(#paper-flow-arrow-link)" />
+            <rect x="606" y="88" width="52" height="13" rx="2" fill="#bae6fd" stroke="#38bdf8" stroke-width="0.8" />
+            <text x="632" y="98" fill="#0369a1" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="700"
+              text-anchor="middle" letter-spacing="0.06em">[1:N CHUNK]</text>
+            <g class="traveling-arrow">
+              <polygon points="-5 -4, 4 0, -5 4" fill="#0284c7">
+                <animateMotion dur="1.3s" repeatCount="indefinite"
+                  path="M596 132 H624 Q632 132 632 124 V108 Q632 100 640 100 H668" rotate="auto" />
+              </polygon>
+            </g>
+
+            <!-- Arrow 4A -> Store 1 (Vector Space) -->
+            <path d="M856 100 H896" fill="none" stroke="rgba(2,132,199,0.2)" stroke-width="3" />
+            <path id="path-p1-4a" class="flow-active-link" d="M856 100 H896" fill="none" stroke="#0284c7"
+              stroke-width="2.2" marker-end="url(#paper-flow-arrow-link)" />
+            <rect x="858" y="82" width="36" height="13" rx="2" fill="#bae6fd" stroke="#38bdf8" stroke-width="0.8" />
+            <text x="876" y="92" fill="#0369a1" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="700"
+              text-anchor="middle" letter-spacing="0.06em">[BATCH]</text>
+            <g class="traveling-arrow">
+              <polygon points="-5 -4, 4 0, -5 4" fill="#0284c7">
+                <animateMotion dur="0.9s" repeatCount="indefinite" path="M856 100 H896" rotate="auto" />
+              </polygon>
+            </g>
+
+            <!-- Fork Path 1B: Node 3 -> Node 4B (Bottom Symbolic Path) -->
+            <path d="M596 164 H624 Q632 164 632 172 V272 Q632 280 640 280 H668" fill="none"
+              stroke="rgba(124,58,237,0.2)" stroke-width="3" />
+            <path id="path-p1-3b" class="flow-active-graph"
+              d="M596 164 H624 Q632 164 632 172 V272 Q632 280 640 280 H668" fill="none" stroke="#7c3aed"
+              stroke-width="2.2" marker-end="url(#paper-flow-arrow-graph)" />
+            <rect x="600" y="220" width="64" height="13" rx="2" fill="#ddd6fe" stroke="#a78bfa" stroke-width="0.8" />
+            <text x="632" y="230" fill="#5b21b6" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="700"
+              text-anchor="middle" letter-spacing="0.06em">[M:N HYPER]</text>
+            <g class="traveling-arrow">
+              <polygon points="-5 -4, 4 0, -5 4" fill="#7c3aed">
+                <animateMotion dur="1.5s" repeatCount="indefinite"
+                  path="M596 164 H624 Q632 164 632 172 V272 Q632 280 640 280 H668" rotate="auto" />
+              </polygon>
+            </g>
+
+            <!-- Arrow 4B -> Store 2 (Financial Graph) -->
+            <path d="M856 280 H896" fill="none" stroke="rgba(124,58,237,0.2)" stroke-width="3" />
+            <path id="path-p1-4b" class="flow-active-graph" d="M856 280 H896" fill="none" stroke="#7c3aed"
+              stroke-width="2.2" marker-end="url(#paper-flow-arrow-graph)" />
+            <rect x="858" y="262" width="36" height="13" rx="2" fill="#ddd6fe" stroke="#a78bfa" stroke-width="0.8" />
+            <text x="876" y="272" fill="#5b21b6" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="700"
+              text-anchor="middle" letter-spacing="0.06em">[REL:FK]</text>
+            <g class="traveling-arrow">
+              <polygon points="-5 -4, 4 0, -5 4" fill="#7c3aed">
+                <animateMotion dur="0.9s" repeatCount="indefinite" path="M856 280 H896" rotate="auto" />
+              </polygon>
+            </g>
+          </g>
+
+          <!-- Step 4 Cross-Phase Store Query Connectors -->
+          <g class="flow-step flow-step-4">
+            <!-- Phase 1 Store 1 to Phase 2 Node 6A -->
+            <path d="M994 146 V472 Q994 480 986 480 H468 V508" fill="none" stroke="rgba(2,132,199,0.2)"
+              stroke-width="2.6" />
+            <path class="flow-active-link" d="M994 146 V472 Q994 480 986 480 H468 V508" fill="none" stroke="#0284c7"
+              stroke-width="2" marker-end="url(#paper-flow-arrow-link)" />
+            <rect x="910" y="442" width="76" height="13" rx="2" fill="#bae6fd" stroke="#38bdf8" stroke-width="0.8" />
+            <text x="948" y="452" fill="#0369a1" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="700"
+              text-anchor="middle" letter-spacing="0.06em">[ANN INDEX]</text>
+            <g class="traveling-arrow">
+              <polygon points="-5 -4, 4 0, -5 4" fill="#0284c7">
+                <animateMotion dur="2.4s" repeatCount="indefinite" path="M994 146 V472 Q994 480 986 480 H468 V508"
+                  rotate="auto" />
+              </polygon>
+            </g>
+
+            <!-- Phase 1 Store 2 to Phase 2 Node 6C -->
+            <path d="M994 326 V716 Q994 724 986 724 H468" fill="none" stroke="rgba(124,58,237,0.2)"
+              stroke-width="2.6" />
+            <path class="flow-active-graph" d="M994 326 V716 Q994 724 986 724 H468" fill="none" stroke="#7c3aed"
+              stroke-width="2" marker-end="url(#paper-flow-arrow-graph)" />
+            <rect x="910" y="682" width="76" height="13" rx="2" fill="#ddd6fe" stroke="#a78bfa" stroke-width="0.8" />
+            <text x="948" y="692" fill="#5b21b6" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="700"
+              text-anchor="middle" letter-spacing="0.06em">[GRAPH QUERY]</text>
+            <g class="traveling-arrow">
+              <polygon points="-5 -4, 4 0, -5 4" fill="#7c3aed">
+                <animateMotion dur="2.6s" repeatCount="indefinite" path="M994 326 V716 Q994 724 986 724 H468"
+                  rotate="auto" />
+              </polygon>
+            </g>
+          </g>
+
+          <!-- NODES: Phase 1 -->
+          <!-- Node 1: Raw Ingress Corpus (Step 1) -->
+          <g data-motion-item data-step="1" class="interactive-node" data-node-id="node-corpus"
+            aria-label="Step 1: Raw financial report ingestion">
+            <!-- Fresh Soft Slate Card -->
+            <rect x="44" y="96" width="132" height="106" rx="6" fill="#f1f5f9" stroke="#64748b" stroke-width="1.8" />
+            <path d="M44 102 A6 6 0 0 1 50 96 H170 A6 6 0 0 1 176 102 V122 H44 Z" fill="#e2e8f0" />
+            <text x="110" y="113" fill="#1e293b" font-size="10.5" font-weight="700" font-family="'Geist', sans-serif"
+              text-anchor="middle">Raw BCTC Corpus</text>
+            <!-- Badge & Glyph -->
+            <rect x="52" y="128" width="38" height="13" rx="2" fill="#bae6fd" stroke="#38bdf8" stroke-width="0.8" />
+            <text x="71" y="138" fill="#0369a1" font-size="7" font-family="'Geist Mono', monospace" font-weight="700"
+              text-anchor="middle" letter-spacing="0.08em">CORPUS</text>
+            <!-- Document Glyph -->
+            <path d="M150 128 H162 V142 H150 Z" fill="#ffffff" stroke="#64748b" stroke-width="1" />
+            <path d="M153 132 H159 M153 135 H159 M153 138 H157" stroke="#0284c7" stroke-width="1" />
+            <!-- Card Content -->
+            <text x="110" y="156" fill="#0f172a" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="600"
+              text-anchor="middle">Triple Golden Set (PDF)</text>
+            <text x="110" y="171" fill="#0284c7" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
+              text-anchor="middle">BACKBONE · QTR · CG</text>
+            <text x="110" y="187" fill="#475569" font-size="7.5" font-family="'Geist Mono', monospace"
+              text-anchor="middle">IngestionGuard: ADTV &gt; 5B</text>
+          </g>
+
+          <!-- Node 2: MinerU OCR & Noise Sanitizer (Step 1) -->
+          <g data-motion-item data-step="1" class="interactive-node" data-node-id="node-mineru"
+            aria-label="Step 1: MinerU OCR extraction and boilerplate sanitization">
+            <!-- Fresh Soft Fuchsia Card -->
+            <rect x="232" y="96" width="152" height="106" rx="6" fill="#fae8ff" stroke="#c084fc" stroke-width="1.8" />
+            <path d="M232 102 A6 6 0 0 1 238 96 H378 A6 6 0 0 1 384 102 V122 H232 Z" fill="#f5d0fe" />
+            <text x="308" y="113" fill="#701a75" font-size="10.5" font-weight="700" font-family="'Geist', sans-serif"
+              text-anchor="middle">MinerU OCR Engine</text>
+            <!-- Badge & Glyph -->
+            <rect x="240" y="128" width="34" height="13" rx="2" fill="#e879f9" />
+            <text x="257" y="138" fill="#ffffff" font-size="7" font-family="'Geist Mono', monospace" font-weight="700"
+              text-anchor="middle" letter-spacing="0.08em">OCR-MD</text>
+            <!-- Table Glyph -->
+            <rect x="354" y="128" width="18" height="13" rx="1" fill="#ffffff" stroke="#c084fc" stroke-width="1" />
+            <line x1="354" y1="133" x2="372" y2="133" stroke="#c084fc" stroke-width="0.8" />
+            <line x1="360" y1="128" x2="360" y2="141" stroke="#c084fc" stroke-width="0.8" />
+            <!-- Content -->
+            <text x="308" y="156" fill="#0f172a" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="600"
+              text-anchor="middle">Markdown Table Preservation</text>
+            <text x="308" y="171" fill="#9333ea" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
+              text-anchor="middle">vi &gt; en Gate · Reject English</text>
+            <text x="308" y="187" fill="#475569" font-size="7.5" font-family="'Geist Mono', monospace"
+              text-anchor="middle">Noise Cleaner: Strip Boilerplate</text>
+          </g>
+
+          <!-- Node 3: Tree Decomposition & Quote Hashing (Step 2) -->
+          <g data-motion-item data-step="2" class="interactive-node" data-node-id="node-ast"
+            aria-label="Step 2: AST Tree decomposition and line-by-line SHA-256 quote hashing">
+            <!-- Fresh Soft Teal Card -->
+            <rect x="440" y="96" width="156" height="106" rx="6" fill="#ccfbf1" stroke="#2dd4bf" stroke-width="1.8" />
+            <path d="M440 102 A6 6 0 0 1 446 96 H590 A6 6 0 0 1 596 102 V122 H440 Z" fill="#99f6e4" />
+            <text x="518" y="113" fill="#115e59" font-size="10.5" font-weight="700" font-family="'Geist', sans-serif"
+              text-anchor="middle">AST Tree &amp; Hasher</text>
+            <!-- Badge -->
+            <rect x="448" y="128" width="46" height="13" rx="2" fill="#14b8a6" />
+            <text x="471" y="138" fill="#ffffff" font-size="7" font-family="'Geist Mono', monospace" font-weight="700"
+              text-anchor="middle" letter-spacing="0.08em">PARSER</text>
+            <!-- Hash Pill -->
+            <rect x="556" y="128" width="32" height="13" rx="2" fill="#f0fdfa" stroke="#14b8a6" stroke-width="0.8" />
+            <text x="572" y="138" fill="#0f766e" font-size="8" font-family="'Geist Mono', monospace" font-weight="700"
+              text-anchor="middle">#256</text>
+            <!-- Content -->
+            <text x="518" y="156" fill="#0f172a" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="600"
+              text-anchor="middle">Hierarchical Heading Regex</text>
+            <text x="518" y="171" fill="#475569" font-size="8" font-family="'Geist Mono', monospace"
+              text-anchor="middle">#, ##, Roman I-V, ThuyetMinh</text>
+            <text x="518" y="187" fill="#0f766e" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="700"
+              text-anchor="middle">quote_hash = SHA-256(line)</text>
+          </g>
+
+          <!-- Semantic Path 3A: Chunker and Vector Store (Step 3) -->
+          <g data-motion-item data-step="3"
+            aria-label="Step 3A: Semantic window chunking and dense vector space storage">
+            <!-- Node 4A: Fresh Soft Sky Blue Card -->
+            <g class="interactive-node" data-node-id="node-chunker">
+              <a href="#inspect-node-chunker" class="node-anchor" aria-label="Khảo sát chi tiết Semantic Chunking Window"><rect x="668" y="62" width="188" height="76" rx="6" fill="#dbeafe" stroke="#60a5fa" stroke-width="1.8" />
+              <path d="M668 68 A6 6 0 0 1 674 62 H850 A6 6 0 0 1 856 68 V84 H668 Z" fill="#bfdbfe" />
+              <text x="762" y="77" fill="#1e40af" font-size="10" font-weight="700" font-family="'Geist', sans-serif"
+                text-anchor="middle">Semantic Chunking Window</text>
+              <text x="762" y="100" fill="#0c4a6e" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="600"
+                text-anchor="middle">W_max = 2800 · Overlap = 320</text>
+              <text x="762" y="115" fill="#2563eb" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
+                text-anchor="middle">Policy: repeat_header · Batch B=32</text>
+              <text x="762" y="129" fill="#475569" font-size="7" font-family="'Geist Mono', monospace"
+                text-anchor="middle">Deterministic Boundary Verification</text>
+            </g></a>
+
+            <!-- Store 1: Fresh Soft Cyan Vector Space (Light, Vibrant, Zero Black) -->
+            <g class="interactive-node" data-node-id="node-vector-store">
+              <a href="#inspect-node-vector-store" class="node-anchor" aria-label="Khảo sát chi tiết Dense Vector Space"><rect x="896" y="56" width="196" height="92" rx="6" fill="#e0f2fe" stroke="#0284c7" stroke-width="2"
+                class="store-breathing" />
+              <path d="M896 62 A6 6 0 0 1 902 56 H1086 A6 6 0 0 1 1092 62 V80 H896 Z" fill="#bae6fd" />
+              <text x="994" y="73" fill="#0369a1" font-size="10.5" font-weight="700" font-family="'Geist', sans-serif"
+                text-anchor="middle">Dense Vector Space (1024-d)</text>
+              <!-- 3D Vector Coordinate Glyph -->
+              <g transform="translate(1048, 86)">
+                <line x1="0" y1="20" x2="22" y2="20" stroke="#0284c7" stroke-width="1.2" />
+                <line x1="0" y1="20" x2="0" y2="2" stroke="#0284c7" stroke-width="1.2" />
+                <line x1="0" y1="20" x2="-10" y2="28" stroke="#0284c7" stroke-width="1.2" />
+                <line x1="0" y1="20" x2="16" y2="6" stroke="#ea580c" stroke-width="1.8" />
+                <line x1="0" y1="20" x2="8" y2="15" stroke="#0284c7" stroke-width="1.8" />
+              </g></a>
+              <text x="968" y="98" fill="#0c4a6e" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="700"
+                text-anchor="middle">Milvus / PGVector (1024-d)</text>
+              <text x="968" y="113" fill="#0284c7" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
+                text-anchor="middle">HNSW Cosine sim(v_Q, v_i)</text>
+              <text x="968" y="128" fill="#475569" font-size="7.5" font-family="'Geist Mono', monospace"
+                text-anchor="middle">embedding_chunks (Active Doc)</text>
+            </g>
+          </g>
+
+          <!-- Symbolic Path 3B: Hypergraph and Financial Graph Store (Step 3) -->
+          <g data-motion-item data-step="3"
+            aria-label="Step 3B: Bipartite hypergraph projection into financial graph storage">
+            <!-- Node 4B: Fresh Soft Lavender Card -->
+            <g class="interactive-node" data-node-id="node-hypergraph">
+              <a href="#inspect-node-hypergraph" class="node-anchor" aria-label="Khảo sát chi tiết Hypergraph Bipartite Projection"><rect x="668" y="242" width="188" height="76" rx="6" fill="#ede9fe" stroke="#a78bfa" stroke-width="1.8" />
+              <path d="M668 248 A6 6 0 0 1 674 242 H850 A6 6 0 0 1 856 248 V264 H668 Z" fill="#ddd6fe" />
+              <text x="762" y="257" fill="#5b21b6" font-size="10" font-weight="700" font-family="'Geist', sans-serif"
+                text-anchor="middle">Hypergraph Projection</text>
+              <text x="762" y="280" fill="#312e81" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="600"
+                text-anchor="middle">Bipartite Events → Entities (M:N)</text>
+              <text x="762" y="295" fill="#7c3aed" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
+                text-anchor="middle">DiGraph G=(V,E) · RPT VND / Pct</text>
+              <text x="762" y="309" fill="#475569" font-size="7" font-family="'Geist Mono', monospace"
+                text-anchor="middle">Tarjan Directed Cycle Detection</text>
+            </g></a>
+
+            <!-- Store 2: Fresh Soft Violet Financial Knowledge Graph (Light, Vibrant, Zero Black) -->
+            <g class="interactive-node" data-node-id="node-graph-store">
+              <a href="#inspect-node-graph-store" class="node-anchor" aria-label="Khảo sát chi tiết Relational Knowledge Graph"><rect x="896" y="236" width="196" height="92" rx="6" fill="#f3e8ff" stroke="#7c3aed" stroke-width="2"
+                class="store-breathing-graph" />
+              <path d="M896 242 A6 6 0 0 1 902 236 H1086 A6 6 0 0 1 1092 242 V260 H896 Z" fill="#e9d5ff" />
+              <text x="994" y="253" fill="#6b21a8" font-size="10.5" font-weight="700" font-family="'Geist', sans-serif"
+                text-anchor="middle">Financial Graph (Symbolic)</text>
+              <!-- Circular Graph Glyph -->
+              <g transform="translate(1048, 268)">
+                <circle cx="8" cy="6" r="4.5" fill="#ffffff" stroke="#7c3aed" stroke-width="1.3" />
+                <circle cx="20" cy="18" r="4.5" fill="#ffedd5" stroke="#ea580c" stroke-width="1.3" />
+                <circle cx="2" cy="22" r="4" fill="#ffffff" stroke="#64748b" stroke-width="1.1" />
+                <line x1="11" y1="9" x2="17" y2="15" stroke="#7c3aed" stroke-width="1.2" />
+                <line x1="5" y1="8" x2="3" y2="18" stroke="#64748b" stroke-width="1.1" />
+                <line x1="6" y1="21" x2="16" y2="19" stroke="#ea580c" stroke-width="1.2" />
+              </g></a>
+              <text x="968" y="278" fill="#581c87" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="700"
+                text-anchor="middle">PostgreSQL / NetworkX DiGraph</text>
+              <text x="968" y="293" fill="#7c3aed" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
+                text-anchor="middle">evidence_spans · document_facts</text>
+              <text x="968" y="308" fill="#475569" font-size="7.5" font-family="'Geist Mono', monospace"
+                text-anchor="middle">document_relations (OWNS, LOANS)</text>
+            </g>
+          </g>
+
+          <!-- ════════════════════════════════════════════════════════════════ -->
+          <!-- DUAL-PHASE INTERFACE SEPARATOR                                   -->
+          <!-- ════════════════════════════════════════════════════════════════ -->
+          <line x1="24" y1="424" x2="1116" y2="424" stroke="#94a3b8" stroke-width="1.4" />
+          <rect x="360" y="413" width="420" height="22" rx="4" fill="#f1f5f9" stroke="#0284c7" stroke-width="1.2" />
+          <text x="570" y="428" fill="#0369a1" font-size="9" font-family="'Geist Mono', monospace" font-weight="700"
+            text-anchor="middle" letter-spacing="0.14em">OFFLINE DUAL-STORE ──▶ ONLINE INFERENCE INTERFACE</text>
+
+          <!-- ════════════════════════════════════════════════════════════════ -->
+          <!-- PHASE 2: ONLINE INFERENCE, FORK-JOIN & CONTEXT (Lower Half)     -->
+          <!-- ════════════════════════════════════════════════════════════════ -->
+          <rect x="24" y="444" width="1092" height="396" rx="8" fill="#fffaf5" stroke="#fb923c" stroke-width="1.3"
+            stroke-dasharray="6,4" />
+          <rect x="40" y="452" width="490" height="20" rx="4" fill="#ffedd5" stroke="#fb923c" stroke-width="0.8" />
+          <text x="50" y="466" fill="#9a3412" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="700"
+            letter-spacing="0.14em">PHASE 2: ONLINE INFERENCE, PARALLEL FORK-JOIN &amp; CONTEXT CONVERGENCE</text>
+
+          <!-- CONNECTORS: Phase 2 (Flow-Synchronized Connectors) -->
+          <!-- Step 4 Forks: From Query Node into 3 branches -->
+          <g class="flow-step flow-step-4">
+            <!-- Branch 2A (Top: Dense Vector Retrieval at y=544) -->
+            <path d="M176 624 H200 Q208 624 208 616 V552 Q208 544 216 544 H236" fill="none" stroke="rgba(2,132,199,0.2)"
+              stroke-width="3" />
+            <path id="path-p2-fork1" class="flow-active-link"
+              d="M176 624 H200 Q208 624 208 616 V552 Q208 544 216 544 H236" fill="none" stroke="#0284c7"
+              stroke-width="2.2" marker-end="url(#paper-flow-arrow-link)" />
+            <rect x="186" y="532" width="44" height="13" rx="2" fill="#bae6fd" stroke="#38bdf8" stroke-width="0.8" />
+            <text x="208" y="542" fill="#0369a1" font-size="7" font-family="'Geist Mono', monospace" font-weight="700"
+              text-anchor="middle" letter-spacing="0.06em">[DENSE]</text>
+            <g class="traveling-arrow">
+              <polygon points="-5 -4, 4 0, -5 4" fill="#0284c7">
+                <animateMotion dur="1.2s" repeatCount="indefinite"
+                  path="M176 624 H200 Q208 624 208 616 V552 Q208 544 216 544 H236" rotate="auto" />
+              </polygon>
+            </g>
+
+            <!-- Branch 2B (Middle: Sparse Lexical Grep at y=640) -->
+            <path d="M176 640 H236" fill="none" stroke="rgba(148,163,184,0.3)" stroke-width="3" />
+            <path id="path-p2-fork2" class="flow-active" d="M176 640 H236" fill="none" stroke="#64748b"
+              stroke-width="2.2" marker-end="url(#paper-flow-arrow)" />
+            <rect x="186" y="622" width="44" height="13" rx="2" fill="#e2e8f0" stroke="#94a3b8" stroke-width="0.8" />
+            <text x="208" y="632" fill="#334155" font-size="7" font-family="'Geist Mono', monospace" font-weight="700"
+              text-anchor="middle" letter-spacing="0.06em">[SPARSE]</text>
+            <g class="traveling-arrow">
+              <polygon points="-5 -4, 4 0, -5 4" fill="#64748b">
+                <animateMotion dur="1.0s" repeatCount="indefinite" path="M176 640 H236" rotate="auto" />
+              </polygon>
+            </g>
+
+            <!-- Branch 2C (Bottom: Deterministic Forensics at y=736) -->
+            <path d="M176 656 H200 Q208 656 208 664 V728 Q208 736 216 736 H236" fill="none" stroke="rgba(225,29,72,0.2)"
+              stroke-width="3" />
+            <path id="path-p2-fork3" class="flow-active-accent"
+              d="M176 656 H200 Q208 656 208 664 V728 Q208 736 216 736 H236" fill="none" stroke="#e11d48"
+              stroke-width="2.2" marker-end="url(#paper-flow-arrow-accent)" />
+            <rect x="184" y="724" width="48" height="13" rx="2" fill="#fecdd3" stroke="#fb7185" stroke-width="0.8" />
+            <text x="208" y="734" fill="#9f1239" font-size="7" font-family="'Geist Mono', monospace" font-weight="700"
+              text-anchor="middle" letter-spacing="0.06em">[FORENSIC]</text>
+            <g class="traveling-arrow">
+              <polygon points="-5 -4, 4 0, -5 4" fill="#e11d48">
+                <animateMotion dur="1.2s" repeatCount="indefinite"
+                  path="M176 656 H200 Q208 656 208 664 V728 Q208 736 216 736 H236" rotate="auto" />
+              </polygon>
+            </g>
+          </g>
+
+          <!-- Step 5 Connectors: Join from 3 Branches into Node 7 (Hybrid Fusion) -->
+          <g class="flow-step flow-step-5">
+            <!-- From 2A (x=468, y=544 -> x=536, y=624) -->
+            <path d="M468 544 H496 Q504 544 504 552 V616 Q504 624 512 624 H536" fill="none" stroke="rgba(2,132,199,0.2)"
+              stroke-width="3" />
+            <path id="path-p2-join1" class="flow-active-link"
+              d="M468 544 H496 Q504 544 504 552 V616 Q504 624 512 624 H536" fill="none" stroke="#0284c7"
+              stroke-width="2.2" marker-end="url(#paper-flow-arrow-link)" />
+            <rect x="478" y="532" width="44" height="13" rx="2" fill="#bae6fd" stroke="#38bdf8" stroke-width="0.8" />
+            <text x="500" y="542" fill="#0369a1" font-size="7" font-family="'Geist Mono', monospace" font-weight="700"
+              text-anchor="middle" letter-spacing="0.06em">[JOIN-1]</text>
+            <g class="traveling-arrow">
+              <polygon points="-5 -4, 4 0, -5 4" fill="#0284c7">
+                <animateMotion dur="1.2s" repeatCount="indefinite"
+                  path="M468 544 H496 Q504 544 504 552 V616 Q504 624 512 624 H536" rotate="auto" />
+              </polygon>
+            </g>
+
+            <!-- From 2B (x=468, y=640 -> x=536, y=640) -->
+            <path d="M468 640 H536" fill="none" stroke="rgba(148,163,184,0.3)" stroke-width="3" />
+            <path id="path-p2-join2" class="flow-active" d="M468 640 H536" fill="none" stroke="#64748b"
+              stroke-width="2.2" marker-end="url(#paper-flow-arrow)" />
+            <rect x="478" y="622" width="44" height="13" rx="2" fill="#e2e8f0" stroke="#94a3b8" stroke-width="0.8" />
+            <text x="500" y="632" fill="#334155" font-size="7" font-family="'Geist Mono', monospace" font-weight="700"
+              text-anchor="middle" letter-spacing="0.06em">[JOIN-2]</text>
+            <g class="traveling-arrow">
+              <polygon points="-5 -4, 4 0, -5 4" fill="#64748b">
+                <animateMotion dur="1.0s" repeatCount="indefinite" path="M468 640 H536" rotate="auto" />
+              </polygon>
+            </g>
+
+            <!-- From 2C (x=468, y=736 -> x=536, y=656) -->
+            <path d="M468 736 H496 Q504 736 504 728 V664 Q504 656 512 656 H536" fill="none" stroke="rgba(234,88,12,0.2)"
+              stroke-width="3" />
+            <path id="path-p2-join3" class="flow-active-accent"
+              d="M468 736 H496 Q504 736 504 728 V664 Q504 656 512 656 H536" fill="none" stroke="#ea580c"
+              stroke-width="2.2" marker-end="url(#paper-flow-arrow-accent)" />
+            <rect x="478" y="724" width="44" height="13" rx="2" fill="#fed7aa" stroke="#fb923c" stroke-width="0.8" />
+            <text x="500" y="734" fill="#9a3412" font-size="7" font-family="'Geist Mono', monospace" font-weight="700"
+              text-anchor="middle" letter-spacing="0.06em">[VETO-3]</text>
+            <g class="traveling-arrow">
+              <polygon points="-5 -4, 4 0, -5 4" fill="#ea580c">
+                <animateMotion dur="1.2s" repeatCount="indefinite"
+                  path="M468 736 H496 Q504 736 504 728 V664 Q504 656 512 656 H536" rotate="auto" />
+              </polygon>
+            </g>
+          </g>
+
+          <!-- Step 6 Final Connector: From Node 7 (Hybrid Fusion) -> Node 8 (Verified Context) -->
+          <g class="flow-step flow-step-6">
+            <path d="M828 640 H884" fill="none" stroke="rgba(234,88,12,0.25)" stroke-width="3.4" />
+            <path id="path-p2-final" class="flow-active-accent" d="M828 640 H884" fill="none" stroke="#ea580c"
+              stroke-width="2.6" marker-end="url(#paper-flow-arrow-accent)" />
+            <rect x="832" y="622" width="48" height="13" rx="2" fill="#fed7aa" stroke="#fb923c" stroke-width="0.8" />
+            <text x="856" y="632" fill="#9a3412" font-size="7" font-family="'Geist Mono', monospace" font-weight="700"
+              text-anchor="middle" letter-spacing="0.06em">[TOP-K RERANK]</text>
+            <g class="traveling-arrow">
+              <polygon points="-6 -5, 5 0, -6 5" fill="#ea580c">
+                <animateMotion dur="0.9s" repeatCount="indefinite" path="M828 640 H884" rotate="auto" />
+              </polygon>
+            </g>
+          </g>
+
+          <!-- NODES: Phase 2 -->
+          <!-- Node 5: User Query Ingress & Parsing (Step 4) -->
+          <g data-motion-item data-step="4" class="interactive-node" data-node-id="node-query"
+            aria-label="Step 4: Natural language query ingress and multi-signal normalization">
+            <!-- Fresh Soft Amber Card -->
+            <rect x="44" y="588" width="132" height="106" rx="6" fill="#fef3c7" stroke="#f59e0b" stroke-width="1.8" />
+            <path d="M44 594 A6 6 0 0 1 50 588 H170 A6 6 0 0 1 176 594 V614 H44 Z" fill="#fde68a" />
+            <text x="110" y="605" fill="#92400e" font-size="10.5" font-weight="700" font-family="'Geist', sans-serif"
+              text-anchor="middle">User Query Ingress</text>
+            <!-- Badge & Glyph -->
+            <rect x="52" y="620" width="34" height="13" rx="2" fill="#f59e0b" />
+            <text x="69" y="630" fill="#ffffff" font-size="7" font-family="'Geist Mono', monospace" font-weight="700"
+              text-anchor="middle" letter-spacing="0.08em">QUERY</text>
+            <circle cx="152" cy="626" r="5" fill="none" stroke="#d97706" stroke-width="1.3" />
+            <line x1="156" y1="630" x2="161" y2="635" stroke="#d97706" stroke-width="1.4" />
+            <!-- Content -->
+            <text x="110" y="648" fill="#0f172a" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="600"
+              text-anchor="middle">Q_raw Normalization</text>
+            <text x="110" y="662" fill="#0284c7" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
+              text-anchor="middle">Noise Strip · Top 4 Terms</text>
+            <text x="110" y="675" fill="#7c3aed" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="600"
+              text-anchor="middle">Entity Conf &gt;= 0.70 Match</text>
+            <text x="110" y="688" fill="#475569" font-size="7.5" font-family="'Geist Mono', monospace"
+              text-anchor="middle">Fiscal Meta: Year, Quarter</text>
+          </g>
+
+          <!-- Node 6 (A, B, C): Parallel Multi-Signal Retrieval Branches (Step 4) -->
+          <g data-motion-item data-step="4"
+            aria-label="Step 4B: Parallel multi-signal retrieval branches (Dense, Sparse, and Forensic)">
+            <!-- Node 6A: Fresh Soft Sky Retrieval -->
+            <g class="interactive-node" data-node-id="node-dense-retrieval">
+              <a href="#inspect-node-dense-retrieval" class="node-anchor" aria-label="Khảo sát chi tiết Branch 1: Dense Vector Retrieval"><rect x="236" y="506" width="232" height="76" rx="6" fill="#e0f2fe" stroke="#38bdf8" stroke-width="1.8" />
+              <path d="M236 512 A6 6 0 0 1 242 506 H462 A6 6 0 0 1 468 512 V528 H236 Z" fill="#bae6fd" />
+              <text x="352" y="522" fill="#0369a1" font-size="10" font-weight="700" font-family="'Geist', sans-serif"
+                text-anchor="middle">Branch 1: Dense Vector Retrieval</text>
+              <text x="352" y="546" fill="#0c4a6e" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="600"
+                text-anchor="middle">Cosine: sim(v_Q, v_i) = (v_Q · v_i) / ||v||</text>
+              <text x="352" y="562" fill="#0284c7" font-size="8" font-family="'Geist Mono', monospace" font-weight="700"
+                text-anchor="middle">Dynamic Cutoff: max(0.35, top_raw * 0.68)</text>
+              <text x="352" y="574" fill="#475569" font-size="7" font-family="'Geist Mono', monospace"
+                text-anchor="middle">Top-K Candidate Extraction (K=32)</text>
+            </g></a>
+
+            <!-- Node 6B: Fresh Soft Slate Grep -->
+            <g class="interactive-node" data-node-id="node-lexical-retrieval">
+              <a href="#inspect-node-lexical-retrieval" class="node-anchor" aria-label="Khảo sát chi tiết Branch 2: Sparse Lexical Grep"><rect x="236" y="602" width="232" height="76" rx="6" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.8" />
+              <path d="M236 608 A6 6 0 0 1 242 602 H462 A6 6 0 0 1 468 608 V624 H236 Z" fill="#e2e8f0" />
+              <text x="352" y="618" fill="#334155" font-size="10" font-weight="700" font-family="'Geist', sans-serif"
+                text-anchor="middle">Branch 2: Sparse Lexical Grep</text>
+              <text x="352" y="642" fill="#0f172a" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="600"
+                text-anchor="middle">+0.55 Phrase · +0.35 Term Match Ratio</text>
+              <text x="352" y="658" fill="#0284c7" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
+                text-anchor="middle">Entity Boost: Ticker +0.20 · Brand/Proj +0.25</text>
+              <text x="352" y="670" fill="#475569" font-size="7" font-family="'Geist Mono', monospace"
+                text-anchor="middle">Exact Match Grounding Anchor</text>
+            </g></a>
+
+            <!-- Node 6C: Fresh Soft Rose Forensics -->
+            <g class="interactive-node" data-node-id="node-forensic-guard">
+              <a href="#inspect-node-forensic-guard" class="node-anchor" aria-label="Khảo sát chi tiết Branch 3: Deterministic Forensics"><rect x="236" y="698" width="232" height="76" rx="6" fill="#ffe4e6" stroke="#fb7185" stroke-width="1.8" />
+              <path d="M236 704 A6 6 0 0 1 242 698 H462 A6 6 0 0 1 468 704 V720 H236 Z" fill="#fecdd3" />
+              <text x="352" y="714" fill="#9f1239" font-size="10" font-weight="700" font-family="'Geist', sans-serif"
+                text-anchor="middle">Branch 3: Deterministic Forensics</text>
+              <text x="352" y="738" fill="#881337" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="700"
+                text-anchor="middle">GIL: Tarjan Cycles | RPT &gt; 0.25 (VETO)</text>
+              <text x="352" y="754" fill="#e11d48" font-size="8" font-family="'Geist Mono', monospace" font-weight="700"
+                text-anchor="middle">Beneish M8 &gt; -1.78 · Sloan Accruals &lt; -0.10</text>
+              <text x="352" y="766" fill="#475569" font-size="7" font-family="'Geist Mono', monospace"
+                text-anchor="middle">Hard Algorithmic Trade Blocker</text>
+            </g></a>
+          </g>
+
+          <!-- Node 7: Convergence, Hybrid Score Fusion & Queue Accumulator (FOCAL 1 - Step 5) -->
+          <g data-motion-item data-step="5" class="interactive-node" data-node-id="node-fusion"
+            aria-label="Step 5: Hybrid score fusion, time-decay multiplier and queue accumulation">
+            <!-- Fresh Soft Peach Card with Vibrant Accent Border -->
+            <rect x="536" y="570" width="292" height="140" rx="8" fill="#ffedd5" stroke="#ea580c" stroke-width="2.2"
+              class="pulse-focal" />
+            <path d="M536 578 A8 8 0 0 1 544 570 H820 A8 8 0 0 1 828 578 V596 H536 Z" fill="#fed7aa" />
+            <text x="682" y="589" fill="#9a3412" font-size="11.5" font-weight="700" font-family="'Geist', sans-serif"
+              text-anchor="middle">Hybrid Fusion &amp; Reranker (FOCAL 1)</text>
+            <!-- Queue Accumulator Badge -->
+            <rect x="656" y="604" width="164" height="16" rx="3" fill="#ea580c" />
+            <text x="738" y="616" fill="#ffffff" font-size="7.5" font-family="'Geist Mono', monospace"
+              text-anchor="middle" font-weight="700" letter-spacing="0.04em">QUEUE: 32 → 24 → 8 CHUNKS</text>
+
+            <text x="682" y="632" fill="#7c2d12" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="600"
+              text-anchor="middle">S_comb = min(1.0, 0.5*S_raw + 0.2*S_rank +</text>
+            <text x="682" y="646" fill="#7c2d12" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="600"
+              text-anchor="middle">0.3*S_lexical + 0.15_exact) * λ_freshness</text>
+            <text x="682" y="664" fill="#0284c7" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
+              text-anchor="middle">Freshness λ: Fresh 1.15 · Active 0.90 · Expired 0.10</text>
+            <text x="682" y="679" fill="#ea580c" font-size="8" font-family="'Geist Mono', monospace" font-weight="700"
+              text-anchor="middle">Relevance Gate: Exact | S_lex &gt;= 0.2 | S_raw &gt;= floor</text>
+            <text x="682" y="694" fill="#475569" font-size="7.5" font-family="'Geist Mono', monospace"
+              text-anchor="middle">Boilerplate Filter: Marker count &lt; 2 · Rank Sort Top-K</text>
+          </g>
+
+          <!-- Node 8: Verified Evidence Context (FOCAL 2 - Step 6) -->
+          <g data-motion-item data-step="6" class="interactive-node" data-node-id="node-verified-evidence"
+            aria-label="Step 6: Verified evidence context with immutable SHA-256 line citation dispatched to Quant Agents">
+            <!-- Fresh Soft Emerald Card with Vibrant Green Border -->
+            <rect x="884" y="570" width="220" height="140" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="2.2"
+              class="pulse-focal" />
+            <path d="M884 578 A8 8 0 0 1 892 570 H1096 A8 8 0 0 1 1104 578 V596 H884 Z" fill="#bbf7d0" />
+            <text x="994" y="589" fill="#166534" font-size="11.5" font-weight="700" font-family="'Geist', sans-serif"
+              text-anchor="middle">Verified Evidence (FOCAL 2)</text>
+            <!-- Verified Shield Glyph -->
+            <path d="M1084 606 L1092 609 V616 C1092 621 1088 624 1084 626 C1080 624 1076 621 1076 616 V609 Z"
+              fill="#ffffff" stroke="#16a34a" stroke-width="1.3" />
+            <path d="M1081 616 L1083 618 L1087 613" fill="none" stroke="#16a34a" stroke-width="1.4" />
+            <!-- Content -->
+            <text x="994" y="622" fill="#15803d" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="700"
+              text-anchor="middle">Line Anchored [L_start : L_end]</text>
+            <text x="994" y="638" fill="#0f172a" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="700"
+              text-anchor="middle">quote_hash SHA-256 Verified</text>
+            <text x="994" y="656" fill="#334155" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
+              text-anchor="middle">Citations [1], [2] Grounded State</text>
+            <text x="994" y="672" fill="#0284c7" font-size="8" font-family="'Geist Mono', monospace" font-weight="700"
+              text-anchor="middle">Dispatches to 12 Quant Agents</text>
+            <text x="994" y="688" fill="#166534" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="600"
+              text-anchor="middle">Forensic Veto + Half-Kelly Sizing</text>
+          </g>
+
+          <!-- ════════════════════════════════════════════════════════════════ -->
+          <!-- LEGEND STRIP (Horizontal at bottom)                              -->
+          <!-- ════════════════════════════════════════════════════════════════ -->
+          <line x1="24" y1="856" x2="1116" y2="856" stroke="#94a3b8" stroke-width="1.2" />
+          <text x="24" y="872" fill="#0f172a" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="700"
+            letter-spacing="0.14em">LEGEND &amp; MATHEMATICAL TAXONOMY</text>
+
+          <!-- Legend Item 1: Dense Vector Stream -->
+          <line x1="270" y1="869" x2="300" y2="869" stroke="#0284c7" stroke-width="2.5" stroke-dasharray="6,4" />
+          <circle cx="285" cy="869" r="3" fill="#0284c7" />
+          <text x="306" y="873" fill="#334155" font-size="8" font-family="'Geist Mono', monospace"
+            font-weight="600">Dense Vector Path (1024-d Cosine)</text>
+
+          <!-- Legend Item 2: Hypergraph Symbolic Stream -->
+          <line x1="510" y1="869" x2="540" y2="869" stroke="#7c3aed" stroke-width="2.5" stroke-dasharray="6,4" />
+          <circle cx="525" cy="869" r="3" fill="#7c3aed" />
+          <text x="546" y="873" fill="#334155" font-size="8" font-family="'Geist Mono', monospace"
+            font-weight="600">Bipartite Hypergraph (M:N DiGraph)</text>
+
+          <!-- Legend Item 3: Forensic Veto & Accruals -->
+          <line x1="750" y1="869" x2="780" y2="869" stroke="#e11d48" stroke-width="2.5" stroke-dasharray="6,4" />
+          <circle cx="765" cy="869" r="3" fill="#e11d48" />
+          <text x="786" y="873" fill="#334155" font-size="8" font-family="'Geist Mono', monospace"
+            font-weight="600">Forensic Hard Veto (GIL / M8 / Sloan)</text>
+
+          <!-- Legend Item 4: Focal Convergence -->
+          <rect x="990" y="864" width="10" height="10" rx="2" fill="#ea580c" />
+          <text x="1006" y="873" fill="#ea580c" font-size="8" font-family="'Geist Mono', monospace"
+            font-weight="700">Focal Convergence Anchor</text>
+        </svg>
+      </div>
+
+      <!-- Playback Controls -->
+      <div data-motion-controls>
+        <button type="button" data-motion-action="play" aria-pressed="false">Play Flow</button>
+        <button type="button" data-motion-action="pause" aria-pressed="false">Pause</button>
+        <button type="button" data-motion-action="prev" disabled aria-label="Previous step">Previous</button>
+        <button type="button" data-motion-action="next" aria-label="Next step">Next</button>
+        <button type="button" data-motion-action="replay" aria-label="Replay animation">Replay</button>
+        <span class="keyboard-help">Keys: Space (Play/Pause) · ← / → (Step) · R (Replay)</span>
+        <span data-motion-step-label aria-hidden="true" style="display:none;">0</span>
+      </div>
+      <div data-motion-status role="status" aria-live="polite" aria-atomic="true" data-motion-status-visible>Ready ·
+        Complete Diagram Loaded</div>
+
+      <noscript>
+        <p>Complete diagram loaded. JavaScript is required only for interactive step-by-step playback controls.</p>
+      </noscript>
+
+      <!-- Interactive Guidance Banner -->
+      <div class="inspector-hint">
+        <span style="font-size:16px;">💡</span>
+        <span><strong>Tương tác Khảo sát:</strong> Nhấp (Click) vào bất kỳ hộp thuật toán, trạm dữ liệu hoặc kho lưu trữ nào trên sơ đồ để mở <strong>Bảng Khảo Sát Chi Tiết (Inspector Drawer)</strong> hiển thị công thức toán học ngầm, điều kiện biên và liên kết mã nguồn gốc.</span>
+      </div>
+
+      <!-- Slide-over Inspector Drawers for Detailed Component Exploration (:target CSS, zero JS) -->
+<a href="#!" id="inspector-backdrop" class="inspector-backdrop" aria-label="Đóng bảng chi tiết"></a>
+      <aside id="inspect-node-corpus" class="inspector-drawer" role="dialog" aria-labelledby="title-node-corpus">
+        <div class="drawer-header">
+          <div>
+            <span class="drawer-badge">Offline ETL · Step 1</span>
+            <h3 id="title-node-corpus" class="drawer-title">Raw Financial BCTC Corpus Ingress</h3>
+          </div>
+          <a href="#!" class="drawer-close" aria-label="Đóng bảng chi tiết">✕</a>
+        </div>
+        <div class="drawer-body">
+          <div class="drawer-section">
+            <label class="drawer-label">Thuật toán &amp; Công thức toán học ngầm</label>
+            <pre class="drawer-code"><code>Input: raw_pdf: bytes | S_0 = (DocumentMetadata, PDFByteStream)
+Filter: ADTV &gt; 5 Billion VND</code></pre>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên trong Code</label>
+            <div class="drawer-text">Lọc thanh khoản: ADTV &gt; 5 Tỷ VND (Top cổ phiếu thanh khoản HOSE/HNX). Bộ 3 tài liệu vàng (Triple Golden Set): BCTC kiểm toán năm (Backbone) + BCTC quý 4 gần nhất + Báo cáo Quản trị công ty (CG).</div>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Hình thái Dữ liệu (I/O Morphology)</label>
+            <div class="drawer-text">PDF Binary Stream → Byte Buffer → Language Identification Gate</div>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Liên kết Mã nguồn gốc</label>
+            <div class="drawer-code-link">📄 <code>ai-engine/app/infrastructure/mineru_ocr.py</code></div>
+          </div>
+        </div>
+      </aside>
+      <aside id="inspect-node-mineru" class="inspector-drawer" role="dialog" aria-labelledby="title-node-mineru">
+        <div class="drawer-header">
+          <div>
+            <span class="drawer-badge">Offline OCR · Step 1</span>
+            <h3 id="title-node-mineru" class="drawer-title">MinerU OCR & Noise Sanitizer</h3>
+          </div>
+          <a href="#!" class="drawer-close" aria-label="Đóng bảng chi tiết">✕</a>
+        </div>
+        <div class="drawer-body">
+          <div class="drawer-section">
+            <label class="drawer-label">Thuật toán &amp; Công thức toán học ngầm</label>
+            <pre class="drawer-code"><code>T_markdown = MinerU(PDF_bytes, mode="layout_aware")
+Gate: count(vi_tokens) &gt; count(en_tokens) else REJECT</code></pre>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên trong Code</label>
+            <div class="drawer-text">Language Gate: vi &gt; en (bảo đảm văn bản tiếng Việt). Giữ nguyên toàn vẹn cấu trúc bảng biểu Markdown Table phức tạp; loại bỏ triệt để các trang disclaimer và boilerplate vô thưởng vô phạt.</div>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Hình thái Dữ liệu (I/O Morphology)</label>
+            <div class="drawer-text">PDF Bytes → Structured Markdown AST với bảng biểu nguyên vẹn</div>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Liên kết Mã nguồn gốc</label>
+            <div class="drawer-code-link">📄 <code>ai-engine/app/infrastructure/mineru_ocr.py:extract_markdown()</code></div>
+          </div>
+        </div>
+      </aside>
+      <aside id="inspect-node-ast" class="inspector-drawer" role="dialog" aria-labelledby="title-node-ast">
+        <div class="drawer-header">
+          <div>
+            <span class="drawer-badge">Structural Parser · Step 2</span>
+            <h3 id="title-node-ast" class="drawer-title">AST Tree Decomposition & Quote Hasher</h3>
+          </div>
+          <a href="#!" class="drawer-close" aria-label="Đóng bảng chi tiết">✕</a>
+        </div>
+        <div class="drawer-body">
+          <div class="drawer-section">
+            <label class="drawer-label">Thuật toán &amp; Công thức toán học ngầm</label>
+            <pre class="drawer-code"><code>H_tree = ParseHierarchy(T_markdown, regex="^(#|##|###|[I-V]+\\.)")
+For line in H_tree: quote_hash = SHA-256(normalize(line))</code></pre>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên trong Code</label>
+            <div class="drawer-text">Phân tích phân cấp 5 bậc tiêu đề; mỗi dòng văn bản được gán mã băm bất biến SHA-256(line) nhằm triệt tiêu hoàn toàn khả năng bịa đặt trích dẫn (hallucination guard).</div>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Hình thái Dữ liệu (I/O Morphology)</label>
+            <div class="drawer-text">Markdown String → Hierarchical AST Nodes + SHA-256 Checksums</div>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Liên kết Mã nguồn gốc</label>
+            <div class="drawer-code-link">📄 <code>ai-engine/app/application/bctc_to_sag_pipeline.py:parse_ast()</code></div>
+          </div>
+        </div>
+      </aside>
+      <aside id="inspect-node-chunker" class="inspector-drawer" role="dialog" aria-labelledby="title-node-chunker">
+        <div class="drawer-header">
+          <div>
+            <span class="drawer-badge">Segmentation · Step 3A</span>
+            <h3 id="title-node-chunker" class="drawer-title">Semantic Chunking Window</h3>
+          </div>
+          <a href="#!" class="drawer-close" aria-label="Đóng bảng chi tiết">✕</a>
+        </div>
+        <div class="drawer-body">
+          <div class="drawer-section">
+            <label class="drawer-label">Thuật toán &amp; Công thức toán học ngầm</label>
+            <pre class="drawer-code"><code>Chunk_i = SlideWindow(Tokens, W_max=2800, Overlap=320, policy="repeat_header")</code></pre>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên trong Code</label>
+            <div class="drawer-text">Kích thước cửa sổ: W_max = 2800 tokens, bước gối Overlap = 320 tokens. Batch size B = 32. Lặp lại tiêu đề cha để bảo toàn ngữ cảnh cục bộ.</div>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Hình thái Dữ liệu (I/O Morphology)</label>
+            <div class="drawer-text">AST Nodes → Disjoint Overlapping Token Chunks kèm Section Metadata</div>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Liên kết Mã nguồn gốc</label>
+            <div class="drawer-code-link">📄 <code>ai-engine/app/application/bctc_to_sag_pipeline.py:create_chunks()</code></div>
+          </div>
+        </div>
+      </aside>
+      <aside id="inspect-node-vector-store" class="inspector-drawer" role="dialog" aria-labelledby="title-node-vector-store">
+        <div class="drawer-header">
+          <div>
+            <span class="drawer-badge">Vector DB · Step 3A</span>
+            <h3 id="title-node-vector-store" class="drawer-title">Dense Vector Space (1024-d)</h3>
+          </div>
+          <a href="#!" class="drawer-close" aria-label="Đóng bảng chi tiết">✕</a>
+        </div>
+        <div class="drawer-body">
+          <div class="drawer-section">
+            <label class="drawer-label">Thuật toán &amp; Công thức toán học ngầm</label>
+            <pre class="drawer-code"><code>v_i = EmbeddingModel(Chunk_i) ∈ ℝ^{1024}
+Distance: D_cosine(u, v) = 1 - (u · v) / (||u|| ||v||)</code></pre>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên trong Code</label>
+            <div class="drawer-text">Chỉ mục HNSW: M=16, efConstruction=200; lưu trữ trong PostgreSQL PGVector / Milvus với 1024 chiều. Chỉ mục hóa theo từng mã cổ phiếu và niên độ tài chính.</div>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Hình thái Dữ liệu (I/O Morphology)</label>
+            <div class="drawer-text">Text Chunk → Float32[1024] Dense Vector Index</div>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Liên kết Mã nguồn gốc</label>
+            <div class="drawer-code-link">📄 <code>ai-engine/app/infrastructure/milvus_repository.py</code></div>
+          </div>
+        </div>
+      </aside>
+      <aside id="inspect-node-hypergraph" class="inspector-drawer" role="dialog" aria-labelledby="title-node-hypergraph">
+        <div class="drawer-header">
+          <div>
+            <span class="drawer-badge">Knowledge Graph · Step 3B</span>
+            <h3 id="title-node-hypergraph" class="drawer-title">Hypergraph Bipartite Projection</h3>
+          </div>
+          <a href="#!" class="drawer-close" aria-label="Đóng bảng chi tiết">✕</a>
+        </div>
+        <div class="drawer-body">
+          <div class="drawer-section">
+            <label class="drawer-label">Thuật toán &amp; Công thức toán học ngầm</label>
+            <pre class="drawer-code"><code>G = (V_entity, V_event, E_hyper)
+E_hyper = (Entity_A, Entity_B, TransactionValue_VND, PercentageEquity)</code></pre>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên trong Code</label>
+            <div class="drawer-text">Ngưỡng giao dịch bên liên quan (RPT): Giá trị ≥ 5% vốn chủ sở hữu hoặc bảo lãnh vay vốn công ty con. Kích hoạt giải thuật Tarjan Directed Cycle Detection.</div>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Hình thái Dữ liệu (I/O Morphology)</label>
+            <div class="drawer-text">Extracted Text Mentions → NetworkX Bipartite Hypergraph Representation</div>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Liên kết Mã nguồn gốc</label>
+            <div class="drawer-code-link">📄 <code>ai-engine/app/application/sag_pipeline.py:build_hypergraph()</code></div>
+          </div>
+        </div>
+      </aside>
+      <aside id="inspect-node-graph-store" class="inspector-drawer" role="dialog" aria-labelledby="title-node-graph-store">
+        <div class="drawer-header">
+          <div>
+            <span class="drawer-badge">Graph Store · Step 3B</span>
+            <h3 id="title-node-graph-store" class="drawer-title">Relational Financial Knowledge Graph</h3>
+          </div>
+          <a href="#!" class="drawer-close" aria-label="Đóng bảng chi tiết">✕</a>
+        </div>
+        <div class="drawer-body">
+          <div class="drawer-section">
+            <label class="drawer-label">Thuật toán &amp; Công thức toán học ngầm</label>
+            <pre class="drawer-code"><code>SELECT * FROM document_relations WHERE relation_type IN ("OWNS", "LOANS", "GUARANTEES")</code></pre>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên trong Code</label>
+            <div class="drawer-text">Lưu trữ thực thể quan hệ trên PostgreSQL: bảng evidence_spans, document_facts, document_relations kết nối khóa ngoại chặt chẽ.</div>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Hình thái Dữ liệu (I/O Morphology)</label>
+            <div class="drawer-text">Hypergraph Edges → Relational Tuples with Foreign Key Anchors</div>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Liên kết Mã nguồn gốc</label>
+            <div class="drawer-code-link">📄 <code>ai-engine/app/infrastructure/db/models.py</code></div>
+          </div>
+        </div>
+      </aside>
+      <aside id="inspect-node-query" class="inspector-drawer" role="dialog" aria-labelledby="title-node-query">
+        <div class="drawer-header">
+          <div>
+            <span class="drawer-badge">Online Trigger · Step 4</span>
+            <h3 id="title-node-query" class="drawer-title">User Query Ingress & Intent Parser</h3>
+          </div>
+          <a href="#!" class="drawer-close" aria-label="Đóng bảng chi tiết">✕</a>
+        </div>
+        <div class="drawer-body">
+          <div class="drawer-section">
+            <label class="drawer-label">Thuật toán &amp; Công thức toán học ngầm</label>
+            <pre class="drawer-code"><code>Q_norm = CleanQuery(Q_raw); Entities = MatchEntity(Q_norm, threshold=0.70)
+v_Q = EmbeddingModel(Q_norm) ∈ ℝ^{1024}</code></pre>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên trong Code</label>
+            <div class="drawer-text">Độ tin cậy nhận diện thực thể: Entity Confidence ≥ 0.70. Bóc tách metadata năm tài chính, quý, và mã chứng khoán trọng tâm.</div>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Hình thái Dữ liệu (I/O Morphology)</label>
+            <div class="drawer-text">Raw User String → Structured Query Intent + v_Q ∈ ℝ^{1024}</div>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Liên kết Mã nguồn gốc</label>
+            <div class="drawer-code-link">📄 <code>ai-engine/app/presentation/api/query_router.py</code></div>
+          </div>
+        </div>
+      </aside>
+      <aside id="inspect-node-dense-retrieval" class="inspector-drawer" role="dialog" aria-labelledby="title-node-dense-retrieval">
+        <div class="drawer-header">
+          <div>
+            <span class="drawer-badge">Parallel Branch 1 · Step 4</span>
+            <h3 id="title-node-dense-retrieval" class="drawer-title">Branch 1: Dense Vector Retrieval</h3>
+          </div>
+          <a href="#!" class="drawer-close" aria-label="Đóng bảng chi tiết">✕</a>
+        </div>
+        <div class="drawer-body">
+          <div class="drawer-section">
+            <label class="drawer-label">Thuật toán &amp; Công thức toán học ngầm</label>
+            <pre class="drawer-code"><code>S_raw(i) = (v_Q · v_i) / (||v_Q|| ||v_i||)
+Cutoff: S_raw ≥ max(0.35, 0.68 * S_top)</code></pre>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên trong Code</label>
+            <div class="drawer-text">Ngưỡng cắt tương đối động: Sàn cứng 0.35, ngưỡng tương đối bằng 68% điểm số cao nhất (S_top). Trích xuất tối đa K=32 ứng viên.</div>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Hình thái Dữ liệu (I/O Morphology)</label>
+            <div class="drawer-text">Query Vector → Top-32 Candidate Chunks by Cosine Similarity</div>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Liên kết Mã nguồn gốc</label>
+            <div class="drawer-code-link">📄 <code>ai-engine/app/application/retrieval_service.py:dense_search()</code></div>
+          </div>
+        </div>
+      </aside>
+      <aside id="inspect-node-lexical-retrieval" class="inspector-drawer" role="dialog" aria-labelledby="title-node-lexical-retrieval">
+        <div class="drawer-header">
+          <div>
+            <span class="drawer-badge">Parallel Branch 2 · Step 4</span>
+            <h3 id="title-node-lexical-retrieval" class="drawer-title">Branch 2: Sparse Lexical Grep</h3>
+          </div>
+          <a href="#!" class="drawer-close" aria-label="Đóng bảng chi tiết">✕</a>
+        </div>
+        <div class="drawer-body">
+          <div class="drawer-section">
+            <label class="drawer-label">Thuật toán &amp; Công thức toán học ngầm</label>
+            <pre class="drawer-code"><code>S_lex = 0.55 * PhraseMatchRatio + 0.35 * TermMatchRatio + Boost(Ticker, Project)</code></pre>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên trong Code</label>
+            <div class="drawer-text">Trọng số cộng hưởng: Khớp cụm từ +0.55, Khớp từ đơn +0.35, Boost mã chứng khoán +0.20, Boost tên dự án/thương hiệu +0.25.</div>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Hình thái Dữ liệu (I/O Morphology)</label>
+            <div class="drawer-text">Query Tokens → Exact Phrase Inverted Index Matches</div>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Liên kết Mã nguồn gốc</label>
+            <div class="drawer-code-link">📄 <code>ai-engine/app/application/retrieval_service.py:lexical_search()</code></div>
+          </div>
+        </div>
+      </aside>
+      <aside id="inspect-node-forensic-guard" class="inspector-drawer" role="dialog" aria-labelledby="title-node-forensic-guard">
+        <div class="drawer-header">
+          <div>
+            <span class="drawer-badge">Safety Guard · Step 4</span>
+            <h3 id="title-node-forensic-guard" class="drawer-title">Branch 3: Forensic Hard-Law & Veto Gate</h3>
+          </div>
+          <a href="#!" class="drawer-close" aria-label="Đóng bảng chi tiết">✕</a>
+        </div>
+        <div class="drawer-body">
+          <div class="drawer-section">
+            <label class="drawer-label">Thuật toán &amp; Công thức toán học ngầm</label>
+            <pre class="drawer-code"><code>If HasCycle(Tarjan(G_RPT)) OR (RPT_Ratio &gt; 0.25) OR (M8 &gt; -1.78) → HARD VETO</code></pre>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên trong Code</label>
+            <div class="drawer-text">Beneish M-Score &gt; -1.78 (Cảnh báo gian lận sổ sách), Sloan Accruals &lt; -0.10 (Chất lượng lợi nhuận thấp), Biên độ sàn 2 phiên HOSE 13.51%. Khóa lệnh ngay lập tức khi vi phạm.</div>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Hình thái Dữ liệu (I/O Morphology)</label>
+            <div class="drawer-text">Graph Relational Cycles → Deterministic Binary Veto Signal (PASS / VETO)</div>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Liên kết Mã nguồn gốc</label>
+            <div class="drawer-code-link">📄 <code>ai-engine/app/domain/rules/forensic_veto.py</code></div>
+          </div>
+        </div>
+      </aside>
+      <aside id="inspect-node-fusion" class="inspector-drawer" role="dialog" aria-labelledby="title-node-fusion">
+        <div class="drawer-header">
+          <div>
+            <span class="drawer-badge">Convergence Anchor · Step 5</span>
+            <h3 id="title-node-fusion" class="drawer-title">Hybrid Score Fusion & Queue Accumulator</h3>
+          </div>
+          <a href="#!" class="drawer-close" aria-label="Đóng bảng chi tiết">✕</a>
+        </div>
+        <div class="drawer-body">
+          <div class="drawer-section">
+            <label class="drawer-label">Thuật toán &amp; Công thức toán học ngầm</label>
+            <pre class="drawer-code"><code>S_comb = min(1.0, 0.50*S_raw + 0.20*S_rank + 0.30*S_lex + 0.15_exact) * λ_freshness
+λ_freshness: Fresh=1.15, Active=0.90, Expired=0.10</code></pre>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên trong Code</label>
+            <div class="drawer-text">Bộ đếm dồn ứ hàng đợi: Nén từ 32 ứng viên → 24 ứng viên → 8 chunks chất lượng cao nhất. Loại bỏ các chunks có chứa từ ngữ boilerplate lặp lại.</div>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Hình thái Dữ liệu (I/O Morphology)</label>
+            <div class="drawer-text">32 Multi-Branch Chunks → 8 High-Signal Ranked Chunks</div>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Liên kết Mã nguồn gốc</label>
+            <div class="drawer-code-link">📄 <code>ai-engine/app/application/retrieval_service.py:fuse_and_rerank()</code></div>
+          </div>
+        </div>
+      </aside>
+      <aside id="inspect-node-verified-evidence" class="inspector-drawer" role="dialog" aria-labelledby="title-node-verified-evidence">
+        <div class="drawer-header">
+          <div>
+            <span class="drawer-badge">Execution Anchor · Step 6</span>
+            <h3 id="title-node-verified-evidence" class="drawer-title">Verified Evidence Context Assembly</h3>
+          </div>
+          <a href="#!" class="drawer-close" aria-label="Đóng bảng chi tiết">✕</a>
+        </div>
+        <div class="drawer-body">
+          <div class="drawer-section">
+            <label class="drawer-label">Thuật toán &amp; Công thức toán học ngầm</label>
+            <pre class="drawer-code"><code>Context = AssertAll(Chunk_i.hash == SHA256(RawSlice(L_start, L_end)))
+Dispatched to: Half-Kelly Engine f* = 0.5 * ((b*p - q) / b)</code></pre>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên trong Code</label>
+            <div class="drawer-text">Khẳng định 100% trích dẫn neo dòng [L_start : L_end] khớp mã băm SHA-256. Phân phối ngữ cảnh tinh khiết cho 12 Quant Agents và Engine quản trị vị thế Half-Kelly.</div>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Hình thái Dữ liệu (I/O Morphology)</label>
+            <div class="drawer-text">Clean Verified Facts → Downstream Quant Decision Context</div>
+          </div>
+          <div class="drawer-section">
+            <label class="drawer-label">Liên kết Mã nguồn gốc</label>
+            <div class="drawer-code-link">📄 <code>ai-engine/app/application/bctc_to_sag_pipeline.py:assemble_context()</code></div>
+          </div>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <script data-diagram-controls>
+    (() => {
+      const params = new URLSearchParams(location.search);
+      const staticOverride = params.get('motion') === 'static' || document.documentElement.dataset.motion === 'static';
+      const requestedStep = params.get('step');
+      const reduce = matchMedia('(prefers-reduced-motion: reduce)');
+      document.fonts.ready.then(() => { document.documentElement.dataset.fontsReady = 'true'; });
+
+      document.querySelectorAll('[data-motion-root]').forEach((root) => {
+        const count = Number(root.dataset.stepCount);
+        const hold = parseFloat(getComputedStyle(root).getPropertyValue('--motion-hold')) || 720;
+        const parsedStep = requestedStep !== null && /^\d+$/.test(requestedStep) ? Number(requestedStep) : null;
+        const exactStep = params.get('motion') === 'step' && Number.isSafeInteger(parsedStep) && parsedStep >= 0 && parsedStep <= count ? parsedStep : null;
+        const items = [...root.querySelectorAll('[data-motion-item]')];
+        const labels = Array.from({ length: count + 1 }, (_, index) => index === 0
+          ? 'Ready'
+          : items.filter((item) => !item.hasAttribute('data-motion-decorative') && Number(item.dataset.step) === index)
+              .map((item) => item.getAttribute('aria-label')).join('; '));
+        const controls = root.querySelector('[data-motion-controls]');
+        const status = root.querySelector('[data-motion-status]');
+        const visibleStep = root.querySelector('[data-motion-step-label]');
+        let step = count;
+        let timer = 0;
+        let playing = false;
+        let stepBeforeReduce = 0;
+        let resumeAfterReduce = root.dataset.motionMode === 'reveal';
+
+        const buttons = (action) => controls.querySelector(`[data-motion-action="${action}"]`);
+        const clearClock = () => { window.clearTimeout(timer); timer = 0; };
+        const announce = () => { status.textContent = `Step ${step} of ${count}: ${labels[step] || 'Complete'}`; };
+        const setControlsAvailable = (available) => {
+          controls.hidden = !available;
+          controls.setAttribute('aria-hidden', String(!available));
+          controls.dataset.playbackDisabled = String(!available);
+          controls.querySelectorAll('button').forEach((control) => { control.disabled = !available; });
+        };
+
+        function render(next, userInitiated = false) {
+          step = Math.max(0, Math.min(count, next));
+          root.dataset.stepCurrent = String(step);
+          root.dataset.frame = step === count ? 'end' : step === 0 ? 'start' : 'step';
+          items.forEach((item) => {
+            const itemStep = Number(item.dataset.step);
+            item.classList.toggle('is-visible', itemStep <= step);
+            item.classList.toggle('is-current', itemStep === step);
+          });
+          if (visibleStep) visibleStep.textContent = String(step);
+          const unavailable = controls.dataset.playbackDisabled === 'true';
+          buttons('prev').disabled = unavailable || step === 0;
+          buttons('next').disabled = unavailable || step === count;
+          if (userInitiated) announce();
+        }
+
+        function pause(userInitiated = false) {
+          clearClock();
+          playing = false;
+          root.classList.remove('is-playing');
+          buttons('play').setAttribute('aria-pressed', 'false');
+          buttons('pause').setAttribute('aria-pressed', 'true');
+          if (userInitiated) status.textContent = `Paused at step ${step} of ${count}`;
+        }
+
+        function finish() {
+          pause(false);
+          root.dataset.frame = 'end';
+          status.textContent = `Complete · step ${count} of ${count}`;
+        }
+
+        function tick() {
+          if (!playing) return;
+          if (step >= count) { finish(); return; }
+          render(step + 1, false);
+          if (step >= count) { finish(); return; }
+          timer = window.setTimeout(tick, hold);
+        }
+
+        function play(fromStart = false, userInitiated = false) {
+          clearClock();
+          if (fromStart || step >= count) render(0, userInitiated);
+          playing = true;
+          root.classList.add('is-playing');
+          buttons('play').setAttribute('aria-pressed', 'true');
+          buttons('pause').setAttribute('aria-pressed', 'false');
+          timer = window.setTimeout(tick, hold);
+        }
+
+        controls.addEventListener('click', (event) => {
+          const button = event.target.closest('[data-motion-action]');
+          if (!button) return;
+          const action = button.dataset.motionAction;
+          if (action === 'play') play(false, true);
+          if (action === 'pause') pause(true);
+          if (action === 'replay') play(true, true);
+          if (action === 'prev') { pause(false); render(step - 1, true); }
+          if (action === 'next') { pause(false); render(step + 1, true); }
+        });
+
+        root.addEventListener('keydown', (event) => {
+          if (event.target.matches('input, textarea, select, a[href]')) return;
+          const keys = { ArrowLeft: step - 1, ArrowRight: step + 1, Home: 0, End: count };
+          if (event.code === 'Space' && !event.target.closest('button')) {
+            event.preventDefault();
+            playing ? pause(true) : play(false, true);
+            return;
+          }
+          if (!event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === 'r') {
+            event.preventDefault();
+            play(true, true);
+            return;
+          }
+          if (!(event.key in keys)) return;
+          event.preventDefault();
+          pause(false);
+          render(keys[event.key], true);
+        });
+
+        document.addEventListener('visibilitychange', () => {
+          if (document.visibilityState === 'hidden' && playing) pause(false);
+        });
+        reduce.addEventListener('change', (event) => {
+          if (event.matches && root.dataset.motionState !== 'reduced') {
+            stepBeforeReduce = step;
+            resumeAfterReduce = playing;
+          }
+          pause(false);
+          if (event.matches) {
+            setControlsAvailable(false);
+            render(count, false);
+            root.dataset.frame = 'static';
+            root.dataset.motionState = 'reduced';
+            status.textContent = 'Reduced motion · complete static frame · playback controls unavailable';
+          } else if (staticOverride || root.dataset.motionMode === 'none') {
+            setControlsAvailable(false);
+            render(count, false);
+            root.dataset.frame = 'static';
+            root.dataset.motionState = 'static';
+            status.textContent = 'Static frame · complete diagram · playback controls unavailable';
+          } else {
+            delete root.dataset.motionState;
+            if (exactStep !== null) {
+              setControlsAvailable(false);
+              render(exactStep, false);
+              root.dataset.frame = 'step';
+              root.dataset.motionState = 'test';
+              status.textContent = `Test frame · step ${step} of ${count} · playback controls unavailable`;
+            } else {
+              setControlsAvailable(true);
+              render(stepBeforeReduce, false);
+              status.textContent = `Ready · step ${step} of ${count}`;
+              if (resumeAfterReduce && root.dataset.motionMode === 'reveal') {
+                play(false, false);
+              }
+            }
+            resumeAfterReduce = false;
+          }
+        });
+
+        if (staticOverride) {
+          document.documentElement.dataset.motion = 'static';
+          pause(false);
+          setControlsAvailable(false);
+          render(count, false);
+          root.dataset.frame = 'static';
+          root.dataset.motionState = 'static';
+          status.textContent = 'Static frame · complete diagram · playback controls unavailable';
+        } else if (reduce.matches || root.dataset.motionMode === 'none') {
+          pause(false);
+          setControlsAvailable(false);
+          render(count, false);
+          root.dataset.frame = 'static';
+          root.dataset.motionState = reduce.matches ? 'reduced' : 'static';
+          status.textContent = reduce.matches
+            ? 'Reduced motion · complete static frame · playback controls unavailable'
+            : 'Static frame · complete diagram · playback controls unavailable';
+        } else if (exactStep !== null) {
+          document.documentElement.dataset.motion = 'step';
+          pause(false);
+          setControlsAvailable(false);
+          render(exactStep, false);
+          root.dataset.frame = 'step';
+          root.dataset.motionState = 'test';
+          status.textContent = `Test frame · step ${step} of ${count} · playback controls unavailable`;
+        } else if (root.dataset.motionMode === 'reveal') {
+          setControlsAvailable(true);
+          render(0, false);
+          play(false, false);
+        } else {
+          pause(false);
+          setControlsAvailable(true);
+          render(0, false);
+          status.textContent = `Ready · step 0 of ${count}`;
+        }
+        root.classList.add('motion-ready');
+      });
+    })();
+  </script>
+</body>
+
+</html>

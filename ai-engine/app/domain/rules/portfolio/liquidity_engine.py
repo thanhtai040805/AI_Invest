@@ -113,8 +113,9 @@ class LiquidityEngine:
             executable_shares = current_shares
             horizon_days = 1
 
-        executable_shares = (executable_shares // 100) * 100
-        exec_incremental = (exec_incremental // 100) * 100
+        executable_shares = max(0, int(executable_shares // 100) * 100)
+        sign = 1 if exec_incremental >= 0 else -1
+        exec_incremental = sign * (abs(int(exec_incremental)) // 100) * 100
         executable_target_weight = round((executable_shares * price) / total_nav, 4) if total_nav > 0 else 0.0
 
         # Ước lượng trượt giá Market Impact

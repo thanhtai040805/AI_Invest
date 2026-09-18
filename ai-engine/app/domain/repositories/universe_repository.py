@@ -112,7 +112,7 @@ class UniverseRepository:
         beneish_score: Optional[float] = None,
         gil_flag: Optional[str] = None,
     ) -> bool:
-        """Cập nhật phân loại Universe và trạng thái tuân thủ Hard Law."""
+        """Cập nhật phân loại Universe và trạng thái tuân thủ Hard Law đồng bộ cho cả stocks và universe_securities."""
         symbol = symbol.upper().strip()
         now = datetime.now()
         query = """
@@ -126,6 +126,21 @@ class UniverseRepository:
         """
         try:
             self.storage.execute(query, (group, beneish_status, beneish_score, gil_flag, now, symbol))
+            # Đồng bộ sang bảng universe_securities
+            try:
+                query_sec = """
+                    INSERT INTO universe_securities (
+                        ticker, universe_group, trading_status, beneish_status, gil_flag, updated_at
+                    ) VALUES (%s, COALESCE(%s, 'B'), 'NORMAL', COALESCE(%s, 'PASS'), COALESCE(%s, 'DATA_INSUFFICIENT'), NOW())
+                    ON CONFLICT (ticker) DO UPDATE SET
+                        universe_group = COALESCE(EXCLUDED.universe_group, universe_securities.universe_group),
+                        beneish_status = COALESCE(EXCLUDED.beneish_status, universe_securities.beneish_status),
+                        gil_flag = COALESCE(EXCLUDED.gil_flag, universe_securities.gil_flag),
+                        updated_at = NOW()
+                """
+                self.storage.execute(query_sec, (symbol, group, beneish_status, gil_flag))
+            except Exception:
+                pass
             return True
         except Exception as e:
             logger.warning(f"Lỗi khi cập nhật compliance cho {symbol} ({e})")
@@ -139,7 +154,7 @@ class UniverseRepository:
         beneish_status: str = "PASS",
         gil_flag: str = "DATA_INSUFFICIENT",
     ) -> bool:
-        """Lưu hoặc cập nhật trạng thái phân nhóm Universe của cổ phiếu vào bảng universe_securities."""
+        """Lưu hoặc cập nhật trạng thái phân nhóm Universe của cổ phiếu vào bảng universe_securities và đồng bộ sang stocks."""
         ticker = ticker.upper().strip()
         query = """
             INSERT INTO universe_securities (
@@ -157,6 +172,19 @@ class UniverseRepository:
                 query,
                 (ticker, universe_group, trading_status, beneish_status, gil_flag),
             )
+            # Đồng bộ sang bảng stocks
+            try:
+                self.storage.execute("""
+                    UPDATE stocks
+                    SET universe_group = %s,
+                        trading_status = %s,
+                        beneish_status = %s,
+                        gil_flag = %s,
+                        group_updated_at = NOW()
+                    WHERE symbol = %s
+                """, (universe_group, trading_status, beneish_status, gil_flag, ticker))
+            except Exception:
+                pass
             return True
         except Exception as e:
             logger.warning(f"Lỗi khi upsert universe_securities cho {ticker} ({e})")

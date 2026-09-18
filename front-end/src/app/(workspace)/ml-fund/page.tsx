@@ -21,7 +21,7 @@ const defaultFunds: FundAccount[] = [
   {
     id: "multi_agent",
     kind: "multi_agent",
-    label: "Multi-Agent Fund (12-Agent)",
+    label: "Quỹ 12-Agent phối hợp",
     accountId: "MAIN_FUND",
     nav: 984_380_000,
     cash: 132_400_000,
@@ -31,7 +31,7 @@ const defaultFunds: FundAccount[] = [
   {
     id: "ml",
     kind: "standalone_ml",
-    label: "Standalone ML Fund",
+    label: "Quỹ ML Tự hành",
     accountId: "standalone-pure-ml-fund-account",
     nav: 500_000_000,
     cash: 500_000_000,
@@ -102,9 +102,9 @@ function AccountSwitcher() {
                 {f.mode && <span className="ml-auto"><Pill tone={modeTone[f.mode]}>{f.mode}</Pill></span>}
                 {!active && <span className="ml-auto text-[11px] text-mineral">Mở →</span>}
               </div>
-              <div className="font-mono text-[10.5px] text-muted mb-3 truncate">{f.accountId}</div>
+              <div className="text-[10.5px] text-muted mb-3 truncate">{f.accountId}</div>
               <div className="grid grid-cols-3 gap-2 text-center">
-                {[["NAV", M(f.nav)], ["Cash", M(f.cash)], ["Vị thế", String(f.openPositions)]].map(([l, v]) => (
+                {[["NAV", M(f.nav)], ["Tiền mặt", M(f.cash)], ["Vị thế", String(f.openPositions)]].map(([l, v]) => (
                   <div key={l}>
                     <div className="text-[10px] uppercase tracking-wide text-muted">{l}</div>
                     <div className="tnum font-mono text-[13px] text-ink mt-0.5">{v}</div>
@@ -119,7 +119,7 @@ function AccountSwitcher() {
         })}
       </div>
       <p className="text-[11.5px] text-muted mt-3">
-        Account isolated — Standalone ML Fund không dùng chung cash, positions hay lệnh với 12-Agent, và bỏ qua Thesis / Counter / CIO / Risk / Governance.
+        Tài khoản cách ly — Quỹ ML Tự hành không dùng chung tiền mặt, vị thế hay lệnh với 12-Agent, và hoạt động hoàn toàn độc lập.
       </p>
     </Panel>
   )
@@ -137,12 +137,12 @@ function RankingTable() {
     <Panel flush className="mb-4">
       <div className="px-5 pt-5">
         <PanelHead
-          title="ML Ranking · phiên hôm nay"
-          sub="hybrid_stacking_ranker.pkl · Beneish gate → LambdaMART rank → Ridge momentum 3D → Survival gate"
+          title="Bảng xếp hạng định lượng ML · Phiên hôm nay"
+          sub="hybrid_stacking_ranker.pkl · Bộ lọc Beneish → Xếp hạng LambdaMART → Xung lực Ridge 3D → Bộ lọc sống sót"
           action={
             <div className="flex items-center gap-2 text-[11px] text-muted">
               <span className="tnum font-mono">{mlSession.predictDate}</span>
-              <span>· {mlSession.predictionsCount} preds</span>
+              <span>· {mlSession.predictionsCount} mã</span>
               <Pill tone={statusTone}>{mlSession.status}</Pill>
             </div>
           }
@@ -152,7 +152,7 @@ function RankingTable() {
         <table className="w-full text-[12.5px]">
           <thead>
             <tr className="text-[10.5px] uppercase tracking-wide text-muted border-y border-line">
-              {["Ticker", "Tier", "Conv.", "P(Surv)", "E[Mom 3D]", "Z", "Shares", "Price", "Value", "Wt", "Action"].map((h, i) => (
+              {["Mã CP", "Hạng", "Độ tin cậy", "P(Sống sót)", "Kỳ vọng T+3", "Điểm Z", "Khối lượng", "Thị giá", "Giá trị", "Tỷ trọng", "Lệnh"].map((h, i) => (
                 <th key={h} className={`font-medium py-2 px-3 ${i > 2 ? "text-right" : "text-left"}`}>{h}</th>
               ))}
             </tr>
@@ -178,13 +178,13 @@ function RankingTable() {
                   {isOpen && (
                     <tr className="border-b border-line bg-paper">
                       <td colSpan={11} className="px-5 py-3">
-                        <div className="font-mono text-[11.5px] text-secondary mb-2">
-                          [PURE-ML] P(Surv)={(p.survProb * 100).toFixed(0)}% | E[Mom]=+{p.momPred.toFixed(1)}% | Z={p.zScore.toFixed(2)}
+                        <div className="text-[11.5px] text-secondary mb-2">
+                          [ML Tự hành] P(Sống sót)={(p.survProb * 100).toFixed(0)}% | Kỳ vọng xung lực=+{p.momPred.toFixed(1)}% | Điểm Z={p.zScore.toFixed(2)}
                         </div>
                         <ul className="text-[11.5px] text-muted space-y-1">
-                          <li>· Layer 0 — Beneish M-Score ≤ −1.78 (fraud gate) passed</li>
-                          <li>· Branch 1 — LambdaMART cross-section rank · Branch 2 — Ridge momentum T+2.5 · Branch 3 — Survival P(no −3.5% drawdown)</li>
-                          <li>· Sizing 20% NAV → {vnd(p.shares)} shares (lô 100) · execution_mode {p.executionMode}</li>
+                          <li>· Tầng 0 — Bộ lọc Beneish M-Score ≤ −1.78 đạt chuẩn an toàn BCTC</li>
+                          <li>· Nhánh 1 — Xếp hạng lát cắt chéo LambdaMART · Nhánh 2 — Xung lực Ridge T+2.5 · Nhánh 3 — Tỷ lệ sống sót P(không sụt quá −3.5%)</li>
+                          <li>· Phân bổ 20% NAV → {vnd(p.shares)} cổ phiếu (lô 100) · Chế độ khớp lệnh: {p.executionMode}</li>
                         </ul>
                       </td>
                     </tr>
@@ -205,19 +205,19 @@ function MLPortfolio() {
   const invested = mlPositions.reduce((a, p) => a + p.marketValue, 0)
   return (
     <Panel>
-      <PanelHead title="Portfolio ML" sub="Vị thế SHADOW riêng của account" action={
+      <PanelHead title="Danh mục ML" sub="Vị thế SHADOW riêng của tài khoản" action={
         <div className="flex gap-4 text-right">
           <div><div className="text-[10px] uppercase tracking-wide text-muted">NAV</div><div className="tnum font-mono text-[13px] text-ink">{M(ml.nav)}</div></div>
-          <div><div className="text-[10px] uppercase tracking-wide text-muted">Cash</div><div className="tnum font-mono text-[13px] text-ink">{M(ml.cash)}</div></div>
+          <div><div className="text-[10px] uppercase tracking-wide text-muted">Tiền mặt</div><div className="tnum font-mono text-[13px] text-ink">{M(ml.cash)}</div></div>
         </div>
       } />
       {mlPositions.length === 0 ? (
-        <div className="text-center text-[13px] text-muted py-8">100% cash — chưa có vị thế ML nào mở.</div>
+        <div className="text-center text-[13px] text-muted py-8">100% tiền mặt — chưa có vị thế ML nào mở.</div>
       ) : (
         <table className="w-full text-[12.5px]">
           <thead>
             <tr className="text-[10.5px] uppercase tracking-wide text-muted border-b border-line">
-              {["Symbol", "Qty", "Avg price", "Market value", "Weight"].map((h, i) => (
+              {["Mã CP", "Khối lượng", "Giá vốn", "Giá trị thị trường", "Tỷ trọng"].map((h, i) => (
                 <th key={h} className={`font-medium py-2 ${i === 0 ? "text-left" : "text-right"}`}>{h}</th>
               ))}
             </tr>
@@ -233,7 +233,7 @@ function MLPortfolio() {
               </tr>
             ))}
             <tr>
-              <td className="py-2.5 text-[11px] uppercase tracking-wide text-muted">Invested</td>
+              <td className="py-2.5 text-[11px] uppercase tracking-wide text-muted">Đã giải ngân</td>
               <td colSpan={2} />
               <td className="py-2.5 text-right tnum font-mono text-ink">{M(invested)}</td>
               <td className="py-2.5 text-right tnum font-mono text-muted">{((invested / ml.nav) * 100).toFixed(0)}%</td>
@@ -255,17 +255,17 @@ function AccuracyDashboard() {
       : { label: "Cần thêm Shadow", tone: "warning" as const }
   return (
     <Panel>
-      <PanelHead title="Accuracy · lookback 60d" sub={`${a.totalEvaluated} evaluated · ${a.newlyEvaluated} mới (evaluate_forward_accuracy sau T+3)`} action={<Pill tone={health.tone}>{health.label}</Pill>} />
+      <PanelHead title="Độ chính xác · 60 ngày gần nhất" sub={`${a.totalEvaluated} lượt đối soát · ${a.newlyEvaluated} mới (đánh giá sau T+3)`} action={<Pill tone={health.tone}>{health.label}</Pill>} />
       <div className="space-y-3 mb-4">
         <div>
-          <div className="flex justify-between text-[11px] text-muted mb-1"><span>Realized survival rate</span><span>Predicted avg</span></div>
-          <FactorBar label="Survival" value={Math.round(a.realizedSurvivalRate)} tone="teal" />
-          <FactorBar label="Predicted" value={Math.round(a.predictedAvgSurvivalProb)} tone="mineral" />
+          <div className="flex justify-between text-[11px] text-muted mb-1"><span>Tỷ lệ sống sót thực tế</span><span>Kỳ vọng mô hình</span></div>
+          <FactorBar label="Thực tế" value={Math.round(a.realizedSurvivalRate)} tone="teal" />
+          <FactorBar label="Kỳ vọng" value={Math.round(a.predictedAvgSurvivalProb)} tone="mineral" />
         </div>
-        <FactorBar label="Directional hit" value={Math.round(a.directionalHitRate)} tone="teal" />
+        <FactorBar label="Đúng xu hướng" value={Math.round(a.directionalHitRate)} tone="teal" />
       </div>
       <div className="grid grid-cols-2 gap-3 mb-4">
-        {[["Realized 3D ret", pct(a.avgRealized3dRet), "gain"], ["Predicted 3D ret", pct(a.avgPredicted3dRet), "mineral"]].map(([l, v, t]) => (
+        {[["Lợi nhuận thực tế T+3", pct(a.avgRealized3dRet), "gain"], ["Kỳ vọng mô hình T+3", pct(a.avgPredicted3dRet), "mineral"]].map(([l, v, t]) => (
           <div key={l} className="rounded-[8px] border border-line bg-paper p-3">
             <div className="text-[10px] uppercase tracking-wide text-muted">{l}</div>
             <div className={`tnum font-mono text-[16px] mt-0.5 ${metricTone[t as string]}`}>{v}</div>
@@ -278,7 +278,7 @@ function AccuracyDashboard() {
           <table className="w-full text-[11.5px]">
             <thead>
               <tr className="text-[10px] uppercase tracking-wide text-muted">
-                {["Date", "Ticker", "Price", "P(Surv)", "Min lock", "3D ret", "Survival"].map((h, i) => (
+                {["Ngày", "Mã CP", "Thị giá", "P(Sống sót)", "Sụt tối đa", "Lợi nhuận T+3", "Kết quả"].map((h, i) => (
                   <th key={h} className={`font-medium py-1.5 ${i < 2 ? "text-left" : "text-right"}`}>{h}</th>
                 ))}
               </tr>
@@ -310,23 +310,23 @@ function Comparison() {
   return (
     <Panel flush>
       <div className="px-5 pt-5">
-        <PanelHead title="Hai trường phái · so sánh song song" sub="Multi-Agent (CSS | CTS | CIO) vs Standalone ML (P(Surv) | Mom | Z) — phân tích, không phải khuyến nghị" />
+        <PanelHead title="Hai trường phái · so sánh song song" sub="12-Agent (CSS | CTS | CIO) vs ML Tự hành (P(Sống sót) | Xung lực | Z) — phân tích, không phải khuyến nghị" />
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-[12.5px]">
           <thead>
             <tr className="text-[10.5px] uppercase tracking-wide text-muted border-y border-line">
-              <th className="font-medium py-2 px-3 text-left">Ticker</th>
-              <th className="font-medium py-2 px-3 text-right text-mineral" colSpan={3}>Multi-Agent</th>
-              <th className="font-medium py-2 px-3 text-right text-teal" colSpan={3}>Standalone ML</th>
+              <th className="font-medium py-2 px-3 text-left">Mã CP</th>
+              <th className="font-medium py-2 px-3 text-right text-mineral" colSpan={3}>12-Agent</th>
+              <th className="font-medium py-2 px-3 text-right text-teal" colSpan={3}>ML Tự hành</th>
             </tr>
             <tr className="text-[10px] uppercase tracking-wide text-muted border-b border-line">
               <th />
               <th className="font-medium py-1.5 px-3 text-right">CSS</th>
               <th className="font-medium py-1.5 px-3 text-right">CTS</th>
               <th className="font-medium py-1.5 px-3 text-right">CIO</th>
-              <th className="font-medium py-1.5 px-3 text-right">P(Surv)</th>
-              <th className="font-medium py-1.5 px-3 text-right">Mom</th>
+              <th className="font-medium py-1.5 px-3 text-right">P(Sống sót)</th>
+              <th className="font-medium py-1.5 px-3 text-right">Xung lực</th>
               <th className="font-medium py-1.5 px-3 text-right">Z</th>
             </tr>
           </thead>
@@ -484,9 +484,9 @@ export default function MLFund() {
   return (
     <MLFundContext.Provider value={liveData}>
       <Page
-        title="Standalone ML Fund"
-        sub="Pure-ML quant · account cô lập · SHADOW paper trading"
-        actions={<Button variant="secondary">Force predict</Button>}
+        title="ML Tự hành"
+        sub="Mô hình định lượng độc lập · Tài khoản cách ly · Khớp lệnh mô phỏng (SHADOW)"
+        actions={<Button variant="secondary">Dự báo lại</Button>}
       >
         <AccountSwitcher />
         <RankingTable />
@@ -494,9 +494,9 @@ export default function MLFund() {
           <MLPortfolio />
           <AccuracyDashboard />
         </div>
-        <div className="mb-1"><SectionEyebrow>Multi-Agent vs Standalone ML</SectionEyebrow></div>
+        <div className="mb-1"><SectionEyebrow>12-Agent vs ML Tự hành</SectionEyebrow></div>
         <Comparison />
-        <p className="text-[11px] text-muted mt-3">NAV {M(ml.nav)} · {ml.mode} · mọi con số là dữ liệu mô phỏng.</p>
+        <p className="text-[11px] text-muted mt-3">NAV {M(ml.nav)} · {ml.mode} · Mọi con số là dữ liệu mô phỏng.</p>
       </Page>
     </MLFundContext.Provider>
   )

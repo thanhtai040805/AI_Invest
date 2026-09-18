@@ -74,13 +74,13 @@ export default function Markets() {
 
   return (
     <Page
-      title="Price board"
-      sub="HOSE · live quotes, ceiling/floor bands, liquidity, and foreign flow."
+      title="Bảng giá trực tuyến"
+      sub="HOSE · Giá khớp thời gian thực, biên độ trần/sàn, thanh khoản và khối ngoại."
       actions={
         isLive ? (
           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-[12px] font-medium bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            LIVE STREAM
+            TRỰC TIẾP
           </span>
         ) : undefined
       }
@@ -97,9 +97,9 @@ export default function Markets() {
             value: currentIndices.vn30Val,
             sub: <PercentChange value={currentIndices.vn30Pct} arrow={false} />,
           },
-          { label: "Liquidity", value: "18.7T" },
+          { label: "Thanh khoản", value: "18.7T" },
           {
-            label: "Foreign flow",
+            label: "Khối ngoại",
             value: <span className="text-gain">+412B</span>,
           },
         ]}
@@ -107,8 +107,8 @@ export default function Markets() {
       <Panel flush className="mt-4">
         <div className="p-5 pb-2">
           <PanelHead
-            title="HOSE watchboard"
-            sub="Prices in VND · volume shares · net foreign flow in VND bn"
+            title="Bảng theo dõi sàn HOSE"
+            sub="Giá tính bằng VNĐ · Khối lượng cổ phiếu · Giá trị khối ngoại tính bằng tỷ VNĐ"
           />
         </div>
         <div className="overflow-x-auto">
@@ -116,16 +116,16 @@ export default function Markets() {
             <thead>
               <tr className="text-[10px] uppercase tracking-wide text-muted border-y border-line">
                 {[
-                  "Symbol",
-                  "Company",
-                  "Ceiling",
-                  "Floor",
-                  "Reference",
-                  "Last",
-                  "Change",
-                  "Volume",
-                  "Foreign",
-                  "Momentum",
+                  "Mã CP",
+                  "Doanh nghiệp",
+                  "Trần",
+                  "Sàn",
+                  "Tham chiếu",
+                  "Khớp lệnh",
+                  "Biến động",
+                  "Khối lượng",
+                  "Khối ngoại",
+                  "Xung lực",
                 ].map((h, i) => (
                   <th
                     key={h}

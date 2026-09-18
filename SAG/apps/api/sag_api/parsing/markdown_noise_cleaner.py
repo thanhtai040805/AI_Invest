@@ -36,6 +36,20 @@ _STATEMENT_PATTERNS = (
     "bao cao thay doi von chu so huu",
 )
 
+_FINANCIAL_REPORT_WRAPPER_PATTERNS = (
+    "báo cáo tài chính riêng",
+    "bao cao tai chinh rieng",
+    "báo cáo tài chính hợp nhất",
+    "bao cao tai chinh hop nhat",
+)
+
+_NOTES_BOUNDARY_PATTERNS = (
+    "bản thuyết minh báo cáo tài chính",
+    "ban thuyet minh bao cao tai chinh",
+    "thuyết minh báo cáo tài chính",
+    "thuyet minh bao cao tai chinh",
+)
+
 _ACCOUNTING_POLICY_PATTERNS = (
     "tóm tắt các chính sách kế toán chủ yếu",
     "các chính sách kế toán chủ yếu",
@@ -349,6 +363,52 @@ def _strip_toc(lines: list[str], stats: CleanStats) -> list[str]:
 
 
 def _strip_statement_leaks(lines: list[str], stats: CleanStats) -> list[str]:
+    # BCTC exports commonly wrap the first three statements below a generic
+    # heading such as "Báo cáo tài chính riêng ...".  Removing only headings
+    # named CDKT/KQKD/LCTT misses the first table in that wrapper.  For the
+    # financial document roles, the notes heading is the hard boundary: when a
+    # report wrapper/statement exists before it, drop the complete prefix so
+    # CDKT, KQKD and LCTT cannot leak into the analytical input.
+    notes_idx = None
+    prefix_has_statement = False
+    for idx, line in enumerate(lines):
+        match = _HEADING_RE.match(line)
+        normalized_line = _normalize_heading(line.lstrip("# "))
+        if not match:
+            # Annual reports often start with a plain-text wrapper title
+            # instead of a Markdown heading.
+            if idx < 40 and any(
+                normalized_line.startswith(pattern)
+                for pattern in _FINANCIAL_REPORT_WRAPPER_PATTERNS
+            ):
+                prefix_has_statement = True
+            continue
+        heading = _normalize_heading(match.group(2))
+        if any(heading.startswith(pattern) for pattern in _NOTES_BOUNDARY_PATTERNS):
+            notes_idx = idx
+            break
+        if _is_statement_heading(match.group(2)) or any(
+            heading.startswith(pattern) for pattern in _FINANCIAL_REPORT_WRAPPER_PATTERNS
+        ):
+            prefix_has_statement = True
+    if notes_idx is not None and prefix_has_statement:
+        removed_sections = sum(
+            1
+            for line in lines[:notes_idx]
+            if (match := _HEADING_RE.match(line))
+            and (
+                _is_statement_heading(match.group(2))
+                or any(
+                    _normalize_heading(match.group(2)).startswith(pattern)
+                    for pattern in _FINANCIAL_REPORT_WRAPPER_PATTERNS
+                )
+            )
+        )
+        return lines[notes_idx:], replace(
+            stats,
+            statement_sections=stats.statement_sections + max(removed_sections, 3),
+        )
+
     out: list[str] = []
     in_statement = False
     statement_level = 0

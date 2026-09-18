@@ -210,11 +210,11 @@ def compute_composite_scores(
 
 def apply_risk_gate(
     composite_scores: dict[str, dict],
-    crs_scores: Optional[dict[str, dict]] = None,
     technical_data: Optional[dict[str, bool]] = None,
     foreign_flow_data: Optional[dict[str, float]] = None,
 ) -> dict[str, dict]:
-    """Run CRS risk gate on all symbols using risk_assessments 7-layer scores.
+    """Run quantitative confidence scoring on all symbols based on percentiles,
+    technicals, and institutional flow.
     Returns updated composite_scores with confidence, decision, flags.
     """
     scorer = ConfidenceScorer()
@@ -223,13 +223,7 @@ def apply_risk_gate(
         comp = data["composite"]
         percentile = max(0, min(100, (comp + 3) / 6 * 100))
 
-        crs = crs_scores.get(sym) if crs_scores else None
-
-        score_result = scorer.score_crs(
-            crs_result=crs,
-            factor_percentile=percentile,
-            technical_aligned=technical_data.get(sym, False) if technical_data else False,
-        ) if crs else scorer.score(
+        score_result = scorer.score(
             factor_percentile=percentile,
             technical_aligned=technical_data.get(sym, False) if technical_data else False,
             foreign_flow_net=foreign_flow_data.get(sym) if foreign_flow_data else None,
@@ -340,29 +334,6 @@ def load_factor_details(score_date: date, symbols: Optional[list[str]] = None, c
         if close_conn:
             cur.close()
             conn.close()
-
-
-def load_crs_scores(score_date: date, cur) -> dict[str, dict]:
-    """Load CRS assessment scores from risk_assessments table."""
-    cur.execute(
-        """SELECT symbol, crs_score, risk_level, hard_blocked,
-                  soft_blocked, recommendation, hard_flags, soft_flags
-           FROM risk_assessments
-           WHERE assessment_date = %s""",
-        (score_date,),
-    )
-    result: dict[str, dict] = {}
-    for row in cur.fetchall():
-        result[row[0]] = {
-            "crs_score": row[1],
-            "risk_level": row[2],
-            "hard_blocked": row[3],
-            "soft_blocked": row[4],
-            "recommendation": row[5],
-            "hard_flags": row[6] or [],
-            "soft_flags": row[7] or [],
-        }
-    return result
 
 
 def load_foreign_flow_5d(score_date: date, symbols: list[str], cur) -> dict[str, float]:
@@ -561,17 +532,12 @@ def run_composite_pipeline(
         scores = compute_composite_scores(score_date, factor_details, sectors)
         logger.info("  Computed composite scores for %d symbols", len(scores))
 
-        # 5. Load CRS 7-layer scores
-        crs_scores = load_crs_scores(score_date, cur)
-        logger.info("  Loaded CRS scores for %d symbols", len(crs_scores))
-
-        # 6. Load foreign flow for risk gate
+        # 5. Load foreign flow for confidence scoring
         foreign_flow_5d = load_foreign_flow_5d(score_date, symbols, cur)
 
-        # 7. Apply CRS risk gate
+        # 6. Apply confidence scoring
         scores = apply_risk_gate(
             scores,
-            crs_scores=crs_scores,
             foreign_flow_data=foreign_flow_5d,
         )
 

@@ -59,7 +59,7 @@ export default function ResearchPage() {
 
   return (
     <Page
-      title="Research Library"
+      title="Thư viện nghiên cứu"
       sub="Thư viện nghiên cứu và luận điểm đầu tư tự hành từ AI Engine & BCTC sàn HOSE."
       actions={
         <div className="flex gap-2">
@@ -73,7 +73,7 @@ export default function ResearchPage() {
             variant={activeTab === "theses" ? "primary" : "secondary"}
             onClick={() => setActiveTab("theses")}
           >
-            Luận điểm Theses ({theses.length})
+            Luận điểm đầu tư ({theses.length})
           </Button>
         </div>
       }
@@ -160,7 +160,7 @@ export default function ResearchPage() {
       ) : (
         <div className="space-y-4">
           <PanelHead
-            title="Active Investment Theses"
+            title="Luận điểm đầu tư đang hoạt động"
             sub="Luận điểm định lượng được phát sinh tự hành bởi Agent 04 & duyệt bởi CIO"
           />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -196,7 +196,7 @@ export default function ResearchPage() {
 
                     {signals.length > 0 && (
                       <div className="mt-3 pt-3 border-t border-line text-[12px]">
-                        <div className="text-[10.5px] uppercase tracking-wide text-muted mb-1 font-semibold">Tín hiệu xác nhận (Signals)</div>
+                        <div className="text-[10.5px] uppercase tracking-wide text-muted mb-1 font-semibold">Tín hiệu xác nhận</div>
                         <ul className="space-y-1 text-secondary">
                           {signals.map((sig, i) => (
                             <li key={i} className="flex gap-1.5"><span className="text-gain">✓</span>{sig}</li>
@@ -207,7 +207,7 @@ export default function ResearchPage() {
 
                     {invalidations.length > 0 && (
                       <div className="mt-3 pt-3 border-t border-line text-[12px]">
-                        <div className="text-[10.5px] uppercase tracking-wide text-muted mb-1 font-semibold">Điều kiện vi phạm (Invalidation)</div>
+                        <div className="text-[10.5px] uppercase tracking-wide text-muted mb-1 font-semibold">Điều kiện vi phạm hủy bỏ</div>
                         <ul className="space-y-1 text-secondary">
                           {invalidations.map((inv, i) => (
                             <li key={i} className="flex gap-1.5"><span className="text-loss">✗</span>{inv}</li>

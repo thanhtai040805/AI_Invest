@@ -231,12 +231,12 @@ class StopLossEngine:
         # Cầm quá 50% timeline mà lãi < 2% (nhưng không vi phạm Hard Stop).
         # Hạ 50% vị thế lô chẵn để cơ cấu sang cổ phiếu có Catalyst mạnh hơn.
         # =====================================================================
-        if days_held > (expected_timeline * 0.5) and 0.0 <= pnl_pct < 0.02:
+        if days_held > (expected_timeline * 0.5) and -0.03 <= pnl_pct < 0.02:
             half_shares = self.round_hose_lot(int(avail_shares * 0.5))
             sell_qty = half_shares if half_shares > 0 else avail_shares
             reason = (
                 f"Time Stop (Tầng 5): Nắm giữ {days_held} ngày (> 50% timeline {expected_timeline} ngày) "
-                f"nhưng hiệu suất chỉ đạt +{pnl_pct*100:.2f}% (< 2.0%). Cảnh báo chôn vốn, hạ tỷ trọng cơ cấu."
+                f"nhưng hiệu suất chỉ đạt {pnl_pct*100:+.2f}% (trong vùng tù đọng -3%..+2%). Cảnh báo chôn vốn, hạ tỷ trọng cơ cấu."
             )
             logger.warning(f"TIME STOP WARNING for {ticker_upper}: {reason}")
             return StopLossOrder(

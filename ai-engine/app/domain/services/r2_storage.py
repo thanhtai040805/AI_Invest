@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any, Optional
+from pathlib import Path
 
 import httpx
 
@@ -111,7 +113,7 @@ class R2StorageService:
                 logger.warning("Lỗi khi kiểm tra file_exists trên R2 (%s): %s", s3_key, err)
                 return False
 
-        if self.auth_mode == "rest_token":
+        elif self.auth_mode == "rest_token":
             url = f"https://api.cloudflare.com/client/v4/accounts/{self.account_id}/r2/buckets/{bucket}/objects/{s3_key}"
             headers = {"Authorization": f"Bearer {self.api_token}"}
             try:
@@ -125,21 +127,31 @@ class R2StorageService:
         return False
 
     def download_bytes(self, s3_key: str, bucket_name: Optional[str] = None) -> bytes:
+        cache_path = self._local_markdown_cache_path(s3_key)
+        if cache_path and cache_path.is_file():
+            return cache_path.read_bytes()
         """Tải dữ liệu từ R2 dạng bytes."""
         bucket = bucket_name or self.bucket_name
         if self.auth_mode == "s3":
             client = self.get_s3_client()
             resp = client.get_object(Bucket=bucket, Key=s3_key)
-            return resp["Body"].read()
+            data = resp["Body"].read()
 
-        if self.auth_mode == "rest_token":
+        elif self.auth_mode == "rest_token":
             url = f"https://api.cloudflare.com/client/v4/accounts/{self.account_id}/r2/buckets/{bucket}/objects/{s3_key}"
             headers = {"Authorization": f"Bearer {self.api_token}"}
             with httpx.Client(timeout=60.0) as client:
                 resp = client.get(url, headers=headers)
                 if resp.status_code != 200:
                     raise RuntimeError(f"Cloudflare R2 REST Download Error ({resp.status_code}): {resp.text}")
-                return resp.content
+                data = resp.content
+        else:
+            raise RuntimeError("R2 credentials are not configured")
+
+        if cache_path:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_bytes(data)
+        return data
 
         raise RuntimeError("R2 chưa được cấu hình credentials")
 
@@ -154,6 +166,27 @@ class R2StorageService:
         remainder = value[5:]
         _, separator, key = remainder.partition("/")
         return key if separator and key else None
+
+    def list_keys(self, prefix: str, bucket_name: Optional[str] = None) -> list[str]:
+        """List object keys below a prefix without downloading their content."""
+        bucket = bucket_name or self.bucket_name
+        if self.auth_mode != "s3":
+            raise RuntimeError("R2 list_keys hiện yêu cầu S3 credentials")
+        client = self.get_s3_client()
+        paginator = client.get_paginator("list_objects_v2")
+        keys: list[str] = []
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            keys.extend(str(item["Key"]) for item in page.get("Contents", []) if item.get("Key"))
+        return keys
+
+    @staticmethod
+    def _local_markdown_cache_path(s3_key: str) -> Optional[Path]:
+        name = Path(s3_key).name
+        stem, suffix = Path(name).stem, Path(name).suffix.lower()
+        if suffix not in {".md", ".markdown"} or not re.fullmatch(r"[0-9a-f]{64}", stem):
+            return None
+        root = Path(os.getenv("R2_LOCAL_MARKDOWN_CACHE", ".data/r2-markdown-cache"))
+        return root / f"{stem}{suffix}"
 
     def delete_object(self, s3_key: str, bucket_name: Optional[str] = None) -> bool:
         """Xóa 1 object trên R2 Storage (dành cho cleanup/teardown hoặc thay thế tài liệu)."""

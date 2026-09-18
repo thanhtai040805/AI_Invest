@@ -9,7 +9,8 @@ Chức năng:
 
 import asyncio
 import logging
-from datetime import datetime
+import os
+from datetime import datetime, time as dt_time
 from typing import Optional
 
 from app.core.registry import AgentRegistry
@@ -20,15 +21,37 @@ logger = logging.getLogger("ai_engine.daemon.position_monitoring")
 
 
 class PositionMonitoringDaemon:
-    def __init__(self, check_interval_seconds: int = 300):
-        self.interval = check_interval_seconds
+    """Daemon Giám sát Vị thế với cơ chế Dynamic Polling theo nhịp biến động thị trường."""
+
+    def __init__(
+        self,
+        normal_interval_seconds: Optional[int] = None,
+        urgent_interval_seconds: Optional[int] = None,
+    ):
+        self.normal_interval = normal_interval_seconds or int(
+            os.getenv("POSITION_MONITOR_NORMAL_INTERVAL", "300")
+        )  # 5 phút trong giờ bình thường
+        self.urgent_interval = urgent_interval_seconds or int(
+            os.getenv("POSITION_MONITOR_URGENT_INTERVAL", "60")
+        )  # 1 phút trong khung giờ nhạy cảm cao 14:00 - 14:45
+        self.interval = self.normal_interval
         self.session_mgr = MarketSessionManager()
         self._running = False
+
+    def get_current_interval(self) -> int:
+        """Xác định chu kỳ quét động: 60s cho 14:00-14:45, 300s cho giờ bình thường."""
+        now_time = datetime.now().time()
+        # Khung giờ chiều 14:00 - 14:45 có độ biến động cao nhất (High-Volatility Power Hour)
+        if dt_time(14, 0) <= now_time <= dt_time(14, 45):
+            return self.urgent_interval
+        return self.normal_interval
 
     async def run_single_tick(self) -> dict:
         """Chạy một nhịp giám sát vị thế và xử lý khẩn cấp."""
         now = datetime.now()
-        logger.info(f"[PositionDaemon] Bắt đầu nhịp giám sát vị thế lúc {now.strftime('%H:%M:%S')}...")
+        current_sleep = self.get_current_interval()
+        mode_tag = "URGENT (60s)" if current_sleep == self.urgent_interval else "NORMAL (300s)"
+        logger.info(f"[PositionDaemon] Bắt đầu nhịp giám sát vị thế [{mode_tag}] lúc {now.strftime('%H:%M:%S')}...")
 
         try:
             res = await AgentRegistry.dispatch("position_monitoring", {
@@ -57,9 +80,11 @@ class PositionMonitoringDaemon:
             return {"error": str(e)}
 
     async def start(self):
-        """Vòng lặp chạy nền định kỳ trên PROD."""
+        """Vòng lặp chạy nền định kỳ trên PROD với Dynamic Polling."""
         self._running = True
-        logger.info("[PositionDaemon] Khởi động Daemon Giám sát Vị thế & Phòng thủ Stop-Loss...")
+        logger.info(
+            f"[PositionDaemon] Khởi động Daemon Giám sát Vị thế (Normal: {self.normal_interval}s, Urgent: {self.urgent_interval}s)..."
+        )
 
         while self._running:
             market_state = self.session_mgr.get_market_state()
@@ -75,9 +100,10 @@ class PositionMonitoringDaemon:
                 await asyncio.sleep(min(wait_secs, 60))
                 continue
 
-            # Khi thị trường mở cửa: Thực thi nhịp giám sát 5 phút
+            # Khi thị trường mở cửa: Thực thi nhịp giám sát theo Dynamic Interval
             await self.run_single_tick()
-            await asyncio.sleep(self.interval)
+            sleep_duration = self.get_current_interval()
+            await asyncio.sleep(sleep_duration)
 
     def stop(self):
         self._running = False

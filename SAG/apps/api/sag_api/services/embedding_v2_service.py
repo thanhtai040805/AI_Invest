@@ -110,6 +110,10 @@ async def build_embeddings_for_document(
                 )
             )
 
+    # All reads/deletes needed to prepare the batch are complete. Release the
+    # DB connection before waiting on the external embedding provider.
+    await session.commit()
+
     if not pending:
         return EmbeddingBuildResult(
             status=ProcessingStageStatus.COMPLETE.value,

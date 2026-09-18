@@ -14,12 +14,91 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Union
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
 logger = logging.getLogger("ai_engine.services.document_selector")
+
+
+def _ascii_title(value: str) -> str:
+    """Normalize Vietnamese/English titles for selector predicates."""
+    return "".join(
+        ch for ch in unicodedata.normalize("NFKD", value or "").lower()
+        if not unicodedata.combining(ch)
+    )
+
+
+def _is_valid_annual_candidate(row: Dict[str, Any]) -> bool:
+    title = _ascii_title(str(row.get("title") or ""))
+    url = _ascii_title(" ".join(str(u) for u in (row.get("article_pdf_urls") or [])))
+    searchable = f"{title} {url}"
+    if any(token in searchable for token in ("quy", "6 thang", "6t", "6%20t", "6-thang", "6thang", "ban nien", "nua dau nam", "thuyet minh", "giai trinh", "tom tat")):
+        return False
+    return any(token in title for token in ("kiem toan", "audited", "ca nam"))
+
+
+def _has_non_annual_marker(row: Dict[str, Any]) -> bool:
+    text = _ascii_title(
+        f"{row.get('title') or ''} {' '.join(str(u) for u in (row.get('article_pdf_urls') or []))}"
+    )
+    return any(token in text for token in ("thuyet minh", "giai trinh", "tom tat"))
+
+
+def _row_period(row: Dict[str, Any], role: str) -> Tuple[int, Union[int, str]]:
+    title = str(row.get("title") or "")
+    url = _ascii_title(" ".join(str(u) for u in (row.get("article_pdf_urls") or [])))
+    # CafeF occasionally labels a 2025 annual PDF as CN/2026; the filename is
+    # the reliable fiscal-period evidence in that case.
+    if role == "ANNUAL_BACKBONE" and row.get("source") == "cafef_docs":
+        if "2025" in url and re.search(r"nam\s*2026", _ascii_title(title), re.I):
+            title = re.sub(r"2026", "2025", title, count=1)
+    return parse_fiscal_period(title, str(row.get("published_date") or ""), role)
+
+
+def _row_urls(row: Dict[str, Any]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(
+        str(url).strip()
+        for url in (row.get("article_pdf_urls") or [])
+        if str(url).strip()
+    ))
+
+
+def _cafef_alternate_urls(
+    cur: Any,
+    ticker: str,
+    role: str,
+    fiscal_year: int,
+    fiscal_quarter: Union[int, str],
+) -> tuple[str, ...]:
+    """Return same-period CafeF URLs as source fallbacks, without trusting filenames for language."""
+    cur.execute("""
+        SELECT title, published_date, article_pdf_urls
+        FROM knowledge_documents
+        WHERE symbol = %s
+          AND source = 'cafef_docs'
+          AND (
+              doc_type = 'financial_statement'
+              OR (doc_type = 'governance_report' AND %s = 'GOVERNANCE_REPORT')
+          )
+    """, (ticker, role))
+    matches: list[tuple[Any, tuple[str, ...]]] = []
+    for row in cur.fetchall():
+        title = _ascii_title(str(row.get("title") or ""))
+        if role != "GOVERNANCE_REPORT" and any(token in title for token in ("hop nhat", "consolidated")):
+            continue
+        year, quarter = _row_period(row, role)
+        if year != fiscal_year or quarter != fiscal_quarter:
+            continue
+        urls = _row_urls(row)
+        if urls:
+            matches.append((row.get("published_date"), urls))
+    urls: list[str] = []
+    for _, row_urls in sorted(matches, key=lambda item: (item[0] is not None, item[0]), reverse=True):
+        urls.extend(row_urls)
+    return tuple(dict.fromkeys(urls))
 
 
 def parse_fiscal_period(
@@ -48,8 +127,7 @@ def parse_fiscal_period(
             if m_date:
                 year = int(m_date.group(1))
     if not year:
-        from datetime import datetime
-        year = datetime.now().year
+        year = 0
 
     # 2. Fiscal Quarter
     m_q = re.search(r"(?:quý|quy|q)\s*([1-4])", t_lower)
@@ -121,7 +199,7 @@ class ActiveDocumentSelector:
         try:
             # 1. Tìm BCTC Kiểm toán năm gần nhất (Riêng / Công ty mẹ)
             cur.execute("""
-                SELECT id, title, doc_type, published_date, article_pdf_urls
+                SELECT id, title, doc_type, published_date, article_pdf_urls, source
                 FROM knowledge_documents
                 WHERE symbol = %s
                   AND doc_type = 'financial_statement'
@@ -136,14 +214,28 @@ class ActiveDocumentSelector:
                       OR LOWER(title) LIKE '%%audited%%'
                       OR LOWER(title) LIKE '%%cả năm%%'
                   )
-                ORDER BY published_date DESC NULLS LAST, id DESC
+                  AND LOWER(title) NOT LIKE '%%6 tháng%%'
+                  AND LOWER(title) NOT LIKE '%%6 thang%%'
+                  AND LOWER(title) NOT LIKE '%%bán niên%%'
+                  AND LOWER(title) NOT LIKE '%%ban nien%%'
+                  AND LOWER(title) NOT LIKE '%%nửa đầu năm%%'
+                  AND LOWER(title) NOT LIKE '%%nua dau nam%%'
+                  AND LOWER(title) NOT LIKE '%%quý%%'
+                  AND LOWER(title) NOT LIKE '%%quy%%'
+                  AND LOWER(title) NOT LIKE '%%thuyết minh%%'
+                  AND LOWER(title) NOT LIKE '%%thuyet minh%%'
+                  AND LOWER(title) NOT LIKE '%%giải trình%%'
+                  AND LOWER(title) NOT LIKE '%%giai trinh%%'
+                  AND LOWER(title) NOT LIKE '%%tóm tắt%%'
+                  AND LOWER(title) NOT LIKE '%%tom tat%%'
+                ORDER BY (source = 'vnstock_docs') DESC, published_date DESC NULLS LAST, id DESC
                 LIMIT 1;
             """, (ticker,))
             row_ann = cur.fetchone()
             if not row_ann:
                 # Fallback cho doanh nghiệp/ngân hàng không dùng tiêu đề riêng/công ty mẹ
                 cur.execute("""
-                    SELECT id, title, doc_type, published_date, article_pdf_urls
+                    SELECT id, title, doc_type, published_date, article_pdf_urls, source
                     FROM knowledge_documents
                     WHERE symbol = %s
                       AND doc_type = 'financial_statement'
@@ -153,15 +245,59 @@ class ActiveDocumentSelector:
                           OR LOWER(title) LIKE '%%audited%%'
                           OR LOWER(title) LIKE '%%cả năm%%'
                       )
-                    ORDER BY published_date DESC NULLS LAST, id DESC
+                      AND LOWER(title) NOT LIKE '%%6 tháng%%'
+                      AND LOWER(title) NOT LIKE '%%6 thang%%'
+                      AND LOWER(title) NOT LIKE '%%bán niên%%'
+                      AND LOWER(title) NOT LIKE '%%ban nien%%'
+                      AND LOWER(title) NOT LIKE '%%nửa đầu năm%%'
+                      AND LOWER(title) NOT LIKE '%%nua dau nam%%'
+                      AND LOWER(title) NOT LIKE '%%quý%%'
+                      AND LOWER(title) NOT LIKE '%%quy%%'
+                      AND LOWER(title) NOT LIKE '%%thuyết minh%%'
+                      AND LOWER(title) NOT LIKE '%%thuyet minh%%'
+                      AND LOWER(title) NOT LIKE '%%giải trình%%'
+                      AND LOWER(title) NOT LIKE '%%giai trinh%%'
+                      AND LOWER(title) NOT LIKE '%%tóm tắt%%'
+                      AND LOWER(title) NOT LIKE '%%tom tat%%'
+                    ORDER BY (source = 'vnstock_docs') DESC, published_date DESC NULLS LAST, id DESC
                     LIMIT 1;
                 """, (ticker,))
                 row_ann = cur.fetchone()
 
+            # SQL title matching is intentionally only a coarse filter: OCR/crawler
+            # titles may contain Vietnamese accents or mojibake. Re-select from the
+            # ticker's annual candidates with Python normalization so a newer valid
+            # annual report cannot be hidden behind an older cache record.
+            cur.execute("""
+                SELECT id, title, doc_type, published_date, article_pdf_urls, source
+                FROM knowledge_documents
+                WHERE symbol = %s AND doc_type = 'financial_statement'
+            """, (ticker,))
+            annual_candidates = []
+            for candidate in cur.fetchall():
+                if _is_valid_annual_candidate(candidate):
+                    parsed_year, _ = _row_period(candidate, "ANNUAL_BACKBONE")
+                    if parsed_year <= 0:
+                        continue
+                    annual_candidates.append((
+                        parsed_year,
+                        any(token in _ascii_title(candidate["title"]) for token in ("rieng", "cong ty me")),
+                        candidate["source"] == "vnstock_docs",
+                        candidate["published_date"],
+                        candidate["id"],
+                        candidate,
+                    ))
+            if annual_candidates:
+                annual_candidates.sort(key=lambda item: item[:5])
+                row_ann = annual_candidates[-1][5]
+
             if row_ann:
-                urls_ann = tuple(dict.fromkeys(str(u).strip() for u in (row_ann.get("article_pdf_urls") or []) if str(u).strip()))
+                y_ann, q_ann = _row_period(row_ann, "ANNUAL_BACKBONE")
+                urls_ann = _row_urls(row_ann) + _cafef_alternate_urls(
+                    cur, ticker, "ANNUAL_BACKBONE", y_ann, q_ann
+                )
+                urls_ann = tuple(dict.fromkeys(urls_ann))
                 url_ann = urls_ann[0] if urls_ann else ""
-                y_ann, q_ann = parse_fiscal_period(row_ann["title"], str(row_ann["published_date"]), "ANNUAL_BACKBONE")
                 annual_doc = ActiveDocument(
                     doc_id=row_ann["id"],
                     ticker=ticker,
@@ -177,10 +313,11 @@ class ActiveDocumentSelector:
                 )
 
             # 2. Tìm BCTC Quý gần nhất (Riêng / Công ty mẹ) xuất bản SAU hoặc CÙNG NĂM với BCTC Kiểm toán
-            annual_date = row_ann["published_date"] if row_ann else "2000-01-01"
+            # Publisher dates are advisory; some CafeF rows use a future date.
+            annual_date = "2000-01-01"
             annual_id = row_ann["id"] if row_ann else -1
             cur.execute("""
-                SELECT id, title, doc_type, published_date, article_pdf_urls
+                SELECT id, title, doc_type, published_date, article_pdf_urls, source
                 FROM knowledge_documents
                 WHERE symbol = %s
                   AND doc_type = 'financial_statement'
@@ -191,27 +328,100 @@ class ActiveDocumentSelector:
                   )
                   AND published_date >= %s
                   AND id != %s
-                ORDER BY published_date DESC NULLS LAST, id DESC
+                  AND LOWER(title) NOT LIKE '%%thuyết minh%%'
+                  AND LOWER(title) NOT LIKE '%%thuyet minh%%'
+                  AND LOWER(title) NOT LIKE '%%giải trình%%'
+                  AND LOWER(title) NOT LIKE '%%giai trinh%%'
+                  AND LOWER(title) NOT LIKE '%%tóm tắt%%'
+                  AND LOWER(title) NOT LIKE '%%tom tat%%'
+                ORDER BY (source = 'vnstock_docs') DESC, published_date DESC NULLS LAST, id DESC
                 LIMIT 1;
             """, (ticker, annual_date, annual_id))
             row_q = cur.fetchone()
             if not row_q:
-                # Fallback nếu không có tiêu đề riêng/công ty mẹ
+                # Fallback nếu không có tiêu đề riêng/công ty mẹ (cho phép BCTC không ghi chữ riêng/mẹ, nhưng không lấy hợp nhất nếu đã có mẹ)
                 cur.execute("""
-                    SELECT id, title, doc_type, published_date, article_pdf_urls
+                    SELECT id, title, doc_type, published_date, article_pdf_urls, source
                     FROM knowledge_documents
                     WHERE symbol = %s
                       AND doc_type = 'financial_statement'
                       AND published_date >= %s
                       AND id != %s
-                    ORDER BY published_date DESC NULLS LAST, id DESC
+                      AND LOWER(title) NOT LIKE '%%thuyết minh%%'
+                      AND LOWER(title) NOT LIKE '%%thuyet minh%%'
+                      AND LOWER(title) NOT LIKE '%%giải trình%%'
+                      AND LOWER(title) NOT LIKE '%%giai trinh%%'
+                      AND LOWER(title) NOT LIKE '%%tóm tắt%%'
+                      AND LOWER(title) NOT LIKE '%%tom tat%%'
+                      AND LOWER(title) NOT LIKE '%%hợp nhất%%'
+                      AND LOWER(title) NOT LIKE '%%hop nhat%%'
+                    ORDER BY (source = 'vnstock_docs') DESC, published_date DESC NULLS LAST, id DESC
                     LIMIT 1;
                 """, (ticker, annual_date, annual_id))
                 row_q = cur.fetchone()
+            # A published date is not enough: some sources publish a future
+            # quarter label early. Keep only a real quarter at or before today.
+            from datetime import date
+            today = date.today()
             if row_q:
-                urls_q = tuple(dict.fromkeys(str(u).strip() for u in (row_q.get("article_pdf_urls") or []) if str(u).strip()))
+                parsed_year, parsed_quarter = _row_period(row_q, "LATEST_QUARTER")
+                current_quarter = (today.month + 2) // 3
+                if (
+                    not isinstance(parsed_quarter, int)
+                    or parsed_year > today.year
+                    or (parsed_year == today.year and parsed_quarter > current_quarter)
+                ):
+                    row_q = None
+
+            # Never accept the first date-ordered row: legacy providers can
+            # return an old but otherwise valid quarter before newer records.
+            # The candidate pass below is the sole source of truth.
+            row_q = None
+
+            # Re-select by parsed fiscal period when the date-ordered query
+            # chose any row; choose the newest parsed fiscal period instead.
+            if row_q is None:
+                cur.execute("""
+                    SELECT id, title, doc_type, published_date, article_pdf_urls, source
+                    FROM knowledge_documents
+                    WHERE symbol = %s
+                      AND doc_type = 'financial_statement'
+                      AND published_date >= %s
+                      AND id != %s
+                """, (ticker, annual_date, annual_id))
+                candidates = []
+                fallback_candidates = []
+                today = date.today()
+                current_quarter = (today.month + 2) // 3
+                for candidate in cur.fetchall():
+                    title = _ascii_title(str(candidate.get("title") or ""))
+                    if _has_non_annual_marker(candidate) or "hop nhat" in title:
+                        continue
+                    y_candidate, q_candidate = _row_period(candidate, "LATEST_QUARTER")
+                    if not isinstance(q_candidate, int) or y_candidate > today.year:
+                        continue
+                    if y_candidate == today.year and q_candidate > current_quarter:
+                        continue
+                    item = (y_candidate, q_candidate, candidate["published_date"], candidate["id"], candidate)
+                    if any(token in title for token in ("rieng", "cong ty me")):
+                        candidates.append(item)
+                    else:
+                        # Some issuers publish a non-consolidated BCTC with a
+                        # generic title; the explicit consolidated exclusion
+                        # above makes this safe as a final fallback.
+                        fallback_candidates.append(item)
+                all_candidates = candidates + fallback_candidates
+                if all_candidates:
+                    # Fiscal recency dominates title specificity; otherwise an
+                    # old explicitly-scoped row can beat a newer generic row.
+                    row_q = sorted(all_candidates, key=lambda item: item[:4])[-1][4]
+            if row_q:
+                y_q, q_q = _row_period(row_q, "LATEST_QUARTER")
+                urls_q = _row_urls(row_q) + _cafef_alternate_urls(
+                    cur, ticker, "LATEST_QUARTER", y_q, q_q
+                )
+                urls_q = tuple(dict.fromkeys(urls_q))
                 url_q = urls_q[0] if urls_q else ""
-                y_q, q_q = parse_fiscal_period(row_q["title"], str(row_q["published_date"]), "LATEST_QUARTER")
                 quarter_doc = ActiveDocument(
                     doc_id=row_q["id"],
                     ticker=ticker,
@@ -228,7 +438,7 @@ class ActiveDocumentSelector:
 
             # 3. Tìm Báo cáo Quản trị gần nhất
             cur.execute("""
-                SELECT id, title, doc_type, published_date, article_pdf_urls
+                SELECT id, title, doc_type, published_date, article_pdf_urls, source
                 FROM knowledge_documents
                 WHERE symbol = %s
                   AND (
@@ -242,14 +452,17 @@ class ActiveDocumentSelector:
                       OR doc_type = 'governance_report'
                   )
                   AND LOWER(title) NOT LIKE '%%nghị quyết%%'
-                ORDER BY published_date DESC NULLS LAST, id DESC
+                ORDER BY (source = 'vnstock_docs') DESC, published_date DESC NULLS LAST, id DESC
                 LIMIT 1;
             """, (ticker,))
             row_gov = cur.fetchone()
             if row_gov:
-                urls_gov = tuple(dict.fromkeys(str(u).strip() for u in (row_gov.get("article_pdf_urls") or []) if str(u).strip()))
+                y_gov, q_gov = _row_period(row_gov, "GOVERNANCE_REPORT")
+                urls_gov = _row_urls(row_gov) + _cafef_alternate_urls(
+                    cur, ticker, "GOVERNANCE_REPORT", y_gov, q_gov
+                )
+                urls_gov = tuple(dict.fromkeys(urls_gov))
                 url_gov = urls_gov[0] if urls_gov else ""
-                y_gov, q_gov = parse_fiscal_period(row_gov["title"], str(row_gov["published_date"]), "GOVERNANCE_REPORT")
                 gov_doc = ActiveDocument(
                     doc_id=row_gov["id"],
                     ticker=ticker,

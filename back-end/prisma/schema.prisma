@@ -534,32 +534,6 @@ model paper_trades {
 }
 
 
-model risk_assessments {
-  id                Int       @id @default(autoincrement())
-  symbol            String
-  assessment_date   DateTime  @db.Date
-  sector            String?
-  crs_score         Float?
-  risk_level        String?
-  hard_blocked      Boolean?  @default(false)
-  soft_blocked      Boolean?  @default(false)
-  recommendation    String?
-  score_quant       Float?
-  score_fundamental Float?
-  score_market_vn   Float?
-  score_macro_vn    Float?
-  score_global      Float?
-  score_regulatory  Float?
-  score_behavioral  Float?
-  hard_flags        String[]
-  soft_flags        String[]
-  all_flags         String[]
-  detail            Json?
-  created_at        DateTime? @default(now()) @db.Timestamptz(6)
-
-  @@unique([symbol, assessment_date])
-  @@index([assessment_date(sort: Desc)], map: "idx_risk_date")
-}
 
 model signal_log {
   id               Int       @id @default(autoincrement())

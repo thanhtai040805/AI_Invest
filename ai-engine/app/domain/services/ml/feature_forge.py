@@ -30,12 +30,15 @@ class FeatureForge:
         out = pd.DataFrame(index=df.index)
         
         # 1. Standard Momentum
+        daily_ret = df['close'].pct_change()
         for window in [5, 10, 20, 60, 120]:
             out[f'mom_{window}d'] = df['close'].pct_change(window)
-            out[f'ret_vol_{window}d'] = df['close'].pct_change().rolling(window).std()
+            vol = daily_ret.rolling(window).std()
+            out[f'ret_vol_{window}d'] = vol
             
-            # Risk-adjusted momentum
-            out[f'sharpe_{window}d'] = out[f'mom_{window}d'] / (out[f'ret_vol_{window}d'] * np.sqrt(252) + 1e-8)
+            # Risk-adjusted momentum: annualized rolling Sharpe over window W
+            mean_ret = daily_ret.rolling(window).mean()
+            out[f'sharpe_{window}d'] = (mean_ret * 252) / (vol * np.sqrt(252) + 1e-8)
             
         # 2. Extreme Reversal (3 sigma bands)
         roll_mean = df['close'].rolling(20).mean()
@@ -171,12 +174,13 @@ class FeatureForge:
         if ticker == "UNKNOWN":
             return out
             
+        conn = None
         try:
             conn = psycopg2.connect(DB_URL)
             
-            # 1. Foreign Flow
-            q_ff = f"SELECT trade_date as date, net_volume FROM foreign_flow WHERE symbol = '{ticker}'"
-            ff_df = pd.read_sql(q_ff, conn)
+            # 1. Foreign Flow (Parameterized query)
+            q_ff = "SELECT trade_date as date, net_volume FROM foreign_flow WHERE symbol = %s"
+            ff_df = pd.read_sql(q_ff, conn, params=(ticker,))
             if not ff_df.empty:
                 ff_df['date'] = pd.to_datetime(ff_df['date'])
                 ff_df = ff_df.set_index('date').sort_index()
@@ -188,9 +192,9 @@ class FeatureForge:
             else:
                 out['foreign_flow_ratio_20d'] = 0.0
 
-            # 2. Insider Trades (Net shares bought in last 90 days)
-            q_in = f"SELECT trade_date as date, trade_type, quantity FROM insider_trades WHERE symbol = '{ticker}'"
-            in_df = pd.read_sql(q_in, conn)
+            # 2. Insider Trades (Net shares bought in last 90 days - Parameterized query)
+            q_in = "SELECT trade_date as date, trade_type, quantity FROM insider_trades WHERE symbol = %s"
+            in_df = pd.read_sql(q_in, conn, params=(ticker,))
             if not in_df.empty:
                 in_df['date'] = pd.to_datetime(in_df['date'])
                 # MUA or BUY
@@ -206,9 +210,9 @@ class FeatureForge:
                 out['insider_net_90d'] = 0.0
                 out['insider_signal'] = 0.0
 
-            # 3. Financial Ratios
-            q_fin = f"SELECT published_date as date, pe, pb, roe FROM financial_ratios WHERE symbol = '{ticker}' AND published_date IS NOT NULL"
-            fin_df = pd.read_sql(q_fin, conn)
+            # 3. Financial Ratios (Parameterized query)
+            q_fin = "SELECT published_date as date, pe, pb, roe FROM financial_ratios WHERE symbol = %s AND published_date IS NOT NULL"
+            fin_df = pd.read_sql(q_fin, conn, params=(ticker,))
             if not fin_df.empty:
                 fin_df['date'] = pd.to_datetime(fin_df['date'])
                 fin_df = fin_df.set_index('date').sort_index()
@@ -228,8 +232,6 @@ class FeatureForge:
                 out['pe'] = np.nan
                 out['pb'] = np.nan
                 out['roe'] = np.nan
-                
-            conn.close()
         except Exception as e:
             logger.error(f"Error fetching fundamentals for {ticker}: {e}")
             out['foreign_flow_ratio_20d'] = 0.0
@@ -238,6 +240,12 @@ class FeatureForge:
             out['pe'] = np.nan
             out['pb'] = np.nan
             out['roe'] = np.nan
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
         return out
         
@@ -249,17 +257,23 @@ class FeatureForge:
         out = pd.DataFrame(index=df.index)
         
         if self._vnindex_df is None:
+            conn = None
             try:
                 conn = psycopg2.connect(DB_URL)
                 q_vn = "SELECT date, close_adj FROM market_data_daily WHERE ticker='VNINDEX'"
                 vn_df = pd.read_sql(q_vn, conn)
-                conn.close()
                 if not vn_df.empty:
                     vn_df['date'] = pd.to_datetime(vn_df['date'])
                     self._vnindex_df = vn_df.set_index('date').sort_index()
             except Exception as e:
                 logger.error(f"Failed to fetch VNINDEX for relative strength: {e}")
                 self._vnindex_df = pd.DataFrame()
+            finally:
+                if conn:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
                 
         if self._vnindex_df is not None and not self._vnindex_df.empty:
             # Join VNINDEX close

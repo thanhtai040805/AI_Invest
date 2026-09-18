@@ -6,73 +6,34 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-import httpx
-
 from app.domain.services.document_selector import ActiveDocumentSelector, TickerDocumentSet, ActiveDocument
-from app.domain.repositories.bctc_pipeline_repository import BctcPipelineRepository
+from app.domain.repositories.bctc_pipeline_repository import BctcPipelineRepository, OCR_CACHE_VERSION
 from app.domain.services.r2_storage import R2StorageService
 from app.adapters.sag_connector import sag_connector, SAGConnector
 
 logger = logging.getLogger("ai_engine.pipeline.bctc_to_sag")
 OCR_DOCUMENT_CONCURRENCY = max(1, int(os.getenv("SAG_OCR_ACTIVE_JOBS", "20")))
 OCR_UPLOAD_CONCURRENCY = max(1, int(os.getenv("SAG_OCR_UPLOAD_CONCURRENCY", "20")))
+EXTRACTION_DOCUMENT_CONCURRENCY = max(1, int(os.getenv("SAG_EXTRACTION_ACTIVE_JOBS", "3")))
 _OCR_DOCUMENT_SEMAPHORE = asyncio.Semaphore(OCR_DOCUMENT_CONCURRENCY)
 _OCR_UPLOAD_SEMAPHORE = asyncio.Semaphore(OCR_UPLOAD_CONCURRENCY)
+_EXTRACTION_DOCUMENT_SEMAPHORE = asyncio.Semaphore(EXTRACTION_DOCUMENT_CONCURRENCY)
 
 
-def _cafef1_fallback(url: str) -> Optional[str]:
-    if "cafefnew.mediacdn.vn" not in url:
-        return None
-    return url.replace("cafefnew.mediacdn.vn", "cafef1.mediacdn.vn", 1)
+def _source_url_candidates(urls: tuple[str, ...]) -> tuple[str, ...]:
+    """Return distinct source URLs in their supplied order.
 
-
-async def _preflight_source_urls(urls: tuple[str, ...]) -> tuple[str, ...]:
-    """Validate source URLs without downloading the PDF body.
-
-    CafeF occasionally publishes a stale ``cafefnew`` URL while the same
-    object is available through ``cafef1``. A HEAD request is preferred; a
-    one-kilobyte range request handles origins that reject HEAD. Network
-    errors remain eligible for SAG, because a short preflight failure is not
-    proof that the source is permanently unavailable.
+    The source registry is authoritative; provider-specific host rewriting
+    does not belong in the BCTC-to-SAG pipeline.
     """
+
     candidates: list[str] = []
-    for url in urls:
-        clean = str(url or "").strip()
-        if not clean:
+    for raw_url in urls:
+        url = str(raw_url or "").strip()
+        if not url:
             continue
-        candidates.append(clean)
-        fallback = _cafef1_fallback(clean)
-        if fallback:
-            candidates.append(fallback)
-
-    ordered = tuple(dict.fromkeys(candidates))
-    if not ordered:
-        return ()
-
-    timeout = httpx.Timeout(connect=3.0, read=7.0, write=3.0, pool=3.0)
-    uncertain: list[str] = []
-    available: list[str] = []
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        for url in ordered:
-            try:
-                response = await client.head(url)
-                if 200 <= response.status_code < 400:
-                    available.append(url)
-                    continue
-                if response.status_code == 404:
-                    logger.warning("Preflight 404, bỏ qua URL nguồn: %s", url)
-                    continue
-                if response.status_code in {405, 403}:
-                    range_response = await client.get(url, headers={"Range": "bytes=0-1023"})
-                    if 200 <= range_response.status_code < 400:
-                        available.append(url)
-                        continue
-                uncertain.append(url)
-            except (httpx.TimeoutException, httpx.TransportError) as error:
-                logger.info("Preflight không xác định cho %s (%s); vẫn để SAG thử", url, error)
-                uncertain.append(url)
-
-    return tuple(dict.fromkeys([*available, *uncertain])) or ordered[:1]
+        candidates.append(url)
+    return tuple(dict.fromkeys(candidates))
 
 
 class _SingleDocumentSelector:
@@ -139,6 +100,7 @@ class BctcToSagPipeline:
         mock_markdowns: Optional[Dict[str, str]] = None,
         force_reprocess: bool = False,
         ocr_only: bool = False,
+        extraction_only: bool = False,
         _single_document: bool = False,
         _skip_gil: bool = False,
     ) -> Dict[str, Any]:
@@ -151,6 +113,21 @@ class BctcToSagPipeline:
         ticker_clean = ticker.upper().strip()
         logger.info(f"==> Bắt đầu BCTC to SAG Pipeline cho mã {ticker_clean} (ocr_only={ocr_only})")
 
+        # 0. Chốt chặn BctcIngestionGuard: Bỏ qua các mã thuộc danh sách rác / đóng băng thanh khoản (Đỉnh 2Y < 5B)
+        from app.domain.rules.bctc_ingestion_guard import should_ingest_bctc
+        allow_ingest, guard_reason = should_ingest_bctc(ticker_clean, force_reprocess=force_reprocess)
+        if not allow_ingest:
+            logger.info(f"⏭️ [BCTC-SAG Guard] {guard_reason}. Bỏ qua nạp để tiết kiệm token & tài nguyên.")
+            return {
+                "ticker": ticker_clean,
+                "status": "SKIPPED_PURGED_LOW_LIQUIDITY",
+                "reason": guard_reason,
+                "ingested_documents": [],
+                "documents": [],
+                "gil_flag": "DORMANT_LOW_LIQUIDITY",
+                "db_updated": False,
+            }
+
         # 1. Tuyển chọn Bộ 3 tài liệu vàng từ PostgreSQL
         doc_set: TickerDocumentSet = self.selector.select_active_documents(ticker_clean)
 
@@ -162,6 +139,7 @@ class BctcToSagPipeline:
                 mock_markdowns=mock_markdowns,
                 force_reprocess=force_reprocess,
                 ocr_only=ocr_only,
+                extraction_only=extraction_only,
             )
 
         ingested_docs = []
@@ -205,11 +183,47 @@ class BctcToSagPipeline:
                 "sag_doc_id": None,
             }
 
+            extraction_md_key = None
+            if extraction_only:
+                cached_record = self.repo.get_record(ticker_clean, year, quarter, scope)
+                extraction_md_key = (cached_record or {}).get("r2_md_key")
+                if extraction_md_key:
+                    doc_info["r2_md_key"] = extraction_md_key
+
             # Legacy classifier and PDF staging are intentionally bypassed.
             # SAG fetches the source URL directly into its ephemeral storage.
 
             # BƯỚC 2B: Kiểm tra xem đã hoàn tất OCR chưa (Idempotency)
-            if not force_reprocess and self.repo.should_skip_ocr(ticker_clean, year, quarter, scope):
+            if extraction_only and extraction_md_key:
+                try:
+                    md_bytes = self.r2.download_bytes(extraction_md_key)
+                    md_content = md_bytes.decode("utf-8")
+                    sag_res = await self.connector.ingest_bctc_document(
+                        ticker=ticker_clean,
+                        title=doc.title,
+                        text_content=md_content,
+                        doc_role=doc.role,
+                        is_active=True,
+                        fiscal_year=year,
+                        fiscal_quarter=_sag_fiscal_quarter(quarter),
+                    )
+                    if sag_res and sag_res.get("status") not in ("FAILED", "error"):
+                        doc_info["sag_doc_id"] = sag_res.get("id")
+                        doc_info["status"] = "EXTRACTION_COMPLETED"
+                    else:
+                        doc_info["status"] = "FAILED"
+                        doc_info["error"] = (sag_res or {}).get("error", "Không thể ingest Markdown R2 vào SAG")
+                except Exception as e:
+                    doc_info["status"] = "FAILED"
+                    doc_info["error"] = f"Không thể đọc Markdown R2 để extraction: {e}"
+                ingested_docs.append(doc_info)
+                continue
+
+            if not force_reprocess and self.repo.should_skip_ocr(
+                ticker_clean, year, quarter, scope,
+                source_document_id=doc.doc_id,
+                cache_version=OCR_CACHE_VERSION,
+            ):
                 rec_ocr = self.repo.get_record(ticker_clean, year, quarter, scope)
                 logger.info(f"⚡ [OCR Cache] {ticker_clean} {year} {q_label} đã OCR trước đó. Bỏ qua gọi lại MinerU.")
                 doc_info["r2_md_key"] = rec_ocr.get("r2_md_key")
@@ -224,6 +238,34 @@ class BctcToSagPipeline:
                 # vốn đã hoàn tất OCR.
                 if ocr_only:
                     doc_info["status"] = "OCR_COMPLETED"
+                    ingested_docs.append(doc_info)
+                    continue
+
+                # Extraction benchmark path: OCR Markdown already exists in
+                # the authoritative R2 cache, so ingest that artifact into a
+                # clean SAG DB without downloading/re-running MinerU.
+                if extraction_only:
+                    try:
+                        md_bytes = self.r2.download_bytes(doc_info["r2_md_key"])
+                        md_content = md_bytes.decode("utf-8")
+                        sag_res = await self.connector.ingest_bctc_document(
+                            ticker=ticker_clean,
+                            title=doc.title,
+                            text_content=md_content,
+                            doc_role=doc.role,
+                            is_active=True,
+                            fiscal_year=year,
+                            fiscal_quarter=_sag_fiscal_quarter(quarter),
+                        )
+                        if sag_res and sag_res.get("status") not in ("FAILED", "error"):
+                            doc_info["sag_doc_id"] = sag_res.get("id")
+                            doc_info["status"] = "EXTRACTION_COMPLETED"
+                        else:
+                            doc_info["status"] = "FAILED"
+                            doc_info["error"] = (sag_res or {}).get("error", "Không thể ingest Markdown R2 vào SAG")
+                    except Exception as e:
+                        doc_info["status"] = "FAILED"
+                        doc_info["error"] = f"Không thể đọc Markdown R2 để extraction: {e}"
                     ingested_docs.append(doc_info)
                     continue
 
@@ -304,7 +346,7 @@ class BctcToSagPipeline:
                         (sag_res or {}).get("error", "unknown error"),
                         doc.pdf_url,
                     )
-                    source_urls = await _preflight_source_urls(doc.pdf_urls or (doc.pdf_url,))
+                    source_urls = _source_url_candidates(doc.pdf_urls or (doc.pdf_url,))
                     for source_url in source_urls:
                         async with _OCR_UPLOAD_SEMAPHORE:
                             sag_res = await self.connector.upload_bctc_pdf_from_url(
@@ -326,7 +368,7 @@ class BctcToSagPipeline:
                             (sag_res or {}).get("error", "unknown error"),
                         )
             elif doc.pdf_url:
-                source_urls = await _preflight_source_urls(doc.pdf_urls or (doc.pdf_url,))
+                source_urls = _source_url_candidates(doc.pdf_urls or (doc.pdf_url,))
                 for source_url in source_urls:
                     async with _OCR_UPLOAD_SEMAPHORE:
                         sag_res = await self.connector.upload_bctc_pdf_from_url(
@@ -383,6 +425,8 @@ class BctcToSagPipeline:
                                 scope=scope,
                                 r2_md_key=md_key,
                                 r2_md_url=md_url,
+                                source_document_id=doc.doc_id,
+                                cache_version=OCR_CACHE_VERSION,
                             )
                             self.repo.set_active_sag_role(
                                 ticker=ticker_clean,
@@ -503,11 +547,13 @@ class BctcToSagPipeline:
         mock_markdowns: Optional[Dict[str, str]],
         force_reprocess: bool,
         ocr_only: bool,
+        extraction_only: bool,
     ) -> Dict[str, Any]:
         """Run each selected document independently with one global OCR limit."""
 
         async def run_document(document: ActiveDocument) -> Dict[str, Any]:
-            async with _OCR_DOCUMENT_SEMAPHORE:
+            semaphore = _EXTRACTION_DOCUMENT_SEMAPHORE if extraction_only else _OCR_DOCUMENT_SEMAPHORE
+            async with semaphore:
                 started = asyncio.get_running_loop().time()
                 child = BctcToSagPipeline(
                     selector=_SingleDocumentSelector(document),
@@ -521,6 +567,7 @@ class BctcToSagPipeline:
                     mock_markdowns=mock_markdowns,
                     force_reprocess=force_reprocess,
                     ocr_only=ocr_only,
+                    extraction_only=extraction_only,
                     _single_document=True,
                     _skip_gil=not ocr_only,
                 )

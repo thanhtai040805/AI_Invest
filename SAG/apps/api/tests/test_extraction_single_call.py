@@ -15,6 +15,7 @@ from sag_api.services.extraction_v2_service import (
     _collect_grounding_failures,
     _iter_manifest_refs,
     coerce_unknown_enums,
+    detect_material_table_movements,
     enrich_manifest_facets_from_observations,
 )
 
@@ -100,6 +101,22 @@ def test_coerce_preserves_explicit_raw_label():
 
     assert payload["facts"][0]["raw_label"] == "So du tien mat"
     assert payload["facts"][0]["taxonomy_candidate"] == "cash_balance"
+
+
+def test_material_table_movements_are_prompt_review_targets():
+    markdown = """| Chỉ tiêu | Q2 năm 2026 | Q2 năm 2025 |
+|---|---:|---:|
+| Chi phí quản lý doanh nghiệp | 49.582.758.613 | 27.771.268.365 |
+| Doanh thu | 133.897.546.249 | 139.115.412.599 |
+"""
+
+    candidates = detect_material_table_movements(markdown)
+
+    assert len(candidates) == 1
+    expense = next(item for item in candidates if "quản lý" in item["row_label"])
+    assert expense["line"] == 3
+    assert expense["left_value"] == "49.582.758.613"
+    assert expense["relative_change_pct"] > 70
 
 
 def test_open_observations_keep_sector_meaning_without_taxonomy_enum():

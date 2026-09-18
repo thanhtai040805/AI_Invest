@@ -21,7 +21,6 @@ V2_TABLES = [
     "entity_mentions",
     "facts",
     "relations",
-    "moat_signals",
     "embedding_chunks",
     "processing_runs",
     "assessment_runs",

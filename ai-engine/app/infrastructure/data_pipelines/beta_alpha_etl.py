@@ -119,12 +119,10 @@ def compute_beta_alpha(
     """
     result = {}
 
-    for label, lookback in [("1y", LOOKBACK_1Y), ("3y", LOOKBACK_3Y)]:
-        cutoff = stock_returns.index[-1] - timedelta(days=lookback)
-        s = stock_returns[stock_returns.index >= cutoff]
-        m = market_returns[market_returns.index >= cutoff]
+    common_all = stock_returns.dropna().index.intersection(market_returns.dropna().index).sort_values()
 
-        common = s.index.intersection(m.index)
+    for label, lookback in [("1y", LOOKBACK_1Y), ("3y", LOOKBACK_3Y)]:
+        common = common_all[-lookback:] if len(common_all) >= lookback else common_all
         if len(common) < MIN_OBS:
             result[f"beta_{label}"] = None
             result[f"alpha_{label}"] = None
@@ -132,8 +130,8 @@ def compute_beta_alpha(
             result[f"n_obs_{label}"] = 0
             continue
 
-        s_aligned = s[common].values
-        m_aligned = m[common].values
+        s_aligned = stock_returns.loc[common].values
+        m_aligned = market_returns.loc[common].values
 
         cov = np.cov(s_aligned, m_aligned)
         var_m = np.var(m_aligned, ddof=1)

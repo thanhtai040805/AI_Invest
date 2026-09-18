@@ -27,16 +27,16 @@ export default function Register() {
   }
   return (
     <AuthShell
-      title="Create your account"
-      sub="Set up your workspace in under a minute."
+      title="Tạo tài khoản mới"
+      sub="Thiết lập không gian làm việc của bạn trong chưa đầy một phút."
       footer={
         <>
-          Already have an account?{" "}
+          Đã có tài khoản?{" "}
           <button
             onClick={() => navigate("/login")}
             className="font-medium text-mineral hover:underline"
           >
-            Sign in
+            Đăng nhập
           </button>
         </>
       }
@@ -49,30 +49,30 @@ export default function Register() {
         className="space-y-4"
       >
         <Field
-          label="Full name"
+          label="Họ và tên"
           value={name}
           onChange={setName}
           placeholder="Nguyễn Văn A"
           error={
-            err ? "Complete all fields (password: 6+ characters)." : undefined
+            err ? "Vui lòng điền đầy đủ thông tin (mật khẩu tối thiểu 6 ký tự)." : undefined
           }
         />
         <Field
-          label="Email"
+          label="Địa chỉ Email"
           type="email"
           value={email}
           onChange={setEmail}
           placeholder="you@firm.vn"
         />
         <Field
-          label="Password"
+          label="Mật khẩu"
           type="password"
           value={pw}
           onChange={setPw}
-          placeholder="At least 6 characters"
+          placeholder="Tối thiểu 6 ký tự"
         />
         <Button type="submit" variant="primary" className="h-11 w-full">
-          Create account
+          Đăng ký tài khoản
         </Button>
       </form>
     </AuthShell>

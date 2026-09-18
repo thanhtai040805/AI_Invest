@@ -2,10 +2,10 @@
 
 Chức năng:
 - Phân tích định lượng chuyên sâu 6 nhóm Factor Score (F1 Value, F2 Quality, F3 Momentum, F4 Earnings, F5 Flow, F6 Technical).
-- Truy vấn Dịch vụ RAG Moat AI từ phân hệ SAG hoặc bộ nhớ đệm O(1) moat_profiles: Định lượng 5 trụ cột lợi thế cạnh tranh.
-- Tính toán điểm Composite Stock Score (CSS) thích ứng qua CSSScoringEngine: Tự động nạp bộ trọng số động (rl_factor_weights) từ Agent-10 (Reinforcement Learning) theo từng Market Regime và nhân hệ số Moat Multiplier.
+- Truy vấn Financial Quality và GIL từ phân hệ SAG hoặc bộ nhớ đệm tương thích.
+- Tính toán điểm Composite Stock Score (CSS) thích ứng qua CSSScoringEngine với các factor tài chính và thị trường.
 - Gán mức độ tự tin (Conviction Level: A+, A, B, C, D, E) và sinh Research Report hoàn chỉnh.
-- Bảng nghiệp vụ quản lý: factor_scores, moat_profiles
+- Bảng nghiệp vụ quản lý: factor_scores, business_quality_profiles
 - Bảng log audit: log_equity_research
 """
 
@@ -20,33 +20,22 @@ from app.core.base_agent import BaseAgent
 from app.domain.rules.scoring import CSSScoringEngine
 from app.domain.services.factor_service import FactorService
 from app.domain.repositories.intelligence_repository import IntelligenceRepository
-from app.adapters.sag_connector import sag_connector
 from app.adapters.postgres_adapter import PostgresAdapter
 from app.domain.rules.market.hmm_classifier import MarketRegime
 
 logger = logging.getLogger(__name__)
 
 
-def _pillar_score(moat_result: Dict[str, Any], pillar: str) -> Optional[float]:
-    pillars = moat_result.get("pillars")
-    if not isinstance(pillars, dict):
-        return None
-    payload = pillars.get(pillar)
-    if not isinstance(payload, dict) or payload.get("score") is None:
-        return None
-    return float(payload["score"])
-
-
 class EquityResearchAgent(BaseAgent):
     """
     AGENT-03: Chuyên viên Nghiên cứu & Định giá Cổ phiếu.
-    Tổng hợp sức mạnh cơ bản, dòng tiền và lợi thế hào kinh tế Moat thành điểm số đầu tư.
+    Tổng hợp sức mạnh cơ bản, dòng tiền và chất lượng doanh nghiệp thành điểm số đầu tư.
     """
 
     def __init__(self):
         super().__init__(
             agent_name="equity_research",
-            state_tables=["factor_scores", "moat_profiles"],
+            state_tables=["factor_scores", "business_quality_profiles"],
             log_table="log_equity_research",
             enabled=True,
         )
@@ -97,83 +86,9 @@ class EquityResearchAgent(BaseAgent):
         else:
             target_d = target_date_raw
 
-        # =========================================================================
-        # 1. Truy vấn Lợi thế cạnh tranh (Economic Moat)
-        # Ưu tiên O(1) từ bảng moat_profiles trong CSDL; nếu chưa có, gọi SAG Moat AI
-        # =========================================================================
-        evidence_quote = ""
-        moat_score: float | None = None
-        moat_multiplier = 1.0
-        moat_source = "DATA_INSUFFICIENT"
-
-        cached_moat = self.intel_repo.get_moat_profile(ticker)
-        cached_score = cached_moat.get("moat_score") if cached_moat else None
-        if cached_moat and not cached_moat.get("is_stale", False) and cached_score is not None:
-            moat_score = float(cached_score)
-            moat_multiplier = float(cached_moat.get("multiplier", 1.0))
-            evidence_summary = cached_moat.get("evidence_summary") or {}
-            evidence_quote = evidence_summary.get("evidence_quote", "")
-            moat_source = "POSTGRES_MOAT_PROFILES"
-        else:
-            try:
-                moat_result = await sag_connector.get_moat_assessment(ticker, sector)
-                result_score = moat_result.get("moat_score")
-                if result_score is not None and moat_result.get("assessment_status") == "COMPLETE":
-                    moat_score = float(result_score)
-                    moat_multiplier = float(moat_result.get("multiplier") or 1.0)
-                    evidence_quote = str(moat_result.get("evidence_quote", ""))
-                    moat_source = "SAG_V2_EVIDENCE_GRAPH"
-
-                    self.intel_repo.save_moat_profile({
-                        "ticker": ticker,
-                        "moat_score": moat_score,
-                        "intangibles_score": _pillar_score(moat_result, "Intangibles"),
-                        "switching_costs_score": _pillar_score(moat_result, "Switching Costs"),
-                        "network_effect_score": _pillar_score(moat_result, "Network Effects"),
-                        "cost_advantage_score": _pillar_score(moat_result, "Cost Advantage"),
-                        "efficient_scale_score": _pillar_score(moat_result, "Efficient Scale"),
-                        "evidence_summary": {
-                            "assessment_status": moat_result.get("assessment_status"),
-                            "coverage_ratio": moat_result.get("coverage_ratio"),
-                            "pillars": moat_result.get("pillars", {}),
-                        },
-                        "source_sag_doc_id": moat_result.get("source_sag_doc_id"),
-                    })
-                else:
-                    moat_source = f"SAG_V2_{moat_result.get('assessment_status', 'INSUFFICIENT')}"
-            except Exception as e:
-                logger.warning(f"SAG Moat AI query failed for {ticker}: {e}")
-                moat_source = "SAG_V2_UNAVAILABLE"
-
-        # Hiệu chuẩn Moat từ Agent-10 (Triệt tiêu Ảo giác Moat AI)
+        # Financial Quality là đầu vào định lượng của Equity Research.
+        business_quality_data = event_data.get("business_quality_data") or {}
         data_quality_flag = "VERIFIED"
-        moat_calibrations = event_data.get("moat_calibrations", {})
-        if ticker in moat_calibrations:
-            m_calib = moat_calibrations[ticker]
-            moat_score = float(m_calib["calibrated_moat_score"]) if m_calib.get("calibrated_moat_score") is not None else moat_score
-            moat_multiplier = float(m_calib.get("calibrated_multiplier", moat_multiplier))
-            data_quality_flag = f"MOAT_CALIBRATED_AGENT10_{m_calib.get('hallucination_risk', 'NORMAL')}"
-        elif moat_score is not None:
-            try:
-                storage = PostgresAdapter()
-                rows_flag = storage.fetch_all(
-                    """
-                    SELECT numeric_value, metadata
-                    FROM mral_metrics
-                    WHERE ticker = %s AND metric_type = 'MOAT_CALIBRATION'
-                    ORDER BY metric_date DESC LIMIT 1
-                    """,
-                    (ticker,)
-                )
-                if rows_flag and rows_flag[0][0] is not None:
-                    calib_score = float(rows_flag[0][0])
-                    meta = rows_flag[0][1] if isinstance(rows_flag[0][1], dict) else {}
-                    if moat_score is not None and calib_score < moat_score:
-                        moat_score = calib_score
-                        moat_multiplier = float(meta.get("calibrated_multiplier", 0.70))
-                        data_quality_flag = f"MOAT_CALIBRATED_DB_{meta.get('hallucination_risk', 'CRITICAL')}"
-            except Exception as e_mc:
-                logger.debug(f"Không thể tra cứu mral_metrics cho Moat {ticker}: {e_mc}")
 
         # =========================================================================
         # 2. Tính toán / Nạp 6 nhóm Factor Scores (F1 - F6) từ Dữ liệu Thật
@@ -217,8 +132,8 @@ class EquityResearchAgent(BaseAgent):
                 computed = self.factor_service.compute_factors_for_ticker(ticker, target_d)
                 f1_value = float(computed.get("f1_value", 50.0))
                 base_f2 = float(computed.get("f2_quality", 50.0))
-                # Tích hợp Moat vào F2 Quality theo rubric chuẩn IOS v5.1
-                f2_quality = round(0.5 * base_f2 + 0.5 * moat_score, 2) if moat_score is not None else base_f2
+                # Financial Quality là factor độc lập; GIL không điều chỉnh F2.
+                f2_quality = round(base_f2, 2)
                 f3_momentum = float(computed.get("f3_momentum", 50.0))
                 f4_earnings = float(computed.get("f4_earnings", 50.0))
                 f5_flow = float(computed.get("f5_flow", 50.0))
@@ -278,6 +193,28 @@ class EquityResearchAgent(BaseAgent):
         if policy_weights and weights_source == "DEFAULT":
             weights_source = "AGENT-10 (Reinforcement Learning Adaptive Weights)"
 
+        # 2.5 Nạp audit_opinion và gil_flag từ CSDL nếu event_data chưa truyền
+        audit_opinion = event_data.get("audit_opinion")
+        gil_flag = event_data.get("gil_flag")
+        if not audit_opinion or not gil_flag:
+            try:
+                storage = PostgresAdapter()
+                s_rows = storage.fetch_all(
+                    "SELECT audit_opinion, gil_flag FROM stocks WHERE symbol = %s LIMIT 1",
+                    (ticker,)
+                )
+                if s_rows and len(s_rows) > 0:
+                    if not audit_opinion:
+                        audit_opinion = s_rows[0][0] or "UNQUALIFIED"
+                    if not gil_flag:
+                        gil_flag = s_rows[0][1] or "PASS"
+            except Exception:
+                pass
+        if not audit_opinion:
+            audit_opinion = "UNQUALIFIED"
+        if not gil_flag:
+            gil_flag = "DATA_INSUFFICIENT"
+
         # Tạo DataFrame đầu vào cho CSSScoringEngine
         df_factors = pd.DataFrame([{
             "ticker": ticker,
@@ -288,9 +225,9 @@ class EquityResearchAgent(BaseAgent):
             "f4_earnings": f4_earnings,
             "f5_flow": f5_flow,
             "f6_technical": f6_technical,
-            "moat_multiplier": moat_multiplier,
-            "audit_opinion": event_data.get("audit_opinion", "UNQUALIFIED"),
-            "gil_flag": event_data.get("gil_flag") or "DATA_INSUFFICIENT",
+            # GIL không được phép tự động nhân CSS.
+            "audit_opinion": audit_opinion,
+            "gil_flag": gil_flag,
         }])
 
         df_scored = self.scoring_engine.calculate_css(
@@ -311,16 +248,19 @@ class EquityResearchAgent(BaseAgent):
             "sector": sector,
             "f1_value": round(f1_value, 2),
             "f2_quality": round(f2_quality, 2),
+            "business_quality_score": round(f2_quality, 2),
+            "business_quality_status": "FINANCIAL_QUALITY",
             "f3_momentum": round(f3_momentum, 2),
             "f4_earnings": round(f4_earnings, 2),
             "f5_flow": round(f5_flow, 2),
             "f6_technical": round(f6_technical, 2),
-            "moat_score": round(moat_score, 2) if moat_score is not None else None,
-            "moat_multiplier": round(moat_multiplier, 2),
             "base_css": round(base_css, 2),
             "css": round(css, 2),
             "conviction": conviction,
             "current_price": current_price,
+            "audit_opinion": audit_opinion,
+            "gil_flag": gil_flag,
+            "gil_status": gil_flag,
             "data_quality_flag": data_quality_flag,
             "eligible_for_thesis": eligible_for_thesis,
             "applied_weights": applied_weights,
@@ -346,7 +286,7 @@ class EquityResearchAgent(BaseAgent):
             self.intel_repo.log_equity_research(
                 ticker=ticker,
                 factor_raw_metrics=raw_factor_metrics,
-                moat_citations_evidence={"evidence_quote": evidence_quote, "moat_score": moat_score},
+                business_quality_evidence=business_quality_data,
                 llm_prompt_tokens=event_data.get("llm_prompt_tokens", 0),
                 research_date=target_d,
             )
@@ -357,10 +297,9 @@ class EquityResearchAgent(BaseAgent):
             "scoring_engine": self.scoring_engine.__class__.__name__,
             "factor_service": self.factor_service.__class__.__name__,
             "factor_source": factor_source,
-            "moat_source": moat_source,
-            "sag_connector": "FastMCP RAG Moat Inquisitor",
+            "business_quality_source": "EVENT_DATA" if business_quality_data else "FINANCIAL_FACTORS",
             "weights_source": weights_source,
-            "evidence_quote": evidence_quote,
+            "business_quality_data": business_quality_data,
             "regime_applied": regime_str,
             "data_quality_flag": data_quality_flag,
         }

@@ -53,6 +53,8 @@ class Settings(BaseSettings):
 
     # ── Database ───────────────────────────────────────────────────
     database_url: str = "postgresql+asyncpg://sag:sag@localhost:5432/sag"
+    # Read-only market master used for deterministic BS/IS/CF denominators.
+    market_database_url: str = "postgresql+asyncpg://postgres:123@localhost:5432/aiinvest"
     allow_sqlite_runtime: bool = False
 
     # ── Storage ────────────────────────────────────────────────────────────
@@ -70,6 +72,11 @@ class Settings(BaseSettings):
     processing_max_attempts: int = Field(default=2, ge=1, le=10)
     worker_poll_seconds: float = Field(default=2.0, ge=0.1, le=60.0)
     job_concurrency: int = 2  # độ đồng thời xử lý nền
+    # Keep background jobs below the PostgreSQL pool capacity. Long-running
+    # MinerU calls must not exhaust DB connections for status updates.
+    db_pool_size: int = Field(default=12, ge=1, le=100)
+    db_max_overflow: int = Field(default=4, ge=0, le=100)
+    db_pool_timeout: float = Field(default=30.0, ge=1.0, le=300.0)
     document_extract_concurrency: int = Field(default=30, ge=1, le=50)  # độ đồng thời trích xuất chunk cho mỗi tài liệu
     document_chunk_max_tokens: int = Field(default=1_000_000, ge=100, le=2_000_000)
     document_chunk_mode: Literal["standard", "heading_strict", "full"] = "full"
@@ -119,15 +126,20 @@ class Settings(BaseSettings):
     # lặng lẽ chạy bằng model trong catalog.
     llm_model: str = Field(description="Model LLM chung (vd openai/deepseek-ai/DeepSeek-V4-Flash)")
     llm_temperature: float = _DEFAULT_LLM_PROVIDER.default_temperature
-    llm_max_tokens: int = 20_000
+    # None means do not send an application-level output cap; let the provider
+    # use the model/API limit. This is important for full-document extraction.
+    llm_max_tokens: int | None = None
     llm_context_window: int = _DEFAULT_LLM_PROVIDER.default_context_window
     llm_timeout_ms: int = Field(default=900_000, ge=1_000, le=900_000)
     llm_max_retries: int = Field(default=0, ge=0, le=10)
+    business_quality_retrieval_top_k: int = Field(default=8, ge=1, le=50)
+    business_quality_retrieval_max_tokens: int = Field(default=2500, ge=256, le=8000)
     # Bên triển khai có thể khóa tường minh cấu hình kết nối LLM; các SAG_LLM_* thông thường chỉ là giá trị mặc định lần khởi động đầu.
     lock_llm_config: bool = False
     # Request body bổ sung truyền tiếp tới chat/completions (JSON), ví dụ {"enable_thinking": false};
     # khi chưa cấu hình, với các model họ qwen sẽ tắt suy luận thống nhất qua LiteLLM reasoning_effort=none.
     llm_extra_body: dict | None = None
+    extraction_audit_enabled: bool = False
 
     # ── Model trích xuất Graph riêng (tùy chọn; mặc định tái dùng llm_model) ────────
     extraction_llm_model: str | None = None
@@ -144,6 +156,7 @@ class Settings(BaseSettings):
     embedding_base_url: str | None = "https://api.siliconflow.com/v1"
     embedding_api_key: str | None = None
     embedding_dimensions: int | None = None
+    embedding_enabled: bool = False
 
     # ── Phân tích tài liệu (chuyển thống nhất sang Markdown canonical trước khi phân tích) ─────────────────
     # auto: PDF ưu tiên MinerU; production không được giả lập extraction khi parser/LLM thiếu cấu hình.
@@ -164,8 +177,9 @@ class Settings(BaseSettings):
     mineru_poll_timeout: float = 1800.0
     mineru_result_max_mb: int = 100
     mineru_key_concurrency: int = Field(default=5, ge=1, le=50)
-    mineru_chunk_max_mb: int = Field(default=180, ge=32, le=200)
-    mineru_chunk_max_pages: int = Field(default=550, ge=1, le=600)
+    mineru_chunk_max_mb: int = Field(default=20, ge=1, le=200)
+    mineru_chunk_max_pages: int = Field(default=180, ge=1, le=600)
+    mineru_chunk_trigger_pages: int = Field(default=200, ge=1, le=600)
     mineru_direct_url: bool = True
     mineru_direct_url_max_mb: int = Field(default=200, ge=1, le=200)
     mineru_direct_url_max_pages: int = Field(default=600, ge=1, le=600)
@@ -278,6 +292,10 @@ class Settings(BaseSettings):
     def effective_extraction_llm_api_key(self) -> str | None:
         if self.extraction_llm_api_key and self.extraction_llm_api_key != _PLACEHOLDER:
             return self.extraction_llm_api_key
+        # An explicitly separate extraction endpoint must never inherit the
+        # agent/retrieval provider's credentials.
+        if self.extraction_llm_base_url:
+            return None
         return self.llm_api_key
 
     @property

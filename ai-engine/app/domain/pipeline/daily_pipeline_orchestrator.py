@@ -4,7 +4,7 @@
   Pha 1: Agent-01 (Market Surveillance) — Macro Regime HMM, Session Context & Halted Check
   Pha 2: Agent-10 (Reinforcement Learning) — Cung cấp Adaptive Policy Weights F1-F6 & Bayesian Kelly
   Pha 3: Agent-02 (Universe Discovery) — Lớp 0 Forensic Accounting Gate (Beneish M-Score <= -1.78), ADTV20 & GIL
-  Pha 4: Agent-03 (Equity Research) — Đánh giá đa nhân tố F1-F6 + Moat AI -> Conviction Level (A+, A, B)
+  Pha 4: Agent-03 (Equity Research) — Đánh giá đa nhân tố F1-F6 + Business Quality -> Conviction Level (A+, A, B)
   Pha 5: Agent-04 (Investment Thesis) — Tổng hợp Luận đề Đầu tư & Kiểm định 3 Tín hiệu Độc lập (Điều 3)
   Pha 6: Agent-05 (Counter Thesis) — Phản biện Đa chiều (Devil's Advocate), CTS Score & Bẫy Thanh khoản
   Pha 7: Agent-12 (Strategy CIO) — Trọng tài Thể chế Tối cao phân định mâu thuẫn & áp trần weight_cap
@@ -281,7 +281,7 @@ class DailyInvestmentPipeline:
             logger.info(f"\n--- [AGENT CHAIN] Xử lý chuyên sâu mã cổ phiếu: {ticker} ---")
 
             # ── PHA 4: AGENT-03 (EQUITY RESEARCH) ──
-            logger.info(f"[Pha 4 - {ticker}] Kích hoạt Agent-03: Phân tích 6 nhóm Factor & Moat AI...")
+            logger.info(f"[Pha 4 - {ticker}] Kích hoạt Agent-03: Phân tích 6 nhóm Factor & Business Quality...")
             res_res = await AgentRegistry.dispatch("equity_research", {
                 "ticker": ticker,
                 "current_regime": regime,

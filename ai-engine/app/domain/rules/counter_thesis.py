@@ -214,7 +214,10 @@ class CounterThesisEngine:
         if gil_clean == "CATASTROPHIC":
             block_reasons.append("Hard Law Veto: Phát hiện rủi ro sở hữu chéo và kiệt quệ tài chính GIL CATASTROPHIC.")
             return Verdict.BLOCK, block_reasons, None
-        elif gil_clean in {"DATA_ERROR", "DATA_INSUFFICIENT"}:
+        elif gil_clean == "DATA_ERROR":
+            block_reasons.append("Hard Law Veto: Lỗi dữ liệu đồ thị sở hữu chéo (GIL) không thể xác thực từ SAG Backend (DATA_ERROR).")
+            return Verdict.BLOCK, block_reasons, None
+        elif gil_clean == "DATA_INSUFFICIENT":
             block_reasons.append("Hard Law Veto: Dữ liệu đồ thị sở hữu chéo (GIL) chưa đủ evidence từ SAG Backend.")
             return Verdict.BLOCK, block_reasons, None
 
@@ -274,6 +277,8 @@ class CounterThesisEngine:
         2. Tìm các rủi ro ngữ cảnh bị bỏ sót (tiến độ dự án, pháp lý, rủi ro khách hàng, xung đột lợi ích ban lãnh đạo).
         3. Chấm điểm phạt rủi ro ngữ cảnh ẩn (blindspot_penalty) từ 0 đến 20 điểm (0: không có rủi ro ẩn, 20: rủi ro ngữ cảnh nghiêm trọng).
         4. Có lỗ hổng logic chết người (fatal_flaw) khiến toàn bộ luận điểm sụp đổ không?
+        5. Nếu thesis đưa ra khẳng định chưa có evidence trực tiếp, phải đánh dấu đó là giả thuyết chưa đủ chứng cứ; không tự coi là bằng chứng phản biện.
+        6. Kiểm tra riêng Financial Quality: lợi nhuận, dòng tiền, biên lợi nhuận, hiệu quả vốn và catalyst có đủ bền vững không.
         
         Cổ phiếu: {ticker}
         Luận điểm: {json.dumps(thesis_body, ensure_ascii=False)}
@@ -289,16 +294,37 @@ class CounterThesisEngine:
         }}
         """
         try:
-            resp = await self.llm_client.chat(prompt)
-            data = json.loads(resp)
-            is_indep = bool(data.get("is_truly_independent", True))
-            penalty = float(data.get("blindspot_penalty", 0.0))
-            fatal_flaw = bool(data.get("fatal_flaw", False))
-            holes = list(data.get("holes", []))
-            rationale = str(data.get("rationale", rationale))
+            if hasattr(self.llm_client, "complete_json"):
+                data = await self.llm_client.complete_json(prompt)
+            else:
+                resp = await self.llm_client.chat(prompt)
+                from app.infrastructure.llm.client import clean_and_parse_json
+                data = clean_and_parse_json(resp)
+
+            raw_indep = data.get("is_truly_independent", True)
+            if isinstance(raw_indep, str):
+                is_indep = raw_indep.lower() in ("true", "1", "yes", "dung", "đúng")
+            else:
+                is_indep = bool(raw_indep)
+
+            raw_penalty = data.get("blindspot_penalty", 0.0)
+            try:
+                penalty = max(0.0, min(20.0, float(raw_penalty)))
+            except (ValueError, TypeError):
+                penalty = 0.0
+
+            raw_flaw = data.get("fatal_flaw", False)
+            if isinstance(raw_flaw, str):
+                fatal_flaw = raw_flaw.lower() in ("true", "1", "yes", "co", "có")
+            else:
+                fatal_flaw = bool(raw_flaw)
+
+            raw_holes = data.get("holes", [])
+            holes = [str(h).strip() for h in raw_holes if str(h).strip()] if isinstance(raw_holes, list) else []
+            rationale = str(data.get("rationale") or rationale).strip()
             return is_indep, penalty, fatal_flaw, holes, rationale
         except Exception as e:
-            logger.warning(f"LLM Devil's Advocate error: {e}")
+            logger.warning(f"LLM Devil's Advocate error (safe fallback): {e}")
             return True, 0.0, False, holes, rationale
 
     async def evaluate_counter_thesis(

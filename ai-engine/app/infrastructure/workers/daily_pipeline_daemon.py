@@ -43,13 +43,13 @@ class DailyPipelineDaemon:
         self._last_result: Optional[Dict[str, Any]] = None
         self._task: Optional[asyncio.Task] = None
 
-        # Cấu hình giờ trigger từ biến môi trường (mặc định 09:15)
-        raw_time = trigger_time_str or os.getenv("DAILY_PIPELINE_TRIGGER_TIME", "09:15")
+        # Cấu hình giờ trigger từ biến môi trường (mặc định 09:25 sau khi nhịp mở phiên ATO ổn định)
+        raw_time = trigger_time_str or os.getenv("DAILY_PIPELINE_TRIGGER_TIME", "09:25")
         try:
             h, m = raw_time.split(":")
             self.trigger_time = dt_time(int(h), int(m))
         except Exception:
-            self.trigger_time = dt_time(9, 15)
+            self.trigger_time = dt_time(9, 25)
 
     @property
     def status(self) -> Dict[str, Any]:

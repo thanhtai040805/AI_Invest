@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from sag_api import __version__
+from sag_api.api.v1 import api_router as v1_api_router
 from sag_api.api.v2 import api_router
 from sag_api.branding import PRODUCT_NAME
 from sag_api.core.config import settings
@@ -42,25 +43,36 @@ async def lifespan(app: FastAPI):
 
     await init_db()
 
+    # The legacy v1 Universe endpoints are still used by the existing
+    # KnowledgeUniverse renderer. Keep one shared engine manager in app state
+    # so timeline/expand/node requests and background jobs use the same SAG
+    # runtime instead of failing with a missing-state 500.
+    from sag_api.sag import EngineManager
+
+    engine_manager = EngineManager(settings)
+    app.state.engine_manager = engine_manager
+
     # OCR jobs do not require the optional zleap engine. Keep the queue alive
     # in the API process so URL/R2 OCR submissions are executable in dev and
     # production without a second API-side scheduler process.
     from sag_api.jobs.inproc import InProcessAsyncQueue
 
-    queue = InProcessAsyncQueue(SessionLocal, engine_manager=None, concurrency=settings.job_concurrency)
+    queue = InProcessAsyncQueue(SessionLocal, engine_manager=engine_manager, concurrency=settings.job_concurrency)
     app.state.job_queue = queue
     await queue.start()
 
     log.info(
-        "sag-api v2 financial evidence service đã khởi động · env=%s · llm_configured=%s · embedding=%s",
+        "sag-api v2 financial evidence service đã khởi động · env=%s · agent_llm_configured=%s · extraction_llm_configured=%s · embedding=%s",
         settings.environment,
         settings.llm_configured,
+        bool(settings.effective_extraction_llm_api_key),
         settings.embedding_model,
     )
     try:
         yield
     finally:
         await queue.stop()
+        await engine_manager.aclose_all()
         await dispose_db()
 
 
@@ -68,7 +80,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=f"{PRODUCT_NAME} API",
         version=__version__,
-        summary="Financial evidence engine for MOAT/GIL",
+        summary="Financial evidence engine for Business Quality/GIL",
         lifespan=lifespan,
     )
 
@@ -117,6 +129,11 @@ def create_app() -> FastAPI:
             error["request_id"] = request_id
         return JSONResponse(status_code=500, content={"error": error})
 
+    # The web application still consumes the established v1 auth/knowledge
+    # contract, while the financial evidence endpoints live under v2.
+    # Mount both versions so the frontend does not receive false 404s during
+    # the v2 migration.
+    app.include_router(v1_api_router)
     app.include_router(api_router)
 
     @app.get("/", tags=["system"])
@@ -134,6 +151,7 @@ def create_app() -> FastAPI:
             "database": "configured",
             "embedding_model": settings.embedding_model,
             "llm_configured": settings.llm_configured,
+            "extraction_llm_configured": bool(settings.effective_extraction_llm_api_key),
         }
 
     @app.get("/metrics", tags=["system"])

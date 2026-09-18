@@ -36,8 +36,8 @@ function PostCard({ p }: { p: CommunityPost }) {
         <div className="min-w-0">
           <div className="flex items-center gap-1.5">
             <span className="text-[13.5px] font-semibold text-ink">{p.author}</span>
-            {p.verified && <span className="text-mineral text-[12px]" title="Verified">✓</span>}
-            {p.ai && <Pill tone="mineral">Intelligence</Pill>}
+            {p.verified && <span className="text-mineral text-[12px]" title="Đã xác thực">✓</span>}
+            {p.ai && <Pill tone="mineral">Trí tuệ nhân tạo</Pill>}
           </div>
           <div className="text-[11.5px] text-muted">{p.firm ? `${p.role} · ${p.firm}` : p.role} · {p.time}</div>
         </div>
@@ -46,13 +46,13 @@ function PostCard({ p }: { p: CommunityPost }) {
 
       {p.evidence && (
         <div className="mt-3 border border-line rounded-[8px] p-3 bg-paper">
-          <SectionEyebrow>Evidence</SectionEyebrow>
+          <SectionEyebrow>Dẫn chứng</SectionEyebrow>
           <ul className="space-y-1 text-[12.5px] text-secondary">{p.evidence.map((e, i) => <li key={i}>· {e}</li>)}</ul>
         </div>
       )}
       {p.signal && (
         <div className="mt-3 grid grid-cols-3 divide-x divide-line border border-line rounded-[8px]">
-          {[["Entry", p.signal.entry, "text-ink"], ["Target", p.signal.target, "text-gain"], ["Stop", p.signal.stop, "text-loss"]].map(([l, v, c]) => (
+          {[["Vùng mua", p.signal.entry, "text-ink"], ["Mục tiêu", p.signal.target, "text-gain"], ["Chặn lỗ", p.signal.stop, "text-loss"]].map(([l, v, c]) => (
             <div key={l as string} className="px-4 py-2.5 text-center">
               <div className="text-[10px] uppercase tracking-wide text-muted">{l as string}</div>
               <div className={`tnum font-mono text-[14px] mt-0.5 ${c}`}>{fmt(v as number)}</div>
@@ -66,7 +66,7 @@ function PostCard({ p }: { p: CommunityPost }) {
         <div className="ml-auto flex items-center gap-4 text-[12px] text-muted">
           <button className="hover:text-secondary">♡ {p.likes}</button>
           <button className="hover:text-secondary">✎ {p.comments}</button>
-          {p.signal && <Link to={`/stock/${p.signal.symbol}`}><Button variant="quiet">Review signal</Button></Link>}
+          {p.signal && <Link to={`/stock/${p.signal.symbol}`}><Button variant="quiet">Xem tín hiệu</Button></Link>}
         </div>
       </div>
     </article>
@@ -113,10 +113,10 @@ export default function Community() {
   }, [resource.data])
 
   return (
-    <Page title="Community" sub="A serious investor network — theses, evidence, and structured signals." actions={<Button variant="primary">New post</Button>}>
+    <Page title="Cộng đồng" sub="Mạng lưới nhà đầu tư chuyên nghiệp — luận điểm, dẫn chứng và tín hiệu chuẩn mực." actions={<Button variant="primary">Đăng bài</Button>}>
       {trendingStocks.length > 0 && (
         <div className="mb-4 bg-surface border border-line rounded-[10px] px-4 py-3 flex items-center gap-4 overflow-x-auto">
-          <span className="text-[11px] uppercase tracking-wide text-muted shrink-0">Trending</span>
+          <span className="text-[11px] uppercase tracking-wide text-muted shrink-0">Xu hướng</span>
           {trendingStocks.map((s) => (
             <Link key={s.symbol} to={`/stock/${s.symbol}`} className="flex items-center gap-1.5 shrink-0">
               <span className="font-mono text-[13px] font-medium text-ink">${s.symbol}</span>
@@ -134,10 +134,10 @@ export default function Community() {
               <div className="flex-1">
                 <textarea placeholder="Nhận định của bạn về thị trường hôm nay?" rows={2} className="w-full resize-none bg-transparent outline-none text-[14px] text-ink placeholder:text-muted" />
                 <div className="flex items-center gap-2 mt-2 pt-2 border-t border-line">
-                  <button className="text-[12px] text-muted hover:text-secondary">Chart</button>
-                  <button className="text-[12px] text-muted hover:text-secondary">Cashtag</button>
-                  <button className="text-[12px] text-muted hover:text-secondary">Thesis template</button>
-                  <Button variant="secondary" className="ml-auto">AI Co-Author</Button>
+                  <button className="text-[12px] text-muted hover:text-secondary">Biểu đồ</button>
+                  <button className="text-[12px] text-muted hover:text-secondary">Gắn mã CP</button>
+                  <button className="text-[12px] text-muted hover:text-secondary">Mẫu luận điểm</button>
+                  <Button variant="secondary" className="ml-auto">AI Trợ lý viết</Button>
                   <Button variant="primary">Đăng bài</Button>
                 </div>
               </div>

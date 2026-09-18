@@ -55,11 +55,11 @@ function AgentCard({ id, runId, symbol, badge }: { id: string; runId: string; sy
 }
 
 const signalCards = [
-  { id: "01", badge: "Market regime" },
-  { id: "05", badge: "Counter-thesis" },
-  { id: "06", badge: "Risk gate" },
-  { id: "12", badge: "CIO directive" },
-  { id: "11", badge: "Governance audit" },
+  { id: "01", badge: "Chế độ thị trường" },
+  { id: "05", badge: "Luận điểm phản biện" },
+  { id: "06", badge: "Cổng kiểm soát rủi ro" },
+  { id: "12", badge: "Chỉ thị CIO" },
+  { id: "11", badge: "Kiểm toán quản trị" },
 ]
 
 export default function WarRoom() {
@@ -141,10 +141,10 @@ export default function WarRoom() {
     <div className="min-h-full bg-paper">
       {/* Header */}
       <div className="min-h-[52px] border-b border-line bg-surface flex flex-wrap items-center gap-x-3 gap-y-1 px-6 py-2.5 shrink-0">
-        <h1 className="text-[16px] font-semibold tracking-tight text-ink">AI War Room</h1>
-        <span className="text-[12px] text-muted hidden md:inline">Analytical command environment</span>
+        <h1 className="text-[16px] font-semibold tracking-tight text-ink">Phòng chỉ huy AI</h1>
+        <span className="text-[12px] text-muted hidden md:inline">Môi trường điều hành & phân tích định lượng</span>
         <div className="ml-auto flex items-center gap-2 text-[12px]">
-          <span className="flex items-center gap-1.5 text-muted"><span className="w-1.5 h-1.5 rounded-full bg-gain animate-pulse" />{liveRuns.length} runs today · {totalCases} names</span>
+          <span className="flex items-center gap-1.5 text-muted"><span className="w-1.5 h-1.5 rounded-full bg-gain animate-pulse" />{liveRuns.length} lượt chạy hôm nay · {totalCases} mã</span>
           <Pill tone="teal"><span className="w-1.5 h-1.5 rounded-full bg-teal animate-pulse mr-1" />Hệ thống tự hành</Pill>
         </div>
       </div>
@@ -159,7 +159,7 @@ export default function WarRoom() {
                 onClick={() => setLeftView(v)}
                 className={`flex-1 h-10 text-[12.5px] font-medium capitalize transition-colors ${leftView === v ? "text-ink" : "text-muted hover:text-secondary"} relative`}
               >
-                {v === "runs" ? "Today's runs" : "How it works"}
+                {v === "runs" ? "Lượt chạy hôm nay" : "Quy trình hoạt động"}
                 {leftView === v && <span className="absolute left-4 right-4 -bottom-px h-[2px] bg-ink rounded-full" />}
               </button>
             ))}
@@ -168,7 +168,7 @@ export default function WarRoom() {
           {leftView === "runs" ? (
             <div className="p-3">
               <p className="text-[11.5px] text-muted leading-snug px-1 mb-3">
-                The multi-agent pipeline runs on a schedule and on live triggers. Each run analyses several names.
+                Quy trình đa tác tử hoạt động tự động theo lịch và kích hoạt trực tiếp. Mỗi lượt phân tích nhiều mã cổ phiếu.
               </p>
               <div className="space-y-1.5">
                 {liveRuns.map((r) => {
@@ -186,7 +186,7 @@ export default function WarRoom() {
                             <span className="text-[13px] font-medium text-ink">{r.label}</span>
                             <span className="ml-auto tnum font-mono text-[11px] text-muted">{r.time}</span>
                           </div>
-                          <div className="text-[11px] text-muted mt-0.5">{r.triggered} · {r.cases.length} names · {r.agentsRun} agents</div>
+                          <div className="text-[11px] text-muted mt-0.5">{r.triggered} · {r.cases.length} mã · {r.agentsRun} tác tử</div>
                         </div>
                       </div>
                     </button>
@@ -197,7 +197,7 @@ export default function WarRoom() {
           ) : (
             <div className="p-4">
               <p className="text-[11.5px] text-muted leading-snug mb-4">
-                Twelve agents work as a relay. Each hands its output to the next — no agent jumps from data to a recommendation.
+                12 tác tử vận hành theo cơ chế tiếp sức. Mỗi tác tử chuyển giao kết quả cho tác tử kế tiếp — không tác tử nào tự ý đưa ra khuyến nghị từ dữ liệu thô.
               </p>
               <div className="relative">
                 <div className="absolute left-[11px] top-1 bottom-1 w-px bg-line" />
@@ -242,7 +242,7 @@ export default function WarRoom() {
           <div className="border-b border-line px-6 py-3 shrink-0 bg-surface/60">
             <div className="flex items-center gap-2 mb-2.5">
               <span className="text-[11px] font-semibold tracking-[0.12em] uppercase text-muted">{run.label}</span>
-              <span className="text-[11px] text-muted">· {run.time} · triggered by {run.triggered}</span>
+              <span className="text-[11px] text-muted">· {run.time} · kích hoạt bởi {run.triggered}</span>
             </div>
             <div className="flex flex-wrap gap-1.5">
               {run.cases.map((rc) => {
@@ -273,38 +273,38 @@ export default function WarRoom() {
               <PercentChange value={stock.changePct} className="text-[13px]" />
             </div>
             <div className="flex items-center gap-2 mt-1">
-              <Pill tone={statusTone[runCase.status]}>{runCase.status} in this run</Pill>
+              <Pill tone={statusTone[runCase.status]}>{runCase.status === "Confirmed" ? "Đã duyệt" : runCase.status === "Watching" ? "Quan sát" : "Mới phát hiện"} trong phiên này</Pill>
               <span className="text-[12px] text-muted">{runCase.note}</span>
             </div>
 
             <div className="mt-6">
-              <SectionEyebrow>Thesis</SectionEyebrow>
+              <SectionEyebrow>Luận điểm đầu tư</SectionEyebrow>
               <p className="font-serif text-[16px] leading-relaxed text-ink">{c.thesis}</p>
               <div className="mt-4 grid grid-cols-2 gap-4 text-[13px]">
                 <div>
-                  <div className="text-[11px] uppercase tracking-wide text-muted mb-1.5">Catalysts</div>
+                  <div className="text-[11px] uppercase tracking-wide text-muted mb-1.5">Chất xúc tác</div>
                   <ul className="space-y-1 text-secondary">{c.catalysts.map((x) => <li key={x}>· {x}</li>)}</ul>
                 </div>
                 <div>
-                  <div className="text-[11px] uppercase tracking-wide text-muted mb-1">Target range</div>
+                  <div className="text-[11px] uppercase tracking-wide text-muted mb-1">Vùng giá mục tiêu</div>
                   <div className="tnum font-mono text-ink text-[15px]">{fmt(c.targetLow)} – {fmt(c.targetHigh)}</div>
-                  <div className="text-[11px] uppercase tracking-wide text-muted mt-3 mb-1">Invalidation</div>
-                  <div className="tnum font-mono text-loss text-[14px]">Close &lt; {fmt(c.invalidation)}</div>
+                  <div className="text-[11px] uppercase tracking-wide text-muted mt-3 mb-1">Điều kiện vi phạm</div>
+                  <div className="tnum font-mono text-loss text-[14px]">Đóng nến &lt; {fmt(c.invalidation)}</div>
                 </div>
               </div>
             </div>
 
             <div className="mt-7 pt-6 border-t border-line">
               <div className="flex items-center gap-2 mb-3">
-                <SectionEyebrow>Counter-thesis</SectionEyebrow>
-                <Pill tone="warning">Devil&apos;s Advocate</Pill>
+                <SectionEyebrow>Luận điểm phản biện</SectionEyebrow>
+                <Pill tone="warning">Tác tử phản biện độc lập</Pill>
               </div>
               <ul className="space-y-2 text-[13px] text-secondary">{c.counter.map((x) => <li key={x}>· {x}</li>)}</ul>
             </div>
 
             <div className="mt-7 pt-6 border-t border-line">
               <div className="flex items-center gap-2 mb-3">
-                <SectionEyebrow>Agent signals</SectionEyebrow>
+                <SectionEyebrow>Tín hiệu tác tử</SectionEyebrow>
                 <span className="text-[11px] text-muted">· {run.label} · {activeSymbol}</span>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -315,7 +315,7 @@ export default function WarRoom() {
             </div>
 
             <div className="mt-7 pt-6 border-t border-line">
-              <SectionEyebrow>Current assessment</SectionEyebrow>
+              <SectionEyebrow>Đánh giá hiện tại</SectionEyebrow>
               <div className="flex items-center gap-3 mb-4">
                 <span className="text-[20px] font-semibold text-ink">{c.bias}</span>
                 <Conviction level={c.conviction} />
@@ -324,9 +324,9 @@ export default function WarRoom() {
                 <ReasoningBlock data={c.reasoning} />
               </div>
               <div className="flex flex-wrap gap-2 mt-4">
-                <Button variant="primary">Copy case to notes</Button>
-                <Link to="/trade"><Button variant="secondary">Plan execution</Button></Link>
-                <Button variant="ghost">Set alert</Button>
+                <Button variant="primary">Lưu vào sổ ghi chú</Button>
+                <Link to="/trade"><Button variant="secondary">Kế hoạch giải ngân</Button></Link>
+                <Button variant="ghost">Cài đặt cảnh báo</Button>
               </div>
             </div>
           </div>
@@ -335,11 +335,11 @@ export default function WarRoom() {
         {/* ── Right column: evidence inspector ── */}
         <aside className="border-t xl:border-t-0 xl:border-l border-line bg-surface self-stretch">
           <div className="px-4 pt-4">
-            <SectionEyebrow>Evidence inspector · {c.symbol}</SectionEyebrow>
-            <Tabs tabs={["Signals", "Counter-Verdicts", "CIO Directives", "Agent Logs"]} active={tab === "Sources" ? "Signals" : tab} onChange={setTab} />
+            <SectionEyebrow>Kiểm định bằng chứng · {c.symbol}</SectionEyebrow>
+            <Tabs tabs={["Tín hiệu", "Phán quyết phản biện", "Nghị quyết CIO", "Nhật ký tác tử"]} active={tab === "Sources" || tab === "Signals" ? "Tín hiệu" : tab === "Counter-Verdicts" ? "Phán quyết phản biện" : tab === "CIO Directives" ? "Nghị quyết CIO" : tab === "Agent Logs" ? "Nhật ký tác tử" : tab} onChange={setTab} />
           </div>
           <div className="p-4">
-            {(tab === "Signals" || tab === "Sources") && (
+            {(tab === "Tín hiệu" || tab === "Signals" || tab === "Sources") && (
               <div className="space-y-3">
                 <div className="text-[12px] text-muted mb-2 font-medium">Bằng chứng định lượng từ cơ sở dữ liệu:</div>
                 <div className="border border-line rounded-[8px] p-3 bg-paper">
@@ -363,7 +363,7 @@ export default function WarRoom() {
                 </div>
               </div>
             )}
-            {tab === "Counter-Verdicts" && (
+            {(tab === "Phán quyết phản biện" || tab === "Counter-Verdicts") && (
               <div className="space-y-3">
                 <div className="text-[12px] text-muted mb-2 font-medium">Phán quyết từ Devil&apos;s Advocate:</div>
                 {c.counter.map((cnt: string, i: number) => (
@@ -376,7 +376,7 @@ export default function WarRoom() {
                 ))}
               </div>
             )}
-            {tab === "CIO Directives" && (
+            {(tab === "Nghị quyết CIO" || tab === "CIO Directives") && (
               <div className="space-y-3 text-[12.5px]">
                 <div className="text-[12px] text-muted mb-2 font-medium">Nghị quyết điều hành danh mục:</div>
                 <div className="border border-line rounded-[8px] p-3 bg-paper space-y-2">
@@ -399,14 +399,14 @@ export default function WarRoom() {
                 </div>
               </div>
             )}
-            {tab === "Agent Logs" && (
+            {(tab === "Nhật ký tác tử" || tab === "Agent Logs") && (
               <div className="space-y-2 text-[12px] font-mono">
                 <div className="text-[11px] text-muted mb-2 font-sans">Nhật ký 12 Agent từ database:</div>
                 {(resource.data as any)?.logs?.slice(0, 8).map((l: any, i: number) => (
                   <div key={i} className="border border-line rounded-[6px] p-2 bg-paper flex items-center justify-between">
                     <span className="text-ink capitalize">{l.agent.replace(/_/g, " ")}</span>
                     <span className="text-muted text-[11px]">
-                      {l.entries?.length || 0} entries
+                      {l.entries?.length || 0} bản ghi
                     </span>
                   </div>
                 )) || <div className="text-muted py-4 text-center">Đang tải nhật ký agent...</div>}

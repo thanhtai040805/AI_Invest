@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 class FinancialRepository:
-    """Repository quản lý dữ liệu BCTC và chỉ số tài chính phục vụ AI định giá & chấm điểm Moat."""
+    """Repository quản lý dữ liệu BCTC và chỉ số tài chính phục vụ AI định giá & Business Quality."""
 
     def __init__(self, storage: Optional[PostgresAdapter] = None):
         self.storage = storage or PostgresAdapter()

@@ -140,7 +140,7 @@ class BaseAgent(abc.ABC):
                 sql = "INSERT INTO log_universe_discovery (date, filtered_counts, beneish_trace, exclusion_log, created_at) VALUES (CURRENT_DATE, %s, %s, %s, CURRENT_TIMESTAMP)"
                 params = (json.dumps(output_data, default=str), json.dumps(computation_trace, default=str), json.dumps(output_data.get("exclusion_log", []), default=str))
             elif self.log_table == "log_equity_research":
-                sql = "INSERT INTO log_equity_research (ticker, date, factor_raw_metrics, moat_citations_evidence, llm_prompt_tokens, created_at) VALUES (%s, CURRENT_DATE, %s, %s, %s, CURRENT_TIMESTAMP)"
+                sql = "INSERT INTO log_equity_research (ticker, date, factor_raw_metrics, business_quality_evidence, llm_prompt_tokens, created_at) VALUES (%s, CURRENT_DATE, %s, %s, %s, CURRENT_TIMESTAMP)"
                 params = (ticker, json.dumps(output_data, default=str), json.dumps(computation_trace, default=str), 0)
             elif self.log_table == "log_investment_thesis":
                 thesis_id = output_data.get("thesis_id") or str(uuid.uuid4())

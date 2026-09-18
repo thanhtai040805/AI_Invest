@@ -4,7 +4,7 @@ Tập hợp toàn bộ các lớp Repository quản lý truy xuất và lưu tr�
 2. MarketDataRepository: Quản lý ohlcv, market_data_daily, indicators, foreign_flow, market_regime
 3. FinancialRepository: Quản lý financial_statements, financial_ratios, corporate_actions, insider_trades
 4. UniverseRepository: Quản lý stocks, instrument_master, universe_securities, beneish_results
-5. IntelligenceRepository: Quản lý factor_scores, moat_profiles, knowledge_documents, investment_theses
+5. IntelligenceRepository: Quản lý factor_scores, business_quality_profiles, knowledge_documents, investment_theses
 """
 
 from app.domain.repositories.portfolio_repository import PortfolioRepository

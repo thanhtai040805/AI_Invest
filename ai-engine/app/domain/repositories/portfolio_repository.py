@@ -9,12 +9,63 @@ from __future__ import annotations
 import logging
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, time, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.adapters.postgres_adapter import PostgresAdapter
 
 logger = logging.getLogger(__name__)
+
+
+def calculate_is_t25_locked(opened_at: Any, now_dt: Optional[datetime] = None) -> bool:
+    """Kiểm tra quy chế thanh toán T+2.5 của thị trường chứng khoán Việt Nam.
+    - Không tính thứ 7 và Chủ Nhật.
+    - T+0, T+1: cổ phiếu chưa về, bị khóa (is_locked = True).
+    - T+2: chỉ khả dụng từ phiên chiều sau 11:30 trưa (trước 11:30 vẫn bị khóa).
+    - T+3 trở đi: đã về tài khoản hoàn toàn (is_locked = False).
+    """
+    if not opened_at:
+        return False
+    try:
+        if isinstance(opened_at, str):
+            opened_dt = datetime.fromisoformat(opened_at)
+        else:
+            opened_dt = opened_at
+
+        if now_dt is None:
+            if hasattr(opened_dt, "tzinfo") and opened_dt.tzinfo is not None:
+                now_dt = datetime.now(opened_dt.tzinfo)
+            else:
+                now_dt = datetime.now()
+        else:
+            if hasattr(opened_dt, "tzinfo") and opened_dt.tzinfo is not None and getattr(now_dt, "tzinfo", None) is None:
+                now_dt = now_dt.replace(tzinfo=opened_dt.tzinfo)
+            elif (not hasattr(opened_dt, "tzinfo") or opened_dt.tzinfo is None) and getattr(now_dt, "tzinfo", None) is not None:
+                opened_dt = opened_dt.replace(tzinfo=now_dt.tzinfo)
+
+        opened_date = opened_dt.date()
+        current_date = now_dt.date()
+
+        if current_date <= opened_date:
+            return True
+
+        b_days = 0
+        cur = opened_date + timedelta(days=1)
+        while cur <= current_date:
+            if cur.weekday() < 5:  # Thứ 2 đến thứ 6
+                b_days += 1
+            cur += timedelta(days=1)
+
+        if b_days < 2:
+            return True
+        elif b_days == 2:
+            # Ngày T+2: VSDC trả chứng khoán vào 11:30 trưa để giao dịch phiên chiều (13:00)
+            return now_dt.time() < time(11, 30)
+        else:
+            return False
+    except Exception as e:
+        logger.debug(f"[calculate_is_t25_locked] Lỗi tính toán T+2.5: {e}")
+        return False
 
 
 class PortfolioRepository:
@@ -122,23 +173,8 @@ class PortfolioRepository:
                     avg_p = float(r[2])
                     opened_at = r[3] if len(r) > 3 and r[3] else None
                     
-                    # Kiểm tra chu kỳ T+2.5 (2 ngày làm việc) cho từng vị thế
-                    is_locked = False
-                    if opened_at:
-                        try:
-                            if isinstance(opened_at, str):
-                                opened_dt = datetime.fromisoformat(opened_at)
-                            else:
-                                opened_dt = opened_at
-                            if hasattr(opened_dt, "tzinfo") and opened_dt.tzinfo is not None:
-                                now_dt = datetime.now(opened_dt.tzinfo)
-                            else:
-                                now_dt = now
-                            # Nếu mở trong vòng 2 ngày (48h), coi như chưa về hết
-                            if (now_dt - opened_dt).total_seconds() < 2 * 86400:
-                                is_locked = True
-                        except Exception:
-                            pass
+                    # Kiểm tra chu kỳ T+2.5 chuẩn ngày làm việc thị trường VN
+                    is_locked = calculate_is_t25_locked(opened_at, now)
 
                     available_shares = 0 if is_locked else total_shares
                     locked_shares = total_shares if is_locked else 0
@@ -302,8 +338,15 @@ class PortfolioRepository:
         now = datetime.now()
 
         # 1. Cập nhật In-Memory Cache
+        # Tính toán phí môi giới (0.10%) và thuế chuyển nhượng (0.10% khi bán)
+        fee_rate = 0.0010
+        min_fee = 10000.0
+        tax_rate = 0.0010
+        brokerage_fee = max(trade_value * fee_rate, min_fee)
+
         if action == "BUY":
-            self._in_memory_account["cash_balance"] -= trade_value
+            total_deduct = trade_value + brokerage_fee
+            self._in_memory_account["cash_balance"] -= total_deduct
             if ticker in self._in_memory_positions:
                 pos = self._in_memory_positions[ticker]
                 old_shares = pos["shares"]
@@ -324,7 +367,9 @@ class PortfolioRepository:
                     "weight_pct": (trade_value / self._in_memory_account["total_nav"]) * 100.0,
                 }
         elif action in ("SELL", "SELL_MP"):
-            self._in_memory_account["cash_balance"] += trade_value
+            tax = trade_value * tax_rate
+            net_credit = max(0.0, trade_value - brokerage_fee - tax)
+            self._in_memory_account["cash_balance"] += net_credit
             if ticker in self._in_memory_positions:
                 pos = self._in_memory_positions[ticker]
                 pos["shares"] = max(0, pos["shares"] - shares)
@@ -345,13 +390,13 @@ class PortfolioRepository:
             logger.warning("[PortfolioRepository] Không tìm thấy user_id hợp lệ để ghi nhận lệnh/vị thế.")
             return order_id
         try:
-            # 2.1 Cập nhật số dư tiền mặt trong bảng users
+            # 2.1 Cập nhật số dư tiền mặt trong bảng users kèm phí & thuế
             if action == "BUY":
                 sql_user = "UPDATE users SET cash_balance = cash_balance - %s WHERE id = %s"
-                self.storage.execute(sql_user, (trade_value, target_uid))
+                self.storage.execute(sql_user, (total_deduct, target_uid))
             elif action in ("SELL", "SELL_MP"):
                 sql_user = "UPDATE users SET cash_balance = cash_balance + %s WHERE id = %s"
-                self.storage.execute(sql_user, (trade_value, target_uid))
+                self.storage.execute(sql_user, (net_credit, target_uid))
 
             # 2.2 Cập nhật vị thế trong bảng positions
             if action == "BUY":
@@ -440,15 +485,41 @@ class PortfolioRepository:
                             (ticker, action, executed_price, now, 0.8, "EXECUTION_AGENT_ORDER", shares, now)
                         )
                     elif action in ("SELL", "SELL_MP"):
-                        sql_close = """
-                            UPDATE paper_trades
-                            SET status = 'CLOSED',
-                                resolve_price = %s,
-                                pnl = ROUND(((%s - price) / price * 100)::numeric, 2),
-                                resolved_at = %s
+                        # FIFO Tranche resolution trong paper_trades
+                        sql_get_open = """
+                            SELECT id, price, quantity FROM paper_trades
                             WHERE ticker = %s AND status = 'OPEN'
+                            ORDER BY date ASC, id ASC
                         """
-                        self.storage.execute(sql_close, (executed_price, executed_price, now, ticker))
+                        open_trades = self.storage.fetch_all(sql_get_open, (ticker,))
+                        rem_sell = shares
+                        for trade in open_trades:
+                            if rem_sell <= 0:
+                                break
+                            t_id, t_price, t_qty = trade[0], float(trade[1]), int(trade[2] or 0)
+                            if t_qty <= rem_sell:
+                                pnl = round(((executed_price - t_price) / t_price * 100), 2) if t_price > 0 else 0.0
+                                self.storage.execute("""
+                                    UPDATE paper_trades
+                                    SET status = 'CLOSED',
+                                        resolve_price = %s,
+                                        pnl = %s,
+                                        resolved_at = %s
+                                    WHERE id = %s
+                                """, (executed_price, pnl, now, t_id))
+                                rem_sell -= t_qty
+                            else:
+                                pnl = round(((executed_price - t_price) / t_price * 100), 2) if t_price > 0 else 0.0
+                                self.storage.execute("""
+                                    UPDATE paper_trades
+                                    SET quantity = quantity - %s
+                                    WHERE id = %s
+                                """, (rem_sell, t_id))
+                                self.storage.execute("""
+                                    INSERT INTO paper_trades (ticker, action, price, date, confidence, thesis, status, quantity, resolve_price, pnl, resolved_at, created_at)
+                                    VALUES (%s, 'BUY', %s, %s, 0.8, 'PARTIAL_FILL_CLOSE', 'CLOSED', %s, %s, %s, %s, %s)
+                                """, (ticker, t_price, now, rem_sell, executed_price, pnl, now, now))
+                                rem_sell = 0
                 except Exception as e_pt:
                     logger.debug(f"Không thể sync paper_trades: {e_pt}")
             except Exception as e_sync:

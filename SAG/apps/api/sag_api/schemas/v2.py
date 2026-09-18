@@ -191,33 +191,49 @@ class PillarAssessmentOutV2(BaseModel):
     counter_evidence: list[dict[str, Any]]
 
 
-class MoatAssessmentOutV2(BaseModel):
-    ticker: str
-    assessment_status: str
-    moat_score: float | None
-    multiplier: float | None
-    coverage_ratio: float
-    active_roles: list[str]
-    missing_roles: list[str]
-    pillars: dict[str, PillarAssessmentOutV2]
-    reasons: list[str]
-    policy_version: str = "moat-policy-v2"
-
-
 class GILAssessmentOutV2(BaseModel):
     ticker: str
     analysis_status: str
     gil_flag: str
     risk_level: str
+    gil_score: float | None = None
     rpt_ratio: float | None
-    total_rpt_exposure_vnd: float
+    total_rpt_exposure_vnd: float | None
     equity_vnd: float | None
     cycles_detected: int
     cycle_paths: list[list[str]]
     reasons: list[str]
     nodes_count: int
     edges_count: int
-    policy_version: str = "gil-policy-v2"
+    policy_version: str = "gil-policy-v3"
+    policy_context: dict[str, Any] = {}
+    company_context: dict[str, Any] = {}
+    exposure: dict[str, Any] = {}
+    relative_risk: dict[str, Any] = {}
+    scores: dict[str, Any] = {}
+    graph: dict[str, Any] = {}
+    policy: dict[str, Any] = {}
+    financial_denominators: dict[str, Any] = {}
+    relationship_risk: dict[str, Any] = {}
+    flow_risk: dict[str, Any] = {}
+    ownership_risk: dict[str, Any] = {}
+    structural_risk: dict[str, Any] = {}
+    materiality: dict[str, Any] = {}
+    rpt_metrics: dict[str, Any] = {}
+    rpt_breakdown: dict[str, Any] = {}
+    insider_evidence: dict[str, Any] = {}
+    risk_components: dict[str, Any] = {}
+    dimensions: dict[str, Any] = {}
+    circular_flow_proven: bool = False
+    tunneling_signals: int = 0
+    catastrophic_triggered: bool = False
+    hard_triggers: dict[str, Any] = {}
+    decision: dict[str, Any] = {}
+    data_quality: dict[str, Any] = {}
+    temporal_risk: dict[str, Any] = {}
+    # Compact provenance for the Agent: no quote duplication, only the
+    # deduplicated graph edges that actually feed the GIL decision.
+    evidence: list[dict[str, Any]] = []
 
 
 class ReviewQueueOut(BaseModel):

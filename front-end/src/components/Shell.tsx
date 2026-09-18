@@ -6,7 +6,7 @@ import { useResource } from "../lib/api/use-resource"
 import { PercentChange } from "./ui"
 
 const nav = [
-  { group: "Workspace", items: [["Tổng quan", "/dashboard"], ["AI War Room", "/agent"], ["Danh mục", "/portfolio"], ["ML Fund", "/ml-fund"]] },
+  { group: "Không gian làm việc", items: [["Tổng quan", "/dashboard"], ["AI War Room", "/agent"], ["Danh mục", "/portfolio"], ["ML Tự hành", "/ml-fund"]] },
   { group: "Thị trường", items: [["Khám phá", "/discovery"], ["Tín hiệu", "/signals"], ["Giao dịch", "/trade"], ["Backtest", "/backtest"], ["Thị trường", "/markets"], ["Ngành", "/sectors"], ["Theo dõi", "/watchlist"]] },
   { group: "Thông tin", items: [["Nghiên cứu", "/research"], ["Cộng đồng", "/community"], ["Cài đặt", "/settings"], ["Trợ giúp", "/help"]] },
 ].map(section => ({ ...section, items: section.items.map(([label, route]) => ({ label, route })) }))
@@ -31,13 +31,13 @@ function UserMenu() {
         <div className="absolute right-0 mt-2 w-52 bg-surface border border-line-strong rounded-[10px] shadow-xl shadow-ink/10 py-1.5 z-40">
           <div className="px-3 py-2 border-b border-line">
             <div className="text-[13px] font-medium text-ink truncate">{name}</div>
-            <div className="text-[11px] text-muted">Personal workspace</div>
+            <div className="text-[11px] text-muted">Không gian cá nhân</div>
           </div>
-          {[["Profile", "/profile/me"], ["Settings", "/settings"], ["Help", "/help"]].map(([l, r]) => (
+          {[["Hồ sơ", "/profile/me"], ["Cài đặt", "/settings"], ["Trợ giúp", "/help"]].map(([l, r]) => (
             <button key={l} onClick={() => { navigate(r); setOpen(false) }} className="w-full text-left px-3 h-8 text-[13px] text-secondary hover:bg-soft hover:text-ink transition-colors">{l}</button>
           ))}
           <div className="border-t border-line mt-1 pt-1">
-            <button onClick={logout} className="w-full text-left px-3 h-8 text-[13px] text-loss hover:bg-loss/8 transition-colors">Sign out</button>
+            <button onClick={logout} className="w-full text-left px-3 h-8 text-[13px] text-loss hover:bg-loss/8 transition-colors">Đăng xuất</button>
           </div>
         </div>
       )}
@@ -53,8 +53,8 @@ function NotificationBell() {
     document.addEventListener("mousedown", onDoc)
     return () => document.removeEventListener("mousedown", onDoc)
   }, [])
-  const notes = [["Market", "VN-Index closed +0.72%", "2m", "bg-gain"], ["Portfolio", "HPG position is up 16.1%", "18m", "bg-teal"], ["AI", "Accumulation strengthened on MBB", "34m", "bg-mineral"], ["Execution", "HPG order is awaiting a fill", "1h", "bg-warning"]]
-  return <div ref={ref} className="relative"><button aria-label="Notifications" onClick={() => setOpen((value) => !value)} className="relative grid h-9 w-9 place-items-center rounded-[7px] border border-line bg-surface text-secondary transition-colors hover:border-ink/30 hover:text-ink"><span className="text-[17px] leading-none">♢</span><span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-gain ring-2 ring-surface" /></button>{open && <div className="absolute right-0 z-40 mt-2 w-[340px] rounded-[10px] border border-line-strong bg-surface py-2 shadow-xl shadow-ink/10"><div className="flex items-center justify-between px-3 pb-2"><span className="text-[13px] font-semibold text-ink">Notifications</span><button className="text-[11px] text-mineral hover:underline">Mark all read</button></div><div className="border-t border-line">{notes.map(([kind, text, time, tone]) => <button key={text} className="flex w-full gap-3 px-3 py-3 text-left hover:bg-soft/70"><span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${tone}`} /><span className="min-w-0 flex-1"><span className="block text-[11px] font-medium text-muted">{kind}</span><span className="block text-[12.5px] leading-snug text-secondary">{text}</span></span><span className="font-mono text-[10px] text-muted">{time}</span></button>)}</div></div>}</div>
+  const notes = [["Thị trường", "VN-Index đóng cửa +0.72%", "2m", "bg-gain"], ["Danh mục", "Vị thế HPG tăng trưởng +16.1%", "18m", "bg-teal"], ["AI", "Tín hiệu tích lũy gia tăng tại MBB", "34m", "bg-mineral"], ["Khớp lệnh", "Lệnh HPG đang chờ khớp", "1h", "bg-warning"]]
+  return <div ref={ref} className="relative"><button aria-label="Thông báo" onClick={() => setOpen((value) => !value)} className="relative grid h-9 w-9 place-items-center rounded-[7px] border border-line bg-surface text-secondary transition-colors hover:border-ink/30 hover:text-ink"><span className="text-[17px] leading-none">♢</span><span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-gain ring-2 ring-surface" /></button>{open && <div className="absolute right-0 z-40 mt-2 w-[340px] rounded-[10px] border border-line-strong bg-surface py-2 shadow-xl shadow-ink/10"><div className="flex items-center justify-between px-3 pb-2"><span className="text-[13px] font-semibold text-ink">Thông báo</span><button className="text-[11px] text-mineral hover:underline">Đánh dấu đã đọc</button></div><div className="border-t border-line">{notes.map(([kind, text, time, tone]) => <button key={text} className="flex w-full gap-3 px-3 py-3 text-left hover:bg-soft/70"><span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${tone}`} /><span className="min-w-0 flex-1"><span className="block text-[11px] font-medium text-muted">{kind}</span><span className="block text-[12.5px] leading-snug text-secondary">{text}</span></span><span className="font-mono text-[10px] text-muted">{time}</span></button>)}</div></div>}</div>
 }
 
 function TopBar({ onSearch }: { onSearch: () => void }) {
@@ -80,7 +80,7 @@ function TopBar({ onSearch }: { onSearch: () => void }) {
           {stat("Khối ngoại", String(snapshot.foreignFlow ?? snapshot.foreign_net ?? "—"))}
         </div>
         <div className="hidden xl:flex flex-col justify-center px-4 border-l border-line">
-          <span className="text-[10px] font-medium tracking-wide text-muted uppercase leading-none">Market Regime</span>
+          <span className="text-[10px] font-medium tracking-wide text-muted uppercase leading-none">Chế độ thị trường</span>
           <span className="text-[12px] text-ink mt-1 leading-none">{String(snapshot.regime ?? "Chưa có dữ liệu")}</span>
         </div>
       </div>
@@ -89,7 +89,7 @@ function TopBar({ onSearch }: { onSearch: () => void }) {
           onClick={onSearch}
           className="flex items-center gap-2 h-9 pl-3 pr-2 rounded-[7px] border border-line-strong text-muted hover:border-ink/30 hover:text-secondary transition-colors text-[13px] w-56"
         >
-          <span>Search ticker, thesis, broker…</span>
+          <span>Tìm mã CP, luận điểm…</span>
           <kbd className="ml-auto text-[10px] font-mono bg-soft border border-line rounded px-1.5 py-0.5 text-secondary">⌘K</kbd>
         </button>
         <NotificationBell />
@@ -139,12 +139,12 @@ function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void 
   const { navigate } = useRouter()
   const [q, setQ] = useState("")
   const allItems = useMemo(() => {
-    const routes = nav.flatMap((s) => s.items.map((i) => ({ type: "Navigate", label: i.label, route: i.route, hint: s.group })))
+    const routes = nav.flatMap((s) => s.items.map((i) => ({ type: "Điều hướng", label: i.label, route: i.route, hint: s.group })))
     const commands = [
-      { type: "Command", label: "Compare HPG and HSG", route: "/discovery", hint: "Comparison" },
-      { type: "Command", label: "Show unusual volume in banking", route: "/signals", hint: "Surveillance" },
-      { type: "Command", label: "Review portfolio risk", route: "/portfolio", hint: "Portfolio" },
-      { type: "Command", label: "Review open orders", route: "/portfolio", hint: "Portfolio" },
+      { type: "Lệnh thao tác", label: "So sánh HPG và HSG", route: "/discovery", hint: "So sánh" },
+      { type: "Lệnh thao tác", label: "Xem thanh khoản đột biến ngành ngân hàng", route: "/signals", hint: "Giám sát" },
+      { type: "Lệnh thao tác", label: "Kiểm tra rủi ro danh mục", route: "/portfolio", hint: "Danh mục" },
+      { type: "Lệnh thao tác", label: "Kiểm tra sổ lệnh đang chờ", route: "/portfolio", hint: "Danh mục" },
     ]
     return [...commands, ...routes]
   }, [])
@@ -164,7 +164,7 @@ function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void 
           <span className="text-muted">⌘</span>
           <input
             autoFocus value={q} onChange={(e) => setQ(e.target.value)}
-            placeholder="Search or type a command…"
+            placeholder="Tìm kiếm hoặc gõ lệnh… (⌘K)"
             className="flex-1 bg-transparent outline-none text-[14px] text-ink placeholder:text-muted"
           />
           <kbd className="text-[10px] font-mono bg-soft border border-line rounded px-1.5 py-0.5 text-muted">ESC</kbd>
@@ -185,7 +185,7 @@ function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void 
               ))}
             </div>
           ))}
-          {results.length === 0 && <div className="px-4 py-8 text-center text-[13px] text-muted">No matches. Try a ticker like HPG or a command.</div>}
+          {results.length === 0 && <div className="px-4 py-8 text-center text-[13px] text-muted">Không tìm thấy kết quả phù hợp. Hãy thử gõ mã CP như HPG.</div>}
         </div>
       </div>
     </div>

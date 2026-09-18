@@ -28,14 +28,21 @@ class CounterThesisAgent(BaseAgent):
     AGENT-05: Chuyên viên Phản biện Luận điểm Đầu tư (Devil's Advocate).
     """
 
-    def __init__(self):
+    def __init__(self, llm_client: Optional[Any] = None):
         super().__init__(
             agent_name="counter_thesis",
             state_tables=["counter_thesis_verdicts"],
             log_table="log_counter_thesis",
             enabled=True,
         )
-        self.counter_thesis_engine = CounterThesisEngine()
+        if llm_client is None:
+            try:
+                from app.infrastructure.llm.client import get_unified_llm_client
+                llm_client = get_unified_llm_client()
+            except Exception as e_llm:
+                logger.debug(f"[CounterThesisAgent] Không thể khởi tạo unified_llm_client: {e_llm}")
+                llm_client = None
+        self.counter_thesis_engine = CounterThesisEngine(llm_client=llm_client)
 
     async def process(self, event_data: Dict[str, Any]) -> Dict[str, Any]:
         """

@@ -10,6 +10,7 @@ Quản lý truy xuất và lưu trữ dữ liệu thị trường:
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
@@ -127,8 +128,54 @@ class MarketDataRepository:
                     }
                     for r in rows
                 ]
+            else:
+                # Fallback sang bảng ohlcv nếu market_data_daily chưa được backfill cho ticker này
+                ohlcv_rows = self.get_ohlcv(ticker, limit=limit)
+                if ohlcv_rows:
+                    return [
+                        {
+                            "date": o["date"],
+                            "open_adj": o["open"],
+                            "high_adj": o["high"],
+                            "low_adj": o["low"],
+                            "close_adj": o["close"],
+                            "vwap": o["close"],
+                            "volume_continuous": o["volume"],
+                            "volume_atc": 0,
+                            "volume_ato": 0,
+                            "volume_total": o["volume"],
+                            "foreign_net_vol": 0,
+                            "adtv20_continuous": float(o["volume"]),
+                            "market_cap": 0.0,
+                        }
+                        for o in ohlcv_rows
+                    ]
         except Exception as e:
             logger.warning(f"Lỗi khi đọc market_data_daily cho {ticker} ({e})")
+            # Fallback sang ohlcv khi gặp lỗi truy vấn
+            try:
+                ohlcv_rows = self.get_ohlcv(ticker, limit=limit)
+                if ohlcv_rows:
+                    return [
+                        {
+                            "date": o["date"],
+                            "open_adj": o["open"],
+                            "high_adj": o["high"],
+                            "low_adj": o["low"],
+                            "close_adj": o["close"],
+                            "vwap": o["close"],
+                            "volume_continuous": o["volume"],
+                            "volume_atc": 0,
+                            "volume_ato": 0,
+                            "volume_total": o["volume"],
+                            "foreign_net_vol": 0,
+                            "adtv20_continuous": float(o["volume"]),
+                            "market_cap": 0.0,
+                        }
+                        for o in ohlcv_rows
+                    ]
+            except Exception:
+                pass
         return []
 
     def get_technical_indicators(self, symbol: str, calc_date: Optional[date] = None) -> Optional[Dict[str, Any]]:
@@ -143,8 +190,15 @@ class MarketDataRepository:
 
         try:
             rows = self.storage.fetch_all(query, params)
-            if rows and rows[0][0]:
-                return rows[0][0]
+            if rows and len(rows) > 0:
+                raw_ind = rows[0][0]
+                if isinstance(raw_ind, dict):
+                    return raw_ind
+                elif isinstance(raw_ind, str):
+                    try:
+                        return json.loads(raw_ind)
+                    except Exception:
+                        pass
         except Exception as e:
             logger.warning(f"Lỗi khi đọc technical_indicators cho {symbol} ({e})")
         return None
@@ -202,7 +256,32 @@ class MarketDataRepository:
                     "net_foreign_flow_bil": float(r[7]) if r[7] is not None else 0.0,
                 }
         except Exception as e:
-            logger.warning(f"Lỗi khi đọc market_regime ({e})")
+            logger.debug(f"Không thể đọc từ market_regime ({e}), thử đọc market_regimes fallback")
+
+        # Fallback sang bảng market_regimes (plural) nếu market_regime rỗng hoặc chưa có dữ liệu
+        try:
+            query_plural = """
+                SELECT date, current_regime, breadth_above_ma50_pct
+                FROM market_regimes
+                ORDER BY date DESC
+                LIMIT 1
+            """
+            rows_plural = self.storage.fetch_all(query_plural)
+            if rows_plural and len(rows_plural) > 0:
+                r_p = rows_plural[0]
+                b50 = float(r_p[2]) / 100.0 if r_p[2] is not None and float(r_p[2]) > 1.0 else (float(r_p[2]) if r_p[2] is not None else 0.5)
+                return {
+                    "date": r_p[0].isoformat() if hasattr(r_p[0], "isoformat") else str(r_p[0]),
+                    "regime_label": str(r_p[1]) if r_p[1] else "BULL_MARKET",
+                    "breadth_ma50": b50,
+                    "breadth_ma200": 0.5,
+                    "breadth_rsi_oversold": 0.0,
+                    "breadth_rsi_overbought": 0.0,
+                    "volume_ratio": 1.0,
+                    "net_foreign_flow_bil": 0.0,
+                }
+        except Exception:
+            pass
 
         return {
             "date": date.today().isoformat(),

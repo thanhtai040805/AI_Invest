@@ -59,64 +59,64 @@ export default function Discovery() {
     const pick = (list: Stock[]) => list.slice(0, 3).map((s) => s.symbol)
     return [
       {
-        name: "Momentum expansion",
+        name: "Bùng nổ xung lực",
         syms: pick([...stockList].sort((a, b) => b.momentum - a.momentum)),
       },
       {
-        name: "Accumulation",
+        name: "Tích lũy khối lượng",
         syms: pick([...stockList].filter((s) => s.flow > 0).sort((a, b) => b.flow - a.flow)),
       },
       {
-        name: "Relative strength",
+        name: "Sức mạnh giá (RS)",
         syms: pick([...stockList].sort((a, b) => b.rs - a.rs)),
       },
       {
-        name: "Value compression",
+        name: "Định giá chiết khấu",
         syms: pick([...stockList].filter((s) => s.changePct < 0).sort((a, b) => a.changePct - b.changePct)),
       },
       {
-        name: "Institutional flow",
+        name: "Dòng tiền tổ chức",
         syms: pick([...stockList].sort((a, b) => Math.abs(b.foreign) - Math.abs(a.foreign))),
       },
       {
-        name: "Risk deterioration",
+        name: "Cảnh báo rủi ro",
         syms: pick([...stockList].filter((s) => s.risk !== "Low").sort((a, b) => a.changePct - b.changePct)),
       },
     ].filter((b) => b.syms.length > 0)
   }, [stockList])
   return (
     <Page
-      title="Alpha Discovery"
-      sub="What deserves my attention?"
-      actions={<Button variant="primary">Save screen</Button>}
+      title="Khám phá Alpha"
+      sub="Lọc và phát hiện các cơ hội đầu tư định lượng"
+      actions={<Button variant="primary">Lưu bộ lọc</Button>}
     >
       <div className="grid grid-cols-1 lg:grid-cols-[260px_1fr] gap-4">
         <Panel className="h-fit">
-          <PanelHead title="Filter builder" />
+          <PanelHead title="Bộ lọc cổ phiếu" />
           <div className="space-y-3.5 text-[12px]">
             {[
-              "Market",
-              "Sector",
-              "Market cap",
-              "Liquidity",
-              "Valuation",
-              "Quality",
-              "Momentum",
-              "Growth",
-              "Sentiment",
-              "Flow",
-              "Risk",
-              "AI signal",
+              "Thị trường",
+              "Ngành nghề",
+              "Vốn hóa",
+              "Thanh khoản",
+              "Định giá",
+              "Chất lượng",
+              "Xung lực",
+              "Tăng trưởng",
+              "Tâm lý",
+              "Dòng tiền",
+              "Rủi ro",
+              "Tín hiệu AI",
             ].map((f) => (
               <div key={f}>
                 <label className="text-secondary">{f}</label>
                 <div className="mt-1 h-8 border border-line rounded-[6px] flex items-center px-2.5 text-muted hover:border-ink/25 cursor-pointer">
-                  Any
+                  Tất cả
                 </div>
               </div>
             ))}
             <Button variant="primary" className="w-full">
-              Apply filters
+              Áp dụng bộ lọc
             </Button>
           </div>
         </Panel>
@@ -126,8 +126,8 @@ export default function Discovery() {
               <div className="px-5 pt-4 pb-2">
                 <PanelHead
                   title={b.name}
-                  sub={`${b.syms.length} candidates`}
-                  action={<Button variant="ghost">Compare</Button>}
+                  sub={`${b.syms.length} mã tiềm năng`}
+                  action={<Button variant="ghost">So sánh</Button>}
                 />
               </div>
               <div className="divide-y divide-line">
@@ -163,7 +163,7 @@ export default function Discovery() {
                       />
                       <RiskLabel risk={s.risk} />
                       <Link to={`/stock/${sym}`}>
-                        <Button variant="quiet">Research</Button>
+                        <Button variant="quiet">Phân tích</Button>
                       </Link>
                     </div>
                   )

@@ -24,7 +24,7 @@ logger = logging.getLogger("ai_engine.daemon.eod_learning")
 class EODLearningDaemon:
     """Daemon tự động kích hoạt Causal Learning cuối phiên (15:15 EOD Cron)."""
 
-    TRIGGER_TIME = dt_time(15, 15)  # 15:15 hàng ngày
+    TRIGGER_TIME = dt_time(17, 30)  # 17:30 hàng ngày (sau khi Daily ETL nạp đủ dữ liệu EOD sạch lúc 17:00)
 
     def __init__(
         self,
@@ -44,7 +44,7 @@ class EODLearningDaemon:
         """Trạng thái hiện tại của EOD Daemon phục vụ API & Monitoring."""
         return {
             "is_running": self._running,
-            "target_trigger_time": "15:15:00",
+            "target_trigger_time": "17:30:00",
             "last_run_date": self._last_run_date or self.runner.last_run_date,
             "last_status": self._last_status,
             "last_result": self.runner.last_result,

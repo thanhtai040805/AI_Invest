@@ -3,7 +3,7 @@
 Chức năng & Trách nhiệm thể chế:
 1. Học từ mọi quyết định đầu tư, lệnh thực thi và lợi nhuận thực tế (Realized Returns).
 2. Theo dõi sai lệch dự báo vs thực tế qua Model Reality Alignment Layer (MRAL) ghi nhận 100% CSDL.
-3. Thẩm định và triệt tiêu Ảo giác Moat AI (RAG LLM) dựa trên 3 mỏ neo tài chính định lượng.
+3. Đánh giá chất lượng evidence đầu vào và độ tin cậy của các factor.
 4. Tính toán Spearman Rank IC đa chân trời cho 6 nhóm Factor theo từng Market Regime.
 5. Chẩn đoán nguyên nhân IC Decay (DATA_ERROR / REGIME_MISMATCH / CROWDING / STRUCTURAL_DECAY).
 6. Hiệu chuẩn bảng tỷ lệ thắng (Win Rate P & Payoff B) qua Empirical Bayes Shrinkage, cấm fake dữ liệu.
@@ -25,7 +25,6 @@ from app.adapters.postgres_adapter import PostgresAdapter
 from app.eval.mral import MRALEngine
 from app.domain.rules.learning.causal_learning_engines import (
     FactorPerformanceEngine,
-    MoatHallucinationCalibrator,
     DecayDiagnosisEngine,
     ProbabilityCalibrationEngine,
     PortfolioAttributionEngine,
@@ -55,7 +54,6 @@ class ReinforcementLearningAgent(BaseAgent):
 
         # Khởi tạo 8 Engine nghiệp vụ chuyên trách
         self.factor_engine = FactorPerformanceEngine(min_sample_threshold=30)
-        self.moat_calibrator = MoatHallucinationCalibrator()
         self.decay_engine = DecayDiagnosisEngine()
         self.prob_engine = ProbabilityCalibrationEngine()
         self.attribution_engine = PortfolioAttributionEngine()
@@ -163,14 +161,14 @@ class ReinforcementLearningAgent(BaseAgent):
             - realized_trades: List[Dict] (kết quả các lệnh đã đóng P&L)
             - factor_predictions: Dict[str, Dict[str, float]] (ticker -> {f1..f6, css})
             - forward_returns: Dict[str, float] (ticker -> realized_return_20d)
-            - moat_assessments: Dict[str, Dict[str, Any]] (tùy chọn: ticker -> moat_score, financial_ratios)
+            - business_quality_evidence: Dict[str, Dict[str, Any]] (tùy chọn: ticker -> evidence metadata)
         """
         target_date = event_data.get("target_date", date.today())
         regime = str(event_data.get("regime", "BULL_MARKET")).upper().strip()
         realized_trades: List[Dict[str, Any]] = event_data.get("realized_trades", [])
         factor_preds: Dict[str, Dict[str, float]] = event_data.get("factor_predictions", {})
         forward_returns: Dict[str, float] = event_data.get("forward_returns", {})
-        moat_inputs: Dict[str, Dict[str, Any]] = event_data.get("moat_assessments", {})
+        quality_evidence: Dict[str, Dict[str, Any]] = event_data.get("business_quality_evidence", {})
 
         # -------------------------------------------------------------
         # 1. Đọc dữ liệu bổ trợ từ CSDL nếu event_data còn thiếu
@@ -238,52 +236,14 @@ class ReinforcementLearningAgent(BaseAgent):
                 })
             mral_records_count = self.mral_engine.log_metrics_batch(mral_batch)
 
-        # -------------------------------------------------------------
-        # 3. THẨM ĐỊNH SAI LỆCH MOAT AI (LỖ HỔNG 2: LLM HALLUCINATION CALIBRATION)
-        # -------------------------------------------------------------
-        moat_calibrations: Dict[str, Any] = {}
-        # Đọc danh sách hồ sơ Moat từ CSDL nếu không truyền trong event
-        if not moat_inputs:
-            try:
-                rows_moat = self.storage.fetch_all(
-                    "SELECT ticker, moat_score, evidence_summary, assessment_status FROM moat_profiles LIMIT 30"
-                )
-                for r in rows_moat:
-                    if r[1] is not None and str(r[3] or "").upper() == "COMPLETE":
-                        moat_inputs[str(r[0])] = {"moat_score": float(r[1]), "financial_ratios": {}}
-            except Exception:
-                pass
-
-        for m_ticker, m_info in moat_inputs.items():
-            if m_info.get("moat_score") is None:
-                moat_calibrations[m_ticker] = {
-                    "status": "DATA_INSUFFICIENT",
-                    "reason": "SAG moat_score is null or assessment is not COMPLETE",
-                }
-                continue
-            llm_score = float(m_info["moat_score"])
-            fin_ratios = m_info.get("financial_ratios", {})
-            calib_res = self.moat_calibrator.evaluate_moat(m_ticker, llm_score, fin_ratios)
-            moat_calibrations[m_ticker] = {
-                "raw_llm_score": calib_res.llm_moat_score,
-                "empirical_quant_score": calib_res.empirical_moat_score,
-                "hallucination_divergence": calib_res.hallucination_divergence,
-                "penalty_factor": calib_res.penalty_factor,
-                "calibrated_moat_score": calib_res.calibrated_moat_score,
-                "calibrated_multiplier": calib_res.calibrated_multiplier,
-                "hallucination_risk": calib_res.hallucination_risk,
-                "diagnostics": calib_res.evidence_diagnostics,
+        # 3. Evidence audit: không chấm lợi thế cạnh tranh và không nhân factor.
+        evidence_quality_audit = {
+            ticker: {
+                "evidence_status": payload.get("evidence_status", "UNVERIFIED"),
+                "evidence_count": len(payload.get("evidence", [])) if isinstance(payload.get("evidence"), list) else 0,
             }
-            # Ghi vết kiểm toán sai lệch Moat vào MRAL
-            self.mral_engine.log_metric(
-                metric_type="MOAT_HALLUCINATION_EVALUATION",
-                metric_date=target_date,
-                ticker=m_ticker,
-                predicted_value=f"LLM:{llm_score:.1f}",
-                realized_value=f"QUANT:{calib_res.empirical_moat_score:.1f}",
-                numeric_value=calib_res.hallucination_divergence,
-                metadata={"risk": calib_res.hallucination_risk, "penalty": calib_res.penalty_factor},
-            )
+            for ticker, payload in quality_evidence.items()
+        }
 
         # -------------------------------------------------------------
         # 4. TÍNH TOÁN SPEARMAN RANK IC ĐA CHÂN TRỜI (KHÔNG CÀO BẰNG PEARSON)
@@ -472,8 +432,7 @@ class ReinforcementLearningAgent(BaseAgent):
             "cdc_triggered": cdc_triggered,
             "policy_weights": policy_weights,
             "kelly_matrix": kelly_matrix,
-            "moat_calibrations_count": len(moat_calibrations),
-            "moat_calibrations": moat_calibrations,
+            "evidence_quality_audit": evidence_quality_audit,
             "governance_proposal": governance_proposal,
             "missing_data_warnings": missing_flags,
         }

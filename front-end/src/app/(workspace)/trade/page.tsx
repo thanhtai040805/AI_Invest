@@ -119,7 +119,7 @@ export default function Trade() {
 
   return (
     <Page
-      title="Execution"
+      title="Giao dịch & Khớp lệnh"
       sub={`${symbol} · Đặt lệnh có kiểm soát rủi ro và tuân thủ kỷ luật danh mục.`}
       actions={
         <div className="flex items-center gap-2">

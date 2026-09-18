@@ -10,12 +10,23 @@ def compute_sharpe(returns: pd.Series, annual_factor: float = 252) -> float:
     return float(returns.mean() / returns.std() * np.sqrt(annual_factor))
 
 
-def compute_sortino(returns: pd.Series, annual_factor: float = 252) -> float:
-    """Sortino ratio (downside deviation only)."""
-    neg = returns[returns < 0]
-    if len(neg) < 1 or neg.std() == 0:
+def compute_sortino(
+    returns: pd.Series, 
+    target_return: float = 0.0, 
+    annual_factor: float = 252
+) -> float:
+    """Sortino ratio (downside deviation only).
+    
+    Uses standard Root Mean Square of negative deviations across all N samples:
+    sigma_d = sqrt(mean(min(0, returns - target)^2))
+    """
+    if len(returns) < 2:
         return 0.0
-    return float(returns.mean() / neg.std() * np.sqrt(annual_factor))
+    downside_diff = np.minimum(0.0, returns - target_return)
+    downside_dev = np.sqrt(np.mean(downside_diff ** 2))
+    if downside_dev == 0.0:
+        return 0.0
+    return float((returns.mean() - target_return) / downside_dev * np.sqrt(annual_factor))
 
 
 def compute_max_drawdown(equity: pd.Series) -> float:
@@ -53,18 +64,39 @@ def compute_deflated_sharpe(
     sharpe: float,
     n_samples: int,
     n_trials: int = 1000,
+    skew: float = 0.0,
+    kurtosis: float = 3.0,
 ) -> float:
-    """Deflated Sharpe Ratio (Bailey & López de Prado).
+    """Deflated Sharpe Ratio (Bailey & López de Prado, 2014).
 
-    Adjusts for multiple testing / selection bias.
+    Adjusts for multiple testing / selection bias and non-normality.
+    Returns probability value in [0, 1] (p-value = 1 - DSR).
     """
     if n_samples < 2:
         return 0.0
-    e_max_sigma = np.sqrt((4 * n_trials - 4) / (n_trials - 2))
-    sharpe_annual = sharpe * np.sqrt(252)
-    numerator = sharpe_annual ** 2 - (n_samples - 1) / n_samples * e_max_sigma ** 2
-    denominator = np.sqrt((n_samples - 1) / n_samples * (1 + sharpe_annual ** 2 / 4))
-    return float(numerator / denominator) if denominator > 0 else 0.0
+    
+    from scipy.stats import norm
+
+    # Standard error of Sharpe ratio under null hypothesis (SR = 0)
+    sigma_0 = np.sqrt(1.0 / (n_samples - 1.0))
+
+    # Expected maximum Sharpe under null hypothesis (Euler-Mascheroni approximation)
+    gamma = 0.57721566490153286
+    if n_trials > 1:
+        z1 = (1.0 - gamma) * norm.ppf(1.0 - 1.0 / n_trials)
+        z2 = gamma * norm.ppf(1.0 - 1.0 / (n_trials * np.e))
+        e_max_sr = sigma_0 * float(z1 + z2)
+    else:
+        e_max_sr = 0.0
+
+    # Variance of Sharpe ratio estimation under non-normality
+    sr_var = (1.0 - skew * sharpe + ((kurtosis - 1.0) / 4.0) * (sharpe ** 2)) / (n_samples - 1.0)
+    if sr_var <= 0:
+        return 0.0
+        
+    sr_std = np.sqrt(sr_var)
+    z = (sharpe - e_max_sr) / (sr_std + 1e-9)
+    return float(norm.cdf(z))
 
 
 def compute_alpha_beta(

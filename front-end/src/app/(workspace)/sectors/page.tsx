@@ -34,8 +34,8 @@ export default function Sectors() {
 
   return (
     <Page
-      title="Sector rotation"
-      sub="One-month performance, current breadth, and foreign flow by industry."
+      title="Luân chuyển dòng tiền ngành"
+      sub="Hiệu suất 1 tháng, độ rộng dòng tiền và giao dịch khối ngoại theo ngành."
     >
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {sectorList.map((s) => (
@@ -46,7 +46,7 @@ export default function Sectors() {
                   {s.name}
                 </div>
                 <div className="text-[12px] text-muted">
-                  {s.vn} · {s.weight}% weight
+                  {s.vn} · {s.weight}% tỷ trọng
                 </div>
               </div>
               <div className="text-right">

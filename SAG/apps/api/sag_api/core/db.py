@@ -38,12 +38,19 @@ if settings.database_url.startswith("sqlite"):
         )
     _ensure_sqlite_dir(settings.database_url)
 
-engine: AsyncEngine = create_async_engine(
-    settings.database_url,
-    echo=False,
-    future=True,
-    pool_pre_ping=True,
-)
+_engine_options = {
+    "echo": False,
+    "future": True,
+    "pool_pre_ping": True,
+}
+if not settings.database_url.startswith("sqlite"):
+    _engine_options.update(
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_max_overflow,
+        pool_timeout=settings.db_pool_timeout,
+    )
+
+engine: AsyncEngine = create_async_engine(settings.database_url, **_engine_options)
 
 if settings.database_url.startswith("sqlite"):
 

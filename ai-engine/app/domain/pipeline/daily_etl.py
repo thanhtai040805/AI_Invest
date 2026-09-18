@@ -6,13 +6,13 @@ Runs at 18:00-19:00 VN time sequentially:
   18:10 → GARCH/EWMA Volatility (top liquid symbols)
   18:15 → Insider trades (CafeF API)
   18:20 → Foreign flow (Vietstock / DNSE flow)
-  18:25 → Financial ratios (AlphaStock API incremental refresh for newly published reports)
+  18:25 → Financial ratios (CafeF API incremental refresh for newly published reports)
   18:30 → Factor scores (Pre-compute F1-F6 factor scores for all HOSE stocks)
   18:35 → Macro indicators (SBV, vi.money, yfinance, VietFin)
 
 Note on Architectural Separation & Ingestion Policy:
 - Market-relative risk metrics (Beta/Alpha): Excluded from Daily ETL as Agents compute them directly.
-- Financial Ratios (AlphaStock): Runs incrementally daily to capture newly filed quarterly earnings automatically.
+- Financial Ratios (CafeF): Runs incrementally daily to capture newly filed quarterly earnings automatically.
 - External Data (Foreign Flow, Insider Trades): Must run daily as Agents cannot calculate external market activity.
 - Factor Scores (F1-F6): Pre-computed across all stocks for O(1) cache lookup by Agent-02 and Agent-03.
 - Composite Scoring & Execution: Handled dynamically by `DailyInvestmentPipeline` (12 Agents) using real-time
@@ -39,6 +39,7 @@ logger = logging.getLogger("ai_engine.etl")
 TZ_VN = timezone(timedelta(hours=7))
 
 JOB_NAME = "daily_etl"
+_bctc_dispatch_task: asyncio.Task | None = None
 
 
 # ── Market calendar helpers ──────────────────────────────────────────────
@@ -81,7 +82,7 @@ class DailyETLPipeline:
         Args:
             trade_date: Date to run ETL for (default: today).
             include_news: If True, run news crawlers (default: False, temporarily disabled).
-            include_financials: If True, run quarterly AlphaStock BCTC ETL (default: False).
+            include_financials: If True, run quarterly CafeF BCTC ETL (default: False).
         """
         self.trade_date = trade_date or datetime.now(TZ_VN).date()
         logger.info("=== DailyETL starting for %s ===", self.trade_date)
@@ -99,6 +100,7 @@ class DailyETLPipeline:
                 ("ohlcv_backfill", self.step_ohlcv_backfill),
                 ("technical_indicators", self.step_technical_indicators),
                 ("garch_volatility", self.step_garch_volatility),
+                ("beta_alpha", self.step_beta_alpha),
                 ("insider_trades", self.step_insider_trades),
                 ("foreign_flow", self.step_foreign_flow),
                 ("financial_ratios", self.step_financial_ratios),
@@ -265,10 +267,10 @@ class DailyETLPipeline:
     # ── Step: Financial Ratios ────────────────────────────────────────
 
     async def step_financial_ratios(self) -> Dict[str, Any]:
-        """Fetch latest financial statements from AlphaStock API, upsert to DB."""
-        logger.info("ETL: financial_ratios — fetching from AlphaStock...")
+        """Fetch latest financial statements from CafeF REST API, upsert to DB."""
+        logger.info("ETL: financial_ratios — fetching from CafeF...")
         try:
-            from app.infrastructure.data_pipelines.financial_etl_alphastock import refresh_incremental
+            from app.infrastructure.data_pipelines.financial_etl_cafef import refresh_incremental
             result = await asyncio.to_thread(refresh_incremental)
             logger.info("ETL: financial_ratios — %d rows", result.get("rows", 0))
             return {"status": "success", **result}
@@ -284,11 +286,11 @@ class DailyETLPipeline:
         Khi phát hiện có tài liệu BCTC mới được chèn: Tự động kích hoạt BctcToSagPipeline chạy ngầm
         (Background Task) để bóc tách OCR, đưa vào SAG và tính toán lại cờ rủi ro GIL flag cho DB.
         """
-        logger.info("ETL: corporate_documents — fetching latest BCTC & Governance PDFs from CafeF...")
+        logger.info("ETL: corporate_documents — fetching BCTC, BCTN, nghị quyết & quản trị PDFs from Vietstock...")
         try:
-            from app.infrastructure.knowledge_base.crawlers.vn.cafef_document_crawl import run as crawl_docs
-            # Type 1 = financial_statement, Type 5 = governance_report (1 năm gần nhất)
-            result = await crawl_docs(types=[1, 5], exchange="HOSE", max_years=1)
+            from app.infrastructure.knowledge_base.crawlers.vn.vietstock_document_crawl import run as crawl_docs
+            # Vietstock: 1 = BCTC, 2 = BCTN, 4 = nghị quyết, 9 = BCQT.
+            result = await asyncio.to_thread(crawl_docs, types=[1, 2, 4, 9], exchange="HOSE", max_years=1)
             inserted = result.get("inserted", 0)
             new_symbols = result.get("new_symbols", [])
             logger.info("ETL: corporate_documents — %d inserted / %d total, %d new symbols", inserted, result.get("total", 0), len(new_symbols))
@@ -296,7 +298,11 @@ class DailyETLPipeline:
             # Tự động kích hoạt BctcToSagPipeline cho các mã có BCTC mới
             if new_symbols:
                 logger.info("ETL: corporate_documents — phát hiện %d mã có BCTC mới (%s). Kích hoạt background BCTC to SAG pipeline...", len(new_symbols), new_symbols[:10])
-                asyncio.create_task(self._dispatch_bctc_to_sag(new_symbols))
+                global _bctc_dispatch_task
+                if _bctc_dispatch_task is None or _bctc_dispatch_task.done():
+                    _bctc_dispatch_task = asyncio.create_task(self._dispatch_bctc_to_sag(new_symbols))
+                else:
+                    logger.info("ETL: BCTC-SAG dispatch đang chạy; bỏ qua dispatch trùng trong cùng chu kỳ.")
 
             return {"status": "success", **result}
         except Exception as e:
@@ -306,9 +312,19 @@ class DailyETLPipeline:
     async def _dispatch_bctc_to_sag(self, symbols: List[str]) -> None:
         """Background worker xử lý tự động BctcToSagPipeline cho các mã mới nạp."""
         try:
+            from app.domain.rules.bctc_ingestion_guard import filter_ingestible_tickers
             from app.domain.pipeline.bctc_to_sag_pipeline import BctcToSagPipeline
+
+            valid_symbols = filter_ingestible_tickers(symbols)
+            skipped_count = len(symbols) - len(valid_symbols)
+            if skipped_count > 0:
+                logger.info(
+                    "⏭️ [Auto BCTC-SAG Worker] Bỏ qua %d mã thuộc danh mục rác/đóng băng thanh khoản (< 5B)",
+                    skipped_count
+                )
+
             pipeline = BctcToSagPipeline()
-            for sym in symbols:
+            for sym in valid_symbols:
                 try:
                     logger.info("⚡ [Auto BCTC-SAG Worker] Bắt đầu xử lý mã %s...", sym)
                     res = await pipeline.process_ticker(sym)
@@ -460,4 +476,3 @@ def run_etl_sync(
 ) -> Dict[str, Any]:
     """Synchronous wrapper for CLI usage."""
     return asyncio.run(run_etl(trade_date, include_news=include_news, include_financials=include_financials))
-

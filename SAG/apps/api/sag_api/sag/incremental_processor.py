@@ -45,11 +45,11 @@ _SQLITE_INTEGER_MAX = 2**63 - 1
 _KNOWLEDGE_EVENT_REQUIREMENTS = """
 QUY TẮC SAG v2 KHI TRÍCH XUẤT TÀI LIỆU BCTC/BCQT:
 1. Markdown gốc là nguồn dữ liệu bất biến. KHÔNG chép lại toàn bộ nội dung, KHÔNG chép lại toàn bộ bảng trong output.
-2. Output chỉ là manifest ngắn cho các facts/relations/entities quan trọng phục vụ MOAT và GIL. Trường content chỉ tóm tắt ngắn bằng tiếng Việt và nêu evidence anchor; nội dung chi tiết được hydrate bằng line span ở tầng SAG v2.
-3. Không bắt buộc một heading tạo một event. Chỉ tạo item khi có thông tin định lượng, quan hệ sở hữu/dòng vốn, giao dịch bên liên quan, quản trị, dự án/công suất, hoặc tín hiệu MOAT rõ ràng.
+2. Output chỉ là manifest ngắn cho các facts/relations/entities quan trọng phục vụ Business Quality và GIL. Trường content chỉ tóm tắt ngắn bằng tiếng Việt và nêu evidence anchor; nội dung chi tiết được hydrate bằng line span ở tầng SAG v2.
+3. Không bắt buộc một heading tạo một event. Chỉ tạo item khi có thông tin định lượng, quan hệ sở hữu/dòng vốn, giao dịch bên liên quan hoặc quản trị rõ ràng.
 4. Mỗi item phải có reference tới đoạn/mục thực tế trong tài liệu; nếu không xác minh được reference thì bỏ item đó.
 5. Taxonomy được phép dùng OTHER khi dữ liệu không khớp nhóm chuyên biệt; không ép dữ liệu mơ hồ thành quan hệ vốn.
-6. Không tự suy diễn điểm MOAT/GIL. Thiếu dữ liệu phải thể hiện là thiếu dữ liệu, không coi là PASS.
+6. Không tự suy diễn điểm Business Quality/GIL. Thiếu dữ liệu phải thể hiện là thiếu dữ liệu, không coi là PASS.
 """.strip()
 
 

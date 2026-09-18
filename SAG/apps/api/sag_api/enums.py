@@ -113,14 +113,6 @@ class RelationType(StrEnum):
     OTHER = "other"
 
 
-class MoatPillar(StrEnum):
-    INTANGIBLES = "intangibles"
-    SWITCHING_COSTS = "switching_costs"
-    NETWORK_EFFECTS = "network_effects"
-    COST_ADVANTAGE = "cost_advantage"
-    EFFICIENT_SCALE = "efficient_scale"
-
-
 class AssessmentStatus(StrEnum):
     COMPLETE = "COMPLETE"
     PARTIAL = "PARTIAL"

@@ -122,6 +122,7 @@ class LLMClient:
         tool_choice: str | dict | None = None,
         extraction: bool = False,
         response_format: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
     ) -> Any:
         request: dict[str, Any] = {
             "model": self._settings.routed_extraction_llm_model if extraction else self._settings.routed_agent_llm_model,
@@ -130,7 +131,7 @@ class LLMClient:
             "num_retries": self._settings.llm_max_retries,
             "messages": messages,
             "temperature": self._settings.effective_llm_temperature,
-            "max_tokens": self._settings.llm_max_tokens,
+            "max_tokens": max_tokens if max_tokens is not None else self._settings.llm_max_tokens,
             "stream": stream,
         }
         if tools:
@@ -286,14 +287,58 @@ class LLMClient:
         except Exception as e:  # noqa: BLE001
             raise _classify_llm_error(e, stage=ErrorStage.GENERATE) from e
 
-    async def complete_extraction_json(self, messages: list[Message]) -> CompletionResult:
-        if not self.extraction_configured:
-            raise ConfigurationError("Chưa cấu hình LLM extraction（SAG_EXTRACTION_LLM_* hoặc SAG_LLM_*）")
+    async def complete_json(self, messages: list[Message], *, max_tokens: int | None = None) -> str:
+        """Complete on the agent/retrieval route with a JSON response format."""
+        self._ensure_configured()
         try:
             resp = await self._create_completion(
                 messages,
-                extraction=True,
                 response_format={"type": "json_object"},
+                max_tokens=max_tokens,
+            )
+            choices = _attr(resp, "choices", []) or []
+            if not choices:
+                raise UpstreamError(
+                    "Mô hình không trả về câu trả lời JSON",
+                    code=ErrorCode.LLM_EMPTY_RESPONSE,
+                    layer=ErrorLayer.LLM,
+                    stage=ErrorStage.GENERATE,
+                )
+            return _attr(_attr(choices[0], "message", {}), "content", "") or ""
+        except ApiError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            raise _classify_llm_error(e, stage=ErrorStage.GENERATE) from e
+
+    async def complete_extraction_json(self, messages: list[Message], *, max_tokens: int | None = None) -> CompletionResult:
+        if not self.extraction_configured:
+            raise ConfigurationError("Chưa cấu hình LLM extraction（SAG_EXTRACTION_LLM_* hoặc SAG_LLM_*）")
+        try:
+            response_format: dict[str, Any] = {"type": "json_object"}
+            for message in reversed(messages):
+                content = message.get("content") if isinstance(message, dict) else None
+                if not isinstance(content, str):
+                    continue
+                try:
+                    prompt_payload = json.loads(content)
+                except json.JSONDecodeError:
+                    continue
+                schema = prompt_payload.get("json_schema") if isinstance(prompt_payload, dict) else None
+                if isinstance(schema, dict):
+                    response_format = {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "financial_extraction_manifest",
+                            "strict": True,
+                            "schema": schema,
+                        },
+                    }
+                break
+            resp = await self._create_completion(
+                messages,
+                extraction=True,
+                response_format=response_format,
+                max_tokens=max_tokens,
             )
             choices = _attr(resp, "choices", []) or []
             if not choices:

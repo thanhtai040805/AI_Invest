@@ -26,16 +26,16 @@ export default function Login() {
   }
   return (
     <AuthShell
-      title="Sign in"
-      sub="Welcome back to your investment workspace."
+      title="Đăng nhập"
+      sub="Chào mừng bạn quay trở lại không gian đầu tư định lượng."
       footer={
         <>
-          New to AIInvest?{" "}
+          Chưa có tài khoản AIInvest?{" "}
           <button
             onClick={() => navigate("/signup")}
             className="font-medium text-mineral hover:underline"
           >
-            Create an account
+            Đăng ký ngay
           </button>
         </>
       }
@@ -48,22 +48,22 @@ export default function Login() {
         className="space-y-4"
       >
         <Field
-          label="Email"
+          label="Địa chỉ Email"
           type="email"
           value={email}
           onChange={setEmail}
           placeholder="you@firm.vn"
-          error={err ? "Enter a valid email and password." : undefined}
+          error={err ? "Vui lòng nhập đúng email và mật khẩu." : undefined}
         />
         <Field
-          label="Password"
+          label="Mật khẩu"
           type="password"
           value={pw}
           onChange={setPw}
           placeholder="••••••••"
         />
         <Button type="submit" variant="primary" className="h-11 w-full">
-          Sign in
+          Đăng nhập
         </Button>
       </form>
     </AuthShell>

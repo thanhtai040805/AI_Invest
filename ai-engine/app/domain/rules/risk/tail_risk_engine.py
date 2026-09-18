@@ -71,9 +71,9 @@ class TailRiskEngine:
             else:
                 sigma = float(np.std(rets))
 
-        # Expected value of tail under Student-t distribution (df = 5)
-        # Tại alpha = 2.5%, Student-t (df=5) có tail quantile ~ 2.571 vs Normal ~ 1.96
-        tail_multiplier = 2.57
+        # Expected Shortfall (CVaR) under Student-t distribution (df = 5, alpha = 2.5%)
+        # Note: 2.571 is the VaR quantile; the true conditional tail expectation (ES) is ~ 3.37 - 3.52x sigma
+        tail_multiplier = 3.37
         es_t = sigma * tail_multiplier
         return round(es_t, 4)
 
@@ -117,10 +117,10 @@ class TailRiskEngine:
         egarch_es = self.calculate_egarch_student_t_es(returns_series)
         stress_es, stress_details = self.calculate_vietnam_stress_es(portfolio_positions, market_beta)
 
-        # Phân loại độ nguy hiểm của rủi ro đuôi
-        if egarch_es > 0.070 or stress_es > 0.140:
+        # Phân loại độ nguy hiểm của rủi ro đuôi (chuẩn hóa tương ứng hệ số ES 3.37x)
+        if egarch_es > 0.080 or stress_es > 0.140:
             verdict = "DANGEROUS"
-        elif egarch_es > 0.045 or hist_es > 0.040:
+        elif egarch_es > 0.055 or hist_es > 0.045:
             verdict = "ELEVATED"
         else:
             verdict = "SAFE"

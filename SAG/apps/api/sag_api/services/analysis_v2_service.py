@@ -8,23 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sag_api.db.models import Document, DocumentFact, DocumentRelation
 from sag_api.services.document_structure_service import ACTIVE_DOCUMENT_ROLES, list_active_documents_by_ticker
 from sag_api.services.gil_service import GILGraphAnalyzer
-
-MOAT_PILLARS = (
-    "Intangibles",
-    "Switching Costs",
-    "Network Effects",
-    "Cost Advantage",
-    "Efficient Scale",
-)
-
-_PILLAR_KEYWORDS = {
-    "Intangibles": ("thương hiệu", "giấy phép", "bằng sáng chế", "nhãn hiệu", "quyền khai thác"),
-    "Switching Costs": ("hợp đồng dài hạn", "chi phí chuyển đổi", "khách hàng chiến lược", "tích hợp"),
-    "Network Effects": ("mạng lưới", "hệ sinh thái", "người dùng", "đối tác"),
-    "Cost Advantage": ("giá vốn", "biên lợi nhuận", "chi phí", "quy mô", "tự chủ", "nguyên liệu"),
-    "Efficient Scale": ("thị phần", "công suất", "dự án", "khu vực", "độc quyền", "cảng", "mỏ"),
-}
-
+from sag_api.services.gil_service import assess_gil as assess_gil_v2
 
 def _role_set(documents: list[Document]) -> set[str]:
     return {str(doc.doc_role) for doc in documents if doc.doc_role}
@@ -43,79 +27,26 @@ def _evidence_from_fact(fact: DocumentFact, document_by_id: dict[str, Document])
     }
 
 
-async def assess_moat_by_ticker(session: AsyncSession, ticker: str) -> dict[str, Any]:
+async def assess_financial_quality_by_ticker(session: AsyncSession, ticker: str) -> dict[str, Any]:
+    """Tổng hợp chất lượng evidence hiện có, không chấm lợi thế cạnh tranh."""
     _source, documents = await list_active_documents_by_ticker(session, ticker)
-    active_roles = sorted(_role_set(documents))
-    missing_roles = [role for role in ACTIVE_DOCUMENT_ROLES if role not in active_roles]
-    document_by_id = {doc.id: doc for doc in documents}
+    document_ids = [doc.id for doc in documents]
     facts = []
-    if document_by_id:
-        facts = list(
-            (
-                await session.execute(
-                    select(DocumentFact).where(DocumentFact.document_id.in_(list(document_by_id)))
-                )
-            ).scalars()
-        )
-
-    pillars: dict[str, dict[str, Any]] = {}
-    qualifying_scores: list[float] = []
-    evidence_roles: set[str] = set()
-    for pillar in MOAT_PILLARS:
-        keywords = _PILLAR_KEYWORDS[pillar]
-        matched = [
-            fact
-            for fact in facts
-            if any(keyword in (fact.label or "").casefold() for keyword in keywords)
-        ][:12]
-        evidence = [_evidence_from_fact(fact, document_by_id) for fact in matched]
-        for item in evidence:
-            if item.get("doc_role"):
-                evidence_roles.add(str(item["doc_role"]))
-        score = None
-        verdict = "NO_EVIDENCE"
-        confidence = 0.0
-        if evidence:
-            score = min(100.0, 50.0 + len(evidence) * 8.0)
-            qualifying_scores.append(score)
-            verdict = "SUPPORTED"
-            confidence = min(0.85, 0.45 + len(evidence) * 0.08)
-        pillars[pillar] = {
-            "verdict": verdict,
-            "score": score,
-            "confidence": confidence,
-            "evidence": evidence,
-            "counter_evidence": [],
-        }
-
-    reasons: list[str] = []
-    if missing_roles:
-        reasons.append(f"Thiếu tài liệu active: {', '.join(missing_roles)}")
-    if len(qualifying_scores) < 3:
-        reasons.append("Chưa đủ ít nhất 3 trụ MOAT có evidence/counter-evidence đã xác minh")
-    if len(evidence_roles) < 2:
-        reasons.append("Evidence MOAT chưa đến từ ít nhất 2 loại tài liệu")
-
-    moat_score = None
-    multiplier = None
-    if not missing_roles and len(qualifying_scores) >= 3 and len(evidence_roles) >= 2:
-        moat_score = round(sum(qualifying_scores) / len(qualifying_scores), 2)
-        multiplier = round(1.0 + (moat_score - 50.0) / 50.0 * 0.15, 3)
-        status = "COMPLETE"
-    elif qualifying_scores:
-        status = "PARTIAL"
-    else:
-        status = "INSUFFICIENT"
+    if document_ids:
+        facts = list((await session.execute(
+            select(DocumentFact).where(DocumentFact.document_id.in_(document_ids))
+        )).scalars())
+    evidence = [_evidence_from_fact(fact, {doc.id: doc for doc in documents}) for fact in facts]
     return {
         "ticker": ticker.upper().strip(),
-        "assessment_status": status,
-        "moat_score": moat_score,
-        "multiplier": multiplier,
-        "coverage_ratio": round(len(qualifying_scores) / len(MOAT_PILLARS), 4),
-        "active_roles": active_roles,
-        "missing_roles": missing_roles,
-        "pillars": pillars,
-        "reasons": reasons,
+        "assessment_status": "COMPLETE" if evidence else "INSUFFICIENT",
+        "quality_score": None,
+        "evidence_status": "VERIFIED" if evidence else "INSUFFICIENT",
+        "coverage_ratio": 1.0 if evidence else 0.0,
+        "active_roles": sorted(_role_set(documents)),
+        "missing_roles": [role for role in ACTIVE_DOCUMENT_ROLES if role not in _role_set(documents)],
+        "evidence": evidence,
+        "reasons": [] if evidence else ["Chưa có evidence định lượng hoặc mô tả đã xác minh"],
     }
 
 
@@ -126,6 +57,16 @@ async def assess_gil_by_ticker(
     equity_override_vnd: float | None = None,
     equity_provenance: str | None = None,
 ) -> dict[str, Any]:
+    """Compatibility adapter; the V2 database-backed GIL is canonical.
+
+    The former DocumentFact/DocumentRelation analyzer is intentionally no
+    longer used for ticker assessments. V1 keeps its direct graph endpoint
+    for clients that explicitly submit an in-memory graph.
+    """
+    return await assess_gil_v2(session, ticker)
+
+    # Legacy implementation retained below temporarily for source-level
+    # migration reference; it is unreachable and must not be used by routes.
     _source, documents = await list_active_documents_by_ticker(session, ticker)
     active_roles = sorted(_role_set(documents))
     missing_roles = [role for role in ACTIVE_DOCUMENT_ROLES if role not in active_roles]

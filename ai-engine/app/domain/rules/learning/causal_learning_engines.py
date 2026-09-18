@@ -2,7 +2,7 @@
 
 Cung cấp 8 bộ máy lượng hóa chuyên sâu cho Agent-10:
 1. FactorPerformanceEngine: Rolling Spearman Rank IC đa chân trời (T+5, T+10, T+20) & khử nhiễu.
-2. MoatHallucinationCalibrator: Thẩm định sai lệch Moat AI (RAG LLM) dựa trên 3 mỏ neo tài chính thực nghiệm.
+2. EvidenceQualityAudit: kiểm tra độ đầy đủ và nguồn gốc của evidence đầu vào.
 3. DecayDiagnosisEngine: Chẩn đoán 4 nguyên nhân suy thoái Alpha (Data, Regime, Crowding, Structural).
 4. ProbabilityCalibrationEngine: Hiệu chuẩn xác suất Bayes (Empirical Bayes Shrinkage) & Resampled Kelly.
 5. PortfolioAttributionEngine: Phân rã hiệu quả danh mục Brinson-Fachler (Allocation, Selection, Interaction).
@@ -117,139 +117,7 @@ class FactorPerformanceEngine:
 
 
 # =====================================================================
-# 2. MOAT HALLUCINATION CALIBRATOR (HIỆU CHUẨN ẢO GIÁC RAG LLM)
-# =====================================================================
-
-@dataclass
-class MoatCalibrationResult:
-    ticker: str
-    llm_moat_score: float
-    empirical_moat_score: float
-    hallucination_divergence: float
-    penalty_factor: float
-    calibrated_moat_score: float
-    calibrated_multiplier: float
-    hallucination_risk: str  # "LOW", "MODERATE", "HIGH_HALLUCINATION"
-    evidence_diagnostics: Dict[str, Any]
-
-
-class MoatHallucinationCalibrator:
-    """
-    Thẩm định sai lệch Moat AI (RAG LLM) dựa trên 3 mỏ neo tài chính định lượng:
-    1. ROIC - WACC spread persistence (Độ bền lợi tức vượt trội chi phí vốn)
-    2. Pricing Power Index (Biên lãi gộp bảo toàn trước lạm phát/hết ưu đãi thuế)
-    3. Relative Market Share Momentum (Tăng trưởng doanh thu so với trung vị ngành)
-    """
-
-    def evaluate_moat(
-        self,
-        ticker: str,
-        llm_moat_score: float,
-        financial_ratios: Dict[str, float],
-    ) -> MoatCalibrationResult:
-        """
-        Đo lường khoảng cách sai lệch giữa tuyên bố định tính của LLM và con số tài chính thực tế.
-        - financial_ratios:
-            - roic: float (%)
-            - wacc: float (%) (mặc định 11.5% tại VN)
-            - roic_spread_persistence_quarters: int (số quý liên tiếp ROIC > WACC)
-            - gross_margin_delta_4q: float (%) (biến động biên gộp YoY)
-            - rev_growth_relative_to_sector: float (%)
-        """
-        clean_ticker = str(ticker).upper().strip()
-        m_llm = float(np.clip(llm_moat_score, 0.0, 100.0))
-
-        # 1. Mỏ neo 1: ROIC - WACC Spread (Trọng số 45%)
-        roic = float(financial_ratios.get("roic", 12.0))
-        wacc = float(financial_ratios.get("wacc", 11.5))
-        roic_spread = roic - wacc
-        persistence_q = int(financial_ratios.get("roic_spread_persistence_quarters", 2))
-
-        # Điểm ROIC: 0 đến 100
-        if roic_spread <= -3.0:
-            s_roic = 10.0
-        elif roic_spread <= 0.0:
-            s_roic = 30.0
-        elif roic_spread < 5.0:
-            s_roic = 50.0 + (roic_spread / 5.0) * 20.0  # 50 - 70
-        else:
-            s_roic = min(100.0, 70.0 + (roic_spread - 5.0) * 3.0 + min(persistence_q * 2.5, 15.0))
-
-        # 2. Mỏ neo 2: Sức mạnh định giá qua Biên Lãi Gộp (Trọng số 35%)
-        gm_delta = float(financial_ratios.get("gross_margin_delta_4q", 0.0))
-        if gm_delta <= -4.0:
-            s_margin = 15.0  # Biên gộp sụp đổ mạnh -> Mất sức mạnh định giá hoặc hết ưu đãi thuế
-        elif gm_delta <= -1.5:
-            s_margin = 40.0
-        elif gm_delta <= 1.5:
-            s_margin = 65.0  # Giữ vững biên gộp khi chi phí tăng -> Moat thực tế
-        else:
-            s_margin = min(100.0, 80.0 + gm_delta * 4.0)
-
-        # 3. Mỏ neo 3: Tốc độ mở rộng thị phần so với Ngành (Trọng số 20%)
-        rel_rev_growth = float(financial_ratios.get("rev_growth_relative_to_sector", 0.0))
-        if rel_rev_growth <= -5.0:
-            s_growth = 25.0
-        elif rel_rev_growth <= 2.0:
-            s_growth = 55.0
-        else:
-            s_growth = min(100.0, 70.0 + rel_rev_growth * 2.0)
-
-        # Tổng hợp điểm Moat Định lượng Thực nghiệm (Empirical Moat Score)
-        m_quant = round(0.45 * s_roic + 0.35 * s_margin + 0.20 * s_growth, 2)
-
-        # Khoảng cách sai lệch (Hallucination Divergence)
-        divergence = max(0.0, m_llm - m_quant)
-
-        # Hàm phạt ảo giác (Moat Hallucination Penalty)
-        # Nếu LLM chấm cao hơn số thực > 15 điểm: Bắt đầu phạt
-        if divergence <= 15.0:
-            penalty = 0.0
-            risk = "LOW"
-        elif divergence <= 30.0:
-            penalty = (divergence - 15.0) / 30.0  # 0.0 -> 0.50
-            risk = "MODERATE"
-        else:
-            penalty = min(1.0, 0.50 + (divergence - 30.0) / 25.0)  # 0.50 -> 1.0
-            risk = "HIGH_HALLUCINATION"
-
-        # Hiệu chuẩn điểm Moat
-        calibrated_moat = round(m_llm * (1.0 - penalty) + m_quant * penalty, 2)
-
-        # Tính Moat Multiplier hiệu chuẩn (chuẩn hóa từ 0.85 đến 1.15)
-        # Điểm 50 = hệ số 1.0, Điểm 100 = 1.15, Điểm 0 = 0.85
-        calibrated_mult = round(1.0 + (calibrated_moat - 50.0) / 50.0 * 0.15, 3)
-
-        diagnostics = {
-            "s_roic_spread": round(s_roic, 1),
-            "s_margin_pricing_power": round(s_margin, 1),
-            "s_relative_growth": round(s_growth, 1),
-            "roic_spread_val": round(roic_spread, 2),
-            "gross_margin_delta": round(gm_delta, 2),
-            "raw_llm_vs_quant_gap": round(divergence, 2),
-        }
-
-        if risk == "HIGH_HALLUCINATION":
-            logger.warning(
-                f"[MoatHallucinationCalibrator] CẢNH BÁO ẢO GIÁC MOAT CAO tại {clean_ticker}: "
-                f"LLM={m_llm:.1f} vs Quant={m_quant:.1f} (Gap={divergence:.1f}). Phạt {penalty*100:.1f}% trọng số Moat!"
-            )
-
-        return MoatCalibrationResult(
-            ticker=clean_ticker,
-            llm_moat_score=m_llm,
-            empirical_moat_score=m_quant,
-            hallucination_divergence=round(divergence, 2),
-            penalty_factor=round(penalty, 4),
-            calibrated_moat_score=calibrated_moat,
-            calibrated_multiplier=calibrated_mult,
-            hallucination_risk=risk,
-            evidence_diagnostics=diagnostics,
-        )
-
-
-# =====================================================================
-# 3. DECAY DIAGNOSIS ENGINE (CHẨN ĐOÁN 4 NGUYÊN NHÂN SUY THOÁI ALPHA)
+# 2. DECAY DIAGNOSIS ENGINE (CHẨN ĐOÁN 4 NGUYÊN NHÂN SUY THOÁI ALPHA)
 # =====================================================================
 
 class DecayDiagnosisEngine:

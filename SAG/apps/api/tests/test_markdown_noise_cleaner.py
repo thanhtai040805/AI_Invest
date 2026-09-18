@@ -187,6 +187,26 @@ def test_financial_roles_can_drop_core_statement_sections_explicitly():
     assert stats.statement_sections == 2
 
 
+def test_financial_report_wrapper_drops_the_three_statements_before_notes():
+    markdown = (
+        "# BÁO CÁO TÀI CHÍNH RIÊNG QUÝ II/2026\n"
+        "| Tài sản | 100 |\n"
+        "# BÁO CÁO KẾT QUẢ HOẠT ĐỘNG KINH DOANH\n"
+        "| Doanh thu | 200 |\n"
+        "# BÁO CÁO LƯU CHUYỂN TIỀN TỆ\n"
+        "| Tiền cuối kỳ | 300 |\n"
+        "# BẢN THUYẾT MINH BÁO CÁO TÀI CHÍNH\n"
+        "## 1. Tiền và tương đương tiền\n"
+        "Tiền gửi ngân hàng.\n"
+    )
+    cleaned, stats = clean_markdown(markdown, doc_role="LATEST_QUARTER")
+    assert "Tài sản" not in cleaned
+    assert "Doanh thu" not in cleaned
+    assert "Tiền cuối kỳ" not in cleaned
+    assert "Tiền gửi ngân hàng" in cleaned
+    assert stats.statement_sections >= 3
+
+
 def test_form_codes_and_audit_stamp_noise_are_stripped():
     markdown = (
         "302-C.\n"

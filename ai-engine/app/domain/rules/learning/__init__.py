@@ -2,7 +2,6 @@
 
 from app.domain.rules.learning.causal_learning_engines import (
     FactorPerformanceEngine,
-    MoatHallucinationCalibrator,
     DecayDiagnosisEngine,
     ProbabilityCalibrationEngine,
     PortfolioAttributionEngine,
@@ -13,7 +12,6 @@ from app.domain.rules.learning.causal_learning_engines import (
 
 __all__ = [
     "FactorPerformanceEngine",
-    "MoatHallucinationCalibrator",
     "DecayDiagnosisEngine",
     "ProbabilityCalibrationEngine",
     "PortfolioAttributionEngine",

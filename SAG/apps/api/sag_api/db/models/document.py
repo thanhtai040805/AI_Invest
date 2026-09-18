@@ -214,24 +214,6 @@ class Relation(IDMixin, TimestampMixin, Base):
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
-class MoatSignal(IDMixin, TimestampMixin, Base):
-    __tablename__ = "moat_signals"
-    __table_args__ = (Index("ix_moat_signals_issuer_pillar", "issuer_id", "pillar"),)
-
-    issuer_id: Mapped[str | None] = mapped_column(ForeignKey("issuers.id", ondelete="CASCADE"), nullable=True, index=True)
-    document_id: Mapped[str] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
-    node_id: Mapped[str] = mapped_column(String(48), index=True)
-    evidence_span_id: Mapped[str | None] = mapped_column(ForeignKey("evidence_spans.id", ondelete="SET NULL"), nullable=True)
-    pillar: Mapped[str] = mapped_column(String(64))
-    direction: Mapped[str] = mapped_column(String(32), default="positive")
-    strength: Mapped[str] = mapped_column(String(32), default="weak")
-    durability: Mapped[str] = mapped_column(String(32), default="unknown")
-    materiality: Mapped[str] = mapped_column(String(32), default="unknown")
-    signal: Mapped[str] = mapped_column(String(512))
-    validation_status: Mapped[str] = mapped_column(String(32), default="VALIDATED")
-    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
-
-
 class DocumentFacet(IDMixin, TimestampMixin, Base):
     """An evidence-backed content capability detected in a document.
 

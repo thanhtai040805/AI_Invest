@@ -113,17 +113,16 @@ class ThesisEngine:
         bull_case = round(base_case * (1.0 + premium + 0.05), 0)
         base_case = round(base_case * (1.0 + premium), 0)
 
-        # Đảm bảo target price luôn >= current_price
-        if base_case < current_price:
-            base_case = round(current_price * 1.12, 0)
+        # Bảo toàn định giá nội tại thực tế (không ép tăng 12% khi định giá thấp hơn thị giá)
         if bull_case <= base_case:
-            bull_case = round(base_case * 1.10, 0)
+            bull_case = round(base_case * 1.05, 0)
 
         return {
             "valuation_method": valuation_method,
             "base_case": float(base_case),
             "bull_case": float(bull_case),
-            "target_range": [float(base_case), float(bull_case)],
+            "target_range": [float(min(base_case, bull_case)), float(max(base_case, bull_case))],
+            "is_overvalued": bool(base_case < current_price),
         }
 
     def generate_pre_mortem_scenarios(
@@ -157,13 +156,13 @@ class ThesisEngine:
 
     def evaluate_idiosyncratic_veto(
         self,
-        moat_score: float,
+        quality_score: float,
         micro_score: float,
         macro_score: float = 60.0
     ) -> bool:
-        """Quyền phủ quyết đặc quyền: Nếu Moat & Micro > 90 thì vượt qua rào cản vĩ mô."""
-        if moat_score >= 90.0 and micro_score >= 90.0:
-            logger.warning("IDIOSYNCRATIC VETO ACTIVATED: Moat và Micro vượt trội, phủ quyết rào cản vĩ mô!")
+        """Quyền phủ quyết đặc quyền: Nếu Business Quality & Micro > 90 thì vượt qua rào cản vĩ mô."""
+        if quality_score >= 90.0 and micro_score >= 90.0:
+            logger.warning("IDIOSYNCRATIC VETO ACTIVATED: Business Quality và Micro vượt trội, phủ quyết rào cản vĩ mô!")
             return True
         return False
 
@@ -171,13 +170,13 @@ class ThesisEngine:
         self,
         factors: Dict[str, float],
         css_score: float,
-        moat_score: float,
+        quality_score: float,
         regime_label: str,
     ) -> Tuple[bool, Dict[str, str], int]:
         """
         Thẩm định thực chất 3 Tín hiệu Độc lập (Hard Law Điều 3):
         - Signal 1: Nhân tố cơ bản / Lợi nhuận (F4 Earnings >= 60 hoặc CSS >= 65 hoặc F1 Value >= 65)
-        - Signal 2: Dòng tiền & Lợi thế kinh tế (Moat Score >= 60 hoặc F5 Flow >= 60 hoặc F3 Momentum >= 60)
+        - Signal 2: Business Quality & Flow (Quality Score >= 60 hoặc F5 Flow >= 60 hoặc F3 Momentum >= 60)
         - Signal 3: Bối cảnh Vĩ mô / Chế độ thị trường HMM (Không phải BEAR/CRISIS hoặc có Idiosyncratic Veto)
         
         Trả về: (passed_all, signals_dict, passed_count)
@@ -192,25 +191,25 @@ class ThesisEngine:
             else f"FAIL (F4 SUE={f4:.1f} < 60 và CSS={css_score:.1f} < 60)"
         )
 
-        # Signal 2: Surveillance / Flow / Moat
+        # Signal 2: Business Quality / Flow
         f5 = factors.get("f5_flow", 50.0)
         f3 = factors.get("f3_momentum", 50.0)
-        s2_passed = (moat_score >= 60.0) or (f5 >= 60.0) or (f3 >= 60.0)
+        s2_passed = (quality_score >= 60.0) or (f5 >= 60.0) or (f3 >= 60.0)
         s2_text = (
-            f"PASS (Moat={moat_score:.1f}, F5 Flow={f5:.1f})"
+            f"PASS (Business Quality={quality_score:.1f}, F5 Flow={f5:.1f})"
             if s2_passed
-            else f"FAIL (Moat={moat_score:.1f}, F5={f5:.1f}, F3={f3:.1f} đều dưới 60)"
+            else f"FAIL (Business Quality={quality_score:.1f}, F5={f5:.1f}, F3={f3:.1f} đều dưới 60)"
         )
 
         # Signal 3: Macro / HMM Regime / Idiosyncratic Veto
         clean_regime = regime_label.upper().strip()
         is_stress_regime = ("BEAR" in clean_regime) or ("CRISIS" in clean_regime) or ("CONTRACTION" in clean_regime)
-        has_veto = self.evaluate_idiosyncratic_veto(moat_score, factors.get("f2_quality", 50.0))
+        has_veto = self.evaluate_idiosyncratic_veto(quality_score, factors.get("f2_quality", 50.0))
 
         s3_passed = (not is_stress_regime) or has_veto
         if s3_passed:
             if has_veto and is_stress_regime:
-                s3_text = f"PASS (IDIOSYNCRATIC_VETO: Moat={moat_score:.1f}, Quality={factors.get('f2_quality', 50.0):.1f} phủ quyết Regime={clean_regime})"
+                s3_text = f"PASS (IDIOSYNCRATIC_VETO: Business Quality={quality_score:.1f}, Quality={factors.get('f2_quality', 50.0):.1f} phủ quyết Regime={clean_regime})"
             else:
                 s3_text = f"PASS (Regime={clean_regime})"
         else:
@@ -243,7 +242,11 @@ class ThesisEngine:
         css_score = float(research_report.get("css", 0.0))
         conviction = str(research_report.get("conviction", "D")).upper()
         gil_status = str(
-            research_report.get("gil_status") or market_context.get("gil_status") or "DATA_INSUFFICIENT"
+            research_report.get("gil_status")
+            or research_report.get("gil_flag")
+            or market_context.get("gil_status")
+            or market_context.get("gil_flag")
+            or "PASS"
         ).upper()
         sector = str(research_report.get("sector", "General"))
         regime_label = str(market_context.get("current_regime", "BULL_TRENDING"))
@@ -265,14 +268,12 @@ class ThesisEngine:
             "f5_flow": float(research_report.get("f5_flow", 50.0)),
             "f6_technical": float(research_report.get("f6_technical", 50.0)),
         }
-        if research_report.get("moat_score") is None:
-            return False, {}, "REJECT: SAG moat_score is null; assessment chưa COMPLETE."
-        moat_score = float(research_report["moat_score"])
+        quality_score = float(research_report.get("business_quality_score", research_report.get("f2_quality", 50.0)))
 
         passed_all_signals, independent_signals, passed_signal_count = self.evaluate_independent_signals(
             factors=factors,
             css_score=css_score,
-            moat_score=moat_score,
+            quality_score=quality_score,
             regime_label=regime_label,
         )
 
@@ -323,7 +324,11 @@ class ThesisEngine:
             },
             "thesis_body": {
                 "why_now": f"Ngòi nổ '{catalyst_info['primary_type']}' bước vào giai đoạn hiện thực hóa, hỗ trợ bởi dòng tiền và tăng trưởng lợi nhuận.",
-                "why_this_stock": f"Mã {ticker_clean} (Ngành {sector}) sở hữu lợi thế Moat ({moat_score:.1f}) và CSS ({css_score:.1f}) thuộc nhóm dẫn dắt Universe.",
+                "why_this_stock": f"Mã {ticker_clean} (Ngành {sector}) có Business Quality ({quality_score:.1f}) và CSS ({css_score:.1f}) thuộc nhóm được xem xét trong Universe.",
+                "business_quality": {
+                    "score": round(quality_score, 2),
+                    "status": research_report.get("business_quality_status", "FINANCIAL_QUALITY"),
+                },
                 "catalyst": catalyst_info,
                 "timeline": f"{timeline_months}M",
                 "price_target": price_target_info,

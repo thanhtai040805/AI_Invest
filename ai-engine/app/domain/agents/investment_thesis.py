@@ -29,7 +29,7 @@ class InvestmentThesisAgent(BaseAgent):
     Trả lời 3 câu hỏi cốt tử: Tại sao bây giờ? Tại sao cổ phiếu này? Tôi có thể sai như thế nào?
     """
 
-    def __init__(self):
+    def __init__(self, llm_client: Optional[Any] = None):
         super().__init__(
             agent_name="investment_thesis",
             state_tables=["investment_theses"],
@@ -38,6 +38,19 @@ class InvestmentThesisAgent(BaseAgent):
         )
         self.thesis_engine = ThesisEngine()
         self.catalyst_validator = CatalystValidator()
+        if llm_client is None:
+            try:
+                from app.infrastructure.llm.client import get_unified_llm_client
+                llm_client = get_unified_llm_client()
+            except Exception as e_llm:
+                logger.debug(f"[InvestmentThesisAgent] Không thể nạp unified_llm_client: {e_llm}")
+                llm_client = None
+        try:
+            from app.domain.rules.thesis_synthesizer import ThesisSynthesizer
+            self.thesis_synthesizer = ThesisSynthesizer(llm_client=llm_client)
+        except Exception as e_syn:
+            logger.debug(f"[InvestmentThesisAgent] Không thể khởi tạo ThesisSynthesizer: {e_syn}")
+            self.thesis_synthesizer = None
 
     async def process(self, event_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -153,7 +166,57 @@ class InvestmentThesisAgent(BaseAgent):
                 }
             }
 
-        # 3. Kiểm tra rò rỉ tin tức PEAI & Bẫy phá vỡ giả qua CatalystValidator
+        # 3.1. Làm giàu luận điểm bằng Financial Quality.
+        if self.thesis_synthesizer:
+            try:
+                business_quality_data = {
+                    "business_quality_score": research_report.get("business_quality_score", research_report.get("f2_quality", 50.0)),
+                    "business_quality_status": research_report.get("business_quality_status", "FINANCIAL_QUALITY"),
+                }
+                direct_evidence = event_data.get("business_quality_data") or research_report.get("business_quality_data")
+                if direct_evidence:
+                    business_quality_data.update(direct_evidence)
+
+                sector = str(research_report.get("sector", "General"))
+                catalyst_type = structured_payload["thesis_body"]["catalyst"]["primary_type"]
+                price_target_info = structured_payload["thesis_body"]["price_target"]
+                independent_signals = structured_payload["input_validation"].get("independent_signals")
+
+                financial_metrics = {
+                    "pe": research_report.get("pe") or event_data.get("pe"),
+                    "pb": research_report.get("pb") or event_data.get("pb"),
+                    "roe": research_report.get("roe") or event_data.get("roe"),
+                    "roic": research_report.get("roic") or event_data.get("roic"),
+                    "gpm": research_report.get("gpm") or research_report.get("gross_profit_margin"),
+                    "earnings_growth": research_report.get("earnings_growth") or research_report.get("f4_earnings"),
+                }
+
+                narrative = await self.thesis_synthesizer.synthesize_thesis_narrative(
+                    ticker=ticker,
+                    sector=sector,
+                    business_quality_data=business_quality_data,
+                    catalyst_type=catalyst_type,
+                    price_target_info=price_target_info,
+                    current_price=current_price,
+                    timeline_months=timeline_months,
+                    independent_signals=independent_signals,
+                    financial_metrics=financial_metrics,
+                )
+                if narrative:
+                    structured_payload["thesis_body"]["why_now"] = narrative["why_now"]
+                    structured_payload["thesis_body"]["why_this_stock"] = narrative["why_this_stock"]
+                    if narrative.get("investment_style"):
+                        structured_payload["thesis_body"]["investment_style"] = narrative["investment_style"]
+                    if narrative.get("catalyst_description"):
+                        structured_payload["thesis_body"]["catalyst"]["description"] = narrative["catalyst_description"]
+                    if narrative.get("pre_mortem"):
+                        structured_payload["thesis_body"]["pre_mortem"] = narrative["pre_mortem"]
+                    if narrative.get("invalidation_triggers"):
+                        structured_payload["thesis_body"]["exit_conditions"]["invalidation_triggers"] = narrative["invalidation_triggers"]
+            except Exception as e_syn_proc:
+                logger.warning(f"[InvestmentThesisAgent] Lỗi làm giàu luận điểm qua LLM: {e_syn_proc}")
+
+        # 3.2. Kiểm tra rò rỉ tin tức PEAI & Bẫy phá vỡ giả qua CatalystValidator
         if "volume_data_3w" in event_data and "price_data_3w" in event_data:
             volume_data_3w = list(event_data["volume_data_3w"])
             price_data_3w = list(event_data["price_data_3w"])

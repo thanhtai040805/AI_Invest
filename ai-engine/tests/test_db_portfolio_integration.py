@@ -54,7 +54,7 @@ def test_portfolio_repository_lifecycle():
             slippage_bps=0.0,
         )
         assert buy_result["status"] == "FILLED"
-        assert buy_result["remaining_cash"] == 1000000000.0 - 75000000.0
+        assert buy_result["remaining_cash"] == 1000000000.0 - (75000000.0 * 1.001)  # Bao gồm phí môi giới 0.10%
 
         # 3. Kiểm tra danh mục vị thế sau khi mua
         positions = repo.get_open_positions()

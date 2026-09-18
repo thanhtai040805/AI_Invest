@@ -65,7 +65,15 @@ def get_job_queue(request: Request) -> Any:
 
 
 def get_llm(request: Request) -> Any:
-    return request.app.state.llm
+    # Some lightweight/API-only startup paths do not attach the shared client
+    # to app.state. Keep dependency resolution functional in those paths too.
+    client = getattr(request.app.state, "llm", None)
+    if client is not None:
+        return client
+    from sag_api.core.config import settings
+    from sag_api.generation import LLMClient
+
+    return LLMClient(settings)
 
 
 def get_agent_runtime(request: Request) -> Any:

@@ -105,21 +105,21 @@ function Stock({ symbol }: { symbol: string }) {
   const liveFactors = useMemo(() => {
     if (factorsRes) {
       return [
-        ["Value", Number(factorsRes.value ?? 60)],
-        ["Quality", Number(factorsRes.quality ?? 72)],
-        ["Momentum", Number(factorsRes.momentum ?? 68)],
-        ["Growth", Number(factorsRes.growth ?? 65)],
-        ["Flow", Number(factorsRes.flow ?? 70)],
-        ["Technical", Number(factorsRes.technical ?? 64)],
+        ["Định giá", Number(factorsRes.value ?? 60)],
+        ["Chất lượng", Number(factorsRes.quality ?? 72)],
+        ["Xung lực", Number(factorsRes.momentum ?? 68)],
+        ["Tăng trưởng", Number(factorsRes.growth ?? 65)],
+        ["Dòng tiền", Number(factorsRes.flow ?? 70)],
+        ["Kỹ thuật", Number(factorsRes.technical ?? 64)],
       ] as const
     }
     return [
-      ["Value", Math.round(s.rsi > 50 ? 65 : 55)],
-      ["Quality", 74],
-      ["Momentum", s.momentum || 68],
-      ["Growth", 66],
-      ["Flow", Math.round(s.flow ? Math.min(Math.max(s.flow * 2, 40), 90) : 60)],
-      ["Technical", s.rsi || 50],
+      ["Định giá", Math.round(s.rsi > 50 ? 65 : 55)],
+      ["Chất lượng", 74],
+      ["Xung lực", s.momentum || 68],
+      ["Tăng trưởng", 66],
+      ["Dòng tiền", Math.round(s.flow ? Math.min(Math.max(s.flow * 2, 40), 90) : 60)],
+      ["Kỹ thuật", s.rsi || 50],
     ] as const
   }, [factorsRes, s])
 
@@ -133,15 +133,15 @@ function Stock({ symbol }: { symbol: string }) {
     return { pe, pb, roe, eps, grossMargin }
   }, [fundamentalsRes, s])
 
-  const [tab, setTab] = useState("Moat Analysis")
+  const [tab, setTab] = useState("Ma trận nhân tố")
   return (
     <Page
       title={`${s.symbol} · ${s.name}`}
       sub={`${s.sector} · HOSE`}
       actions={<>
-        <Button variant="secondary">Add to watchlist</Button>
-        <Button variant="secondary">Set alert</Button>
-        <Button variant="primary">Save thesis</Button>
+        <Button variant="secondary">Thêm vào theo dõi</Button>
+        <Button variant="secondary">Đặt cảnh báo</Button>
+        <Button variant="primary">Lưu luận điểm</Button>
       </>}
     >
       {/* Price header */}
@@ -156,7 +156,7 @@ function Stock({ symbol }: { symbol: string }) {
               {isLive && (
                 <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                  LIVE
+                  TRỰC TIẾP
                 </span>
               )}
             </div>
@@ -180,11 +180,11 @@ function Stock({ symbol }: { symbol: string }) {
         {/* Left: chart + order book */}
         <div className="space-y-4">
           <Panel>
-            <PanelHead title="Price" sub="Live candlestick · crosshair, zoom, indicators & drawing tools" action={<Pill tone="teal"><i className="h-1.5 w-1.5 rounded-full bg-gain animate-pulse" />Live</Pill>} />
+            <PanelHead title="Biểu đồ giá" sub="Nến trực tiếp · công cụ vẽ, chỉ báo kỹ thuật & phóng to" action={<Pill tone="teal"><i className="h-1.5 w-1.5 rounded-full bg-gain animate-pulse" />Trực tiếp</Pill>} />
             <KLineChart ticker={s.symbol} name={s.name} basePrice={s.price} precision={0} height={420} subIndicators={["VOL"]} drawingBar />
             <div className="mt-3 flex items-center gap-4 text-[11px] text-muted">
-              <span>Vol {s.volume}</span>
-              <span className="ml-auto tnum">Range {fmt(s.floor)} – {fmt(s.ceiling)}</span>
+              <span>KL {s.volume}</span>
+              <span className="ml-auto tnum">Biên độ {fmt(s.floor)} – {fmt(s.ceiling)}</span>
             </div>
           </Panel>
           <Panel>
@@ -199,23 +199,23 @@ function Stock({ symbol }: { symbol: string }) {
         {/* Right: research inspector */}
         <Panel flush>
           <div className="px-5 pt-5">
-            <Tabs tabs={["Factor Matrix", "Financials", "Valuation", "Risk", "Thesis"]} active={tab === "Moat Analysis" || tab === "Graph Intelligence" ? "Factor Matrix" : tab} onChange={setTab} />
+            <Tabs tabs={["Ma trận nhân tố", "Tài chính", "Định giá", "Luận điểm"]} active={tab === "Moat Analysis" || tab === "Graph Intelligence" || tab === "Factor Matrix" || tab === "Ma trận nhân tố" ? "Ma trận nhân tố" : tab === "Financials" || tab === "Tài chính" ? "Tài chính" : tab === "Valuation" || tab === "Định giá" ? "Định giá" : tab === "Thesis" || tab === "Luận điểm" ? "Luận điểm" : tab} onChange={setTab} />
           </div>
           <div className="p-5">
-            {tab === "Factor Matrix" && (
+            {(tab === "Ma trận nhân tố" || tab === "Factor Matrix" || tab === "Moat Analysis" || tab === "Graph Intelligence") && (
               <div className="space-y-3">
                 <p className="text-[12px] text-muted">Điểm số định lượng các yếu tố F1–F6 từ mô hình AI Invest.</p>
                 {liveFactors.map(([l, v]) => <FactorBar key={l} label={l} value={v} />)}
               </div>
             )}
-            {tab === "Financials" && (
+            {(tab === "Tài chính" || tab === "Financials") && (
               <div className="space-y-2.5 text-[13px]">
                 {[["Biên lợi nhuận gộp", liveFundamentals.grossMargin], ["ROE (Tỷ suất sinh lời)", liveFundamentals.roe], ["P/E (Thị giá / Lợi nhuận)", liveFundamentals.pe], ["P/B (Thị giá / Giá trị sổ sách)", liveFundamentals.pb], ["EPS TTM", liveFundamentals.eps]].map(([l, v]) => (
                   <div key={l} className="flex justify-between border-b border-line pb-2"><span className="text-secondary">{l}</span><span className="tnum font-mono text-ink font-semibold">{v}</span></div>
                 ))}
               </div>
             )}
-            {tab === "Valuation" && (
+            {(tab === "Định giá" || tab === "Valuation") && (
               <div className="space-y-2.5 text-[13px]">
                 {[["P/E hiện tại", liveFundamentals.pe, "Trung vị ngành: 14.5×"], ["P/B hiện tại", liveFundamentals.pb, "Trung vị ngành: 1.8×"], ["EPS", liveFundamentals.eps, "Lợi nhuận mỗi cổ phần"], ["Vùng giá hợp lý", `${fmt(Math.round(s.price * 0.95))} – ${fmt(Math.round(s.price * 1.18))}`, "Định giá DCF + Multiples"]].map(([l, v, d]) => (
                   <div key={l} className="flex items-center justify-between border-b border-line pb-2"><span className="text-secondary">{l}</span><span className="tnum font-mono text-ink font-semibold">{v}</span><span className="text-[11px] text-muted">{d}</span></div>
@@ -223,19 +223,9 @@ function Stock({ symbol }: { symbol: string }) {
                 <p className="text-[12px] text-secondary pt-1">Định giá cập nhật tự động theo BCTC quý gần nhất và giá khớp lệnh.</p>
               </div>
             )}
-            {tab === "Risk" && (
-              <div className="space-y-3 text-[13px]">
-                <div className="flex items-center justify-between"><span className="text-secondary">Overall risk</span><RiskLabel risk={s.risk} /></div>
-                <ul className="space-y-1.5 text-secondary">
-                  <li>· Cyclical earnings sensitivity to construction demand</li>
-                  <li>· China export price competition</li>
-                  <li>· Working-capital intensity in expansion phase</li>
-                </ul>
-              </div>
-            )}
-            {tab === "Thesis" && (
+            {(tab === "Luận điểm" || tab === "Thesis") && (
               <div>
-                <div className="flex items-center gap-2 mb-3"><span className="text-[15px] font-semibold text-ink">Bullish bias</span><Conviction level="Moderate" /></div>
+                <div className="flex items-center gap-2 mb-3"><span className="text-[15px] font-semibold text-ink">Xu hướng tích cực</span><Conviction level="Moderate" /></div>
                 <ReasoningBlock data={defaultStockCases[symbol]?.reasoning || defaultStockCases.HPG.reasoning} />
               </div>
             )}

@@ -113,7 +113,7 @@ class DynamicAllocationEngine:
             adjusted_target = remaining_equity_budget
 
         # Kiểm tra tiền mặt khả dụng (chỉ áp dụng khi gia tăng tỷ trọng)
-        existing_this_stock = next((p for p in existing_positions if p["ticker"] == ticker), None)
+        existing_this_stock = next((p for p in existing_positions if (p.get("ticker") or p.get("symbol")) == ticker), None)
         current_weight = (
             float(existing_this_stock.get("market_value", 0.0)) / total_nav
             if existing_this_stock and total_nav > 0

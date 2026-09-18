@@ -195,32 +195,36 @@ class ExecutionAdaptationEngine:
         avoid_atc_dump = (atc_conc > 0.30 and exec_mode == ExecutionMode.STRESS)
 
         # 5. Phân bổ slices (Lô chẵn 100, trần 500k)
+        # Đảm bảo số lượng slice đủ để không vượt quá trần 500,000 cổ/lệnh của HOSE
+        min_children_for_cap = max(1, (total_quantity + self.MAX_ORDER_SIZE_HOSE - 1) // self.MAX_ORDER_SIZE_HOSE)
+        num_children = max(num_children, min_children_for_cap)
+
         base_slice_qty = (total_quantity // (num_children * 100)) * 100
         slices: List[OrderSlice] = []
         rem_qty = total_quantity
+        slice_idx = 1
 
         for i in range(num_children):
             if i == num_children - 1:
-                slice_qty = rem_qty
+                slice_qty = min(rem_qty, self.MAX_ORDER_SIZE_HOSE)
             else:
-                slice_qty = min(rem_qty, base_slice_qty)
+                slice_qty = min(rem_qty, base_slice_qty, self.MAX_ORDER_SIZE_HOSE)
 
+            slice_qty = (slice_qty // 100) * 100
             if slice_qty <= 0:
                 continue
-
-            # Đảm bảo không vượt quá trần 500,000 cổ / lệnh
-            slice_qty = min(slice_qty, self.MAX_ORDER_SIZE_HOSE)
-            slice_qty = (slice_qty // 100) * 100
 
             # Tính giá đặt limit cho từng slice
             if strategy == ExecutionStrategy.PASSIVE_LIMIT:
                 step_size = 50.0 if decision_price < 50_000 else 100.0
-                offset = (i % 3) * step_size
+                offset = ((slice_idx - 1) % 3) * step_size
                 if direction_clean == "BUY":
-                    calc_price = decision_price + offset
+                    # Lệnh mua thụ động đặt DƯỚI hoặc BẰNG giá thị trường để đón thanh khoản
+                    calc_price = decision_price - offset
                     slice_limit = min(calc_price, max_price)
                 else:
-                    calc_price = decision_price - offset
+                    # Lệnh bán thụ động đặt TRÊN hoặc BẰNG giá thị trường để bán giá tốt
+                    calc_price = decision_price + offset
                     slice_limit = max(calc_price, max_price)
                 slice_limit = self.align_to_hose_tick_size(slice_limit)
                 p_type = "LIMIT"
@@ -236,10 +240,40 @@ class ExecutionAdaptationEngine:
                 quantity=slice_qty,
                 price_type=p_type,
                 limit_price=slice_limit,
-                slice_index=i + 1,
+                slice_index=slice_idx,
                 session_phase=phase_label,
             ))
+            slice_idx += 1
             rem_qty -= slice_qty
+
+        # Đảm bảo phân bổ hết 100% khối lượng còn lại nếu có do trần 500k
+        while rem_qty >= 100:
+            extra_qty = min(rem_qty, self.MAX_ORDER_SIZE_HOSE)
+            extra_qty = (extra_qty // 100) * 100
+            if extra_qty <= 0:
+                break
+            if strategy == ExecutionStrategy.PASSIVE_LIMIT:
+                step_size = 50.0 if decision_price < 50_000 else 100.0
+                offset = ((slice_idx - 1) % 3) * step_size
+                calc_price = (decision_price - offset) if direction_clean == "BUY" else (decision_price + offset)
+                slice_limit = min(calc_price, max_price) if direction_clean == "BUY" else max(calc_price, max_price)
+                slice_limit = self.align_to_hose_tick_size(slice_limit)
+                p_type = "LIMIT"
+            else:
+                slice_limit = self.align_to_hose_tick_size(max_price)
+                p_type = "LIMIT" if market_phase in ("ATO", "ATC") else "MP"
+
+            slices.append(OrderSlice(
+                ticker=ticker_clean,
+                side=direction_clean,
+                quantity=extra_qty,
+                price_type=p_type,
+                limit_price=slice_limit,
+                slice_index=slice_idx,
+                session_phase=market_phase,
+            ))
+            slice_idx += 1
+            rem_qty -= extra_qty
 
         return ExecutionPlan(
             execution_decision="EXECUTE",

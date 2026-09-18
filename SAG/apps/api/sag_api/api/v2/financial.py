@@ -3,16 +3,16 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.core.db import get_session
-from sag_api.core.deps import get_job_queue, require_service_or_admin
+from sag_api.core.deps import get_job_queue, get_llm, require_service_or_admin
 from sag_api.core.errors import NotFoundError, ValidationError
 from sag_api.db.models import DocumentFacet, DocumentTreeNode, EvidenceSpan, Job, Observation, ReviewQueueItem
-from sag_api.enums import JobStatus, JobType
+from sag_api.enums import DocumentStatus, JobStatus, JobType
 from sag_api.schemas.v2 import (
     DocumentCreateIn,
     DocumentObjectCreateIn,
@@ -24,7 +24,6 @@ from sag_api.schemas.v2 import (
     EvidenceSearchOut,
     GILAssessmentOutV2,
     DocumentFacetOutV2,
-    MoatAssessmentOutV2,
     NodeContentOutV2,
     ObservationOutV2,
     ObservationSearchIn,
@@ -32,21 +31,19 @@ from sag_api.schemas.v2 import (
     TreeNodeOutV2,
 )
 from sag_api.services.financial_v2_service import (
-    assess_gil,
-    assess_moat,
     create_financial_document,
     document_to_out,
     enqueue_document_processing,
     get_document_for_ticker,
-    heading_path_list,
     hydrate_markdown,
     hydrate_node_content,
     list_documents,
     parse_pdf_bytes_to_markdown,
     parse_pdf_object_to_markdown,
-    search_evidence,
 )
 from sag_api.services.document_structure_service import sha256_text
+from sag_api.services.evidence_v2_service import heading_path_list, search_evidence
+from sag_api.services.gil_service import assess_gil
 
 router = APIRouter(tags=["sag-v2"], dependencies=[Depends(require_service_or_admin)])
 
@@ -266,6 +263,20 @@ async def get_document_by_id(document_id: str, session: AsyncSession = Depends(g
     return DocumentOutV2(**document_to_out(doc, asset, issuer))
 
 
+@router.get("/documents/{document_id}/extraction/raw")
+async def get_extraction_raw_response(document_id: str, session: AsyncSession = Depends(get_session)) -> Response:
+    """Return only the exact LLM response captured before server hydration."""
+    from sag_api.db.models import Document
+
+    doc = await session.get(Document, document_id)
+    if doc is None:
+        raise NotFoundError("Tài liệu không tồn tại")
+    raw = (doc.coverage or {}).get("extraction", {}).get("audit_raw_llm_response")
+    if not raw:
+        raise NotFoundError("Tài liệu chưa có audit_raw_llm_response")
+    return Response(content=str(raw), media_type="application/json; charset=utf-8")
+
+
 @router.get("/jobs/{job_id}")
 async def get_financial_job_status(job_id: str, session: AsyncSession = Depends(get_session)) -> dict:
     job = await session.get(Job, job_id)
@@ -295,7 +306,11 @@ async def get_document_markdown(document_id: str, session: AsyncSession = Depend
 
 
 @router.post("/documents/{document_id}/reprocess", response_model=DocumentOutV2)
-async def reprocess_document(document_id: str, session: AsyncSession = Depends(get_session)) -> DocumentOutV2:
+async def reprocess_document(
+    document_id: str,
+    force: bool = Query(False, description="Run extraction again even when the document is READY"),
+    session: AsyncSession = Depends(get_session),
+) -> DocumentOutV2:
     from sag_api.db.models import Document, DocumentAsset, Issuer
     from sag_api.services.financial_v2_service import activate_document, rebuild_structure_and_embeddings
 
@@ -310,8 +325,19 @@ async def reprocess_document(document_id: str, session: AsyncSession = Depends(g
 
     if settings.process_documents_inline and settings.environment != "prod":
         markdown = await hydrate_markdown(doc, asset, session)
-        await rebuild_structure_and_embeddings(session, issuer, doc, markdown)
-        if doc.extraction_status == "COMPLETE" and doc.embedding_status == "COMPLETE":
+        # A normal reprocess repairs incomplete documents.  ``force`` is the
+        # explicit benchmark path that reruns the current extraction prompt
+        # for an already READY document.
+        if force:
+            doc.status = DocumentStatus.PROCESSING
+            doc.is_active = False
+            doc.error = None
+            doc.progress = 0
+        if force or doc.status != DocumentStatus.READY:
+            await rebuild_structure_and_embeddings(session, issuer, doc, markdown)
+        if doc.extraction_status == "COMPLETE" and (
+            not settings.embedding_enabled or doc.embedding_status == "COMPLETE"
+        ):
             await activate_document(session, issuer.id, doc)
     else:
         await enqueue_document_processing(session, doc)
@@ -520,11 +546,6 @@ async def evidence_graph(ticker: str, session: AsyncSession = Depends(get_sessio
     }
 
 
-@router.get("/tickers/{ticker}/assessments/moat", response_model=MoatAssessmentOutV2)
-async def moat_assessment(ticker: str, session: AsyncSession = Depends(get_session)) -> MoatAssessmentOutV2:
-    return MoatAssessmentOutV2(**await assess_moat(session, ticker))
-
-
 @router.get("/tickers/{ticker}/assessments/gil", response_model=GILAssessmentOutV2)
 async def gil_assessment(ticker: str, session: AsyncSession = Depends(get_session)) -> GILAssessmentOutV2:
     return GILAssessmentOutV2(**await assess_gil(session, ticker))
@@ -532,6 +553,7 @@ async def gil_assessment(ticker: str, session: AsyncSession = Depends(get_sessio
 
 @router.get("/review-queue", response_model=list[ReviewQueueOut])
 async def review_queue(session: AsyncSession = Depends(get_session)) -> list[ReviewQueueOut]:
+    """Đánh giá Business Quality từ evidence đã extract; không chấm điểm lợi thế cạnh tranh."""
     from sag_api.db.models import Issuer
 
     rows = (await session.execute(select(ReviewQueueItem).order_by(ReviewQueueItem.created_at.desc()).limit(200))).scalars().all()

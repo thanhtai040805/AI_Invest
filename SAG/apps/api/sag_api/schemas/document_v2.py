@@ -53,28 +53,35 @@ class PillarAssessmentOut(BaseModel):
     counter_evidence: list[dict[str, Any]]
 
 
-class MoatAssessmentOut(BaseModel):
-    ticker: str
-    assessment_status: str
-    moat_score: float | None
-    multiplier: float | None
-    coverage_ratio: float
-    active_roles: list[str]
-    missing_roles: list[str]
-    pillars: dict[str, PillarAssessmentOut]
-    reasons: list[str]
-
-
 class GILAssessmentOut(BaseModel):
     ticker: str
     analysis_status: str
     gil_flag: str | None
     risk_level: str
     rpt_ratio: float | None
-    total_rpt_exposure_vnd: float
+    total_rpt_exposure_vnd: float | None
     equity_vnd: float | None
     cycles_detected: int
     cycle_paths: list[list[str]]
     reasons: list[str]
     nodes_count: int
     edges_count: int
+    rpt_metrics: dict[str, Any] = {}
+    rpt_breakdown: dict[str, Any] = {}
+    risk_components: dict[str, Any] = {}
+    circular_flow_proven: bool = False
+    tunneling_signals: int = 0
+    catastrophic_triggered: bool = False
+    policy_context: dict[str, Any] = {}
+    company_context: dict[str, Any] = {}
+    exposure: dict[str, Any] = {}
+    relative_risk: dict[str, Any] = {}
+    scores: dict[str, Any] = {}
+    graph: dict[str, Any] = {}
+    policy: dict[str, Any] = {}
+    financial_denominators: dict[str, Any] = {}
+    relationship_risk: dict[str, Any] = {}
+    flow_risk: dict[str, Any] = {}
+    ownership_risk: dict[str, Any] = {}
+    structural_risk: dict[str, Any] = {}
+    materiality: dict[str, Any] = {}

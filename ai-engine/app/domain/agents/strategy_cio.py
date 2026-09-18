@@ -75,6 +75,13 @@ class StrategyCIOAgent(BaseAgent):
         self.last_decision_hash: str = "0" * 64
         self.audit_trail = AuditTrailEngine()
         self._init_cio_tables()
+        try:
+            from app.domain.rules.strategic_memo_generator import StrategicMemoGenerator
+            from app.infrastructure.llm.client import get_unified_llm_client
+            self.memo_generator = StrategicMemoGenerator(llm_client=get_unified_llm_client())
+        except Exception as e_memo:
+            logger.debug(f"[StrategyCIOAgent] Không thể khởi tạo memo_generator: {e_memo}")
+            self.memo_generator = None
 
     def _init_cio_tables(self) -> None:
         """Load latest CIO hash; schema is managed by Prisma/migrations, not runtime."""
@@ -119,12 +126,7 @@ class StrategyCIOAgent(BaseAgent):
         except (ValueError, AttributeError):
             safe_res_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, str(resolution_id)))
 
-        safe_thesis_uuid = None
-        if thesis_id:
-            try:
-                safe_thesis_uuid = str(uuid.UUID(str(thesis_id)))
-            except (ValueError, AttributeError):
-                safe_thesis_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, str(thesis_id)))
+        safe_thesis_id = str(thesis_id).strip()[:64] if thesis_id else None
 
         resolved_summary = summary or payload.get("executive_rationale") or payload.get("rationale", "")
 
@@ -139,7 +141,7 @@ class StrategyCIOAgent(BaseAgent):
                         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP);
                     """, (
                         safe_res_uuid,
-                        safe_thesis_uuid,
+                        safe_thesis_id,
                         decision_type,
                         ticker,
                         resolved_summary,
@@ -877,8 +879,69 @@ class StrategyCIOAgent(BaseAgent):
             res = await self.evaluate_exception_request(req_payload)
             return {"data": res, "trace": {"cio_action": "EXCEPTION_EVALUATION"}}
 
-        # 6. Ban hành Chỉ thị Vĩ mô Chiến lược (Macro Review)
+        # 6. Tạo Báo cáo Cập nhật Chiến lược (Strategic Memo Generator)
+        if "strategic_memo" in event_data or "generate_memo" in event_data or action in ("strategic_memo", "generate_memo"):
+            memo_payload = event_data.get("strategic_memo") or event_data.get("memo_data") or event_data
+            ticker = str(memo_payload.get("ticker", "")).upper().strip()
+            company_name = str(memo_payload.get("company_name", ticker))
+            memo_text = await self.generate_strategic_memo(
+                ticker=ticker,
+                company_name=company_name,
+                business_quality_data=memo_payload.get("business_quality_data"),
+                gil_data=memo_payload.get("gil_data"),
+                thesis_payload=memo_payload.get("thesis_payload") or memo_payload.get("investment_thesis"),
+                counter_payload=memo_payload.get("counter_payload") or memo_payload.get("counter_thesis"),
+                financial_summary=memo_payload.get("financial_summary"),
+                target_date=memo_payload.get("target_date"),
+            )
+            return {
+                "data": {
+                    "ticker": ticker,
+                    "company_name": company_name,
+                    "strategic_memo": memo_text,
+                },
+                "trace": {"cio_action": "STRATEGIC_MEMO_GENERATED", "ticker": ticker}
+            }
+
+        # 7. Ban hành Chỉ thị Vĩ mô Chiến lược (Macro Review)
         macro_inputs = event_data.get("macro_data") or event_data
         res = await self.issue_strategic_directive(macro_inputs)
         trace = {"regime_context": res.get("macro_regime"), "strategic_cash": res.get("strategic_cash_target_pct")}
         return {"data": res, "trace": trace}
+
+    async def generate_strategic_memo(
+        self,
+        ticker: str,
+        company_name: Optional[str] = None,
+        business_quality_data: Optional[Dict[str, Any]] = None,
+        gil_data: Optional[Dict[str, Any]] = None,
+        thesis_payload: Optional[Dict[str, Any]] = None,
+        counter_payload: Optional[Dict[str, Any]] = None,
+        financial_summary: Optional[Dict[str, Any]] = None,
+        target_date: Optional[str] = None,
+    ) -> str:
+        """Tạo Báo cáo Cập nhật Chiến lược CIO với Persona Smart Money và cấu trúc 4 phần."""
+        clean_ticker = str(ticker).upper().strip()
+        c_name = company_name or clean_ticker
+
+        # Khởi tạo generator nếu chưa có
+        if not self.memo_generator:
+            try:
+                from app.domain.rules.strategic_memo_generator import StrategicMemoGenerator
+                from app.infrastructure.llm.client import get_unified_llm_client
+                self.memo_generator = StrategicMemoGenerator(llm_client=get_unified_llm_client())
+            except Exception as e:
+                logger.warning(f"[StrategyCIOAgent] Lỗi tạo StrategicMemoGenerator: {e}")
+                from app.domain.rules.strategic_memo_generator import StrategicMemoGenerator
+                self.memo_generator = StrategicMemoGenerator(llm_client=None)
+
+        return await self.memo_generator.generate_memo(
+            ticker=clean_ticker,
+            company_name=c_name,
+            business_quality_data=business_quality_data,
+            gil_data=gil_data,
+            thesis_payload=thesis_payload,
+            counter_payload=counter_payload,
+            financial_summary=financial_summary,
+            target_date=target_date,
+        )

@@ -12,14 +12,13 @@ const send = async (res: Response, next: NextFunction, work: () => Promise<unkno
 };
 
 router.get('/overview', (_req, res, next) => send(res, next, async () => {
-  const [regime, signals, factors, risks, news] = await Promise.all([
+  const [regime, signals, factors, news] = await Promise.all([
     db.market_regime.findFirst({ orderBy: { date: 'desc' } }),
     db.signals.findMany({ orderBy: { signal_date: 'desc' }, take: 20 }),
     db.factorScore.findMany({ orderBy: { score_date: 'desc' }, take: 20 }),
-    db.risk_assessments.findMany({ orderBy: { assessment_date: 'desc' }, take: 12 }),
     db.knowledge_documents.findMany({ orderBy: { published_date: 'desc' }, take: 8 }),
   ]);
-  return { regime, signals, factors, risks, news };
+  return { regime, signals, factors, risks: [], news };
 }));
 
 router.get('/signals', (_req, res, next) => send(res, next, async () => {
@@ -56,14 +55,13 @@ router.get('/agent', (_req, res, next) => send(res, next, async () => {
     agent: model.replace('log_', ''),
     entries: db[model] ? await db[model].findMany({ take: 10, orderBy: { id: 'desc' } }).catch(() => []) : [],
   })));
-  const [theses, counterTheses, resolutions, risks, mainAccount] = await Promise.all([
+  const [theses, counterTheses, resolutions, mainAccount] = await Promise.all([
     db.$queryRawUnsafe('SELECT * FROM investment_theses ORDER BY created_at DESC LIMIT 30;').catch(() => []),
     db.$queryRawUnsafe('SELECT * FROM counter_thesis_verdicts ORDER BY evaluated_at DESC LIMIT 30;').catch(() => []),
     db.$queryRawUnsafe('SELECT * FROM cio_resolutions ORDER BY created_at DESC LIMIT 30;').catch(() => []),
-    db.$queryRawUnsafe('SELECT * FROM risk_assessments ORDER BY assessment_date DESC LIMIT 30;').catch(() => []),
     db.$queryRawUnsafe("SELECT * FROM portfolio_account WHERE account_id = 'MAIN_FUND' LIMIT 1;").catch(() => []),
   ]);
-  return { logs, theses, counterTheses, resolutions, risks, account: mainAccount[0] || null, mode: 'SHADOW' };
+  return { logs, theses, counterTheses, resolutions, risks: [], account: mainAccount[0] || null, mode: 'SHADOW' };
 }));
 
 router.get('/ml-fund', (req: AuthRequest, res, next) => send(res, next, async () => {

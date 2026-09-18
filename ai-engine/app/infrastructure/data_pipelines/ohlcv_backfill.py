@@ -286,9 +286,9 @@ def run_daily_backfill(
 
         rows = []
         for i in range(len(result['t'])):
-            candle_time = datetime.fromtimestamp(result['t'][i], tz=TZ_VN)
+            candle_date = datetime.fromtimestamp(result['t'][i], tz=TZ_VN).date()
             rows.append((
-                candle_time, sym,
+                candle_date, sym,
                 result.get('o', [0])[i],
                 result.get('h', [0])[i],
                 result.get('l', [0])[i],
@@ -335,7 +335,7 @@ def run_daily_backfill(
             if isinstance(data_idx, dict) and data_idx.get("t"):
                 v_rows = [
                     (
-                        datetime.fromtimestamp(data_idx["t"][i], tz=TZ_VN),
+                        datetime.fromtimestamp(data_idx["t"][i], tz=TZ_VN).date(),
                         "VNINDEX",
                         data_idx.get("o", [0])[i],
                         data_idx.get("h", [0])[i],

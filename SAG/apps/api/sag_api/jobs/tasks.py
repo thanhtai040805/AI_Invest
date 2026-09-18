@@ -215,7 +215,7 @@ async def process_document(
         and (
             document.structure_status != "COMPLETE"
             or document.extraction_status != "COMPLETE"
-            or document.embedding_status != "COMPLETE"
+            or (settings.embedding_enabled and document.embedding_status != "COMPLETE")
         )
     ):
         document.status = DocumentStatus.FAILED

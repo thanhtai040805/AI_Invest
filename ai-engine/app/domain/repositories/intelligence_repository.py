@@ -1,9 +1,8 @@
 """Intelligence Repository (IOS v5.1)
 Quản lý kết quả phân tích trí tuệ nhân tạo, điểm số định lượng và luận điểm đầu tư:
 - factor_scores: 6 nhóm nhân tố (F1-F6) và điểm tổng hợp Composite Stock Score (CSS)
-- moat_profiles: Điểm hào kinh tế định lượng 5 trụ cột và bằng chứng trích dẫn
+- business_quality_profiles: Điểm chất lượng doanh nghiệp và bằng chứng phân tích
 - knowledge_documents: Dữ liệu OCR BCTC, tin tức, và AI Triage phân tích tác động
-- risk_assessments: Đánh giá chấm điểm rủi ro và các cờ cảnh báo Hard/Soft flags
 - investment_theses & counter_thesis_verdicts: Luận điểm đầu tư và phán quyết phản biện
 """
 
@@ -20,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class IntelligenceRepository:
-    """Repository quản lý kết quả phân tích AI, Factor Scores, Moat và Thesis đầu tư."""
+    """Repository quản lý kết quả phân tích AI, Factor Scores, Business Quality và Thesis đầu tư."""
 
     def __init__(self, storage: Optional[PostgresAdapter] = None):
         self.storage = storage or PostgresAdapter()
@@ -174,17 +173,16 @@ class IntelligenceRepository:
             logger.warning(f"Lỗi khi lưu factor_scores cho {symbol} ({e})")
             return False
 
-    def get_moat_profile(self, ticker: str) -> Optional[Dict[str, Any]]:
-        """Lấy hồ sơ Moat Profile định lượng của cổ phiếu."""
+    def get_business_quality_profile(self, ticker: str) -> Optional[Dict[str, Any]]:
+        """Lấy hồ sơ Business Quality và evidence của cổ phiếu."""
         if not ticker:
             raise ValueError("[IntelligenceRepository] ticker không được rỗng.")
         ticker = str(ticker).upper().strip()
         query = """
-            SELECT ticker, fiscal_year, report_type, moat_score,
-                   intangibles_score, switching_costs_score, network_effect_score,
-                   cost_advantage_score, efficient_scale_score, evidence_summary,
+            SELECT ticker, fiscal_year, report_type, quality_score,
+                   quality_details, evidence_summary,
                    source_sag_doc_id, extracted_at, is_stale
-            FROM moat_profiles
+            FROM business_quality_profiles
             WHERE ticker = %s
             LIMIT 1
         """
@@ -192,82 +190,39 @@ class IntelligenceRepository:
             rows = self.storage.fetch_all(query, (ticker,))
             if rows and len(rows) > 0:
                 r = rows[0]
-                m_score = float(r[3]) if r[3] is not None else 0.0
-                intan = float(r[4]) if r[4] is not None else 0.0
-                sw = float(r[5]) if r[5] is not None else 0.0
-                net = float(r[6]) if r[6] is not None else 0.0
-                cost = float(r[7]) if r[7] is not None else 0.0
-                scale = float(r[8]) if r[8] is not None else 0.0
-                sum_pillars = intan + sw + net + cost + scale
-                
-                # Tự động hiệu chỉnh moat_score nếu bằng 0 nhưng có điểm 5 trụ cột
-                if m_score <= 0.0 and sum_pillars > 0:
-                    m_score = sum_pillars
-
-                # Hệ số Moat Multiplier chuẩn hóa
-                if m_score >= 70.0:
-                    multiplier = 1.15
-                elif m_score >= 50.0:
-                    multiplier = 1.05
-                elif m_score > 0.0:
-                    multiplier = 0.90
-                else:
-                    multiplier = 0.75
-
                 return {
                     "ticker": str(r[0]),
                     "fiscal_year": int(r[1]) if r[1] is not None else 2025,
                     "report_type": str(r[2]) if r[2] else "ANNUAL_REPORT",
-                    "moat_score": m_score,
-                    "multiplier": multiplier,
-                    "intangibles_score": intan,
-                    "switching_costs_score": sw,
-                    "network_effect_score": net,
-                    "cost_advantage_score": cost,
-                    "efficient_scale_score": scale,
-                    "evidence_summary": r[9] if isinstance(r[9], dict) else {},
-                    "source_sag_doc_id": str(r[10]) if r[10] else None,
-                    "extracted_at": r[11].isoformat() if hasattr(r[11], "isoformat") else str(r[11]),
-                    "is_stale": bool(r[12]) if len(r) > 12 and r[12] is not None else False,
+                    "quality_score": float(r[3]) if r[3] is not None else None,
+                    "quality_details": r[4] if isinstance(r[4], dict) else {},
+                    "evidence_summary": r[5] if isinstance(r[5], dict) else {},
+                    "source_sag_doc_id": str(r[6]) if r[6] else None,
+                    "extracted_at": r[7].isoformat() if hasattr(r[7], "isoformat") else str(r[7]),
+                    "is_stale": bool(r[8]) if len(r) > 8 and r[8] is not None else False,
                 }
         except Exception as e:
-            logger.warning(f"Lỗi khi đọc moat_profiles cho {ticker} ({e})")
+            logger.warning(f"Lỗi khi đọc business_quality_profiles cho {ticker} ({e})")
         return None
 
-    def save_moat_profile(self, moat_data: Dict[str, Any]) -> bool:
-        """Lưu hồ sơ Moat Profile từ SAG / RAG Moat AI Service."""
-        ticker = moat_data.get("ticker")
+    def save_business_quality_profile(self, quality_data: Dict[str, Any]) -> bool:
+        """Lưu hồ sơ Business Quality và evidence."""
+        ticker = quality_data.get("ticker")
         if not ticker:
-            raise ValueError("[IntelligenceRepository] Thiếu 'ticker' trong moat_data.")
+            raise ValueError("[IntelligenceRepository] Thiếu 'ticker' trong quality_data.")
         ticker = str(ticker).upper().strip()
         now = datetime.now()
 
-        m_score = float(moat_data.get("moat_score", 0.0))
-        intan = float(moat_data.get("intangibles_score", 0.0))
-        sw = float(moat_data.get("switching_costs_score", 0.0))
-        net = float(moat_data.get("network_effect_score", 0.0))
-        cost = float(moat_data.get("cost_advantage_score", 0.0))
-        scale = float(moat_data.get("efficient_scale_score", 0.0))
-        sum_pillars = intan + sw + net + cost + scale
-        if m_score <= 0.0 and sum_pillars > 0:
-            m_score = sum_pillars
-
         query = """
-            INSERT INTO moat_profiles (
-                ticker, fiscal_year, report_type, moat_score,
-                intangibles_score, switching_costs_score, network_effect_score,
-                cost_advantage_score, efficient_scale_score, evidence_summary,
+            INSERT INTO business_quality_profiles (
+                ticker, fiscal_year, report_type, quality_score, quality_details, evidence_summary,
                 source_sag_doc_id, extracted_at, is_stale
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (ticker) DO UPDATE SET
                 fiscal_year = EXCLUDED.fiscal_year,
                 report_type = EXCLUDED.report_type,
-                moat_score = EXCLUDED.moat_score,
-                intangibles_score = EXCLUDED.intangibles_score,
-                switching_costs_score = EXCLUDED.switching_costs_score,
-                network_effect_score = EXCLUDED.network_effect_score,
-                cost_advantage_score = EXCLUDED.cost_advantage_score,
-                efficient_scale_score = EXCLUDED.efficient_scale_score,
+                quality_score = EXCLUDED.quality_score,
+                quality_details = EXCLUDED.quality_details,
                 evidence_summary = EXCLUDED.evidence_summary,
                 source_sag_doc_id = EXCLUDED.source_sag_doc_id,
                 extracted_at = EXCLUDED.extracted_at,
@@ -278,30 +233,26 @@ class IntelligenceRepository:
                 query,
                 (
                     ticker,
-                    int(moat_data.get("fiscal_year", 2025)),
-                    str(moat_data.get("report_type", "ANNUAL_REPORT")),
-                    m_score,
-                    intan,
-                    sw,
-                    net,
-                    cost,
-                    scale,
-                    json.dumps(moat_data.get("evidence_summary", {}), ensure_ascii=False, default=str),
-                    moat_data.get("source_sag_doc_id"),
+                    int(quality_data.get("fiscal_year", 2025)),
+                    str(quality_data.get("report_type", "ANNUAL_REPORT")),
+                    quality_data.get("quality_score"),
+                    json.dumps(quality_data.get("quality_details", {}), ensure_ascii=False, default=str),
+                    json.dumps(quality_data.get("evidence_summary", {}), ensure_ascii=False, default=str),
+                    quality_data.get("source_sag_doc_id"),
                     now,
                     False,
                 ),
             )
             return True
         except Exception as e:
-            logger.warning(f"Lỗi khi lưu moat_profiles cho {ticker} ({e})")
+            logger.warning(f"Lỗi khi lưu business_quality_profiles cho {ticker} ({e})")
             return False
 
     def log_equity_research(
         self,
         ticker: str,
         factor_raw_metrics: Dict[str, Any],
-        moat_citations_evidence: Dict[str, Any],
+        business_quality_evidence: Dict[str, Any],
         llm_prompt_tokens: int = 0,
         research_date: Optional[date] = None,
     ) -> bool:
@@ -312,7 +263,7 @@ class IntelligenceRepository:
         target_date = research_date or date.today()
         query = """
             INSERT INTO log_equity_research (
-                ticker, date, factor_raw_metrics, moat_citations_evidence,
+                ticker, date, factor_raw_metrics, business_quality_evidence,
                 llm_prompt_tokens, created_at
             ) VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
         """
@@ -323,7 +274,7 @@ class IntelligenceRepository:
                     ticker,
                     target_date,
                     json.dumps(factor_raw_metrics, ensure_ascii=False, default=str),
-                    json.dumps(moat_citations_evidence, ensure_ascii=False, default=str),
+                    json.dumps(business_quality_evidence, ensure_ascii=False, default=str),
                     int(llm_prompt_tokens),
                 ),
             )

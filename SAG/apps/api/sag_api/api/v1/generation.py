@@ -102,14 +102,10 @@ async def generate(
             "text": str(e),
             "response": {
                 "ticker": ticker,
-                "moat_score": 0.0,
-                "intangibles_score": 0.0,
-                "switching_costs_score": 0.0,
-                "network_effect_score": 0.0,
-                "cost_advantage_score": 0.0,
-                "efficient_scale_score": 0.0,
+                "quality_score": None,
+                "evidence_status": "INSUFFICIENT",
+                "evidence": [],
                 "evidence_quote": f"Lỗi gọi LLM Backend: {e}",
-                "multiplier": 0.75,
             },
         }
 
@@ -125,14 +121,10 @@ async def generate(
     if not parsed_json:
         parsed_json = {
             "ticker": ticker,
-            "moat_score": 60.0,
-            "intangibles_score": 50.0,
-            "switching_costs_score": 50.0,
-            "network_effect_score": 50.0,
-            "cost_advantage_score": 50.0,
-            "efficient_scale_score": 50.0,
+            "quality_score": None,
+            "evidence_status": "UNVERIFIED",
+            "evidence": [],
             "evidence_quote": response_text[:300] if response_text else "",
-            "multiplier": 1.0,
         }
 
     parsed_json["ticker"] = ticker

@@ -144,15 +144,15 @@ export default function Backtest() {
 
   return (
     <Page
-      title="Backtest Lab"
-      sub="Quantitative strategy research & validation environment."
+      title="Thử nghiệm Backtest"
+      sub="Môi trường nghiên cứu và kiểm định chiến lược định lượng."
       actions={
         <>
           <Button variant="secondary" onClick={loadData} disabled={loading || running}>
-            Refresh Data
+            Làm mới dữ liệu
           </Button>
           <Button variant="primary" onClick={handleRunBacktest} disabled={running}>
-            {running ? "Running..." : "Run backtest"}
+            {running ? "Đang chạy..." : "Chạy Backtest"}
           </Button>
         </>
       }
@@ -161,17 +161,17 @@ export default function Backtest() {
         <div className="mb-4 rounded-[8px] border border-line bg-surface p-3 text-[12px] flex items-center justify-between">
           <span className="font-mono text-ink">{runStatus}</span>
           <button onClick={() => setRunStatus(null)} className="text-muted hover:text-ink text-[11px]">
-            Dismiss
+            Đóng
           </button>
         </div>
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-4">
         <Panel className="h-fit">
-          <PanelHead title="Strategy Configuration" />
+          <PanelHead title="Cấu hình chiến lược" />
           <div className="space-y-3 text-[12px] p-1">
             <div>
-              <label className="text-secondary">Universe / Symbol</label>
+              <label className="text-secondary">Danh mục / Mã CP</label>
               <input
                 value={symbol}
                 onChange={(e) => setSymbol(e.target.value)}
@@ -179,21 +179,21 @@ export default function Backtest() {
               />
             </div>
             <div>
-              <label className="text-secondary">Strategy Model</label>
+              <label className="text-secondary">Mô hình chiến lược</label>
               <select
                 value={strategy}
                 onChange={(e) => setStrategy(e.target.value)}
                 className="mt-1 w-full h-8 border border-line rounded-[6px] px-2 font-mono text-ink bg-paper"
               >
-                <option value="Momentum + Quality">Momentum + Quality (F3/F2)</option>
-                <option value="Multi-Factor F1-F6">Multi-Factor Quantitative (F1–F6)</option>
-                <option value="Mean Reversion">Mean Reversion + Order Flow</option>
-                <option value="Reinforcement Learning">Reinforcement Learning Adaptive</option>
+                <option value="Momentum + Quality">Xung lực + Chất lượng (F3/F2)</option>
+                <option value="Multi-Factor F1-F6">Đa nhân tố định lượng (F1–F6)</option>
+                <option value="Mean Reversion">Đảo chiều trung bình + Dòng tiền</option>
+                <option value="Reinforcement Learning">Học tăng cường thích ứng</option>
               </select>
             </div>
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="text-secondary">Start Date</label>
+                <label className="text-secondary">Ngày bắt đầu</label>
                 <input
                   type="date"
                   value={startDate}
@@ -202,7 +202,7 @@ export default function Backtest() {
                 />
               </div>
               <div>
-                <label className="text-secondary">End Date</label>
+                <label className="text-secondary">Ngày kết thúc</label>
                 <input
                   type="date"
                   value={endDate}
@@ -212,7 +212,7 @@ export default function Backtest() {
               </div>
             </div>
             <div>
-              <label className="text-secondary">Initial Capital (VND)</label>
+              <label className="text-secondary">Vốn ban đầu (VNĐ)</label>
               <input
                 value={capital}
                 onChange={(e) => setCapital(e.target.value)}
@@ -220,15 +220,15 @@ export default function Backtest() {
               />
             </div>
             <div>
-              <label className="text-secondary">Rebalance Frequency</label>
+              <label className="text-secondary">Tần suất tái cân bằng</label>
               <div className="mt-1 h-8 border border-line rounded-[6px] flex items-center px-2.5 tnum font-mono text-ink bg-paper">
-                Monthly / Adaptive T+2.5
+                Hàng tháng / Thích ứng T+2.5
               </div>
             </div>
             <div>
-              <label className="text-secondary">Trading Fee & Tax</label>
+              <label className="text-secondary">Phí & thuế giao dịch</label>
               <div className="mt-1 h-8 border border-line rounded-[6px] flex items-center px-2.5 tnum font-mono text-ink bg-paper">
-                0.15% per round-trip
+                0.15% mỗi vòng khớp lệnh
               </div>
             </div>
             <Button
@@ -237,7 +237,7 @@ export default function Backtest() {
               onClick={handleRunBacktest}
               disabled={running}
             >
-              {running ? "Simulating Execution..." : "Execute Simulation"}
+              {running ? "Đang chạy mô phỏng..." : "Bắt đầu mô phỏng"}
             </Button>
           </div>
         </Panel>
@@ -246,7 +246,7 @@ export default function Backtest() {
           <MetricStrip
             items={[
               {
-                label: "Total Return",
+                label: "Tổng lợi nhuận",
                 value: (
                   <span className={totalReturn >= 0 ? "text-gain" : "text-loss"}>
                     {totalReturn >= 0 ? `+${totalReturn.toFixed(1)}%` : `${totalReturn.toFixed(1)}%`}
@@ -254,11 +254,11 @@ export default function Backtest() {
                 ),
               },
               {
-                label: "Sharpe Ratio",
+                label: "Tỷ số Sharpe",
                 value: risks?.sharpe != null ? risks.sharpe.toFixed(2) : "1.64",
               },
               {
-                label: "Max Drawdown",
+                label: "Sụt giảm tối đa",
                 value: (
                   <span className="text-loss">
                     {risks?.maxDrawdown != null ? `${risks.maxDrawdown.toFixed(1)}%` : "-8.2%"}
@@ -266,7 +266,7 @@ export default function Backtest() {
                 ),
               },
               {
-                label: "Win Rate",
+                label: "Tỷ lệ thắng",
                 value: `${winRate}%`,
               },
             ]}
@@ -274,8 +274,8 @@ export default function Backtest() {
 
           <Panel>
             <PanelHead
-              title="Equity Curve & Risk Performance"
-              sub={`Historical Portfolio NAV Simulation · ${startDate} to ${endDate}`}
+              title="Đường cong tài sản & Hiệu suất rủi ro"
+              sub={`Mô phỏng NAV danh mục lịch sử · ${startDate} đến ${endDate}`}
             />
             {equityCurve.length > 1 ? (
               <div className="h-56 bg-paper border border-line rounded-[8px] p-2 flex flex-col justify-between">
@@ -296,7 +296,7 @@ export default function Backtest() {
               </div>
             ) : (
               <div className="h-56 bg-paper border border-line rounded-[8px] grid place-items-center text-[12px] text-muted font-mono">
-                {loading ? "Loading quantitative telemetry from database..." : "No prior equity runs. Execute backtest to render curve."}
+                {loading ? "Đang tải dữ liệu định lượng từ CSDL..." : "Chưa có lượt chạy nào. Bấm 'Bắt đầu mô phỏng' để vẽ đường cong."}
               </div>
             )}
 
@@ -314,15 +314,15 @@ export default function Backtest() {
                 </div>
               </div>
               <div>
-                <div className="text-[11px] uppercase text-muted">Simulated Trades</div>
+                <div className="text-[11px] uppercase text-muted">Lệnh mô phỏng</div>
                 <div className="tnum font-mono text-ink text-[15px]">
-                  {trades.length} records
+                  {trades.length} bản ghi
                 </div>
               </div>
               <div>
-                <div className="text-[11px] uppercase text-muted">Portfolio NAV</div>
+                <div className="text-[11px] uppercase text-muted">NAV Danh mục</div>
                 <div className="tnum font-mono text-ink text-[15px]">
-                  {latestValue > 0 ? (latestValue / 1e9).toFixed(3) + "B VND" : "1.000B VND"}
+                  {latestValue > 0 ? (latestValue / 1e9).toFixed(3) + "B VNĐ" : "1.000B VNĐ"}
                 </div>
               </div>
             </div>
@@ -330,20 +330,21 @@ export default function Backtest() {
 
           <Panel>
             <PanelHead
-              title="Execution Log & Paper Trades"
-              sub={`Live Paper Trades from DB (${trades.length} entries)`}
+              title="Nhật ký khớp lệnh & Giao dịch thử"
+              sub={`Dữ liệu khớp lệnh mô phỏng từ CSDL (${trades.length} lệnh)`}
             />
             <div className="overflow-x-auto">
               <table className="w-full text-left text-[12px] font-mono">
                 <thead className="border-b border-line text-muted">
                   <tr>
-                    <th className="py-2 px-3">Date</th>
-                    <th className="py-2 px-3">Ticker</th>
-                    <th className="py-2 px-3">Side</th>
-                    <th className="py-2 px-3 text-right">Price</th>
-                    <th className="py-2 px-3 text-right">Quantity</th>
-                    <th className="py-2 px-3 text-center">Confidence</th>
-                    <th className="py-2 px-3 text-right">Status</th>
+                    <th className="py-2 px-3">Ngày</th>
+                    <th className="py-2 px-3">Mã CP</th>
+                    <th className="py-2 px-3">Chiều</th>
+                    <th className="py-2 px-3 text-right">Giá đặt</th>
+                    <th className="py-2 px-3 text-right">Khối lượng</th>
+                    <th className="py-2 px-3 text-center">Độ tin cậy</th>
+                    <th className="py-2 px-3 text-center">Trạng thái</th>
+                    <th className="py-2 px-3 text-right">Lãi/Lỗ</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-line">

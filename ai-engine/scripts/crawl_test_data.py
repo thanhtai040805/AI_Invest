@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import List, Dict, Any
 
 from app.config.settings import get_settings
-from app.infrastructure.knowledge_base.crawlers.vn.cafef_document_crawl import fetch_documents
+from app.infrastructure.knowledge_base.crawlers.vn.vietstock_document_crawl import fetch_documents
 from app.infrastructure.knowledge_base.crawlers.vn.pdf_parser import async_download_pdf_text
 
 # Cấu hình logging ra console
@@ -78,27 +78,32 @@ async def crawl_and_save_test_data():
         for symbol in TEST_SYMBOLS:
             logger.info(f"Starting crawl for symbol: {symbol}")
             
-            # Cào Type 1 (BCTC), Type 3 (BCTN) và Type 4 (Nghị quyết ĐHĐCĐ & HĐQT)
-            doc_types = [1, 3, 4]
+            # Cào Type 1 (BCTC), Type 2 (BCTN) và Type 4 (Nghị quyết ĐHĐCĐ & HĐQT) theo mã Vietstock
+            doc_types = [1, 2, 4]
             for dtype in doc_types:
                 if dtype == 1:
                     doc_type_name = "BCTC"
-                elif dtype == 3:
+                elif dtype == 2:
                     doc_type_name = "BCTN"
                 else:
                     doc_type_name = "NQ"
 
                 logger.info(f"  Fetching metadata for {symbol} - Type {doc_type_name}")
                 
-                # Fetch metadata
-                docs = await fetch_documents(client, symbol, dtype)
+                # Fetch metadata via Vietstock
+                try:
+                    docs = await asyncio.to_thread(fetch_documents, symbol, dtype)
+                except Exception as e:
+                    logger.warning(f"  Error fetching metadata for {symbol} - {doc_type_name}: {e}")
+                    continue
+
                 if not docs:
                     logger.warning(f"  No documents found for {symbol} - {doc_type_name}")
                     continue
                 
                 # Chỉ lấy 1 tài liệu mới nhất để tránh quá tải dung lượng và thời gian cào
                 doc = docs[0]
-                url = doc.get("url")
+                url = (doc.get("article_pdf_urls") or [doc.get("url")])[0]
                 title = doc.get("title", "")
                 
                 # Clean up file name

@@ -30,8 +30,8 @@ def test_factor_service_real_computation():
     assert factors["f3_momentum"] > 0
 
 
-def test_intelligence_repository_factor_and_moat():
-    """Kiểm tra IntelligenceRepository lưu và đọc đầy đủ 6 nhân tố F1-F6, hiệu chuẩn Moat và ghi log."""
+def test_intelligence_repository_factor_and_business_quality():
+    """Kiểm tra IntelligenceRepository lưu factor và evidence Business Quality."""
     repo = IntelligenceRepository()
     test_d = date(2026, 9, 5)
     
@@ -63,17 +63,11 @@ def test_intelligence_repository_factor_and_moat():
     assert res["css"] == 75.84
     assert res["conviction"] == "A"
     
-    # 3. Moat profile auto-recovery
-    moat = repo.get_moat_profile("FPT")
-    assert moat is not None
-    assert moat["moat_score"] >= 70.0
-    assert moat["multiplier"] >= 1.15
-    
-    # 4. Ghi log_equity_research
+    # 3. Ghi log Business Quality evidence
     log_saved = repo.log_equity_research(
         ticker="FPT",
         factor_raw_metrics={"pe": 18.5, "roe": 0.28},
-        moat_citations_evidence={"evidence_quote": "Leading enterprise tech in VN"},
+        business_quality_evidence={"evidence_status": "VERIFIED"},
         llm_prompt_tokens=200,
         research_date=test_d,
     )
@@ -88,6 +82,7 @@ def test_equity_research_agent_process_fpt():
             "ticker": "FPT",
             "sector": "Technology",
             "current_regime": "BULL_TRENDING",
+            "target_date": date(2026, 9, 5),
         })
         
         data = res["data"]
@@ -97,33 +92,28 @@ def test_equity_research_agent_process_fpt():
         assert data["conviction"] in ["A+", "A", "B"]
         assert data["css"] >= 60.0
         assert data["eligible_for_thesis"] is True
-        assert data["moat_score"] >= 70.0
+        assert data["business_quality_score"] >= 0.0
+        assert "moat_score" not in data
         assert data["current_price"] > 0
         assert trace["scoring_engine"] == "CSSScoringEngine"
         assert "BULL" in trace["regime_applied"]
     asyncio.run(_test())
 
 
-def test_equity_research_moat_calibration_reduction():
-    """Kiểm tra cơ chế dập tắt ảo giác Moat AI: Agent 10 hiệu chuẩn Moat sẽ hạ moat_score và multiplier."""
+def test_equity_research_does_not_use_competitive_score():
+    """Competitive evidence không được biến thành điểm hoặc multiplier CSS."""
     async def _test():
         agent = EquityResearchAgent()
         res = await agent.process({
             "ticker": "FPT",
             "current_regime": "BULL_TRENDING",
-            "moat_calibrations": {
-                "FPT": {
-                    "calibrated_moat_score": 35.0,
-                    "calibrated_multiplier": 0.85,
-                    "hallucination_risk": "HIGH",
-                }
-            }
+            "business_quality_data": {"competitive_evidence_verified": False},
         })
         
         data = res["data"]
-        assert data["moat_score"] == 35.0
-        assert data["moat_multiplier"] == 0.85
-        assert "MOAT_CALIBRATED_AGENT10_HIGH" in data["data_quality_flag"]
+        assert "moat_score" not in data
+        assert "moat_multiplier" not in data
+        assert data["business_quality_status"] == "FINANCIAL_QUALITY"
     asyncio.run(_test())
 
 

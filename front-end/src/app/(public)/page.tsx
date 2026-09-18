@@ -46,14 +46,14 @@ function PortfolioRiskFrame() {
   return (
     <div className="rounded-[12px] border border-line bg-surface p-6">
       <div className="text-[10px] font-semibold tracking-[.14em] text-muted">
-        PORTFOLIO / RISK FRAME
+        KHUNG QUẢN TRỊ DANH MỤC / RỦI RO
       </div>
       <div className="mt-5 grid grid-cols-2 gap-4">
         {[
           ["NAV", navText, "text-ink"],
-          ["Return", returnText, returnText.startsWith("-") ? "text-loss" : "text-gain"],
-          ["Expected shortfall", "−4.8%", "text-ink"],
-          ["Risk budget", tier === "NORMAL" ? "100%" : "62%", "text-teal"],
+          ["Lợi nhuận", returnText, returnText.startsWith("-") ? "text-loss" : "text-gain"],
+          ["Tổn thất kỳ vọng", "−4.8%", "text-ink"],
+          ["Ngân sách rủi ro", tier === "NORMAL" ? "100%" : "62%", "text-teal"],
         ].map(([l, v, c]) => (
           <div key={l} className="border-b border-line pb-3">
             <div className="text-[11px] text-muted">{l}</div>
@@ -69,9 +69,9 @@ function PortfolioRiskFrame() {
         <span className={`h-2 flex-1 rounded-full ${tier === "PROTECTION" ? "bg-loss" : "bg-line-strong"}`} />
       </div>
       <div className="mt-2 flex justify-between text-[10px] text-muted">
-        <span>Normal</span>
-        <span>Caution</span>
-        <span>Protection</span>
+        <span>Bình thường</span>
+        <span>Thận trọng</span>
+        <span>Phòng vệ</span>
       </div>
     </div>
   )
@@ -133,11 +133,11 @@ function MarketPulse() {
     <div className="overflow-hidden rounded-[14px] border border-line-strong bg-surface shadow-[0_24px_60px_rgba(24,32,29,.12)]">
       <div className="flex h-11 items-center border-b border-line px-4">
         <span className="font-mono text-[11px] text-muted">
-          MARKET / OVERVIEW
+          THỊ TRƯỜNG / TỔNG QUAN
         </span>
         <span className="ml-auto flex items-center gap-1.5 text-[10px] text-gain">
           <i className="h-1.5 w-1.5 rounded-full bg-gain animate-pulse" />
-          LIVE · DB STREAM
+          TRỰC TIẾP · DỮ LIỆU SÀN
         </span>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-[1.35fr_.9fr]">
@@ -161,7 +161,7 @@ function MarketPulse() {
             <div className="text-right text-[10px] text-muted">
               {indexData?.date || "08 SEP 2026"}
               <br />
-              <span className="text-teal">Bull trend</span>
+              <span className="text-teal">Xu hướng tăng</span>
             </div>
           </div>
           <div className="pt-4">
@@ -179,20 +179,20 @@ function MarketPulse() {
         </div>
         <div className="border-t border-line bg-paper p-4 sm:border-l sm:border-t-0">
           <div className="text-[10px] font-semibold tracking-[.14em] text-muted">
-            MARKET REGIME
+            CHẾ ĐỘ THỊ TRƯỜNG
           </div>
           <div className="mt-2 text-[18px] font-semibold tracking-tight text-ink">
-            Constructive
+            Tích cực
           </div>
           <p className="mt-1 text-[12px] leading-relaxed text-secondary">
-            Breadth and liquidity confirm the banking-led advance from database telemetry.
+            Độ rộng và thanh khoản thị trường củng cố đà tăng dẫn dắt bởi nhóm ngân hàng.
           </p>
           <div className="mt-5 space-y-2.5">
             {[
-              ["Liquidity", liquidity !== "—" ? liquidity : "18.7T", "text-ink"],
-              ["Foreign flow", foreignFlow !== "—" ? foreignFlow : "+182B", foreignFlow.startsWith("-") ? "text-loss" : "text-gain"],
-              ["Advancers / Decliners", advDec !== "—" ? advDec : "58 / 42", "text-ink"],
-              ["Market State", "Normal Session", "text-teal"],
+              ["Thanh khoản", liquidity !== "—" ? liquidity : "18.7T", "text-ink"],
+              ["Dòng tiền ngoại", foreignFlow !== "—" ? foreignFlow : "+182B", foreignFlow.startsWith("-") ? "text-loss" : "text-gain"],
+              ["Số mã tăng / giảm", advDec !== "—" ? advDec : "58 / 42", "text-ink"],
+              ["Trạng thái thị trường", "Phiên bình thường", "text-teal"],
             ].map(([l, v, t]) => (
               <div
                 key={l}
@@ -211,16 +211,16 @@ function MarketPulse() {
 
 function AskDemo() {
   const [query, setQuery] = useState(
-    "Why is HPG attracting foreign demand today?",
+    "Tại sao khối ngoại mua ròng mạnh HPG hôm nay?",
   )
   const [asked, setAsked] = useState(true)
   const answers: Record<string, string> = {
-    "Why is HPG attracting foreign demand today?":
-      "Foreign investors bought a net 182B in HPG as volume reached 2.1× its 20-session average. The move is supported by Q2 margin recovery, but the China export risk still needs monitoring.",
-    "Compare MBB and TCB on momentum":
-      "MBB leads TCB on flow (+143B versus +88B) and momentum percentile (74 versus 66). Both benefit from banking breadth; MBB has the cleaner intraday confirmation.",
-    "What changed in real estate?":
-      "Real estate breadth weakened as VHM fell 2.05% and foreign flow turned negative. This is a divergence from the broader market, not yet a sector-wide reversal.",
+    "Tại sao khối ngoại mua ròng mạnh HPG hôm nay?":
+      "Khối ngoại mua ròng 182 tỷ VNĐ tại HPG khi khối lượng giao dịch đạt 2.1× trung bình 20 phiên. Động lực được hỗ trợ bởi sự hồi phục biên lợi nhuận Q2, song vẫn cần theo dõi rủi ro từ thị trường xuất khẩu.",
+    "So sánh xung lực giữa MBB và TCB":
+      "MBB dẫn trước TCB về dòng tiền (+143 tỷ so với +88 tỷ) và điểm phần trăm xung lực (74 so với 66). Cả hai đều hưởng lợi từ độ rộng ngành ngân hàng; MBB có tín hiệu xác nhận trong phiên rõ ràng hơn.",
+    "Nhóm ngành Bất động sản có biến động gì?":
+      "Độ rộng ngành Bất động sản suy yếu khi VHM giảm 2.05% và dòng tiền ngoại đảo chiều bán ròng. Đây là sự phân kỳ với thị trường chung, chưa phải đảo chiều toàn ngành.",
   }
   return (
     <div className="rounded-[12px] border border-line-strong bg-surface shadow-sm">
@@ -230,9 +230,9 @@ function AskDemo() {
             A
           </span>
           <span className="text-[13px] font-semibold text-ink">
-            Ask AIInvest
+            Hỏi đáp AIInvest
           </span>
-          <Pill tone="teal">Evidence mode</Pill>
+          <Pill tone="teal">Chế độ dẫn chứng</Pill>
         </div>
       </div>
       <div className="p-5">
@@ -242,16 +242,16 @@ function AskDemo() {
         {asked && (
           <div className="mt-4 border-l-2 border-teal pl-4">
             <div className="text-[10px] font-semibold uppercase tracking-[.14em] text-teal">
-              Answer · 14:27 ICT
+              Câu trả lời · 14:27 ICT
             </div>
             <p className="mt-2 text-[13px] leading-relaxed text-secondary">
               {answers[query]}
             </p>
             <div className="mt-4 grid grid-cols-3 gap-2">
               {[
-                ["Flow", "+182B", "gain"],
-                ["Volume", "2.1×", "mineral"],
-                ["Risk", "China exports", "warning"],
+                ["Dòng tiền", "+182B", "gain"],
+                ["Khối lượng", "2.1×", "mineral"],
+                ["Rủi ro", "Xuất khẩu thép", "warning"],
               ].map(([l, v, t]) => (
                 <div key={l} className="rounded-[6px] bg-soft px-2.5 py-2">
                   <div className="text-[9px] uppercase tracking-wide text-muted">
@@ -340,7 +340,7 @@ function Pipeline() {
           → {step.handoff}
         </p>
         <div className="mt-4 text-[10px] font-semibold uppercase tracking-[.14em] text-muted">
-          Signature outputs
+          Kết quả nổi bật
         </div>
         <div className="mt-2 space-y-1.5">
           {step.headline.map((m) => (
@@ -379,7 +379,7 @@ function Pipeline() {
 }
 
 function ResearchCase() {
-  const [tab, setTab] = useState("Thesis")
+  const [tab, setTab] = useState("Luận điểm")
   const [quote, setQuote] = useState<{ price: number; change_pct: number } | null>(null)
 
   useEffect(() => {
@@ -403,59 +403,57 @@ function ResearchCase() {
       </div>
       <div className="px-5 pt-2">
         <Tabs
-          tabs={["Thesis", "Financials", "MOAT", "Valuation", "Risk"]}
-          active={tab}
+          tabs={["Luận điểm", "Tài chính", "Lợi thế MOAT", "Định giá", "Rủi ro"]}
+          active={tab === "Thesis" ? "Luận điểm" : tab === "Financials" ? "Tài chính" : tab === "MOAT" ? "Lợi thế MOAT" : tab === "Valuation" ? "Định giá" : tab === "Risk" ? "Rủi ro" : tab}
           onChange={setTab}
         />
       </div>
       <div className="grid min-h-[230px] grid-cols-1 gap-6 p-5 md:grid-cols-[1.2fr_.8fr]">
-        {tab === "Thesis" ? (
+        {(tab === "Luận điểm" || tab === "Thesis") ? (
           <div>
             <div className="text-[10px] font-semibold uppercase tracking-[.14em] text-muted">
-              Current assessment
+              Đánh giá hiện tại
             </div>
             <h3 className="mt-2 font-serif text-[24px] leading-tight text-ink">
-              Accumulation strengthens as steel margins recover.
+              Xu hướng tích lũy gia tăng khi biên lợi nhuận ngành thép hồi phục.
             </h3>
             <p className="mt-3 text-[13px] leading-relaxed text-secondary">
-              Higher construction demand, an on-schedule Dung Quat 2 ramp, and
-              renewed domestic volume create a credible recovery
-              narrative.
+              Nhu cầu xây dựng cải thiện, tiến độ dự án Dung Quất 2 đúng kế hoạch và
+              sản lượng tiêu thụ nội địa phục hồi tạo nên luận điểm đầu tư vững chắc.
             </p>
             <div className="mt-4 flex gap-2">
-              <Pill tone="teal">Bullish bias</Pill>
-              <Pill tone="gold">Moderate conviction</Pill>
+              <Pill tone="teal">Xu hướng tích cực</Pill>
+              <Pill tone="gold">Độ tin cậy trung bình</Pill>
             </div>
           </div>
         ) : (
           <div>
             <div className="text-[10px] font-semibold uppercase tracking-[.14em] text-muted">
-              {tab} analysis
+              Phân tích {tab}
             </div>
             <h3 className="mt-2 text-[19px] font-semibold text-ink">
-              {tab === "Financials"
-                ? "Q2 gross margin reached 13.2%"
-                : tab === "MOAT"
-                  ? "Integrated steel capacity remains decisive"
-                  : tab === "Valuation"
-                    ? "Target range: 25,000–27,500"
-                    : "Close below 20,500 invalidates the case"}
+              {(tab === "Tài chính" || tab === "Financials")
+                ? "Biên lợi nhuận gộp Q2 đạt 13.2%"
+                : (tab === "Lợi thế MOAT" || tab === "MOAT")
+                  ? "Năng lực sản xuất thép tích hợp quy mô hàng đầu"
+                  : (tab === "Định giá" || tab === "Valuation")
+                    ? "Vùng giá mục tiêu: 25,000–27,500"
+                    : "Đóng nến dưới 20,500 sẽ vi phạm luận điểm"}
             </h3>
             <p className="mt-3 text-[13px] leading-relaxed text-secondary">
-              Every conclusion is tied to a disclosed financial, observable
-              market input, or stated risk condition.
+              Mọi kết luận đều được gắn chặt với báo cáo tài chính công bố, dữ liệu thị trường có thể quan sát hoặc điều kiện rủi ro cụ thể.
             </p>
           </div>
         )}
         <div className="border-l-0 border-line md:border-l md:pl-6">
           <div className="text-[10px] font-semibold uppercase tracking-[.14em] text-muted">
-            Decision frame
+            Khung ra quyết định
           </div>
           {[
-            ["Catalyst", "DQ2 blast furnace commissioning"],
-            ["Target", "25,000–27,500"],
-            ["Invalidation", "< 20,500"],
-            ["Holding horizon", "3–6 months"],
+            ["Chất xúc tác", "Đưa lò cao Dung Quất 2 vào vận hành"],
+            ["Mục tiêu", "25,000–27,500"],
+            ["Điều kiện vi phạm", "< 20,500"],
+            ["Thời gian nắm giữ", "3–6 tháng"],
           ].map(([l, v]) => (
             <div
               key={l}
@@ -542,21 +540,21 @@ export default function Landing() {
         <Logo onClick={() => navigate("/")} />
         <nav className="ml-10 hidden items-center gap-7 text-[13px] text-secondary md:flex">
           <a href="#intelligence" className="hover:text-ink">
-            Intelligence
+            Trí tuệ nhân tạo
           </a>
           <a href="#research" className="hover:text-ink">
-            Research
+            Nghiên cứu
           </a>
           <a href="#evidence" className="hover:text-ink">
-            Evidence
+            Dẫn chứng
           </a>
         </nav>
         <div className="ml-auto flex gap-2">
           <Button variant="ghost" onClick={() => navigate("/login")}>
-            Sign in
+            Đăng nhập
           </Button>
           <Button variant="primary" onClick={() => navigate("/signup")}>
-            Create account
+            Đăng ký tài khoản
           </Button>
         </div>
       </header>
@@ -575,16 +573,14 @@ export default function Landing() {
           />
           <div className="relative mx-auto grid max-w-[1280px] grid-cols-1 items-center gap-12 px-6 py-16 lg:grid-cols-[.9fr_1.1fr] lg:px-10 lg:py-24">
             <div>
-              <Pill tone="mineral">AI investment intelligence · Vietnam</Pill>
+              <Pill tone="mineral">Trí tuệ nhân tạo đầu tư chứng khoán · Việt Nam</Pill>
               <h1 className="mt-5 font-serif text-[clamp(44px,6vw,72px)] leading-[.98] tracking-[-.035em] text-ink">
-                The market is moving.
+                Thị trường biến động liên tục.
                 <br />
-                <span className="text-teal">Your reasoning should, too.</span>
+                <span className="text-teal">Tư duy đầu tư cũng cần thích ứng.</span>
               </h1>
               <p className="mt-6 max-w-lg text-[16px] leading-relaxed text-secondary">
-                AIInvest is the living research environment for Vietnamese
-                equities: market context, structured stock intelligence,
-                agent-led analysis, and the evidence behind every call.
+                AIInvest là môi trường nghiên cứu chuyên sâu cho thị trường chứng khoán Việt Nam: bối cảnh vĩ mô, dữ liệu cổ phiếu chuẩn hóa, phân tích từ hệ thống tác tử và bằng chứng xác thực cho từng quyết định.
               </p>
               <div className="mt-8 flex flex-wrap gap-3">
                 <Button
@@ -592,7 +588,7 @@ export default function Landing() {
                   className="h-11 px-5 text-[14px]"
                   onClick={enter}
                 >
-                  Explore live workspace
+                  Khám phá không gian làm việc
                 </Button>
                 <button
                   onClick={() =>
@@ -602,16 +598,16 @@ export default function Landing() {
                   }
                   className="h-11 px-3 text-[13px] font-medium text-secondary hover:text-ink"
                 >
-                  Watch it reason ↓
+                  Xem quy trình phân tích ↓
                 </button>
               </div>
               <div className="mt-9 flex gap-6 text-[11px] text-muted">
                 <span className="flex items-center gap-1.5">
                   <i className="h-1.5 w-1.5 rounded-full bg-gain animate-pulse" />
-                  Market live
+                  Dữ liệu sàn trực tiếp
                 </span>
-                <span>12 specialist agents</span>
-                <span>Source-traceable</span>
+                <span>12 tác tử chuyên biệt</span>
+                <span>Nguồn gốc minh bạch</span>
               </div>
             </div>
             <MarketPulse />
@@ -624,19 +620,16 @@ export default function Landing() {
           <div className="grid grid-cols-1 gap-14 lg:grid-cols-[.75fr_1.25fr]">
             <div className="lg:pt-10">
               <div className="text-[11px] font-semibold uppercase tracking-[.16em] text-muted">
-                01 — Ask the market
+                01 — Vấn đáp thị trường
               </div>
               <h2 className="mt-4 font-serif text-[38px] leading-[1.06] tracking-tight text-ink">
-                From a question to a qualified view.
+                Từ một câu hỏi đến góc nhìn đầu tư chuẩn mực.
               </h2>
               <p className="mt-5 text-[15px] leading-relaxed text-secondary">
-                Ask in the language of an investor. AIInvest connects the answer
-                to price action, sectors, financial statements, flows and
-                risk—not a black-box score.
+                Đặt câu hỏi theo ngôn ngữ của nhà đầu tư. AIInvest liên kết câu trả lời với biến động giá, ngành nghề, báo cáo tài chính, dòng tiền và rủi ro — không phải một điểm số hộp đen.
               </p>
               <div className="mt-7 border-l border-gold pl-4 text-[13px] leading-relaxed text-secondary">
-                “The important thing is not a faster answer. It is an answer you
-                can interrogate.”
+                “Điều quan trọng không phải câu trả lời nhanh hơn, mà là câu trả lời bạn có thể kiểm chứng được.”
               </div>
             </div>
             <AskDemo />
@@ -647,22 +640,19 @@ export default function Landing() {
             <Pipeline />
             <div className="flex flex-col justify-center">
               <div className="text-[11px] font-semibold uppercase tracking-[.16em] text-muted">
-                02 — Multi-agent research
+                02 — Nghiên cứu đa tác tử
               </div>
               <h2 className="mt-4 font-serif text-[38px] leading-[1.06] tracking-tight text-ink">
-                Market → sector → stock. No skipped reasoning.
+                Thị trường → Ngành nghề → Cổ phiếu. Không bỏ sót bất kỳ mắt xích nào.
               </h2>
               <p className="mt-5 text-[15px] leading-relaxed text-secondary">
-                A research case moves through specialist agents with an explicit
-                handoff. Market regime becomes sector context; sector context
-                becomes a stock assessment; the assessment is stress-tested
-                before any action is proposed.
+                Hồ sơ nghiên cứu luân chuyển qua các tác tử chuyên trách với sự chuyển giao rõ ràng. Chế độ thị trường thành bối cảnh ngành; bối cảnh ngành thành đánh giá cổ phiếu; đánh giá được kiểm định sức ép rủi ro trước khi đưa ra đề xuất.
               </p>
               <div className="mt-7 grid grid-cols-3 gap-4 border-t border-line pt-5">
                 {[
-                  ["12", "agents"],
-                  ["04", "evidence layers"],
-                  ["01", "shared risk frame"],
+                  ["12", "tác tử chuyên biệt"],
+                  ["04", "lớp bằng chứng"],
+                  ["01", "khung rủi ro thống nhất"],
                 ].map(([n, l]) => (
                   <div key={l}>
                     <div className="font-mono text-[22px] font-semibold text-ink">
@@ -681,15 +671,13 @@ export default function Landing() {
         >
           <div className="mb-10 flex max-w-2xl flex-col gap-3">
             <div className="text-[11px] font-semibold uppercase tracking-[.16em] text-muted">
-              03 — Research that decides
+              03 — Nghiên cứu mang tính quyết định
             </div>
             <h2 className="font-serif text-[40px] leading-[1.05] tracking-tight text-ink">
-              See the whole investment case.
+              Nắm trọn vẹn toàn bộ luận điểm đầu tư.
             </h2>
             <p className="text-[15px] leading-relaxed text-secondary">
-              Financial quality, competitive advantage, valuation and
-              invalidation live in one active research object—not scattered
-              across tabs and PDFs.
+              Chất lượng tài chính, lợi thế cạnh tranh, định giá và điều kiện vi phạm được hợp nhất trong một đối tượng nghiên cứu sống động — không còn phân mảnh qua nhiều tab hay file PDF.
             </p>
           </div>
           <ResearchCase />
@@ -698,22 +686,20 @@ export default function Landing() {
           <div className="mx-auto grid max-w-[1280px] grid-cols-1 gap-14 px-6 py-24 lg:grid-cols-[.72fr_1.28fr] lg:px-10">
             <div>
               <div className="text-[11px] font-semibold uppercase tracking-[.16em] text-muted">
-                04 — Evidence as a first-class object
+                04 — Bằng chứng là trọng tâm hàng đầu
               </div>
               <h2 className="mt-4 font-serif text-[38px] leading-[1.06] tracking-tight text-ink">
-                Every conclusion keeps its receipts.
+                Mọi kết luận đều có xuất xứ và dẫn chứng rõ ràng.
               </h2>
               <p className="mt-5 text-[15px] leading-relaxed text-secondary">
-                Open the source behind a thesis, trace it through an agent
-                handoff, and see exactly which observation changed the
-                investment view. Credibility is a product feature.
+                Mở tài liệu gốc đằng sau luận điểm, theo dõi quá trình chuyển giao qua các tác tử, và thấy chính xác quan sát nào đã làm thay đổi góc nhìn đầu tư. Tính minh bạch là giá trị cốt lõi.
               </p>
               <div className="mt-7 flex flex-wrap gap-2">
                 {[
-                  "Exchange filings",
-                  "Financial statements",
-                  "Foreign flow",
-                  "Macro releases",
+                  "Công bố thông tin SGDCK",
+                  "Báo cáo tài chính",
+                  "Dòng tiền ngoại",
+                  "Dữ liệu vĩ mô",
                 ].map((x) => (
                   <Pill key={x} tone="neutral">
                     {x}
@@ -728,21 +714,19 @@ export default function Landing() {
           <div className="grid grid-cols-1 gap-4 md:grid-cols-[1.15fr_.85fr]">
             <div className="rounded-[12px] bg-ink p-8 text-paper">
               <div className="text-[11px] font-semibold uppercase tracking-[.16em] text-paper/55">
-                05 — Portfolio intelligence
+                05 — Quản trị danh mục thông minh
               </div>
               <h2 className="mt-4 max-w-lg font-serif text-[36px] leading-[1.06]">
-                Research does not end when you own the stock.
+                Nghiên cứu không dừng lại khi bạn đã sở hữu cổ phiếu.
               </h2>
               <p className="mt-4 max-w-md text-[14px] leading-relaxed text-paper/70">
-                Translate conviction into sizing, monitor correlated exposure,
-                and preserve the conditions that would make you change your
-                mind.
+                Chuyển hóa mức độ tự tin thành tỷ trọng phân bổ, giám sát độ tương quan rủi ro và xác định trước các điều kiện sẽ khiến bạn thay đổi quyết định.
               </p>
               <Button
                 variant="secondary"
                 className="mt-7 border-white/25 bg-transparent text-paper hover:bg-white/10"
               >
-                View portfolio workflow
+                Xem quy trình danh mục
               </Button>
             </div>
             <PortfolioRiskFrame />
@@ -751,14 +735,13 @@ export default function Landing() {
         <section className="border-t border-line bg-surface">
           <div className="mx-auto max-w-[1280px] px-6 py-20 text-center lg:px-10">
             <div className="text-[11px] font-semibold uppercase tracking-[.16em] text-muted">
-              A professional research network
+              Mạng lưới nghiên cứu chuyên nghiệp
             </div>
             <h2 className="mx-auto mt-4 max-w-2xl font-serif text-[40px] leading-[1.06] tracking-tight text-ink">
-              The calm layer between signal and decision.
+              Khoảng lặng lý tính giữa tín hiệu và quyết định.
             </h2>
             <p className="mx-auto mt-5 max-w-xl text-[15px] leading-relaxed text-secondary">
-              Built for investors who want a more rigorous relationship with
-              Vietnam’s market—without outsourcing their judgment.
+              Được xây dựng cho những nhà đầu tư tìm kiếm sự chuẩn mực, kỷ luật với thị trường chứng khoán Việt Nam — làm chủ hoàn toàn quyết định của chính mình.
             </p>
             <div className="mt-8 flex justify-center">
               <Button
@@ -775,7 +758,7 @@ export default function Landing() {
       <footer className="mx-auto flex max-w-[1280px] flex-wrap items-center gap-4 px-6 py-8 text-[11px] text-muted lg:px-10">
         <Logo onClick={() => navigate("/")} />
         <span className="ml-auto">
-          Vietnam equities · Research tooling, not investment advice.
+          Thị trường chứng khoán Việt Nam · Công cụ hỗ trợ nghiên cứu, không phải khuyến nghị đầu tư.
         </span>
       </footer>
     </div>

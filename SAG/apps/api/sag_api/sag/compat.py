@@ -324,7 +324,7 @@ def install_zleap_sag_extract_compat() -> None:
                     "Nhiệm vụ: đọc tài liệu BCTC/BCQT đầy đủ và xuất manifest ngắn gồm sự kiện, thực thể, fact định lượng và quan hệ có evidence. "
                     "Không chép lại toàn bộ Markdown hoặc bảng; nội dung gốc được SAG v2 hydrate bằng line span. "
                     "Không ép một heading thành một event; chỉ tạo item khi có thông tin phân tích rõ. "
-                    "Không tự suy diễn điểm MOAT/GIL hoặc PASS khi thiếu evidence.\n\n"
+                    "Không tự suy diễn điểm Business Quality/GIL hoặc PASS khi thiếu evidence.\n\n"
                     f"{custom_reqs}\n"
                 )
             return orig_build_system_prompt(self)

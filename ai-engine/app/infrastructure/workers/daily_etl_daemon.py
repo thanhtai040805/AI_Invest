@@ -24,7 +24,7 @@ logger = logging.getLogger("ai_engine.daemon.daily_etl")
 class DailyETLDaemon:
     """Daemon tự động kích hoạt nạp dữ liệu cuối ngày (18:00 Post-Market ETL Cron)."""
 
-    TRIGGER_TIME = dt_time(18, 0)  # 18:00 hàng ngày
+    TRIGGER_TIME = dt_time(17, 0)  # 17:00 hàng ngày (sau khi sở HOSE/HNX chốt sổ chính thức)
 
     def __init__(
         self,
@@ -43,7 +43,7 @@ class DailyETLDaemon:
         """Trạng thái hiện tại của Daily ETL Daemon phục vụ API & Monitoring."""
         return {
             "is_running": self._running,
-            "target_trigger_time": "18:00:00",
+            "target_trigger_time": "17:00:00",
             "last_run_date": self._last_run_date,
             "last_status": self._last_status,
             "last_result": self._last_result,

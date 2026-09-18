@@ -41,11 +41,10 @@ export function AuthShell({
           <span className="text-[17px] font-semibold">AIInvest</span>
         </button>
         <p className="max-w-sm font-serif text-[28px] leading-snug">
-          See what changed, understand why, and decide with the evidence in
-          front of you.
+          Quan sát biến động, thấu hiểu nguyên nhân và ra quyết định dựa trên dẫn chứng định lượng.
         </p>
         <span className="text-[11px] text-paper/50">
-          Institutional-grade research · calm by design
+          Nghiên cứu cấp độ tổ chức · Thiết kế tối giản & tĩnh tại
         </span>
       </div>
       <div className="flex items-center justify-center p-6 sm:p-10">

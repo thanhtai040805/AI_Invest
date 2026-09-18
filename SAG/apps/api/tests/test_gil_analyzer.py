@@ -61,7 +61,7 @@ def test_gil_analyzer_capital_tunneling_cycle():
 
 
 def test_gil_analyzer_high_exposure_without_cycle():
-    """Kiểm thử công ty không có chu trình nhưng nợ bảo lãnh vượt 50% vốn CSH."""
+    """Exposure cao nhưng không có cycle chỉ yêu cầu review, không catastrophic."""
     equity = 10_000_000_000_000  # 10 nghìn tỷ
     analyzer = GILGraphAnalyzer(ticker="OVER_LEVERAGED", equity_vnd=equity)
 
@@ -79,8 +79,8 @@ def test_gil_analyzer_high_exposure_without_cycle():
     analyzer.build_graph(nodes, edges)
     result = analyzer.evaluate()
 
-    assert result.gil_flag == "CATASTROPHIC"
-    assert result.risk_level == "CRITICAL"
+    assert result.gil_flag == "WARNING"
+    assert result.risk_level == "HIGH"
     assert result.rpt_ratio == 0.60
     assert result.cycles_detected == 0
     print("PASS high exposure test:", result.summary)

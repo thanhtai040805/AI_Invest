@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.adapters.postgres_adapter import PostgresAdapter
 
 logger = logging.getLogger("ai_engine.repositories.bctc_pipeline")
+OCR_CACHE_VERSION = "ocr-v2"
 
 
 class BctcPipelineRepository:
@@ -54,6 +55,7 @@ class BctcPipelineRepository:
                    is_classified, classifier_status, total_raw_pages, retained_pages,
                    r2_pdf_uploaded, r2_pdf_key, r2_pdf_url, pdf_sha256,
                    is_ocr_completed, ocr_status, r2_md_uploaded, r2_md_key, r2_md_url,
+                   ocr_cache_version, source_document_id,
                    is_audited, auditor_name, audit_opinion, announcement_date,
                    created_at, updated_at
             FROM bctc_pipeline_records
@@ -82,12 +84,14 @@ class BctcPipelineRepository:
                     "r2_md_uploaded": bool(r[15]),
                     "r2_md_key": r[16],
                     "r2_md_url": r[17],
-                    "is_audited": bool(r[18]),
-                    "auditor_name": r[19],
-                    "audit_opinion": r[20],
-                    "announcement_date": r[21].isoformat() if r[21] else None,
-                    "created_at": r[22].isoformat() if r[22] else None,
-                    "updated_at": r[23].isoformat() if r[23] else None,
+                    "ocr_cache_version": r[18],
+                    "source_document_id": r[19],
+                    "is_audited": bool(r[20]),
+                    "auditor_name": r[21],
+                    "audit_opinion": r[22],
+                    "announcement_date": r[23].isoformat() if r[23] else None,
+                    "created_at": r[24].isoformat() if r[24] else None,
+                    "updated_at": r[25].isoformat() if r[25] else None,
                 }
         except Exception as err:
             logger.warning("Lỗi get_record %s: %s", rec_id, err)
@@ -99,6 +103,8 @@ class BctcPipelineRepository:
         year: int,
         quarter: Any,
         scope: str = "CONSOLIDATED",
+        source_document_id: Optional[int] = None,
+        cache_version: str = OCR_CACHE_VERSION,
     ) -> bool:
         """Kiểm tra xem BCTC này đã hoàn thành OCR và upload Markdown lên R2 chưa.
         Nếu rồi -> BỎ QUA để tránh tốn tiền gọi lại API MinerU OCR.
@@ -106,7 +112,12 @@ class BctcPipelineRepository:
         rec = self.get_record(ticker, year, quarter, scope)
         if not rec:
             return False
-        return bool(rec.get("is_ocr_completed") and rec.get("r2_md_uploaded"))
+        return bool(
+            rec.get("is_ocr_completed")
+            and rec.get("r2_md_uploaded")
+            and rec.get("ocr_cache_version") == cache_version
+            and str(rec.get("source_document_id")) == str(source_document_id)
+        )
 
     def save_ocr_result(
         self,
@@ -116,6 +127,8 @@ class BctcPipelineRepository:
         scope: str,
         r2_md_key: str,
         r2_md_url: str,
+        source_document_id: Optional[int] = None,
+        cache_version: str = OCR_CACHE_VERSION,
     ) -> None:
         """Upsert OCR state; the URL-first flow has no classifier row to update."""
         rec_id = self.make_record_id(ticker, year, quarter, scope)
@@ -135,11 +148,13 @@ class BctcPipelineRepository:
                 id, ticker, fiscal_year, fiscal_quarter, report_scope,
                 is_classified, classifier_status, r2_pdf_uploaded,
                 is_ocr_completed, ocr_status, r2_md_uploaded, r2_md_key, r2_md_url,
+                ocr_cache_version, source_document_id,
                 updated_at
             ) VALUES (
                 %s, %s, %s, %s, %s,
                 FALSE, 'SKIPPED', FALSE,
                 TRUE, 'SUCCESS', TRUE, %s, %s,
+                %s, %s,
                 CURRENT_TIMESTAMP
             )
             ON CONFLICT (id) DO UPDATE SET
@@ -148,10 +163,12 @@ class BctcPipelineRepository:
                 r2_md_uploaded = TRUE,
                 r2_md_key = %s,
                 r2_md_url = %s,
+                ocr_cache_version = %s,
+                source_document_id = %s,
                 updated_at = CURRENT_TIMESTAMP
             ;
         """
-        self.storage.execute(query, (rec_id, ticker.upper().strip(), year, q_num, scope.upper().strip(), r2_md_key, r2_md_url, r2_md_key, r2_md_url))
+        self.storage.execute(query, (rec_id, ticker.upper().strip(), year, q_num, scope.upper().strip(), r2_md_key, r2_md_url, cache_version, source_document_id, r2_md_key, r2_md_url, cache_version, source_document_id))
         logger.info("Saved OCR status for %s (r2_md_key=%s)", rec_id, r2_md_key)
 
     def set_active_sag_role(

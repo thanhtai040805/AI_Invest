@@ -14,7 +14,7 @@ import { workspaceApi } from "@/lib/api"
 import { useResource } from "@/lib/api/use-resource"
 
 export default function Signals() {
-  const [tab, setTab] = useState("Emerging")
+  const [tab, setTab] = useState("Mới xuất hiện")
   const resource = useResource(() => workspaceApi.signals().catch(() => null), [])
 
   const rows = useMemo(() => {
@@ -28,11 +28,11 @@ export default function Signals() {
       const flowBn = Math.round(Number(sig.foreign_flow ?? 0))
       return {
         symbol: String(sig.symbol),
-        sector: String(sig.sector_group || "General"),
+        sector: String(sig.sector_group || "Tổng hợp"),
         momentum: mom,
         flow: flowBn,
         observation: `Tín hiệu ${sig.signal} (Rank ${rank.toFixed(2)})`,
-        evidence: `Khối ngoại ròng: ${flowBn >= 0 ? "+" : ""}${flowBn}B · Hard flags: ${sig.hard_flags ?? 0}`,
+        evidence: `Khối ngoại ròng: ${flowBn >= 0 ? "+" : ""}${flowBn}B · Rủi ro vi phạm: ${sig.hard_flags ?? 0}`,
         risk: Number(sig.hard_flags) > 0 ? "Có rủi ro vi phạm (Hard flag)" : `Xác nhận ${mom > 75 ? "Cao" : "Trung bình"}`,
       }
     })
@@ -40,11 +40,11 @@ export default function Signals() {
 
   return (
     <Page
-      title="Signals"
-      sub="Machine-detected market changes with evidence and conviction."
+      title="Tín hiệu thị trường"
+      sub="Tín hiệu phát hiện từ máy học kèm luận cứ và độ tin cậy."
     >
       <Tabs
-        tabs={["Emerging", "Confirmed", "Weakening", "Invalidated"]}
+        tabs={["Mới xuất hiện", "Đã xác nhận", "Suy yếu", "Bị hủy bỏ"]}
         active={tab}
         onChange={setTab}
       />
@@ -66,34 +66,34 @@ export default function Signals() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-1.5 text-[12.5px] text-secondary mt-2">
                   <div>
                     <span className="text-[10px] uppercase tracking-wide text-muted mr-2">
-                      Observation
+                      Quan sát
                     </span>
-                    Turnover expanded above 2× average
+                    Thanh khoản đột biến vượt 2× trung bình 20 phiên
                   </div>
                   <div>
                     <span className="text-[10px] uppercase tracking-wide text-muted mr-2">
-                      Evidence
+                      Bằng chứng
                     </span>
-                    Foreign flow {s.flow >= 0 ? "positive" : "negative"} (
+                    Khối ngoại {s.flow >= 0 ? "mua ròng" : "bán ròng"} (
                     {s.flow >= 0 ? "+" : ""}
-                    {s.flow})
+                    {s.flow}B)
                   </div>
                   <div>
                     <span className="text-[10px] uppercase tracking-wide text-muted mr-2">
-                      Risk
+                      Rủi ro
                     </span>
-                    Confirmation {s.momentum > 75 ? "high" : "moderate"}
+                    Xác nhận {s.momentum > 75 ? "cao" : "trung bình"}
                   </div>
                   <div>
                     <span className="text-[10px] uppercase tracking-wide text-muted mr-2">
-                      Sectors
+                      Ngành
                     </span>
                     {s.sector}
                   </div>
                 </div>
               </div>
               <Link to={`/stock/${s.symbol}`}>
-                <Button variant="secondary">Investigate</Button>
+                <Button variant="secondary">Chi tiết</Button>
               </Link>
             </div>
           </Panel>

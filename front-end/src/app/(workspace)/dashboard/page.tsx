@@ -46,7 +46,7 @@ function MarketMap({ sectors }: { sectors: Sector[] }) {
                     {sector.name}
                   </div>
                   <div className="mt-0.5 text-[10px] text-secondary">
-                    {((sector.weight / total) * 100).toFixed(0)}% market weight
+                    {((sector.weight / total) * 100).toFixed(0)}% tỷ trọng
                   </div>
                 </div>
                 <PercentChange
@@ -92,13 +92,13 @@ function DashboardView({
 }) {
   return (
     <Page
-      title="Market overview"
-      sub="Vietnam equities · HOSE session · Live indicators"
+      title="Tổng quan thị trường"
+      sub="Thị trường chứng khoán Việt Nam · Phiên giao dịch HOSE · Chỉ số trực tiếp"
       actions={
         <>
-          <Button variant="secondary">Export brief</Button>
+          <Button variant="secondary">Xuất báo cáo</Button>
           <Link to="/discovery">
-            <Button variant="primary">Open Discovery</Button>
+            <Button variant="primary">Khám phá Alpha</Button>
           </Link>
         </>
       }
@@ -107,11 +107,11 @@ function DashboardView({
         <Panel>
           <PanelHead
             title="VN-Index & VN30"
-            sub="Live candlestick · HOSE session · crosshair, zoom & indicators"
+            sub="Nến thời gian thực · Phiên HOSE · Con trỏ, phóng to & chỉ báo"
             action={
               <Pill tone="teal">
                 <i className="h-1.5 w-1.5 rounded-full bg-gain animate-pulse" />
-                Live
+                Trực tiếp
               </Pill>
             }
           />
@@ -156,7 +156,7 @@ function DashboardView({
           />
         </Panel>
         <Panel>
-          <PanelHead title="Market pulse" sub="Live structure, not signals" />
+          <PanelHead title="Nhịp đập thị trường" sub="Cấu trúc dòng tiền & thị trường thời gian thực" />
           <div className="divide-y divide-line">
             {[
               ["Trạng thái thị trường", pulse?.state || "Xu hướng tăng · Biến động thấp", "teal"],
@@ -184,11 +184,11 @@ function DashboardView({
       <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.55fr)_minmax(310px,0.8fr)] gap-4 mt-4">
         <Panel>
           <PanelHead
-            title="Market map"
-            sub="Heat = daily return · area = index weight · line = one-month direction"
+            title="Bản đồ nhiệt ngành"
+            sub="Màu sắc = Biến động ngày · Diện tích = Vốn hóa · Đường kẻ = Xu hướng 1 tháng"
             action={
               <Link to="/markets">
-                <Button variant="ghost">Open price board</Button>
+                <Button variant="ghost">Mở bảng giá</Button>
               </Link>
             }
           />
@@ -196,9 +196,9 @@ function DashboardView({
         </Panel>
         <Panel>
           <PanelHead
-            title="Market tape"
-            sub="Events requiring context"
-            action={<Pill tone="teal">Live</Pill>}
+            title="Nhật ký thị trường"
+            sub="Sự kiện và cảnh báo trọng yếu"
+            action={<Pill tone="teal">Trực tiếp</Pill>}
           />
           <div className="divide-y divide-line">
             {surveillance.map((item) => (

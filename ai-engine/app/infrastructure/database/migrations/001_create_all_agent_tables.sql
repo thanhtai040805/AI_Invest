@@ -57,16 +57,12 @@ CREATE TABLE IF NOT EXISTS factor_scores (
     PRIMARY KEY (ticker, date)
 );
 
-CREATE TABLE IF NOT EXISTS moat_profiles (
+CREATE TABLE IF NOT EXISTS business_quality_profiles (
     ticker VARCHAR(16) PRIMARY KEY,
     fiscal_year INTEGER NOT NULL DEFAULT 2025,
     report_type VARCHAR(32) NOT NULL DEFAULT 'ANNUAL_REPORT',
-    moat_score NUMERIC(6,2),
-    intangibles_score NUMERIC(6,2),
-    switching_costs_score NUMERIC(6,2),
-    network_effect_score NUMERIC(6,2),
-    cost_advantage_score NUMERIC(6,2),
-    efficient_scale_score NUMERIC(6,2),
+    quality_score NUMERIC(6,2),
+    quality_details JSONB NOT NULL DEFAULT '{}'::jsonb,
     evidence_summary JSONB NOT NULL DEFAULT '{}'::jsonb,
     source_sag_doc_id VARCHAR(128),
     extracted_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -276,9 +272,9 @@ CREATE TABLE IF NOT EXISTS strategic_allocations (
 
 CREATE TABLE IF NOT EXISTS cio_resolutions (
     resolution_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    thesis_id UUID NOT NULL,
+    thesis_id VARCHAR(64),
     debate_summary TEXT NOT NULL,
-    final_resolution VARCHAR(16) NOT NULL,
+    final_resolution VARCHAR(64) NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -309,7 +305,7 @@ CREATE TABLE IF NOT EXISTS log_equity_research (
     ticker VARCHAR(16) NOT NULL,
     date DATE NOT NULL,
     factor_raw_metrics JSONB NOT NULL,
-    moat_citations_evidence JSONB NOT NULL,
+    business_quality_evidence JSONB NOT NULL,
     llm_prompt_tokens INTEGER,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
@@ -402,7 +398,7 @@ CREATE TABLE IF NOT EXISTS log_strategy_cio (
 -- INDEXES CHO TRUY VẤN O(1) TỐI ƯU HIỆU NĂNG
 -- ============================================================================
 CREATE INDEX IF NOT EXISTS idx_factor_scores_symbol_date ON factor_scores (symbol, score_date);
-CREATE INDEX IF NOT EXISTS idx_moat_profiles_ticker ON moat_profiles (ticker);
+CREATE INDEX IF NOT EXISTS idx_business_quality_profiles_ticker ON business_quality_profiles (ticker);
 CREATE INDEX IF NOT EXISTS idx_universe_group ON universe_securities (universe_group);
 CREATE INDEX IF NOT EXISTS idx_theses_status ON investment_theses (status);
 CREATE INDEX IF NOT EXISTS idx_theses_ticker_created ON investment_theses (ticker, created_at DESC);
@@ -438,6 +434,8 @@ CREATE TABLE IF NOT EXISTS bctc_pipeline_records (
     r2_md_uploaded BOOLEAN DEFAULT FALSE,
     r2_md_key VARCHAR(256),
     r2_md_url TEXT,
+    ocr_cache_version VARCHAR(32),
+    source_document_id BIGINT,
     
     -- Audit & Temporal details
     is_audited BOOLEAN DEFAULT FALSE,

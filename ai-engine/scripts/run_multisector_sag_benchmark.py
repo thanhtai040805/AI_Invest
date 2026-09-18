@@ -44,16 +44,18 @@ from app.domain.services.document_selector import ActiveDocumentSelector
 DEFAULT_TICKERS = ("HPG", "TCB", "HCM", "VNM", "VIC")
 POLL_SECONDS = 5
 READY_TIMEOUT_SECONDS = 900
-# A benchmark must not add a ticker-level execution policy that production does
-# not have.  process_ticker owns document-level concurrency; tickers are run
-# one at a time here so the report observes the real pipeline deterministically.
-BENCHMARK_CONCURRENCY = 1
+# Five tickers may submit documents together.  MinerUClient remains the single
+# global gate: with two keys at five slots/key this yields at most ten OCR
+# files, regardless of which ticker owns them.
+BENCHMARK_CONCURRENCY = max(1, min(len(DEFAULT_TICKERS), int(os.getenv("SAG_BENCHMARK_TICKER_CONCURRENCY", "5"))))
 REQUIRED_DOCUMENT_ROLES = {
     "ANNUAL_BACKBONE",
     "LATEST_QUARTER",
     "GOVERNANCE_REPORT",
 }
-EXPECTED_EXTRACTION_PROMPT_VERSION = "financial-full-document-extraction-v4"
+EXPECTED_EXTRACTION_PROMPT_VERSION = "sag-evidence-annotation-v30-vi"
+EXPECTED_ANNUAL_PROMPT_VERSION = "sag-evidence-annotation-v31-vi"
+EXPECTED_GOVERNANCE_PROMPT_VERSION = "governance-evidence-annotation-v5-vi"
 
 
 async def fetch_json(client: httpx.AsyncClient, url: str) -> Any:
@@ -146,11 +148,13 @@ def extraction_quality(status: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def extraction_quality_failures(quality: dict[str, Any]) -> list[str]:
+def extraction_quality_failures(
+    quality: dict[str, Any], expected_prompt_version: str = EXPECTED_EXTRACTION_PROMPT_VERSION
+) -> list[str]:
     failures: list[str] = []
-    if quality.get("prompt_version") != EXPECTED_EXTRACTION_PROMPT_VERSION:
+    if quality.get("prompt_version") != expected_prompt_version:
         failures.append(
-            f"prompt_version_mismatch:{quality.get('prompt_version')}!={EXPECTED_EXTRACTION_PROMPT_VERSION}"
+            f"prompt_version_mismatch:{quality.get('prompt_version')}!={expected_prompt_version}"
         )
     if quality.get("ungrounded_facts_dropped", 0) > 0:
         failures.append(f"ungrounded_facts_dropped:{quality['ungrounded_facts_dropped']}")
@@ -166,12 +170,19 @@ async def run_ticker(
     connector: SAGConnector,
     *,
     ocr_only: bool = False,
+    extraction_only: bool = False,
+    force_reprocess: bool = False,
 ) -> dict[str, Any]:
     selected = selector.select_active_documents(ticker)
     selected_roles = {doc.role for doc in selected.all_documents}
     selector_roles_complete = REQUIRED_DOCUMENT_ROLES.issubset(selected_roles)
     started = time.monotonic()
-    result = await pipeline.process_ticker(ticker, ocr_only=ocr_only)
+    result = await pipeline.process_ticker(
+        ticker,
+        ocr_only=ocr_only,
+        extraction_only=extraction_only,
+        force_reprocess=force_reprocess,
+    )
     elapsed_seconds = round(time.monotonic() - started, 1)
     documents = result.get("documents") or []
     ids = {doc["sag_doc_id"] for doc in documents if doc.get("sag_doc_id")}
@@ -212,11 +223,22 @@ async def run_ticker(
         document_id: extraction_quality(status)
         for document_id, status in statuses.items()
     }
-    quality_failures = {
-        document_id: extraction_quality_failures(quality)
-        for document_id, quality in quality_by_document.items()
-        if extraction_quality_failures(quality)
+    role_by_document_id = {
+        document_id: str(status.get("doc_role") or "").upper()
+        for document_id, status in statuses.items()
     }
+    quality_failures = {}
+    for document_id, quality in quality_by_document.items():
+        expected = (
+            EXPECTED_GOVERNANCE_PROMPT_VERSION
+            if role_by_document_id.get(document_id) == "GOVERNANCE_REPORT"
+            else EXPECTED_ANNUAL_PROMPT_VERSION
+            if role_by_document_id.get(document_id) == "ANNUAL_BACKBONE"
+            else EXPECTED_EXTRACTION_PROMPT_VERSION
+        )
+        failures = extraction_quality_failures(quality, expected)
+        if failures:
+            quality_failures[document_id] = failures
 
     documents_ready = bool(ids) and all(
         status.get("status") == "READY"
@@ -258,7 +280,14 @@ async def run_ticker(
     }
 
 
-async def main(tickers: tuple[str, ...], output: Path, *, ocr_only: bool = False) -> int:
+async def main(
+    tickers: tuple[str, ...],
+    output: Path,
+    *,
+    ocr_only: bool = False,
+    extraction_only: bool = False,
+    force_reprocess: bool = False,
+) -> int:
     selector = ActiveDocumentSelector()
     connector = SAGConnector()
     pipeline = BctcToSagPipeline(selector=selector, connector=connector)
@@ -288,10 +317,20 @@ async def main(tickers: tuple[str, ...], output: Path, *, ocr_only: bool = False
                 index, ticker = queue.get_nowait()
             except asyncio.QueueEmpty:
                 return
-            mode = "selector -> source URL -> SAG OCR -> R2 Markdown" if ocr_only else "selector -> source URL -> SAG -> GIL"
+            mode = (
+                "selector -> R2 Markdown -> SAG extraction"
+                if extraction_only
+                else "selector -> source URL -> SAG OCR -> R2 Markdown"
+                if ocr_only
+                else "selector -> source URL -> SAG -> GIL"
+            )
             print(f"\n[worker {worker_id}] === {ticker}: {mode} ===", flush=True)
             try:
-                row = await run_ticker(ticker, pipeline, selector, connector, ocr_only=ocr_only)
+                row = await run_ticker(
+                    ticker, pipeline, selector, connector,
+                    ocr_only=ocr_only, force_reprocess=force_reprocess,
+                    extraction_only=extraction_only,
+                )
             except Exception as error:  # Continue so one issuer cannot hide other failures.
                 row = {"ticker": ticker, "passed": False, "error": f"{type(error).__name__}: {error}"}
             results_by_index[index] = row
@@ -300,10 +339,7 @@ async def main(tickers: tuple[str, ...], output: Path, *, ocr_only: bool = False
                 await write_checkpoint()
             queue.task_done()
 
-    # Keep ticker orchestration out of the production pipeline.  The pipeline
-    # itself still runs its normal per-document concurrency and all source URL
-    # fallback/preflight logic unchanged.
-    await worker(0)
+    await asyncio.gather(*(worker(worker_id) for worker_id in range(BENCHMARK_CONCURRENCY)))
     results = [results_by_index[index] for index in sorted(results_by_index)]
 
     report = {
@@ -353,13 +389,29 @@ if __name__ == "__main__":
         help="Chỉ chạy OCR trực tiếp từ URL nguồn và lưu Markdown lên R2; bỏ qua extraction, embedding và GIL.",
     )
     parser.add_argument(
+        "--extraction-only",
+        action="store_true",
+        help="Chỉ ingest Markdown OCR đã có trên R2 vào SAG để chạy extraction/embedding; không gọi MinerU.",
+    )
+    parser.add_argument(
         "--all-db",
         action="store_true",
         help="Tự lấy toàn bộ mã có PDF trong knowledge_documents.",
+    )
+    parser.add_argument(
+        "--force-reprocess",
+        action="store_true",
+        help="Bỏ qua cache Markdown/DB của pipeline và chạy lại các tài liệu đã chọn.",
     )
     args = parser.parse_args()
     selected_tickers = load_all_db_tickers() if args.all_db else tuple(
         item.strip().upper() for item in args.tickers.split(",") if item.strip()
     )
     print(f"Selected tickers: {len(selected_tickers)}", flush=True)
-    raise SystemExit(asyncio.run(main(selected_tickers, args.output, ocr_only=args.ocr_only)))
+    raise SystemExit(asyncio.run(main(
+        selected_tickers,
+        args.output,
+        ocr_only=args.ocr_only,
+        extraction_only=args.extraction_only,
+        force_reprocess=args.force_reprocess,
+    )))

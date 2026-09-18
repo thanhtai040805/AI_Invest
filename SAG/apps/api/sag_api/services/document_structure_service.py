@@ -117,21 +117,11 @@ class RelationIn(BaseModel):
         return (value or "OTHER").strip().upper() or "OTHER"
 
 
-class MoatSignalIn(BaseModel):
-    pillar: str = Field(default="OTHER", max_length=64)
-    signal: str = Field(min_length=1, max_length=512)
-    direction: str = Field(default="support", max_length=32)
-    confidence: float = Field(default=0.5, ge=0, le=1)
-    evidence: ExtractionReference
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
 class ExtractionManifest(BaseModel):
     node_annotations: list[NodeAnnotationIn] = Field(default_factory=list)
     entities: list[EntityIn] = Field(default_factory=list)
     facts: list[FactIn] = Field(default_factory=list)
     relations: list[RelationIn] = Field(default_factory=list)
-    moat_signals: list[MoatSignalIn] = Field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -434,10 +424,10 @@ def _extraction_prompt(source: Source, document: Document, markdown: str, nodes:
         DocumentRole.GOVERNANCE_REPORT.value: "governance report: owners, board/executives, related-party transactions, governance risks, insider or group relationships",
     }.get(doc_role, "financial and governance evidence")
     schema_hint = {
-        "node_annotations": [{"node_id": "string", "summary": "short non-verbatim summary", "relevance": {"moat": 0.0, "gil": 0.0}}],
+        "node_annotations": [{"node_id": "string", "summary": "short non-verbatim summary", "relevance": {"business_quality": 0.0, "gil": 0.0}}],
         "entities": [{"canonical_name": "string", "display_name": "string", "entity_type": "COMPANY|SUBSIDIARY|RELATED_PARTY|PERSON|BANK|TICKER|OTHER"}],
         "facts": [{
-            "fact_type": "EQUITY|OWNERSHIP|FINANCIAL_FLOW|RELATED_PARTY|PERFORMANCE|DIVIDEND|MOAT_SIGNAL|OTHER",
+        "fact_type": "EQUITY|OWNERSHIP|FINANCIAL_FLOW|RELATED_PARTY|PERFORMANCE|DIVIDEND|OTHER",
             "label": "short fact label",
             "value": "string|null",
             "unit": "VND|%|shares|...|null",
@@ -453,14 +443,6 @@ def _extraction_prompt(source: Source, document: Document, markdown: str, nodes:
             "amount_vnd": None,
             "ownership_pct": None,
             "verified": True,
-            "evidence": {"node_id": "node id", "start_line": 1, "end_line": 1, "quote": "short exact quote|null"},
-            "metadata": {},
-        }],
-        "moat_signals": [{
-            "pillar": "INTANGIBLES|SWITCHING_COSTS|NETWORK_EFFECTS|COST_ADVANTAGE|EFFICIENT_SCALE|OTHER",
-            "signal": "short signal",
-            "direction": "support|counter",
-            "confidence": 0.5,
             "evidence": {"node_id": "node id", "start_line": 1, "end_line": 1, "quote": "short exact quote|null"},
             "metadata": {},
         }],
@@ -484,7 +466,7 @@ def _extraction_prompt(source: Source, document: Document, markdown: str, nodes:
         "Required JSON shape example (keys are mandatory, arrays may be empty):\n"
         f"{json.dumps(schema_hint, ensure_ascii=False)}\n\n"
         "Rules:\n"
-        "- Every fact, relation and moat_signal must reference an existing node_id and line span inside that node.\n"
+        "- Every fact and relation item must reference an existing node_id and line span inside that node.\n"
         "- Line numbers below are authoritative; use them in evidence references.\n"
         "- Normalize capital direction: owner->investee and lender/creditor->borrower/debtor.\n"
         "- TRANSACTS_WITH and GUARANTEES_FOR are not capital-flow relations unless the text states a loan/receivable/payable/investment.\n"
@@ -765,33 +747,6 @@ async def _persist_manifest(
                 end_line=fact.evidence.end_line,
                 quote_hash=quote_hash,
                 metadata_json={**fact.metadata, "extraction": "llm_manifest_v2"},
-            )
-        )
-        fact_count += 1
-
-    for signal in manifest.moat_signals:
-        _reference_node(signal.evidence, nodes_by_id)
-        quote_hash = _quote_hash_for(markdown, signal.evidence)
-        session.add(
-            DocumentFact(
-                id=new_id(),
-                document_id=document.id,
-                source_id=source.id,
-                node_id=signal.evidence.node_id,
-                fact_type="MOAT_SIGNAL",
-                label=signal.signal.strip()[:512],
-                value=signal.direction.strip().lower() or None,
-                unit=signal.pillar.strip().upper() or "OTHER",
-                period=period,
-                start_line=signal.evidence.start_line,
-                end_line=signal.evidence.end_line,
-                quote_hash=quote_hash,
-                metadata_json={
-                    **signal.metadata,
-                    "pillar": signal.pillar.strip().upper() or "OTHER",
-                    "confidence": signal.confidence,
-                    "extraction": "llm_manifest_v2",
-                },
             )
         )
         fact_count += 1

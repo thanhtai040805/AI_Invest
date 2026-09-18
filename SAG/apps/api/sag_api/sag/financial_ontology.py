@@ -320,7 +320,7 @@ Tài liệu bạn nhận được là toàn bộ nội dung Báo cáo Tài chín
 Toàn bộ tài liệu được phân tích trong DUY NHẤT 1 PROMPT để đảm bảo tầm nhìn toàn cục.
 
 QUY TẮC CỐT LÕI SAG v2: OUTPUT LÀ MANIFEST NGẮN, KHÔNG PHẢI BẢN SAO TÀI LIỆU
-- Không áp dụng quy tắc "1 heading = 1 event". Chỉ tạo event khi mục đó có fact định lượng, entity/relationship, tín hiệu MOAT hoặc rủi ro GIL rõ ràng.
+- Không áp dụng quy tắc "1 heading = 1 event". Chỉ tạo event khi mục đó có fact định lượng, entity/relationship, evidence kinh doanh hoặc rủi ro GIL rõ ràng.
 - Không chép lại toàn bộ nội dung hoặc toàn bộ bảng Markdown vào `content`. Markdown gốc được hệ thống hydrate bằng line span; output của bạn chỉ cần tóm tắt nghiệp vụ và evidence anchor.
 - Không tự tạo bằng chứng, không suy diễn quan hệ vốn từ giao dịch mơ hồ, không coi thiếu dữ liệu là PASS.
 - Dùng OTHER nếu taxonomy không khớp; không ép dữ liệu vào nhóm sai.

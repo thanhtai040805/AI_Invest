@@ -74,9 +74,9 @@ export default function Portfolio() {
   if (resource.loading || resource.error || !resource.data) return <Page title="Danh mục"><DataState loading={resource.loading} error={resource.error} empty={!resource.loading && !resource.data} retry={() => void resource.reload()}><></></DataState></Page>
   return (
     <Page
-      title="Portfolio"
-      sub="How exposed am I, and what can hurt me?"
-      actions={<><Button variant="secondary">Export holdings</Button><Link to="/trade"><Button variant="primary">Rebalance</Button></Link></>}
+      title="Danh mục đầu tư"
+      sub="Độ chịu tải rủi ro · Phân bổ tài sản · Quản trị sụt giảm vốn"
+      actions={<><Button variant="secondary">Xuất danh mục</Button><Link to="/trade"><Button variant="primary">Tái cân bằng</Button></Link></>}
     >
       <MetricStrip items={[
         { label: "NAV", value: fmt(n(summary.nav ?? summary.totalValue)), sub: <span className="text-muted">Giá trị tài sản ròng</span> },
@@ -87,25 +87,25 @@ export default function Portfolio() {
 
       <div className="grid grid-cols-1 lg:grid-cols-[1.5fr_1fr] gap-4 mt-4">
         <Panel>
-          <PanelHead title="Equity curve" sub="Portfolio NAV vs VN-Index · 1Y" action={
+          <PanelHead title="Đường cong tăng trưởng NAV" sub="Giá trị NAV so với VN-Index · 1 năm" action={
             <div className="flex items-center gap-3 text-[11px]">
-              <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 bg-teal" />Portfolio</span>
+              <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 bg-teal" />Danh mục</span>
               <span className="flex items-center gap-1.5 text-muted"><span className="w-3 h-0.5 border-t border-dashed border-muted" />VN-Index</span>
             </div>
           } />
           <EquityCurve points={(perfRaw as any)?.equityCurve} />
         </Panel>
         <Panel>
-          <PanelHead title="Drawdown protocol" sub="Trạng thái kiểm soát sụt giảm danh mục từ Sovereign Risk Gate" />
+          <PanelHead title="Quy chế sụt giảm Drawdown" sub="Trạng thái kiểm soát sụt giảm danh mục từ Sovereign Risk Gate" />
           {(() => {
             const currentDD = Number(summary.drawdown ?? summary.maxDrawdown ?? -2.1)
             const ddTier = String(summary.drawdown_tier || "GREEN")
-            const stateLabel = ddTier === "GREEN" ? "Normal" : ddTier === "YELLOW" ? "Caution" : ddTier === "ORANGE" ? "Defensive" : "Protection"
-            const tierIdx = Math.max(["Normal", "Caution", "Defensive", "Protection"].indexOf(stateLabel), 0)
+            const stateLabel = ddTier === "GREEN" ? "Bình thường" : ddTier === "YELLOW" ? "Thận trọng" : ddTier === "ORANGE" ? "Phòng vệ" : "Bảo vệ vốn"
+            const tierIdx = Math.max(["Bình thường", "Thận trọng", "Phòng vệ", "Bảo vệ vốn"].indexOf(stateLabel), 0)
             return (
               <>
                 <div className="flex items-center gap-1.5 mb-4">
-                  {["Normal", "Caution", "Defensive", "Protection"].map((s, i) => (
+                  {["Bình thường", "Thận trọng", "Phòng vệ", "Bảo vệ vốn"].map((s, i) => (
                     <div key={s} className="flex-1 text-center">
                       <div className={`h-2 rounded-full ${i === tierIdx ? "bg-teal" : "bg-line-strong"}`} />
                       <div className={`text-[10px] mt-1.5 ${i === tierIdx ? "text-ink font-medium" : "text-muted"}`}>{s}</div>
@@ -122,11 +122,11 @@ export default function Portfolio() {
       </div>
 
       <Panel className="mt-4" flush>
-        <div className="p-5 pb-3"><PanelHead title="Positions" sub={`${positions.length} holdings · quarter-Kelly recommended weights`} /></div>
+        <div className="p-5 pb-3"><PanelHead title="Vị thế nắm giữ" sub={`${positions.length} mã đang nắm giữ · Tỷ trọng khuyến nghị Quarter-Kelly`} /></div>
         <div className="overflow-x-auto">
           <table className="w-full text-[13px] min-w-[900px]">
             <thead><tr className="text-[11px] uppercase tracking-wide text-muted border-y border-line">
-              {["Symbol", "Entry", "Current", "Weight", "P&L", "Rec. Weight", "¼ Kelly", "Risk", "Stop"].map((h, i) => (
+              {["Mã CP", "Giá vốn", "Thị giá", "Tỷ trọng", "Lãi/Lỗ", "Tỷ trọng chuẩn", "¼ Kelly", "Rủi ro", "Chặn lỗ"].map((h, i) => (
                 <th key={h} className={`font-medium py-2.5 ${i === 0 ? "text-left pl-5" : i >= 1 && i <= 6 ? "text-right px-3" : "text-left px-3"} ${i === 8 ? "pr-5" : ""}`}>{h}</th>
               ))}
             </tr></thead>
@@ -150,9 +150,9 @@ export default function Portfolio() {
       </Panel>
 
       <Panel className="mt-4">
-        <PanelHead title="Portfolio controls" sub="Risk budget and order activity in one decision surface" />
-        <Tabs tabs={["Risk engine", "Orders"]} active={portfolioTab} onChange={setPortfolioTab} />
-        {portfolioTab === "Risk engine" ? <div className="grid grid-cols-1 lg:grid-cols-[1.2fr_0.8fr] gap-8 pt-5"><div className="grid grid-cols-2 gap-x-6 gap-y-4 text-[13px]">{Object.entries(summaryRisk).slice(0, 6).map(([label, value]) => <div key={label} className="flex items-center justify-between border-b border-line pb-2.5"><span className="text-secondary">{label}</span><span className="tnum font-mono text-ink">{String(value ?? "—")}</span></div>)}</div><div><div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted mb-3">Ma trận tương quan</div><CorrelationMatrix positions={positions} /></div></div> : <div className="overflow-x-auto pt-5"><table className="w-full min-w-[700px] text-[13px]"><thead><tr className="border-b border-line text-left text-[10px] font-medium uppercase tracking-wide text-muted">{["Mã", "Chiều", "Khối lượng", "Giá", "Trạng thái", "Thời gian"].map((h) => <th className="pb-2.5" key={h}>{h}</th>)}</tr></thead><tbody className="divide-y divide-line">{liveOrders.map((order) => <tr key={String(order.id)}><td className="py-3 font-mono font-semibold text-ink">{String(order.symbol ?? order.ticker)}</td><td>{String(order.side ?? "—")}</td><td className="font-mono">{String(order.quantity ?? "—")}</td><td className="font-mono">{String(order.limitPrice ?? order.price ?? "—")}</td><td>{String(order.status ?? "—")}</td><td className="font-mono text-muted">{String(order.createdAt ?? order.date ?? "—")}</td></tr>)}</tbody></table></div>}
+        <PanelHead title="Kiểm soát danh mục" sub="Ngân sách rủi ro và lịch sử lệnh giao dịch tập trung" />
+        <Tabs tabs={["Công cụ rủi ro", "Lịch sử lệnh"]} active={portfolioTab === "Risk engine" ? "Công cụ rủi ro" : portfolioTab === "Orders" ? "Lịch sử lệnh" : portfolioTab} onChange={setPortfolioTab} />
+        {portfolioTab === "Công cụ rủi ro" || portfolioTab === "Risk engine" ? <div className="grid grid-cols-1 lg:grid-cols-[1.2fr_0.8fr] gap-8 pt-5"><div className="grid grid-cols-2 gap-x-6 gap-y-4 text-[13px]">{Object.entries(summaryRisk).slice(0, 6).map(([label, value]) => <div key={label} className="flex items-center justify-between border-b border-line pb-2.5"><span className="text-secondary">{label}</span><span className="tnum font-mono text-ink">{String(value ?? "—")}</span></div>)}</div><div><div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted mb-3">Ma trận tương quan</div><CorrelationMatrix positions={positions} /></div></div> : <div className="overflow-x-auto pt-5"><table className="w-full min-w-[700px] text-[13px]"><thead><tr className="border-b border-line text-left text-[10px] font-medium uppercase tracking-wide text-muted">{["Mã", "Chiều", "Khối lượng", "Giá", "Trạng thái", "Thời gian"].map((h) => <th className="pb-2.5" key={h}>{h}</th>)}</tr></thead><tbody className="divide-y divide-line">{liveOrders.map((order) => <tr key={String(order.id)}><td className="py-3 font-mono font-semibold text-ink">{String(order.symbol ?? order.ticker)}</td><td>{String(order.side ?? "—")}</td><td className="font-mono">{String(order.quantity ?? "—")}</td><td className="font-mono">{String(order.limitPrice ?? order.price ?? "—")}</td><td>{String(order.status ?? "—")}</td><td className="font-mono text-muted">{String(order.createdAt ?? order.date ?? "—")}</td></tr>)}</tbody></table></div>}
       </Panel>
     </Page>
   )
