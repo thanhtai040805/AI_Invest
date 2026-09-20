@@ -282,6 +282,9 @@ class StandaloneMLChannel:
         except ValueError:
             exec_mode = StandaloneExecutionMode.SHADOW_RUNNER
 
+        if exec_mode == StandaloneExecutionMode.LIVE:
+            raise RuntimeError("LIVE execution is unavailable: no broker order gateway is implemented")
+
         if exec_mode == StandaloneExecutionMode.DISABLED:
             logger.info("[Standalone ML Fund] Chế độ DISABLED. Bỏ qua vận hành.")
             return {
@@ -388,11 +391,7 @@ class StandaloneMLChannel:
                 "price": close_price,
                 "target_weight_pct": self.position_weight,
                 "execution_mode": exec_mode.value,
-                "action": (
-                    "EXECUTE_LIVE_BROKER"
-                    if exec_mode == StandaloneExecutionMode.LIVE
-                    else "SHADOW_PAPER_TRADE_ONLY"
-                ),
+                "action": "SHADOW_PAPER_TRADE_ONLY",
                 "rationale": (
                     f"[STANDALONE PURE-ML] P(Surv)={surv_prob:.1%} | "
                     f"E[Mom3D]={mom_pred:+.2%} | Z={pred_score:+.2f}"

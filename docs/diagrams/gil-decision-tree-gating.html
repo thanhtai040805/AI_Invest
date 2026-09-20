@@ -1,0 +1,1527 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kiến Trúc Đồ Thị Doanh Nghiệp Thời Gian (TCG) &amp; Cây Quyết Định Gating GIL</title>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&amp;family=Geist+Mono:wght@400;500;600;700&amp;family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&amp;display=swap"
+    rel="stylesheet" />
+  <style>
+    :root {
+      --color-paper: #fafafa;
+      --color-paper-2: #ffffff;
+      --color-ink: #0f172a;
+      --color-muted: #475569;
+      --color-soft: #64748b;
+      --color-rule: #cbd5e1;
+      
+      /* Scientific Pastel Palette (Zero Black Item Fill) */
+      --gate-hdr-fill: #e0f2fe;
+      --gate-hdr-stroke: #0284c7;
+      --gate-hdr-text: #0369a1;
+      --gate-box-fill: #ffffff;
+      --gate-box-stroke: #bae6fd;
+
+      --pass-fill: #dcfce7;
+      --pass-stroke: #16a34a;
+      --pass-text: #15803d;
+
+      --warn-fill: #fef3c7;
+      --warn-stroke: #d97706;
+      --warn-text: #b45309;
+
+      --cat-fill: #fee2e2;
+      --cat-stroke: #dc2626;
+      --cat-text: #b91c1c;
+
+      --insuf-fill: #f3e8ff;
+      --insuf-stroke: #7c3aed;
+      --insuf-text: #6d28d9;
+
+      --glyph-bg: #f8fafc;
+      --glyph-border: #cbd5e1;
+
+      --font-serif: 'Newsreader', Georgia, serif;
+      --font-sans: 'Geist', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-mono: 'Geist Mono', monospace;
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 36px 20px;
+      color: var(--color-ink);
+      background-color: var(--color-paper);
+      background-image: radial-gradient(rgba(15, 23, 42, 0.06) 1px, transparent 1px);
+      background-size: 24px 24px;
+      font-family: var(--font-sans);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .container {
+      width: min(100%, 1700px);
+    }
+
+    .header {
+      margin-bottom: 20px;
+    }
+
+    .eyebrow {
+      margin: 0 0 8px;
+      color: var(--color-muted);
+      font: 600 12px/1.4 var(--font-mono);
+      letter-spacing: .16em;
+      text-transform: uppercase;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .eyebrow-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      background: #0284c7;
+      color: #ffffff;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font: 400 32px/1.2 var(--font-serif);
+      letter-spacing: -0.02em;
+      color: var(--color-ink);
+    }
+
+    .subtitle {
+      margin: 0;
+      font-size: 14.5px;
+      line-height: 1.6;
+      color: var(--color-muted);
+      max-width: 1450px;
+    }
+
+    /* Preset Switcher Toolbar */
+    .preset-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+      margin: 18px 0 20px;
+      padding: 12px 18px;
+      background: #ffffff;
+      border: 1px solid var(--color-rule);
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+    }
+
+    .preset-toolbar-label {
+      font: 600 12px/1 var(--font-mono);
+      color: var(--color-soft);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-right: 6px;
+    }
+
+    .preset-radio {
+      display: none;
+    }
+
+    .preset-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 6px 14px;
+      border-radius: 6px;
+      font: 500 13px/1.2 var(--font-sans);
+      color: var(--color-muted);
+      background: #f8fafc;
+      border: 1px solid var(--color-rule);
+      cursor: pointer;
+      transition: all 0.2s ease;
+      user-select: none;
+    }
+
+    .preset-btn:hover {
+      background: #f1f5f9;
+      color: var(--color-ink);
+      border-color: #94a3b8;
+    }
+
+    .dot-indicator {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+
+    .dot-overview { background: #0284c7; }
+    .dot-pass { background: #16a34a; }
+    .dot-cat { background: #dc2626; }
+    .dot-warn { background: #d97706; }
+    .dot-insuf { background: #7c3aed; }
+
+    #preset-all:checked ~ .preset-toolbar label[for="preset-all"],
+    #preset-pass:checked ~ .preset-toolbar label[for="preset-pass"],
+    #preset-cat:checked ~ .preset-toolbar label[for="preset-cat"],
+    #preset-warn:checked ~ .preset-toolbar label[for="preset-warn"],
+    #preset-insuf:checked ~ .preset-toolbar label[for="preset-insuf"] {
+      background: var(--color-ink);
+      color: #ffffff;
+      border-color: var(--color-ink);
+      box-shadow: 0 2px 6px rgba(15, 23, 42, 0.2);
+    }
+
+    #preset-pass:checked ~ .preset-toolbar label[for="preset-pass"] {
+      background: #15803d;
+      border-color: #15803d;
+    }
+    #preset-cat:checked ~ .preset-toolbar label[for="preset-cat"] {
+      background: #b91c1c;
+      border-color: #b91c1c;
+    }
+    #preset-warn:checked ~ .preset-toolbar label[for="preset-warn"] {
+      background: #b45309;
+      border-color: #b45309;
+    }
+    #preset-insuf:checked ~ .preset-toolbar label[for="preset-insuf"] {
+      background: #6d28d9;
+      border-color: #6d28d9;
+    }
+
+    /* Canvas Container */
+    .diagram-container {
+      background: var(--color-paper-2);
+      border-radius: 10px;
+      border: 1px solid var(--color-rule);
+      padding: 24px;
+      overflow-x: auto;
+      box-shadow: 0 4px 24px -2px rgba(15, 23, 42, 0.07);
+      position: relative;
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      min-width: 1600px;
+      height: auto;
+    }
+
+    /* Node & Badge Interactions */
+    .interactive-node {
+      cursor: pointer;
+      transition: filter 0.2s ease, opacity 0.3s ease;
+    }
+
+    .interactive-node:hover {
+      filter: drop-shadow(0 4px 16px rgba(2, 132, 199, 0.35));
+    }
+
+    .subgraph-card {
+      cursor: pointer;
+      transition: transform 0.2s ease, filter 0.2s ease;
+    }
+
+    .subgraph-card:hover {
+      filter: drop-shadow(0 4px 14px rgba(15, 23, 42, 0.25));
+    }
+
+    .decision-badge:hover {
+      filter: drop-shadow(0 4px 18px rgba(15, 23, 42, 0.2));
+    }
+
+    /* Dynamic Scenario Flow Filtering */
+    .scenario-item, .scenario-link {
+      transition: opacity 0.35s cubic-bezier(0.2, 0.8, 0.2, 1), stroke-width 0.25s ease;
+    }
+
+    /* Preset 1 (PASS): Highlight Main Spine to PASS */
+    #preset-pass:checked ~ .diagram-container .branch-insuf,
+    #preset-pass:checked ~ .diagram-container .branch-cat,
+    #preset-pass:checked ~ .diagram-container .branch-warn {
+      opacity: 0.12 !important;
+    }
+    #preset-pass:checked ~ .diagram-container .branch-pass {
+      opacity: 1 !important;
+      filter: drop-shadow(0 0 8px rgba(22, 163, 74, 0.45));
+    }
+    #preset-pass:checked ~ .diagram-container .stream-pass {
+      stroke: #16a34a !important;
+      stroke-width: 3.5 !important;
+      stroke-dasharray: 8 6;
+      animation: photonFlow 0.85s linear infinite;
+    }
+
+    /* Preset 2 (CATASTROPHIC): Highlight Gate 1 to CATASTROPHIC */
+    #preset-cat:checked ~ .diagram-container .branch-insuf,
+    #preset-cat:checked ~ .diagram-container .branch-warn,
+    #preset-cat:checked ~ .diagram-container .branch-pass-from-g1,
+    #preset-cat:checked ~ .diagram-container .branch-gate2,
+    #preset-cat:checked ~ .diagram-container .branch-gate3 {
+      opacity: 0.12 !important;
+    }
+    #preset-cat:checked ~ .diagram-container .branch-cat {
+      opacity: 1 !important;
+      filter: drop-shadow(0 0 10px rgba(220, 38, 38, 0.45));
+    }
+    #preset-cat:checked ~ .diagram-container .stream-cat {
+      stroke: #dc2626 !important;
+      stroke-width: 3.5 !important;
+      stroke-dasharray: 8 6;
+      animation: photonFlow 0.85s linear infinite;
+    }
+
+    /* Preset 3 (WARNING): Highlight Gate 2 to WARNING */
+    #preset-warn:checked ~ .diagram-container .branch-insuf,
+    #preset-warn:checked ~ .diagram-container .branch-cat,
+    #preset-warn:checked ~ .diagram-container .branch-pass-from-g2,
+    #preset-warn:checked ~ .diagram-container .branch-gate3 {
+      opacity: 0.12 !important;
+    }
+    #preset-warn:checked ~ .diagram-container .branch-warn {
+      opacity: 1 !important;
+      filter: drop-shadow(0 0 10px rgba(217, 119, 6, 0.45));
+    }
+    #preset-warn:checked ~ .diagram-container .stream-warn {
+      stroke: #d97706 !important;
+      stroke-width: 3.5 !important;
+      stroke-dasharray: 8 6;
+      animation: photonFlow 0.85s linear infinite;
+    }
+
+    /* Preset 4 (DATA_INSUFFICIENT): Highlight Gate 0 to DATA_INSUFFICIENT */
+    #preset-insuf:checked ~ .diagram-container .branch-cat,
+    #preset-insuf:checked ~ .diagram-container .branch-warn,
+    #preset-insuf:checked ~ .diagram-container .branch-gate1,
+    #preset-insuf:checked ~ .diagram-container .branch-gate2,
+    #preset-insuf:checked ~ .diagram-container .branch-gate3 {
+      opacity: 0.12 !important;
+    }
+    #preset-insuf:checked ~ .diagram-container .branch-insuf {
+      opacity: 1 !important;
+      filter: drop-shadow(0 0 10px rgba(124, 58, 237, 0.45));
+    }
+    #preset-insuf:checked ~ .diagram-container .stream-insuf {
+      stroke: #7c3aed !important;
+      stroke-width: 3.5 !important;
+      stroke-dasharray: 8 6;
+      animation: photonFlow 0.85s linear infinite;
+    }
+
+    /* Micro-graph Animations */
+    .cycle-flow-anim {
+      stroke-dasharray: 6 4;
+      animation: cycleRotate 1.2s linear infinite;
+    }
+
+    @keyframes cycleRotate {
+      to {
+        stroke-dashoffset: -20;
+      }
+    }
+
+    @keyframes photonFlow {
+      to {
+        stroke-dashoffset: -28;
+      }
+    }
+
+    /* Inspector Backdrop */
+    .inspector-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.38);
+      backdrop-filter: blur(4px);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s ease;
+      z-index: 998;
+    }
+
+    body:has(.inspector-drawer:target) .inspector-backdrop,
+    .inspector-drawer:target ~ .inspector-backdrop {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    /* Inspector Drawer Panel */
+    .inspector-drawer {
+      position: fixed;
+      top: 0;
+      right: -580px;
+      width: 550px;
+      max-width: 92vw;
+      height: 100vh;
+      background: #ffffff;
+      box-shadow: -8px 0 36px rgba(15, 23, 42, 0.18);
+      border-left: 1px solid var(--color-rule);
+      z-index: 999;
+      display: flex;
+      flex-direction: column;
+      transition: right 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .inspector-drawer:target {
+      right: 0;
+    }
+
+    .drawer-header {
+      padding: 18px 24px;
+      border-bottom: 1px solid var(--color-rule);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #f8fafc;
+    }
+
+    .drawer-title-group {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .drawer-badge {
+      font: 600 11px/1.2 var(--font-mono);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      padding: 3px 8px;
+      border-radius: 4px;
+      display: inline-block;
+      width: fit-content;
+    }
+
+    .drawer-title {
+      margin: 0;
+      font: 600 18px/1.3 var(--font-sans);
+      color: var(--color-ink);
+    }
+
+    .drawer-close {
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 6px;
+      border: 1px solid var(--color-rule);
+      background: #ffffff;
+      color: var(--color-soft);
+      font-size: 18px;
+      text-decoration: none;
+      transition: all 0.15s ease;
+    }
+
+    .drawer-close:hover {
+      background: #fee2e2;
+      color: #dc2626;
+      border-color: #fca5a5;
+    }
+
+    .drawer-body {
+      padding: 24px;
+      overflow-y: auto;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      line-height: 1.55;
+      font-size: 13.5px;
+      color: var(--color-ink);
+    }
+
+    .drawer-section {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .drawer-section-title {
+      margin: 0;
+      font: 600 12px/1.3 var(--font-mono);
+      color: var(--color-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      border-left: 3px solid #0284c7;
+      padding-left: 8px;
+    }
+
+    .drawer-formula-box {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      padding: 12px 16px;
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      color: #0f172a;
+      overflow-x: auto;
+    }
+
+    .drawer-constants-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+
+    .drawer-constants-table th {
+      text-align: left;
+      font: 600 11px/1.2 var(--font-mono);
+      color: var(--color-soft);
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--color-rule);
+      text-transform: uppercase;
+    }
+
+    .drawer-constants-table td {
+      padding: 6px 8px;
+      border-bottom: 1px solid #f1f5f9;
+      color: #1e293b;
+    }
+
+    .drawer-code-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 12px;
+      background: #f1f5f9;
+      border-radius: 6px;
+      font: 500 12px/1.3 var(--font-mono);
+      color: #0284c7;
+      word-break: break-all;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <header class="header">
+      <div class="eyebrow">
+        <span>GIL Research Framework v1.0</span>
+        <span>·</span>
+        <span class="eyebrow-badge">NeurIPS / ICLR / SIGMOD Standard</span>
+        <span>·</span>
+        <span>Temporal Corporate Graph (TCG) &amp; Decision Tree Gating</span>
+      </div>
+      <h1>Kiến Trúc Đồ Thị Doanh Nghiệp Thời Gian (TCG) &amp; Cây Quyết Định Gating GIL</h1>
+      <p class="subtitle">
+        Phân rã hoàn chỉnh hệ thống <strong>Graph Intelligence Layer (GIL)</strong> từ mã nguồn gốc: 
+        <strong>Giai đoạn 1</strong>: Mô hình hóa thực thể &amp; Hợp nhất Đồ thị Đa tầng (<strong>Ownership, Governance, Financial Flow</strong>) thành <strong>Temporal Corporate Graph (TCG)</strong>; 
+        <strong>Giai đoạn 2</strong>: Cây quyết định toán học 4 cổng chặn phân định chính xác cờ <strong>PASS, WARNING, CATASTROPHIC, DATA_INSUFFICIENT</strong>.
+      </p>
+    </header>
+
+    <!-- Invisible Preset Radios -->
+    <input type="radio" id="preset-all" name="scenario-filter" class="preset-radio" checked />
+    <input type="radio" id="preset-pass" name="scenario-filter" class="preset-radio" />
+    <input type="radio" id="preset-cat" name="scenario-filter" class="preset-radio" />
+    <input type="radio" id="preset-warn" name="scenario-filter" class="preset-radio" />
+    <input type="radio" id="preset-insuf" name="scenario-filter" class="preset-radio" />
+
+    <!-- Interactive Preset Switcher Toolbar -->
+    <nav class="preset-toolbar" aria-label="Bộ lọc kịch bản kiểm định">
+      <span class="preset-toolbar-label">Kịch Bản Luồng Quyết Định:</span>
+      <label for="preset-all" class="preset-btn">
+        <span class="dot-indicator dot-overview"></span> Toàn bộ Kiến trúc TCG &amp; Cây Gating
+      </label>
+      <label for="preset-pass" class="preset-btn">
+        <span class="dot-indicator dot-pass"></span> Kịch bản 1: Cây phân cấp sạch &rarr; PASS (Kelly Sizing)
+      </label>
+      <label for="preset-cat" class="preset-btn">
+        <span class="dot-indicator dot-cat"></span> Kịch bản 2: Chu trình rút ruột M1 &rarr; CATASTROPHIC Veto
+      </label>
+      <label for="preset-warn" class="preset-btn">
+        <span class="dot-indicator dot-warn"></span> Kịch bản 3: Sàng lọc Motifs M2–M5 &rarr; WARNING
+      </label>
+      <label for="preset-insuf" class="preset-btn">
+        <span class="dot-indicator dot-insuf"></span> Kịch bản 4: Đồ thị đứt gãy / Lệch Scope &rarr; DATA_INSUFFICIENT
+      </label>
+    </nav>
+
+    <!-- Main SVG Diagram Canvas -->
+    <main class="diagram-container">
+      <svg role="img" aria-labelledby="gil-tree-title gil-tree-desc" viewBox="0 0 1600 2400">
+        <title id="gil-tree-title">Kiến Trúc Đồ Thị Doanh Nghiệp Thời Gian (TCG) &amp; Cây Quyết Định Gating GIL</title>
+        <desc id="gil-tree-desc">
+          Sơ đồ kỹ thuật gồm 2 giai đoạn: Giai đoạn 1 mô tả quy trình trích xuất Entity Layer và hợp nhất 3 lớp đồ thị Ownership, Governance, Financial Flow thành Temporal Corporate Graph. Giai đoạn 2 là cây quyết định 4 cổng chặn với các đồ thị con thực tế, kích thước lớn và rõ ràng.
+        </desc>
+
+        <defs>
+          <!-- Arrow Markers -->
+          <marker id="arrow-default" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 1.5 L 9 5 L 0 8.5 z" fill="#64748b" />
+          </marker>
+          <marker id="arrow-gate" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 1.5 L 9 5 L 0 8.5 z" fill="#0284c7" />
+          </marker>
+          <marker id="arrow-pass" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 1.5 L 9 5 L 0 8.5 z" fill="#16a34a" />
+          </marker>
+          <marker id="arrow-cat" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 1.5 L 9 5 L 0 8.5 z" fill="#dc2626" />
+          </marker>
+          <marker id="arrow-warn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 1.5 L 9 5 L 0 8.5 z" fill="#d97706" />
+          </marker>
+          <marker id="arrow-insuf" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 1.5 L 9 5 L 0 8.5 z" fill="#7c3aed" />
+          </marker>
+
+          <!-- Micro Arrow Markers for In-Graph Glyphs -->
+          <marker id="m-arrow-blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+            <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#0284c7" />
+          </marker>
+          <marker id="m-arrow-red" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+            <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#dc2626" />
+          </marker>
+          <marker id="m-arrow-amber" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+            <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#d97706" />
+          </marker>
+          <marker id="m-arrow-green" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+            <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#16a34a" />
+          </marker>
+          <marker id="m-arrow-purple" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+            <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#7c3aed" />
+          </marker>
+        </defs>
+
+        <!-- ============================================================== -->
+        <!-- GIAI ĐOẠN 1: MÔ HÌNH HÓA THỰC THỂ & HỢP NHẤT ĐỒ THỊ ĐA TẦNG (TCG) -->
+        <!-- ============================================================== -->
+        <g id="phase1-tcg-pipeline">
+          <!-- Phase 1 Banner -->
+          <rect x="40" y="20" width="1520" height="500" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5" />
+          
+          <rect x="40" y="20" width="1520" height="42" rx="10" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1.5" />
+          <text x="65" y="47" font-family="var(--font-mono)" font-size="13" font-weight="700" fill="#0f172a" letter-spacing="0.08em">
+            GIAI ĐOẠN 1: THIẾT LẬP ĐỒ THỊ DOANH NGHIỆP THỜI GIAN · TEMPORAL CORPORATE GRAPH (TCG) PIPELINE
+          </text>
+          <text x="1220" y="46" font-family="var(--font-mono)" font-size="11.5" font-weight="600" fill="#0284c7">
+            Module: sag_api/services/gil_service.py
+          </text>
+
+          <!-- 1. Entity Layer (Input Box) -->
+          <g class="interactive-node" id="node-entity-layer">
+            <a href="#drawer-entity-layer">
+              <rect x="580" y="75" width="440" height="65" rx="8" fill="#ffffff" stroke="#0284c7" stroke-width="2" />
+              <text x="800" y="98" font-family="var(--font-mono)" font-size="13" font-weight="700" fill="#0369a1" text-anchor="middle">
+                TẦNG THỰC THỂ PHÁP LÝ (ENTITY RESOLUTION LAYER)
+              </text>
+              <text x="800" y="122" font-family="var(--font-sans)" font-size="12" fill="#475569" text-anchor="middle">
+                Định danh: Doanh nghiệp Vcorp · Cá nhân/Lãnh đạo Vperson · Đối tác SPV Vspv
+              </text>
+            </a>
+          </g>
+
+          <!-- Connectors from Entity Layer to 3 Layer Graphs -->
+          <!-- Left: To Ownership Graph -->
+          <path d="M 680 140 L 680 155 Q 680 163 672 163 L 288 163 Q 280 163 280 171 L 280 185" fill="none" stroke="#0284c7" stroke-width="1.5" marker-end="url(#m-arrow-blue)" />
+          <!-- Center: To Governance Graph -->
+          <path d="M 800 140 L 800 185" fill="none" stroke="#0284c7" stroke-width="1.5" marker-end="url(#m-arrow-blue)" />
+          <!-- Right: To Financial Flow Graph -->
+          <path d="M 920 140 L 920 155 Q 920 163 928 163 L 1312 163 Q 1320 163 1320 171 L 1320 185" fill="none" stroke="#0284c7" stroke-width="1.5" marker-end="url(#m-arrow-blue)" />
+
+          <!-- LAYER 1: OWNERSHIP GRAPH (Spacious, Clear Real Entities) -->
+          <g class="subgraph-card" id="card-ownership-graph">
+            <a href="#drawer-ownership-graph">
+              <rect x="65" y="185" width="450" height="205" rx="8" fill="#ffffff" stroke="#93c5fd" stroke-width="1.5" />
+              <rect x="65" y="185" width="450" height="30" rx="8" fill="#eff6ff" stroke="#93c5fd" stroke-width="1.5" />
+              <text x="80" y="205" font-family="var(--font-mono)" font-size="11.5" font-weight="700" fill="#1d4ed8">
+                LỚP 1: ĐỒ THỊ SỞ HỮU · G_own = (V, E_own)
+              </text>
+              <text x="440" y="204" font-family="var(--font-mono)" font-size="10.5" font-weight="600" fill="#64748b">
+                Trọng số: % Cổ phần
+              </text>
+
+              <!-- Node: Công ty Mẹ (Holding Corp) -->
+              <circle cx="150" cy="270" r="24" fill="#dbeafe" stroke="#1d4ed8" stroke-width="2" />
+              <text x="150" y="266" font-family="var(--font-mono)" font-size="11" font-weight="700" fill="#1e40af" text-anchor="middle">HOLDING</text>
+              <text x="150" y="280" font-family="var(--font-sans)" font-size="9" fill="#1e40af" text-anchor="middle">Niêm Yết</text>
+
+              <!-- Node: Công ty Con A -->
+              <circle cx="310" cy="245" r="22" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5" />
+              <text x="310" y="242" font-family="var(--font-mono)" font-size="10.5" font-weight="600" fill="#1e3a8a" text-anchor="middle">CTY CON A</text>
+              <text x="310" y="255" font-family="var(--font-sans)" font-size="8.5" fill="#475569" text-anchor="middle">Hợp nhất</text>
+
+              <!-- Node: Công ty Liên Kết B -->
+              <circle cx="430" cy="320" r="20" fill="#f8fafc" stroke="#64748b" stroke-width="1.5" />
+              <text x="430" y="318" font-family="var(--font-mono)" font-size="9.5" font-weight="600" fill="#334155" text-anchor="middle">LIÊN KẾT B</text>
+              <text x="430" y="330" font-family="var(--font-sans)" font-size="8.5" fill="#475569" text-anchor="middle">24.5% Vốn</text>
+
+              <!-- Node: Cổ đông lớn (UBO) -->
+              <circle cx="150" cy="350" r="18" fill="#fef3c7" stroke="#d97706" stroke-width="1.5" />
+              <text x="150" y="354" font-family="var(--font-mono)" font-size="9" font-weight="700" fill="#b45309" text-anchor="middle">UBO (35%)</text>
+
+              <!-- Edges -->
+              <path d="M 174 265 L 285 248" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#m-arrow-blue)" />
+              <rect x="200" y="242" width="68" height="16" rx="3" fill="#ffffff" stroke="#bfdbfe" stroke-width="1" />
+              <text x="234" y="254" font-family="var(--font-mono)" font-size="9" font-weight="700" fill="#1d4ed8" text-anchor="middle">OWNS 75%</text>
+
+              <path d="M 328 258 L 412 308" fill="none" stroke="#2563eb" stroke-width="1.5" marker-end="url(#m-arrow-blue)" />
+              <rect x="345" y="278" width="66" height="16" rx="3" fill="#ffffff" stroke="#bfdbfe" stroke-width="1" />
+              <text x="378" y="290" font-family="var(--font-mono)" font-size="9" font-weight="700" fill="#1d4ed8" text-anchor="middle">OWNS 32%</text>
+
+              <path d="M 150 332 L 150 297" fill="none" stroke="#d97706" stroke-width="1.5" marker-end="url(#m-arrow-amber)" />
+            </a>
+          </g>
+
+          <!-- LAYER 2: GOVERNANCE GRAPH (Interlocking Directorates) -->
+          <g class="subgraph-card" id="card-governance-graph">
+            <a href="#drawer-governance-graph">
+              <rect x="545" y="185" width="490" height="205" rx="8" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.5" />
+              <rect x="545" y="185" width="490" height="30" rx="8" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5" />
+              <text x="560" y="205" font-family="var(--font-mono)" font-size="11.5" font-weight="700" fill="#0f172a">
+                LỚP 2: ĐỒ THỊ QUẢN TRỊ &amp; ĐIỀU HÀNH · G_gov = (V, E_gov)
+              </text>
+              <text x="965" y="204" font-family="var(--font-mono)" font-size="10.5" font-weight="600" fill="#64748b">
+                Kiêm nhiệm HĐQT / TGĐ
+              </text>
+
+              <!-- Central Node: Chủ tịch HĐQT -->
+              <circle cx="790" cy="265" r="25" fill="#fef3c7" stroke="#d97706" stroke-width="2" />
+              <text x="790" y="261" font-family="var(--font-mono)" font-size="11" font-weight="700" fill="#b45309" text-anchor="middle">CHỦ TỊCH</text>
+              <text x="790" y="275" font-family="var(--font-sans)" font-size="9" fill="#92400e" text-anchor="middle">Người Đại Diện</text>
+
+              <!-- Left Node: Holding Corp -->
+              <circle cx="620" cy="325" r="22" fill="#dbeafe" stroke="#1d4ed8" stroke-width="1.5" />
+              <text x="620" y="322" font-family="var(--font-mono)" font-size="10" font-weight="700" fill="#1e40af" text-anchor="middle">HOLDING</text>
+              <text x="620" y="335" font-family="var(--font-sans)" font-size="8.5" fill="#475569" text-anchor="middle">Niêm Yết</text>
+
+              <!-- Right Node: Đối tác SPV X (Bên thứ ba ngầm) -->
+              <circle cx="950" cy="325" r="22" fill="#fee2e2" stroke="#dc2626" stroke-width="1.5" />
+              <text x="950" y="322" font-family="var(--font-mono)" font-size="10" font-weight="700" fill="#991b1b" text-anchor="middle">SPV ĐỐI TÁC</text>
+              <text x="950" y="335" font-family="var(--font-sans)" font-size="8.5" fill="#991b1b" text-anchor="middle">Ngoài BCTC</text>
+
+              <!-- Edges -->
+              <path d="M 768 277 L 640 317" fill="none" stroke="#d97706" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#m-arrow-amber)" />
+              <rect x="670" y="286" width="82" height="16" rx="3" fill="#ffffff" stroke="#fcd34d" stroke-width="1" />
+              <text x="711" y="298" font-family="var(--font-mono)" font-size="8.5" font-weight="700" fill="#b45309" text-anchor="middle">CHỦ TỊCH HĐQT</text>
+
+              <path d="M 812 277 L 930 317" fill="none" stroke="#dc2626" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#m-arrow-red)" />
+              <rect x="835" y="286" width="94" height="16" rx="3" fill="#ffffff" stroke="#fca5a5" stroke-width="1" />
+              <text x="882" y="298" font-family="var(--font-mono)" font-size="8.5" font-weight="700" fill="#dc2626" text-anchor="middle">ĐẠI DIỆN PHÁP LUẬT</text>
+            </a>
+          </g>
+
+          <!-- LAYER 3: FINANCIAL FLOW GRAPH (Loans, Advances, Deposits) -->
+          <g class="subgraph-card" id="card-flow-graph">
+            <a href="#drawer-flow-graph">
+              <rect x="1065" y="185" width="470" height="205" rx="8" fill="#ffffff" stroke="#fca5a5" stroke-width="1.5" />
+              <rect x="1065" y="185" width="470" height="30" rx="8" fill="#fef2f2" stroke="#fca5a5" stroke-width="1.5" />
+              <text x="1080" y="205" font-family="var(--font-mono)" font-size="11.5" font-weight="700" fill="#991b1b">
+                LỚP 3: ĐỒ THỊ DÒNG TIỀN &amp; TÀI CHÍNH · G_flow = (V, E_flow)
+              </text>
+              <text x="1465" y="204" font-family="var(--font-mono)" font-size="10.5" font-weight="600" fill="#64748b">
+                Trọng số: Giá trị VND
+              </text>
+
+              <!-- Node: Holding Corp -->
+              <circle cx="1140" cy="265" r="23" fill="#dbeafe" stroke="#1d4ed8" stroke-width="2" />
+              <text x="1140" y="261" font-family="var(--font-mono)" font-size="10.5" font-weight="700" fill="#1e40af" text-anchor="middle">HOLDING</text>
+              <text x="1140" y="275" font-family="var(--font-sans)" font-size="8.5" fill="#1e40af" text-anchor="middle">Chuyển Tiền</text>
+
+              <!-- Node: Công ty con / SPV A -->
+              <circle cx="1310" cy="250" r="21" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5" />
+              <text x="1310" y="247" font-family="var(--font-mono)" font-size="10" font-weight="600" fill="#1e3a8a" text-anchor="middle">SPV A</text>
+              <text x="1310" y="259" font-family="var(--font-sans)" font-size="8.5" fill="#475569" text-anchor="middle">Ủy thác</text>
+
+              <!-- Node: Bên thứ ba Z -->
+              <circle cx="1450" cy="330" r="21" fill="#fee2e2" stroke="#dc2626" stroke-width="1.5" />
+              <text x="1450" y="327" font-family="var(--font-mono)" font-size="10" font-weight="600" fill="#991b1b" text-anchor="middle">BÊN THỨ 3</text>
+              <text x="1450" y="340" font-family="var(--font-sans)" font-size="8.5" fill="#991b1b" text-anchor="middle">Đặt cọc mua CP</text>
+
+              <!-- Edges with real financial amounts -->
+              <path d="M 1163 262 L 1285 253" fill="none" stroke="#dc2626" stroke-width="2" marker-end="url(#m-arrow-red)" />
+              <rect x="1178" y="244" width="94" height="16" rx="3" fill="#ffffff" stroke="#fca5a5" stroke-width="1" />
+              <text x="1225" y="256" font-family="var(--font-mono)" font-size="8.5" font-weight="700" fill="#b91c1c" text-anchor="middle">LOANS_TO 450 Tỷ</text>
+
+              <path d="M 1325 264 L 1432 318" fill="none" stroke="#dc2626" stroke-width="2" marker-end="url(#m-arrow-red)" />
+              <rect x="1335" y="286" width="102" height="16" rx="3" fill="#ffffff" stroke="#fca5a5" stroke-width="1" />
+              <text x="1386" y="298" font-family="var(--font-mono)" font-size="8.5" font-weight="700" fill="#b91c1c" text-anchor="middle">DEPOSIT 420 Tỷ</text>
+            </a>
+          </g>
+
+          <!-- Fusion into Temporal Corporate Graph (TCG) Box -->
+          <g class="interactive-node" id="node-tcg-fusion">
+            <a href="#drawer-tcg-fusion">
+              <rect x="250" y="415" width="1100" height="85" rx="8" fill="#ffffff" stroke="#0284c7" stroke-width="2" />
+              <rect x="250" y="415" width="1100" height="26" rx="8" fill="#e0f2fe" stroke="#0284c7" stroke-width="1.5" />
+              <text x="800" y="433" font-family="var(--font-mono)" font-size="12" font-weight="700" fill="#0369a1" text-anchor="middle">
+                HỢP NHẤT KHÔNG - THỜI GIAN · TEMPORAL CORPORATE GRAPH: G_TCG(t) = (V, E_own(t), E_gov(t), E_flow(t), A_scope)
+              </text>
+              <text x="800" y="465" font-family="var(--font-mono)" font-size="12.5" font-weight="600" fill="#0f172a" text-anchor="middle">
+                BẤT BIẾN PHẠM VI KẾ TOÁN: ValidRatio(x, y) &hArr; Scope(x) = Scope(y) &and; Period(x) = Period(y)
+              </text>
+              <text x="800" y="488" font-family="var(--font-sans)" font-size="11.5" fill="#64748b" text-anchor="middle">
+                (Triệt tiêu hoàn toàn lỗi so khớp số dư BCTC Riêng lẻ với Vốn chủ sở hữu BCTC Hợp nhất)
+              </text>
+            </a>
+          </g>
+
+          <!-- Connectors from 3 Layers down to Fusion Box -->
+          <path d="M 280 390 L 280 405 Q 280 415 290 415 L 360 415" fill="none" stroke="#64748b" stroke-width="1.5" />
+          <path d="M 800 390 L 800 415" fill="none" stroke="#64748b" stroke-width="1.5" />
+          <path d="M 1320 390 L 1320 405 Q 1320 415 1310 415 L 1240 415" fill="none" stroke="#64748b" stroke-width="1.5" />
+        </g>
+
+        <!-- Downward Bridge Connector from Phase 1 to Phase 2 -->
+        <path d="M 800 500 L 800 555" fill="none" stroke="#0284c7" stroke-width="2.5" marker-end="url(#arrow-gate)" />
+        <rect x="740" y="518" width="120" height="24" rx="4" fill="#ffffff" stroke="#cbd5e1" stroke-width="1" />
+        <text x="800" y="534" font-family="var(--font-mono)" font-size="11" font-weight="700" fill="#0284c7" text-anchor="middle">XUẤT ĐỒ THỊ TCG</text>
+
+        <!-- ============================================================== -->
+        <!-- GIAI ĐOẠN 2: CÂY QUYẾT ĐỊNH BẬC THANG & CÁC CỔNG GATING TOÁN HỌC -->
+        <!-- ============================================================== -->
+        <g id="phase2-gating-tree">
+          <!-- Phase 2 Banner -->
+          <rect x="40" y="560" width="1520" height="1780" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.5" />
+          <rect x="40" y="560" width="1520" height="42" rx="10" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1.5" />
+          <text x="65" y="587" font-family="var(--font-mono)" font-size="13" font-weight="700" fill="#0f172a" letter-spacing="0.08em">
+            GIAI ĐOẠN 2: CÂY QUYẾT ĐỊNH TOÁN HỌC &amp; THUẬT TOÁN GATING CỦA HỆ THỐNG GIL (GIL GATING ENGINE)
+          </text>
+          <text x="1190" y="586" font-family="var(--font-mono)" font-size="11.5" font-weight="600" fill="#16a34a">
+            Thực thi Deterministic · 0 Token LLM · 5ms Gate
+          </text>
+
+          <!-- 4 Vertical Column Guides -->
+          <g class="tier-guides" opacity="0.45">
+            <rect x="60" y="615" width="340" height="1705" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-dasharray="4 4" />
+            <text x="75" y="635" font-family="var(--font-mono)" font-size="11" font-weight="700" fill="#7c3aed">CỘT 1 · CỔNG 0 (DATA INTEGRITY)</text>
+
+            <rect x="430" y="615" width="350" height="1705" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-dasharray="4 4" />
+            <text x="445" y="635" font-family="var(--font-mono)" font-size="11" font-weight="700" fill="#dc2626">CỘT 2 · CỔNG 1 (TUNNELING VETO)</text>
+
+            <rect x="810" y="615" width="410" height="1705" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-dasharray="4 4" />
+            <text x="825" y="635" font-family="var(--font-mono)" font-size="11" font-weight="700" fill="#d97706">CỘT 3 · CỔNG 2 (STRUCTURAL EXPOSURE)</text>
+
+            <rect x="1245" y="615" width="295" height="1705" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-dasharray="4 4" />
+            <text x="1260" y="635" font-family="var(--font-mono)" font-size="11" font-weight="700" fill="#16a34a">CỘT 4 · CỔNG 3 (PASS APPROVAL)</text>
+          </g>
+
+          <!-- ============================================================== -->
+          <!-- CỔNG 0: DATA INTEGRITY GATE (COL 1) -->
+          <!-- ============================================================== -->
+          <g class="interactive-node" id="node-gate0">
+            <a href="#drawer-gate0">
+              <rect x="80" y="660" width="300" height="42" rx="6" fill="#e0f2fe" stroke="#0284c7" stroke-width="2" />
+              <text x="230" y="686" font-family="var(--font-mono)" font-size="12" font-weight="700" fill="#0369a1" text-anchor="middle">
+                CỔNG 0: TÍNH ĐẦY ĐỦ CỦA DỮ LIỆU
+              </text>
+
+              <rect x="80" y="702" width="300" height="225" rx="6" fill="#ffffff" stroke="#bae6fd" stroke-width="1.5" />
+              <text x="95" y="726" font-family="var(--font-sans)" font-size="11.5" font-weight="700" fill="#0f172a">Điều kiện đứt gãy dữ liệu (E = 0):</text>
+              <text x="95" y="746" font-family="var(--font-sans)" font-size="11" fill="#475569">• Không có thuyết minh bên liên quan (VAS 26)</text>
+              <text x="95" y="764" font-family="var(--font-sans)" font-size="11" fill="#475569">• Thiếu dữ liệu BCTC tối thiểu 4 quý liên tiếp</text>
+              <text x="95" y="782" font-family="var(--font-sans)" font-size="11" fill="#475569">• Lệch Scope kế toán (Riêng lẻ vs Hợp nhất)</text>
+
+              <!-- Spacious Subgraph: Disconnected & Broken Graph -->
+              <g transform="translate(95, 795)">
+                <rect x="0" y="0" width="270" height="120" rx="6" fill="#faf5ff" stroke="#e9d5ff" stroke-width="1" />
+                <text x="10" y="18" font-family="var(--font-mono)" font-size="10" font-weight="700" fill="#6d28d9">
+                  HÌNH THÁI: ĐỒ THỊ ĐỨT GÃY / THIẾU KỲ
+                </text>
+
+                <!-- Isolated Nodes -->
+                <circle cx="45" cy="65" r="16" fill="#ffffff" stroke="#7c3aed" stroke-width="1.5" />
+                <text x="45" y="69" font-family="var(--font-mono)" font-size="9.5" font-weight="700" fill="#7c3aed" text-anchor="middle">TICKER</text>
+
+                <circle cx="140" cy="45" r="14" fill="#ffffff" stroke="#94a3b8" stroke-dasharray="3 2" stroke-width="1.5" />
+                <text x="140" y="49" font-family="var(--font-mono)" font-size="8.5" fill="#64748b" text-anchor="middle">BCTC Q1</text>
+
+                <circle cx="140" cy="85" r="14" fill="#fee2e2" stroke="#dc2626" stroke-dasharray="3 2" stroke-width="1.5" />
+                <text x="140" y="89" font-family="var(--font-mono)" font-size="8.5" font-weight="700" fill="#b91c1c" text-anchor="middle">Q2 THIẾU</text>
+
+                <circle cx="225" cy="65" r="14" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5" />
+                <text x="225" y="69" font-family="var(--font-mono)" font-size="8.5" fill="#64748b" text-anchor="middle">BCTC Q3</text>
+
+                <!-- Broken connection line -->
+                <path d="M 61 65 L 126 48" fill="none" stroke="#64748b" stroke-width="1.2" />
+                <path d="M 61 65 L 126 82" fill="none" stroke="#dc2626" stroke-dasharray="4 3" stroke-width="1.5" marker-end="url(#m-arrow-red)" />
+                <path d="M 154 85 L 211 68" fill="none" stroke="#dc2626" stroke-dasharray="4 3" stroke-width="1.5" />
+              </g>
+            </a>
+          </g>
+
+          <!-- Gate 0 Connectors -->
+          <!-- True Branch -> DATA_INSUFFICIENT Badge -->
+          <g class="branch-insuf scenario-link">
+            <path class="stream-insuf" d="M 230 927 L 230 990" fill="none" stroke="#7c3aed" stroke-width="2.5" marker-end="url(#arrow-insuf)" />
+            <rect x="200" y="945" width="60" height="20" rx="3" fill="#ffffff" stroke="#cbd5e1" stroke-width="1" />
+            <text x="230" y="959" font-family="var(--font-mono)" font-size="10.5" font-weight="700" fill="#6d28d9" text-anchor="middle">ĐÚNG</text>
+          </g>
+
+          <!-- Decision Badge 0: DATA_INSUFFICIENT -->
+          <g class="decision-badge branch-insuf" id="badge-data-insufficient">
+            <a href="#drawer-badge-insuf">
+              <rect x="80" y="990" width="300" height="110" rx="8" fill="#f3e8ff" stroke="#7c3aed" stroke-width="2" />
+              <text x="230" y="1022" font-family="var(--font-mono)" font-size="14" font-weight="700" fill="#6d28d9" text-anchor="middle">
+                DATA_INSUFFICIENT
+              </text>
+              <text x="230" y="1046" font-family="var(--font-sans)" font-size="12" font-weight="600" fill="#4c1d95" text-anchor="middle">
+                HỦY ĐÁNH GIÁ VÌ THIẾU DỮ LIỆU
+              </text>
+              <text x="230" y="1072" font-family="var(--font-sans)" font-size="11" fill="#6d28d9" text-anchor="middle">
+                (Không phân bổ danh mục · Báo cáo thiếu kỳ)
+              </text>
+            </a>
+          </g>
+
+          <!-- False Branch from Gate 0 -> Gate 1 -->
+          <g class="branch-pass branch-cat branch-warn branch-gate1 scenario-link">
+            <path class="stream-pass" d="M 380 700 L 400 700 Q 408 700 408 708 L 408 770 Q 408 778 416 778 L 450 778"
+                  fill="none" stroke="#0284c7" stroke-width="2.5" marker-end="url(#arrow-gate)" />
+            <rect x="390" y="730" width="36" height="20" rx="3" fill="#ffffff" stroke="#cbd5e1" stroke-width="1" />
+            <text x="408" y="744" font-family="var(--font-mono)" font-size="10" font-weight="700" fill="#0369a1" text-anchor="middle">SAI</text>
+          </g>
+
+          <!-- ============================================================== -->
+          <!-- CỔNG 1: CAPITAL TUNNELING VETO (COL 2) -->
+          <!-- ============================================================== -->
+          <g class="interactive-node branch-pass branch-cat branch-warn branch-gate1 scenario-item" id="node-gate1">
+            <a href="#drawer-gate1">
+              <rect x="450" y="750" width="310" height="42" rx="6" fill="#fee2e2" stroke="#dc2626" stroke-width="2" />
+              <text x="605" y="776" font-family="var(--font-mono)" font-size="12" font-weight="700" fill="#b91c1c" text-anchor="middle">
+                CỔNG 1: PHỦ QUYẾT RÚT RUỘT (VETO)
+              </text>
+
+              <rect x="450" y="792" width="310" height="295" rx="6" fill="#ffffff" stroke="#fca5a5" stroke-width="1.5" />
+              <text x="465" y="816" font-family="var(--font-sans)" font-size="11.5" font-weight="700" fill="#0f172a">Thuật toán DFS Chu trình khép kín:</text>
+              <text x="465" y="836" font-family="var(--font-sans)" font-size="11" fill="#475569">• Chu trình luân chuyển dòng vốn: |C| &ge; 3</text>
+              <text x="465" y="854" font-family="var(--font-sans)" font-size="11" fill="#475569">• Tỷ lệ trọng yếu R_mat(C) &ge; 15% Vốn CSH</text>
+              <text x="465" y="872" font-family="var(--font-sans)" font-size="11" fill="#475569">• Cửa sổ thời gian luân chuyển: T &le; 4 Quý</text>
+
+              <!-- Spacious Subgraph: Animated Real-World Motif M1 Cycle -->
+              <g transform="translate(465, 885)">
+                <rect x="0" y="0" width="280" height="190" rx="6" fill="#fef2f2" stroke="#fecaca" stroke-width="1" />
+                <text x="12" y="20" font-family="var(--font-mono)" font-size="10.5" font-weight="700" fill="#dc2626">
+                  MOTIF M1: CHU TRÌNH RÚT RUỘT KHÉP KÍN
+                </text>
+
+                <!-- Top Node: Holding Corp -->
+                <circle cx="140" cy="55" r="20" fill="#ffffff" stroke="#1d4ed8" stroke-width="2" />
+                <text x="140" y="52" font-family="var(--font-mono)" font-size="9" font-weight="700" fill="#1e40af" text-anchor="middle">HOLDING</text>
+                <text x="140" y="63" font-family="var(--font-sans)" font-size="8" fill="#475569" text-anchor="middle">Niêm Yết</text>
+
+                <!-- Bottom Right Node: Công ty con B -->
+                <circle cx="220" cy="140" r="18" fill="#ffffff" stroke="#dc2626" stroke-width="2" />
+                <text x="220" y="138" font-family="var(--font-mono)" font-size="8.5" font-weight="700" fill="#dc2626" text-anchor="middle">SPV B</text>
+                <text x="220" y="149" font-family="var(--font-sans)" font-size="7.5" fill="#475569" text-anchor="middle">Ủy thác</text>
+
+                <!-- Bottom Left Node: Công ty liên kết C -->
+                <circle cx="60" cy="140" r="18" fill="#ffffff" stroke="#dc2626" stroke-width="2" />
+                <text x="60" y="138" font-family="var(--font-mono)" font-size="8.5" font-weight="700" fill="#dc2626" text-anchor="middle">ĐỐI TÁC C</text>
+                <text x="60" y="149" font-family="var(--font-sans)" font-size="7.5" fill="#475569" text-anchor="middle">Cho vay lại</text>
+
+                <!-- Directed Animated Edges -->
+                <!-- Holding -> SPV B -->
+                <path class="cycle-flow-anim" d="M 158 63 L 205 125" fill="none" stroke="#dc2626" stroke-width="2" marker-end="url(#m-arrow-red)" />
+                <rect x="180" y="85" width="85" height="15" rx="3" fill="#ffffff" stroke="#fca5a5" stroke-width="0.8" />
+                <text x="222" y="96" font-family="var(--font-mono)" font-size="7.5" font-weight="700" fill="#b91c1c" text-anchor="middle">ỦY THÁC 450 TỶ</text>
+
+                <!-- SPV B -> Đối tác C -->
+                <path class="cycle-flow-anim" d="M 202 140 L 78 140" fill="none" stroke="#dc2626" stroke-width="2" marker-end="url(#m-arrow-red)" />
+                <rect x="100" y="148" width="80" height="15" rx="3" fill="#ffffff" stroke="#fca5a5" stroke-width="0.8" />
+                <text x="140" y="159" font-family="var(--font-mono)" font-size="7.5" font-weight="700" fill="#b91c1c" text-anchor="middle">CHO VAY 430 TỶ</text>
+
+                <!-- Đối tác C -> Holding (Khép vòng) -->
+                <path class="cycle-flow-anim" d="M 72 125 L 122 65" fill="none" stroke="#dc2626" stroke-width="2" marker-end="url(#m-arrow-red)" />
+                <rect x="18" y="85" width="85" height="15" rx="3" fill="#ffffff" stroke="#fca5a5" stroke-width="0.8" />
+                <text x="60" y="96" font-family="var(--font-mono)" font-size="7.5" font-weight="700" fill="#b91c1c" text-anchor="middle">TRẢ NỢ CŨ 420 TỶ</text>
+              </g>
+            </a>
+          </g>
+
+          <!-- Gate 1 Connectors -->
+          <!-- True Branch -> CATASTROPHIC Badge -->
+          <g class="branch-cat scenario-link">
+            <path class="stream-cat" d="M 605 1087 L 605 1160" fill="none" stroke="#dc2626" stroke-width="2.5" marker-end="url(#arrow-cat)" />
+            <rect x="575" y="1115" width="60" height="20" rx="3" fill="#ffffff" stroke="#cbd5e1" stroke-width="1" />
+            <text x="605" y="1129" font-family="var(--font-mono)" font-size="10.5" font-weight="700" fill="#dc2626" text-anchor="middle">ĐÚNG</text>
+          </g>
+
+          <!-- Decision Badge 1: CATASTROPHIC -->
+          <g class="decision-badge branch-cat" id="badge-catastrophic">
+            <a href="#drawer-badge-cat">
+              <rect x="450" y="1160" width="310" height="110" rx="8" fill="#fee2e2" stroke="#dc2626" stroke-width="2" />
+              <text x="605" y="1192" font-family="var(--font-mono)" font-size="14" font-weight="700" fill="#b91c1c" text-anchor="middle">
+                CATASTROPHIC
+              </text>
+              <text x="605" y="1216" font-family="var(--font-sans)" font-size="12" font-weight="600" fill="#991b1b" text-anchor="middle">
+                LOẠI BỎ KHỎI DANH MỤC ĐẦU TƯ
+              </text>
+              <text x="605" y="1242" font-family="var(--font-sans)" font-size="11" fill="#b91c1c" text-anchor="middle">
+                (Phủ quyết tuyệt đối · Không phân bổ Kelly)
+              </text>
+            </a>
+          </g>
+
+          <!-- False Branch from Gate 1 -> Gate 2 -->
+          <g class="branch-pass branch-warn branch-gate2 scenario-link">
+            <path class="stream-pass" d="M 760 790 L 785 790 Q 793 790 793 798 L 793 880 Q 793 888 801 888 L 830 888"
+                  fill="none" stroke="#0284c7" stroke-width="2.5" marker-end="url(#arrow-gate)" />
+            <rect x="775" y="830" width="36" height="20" rx="3" fill="#ffffff" stroke="#cbd5e1" stroke-width="1" />
+            <text x="793" y="844" font-family="var(--font-mono)" font-size="10" font-weight="700" fill="#0369a1" text-anchor="middle">SAI</text>
+          </g>
+
+          <!-- ============================================================== -->
+          <!-- CỔNG 2: MATERIALITY & STRUCTURAL RISK (COL 3) -->
+          <!-- ============================================================== -->
+          <g class="interactive-node branch-pass branch-warn branch-gate2 scenario-item" id="node-gate2">
+            <a href="#drawer-gate2">
+              <rect x="830" y="860" width="370" height="42" rx="6" fill="#fef3c7" stroke="#d97706" stroke-width="2" />
+              <text x="1015" y="886" font-family="var(--font-mono)" font-size="12" font-weight="700" fill="#b45309" text-anchor="middle">
+                CỔNG 2: PHƠI NHIỄM TRỌNG YẾU &amp; CẤU TRÚC
+              </text>
+
+              <rect x="830" y="902" width="370" height="630" rx="6" fill="#ffffff" stroke="#fde68a" stroke-width="1.5" />
+              <text x="845" y="926" font-family="var(--font-sans)" font-size="11.5" font-weight="700" fill="#0f172a">Kiểm tra ngưỡng &amp; 4 Motif cấu trúc bất thường:</text>
+              <text x="845" y="946" font-family="var(--font-sans)" font-size="11" fill="#475569">• Phơi nhiễm phi tuyến: S_mat(r) &ge; &tau;_eff (Ngưỡng ngành)</text>
+              <text x="845" y="964" font-family="var(--font-sans)" font-size="11" fill="#475569">• Rò rỉ qua biên đồ thị: Leakage &ge; 10% Tổng tài sản</text>
+              <text x="845" y="982" font-family="var(--font-sans)" font-size="11" fill="#475569">• Bất cân xứng quyền lực: Ownership &le; 5% &and; Flow &ge; 50%</text>
+
+              <!-- Spacious 4-Motif Layout: Each card is 340px wide, high-contrast, fully labeled -->
+              <!-- MOTIF M2: INSIDER FUNNEL -->
+              <g transform="translate(845, 1000)">
+                <rect x="0" y="0" width="340" height="115" rx="6" fill="#fffbeb" stroke="#fcd34d" stroke-width="1" />
+                <text x="10" y="18" font-family="var(--font-mono)" font-size="10" font-weight="700" fill="#b45309">
+                  MOTIF M2: PHỄU GOM VỐN NỘI BỘ (IN-STAR FUNNEL)
+                </text>
+
+                <!-- Star Nodes -->
+                <circle cx="35" cy="48" r="13" fill="#ffffff" stroke="#d97706" stroke-width="1.5" />
+                <text x="35" y="52" font-family="var(--font-mono)" font-size="8" fill="#78350f" text-anchor="middle">CTY A</text>
+
+                <circle cx="35" cy="90" r="13" fill="#ffffff" stroke="#d97706" stroke-width="1.5" />
+                <text x="35" y="94" font-family="var(--font-mono)" font-size="8" fill="#78350f" text-anchor="middle">CTY B</text>
+
+                <!-- Central Hub -->
+                <circle cx="160" cy="68" r="18" fill="#fee2e2" stroke="#dc2626" stroke-width="2" />
+                <text x="160" y="65" font-family="var(--font-mono)" font-size="8.5" font-weight="700" fill="#991b1b" text-anchor="middle">LÃNH ĐẠO</text>
+                <text x="160" y="76" font-family="var(--font-sans)" font-size="7.5" fill="#991b1b" text-anchor="middle">Tài khoản cá nhân</text>
+
+                <!-- Arrows -->
+                <path d="M 48 50 L 142 65" fill="none" stroke="#dc2626" stroke-width="1.5" marker-end="url(#m-arrow-red)" />
+                <text x="88" y="52" font-family="var(--font-mono)" font-size="7.5" font-weight="700" fill="#b91c1c">250 TỶ</text>
+
+                <path d="M 48 88 L 142 72" fill="none" stroke="#dc2626" stroke-width="1.5" marker-end="url(#m-arrow-red)" />
+                <text x="88" y="88" font-family="var(--font-mono)" font-size="7.5" font-weight="700" fill="#b91c1c">400 TỶ</text>
+
+                <!-- Description -->
+                <text x="210" y="55" font-family="var(--font-sans)" font-size="9" font-weight="600" fill="#0f172a">Gom vốn về</text>
+                <text x="210" y="70" font-family="var(--font-sans)" font-size="9" font-weight="600" fill="#0f172a">người nội bộ:</text>
+                <text x="210" y="88" font-family="var(--font-mono)" font-size="10" font-weight="700" fill="#dc2626">&Sigma; = 650 Tỷ VND</text>
+              </g>
+
+              <!-- MOTIF M3: EXTERNAL EXTRACTION -->
+              <g transform="translate(845, 1125)">
+                <rect x="0" y="0" width="340" height="115" rx="6" fill="#fffbeb" stroke="#fcd34d" stroke-width="1" />
+                <text x="10" y="18" font-family="var(--font-mono)" font-size="10" font-weight="700" fill="#b45309">
+                  MOTIF M3: RÚT VỐN QUA BIÊN NGOẠI VI (BOUNDARY EXTRACTION)
+                </text>
+
+                <!-- Core Network Node -->
+                <circle cx="45" cy="65" r="16" fill="#dbeafe" stroke="#1d4ed8" stroke-width="1.5" />
+                <text x="45" y="62" font-family="var(--font-mono)" font-size="8.5" font-weight="700" fill="#1e40af" text-anchor="middle">HOLDING</text>
+                <text x="45" y="73" font-family="var(--font-sans)" font-size="7" fill="#1e40af" text-anchor="middle">Kiểm toán</text>
+
+                <!-- Boundary Line (Audited Perimeter) -->
+                <line x1="120" y1="28" x2="120" y2="105" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4 3" />
+                <text x="123" y="40" font-family="var(--font-mono)" font-size="7" fill="#64748b">BIÊN KIỂM TOÁN</text>
+
+                <!-- Shell Entity Outside -->
+                <circle cx="200" cy="65" r="18" fill="#fee2e2" stroke="#dc2626" stroke-width="2" />
+                <text x="200" y="62" font-family="var(--font-mono)" font-size="8.5" font-weight="700" fill="#991b1b" text-anchor="middle">SPV LẠ</text>
+                <text x="200" y="73" font-family="var(--font-sans)" font-size="7" fill="#991b1b" text-anchor="middle">Không hợp nhất</text>
+
+                <!-- Cut Edge -->
+                <path d="M 61 65 L 182 65" fill="none" stroke="#dc2626" stroke-width="2" marker-end="url(#m-arrow-red)" />
+                <rect x="75" y="55" width="85" height="15" rx="3" fill="#ffffff" stroke="#fca5a5" stroke-width="0.8" />
+                <text x="117" y="66" font-family="var(--font-mono)" font-size="7.5" font-weight="700" fill="#b91c1c" text-anchor="middle">ĐẶT CỌC 420 TỶ</text>
+
+                <text x="240" y="60" font-family="var(--font-sans)" font-size="9" fill="#0f172a">Vốn chảy ra</text>
+                <text x="240" y="75" font-family="var(--font-sans)" font-size="9" fill="#0f172a">khỏi tầm kiểm soát</text>
+                <text x="240" y="90" font-family="var(--font-mono)" font-size="9.5" font-weight="700" fill="#dc2626">Leak &ge; 10% T.Sản</text>
+              </g>
+
+              <!-- MOTIF M4: CONTROL-FLOW MISMATCH -->
+              <g transform="translate(845, 1250)">
+                <rect x="0" y="0" width="340" height="115" rx="6" fill="#fffbeb" stroke="#fcd34d" stroke-width="1" />
+                <text x="10" y="18" font-family="var(--font-mono)" font-size="10" font-weight="700" fill="#b45309">
+                  MOTIF M4: BẤT ĐỐI XỨNG QUYỀN LỰC VÀ DÒNG TIỀN (ASYMMETRY)
+                </text>
+
+                <circle cx="50" cy="65" r="18" fill="#dbeafe" stroke="#1d4ed8" stroke-width="2" />
+                <text x="50" y="62" font-family="var(--font-mono)" font-size="8.5" font-weight="700" fill="#1e40af" text-anchor="middle">HOLDING</text>
+                <text x="50" y="73" font-family="var(--font-sans)" font-size="7" fill="#1e40af" text-anchor="middle">Gánh Rủi Ro</text>
+
+                <circle cx="210" cy="65" r="18" fill="#ffffff" stroke="#d97706" stroke-width="2" />
+                <text x="210" y="62" font-family="var(--font-mono)" font-size="8.5" font-weight="700" fill="#b45309" text-anchor="middle">ĐỐI TÁC X</text>
+                <text x="210" y="73" font-family="var(--font-sans)" font-size="7" fill="#78350f" text-anchor="middle">Hưởng Lợi</text>
+
+                <!-- Asymmetry dual edge: Thin Ownership vs Massive Flow -->
+                <path d="M 68 55 Q 130 35 192 55" fill="none" stroke="#2563eb" stroke-width="1.2" marker-end="url(#m-arrow-blue)" />
+                <text x="130" y="38" font-family="var(--font-mono)" font-size="8" font-weight="700" fill="#1d4ed8" text-anchor="middle">SỞ HỮU CHỈ 4.5% (THẤP)</text>
+
+                <path d="M 68 75 Q 130 95 192 75" fill="none" stroke="#dc2626" stroke-width="2.5" marker-end="url(#m-arrow-red)" />
+                <text x="130" y="108" font-family="var(--font-mono)" font-size="8" font-weight="700" fill="#dc2626" text-anchor="middle">BẢO LÃNH 60% VỐN CSH (CỰC CAO)</text>
+
+                <text x="245" y="60" font-family="var(--font-sans)" font-size="8.5" fill="#0f172a">Lệch pha kiểm soát</text>
+                <text x="245" y="75" font-family="var(--font-sans)" font-size="8.5" fill="#0f172a">rút ruột tinh vi</text>
+              </g>
+
+              <!-- MOTIF M5: TEMPORAL MATURITY CONVERSION -->
+              <g transform="translate(845, 1375)">
+                <rect x="0" y="0" width="340" height="145" rx="6" fill="#fffbeb" stroke="#fcd34d" stroke-width="1" />
+                <text x="10" y="18" font-family="var(--font-mono)" font-size="10" font-weight="700" fill="#b45309">
+                  MOTIF M5: ĐẢO KỲ HẠN &amp; BẢN CHẤT GIAO DỊCH (CONVERSION)
+                </text>
+
+                <!-- Timeline Stages -->
+                <rect x="15" y="35" width="80" height="42" rx="4" fill="#ffffff" stroke="#cbd5e1" stroke-width="1" />
+                <text x="55" y="52" font-family="var(--font-mono)" font-size="8" font-weight="700" fill="#0f172a" text-anchor="middle">NGÀY 25/12</text>
+                <text x="55" y="66" font-family="var(--font-sans)" font-size="7.5" fill="#dc2626" text-anchor="middle">Vay ngắn hạn</text>
+
+                <path d="M 95 56 L 125 56" fill="none" stroke="#d97706" stroke-width="1.5" marker-end="url(#m-arrow-amber)" />
+
+                <rect x="130" y="35" width="80" height="42" rx="4" fill="#fef3c7" stroke="#d97706" stroke-width="1.5" />
+                <text x="170" y="52" font-family="var(--font-mono)" font-size="8" font-weight="700" fill="#b45309" text-anchor="middle">NGÀY 30/12</text>
+                <text x="170" y="66" font-family="var(--font-sans)" font-size="7.5" fill="#b45309" text-anchor="middle">Chuyển Đặt cọc</text>
+
+                <path d="M 210 56 L 240 56" fill="none" stroke="#d97706" stroke-width="1.5" marker-end="url(#m-arrow-amber)" />
+
+                <rect x="245" y="35" width="85" height="42" rx="4" fill="#fee2e2" stroke="#dc2626" stroke-width="1.5" />
+                <text x="287" y="52" font-family="var(--font-mono)" font-size="8" font-weight="700" fill="#991b1b" text-anchor="middle">NGÀY 31/12</text>
+                <text x="287" y="66" font-family="var(--font-sans)" font-size="7.5" fill="#991b1b" text-anchor="middle">Khóa sổ BCTC</text>
+
+                <text x="15" y="98" font-family="var(--font-sans)" font-size="9" fill="#334155">
+                  Bản chất: Đổi nhãn từ nợ vay rủi ro cao sang "Tài sản dở dang dài hạn"
+                </text>
+                <text x="15" y="115" font-family="var(--font-sans)" font-size="9" fill="#334155">
+                  hoặc "Ủy thác đầu tư" ngay trước giờ kiểm toán nhằm che giấu dòng tiền.
+                </text>
+                <text x="15" y="132" font-family="var(--font-mono)" font-size="9.5" font-weight="700" fill="#dc2626">
+                  GIL Phát hiện qua biến đổi trọng số cạnh: w(e, t) &ne; w(e, t+1)
+                </text>
+              </g>
+            </a>
+          </g>
+
+          <!-- Gate 2 Connectors -->
+          <!-- True Branch -> WARNING Badge -->
+          <g class="branch-warn scenario-link">
+            <path class="stream-warn" d="M 1015 1532 L 1015 1600" fill="none" stroke="#d97706" stroke-width="2.5" marker-end="url(#arrow-warn)" />
+            <rect x="985" y="1555" width="60" height="20" rx="3" fill="#ffffff" stroke="#cbd5e1" stroke-width="1" />
+            <text x="1015" y="1569" font-family="var(--font-mono)" font-size="10.5" font-weight="700" fill="#d97706" text-anchor="middle">ĐÚNG</text>
+          </g>
+
+          <!-- Decision Badge 2: WARNING -->
+          <g class="decision-badge branch-warn" id="badge-warning">
+            <a href="#drawer-badge-warn">
+              <rect x="860" y="1600" width="310" height="110" rx="8" fill="#fef3c7" stroke="#d97706" stroke-width="2" />
+              <text x="1015" y="1632" font-family="var(--font-mono)" font-size="14" font-weight="700" fill="#b45309" text-anchor="middle">
+                WARNING
+              </text>
+              <text x="1015" y="1656" font-family="var(--font-sans)" font-size="12" font-weight="600" fill="#92400e" text-anchor="middle">
+                CẢNH BÁO RỦI RO CẤU TRÚC CAO
+              </text>
+              <text x="1015" y="1682" font-family="var(--font-sans)" font-size="11" fill="#b45309" text-anchor="middle">
+                (Phạt giảm 30% - 50% tỷ trọng phân bổ Kelly)
+              </text>
+            </a>
+          </g>
+
+          <!-- False Branch from Gate 2 -> Gate 3 -->
+          <g class="branch-pass branch-gate3 scenario-link">
+            <path class="stream-pass" d="M 1200 880 L 1225 880 Q 1233 880 1233 888 L 1233 970 Q 1233 978 1241 978 L 1260 978"
+                  fill="none" stroke="#16a34a" stroke-width="2.5" marker-end="url(#arrow-pass)" />
+            <rect x="1215" y="920" width="36" height="20" rx="3" fill="#ffffff" stroke="#cbd5e1" stroke-width="1" />
+            <text x="1233" y="934" font-family="var(--font-mono)" font-size="10" font-weight="700" fill="#15803d" text-anchor="middle">SAI</text>
+          </g>
+
+          <!-- ============================================================== -->
+          <!-- CỔNG 3: PASS APPROVAL & KELLY SIZING (COL 4) -->
+          <!-- ============================================================== -->
+          <g class="interactive-node branch-pass branch-gate3 scenario-item" id="node-gate3">
+            <a href="#drawer-gate3">
+              <rect x="1260" y="960" width="265" height="42" rx="6" fill="#dcfce7" stroke="#16a34a" stroke-width="2" />
+              <text x="1392" y="986" font-family="var(--font-mono)" font-size="12" font-weight="700" fill="#15803d" text-anchor="middle">
+                CỔNG 3: PHÊ DUYỆT ĐẠT CHUẨN
+              </text>
+
+              <rect x="1260" y="1002" width="265" height="310" rx="6" fill="#ffffff" stroke="#bbf7d0" stroke-width="1.5" />
+              <text x="1275" y="1026" font-family="var(--font-sans)" font-size="11.5" font-weight="700" fill="#0f172a">Đạt chuẩn toàn bộ chốt chặn:</text>
+              <text x="1275" y="1046" font-family="var(--font-sans)" font-size="11" fill="#475569">• Không có chu trình rút ruột M1</text>
+              <text x="1275" y="1064" font-family="var(--font-sans)" font-size="11" fill="#475569">• Không vi phạm các Motifs M2–M5</text>
+              <text x="1275" y="1082" font-family="var(--font-sans)" font-size="11" fill="#475569">• Phơi nhiễm trọng yếu an toàn: r &lt; &tau;</text>
+
+              <!-- Spacious Subgraph: Clean Arborescence DAG -->
+              <g transform="translate(1275, 1100)">
+                <rect x="0" y="0" width="235" height="195" rx="6" fill="#f0fdf4" stroke="#bbf7d0" stroke-width="1" />
+                <text x="10" y="18" font-family="var(--font-mono)" font-size="10" font-weight="700" fill="#16a34a">
+                  HÌNH THÁI: CÂY PHÂN CẤP SẠCH (DAG)
+                </text>
+
+                <!-- Root: Holding Corp -->
+                <circle cx="118" cy="52" r="18" fill="#ffffff" stroke="#16a34a" stroke-width="2" />
+                <text x="118" y="49" font-family="var(--font-mono)" font-size="8.5" font-weight="700" fill="#15803d" text-anchor="middle">HOLDING</text>
+                <text x="118" y="60" font-family="var(--font-sans)" font-size="7.5" fill="#475569" text-anchor="middle">Niêm Yết</text>
+
+                <!-- Child 1: Công ty con 100% vốn -->
+                <circle cx="55" cy="120" r="16" fill="#ffffff" stroke="#16a34a" stroke-width="1.5" />
+                <text x="55" y="118" font-family="var(--font-mono)" font-size="8" font-weight="700" fill="#15803d" text-anchor="middle">CTY CON 1</text>
+                <text x="55" y="128" font-family="var(--font-sans)" font-size="7" fill="#475569" text-anchor="middle">100% Vốn</text>
+
+                <!-- Child 2: Công ty con 80% vốn -->
+                <circle cx="180" cy="120" r="16" fill="#ffffff" stroke="#16a34a" stroke-width="1.5" />
+                <text x="180" y="118" font-family="var(--font-mono)" font-size="8" font-weight="700" fill="#15803d" text-anchor="middle">CTY CON 2</text>
+                <text x="180" y="128" font-family="var(--font-sans)" font-size="7" fill="#475569" text-anchor="middle">80% Vốn</text>
+
+                <!-- Project Node (Leaf) -->
+                <circle cx="180" cy="170" r="13" fill="#ffffff" stroke="#64748b" stroke-width="1" />
+                <text x="180" y="174" font-family="var(--font-mono)" font-size="7.5" fill="#334155" text-anchor="middle">DỰ ÁN X</text>
+
+                <!-- Direct Clean Out-Edges -->
+                <path d="M 103 62 L 67 106" fill="none" stroke="#16a34a" stroke-width="1.5" marker-end="url(#m-arrow-green)" />
+                <path d="M 132 62 L 168 106" fill="none" stroke="#16a34a" stroke-width="1.5" marker-end="url(#m-arrow-green)" />
+                <path d="M 180 136 L 180 157" fill="none" stroke="#16a34a" stroke-width="1.5" marker-end="url(#m-arrow-green)" />
+              </g>
+            </a>
+          </g>
+
+          <!-- Gate 3 Connector -> PASS Badge -->
+          <g class="branch-pass scenario-link">
+            <path class="stream-pass" d="M 1392 1312 L 1392 1400" fill="none" stroke="#16a34a" stroke-width="2.5" marker-end="url(#arrow-pass)" />
+            <rect x="1362" y="1345" width="60" height="20" rx="3" fill="#ffffff" stroke="#cbd5e1" stroke-width="1" />
+            <text x="1392" y="1359" font-family="var(--font-mono)" font-size="10.5" font-weight="700" fill="#15803d" text-anchor="middle">ĐẠT CHUẨN</text>
+          </g>
+
+          <!-- Decision Badge 3: PASS -->
+          <g class="decision-badge branch-pass" id="badge-pass">
+            <a href="#drawer-badge-pass">
+              <rect x="1260" y="1400" width="265" height="120" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="2" />
+              <text x="1392" y="1432" font-family="var(--font-mono)" font-size="16" font-weight="700" fill="#15803d" text-anchor="middle">
+                PASS
+              </text>
+              <text x="1392" y="1456" font-family="var(--font-sans)" font-size="12" font-weight="600" fill="#166534" text-anchor="middle">
+                PHÊ DUYỆT ĐẦU TƯ ĐẦY ĐỦ
+              </text>
+              <text x="1392" y="1480" font-family="var(--font-sans)" font-size="11" fill="#15803d" text-anchor="middle">
+                Phân bổ Kelly tối đa: f* = 100%
+              </text>
+              <text x="1392" y="1500" font-family="var(--font-mono)" font-size="10" fill="#166534" text-anchor="middle">
+                f* = (p*b - q)/b &times; Conf_GIL
+              </text>
+            </a>
+          </g>
+        </g>
+      </svg>
+    </main>
+
+    <!-- ============================================================== -->
+    <!-- SLIDE-OVER INSPECTOR DRAWERS (PURE CSS :TARGET) -->
+    <!-- ============================================================== -->
+    <a href="#" class="inspector-backdrop" aria-label="Đóng bảng khảo sát"></a>
+
+    <!-- Drawer: Entity Layer -->
+    <aside class="inspector-drawer" id="drawer-entity-layer">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#e0f2fe;color:#0284c7;">Input Modeling</span>
+          <h3 class="drawer-title">Entity Resolution Layer</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Nhiệm Vụ &amp; Trích Xuất Thực Thể</h4>
+          <p>
+            Tầng giải quyết thực thể (Entity Resolution) chuẩn hóa và liên kết tất cả các danh xưng từ báo cáo tài chính, thuyết minh bên liên quan (VAS 26 / IFRS), danh sách cổ đông lớn, và nghị quyết HĐQT thành tập đỉnh duy nhất:
+          </p>
+          <div class="drawer-formula-box">
+            V = V_corp &cup; V_person &cup; V_spv
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Chịu Trách Nhiệm</h4>
+          <div class="drawer-code-link">📄 <code>gil_service.py:build_from_source_graph() [L131-L215]</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer: Ownership Graph -->
+    <aside class="inspector-drawer" id="drawer-ownership-graph">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#dbeafe;color:#1e40af;">Layer 1 Multiplex</span>
+          <h3 class="drawer-title">Lớp 1: Đồ Thị Sở Hữu (G_own)</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Cấu Trúc &amp; Trọng Số</h4>
+          <p>
+            Mô hình hóa quyền sở hữu và tỷ lệ biểu quyết trực tiếp hoặc gián tiếp giữa các pháp nhân và cổ đông lớn:
+          </p>
+          <div class="drawer-formula-box">
+            G_own = (V, E_own), &forall; e &in; E_own: w(e) &in; (0, 100%]
+          </div>
+          <p>
+            Các nhãn cạnh bao gồm: <code>OWNS</code>, <code>SUBSIDIARY_OF</code>, <code>AFFILIATE_OF</code>, <code>INVESTS_IN</code>.
+          </p>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Chịu Trách Nhiệm</h4>
+          <div class="drawer-code-link">📄 <code>gil_service.py:OWNERSHIP_RELATIONS [L76-L82]</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer: Governance Graph -->
+    <aside class="inspector-drawer" id="drawer-governance-graph">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#fef3c7;color:#b45309;">Layer 2 Multiplex</span>
+          <h3 class="drawer-title">Lớp 2: Đồ Thị Quản Trị &amp; Điều Hành (G_gov)</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Cấu Trúc &amp; Mạng Lưới Quyền Lực</h4>
+          <p>
+            Xác định các mối quan hệ kiêm nhiệm (Interlocking Directorates), người đại diện theo pháp luật và quan hệ thân tộc theo Luật Doanh nghiệp:
+          </p>
+          <div class="drawer-formula-box">
+            G_gov = (V, E_gov), E_gov &sub; V_person &times; V_corp
+          </div>
+          <p>
+            Đặc biệt theo dõi cá nhân giữ vị trí kép: vừa là Chủ tịch/TGĐ bên niêm yết, vừa là Người đại diện hoặc Cổ đông sáng lập tại các SPV bên ngoài.
+          </p>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Chịu Trách Nhiệm</h4>
+          <div class="drawer-code-link">📄 <code>gil_service.py:_relationship_breakdown() [L600-L650]</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer: Flow Graph -->
+    <aside class="inspector-drawer" id="drawer-flow-graph">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#fee2e2;color:#dc2626;">Layer 3 Multiplex</span>
+          <h3 class="drawer-title">Lớp 3: Đồ Thị Dòng Tiền &amp; Tài Chính (G_flow)</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Cấu Trúc Giao Dịch Thực</h4>
+          <p>
+            Lưu vết toàn bộ số dư và phát sinh giao dịch có giá trị bằng tiền:
+          </p>
+          <div class="drawer-formula-box">
+            G_flow = (V, E_flow), &forall; e &in; E_flow: w(e) &ge; 0 (VND)
+          </div>
+          <p>
+            Quan hệ: <code>LOANS_TO</code>, <code>BORROWS_FROM</code>, <code>RECEIVABLE_FROM</code>, <code>PAYABLE_TO</code>, <code>GUARANTEES_FOR</code>.
+          </p>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Chịu Trách Nhiệm</h4>
+          <div class="drawer-code-link">📄 <code>gil_service.py:FINANCIAL_FLOW_RELATIONS [L69-L75]</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer: TCG Fusion & Scope Invariant -->
+    <aside class="inspector-drawer" id="drawer-tcg-fusion">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#e0f2fe;color:#0284c7;">Multiplex Fusion</span>
+          <h3 class="drawer-title">Temporal Corporate Graph &amp; Scope Invariant</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Hợp Nhất Không - Thời Gian</h4>
+          <p>
+            Mỗi quý báo cáo tài chính t tạo ra một ảnh chụp (snapshot) hợp nhất 3 mặt phẳng đồ thị:
+          </p>
+          <div class="drawer-formula-box">
+            G_TCG(t) = (V, E_own(t), E_gov(t), E_flow(t), A_scope)
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Bất Biến Phạm Vi Kế Toán (Accounting Scope Invariant)</h4>
+          <p>
+            Nghiêm cấm tuyệt đối việc chia các khoản nợ/phải thu đơn lẻ cho Vốn chủ sở hữu hợp nhất. Hệ thống chỉ công nhận tỷ lệ hợp lệ khi cùng phạm vi và kỳ lập:
+          </p>
+          <div class="drawer-formula-box">
+            ValidRatio(x, y) &hArr; Scope(x) = Scope(y) &and; Period(x) = Period(y)
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer: Gate 0 -->
+    <aside class="inspector-drawer" id="drawer-gate0">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#e0f2fe;color:#0284c7;">Chốt Chặn 0</span>
+          <h3 class="drawer-title">Cổng 0: Kiểm Tra Tính Đầy Đủ Dữ Liệu</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Toán Tử Kiểm Tra</h4>
+          <div class="drawer-formula-box">
+            IsComplete(G) &hArr; |E_flow| &gt; 0 &and; &exist; T &ge; 4 Quý &and; ValidScope(G)
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Gốc</h4>
+          <div class="drawer-code-link">📄 <code>gil_service.py:assess_gil() [L520-L545]</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer: Gate 1 -->
+    <aside class="inspector-drawer" id="drawer-gate1">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#fee2e2;color:#dc2626;">Chốt Chặn 1</span>
+          <h3 class="drawer-title">Cổng 1: Phủ Quyết Chu Trình Rút Ruột (Motif M1)</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Toán Học Chu Trình Có Hướng</h4>
+          <div class="drawer-formula-box">
+            C = (v_1, e_1, v_2, ..., v_k, e_k, v_1)<br/>
+            &forall; e &in; C: e &in; E_flow, |C| &ge; 3<br/>
+            R_mat(C) = min_{e &in; C} w(e) / Equity &ge; 15%
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Gốc</h4>
+          <div class="drawer-code-link">📄 <code>gil_service.py:detect_capital_tunneling_cycles() [L300-L360]</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer: Gate 2 -->
+    <aside class="inspector-drawer" id="drawer-gate2">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#fef3c7;color:#b45309;">Chốt Chặn 2</span>
+          <h3 class="drawer-title">Cổng 2: Phơi Nhiễm Trọng Yếu &amp; Cấu Trúc Bất Thường</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Hàm Điểm Phi Tuyến &amp; Ngưỡng Thích Ứng</h4>
+          <div class="drawer-formula-box">
+            &tau;_eff = 0.25 &times; M_archetype &times; M_sector<br/>
+            S_mat(r) = 1 / (1 + exp(-k &times; (r - &tau;_eff)))
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Gốc</h4>
+          <div class="drawer-code-link">📄 <code>gil_service.py:_nonlinear_exposure_score() [L480-L515]</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer: Gate 3 & PASS -->
+    <aside class="inspector-drawer" id="drawer-gate3">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#dcfce7;color:#15803d;">Chốt Chặn 3</span>
+          <h3 class="drawer-title">Cổng 3: Phê Duyệt PASS &amp; Phân Bổ Kelly</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Đồ Thị Phân Cấp Sạch &amp; Kích Thước Vị Thế</h4>
+          <div class="drawer-formula-box">
+            f* = (p &times; b - q) / b &times; Conf_GIL<br/>
+            &forall; v: in-degree(v) &le; 1, Directed Acyclic Graph (DAG)
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Gốc</h4>
+          <div class="drawer-code-link">📄 <code>gil_service.py:assess_gil() [L540-L580]</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer: Badges -->
+    <aside class="inspector-drawer" id="drawer-badge-insuf">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#f3e8ff;color:#6d28d9;">Decision Output</span>
+          <h3 class="drawer-title">Huy Hiệu: DATA_INSUFFICIENT</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <p>Gán nhãn khi dữ liệu thuyết minh BCTC không đủ điều kiện tối thiểu để xây dựng đồ thị dòng tiền đáng tin cậy. Hệ thống từ chối chấm điểm rủi ro.</p>
+      </div>
+    </aside>
+
+    <aside class="inspector-drawer" id="drawer-badge-cat">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#fee2e2;color:#b91c1c;">Decision Output</span>
+          <h3 class="drawer-title">Huy Hiệu: CATASTROPHIC</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <p>Chốt chặn veto kích hoạt khi phát hiện chu trình dòng tiền khép kín rút ruột (Motif M1) có tỷ lệ vượt quá 15% Vốn chủ sở hữu. Ngắt kết nối danh mục ngay lập tức.</p>
+      </div>
+    </aside>
+
+    <aside class="inspector-drawer" id="drawer-badge-warn">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#fef3c7;color:#b45309;">Decision Output</span>
+          <h3 class="drawer-title">Huy Hiệu: WARNING</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <p>Kích hoạt khi tỷ lệ phơi nhiễm nợ vay, ủy thác vượt ngưỡng ngành hoặc vi phạm một trong các Motifs M2, M3, M4, M5. Cho phép đầu tư nhưng áp dụng phạt giảm tỷ trọng Kelly.</p>
+      </div>
+    </aside>
+
+    <aside class="inspector-drawer" id="drawer-badge-pass">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#dcfce7;color:#15803d;">Decision Output</span>
+          <h3 class="drawer-title">Huy Hiệu: PASS</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <p>Cấu trúc đồ thị doanh nghiệp đạt chuẩn minh bạch (Clean Tree DAG), không phát hiện rủi ro rút ruột hoặc phơi nhiễm bất thường. Phân bổ vị thế đầu tư tối đa.</p>
+      </div>
+    </aside>
+  </div>
+</body>
+
+</html>

@@ -95,11 +95,10 @@ async def upload_by_ticker(
     from sag_api.services.document_service import create_document_from_upload
 
     source = await get_or_create_source_by_ticker(session, ticker, engine_manager=engine_manager)
-    data = await file.read()
+    from sag_api.core.uploads import read_upload_limited
+    data = await read_upload_limited(file, settings.max_upload_mb * 1024 * 1024)
     if not data:
         raise ValidationError("Nội dung file rỗng")
-    if len(data) > settings.max_upload_mb * 1024 * 1024:
-        raise ValidationError(f"File vượt giới hạn {settings.max_upload_mb}MB")
 
     document, _job = await create_document_from_upload(
         session,

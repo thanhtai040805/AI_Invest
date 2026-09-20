@@ -168,6 +168,18 @@ def test_common_english_mirror_lines_are_removed_but_unique_english_is_kept():
     assert stats.bilingual_duplicates_removed == 1
 
 
+def test_long_interleaved_english_paragraphs_are_removed():
+    markdown = (
+        "Vingroup lãnh đạo và ban điều hành tham gia đào tạo nội bộ.\n"
+        "Vingroup's leadership as well as the senior management of subsidiaries and member companies actively participate in workshops and internal training programs.\n"
+        "Nội dung tiếng Việt cần giữ lại.\n"
+    )
+    cleaned, stats = clean_markdown(markdown)
+    assert "Vingroup's leadership" not in cleaned
+    assert "Nội dung tiếng Việt cần giữ lại." in cleaned
+    assert stats.english_lines_removed == 1
+
+
 def test_financial_roles_can_drop_core_statement_sections_explicitly():
     markdown = (
         "## BÁO CÁO TÌNH HÌNH TÀI CHÍNH\n"

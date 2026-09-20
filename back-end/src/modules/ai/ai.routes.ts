@@ -9,11 +9,12 @@ import prisma from '../../config/database';
 const router = Router();
 
 const backtestSchema = z.object({
-  symbol: z.string().min(1),
-  strategy: z.string().min(1),
-  startDate: z.string(),
-  endDate: z.string(),
+  symbol: z.string().trim().regex(/^[A-Za-z0-9.-]{1,16}$/),
+  strategy: z.enum(['sma_cross', 'rsi', 'bollinger']),
+  startDate: z.string().date(),
+  endDate: z.string().date(),
   params: z.record(z.unknown()).optional(),
+  capital: z.coerce.number().finite().positive().optional(),
 });
 
 router.post('/backtest', authMiddleware, async (req: AuthRequest, res: Response, next: NextFunction) => {
@@ -21,10 +22,11 @@ router.post('/backtest', authMiddleware, async (req: AuthRequest, res: Response,
     const body = backtestSchema.parse(req.body);
     const result = await aiEngineService.submitBacktest({
       symbol: body.symbol.toUpperCase(),
-      strategy: body.strategy,
-      startDate: body.startDate,
-      endDate: body.endDate,
-      params: body.params,
+      start_date: body.startDate,
+      end_date: body.endDate,
+      strategy_config: { type: body.strategy, params: body.params ?? {} },
+      initial_capital: body.capital,
+      source: 'auto',
     });
     res.status(202).json(result);
   } catch (err) {

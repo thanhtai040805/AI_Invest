@@ -61,6 +61,11 @@ async def lifespan(app: FastAPI):
     app.state.job_queue = queue
     await queue.start()
 
+    from sag_agent import AgentRuntime
+    agent_runtime = AgentRuntime()
+    await agent_runtime.start()
+    app.state.agent_runtime = agent_runtime
+
     log.info(
         "sag-api v2 financial evidence service đã khởi động · env=%s · agent_llm_configured=%s · extraction_llm_configured=%s · embedding=%s",
         settings.environment,
@@ -71,6 +76,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        await agent_runtime.stop()
         await queue.stop()
         await engine_manager.aclose_all()
         await dispose_db()

@@ -1,14 +1,24 @@
 """Admin API — job states, backfill triggers, and system monitoring."""
 
 import asyncio
+import hmac
+import os
 from typing import Optional
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
 from app.infrastructure.monitoring.job_state_service import get_job, list_jobs
 from app.infrastructure.monitoring.monitoring import run_all_health_checks, monitoring_svc
 from app.infrastructure.data_pipelines.backfill_service import trigger_run
 
-router = APIRouter()
+def _require_admin(x_admin_token: str | None = Header(default=None)) -> None:
+    if os.getenv("ENVIRONMENT", "").lower() == "test":
+        return
+    expected = os.getenv("AI_ENGINE_ADMIN_TOKEN", "")
+    if not expected or not x_admin_token or not hmac.compare_digest(x_admin_token, expected):
+        raise HTTPException(status_code=401, detail="Unauthorized admin service")
+
+
+router = APIRouter(dependencies=[Depends(_require_admin)])
 
 
 @router.get("/admin/jobs")

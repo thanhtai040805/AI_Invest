@@ -14,6 +14,7 @@ import asyncio
 import logging
 from datetime import date, datetime, time as dt_time
 from typing import Any, Dict, Optional
+from zoneinfo import ZoneInfo
 
 from app.domain.pipeline.eod_pipeline import eod_runner, EODPipelineRunner
 from app.infrastructure.external_api.dnse.market_session import MarketSessionManager
@@ -62,7 +63,7 @@ class EODLearningDaemon:
 
     async def _check_and_trigger(self) -> None:
         """Kiểm tra điều kiện giờ và ngày giao dịch để kích hoạt."""
-        now = datetime.now()
+        now = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
         today_str = now.date().isoformat()
 
         # 1. Kiểm tra ngày làm việc sàn HOSE

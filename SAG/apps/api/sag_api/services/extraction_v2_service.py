@@ -811,16 +811,20 @@ _NUMERIC_CELL_RE = re.compile(r"^\(?-?\d[\d., ]*\)?%?$")
 _ROMAN_QUARTERS = {"i": 1, "ii": 2, "iii": 3, "iv": 4}
 
 _TABLE_FACT_RULES: tuple[tuple[tuple[str, ...], FactType, str, str | None], ...] = (
+    (("tong cong tai san",), FactType.OTHER, "total_assets", "asset_balance"),
+    (("cac khoan phai thu ngan han",), FactType.RECEIVABLE_BALANCE, "total_receivables", None),
+    (("tien va cac khoan tuong duong tien",), FactType.OTHER, "cash_and_equivalents", "cash_balance"),
+    (("tong cong no phai tra",), FactType.PAYABLE_BALANCE, "total_payables", None),
     (("tien mat",), FactType.OTHER, "cash_on_hand", "cash_balance"),
     (("tien gui ngan hang",), FactType.OTHER, "bank_deposit_demand", "cash_balance"),
     (("cac khoan tuong duong tien",), FactType.OTHER, "cash_equivalents", "cash_balance"),
-    (("tien", "cong"), FactType.OTHER, "cash_and_equivalents", "cash_balance"),
     (("phai thu",), FactType.RECEIVABLE_BALANCE, "receivable_balance", None),
     (("phai tra",), FactType.PAYABLE_BALANCE, "payable_balance", None),
     (("co tuc",), FactType.DIVIDEND, "dividend", None),
     (("von gop",), FactType.EQUITY, "contributed_capital", None),
     (("von chu",), FactType.EQUITY, "equity", None),
     (("loi nhuan",), FactType.PROFIT, "profit", None),
+    (("doanh thu hoat dong tai chinh",), FactType.REVENUE, "financial_income", None),
     (("doanh thu",), FactType.REVENUE, "revenue", None),
     (("gia von",), FactType.OTHER, "cost_of_goods_sold", "cost_of_goods_sold"),
     (("chi phi di vay",), FactType.OTHER, "borrowing_cost", "interest_expense"),
@@ -975,6 +979,7 @@ def enrich_manifest_with_table_facts(
             if period_start is None and period_end is None and as_of is None:
                 as_of = document.period_end
             unit = _unit_from_context(header, row_label, value_text)
+            value_numeric *= _table_value_scale(markdown, line_no, header, row_label)
             fact = FactIn(
                 fact_type=fact_type,
                 label=_table_fact_label(row_label, header),
@@ -1214,7 +1219,12 @@ def _looks_like_table_header(row_label: str, cells: list[str]) -> bool:
 def _row_label(cells: list[str]) -> str:
     for cell in cells:
         value = cell.strip()
-        if value and _parse_table_value(value) is None and not _TABLE_SEPARATOR_RE.match(value):
+        if (
+            value
+            and _parse_table_value(value) is None
+            and not _TABLE_SEPARATOR_RE.match(value)
+            and not re.fullmatch(r"[A-ZIVX]+\.?|\d+\.?", value, re.IGNORECASE)
+        ):
             return value
     return ""
 
@@ -1276,7 +1286,14 @@ def _column_context(markdown: str, line_no: int, cell_index: int) -> str:
 
 def _infer_accounting_scope(markdown: str, document: Document) -> str:
     """Resolve scope conservatively; UNKNOWN is safer than mixing scopes."""
-    sample = f"{document.filename} {markdown[:12000]}".casefold()
+    import unicodedata
+
+    sample = unicodedata.normalize("NFD", f"{document.filename} {markdown[:12000]}").casefold()
+    sample = "".join(char for char in sample if unicodedata.category(char) != "Mn")
+    if "bao cao tai chinh rieng" in sample or "bctc rieng" in sample:
+        return "STANDALONE"
+    if "bao cao tai chinh hop nhat" in sample or "bctc hop nhat" in sample:
+        return "CONSOLIDATED"
     if any(token in sample for token in ("báo cáo tài chính riêng", "bctc riêng", "standalone", "separate financial")):
         return "STANDALONE"
     if any(token in sample for token in ("báo cáo tài chính hợp nhất", "bctc hợp nhất", "consolidated financial")):
@@ -1437,6 +1454,23 @@ def _unit_from_context(header: str, row_label: str, value_text: str) -> str | No
     if "vnd" in folded or len(re.sub(r"\D", "", value_text)) >= 4:
         return "VND"
     return None
+
+
+def _table_value_scale(markdown: str, line_no: int, header: str, row_label: str) -> float:
+    """Normalize figures whose table unit is declared immediately above it."""
+    lines = markdown.splitlines()
+    table_start = line_no - 1
+    while table_start >= 0 and lines[table_start].strip().startswith("|"):
+        table_start -= 1
+    context = " ".join(lines[max(0, table_start - 6):table_start + 1] + [header, row_label])
+    folded = _fold_text(context)
+    if "trieu" in folded and ("vnd" in folded or "dong" in folded):
+        return 1_000_000.0
+    if "nghin" in folded and ("vnd" in folded or "dong" in folded):
+        return 1_000.0
+    if "ty vnd" in folded or "ty dong" in folded:
+        return 1_000_000_000.0
+    return 1.0
 
 
 def _fact_identity(fact: FactIn) -> tuple[Any, ...]:
@@ -2191,7 +2225,7 @@ async def _persist_statement_table_facts(
     lines = markdown.splitlines()
     notes_line = next(
         (index for index, line in enumerate(lines, start=1)
-         if "thuyet minh bao cao tai chinh" in _fold_text(line.lstrip("# "))),
+         if re.match(r"^thuyet minh bao cao tai chinh\b", _fold_text(line.lstrip("# ")))),
         len(lines) + 1,
     )
     scope = _infer_accounting_scope(markdown, document)
@@ -2211,6 +2245,7 @@ async def _persist_statement_table_facts(
             if taxonomy_candidate == "unmapped_table_line_item":
                 continue
             header = headers.get(index, "")
+            value_numeric *= _table_value_scale(markdown, line_no, header, row_label)
             period_start, period_end, as_of = _period_from_column(header)
             quote = lines[line_no - 1].strip()
             node_id = f"statement_table_{line_no}"

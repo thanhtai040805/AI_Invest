@@ -1,5 +1,26 @@
+from types import SimpleNamespace
+
 import pytest
-from sag_api.services.gil_service import GILGraphAnalyzer
+from sag_api.services.gil_service import GILGraphAnalyzer, _denominator_exposure_buckets, _insider_metrics, _parse_vn_number
+from sag_api.services.extraction_v2_service import _classify_table_fact, _table_value_scale
+
+
+def test_table_value_scale_normalizes_million_vnd_context():
+    markdown = "Đơn vị tính: triệu VND\n| A | B |\n|---|---|\n| Vốn chủ sở hữu | 103.843.473 |"
+    assert _table_value_scale(markdown, 4, "B", "Vốn chủ sở hữu") == 1_000_000.0
+
+
+def test_vietnamese_number_separators():
+    assert _parse_vn_number("1,5") == 1.5
+    assert _parse_vn_number("1.000") == 1000.0
+    assert _parse_vn_number("1.234,5") == 1234.5
+
+
+def test_cash_flow_loan_payment_is_not_cash_balance():
+    _fact_type, semantic_key, _taxonomy = _classify_table_fact(
+        "", "Tien chi cho vay, mua cong cu no cua don vi khac"
+    )
+    assert semantic_key != "cash_and_equivalents"
 
 
 def test_gil_analyzer_clean_company():
@@ -28,6 +49,35 @@ def test_gil_analyzer_clean_company():
     assert result.rpt_ratio < 0.25
     assert len(result.cycle_paths) == 0
     print("PASS clean company test:", result.summary)
+
+
+def test_gil_denominators_use_flow_kind_and_keep_unmapped_flows_out():
+    relations = [
+        SimpleNamespace(relation_type="transacts_with", amount_vnd=100.0, metadata_json={"flow_kind": "service_revenue"}),
+        SimpleNamespace(relation_type="transacts_with", amount_vnd=200.0, metadata_json={"flow_kind": "purchase"}),
+        SimpleNamespace(relation_type="invests_in", amount_vnd=300.0, metadata_json={"flow_kind": "capital_contribution"}),
+        SimpleNamespace(relation_type="creditor_of", amount_vnd=400.0, metadata_json={"flow_kind": "receivable"}),
+        SimpleNamespace(relation_type="lends_to", amount_vnd=500.0, metadata_json={"flow_kind": "loan"}),
+    ]
+    buckets = _denominator_exposure_buckets(relations)
+    assert buckets["service_revenue_vnd"] == 100.0
+    assert buckets["capital_allocation_vnd"] == 300.0
+    assert buckets["receivable_vnd"] == 400.0
+    assert buckets["loan_vnd"] == 500.0
+    assert buckets["purchase_vnd"] == 200.0
+    assert buckets["non_ratio_flow_vnd"] == 0.0
+
+
+def test_gil_quantifies_insider_ownership_without_fabricating_transaction_value():
+    observations = [
+        SimpleNamespace(statement="Chủ tịch và vợ cùng sở hữu 32.68% cổ phần."),
+        SimpleNamespace(statement="Chuyển nhượng 5% vốn cho cán bộ quản lý nội bộ."),
+    ]
+    metrics = _insider_metrics(observations, 100_000.0)
+    assert metrics["ownership_pct"] == 32.68
+    assert metrics["ownership_exposure_vnd"] == 32680.0
+    assert metrics["transaction_exposure_vnd"] is None
+    assert metrics["basis"] == "OWNERSHIP_PERCENTAGE"
 
 
 def test_gil_analyzer_capital_tunneling_cycle():

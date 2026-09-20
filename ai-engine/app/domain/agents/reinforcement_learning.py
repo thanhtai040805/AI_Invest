@@ -180,8 +180,11 @@ class ReinforcementLearningAgent(BaseAgent):
         if not realized_trades:
             # Tra cứu lệnh đã đóng gần nhất từ bảng paper_trades hoặc order_executions
             try:
+                import os
+                account_id = os.getenv("MULTI_AGENT_ACCOUNT_ID", "940b0c70-2010-42f3-b947-797e6419b794")
                 rows_trades = self.storage.fetch_all(
-                    "SELECT ticker, pnl, confidence FROM paper_trades WHERE pnl IS NOT NULL AND status = 'CLOSED' ORDER BY resolved_at DESC LIMIT 50"
+                    "SELECT ticker, pnl, confidence FROM paper_trades WHERE account_id = %s AND pnl IS NOT NULL AND status = 'CLOSED' ORDER BY resolved_at DESC LIMIT 50",
+                    (account_id,),
                 )
                 if rows_trades:
                     realized_trades = [{"ticker": r[0], "pnl": float(r[1]), "conviction": r[2] or "A"} for r in rows_trades]

@@ -155,7 +155,9 @@ class VNCalendar:
         try:
             working = self._fetch_working_dates()
             date_str = date.strftime("%Y-%m-%d")
-            if working and date_str not in working:
+            # DNSE may return only a bounded window. Absence outside that
+            # window is unknown, not proof that the exchange is closed.
+            if working and min(working) <= date_str <= max(working) and date_str not in working:
                 return False
         except Exception:
             pass  # If DNSE fetch fails, fall through to weekday-only check

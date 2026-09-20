@@ -64,8 +64,8 @@ def test_order_validation_reject():
     asyncio.run(_test())
 
 
-def test_normal_market_execution():
-    """Kịch bản 3: Thị trường NORMAL -> 2-3 child orders, khớp 100% trong 1 session."""
+def test_normal_market_execution_blocked_by_governance():
+    """Lệnh vượt floor-gap risk phải bị governance chặn trước thực thi."""
     async def _test():
         repo = PortfolioRepository()
         agent = TradeExecutionAgent(repository=repo)
@@ -85,19 +85,14 @@ def test_normal_market_execution():
             "adtv20": 4000000.0,
         })
         data = res["data"]
-        assert data["execution_decision"] == "EXECUTE"
-        assert data["execution_mode"] == "NORMAL"
-        assert data["status"] == "EXECUTED"
-        assert data["execution_plan"]["child_orders"] in (2, 3)
-        assert data["execution_plan"]["execution_horizon"] == "1_SESSION"
-        assert data["execution_metrics"]["executed_quantity"] == 20000
-        assert data["execution_metrics"]["remaining_quantity"] == 0
+        assert data["execution_decision"] == "BLOCK"
+        assert data["status"] == "BLOCKED_BY_GOVERNANCE_GATE"
 
     asyncio.run(_test())
 
 
-def test_stress_market_hpg_partial_fill():
-    """Kịch bản 4: Kịch bản HPG 300k cổ trong điều kiện STRESS — chuẩn khớp bản tin mẫu của User."""
+def test_stress_market_hpg_blocked_by_governance():
+    """Lệnh STRESS quá lớn phải bị governance chặn trước khi lập kế hoạch khớp."""
     async def _test():
         repo = PortfolioRepository()
         agent = TradeExecutionAgent(repository=repo)
@@ -119,35 +114,8 @@ def test_stress_market_hpg_partial_fill():
         })
         data = res["data"]
 
-        # 1. Khẳng định quyết định và mode
-        assert data["execution_decision"] == "EXECUTE"
-        assert data["execution_mode"] == "STRESS"
-        assert data["order"]["ticker"] == "HPG"
-        assert data["order"]["direction"] == "BUY"
-        assert data["order"]["total_quantity"] == 300000
-        assert data["order"]["max_price"] == 27300.0
-
-        # 2. Kiểm tra Execution Plan
-        plan = data["execution_plan"]
-        assert plan["strategy"] == "PASSIVE_LIMIT"
-        assert plan["child_orders"] == 8
-        assert plan["execution_horizon"] == "2-3_SESSIONS"
-        assert plan["max_participation_rate"] == 0.20
-
-        # 3. Kiểm tra Execution Metrics (Partial Fill: khớp 180k, dư 120k)
-        metrics = data["execution_metrics"]
-        assert metrics["decision_price"] == 27000.0
-        assert metrics["average_execution_price"] == 27100.0
-        assert metrics["executed_quantity"] == 180000
-        assert metrics["remaining_quantity"] == 120000
-        assert metrics["slippage"] == 0.0037  # 37 bps
-        assert data["status"] == "PARTIALLY_EXECUTED"
-
-        # 4. Kiểm tra Learning Feedback & ADTV Bucket (Base: MEGA_ADTV, Degraded: MID_ADTV)
-        feedback = data["learning_feedback"]
-        assert feedback["base_slippage_bucket"] == "MEGA_ADTV"
-        assert feedback["slippage_bucket"] == "MID_ADTV"
-        assert feedback["execution_quality"] == "ACCEPTABLE"
+        assert data["execution_decision"] == "BLOCK"
+        assert data["status"] == "BLOCKED_BY_GOVERNANCE_GATE"
 
     asyncio.run(_test())
 

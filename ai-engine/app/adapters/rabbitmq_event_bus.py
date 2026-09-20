@@ -4,7 +4,7 @@ Implements Topic Exchange 'aiinvest.events' with Dead-Letter Exchange 'aiinvest.
 Production-Ready:
 - Kết nối thật đến RabbitMQ Broker qua aio_pika (AMQP 0-9-1).
 - Auto-reconnect với exponential backoff khi mất kết nối.
-- Dual-mode: AMQP publish lên broker + In-Memory dispatch cho local subscribers.
+- AMQP khi broker hoạt động; In-Memory chỉ là fallback khi broker không khả dụng.
 - Dead-Letter Exchange (DLX) + Dead-Letter Queue (DLQ) trên broker thật.
 - Fallback In-Memory khi broker không khả dụng (dev/test/single-instance).
 """
@@ -199,7 +199,7 @@ class RabbitMQEventBus(EventBusPort):
     ) -> EventMessage:
         """
         Phát tin nhắn lên Topic Exchange:
-        - Nếu có broker thật: Publish lên AMQP Exchange + dispatch local subscribers.
+        - Nếu có broker thật: Publish lên AMQP Exchange.
         - Nếu fallback: Chỉ dispatch local In-Memory subscribers.
         """
         event_msg = EventMessage(
@@ -262,8 +262,8 @@ class RabbitMQEventBus(EventBusPort):
                 f"(id={event_msg.event_id[:8]})"
             )
 
-        # 2. Dispatch tới local In-Memory subscribers (always — for same-process agents)
-        matching_handlers = self._find_matching_handlers(topic)
+        # 2. Chỉ dispatch cục bộ khi AMQP không nhận sự kiện, tránh xử lý hai lần.
+        matching_handlers = [] if amqp_published else self._find_matching_handlers(topic)
         for sub in matching_handlers:
             queue_name = sub["queue_name"]
             handler = sub["handler"]

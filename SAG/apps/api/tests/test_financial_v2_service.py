@@ -358,7 +358,7 @@ def test_gil_uses_validated_evidence_not_document_role_gate(tmp_path):
                         fact_type="equity",
                         semantic_key="total_equity",
                         label="Total equity",
-                        value_numeric=1000.0,
+                        value_numeric=1_000_000_000_000.0,
                         validation_status="VALIDATED",
                     ),
                     Relation(
@@ -377,7 +377,7 @@ def test_gil_uses_validated_evidence_not_document_role_gate(tmp_path):
                         subject="Bank",
                         object="Related party",
                         relation_type="transacts_with",
-                        amount_vnd=100.0,
+                        amount_vnd=100_000_000_000.0,
                         validation_status="VALIDATED",
                     ),
                 ]
@@ -386,8 +386,8 @@ def test_gil_uses_validated_evidence_not_document_role_gate(tmp_path):
 
             result = await service.assess_gil(session, "BANK")
             assert result["analysis_status"] == "COMPLETE"
-            assert result["gil_flag"] == "PASS"
-            assert result["rpt_ratio"] == 0.1
+            assert result["gil_flag"] == "WATCH"
+            assert result["rpt_ratio"] is None
             assert not any("tài liệu active" in reason for reason in result["reasons"])
 
         await engine.dispose()

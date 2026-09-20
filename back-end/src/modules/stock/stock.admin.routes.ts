@@ -2,8 +2,10 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { queueOhlcvBackfill } from '../../services/scheduler.service';
 import { syncStocksFromEngine } from '../../services/stockSync.service';
+import { internalAuth } from '../../middleware/internalAuth';
 
 const router = Router();
+router.use(internalAuth);
 
 const backfillSchema = z.object({
   symbol: z.string().min(1),

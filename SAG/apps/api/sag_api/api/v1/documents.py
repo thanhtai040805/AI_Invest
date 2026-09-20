@@ -9,6 +9,7 @@ from sag_api.core.config import settings
 from sag_api.core.db import get_session
 from sag_api.core.deps import get_current_user, get_engine_manager, get_job_queue
 from sag_api.core.errors import ConflictError, NotFoundError, ValidationError
+from sag_api.core.uploads import read_upload_limited
 from sag_api.db.models import User
 from sag_api.enums import DocumentStatus
 from sag_api.jobs import JobQueue
@@ -67,11 +68,9 @@ async def upload(
 ) -> DocumentOut:
     source = await get_source(session, source_id)
     _check_extension(file.filename)
-    data = await file.read()
+    data = await read_upload_limited(file, settings.max_upload_mb * 1024 * 1024)
     if not data:
         raise ValidationError("Nội dung file rỗng")
-    if len(data) > settings.max_upload_mb * 1024 * 1024:
-        raise ValidationError(f"File vượt giới hạn {settings.max_upload_mb}MB")
     document, _job = await create_document_from_upload(
         session,
         source,

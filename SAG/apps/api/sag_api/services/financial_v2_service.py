@@ -55,6 +55,21 @@ from sag_api.services.document_structure_service import (
 logger = logging.getLogger("sag.financial_v2")
 
 
+async def assess_gil(session: AsyncSession, ticker: str) -> dict[str, Any]:
+    """Compatibility entry point; GIL logic lives in gil_service."""
+    from sag_api.services.gil_service import assess_gil as run_assessment
+
+    return await run_assessment(session, ticker)
+
+
+async def assess_moat(session: AsyncSession, ticker: str) -> dict[str, Any]:
+    """Legacy name for the evidence-quality assessment; no MOAT score is invented."""
+    from sag_api.services.analysis_v2_service import assess_financial_quality_by_ticker
+
+    result = await assess_financial_quality_by_ticker(session, ticker)
+    return {**result, "moat_score": None}
+
+
 def _is_mineru_size_or_page_limit_error(error: Exception) -> bool:
     """Only explicit size/page-limit errors justify a local split fallback."""
     message = str(error).lower().replace("_", " ").replace("-", " ")
@@ -599,6 +614,8 @@ async def create_financial_document(
     ticker: str,
     body: DocumentCreateIn,
 ) -> tuple[Document, bool]:
+    if settings.environment == "prod" and body.processing_mode != "FULL":
+        body = body.model_copy(update={"processing_mode": "FULL"})
     issuer = await get_or_create_issuer(session, ticker)
     role = normalize_doc_role(body.doc_role)
     if role is None:
@@ -887,8 +904,8 @@ async def rebuild_structure_and_embeddings(
     document: Document,
     markdown: str,
 ) -> None:
-    raw_markdown = markdown
-    markdown = analysis_markdown(markdown, doc_role=document.doc_role)
+    raw_markdown = clean_ocr_markdown(markdown, document.filename)
+    markdown = analysis_markdown(raw_markdown, doc_role=document.doc_role)
     structure_run = _stage_run(document, "structure", ProcessingStageStatus.RUNNING.value)
     session.add(structure_run)
     metadata = {
@@ -1154,7 +1171,10 @@ def _document_ready_for_activation(document: Document) -> bool:
     return (
         document.structure_status == ProcessingStageStatus.COMPLETE.value
         and document.extraction_status == ProcessingStageStatus.COMPLETE.value
-        and document.embedding_status == ProcessingStageStatus.COMPLETE.value
+        and (
+            not settings.embedding_enabled
+            or document.embedding_status == ProcessingStageStatus.COMPLETE.value
+        )
     )
 
 

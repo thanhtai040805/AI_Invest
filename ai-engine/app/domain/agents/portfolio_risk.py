@@ -117,13 +117,6 @@ class PortfolioRiskAgent(BaseAgent):
                         "[PortfolioRiskAgent] CRITICAL: DB Account State trống và không có portfolio_input. "
                         "Sử dụng NAV mặc định 1,000,000,000 VND (ESTIMATED mode)."
                     )
-            except Exception as e_acc:
-                is_estimated_nav = True
-                logger.critical(
-                    f"[PortfolioRiskAgent] CRITICAL: Không thể nạp Account State ({e_acc}). "
-                    "Sử dụng NAV mặc định 1,000,000,000 VND (ESTIMATED mode)."
-                )
-
                 open_positions = portfolio_repo.get_open_positions(user_id=user_id)
                 for pos in open_positions:
                     sym = str(pos.get("ticker", pos.get("symbol", ""))).upper().strip()
@@ -151,8 +144,12 @@ class PortfolioRiskAgent(BaseAgent):
                     f"[PortfolioRiskAgent] Tự động nạp tài khoản thực tế: NAV={nav:,.0f} VND, "
                     f"Cash={cash_vnd:,.0f} VND, {len(positions)} vị thế nắm giữ."
                 )
-            except Exception as e_port:
-                logger.warning(f"[PortfolioRiskAgent] Không thể nạp tài khoản từ DB ({e_port}), fallback in-memory")
+            except Exception as e_acc:
+                is_estimated_nav = True
+                logger.critical(
+                    f"[PortfolioRiskAgent] CRITICAL: Không thể nạp Account State ({e_acc}). "
+                    "Sử dụng NAV mặc định 1,000,000,000 VND (ESTIMATED mode)."
+                )
                 if portfolio_input and isinstance(portfolio_input, dict):
                     nav = float(portfolio_input.get("total_nav", 1000000000.0))
                     peak_nav = float(portfolio_input.get("peak_nav", nav))

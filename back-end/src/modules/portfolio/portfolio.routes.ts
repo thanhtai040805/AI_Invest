@@ -7,11 +7,15 @@ const router = Router();
 router.use(authMiddleware);
 
 const orderSchema = z.object({
-  symbol: z.string().min(1),
+  symbol: z.string().trim().regex(/^[A-Za-z0-9.-]{1,16}$/).transform((value) => value.toUpperCase()),
   side: z.enum(['BUY', 'SELL']),
-  orderType: z.string().default('LO'),
-  price: z.number().optional(),
+  orderType: z.enum(['LO', 'MP', 'ATO', 'ATC']).default('LO'),
+  price: z.number().finite().positive().optional(),
   quantity: z.number().int().positive(),
+}).superRefine((order, ctx) => {
+  if (order.orderType === 'LO' && order.price == null) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['price'], message: 'Limit price is required' });
+  }
 });
 
 router.get('/summary', async (req: AuthRequest, res: Response, next: NextFunction) => {
@@ -37,7 +41,7 @@ router.post('/order', async (req: AuthRequest, res: Response, next: NextFunction
     res.status(201).json(order);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Order failed';
-    if (message.includes('Insufficient')) {
+    if (err instanceof portfolioService.PortfolioError) {
       res.status(400).json({ error: message });
       return;
     }

@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sag_api.core.db import get_session
 from sag_api.core.deps import get_job_queue, get_llm, require_service_or_admin
 from sag_api.core.errors import NotFoundError, ValidationError
+from sag_api.core.config import settings
+from sag_api.core.uploads import read_upload_limited
 from sag_api.db.models import DocumentFacet, DocumentTreeNode, EvidenceSpan, Job, Observation, ReviewQueueItem
 from sag_api.enums import DocumentStatus, JobStatus, JobType
 from sag_api.schemas.v2 import (
@@ -74,7 +76,7 @@ async def upload_document(
     processing_mode: str = Form("FULL"),
     session: AsyncSession = Depends(get_session),
 ) -> DocumentOutV2:
-    data = await file.read()
+    data = await read_upload_limited(file, settings.max_upload_mb * 1024 * 1024)
     if not data:
         raise ValidationError("File rỗng")
     content_type = file.content_type or "application/octet-stream"

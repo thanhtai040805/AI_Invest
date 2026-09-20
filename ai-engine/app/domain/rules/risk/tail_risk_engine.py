@@ -66,8 +66,8 @@ class TailRiskEngine:
             rets = np.array(returns_series)
             negative_rets = rets[rets < 0]
             if len(negative_rets) > 5:
-                # Hệ số khuếch đại tâm lý hoảng loạn thị trường cận biên ~ 1.25x
-                sigma = float(np.std(negative_rets)) * 1.25
+                # RMS quanh 0 giữ lại mức lỗ khi chuỗi giảm có cùng biên độ.
+                sigma = float(np.sqrt(np.mean(np.square(negative_rets)))) * 1.25
             else:
                 sigma = float(np.std(rets))
 

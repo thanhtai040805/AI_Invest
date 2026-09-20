@@ -1,8 +1,7 @@
+import { Prisma } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import prisma from '../config/database';
 import { aiEngineService } from './aiEngine.service';
-
-const INITIAL_CASH = 1_000_000_000;
 
 export interface PositionView {
   id: string;
@@ -16,9 +15,12 @@ export interface PositionView {
   pnlPercent: number;
 }
 
+export class PortfolioError extends Error {}
+
 export async function getUserCash(userId: string): Promise<number> {
   const user = await prisma.user.findUnique({ where: { id: userId } });
-  return Number(user?.cashBalance ?? INITIAL_CASH);
+  if (!user) throw new PortfolioError('Portfolio account not found');
+  return Number(user.cashBalance);
 }
 
 export async function getPositions(userId: string): Promise<PositionView[]> {
@@ -70,8 +72,8 @@ export async function getSummary(userId: string) {
     totalEquity: nav,
     totalProfit: pnl,
     totalProfitPercent: pnlPercent,
-    dailyPnL: pnl * 0.1,
-    dailyPnLPercent: pnlPercent * 0.1,
+    dailyPnL: null,
+    dailyPnLPercent: null,
     assetsCount: positions.length,
   };
 }
@@ -82,117 +84,65 @@ export async function placeOrder(
 ) {
   const symbol = input.symbol.toUpperCase();
   const quote = await aiEngineService.getQuote(symbol);
-  const fillPrice = input.price ?? quote.price ?? 0;
+  const fillPrice = Number(quote.price);
+  if (!Number.isFinite(fillPrice) || fillPrice <= 0) {
+    throw new PortfolioError('A valid market price is unavailable');
+  }
+  if (input.orderType === 'LO' && input.price != null) {
+    if (input.side === 'BUY' && fillPrice > input.price) throw new PortfolioError('Buy limit price is below market');
+    if (input.side === 'SELL' && fillPrice < input.price) throw new PortfolioError('Sell limit price is above market');
+  }
   const notional = fillPrice * input.quantity;
 
-  let cash = await getUserCash(userId);
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRawUnsafe('SELECT id FROM users WHERE id = $1 FOR UPDATE', userId);
+    await tx.stock.upsert({
+      where: { symbol },
+      create: { symbol, name: quote.name ?? symbol, exchange: 'HOSE' },
+      update: { name: quote.name ?? symbol },
+    });
 
-  if (input.side === 'BUY' && notional > cash) {
-    throw new Error('Insufficient buying power');
-  }
+    const user = await tx.user.findUnique({ where: { id: userId } });
+    if (!user) throw new PortfolioError('Portfolio account not found');
+    const cash = Number(user.cashBalance);
+    const existing = await tx.position.findFirst({ where: { userId, symbol } });
 
-  await prisma.stock.upsert({
-    where: { symbol },
-    create: { symbol, name: quote.name ?? symbol, exchange: 'HOSE' },
-    update: { name: quote.name ?? symbol },
-  });
-
-  const existing = await prisma.position.findFirst({ where: { userId, symbol } });
-
-  if (input.side === 'BUY') {
-    cash -= notional;
-    if (existing) {
-      const newQty = existing.quantity + input.quantity;
-      const newAvg = (Number(existing.avgPrice) * existing.quantity + notional) / newQty;
-      await prisma.position.update({
-        where: { id: existing.id },
-        data: { quantity: newQty, avgPrice: new Decimal(newAvg) },
-      });
+    if (input.side === 'BUY') {
+      if (notional > cash) throw new PortfolioError('Insufficient buying power');
+      if (existing) {
+        const newQty = existing.quantity + input.quantity;
+        const newAvg = (Number(existing.avgPrice) * existing.quantity + notional) / newQty;
+        await tx.position.update({
+          where: { id: existing.id },
+          data: { quantity: newQty, avgPrice: new Decimal(newAvg) },
+        });
+      } else {
+        await tx.position.create({
+          data: { userId, symbol, quantity: input.quantity, avgPrice: new Decimal(fillPrice) },
+        });
+      }
+      await tx.user.update({ where: { id: userId }, data: { cashBalance: { decrement: notional } } });
     } else {
-      await prisma.position.create({
-        data: { userId, symbol, quantity: input.quantity, avgPrice: new Decimal(fillPrice) },
-      });
+      if (!existing || existing.quantity < input.quantity) throw new PortfolioError('Insufficient shares to sell');
+      const newQty = existing.quantity - input.quantity;
+      if (newQty === 0) await tx.position.delete({ where: { id: existing.id } });
+      else await tx.position.update({ where: { id: existing.id }, data: { quantity: newQty } });
+      await tx.user.update({ where: { id: userId }, data: { cashBalance: { increment: notional } } });
     }
-  } else {
-    if (!existing || existing.quantity < input.quantity) {
-      throw new Error('Insufficient shares to sell');
-    }
-    cash += notional;
-    const newQty = existing.quantity - input.quantity;
-    if (newQty <= 0) {
-      await prisma.position.delete({ where: { id: existing.id } });
-    } else {
-      await prisma.position.update({ where: { id: existing.id }, data: { quantity: newQty } });
-    }
-  }
 
-  await prisma.user.update({
-    where: { id: userId },
-    data: { cashBalance: new Decimal(cash) },
-  });
-
-  return prisma.order.create({
-    data: {
-      userId,
-      symbol,
-      side: input.side,
-      orderType: input.orderType,
-      price: fillPrice,
-      quantity: input.quantity,
-      status: 'FILLED',
-    },
-  });
+    return tx.order.create({
+      data: { userId, symbol, side: input.side, orderType: input.orderType, price: fillPrice, quantity: input.quantity, status: 'FILLED' },
+    });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 }
 
 /** Build equity curve from filled orders + current NAV */
 export async function getPerformance(userId: string) {
-  const orders = await prisma.order.findMany({
-    where: { userId, status: 'FILLED' },
-    orderBy: { createdAt: 'asc' },
-  });
-
   const summary = await getSummary(userId);
-  const points: { date: string; value: number }[] = [];
-
-  if (orders.length === 0) {
-    points.push({ date: new Date().toISOString().slice(0, 10), value: summary.nav });
-    return { equityCurve: points };
-  }
-
-  let cash = INITIAL_CASH;
-  const holdings: Record<string, { qty: number; avg: number }> = {};
-
-  for (const o of orders) {
-    const price = Number(o.price ?? 0);
-    const sym = o.symbol;
-    if (o.side === 'BUY') {
-      cash -= price * o.quantity;
-      const h = holdings[sym] ?? { qty: 0, avg: 0 };
-      const newQty = h.qty + o.quantity;
-      h.avg = newQty > 0 ? (h.avg * h.qty + price * o.quantity) / newQty : price;
-      h.qty = newQty;
-      holdings[sym] = h;
-    } else {
-      cash += price * o.quantity;
-      const h = holdings[sym];
-      if (h) {
-        h.qty -= o.quantity;
-        if (h.qty <= 0) delete holdings[sym];
-      }
-    }
-
-    let marketValue = 0;
-    for (const [s, h] of Object.entries(holdings)) {
-      marketValue += h.avg * h.qty;
-    }
-    points.push({
-      date: o.createdAt.toISOString().slice(0, 10),
-      value: cash + marketValue,
-    });
-  }
-
-  points.push({ date: new Date().toISOString().slice(0, 10), value: summary.nav });
-  return { equityCurve: points };
+  return {
+    equityCurve: [{ date: new Date().toISOString().slice(0, 10), value: summary.nav }],
+    message: 'Historical NAV snapshots are not available',
+  };
 }
 
 /** Risk metrics from equity curve daily returns */
@@ -205,38 +155,6 @@ export async function getOrders(userId: string) {
 }
 
 export async function getRiskMetrics(userId: string) {
-  const { equityCurve } = await getPerformance(userId);
-  const values = equityCurve.map((p) => p.value);
-  if (values.length < 2) {
-    return { sharpe: null, alpha: null, beta: null, maxDrawdown: null, message: 'Need more trade history' };
-  }
-
-  const returns: number[] = [];
-  for (let i = 1; i < values.length; i++) {
-    if (values[i - 1] > 0) returns.push((values[i] - values[i - 1]) / values[i - 1]);
-  }
-
-  const avg = returns.reduce((a, b) => a + b, 0) / returns.length;
-  const variance = returns.reduce((s, r) => s + (r - avg) ** 2, 0) / Math.max(returns.length - 1, 1);
-  const std = Math.sqrt(variance);
-  const sharpe = std > 0 ? (avg / std) * Math.sqrt(252) : null;
-
-  let peak = values[0];
-  let maxDrawdown = 0;
-  for (const v of values) {
-    if (v > peak) peak = v;
-    const dd = peak > 0 ? (peak - v) / peak : 0;
-    if (dd > maxDrawdown) maxDrawdown = dd;
-  }
-
-  const marketReturn = 0.0003;
-  const beta = 1.05;
-  const alpha = avg - beta * marketReturn;
-
-  return {
-    sharpe: sharpe != null ? Number(sharpe.toFixed(2)) : null,
-    alpha: Number((alpha * 100 * 252).toFixed(2)),
-    beta: Number(beta.toFixed(2)),
-    maxDrawdown: Number((-maxDrawdown * 100).toFixed(2)),
-  };
+  await getUserCash(userId);
+  return { sharpe: null, alpha: null, beta: null, maxDrawdown: null, message: 'Historical daily NAV snapshots are not available' };
 }

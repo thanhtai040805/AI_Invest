@@ -114,12 +114,14 @@ class PositionMonitoringAgent(BaseAgent):
                     pnl = %s,
                     resolved_at = CURRENT_TIMESTAMP
                 WHERE ticker = %s AND status = 'OPEN'
+                  AND account_id = %s
             """
+            account_id = self.repository.account_id
             for order in stop_loss_orders:
                 ticker = order["ticker"]
                 triggered_price = float(order.get("triggered_price", 0.0))
                 pnl_pct = float(order.get("current_pnl_pct", 0.0))
-                self.repository.storage.execute(sql_paper, (triggered_price, pnl_pct, ticker))
+                self.repository.storage.execute(sql_paper, (triggered_price, pnl_pct, ticker, account_id))
         except Exception as e:
             logger.debug(f"Không thể ghi stop_loss_events hoặc paper_trades vào DB ({e})")
 
@@ -513,5 +515,4 @@ class PositionMonitoringAgent(BaseAgent):
             logger.warning(f"[PositionMonitoringAgent] Lỗi bắn sự kiện RabbitMQ: {e_ev}")
 
         return {"data": output_data, "trace": trace}
-
 

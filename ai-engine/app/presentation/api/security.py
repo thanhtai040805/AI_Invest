@@ -70,7 +70,7 @@ async def get_security_status():
 @router.get("/risk-flags/{symbol}")
 async def get_risk_flags(symbol: str):
     """Detect warning/risk signals for a stock symbol (v2 computed flags)."""
-    from app.domain.rules.risk.risk_queries import get_active_flags, get_hard_blocked, get_soft_flag_count
+    from app.infrastructure.risk_queries import get_active_flags, get_hard_blocked, get_soft_flag_count
 
     try:
         flags = get_active_flags(symbol)

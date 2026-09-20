@@ -6,6 +6,8 @@ import asyncio
 import json
 import os
 import tempfile
+import re
+from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -16,12 +18,13 @@ router = APIRouter(tags=["Backtest"])
 
 
 class BacktestRequest(BaseModel):
-    symbol: str = Field(..., description="Stock symbol (e.g., VCB)")
+    symbol: str = Field(..., pattern=r"^[A-Za-z0-9.-]{1,16}$", description="Stock symbol (e.g., VCB)")
     start_date: str = Field(..., description="Start date (YYYY-MM-DD)")
     end_date: str = Field(..., description="End date (YYYY-MM-DD)")
     strategy_config: Dict[str, Any] = Field(..., description="Strategy configuration")
     source: str = Field(default="dnse", description="Data source: dnse, vietfin, auto")
     use_macro_risk: bool = Field(default=True, description="Enable Institutional Macro Risk Shield")
+    initial_capital: float = Field(default=1_000_000_000, gt=0)
 
 
 _SIGNAL_TEMPLATE = '''"""Signal engine for {symbol} — auto-generated from strategy config."""
@@ -113,8 +116,13 @@ def _render_signal_body(config: Dict[str, Any]) -> str:
             f"        return df"
         )
 
-    # Default: buy signal every day
-    return f'        df["signal"] = 1.0\n        return df'
+    raise ValueError(f"Unsupported strategy: {strategy_type}")
+
+
+def _run_directory(run_id: str) -> Path:
+    if not re.fullmatch(r"vn_[A-Z0-9.-]{1,16}_\d{4}-\d{2}-\d{2}_\d{4}-\d{2}-\d{2}", run_id):
+        raise HTTPException(status_code=400, detail="Invalid run_id")
+    return Path(os.getenv("RUNS_DIR", tempfile.gettempdir())) / "backtest_runs" / run_id
 
 
 @router.post("/run")
@@ -122,10 +130,14 @@ async def run_backtest_route(request: BacktestRequest):
     """Run backtest using Vibe-Trading engine with real data loader."""
     try:
         symbol = request.symbol.upper()
+        start = date.fromisoformat(request.start_date)
+        end = date.fromisoformat(request.end_date)
+        if start >= end:
+            raise HTTPException(status_code=400, detail="start_date must be before end_date")
         run_id = f"vn_{symbol}_{request.start_date}_{request.end_date}"
 
         # Create a temp run directory with config.json + signal_engine.py
-        runs_root = Path(os.getenv("RUNS_DIR", tempfile.gettempdir())) / "backtest_runs" / run_id
+        runs_root = _run_directory(run_id)
         runs_root.mkdir(parents=True, exist_ok=True)
         code_dir = runs_root / "code"
         code_dir.mkdir(exist_ok=True)
@@ -137,6 +149,8 @@ async def run_backtest_route(request: BacktestRequest):
             "end_date": request.end_date,
             "interval": "1D",
             "use_macro_risk": request.use_macro_risk,
+            "strategy_config": request.strategy_config,
+            "initial_capital": request.initial_capital,
         }
         (runs_root / "config.json").write_text(
             json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -201,13 +215,17 @@ async def run_backtest_route(request: BacktestRequest):
             "logs": (result.get("stdout", "") + "\n" + result.get("stderr", "")),
         }
 
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/status/{run_id}")
 async def get_backtest_status(run_id: str):
-    runs_root = Path(os.getenv("RUNS_DIR", tempfile.gettempdir())) / "backtest_runs" / run_id
+    runs_root = _run_directory(run_id)
     if not runs_root.exists():
         return {"run_id": run_id, "status": "not_found"}
     return {
@@ -233,7 +251,7 @@ async def get_backtest_history():
 
 @router.get("/results/{run_id}")
 async def get_backtest_results(run_id: str):
-    runs_root = Path(os.getenv("RUNS_DIR", tempfile.gettempdir())) / "backtest_runs" / run_id
+    runs_root = _run_directory(run_id)
     if not runs_root.exists():
         return {"run_id": run_id, "status": "not_found"}
 

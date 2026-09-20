@@ -26,16 +26,18 @@ def build_engine_config(settings: Settings, *, overrides: dict[str, Any] | None 
             model_name = model_name[len(prefix):]
             break
 
-    llm = LLMConfig(
+    llm_kwargs: dict[str, Any] = dict(
         api_key=settings.effective_extraction_llm_api_key or _PLACEHOLDER,
         model=model_name,
         provider="openai",
         base_url=settings.effective_extraction_llm_base_url,
         temperature=settings.effective_llm_temperature,
-        max_tokens=settings.llm_max_tokens,
         timeout=max(1, (settings.llm_timeout_ms + 999) // 1000),
         max_retries=settings.llm_max_retries,
     )
+    if settings.llm_max_tokens is not None:
+        llm_kwargs["max_tokens"] = settings.llm_max_tokens
+    llm = LLMConfig(**llm_kwargs)
     embedding = EmbeddingConfig(
         model=settings.routed_embedding_model,
         base_url=settings.effective_embedding_base_url,

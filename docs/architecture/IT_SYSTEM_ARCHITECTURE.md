@@ -21,7 +21,7 @@ Hệ thống được thiết kế theo mô hình **Event-Driven Microservices k
                                         ▼
 ┌────────────────────────────────────────────────────────────────────────────────┐
 │                   TẦNG 2: API GATEWAY & QUẢN TRỊ NGHIỆP VỤ                     │
-│    NestJS Gateway · Prisma ORM · JWT Auth · Redis Cache & Pub/Sub (:4000)       │
+│    Express Gateway · Prisma ORM · JWT Auth · Redis Cache & Pub/Sub (:3001)      │
 └───────────────────┬───────────────────────────────────────┬────────────────────┘
                     │ REST / gRPC                           │ Event Bus
                     ▼                                       ▼
@@ -35,7 +35,7 @@ Hệ thống được thiết kế theo mô hình **Event-Driven Microservices k
                     ▼                                         ▼
 ┌────────────────────────────────────────────────────────────────────────────────┐
 │                     TẦNG 5: LƯU TRỮ DOANH NGHIỆP (PERSISTENCE)                 │
-│      PostgreSQL 16 (Relational DB & Hashes) · MinIO/S3 (BCTC PDFs & Files)      │
+│ PostgreSQL 16 (Core) · PostgreSQL/pgvector (SAG) · MinIO/S3 (BCTC PDFs & Files) │
 └────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -52,13 +52,13 @@ Hệ thống được thiết kế theo mô hình **Event-Driven Microservices k
 - **Port**: `3000` (Local) / `443` (Production).
 
 ### Tầng 2: API Gateway & Service Layer (`back-end/`)
-- **Công nghệ lõi**: NestJS, TypeScript, Prisma ORM, Redis.
+- **Công nghệ lõi**: Express 4, TypeScript, Prisma ORM, Redis.
 - **Trách nhiệm kỹ thuật**:
   - **API Gateway & Routing**: Tiếp nhận toàn bộ request từ người dùng, thực hiện rate limiting, CORS, và SSL Termination.
   - **Identity & Access Management (IAM)**: Xác thực JWT Bearer, phân quyền Role-Based Access Control (RBAC).
   - **State & Portfolio Management**: Quản lý tài khoản, danh mục đầu tư người dùng, theo dõi số dư tiền và cổ phiếu.
   - **Redis Caching & Session**: Lưu trữ session, blacklist token và làm cầu nối pub/sub cho các sự kiện thị trường.
-- **Port**: `4000`.
+- **Port**: `3001`.
 
 ### Tầng 3: Core Computational & Quant Engine (`ai-engine/`)
 - **Công nghệ lõi**: Python 3.11+, FastAPI, Pydantic v2, Celery/Async Workers.
@@ -93,7 +93,8 @@ Hệ thống được thiết kế theo mô hình **Event-Driven Microservices k
 - **Port**: `8001`.
 
 ### Tầng 5: Enterprise Persistence & Storage Tier
-- **PostgreSQL 16**: Cơ sở dữ liệu quan hệ lưu trữ thông tin tài khoản, danh mục, kết quả backtest, và bảng băm `quote_hash` của các BCTC.
+- **PostgreSQL 16 (Core)**: Lưu tài khoản, tiền mặt, vị thế, lệnh, dữ liệu thị trường và kết quả định lượng.
+- **PostgreSQL 16 + pgvector (SAG)**: CSDL tách biệt cho tài liệu, chứng cứ, đồ thị và vector pháp y. SAG chỉ đọc dữ liệu thị trường Core qua kết nối riêng.
 - **MinIO / AWS S3**: Lưu trữ các file PDF gốc BCTC, tài liệu công bố thông tin và báo cáo xuất ra.
 - **Redis 7**: Cache dữ liệu bảng giá, ticker OHLCV và kênh truyền Pub/Sub giữa các microservices.
 - **Ports**: PostgreSQL (`5432`), Redis (`6379`), MinIO (`9000`/`9001`).
@@ -114,7 +115,7 @@ Hệ thống được thiết kế theo mô hình **Event-Driven Microservices k
 ┌─────────────────────────────────────────────────────────┐
 │ ZONE 2: APPLICATION SERVICE MESH                        │
 │   • front-end (:3000)                                   │
-│   • back-end NestJS API Gateway (:4000)                 │
+│   • back-end Express API Gateway (:3001)                │
 └────────────────────────────┬────────────────────────────┘
                              │
                              ▼ (Private Subnet 10.0.2.0/24 - mTLS)
@@ -128,7 +129,8 @@ Hệ thống được thiết kế theo mô hình **Event-Driven Microservices k
                              ▼ (Isolated DB Subnet 10.0.3.0/24 - No Public IP)
 ┌─────────────────────────────────────────────────────────┐
 │ ZONE 4: ENTERPRISE DATA STORAGE                         │
-│   • PostgreSQL 16 (:5432)                               │
+│   • PostgreSQL 16 Core (:5432)                          │
+│   • PostgreSQL/pgvector SAG (internal :5432)            │
 │   • Redis Cache (:6379)                                 │
 │   • MinIO S3 Object Storage (:9000)                     │
 └─────────────────────────────────────────────────────────┘
@@ -138,6 +140,8 @@ Hệ thống được thiết kế theo mô hình **Event-Driven Microservices k
 1. **Zero External Access to Database**: CSDL PostgreSQL và Redis không gán Public IP, chỉ lắng nghe kết nối từ mạng nội bộ Docker/VPC.
 2. **Strict Identity Propagation**: Mọi request qua API Gateway đều được xác thực JWT, giải mã `userId`, và truyền tải dưới dạng header tin cậy nội bộ (`x-user-id`).
 3. **Evidence Immutability**: Các bản băm `quote_hash` sau khi ghi vào PostgreSQL được bảo vệ bằng quyền ghi Append-Only đối với các bảng bằng chứng.
+4. **Service Authentication**: Route quản trị của Backend dùng `INTERNAL_SERVICE_TOKEN`; route quản trị AI Engine dùng `AI_ENGINE_ADMIN_TOKEN`; Backend truyền token này qua `X-Admin-Token`. SAG production yêu cầu `SAG_SERVICE_TOKEN` và `SAG_SECRET_KEY` mạnh, không chấp nhận giá trị mặc định.
+5. **Atomic Portfolio Ledger**: Tiền, vị thế và lệnh được cập nhật trong transaction có khóa tài khoản. DB áp đặt một vị thế cho mỗi `(user_id, symbol)`, reaction chỉ được trỏ tới đúng một post hoặc comment, và `paper_trades` luôn có `account_id`.
 
 ---
 
@@ -151,7 +155,7 @@ Quy trình khép kín từ khi phát hiện BCTC mới đến khi sinh lệnh mu
 4. **Fraud & Moat Scoring**: SAG phân tích tương quan dòng tiền với doanh thu để phát hiện rủi ro gian lận (cờ GIL) và chấm điểm Hào kinh tế (MOAT).
 5. **Multi-Agent Consensus**: 12 Quant Agents truy vấn kết quả từ SAG. Nếu cờ GIL ở mức rủi ro cao (CRITICAL), Agent Forensic kích hoạt quyền VETO loại bỏ cổ phiếu khỏi danh mục đầu tư ngay lập tức.
 6. **Dual-Book Portfolio Allocation**: Nếu vượt qua vòng thẩm định pháp y, Risk Parity Agent phân bổ tỷ trọng dựa trên quy tắc HOSE (T+2.5, biên độ trần/sàn ±7%).
-7. **Order Dispatch**: Lệnh được gửi qua NestJS Gateway để ghi nhận trạng thái vào PostgreSQL và thông báo đến người dùng qua WebSocket.
+7. **Order Dispatch**: Khi chưa có broker gateway, mọi cấu hình `LIVE` bị từ chối. Shadow order chỉ được ghi sau governance, trong một transaction PostgreSQL; kết quả được phát qua Express/WebSocket.
 
 ---
 
@@ -163,4 +167,3 @@ Toàn bộ các sơ đồ tương tác tự chứa (standalone SVG/HTML) đượ
 - **[paper-grade-algorithmic-data-flow.html](file:///d:/AIInvest/docs/diagrams/paper-grade-algorithmic-data-flow.html)**: Sơ đồ phương pháp luận báo cáo khoa học Paper-Grade: Bóc tách hình thái dữ liệu 2 pha (Offline Ingestion AST, băm `quote_hash` SHA-256, chiếu siêu đồ thị $M:N$, không gian vector 1024 chiều vs Online Parallel Fork-Join Retrieval, bộ tích lũy Queue Accumulator $32 \to 24 \to 8$, điều khiển tương tác Step Motion có phím tắt, Dynamic Flow Opacity và bảng khảo sát chi tiết Inspector Drawer khi nhấp vào từng node).
 
 Chi tiết hướng dẫn mở, tương tác và xem sơ đồ được mô tả tại [docs/diagrams/README.md](file:///d:/AIInvest/docs/diagrams/README.md).
-

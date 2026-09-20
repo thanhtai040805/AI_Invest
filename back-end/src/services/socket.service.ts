@@ -41,6 +41,7 @@ class SocketService {
         const sym = symbol.toUpperCase();
         const currentMeta = this.socketMeta.get(socket.id);
         if (!currentMeta) return;
+        if (currentMeta.subscribedSymbols.has(sym)) return;
 
         if (currentMeta.subscribedSymbols.size >= MAX_SUBSCRIPTIONS_PER_SOCKET) {
           socket.emit('error:limit', {
@@ -93,9 +94,7 @@ class SocketService {
       socket.on('unsubscribe:symbol', async (symbol: string) => {
         const sym = symbol.toUpperCase();
         const currentMeta = this.socketMeta.get(socket.id);
-        if (currentMeta) {
-          currentMeta.subscribedSymbols.delete(sym);
-        }
+        if (!currentMeta?.subscribedSymbols.delete(sym)) return;
         socket.leave(`stock:${sym}`);
         await subscriptionService.removeSymbol(sym);
       });
@@ -103,9 +102,8 @@ class SocketService {
       socket.on('subscribe:market', async () => {
         socket.join('market:overview');
         const currentMeta = this.socketMeta.get(socket.id);
-        if (currentMeta) {
-          currentMeta.subscribedMarket = true;
-        }
+        if (!currentMeta || currentMeta.subscribedMarket) return;
+        currentMeta.subscribedMarket = true;
         await subscriptionService.incrementMarketSubscribers();
         console.log(`[Socket.IO] ${socket.id} joined market:overview`);
 
@@ -127,9 +125,8 @@ class SocketService {
       socket.on('unsubscribe:market', async () => {
         socket.leave('market:overview');
         const currentMeta = this.socketMeta.get(socket.id);
-        if (currentMeta) {
-          currentMeta.subscribedMarket = false;
-        }
+        if (!currentMeta?.subscribedMarket) return;
+        currentMeta.subscribedMarket = false;
         await subscriptionService.decrementMarketSubscribers();
       });
 

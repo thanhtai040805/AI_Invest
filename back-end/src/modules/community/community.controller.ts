@@ -13,17 +13,23 @@ const AddCommentSchema = z.object({
   parentCommentId: z.string().optional(),
 });
 
+const NewsItemSchema = z.object({
+  symbol: z.string().trim().min(1).max(16).transform((value) => value.toUpperCase()),
+  title: z.string().trim().min(1).max(1000),
+  url: z.string().url().max(4096),
+  content: z.string().optional(),
+  articleContent: z.string().optional(),
+  articlePdfText: z.string().optional(),
+  publishDate: z.coerce.date(),
+  sentimentScore: z.number().finite().min(-1).max(1).optional(),
+});
+
 export const communityController = {
   async ingestNews(req: Request, res: Response, next: NextFunction) {
     try {
-      const data = req.body as Array<{
-        symbol: string; title: string; url: string; content?: string;
-        articleContent?: string; articlePdfText?: string;
-        publishDate: string; sentimentScore?: number;
-      }>;
+      const data = z.array(NewsItemSchema).max(1000).parse(req.body);
 
       let inserted = 0;
-      const now = new Date().toISOString();
       for (const item of data) {
         await prisma.$executeRawUnsafe(
           `INSERT INTO news_events (symbol, title, url, content, article_content, article_pdf_text, published_date, sentiment_score, source)
@@ -38,7 +44,7 @@ export const communityController = {
           item.content ?? null,
           item.articleContent ?? null,
           item.articlePdfText ?? null,
-          new Date(item.publishDate),
+          item.publishDate,
           item.sentimentScore ?? null,
         );
         inserted++;
@@ -73,16 +79,7 @@ export const communityController = {
 
   async createBotPost(req: Request, res: Response, next: NextFunction) {
     try {
-      // Very simple authorization for internal bot logic
-      const authHeader = req.headers.authorization;
-      if (authHeader !== 'Bearer AI_BOT_SECRET_KEY') {
-        return res.status(401).json({ error: 'Unauthorized bot' });
-      }
-
-      const { content, taggedSymbols } = req.body;
-      if (!content) {
-        return res.status(400).json({ error: 'Content is required' });
-      }
+      const { content, taggedSymbols } = CreatePostSchema.parse(req.body);
 
       // Ensure the AI-Bot user exists
       let aiBot = await prisma.user.findFirst({ where: { email: 'bot@aiinvest.com' } });
@@ -205,7 +202,7 @@ export const communityController = {
       if (!post) return res.status(404).json({ error: 'Post not found' });
 
       const existingReaction = await prisma.reaction.findUnique({
-        where: { userId_targetId_targetType: { userId, targetId: postId, targetType: 'POST' } }
+        where: { userId_postId: { userId, postId } }
       });
 
       await prisma.$transaction(async (tx: any) => {
@@ -214,7 +211,7 @@ export const communityController = {
           await tx.post.update({ where: { id: postId }, data: { likesCount: { decrement: 1 } } });
         } else {
           await tx.reaction.create({
-            data: { userId, targetId: postId, targetType: 'POST' }
+            data: { userId, postId }
           });
           await tx.post.update({ where: { id: postId }, data: { likesCount: { increment: 1 } } });
         }
@@ -235,14 +232,14 @@ export const communityController = {
       if (!comment) return res.status(404).json({ error: 'Comment not found' });
 
       const existingReaction = await prisma.reaction.findUnique({
-        where: { userId_targetId_targetType: { userId, targetId: commentId, targetType: 'COMMENT' } }
+        where: { userId_commentId: { userId, commentId } }
       });
 
       if (existingReaction) {
         await prisma.reaction.delete({ where: { id: existingReaction.id } });
       } else {
         await prisma.reaction.create({
-          data: { userId, targetId: commentId, targetType: 'COMMENT' }
+          data: { userId, commentId }
         });
       }
 
@@ -308,7 +305,7 @@ export const communityController = {
           COUNT(DISTINCT p.id) as post_count
         FROM users u
         LEFT JOIN posts p ON p.author_id = u.id
-        LEFT JOIN reactions r ON r.target_id = p.id AND r.target_type = 'POST'
+        LEFT JOIN reactions r ON r.post_id = p.id
         WHERE u.display_name IS NOT NULL
         GROUP BY u.id, u.display_name, u.win_rate
         ORDER BY reaction_count DESC, post_count DESC

@@ -28,7 +28,17 @@ async def lifespan(app: FastAPI):
     except Exception as e_mq:
         logger.warning(f"⚠️ [Lifespan] EventBus connect failed: {e_mq}")
 
-    # ── 3. Background Daemons ────────────────────────────────────────
+    # ── 3. DNSE realtime stream ─────────────────────────────────────
+    try:
+        from app.config.settings import get_settings
+        from app.infrastructure.external_api.dnse.stream_hub import get_stream_hub
+        if get_settings().dnse_enabled:
+            get_stream_hub().start()
+            logger.info("[Lifespan] DNSE realtime stream hub đã được khởi động.")
+    except Exception as e_stream:
+        logger.warning(f"[Lifespan] Không thể khởi động DNSE stream hub: {e_stream}")
+
+    # ── 4. Background Daemons ────────────────────────────────────────
     # Khởi động:
     # 1. Daily Pipeline Daemon (09:15 Mở phiên - 12 Agents & Standalone ML)
     # 2. Position Monitoring Daemon (09:00 - 14:45 Trong phiên - Realtime Ticks & Stop Loss)
@@ -73,6 +83,12 @@ async def lifespan(app: FastAPI):
     try:
         from app.adapters.rabbitmq_event_bus import event_bus
         await event_bus.close()
+    except Exception:
+        pass
+
+    try:
+        from app.infrastructure.external_api.dnse.stream_hub import get_stream_hub
+        get_stream_hub().stop()
     except Exception:
         pass
 

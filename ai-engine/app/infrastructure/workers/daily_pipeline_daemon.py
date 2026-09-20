@@ -18,9 +18,11 @@ import logging
 import os
 from datetime import date, datetime, time as dt_time
 from typing import Any, Dict, Optional
+from zoneinfo import ZoneInfo
 
 from app.domain.pipeline.daily_pipeline_orchestrator import daily_pipeline, DailyInvestmentPipeline
 from app.infrastructure.external_api.dnse.market_session import MarketSessionManager
+from app.infrastructure.monitoring.job_state_service import exclusive_job, get_job, set_completed, set_failed, set_running
 
 logger = logging.getLogger("ai_engine.daemon.daily_pipeline")
 
@@ -43,13 +45,12 @@ class DailyPipelineDaemon:
         self._last_result: Optional[Dict[str, Any]] = None
         self._task: Optional[asyncio.Task] = None
 
-        # Cấu hình giờ trigger từ biến môi trường (mặc định 09:25 sau khi nhịp mở phiên ATO ổn định)
-        raw_time = trigger_time_str or os.getenv("DAILY_PIPELINE_TRIGGER_TIME", "09:25")
+        raw_time = trigger_time_str or os.getenv("DAILY_PIPELINE_TRIGGER_TIME", "09:15")
         try:
             h, m = raw_time.split(":")
             self.trigger_time = dt_time(int(h), int(m))
         except Exception:
-            self.trigger_time = dt_time(9, 25)
+            self.trigger_time = dt_time(9, 15)
 
     @property
     def status(self) -> Dict[str, Any]:
@@ -77,24 +78,32 @@ class DailyPipelineDaemon:
         """Kích hoạt thủ công Daily Pipeline tức thì (qua REST API hoặc Admin CLI)."""
         run_d = target_date or date.today().isoformat()
         logger.info(f"[DailyPipelineDaemon] Nhận lệnh kích hoạt thủ công cho ngày: {run_d} (force={force})")
-        self._last_status = "RUNNING_MANUAL"
-        try:
-            res = await self.runner.run(
-                target_date=run_d,
-                candidate_tickers=candidate_tickers,
-            )
-            self._last_run_date = run_d
-            self._last_result = res
-            self._last_status = res.get("status", "COMPLETED")
-            return res
-        except Exception as e:
-            self._last_status = f"FAILED: {e}"
-            logger.error(f"[DailyPipelineDaemon] Lỗi khi chạy manual pipeline: {e}", exc_info=True)
-            raise
+        job_name = "daily_investment_pipeline"
+        with exclusive_job(job_name) as acquired:
+            if not acquired:
+                raise RuntimeError("Daily pipeline is already running")
+            previous = get_job(job_name)
+            if not force and previous and previous.get("status") == "completed" and previous.get("metadata", {}).get("run_date") == run_d:
+                self._last_status = "ALREADY_COMPLETED"
+                return {"date": run_d, "status": "ALREADY_COMPLETED", "multi_agent_instructions": [], "standalone_ml_instructions": []}
+            self._last_status = "RUNNING_MANUAL"
+            set_running(job_name, {"run_date": run_d})
+            try:
+                res = await self.runner.run(target_date=run_d, candidate_tickers=candidate_tickers)
+                self._last_run_date = run_d
+                self._last_result = res
+                self._last_status = res.get("status", "COMPLETED")
+                set_completed(job_name, {"run_date": run_d, "status": self._last_status})
+                return res
+            except Exception as e:
+                self._last_status = f"FAILED: {e}"
+                set_failed(job_name, str(e), {"run_date": run_d})
+                logger.error(f"[DailyPipelineDaemon] Lỗi khi chạy manual pipeline: {e}", exc_info=True)
+                raise
 
     async def _check_and_trigger(self) -> None:
         """Kiểm tra điều kiện giờ và ngày giao dịch để tự động kích hoạt."""
-        now = datetime.now()
+        now = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
         today_str = now.date().isoformat()
 
         # 1. Kiểm tra ngày làm việc sàn HOSE (Thứ 2 - Thứ 6, không phải ngày lễ)
@@ -117,7 +126,7 @@ class DailyPipelineDaemon:
         )
         self._last_status = "RUNNING_SCHEDULED"
         try:
-            res = await self.runner.run(target_date=today_str)
+            res = await self.trigger_manual(target_date=today_str)
             self._last_run_date = today_str
             self._last_result = res
             self._last_status = res.get("status", "SUCCESS")

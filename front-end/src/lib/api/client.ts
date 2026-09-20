@@ -9,7 +9,8 @@ let refreshing: Promise<string> | null = null
 apiClient.interceptors.request.use(request => { const token = tokenStore.get(); if (token) request.headers.Authorization = `Bearer ${token}`; return request })
 apiClient.interceptors.response.use(response => response, async (error: AxiosError) => {
   const request = error.config as (InternalAxiosRequestConfig & { _retried?: boolean }) | undefined
-  if (error.response?.status === 401 && request && !request._retried && !request.url?.includes("/auth/")) {
+  const refreshable = request?.url?.endsWith("/auth/me") || !request?.url?.includes("/auth/")
+  if (error.response?.status === 401 && request && !request._retried && refreshable) {
     request._retried = true
     refreshing ??= refreshClient.post("/auth/refresh").then(({ data }) => { tokenStore.set(data.accessToken); return data.accessToken }).finally(() => { refreshing = null })
     try { request.headers.Authorization = `Bearer ${await refreshing}`; return apiClient(request) } catch { tokenStore.clear() }

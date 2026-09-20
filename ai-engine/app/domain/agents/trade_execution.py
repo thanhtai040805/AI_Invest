@@ -241,17 +241,14 @@ class TradeExecutionAgent(BaseAgent):
             return {"data": reject_payload, "trace": {"valid": False, "reason": val_reason}}
 
         # 3.6. KIỂM TRA PRE-TRADE GOVERNANCE GATE (MANDATORY FOR PRODUCTION INTEGRITY)
-        gov_token = decision.get("governance_token") or event_data.get("governance_token")
+        gov_token = None
         if not gov_token:
             sl_price = decision.get("stop_loss_price") or event_data.get("stop_loss_price")
             if sl_price is None and direction == "BUY":
                 sl_price = round(decision_price * 0.93, 2)
 
-            order_val = shares * decision_price
             account_state = self.repository.get_account_state()
             base_nav = float(decision.get("total_nav") or event_data.get("total_nav") or event_data.get("nav") or account_state.get("total_nav", 1_000_000_000.0))
-            has_explicit_nav = bool(decision.get("total_nav") or event_data.get("total_nav") or event_data.get("nav"))
-            effective_nav = max(base_nav, order_val / 0.10) if (not has_explicit_nav and order_val > base_nav * 0.15) else base_nav
 
             try:
                 from app.core.registry import AgentRegistry
@@ -265,8 +262,8 @@ class TradeExecutionAgent(BaseAgent):
                         "sector": decision.get("sector", "Unknown"),
                     },
                     "portfolio": {
-                        "nav": effective_nav,
-                        "total_nav": effective_nav,
+                        "nav": base_nav,
+                        "total_nav": base_nav,
                     },
                     "issuing_agent": decision.get("issuing_agent", "portfolio_allocation"),
                     "adtv20": adtv20,
@@ -301,8 +298,27 @@ class TradeExecutionAgent(BaseAgent):
                             "trace": {"governance_verdict": "BLOCK", "reason": gov_data.get("reason")},
                         }
                     gov_token = gov_data.get("governance_token")
+                if not gov_token:
+                    raise RuntimeError("Governance gate did not issue an approval token")
             except Exception as e:
-                logger.warning(f"[TradeExecutionAgent] Kiểm tra Governance Gate qua AgentRegistry gặp lỗi: {e}")
+                logger.critical(f"[TradeExecutionAgent] Governance Gate thất bại; chặn lệnh {ticker}: {e}")
+                return {
+                    "data": {
+                        "execution_decision": "BLOCK",
+                        "order_id": str(uuid.uuid4()),
+                        "ticker": ticker,
+                        "action": direction,
+                        "shares": 0,
+                        "status": "BLOCKED_GOVERNANCE_UNAVAILABLE",
+                        "rejection_reason": str(e),
+                        "executed_price": 0.0,
+                        "target_price": decision_price,
+                        "slippage_bps": 0.0,
+                        "slice_count": 0,
+                        "execution_mode": "GOVERNANCE_BLOCKED",
+                    },
+                    "trace": {"governance_verdict": "UNAVAILABLE"},
+                }
 
         # 4. LẬP KẾ HOẠCH THỰC THI QUA EAE ENGINE
         plan = self.eae_engine.create_execution_plan(

@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
@@ -165,6 +166,33 @@ def snapshot_import(args: argparse.Namespace) -> None:
     print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
 
 
+def storage_gc(args: argparse.Namespace) -> None:
+    root = Path(args.objects_dir).resolve()
+    if not root.is_dir():
+        raise SystemExit(f"object store không tồn tại: {root}")
+    cutoff = time.time() - max(0, args.keep_days) * 86400
+    candidates = [
+        path for path in root.rglob("*")
+        if path.is_file() and path.suffix.lower() in {".md", ".pdf"} and path.stat().st_mtime < cutoff
+    ]
+    bytes_total = sum(path.stat().st_size for path in candidates)
+    if args.apply:
+        for path in candidates:
+            path.unlink(missing_ok=True)
+        for directory in sorted((path for path in root.rglob("*") if path.is_dir()), reverse=True):
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+    print(json.dumps({
+        "status": "CLEANED" if args.apply else "DRY_RUN",
+        "root": str(root),
+        "keep_days": args.keep_days,
+        "files": len(candidates),
+        "bytes": bytes_total,
+    }, ensure_ascii=False))
+
+
 async def _snapshot_import_async(
     manifest_path: Path,
     manifest: dict[str, Any],
@@ -267,6 +295,11 @@ def main() -> None:
     imp.add_argument("--target", required=True)
     imp.add_argument("--reuse-compatible-vectors", action="store_true")
     imp.set_defaults(func=snapshot_import)
+    gc = sub.add_parser("storage-gc")
+    gc.add_argument("--objects-dir", default=str(Path.cwd() / ".data" / "cache" / "uploads" / "objects"))
+    gc.add_argument("--keep-days", type=int, default=1)
+    gc.add_argument("--apply", action="store_true")
+    gc.set_defaults(func=storage_gc)
     args = parser.parse_args()
     args.func(args)
 

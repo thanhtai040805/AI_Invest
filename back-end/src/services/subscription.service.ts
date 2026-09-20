@@ -1,33 +1,37 @@
 import { redisService } from './redis.service';
 
-const SUBSCRIBED_SYMBOLS_KEY = 'socket:subscribed:symbols';
+const SUBSCRIBED_SYMBOLS_KEY = 'socket:subscribed:symbol-counts:v2';
 const SUBSCRIBED_MARKET_KEY = 'socket:subscribed:market';
 
 class SubscriptionService {
-  private memSymbols = new Set<string>();
+  private memSymbols = new Map<string, number>();
   private memMarketCount = 0;
 
   async addSymbol(symbol: string): Promise<void> {
     const sym = symbol.toUpperCase();
-    this.memSymbols.add(sym);
+    this.memSymbols.set(sym, (this.memSymbols.get(sym) ?? 0) + 1);
     try {
-      await redisService.getClient().sadd(SUBSCRIBED_SYMBOLS_KEY, sym);
+      await redisService.getClient().hincrby(SUBSCRIBED_SYMBOLS_KEY, sym, 1);
     } catch {}
   }
 
   async removeSymbol(symbol: string): Promise<void> {
     const sym = symbol.toUpperCase();
-    this.memSymbols.delete(sym);
+    const next = Math.max(0, (this.memSymbols.get(sym) ?? 0) - 1);
+    if (next === 0) this.memSymbols.delete(sym);
+    else this.memSymbols.set(sym, next);
     try {
-      await redisService.getClient().srem(SUBSCRIBED_SYMBOLS_KEY, sym);
+      const count = await redisService.getClient().hincrby(SUBSCRIBED_SYMBOLS_KEY, sym, -1);
+      if (count <= 0) await redisService.getClient().hdel(SUBSCRIBED_SYMBOLS_KEY, sym);
     } catch {}
   }
 
   async getSubscribedSymbols(): Promise<string[]> {
     try {
-      return await redisService.getClient().smembers(SUBSCRIBED_SYMBOLS_KEY);
+      const counts = await redisService.getClient().hgetall(SUBSCRIBED_SYMBOLS_KEY);
+      return Object.entries(counts).filter(([, count]) => Number(count) > 0).map(([symbol]) => symbol);
     } catch {
-      return Array.from(this.memSymbols);
+      return Array.from(this.memSymbols.keys());
     }
   }
 

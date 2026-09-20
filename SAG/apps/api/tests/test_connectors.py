@@ -28,6 +28,10 @@ def test_web_validate_rejects_bad_url():
         c.validate_config({"urls": "ftp://nope"})
     with pytest.raises(ValidationError):
         c.validate_config({"urls": "not-a-url"})
+    with pytest.raises(ValidationError):
+        c.validate_config({"urls": "http://127.0.0.1/admin"})
+    with pytest.raises(ValidationError):
+        c.validate_config({"urls": "https://user:pass@example.com"})
     # 合法不抛
     c.validate_config({"urls": "https://example.com/docs"})
 

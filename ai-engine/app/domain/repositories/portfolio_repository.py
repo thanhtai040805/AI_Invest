@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import uuid
+from copy import deepcopy
 from datetime import datetime, time, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -106,33 +107,51 @@ class PortfolioRepository:
             else:
                 rows_user = []
 
-            if not rows_user:
-                query_user = "SELECT id, cash_balance, win_rate FROM users ORDER BY created_at ASC LIMIT 1"
-                rows_user = self.storage.fetch_all(query_user)
-
             if rows_user and len(rows_user) > 0:
                 uid, cash, win_rate = rows_user[0]
                 cash_val = float(cash) if cash is not None else 1000000000.0
                 win_rate_val = float(win_rate) if win_rate is not None else 0.0
 
                 # 2. Tính tổng giá trị danh mục vị thế từ bảng positions
-                query_pos = "SELECT symbol, quantity, avg_price FROM positions WHERE user_id = %s AND quantity > 0"
+                query_pos = """
+                    SELECT p.symbol, p.quantity,
+                           COALESCE(md.close_adj * 1000, p.avg_price) AS current_price
+                    FROM positions p
+                    LEFT JOIN LATERAL (
+                        SELECT close_adj FROM market_data_daily
+                        WHERE ticker = p.symbol ORDER BY date DESC LIMIT 1
+                    ) md ON TRUE
+                    WHERE p.user_id = %s AND p.quantity > 0
+                """
                 rows_pos = self.storage.fetch_all(query_pos, (uid,))
                 positions_val = sum(float(r[1]) * float(r[2]) for r in rows_pos) if rows_pos else 0.0
                 total_nav = cash_val + positions_val
+
+                account_rows = self.storage.fetch_all(
+                    "SELECT peak_nav FROM portfolio_account WHERE account_id = %s",
+                    (str(uid),),
+                )
+                previous_peak = float(account_rows[0][0]) if account_rows else total_nav
+                peak_nav = max(total_nav, previous_peak)
+                drawdown_pct = ((peak_nav - total_nav) / peak_nav * 100.0) if peak_nav > 0 else 0.0
+                drawdown_tier = "RED" if drawdown_pct >= 10 else ("ORANGE" if drawdown_pct >= 5 else ("YELLOW" if drawdown_pct >= 2 else "GREEN"))
 
                 self._in_memory_account = {
                     "account_id": str(uid),
                     "cash_balance": cash_val,
                     "total_nav": total_nav,
-                    "peak_nav": max(total_nav, self._in_memory_account.get("peak_nav", total_nav)),
-                    "drawdown_tier": "GREEN",
+                    "peak_nav": peak_nav,
+                    "drawdown_tier": drawdown_tier,
                     "win_rate": win_rate_val,
                 }
                 return self._in_memory_account
         except Exception as e:
             logger.warning(f"Không thể đọc account_state từ DB ({e}), dùng in-memory fallback")
 
+        if user_id is not None:
+            raise LookupError(f"Portfolio user not found: {user_id}")
+        if os.getenv("ENVIRONMENT", "").lower() != "test":
+            raise RuntimeError("Portfolio account state is unavailable")
         return self._in_memory_account
 
     def get_open_positions(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -141,9 +160,14 @@ class PortfolioRepository:
         try:
             if target_uid:
                 query = """
-                    SELECT symbol, quantity, avg_price, opened_at
-                    FROM positions
-                    WHERE user_id = %s AND quantity > 0
+                    SELECT p.symbol, p.quantity, p.avg_price, p.opened_at,
+                           COALESCE(md.close_adj * 1000, p.avg_price) AS current_price
+                    FROM positions p
+                    LEFT JOIN LATERAL (
+                        SELECT close_adj FROM market_data_daily
+                        WHERE ticker = p.symbol ORDER BY date DESC LIMIT 1
+                    ) md ON TRUE
+                    WHERE p.user_id = %s AND p.quantity > 0
                     ORDER BY quantity DESC
                 """
                 rows = self.storage.fetch_all(query, (target_uid,))
@@ -159,7 +183,7 @@ class PortfolioRepository:
             if rows is not None:
                 results = []
                 # Tính tổng NAV để tính % tỷ trọng từng vị thế
-                tot_pos_val = sum(int(r[1]) * float(r[2]) for r in rows)
+                tot_pos_val = sum(int(r[1]) * float(r[4] if len(r) > 4 and r[4] is not None else r[2]) for r in rows)
                 try:
                     cash_row = self.storage.fetch_all("SELECT cash_balance FROM users WHERE id = %s", (target_uid,)) if target_uid else None
                     cash_val = float(cash_row[0][0]) if cash_row and cash_row[0][0] is not None else 0.0
@@ -171,6 +195,7 @@ class PortfolioRepository:
                 for r in rows:
                     total_shares = int(r[1])
                     avg_p = float(r[2])
+                    current_p = float(r[4]) if len(r) > 4 and r[4] is not None else avg_p
                     opened_at = r[3] if len(r) > 3 and r[3] else None
                     
                     # Kiểm tra chu kỳ T+2.5 chuẩn ngày làm việc thị trường VN
@@ -178,7 +203,7 @@ class PortfolioRepository:
 
                     available_shares = 0 if is_locked else total_shares
                     locked_shares = total_shares if is_locked else 0
-                    mkt_val = total_shares * avg_p
+                    mkt_val = total_shares * current_p
                     w_pct = round((mkt_val / tot_nav) * 100.0, 1) if tot_nav > 0 else 0.0
 
                     results.append({
@@ -190,7 +215,7 @@ class PortfolioRepository:
                         "locked_t25_shares": locked_shares,
                         "average_price": avg_p,
                         "avg_price": avg_p,
-                        "current_price": avg_p,
+                        "current_price": current_p,
                         "market_value": mkt_val,
                         "weight_pct": w_pct,
                     })
@@ -198,6 +223,10 @@ class PortfolioRepository:
         except Exception as e:
             logger.warning(f"Không thể đọc positions từ DB ({e}), dùng in-memory fallback")
 
+        if user_id is not None:
+            raise LookupError(f"Portfolio positions unavailable for user: {user_id}")
+        if os.getenv("ENVIRONMENT", "").lower() != "test":
+            raise RuntimeError("Portfolio positions are unavailable")
         # In-memory positions fallback: đảm bảo có available_shares và locked_t25_shares
         in_mem_list = []
         for p in self._in_memory_positions.values():
@@ -332,12 +361,21 @@ class PortfolioRepository:
         """
         ticker = ticker.upper().strip()
         action = action.upper().strip()
+        if not ticker or shares <= 0 or executed_price <= 0 or action not in ("BUY", "SELL", "SELL_MP"):
+            raise ValueError("Invalid order transaction")
+        target_uid = user_id or self._in_memory_account.get("account_id") or os.getenv("DEFAULT_PORTFOLIO_USER_ID")
+        if not target_uid:
+            raise RuntimeError("Portfolio user_id is required")
+
         trade_value = float(executed_price * shares)
         order_id = str(uuid.uuid4())
         pos_id = str(uuid.uuid4())
         now = datetime.now()
 
-        # 1. Cập nhật In-Memory Cache
+        account_before = deepcopy(self._in_memory_account)
+        positions_before = deepcopy(self._in_memory_positions)
+
+        # 1. Cập nhật In-Memory Cache; rollback nếu DB không commit được.
         # Tính toán phí môi giới (0.10%) và thuế chuyển nhượng (0.10% khi bán)
         fee_rate = 0.0010
         min_fee = 10000.0
@@ -378,22 +416,23 @@ class PortfolioRepository:
                     del self._in_memory_positions[ticker]
 
         # 2. Cập nhật CSDL PostgreSQL thực tế
-        target_uid = user_id or self._in_memory_account.get("account_id") or os.getenv("DEFAULT_PORTFOLIO_USER_ID")
-        if not target_uid:
-            try:
-                first_u = self.storage.fetch_all("SELECT id FROM users ORDER BY created_at ASC LIMIT 1")
-                if first_u and first_u[0]:
-                    target_uid = str(first_u[0][0])
-            except Exception:
-                pass
-        if not target_uid:
-            logger.warning("[PortfolioRepository] Không tìm thấy user_id hợp lệ để ghi nhận lệnh/vị thế.")
-            return order_id
         try:
+            self.storage.begin()
+            users = self.storage.fetch_all(
+                "SELECT cash_balance FROM users WHERE id = %s FOR UPDATE",
+                (target_uid,),
+            )
+            if not users:
+                raise RuntimeError(f"Portfolio user not found: {target_uid}")
+
             # 2.1 Cập nhật số dư tiền mặt trong bảng users kèm phí & thuế
             if action == "BUY":
-                sql_user = "UPDATE users SET cash_balance = cash_balance - %s WHERE id = %s"
-                self.storage.execute(sql_user, (total_deduct, target_uid))
+                if float(users[0][0]) < total_deduct:
+                    raise ValueError("Insufficient buying power")
+                self.storage.execute(
+                    "UPDATE users SET cash_balance = cash_balance - %s WHERE id = %s",
+                    (total_deduct, target_uid),
+                )
             elif action in ("SELL", "SELL_MP"):
                 sql_user = "UPDATE users SET cash_balance = cash_balance + %s WHERE id = %s"
                 self.storage.execute(sql_user, (net_credit, target_uid))
@@ -401,14 +440,14 @@ class PortfolioRepository:
             # 2.2 Cập nhật vị thế trong bảng positions
             if action == "BUY":
                 # Kiểm tra vị thế đã tồn tại chưa
-                sql_check = "SELECT id, quantity, avg_price FROM positions WHERE user_id = %s AND symbol = %s"
+                sql_check = "SELECT id, quantity, avg_price FROM positions WHERE user_id = %s AND symbol = %s FOR UPDATE"
                 existing = self.storage.fetch_all(sql_check, (target_uid, ticker))
                 if existing:
                     pid, old_q, old_avg = existing[0]
                     new_q = int(old_q) + shares
                     new_avg = ((float(old_avg) * int(old_q)) + (executed_price * shares)) / new_q
-                    sql_update_pos = "UPDATE positions SET quantity = %s, avg_price = %s WHERE id = %s"
-                    self.storage.execute(sql_update_pos, (new_q, new_avg, pid))
+                    sql_update_pos = "UPDATE positions SET quantity = %s, avg_price = %s, opened_at = %s WHERE id = %s"
+                    self.storage.execute(sql_update_pos, (new_q, new_avg, now, pid))
                 else:
                     sql_insert_pos = """
                         INSERT INTO positions (id, user_id, symbol, quantity, avg_price, opened_at)
@@ -416,11 +455,15 @@ class PortfolioRepository:
                     """
                     self.storage.execute(sql_insert_pos, (pos_id, target_uid, ticker, shares, executed_price, now))
             elif action in ("SELL", "SELL_MP"):
-                sql_check = "SELECT id, quantity FROM positions WHERE user_id = %s AND symbol = %s"
+                sql_check = "SELECT id, quantity, opened_at FROM positions WHERE user_id = %s AND symbol = %s FOR UPDATE"
                 existing = self.storage.fetch_all(sql_check, (target_uid, ticker))
+                if not existing or int(existing[0][1]) < shares:
+                    raise ValueError("Insufficient shares to sell")
+                if calculate_is_t25_locked(existing[0][2], now):
+                    raise ValueError("Shares are locked by T+2.5 settlement")
                 if existing:
-                    pid, old_q = existing[0]
-                    remaining_q = max(0, int(old_q) - shares)
+                    pid, old_q, _opened_at = existing[0]
+                    remaining_q = int(old_q) - shares
                     if remaining_q == 0:
                         self.storage.execute("DELETE FROM positions WHERE id = %s", (pid,))
                         # Hủy hoặc hoàn tất mọi chiến dịch gom/xả đang chạy cho ticker này để tránh zombie campaigns
@@ -470,28 +513,28 @@ class PortfolioRepository:
                 """
                 self.storage.execute(
                     sql_account,
-                    ("MAIN_FUND", acc_state["cash_balance"], acc_state["total_nav"], acc_state["peak_nav"], "GREEN", now)
+                    (str(target_uid), acc_state["cash_balance"], acc_state["total_nav"], acc_state["peak_nav"], acc_state.get("drawdown_tier", "GREEN"), now)
                 )
 
                 # Đồng bộ bảng paper_trades phục vụ học tăng cường (Agent-10)
                 try:
                     if action == "BUY":
                         sql_paper = """
-                            INSERT INTO paper_trades (ticker, action, price, date, confidence, thesis, status, quantity, created_at)
-                            VALUES (%s, %s, %s, %s, %s, %s, 'OPEN', %s, %s)
+                            INSERT INTO paper_trades (ticker, action, price, date, confidence, thesis, status, quantity, created_at, account_id)
+                            VALUES (%s, %s, %s, %s, %s, %s, 'OPEN', %s, %s, %s)
                         """
                         self.storage.execute(
                             sql_paper,
-                            (ticker, action, executed_price, now, 0.8, "EXECUTION_AGENT_ORDER", shares, now)
+                            (ticker, action, executed_price, now, 0.8, "EXECUTION_AGENT_ORDER", shares, now, str(target_uid))
                         )
                     elif action in ("SELL", "SELL_MP"):
                         # FIFO Tranche resolution trong paper_trades
                         sql_get_open = """
                             SELECT id, price, quantity FROM paper_trades
-                            WHERE ticker = %s AND status = 'OPEN'
+                            WHERE ticker = %s AND account_id = %s AND status = 'OPEN'
                             ORDER BY date ASC, id ASC
                         """
-                        open_trades = self.storage.fetch_all(sql_get_open, (ticker,))
+                        open_trades = self.storage.fetch_all(sql_get_open, (ticker, str(target_uid)))
                         rem_sell = shares
                         for trade in open_trades:
                             if rem_sell <= 0:
@@ -516,18 +559,23 @@ class PortfolioRepository:
                                     WHERE id = %s
                                 """, (rem_sell, t_id))
                                 self.storage.execute("""
-                                    INSERT INTO paper_trades (ticker, action, price, date, confidence, thesis, status, quantity, resolve_price, pnl, resolved_at, created_at)
-                                    VALUES (%s, 'BUY', %s, %s, 0.8, 'PARTIAL_FILL_CLOSE', 'CLOSED', %s, %s, %s, %s, %s)
-                                """, (ticker, t_price, now, rem_sell, executed_price, pnl, now, now))
+                                    INSERT INTO paper_trades (ticker, action, price, date, confidence, thesis, status, quantity, resolve_price, pnl, resolved_at, created_at, account_id)
+                                    VALUES (%s, 'BUY', %s, %s, 0.8, 'PARTIAL_FILL_CLOSE', 'CLOSED', %s, %s, %s, %s, %s, %s)
+                                """, (ticker, t_price, now, rem_sell, executed_price, pnl, now, now, str(target_uid)))
                                 rem_sell = 0
-                except Exception as e_pt:
-                    logger.debug(f"Không thể sync paper_trades: {e_pt}")
-            except Exception as e_sync:
-                logger.debug(f"Không thể sync portfolio_account hoặc paper_trades: {e_sync}")
+                except Exception:
+                    raise
+            except Exception:
+                raise
 
+            self.storage.commit()
             logger.info(f"Đã cập nhật giao dịch {action} {shares} {ticker} (status: {status}) vào bảng users, positions và orders thành công.")
         except Exception as e:
-            logger.warning(f"Lỗi khi sync giao dịch vào DB ({e}), đã ghi in-memory.")
+            self.storage.rollback()
+            self._in_memory_account = account_before
+            self._in_memory_positions = positions_before
+            logger.error(f"Lỗi khi sync giao dịch vào DB; đã rollback toàn bộ ({e}).")
+            raise
 
         return {
             "order_id": order_id,
@@ -706,5 +754,3 @@ class PortfolioRepository:
         except Exception as e:
             logger.warning(f"Lỗi khi đọc portfolio_decisions theo ngày {target_date}: {e}")
             return []
-
-

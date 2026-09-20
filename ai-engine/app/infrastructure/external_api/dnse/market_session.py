@@ -14,6 +14,11 @@ import time
 from datetime import datetime, timedelta, time as dt_time
 from enum import Enum
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+from app.infrastructure.vendors.vn.calendar import VNCalendar
+
+TZ_VN = ZoneInfo("Asia/Ho_Chi_Minh")
 
 
 class MarketState(Enum):
@@ -49,20 +54,27 @@ class MarketSessionManager:
 
     def __init__(self, holidays: Optional[set] = None) -> None:
         self._holidays: set = holidays or set()
+        self._calendar = VNCalendar()
         self._last_state: Optional[MarketState] = None
         self._state_changed_at: Optional[float] = None
 
+    @staticmethod
+    def _vn_now(dt: Optional[datetime] = None) -> datetime:
+        if dt is None:
+            return datetime.now(TZ_VN)
+        return dt.replace(tzinfo=TZ_VN) if dt.tzinfo is None else dt.astimezone(TZ_VN)
+
     def is_trading_day(self, dt: Optional[datetime] = None) -> bool:
-        now = dt or datetime.now()
-        if now.weekday() >= 5:
-            return False
+        now = self._vn_now(dt)
         date_str = now.strftime("%Y-%m-%d")
         if date_str in self._holidays:
             return False
-        return True
+        if now.date() in self._calendar.VN_HOLIDAYS.get(now.year, []):
+            return False
+        return self._calendar.is_trading_day(now)
 
     def get_market_state(self, dt: Optional[datetime] = None) -> MarketState:
-        now = dt or datetime.now()
+        now = self._vn_now(dt)
         if not self.is_trading_day(now):
             return MarketState.CLOSED
 
@@ -107,7 +119,7 @@ class MarketSessionManager:
         )
 
     def next_state_change(self, dt: Optional[datetime] = None) -> tuple[MarketState, float]:
-        now = dt or datetime.now()
+        now = self._vn_now(dt)
         current = self.get_market_state(now)
         sched = self.HOSE_SCHEDULE
 

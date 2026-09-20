@@ -32,6 +32,8 @@ export const config = {
   databaseUrl: requireEnv('DATABASE_URL', 'postgresql://postgres:password@localhost:5432/aiinvest'),
   redisUrl: process.env.REDIS_URL ?? 'redis://localhost:6379',
   aiEngineUrl: process.env.AI_ENGINE_URL ?? 'http://localhost:8000',
+  internalServiceToken: requireEnvProduction('INTERNAL_SERVICE_TOKEN'),
+  aiEngineAdminToken: requireEnvProduction('AI_ENGINE_ADMIN_TOKEN'),
   dnse: {
     enabled: process.env.DNSE_ENABLED === 'true',
     redisChannelPrefix: process.env.DNSE_REDIS_CHANNEL_PREFIX ?? 'dnse:event',

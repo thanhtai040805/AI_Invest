@@ -1,0 +1,1925 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kiến Trúc Toàn Diện 12 Agent Định Lượng Tự Hành · AIInvest Sovereign Architecture (IOS v5.1)</title>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&amp;family=Geist+Mono:wght@400;500;600;700&amp;family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&amp;display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --color-paper: #fafafa;
+      --color-paper-2: #ffffff;
+      --color-ink: #0f172a;
+      --color-muted: #475569;
+      --color-soft: #64748b;
+      --color-rule: #cbd5e1;
+
+      /* Pastel Subsystem Palettes (Zero Black Item Fill) */
+      --blue-bg: #e0f2fe;
+      --blue-border: #0284c7;
+      --blue-text: #0369a1;
+
+      --purple-bg: #f3e8ff;
+      --purple-border: #7c3aed;
+      --purple-text: #6d28d9;
+
+      --teal-bg: #ecfeff;
+      --teal-border: #0891b2;
+      --teal-text: #0e7490;
+
+      --peach-bg: #ffedd5;
+      --peach-border: #ea580c;
+      --peach-text: #c2410c;
+
+      --green-bg: #dcfce7;
+      --green-border: #16a34a;
+      --green-text: #15803d;
+
+      --rose-bg: #ffe4e6;
+      --rose-border: #e11d48;
+      --rose-text: #be123c;
+
+      --slate-bg: #f1f5f9;
+      --slate-border: #64748b;
+      --slate-text: #334155;
+
+      --focal-coral: #ea580c;
+
+      --font-serif: 'Newsreader', Georgia, serif;
+      --font-sans: 'Geist', -apple-system, system-ui, sans-serif;
+      --font-mono: 'Geist Mono', monospace;
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 36px 20px;
+      color: var(--color-ink);
+      background-color: var(--color-paper);
+      background-image: radial-gradient(rgba(15, 23, 42, 0.06) 1px, transparent 1px);
+      background-size: 24px 24px;
+      font-family: var(--font-sans);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .container {
+      width: min(100%, 1780px);
+    }
+
+    .header {
+      margin-bottom: 20px;
+    }
+
+    .eyebrow {
+      margin: 0 0 8px;
+      color: var(--color-muted);
+      font: 600 12px/1.4 var(--font-mono);
+      letter-spacing: .16em;
+      text-transform: uppercase;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .eyebrow-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      background: #0284c7;
+      color: #ffffff;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .eyebrow-badge-focal {
+      background: #ea580c;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font: 400 32px/1.2 var(--font-serif);
+      letter-spacing: -0.02em;
+      color: var(--color-ink);
+    }
+
+    .subtitle {
+      margin: 0;
+      font-size: 14.5px;
+      line-height: 1.6;
+      color: var(--color-muted);
+      max-width: 1560px;
+    }
+
+    /* Preset Toolbar - Pure CSS Layer Switcher */
+    .preset-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+      margin: 10px 0 14px;
+      padding: 10px 16px;
+      background: #ffffff;
+      border: 1px solid var(--color-rule);
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+    }
+
+    .preset-toolbar-label {
+      font: 600 12px/1 var(--font-mono);
+      color: var(--color-soft);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-right: 6px;
+    }
+
+    .preset-radio,
+    .sim-radio {
+      display: none;
+    }
+
+    .preset-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 6px 14px;
+      border-radius: 6px;
+      font: 500 13px/1.2 var(--font-sans);
+      color: var(--color-muted);
+      background: #f8fafc;
+      border: 1px solid var(--color-rule);
+      cursor: pointer;
+      transition: all 0.2s ease;
+      user-select: none;
+    }
+
+    .preset-btn:hover {
+      background: #f1f5f9;
+      color: var(--color-ink);
+      border-color: #94a3b8;
+    }
+
+    .dot-indicator {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+
+    .dot-all { background: #0f172a; }
+    .dot-l1 { background: #0284c7; }
+    .dot-l2 { background: #e11d48; }
+    .dot-l3 { background: #16a34a; }
+    .dot-l4 { background: #7c3aed; }
+
+    #preset-all:checked ~ .preset-toolbar label[for="preset-all"],
+    #preset-l1:checked ~ .preset-toolbar label[for="preset-l1"],
+    #preset-l2:checked ~ .preset-toolbar label[for="preset-l2"],
+    #preset-l3:checked ~ .preset-toolbar label[for="preset-l3"],
+    #preset-l4:checked ~ .preset-toolbar label[for="preset-l4"] {
+      background: var(--color-ink);
+      color: #ffffff;
+      border-color: var(--color-ink);
+    }
+
+    /* Interactive Layer Dimming via Radio States */
+    #preset-l1:checked ~ .diagram-wrapper .layer-group:not(.layer-1),
+    #preset-l2:checked ~ .diagram-wrapper .layer-group:not(.layer-2),
+    #preset-l3:checked ~ .diagram-wrapper .layer-group:not(.layer-3),
+    #preset-l4:checked ~ .diagram-wrapper .layer-group:not(.layer-4) {
+      opacity: 0.16;
+      transition: opacity 0.3s ease;
+    }
+
+    #preset-l1:checked ~ .diagram-wrapper .layer-1,
+    #preset-l2:checked ~ .diagram-wrapper .layer-2,
+    #preset-l3:checked ~ .diagram-wrapper .layer-3,
+    #preset-l4:checked ~ .diagram-wrapper .layer-4 {
+      opacity: 1 !important;
+      transition: opacity 0.3s ease;
+    }
+
+    /* ========================================================================= */
+    /* SIMULATION ACTION TOOLBAR & LIVE HUD MONITOR                              */
+    /* ========================================================================= */
+    .sim-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 7px;
+      margin: 14px 0 10px;
+      padding: 10px 16px;
+      background: #f8fafc;
+      border: 1px solid var(--color-rule);
+      border-radius: 8px;
+    }
+
+    .sim-toolbar-label {
+      font: 700 11px/1 var(--font-mono);
+      color: var(--color-ink);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-right: 4px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .sim-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 5px 11px;
+      border-radius: 5px;
+      font: 500 12px/1.2 var(--font-sans);
+      color: var(--color-muted);
+      background: #ffffff;
+      border: 1px solid var(--color-rule);
+      cursor: pointer;
+      transition: all 0.18s ease;
+      user-select: none;
+    }
+
+    .sim-btn:hover {
+      background: #f1f5f9;
+      color: var(--color-ink);
+      border-color: #94a3b8;
+    }
+
+    .sim-btn-focal {
+      font-weight: 600;
+      color: #0284c7;
+      border-color: #bae6fd;
+      background: #f0f9ff;
+    }
+
+    #sim-auto:checked ~ .sim-toolbar label[for="sim-auto"],
+    #sim-static:checked ~ .sim-toolbar label[for="sim-static"],
+    #sim-s1:checked ~ .sim-toolbar label[for="sim-s1"],
+    #sim-s2:checked ~ .sim-toolbar label[for="sim-s2"],
+    #sim-s3:checked ~ .sim-toolbar label[for="sim-s3"],
+    #sim-s4:checked ~ .sim-toolbar label[for="sim-s4"],
+    #sim-s5:checked ~ .sim-toolbar label[for="sim-s5"],
+    #sim-s6:checked ~ .sim-toolbar label[for="sim-s6"],
+    #sim-s7:checked ~ .sim-toolbar label[for="sim-s7"],
+    #sim-s8:checked ~ .sim-toolbar label[for="sim-s8"],
+    #sim-s9:checked ~ .sim-toolbar label[for="sim-s9"],
+    #sim-s10:checked ~ .sim-toolbar label[for="sim-s10"],
+    #sim-s11:checked ~ .sim-toolbar label[for="sim-s11"],
+    #sim-s12:checked ~ .sim-toolbar label[for="sim-s12"] {
+      background: #0f172a;
+      color: #ffffff;
+      border-color: #0f172a;
+    }
+
+    /* Live Execution HUD */
+    .execution-hud {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 16px;
+      margin-bottom: 14px;
+      background: #ffffff;
+      border: 1px solid var(--color-rule);
+      border-left: 4px solid #0284c7;
+      border-radius: 6px;
+      box-shadow: 0 2px 6px rgba(15, 23, 42, 0.03);
+    }
+
+    .hud-badge-wrap {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      flex-shrink: 0;
+    }
+
+    .hud-pulse-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #0284c7;
+      display: inline-block;
+      animation: beaconGlow 1.6s ease-in-out infinite;
+    }
+
+    @keyframes beaconGlow {
+      0%, 100% { transform: scale(1); opacity: 1; box-shadow: 0 0 0 0 rgba(2, 132, 199, 0.6); }
+      50% { transform: scale(1.2); opacity: 0.8; box-shadow: 0 0 0 5px rgba(2, 132, 199, 0); }
+    }
+
+    .hud-tag {
+      font: 700 11px/1 var(--font-mono);
+      color: #0284c7;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .hud-caption {
+      font-size: 13px;
+      line-height: 1.45;
+      color: var(--color-muted);
+      flex: 1;
+    }
+
+    .hud-text { display: none; }
+    #sim-auto:checked ~ .execution-hud .hud-text-auto { display: inline; }
+    #sim-static:checked ~ .execution-hud .hud-text-static { display: inline; }
+    #sim-s1:checked ~ .execution-hud .hud-text-s1 { display: inline; }
+    #sim-s2:checked ~ .execution-hud .hud-text-s2 { display: inline; }
+    #sim-s3:checked ~ .execution-hud .hud-text-s3 { display: inline; }
+    #sim-s4:checked ~ .execution-hud .hud-text-s4 { display: inline; }
+    #sim-s5:checked ~ .execution-hud .hud-text-s5 { display: inline; }
+    #sim-s6:checked ~ .execution-hud .hud-text-s6 { display: inline; }
+    #sim-s7:checked ~ .execution-hud .hud-text-s7 { display: inline; }
+    #sim-s8:checked ~ .execution-hud .hud-text-s8 { display: inline; }
+    #sim-s9:checked ~ .execution-hud .hud-text-s9 { display: inline; }
+    #sim-s10:checked ~ .execution-hud .hud-text-s10 { display: inline; }
+    #sim-s11:checked ~ .execution-hud .hud-text-s11 { display: inline; }
+    #sim-s12:checked ~ .execution-hud .hud-text-s12 { display: inline; }
+
+    /* ========================================================================= */
+    /* KEYFRAMES & ARRIVAL HIGHLIGHT ANIMATION (24s HOT-PATH QUANTUM LOOP)      */
+    /* ========================================================================= */
+    .agent-live-tag,
+    .agent-live-text {
+      opacity: 0;
+      transition: opacity 0.25s ease;
+    }
+
+    .node-box {
+      transition: filter 0.25s ease, stroke-width 0.25s ease, stroke 0.25s ease;
+    }
+
+    @keyframes glowA01 {
+      0%, 8.33% { filter: drop-shadow(0 0 14px rgba(2, 132, 199, 0.7)); stroke: #0284c7; stroke-width: 2.5px; }
+      9.5%, 100% { filter: none; stroke-width: 1.5px; }
+    }
+    @keyframes glowA02 {
+      0%, 7.5% { filter: none; stroke-width: 1.5px; }
+      8.33%, 16.67% { filter: drop-shadow(0 0 14px rgba(2, 132, 199, 0.7)); stroke: #0284c7; stroke-width: 2.5px; }
+      17.8%, 100% { filter: none; stroke-width: 1.5px; }
+    }
+    @keyframes glowA03 {
+      0%, 15.8% { filter: none; stroke-width: 1.5px; }
+      16.67%, 25.00% { filter: drop-shadow(0 0 14px rgba(2, 132, 199, 0.7)); stroke: #0284c7; stroke-width: 2.5px; }
+      26.2%, 100% { filter: none; stroke-width: 1.5px; }
+    }
+    @keyframes glowA04 {
+      0%, 24.2% { filter: none; stroke-width: 1.5px; }
+      25.00%, 33.33% { filter: drop-shadow(0 0 14px rgba(2, 132, 199, 0.7)); stroke: #0284c7; stroke-width: 2.5px; }
+      34.5%, 100% { filter: none; stroke-width: 1.5px; }
+    }
+    @keyframes glowA05 {
+      0%, 32.5% { filter: none; stroke-width: 1.5px; }
+      33.33%, 41.67% { filter: drop-shadow(0 0 16px rgba(234, 88, 12, 0.8)); stroke: #ea580c; stroke-width: 2.5px; }
+      42.8%, 100% { filter: none; stroke-width: 1.5px; }
+    }
+    @keyframes glowA12 {
+      0%, 40.8% { filter: none; stroke-width: 1.5px; }
+      41.67%, 50.00% { filter: drop-shadow(0 0 16px rgba(225, 29, 72, 0.8)); stroke: #e11d48; stroke-width: 2.5px; }
+      51.2%, 100% { filter: none; stroke-width: 1.5px; }
+    }
+    @keyframes glowA06 {
+      0%, 49.2% { filter: none; stroke-width: 1.5px; }
+      50.00%, 58.33% { filter: drop-shadow(0 0 14px rgba(22, 163, 74, 0.75)); stroke: #16a34a; stroke-width: 2.5px; }
+      59.5%, 100% { filter: none; stroke-width: 1.5px; }
+    }
+    @keyframes glowA07 {
+      0%, 57.5% { filter: none; stroke-width: 1.5px; }
+      58.33%, 66.67% { filter: drop-shadow(0 0 16px rgba(234, 88, 12, 0.8)); stroke: #ea580c; stroke-width: 2.5px; }
+      67.8%, 100% { filter: none; stroke-width: 1.5px; }
+    }
+    @keyframes glowA08 {
+      0%, 65.8% { filter: none; stroke-width: 1.5px; }
+      66.67%, 75.00% { filter: drop-shadow(0 0 14px rgba(22, 163, 74, 0.75)); stroke: #16a34a; stroke-width: 2.5px; }
+      76.2%, 100% { filter: none; stroke-width: 1.5px; }
+    }
+    @keyframes glowA09 {
+      0%, 74.2% { filter: none; stroke-width: 1.5px; }
+      75.00%, 83.33% { filter: drop-shadow(0 0 14px rgba(2, 132, 199, 0.7)); stroke: #0284c7; stroke-width: 2.5px; }
+      84.5%, 100% { filter: none; stroke-width: 1.5px; }
+    }
+    @keyframes glowA11 {
+      0%, 82.5% { filter: none; stroke-width: 1.5px; }
+      83.33%, 91.67% { filter: drop-shadow(0 0 14px rgba(100, 116, 139, 0.8)); stroke: #475569; stroke-width: 2.5px; }
+      92.8%, 100% { filter: none; stroke-width: 1.5px; }
+    }
+    @keyframes glowA10 {
+      0%, 90.8% { filter: none; stroke-width: 1.5px; }
+      91.67%, 100.00% { filter: drop-shadow(0 0 16px rgba(124, 58, 237, 0.75)); stroke: #7c3aed; stroke-width: 2.5px; }
+    }
+
+    @keyframes tagGlow {
+      0%, 100% { opacity: 1; }
+    }
+
+    #sim-auto:checked ~ .diagram-wrapper .node-a01 .node-box { animation: glowA01 24s infinite; }
+    #sim-auto:checked ~ .diagram-wrapper .node-a02 .node-box { animation: glowA02 24s infinite; }
+    #sim-auto:checked ~ .diagram-wrapper .node-a03 .node-box { animation: glowA03 24s infinite; }
+    #sim-auto:checked ~ .diagram-wrapper .node-a04 .node-box { animation: glowA04 24s infinite; }
+    #sim-auto:checked ~ .diagram-wrapper .node-a05 .node-box { animation: glowA05 24s infinite; }
+    #sim-auto:checked ~ .diagram-wrapper .node-a12 .node-box { animation: glowA12 24s infinite; }
+    #sim-auto:checked ~ .diagram-wrapper .node-a06 .node-box { animation: glowA06 24s infinite; }
+    #sim-auto:checked ~ .diagram-wrapper .node-a07 .node-box { animation: glowA07 24s infinite; }
+    #sim-auto:checked ~ .diagram-wrapper .node-a08 .node-box { animation: glowA08 24s infinite; }
+    #sim-auto:checked ~ .diagram-wrapper .node-a09 .node-box { animation: glowA09 24s infinite; }
+    #sim-auto:checked ~ .diagram-wrapper .node-a11 .node-box { animation: glowA11 24s infinite; }
+    #sim-auto:checked ~ .diagram-wrapper .node-a10 .node-box { animation: glowA10 24s infinite; }
+
+    #sim-auto:checked ~ .diagram-wrapper .node-a01 .agent-live-tag,
+    #sim-auto:checked ~ .diagram-wrapper .node-a01 .agent-live-text { animation: glowA01 24s infinite; }
+    #sim-auto:checked ~ .diagram-wrapper .node-a02 .agent-live-tag,
+    #sim-auto:checked ~ .diagram-wrapper .node-a02 .agent-live-text { animation: glowA02 24s infinite; }
+    #sim-auto:checked ~ .diagram-wrapper .node-a03 .agent-live-tag,
+    #sim-auto:checked ~ .diagram-wrapper .node-a03 .agent-live-text { animation: glowA03 24s infinite; }
+    #sim-auto:checked ~ .diagram-wrapper .node-a04 .agent-live-tag,
+    #sim-auto:checked ~ .diagram-wrapper .node-a04 .agent-live-text { animation: glowA04 24s infinite; }
+    #sim-auto:checked ~ .diagram-wrapper .node-a05 .agent-live-tag,
+    #sim-auto:checked ~ .diagram-wrapper .node-a05 .agent-live-text { animation: glowA05 24s infinite; }
+    #sim-auto:checked ~ .diagram-wrapper .node-a12 .agent-live-tag,
+    #sim-auto:checked ~ .diagram-wrapper .node-a12 .agent-live-text { animation: glowA12 24s infinite; }
+    #sim-auto:checked ~ .diagram-wrapper .node-a06 .agent-live-tag,
+    #sim-auto:checked ~ .diagram-wrapper .node-a06 .agent-live-text { animation: glowA06 24s infinite; }
+    #sim-auto:checked ~ .diagram-wrapper .node-a07 .agent-live-tag,
+    #sim-auto:checked ~ .diagram-wrapper .node-a07 .agent-live-text { animation: glowA07 24s infinite; }
+    #sim-auto:checked ~ .diagram-wrapper .node-a08 .agent-live-tag,
+    #sim-auto:checked ~ .diagram-wrapper .node-a08 .agent-live-text { animation: glowA08 24s infinite; }
+    #sim-auto:checked ~ .diagram-wrapper .node-a09 .agent-live-tag,
+    #sim-auto:checked ~ .diagram-wrapper .node-a09 .agent-live-text { animation: glowA09 24s infinite; }
+    #sim-auto:checked ~ .diagram-wrapper .node-a11 .agent-live-tag,
+    #sim-auto:checked ~ .diagram-wrapper .node-a11 .agent-live-text { animation: glowA11 24s infinite; }
+    #sim-auto:checked ~ .diagram-wrapper .node-a10 .agent-live-tag,
+    #sim-auto:checked ~ .diagram-wrapper .node-a10 .agent-live-text { animation: glowA10 24s infinite; }
+
+    /* Static Mode: Turn off Quantum particles */
+    #sim-static:checked ~ .diagram-wrapper .quantum-flow-group {
+      display: none !important;
+    }
+
+    /* Manual Step Selected State */
+    #sim-s1:checked ~ .diagram-wrapper .node-a01 .node-box,
+    #sim-s2:checked ~ .diagram-wrapper .node-a02 .node-box,
+    #sim-s3:checked ~ .diagram-wrapper .node-a03 .node-box,
+    #sim-s4:checked ~ .diagram-wrapper .node-a04 .node-box,
+    #sim-s5:checked ~ .diagram-wrapper .node-a05 .node-box,
+    #sim-s6:checked ~ .diagram-wrapper .node-a12 .node-box,
+    #sim-s7:checked ~ .diagram-wrapper .node-a06 .node-box,
+    #sim-s8:checked ~ .diagram-wrapper .node-a07 .node-box,
+    #sim-s9:checked ~ .diagram-wrapper .node-a08 .node-box,
+    #sim-s10:checked ~ .diagram-wrapper .node-a09 .node-box,
+    #sim-s11:checked ~ .diagram-wrapper .node-a11 .node-box,
+    #sim-s12:checked ~ .diagram-wrapper .node-a10 .node-box {
+      filter: drop-shadow(0 0 16px rgba(15, 23, 42, 0.35)) !important;
+      stroke-width: 2.6px !important;
+    }
+
+    #sim-s1:checked ~ .diagram-wrapper .node-a01 .agent-live-tag,
+    #sim-s1:checked ~ .diagram-wrapper .node-a01 .agent-live-text,
+    #sim-s2:checked ~ .diagram-wrapper .node-a02 .agent-live-tag,
+    #sim-s2:checked ~ .diagram-wrapper .node-a02 .agent-live-text,
+    #sim-s3:checked ~ .diagram-wrapper .node-a03 .agent-live-tag,
+    #sim-s3:checked ~ .diagram-wrapper .node-a03 .agent-live-text,
+    #sim-s4:checked ~ .diagram-wrapper .node-a04 .agent-live-tag,
+    #sim-s4:checked ~ .diagram-wrapper .node-a04 .agent-live-text,
+    #sim-s5:checked ~ .diagram-wrapper .node-a05 .agent-live-tag,
+    #sim-s5:checked ~ .diagram-wrapper .node-a05 .agent-live-text,
+    #sim-s6:checked ~ .diagram-wrapper .node-a12 .agent-live-tag,
+    #sim-s6:checked ~ .diagram-wrapper .node-a12 .agent-live-text,
+    #sim-s7:checked ~ .diagram-wrapper .node-a06 .agent-live-tag,
+    #sim-s7:checked ~ .diagram-wrapper .node-a06 .agent-live-text,
+    #sim-s8:checked ~ .diagram-wrapper .node-a07 .agent-live-tag,
+    #sim-s8:checked ~ .diagram-wrapper .node-a07 .agent-live-text,
+    #sim-s9:checked ~ .diagram-wrapper .node-a08 .agent-live-tag,
+    #sim-s9:checked ~ .diagram-wrapper .node-a08 .agent-live-text,
+    #sim-s10:checked ~ .diagram-wrapper .node-a09 .agent-live-tag,
+    #sim-s10:checked ~ .diagram-wrapper .node-a09 .agent-live-text,
+    #sim-s11:checked ~ .diagram-wrapper .node-a11 .agent-live-tag,
+    #sim-s11:checked ~ .diagram-wrapper .node-a11 .agent-live-text,
+    #sim-s12:checked ~ .diagram-wrapper .node-a10 .agent-live-tag,
+    #sim-s12:checked ~ .diagram-wrapper .node-a10 .agent-live-text {
+      opacity: 1 !important;
+    }
+
+    .diagram-wrapper {
+      background: var(--color-paper-2);
+      border-radius: 8px;
+      border: 1px solid var(--color-rule);
+      padding: 18px;
+      overflow-x: auto;
+      box-shadow: 0 4px 20px -2px rgba(15, 23, 42, 0.05);
+      position: relative;
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      min-width: 1680px;
+      height: auto;
+    }
+
+    /* Node Links & Hover States */
+    .node-anchor {
+      cursor: pointer;
+      text-decoration: none;
+    }
+
+    .node-anchor rect,
+    .node-anchor path {
+      transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+
+    .node-anchor:hover .node-box {
+      filter: drop-shadow(0 6px 14px rgba(15, 23, 42, 0.12));
+      transform: translateY(-2px);
+    }
+
+    .node-anchor:hover .node-border {
+      stroke-width: 2px;
+    }
+
+    /* Summary Cards Grid */
+    .cards-grid {
+      display: grid;
+      grid-template-columns: 1.15fr 1fr 0.95fr;
+      gap: 16px;
+      margin-top: 24px;
+    }
+
+    .card {
+      background: #ffffff;
+      border: 1px solid var(--color-rule);
+      border-radius: 6px;
+      padding: 1.25rem;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 4px 0 10px;
+    }
+
+    .card-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+
+    .card-dot.blue { background: #0284c7; }
+    .card-dot.purple { background: #7c3aed; }
+    .card-dot.green { background: #16a34a; }
+    .card-dot.coral { background: #ea580c; }
+
+    .card-title {
+      font: 600 13px/1.3 var(--font-mono);
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      margin: 0;
+      color: var(--color-ink);
+    }
+
+    .card p, .card li {
+      font-size: 13px;
+      line-height: 1.55;
+      color: var(--color-muted);
+      margin: 0;
+    }
+
+    .card ul {
+      margin: 8px 0 0;
+      padding-left: 18px;
+    }
+
+    .card li {
+      margin-bottom: 6px;
+    }
+
+    /* Inspector Drawer (Zero-JS CSS :target implementation) */
+    .inspector-drawer {
+      position: fixed;
+      top: 0;
+      right: -580px;
+      width: 560px;
+      height: 100vh;
+      background: #ffffff;
+      box-shadow: -6px 0 30px rgba(15, 23, 42, 0.15);
+      border-left: 1px solid var(--color-rule);
+      transition: right 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+      z-index: 1000;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .inspector-drawer:target {
+      right: 0;
+    }
+
+    .drawer-header {
+      padding: 20px 24px;
+      border-bottom: 1px solid var(--color-rule);
+      background: #f8fafc;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+    }
+
+    .drawer-title-group {
+      max-width: 440px;
+    }
+
+    .drawer-badge {
+      display: inline-block;
+      padding: 3px 8px;
+      font: 600 11px/1.2 var(--font-mono);
+      border-radius: 4px;
+      margin-bottom: 6px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .drawer-title {
+      margin: 0;
+      font: 600 18px/1.3 var(--font-sans);
+      color: var(--color-ink);
+    }
+
+    .drawer-close {
+      font-size: 26px;
+      line-height: 1;
+      color: var(--color-soft);
+      text-decoration: none;
+      padding: 2px 8px;
+      border-radius: 4px;
+      transition: all 0.15s ease;
+    }
+
+    .drawer-close:hover {
+      background: #e2e8f0;
+      color: var(--color-ink);
+    }
+
+    .drawer-body {
+      padding: 24px;
+      overflow-y: auto;
+      flex: 1;
+      font-size: 13.5px;
+      line-height: 1.6;
+      color: var(--color-muted);
+    }
+
+    .drawer-section {
+      margin-bottom: 20px;
+    }
+
+    .drawer-section-title {
+      margin: 0 0 8px;
+      font: 600 12px/1.2 var(--font-mono);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--color-ink);
+      border-bottom: 1px dashed var(--color-rule);
+      padding-bottom: 4px;
+    }
+
+    .drawer-formula-box {
+      background: #f8fafc;
+      border: 1px solid var(--color-rule);
+      border-radius: 6px;
+      padding: 12px 14px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--color-ink);
+      white-space: pre-wrap;
+      overflow-x: auto;
+      margin-bottom: 8px;
+    }
+
+    .drawer-code-link {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: #f1f5f9;
+      border: 1px solid var(--color-rule);
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--color-ink);
+      margin-top: 6px;
+    }
+
+    .param-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    .param-list li {
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 0;
+      border-bottom: 1px dotted var(--color-rule);
+      font-size: 12.5px;
+    }
+
+    .param-key {
+      font-family: var(--font-mono);
+      font-weight: 600;
+      color: #0284c7;
+    }
+
+    .param-val {
+      font-weight: 600;
+      color: var(--color-ink);
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+
+    <!-- Pure CSS Radio Inputs for Layer Filtering -->
+    <input type="radio" name="preset-filter" id="preset-all" class="preset-radio" checked />
+    <input type="radio" name="preset-filter" id="preset-l1" class="preset-radio" />
+    <input type="radio" name="preset-filter" id="preset-l2" class="preset-radio" />
+    <input type="radio" name="preset-filter" id="preset-l3" class="preset-radio" />
+    <input type="radio" name="preset-filter" id="preset-l4" class="preset-radio" />
+
+    <!-- Pure CSS Radio Inputs for Simulation Actions & Quantum Execution -->
+    <input type="radio" name="flow-sim" id="sim-auto" class="sim-radio" checked />
+    <input type="radio" name="flow-sim" id="sim-static" class="sim-radio" />
+    <input type="radio" name="flow-sim" id="sim-s1" class="sim-radio" />
+    <input type="radio" name="flow-sim" id="sim-s2" class="sim-radio" />
+    <input type="radio" name="flow-sim" id="sim-s3" class="sim-radio" />
+    <input type="radio" name="flow-sim" id="sim-s4" class="sim-radio" />
+    <input type="radio" name="flow-sim" id="sim-s5" class="sim-radio" />
+    <input type="radio" name="flow-sim" id="sim-s6" class="sim-radio" />
+    <input type="radio" name="flow-sim" id="sim-s7" class="sim-radio" />
+    <input type="radio" name="flow-sim" id="sim-s8" class="sim-radio" />
+    <input type="radio" name="flow-sim" id="sim-s9" class="sim-radio" />
+    <input type="radio" name="flow-sim" id="sim-s10" class="sim-radio" />
+    <input type="radio" name="flow-sim" id="sim-s11" class="sim-radio" />
+    <input type="radio" name="flow-sim" id="sim-s12" class="sim-radio" />
+
+    <!-- Top Header -->
+    <header class="header">
+      <div class="eyebrow">
+        <span class="eyebrow-badge">IOS v5.1</span>
+        <span class="eyebrow-badge eyebrow-badge-focal">12 Multi-Agent Sovereign Organization</span>
+        <span>Paper-Grade NeurIPS/ICLR/SIGMOD Specification</span>
+      </div>
+      <h1>Kiến Trúc Toàn Diện 12 Agent Định Lượng Tự Hành (Separation of Powers)</h1>
+      <p class="subtitle">
+        Sơ đồ khoa học hợp nhất toàn bộ 12 Agent độc lập theo nguyên tắc Tam Giác Quyền Lực &amp; Phân Lập Thể Chế trên sàn HOSE:
+        Từ Giám sát Vĩ mô HMM, Quét Universe Lớp 0 Beneish, Phân tích Đa nhân tố F1-F6, Luận điểm &amp; Phản biện Đối nghịch, Trọng tài CIO,
+        Định cỡ Quarter Kelly, Cổng Rủi ro 5 Tầng, Khớp lệnh Vi cấu trúc EAE, Canh gác Dừng lỗ T0-T5 đến Sổ cái Bất biến SHA-256 &amp; Học Tăng Cường Thích Ứng.
+        <em>(Nhấp vào từng Agent để mở bảng điều tra toán học chi tiết)</em>
+      </p>
+    </header>
+
+    <!-- Simulation & Quantum Flow Action Toolbar -->
+    <div class="sim-toolbar">
+      <span class="sim-toolbar-label"><span class="hud-pulse-dot"></span> Demo Luồng Thực Thi:</span>
+      <label for="sim-auto" class="sim-btn sim-btn-focal">⚡ Tự Động Chạy Luồng (Quantum Loop)</label>
+      <label for="sim-static" class="sim-btn">⏹ Xem Tĩnh (Overview)</label>
+      <span style="color:var(--color-rule);margin:0 4px;">|</span>
+      <label for="sim-s1" class="sim-btn">1. Vĩ Mô (A01)</label>
+      <label for="sim-s2" class="sim-btn">2. Lớp 0 (A02)</label>
+      <label for="sim-s3" class="sim-btn">3. F1-F6 (A03)</label>
+      <label for="sim-s4" class="sim-btn">4. Luận Đề (A04)</label>
+      <label for="sim-s5" class="sim-btn">5. Phản Biện (A05)</label>
+      <label for="sim-s6" class="sim-btn">6. CIO (A12)</label>
+      <label for="sim-s7" class="sim-btn">7. Kelly (A06)</label>
+      <label for="sim-s8" class="sim-btn">8. Rủi Ro (A07)</label>
+      <label for="sim-s9" class="sim-btn">9. Khớp Lệnh (A08)</label>
+      <label for="sim-s10" class="sim-btn">10. Canh Gác (A09)</label>
+      <label for="sim-s11" class="sim-btn">11. Sổ Cái (A11)</label>
+      <label for="sim-s12" class="sim-btn">12. Thích Ứng (A10)</label>
+    </div>
+
+    <!-- Preset Filter Toolbar -->
+    <div class="preset-toolbar">
+      <span class="preset-toolbar-label">Lọc Tầng Kiến Trúc:</span>
+      <label for="preset-all" class="preset-btn"><span class="dot-indicator dot-all"></span> Toàn Bộ 12 Agents (Hot-Path)</label>
+      <label for="preset-l1" class="preset-btn"><span class="dot-indicator dot-l1"></span> Tầng 1: Vĩ Mô &amp; Lớp 0 Forensic (Agent 01, 02)</label>
+      <label for="preset-l2" class="preset-btn"><span class="dot-indicator dot-l2"></span> Tầng 2: Nghiên Cứu, Phản Biện &amp; CIO (Agent 03, 04, 05, 12)</label>
+      <label for="preset-l3" class="preset-btn"><span class="dot-indicator dot-l3"></span> Tầng 3: Kelly Sizing, Rủi Ro &amp; Khớp Lệnh (Agent 06, 07, 08, 09)</label>
+      <label for="preset-l4" class="preset-btn"><span class="dot-indicator dot-l4"></span> Tầng 4: Sổ Cái Mật Mã &amp; Học Thích Ứng (Agent 10, 11)</label>
+    </div>
+
+    <!-- Live Execution HUD (Head-Up Display) -->
+    <div class="execution-hud">
+      <div class="hud-badge-wrap">
+        <span class="hud-pulse-dot"></span>
+        <span class="hud-tag">LIVE QUANTUM TRACE:</span>
+      </div>
+      <div class="hud-caption">
+        <span class="hud-text hud-text-auto">Vòng lặp Hot-Path 12 Agent tự hành khép kín (24s loop): Hạt lượng tử Quantum đang chạy qua từng Agent để kích hoạt toán học tương ứng...</span>
+        <span class="hud-text hud-text-static">Chế độ xem tĩnh: Toàn bộ 12 Agent định vị theo 4 tầng thể chế phân quyền, bảo đảm tuân thủ 6 Hard Laws và vi cấu trúc HOSE.</span>
+        <span class="hud-text hud-text-s1">BƯỚC 1: AGENT-01 (MARKET SURVEILLANCE) &mdash; Ước lượng Sticky HMM Regime 3 trạng thái, GJR-GARCH(1,1) &amp; CSAD bầy đàn HOSE.</span>
+        <span class="hud-text hud-text-s2">BƯỚC 2: AGENT-02 (UNIVERSE DISCOVERY) &mdash; Quét 406 mã HOSE, thanh lọc Lớp 0 Beneish M &le; -1.78 và loại bỏ rút ruột GIL.</span>
+        <span class="hud-text hud-text-s3">BƯỚC 3: AGENT-03 (EQUITY RESEARCH) &mdash; Động cơ 6 nhân tố F1-F6 chấm điểm CSS &ge; 65.0, tuyển chọn Conviction Tier B/A/A+.</span>
+        <span class="hud-text hud-text-s4">BƯỚC 4: AGENT-04 (INVESTMENT THESIS) &mdash; Hiến pháp Điều 3: Ba tín hiệu độc lập, định giá P_target = 0.5 P/E + 0.5 EV, kịch bản Pre-Mortem.</span>
+        <span class="hud-text hud-text-s5">BƯỚC 5: AGENT-05 (COUNTER THESIS) &mdash; Tranh biện đối nghịch Devil's Advocate, thang điểm CTS = (Base + ML) &times; M, bẫy Bull-trap và giải chấp chéo.</span>
+        <span class="hud-text hud-text-s6">BƯỚC 6: AGENT-12 (STRATEGY CIO) &mdash; Trọng tài Tối cao giải quyết tranh chấp (Dispute), tuyệt đối tuân thủ 6 Hard Laws, cấp trần w_cap &le; 15%.</span>
+        <span class="hud-text hud-text-s7">BƯỚC 7: AGENT-06 (PORTFOLIO ALLOCATION) &mdash; Định cỡ Quarter Kelly f* = 0.25 (p - (1-p)/R) co giãn theo Regime, làm tròn lô 100 sàn HOSE.</span>
+        <span class="hud-text hud-text-s8">BƯỚC 8: AGENT-07 (PORTFOLIO RISK GATEKEEPER) &mdash; Cổng rủi ro 5 lớp tiền khớp lệnh: Hard Laws, đệm rủi ro kẹt T+2.5 (-13.51%), Tape VSA, CVaR 97.5%.</span>
+        <span class="hud-text hud-text-s9">BƯỚC 9: AGENT-08 (TRADE EXECUTION) &mdash; Động cơ khớp lệnh EAE, cắt lát VWAP, bước giá 10đ/50đ/100đ, trần 500.000 cp, phòng vệ trễ mạng &gt; 1500ms.</span>
+        <span class="hud-text hud-text-s10">BƯỚC 10: AGENT-09 (POSITION MONITORING) &mdash; Canh gác 5 phút/lần, thang dừng lỗ T0-T5, SLA 14:00 Invalidation, quyền BYPASS cắt lỗ thẳng sàn.</span>
+        <span class="hud-text hud-text-s11">BƯỚC 11: AGENT-11 (SYSTEM GOVERNANCE) &mdash; Sổ cái bất biến SHA-256 Chained Block, kiểm toán toàn chuỗi hash verifier và chứng thực tuân thủ thể chế.</span>
+        <span class="hud-text hud-text-s12">BƯỚC 12: AGENT-10 (REINFORCEMENT LEARNING) &mdash; Học tăng cường ngoại tuyến, co ngót Bayes N0=25, cập nhật trọng số chính sách w* phản hồi về Agent 03 &amp; 01.</span>
+      </div>
+    </div>
+
+    <!-- Main Diagram SVG Wrapper -->
+    <div class="diagram-wrapper">
+      <svg viewBox="0 0 1660 880" role="img" aria-labelledby="diagram-12agent-title diagram-12agent-desc" xmlns="http://www.w3.org/2000/svg">
+        <title id="diagram-12agent-title">Kiến Trúc Hợp Nhất 12 Agent Định Lượng Tự Hành AIInvest</title>
+        <desc id="diagram-12agent-desc">Sơ đồ tương tác chuẩn bài báo khoa học NeurIPS bóc tách chi tiết 12 Agent định lượng, dòng chảy biến đổi dữ liệu S0 đến S12, và các công thức toán học ngầm từ mã nguồn gốc.</desc>
+
+        <defs>
+          <!-- Grid Pattern -->
+          <pattern id="archGrid" x="0" y="0" width="20" height="20" patternUnits="userSpaceOnUse">
+            <circle cx="2" cy="2" r="1" fill="#cbd5e1" opacity="0.4" />
+          </pattern>
+
+          <!-- Quantum Glow Filter -->
+          <filter id="quantumGlow" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="3" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+
+          <!-- Orthogonal Markers -->
+          <marker id="arr-blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#0284c7" />
+          </marker>
+          <marker id="arr-purple" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#7c3aed" />
+          </marker>
+          <marker id="arr-green" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#16a34a" />
+          </marker>
+          <marker id="arr-coral" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#ea580c" />
+          </marker>
+          <marker id="arr-rose" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#e11d48" />
+          </marker>
+          <marker id="arr-slate" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#64748b" />
+          </marker>
+        </defs>
+
+        <!-- Canvas Background -->
+        <rect width="1660" height="880" fill="#fafafa" />
+        <rect width="1660" height="880" fill="url(#archGrid)" />
+
+        <!-- ========================================================================= -->
+        <!-- LAYER 1: VĨ MÔ, GIÁM SÁT THỜI GIAN THỰC & KHÁM PHÁ UNIVERSE (TOP)       -->
+        <!-- ========================================================================= -->
+        <g class="layer-group layer-1">
+          <!-- Layer Container Box -->
+          <rect x="30" y="24" width="1600" height="190" rx="8" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.2" />
+          <rect x="30" y="24" width="370" height="24" rx="4" fill="#f1f5f9" />
+          <text x="42" y="40" font-family="Geist Mono" font-size="11" font-weight="700" fill="#475569" letter-spacing="0.5">TẦNG 1: GIÁM SÁT VĨ MÔ &amp; KHÁM PHÁ UNIVERSE LỚP 0</text>
+
+          <!-- AGENT 01: MARKET SURVEILLANCE -->
+          <a href="#drawer-agent01" class="node-anchor">
+            <g class="node-agent node-a01" transform="translate(60, 56)">
+              <rect width="320" height="136" rx="8" fill="#e0f2fe" stroke="#0284c7" stroke-width="1.5" class="node-box node-border" />
+              <rect x="14" y="12" width="78" height="20" rx="4" fill="#0284c7" />
+              <text x="21" y="26" font-family="Geist Mono" font-size="10" font-weight="700" fill="#ffffff">AGENT-01</text>
+              <rect x="238" y="12" width="68" height="20" rx="4" fill="#0284c7" class="agent-live-tag" />
+              <text x="245" y="26" font-family="Geist Mono" font-size="9" font-weight="700" fill="#ffffff" class="agent-live-text">● ACTIVE</text>
+              <text x="100" y="27" font-family="Geist" font-size="13" font-weight="700" fill="#0f172a">Market Surveillance</text>
+              <text x="14" y="52" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Sticky HMM 3-State (Bull/Range/Bear)</text>
+              <text x="14" y="70" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Biến động GJR-GARCH(1,1) &amp; VIX_VN</text>
+              <text x="14" y="88" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• CSAD Herding (Panic Selling vs FOMO)</text>
+              <text x="14" y="106" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Xanh vỏ đỏ lòng (Advance/Decline &lt; 0.4)</text>
+              <rect x="14" y="114" width="292" height="14" rx="3" fill="#ffffff" opacity="0.9" />
+              <text x="20" y="125" font-family="Geist Mono" font-size="9" font-weight="600" fill="#0369a1">Output: Macro Regime Vector &amp; Target Cash %</text>
+            </g>
+          </a>
+
+          <!-- Pipeline Arrow: Agent 01 -> Agent 02 -->
+          <path d="M 380 124 L 472 124" fill="none" stroke="#0284c7" stroke-width="2" marker-end="url(#arr-blue)" />
+          <rect x="390" y="112" width="70" height="20" rx="4" fill="#ffffff" stroke="#bae6fd" />
+          <text x="396" y="126" font-family="Geist Mono" font-size="9.5" font-weight="700" fill="#0284c7">Regime Flow</text>
+
+          <!-- AGENT 02: UNIVERSE DISCOVERY -->
+          <a href="#drawer-agent02" class="node-anchor">
+            <g class="node-agent node-a02" transform="translate(480, 56)">
+              <rect width="330" height="136" rx="8" fill="#e0f2fe" stroke="#0284c7" stroke-width="1.5" class="node-box node-border" />
+              <rect x="14" y="12" width="78" height="20" rx="4" fill="#0284c7" />
+              <text x="21" y="26" font-family="Geist Mono" font-size="10" font-weight="700" fill="#ffffff">AGENT-02</text>
+              <rect x="248" y="12" width="68" height="20" rx="4" fill="#0284c7" class="agent-live-tag" />
+              <text x="255" y="26" font-family="Geist Mono" font-size="9" font-weight="700" fill="#ffffff" class="agent-live-text">● ACTIVE</text>
+              <text x="100" y="27" font-family="Geist" font-size="13" font-weight="700" fill="#0f172a">Universe Discovery</text>
+              <text x="14" y="52" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• 406 Mã HOSE Hard Sieve Filter</text>
+              <text x="14" y="70" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Cổng Lớp 0: Beneish M-Score &le; -1.78</text>
+              <text x="14" y="88" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Thanh khoản bắt buộc ADTV20 &ge; 15 tỷ VND</text>
+              <text x="14" y="106" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Đồ thị GIL chống Rút ruột vốn (No Catastrophic)</text>
+              <rect x="14" y="114" width="302" height="14" rx="3" fill="#ffffff" opacity="0.9" />
+              <text x="20" y="125" font-family="Geist Mono" font-size="9" font-weight="600" fill="#0369a1">Output: Universe Group A (Elite) &amp; Group B</text>
+            </g>
+          </a>
+
+          <!-- AGENT 10 (Offline Loop preview in Layer 1) -->
+          <a href="#drawer-agent10" class="node-anchor">
+            <g class="node-agent node-a10" transform="translate(1180, 56)">
+              <rect width="400" height="136" rx="8" fill="#f3e8ff" stroke="#7c3aed" stroke-width="1.5" class="node-box node-border" />
+              <rect x="14" y="12" width="78" height="20" rx="4" fill="#7c3aed" />
+              <text x="21" y="26" font-family="Geist Mono" font-size="10" font-weight="700" fill="#ffffff">AGENT-10</text>
+              <rect x="318" y="12" width="68" height="20" rx="4" fill="#7c3aed" class="agent-live-tag" />
+              <text x="325" y="26" font-family="Geist Mono" font-size="9" font-weight="700" fill="#ffffff" class="agent-live-text">● ACTIVE</text>
+              <text x="100" y="27" font-family="Geist" font-size="13" font-weight="700" fill="#0f172a">Reinforcement Learning &amp; Adaptation</text>
+              <text x="14" y="52" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Spearman Rank IC đa chân trời (Grinold-Kahn)</text>
+              <text x="14" y="70" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Co ngót xác suất Empirical Bayes Shrinkage (N0=25)</text>
+              <text x="14" y="88" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Chẩn đoán 4 nguyên nhân IC Decay (MRAL Layer)</text>
+              <text x="14" y="106" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Cổng OOS Walk-Forward (Sharpe &ge; 1.2, DD &le; 10%)</text>
+              <rect x="14" y="114" width="372" height="14" rx="3" fill="#ffffff" opacity="0.9" />
+              <text x="20" y="125" font-family="Geist Mono" font-size="9" font-weight="600" fill="#6d28d9">Cung cấp: Trọng số chính sách Factor F1-F6 &amp; Bayes Kelly</text>
+            </g>
+          </a>
+        </g>
+
+        <!-- Pipeline Arrow: Agent 02 -> Agent 03 (Downward Orthogonal r=8) -->
+        <path d="M 645 192 L 645 220 A 8 8 0 0 1 637 228 L 228 228 A 8 8 0 0 0 220 236 L 220 288" fill="none" stroke="#0284c7" stroke-width="2" marker-end="url(#arr-blue)" />
+        <rect x="360" y="218" width="180" height="20" rx="4" fill="#ffffff" stroke="#bae6fd" />
+        <text x="368" y="232" font-family="Geist Mono" font-size="9.5" font-weight="700" fill="#0284c7">Filtered Stocks (M &le; -1.78)</text>
+
+        <!-- Dynamic Policy Weight Feedback: Agent 10 -> Agent 03 -->
+        <path d="M 1240 192 L 1240 232 A 8 8 0 0 1 1232 240 L 348 240 A 8 8 0 0 0 340 248 L 340 288" fill="none" stroke="#7c3aed" stroke-width="1.8" stroke-dasharray="4,4" marker-end="url(#arr-purple)" />
+        <rect x="740" y="230" width="180" height="20" rx="4" fill="#ffffff" stroke="#ddd6fe" />
+        <text x="748" y="244" font-family="Geist Mono" font-size="9.5" font-weight="700" fill="#7c3aed">Policy Weights \vec{w}^* (F1-F6)</text>
+
+        <!-- ========================================================================= -->
+        <!-- LAYER 2: NGHIÊN CỨU ĐA NHÂN TỐ, PHẢN BIỆN ĐỐI NGHỊCH & TRỌNG TÀI CIO     -->
+        <!-- ========================================================================= -->
+        <g class="layer-group layer-2">
+          <!-- Layer Container Box -->
+          <rect x="30" y="260" width="1600" height="250" rx="8" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.2" />
+          <rect x="30" y="260" width="450" height="24" rx="4" fill="#f1f5f9" />
+          <text x="42" y="276" font-family="Geist Mono" font-size="11" font-weight="700" fill="#475569" letter-spacing="0.5">TẦNG 2: NGHIÊN CỨU ĐA NHÂN TỐ, TRANH BIỆN ĐỐI NGHỊCH &amp; TRỌNG TÀI CIO</text>
+
+          <!-- AGENT 03: EQUITY RESEARCH -->
+          <a href="#drawer-agent03" class="node-anchor">
+            <g class="node-agent node-a03" transform="translate(60, 296)">
+              <rect width="320" height="184" rx="8" fill="#e0f2fe" stroke="#0284c7" stroke-width="1.5" class="node-box node-border" />
+              <rect x="14" y="12" width="78" height="20" rx="4" fill="#0284c7" />
+              <text x="21" y="26" font-family="Geist Mono" font-size="10" font-weight="700" fill="#ffffff">AGENT-03</text>
+              <rect x="238" y="12" width="68" height="20" rx="4" fill="#0284c7" class="agent-live-tag" />
+              <text x="245" y="26" font-family="Geist Mono" font-size="9" font-weight="700" fill="#ffffff" class="agent-live-text">● ACTIVE</text>
+              <text x="100" y="27" font-family="Geist" font-size="13" font-weight="700" fill="#0f172a">Equity Research</text>
+              <text x="14" y="52" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Động cơ chấm điểm 6 Factor Scores (F1-F6):</text>
+              <text x="22" y="70" font-family="Geist Mono" font-size="10.5" font-weight="600" fill="#0369a1">F1: Value | F2: Quality | F3: Momentum</text>
+              <text x="22" y="88" font-family="Geist Mono" font-size="10.5" font-weight="600" fill="#0369a1">F4: Growth | F5: Flow | F6: Technical</text>
+              <text x="14" y="108" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Tổng hợp Composite Stock Score (CSS)</text>
+              <text x="14" y="126" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Xếp hạng Conviction Tier: A+, A, B, C, D</text>
+              <text x="14" y="144" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Đánh giá Chất lượng BCTC &amp; Ban Lãnh đạo</text>
+              <rect x="14" y="156" width="292" height="18" rx="3" fill="#ffffff" opacity="0.9" />
+              <text x="20" y="169" font-family="Geist Mono" font-size="9.5" font-weight="700" fill="#0284c7">Ngưỡng đạt: CSS &ge; 65.0 (Conviction Tier &ge; B)</text>
+            </g>
+          </a>
+
+          <!-- Pipeline Arrow: Agent 03 -> Agent 04 -->
+          <path d="M 380 388 L 452 388" fill="none" stroke="#0284c7" stroke-width="2" marker-end="url(#arr-blue)" />
+          <rect x="388" y="376" width="56" height="20" rx="4" fill="#ffffff" stroke="#bae6fd" />
+          <text x="394" y="390" font-family="Geist Mono" font-size="9.5" font-weight="700" fill="#0284c7">Tier &ge; B</text>
+
+          <!-- AGENT 04: INVESTMENT THESIS -->
+          <a href="#drawer-agent04" class="node-anchor">
+            <g class="node-agent node-a04" transform="translate(460, 296)">
+              <rect width="330" height="184" rx="8" fill="#e0f2fe" stroke="#0284c7" stroke-width="1.5" class="node-box node-border" />
+              <rect x="14" y="12" width="78" height="20" rx="4" fill="#0284c7" />
+              <text x="21" y="26" font-family="Geist Mono" font-size="10" font-weight="700" fill="#ffffff">AGENT-04</text>
+              <rect x="248" y="12" width="68" height="20" rx="4" fill="#0284c7" class="agent-live-tag" />
+              <text x="255" y="26" font-family="Geist Mono" font-size="9" font-weight="700" fill="#ffffff" class="agent-live-text">● ACTIVE</text>
+              <text x="100" y="27" font-family="Geist" font-size="13" font-weight="700" fill="#0f172a">Investment Thesis</text>
+              <text x="14" y="52" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Hiến pháp Điều 3: Ba Tín hiệu Độc lập</text>
+              <text x="22" y="70" font-family="Geist Mono" font-size="10.5" font-weight="600" fill="#0369a1">Catalyst Cơ bản + Xung lượng + Dòng tiền</text>
+              <text x="14" y="90" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Định giá mục tiêu thích ứng đa mô hình:</text>
+              <text x="22" y="108" font-family="Geist Mono" font-size="10.5" font-weight="600" fill="#0369a1">P_target = 0.5 P/E + 0.5 EV (Cấm DCF &le; 3T)</text>
+              <text x="14" y="128" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Thiết lập 3 kịch bản thất bại Pre-Mortem</text>
+              <text x="14" y="146" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Xác lập điều kiện hủy bỏ luận điểm (Invalidation)</text>
+              <rect x="14" y="156" width="302" height="18" rx="3" fill="#ffffff" opacity="0.9" />
+              <text x="20" y="169" font-family="Geist Mono" font-size="9.5" font-weight="700" fill="#0284c7">Bàn giao Luận đề: 3 Câu hỏi cốt tử &amp; SLA</text>
+            </g>
+          </a>
+
+          <!-- Pipeline Arrow: Agent 04 -> Agent 05 (Adversarial Dialectic) -->
+          <path d="M 790 388 L 862 388" fill="none" stroke="#ea580c" stroke-width="2" marker-end="url(#arr-coral)" />
+          <rect x="798" y="376" width="56" height="20" rx="4" fill="#ffffff" stroke="#fed7aa" />
+          <text x="802" y="390" font-family="Geist Mono" font-size="9.5" font-weight="700" fill="#ea580c">Thesis</text>
+
+          <!-- AGENT 05: COUNTER THESIS (DEVIL'S ADVOCATE) -->
+          <a href="#drawer-agent05" class="node-anchor">
+            <g class="node-agent node-a05" transform="translate(870, 296)">
+              <rect width="340" height="184" rx="8" fill="#ffedd5" stroke="#ea580c" stroke-width="1.5" class="node-box node-border" />
+              <rect x="14" y="12" width="78" height="20" rx="4" fill="#ea580c" />
+              <text x="21" y="26" font-family="Geist Mono" font-size="10" font-weight="700" fill="#ffffff">AGENT-05</text>
+              <rect x="258" y="12" width="68" height="20" rx="4" fill="#ea580c" class="agent-live-tag" />
+              <text x="265" y="26" font-family="Geist Mono" font-size="9" font-weight="700" fill="#ffffff" class="agent-live-text">● ACTIVE</text>
+              <text x="100" y="27" font-family="Geist" font-size="13" font-weight="700" fill="#0f172a">Counter Thesis (Devil's Advocate)</text>
+              <text x="14" y="52" font-family="Geist" font-size="11.5" font-weight="500" fill="#7c2d12">• Điểm Phản biện 3 Tầng: CTS = (Base + ML) \times M</text>
+              <text x="14" y="70" font-family="Geist" font-size="11.5" font-weight="500" fill="#7c2d12">• Quét 4 Bẫy chết người: Bẫy thanh khoản kẹt sàn,</text>
+              <text x="22" y="88" font-family="Geist Mono" font-size="10.5" font-weight="600" fill="#c2410c">FOMO chuỗi trần, Bull-Trap, Giải chấp chéo</text>
+              <text x="14" y="108" font-family="Geist" font-size="11.5" font-weight="500" fill="#7c2d12">• Ngoại lệ Bắt đáy Capitulation (Bẫy 3 giảm M)</text>
+              <text x="14" y="126" font-family="Geist" font-size="11.5" font-weight="500" fill="#7c2d12">• Phán quyết thể chế: PROCEED, CONDITIONAL, BLOCK</text>
+              <text x="14" y="144" font-family="Geist" font-size="11.5" font-weight="500" fill="#7c2d12">• Liệt kê Block Reasons &amp; Điều kiện rủi ro biên</text>
+              <rect x="14" y="156" width="312" height="18" rx="3" fill="#ffffff" opacity="0.9" />
+              <text x="20" y="169" font-family="Geist Mono" font-size="9.5" font-weight="700" fill="#c2410c">Thang CTS: &lt;40 Duyệt | 40-70 Ép trần | &gt;70 Chặn</text>
+            </g>
+          </a>
+
+          <!-- Pipeline Arrow: Dialectic Dispute -> Agent 12 (CIO) -->
+          <path d="M 1210 388 L 1282 388" fill="none" stroke="#e11d48" stroke-width="2" marker-end="url(#arr-rose)" />
+          <rect x="1218" y="376" width="56" height="20" rx="4" fill="#ffffff" stroke="#fecdd3" />
+          <text x="1224" y="390" font-family="Geist Mono" font-size="9.5" font-weight="700" fill="#e11d48">Dispute</text>
+
+          <!-- AGENT 12: STRATEGY CIO (SUPREME ARBITER) -->
+          <a href="#drawer-agent12" class="node-anchor">
+            <g class="node-agent node-a12" transform="translate(1290, 296)">
+              <rect width="290" height="184" rx="8" fill="#ffe4e6" stroke="#e11d48" stroke-width="1.5" class="node-box node-border" />
+              <rect x="14" y="12" width="78" height="20" rx="4" fill="#e11d48" />
+              <text x="21" y="26" font-family="Geist Mono" font-size="10" font-weight="700" fill="#ffffff">AGENT-12</text>
+              <rect x="208" y="12" width="68" height="20" rx="4" fill="#e11d48" class="agent-live-tag" />
+              <text x="215" y="26" font-family="Geist Mono" font-size="9" font-weight="700" fill="#ffffff" class="agent-live-text">● ACTIVE</text>
+              <text x="100" y="27" font-family="Geist" font-size="13" font-weight="700" fill="#0f172a">Strategy CIO (Trọng Tài)</text>
+              <text x="14" y="52" font-family="Geist" font-size="11.5" font-weight="500" fill="#881337">• Trọng tài Tối cao phân định 3 Tầng rủi ro</text>
+              <text x="14" y="70" font-family="Geist" font-size="11.5" font-weight="500" fill="#881337">• TUYỆT ĐỐI KHÔNG OVERRIDE 6 HARD LAWS</text>
+              <text x="14" y="88" font-family="Geist" font-size="11.5" font-weight="500" fill="#881337">• Thẩm quyền ngoại lệ có biên (&le; 5% NAV, 48h)</text>
+              <text x="14" y="108" font-family="Geist" font-size="11.5" font-weight="500" fill="#881337">• Quyết định trần tỷ trọng tối cao: weight_cap</text>
+              <text x="14" y="126" font-family="Geist" font-size="11.5" font-weight="500" fill="#881337">• Băm mật mã SHA-256 Chained Resolution</text>
+              <text x="14" y="144" font-family="Geist" font-size="11.5" font-weight="500" fill="#881337">• Lệnh Khẩn cấp: Freeze BUY, mở Sell Tunnel</text>
+              <rect x="14" y="156" width="262" height="18" rx="3" fill="#ffffff" opacity="0.9" />
+              <text x="20" y="169" font-family="Geist Mono" font-size="9.5" font-weight="700" fill="#be123c">Phán quyết: APPROVED / BLOCK + w_cap</text>
+            </g>
+          </a>
+        </g>
+
+        <!-- Pipeline Arrow: Agent 12 -> Agent 06 (Downward Orthogonal r=8) -->
+        <path d="M 1435 480 L 1435 520 A 8 8 0 0 1 1427 528 L 228 528 A 8 8 0 0 0 220 536 L 220 588" fill="none" stroke="#16a34a" stroke-width="2" marker-end="url(#arr-green)" />
+        <rect x="760" y="518" width="180" height="20" rx="4" fill="#ffffff" stroke="#bbf7d0" />
+        <text x="768" y="532" font-family="Geist Mono" font-size="9.5" font-weight="700" fill="#16a34a">Approved Cap w_cap &le; 15%</text>
+
+        <!-- ========================================================================= -->
+        <!-- LAYER 3: ĐỊNH CỠ KELLY, CỔNG RỦI RO, THỰC THI & CANH GÁC VỊ THẾ         -->
+        <!-- ========================================================================= -->
+        <g class="layer-group layer-3">
+          <!-- Layer Container Box -->
+          <rect x="30" y="550" width="1600" height="300" rx="8" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.2" />
+          <rect x="30" y="550" width="460" height="24" rx="4" fill="#f1f5f9" />
+          <text x="42" y="566" font-family="Geist Mono" font-size="11" font-weight="700" fill="#475569" letter-spacing="0.5">TẦNG 3: ĐỊNH CỠ KELLY, CỔNG RỦI RO 5 LỚP, THỰC THI &amp; CANH GÁC VỊ THẾ</text>
+
+          <!-- AGENT 06: PORTFOLIO ALLOCATION -->
+          <a href="#drawer-agent06" class="node-anchor">
+            <g class="node-agent node-a06" transform="translate(60, 596)">
+              <rect width="320" height="230" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5" class="node-box node-border" />
+              <rect x="14" y="12" width="78" height="20" rx="4" fill="#16a34a" />
+              <text x="21" y="26" font-family="Geist Mono" font-size="10" font-weight="700" fill="#ffffff">AGENT-06</text>
+              <rect x="238" y="12" width="68" height="20" rx="4" fill="#16a34a" class="agent-live-tag" />
+              <text x="245" y="26" font-family="Geist Mono" font-size="9" font-weight="700" fill="#ffffff" class="agent-live-text">● ACTIVE</text>
+              <text x="100" y="27" font-family="Geist" font-size="13" font-weight="700" fill="#0f172a">Portfolio Allocation</text>
+              <text x="14" y="52" font-family="Geist" font-size="11.5" font-weight="500" fill="#14532d">• Kiến trúc 8 Engine Điều phối Định chế</text>
+              <text x="14" y="70" font-family="Geist" font-size="11.5" font-weight="500" fill="#14532d">• Quarter Kelly Sizing: f* = 0.25 (p - (1-p)/R)</text>
+              <text x="14" y="88" font-family="Geist" font-size="11.5" font-weight="500" fill="#14532d">• Co giãn theo HMM Regime: Bull 1.0x, Bear 0.25x</text>
+              <text x="14" y="106" font-family="Geist" font-size="11.5" font-weight="500" fill="#14532d">• Ràng buộc Điều 4: Cổ phiếu &le; 15%, Ngành &le; 35%</text>
+              <text x="14" y="124" font-family="Geist" font-size="11.5" font-weight="500" fill="#14532d">• Điều 2 Thanh khoản: Lệnh &le; 15%, Vị thế &le; 25% ADTV</text>
+              <text x="14" y="142" font-family="Geist" font-size="11.5" font-weight="500" fill="#14532d">• Làm tròn Lô chẵn 100 sàn HOSE: \lfloor w^* NAV / 100P \rfloor \times 100</text>
+              <text x="14" y="160" font-family="Geist" font-size="11.5" font-weight="500" fill="#14532d">• Vùng chết tái cân bằng (Deadband &ge; 2%) chống phí</text>
+              <text x="14" y="178" font-family="Geist" font-size="11.5" font-weight="500" fill="#14532d">• TRIỆT TIÊU 100% MOCK DATA &amp; PORTFOLIO BLINDNESS</text>
+              <rect x="14" y="196" width="292" height="22" rx="4" fill="#ffffff" opacity="0.9" />
+              <text x="20" y="211" font-family="Geist Mono" font-size="9.5" font-weight="700" fill="#15803d">Đề xuất Lệnh: Ticker, Khối lượng Q*, Giá, Tỷ trọng</text>
+            </g>
+          </a>
+
+          <!-- Pipeline Arrow: Agent 06 -> Agent 07 -->
+          <path d="M 380 711 L 452 711" fill="none" stroke="#ea580c" stroke-width="2" marker-end="url(#arr-coral)" />
+          <rect x="388" y="699" width="56" height="20" rx="4" fill="#ffffff" stroke="#fed7aa" />
+          <text x="394" y="713" font-family="Geist Mono" font-size="9.5" font-weight="700" fill="#ea580c">Order f*</text>
+
+          <!-- AGENT 07: PORTFOLIO RISK -->
+          <a href="#drawer-agent07" class="node-anchor">
+            <g class="node-agent node-a07" transform="translate(460, 596)">
+              <rect width="330" height="230" rx="8" fill="#ffedd5" stroke="#ea580c" stroke-width="1.5" class="node-box node-border" />
+              <rect x="14" y="12" width="78" height="20" rx="4" fill="#ea580c" />
+              <text x="21" y="26" font-family="Geist Mono" font-size="10" font-weight="700" fill="#ffffff">AGENT-07</text>
+              <rect x="248" y="12" width="68" height="20" rx="4" fill="#ea580c" class="agent-live-tag" />
+              <text x="255" y="26" font-family="Geist Mono" font-size="9" font-weight="700" fill="#ffffff" class="agent-live-text">● ACTIVE</text>
+              <text x="100" y="27" font-family="Geist" font-size="13" font-weight="700" fill="#0f172a">Portfolio Risk (Gatekeeper)</text>
+              <text x="14" y="52" font-family="Geist" font-size="11.5" font-weight="500" fill="#7c2d12">• Nắm Quyền Phủ Quyết Tối Cao (Veto Sovereign)</text>
+              <text x="14" y="70" font-family="Geist" font-size="11.5" font-weight="500" fill="#7c2d12">• Lớp 1: Hard Laws thể chế (Stop-loss &le; 2% NAV)</text>
+              <text x="14" y="88" font-family="Geist" font-size="11.5" font-weight="500" fill="#7c2d12">• Lớp 2: Rủi ro kẹt T+2.5 (2 cây sàn -13.51% buffer)</text>
+              <text x="14" y="106" font-family="Geist" font-size="11.5" font-weight="500" fill="#7c2d12">• Lớp 3: Tape Anomaly VSA (Dị thường xả hàng ATC)</text>
+              <text x="14" y="124" font-family="Geist" font-size="11.5" font-weight="500" fill="#7c2d12">• Lớp 4: EGARCH-t Tail Risk (CVaR ES 97.5% df=5)</text>
+              <text x="14" y="142" font-family="Geist" font-size="11.5" font-weight="500" fill="#7c2d12">• Lớp 5: CDC Model Risk (IC Decay &ge; 50% for 5 sessions)</text>
+              <text x="14" y="160" font-family="Geist" font-size="11.5" font-weight="500" fill="#7c2d12">• Giảm tỷ trọng khẩn cấp (De-risk nhanh / Re-risk chậm)</text>
+              <text x="14" y="178" font-family="Geist" font-size="11.5" font-weight="500" fill="#7c2d12">• Quyết định: PASS / REDUCE / BLOCK / CASH BOOST</text>
+              <rect x="14" y="196" width="302" height="22" rx="4" fill="#ffffff" opacity="0.9" />
+              <text x="20" y="211" font-family="Geist Mono" font-size="9.5" font-weight="700" fill="#c2410c">Phán quyết: Approved Shares &amp; Risk Token</text>
+            </g>
+          </a>
+
+          <!-- Pipeline Arrow: Agent 07 -> Agent 08 -->
+          <path d="M 790 711 L 862 711" fill="none" stroke="#16a34a" stroke-width="2" marker-end="url(#arr-green)" />
+          <rect x="798" y="699" width="56" height="20" rx="4" fill="#ffffff" stroke="#bbf7d0" />
+          <text x="804" y="713" font-family="Geist Mono" font-size="9.5" font-weight="700" fill="#16a34a">Approved</text>
+
+          <!-- AGENT 08: TRADE EXECUTION -->
+          <a href="#drawer-agent08" class="node-anchor">
+            <g class="node-agent node-a08" transform="translate(870, 596)">
+              <rect width="320" height="230" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5" class="node-box node-border" />
+              <rect x="14" y="12" width="78" height="20" rx="4" fill="#16a34a" />
+              <text x="21" y="26" font-family="Geist Mono" font-size="10" font-weight="700" fill="#ffffff">AGENT-08</text>
+              <rect x="238" y="12" width="68" height="20" rx="4" fill="#16a34a" class="agent-live-tag" />
+              <text x="245" y="26" font-family="Geist Mono" font-size="9" font-weight="700" fill="#ffffff" class="agent-live-text">● ACTIVE</text>
+              <text x="100" y="27" font-family="Geist" font-size="13" font-weight="700" fill="#0f172a">Trade Execution</text>
+              <text x="14" y="52" font-family="Geist" font-size="11.5" font-weight="500" fill="#14532d">• Động cơ Khớp lệnh EAE (Execution Adaptation)</text>
+              <text x="14" y="70" font-family="Geist" font-size="11.5" font-weight="500" fill="#14532d">• Tuân thủ Vi cấu trúc HOSE: Bước giá 10đ/50đ/100đ</text>
+              <text x="14" y="88" font-family="Geist" font-size="11.5" font-weight="500" fill="#14532d">• Trần lệnh tối đa 500,000 cổ phiếu / lệnh bắn</text>
+              <text x="14" y="106" font-family="Geist" font-size="11.5" font-weight="500" fill="#14532d">• Phân tầng ADTV (Mega/High/Mid) &amp; Hạ nhãn động</text>
+              <text x="14" y="124" font-family="Geist" font-size="11.5" font-weight="500" fill="#14532d">• Tối ưu hóa trượt giá qua thuật toán VWAP Slicing</text>
+              <text x="14" y="142" font-family="Geist" font-size="11.5" font-weight="500" fill="#14532d">• Failsafe Guard: Khóa khi trễ mạng &gt; 1500ms</text>
+              <text x="14" y="160" font-family="Geist" font-size="11.5" font-weight="500" fill="#14532d">• Chế độ kép: LIVE (DNSE Broker) vs SHADOW Paper</text>
+              <text x="14" y="178" font-family="Geist" font-size="11.5" font-weight="500" fill="#14532d">• Ghi nhận hồ sơ trượt giá (Slippage Records) cho RL</text>
+              <rect x="14" y="196" width="292" height="22" rx="4" fill="#ffffff" opacity="0.9" />
+              <text x="20" y="211" font-family="Geist Mono" font-size="9.5" font-weight="700" fill="#15803d">Xác nhận Khớp lệnh: Filled Orders &amp; Slippage Log</text>
+            </g>
+          </a>
+
+          <!-- Pipeline Arrow: Agent 08 -> Agent 09 -->
+          <path d="M 1190 711 L 1242 711" fill="none" stroke="#0284c7" stroke-width="2" marker-end="url(#arr-blue)" />
+          <rect x="1194" y="699" width="44" height="20" rx="4" fill="#ffffff" stroke="#bae6fd" />
+          <text x="1199" y="713" font-family="Geist Mono" font-size="9.5" font-weight="700" fill="#0284c7">FILLED</text>
+
+          <!-- Emergency Stop Loss BYPASS Feedback: Agent 09 -> Agent 08 -->
+          <path d="M 1250 760 L 1198 760" fill="none" stroke="#e11d48" stroke-width="2" stroke-dasharray="3,3" marker-end="url(#arr-rose)" />
+          <rect x="1198" y="748" width="50" height="18" rx="3" fill="#ffffff" stroke="#fecdd3" />
+          <text x="1201" y="761" font-family="Geist Mono" font-size="8" font-weight="700" fill="#e11d48">T0-T5 EXIT</text>
+
+          <!-- AGENT 09: POSITION MONITORING -->
+          <a href="#drawer-agent09" class="node-anchor">
+            <g class="node-agent node-a09" transform="translate(1250, 596)">
+              <rect width="330" height="230" rx="8" fill="#e0f2fe" stroke="#0284c7" stroke-width="1.5" class="node-box node-border" />
+              <rect x="14" y="12" width="78" height="20" rx="4" fill="#0284c7" />
+              <text x="21" y="26" font-family="Geist Mono" font-size="10" font-weight="700" fill="#ffffff">AGENT-09</text>
+              <rect x="248" y="12" width="68" height="20" rx="4" fill="#0284c7" class="agent-live-tag" />
+              <text x="255" y="26" font-family="Geist Mono" font-size="9" font-weight="700" fill="#ffffff" class="agent-live-text">● ACTIVE</text>
+              <text x="100" y="27" font-family="Geist" font-size="13" font-weight="700" fill="#0f172a">Position Monitoring (Canh Gác)</text>
+              <text x="14" y="52" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Giám sát chu kỳ 5 phút thời gian thực trong phiên</text>
+              <text x="14" y="70" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Phân tách tài sản T+2.5 (Available vs Locked)</text>
+              <text x="14" y="88" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Thang 6 bậc Cắt lỗ Phòng thủ T0 - T5:</text>
+              <text x="22" y="106" font-family="Geist Mono" font-size="10.5" font-weight="600" fill="#0369a1">T1: Hard Stop 2% NAV | T2: Trailing Lock 35%</text>
+              <text x="22" y="124" font-family="Geist Mono" font-size="10.5" font-weight="600" fill="#0369a1">T3: Gãy Swing Low | T4: VSA Rejection 50%</text>
+              <text x="14" y="144" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• SLA 14:00 Thesis Invalidation Auto-Exit</text>
+              <text x="14" y="162" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• BYPASS Portfolio Agent phát lệnh cắt lỗ thẳng sàn</text>
+              <text x="14" y="180" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Failsafe Bất đối xứng: Khóa MUA, MỞ BÁN THOÁT</text>
+              <rect x="14" y="196" width="302" height="22" rx="4" fill="#ffffff" opacity="0.9" />
+              <text x="20" y="211" font-family="Geist Mono" font-size="9.5" font-weight="700" fill="#0284c7">Giám sát Vị thế: Health Ticks &amp; Emergency Exits</text>
+            </g>
+          </a>
+        </g>
+
+        <!-- Sovereign Cryptographic & PnL Audit Trail: Agent 09 -> Agent 11 & Agent 10 -->
+        <!-- Main Audit Path into Agent 11 Top (via Clear Right & Top Corridors) -->
+        <path d="M 1580 680 L 1607 680 A 8 8 0 0 0 1615 672 L 1615 48 A 8 8 0 0 0 1607 40 L 1003 40 A 8 8 0 0 0 995 48 L 995 54" fill="none" stroke="#64748b" stroke-width="1.8" stroke-dasharray="4,4" marker-end="url(#arr-slate)" />
+        <rect x="1160" y="30" width="240" height="20" rx="4" fill="#ffffff" stroke="#cbd5e1" />
+        <text x="1168" y="44" font-family="Geist Mono" font-size="9.5" font-weight="700" fill="#475569">Action Audit Logs (SHA-256 Ledger)</text>
+
+        <!-- Branch Audit Path into Agent 10 Right Port -->
+        <path d="M 1615 124 L 1582 124" fill="none" stroke="#7c3aed" stroke-width="1.8" stroke-dasharray="4,4" marker-end="url(#arr-purple)" />
+        <rect x="1490" y="112" width="130" height="20" rx="4" fill="#ffffff" stroke="#ddd6fe" />
+        <text x="1496" y="126" font-family="Geist Mono" font-size="9.5" font-weight="700" fill="#7c3aed">Realized PnL &amp; IC</text>
+
+        <!-- Ledger Token Verification: Agent 11 -> Agent 10 -->
+        <path d="M 1160 124 L 1172 124" fill="none" stroke="#7c3aed" stroke-width="1.8" marker-end="url(#arr-purple)" />
+        <rect x="1150" y="113" width="34" height="18" rx="3" fill="#ffffff" stroke="#ddd6fe" />
+        <text x="1153" y="125" font-family="Geist Mono" font-size="8.5" font-weight="700" fill="#7c3aed">TOKEN</text>
+
+        <!-- AGENT 11: SYSTEM GOVERNANCE (Nested in Top-Right) -->
+        <g class="layer-group layer-4">
+          <a href="#drawer-agent11" class="node-anchor">
+            <g class="node-agent node-a11" transform="translate(830, 56)">
+              <rect width="330" height="136" rx="8" fill="#f1f5f9" stroke="#64748b" stroke-width="1.5" class="node-box node-border" />
+              <rect x="14" y="12" width="78" height="20" rx="4" fill="#64748b" />
+              <text x="21" y="26" font-family="Geist Mono" font-size="10" font-weight="700" fill="#ffffff">AGENT-11</text>
+              <rect x="248" y="12" width="68" height="20" rx="4" fill="#64748b" class="agent-live-tag" />
+              <text x="255" y="26" font-family="Geist Mono" font-size="9" font-weight="700" fill="#ffffff" class="agent-live-text">● ACTIVE</text>
+              <text x="100" y="27" font-family="Geist" font-size="13" font-weight="700" fill="#0f172a">System Governance (Tòa Án)</text>
+              <text x="14" y="52" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Tam Giác Quyền Lực: Compliance - Audit - Change</text>
+              <text x="14" y="70" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Sổ cái Bất biến SHA-256 Chained Block Ledger</text>
+              <text x="14" y="88" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Kiểm toán toàn chuỗi (Full Chain Hash Verifier)</text>
+              <text x="14" y="106" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Giám sát Failsafe Heartbeat (1500ms, 3 misses)</text>
+              <rect x="14" y="114" width="302" height="14" rx="3" fill="#ffffff" opacity="0.9" />
+              <text x="20" y="125" font-family="Geist Mono" font-size="9" font-weight="700" fill="#334155">Chữ ký số: Cryptographic Token &amp; Compliance Block</text>
+            </g>
+          </a>
+        </g>
+
+        <!-- ========================================================================= -->
+        <!-- REALISTIC QUANTUM EXECUTION FLOW (NATIVE HARDWARE-ACCELERATED SVG)        -->
+        <!-- ========================================================================= -->
+        <g id="quantum-flow-layer" class="quantum-flow-group">
+          <!-- Step 1: Quantum A01 -> A02 (0.0s - 2.0s) -->
+          <circle r="5" fill="#38bdf8" filter="url(#quantumGlow)">
+            <animateMotion dur="24s" repeatCount="indefinite" keyPoints="0;1;1;0" keyTimes="0;0.0833;0.999;1" path="M 380 124 L 472 124" />
+            <animate attributeName="opacity" dur="24s" repeatCount="indefinite" values="1;1;0;0;1" keyTimes="0;0.0833;0.084;0.999;1" />
+          </circle>
+
+          <!-- Step 2: Quantum A02 -> A03 (2.0s - 4.0s) -->
+          <circle r="5" fill="#38bdf8" filter="url(#quantumGlow)">
+            <animateMotion dur="24s" repeatCount="indefinite" keyPoints="0;0;1;1;0" keyTimes="0;0.0833;0.1667;0.999;1" path="M 645 192 L 645 220 A 8 8 0 0 1 637 228 L 228 228 A 8 8 0 0 0 220 236 L 220 288" />
+            <animate attributeName="opacity" dur="24s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.0832;0.0833;0.1667;0.1668;1" />
+          </circle>
+
+          <!-- Step 3: Quantum A03 -> A04 (4.0s - 6.0s) -->
+          <circle r="5" fill="#38bdf8" filter="url(#quantumGlow)">
+            <animateMotion dur="24s" repeatCount="indefinite" keyPoints="0;0;1;1;0" keyTimes="0;0.1667;0.2500;0.999;1" path="M 380 388 L 452 388" />
+            <animate attributeName="opacity" dur="24s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.1666;0.1667;0.2500;0.2501;1" />
+          </circle>
+
+          <!-- Step 4: Quantum A04 -> A05 (6.0s - 8.0s) -->
+          <circle r="5" fill="#fb923c" filter="url(#quantumGlow)">
+            <animateMotion dur="24s" repeatCount="indefinite" keyPoints="0;0;1;1;0" keyTimes="0;0.2500;0.3333;0.999;1" path="M 790 388 L 862 388" />
+            <animate attributeName="opacity" dur="24s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.2499;0.2500;0.3333;0.3334;1" />
+          </circle>
+
+          <!-- Step 5: Quantum A05 -> A12 Dispute (8.0s - 10.0s) -->
+          <circle r="5" fill="#f43f5e" filter="url(#quantumGlow)">
+            <animateMotion dur="24s" repeatCount="indefinite" keyPoints="0;0;1;1;0" keyTimes="0;0.3333;0.4167;0.999;1" path="M 1210 388 L 1282 388" />
+            <animate attributeName="opacity" dur="24s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.3332;0.3333;0.4167;0.4168;1" />
+          </circle>
+
+          <!-- Step 6: Quantum A12 -> A06 Approved Cap (10.0s - 12.0s) -->
+          <circle r="5" fill="#4ade80" filter="url(#quantumGlow)">
+            <animateMotion dur="24s" repeatCount="indefinite" keyPoints="0;0;1;1;0" keyTimes="0;0.4167;0.5000;0.999;1" path="M 1435 480 L 1435 520 A 8 8 0 0 1 1427 528 L 228 528 A 8 8 0 0 0 220 536 L 220 588" />
+            <animate attributeName="opacity" dur="24s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.4166;0.4167;0.5000;0.5001;1" />
+          </circle>
+
+          <!-- Step 7: Quantum A06 -> A07 Order f* (12.0s - 14.0s) -->
+          <circle r="5" fill="#fb923c" filter="url(#quantumGlow)">
+            <animateMotion dur="24s" repeatCount="indefinite" keyPoints="0;0;1;1;0" keyTimes="0;0.5000;0.5833;0.999;1" path="M 380 711 L 452 711" />
+            <animate attributeName="opacity" dur="24s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.4999;0.5000;0.5833;0.5834;1" />
+          </circle>
+
+          <!-- Step 8: Quantum A07 -> A08 Approved Execution (14.0s - 16.0s) -->
+          <circle r="5" fill="#4ade80" filter="url(#quantumGlow)">
+            <animateMotion dur="24s" repeatCount="indefinite" keyPoints="0;0;1;1;0" keyTimes="0;0.5833;0.6667;0.999;1" path="M 790 711 L 862 711" />
+            <animate attributeName="opacity" dur="24s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.5832;0.5833;0.6667;0.6668;1" />
+          </circle>
+
+          <!-- Step 9: Quantum A08 -> A09 Filled Orders (16.0s - 18.0s) -->
+          <circle r="5" fill="#38bdf8" filter="url(#quantumGlow)">
+            <animateMotion dur="24s" repeatCount="indefinite" keyPoints="0;0;1;1;0" keyTimes="0;0.6667;0.7500;0.999;1" path="M 1190 711 L 1242 711" />
+            <animate attributeName="opacity" dur="24s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.6666;0.6667;0.7500;0.7501;1" />
+          </circle>
+
+          <!-- Step 10: Quantum A09 -> A11 Audit Logs & A10 PnL (18.0s - 20.0s) -->
+          <circle r="5" fill="#94a3b8" filter="url(#quantumGlow)">
+            <animateMotion dur="24s" repeatCount="indefinite" keyPoints="0;0;1;1;0" keyTimes="0;0.7500;0.8333;0.999;1" path="M 1580 680 L 1607 680 A 8 8 0 0 0 1615 672 L 1615 48 A 8 8 0 0 0 1607 40 L 1003 40 A 8 8 0 0 0 995 48 L 995 54" />
+            <animate attributeName="opacity" dur="24s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.7499;0.7500;0.8333;0.8334;1" />
+          </circle>
+
+          <!-- Step 11: Quantum A11 -> A10 Cryptographic Ledger Verification (20.0s - 22.0s) -->
+          <circle r="5" fill="#c084fc" filter="url(#quantumGlow)">
+            <animateMotion dur="24s" repeatCount="indefinite" keyPoints="0;0;1;1;0" keyTimes="0;0.8333;0.9167;0.999;1" path="M 1160 124 L 1172 124" />
+            <animate attributeName="opacity" dur="24s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.8332;0.8333;0.9167;0.9168;1" />
+          </circle>
+
+          <!-- Step 12: Quantum A10 -> A03 / A01 Dynamic Policy Weights (22.0s - 24.0s) -->
+          <circle r="5" fill="#c084fc" filter="url(#quantumGlow)">
+            <animateMotion dur="24s" repeatCount="indefinite" keyPoints="0;0;1;1" keyTimes="0;0.9167;0.9999;1" path="M 1240 192 L 1240 232 A 8 8 0 0 1 1232 240 L 348 240 A 8 8 0 0 0 340 248 L 340 288" />
+            <animate attributeName="opacity" dur="24s" repeatCount="indefinite" values="0;0;1;1" keyTimes="0;0.9166;0.9167;0.9999;1" />
+          </circle>
+        </g>
+      </svg>
+    </div>
+
+    <!-- Summary Pedagogy Cards for Academic Teaching -->
+    <div class="cards-grid">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-dot blue"></span>
+          <h3 class="card-title">1. Phân Quyền Thể Chế (Separation of Powers)</h3>
+        </div>
+        <p>Hệ thống loại bỏ hoàn toàn mô hình "Single Agent" dễ bị ảo giác hoặc "bẻ lái rủi ro". AIInvest thiết lập cơ chế kiểm soát chéo 3 bên độc lập:</p>
+        <ul>
+          <li><strong>Bên Lập thuyết</strong>: Agent 03 &amp; 04 tìm kiếm cơ hội dựa trên F1-F6 và 3 tín hiệu độc lập.</li>
+          <li><strong>Bên Phản biện</strong>: Agent 05 (Devil's Advocate) có nghĩa vụ bắt buộc tìm lý do bác bỏ luận điểm.</li>
+          <li><strong>Bên Phủ quyết &amp; Cầm trịch</strong>: Agent 07 (Risk) và Agent 11 (Governance) nắm quyền chặn lệnh sinh tử mà không cần xin phép.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <span class="card-dot coral"></span>
+          <h3 class="card-title">2. Chân Lý Số Học &amp; Biên Cứng HOSE</h3>
+        </div>
+        <p>Mọi quyết định đều neo chặt vào công thức toán học và quy chế vi cấu trúc thị trường chứng khoán Việt Nam:</p>
+        <ul>
+          <li><strong>Rủi ro T+2.5</strong>: Biên độ kẹt sàn 2 phiên liên tiếp được lượng hóa chính xác: <code>1 - (1-0.07)^2 = 13.51%</code>.</li>
+          <li><strong>Quarter Kelly</strong>: <code>f* = 0.25 (p - (1-p)/R)</code> co giãn theo HMM Regime, triệt tiêu rủi ro cháy tài khoản.</li>
+          <li><strong>Vi cấu trúc HOSE</strong>: Lô chẵn 100, bước giá 10đ/50đ/100đ, trần 500.000 cổ phiếu, cấm bán khống cổ phiếu cơ sở.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <span class="card-dot purple"></span>
+          <h3 class="card-title">3. Tự Khép Kín &amp; Thích Ứng Causal ML</h3>
+        </div>
+        <p>Cỗ máy liên tục tự đo lường và sửa sai qua chu trình học máy khép kín giữa Agent-10 và Agent-11:</p>
+        <ul>
+          <li><strong>Co ngót Bayes</strong>: <code>p_calibrated = (N0/(N0+N)) p_prior + (N/(N0+N)) p_sample</code> với <code>N0 = 25</code>.</li>
+          <li><strong>Sổ cái Mật mã</strong>: Mọi quyết định được băm <code>SHA-256</code> tuần tự theo chuỗi khối, bảo đảm tính toàn vẹn 100%.</li>
+          <li><strong>Cổng OOS</strong>: Đề xuất mô hình mới phải vượt qua kiểm định Walk-Forward với Sharpe &ge; 1.2 và MaxDD &le; 10%.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- ========================================================================= -->
+    <!-- 12 INSPECTOR DRAWERS (ZERO-JS CSS :TARGET ARCHITECTURE)                   -->
+    <!-- ========================================================================= -->
+
+    <!-- Drawer 01: Market Surveillance -->
+    <aside class="inspector-drawer" id="drawer-agent01">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#e0f2fe;color:#0284c7;">AGENT-01: MACRO SURVEILLANCE</span>
+          <h3 class="drawer-title">Market Surveillance Agent</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Nhiệm Vụ Nghiệp Vụ &amp; Trách Nhiệm Thể Chế</h4>
+          <p>Quan sát liên tục thị trường HOSE theo thời gian thực xuyên suốt 6 phiên giao dịch hàng ngày (ATO, Khớp lệnh sáng, Nghỉ trưa, Khớp lệnh chiều, ATC, Thỏa thuận). Ước lượng Regime vĩ mô qua mô hình Sticky HMM 3 trạng thái kết hợp dự báo biến động GJR-GARCH(1,1) và kiểm định tâm lý bầy đàn CSAD.</p>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Công Thức Toán Học &amp; Giải Thuật Ngầm</h4>
+          <div class="drawer-formula-box">
+1. Sticky HMM State Transition:
+   P(S_t = j | S_{t-1} = i) = A_{ij} + &kappa; &middot; I(i = j)
+   States: {Bull Market, Range Bound, Bear Market}
+
+2. GJR-GARCH(1,1) Asymmetric Volatility:
+   &sigma;_t^2 = &omega; + (&alpha; + &gamma; &middot; I(&epsilon;_{t-1} &lt; 0)) &epsilon;_{t-1}^2 + &beta; &sigma;_{t-1}^2
+
+3. CSAD Herding Model (Chang, Cheng &amp; Khorana 2000):
+   CSAD_t = (1/N) &sum; |R_{i,t} - R_{m,t}|
+   Regression: CSAD_t = &alpha; + &beta;_1 |R_{m,t}| + &beta;_2 (R_{m,t})^2
+   &beta;_2 &lt; 0 &implies; Hiệu ứng Bầy đàn Hoảng loạn (Panic Selling) hoặc Hưng phấn (FOMO)
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Tham Số Biên Khai Quật Từ Mã Nguồn</h4>
+          <ul class="param-list">
+            <li><span class="param-key">current_regime</span><span class="param-val">BULL / BEAR / RANGE_BOUND</span></li>
+            <li><span class="param-key">floor_lock_limit</span><span class="param-val">Close/Open &le; -6.9%</span></li>
+            <li><span class="param-key">vn30_distortion</span><span class="param-val">Advance / Decline &lt; 0.40</span></li>
+            <li><span class="param-key">atc_vol_spike</span><span class="param-val">Vol_ATC &gt; 2.5x MA20</span></li>
+            <li><span class="param-key">cash_ratio</span><span class="param-val">15% (Bull) vs 100% (Bear/Crisis)</span></li>
+          </ul>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Hình Thái Dữ Liệu Vào / Ra</h4>
+          <div class="drawer-formula-box">
+Input:  Raw OHLCV Ticks, L2 Order Book, Foreign Net Value Flow
+State:  \vec{&Theta;}_t = [P(Bull), P(Range), P(Bear), &sigma;_{GJR}, &beta;_2^{CSAD}]
+Output: Regime Context {Target Cash %, Distribution Days, Halted Stocks}
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Thực Tế</h4>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/agents/market_surveillance.py</code></div>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/rules/market/hmm_regime_engine.py</code></div>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/rules/market/csad_calculator.py</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer 02: Universe Discovery -->
+    <aside class="inspector-drawer" id="drawer-agent02">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#e0f2fe;color:#0284c7;">AGENT-02: UNIVERSE DISCOVERY</span>
+          <h3 class="drawer-title">Universe Discovery Agent</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Nhiệm Vụ Nghiệp Vụ &amp; Trách Nhiệm Thể Chế</h4>
+          <p>Thực hiện nhiệm vụ người gác cổng Lớp 0 (Layer-0 Gatekeeper). Quét toàn bộ 406 mã cổ phiếu trên sàn HOSE, loại trừ vĩnh viễn các doanh nghiệp có rủi ro gian lận BCTC qua mô hình Beneish M-Score kép, thanh lọc các mã thiếu thanh khoản hoặc có nguy cơ rút ruột vốn theo đồ thị GIL.</p>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Công Thức Toán Học &amp; Giải Thuật Ngầm</h4>
+          <div class="drawer-formula-box">
+1. Mô hình Beneish M-Score 8 Biến Đầy Đủ (VAS TT 200/BTC):
+   M_8 = -4.84 + 0.920 DSRI + 0.528 GMI + 0.404 AQI + 0.892 SGI
+         + 0.115 DEPI - 0.172 SGAI + 4.037 TATA + 0.0327 LVGI
+
+2. Mô hình Beneish 5 Biến Phi Dòng Tiền (Adaptive M5):
+   M_5 = -6.065 + 0.823 DSRI + 0.906 GMI + 0.593 AQI + 0.717 SGI + 0.107 LVGI
+
+3. Cổng Loại Trừ Cứng Lớp 0:
+   M &gt; -1.78 &implies; LOẠI BỎ VĨNH VIỄN KHỎI UNIVERSE
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Tham Số Biên Khai Quật Từ Mã Nguồn</h4>
+          <ul class="param-list">
+            <li><span class="param-key">Beneish M-Score Cutoff</span><span class="param-val">M &le; -1.78 (Thao túng BCTC)</span></li>
+            <li><span class="param-key">Thanh khoản tối thiểu</span><span class="param-val">ADTV20 &ge; 15,000,000,000 VND</span></li>
+            <li><span class="param-key">Thời gian niêm yết</span><span class="param-val">&ge; 12 Tháng (Đảm bảo mẫu ADF)</span></li>
+            <li><span class="param-key">Audit Opinion</span><span class="param-val">UNQUALIFIED (Chấp nhận toàn phần)</span></li>
+            <li><span class="param-key">Cờ Rút Ruột GIL</span><span class="param-val">GIL Flag != CATASTROPHIC</span></li>
+          </ul>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Hình Thái Dữ Liệu Vào / Ra</h4>
+          <div class="drawer-formula-box">
+Input:  Toàn bộ Universe HOSE (406 mã), BCTC đã trích xuất AST
+Sieve:  Binary Polytope Filter S_{L0}
+Output: Danh sách Group A (Elite), Group B (Standard), Excluded List
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Thực Tế</h4>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/agents/universe_discovery.py</code></div>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/rules/beneish.py</code></div>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/rules/universe_manager.py</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer 03: Equity Research -->
+    <aside class="inspector-drawer" id="drawer-agent03">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#e0f2fe;color:#0284c7;">AGENT-03: EQUITY RESEARCH</span>
+          <h3 class="drawer-title">Equity Research Agent</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Nhiệm Vụ Nghiệp Vụ &amp; Trách Nhiệm Thể Chế</h4>
+          <p>Phân tích định lượng chuyên sâu từng mã cổ phiếu đã vượt qua Lớp 0. Tính toán 6 nhóm Factor Scores chuẩn hóa nội ngành (F1-F6) với bộ trọng số động thích ứng do Agent-10 RL cung cấp, tính toán Composite Stock Score (CSS) và phân định Conviction Tier.</p>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Công Thức Toán Học &amp; Giải Thuật Ngầm</h4>
+          <div class="drawer-formula-box">
+1. Composite Stock Score (CSS):
+   CSS_i = \sum_{k=1}^6 w_k &middot; Z_i(F_k)
+   trong đó Z_i(F_k) là điểm Z-Score nội ngành đã Winsorize [1%, 99%]
+
+2. Phân Tầng Conviction:
+   Tier A+: CSS &ge; 85.0
+   Tier A : 75.0 &le; CSS &lt; 85.0
+   Tier B : 65.0 &le; CSS &lt; 75.0
+   Tier C/D/E: CSS &lt; 65.0 &implies; LOẠI BỎ (Chưa đủ điều kiện đầu tư)
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Tham Số Biên Khai Quật Từ Mã Nguồn</h4>
+          <ul class="param-list">
+            <li><span class="param-key">Ngưỡng Conviction tối thiểu</span><span class="param-val">Tier B (CSS &ge; 65.0)</span></li>
+            <li><span class="param-key">F1 Value Factor</span><span class="param-val">P/E, P/B, EV/EBITDA nghịch đảo</span></li>
+            <li><span class="param-key">F2 Quality Factor</span><span class="param-val">Piotroski F-Score (9/9), Altman Z'</span></li>
+            <li><span class="param-key">F3 Momentum Factor</span><span class="param-val">FFD d*, Garman-Klass Volatility</span></li>
+            <li><span class="param-key">F5 Money Flow</span><span class="param-val">Foreign Net Flow 5D, ADTV Surge</span></li>
+          </ul>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Thực Tế</h4>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/agents/equity_research.py</code></div>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/rules/scoring.py</code></div>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/services/factor_service.py</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer 04: Investment Thesis -->
+    <aside class="inspector-drawer" id="drawer-agent04">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#e0f2fe;color:#0284c7;">AGENT-04: INVESTMENT THESIS</span>
+          <h3 class="drawer-title">Investment Thesis Agent</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Nhiệm Vụ Nghiệp Vụ &amp; Trách Nhiệm Thể Chế</h4>
+          <p>Xây dựng luận điểm đầu tư có cấu trúc chuẩn hóa cho các mã đạt Conviction &ge; B. Bắt buộc thực thi Nguyên tắc Ba Tín hiệu Độc lập (Điều 3 Hiến pháp), tính toán giá mục tiêu đa mô hình thích ứng và thiết lập 3 kịch bản Pre-Mortem lường trước các nguyên nhân thất bại.</p>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Công Thức Toán Học &amp; Giải Thuật Ngầm</h4>
+          <div class="drawer-formula-box">
+1. Nguyên Tắc Ba Tín Hiệu Độc Lập (Điều 3):
+   Signal = I(Catalyst Cơ bản) &middot; I(Cấu trúc Kỹ thuật) &middot; I(Xung lực Dòng tiền)
+   Yêu cầu: &sum; Signals &ge; 3 &implies; Luận đề Hợp Lệ
+
+2. Định Giá Mục Tiêu Thích Ứng:
+   P_target = 0.5 P_{P/E} + 0.5 P_{EV/EBITDA}  (nếu Timeline &le; 3 tháng)
+   P_target = 0.4 P_{DCF} + 0.3 P_{P/E} + 0.3 P_{EV} (nếu Timeline &gt; 3 tháng)
+   (TUYỆT ĐỐI KHÔNG DÙNG DCF CHO GIAO DỊCH NGẮN HẠN &le; 3 THÁNG)
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Tham Số Biên Khai Quật Từ Mã Nguồn</h4>
+          <ul class="param-list">
+            <li><span class="param-key">Tín hiệu xác nhận tối thiểu</span><span class="param-val">&ge; 3 Tín hiệu độc lập</span></li>
+            <li><span class="param-key">Kịch bản Pre-Mortem</span><span class="param-val">Đủ 3 kịch bản chi tiết</span></li>
+            <li><span class="param-key">Khung thời gian</span><span class="param-val">1, 3, hoặc 6 Tháng</span></li>
+            <li><span class="param-key">Điều kiện Invalidation</span><span class="param-val">Thủng vùng Swing Low kỹ thuật</span></li>
+          </ul>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Thực Tế</h4>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/agents/investment_thesis.py</code></div>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/rules/thesis_engine.py</code></div>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/rules/catalyst_validator.py</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer 05: Counter Thesis -->
+    <aside class="inspector-drawer" id="drawer-agent05">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#ffedd5;color:#ea580c;">AGENT-05: COUNTER THESIS</span>
+          <h3 class="drawer-title">Counter Thesis Agent (Devil's Advocate)</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Nhiệm Vụ Nghiệp Vụ &amp; Trách Nhiệm Thể Chế</h4>
+          <p>Đóng vai trò "Kẻ Phản Biện Ác Quỷ" (Devil's Advocate) với nghĩa vụ pháp định bắt buộc tìm lý do để BÁC BỎ luận điểm. Tính toán điểm Counter-Thesis Score (CTS) 3 tầng, rà soát 4 bẫy tâm lý và thanh khoản, và đưa ra phán quyết độc lập: PROCEED, CONDITIONAL hoặc BLOCK.</p>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Công Thức Toán Học &amp; Giải Thuật Ngầm</h4>
+          <div class="drawer-formula-box">
+1. Điểm Phản Biện Ba Tầng (CTS):
+   CTS = min(100.0, (CTS_base + &Delta;_ML) &times; M_regime)
+
+2. Hệ Số Co Giãn Môi Trường M_regime:
+   Bull Low Vol: 0.90 | Sideways: 1.00 | Correction: 1.15 | Bear Panic: 1.50
+
+3. Ngoại Lệ Bắt Đáy Capitulation (Bẫy 3):
+   Nếu FloorHits_5d &ge; 2 VÀ Vol_5d / Vol_20d &gt; 3.0 &implies; Giảm M_regime về 1.0
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Tham Số Biên Khai Quật Từ Mã Nguồn</h4>
+          <ul class="param-list">
+            <li><span class="param-key">Phán quyết PROCEED</span><span class="param-val">CTS &lt; 40.0</span></li>
+            <li><span class="param-key">Phán quyết CONDITIONAL</span><span class="param-val">40.0 &le; CTS &le; 70.0 (Ép trần tỷ trọng)</span></li>
+            <li><span class="param-key">Phán quyết BLOCK</span><span class="param-val">CTS &gt; 70.0 (Phủ quyết giải ngân)</span></li>
+            <li><span class="param-key">Bẫy FOMO Trần (Trap 1)</span><span class="param-val">CeilingStreak &ge; 3 phiên</span></li>
+            <li><span class="param-key">Bẫy Bull-Trap (Trap 2)</span><span class="param-val">Breakout Vol &lt; 0.8x MA20</span></li>
+          </ul>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Thực Tế</h4>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/agents/counter_thesis.py</code></div>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/rules/counter_thesis.py</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer 12: Strategy CIO -->
+    <aside class="inspector-drawer" id="drawer-agent12">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#ffe4e6;color:#e11d48;">AGENT-12: STRATEGY CIO</span>
+          <h3 class="drawer-title">Strategy CIO Agent (Trọng Tài Thể Chế)</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Nhiệm Vụ Nghiệp Vụ &amp; Trách Nhiệm Thể Chế</h4>
+          <p>Là Giám đốc Đầu tư Chiến lược và Trọng tài Thể chế Tối cao của hệ thống. Đứng ở vị trí trung lập để giải quyết xung đột ý kiến giữa Investment Thesis (Agent-04) và Counter-Thesis (Agent-05). Cấp phép ngoại lệ có biên an toàn và ký số SHA-256 Chained Resolution.</p>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Công Thức Toán Học &amp; Giải Thuật Ngầm</h4>
+          <div class="drawer-formula-box">
+1. Ma Trận Trọng Tài Xung Đột (Game-Theoretic Arbitration):
+   R(Thesis, Counter) =
+     BLOCK           nếu Vi phạm Hard Law HOẶC CTS &gt; 75.0
+     APPROVED (Capped) nếu 50.0 &le; CTS &le; 75.0 &implies; w_cap = 0.08
+     APPROVED (Full)   nếu CTS &lt; 50.0 &implies; w_cap = 0.15
+
+2. Sổ Cái Băm Nghị Quyết Bất Biến:
+   H_t = SHA-256(H_{t-1} || CanonicalJSON(Resolution_t))
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Tham Số Biên Khai Quật Từ Mã Nguồn</h4>
+          <ul class="param-list">
+            <li><span class="param-key">Bảo lưu Hiến pháp</span><span class="param-val">Bất khả xâm phạm 6 Hard Laws</span></li>
+            <li><span class="param-key">Biên độ ngoại lệ</span><span class="param-val">&le; 5% NAV, thời hạn &le; 48 Giờ</span></li>
+            <li><span class="param-key">System Halt Dual-Tunnel</span><span class="param-val">Đóng băng BUY, mở thông SELL thoát hiểm</span></li>
+            <li><span class="param-key">Trần Tỷ trọng w_cap</span><span class="param-val">0.08 (Conditional) đến 0.15 (Max)</span></li>
+          </ul>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Thực Tế</h4>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/agents/strategy_cio.py</code></div>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/eval/audit_trail.py</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer 06: Portfolio Allocation -->
+    <aside class="inspector-drawer" id="drawer-agent06">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#dcfce7;color:#16a34a;">AGENT-06: PORTFOLIO ALLOCATION</span>
+          <h3 class="drawer-title">Portfolio Allocation Agent</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Nhiệm Vụ Nghiệp Vụ &amp; Trách Nhiệm Thể Chế</h4>
+          <p>Điều phối 8 Engine phân bổ vốn chuẩn định chế. Định cỡ quy mô vị thế theo công thức Quarter Kelly thu hẹp và hệ số co giãn Regime, áp trần Điều 4 Hiến pháp (Tối đa 15% NAV/mã, 35% NAV/ngành) và làm tròn theo bước khớp lệnh lô chẵn 100 cổ phiếu của sàn HOSE.</p>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Công Thức Toán Học &amp; Giải Thuật Ngầm</h4>
+          <div class="drawer-formula-box">
+1. Quarter Kelly Criterion:
+   f^* = 0.25 &times; (p - (1 - p) / R)
+
+2. Co Giãn Theo Chế Độ Thị Trường HMM:
+   w_i^* = min(0.25 f^* &middot; M_regime, w_cap, 0.15)
+   M \in {1.00 (Bull), 0.75 (Choppy), 0.50 (Bounce), 0.25 (Bear)}
+
+3. Làm Tròn Lô Chẵn Sàn HOSE:
+   Q_i^* = \lfloor (w_i^* &middot; NAV) / (100 &middot; P_i) \rfloor &times; 100
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Tham Số Biên Khai Quật Từ Mã Nguồn</h4>
+          <ul class="param-list">
+            <li><span class="param-key">Trần một mã (Điều 4)</span><span class="param-val">&le; 15.0% Tổng NAV</span></li>
+            <li><span class="param-key">Trần một ngành (Điều 4)</span><span class="param-val">&le; 35.0% Tổng NAV</span></li>
+            <li><span class="param-key">Sức chứa thanh khoản (Điều 2)</span><span class="param-val">Lệnh &le; 15%, Vị thế &le; 25% ADTV20</span></li>
+            <li><span class="param-key">Rebalance Deadband</span><span class="param-val">2.0% Chống bào mòn phí giao dịch</span></li>
+          </ul>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Thực Tế</h4>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/agents/portfolio_allocation.py</code></div>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/rules/portfolio/kelly_engine.py</code></div>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/rules/portfolio/construction_engine.py</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer 07: Portfolio Risk -->
+    <aside class="inspector-drawer" id="drawer-agent07">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#ffedd5;color:#ea580c;">AGENT-07: PORTFOLIO RISK</span>
+          <h3 class="drawer-title">Portfolio Risk Agent (Cổng Kiểm Soát Rủi Ro)</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Nhiệm Vụ Nghiệp Vụ &amp; Trách Nhiệm Thể Chế</h4>
+          <p>Là Cổng Kiểm Soát Rủi Ro Pre-Trade Tối Cao (Sovereign Gatekeeper) trước khi lệnh được bắn ra thị trường. Thẩm định qua 5 lớp độc lập: 6 Hard Laws, rủi ro kẹt hàng thanh toán T+2.5, dị thường nến Tape Anomaly VSA, rủi ro đuôi EGARCH-t CVaR và bộ kiểm soát suy thoái mô hình CDC.</p>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Công Thức Toán Học &amp; Giải Thuật Ngầm</h4>
+          <div class="drawer-formula-box">
+1. Rủi Ro Kẹt Sàn T+2.5 (Điều 1 Hard Law):
+   Downside_{T25} = 1 - (1 - 0.07)^2 = 13.51%
+   P_i &middot; max(StopLoss_%, 0.1351) &middot; Q_i &le; 0.02 &middot; NAV
+
+2. Conditional Tail Expected Shortfall (EGARCH Student-t, df = 5):
+   ES_{97.5%} = &sigma;_{EGARCH} &times; 3.37 &le; 0.045 &middot; NAV
+
+3. Capital Degradation Controller (CDC):
+   IC Decay &ge; 50% kéo dài &ge; 5 phiên &implies; ĐÓNG BĂNG MUA MỚI, TIỀN &ge; 60%
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Tham Số Biên Khai Quật Từ Mã Nguồn</h4>
+          <ul class="param-list">
+            <li><span class="param-key">T+2.5 Locked Cap</span><span class="param-val">&le; 35.0% Tổng NAV</span></li>
+            <li><span class="param-key">VSA Churning Anomaly</span><span class="param-val">Vol &gt; 1.5x MA20 kèm Râu nến trên &gt; 50%</span></li>
+            <li><span class="param-key">CDC Tier RED Trigger</span><span class="param-val">IC Decay &ge; 50% &amp; Sessions &ge; 5</span></li>
+            <li><span class="param-key">Phán quyết</span><span class="param-val">PASS / REDUCE / BLOCK</span></li>
+          </ul>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Thực Tế</h4>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/agents/portfolio_risk.py</code></div>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/rules/risk/tail_risk_engine.py</code></div>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/rules/risk/cdc_controller.py</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer 08: Trade Execution -->
+    <aside class="inspector-drawer" id="drawer-agent08">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#dcfce7;color:#16a34a;">AGENT-08: TRADE EXECUTION</span>
+          <h3 class="drawer-title">Trade Execution Agent</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Nhiệm Vụ Nghiệp Vụ &amp; Trách Nhiệm Thể Chế</h4>
+          <p>Chuyên viên Khớp lệnh và Tối ưu Trượt giá trên sàn HOSE. Vận hành động cơ EAE thích ứng theo trạng thái thị trường, tuân thủ nghiêm ngặt quy chế vi cấu trúc HOSE (lô 100, trần 500k, bước giá bậc thang), quản lý cơ chế hạ nhãn ADTV động và tích hợp chốt chặn Failsafe.</p>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Công Thức Toán Học &amp; Giải Thuật Ngầm</h4>
+          <div class="drawer-formula-box">
+1. Quy Định Bước Giá Sàn HOSE:
+   P &lt; 10,000 VND         &implies; Bước giá 10 VND
+   10,000 &le; P &lt; 50,000 VND &implies; Bước giá 50 VND
+   P &ge; 50,000 VND        &implies; Bước giá 100 VND
+
+2. Đo Lường Implementation Shortfall (IS):
+   IS = (P_executed - P_decision) / P_decision &times; 10,000 (bps)
+
+3. Hạ Nhãn ADTV Động (Dynamic Degradation):
+   Nếu Spread &gt; 100bps hoặc Thị trường STRESS &implies; Hạ bậc ADTV Bucket
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Tham Số Biên Khai Quật Từ Mã Nguồn</h4>
+          <ul class="param-list">
+            <li><span class="param-key">Trần lệnh tối đa</span><span class="param-val">500,000 Cổ phiếu / Lệnh</span></li>
+            <li><span class="param-key">Failsafe Ngắt kết nối</span><span class="param-val">Latency &gt; 1500ms hoặc Mất 3 nhịp Heartbeat</span></li>
+            <li><span class="param-key">Chốt chặn ATC</span><span class="param-val">Đóng băng lệnh 5 phút cuối nếu phát hiện sốc ảo</span></li>
+            <li><span class="param-key">Chế độ vận hành</span><span class="param-val">LIVE (Broker DNSE) vs SHADOW (Paper)</span></li>
+          </ul>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Thực Tế</h4>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/agents/trade_execution.py</code></div>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/rules/execution/eae.py</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer 09: Position Monitoring -->
+    <aside class="inspector-drawer" id="drawer-agent09">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#e0f2fe;color:#0284c7;">AGENT-09: POSITION MONITORING</span>
+          <h3 class="drawer-title">Position Monitoring Agent</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Nhiệm Vụ Nghiệp Vụ &amp; Trách Nhiệm Thể Chế</h4>
+          <p>Giám sát thời gian thực toàn bộ các vị thế đang mở trong danh mục theo chu kỳ 5 phút trong giờ giao dịch. Tuân thủ chu kỳ bù trừ T+2.5, vận hành thang phòng vệ dừng lỗ đa tầng T0-T5, giám sát hạn chót SLA 14:00 và có quyền phát lệnh cắt lỗ thẳng ra sàn mà không cần xin phép.</p>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Công Thức Toán Học &amp; Giải Thuật Ngầm</h4>
+          <div class="drawer-formula-box">
+Thang Phòng Vệ Cắt Lỗ Đa Tầng T0 - T5:
+• T0 (Thanh toán): Q_sell &le; Q_available (đã qua chu kỳ T+2.5)
+• T1 (Hard Stop Điều 1): Lỗ vị thế &ge; 2% NAV &implies; BÁN KHẨN CẤP (BYPASS)
+• T2 (Trailing Stop): Lãi &ge; 10% VÀ Mất &ge; 35% lợi nhuận đỉnh &implies; CHỐT LÃI
+• T3 (Structural Exit): Giá thủng đáy hỗ trợ gần nhất Swing Low &implies; THOÁT
+• T4 (VSA Fast Exit): Nến Bearish Rejection VÀ Vol &gt; 1.5x MA20 &implies; CẮT 50%
+• T5 (Time Stop): Nắm &gt; 50% thời hạn mà Lãi &lt; 2% &implies; CƠ CẤU VỐN
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Tham Số Biên Khai Quật Từ Mã Nguồn</h4>
+          <ul class="param-list">
+            <li><span class="param-key">Hard Stop Lớp 1</span><span class="param-val">-2.0% NAV Tổng tài khoản</span></li>
+            <li><span class="param-key">Kéo hòa vốn Breakeven</span><span class="param-val">+2.5% Lãi kích hoạt</span></li>
+            <li><span class="param-key">Hạn chót SLA 14:00</span><span class="param-val">Tự động kích hoạt AUTO_EXIT trước ATC</span></li>
+            <li><span class="param-key">Failsafe Bypass</span><span class="param-val">Đường hầm BÁN luôn mở thông 100%</span></li>
+          </ul>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Thực Tế</h4>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/agents/position_monitoring.py</code></div>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/rules/stop_loss.py</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer 10: Reinforcement Learning -->
+    <aside class="inspector-drawer" id="drawer-agent10">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#f3e8ff;color:#7c3aed;">AGENT-10: REINFORCEMENT LEARNING</span>
+          <h3 class="drawer-title">Reinforcement Learning &amp; Causal Adaptation Agent</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Nhiệm Vụ Nghiệp Vụ &amp; Trách Nhiệm Thể Chế</h4>
+          <p>Đóng vai trò cỗ máy tự học và thích ứng nhân quả của tổ chức định lượng. Liên tục đối chiếu kỳ vọng mô hình với kết quả thực tế qua lớp MRAL, tính toán Spearman Rank IC đa chân trời cho 6 nhóm Factor, hiệu chuẩn ma trận tỷ lệ thắng Kelly qua Bayesian Shrinkage và chẩn đoán suy thoái Alpha.</p>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Công Thức Toán Học &amp; Giải Thuật Ngầm</h4>
+          <div class="drawer-formula-box">
+1. Spearman Rank IC (Grinold &amp; Kahn):
+   \rho_{Rank} = 1 - (6 \sum d_i^2) / (n(n^2 - 1)),  t_{stat} = \rho \sqrt{(n-2)/(1 - \rho^2)}
+
+2. Empirical Bayes Prior Shrinkage:
+   p_{calibrated} = (N_0 / (N_0 + N)) p_{prior} + (N / (N_0 + N)) p_{sample}
+   b_{calibrated} = (N_0 / (N_0 + N)) b_{prior} + (N / (N_0 + N)) b_{sample}
+   với trọng số Prior cố định: N_0 = 25.0 lệnh
+
+3. Kiểm Định OOS Walk-Forward:
+   Sharpe_{OOS} &ge; 1.20  VÀ  MaxDD_{OOS} &le; 10.0%
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Tham Số Biên Khai Quật Từ Mã Nguồn</h4>
+          <ul class="param-list">
+            <li><span class="param-key">Ngưỡng mẫu N0 Bayes</span><span class="param-val">25 Lệnh (Ổn định phương sai mẫu nhỏ)</span></li>
+            <li><span class="param-key">Báo động CDC Suy thoái</span><span class="param-val">IC Decay &ge; 50% kéo dài &ge; 5 phiên</span></li>
+            <li><span class="param-key">Phân rã PnL</span><span class="param-val">Mô hình Brinson-Fachler 3 thành phần</span></li>
+            <li><span class="param-key">OOS Walk-Forward</span><span class="param-val">Tối thiểu 20 phiên dữ liệu kiểm định</span></li>
+          </ul>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Thực Tế</h4>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/agents/reinforcement_learning.py</code></div>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/rules/learning/causal_learning_engines.py</code></div>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/eval/mral.py</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer 11: System Governance -->
+    <aside class="inspector-drawer" id="drawer-agent11">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#f1f5f9;color:#64748b;">AGENT-11: SYSTEM GOVERNANCE</span>
+          <h3 class="drawer-title">System Governance Agent (Tòa Án Thể Chế)</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Nhiệm Vụ Nghiệp Vụ &amp; Trách Nhiệm Thể Chế</h4>
+          <p>Là Tòa án Tối cao và Cơ quan Lưu chiểu Mật mã Bất biến của AIInvest. Vận hành Tam Giác Quyền Lực (Compliance - Audit - Change), băm chuỗi khối SHA-256 Hash Chaining liên tục cho mọi sự kiện giao dịch, thẩm định các yêu cầu thay đổi mô hình và kiểm tra Ma trận Thẩm quyền.</p>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Công Thức Toán Học &amp; Giải Thuật Ngầm</h4>
+          <div class="drawer-formula-box">
+1. Chuỗi Khối Băm Kiểm Toán Mật Mã SHA-256 (Hash Chaining):
+   Block_k = SHA-256(Block_{k-1} || Timestamp || AgentID || EventType || CanonicalJSON(Details))
+
+2. Xác Thực Toàn Vẹn Chuỗi Khối (Full Chain Verifier):
+   Verify(B_1 ... B_m) \iff \forall k \in [2, m]: B_k.prev_hash == SHA-256(B_{k-1})
+
+3. Kiểm Soát Thay Đổi Mô Hình (Model Change Impact):
+   Approve(&Delta;M) \iff TurnoverShock &le; 30% VÀ OOS Sharpe &ge; 1.2 VÀ MaxDD &le; 10%
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Tham Số Biên Khai Quật Từ Mã Nguồn</h4>
+          <ul class="param-list">
+            <li><span class="param-key">Tuân thủ Hiến pháp</span><span class="param-val">Kiểm tra nghiêm ngặt 6 Hard Laws</span></li>
+            <li><span class="param-key">Turnover Shock tối đa</span><span class="param-val">&le; 30.0% Danh mục khi đổi mô hình</span></li>
+            <li><span class="param-key">Failsafe Heartbeat</span><span class="param-val">Nhịp 30s, trễ &le; 1500ms, rớt &le; 3 lần</span></li>
+            <li><span class="param-key">Lưu trữ Kiểm toán</span><span class="param-val">Bảng audit_logs có Transaction Advisory Lock</span></li>
+          </ul>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Thực Tế</h4>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/agents/system_governance.py</code></div>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/rules/governance/compliance_engine.py</code></div>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/rules/governance/change_engine.py</code></div>
+        </div>
+      </div>
+    </aside>
+
+  </div>
+
+</body>
+</html>

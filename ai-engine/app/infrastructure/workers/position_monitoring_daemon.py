@@ -12,6 +12,7 @@ import logging
 import os
 from datetime import datetime, time as dt_time
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from app.core.registry import AgentRegistry
 import app.domain.agents  # Nạp toàn bộ 12 agents vào registry
@@ -40,7 +41,7 @@ class PositionMonitoringDaemon:
 
     def get_current_interval(self) -> int:
         """Xác định chu kỳ quét động: 60s cho 14:00-14:45, 300s cho giờ bình thường."""
-        now_time = datetime.now().time()
+        now_time = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).time()
         # Khung giờ chiều 14:00 - 14:45 có độ biến động cao nhất (High-Volatility Power Hour)
         if dt_time(14, 0) <= now_time <= dt_time(14, 45):
             return self.urgent_interval
@@ -48,7 +49,7 @@ class PositionMonitoringDaemon:
 
     async def run_single_tick(self) -> dict:
         """Chạy một nhịp giám sát vị thế và xử lý khẩn cấp."""
-        now = datetime.now()
+        now = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
         current_sleep = self.get_current_interval()
         mode_tag = "URGENT (60s)" if current_sleep == self.urgent_interval else "NORMAL (300s)"
         logger.info(f"[PositionDaemon] Bắt đầu nhịp giám sát vị thế [{mode_tag}] lúc {now.strftime('%H:%M:%S')}...")

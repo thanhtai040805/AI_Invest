@@ -1,5 +1,3 @@
-version: '3.9'
-
 services:
   postgres:
     image: timescale/timescaledb:latest-pg16
@@ -50,6 +48,50 @@ services:
       timeout: 5s
       retries: 5
 
+  sag-postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: sag
+      POSTGRES_USER: sag
+      POSTGRES_PASSWORD: ${SAG_DB_PASSWORD:-sag_local_only}
+    volumes:
+      - sag_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sag -d sag"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  sag-api:
+    build:
+      context: ./SAG/apps/api
+      dockerfile: Dockerfile
+      args:
+        SAG_API_EXTRAS: postgres
+    ports:
+      - "8001:8000"
+    environment:
+      - SAG_ENVIRONMENT=prod
+      - SAG_DEBUG=false
+      - SAG_SECRET_KEY=${SAG_SECRET_KEY:-}
+      - SAG_SERVICE_TOKEN=${SAG_SERVICE_TOKEN:-}
+      - SAG_ADMIN_TOKEN=${SAG_ADMIN_TOKEN:-}
+      - SAG_DATABASE_URL=postgresql+asyncpg://sag:${SAG_DB_PASSWORD:-sag_local_only}@sag-postgres:5432/sag
+      - SAG_MARKET_DATABASE_URL=postgresql+asyncpg://postgres:${DB_PASSWORD:-aiinvest123}@postgres:5432/aiinvest
+      - SAG_SAG_PG_HOST=sag-postgres
+      - SAG_SAG_PG_USER=sag
+      - SAG_SAG_PG_PASSWORD=${SAG_DB_PASSWORD:-sag_local_only}
+      - SAG_SAG_PG_DATABASE=sag
+      - SAG_LLM_MODEL=${SAG_LLM_MODEL:-openai/gpt-4.1-mini}
+      - SAG_LLM_API_KEY=${SAG_LLM_API_KEY:-}
+      - SAG_EMBEDDING_API_KEY=${SAG_EMBEDDING_API_KEY:-}
+    depends_on:
+      sag-postgres:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
   ai-engine:
     build:
       context: ./ai-engine
@@ -67,9 +109,15 @@ services:
       - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
       - LLM_API_KEY=${LLM_API_KEY:-}
       - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - DATABASE_URL=postgresql://postgres:${DB_PASSWORD:-aiinvest123}@postgres:5432/aiinvest
+      - AI_ENGINE_ADMIN_TOKEN=${AI_ENGINE_ADMIN_TOKEN:-}
+      - SAG_API_BASE=http://sag-api:8000/api/v2
+      - SAG_SERVICE_TOKEN=${SAG_SERVICE_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy
+      sag-api:
+        condition: service_started
       redis:
         condition: service_healthy
       rabbitmq:
@@ -88,6 +136,8 @@ services:
       - REDIS_URL=redis://:${REDIS_PASSWORD:-aiinvest_redis_secret}@redis:6379
       - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
       - AI_ENGINE_URL=http://ai-engine:8000
+      - AI_ENGINE_ADMIN_TOKEN=${AI_ENGINE_ADMIN_TOKEN:-}
+      - INTERNAL_SERVICE_TOKEN=${INTERNAL_SERVICE_TOKEN:-}
       - DNSE_ENABLED=${DNSE_ENABLED:-true}
       - DNSE_REDIS_CHANNEL_PREFIX=${DNSE_REDIS_CHANNEL_PREFIX:-dnse:event}
       - JWT_ACCESS_SECRET=${JWT_ACCESS_SECRET:-}
@@ -105,7 +155,10 @@ services:
         condition: service_healthy
       ai-engine:
         condition: service_started
+      sag-api:
+        condition: service_started
     restart: unless-stopped
 
 volumes:
   pgdata:
+  sag_pgdata:

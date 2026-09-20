@@ -1,10 +1,26 @@
 """Job state tracking — PostgreSQL-backed, survives restarts."""
 
 import json
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from app.infrastructure.database.pg_pool import get_cursor
+from app.infrastructure.database.pg_pool import get_conn
+
+
+@contextmanager
+def exclusive_job(job_name: str):
+    """Hold a PostgreSQL advisory lock for one cross-process job execution."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_try_advisory_lock(hashtext(%s))", (job_name,))
+            acquired = bool(cur.fetchone()[0])
+            try:
+                yield acquired
+            finally:
+                if acquired:
+                    cur.execute("SELECT pg_advisory_unlock(hashtext(%s))", (job_name,))
 
 
 def get_job(job_name: str) -> Optional[dict]:

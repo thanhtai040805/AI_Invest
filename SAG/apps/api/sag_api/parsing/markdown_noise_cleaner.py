@@ -87,12 +87,26 @@ _STAMP_NOISE_RE = re.compile(
 )
 _GARBLED_HEADING_RE = re.compile(r"^#{1,6}\s*(?:[^\w\s]+|cn\s+n\s+anh)\s*$", re.IGNORECASE)
 _ENGLISH_DUPLICATE_RE = re.compile(
-    r"^\s*(?:State Securities Commission|Ho Chi Minh Stock Exchange|Ha Noi Stock Exchange|"
+    r"^\s*(?:The State Securities Commission|The Stock Exchange|State Securities Commission|Ho Chi Minh Stock Exchange|Ha Noi Stock Exchange|"
     r"Name of organization:|Ticker symbol:|Address:|Tel\.:|E-mail:|Contents of disclosure|"
     r"Disclosure of|This information was published|We certify|Attachment:|Report on|"
     r"LEGAL REPRESENTATIVE|Sign, write|Chief Executive Officer)\b",
     re.IGNORECASE,
 )
+_ENGLISH_SECTION_RE = re.compile(
+    r"^\s*(?:#{1,6}\s*)?(?:financial statements?|financial position|income statement|"
+    r"cash flow statement|notes to the financial statements?|management report|"
+    r"related party transactions?)\b",
+    re.IGNORECASE,
+)
+_ENGLISH_WORD_RE = re.compile(r"\b[A-Za-z][A-Za-z'-]*\b")
+_VIETNAMESE_CHAR_RE = re.compile(r"[ĂÂÊÔƠƯĐăâêôơưđÀ-ỹà-ỹ]")
+_ENGLISH_SENTENCE_WORDS = frozenset({
+    "the", "and", "or", "of", "for", "from", "to", "in", "on", "with", "as", "by",
+    "company", "group", "corporation", "management", "department", "participate", "training",
+    "program", "programs", "workshop", "workshops", "seminar", "seminars", "legal", "regulations",
+    "business", "activities", "financial", "governance", "report", "reports", "updated", "applicable",
+})
 
 
 from html.parser import HTMLParser
@@ -205,6 +219,8 @@ class CleanStats:
     stamps_removed: int = 0
     tables_converted: int = 0
     bilingual_duplicates_removed: int = 0
+    english_lines_removed: int = 0
+    english_inline_fragments_removed: int = 0
 
 
 def clean_markdown(
@@ -227,6 +243,8 @@ def clean_markdown(
     stats = CleanStats(lines_in=len(lines), tables_converted=converted_tables)
     lines, stats = _strip_images(lines, stats)
     lines, stats = _strip_bilingual_duplicates(lines, stats)
+    lines, stats = _strip_english_duplicate_lines(lines, stats)
+    lines, stats = _strip_inline_english_mirrors(lines, stats)
     lines, stats = _strip_audit_stamps_and_form_codes(lines, stats)
     lines, stats = _strip_html_comments(lines, stats)
     lines, stats = _strip_repeated_headings(lines, stats)
@@ -247,8 +265,23 @@ def _strip_bilingual_duplicates(
     """Remove common English mirror lines without deleting English-only facts."""
     out: list[str] = []
     removed = 0
+    english_section_level: int | None = None
     for line in lines:
         stripped = line.strip()
+        heading = _HEADING_RE.match(stripped)
+        if english_section_level is not None:
+            if heading and len(heading.group(1)) <= english_section_level:
+                english_section_level = None
+            else:
+                removed += 1
+                continue
+        if stripped and _ENGLISH_SECTION_RE.match(stripped):
+            english_section_level = len(heading.group(1)) if heading else 1
+            removed += 1
+            continue
+        if stripped and _ENGLISH_DUPLICATE_RE.match(stripped):
+            removed += 1
+            continue
         previous = out[-1].strip() if out else ""
         has_vietnamese_context = bool(re.search(r"[À-ỹĐđ]", previous))
         if stripped and has_vietnamese_context and _ENGLISH_DUPLICATE_RE.match(stripped):
@@ -256,6 +289,71 @@ def _strip_bilingual_duplicates(
             continue
         out.append(line)
     return out, replace(stats, bilingual_duplicates_removed=stats.bilingual_duplicates_removed + removed)
+
+
+def _strip_english_duplicate_lines(
+    lines: list[str], stats: CleanStats
+) -> tuple[list[str], CleanStats]:
+    """Remove long English mirror paragraphs interleaved with Vietnamese OCR.
+
+    Short proper names and table cells remain available for entity resolution;
+    only non-table, English-dominant sentences are treated as duplicated text.
+    """
+    out: list[str] = []
+    removed = 0
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("|", "#", ">", "-", "*")):
+            out.append(line)
+            continue
+        words = _ENGLISH_WORD_RE.findall(stripped)
+        if (
+            len(words) >= 8
+            and not _VIETNAMESE_CHAR_RE.search(stripped)
+            and sum(word.casefold() in _ENGLISH_SENTENCE_WORDS for word in words) >= 2
+        ):
+            removed += 1
+            continue
+        out.append(line)
+    return out, replace(stats, english_lines_removed=stats.english_lines_removed + removed)
+
+
+def _strip_inline_english_mirrors(
+    lines: list[str], stats: CleanStats
+) -> tuple[list[str], CleanStats]:
+    """Remove long English clauses embedded after Vietnamese text.
+
+    Tables and short identifiers are intentionally untouched because their
+    English tokens can be legal names, counterparty names, or column labels.
+    """
+    out: list[str] = []
+    removed = 0
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("|", "#", ">", "-", "*")):
+            out.append(line)
+            continue
+        parts = re.split(r"(?<=[.!?;])\s+(?=[A-Z][a-z])|\s+/\s+", stripped)
+        if len(parts) == 1:
+            out.append(line)
+            continue
+        kept: list[str] = []
+        for part in parts:
+            words = _ENGLISH_WORD_RE.findall(part)
+            is_english_mirror = (
+                len(words) >= 8
+                and not _VIETNAMESE_CHAR_RE.search(part)
+                and sum(word.casefold() in _ENGLISH_SENTENCE_WORDS for word in words) >= 2
+            )
+            if is_english_mirror:
+                removed += 1
+            else:
+                kept.append(part)
+        if kept:
+            out.append(" ".join(kept).strip())
+        elif not parts:
+            out.append(line)
+    return out, replace(stats, english_inline_fragments_removed=stats.english_inline_fragments_removed + removed)
 
 
 def _strip_images(lines: list[str], stats: CleanStats) -> tuple[list[str], CleanStats]:

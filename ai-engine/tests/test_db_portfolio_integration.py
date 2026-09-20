@@ -4,6 +4,9 @@ và giám sát vị thế tự động qua PortfolioRepository.
 """
 
 import asyncio
+from datetime import datetime, timedelta
+
+import pytest
 from app.domain.repositories.portfolio_repository import PortfolioRepository
 from app.domain.agents.portfolio_allocation import PortfolioAllocationAgent
 from app.domain.agents.trade_execution import TradeExecutionAgent
@@ -76,7 +79,18 @@ def test_portfolio_repository_lifecycle():
         assert fpt_pos["shares"] == 1000
         assert fpt_pos["average_price"] == 155000.0  # (150*500 + 160*500) / 1000
 
-        # 5. Khớp lệnh BÁN 400 FPT giá 170,000đ
+        # 5. Không được bán trước T+2.5; sau khi settlement mới khớp lệnh.
+        with pytest.raises(ValueError, match=r"T\+2.5"):
+            repo.execute_order_transaction(
+                ticker="FPT",
+                action="SELL",
+                shares=400,
+                executed_price=170000.0,
+            )
+        repo.storage.execute(
+            "UPDATE positions SET opened_at = %s WHERE user_id = %s AND symbol = 'FPT'",
+            (datetime.now() - timedelta(days=7), repo._in_memory_account["account_id"]),
+        )
         repo.execute_order_transaction(
             ticker="FPT",
             action="SELL",

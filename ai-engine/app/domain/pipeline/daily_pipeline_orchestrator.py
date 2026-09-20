@@ -60,6 +60,13 @@ class DailyInvestmentPipeline:
         except ValueError:
             self.standalone_ml_mode = ExecutionMode.SHADOW_RUNNER
 
+        if self.multi_agent_mode == ExecutionMode.LIVE:
+            logger.critical("LIVE multi-agent execution is disabled: no broker order gateway is implemented")
+            self.multi_agent_mode = ExecutionMode.DISABLED
+        if self.standalone_ml_mode == ExecutionMode.LIVE:
+            logger.critical("LIVE standalone execution is disabled: no broker order gateway is implemented")
+            self.standalone_ml_mode = ExecutionMode.DISABLED
+
         self.portfolio_repo = PortfolioRepository()
         logger.info(
             f"[DailyInvestmentPipeline] Khởi tạo thành công: "
@@ -379,7 +386,7 @@ class DailyInvestmentPipeline:
             # ── PHA 9: AGENT-07 (PORTFOLIO RISK SUPREME GATEKEEPER) ──
             logger.info(f"[Pha 9 - {ticker}] Kích hoạt Agent-07: Thẩm định Rủi ro Tối cao (Điều 1 Hard Stop, T+2.5, VSA)...")
             res_risk = await AgentRegistry.dispatch("portfolio_risk", {
-                "portfolio": {"total_nav": current_nav, "peak_nav": current_nav, "locked_t25_value": 0.0},
+                "user_id": multi_agent_account_id,
                 "proposed_order": proposed_order,
                 "cdc_status": cdc_triggered,
                 "market_context": {"distribution_days": distribution_days, "breadth_ma20_pct": breadth_ma20_pct},
@@ -431,7 +438,7 @@ class DailyInvestmentPipeline:
                 "take_profit_pct": 0.15,
                 "execution_mode": self.multi_agent_mode.value,
                 "execution_status": exec_data.get("status", "SUCCESS"),
-                "action": "SHADOW_PAPER_TRADE_ONLY" if self.multi_agent_mode == ExecutionMode.SHADOW_RUNNER else "EXECUTE_LIVE_BROKER",
+                "action": "SHADOW_PAPER_TRADE_ONLY",
                 "rationale": f"[12-AGENT] CSS={research_report.get('css', 0):.1f} | CTS={cts_score:.1f} | CIO={final_resolution}",
             }
             qualified_orders_multi_agent.append(order_record_ma)

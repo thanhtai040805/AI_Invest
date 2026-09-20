@@ -10,7 +10,10 @@ class AIEngineService {
     this.client = axios.create({
       baseURL: config.aiEngineUrl,
       timeout: 2_500,
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Admin-Token': config.aiEngineAdminToken,
+      },
     });
 
     this.circuitBreaker = new CircuitBreaker({

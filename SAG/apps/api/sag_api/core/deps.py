@@ -26,7 +26,7 @@ async def get_current_user(
 ) -> User:
     if creds is None:
         from sag_api.core.config import settings
-        if settings.environment == "dev" or settings.debug:
+        if settings.environment == "dev" and settings.debug:
             user = await get_user(session, "dev_system_user")
             if user is None:
                 from sag_api.db.models.user import User as UserModel
@@ -94,7 +94,7 @@ async def require_service_or_admin(
     """Authenticate v2 internal/admin APIs without the generic web user model."""
     from sag_api.core.config import settings
 
-    if settings.environment == "dev" or settings.debug:
+    if settings.environment == "dev" and settings.debug:
         if creds is None:
             return
     if creds is None:

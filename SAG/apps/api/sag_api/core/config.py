@@ -266,6 +266,13 @@ class Settings(BaseSettings):
                 raise ValueError("SAG production database_url must use postgresql+asyncpg://.")
             if not self.service_token or len(self.service_token) < 32:
                 raise ValueError("SAG production requires a strong SAG_SERVICE_TOKEN with at least 32 characters.")
+            insecure = {
+                "dev-insecure-secret-change-me-in-production-0123456789",
+                "please-change-this-in-production-0123456789",
+                "dev-secret-change-me",
+            }
+            if len(self.secret_key) < 32 or self.secret_key in insecure:
+                raise ValueError("SAG production requires a non-default SAG_SECRET_KEY with at least 32 characters.")
         return self
 
     @property

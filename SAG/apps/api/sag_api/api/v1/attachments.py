@@ -17,6 +17,7 @@ from sag_api.core.config import settings
 from sag_api.core.db import get_session
 from sag_api.core.deps import get_current_user
 from sag_api.core.errors import NotFoundError, ValidationError
+from sag_api.core.uploads import read_upload_limited
 from sag_api.db.models import User
 
 router = APIRouter(prefix="/attachments", tags=["attachments"])
@@ -51,9 +52,7 @@ async def upload(
     media_type = _ALLOWED.get(ext)
     if media_type is None:
         raise ValidationError("Chỉ hỗ trợ tệp đính kèm hình ảnh (png / jpg / webp / gif)")
-    data = await file.read()
-    if len(data) > _MAX_MB * 1024 * 1024:
-        raise ValidationError(f"Hình ảnh quá lớn (giới hạn {_MAX_MB}MB)")
+    data = await read_upload_limited(file, _MAX_MB * 1024 * 1024)
     attachment_id = f"{uuid.uuid4().hex}{ext}"
     with open(os.path.join(_dir(), attachment_id), "wb") as f:
         f.write(data)

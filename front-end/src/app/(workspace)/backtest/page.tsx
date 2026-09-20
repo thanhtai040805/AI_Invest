@@ -38,8 +38,8 @@ interface PaperTrade {
 }
 
 export default function Backtest() {
-  const [symbol, setSymbol] = useState("VN30")
-  const [strategy, setStrategy] = useState("Momentum + Quality")
+  const [symbol, setSymbol] = useState("FPT")
+  const [strategy, setStrategy] = useState("sma_cross")
   const [startDate, setStartDate] = useState("2024-01-01")
   const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10))
   const [capital, setCapital] = useState("1,000,000,000")
@@ -99,10 +99,22 @@ export default function Backtest() {
         strategy,
         startDate,
         endDate,
-        params: { capital: capital.replace(/,/g, "") },
+        params: {},
+        capital: Number(capital.replace(/,/g, "")),
       })
-      setRunStatus(res?.message || "Job submitted to quantitative engine")
-      await loadData()
+      if (Array.isArray(res?.equity_curve)) {
+        setEquityCurve(res.equity_curve.map((point: { date: string; equity: number }) => ({ date: point.date, value: Number(point.equity) })))
+      }
+      if (Array.isArray(res?.trades)) setTrades(res.trades)
+      if (res?.metrics) {
+        setRisks({
+          sharpe: Number(res.metrics.sharpe_ratio ?? 0),
+          alpha: null,
+          beta: null,
+          maxDrawdown: Number(res.metrics.max_drawdown ?? 0) * 100,
+        })
+      }
+      setRunStatus(res?.status === "success" ? `Hoàn tất ${res.metrics?.total_trades ?? 0} giao dịch` : "Backtest thất bại")
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Backtest execution timed out or queued"
       setRunStatus(msg)
@@ -121,8 +133,6 @@ export default function Backtest() {
   const winningTrades = resolvedTrades.filter((t) => (t.pnl ?? 0) > 0)
   const winRate = resolvedTrades.length > 0
     ? Math.round((winningTrades.length / resolvedTrades.length) * 100)
-    : trades.length > 0
-    ? 60
     : 0
 
   // SVG Chart points calculation
@@ -185,9 +195,9 @@ export default function Backtest() {
                 onChange={(e) => setStrategy(e.target.value)}
                 className="mt-1 w-full h-8 border border-line rounded-[6px] px-2 font-mono text-ink bg-paper"
               >
-                <option value="Momentum + Quality">Xung lực + Chất lượng (F3/F2)</option>
-                <option value="Multi-Factor F1-F6">Đa nhân tố định lượng (F1–F6)</option>
-                <option value="Mean Reversion">Đảo chiều trung bình + Dòng tiền</option>
+                <option value="sma_cross">Giao cắt trung bình động</option>
+                <option value="rsi">Đảo chiều RSI</option>
+                <option value="bollinger">Dải Bollinger</option>
                 <option value="Reinforcement Learning">Học tăng cường thích ứng</option>
               </select>
             </div>
@@ -255,13 +265,13 @@ export default function Backtest() {
               },
               {
                 label: "Tỷ số Sharpe",
-                value: risks?.sharpe != null ? risks.sharpe.toFixed(2) : "1.64",
+                value: risks?.sharpe != null ? risks.sharpe.toFixed(2) : "—",
               },
               {
                 label: "Sụt giảm tối đa",
                 value: (
                   <span className="text-loss">
-                    {risks?.maxDrawdown != null ? `${risks.maxDrawdown.toFixed(1)}%` : "-8.2%"}
+                    {risks?.maxDrawdown != null ? `${risks.maxDrawdown.toFixed(1)}%` : "—"}
                   </span>
                 ),
               },

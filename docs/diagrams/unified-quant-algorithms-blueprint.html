@@ -1,0 +1,1654 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bản Thiết Kế Vĩ Mô Hợp Nhất Toàn Bộ 6 Trục Giải Thuật · AIInvest Master Blueprint</title>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&amp;family=Geist+Mono:wght@400;500;600;700&amp;family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&amp;display=swap"
+    rel="stylesheet" />
+  <style>
+    :root {
+      --color-paper: #fafafa;
+      --color-paper-2: #ffffff;
+      --color-ink: #0f172a;
+      --color-muted: #475569;
+      --color-soft: #64748b;
+      --color-rule: #cbd5e1;
+
+      /* Pastel Pillar Palettes (Zero Black Item Fill) */
+      --p1-bg: #e0f2fe;
+      --p1-border: #0284c7;
+      --p1-text: #0369a1;
+
+      --p2-bg: #f3e8ff;
+      --p2-border: #7c3aed;
+      --p2-text: #6d28d9;
+
+      --p3-bg: #ecfeff;
+      --p3-border: #0891b2;
+      --p3-text: #0e7490;
+
+      --p4-bg: #ffedd5;
+      --p4-border: #ea580c;
+      --p4-text: #c2410c;
+
+      --p5-bg: #dcfce7;
+      --p5-border: #16a34a;
+      --p5-text: #15803d;
+
+      --p6-bg: #f8fafc;
+      --p6-border: #475569;
+      --p6-text: #334155;
+
+      --focal-coral: #ea580c;
+      --focal-green: #16a34a;
+
+      --font-serif: 'Newsreader', Georgia, serif;
+      --font-sans: 'Geist', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-mono: 'Geist Mono', monospace;
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 36px 20px;
+      color: var(--color-ink);
+      background-color: var(--color-paper);
+      background-image: radial-gradient(rgba(15, 23, 42, 0.06) 1px, transparent 1px);
+      background-size: 24px 24px;
+      font-family: var(--font-sans);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .container {
+      width: min(100%, 1780px);
+    }
+
+    .header {
+      margin-bottom: 20px;
+    }
+
+    .eyebrow {
+      margin: 0 0 8px;
+      color: var(--color-muted);
+      font: 600 12px/1.4 var(--font-mono);
+      letter-spacing: .16em;
+      text-transform: uppercase;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .eyebrow-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      background: #0284c7;
+      color: #ffffff;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .eyebrow-badge-focal {
+      background: #ea580c;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font: 400 32px/1.2 var(--font-serif);
+      letter-spacing: -0.02em;
+      color: var(--color-ink);
+    }
+
+    .subtitle {
+      margin: 0;
+      font-size: 14.5px;
+      line-height: 1.6;
+      color: var(--color-muted);
+      max-width: 1560px;
+    }
+
+    /* Preset Toolbar - Pure CSS Pillar Switcher */
+    .preset-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+      margin: 18px 0 20px;
+      padding: 12px 18px;
+      background: #ffffff;
+      border: 1px solid var(--color-rule);
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+    }
+
+    .preset-toolbar-label {
+      font: 600 12px/1 var(--font-mono);
+      color: var(--color-soft);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-right: 6px;
+    }
+
+    .preset-radio {
+      display: none;
+    }
+
+    .preset-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 6px 14px;
+      border-radius: 6px;
+      font: 500 13px/1.2 var(--font-sans);
+      color: var(--color-muted);
+      background: #f8fafc;
+      border: 1px solid var(--color-rule);
+      cursor: pointer;
+      transition: all 0.2s ease;
+      user-select: none;
+    }
+
+    .preset-btn:hover {
+      background: #f1f5f9;
+      color: var(--color-ink);
+      border-color: #94a3b8;
+    }
+
+    .dot-indicator {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+
+    .dot-overview { background: #0f172a; }
+    .dot-p1 { background: #0284c7; }
+    .dot-p2 { background: #7c3aed; }
+    .dot-p3 { background: #0891b2; }
+    .dot-p4 { background: #ea580c; }
+    .dot-p5 { background: #16a34a; }
+    .dot-p6 { background: #475569; }
+
+    #preset-all:checked ~ .preset-toolbar label[for="preset-all"],
+    #preset-p1:checked ~ .preset-toolbar label[for="preset-p1"],
+    #preset-p2:checked ~ .preset-toolbar label[for="preset-p2"],
+    #preset-p3:checked ~ .preset-toolbar label[for="preset-p3"],
+    #preset-p4:checked ~ .preset-toolbar label[for="preset-p4"],
+    #preset-p5:checked ~ .preset-toolbar label[for="preset-p5"],
+    #preset-p6:checked ~ .preset-toolbar label[for="preset-p6"] {
+      background: var(--color-ink);
+      color: #ffffff;
+      border-color: var(--color-ink);
+    }
+
+    /* Interactive Pillar Highlighting via Radio States */
+    #preset-p1:checked ~ .diagram-wrapper .pillar-group:not(.pillar-1),
+    #preset-p2:checked ~ .diagram-wrapper .pillar-group:not(.pillar-2),
+    #preset-p3:checked ~ .diagram-wrapper .pillar-group:not(.pillar-3),
+    #preset-p4:checked ~ .diagram-wrapper .pillar-group:not(.pillar-4),
+    #preset-p5:checked ~ .diagram-wrapper .pillar-group:not(.pillar-5),
+    #preset-p6:checked ~ .diagram-wrapper .pillar-group:not(.pillar-6) {
+      opacity: 0.18;
+      transition: opacity 0.3s ease;
+    }
+
+    #preset-p1:checked ~ .diagram-wrapper .pillar-1,
+    #preset-p2:checked ~ .diagram-wrapper .pillar-2,
+    #preset-p3:checked ~ .diagram-wrapper .pillar-3,
+    #preset-p4:checked ~ .diagram-wrapper .pillar-4,
+    #preset-p5:checked ~ .diagram-wrapper .pillar-5,
+    #preset-p6:checked ~ .diagram-wrapper .pillar-6 {
+      opacity: 1 !important;
+      transition: opacity 0.3s ease;
+    }
+
+    .diagram-wrapper {
+      background: var(--color-paper-2);
+      border-radius: 8px;
+      border: 1px solid var(--color-rule);
+      padding: 18px;
+      overflow-x: auto;
+      box-shadow: 0 4px 20px -2px rgba(15, 23, 42, 0.05);
+      position: relative;
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      min-width: 1680px;
+      height: auto;
+    }
+
+    /* Node Links & Hover States */
+    .node-anchor {
+      cursor: pointer;
+      text-decoration: none;
+    }
+
+    .node-anchor rect,
+    .node-anchor path {
+      transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+
+    .node-anchor:hover .node-box {
+      filter: drop-shadow(0 6px 14px rgba(15, 23, 42, 0.12));
+      transform: translateY(-2px);
+    }
+
+    .node-anchor:hover .node-border {
+      stroke-width: 2px;
+    }
+
+    /* Summary Cards Grid */
+    .cards-grid {
+      display: grid;
+      grid-template-columns: 1.15fr 1fr 0.95fr;
+      gap: 16px;
+      margin-top: 24px;
+    }
+
+    .card {
+      background: #ffffff;
+      border: 1px solid var(--color-rule);
+      border-radius: 6px;
+      padding: 1.25rem;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 4px 0 10px;
+    }
+
+    .card-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+
+    .card-dot.blue { background: #0284c7; }
+    .card-dot.coral { background: #ea580c; }
+    .card-dot.green { background: #16a34a; }
+
+    .card h3 {
+      margin: 0;
+      font: 600 15px/1.3 var(--font-sans);
+      color: var(--color-ink);
+    }
+
+    .card p, .card li {
+      font-size: 13px;
+      line-height: 1.55;
+      color: var(--color-muted);
+    }
+
+    .card ul {
+      margin: 8px 0 0;
+      padding-left: 18px;
+    }
+
+    .card li {
+      margin-bottom: 6px;
+    }
+
+    /* Inspector Drawer (Zero-JS CSS :target implementation) */
+    .inspector-drawer {
+      position: fixed;
+      top: 0;
+      right: -540px;
+      width: 520px;
+      height: 100vh;
+      background: #ffffff;
+      box-shadow: -6px 0 30px rgba(15, 23, 42, 0.15);
+      border-left: 1px solid var(--color-rule);
+      transition: right 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+      z-index: 1000;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .inspector-drawer:target {
+      right: 0;
+    }
+
+    .drawer-header {
+      padding: 20px 24px;
+      border-bottom: 1px solid var(--color-rule);
+      background: #f8fafc;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+    }
+
+    .drawer-title-group {
+      max-width: 420px;
+    }
+
+    .drawer-badge {
+      display: inline-block;
+      padding: 3px 8px;
+      font: 600 11px/1.2 var(--font-mono);
+      border-radius: 4px;
+      margin-bottom: 6px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .drawer-title {
+      margin: 0;
+      font: 600 18px/1.3 var(--font-sans);
+      color: var(--color-ink);
+    }
+
+    .drawer-close {
+      font-size: 26px;
+      line-height: 1;
+      color: var(--color-soft);
+      text-decoration: none;
+      padding: 2px 8px;
+      border-radius: 4px;
+      transition: all 0.15s ease;
+    }
+
+    .drawer-close:hover {
+      background: #e2e8f0;
+      color: var(--color-ink);
+    }
+
+    .drawer-body {
+      padding: 24px;
+      overflow-y: auto;
+      flex: 1;
+      font-size: 13.5px;
+      line-height: 1.6;
+      color: var(--color-muted);
+    }
+
+    .drawer-section {
+      margin-bottom: 20px;
+    }
+
+    .drawer-section-title {
+      margin: 0 0 8px;
+      font: 600 12px/1.2 var(--font-mono);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--color-ink);
+      border-bottom: 1px dashed var(--color-rule);
+      padding-bottom: 4px;
+    }
+
+    .drawer-formula-box {
+      background: #f8fafc;
+      border: 1px solid var(--color-rule);
+      border-radius: 6px;
+      padding: 12px 14px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.6;
+      color: #0369a1;
+      overflow-x: auto;
+      margin: 8px 0;
+    }
+
+    .drawer-code-link {
+      background: #f1f5f9;
+      border-left: 3px solid #0284c7;
+      padding: 8px 12px;
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      color: #0f172a;
+      margin-top: 6px;
+      border-radius: 0 4px 4px 0;
+    }
+
+    .param-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    .param-list li {
+      padding: 5px 0;
+      border-bottom: 1px solid #f1f5f9;
+      display: flex;
+      justify-content: space-between;
+      font-size: 12.5px;
+    }
+
+    .param-list .param-key {
+      font-family: var(--font-mono);
+      color: #475569;
+    }
+
+    .param-list .param-val {
+      font-weight: 600;
+      color: #0f172a;
+    }
+
+    footer {
+      margin-top: 24px;
+      padding-top: 14px;
+      border-top: 1px solid var(--color-rule);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font: 11px/1.4 var(--font-mono);
+      color: var(--color-soft);
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header class="header">
+      <div class="eyebrow">
+        <span class="eyebrow-badge">NEURIPS / SIGMOD GRADE</span>
+        <span class="eyebrow-badge eyebrow-badge-focal">MASTER BLUEPRINT</span>
+        <span>AIINVEST QUANTITATIVE &amp; FORENSIC ALPHA SUITE</span>
+      </div>
+      <h1>Bản Thiết Kế Vĩ Mô Hợp Nhất Toàn Bộ 6 Trục Giải Thuật (Unified Macro Blueprint)</h1>
+      <p class="subtitle">
+        Sơ đồ kiến trúc khoa học vĩ mô tích hợp toàn diện 5 tầng thực thi và 6 trục giải thuật định lượng: Từ cảm ứng nạp BCTC AST băm SHA-256 &amp; vi phân phân số FFD đến lan truyền cú sốc đồ thị 15 ngành/9 tập đoàn HOSE, trung hòa ngành &amp; trực giao hóa Gram-Schmidt, chốt chặn thao túng Beneish M-Score thích ứng kép, bộ ba Hard Laws sàn HOSE, định cỡ Quarter Kelly co giãn Regime và thang 6 bậc cắt lỗ phòng thủ đa tầng T0–T5.
+      </p>
+    </header>
+
+    <!-- Hidden Radios for Pure CSS Preset Filtering -->
+    <input type="radio" name="pillar_preset" id="preset-all" class="preset-radio" checked />
+    <input type="radio" name="pillar_preset" id="preset-p1" class="preset-radio" />
+    <input type="radio" name="pillar_preset" id="preset-p2" class="preset-radio" />
+    <input type="radio" name="pillar_preset" id="preset-p3" class="preset-radio" />
+    <input type="radio" name="pillar_preset" id="preset-p4" class="preset-radio" />
+    <input type="radio" name="pillar_preset" id="preset-p5" class="preset-radio" />
+    <input type="radio" name="pillar_preset" id="preset-p6" class="preset-radio" />
+
+    <!-- Preset Toolbar -->
+    <div class="preset-toolbar">
+      <span class="preset-toolbar-label">Lọc Trọng Tâm Giải Thuật:</span>
+      <label for="preset-all" class="preset-btn"><span class="dot-indicator dot-overview"></span> Toàn Bộ Hệ Thống (Master View)</label>
+      <label for="preset-p1" class="preset-btn"><span class="dot-indicator dot-p1"></span> Pillar 1: Vi Phân Phân Số FFD &amp; Vi Cấu Trúc</label>
+      <label for="preset-p2" class="preset-btn"><span class="dot-indicator dot-p2"></span> Pillar 2: Lan Truyền Cú Sốc Đồ Thị &amp; Tập Đoàn</label>
+      <label for="preset-p3" class="preset-btn"><span class="dot-indicator dot-p3"></span> Pillar 3: Trung Hòa Ngành, Trực Giao &amp; IC</label>
+      <label for="preset-p4" class="preset-btn"><span class="dot-indicator dot-p4"></span> Pillar 4: Giám Định Thao Túng Beneish M-Score</label>
+      <label for="preset-p5" class="preset-btn"><span class="dot-indicator dot-p5"></span> Pillar 5: Hard Laws, Cắt Lỗ Đa Tầng &amp; Kelly</label>
+      <label for="preset-p6" class="preset-btn"><span class="dot-indicator dot-p6"></span> Pillar 6: BCTC AST &amp; Dual-Store Ingestion</label>
+    </div>
+
+    <!-- Diagram SVG Container -->
+    <div class="diagram-wrapper">
+      <svg role="img" aria-labelledby="diagram-title diagram-desc" viewBox="0 0 1740 1260">
+        <title id="diagram-title">Sơ đồ Kiến Trúc Vĩ Mô Hợp Nhất 6 Trục Giải Thuật Định Lượng AIInvest</title>
+        <desc id="diagram-desc">
+          Bản thiết kế vĩ mô 5 tầng gồm: Tầng 1 Cảm ứng nạp dữ liệu BCTC AST và chuỗi FFD; Tầng 2 Đồ thị lan truyền cú sốc 15 ngành và 9 tập đoàn HOSE; Tầng 3 Trung hòa ngành, trực giao hóa Gram-Schmidt và kiểm định IC; Tầng 4 Thể chế phủ quyết Beneish và Hard Laws; Tầng 5 Định cỡ Kelly theo Regime và cắt lỗ đa tầng T0-T5.
+        </desc>
+
+        <defs>
+          <!-- Markers strictly according to /diagram-design -->
+          <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#475569" />
+          </marker>
+          <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#ea580c" />
+          </marker>
+          <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#0284c7" />
+          </marker>
+          <marker id="arrow-emerald" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#16a34a" />
+          </marker>
+          <marker id="arrow-violet" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#7c3aed" />
+          </marker>
+        </defs>
+
+        <!-- Base Canvas -->
+        <rect width="100%" height="100%" fill="#fafafa" rx="6" />
+
+        <!-- ========================================================================= -->
+        <!-- LAYER BANDS (5 STRATA) -->
+        <!-- ========================================================================= -->
+
+        <!-- Layer 1 Band: Physical Sensing & Ingestion Layer -->
+        <g class="layer-band" id="band-1">
+          <rect x="30" y="30" width="1680" height="210" rx="8" fill="#f0f9ff" stroke="#bae6fd" stroke-width="1" />
+          <rect x="30" y="30" width="1680" height="28" rx="8" fill="#e0f2fe" />
+          <rect x="30" y="48" width="1680" height="10" fill="#e0f2fe" />
+          <text x="45" y="49" fill="#0369a1" font-family="'Geist Mono', monospace" font-size="11" font-weight="700" letter-spacing="0.1em">
+            TẦNG 1: CẢM ỨNG DỮ LIỆU &amp; BIẾN ĐỔI VẬT LÝ (PHYSICAL SENSING &amp; INGESTION LAYER)
+          </text>
+          <text x="1480" y="49" fill="#0284c7" font-family="'Geist Mono', monospace" font-size="10" font-weight="600">
+            PILLAR 1 &amp; PILLAR 6
+          </text>
+        </g>
+
+        <!-- Layer 2 Band: Spatial & Graph Contagion Layer -->
+        <g class="layer-band" id="band-2">
+          <rect x="30" y="260" width="1680" height="200" rx="8" fill="#faf5ff" stroke="#e9d5ff" stroke-width="1" />
+          <rect x="30" y="260" width="1680" height="28" rx="8" fill="#f3e8ff" />
+          <rect x="30" y="278" width="1680" height="10" fill="#f3e8ff" />
+          <text x="45" y="279" fill="#6d28d9" font-family="'Geist Mono', monospace" font-size="11" font-weight="700" letter-spacing="0.1em">
+            TẦNG 2: TRÍ TUỆ ĐỒ THỊ &amp; LAN TRUYỀN KHÔNG GIAN (SPATIAL &amp; GRAPH CONTAGION LAYER)
+          </text>
+          <text x="1560" y="279" fill="#7c3aed" font-family="'Geist Mono', monospace" font-size="10" font-weight="600">
+            PILLAR 2
+          </text>
+        </g>
+
+        <!-- Layer 3 Band: Quantitative Factor Engineering & IC Testing -->
+        <g class="layer-band" id="band-3">
+          <rect x="30" y="480" width="1680" height="200" rx="8" fill="#ecfeff" stroke="#a5f3fc" stroke-width="1" />
+          <rect x="30" y="480" width="1680" height="28" rx="8" fill="#cffafe" />
+          <rect x="30" y="498" width="1680" height="10" fill="#cffafe" />
+          <text x="45" y="499" fill="#0e7490" font-family="'Geist Mono', monospace" font-size="11" font-weight="700" letter-spacing="0.1em">
+            TẦNG 3: KỸ THUẬT NHÂN TỐ ĐỊNH LƯỢNG &amp; KIỂM ĐỊNH IC (QUANTITATIVE FACTOR &amp; IC LAYER)
+          </text>
+          <text x="1560" y="499" fill="#0891b2" font-family="'Geist Mono', monospace" font-size="10" font-weight="600">
+            PILLAR 3
+          </text>
+        </g>
+
+        <!-- Layer 4 Band: Forensic & Institutional Veto Layer -->
+        <g class="layer-band" id="band-4">
+          <rect x="30" y="700" width="1680" height="210" rx="8" fill="#fff7ed" stroke="#fed7aa" stroke-width="1" />
+          <rect x="30" y="700" width="1680" height="28" rx="8" fill="#ffedd5" />
+          <rect x="30" y="718" width="1680" height="10" fill="#ffedd5" />
+          <text x="45" y="719" fill="#c2410c" font-family="'Geist Mono', monospace" font-size="11" font-weight="700" letter-spacing="0.1em">
+            TẦNG 4: THỂ CHẾ PHỦ QUYẾT &amp; GIÁM ĐỊNH PHÁP Y (FORENSIC &amp; INSTITUTIONAL VETO LAYER)
+          </text>
+          <text x="1460" y="719" fill="#ea580c" font-family="'Geist Mono', monospace" font-size="10" font-weight="600">
+            PILLAR 4 &amp; HARD LAWS
+          </text>
+        </g>
+
+        <!-- Layer 5 Band: Regime Allocation & Execution Layer -->
+        <g class="layer-band" id="band-5">
+          <rect x="30" y="930" width="1680" height="220" rx="8" fill="#f0fdf4" stroke="#bbf7d0" stroke-width="1" />
+          <rect x="30" y="930" width="1680" height="28" rx="8" fill="#dcfce7" />
+          <rect x="30" y="948" width="1680" height="10" fill="#dcfce7" />
+          <text x="45" y="949" fill="#15803d" font-family="'Geist Mono', monospace" font-size="11" font-weight="700" letter-spacing="0.1em">
+            TẦNG 5: TỐI ƯU PHÂN BỔ KELLY &amp; THỰC THI THÍCH ỨNG (REGIME ALLOCATION &amp; EXECUTION LAYER)
+          </text>
+          <text x="1560" y="949" fill="#16a34a" font-family="'Geist Mono', monospace" font-size="10" font-weight="600">
+            PILLAR 5
+          </text>
+        </g>
+
+        <!-- ========================================================================= -->
+        <!-- CONNECTORS (ORTHOGONAL r=8, ZERO DIAGONALS, MANDATORY MASK RECTS) -->
+        <!-- ========================================================================= -->
+
+        <!-- Connectors: Layer 1 Intra -->
+        <!-- 1. bctc-doc -> mineru-ast -->
+        <g class="pillar-group pillar-6">
+          <path d="M 230 110 H 280" fill="none" stroke="#0284c7" stroke-width="1.5" marker-end="url(#arrow-link)" />
+          <rect x="238" y="94" width="34" height="12" rx="2" fill="#f0f9ff" />
+          <text x="255" y="103" fill="#0284c7" font-family="'Geist Mono', monospace" font-size="8" font-weight="600" text-anchor="middle">OCR</text>
+        </g>
+
+        <!-- 2. mineru-ast -> sha256-hash -->
+        <g class="pillar-group pillar-6">
+          <path d="M 470 110 H 510" fill="none" stroke="#0284c7" stroke-width="1.5" marker-end="url(#arrow-link)" />
+          <rect x="474" y="94" width="32" height="12" rx="2" fill="#f0f9ff" />
+          <text x="490" y="103" fill="#0284c7" font-family="'Geist Mono', monospace" font-size="8" font-weight="600" text-anchor="middle">AST</text>
+        </g>
+
+        <!-- 3. sha256-hash -> dual-store -->
+        <g class="pillar-group pillar-6">
+          <path d="M 700 110 H 740" fill="none" stroke="#0284c7" stroke-width="1.5" marker-end="url(#arrow-link)" />
+          <rect x="702" y="94" width="36" height="12" rx="2" fill="#f0f9ff" />
+          <text x="720" y="103" fill="#0284c7" font-family="'Geist Mono', monospace" font-size="8" font-weight="600" text-anchor="middle">HASH</text>
+        </g>
+
+        <!-- 4. ohlcv-tick -> ffd-engine -->
+        <g class="pillar-group pillar-1">
+          <path d="M 1210 110 H 1260" fill="none" stroke="#0284c7" stroke-width="1.5" marker-end="url(#arrow-link)" />
+          <rect x="1218" y="94" width="34" height="12" rx="2" fill="#f0f9ff" />
+          <text x="1235" y="103" fill="#0284c7" font-family="'Geist Mono', monospace" font-size="8" font-weight="600" text-anchor="middle">TICK</text>
+        </g>
+
+        <!-- 5. ffd-engine -> feature-forge -->
+        <g class="pillar-group pillar-1">
+          <path d="M 1450 110 H 1490" fill="none" stroke="#0284c7" stroke-width="1.5" marker-end="url(#arrow-link)" />
+          <rect x="1454" y="94" width="32" height="12" rx="2" fill="#f0f9ff" />
+          <text x="1470" y="103" fill="#0284c7" font-family="'Geist Mono', monospace" font-size="8" font-weight="600" text-anchor="middle">FFD</text>
+        </g>
+
+        <!-- Connectors: Layer 1 -> Layer 2 Inter-strata -->
+        <!-- 6. dual-store -> hose-topology (Orthogonal elbow r=8) -->
+        <g class="pillar-group pillar-6 pillar-2">
+          <path d="M 850 155 V 190 Q 850 198 842 198 H 228 Q 220 198 220 206 V 300" fill="none" stroke="#475569" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#arrow)" />
+          <rect x="480" y="188" width="90" height="14" rx="2" fill="#fafafa" />
+          <text x="525" y="199" fill="#475569" font-family="'Geist Mono', monospace" font-size="8" font-weight="600" text-anchor="middle">RELATIONAL GRAPH</text>
+        </g>
+
+        <!-- 7. feature-forge -> hose-topology & graph engine (Orthogonal elbow r=8) -->
+        <g class="pillar-group pillar-1 pillar-2">
+          <path d="M 1580 155 V 220 Q 1580 228 1572 228 H 358 Q 350 228 350 236 V 300" fill="none" stroke="#0284c7" stroke-width="1.5" marker-end="url(#arrow-link)" />
+          <rect x="940" y="218" width="100" height="14" rx="2" fill="#fafafa" />
+          <text x="990" y="229" fill="#0284c7" font-family="'Geist Mono', monospace" font-size="8" font-weight="600" text-anchor="middle">STATIONARY ALPHA TENSOR</text>
+        </g>
+
+        <!-- Connectors: Layer 2 Intra -->
+        <!-- 8. hose-topology -> leader-shock -->
+        <g class="pillar-group pillar-2">
+          <path d="M 370 360 H 420" fill="none" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arrow-violet)" />
+          <rect x="376" y="344" width="38" height="12" rx="2" fill="#faf5ff" />
+          <text x="395" y="353" fill="#7c3aed" font-family="'Geist Mono', monospace" font-size="8" font-weight="600" text-anchor="middle">HUBS</text>
+        </g>
+
+        <!-- 9. leader-shock -> catchup-breadth -->
+        <g class="pillar-group pillar-2">
+          <path d="M 690 360 H 740" fill="none" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arrow-violet)" />
+          <rect x="696" y="344" width="38" height="12" rx="2" fill="#faf5ff" />
+          <text x="715" y="353" fill="#7c3aed" font-family="'Geist Mono', monospace" font-size="8" font-weight="600" text-anchor="middle">PULSE</text>
+        </g>
+
+        <!-- 10. catchup-breadth -> eco-spillover -->
+        <g class="pillar-group pillar-2">
+          <path d="M 1030 360 H 1080" fill="none" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arrow-violet)" />
+          <rect x="1038" y="344" width="34" height="12" rx="2" fill="#faf5ff" />
+          <text x="1055" y="353" fill="#7c3aed" font-family="'Geist Mono', monospace" font-size="8" font-weight="600" text-anchor="middle">VR&gt;1.5</text>
+        </g>
+
+        <!-- 11. eco-spillover -> zero-lookahead -->
+        <g class="pillar-group pillar-2">
+          <path d="M 1340 360 H 1390" fill="none" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arrow-violet)" />
+          <rect x="1348" y="344" width="34" height="12" rx="2" fill="#faf5ff" />
+          <text x="1365" y="353" fill="#7c3aed" font-family="'Geist Mono', monospace" font-size="8" font-weight="600" text-anchor="middle">GROUP</text>
+        </g>
+
+        <!-- Connectors: Layer 2 -> Layer 3 Inter-strata -->
+        <!-- 12. zero-lookahead -> dist-winsor (Orthogonal elbow r=8) -->
+        <g class="pillar-group pillar-2 pillar-3">
+          <path d="M 1520 420 V 450 Q 1520 458 1512 458 H 208 Q 200 458 200 466 V 520" fill="none" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arrow-violet)" />
+          <rect x="800" y="448" width="140" height="14" rx="2" fill="#fafafa" />
+          <text x="870" y="459" fill="#7c3aed" font-family="'Geist Mono', monospace" font-size="8" font-weight="600" text-anchor="middle">SHIFT(1, 2) CONTAGION ALPHA</text>
+        </g>
+
+        <!-- Connectors: Layer 3 Intra -->
+        <!-- 13. dist-winsor -> safe-zscore -->
+        <g class="pillar-group pillar-3">
+          <path d="M 330 570 H 380" fill="none" stroke="#0891b2" stroke-width="1.5" marker-end="url(#arrow-link)" />
+          <rect x="338" y="554" width="34" height="12" rx="2" fill="#ecfeff" />
+          <text x="355" y="563" fill="#0891b2" font-family="'Geist Mono', monospace" font-size="8" font-weight="600" text-anchor="middle">WINSOR</text>
+        </g>
+
+        <!-- 14. safe-zscore -> orthogonal-engine -->
+        <g class="pillar-group pillar-3">
+          <path d="M 640 570 H 690" fill="none" stroke="#0891b2" stroke-width="1.5" marker-end="url(#arrow-link)" />
+          <rect x="646" y="554" width="38" height="12" rx="2" fill="#ecfeff" />
+          <text x="665" y="563" fill="#0891b2" font-family="'Geist Mono', monospace" font-size="8" font-weight="600" text-anchor="middle">Z-SCORE</text>
+        </g>
+
+        <!-- 15. orthogonal-engine -> vn-filters -->
+        <g class="pillar-group pillar-3">
+          <path d="M 1010 570 H 1060" fill="none" stroke="#0891b2" stroke-width="1.5" marker-end="url(#arrow-link)" />
+          <rect x="1016" y="554" width="38" height="12" rx="2" fill="#ecfeff" />
+          <text x="1035" y="563" fill="#0891b2" font-family="'Geist Mono', monospace" font-size="8" font-weight="600" text-anchor="middle">ORTHOG</text>
+        </g>
+
+        <!-- 16. vn-filters -> ic-metrics -->
+        <g class="pillar-group pillar-3">
+          <path d="M 1340 570 H 1390" fill="none" stroke="#0891b2" stroke-width="1.5" marker-end="url(#arrow-link)" />
+          <rect x="1348" y="554" width="34" height="12" rx="2" fill="#ecfeff" />
+          <text x="1365" y="563" fill="#0891b2" font-family="'Geist Mono', monospace" font-size="8" font-weight="600" text-anchor="middle">PURGE</text>
+        </g>
+
+        <!-- Connectors: Layer 3 -> Layer 4 Inter-strata -->
+        <!-- 17. ic-metrics -> beneish-exempt & dual-engine (Orthogonal elbow r=8) -->
+        <g class="pillar-group pillar-3 pillar-4">
+          <path d="M 1520 620 V 660 Q 1520 668 1512 668 H 198 Q 190 668 190 676 V 740" fill="none" stroke="#0891b2" stroke-width="1.5" marker-end="url(#arrow-link)" />
+          <rect x="790" y="658" width="160" height="14" rx="2" fill="#fafafa" />
+          <text x="870" y="669" fill="#0891b2" font-family="'Geist Mono', monospace" font-size="8" font-weight="600" text-anchor="middle">RANK IC CANDIDATE UNIVERSE</text>
+        </g>
+
+        <!-- Connectors: Layer 4 Intra -->
+        <!-- 18. beneish-exempt -> beneish-dual -->
+        <g class="pillar-group pillar-4">
+          <path d="M 310 790 H 350" fill="none" stroke="#ea580c" stroke-width="1.5" marker-end="url(#arrow-accent)" />
+          <rect x="314" y="774" width="32" height="12" rx="2" fill="#fff7ed" />
+          <text x="330" y="783" fill="#ea580c" font-family="'Geist Mono', monospace" font-size="8" font-weight="600" text-anchor="middle">ROUT</text>
+        </g>
+
+        <!-- 19. beneish-dual -> beneish-veto -->
+        <g class="pillar-group pillar-4">
+          <path d="M 640 790 H 680" fill="none" stroke="#ea580c" stroke-width="1.5" marker-end="url(#arrow-accent)" />
+          <rect x="646" y="774" width="28" height="12" rx="2" fill="#fff7ed" />
+          <text x="660" y="783" fill="#ea580c" font-family="'Geist Mono', monospace" font-size="8" font-weight="600" text-anchor="middle">M-SC</text>
+        </g>
+
+        <!-- 20. beneish-veto -> hard-law-1 (Coral Focal Path) -->
+        <g class="pillar-group pillar-4">
+          <path d="M 970 790 H 1020" fill="none" stroke="#ea580c" stroke-width="1.8" marker-end="url(#arrow-accent)" />
+          <rect x="976" y="774" width="38" height="12" rx="2" fill="#fff7ed" />
+          <text x="995" y="783" fill="#ea580c" font-family="'Geist Mono', monospace" font-size="8" font-weight="700" text-anchor="middle">PASS</text>
+        </g>
+
+        <!-- 21. hard-law-1 -> hard-law-2-4 -->
+        <g class="pillar-group pillar-4 pillar-5">
+          <path d="M 1330 790 H 1380" fill="none" stroke="#ea580c" stroke-width="1.5" marker-end="url(#arrow-accent)" />
+          <rect x="1336" y="774" width="38" height="12" rx="2" fill="#fff7ed" />
+          <text x="1355" y="783" fill="#ea580c" font-family="'Geist Mono', monospace" font-size="8" font-weight="600" text-anchor="middle">CAP-OK</text>
+        </g>
+
+        <!-- Connectors: Layer 4 -> Layer 5 Inter-strata -->
+        <!-- 22. hard-law-2-4 -> regime-hmm (Orthogonal elbow r=8) -->
+        <g class="pillar-group pillar-4 pillar-5">
+          <path d="M 1520 850 V 890 Q 1520 898 1512 898 H 218 Q 210 898 210 906 V 970" fill="none" stroke="#16a34a" stroke-width="1.5" marker-end="url(#arrow-emerald)" />
+          <rect x="800" y="888" width="140" height="14" rx="2" fill="#fafafa" />
+          <text x="870" y="899" fill="#16a34a" font-family="'Geist Mono', monospace" font-size="8" font-weight="700" text-anchor="middle">INSTITUTIONAL PERMITTED</text>
+        </g>
+
+        <!-- Connectors: Layer 5 Intra -->
+        <!-- 23. regime-hmm -> kelly-sizer -->
+        <g class="pillar-group pillar-5">
+          <path d="M 360 1025 H 410" fill="none" stroke="#16a34a" stroke-width="1.5" marker-end="url(#arrow-emerald)" />
+          <rect x="368" y="1009" width="34" height="12" rx="2" fill="#f0fdf4" />
+          <text x="385" y="1018" fill="#16a34a" font-family="'Geist Mono', monospace" font-size="8" font-weight="600" text-anchor="middle">SCALE</text>
+        </g>
+
+        <!-- 24. kelly-sizer -> hose-exec -->
+        <g class="pillar-group pillar-5">
+          <path d="M 680 1025 H 730" fill="none" stroke="#16a34a" stroke-width="1.8" marker-end="url(#arrow-emerald)" />
+          <rect x="686" y="1009" width="38" height="12" rx="2" fill="#f0fdf4" />
+          <text x="705" y="1018" fill="#16a34a" font-family="'Geist Mono', monospace" font-size="8" font-weight="700" text-anchor="middle">ALLOC</text>
+        </g>
+
+        <!-- 25. hose-exec -> stoploss-t0t5 -->
+        <g class="pillar-group pillar-5">
+          <path d="M 1010 1025 H 1060" fill="none" stroke="#16a34a" stroke-width="1.5" marker-end="url(#arrow-emerald)" />
+          <rect x="1016" y="1009" width="38" height="12" rx="2" fill="#f0fdf4" />
+          <text x="1035" y="1018" fill="#16a34a" font-family="'Geist Mono', monospace" font-size="8" font-weight="600" text-anchor="middle">FILLED</text>
+        </g>
+
+        <!-- ========================================================================= -->
+        <!-- NODES & GLYPHS (FRESH PASTEL, NO BLACK FILLS, INTERACTIVE DRAWERS) -->
+        <!-- ========================================================================= -->
+
+        <!-- LAYER 1 NODES -->
+        <!-- Node 1: Golden Document Trinity -->
+        <g class="pillar-group pillar-6">
+          <a href="#drawer-bctc-ocr" class="node-anchor">
+            <rect x="60" y="75" width="170" height="80" rx="6" fill="#ffffff" class="node-box" />
+            <rect x="60" y="75" width="170" height="80" rx="6" fill="#f8fafc" stroke="#64748b" stroke-width="1" class="node-border" />
+            <rect x="68" y="81" width="46" height="13" rx="2" fill="#e2e8f0" />
+            <text x="91" y="91" fill="#475569" font-family="'Geist Mono', monospace" font-size="7.5" font-weight="700" text-anchor="middle">INPUT</text>
+            <text x="145" y="106" fill="#0f172a" font-family="'Geist', sans-serif" font-size="12" font-weight="600" text-anchor="middle">Bộ 3 BCTC Vàng</text>
+            <text x="145" y="122" fill="#475569" font-family="'Geist Mono', monospace" font-size="8.5" text-anchor="middle">Audited · Qtr · Governance</text>
+            <text x="145" y="136" fill="#0284c7" font-family="'Geist Mono', monospace" font-size="8" text-anchor="middle">📄 document_selector.py</text>
+          </a>
+        </g>
+
+        <!-- Node 2: MinerU OCR & Markdown AST -->
+        <g class="pillar-group pillar-6">
+          <a href="#drawer-bctc-ocr" class="node-anchor">
+            <rect x="280" y="75" width="190" height="80" rx="6" fill="#ffffff" class="node-box" />
+            <rect x="280" y="75" width="190" height="80" rx="6" fill="#f3e8ff" stroke="#7c3aed" stroke-width="1" class="node-border" />
+            <rect x="288" y="81" width="56" height="13" rx="2" fill="#e9d5ff" />
+            <text x="316" y="91" fill="#6d28d9" font-family="'Geist Mono', monospace" font-size="7.5" font-weight="700" text-anchor="middle">PARSER</text>
+            <text x="375" y="106" fill="#0f172a" font-family="'Geist', sans-serif" font-size="12" font-weight="600" text-anchor="middle">MinerU OCR &amp; AST</text>
+            <text x="375" y="122" fill="#6d28d9" font-family="'Geist Mono', monospace" font-size="8.5" text-anchor="middle">Deep Multi-Table Parsing</text>
+            <text x="375" y="136" fill="#475569" font-family="'Geist Mono', monospace" font-size="8" text-anchor="middle">Jobs=20 · Markdown Trees</text>
+          </a>
+        </g>
+
+        <!-- Node 3: SHA-256 Content Hashing -->
+        <g class="pillar-group pillar-6">
+          <a href="#drawer-bctc-ocr" class="node-anchor">
+            <rect x="510" y="75" width="190" height="80" rx="6" fill="#ffffff" class="node-box" />
+            <rect x="510" y="75" width="190" height="80" rx="6" fill="#e0f2fe" stroke="#0284c7" stroke-width="1" class="node-border" />
+            <rect x="518" y="81" width="52" height="13" rx="2" fill="#bae6fd" />
+            <text x="544" y="91" fill="#0369a1" font-family="'Geist Mono', monospace" font-size="7.5" font-weight="700" text-anchor="middle">CRYPTO</text>
+            <text x="605" y="106" fill="#0f172a" font-family="'Geist', sans-serif" font-size="12" font-weight="600" text-anchor="middle">SHA-256 Hash Dòng</text>
+            <text x="605" y="122" fill="#0284c7" font-family="'Geist Mono', monospace" font-size="8.5" text-anchor="middle">quote_hash = SHA256(line)</text>
+            <text x="605" y="136" fill="#475569" font-family="'Geist Mono', monospace" font-size="8" text-anchor="middle">Zero Hallucination Proof</text>
+          </a>
+        </g>
+
+        <!-- Node 4: Dual-Store Ingestion -->
+        <g class="pillar-group pillar-6">
+          <a href="#drawer-dualstore" class="node-anchor">
+            <rect x="740" y="75" width="220" height="80" rx="6" fill="#ffffff" class="node-box" />
+            <rect x="740" y="75" width="220" height="80" rx="6" fill="#ecfeff" stroke="#0891b2" stroke-width="1" class="node-border" />
+            <rect x="748" y="81" width="60" height="13" rx="2" fill="#cffafe" />
+            <text x="778" y="91" fill="#0e7490" font-family="'Geist Mono', monospace" font-size="7.5" font-weight="700" text-anchor="middle">DUAL-STORE</text>
+            <text x="850" y="106" fill="#0f172a" font-family="'Geist', sans-serif" font-size="12" font-weight="600" text-anchor="middle">Kho Lưu Trữ Kép</text>
+            <text x="850" y="122" fill="#0891b2" font-family="'Geist Mono', monospace" font-size="8.5" text-anchor="middle">PostgreSQL VAS + Vector 1024d</text>
+            <text x="850" y="136" fill="#475569" font-family="'Geist Mono', monospace" font-size="8" text-anchor="middle">Siêu đồ thị Bipartite M:N</text>
+          </a>
+        </g>
+
+        <!-- Node 5: OHLCV Tick Stream -->
+        <g class="pillar-group pillar-1">
+          <a href="#drawer-ffd" class="node-anchor">
+            <rect x="1040" y="75" width="170" height="80" rx="6" fill="#ffffff" class="node-box" />
+            <rect x="1040" y="75" width="170" height="80" rx="6" fill="#f8fafc" stroke="#64748b" stroke-width="1" class="node-border" />
+            <rect x="1048" y="81" width="46" height="13" rx="2" fill="#e2e8f0" />
+            <text x="1071" y="91" fill="#475569" font-family="'Geist Mono', monospace" font-size="7.5" font-weight="700" text-anchor="middle">MARKET</text>
+            <text x="1125" y="106" fill="#0f172a" font-family="'Geist', sans-serif" font-size="12" font-weight="600" text-anchor="middle">Tick Stream HOSE</text>
+            <text x="1125" y="122" fill="#475569" font-family="'Geist Mono', monospace" font-size="8.5" text-anchor="middle">406 Cổ Phiếu Niêm Yết</text>
+            <text x="1125" y="136" fill="#0284c7" font-family="'Geist Mono', monospace" font-size="8" text-anchor="middle">Bar OHLCV &amp; Volume</text>
+          </a>
+        </g>
+
+        <!-- Node 6: López de Prado FFD Engine -->
+        <g class="pillar-group pillar-1">
+          <a href="#drawer-ffd" class="node-anchor">
+            <rect x="1260" y="75" width="190" height="80" rx="6" fill="#ffffff" class="node-box" />
+            <rect x="1260" y="75" width="190" height="80" rx="6" fill="#e0f2fe" stroke="#0284c7" stroke-width="1" class="node-border" />
+            <rect x="1268" y="81" width="56" height="13" rx="2" fill="#bae6fd" />
+            <text x="1296" y="91" fill="#0369a1" font-family="'Geist Mono', monospace" font-size="7.5" font-weight="700" text-anchor="middle">ALGO FFD</text>
+            <text x="1355" y="106" fill="#0f172a" font-family="'Geist', sans-serif" font-size="12" font-weight="600" text-anchor="middle">Vi Phân Phân Số FFD</text>
+            <text x="1355" y="122" fill="#0284c7" font-family="'Geist Mono', monospace" font-size="8.5" text-anchor="middle">|w_k| &ge; 1e-5 · ADF d*</text>
+            <text x="1355" y="136" fill="#475569" font-family="'Geist Mono', monospace" font-size="8" text-anchor="middle">Bảo toàn ký ức dài hạn</text>
+          </a>
+        </g>
+
+        <!-- Node 7: Feature Forge Engine -->
+        <g class="pillar-group pillar-1">
+          <a href="#drawer-ffd" class="node-anchor">
+            <rect x="1490" y="75" width="200" height="80" rx="6" fill="#ffffff" class="node-box" />
+            <rect x="1490" y="75" width="200" height="80" rx="6" fill="#dcfce7" stroke="#16a34a" stroke-width="1" class="node-border" />
+            <rect x="1498" y="81" width="52" height="13" rx="2" fill="#bbf7d0" />
+            <text x="1524" y="91" fill="#15803d" font-family="'Geist Mono', monospace" font-size="7.5" font-weight="700" text-anchor="middle">FORGE</text>
+            <text x="1590" y="106" fill="#0f172a" font-family="'Geist', sans-serif" font-size="12" font-weight="600" text-anchor="middle">Đặc Trưng Vi Cấu Trúc</text>
+            <text x="1590" y="122" fill="#15803d" font-family="'Geist Mono', monospace" font-size="8.5" text-anchor="middle">Garman-Klass &amp; Amihud</text>
+            <text x="1590" y="136" fill="#475569" font-family="'Geist Mono', monospace" font-size="8" text-anchor="middle">DVOL Trend · MFI · ATR</text>
+          </a>
+        </g>
+
+        <!-- LAYER 2 NODES -->
+        <!-- Node 8: Directed Graph HOSE Topology -->
+        <g class="pillar-group pillar-2">
+          <a href="#drawer-graph" class="node-anchor">
+            <rect x="60" y="300" width="310" height="120" rx="6" fill="#ffffff" class="node-box" />
+            <rect x="60" y="300" width="310" height="120" rx="6" fill="#f3e8ff" stroke="#7c3aed" stroke-width="1" class="node-border" />
+            <rect x="68" y="306" width="60" height="13" rx="2" fill="#e9d5ff" />
+            <text x="98" y="316" fill="#6d28d9" font-family="'Geist Mono', monospace" font-size="7.5" font-weight="700" text-anchor="middle">GRAPH MAP</text>
+            <text x="215" y="332" fill="#0f172a" font-family="'Geist', sans-serif" font-size="13" font-weight="600" text-anchor="middle">Đồ Thị 15 Phân Ngành &amp; 9 Tập Đoàn</text>
+            <text x="215" y="352" fill="#6d28d9" font-family="'Geist Mono', monospace" font-size="9" text-anchor="middle">406 Cổ Phiếu HOSE Chiếu Theo ICB</text>
+            <text x="215" y="370" fill="#475569" font-family="'Geist', sans-serif" font-size="10.5" text-anchor="middle">15 Hubs: VCB, SSI, DIG, HPG, PVD, MWG...</text>
+            <text x="215" y="388" fill="#475569" font-family="'Geist Mono', monospace" font-size="9" text-anchor="middle">9 Cụm: VinGroup, Gelex, DGC, HoangHuy...</text>
+            <text x="215" y="406" fill="#0284c7" font-family="'Geist Mono', monospace" font-size="8.5" text-anchor="middle">📄 graph_contagion_engine.py</text>
+          </a>
+        </g>
+
+        <!-- Node 9: Leader Shock Dynamic Impulse -->
+        <g class="pillar-group pillar-2">
+          <a href="#drawer-graph" class="node-anchor">
+            <rect x="420" y="300" width="270" height="120" rx="6" fill="#ffffff" class="node-box" />
+            <rect x="420" y="300" width="270" height="120" rx="6" fill="#e0f2fe" stroke="#0284c7" stroke-width="1" class="node-border" />
+            <rect x="428" y="306" width="60" height="13" rx="2" fill="#bae6fd" />
+            <text x="458" y="316" fill="#0369a1" font-family="'Geist Mono', monospace" font-size="7.5" font-weight="700" text-anchor="middle">IMPULSE</text>
+            <text x="555" y="332" fill="#0f172a" font-family="'Geist', sans-serif" font-size="13" font-weight="600" text-anchor="middle">Xung Lực Leader Shock</text>
+            <text x="555" y="354" fill="#0284c7" font-family="'Geist Mono', monospace" font-size="10" font-weight="600" text-anchor="middle">Shock = R &times; ln(1 + max(0, VR))</text>
+            <text x="555" y="374" fill="#475569" font-family="'Geist', sans-serif" font-size="10.5" text-anchor="middle">VR = Vol / MA20(Vol) &gt; 0</text>
+            <text x="555" y="394" fill="#6d28d9" font-family="'Geist Mono', monospace" font-size="9" text-anchor="middle">Lan truyền trễ sec_hub_shock_1d/2d</text>
+          </a>
+        </g>
+
+        <!-- Node 10: 3-Day Catch-up Potential & Surge Breadth -->
+        <g class="pillar-group pillar-2">
+          <a href="#drawer-graph" class="node-anchor">
+            <rect x="740" y="300" width="290" height="120" rx="6" fill="#ffffff" class="node-box" />
+            <rect x="740" y="300" width="290" height="120" rx="6" fill="#ecfeff" stroke="#0891b2" stroke-width="1" class="node-border" />
+            <rect x="748" y="306" width="64" height="13" rx="2" fill="#cffafe" />
+            <text x="780" y="316" fill="#0e7490" font-family="'Geist Mono', monospace" font-size="7.5" font-weight="700" text-anchor="middle">CATCH-UP</text>
+            <text x="885" y="332" fill="#0f172a" font-family="'Geist', sans-serif" font-size="13" font-weight="600" text-anchor="middle">Thế Năng Đuổi Kịp 3 Phiên</text>
+            <text x="885" y="354" fill="#0891b2" font-family="'Geist Mono', monospace" font-size="10" font-weight="600" text-anchor="middle">&Delta;_catchup = &prod;(1+R_sec) - &prod;(1+R_stock)</text>
+            <text x="885" y="374" fill="#475569" font-family="'Geist', sans-serif" font-size="10.5" text-anchor="middle">Bùng nổ khối lượng ngành (VR &ge; 1.5)</text>
+            <text x="885" y="394" fill="#475569" font-family="'Geist Mono', monospace" font-size="9" text-anchor="middle">B_surge = (1/|S|) &sum; &Iopf;(VR &ge; 1.5 &and; R &gt; 0)</text>
+          </a>
+        </g>
+
+        <!-- Node 11: Ecosystem Spillover Impulse -->
+        <g class="pillar-group pillar-2">
+          <a href="#drawer-graph" class="node-anchor">
+            <rect x="1080" y="300" width="260" height="120" rx="6" fill="#ffffff" class="node-box" />
+            <rect x="1080" y="300" width="260" height="120" rx="6" fill="#dcfce7" stroke="#16a34a" stroke-width="1" class="node-border" />
+            <rect x="1088" y="306" width="68" height="13" rx="2" fill="#bbf7d0" />
+            <text x="1122" y="316" fill="#15803d" font-family="'Geist Mono', monospace" font-size="7.5" font-weight="700" text-anchor="middle">SYNDICATE</text>
+            <text x="1210" y="332" fill="#0f172a" font-family="'Geist', sans-serif" font-size="13" font-weight="600" text-anchor="middle">Xung Lực Lan Tỏa Tập Đoàn</text>
+            <text x="1210" y="354" fill="#15803d" font-family="'Geist Mono', monospace" font-size="10" font-weight="600" text-anchor="middle">Eco_Shock = R_lead &times; ln(1+VR)</text>
+            <text x="1210" y="374" fill="#475569" font-family="'Geist', sans-serif" font-size="10.5" text-anchor="middle">Cộng hưởng hệ sinh thái khép kín</text>
+            <text x="1210" y="394" fill="#475569" font-family="'Geist Mono', monospace" font-size="9" text-anchor="middle">VIC&rarr;VHM/VRE · GEX&rarr;VIX/VGC</text>
+          </a>
+        </g>
+
+        <!-- Node 12: Zero-Lookahead Lag Shield -->
+        <g class="pillar-group pillar-2">
+          <a href="#drawer-graph" class="node-anchor">
+            <rect x="1390" y="300" width="260" height="120" rx="6" fill="#ffffff" class="node-box" />
+            <rect x="1390" y="300" width="260" height="120" rx="6" fill="#ffedd5" stroke="#ea580c" stroke-width="1" class="node-border" />
+            <rect x="1398" y="306" width="64" height="13" rx="2" fill="#fed7aa" />
+            <text x="1430" y="316" fill="#c2410c" font-family="'Geist Mono', monospace" font-size="7.5" font-weight="700" text-anchor="middle">TIME-GUARD</text>
+            <text x="1520" y="332" fill="#0f172a" font-family="'Geist', sans-serif" font-size="13" font-weight="600" text-anchor="middle">Hàng Rào Chống Lookahead</text>
+            <text x="1520" y="354" fill="#ea580c" font-family="'Geist Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">Bắt buộc Shift(1) &amp; Shift(2)</text>
+            <text x="1520" y="374" fill="#475569" font-family="'Geist', sans-serif" font-size="10.5" text-anchor="middle">Triệt tiêu hoàn toàn rò rỉ tương lai</text>
+            <text x="1520" y="394" fill="#475569" font-family="'Geist Mono', monospace" font-size="9" text-anchor="middle">Chuẩn kiểm định định lượng quốc tế</text>
+          </a>
+        </g>
+
+        <!-- LAYER 3 NODES -->
+        <!-- Node 13: Distribution Classifier & Winsorize -->
+        <g class="pillar-group pillar-3">
+          <a href="#drawer-neutralize" class="node-anchor">
+            <rect x="60" y="520" width="270" height="100" rx="6" fill="#ffffff" class="node-box" />
+            <rect x="60" y="520" width="270" height="100" rx="6" fill="#ecfeff" stroke="#0891b2" stroke-width="1" class="node-border" />
+            <rect x="68" y="526" width="60" height="13" rx="2" fill="#cffafe" />
+            <text x="98" y="536" fill="#0e7490" font-family="'Geist Mono', monospace" font-size="7.5" font-weight="700" text-anchor="middle">CLASSIFIER</text>
+            <text x="195" y="552" fill="#0f172a" font-family="'Geist', sans-serif" font-size="12.5" font-weight="600" text-anchor="middle">Nhận Diện Phân Phối</text>
+            <text x="195" y="570" fill="#0891b2" font-family="'Geist Mono', monospace" font-size="9.5" text-anchor="middle">Nhị phân · Thứ bậc &le;11 · Liên tục</text>
+            <text x="195" y="588" fill="#475569" font-family="'Geist Mono', monospace" font-size="9" text-anchor="middle">Winsorize Cắt Ngọn [q_0.01, q_0.99]</text>
+            <text x="195" y="604" fill="#0284c7" font-family="'Geist Mono', monospace" font-size="8" text-anchor="middle">📄 sector_neutralizer.py</text>
+          </a>
+        </g>
+
+        <!-- Node 14: Defensive Sector Z-Score -->
+        <g class="pillar-group pillar-3">
+          <a href="#drawer-neutralize" class="node-anchor">
+            <rect x="380" y="520" width="260" height="100" rx="6" fill="#ffffff" class="node-box" />
+            <rect x="380" y="520" width="260" height="100" rx="6" fill="#e0f2fe" stroke="#0284c7" stroke-width="1" class="node-border" />
+            <rect x="388" y="526" width="64" height="13" rx="2" fill="#bae6fd" />
+            <text x="420" y="536" fill="#0369a1" font-family="'Geist Mono', monospace" font-size="7.5" font-weight="700" text-anchor="middle">Z-SCORE</text>
+            <text x="510" y="552" fill="#0f172a" font-family="'Geist', sans-serif" font-size="12.5" font-weight="600" text-anchor="middle">Z-Score Ngành Phòng Thủ</text>
+            <text x="510" y="570" fill="#0284c7" font-family="'Geist Mono', monospace" font-size="9.5" font-weight="600" text-anchor="middle">z_i = (x*_i - &mu;_S) / &sigma;_S</text>
+            <text x="510" y="588" fill="#475569" font-family="'Geist Mono', monospace" font-size="9" text-anchor="middle">Biên an toàn: N_S &ge; 3 &amp; &sigma;_S &gt; 0</text>
+            <text x="510" y="604" fill="#475569" font-family="'Geist', sans-serif" font-size="9.5" text-anchor="middle">Nếu vi phạm &rarr; gán z_i = 0.0 an toàn</text>
+          </a>
+        </g>
+
+        <!-- Node 15: Factor Orthogonalization (Gram-Schmidt & PCA) -->
+        <g class="pillar-group pillar-3">
+          <a href="#drawer-orthogonal" class="node-anchor">
+            <rect x="690" y="520" width="320" height="100" rx="6" fill="#ffffff" class="node-box" />
+            <rect x="690" y="520" width="320" height="100" rx="6" fill="#f3e8ff" stroke="#7c3aed" stroke-width="1" class="node-border" />
+            <rect x="698" y="526" width="68" height="13" rx="2" fill="#e9d5ff" />
+            <text x="732" y="536" fill="#6d28d9" font-family="'Geist Mono', monospace" font-size="7.5" font-weight="700" text-anchor="middle">ORTHOGONAL</text>
+            <text x="850" y="552" fill="#0f172a" font-family="'Geist', sans-serif" font-size="12.5" font-weight="600" text-anchor="middle">Trực Giao Hóa Gram-Schmidt &amp; PCA</text>
+            <text x="850" y="570" fill="#7c3aed" font-family="'Geist Mono', monospace" font-size="9.5" font-weight="600" text-anchor="middle">u_k = v_k - &sum; proj_u(v_k) &implies; &lang;u_k, u_j&rang; = 0</text>
+            <text x="850" y="588" fill="#475569" font-family="'Geist Mono', monospace" font-size="9" text-anchor="middle">Khử đa cộng tuyến: VIF &lt; 5.0</text>
+            <text x="850" y="604" fill="#0284c7" font-family="'Geist Mono', monospace" font-size="8" text-anchor="middle">📄 factor_orthogonalization.py</text>
+          </a>
+        </g>
+
+        <!-- Node 16: HOSE Market Filters -->
+        <g class="pillar-group pillar-3">
+          <a href="#drawer-ic" class="node-anchor">
+            <rect x="1060" y="520" width="280" height="100" rx="6" fill="#ffffff" class="node-box" />
+            <rect x="1060" y="520" width="280" height="100" rx="6" fill="#ffedd5" stroke="#ea580c" stroke-width="1" class="node-border" />
+            <rect x="1068" y="526" width="56" height="13" rx="2" fill="#fed7aa" />
+            <text x="1096" y="536" fill="#c2410c" font-family="'Geist Mono', monospace" font-size="7.5" font-weight="700" text-anchor="middle">FILTERS</text>
+            <text x="1200" y="552" fill="#0f172a" font-family="'Geist', sans-serif" font-size="12.5" font-weight="600" text-anchor="middle">Bộ Lọc Thanh Khoản &amp; Giá Trần</text>
+            <text x="1200" y="570" fill="#ea580c" font-family="'Geist Mono', monospace" font-size="9.5" font-weight="600" text-anchor="middle">GTGD &ge; 5.0 Tỷ VND/Ngày</text>
+            <text x="1200" y="588" fill="#475569" font-family="'Geist Mono', monospace" font-size="9" text-anchor="middle">Lọc không mua khi P_t = P_ceil (+7%)</text>
+            <text x="1200" y="604" fill="#475569" font-family="'Geist', sans-serif" font-size="9.5" text-anchor="middle">Loại bỏ thanh khoản ảo và kẹt trần</text>
+          </a>
+        </g>
+
+        <!-- Node 17: Purged IC & Decile Spread -->
+        <g class="pillar-group pillar-3">
+          <a href="#drawer-ic" class="node-anchor">
+            <rect x="1390" y="520" width="260" height="100" rx="6" fill="#ffffff" class="node-box" />
+            <rect x="1390" y="520" width="260" height="100" rx="6" fill="#dcfce7" stroke="#16a34a" stroke-width="1" class="node-border" />
+            <rect x="1398" y="526" width="56" height="13" rx="2" fill="#bbf7d0" />
+            <text x="1426" y="536" fill="#15803d" font-family="'Geist Mono', monospace" font-size="7.5" font-weight="700" text-anchor="middle">METRICS</text>
+            <text x="1520" y="552" fill="#0f172a" font-family="'Geist', sans-serif" font-size="12.5" font-weight="600" text-anchor="middle">Kiểm Định IC &amp; Decile Spread</text>
+            <text x="1520" y="570" fill="#15803d" font-family="'Geist Mono', monospace" font-size="9.5" font-weight="600" text-anchor="middle">Rank IC Spearman (Kỳ 5d) · |t| &gt; 2.0</text>
+            <text x="1520" y="588" fill="#475569" font-family="'Geist Mono', monospace" font-size="9" text-anchor="middle">Đơn điệu 10 nhóm: Q10 - Q1 &gt; 0</text>
+            <text x="1520" y="604" fill="#0284c7" font-family="'Geist Mono', monospace" font-size="8" text-anchor="middle">📄 vn_ic_tester.py</text>
+          </a>
+        </g>
+
+        <!-- LAYER 4 NODES -->
+        <!-- Node 18: Financial Sector Exemption -->
+        <g class="pillar-group pillar-4">
+          <a href="#drawer-beneish" class="node-anchor">
+            <rect x="60" y="740" width="250" height="110" rx="6" fill="#ffffff" class="node-box" />
+            <rect x="60" y="740" width="250" height="110" rx="6" fill="#f8fafc" stroke="#64748b" stroke-width="1" class="node-border" />
+            <rect x="68" y="746" width="56" height="13" rx="2" fill="#e2e8f0" />
+            <text x="96" y="756" fill="#475569" font-family="'Geist Mono', monospace" font-size="7.5" font-weight="700" text-anchor="middle">EXEMPT</text>
+            <text x="185" y="774" fill="#0f172a" font-family="'Geist', sans-serif" font-size="13" font-weight="600" text-anchor="middle">Miễn Trừ Ngành Đặc Thù</text>
+            <text x="185" y="794" fill="#475569" font-family="'Geist', sans-serif" font-size="10.5" text-anchor="middle">Bỏ qua: Ngân hàng · BĐS</text>
+            <text x="185" y="812" fill="#475569" font-family="'Geist', sans-serif" font-size="10.5" text-anchor="middle">Chứng khoán · Bảo hiểm</text>
+            <text x="185" y="830" fill="#0284c7" font-family="'Geist Mono', monospace" font-size="8.5" text-anchor="middle">📄 rules/beneish.py</text>
+          </a>
+        </g>
+
+        <!-- Node 19: Dual-Engine Adaptive Beneish -->
+        <g class="pillar-group pillar-4">
+          <a href="#drawer-beneish" class="node-anchor">
+            <rect x="350" y="740" width="290" height="110" rx="6" fill="#ffffff" class="node-box" />
+            <rect x="350" y="740" width="290" height="110" rx="6" fill="#e0f2fe" stroke="#0284c7" stroke-width="1" class="node-border" />
+            <rect x="358" y="746" width="68" height="13" rx="2" fill="#bae6fd" />
+            <text x="392" y="756" fill="#0369a1" font-family="'Geist Mono', monospace" font-size="7.5" font-weight="700" text-anchor="middle">DUAL-M</text>
+            <text x="495" y="774" fill="#0f172a" font-family="'Geist', sans-serif" font-size="13" font-weight="600" text-anchor="middle">Động Cơ Kép M8 vs M5</text>
+            <text x="495" y="794" fill="#0284c7" font-family="'Geist Mono', monospace" font-size="9.5" font-weight="600" text-anchor="middle">M8: Đầy Đủ Dòng Tiền &amp; Khấu Hao</text>
+            <text x="495" y="812" fill="#6d28d9" font-family="'Geist Mono', monospace" font-size="9.5" font-weight="600" text-anchor="middle">M5: Thích Ứng Phi Dòng Tiền</text>
+            <text x="495" y="830" fill="#475569" font-family="'Geist Mono', monospace" font-size="8.5" text-anchor="middle">8 Biến chuẩn VAS TT 200/BTC</text>
+          </a>
+        </g>
+
+        <!-- Node 20: Hard Law Layer 0 Veto Gate (Coral Focal 1) -->
+        <g class="pillar-group pillar-4">
+          <a href="#drawer-beneish" class="node-anchor">
+            <rect x="680" y="740" width="290" height="110" rx="6" fill="#ffffff" class="node-box" />
+            <rect x="680" y="740" width="290" height="110" rx="6" fill="#ffedd5" stroke="#ea580c" stroke-width="2" class="node-border" />
+            <rect x="688" y="746" width="76" height="13" rx="2" fill="#fed7aa" />
+            <text x="726" y="756" fill="#c2410c" font-family="'Geist Mono', monospace" font-size="7.5" font-weight="700" text-anchor="middle">VETO GATE L0</text>
+            <text x="825" y="774" fill="#0f172a" font-family="'Geist', sans-serif" font-size="13" font-weight="700" text-anchor="middle">Cổng Phán Quyết Beneish</text>
+            <text x="825" y="794" fill="#c2410c" font-family="'Geist Mono', monospace" font-size="10" font-weight="700" text-anchor="middle">M &gt; -1.78 &implies; FAIL (LOẠI BỎ)</text>
+            <text x="825" y="812" fill="#15803d" font-family="'Geist Mono', monospace" font-size="9.5" font-weight="600" text-anchor="middle">M &le; -1.78 &implies; PASS (HỢP LỆ)</text>
+            <text x="825" y="830" fill="#475569" font-family="'Geist', sans-serif" font-size="9.5" text-anchor="middle">Chặn đứng rủi ro làm đẹp BCTC</text>
+          </a>
+        </g>
+
+        <!-- Node 21: Pre-trade Hard Law Condition 1 -->
+        <g class="pillar-group pillar-4 pillar-5">
+          <a href="#drawer-hardlaw" class="node-anchor">
+            <rect x="1020" y="740" width="310" height="110" rx="6" fill="#ffffff" class="node-box" />
+            <rect x="1020" y="740" width="310" height="110" rx="6" fill="#ffedd5" stroke="#ea580c" stroke-width="1.5" class="node-border" />
+            <rect x="1028" y="746" width="70" height="13" rx="2" fill="#fed7aa" />
+            <text x="1063" y="756" fill="#c2410c" font-family="'Geist Mono', monospace" font-size="7.5" font-weight="700" text-anchor="middle">HARD LAW 1</text>
+            <text x="1175" y="774" fill="#0f172a" font-family="'Geist', sans-serif" font-size="13" font-weight="600" text-anchor="middle">Điều 1: Luật Tồn Tại (2% NAV)</text>
+            <text x="1175" y="794" fill="#c2410c" font-family="'Geist Mono', monospace" font-size="9.5" font-weight="600" text-anchor="middle">Đệm kẹt sàn T+2.5: Downside = 13.51%</text>
+            <text x="1175" y="812" fill="#475569" font-family="'Geist Mono', monospace" font-size="9" text-anchor="middle">P &times; max(Stop, 0.1351) &times; Q &le; 0.02 NAV</text>
+            <text x="1175" y="830" fill="#0284c7" font-family="'Geist Mono', monospace" font-size="8.5" text-anchor="middle">📄 rules/hard_laws.py</text>
+          </a>
+        </g>
+
+        <!-- Node 22: Pre-trade Hard Laws Condition 2 & 4 -->
+        <g class="pillar-group pillar-4 pillar-5">
+          <a href="#drawer-hardlaw" class="node-anchor">
+            <rect x="1380" y="740" width="280" height="110" rx="6" fill="#ffffff" class="node-box" />
+            <rect x="1380" y="740" width="280" height="110" rx="6" fill="#f8fafc" stroke="#64748b" stroke-width="1" class="node-border" />
+            <rect x="1388" y="746" width="76" height="13" rx="2" fill="#e2e8f0" />
+            <text x="1426" y="756" fill="#475569" font-family="'Geist Mono', monospace" font-size="7.5" font-weight="700" text-anchor="middle">HARD LAWS 2&amp;4</text>
+            <text x="1520" y="774" fill="#0f172a" font-family="'Geist', sans-serif" font-size="13" font-weight="600" text-anchor="middle">Điều 2 &amp; 4: Sức Chứa &amp; Phân Bổ</text>
+            <text x="1520" y="794" fill="#0f172a" font-family="'Geist Mono', monospace" font-size="9.5" font-weight="600" text-anchor="middle">Lệnh &le; 15% ADTV20 · Vị thế &le; 25%</text>
+            <text x="1520" y="812" fill="#475569" font-family="'Geist Mono', monospace" font-size="9" text-anchor="middle">Cổ phiếu &le; 15% NAV · Ngành &le; 35%</text>
+            <text x="1520" y="830" fill="#475569" font-family="'Geist', sans-serif" font-size="9.5" text-anchor="middle">Ngăn chặn rủi ro tháo chạy thanh khoản</text>
+          </a>
+        </g>
+
+        <!-- LAYER 5 NODES -->
+        <!-- Node 23: HMM Market Regime Classifier -->
+        <g class="pillar-group pillar-5">
+          <a href="#drawer-kelly" class="node-anchor">
+            <rect x="60" y="970" width="300" height="110" rx="6" fill="#ffffff" class="node-box" />
+            <rect x="60" y="970" width="300" height="110" rx="6" fill="#f3e8ff" stroke="#7c3aed" stroke-width="1" class="node-border" />
+            <rect x="68" y="976" width="64" height="13" rx="2" fill="#e9d5ff" />
+            <text x="100" y="986" fill="#6d28d9" font-family="'Geist Mono', monospace" font-size="7.5" font-weight="700" text-anchor="middle">REGIME</text>
+            <text x="210" y="1002" fill="#0f172a" font-family="'Geist', sans-serif" font-size="13" font-weight="600" text-anchor="middle">Nhận Diện Chế Độ Thị Trường HMM</text>
+            <text x="210" y="1022" fill="#6d28d9" font-family="'Geist Mono', monospace" font-size="9.5" font-weight="600" text-anchor="middle">Bull 1.00x · Choppy 0.75x</text>
+            <text x="210" y="1040" fill="#ea580c" font-family="'Geist Mono', monospace" font-size="9.5" font-weight="600" text-anchor="middle">Bounce 0.50x · Bear 0.25x</text>
+            <text x="210" y="1060" fill="#475569" font-family="'Geist', sans-serif" font-size="9.5" text-anchor="middle">Hệ số co giãn rủi ro vĩ mô</text>
+          </a>
+        </g>
+
+        <!-- Node 24: Quarter Kelly Position Sizer (Green Focal 2) -->
+        <g class="pillar-group pillar-5">
+          <a href="#drawer-kelly" class="node-anchor">
+            <rect x="410" y="970" width="270" height="110" rx="6" fill="#ffffff" class="node-box" />
+            <rect x="410" y="970" width="270" height="110" rx="6" fill="#dcfce7" stroke="#16a34a" stroke-width="2" class="node-border" />
+            <rect x="418" y="976" width="60" height="13" rx="2" fill="#bbf7d0" />
+            <text x="448" y="986" fill="#15803d" font-family="'Geist Mono', monospace" font-size="7.5" font-weight="700" text-anchor="middle">KELLY</text>
+            <text x="545" y="1002" fill="#0f172a" font-family="'Geist', sans-serif" font-size="13" font-weight="700" text-anchor="middle">Định Cỡ Vị Thế Quarter Kelly</text>
+            <text x="545" y="1022" fill="#15803d" font-family="'Geist Mono', monospace" font-size="9.5" font-weight="600" text-anchor="middle">f* = W - (1-W)/R · f_base = 0.25 f*</text>
+            <text x="545" y="1040" fill="#0f172a" font-family="'Geist Mono', monospace" font-size="9.5" font-weight="600" text-anchor="middle">w* = min(0.25 f* &times; M_regime, 0.15)</text>
+            <text x="545" y="1060" fill="#0284c7" font-family="'Geist Mono', monospace" font-size="8.5" text-anchor="middle">📄 rules/kelly_sizer.py</text>
+          </a>
+        </g>
+
+        <!-- Node 25: HOSE Round-Lot Execution Engine -->
+        <g class="pillar-group pillar-5">
+          <a href="#drawer-kelly" class="node-anchor">
+            <rect x="730" y="970" width="280" height="110" rx="6" fill="#ffffff" class="node-box" />
+            <rect x="730" y="970" width="280" height="110" rx="6" fill="#e0f2fe" stroke="#0284c7" stroke-width="1" class="node-border" />
+            <rect x="738" y="976" width="56" height="13" rx="2" fill="#bae6fd" />
+            <text x="766" y="986" fill="#0369a1" font-family="'Geist Mono', monospace" font-size="7.5" font-weight="700" text-anchor="middle">EXECUTE</text>
+            <text x="870" y="1002" fill="#0f172a" font-family="'Geist', sans-serif" font-size="13" font-weight="600" text-anchor="middle">Khớp Lệnh Lô Chẵn HOSE</text>
+            <text x="870" y="1022" fill="#0284c7" font-family="'Geist Mono', monospace" font-size="9.5" font-weight="600" text-anchor="middle">Q* = floor(w* &times; NAV / (100&times;P)) &times; 100</text>
+            <text x="870" y="1040" fill="#475569" font-family="'Geist Mono', monospace" font-size="9" text-anchor="middle">Quy chuẩn lô 100 cổ phiếu sàn HOSE</text>
+            <text x="870" y="1060" fill="#15803d" font-family="'Geist', sans-serif" font-size="9.5" font-weight="600" text-anchor="middle">&check; Đạt chuẩn thể chế sẵn sàng khớp</text>
+          </a>
+        </g>
+
+        <!-- Node 26: Multi-tier Defense Hierarchy (T0-T5) -->
+        <g class="pillar-group pillar-5">
+          <a href="#drawer-stoploss" class="node-anchor">
+            <rect x="1060" y="970" width="600" height="110" rx="6" fill="#ffffff" class="node-box" />
+            <rect x="1060" y="970" width="600" height="110" rx="6" fill="#f8fafc" stroke="#475569" stroke-width="1.2" class="node-border" />
+            <rect x="1068" y="976" width="80" height="13" rx="2" fill="#e2e8f0" />
+            <text x="1108" y="986" fill="#334155" font-family="'Geist Mono', monospace" font-size="7.5" font-weight="700" text-anchor="middle">POST-TRADE T0-T5</text>
+            <text x="1360" y="996" fill="#0f172a" font-family="'Geist', sans-serif" font-size="13" font-weight="700" text-anchor="middle">Thang 6 Bậc Phòng Thủ Cắt Lỗ Đa Tầng Sinh Tử</text>
+            
+            <!-- 6 Stop Loss Steps Grid -->
+            <rect x="1075" y="1010" width="85" height="58" rx="4" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="0.8" />
+            <text x="1117" y="1025" fill="#0f172a" font-family="'Geist Mono', monospace" font-size="9" font-weight="700" text-anchor="middle">T0: T+2.5</text>
+            <text x="1117" y="1040" fill="#475569" font-family="'Geist', sans-serif" font-size="8.5" text-anchor="middle">Hàng khả dụng</text>
+            <text x="1117" y="1054" fill="#64748b" font-family="'Geist', sans-serif" font-size="8" text-anchor="middle">Xử lý nẹp sàn</text>
+
+            <rect x="1168" y="1010" width="88" height="58" rx="4" fill="#fee2e2" stroke="#dc2626" stroke-width="0.8" />
+            <text x="1212" y="1025" fill="#b91c1c" font-family="'Geist Mono', monospace" font-size="9" font-weight="700" text-anchor="middle">T1: Hard Stop</text>
+            <text x="1212" y="1040" fill="#b91c1c" font-family="'Geist', sans-serif" font-size="8.5" text-anchor="middle">Lỗ &ge; 2% NAV</text>
+            <text x="1212" y="1054" fill="#b91c1c" font-family="'Geist', sans-serif" font-size="8" text-anchor="middle">BÁN SẠCH 100%</text>
+
+            <rect x="1264" y="1010" width="92" height="58" rx="4" fill="#dcfce7" stroke="#16a34a" stroke-width="0.8" />
+            <text x="1310" y="1025" fill="#15803d" font-family="'Geist Mono', monospace" font-size="9" font-weight="700" text-anchor="middle">T2: Trailing</text>
+            <text x="1310" y="1040" fill="#15803d" font-family="'Geist', sans-serif" font-size="8.5" text-anchor="middle">Peak &gt; 10%</text>
+            <text x="1310" y="1054" fill="#15803d" font-family="'Geist', sans-serif" font-size="8" text-anchor="middle">Pullback &ge; 35%</text>
+
+            <rect x="1364" y="1010" width="92" height="58" rx="4" fill="#fef3c7" stroke="#d97706" stroke-width="0.8" />
+            <text x="1410" y="1025" fill="#b45309" font-family="'Geist Mono', monospace" font-size="9" font-weight="700" text-anchor="middle">T3: Structure</text>
+            <text x="1410" y="1040" fill="#b45309" font-family="'Geist', sans-serif" font-size="8.5" text-anchor="middle">Thủng Swing Low</text>
+            <text x="1410" y="1054" fill="#b45309" font-family="'Geist', sans-serif" font-size="8" text-anchor="middle">Thoát phá vỡ hỗ trợ</text>
+
+            <rect x="1464" y="1010" width="92" height="58" rx="4" fill="#ffedd5" stroke="#ea580c" stroke-width="0.8" />
+            <text x="1510" y="1025" fill="#c2410c" font-family="'Geist Mono', monospace" font-size="9" font-weight="700" text-anchor="middle">T4: VSA Reject</text>
+            <text x="1510" y="1040" fill="#c2410c" font-family="'Geist', sans-serif" font-size="8.5" text-anchor="middle">Râu trên &gt; 50%</text>
+            <text x="1510" y="1054" fill="#c2410c" font-family="'Geist', sans-serif" font-size="8" text-anchor="middle">Vol &gt; 1.5x MA20</text>
+
+            <rect x="1564" y="1010" width="88" height="58" rx="4" fill="#f3e8ff" stroke="#7c3aed" stroke-width="0.8" />
+            <text x="1608" y="1025" fill="#6d28d9" font-family="'Geist Mono', monospace" font-size="9" font-weight="700" text-anchor="middle">T5: Time Stop</text>
+            <text x="1608" y="1040" fill="#6d28d9" font-family="'Geist', sans-serif" font-size="8.5" text-anchor="middle">Cầm &gt; 50% time</text>
+            <text x="1608" y="1054" fill="#6d28d9" font-family="'Geist', sans-serif" font-size="8" text-anchor="middle">Lãi &lt; 2% &rarr; Tái phân bổ</text>
+          </a>
+        </g>
+
+        <!-- ========================================================================= -->
+        <!-- BOTTOM LEGEND STRIP (Strictly adhering to /diagram-design) -->
+        <!-- ========================================================================= -->
+        <g id="diagram-legend">
+          <line x1="30" y1="1190" x2="1710" y2="1190" stroke="#cbd5e1" stroke-width="1" />
+          <text x="40" y="1215" fill="#475569" font-family="'Geist Mono', monospace" font-size="9" font-weight="700" letter-spacing="0.14em">CHÚ GIẢI (LEGEND)</text>
+          
+          <!-- Item 1: Physical Sensing & Ingestion -->
+          <rect x="170" y="1205" width="12" height="12" rx="2" fill="#e0f2fe" stroke="#0284c7" stroke-width="1" />
+          <text x="190" y="1215" fill="#334155" font-family="'Geist', sans-serif" font-size="11">Cảm Ứng &amp; FFD (P1/P6)</text>
+
+          <!-- Item 2: Spatial & Graph Contagion -->
+          <rect x="360" y="1205" width="12" height="12" rx="2" fill="#f3e8ff" stroke="#7c3aed" stroke-width="1" />
+          <text x="380" y="1215" fill="#334155" font-family="'Geist', sans-serif" font-size="11">Đồ Thị Lan Truyền (P2)</text>
+
+          <!-- Item 3: Neutralization & Orthogonal -->
+          <rect x="540" y="1205" width="12" height="12" rx="2" fill="#ecfeff" stroke="#0891b2" stroke-width="1" />
+          <text x="560" y="1215" fill="#334155" font-family="'Geist', sans-serif" font-size="11">Trung Hòa &amp; Trực Giao (P3)</text>
+
+          <!-- Item 4: Beneish Veto Gate (Focal Coral) -->
+          <rect x="740" y="1205" width="12" height="12" rx="2" fill="#ffedd5" stroke="#ea580c" stroke-width="1.8" />
+          <text x="760" y="1215" fill="#c2410c" font-family="'Geist', sans-serif" font-size="11" font-weight="600">Veto Beneish &amp; Hard Laws (P4)</text>
+
+          <!-- Item 5: Kelly Sizer & Stop-Loss (Focal Green) -->
+          <rect x="980" y="1205" width="12" height="12" rx="2" fill="#dcfce7" stroke="#16a34a" stroke-width="1.8" />
+          <text x="1000" y="1215" fill="#15803d" font-family="'Geist', sans-serif" font-size="11" font-weight="600">Kelly Sizing &amp; Cắt Lỗ T0-T5 (P5)</text>
+
+          <!-- Item 6: Interactive Hint -->
+          <text x="1410" y="1215" fill="#0284c7" font-family="'Geist Mono', monospace" font-size="10.5" font-weight="600">
+            &bullet; Nhấp chuột vào bất kỳ khối nào để mở bảng khảo sát Drawer
+          </text>
+        </g>
+      </svg>
+    </div>
+
+    <!-- Summary Cards Grid -->
+    <div class="cards-grid">
+      <!-- Card 1 -->
+      <div class="card">
+        <p class="eyebrow" style="color:#0284c7;">TRỤC TOÁN HỌC &amp; ĐẶC TRƯNG</p>
+        <div class="card-header">
+          <span class="card-dot blue"></span>
+          <h3>Bảo Toàn Ký Ức Dài Hạn &amp; Đồ Thị Định Hướng</h3>
+        </div>
+        <ul>
+          <li><strong>Vi phân phân số FFD</strong>: Giải bài toán đánh đổi giữa tính dừng (Stationarity) và ký ức chuỗi giá với cửa sổ cố định $|w_k| \ge 10^{-5}$, cực tiểu hóa $d^*$ qua nghiệm ADF $p < 0.05$.</li>
+          <li><strong>Lan truyền Đồ thị 15 Ngành &amp; 9 Tập Đoàn</strong>: Bắt trọn độ trễ Lead-Lag thời gian thực bằng xung lực Leader Shock $\text{Shock} = R \ln(1+\max(0, \text{VR}))$ và thế năng bắt kịp 3 phiên $\Delta_{\text{catchup}}$.</li>
+          <li><strong>Bảo toàn Không gian Thời gian</strong>: 100% xung lực lan tỏa áp dụng toán tử trễ $\text{Shift}(1)$ hoặc $\text{Shift}(2)$, triệt tiêu rò rỉ dữ liệu tương lai (Zero Lookahead).</li>
+        </ul>
+      </div>
+
+      <!-- Card 2 -->
+      <div class="card">
+        <p class="eyebrow" style="color:#ea580c;">THỂ CHẾ PHỦ QUYẾT &amp; AN TOÀN VỐN</p>
+        <div class="card-header">
+          <span class="card-dot coral"></span>
+          <h3>Cổng Giám Định Pháp Y &amp; Pre-Trade Hard Laws</h3>
+        </div>
+        <ul>
+          <li><strong>Động cơ kép Beneish M-Score</strong>: Chuyển mạch thích ứng $M_8$ đầy đủ vs $M_5$ phi dòng tiền theo VAS Thông tư 200/BTC. Ngưỡng loại bỏ tuyệt đối $M > -1.78$ trước khi cổ phiếu vào danh mục.</li>
+          <li><strong>Điều 1 Hard Law (Luật Tồn Tại)</strong>: Rủi ro vị thế tối đa $\le 2\%$ NAV với hệ số đệm sàn T+2.5 bắt buộc $13.51\%$ (2 cây sàn $-7\%$ liên tiếp).</li>
+          <li><strong>Điều 2 &amp; 4 Hard Laws</strong>: Khống chế thanh khoản khớp lệnh $\le 15\%$ ADTV20, trần vị thế $\le 25\%$ ADTV20, tỷ trọng cổ phiếu $\le 15\%$ NAV và nhóm ngành $\le 35\%$ NAV.</li>
+        </ul>
+      </div>
+
+      <!-- Card 3 -->
+      <div class="card">
+        <p class="eyebrow" style="color:#16a34a;">THÍCH ỨNG REGIME &amp; THỰC THI</p>
+        <div class="card-header">
+          <span class="card-dot green"></span>
+          <h3>Định Cỡ Quarter Kelly &amp; Thang Cắt Lỗ Đa Tầng</h3>
+        </div>
+        <ul>
+          <li><strong>Quarter Kelly Co Giãn Vĩ Mô</strong>: Thu hẹp phân số an toàn $0.25 f^*$, kết hợp nhân tử trạng thái thị trường HMM $M_{\text{regime}}$ từ $1.00\times$ (Bull) xuống $0.25\times$ (Bear).</li>
+          <li><strong>Chuẩn hóa Lô 100 HOSE</strong>: Làm tròn số lượng cổ phiếu khớp lệnh $Q^*$ xuống bội số của 100, khớp lệnh tự động trên cổng sàn HOSE.</li>
+          <li><strong>Thang 6 Bậc Cắt Lỗ Phòng Thủ T0–T5</strong>: Kiểm tra hàng khả dụng T+2.5 (T0), Hard stop $2\%$ NAV (T1), Trailing stop khóa lãi $35\%$ thoái lui (T2), thủng Swing low (T3), từ chối giá VSA (T4) và chi phí cơ hội thời gian (T5).</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <footer>
+      <div>AIINVEST SYSTEM HARNESS &bull; COMPILED VIA SCIENTIFIC DIAGRAM SPECIFICATION V4.0.0</div>
+      <div>NEURIPS / ICLR / SIGMOD PUBLICATION GRADE &bull; REPO SOURCE: ai-engine/app/</div>
+    </footer>
+
+    <!-- ========================================================================= -->
+    <!-- INSPECTOR DRAWERS (ZERO-JS CSS :TARGET) -->
+    <!-- ========================================================================= -->
+
+    <!-- Drawer 1: FFD & Microstructure -->
+    <aside class="inspector-drawer" id="drawer-ffd">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#e0f2fe;color:#0369a1;">Pillar 1: Feature Engineering</span>
+          <h3 class="drawer-title">Vi Phân Phân Số FFD &amp; Vi Cấu Trúc</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Bản Chất Toán Học &amp; Công Thức Gốc</h4>
+          <p>Khai triển nhị thức trọng số FFD cửa sổ cố định (Marcos López de Prado) bảo toàn ký ức dài hạn:</p>
+          <div class="drawer-formula-box">
+            w_0 = 1.0<br/>
+            w_k = -w_{k-1} &times; (d - k + 1) / k &emsp; (|w_k| &ge; 10^-5)<br/>
+            P~_t = &sum;_{k=0}^{K-1} w_k P_{t-k}<br/>
+            d* = min { d &isin; [0, 1] | p_ADF(P~_t(d)) &lt; 0.05 }
+          </div>
+          <p>Đặc trưng biến động Garman-Klass hiệu quả vi cấu trúc nến OHLC:</p>
+          <div class="drawer-formula-box">
+            &sigma;_GK^2 = 0.511 (ln(H/L))^2 - 0.019 [ln(C/O)ln(HL/O^2) - 2ln(H/O)ln(L/O)] - 0.383(ln(C/O))^2
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Tham Số Biên &amp; Ground Truth</h4>
+          <ul class="param-list">
+            <li><span class="param-key">Ngưỡng cắt trọng số (threshold)</span><span class="param-val">1e-5</span></li>
+            <li><span class="param-key">Kiểm định dừng Augmented Dickey-Fuller</span><span class="param-val">p &lt; 0.05 (maxlag=1)</span></li>
+            <li><span class="param-key">Quét tham số d</span><span class="param-val">0.00 &rarr; 1.00 (step 0.05)</span></li>
+            <li><span class="param-key">Kém thanh khoản Amihud (&lambda;)</span><span class="param-val">rolling 20d |R| / (P &times; V)</span></li>
+          </ul>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Tham Chiếu</h4>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/services/ml/frac_diff.py</code></div>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/services/ml/feature_forge.py</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer 2: Graph Contagion -->
+    <aside class="inspector-drawer" id="drawer-graph">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#f3e8ff;color:#6d28d9;">Pillar 2: Spatial Graph</span>
+          <h3 class="drawer-title">Lan Truyền Cú Sốc Đồ Thị &amp; Tập Đoàn</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Bản Chất Toán Học &amp; Động Lực Học</h4>
+          <p>Mô hình đồ thị định hướng 15 phân ngành (406 mã sàn HOSE) và 9 tập đoàn tài phiệt:</p>
+          <div class="drawer-formula-box">
+            VR_{i, t} = Vol_{i, t} / (MA20(Vol_i) + 10^-8)<br/>
+            Shock_{lead, t} = R_{lead, t} &times; ln(1 + max(0, VR_{lead, t})) &rarr; Shift(1, 2)<br/>
+            &Delta;_{catchup, t-1} = &prod;_{k=1}^3 (1 + R_{sec, t-k}) - &prod;_{k=1}^3 (1 + R_{stock, t-k})<br/>
+            B_{surge, t-1} = (1/|S|) &sum; &Iopf;(VR_{i, t-1} &ge; 1.5 &and; R_{i, t-1} &gt; 0)
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Hàng Rào Chống Lookahead</h4>
+          <p>Tất cả các tín hiệu xung lực từ Leader và cụm ngành bắt buộc dịch chuyển trễ Shift(1) hoặc Shift(2) trước khi đưa vào bảng alpha, đảm bảo mô hình không rò rỉ tương lai.</p>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Tham Chiếu</h4>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/services/ml/graph_contagion_engine.py</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer 3: Neutralization & Z-Score -->
+    <aside class="inspector-drawer" id="drawer-neutralize">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#ecfeff;color:#0e7490;">Pillar 3: Normalization</span>
+          <h3 class="drawer-title">Trung Hòa Ngành &amp; Phân Vị Phòng Thủ</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Toán Tử Nhận Diện Phân Phối</h4>
+          <div class="drawer-formula-box">
+            Type(X) = binary &emsp; nếu |U| &le; 2<br/>
+            Type(X) = discrete &ensp; nếu |U| &le; 11 &and; mod(0.1) == 0<br/>
+            Type(X) = continuous còn lại<br/>
+            x* = max(q_0.01, min(x, q_0.99)) &emsp; [Winsorize]
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Z-Score Phòng Thủ Có Biên Mẫu</h4>
+          <div class="drawer-formula-box">
+            z_i = (x*_i - &mu;_S) / &sigma;_S &emsp; nếu |S_i| &ge; 3 &and; &sigma;_S &gt; 0<br/>
+            z_i = 0.0 &emsp;&emsp;&emsp;&emsp;&emsp;&emsp; nếu |S_i| &lt; 3 &or; &sigma;_S == 0
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Tham Chiếu</h4>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/services/quant/sector_neutralizer.py</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer 4: Orthogonalization & PCA -->
+    <aside class="inspector-drawer" id="drawer-orthogonal">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#f3e8ff;color:#6d28d9;">Pillar 3: Linear Algebra</span>
+          <h3 class="drawer-title">Trực Giao Hóa Gram-Schmidt &amp; PCA</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Thuật Toán Gram-Schmidt Khử Đa Cộng Tuyến</h4>
+          <p>Triệt tiêu hoàn toàn phần dư thừa tương quan giữa các nhân tố alpha:</p>
+          <div class="drawer-formula-box">
+            u_k = v_k - &sum;_{j=1}^{k-1} [ &lang;v_k, u_j&rang; / &lang;u_j, u_j&rang; ] &times; u_j<br/>
+            &implies; &lang;u_k, u_j&rang; = 0 &emsp; &forall; j &lt; k
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Hệ Số Phóng Đại Phương Sai (VIF)</h4>
+          <div class="drawer-formula-box">
+            VIF_j = 1 / (1 - R_j^2) &emsp; [Yêu cầu an toàn: VIF &lt; 5.0]
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Tham Chiếu</h4>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/services/quant/factor_orthogonalization.py</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer 5: IC Testing & Market Filters -->
+    <aside class="inspector-drawer" id="drawer-ic">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#dcfce7;color:#15803d;">Pillar 3: Alpha Testing</span>
+          <h3 class="drawer-title">Kiểm Định IC &amp; Bộ Lọc Sàn HOSE</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Đo Lường IC Kỳ Hạn 5 Phiên &amp; T-Stat</h4>
+          <div class="drawer-formula-box">
+            &rho;_Rank(t) = 1 - 6 &sum; d_i^2 / (n(n^2 - 1))<br/>
+            IR = mean(IC) / std(IC)<br/>
+            t_stat = IR &times; sqrt(T) &emsp; [Yêu cầu ý nghĩa: |t| &gt; 2.0]<br/>
+            Spread = Mean(Q10_return) - Mean(Q1_return)
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Bộ Lọc Thanh Khoản &amp; Giá Trần HOSE</h4>
+          <ul class="param-list">
+            <li><span class="param-key">GTGD trung bình tối thiểu</span><span class="param-val">&ge; 5.0 tỷ VND / ngày</span></li>
+            <li><span class="param-key">Bộ lọc giá trần (+7%)</span><span class="param-val">Loại bỏ lệnh nếu P = P_ceil</span></li>
+            <li><span class="param-key">Chu kỳ kiểm định IC</span><span class="param-val">holding = 5 phiên giao dịch</span></li>
+          </ul>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Tham Chiếu</h4>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/services/quant/vn_ic_tester.py</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer 6: Beneish M-Score Forensic -->
+    <aside class="inspector-drawer" id="drawer-beneish">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#ffedd5;color:#c2410c;">Pillar 4: Forensic Gate</span>
+          <h3 class="drawer-title">Bóc Tách Gian Lận BCTC Beneish M-Score</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mô Hình Đầy Đủ M8 vs Mô Hình Thích Ứng M5</h4>
+          <p>Chuẩn hóa 8 chỉ số theo VAS Thông tư 200/BTC:</p>
+          <div class="drawer-formula-box">
+            M8 = -4.84 + 0.920 DSRI + 0.528 GMI + 0.404 AQI + 0.892 SGI + 0.115 DEPI - 0.172 SGAI + 4.037 TATA + 0.0327 LVGI<br/><br/>
+            M5 = -6.065 + 0.823 DSRI + 0.906 GMI + 0.593 AQI + 0.717 SGI + 0.107 LVGI
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Cổng Phán Quyết Veto Tuyệt Đối</h4>
+          <p>Đóng vai trò Hard Law Lớp 0 loại bỏ cổ phiếu ngay từ cửa ngõ:</p>
+          <ul class="param-list">
+            <li><span class="param-key">Ngưỡng Veto (Cutoff)</span><span class="param-val" style="color:#b91c1c;">M &gt; -1.78 &implies; FAIL</span></li>
+            <li><span class="param-key">Ngưỡng An Toàn (Safe)</span><span class="param-val" style="color:#15803d;">M &le; -1.78 &implies; PASS</span></li>
+            <li><span class="param-key">Miễn trừ đặc thù</span><span class="param-val">Ngân hàng, BĐS, Chứng khoán, BH</span></li>
+          </ul>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Tham Chiếu</h4>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/rules/beneish.py</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer 7: Institutional Hard Laws -->
+    <aside class="inspector-drawer" id="drawer-hardlaw">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#ffedd5;color:#c2410c;">Pillar 5: Institutional Rules</span>
+          <h3 class="drawer-title">Bộ Ba Hard Laws Sàn HOSE</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Điều 1: Luật Tồn Tại (Risk Amount &le; 2% NAV)</h4>
+          <p>Tính toán rủi ro kẹt sàn 2 phiên liên tiếp trong chu kỳ T+2.5 trên sàn HOSE (&plusmn;7%):</p>
+          <div class="drawer-formula-box">
+            Downside_{T25} = 1 - (1 - 0.07)^2 = 13.51%<br/>
+            Effective Downside = max(StopLoss_{order}, 13.51%)<br/>
+            Risk = P &times; Effective Downside &times; Q &le; 0.02 &times; NAV
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Điều 2 &amp; 4: Sức Chứa Thanh Khoản &amp; Tập Trung</h4>
+          <div class="drawer-formula-box">
+            Q_{order} &le; 0.15 &times; ADTV20 &emsp; [Lệnh đơn phiên]<br/>
+            &sum; Q_{pos} &le; 0.25 &times; ADTV20 &emsp; [Tổng vị thế tích lũy]<br/>
+            w_i = (P_i &times; Q_i) / NAV &le; 0.15 &emsp; [Mã đơn lẻ &le; 15%]<br/>
+            &sum;_{i &isin; S} w_i &le; 0.35 &emsp;&emsp;&emsp;&emsp;&emsp;&emsp; [Toàn ngành &le; 35%]
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Tham Chiếu</h4>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/rules/hard_laws.py</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer 8: Regime Kelly Sizing -->
+    <aside class="inspector-drawer" id="drawer-kelly">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#dcfce7;color:#15803d;">Pillar 5: Capital Sizing</span>
+          <h3 class="drawer-title">Định Cỡ Quarter Kelly &amp; Khớp Lệnh HOSE</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Tiêu Chuẩn Kelly Thu Hẹp Phân Số &amp; HMM</h4>
+          <div class="drawer-formula-box">
+            f* = W - (1 - W) / R<br/>
+            f_{baseline} = 0.25 &times; f* &emsp; [Quarter Kelly]<br/>
+            w* = min(0.25 &times; f* &times; M_{regime}, 0.15)<br/>
+            Q* = floor(w* &times; NAV / (100 &times; P)) &times; 100
+          </div>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Nhân Tử Co Giãn Theo Chế Độ Vĩ Mô</h4>
+          <ul class="param-list">
+            <li><span class="param-key">Bull Trending</span><span class="param-val">M_regime = 1.00x</span></li>
+            <li><span class="param-key">Bull Choppy</span><span class="param-val">M_regime = 0.75x</span></li>
+            <li><span class="param-key">Bear Bounce</span><span class="param-val">M_regime = 0.50x</span></li>
+            <li><span class="param-key">Bear Trending</span><span class="param-val">M_regime = 0.25x</span></li>
+          </ul>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Tham Chiếu</h4>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/rules/kelly_sizer.py</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer 9: Stop Loss Hierarchy -->
+    <aside class="inspector-drawer" id="drawer-stoploss">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#f8fafc;color:#334155;">Pillar 5: Risk Defense</span>
+          <h3 class="drawer-title">Thang 6 Bậc Phòng Thủ Cắt Lỗ T0–T5</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Quy Chuẩn Kích Hoạt 6 Tầng Sinh Tử</h4>
+          <ul class="param-list">
+            <li><span class="param-key">T0 (Hàng khả dụng T+2.5)</span><span class="param-val">Q_sell &le; Q_avail &middot; Xử lý kẹt sàn</span></li>
+            <li><span class="param-key">T1 (Hard Stop Khẩn Cấp)</span><span class="param-val" style="color:#b91c1c;">PnL &le; -2% NAV &implies; BÁN SẠCH</span></li>
+            <li><span class="param-key">T2 (Trailing Stop Khóa Lãi)</span><span class="param-val">Peak &gt; 10% &and; Fallback &ge; 35%</span></li>
+            <li><span class="param-key">T3 (Structural Support Exit)</span><span class="param-val">P &lt; Swing Low đáy gần nhất</span></li>
+            <li><span class="param-key">T4 (VSA Fast Rejection)</span><span class="param-val">Upper Wick &gt; 50% &and; Vol &gt; 1.5x MA20</span></li>
+            <li><span class="param-key">T5 (Chi Phí Cơ Hội)</span><span class="param-val">Held &gt; 50% Timeline &and; Return &lt; 2%</span></li>
+          </ul>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Tham Chiếu</h4>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/rules/stop_loss.py</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer 10: BCTC OCR & Hashing -->
+    <aside class="inspector-drawer" id="drawer-bctc-ocr">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#f8fafc;color:#475569;">Pillar 6: Multimodal Parser</span>
+          <h3 class="drawer-title">BCTC AST Parsing &amp; Content Hashing</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Tuyển Chọn Bộ 3 Tài Liệu Vàng</h4>
+          <p>Tự động chọn lọc: Báo cáo kiểm toán cả năm (Annual Audited), BCTC quý gần nhất và Báo cáo quản trị doanh nghiệp.</p>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">MinerU OCR &amp; Line Content Hashing</h4>
+          <div class="drawer-formula-box">
+            quote_hash = SHA-256(normalized_line_text)<br/>
+            AST Table Extraction &rarr; Key-Value VAS Mapping
+          </div>
+          <p>Mỗi dòng số liệu tài chính trích xuất đều được gắn chuỗi hash 64 ký tự hex. Khi phân tích, hệ thống đối chiếu ngược để đảm bảo độ tin cậy tuyệt đối 100%.</p>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Tham Chiếu</h4>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/pipeline/bctc_to_sag_pipeline.py</code></div>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/domain/services/document_selector.py</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer 11: Dual-Store Persistence -->
+    <aside class="inspector-drawer" id="drawer-dualstore">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#ecfeff;color:#0891b2;">Pillar 6: Dual Storage</span>
+          <h3 class="drawer-title">Kho Lưu Trữ Kép Bất Biến Dual-Store</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Cấu Trúc Lưu Trữ Kép</h4>
+          <ul class="param-list">
+            <li><span class="param-key">PostgreSQL Relational Store</span><span class="param-val">VAS 200 Financial Statements</span></li>
+            <li><span class="param-key">Vector Embedding Space</span><span class="param-val">1024-dimension Dense Vector</span></li>
+            <li><span class="param-key">Bipartite Hypergraph M:N</span><span class="param-val">Doanh nghiệp - Chỉ tiêu - Kỳ báo cáo</span></li>
+            <li><span class="param-key">Queue Accumulator</span><span class="param-val">32 chunks &rarr; 24 &rarr; Top 8 Gold</span></li>
+          </ul>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Mã Nguồn Tham Chiếu</h4>
+          <div class="drawer-code-link">📄 <code>ai-engine/app/adapters/sag_connector.py</code></div>
+          <div class="drawer-code-link">📄 <code>SAG/apps/api/sag_api/services/financial_v2_service.py</code></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Drawer 12: Unified Macro Pipeline -->
+    <aside class="inspector-drawer" id="drawer-macro">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <span class="drawer-badge" style="background:#fafafa;color:#0f172a;">Pillar 7: Master Architecture</span>
+          <h3 class="drawer-title">Hệ Thống Kiến Trúc Vĩ Mô Hợp Nhất</h3>
+        </div>
+        <a href="#" class="drawer-close">&times;</a>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Vòng Đời Xử Lý Định Lượng Khép Kín</h4>
+          <p>Kiến trúc khép kín kết hợp chặt chẽ giữa 6 trục giải thuật toán học và pháp y:</p>
+          <ol style="padding-left: 18px; margin: 8px 0;">
+            <li><strong>Cảm ứng dữ liệu</strong>: Nạp tài liệu BCTC và Tick dữ liệu giá.</li>
+            <li><strong>Luyện tạo đặc trưng</strong>: FFD bảo toàn ký ức chuỗi dừng và trích xuất vi cấu trúc.</li>
+            <li><strong>Lan truyền đồ thị</strong>: Khai thác xung lực Lead-Lag 15 ngành và 9 tập đoàn.</li>
+            <li><strong>Chuẩn hóa &amp; Trực giao</strong>: Triệt tiêu đa cộng tuyến VIF &lt; 5.0 và đo lường IC.</li>
+            <li><strong>Pháp y &amp; Hard Laws</strong>: Phủ quyết gian lận Beneish và khóa cứng rủi ro T+2.5.</li>
+            <li><strong>Phân bổ &amp; Phòng thủ</strong>: Định cỡ Quarter Kelly theo Regime và giám sát T0-T5.</li>
+          </ol>
+        </div>
+        <div class="drawer-section">
+          <h4 class="drawer-section-title">Tài Liệu Cốt Lõi</h4>
+          <div class="drawer-code-link">📄 <code>docs/architecture/PROJECT_MEMORY.md</code></div>
+          <div class="drawer-code-link">📄 <code>docs/diagrams/SCIENTIFIC_ALGORITHMS_PROMPT_CATALOG.md</code></div>
+        </div>
+      </div>
+    </aside>
+
+  </div>
+</body>
+
+</html>

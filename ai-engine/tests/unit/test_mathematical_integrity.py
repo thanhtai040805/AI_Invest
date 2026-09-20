@@ -143,6 +143,10 @@ class TestTailRiskMultiplier:
         assert es == pytest.approx(0.014 * 3.37, abs=1e-3)
         assert es > 0.014 * 2.571  # Strictly larger than VaR quantile
 
+    def test_constant_large_losses_have_nonzero_expected_shortfall(self):
+        engine = TailRiskEngine()
+        assert engine.calculate_egarch_student_t_es([-0.07] * 20) > 0.07
+
 
 class TestValuationOvervaluationIntegrity:
     def test_overvalued_stock_retains_intrinsic_target(self):

@@ -1,13 +1,13 @@
 import { Router } from 'express';
 import { communityController } from './community.controller';
 import { authMiddleware } from '../../middleware/auth';
+import { internalAuth } from '../../middleware/internalAuth';
 
 const router = Router();
 
-// News ingestion (internal AI engine)
-// TODO: add API key or IP restriction for security
-router.post('/news/ingest', communityController.ingestNews);
-router.post('/bot/posts', communityController.createBotPost);
+// Writes performed by internal ingestion/AI services.
+router.post('/news/ingest', internalAuth, communityController.ingestNews);
+router.post('/bot/posts', internalAuth, communityController.createBotPost);
 
 // Feed & Posts
 router.get('/posts', communityController.getPosts);

@@ -21,10 +21,15 @@ dependencies = [
     "markitdown[pdf]>=0.1.6,<0.2",
     "charset-normalizer>=3.3,<4",
     "tzdata>=2024.1",
+    "asyncpg>=0.29",
+    "sse-starlette>=3.0,<4",
+    "mcp>=1.27,<2",
+    "networkx>=3.4,<4",
+    "zleap-sag>=0.13,<0.14",
 ]
 
 [project.optional-dependencies]
-postgres = ["asyncpg>=0.29"]
+postgres = []
 legacy-sqlite = ["aiosqlite>=0.20"]
 dev = [
     "pytest>=8.2",

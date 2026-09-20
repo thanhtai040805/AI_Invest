@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt, { Secret } from 'jsonwebtoken';
 import crypto from 'crypto';
@@ -87,11 +87,11 @@ function clearRefreshTokenCookie(res: Response) {
   });
 }
 
-async function createSessionTokens(userId: string) {
+async function createSessionTokens(userId: string, client = db) {
   const accessToken = createAccessToken(userId);
   const refresh = createRefreshToken(userId);
 
-  await db.refreshToken.create({
+  await client.refreshToken.create({
     data: {
       tokenId: refresh.tokenId,
       userId,
@@ -116,7 +116,7 @@ function buildUserResponse(user: { id: string; email: string; displayName: strin
   return { id: user.id, email: user.email, displayName: user.displayName };
 }
 
-router.post('/register', async (req: Request, res: Response) => {
+router.post('/register', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { email, password, displayName } = registerSchema.parse(req.body);
 
@@ -143,11 +143,11 @@ router.post('/register', async (req: Request, res: Response) => {
       res.status(400).json({ error: 'Validation error', details: err.errors });
       return;
     }
-    throw err;
+    next(err);
   }
 });
 
-router.post('/login', async (req: Request, res: Response) => {
+router.post('/login', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { email, password } = loginSchema.parse(req.body);
 
@@ -175,11 +175,11 @@ router.post('/login', async (req: Request, res: Response) => {
       res.status(400).json({ error: 'Validation error', details: err.errors });
       return;
     }
-    throw err;
+    next(err);
   }
 });
 
-router.post('/refresh', async (req: Request, res: Response) => {
+router.post('/refresh', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const refreshToken = getRefreshTokenFromRequest(req);
     if (!refreshToken) {
@@ -200,29 +200,38 @@ router.post('/refresh', async (req: Request, res: Response) => {
       return;
     }
 
-    const storedToken = await db.refreshToken.findUnique({ where: { tokenId: decoded.tokenId } });
-    if (!storedToken || storedToken.isRevoked || storedToken.expiresAt < new Date()) {
-      res.status(401).json({ error: 'Refresh token revoked or expired' });
-      return;
-    }
-
-    await revokeRefreshToken(decoded.tokenId);
-    const tokens = await createSessionTokens(decoded.userId);
+    const tokens = await prisma.$transaction(async (tx) => {
+      const consumed = await (tx as any).refreshToken.updateMany({
+        where: {
+          tokenId: decoded.tokenId,
+          userId: decoded.userId,
+          isRevoked: false,
+          expiresAt: { gt: new Date() },
+        },
+        data: { isRevoked: true },
+      });
+      if (consumed.count !== 1) throw new Error('REFRESH_TOKEN_REUSED');
+      return createSessionTokens(decoded.userId, tx as any);
+    });
     setRefreshTokenCookie(res, tokens.refreshToken);
 
     res.json({
       accessToken: tokens.accessToken,
     });
   } catch (err: any) {
+    if (err.message === 'REFRESH_TOKEN_REUSED') {
+      res.status(401).json({ error: 'Refresh token revoked or expired' });
+      return;
+    }
     if (err.name === 'ZodError') {
       res.status(400).json({ error: 'Validation error', details: err.errors });
       return;
     }
-    throw err;
+    next(err);
   }
 });
 
-router.post('/logout', async (req: Request, res: Response) => {
+router.post('/logout', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const refreshToken = getRefreshTokenFromRequest(req);
     if (refreshToken) {
@@ -243,22 +252,26 @@ router.post('/logout', async (req: Request, res: Response) => {
       res.status(400).json({ error: 'Validation error', details: err.errors });
       return;
     }
-    throw err;
+    next(err);
   }
 });
 
-router.get('/me', authMiddleware, async (req: AuthRequest, res: Response) => {
-  const user = await prisma.user.findUnique({
-    where: { id: req.userId },
-    select: { id: true, email: true, displayName: true, createdAt: true },
-  });
+router.get('/me', authMiddleware, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.userId },
+      select: { id: true, email: true, displayName: true, createdAt: true },
+    });
 
-  if (!user) {
-    res.status(404).json({ error: 'User not found' });
-    return;
+    if (!user) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+
+    res.json(user);
+  } catch (err) {
+    next(err);
   }
-
-  res.json(user);
 });
 
 export default router;

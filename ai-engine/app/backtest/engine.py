@@ -165,7 +165,8 @@ class HOSEBacktestEngine:
             if multiplier < 1.0:
                 target_weights = {k: v * multiplier for k, v in target_weights.items()}
 
-            for sym, target_weight in target_weights.items():
+            for sym in set(target_weights) | set(portfolio.positions):
+                target_weight = target_weights.get(sym, 0.0)
                 current_pos = portfolio.positions.get(sym)
                 current_qty = current_pos.quantity if current_pos else 0
                 target_qty = round_to_lot(
@@ -186,6 +187,11 @@ class HOSEBacktestEngine:
                     if price is None:
                         continue
                     cost = estimate_cost("BUY", price, qty)
+                    while qty > 0 and price * qty + cost["total_cost"] > portfolio.cash:
+                        qty -= 100
+                        cost = estimate_cost("BUY", price, qty) if qty > 0 else {"total_cost": 0.0, "brokerage": 0.0, "tax": 0.0, "slippage": 0.0}
+                    if qty <= 0:
+                        continue
                     fill = Fill(sym, price, qty, "BUY", current)
                     portfolio.apply_fill(fill, cost)
                     for k in total_costs:
@@ -240,10 +246,11 @@ class HOSEBacktestEngine:
 
 
 def run_backtest(runs_root: str) -> str:
-    """Run backtest for a run directory containing config.json and save artifacts."""
+    """Run a long-only, next-session backtest from canonical daily market data."""
     import json
-    import os
     from pathlib import Path
+
+    from app.infrastructure.database.pg_pool import get_conn
 
     root = Path(runs_root)
     config_file = root / "config.json"
@@ -254,26 +261,102 @@ def run_backtest(runs_root: str) -> str:
         except Exception:
             pass
 
+    symbol = str((config.get("codes") or [""])[0]).upper()
+    strategy = config.get("strategy_config") or {}
+    strategy_type = strategy.get("type")
+    if strategy_type not in {"sma_cross", "rsi", "bollinger"}:
+        raise ValueError(f"Unsupported strategy: {strategy_type}")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT date, open_adj * 1000, high_adj * 1000, low_adj * 1000,
+                          close_adj * 1000, volume_total
+                   FROM market_data_daily
+                   WHERE ticker = %s AND date BETWEEN %s AND %s
+                   ORDER BY date""",
+                (symbol, config["start_date"], config["end_date"]),
+            )
+            rows = cur.fetchall()
+    if len(rows) < 2:
+        raise ValueError(f"Insufficient market data for {symbol}")
+
+    df = pd.DataFrame(rows, columns=["date", "open", "high", "low", "close", "volume"])
+    params = strategy.get("params") or {}
+    if strategy_type == "sma_cross":
+        fast, slow = int(params.get("fast", 10)), int(params.get("slow", 30))
+        if not 1 <= fast < slow <= 500:
+            raise ValueError("SMA periods must satisfy 1 <= fast < slow <= 500")
+        desired = (df["close"].rolling(fast).mean() > df["close"].rolling(slow).mean()).astype(int)
+    elif strategy_type == "rsi":
+        period = int(params.get("period", 14))
+        delta = df["close"].diff()
+        rs = delta.clip(lower=0).rolling(period).mean() / (-delta.clip(upper=0)).rolling(period).mean().replace(0, np.nan)
+        rsi = 100 - 100 / (1 + rs)
+        desired = pd.Series(np.nan, index=df.index)
+        desired[rsi < float(params.get("oversold", 30))] = 1
+        desired[rsi > float(params.get("overbought", 70))] = 0
+        desired = desired.ffill().fillna(0).astype(int)
+    else:
+        period, width = int(params.get("period", 20)), float(params.get("std_dev", 2))
+        mid = df["close"].rolling(period).mean()
+        std = df["close"].rolling(period).std()
+        desired = pd.Series(np.nan, index=df.index)
+        desired[df["close"] < mid - width * std] = 1
+        desired[df["close"] > mid + width * std] = 0
+        desired = desired.ffill().fillna(0).astype(int)
+
+    initial_capital = float(config.get("initial_capital", 1_000_000_000))
+    cash, quantity, buy_date = initial_capital, 0, None
+    equity_rows, trades = [], []
+    total_cost = 0.0
+    for i, row in df.iterrows():
+        target = int(desired.iloc[i - 1]) if i > 0 else 0  # signal t executes at t+1 open
+        price = float(row["open"] or row["close"])
+        trade_date = row["date"]
+        if target == 1 and quantity == 0:
+            qty = round_to_lot(cash / (price * 1.002))
+            if qty > 0:
+                cost = estimate_cost("BUY", price, qty)
+                while qty > 0 and price * qty + cost["total_cost"] > cash:
+                    qty -= 100
+                    cost = estimate_cost("BUY", price, qty) if qty else {"total_cost": 0.0}
+                if qty:
+                    cash -= price * qty + cost["total_cost"]
+                    quantity, buy_date = qty, trade_date
+                    total_cost += cost["total_cost"]
+                    trades.append({"date": trade_date, "side": "BUY", "price": price, "quantity": qty})
+        elif target == 0 and quantity > 0 and buy_date and count_trading_days(buy_date, trade_date) - 1 >= 2:
+            cost = estimate_cost("SELL", price, quantity)
+            cash += price * quantity - cost["total_cost"]
+            total_cost += cost["total_cost"]
+            trades.append({"date": trade_date, "side": "SELL", "price": price, "quantity": quantity})
+            quantity, buy_date = 0, None
+        equity_rows.append({"date": trade_date, "equity": cash + quantity * float(row["close"]), "cash": cash, "market_value": quantity * float(row["close"])})
+
+    eq = pd.DataFrame(equity_rows)
+    returns = eq["equity"].pct_change().dropna()
+    years = max((pd.Timestamp(eq["date"].iloc[-1]) - pd.Timestamp(eq["date"].iloc[0])).days / 365.25, 1 / 365.25)
+    roll_max = eq["equity"].cummax()
+    max_drawdown = float(((eq["equity"] - roll_max) / roll_max).min())
     metrics = {
-        "cagr": 0.185,
-        "sharpe_ratio": 1.42,
-        "sortino_ratio": 1.85,
-        "max_drawdown": -0.092,
-        "win_rate": 0.68,
-        "profit_factor": 1.95,
-        "total_trades": 24,
-        "total_costs": 1500000,
+        "cagr": float((eq["equity"].iloc[-1] / initial_capital) ** (1 / years) - 1),
+        "sharpe_ratio": float(returns.mean() / returns.std() * np.sqrt(252)) if returns.std() > 0 else 0.0,
+        "max_drawdown": max_drawdown,
+        "total_trades": len(trades),
+        "total_costs": total_cost,
+        "ending_equity": float(eq["equity"].iloc[-1]),
     }
     (root / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
-
-    # Generate dummy equity curve if none exists
     equity_file = root / "equity.csv"
-    if not equity_file.exists():
-        equity_file.write_text("date,equity,cash,market_value\n2025-01-01,100000000,100000000,0\n2025-06-01,118500000,20000000,98500000\n", encoding="utf-8")
+    eq.to_csv(equity_file, index=False)
+    trades_file = root / "trades.csv"
+    pd.DataFrame(trades, columns=["date", "side", "price", "quantity"]).to_csv(trades_file, index=False)
 
     artifacts = {
         "metrics_json": str(root / "metrics.json"),
         "equity_csv": str(equity_file),
+        "trades_csv": str(trades_file),
     }
 
     return json.dumps({

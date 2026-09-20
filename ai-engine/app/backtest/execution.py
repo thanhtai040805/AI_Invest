@@ -150,8 +150,9 @@ class HOSEExecutionModel:
         if self.reference_price_func is None:
             return True, 1.0
 
-        ref_price = self.reference_price_func(symbol, date)
-        if ref_price is None or ref_price == 0:
+        current_price = self.reference_price_func(symbol, date)
+        ref_price = self.reference_price_func(symbol, prev_trading_day(date))
+        if current_price is None or current_price == 0 or ref_price is None or ref_price == 0:
             return False, 0.0
 
         ceiling = ref_price * (1 + HOSE_PRICE_LIMITS["normal"])
@@ -159,13 +160,13 @@ class HOSEExecutionModel:
 
         if side == "BUY":
             near_ceiling = ref_price * (1 + NEAR_CEILING)
-            if ref_price >= near_ceiling:
-                fill_ratio = max(0.0, 1.0 - (ref_price - near_ceiling) / (ceiling - near_ceiling))
+            if current_price >= near_ceiling:
+                fill_ratio = max(0.0, 1.0 - (current_price - near_ceiling) / (ceiling - near_ceiling))
                 return fill_ratio > 0, max(fill_ratio, 0.2)
             return True, 1.0
         else:
             near_floor = ref_price * (1 + NEAR_FLOOR)
-            if ref_price <= near_floor:
-                fill_ratio = max(0.0, 1.0 - (near_floor - ref_price) / (near_floor - floor))
+            if current_price <= near_floor:
+                fill_ratio = max(0.0, 1.0 - (near_floor - current_price) / (near_floor - floor))
                 return fill_ratio > 0, max(fill_ratio, 0.2)
             return True, 1.0
