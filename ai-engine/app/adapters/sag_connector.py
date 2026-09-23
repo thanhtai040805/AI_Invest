@@ -65,7 +65,10 @@ def _extract_pdf_candidates_from_zip(
             lower = name.lower()
             value = 0
             if any(k in lower for k in ("giai_trinh", "giai-trinh", "giaitrinh", "bien_dong_ln", "explanation")):
-                value -= 100
+                if not any(b in lower for b in ("bctc", "bao_cao_tai_chinh", "baocaotaichinh", "financial_statement")):
+                    value -= 150
+                else:
+                    value -= 10
             if any(k in lower for k in ("tom_tat", "tomtat", "summary", "brief")):
                 value -= 80
 
@@ -80,7 +83,7 @@ def _extract_pdf_candidates_from_zip(
                     value += 30
 
             if role in {"ANNUAL_BACKBONE", "LATEST_QUARTER"}:
-                if any(k in lower for k in ("bctc", "financial", "interim", "statement", "baocaotaichinh")):
+                if any(k in lower for k in ("bctc", "bao_cao_tai_chinh", "baocaotaichinh", "financial", "interim", "statement")):
                     value += 100
                 if scope_upper == "SEPARATE":
                     if any(k in lower for k in ("congtyme", "cong_ty_me", "rieng", "parent", "separate")):
@@ -92,8 +95,10 @@ def _extract_pdf_candidates_from_zip(
                         value += 60
                     if any(k in lower for k in ("congtyme", "cong_ty_me", "rieng")):
                         value -= 50
-                if any(k in lower for k in ("bctc", "baocaotaichinh", "soat_xet", "kiem_toan")):
-                    value += 30
+                if any(k in lower for k in ("bao_cao_tai_chinh", "baocaotaichinh", "kiem_toan", "soat_xet", "ban_nien", "_vn", "_vi", "vas", "tieng_viet")):
+                    value += 80
+                if any(k in lower for k in ("audited_financial", "financial_statement", "interim_financial", "semi_annual", "english", "_en.", "_en_", "_eng", "ifrs")):
+                    value -= 200
 
             return value, -len(name)
 
@@ -112,10 +117,28 @@ class SAGConnector:
         cfg = get_settings()
         self.api_base = (api_base or cfg.sag_api_base or os.getenv("SAG_API_BASE", "http://localhost:8000/api/v2")).rstrip("/")
         self.service_token = cfg.sag_service_token or os.getenv("SAG_SERVICE_TOKEN", "")
+        self.sag_analysis_hold = cfg.sag_analysis_hold
         self._source_fallback_semaphore = asyncio.Semaphore(1)
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.service_token}"} if self.service_token else {}
+
+    def _analysis_hold_result(self, ticker: str, operation: str) -> Dict[str, Any] | None:
+        if not self.sag_analysis_hold:
+            return None
+        ticker_clean = ticker.upper().strip()
+        logger.info("SAG closed blocked operation: %s %s", ticker_clean, operation)
+        return {
+            "status": "BLOCKED",
+            "analysis_status": "SAG_CLOSED",
+            "assessment_status": "SAG_CLOSED",
+            "ticker": ticker_clean,
+            "operation": operation,
+            "error_code": "SAG_CLOSED",
+            "error": "SAG is temporarily closed; all reads and writes are disabled.",
+            "retryable": False,
+            "mutated": False,
+        }
 
     @staticmethod
     def _technical_error(ticker: str, kind: str, message: str) -> Dict[str, Any]:
@@ -134,6 +157,8 @@ class SAGConnector:
     async def get_financial_quality_assessment(self, ticker: str, sector: str = "general") -> Dict[str, Any]:
         """Truy vấn Financial Quality evidence-first từ nguồn dữ liệu tài chính."""
         ticker_clean = ticker.upper().strip()
+        if blocked := self._analysis_hold_result(ticker_clean, "get_financial_quality_assessment"):
+            return blocked
         try:
             timeout_config = httpx.Timeout(connect=2.0, read=30.0, write=5.0, pool=2.0)
             async with httpx.AsyncClient(timeout=timeout_config) as client:
@@ -155,6 +180,8 @@ class SAGConnector:
     ) -> Dict[str, Any]:
         """Truy vấn đồ thị sở hữu chéo và rủi ro quan hệ bên liên quan (GIL) từ SAG."""
         ticker_clean = ticker.upper().strip()
+        if blocked := self._analysis_hold_result(ticker_clean, "get_gil_relationships"):
+            return blocked
         try:
             timeout_config = httpx.Timeout(connect=2.0, read=30.0, write=5.0, pool=2.0)
             async with httpx.AsyncClient(timeout=timeout_config) as client:
@@ -177,12 +204,17 @@ class SAGConnector:
         title: str,
         text_content: str,
         doc_role: str = "LATEST_QUARTER",
+        scope: str = "SEPARATE",
         is_active: bool = True,
         fiscal_year: Optional[int] = None,
         fiscal_quarter: Optional[int] = None,
+        period_start: Optional[str] = None,
+        period_end: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Send canonical Markdown to SAG v2 by ticker."""
         ticker_clean = ticker.upper().strip()
+        if blocked := self._analysis_hold_result(ticker_clean, "ingest_bctc_document"):
+            return blocked
         payload = {
             "title": title,
             "markdown": text_content,
@@ -190,8 +222,9 @@ class SAGConnector:
             "activate": is_active,
             "fiscal_year": fiscal_year,
             "fiscal_quarter": fiscal_quarter,
-            "period_start": _period_start(fiscal_year, fiscal_quarter, doc_role),
-            "period_end": _period_end(fiscal_year, fiscal_quarter),
+            "period_start": period_start or _period_start(fiscal_year, fiscal_quarter, doc_role),
+            "period_end": period_end or _period_end(fiscal_year, fiscal_quarter),
+            "metadata": {"report_scope": scope},
         }
 
         try:
@@ -231,10 +264,14 @@ class SAGConnector:
         is_active: bool = True,
         fiscal_year: Optional[int] = None,
         fiscal_quarter: Optional[int] = None,
+        period_start: Optional[str] = None,
+        period_end: Optional[str] = None,
         ocr_only: bool = False,
     ) -> Dict[str, Any]:
         """Tải file PDF thực tế lên SAG Backend để kích hoạt MinerU OCR & Tree building."""
         ticker_clean = ticker.upper().strip()
+        if blocked := self._analysis_hold_result(ticker_clean, "upload_bctc_pdf"):
+            return blocked
         data = {
             "doc_role": doc_role,
             "is_active": str(is_active).lower(),
@@ -243,8 +280,8 @@ class SAGConnector:
             data["fiscal_year"] = str(fiscal_year)
         if fiscal_quarter is not None:
             data["fiscal_quarter"] = str(fiscal_quarter)
-        period_start = _period_start(fiscal_year, fiscal_quarter, doc_role)
-        period_end = _period_end(fiscal_year, fiscal_quarter)
+        period_start = period_start or _period_start(fiscal_year, fiscal_quarter, doc_role)
+        period_end = period_end or _period_end(fiscal_year, fiscal_quarter)
         if period_start:
             data["period_start"] = period_start
         if period_end:
@@ -285,26 +322,32 @@ class SAGConnector:
         object_uri: str,
         title: str,
         doc_role: str = "LATEST_QUARTER",
+        scope: str = "SEPARATE",
         is_active: bool = False,
         fiscal_year: Optional[int] = None,
         fiscal_quarter: Optional[int] = None,
+        period_start: Optional[str] = None,
+        period_end: Optional[str] = None,
         ocr_only: bool = True,
     ) -> Dict[str, Any]:
         """Ask SAG to read the PDF from R2, keeping PDF bytes off the VPS."""
         ticker_clean = ticker.upper().strip()
+        if blocked := self._analysis_hold_result(ticker_clean, "upload_bctc_pdf_from_r2"):
+            return blocked
         payload: Dict[str, Any] = {
             "title": title,
             "object_uri": object_uri,
             "doc_role": doc_role,
             "activate": is_active,
             "processing_mode": "OCR_ONLY" if ocr_only else "FULL",
+            "metadata": {"report_scope": scope},
         }
         if fiscal_year is not None:
             payload["fiscal_year"] = fiscal_year
         if fiscal_quarter is not None:
             payload["fiscal_quarter"] = fiscal_quarter
-        period_start = _period_start(fiscal_year, fiscal_quarter, doc_role)
-        period_end = _period_end(fiscal_year, fiscal_quarter)
+        period_start = period_start or _period_start(fiscal_year, fiscal_quarter, doc_role)
+        period_end = period_end or _period_end(fiscal_year, fiscal_quarter)
         if period_start:
             payload["period_start"] = period_start
         if period_end:
@@ -376,13 +419,18 @@ class SAGConnector:
         source_url: str,
         title: str,
         doc_role: str = "LATEST_QUARTER",
+        scope: str = "SEPARATE",
         is_active: bool = False,
         fiscal_year: Optional[int] = None,
         fiscal_quarter: Optional[int] = None,
+        period_start: Optional[str] = None,
+        period_end: Optional[str] = None,
         ocr_only: bool = True,
     ) -> Dict[str, Any]:
         """Queue SAG OCR from the source URL; never stage the PDF in R2."""
         ticker_clean = ticker.upper().strip()
+        if blocked := self._analysis_hold_result(ticker_clean, "upload_bctc_pdf_from_url"):
+            return blocked
         cafef1_url = _cafef1_fallback_url(source_url)
         if cafef1_url:
             try:
@@ -401,9 +449,12 @@ class SAGConnector:
                 source_url=source_url,
                 title=title,
                 doc_role=doc_role,
+                scope=scope,
                 is_active=is_active,
                 fiscal_year=fiscal_year,
                 fiscal_quarter=fiscal_quarter,
+                period_start=period_start,
+                period_end=period_end,
                 ocr_only=ocr_only,
             )
             cafef1_url = _cafef1_fallback_url(source_url)
@@ -413,9 +464,12 @@ class SAGConnector:
                     source_url=cafef1_url,
                     title=title,
                     doc_role=doc_role,
+                    scope=scope,
                     is_active=is_active,
                     fiscal_year=fiscal_year,
                     fiscal_quarter=fiscal_quarter,
+                    period_start=period_start,
+                    period_end=period_end,
                     ocr_only=ocr_only,
                 )
             return local_result
@@ -425,13 +479,14 @@ class SAGConnector:
             "doc_role": doc_role,
             "activate": is_active,
             "processing_mode": "OCR_ONLY" if ocr_only else "FULL",
+            "metadata": {"report_scope": scope},
         }
         if fiscal_year is not None:
             payload["fiscal_year"] = fiscal_year
         if fiscal_quarter is not None:
             payload["fiscal_quarter"] = fiscal_quarter
-        period_start = _period_start(fiscal_year, fiscal_quarter, doc_role)
-        period_end = _period_end(fiscal_year, fiscal_quarter)
+        period_start = period_start or _period_start(fiscal_year, fiscal_quarter, doc_role)
+        period_end = period_end or _period_end(fiscal_year, fiscal_quarter)
         if period_start:
             payload["period_start"] = period_start
         if period_end:
@@ -495,9 +550,12 @@ class SAGConnector:
                 source_url=source_url,
                 title=title,
                 doc_role=doc_role,
+                scope=scope,
                 is_active=is_active,
                 fiscal_year=fiscal_year,
                 fiscal_quarter=fiscal_quarter,
+                period_start=period_start,
+                period_end=period_end,
                 ocr_only=ocr_only,
             )
             cafef1_url = _cafef1_fallback_url(source_url)
@@ -508,9 +566,12 @@ class SAGConnector:
                     source_url=cafef1_url,
                     title=title,
                     doc_role=doc_role,
+                    scope=scope,
                     is_active=is_active,
                     fiscal_year=fiscal_year,
                     fiscal_quarter=fiscal_quarter,
+                    period_start=period_start,
+                    period_end=period_end,
                     ocr_only=ocr_only,
                 )
             return local_result
@@ -522,9 +583,12 @@ class SAGConnector:
                 source_url=cafef1_url,
                 title=title,
                 doc_role=doc_role,
+                scope=scope,
                 is_active=is_active,
                 fiscal_year=fiscal_year,
                 fiscal_quarter=fiscal_quarter,
+                period_start=period_start,
+                period_end=period_end,
                 ocr_only=ocr_only,
             )
         return {
@@ -542,12 +606,17 @@ class SAGConnector:
         source_url: str,
         title: str,
         doc_role: str,
+        scope: str,
         is_active: bool,
         fiscal_year: Optional[int],
         fiscal_quarter: Optional[int],
-        ocr_only: bool,
+        period_start: Optional[str],
+        period_end: Optional[str],
+        ocr_only: bool = True,
     ) -> Dict[str, Any]:
         """Last-resort fetch: stream to one temp file (PDF or ZIP), extract if ZIP, upload to SAG, then delete."""
+        if blocked := self._analysis_hold_result(ticker, "_upload_source_via_local_stream"):
+            return blocked
         async with self._source_fallback_semaphore:
             temp_path: Optional[str] = None
             extracted_pdf_paths: list[str] = []
@@ -577,7 +646,7 @@ class SAGConnector:
 
                 if first_chunk.startswith(b"PK\x03\x04"):
                     candidates = _extract_pdf_candidates_from_zip(
-                        temp_path, doc_role, scope="SEPARATE"
+                        temp_path, doc_role, scope=scope
                     )
                     last_result: Dict[str, Any] = {
                         "status": "FAILED",
@@ -590,11 +659,21 @@ class SAGConnector:
                             pdf_path=extracted_pdf_path,
                             filename=os.path.basename(selected_filename),
                             doc_role=doc_role,
+                            scope=scope,
                             is_active=is_active,
                             fiscal_year=fiscal_year,
                             fiscal_quarter=fiscal_quarter,
+                            period_start=period_start,
+                            period_end=period_end,
                             ocr_only=ocr_only,
                         )
+                        err_msg = str(last_result.get("error") or "") if last_result else ""
+                        # Failover nếu tài liệu bị SAG từ chối do là bản tiếng Anh đơn ngữ
+                        if "OCR document is English" in err_msg:
+                            logger.warning(
+                                f"Candidate {selected_filename} for {ticker} is English, trying next candidate in ZIP..."
+                            )
+                            continue
                         if last_result and last_result.get("status") not in ("FAILED", "error"):
                             return last_result
                     return last_result
@@ -609,9 +688,12 @@ class SAGConnector:
                     pdf_path=upload_target,
                     filename=upload_filename,
                     doc_role=doc_role,
+                    scope=scope,
                     is_active=is_active,
                     fiscal_year=fiscal_year,
                     fiscal_quarter=fiscal_quarter,
+                    period_start=period_start,
+                    period_end=period_end,
                     ocr_only=ocr_only,
                 )
             except Exception as error:
@@ -641,20 +723,29 @@ class SAGConnector:
         pdf_path: str,
         filename: str,
         doc_role: str,
+        scope: str,
         is_active: bool,
         fiscal_year: Optional[int],
         fiscal_quarter: Optional[int],
-        ocr_only: bool,
+        period_start: Optional[str] = None,
+        period_end: Optional[str] = None,
+        ocr_only: bool = False,
     ) -> Dict[str, Any]:
-        data: Dict[str, str] = {"doc_role": doc_role, "is_active": str(is_active).lower()}
+        if blocked := self._analysis_hold_result(ticker, "upload_bctc_pdf_file"):
+            return blocked
+        data: Dict[str, str] = {
+            "doc_role": doc_role,
+            "report_scope": scope,
+            "is_active": str(is_active).lower(),
+        }
         if fiscal_year is not None:
             data["fiscal_year"] = str(fiscal_year)
         if fiscal_quarter is not None:
             data["fiscal_quarter"] = str(fiscal_quarter)
         if ocr_only:
             data["processing_mode"] = "OCR_ONLY"
-        period_start = _period_start(fiscal_year, fiscal_quarter, doc_role)
-        period_end = _period_end(fiscal_year, fiscal_quarter)
+        period_start = period_start or _period_start(fiscal_year, fiscal_quarter, doc_role)
+        period_end = period_end or _period_end(fiscal_year, fiscal_quarter)
         if period_start:
             data["period_start"] = period_start
         if period_end:
@@ -680,6 +771,8 @@ class SAGConnector:
 
     async def get_document_status(self, source_id: str, document_id: str) -> Optional[Dict[str, Any]]:
         """Truy vấn trạng thái Document từ SAG API qua HTTP."""
+        if blocked := self._analysis_hold_result(source_id or document_id, "get_document_status"):
+            return blocked
         try:
             timeout_config = httpx.Timeout(connect=2.0, read=10.0, write=5.0, pool=2.0)
             async with httpx.AsyncClient(timeout=timeout_config) as client:
@@ -692,6 +785,9 @@ class SAGConnector:
 
     async def get_document_parsed_markdown(self, source_id: str, document_id: str) -> Optional[str]:
         """Tải toàn bộ nội dung Markdown sau khi OCR & parsing hoàn tất từ SAG API."""
+        if self.sag_analysis_hold:
+            self._analysis_hold_result(source_id or document_id, "get_document_parsed_markdown")
+            return None
         try:
             timeout_config = httpx.Timeout(connect=5.0, read=30.0, write=5.0, pool=5.0)
             async with httpx.AsyncClient(timeout=timeout_config) as client:

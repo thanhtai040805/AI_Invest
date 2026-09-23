@@ -104,8 +104,8 @@ def test_adaptive_valuation_pricing(thesis_engine):
     assert val_bull["base_case"] == 69000.0
 
 
-def test_hard_filter_catastrophic_rejection(agent04):
-    """Test 4: Bắt buộc REJECT nếu vi phạm Hard Filter Lớp 0 (GIL CATASTROPHIC)"""
+def test_legacy_gil_payload_is_ignored(agent04):
+    """SAG/GIL payloads are no longer a Thesis input or veto."""
     async def _run():
         res = await agent04.process({
             "ticker": "EVIL_TICKER",
@@ -117,8 +117,8 @@ def test_hard_filter_catastrophic_rejection(agent04):
             },
             "market_context": {"current_regime": "BULL_TRENDING"}
         })
-        assert res["data"]["status"] == "REJECTED"
-        assert "GIL == CATASTROPHIC" in res["data"]["reason"]
+        assert res["data"]["status"] != "DEFERRED"
+        assert "GIL" not in res["data"].get("reason", "")
 
     asyncio.run(_run())
 
@@ -348,4 +348,3 @@ def test_thesis_re_evaluation_on_conflict_update(intel_repo):
     assert updated_thesis["target_price_range"] == [50000.0, 55000.0]
     assert updated_thesis["status"] == "APPROVED_ACTIVE"
     assert len(updated_thesis["pre_mortem_scenarios"]) == 3
-

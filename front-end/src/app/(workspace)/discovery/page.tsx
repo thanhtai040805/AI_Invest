@@ -14,16 +14,17 @@ import {
 } from "@/components/ui"
 import { marketApi } from "@/lib/api"
 import { useResource } from "@/lib/api/use-resource"
+import type { ApiMarketSnapshot, ApiMarketStock } from "@/types"
 
 export default function Discovery() {
   const resource = useResource(() => marketApi.snapshot().catch(() => null), [])
 
-  const stockList = useMemo(() => {
-    const raw = resource.data as any
+  const stockList = useMemo<Stock[]>(() => {
+    const raw = resource.data as ApiMarketSnapshot | null
     const apiStocks = Array.isArray(raw?.stocks) ? raw.stocks : []
     if (!apiStocks.length) return []
 
-    return apiStocks.map((r: any) => {
+    return (apiStocks as ApiMarketStock[]).map((r) => {
       const sym = String(r.symbol)
       const mom = Math.round(Number(r.momentum ?? 0))
       const rsVal = Math.round(Number(r.rs ?? 50))
@@ -137,6 +138,7 @@ export default function Discovery() {
                     name: sym,
                     price: 50000,
                     changePct: 0,
+                    spark: [100, 100],
                     rsi: 50,
                     pe: 12,
                     foreignFlow: 0,

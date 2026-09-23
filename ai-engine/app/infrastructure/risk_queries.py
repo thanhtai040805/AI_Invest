@@ -7,28 +7,26 @@ from app.adapters.postgres_adapter import PostgresAdapter
 
 def get_active_flags(symbol: str) -> list[dict[str, Any]]:
     rows = PostgresAdapter().fetch_all(
-        """SELECT trading_status, beneish_status, gil_flag, audit_opinion
+        """SELECT trading_status, beneish_status, audit_opinion
            FROM stocks WHERE symbol = %s LIMIT 1""",
         (symbol.upper().strip(),),
     )
     if not rows:
         return [{"code": "SYMBOL_NOT_FOUND", "severity": "HARD", "value": None}]
 
-    trading, beneish, gil, audit = (str(value or "").upper().strip() for value in rows[0])
+    trading, beneish, audit = (str(value or "").upper().strip() for value in rows[0])
     flags: list[dict[str, Any]] = []
     if trading != "NORMAL":
         flags.append({"code": "TRADING_STATUS", "severity": "HARD", "value": trading})
     if beneish not in {"PASS", "SAFE"}:
         flags.append({"code": "BENEISH_STATUS", "severity": "HARD" if beneish not in {"PENDING", "UNKNOWN"} else "SOFT", "value": beneish})
-    if gil not in {"PASS", "NORMAL", "SAFE"}:
-        flags.append({"code": "GIL_FLAG", "severity": "HARD" if gil in {"CATASTROPHIC", "DATA_ERROR", "TECHNICAL_ERROR"} else "SOFT", "value": gil})
     if audit != "UNQUALIFIED":
         flags.append({"code": "AUDIT_OPINION", "severity": "HARD", "value": audit})
     return flags
 
 
 def get_hard_blocked(symbol: str) -> bool:
-    return any(flag["severity"] == "HARD" for flag in get_active_flags(symbol))
+    return any(flag["severity"] in {"HARD", "CLOSED"} for flag in get_active_flags(symbol))
 
 
 def get_soft_flag_count(symbol: str) -> int:

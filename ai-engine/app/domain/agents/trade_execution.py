@@ -5,7 +5,8 @@ Chuyên viên Khớp lệnh & Tối ưu Trượt giá trên sàn HOSE:
 - Tuân thủ Vi cấu trúc HOSE: Lô chẵn 100, trần 500,000 cổ, bước giá (10đ, 50đ, 100đ).
 - Điều phối thực thi theo Market State (NORMAL, STRESS, CRISIS) qua EAE Engine.
 - Tích hợp Giao thức 3 Pha phòng vệ bẫy ATC & Anomaly Kill-Switch.
-- Xử lý Khối lượng Dư (Lựa chọn B): Chốt lệnh phần đã khớp (PARTIALLY_EXECUTED), không tự động gom bù trong Execution, để Portfolio Agent tái tính toán ở phiên sau.
+- Khớp Shadow chỉ khi sổ lệnh hiện hành có đủ độ sâu tại giá cho phép; dữ liệu thiếu hoặc cũ sẽ chặn giao dịch.
+- BUY Shadow waits as a day limit at the approved reference price and fills the existing pending order atomically when executable depth appears.
 - Phân tầng ADTV chuẩn (MEGA, HIGH, MID, LOW) kèm hạ nhãn động (Dynamic Degradation) cho HPG.
 - Ghi nhận hồ sơ trượt giá (slippage_records) phục vụ học tăng cường (Agent-10).
 """
@@ -15,6 +16,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional
 
 from app.core.base_agent import BaseAgent
@@ -169,9 +171,15 @@ class TradeExecutionAgent(BaseAgent):
             return {"data": reject_payload, "trace": {"valid": False, "reason": "MISSING_MARKET_PRICE"}}
 
         decision_price = self.eae_engine.align_to_hose_tick_size(decision_price)
+        pending_order_id = decision.get("pending_order_id") or event_data.get("pending_order_id")
         max_price = float(decision.get("max_price", 0.0))
-        if max_price <= 0:
-            max_price = decision_price * 1.015 if direction == "BUY" else decision_price * 0.985
+        if direction == "BUY" and pending_order_id:
+            max_price = decision_price
+        elif direction == "BUY":
+            # Shadow entry is capped at the approved morning reference price.
+            max_price = decision_price
+        elif max_price <= 0:
+            max_price = decision_price * 0.985
         max_price = self.eae_engine.align_to_hose_tick_size(max_price)
 
         # 2. Đọc thanh khoản ADTV20 & Market State
@@ -269,7 +277,6 @@ class TradeExecutionAgent(BaseAgent):
                     "adtv20": adtv20,
                     "confirming_signals_count": decision.get("confirming_signals_count", 3),
                     "beneish_passed": decision.get("beneish_passed", True),
-                    "gil_ocr_score": decision.get("gil_ocr_score", 0.0),
                     "available_shares": decision.get("available_shares"),
                 })
                 if gov_res.get("status") == "SUCCESS":
@@ -333,7 +340,7 @@ class TradeExecutionAgent(BaseAgent):
         )
 
         # 6. KIỂM TRA BẤY THAO TÚNG PHIÊN ATC (ATC ANOMALY CHECK)
-        now_dt = datetime.now()
+        now_dt = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
         market_phase = self.eae_engine.determine_market_phase(now_dt)
         if market_phase == "ATC" or atc_concentration > 0.30:
             atc_eval = atc_anomaly_detector.evaluate_atc_session(
@@ -371,32 +378,54 @@ class TradeExecutionAgent(BaseAgent):
                 }
                 return {"data": kill_payload, "trace": {"atc_contingency": contingency}}
 
-        # 7. MÔ PHỎNG KHỚP LỆNH THỰC TẾ & PARTIAL FILL (LỰA CHỌN B)
-        # Nếu STRESS & lệnh tái cân bằng lớn (e.g. >= 100k cổ): Khớp 60% (180k/300k), dư 40% (120k)
-        # LƯU Ý: Lệnh phòng vệ khẩn cấp (Emergency Stop-Loss) từ Agent-09 được ưu tiên khớp 100% để bảo vệ vốn!
-        is_emergency = bool(
-            str(decision.get("urgency", "")).upper() in ("EMERGENCY", "HIGH")
-            or decision.get("bypass_portfolio_agent", False)
-            or event_data.get("failsafe_override", False)
-        )
-        if plan.execution_mode == "STRESS" and shares >= 100_000 and not is_emergency:
-            executed_shares = int(shares * 0.60) // 100 * 100
-            remaining_shares = shares - executed_shares
-            status_str = "PARTIALLY_EXECUTED"
-            # Giá khớp bình quân dịch chuyển 2 bước giá (100đ với thị giá 27k)
-            tick_step = 50.0 if decision_price < 50_000 else 100.0
-            if direction == "BUY":
-                executed_price = self.eae_engine.align_to_hose_tick_size(decision_price + (2 * tick_step))
-            else:
-                executed_price = self.eae_engine.align_to_hose_tick_size(decision_price - (2 * tick_step))
-        else:
-            executed_shares = shares
-            remaining_shares = 0
-            status_str = "EXECUTED"
-            executed_price = self.eae_engine.align_to_hose_tick_size(decision_price * 1.0012 if direction == "BUY" else decision_price * 0.9988)
-
-        # Đo lường trượt giá
-        slippage = abs(executed_price - decision_price) / decision_price if decision_price > 0 else 0.0
+        # 7. Shadow fills require recent executable displayed depth.
+        from app.domain.rules.execution.shadow_fill import shadow_fill
+        try:
+            executed_price = shadow_fill(
+                event_data.get("orderbook"), direction, shares, max_price
+            )
+        except ValueError as exc:
+            logger.info("[TradeExecutionAgent] Shadow order not filled for %s: %s", ticker, exc)
+            if direction == "BUY" and not pending_order_id:
+                pending_order_id = self.repository.create_shadow_pending_order(
+                    ticker=ticker,
+                    shares=shares,
+                    limit_price=max_price,
+                    user_id=decision.get("user_id") or event_data.get("user_id"),
+                )
+                return {"data": {
+                    "execution_decision": "WAIT",
+                    "order_id": pending_order_id,
+                    "ticker": ticker,
+                    "action": direction,
+                    "shares": shares,
+                    "executed_price": 0.0,
+                    "target_price": max_price,
+                    "status": "PENDING_SHADOW",
+                    "execution_mode": "SHADOW",
+                    "rejection_reason": str(exc),
+                }, "trace": {"reason": "WAITING_FOR_LIMIT_PRICE"}}
+            return {
+                "data": {
+                    "execution_decision": "BLOCK",
+                    "order_id": str(uuid.uuid4()),
+                    "ticker": ticker,
+                    "action": direction,
+                    "shares": 0,
+                    "status": "BLOCKED_NO_EXECUTABLE_DEPTH",
+                    "rejection_reason": str(exc),
+                    "executed_price": 0.0,
+                    "target_price": decision_price,
+                    "slippage_bps": 0.0,
+                    "slice_count": len(plan.slices),
+                    "execution_mode": "SHADOW",
+                },
+                "trace": {"reason": "NO_EXECUTABLE_DEPTH"},
+            }
+        executed_shares = shares
+        remaining_shares = 0
+        status_str = "EXECUTED"
+        slippage = abs(executed_price - decision_price) / decision_price
         slippage_bps = round(slippage * 10_000.0, 2)
 
         # 8. GHI NHẬN GIAO DỊCH VÀO CSDL (POSTGRESQL ATOMIC TRANSACTION)
@@ -408,6 +437,8 @@ class TradeExecutionAgent(BaseAgent):
             target_price=decision_price,
             slippage_bps=slippage_bps,
             execution_mode=plan.execution_mode,
+            user_id=decision.get("user_id") or event_data.get("user_id"),
+            pending_order_id=pending_order_id,
             status=status_str,
         )
 

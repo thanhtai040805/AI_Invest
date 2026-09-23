@@ -1,5 +1,5 @@
 """Universe Repository (IOS v5.1)
-Quản lý danh sách cổ phiếu, phân nhóm Universe (Group A/B/C/Sandbox), và kết quả lọc Lớp 0 (Beneish/GIL):
+Quản lý danh sách cổ phiếu, phân nhóm Universe (Group A/B/C/Sandbox), và kết quả lọc Lớp 0 (Beneish):
 - stocks: Danh bạ chứng khoán niêm yết
 - instrument_master: Thông tin cơ bản, free float, shares outstanding
 - universe_securities: Phân loại nhóm và trạng thái tuân thủ Hard Law
@@ -46,7 +46,7 @@ class UniverseRepository:
         where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
         query = f"""
             SELECT symbol, name, exchange, industry, market_cap,
-                   universe_group, trading_status, beneish_status, beneish_score, gil_flag
+                   universe_group, trading_status, beneish_status, beneish_score
             FROM stocks
             {where_clause}
             ORDER BY market_cap DESC NULLS LAST
@@ -66,7 +66,6 @@ class UniverseRepository:
                         "trading_status": str(r[6]) if r[6] else "NORMAL",
                         "beneish_status": str(r[7]) if r[7] else "PENDING",
                         "beneish_score": float(r[8]) if r[8] is not None else None,
-                        "gil_flag": str(r[9]) if r[9] else "DATA_INSUFFICIENT",
                     }
                     for r in rows
                 ]
@@ -79,7 +78,7 @@ class UniverseRepository:
         symbol = symbol.upper().strip()
         query = """
             SELECT symbol, name, exchange, industry, market_cap, ref_price,
-                   universe_group, trading_status, beneish_status, beneish_score, gil_flag
+                   universe_group, trading_status, beneish_status, beneish_score
             FROM stocks
             WHERE symbol = %s
         """
@@ -98,7 +97,6 @@ class UniverseRepository:
                     "trading_status": str(r[7]) if r[7] else "NORMAL",
                     "beneish_status": str(r[8]) if r[8] else "PENDING",
                     "beneish_score": float(r[9]) if r[9] is not None else None,
-                    "gil_flag": str(r[10]) if r[10] else "DATA_INSUFFICIENT",
                 }
         except Exception as e:
             logger.warning(f"Lỗi khi đọc stock {symbol} ({e})")
@@ -110,7 +108,6 @@ class UniverseRepository:
         group: Optional[str] = None,
         beneish_status: Optional[str] = None,
         beneish_score: Optional[float] = None,
-        gil_flag: Optional[str] = None,
     ) -> bool:
         """Cập nhật phân loại Universe và trạng thái tuân thủ Hard Law đồng bộ cho cả stocks và universe_securities."""
         symbol = symbol.upper().strip()
@@ -120,25 +117,23 @@ class UniverseRepository:
             SET universe_group = COALESCE(%s, universe_group),
                 beneish_status = COALESCE(%s, beneish_status),
                 beneish_score = COALESCE(%s, beneish_score),
-                gil_flag = COALESCE(%s, gil_flag),
                 group_updated_at = %s
             WHERE symbol = %s
         """
         try:
-            self.storage.execute(query, (group, beneish_status, beneish_score, gil_flag, now, symbol))
+            self.storage.execute(query, (group, beneish_status, beneish_score, now, symbol))
             # Đồng bộ sang bảng universe_securities
             try:
                 query_sec = """
                     INSERT INTO universe_securities (
                         ticker, universe_group, trading_status, beneish_status, gil_flag, updated_at
-                    ) VALUES (%s, COALESCE(%s, 'B'), 'NORMAL', COALESCE(%s, 'PASS'), COALESCE(%s, 'DATA_INSUFFICIENT'), NOW())
+                    ) VALUES (%s, COALESCE(%s, 'B'), 'NORMAL', COALESCE(%s, 'PASS'), 'SAG_HOLD', NOW())
                     ON CONFLICT (ticker) DO UPDATE SET
                         universe_group = COALESCE(EXCLUDED.universe_group, universe_securities.universe_group),
                         beneish_status = COALESCE(EXCLUDED.beneish_status, universe_securities.beneish_status),
-                        gil_flag = COALESCE(EXCLUDED.gil_flag, universe_securities.gil_flag),
                         updated_at = NOW()
                 """
-                self.storage.execute(query_sec, (symbol, group, beneish_status, gil_flag))
+                self.storage.execute(query_sec, (symbol, group, beneish_status))
             except Exception:
                 pass
             return True
@@ -152,25 +147,23 @@ class UniverseRepository:
         universe_group: str,
         trading_status: str = "NORMAL",
         beneish_status: str = "PASS",
-        gil_flag: str = "DATA_INSUFFICIENT",
     ) -> bool:
         """Lưu hoặc cập nhật trạng thái phân nhóm Universe của cổ phiếu vào bảng universe_securities và đồng bộ sang stocks."""
         ticker = ticker.upper().strip()
         query = """
             INSERT INTO universe_securities (
                 ticker, universe_group, trading_status, beneish_status, gil_flag, updated_at
-            ) VALUES (%s, %s, %s, %s, %s, NOW())
+            ) VALUES (%s, %s, %s, %s, 'SAG_HOLD', NOW())
             ON CONFLICT (ticker) DO UPDATE SET
                 universe_group = EXCLUDED.universe_group,
                 trading_status = EXCLUDED.trading_status,
                 beneish_status = EXCLUDED.beneish_status,
-                gil_flag = EXCLUDED.gil_flag,
                 updated_at = NOW()
         """
         try:
             self.storage.execute(
                 query,
-                (ticker, universe_group, trading_status, beneish_status, gil_flag),
+                (ticker, universe_group, trading_status, beneish_status),
             )
             # Đồng bộ sang bảng stocks
             try:
@@ -179,10 +172,9 @@ class UniverseRepository:
                     SET universe_group = %s,
                         trading_status = %s,
                         beneish_status = %s,
-                        gil_flag = %s,
                         group_updated_at = NOW()
                     WHERE symbol = %s
-                """, (universe_group, trading_status, beneish_status, gil_flag, ticker))
+                """, (universe_group, trading_status, beneish_status, ticker))
             except Exception:
                 pass
             return True

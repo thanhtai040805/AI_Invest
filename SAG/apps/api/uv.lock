@@ -1294,6 +1294,7 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/2b/6b/bd4e71ce6bc36fa0f344e4cde8068176cbed8ab72013735b5f8fa2a32a67/lancedb-0.39.0-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:66d9e64d7d1b52955f913f673d8f40e6e2eeeadf80a93c2d1ec2abfc686e7141", size = 63780771, upload-time = "2026-09-17T22:07:49.875Z" },
     { url = "https://files.pythonhosted.org/packages/64/b2/02c1d60588094190b545802aa0f3bd756e2d679282442c42371e57888c1a/lancedb-0.39.0-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:0b38bfc50c79dd55bb993388b55af7d757e1cd1a0d0bbdc9a49926aae8f1533c", size = 67889066, upload-time = "2026-09-17T22:07:55.576Z" },
     { url = "https://files.pythonhosted.org/packages/55/de/a4cd70478b7d8a6b07acf591e4abf4eda39d6d250a627cd68430e77449d2/lancedb-0.39.0-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:640dcde055e684f44c7aa2f79a345301862d7a6868076ee76d8a732296be00bb", size = 71408505, upload-time = "2026-09-17T22:08:01.938Z" },
+    { url = "https://files.pythonhosted.org/packages/65/c4/d425cb82a956bfe47c7d903dd15fb59c0d0011b805cb5af5e26b581b8537/lancedb-0.39.0-cp310-abi3-win_amd64.whl", hash = "sha256:b93f1eddbb7c0fa55770fc4ad4794d676ca9209e1683cd9535091dd450f12810", size = 103116777, upload-time = "2026-09-21T14:13:42.695Z" },
 ]
 
 [[package]]
@@ -2952,7 +2953,7 @@ requires-dist = [
     { name = "sse-starlette", specifier = ">=3.0,<4" },
     { name = "tzdata", specifier = ">=2024.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
-    { name = "zleap-sag", specifier = ">=0.13,<0.14" },
+    { name = "zleap-sag", specifier = "==0.7.1" },
 ]
 provides-extras = ["postgres", "legacy-sqlite", "dev", "desktop"]
 
@@ -3589,7 +3590,7 @@ wheels = [
 
 [[package]]
 name = "zleap-sag"
-version = "0.13.0"
+version = "0.7.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -3600,7 +3601,6 @@ dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "openai" },
-    { name = "pillow" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pyyaml" },
@@ -3609,7 +3609,7 @@ dependencies = [
     { name = "tokenizers" },
     { name = "tzdata" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/bf/69/fbc8a16f141380d03bb754399fca03b6ed9d0f1dd2c54a329f0f249b1d7d/zleap_sag-0.13.0.tar.gz", hash = "sha256:17f915fb5c2ee9baee44048d03f5eb6937138e73c2c88e062f39111f4ab9519b", size = 3846713, upload-time = "2026-09-17T09:10:17.211Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/fb/be/8a124c711e3274204fd440a14766dc35438b5e5868d71acd734231f3fe89/zleap_sag-0.7.1.tar.gz", hash = "sha256:2ca75da95916165bcf10049eac2171c0e91f7907874e0dc60b26b2da88d1634e", size = 2297185, upload-time = "2026-07-07T08:02:20.425Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9f/1e/948587e74ddb5fc3ee9f8e0af6876ab389f48882b357e481c506fb62d12c/zleap_sag-0.13.0-py3-none-any.whl", hash = "sha256:2beee6f89a66af20adda6c3e96321a99113de6f682d2f2a023d6f50297bd41a9", size = 3304995, upload-time = "2026-09-17T09:10:15.272Z" },
+    { url = "https://files.pythonhosted.org/packages/74/83/c415067fae12cb57f706106c9f5502c15a2b94f56d06a5a8d61f9531a634/zleap_sag-0.7.1-py3-none-any.whl", hash = "sha256:92158f43536cd62a027730853f197173fed14e1b556a665fcd19cc0d4c56cda3", size = 2401544, upload-time = "2026-07-07T08:02:18.657Z" },
 ]

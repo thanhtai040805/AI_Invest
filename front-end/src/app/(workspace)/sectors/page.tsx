@@ -11,15 +11,18 @@ import {
 import { marketApi } from "@/lib/api"
 import { useResource } from "@/lib/api/use-resource"
 
+interface ApiSector { sector?: string; foreign_flow?: number; count?: number; change_pct?: number; sparkline?: number[] }
+interface ApiHeatmap { sectors?: ApiSector[] }
+
 export default function Sectors() {
   const resource = useResource(() => marketApi.heatmap().catch(() => null), [])
 
   const sectorList = useMemo(() => {
-    const raw = resource.data as any
+    const raw = resource.data as ApiHeatmap | null
     const apiSectors = Array.isArray(raw?.sectors) ? raw.sectors : []
     if (!apiSectors.length) return []
 
-    return apiSectors.slice(0, 12).map((s: any) => {
+    return (apiSectors as ApiSector[]).slice(0, 12).map((s) => {
       const foreignBn = Math.round(Number(s.foreign_flow ?? 0) / 1e9)
       return {
         name: String(s.sector || "General"),
@@ -65,8 +68,8 @@ export default function Sectors() {
                 series={[
                   {
                     label: s.name,
-                    data: (s as any).sparkline && (s as any).sparkline.length > 1
-                      ? (s as any).sparkline
+                    data: s.sparkline && s.sparkline.length > 1
+                      ? s.sparkline
                       : [100, 100 + s.changePct],
                     color:
                       s.changePct >= 0

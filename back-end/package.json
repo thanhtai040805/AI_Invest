@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "tsx watch src/app.ts",
     "build": "tsc",
+    "test": "npm run build && node --test tests/*.test.cjs",
     "start": "node dist/app.js",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
@@ -26,7 +27,6 @@
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
     "socket.io": "^4.7.5",
-    "uuid": "^10.0.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
@@ -37,7 +37,6 @@
     "@types/jsonwebtoken": "^9.0.6",
     "@types/morgan": "^1.9.9",
     "@types/node": "^22.0.0",
-    "@types/uuid": "^10.0.0",
     "prisma": "^5.19.0",
     "tsx": "^4.19.0",
     "typescript": "^5.5.4"

@@ -36,6 +36,37 @@ def _source_url_candidates(urls: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(candidates))
 
 
+def _cached_markdown_exists(r2: R2StorageService, key: str | None) -> bool:
+    """Do not period-lock a cache row whose authoritative R2 object is gone."""
+    if not key or not r2.is_configured:
+        return False
+    try:
+        return r2.file_exists(key)
+    except Exception as error:  # noqa: BLE001
+        logger.warning("Cannot verify cached Markdown %s: %s", key, error)
+        return False
+
+
+def _sag_analysis_hold(result: Optional[Dict[str, Any]]) -> bool:
+    return bool(result and result.get("error_code") in {"SAG_ANALYSIS_HOLD", "SAG_CLOSED"})
+
+
+def _sag_write_succeeded(result: Optional[Dict[str, Any]]) -> bool:
+    return bool(result and result.get("status") not in {"FAILED", "error", "BLOCKED"})
+
+
+def _analysis_hold_pipeline_result(ticker: str, documents: list[Dict[str, Any]]) -> Dict[str, Any]:
+    return {
+        "ticker": ticker,
+        "status": "SAG_CLOSED",
+        "analysis_status": "SAG_CLOSED",
+        "documents_count": len(documents),
+        "documents": documents,
+        "gil_result": None,
+        "gil_flag": "PENDING_SAG_CLOSED",
+        "db_updated": False,
+        "reason": "SAG is temporarily closed; no SAG data was read or refreshed.",
+    }
 class _SingleDocumentSelector:
     """Selector adapter used by the document-level parallel coordinator."""
 
@@ -112,6 +143,9 @@ class BctcToSagPipeline:
         """
         ticker_clean = ticker.upper().strip()
         logger.info(f"==> Bắt đầu BCTC to SAG Pipeline cho mã {ticker_clean} (ocr_only={ocr_only})")
+
+        if getattr(self.connector, "sag_analysis_hold", False) is True:
+            return _analysis_hold_pipeline_result(ticker_clean, [])
 
         # 0. Chốt chặn BctcIngestionGuard: Bỏ qua các mã thuộc danh sách rác / đóng băng thanh khoản (Đỉnh 2Y < 5B)
         from app.domain.rules.bctc_ingestion_guard import should_ingest_bctc
@@ -203,15 +237,18 @@ class BctcToSagPipeline:
                         title=doc.title,
                         text_content=md_content,
                         doc_role=doc.role,
+                        scope=scope,
                         is_active=True,
                         fiscal_year=year,
                         fiscal_quarter=_sag_fiscal_quarter(quarter),
+                        period_start=doc.period_start,
+                        period_end=doc.period_end,
                     )
-                    if sag_res and sag_res.get("status") not in ("FAILED", "error"):
+                    if _sag_write_succeeded(sag_res):
                         doc_info["sag_doc_id"] = sag_res.get("id")
                         doc_info["status"] = "EXTRACTION_COMPLETED"
                     else:
-                        doc_info["status"] = "FAILED"
+                        doc_info["status"] = "BLOCKED" if _sag_analysis_hold(sag_res) else "FAILED"
                         doc_info["error"] = (sag_res or {}).get("error", "Không thể ingest Markdown R2 vào SAG")
                 except Exception as e:
                     doc_info["status"] = "FAILED"
@@ -219,11 +256,22 @@ class BctcToSagPipeline:
                 ingested_docs.append(doc_info)
                 continue
 
-            if not force_reprocess and self.repo.should_skip_ocr(
+            cache_hit = not force_reprocess and self.repo.should_skip_ocr(
                 ticker_clean, year, quarter, scope,
                 source_document_id=doc.doc_id,
                 cache_version=OCR_CACHE_VERSION,
-            ):
+            )
+            if cache_hit:
+                rec_ocr = self.repo.get_record(ticker_clean, year, quarter, scope)
+                cached_key = (rec_ocr or {}).get("r2_md_key")
+                cache_hit = _cached_markdown_exists(self.r2, cached_key)
+                if not cache_hit:
+                    logger.warning(
+                        "[OCR Cache] %s %s cache row exists but R2 Markdown is unavailable; retrying source",
+                        ticker_clean,
+                        q_label,
+                    )
+            if cache_hit:
                 rec_ocr = self.repo.get_record(ticker_clean, year, quarter, scope)
                 logger.info(f"⚡ [OCR Cache] {ticker_clean} {year} {q_label} đã OCR trước đó. Bỏ qua gọi lại MinerU.")
                 doc_info["r2_md_key"] = rec_ocr.get("r2_md_key")
@@ -253,15 +301,18 @@ class BctcToSagPipeline:
                             title=doc.title,
                             text_content=md_content,
                             doc_role=doc.role,
+                            scope=scope,
                             is_active=True,
                             fiscal_year=year,
                             fiscal_quarter=_sag_fiscal_quarter(quarter),
+                            period_start=doc.period_start,
+                            period_end=doc.period_end,
                         )
-                        if sag_res and sag_res.get("status") not in ("FAILED", "error"):
+                        if _sag_write_succeeded(sag_res):
                             doc_info["sag_doc_id"] = sag_res.get("id")
                             doc_info["status"] = "EXTRACTION_COMPLETED"
                         else:
-                            doc_info["status"] = "FAILED"
+                            doc_info["status"] = "BLOCKED" if _sag_analysis_hold(sag_res) else "FAILED"
                             doc_info["error"] = (sag_res or {}).get("error", "Không thể ingest Markdown R2 vào SAG")
                     except Exception as e:
                         doc_info["status"] = "FAILED"
@@ -290,15 +341,18 @@ class BctcToSagPipeline:
                             title=doc.title,
                             text_content=md_content,
                             doc_role=doc.role,
+                            scope=scope,
                             is_active=True,
                             fiscal_year=year,
                             fiscal_quarter=_sag_fiscal_quarter(quarter),
+                            period_start=doc.period_start,
+                            period_end=doc.period_end,
                         )
-                        if sag_res and sag_res.get("status") not in ("FAILED", "error"):
+                        if _sag_write_succeeded(sag_res):
                             doc_info["sag_doc_id"] = sag_res.get("id")
                             doc_info["status"] = "INGESTED_TO_SAG_FROM_R2_MARKDOWN"
                         else:
-                            doc_info["status"] = "FAILED"
+                            doc_info["status"] = "BLOCKED" if _sag_analysis_hold(sag_res) else "FAILED"
                             doc_info["error"] = (sag_res or {}).get("error", "Không thể ingest Markdown R2 vào SAG")
                     except Exception as e:
                         doc_info["status"] = "FAILED"
@@ -318,9 +372,12 @@ class BctcToSagPipeline:
                     title=doc.title,
                     text_content=content_md,
                     doc_role=doc.role,
+                    scope=scope,
                     is_active=True,
                     fiscal_year=year,
                     fiscal_quarter=_sag_fiscal_quarter(quarter),
+                    period_start=doc.period_start,
+                    period_end=doc.period_end,
                 )
             elif backlog_rec and backlog_rec.get("r2_pdf_key"):
                 async with _OCR_UPLOAD_SEMAPHORE:
@@ -329,8 +386,11 @@ class BctcToSagPipeline:
                         object_uri=f"r2://{self.r2.bucket_name}/{backlog_rec['r2_pdf_key']}",
                         title=doc.title,
                         doc_role=doc.role,
+                        scope=scope,
                         fiscal_year=year,
                         fiscal_quarter=_sag_fiscal_quarter(quarter),
+                        period_start=doc.period_start,
+                        period_end=doc.period_end,
                         is_active=not ocr_only,
                         ocr_only=ocr_only,
                     )
@@ -354,12 +414,17 @@ class BctcToSagPipeline:
                                 source_url=source_url,
                                 title=doc.title,
                                 doc_role=doc.role,
+                                scope=scope,
                                 fiscal_year=year,
                                 fiscal_quarter=_sag_fiscal_quarter(quarter),
+                                period_start=doc.period_start,
+                                period_end=doc.period_end,
                                 is_active=not ocr_only,
                                 ocr_only=ocr_only,
                             )
-                        if sag_res and sag_res.get("status") not in ("FAILED", "error"):
+                        if _sag_write_succeeded(sag_res):
+                            break
+                        if _sag_analysis_hold(sag_res):
                             break
                         logger.warning(
                             "Fallback source URL thất bại cho %s (%s): %s",
@@ -376,12 +441,17 @@ class BctcToSagPipeline:
                             source_url=source_url,
                             title=doc.title,
                             doc_role=doc.role,
+                            scope=scope,
                             fiscal_year=year,
                             fiscal_quarter=_sag_fiscal_quarter(quarter),
+                            period_start=doc.period_start,
+                            period_end=doc.period_end,
                             is_active=not ocr_only,
                             ocr_only=ocr_only,
                         )
-                    if sag_res and sag_res.get("status") not in ("FAILED", "error"):
+                    if _sag_write_succeeded(sag_res):
+                        break
+                    if _sag_analysis_hold(sag_res):
                         break
                     logger.warning(
                         "Source URL thất bại cho %s (%s): %s",
@@ -390,7 +460,7 @@ class BctcToSagPipeline:
                         (sag_res or {}).get("error", "unknown error"),
                     )
 
-            if sag_res and sag_res.get("status") not in ("FAILED", "error"):
+            if _sag_write_succeeded(sag_res):
                 sag_doc_id = sag_res.get("id")
                 doc_info["sag_doc_id"] = sag_doc_id
                 doc_info["status"] = "INGESTED_TO_SAG"
@@ -461,12 +531,15 @@ class BctcToSagPipeline:
                 else:
                     doc_info["status"] = "SUCCESS"
             else:
-                doc_info["status"] = "FAILED"
+                doc_info["status"] = "BLOCKED" if _sag_analysis_hold(sag_res) else "FAILED"
                 doc_info["error"] = sag_res.get("error") if sag_res else "Không có dữ liệu PDF"
 
             ingested_docs.append(doc_info)
 
         # Nếu chỉ chạy OCR (ocr_only=True): Dừng tại đây, bỏ qua phân tích GIL để tiết kiệm tài nguyên
+        if any(item.get("status") == "BLOCKED" for item in ingested_docs):
+            return _analysis_hold_pipeline_result(ticker_clean, ingested_docs)
+
         if ocr_only:
             logger.info(f"==> [OCR ONLY] Hoàn tất cắt tỉa và OCR cho {ticker_clean}. Markdown đã lưu R2 & CSDL. Bỏ qua bước GIL.")
             return {
@@ -593,6 +666,9 @@ class BctcToSagPipeline:
             else:
                 documents.extend(outcome.get("documents") or [])
 
+        if any(item.get("status") == "BLOCKED" for item in documents):
+            return _analysis_hold_pipeline_result(ticker, documents)
+
         if ocr_only:
             return {
                 "ticker": ticker,
@@ -661,6 +737,8 @@ class BctcToSagPipeline:
             try:
                 status_doc = await self.connector.get_document_status(source_id, doc_id)
                 if status_doc:
+                    if status_doc.get("error_code") == "SAG_CLOSED":
+                        return status_doc
                     st = str(status_doc.get("status") or "").upper()
                     structure_status = str(status_doc.get("structure_status") or "").upper()
                     extraction_status = str(status_doc.get("extraction_status") or "").upper()

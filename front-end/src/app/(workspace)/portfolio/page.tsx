@@ -93,7 +93,7 @@ export default function Portfolio() {
               <span className="flex items-center gap-1.5 text-muted"><span className="w-3 h-0.5 border-t border-dashed border-muted" />VN-Index</span>
             </div>
           } />
-          <EquityCurve points={(perfRaw as any)?.equityCurve} />
+          <EquityCurve points={(perfRaw as { equityCurve?: { date: string; value: number }[] } | null)?.equityCurve} />
         </Panel>
         <Panel>
           <PanelHead title="Quy chế sụt giảm Drawdown" sub="Trạng thái kiểm soát sụt giảm danh mục từ Sovereign Risk Gate" />

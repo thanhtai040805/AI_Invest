@@ -1,7 +1,7 @@
 """AGENT-11: System Governance Agent (IOS v5.1 Institutional Sovereign Architecture)
 
 Kiến trúc Tam Giác Quyền Lực:
-1. COMPLIANCE: Thẩm tra 6 Hard Laws bất khả xâm phạm, Ma trận Thẩm quyền (Authority), Quy chế sàn HOSE.
+1. COMPLIANCE: Thẩm tra các Hard Laws bất khả xâm phạm, Ma trận Thẩm quyền (Authority), Quy chế sàn HOSE.
 2. AUDIT: Sổ cái bất biến SHA-256 Hash Chaining liên tục, toàn vẹn mật mã (Full Chain Verifier), Versioning.
 3. CHANGE: Thẩm định Yêu cầu Thay đổi mô hình (Change Request), Phân tích Tác động (Impact), OOS Validation.
 4. DECISION GATE: Cổng phán quyết Pre-Trade & Model Change:
@@ -63,7 +63,7 @@ class SystemGovernanceAgent(BaseAgent):
 
     def _init_and_sync_governance_rules_to_db(self) -> None:
         """
-        Đồng bộ toàn bộ 6 Hard Laws, Chính sách Vi cấu trúc HOSE, và Ma trận Thẩm quyền
+        Đồng bộ toàn bộ Hard Laws, Chính sách Vi cấu trúc HOSE, và Ma trận Thẩm quyền
         vào bảng governance_rules trong PostgreSQL. Đảm bảo CSDL luôn phản ánh đúng Hiến pháp đầu tư.
         """
         from app.infrastructure.database.pg_pool import get_conn
@@ -74,7 +74,6 @@ class SystemGovernanceAgent(BaseAgent):
             ("DIEU_3", "Nguyên tắc Ba Tín hiệu Độc lập (Rule of Three)", "HARD_LAW", True, {"min_confirming_signals": 3}),
             ("DIEU_4", "Trần Tỷ trọng Danh mục (15% Cổ phiếu / 35% Ngành)", "HARD_LAW", True, {"max_single_stock_pct": 15.0, "max_single_sector_pct": 35.0}),
             ("DIEU_5", "Cổng Beneish M-Score Lớp 0 (Loại trừ Gian lận BCTC)", "HARD_LAW", True, {"threshold": -1.78}),
-            ("DIEU_6", "Cổng GIL OCR Network (Sở hữu chéo Rủi ro Thảm họa)", "HARD_LAW", True, {"max_ocr_score": 0.85}),
             ("HOSE_MICROSTRUCTURE", "Quy chế Vi Cấu Trúc Sàn HOSE", "MARKET_POLICY", True, {"lot_size": 100, "max_order_shares": 500000, "allow_short_selling": False}),
             ("AUTHORITY_MATRIX", "Ma trận Thẩm quyền Phát Lệnh & Quyết định", "AUTHORITY", True, {"portfolio_allocation": ["BUY", "SELL", "REBALANCE"], "position_monitoring": ["STOP_LOSS_EMERGENCY_SELL"], "system_governance": ["KILL_SWITCH_HALT", "EMERGENCY_FREEZE"]}),
             ("CHANGE_MANAGEMENT", "Quản trị Thay đổi Mô hình ML & Phân tích Sốc Đảo chiều", "CHANGE_MANAGEMENT", True, {"max_turnover_shock_pct": 30.0, "min_oos_sharpe": 1.2, "max_oos_drawdown_pct": 10.0}),
@@ -255,7 +254,6 @@ class SystemGovernanceAgent(BaseAgent):
         adtv20 = float(event_data.get("adtv20", 2_000_000.0))
         signals_count = int(event_data.get("confirming_signals_count", 3))
         beneish_ok = bool(event_data.get("beneish_passed", True))
-        gil_ocr = float(event_data.get("gil_ocr_score", 0.0))
         available_sh = event_data.get("available_shares")
 
         # 3. Thẩm định qua Compliance Engine
@@ -267,7 +265,6 @@ class SystemGovernanceAgent(BaseAgent):
             order_intent=order_intent,
             confirming_signals_count=signals_count,
             beneish_passed=beneish_ok,
-            gil_ocr_score=gil_ocr,
             available_shares=available_sh,
         )
 
@@ -476,7 +473,6 @@ class SystemGovernanceAgent(BaseAgent):
                 "DIEU_3_RULE_OF_THREE_INDEPENDENT_SIGNALS",
                 "DIEU_4_CONCENTRATION_MAX_15PCT_STOCK_35PCT_SECTOR",
                 "DIEU_5_BENEISH_CLASS_0_GATE",
-                "DIEU_6_GIL_CATASTROPHIC_ZERO_TOLERANCE",
             ],
         }
 

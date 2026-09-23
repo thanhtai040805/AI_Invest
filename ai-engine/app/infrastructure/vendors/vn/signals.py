@@ -17,7 +17,7 @@ import psycopg2
 import psycopg2.extras
 
 from app.infrastructure.database.pg_pool import DB_URL, get_conn, get_cursor
-from app.infrastructure.risk_queries import get_hard_blocked, get_soft_flag_count
+from app.infrastructure.risk_queries import get_active_flags
 from app.infrastructure.vendors.vn.sector_groups import classify
 
 logger = logging.getLogger(__name__)
@@ -110,8 +110,9 @@ def refresh_all(calc_date: Optional[date] = None) -> dict:
         output_rows = []
         for sym, _ in symbols:
             percentile = factor_map.get(sym)
-            hard_blocked = get_hard_blocked(sym)
-            soft_count = get_soft_flag_count(sym)
+            flags = get_active_flags(sym)
+            hard_blocked = any(flag["severity"] == "HARD" for flag in flags)
+            soft_count = sum(flag["severity"] == "SOFT" for flag in flags)
             signal = determine_signal(percentile, hard_blocked, soft_count)
             group = classify(sym_industry.get(sym), sym)
 

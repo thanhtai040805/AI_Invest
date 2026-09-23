@@ -195,7 +195,12 @@ class GILAssessmentOutV2(BaseModel):
     ticker: str
     analysis_status: str
     gil_flag: str
+    risk_signal: str = "UNKNOWN"
+    flow_signal: str = "NOT_ASSESSED"
+    flow_findings: list[str] = []
+    evidence_status: str = "INSUFFICIENT"
     risk_level: str
+    review_status: str = "CLEAR"
     gil_score: float | None = None
     rpt_ratio: float | None
     total_rpt_exposure_vnd: float | None

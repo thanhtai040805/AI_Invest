@@ -12,6 +12,7 @@ import uuid
 from copy import deepcopy
 from datetime import datetime, time, timedelta
 from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from app.adapters.postgres_adapter import PostgresAdapter
 
@@ -352,6 +353,7 @@ class PortfolioRepository:
         execution_mode: str = "NORMAL",
         user_id: Optional[str] = None,
         status: str = "FILLED",
+        pending_order_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Thực hiện giao dịch nguyên tử (Atomic Execution):
@@ -368,7 +370,7 @@ class PortfolioRepository:
             raise RuntimeError("Portfolio user_id is required")
 
         trade_value = float(executed_price * shares)
-        order_id = str(uuid.uuid4())
+        order_id = str(pending_order_id or uuid.uuid4())
         pos_id = str(uuid.uuid4())
         now = datetime.now()
 
@@ -418,6 +420,16 @@ class PortfolioRepository:
         # 2. Cập nhật CSDL PostgreSQL thực tế
         try:
             self.storage.begin()
+            if pending_order_id:
+                pending = self.storage.fetch_all(
+                    "SELECT user_id, symbol, side, quantity, status FROM orders WHERE id = %s FOR UPDATE",
+                    (pending_order_id,),
+                )
+                if not pending or str(pending[0][4]) != "PENDING_SHADOW":
+                    raise ValueError("Shadow order is no longer pending")
+                if (str(pending[0][0]) != str(target_uid) or str(pending[0][1]).upper() != ticker
+                        or str(pending[0][2]).upper() != action or int(pending[0][3]) != shares):
+                    raise ValueError("Shadow order details do not match the pending order")
             users = self.storage.fetch_all(
                 "SELECT cash_balance FROM users WHERE id = %s FOR UPDATE",
                 (target_uid,),
@@ -480,11 +492,17 @@ class PortfolioRepository:
                         self.storage.execute("UPDATE positions SET quantity = %s WHERE id = %s", (remaining_q, pid))
 
             # 2.3 Ghi lệnh vào bảng orders (Sổ lệnh hệ thống)
-            sql_order = """
-                INSERT INTO orders (id, user_id, symbol, side, order_type, price, quantity, status, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """
-            self.storage.execute(sql_order, (order_id, target_uid, ticker, action, execution_mode, executed_price, shares, status, now))
+            if pending_order_id:
+                self.storage.execute(
+                    "UPDATE orders SET status = %s, price = %s WHERE id = %s AND status = 'PENDING_SHADOW'",
+                    (status, executed_price, pending_order_id),
+                )
+            else:
+                self.storage.execute(
+                    "INSERT INTO orders (id, user_id, symbol, side, order_type, price, quantity, status, created_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (order_id, target_uid, ticker, action, execution_mode, executed_price, shares, status, now),
+                )
 
             # 2.4 Đồng thời ghi vào order_executions, portfolio_positions & portfolio_account để đồng bộ các Agent
             try:
@@ -588,6 +606,54 @@ class PortfolioRepository:
             "status": status,
             "timestamp": now.isoformat(),
         }
+
+    def create_shadow_pending_order(
+        self, ticker: str, shares: int, limit_price: float, user_id: Optional[str] = None,
+        order_type: str = "SHADOW_LIMIT",
+    ) -> str:
+        """Persist a day-only Shadow limit order without changing cash or positions."""
+        ticker = ticker.upper().strip()
+        if (not ticker or shares <= 0 or limit_price <= 0
+                or order_type not in ("SHADOW_LIMIT", "SHADOW_ML_LIMIT")):
+            raise ValueError("Invalid Shadow pending order")
+        target_uid = user_id or self.account_id
+        order_id = str(uuid.uuid4())
+        now = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).replace(tzinfo=None)
+        self.storage.execute(
+            "INSERT INTO orders (id, user_id, symbol, side, order_type, price, quantity, status, created_at) "
+            "VALUES (%s, %s, %s, 'BUY', %s, %s, %s, 'PENDING_SHADOW', %s)",
+            (order_id, target_uid, ticker.upper().strip(), order_type, limit_price, shares, now),
+        )
+        return order_id
+
+    def get_pending_shadow_orders(self) -> List[Dict[str, Any]]:
+        rows = self.storage.fetch_all(
+            "SELECT id, user_id, symbol, side, price, quantity, order_type FROM orders "
+            "WHERE status = 'PENDING_SHADOW' AND order_type IN ('SHADOW_LIMIT', 'SHADOW_ML_LIMIT') "
+            "ORDER BY created_at"
+        )
+        return [
+            {"order_id": str(r[0]), "user_id": str(r[1]), "ticker": str(r[2]),
+             "side": str(r[3]), "limit_price": float(r[4]), "shares": int(r[5]),
+             "order_type": str(r[6])}
+            for r in rows
+        ]
+
+    def expire_pending_shadow_orders(self) -> int:
+        now = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
+        rows = self.storage.fetch_all(
+            "UPDATE orders SET status = 'EXPIRED' WHERE status = 'PENDING_SHADOW' "
+            "AND order_type IN ('SHADOW_LIMIT', 'SHADOW_ML_LIMIT') "
+            "AND (created_at::date < %s OR %s >= TIME '14:45') RETURNING id",
+            (now.date(), now.time().replace(tzinfo=None)),
+        )
+        return len(rows)
+
+    def cancel_pending_shadow_order(self, order_id: str) -> None:
+        self.storage.execute(
+            "UPDATE orders SET status = 'CANCELLED' WHERE id = %s AND status = 'PENDING_SHADOW'",
+            (order_id,),
+        )
 
     def record_slippage(
         self,

@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import prisma from '../config/database';
 import { aiEngineService } from './aiEngine.service';
+import { shadowFill } from './shadowFill';
 
 export interface PositionView {
   id: string;
@@ -31,8 +32,11 @@ export async function getPositions(userId: string): Promise<PositionView[]> {
 
   return Promise.all(
     positions.map(async (pos) => {
-      const quote = await aiEngineService.getQuote(pos.symbol);
-      const price = quote.price ?? Number(pos.avgPrice);
+      const quote = await aiEngineService.getQuote(pos.symbol).catch(() => null);
+      const rawPrice = Number(quote?.price);
+      const price = Number.isFinite(rawPrice) && rawPrice > 0
+        ? (rawPrice < 500 ? Math.round(rawPrice * 1000) : rawPrice)
+        : Number(pos.avgPrice);
       const marketValue = price * pos.quantity;
       const cost = Number(pos.avgPrice) * pos.quantity;
       return {
@@ -83,23 +87,29 @@ export async function placeOrder(
   input: { symbol: string; side: 'BUY' | 'SELL'; orderType: string; price?: number; quantity: number },
 ) {
   const symbol = input.symbol.toUpperCase();
-  const quote = await aiEngineService.getQuote(symbol);
-  const fillPrice = Number(quote.price);
-  if (!Number.isFinite(fillPrice) || fillPrice <= 0) {
-    throw new PortfolioError('A valid market price is unavailable');
+  if (input.orderType !== 'LO' && input.orderType !== 'MP') {
+    throw new PortfolioError('ATO/ATC auction fills are not supported in Shadow mode');
   }
-  if (input.orderType === 'LO' && input.price != null) {
-    if (input.side === 'BUY' && fillPrice > input.price) throw new PortfolioError('Buy limit price is below market');
-    if (input.side === 'SELL' && fillPrice < input.price) throw new PortfolioError('Sell limit price is above market');
+  let fill: { price: number; notional: number };
+  try {
+    fill = shadowFill(await aiEngineService.getOrderBook(symbol), input.side, input.quantity,
+      input.orderType === 'LO' ? input.price : undefined);
+  } catch (error) {
+    throw new PortfolioError(error instanceof Error ? error.message : 'Live order book is unavailable');
   }
-  const notional = fillPrice * input.quantity;
+  const { price: fillPrice, notional } = fill;
+  const fee = Math.max(Math.round(notional * 0.001), 10_000);
+  const tax = input.side === 'SELL' ? Math.round(notional * 0.001) : 0;
+  if (input.side === 'SELL' && notional <= fee + tax) {
+    throw new PortfolioError('Sale proceeds do not cover fee and tax');
+  }
 
   return prisma.$transaction(async (tx) => {
     await tx.$queryRawUnsafe('SELECT id FROM users WHERE id = $1 FOR UPDATE', userId);
     await tx.stock.upsert({
       where: { symbol },
-      create: { symbol, name: quote.name ?? symbol, exchange: 'HOSE' },
-      update: { name: quote.name ?? symbol },
+      create: { symbol, name: symbol, exchange: 'HOSE' },
+      update: {},
     });
 
     const user = await tx.user.findUnique({ where: { id: userId } });
@@ -108,7 +118,7 @@ export async function placeOrder(
     const existing = await tx.position.findFirst({ where: { userId, symbol } });
 
     if (input.side === 'BUY') {
-      if (notional > cash) throw new PortfolioError('Insufficient buying power');
+      if (notional + fee > cash) throw new PortfolioError('Insufficient buying power including fee');
       if (existing) {
         const newQty = existing.quantity + input.quantity;
         const newAvg = (Number(existing.avgPrice) * existing.quantity + notional) / newQty;
@@ -121,13 +131,13 @@ export async function placeOrder(
           data: { userId, symbol, quantity: input.quantity, avgPrice: new Decimal(fillPrice) },
         });
       }
-      await tx.user.update({ where: { id: userId }, data: { cashBalance: { decrement: notional } } });
+      await tx.user.update({ where: { id: userId }, data: { cashBalance: { decrement: notional + fee } } });
     } else {
       if (!existing || existing.quantity < input.quantity) throw new PortfolioError('Insufficient shares to sell');
       const newQty = existing.quantity - input.quantity;
       if (newQty === 0) await tx.position.delete({ where: { id: existing.id } });
       else await tx.position.update({ where: { id: existing.id }, data: { quantity: newQty } });
-      await tx.user.update({ where: { id: userId }, data: { cashBalance: { increment: notional } } });
+      await tx.user.update({ where: { id: userId }, data: { cashBalance: { increment: notional - fee - tax } } });
     }
 
     return tx.order.create({

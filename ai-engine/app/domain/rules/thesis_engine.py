@@ -2,7 +2,7 @@
 
 Quy tắc nghiệp vụ cốt lõi:
 1. Cấu trúc ID chuẩn hóa: THESIS_HOSE_{TICKER}_{YEAR}Q{Q}_{SEQ}
-2. Lọc Hard Filter lớp 0 (GIL CATASTROPHIC) & Kiểm tra CSS >= 65 (Conviction >= B).
+2. Lọc Hard Filter lớp 0 (Beneish/Audit) & Kiểm tra CSS >= 65 (Conviction >= B).
 3. Tự động nhận diện Ngòi nổ (Catalyst Selection) từ phân phối 6 nhân tố (F1-F6).
 4. Định giá thích ứng đa mô hình (Adaptive Valuation) theo Sector & Timeline (1M, 3M, 6M).
 5. Phân tích Pre-Mortem (3 kịch bản thất bại) & Điều kiện Hủy Luận điểm (Thesis Invalidation).
@@ -241,19 +241,9 @@ class ThesisEngine:
         ticker_clean = str(ticker).upper().strip()
         css_score = float(research_report.get("css", 0.0))
         conviction = str(research_report.get("conviction", "D")).upper()
-        gil_status = str(
-            research_report.get("gil_status")
-            or research_report.get("gil_flag")
-            or market_context.get("gil_status")
-            or market_context.get("gil_flag")
-            or "PASS"
-        ).upper()
         sector = str(research_report.get("sector", "General"))
         regime_label = str(market_context.get("current_regime", "BULL_TRENDING"))
         current_price = float(research_report.get("current_price") or market_context.get("current_price", 0.0))
-
-        if gil_status in {"CATASTROPHIC", "DATA_INSUFFICIENT", "TECHNICAL_ERROR"}:
-            return False, {}, f"REJECT: GIL không đủ điều kiện mở vị thế ({gil_status})."
 
         # 2. Check Conviction & CSS Score: CSS >= 65 (Conviction >= B)
         if css_score < 60.0 or conviction in ["C", "D", "E"]:
@@ -317,7 +307,6 @@ class ThesisEngine:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "status": "PENDING_COUNTER_ANALYSIS",
             "input_validation": {
-                "gil_status": gil_status,
                 "conviction_level": conviction,
                 "css_score": round(css_score, 1),
                 "independent_signals": independent_signals,

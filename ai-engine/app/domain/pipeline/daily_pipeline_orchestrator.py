@@ -3,7 +3,7 @@
 Điều phối toàn bộ chu trình đầu tư khép kín qua 12 Agents (Agent-01 đến Agent-12):
   Pha 1: Agent-01 (Market Surveillance) — Macro Regime HMM, Session Context & Halted Check
   Pha 2: Agent-10 (Reinforcement Learning) — Cung cấp Adaptive Policy Weights F1-F6 & Bayesian Kelly
-  Pha 3: Agent-02 (Universe Discovery) — Lớp 0 Forensic Accounting Gate (Beneish M-Score <= -1.78), ADTV20 & GIL
+  Pha 3: Agent-02 (Universe Discovery) — Lớp 0 Forensic Accounting Gate (Beneish M-Score <= -1.78) & ADTV20
   Pha 4: Agent-03 (Equity Research) — Đánh giá đa nhân tố F1-F6 + Business Quality -> Conviction Level (A+, A, B)
   Pha 5: Agent-04 (Investment Thesis) — Tổng hợp Luận đề Đầu tư & Kiểm định 3 Tín hiệu Độc lập (Điều 3)
   Pha 6: Agent-05 (Counter Thesis) — Phản biện Đa chiều (Devil's Advocate), CTS Score & Bẫy Thanh khoản
@@ -73,6 +73,38 @@ class DailyInvestmentPipeline:
             f"Multi-Agent Mode = '{self.multi_agent_mode.value}' | "
             f"Standalone ML Mode = '{self.standalone_ml_mode.value}'"
         )
+
+    async def _monitor_open_positions(self, is_bear_defense: bool = False) -> List[Dict[str, Any]]:
+        """Keep exits/risk monitoring alive when new analysis is unavailable."""
+        instructions: List[Dict[str, Any]] = []
+        try:
+            positions = self.portfolio_repo.get_open_positions()
+            account = self.portfolio_repo.get_account_state()
+            nav = float(account.get("total_nav", 1_000_000_000.0))
+            for position in positions:
+                ticker = position.get("ticker", position.get("symbol"))
+                quantity = int(position.get("shares", position.get("quantity", 0)))
+                average_price = float(position.get("average_price", position.get("avg_price", 0.0)))
+                current_price = float(position.get("current_price", average_price))
+                if not ticker or quantity <= 0:
+                    continue
+                result = await AgentRegistry.dispatch("position_monitoring", {
+                    "position": {
+                        "ticker": ticker,
+                        "average_price": average_price,
+                        "current_price": current_price,
+                        "quantity": quantity,
+                    },
+                    "nav": nav,
+                    "is_bear_defense": is_bear_defense,
+                })
+                if result.get("status") == "SUCCESS":
+                    data = result.get("result", {}).get("data", {})
+                    if data.get("action") in ("EMERGENCY_STOP_LOSS", "SELL", "REDUCE"):
+                        instructions.append(data)
+        except Exception as error:
+            logger.error("[DailyPipeline] Existing position monitoring failed: %s", error)
+        return instructions
 
     async def run(
         self,
@@ -233,7 +265,7 @@ class DailyInvestmentPipeline:
         # =========================================================================
         # PHA 3: AGENT-02 (UNIVERSE DISCOVERY & LỚP 0 BENEISH M-SCORE)
         # =========================================================================
-        logger.info("[Pha 3] Kích hoạt Agent-02: Quét Universe HOSE, Thẩm định Lớp 0 Beneish M-Score & GIL...")
+        logger.info("[Pha 3] Kích hoạt Agent-02: Quét Universe HOSE, Thẩm định Lớp 0 Beneish M-Score...")
         res_disc = await AgentRegistry.dispatch("universe_discovery", {
             "tickers": candidate_tickers,
             "target_date": target_date_obj,
@@ -247,13 +279,14 @@ class DailyInvestmentPipeline:
 
         logger.info(f"[Pha 3] Hoàn tất: Phát hiện {eligible_count} mã đạt chuẩn Universe & vượt qua Lớp 0.")
         pipeline_trace["phases"]["phase_3_universe_discovery"] = {
-            "status": "COMPLETED",
+            "status": disc_data.get("status", "COMPLETED"),
             "scanned_count": disc_data.get("scanned_count", 0),
             "eligible_count": eligible_count,
             "excluded_count": disc_data.get("excluded_count", 0),
         }
 
         if eligible_count == 0 or not discovery_list:
+            hold_instructions = await self._monitor_open_positions()
             logger.warning("[Daily Investment Pipeline] Không có mã nào vượt qua bộ lọc Universe / Lớp 0 Beneish.")
             return {
                 "date": run_date_str,
@@ -261,7 +294,7 @@ class DailyInvestmentPipeline:
                 "session_context": session_context,
                 "cash_ratio": cash_ratio,
                 "status": "NO_ELIGIBLE_UNIVERSE",
-                "multi_agent_instructions": [],
+                "multi_agent_instructions": hold_instructions,
                 "standalone_ml_instructions": [],
                 "trace": pipeline_trace,
             }
@@ -313,9 +346,9 @@ class DailyInvestmentPipeline:
             # ── PHA 5: AGENT-04 (INVESTMENT THESIS) ──
             logger.info(f"[Pha 5 - {ticker}] Kích hoạt Agent-04: Xây dựng Luận đề & Xác thực Điều 3 (3 Tín hiệu)...")
             res_thesis = await AgentRegistry.dispatch("investment_thesis", {
-                "research_report": research_report
+                "research_report": research_report,
             })
-            if res_thesis.get("status") != "SUCCESS" or res_thesis.get("result", {}).get("data", {}).get("status") in ["REJECTED", "WAIT_OR_SKIP"]:
+            if res_thesis.get("status") != "SUCCESS" or res_thesis.get("result", {}).get("data", {}).get("status") in ["REJECTED", "WAIT_OR_SKIP", "DEFERRED"]:
                 logger.info(f"[Pha 5 - {ticker}] Luận đề bị từ chối hoặc chưa đủ tín hiệu xác thực. Bỏ qua.")
                 continue
 
@@ -326,7 +359,6 @@ class DailyInvestmentPipeline:
             logger.info(f"[Pha 6 - {ticker}] Kích hoạt Agent-05: Phản biện Đa chiều (Devil's Advocate) & Tính CTS Score...")
             res_counter = await AgentRegistry.dispatch("counter_thesis", {
                 "investment_thesis": thesis_data,
-                "gil_output": {"status": "ACTIVE", "gil_flag": "NORMAL", "risk_level": "LOW", "cycles_detected": 0},
             })
             counter_data = res_counter.get("result", {}).get("data", {}) if res_counter.get("status") == "SUCCESS" else {}
             counter_verdict = counter_data.get("verdict", "PROCEED")
@@ -411,12 +443,15 @@ class DailyInvestmentPipeline:
             execution_instruction["target_price"] = current_price
 
             if self.multi_agent_mode != ExecutionMode.DISABLED:
+                from app.infrastructure.external_api.market_data_service import market_data_svc
+                orderbook = await market_data_svc.get_order_book(ticker)
                 res_exec = await AgentRegistry.dispatch("trade_execution", {
                     "order_instruction": execution_instruction,
                     "adtv20": 2_000_000,
+                    "orderbook": orderbook,
                 })
                 exec_data = res_exec.get("result", {}).get("data", {}) if res_exec.get("status") == "SUCCESS" else {}
-                logger.info(f"[Pha 10 - {ticker}] Trạng thái thực thi: {exec_data.get('status', 'EXECUTED')}")
+                logger.info(f"[Pha 10 - {ticker}] Trạng thái thực thi: {exec_data.get('status', 'UNKNOWN')}")
             else:
                 exec_data = {"status": "DISABLED", "shares": 0}
 
@@ -430,32 +465,34 @@ class DailyInvestmentPipeline:
                 "conviction": conviction,
                 "z_score": z_score_val,
                 "pred_score": css_score_val,
-                "shares": approved_shares,
-                "price": current_price,
+                "shares": int(exec_data.get("shares", 0)),
+                "approved_shares": approved_shares,
+                "price": float(exec_data.get("executed_price", 0.0)),
                 "target_weight_pct": alloc_data.get("target_weight_pct", 0.12),
                 "hard_stop_pct": 0.07,  # -7% cơ sở sàn HOSE
                 "breakeven_trigger_pct": 0.025, # +2.5% kích hoạt kéo hòa vốn
                 "take_profit_pct": 0.15,
                 "execution_mode": self.multi_agent_mode.value,
-                "execution_status": exec_data.get("status", "SUCCESS"),
+                "execution_status": exec_data.get("status", "UNKNOWN"),
                 "action": "SHADOW_PAPER_TRADE_ONLY",
                 "rationale": f"[12-AGENT] CSS={research_report.get('css', 0):.1f} | CTS={cts_score:.1f} | CIO={final_resolution}",
             }
             qualified_orders_multi_agent.append(order_record_ma)
 
             # ── PHA 11: AGENT-09 (POSITION MONITORING INITIALIZATION) ──
-            logger.info(f"[Pha 11 - {ticker}] Kích hoạt Agent-09: Đăng ký Giám sát Vị thế & 4 Tầng Phòng vệ...")
-            res_mon = await AgentRegistry.dispatch("position_monitoring", {
-                "position": {
-                    "ticker": ticker,
-                    "average_price": current_price,
-                    "current_price": current_price,
-                    "quantity": approved_shares,
-                },
-                "nav": current_nav,
-            })
-            mon_data = res_mon.get("result", {}).get("data", {}) if res_mon.get("status") == "SUCCESS" else {}
-            monitored_positions_created.append(mon_data)
+            if exec_data.get("status") == "EXECUTED":
+                logger.info(f"[Pha 11 - {ticker}] Kích hoạt Agent-09: Đăng ký Giám sát Vị thế & 4 Tầng Phòng vệ...")
+                res_mon = await AgentRegistry.dispatch("position_monitoring", {
+                    "position": {
+                        "ticker": ticker,
+                        "average_price": exec_data["executed_price"],
+                        "current_price": exec_data["executed_price"],
+                        "quantity": exec_data["shares"],
+                    },
+                    "nav": current_nav,
+                })
+                mon_data = res_mon.get("result", {}).get("data", {}) if res_mon.get("status") == "SUCCESS" else {}
+                monitored_positions_created.append(mon_data)
 
             # Thu thập nhật ký kiểm toán cho Agent-11
             actions_to_audit.append({
@@ -470,7 +507,7 @@ class DailyInvestmentPipeline:
             })
             actions_to_audit.append({
                 "agent_id": "trade_execution",
-                "event_type": "TRADE_FILLED",
+                "event_type": "TRADE_FILLED" if exec_data.get("status") == "EXECUTED" else "TRADE_NOT_FILLED",
                 "details": exec_data,
             })
 

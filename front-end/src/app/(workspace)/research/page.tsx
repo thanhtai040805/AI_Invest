@@ -29,6 +29,8 @@ interface InvestmentThesis {
   created_at: string
 }
 
+const EMPTY_DOCUMENTS: KnowledgeDoc[] = []
+
 export default function ResearchPage() {
   const resource = useResource(() => workspaceApi.research().catch(() => ({ documents: [], theses: [] })), [])
   const [activeTab, setActiveTab] = useState<"docs" | "theses">("docs")
@@ -36,7 +38,7 @@ export default function ResearchPage() {
   const [search, setSearch] = useState("")
 
   const raw = resource.data as { documents?: KnowledgeDoc[]; theses?: InvestmentThesis[] } | null
-  const documents = raw?.documents ?? []
+  const documents = raw?.documents ?? EMPTY_DOCUMENTS
   const theses = raw?.theses ?? []
 
   const categories = useMemo(() => {

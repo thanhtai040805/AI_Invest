@@ -3,6 +3,12 @@
 import { useState, useEffect, useRef } from "react"
 import { getSocket } from "./socket"
 import type { Stock } from "@/types"
+import type { ApiMarketIndex } from "@/types"
+
+interface PriceTick { price?: number; close?: number; ref?: number; ceiling?: number; floor?: number; change_pct?: number; volume?: number }
+interface OrderBookTick { bids?: RealtimeOrderBookLevel[]; asks?: RealtimeOrderBookLevel[] }
+interface TradeTick { time?: string; price?: number; volume?: number; side?: "BUY" | "SELL" }
+interface MarketIndicesTick { indices?: ApiMarketIndex[] }
 
 export interface RealtimeOrderBookLevel {
   price: number
@@ -32,6 +38,8 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
 
   useEffect(() => {
     if (initialStock) {
+      // Sync refreshed quote props into the live state after the API request resolves.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setStock((prev) => ({
         ...initialStock,
         price: prev?.price ?? initialStock.price,
@@ -59,7 +67,7 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
       setIsLive(false)
     }
 
-    function onPrice(data: any) {
+    function onPrice(data: PriceTick) {
       if (!data) return
       setIsLive(true)
       setLastTickAt(new Date())
@@ -87,7 +95,7 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
       })
     }
 
-    function onOrderBook(data: any) {
+    function onOrderBook(data: OrderBookTick) {
       if (!data) return
       setIsLive(true)
       if (data.bids || data.asks) {
@@ -98,7 +106,7 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
       }
     }
 
-    function onTrade(data: any) {
+    function onTrade(data: TradeTick) {
       if (!data) return
       setIsLive(true)
       setTrades((prev) => [
@@ -148,7 +156,11 @@ export function useRealtimeMarket(initialIndices?: {
   const [isLive, setIsLive] = useState(false)
 
   useEffect(() => {
-    if (initialIndices) setIndices(initialIndices)
+    if (initialIndices) {
+      // Sync server supplied initial indices when the parent refreshes its data.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setIndices(initialIndices)
+    }
   }, [initialIndices])
 
   useEffect(() => {
@@ -163,13 +175,14 @@ export function useRealtimeMarket(initialIndices?: {
       setIsLive(false)
     }
 
-    function onIndices(data: any) {
+    function onIndices(data: MarketIndicesTick) {
       setIsLive(true)
       const list = Array.isArray(data?.indices) ? data.indices : []
       if (!list.length) return
 
-      const vnIndexItem = list.find((x: any) => String(x.symbol).includes("VNINDEX") || String(x.symbol).includes("VN-INDEX"))
-      const vn30Item = list.find((x: any) => String(x.symbol).includes("VN30"))
+      const indices = list as ApiMarketIndex[]
+      const vnIndexItem = indices.find((x) => String(x.symbol).includes("VNINDEX") || String(x.symbol).includes("VN-INDEX"))
+      const vn30Item = indices.find((x) => String(x.symbol).includes("VN30"))
 
       setIndices((prev) => ({
         vnIndexVal: vnIndexItem

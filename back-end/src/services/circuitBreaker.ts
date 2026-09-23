@@ -88,7 +88,6 @@ export class CircuitBreaker {
   }
 
   get currentState(): CircuitState {
-    this.checkState();
     return this.state;
   }
 

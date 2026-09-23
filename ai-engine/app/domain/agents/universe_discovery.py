@@ -7,8 +7,7 @@ Chức năng:
   2. Báo cáo kiểm toán (Audit Opinion: UNQUALIFIED).
   3. Thanh khoản bắt buộc (ADTV20 >= 15 tỷ VND).
   4. Thời gian niêm yết (Listing Age >= 12 tháng cho chiến lược Quant).
-  5. Rủi ro sở hữu chéo / rút ruột vốn Graph Intelligence Layer (GIL Flag != CATASTROPHIC).
-  6. Bộ lọc Lớp 0 (Forensic Accounting): Beneish M-Score 8 biến (M-Score <= -1.78, miễn trừ tài chính).
+  5. Bộ lọc Lớp 0 (Forensic Accounting): Beneish M-Score 8 biến (M-Score <= -1.78, miễn trừ tài chính).
 - Phân nhóm Universe động (Group A / Group B / Group C / Sandbox / Excluded) theo vốn hóa, thanh khoản và regime.
 - Bảng nghiệp vụ quản lý: universe_securities, beneish_results
 - Bảng log audit: log_universe_discovery
@@ -25,7 +24,6 @@ from app.core.base_agent import BaseAgent
 from app.domain.rules.universe_manager import UniverseManager, UniverseGroup, TradingStatus
 from app.domain.rules.beneish import BeneishMScoreEngine
 from app.domain.repositories.universe_repository import UniverseRepository
-from app.adapters.sag_connector import sag_connector
 from app.infrastructure.database.pg_pool import get_conn
 from app.domain.rules.market.session_context_manager import SessionContextManager
 from app.infrastructure.external_api.market_data_service import MarketDataService
@@ -63,7 +61,6 @@ class UniverseDiscoveryAgent(BaseAgent):
             - current_regime: str ("BULL_MARKET" / "BEAR_MARKET" / "RANGE_BOUND") từ Agent-01
             - halted_tickers: List[str] (mã bị tạm ngừng giao dịch realtime) từ Agent-01
             - beneish_overrides: Optional[Dict[str, float]] (ghi đè mô phỏng nếu có)
-            - refresh_gil: Optional[bool] (có truy vấn trực tiếp SAG realtime không)
         """
         target_date: date = event_data.get("target_date", date.today())
         tickers: Optional[List[str]] = event_data.get("tickers")
@@ -73,8 +70,6 @@ class UniverseDiscoveryAgent(BaseAgent):
         halted_tickers_raw = event_data.get("halted_tickers", [])
         halted_tickers: set[str] = {str(t).upper().strip() for t in halted_tickers_raw if t}
         beneish_overrides: Dict[str, float] = event_data.get("beneish_overrides", {})
-        refresh_gil: bool = bool(event_data.get("refresh_gil", False))
-
         # Cầu nối Real-time DNSE: Quét trạng thái giao dịch trực tiếp nếu đang trong giờ giao dịch hoặc có yêu cầu realtime
         session = self.session_manager.get_session(datetime.now())
         if self.session_manager.is_order_matching_active(session) or event_data.get("is_realtime"):
@@ -143,7 +138,7 @@ class UniverseDiscoveryAgent(BaseAgent):
                     # 3.1 Metadata từ bảng stocks
                     cur.execute(
                         """
-                        SELECT symbol, trading_status, audit_opinion, gil_flag, market_cap,
+                        SELECT symbol, trading_status, audit_opinion, market_cap,
                                COALESCE(industry, sector, '') as industry
                         FROM stocks
                         WHERE symbol = ANY(%s)
@@ -154,9 +149,8 @@ class UniverseDiscoveryAgent(BaseAgent):
                         str(r[0]).upper().strip(): {
                             "trading_status": str(r[1] or "NORMAL").upper().strip(),
                             "audit_opinion": str(r[2] or "UNQUALIFIED").upper().strip(),
-                            "gil_flag": str(r[3] or "DATA_INSUFFICIENT").upper().strip(),
-                            "market_cap": float(r[4] or 0.0),
-                            "industry": str(r[5] or "").strip(),
+                            "market_cap": float(r[3] or 0.0),
+                            "industry": str(r[4] or "").strip(),
                         }
                         for r in cur.fetchall()
                     }
@@ -242,7 +236,6 @@ class UniverseDiscoveryAgent(BaseAgent):
                     "universe_group": UniverseGroup.EXCLUDED.value,
                     "trading_status": "HALTED",
                     "beneish_status": "UNKNOWN",
-                    "gil_flag": "DATA_INSUFFICIENT",
                 })
                 continue
 
@@ -260,7 +253,6 @@ class UniverseDiscoveryAgent(BaseAgent):
                     "universe_group": UniverseGroup.EXCLUDED.value,
                     "trading_status": db_status,
                     "beneish_status": "UNKNOWN",
-                    "gil_flag": "DATA_INSUFFICIENT",
                 })
                 continue
 
@@ -277,7 +269,6 @@ class UniverseDiscoveryAgent(BaseAgent):
                     "universe_group": UniverseGroup.EXCLUDED.value,
                     "trading_status": db_status,
                     "beneish_status": "UNKNOWN",
-                    "gil_flag": "DATA_INSUFFICIENT",
                 })
                 continue
 
@@ -296,7 +287,6 @@ class UniverseDiscoveryAgent(BaseAgent):
                     "universe_group": UniverseGroup.EXCLUDED.value,
                     "trading_status": db_status,
                     "beneish_status": "UNKNOWN",
-                    "gil_flag": "DATA_INSUFFICIENT",
                 })
                 continue
 
@@ -321,35 +311,10 @@ class UniverseDiscoveryAgent(BaseAgent):
                     "universe_group": UniverseGroup.EXCLUDED.value,
                     "trading_status": db_status,
                     "beneish_status": "UNKNOWN",
-                    "gil_flag": "DATA_INSUFFICIENT",
                 })
                 continue
 
-            # 4.6 Kiểm tra cờ GIL (Graph Intelligence Layer)
-            gil_flag = meta.get("gil_flag") or "DATA_INSUFFICIENT"
-            if refresh_gil:
-                try:
-                    gil_data = await sag_connector.get_gil_relationships(symbol)
-                    gil_flag = gil_data.get("gil_flag") or gil_flag
-                except Exception as e:
-                    logger.debug(f"Không thể refresh GIL từ SAG cho {symbol}: {e}")
-
-            if gil_flag in {"CATASTROPHIC", "DATA_INSUFFICIENT", "TECHNICAL_ERROR"}:
-                exclusion_log.append({
-                    "ticker": symbol,
-                    "reason": f"GIL_{gil_flag}",
-                    "detail": "GIL không đủ điều kiện để đưa vào universe mở vị thế mới.",
-                })
-                state_securities_to_save.append({
-                    "ticker": symbol,
-                    "universe_group": UniverseGroup.EXCLUDED.value,
-                    "trading_status": db_status,
-                    "beneish_status": "UNKNOWN",
-                    "gil_flag": gil_flag,
-                })
-                continue
-
-            # 4.7 Chạy bộ lọc Lớp 0: Beneish M-Score 8 biến
+            # 4.6 Chạy bộ lọc Lớp 0: Beneish M-Score 8 biến
             is_exempt = False
             if symbol in beneish_overrides:
                 m_score = float(beneish_overrides[symbol])
@@ -392,7 +357,6 @@ class UniverseDiscoveryAgent(BaseAgent):
                     "universe_group": UniverseGroup.EXCLUDED.value,
                     "trading_status": db_status,
                     "beneish_status": b_status,
-                    "gil_flag": gil_flag,
                 })
                 continue
 
@@ -409,7 +373,6 @@ class UniverseDiscoveryAgent(BaseAgent):
                     "universe_group": UniverseGroup.EXCLUDED.value,
                     "trading_status": db_status,
                     "beneish_status": b_status,
-                    "gil_flag": gil_flag,
                 })
                 continue
 
@@ -430,7 +393,6 @@ class UniverseDiscoveryAgent(BaseAgent):
                         "universe_group": UniverseGroup.EXCLUDED.value,
                         "trading_status": db_status,
                         "beneish_status": b_status,
-                        "gil_flag": gil_flag,
                     })
                     continue
 
@@ -445,7 +407,6 @@ class UniverseDiscoveryAgent(BaseAgent):
                 "trading_status": db_status if db_status else TradingStatus.NORMAL.value,
                 "beneish_status": b_status,
                 "m_score": m_score,
-                "gil_flag": gil_flag,
                 "adtv20": adtv20,
                 "provisional_conviction": "ELIGIBLE",
             })
@@ -454,7 +415,6 @@ class UniverseDiscoveryAgent(BaseAgent):
                 "universe_group": u_group,
                 "trading_status": db_status,
                 "beneish_status": b_status,
-                "gil_flag": gil_flag,
             })
 
         # 5. Lưu đồng bộ vào State Tables (universe_securities) và Master Table (stocks)
@@ -466,12 +426,11 @@ class UniverseDiscoveryAgent(BaseAgent):
                             """
                             INSERT INTO universe_securities (
                                 ticker, universe_group, trading_status, beneish_status, gil_flag, updated_at
-                            ) VALUES (%s, %s, %s, %s, %s, NOW())
+                            ) VALUES (%s, %s, %s, %s, 'SAG_HOLD', NOW())
                             ON CONFLICT (ticker) DO UPDATE SET
                                 universe_group = EXCLUDED.universe_group,
                                 trading_status = EXCLUDED.trading_status,
                                 beneish_status = EXCLUDED.beneish_status,
-                                gil_flag = EXCLUDED.gil_flag,
                                 updated_at = NOW();
                             UPDATE stocks
                             SET universe_group = %s, group_updated_at = NOW()
@@ -482,7 +441,6 @@ class UniverseDiscoveryAgent(BaseAgent):
                                 item["universe_group"][:16],
                                 item["trading_status"][:16],
                                 item["beneish_status"][:16],
-                                item["gil_flag"][:32],
                                 item["universe_group"][:16],
                                 item["ticker"][:16],
                             ),
@@ -505,7 +463,6 @@ class UniverseDiscoveryAgent(BaseAgent):
         trace = {
             "universe_manager": self.universe_manager.__class__.__name__,
             "beneish_engine": self.beneish_engine.__class__.__name__,
-            "gil_source": "Database gil_flag (Fast O(1) Local Lookup)",
             "session_context": session_context,
             "current_regime": current_regime,
             "halted_tickers_count": len(halted_tickers),

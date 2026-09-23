@@ -1,8 +1,8 @@
-"""Strategic Memo Generator (Financial Quality + GIL)
+"""Strategic Memo Generator (Financial Quality + Market Risk)
 
 Mô đun sinh "BÁO CÁO CẬP NHẬT CHIẾN LƯỢC" dành cho Giám đốc Đầu tư (Strategy CIO).
 Persona: Giám đốc Đầu tư (CIO) lão luyện, đại diện dòng tiền lớn (Smart Money).
-Nguyên tắc: Văn phong sắc bén, phũ phàng, vạch trần lầm tưởng và neo Financial Quality & rủi ro GIL từ SAG.
+Nguyên tắc: Văn phong sắc bén, vạch trần lầm tưởng và neo vào Financial Quality, thị trường và định giá.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ class StrategicMemoGenerator:
     """
     Sinh Báo cáo Cập nhật Chiến lược CIO dựa trên sự kết hợp giữa:
     - Financial Quality và trích dẫn BCTC từ nguồn dữ liệu tài chính
-    - Rủi ro sở hữu chéo/rút ruột vốn GIL từ SAG v2
+    - Rủi ro tài chính, thị trường và định giá từ dữ liệu độc lập
     - Luận điểm mua từ Investment Thesis (Agent-04)
     - Phản biện Devil's Advocate & CTS từ Counter Thesis (Agent-05)
     """
@@ -43,7 +43,6 @@ class StrategicMemoGenerator:
         ticker: str,
         company_name: str,
         business_quality_data: Optional[Dict[str, Any]] = None,
-        gil_data: Optional[Dict[str, Any]] = None,
         thesis_payload: Optional[Dict[str, Any]] = None,
         counter_payload: Optional[Dict[str, Any]] = None,
         financial_summary: Optional[Dict[str, Any]] = None,
@@ -53,7 +52,7 @@ class StrategicMemoGenerator:
         t_date = target_date or datetime.now().strftime("%d/%m/%Y")
         clean_ticker = str(ticker).upper().strip()
 
-        # Chuẩn bị dữ liệu bằng chứng từ SAG
+        # Chuẩn bị dữ liệu tài chính độc lập
         quality_info = business_quality_data or {}
         quality_score = quality_info.get("business_quality_score", quality_info.get("f2_quality", "Chưa xác định"))
         quality_status = quality_info.get("business_quality_status", "FINANCIAL_QUALITY")
@@ -66,11 +65,6 @@ class StrategicMemoGenerator:
                     score = p_val.get("score")
                     verdict = p_val.get("verdict", "")
                     pillars_summary.append(f"- Trụ {p_name}: Score={score}, Trạng thái={verdict}")
-
-        gil_info = gil_data or {}
-        gil_flag = gil_info.get("gil_flag", "PASS")
-        ocr_score = gil_info.get("ocr_score", 0.0)
-        cycles = gil_info.get("cycles_detected", 0)
 
         # Chuẩn bị dữ liệu từ Thesis và Counter-Thesis
         t_body = (thesis_payload or {}).get("thesis_body", {})
@@ -92,10 +86,8 @@ Thời điểm phân tích: {t_date}
 - Chi tiết Financial Quality:
 {chr(10).join(pillars_summary) if pillars_summary else "- Chưa có dữ liệu trụ cột chi tiết"}
 
-2. RỦI RO QUẢN TRỊ & SỞ HỮU CHÉO (GIL TỪ SAG):
-- Cờ trạng thái GIL: {gil_flag}
-- Điểm rủi ro rút ruột vốn / OCR: {ocr_score}
-- Số chu trình vòng lặp sở hữu chéo: {cycles}
+2. RỦI RO TÀI CHÍNH VÀ THỊ TRƯỜNG:
+- Tập trung vào chất lượng lợi nhuận, đòn bẩy, thanh khoản và chế độ thị trường từ dữ liệu được cung cấp.
 
 3. LUẬN ĐIỂM ĐẦU TƯ TỪ THESIS AGENT:
 {json.dumps(t_body, ensure_ascii=False, indent=2) if t_body else "Chưa có nội dung Thesis chi tiết"}
@@ -124,7 +116,7 @@ Hãy trình bày đúng theo định dạng Markdown sau:
 
 ### 2. NHÌN THẲNG VÀO NÚT THẮT / TỬ HUYỆT (THE CORE BOTTLENECK)
 - Chỉ ra những điểm yếu mang tính cấu trúc, các rủi ro chìm đang bóp nghẹt doanh nghiệp hoặc kìm hãm định giá cổ phiếu.
-- Đào sâu: Gánh nặng nợ vay, chi phí vốn (COF), biên lợi nhuận, rủi ro nợ xấu hệ sinh thái sân sau (bám vào số liệu GIL/BCTC), điểm nghẽn pháp lý hoặc bẫy khấu hao. Giải thích rõ vì sao thị trường đang chiết khấu giá cổ phiếu này.
+- Đào sâu: Gánh nặng nợ vay, chi phí vốn (COF), biên lợi nhuận, điểm nghẽn pháp lý hoặc bẫy khấu hao. Giải thích rõ vì sao thị trường đang chiết khấu giá cổ phiếu này.
 
 ### 3. CHẤT XÚC TÁC ĐỊNH GIÁ / KHẢ NĂNG DUY TRÌ KẾT QUẢ (THE TRUE CATALYSTS)
 - Nếu tử huyệt là rủi ro, thì đâu là "ánh sáng cuối đường hầm"? 
@@ -148,7 +140,6 @@ Hãy trình bày đúng theo định dạng Markdown sau:
         ticker: str,
         company_name: str,
         business_quality_data: Optional[Dict[str, Any]] = None,
-        gil_data: Optional[Dict[str, Any]] = None,
         thesis_payload: Optional[Dict[str, Any]] = None,
         counter_payload: Optional[Dict[str, Any]] = None,
         financial_summary: Optional[Dict[str, Any]] = None,
@@ -160,7 +151,6 @@ Hãy trình bày đúng theo định dạng Markdown sau:
             ticker=clean_ticker,
             company_name=company_name,
             business_quality_data=business_quality_data,
-            gil_data=gil_data,
             thesis_payload=thesis_payload,
             counter_payload=counter_payload,
             financial_summary=financial_summary,
@@ -180,7 +170,6 @@ Hãy trình bày đúng theo định dạng Markdown sau:
             ticker=clean_ticker,
             company_name=company_name,
             business_quality_data=business_quality_data,
-            gil_data=gil_data,
             thesis_payload=thesis_payload,
             counter_payload=counter_payload,
         )
@@ -190,7 +179,6 @@ Hãy trình bày đúng theo định dạng Markdown sau:
         ticker: str,
         company_name: str,
         business_quality_data: Optional[Dict[str, Any]],
-        gil_data: Optional[Dict[str, Any]],
         thesis_payload: Optional[Dict[str, Any]],
         counter_payload: Optional[Dict[str, Any]],
     ) -> str:
@@ -198,7 +186,6 @@ Hãy trình bày đúng theo định dạng Markdown sau:
         quality_score = (business_quality_data or {}).get("business_quality_score", (business_quality_data or {}).get("f2_quality", "N/A"))
         quality_status = (business_quality_data or {}).get("business_quality_status", "FINANCIAL_QUALITY")
         quote = (business_quality_data or {}).get("evidence_quote", "Chưa có trích dẫn bằng chứng cụ thể.")
-        gil_flag = (gil_data or {}).get("gil_flag", "PASS")
         verdict = (counter_payload or {}).get("verdict", "PROCEED")
         cts = (counter_payload or {}).get("cts_score", 0.0)
         today_str = datetime.now().strftime("%d/%m/%Y")
@@ -214,7 +201,6 @@ Hãy trình bày đúng theo định dạng Markdown sau:
 - **Quy tắc 80/20:** Định giá của {ticker} bị chi phối 80% bởi chu kỳ cung-cầu cốt lõi và khả năng bảo toàn biên lợi nhuận gộp.
 
 ### 2. NHÌN THẲNG VÀO NÚT THẮT / TỬ HUYỆT (THE CORE BOTTLENECK)
-- Cờ rủi ro quản trị GIL: **{gil_flag}**.
 - Áp lực từ chi phí vốn và điểm nghẽn tiến độ dự án là nguyên nhân thị trường đang chiết khấu định giá. Phản biện Devil's Advocate cảnh báo điểm CTS ở mức {cts:.1f}/100.
 
 ### 3. CHẤT XÚC TÁC ĐỊNH GIÁ / KHẢ NĂNG DUY TRÌ KẾT QUẢ (THE TRUE CATALYSTS)

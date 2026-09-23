@@ -14,6 +14,9 @@ import {
 import { marketApi } from "@/lib/api"
 import { useResource } from "@/lib/api/use-resource"
 import { useRealtimeMarket } from "@/lib/use-realtime"
+import type { ApiMarketIndex, ApiMarketSnapshot, ApiMarketStock } from "@/types"
+
+interface ApiIndices { indices?: ApiMarketIndex[] }
 
 export default function Markets() {
   const resource = useResource(() => Promise.all([
@@ -22,12 +25,12 @@ export default function Markets() {
   ]), [])
 
   const { indicesData: initialIndices, stockList } = useMemo(() => {
-    const [indicesRes, snapshotRes] = (resource.data || []) as [any, any]
+    const [indicesRes, snapshotRes] = (resource.data || []) as [ApiIndices | null, ApiMarketSnapshot | null]
     const indicesList = Array.isArray(indicesRes?.indices) ? indicesRes.indices : []
     const rawStocks = Array.isArray(snapshotRes?.stocks) ? snapshotRes.stocks : []
 
-    const vnIndexItem = indicesList.find((x: any) => String(x.symbol).includes("VNINDEX") || String(x.symbol).includes("VN-INDEX"))
-    const vn30Item = indicesList.find((x: any) => String(x.symbol).includes("VN30"))
+    const vnIndexItem = (indicesList as ApiMarketIndex[]).find((x) => String(x.symbol).includes("VNINDEX") || String(x.symbol).includes("VN-INDEX"))
+    const vn30Item = (indicesList as ApiMarketIndex[]).find((x) => String(x.symbol).includes("VN30"))
 
     const indicesData = {
       vnIndexVal: vnIndexItem ? Number(vnIndexItem.value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "1,284.32",
@@ -40,7 +43,7 @@ export default function Markets() {
       return { indicesData, stockList: [] }
     }
 
-    const liveStocks: Stock[] = rawStocks.slice(0, 30).map((r: any) => {
+    const liveStocks: Stock[] = (rawStocks as ApiMarketStock[]).slice(0, 30).map((r) => {
       const volNum = Number(r.volume ?? 0)
       const volStr = volNum >= 1e6 ? `${(volNum / 1e6).toFixed(1)}M` : `${(volNum / 1e3).toFixed(0)}k`
 

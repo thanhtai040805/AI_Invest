@@ -23,6 +23,21 @@ interface CommunityPost {
   signal?: { symbol: string; entry: number; target: number; stop: number }
 }
 
+interface ApiCommunityPost {
+  id?: string | number
+  author?: { displayName?: string }
+  authorId?: string
+  createdAt?: string
+  content?: string
+  taggedSymbols?: string[] | string
+  likesCount?: number
+  commentsCount?: number
+  _count?: { reactions?: number; comments?: number }
+}
+interface ApiExpert { id?: string | number; displayName?: string; name?: string; rank?: string; postCount?: number }
+interface ApiPostsResponse { posts?: ApiCommunityPost[] }
+interface ApiCommunitySnapshot { stocks?: { symbol?: string; change_pct?: number }[] }
+
 function Avatar({ name, ai }: { name: string; ai?: boolean }) {
   const initials = ai ? "◈" : name.split(" ").slice(-2).map((w) => w[0]).join("")
   return <div className={`w-9 h-9 rounded-full grid place-items-center text-[12px] font-semibold shrink-0 ${ai ? "bg-mineral/12 text-mineral border border-mineral/25" : "bg-teal/12 text-teal border border-teal/25"}`}>{initials}</div>
@@ -81,12 +96,12 @@ export default function Community() {
   ]), [])
 
   const { postList, trendingStocks, topExperts } = useMemo(() => {
-    const [postsRes, snapRes, expertsRes] = (resource.data || []) as [any, any, any]
+    const [postsRes, snapRes, expertsRes] = (resource.data || []) as [ApiPostsResponse | null, ApiCommunitySnapshot | null, ApiExpert[] | null]
     const rawPosts = Array.isArray(postsRes?.posts) ? postsRes.posts : []
     const rawStocks = Array.isArray(snapRes?.stocks) ? snapRes.stocks : []
     const rawExperts = Array.isArray(expertsRes) ? expertsRes : []
 
-    const apiPosts: CommunityPost[] = rawPosts.map((r: any) => ({
+    const apiPosts: CommunityPost[] = rawPosts.map((r) => ({
       id: String(r.id),
       author: String(r.author?.displayName || (r.authorId?.includes("ai") ? "AI Intelligence Bot" : "Nhà đầu tư")),
       firm: "AIInvest Network",
@@ -100,7 +115,7 @@ export default function Community() {
       comments: Number(r.commentsCount || r._count?.comments || 0),
     }))
 
-    const trending = rawStocks.slice(0, 6).map((s: any) => ({
+    const trending = rawStocks.slice(0, 6).map((s) => ({
       symbol: String(s.symbol),
       changePct: Number(Number(s.change_pct ?? 0).toFixed(2)),
     }))
@@ -156,7 +171,7 @@ export default function Community() {
           <Panel>
             <PanelHead title="Chuyên gia & Nhà phân tích" />
             <div className="space-y-3">
-              {topExperts.map((b: any, i: number) => (
+              {topExperts.map((b, i) => (
                 <div key={b.id || i} className="flex items-center gap-2.5">
                   <span className="text-[11px] font-mono text-muted w-4">{i + 1}</span>
                   <div className="min-w-0 flex-1">

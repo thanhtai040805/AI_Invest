@@ -9,7 +9,6 @@ Chức năng:
    - CTS 0–30:  PROCEED (Gửi nguyên bản sang Portfolio Agent)
    - CTS 31–60: CONDITIONAL (Bắt buộc kèm execution_constraints: giảm size, siết stop-loss)
    - CTS > 60:  BLOCK (Hủy Thesis kèm lý do)
-   - GIL == CATASTROPHIC: CTS = 100 -> BLOCK (Zero Exception)
 3. Hỗ trợ LLM Devil's Advocate để sinh phân tích định tính và lỗ hổng luận điểm.
 """
 
@@ -81,38 +80,26 @@ class CounterThesisEngine:
     def calculate_base_cts(self, risk_features: Dict[str, float]) -> float:
         """
         Tính Base CTS qua 3 tầng rủi ro (0 - 100 điểm):
-        - Business Risk (45%): GIL (15%), Beneish (10%), Rec_Spike (10%), Graph_RPT (10%)
-        - Market Risk (35%): Macro_Headwind (15%), Liquidity_Stress (20%)
-        - Model Risk (20%): Missing_Data / Staleness (20%)
+        Only independently available evidence is scored. The remaining
+        weights preserve the old relative proportions after removing the
+        retired 25% provider share.
         """
-        gil_score = float(risk_features.get("gil_risk", 0.0))
         beneish_score = float(risk_features.get("beneish_risk", 0.0))
         rec_spike = float(risk_features.get("receivable_spike", 0.0))
-        graph_rpt = float(risk_features.get("graph_rpt_risk", 0.0))
 
         macro_headwind = float(risk_features.get("macro_headwind", 0.0))
         liquidity_stress = float(risk_features.get("liquidity_stress", 0.0))
 
         missing_data = float(risk_features.get("missing_data", 0.0))
 
-        # 1. Business Risk (45%)
-        business_risk = (
-            0.15 * gil_score +
-            0.10 * beneish_score +
-            0.10 * rec_spike +
-            0.10 * graph_rpt
+        # Old independent weights were 10/10/15/20/20 out of 75.
+        base_cts = (
+            (2.0 / 15.0) * beneish_score
+            + (2.0 / 15.0) * rec_spike
+            + (1.0 / 5.0) * macro_headwind
+            + (4.0 / 15.0) * liquidity_stress
+            + (4.0 / 15.0) * missing_data
         )
-
-        # 2. Market Risk (35%)
-        market_risk = (
-            0.15 * macro_headwind +
-            0.20 * liquidity_stress
-        )
-
-        # 3. Model Risk (20%)
-        model_risk = 0.20 * missing_data
-
-        base_cts = business_risk + market_risk + model_risk
         return round(max(0.0, min(100.0, base_cts)), 2)
 
     def calculate_ml_interaction(self, risk_features: Dict[str, float]) -> float:
@@ -125,7 +112,6 @@ class CounterThesisEngine:
         r_rec = float(risk_features.get("receivable_spike", 0.0))
         r_liq = float(risk_features.get("liquidity_stress", 0.0))
         r_macro = float(risk_features.get("macro_headwind", 0.0))
-        r_rpt = float(risk_features.get("graph_rpt_risk", 0.0))
         r_beneish = float(risk_features.get("beneish_risk", 0.0))
         r_missing = float(risk_features.get("missing_data", 0.0))
 
@@ -137,8 +123,8 @@ class CounterThesisEngine:
         if r_macro >= 60.0 and r_liq >= 60.0:
             multiplier += 0.15
 
-        # Cặp 3: Sân sau RPT + Phải thu phình to (Rút ruột dòng tiền)
-        if r_rpt >= 60.0 and r_rec >= 60.0:
+        # Cặp 3: Beneish + Phải thu phình to (dấu hiệu chất lượng lợi nhuận)
+        if r_beneish >= 60.0 and r_rec >= 60.0:
             multiplier += 0.15
 
         # Cặp 4: Dữ liệu BCTC chậm/mù + M-Score tiệm cận ranh giới gian lận
@@ -202,24 +188,11 @@ class CounterThesisEngine:
     def determine_verdict_and_constraints(
         self,
         final_cts: float,
-        gil_flag: str,
         current_price: float,
         is_capitulation: bool = False
     ) -> Tuple[Verdict, List[str], Optional[ExecutionConstraints]]:
         """Phân loại phán quyết cuối cùng và sinh ràng buộc thực thi."""
         block_reasons = []
-
-        # Hard Law: GIL CATASTROPHIC hoặc thiếu dữ liệu GIL đã xác minh.
-        gil_clean = str(gil_flag).upper().strip()
-        if gil_clean == "CATASTROPHIC":
-            block_reasons.append("Hard Law Veto: Phát hiện rủi ro sở hữu chéo và kiệt quệ tài chính GIL CATASTROPHIC.")
-            return Verdict.BLOCK, block_reasons, None
-        elif gil_clean == "DATA_ERROR":
-            block_reasons.append("Hard Law Veto: Lỗi dữ liệu đồ thị sở hữu chéo (GIL) không thể xác thực từ SAG Backend (DATA_ERROR).")
-            return Verdict.BLOCK, block_reasons, None
-        elif gil_clean == "DATA_INSUFFICIENT":
-            block_reasons.append("Hard Law Veto: Dữ liệu đồ thị sở hữu chéo (GIL) chưa đủ evidence từ SAG Backend.")
-            return Verdict.BLOCK, block_reasons, None
 
         if final_cts > 60.0:
             block_reasons.append(f"Điểm Final CTS ({final_cts:.1f}) vượt ngưỡng an toàn (> 60.0). Rủi ro tổng hợp quá cao.")
@@ -376,15 +349,10 @@ class CounterThesisEngine:
         unique_signals = len(set(signals))
         rule_of_three_passed = (unique_signals >= 3) and llm_indep
 
-        # 3. Kiểm tra cờ GIL
-        gil_status = str(risk_features.get("gil_status") or thesis_payload.get("input_validation", {}).get("gil_status", "PASS")).upper().strip()
-        if gil_status in ["CATASTROPHIC", "DATA_ERROR"]:
-            risk_features["gil_risk"] = 100.0
-
-        # 4. Kiểm tra ngoại lệ Bắt đáy Capitulation (Bẫy 3)
+        # 3. Kiểm tra ngoại lệ Bắt đáy Capitulation (Bẫy 3)
         is_capitulation, capitulation_reasons = self.check_capitulation_criteria(market_data, stock_data)
 
-        # 5. Tính toán 3-Tier CTS (Có tích hợp điểm phạt ngữ cảnh LLM Blind-spot)
+        # 4. Tính toán 3-Tier CTS (Có tích hợp điểm phạt ngữ cảnh LLM Blind-spot)
         base_quant_cts = self.calculate_base_cts(risk_features)
         base_cts = min(100.0, round(base_quant_cts + llm_blindspot_penalty, 2))
 
@@ -393,18 +361,17 @@ class CounterThesisEngine:
         regime_multiplier = self.get_regime_multiplier(regime_label, is_capitulation=is_capitulation)
 
         # Tính Final CTS
-        if gil_status in ["CATASTROPHIC", "DATA_ERROR"] or fatal_flaw:
+        if fatal_flaw:
             final_cts = 100.0
         elif not rule_of_three_passed:
             final_cts = max(65.0, base_cts * interaction_multiplier * regime_multiplier)
         else:
             final_cts = round(base_cts * interaction_multiplier * regime_multiplier, 1)
 
-        # 6. Phân loại Phán quyết và Constraints
+        # 5. Phân loại Phán quyết và Constraints
         current_price = float(stock_data.get("current_price", 0.0))
         verdict, block_reasons, constraints = self.determine_verdict_and_constraints(
             final_cts=final_cts,
-            gil_flag=gil_status,
             current_price=current_price,
             is_capitulation=is_capitulation
         )

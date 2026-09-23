@@ -11,7 +11,7 @@ const orderSchema = z.object({
   side: z.enum(['BUY', 'SELL']),
   orderType: z.enum(['LO', 'MP', 'ATO', 'ATC']).default('LO'),
   price: z.number().finite().positive().optional(),
-  quantity: z.number().int().positive(),
+  quantity: z.number().int().positive().multipleOf(100).max(500000),
 }).superRefine((order, ctx) => {
   if (order.orderType === 'LO' && order.price == null) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['price'], message: 'Limit price is required' });

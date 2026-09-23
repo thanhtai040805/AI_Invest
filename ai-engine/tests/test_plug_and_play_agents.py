@@ -4,14 +4,13 @@ import asyncio
 import pytest
 from app.core.base_agent import BaseAgent
 from app.core.registry import AgentRegistry, agent_registry
-from app.adapters.sag_connector import SAGConnector
 
 
 class MockResearchAgent(BaseAgent):
     def __init__(self):
         super().__init__(
             agent_name="equity_research",
-            state_tables=["factor_scores", "moat_profiles"],
+            state_tables=["factor_scores"],
             log_table="log_equity_research",
             enabled=True,
         )
@@ -23,12 +22,11 @@ class MockResearchAgent(BaseAgent):
             "data": {
                 "f1_value": 72.5,
                 "f2_quality": 88.0,
-                "moat_score": 85.0,
                 "css": 82.4,
                 "conviction": "A+",
             },
             "trace": {
-                "moat_source": "SAG_RAG",
+                "quality_source": "FINANCIAL_FACTORS",
                 "calc_steps": "CSS = 0.3*F1 + 0.4*F2 ...",
             },
         }
@@ -81,16 +79,5 @@ def test_agent_registry_plug_and_play():
         assert AgentRegistry.unregister("strategy_cio") is True
         assert AgentRegistry.get_agent("strategy_cio") is None
         assert AgentRegistry.get_agent("equity_research") is not None
-
-    asyncio.run(_test())
-
-
-def test_sag_connector_fallback():
-    async def _test():
-        connector = SAGConnector(api_base="http://localhost:9999/api/v1")  # mock unavailable endpoint
-        res = await connector.get_moat_assessment("FPT")
-        assert res["ticker"] == "FPT"
-        assert res["moat_score"] == 0.0
-        assert res["status"] == "FALLBACK"
 
     asyncio.run(_test())

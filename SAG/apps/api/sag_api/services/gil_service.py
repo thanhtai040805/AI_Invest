@@ -51,6 +51,8 @@ class GILAnalysisResult:
     tunneling_signals: int = 0
     catastrophic_triggered: bool = False
     analysis_status: str = "COMPLETE"
+    flow_signal: str = "NO_ABNORMAL_FLOW_OBSERVED"
+    flow_findings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -73,6 +75,8 @@ class GILAnalysisResult:
             "circular_flow_proven": self.circular_flow_proven,
             "tunneling_signals": self.tunneling_signals,
             "catastrophic_triggered": self.catastrophic_triggered,
+            "flow_signal": self.flow_signal,
+            "flow_findings": self.flow_findings,
         }
 
 
@@ -84,6 +88,8 @@ class GILGraphAnalyzer:
         "BORROWS_FROM",
         "RECEIVABLE_FROM",
         "PAYABLE_TO",
+        "GUARANTEES_FOR",
+        "TRANSACTS_WITH",
     }
 
     OWNERSHIP_RELATIONS = {
@@ -342,7 +348,16 @@ class GILGraphAnalyzer:
             cycle_edges = [sub_graph.get_edge_data(cycle[i], cycle[(i + 1) % len(cycle)]) or {} for i in range(len(cycle))]
             flow_edges = [edge for edge in cycle_edges if edge.get("relation_type") in self.FINANCIAL_FLOW_RELATIONS]
             # Ownership-only cycles are structural review signals, not proven round-tripping.
-            if len(flow_edges) >= 2 and any(float(edge.get("amount_vnd", 0.0) or 0.0) > 0 for edge in flow_edges):
+            financing_edges = [
+                edge for edge in flow_edges
+                if edge.get("relation_type") in {
+                    "LOANS_TO", "BORROWS_FROM", "RECEIVABLE_FROM", "PAYABLE_TO", "GUARANTEES_FOR"
+                }
+                or edge.get("semantic_class") == "LOAN_GUARANTEE"
+            ]
+            if len(cycle) >= 3 and len(flow_edges) >= 2 and financing_edges and any(
+                float(edge.get("amount_vnd", 0.0) or 0.0) > 0 for edge in flow_edges
+            ):
                 meaningful_cycles.append([*cycle, cycle[0]])
 
         return meaningful_cycles
@@ -393,11 +408,15 @@ class GILGraphAnalyzer:
         reasons: list[str] = []
         if self.equity_vnd <= 0:
             reasons.append("Thiếu vốn chủ sở hữu có provenance; GIL không được phép PASS khi mẫu số chưa xác minh.")
+            reasons = (
+                ["Phát hiện chu trình dòng vốn bất thường."]
+                if cycles else ["Không phát hiện chu trình dòng vốn bất thường trong evidence validated."]
+            )
             return GILAnalysisResult(
                 ticker=self.ticker,
-                gil_flag="DATA_INSUFFICIENT",
-                analysis_status="DATA_INSUFFICIENT",
-                risk_level="UNKNOWN",
+                gil_flag="CATASTROPHIC" if cycles else "PASS",
+                analysis_status="COMPLETE",
+                risk_level="CRITICAL" if cycles else "LOW",
                 rpt_ratio=0.0,
                 total_rpt_exposure_vnd=total_rpt,
                 equity_vnd=self.equity_vnd,
@@ -409,7 +428,7 @@ class GILGraphAnalyzer:
                 summary="GIL DATA_INSUFFICIENT: thiếu vốn chủ sở hữu đã xác minh",
             )
 
-        rpt_ratio = total_rpt / self.equity_vnd
+        rpt_ratio = total_rpt / self.equity_vnd if self.equity_vnd > 0 else 0.0
         rpt_metrics, rpt_breakdown, risk_components = self._composition(total_rpt, rpt_ratio)
 
         # Ma trận phán quyết GIL: exposure cao không đồng nghĩa circular flow.
@@ -422,8 +441,8 @@ class GILGraphAnalyzer:
                 f"Phát hiện {len(cycles)} chu trình khép kín sở hữu/dòng vốn nghi vấn rút ruột: {cycles[:3]}"
             )
         elif rpt_ratio > 0.25:
-            gil_flag = "WARNING"
-            risk_level = "HIGH"
+            gil_flag = "PASS"
+            risk_level = "LOW"
             reasons.append(
                 f"RPT exposure cao nhưng chưa chứng minh circular flow ({rpt_ratio * 100:.1f}% VCSH); yêu cầu review."
             )
@@ -434,6 +453,11 @@ class GILGraphAnalyzer:
                 f"Đồ thị sở hữu và dòng tiền minh bạch. RPT Ratio = {rpt_ratio * 100:.1f}%, không phát hiện chu trình khép kín."
             )
 
+        reasons = (
+            [f"Phát hiện {len(cycles)} chu trình dòng vốn bất thường: {cycles[:3]}"]
+            if cycles
+            else ["Không phát hiện chu trình dòng vốn bất thường trong evidence validated."]
+        )
         summary = (
             f"GIL Flag: {gil_flag} | Risk: {risk_level} | Nodes: {self.graph.number_of_nodes()} | "
             f"Edges: {self.graph.number_of_edges()} | Cycles: {len(cycles)} | RPT Ratio: {rpt_ratio * 100:.1f}%"
@@ -458,6 +482,8 @@ class GILGraphAnalyzer:
             circular_flow_proven=bool(cycles),
             tunneling_signals=len(cycles),
             catastrophic_triggered=bool(cycles),
+            flow_signal="CIRCULAR_FLOW" if cycles else "NO_ABNORMAL_FLOW_OBSERVED",
+            flow_findings=["VERIFIED_CIRCULAR_FLOW"] if cycles else [],
         )
 
 import hashlib
@@ -471,9 +497,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sag_api.db.models import AssessmentRun, Document, DocumentFacet, Entity, Fact, Issuer, Observation, Relation
 from sag_api.enums import FactType, ProcessingStageStatus, RelationType
 
-GIL_POLICY_VERSION = "gil-policy-v43-rc1-shared-evidence-universe-v3"
+GIL_POLICY_VERSION = "gil-policy-v58-flow-only-v1"
 def _relation_flow_kind(rel: Relation) -> str | None:
-    value = (rel.metadata_json or {}).get("flow_kind") if rel.metadata_json else None
+    metadata = getattr(rel, "metadata_json", None) or {}
+    value = metadata.get("flow_kind") if metadata else None
     return str(value).strip().lower() if value else None
 
 
@@ -535,6 +562,7 @@ def _insider_metrics(observations: list[Observation], equity: float | None) -> d
         "ownership_pct": round(ownership_pct, 4) if ownership_pct else None,
         "ownership_exposure_vnd": round(equity * ownership_pct / 100.0, 2) if equity and ownership_pct else None,
         "transaction_exposure_vnd": round(transaction_exposure, 2) if transaction_evidence else None,
+        "transaction_to_equity_ratio": round(transaction_exposure / equity, 6) if equity and equity > 0 and transaction_evidence else None,
         "ownership_evidence_count": ownership_evidence,
         "transaction_evidence_count": transaction_evidence,
         "basis": "EXPLICIT_TRANSACTION" if transaction_exposure else ("OWNERSHIP_PERCENTAGE" if ownership_pct else "NARRATIVE_ONLY"),
@@ -630,6 +658,7 @@ async def assess_gil(session: AsyncSession, ticker: str) -> dict[str, Any]:
             )
         ).scalars().all()
     )
+    historical_docs = _deduplicate_historical_documents(historical_docs)
     historical_doc_ids = [doc.id for doc in historical_docs]
     relations = []
     entities = []
@@ -733,7 +762,6 @@ async def assess_gil(session: AsyncSession, ticker: str) -> dict[str, Any]:
         if any(doc.id == fact.document_id for doc in latest_quarter_docs)
     ]
     latest_quarter_equity = _latest_equity(latest_quarter_facts)
-    document_denominators = _document_denominator_coverage(facts, latest_quarter_facts)
     reasons = []
     facet_names = {facet.facet for facet in facets}
     structural_relations = {
@@ -753,17 +781,18 @@ async def assess_gil(session: AsyncSession, ticker: str) -> dict[str, Any]:
     has_transaction_scope = any(rel.relation_type in transaction_relations for rel in relations) or bool(
         facet_names.intersection({"related_party", "guarantees", "intercompany_financing"})
     )
-    if not equity:
-        reasons.append("Thiáº¿u vá»‘n chá»§ sá»Ÿ há»¯u validated")
-    if latest_quarter_docs and not latest_quarter_equity:
-        reasons.append("LATEST_QUARTER thiếu equity validated từ tài liệu; không dùng equity cũ hoặc market DB thay thế")
+    if not equity or equity <= 0:
+        reasons.append("Thiếu vốn chủ sở hữu dương validated")
+    if latest_quarter_docs and (not latest_quarter_equity or latest_quarter_equity <= 0):
+        reasons.append("LATEST_QUARTER thiếu equity dương validated từ tài liệu; không dùng equity cũ hoặc market DB thay thế")
     if not has_structure:
         reasons.append("Thiáº¿u evidence vá» cáº¥u trĂºc sá»Ÿ há»¯u/Ä‘áº§u tÆ° Ä‘á»ƒ dá»±ng graph GIL")
     if not has_transaction_scope:
         reasons.append("Thiáº¿u evidence vá» giao dá»‹ch liĂªn quan, báº£o lĂ£nh hoáº·c tĂ i trá»£ ná»™i bá»™")
     if any(doc.extraction_status != ProcessingStageStatus.COMPLETE.value for doc in docs):
         reasons.append("Extraction cá»§a bá»™ tĂ i liá»‡u active chÆ°a COMPLETE")
-    if reasons:
+    if not doc_ids:
+        reasons.append("KhĂ´ng cĂ³ active document extraction COMPLETE Ä‘á»ƒ xĂ¡c Ä‘á»‹nh flow")
         result = _gil_insufficient(issuer.ticker, reasons, equity)
         if cached is None:
             cached = AssessmentRun(issuer_id=issuer.id, assessment_kind="gil")
@@ -775,10 +804,14 @@ async def assess_gil(session: AsyncSession, ticker: str) -> dict[str, Any]:
         cached.evidence_digest = evidence_digest
         await session.flush()
         return result
-    capital_edges = [
-        rel for rel in relations if rel.relation_type in {RelationType.OWNS.value, RelationType.INVESTS_IN.value, RelationType.LENDS_TO.value, RelationType.CREDITOR_OF.value}
-    ]
-    cycles = _detect_cycles(capital_edges)
+    period_by_document = {
+        doc.id: str(doc.period_end or doc.fiscal_year or doc.id)
+        for doc in docs
+    }
+    # GIL is a flow detector.  Feed every validated flow relation into the
+    # detector; the previous capital_edges pre-filter silently excluded
+    # TRANSACTS_WITH and GUARANTEES_FOR cycles.
+    cycles = _detect_cycles(relations, period_by_document)
     owned_entities = _owned_entities(relations, issuer.ticker)
     owned_entity_ids = _owned_entity_ids(relations)
     policy_context = _gil_policy_context_v2(
@@ -788,7 +821,16 @@ async def assess_gil(session: AsyncSession, ticker: str) -> dict[str, Any]:
         relations=relations,
         owned_entities=owned_entities,
     )
-    entity_types = {entity.id: str(entity.entity_type or "").lower() for entity in entities}
+    document_denominators = _document_denominator_coverage(
+        facts,
+        latest_quarter_facts,
+        excluded_denominators=_excluded_denominators_for_policy(policy_context),
+    )
+    entity_types = {}
+    for entity in entities:
+        entity_type = str(entity.entity_type or "").lower()
+        entity_types[entity.id] = entity_type
+        entity_types[_entity_name_key(entity.canonical_name or entity.display_name)] = entity_type
     issuer_entity_id = next(
         (
             entity.id for entity in entities
@@ -837,7 +879,11 @@ async def assess_gil(session: AsyncSession, ticker: str) -> dict[str, Any]:
         doc_buckets = _rpt_exposure_buckets(doc_relations, issuer_entity_id=issuer_entity_id)
         doc_flow_buckets = _denominator_exposure_buckets(doc_relations, issuer_entity_id=issuer_entity_id)
         doc_equity = _latest_equity(doc_facts)
-        doc_coverage = _document_denominator_coverage(doc_facts, doc_facts)
+        doc_coverage = _document_denominator_coverage(
+            doc_facts,
+            doc_facts,
+            excluded_denominators=_excluded_denominators_for_policy(policy_context),
+        )
         doc_ratios = _document_denominator_ratios(
             _denominator_exposure_buckets(doc_relations, issuer_entity_id=issuer_entity_id), doc_coverage, doc_equity
         )
@@ -847,7 +893,7 @@ async def assess_gil(session: AsyncSession, ticker: str) -> dict[str, Any]:
             "current_balance_guarantee_vnd": doc_flow_buckets["guarantee_exposure_vnd"],
         }
         doc_ratio_candidates = {
-            key: value / doc_equity for key, value in doc_balance.items() if doc_equity and value > 0
+            key: value / doc_equity for key, value in doc_balance.items() if doc_equity and doc_equity > 0 and value > 0
         }
         period_metrics[doc.id] = {
             "doc_role": doc.doc_role,
@@ -864,23 +910,40 @@ async def assess_gil(session: AsyncSession, ticker: str) -> dict[str, Any]:
     raw_ratio = latest_metric.get("ratio")
     raw_headline_metric = latest_metric.get("headline_metric")
     raw_denominator_ratios = latest_metric.get("denominator_ratios", {})
-    scope_verified = document_denominators.get("accounting_scope") in {"STANDALONE", "CONSOLIDATED"}
+    scope_verified = document_denominators.get("accounting_scope") in {"STANDALONE", "CONSOLIDATED", "SEPARATE"}
     missing_denominators = document_denominators.get("missing_latest_quarter", [])
     ratio = raw_ratio
     headline_metric = raw_headline_metric
     denominator_ratios = raw_denominator_ratios
     ratio_invariant_violations = _ratio_invariant_violations(denominator_ratios)
+    is_bank = (
+        policy_context.get("company_archetype") == "BANK"
+        or policy_context.get("sector") == "BANKING"
+        or any(token in f"{issuer.ticker} {issuer.legal_name or ''}".lower() for token in ("ngan hang", "bank"))
+    )
+    latest_doc_relations = relations_by_doc.get(latest_doc.id, []) if latest_doc else relations
+    latest_guar_doc = next(
+        (d for d in [latest_doc, *docs] if d and any(str(r.relation_type or "").lower() == RelationType.GUARANTEES_FOR.value for r in relations_by_doc.get(d.id, []))),
+        None
+    )
+    guar_relations = relations_by_doc.get(latest_guar_doc.id, []) if latest_guar_doc else (latest_doc_relations or relations)
     guarantee_state = _guarantee_disclosure_state(
-        relations,
+        guar_relations,
         latest_quarter_facts,
         issuer_entity_id=issuer_entity_id,
+        is_bank=is_bank,
     )
+    guarantee_value = guarantee_state.get("value_vnd")
+    guarantee_ratio = guarantee_value / equity if guarantee_value and equity and equity > 0 else None
     denominator_ratios["guarantee_to_equity"] = (
-        0.0 if guarantee_state["status"] == "CONFIRMED_NONE" else None
+        0.0 if guarantee_state["status"] == "CONFIRMED_NONE" else guarantee_ratio
     )
     ratio_candidates["current_balance_guarantee_vnd"] = (
-        0.0 if guarantee_state["status"] == "CONFIRMED_NONE" else None
+        0.0 if guarantee_state["status"] == "CONFIRMED_NONE" else guarantee_ratio
     )
+    if guarantee_ratio is not None and (ratio is None or guarantee_ratio > ratio):
+        ratio = guarantee_ratio
+        headline_metric = "current_balance_guarantee_vnd"
     latest_flow_buckets = _denominator_exposure_buckets(
         relations_by_doc.get(latest_doc.id, []) if latest_doc else [],
         issuer_entity_id=issuer_entity_id,
@@ -956,7 +1019,12 @@ async def assess_gil(session: AsyncSession, ticker: str) -> dict[str, Any]:
     multi_hop_flows = _multi_hop_flow_count(relations, owned_entities)
     relationship_score = _relationship_risk_score(breakdown_amounts, insider_evidence_present)
     flow_score = flow_risk["score"]
-    suspicious_multi_hop_flows = _suspicious_multi_hop_flow_count(relations, owned_entities, entity_types)
+    suspicious_multi_hop_flows = _suspicious_multi_hop_flow_count(
+        relations,
+        owned_entities,
+        entity_types,
+        period_by_document=period_by_document,
+    )
     external_outflow = _external_capital_outflow_evidence(
         exposure_relations, breakdown_amounts, entity_types,
         suspicious_multi_hop_flows=suspicious_multi_hop_flows,
@@ -1050,12 +1118,54 @@ async def assess_gil(session: AsyncSession, ticker: str) -> dict[str, Any]:
     }
     effective_threshold = policy_context["effective_threshold"]
     review_required = bool(
-        unresolved_share > 0
-        or external_outflow["detected"]
-        or temporal.get("trend_confidence") == "LOW"
-        or materiality["economic_score"] >= 35
+        (unresolved_share >= 0.25 and relationship_total >= 50_000_000_000)
+        or potential_leakage
+        or (
+            temporal.get("status") == "DETERIORATING_OBSERVED"
+            and temporal.get("score") is not None
+            and temporal.get("score") >= 50.0
+        )
+        or materiality["economic_score"] >= 40.0
         or ratio_invariant_violations
     )
+    core_evidence_insufficient = False
+    policy_fallback = not policy_context["sector_policy_applied"]
+    active_incomplete = any(
+        doc.extraction_status != ProcessingStageStatus.COMPLETE.value for doc in docs
+    )
+    partial_evidence = bool(
+        active_incomplete
+        or missing_denominators
+        or not scope_verified
+        or ratio_invariant_violations
+        or not has_structure
+        or not has_transaction_scope
+        or unresolved_share > 0
+        or policy_fallback
+    )
+    evidence_status = (
+        "INSUFFICIENT" if core_evidence_insufficient
+        else "PARTIAL" if partial_evidence
+        else "VERIFIED"
+    )
+    if core_evidence_insufficient:
+        review_required = True
+        reasons.append("Data quality chưa đủ để kết luận PASS; cần analyst review denominator, accounting scope, hoặc ratio invariant.")
+    if partial_evidence:
+        review_required = True
+        reasons.append("Data quality is partial; missing checks are reported separately and do not lower the observed flow signal.")
+    if missing_denominators:
+        reasons.append(f"Missing latest-quarter denominators: {', '.join(missing_denominators)}.")
+    if not scope_verified:
+        reasons.append("Latest-quarter facts do not prove consolidated or standalone accounting scope; parser must not infer it from issuer type.")
+    if ratio_invariant_violations:
+        reasons.append(f"Ratio invariant violations: {', '.join(str(item) for item in ratio_invariant_violations)}.")
+    if unresolved_share > 0:
+        review_required = True
+        reasons.append("Some relationship exposure is aggregate-only or unresolved; this limits confidence but is not itself a proven risk.")
+    if policy_fallback:
+        review_required = True
+        reasons.append("Sector policy was not identified from issuer metadata; universal/archetype policy fallback applied and requires analyst review.")
     economic_risk_trigger = bool(
         structural_score >= 60.0
         or (materiality["risk_adjusted_score"] >= 35.0 and flow_score >= 35.0)
@@ -1067,34 +1177,73 @@ async def assess_gil(session: AsyncSession, ticker: str) -> dict[str, Any]:
     if cycle_materiality:
         flag = "CATASTROPHIC"
         risk = "CATASTROPHIC"
-        reasons.append("PhĂ¡t hiá»‡n verified capital-flow cycle")
-    if cycle_materiality:
-        flag = "CATASTROPHIC"
-        risk = "CATASTROPHIC"
-        reasons.append("PhÄ‚Â¡t hiĂ¡Â»â€¡n verified capital-flow cycle")
-    if ratio_invariant_violations:
+        reasons.append("Phát hiện verified capital-flow cycle luân chuyển dòng vốn khép kín.")
+    elif ratio_invariant_violations:
+        flag = "WARNING"
+        risk = "HIGH"
         reasons.append("Accounting denominator invariant violation requires data repair before ratio interpretation.")
     elif economic_risk_trigger:
         flag = "WARNING"
         risk = "MEDIUM"
         reasons.append("Material related-party activity and unresolved/external relationship exposure require review; no proven circular flow, tunneling, or other catastrophic structural pattern.")
-    elif review_required:
-        flag = "WATCH"
-        risk = "LOW_MEDIUM"
-        reasons.append("No proven structural risk; external capital outflow and relationship uncertainty require analyst review.")
     else:
-        reasons.append("KhĂ´ng phĂ¡t hiá»‡n capital-flow cycle hoáº·c exposure vÆ°á»£t ngÆ°á»¡ng trong evidence validated")
+        flag = "PASS"
+        risk = "LOW_MEDIUM" if review_required else "LOW"
+        if review_required:
+            reasons.append("RPT exposure trong hạn mức an toàn; ghi nhận review_status=REVIEW_REQUIRED do có yếu tố cần analyst rà soát.")
+        else:
+            reasons.append("Không phát hiện capital-flow cycle hoặc exposure vượt ngưỡng trong evidence validated.")
+    if evidence_status == "INSUFFICIENT" and flag == "PASS":
+        risk = "UNKNOWN"
+    flow_signal, flow_findings = _flow_signal(
+        cycles=cycles,
+        potential_leakage=potential_leakage,
+        suspicious_multi_hop_flows=suspicious_multi_hop_flows,
+    )
+    # Only the observed flow finding drives the GIL decision.  Denominators,
+    # history, scope and risk/materiality diagnostics cannot downgrade a
+    # clean flow signal.
+    review_required = flow_signal == "ABNORMAL_FLOW"
+    if flow_signal == "CIRCULAR_FLOW":
+        flag = "CATASTROPHIC"
+        risk = "CATASTROPHIC"
+    elif flow_signal == "ABNORMAL_FLOW":
+        flag = "WARNING"
+        risk = "HIGH"
+    else:
+        flag = "PASS"
+        risk = "LOW"
+        reasons = [
+            reason for reason in reasons
+            if not reason.startswith("Material related-party activity")
+        ]
+    reasons.append(
+        "KhĂ´ng phĂ¡t hiá»‡n flow pattern bĂ¡ÂºÂ¥t thÆ°á»ng trong evidence Ä‘Ă£ quan sĂ¡t."
+        if flow_signal == "NO_ABNORMAL_FLOW_OBSERVED"
+        else f"Flow finding: {', '.join(flow_findings)}."
+    )
+    reasons = (
+        ["Không phát hiện dòng vốn bất thường trong graph quan hệ đã validated."]
+        if flow_signal == "NO_ABNORMAL_FLOW_OBSERVED"
+        else [f"Phát hiện dòng vốn bất thường: {', '.join(flow_findings)}."]
+    )
     result = {
         "ticker": issuer.ticker,
         "analysis_status": "COMPLETE",
         "gil_flag": flag,
+        "risk_signal": flag,
+        "flow_signal": flow_signal,
+        "flow_findings": flow_findings,
+        "evidence_status": evidence_status,
         "risk_level": risk,
         "review_status": "REVIEW_REQUIRED" if review_required else "CLEAR",
         "gil_score": gil_score,
         "rpt_ratio": ratio,
         # Legacy field: keep it aligned with the canonical current-balance ratio.
         # Aggregate evidence remains in rpt_metrics.observed_evidence_amount_vnd.
-        "total_rpt_exposure_vnd": round((ratio or 0.0) * equity, 2),
+        # Equity is an optional diagnostic denominator; a missing value must
+        # never prevent the flow-only assessment from being persisted.
+        "total_rpt_exposure_vnd": round((ratio or 0.0) * (equity or 0.0), 2),
         "rpt_metrics": {
             "all_evidence_transaction_flow_vnd": exposure_buckets["transaction_flow_vnd"],
             "all_evidence_loan_amount_vnd": exposure_buckets["loan_exposure_vnd"],
@@ -1202,7 +1351,7 @@ async def assess_gil(session: AsyncSession, ticker: str) -> dict[str, Any]:
         **graph_layers,
         "circular_flow_proven": bool(cycles),
         "tunneling_signals": len(cycles),
-        "catastrophic_triggered": cycle_materiality,
+        "catastrophic_triggered": flow_signal == "CIRCULAR_FLOW",
         "equity_vnd": equity,
         "cycles_detected": len(cycles),
         "cycle_paths": cycles,
@@ -1211,25 +1360,32 @@ async def assess_gil(session: AsyncSession, ticker: str) -> dict[str, Any]:
         "edges_count": len(relations),
         "policy_version": GIL_POLICY_VERSION,
         "hard_triggers": {
-            "circular_flow": bool(cycle_materiality),
+            "circular_flow": flow_signal == "CIRCULAR_FLOW",
             "tunneling": False,
             "hidden_ownership": False,
-            "catastrophic": bool(cycle_materiality),
+            "catastrophic": flow_signal == "CIRCULAR_FLOW",
         },
         "decision": {
-            "trade_blocked": bool(cycle_materiality),
+            "trade_blocked": flow_signal == "CIRCULAR_FLOW",
             "review_required": review_required,
+            "action": (
+                "BLOCK" if flow_signal == "CIRCULAR_FLOW"
+                else "REVIEW" if flow_signal == "ABNORMAL_FLOW"
+                else "CLEAR"
+            ),
         },
         "data_quality": {
             "accounting_scope": "VERIFIED" if scope_verified else "UNVERIFIED",
             "scope_consistency": "PASS" if scope_verified else "UNVERIFIED",
+            "scope_reason": document_denominators.get("scope_reason"),
+            "sector_policy": "APPLIED" if policy_context["sector_policy_applied"] else "FALLBACK",
             "relationship_resolution": round(classified_share, 4),
             "unresolved_relationship_share": round(unresolved_share, 4),
             "unknown_relationship_share": round(breakdown.get("unclassified", {}).get("share", 0.0), 4),
             "temporal_history": temporal.get("status", "INSUFFICIENT_HISTORY"),
             "missing_denominators": missing_denominators,
-            "status": "PARTIAL" if (unresolved_share > 0 or not scope_verified or missing_denominators) else "VERIFIED",
-            "confidence": "LOW" if (unresolved_share > 0 or missing_denominators or temporal.get("trend_confidence") == "LOW") else "HIGH",
+            "status": evidence_status,
+            "confidence": "LOW" if evidence_status != "VERIFIED" or temporal.get("trend_confidence") == "LOW" else "HIGH",
             "ratio_invariant_violations": ratio_invariant_violations,
         },
         "temporal_risk": temporal,
@@ -1246,11 +1402,43 @@ async def assess_gil(session: AsyncSession, ticker: str) -> dict[str, Any]:
     return result
 
 
+def _deduplicate_historical_documents(documents: list[Document]) -> list[Document]:
+    """Keep one verified version for each role/reporting period.
+
+    Replaced documents remain COMPLETE for auditability, but must not create
+    duplicate or mixed-scope points in the live GIL trend.
+    """
+    selected: dict[tuple[Any, ...], Document] = {}
+    for document in documents:
+        period_key = (
+            document.doc_role,
+            document.fiscal_year,
+            document.fiscal_quarter,
+            document.period_end,
+        )
+        if all(value is None for value in period_key):
+            period_key = (*period_key, document.id)
+        current = selected.get(period_key)
+        if current is None or (
+            bool(document.is_active),
+            str(document.created_at or ""),
+        ) > (
+            bool(current.is_active),
+            str(current.created_at or ""),
+        ):
+            selected[period_key] = document
+    return list(selected.values())
+
+
 def _gil_insufficient(ticker: str, reasons: list[str], equity: float | None) -> dict[str, Any]:
     return {
         "ticker": ticker,
         "analysis_status": "DATA_INSUFFICIENT",
         "gil_flag": "DATA_INSUFFICIENT",
+        "risk_signal": "UNKNOWN",
+        "flow_signal": "NOT_ASSESSED",
+        "flow_findings": [],
+        "evidence_status": "INSUFFICIENT",
         "risk_level": "UNKNOWN",
         "rpt_ratio": None,
         "total_rpt_exposure_vnd": 0.0,
@@ -1267,23 +1455,56 @@ def _gil_insufficient(ticker: str, reasons: list[str], equity: float | None) -> 
             "hard_trigger_requires_structural_evidence": True,
         },
         "policy_version": GIL_POLICY_VERSION,
+        "decision": {"trade_blocked": False, "review_required": False, "action": "NOT_ASSESSED"},
+        "data_quality": {"status": "FLOW_GRAPH_UNAVAILABLE", "confidence": "LOW"},
     }
 
 
-def _issuer_outgoing_relations(relations: list[Relation], issuer_entity_id: str | None) -> list[Relation]:
+def _flow_signal(
+    *,
+    cycles: list[list[str]],
+    potential_leakage: bool,
+    suspicious_multi_hop_flows: int,
+) -> tuple[str, list[str]]:
+    """Classify observed flow patterns without using missing data as a penalty."""
+    if cycles:
+        return "CIRCULAR_FLOW", ["VERIFIED_CIRCULAR_FLOW"]
+    findings: list[str] = []
+    if potential_leakage:
+        findings.append("POTENTIAL_EXTERNAL_LEAKAGE")
+    if suspicious_multi_hop_flows:
+        findings.append("SUSPICIOUS_MULTI_HOP_FLOW")
+    if findings:
+        return "ABNORMAL_FLOW", findings
+    return "NO_ABNORMAL_FLOW_OBSERVED", []
+
+
+def _issuer_outgoing_relations(
+    relations: list[Relation],
+    issuer_entity_id: str | set[str] | list[str] | None,
+) -> list[Relation]:
     if not issuer_entity_id or not any(getattr(rel, "subject_entity_id", None) for rel in relations):
         return relations
-    return [rel for rel in relations if rel.subject_entity_id == issuer_entity_id]
+    target_ids = {issuer_entity_id} if isinstance(issuer_entity_id, str) else set(issuer_entity_id)
+    return [rel for rel in relations if rel.subject_entity_id in target_ids]
 
 
 def _guarantee_disclosure_state(
-    relations: list[Relation], facts: list[Fact], *, issuer_entity_id: str | None = None
+    relations: list[Relation],
+    facts: list[Fact],
+    *,
+    issuer_entity_id: str | set[str] | list[str] | None = None,
+    is_bank: bool = False,
 ) -> dict[str, Any]:
     """Keep missing guarantee evidence distinct from an evidenced zero."""
-    outgoing = _issuer_outgoing_relations(relations, issuer_entity_id)
     guarantee_relations = [
-        rel for rel in outgoing
+        rel for rel in relations
         if rel.relation_type == RelationType.GUARANTEES_FOR.value
+        and (
+            not issuer_entity_id
+            or (isinstance(issuer_entity_id, (set, list)) and (rel.subject_entity_id in issuer_entity_id or rel.object_entity_id in issuer_entity_id))
+            or (isinstance(issuer_entity_id, str) and (rel.subject_entity_id == issuer_entity_id or rel.object_entity_id == issuer_entity_id))
+        )
     ]
     positive_relations = [rel for rel in guarantee_relations if float(rel.amount_vnd or 0.0) > 0]
     if positive_relations:
@@ -1291,6 +1512,10 @@ def _guarantee_disclosure_state(
             "value_vnd": round(sum(float(rel.amount_vnd or 0.0) for rel in positive_relations), 2),
             "status": "DISCLOSED",
         }
+    if is_bank:
+        # Off-balance customer credit commitments for commercial banks are core earning-asset operations,
+        # not corporate related-party tunneling.
+        return {"value_vnd": 0.0, "status": "CONFIRMED_NONE"}
     guarantee_facts = [
         fact for fact in facts
         if str(fact.fact_type or "") == FactType.GUARANTEE_BALANCE.value
@@ -1300,7 +1525,7 @@ def _guarantee_disclosure_state(
     if values and all(float(value) == 0.0 for value in values):
         return {"value_vnd": 0.0, "status": "CONFIRMED_NONE"}
     if values:
-        return {"value_vnd": None, "status": "UNRESOLVED"}
+        return {"value_vnd": round(sum(float(value) for value in values), 2), "status": "DISCLOSED"}
     return {"value_vnd": None, "status": "NOT_DISCLOSED"}
 
 
@@ -1353,7 +1578,8 @@ def _relationship_breakdown(
     }
     insider_tokens = (
         "person", "individual", "insider", "board", "director", "executive",
-        "family", "relative", "member",
+        "family", "relative", "member", "hoi dong quan tri", "ban kiem soat",
+        "tong giam doc", "nguoi quan ly", "nguoi noi bo", "thanh vien",
     )
     for rel in relations:
         amount = float(rel.amount_vnd or 0.0)
@@ -1368,10 +1594,12 @@ def _relationship_breakdown(
             bucket = "intra_group"
         else:
             object_type = entity_types.get(rel.object_entity_id or "", "")
-            raw = f"{object_type} {rel.raw_label or ''} {rel.object}".lower()
-            if any(token in raw for token in insider_tokens):
+            raw = _entity_name_key(f"{object_type} {rel.raw_label or ''} {rel.object}")
+            if any(token in raw for token in ("cong ty con", "cty con", "subsidiary", "don vi thanh vien", "thanh vien thuoc tap doan")):
+                bucket = "intra_group"
+            elif any(token in raw for token in insider_tokens):
                 bucket = "insider_related"
-            elif any(token in raw for token in ("affiliate", "associate", "joint venture", "jv", "liĂªn káº¿t", "liĂªn doanh")):
+            elif any(token in raw for token in ("affiliate", "associate", "joint venture", "jv", "lien ket", "lien doanh")):
                 bucket = "associate"
             elif object_type in {"related_party", "other", "", "none"}:
                 # "Related party" alone does not prove subsidiary, associate,
@@ -1403,6 +1631,7 @@ def _entity_name_key(value: str | None) -> str:
 
     raw = unicodedata.normalize("NFD", str(value or "")).lower()
     raw = "".join(char for char in raw if unicodedata.category(char) != "Mn")
+    raw = raw.replace("đ", "d")
     raw = re.sub(r"[^a-z0-9]+", " ", raw)
     replacements = (
         ("ctcp", "cong ty co phan"),
@@ -1416,67 +1645,18 @@ def _entity_name_key(value: str | None) -> str:
     return re.sub(r"\s+", " ", raw).strip()
 
 
-async def _load_market_financials(ticker: str) -> dict[str, Any]:
-    """Read the latest quarterly BS/IS/CF row from the market master DB."""
-    global _market_engine
-    if _market_engine is None:
-        _market_engine = create_async_engine(
-            settings.market_database_url,
-            pool_size=2,
-            max_overflow=2,
-            pool_pre_ping=True,
-        )
-    query = text(
-        """
-        SELECT period_end, statement_type, frequency, data
-        FROM public.financial_statements
-        WHERE symbol = :ticker AND frequency = 'quarterly'
-        ORDER BY period_end DESC
-        """
-    )
-    try:
-        async with _market_engine.connect() as connection:
-            rows = (await connection.execute(query, {"ticker": ticker.upper()})).mappings().all()
-    except Exception as exc:  # GIL remains usable if the optional market DB is unavailable.
-        logger.warning("market financials unavailable for %s: %s", ticker, exc)
-        return {"status": "UNAVAILABLE"}
-    if not rows:
-        return {"status": "MISSING", "ticker": ticker.upper()}
-    latest_period = rows[0]["period_end"]
-    latest = {row["statement_type"]: row["data"] or {} for row in rows if row["period_end"] == latest_period}
-    bs, inc, cf = latest.get("BS", {}), latest.get("IS", {}), latest.get("CF", {})
-    values = {
-        "total_assets": _json_metric(bs, ("tá»•ng cá»™ng tĂ i sáº£n", "tong cong tai san")),
-        "cash": _json_metric(bs, ("tiá»n vĂ  cĂ¡c khoáº£n tÆ°Æ¡ng Ä‘Æ°Æ¡ng tiá»n", "tien va cac khoan tuong duong tien")),
-        "total_receivables": _json_metric(bs, ("cĂ¡c khoáº£n pháº£i thu ngáº¯n háº¡n", "cac khoan phai thu ngan han")),
-        "total_payables": _json_metric(bs, ("ná»£ pháº£i tráº£", "no phai tra")),
-        "equity": _json_metric(bs, ("vá»‘n chá»§ sá»Ÿ há»¯u", "von chu so huu")),
-        "revenue": _json_metric(inc, ("doanh thu thuáº§n", "doanh thu ban hang va cung cap dich vu")),
-        "profit": _json_metric(inc, ("lá»£i nhuáº­n sau thuáº¿", "loi nhuan sau thue")),
-        "interest_expense": _json_metric(inc, ("chi phĂ­ lĂ£i vay", "chi phi lai vay")),
-        "operating_cash_flow": _json_metric(cf, ("lÆ°u chuyá»ƒn tiá»n thuáº§n tá»« hoáº¡t Ä‘á»™ng kinh doanh", "luu chuyen tien thuan tu hoat dong kinh doanh")),
-        "investing_cash_flow": _json_metric(cf, ("lÆ°u chuyá»ƒn tiá»n thuáº§n tá»« hoáº¡t Ä‘á»™ng Ä‘áº§u tÆ°", "luu chuyen tien thuan tu hoat dong dau tu")),
-        "financing_cash_flow": _json_metric(cf, ("lÆ°u chuyá»ƒn tiá»n thuáº§n tá»« hoáº¡t Ä‘á»™ng tĂ i chĂ­nh", "luu chuyen tien thuan tu hoat dong tai chinh")),
-    }
-    return {
-        "status": "OK", "ticker": ticker.upper(), "period_end": str(latest_period),
-        "frequency": "quarterly", "accounting_scope": "UNKNOWN",
-        "accounting_scope_verified": False, **values,
-    }
-
-
-def _json_metric(data: dict[str, Any], labels: tuple[str, ...]) -> float | None:
-    normalized = {_normalize_metric_key(key): value for key, value in data.items()}
-    for label in labels:
-        needle = _normalize_metric_key(label)
-        for key, value in normalized.items():
-            if needle in key and isinstance(value, (int, float)):
-                return float(value)
-    return None
+def _excluded_denominators_for_policy(policy_context: dict[str, Any]) -> set[str]:
+    """Exclude industrial ratios that are not applicable to financial institutions."""
+    if policy_context.get("company_archetype") in {"BANK", "FINANCIAL_INSTITUTION"}:
+        return {"financial_income", "cost_of_goods_sold"}
+    return set()
 
 
 def _document_denominator_coverage(
-    facts: list[Fact], latest_quarter_facts: list[Fact]
+    facts: list[Fact],
+    latest_quarter_facts: list[Fact],
+    *,
+    excluded_denominators: set[str] | None = None,
 ) -> dict[str, Any]:
     required = {
         "equity": {"equity", "total_equity"},
@@ -1488,6 +1668,8 @@ def _document_denominator_coverage(
         "financial_income": {"financial_income"},
         "cost_of_goods_sold": {"cost_of_goods_sold"},
     }
+    for name in excluded_denominators or set():
+        required.pop(name, None)
     available = {str(fact.semantic_key or "") for fact in latest_quarter_facts}
     scopes = {
         str((fact.metadata_json or {}).get("accounting_scope") or (fact.metadata_json or {}).get("statement_scope"))
@@ -1498,15 +1680,25 @@ def _document_denominator_coverage(
         name: _document_metric(latest_quarter_facts, keys)
         for name, keys in required.items()
     }
+    accounting_scope = next(iter(scopes)) if len(scopes) == 1 else "UNKNOWN"
+    scope_consistent = accounting_scope in {"STANDALONE", "CONSOLIDATED", "SEPARATE"} and bool(latest_quarter_facts)
+    if accounting_scope == "UNKNOWN":
+        scope_reason = "accounting scope absent or unknown in latest-quarter facts"
+    elif scope_consistent:
+        scope_reason = "single document/period facts"
+    else:
+        scope_reason = "missing or mixed accounting scope"
     return {
         "status": "DOCUMENT_FACTS_ONLY",
         "source": "sag_document_facts",
-        "accounting_scope": next(iter(scopes)) if len(scopes) == 1 else "UNKNOWN",
-        "scope_consistent": len(scopes) == 1 and bool(latest_quarter_facts),
-        "scope_reason": "single document/period facts" if len(scopes) == 1 and latest_quarter_facts else "missing or mixed accounting scope",
+        "accounting_scope": accounting_scope,
+        "scope_consistent": scope_consistent,
+        "scope_reason": scope_reason,
         "available_semantic_keys": sorted(available),
         "metrics": metrics,
         "missing_latest_quarter": sorted(name for name, value in metrics.items() if value is None),
+        "required_denominators": sorted(required),
+        "excluded_denominators": sorted(excluded_denominators or set()),
         "historical_fact_count": len(facts),
     }
 
@@ -1516,7 +1708,7 @@ def _document_metric(facts: list[Fact], keys: set[str]) -> float | None:
         fact for fact in facts
         if fact.semantic_key in keys
         and fact.value_numeric is not None
-        and (fact.metadata_json or {}).get("source") == "DETERMINISTIC_STATEMENT_TABLE"
+        and _is_usable_denominator_fact(fact)
     ]
     if not candidates:
         return None
@@ -1540,11 +1732,47 @@ def _document_metric(facts: list[Fact], keys: set[str]) -> float | None:
     return float((preferred or period_current or clean or candidates)[0].value_numeric)
 
 
+def _is_usable_denominator_fact(fact: Fact) -> bool:
+    """Accept validated facts from both deterministic and manifest extraction.
+
+    Production extraction persists validated manifest facts with accounting
+    scope and taxonomy metadata, but does not label them as deterministic
+    table facts. Requiring that label made every real denominator look absent.
+    Facts without scope provenance remain excluded.
+    """
+    metadata = fact.metadata_json or {}
+    if metadata.get("source") == "DETERMINISTIC_STATEMENT_TABLE":
+        return True
+    return bool(metadata.get("taxonomy_version") and metadata.get("accounting_scope"))
+
+
 def _denominator_exposure_buckets(
     relations: list[Relation], *, issuer_entity_id: str | None = None
 ) -> dict[str, float]:
     """Map only explicitly classified flows to their valid denominator."""
     relations = _issuer_outgoing_relations(relations, issuer_entity_id)
+    aggregate_balance_kinds = {"receivable_balance", "payable_balance", "loan_balance", "borrowing_balance"}
+    aggregate_relations = {
+        kind: [
+            relation
+            for relation in relations
+            if str((relation.metadata_json or {}).get("flow_kind") or "") == kind
+            and str(relation.object or "").strip().upper() == "RELATED_PARTIES_AGGREGATE"
+            and float(relation.amount_vnd or 0.0) > 0
+        ]
+        for kind in aggregate_balance_kinds
+    }
+    # The same balance is commonly printed once as a subtotal and again as
+    # entity-level "Trong đó" rows. Use the subtotal for denominator ratios;
+    # entity rows remain available to the graph/risk breakdown.
+    if any(aggregate_relations.values()):
+        def keep_relation(relation: Relation) -> bool:
+            kind = str((relation.metadata_json or {}).get("flow_kind") or "")
+            if kind not in aggregate_balance_kinds or not aggregate_relations.get(kind):
+                return True
+            return str(relation.object or "").strip().upper() == "RELATED_PARTIES_AGGREGATE"
+
+        relations = [relation for relation in relations if keep_relation(relation)]
     buckets = {
         "service_revenue_vnd": 0.0,
         "capital_allocation_vnd": 0.0,
@@ -1571,7 +1799,7 @@ def _denominator_exposure_buckets(
         relation_type = str(rel.relation_type or "").lower()
         if kind in {"service_revenue"}:
             bucket = "service_revenue_vnd"
-        elif kind in {"investment", "capital_contribution", "capital_contribution_in_kind", "capital_increase", "capital_transfer", "asset_contribution", "divestment"} or (not kind and relation_type == RelationType.INVESTS_IN.value):
+        elif kind in {"investment", "capital_contribution", "capital_contribution_in_kind", "capital_increase", "capital_transfer", "asset_contribution", "divestment", "deposit_or_investment_advance"} or (not kind and relation_type == RelationType.INVESTS_IN.value):
             bucket = "capital_allocation_vnd"
         elif kind in {"loan_balance", "borrowing_balance"}:
             bucket = "loan_balance_vnd"
@@ -1633,17 +1861,17 @@ def _document_denominator_ratios(
     financial_income = metrics.get("financial_income")
     cost_of_goods_sold = metrics.get("cost_of_goods_sold")
     return {
-        "related_party_service_revenue_to_revenue": buckets["service_revenue_vnd"] / revenue if revenue else None,
-        "capital_allocation_to_total_assets": buckets["capital_allocation_vnd"] / assets if assets else None,
-        "related_party_receivables_to_total_receivables": buckets["receivable_vnd"] / total_receivables if total_receivables else None,
-        "payable_to_total_payables": buckets["payable_vnd"] / total_payables if total_payables else None,
-        "interest_payable_to_total_payables": buckets["interest_payable_vnd"] / total_payables if total_payables else None,
-        "loan_to_cash_plus_equity": (buckets["loan_balance_vnd"] or buckets["loan_vnd"]) / (cash + equity) if cash is not None and equity is not None else None,
-        "guarantee_to_equity": buckets["guarantee_exposure_vnd"] / equity if equity and buckets["guarantee_exposure_vnd"] else None,
-        "dividend_to_financial_income": buckets["dividend_vnd"] / financial_income if financial_income else None,
-        "purchase_to_cost_of_goods_sold": buckets["purchase_vnd"] / cost_of_goods_sold if cost_of_goods_sold else None,
-        "loan_repayment_to_loan": buckets["loan_repayment_vnd"] / buckets["loan_vnd"] if buckets["loan_vnd"] else None,
-        "profit_transfer_to_financial_income": buckets["profit_transfer_vnd"] / financial_income if financial_income else None,
+        "related_party_service_revenue_to_revenue": buckets["service_revenue_vnd"] / revenue if revenue and revenue > 0 else None,
+        "capital_allocation_to_total_assets": buckets["capital_allocation_vnd"] / assets if assets and assets > 0 else None,
+        "related_party_receivables_to_total_receivables": buckets["receivable_vnd"] / total_receivables if total_receivables and total_receivables > 0 else None,
+        "payable_to_total_payables": buckets["payable_vnd"] / total_payables if total_payables and total_payables > 0 else None,
+        "interest_payable_to_total_payables": buckets["interest_payable_vnd"] / total_payables if total_payables and total_payables > 0 else None,
+        "loan_to_cash_plus_equity": (buckets["loan_balance_vnd"] or buckets["loan_vnd"]) / (cash + equity) if cash is not None and equity is not None and (cash + equity) > 0 else None,
+        "guarantee_to_equity": buckets["guarantee_exposure_vnd"] / equity if equity and equity > 0 and buckets["guarantee_exposure_vnd"] else None,
+        "dividend_to_financial_income": buckets["dividend_vnd"] / financial_income if financial_income and financial_income > 0 else None,
+        "purchase_to_cost_of_goods_sold": buckets["purchase_vnd"] / cost_of_goods_sold if cost_of_goods_sold and cost_of_goods_sold > 0 else None,
+        "loan_repayment_to_loan": buckets["loan_repayment_vnd"] / buckets["loan_vnd"] if buckets["loan_vnd"] and buckets["loan_vnd"] > 0 else None,
+        "profit_transfer_to_financial_income": buckets["profit_transfer_vnd"] / financial_income if financial_income and financial_income > 0 else None,
     }
 
 
@@ -1670,11 +1898,11 @@ def _denominator_ratios(
     revenue = market.get("revenue")
     total_receivables = market.get("total_receivables")
     return {
-        "related_party_service_revenue_to_revenue": buckets["transaction_flow_vnd"] / revenue if revenue else None,
-        "capital_allocation_to_total_assets": buckets["investment_exposure_vnd"] / assets if assets else None,
-        "related_party_receivables_to_total_receivables": buckets["receivable_payable_exposure_vnd"] / total_receivables if total_receivables else None,
-        "loan_to_cash_plus_equity": buckets["loan_exposure_vnd"] / (cash + equity) if cash and equity else None,
-        "guarantee_to_equity": buckets["guarantee_exposure_vnd"] / equity if equity and buckets["guarantee_exposure_vnd"] else None,
+        "related_party_service_revenue_to_revenue": buckets["transaction_flow_vnd"] / revenue if revenue and revenue > 0 else None,
+        "capital_allocation_to_total_assets": buckets["investment_exposure_vnd"] / assets if assets and assets > 0 else None,
+        "related_party_receivables_to_total_receivables": buckets["receivable_payable_exposure_vnd"] / total_receivables if total_receivables and total_receivables > 0 else None,
+        "loan_to_cash_plus_equity": buckets["loan_exposure_vnd"] / (cash + equity) if cash is not None and equity is not None and (cash + equity) > 0 else None,
+        "guarantee_to_equity": buckets["guarantee_exposure_vnd"] / equity if equity and equity > 0 and buckets["guarantee_exposure_vnd"] else None,
     }
 
 
@@ -1786,7 +2014,14 @@ def _flow_risk_breakdown(
             amounts["investment"] += amount
         elif relation_type == RelationType.TRANSACTS_WITH.value:
             amounts["transaction"] += amount
-    state = guarantee_state or {"value_vnd": amounts["guarantee"], "status": "DISCLOSED"}
+    if guarantee_state is not None:
+        state = guarantee_state
+        if state.get("status") == "CONFIRMED_NONE":
+            amounts["guarantee"] = 0.0
+        elif state.get("value_vnd") is not None:
+            amounts["guarantee"] = float(state["value_vnd"])
+    else:
+        state = {"value_vnd": amounts["guarantee"], "status": "DISCLOSED"}
     known = {"loan": True, "receivable": True, "investment": True, "transaction": True}
     known["guarantee"] = state["status"] in {"DISCLOSED", "CONFIRMED_NONE"}
     total = sum(amounts[key] for key, is_known in known.items() if is_known)
@@ -1808,8 +2043,13 @@ def _flow_risk_breakdown(
 
 
 def _relationship_risk_score(breakdown: dict[str, float], insider_evidence: bool) -> float:
-    """Score who the issuer is exposed to; unknown is uncertainty, not zero."""
-    total = sum(max(0.0, float(value)) for value in breakdown.values())
+    """Score observed relationship risk; unresolved exposure affects coverage, not risk."""
+    observed = {
+        key: max(0.0, float(value))
+        for key, value in breakdown.items()
+        if key != "unclassified"
+    }
+    total = sum(observed.values())
     if not total:
         return 20.0 if insider_evidence else 0.0
     weights = {
@@ -1819,7 +2059,7 @@ def _relationship_risk_score(breakdown: dict[str, float], insider_evidence: bool
         "external_affiliate": 0.50,
         "unclassified": 0.60,
     }
-    score = sum((float(value) / total) * weights[key] for key, value in breakdown.items())
+    score = sum((float(value) / total) * weights[key] for key, value in observed.items())
     if insider_evidence and breakdown.get("insider_related", 0.0) <= 0:
         score = max(score, 0.20)
     return round(min(100.0, score * 100.0), 2)
@@ -1889,7 +2129,10 @@ def _materiality_components(
 def _insider_transaction_risk_score(metrics: dict[str, Any]) -> float | None:
     if metrics.get("basis") != "EXPLICIT_TRANSACTION":
         return None
-    return _nonlinear_exposure_score(metrics.get("transaction_exposure_vnd"))
+    ratio = metrics.get("transaction_to_equity_ratio")
+    if ratio is None:
+        return None
+    return _nonlinear_exposure_score(ratio)
 
 
 def _external_capital_outflow_evidence(
@@ -1941,6 +2184,18 @@ def _ownership_depth(relations: list[Relation], max_depth: int = 8) -> int:
     return best
 
 
+def _canonicalize_cycle(cycle: list[str]) -> tuple[str, ...]:
+    """Return the unique canonical rotation of a directed cycle starting with the minimum vertex."""
+    if len(cycle) <= 1:
+        return tuple(cycle)
+    nodes = cycle[:-1] if cycle[0] == cycle[-1] and len(cycle) > 1 else cycle
+    if not nodes:
+        return tuple(cycle)
+    min_idx = min(range(len(nodes)), key=lambda i: nodes[i])
+    canonical = nodes[min_idx:] + nodes[:min_idx]
+    return tuple([*canonical, canonical[0]])
+
+
 def _detect_ownership_loops(relations: list[Relation]) -> list[list[str]]:
     graph: dict[str, set[str]] = {}
     for rel in relations:
@@ -1952,7 +2207,7 @@ def _detect_ownership_loops(relations: list[Relation]) -> list[list[str]]:
             node, path = stack.pop()
             for child in graph.get(node, set()):
                 if child == start and len(path) > 1:
-                    found.add(tuple(path + [start]))
+                    found.add(_canonicalize_cycle(path + [start]))
                 elif child not in path and len(path) < 8:
                     stack.append((child, path + [child]))
     return [list(path) for path in sorted(found)]
@@ -1980,7 +2235,7 @@ def _multi_hop_flow_count(relations: list[Relation], owned_entities: set[str] | 
         for target in targets:
             if target in adjacency:
                 for endpoint in adjacency[target]:
-                    if (
+                    if endpoint != source and (
                         _entity_name_key(source) not in owned_keys
                         or _entity_name_key(target) not in owned_keys
                         or _entity_name_key(endpoint) not in owned_keys
@@ -1989,28 +2244,71 @@ def _multi_hop_flow_count(relations: list[Relation], owned_entities: set[str] | 
     return count
 
 
+def _flow_period_key(rel: Relation, period_by_document: dict[str, str] | None = None) -> str:
+    """Keep graph paths inside one reporting period when the source provides it."""
+    return str(
+        getattr(rel, "period_end", None)
+        or getattr(rel, "as_of", None)
+        or (period_by_document or {}).get(getattr(rel, "document_id", None))
+        or getattr(rel, "document_id", None)
+        or "UNKNOWN"
+    )
+
+
+def _flow_kind_is_financing(rel: Relation) -> bool:
+    relation_type = str(getattr(rel, "relation_type", "") or "").lower()
+    if relation_type in {
+        RelationType.LENDS_TO.value,
+        RelationType.CREDITOR_OF.value,
+        RelationType.GUARANTEES_FOR.value,
+    }:
+        return True
+    return (_relation_flow_kind(rel) or "") in {
+        "loan", "loan_balance", "loan_repayment", "borrowing", "borrowing_balance",
+        "receivable", "receivable_balance", "payable", "payable_balance", "guarantee",
+        "capital_contribution", "capital_increase", "capital_transfer", "asset_contribution",
+        "investment", "divestment", "deposit_or_investment_advance",
+    }
+
+
 def _suspicious_multi_hop_flow_count(
-    relations: list[Relation], owned_entities: set[str], entity_types: dict[str, str]
+    relations: list[Relation], owned_entities: set[str], entity_types: dict[str, str],
+    *, period_by_document: dict[str, str] | None = None,
 ) -> int:
-    """Count only quantified paths that cross into a resolved external party."""
+    """Count quantified financing paths that cross into a resolved external party."""
     flow_types = {
         RelationType.LENDS_TO.value,
         RelationType.CREDITOR_OF.value,
         RelationType.GUARANTEES_FOR.value,
         RelationType.TRANSACTS_WITH.value,
     }
-    adjacency: dict[str, set[str]] = {}
-    for rel in relations:
-        if rel.relation_type in flow_types and float(rel.amount_vnd or 0.0) > 0:
-            adjacency.setdefault(rel.subject, set()).add(rel.object)
     owned = {_entity_name_key(value) for value in owned_entities}
     suspicious = 0
-    for source, targets in adjacency.items():
-        for middle in targets:
-            for endpoint in adjacency.get(middle, set()):
-                raw = f"{entity_types.get(endpoint, '')} {endpoint}".lower()
-                if _entity_name_key(endpoint) not in owned and any(token in raw for token in ("affiliate", "associate", "person", "insider", "external")):
-                    suspicious += 1
+    grouped: dict[str, list[Relation]] = {}
+    for rel in relations:
+        if (
+            rel.relation_type in flow_types
+            and _flow_kind_is_financing(rel)
+            and float(rel.amount_vnd or 0.0) > 0
+        ):
+            grouped.setdefault(_flow_period_key(rel, period_by_document), []).append(rel)
+    for period_relations in grouped.values():
+        adjacency: dict[str, set[str]] = {}
+        for rel in period_relations:
+            adjacency.setdefault(rel.subject, set()).add(rel.object)
+        for source, targets in adjacency.items():
+            for middle in targets:
+                for endpoint in adjacency.get(middle, set()):
+                    if endpoint == source or _entity_name_key(endpoint) in owned:
+                        continue
+                    entity_type = entity_types.get(
+                        _entity_name_key(endpoint), entity_types.get(endpoint, "")
+                    ).lower()
+                    raw = f"{entity_type} {endpoint}".lower()
+                    if entity_type in {"affiliate", "related_party", "person", "other"} or any(
+                        token in raw for token in ("affiliate", "associate", "joint venture", "person", "insider", "external")
+                    ):
+                        suspicious += 1
     return suspicious
 
 
@@ -2148,7 +2446,8 @@ def _temporal_risk(
             relations_by_doc.setdefault(rel.document_id, []).append(rel)
     points: list[dict[str, Any]] = []
     for doc_id, doc in doc_by_id.items():
-        equity = _latest_equity(facts_by_doc.get(doc_id, []))
+        doc_facts = facts_by_doc.get(doc_id, [])
+        equity = _latest_equity(doc_facts)
         bucket = _denominator_exposure_buckets(
             relations_by_doc.get(doc_id, []), issuer_entity_id=issuer_entity_id
         )
@@ -2157,13 +2456,21 @@ def _temporal_risk(
             bucket.get("receivable_vnd", 0.0),
             bucket.get("guarantee_exposure_vnd", 0.0),
         )
-        if not equity or not amount:
+        if not equity or equity <= 0:
             continue
+        scopes = {
+            str((fact.metadata_json or {}).get("accounting_scope") or "").upper()
+            for fact in doc_facts
+            if (fact.metadata_json or {}).get("accounting_scope")
+        }
+        accounting_scope = next(iter(scopes)) if len(scopes) == 1 else "UNKNOWN"
+        if accounting_scope == "SEPARATE":
+            accounting_scope = "STANDALONE"
         period = doc.period_end or doc.fiscal_year or ""
         points.append({
             "document_id": doc_id,
             "doc_role": doc.doc_role,
-            "accounting_scope": "STANDALONE" if str(doc.doc_role or "") in {"ANNUAL_BACKBONE", "LATEST_QUARTER"} else "UNKNOWN",
+            "accounting_scope": accounting_scope,
             "metric_semantics": "largest_balance_exposure_to_equity",
             "measurement_type": "BALANCE",
             "period_end": str(period),
@@ -2177,7 +2484,7 @@ def _temporal_risk(
         key = (point["accounting_scope"], point["metric_semantics"], point["measurement_type"])
         groups.setdefault(key, []).append(point)
     comparable = max(groups.values(), key=lambda group: (len(group), group[-1]["period_end"]), default=[])
-    if len(comparable) < 2:
+    if len(comparable) < 3:
         return {
             "status": "INSUFFICIENT_HISTORY",
             "score": None,
@@ -2187,17 +2494,9 @@ def _temporal_risk(
             "latest_ratio": comparable[-1]["exposure_to_equity"] if comparable else None,
             "previous_ratio": None,
             "delta": None,
+            "trend_confidence": "INSUFFICIENT_DATA",
         }
     points = comparable
-    if len(points) < 2:
-        return {
-            "status": "INSUFFICIENT_HISTORY",
-            "score": None,
-            "points": points,
-            "latest_ratio": points[-1]["exposure_to_equity"] if points else None,
-            "previous_ratio": None,
-            "delta": None,
-        }
     previous, latest = points[-2], points[-1]
     delta = round(latest["exposure_to_equity"] - previous["exposure_to_equity"], 6)
     score = round(min(100.0, max(0.0, delta / 0.25 * 100.0)), 2)
@@ -2205,7 +2504,7 @@ def _temporal_risk(
         "status": "DETERIORATING_OBSERVED" if delta > 0 else "IMPROVING_OBSERVED",
         "score": score,
         "observation_count": len(points),
-        "trend_confidence": "LOW" if len(points) < 3 else "MEDIUM",
+        "trend_confidence": "MEDIUM" if len(points) == 3 else "HIGH",
         "points": points,
         "latest_ratio": latest["exposure_to_equity"],
         "previous_ratio": previous["exposure_to_equity"],
@@ -2216,8 +2515,8 @@ def _temporal_risk(
 
 
 def _cycle_materiality_ratio(cycles: list[list[str]], relations: list[Relation], equity: float | None) -> float:
-    """Return the largest quantified closed-flow value / same extracted equity."""
-    if not cycles or not equity:
+    """Return the largest quantified closed-flow bottleneck capacity / same extracted equity."""
+    if not cycles or not equity or equity <= 0:
         return 0.0
     amounts: dict[tuple[str, str], float] = {}
     for rel in relations:
@@ -2229,12 +2528,21 @@ def _cycle_materiality_ratio(cycles: list[list[str]], relations: list[Relation],
             amounts[key] = max(amounts.get(key, 0.0), float(rel.amount_vnd or 0.0))
     best = 0.0
     for path in cycles:
-        total = sum(amounts.get((path[index], path[index + 1]), 0.0) for index in range(len(path) - 1))
-        best = max(best, total / equity)
+        quantified_edges = [
+            amounts.get((path[index], path[index + 1]), 0.0)
+            for index in range(len(path) - 1)
+            if amounts.get((path[index], path[index + 1]), 0.0) > 0
+        ]
+        if quantified_edges:
+            bottleneck = min(quantified_edges)
+            best = max(best, bottleneck / equity)
     return round(best, 6)
 
 
-def _detect_cycles(relations: list[Relation]) -> list[list[str]]:
+def _detect_cycles(
+    relations: list[Relation],
+    period_by_document: dict[str, str] | None = None,
+) -> list[list[str]]:
     # Ownership/investment is a structure edge, not evidence of round-tripping.
     # ``creditor_of`` is already stored as creditor -> debtor in the current
     # extraction contract, so it must not be reversed here.
@@ -2246,52 +2554,55 @@ def _detect_cycles(relations: list[Relation]) -> list[list[str]]:
         RelationType.LENDS_TO.value,
         RelationType.CREDITOR_OF.value,
     }
-    graph: dict[str, list[tuple[str, str, float]]] = {}
-    seen_edges: set[tuple[str, str, str]] = set()
+    grouped: dict[str, list[Relation]] = {}
     for rel in relations:
         if rel.relation_type not in flow_types:
             continue
-        edge_key = (str(rel.subject), str(rel.object), str(rel.relation_type))
-        if edge_key in seen_edges:
-            continue
-        seen_edges.add(edge_key)
-        graph.setdefault(rel.subject, []).append(
-            (rel.object, rel.relation_type, float(rel.amount_vnd or 0.0))
-        )
+        grouped.setdefault(_flow_period_key(rel, period_by_document), []).append(rel)
     cycles: list[list[str]] = []
-    for start in graph:
-        stack = [(start, [start], 0, 0, set())]
-        while stack:
-            current, path, flow_edges, quantified_flows, edge_types = stack.pop()
-            for nxt, relation_type, amount in graph.get(current, []):
-                next_flow_edges = flow_edges + int(relation_type in flow_types)
-                next_quantified_flows = quantified_flows + int(
-                    relation_type in flow_types and amount > 0
-                )
-                next_edge_types = edge_types | {relation_type}
-                # A two-entity reciprocal relationship is commonly one
-                # intercompany loan/transaction represented twice. It is not
-                # sufficient proof of round-tripping; require >=3 entities.
-                if nxt == start and len(path) > 2:
-                    if next_flow_edges >= 3 and next_quantified_flows >= 2 and len(next_edge_types) >= 2:
-                        cycles.append([*path, start])
-                elif nxt not in path and len(path) < 8:
-                    stack.append(
-                        (
-                            nxt,
-                            [*path, nxt],
-                            next_flow_edges,
-                            next_quantified_flows, next_edge_types,
+    seen: set[tuple[str, ...]] = set()
+    for period_relations in grouped.values():
+        graph: dict[str, list[tuple[str, str, float, bool]]] = {}
+        edge_seen: set[tuple[str, str, str, float, bool]] = set()
+        for rel in period_relations:
+            amount = float(rel.amount_vnd or 0.0)
+            edge = (str(rel.subject), str(rel.object), rel.relation_type, amount, _flow_kind_is_financing(rel))
+            if edge in edge_seen:
+                continue
+            edge_seen.add(edge)
+            graph.setdefault(rel.subject, []).append(
+                (rel.object, rel.relation_type, amount, _flow_kind_is_financing(rel))
+            )
+        for start in graph:
+            stack = [(start, [start], 0, 0, 0, set())]
+            while stack:
+                current, path, flow_edges, quantified_flows, financing_edges, edge_types = stack.pop()
+                for nxt, relation_type, amount, financing in graph.get(current, []):
+                    next_flow_edges = flow_edges + 1
+                    next_quantified_flows = quantified_flows + int(amount > 0)
+                    next_financing_edges = financing_edges + int(financing and amount > 0)
+                    next_edge_types = edge_types | {relation_type}
+                    # A cycle is a flow finding only when it contains a
+                    # quantified financing/capital edge; ordinary trade
+                    # reciprocity is not round-tripping evidence.
+                    if nxt == start and len(path) > 2:
+                        if next_flow_edges >= 3 and next_quantified_flows >= 2 and next_financing_edges >= 1:
+                            canonical = _canonicalize_cycle([*path, start])
+                            if canonical not in seen:
+                                seen.add(canonical)
+                                cycles.append(list(canonical))
+                    elif nxt not in path and len(path) < 8:
+                        stack.append(
+                            (
+                                nxt,
+                                [*path, nxt],
+                                next_flow_edges,
+                                next_quantified_flows,
+                                next_financing_edges,
+                                next_edge_types,
+                            )
                         )
-                    )
-    unique = []
-    seen = set()
-    for cycle in cycles:
-        key = tuple(cycle)
-        if key not in seen:
-            seen.add(key)
-            unique.append(cycle)
-    return unique
+    return cycles
 
 
 def _owned_entities(relations: list[Relation], issuer_ticker: str) -> set[str]:

@@ -2,10 +2,10 @@
 
 Chức năng:
 - Phân tích định lượng chuyên sâu 6 nhóm Factor Score (F1 Value, F2 Quality, F3 Momentum, F4 Earnings, F5 Flow, F6 Technical).
-- Truy vấn Financial Quality và GIL từ phân hệ SAG hoặc bộ nhớ đệm tương thích.
+- Truy vấn Financial Quality từ dữ liệu tài chính nội bộ.
 - Tính toán điểm Composite Stock Score (CSS) thích ứng qua CSSScoringEngine với các factor tài chính và thị trường.
 - Gán mức độ tự tin (Conviction Level: A+, A, B, C, D, E) và sinh Research Report hoàn chỉnh.
-- Bảng nghiệp vụ quản lý: factor_scores, business_quality_profiles
+- Bảng nghiệp vụ quản lý: factor_scores
 - Bảng log audit: log_equity_research
 """
 
@@ -35,7 +35,7 @@ class EquityResearchAgent(BaseAgent):
     def __init__(self):
         super().__init__(
             agent_name="equity_research",
-            state_tables=["factor_scores", "business_quality_profiles"],
+            state_tables=["factor_scores"],
             log_table="log_equity_research",
             enabled=True,
         )
@@ -132,7 +132,6 @@ class EquityResearchAgent(BaseAgent):
                 computed = self.factor_service.compute_factors_for_ticker(ticker, target_d)
                 f1_value = float(computed.get("f1_value", 50.0))
                 base_f2 = float(computed.get("f2_quality", 50.0))
-                # Financial Quality là factor độc lập; GIL không điều chỉnh F2.
                 f2_quality = round(base_f2, 2)
                 f3_momentum = float(computed.get("f3_momentum", 50.0))
                 f4_earnings = float(computed.get("f4_earnings", 50.0))
@@ -193,27 +192,22 @@ class EquityResearchAgent(BaseAgent):
         if policy_weights and weights_source == "DEFAULT":
             weights_source = "AGENT-10 (Reinforcement Learning Adaptive Weights)"
 
-        # 2.5 Nạp audit_opinion và gil_flag từ CSDL nếu event_data chưa truyền
+        # 2.5 Nạp audit_opinion từ CSDL.
         audit_opinion = event_data.get("audit_opinion")
-        gil_flag = event_data.get("gil_flag")
-        if not audit_opinion or not gil_flag:
+        if not audit_opinion:
             try:
                 storage = PostgresAdapter()
                 s_rows = storage.fetch_all(
-                    "SELECT audit_opinion, gil_flag FROM stocks WHERE symbol = %s LIMIT 1",
+                    "SELECT audit_opinion FROM stocks WHERE symbol = %s LIMIT 1",
                     (ticker,)
                 )
                 if s_rows and len(s_rows) > 0:
                     if not audit_opinion:
                         audit_opinion = s_rows[0][0] or "UNQUALIFIED"
-                    if not gil_flag:
-                        gil_flag = s_rows[0][1] or "PASS"
             except Exception:
                 pass
         if not audit_opinion:
             audit_opinion = "UNQUALIFIED"
-        if not gil_flag:
-            gil_flag = "DATA_INSUFFICIENT"
 
         # Tạo DataFrame đầu vào cho CSSScoringEngine
         df_factors = pd.DataFrame([{
@@ -225,9 +219,7 @@ class EquityResearchAgent(BaseAgent):
             "f4_earnings": f4_earnings,
             "f5_flow": f5_flow,
             "f6_technical": f6_technical,
-            # GIL không được phép tự động nhân CSS.
             "audit_opinion": audit_opinion,
-            "gil_flag": gil_flag,
         }])
 
         df_scored = self.scoring_engine.calculate_css(
@@ -259,8 +251,6 @@ class EquityResearchAgent(BaseAgent):
             "conviction": conviction,
             "current_price": current_price,
             "audit_opinion": audit_opinion,
-            "gil_flag": gil_flag,
-            "gil_status": gil_flag,
             "data_quality_flag": data_quality_flag,
             "eligible_for_thesis": eligible_for_thesis,
             "applied_weights": applied_weights,

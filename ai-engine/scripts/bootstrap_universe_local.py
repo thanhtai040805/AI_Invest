@@ -111,6 +111,10 @@ async def run_bootstrap(
         # 2. Chạy Pipeline nạp SAG và đánh giá đồ thị GIL
         try:
             res = await pipeline.process_ticker(ticker=ticker, equity_vnd=equity_vnd)
+            if res.get("status") in {"SAG_ANALYSIS_HOLD", "SAG_CLOSED"}:
+                print("  ⏸️ SAG đang đóng; chưa đọc/chạy SAG và chưa ghi kết quả.\n")
+                summary_stats["processed"] += 1
+                continue
             gil_flag = res.get("gil_flag", "PASS")
             gil_info = res.get("gil_result", {})
 

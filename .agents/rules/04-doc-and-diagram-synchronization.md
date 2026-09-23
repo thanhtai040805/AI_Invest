@@ -11,8 +11,8 @@ Whenever an engineer or AI agent performs a **commit**, **major functional chang
 
 | Nature of Change | Impacted Code / Area | Required Documentation Update | Required Diagram Update |
 |---|---|---|---|
-| **System Architecture / Services** | New microservice, changed port, network boundary, protocol, or gateway routing | [IT_SYSTEM_ARCHITECTURE.md](file:///d:/AIInvest/docs/architecture/IT_SYSTEM_ARCHITECTURE.md) | [system-architecture.html](file:///d:/AIInvest/docs/diagrams/system-architecture.html) |
-| **Pipeline & Evidence Lifecycle** | BCTC ingestion, MinerU OCR, SAG v2 hashing, GIL/MOAT rules, quant debate, or HOSE execution | [PROJECT_MEMORY.md](file:///d:/AIInvest/docs/architecture/PROJECT_MEMORY.md) | [bctc-forensics-pipeline.html](file:///d:/AIInvest/docs/diagrams/bctc-forensics-pipeline.html) |
+| **System Architecture / Services** | New microservice, changed port, network boundary, protocol, or gateway routing | [IT_SYSTEM_ARCHITECTURE.md](file:///d:/AIInvest/docs/architecture/IT_SYSTEM_ARCHITECTURE.md) | Relevant existing file in `docs/diagrams/` |
+| **Pipeline & Evidence Lifecycle** | BCTC ingestion, MinerU OCR, SAG v2 hashing, GIL/MOAT rules, quant debate, or HOSE execution | [PROJECT_MEMORY.md](file:///d:/AIInvest/docs/architecture/PROJECT_MEMORY.md) | [paper-grade-algorithmic-data-flow.html](file:///d:/AIInvest/docs/diagrams/paper-grade-algorithmic-data-flow.html) |
 | **Database Models & Schemas** | Prisma schema migration, SQLAlchemy models, new tables or altered columns | [IT_SYSTEM_ARCHITECTURE.md](file:///d:/AIInvest/docs/architecture/IT_SYSTEM_ARCHITECTURE.md) (Persistence section) | Update entity/store references in relevant diagrams |
 | **Domain Rules & Exchange Logic** | HOSE T+2.5 settlement, ±7% price bands, risk models | [PROJECT_MEMORY.md](file:///d:/AIInvest/docs/architecture/PROJECT_MEMORY.md) & [IT_SYSTEM_ARCHITECTURE.md](file:///d:/AIInvest/docs/architecture/IT_SYSTEM_ARCHITECTURE.md) | Update Risk Node annotations |
 

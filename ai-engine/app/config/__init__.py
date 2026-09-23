@@ -13,9 +13,6 @@ ENCODING = _settings.encoding
 REDIS_URL = _settings.redis_url
 REDIS_CHANNEL_PREFIX = _settings.redis_channel_prefix
 
-LLM_API_KEY = _settings.llm_api_key
-LLM_PROVIDER = _settings.llm_provider
-
 __all__ = [
     "get_settings",
     "get_dnse_client",
@@ -28,6 +25,4 @@ __all__ = [
     "ENCODING",
     "REDIS_URL",
     "REDIS_CHANNEL_PREFIX",
-    "LLM_API_KEY",
-    "LLM_PROVIDER",
 ]

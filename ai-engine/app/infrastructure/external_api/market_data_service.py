@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from app.config.settings import get_settings
 from app.infrastructure.external_api.dnse.stream_hub import get_stream_hub
+from app.infrastructure.external_api.dnse.market_session import MarketSessionManager
 from app.infrastructure.external_api.dnse.rest_client import get_rest_client
 from app.infrastructure.external_api.dnse.redis_pub import (
     get_redis,
@@ -65,6 +66,7 @@ class MarketDataService:
     def __init__(self) -> None:
         self._hub = get_stream_hub()
         self._rest = get_rest_client()
+        self._session = MarketSessionManager()
 
     async def get_indices(self) -> Dict:
         """Return live indices from hub or Redis. Fallback to REST."""
@@ -479,21 +481,22 @@ class MarketDataService:
     async def get_order_book(self, symbol: str) -> Dict:
         sym = symbol.upper()
         self._hub.subscribe_symbols([sym])
+        market_state = self._session.get_market_state().value
 
         cached = self._hub.get_orderbook(sym)
         if cached:
-            return cached
+            return {**cached, "marketState": market_state}
 
         try:
             r = get_redis()
             ob_cached = r.get(f"stock:{sym}:orderbook")
             if ob_cached:
                 import json
-                return json.loads(ob_cached)
+                return {**json.loads(ob_cached), "marketState": market_state}
         except Exception:
             pass
 
-        return {"symbol": sym, "bids": [], "asks": [], "lastUpdate": datetime.now().isoformat()}
+        return {"symbol": sym, "bids": [], "asks": [], "marketState": market_state}
 
     async def get_trades(self, symbol: str) -> Dict:
         sym = symbol.upper()

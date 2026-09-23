@@ -9,8 +9,8 @@ Các đặc tính cốt lõi:
 2. Pure-ML Decision Making: Tự động nạp Universe HOSE, tính 51 đặc trưng (Feature Forge + Graph Contagion),
    dự báo xác suất và tự quyết định giải ngân (20% NAV / vị thế).
 3. Shadow / Live Automation:
-   - SHADOW_RUNNER: Tự động ghi nhận paper trade, trừ/cộng tiền và theo dõi danh mục ngầm.
-   - LIVE: Chuyển giao lệnh sang Execution Gateway khi có quyết định mở cửa.
+   - SHADOW_RUNNER: Chỉ ghi paper trade khi sổ lệnh thật còn mới và đủ độ sâu.
+   - LIVE: Không khả dụng; chưa có cổng đặt lệnh môi giới.
 4. Continuous Accuracy Tracking: Đo đạc và đối soát độ chính xác thực tế trên thị trường:
    - Realized Survival Rate vs Predicted Probability.
    - Directional Win Rate vs Predicted 3D Momentum.
@@ -439,17 +439,14 @@ class StandaloneMLChannel:
             # Nếu chạy SHADOW_RUNNER, tự động khớp paper trade vào tài khoản độc lập
             if exec_mode == StandaloneExecutionMode.SHADOW_RUNNER:
                 try:
-                    self.portfolio_repo.execute_order_transaction(
-                        ticker=ticker,
-                        action="BUY",
-                        shares=shares,
-                        executed_price=close_price,
-                        user_id=self.account_id,
-                        execution_mode="SHADOW_PAPER",
-                        status="FILLED",
+                    order_record["order_id"] = self.portfolio_repo.create_shadow_pending_order(
+                        ticker=ticker, shares=shares, limit_price=close_price,
+                        user_id=self.account_id, order_type="SHADOW_ML_LIMIT",
                     )
+                    order_record["execution_status"] = "PENDING_SHADOW"
                 except Exception as e_pt:
-                    logger.debug(f"Khớp paper trade SHADOW_RUNNER: {e_pt}")
+                    order_record["execution_status"] = "QUEUE_FAILED"
+                    logger.warning("Could not queue Shadow order for %s: %s", ticker, e_pt)
 
         logger.info(
             f"[Standalone ML Fund] Hoàn tất chu trình: Đề xuất {len(qualified_orders)} lệnh "

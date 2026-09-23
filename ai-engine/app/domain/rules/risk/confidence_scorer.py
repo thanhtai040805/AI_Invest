@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 HARD_FLAGS: List[str] = [
-    "GIL_CATASTROPHIC",
     "AUDIT_DENIAL",
     "AUDIT_ADVERSE",
     "SPECIAL_CONTROL",

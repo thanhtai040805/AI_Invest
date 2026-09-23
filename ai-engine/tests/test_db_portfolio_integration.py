@@ -4,7 +4,8 @@ và giám sát vị thế tự động qua PortfolioRepository.
 """
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock
 
 import pytest
 from app.domain.repositories.portfolio_repository import PortfolioRepository
@@ -108,7 +109,7 @@ def test_portfolio_repository_lifecycle():
     asyncio.run(_test())
 
 
-def test_agents_db_sync_pipeline():
+def test_agents_db_sync_pipeline(monkeypatch):
     """Kiểm thử sự phối hợp nhịp nhàng giữa Agent-07, Agent-08 và Agent-09 qua PortfolioRepository."""
     async def _test():
         repo = PortfolioRepository()
@@ -127,20 +128,39 @@ def test_agents_db_sync_pipeline():
         assert order_instruction["action"] == "BUY"
         assert order_instruction["target_shares"] > 0
 
-        # 2. Agent-08 thực thi lệnh và tự động ghi vào DB
-        exec_res = await exec_agent.process({
+        # 2. Agent-08 persists the approved entry as pending without a live book.
+        pending_res = await exec_agent.process({
             "order_instruction": order_instruction,
             "adtv20": 3000000.0,
         })
-        report = exec_res["data"]
-        assert report["status"] == "EXECUTED"
-        assert report["ticker"] == "VNM"
+        pending = pending_res["data"]
+        assert pending["status"] == "PENDING_SHADOW"
+        assert repo.get_open_positions() == []
+
+        shares = order_instruction["target_shares"]
+        price = order_instruction["price"]
+        book = {
+            "marketState": "continuous_morning",
+            "lastUpdate": datetime.now(timezone.utc).isoformat(),
+            "bids": [],
+            "asks": [{"price": price / 1000, "volume": shares}],
+        }
+        from app.infrastructure.external_api.dnse.market_session import MarketState
+        from app.infrastructure.external_api.market_data_service import market_data_svc
+        from app.infrastructure.workers.shadow_order_daemon import ShadowOrderDaemon
+
+        shadow_daemon = ShadowOrderDaemon()
+        shadow_daemon.session.get_market_state = lambda: MarketState.CONTINUOUS_MORNING
+        shadow_daemon.repository.expire_pending_shadow_orders = lambda: 0
+        monkeypatch.setattr(market_data_svc, "get_order_book", AsyncMock(return_value=book))
+        assert await shadow_daemon.run_single_tick() == 1
 
         # Kiểm tra vị thế đã được ghi vào DB
         positions = repo.get_open_positions()
         vnm_pos = next((p for p in positions if p["ticker"] == "VNM"), None)
         assert vnm_pos is not None
-        assert vnm_pos["shares"] == order_instruction["target_shares"]
+        assert vnm_pos["shares"] == shares
+        assert repo.get_account_state()["cash_balance"] < 1000000000.0
 
         # 3. Agent-09 tự động đọc vị thế từ DB và canh gác Stop-loss
         mon_res = await mon_agent.process({

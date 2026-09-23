@@ -846,11 +846,11 @@
             <line x1="360" y1="128" x2="360" y2="141" stroke="#c084fc" stroke-width="0.8" />
             <!-- Content -->
             <text x="308" y="156" fill="#0f172a" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="600"
-              text-anchor="middle">Markdown Table Preservation</text>
+              text-anchor="middle">Markdown Table + Data Gate</text>
             <text x="308" y="171" fill="#9333ea" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
-              text-anchor="middle">vi &gt; en Gate · Reject English</text>
+              text-anchor="middle">vi &gt; en Reject · Source Fallback</text>
             <text x="308" y="187" fill="#475569" font-size="7.5" font-family="'Geist Mono', monospace"
-              text-anchor="middle">Noise Cleaner: Boilerplate + Inline English Mirrors + Unit Normalization</text>
+              text-anchor="middle">R2 Gate · SAG closed · Evidence boundary</text>
           </g>
 
           <!-- Node 3: Tree Decomposition & Quote Hashing (Step 2) -->
@@ -931,7 +931,7 @@
               <text x="762" y="280" fill="#312e81" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="600"
                 text-anchor="middle">Bipartite Events → Entities (M:N)</text>
               <text x="762" y="295" fill="#7c3aed" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
-                text-anchor="middle">DiGraph G=(V,E) · RPT VND / Pct</text>
+                text-anchor="middle">DiGraph G=(V,E) · deterministic compiler · role-gated RPT</text>
               <text x="762" y="309" fill="#475569" font-size="7" font-family="'Geist Mono', monospace"
                 text-anchor="middle">Tarjan Directed Cycle Detection</text>
             </g></a>
@@ -957,7 +957,7 @@
               <text x="968" y="293" fill="#7c3aed" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
                 text-anchor="middle">evidence_spans · document_facts</text>
               <text x="968" y="308" fill="#475569" font-size="7.5" font-family="'Geist Mono', monospace"
-                text-anchor="middle">document_relations (OWNS, LOANS)</text>
+                text-anchor="middle">GilGraphCompiler · grounded edges</text>
             </g>
           </g>
 
@@ -1149,16 +1149,17 @@
 
             <!-- Node 6C: Fresh Soft Rose Forensics -->
             <g class="interactive-node" data-node-id="node-forensic-guard">
+              <title>GIL guard: validated same-period flow graph; only circular flow blocks, abnormal flow goes to review.</title>
               <a href="#inspect-node-forensic-guard" class="node-anchor" aria-label="Khảo sát chi tiết Branch 3: Deterministic Forensics"><rect x="236" y="698" width="232" height="76" rx="6" fill="#ffe4e6" stroke="#fb7185" stroke-width="1.8" />
               <path d="M236 704 A6 6 0 0 1 242 698 H462 A6 6 0 0 1 468 704 V720 H236 Z" fill="#fecdd3" />
               <text x="352" y="714" fill="#9f1239" font-size="10" font-weight="700" font-family="'Geist', sans-serif"
                 text-anchor="middle">Branch 3: Deterministic Forensics</text>
               <text x="352" y="738" fill="#881337" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="700"
-                text-anchor="middle">GIL: Semantic Stock/Flow Graph + Ratio Invariants | VETO</text>
+                text-anchor="middle">GIL: Flow Signal Only | Coverage is audit metadata</text>
               <text x="352" y="754" fill="#e11d48" font-size="8" font-family="'Geist Mono', monospace" font-weight="700"
                 text-anchor="middle">Beneish M8 &gt; -1.78 · Sloan Accruals &lt; -0.10</text>
               <text x="352" y="766" fill="#475569" font-size="7" font-family="'Geist Mono', monospace"
-                text-anchor="middle">Flow-Kind Denominators ? Relationship Resolution Â· Insider Evidence Â· Trade Blocker</text>
+                text-anchor="middle">Missing data = coverage only · Circular flow = BLOCK · Other flow = REVIEW</text>
             </g></a>
           </g>
 
@@ -1311,7 +1312,7 @@ Filter: ADTV &gt; 5 Billion VND</code></pre>
           <div class="drawer-section">
             <label class="drawer-label">Thuật toán &amp; Công thức toán học ngầm</label>
             <pre class="drawer-code"><code>T_markdown = MinerU(PDF_bytes, mode="layout_aware")
-Gate: count(vi_tokens) &gt; count(en_tokens) else REJECT</code></pre>
+Gate: English -&gt; next source candidate; missing R2 -&gt; retry source</code></pre>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên trong Code</label>

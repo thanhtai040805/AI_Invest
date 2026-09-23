@@ -118,7 +118,7 @@ def test_equity_research_does_not_use_competitive_score():
 
 
 def test_css_scoring_engine_gatekeeper_veto():
-    """Kiểm tra Gatekeeper của CSSScoringEngine: Ý kiến kiểm toán hoặc GIL CATASTROPHIC phải ép về hạng E."""
+    """Kiểm tra Gatekeeper: chỉ ý kiến kiểm toán ảnh hưởng Conviction."""
     engine = CSSScoringEngine()
     
     df_bad_audit = pd.DataFrame([{
@@ -149,7 +149,7 @@ def test_css_scoring_engine_gatekeeper_veto():
         "gil_flag": "CATASTROPHIC",
     }])
     scored_cat = engine.calculate_css(df_catastrophic, MarketRegime.BULL_TRENDING)
-    assert scored_cat["conviction"].iloc[0] == ConvictionLevel.E.value
+    assert scored_cat["conviction"].iloc[0] == ConvictionLevel.A_PLUS.value
 
 
 def test_equity_research_missing_ticker_raises():

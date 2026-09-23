@@ -6,6 +6,9 @@ import "@klinecharts/pro/dist/klinecharts-pro.css"
 import { stockApi } from "@/lib/api"
 import { getSocket } from "@/lib/socket"
 
+interface ApiCandle { date: string; open?: number; high?: number; low?: number; close: number; volume?: number }
+interface PriceTick { price?: number; close?: number; volume?: number }
+
 // ── Real Vietnamese market data feed connected to PostgreSQL & WebSocket ──
 class RealMarketDatafeed implements Datafeed {
   private socketUnsub?: () => void
@@ -16,12 +19,15 @@ class RealMarketDatafeed implements Datafeed {
   }
 
   async getHistoryKLineData(symbol: SymbolInfo, period: Period, _from: number, _to: number): Promise<KLineData[]> {
+    void period
+    void _from
+    void _to
     const sym = symbol.ticker.toUpperCase()
     try {
-      const candles = await stockApi.ohlcv(sym)
+      const candles = await stockApi.ohlcv(sym) as ApiCandle[]
       if (Array.isArray(candles) && candles.length > 0) {
-        const sorted = [...candles].sort((a: any, b: any) => new Date(a.date).getTime() - new Date(b.date).getTime())
-        const formatted: KLineData[] = sorted.map((c: any) => {
+        const sorted = [...candles].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+        const formatted: KLineData[] = sorted.map((c) => {
           const timestamp = new Date(c.date).getTime()
           const open = Number(c.open ?? c.close)
           const high = Number(c.high ?? Math.max(open, Number(c.close)))
@@ -65,7 +71,7 @@ class RealMarketDatafeed implements Datafeed {
     const sym = symbol.ticker.toUpperCase()
     const socket = getSocket()
 
-    const onPrice = (data: any) => {
+    const onPrice = (data: PriceTick) => {
       if (!data) return
       const price = Number(data.price ?? data.close)
       if (!price) return

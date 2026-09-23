@@ -1,7 +1,6 @@
 """Intelligence Repository (IOS v5.1)
 Quản lý kết quả phân tích trí tuệ nhân tạo, điểm số định lượng và luận điểm đầu tư:
 - factor_scores: 6 nhóm nhân tố (F1-F6) và điểm tổng hợp Composite Stock Score (CSS)
-- business_quality_profiles: Điểm chất lượng doanh nghiệp và bằng chứng phân tích
 - knowledge_documents: Dữ liệu OCR BCTC, tin tức, và AI Triage phân tích tác động
 - investment_theses & counter_thesis_verdicts: Luận điểm đầu tư và phán quyết phản biện
 """
@@ -171,81 +170,6 @@ class IntelligenceRepository:
             return True
         except Exception as e:
             logger.warning(f"Lỗi khi lưu factor_scores cho {symbol} ({e})")
-            return False
-
-    def get_business_quality_profile(self, ticker: str) -> Optional[Dict[str, Any]]:
-        """Lấy hồ sơ Business Quality và evidence của cổ phiếu."""
-        if not ticker:
-            raise ValueError("[IntelligenceRepository] ticker không được rỗng.")
-        ticker = str(ticker).upper().strip()
-        query = """
-            SELECT ticker, fiscal_year, report_type, quality_score,
-                   quality_details, evidence_summary,
-                   source_sag_doc_id, extracted_at, is_stale
-            FROM business_quality_profiles
-            WHERE ticker = %s
-            LIMIT 1
-        """
-        try:
-            rows = self.storage.fetch_all(query, (ticker,))
-            if rows and len(rows) > 0:
-                r = rows[0]
-                return {
-                    "ticker": str(r[0]),
-                    "fiscal_year": int(r[1]) if r[1] is not None else 2025,
-                    "report_type": str(r[2]) if r[2] else "ANNUAL_REPORT",
-                    "quality_score": float(r[3]) if r[3] is not None else None,
-                    "quality_details": r[4] if isinstance(r[4], dict) else {},
-                    "evidence_summary": r[5] if isinstance(r[5], dict) else {},
-                    "source_sag_doc_id": str(r[6]) if r[6] else None,
-                    "extracted_at": r[7].isoformat() if hasattr(r[7], "isoformat") else str(r[7]),
-                    "is_stale": bool(r[8]) if len(r) > 8 and r[8] is not None else False,
-                }
-        except Exception as e:
-            logger.warning(f"Lỗi khi đọc business_quality_profiles cho {ticker} ({e})")
-        return None
-
-    def save_business_quality_profile(self, quality_data: Dict[str, Any]) -> bool:
-        """Lưu hồ sơ Business Quality và evidence."""
-        ticker = quality_data.get("ticker")
-        if not ticker:
-            raise ValueError("[IntelligenceRepository] Thiếu 'ticker' trong quality_data.")
-        ticker = str(ticker).upper().strip()
-        now = datetime.now()
-
-        query = """
-            INSERT INTO business_quality_profiles (
-                ticker, fiscal_year, report_type, quality_score, quality_details, evidence_summary,
-                source_sag_doc_id, extracted_at, is_stale
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (ticker) DO UPDATE SET
-                fiscal_year = EXCLUDED.fiscal_year,
-                report_type = EXCLUDED.report_type,
-                quality_score = EXCLUDED.quality_score,
-                quality_details = EXCLUDED.quality_details,
-                evidence_summary = EXCLUDED.evidence_summary,
-                source_sag_doc_id = EXCLUDED.source_sag_doc_id,
-                extracted_at = EXCLUDED.extracted_at,
-                is_stale = EXCLUDED.is_stale
-        """
-        try:
-            self.storage.execute(
-                query,
-                (
-                    ticker,
-                    int(quality_data.get("fiscal_year", 2025)),
-                    str(quality_data.get("report_type", "ANNUAL_REPORT")),
-                    quality_data.get("quality_score"),
-                    json.dumps(quality_data.get("quality_details", {}), ensure_ascii=False, default=str),
-                    json.dumps(quality_data.get("evidence_summary", {}), ensure_ascii=False, default=str),
-                    quality_data.get("source_sag_doc_id"),
-                    now,
-                    False,
-                ),
-            )
-            return True
-        except Exception as e:
-            logger.warning(f"Lỗi khi lưu business_quality_profiles cho {ticker} ({e})")
             return False
 
     def log_equity_research(

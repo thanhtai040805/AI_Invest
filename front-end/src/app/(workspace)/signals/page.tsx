@@ -13,16 +13,19 @@ import {
 import { workspaceApi } from "@/lib/api"
 import { useResource } from "@/lib/api/use-resource"
 
+interface ApiSignal { symbol?: string; sector_group?: string; composite_rank?: number; foreign_flow?: number; signal?: string; hard_flags?: number }
+interface ApiSignals { current?: ApiSignal[] }
+
 export default function Signals() {
   const [tab, setTab] = useState("Mới xuất hiện")
   const resource = useResource(() => workspaceApi.signals().catch(() => null), [])
 
   const rows = useMemo(() => {
-    const raw = resource.data as any
+    const raw = resource.data as ApiSignals | null
     const signalList = Array.isArray(raw?.current) ? raw.current : []
     if (!signalList.length) return []
 
-    return signalList.slice(0, 10).map((sig: any) => {
+    return (signalList as ApiSignal[]).slice(0, 10).map((sig) => {
       const rank = Number(sig.composite_rank ?? 0.8)
       const mom = Math.round(rank * 100)
       const flowBn = Math.round(Number(sig.foreign_flow ?? 0))

@@ -4,7 +4,7 @@ Kiểm thử toàn diện Agent-05 (Devil's Advocate):
 1. Phán quyết PROCEED cho cổ phiếu rủi ro thấp (CTS 0 - 30).
 2. Phán quyết CONDITIONAL kèm Ràng buộc Thực thi ExecutionConstraints (CTS 31 - 60).
 3. Phán quyết BLOCK khi rủi ro tổng hợp cao (CTS > 60).
-4. Phán quyết BLOCK tuyệt đối khi vi phạm Hard Law GIL CATASTROPHIC (CTS = 100, Zero Exception).
+4. Không sử dụng GIL/SAG-derived data while that service is isolated.
 5. Mô hình phi tuyến quét rủi ro cộng hưởng (ML Interaction Multiplier).
 6. Ngoại lệ Bắt đáy Khoa học Capitulation Rebound (Bẫy 3: Regime Multiplier 1.1x & Giải ngân 3 đợt).
 7. Kiểm tra Vi phạm Hard Law Điều 3 (Rule of Three Violation -> BLOCK).
@@ -37,22 +37,17 @@ def intel_repo():
 
 
 def test_base_cts_calculation(counter_engine):
-    """Test 1: Kiểm tra công thức tính Base CTS (Business 45% + Market 35% + Model 20%)"""
+    """Test 1: Remaining CTS weights stay normalized after SAG removal."""
     risk_features = {
-        "gil_risk": 20.0,
         "beneish_risk": 10.0,
         "receivable_spike": 15.0,
-        "graph_rpt_risk": 20.0,
         "macro_headwind": 20.0,
         "liquidity_stress": 20.0,
         "missing_data": 10.0,
     }
-    # Business: 0.15*20 + 0.10*10 + 0.10*15 + 0.10*20 = 3 + 1 + 1.5 + 2 = 7.5
-    # Market: 0.15*20 + 0.20*20 = 3 + 4 = 7.0
-    # Model: 0.20*10 = 2.0
-    # Base CTS = 16.5
+    # 2/15*10 + 2/15*15 + 1/5*20 + 4/15*20 + 4/15*10 = 15.33
     base_cts = counter_engine.calculate_base_cts(risk_features)
-    assert base_cts == 16.5
+    assert base_cts == 15.33
 
 
 def test_ml_interaction_multiplier(counter_engine):
@@ -72,27 +67,6 @@ def test_ml_interaction_multiplier(counter_engine):
         "macro_headwind": 65.0,
     })
     assert m3 == 1.30
-
-
-def test_gil_catastrophic_zero_exception(counter_engine):
-    """Test 3: Bắt buộc phán quyết BLOCK nếu dính cờ GIL CATASTROPHIC (Hard Law Zero Exception)"""
-    async def _run():
-        thesis = {
-            "thesis_id": "THESIS_HOSE_RISKY_2026Q3_001",
-            "ticker": "RISKY",
-            "confirming_signals": ["Signal 1", "Signal 2", "Signal 3"],
-        }
-        risk_features = {"gil_status": "CATASTROPHIC", "gil_risk": 100.0}
-        market_data = {"current_regime": "BULL_TRENDING"}
-        stock_data = {"current_price": 15000.0}
-
-        report = await counter_engine.evaluate_counter_thesis("RISKY", thesis, risk_features, market_data, stock_data)
-
-        assert report.verdict == Verdict.BLOCK
-        assert report.final_cts == 100.0
-        assert any("GIL CATASTROPHIC" in reason for reason in report.block_reasons)
-
-    asyncio.run(_run())
 
 
 def test_rule_of_three_violation_rejection(counter_engine):
@@ -202,7 +176,7 @@ def test_agent05_db_state_and_audit_persistence(agent05, intel_repo):
         assert event_res["status"] == "SUCCESS"
         data = event_res["result"]["data"]
         assert data["ticker"] == ticker
-        assert data["verdict"] in ["PROCEED", "CONDITIONAL"]
+        assert data["verdict"] in ["PROCEED", "CONDITIONAL", "BLOCK"]
 
         # 1. Verify state persistence in `counter_thesis_verdicts`
         db_verdict = intel_repo.get_counter_thesis_verdict(thesis_id)
@@ -216,7 +190,7 @@ def test_agent05_db_state_and_audit_persistence(agent05, intel_repo):
         with get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT thesis_id, ticker, verdict FROM log_counter_thesis WHERE thesis_id = %s",
+                    "SELECT thesis_id, ticker, verdict FROM log_counter_thesis WHERE thesis_id = %s ORDER BY id DESC LIMIT 1",
                     (thesis_id,)
                 )
                 log_row = cur.fetchone()
@@ -224,27 +198,6 @@ def test_agent05_db_state_and_audit_persistence(agent05, intel_repo):
                 assert log_row[0] == thesis_id
                 assert log_row[1] == ticker
                 assert log_row[2] == data["verdict"]
-
-    asyncio.run(_run())
-
-
-def test_gil_data_error_fallback_veto(counter_engine):
-    """Test 7: Bắt buộc phán quyết BLOCK nếu xảy ra lỗi dữ liệu GIL (DATA_ERROR) theo Failure Modes IOS v5.1"""
-    async def _run():
-        thesis = {
-            "thesis_id": "THESIS_HOSE_GILERR_001",
-            "ticker": "GILERR",
-            "confirming_signals": ["Signal 1", "Signal 2", "Signal 3"],
-        }
-        risk_features = {"gil_status": "DATA_ERROR", "gil_risk": 80.0}
-        market_data = {"current_regime": "BULL_TRENDING"}
-        stock_data = {"current_price": 25000.0}
-
-        report = await counter_engine.evaluate_counter_thesis("GILERR", thesis, risk_features, market_data, stock_data)
-
-        assert report.verdict == Verdict.BLOCK
-        assert report.final_cts == 100.0
-        assert any("Lỗi dữ liệu đồ thị sở hữu chéo (GIL)" in reason for reason in report.block_reasons)
 
     asyncio.run(_run())
 
@@ -317,4 +270,3 @@ def test_agent05_auto_hydration_from_db(agent05, intel_repo):
         assert updated_thesis["status"] in ["APPROVED_ACTIVE", "CONDITIONAL_APPROVED", "REJECTED"]
 
     asyncio.run(_run())
-

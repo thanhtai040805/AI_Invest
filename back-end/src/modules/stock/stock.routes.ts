@@ -123,22 +123,13 @@ router.get('/:symbol/quote', (req, res, next) => {
   );
 });
 
-async function dbStockOrderBook(symbol: string) {
-  const quote = await dbStockQuote(symbol);
-  const p = quote?.price || 25000;
-  const step = p < 10000 ? 10 : p < 50000 ? 50 : 100;
-  const bids = [1, 2, 3].map((i) => ({ price: p - i * step, volume: Math.round((10 + (i * 3) % 7) * 1200) }));
-  const asks = [1, 2, 3].map((i) => ({ price: p + i * step, volume: Math.round((8 + (i * 5) % 9) * 1100) }));
-  return { symbol, bids, asks, asOf: quote?.asOf || new Date().toISOString() };
-}
-
 router.get('/:symbol/orderbook', (req, res, next) => {
   const symbol = symbolParam(req);
   return handle(req, res, next, () =>
     cached(`stock:${symbol}:orderbook`, config.cacheTtl.orderbook, async () => {
       const live = await aiEngineService.getOrderBook(symbol).catch(() => null);
       if (live && (live as any).bids) return live;
-      return dbStockOrderBook(symbol);
+      return { symbol, bids: [], asks: [] };
     }),
   );
 });

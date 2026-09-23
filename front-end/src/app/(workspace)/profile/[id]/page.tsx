@@ -7,13 +7,16 @@ import { Link } from "@/lib/router"
 import { Button, Panel, Pill, PercentChange, fmt } from "@/components/ui"
 import { communityApi, marketApi } from "@/lib/api"
 import { useResource } from "@/lib/api/use-resource"
-import type { Stock } from "@/types"
+
+interface ApiExpert { id?: string | number; displayName?: string; winRate?: number; reactionCount?: number; rank?: string }
+interface ApiProfileStock { symbol?: string; name?: string; price?: number; ref?: number; change_pct?: number; changePct?: number }
+interface ApiProfileSnapshot { stocks?: ApiProfileStock[]; items?: ApiProfileStock[] }
 
 function BrokerProfile({ id }: { id: string }) {
   const expertsRes = useResource(() => communityApi.experts().catch(() => []), [])
   const snapshotRes = useResource(() => marketApi.snapshot().catch(() => ({ items: [] })), [])
 
-  const experts = (expertsRes.data as any[]) || []
+  const experts = (expertsRes.data as ApiExpert[] | null) || []
   const currentExpert = experts.find((x) => String(x.id) === id) || experts[0] || {
     id: "exp-1",
     displayName: "Nguyễn Tuấn Anh",
@@ -23,7 +26,7 @@ function BrokerProfile({ id }: { id: string }) {
   }
 
   const modelStocks = useMemo(() => {
-    const raw = snapshotRes.data as any
+    const raw = snapshotRes.data as ApiProfileSnapshot | null
     const items = raw?.stocks || raw?.items || []
     return items.slice(0, 5)
   }, [snapshotRes.data])

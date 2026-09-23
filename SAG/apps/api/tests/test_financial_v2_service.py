@@ -3,7 +3,42 @@ import asyncio
 import pytest
 
 
-def test_financial_v2_dedupes_and_does_not_activate_without_extraction(tmp_path, monkeypatch):
+def test_period_alignment_corrects_a_future_title_period_to_statement_date():
+    from sag_api.db.models import Document
+    from sag_api.services.financial_v2_service import _align_document_period
+
+    document = Document(
+        doc_role="LATEST_QUARTER",
+        period_end="2026-09-30",
+        fiscal_year=2026,
+        fiscal_quarter=3,
+    )
+    result = _align_document_period(
+        document,
+        "BÁO CÁO TÀI CHÍNH QUÝ 3\nBẢNG CÂN ĐỐI KẾ TOÁN\nTại ngày 30/06/2026",
+    )
+    assert result["status"] == "CORRECTED"
+    assert str(document.period_end) == "2026-06-30"
+    assert str(document.period_start) == "2026-04-01"
+    assert document.fiscal_quarter == 2
+
+
+def test_governance_period_uses_reporting_horizon_not_signature_date():
+    from datetime import date
+    from sag_api.db.models import Document
+    from sag_api.services.financial_v2_service import _align_document_period
+
+    document = Document(
+        filename="Báo cáo tình hình quản trị 6 tháng đầu năm 2026",
+        doc_role="GOVERNANCE_REPORT",
+        period_end=date(2026, 6, 30),
+    )
+    result = _align_document_period(document, "Ký ngày 30/07/2026")
+    assert result["status"] == "MATCH"
+    assert str(document.period_end) == "2026-06-30"
+
+
+def test_financial_v2_dedupes_and_activates_with_deterministic_extraction(tmp_path, monkeypatch):
     async def _test():
         pytest.importorskip("aiosqlite")
         from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -20,7 +55,7 @@ def test_financial_v2_dedupes_and_does_not_activate_without_extraction(tmp_path,
 
         body = DocumentCreateIn(
             title="HPG Q1",
-            markdown="# HPG\n## Thuyet minh\nNoi dung",
+            markdown="# HPG\n## Balance Sheet\n## Income Statement\n## Cash Flow\n## Thuyet minh\nNoi dung",
             doc_role="LATEST_QUARTER",
             fiscal_year=2026,
             fiscal_quarter=1,
@@ -29,14 +64,20 @@ def test_financial_v2_dedupes_and_does_not_activate_without_extraction(tmp_path,
         async with session_factory() as session:
             first, first_dedup = await service.create_financial_document(session, "HPG", body)
             second, second_dedup = await service.create_financial_document(session, "HPG", body)
+            scoped_body = body.model_copy(update={"metadata": {"report_scope": "SEPARATE"}})
+            third, third_dedup = await service.create_financial_document(session, "HPG", scoped_body)
+            asset = await session.get(service.DocumentAsset, third.asset_id)
 
             assert first.id == second.id
             assert first_dedup is False
             assert second_dedup is True
+            assert third.id == first.id
+            assert third_dedup is True
+            assert (asset.metadata_json or {}).get("report_scope") == "SEPARATE"
             assert first.structure_status == "COMPLETE"
             assert first.embedding_status == "INCOMPLETE"
-            assert first.extraction_status == "INCOMPLETE"
-            assert first.is_active is False
+            assert first.extraction_status == "COMPLETE"
+            assert first.is_active is True
 
         await engine.dispose()
 
@@ -160,6 +201,25 @@ def test_read_markdown_from_local_object_uri_accepts_raw_or_canonical_hash(tmp_p
         assert canonical_hash == hashlib.sha256(canonical.encode("utf-8")).hexdigest()
         assert size_bytes == len(canonical.encode("utf-8"))
         assert uri == str(source)
+
+    asyncio.run(_test())
+
+
+def test_markdown_ingest_persists_clean_canonical_text():
+    from sag_api.schemas.v2 import DocumentCreateIn
+    from sag_api.services.financial_v2_service import _read_markdown_from_body
+
+    async def _test():
+        body = DocumentCreateIn(
+            title="HPG annual",
+            markdown="# HPG\nState Securities Commission of Vietnam\nNội dung tiếng Việt giữ lại.",
+            doc_role="ANNUAL_BACKBONE",
+            fiscal_year=2026,
+            period_end="2026-12-31",
+        )
+        canonical, _raw_hash, _canonical_hash, _size_bytes, _uri = await _read_markdown_from_body(body)
+        assert "State Securities Commission" not in canonical
+        assert "Nội dung tiếng Việt giữ lại." in canonical
 
     asyncio.run(_test())
 
@@ -385,8 +445,12 @@ def test_gil_uses_validated_evidence_not_document_role_gate(tmp_path):
             await session.commit()
 
             result = await service.assess_gil(session, "BANK")
-            assert result["analysis_status"] == "COMPLETE"
-            assert result["gil_flag"] == "WATCH"
+            assert result["gil_flag"] == "PASS"
+            assert result["risk_signal"] == "PASS"
+            assert result["flow_signal"] == "NO_ABNORMAL_FLOW_OBSERVED"
+            assert result["evidence_status"] == "PARTIAL"
+            assert result["decision"]["action"] == "CLEAR"
+            assert result["review_status"] == "CLEAR"
             assert result["rpt_ratio"] is None
             assert not any("tài liệu active" in reason for reason in result["reasons"])
 

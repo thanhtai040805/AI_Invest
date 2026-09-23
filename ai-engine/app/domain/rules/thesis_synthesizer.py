@@ -2,7 +2,7 @@
 
 Mô đun LLM Thesis Synthesizer cho Agent-04 (Investment Thesis).
 Chức năng:
-- Tiếp nhận Financial Quality và GIL từ SAG v2.
+- Tiếp nhận Financial Quality và các chỉ số tài chính độc lập.
 - Nạp các chỉ số tài chính cốt lõi (P/E, P/B, ROE, GPM, SUE) để tạo lập luận định chế sắc bén.
 - Định vị phong cách đầu tư (Investment Style Taxonomy).
 - Ép buộc các điều kiện hủy luận điểm (Invalidation Triggers) phải có NGƯỠNG ĐỊNH LƯỢNG cụ thể.
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 THESIS_SYNTHESIZER_SYSTEM_PROMPT = (
     "Bạn là Giám đốc Chiến lược Cổ phiếu (Head of Equity Strategy) của một quỹ đầu tư định chế lớn.\n"
     "Nhiệm vụ: Xây dựng Luận điểm Đầu tư (Investment Thesis) sắc bén, thực dụng, đi thẳng vào dòng tiền thật "
-    "và ngòi nổ thực tế, dựa trên Financial Quality, GIL và chỉ số tài chính từ BCTC.\n"
+    "và ngòi nổ thực tế, dựa trên Financial Quality và chỉ số tài chính từ BCTC.\n"
     "Quy tắc bắt buộc:\n"
     "1. KHÔNG viết văn PR màu hồng hay nhận định chung chung. Mọi lập luận phải gắn với dòng tiền tự do (FCF) và chất lượng lợi nhuận.\n"
     "2. Neo trực tiếp vào bằng chứng tài chính/kinh doanh được cung cấp; không suy diễn thành lợi thế độc quyền khi tài liệu không chứng minh.\n"

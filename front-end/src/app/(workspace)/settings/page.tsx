@@ -14,6 +14,8 @@ export default function Settings() {
   useEffect(() => {
     try {
       const saved = localStorage.getItem("aiinvest_lang")
+      // Restore the persisted preference after client hydration.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       if (saved) setLang(saved)
     } catch {}
   }, [])

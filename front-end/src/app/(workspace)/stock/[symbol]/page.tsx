@@ -6,12 +6,17 @@ import { Page } from "@/components/Shell"
 import { defaultStockCases } from "@/lib/agent-system"
 import {
   Button, Conviction, FactorBar, Panel, PanelHead, Pill, PercentChange,
-  ReasoningBlock, RiskLabel, Tabs, fmt,
+  ReasoningBlock, Tabs, fmt,
 } from "@/components/ui"
 import { KLineChart } from "@/components/KLineChart"
 import { stockApi } from "@/lib/api"
 import { useResource } from "@/lib/api/use-resource"
 import { useRealtimeStock } from "@/lib/use-realtime"
+
+interface ApiStockQuote { price?: number; close?: number; ref?: number; open?: number; change_pct?: number; ceiling?: number; floor?: number; volume?: number }
+interface ApiStockProfile { name?: string; industry?: string; sector?: string }
+interface ApiFactors { value?: number; quality?: number; momentum?: number; growth?: number; flow?: number; technical?: number }
+interface ApiFundamentals { pe?: number; pb?: number; roe?: number; eps?: number; gross_margin?: number }
 
 function OrderBook({ customBids, customAsks, basePrice = 25000 }: { customBids?: [number, number][]; customAsks?: [number, number][]; basePrice?: number }) {
   const p = basePrice > 0 ? basePrice : 25000
@@ -47,7 +52,7 @@ function OrderBook({ customBids, customAsks, basePrice = 25000 }: { customBids?:
 
 
 function Stock({ symbol }: { symbol: string }) {
-  const defaultStock = {
+  const defaultStock = useMemo(() => ({
     symbol,
     name: symbol,
     price: 30000,
@@ -68,7 +73,7 @@ function Stock({ symbol }: { symbol: string }) {
     pe: 12,
     foreign: 0,
     spark: [30, 30, 30],
-  }
+  }), [symbol])
   const resource = useResource(() => Promise.all([
     stockApi.quote(symbol).catch(() => null),
     stockApi.profile(symbol).catch(() => null),
@@ -77,7 +82,7 @@ function Stock({ symbol }: { symbol: string }) {
   ]), [symbol])
 
   const initialStock = useMemo(() => {
-    const [quoteRes, profileRes] = (resource.data || []) as [any, any, any, any]
+    const [quoteRes, profileRes] = (resource.data || []) as [ApiStockQuote | null, ApiStockProfile | null, unknown, ApiFactors | null]
     if (!quoteRes && !profileRes) return defaultStock
 
     const qPrice = Number(quoteRes?.price ?? quoteRes?.close ?? defaultStock.price)
@@ -100,7 +105,7 @@ function Stock({ symbol }: { symbol: string }) {
 
   const { stock: realtimeStock, orderbook, isLive, flash } = useRealtimeStock(symbol, initialStock)
   const s = realtimeStock || initialStock
-  const [,, fundamentalsRes, factorsRes] = (resource.data || []) as [any, any, any, any]
+  const [,, fundamentalsRes, factorsRes] = (resource.data || []) as [unknown, unknown, ApiFundamentals | null, ApiFactors | null]
 
   const liveFactors = useMemo(() => {
     if (factorsRes) {

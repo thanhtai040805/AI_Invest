@@ -8,12 +8,10 @@ Tuân thủ các quy tắc trong DATA_SCHEMA.md và IMPLEMENTATION_PLAN.md.
 from __future__ import annotations
 
 import logging
-import os
 from datetime import date, datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from app.config.settings import get_settings
 from app.infrastructure.database.pg_pool import get_conn
 
 logger = logging.getLogger(__name__)
@@ -35,9 +33,6 @@ class TradingStatus(Enum):
 
 
 class UniverseManager:
-    def __init__(self):
-        self.settings = get_settings()
-
     _vn30_cache: Optional[List[str]] = None
 
     def _get_vn30_list(self) -> List[str]:
@@ -72,7 +67,7 @@ class UniverseManager:
                 cur.execute(
                     """
                     SELECT symbol, trading_status, market_cap, audit_opinion,
-                           beneish_status, gil_flag, COALESCE(industry, sector, '') as industry
+                           beneish_status, COALESCE(industry, sector, '') as industry
                     FROM stocks
                     WHERE symbol = ANY(%s)
                     """,
@@ -84,8 +79,7 @@ class UniverseManager:
                         "market_cap": float(r[2] or 0.0),
                         "audit_opinion": str(r[3] or "UNQUALIFIED").upper().strip(),
                         "beneish_status": str(r[4] or "PASS").upper().strip(),
-                        "gil_flag": str(r[5] or "DATA_INSUFFICIENT").upper().strip(),
-                        "industry": str(r[6] or "").strip(),
+                        "industry": str(r[5] or "").strip(),
                     }
                     for r in cur.fetchall()
                 }
@@ -144,7 +138,6 @@ class UniverseManager:
                     status = meta.get("trading_status", "NORMAL")
                     mcap = meta.get("market_cap", 0.0)
                     beneish = meta.get("beneish_status", "PASS")
-                    gil = meta.get("gil_flag") or "DATA_INSUFFICIENT"
                     audit = meta.get("audit_opinion", "UNQUALIFIED")
 
                     liq_info = liquidity_map.get(sym, {})
@@ -170,9 +163,6 @@ class UniverseManager:
                     elif audit != "UNQUALIFIED":
                         group = UniverseGroup.EXCLUDED
                         reason = f"Audit Opinion: {audit}"
-                    elif gil == "CATASTROPHIC":
-                        group = UniverseGroup.EXCLUDED
-                        reason = "GIL Flag: CATASTROPHIC"
                     elif beneish == "FAIL":
                         group = UniverseGroup.EXCLUDED
                         reason = "Beneish M-Score: FAIL"
@@ -207,7 +197,6 @@ class UniverseManager:
                         "adtv20": adtv20,
                         "market_cap": mcap,
                         "beneish_status": beneish,
-                        "gil_flag": gil,
                         "updated_at": datetime.now(),
                     })
 
@@ -252,7 +241,6 @@ class UniverseManager:
             ugroup = res["universe_group"]
             t_status = res.get("trading_status", "NORMAL")
             b_status = res.get("beneish_status", "PASS")
-            g_flag = res.get("gil_flag") or "DATA_INSUFFICIENT"
 
             # 1. Update stocks table
             cur.execute(
@@ -269,15 +257,14 @@ class UniverseManager:
                 """
                 INSERT INTO universe_securities (
                     ticker, universe_group, trading_status, beneish_status, gil_flag, updated_at
-                ) VALUES (%s, %s, %s, %s, %s, NOW())
+                ) VALUES (%s, %s, %s, %s, 'SAG_HOLD', NOW())
                 ON CONFLICT (ticker) DO UPDATE SET
                     universe_group = EXCLUDED.universe_group,
                     trading_status = EXCLUDED.trading_status,
                     beneish_status = EXCLUDED.beneish_status,
-                    gil_flag = EXCLUDED.gil_flag,
                     updated_at = NOW()
                 """,
-                (sym, ugroup, t_status, b_status, g_flag),
+                (sym, ugroup, t_status, b_status),
             )
 
 

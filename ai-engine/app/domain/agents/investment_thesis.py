@@ -2,7 +2,7 @@
 
 Chức năng:
 - Xây dựng luận điểm đầu tư có cấu trúc (Investment Thesis) cho các mã có Conviction >= B (CSS >= 60-65).
-- Tự động lọc Hard Filter Lớp 0 (GIL CATASTROPHIC) -> REJECT ngay.
+- Tự động lọc Hard Filter Lớp 0 (Beneish/Audit) -> REJECT ngay.
 - Tự động nhận diện Ngòi nổ Catalyst từ 6 nhóm Factor Score (F1-F6).
 - Tính toán Target Price thích ứng đa mô hình (loại bỏ DCF cho timeline <= 3 tháng).
 - Xác lập bắt buộc tối thiểu 3 tín hiệu độc lập, 3 kịch bản Pre-Mortem và điều kiện hủy luận điểm Invalidation.
@@ -69,28 +69,13 @@ class InvestmentThesisAgent(BaseAgent):
             raise ValueError("[InvestmentThesisAgent] Thiếu thông tin mã cổ phiếu (ticker) bắt buộc.")
         ticker = str(ticker).upper().strip()
 
-        market_context = event_data.get("market_context", {})
+        market_context = dict(event_data.get("market_context", {}))
         val_inputs = event_data.get("valuation_inputs", {})
         timeline_months = int(event_data.get("timeline_months", 3))
         seq_num = int(event_data.get("seq_num", 1))
         custom_catalyst_desc = event_data.get("custom_catalyst_desc")
 
-        # 1. Sàng lọc sớm Hard Filter Lớp 0 (GIL CATASTROPHIC) & Ngưỡng Conviction tối thiểu
-        gil_status = str(research_report.get("gil_status") or market_context.get("gil_status", "PASS")).upper()
-        if gil_status == "CATASTROPHIC":
-            logger.info(f"[InvestmentThesisAgent] Ticker {ticker} bị REJECT do vi phạm GIL CATASTROPHIC.")
-            return {
-                "data": {
-                    "ticker": ticker,
-                    "status": "REJECTED",
-                    "reason": "REJECT: Vi phạm Hard Filter Lớp 0 (GIL == CATASTROPHIC).",
-                },
-                "trace": {
-                    "thesis_engine": self.thesis_engine.__class__.__name__,
-                    "decision": "SKIP_THESIS",
-                }
-            }
-
+        # 1. Sàng lọc theo bằng chứng tài chính độc lập và ngưỡng Conviction.
         css_score = float(research_report.get("css", 0.0))
         conviction = str(research_report.get("conviction", "D")).upper()
         if css_score < 60.0 or conviction in ["C", "D", "E"]:

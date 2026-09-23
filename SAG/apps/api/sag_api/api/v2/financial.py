@@ -72,6 +72,7 @@ async def upload_document(
     fiscal_quarter: int | None = Form(None),
     period_start: str | None = Form(None),
     period_end: str | None = Form(None),
+    report_scope: str | None = Form(None),
     is_active: bool = Form(True),
     processing_mode: str = Form("FULL"),
     session: AsyncSession = Depends(get_session),
@@ -101,6 +102,7 @@ async def upload_document(
         period_end=period_end,
         activate=is_active if processing_mode.upper() == "FULL" else False,
         processing_mode=processing_mode.upper(),
+        metadata={"report_scope": report_scope} if report_scope else {},
     )
     document, deduplicated = await create_financial_document(session, ticker, body)
     issuer, doc, asset = await get_document_for_ticker(session, ticker, document.id)

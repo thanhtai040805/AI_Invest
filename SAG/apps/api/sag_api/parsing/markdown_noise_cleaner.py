@@ -18,7 +18,7 @@ _SIGNATURE_RE = re.compile(
 _DATE_RE = re.compile(r"^\s*Ngày \d{1,2}(/|\s+tháng\s+)\d{1,2}")
 _CITY_RE = re.compile(r"^\s*(Hà Nội,?\s*(Việt Nam)?|Thành phố Hồ Chí Minh|Việt Nam)\s*$")
 _ALL_CAPS_FRAGMENT_RE = re.compile(r"^[\sA-ZÀÁẢÃẠĂẮẰẲẴẶÂẤẦẨẪẬĐÈÉẺẼẸÊẾỀỂỄỆÌÍỈĨỊÒÓỎÕỌÔỐỒỔỖỘƠỚỜỞỠỢÙÚỦŨỤƯỨỪỬỮỰỲÝỶỸỴ0-9.]+$")
-_LATEX_JUNK_RE = re.compile(r"\\(frac|delta|partial|sum|theta|alpha|beta|omega)")
+_LATEX_JUNK_RE = re.compile(r"\\(frac|delta|partial|sum|theta|alpha|beta|omega)", re.IGNORECASE)
 
 _STATEMENT_PATTERNS = (
     "bảng cân đối kế toán",
@@ -106,6 +106,7 @@ _ENGLISH_SENTENCE_WORDS = frozenset({
     "company", "group", "corporation", "management", "department", "participate", "training",
     "program", "programs", "workshop", "workshops", "seminar", "seminars", "legal", "regulations",
     "business", "activities", "financial", "governance", "report", "reports", "updated", "applicable",
+    "meeting", "shareholders", "board", "directors", "committee", "audit", "general", "resolution", "decisions",
 })
 
 
@@ -249,8 +250,7 @@ def clean_markdown(
     lines, stats = _strip_html_comments(lines, stats)
     lines, stats = _strip_repeated_headings(lines, stats)
     lines, stats = _strip_toc(lines, stats)
-    if str(doc_role or "").upper() in {"ANNUAL_BACKBONE", "LATEST_QUARTER"}:
-        lines, stats = _strip_statement_leaks(lines, stats)
+    # Note: Statement tables (BCTC tables) are strictly preserved for deterministic compilers.
     # Accounting policies can explain restatements, estimates and risk. Keep
     # them in the canonical analytical input; filtering belongs to retrieval.
     lines, stats = _strip_trailing_signature(lines, stats)
@@ -262,7 +262,7 @@ def clean_markdown(
 def _strip_bilingual_duplicates(
     lines: list[str], stats: CleanStats
 ) -> tuple[list[str], CleanStats]:
-    """Remove common English mirror lines without deleting English-only facts."""
+    """Remove common English mirror lines and bilingual heading suffixes without deleting English-only facts."""
     out: list[str] = []
     removed = 0
     english_section_level: int | None = None
@@ -276,9 +276,12 @@ def _strip_bilingual_duplicates(
                 removed += 1
                 continue
         if stripped and _ENGLISH_SECTION_RE.match(stripped):
-            english_section_level = len(heading.group(1)) if heading else 1
-            removed += 1
-            continue
+            previous = out[-1].strip() if out else ""
+            has_vietnamese_context = bool(_VIETNAMESE_CHAR_RE.search(previous))
+            if has_vietnamese_context:
+                english_section_level = len(heading.group(1)) if heading else 1
+                removed += 1
+                continue
         if stripped and _ENGLISH_DUPLICATE_RE.match(stripped):
             removed += 1
             continue
@@ -287,6 +290,31 @@ def _strip_bilingual_duplicates(
         if stripped and has_vietnamese_context and _ENGLISH_DUPLICATE_RE.match(stripped):
             removed += 1
             continue
+
+        # Strip inline bilingual suffix in headings: e.g. "## Tiêu đề / English title"
+        if heading:
+            hashes, text = heading.group(1), heading.group(2)
+            if " / " in text:
+                parts = text.split(" / ")
+                if len(parts) == 2 and _VIETNAMESE_CHAR_RE.search(parts[0]) and not _VIETNAMESE_CHAR_RE.search(parts[1]):
+                    line = f"{hashes} {parts[0].strip()}"
+                    removed += 1
+                    out.append(line)
+                    continue
+            # Strip consecutive duplicate English headings (where previous line was Vietnamese heading of same level)
+            if out:
+                prev_match = _HEADING_RE.match(out[-1].strip())
+                if (
+                    prev_match
+                    and len(prev_match.group(1)) == len(hashes)
+                    and _VIETNAMESE_CHAR_RE.search(prev_match.group(2))
+                    and not _VIETNAMESE_CHAR_RE.search(text)
+                ):
+                    words = _ENGLISH_WORD_RE.findall(text)
+                    if len(words) >= 2 and any(w.casefold() in _ENGLISH_SENTENCE_WORDS for w in words):
+                        removed += 1
+                        continue
+
         out.append(line)
     return out, replace(stats, bilingual_duplicates_removed=stats.bilingual_duplicates_removed + removed)
 
@@ -338,6 +366,7 @@ def _strip_inline_english_mirrors(
             out.append(line)
             continue
         kept: list[str] = []
+        has_removed = False
         for part in parts:
             words = _ENGLISH_WORD_RE.findall(part)
             is_english_mirror = (
@@ -346,12 +375,13 @@ def _strip_inline_english_mirrors(
                 and sum(word.casefold() in _ENGLISH_SENTENCE_WORDS for word in words) >= 2
             )
             if is_english_mirror:
+                has_removed = True
                 removed += 1
             else:
                 kept.append(part)
-        if kept:
+        if has_removed and kept:
             out.append(" ".join(kept).strip())
-        elif not parts:
+        else:
             out.append(line)
     return out, replace(stats, english_inline_fragments_removed=stats.english_inline_fragments_removed + removed)
 

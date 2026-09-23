@@ -1,4 +1,4 @@
-import type { AgentMetric, AgentStep } from "@/types"
+import type { AgentStep } from "@/types"
 
 export interface Citation {
   source: string
@@ -215,7 +215,8 @@ export const defaultStockCases: Record<string, StockCaseDetail> = {
   },
 }
 
-export function agentOutput(id: string, _ctx: { runId: string; symbol: string }) {
+export function agentOutput(id: string, ctx: { runId: string; symbol: string }) {
+  void ctx
   const step = pipeline.find((p) => p.id === id)
   if (!step) {
     return {

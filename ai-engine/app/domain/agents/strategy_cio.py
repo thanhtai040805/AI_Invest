@@ -8,7 +8,7 @@ Chức năng & Thẩm quyền Thể chế:
 5. Kiểm soát Khẩn cấp (Emergency System Control): Kích hoạt System Halt Dual-Tunnel (Đóng băng BUY mới, bảo vệ Defensive Exit Stop-loss).
 6. Sổ cái Kiểm toán Bất biến (Cryptographic Audit Trail): SHA-256 Canonical JSON Hash Chaining, neo vào AuditTrailEngine.
 
-BẢO LƯU HIẾN PHÁP: TUYỆT ĐỐI KHÔNG OVERRIDE 6 HARD LAWS, FAILSAFE, HOẶC AUDIT INTEGRITY.
+BẢO LƯU HIẾN PHÁP: TUYỆT ĐỐI KHÔNG OVERRIDE HARD LAWS, FAILSAFE, HOẶC AUDIT INTEGRITY.
 """
 
 from __future__ import annotations
@@ -60,7 +60,6 @@ class StrategyCIOAgent(BaseAgent):
         "DIEU_3", "DIEU_3_RULE_OF_THREE_SIGNALS",
         "DIEU_4", "DIEU_4_CONCENTRATION_MAX_15PCT_STOCK_35PCT_SECTOR",
         "DIEU_5", "DIEU_5_BENEISH_GATE",
-        "DIEU_6", "DIEU_6_GIL_CATASTROPHIC",
         "HARD_LAW_BREACH", "FAILSAFE_EMERGENCY_LOCK", "HOSE_SHORT_SELLING_PROHIBITION"
     }
 
@@ -236,7 +235,7 @@ class StrategyCIOAgent(BaseAgent):
                     "hard_law_override_attempted": False,
                 }
             else:
-                # Các vi phạm khác (Beneish, GIL Catastrophic, T+2.5 Floor Gap, Failsafe) -> XÁC NHẬN HỦY LỆNH HOÀN TOÀN
+                # Các vi phạm khác (Beneish, T+2.5 Floor Gap, Failsafe) -> XÁC NHẬN HỦY LỆNH HOÀN TOÀN
                 final_res = "CONFIRM_BLOCK"
                 exec_rationale = (
                     f"CIO xác nhận phán quyết BLOCK của Governance Agent: Mã {ticker} vi phạm nghiêm trọng {violated_rule}. "
@@ -307,7 +306,6 @@ class StrategyCIOAgent(BaseAgent):
             hard_law_breach or
             any(hl in violated_rule for hl in self.HARD_LAW_RULES) or
             any(hl in str(r).upper() for r in block_reasons for hl in self.HARD_LAW_RULES) or
-            "GIL_CATASTROPHIC" in counter_verdict or
             "BENEISH_FAIL" in counter_verdict
         )
 
@@ -888,7 +886,6 @@ class StrategyCIOAgent(BaseAgent):
                 ticker=ticker,
                 company_name=company_name,
                 business_quality_data=memo_payload.get("business_quality_data"),
-                gil_data=memo_payload.get("gil_data"),
                 thesis_payload=memo_payload.get("thesis_payload") or memo_payload.get("investment_thesis"),
                 counter_payload=memo_payload.get("counter_payload") or memo_payload.get("counter_thesis"),
                 financial_summary=memo_payload.get("financial_summary"),
@@ -914,7 +911,6 @@ class StrategyCIOAgent(BaseAgent):
         ticker: str,
         company_name: Optional[str] = None,
         business_quality_data: Optional[Dict[str, Any]] = None,
-        gil_data: Optional[Dict[str, Any]] = None,
         thesis_payload: Optional[Dict[str, Any]] = None,
         counter_payload: Optional[Dict[str, Any]] = None,
         financial_summary: Optional[Dict[str, Any]] = None,
@@ -939,7 +935,6 @@ class StrategyCIOAgent(BaseAgent):
             ticker=clean_ticker,
             company_name=c_name,
             business_quality_data=business_quality_data,
-            gil_data=gil_data,
             thesis_payload=thesis_payload,
             counter_payload=counter_payload,
             financial_summary=financial_summary,

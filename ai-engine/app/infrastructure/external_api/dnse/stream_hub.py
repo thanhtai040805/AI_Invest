@@ -249,7 +249,7 @@ class DnseStreamHub:
             "symbol": symbol,
             "bids": bids,
             "asks": asks,
-            "lastUpdate": datetime.now().isoformat(),
+            "lastUpdate": datetime.now().astimezone().isoformat(),
         }
 
     def _map_ohlc(self, data: Any) -> Dict[str, Any]:

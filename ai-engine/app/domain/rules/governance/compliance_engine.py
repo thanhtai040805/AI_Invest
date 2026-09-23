@@ -1,7 +1,7 @@
 """Governance Compliance Engine — Institutional Sovereign Gatekeeper (IOS v5.1).
 
 Nhiệm vụ thể chế:
-1. Thẩm định 6 Hard Laws bất khả xâm phạm (Điều 1 -> Điều 6). Không ai có quyền Override.
+1. Thẩm định các Hard Laws bất khả xâm phạm. Không ai có quyền Override.
 2. Kiểm tra Ma trận Thẩm quyền (Authority Matrix) phân quyền tác vụ giữa các Agent.
 3. Kiểm tra Chính sách Vi cấu trúc Sở Giao dịch Chứng khoán TP.HCM (HOSE Policy).
 """
@@ -110,7 +110,6 @@ class GovernanceComplianceEngine:
         order_intent: str = "BUY",
         confirming_signals_count: int = 3,
         beneish_passed: bool = True,
-        gil_ocr_score: float = 0.0,
         available_shares: Optional[int] = None,
     ) -> ComplianceResult:
         """
@@ -141,18 +140,7 @@ class GovernanceComplianceEngine:
                 details={"ticker": ticker_clean, "beneish_passed": False},
             )
 
-        # 3. Hard Law 6: Cổng GIL Catastrophic (Sở hữu chéo & Gian lận Tập đoàn)
-        if gil_ocr_score > 0.85:
-            return ComplianceResult(
-                is_compliant=False,
-                verdict=ComplianceVerdict.BLOCK,
-                violated_rule=HardLaw.DIEU_6.name if hasattr(HardLaw, "DIEU_6") else "DIEU_6_GIL_CATASTROPHIC",
-                risk_level=RiskSeverity.CATASTROPHIC,
-                reason=f"Mã {ticker_clean} vi phạm Điều 6: GIL CATASTROPHIC (OCR Score={gil_ocr_score:.2f} > 0.85). Zero tolerance.",
-                details={"ticker": ticker_clean, "gil_ocr_score": gil_ocr_score},
-            )
-
-        # 4. Hard Law 3: Tối thiểu 3 tín hiệu độc lập xác nhận cho lệnh BUY
+        # 3. Hard Law 3: Tối thiểu 3 tín hiệu độc lập xác nhận cho lệnh BUY
         if order.side == "BUY" and order_intent not in ("EMERGENCY_STOP_LOSS", "TAKE_PROFIT"):
             if confirming_signals_count < 3:
                 return ComplianceResult(
@@ -164,7 +152,7 @@ class GovernanceComplianceEngine:
                     details={"ticker": ticker_clean, "confirming_signals_count": confirming_signals_count},
                 )
 
-        # 5. Hard Laws 1, 2, 4 (Tồn tại T+2.5, Thanh khoản ADTV20, Tập trung vị thế 15% / 35%)
+        # 4. Hard Laws 1, 2, 4 (Tồn tại T+2.5, Thanh khoản ADTV20, Tập trung vị thế 15% / 35%)
         hl_check: HardLawCheck = self.hard_law_engine.check_order(order, portfolio, adtv20_continuous)
         if not hl_check.passed:
             return ComplianceResult(
@@ -176,7 +164,7 @@ class GovernanceComplianceEngine:
                 details={"ticker": ticker_clean, "violated_law": str(hl_check.violated_law)},
             )
 
-        # 6. Kiểm tra Chính sách Vi cấu trúc HOSE
+        # 5. Kiểm tra Chính sách Vi cấu trúc HOSE
         hose_ok, hose_reason = self.validate_hose_microstructure(ticker_clean, order.quantity, order.price)
         if not hose_ok:
             return ComplianceResult(

@@ -12,10 +12,9 @@ from sag_api.services import extraction_v2_service as service
 from sag_api.services.extraction_v2_service import (
     TAXONOMY_VERSION,
     ExtractionManifestIn,
-    _collect_grounding_failures,
+    _infer_accounting_scope,
     _iter_manifest_refs,
     coerce_unknown_enums,
-    detect_material_table_movements,
     enrich_manifest_facets_from_observations,
 )
 
@@ -36,6 +35,12 @@ def _manifest_payload(**overrides):
 
 def _evidence():
     return {"node_id": "n1", "quote": "HPG"}
+
+
+def test_scope_uses_document_title_before_conflicting_note_text():
+    document = type("Document", (), {"filename": "BCTC Hợp nhất Kiểm toán năm 2025"})()
+    markdown = "Báo cáo tài chính riêng của công ty mẹ được trình bày trong thuyết minh."
+    assert _infer_accounting_scope(markdown, document) == "CONSOLIDATED"
 
 
 def test_coerce_unknown_enums_keeps_original_concept():
@@ -103,20 +108,6 @@ def test_coerce_preserves_explicit_raw_label():
     assert payload["facts"][0]["taxonomy_candidate"] == "cash_balance"
 
 
-def test_material_table_movements_are_prompt_review_targets():
-    markdown = """| Chỉ tiêu | Q2 năm 2026 | Q2 năm 2025 |
-|---|---:|---:|
-| Chi phí quản lý doanh nghiệp | 49.582.758.613 | 27.771.268.365 |
-| Doanh thu | 133.897.546.249 | 139.115.412.599 |
-"""
-
-    candidates = detect_material_table_movements(markdown)
-
-    assert len(candidates) == 1
-    expense = next(item for item in candidates if "quản lý" in item["row_label"])
-    assert expense["line"] == 3
-    assert expense["left_value"] == "49.582.758.613"
-    assert expense["relative_change_pct"] > 70
 
 
 def test_open_observations_keep_sector_meaning_without_taxonomy_enum():
@@ -158,51 +149,9 @@ def _make_request_parts():
 
     issuer = Issuer(ticker="HPG")
     document = Document(id="d1", doc_role="ANNUAL_BACKBONE", fiscal_year=2025)
-    nodes = [DocumentTreeNode(document_id="d1", node_id="n1", start_line=1, end_line=1)]
-    return issuer, document, "# HPG\n", nodes
-
-
-class _StubLLMClient:
-    instances: list = []
-    configured_content = ""
-    configured_finish_reason = "stop"
-
-    def __init__(self, settings):
-        self.calls = 0
-        _StubLLMClient.instances.append(self)
-
-    @property
-    def extraction_configured(self):
-        return True
-
-    async def complete_extraction_json(self, messages):
-        from sag_api.generation.llm import CompletionResult
-
-        self.calls += 1
-        return CompletionResult(
-            content=type(self).configured_content,
-            finish_reason=type(self).configured_finish_reason,
-            usage=None,
-        )
-
-
-def _run_with_stub(monkeypatch, content, finish_reason="stop"):
-    async def _test():
-        from sag_api.enums import ProcessingStageStatus
-
-        _StubLLMClient.instances.clear()
-        _StubLLMClient.configured_content = content
-        _StubLLMClient.configured_finish_reason = finish_reason
-        monkeypatch.setattr(service, "LLMClient", _StubLLMClient)
-        issuer, document, markdown, nodes = _make_request_parts()
-        result = await service.extract_and_persist_manifest(None, issuer, document, markdown, nodes)
-        total_calls = sum(stub.calls for stub in _StubLLMClient.instances)
-        assert total_calls == 1
-        assert result.metadata["attempts"] == 1
-        assert result.metadata["mode"] == "llm_manifest"
-        return result
-
-    return asyncio.run(_test())
+    nodes = [DocumentTreeNode(document_id="d1", node_id="n1", start_line=1, end_line=5)]
+    markdown = "# HPG\n## Balance Sheet\n## Income Statement\n## Cash Flow\n## Thuyet minh\n"
+    return issuer, document, markdown, nodes
 
 
 def test_missing_node_annotations_are_filled_deterministically():
@@ -241,15 +190,31 @@ def test_line_based_evidence_resolves_to_persistent_node_ids():
     assert manifest.facts[0].evidence.node_id == nodes[1].node_id
 
 
-def test_length_suggests_more_tokens_not_chunking(monkeypatch):
+def test_extraction_uses_deterministic_compiler_without_llm(monkeypatch):
     from sag_api.enums import ProcessingStageStatus
 
-    result = _run_with_stub(monkeypatch, "", finish_reason="length")
+    class _Savepoint:
+        async def __aenter__(self):
+            return self
 
-    assert result.status == ProcessingStageStatus.INCOMPLETE.value
-    assert "chunked" not in result.error.lower()
-    assert "chunked" not in json.dumps(result.metadata).lower()
-    assert result.metadata["suggested_action"] == "increase_max_tokens"
+        async def __aexit__(self, *_args):
+            return False
+
+    class _Session:
+        def begin_nested(self):
+            return _Savepoint()
+
+    async def _persist(*_args, **_kwargs):
+        return {"fact_count": 0, "relation_count": 0, "observation_count": 0, "facet_count": 0, "evidence_count": 0}
+
+    monkeypatch.setattr(service, "validate_and_persist_manifest", _persist)
+    assert not hasattr(service, "LLMClient")
+    issuer, document, markdown, nodes = _make_request_parts()
+    result = asyncio.run(service.extract_and_persist_manifest(_Session(), issuer, document, markdown, nodes))
+
+    assert result.status == ProcessingStageStatus.COMPLETE.value
+    assert result.metadata["mode"] == "deterministic_compiler"
+    assert result.metadata["llm_used"] is False
 
 
 def test_normalized_fuzzy_grounds_split_number_multiline_quote():
@@ -381,52 +346,3 @@ def test_iter_manifest_refs_stable_order():
     assert paths[4] == "relations.0"
     assert paths[5] == "moat_signals.0"
     assert paths[6] == "gil_disclosures.0"
-
-
-def test_collect_grounding_failures_empty_when_all_ground():
-    from sag_api.db.models import DocumentTreeNode
-    from sag_api.services.extraction_v2_service import (
-        ExtractionManifestIn,
-        _collect_grounding_failures,
-    )
-
-    node = DocumentTreeNode(document_id="d1", node_id="n1", start_line=1, end_line=3)
-    manifest = ExtractionManifestIn.model_validate(_manifest_payload(
-        entity_mentions=[{"raw_text": "a", "canonical_name": "a", "entity_type": "issuer", "evidence": {"node_id": "n1", "quote": "Tien mat"}}],
-    ))
-    failures = _collect_grounding_failures("Tien mat 46.186.800.000 dong\nkhac\ncuoi\n", [node], manifest)
-    assert failures == []
-
-
-def test_collect_grounding_failures_returns_structured_records():
-    from sag_api.db.models import DocumentTreeNode
-    from sag_api.services.extraction_v2_service import (
-        ExtractionManifestIn,
-        _collect_grounding_failures,
-    )
-
-    node = DocumentTreeNode(document_id="d1", node_id="n_wrong", start_line=1, end_line=3)
-    manifest = ExtractionManifestIn.model_validate(_manifest_payload(
-        entity_mentions=[{"raw_text": "a", "canonical_name": "a", "entity_type": "issuer", "evidence": {"node_id": "n_wrong", "quote": "so bịa không có thật"}}],
-    ))
-    failures = _collect_grounding_failures("Tien mat 46.186.800.000 dong\nkhac\ncuoi\n", [node], manifest)
-    assert len(failures) == 1
-    assert failures[0]["path"] == "entity_mentions.0"
-    assert failures[0]["node_id"] == "n_wrong"
-    assert "quote" in failures[0]
-    assert "error" in failures[0]
-    assert isinstance(failures[0]["error"], str)
-
-
-def test_build_repair_prompt_returns_two_messages():
-    from sag_api.db.models import DocumentTreeNode
-    from sag_api.services.extraction_v2_service import build_repair_prompt
-
-    node = DocumentTreeNode(document_id="d1", node_id="n1", start_line=1, end_line=5)
-    markdown = "Tien mat\nkhac\ncuoi\n"
-    failures = [{"path": "entity_mentions.0", "node_id": "n1", "quote": "Tien mat", "line_hint": None, "error": "xuất hiện duy nhất"}]
-    messages = build_repair_prompt(markdown, [node], failures)
-    assert len(messages) == 2
-    assert messages[0]["role"] == "system"
-    assert "task" in json.loads(messages[1]["content"])
-    assert json.loads(messages[1]["content"])["task"] == "repair_evidence_citations"

@@ -26,6 +26,7 @@ function Logo({ onClick }: { onClick?: () => void }) {
 }
 
 import { marketApi, stockApi, portfolioApi } from "@/lib/api"
+import type { ApiMarketIndex, ApiMarketStock, ApiNewsItem } from "@/types"
 
 function PortfolioRiskFrame() {
   const [navText, setNavText] = useState("1.00B")
@@ -91,7 +92,8 @@ function MarketPulse() {
       if (!mounted) return
 
       if (indRes.status === "fulfilled" && indRes.value?.indices) {
-        const vn = indRes.value.indices.find((x: any) => x.symbol === "VNINDEX" || x.symbol === "VN-INDEX") || indRes.value.indices[0]
+        const indices = indRes.value.indices as ApiMarketIndex[]
+        const vn = indices.find((x) => x.symbol === "VNINDEX" || x.symbol === "VN-INDEX") || indices[0]
         if (vn) {
           setIndexData({
             value: Number(vn.value) || 1830.44,
@@ -105,7 +107,7 @@ function MarketPulse() {
       }
 
       if (snapRes.status === "fulfilled" && snapRes.value?.stocks) {
-        const stocks: any[] = snapRes.value.stocks
+        const stocks = snapRes.value.stocks as ApiMarketStock[]
         const adv = stocks.filter((s) => (s.change_pct ?? 0) > 0).length
         const dec = stocks.filter((s) => (s.change_pct ?? 0) < 0).length
         setAdvDec(`${adv} / ${dec}`)
@@ -476,7 +478,7 @@ function EvidenceExplorer() {
   useEffect(() => {
     stockApi.news("HPG").then((items) => {
       if (Array.isArray(items) && items.length > 0) {
-        const mapped = items.slice(0, 4).map((d: any) => ({
+        const mapped = items.slice(0, 4).map((d: ApiNewsItem) => ({
           source: d.title || "Tài liệu công bố HPG",
           detail: d.ai_summary || d.article_content?.slice(0, 200) || "Công bố thông tin chính thức của doanh nghiệp trên Sở GDCK TP.HCM.",
           date: d.published_date ? new Date(d.published_date).toLocaleDateString("vi-VN") : "Gần đây",

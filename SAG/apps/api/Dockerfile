@@ -18,13 +18,20 @@ RUN pip install --upgrade pip hatchling \
  && python -c 'import os, tomllib; p=tomllib.load(open("pyproject.toml", "rb")); deps=list(p["project"]["dependencies"]); deps += p["project"]["optional-dependencies"].get(os.environ.get("SAG_API_EXTRAS", ""), []); print("\n".join(deps))' > /tmp/requirements.txt \
  && pip install -r /tmp/requirements.txt
 
-# Rồi cài chính project này（không phân giải phụ thuộc, giữ build lại nhanh）。
+# Rồi cài chính project này
 COPY sag_api ./sag_api
 COPY sag_agent ./sag_agent
 RUN pip install --no-deps --no-build-isolation .
+
+# Copy cấu hình migration Alembic và entrypoint script
+COPY alembic.ini ./
+COPY alembic ./alembic
+COPY docker-entrypoint.sh ./
+RUN chmod +x docker-entrypoint.sh
 
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
   CMD curl -fsS http://localhost:8000/api/v1/system/health || exit 1
 
+ENTRYPOINT ["./docker-entrypoint.sh"]
 CMD ["uvicorn", "sag_api.main:app", "--host", "0.0.0.0", "--port", "8000"]

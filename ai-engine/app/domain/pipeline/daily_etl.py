@@ -39,7 +39,6 @@ logger = logging.getLogger("ai_engine.etl")
 TZ_VN = timezone(timedelta(hours=7))
 
 JOB_NAME = "daily_etl"
-_bctc_dispatch_task: asyncio.Task | None = None
 
 
 # ── Market calendar helpers ──────────────────────────────────────────────
@@ -283,8 +282,8 @@ class DailyETLPipeline:
     async def step_corporate_documents(self) -> Dict[str, Any]:
         """Crawl new BCTC and Corporate Governance PDF documents into knowledge_documents.
         
-        Khi phát hiện có tài liệu BCTC mới được chèn: Tự động kích hoạt BctcToSagPipeline chạy ngầm
-        (Background Task) để bóc tách OCR, đưa vào SAG và tính toán lại cờ rủi ro GIL flag cho DB.
+        Tài liệu chỉ được lưu làm metadata; việc phân tích SAG thuộc quy trình
+        nghiên cứu tách biệt và không được ETL runtime kích hoạt.
         """
         logger.info("ETL: corporate_documents — fetching BCTC, BCTN, nghị quyết & quản trị PDFs from Vietstock...")
         try:
@@ -292,48 +291,16 @@ class DailyETLPipeline:
             # Vietstock: 1 = BCTC, 2 = BCTN, 4 = nghị quyết, 9 = BCQT.
             result = await asyncio.to_thread(crawl_docs, types=[1, 2, 4, 9], exchange="HOSE", max_years=1)
             inserted = result.get("inserted", 0)
-            new_symbols = result.get("new_symbols", [])
-            logger.info("ETL: corporate_documents — %d inserted / %d total, %d new symbols", inserted, result.get("total", 0), len(new_symbols))
-
-            # Tự động kích hoạt BctcToSagPipeline cho các mã có BCTC mới
-            if new_symbols:
-                logger.info("ETL: corporate_documents — phát hiện %d mã có BCTC mới (%s). Kích hoạt background BCTC to SAG pipeline...", len(new_symbols), new_symbols[:10])
-                global _bctc_dispatch_task
-                if _bctc_dispatch_task is None or _bctc_dispatch_task.done():
-                    _bctc_dispatch_task = asyncio.create_task(self._dispatch_bctc_to_sag(new_symbols))
-                else:
-                    logger.info("ETL: BCTC-SAG dispatch đang chạy; bỏ qua dispatch trùng trong cùng chu kỳ.")
+            logger.info(
+                "ETL: corporate_documents — %d inserted / %d total; SAG research dispatch is disabled",
+                inserted,
+                result.get("total", 0),
+            )
 
             return {"status": "success", **result}
         except Exception as e:
             logger.error("ETL: corporate_documents failed: %s", e)
             return {"status": "failed", "error": str(e)}
-
-    async def _dispatch_bctc_to_sag(self, symbols: List[str]) -> None:
-        """Background worker xử lý tự động BctcToSagPipeline cho các mã mới nạp."""
-        try:
-            from app.domain.rules.bctc_ingestion_guard import filter_ingestible_tickers
-            from app.domain.pipeline.bctc_to_sag_pipeline import BctcToSagPipeline
-
-            valid_symbols = filter_ingestible_tickers(symbols)
-            skipped_count = len(symbols) - len(valid_symbols)
-            if skipped_count > 0:
-                logger.info(
-                    "⏭️ [Auto BCTC-SAG Worker] Bỏ qua %d mã thuộc danh mục rác/đóng băng thanh khoản (< 5B)",
-                    skipped_count
-                )
-
-            pipeline = BctcToSagPipeline()
-            for sym in valid_symbols:
-                try:
-                    logger.info("⚡ [Auto BCTC-SAG Worker] Bắt đầu xử lý mã %s...", sym)
-                    res = await pipeline.process_ticker(sym)
-                    logger.info("✅ [Auto BCTC-SAG Worker] Hoàn tất mã %s: GIL flag = %s (DB Updated: %s)",
-                                sym, res.get("gil_flag"), res.get("db_updated"))
-                except Exception as e_sym:
-                    logger.warning("⚠️ [Auto BCTC-SAG Worker] Lỗi xử lý mã %s: %s", sym, e_sym)
-        except Exception as e_dispatch:
-            logger.error("❌ [Auto BCTC-SAG Worker] Fatal error in dispatch loop: %s", e_dispatch)
 
     # ── Step: Factor Scores ───────────────────────────────────────────
 
@@ -393,6 +360,7 @@ class DailyETLPipeline:
         try:
             from app.domain.repositories.portfolio_repository import PortfolioRepository
             from app.domain.agents.trade_execution import TradeExecutionAgent
+            from app.infrastructure.external_api.market_data_service import market_data_svc
             
             p_repo = PortfolioRepository()
             account_state = p_repo.get_account_state()
@@ -401,13 +369,15 @@ class DailyETLPipeline:
             signals = p_repo.get_active_signals(str(self.trade_date))
             executed_count = 0
             for sig in signals:
+                ticker = sig.get("ticker", "FPT")
                 exec_res = await exec_agent.process({
                     "order_instruction": {
-                        "ticker": sig.get("ticker", "FPT"),
+                        "ticker": ticker,
                         "action": sig.get("action", "BUY"),
                         "shares": int(sig.get("quantity", 100)),
                         "target_price": float(sig.get("price", 0.0)),
-                    }
+                    },
+                    "orderbook": await market_data_svc.get_order_book(ticker),
                 })
                 if exec_res.get("data", {}).get("status") == "EXECUTED":
                     executed_count += 1

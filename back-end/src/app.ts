@@ -38,6 +38,7 @@ import communityRoutes from './modules/community/community.routes';
 import workspaceRoutes from './modules/workspace/workspace.routes';
 
 const app = express();
+app.set('trust proxy', 1);
 const server = http.createServer(app);
 
 // ── Security Middleware ────────────────────────────────

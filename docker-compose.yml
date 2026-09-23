@@ -1,55 +1,67 @@
 services:
+  # ── Tầng 5: Enterprise Persistence & Storage ───────────────────
   postgres:
     image: timescale/timescaledb:latest-pg16
-    container_name: aiinvest-db
-    ports:
-      - "5432:5432"
     environment:
       POSTGRES_DB: aiinvest
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-aiinvest123}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d aiinvest"]
       interval: 5s
       timeout: 5s
       retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
-    container_name: aiinvest-redis
-    ports:
-      - "6379:6379"
     command: >
       redis-server
-      --requirepass ${REDIS_PASSWORD:-aiinvest_redis_secret}
+      --requirepass ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
       --maxmemory 512mb
       --maxmemory-policy noeviction
       --appendonly yes
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-aiinvest_redis_secret}", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}", "ping"]
       interval: 5s
       timeout: 5s
       retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+    restart: unless-stopped
 
   rabbitmq:
     image: rabbitmq:3-management-alpine
-    container_name: aiinvest-rabbitmq
-    ports:
-      - "5672:5672"     # AMQP Protocol
-      - "15672:15672"   # Management Dashboard UI
     environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-guest}
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?Set RABBITMQ_USER in .env}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:?Set RABBITMQ_PASS in .env}
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 5s
       timeout: 5s
       retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+    restart: unless-stopped
 
   sag-postgres:
+    profiles: ["research"]
     image: pgvector/pgvector:pg16
+    ports:
+      - "127.0.0.1:55432:5432"
     environment:
       POSTGRES_DB: sag
       POSTGRES_USER: sag
@@ -61,18 +73,26 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+    restart: unless-stopped
 
+  # ── Tầng 4: Financial Forensics & Evidence Core (SAG) ──────────
   sag-api:
+    profiles: ["research"]
     build:
       context: ./SAG/apps/api
       dockerfile: Dockerfile
       args:
         SAG_API_EXTRAS: postgres
-    ports:
-      - "8001:8000"
+    expose:
+      - "8000"
     environment:
-      - SAG_ENVIRONMENT=prod
-      - SAG_DEBUG=false
+      - SAG_ENVIRONMENT=${SAG_ENVIRONMENT:-prod}
+      - SAG_DEBUG=${SAG_DEBUG:-false}
       - SAG_SECRET_KEY=${SAG_SECRET_KEY:-}
       - SAG_SERVICE_TOKEN=${SAG_SERVICE_TOKEN:-}
       - SAG_ADMIN_TOKEN=${SAG_ADMIN_TOKEN:-}
@@ -85,67 +105,120 @@ services:
       - SAG_LLM_MODEL=${SAG_LLM_MODEL:-openai/gpt-4.1-mini}
       - SAG_LLM_API_KEY=${SAG_LLM_API_KEY:-}
       - SAG_EMBEDDING_API_KEY=${SAG_EMBEDDING_API_KEY:-}
+      - R2_ACCOUNT_ID=${R2_ACCOUNT_ID:-}
+      - R2_ENDPOINT_URL=${R2_ENDPOINT_URL:-}
+      - R2_BUCKET_NAME=${R2_BUCKET_NAME:-aiinvest-bctc-prod}
+      - R2_TOKEN=${R2_TOKEN:-}
+      - R2_ACCESS_KEY_ID=${R2_ACCESS_KEY_ID:-}
+      - R2_SECRET_ACCESS_KEY=${R2_SECRET_ACCESS_KEY:-}
+      - MINERU_KEY_CONCURRENCY=${MINERU_KEY_CONCURRENCY:-5}
+      - MINERU_SUBMIT_RPM=${MINERU_SUBMIT_RPM:-240}
     depends_on:
       sag-postgres:
         condition: service_healthy
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/api/v1/system/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
     restart: unless-stopped
 
+  migrate:
+    build:
+      context: ./back-end
+      dockerfile: Dockerfile
+    image: aiinvest-backend
+    command: ["true"]
+    environment:
+      DATABASE_URL: postgresql://postgres:${DB_PASSWORD:?Set DB_PASSWORD in .env}@postgres:5432/aiinvest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # ── Tầng 3: Core Quant Intelligence (AI Engine) ───────────────
   ai-engine:
     build:
       context: ./ai-engine
       dockerfile: Dockerfile
-    container_name: aiinvest-ai
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     environment:
-      - DNSE_ENABLED=${DNSE_ENABLED:-true}
+      - DNSE_ENABLED=${DNSE_ENABLED:-false}
       - DNSE_API_KEY=${DNSE_API_KEY:-}
       - DNSE_API_SECRET=${DNSE_API_SECRET:-}
       - DNSE_ACCOUNT_NO=${DNSE_ACCOUNT_NO:-}
       - DNSE_BASE_URL=${DNSE_BASE_URL:-https://openapi.dnse.com.vn}
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-aiinvest_redis_secret}@redis:6379
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
-      - LLM_API_KEY=${LLM_API_KEY:-}
-      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
-      - DATABASE_URL=postgresql://postgres:${DB_PASSWORD:-aiinvest123}@postgres:5432/aiinvest
-      - AI_ENGINE_ADMIN_TOKEN=${AI_ENGINE_ADMIN_TOKEN:-}
-      - SAG_API_BASE=http://sag-api:8000/api/v2
-      - SAG_SERVICE_TOKEN=${SAG_SERVICE_TOKEN:-}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}@redis:6379
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:?Set RABBITMQ_USER in .env}:${RABBITMQ_PASS:?Set RABBITMQ_PASS in .env}@rabbitmq:5672/
+      - GROQ_API_KEY0=${GROQ_API_KEY0:-}
+      - GROQ_API_KEY1=${GROQ_API_KEY1:-}
+      - GROQ_MODEL0=${GROQ_MODEL0:-openai/gpt-oss-120b}
+      - EVOMAP_API_KEY=${EVOMAP_API_KEY:-}
+      - MULTI_AGENT_ACCOUNT_ID=${MULTI_AGENT_ACCOUNT_ID:-}
+      - PORTFOLIO_AUTOMATION_ENABLED=${PORTFOLIO_AUTOMATION_ENABLED:-false}
+      - MULTI_AGENT_MODE=${MULTI_AGENT_MODE:-SHADOW_RUNNER}
+      - STANDALONE_ML_ACCOUNT_ID=${STANDALONE_ML_ACCOUNT_ID:-standalone-pure-ml-fund-account}
+      - STANDALONE_ML_MODE=${STANDALONE_ML_MODE:-SHADOW_RUNNER}
+      - STANDALONE_ML_POSITION_WEIGHT=${STANDALONE_ML_POSITION_WEIGHT:-0.20}
+      - DATABASE_URL=postgresql://postgres:${DB_PASSWORD:?Set DB_PASSWORD in .env}@postgres:5432/aiinvest
+      - AI_ENGINE_ADMIN_TOKEN=${AI_ENGINE_ADMIN_TOKEN:?Set AI_ENGINE_ADMIN_TOKEN in .env}
+      - R2_ACCOUNT_ID=${R2_ACCOUNT_ID:-}
+      - R2_ENDPOINT_URL=${R2_ENDPOINT_URL:-}
+      - R2_BUCKET_NAME=${R2_BUCKET_NAME:-aiinvest-bctc-prod}
+      - R2_TEST_BUCKET_NAME=${R2_TEST_BUCKET_NAME:-aiinvest-bctc-test}
+      - R2_TOKEN=${R2_TOKEN:-}
+      - R2_ACCESS_KEY_ID=${R2_ACCESS_KEY_ID:-}
+      - R2_SECRET_ACCESS_KEY=${R2_SECRET_ACCESS_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy
-      sag-api:
-        condition: service_started
       redis:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
     restart: unless-stopped
 
+  # ── Tầng 2: Core API Gateway & Service Layer (Backend) ─────────
   backend:
-    build:
-      context: ./back-end
-      dockerfile: Dockerfile
-    container_name: aiinvest-api
-    ports:
-      - "3001:3001"
+    image: aiinvest-backend
+    expose:
+      - "3001"
     environment:
-      - DATABASE_URL=postgresql://postgres:${DB_PASSWORD:-aiinvest123}@postgres:5432/aiinvest
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-aiinvest_redis_secret}@redis:6379
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
+      - DATABASE_URL=postgresql://postgres:${DB_PASSWORD:?Set DB_PASSWORD in .env}@postgres:5432/aiinvest
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}@redis:6379
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:?Set RABBITMQ_USER in .env}:${RABBITMQ_PASS:?Set RABBITMQ_PASS in .env}@rabbitmq:5672/
       - AI_ENGINE_URL=http://ai-engine:8000
-      - AI_ENGINE_ADMIN_TOKEN=${AI_ENGINE_ADMIN_TOKEN:-}
-      - INTERNAL_SERVICE_TOKEN=${INTERNAL_SERVICE_TOKEN:-}
-      - DNSE_ENABLED=${DNSE_ENABLED:-true}
+      - AI_ENGINE_ADMIN_TOKEN=${AI_ENGINE_ADMIN_TOKEN:?Set AI_ENGINE_ADMIN_TOKEN in .env}
+      - INTERNAL_SERVICE_TOKEN=${INTERNAL_SERVICE_TOKEN:?Set INTERNAL_SERVICE_TOKEN in .env}
+      - DNSE_ENABLED=${DNSE_ENABLED:-false}
       - DNSE_REDIS_CHANNEL_PREFIX=${DNSE_REDIS_CHANNEL_PREFIX:-dnse:event}
-      - JWT_ACCESS_SECRET=${JWT_ACCESS_SECRET:-}
-      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET:-}
-      - JWT_SECRET=${JWT_SECRET:-}
-      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:3000}
+      - JWT_ACCESS_SECRET=${JWT_ACCESS_SECRET:?Set JWT_ACCESS_SECRET in .env}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET:?Set JWT_REFRESH_SECRET in .env}
+      - CORS_ORIGIN=${CORS_ORIGIN:?Set CORS_ORIGIN in .env}
       - PORT=3001
-      - NODE_ENV=production
+      - NODE_ENV=${NODE_ENV:-production}
     depends_on:
       postgres:
         condition: service_healthy
@@ -153,10 +226,75 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       ai-engine:
-        condition: service_started
-      sag-api:
-        condition: service_started
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3001/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+    restart: unless-stopped
+
+  # ── Tầng 1: Presentation Tier (Frontend Next.js) ───────────────
+  frontend:
+    build:
+      context: ./front-end
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api/v1}
+        NEXT_PUBLIC_SOCKET_URL: ${NEXT_PUBLIC_SOCKET_URL:-/}
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-/}
+    expose:
+      - "3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3000/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+    restart: unless-stopped
+
+  # ── Zone 1: Public DMZ (Nginx Ingress & SSL Termination) ───────
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      frontend:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -kfsS https://localhost/ || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
     restart: unless-stopped
 
 volumes:

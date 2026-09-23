@@ -55,7 +55,6 @@ export default function Backtest() {
 
   const loadData = async () => {
     try {
-      setLoading(true)
       const [perfRes, riskRes, mlFundRes] = await Promise.allSettled([
         portfolioApi.performance(),
         portfolioApi.risks(),
@@ -87,6 +86,8 @@ export default function Backtest() {
   }
 
   useEffect(() => {
+    // Initial page state is already loading; fetching here must not reset it synchronously.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- loadData updates state only after its asynchronous requests settle.
     loadData()
   }, [])
 

@@ -25,7 +25,7 @@ dependencies = [
     "sse-starlette>=3.0,<4",
     "mcp>=1.27,<2",
     "networkx>=3.4,<4",
-    "zleap-sag>=0.13,<0.14",
+    "zleap-sag==0.7.1",
 ]
 
 [project.optional-dependencies]

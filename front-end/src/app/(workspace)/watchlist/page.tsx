@@ -15,6 +15,8 @@ interface WatchlistData {
   createdAt?: string
 }
 
+const EMPTY_STOCKS: Stock[] = []
+
 export default function WatchlistPage() {
   const [newSymbol, setNewSymbol] = useState("")
   const [isAdding, setIsAdding] = useState(false)
@@ -23,7 +25,7 @@ export default function WatchlistPage() {
   const snapshotRes = useResource(() => marketApi.snapshot().catch(() => ({ items: [] })), [])
 
   const rawWatchlists = (watchlistsRes.data as WatchlistData[]) || []
-  const stockItems = (snapshotRes.data as { items?: Stock[] })?.items || []
+  const stockItems = (snapshotRes.data as { items?: Stock[] })?.items ?? EMPTY_STOCKS
 
   // Default watchlist if user has none in DB yet
   const activeWatchlist = rawWatchlists[0] || {

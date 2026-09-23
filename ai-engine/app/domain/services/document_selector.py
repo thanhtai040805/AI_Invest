@@ -66,12 +66,23 @@ def _row_urls(row: Dict[str, Any]) -> tuple[str, ...]:
     ))
 
 
+def _document_scope(row: Dict[str, Any]) -> str:
+    """Infer the reporting scope used by the downstream GIL denominator."""
+    text = _ascii_title(
+        f"{row.get('title') or ''} {' '.join(str(u) for u in (row.get('article_pdf_urls') or []))}"
+    )
+    if any(token in text for token in ("hop nhat", "consolidated")):
+        return "CONSOLIDATED"
+    return "SEPARATE"
+
+
 def _cafef_alternate_urls(
     cur: Any,
     ticker: str,
     role: str,
     fiscal_year: int,
     fiscal_quarter: Union[int, str],
+    scope: str = "SEPARATE",
 ) -> tuple[str, ...]:
     """Return same-period CafeF URLs as source fallbacks, without trusting filenames for language."""
     cur.execute("""
@@ -87,8 +98,10 @@ def _cafef_alternate_urls(
     matches: list[tuple[Any, tuple[str, ...]]] = []
     for row in cur.fetchall():
         title = _ascii_title(str(row.get("title") or ""))
-        if role != "GOVERNANCE_REPORT" and any(token in title for token in ("hop nhat", "consolidated")):
-            continue
+        if role != "GOVERNANCE_REPORT":
+            row_scope = _document_scope(row)
+            if row_scope != scope:
+                continue
         year, quarter = _row_period(row, role)
         if year != fiscal_year or quarter != fiscal_quarter:
             continue
@@ -145,6 +158,27 @@ def parse_fiscal_period(
     return year, quarter
 
 
+def parse_period_dates(title: str) -> tuple[Optional[str], Optional[str]]:
+    """Read explicit reporting-period dates when a document title provides them."""
+    matches = re.findall(
+        r"(?<!\d)(\d{1,2})\s*[/.-]\s*(\d{1,2})\s*[/.-]\s*(20\d{2})(?!\d)",
+        title or "",
+    )
+    if not matches:
+        return None, None
+    from datetime import date
+
+    dates: list[str] = []
+    for day, month, year in matches:
+        try:
+            dates.append(date(int(year), int(month), int(day)).isoformat())
+        except ValueError:
+            continue
+    if not dates:
+        return None, None
+    return (dates[0], dates[-1]) if len(dates) > 1 else (None, dates[0])
+
+
 @dataclass(frozen=True)
 class ActiveDocument:
     doc_id: int
@@ -157,6 +191,8 @@ class ActiveDocument:
     pdf_urls: tuple[str, ...] = ()
     fiscal_year: Optional[int] = None
     fiscal_quarter: Optional[Union[int, str]] = None
+    period_start: Optional[str] = None
+    period_end: Optional[str] = None
     scope: str = "SEPARATE"
 
 
@@ -276,12 +312,14 @@ class ActiveDocumentSelector:
             annual_candidates = []
             for candidate in cur.fetchall():
                 if _is_valid_annual_candidate(candidate):
+                    if _document_scope(candidate) != "SEPARATE":
+                        continue
                     parsed_year, _ = _row_period(candidate, "ANNUAL_BACKBONE")
                     if parsed_year <= 0:
                         continue
                     annual_candidates.append((
                         parsed_year,
-                        any(token in _ascii_title(candidate["title"]) for token in ("rieng", "cong ty me")),
+                        _document_scope(candidate) == "CONSOLIDATED",
                         candidate["source"] == "vnstock_docs",
                         candidate["published_date"],
                         candidate["id"],
@@ -290,11 +328,15 @@ class ActiveDocumentSelector:
             if annual_candidates:
                 annual_candidates.sort(key=lambda item: item[:5])
                 row_ann = annual_candidates[-1][5]
+            elif row_ann and _document_scope(row_ann) != "SEPARATE":
+                row_ann = None
 
             if row_ann:
                 y_ann, q_ann = _row_period(row_ann, "ANNUAL_BACKBONE")
+                period_start_ann, period_end_ann = parse_period_dates(str(row_ann["title"] or ""))
+                scope_ann = _document_scope(row_ann)
                 urls_ann = _row_urls(row_ann) + _cafef_alternate_urls(
-                    cur, ticker, "ANNUAL_BACKBONE", y_ann, q_ann
+                    cur, ticker, "ANNUAL_BACKBONE", y_ann, q_ann, scope_ann
                 )
                 urls_ann = tuple(dict.fromkeys(urls_ann))
                 url_ann = urls_ann[0] if urls_ann else ""
@@ -309,7 +351,9 @@ class ActiveDocumentSelector:
                     role="ANNUAL_BACKBONE",
                     fiscal_year=y_ann,
                     fiscal_quarter=q_ann,
-                    scope="SEPARATE",
+                    period_start=period_start_ann,
+                    period_end=period_end_ann,
+                    scope=scope_ann,
                 )
 
             # 2. Tìm BCTC Quý gần nhất (Riêng / Công ty mẹ) xuất bản SAU hoặc CÙNG NĂM với BCTC Kiểm toán
@@ -395,30 +439,34 @@ class ActiveDocumentSelector:
                 current_quarter = (today.month + 2) // 3
                 for candidate in cur.fetchall():
                     title = _ascii_title(str(candidate.get("title") or ""))
-                    if _has_non_annual_marker(candidate) or "hop nhat" in title:
+                    if _has_non_annual_marker(candidate):
+                        continue
+                    if _document_scope(candidate) != "SEPARATE":
                         continue
                     y_candidate, q_candidate = _row_period(candidate, "LATEST_QUARTER")
                     if not isinstance(q_candidate, int) or y_candidate > today.year:
                         continue
                     if y_candidate == today.year and q_candidate > current_quarter:
                         continue
-                    item = (y_candidate, q_candidate, candidate["published_date"], candidate["id"], candidate)
-                    if any(token in title for token in ("rieng", "cong ty me")):
-                        candidates.append(item)
-                    else:
-                        # Some issuers publish a non-consolidated BCTC with a
-                        # generic title; the explicit consolidated exclusion
-                        # above makes this safe as a final fallback.
-                        fallback_candidates.append(item)
+                    item = (
+                        y_candidate,
+                        q_candidate,
+                        _document_scope(candidate) == "CONSOLIDATED",
+                        candidate["published_date"],
+                        candidate["id"],
+                        candidate,
+                    )
+                    candidates.append(item)
                 all_candidates = candidates + fallback_candidates
                 if all_candidates:
-                    # Fiscal recency dominates title specificity; otherwise an
-                    # old explicitly-scoped row can beat a newer generic row.
-                    row_q = sorted(all_candidates, key=lambda item: item[:4])[-1][4]
+                    # Fiscal recency dominates within the separate-report scope.
+                    row_q = sorted(all_candidates, key=lambda item: item[:5])[-1][5]
             if row_q:
                 y_q, q_q = _row_period(row_q, "LATEST_QUARTER")
+                period_start_q, period_end_q = parse_period_dates(str(row_q["title"] or ""))
+                scope_q = _document_scope(row_q)
                 urls_q = _row_urls(row_q) + _cafef_alternate_urls(
-                    cur, ticker, "LATEST_QUARTER", y_q, q_q
+                    cur, ticker, "LATEST_QUARTER", y_q, q_q, scope_q
                 )
                 urls_q = tuple(dict.fromkeys(urls_q))
                 url_q = urls_q[0] if urls_q else ""
@@ -433,7 +481,9 @@ class ActiveDocumentSelector:
                     role="LATEST_QUARTER",
                     fiscal_year=y_q,
                     fiscal_quarter=q_q,
-                    scope="SEPARATE",
+                    period_start=period_start_q,
+                    period_end=period_end_q,
+                    scope=scope_q,
                 )
 
             # 3. Tìm Báo cáo Quản trị gần nhất
@@ -458,6 +508,7 @@ class ActiveDocumentSelector:
             row_gov = cur.fetchone()
             if row_gov:
                 y_gov, q_gov = _row_period(row_gov, "GOVERNANCE_REPORT")
+                period_start_gov, period_end_gov = parse_period_dates(str(row_gov["title"] or ""))
                 urls_gov = _row_urls(row_gov) + _cafef_alternate_urls(
                     cur, ticker, "GOVERNANCE_REPORT", y_gov, q_gov
                 )
@@ -474,6 +525,8 @@ class ActiveDocumentSelector:
                     role="GOVERNANCE_REPORT",
                     fiscal_year=y_gov,
                     fiscal_quarter=q_gov,
+                    period_start=period_start_gov,
+                    period_end=period_end_gov,
                     scope="GOVERNANCE",
                 )
 

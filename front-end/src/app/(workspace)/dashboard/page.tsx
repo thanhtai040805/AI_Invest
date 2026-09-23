@@ -16,8 +16,12 @@ import {
   Sparkline,
 } from "@/components/ui";
 import { KLineChart } from "@/components/KLineChart";
+import type { ApiMarketStock } from "@/types";
 
-function MarketMap({ sectors }: { sectors: Sector[] }) {
+type DashboardSector = Sector & { sparkline?: number[] };
+interface ApiSectorRow { name?: string; sector?: string; nameVi?: string; weight?: number; marketWeight?: number; market_cap?: number; changePct?: number; change_pct?: number; change?: number; foreign?: number; foreignFlow?: number; foreign_flow?: number; sparkline?: number[] }
+
+function MarketMap({ sectors }: { sectors: DashboardSector[] }) {
   const total = sectors.reduce((sum, sector) => sum + sector.weight, 0);
   return (
     <div className="grid grid-cols-2 sm:grid-cols-4 auto-rows-[118px] gap-1.5">
@@ -27,8 +31,8 @@ function MarketMap({ sectors }: { sectors: Sector[] }) {
         const ground = positive
           ? `color-mix(in srgb, var(--color-gain) ${10 + strength * 30}%, var(--color-surface))`
           : `color-mix(in srgb, var(--color-loss) ${10 + strength * 30}%, var(--color-surface))`;
-        const data = Array.isArray((sector as any).sparkline) && (sector as any).sparkline.length > 1
-          ? (sector as any).sparkline
+        const data = Array.isArray(sector.sparkline) && sector.sparkline.length > 1
+          ? sector.sparkline
           : [100, 100 + sector.changePct];
         return (
           <div
@@ -248,14 +252,14 @@ export default function Dashboard() {
     const findIndex = (name: string) => indexRows.find((row: Record<string, unknown>) => String(row.symbol || row.code || row.name).toUpperCase().includes(name));
     const vn = findIndex("VNINDEX") || findIndex("VN-INDEX") || {};
     const vn30 = findIndex("VN30") || {};
-    const sectorRows = Array.isArray(heatmap) ? heatmap : heatmap?.sectors || heatmap?.data || [];
-    const sectors: Sector[] = sectorRows.map((row: Record<string, unknown>) => ({
+    const sectorRows: ApiSectorRow[] = Array.isArray(heatmap) ? heatmap : heatmap?.sectors || heatmap?.data || [];
+    const sectors: DashboardSector[] = sectorRows.map((row) => ({
       name: String(row.name || row.sector || "—"),
       vn: String(row.nameVi || row.name || row.sector || "—"),
       weight: Number(row.weight || row.marketWeight || row.market_cap || 1),
       changePct: Number(row.changePct || row.change_pct || row.change || 0),
       foreign: Number(row.foreign || row.foreignFlow || row.foreign_flow || 0),
-      sparkline: (row as any).sparkline,
+      sparkline: row.sparkline,
     }));
     const signalRows = overview?.signals || [];
     const surveillance: Surveillance[] = signalRows.map((row: Record<string, unknown>) => ({
@@ -266,12 +270,12 @@ export default function Dashboard() {
       tone: Number(row.composite_rank || 0) >= 0 ? "gain" : "loss",
     }));
 
-    const rawStocks = Array.isArray(snap?.stocks) ? snap.stocks : [];
-    const advancing = rawStocks.filter((s: any) => Number(s.change_pct) > 0).length;
-    const declining = rawStocks.filter((s: any) => Number(s.change_pct) < 0).length;
-    const totalVal = rawStocks.reduce((sum: number, s: any) => sum + (Number(s.price ?? 0) * Number(s.volume ?? 0)), 0);
-    const foreignSum = Math.round(rawStocks.reduce((sum: number, s: any) => sum + Number(s.foreign_flow ?? 0), 0));
-    const topLeaders = sectorRows.slice(0, 3).map((r: any) => r.sector || r.name).filter(Boolean).join(" · ");
+    const rawStocks: ApiMarketStock[] = Array.isArray(snap?.stocks) ? snap.stocks : [];
+    const advancing = rawStocks.filter((s) => Number(s.change_pct) > 0).length;
+    const declining = rawStocks.filter((s) => Number(s.change_pct) < 0).length;
+    const totalVal = rawStocks.reduce((sum, s) => sum + Number(s.price ?? 0) * Number(s.volume ?? 0), 0);
+    const foreignSum = Math.round(rawStocks.reduce((sum, s) => sum + Number(s.foreign_flow ?? 0), 0));
+    const topLeaders = sectorRows.slice(0, 3).map((r) => r.sector || r.name).filter(Boolean).join(" · ");
 
     const regimeLabel = overview?.regime?.regime_label || overview?.regime?.dominant_regime;
     const stateStr = regimeLabel ? `${regimeLabel} · Tin cậy ${(Number(overview?.regime?.confidence ?? 0.8) * 100).toFixed(0)}%` : "Tích lũy · Biên độ hẹp";

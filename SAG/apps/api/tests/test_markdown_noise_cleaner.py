@@ -104,6 +104,13 @@ def test_latex_junk_lines_are_removed():
     assert stats.latex_junk == 1
 
 
+def test_uppercase_latex_junk_lines_are_removed():
+    cleaned, stats = clean_markdown("# A\n\\Delta x + \\Omega\nnội dung\n")
+    assert "\\Delta" not in cleaned
+    assert "\\Omega" not in cleaned
+    assert stats.latex_junk == 1
+
+
 def test_blank_lines_are_collapsed_and_output_trimmed():
     markdown = "# A\n\n\n\nnội dung\n\n\n\n"
     cleaned, _stats = clean_markdown(markdown)
@@ -180,7 +187,7 @@ def test_long_interleaved_english_paragraphs_are_removed():
     assert stats.english_lines_removed == 1
 
 
-def test_financial_roles_can_drop_core_statement_sections_explicitly():
+def test_financial_roles_preserve_core_statement_sections():
     markdown = (
         "## BÁO CÁO TÌNH HÌNH TÀI CHÍNH\n"
         "| Tài sản | 100 |\n"
@@ -192,14 +199,13 @@ def test_financial_roles_can_drop_core_statement_sections_explicitly():
         "Rủi ro thanh khoản\n"
     )
     cleaned, stats = clean_markdown(markdown, doc_role="LATEST_QUARTER")
-    assert "Tài sản" not in cleaned
-    assert "Dòng tiền" not in cleaned
+    assert "Tài sản" in cleaned
+    assert "Dòng tiền" in cleaned
     assert "Nợ vay và kỳ hạn" in cleaned
     assert "Rủi ro thanh khoản" in cleaned
-    assert stats.statement_sections == 2
 
 
-def test_financial_report_wrapper_drops_the_three_statements_before_notes():
+def test_financial_report_wrapper_preserves_statements_before_notes():
     markdown = (
         "# BÁO CÁO TÀI CHÍNH RIÊNG QUÝ II/2026\n"
         "| Tài sản | 100 |\n"
@@ -212,11 +218,25 @@ def test_financial_report_wrapper_drops_the_three_statements_before_notes():
         "Tiền gửi ngân hàng.\n"
     )
     cleaned, stats = clean_markdown(markdown, doc_role="LATEST_QUARTER")
-    assert "Tài sản" not in cleaned
-    assert "Doanh thu" not in cleaned
-    assert "Tiền cuối kỳ" not in cleaned
+    assert "Tài sản" in cleaned
+    assert "Doanh thu" in cleaned
+    assert "Tiền cuối kỳ" in cleaned
     assert "Tiền gửi ngân hàng" in cleaned
-    assert stats.statement_sections >= 3
+
+
+def test_bilingual_heading_suffixes_and_duplicate_headings_stripped():
+    markdown = (
+        "## III. Ủy Ban Kiểm Toán (Báo cáo 6 tháng) / Audit Committee (Semi-annual report):\n"
+        "Báo cáo giám sát.\n"
+        "## 1. Hoạt động của Đại hội đồng cổ đông\n"
+        "## 1. Activities of the General Meeting of Shareholders\n"
+        "Nội dung họp ĐHĐCĐ.\n"
+    )
+    cleaned, stats = clean_markdown(markdown)
+    assert "## III. Ủy Ban Kiểm Toán (Báo cáo 6 tháng)" in cleaned
+    assert "/ Audit Committee" not in cleaned
+    assert "## 1. Activities of the General Meeting of Shareholders" not in cleaned
+    assert "Nội dung họp ĐHĐCĐ." in cleaned
 
 
 def test_form_codes_and_audit_stamp_noise_are_stripped():

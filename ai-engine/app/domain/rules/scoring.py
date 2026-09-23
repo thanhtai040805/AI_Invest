@@ -69,6 +69,14 @@ class CSSScoringEngine:
             else:
                 regime_key = MarketRegime.SIDEWAYS
             weights = self.regime_weights.get(regime_key, self.regime_weights.get(MarketRegime.SIDEWAYS, self.regime_weights["DEFAULT"]))
+
+        # Agent-10 may return unnormalised weights. Keep CSS on a stable 0-100
+        # scale regardless of the policy source.
+        total_weight = sum(float(value) for value in weights.values())
+        if total_weight <= 0:
+            weights = self.regime_weights["DEFAULT"]
+        elif abs(total_weight - 1.0) > 1e-9:
+            weights = {key: float(value) / total_weight for key, value in weights.items()}
         
         # Hàm áp dụng trọng số dựa trên sector
         def apply_weights(row):
@@ -86,8 +94,7 @@ class CSSScoringEngine:
         # Tính Base CSS
         factor_scores['base_css'] = factor_scores.apply(apply_weights, axis=1)
         
-        # CSS chỉ phản ánh các factor đã được định lượng. GIL
-        # được phân tích ở Thesis, không biến thành một multiplier tùy ý.
+        # CSS chỉ phản ánh sáu factor đã được định lượng.
         factor_scores['css'] = factor_scores['base_css']
         
         # Xác định Conviction Level kèm theo Gatekeeper (Rule-based)
@@ -107,11 +114,9 @@ class CSSScoringEngine:
         return factor_scores
 
     def _apply_gatekeeper(self, row: pd.Series) -> str:
-        """Gatekeeper Rule: Check quality and audit/gil status before mapping to Conviction."""
+        """Gatekeeper Rule: audited financial statements are required."""
         audit = row.get('audit_opinion', 'UNQUALIFIED')
-        gil = str(row.get('gil_flag') or 'DATA_INSUFFICIENT').upper()
-        
-        if audit != 'UNQUALIFIED' or gil in {'CATASTROPHIC', 'DATA_INSUFFICIENT', 'TECHNICAL_ERROR'}:
+        if audit != 'UNQUALIFIED':
             return ConvictionLevel.E.value
             
         css = row['css']

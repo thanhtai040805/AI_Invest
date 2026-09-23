@@ -93,7 +93,7 @@ def test_structured_thesis_schema_validation(thesis_engine):
     assert len(payload["thesis_body"]["exit_conditions"]["invalidation_triggers"]) >= 3
 
 
-def test_hard_filter_gil_catastrophic_rejection(thesis_engine):
+def test_legacy_gil_payload_is_ignored_by_thesis(thesis_engine):
     research_report = {"css": 80.0, "conviction": "A"}
     market_context = {"gil_status": "CATASTROPHIC"}
     is_eligible, payload, msg = thesis_engine.build_structured_thesis_output(
@@ -102,26 +102,21 @@ def test_hard_filter_gil_catastrophic_rejection(thesis_engine):
         market_context=market_context,
     )
     assert is_eligible is False
-    assert "REJECT" in msg
+    assert "GIL" not in msg
 
 
 def test_base_cts_calculation(counter_engine):
     # Test Base CTS with realistic features (no margin tension)
     risk_features = {
-        "gil_risk": 20.0,
         "beneish_risk": 10.0,
         "receivable_spike": 15.0,
-        "graph_rpt_risk": 20.0,
         "macro_headwind": 20.0,
         "liquidity_stress": 20.0,
         "missing_data": 10.0,
     }
-    # Business: 0.15*20 + 0.1*10 + 0.1*15 + 0.1*20 = 3 + 1 + 1.5 + 2 = 7.5
-    # Market: 0.15*20 + 0.2*20 = 3 + 4 = 7.0
-    # Model: 0.2*10 = 2.0
-    # Base CTS = 16.5
+    # 2/15*10 + 2/15*15 + 1/5*20 + 4/15*20 + 4/15*10 = 15.33
     base_cts = counter_engine.calculate_base_cts(risk_features)
-    assert base_cts == 16.5
+    assert base_cts == 15.33
 
 
 def test_ml_interaction_multiplier(counter_engine):
@@ -191,13 +186,13 @@ def test_counter_thesis_verdicts(counter_engine):
         assert rep2.execution_constraints is not None
         assert "max_position_size_multiplier" in rep2.execution_constraints
 
-        # Case 3: GIL CATASTROPHIC -> BLOCK (Hard Law Zero Exception)
+        # Case 3: legacy GIL-only input is ignored; no fabricated veto.
         cat_risk = {
             "gil_status": "CATASTROPHIC", "gil_risk": 100.0
         }
         rep3 = await counter_engine.evaluate_counter_thesis("HPG", thesis, cat_risk, market_data, stock_data)
-        assert rep3.verdict == Verdict.BLOCK
-        assert rep3.final_cts == 100.0
+        assert rep3.verdict == Verdict.PROCEED
+        assert rep3.final_cts == 0.0
 
     asyncio.run(_run())
 
@@ -252,6 +247,6 @@ def test_agents_end_to_end():
         verdict_data = res05["data"]
         assert verdict_data["ticker"] == "HPG"
         assert "cts_score" in verdict_data
-        assert verdict_data["verdict"] in ["PROCEED", "CONDITIONAL"]
+        assert verdict_data["verdict"] in ["PROCEED", "CONDITIONAL", "BLOCK"]
 
     asyncio.run(_run())

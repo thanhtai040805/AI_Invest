@@ -9,7 +9,7 @@ import re
 import tempfile
 import time
 import zipfile
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +55,78 @@ from sag_api.services.document_structure_service import (
 logger = logging.getLogger("sag.financial_v2")
 
 
+def _infer_period_end(markdown: str, role: str | None, title: str = "") -> date | None:
+    """Infer the report period from early document dates, ignoring future contract dates."""
+    role_upper = str(role or "").upper()
+    if role_upper == DocumentRole.GOVERNANCE_REPORT.value:
+        # Governance PDFs often contain a later signing/publication date. The
+        # title's reporting horizon is stronger evidence than the largest date
+        # found in the first pages.
+        title_lower = (title or "").lower()
+        year_match = re.search(r"20\d{2}", title_lower)
+        year = int(year_match.group(0)) if year_match else None
+        if year and re.search(r"6\s*(?:tháng|thang|thĂ¡ng|months?)", title_lower):
+            return date(year, 6, 30)
+        if year and re.search(r"9\s*(?:tháng|thang|thĂ¡ng|months?)", title_lower):
+            return date(year, 9, 30)
+        if year and re.search(r"(?:cả năm|ca nam|annual|year)", title_lower):
+            return date(year, 12, 31)
+    line_limit = 300 if role_upper in {DocumentRole.ANNUAL_BACKBONE.value, DocumentRole.LATEST_QUARTER.value} else 160
+    text = "\n".join(markdown.splitlines()[:line_limit])
+    candidates: list[date] = []
+    patterns = (
+        re.compile(r"(?<!\d)(\d{1,2})/(\d{1,2})/(20\d{2})(?!\d)"),
+        re.compile(r"(?i)(?:ngay|ngày)\s+(\d{1,2})\s+(?:thang|tháng)\s+(\d{1,2})\s+(?:nam|năm)\s+(20\d{2})"),
+    )
+    for pattern in patterns:
+        for match in pattern.finditer(text):
+            try:
+                value = date(int(match.group(3)), int(match.group(2)), int(match.group(1)))
+            except ValueError:
+                continue
+            if value <= date.today():
+                candidates.append(value)
+    if not candidates:
+        return None
+    if role_upper == DocumentRole.ANNUAL_BACKBONE.value:
+        candidates = [value for value in candidates if value.month == 12 and value.day >= 28]
+    elif role_upper == DocumentRole.LATEST_QUARTER.value:
+        candidates = [value for value in candidates if value.month in {3, 6, 9, 12}]
+    return max(candidates, default=None)
+
+
+def _align_document_period(document: Document, markdown: str) -> dict[str, Any]:
+    supplied = document.period_end
+    inferred = _infer_period_end(markdown, document.doc_role, document.filename or "")
+    status = "UNRESOLVED"
+    if inferred is not None and supplied == inferred:
+        status = "MATCH"
+    elif inferred is not None and (supplied is None or inferred != supplied):
+        document.period_end = inferred
+        if document.doc_role in {
+            DocumentRole.ANNUAL_BACKBONE.value,
+            DocumentRole.LATEST_QUARTER.value,
+            DocumentRole.GOVERNANCE_REPORT.value,
+        }:
+            if document.doc_role == DocumentRole.LATEST_QUARTER.value:
+                start_month = ((inferred.month - 1) // 3) * 3 + 1
+                document.period_start = date(inferred.year, start_month, 1)
+            else:
+                document.period_start = date(inferred.year, 1, 1)
+        if document.doc_role == DocumentRole.ANNUAL_BACKBONE.value:
+            document.fiscal_year = inferred.year
+            document.fiscal_quarter = None
+        elif document.doc_role == DocumentRole.LATEST_QUARTER.value:
+            document.fiscal_year = inferred.year
+            document.fiscal_quarter = ((inferred.month - 1) // 3) + 1
+        status = "CORRECTED"
+    return {
+        "status": status,
+        "supplied_period_end": str(supplied) if supplied else None,
+        "inferred_period_end": str(inferred) if inferred else None,
+    }
+
+
 async def assess_gil(session: AsyncSession, ticker: str) -> dict[str, Any]:
     """Compatibility entry point; GIL logic lives in gil_service."""
     from sag_api.services.gil_service import assess_gil as run_assessment
@@ -94,24 +166,44 @@ PROCESSING_VERSION = 2
 CANONICALIZATION_VERSION = "canonical-md-v1"
 
 _VIETNAMESE_WORDS = frozenset(
-    "báo cáo tài chính công ty mẹ hợp nhất quý năm tháng doanh thu chi phí tài sản nguồn vốn vốn chủ sở hữu phải thu phải trả".split()
+    "báo cáo tài chính công ty mẹ hợp nhất quý năm tháng doanh thu chi phí tài sản nguồn vốn vốn chủ sở hữu phải thu phải trả thuyết minh kiểm toán soát xét".split()
 )
 _ENGLISH_WORDS = frozenset(
-    "financial statements interim annual quarter company parent consolidated revenue expense assets liabilities equity receivables payables".split()
+    "financial statements interim annual quarter company parent consolidated revenue expense assets liabilities equity receivables payables notes audit profit balance".split()
 )
+_VN_DIACRITICS = "ăâđêôơưáàảãạấầẩẫậếềểễệốồổỗộớờởỡợứừửữựỳýỷỹỵ"
 
 
 def _document_language(markdown: str) -> str:
-    """Cheap post-OCR gate; unknown is retained for manual review."""
+    """Cheap post-OCR gate; unknown is retained for manual review.
+
+    Uses body-focused detection beyond the introductory cover letter
+    (e.g., periodic disclosure letter / công văn CBTT) to prevent false UNKNOWN.
+    """
+    # 1. Check body beyond introductory cover page (chars 4000 to 54000 if long enough)
+    body = markdown[4000:54000] if len(markdown) > 8000 else markdown[:50000]
+    sample_body = re.sub(r"[`|0-9_#*:/().,;\-]+", " ", body.casefold())
+
+    vi_body = sum(sample_body.count(w) for w in _VIETNAMESE_WORDS)
+    vi_body_chars = sum(sample_body.count(c) for c in _VN_DIACRITICS)
+    en_body = sum(sample_body.count(w) for w in _ENGLISH_WORDS)
+
+    if en_body >= 5 and vi_body == 0 and vi_body_chars < 15:
+        return "ENGLISH"
+
+    # 2. General sample
     sample = re.sub(r"[`|0-9_#*:/().,;\-]+", " ", markdown[:50000].casefold())
     vi = sum(sample.count(word) for word in _VIETNAMESE_WORDS)
-    vi += sum(sample.count(char) for char in "ăâđêôơưáàảãạấầẩẫậếềểễệốồổỗộớờởỡợứừửữự")
+    vi += sum(sample.count(char) for char in _VN_DIACRITICS)
     en = sum(sample.count(word) for word in _ENGLISH_WORDS)
+
     if en >= 4 and vi == 0:
         return "ENGLISH"
     if vi > en:
         return "VIETNAMESE"
     if en >= 4 and en > vi * 2:
+        return "ENGLISH"
+    if en >= 8 and vi_body_chars < 20:
         return "ENGLISH"
     return "UNKNOWN"
 
@@ -136,7 +228,7 @@ def clean_ocr_markdown(markdown: str, filename: str, *, doc_role: str | None = N
     """
     from sag_api.parsing.markdown_noise_cleaner import clean_markdown
 
-    cleaned, _stats = clean_markdown(markdown)
+    cleaned, _stats = clean_markdown(markdown, doc_role=doc_role)
     if not cleaned.strip():
         raise ValidationError(f"Cleaner lĂ m rá»—ng Markdown OCR cho {filename}")
     canonical = canonicalize_markdown(cleaned)
@@ -212,9 +304,12 @@ def _extract_pdf_from_zip(path: Path, doc_role: str | None = None, scope: str | 
             lower = name.lower()
             value = 0
 
-            # 1. Phạt nặng tài liệu phụ trợ, giải trình, tóm tắt
+            # 1. Phạt nặng tài liệu giải trình đơn thuần, tóm tắt (không phải full BCTC)
             if any(k in lower for k in ("giai_trinh", "giai-trinh", "giaitrinh", "bien_dong_ln", "explanation")):
-                value -= 100
+                if not any(b in lower for b in ("bctc", "bao_cao_tai_chinh", "baocaotaichinh", "financial_statement")):
+                    value -= 150
+                else:
+                    value -= 10
             if any(k in lower for k in ("tom_tat", "tomtat", "summary", "brief")):
                 value -= 80
 
@@ -232,7 +327,7 @@ def _extract_pdf_from_zip(path: Path, doc_role: str | None = None, scope: str | 
 
             # 3. Xử lý BCTC (ANNUAL_BACKBONE & LATEST_QUARTER)
             if role in {"ANNUAL_BACKBONE", "LATEST_QUARTER"}:
-                if any(k in lower for k in ("bctc", "financial", "interim", "statement", "baocaotaichinh")):
+                if any(k in lower for k in ("bctc", "bao_cao_tai_chinh", "baocaotaichinh", "financial", "interim", "statement")):
                     value += 100
 
                 # Ưu tiên Scope: Mẹ / Riêng vs Hợp nhất
@@ -247,11 +342,12 @@ def _extract_pdf_from_zip(path: Path, doc_role: str | None = None, scope: str | 
                     if any(k in lower for k in ("congtyme", "cong_ty_me", "rieng")):
                         value -= 50
 
-                # Ưu tiên tiếng Việt hơn tiếng Anh
-                if any(k in lower for k in ("bctc", "baocaotaichinh", "soat_xet", "kiem_toan")):
-                    value += 30
-                if any(k in lower for k in ("interim_financial", "financial_statements", "english")):
-                    value -= 25
+                # Ưu tiên tiếng Việt mạnh mẽ
+                if any(k in lower for k in ("bao_cao_tai_chinh", "baocaotaichinh", "kiem_toan", "soat_xet", "ban_nien", "_vn", "_vi", "vas", "tieng_viet")):
+                    value += 80
+                # Phạt nặng các tệp tiếng Anh
+                if any(k in lower for k in ("audited_financial", "financial_statement", "interim_financial", "semi_annual", "english", "_en.", "_en_", "_eng", "ifrs")):
+                    value -= 200
 
             return value, -len(name)
 
@@ -292,8 +388,7 @@ async def _read_markdown_from_body(body: DocumentCreateIn) -> tuple[str, str, st
         raw_text = raw_bytes.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ValidationError("Markdown object pháº£i lĂ  UTF-8") from exc
-    canonical = canonicalize_markdown(raw_text)
-    _reject_english(canonical, body.title or uri)
+    canonical = clean_ocr_markdown(raw_text, body.title or uri, doc_role=body.doc_role)
     data = canonical.encode("utf-8")
     content_hash = _hash_bytes(data)
     if body.content_sha256 and body.content_sha256 not in {raw_hash, content_hash}:
@@ -667,9 +762,49 @@ async def create_financial_document(
         existing_rows[0] if existing_rows else None,
     )
     if existing is not None:
-        if body.processing_mode == "OCR_ONLY" and existing.asset_id:
-            asset = await session.get(DocumentAsset, existing.asset_id)
-            if asset is not None and not str(asset.object_uri or "").startswith("r2://"):
+        asset = await session.get(DocumentAsset, existing.asset_id) if existing.asset_id else None
+        scope_changed = asset is None
+        if asset is None:
+            cache_path = _cache_path_for(content_hash, ".md")
+            if not cache_path.exists():
+                cache_path.write_bytes(canonical.encode("utf-8"))
+            existing_asset = await session.scalar(
+                select(DocumentAsset).where(DocumentAsset.content_sha256 == content_hash).limit(1)
+            )
+            if existing_asset is None:
+                asset_uri = await _persist_canonical_markdown_uri(
+                    canonical,
+                    ticker=issuer.ticker,
+                    doc_role=role,
+                    content_hash=content_hash,
+                    fallback_uri=resolved_uri,
+                )
+                asset = DocumentAsset(
+                    issuer_id=issuer.id,
+                    asset_kind="canonical_markdown",
+                    object_uri=asset_uri,
+                    content_type="text/markdown; charset=utf-8",
+                    size_bytes=size_bytes,
+                    content_sha256=content_hash,
+                    canonical_markdown_sha256=content_hash,
+                    parser_version="provided-markdown",
+                    canonicalization_version=CANONICALIZATION_VERSION,
+                    metadata_json={**body.metadata, "local_cache_path": str(cache_path), "raw_content_sha256": raw_hash},
+                )
+                session.add(asset)
+                await session.flush()
+            else:
+                asset = existing_asset
+                asset.metadata_json = {**(asset.metadata_json or {}), **body.metadata}
+            existing.asset_id = asset.id
+            existing.storage_path = str(cache_path)
+        if asset is not None and body.metadata:
+            old_scope = (asset.metadata_json or {}).get("report_scope")
+            new_scope = body.metadata.get("report_scope")
+            scope_changed = scope_changed or bool(new_scope and new_scope != old_scope)
+            asset.metadata_json = {**(asset.metadata_json or {}), **body.metadata}
+        if body.processing_mode == "OCR_ONLY" and asset is not None:
+            if not str(asset.object_uri or "").startswith("r2://"):
                 r2_uri = await _persist_canonical_markdown_uri(
                     canonical,
                     ticker=issuer.ticker,
@@ -687,7 +822,8 @@ async def create_financial_document(
             body.processing_mode == "OCR_ONLY"
             and existing.structure_status != ProcessingStageStatus.COMPLETE.value
         )
-        if needs_ocr_rebuild or _status_value(existing.status) in {DocumentStatus.FAILED.value, DocumentStatus.CANCELLED.value}:
+        needs_scope_rebuild = scope_changed and body.processing_mode != "OCR_ONLY"
+        if needs_ocr_rebuild or needs_scope_rebuild or _status_value(existing.status) in {DocumentStatus.FAILED.value, DocumentStatus.CANCELLED.value}:
             existing.status = DocumentStatus.PROCESSING
             existing.progress = 0
             existing.error = None
@@ -903,8 +1039,18 @@ async def rebuild_structure_and_embeddings(
     issuer: Issuer,
     document: Document,
     markdown: str,
+    report_scope: str | None = None,
 ) -> None:
-    raw_markdown = clean_ocr_markdown(markdown, document.filename)
+    if report_scope is None and document.asset_id:
+        asset = await session.get(DocumentAsset, document.asset_id)
+        report_scope = (asset.metadata_json or {}).get("report_scope") if asset else None
+    from sag_api.extraction.parsers.statement_table_parser import assess_financial_document_completeness
+
+    raw_markdown = clean_ocr_markdown(markdown, document.filename, doc_role=document.doc_role)
+    source_completeness = assess_financial_document_completeness(
+        raw_markdown, str(document.doc_role or "").upper()
+    )
+    period_alignment = _align_document_period(document, raw_markdown)
     markdown = analysis_markdown(raw_markdown, doc_role=document.doc_role)
     structure_run = _stage_run(document, "structure", ProcessingStageStatus.RUNNING.value)
     session.add(structure_run)
@@ -916,6 +1062,7 @@ async def rebuild_structure_and_embeddings(
         "fiscal_quarter": document.fiscal_quarter,
     }
     nodes, coverage = parse_markdown_tree(markdown, document_id=document.id, source_id=issuer.id, metadata=metadata)
+    coverage = {**coverage, "period_alignment": period_alignment}
     await session.execute(delete(DocumentTreeNode).where(DocumentTreeNode.document_id == document.id))
     await session.execute(delete(EmbeddingChunk).where(EmbeddingChunk.document_id == document.id))
     # Make the old node identities disappear before inserting deterministic
@@ -964,19 +1111,20 @@ async def rebuild_structure_and_embeddings(
     try:
         extraction_run = _stage_run(document, "extraction", ProcessingStageStatus.RUNNING.value)
         session.add(extraction_run)
-        # The LLM call can take minutes. Commit the structure and stage marker
-        # first so the session returns its DB connection to the pool while
-        # waiting on the external provider.
+        # Commit structure and stage marker before extraction so the session
+        # does not hold a connection during the compiler work.
         await session.commit()
         extraction = await extract_and_persist_manifest(
             session, issuer, document, markdown, node_rows,
             statement_markdown=raw_markdown,
+            accounting_scope=report_scope,
+            source_completeness=source_completeness,
         )
     except Exception as exc:  # noqa: BLE001
         extraction = None
         extraction_error = str(exc)[:2000]
         extraction_error_metadata = {
-            "mode": "llm_manifest",
+            "mode": "deterministic_compiler",
             "error_type": type(exc).__name__,
             "error": extraction_error,
         }
@@ -990,7 +1138,7 @@ async def rebuild_structure_and_embeddings(
         document.token_usage = int(document.token_usage or 0) + int(extraction.token_usage or 0)
         _complete_stage(extraction_run, extraction.metadata or {}, status=extraction.status, error=extraction.error)
         if extraction.status != ProcessingStageStatus.COMPLETE.value:
-            # Propagate the exact LLM failure reason instead of a generic placeholder.
+            # Propagate the exact compiler failure reason instead of a generic placeholder.
             extraction_error = (extraction.error or "")[:2000] or extraction.status
             document.error = extraction_error
 
@@ -1063,7 +1211,10 @@ async def rebuild_document_structure_only(
     markdown: str,
 ) -> None:
     """Build OCR/tree artifacts without invoking extraction or embeddings."""
-    markdown = analysis_markdown(markdown, doc_role=document.doc_role)
+    markdown = analysis_markdown(
+        clean_ocr_markdown(markdown, document.filename, doc_role=document.doc_role),
+        doc_role=document.doc_role,
+    )
     structure_run = _stage_run(document, "structure", ProcessingStageStatus.RUNNING.value)
     session.add(structure_run)
     metadata = {

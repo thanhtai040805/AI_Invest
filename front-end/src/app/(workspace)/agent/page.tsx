@@ -1,12 +1,28 @@
 "use client"
 
 import { useMemo, useState } from "react"
-import { agentOutput, citations, pipeline, defaultRuns, defaultStockCases } from "@/lib/agent-system"
+import { agentOutput, pipeline, defaultRuns, defaultStockCases, type CaseItem, type StockCaseDetail } from "@/lib/agent-system"
 import { Button, Conviction, metricTone, Pill, ReasoningBlock, SectionEyebrow, Tabs, PercentChange, fmt } from "@/components/ui"
 import { Link } from "@/lib/router"
 import { workspaceApi, marketApi } from "@/lib/api"
 import { useResource } from "@/lib/api/use-resource"
 import type { Stock } from "@/types"
+
+interface AgentThesis {
+  ticker?: string
+  status?: string
+  thesis_statement?: string
+  thesis?: string
+  catalyst_description?: string
+  target_price?: number
+  entry_price_estimated?: number
+  invalidation_threshold?: number
+  thesis_id?: string
+}
+
+interface AgentCounterThesis { ticker?: string; thesis_id?: string; argument_points?: string[] }
+interface AgentLog { agent?: string; entries?: unknown[] }
+interface AgentResponse { theses?: AgentThesis[]; counterTheses?: AgentCounterThesis[]; logs?: AgentLog[] }
 
 const statusTone: Record<string, "gain" | "mineral" | "teal" | "warning" | "neutral"> = {
   New: "mineral", Updated: "teal", Confirmed: "gain", Watching: "neutral", Flagged: "warning",
@@ -67,13 +83,13 @@ export default function WarRoom() {
   const snapshotRes = useResource(() => marketApi.snapshot().catch(() => ({ items: [] })), [])
 
   const liveRuns = useMemo(() => {
-    const raw = resource.data as any
+    const raw = resource.data as AgentResponse | null
     if (!raw || !Array.isArray(raw.theses) || raw.theses.length === 0) {
       return defaultRuns
     }
-    const liveCases = raw.theses.map((t: any) => ({
+    const liveCases: CaseItem[] = raw.theses.map((t) => ({
       symbol: String(t.ticker),
-      status: (t.status === "APPROVED" ? "Confirmed" : t.status === "WATCH" ? "Watching" : "New") as any,
+      status: t.status === "APPROVED" ? "Confirmed" : t.status === "WATCH" ? "Watching" : "New",
       note: String(t.thesis_statement || t.catalyst_description || "Luận điểm đầu tư tự hành"),
     }))
     const firstRun = {
@@ -88,15 +104,15 @@ export default function WarRoom() {
   }, [resource.data])
 
   const liveStockCases = useMemo(() => {
-    const raw = resource.data as any
+    const raw = resource.data as AgentResponse | null
     if (!raw || !Array.isArray(raw.theses) || raw.theses.length === 0) {
       return defaultStockCases
     }
-    const mapped: Record<string, any> = { ...defaultStockCases }
-    raw.theses.forEach((t: any) => {
+    const mapped: Record<string, StockCaseDetail> = { ...defaultStockCases }
+    raw.theses.forEach((t) => {
       const sym = String(t.ticker)
       const base = defaultStockCases[sym] ?? defaultStockCases.HPG
-      const counterMatch = raw.counterTheses?.find((ct: any) => ct.ticker === sym || ct.thesis_id === t.thesis_id)
+      const counterMatch = raw.counterTheses?.find((ct) => ct.ticker === sym || ct.thesis_id === t.thesis_id)
       mapped[sym] = {
         ...base,
         symbol: sym,
@@ -122,7 +138,7 @@ export default function WarRoom() {
   const [showDetail, setShowDetail] = useState(false)
 
   // keep selected symbol valid for the run
-  const activeSymbol = run.cases.some((c: any) => c.symbol === symbol) ? symbol : (run.cases[0]?.symbol ?? "HPG")
+  const activeSymbol = run.cases.some((c) => c.symbol === symbol) ? symbol : (run.cases[0]?.symbol ?? "HPG")
   const c = liveStockCases[activeSymbol] ?? defaultStockCases[activeSymbol] ?? defaultStockCases.HPG
 
   const stockList = (snapshotRes.data as { items?: Stock[] })?.items || []
@@ -133,9 +149,9 @@ export default function WarRoom() {
     changePct: 0.8,
   }
 
-  const runCase = run.cases.find((x: any) => x.symbol === activeSymbol) ?? run.cases[0]
+  const runCase = run.cases.find((x) => x.symbol === activeSymbol) ?? run.cases[0]
 
-  const totalCases = useMemo(() => new Set(liveRuns.flatMap((r: any) => r.cases.map((x: any) => x.symbol))).size, [liveRuns])
+  const totalCases = useMemo(() => new Set(liveRuns.flatMap((r) => r.cases.map((x) => x.symbol))).size, [liveRuns])
 
   return (
     <div className="min-h-full bg-paper">
@@ -402,7 +418,7 @@ export default function WarRoom() {
             {(tab === "Nhật ký tác tử" || tab === "Agent Logs") && (
               <div className="space-y-2 text-[12px] font-mono">
                 <div className="text-[11px] text-muted mb-2 font-sans">Nhật ký 12 Agent từ database:</div>
-                {(resource.data as any)?.logs?.slice(0, 8).map((l: any, i: number) => (
+                {(resource.data as AgentResponse | null)?.logs?.slice(0, 8).map((l, i) => (
                   <div key={i} className="border border-line rounded-[6px] p-2 bg-paper flex items-center justify-between">
                     <span className="text-ink capitalize">{l.agent.replace(/_/g, " ")}</span>
                     <span className="text-muted text-[11px]">

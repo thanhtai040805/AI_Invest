@@ -1150,12 +1150,12 @@
               <text x="14" y="70" font-family="Geist" font-size="11.5" font-weight="500" fill="#14532d">• Tuân thủ Vi cấu trúc HOSE: Bước giá 10đ/50đ/100đ</text>
               <text x="14" y="88" font-family="Geist" font-size="11.5" font-weight="500" fill="#14532d">• Trần lệnh tối đa 500,000 cổ phiếu / lệnh bắn</text>
               <text x="14" y="106" font-family="Geist" font-size="11.5" font-weight="500" fill="#14532d">• Phân tầng ADTV (Mega/High/Mid) &amp; Hạ nhãn động</text>
-              <text x="14" y="124" font-family="Geist" font-size="11.5" font-weight="500" fill="#14532d">• Tối ưu hóa trượt giá qua thuật toán VWAP Slicing</text>
+              <text x="14" y="124" font-family="Geist" font-size="11.5" font-weight="500" fill="#14532d">• Shadow limit chờ giá; 1 worker quét mỗi giây</text>
               <text x="14" y="142" font-family="Geist" font-size="11.5" font-weight="500" fill="#14532d">• Failsafe Guard: Khóa khi trễ mạng &gt; 1500ms</text>
-              <text x="14" y="160" font-family="Geist" font-size="11.5" font-weight="500" fill="#14532d">• Chế độ kép: LIVE (DNSE Broker) vs SHADOW Paper</text>
+              <text x="14" y="160" font-family="Geist" font-size="11.5" font-weight="500" fill="#14532d">• Chỉ giao dịch ảo; không gửi lệnh DNSE</text>
               <text x="14" y="178" font-family="Geist" font-size="11.5" font-weight="500" fill="#14532d">• Ghi nhận hồ sơ trượt giá (Slippage Records) cho RL</text>
               <rect x="14" y="196" width="292" height="22" rx="4" fill="#ffffff" opacity="0.9" />
-              <text x="20" y="211" font-family="Geist Mono" font-size="9.5" font-weight="700" fill="#15803d">Xác nhận Khớp lệnh: Filled Orders &amp; Slippage Log</text>
+              <text x="20" y="211" font-family="Geist Mono" font-size="9.5" font-weight="700" fill="#15803d">Pending → Filled/Expired; ledger cập nhật nguyên tử</text>
             </g>
           </a>
 
@@ -1773,7 +1773,7 @@ Output: Danh sách Group A (Elite), Group B (Standard), Excluded List
             <li><span class="param-key">Trần lệnh tối đa</span><span class="param-val">500,000 Cổ phiếu / Lệnh</span></li>
             <li><span class="param-key">Failsafe Ngắt kết nối</span><span class="param-val">Latency &gt; 1500ms hoặc Mất 3 nhịp Heartbeat</span></li>
             <li><span class="param-key">Chốt chặn ATC</span><span class="param-val">Đóng băng lệnh 5 phút cuối nếu phát hiện sốc ảo</span></li>
-            <li><span class="param-key">Chế độ vận hành</span><span class="param-val">LIVE (Broker DNSE) vs SHADOW (Paper)</span></li>
+            <li><span class="param-key">Chế độ vận hành</span><span class="param-val">SHADOW; sổ lệnh tối đa 10 giây</span></li>
           </ul>
         </div>
         <div class="drawer-section">

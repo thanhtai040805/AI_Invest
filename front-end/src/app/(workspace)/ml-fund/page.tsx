@@ -349,10 +349,16 @@ function Comparison() {
   )
 }
 
+interface ApiFundAccount { account_id?: string; total_nav?: number; cash_balance?: number; open_positions?: number; drawdown_tier?: string; mode?: string }
+interface ApiPrediction { ticker?: string; pred_score_z?: number; shares?: number; price?: number; surv_prob?: number; mom_pred?: number; rank_pred?: number; target_weight_pct?: number; execution_mode?: string; predict_date?: string; realized_min_lock_ret?: number; realized_3d_ret?: number; survival_outcome?: boolean; accuracy_evaluated_at?: string }
+interface ApiTrade { symbol?: string; ticker?: string; quantity?: number; price?: number }
+interface ApiMetrics { total_evaluated?: number; newly_evaluated?: number; realized_survival_rate?: number; predicted_avg_survival_prob?: number; directional_hit_rate?: number; avg_realized_3d_ret?: number; avg_predicted_3d_ret?: number }
+interface ApiMLFund { mainAccount?: ApiFundAccount; account?: ApiFundAccount; predictions?: ApiPrediction[]; trades?: ApiTrade[]; metrics?: ApiMetrics[] }
+
 export default function MLFund() {
   const resource = useResource(() => workspaceApi.mlFund().catch(() => null), [])
   const liveData = useMemo(() => {
-    const raw = resource.data as any
+    const raw = resource.data as ApiMLFund | null
     if (!raw) {
       return {
         funds: defaultFunds,
@@ -373,7 +379,7 @@ export default function MLFund() {
         nav: Number(raw.mainAccount.total_nav) || 984_380_000,
         cash: Number(raw.mainAccount.cash_balance) || 132_400_000,
         openPositions: Number(raw.mainAccount.open_positions ?? 3),
-        mode: (raw.mainAccount.drawdown_tier === "GREEN" ? "LIVE" : "SHADOW_RUNNER") as any,
+        mode: raw.mainAccount.drawdown_tier === "GREEN" ? "LIVE" : "SHADOW_RUNNER",
       } : defaultFunds[0],
       raw.account ? {
         id: "ml" as const,
@@ -383,12 +389,12 @@ export default function MLFund() {
         nav: Number(raw.account.total_nav) || 500_000_000,
         cash: Number(raw.account.cash_balance) || 500_000_000,
         openPositions: Number(raw.account.open_positions ?? (raw.trades?.length || 0)),
-        mode: (raw.account.mode || "SHADOW_RUNNER") as any,
+        mode: raw.account.mode === "LIVE" ? "LIVE" : raw.account.mode === "DISABLED" ? "DISABLED" : "SHADOW_RUNNER",
       } : defaultFunds[1]
     ]
 
     const currentPredictions: MLPrediction[] = Array.isArray(raw.predictions) && raw.predictions.length > 0
-      ? raw.predictions.map((p: any) => {
+      ? raw.predictions.map((p) => {
           const z = Number(p.pred_score_z ?? 1.0)
           const tier = z >= 1.0 ? "TIER_A_PLUS" : "TIER_A"
           const shares = Number(p.shares ?? 1000)
@@ -417,7 +423,7 @@ export default function MLFund() {
       : []
 
     const currentPositions: MLPosition[] = Array.isArray(raw.trades) && raw.trades.length > 0
-      ? raw.trades.slice(0, 5).map((t: any) => {
+      ? raw.trades.slice(0, 5).map((t) => {
           const qty = Number(t.quantity || 1000)
           const px = Number(t.price || 50000)
           const val = qty * px
@@ -433,10 +439,10 @@ export default function MLFund() {
         })
       : []
 
-    const currentSession = {
+    const currentSession: MLSession = {
       predictDate: currentPredictions[0]?.predictDate || defaultSession.predictDate,
       predictionsCount: currentPredictions.length,
-      status: (currentPredictions.length > 0 ? "SUCCESS" : "DISABLED") as any,
+      status: currentPredictions.length > 0 ? "SUCCESS" : "DISABLED",
     }
 
     const currentHistory = currentPredictions.filter((p) => p.evaluatedAt || p.survivalOutcome !== undefined)

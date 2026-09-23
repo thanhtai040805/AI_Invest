@@ -152,7 +152,12 @@ def extraction_quality_failures(
     quality: dict[str, Any], expected_prompt_version: str = EXPECTED_EXTRACTION_PROMPT_VERSION
 ) -> list[str]:
     failures: list[str] = []
-    if quality.get("prompt_version") != expected_prompt_version:
+    # The production path is a deterministic compiler. Prompt versions are
+    # only meaningful for the retired LLM extraction path.
+    if quality.get("mode") == "deterministic_compiler":
+        if not quality.get("taxonomy_version"):
+            failures.append("taxonomy_version_missing")
+    elif quality.get("prompt_version") != expected_prompt_version:
         failures.append(
             f"prompt_version_mismatch:{quality.get('prompt_version')}!={expected_prompt_version}"
         )
@@ -177,6 +182,21 @@ async def run_ticker(
     selected_roles = {doc.role for doc in selected.all_documents}
     selector_roles_complete = REQUIRED_DOCUMENT_ROLES.issubset(selected_roles)
     started = time.monotonic()
+    if connector.sag_analysis_hold:
+        return {
+            "ticker": ticker,
+            "selector_complete": selected.is_complete,
+            "selected_roles": sorted(selected_roles),
+            "required_roles_complete": selector_roles_complete,
+            "pipeline_status": "SAG_CLOSED",
+            "elapsed_seconds": round(time.monotonic() - started, 1),
+            "documents": [],
+            "sag_statuses": {},
+            "evidence": {},
+            "gil": None,
+            "passed": False,
+            "reason": "SAG is closed; benchmark did not connect or read SAG.",
+        }
     result = await pipeline.process_ticker(
         ticker,
         ocr_only=ocr_only,

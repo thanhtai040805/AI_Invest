@@ -17,7 +17,6 @@ from datetime import date
 
 from app.core.base_agent import BaseAgent
 from app.domain.rules.counter_thesis import CounterThesisEngine, Verdict
-from app.adapters.sag_connector import sag_connector
 from app.domain.rules.beneish import beneish_engine
 
 logger = logging.getLogger(__name__)
@@ -142,41 +141,7 @@ class CounterThesisAgent(BaseAgent):
             except Exception as e:
                 logger.warning(f"Lỗi hydrate volume/vol_ma20 cho {ticker}: {e}")
 
-        # 1. Truy vấn Dữ liệu Sở hữu chéo & Đồ thị GIL từ SAG Connector
-        gil_flag = "DATA_INSUFFICIENT"
-        ocr_score = 0.0
-        cycles_detected = 0
-        gil_error = None
-
-        if "gil_info" in event_data or "gil_output" in event_data:
-            gil_info = event_data.get("gil_info") or event_data.get("gil_output", {})
-            gil_flag = str(gil_info.get("gil_flag") or "DATA_INSUFFICIENT").upper()
-            ocr_score = float(gil_info.get("ocr_score", 0.0))
-            cycles_detected = int(gil_info.get("cycles_detected", 0))
-        elif "gil_status" in risk_overrides:
-            gil_flag = str(risk_overrides["gil_status"]).upper()
-            ocr_score = float(risk_overrides.get("ocr_score", 0.0))
-        elif "gil_status" in market_data:
-            gil_flag = str(market_data["gil_status"]).upper()
-            ocr_score = float(market_data.get("ocr_score", 0.0))
-        else:
-            try:
-                gil_info = await sag_connector.get_gil_relationships(ticker)
-                status = str(gil_info.get("analysis_status") or gil_info.get("status") or "").upper()
-                flag = str(gil_info.get("gil_flag") or "DATA_INSUFFICIENT").upper()
-                if status in {"FALLBACK", "DATA_INSUFFICIENT"} or flag in {"DATA_ERROR", "DATA_INSUFFICIENT"}:
-                    gil_flag = "DATA_INSUFFICIENT"
-                    logger.warning(f"[CounterThesisAgent] Nhận trạng thái GIL thiếu dữ liệu từ SAG cho {ticker}.")
-                else:
-                    gil_flag = flag
-                    ocr_score = float(gil_info.get("ocr_score", 0.0))
-                    cycles_detected = int(gil_info.get("cycles_detected", 0))
-            except Exception as e:
-                logger.warning(f"Lỗi truy vấn GIL từ SAG cho {ticker}: {e}")
-                gil_flag = "DATA_INSUFFICIENT"
-                gil_error = str(e)
-
-        # 2. Truy vấn Beneish M-Score & Phải thu từ BeneishEngine
+        # 1. Truy vấn Beneish M-Score & Phải thu từ BeneishEngine
         beneish_risk = 20.0
         receivable_spike = 20.0
         try:
@@ -202,19 +167,16 @@ class CounterThesisAgent(BaseAgent):
             logger.warning(f"Lỗi tính toán M-Score cho {ticker}: {e}")
             beneish_risk = 40.0
 
-        # 3. Chuẩn hóa Risk Features cho Base CTS (Đã loại bỏ Margin Tension)
+        # 2. Chuẩn hóa các Risk Features độc lập cho Base CTS.
         risk_features = {
-            "gil_risk": 100.0 if gil_flag in ["CATASTROPHIC", "DATA_ERROR", "DATA_INSUFFICIENT"] else (60.0 if gil_flag == "WARNING" else ocr_score),
-            "gil_status": gil_flag,
             "beneish_risk": float(risk_overrides.get("beneish_risk", beneish_risk)),
             "receivable_spike": float(risk_overrides.get("receivable_spike", receivable_spike)),
-            "graph_rpt_risk": float(risk_overrides.get("graph_rpt_risk", 75.0 if cycles_detected > 0 else 20.0)),
             "macro_headwind": float(risk_overrides.get("macro_headwind", 40.0 if "BEAR" in str(market_data.get("current_regime", "")).upper() else 20.0)),
             "liquidity_stress": float(risk_overrides.get("liquidity_stress", 60.0 if float(market_data.get("breadth_above_ma50_pct", 50.0)) < 30.0 else 25.0)),
-            "missing_data": float(risk_overrides.get("missing_data", 80.0 if gil_flag in {"DATA_ERROR", "DATA_INSUFFICIENT"} else 15.0)),
+            "missing_data": float(risk_overrides.get("missing_data", 20.0)),
         }
 
-        # 4. Chạy toàn bộ quy trình phản biện qua CounterThesisEngine
+        # 3. Chạy toàn bộ quy trình phản biện qua CounterThesisEngine
         report = await self.counter_thesis_engine.evaluate_counter_thesis(
             ticker=ticker,
             thesis_payload=thesis,
@@ -273,7 +235,6 @@ class CounterThesisAgent(BaseAgent):
 
         trace = {
             "counter_thesis_engine": self.counter_thesis_engine.__class__.__name__,
-            "gil_status": gil_flag,
             "base_cts": report.base_cts,
             "interaction_multiplier": report.interaction_multiplier,
             "regime_multiplier": report.regime_multiplier,

@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.infrastructure.database.pg_pool import migrate as pg_migrate, run_agent_migrations
+from app.config.settings import get_settings
 
 logger = logging.getLogger("ai_engine.lifespan")
 
@@ -44,29 +45,44 @@ async def lifespan(app: FastAPI):
     # 2. Position Monitoring Daemon (09:00 - 14:45 Trong phiên - Realtime Ticks & Stop Loss)
     # 3. EOD Learning Daemon (15:15 Cuối phiên - Causal Learning & PnL Settlement)
     tasks = []
-    try:
-        from app.infrastructure.workers.daily_pipeline_daemon import daily_daemon
-        daily_task = asyncio.create_task(daily_daemon.start())
-        tasks.append((daily_task, daily_daemon))
-        logger.info("[Lifespan] Daily Pipeline Daemon (09:15 Morning Cron) đã được khởi động.")
-    except Exception as e_daily:
-        logger.warning(f"[Lifespan] Không thể khởi động Daily Pipeline Daemon: {e_daily}")
+    settings = get_settings()
+    automation = settings.portfolio_automation_enabled
+    if automation and not settings.multi_agent_account_id:
+        raise RuntimeError("PORTFOLIO_AUTOMATION_ENABLED requires MULTI_AGENT_ACCOUNT_ID")
+    if not automation:
+        logger.info("[Lifespan] Portfolio automation disabled until an account is configured.")
+    if automation:
+        try:
+            from app.infrastructure.workers.shadow_order_daemon import daemon as shadow_daemon
+            shadow_task = asyncio.create_task(shadow_daemon.start())
+            tasks.append((shadow_task, shadow_daemon))
+            logger.info("[Lifespan] Shadow limit order monitor (1s polling) started.")
+        except Exception as e_shadow:
+            logger.warning(f"[Lifespan] Could not start Shadow order monitor: {e_shadow}")
 
-    try:
-        from app.infrastructure.workers.position_monitoring_daemon import daemon as pos_daemon
-        pos_task = asyncio.create_task(pos_daemon.start())
-        tasks.append((pos_task, pos_daemon))
-        logger.info("[Lifespan] Position Monitoring Daemon đã được khởi động.")
-    except Exception as e_pos:
-        logger.warning(f"[Lifespan] Không thể khởi động Position Monitoring Daemon: {e_pos}")
+        try:
+            from app.infrastructure.workers.daily_pipeline_daemon import daily_daemon
+            daily_task = asyncio.create_task(daily_daemon.start())
+            tasks.append((daily_task, daily_daemon))
+            logger.info("[Lifespan] Daily Pipeline Daemon (09:15 Morning Cron) đã được khởi động.")
+        except Exception as e_daily:
+            logger.warning(f"[Lifespan] Không thể khởi động Daily Pipeline Daemon: {e_daily}")
 
-    try:
-        from app.infrastructure.workers.eod_learning_daemon import eod_daemon
-        eod_task = asyncio.create_task(eod_daemon.start())
-        tasks.append((eod_task, eod_daemon))
-        logger.info("[Lifespan] EOD Learning Daemon (15:15 EOD Cron) đã được khởi động.")
-    except Exception as e_eod:
-        logger.warning(f"[Lifespan] Không thể khởi động EOD Learning Daemon: {e_eod}")
+        try:
+            from app.infrastructure.workers.position_monitoring_daemon import daemon as pos_daemon
+            pos_task = asyncio.create_task(pos_daemon.start())
+            tasks.append((pos_task, pos_daemon))
+            logger.info("[Lifespan] Position Monitoring Daemon đã được khởi động.")
+        except Exception as e_pos:
+            logger.warning(f"[Lifespan] Không thể khởi động Position Monitoring Daemon: {e_pos}")
+
+        try:
+            from app.infrastructure.workers.eod_learning_daemon import eod_daemon
+            eod_task = asyncio.create_task(eod_daemon.start())
+            tasks.append((eod_task, eod_daemon))
+            logger.info("[Lifespan] EOD Learning Daemon (15:15 EOD Cron) đã được khởi động.")
+        except Exception as e_eod:
+            logger.warning(f"[Lifespan] Không thể khởi động EOD Learning Daemon: {e_eod}")
 
     try:
         from app.infrastructure.workers.daily_etl_daemon import etl_daemon
@@ -100,4 +116,3 @@ async def lifespan(app: FastAPI):
         except Exception:
             pass
     logger.info("[Lifespan] Đã dừng toàn bộ background daemons và EventBus.")
-
