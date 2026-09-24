@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS "signals";
+DROP TABLE IF EXISTS "signal_log";

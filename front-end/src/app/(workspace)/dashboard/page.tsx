@@ -3,7 +3,6 @@
 import { Page } from "@/components/Shell";
 import { Link } from "@/lib/router";
 type Sector = { name: string; vn: string; weight: number; changePct: number; foreign: number };
-type Surveillance = { kind: string; symbol?: string; text: string; time: string; tone: "info" | "gain" | "loss" | "warning" };
 import { marketApi, workspaceApi } from "@/lib/api";
 import { useResource } from "@/lib/api/use-resource";
 import { DataState } from "@/components/data-state";
@@ -78,12 +77,10 @@ function MarketMap({ sectors }: { sectors: DashboardSector[] }) {
 
 function DashboardView({
   sectors,
-  surveillance,
   indices,
   pulse,
 }: {
   sectors: Sector[];
-  surveillance: Surveillance[];
   indices: Record<string, number>;
   pulse?: {
     state: string;
@@ -185,7 +182,7 @@ function DashboardView({
         </Panel>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.55fr)_minmax(310px,0.8fr)] gap-4 mt-4">
+      <div className="grid grid-cols-1 gap-4 mt-4">
         <Panel>
           <PanelHead
             title="Bản đồ nhiệt ngành"
@@ -197,43 +194,6 @@ function DashboardView({
             }
           />
           <MarketMap sectors={sectors} />
-        </Panel>
-        <Panel>
-          <PanelHead
-            title="Nhật ký thị trường"
-            sub="Sự kiện và cảnh báo trọng yếu"
-            action={<Pill tone="teal">Trực tiếp</Pill>}
-          />
-          <div className="divide-y divide-line">
-            {surveillance.map((item) => (
-              <div key={item.kind} className="flex gap-3 py-3">
-                <span
-                  className={`mt-1.5 h-1.5 w-1.5 rounded-full ${item.tone === "gain" ? "bg-gain" : item.tone === "loss" ? "bg-loss" : item.tone === "warning" ? "bg-warning" : "bg-mineral"}`}
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="flex gap-2">
-                    <span className="text-[12px] font-semibold text-ink">
-                      {item.kind}
-                    </span>
-                    {item.symbol && (
-                      <Link
-                        to={`/stock/${item.symbol}`}
-                        className="font-mono text-[11px] text-mineral"
-                      >
-                        {item.symbol}
-                      </Link>
-                    )}
-                    <span className="ml-auto text-[10px] font-mono text-muted">
-                      {item.time}
-                    </span>
-                  </div>
-                  <p className="mt-1 text-[12px] leading-snug text-secondary">
-                    {item.text}
-                  </p>
-                </div>
-              </div>
-            ))}
-          </div>
         </Panel>
       </div>
     </Page>
@@ -261,15 +221,6 @@ export default function Dashboard() {
       foreign: Number(row.foreign || row.foreignFlow || row.foreign_flow || 0),
       sparkline: row.sparkline,
     }));
-    const signalRows = overview?.signals || [];
-    const surveillance: Surveillance[] = signalRows.map((row: Record<string, unknown>) => ({
-      kind: String(row.signal || row.direction || "Tín hiệu"),
-      symbol: String(row.symbol || ""),
-      text: `Xếp hạng tổng hợp ${Number(row.composite_rank || 0).toFixed(2)}`,
-      time: String(row.signal_date || ""),
-      tone: Number(row.composite_rank || 0) >= 0 ? "gain" : "loss",
-    }));
-
     const rawStocks: ApiMarketStock[] = Array.isArray(snap?.stocks) ? snap.stocks : [];
     const advancing = rawStocks.filter((s) => Number(s.change_pct) > 0).length;
     const declining = rawStocks.filter((s) => Number(s.change_pct) < 0).length;
@@ -291,7 +242,6 @@ export default function Dashboard() {
 
     return {
       sectors,
-      surveillance,
       pulse,
       indices: {
         vnindex: Number(vn.value || vn.indexValue || vn.close || 0),

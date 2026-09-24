@@ -93,10 +93,6 @@ export function RiskLabel({ risk }: { risk: string }) {
   )
 }
 
-export function SignalLabel({ label }: { label: string }) {
-  return <span className="text-[12px] text-secondary">{label}</span>
-}
-
 export function Conviction({ level }: { level: "Strong" | "Moderate" | "Weak" | "Conflicting" }) {
   const tone = level === "Strong" ? "teal" : level === "Moderate" ? "gold" : level === "Weak" ? "neutral" : "warning"
   return <Pill tone={tone}>{level}</Pill>
@@ -180,31 +176,6 @@ export function FactorBar({ label, value, tone = "mineral" }: { label: string; v
 }
 
 // ── Market Signal Rail (signature) ─────────────────────────────
-export function MarketSignalRail({ compact, values }: { compact?: boolean; values?: { market?: string; change?: string; signal?: string; risk?: string } }) {
-  const rows: [string, string][] = [
-    ["THỊ TRƯỜNG", values?.market ?? "Chưa có dữ liệu"],
-    ["THAY ĐỔI", values?.change ?? "—"],
-    ["TÍN HIỆU", values?.signal ?? "Chưa có tín hiệu"],
-    ["RỦI RO", values?.risk ?? "Chưa đánh giá"],
-  ]
-  return (
-    <div className={`bg-surface border border-line rounded-[10px] ${compact ? "px-4 py-3" : "p-5"}`}>
-      <div className={`grid ${compact ? "grid-cols-4 divide-x divide-line" : "grid-cols-1 divide-y divide-line"}`}>
-        {rows.map(([k, v], i) => (
-          <div key={k} className={`${compact ? "px-4 first:pl-0 last:pr-0" : "py-3 first:pt-0 last:pb-0"} relative`}>
-            <div className="flex items-center gap-1.5">
-              <span className="text-[10px] font-semibold tracking-[0.14em] text-muted">{k}</span>
-              {!compact && i < 3 && <span className="text-muted">→</span>}
-            </div>
-            <p className="text-[13px] text-ink mt-1 font-medium leading-tight">{v}</p>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-// ── Metric strip ───────────────────────────────────────────────
 export function MetricStrip({ items }: { items: { label: string; value: ReactNode; sub?: ReactNode }[] }) {
   return (
     <div className="grid grid-cols-2 md:grid-cols-4 divide-x divide-line border border-line rounded-[10px] bg-surface overflow-hidden">

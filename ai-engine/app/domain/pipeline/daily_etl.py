@@ -338,56 +338,6 @@ class DailyETLPipeline:
             logger.error("ETL: composite_scoring failed: %s", e)
             return {"status": "failed", "error": str(e)}
 
-    # ── Step: Signals ────────────────────────────────────────────
-
-    async def step_signals(self) -> Dict[str, Any]:
-        """Compute buy/sell signals from factor scores + risk flags."""
-        logger.info("ETL: signals — computing buy/sell recommendations...")
-        try:
-            from app.infrastructure.vendors.vn.signals import refresh_all as signal_refresh
-            result = await asyncio.to_thread(signal_refresh, self.trade_date)
-            logger.info("ETL: signals — %d rows", result.get("rows", 0))
-            return {"status": "success", **result}
-        except Exception as e:
-            logger.error("ETL: signals failed: %s", e)
-            return {"status": "failed", "error": str(e)}
-
-    # ── Step: Paper Trading ──────────────────────────────────────────
-
-    async def step_paper_trading(self) -> Dict[str, Any]:
-        """Auto-trade today's signals into portfolio via Trade Execution Agent (Agent-08)."""
-        logger.info("ETL: paper_trading — executing signals via Agent-08...")
-        try:
-            from app.domain.repositories.portfolio_repository import PortfolioRepository
-            from app.domain.agents.trade_execution import TradeExecutionAgent
-            from app.infrastructure.external_api.market_data_service import market_data_svc
-            
-            p_repo = PortfolioRepository()
-            account_state = p_repo.get_account_state()
-            exec_agent = TradeExecutionAgent()
-            
-            signals = p_repo.get_active_signals(str(self.trade_date))
-            executed_count = 0
-            for sig in signals:
-                ticker = sig.get("ticker", "FPT")
-                exec_res = await exec_agent.process({
-                    "order_instruction": {
-                        "ticker": ticker,
-                        "action": sig.get("action", "BUY"),
-                        "shares": int(sig.get("quantity", 100)),
-                        "target_price": float(sig.get("price", 0.0)),
-                    },
-                    "orderbook": await market_data_svc.get_order_book(ticker),
-                })
-                if exec_res.get("data", {}).get("status") == "EXECUTED":
-                    executed_count += 1
-
-            logger.info("ETL: paper_trading — %d orders executed via Agent-08", executed_count)
-            return {"status": "success", "executed_count": executed_count, "account": account_state}
-        except Exception as e:
-            logger.error("ETL: paper_trading failed: %s", e)
-            return {"status": "failed", "error": str(e)}
-
     # ── Step: Screener Cache ──────────────────────────────────────────
 
     async def step_screener_cache(self) -> Dict[str, Any]:

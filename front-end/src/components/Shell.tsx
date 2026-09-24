@@ -7,7 +7,7 @@ import { PercentChange } from "./ui"
 
 const nav = [
   { group: "Không gian làm việc", items: [["Tổng quan", "/dashboard"], ["AI War Room", "/agent"], ["Danh mục", "/portfolio"], ["ML Tự hành", "/ml-fund"]] },
-  { group: "Thị trường", items: [["Khám phá", "/discovery"], ["Tín hiệu", "/signals"], ["Giao dịch", "/trade"], ["Backtest", "/backtest"], ["Thị trường", "/markets"], ["Ngành", "/sectors"], ["Theo dõi", "/watchlist"]] },
+  { group: "Thị trường", items: [["Khám phá", "/discovery"], ["Giao dịch", "/trade"], ["Backtest", "/backtest"], ["Thị trường", "/markets"], ["Ngành", "/sectors"], ["Theo dõi", "/watchlist"]] },
   { group: "Thông tin", items: [["Nghiên cứu", "/research"], ["Cộng đồng", "/community"], ["Cài đặt", "/settings"], ["Trợ giúp", "/help"]] },
 ].map(section => ({ ...section, items: section.items.map(([label, route]) => ({ label, route })) }))
 
@@ -142,7 +142,6 @@ function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void 
     const routes = nav.flatMap((s) => s.items.map((i) => ({ type: "Điều hướng", label: i.label, route: i.route, hint: s.group })))
     const commands = [
       { type: "Lệnh thao tác", label: "So sánh HPG và HSG", route: "/discovery", hint: "So sánh" },
-      { type: "Lệnh thao tác", label: "Xem thanh khoản đột biến ngành ngân hàng", route: "/signals", hint: "Giám sát" },
       { type: "Lệnh thao tác", label: "Kiểm tra rủi ro danh mục", route: "/portfolio", hint: "Danh mục" },
       { type: "Lệnh thao tác", label: "Kiểm tra sổ lệnh đang chờ", route: "/portfolio", hint: "Danh mục" },
     ]

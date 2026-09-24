@@ -96,6 +96,8 @@ Hệ thống được thiết kế theo mô hình **Event-Driven Microservices k
 ### Tầng 5: Enterprise Persistence & Storage Tier
 - **PostgreSQL 16 (Core)**: Lưu tài khoản, tiền mặt, vị thế, lệnh, dữ liệu thị trường và kết quả định lượng.
 - **Portfolio account identity**: `portfolio_account.account_id` stores up to 64 characters so it can use the same UUID identifier as `users.id`.
+- **Alpha research storage**: `alpha_signals` is retired because the current application has no readers or writers.
+- **Trading decisions**: Orders are produced through the Agent workflow and risk approval; the detached daily BUY/HOLD/SELL feed and its UI/API are retired.
 - **PostgreSQL 16 + pgvector (SAG)**: CSDL tách biệt cho tài liệu, chứng cứ, đồ thị và vector pháp y. SAG chỉ đọc dữ liệu thị trường Core qua kết nối riêng.
 - **MinIO / AWS S3**: Lưu trữ các file PDF gốc BCTC, tài liệu công bố thông tin và báo cáo xuất ra.
 - **Redis 7**: Cache dữ liệu bảng giá, ticker OHLCV và kênh truyền Pub/Sub giữa các microservices.

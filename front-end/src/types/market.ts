@@ -31,15 +31,6 @@ export interface Sector {
   foreign: number
 }
 
-export interface Surveillance {
-  symbol: string
-  trigger: string
-  severity: "info" | "warn" | "critical"
-  time: string
-  detail: string
-  action: string
-}
-
 export interface Citation {
   id: string
   ticker: string

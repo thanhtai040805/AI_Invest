@@ -321,3 +321,8 @@ AIInvest is an autonomous investment and financial forensics organization engine
 - AI-approved Shadow BUY orders now use the approved morning price as a day limit. They remain in the existing `orders` table as `PENDING_SHADOW`; one sequential worker scans every 1 second after a pass when orders are pending, and every 5 seconds while idle. It checks fresh displayed depth, atomically fills the existing order with cash/position updates, or expires it at session end. Standalone ML Shadow orders use the same pending lifecycle and isolated account.
 - No recommendation, allocation, risk-gate, or agent ordering logic changes for pending Shadow execution. Current orders table fields are sufficient; no table migration is required.
 - Widened `portfolio_account.account_id` to 64 characters: the previous 32-character column rejected 36-character user UUIDs and rolled back paper fills while synchronizing account NAV.
+
+## 2026-09-24 — Retire detached signal feed
+
+- Removed the standalone factor-rank BUY/HOLD/SELL feed and its UI/API. Trade instructions continue through the existing Agent allocation, risk approval, and execution flow.
+- The sector heatmap now reads `stocks.sector` instead of relying on the retired signal snapshot table.

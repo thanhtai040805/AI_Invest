@@ -79,33 +79,26 @@ async function dbIndices() {
 async function dbHeatmap() {
   const [sectors, histories] = await Promise.all([
     prisma.$queryRaw<Array<Record<string, unknown>>>`
-      WITH latest AS (SELECT MAX(date) AS date FROM market_data_daily), signal_sector AS (
-        SELECT DISTINCT ON (symbol) symbol, COALESCE(sector_group, 'Khác') AS sector
-        FROM signals ORDER BY symbol, signal_date DESC
-      )
+      WITH latest AS (SELECT MAX(date) AS date FROM market_data_daily)
       SELECT COALESCE(s.sector, 'Khác') AS sector,
              COUNT(*)::int AS count,
              AVG(CASE WHEN d.open_adj IS NOT NULL AND d.open_adj <> 0 THEN ((d.close_adj-d.open_adj)/d.open_adj)*100 ELSE 0 END)::float8 AS change_pct,
              SUM(COALESCE(d.market_cap, 0))::float8 AS market_cap,
              SUM(COALESCE(d.foreign_net_vol, 0))::float8 AS foreign_flow
       FROM market_data_daily d JOIN latest l ON d.date=l.date
-      LEFT JOIN signal_sector s ON s.symbol=d.ticker GROUP BY COALESCE(s.sector, 'Khác')
+      LEFT JOIN stocks s ON s.symbol=d.ticker GROUP BY COALESCE(s.sector, 'Khác')
       ORDER BY market_cap DESC
     `,
     prisma.$queryRaw<Array<{ sector: string; sparkline: number[] }>>`
       WITH recent_dates AS (
         SELECT DISTINCT date FROM market_data_daily ORDER BY date DESC LIMIT 15
       ),
-      signal_sector AS (
-        SELECT DISTINCT ON (symbol) symbol, COALESCE(sector_group, 'Khác') AS sector
-        FROM signals ORDER BY symbol, signal_date DESC
-      ),
       sector_daily AS (
-        SELECT s.sector, d.date, AVG(d.close_adj * 1000)::float8 AS avg_price
+        SELECT COALESCE(s.sector, 'Khác') AS sector, d.date, AVG(d.close_adj * 1000)::float8 AS avg_price
         FROM market_data_daily d
         JOIN recent_dates r ON d.date = r.date
-        JOIN signal_sector s ON s.symbol = d.ticker
-        GROUP BY s.sector, d.date
+        JOIN stocks s ON s.symbol = d.ticker
+        GROUP BY COALESCE(s.sector, 'Khác'), d.date
       )
       SELECT sector, json_agg(avg_price ORDER BY date ASC) AS sparkline
       FROM sector_daily

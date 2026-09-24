@@ -5,7 +5,6 @@ import pytest
 
 from app.domain.rules.counter_thesis import CounterThesisEngine
 from app.domain.rules.scoring import CSSScoringEngine, ConvictionLevel
-from app.infrastructure.vendors.vn.signals import SIGNAL_HOLD, determine_signal
 
 
 ROOT = Path(__file__).parents[1]
@@ -43,10 +42,6 @@ def test_css_requires_audit_but_not_sag_evidence_and_normalizes_policy_weights()
     assert scored.loc[0, "conviction"] == ConvictionLevel.A.value
 
 
-def test_signals_use_current_risk_flags_only():
-    assert determine_signal(50.0, False, 0) == SIGNAL_HOLD
-
-
 def test_decision_runtime_has_no_sag_or_legacy_gil_dependency():
     runtime_files = [
         ROOT / "app/domain/agents/counter_thesis.py",
@@ -68,7 +63,6 @@ def test_decision_runtime_has_no_sag_or_legacy_gil_dependency():
         ROOT / "app/domain/repositories/__init__.py",
         ROOT / "app/domain/repositories/intelligence_repository.py",
         ROOT / "app/infrastructure/risk_queries.py",
-        ROOT / "app/infrastructure/vendors/vn/signals.py",
     ]
     forbidden = (
         "SAGConnector",
