@@ -58,6 +58,9 @@ class CounterThesisAgent(BaseAgent):
         if not ticker:
             raise ValueError("[CounterThesisAgent] Thiếu thông tin mã cổ phiếu (ticker) trong thesis hoặc event_data.")
         ticker = str(ticker).upper().strip()
+        as_of = event_data.get("target_date") or event_data.get("date") or event_data.get("as_of_date") or date.today()
+        if isinstance(as_of, str):
+            as_of = date.fromisoformat(as_of[:10])
 
         from app.domain.repositories.intelligence_repository import IntelligenceRepository
         intel_repo = IntelligenceRepository()
@@ -122,7 +125,7 @@ class CounterThesisAgent(BaseAgent):
             try:
                 from app.domain.repositories.financial_repository import FinancialRepository
                 f_repo = FinancialRepository()
-                ratios = f_repo.get_latest_ratios(ticker)
+                ratios = f_repo.get_latest_ratios(ticker, as_of=as_of)
                 if ratios:
                     stock_data.setdefault("pe_ratio", float(ratios.get("pe", 99.0)))
                     stock_data.setdefault("pb_ratio", float(ratios.get("pb", 99.0)))
@@ -133,7 +136,10 @@ class CounterThesisAgent(BaseAgent):
             try:
                 from app.domain.repositories.market_data_repository import MarketDataRepository
                 m_repo = MarketDataRepository()
-                ohlcv_list = m_repo.get_ohlcv(ticker, limit=20)
+                market_data_date = event_data.get("market_data_date") or as_of
+                if isinstance(market_data_date, str):
+                    market_data_date = date.fromisoformat(market_data_date[:10])
+                ohlcv_list = m_repo.get_ohlcv(ticker, end_date=market_data_date, limit=20)
                 if ohlcv_list:
                     stock_data.setdefault("volume", float(ohlcv_list[0].get("volume", 0.0)))
                     vols = [float(x.get("volume", 0.0)) for x in ohlcv_list]
@@ -145,7 +151,7 @@ class CounterThesisAgent(BaseAgent):
         beneish_risk = 20.0
         receivable_spike = 20.0
         try:
-            m_res = beneish_engine.calculate_m_score(ticker, date.today())
+            m_res = beneish_engine.calculate_m_score(ticker, as_of)
             m_score = m_res.get("m_score")
             if m_score is not None:
                 if m_score > -1.78:
@@ -206,7 +212,7 @@ class CounterThesisAgent(BaseAgent):
         # 5. Lưu phán quyết vào CSDL qua IntelligenceRepository
         try:
             intel_repo.save_counter_thesis_verdict(verdict_output)
-            
+        
             # 5.1 Cập nhật trạng thái của Investment Thesis theo phán quyết Devil's Advocate
             new_thesis_status = "APPROVED_ACTIVE" if verdict_str == "PROCEED" else ("CONDITIONAL_APPROVED" if verdict_str == "CONDITIONAL" else "REJECTED")
             if thesis_id:

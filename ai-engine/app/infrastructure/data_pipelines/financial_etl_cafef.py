@@ -6,8 +6,11 @@ No Chromium or headless browser required.
 import logging
 import math
 import re
+import unicodedata
+from calendar import monthrange
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
+from urllib.parse import unquote
 
 import httpx
 import psycopg2
@@ -21,9 +24,19 @@ TZ_VN = timezone(timedelta(hours=7))
 BATCH_SIZE = 50
 API_BASE = "https://apiweb.cafef.vn/api"
 
-EXCLUDED_SYMBOLS = {"KSS", "PCN", "TCD", "HHR", "CTC", "BCG", "B82", "VMD"}
+EXCLUDED_SYMBOLS = {"KSS", "PCN", "TCD", "HHR", "CTC", "BCG", "B82"}
 
-SPECIAL_FY = {"SBT", "LSS"}
+# (fiscal year end month, day, fiscal-label year offset).
+# Verified from reporting-period labels/documents: SBT/LSS label the FY start year;
+# HSG/TIX label the FY end year. Other CafeF symbols use calendar-year labels.
+FISCAL_CALENDARS = {
+    "SBT": (6, 30, 1),
+    "LSS": (6, 30, 1),
+    "CTD": (6, 30, 0),
+    "FIR": (9, 30, 0),
+    "HSG": (9, 30, 0),
+    "TIX": (9, 30, 0),
+}
 
 _HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -51,25 +64,128 @@ def _clean_nan(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _period_label_to_date(label: str) -> Optional[date]:
-    """Convert 'Q2-2026' or '2026-Q2' → date(2026, 6, 30), '2025' → date(2025, 12, 31)."""
+def _period_label_to_date(label: str, symbol: str = "") -> Optional[date]:
+    """Convert CafeF's fiscal period label to its actual quarter/year end."""
     if not label:
         return None
-    # 'Q2-2026' format
-    m = re.match(r"Q([1-4])-(\d{4})", label)
+    m = re.fullmatch(r"Q([1-4])-(\d{4})", label, re.I)
     if m:
-        q, year = int(m.group(1)), int(m.group(2))
-        return {1: date(year, 3, 31), 2: date(year, 6, 30), 3: date(year, 9, 30), 4: date(year, 12, 31)}[q]
-    # '2026-Q2' format
-    m = re.match(r"(\d{4})-Q([1-4])", label)
-    if m:
-        year, q = int(m.group(1)), int(m.group(2))
-        return {1: date(year, 3, 31), 2: date(year, 6, 30), 3: date(year, 9, 30), 4: date(year, 12, 31)}[q]
-    # '2025' format
-    m = re.match(r"(\d{4})$", label)
-    if m:
-        return date(int(m.group(1)), 12, 31)
-    return None
+        quarter, label_year = int(m.group(1)), int(m.group(2))
+    else:
+        m = re.fullmatch(r"(\d{4})-Q([1-4])", label, re.I)
+        if m:
+            label_year, quarter = int(m.group(1)), int(m.group(2))
+        else:
+            m = re.fullmatch(r"(\d{4})", label)
+            if not m:
+                return None
+            end_month, end_day, year_offset = FISCAL_CALENDARS.get(symbol.upper(), (12, 31, 0))
+            year = int(m.group(1)) + year_offset
+            return date(year, end_month, min(end_day, monthrange(year, end_month)[1]))
+
+    end_month, end_day, year_offset = FISCAL_CALENDARS.get(symbol.upper(), (12, 31, 0))
+    fiscal_end_year = label_year + year_offset
+    month = ((end_month - (4 - quarter) * 3 - 1) % 12) + 1
+    year = fiscal_end_year - int(month > end_month)
+    return date(year, month, monthrange(year, month)[1])
+
+
+def _ascii(value: str) -> str:
+    return "".join(ch for ch in unicodedata.normalize("NFKD", value.lower()) if not unicodedata.combining(ch))
+
+
+def _document_period_label(title: str, url: str) -> Optional[str]:
+    url_text = _ascii(unquote(url)).replace("_", " ").replace("%20", " ")
+    for pattern, year_group, quarter_group in (
+        (r"(?<!\d)(20\d{2})\s*q\s*([1-4])(?!\d)", 1, 2),
+        (r"(?<!\d)(\d{2})\s*q\s*([1-4])(?!\d)", 1, 2),
+        (r"q\s*([1-4])\D{0,18}(20\d{2})", 2, 1),
+    ):
+        quarter = re.search(pattern, url_text)
+        if quarter:
+            year = int(quarter.group(year_group))
+            if year < 100:
+                year += 2000
+            return f"Q{quarter.group(quarter_group)}-{year}"
+
+    text = _ascii(unquote(title)).replace("_", " ").replace("%20", " ")
+    quarter = re.search(r"(?:quy|q)\s*([1-4])\D{0,18}(20\d{2})", text)
+    if quarter:
+        return f"Q{quarter.group(1)}-{quarter.group(2)}"
+    annual = re.search(r"(?:nam|year|cn)\D{0,18}(20\d{2})", text)
+    return annual.group(1) if annual else None
+
+
+def _cafef_availability_by_period(cur, symbol: str) -> dict[str, date]:
+    """Use upload time from a report URL, falling back to when this system first crawled it."""
+    from app.infrastructure.knowledge_base.crawlers.vn.cafef_document_crawl import _url_available_at
+
+    cur.execute(
+        """SELECT title, url, article_pdf_urls, published_date
+           FROM knowledge_documents
+           WHERE symbol = %s AND source = 'cafef_docs'
+             AND doc_type = 'financial_statement'""",
+        (symbol,),
+    )
+    seen_at_by_url: dict[str, date] = {}
+    fallback_rows = cur.fetchall()
+    for _, url, pdf_urls, published_date in fallback_rows:
+        for link in [str(url or ""), *(str(item) for item in (pdf_urls or []))]:
+            if link and published_date:
+                seen_at_by_url[link] = published_date
+
+    try:
+        response = _CLIENT.get(
+            "https://cafef.vn/du-lieu/Ajax/PageNew/FileBCTC.ashx",
+            params={"Symbol": symbol, "Type": 1, "Year": 0},
+            headers={"X-Requested-With": "XMLHttpRequest", "Referer": "https://cafef.vn/"},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        documents = payload.get("Data", []) if isinstance(payload, dict) and payload.get("Success") else []
+    except Exception as exc:
+        logger.warning("CafeF document metadata unavailable for %s: %s", symbol, exc)
+        documents = []
+
+    result: dict[str, date] = {}
+    observed_at = datetime.now(timezone.utc)
+    for item in documents:
+        time_label = str(item.get("Time") or "")
+        match = re.fullmatch(r"Q([1-4])/(20\d{2})", time_label, re.I)
+        if match:
+            label = f"Q{match.group(1)}-{match.group(2)}"
+        else:
+            match = re.fullmatch(r"CN/(20\d{2})", time_label, re.I)
+            if not match:
+                continue
+            label = match.group(1)
+        url = str(item.get("Link") or "")
+        available = _url_available_at(url) or seen_at_by_url.get(url) or observed_at
+        if isinstance(available, datetime):
+            available = available.date()
+        result[label] = max(result.get(label, available), available)
+
+    if result:
+        return result
+
+    # If CafeF's document endpoint is down, use already-crawled records only.
+    result = {}
+    for title, url, pdf_urls, published_date in fallback_rows:
+        candidates = [str(url or ""), *(str(item) for item in (pdf_urls or []))]
+        available = None
+        for link in candidates:
+            if link:
+                available = _url_available_at(link)
+                if available:
+                    break
+        if available is None:
+            available = published_date
+        label = _document_period_label(str(title or ""), " ".join(candidates))
+        if label and available:
+            if isinstance(available, datetime):
+                available = available.date()
+            result[label] = max(result.get(label, available), available)
+    return result
 
 
 def _slugify(text: str) -> str:
@@ -86,8 +202,10 @@ def _slugify(text: str) -> str:
     return t.strip("_")
 
 
-def _upsert(cur, symbol: str, period_end: date, stmt_type: str, freq: str, data: dict):
-    published_date = period_end + timedelta(days=45 if freq == "quarterly" else 90)
+def _upsert(
+    cur, symbol: str, period_end: date, stmt_type: str, freq: str,
+    data: dict, published_date: Optional[date],
+):
     cur.execute(
         """INSERT INTO financial_statements
            (symbol, period_end, statement_type, frequency, data, source, published_date)
@@ -312,6 +430,8 @@ def fetch_and_store_financials(symbol: str, cur, max_quarters: int = 80) -> dict
         ("yearly", cdkt_a, kqkd_a, lctt_a, None),
     ]
 
+    available_by_period = _cafef_availability_by_period(cur, clean_sym)
+
     for freq, raw_bs, raw_is, raw_cf, raw_ratios in runs:
         parsed_bs = _parse_cdkt(raw_bs, is_bank) if raw_bs else {}
         parsed_is = _parse_kqkd(raw_is, is_bank) if raw_is else {}
@@ -320,21 +440,24 @@ def fetch_and_store_financials(symbol: str, cur, max_quarters: int = 80) -> dict
 
         all_period_labels = set(parsed_bs.keys()) | set(parsed_is.keys()) | set(parsed_cf.keys()) | set(parsed_r.keys())
         for pl in all_period_labels:
-            pe = _period_label_to_date(pl)
-            if not pe:
+            pe = _period_label_to_date(pl, clean_sym)
+            if not pe or pe > datetime.now(TZ_VN).date():
+                if pe:
+                    logger.warning("Skipping future CafeF period %s for %s", pl, clean_sym)
                 continue
+            available = available_by_period.get(pl)
 
             if pl in parsed_bs and parsed_bs[pl]:
-                _upsert(cur, clean_sym, pe, "BS", freq, parsed_bs[pl])
+                _upsert(cur, clean_sym, pe, "BS", freq, parsed_bs[pl], available)
                 total_upserted += 1
             if pl in parsed_is and parsed_is[pl]:
-                _upsert(cur, clean_sym, pe, "IS", freq, parsed_is[pl])
+                _upsert(cur, clean_sym, pe, "IS", freq, parsed_is[pl], available)
                 total_upserted += 1
             if pl in parsed_cf and parsed_cf[pl]:
-                _upsert(cur, clean_sym, pe, "CF", freq, parsed_cf[pl])
+                _upsert(cur, clean_sym, pe, "CF", freq, parsed_cf[pl], available)
                 total_upserted += 1
             if pl in parsed_r and parsed_r[pl]:
-                _upsert(cur, clean_sym, pe, "ratios", freq, parsed_r[pl])
+                _upsert(cur, clean_sym, pe, "ratios", freq, parsed_r[pl], available)
                 total_upserted += 1
 
     try:
@@ -430,7 +553,7 @@ _NM_KEYS = ["lợi nhuận ròng", "net margin", "sinh lợi trên doanh thu", "
 def _store_derived_ratios(symbol: str, cur) -> None:
     """Compute and store financial_ratios for ALL available periods."""
     cur.execute(
-        """SELECT period_end, statement_type, data
+        """SELECT period_end, statement_type, data, published_date
            FROM financial_statements
            WHERE symbol = %s
            ORDER BY period_end DESC""",
@@ -443,9 +566,12 @@ def _store_derived_ratios(symbol: str, cur) -> None:
     import json
 
     periods: dict[date, dict[str, dict]] = {}
-    for pe, st, raw in stmt_rows:
+    availability_by_period: dict[date, date] = {}
+    for pe, st, raw, available in stmt_rows:
         data = raw if isinstance(raw, dict) else (json.loads(raw) if isinstance(raw, str) else {})
         periods.setdefault(pe, {})[st] = data
+        if available:
+            availability_by_period[pe] = max(availability_by_period.get(pe, available), available)
 
     sorted_periods = sorted(periods.keys(), reverse=True)
 
@@ -552,8 +678,7 @@ def _store_derived_ratios(symbol: str, cur) -> None:
             if ni is not None and ni_prev is not None and ni_prev != 0:
                 yoy_ni = (ni - ni_prev) / abs(ni_prev)
 
-        freq = "yearly" if pe.month == 12 and pe.day == 31 else "quarterly"
-        published_date = pe + timedelta(days=90 if freq == "yearly" else 45)
+        published_date = availability_by_period.get(pe)
 
         cur.execute(
             """INSERT INTO financial_ratios

@@ -36,6 +36,12 @@ from app.domain.rules.learning.causal_learning_engines import (
 logger = logging.getLogger(__name__)
 
 
+def _change_gate_approved(response: Dict[str, Any], oos_approved: bool) -> bool:
+    result = response.get("result", {}) if isinstance(response, dict) else {}
+    decision = result.get("data", result) if isinstance(result, dict) else {}
+    return bool(response.get("status") == "SUCCESS" and oos_approved and decision.get("approved", False))
+
+
 class ReinforcementLearningAgent(BaseAgent):
     """
     AGENT-10: Chuyên viên Học Tăng Cường & Thích Ứng Mô Hình (Causal Adaptation Engine).
@@ -69,7 +75,7 @@ class ReinforcementLearningAgent(BaseAgent):
         kelly_matrix: Dict[str, Any],
         ic_factors: Dict[str, float],
         cdc_triggered: bool,
-    ) -> None:
+    ) -> bool:
         """Ghi nhận 100% trạng thái học máy xuống các bảng CSDL lõi của PostgreSQL."""
         try:
             # 1. Ghi bảng rl_factor_weights
@@ -149,8 +155,10 @@ class ReinforcementLearningAgent(BaseAgent):
                     ),
                 )
             logger.info(f"[ReinforcementLearningAgent] Đã lưu 100% trạng thái RL xuống CSDL (Regime={regime}, Epoch={epoch}).")
+            return True
         except Exception as e:
             logger.error(f"[ReinforcementLearningAgent] Lỗi khi lưu trạng thái xuống CSDL: {e}")
+            return False
 
     async def process(self, event_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -164,6 +172,11 @@ class ReinforcementLearningAgent(BaseAgent):
             - business_quality_evidence: Dict[str, Dict[str, Any]] (tùy chọn: ticker -> evidence metadata)
         """
         target_date = event_data.get("target_date", date.today())
+        if isinstance(target_date, str):
+            target_date = date.fromisoformat(target_date[:10])
+        data_as_of = event_data.get("market_data_date") or target_date
+        if isinstance(data_as_of, str):
+            data_as_of = date.fromisoformat(data_as_of[:10])
         regime = str(event_data.get("regime", "BULL_MARKET")).upper().strip()
         realized_trades: List[Dict[str, Any]] = event_data.get("realized_trades", [])
         factor_preds: Dict[str, Dict[str, float]] = event_data.get("factor_predictions", {})
@@ -183,8 +196,8 @@ class ReinforcementLearningAgent(BaseAgent):
                 import os
                 account_id = os.getenv("MULTI_AGENT_ACCOUNT_ID", "940b0c70-2010-42f3-b947-797e6419b794")
                 rows_trades = self.storage.fetch_all(
-                    "SELECT ticker, pnl, confidence FROM paper_trades WHERE account_id = %s AND pnl IS NOT NULL AND status = 'CLOSED' ORDER BY resolved_at DESC LIMIT 50",
-                    (account_id,),
+                    "SELECT ticker, pnl, confidence FROM paper_trades WHERE account_id = %s AND pnl IS NOT NULL AND status = 'CLOSED' AND resolved_at < %s ORDER BY resolved_at DESC LIMIT 50",
+                    (account_id, target_date),
                 )
                 if rows_trades:
                     realized_trades = [{"ticker": r[0], "pnl": float(r[1]), "conviction": r[2] or "A"} for r in rows_trades]
@@ -200,8 +213,10 @@ class ReinforcementLearningAgent(BaseAgent):
                     """
                     SELECT symbol, value_score, quality_score, momentum_1m, earnings_yield_score, foreign_flow_score, composite_score
                     FROM factor_scores
+                    WHERE score_date <= %s
                     ORDER BY score_date DESC LIMIT 100
-                    """
+                    """,
+                    (data_as_of,),
                 )
                 if rows_factors:
                     for r in rows_factors:
@@ -357,23 +372,23 @@ class ReinforcementLearningAgent(BaseAgent):
                 pnl = float(t.get("pnl", 0.0))
                 real_oos_returns.append(round(pnl / 100_000_000.0, 4))
 
-        # Nếu chưa đủ 20 phiên, tra cứu chuỗi lợi nhuận lịch sử thực tế của VN-Index từ PostgreSQL
-        if len(real_oos_returns) < 20:
-            try:
-                rows_ret = self.storage.fetch_all(
-                    "SELECT close_adj FROM market_data_daily WHERE ticker = 'VNINDEX' ORDER BY date DESC LIMIT 25"
-                )
-                if len(rows_ret) >= 2:
-                    closes = [float(r[0]) for r in reversed(rows_ret)]
-                    vni_rets = [(closes[i] - closes[i - 1]) / closes[i - 1] for i in range(1, len(closes))]
-                    real_oos_returns.extend(vni_rets)
-            except Exception as e_ret:
-                logger.debug(f"Không thể nạp lợi nhuận VN-Index từ CSDL: {e_ret}")
+        oos_status = "VALIDATED" if len(real_oos_returns) >= 20 else "INSUFFICIENT_DATA"
 
-        # Fallback phân phối lợi nhuận nếu dữ liệu lịch sử ban đầu còn trống
-        if len(real_oos_returns) < 20:
-            base_mu = 0.0010 if "BULL" in regime else (-0.0008 if "BEAR" in regime else 0.0003)
-            real_oos_returns = [round(base_mu + 0.004 * float(np.sin(i * 0.5)), 4) for i in range(25)]
+        current_state = event_data.get("current_state")
+        if current_state is None:
+            try:
+                rows_current = self.storage.fetch_all(
+                    "SELECT f1_value_weight, f2_quality_weight, f3_momentum_weight, f4_earnings_weight, f5_flow_weight, f6_technical_weight FROM rl_factor_weights WHERE regime = %s",
+                    (regime,),
+                )
+                if rows_current:
+                    current_state = dict(zip(
+                        ("f1_value", "f2_quality", "f3_momentum", "f4_earnings", "f5_flow", "f6_technical"),
+                        map(float, rows_current[0]),
+                    ))
+            except Exception as exc:
+                missing_flags.append(f"CURRENT_WEIGHT_STATE_FETCH_ERROR: {exc}")
+        current_state = current_state or {}
 
         # 7.2 Đóng gói Change Request chính thức trình System Governance Agent thẩm định
         target_date_str = target_date.strftime("%Y%m%d") if hasattr(target_date, "strftime") else str(target_date).replace("-", "")
@@ -382,7 +397,7 @@ class ReinforcementLearningAgent(BaseAgent):
             "initiator_agent": "reinforcement_learning",
             "target_component": "rl_factor_weights",
             "proposed_changes": policy_weights,
-            "current_state": {},
+            "current_state": current_state,
             "oos_returns": real_oos_returns[:30],
             "rationale": f"Cập nhật thích ứng trọng số Factor theo chế độ {regime} với Rank IC={avg_ic_20d:.4f}.",
         }
@@ -395,23 +410,34 @@ class ReinforcementLearningAgent(BaseAgent):
             max_drawdown_limit=0.10,
         )
 
-        gov_approved = True
+        gov_approved = False
         try:
             from app.core.registry import AgentRegistry
             gov_res = await AgentRegistry.dispatch("system_governance", {"change_request": cr_payload})
             if gov_res.get("status") == "SUCCESS":
-                gov_data = gov_res.get("result", {}).get("data", {})
-                gov_approved = bool(gov_data.get("approved", True))
-                governance_proposal["governance_agent_status"] = gov_data.get("status", "APPROVED")
+                gov_result = gov_res.get("result", {})
+                gov_data = gov_result.get("data", gov_result) if isinstance(gov_result, dict) else {}
+                gov_approved = _change_gate_approved(
+                    gov_res,
+                    bool(governance_proposal.get("approved", False)) and oos_status == "VALIDATED" and bool(current_state),
+                )
+                governance_proposal["governance_agent_status"] = gov_data.get("status", "UNKNOWN")
                 governance_proposal["governance_reason"] = gov_data.get("reason", "")
+            else:
+                governance_proposal["governance_agent_status"] = gov_res.get("status", "UNKNOWN")
         except Exception as e_gov:
+            governance_proposal["governance_agent_status"] = "ERROR"
+            governance_proposal["governance_reason"] = str(e_gov)
             logger.debug(f"[ReinforcementLearningAgent] Bỏ qua kiểm tra trực tiếp Governance: {e_gov}")
 
-        # -------------------------------------------------------------
-        # 8. LƯU 100% XUỐNG CSDL NẾU ĐƯỢC CHẤP THUẬN
-        # -------------------------------------------------------------
+            # -------------------------------------------------------------
+            # 8. LƯU 100% XUỐNG CSDL NẾU ĐƯỢC CHẤP THUẬN
+            # -------------------------------------------------------------
+        governance_proposal["oos_approved"] = governance_proposal.get("approved", False)
+        governance_proposal["approved"] = gov_approved
+        persisted = False
         if gov_approved:
-            self._persist_state_to_db(
+            persisted = self._persist_state_to_db(
                 target_date=target_date,
                 regime=regime,
                 policy_weights=policy_weights,
@@ -433,10 +459,13 @@ class ReinforcementLearningAgent(BaseAgent):
             "decay_diagnosis": decay_diagnosis,
             "decay_detail": decay_res["detail"],
             "cdc_triggered": cdc_triggered,
-            "policy_weights": policy_weights,
+            "policy_weights": policy_weights if gov_approved else {},
             "kelly_matrix": kelly_matrix,
             "evidence_quality_audit": evidence_quality_audit,
             "governance_proposal": governance_proposal,
+            "governance_approved": gov_approved,
+            "oos_status": oos_status,
+            "oos_sample_size": len(real_oos_returns),
             "missing_data_warnings": missing_flags,
         }
 
@@ -444,7 +473,7 @@ class ReinforcementLearningAgent(BaseAgent):
             "mral_engine": self.mral_engine.__class__.__name__,
             "learning_protocol": "Empirical Bayes Shrinkage & Rank IC Causal Attribution",
             "calibration_timestamp": datetime.now().isoformat(),
-            "db_persistence": "100%_COMMITTED_POSTGRESQL",
+            "db_persistence": "COMMITTED_POSTGRESQL" if persisted else "NOT_PERSISTED",
         }
 
         # Bắn sự kiện lên RabbitMQ Event Bus

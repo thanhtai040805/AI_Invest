@@ -10,7 +10,7 @@ import logging
 import os
 import uuid
 from copy import deepcopy
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
@@ -97,9 +97,10 @@ class PortfolioRepository:
         self._in_memory_campaigns: Dict[str, Dict[str, Any]] = {}
         self._in_memory_slippage_records: List[Dict[str, Any]] = []
 
-    def get_account_state(self, user_id: Optional[str] = None) -> Dict[str, Any]:
+    def get_account_state(self, user_id: Optional[str] = None, as_of: Optional[datetime | date] = None) -> Dict[str, Any]:
         """Lấy số dư tiền mặt từ bảng users và tính tổng NAV danh mục từ CSDL."""
         target_uid = user_id or self.account_id or self._in_memory_account.get("account_id")
+        as_of_error = None
         try:
             # 1. Đọc số dư tiền mặt từ bảng users
             if target_uid:
@@ -110,27 +111,35 @@ class PortfolioRepository:
 
             if rows_user and len(rows_user) > 0:
                 uid, cash, win_rate = rows_user[0]
+                if as_of is not None and cash is None:
+                    as_of_error = f"Missing replay cash balance for account {uid}"
+                    raise LookupError(f"Missing replay cash balance for account {uid}")
                 cash_val = float(cash) if cash is not None else 1000000000.0
                 win_rate_val = float(win_rate) if win_rate is not None else 0.0
 
                 # 2. Tính tổng giá trị danh mục vị thế từ bảng positions
+                mark_date = as_of.date() if isinstance(as_of, datetime) else as_of
                 query_pos = """
                     SELECT p.symbol, p.quantity,
-                           COALESCE(md.close_adj * 1000, p.avg_price) AS current_price
+                           CASE WHEN %s::date IS NULL THEN COALESCE(md.close_adj * 1000, p.avg_price)
+                                ELSE md.close_adj * 1000 END AS current_price
                     FROM positions p
                     LEFT JOIN LATERAL (
                         SELECT close_adj FROM market_data_daily
-                        WHERE ticker = p.symbol ORDER BY date DESC LIMIT 1
+                        WHERE ticker = p.symbol AND (%s::date IS NULL OR date <= %s::date)
+                        ORDER BY date DESC LIMIT 1
                     ) md ON TRUE
                     WHERE p.user_id = %s AND p.quantity > 0
                 """
-                rows_pos = self.storage.fetch_all(query_pos, (uid,))
+                rows_pos = self.storage.fetch_all(query_pos, (mark_date, mark_date, mark_date, uid))
+                if as_of is not None and any(r[2] is None for r in rows_pos):
+                    as_of_error = f"Missing market mark as of {mark_date} for replay account {uid}"
+                    raise LookupError(f"Missing market mark as of {mark_date} for replay account {uid}")
                 positions_val = sum(float(r[1]) * float(r[2]) for r in rows_pos) if rows_pos else 0.0
                 total_nav = cash_val + positions_val
 
                 account_rows = self.storage.fetch_all(
-                    "SELECT peak_nav FROM portfolio_account WHERE account_id = %s",
-                    (str(uid),),
+                    "SELECT peak_nav FROM portfolio_account WHERE account_id = %s", (str(uid),)
                 )
                 previous_peak = float(account_rows[0][0]) if account_rows else total_nav
                 peak_nav = max(total_nav, previous_peak)
@@ -149,29 +158,40 @@ class PortfolioRepository:
         except Exception as e:
             logger.warning(f"Không thể đọc account_state từ DB ({e}), dùng in-memory fallback")
 
+        if as_of is not None:
+            raise LookupError(as_of_error or "As-of portfolio state unavailable")
         if user_id is not None:
             raise LookupError(f"Portfolio user not found: {user_id}")
         if os.getenv("ENVIRONMENT", "").lower() != "test":
             raise RuntimeError("Portfolio account state is unavailable")
         return self._in_memory_account
 
-    def get_open_positions(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_open_positions(
+        self,
+        user_id: Optional[str] = None,
+        as_of: Optional[datetime | date] = None,
+        as_of_time: Optional[datetime] = None,
+    ) -> List[Dict[str, Any]]:
         """Lấy toàn bộ các vị thế cổ phiếu đang nắm giữ kèm phân tách hàng khả dụng T+2.5."""
         target_uid = user_id or self.account_id or self._in_memory_account.get("account_id")
+        as_of_error = None
         try:
             if target_uid:
+                mark_date = as_of.date() if isinstance(as_of, datetime) else as_of
                 query = """
                     SELECT p.symbol, p.quantity, p.avg_price, p.opened_at,
-                           COALESCE(md.close_adj * 1000, p.avg_price) AS current_price
+                           CASE WHEN %s::date IS NULL THEN COALESCE(md.close_adj * 1000, p.avg_price)
+                                ELSE md.close_adj * 1000 END AS current_price
                     FROM positions p
                     LEFT JOIN LATERAL (
                         SELECT close_adj FROM market_data_daily
-                        WHERE ticker = p.symbol ORDER BY date DESC LIMIT 1
+                        WHERE ticker = p.symbol AND (%s::date IS NULL OR date <= %s::date)
+                        ORDER BY date DESC LIMIT 1
                     ) md ON TRUE
                     WHERE p.user_id = %s AND p.quantity > 0
                     ORDER BY quantity DESC
                 """
-                rows = self.storage.fetch_all(query, (target_uid,))
+                rows = self.storage.fetch_all(query, (mark_date, mark_date, mark_date, target_uid))
             else:
                 query = """
                     SELECT symbol, quantity, avg_price, opened_at
@@ -182,17 +202,27 @@ class PortfolioRepository:
                 rows = self.storage.fetch_all(query)
 
             if rows is not None:
+                if as_of is not None and any(len(r) < 5 or r[4] is None for r in rows):
+                    as_of_error = f"Missing market mark as of {mark_date} for replay account {target_uid}"
+                    raise LookupError(as_of_error)
                 results = []
                 # Tính tổng NAV để tính % tỷ trọng từng vị thế
                 tot_pos_val = sum(int(r[1]) * float(r[4] if len(r) > 4 and r[4] is not None else r[2]) for r in rows)
                 try:
                     cash_row = self.storage.fetch_all("SELECT cash_balance FROM users WHERE id = %s", (target_uid,)) if target_uid else None
+                    if as_of is not None and (not cash_row or cash_row[0][0] is None):
+                        as_of_error = f"Missing replay cash balance for account {target_uid}"
+                        raise LookupError(as_of_error)
                     cash_val = float(cash_row[0][0]) if cash_row and cash_row[0][0] is not None else 0.0
                     tot_nav = cash_val + tot_pos_val
                 except Exception:
+                    if as_of is not None:
+                        raise
                     tot_nav = tot_pos_val
 
-                now = datetime.now()
+                t_plus_2_time = as_of_time or (as_of if isinstance(as_of, datetime) else (
+                    datetime.combine(as_of, time(9, 45), ZoneInfo("Asia/Ho_Chi_Minh")) if as_of else datetime.now()
+                ))
                 for r in rows:
                     total_shares = int(r[1])
                     avg_p = float(r[2])
@@ -200,7 +230,7 @@ class PortfolioRepository:
                     opened_at = r[3] if len(r) > 3 and r[3] else None
                     
                     # Kiểm tra chu kỳ T+2.5 chuẩn ngày làm việc thị trường VN
-                    is_locked = calculate_is_t25_locked(opened_at, now)
+                    is_locked = calculate_is_t25_locked(opened_at, t_plus_2_time)
 
                     available_shares = 0 if is_locked else total_shares
                     locked_shares = total_shares if is_locked else 0
@@ -224,6 +254,8 @@ class PortfolioRepository:
         except Exception as e:
             logger.warning(f"Không thể đọc positions từ DB ({e}), dùng in-memory fallback")
 
+        if as_of is not None:
+            raise LookupError(as_of_error or "As-of positions unavailable")
         if user_id is not None:
             raise LookupError(f"Portfolio positions unavailable for user: {user_id}")
         if os.getenv("ENVIRONMENT", "").lower() != "test":
@@ -341,6 +373,222 @@ class PortfolioRepository:
         except Exception as e:
             logger.debug(f"Lỗi update campaign status ({e})")
 
+
+    def record_replay_execution(
+        self,
+        ticker: str,
+        action: str,
+        shares: int,
+        executed_price: float,
+        *,
+        user_id: str,
+        executed_at: datetime,
+        mark_as_of: date,
+    ) -> Dict[str, Any]:
+        """Atomically persist a simulated fill to the explicitly allowlisted replay DB."""
+        ticker = ticker.upper().strip()
+        action = action.upper().strip()
+        if not ticker or shares <= 0 or executed_price <= 0 or action not in ("BUY", "SELL"):
+            raise ValueError("Invalid replay execution")
+        if not user_id or not isinstance(executed_at, datetime) or not isinstance(mark_as_of, date) or isinstance(mark_as_of, datetime):
+            raise ValueError("Replay user, execution timestamp, and mark date are required")
+        vietnam_tz = ZoneInfo("Asia/Ho_Chi_Minh")
+        execution_local = executed_at.replace(tzinfo=vietnam_tz) if executed_at.tzinfo is None else executed_at.astimezone(vietnam_tz)
+        execution_db_timestamp = execution_local.replace(tzinfo=None)
+        if mark_as_of >= datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date():
+            raise ValueError("PostgreSQL replay marks must be strictly historical")
+        if mark_as_of >= execution_local.date():
+            raise ValueError("Daily replay mark must be strictly before the fill date")
+
+        trade_value = float(shares * executed_price)
+        brokerage_fee = max(trade_value * 0.001, 10_000.0)
+        tax = trade_value * 0.001 if action == "SELL" else 0.0
+        cash_delta = -(trade_value + brokerage_fee) if action == "BUY" else trade_value - brokerage_fee - tax
+        order_id = str(uuid.uuid4())
+        position_id = str(uuid.uuid4())
+        account_before = deepcopy(self._in_memory_account)
+
+        try:
+            self.storage.begin()
+            users = self.storage.fetch_all(
+                "SELECT cash_balance FROM users WHERE id = %s FOR UPDATE", (user_id,)
+            )
+            if not users or users[0][0] is None:
+                raise LookupError(f"Replay account cash balance unavailable: {user_id}")
+            cash_before = float(users[0][0])
+            if action == "BUY" and cash_before < -cash_delta:
+                raise ValueError("Insufficient replay cash")
+
+            existing = self.storage.fetch_all(
+                "SELECT id, quantity, avg_price, opened_at FROM positions WHERE user_id = %s AND symbol = %s FOR UPDATE",
+                (user_id, ticker),
+            )
+            if action == "SELL":
+                if not existing or int(existing[0][1]) < shares:
+                    raise ValueError("Insufficient replay shares")
+                if calculate_is_t25_locked(existing[0][3], execution_local):
+                    raise ValueError("Replay shares are locked by T+2.5 settlement")
+
+            self.storage.execute("UPDATE users SET cash_balance = cash_balance + %s WHERE id = %s", (cash_delta, user_id))
+            if action == "BUY":
+                if existing:
+                    row_id, old_qty, old_avg, _opened_at = existing[0]
+                    new_qty = int(old_qty) + shares
+                    avg_price = (float(old_avg) * int(old_qty) + executed_price * shares) / new_qty
+                    self.storage.execute(
+                        "UPDATE positions SET quantity = %s, avg_price = %s, opened_at = %s WHERE id = %s",
+                        (new_qty, avg_price, execution_db_timestamp, row_id),
+                    )
+                else:
+                    self.storage.execute(
+                        "INSERT INTO positions (id, user_id, symbol, quantity, avg_price, opened_at) VALUES (%s, %s, %s, %s, %s, %s)",
+                        (position_id, user_id, ticker, shares, executed_price, execution_db_timestamp),
+                    )
+            else:
+                row_id, old_qty = existing[0][0], int(existing[0][1])
+                remaining = old_qty - shares
+                if remaining:
+                    self.storage.execute("UPDATE positions SET quantity = %s WHERE id = %s", (remaining, row_id))
+                else:
+                    self.storage.execute("DELETE FROM positions WHERE id = %s", (row_id,))
+
+            self.storage.execute(
+                "INSERT INTO orders (id, user_id, symbol, side, order_type, price, quantity, status, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (order_id, user_id, ticker, action, "REPLAY_MARKET", executed_price, shares, "FILLED_REPLAY", execution_db_timestamp),
+            )
+            self.storage.execute(
+                "INSERT INTO order_executions (order_id, ticker, action, shares, executed_price, target_price, slippage_bps, execution_mode, executed_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (order_id, ticker, action, shares, executed_price, executed_price, 0.0, "POSTGRES_REPLAY", execution_local),
+            )
+
+            account = self.get_account_state(user_id=user_id, as_of=mark_as_of)
+            self.storage.execute(
+                "INSERT INTO portfolio_account (account_id, cash_balance, total_nav, peak_nav, drawdown_tier, updated_at) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (account_id) DO UPDATE SET cash_balance = EXCLUDED.cash_balance, total_nav = EXCLUDED.total_nav, peak_nav = EXCLUDED.peak_nav, drawdown_tier = EXCLUDED.drawdown_tier, updated_at = EXCLUDED.updated_at",
+                (user_id, account["cash_balance"], account["total_nav"], account["peak_nav"], account["drawdown_tier"], execution_local),
+            )
+            self.storage.commit()
+            return {
+                "order_id": order_id,
+                "ticker": ticker,
+                "action": action,
+                "shares": shares,
+                "executed_price": executed_price,
+                "cash_balance": account["cash_balance"],
+                "total_nav": account["total_nav"],
+                "status": "FILLED_REPLAY",
+                "executed_at": execution_local.isoformat(),
+                "mark_as_of": mark_as_of.isoformat(),
+                "mark_type": "LAST_DAILY_CLOSE_ON_OR_BEFORE_AS_OF",
+            }
+        except Exception:
+            self.storage.rollback()
+            self._in_memory_account = account_before
+            raise
+
+    def record_replay_mark(self, *, user_id: str, mark_as_of: date) -> Dict[str, Any]:
+        """Persist one replay day's close-marked account state."""
+        if not user_id or not isinstance(mark_as_of, date) or isinstance(mark_as_of, datetime):
+            raise ValueError("Replay user and close-mark date are required")
+        if mark_as_of >= datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date():
+            raise ValueError("PostgreSQL replay marks must be strictly historical")
+
+        account_before = deepcopy(self._in_memory_account)
+        try:
+            self.storage.begin()
+            account = self.get_account_state(user_id=user_id, as_of=mark_as_of)
+            marked_at = datetime.combine(mark_as_of, time(15, 0), tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+            self.storage.execute(
+                "INSERT INTO portfolio_account (account_id, cash_balance, total_nav, peak_nav, drawdown_tier, updated_at) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (account_id) DO UPDATE SET cash_balance = EXCLUDED.cash_balance, total_nav = EXCLUDED.total_nav, peak_nav = EXCLUDED.peak_nav, drawdown_tier = EXCLUDED.drawdown_tier, updated_at = EXCLUDED.updated_at",
+                (user_id, account["cash_balance"], account["total_nav"], account["peak_nav"], account["drawdown_tier"], marked_at),
+            )
+            self.storage.commit()
+            return {**account, "mark_as_of": mark_as_of.isoformat(), "mark_type": "LAST_DAILY_CLOSE_ON_OR_BEFORE_AS_OF"}
+        except Exception:
+            self.storage.rollback()
+            self._in_memory_account = account_before
+            raise
+
+    def reset_paper_trading_account(
+        self,
+        user_id: Optional[str] = None,
+        initial_capital: float = 1_000_000_000.0,
+        clean_agents_and_logs: bool = False,
+    ) -> Dict[str, Any]:
+        """Khôi phục tài khoản Paper Trading về trạng thái ban đầu sạch sẽ để sẵn sàng lên PROD.
+        Xóa toàn bộ:
+        - order_executions
+        - orders
+        - positions
+        - Reset cash_balance và total_nav về initial_capital (1 tỷ)
+        - Tùy chọn (clean_agents_and_logs=True): Xóa toàn bộ kết quả quyết định và 12 bảng Logs của Agents.
+        """
+        target_uid = user_id or self.account_id
+        try:
+            self.storage.begin()
+            # 1. Xóa executions của user
+            self.storage.execute(
+                "DELETE FROM order_executions WHERE order_id::text IN (SELECT id::text FROM orders WHERE user_id = %s) OR execution_mode = 'POSTGRES_REPLAY'",
+                (target_uid,),
+            )
+            # 2. Xóa orders
+            self.storage.execute("DELETE FROM orders WHERE user_id = %s", (target_uid,))
+            # 3. Xóa positions
+            self.storage.execute("DELETE FROM positions WHERE user_id = %s", (target_uid,))
+            # 4. Khôi phục số dư users
+            self.storage.execute("UPDATE users SET cash_balance = %s WHERE id = %s", (initial_capital, target_uid))
+            # 5. Khôi phục portfolio_account
+            self.storage.execute(
+                "INSERT INTO portfolio_account (account_id, cash_balance, total_nav, peak_nav, drawdown_tier, updated_at) "
+                "VALUES (%s, %s, %s, %s, 'GREEN', NOW()) "
+                "ON CONFLICT (account_id) DO UPDATE SET cash_balance = EXCLUDED.cash_balance, "
+                "total_nav = EXCLUDED.total_nav, peak_nav = EXCLUDED.peak_nav, drawdown_tier = 'GREEN', updated_at = NOW()",
+                (target_uid, initial_capital, initial_capital, initial_capital),
+            )
+
+            # 6. Dọn dẹp kết quả quyết định và Logs của 12 Agents (khi được yêu cầu)
+            if clean_agents_and_logs:
+                clean_sql = """
+                DO $$ 
+                DECLARE 
+                    tbl text;
+                    tables text[] := ARRAY[
+                        'portfolio_decisions', 'investment_theses', 'counter_thesis_verdicts',
+                        'cio_resolutions', 'cio_strategic_directives', 'strategic_allocations',
+                        'stop_loss_events', 'position_health_ticks', 'risk_snapshots',
+                        'slippage_records', 'audit_reports', 'violation_reports',
+                        'log_market_surveillance', 'log_universe_discovery', 'log_equity_research',
+                        'log_investment_thesis', 'log_counter_thesis', 'log_strategy_cio',
+                        'log_portfolio_allocation', 'log_portfolio_risk', 'log_trade_execution',
+                        'log_position_monitoring', 'log_reinforcement_learning', 'log_system_governance'
+                    ];
+                BEGIN 
+                    FOREACH tbl IN ARRAY tables LOOP
+                        IF to_regclass(tbl) IS NOT NULL THEN
+                            EXECUTE 'TRUNCATE TABLE ' || quote_ident(tbl) || ' CASCADE';
+                        END IF;
+                    END LOOP;
+                END $$;
+                """
+                self.storage.execute(clean_sql)
+
+            self.storage.commit()
+
+            # Reset in-memory
+            self._in_memory_account = {
+                "account_id": target_uid,
+                "cash_balance": initial_capital,
+                "total_nav": initial_capital,
+                "peak_nav": initial_capital,
+                "drawdown_tier": "GREEN",
+                "win_rate": 0.0,
+            }
+            self._in_memory_positions.clear()
+            logger.info(f"[PortfolioRepository] Đã reset tài khoản {target_uid} về {initial_capital:,.0f} VND sạch sẽ.")
+            return {"user_id": target_uid, "cash_balance": initial_capital, "status": "RESET_SUCCESS"}
+        except Exception as e:
+            self.storage.rollback()
+            logger.error(f"[PortfolioRepository] Lỗi reset paper trading account {target_uid}: {e}")
+            raise
 
     def execute_order_transaction(
         self,

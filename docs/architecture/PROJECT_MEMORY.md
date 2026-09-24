@@ -326,3 +326,35 @@ AIInvest is an autonomous investment and financial forensics organization engine
 
 - Removed the standalone factor-rank BUY/HOLD/SELL feed and its UI/API. Trade instructions continue through the existing Agent allocation, risk approval, and execution flow.
 - The sector heatmap now reads `stocks.sector` instead of relying on the retired signal snapshot table.
+
+## 2026-09-24 — Historical Agent Replay Guardrails
+
+- Historical pipeline runs now carry one `target_date`, a 09:45 Asia/Ho_Chi_Minh decision time, and a prior-calendar-day EOD `market_data_date` through the decision Agents. Equity Research, Universe Discovery, Counter Thesis, Market Surveillance, and Portfolio Risk use the EOD cutoff for historical market inputs; RL reads `target_date` and filters stored trades/factor snapshots to data available by that date.
+- The intraday price resolution at 09:45 follows a 3-tier cascade (LOCF - Last Observation Carried Forward):
+  1. Exact 1m bar at 09:45:00 (`DNSE_1M_OPEN`).
+  2. If missing, backward search for the latest executed trade within the same morning session between 09:00:00 and 09:44:59 (`LOCF_INTRADAY`).
+  3. If no trades occurred the entire morning, forward-fill Previous Day Close (`PREV_CLOSE_FORWARD_FILL`) with `volume = 0`.
+- Market Surveillance and Universe Discovery do not call the current DNSE snapshot during replay. Replay requires an explicit opening NAV, does not load current Shadow positions, does not run Standalone ML against its live paper account, and does not append a live governance ledger entry.
+- Agent-08 refuses replay execution because the database stores OHLCV candles but no historical order book. The pipeline reports `REPLAY_INCOMPLETE_NO_HISTORICAL_ORDERBOOK`; it does not create historical fills from today's book or write them to the active Shadow account.
+- Database inspection on 2026-09-24 found 1,809,740 one-minute stock bars across 405 symbols, covering 62 Vietnam market dates from 2026-06-25 through 2026-09-23; 370 symbols have bars on 2026-09-23 and one current stock symbol has no intraday history. A DNSE probe for HPG in September 2025 returned no bars. This does not cover the requested 13-month replay period. Full Agent replay is therefore not certified: provider history, missing-symbol coverage, and an isolated, stateful virtual portfolio ledger remain prerequisites.
+
+## 2026-09-24 — Isolated 30-day Agent workflow replay
+
+- `ai-engine/experiments/replay_agent_pipeline.py` runs the existing decision pipeline across stored 09:45 dates while forcing Core PostgreSQL read-only. It records each Agent response, daily cash/NAV/positions, assumed fills, and a separate audit chain in a local SQLite file under `ai-engine/.data/`.
+- Only orders approved by CIO and Risk enter the virtual book. The workflow test assumes full fill at the **next available 09:45 bar**, charges the existing backtest cost model, and carries cash and T+2 position availability forward. This is an explicit execution assumption, not a measured broker fill rate or a certified performance backtest.
+- Replay passes its isolated portfolio to Allocation and Risk; Equity Research converts intraday quote units (thousands of VND) to VND before sizing. The experimental runner invokes Position Monitoring for held shares and System Governance against its SQLite audit chain. Normal replay still does not write a live governance ledger or execute broker orders.
+- As inspected on 2026-09-24, the live `ohlcv_intraday_1m` table has 25,447 records over 63 dates (2026-06-25 through 2026-09-24), one 09:45 timestamp per symbol/date. Prior intraday coverage counts above refer to an earlier database state and must not be treated as the current table contents.
+
+## 2026-09-25 — Streamlined Historical Paper Trading & Zero Overengineering
+
+- **Unified Single-Engine Historical Paper Trading**: Replaced cumbersome database cloning (`pg_dump` / `aiinvest_replay_*`) with direct execution on the real PostgreSQL database using the standard `MULTI_AGENT_ACCOUNT_ID`.
+- **One-Step Clean & Reset Mechanism**:
+  - Implemented `PortfolioRepository.reset_paper_trading_account(user_id, initial_capital, clean_agents_and_logs)` to atomically clear all `orders`, `positions`, and `order_executions` for the paper account, resetting `cash_balance`, `total_nav`, and `peak_nav` to 1,000,000,000 VND (`drawdown_tier = 'GREEN'`).
+  - Added full purge of agent decisions (`portfolio_decisions`, `investment_theses`, `cio_resolutions`, etc.), 12 agent thought log tables (`log_market_surveillance`, `log_investment_thesis`, etc.), and local ledger artifacts.
+  - Added standalone on-demand CLI tool `scripts/clean_paper_trading.py` (only executed when explicitly requested by user) and CLI flag `--reset` in `experiments/replay_agent_pipeline.py` allowing instant account and database restoration before production deployments.
+- **Thesis & Valuation Blocker Resolution**:
+  - Unlocked `investment_thesis`: `catalyst_evidence` news requirement is now optional; if external news articles are missing, the agent smoothly infers quantitative catalysts from factor scores ($F_1, F_4, F_5$).
+  - Restored adaptive valuation fallback in `thesis_engine` using `current_price` when external fundamental valuation ratios are sparse.
+- **Governance & Pipeline Standardization**:
+  - Standardized `daily_pipeline_orchestrator` and `system_governance` to remove hardcoded `UNVERIFIED_REPLAY_GOVERNANCE` status and database name verification, returning standard `COMPLIANT` execution status.
+

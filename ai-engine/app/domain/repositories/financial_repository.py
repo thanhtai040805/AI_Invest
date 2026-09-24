@@ -28,11 +28,16 @@ class FinancialRepository:
         symbol: str,
         statement_type: Optional[str] = None,
         limit: int = 8,
+        as_of: Optional[date] = None,
     ) -> List[Dict[str, Any]]:
         """Lấy danh sách các kỳ BCTC gần nhất của cổ phiếu."""
         symbol = symbol.upper().strip()
         conditions = ["symbol = %s"]
         params: List[Any] = [symbol]
+
+        if as_of:
+            conditions.extend(["published_date IS NOT NULL", "published_date <= %s"])
+            params.append(as_of)
 
         if statement_type:
             conditions.append("statement_type = %s")
@@ -66,7 +71,7 @@ class FinancialRepository:
             logger.warning(f"Lỗi khi đọc financial_statements cho {symbol} ({e})")
         return []
 
-    def get_latest_ratios(self, symbol: str) -> Optional[Dict[str, Any]]:
+    def get_latest_ratios(self, symbol: str, as_of: Optional[date] = None) -> Optional[Dict[str, Any]]:
         """Lấy chỉ số tài chính gần nhất của cổ phiếu (P/E, P/B, ROE, ROA, Debt/Equity...)."""
         symbol = symbol.upper().strip()
         query = """
@@ -75,11 +80,13 @@ class FinancialRepository:
                    yoy_revenue_growth, yoy_earnings_growth, published_date
             FROM financial_ratios
             WHERE symbol = %s
-            ORDER BY ratio_date DESC
+              AND published_date IS NOT NULL
+              AND published_date <= %s
+            ORDER BY published_date DESC, ratio_date DESC
             LIMIT 1
         """
         try:
-            rows = self.storage.fetch_all(query, (symbol,))
+            rows = self.storage.fetch_all(query, (symbol, as_of or date.today()))
             if rows and len(rows) > 0:
                 r = rows[0]
                 return {

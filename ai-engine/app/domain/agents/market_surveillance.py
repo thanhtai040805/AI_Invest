@@ -74,9 +74,7 @@ class MarketSurveillanceAgent(BaseAgent):
                     row_max = cur.fetchone()
                     eff_date = row_max[0] if (row_max and row_max[0]) else None
                     if not eff_date:
-                        cur.execute("SELECT MAX(date) FROM market_data_daily")
-                        row_fallback = cur.fetchone()
-                        eff_date = row_fallback[0] if (row_fallback and row_fallback[0]) else target_d
+                        eff_date = target_d
 
                     hydrated["effective_date"] = eff_date
 
@@ -150,6 +148,25 @@ class MarketSurveillanceAgent(BaseAgent):
                         breadth_ma50_pct = 50.0
                         hydrated["breadth_valid"] = False
                     hydrated["breadth_above_ma50_pct"] = round(breadth_ma50_pct, 2)
+
+                    cur.execute("""
+                        WITH windowed AS (
+                            SELECT ticker, date, close_adj,
+                                   AVG(close_adj) OVER (PARTITION BY ticker ORDER BY date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) AS ma20,
+                                   COUNT(close_adj) OVER (PARTITION BY ticker ORDER BY date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) AS cnt
+                            FROM market_data_daily
+                            WHERE date <= %s AND date >= %s AND ticker != 'VNINDEX'
+                        )
+                        SELECT COUNT(*), SUM(CASE WHEN close_adj > ma20 THEN 1 ELSE 0 END)
+                        FROM windowed WHERE date = %s AND cnt >= 20
+                    """, (eff_date, start_ma50, eff_date))
+                    row_ma20 = cur.fetchone()
+                    if row_ma20 and row_ma20[0]:
+                        hydrated["breadth_above_ma20_pct"] = round(float(row_ma20[1] or 0) / float(row_ma20[0]) * 100.0, 2)
+                        hydrated["breadth_ma20_valid"] = True
+                    else:
+                        hydrated["breadth_above_ma20_pct"] = None
+                        hydrated["breadth_ma20_valid"] = False
 
                     # 4. Lấy chuỗi lịch sử VNINDEX kèm vol_ma20, macro và foreign flow cho HMM & GARCH
                     cur.execute("""
@@ -299,7 +316,8 @@ class MarketSurveillanceAgent(BaseAgent):
 
         # 1b. Cầu nối Dữ liệu Thời gian Thực qua DNSE API (chạy khi trong giờ giao dịch hoặc có yêu cầu realtime)
         dnse_live_data = None
-        if is_intraday_active or is_realtime_requested:
+        is_today = (target_d == date.today())
+        if is_today and (is_intraday_active or is_realtime_requested):
             try:
                 live_breadth = await self.market_data_service.get_breadth()
                 live_indices = await self.market_data_service.get_indices()
@@ -323,7 +341,10 @@ class MarketSurveillanceAgent(BaseAgent):
         )
 
         if not has_full_inputs:
-            hydrated = await asyncio.to_thread(self._sync_hydrate_data, target_d)
+            market_data_date = event_data.get("market_data_date")
+            if isinstance(market_data_date, str):
+                market_data_date = date.fromisoformat(market_data_date[:10])
+            hydrated = await asyncio.to_thread(self._sync_hydrate_data, market_data_date or target_d)
         else:
             hydrated = {}
 
@@ -575,6 +596,8 @@ class MarketSurveillanceAgent(BaseAgent):
             "garch_cash_target_pct": garch_cash_target,
             "hmm_probabilities": hmm_probs,
             "breadth_above_ma50_pct": breadth_pct,
+            "breadth_above_ma20_pct": hydrated.get("breadth_above_ma20_pct"),
+            "breadth_ma20_valid": hydrated.get("breadth_ma20_valid", False),
             "adv_decl_ratio": adv_decl_ratio,
             "floor_locked_count": floor_locked_count,
             "ceiling_count": ceiling_count,

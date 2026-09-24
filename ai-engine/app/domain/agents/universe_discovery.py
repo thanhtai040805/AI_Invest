@@ -31,6 +31,16 @@ from app.infrastructure.external_api.market_data_service import MarketDataServic
 logger = logging.getLogger(__name__)
 
 
+def _coerce_date(value: Any) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        return date.fromisoformat(value[:10])
+    raise ValueError("target_date must be a date, datetime, or ISO date string")
+
+
 class UniverseDiscoveryAgent(BaseAgent):
     """
     AGENT-02: Chuyên viên Khám phá & Sàng lọc Universe.
@@ -62,7 +72,10 @@ class UniverseDiscoveryAgent(BaseAgent):
             - halted_tickers: List[str] (mã bị tạm ngừng giao dịch realtime) từ Agent-01
             - beneish_overrides: Optional[Dict[str, float]] (ghi đè mô phỏng nếu có)
         """
-        target_date: date = event_data.get("target_date", date.today())
+        target_date = _coerce_date(event_data.get("target_date") or date.today())
+        market_data_date = event_data.get("market_data_date") or target_date
+        if isinstance(market_data_date, str):
+            market_data_date = date.fromisoformat(market_data_date[:10])
         tickers: Optional[List[str]] = event_data.get("tickers")
         strategy_mode: str = str(event_data.get("strategy_mode", "Quant"))
         session_context: str = str(event_data.get("session_context", "Normal"))
@@ -72,7 +85,8 @@ class UniverseDiscoveryAgent(BaseAgent):
         beneish_overrides: Dict[str, float] = event_data.get("beneish_overrides", {})
         # Cầu nối Real-time DNSE: Quét trạng thái giao dịch trực tiếp nếu đang trong giờ giao dịch hoặc có yêu cầu realtime
         session = self.session_manager.get_session(datetime.now())
-        if self.session_manager.is_order_matching_active(session) or event_data.get("is_realtime"):
+        is_today = (target_date == date.today())
+        if is_today and (self.session_manager.is_order_matching_active(session) or event_data.get("is_realtime")):
             try:
                 snap = await self.market_data_service.get_snapshot(exchange="HOSE")
                 for s in snap.get("stocks", []):
@@ -167,17 +181,20 @@ class UniverseDiscoveryAgent(BaseAgent):
                         )
                         SELECT ticker, 
                                AVG(close_adj * volume_total * 1000) as adtv20_vnd,
+                               AVG(volume_total) as adtv20_shares,
                                COUNT(*) as trade_days
                         FROM market_data_daily
                         WHERE date IN (SELECT date FROM recent_days) AND ticker = ANY(%s)
                         GROUP BY ticker
                         """,
-                        (target_date, tickers),
+                        (market_data_date, tickers),
                     )
                     l_meta = {
                         str(r[0]).upper().strip(): {
                             "adtv20": float(r[1] or 0.0),
-                            "trade_days": int(r[2] or 0),
+                            "adtv20_vnd": float(r[1] or 0.0),
+                            "adtv20_shares": float(r[2] or 0.0),
+                            "trade_days": int(r[3] or 0),
                         }
                         for r in cur.fetchall()
                     }
@@ -190,7 +207,7 @@ class UniverseDiscoveryAgent(BaseAgent):
                         WHERE ticker = ANY(%s) AND date <= %s
                         GROUP BY ticker
                         """,
-                        (tickers, target_date),
+                        (tickers, market_data_date),
                     )
                     list_meta = {
                         str(r[0]).upper().strip(): {
@@ -408,6 +425,8 @@ class UniverseDiscoveryAgent(BaseAgent):
                 "beneish_status": b_status,
                 "m_score": m_score,
                 "adtv20": adtv20,
+                "adtv20_vnd": adtv20,
+                "adtv20_shares": liq_data.get("adtv20_shares", 0.0),
                 "provisional_conviction": "ELIGIBLE",
             })
             state_securities_to_save.append({

@@ -22,7 +22,7 @@ def test_daily_daemon_initialization_and_status():
     st = daemon.status
 
     assert st["is_running"] is False
-    assert st["target_trigger_time"] == "09:15:00"
+    assert st["target_trigger_time"] == "09:45:00"
     assert st["last_status"] == "IDLE"
 
 
@@ -72,7 +72,7 @@ def test_admin_api_daily_pipeline_endpoints():
     assert resp_status.status_code == 200
     data_status = resp_status.json()
     assert "target_trigger_time" in data_status
-    assert data_status["target_trigger_time"] == "09:15:00"
+    assert data_status["target_trigger_time"] == "09:45:00"
 
     # 2. POST trigger
     resp_trigger = client.post("/api/admin/daily-pipeline/trigger?target_date=2026-08-24&force=true")

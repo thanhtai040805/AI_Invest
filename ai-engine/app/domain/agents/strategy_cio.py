@@ -1,14 +1,14 @@
-"""AGENT-12: Strategy CIO Agent (IOS v5.1 Institutional Sovereign Architecture)
+﻿"""AGENT-12: Strategy CIO Agent (IOS v5.1 Institutional Sovereign Architecture)
 
-Chức năng & Thẩm quyền Thể chế:
-1. Trọng tài Tối cao (Conflict Arbitration): Phân định 3 Tầng Rủi ro (Hard Law vs Critical Risk vs Normal Risk).
-2. Thẩm quyền Ngoại lệ (Exception Authority): Cấp phép ngoại lệ có biên an toàn (Boundedness Check <= 5% NAV, <= 48h, Governance Co-sign).
-3. Định hướng Vĩ mô Chiến lược (Strategic Direction): Ban hành Directive có Versioning, Macro Regime, Risk Appetite, Sector Tilt & Flash Invalidation Triggers.
-4. Phê duyệt Thay đổi Hệ thống Lớn (Major Change Approval): Thẩm định OOS Sharpe, Max Drawdown và kiểm soát Turnover Shock.
-5. Kiểm soát Khẩn cấp (Emergency System Control): Kích hoạt System Halt Dual-Tunnel (Đóng băng BUY mới, bảo vệ Defensive Exit Stop-loss).
-6. Sổ cái Kiểm toán Bất biến (Cryptographic Audit Trail): SHA-256 Canonical JSON Hash Chaining, neo vào AuditTrailEngine.
+Chá»©c nÄƒng & Tháº©m quyá»n Thá»ƒ cháº¿:
+1. Trá»ng tĂ i Tá»‘i cao (Conflict Arbitration): PhĂ¢n Ä‘á»‹nh 3 Táº§ng Rá»§i ro (Hard Law vs Critical Risk vs Normal Risk).
+2. Tháº©m quyá»n Ngoáº¡i lá»‡ (Exception Authority): Cáº¥p phĂ©p ngoáº¡i lá»‡ cĂ³ biĂªn an toĂ n (Boundedness Check <= 5% NAV, <= 48h, Governance Co-sign).
+3. Äá»‹nh hÆ°á»›ng VÄ© mĂ´ Chiáº¿n lÆ°á»£c (Strategic Direction): Ban hĂ nh Directive cĂ³ Versioning, Macro Regime, Risk Appetite, Sector Tilt & Flash Invalidation Triggers.
+4. PhĂª duyá»‡t Thay Ä‘á»•i Há»‡ thá»‘ng Lá»›n (Major Change Approval): Tháº©m Ä‘á»‹nh OOS Sharpe, Max Drawdown vĂ  kiá»ƒm soĂ¡t Turnover Shock.
+5. Kiá»ƒm soĂ¡t Kháº©n cáº¥p (Emergency System Control): KĂ­ch hoáº¡t System Halt Dual-Tunnel (ÄĂ³ng bÄƒng BUY má»›i, báº£o vá»‡ Defensive Exit Stop-loss).
+6. Sá»• cĂ¡i Kiá»ƒm toĂ¡n Báº¥t biáº¿n (Cryptographic Audit Trail): SHA-256 Canonical JSON Hash Chaining, neo vĂ o AuditTrailEngine.
 
-BẢO LƯU HIẾN PHÁP: TUYỆT ĐỐI KHÔNG OVERRIDE HARD LAWS, FAILSAFE, HOẶC AUDIT INTEGRITY.
+Báº¢O LÆ¯U HIáº¾N PHĂP: TUYá»†T Äá»I KHĂ”NG OVERRIDE HARD LAWS, FAILSAFE, HOáº¶C AUDIT INTEGRITY.
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ class SystemHaltState(str, Enum):
 
 class StrategyCIOAgent(BaseAgent):
     """
-    AGENT-12: Giám đốc Đầu tư Chiến lược (CIO) & Trọng tài Thể chế Tối cao.
+    AGENT-12: GiĂ¡m Ä‘á»‘c Äáº§u tÆ° Chiáº¿n lÆ°á»£c (CIO) & Trá»ng tĂ i Thá»ƒ cháº¿ Tá»‘i cao.
     """
 
     HARD_LAW_RULES = {
@@ -79,7 +79,7 @@ class StrategyCIOAgent(BaseAgent):
             from app.infrastructure.llm.client import get_unified_llm_client
             self.memo_generator = StrategicMemoGenerator(llm_client=get_unified_llm_client())
         except Exception as e_memo:
-            logger.debug(f"[StrategyCIOAgent] Không thể khởi tạo memo_generator: {e_memo}")
+            logger.debug(f"[StrategyCIOAgent] KhĂ´ng thá»ƒ khá»Ÿi táº¡o memo_generator: {e_memo}")
             self.memo_generator = None
 
     def _init_cio_tables(self) -> None:
@@ -93,10 +93,10 @@ class StrategyCIOAgent(BaseAgent):
                     if row and row[0]:
                         self.last_decision_hash = row[0]
         except Exception as e:
-            logger.warning(f"[StrategyCIOAgent] Không thể nạp hash CIO từ database: {e}")
+            logger.warning(f"[StrategyCIOAgent] KhĂ´ng thá»ƒ náº¡p hash CIO tá»« database: {e}")
 
     def _calculate_canonical_hash(self, payload: Dict[str, Any], previous_hash: str) -> str:
-        """Tính mã băm SHA-256 bất biến dựa trên Canonical JSON."""
+        """TĂ­nh mĂ£ bÄƒm SHA-256 báº¥t biáº¿n dá»±a trĂªn Canonical JSON."""
         serialized = json.dumps(payload, sort_keys=True, default=str)
         hash_input = f"{serialized}_{previous_hash}".encode("utf-8")
         return hashlib.sha256(hash_input).hexdigest()
@@ -112,13 +112,14 @@ class StrategyCIOAgent(BaseAgent):
         summary: Optional[str] = None,
         gov_cosign: bool = False,
     ) -> str:
-        """Lưu trữ phán quyết bất biến và neo chuỗi băm vào AuditTrailEngine của Governance."""
+        """LÆ°u trá»¯ phĂ¡n quyáº¿t báº¥t biáº¿n vĂ  neo chuá»—i bÄƒm vĂ o AuditTrailEngine cá»§a Governance."""
         from app.infrastructure.database.pg_pool import get_conn
         from psycopg2.extras import Json
 
         decision_hash = self._calculate_canonical_hash(payload, self.last_decision_hash)
 
-        # Chuẩn hóa an toàn resolution_id và thesis_id để tuyệt đối không lỗi cú pháp PostgreSQL UUID
+
+        # Chuáº©n hĂ³a an toĂ n resolution_id vĂ  thesis_id Ä‘á»ƒ tuyá»‡t Ä‘á»‘i khĂ´ng lá»—i cĂº phĂ¡p PostgreSQL UUID
         safe_res_uuid = str(resolution_id)
         try:
             uuid.UUID(safe_res_uuid)
@@ -152,9 +153,9 @@ class StrategyCIOAgent(BaseAgent):
                     ))
             self.last_decision_hash = decision_hash
         except Exception as e:
-            logger.error(f"[StrategyCIOAgent] Lỗi ghi sổ cái bất biến cio_resolutions: {e}")
+            logger.error(f"[StrategyCIOAgent] Lá»—i ghi sá»• cĂ¡i báº¥t biáº¿n cio_resolutions: {e}")
 
-        # Neo chéo (Anchor) vào AuditTrailEngine toàn cục
+        # Neo chĂ©o (Anchor) vĂ o AuditTrailEngine toĂ n cá»¥c
         try:
             self.audit_trail.log_event("strategy_cio", f"CIO_{decision_type}", {
                 "resolution_id": str(resolution_id),
@@ -163,12 +164,12 @@ class StrategyCIOAgent(BaseAgent):
                 "ticker": ticker,
             })
         except Exception as e:
-            logger.warning(f"[StrategyCIOAgent] Lỗi neo audit trail: {e}")
+            logger.warning(f"[StrategyCIOAgent] Lá»—i neo audit trail: {e}")
 
         return decision_hash
 
     async def _publish_cio_event(self, payload: Dict[str, Any], decision_type: str = "CIO_RESOLUTION") -> None:
-        """Bắn sự kiện CIO_RESOLUTION lên RabbitMQ Event Bus."""
+        """Báº¯n sá»± kiá»‡n CIO_RESOLUTION lĂªn RabbitMQ Event Bus."""
         try:
             from app.core.event_topics import EventTopics
             await self.publish_event(
@@ -184,10 +185,10 @@ class StrategyCIOAgent(BaseAgent):
                 },
             )
         except Exception as e_pub:
-            logger.warning(f"[StrategyCIOAgent] Lỗi bắn sự kiện CIO_RESOLUTION: {e_pub}")
+            logger.warning(f"[StrategyCIOAgent] Lá»—i báº¯n sá»± kiá»‡n CIO_RESOLUTION: {e_pub}")
 
     def _update_violation_report_in_db(self, report_id: str, resolution_id: str, status: str) -> None:
-        """Cập nhật trạng thái xử lý trong bảng violation_reports."""
+        """Cáº­p nháº­t tráº¡ng thĂ¡i xá»­ lĂ½ trong báº£ng violation_reports."""
         from app.infrastructure.database.pg_pool import get_conn
         try:
             with get_conn() as conn:
@@ -200,15 +201,15 @@ class StrategyCIOAgent(BaseAgent):
                         WHERE report_id = %s;
                     """, (status, resolution_id, report_id))
         except Exception as e:
-            logger.error(f"[StrategyCIOAgent] Lỗi cập nhật violation_reports: {e}")
+            logger.error(f"[StrategyCIOAgent] Lá»—i cáº­p nháº­t violation_reports: {e}")
 
     # =========================================================================
-    # 1. GOVERNANCE ESCALATION (Xử lý Vi phạm từ Agent 11)
+    # 1. GOVERNANCE ESCALATION (Xá»­ lĂ½ Vi pháº¡m tá»« Agent 11)
     # =========================================================================
     async def handle_governance_escalation(self, escalation_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Xử lý Escalation từ System Governance Agent khi lệnh bị BLOCK.
-        Tuân thủ Hiến pháp: Khẳng định tính bất khả xâm phạm của Hard Laws.
+        Xá»­ lĂ½ Escalation tá»« System Governance Agent khi lá»‡nh bá»‹ BLOCK.
+        TuĂ¢n thá»§ Hiáº¿n phĂ¡p: Kháº³ng Ä‘á»‹nh tĂ­nh báº¥t kháº£ xĂ¢m pháº¡m cá»§a Hard Laws.
         """
         report_id = escalation_data.get("report_id") or str(uuid.uuid4())
         ticker = str(escalation_data.get("ticker", "PORTFOLIO")).upper().strip()
@@ -222,11 +223,11 @@ class StrategyCIOAgent(BaseAgent):
 
         if is_hard_law:
             if "DIEU_4" in violated_rule or "Single" in reason or "15%" in reason:
-                # Ép hạ quy mô tối đa về mức an toàn theo luật (Không override, cưỡng chế trần 10%)
+                # Ă‰p háº¡ quy mĂ´ tá»‘i Ä‘a vá» má»©c an toĂ n theo luáº­t (KhĂ´ng override, cÆ°á»¡ng cháº¿ tráº§n 10%)
                 final_res = "FORCE_DOWNSIZE"
                 exec_rationale = (
-                    f"CIO phán quyết: Vi phạm Điều 4 Hard Law ({violated_rule}). Tuyệt đối cấm mua vượt 15% NAV. "
-                    f"Ép hạ tỷ trọng về mức tối đa cho phép 10.0% NAV để đảm bảo tuân thủ Hiến pháp."
+                    f"CIO phĂ¡n quyáº¿t: Vi pháº¡m Äiá»u 4 Hard Law ({violated_rule}). Tuyá»‡t Ä‘á»‘i cáº¥m mua vÆ°á»£t 15% NAV. "
+                    f"Ă‰p háº¡ tá»· trá»ng vá» má»©c tá»‘i Ä‘a cho phĂ©p 10.0% NAV Ä‘á»ƒ Ä‘áº£m báº£o tuĂ¢n thá»§ Hiáº¿n phĂ¡p."
                 )
                 resolution_details = {
                     "action": "FORCE_DOWNSIZE",
@@ -235,11 +236,11 @@ class StrategyCIOAgent(BaseAgent):
                     "hard_law_override_attempted": False,
                 }
             else:
-                # Các vi phạm khác (Beneish, T+2.5 Floor Gap, Failsafe) -> XÁC NHẬN HỦY LỆNH HOÀN TOÀN
+                # CĂ¡c vi pháº¡m khĂ¡c (Beneish, T+2.5 Floor Gap, Failsafe) -> XĂC NHáº¬N Há»¦Y Lá»†NH HOĂ€N TOĂ€N
                 final_res = "CONFIRM_BLOCK"
                 exec_rationale = (
-                    f"CIO xác nhận phán quyết BLOCK của Governance Agent: Mã {ticker} vi phạm nghiêm trọng {violated_rule}. "
-                    f"Lý do: {reason}. Theo Hiến pháp đầu tư, CIO không có thẩm quyền override Hard Laws."
+                    f"CIO xĂ¡c nháº­n phĂ¡n quyáº¿t BLOCK cá»§a Governance Agent: MĂ£ {ticker} vi pháº¡m nghiĂªm trá»ng {violated_rule}. "
+                    f"LĂ½ do: {reason}. Theo Hiáº¿n phĂ¡p Ä‘áº§u tÆ°, CIO khĂ´ng cĂ³ tháº©m quyá»n override Hard Laws."
                 )
                 resolution_details = {
                     "action": "CANCEL_ORDER",
@@ -248,7 +249,7 @@ class StrategyCIOAgent(BaseAgent):
                 }
         else:
             final_res = "APPROVE_CONDITIONAL"
-            exec_rationale = f"CIO chấp thuận phân bổ có điều kiện cho {ticker} sau khi thẩm định rủi ro soft limits: {reason}."
+            exec_rationale = f"CIO cháº¥p thuáº­n phĂ¢n bá»• cĂ³ Ä‘iá»u kiá»‡n cho {ticker} sau khi tháº©m Ä‘á»‹nh rá»§i ro soft limits: {reason}."
             resolution_details = {
                 "action": "ALLOW_WITH_MONITORING",
                 "target_ticker": ticker,
@@ -265,7 +266,7 @@ class StrategyCIOAgent(BaseAgent):
             "resolved_at": datetime.now(timezone.utc).isoformat(),
         }
 
-        # Lưu sổ cái mật mã bất biến và cập nhật violation_reports
+        # LÆ°u sá»• cĂ¡i máº­t mĂ£ báº¥t biáº¿n vĂ  cáº­p nháº­t violation_reports
         dec_hash = self._persist_audit_record(
             resolution_id=resolution_id,
             decision_type="GOVERNANCE_ESCALATION",
@@ -281,15 +282,15 @@ class StrategyCIOAgent(BaseAgent):
         return payload
 
     # =========================================================================
-    # 2. CONFLICT RESOLUTION: PHÂN TÁCH MINH BẠCH 3 TẦNG RỦI RO (PHẢN BIỆN 5)
+    # 2. CONFLICT RESOLUTION: PHĂ‚N TĂCH MINH Báº CH 3 Táº¦NG Rá»¦I RO (PHáº¢N BIá»†N 5)
     # =========================================================================
     async def resolve_conflict(self, conflict_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Phân xử xung đột luận điểm (Thesis vs Counter-Thesis hoặc Portfolio vs Risk).
-        Áp dụng chặt chẽ Mô hình Phân định 3 Tầng Rủi ro Thể chế (The 3-Tier Risk Hierarchy):
-          - Tầng 1: Hard Law (Hiến pháp) -> UPHOLD_BLOCK (100% Zero Tolerance)
-          - Tầng 2: Critical Tail Risk (Cận biên Thảm họa) -> DISCRETIONARY_BLOCK hoặc FORCE_RECALCULATION
-          - Tầng 3: Normal Risk (Thương mại / Thị trường Thường) -> PROCEED_WITH_PENALTY (Hệ số phạt Kelly)
+        PhĂ¢n xá»­ xung Ä‘á»™t luáº­n Ä‘iá»ƒm (Thesis vs Counter-Thesis hoáº·c Portfolio vs Risk).
+        Ăp dá»¥ng cháº·t cháº½ MĂ´ hĂ¬nh PhĂ¢n Ä‘á»‹nh 3 Táº§ng Rá»§i ro Thá»ƒ cháº¿ (The 3-Tier Risk Hierarchy):
+          - Táº§ng 1: Hard Law (Hiáº¿n phĂ¡p) -> UPHOLD_BLOCK (100% Zero Tolerance)
+          - Táº§ng 2: Critical Tail Risk (Cáº­n biĂªn Tháº£m há»a) -> DISCRETIONARY_BLOCK hoáº·c FORCE_RECALCULATION
+          - Táº§ng 3: Normal Risk (ThÆ°Æ¡ng máº¡i / Thá»‹ trÆ°á»ng ThÆ°á»ng) -> PROCEED_WITH_PENALTY (Há»‡ sá»‘ pháº¡t Kelly)
         """
         resolution_id = str(uuid.uuid4())
         thesis_id = conflict_data.get("thesis_id") or str(uuid.uuid4())
@@ -301,7 +302,7 @@ class StrategyCIOAgent(BaseAgent):
         block_reasons = conflict_data.get("block_reasons", [])
         violated_rule = str(conflict_data.get("violated_rule", "")).upper().strip()
 
-        # Kiểm tra sự hiện diện của vi phạm Hard Law
+        # Kiá»ƒm tra sá»± hiá»‡n diá»‡n cá»§a vi pháº¡m Hard Law
         has_hard_law_violation = (
             hard_law_breach or
             any(hl in violated_rule for hl in self.HARD_LAW_RULES) or
@@ -311,14 +312,14 @@ class StrategyCIOAgent(BaseAgent):
 
 
         # ---------------------------------------------------------------------
-        # TẦNG 1: HARD LAW (Hiến pháp Đầu tư — Bất khả Xâm phạm)
+        # Táº¦NG 1: HARD LAW (Hiáº¿n phĂ¡p Äáº§u tÆ° â€” Báº¥t kháº£ XĂ¢m pháº¡m)
         # ---------------------------------------------------------------------
         if has_hard_law_violation:
             final_res = "UPHOLD_BLOCK"
             rationale = (
-                f"CIO phán quyết [TẦNG 1 - HARD LAW]: Giữ nguyên phán quyết BLOCK đối với mã {ticker}. "
-                f"Phát hiện vi phạm nghiêm trọng Điều luật Hiến pháp ({violated_rule or 'HARD_LAW_BREACH'}). "
-                f"Theo Nguyên tắc Bất biến số 2: CIO tuyệt đối không có thẩm quyền override Hard Laws."
+                f"CIO phĂ¡n quyáº¿t [Táº¦NG 1 - HARD LAW]: Giá»¯ nguyĂªn phĂ¡n quyáº¿t BLOCK Ä‘á»‘i vá»›i mĂ£ {ticker}. "
+                f"PhĂ¡t hiá»‡n vi pháº¡m nghiĂªm trá»ng Äiá»u luáº­t Hiáº¿n phĂ¡p ({violated_rule or 'HARD_LAW_BREACH'}). "
+                f"Theo NguyĂªn táº¯c Báº¥t biáº¿n sá»‘ 2: CIO tuyá»‡t Ä‘á»‘i khĂ´ng cĂ³ tháº©m quyá»n override Hard Laws."
             )
             weight_cap = 0.0
             penalty_factor = 0.0
@@ -326,14 +327,14 @@ class StrategyCIOAgent(BaseAgent):
             severity_tier = "TIER_1_HARD_LAW_INVARIANT"
 
         # ---------------------------------------------------------------------
-        # TẦNG 2: CRITICAL TAIL RISK (Rủi ro Khẩn cấp Cận biên Thảm họa)
+        # Táº¦NG 2: CRITICAL TAIL RISK (Rá»§i ro Kháº©n cáº¥p Cáº­n biĂªn Tháº£m há»a)
         # ---------------------------------------------------------------------
         elif cts_score >= 80.0 or counter_verdict == "BLOCK" or "CRITICAL" in counter_verdict:
             final_res = "DISCRETIONARY_BLOCK"
             rationale = (
-                f"CIO phán quyết [TẦNG 2 - CRITICAL TAIL RISK]: Kích hoạt quyền phủ quyết chiến lược (Discretionary Block) đối với {ticker}. "
-                f"Điểm phản biện Counter-Thesis Score ({cts_score:.1f}/100) hoặc rủi ro thảm họa quá cao: {block_reasons}. "
-                f"Chặn giải ngân để bảo toàn vốn trước nguy cơ sập gãy thanh khoản hoặc quản trị mờ ám."
+                f"CIO phĂ¡n quyáº¿t [Táº¦NG 2 - CRITICAL TAIL RISK]: KĂ­ch hoáº¡t quyá»n phá»§ quyáº¿t chiáº¿n lÆ°á»£c (Discretionary Block) Ä‘á»‘i vá»›i {ticker}. "
+                f"Äiá»ƒm pháº£n biá»‡n Counter-Thesis Score ({cts_score:.1f}/100) hoáº·c rá»§i ro tháº£m há»a quĂ¡ cao: {block_reasons}. "
+                f"Cháº·n giáº£i ngĂ¢n Ä‘á»ƒ báº£o toĂ n vá»‘n trÆ°á»›c nguy cÆ¡ sáº­p gĂ£y thanh khoáº£n hoáº·c quáº£n trá»‹ má» Ă¡m."
             )
             weight_cap = 0.0
             penalty_factor = 0.0
@@ -341,26 +342,26 @@ class StrategyCIOAgent(BaseAgent):
             severity_tier = "TIER_2_CRITICAL_TAIL_RISK"
 
         # ---------------------------------------------------------------------
-        # TẦNG 3: NORMAL RISK (Rủi ro Kinh doanh & Thị trường Thông thường)
+        # Táº¦NG 3: NORMAL RISK (Rá»§i ro Kinh doanh & Thá»‹ trÆ°á»ng ThĂ´ng thÆ°á»ng)
         # ---------------------------------------------------------------------
         else:
             final_res = "PROCEED_WITH_PENALTY"
-            # Điều tiết tỷ trọng linh hoạt theo thang điểm CTS
+            # Äiá»u tiáº¿t tá»· trá»ng linh hoáº¡t theo thang Ä‘iá»ƒm CTS
             if cts_score >= 50.0 or "CONDITIONAL" in counter_verdict or "WARNING" in counter_verdict:
                 weight_cap = 0.08
                 penalty_factor = 0.50
                 rationale = (
-                    f"CIO phán quyết [TẦNG 3 - NORMAL RISK]: Chấp thuận giải ngân thận trọng cho mã {ticker}. "
-                    f"Ghi nhận các cảnh báo thị trường/định giá từ Counter-Thesis (CTS={cts_score:.1f}). "
-                    f"Áp trần tỷ trọng an toàn {weight_cap*100:.1f}% NAV và áp dụng hệ số phạt Kelly lambda={penalty_factor:.2f}."
+                    f"CIO phĂ¡n quyáº¿t [Táº¦NG 3 - NORMAL RISK]: Cháº¥p thuáº­n giáº£i ngĂ¢n tháº­n trá»ng cho mĂ£ {ticker}. "
+                    f"Ghi nháº­n cĂ¡c cáº£nh bĂ¡o thá»‹ trÆ°á»ng/Ä‘á»‹nh giĂ¡ tá»« Counter-Thesis (CTS={cts_score:.1f}). "
+                    f"Ăp tráº§n tá»· trá»ng an toĂ n {weight_cap*100:.1f}% NAV vĂ  Ă¡p dá»¥ng há»‡ sá»‘ pháº¡t Kelly lambda={penalty_factor:.2f}."
                 )
                 conditions = ["APPLY_RISK_PENALTY_0_5", "MAX_POSITION_WEIGHT_CAP_8PCT", "TIGHT_TRAILING_STOP_LOSS"]
             else:
                 weight_cap = 0.15
                 penalty_factor = 1.0
                 rationale = (
-                    f"CIO phán quyết [TẦNG 3 - NORMAL RISK]: Phê duyệt toàn diện luận điểm đầu tư cho {ticker}. "
-                    f"Tỷ lệ Risk/Reward vượt trội, rủi ro thương mại ở mức thấp (CTS={cts_score:.1f})."
+                    f"CIO phĂ¡n quyáº¿t [Táº¦NG 3 - NORMAL RISK]: PhĂª duyá»‡t toĂ n diá»‡n luáº­n Ä‘iá»ƒm Ä‘áº§u tÆ° cho {ticker}. "
+                    f"Tá»· lá»‡ Risk/Reward vÆ°á»£t trá»™i, rá»§i ro thÆ°Æ¡ng máº¡i á»Ÿ má»©c tháº¥p (CTS={cts_score:.1f})."
                 )
                 conditions = ["STANDARD_QUARTER_KELLY_SIZING", "ROUTINE_MONITORING"]
             severity_tier = "TIER_3_NORMAL_BUSINESS_RISK"
@@ -380,7 +381,7 @@ class StrategyCIOAgent(BaseAgent):
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-        # Lưu sổ cái mật mã bất biến
+        # LÆ°u sá»• cĂ¡i máº­t mĂ£ báº¥t biáº¿n
         dec_hash = self._persist_audit_record(
             resolution_id=resolution_id,
             decision_type="CONFLICT_RESOLUTION",
@@ -396,12 +397,12 @@ class StrategyCIOAgent(BaseAgent):
         return resolution_payload
 
     # =========================================================================
-    # 3. EXCEPTION MANAGEMENT (Quản trị Ngoại lệ có Biên An Toàn)
+    # 3. EXCEPTION MANAGEMENT (Quáº£n trá»‹ Ngoáº¡i lá»‡ cĂ³ BiĂªn An ToĂ n)
     # =========================================================================
     async def evaluate_exception_request(self, req: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Thẩm định yêu cầu ngoại lệ ngoài quy chế.
-        Bắt buộc tuân thủ Boundedness Check (<= 5% NAV, <= 48h, Governance Co-sign, không lách Hard Law).
+        Tháº©m Ä‘á»‹nh yĂªu cáº§u ngoáº¡i lá»‡ ngoĂ i quy cháº¿.
+        Báº¯t buá»™c tuĂ¢n thá»§ Boundedness Check (<= 5% NAV, <= 48h, Governance Co-sign, khĂ´ng lĂ¡ch Hard Law).
         """
         exception_id = req.get("exception_id", str(uuid.uuid4()))
         reason = req.get("reason", "")
@@ -409,7 +410,7 @@ class StrategyCIOAgent(BaseAgent):
         proposed_exposure = float(req.get("max_exposure_nav_pct", 5.0))
         duration_hours = float(req.get("duration_hours", 24.0))
 
-        # Kiểm tra lách Hard Law chuẩn hóa chuỗi (chống bypass bằng khoảng trắng hoặc dấu gạch nối)
+        # Kiá»ƒm tra lĂ¡ch Hard Law chuáº©n hĂ³a chuá»—i (chá»‘ng bypass báº±ng khoáº£ng tráº¯ng hoáº·c dáº¥u gáº¡ch ná»‘i)
         clean_reason = reason.replace(" ", "_").replace("-", "_").upper()
         clean_scope = scope.replace(" ", "_").replace("-", "_").upper()
         clean_rule = str(req.get("violated_rule", "")).replace(" ", "_").replace("-", "_").upper()
@@ -422,19 +423,19 @@ class StrategyCIOAgent(BaseAgent):
         if violates_hard_law or proposed_exposure > 5.0:
             final_res = "REJECT_HARD_LAW_BYPASS"
             rationale = (
-                f"CIO bác bỏ Yêu cầu Ngoại lệ {exception_id}: Tuyệt đối không cho phép ngoại lệ chạm vào Hard Laws "
-                f"hoặc vượt quá hạn mức trần 5.0% NAV (Đề xuất: {proposed_exposure:.1f}%)."
+                f"CIO bĂ¡c bá» YĂªu cáº§u Ngoáº¡i lá»‡ {exception_id}: Tuyá»‡t Ä‘á»‘i khĂ´ng cho phĂ©p ngoáº¡i lá»‡ cháº¡m vĂ o Hard Laws "
+                f"hoáº·c vÆ°á»£t quĂ¡ háº¡n má»©c tráº§n 5.0% NAV (Äá» xuáº¥t: {proposed_exposure:.1f}%)."
             )
             gov_cosign = False
         elif duration_hours > 48.0:
             final_res = "REJECT_EXCESSIVE_DURATION"
-            rationale = f"CIO bác bỏ Yêu cầu Ngoại lệ {exception_id}: Hiệu lực {duration_hours:.1f}h vượt quá trần tối đa 48.0 giờ."
+            rationale = f"CIO bĂ¡c bá» YĂªu cáº§u Ngoáº¡i lá»‡ {exception_id}: Hiá»‡u lá»±c {duration_hours:.1f}h vÆ°á»£t quĂ¡ tráº§n tá»‘i Ä‘a 48.0 giá»."
             gov_cosign = False
         else:
             final_res = "APPROVE_BOUNDED_EXCEPTION"
             rationale = (
-                f"CIO phê duyệt ngoại lệ có giới hạn cho phạm vi [{scope}]: {reason}. "
-                f"Hạn mức phân bổ: {proposed_exposure:.1f}% NAV, thời hạn: {duration_hours:.1f}h. Kích hoạt Dual-Key Co-sign."
+                f"CIO phĂª duyá»‡t ngoáº¡i lá»‡ cĂ³ giá»›i háº¡n cho pháº¡m vi [{scope}]: {reason}. "
+                f"Háº¡n má»©c phĂ¢n bá»•: {proposed_exposure:.1f}% NAV, thá»i háº¡n: {duration_hours:.1f}h. KĂ­ch hoáº¡t Dual-Key Co-sign."
             )
             gov_cosign = True
 
@@ -465,12 +466,12 @@ class StrategyCIOAgent(BaseAgent):
         return verdict_payload
 
     # =========================================================================
-    # 4. STRATEGIC DIRECTION (Định hướng Vĩ mô Chiến lược & Sector Tilt)
+    # 4. STRATEGIC DIRECTION (Äá»‹nh hÆ°á»›ng VÄ© mĂ´ Chiáº¿n lÆ°á»£c & Sector Tilt)
     # =========================================================================
     async def issue_strategic_directive(self, macro_inputs: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Ban hành Chỉ thị Chiến lược Vĩ mô cấp Quỹ (Monthly Strategic Directive).
-        Tích hợp Bộ Kích Hoạt Hủy Bỏ Khẩn Cấp (Flash Invalidation Trigger) trong phiên.
+        Ban hĂ nh Chá»‰ thá»‹ Chiáº¿n lÆ°á»£c VÄ© mĂ´ cáº¥p Quá»¹ (Monthly Strategic Directive).
+        TĂ­ch há»£p Bá»™ KĂ­ch Hoáº¡t Há»§y Bá» Kháº©n Cáº¥p (Flash Invalidation Trigger) trong phiĂªn.
         """
         directive_id = f"CIO-DIR-{datetime.now().strftime('%Y%m')}-{uuid.uuid4().hex[:4].upper()}"
 
@@ -506,9 +507,9 @@ class StrategyCIOAgent(BaseAgent):
             sector_tilt = {"BANK": "NEUTRAL", "TECH": "OVERWEIGHT", "RETAIL": "OVERWEIGHT", "INDUSTRIAL_PARK": "OVERWEIGHT"}
 
         rationale = (
-            f"Chỉ thị Chiến lược {directive_id}: Chế độ {regime.value}, Khẩu vị rủi ro {appetite.value}. "
-            f"VIX_VN_analog={vix_analog:.1f}, Breadth MA20={breadth_ma20:.1f}%, Tín dụng YoY={credit_growth:.1f}%. "
-            f"Mục tiêu tiền mặt chiến lược: {cash_target}%. CIO chỉ cấp ràng buộc trần ngành, không stock-pick."
+            f"Chá»‰ thá»‹ Chiáº¿n lÆ°á»£c {directive_id}: Cháº¿ Ä‘á»™ {regime.value}, Kháº©u vá»‹ rá»§i ro {appetite.value}. "
+            f"VIX_VN_analog={vix_analog:.1f}, Breadth MA20={breadth_ma20:.1f}%, TĂ­n dá»¥ng YoY={credit_growth:.1f}%. "
+            f"Má»¥c tiĂªu tiá»n máº·t chiáº¿n lÆ°á»£c: {cash_target}%. CIO chá»‰ cáº¥p rĂ ng buá»™c tráº§n ngĂ nh, khĂ´ng stock-pick."
         )
 
         effective_from = datetime.now(timezone.utc).date().isoformat()
@@ -530,7 +531,7 @@ class StrategyCIOAgent(BaseAgent):
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-        # 1. Lưu CSDL vào bảng cio_strategic_directives
+        # 1. LÆ°u CSDL vĂ o báº£ng cio_strategic_directives
         from app.infrastructure.database.pg_pool import get_conn
         from psycopg2.extras import Json
         try:
@@ -549,9 +550,9 @@ class StrategyCIOAgent(BaseAgent):
                         Json(sector_tilt), Json(directive_payload["flash_invalidation_thresholds"]), rationale
                     ))
         except Exception as e:
-            logger.error(f"[StrategyCIOAgent] Lỗi lưu cio_strategic_directives: {e}")
+            logger.error(f"[StrategyCIOAgent] Lá»—i lÆ°u cio_strategic_directives: {e}")
 
-        # 2. Dual-write vào strategic_allocations (tương thích ngược các view cũ)
+        # 2. Dual-write vĂ o strategic_allocations (tÆ°Æ¡ng thĂ­ch ngÆ°á»£c cĂ¡c view cÅ©)
         try:
             with get_conn() as conn:
                 with conn.cursor() as cur:
@@ -567,9 +568,9 @@ class StrategyCIOAgent(BaseAgent):
                         Json([s for s, t in sector_tilt.items() if t == "OVERWEIGHT"])
                     ))
         except Exception as e:
-            logger.warning(f"[StrategyCIOAgent] Lỗi ghi strategic_allocations (legacy fallback): {e}")
+            logger.warning(f"[StrategyCIOAgent] Lá»—i ghi strategic_allocations (legacy fallback): {e}")
 
-        # 3. Đồng thời lưu vào sổ cái băm chung
+        # 3. Äá»“ng thá»i lÆ°u vĂ o sá»• cĂ¡i bÄƒm chung
         dec_hash = self._persist_audit_record(
             resolution_id=str(uuid.uuid4()),
             decision_type="STRATEGIC_DIRECTIVE",
@@ -580,7 +581,7 @@ class StrategyCIOAgent(BaseAgent):
         )
         directive_payload["decision_hash"] = dec_hash
 
-        # Cung cấp thêm các trường tương thích ngược với pipeline
+        # Cung cáº¥p thĂªm cĂ¡c trÆ°á»ng tÆ°Æ¡ng thĂ­ch ngÆ°á»£c vá»›i pipeline
         directive_payload["macro_view"] = rationale
         directive_payload["cash_target_override"] = cash_target
         directive_payload["sector_focus"] = [s for s, t in sector_tilt.items() if t == "OVERWEIGHT"]
@@ -589,11 +590,11 @@ class StrategyCIOAgent(BaseAgent):
         return directive_payload
 
     # =========================================================================
-    # 5. MAJOR SYSTEM CHANGE MANAGEMENT (Thẩm định Đề xuất Thay đổi Mô hình)
+    # 5. MAJOR SYSTEM CHANGE MANAGEMENT (Tháº©m Ä‘á»‹nh Äá» xuáº¥t Thay Ä‘á»•i MĂ´ hĂ¬nh)
     # =========================================================================
     async def handle_change_request_escalation(self, cr_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Xử lý đề xuất thay đổi mô hình ML / Factor weights khi phát sinh xáo trộn danh mục lớn.
+        Xá»­ lĂ½ Ä‘á» xuáº¥t thay Ä‘á»•i mĂ´ hĂ¬nh ML / Factor weights khi phĂ¡t sinh xĂ¡o trá»™n danh má»¥c lá»›n.
         """
         cr_id = cr_data.get("cr_id", str(uuid.uuid4()))
         turnover_delta = float(cr_data.get("turnover_delta", cr_data.get("weight_turnover_delta", 0.35)))
@@ -601,18 +602,18 @@ class StrategyCIOAgent(BaseAgent):
         max_dd = float(cr_data.get("max_drawdown", 0.08))
         resolution_id = str(uuid.uuid4())
 
-        # Tiêu chuẩn thể chế: OOS Sharpe >= 1.40, Max Drawdown <= 12%, Turnover Delta <= 35%
+        # TiĂªu chuáº©n thá»ƒ cháº¿: OOS Sharpe >= 1.40, Max Drawdown <= 12%, Turnover Delta <= 35%
         if sharpe >= 1.40 and turnover_delta <= 0.35 and max_dd <= 0.12:
             final_res = "APPROVE_HIGH_TURNOVER_CHANGE"
             rationale = (
-                f"CIO phê duyệt Change Request {cr_id}: Độ xáo trộn {turnover_delta*100:.1f}% nằm trong dung sai cho phép "
-                f"và được bù đắp thỏa đáng bởi OOS Sharpe ({sharpe:.2f} >= 1.40) cùng Max Drawdown ({max_dd*100:.1f}% <= 12%)."
+                f"CIO phĂª duyá»‡t Change Request {cr_id}: Äá»™ xĂ¡o trá»™n {turnover_delta*100:.1f}% náº±m trong dung sai cho phĂ©p "
+                f"vĂ  Ä‘Æ°á»£c bĂ¹ Ä‘áº¯p thá»a Ä‘Ă¡ng bá»Ÿi OOS Sharpe ({sharpe:.2f} >= 1.40) cĂ¹ng Max Drawdown ({max_dd*100:.1f}% <= 12%)."
             )
         else:
             final_res = "REJECT_EXCESSIVE_TURNOVER"
             rationale = (
-                f"CIO bác bỏ Change Request {cr_id}: Độ xáo trộn danh mục ({turnover_delta*100:.1f}%) hoặc rủi ro Drawdown ({max_dd*100:.1f}%) "
-                f"quá cao so với Sharpe đạt được ({sharpe:.2f}). Rủi ro bào mòn thuế phí T+1.5 không thể chấp nhận."
+                f"CIO bĂ¡c bá» Change Request {cr_id}: Äá»™ xĂ¡o trá»™n danh má»¥c ({turnover_delta*100:.1f}%) hoáº·c rá»§i ro Drawdown ({max_dd*100:.1f}%) "
+                f"quĂ¡ cao so vá»›i Sharpe Ä‘áº¡t Ä‘Æ°á»£c ({sharpe:.2f}). Rá»§i ro bĂ o mĂ²n thuáº¿ phĂ­ T+1.5 khĂ´ng thá»ƒ cháº¥p nháº­n."
             )
 
         verdict_payload = {
@@ -640,12 +641,12 @@ class StrategyCIOAgent(BaseAgent):
         return verdict_payload
 
     # =========================================================================
-    # 6. EMERGENCY SYSTEM CONTROL & FAILSAFE DUAL-TUNNEL (Dừng Khẩn Cấp)
+    # 6. EMERGENCY SYSTEM CONTROL & FAILSAFE DUAL-TUNNEL (Dá»«ng Kháº©n Cáº¥p)
     # =========================================================================
     async def handle_emergency_halt(self, trigger_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Kích hoạt Trạng thái Dừng Khẩn cấp (SYSTEM HALT).
-        Thực thi Dual-Tunnel: Đóng băng chiều MUA mới, nhưng bảo vệ cổng xả phòng vệ cho Stop-loss.
+        KĂ­ch hoáº¡t Tráº¡ng thĂ¡i Dá»«ng Kháº©n cáº¥p (SYSTEM HALT).
+        Thá»±c thi Dual-Tunnel: ÄĂ³ng bÄƒng chiá»u MUA má»›i, nhÆ°ng báº£o vá»‡ cá»•ng xáº£ phĂ²ng vá»‡ cho Stop-loss.
         """
         halt_id = str(uuid.uuid4())
         reason = trigger_data.get("reason", "CRITICAL_FAILSAFE_OR_DRAWDOWN")
@@ -663,14 +664,14 @@ class StrategyCIOAgent(BaseAgent):
                 "NOTIFY_ALL_EXECUTIVE_AGENTS",
             ]
             rationale = (
-                f"KÍCH HOẠT DỪNG HỆ THỐNG KHẨN CẤP: {reason}. Failsafe={is_failsafe}, DrawdownTier={drawdown_tier}. "
-                f"Toàn bộ lệnh MUA mới bị đóng băng tức thì. Duy trì đường ống ưu tiên cho Stop-loss bảo toàn vốn."
+                f"KĂCH HOáº T Dá»ªNG Há»† THá»NG KHáº¨N Cáº¤P: {reason}. Failsafe={is_failsafe}, DrawdownTier={drawdown_tier}. "
+                f"ToĂ n bá»™ lá»‡nh MUA má»›i bá»‹ Ä‘Ă³ng bÄƒng tá»©c thĂ¬. Duy trĂ¬ Ä‘Æ°á»ng á»‘ng Æ°u tiĂªn cho Stop-loss báº£o toĂ n vá»‘n."
             )
         else:
             self.system_halt_state = SystemHaltState.NORMAL
             status_verdict = "SYSTEM_OPERATIONAL_NORMAL"
             actions_executed = ["RESUME_FULL_PIPELINE_OPERATIONS"]
-            rationale = "Hệ thống vận hành an toàn trong ngưỡng dung sai rủi ro thể chế."
+            rationale = "Há»‡ thá»‘ng váº­n hĂ nh an toĂ n trong ngÆ°á»¡ng dung sai rá»§i ro thá»ƒ cháº¿."
 
         halt_payload = {
             "halt_id": halt_id,
@@ -695,10 +696,10 @@ class StrategyCIOAgent(BaseAgent):
         return halt_payload
 
     # =========================================================================
-    # 7. AUDIT TRAIL VERIFICATION & DIRECTIVE INSPECTION (Truy vấn & Xác thực)
+    # 7. AUDIT TRAIL VERIFICATION & DIRECTIVE INSPECTION (Truy váº¥n & XĂ¡c thá»±c)
     # =========================================================================
     def get_active_directive(self) -> Optional[Dict[str, Any]]:
-        """Lấy Chỉ thị Chiến lược Vĩ mô đang có hiệu lực gần nhất từ CSDL."""
+        """Láº¥y Chá»‰ thá»‹ Chiáº¿n lÆ°á»£c VÄ© mĂ´ Ä‘ang cĂ³ hiá»‡u lá»±c gáº§n nháº¥t tá»« CSDL."""
         from app.infrastructure.database.pg_pool import get_conn
         try:
             with get_conn() as conn:
@@ -732,13 +733,13 @@ class StrategyCIOAgent(BaseAgent):
                         "created_at": row[12].isoformat() if row[12] else None,
                     }
         except Exception as e:
-            logger.error(f"[StrategyCIOAgent] Lỗi truy vấn active directive: {e}")
+            logger.error(f"[StrategyCIOAgent] Lá»—i truy váº¥n active directive: {e}")
             return None
 
     def verify_audit_chain(self, limit: int = 100) -> Dict[str, Any]:
         """
-        Kiểm toán xác thực tính toàn vẹn mật mã của Sổ cái Phán quyết CIO.
-        Tái tính toán chuỗi băm SHA-256 từ Canonical JSON của từng phán quyết liên tiếp.
+        Kiá»ƒm toĂ¡n xĂ¡c thá»±c tĂ­nh toĂ n váº¹n máº­t mĂ£ cá»§a Sá»• cĂ¡i PhĂ¡n quyáº¿t CIO.
+        TĂ¡i tĂ­nh toĂ¡n chuá»—i bÄƒm SHA-256 tá»« Canonical JSON cá»§a tá»«ng phĂ¡n quyáº¿t liĂªn tiáº¿p.
         """
         from app.infrastructure.database.pg_pool import get_conn
         try:
@@ -758,14 +759,14 @@ class StrategyCIOAgent(BaseAgent):
                     "status": "EMPTY",
                     "verified": True,
                     "records_checked": 0,
-                    "message": "Sổ cái chưa có bản ghi phán quyết nào."
+                    "message": "Sá»• cĂ¡i chÆ°a cĂ³ báº£n ghi phĂ¡n quyáº¿t nĂ o."
                 }
 
             checked_count = 0
             for row in rows:
                 res_id, dec_type, final_res, payload, prev_hash, stored_hash, created_at = row
                 
-                # Tái tính toán băm SHA-256 Canonical JSON
+                # TĂ¡i tĂ­nh toĂ¡n bÄƒm SHA-256 Canonical JSON
                 parsed_payload = payload if isinstance(payload, dict) else json.loads(payload)
                 calc_hash = self._calculate_canonical_hash(parsed_payload, prev_hash)
                 
@@ -785,19 +786,19 @@ class StrategyCIOAgent(BaseAgent):
                 "verified": True,
                 "records_checked": checked_count,
                 "latest_hash": self.last_decision_hash,
-                "message": f"Toàn bộ {checked_count} phán quyết được xác thực toàn vẹn mật mã SHA-256."
+                "message": f"ToĂ n bá»™ {checked_count} phĂ¡n quyáº¿t Ä‘Æ°á»£c xĂ¡c thá»±c toĂ n váº¹n máº­t mĂ£ SHA-256."
             }
         except Exception as e:
-            logger.error(f"[StrategyCIOAgent] Lỗi khi xác thực chuỗi băm audit trail: {e}")
+            logger.error(f"[StrategyCIOAgent] Lá»—i khi xĂ¡c thá»±c chuá»—i bÄƒm audit trail: {e}")
             return {"status": "ERROR", "verified": False, "error": str(e)}
 
     def as_tool(self) -> Dict[str, Any]:
-        """Cung cấp metadata phục vụ FastMCP / Chatbot Tool Call."""
+        """Cung cáº¥p metadata phá»¥c vá»¥ FastMCP / Chatbot Tool Call."""
         tool_meta = super().as_tool()
         tool_meta["description"] = (
-            "AGENT-12: Giám đốc Đầu tư Chiến lược (CIO) & Trọng tài Thể chế Tối cao. "
-            "Chịu trách nhiệm phân xử xung đột 3 tầng rủi ro, ban hành chỉ thị vĩ mô, "
-            "phê duyệt ngoại lệ bounded <=5% NAV, kiểm soát dừng khẩn cấp và lưu sổ cái băm SHA-256."
+            "AGENT-12: GiĂ¡m Ä‘á»‘c Äáº§u tÆ° Chiáº¿n lÆ°á»£c (CIO) & Trá»ng tĂ i Thá»ƒ cháº¿ Tá»‘i cao. "
+            "Chá»‹u trĂ¡ch nhiá»‡m phĂ¢n xá»­ xung Ä‘á»™t 3 táº§ng rá»§i ro, ban hĂ nh chá»‰ thá»‹ vÄ© mĂ´, "
+            "phĂª duyá»‡t ngoáº¡i lá»‡ bounded <=5% NAV, kiá»ƒm soĂ¡t dá»«ng kháº©n cáº¥p vĂ  lÆ°u sá»• cĂ¡i bÄƒm SHA-256."
         )
         tool_meta["supported_actions"] = [
             "issue_strategic_directive",
@@ -816,10 +817,13 @@ class StrategyCIOAgent(BaseAgent):
     # PROCESS DISPATCHER
     # =========================================================================
     async def process(self, event_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Điều phối các sự kiện Thể chế tới các module thẩm quyền của CIO."""
+        return await self._process_event(event_data)
+
+    async def _process_event(self, event_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Äiá»u phá»‘i cĂ¡c sá»± kiá»‡n Thá»ƒ cháº¿ tá»›i cĂ¡c module tháº©m quyá»n cá»§a CIO."""
         action = str(event_data.get("action", "")).strip().lower()
 
-        # 0. Truy vấn tra cứu nhanh không làm thay đổi trạng thái
+        # 0. Truy váº¥n tra cá»©u nhanh khĂ´ng lĂ m thay Ä‘á»•i tráº¡ng thĂ¡i
         if action == "get_active_directive":
             directive = self.get_active_directive()
             return {"data": directive, "trace": {"cio_action": "GET_ACTIVE_DIRECTIVE"}}
@@ -838,26 +842,26 @@ class StrategyCIOAgent(BaseAgent):
                 "trace": {"cio_action": "GET_SYSTEM_STATUS"}
             }
 
-        # 1. Sự cố Khẩn cấp Failsafe hoặc Kích hoạt Dừng Hệ thống
+        # 1. Sá»± cá»‘ Kháº©n cáº¥p Failsafe hoáº·c KĂ­ch hoáº¡t Dá»«ng Há»‡ thá»‘ng
         if event_data.get("failsafe_active") or event_data.get("trigger_system_halt") or action == "emergency_halt":
             res = await self.handle_emergency_halt(event_data)
             return {"data": res, "trace": {"cio_action": "EMERGENCY_HALT"}}
 
-        # 2. Xử lý Escalation khi có lệnh vi phạm từ Governance (Agent 11)
+        # 2. Xá»­ lĂ½ Escalation khi cĂ³ lá»‡nh vi pháº¡m tá»« Governance (Agent 11)
         if "escalation" in event_data or "violation_report" in event_data or action == "escalation":
             escalation_payload = event_data.get("escalation") or event_data.get("violation_report") or event_data
             res = await self.handle_governance_escalation(escalation_payload)
             trace = {"escalation_source": "system_governance_agent", "verdict": res["final_resolution"]}
             return {"data": res, "trace": trace}
 
-        # 3. Escalation Change Request từ Governance
+        # 3. Escalation Change Request tá»« Governance
         if "escalation_change_request" in event_data or "change_request" in event_data or action == "change_request":
             cr_payload = event_data.get("escalation_change_request") or event_data.get("change_request") or event_data
             res = await self.handle_change_request_escalation(cr_payload)
             trace = {"escalation_source": "system_governance_change_request", "verdict": res["final_resolution"]}
             return {"data": res, "trace": trace}
 
-        # 4. Phân xử Xung đột Luận điểm (Thesis vs Counter-Thesis hoặc Portfolio vs Risk)
+        # 4. PhĂ¢n xá»­ Xung Ä‘á»™t Luáº­n Ä‘iá»ƒm (Thesis vs Counter-Thesis hoáº·c Portfolio vs Risk)
         if "conflict" in event_data or action == "resolve_conflict":
             conflict_payload = event_data.get("conflict") or event_data
             res = await self.resolve_conflict(conflict_payload)
@@ -871,13 +875,13 @@ class StrategyCIOAgent(BaseAgent):
             }
             return {"data": res, "trace": trace}
 
-        # 5. Yêu cầu Ngoại lệ (Exception Request)
+        # 5. YĂªu cáº§u Ngoáº¡i lá»‡ (Exception Request)
         if "exception_request" in event_data or action == "exception_request":
             req_payload = event_data.get("exception_request") or event_data
             res = await self.evaluate_exception_request(req_payload)
             return {"data": res, "trace": {"cio_action": "EXCEPTION_EVALUATION"}}
 
-        # 6. Tạo Báo cáo Cập nhật Chiến lược (Strategic Memo Generator)
+        # 6. Táº¡o BĂ¡o cĂ¡o Cáº­p nháº­t Chiáº¿n lÆ°á»£c (Strategic Memo Generator)
         if "strategic_memo" in event_data or "generate_memo" in event_data or action in ("strategic_memo", "generate_memo"):
             memo_payload = event_data.get("strategic_memo") or event_data.get("memo_data") or event_data
             ticker = str(memo_payload.get("ticker", "")).upper().strip()
@@ -900,7 +904,7 @@ class StrategyCIOAgent(BaseAgent):
                 "trace": {"cio_action": "STRATEGIC_MEMO_GENERATED", "ticker": ticker}
             }
 
-        # 7. Ban hành Chỉ thị Vĩ mô Chiến lược (Macro Review)
+        # 7. Ban hĂ nh Chá»‰ thá»‹ VÄ© mĂ´ Chiáº¿n lÆ°á»£c (Macro Review)
         macro_inputs = event_data.get("macro_data") or event_data
         res = await self.issue_strategic_directive(macro_inputs)
         trace = {"regime_context": res.get("macro_regime"), "strategic_cash": res.get("strategic_cash_target_pct")}
@@ -916,18 +920,18 @@ class StrategyCIOAgent(BaseAgent):
         financial_summary: Optional[Dict[str, Any]] = None,
         target_date: Optional[str] = None,
     ) -> str:
-        """Tạo Báo cáo Cập nhật Chiến lược CIO với Persona Smart Money và cấu trúc 4 phần."""
+        """Táº¡o BĂ¡o cĂ¡o Cáº­p nháº­t Chiáº¿n lÆ°á»£c CIO vá»›i Persona Smart Money vĂ  cáº¥u trĂºc 4 pháº§n."""
         clean_ticker = str(ticker).upper().strip()
         c_name = company_name or clean_ticker
 
-        # Khởi tạo generator nếu chưa có
+        # Khá»Ÿi táº¡o generator náº¿u chÆ°a cĂ³
         if not self.memo_generator:
             try:
                 from app.domain.rules.strategic_memo_generator import StrategicMemoGenerator
                 from app.infrastructure.llm.client import get_unified_llm_client
                 self.memo_generator = StrategicMemoGenerator(llm_client=get_unified_llm_client())
             except Exception as e:
-                logger.warning(f"[StrategyCIOAgent] Lỗi tạo StrategicMemoGenerator: {e}")
+                logger.warning(f"[StrategyCIOAgent] Lá»—i táº¡o StrategicMemoGenerator: {e}")
                 from app.domain.rules.strategic_memo_generator import StrategicMemoGenerator
                 self.memo_generator = StrategicMemoGenerator(llm_client=None)
 

@@ -85,6 +85,9 @@ class EquityResearchAgent(BaseAgent):
             target_d = target_date_raw.date()
         else:
             target_d = target_date_raw
+        market_data_date = event_data.get("market_data_date") or target_d
+        if isinstance(market_data_date, str):
+            market_data_date = date.fromisoformat(market_data_date[:10])
 
         # Financial Quality là đầu vào định lượng của Equity Research.
         business_quality_data = event_data.get("business_quality_data") or {}
@@ -108,7 +111,7 @@ class EquityResearchAgent(BaseAgent):
             factor_source = "USER_OVERRIDE"
         else:
             # Ưu tiên kiểm tra CSDL factor_scores
-            db_factors = self.intel_repo.get_factor_score(ticker, score_date=target_d)
+            db_factors = self.intel_repo.get_factor_score(ticker, score_date=market_data_date)
             has_db_valid = (
                 db_factors is not None
                 and (
@@ -129,7 +132,7 @@ class EquityResearchAgent(BaseAgent):
                 factor_source = "POSTGRES_FACTOR_SCORES"
             else:
                 # Tính toán ĐỘNG thực tế từ financial_ratios và market_data_daily
-                computed = self.factor_service.compute_factors_for_ticker(ticker, target_d)
+                computed = self.factor_service.compute_factors_for_ticker(ticker, market_data_date)
                 f1_value = float(computed.get("f1_value", 50.0))
                 base_f2 = float(computed.get("f2_quality", 50.0))
                 f2_quality = round(base_f2, 2)
@@ -146,19 +149,28 @@ class EquityResearchAgent(BaseAgent):
             try:
                 from app.domain.repositories.market_data_repository import MarketDataRepository
                 m_repo = MarketDataRepository()
-                rt_price = m_repo.get_realtime_or_latest_price(ticker)
+                if event_data.get("current_time"):
+                    rt_price = m_repo.get_intraday_open(
+                        ticker, datetime.fromisoformat(str(event_data["current_time"]))
+                    )
+                else:
+                    rt_price = m_repo.get_realtime_or_latest_price(ticker)
                 if rt_price and rt_price > 0:
                     current_price = float(rt_price)
+                    if current_price < 1000:
+                        current_price *= 1000  # Intraday OHLCV stores prices in thousands of VND.
                 else:
                     storage = PostgresAdapter()
                     p_rows = storage.fetch_all(
-                        "SELECT close_adj FROM market_data_daily WHERE ticker = %s ORDER BY date DESC LIMIT 1",
-                        (ticker,)
+                        "SELECT close_adj FROM market_data_daily WHERE ticker = %s AND date <= %s ORDER BY date DESC LIMIT 1",
+                        (ticker, market_data_date)
                     )
                     if p_rows and p_rows[0][0]:
                         current_price = float(p_rows[0][0])
             except Exception:
-                current_price = 50000.0
+                current_price = 0.0
+        if current_price <= 0:
+            return {"data": {"ticker": ticker, "status": "DEFERRED", "reason": "MARKET_PRICE_MISSING"}, "trace": {"valid": False}}
 
         # =========================================================================
         # 3. Tính điểm Composite Stock Score (CSS) qua CSSScoringEngine
@@ -201,9 +213,8 @@ class EquityResearchAgent(BaseAgent):
                     "SELECT audit_opinion FROM stocks WHERE symbol = %s LIMIT 1",
                     (ticker,)
                 )
-                if s_rows and len(s_rows) > 0:
-                    if not audit_opinion:
-                        audit_opinion = s_rows[0][0] or "UNQUALIFIED"
+                if s_rows and len(s_rows) > 0 and s_rows[0][0]:
+                    audit_opinion = s_rows[0][0]
             except Exception:
                 pass
         if not audit_opinion:

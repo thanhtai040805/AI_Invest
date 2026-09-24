@@ -22,7 +22,7 @@ class CatalystValidator:
         Kiểm tra rò rỉ thông tin trước báo cáo (Pre-Earnings Accumulation Index).
         """
         if not volume_data_3w or not price_data_3w or price_data_3w[0] <= 0:
-            return "BUY" # Thiếu data hoặc giá không hợp lệ thì mặc định theo SUE
+            return "DATA_MISSING"
             
         avg_vol = sum(volume_data_3w) / len(volume_data_3w)
         max_vol = max(volume_data_3w)
@@ -33,8 +33,8 @@ class CatalystValidator:
             logger.warning("PEAI WARNING: Information leakage detected. Price already ran up > 20%.")
             if sue_score > 1.5:
                 return "HOLD" # Tránh bẫy Sell-on-News
-                
-        return "BUY"
+            return "LEAKAGE_DETECTED"
+        return "CLEAN"
 
     def check_false_breakout_entry(self, current_candle: Dict[str, float], ma20_vol: float) -> bool:
         """

@@ -64,9 +64,9 @@ class ThesisSynthesizer:
                 if isinstance(v, dict):
                     pillars_lines.append(f"- Trụ {k}: Score={v.get('score')}, Verdict={v.get('verdict')}")
 
-        base_case = price_target_info.get("base_case", current_price * 1.15)
-        bull_case = price_target_info.get("bull_case", current_price * 1.25)
-        upside_pct = round(((base_case / current_price) - 1.0) * 100.0, 1) if current_price > 0 else 15.0
+        base_case = price_target_info["base_case"]
+        bull_case = price_target_info.get("bull_case", base_case)
+        upside_pct = round(((base_case / current_price) - 1.0) * 100.0, 1) if current_price > 0 else 0.0
 
         fin = financial_metrics or {}
         fin_lines = []
@@ -80,8 +80,10 @@ class ThesisSynthesizer:
             fin_lines.append(f"- ROIC: {float(fin['roic']):.1f}%")
         if fin.get("gpm"):
             fin_lines.append(f"- Biên lãi gộp (GPM): {float(fin['gpm']):.1f}%")
-        if fin.get("earnings_growth"):
-            fin_lines.append(f"- Tăng trưởng LN quý gần nhất (SUE): {float(fin['earnings_growth']):.1f}%")
+        if fin.get("earnings_growth") is not None:
+            fin_lines.append(f"- Tăng trưởng lợi nhuận báo cáo: {float(fin['earnings_growth']):.1f}%")
+        if fin.get("f4_score") is not None:
+            fin_lines.append(f"- Điểm factor F4 earnings: {float(fin['f4_score']):.1f}/100")
 
         user_content = f"""
 Cổ phiếu: {clean_ticker} (Ngành: {sector})

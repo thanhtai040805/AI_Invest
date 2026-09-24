@@ -210,10 +210,12 @@ class BeneishMScoreEngine:
                         """
                         SELECT statement_type, period_end, data
                         FROM financial_statements
-                        WHERE symbol = %s AND statement_type IN ('IS', 'BS', 'CF') AND period_end <= %s
+                        WHERE symbol = %s AND statement_type IN ('IS', 'BS', 'CF')
+                          AND period_end <= %s
+                          AND published_date IS NOT NULL AND published_date <= %s
                         ORDER BY period_end DESC;
                         """,
-                        (sym, target_date),
+                        (sym, target_date, target_date),
                     )
                     rows = cur.fetchall()
                     for st, pe, d in rows:

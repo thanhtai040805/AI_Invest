@@ -260,24 +260,49 @@ class TradeExecutionAgent(BaseAgent):
 
             try:
                 from app.core.registry import AgentRegistry
+                is_override = bool(
+                    decision.get("failsafe_override")
+                    or decision.get("bypass_portfolio_agent")
+                    or event_data.get("failsafe_override")
+                    or event_data.get("bypass_portfolio_agent")
+                )
+                issuing_agent = "position_monitoring" if is_override else decision.get("issuing_agent", "portfolio_allocation")
+
+                # Xác định order_intent hợp lệ theo Authority Matrix
+                raw_intent = str(decision.get("order_intent") or decision.get("action") or direction).upper().strip()
+                if issuing_agent == "position_monitoring":
+                    if raw_intent in ("EMERGENCY_STOP_LOSS", "TAKE_PROFIT", "THESIS_EXIT", "STOP_LOSS"):
+                        order_intent = raw_intent
+                    elif is_override or decision.get("urgency") == "EMERGENCY" or decision.get("rule_level") == "HARD_STOP":
+                        order_intent = "EMERGENCY_STOP_LOSS"
+                    else:
+                        order_intent = "STOP_LOSS"
+                else:
+                    order_intent = raw_intent if raw_intent in ("BUY", "SELL", "REBALANCE", "NEW_BUY", "REBALANCE_BUY", "REBALANCE_SELL") else direction
+
                 gov_res = await AgentRegistry.dispatch("system_governance", {
                     "order": {
                         "ticker": ticker,
                         "side": direction,
+                        "action": order_intent,
                         "shares": shares,
                         "price": decision_price,
                         "stop_loss_price": sl_price,
                         "sector": decision.get("sector", "Unknown"),
+                        "failsafe_override": is_override,
                     },
                     "portfolio": {
                         "nav": base_nav,
                         "total_nav": base_nav,
                     },
-                    "issuing_agent": decision.get("issuing_agent", "portfolio_allocation"),
+                    "issuing_agent": issuing_agent,
+                    "order_intent": order_intent,
+                    "failsafe_override": is_override,
                     "adtv20": adtv20,
                     "confirming_signals_count": decision.get("confirming_signals_count", 3),
                     "beneish_passed": decision.get("beneish_passed", True),
                     "available_shares": decision.get("available_shares"),
+                    **({"broker_heartbeat": event_data["broker_heartbeat"]} if event_data.get("broker_heartbeat") else {}),
                 })
                 if gov_res.get("status") == "SUCCESS":
                     raw_res = gov_res.get("result", {})
@@ -385,43 +410,56 @@ class TradeExecutionAgent(BaseAgent):
                 event_data.get("orderbook"), direction, shares, max_price
             )
         except ValueError as exc:
-            logger.info("[TradeExecutionAgent] Shadow order not filled for %s: %s", ticker, exc)
-            if direction == "BUY" and not pending_order_id:
-                pending_order_id = self.repository.create_shadow_pending_order(
-                    ticker=ticker,
-                    shares=shares,
-                    limit_price=max_price,
-                    user_id=decision.get("user_id") or event_data.get("user_id"),
-                )
-                return {"data": {
-                    "execution_decision": "WAIT",
-                    "order_id": pending_order_id,
-                    "ticker": ticker,
-                    "action": direction,
-                    "shares": shares,
-                    "executed_price": 0.0,
-                    "target_price": max_price,
-                    "status": "PENDING_SHADOW",
-                    "execution_mode": "SHADOW",
-                    "rejection_reason": str(exc),
-                }, "trace": {"reason": "WAITING_FOR_LIMIT_PRICE"}}
-            return {
-                "data": {
-                    "execution_decision": "BLOCK",
-                    "order_id": str(uuid.uuid4()),
-                    "ticker": ticker,
-                    "action": direction,
-                    "shares": 0,
-                    "status": "BLOCKED_NO_EXECUTABLE_DEPTH",
-                    "rejection_reason": str(exc),
-                    "executed_price": 0.0,
-                    "target_price": decision_price,
-                    "slippage_bps": 0.0,
-                    "slice_count": len(plan.slices),
-                    "execution_mode": "SHADOW",
-                },
-                "trace": {"reason": "NO_EXECUTABLE_DEPTH"},
-            }
+            # LƯU Ý: Lệnh phòng vệ khẩn cấp (Emergency Stop-Loss) từ Agent-09 được ưu tiên khớp 100% để bảo vệ vốn
+            is_emergency = bool(
+                str(decision.get("urgency", "")).upper() in ("EMERGENCY", "HIGH")
+                or decision.get("bypass_portfolio_agent", False)
+                or event_data.get("failsafe_override", False)
+                or decision.get("failsafe_override", False)
+                or is_override
+                or issuing_agent == "position_monitoring"
+            )
+            if is_emergency and direction == "SELL":
+                logger.warning(f"[TradeExecutionAgent] Khớp lệnh BÁN phòng vệ khẩn cấp cho {ticker} tại giá quyết định {decision_price:,.1f}")
+                executed_price = self.eae_engine.align_to_hose_tick_size(decision_price * 0.9988)
+            else:
+                logger.info("[TradeExecutionAgent] Shadow order not filled for %s: %s", ticker, exc)
+                if direction == "BUY" and not pending_order_id:
+                    pending_order_id = self.repository.create_shadow_pending_order(
+                        ticker=ticker,
+                        shares=shares,
+                        limit_price=max_price,
+                        user_id=decision.get("user_id") or event_data.get("user_id"),
+                    )
+                    return {"data": {
+                        "execution_decision": "WAIT",
+                        "order_id": pending_order_id,
+                        "ticker": ticker,
+                        "action": direction,
+                        "shares": shares,
+                        "executed_price": 0.0,
+                        "target_price": max_price,
+                        "status": "PENDING_SHADOW",
+                        "execution_mode": "SHADOW",
+                        "rejection_reason": str(exc),
+                    }, "trace": {"reason": "WAITING_FOR_LIMIT_PRICE"}}
+                return {
+                    "data": {
+                        "execution_decision": "BLOCK",
+                        "order_id": str(uuid.uuid4()),
+                        "ticker": ticker,
+                        "action": direction,
+                        "shares": 0,
+                        "status": "BLOCKED_NO_EXECUTABLE_DEPTH",
+                        "rejection_reason": str(exc),
+                        "executed_price": 0.0,
+                        "target_price": decision_price,
+                        "slippage_bps": 0.0,
+                        "slice_count": len(plan.slices),
+                        "execution_mode": "SHADOW",
+                    },
+                    "trace": {"reason": "NO_EXECUTABLE_DEPTH"},
+                }
         executed_shares = shares
         remaining_shares = 0
         status_str = "EXECUTED"

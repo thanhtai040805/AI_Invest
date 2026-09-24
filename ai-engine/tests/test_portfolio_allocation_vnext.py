@@ -226,6 +226,8 @@ def test_four_output_groups_complete_contract():
         repo._in_memory_positions.clear()
         try:
             repo.storage.execute("DELETE FROM positions WHERE symbol = 'HPG'")
+            repo.storage.execute("DELETE FROM investment_theses WHERE ticker = 'HPG'")
+            repo.storage.execute("DELETE FROM counter_thesis_verdicts WHERE ticker = 'HPG'")
         except Exception:
             pass
 
@@ -237,6 +239,16 @@ def test_four_output_groups_complete_contract():
                 "price": 28000.0,
                 "sector": "Materials",
                 "adtv20": 15000000.0,
+            },
+            "investment_thesis": {
+                "status": "PROCEED",
+                "confirming_signals": ["PASS_SIGNAL_1", "PASS_SIGNAL_2", "PASS_SIGNAL_3"],
+                "conviction": "A",
+                "sector": "Materials",
+            },
+            "counter_thesis": {
+                "verdict": "PROCEED",
+                "cts_score": 25.0,
             },
             "regime": "BULL_MARKET",
             "total_nav": 1000000000.0,

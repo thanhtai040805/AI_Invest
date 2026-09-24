@@ -158,7 +158,13 @@ class SystemGovernanceAgent(BaseAgent):
         order_intent = str(event_data.get("order_intent") or raw_order.get("action") or raw_order.get("side") or "BUY").upper().strip()
 
         ticker = str(raw_order.get("ticker", "UNKNOWN")).upper().strip()
-        side = "SELL" if "SELL" in order_intent else "BUY"
+        raw_side = str(raw_order.get("side") or raw_order.get("direction") or "").upper().strip()
+        if raw_side in ("SELL", "BUY"):
+            side = raw_side
+        elif any(k in order_intent for k in ("SELL", "EXIT", "STOP_LOSS", "TAKE_PROFIT")):
+            side = "SELL"
+        else:
+            side = "BUY"
         quantity = int(raw_order.get("shares") or raw_order.get("quantity") or raw_order.get("approved_shares") or raw_order.get("target_shares") or 0)
         price = float(raw_order.get("price") or raw_order.get("target_price") or 0.0)
         stop_loss_price = raw_order.get("stop_loss_price")
@@ -167,7 +173,7 @@ class SystemGovernanceAgent(BaseAgent):
         sector = str(raw_order.get("sector") or raw_portfolio.get("positions", {}).get(ticker, {}).get("sector", "Unknown"))
 
         # 1. Kiểm tra Failsafe Broker Connection
-        broker_hb = event_data.get("broker_heartbeat", {"latency_ms": 120.0, "is_connected": True, "missed_beats": 0})
+        broker_hb = event_data.get("broker_heartbeat") or {"latency_ms": 120.0, "is_connected": True, "missed_beats": 0}
         latency_ms = float(broker_hb.get("latency_ms", 120.0))
         is_connected = bool(broker_hb.get("is_connected", True))
         missed_beats = int(broker_hb.get("missed_beats", 0))
@@ -177,11 +183,17 @@ class SystemGovernanceAgent(BaseAgent):
             failsafe_active = True
             failsafe_reason = f"BROKER_DISCONNECT_OR_LATENCY_SPIKE ({latency_ms:.0f}ms, Missed={missed_beats})"
         else:
+            self.failsafe_engine.status = FailsafeStatus.INACTIVE
             failsafe_active = False
             failsafe_reason = ""
 
-        # Cho phép lệnh Stop-Loss khẩn cấp từ position_monitoring được bảo toàn vốn
-        if failsafe_active and not (issuing_agent == "position_monitoring" and side == "SELL"):
+        # Cho phép lệnh BÁN phòng vệ khẩn cấp từ position_monitoring hoặc có failsafe_override
+        is_defensive_sell = side == "SELL" and (
+            issuing_agent == "position_monitoring"
+            or event_data.get("failsafe_override")
+            or raw_order.get("failsafe_override")
+        )
+        if failsafe_active and not is_defensive_sell:
             report_id = str(uuid.uuid4())
             violation_report = {
                 "report_id": report_id,
@@ -417,7 +429,7 @@ class SystemGovernanceAgent(BaseAgent):
             return await self.evaluate_change_request_gate(event_data)
 
         # 3. Rẽ nhánh Audit Trail & Heartbeat Kiểm toán định kỳ (EOD)
-        broker_hb = event_data.get("broker_heartbeat", {"latency_ms": 120.0, "is_connected": True, "missed_beats": 0})
+        broker_hb = event_data.get("broker_heartbeat") or {"latency_ms": 0.0, "is_connected": False, "missed_beats": 3}
         actions_to_audit = event_data.get("actions_to_audit", [])
 
         latency_ms = float(broker_hb.get("latency_ms", 120.0))
@@ -508,6 +520,7 @@ class SystemGovernanceAgent(BaseAgent):
         self._save_audit_report_to_db(governance_report)
 
         trace = {
+            "governance_mode": "LIVE",
             "compliance_engine": self.compliance_engine.__class__.__name__,
             "audit_trail_engine": self.audit_trail.__class__.__name__,
             "change_engine": self.change_engine.__class__.__name__,

@@ -57,12 +57,6 @@ HOSE_PRICE_STEPS = [
     (float("inf"), 1_000),
 ]
 
-# ── Heuristic offset for financial statement release (look-ahead bias) ──
-FS_RELEASE_OFFSET_QUARTERLY = 20  # calendar days
-FS_RELEASE_OFFSET_ANNUAL = 30     # calendar days
-FS_STALE_THRESHOLD_DAYS = 180     # 2 quarters without data → tag for removal
-
-
 def _ceiling_price(prev_close: float) -> float:
     """Dynamic HOSE ceiling price with correct price step rounding."""
     step = 10
@@ -73,11 +67,6 @@ def _ceiling_price(prev_close: float) -> float:
     raw_ceil = prev_close * 1.07
     return math.floor(raw_ceil / step) * step
 
-
-def _effective_date(period_end: date) -> date:
-    """Estimated release date to prevent look-ahead bias."""
-    offset = FS_RELEASE_OFFSET_ANNUAL if period_end.month == 12 else FS_RELEASE_OFFSET_QUARTERLY
-    return period_end + timedelta(days=offset)
 
 VN_FACTORS = {
     "SIZE":            {"group": "risk", "direction": -1},
@@ -148,21 +137,22 @@ class VNICTester:
                 "floor": float(r[3]) if r[3] else None,
             }
 
-        # 2) Fundamentals (financial_ratios — DISTINCT ON gives latest per symbol)
+        # 2) Fundamentals: keep report availability dates for per-session PIT selection.
         self.cur.execute(
-            """SELECT DISTINCT ON (symbol) symbol, pe, pb, roe, gross_margin, net_margin,
+            """SELECT symbol, ratio_date, published_date, pe, pb, roe, gross_margin, net_margin,
                       fcf_yield, ev_ebitda, yoy_revenue_growth, yoy_earnings_growth
                FROM financial_ratios
-               WHERE symbol = ANY(%s)
-               ORDER BY symbol, ratio_date DESC""",
+               WHERE symbol = ANY(%s) AND published_date IS NOT NULL
+               ORDER BY symbol, ratio_date, published_date""",
             (symbols,),
         )
-        self._cache_fundamentals: dict[str, dict] = {}
+        self._cache_fundamentals: dict[str, list[dict]] = defaultdict(list)
         for r in self.cur.fetchall():
-            self._cache_fundamentals[r[0]] = {
-                "pe": r[1], "pb": r[2], "roe": r[3], "gm": r[4], "nm": r[5],
-                "fcf_y": r[6], "ev_eb": r[7], "yoy_rev": r[8], "yoy_earn": r[9],
-            }
+            self._cache_fundamentals[r[0]].append({
+                "period_end": r[1], "available_at": r[2], "pe": r[3], "pb": r[4],
+                "roe": r[5], "gm": r[6], "nm": r[7], "fcf_y": r[8],
+                "ev_eb": r[9], "yoy_rev": r[10], "yoy_earn": r[11],
+            })
 
         # 3) Foreign flow (all rows for date range)
         self.cur.execute(
@@ -200,15 +190,17 @@ class VNICTester:
         stmt_types = {"BS": "BS", "IS": "IS", "CF": "CF"}
         for cache_key, stmt_val in [("_cache_fs_bs", "BS"), ("_cache_fs_is", "IS"), ("_cache_fs_cf", "CF")]:
             self.cur.execute(
-                """SELECT symbol, period_end, data FROM financial_statements
-                   WHERE statement_type = %s AND symbol = ANY(%s) AND period_end >= %s
-                   ORDER BY symbol, period_end""",
-                (stmt_val, symbols, start_date),
+                """SELECT symbol, period_end, published_date, data FROM financial_statements
+                   WHERE statement_type = %s AND symbol = ANY(%s)
+                     AND published_date IS NOT NULL
+                   ORDER BY symbol, period_end, published_date""",
+                (stmt_val, symbols),
             )
             cache = defaultdict(list)
             for r in self.cur.fetchall():
-                d = r[2] if isinstance(r[2], dict) else {}
+                d = dict(r[3]) if isinstance(r[3], dict) else {}
                 d["dt"] = r[1]
+                d["available_at"] = r[2]
                 cache[r[0]].append(d)
             setattr(self, cache_key, cache)
         n_bs = sum(len(v) for v in self._cache_fs_bs.values())
@@ -628,18 +620,28 @@ class VNICTester:
 
     def _load_fundamentals(self, dt, symbols):
         if hasattr(self, "_cache_fundamentals"):
-            return {s: self._cache_fundamentals.get(s, {}) for s in symbols}
+            result = {}
+            for symbol in symbols:
+                eligible = [
+                    r for r in self._cache_fundamentals.get(symbol, [])
+                    if r["available_at"] <= dt and r["period_end"] <= dt
+                ]
+                if eligible:
+                    result[symbol] = max(eligible, key=lambda r: (r["period_end"], r["available_at"]))
+            return result
         self.cur.execute("""
-            SELECT DISTINCT ON (symbol) symbol, pe, pb, roe, gross_margin, net_margin,
+            SELECT DISTINCT ON (symbol) symbol, ratio_date, published_date, pe, pb, roe, gross_margin, net_margin,
                    fcf_yield, ev_ebitda, yoy_revenue_growth, yoy_earnings_growth
             FROM financial_ratios
             WHERE symbol = ANY(%s) AND ratio_date <= %s
-            ORDER BY symbol, ratio_date DESC
-        """, (symbols, dt))
+              AND published_date IS NOT NULL AND published_date <= %s
+            ORDER BY symbol, ratio_date DESC, published_date DESC
+        """, (symbols, dt, dt))
         out = {}
         for r in self.cur.fetchall():
-            out[r[0]] = {"pe": r[1], "pb": r[2], "roe": r[3], "gm": r[4], "nm": r[5],
-                         "fcf_y": r[6], "ev_eb": r[7], "yoy_rev": r[8], "yoy_earn": r[9]}
+            out[r[0]] = {"period_end": r[1], "available_at": r[2], "pe": r[3], "pb": r[4],
+                         "roe": r[5], "gm": r[6], "nm": r[7], "fcf_y": r[8],
+                         "ev_eb": r[9], "yoy_rev": r[10], "yoy_earn": r[11]}
         return out
 
     def _load_meta(self, symbols):
@@ -913,7 +915,8 @@ class VNICTester:
 
                     entries = [e for e in cache.get(sym, [])
                                if e.get("dt") is not None
-                               and _effective_date(e["dt"]) <= dt]
+                               and e.get("available_at") is not None
+                               and e["available_at"] <= dt]
                     entries.sort(key=lambda x: x["dt"], reverse=True)
                     if sym not in result:
                         result[sym] = {}
@@ -947,7 +950,8 @@ class VNICTester:
                         continue
                     is_entries = [e for e in cache.get(sym, [])
                                   if e.get("dt") is not None
-                                  and _effective_date(e["dt"]) <= dt]
+                                  and e.get("available_at") is not None
+                                  and e["available_at"] <= dt]
                     is_entries.sort(key=lambda x: x["dt"], reverse=True)
                     is_bank_flag = _is_bank(sym)
                     is_km = BANK_IS_KEYS if is_bank_flag else STATEMENT_IS_KEYS
@@ -979,23 +983,25 @@ class VNICTester:
             for stmt_type, key_map in [("BS", STATEMENT_BS_KEYS), ("IS", STATEMENT_IS_KEYS), ("CF", STATEMENT_CF_KEYS)]:
                 bank_key_map = {"BS": BANK_BS_KEYS, "IS": BANK_IS_KEYS, "CF": BANK_CF_KEYS}.get(stmt_type)
                 self.cur.execute("""
-                    SELECT symbol, period_end, data
+                    SELECT symbol, period_end, published_date, data
                     FROM financial_statements
-                    WHERE statement_type = %s AND symbol = ANY(%s) AND period_end <= %s
+                    WHERE statement_type = %s AND symbol = ANY(%s)
+                      AND period_end <= %s
+                      AND published_date IS NOT NULL AND published_date <= %s
                     ORDER BY symbol, period_end DESC
-                """, (stmt_type, symbols, dt))
+                """, (stmt_type, symbols, dt, dt))
                 rows = self.cur.fetchall()
                 by_sym: dict[str, list] = {}
-                for sym, pe, data in rows:
-                    by_sym.setdefault(sym, []).append((pe, data))
+                for sym, pe, available, data in rows:
+                    by_sym.setdefault(sym, []).append((pe, available, data))
                 for sym, entries in by_sym.items():
                     if sym not in result:
                         result[sym] = {}
                     km = bank_key_map if (bank_key_map and _is_bank(sym)) else key_map
                     # Filter by look-ahead: chỉ dùng báo cáo có effective_date <= dt
                     entries_filtered = [
-                        (pe, data) for pe, data in entries
-                        if _effective_date(pe) <= dt
+                        (pe, data) for pe, available, data in entries
+                        if available is not None and available <= dt
                     ]
                     parsed = {}
                     if entries_filtered:

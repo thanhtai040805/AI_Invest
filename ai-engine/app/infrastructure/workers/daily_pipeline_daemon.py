@@ -2,7 +2,7 @@
 
 Chức năng:
 - Chạy nền tự động trong tiến trình AI Engine khi deploy (FastAPI lifespan).
-- Canh đúng 09:15 hàng ngày (khi phiên khớp lệnh liên tục HOSE bắt đầu sau ATO).
+- Canh đúng 09:45 hàng ngày (khi phiên khớp lệnh liên tục HOSE bắt đầu sau ATO).
 - Nhận diện ngày giao dịch (Thứ 2 - Thứ 6 qua MarketSessionManager).
 - Tự động kích hoạt DailyInvestmentPipeline thực thi đồng thời:
     1. Multi-Agent Book (12 Agents sovereign pipeline).
@@ -28,7 +28,7 @@ logger = logging.getLogger("ai_engine.daemon.daily_pipeline")
 
 
 class DailyPipelineDaemon:
-    """Daemon tự động kích hoạt chu trình Daily Investment Pipeline đầu phiên (09:15 sáng)."""
+    """Daemon tự động kích hoạt chu trình Daily Investment Pipeline đầu phiên (09:45 sáng)."""
 
     def __init__(
         self,
@@ -45,12 +45,12 @@ class DailyPipelineDaemon:
         self._last_result: Optional[Dict[str, Any]] = None
         self._task: Optional[asyncio.Task] = None
 
-        raw_time = trigger_time_str or os.getenv("DAILY_PIPELINE_TRIGGER_TIME", "09:15")
+        raw_time = trigger_time_str or os.getenv("DAILY_PIPELINE_TRIGGER_TIME", "09:45")
         try:
             h, m = raw_time.split(":")
             self.trigger_time = dt_time(int(h), int(m))
         except Exception:
-            self.trigger_time = dt_time(9, 15)
+            self.trigger_time = dt_time(9, 45)
 
     @property
     def status(self) -> Dict[str, Any]:

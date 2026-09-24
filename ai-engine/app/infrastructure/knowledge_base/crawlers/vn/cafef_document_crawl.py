@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -24,6 +25,59 @@ HEADERS = {
     "Referer": "https://cafef.vn/",
     "X-Requested-With": "XMLHttpRequest",
 }
+_VN_TZ = timezone(timedelta(hours=7))
+
+
+def _not_future(value: datetime) -> bool:
+    now = datetime.now(_VN_TZ)
+    return 2000 <= value.year <= now.year and value <= now
+
+
+def _url_available_at(url: str) -> datetime | None:
+    """Extract a timestamp embedded in CafeF's uploaded file name, if present."""
+    filename = urlsplit(url).path.rsplit("/", 1)[-1]
+    match = re.search(r"_(\d{14})(?=\.[^.]+$|$)", filename)
+    if match:
+        value = match.group(1)
+        for fmt in ("%d%m%Y%H%M%S", "%Y%m%d%H%M%S"):
+            try:
+                parsed = datetime.strptime(value, fmt).replace(tzinfo=_VN_TZ)
+                if _not_future(parsed):
+                    return parsed
+            except ValueError:
+                pass
+
+    match = re.search(r"[_-](\d{10})(?=\.[^.]+$|$)", filename)
+    if match:
+        try:
+            parsed = datetime.fromtimestamp(int(match.group(1)), timezone.utc).astimezone(_VN_TZ)
+            if _not_future(parsed):
+                return parsed
+        except (ValueError, OSError, OverflowError):
+            pass
+
+    match = re.match(r"(20\d{2})(\d{2})(\d{2})[_-]", filename)
+    if match:
+        try:
+            parsed = datetime.strptime("".join(match.groups()), "%Y%m%d").replace(tzinfo=_VN_TZ)
+            if _not_future(parsed):
+                return parsed
+        except ValueError:
+            pass
+    # Older CafeF filenames embed DDMMYYYY in the report slug instead of
+    # appending a timestamp (for example, "...hoa-sen30102024-...").
+    matches = re.finditer(r"(\d{2})(\d{2})(20\d{2})(?=\D|$)", filename)
+    for match in reversed(list(matches)):
+        prefix_digits = re.search(r"(\d*)$", filename[:match.start()]).group(1)
+        if len(prefix_digits) > 2:
+            continue
+        try:
+            parsed = datetime.strptime("".join(match.groups()), "%d%m%Y").replace(tzinfo=_VN_TZ)
+            if _not_future(parsed):
+                return parsed
+        except ValueError:
+            continue
+    return None
 
 
 def load_symbols(exchange: str | None = None) -> list[str]:
@@ -36,19 +90,8 @@ def load_symbols(exchange: str | None = None) -> list[str]:
 
 
 def _date(item: dict[str, Any], title: str, url: str) -> datetime | None:
-    value = str(item.get("Time") or "")
-    match = re.fullmatch(r"Q([1-4])/(20\d{2})", value, re.I)
-    if match:
-        quarter = int(match.group(1))
-        year = int(match.group(2))
-        return datetime(year, {1: 3, 2: 6, 3: 9, 4: 12}[quarter], 28, tzinfo=timezone.utc)
-    match = re.fullmatch(r"CN/(20\d{2})", value, re.I)
-    if match:
-        return datetime(int(match.group(1)), 12, 31, tzinfo=timezone.utc)
-    years = [int(year) for year in re.findall(r"(?:nam|năm|year|_)\D{0,12}(20\d{2})", f"{title} {url}", re.I)]
-    if years:
-        return datetime(max(years), 12, 31, tzinfo=timezone.utc)
-    return None
+    # Time/Year in CafeF's API identify a reporting period, not a publication date.
+    return _url_available_at(url)
 
 
 async def fetch(client: httpx.AsyncClient, symbol: str, document_type: int) -> list[dict[str, Any]]:

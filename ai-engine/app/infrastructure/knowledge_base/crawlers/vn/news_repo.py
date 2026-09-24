@@ -85,6 +85,7 @@ def upsert_article(art: dict, source: str) -> bool:
             if has_data:
                 cur.execute(
                     """UPDATE knowledge_documents SET
+                       published_date = COALESCE(%s, knowledge_documents.published_date),
                        doc_type = CASE WHEN %s::text IS NOT NULL AND knowledge_documents.doc_type = 'news' THEN %s ELSE knowledge_documents.doc_type END,
                        article_content = COALESCE(knowledge_documents.article_content, %s),
                        article_images = CASE
@@ -119,7 +120,8 @@ def upsert_article(art: dict, source: str) -> bool:
                        affected_entities = COALESCE(knowledge_documents.affected_entities, %s)
                        WHERE symbol = %s AND url = %s
                        AND (article_content IS NULL OR article_content = '')""",
-                    (doc_type if doc_type != "news" else None,
+                    (art.get("published_date"),
+                     doc_type if doc_type != "news" else None,
                      doc_type if doc_type != "news" else None,
                      content or None, images or None, pdf_urls or None,
                      pdf_text or None, fetched_at,

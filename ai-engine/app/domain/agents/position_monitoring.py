@@ -421,6 +421,7 @@ class PositionMonitoringAgent(BaseAgent):
                             "order_instruction": order,
                             "failsafe_active": failsafe_active,
                             "failsafe_override": True,
+                            **({"broker_heartbeat": event_data["broker_heartbeat"]} if event_data.get("broker_heartbeat") else {}),
                         })
                         order["dispatch_status"] = "DISPATCHED_TO_AGENT_08"
                         order["execution_response"] = exec_res.get("result", {}).get("data", {})
@@ -515,4 +516,3 @@ class PositionMonitoringAgent(BaseAgent):
             logger.warning(f"[PositionMonitoringAgent] Lỗi bắn sự kiện RabbitMQ: {e_ev}")
 
         return {"data": output_data, "trace": trace}
-

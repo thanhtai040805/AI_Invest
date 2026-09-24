@@ -89,21 +89,40 @@ class ThesisEngine:
         - Regime Premium: Thêm 15% khi thị trường Bullish mạnh.
         """
         if current_price <= 0:
-            current_price = 10000.0
+            raise ValueError(f"current_price must be positive, got {current_price}")
 
-        if pe_comp_price <= 0:
-            pe_comp_price = current_price * 1.15
-        if ev_ebitda_comp_price <= 0:
-            ev_ebitda_comp_price = current_price * 1.18
-        if dcf_price <= 0:
-            dcf_price = current_price * 1.22
+        pe = float(pe_comp_price or 0.0)
+        ev = float(ev_ebitda_comp_price or 0.0)
+        dcf = float(dcf_price or 0.0)
 
         if timeline_months <= 3:
-            base_case = round((pe_comp_price * 0.5) + (ev_ebitda_comp_price * 0.5), 0)
-            valuation_method = f"{sector}_Standard (50% PE + 50% EV/EBITDA - Loại bỏ DCF cho timeline {timeline_months}M)"
+            # Timeline ngắn hạn (<= 3M): Loại bỏ DCF, sử dụng P/E và/hoặc EV/EBITDA
+            components = []
+            if pe > 0:
+                components.append(("PE", pe, 0.50))
+            if ev > 0:
+                components.append(("EV/EBITDA", ev, 0.50))
+            if not components:
+                raise ValueError("DATA_MISSING: Missing fundamental valuation inputs (both pe_comp_price and ev_ebitda_comp_price are <= 0)")
+            total_w = sum(w for _, _, w in components)
+            base_case = round(sum(p * (w / total_w) for _, p, w in components), 0)
+            desc_parts = " + ".join(f"{round((w/total_w)*100)}% {name}" for name, _, w in components)
+            valuation_method = f"{sector}_Standard ({desc_parts} - Loại bỏ DCF cho timeline {timeline_months}M)"
         else:
-            base_case = round((pe_comp_price * 0.35) + (ev_ebitda_comp_price * 0.35) + (dcf_price * 0.30), 0)
-            valuation_method = f"{sector}_Standard (35% PE + 35% EV/EBITDA + 30% DCF)"
+            # Timeline trung/dài hạn (> 3M): Sử dụng P/E (35%), EV/EBITDA (35%), DCF (30%)
+            components = []
+            if pe > 0:
+                components.append(("PE", pe, 0.35))
+            if ev > 0:
+                components.append(("EV/EBITDA", ev, 0.35))
+            if dcf > 0:
+                components.append(("DCF", dcf, 0.30))
+            if not components:
+                raise ValueError("DATA_MISSING: Missing fundamental valuation inputs (pe, ev_ebitda, and dcf are all <= 0)")
+            total_w = sum(w for _, _, w in components)
+            base_case = round(sum(p * (w / total_w) for _, p, w in components), 0)
+            desc_parts = " + ".join(f"{round((w/total_w)*100)}% {name}" for name, _, w in components)
+            valuation_method = f"{sector}_Standard ({desc_parts})"
 
         # Thêm Premium theo Regime
         premium = 0.0
@@ -186,9 +205,9 @@ class ThesisEngine:
         f1 = factors.get("f1_value", 50.0)
         s1_passed = (f4 >= 60.0) or (css_score >= 60.0) or (f1 >= 60.0)
         s1_text = (
-            f"PASS (F4 SUE={f4:.1f}, CSS={css_score:.1f})"
+            f"PASS (F4 score={f4:.1f}/100, CSS={css_score:.1f})"
             if s1_passed
-            else f"FAIL (F4 SUE={f4:.1f} < 60 và CSS={css_score:.1f} < 60)"
+            else f"FAIL (F4 score={f4:.1f}/100 < 60 và CSS={css_score:.1f} < 60)"
         )
 
         # Signal 2: Business Quality / Flow
@@ -275,15 +294,18 @@ class ThesisEngine:
 
         # 5. Tính toán Price Target & Timeline
         val_inputs = valuation_inputs or {}
-        price_target_info = self.calculate_adaptive_target_price(
-            timeline_months=timeline_months,
-            current_price=current_price,
-            pe_comp_price=float(val_inputs.get("pe_price", 0.0)),
-            ev_ebitda_comp_price=float(val_inputs.get("ev_ebitda_price", 0.0)),
-            dcf_price=float(val_inputs.get("dcf_price", 0.0)),
-            regime_label=regime_label,
-            sector=sector
-        )
+        try:
+            price_target_info = self.calculate_adaptive_target_price(
+                timeline_months=timeline_months,
+                current_price=current_price,
+                pe_comp_price=float(val_inputs.get("pe_price") or val_inputs.get("pe_comp_price") or 0.0),
+                ev_ebitda_comp_price=float(val_inputs.get("ev_ebitda_price") or val_inputs.get("ev_ebitda_comp_price") or 0.0),
+                dcf_price=float(val_inputs.get("dcf_price") or 0.0),
+                regime_label=regime_label,
+                sector=sector
+            )
+        except ValueError as exc:
+            return False, {}, f"REJECTED: DATA_MISSING: {str(exc)}"
 
         # 6. Pre-Mortem Scenarios
         pre_mortem = self.generate_pre_mortem_scenarios(

@@ -107,13 +107,13 @@ class PortfolioAllocationAgent(BaseAgent):
 
         # B. Nạp Số dư Tài khoản & NAV thực tế từ PortfolioRepository
         account_state = self.repository.get_account_state()
-        nav = float(event_data.get("total_nav", account_state.get("total_nav", 0.0)))
+        nav = float(event_data.get("total_nav") or account_state.get("total_nav", 0.0))
         if nav <= 0:
             error_msg = f"[PortfolioAllocationAgent] Tổng NAV tài khoản không hợp lệ ({nav} VND). Từ chối phân bổ vốn."
             logger.error(error_msg)
             raise ValueError(error_msg)
 
-        cash_balance = float(event_data.get("cash_balance", account_state.get("cash_balance", nav)))
+        cash_balance = float(event_data.get("cash_balance") or account_state.get("cash_balance", nav))
 
         # C. Nạp toàn bộ Vị thế Hiện Hữu (Khắc phục Portfolio Blindness)
         existing_positions = (
@@ -130,7 +130,7 @@ class PortfolioAllocationAgent(BaseAgent):
         current_weight = round((current_shares * price) / nav, 4) if nav > 0 else 0.0
 
         # D. Nạp ADTV20 thực tế
-        adtv20 = float(candidate.get("adtv20") or event_data.get("adtv20", 0.0))
+        adtv20 = float(candidate.get("adtv20_shares") or candidate.get("adtv20") or event_data.get("adtv20_shares", 0.0))
         if adtv20 <= 0:
             try:
                 from app.domain.repositories.market_data_repository import MarketDataRepository
@@ -142,8 +142,7 @@ class PortfolioAllocationAgent(BaseAgent):
                 pass
 
         if adtv20 <= 0:
-            logger.warning(f"Thiếu thanh khoản ADTV20 cho mã {ticker}. Áp dụng mức ước lượng cơ sở tối thiểu 500,000 cổ.")
-            adtv20 = 500000.0
+            raise ValueError(f"Thiếu ADTV20 shares as-of for {ticker}; allocation is blocked.")
 
         # =========================================================================
         # 1. ENGINE 1: ELIGIBILITY ENGINE (VỚI AUTO-HYDRATION TỪ CSDL)

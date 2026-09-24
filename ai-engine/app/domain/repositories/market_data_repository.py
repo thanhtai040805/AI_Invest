@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from app.adapters.postgres_adapter import PostgresAdapter
@@ -130,11 +130,13 @@ class MarketDataRepository:
                 ]
             else:
                 # Fallback sang bảng ohlcv nếu market_data_daily chưa được backfill cho ticker này
-                ohlcv_rows = self.get_ohlcv(ticker, limit=limit)
+                ohlcv_rows = self.get_ohlcv(
+                    ticker, start_date=start_date, end_date=end_date, limit=limit
+                )
                 if ohlcv_rows:
                     return [
                         {
-                            "date": o["date"],
+                            "date": o["time"][:10],
                             "open_adj": o["open"],
                             "high_adj": o["high"],
                             "low_adj": o["low"],
@@ -154,11 +156,13 @@ class MarketDataRepository:
             logger.warning(f"Lỗi khi đọc market_data_daily cho {ticker} ({e})")
             # Fallback sang ohlcv khi gặp lỗi truy vấn
             try:
-                ohlcv_rows = self.get_ohlcv(ticker, limit=limit)
+                ohlcv_rows = self.get_ohlcv(
+                    ticker, start_date=start_date, end_date=end_date, limit=limit
+                )
                 if ohlcv_rows:
                     return [
                         {
-                            "date": o["date"],
+                            "date": o["time"][:10],
                             "open_adj": o["open"],
                             "high_adj": o["high"],
                             "low_adj": o["low"],
@@ -177,6 +181,183 @@ class MarketDataRepository:
             except Exception:
                 pass
         return []
+
+    def get_previous_close(self, symbol: str, before_date: date) -> Optional[float]:
+        """Lấy giá đóng cửa phiên gần nhất trước ngày được chỉ định (Giá tham chiếu sàn)."""
+        symbol = symbol.upper().strip()
+        try:
+            # 1. Ưu tiên market_data_daily
+            rows = self.storage.fetch_all(
+                """
+                SELECT COALESCE(close_unadj, close_adj) FROM market_data_daily
+                WHERE ticker = %s AND date < %s
+                ORDER BY date DESC LIMIT 1
+                """,
+                (symbol, before_date),
+            )
+            if rows and rows[0][0] is not None:
+                return float(rows[0][0])
+            # 2. Fallback sang ohlcv
+            rows_ohlcv = self.storage.fetch_all(
+                """
+                SELECT close FROM ohlcv
+                WHERE symbol = %s AND time < %s
+                ORDER BY time DESC LIMIT 1
+                """,
+                (symbol, before_date),
+            )
+            if rows_ohlcv and rows_ohlcv[0][0] is not None:
+                return float(rows_ohlcv[0][0])
+        except Exception as exc:
+            logger.warning("Could not get previous close for %s: %s", symbol, exc)
+        return None
+
+    def get_intraday_1m_bar(
+        self,
+        symbol: str,
+        bar_time: datetime,
+        fallback_prev_close: bool = True,
+    ) -> Optional[Dict[str, Any]]:
+        """Lấy cây nến 1 phút từ bảng ohlcv_intraday_1m theo chiến lược 3 lớp (LOCF - As-Of Join):
+        1. Ưu tiên nến khớp đúng phút bar_time (ví dụ 09:45:00).
+        2. Nếu phút đó không có giao dịch: lùi lại tìm nến gần nhất trong cùng phiên sáng (09:00 -> bar_time).
+        3. Nếu cả phiên sáng không có giao dịch: lấy giá đóng cửa phiên hôm trước (Previous Close / Tham chiếu) với volume = 0.
+        """
+        symbol = symbol.upper().strip()
+        try:
+            # Lớp 1: Khớp đúng phút bar_time
+            rows = self.storage.fetch_all(
+                """
+                SELECT time, symbol, open, high, low, close, volume, data_source
+                FROM ohlcv_intraday_1m
+                WHERE symbol = %s AND time >= %s AND time < %s
+                ORDER BY time LIMIT 1
+                """,
+                (symbol, bar_time, bar_time + timedelta(minutes=1)),
+            )
+            if rows and rows[0]:
+                r = rows[0]
+                is_ff = (r[7] == "FORWARD_FILL") if len(r) > 7 else False
+                return {
+                    "time": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
+                    "symbol": symbol,
+                    "open": float(r[2]),
+                    "high": float(r[3]),
+                    "low": float(r[4]),
+                    "close": float(r[5]),
+                    "volume": int(r[6]),
+                    "data_source": r[7] if len(r) > 7 else "DNSE",
+                    "is_synthetic": is_ff,
+                }
+
+            # Lớp 2: Lùi lại tìm nến khớp gần nhất trong cùng phiên giao dịch (LOCF - Last Observation Carried Forward)
+            session_start = bar_time.replace(hour=9, minute=0, second=0, microsecond=0)
+            rows_backward = self.storage.fetch_all(
+                """
+                SELECT time, symbol, open, high, low, close, volume, data_source
+                FROM ohlcv_intraday_1m
+                WHERE symbol = %s AND time < %s AND time >= %s AND data_source != 'FORWARD_FILL'
+                ORDER BY time DESC LIMIT 1
+                """,
+                (symbol, bar_time, session_start),
+            )
+            if rows_backward and rows_backward[0]:
+                rb = rows_backward[0]
+                last_price = float(rb[5])  # Lấy giá Close của nến gần nhất làm thị giá hiện tại
+                return {
+                    "time": bar_time.isoformat() if hasattr(bar_time, "isoformat") else str(bar_time),
+                    "symbol": symbol,
+                    "open": last_price,
+                    "high": last_price,
+                    "low": last_price,
+                    "close": last_price,
+                    "volume": 0,
+                    "data_source": "LOCF_INTRADAY",
+                    "is_synthetic": True,
+                    "last_traded_at": rb[0].isoformat() if hasattr(rb[0], "isoformat") else str(rb[0]),
+                }
+        except Exception as exc:
+            logger.warning("Could not load intraday 1m bar for %s: %s", symbol, exc)
+
+        # Lớp 3: Fallback lấy giá đóng cửa phiên hôm trước (Giá tham chiếu) khi mã chưa hề giao dịch trong sáng nay
+        if fallback_prev_close:
+            prev_close = self.get_previous_close(symbol, bar_time.date())
+            if prev_close and prev_close > 0:
+                return {
+                    "time": bar_time.isoformat() if hasattr(bar_time, "isoformat") else str(bar_time),
+                    "symbol": symbol,
+                    "open": prev_close,
+                    "high": prev_close,
+                    "low": prev_close,
+                    "close": prev_close,
+                    "volume": 0,
+                    "data_source": "PREV_CLOSE_FORWARD_FILL",
+                    "is_synthetic": True,
+                }
+
+        return None
+
+    def get_intraday_open(self, symbol: str, bar_time: datetime) -> Optional[float]:
+        """Return the stored 1-minute bar open beginning at the requested replay time."""
+        bar = self.get_intraday_1m_bar(symbol, bar_time, fallback_prev_close=False)
+        return bar["open"] if bar else None
+
+    def get_replay_market_price(self, symbol: str, replay_at: datetime) -> Optional[Dict[str, Any]]:
+        """Lấy giá thị trường tại thời điểm Replay (09:45) theo chuẩn 3 lớp LOCF:
+        1. Nến đúng phút replay_at hoặc nến lùi lại trong cùng phiên (LOCF).
+        2. Snapshot sổ lệnh (DNSE_QUOTE_MIDPOINT).
+        3. Giá đóng cửa ngày hôm trước (PREV_CLOSE_FORWARD_FILL).
+        """
+        bar = self.get_intraday_1m_bar(symbol, replay_at, fallback_prev_close=False)
+        if bar and bar.get("open") and bar["open"] > 0:
+            source = "DNSE_1M_OPEN" if not bar.get("is_synthetic") else bar.get("data_source", "LOCF_INTRADAY")
+            return {
+                "price": bar["open"],
+                "source": source,
+                "volume": bar.get("volume", 0),
+                "is_synthetic": bar.get("is_synthetic", False),
+            }
+
+        try:
+            rows = self.storage.fetch_all(
+                """
+                SELECT quote_time, bid, offer,
+                       EXTRACT(EPOCH FROM (replay_at - quote_time))
+                FROM market_data_quote_snapshots
+                WHERE symbol = %s AND replay_at = %s AND quote_time <= replay_at
+                """,
+                (symbol.upper().strip(), replay_at),
+            )
+            if rows:
+                quote_time, bid, offer, age_seconds = rows[0]
+                if isinstance(bid, str):
+                    bid = json.loads(bid)
+                if isinstance(offer, str):
+                    offer = json.loads(offer)
+                if bid and offer:
+                    bid_price = float(bid[0]["price"])
+                    ask_price = float(offer[0]["price"])
+                    if 0 < bid_price <= ask_price:
+                        return {
+                            "price": (bid_price + ask_price) / 2,
+                            "source": "DNSE_QUOTE_MIDPOINT",
+                            "quote_time": quote_time.isoformat(),
+                            "age_seconds": float(age_seconds),
+                        }
+        except Exception as exc:
+            logger.warning("Could not load historical quote for %s: %s", symbol, exc)
+
+        # Lớp 3: Forward-fill từ Giá Tham Chiếu / Previous Close khi chưa có khớp lệnh trong cả sáng nay
+        prev_close = self.get_previous_close(symbol, replay_at.date())
+        if prev_close and prev_close > 0:
+            return {
+                "price": prev_close,
+                "source": "PREV_CLOSE_FORWARD_FILL",
+                "volume": 0,
+                "is_synthetic": True,
+            }
+
+        return None
 
     def get_technical_indicators(self, symbol: str, calc_date: Optional[date] = None) -> Optional[Dict[str, Any]]:
         """Lấy các chỉ số kỹ thuật đã tính toán sẵn."""

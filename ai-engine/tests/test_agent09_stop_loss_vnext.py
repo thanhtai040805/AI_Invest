@@ -288,30 +288,42 @@ def test_agent09_auto_fetch_realtime_price():
 def test_agent09_auto_dispatch_to_agent08():
     """Kiểm tra Agent-09 tự động bắn lệnh khẩn cấp sang Agent-08 khi có cờ auto_dispatch."""
     async def _test():
+        from datetime import datetime, timedelta
+        import uuid
         repo = PortfolioRepository()
-        agent = PositionMonitoringAgent(repository=repo, auto_dispatch=True)
+        user_id = repo._in_memory_account["account_id"]
+        repo.storage.execute("DELETE FROM positions WHERE symbol = 'HPG'")
+        repo.storage.execute(
+            "INSERT INTO positions (id, user_id, symbol, quantity, avg_price, opened_at) VALUES (%s, %s, 'HPG', %s, %s, %s)",
+            (str(uuid.uuid4()), user_id, 10_000, 30_000.0, datetime.now() - timedelta(days=5)),
+        )
 
-        res = await agent.process({
-            "nav": 1_000_000_000.0,
-            "positions": [{
-                "ticker": "HPG",
-                "quantity": 10_000,
-                "available_shares": 10_000,
-                "entry_price": 30_000.0,
-                "current_price": 25_000.0,  # Lỗ -50tr = -5% NAV
-            }],
-            "auto_dispatch": True,
-        })
+        try:
+            agent = PositionMonitoringAgent(repository=repo, auto_dispatch=True)
 
-        data = res["data"]
-        assert data["stop_loss_triggered"] is True
-        order = data["stop_loss_orders"][0]
-        # Lệnh phải được tự động dispatch sang Agent-08
-        assert order["dispatch_status"] == "DISPATCHED_TO_AGENT_08"
-        assert len(data["dispatch_results"]) >= 1
-        exec_report = data["dispatch_results"][0]
-        assert exec_report["status"] in ("EXECUTED", "PARTIALLY_EXECUTED")
-        assert exec_report["ticker"] == "HPG"
+            res = await agent.process({
+                "nav": 1_000_000_000.0,
+                "positions": [{
+                    "ticker": "HPG",
+                    "quantity": 10_000,
+                    "available_shares": 10_000,
+                    "entry_price": 30_000.0,
+                    "current_price": 25_000.0,  # Lỗ -50tr = -5% NAV
+                }],
+                "auto_dispatch": True,
+            })
+
+            data = res["data"]
+            assert data["stop_loss_triggered"] is True
+            order = data["stop_loss_orders"][0]
+            # Lệnh phải được tự động dispatch sang Agent-08
+            assert order["dispatch_status"] == "DISPATCHED_TO_AGENT_08"
+            assert len(data["dispatch_results"]) >= 1
+            exec_report = data["dispatch_results"][0]
+            assert exec_report["status"] in ("EXECUTED", "PARTIALLY_EXECUTED")
+            assert exec_report["ticker"] == "HPG"
+        finally:
+            repo.storage.execute("DELETE FROM positions WHERE symbol = 'HPG'")
 
     asyncio.run(_test())
 
@@ -319,35 +331,48 @@ def test_agent09_auto_dispatch_to_agent08():
 def test_agent08_allows_defensive_sell_during_failsafe():
     """Kiểm tra Agent-08 cho phép lệnh BÁN phòng thủ từ Agent-09 bypass Failsafe nhưng vẫn chặn lệnh MUA."""
     async def _test():
+        from datetime import datetime, timedelta
+        import uuid
         from app.domain.agents.trade_execution import TradeExecutionAgent
-        exec_agent = TradeExecutionAgent(repository=PortfolioRepository())
+        repo = PortfolioRepository()
+        user_id = repo._in_memory_account["account_id"]
+        repo.storage.execute("DELETE FROM positions WHERE symbol = 'HPG'")
+        repo.storage.execute(
+            "INSERT INTO positions (id, user_id, symbol, quantity, avg_price, opened_at) VALUES (%s, %s, 'HPG', %s, %s, %s)",
+            (str(uuid.uuid4()), user_id, 10_000, 30_000.0, datetime.now() - timedelta(days=5)),
+        )
 
-        # 1. Thử lệnh MUA khi Failsafe ACTIVE -> Phải bị BLOCK
-        res_buy = await exec_agent.process({
-            "failsafe_active": True,
-            "order_instruction": {
-                "ticker": "HPG",
-                "action": "BUY",
-                "target_shares": 1000,
-                "price": 27000.0,
-            },
-        })
-        assert res_buy["data"]["status"] == "BLOCKED_FAILSAFE"
+        try:
+            exec_agent = TradeExecutionAgent(repository=repo)
 
-        # 2. Thử lệnh BÁN phòng thủ khẩn cấp từ Agent-09 khi Failsafe ACTIVE -> Phải được BẬT ĐÈN XANH
-        res_sell = await exec_agent.process({
-            "failsafe_active": True,
-            "order_instruction": {
-                "ticker": "HPG",
-                "action": "SELL",
-                "shares": 1000,
-                "price": 27000.0,
-                "failsafe_override": True,
-                "bypass_portfolio_agent": True,
-            },
-        })
-        assert res_sell["data"]["status"] in ("EXECUTED", "PARTIALLY_EXECUTED")
-        assert res_sell["data"]["shares"] == 1000
+            # 1. Thử lệnh MUA khi Failsafe ACTIVE -> Phải bị BLOCK
+            res_buy = await exec_agent.process({
+                "failsafe_active": True,
+                "order_instruction": {
+                    "ticker": "HPG",
+                    "action": "BUY",
+                    "target_shares": 1000,
+                    "price": 27000.0,
+                },
+            })
+            assert res_buy["data"]["status"] == "BLOCKED_FAILSAFE"
+
+            # 2. Thử lệnh BÁN phòng thủ khẩn cấp từ Agent-09 khi Failsafe ACTIVE -> Phải được BẬT ĐÈN XANH
+            res_sell = await exec_agent.process({
+                "failsafe_active": True,
+                "order_instruction": {
+                    "ticker": "HPG",
+                    "action": "SELL",
+                    "shares": 1000,
+                    "price": 27000.0,
+                    "failsafe_override": True,
+                    "bypass_portfolio_agent": True,
+                },
+            })
+            assert res_sell["data"]["status"] in ("EXECUTED", "PARTIALLY_EXECUTED")
+            assert res_sell["data"]["shares"] == 1000
+        finally:
+            repo.storage.execute("DELETE FROM positions WHERE symbol = 'HPG'")
 
     asyncio.run(_test())
 

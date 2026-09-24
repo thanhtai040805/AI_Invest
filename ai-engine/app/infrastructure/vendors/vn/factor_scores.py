@@ -137,8 +137,8 @@ def _safe_div(a, b, default=0.0):
     return a / b
 
 
-def _extract_fin_stmts(cur, symbols: list[str]) -> dict[str, dict[str, Any]]:
-    """Extract latest BS/IS/CF from financial_statements for each symbol."""
+def _extract_fin_stmts(cur, symbols: list[str], as_of: date) -> dict[str, dict[str, Any]]:
+    """Extract the latest statements available by the scoring date."""
     cur.execute(
         """SELECT DISTINCT ON (fs.symbol, fs.statement_type)
                   fs.symbol, fs.statement_type, fs.period_end, fs.data
@@ -146,8 +146,11 @@ def _extract_fin_stmts(cur, symbols: list[str]) -> dict[str, dict[str, Any]]:
            WHERE fs.symbol = ANY(%s)
              AND fs.statement_type IN ('BS', 'IS', 'CF')
              AND fs.frequency = 'quarterly'
+             AND fs.period_end <= %s
+             AND fs.published_date IS NOT NULL
+             AND fs.published_date <= %s
            ORDER BY fs.symbol, fs.statement_type, fs.period_end DESC""",
-        (symbols,),
+        (symbols, as_of, as_of),
     )
     result: dict[str, dict[str, Any]] = {}
     for sym, st, pe, raw in cur.fetchall():
@@ -189,7 +192,9 @@ def _tet_signal(d: date) -> float:
     return 0.0
 
 
-def _extract_multi_stmts(cur, symbols: list[str], n_quarters: int = 5) -> dict[str, list[dict[str, Any]]]:
+def _extract_multi_stmts(
+    cur, symbols: list[str], as_of: date, n_quarters: int = 5
+) -> dict[str, list[dict[str, Any]]]:
     """Extract last N quarters of BS/IS/CF for each symbol (for Piotroski F)."""
     cur.execute(
         """SELECT fs.symbol, fs.statement_type, fs.period_end, fs.data
@@ -197,8 +202,11 @@ def _extract_multi_stmts(cur, symbols: list[str], n_quarters: int = 5) -> dict[s
            WHERE fs.symbol = ANY(%s)
              AND fs.statement_type IN ('BS', 'IS', 'CF')
              AND fs.frequency = 'quarterly'
+             AND fs.period_end <= %s
+             AND fs.published_date IS NOT NULL
+             AND fs.published_date <= %s
            ORDER BY fs.symbol, fs.statement_type, fs.period_end DESC""",
-        (symbols,),
+        (symbols, as_of, as_of),
     )
     result: dict[str, list[dict[str, Any]]] = {}
     for sym, st, pe, raw in cur.fetchall():
@@ -377,8 +385,11 @@ def compute_factor_scores(
                   yoy_revenue_growth, yoy_earnings_growth
            FROM financial_ratios
            WHERE symbol = ANY(%s)
+             AND ratio_date <= %s
+             AND published_date IS NOT NULL
+             AND published_date <= %s
            ORDER BY symbol, ratio_date DESC""",
-        (symbols,),
+        (symbols, score_date, score_date),
     )
     fin_rows = cur.fetchall()
     fin_map: dict[str, dict] = {}
@@ -395,7 +406,7 @@ def compute_factor_scores(
     news_sentiment: dict[str, float] = {}
 
     # 5. Load financial statements
-    stmt_data = _extract_fin_stmts(cur, symbols)
+    stmt_data = _extract_fin_stmts(cur, symbols, score_date)
     logger.info("  Loaded financial statements for %d symbols", len(stmt_data))
 
     # 6. Load market cap from stocks table
@@ -456,13 +467,15 @@ def compute_factor_scores(
             vnindex_regime = 1.0 if float(row[0]) > 0 else -1.0
     except Exception:
         pass
-    # Fallback: try latest available
+    # Fallback: use the latest regime known at the scoring date, never a future row.
     if vnindex_regime == 0.0:
         try:
             cur.execute(
                 """SELECT value FROM macro_indicators
                    WHERE indicator_name = 'vnindex_return_1m'
-                   ORDER BY indicator_date DESC LIMIT 1"""
+                     AND indicator_date <= %s
+                   ORDER BY indicator_date DESC LIMIT 1""",
+                (score_date,),
             )
             row = cur.fetchone()
             if row:
@@ -484,7 +497,7 @@ def compute_factor_scores(
     logger.info("  Loaded price limits for %d symbols", len(price_limit_map))
 
     # 11. Load multi-period financial statements (for Piotroski F)
-    multi_stmt = _extract_multi_stmts(cur, symbols, n_quarters=5)
+    multi_stmt = _extract_multi_stmts(cur, symbols, score_date, n_quarters=5)
     logger.info("  Loaded multi-period statements for %d symbols", len(multi_stmt))
 
     # 12. Load foreign_flow room_remaining (latest per symbol)
@@ -1311,10 +1324,6 @@ def refresh_all(
             symbols = [r[0] for r in cur.fetchall()]
             
         logger.info("Computing factor scores for %d symbols (liquid universe)", len(symbols))
-
-        cur.execute("DELETE FROM factor_scores")
-        logger.info("  Deleted %d old factor scores", cur.rowcount)
-        conn.commit()
 
         rows = compute_factor_scores(symbols, score_date, cur, orthogonalizer=orthogonalizer)
         if not rows:

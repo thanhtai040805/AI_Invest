@@ -219,6 +219,9 @@ def test_agent04_db_state_and_audit_persistence(agent04, intel_repo):
             "f4_earnings": 65.0,
             "f5_flow": 85.0,
             "f6_technical": 78.0,
+            "pe_comp_price": 38000.0,
+            "ev_ebitda_comp_price": 39000.0,
+            "dcf_price": 40000.0,
         }
         market_context = {
             "current_regime": "BULL_TRENDING",

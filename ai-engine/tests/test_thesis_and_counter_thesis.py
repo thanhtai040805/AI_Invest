@@ -215,6 +215,8 @@ def test_agents_end_to_end():
             "f4_earnings": 88.0,
             "f5_flow": 72.0,
             "f6_technical": 65.0,
+            "pe_comp_price": 33000.0,
+            "ev_ebitda_comp_price": 34000.0,
         }
         market_context = {
             "current_regime": "Bull Low Vol",

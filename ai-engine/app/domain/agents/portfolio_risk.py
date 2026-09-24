@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 from app.core.base_agent import BaseAgent
@@ -176,12 +176,16 @@ class PortfolioRiskAgent(BaseAgent):
             returns_series = list(portfolio_input.get("returns_series", []))
 
         # 0.3 Nạp chuỗi returns lịch sử nếu chưa có (phục vụ Tail Risk EGARCH-t & ES 97.5%)
-        if not returns_series:
+        vnindex_bars = []
+        if not returns_series or event_data.get("market_context", {}).get("distribution_days") is None:
             try:
                 from app.domain.repositories.market_data_repository import MarketDataRepository
                 market_repo = MarketDataRepository()
-                vnindex_bars = market_repo.get_ohlcv("VNINDEX", limit=60)
-                if vnindex_bars and len(vnindex_bars) > 1:
+                target_date = event_data.get("market_data_date") or event_data.get("target_date")
+                if isinstance(target_date, str):
+                    target_date = date.fromisoformat(target_date[:10])
+                vnindex_bars = market_repo.get_ohlcv("VNINDEX", end_date=target_date, limit=60)
+                if vnindex_bars and len(vnindex_bars) > 1 and not returns_series:
                     # Chuẩn hóa về chuỗi thời gian tăng dần (chronological ASC) trước khi tính lợi suất
                     bars_asc = list(reversed(vnindex_bars)) if (
                         "time" in vnindex_bars[0] and "time" in vnindex_bars[-1]
@@ -198,25 +202,20 @@ class PortfolioRiskAgent(BaseAgent):
 
         # 0.4 Nạp Market Context (Breadth, Regime)
         market_ctx = event_data.get("market_context", {})
-        if not market_ctx:
-            try:
-                from app.domain.repositories.market_data_repository import MarketDataRepository
-                market_repo = MarketDataRepository()
-                regime_data = market_repo.get_latest_market_regime()
-                if regime_data:
-                    b_ratio = float(regime_data.get("breadth_ratio", 0.55))
-                    market_ctx = {
-                        "distribution_days": 0,
-                        "breadth_ma20_pct": round(b_ratio * 100, 1),
-                        "vnindex_change_pct": 0.0,
-                        "market_beta": 1.10,
-                        "regime": regime_data.get("regime", "UNKNOWN"),
-                    }
-            except Exception as e_mkt:
-                logger.debug(f"[PortfolioRiskAgent] Không thể nạp market_regime: {e_mkt}")
-
-        distribution_days = int(market_ctx.get("distribution_days", 0))
-        breadth_ma20_pct = float(market_ctx.get("breadth_ma20_pct", 55.0))
+        distribution_value = market_ctx.get("distribution_days")
+        if distribution_value is None and len(vnindex_bars) > 1:
+            chronological = list(reversed(vnindex_bars)) if str(vnindex_bars[0].get("time", "")) > str(vnindex_bars[-1].get("time", "")) else vnindex_bars
+            distribution_value = self.breadth_engine.count_distribution_days(chronological)
+        breadth_value = market_ctx.get("breadth_ma20_pct")
+        missing_breadth_inputs = [
+            name for name, value in (
+                ("distribution_days", distribution_value),
+                ("breadth_ma20_pct", breadth_value),
+            ) if value is None
+        ]
+        breadth_inputs_missing = bool(missing_breadth_inputs)
+        distribution_days = int(distribution_value or 0)
+        breadth_ma20_pct = float(breadth_value) if breadth_value is not None else 50.0
         vnindex_change_pct = float(market_ctx.get("vnindex_change_pct", 0.0))
         market_beta = float(market_ctx.get("market_beta", 1.10))
 
@@ -323,7 +322,18 @@ class PortfolioRiskAgent(BaseAgent):
             else:
                 stop_loss_p = order_price * 0.93 if order_price > 0 else None  # Default 7% stop loss
             order_sector = proposed_order_raw.get("sector", "Unknown")
-            adtv20 = float(proposed_order_raw.get("adtv20", 2000000.0))
+            adtv20 = float(
+                proposed_order_raw.get("adtv20_shares")
+                or proposed_order_raw.get("adtv20")
+                or proposed_order_raw.get("adtv20_volume")
+                or event_data.get("adtv20")
+                or 0.0
+            )
+            liquidity_data_missing = adtv20 <= 0
+            if liquidity_data_missing:
+                hard_law_status_map["liquidity_limit"] = "BLOCK"
+                hard_law_status_map["all_passed"] = False
+                reasons_list.append("INSUFFICIENT_DATA: as-of ADTV20 shares missing; order blocked.")
 
             p_state = PortfolioState(
                 nav=nav,
@@ -382,7 +392,12 @@ class PortfolioRiskAgent(BaseAgent):
                 try:
                     from app.domain.repositories.market_data_repository import MarketDataRepository
                     market_repo = MarketDataRepository()
-                    ohlcv_bars = market_repo.get_ohlcv(order_ticker, limit=20)
+                    market_data_date = event_data.get("market_data_date") or event_data.get("target_date")
+                    if isinstance(market_data_date, str):
+                        market_data_date = date.fromisoformat(market_data_date[:10])
+                    ohlcv_bars = market_repo.get_ohlcv(
+                        order_ticker, end_date=market_data_date, limit=20
+                    )
                     if ohlcv_bars and len(ohlcv_bars) > 0:
                         # Nhận diện nến gần nhất: Nếu DB trả về time DESC (mới nhất ở [0]), lấy [0]
                         # Nếu mock/list không có time hoặc time ASC, lấy [-1]
@@ -431,6 +446,8 @@ class PortfolioRiskAgent(BaseAgent):
             # =========================================================================
             # 3. TỔNG HỢP PHÁN QUYẾT THỂ CHẾ (POLICY DECISION MATRIX)
             # =========================================================================
+            if breadth_inputs_missing:
+                reasons_list.append(f"INSUFFICIENT_DATA: missing as-of market inputs: {', '.join(missing_breadth_inputs)}.")
             # Điều kiện BLOCK Tuyệt đối:
             is_blocked = (
                 (not hl_check.passed)
@@ -439,6 +456,8 @@ class PortfolioRiskAgent(BaseAgent):
                 or (dd_eval.tier == DrawdownTier.RED)
                 or (cdc_eval.tier == CDCTier.RED)
                 or (breadth_eval.action_recommended == "BLOCK_BUY")
+                or liquidity_data_missing
+                or breadth_inputs_missing
             )
 
             if is_blocked:
@@ -504,9 +523,10 @@ class PortfolioRiskAgent(BaseAgent):
                 "avg_correlation": 0.44,
             },
             "market_breadth": {
-                "distribution_days": breadth_eval.distribution_days_count,
-                "breadth_ma20_pct": breadth_eval.breadth_ma20_pct,
-                "health_tier": breadth_eval.health_tier.value,
+                "distribution_days": distribution_value,
+                "breadth_ma20_pct": breadth_value,
+                "data_status": "INSUFFICIENT_DATA" if breadth_inputs_missing else "AS_OF",
+                "health_tier": "UNKNOWN" if breadth_inputs_missing else breadth_eval.health_tier.value,
                 "is_divergence": breadth_eval.is_divergence_green_index_red_breadth,
             },
             "drawdown": {

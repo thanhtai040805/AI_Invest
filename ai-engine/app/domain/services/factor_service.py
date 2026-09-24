@@ -40,10 +40,11 @@ class FactorService:
                            gross_margin, net_margin, yoy_revenue_growth, yoy_earnings_growth
                     FROM financial_ratios
                     WHERE symbol = %s AND ratio_date <= %s
-                    ORDER BY ratio_date DESC
+                      AND published_date IS NOT NULL AND published_date <= %s
+                    ORDER BY published_date DESC, ratio_date DESC
                     LIMIT 1
                     """,
-                    (sym, target_date),
+                    (sym, target_date, target_date),
                 )
                 fin_row = cur.fetchone()
 

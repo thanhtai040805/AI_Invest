@@ -14,7 +14,9 @@ Chức năng:
 from __future__ import annotations
 
 import logging
+from datetime import date, datetime, time, timezone
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 from app.core.base_agent import BaseAgent
 from app.domain.rules.thesis_engine import ThesisEngine
@@ -70,7 +72,21 @@ class InvestmentThesisAgent(BaseAgent):
         ticker = str(ticker).upper().strip()
 
         market_context = dict(event_data.get("market_context", {}))
-        val_inputs = event_data.get("valuation_inputs", {})
+        target_date = event_data.get("market_data_date") or event_data.get("target_date")
+        if isinstance(target_date, str):
+            target_date = date.fromisoformat(target_date[:10])
+        val_inputs = dict(event_data.get("valuation_inputs") or research_report.get("valuation_inputs") or {})
+        if not val_inputs:
+            val_inputs = {
+                "pe_price": research_report.get("pe_price") or research_report.get("pe_comp_price"),
+                "ev_ebitda_price": research_report.get("ev_ebitda_price") or research_report.get("ev_ebitda_comp_price"),
+                "dcf_price": research_report.get("dcf_price"),
+            }
+        else:
+            if not val_inputs.get("pe_price") and val_inputs.get("pe_comp_price"):
+                val_inputs["pe_price"] = val_inputs["pe_comp_price"]
+            if not val_inputs.get("ev_ebitda_price") and val_inputs.get("ev_ebitda_comp_price"):
+                val_inputs["ev_ebitda_price"] = val_inputs["ev_ebitda_comp_price"]
         timeline_months = int(event_data.get("timeline_months", 3))
         seq_num = int(event_data.get("seq_num", 1))
         custom_catalyst_desc = event_data.get("custom_catalyst_desc")
@@ -98,11 +114,11 @@ class InvestmentThesisAgent(BaseAgent):
         try:
             from app.domain.repositories.market_data_repository import MarketDataRepository
             m_repo = MarketDataRepository()
-            ohlcv_3w = m_repo.get_ohlcv(ticker, limit=15)
+            ohlcv_3w = m_repo.get_ohlcv(ticker, end_date=target_date, limit=15)
             if current_price <= 0 and ohlcv_3w and "close" in ohlcv_3w[0]:
                 current_price = float(ohlcv_3w[0]["close"])
             if current_price <= 0:
-                latest_m = m_repo.get_market_data_daily(ticker, limit=1)
+                latest_m = m_repo.get_market_data_daily(ticker, end_date=target_date, limit=1)
                 if latest_m and "close" in latest_m[0]:
                     current_price = float(latest_m[0]["close"])
         except Exception as e_m:
@@ -139,17 +155,57 @@ class InvestmentThesisAgent(BaseAgent):
 
         if not is_eligible:
             logger.info(f"[InvestmentThesisAgent] Ticker {ticker} không đủ điều kiện sinh thesis: {message}")
+            res_data = {
+                "ticker": ticker,
+                "status": "REJECTED" if "REJECT" in message else "WAIT_OR_SKIP",
+                "reason": message,
+            }
+            if "DATA_MISSING" in message:
+                res_data["valuation_status"] = "NO_FUNDAMENTAL_TARGET"
             return {
-                "data": {
-                    "ticker": ticker,
-                    "status": "REJECTED" if "REJECT" in message else "WAIT_OR_SKIP",
-                    "reason": message,
-                },
+                "data": res_data,
                 "trace": {
                     "thesis_engine": self.thesis_engine.__class__.__name__,
                     "decision": "SKIP_THESIS",
                 }
             }
+
+        catalyst_evidence = event_data.get("catalyst_evidence")
+        if catalyst_evidence is not None:
+            if not isinstance(catalyst_evidence, list) or any(
+                not isinstance(item, dict) or not all(item.get(key) for key in ("source", "source_timestamp", "excerpt"))
+                for item in catalyst_evidence
+            ):
+                return {
+                    "data": {
+                        "ticker": ticker,
+                        "status": "DEFERRED",
+                        "reason": "UNVERIFIED_CATALYST: source, timestamp and excerpt are required before a thesis can proceed.",
+                    },
+                    "trace": {"decision": "DEFER_UNVERIFIED_CATALYST"},
+                }
+            decision_day = event_data.get("target_date") or target_date
+            if isinstance(decision_day, str):
+                decision_day = date.fromisoformat(decision_day[:10])
+            if event_data.get("current_time"):
+                try:
+                    decision_time = datetime.fromisoformat(str(event_data["current_time"]))
+                except Exception:
+                    decision_time = datetime.combine(decision_day or date.today(), time(9, 45), ZoneInfo("Asia/Ho_Chi_Minh"))
+            elif decision_day and decision_day < date.today():
+                decision_time = datetime.combine(decision_day, time(9, 45), ZoneInfo("Asia/Ho_Chi_Minh"))
+            else:
+                decision_time = datetime.now(timezone.utc)
+            try:
+                for item in catalyst_evidence:
+                    source_time = datetime.fromisoformat(str(item["source_timestamp"]).replace("Z", "+00:00"))
+                    if source_time.tzinfo is None or source_time > decision_time:
+                        raise ValueError("future or timezone-free source timestamp")
+            except (TypeError, ValueError):
+                return {
+                    "data": {"ticker": ticker, "status": "DEFERRED", "reason": "UNVERIFIED_CATALYST: source timestamp is invalid or after decision time."},
+                    "trace": {"decision": "DEFER_FUTURE_CATALYST_EVIDENCE"},
+                }
 
         # 3.1. Làm giàu luận điểm bằng Financial Quality.
         if self.thesis_synthesizer:
@@ -173,7 +229,8 @@ class InvestmentThesisAgent(BaseAgent):
                     "roe": research_report.get("roe") or event_data.get("roe"),
                     "roic": research_report.get("roic") or event_data.get("roic"),
                     "gpm": research_report.get("gpm") or research_report.get("gross_profit_margin"),
-                    "earnings_growth": research_report.get("earnings_growth") or research_report.get("f4_earnings"),
+                    "earnings_growth": research_report.get("earnings_growth"),
+                    "f4_score": research_report.get("f4_earnings"),
                 }
 
                 narrative = await self.thesis_synthesizer.synthesize_thesis_narrative(
@@ -213,11 +270,16 @@ class InvestmentThesisAgent(BaseAgent):
                 for x in chronological
             ]
         else:
-            volume_data_3w = [300000.0] * 15
-            price_data_3w = [current_price * 0.98, current_price * 0.99, current_price]
+            volume_data_3w = []
+            price_data_3w = []
 
-        sue_val = float(research_report.get("f4_earnings", 50.0)) / 25.0
-        peai_status = self.catalyst_validator.check_peai_accumulation(volume_data_3w, price_data_3w, sue_score=sue_val)
+        earnings_surprise = float(research_report.get("sue_score", 0.0))
+        peai_status = self.catalyst_validator.check_peai_accumulation(volume_data_3w, price_data_3w, sue_score=earnings_surprise)
+        if peai_status == "HOLD":
+            return {
+                "data": {"ticker": ticker, "status": "WAIT_OR_SKIP", "reason": "PEAI_WARNING: Information leakage detected. Price already ran up > 20%."},
+                "trace": {"decision": "SKIP_PEAI_HOLD"},
+            }
         structured_payload["input_validation"]["peai_status"] = peai_status
 
         # 4. Lưu luận điểm đầu tư vào CSDL qua IntelligenceRepository

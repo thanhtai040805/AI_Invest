@@ -190,6 +190,22 @@ model Ohlcv {
   @@map("ohlcv")
 }
 
+model IntradayOhlcv1m {
+  time        DateTime @db.Timestamptz(6)
+  symbol      String   @db.VarChar(16)
+  open        Decimal  @db.Decimal(16, 9)
+  high        Decimal  @db.Decimal(16, 9)
+  low         Decimal  @db.Decimal(16, 9)
+  close       Decimal  @db.Decimal(16, 9)
+  volume      BigInt
+  data_source String   @default("DNSE") @db.VarChar(16)
+  fetched_at  DateTime @default(now()) @db.Timestamptz(6)
+
+  @@id([time, symbol])
+  @@index([symbol, time(sort: Desc)])
+  @@map("ohlcv_intraday_1m")
+}
+
 model Post {
   id            String     @id @default(uuid())
   authorId      String     @map("author_id")
