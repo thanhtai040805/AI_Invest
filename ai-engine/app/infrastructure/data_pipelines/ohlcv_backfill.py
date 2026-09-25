@@ -184,7 +184,7 @@ def sync_stocks(
 
         name = item.get("companyName") or item.get("CompanyName") or sym
         exchange = item.get("market") or item.get("Market") or "HOSE"
-        industry = item.get("industryName") or item.get("IndustryName") or ""
+        industry = (item.get("industryName") or item.get("IndustryName") or "").strip() or None
 
         ceiling = None
         floor = None
@@ -223,7 +223,7 @@ def sync_stocks(
             ON CONFLICT (symbol) DO UPDATE SET
                 name = EXCLUDED.name,
                 exchange = EXCLUDED.exchange,
-                industry = EXCLUDED.industry,
+                industry = COALESCE(EXCLUDED.industry, stocks.industry),
                 market_cap = EXCLUDED.market_cap,
                 ceiling = EXCLUDED.ceiling,
                 floor = EXCLUDED.floor,

@@ -14,6 +14,7 @@ import json
 import logging
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 from app.adapters.postgres_adapter import PostgresAdapter
 
@@ -512,6 +513,7 @@ class MarketDataRepository:
         self,
         symbol: str,
         allow_eod_fallback: bool = True,
+        socket_only: bool = False,
     ) -> Optional[float]:
         """
         Lấy giá thị trường:
@@ -521,12 +523,22 @@ class MarketDataRepository:
         """
         symbol_clean = str(symbol).upper().strip()
 
+        def fresh_socket_quote(quote: dict) -> bool:
+            try:
+                updated = datetime.fromisoformat(str(quote["lastUpdate"]).replace("Z", "+00:00"))
+                if updated.tzinfo is None:
+                    updated = updated.replace(tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+                age = (datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")) - updated).total_seconds()
+                return -1 <= age <= 10
+            except (KeyError, TypeError, ValueError):
+                return False
+
         # 1. DNSE WebSocket Stream Hub In-Memory Cache (0ms latency)
         try:
             from app.infrastructure.external_api.dnse.stream_hub import get_stream_hub
             hub = get_stream_hub()
             quote = hub.get_quote(symbol_clean)
-            if quote:
+            if quote and (not socket_only or fresh_socket_quote(quote)):
                 price_raw = float(quote.get("price", 0.0) or quote.get("matchPrice", 0.0) or 0.0)
                 if price_raw > 0:
                     price = price_raw * 1000.0 if price_raw < 1000.0 else price_raw
@@ -543,12 +555,15 @@ class MarketDataRepository:
             cached_data = r.get(f"stock:{symbol_clean}:quote")
             if cached_data:
                 quote = json.loads(cached_data)
-                price = float(quote.get("price", 0.0))
+                price = float(quote.get("price", 0.0)) if not socket_only or fresh_socket_quote(quote) else 0.0
                 if price > 0:
                     logger.debug(f"[DNSE Realtime] Lấy giá khớp realtime từ Redis cho {symbol_clean}: {price:,} VND")
                     return price
         except Exception as e:
             logger.debug(f"Không thể đọc quote realtime từ Redis ({e})")
+
+        if socket_only:
+            return None
 
         # 2. DNSE OpenAPI Security Info (Trực tiếp từ openapi.dnse.com.vn, phản hồi ~20ms)
         try:

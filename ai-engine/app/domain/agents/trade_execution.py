@@ -130,21 +130,7 @@ class TradeExecutionAgent(BaseAgent):
         # 1. Xác định giá quyết định (decision_price) & giá trần/sàn (max_price)
         decision_price = float(decision.get("price", decision.get("target_price", 0.0)))
         if decision_price <= 0:
-            try:
-                from app.domain.repositories.market_data_repository import MarketDataRepository
-                m_repo = MarketDataRepository()
-                realtime_price = m_repo.get_realtime_or_latest_price(ticker)
-                if realtime_price and realtime_price > 0:
-                    decision_price = float(realtime_price)
-                else:
-                    latest_m = m_repo.get_market_data_daily(ticker, limit=1)
-                    if latest_m and "close" in latest_m[0]:
-                        decision_price = float(latest_m[0]["close"])
-            except Exception as e_p:
-                logger.warning(f"[TradeExecutionAgent] Lỗi khi tra cứu giá cho {ticker}: {e_p}")
-
-        if decision_price <= 0:
-            logger.error(f"[TradeExecutionAgent] Không thể tìm thấy giá thị trường hợp lệ cho {ticker}. Từ chối thực thi.")
+            logger.error(f"[TradeExecutionAgent] Thiếu giá từ sự kiện hiện tại cho {ticker}. Từ chối thực thi.")
             order_id = str(uuid.uuid4())
             reject_payload = {
                 "execution_decision": "REJECT",
@@ -153,7 +139,7 @@ class TradeExecutionAgent(BaseAgent):
                 "action": direction,
                 "shares": 0,
                 "status": "REJECTED_MISSING_PRICE",
-                "rejection_reason": f"Không có giá khớp thị trường realtime hoặc giá nến cho {ticker}.",
+                "rejection_reason": f"Không có giá socket hiện tại trong quyết định cho {ticker}.",
                 "executed_price": 0.0,
                 "target_price": 0.0,
                 "slippage_bps": 0.0,
@@ -406,8 +392,12 @@ class TradeExecutionAgent(BaseAgent):
         # 7. Shadow fills require recent executable displayed depth.
         from app.domain.rules.execution.shadow_fill import shadow_fill
         try:
+            orderbook = event_data.get("orderbook")
+            if not isinstance(orderbook, dict):
+                from app.infrastructure.external_api.market_data_service import market_data_svc
+                orderbook = await market_data_svc.get_order_book(ticker)
             executed_price = shadow_fill(
-                event_data.get("orderbook"), direction, shares, max_price
+                orderbook, direction, shares, max_price
             )
         except ValueError as exc:
             # LƯU Ý: Lệnh phòng vệ khẩn cấp (Emergency Stop-Loss) từ Agent-09 được ưu tiên khớp 100% để bảo vệ vốn
@@ -420,8 +410,24 @@ class TradeExecutionAgent(BaseAgent):
                 or issuing_agent == "position_monitoring"
             )
             if is_emergency and direction == "SELL":
-                logger.warning(f"[TradeExecutionAgent] Khớp lệnh BÁN phòng vệ khẩn cấp cho {ticker} tại giá quyết định {decision_price:,.1f}")
-                executed_price = self.eae_engine.align_to_hose_tick_size(decision_price * 0.9988)
+                logger.warning("[TradeExecutionAgent] Emergency sell not filled: executable live depth is unavailable for %s", ticker)
+                return {
+                    "data": {
+                        "execution_decision": "BLOCK",
+                        "order_id": str(uuid.uuid4()),
+                        "ticker": ticker,
+                        "action": direction,
+                        "shares": 0,
+                        "status": "BLOCKED_NO_EXECUTABLE_DEPTH",
+                        "rejection_reason": str(exc),
+                        "executed_price": 0.0,
+                        "target_price": decision_price,
+                        "slippage_bps": 0.0,
+                        "slice_count": len(plan.slices),
+                        "execution_mode": "SHADOW",
+                    },
+                    "trace": {"reason": "NO_EXECUTABLE_DEPTH"},
+                }
             else:
                 logger.info("[TradeExecutionAgent] Shadow order not filled for %s: %s", ticker, exc)
                 if direction == "BUY" and not pending_order_id:

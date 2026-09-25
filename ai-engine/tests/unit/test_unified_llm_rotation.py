@@ -1,85 +1,96 @@
-"""Unit tests for UnifiedLLMClient multi-model rotation, round-robin, rate-limiting, and EvoMap fallback."""
+"""Unit tests for the configured UnifiedLLMClient provider and cooldown behavior."""
 
 import asyncio
+import logging
 import time
 from unittest.mock import patch, MagicMock
 
 from app.infrastructure.llm.client import UnifiedLLMClient
 
 
-def test_round_robin_rotation_order():
-    """Verify that multiple keys and models are interleaved and rotated via round-robin."""
+def test_xkiro_and_evomap_are_configured_in_priority_order():
     async def _run():
         mock_settings = MagicMock()
-        mock_settings.llm_groq_key0 = "test_key_0"
-        mock_settings.llm_groq_key1 = "test_key_1"
-        mock_settings.llm_groq_model0 = "openai/gpt-oss-120b"
-        mock_settings.evomap_api_key = "sk-evomap-test"
+        mock_settings.xkiro_api_key = "xkiro_test"
+        mock_settings.evomap_api_key = "evomap_test"
 
         with patch("app.infrastructure.llm.client.get_settings", return_value=mock_settings):
             client = UnifiedLLMClient()
             assert client.is_configured
-            # 6 Groq slots + 1 EvoMap slot = 7 providers
-            assert len(client.providers) == 7
-
-            # Check models present
-            models = [p["model"] for p in client.providers]
-            assert "openai/gpt-oss-120b" in models
-            assert "openai/gpt-oss-20b" in models
-            assert "qwen/qwen3.8-27b" in models
-            assert "evomap-deepseek-v4-flash" in models
-
-            # Check round robin rotation produces different starting candidates on successive calls
+            assert [provider["name"] for provider in client.providers] == ["XKIRO_QWEN", "EVOMAP_DEEPSEEK"]
+            assert client.providers[0]["base_url"] == "https://api.xkiro.com/v1"
+            assert client.providers[0]["model"] == "qwen/qwen3.7-plus:free"
+            assert client.providers[1]["base_url"] == "https://api.evomap.ai/v1"
+            assert client.providers[1]["model"] == "evomap-deepseek-v4-flash"
+            assert client.providers[1]["api_key"] == "sk-evomap-evomap_test"
             cand1 = await client._get_ordered_candidates()
             cand2 = await client._get_ordered_candidates()
-            assert cand1[0]["name"] != cand2[0]["name"]
+            assert cand1 == cand2 == client.providers
 
     asyncio.run(_run())
 
 
-def test_rate_limiting_and_cooldown():
-    """Verify that slot exceeds MAX_RPM_PER_SLOT or is cooling down is marked unavailable."""
+def test_provider_cooldown_marks_provider_unavailable():
     async def _run():
         mock_settings = MagicMock()
-        mock_settings.llm_groq_key0 = "test_key_0"
-        mock_settings.llm_groq_key1 = ""
-        mock_settings.llm_groq_model0 = "openai/gpt-oss-120b"
+        mock_settings.xkiro_api_key = "xkiro_test"
         mock_settings.evomap_api_key = ""
 
         with patch("app.infrastructure.llm.client.get_settings", return_value=mock_settings):
             client = UnifiedLLMClient()
             p_name = client.providers[0]["name"]
 
-            # Initial: slot is available
-            assert client._is_slot_available(p_name, is_groq=True) is True
-
-            # Simulate 25 calls within 60s
             now = time.monotonic()
-            for _ in range(client.MAX_RPM_PER_SLOT):
-                client._call_history[p_name].append(now)
-
-            # Slot should now be unavailable to avoid 429
-            assert client._is_slot_available(p_name, is_groq=True) is False
-
-            # Simulate 429 cooldown
-            client._call_history[p_name].clear()
+            assert client._is_slot_available(p_name) is True
             client._cooldown_until[p_name] = now + 60.0
-            assert client._is_slot_available(p_name, is_groq=True) is False
+            assert client._is_slot_available(p_name) is False
 
     asyncio.run(_run())
 
 
-def test_evomap_configured_as_fallback():
-    """Verify that EvoMap DeepSeek V4 Flash is loaded and present in providers."""
-    mock_settings = MagicMock()
-    mock_settings.llm_groq_key0 = "test_key_0"
-    mock_settings.llm_groq_key1 = ""
-    mock_settings.llm_groq_model0 = "openai/gpt-oss-120b"
-    mock_settings.evomap_api_key = "sk-evomap-12345"
+def test_complete_json_does_not_repeat_full_provider_sweep_on_failure():
+    """A failed structured request is surfaced once instead of replaying every provider."""
+    from unittest.mock import AsyncMock
+    import pytest
 
-    with patch("app.infrastructure.llm.client.get_settings", return_value=mock_settings):
-        client = UnifiedLLMClient()
-        evo_provider = [p for p in client.providers if p["name"] == "EVOMAP_DEEPSEEK"]
-        assert len(evo_provider) == 1
-        assert evo_provider[0]["model"] == "evomap-deepseek-v4-flash"
-        assert evo_provider[0]["base_url"] == "https://api.evomap.ai/v1"
+    async def _run():
+        client = UnifiedLLMClient(api_key="test", base_url="https://example.invalid/v1", model="test-model")
+        client.chat = AsyncMock(side_effect=RuntimeError("provider unavailable"))
+        with pytest.raises(RuntimeError, match="provider unavailable"):
+            await client.complete_json("return json")
+        assert client.chat.await_count == 1
+
+    asyncio.run(_run())
+
+
+def test_provider_failure_log_includes_model_status_and_request_id(caplog):
+    import pytest
+
+    class Response:
+        status_code = 503
+        headers = {"x-evomap-request-id": "request-123"}
+        text = "upstream unavailable"
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            return Response()
+
+    async def _run():
+        client = UnifiedLLMClient(api_key="test", base_url="https://example.invalid/v1", model="test-model")
+        with patch("app.infrastructure.llm.client.httpx.AsyncClient", return_value=Client()):
+            with caplog.at_level(logging.WARNING, logger="app.infrastructure.llm.client"):
+                with pytest.raises(RuntimeError, match="All configured LLM providers failed"):
+                    await client.chat("hello")
+
+        assert "model=test-model" in caplog.text
+        assert "HTTP 503" in caplog.text
+        assert "request_id=request-123" in caplog.text
+        assert "upstream unavailable" in caplog.text
+
+    asyncio.run(_run())

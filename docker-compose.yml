@@ -159,9 +159,7 @@ services:
       - DNSE_BASE_URL=${DNSE_BASE_URL:-https://openapi.dnse.com.vn}
       - REDIS_URL=redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}@redis:6379
       - RABBITMQ_URL=amqp://${RABBITMQ_USER:?Set RABBITMQ_USER in .env}:${RABBITMQ_PASS:?Set RABBITMQ_PASS in .env}@rabbitmq:5672/
-      - GROQ_API_KEY0=${GROQ_API_KEY0:-}
-      - GROQ_API_KEY1=${GROQ_API_KEY1:-}
-      - GROQ_MODEL0=${GROQ_MODEL0:-openai/gpt-oss-120b}
+      - XKIRO_API_KEY=${XKIRO_API_KEY:-}
       - EVOMAP_API_KEY=${EVOMAP_API_KEY:-}
       - MULTI_AGENT_ACCOUNT_ID=${MULTI_AGENT_ACCOUNT_ID:-}
       - PORTFOLIO_AUTOMATION_ENABLED=${PORTFOLIO_AUTOMATION_ENABLED:-false}

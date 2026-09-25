@@ -489,8 +489,9 @@ class PortfolioRepository:
         """Persist one replay day's close-marked account state."""
         if not user_id or not isinstance(mark_as_of, date) or isinstance(mark_as_of, datetime):
             raise ValueError("Replay user and close-mark date are required")
-        if mark_as_of >= datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date():
-            raise ValueError("PostgreSQL replay marks must be strictly historical")
+        now_vn = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
+        if mark_as_of > now_vn.date() or (mark_as_of == now_vn.date() and now_vn.time() < time(15, 0)):
+            raise ValueError("Replay close marks must not be future-dated or during the current session")
 
         account_before = deepcopy(self._in_memory_account)
         try:
@@ -527,7 +528,7 @@ class PortfolioRepository:
             self.storage.begin()
             # 1. Xóa executions của user
             self.storage.execute(
-                "DELETE FROM order_executions WHERE order_id::text IN (SELECT id::text FROM orders WHERE user_id = %s) OR execution_mode = 'POSTGRES_REPLAY'",
+                "DELETE FROM order_executions e USING orders o WHERE e.order_id::text = o.id AND o.user_id = %s",
                 (target_uid,),
             )
             # 2. Xóa orders

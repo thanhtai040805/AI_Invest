@@ -14,9 +14,8 @@ Chức năng:
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, time, timezone
+from datetime import date
 from typing import Any, Dict, List, Optional
-from zoneinfo import ZoneInfo
 
 from app.core.base_agent import BaseAgent
 from app.domain.repositories.financial_repository import FinancialRepository
@@ -46,13 +45,19 @@ class InvestmentThesisAgent(BaseAgent):
                 from app.infrastructure.llm.client import get_unified_llm_client
                 llm_client = get_unified_llm_client()
             except Exception as e_llm:
-                logger.debug(f"[InvestmentThesisAgent] Không thể nạp unified_llm_client: {e_llm}")
+                logger.warning(
+                    "[InvestmentThesisAgent] LLM client initialization failed (%s): %r; narrative will use baseline.",
+                    type(e_llm).__name__, e_llm,
+                )
                 llm_client = None
         try:
             from app.domain.rules.thesis_synthesizer import ThesisSynthesizer
             self.thesis_synthesizer = ThesisSynthesizer(llm_client=llm_client)
         except Exception as e_syn:
-            logger.debug(f"[InvestmentThesisAgent] Không thể khởi tạo ThesisSynthesizer: {e_syn}")
+            logger.warning(
+                "[InvestmentThesisAgent] ThesisSynthesizer initialization failed (%s): %r; narrative will be omitted.",
+                type(e_syn).__name__, e_syn,
+            )
             self.thesis_synthesizer = None
 
     async def process(self, event_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -99,12 +104,18 @@ class InvestmentThesisAgent(BaseAgent):
         css_score = float(research_report.get("css", 0.0))
         conviction = str(research_report.get("conviction", "D")).upper()
         if css_score < 60.0 or conviction in ["C", "D", "E"]:
+            reason_codes = []
+            if conviction in ["C", "D", "E"]:
+                reason_codes.append("CONVICTION_BELOW_B")
+            if css_score < 60.0:
+                reason_codes.append("CSS_BELOW_60")
             logger.info(f"[InvestmentThesisAgent] Ticker {ticker} không đủ ngưỡng Conviction B: CSS={css_score:.1f}, Conviction={conviction}")
             return {
                 "data": {
                     "ticker": ticker,
                     "status": "WAIT_OR_SKIP",
                     "reason": f"WAIT / SKIP: CSS ({css_score:.1f}) hoặc Conviction ({conviction}) chưa đạt ngưỡng B.",
+                    "reason_codes": reason_codes,
                 },
                 "trace": {
                     "thesis_engine": self.thesis_engine.__class__.__name__,
@@ -138,6 +149,7 @@ class InvestmentThesisAgent(BaseAgent):
                     "ticker": ticker,
                     "status": "REJECTED",
                     "reason": f"DATA_MISSING: Không có dữ liệu giá giao dịch hiện tại cho {ticker}.",
+                    "reason_codes": ["CURRENT_PRICE_MISSING_OR_NONPOSITIVE"],
                 },
                 "trace": {
                     "thesis_engine": self.thesis_engine.__class__.__name__,
@@ -164,6 +176,14 @@ class InvestmentThesisAgent(BaseAgent):
                 "status": "REJECTED" if "REJECT" in message else "WAIT_OR_SKIP",
                 "reason": message,
             }
+            if "Không đủ 3 tín hiệu" in message:
+                res_data["reason_codes"] = ["INDEPENDENT_SIGNALS_BELOW_3"]
+            elif "DATA_MISSING" in message:
+                res_data["reason_codes"] = ["VALUATION_INPUTS_MISSING"]
+            elif "Biên an toàn" in message:
+                res_data["reason_codes"] = ["MARGIN_OF_SAFETY_BELOW_15"]
+            else:
+                res_data["reason_codes"] = ["THESIS_VALIDATION_FAILED"]
             if "DATA_MISSING" in message:
                 res_data["valuation_status"] = "NO_FUNDAMENTAL_TARGET"
             return {
@@ -173,43 +193,6 @@ class InvestmentThesisAgent(BaseAgent):
                     "decision": "SKIP_THESIS",
                 }
             }
-
-        catalyst_evidence = event_data.get("catalyst_evidence")
-        if catalyst_evidence is not None:
-            if not isinstance(catalyst_evidence, list) or any(
-                not isinstance(item, dict) or not all(item.get(key) for key in ("source", "source_timestamp", "excerpt"))
-                for item in catalyst_evidence
-            ):
-                return {
-                    "data": {
-                        "ticker": ticker,
-                        "status": "DEFERRED",
-                        "reason": "UNVERIFIED_CATALYST: source, timestamp and excerpt are required before a thesis can proceed.",
-                    },
-                    "trace": {"decision": "DEFER_UNVERIFIED_CATALYST"},
-                }
-            decision_day = event_data.get("target_date") or target_date
-            if isinstance(decision_day, str):
-                decision_day = date.fromisoformat(decision_day[:10])
-            if event_data.get("current_time"):
-                try:
-                    decision_time = datetime.fromisoformat(str(event_data["current_time"]))
-                except Exception:
-                    decision_time = datetime.combine(decision_day or date.today(), time(9, 45), ZoneInfo("Asia/Ho_Chi_Minh"))
-            elif decision_day and decision_day < date.today():
-                decision_time = datetime.combine(decision_day, time(9, 45), ZoneInfo("Asia/Ho_Chi_Minh"))
-            else:
-                decision_time = datetime.now(timezone.utc)
-            try:
-                for item in catalyst_evidence:
-                    source_time = datetime.fromisoformat(str(item["source_timestamp"]).replace("Z", "+00:00"))
-                    if source_time.tzinfo is None or source_time > decision_time:
-                        raise ValueError("future or timezone-free source timestamp")
-            except (TypeError, ValueError):
-                return {
-                    "data": {"ticker": ticker, "status": "DEFERRED", "reason": "UNVERIFIED_CATALYST: source timestamp is invalid or after decision time."},
-                    "trace": {"decision": "DEFER_FUTURE_CATALYST_EVIDENCE"},
-                }
 
         # 3.1. Làm giàu luận điểm bằng Financial Quality.
         if self.thesis_synthesizer:
@@ -281,7 +264,7 @@ class InvestmentThesisAgent(BaseAgent):
         peai_status = self.catalyst_validator.check_peai_accumulation(volume_data_3w, price_data_3w, sue_score=earnings_surprise)
         if peai_status == "HOLD":
             return {
-                "data": {"ticker": ticker, "status": "WAIT_OR_SKIP", "reason": "PEAI_WARNING: Information leakage detected. Price already ran up > 20%."},
+                "data": {"ticker": ticker, "status": "WAIT_OR_SKIP", "reason": "PEAI_WARNING: Information leakage detected. Price already ran up > 20%.", "reason_codes": ["PRICE_ALREADY_RAN_UP_20PCT"]},
                 "trace": {"decision": "SKIP_PEAI_HOLD"},
             }
         structured_payload["input_validation"]["peai_status"] = peai_status

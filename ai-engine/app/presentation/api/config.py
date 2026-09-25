@@ -35,9 +35,9 @@ async def get_config():
         return {
             "dnse_enabled": settings.dnse_enabled,
             "dnse_configured": settings.dnse_configured,
-            "nvidia_configured": bool(settings.llm_nvidia_key),
-            "groq0_configured": bool(settings.llm_groq_key0),
-            "groq1_configured": bool(settings.llm_groq_key1),
+            "llm_provider": "XKIRO_QWEN" if settings.xkiro_api_key else "EVOMAP_DEEPSEEK" if settings.evomap_api_key else "NONE",
+            "xkiro_configured": bool(settings.xkiro_api_key),
+            "evomap_configured": bool(settings.evomap_api_key),
         }
         
     except Exception as e:

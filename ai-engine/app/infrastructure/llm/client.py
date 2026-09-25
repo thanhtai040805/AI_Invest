@@ -1,13 +1,7 @@
-"""Unified LLM Client for AI-Engine (IOS v5.1)
-
-Hỗ trợ gọi đa nhà cung cấp tương thích OpenAI API (Groq Multi-Model rotation, EvoMap DeepSeek V4 Flash).
-Cung cấp bộ trích xuất JSON chống lỗi Markdown block ```json ``` và fallback an toàn.
-"""
+"""Unified OpenAI-compatible LLM client for Xkiro and EvoMap."""
 
 from __future__ import annotations
 
-import asyncio
-from collections import defaultdict, deque
 import json
 import logging
 import re
@@ -106,17 +100,9 @@ def clean_and_parse_json(raw_text: str) -> Dict[str, Any]:
 
 
 class UnifiedLLMClient:
-    """
-    Async LLM Client chuẩn hóa cho ai-engine (IOS v5.1).
-    Hỗ trợ xoay tua chủ động (Active Round-Robin) qua ma trận:
-      (Key 0, Key 1) x (openai/gpt-oss-120b, openai/gpt-oss-20b, qwen/qwen3.8-27b)
-    Tích hợp bộ kiểm soát RPM (Sliding Window Rate Limiter < 25 RPM/slot)
-    và tự động Cooldown 60s khi gặp 429 để tránh bị khóa API Groq Free Tier.
-    Fallback cuối: EvoMap (evomap-deepseek-v4-flash).
-    """
+    """OpenAI-compatible LLM client with Xkiro primary and EvoMap fallback."""
 
-    MAX_RPM_PER_SLOT: int = 25   # Groq Free tier giới hạn 30 RPM -> đặt 25 an toàn
-    COOLDOWN_SECONDS: float = 60.0  # Khi bị 429 thì tạm ngừng slot đó 60 giây
+    COOLDOWN_SECONDS: float = 60.0
 
     def __init__(
         self,
@@ -127,62 +113,33 @@ class UnifiedLLMClient:
         settings = get_settings()
 
         self.providers: List[Dict[str, Any]] = []
-        self._cursor: int = 0
-        self._lock = asyncio.Lock()
-        self._call_history: Dict[str, deque[float]] = defaultdict(deque)
         self._cooldown_until: Dict[str, float] = {}
+        self._last_provider: Optional[str] = None
 
-        # Nếu truyền custom cụ thể
         if api_key and base_url and model:
             self.providers.append({
                 "name": "CUSTOM",
                 "api_key": api_key,
                 "base_url": base_url.rstrip("/"),
                 "model": model,
-                "is_groq": False,
             })
         else:
-            # 1. Cấu hình Groq 3 mô hình Free Tier mạnh nhất
-            groq_models = [
-                "openai/gpt-oss-120b",
-                "openai/gpt-oss-20b",
-                "qwen/qwen3.8-27b",
-            ]
-
-            # Đưa model user cấu hình riêng lên đầu nếu hợp lệ
-            preferred_m0 = settings.llm_groq_model0
-            if preferred_m0 and preferred_m0 in groq_models:
-                groq_models.remove(preferred_m0)
-                groq_models.insert(0, preferred_m0)
-
-            groq_keys = []
-            if settings.llm_groq_key0:
-                groq_keys.append(("GROQ_K0", settings.llm_groq_key0))
-            if settings.llm_groq_key1 and settings.llm_groq_key1 != settings.llm_groq_key0:
-                groq_keys.append(("GROQ_K1", settings.llm_groq_key1))
-
-            # Xếp thứ tự đan xen các model & keys để phân tán tải tối ưu:
-            # Ví dụ: K0-120b, K1-120b, K0-20b, K1-20b, K0-qwen, K1-qwen
-            for g_model in groq_models:
-                clean_name = g_model.split("/")[-1].replace(".", "").replace("-", "_")
-                for key_label, g_key in groq_keys:
-                    self.providers.append({
-                        "name": f"{key_label}_{clean_name}",
-                        "api_key": g_key,
-                        "base_url": "https://api.groq.com/openai/v1",
-                        "model": g_model,
-                        "is_groq": True,
-                    })
-
-            # 2. Cấu hình EvoMap (DeepSeek V4 Flash) làm Fallback cuối cùng
+            if settings.xkiro_api_key:
+                self.providers.append({
+                    "name": "XKIRO_QWEN",
+                    "api_key": settings.xkiro_api_key,
+                    "base_url": "https://api.xkiro.com/v1",
+                    "model": "qwen/qwen3.7-plus:free",
+                })
             if settings.evomap_api_key:
-                evo_key = settings.evomap_api_key
+                evomap_key = settings.evomap_api_key
+                if not evomap_key.startswith("sk-evomap-"):
+                    evomap_key = f"sk-evomap-{evomap_key}"
                 self.providers.append({
                     "name": "EVOMAP_DEEPSEEK",
-                    "api_key": evo_key,
+                    "api_key": evomap_key,
                     "base_url": "https://api.evomap.ai/v1",
                     "model": "evomap-deepseek-v4-flash",
-                    "is_groq": False,
                 })
 
     @property
@@ -193,45 +150,14 @@ class UnifiedLLMClient:
     def provider(self) -> str:
         return self.providers[0]["name"] if self.providers else "NONE"
 
-    def _is_slot_available(self, p_name: str, is_groq: bool) -> bool:
-        """Kiểm tra xem slot có đang bị cooldown hoặc chạm trần RPM hay không."""
-        now = time.monotonic()
-
-        # Kiểm tra cooldown (do dính 429 gần đây)
-        cooldown = self._cooldown_until.get(p_name, 0.0)
-        if now < cooldown:
-            return False
-
-        if not is_groq:
-            return True
-
-        # Kiểm tra sliding window RPM (tối đa MAX_RPM_PER_SLOT requests trong 60s)
-        history = self._call_history[p_name]
-        while history and now - history[0] > 60.0:
-            history.popleft()
-
-        if len(history) >= self.MAX_RPM_PER_SLOT:
-            return False
-
-        return True
+    def _is_slot_available(self, p_name: str) -> bool:
+        return time.monotonic() >= self._cooldown_until.get(p_name, 0.0)
 
     async def _get_ordered_candidates(self) -> List[Dict[str, Any]]:
-        """Lấy danh sách providers xoay tua theo Round-Robin và lọc trạng thái Cooldown/RPM."""
-        if not self.providers:
-            return []
-
-        async with self._lock:
-            start_idx = self._cursor
-            self._cursor = (self._cursor + 1) % len(self.providers)
-
-        # Xoay vòng danh sách bắt đầu từ start_idx
-        ordered = self.providers[start_idx:] + self.providers[:start_idx]
-
-        # Ưu tiên các slot khả dụng (chưa chạm RPM, không cooldown)
-        available = [p for p in ordered if self._is_slot_available(p["name"], p.get("is_groq", False))]
-        unavailable = [p for p in ordered if not self._is_slot_available(p["name"], p.get("is_groq", False))]
-
-        return available + unavailable
+        """Prefer providers outside cooldown, preserving configured priority."""
+        available = [p for p in self.providers if self._is_slot_available(p["name"])]
+        cooling = [p for p in self.providers if not self._is_slot_available(p["name"])]
+        return available + cooling
 
     async def chat(
         self,
@@ -240,9 +166,11 @@ class UnifiedLLMClient:
         max_tokens: int = 1500,
         response_format: Optional[Dict[str, str]] = None,
     ) -> str:
-        """Gửi yêu cầu chat completion với cơ chế Active Round-Robin, Rate-Limit Pacing và Auto-Fallback."""
+        """Send a completion through Xkiro, falling back to EvoMap on failure."""
         if not self.is_configured:
-            raise ValueError("Chưa cấu hình API Key cho bất kỳ LLM Provider nào.")
+            message = "No LLM provider configured; set XKIRO_API_KEY or EVOMAP_API_KEY."
+            logger.error("[UnifiedLLMClient] %s", message)
+            raise ValueError(message)
 
         if isinstance(prompt_or_messages, str):
             messages = [{"role": "user", "content": prompt_or_messages}]
@@ -259,15 +187,10 @@ class UnifiedLLMClient:
             p_key = p["api_key"]
             p_url = p["base_url"]
             p_model = p["model"]
-            is_groq = p.get("is_groq", False)
-
             # Nếu slot này đang trong thời gian Cooldown (do dính 429), bỏ qua sang slot kế tiếp
-            now = time.monotonic()
-            if now < self._cooldown_until.get(p_name, 0.0):
+            if not self._is_slot_available(p_name):
+                last_error = RuntimeError(f"Provider {p_name} is cooling down")
                 continue
-
-            # Ghi nhận thời điểm gọi vào lịch sử rate limiter
-            self._call_history[p_name].append(now)
 
             payload: Dict[str, Any] = {
                 "model": p_model,
@@ -283,6 +206,8 @@ class UnifiedLLMClient:
                 "Content-Type": "application/json",
             }
 
+            request_started = time.perf_counter()
+            resp = None
             try:
                 async with httpx.AsyncClient(timeout=timeout) as client:
                     resp = await client.post(
@@ -300,27 +225,67 @@ class UnifiedLLMClient:
                             if not content and msg.get("reasoning_content"):
                                 content = msg.get("reasoning_content", "")
                             if content:
+                                elapsed = time.perf_counter() - request_started
+                                request_id = (
+                                    resp.headers.get("x-evomap-request-id")
+                                    or resp.headers.get("x-request-id")
+                                    or resp.headers.get("request-id", "unknown")
+                                )
+                                if elapsed >= 5.0 or p_name != self.providers[0]["name"]:
+                                    logger.warning(
+                                        "[UnifiedLLMClient] Provider %s model=%s succeeded in %.2fs after fallback=%s (request_id=%s).",
+                                        p_name, p_model, elapsed, p_name != self.providers[0]["name"], request_id,
+                                    )
+                                self._last_provider = p_name
                                 return content
-
-                    if resp.status_code == 429:
-                        self._cooldown_until[p_name] = time.monotonic() + self.COOLDOWN_SECONDS
-                        err_msg = (
-                            f"Slot {p_name} chạm trần 429 Rate Limit. "
-                            f"Kích hoạt Cooldown {self.COOLDOWN_SECONDS}s, tự động xoay sang slot khác..."
-                        )
-                        logger.warning(f"[UnifiedLLMClient] {err_msg}")
+                        elapsed = time.perf_counter() - request_started
+                        request_id = resp.headers.get("x-evomap-request-id") or resp.headers.get("x-request-id") or resp.headers.get("request-id", "unknown")
+                        err_msg = f"Provider {p_name} model={p_model} returned HTTP 200 with empty content after {elapsed:.2f}s (request_id={request_id})"
+                        logger.warning("[UnifiedLLMClient] %s; trying next provider.", err_msg)
                         last_error = RuntimeError(err_msg)
                         continue
 
-                    err_msg = f"Provider {p_name} trả về HTTP {resp.status_code}: {resp.text[:200]}"
-                    logger.warning(f"[UnifiedLLMClient] {err_msg}. Kích hoạt fallback...")
+                    if resp.status_code == 429:
+                        retry_after = resp.headers.get("retry-after")
+                        try:
+                            cooldown_seconds = max(1.0, float(retry_after)) if retry_after else self.COOLDOWN_SECONDS
+                        except ValueError:
+                            cooldown_seconds = self.COOLDOWN_SECONDS
+                        self._cooldown_until[p_name] = time.monotonic() + cooldown_seconds
+                        elapsed = time.perf_counter() - request_started
+                        request_id = (
+                            resp.headers.get("x-evomap-request-id")
+                            or resp.headers.get("x-request-id")
+                            or resp.headers.get("request-id", "unknown")
+                        )
+                        err_msg = (
+                            f"Provider {p_name} returned HTTP 429 after {elapsed:.2f}s; "
+                            f"cooldown={cooldown_seconds:g}s (request_id={request_id}): {resp.text[:200]}"
+                        )
+                        logger.warning("[UnifiedLLMClient] %s; trying next provider.", err_msg)
+                        last_error = RuntimeError(err_msg)
+                        continue
+
+                    elapsed = time.perf_counter() - request_started
+                    request_id = (resp.headers.get("x-evomap-request-id") or resp.headers.get("x-request-id") or resp.headers.get("request-id", "unknown"))
+                    err_msg = f"Provider {p_name} model={p_model} returned HTTP {resp.status_code} after {elapsed:.2f}s (request_id={request_id}): {resp.text[:200]}"
+                    logger.warning("[UnifiedLLMClient] %s; trying next provider.", err_msg)
                     last_error = RuntimeError(err_msg)
             except Exception as e:
-                err_msg = f"Provider {p_name} lỗi kết nối: {e}"
-                logger.warning(f"[UnifiedLLMClient] {err_msg}. Kích hoạt fallback...")
+                elapsed = time.perf_counter() - request_started
+                request_id = (
+                    resp.headers.get("x-evomap-request-id")
+                    or resp.headers.get("x-request-id")
+                    or resp.headers.get("request-id", "unknown")
+                ) if resp is not None else "unknown"
+                status = f" HTTP {resp.status_code}" if resp is not None else ""
+                err_msg = f"Provider {p_name} model={p_model}{status} failed after {elapsed:.2f}s (request_id={request_id}; {type(e).__name__}): {e!r}"
+                logger.warning("[UnifiedLLMClient] %s; trying next provider.", err_msg)
                 last_error = e
 
-        raise RuntimeError(f"Toàn bộ LLM Providers đều thất bại. Lỗi cuối: {last_error}")
+        message = f"All configured LLM providers failed; last error: {last_error!r}"
+        logger.error("[UnifiedLLMClient] %s", message)
+        raise RuntimeError(message)
 
     async def complete_json(
         self,
@@ -328,23 +293,21 @@ class UnifiedLLMClient:
         temperature: float = 0.1,
         max_tokens: int = 2000,
     ) -> Dict[str, Any]:
-        """Gửi prompt và bóc tách kết quả thành Python Dict an toàn."""
+        """Request JSON mode once and parse the response."""
+        raw = await self.chat(
+            prompt_or_messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format={"type": "json_object"},
+        )
         try:
-            raw = await self.chat(
-                prompt_or_messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                response_format={"type": "json_object"},
+            return clean_and_parse_json(raw)
+        except Exception as e:
+            logger.warning(
+                "[UnifiedLLMClient] JSON parsing failed after provider=%s (%s): %r",
+                self._last_provider or "unknown", type(e).__name__, e,
             )
-        except Exception:
-            raw = await self.chat(
-                prompt_or_messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                response_format=None,
-            )
-
-        return clean_and_parse_json(raw)
+            raise
 
 
 _unified_llm_client: Optional[UnifiedLLMClient] = None

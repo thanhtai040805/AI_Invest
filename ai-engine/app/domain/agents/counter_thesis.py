@@ -39,9 +39,9 @@ class CounterThesisAgent(BaseAgent):
                 from app.infrastructure.llm.client import get_unified_llm_client
                 llm_client = get_unified_llm_client()
             except Exception as e_llm:
-                logger.debug(f"[CounterThesisAgent] Không thể khởi tạo unified_llm_client: {e_llm}")
+                logger.warning("[CounterThesisAgent] LLM client initialization failed (%s): %r; verdicts will fail closed.", type(e_llm).__name__, e_llm)
                 llm_client = None
-        self.counter_thesis_engine = CounterThesisEngine(llm_client=llm_client)
+        self.counter_thesis_engine = CounterThesisEngine(llm_client=llm_client, require_llm=True)
 
     async def process(self, event_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -202,6 +202,12 @@ class CounterThesisAgent(BaseAgent):
             "cts_score": report.final_cts,
             "verdict": verdict_str,
             "rule_of_three_passed": report.rule_of_three_passed,
+            "llm_review": {
+                "is_truly_independent": report.llm_independence,
+                "blindspot_penalty": report.llm_blindspot_penalty,
+                "fatal_flaw": report.llm_fatal_flaw,
+                "rationale": report.llm_rationale,
+            },
             "is_capitulation_rebound": report.is_capitulation_rebound,
             "block_reasons": report.block_reasons,
             "holes": report.holes,
@@ -246,6 +252,7 @@ class CounterThesisAgent(BaseAgent):
             "regime_multiplier": report.regime_multiplier,
             "final_cts": report.final_cts,
             "verdict": verdict_str,
+            "llm_review": verdict_output["llm_review"],
         }
 
         return {"data": verdict_output, "trace": trace}

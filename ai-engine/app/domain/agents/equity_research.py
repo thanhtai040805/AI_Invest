@@ -244,7 +244,14 @@ class EquityResearchAgent(BaseAgent):
         conviction = str(df_scored["conviction"].iloc[0])
 
         applied_weights = policy_weights or self.scoring_engine.regime_weights.get(regime_str, {})
-        eligible_for_thesis = (conviction in ["A+", "A", "B"]) and (css >= 60.0)
+        eligibility_reasons = []
+        if conviction not in ["A+", "A", "B"]:
+            eligibility_reasons.append("CONVICTION_BELOW_B")
+        if css < 60.0:
+            eligibility_reasons.append("CSS_BELOW_60")
+        if current_price <= 0:
+            eligibility_reasons.append("CURRENT_PRICE_MISSING_OR_NONPOSITIVE")
+        eligible_for_thesis = not eligibility_reasons
 
         research_report = {
             "ticker": ticker,
@@ -264,6 +271,7 @@ class EquityResearchAgent(BaseAgent):
             "audit_opinion": audit_opinion,
             "data_quality_flag": data_quality_flag,
             "eligible_for_thesis": eligible_for_thesis,
+            "eligibility_reasons": eligibility_reasons,
             "applied_weights": applied_weights,
         }
 
@@ -286,7 +294,16 @@ class EquityResearchAgent(BaseAgent):
             )
             self.intel_repo.log_equity_research(
                 ticker=ticker,
-                factor_raw_metrics=raw_factor_metrics,
+                factor_raw_metrics={
+                    **raw_factor_metrics,
+                    "research_gate": {
+                        "eligible_for_thesis": eligible_for_thesis,
+                        "reason_codes": eligibility_reasons,
+                        "conviction": conviction,
+                        "css": round(css, 2),
+                        "current_price": current_price,
+                    },
+                },
                 business_quality_evidence=business_quality_data,
                 llm_prompt_tokens=event_data.get("llm_prompt_tokens", 0),
                 research_date=target_d,

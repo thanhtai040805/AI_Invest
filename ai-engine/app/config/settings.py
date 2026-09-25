@@ -34,15 +34,8 @@ class Settings:
     portfolio_automation_enabled: bool
     multi_agent_account_id: str
 
-    # AI Multi-Model Configuration
-    llm_nvidia_key: str
-    llm_nvidia_model: str
-    llm_groq_key: str
-    llm_groq_key0: str
-    llm_groq_key1: str
-    llm_groq_model: str
-    llm_groq_model0: str
-    llm_groq_model1: str
+    # Multi-agent LLM routing: Xkiro primary, EvoMap fallback.
+    xkiro_api_key: str
     llm_routing_mode: str
     llm_fallback_hardcoded: bool
 
@@ -71,21 +64,13 @@ def get_settings() -> Settings:
 
 
         evomap_api_key=os.getenv("EVOMAP_API_KEY", ""),
+        xkiro_api_key=os.getenv("XKIRO_API_KEY", ""),
         sag_api_base=os.getenv("SAG_API_BASE", "http://localhost:8000/api/v2"),
         sag_service_token=os.getenv("SAG_SERVICE_TOKEN", ""),
         sag_analysis_hold=os.getenv("SAG_ANALYSIS_HOLD", "true").lower() in ("1", "true", "yes"),
         portfolio_automation_enabled=os.getenv("PORTFOLIO_AUTOMATION_ENABLED", "false").lower() in ("1", "true", "yes"),
         multi_agent_account_id=os.getenv("MULTI_AGENT_ACCOUNT_ID", ""),
         
-        # AI Multi-Model env loaders (supports standard names and shorthand variables)
-        llm_nvidia_key=os.getenv("NVDIA", os.getenv("NVIDIA_API_KEY", "")),
-        llm_nvidia_model=os.getenv("NVIDIA_MODEL", "minimaxai/minimax-m2.7"),
-        llm_groq_key=os.getenv("GROQ_API_KEY0", os.getenv("GROQ_API_KEY", "")),
-        llm_groq_key0=os.getenv("GROQ_API_KEY0", os.getenv("GROQ_API_KEY", "")),
-        llm_groq_key1=os.getenv("GROQ_API_KEY1", os.getenv("GROQ_API_KEY", "")),
-        llm_groq_model=os.getenv("GROQ_MODEL0", os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")),
-        llm_groq_model0=os.getenv("GROQ_MODEL0", os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")),
-        llm_groq_model1=os.getenv("GROQ_MODEL1", "openai/gpt-oss-20b"),
         llm_routing_mode=os.getenv("LLM_ROUTING_MODE", "auto"),
         llm_fallback_hardcoded=os.getenv("LLM_FALLBACK_HARDCODED", "true").lower() in ("1", "true", "yes"),
 

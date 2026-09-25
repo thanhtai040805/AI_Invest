@@ -85,8 +85,48 @@ def test_counter_thesis_llm_graceful_fallback_on_error():
         )
 
         # Phải fallback an toàn không làm crash chương trình
-        assert is_indep is True
+        assert is_indep is None
         assert penalty == 0.0
         assert fatal_flaw is False
+        assert "LLM_ERROR" in rationale
+
+    asyncio.run(_run())
+
+
+def test_counter_thesis_missing_required_llm_fields_fails_closed():
+    async def _run():
+        mock_llm = MagicMock()
+        mock_llm.complete_json = AsyncMock(return_value={"blindspot_penalty": 0})
+        engine = CounterThesisEngine(llm_client=mock_llm)
+
+        report = await engine.evaluate_counter_thesis(
+            ticker="HPG",
+            thesis_payload={"thesis_id": "test", "confirming_signals": ["a", "b", "c"]},
+            risk_features={},
+            market_data={"current_regime": "BULL_TRENDING"},
+            stock_data={"current_price": 22_000},
+        )
+
+        assert report.verdict.value == "BLOCK"
+        assert report.rule_of_three_passed is False
+        assert any("LLM" in reason for reason in report.block_reasons)
+
+    asyncio.run(_run())
+
+
+def test_counter_thesis_required_llm_missing_fails_closed():
+    async def _run():
+        engine = CounterThesisEngine(require_llm=True)
+        report = await engine.evaluate_counter_thesis(
+            ticker="HPG",
+            thesis_payload={"thesis_id": "test", "confirming_signals": ["a", "b", "c"]},
+            risk_features={},
+            market_data={"current_regime": "BULL_TRENDING"},
+            stock_data={"current_price": 22_000},
+        )
+
+        assert report.verdict.value == "BLOCK"
+        assert report.rule_of_three_passed is False
+        assert "LLM" in report.rationale
 
     asyncio.run(_run())

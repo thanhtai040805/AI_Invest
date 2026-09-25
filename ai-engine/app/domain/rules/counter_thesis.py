@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
@@ -67,6 +68,10 @@ class CounterThesisReport:
     holes: List[str]
     execution_constraints: Optional[Dict[str, Any]]
     rationale: str
+    llm_independence: Optional[bool] = None
+    llm_blindspot_penalty: float = 0.0
+    llm_fatal_flaw: bool = False
+    llm_rationale: str = ""
 
 
 class CounterThesisEngine:
@@ -74,8 +79,9 @@ class CounterThesisEngine:
     Quy tắc định lượng 3-Tier CTS & Devil's Advocate cho Agent-05.
     """
 
-    def __init__(self, llm_client=None):
+    def __init__(self, llm_client=None, require_llm: bool = False):
         self.llm_client = llm_client
+        self.require_llm = require_llm
 
     def calculate_base_cts(self, risk_features: Dict[str, float]) -> float:
         """
@@ -227,7 +233,7 @@ class CounterThesisEngine:
         ticker: str,
         thesis_payload: Dict[str, Any],
         signals: List[str]
-    ) -> Tuple[bool, float, bool, List[str], str]:
+    ) -> Tuple[Optional[bool], float, bool, List[str], str]:
         """
         LLM Semantic Inquisitor:
         1. Kiểm tra tính độc lập thực sự của 3 tín hiệu (Semantic Independence).
@@ -240,6 +246,9 @@ class CounterThesisEngine:
         rationale = "Đạt yêu cầu phản biện định tính từ LLM."
 
         if not self.llm_client:
+            if self.require_llm:
+                logger.error("Counter-thesis LLM unavailable for %s; quantitative gates remain active.", ticker)
+                return None, 0.0, False, ["LLM semantic review unavailable; quantitative Rule-of-Three and CTS remain active."], "LLM_NOT_CONFIGURED"
             return True, 0.0, False, holes, rationale
 
         thesis_body = thesis_payload.get("thesis_body", {})
@@ -252,9 +261,10 @@ class CounterThesisEngine:
         4. Có lỗ hổng logic chết người (fatal_flaw) khiến toàn bộ luận điểm sụp đổ không?
         5. Nếu thesis đưa ra khẳng định chưa có evidence trực tiếp, phải đánh dấu đó là giả thuyết chưa đủ chứng cứ; không tự coi là bằng chứng phản biện.
         6. Kiểm tra riêng Financial Quality: lợi nhuận, dòng tiền, biên lợi nhuận, hiệu quả vốn và catalyst có đủ bền vững không.
+        7. Chỉ đặt fatal_flaw=true khi có ít nhất hai trích dẫn nguyên văn từ hai trường thesis khác nhau; điền path (dotted path từ object thesis) và quote chính xác.
         
         Cổ phiếu: {ticker}
-        Luận điểm: {json.dumps(thesis_body, ensure_ascii=False)}
+        Luận điểm có cấu trúc (dùng để trích dẫn bằng chứng fatal): {json.dumps(thesis_payload, ensure_ascii=False)}
         Tín hiệu hỗ trợ: {', '.join(signals)}
         
         Trả về kết quả dưới dạng JSON chuẩn:
@@ -262,6 +272,7 @@ class CounterThesisEngine:
             "is_truly_independent": true,
             "blindspot_penalty": 5.0,
             "fatal_flaw": false,
+            "fatal_flaw_evidence": [{{"path": "thesis_body.path", "quote": "exact text from that field"}}],
             "holes": ["Lỗ hổng 1", "Lỗ hổng 2"],
             "rationale": "Phân tích phản biện chi tiết"
         }}
@@ -274,31 +285,66 @@ class CounterThesisEngine:
                 from app.infrastructure.llm.client import clean_and_parse_json
                 data = clean_and_parse_json(resp)
 
-            raw_indep = data.get("is_truly_independent", True)
+            missing = {"is_truly_independent", "blindspot_penalty", "fatal_flaw"} - data.keys()
+            if missing:
+                raise ValueError(f"LLM response missing required fields: {', '.join(sorted(missing))}")
+
+            raw_indep = data["is_truly_independent"]
             if isinstance(raw_indep, str):
-                is_indep = raw_indep.lower() in ("true", "1", "yes", "dung", "đúng")
-            else:
+                normalized = raw_indep.strip().lower()
+                if normalized not in ("true", "false", "1", "0", "yes", "no", "dung", "khong", "đúng", "không"):
+                    raise ValueError("LLM response has invalid is_truly_independent")
+                is_indep = normalized in ("true", "1", "yes", "dung", "đúng")
+            elif isinstance(raw_indep, bool):
                 is_indep = bool(raw_indep)
-
-            raw_penalty = data.get("blindspot_penalty", 0.0)
-            try:
-                penalty = max(0.0, min(20.0, float(raw_penalty)))
-            except (ValueError, TypeError):
-                penalty = 0.0
-
-            raw_flaw = data.get("fatal_flaw", False)
-            if isinstance(raw_flaw, str):
-                fatal_flaw = raw_flaw.lower() in ("true", "1", "yes", "co", "có")
             else:
+                raise ValueError("LLM response has invalid is_truly_independent")
+
+            try:
+                penalty = float(data["blindspot_penalty"])
+            except (ValueError, TypeError):
+                raise ValueError("LLM response has invalid blindspot_penalty") from None
+            if not math.isfinite(penalty):
+                raise ValueError("LLM response has invalid blindspot_penalty")
+            penalty = max(0.0, min(20.0, penalty))
+
+            raw_flaw = data["fatal_flaw"]
+            if isinstance(raw_flaw, str):
+                normalized = raw_flaw.strip().lower()
+                if normalized not in ("true", "false", "1", "0", "yes", "no", "co", "khong", "có", "không"):
+                    raise ValueError("LLM response has invalid fatal_flaw")
+                fatal_flaw = normalized in ("true", "1", "yes", "co", "có")
+            elif isinstance(raw_flaw, bool):
                 fatal_flaw = bool(raw_flaw)
+            else:
+                raise ValueError("LLM response has invalid fatal_flaw")
 
             raw_holes = data.get("holes", [])
             holes = [str(h).strip() for h in raw_holes if str(h).strip()] if isinstance(raw_holes, list) else []
             rationale = str(data.get("rationale") or rationale).strip()
+            if fatal_flaw:
+                cited_paths = set()
+                evidence = data.get("fatal_flaw_evidence", [])
+                if isinstance(evidence, list):
+                    for item in evidence:
+                        if not isinstance(item, dict):
+                            continue
+                        path, quote = item.get("path"), item.get("quote")
+                        value: Any = thesis_payload
+                        try:
+                            for part in str(path).split("."):
+                                value = value[int(part)] if isinstance(value, list) else value[part]
+                        except (KeyError, IndexError, TypeError, ValueError):
+                            continue
+                        if isinstance(value, (str, int, float, bool)) and str(quote or "") and str(quote) in str(value):
+                            cited_paths.add(str(path))
+                if len(cited_paths) < 2:
+                    fatal_flaw = False
+                    holes.append("Unverified LLM fatal-flaw claim: fewer than two exact citations from distinct thesis fields.")
             return is_indep, penalty, fatal_flaw, holes, rationale
         except Exception as e:
-            logger.warning(f"LLM Devil's Advocate error (safe fallback): {e}")
-            return True, 0.0, False, holes, rationale
+            logger.warning("LLM Devil's Advocate failed for %s (%s): %r; quantitative gates remain active.", ticker, type(e).__name__, e)
+            return None, 0.0, False, ["LLM semantic review unavailable; quantitative Rule-of-Three and CTS remain active."], f"LLM_ERROR: {type(e).__name__}"
 
     async def evaluate_counter_thesis(
         self,
@@ -323,11 +369,14 @@ class CounterThesisEngine:
         )
         
         passed_signals: List[str] = []
+        passed_families = set()
         if isinstance(raw_signals, dict):
             for k, v in raw_signals.items():
                 v_str = str(v).strip()
                 if v_str.upper().startswith("PASS") or v_str.upper().startswith("TRUE") or "PASS" in v_str.upper():
                     passed_signals.append(f"{k}: {v_str}")
+                    if k in {"signal_1_factor", "signal_2_surveillance", "signal_3_macro_hmm"}:
+                        passed_families.add(k)
                 elif not (v_str.upper().startswith("FAIL") or v_str.upper().startswith("FALSE")):
                     passed_signals.append(f"{k}: {v_str}")
         elif isinstance(raw_signals, list):
@@ -346,8 +395,10 @@ class CounterThesisEngine:
         )
 
         # 2. Kiểm tra Hard Law Điều 3 (Rule of Three) kết hợp LLM
-        unique_signals = len(set(signals))
-        rule_of_three_passed = (unique_signals >= 3) and llm_indep
+        unique_signals = len(passed_families)
+        # Three deterministic, named evidence families satisfy the rule; LLM prose
+        # cannot revoke this gate based on a subjective semantic similarity judgment.
+        rule_of_three_passed = unique_signals == 3
 
         # 3. Kiểm tra ngoại lệ Bắt đáy Capitulation (Bẫy 3)
         is_capitulation, capitulation_reasons = self.check_capitulation_criteria(market_data, stock_data)
@@ -360,13 +411,8 @@ class CounterThesisEngine:
         regime_label = str(market_data.get("current_regime", "BULL_TRENDING"))
         regime_multiplier = self.get_regime_multiplier(regime_label, is_capitulation=is_capitulation)
 
-        # Tính Final CTS
-        if fatal_flaw:
-            final_cts = 100.0
-        elif not rule_of_three_passed:
-            final_cts = max(65.0, base_cts * interaction_multiplier * regime_multiplier)
-        else:
-            final_cts = round(base_cts * interaction_multiplier * regime_multiplier, 1)
+        # Keep the continuous risk score separate from categorical safety vetoes.
+        final_cts = min(100.0, round(base_cts * interaction_multiplier * regime_multiplier, 1))
 
         # 5. Phân loại Phán quyết và Constraints
         current_price = float(stock_data.get("current_price", 0.0))
@@ -378,12 +424,11 @@ class CounterThesisEngine:
 
         if not rule_of_three_passed:
             verdict = Verdict.BLOCK
-            reason = "Vi phạm Hard Law Điều 3: Không đủ 3 tín hiệu độc lập." if unique_signals < 3 else "Vi phạm Hard Law Điều 3: LLM phát hiện các tín hiệu bị trùng lặp ngữ nghĩa (không độc lập)."
-            block_reasons.append(reason)
+            block_reasons.append(f"Vi phạm Hard Law Điều 3: chỉ có {unique_signals}/3 nhóm tín hiệu độc lập có tên/được xác nhận.")
 
         if fatal_flaw:
             verdict = Verdict.BLOCK
-            block_reasons.append("Phủ quyết bởi LLM Devil's Advocate: Phát hiện lỗ hổng logic chết người (Fatal Flaw).")
+            block_reasons.append("LLM_FATAL_FLAW: Devil's Advocate flagged a thesis-breaking issue; the flag blocks independently of CTS.")
 
         all_holes = block_reasons + llm_holes
         if is_capitulation:
@@ -405,6 +450,10 @@ class CounterThesisEngine:
             holes=all_holes,
             execution_constraints=constraints_dict,
             rationale=llm_rationale if verdict != Verdict.BLOCK else f"Bị chặn bởi Counter Thesis Agent. Lý do: {'; '.join(block_reasons)}",
+            llm_independence=llm_indep,
+            llm_blindspot_penalty=llm_blindspot_penalty,
+            llm_fatal_flaw=fatal_flaw,
+            llm_rationale=llm_rationale,
         )
 
 

@@ -173,7 +173,16 @@ Hãy tổng hợp luận điểm đầu tư chuyên sâu theo đúng cấu trúc
             pre_mortem = [str(x).strip() for x in data.get("pre_mortem", []) if str(x).strip()]
             invalidation = [str(x).strip() for x in data.get("invalidation_triggers", []) if str(x).strip()]
 
-            if why_now and why_this_stock and len(pre_mortem) >= 2 and len(invalidation) >= 2:
+            missing = []
+            if not why_now:
+                missing.append("why_now")
+            if not why_this_stock:
+                missing.append("why_this_stock")
+            if len(pre_mortem) < 2:
+                missing.append("pre_mortem>=2")
+            if len(invalidation) < 2:
+                missing.append("invalidation_triggers>=2")
+            if not missing:
                 return {
                     "investment_style": style,
                     "why_now": why_now,
@@ -182,8 +191,8 @@ Hãy tổng hợp luận điểm đầu tư chuyên sâu theo đúng cấu trúc
                     "pre_mortem": pre_mortem,
                     "invalidation_triggers": invalidation,
                 }
-            logger.warning(f"[ThesisSynthesizer] LLM trả về thiếu trường cho {clean_ticker}.")
+            logger.warning("[ThesisSynthesizer] LLM response for %s is missing valid fields: %s; using baseline template.", clean_ticker, ", ".join(missing))
             return None
         except Exception as e:
-            logger.warning(f"[ThesisSynthesizer] Lỗi gọi LLM cho {clean_ticker} ({e}), dùng baseline template.")
+            logger.warning("[ThesisSynthesizer] LLM call failed for %s (%s): %r; using baseline template.", clean_ticker, type(e).__name__, e)
             return None

@@ -220,22 +220,25 @@ class ThesisEngine:
         # Signal 2: Business Quality / Flow
         f5 = factors.get("f5_flow", 50.0)
         f3 = factors.get("f3_momentum", 50.0)
-        s2_passed = (quality_score >= 60.0) or (f5 >= 60.0) or (f3 >= 60.0)
+        s2_passed = (f5 >= 60.0) or (f3 >= 60.0)
         s2_text = (
-            f"PASS (Business Quality={quality_score:.1f}, F5 Flow={f5:.1f})"
+            f"PASS (F5 Flow={f5:.1f}, F3 Momentum={f3:.1f})"
             if s2_passed
-            else f"FAIL (Business Quality={quality_score:.1f}, F5={f5:.1f}, F3={f3:.1f} đều dưới 60)"
+            else f"FAIL (F5 Flow={f5:.1f}, F3 Momentum={f3:.1f} đều dưới 60)"
         )
 
         # Signal 3: Macro / HMM Regime / Idiosyncratic Veto
         clean_regime = regime_label.upper().strip()
         is_stress_regime = ("BEAR" in clean_regime) or ("CRISIS" in clean_regime) or ("CONTRACTION" in clean_regime)
-        has_veto = self.evaluate_idiosyncratic_veto(quality_score, factors.get("f2_quality", 50.0))
+        has_veto = (
+            self.evaluate_idiosyncratic_veto(quality_score, f3)
+            if is_stress_regime else False
+        )
 
         s3_passed = (not is_stress_regime) or has_veto
         if s3_passed:
             if has_veto and is_stress_regime:
-                s3_text = f"PASS (IDIOSYNCRATIC_VETO: Business Quality={quality_score:.1f}, Quality={factors.get('f2_quality', 50.0):.1f} phủ quyết Regime={clean_regime})"
+                s3_text = f"PASS (IDIOSYNCRATIC_VETO: Business Quality={quality_score:.1f}, F3 Momentum={f3:.1f} overrides Regime={clean_regime})"
             else:
                 s3_text = f"PASS (Regime={clean_regime})"
         else:

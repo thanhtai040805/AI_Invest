@@ -162,8 +162,17 @@ Hãy trình bày đúng theo định dạng Markdown sau:
                 resp = await self.llm_client.chat(messages, temperature=0.3, max_tokens=2500)
                 if resp and len(resp.strip()) > 200:
                     return resp.strip()
+                logger.warning(
+                    "[StrategicMemoGenerator] LLM returned short output for %s (length=%d); using fallback template.",
+                    clean_ticker, len(resp.strip()) if resp else 0,
+                )
             except Exception as e:
-                logger.warning(f"[StrategicMemoGenerator] Lỗi gọi LLM ({e}), chuyển sang fallback template.")
+                logger.warning(
+                    "[StrategicMemoGenerator] LLM call failed for %s (%s): %r; using fallback template.",
+                    clean_ticker, type(e).__name__, e,
+                )
+        elif self.llm_client:
+            logger.warning("[StrategicMemoGenerator] No LLM provider configured for %s; using fallback template.", clean_ticker)
 
         # Fallback có cấu trúc nếu không có kết nối LLM
         return self._generate_fallback_memo(

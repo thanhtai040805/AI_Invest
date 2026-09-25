@@ -1,8 +1,8 @@
-"""Script cào và nạp dữ liệu nến 09:45 cho ngày hôm nay (2026-09-24) từ DNSE API:
+"""Fetch and normalize today's 09:45 OHLCV inputs from DNSE:
 Áp dụng chuẩn 3 lớp:
 1. Khớp đúng 09:45:00 -> giữ nguyên nến thực và volume từ DNSE.
 2. Khớp trước 09:45:00 trong sáng nay -> lấy giá khớp gần nhất (LOCF_INTRADAY), volume = 0.
-3. Không khớp lệnh cả sáng -> lấy giá đóng cửa ngày 23/09 (FORWARD_FILL), volume = 0.
+3. Không khớp lệnh cả sáng -> lấy giá đóng cửa phiên trước (FORWARD_FILL), volume = 0.
 """
 
 import os
@@ -16,16 +16,16 @@ from psycopg2.extras import execute_values
 
 sys.path.insert(0, r"d:\AIInvest\ai-engine")
 from app.infrastructure.external_api.dnse.intraday_tool import DnseIntradayTool
+from app.infrastructure.database.pg_pool import DB_URL
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-DB_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/aiinvest")
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 
 def backfill_today():
-    today = date(2026, 9, 24)
+    today = datetime.now(VN_TZ).date()
     target_time = datetime(today.year, today.month, today.day, 9, 45, tzinfo=VN_TZ)
     session_start = datetime(today.year, today.month, today.day, 9, 0, tzinfo=VN_TZ)
     session_end = datetime(today.year, today.month, today.day, 9, 46, tzinfo=VN_TZ)
@@ -43,7 +43,7 @@ def backfill_today():
         symbols = [r[0] for r in cur.fetchall()]
         logger.info("Bat dau crawl du lieu 09:45 ngay %s cho %d ma...", today, len(symbols))
 
-        # 2. Lấy sẵn giá đóng cửa ngày hôm trước (23/09/2026) làm fallback
+        # 2. Lấy sẵn giá đóng cửa phiên trước làm fallback
         cur.execute("""
             SELECT DISTINCT ON (ticker)
                 ticker, COALESCE(close_unadj, close_adj)

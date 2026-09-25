@@ -89,14 +89,18 @@ class PositionMonitoringAgent(BaseAgent):
         except Exception as e:
             logger.debug(f"Không thể ghi position_health_ticks vào DB ({e})")
 
-    def _persist_stop_loss_events(self, stop_loss_orders: List[Dict[str, Any]]) -> None:
-        """Ghi nhận sự kiện kích hoạt Stop-Loss khẩn cấp vào bảng nghiệp vụ stop_loss_events và cập nhật paper_trades."""
+    def _persist_stop_loss_events(
+        self,
+        stop_loss_orders: List[Dict[str, Any]],
+        triggered_at: Optional[datetime] = None,
+    ) -> None:
+        """Persist stop events at replay time, or DB time for the live path."""
         if not stop_loss_orders:
             return
         try:
             sql = """
                 INSERT INTO stop_loss_events (event_id, ticker, triggered_price, loss_pct_nav, bypass_order_id, triggered_at)
-                VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                VALUES (%s, %s, %s, %s, %s, COALESCE(%s::timestamptz, CURRENT_TIMESTAMP))
             """
             for order in stop_loss_orders:
                 event_id = order.get("stop_order_id") or str(uuid.uuid4())
@@ -104,7 +108,9 @@ class PositionMonitoringAgent(BaseAgent):
                 loss_nav = float(order.get("current_pnl_nav_pct", 0.0))
                 bypass_id = event_id if order.get("bypass_portfolio_agent") else None
                 triggered_price = float(order.get("triggered_price", 0.0))
-                self.repository.storage.execute(sql, (event_id, ticker, triggered_price, loss_nav, bypass_id))
+                self.repository.storage.execute(
+                    sql, (event_id, ticker, triggered_price, loss_nav, bypass_id, triggered_at)
+                )
 
             # Đồng bộ sang bảng paper_trades: Đóng vị thế và ghi nhận P&L thực tế phục vụ Agent-10 học tăng cường
             sql_paper = """
@@ -112,7 +118,7 @@ class PositionMonitoringAgent(BaseAgent):
                 SET status = 'CLOSED',
                     resolve_price = %s,
                     pnl = %s,
-                    resolved_at = CURRENT_TIMESTAMP
+                    resolved_at = COALESCE(%s::timestamptz, CURRENT_TIMESTAMP)
                 WHERE ticker = %s AND status = 'OPEN'
                   AND account_id = %s
             """
@@ -121,7 +127,9 @@ class PositionMonitoringAgent(BaseAgent):
                 ticker = order["ticker"]
                 triggered_price = float(order.get("triggered_price", 0.0))
                 pnl_pct = float(order.get("current_pnl_pct", 0.0))
-                self.repository.storage.execute(sql_paper, (triggered_price, pnl_pct, ticker, account_id))
+                self.repository.storage.execute(
+                    sql_paper, (triggered_price, pnl_pct, triggered_at, ticker, account_id)
+                )
         except Exception as e:
             logger.debug(f"Không thể ghi stop_loss_events hoặc paper_trades vào DB ({e})")
 
@@ -195,7 +203,7 @@ class PositionMonitoringAgent(BaseAgent):
 
             entry_price = float(pos.get("entry_price") or pos.get("average_price", 0.0))
             raw_current_price = pos.get("current_price")
-            current_price = float(raw_current_price) if raw_current_price is not None and float(raw_current_price) > 0 else entry_price
+            current_price = float(raw_current_price) if raw_current_price is not None and float(raw_current_price) > 0 else 0.0
 
             swing_low = pos.get("swing_low") or pos.get("swing_low_price")
             holding_days = int(pos.get("holding_days") or pos.get("days_held", 0))
@@ -222,10 +230,12 @@ class PositionMonitoringAgent(BaseAgent):
                     tick_info.get("is_floor_locked", False)
                     or (current_price <= floor_price and bid_vol == 0)
                 )
-            elif raw_current_price is None and self.market_data_repo:
-                # Tự động truy xuất giá realtime từ Redis / DNSE WebSocket khi chưa có giá cụ thể
+            elif current_price <= 0 and self.market_data_repo:
+                # Paper monitoring may use fresh socket cache only; REST/history prices are not executable.
                 try:
-                    live_p = self.market_data_repo.get_realtime_or_latest_price(ticker, allow_eod_fallback=True)
+                    live_p = self.market_data_repo.get_realtime_or_latest_price(
+                        ticker, allow_eod_fallback=False, socket_only=True
+                    )
                     if live_p and live_p > 0:
                         current_price = float(live_p)
                 except Exception as e_price:
@@ -247,6 +257,10 @@ class PositionMonitoringAgent(BaseAgent):
                         is_floor_locked = (current_price <= floor_price and bid_vol == 0)
                 except Exception:
                     pass
+
+            if current_price <= 0:
+                logger.warning("[PositionMonitoringAgent] Bỏ qua %s vì không có giá socket hiện tại.", ticker)
+                continue
 
             # 2. CẬP NHẬT VÀ LƯU GIỮ GIÁ ĐỈNH (PEAK_PRICE) PHỤC VỤ TRAILING STOP
             cached_peak = self._peak_price_cache.get(ticker, 0.0)
@@ -423,10 +437,19 @@ class PositionMonitoringAgent(BaseAgent):
                             "failsafe_override": True,
                             **({"broker_heartbeat": event_data["broker_heartbeat"]} if event_data.get("broker_heartbeat") else {}),
                         })
-                        order["dispatch_status"] = "DISPATCHED_TO_AGENT_08"
-                        order["execution_response"] = exec_res.get("result", {}).get("data", {})
-                        dispatch_results.append(order["execution_response"])
-                        logger.info(f"[PositionMonitoringAgent] Đã tự động dispatch lệnh khẩn cấp cho {order['ticker']} sang Agent-08.")
+                        response = exec_res.get("result", {}).get("data", {})
+                        order["execution_response"] = response
+                        status = str(response.get("status", "UNKNOWN"))
+                        order["dispatch_status"] = (
+                            "EXECUTED_BY_AGENT_08" if status == "EXECUTED" else
+                            "PARTIALLY_EXECUTED_BY_AGENT_08" if status == "PARTIALLY_EXECUTED" else
+                            status
+                        )
+                        dispatch_results.append(response)
+                        logger.info(
+                            "[PositionMonitoringAgent] Agent-08 response for %s: %s",
+                            order["ticker"], status,
+                        )
                     except Exception as e_dispatch:
                         logger.error(f"[PositionMonitoringAgent] Lỗi khi dispatch lệnh sang Agent-08: {e_dispatch}")
                         order["dispatch_status"] = f"DISPATCH_ERROR: {e_dispatch}"
@@ -434,7 +457,10 @@ class PositionMonitoringAgent(BaseAgent):
         # 7. GHI NHẬN PERSISTENCE VÀO CSDL (TABLES NGHIỆP VỤ)
         self._persist_health_ticks(monitored_positions)
         if stop_loss_orders:
-            self._persist_stop_loss_events(stop_loss_orders)
+            self._persist_stop_loss_events(
+                stop_loss_orders,
+                triggered_at=eval_dt if event_data.get("is_replay") else None,
+            )
 
         # Cung cấp các trường top-level để BaseAgent ghi đúng vào log_position_monitoring
         first_pos = monitored_positions[0] if monitored_positions else {}

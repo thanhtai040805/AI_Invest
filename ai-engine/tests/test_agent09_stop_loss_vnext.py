@@ -250,7 +250,9 @@ def test_agent09_auto_fetch_realtime_price():
     """Kiểm tra Agent-09 tự động kéo giá realtime từ MarketDataRepository khi không có market_ticks."""
     async def _test():
         class MockMarketDataRepo:
-            def get_realtime_or_latest_price(self, symbol, allow_eod_fallback=True):
+            def get_realtime_or_latest_price(self, symbol, allow_eod_fallback=True, socket_only=False):
+                assert allow_eod_fallback is False
+                assert socket_only is True
                 if symbol == "HPG":
                     return 24_000.0  # Giá thị trường rơi sâu xuống 24k
                 return 50_000.0
@@ -285,11 +287,42 @@ def test_agent09_auto_fetch_realtime_price():
     asyncio.run(_test())
 
 
-def test_agent09_auto_dispatch_to_agent08():
+def test_agent09_skips_position_when_socket_price_is_missing():
+    async def _test():
+        class EmptySocketRepo:
+            def get_realtime_or_latest_price(self, symbol, allow_eod_fallback=True, socket_only=False):
+                assert allow_eod_fallback is False
+                assert socket_only is True
+                return None
+
+        agent = PositionMonitoringAgent(
+            repository=PortfolioRepository(),
+            market_data_repo=EmptySocketRepo(),
+            auto_dispatch=False,
+        )
+        result = await agent.process({
+            "nav": 1_000_000_000,
+            "positions": [{"ticker": "HPG", "quantity": 10_000, "entry_price": 30_000}],
+        })
+        assert result["data"]["positions_health"] == []
+        assert result["data"]["stop_loss_orders"] == []
+
+    asyncio.run(_test())
+
+
+def test_agent09_auto_dispatch_to_agent08(monkeypatch):
     """Kiểm tra Agent-09 tự động bắn lệnh khẩn cấp sang Agent-08 khi có cờ auto_dispatch."""
     async def _test():
         from datetime import datetime, timedelta
         import uuid
+        from unittest.mock import AsyncMock
+        from app.infrastructure.external_api.market_data_service import market_data_svc
+
+        monkeypatch.setattr(market_data_svc, "get_order_book", AsyncMock(return_value={
+            "symbol": "HPG", "marketState": "continuous_morning",
+            "lastUpdate": datetime.now().astimezone().isoformat(),
+            "bids": [{"price": 25.0, "volume": 10_000}], "asks": [],
+        }))
         repo = PortfolioRepository()
         user_id = repo._in_memory_account["account_id"]
         repo.storage.execute("DELETE FROM positions WHERE symbol = 'HPG'")
@@ -317,7 +350,7 @@ def test_agent09_auto_dispatch_to_agent08():
             assert data["stop_loss_triggered"] is True
             order = data["stop_loss_orders"][0]
             # Lệnh phải được tự động dispatch sang Agent-08
-            assert order["dispatch_status"] == "DISPATCHED_TO_AGENT_08"
+            assert order["dispatch_status"] == "EXECUTED_BY_AGENT_08"
             assert len(data["dispatch_results"]) >= 1
             exec_report = data["dispatch_results"][0]
             assert exec_report["status"] in ("EXECUTED", "PARTIALLY_EXECUTED")
@@ -328,11 +361,12 @@ def test_agent09_auto_dispatch_to_agent08():
     asyncio.run(_test())
 
 
-def test_agent08_allows_defensive_sell_during_failsafe():
+def test_agent08_allows_defensive_sell_during_failsafe(monkeypatch):
     """Kiểm tra Agent-08 cho phép lệnh BÁN phòng thủ từ Agent-09 bypass Failsafe nhưng vẫn chặn lệnh MUA."""
     async def _test():
         from datetime import datetime, timedelta
         import uuid
+        from datetime import timezone
         from app.domain.agents.trade_execution import TradeExecutionAgent
         repo = PortfolioRepository()
         user_id = repo._in_memory_account["account_id"]
@@ -348,7 +382,7 @@ def test_agent08_allows_defensive_sell_during_failsafe():
             # 1. Thử lệnh MUA khi Failsafe ACTIVE -> Phải bị BLOCK
             res_buy = await exec_agent.process({
                 "failsafe_active": True,
-                "order_instruction": {
+            "order_instruction": {
                     "ticker": "HPG",
                     "action": "BUY",
                     "target_shares": 1000,
@@ -366,9 +400,14 @@ def test_agent08_allows_defensive_sell_during_failsafe():
                     "shares": 1000,
                     "price": 27000.0,
                     "failsafe_override": True,
-                    "bypass_portfolio_agent": True,
-                },
-            })
+                "bypass_portfolio_agent": True,
+            },
+            "orderbook": {
+                "symbol": "HPG", "marketState": "continuous_morning",
+                "lastUpdate": datetime.now(timezone.utc).isoformat(),
+                "bids": [{"price": 27.0, "volume": 1000}], "asks": [],
+            },
+        })
             assert res_sell["data"]["status"] in ("EXECUTED", "PARTIALLY_EXECUTED")
             assert res_sell["data"]["shares"] == 1000
         finally:

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections import Counter
 from datetime import date, datetime, time, timedelta
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
@@ -87,14 +88,12 @@ class DailyInvestmentPipeline:
                 ticker = position.get("ticker", position.get("symbol"))
                 quantity = int(position.get("shares", position.get("quantity", 0)))
                 average_price = float(position.get("average_price", position.get("avg_price", 0.0)))
-                current_price = float(position.get("current_price", average_price))
                 if not ticker or quantity <= 0:
                     continue
                 result = await AgentRegistry.dispatch("position_monitoring", {
                     "position": {
                         "ticker": ticker,
                         "average_price": average_price,
-                        "current_price": current_price,
                         "quantity": quantity,
                     },
                     "nav": nav,
@@ -138,6 +137,7 @@ class DailyInvestmentPipeline:
             "target_date": run_date_str,
             "market_data_date": market_data_date.isoformat(),
             "replay_account_id": multi_agent_account_id,
+            "is_replay": replay_at is not None,
             **({"current_time": replay_at.isoformat()} if replay_at else {}),
         }
         pipeline_trace: Dict[str, Any] = {"run_date": run_date_str, "phases": {}}
@@ -249,13 +249,11 @@ class DailyInvestmentPipeline:
                         p_ticker = pos.get("ticker", pos.get("symbol"))
                         p_qty = int(pos.get("shares", pos.get("quantity", 0)))
                         p_avg = float(pos.get("average_price", pos.get("avg_price", 0.0)))
-                        p_cur = float(pos.get("current_price", p_avg))
                         if p_ticker and p_qty > 0:
                             res_mon = await AgentRegistry.dispatch("position_monitoring", {
                                 "position": {
                                     "ticker": p_ticker,
                                     "average_price": p_avg,
-                                    "current_price": p_cur,
                                     "quantity": p_qty,
                                 },
                                 "nav": cur_nav,
@@ -373,6 +371,8 @@ class DailyInvestmentPipeline:
         qualified_orders_multi_agent: List[Dict[str, Any]] = []
         qualified_orders_standalone: List[Dict[str, Any]] = []
         monitored_positions_created: List[Dict[str, Any]] = []
+        research_gate_decisions: List[Dict[str, Any]] = []
+        thesis_gate_decisions: List[Dict[str, Any]] = []
 
         for ticker in selected_tickers:
             if len(qualified_orders_multi_agent) >= max_candidates:
@@ -389,6 +389,11 @@ class DailyInvestmentPipeline:
                 **replay_context,
             })
             if res_res.get("status") != "SUCCESS":
+                research_gate_decisions.append({
+                    "ticker": ticker,
+                    "status": "RESEARCH_FAILED",
+                    "reason_codes": ["EQUITY_RESEARCH_FAILED"],
+                })
                 logger.warning(f"[Pha 4 - {ticker}] Equity Research thất bại. Bỏ qua.")
                 continue
 
@@ -399,10 +404,27 @@ class DailyInvestmentPipeline:
 
             logger.info(f"[Pha 4 - {ticker}] Conviction = '{conviction}' | CSS = {research_report.get('css', 0):.1f} | Price = {current_price:,.0f}")
 
-            # Chỉ các mã Conviction đạt chuẩn Tinh hoa (A+, A) hoặc B mới được đưa vào Luận đề
-            if conviction not in ["A+", "A", "B"] or current_price <= 0:
-                logger.info(f"[Pha 4 - {ticker}] Mã chưa đạt ngưỡng giải ngân (Conviction {conviction}). Bỏ qua.")
+            reason_codes = research_report.get("eligibility_reasons")
+            if not isinstance(reason_codes, list):
+                reason_codes = ["RESEARCH_GATE_DECISION_MISSING"]
+            if not research_report.get("eligible_for_thesis") and not reason_codes:
+                reason_codes = ["RESEARCH_GATE_FAILED_WITHOUT_REASON"]
+            research_gate_decisions.append({
+                "ticker": ticker,
+                "status": "PASS" if research_report.get("eligible_for_thesis") and not reason_codes else "EXCLUDED",
+                "reason_codes": reason_codes,
+                "conviction": conviction,
+                "css": research_report.get("css"),
+                "current_price": current_price,
+            })
+            if not research_report.get("eligible_for_thesis") or reason_codes:
+                logger.info(
+                    f"[Pha 4 - {ticker}] Research gate=EXCLUDED | reason_codes={reason_codes} | "
+                    f"Conviction={conviction} | CSS={research_report.get('css', 0):.1f} | Price={current_price:,.0f}"
+                )
                 continue
+
+            logger.info(f"[Pha 4 - {ticker}] Research gate=PASS")
 
             # ── PHA 5: AGENT-04 (INVESTMENT THESIS) ──
             logger.info(f"[Pha 5 - {ticker}] Kích hoạt Agent-04: Xây dựng Luận đề & Xác thực Điều 3 (3 Tín hiệu)...")
@@ -411,11 +433,25 @@ class DailyInvestmentPipeline:
                 "market_context": {"current_regime": regime, "session_context": session_context},
                 **replay_context,
             })
-            if res_thesis.get("status") != "SUCCESS" or res_thesis.get("result", {}).get("data", {}).get("status") in ["REJECTED", "WAIT_OR_SKIP", "DEFERRED"]:
-                logger.info(f"[Pha 5 - {ticker}] Luận đề bị từ chối hoặc chưa đủ tín hiệu xác thực. Bỏ qua.")
+            thesis_result_data = res_thesis.get("result", {}).get("data", {}) if res_thesis.get("status") == "SUCCESS" else {}
+            thesis_status = thesis_result_data.get("status", "AGENT_FAILED")
+            thesis_reason_codes = thesis_result_data.get("reason_codes") or (
+                ["INVESTMENT_THESIS_FAILED"] if thesis_status == "AGENT_FAILED" else []
+            )
+            thesis_gate_decisions.append({
+                "ticker": ticker,
+                "status": thesis_status,
+                "reason_codes": thesis_reason_codes,
+                "reason": thesis_result_data.get("reason"),
+            })
+            if res_thesis.get("status") != "SUCCESS" or thesis_status in ["REJECTED", "WAIT_OR_SKIP", "DEFERRED"]:
+                logger.info(
+                    f"[Pha 5 - {ticker}] Thesis={thesis_status} | reason_codes={thesis_reason_codes} | "
+                    f"reason={thesis_result_data.get('reason', 'agent dispatch failed')}"
+                )
                 continue
 
-            thesis_data = res_thesis["result"]["data"]
+            thesis_data = thesis_result_data
             logger.info(f"[Pha 5 - {ticker}] Luận đề hợp lệ (Thesis ID: {thesis_data.get('thesis_id')}).")
 
             # ── PHA 6: AGENT-05 (COUNTER THESIS - DEVIL'S ADVOCATE) ──
@@ -622,6 +658,36 @@ class DailyInvestmentPipeline:
                 "event_type": "TRADE_FILLED" if exec_data.get("status") == "EXECUTED" else "TRADE_NOT_FILLED",
                 "details": exec_data,
             })
+
+        research_status_counts = Counter(item["status"] for item in research_gate_decisions)
+        research_reason_counts = Counter(
+            code for item in research_gate_decisions for code in item.get("reason_codes", [])
+        )
+        thesis_status_counts = Counter(item["status"] for item in thesis_gate_decisions)
+        thesis_reason_counts = Counter(
+            code for item in thesis_gate_decisions for code in item.get("reason_codes", [])
+        )
+        pipeline_trace["phases"]["phase_4_equity_research_gate"] = {
+            "selected_count": len(selected_tickers),
+            "evaluated_count": len(research_gate_decisions),
+            "not_evaluated_count": max(0, len(selected_tickers) - len(research_gate_decisions)),
+            "status_counts": dict(research_status_counts),
+            "reason_counts": dict(research_reason_counts),
+            "candidate_decisions": research_gate_decisions,
+        }
+        pipeline_trace["phases"]["phase_5_investment_thesis_gate"] = {
+            "evaluated_count": len(thesis_gate_decisions),
+            "status_counts": dict(thesis_status_counts),
+            "reason_counts": dict(thesis_reason_counts),
+            "candidate_decisions": thesis_gate_decisions,
+        }
+        logger.info(
+            "[Gate Summary] Research evaluated=%d selected=%d statuses=%s reason_codes=%s; "
+            "Thesis evaluated=%d statuses=%s reason_codes=%s",
+            len(research_gate_decisions), len(selected_tickers), dict(research_status_counts),
+            dict(research_reason_counts), len(thesis_gate_decisions), dict(thesis_status_counts),
+            dict(thesis_reason_counts),
+        )
 
         # =========================================================================
         # STANDALONE PURE-ML FUND: KÊNH TỰ VẬN HÀNH ĐỘC LẬP (ACCOUNT RIÊNG BIỆT)

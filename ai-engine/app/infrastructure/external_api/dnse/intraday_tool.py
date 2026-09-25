@@ -8,6 +8,7 @@ import logging
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 from app.config.settings import get_settings
 from app.infrastructure.external_api.dnse.api.client import DNSEClient
@@ -42,6 +43,9 @@ class DnseIntradayTool:
     def __init__(self) -> None:
         self._client: Optional[DNSEClient] = None
         self._last_request_ts: float = 0.0
+        self.quote_api_requests = 0
+        self.quote_api_pages = 0
+        self.quote_api_rate_limits = 0
 
     def _get_client(self) -> DNSEClient:
         if self._client is None:
@@ -65,6 +69,7 @@ class DnseIntradayTool:
         resolution: str = "1D",
         from_ts: Optional[int] = None,
         to_ts: Optional[int] = None,
+        strict: bool = False,
     ) -> List[Dict[str, Any]]:
         """Fetch OHLCV from DNSE REST API.
 
@@ -99,12 +104,16 @@ class DnseIntradayTool:
 
             if status != 200 or not body:
                 logger.warning(f"DNSE REST OHLCV {symbol} {res}: status={status}")
+                if strict:
+                    raise RuntimeError(f"DNSE REST OHLCV {symbol} {res}: status={status}")
                 return []
 
             try:
                 data = json.loads(body) if isinstance(body, str) else body
             except json.JSONDecodeError:
                 logger.error(f"DNSE REST OHLCV {symbol} {res}: invalid JSON")
+                if strict:
+                    raise ValueError(f"DNSE REST OHLCV {symbol} {res}: invalid JSON")
                 return []
 
             timestamps = data.get("t", [])
@@ -116,6 +125,9 @@ class DnseIntradayTool:
 
             if not timestamps:
                 return []
+
+            if strict and any(len(values) != len(timestamps) for values in (opens, highs, lows, closes, volumes)):
+                raise ValueError(f"DNSE REST OHLCV {symbol} {res}: inconsistent array lengths")
 
             result = []
             n = len(timestamps)
@@ -149,7 +161,95 @@ class DnseIntradayTool:
             return result
 
         logger.error(f"DNSE REST OHLCV {symbol} {res}: failed after 3 attempts")
+        if strict:
+            raise RuntimeError(f"DNSE REST OHLCV {symbol} {res}: failed after 3 attempts")
         return []
+
+    def fetch_quotes(
+        self,
+        symbol: str,
+        from_ts: int,
+        to_ts: int,
+        board_id: Optional[str] = None,
+        limit: int = 1000,
+    ) -> List[Dict[str, Any]]:
+        """Fetch raw historical bid/ask depth, following DNSE page tokens."""
+        client = self._get_client()
+        settings = get_settings()
+        page_token = None
+        seen_tokens = set()
+        quotes = []
+        request_count = page_count = rate_limit_count = 0
+
+        while True:
+            self._rate_limit()
+            for attempt in range(3):
+                request_count += 1
+                self.quote_api_requests += 1
+                status, body = client.get_quotes(
+                    symbol=symbol.upper(),
+                    board_id=board_id or settings.board_id,
+                    from_date=from_ts,
+                    to_date=to_ts,
+                    limit=limit,
+                    order="DESC",
+                    next_page_token=page_token,
+                )
+                if status == 429:
+                    rate_limit_count += 1
+                    self.quote_api_rate_limits += 1
+                    logger.warning(
+                        "DNSE quote history rate limited: symbol=%s page=%d attempt=%d",
+                        symbol.upper(), page_count + 1, attempt + 1,
+                    )
+                    time.sleep(30)
+                    continue
+                if status != 200 or not body:
+                    raise RuntimeError(f"DNSE quote history {symbol}: status={status}")
+                break
+            else:
+                raise RuntimeError(f"DNSE quote history {symbol}: failed after 3 attempts")
+
+            try:
+                data = json.loads(body) if isinstance(body, str) else body
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise ValueError(f"DNSE quote history {symbol}: invalid JSON") from exc
+            if not isinstance(data, dict) or not isinstance(data.get("quotes"), list):
+                raise ValueError(f"DNSE quote history {symbol}: missing quotes list")
+            page_count += 1
+            self.quote_api_pages += 1
+
+            for quote in data["quotes"]:
+                raw_time = quote.get("time")
+                try:
+                    quote_time = datetime.fromisoformat(str(raw_time).replace("Z", "+00:00"))
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(f"DNSE quote history {symbol}: invalid quote time") from exc
+                if quote_time.tzinfo is None:
+                    quote_time = quote_time.replace(tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+                quotes.append({
+                    "symbol": str(quote.get("symbol") or symbol).upper(),
+                    "board_id": str(quote.get("boardId") or board_id or settings.board_id),
+                    "time": quote_time.isoformat(),
+                    "bid": quote.get("bid") or [],
+                    "offer": quote.get("offer") or [],
+                    "total_bid_quantity": quote.get("totalBidQtty"),
+                    "total_offer_quantity": quote.get("totalOfferQtty"),
+                })
+
+            page_token = data.get("nextPageToken")
+            if not page_token:
+                break
+            if page_token in seen_tokens:
+                raise RuntimeError(f"DNSE quote history {symbol}: repeated page token")
+            seen_tokens.add(page_token)
+
+        quotes.sort(key=lambda quote: datetime.fromisoformat(quote["time"]))
+        logger.info(
+            "DNSE quote history %s: %d snapshots, %d pages, %d requests, %d rate limits",
+            symbol.upper(), len(quotes), page_count, request_count, rate_limit_count,
+        )
+        return quotes
 
 
 _intraday_tool: Optional[DnseIntradayTool] = None

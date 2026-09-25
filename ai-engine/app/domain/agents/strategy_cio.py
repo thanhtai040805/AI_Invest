@@ -331,15 +331,18 @@ class StrategyCIOAgent(BaseAgent):
         # ---------------------------------------------------------------------
         elif cts_score >= 80.0 or counter_verdict == "BLOCK" or "CRITICAL" in counter_verdict:
             final_res = "DISCRETIONARY_BLOCK"
-            rationale = (
-                f"CIO phĂ¡n quyáº¿t [Táº¦NG 2 - CRITICAL TAIL RISK]: KĂ­ch hoáº¡t quyá»n phá»§ quyáº¿t chiáº¿n lÆ°á»£c (Discretionary Block) Ä‘á»‘i vá»›i {ticker}. "
-                f"Äiá»ƒm pháº£n biá»‡n Counter-Thesis Score ({cts_score:.1f}/100) hoáº·c rá»§i ro tháº£m há»a quĂ¡ cao: {block_reasons}. "
-                f"Cháº·n giáº£i ngĂ¢n Ä‘á»ƒ báº£o toĂ n vá»‘n trÆ°á»›c nguy cÆ¡ sáº­p gĂ£y thanh khoáº£n hoáº·c quáº£n trá»‹ má» Ă¡m."
-            )
+            block_causes = []
+            if cts_score >= 80.0:
+                block_causes.append(f"CTS {cts_score:.1f} exceeds the block threshold of 80")
+            if counter_verdict == "BLOCK":
+                block_causes.extend(block_reasons or ["Counter-Thesis returned BLOCK"])
+            elif "CRITICAL" in counter_verdict:
+                block_causes.append(f"Counter-Thesis returned {counter_verdict}")
+            rationale = f"CIO blocks {ticker} at CTS={cts_score:.1f}/100. Causes: {'; '.join(block_causes)}."
             weight_cap = 0.0
             penalty_factor = 0.0
             conditions = ["RETURN_TO_RESEARCH_QUEUE", "SUSPEND_PURCHASE_UNTIL_AUDITED"]
-            severity_tier = "TIER_2_CRITICAL_TAIL_RISK"
+            severity_tier = "TIER_2_CRITICAL_TAIL_RISK" if cts_score >= 80.0 or "CRITICAL" in counter_verdict else "TIER_2_COUNTERTHESIS_VETO"
 
         # ---------------------------------------------------------------------
         # Táº¦NG 3: NORMAL RISK (Rá»§i ro Kinh doanh & Thá»‹ trÆ°á»ng ThĂ´ng thÆ°á»ng)

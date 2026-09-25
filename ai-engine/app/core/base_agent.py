@@ -119,6 +119,8 @@ class BaseAgent(abc.ABC):
         status: str,
     ) -> None:
         """Ghi nhận vào bảng log tư duy riêng biệt chuẩn hóa theo schema 12 Agents."""
+        if self.log_table == "log_equity_research" and status == "SUCCESS":
+            return  # EquityResearchAgent writes the enriched, point-in-time row itself.
         try:
             from app.infrastructure.database.pg_pool import get_conn
             import uuid

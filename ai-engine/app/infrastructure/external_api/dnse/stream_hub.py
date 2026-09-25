@@ -230,7 +230,7 @@ class DnseStreamHub:
             "ceiling": 0,
             "floor": 0,
             "trend": "up" if pct > 0 else "down" if pct < 0 else "steady",
-            "lastUpdate": datetime.now().isoformat(),
+            "lastUpdate": datetime.now().astimezone().isoformat(),
         }
 
     def _map_quote(self, data: Any, symbol: str) -> Dict[str, Any]:
