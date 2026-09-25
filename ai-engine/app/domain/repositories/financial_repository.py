@@ -9,7 +9,8 @@ Quản lý dữ liệu tài chính phục vụ phân tích cơ bản, định gi
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
+from math import isfinite
 from typing import Any, Dict, List, Optional
 
 from app.adapters.postgres_adapter import PostgresAdapter
@@ -36,8 +37,8 @@ class FinancialRepository:
         params: List[Any] = [symbol]
 
         if as_of:
-            conditions.extend(["published_date IS NOT NULL", "published_date <= %s"])
-            params.append(as_of)
+            conditions.extend(["published_date IS NOT NULL", "published_date <= %s", "period_end <= %s"])
+            params.extend([as_of, as_of])
 
         if statement_type:
             conditions.append("statement_type = %s")
@@ -48,7 +49,7 @@ class FinancialRepository:
             SELECT period_end, statement_type, frequency, data, published_date, source
             FROM financial_statements
             WHERE {where_clause}
-            ORDER BY period_end DESC
+            ORDER BY period_end DESC, published_date DESC
             LIMIT %s
         """
         params.append(limit)
@@ -70,6 +71,67 @@ class FinancialRepository:
         except Exception as e:
             logger.warning(f"Lỗi khi đọc financial_statements cho {symbol} ({e})")
         return []
+
+    def get_peer_valuation_inputs(self, symbol: str, as_of: date) -> Dict[str, Any]:
+        """Point-in-time EPS/BVPS priced at the median multiple of published sector peers."""
+        symbol = symbol.upper().strip()
+        stocks = self.storage.fetch_all("SELECT sector FROM stocks WHERE symbol = %s", (symbol,))
+        statements = self.get_financial_statements(symbol, statement_type="ratios", limit=1, as_of=as_of)
+        if not stocks or not statements:
+            return {}
+
+        statement = statements[0]
+        if date.fromisoformat(statement["period_end"]) < as_of - timedelta(days=550):
+            return {}
+        data = statement["data"]
+        try:
+            eps = float(data.get("thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps") or 0)
+            bvps = float(data.get("giá_trị_sổ_sách_của_cổ_phiếu_bvps") or 0)
+        except (TypeError, ValueError):
+            return {}
+        eps = eps if isfinite(eps) else 0.0
+        bvps = bvps if isfinite(bvps) else 0.0
+        sector = stocks[0][0]
+        peers = self.storage.fetch_all("""
+            WITH latest AS (
+                SELECT DISTINCT ON (r.symbol) r.symbol, r.pe, r.pb
+                FROM financial_ratios r
+                JOIN stocks s ON s.symbol = r.symbol
+                WHERE s.sector = %s AND s.exchange = 'HOSE' AND r.symbol <> %s
+                  AND r.published_date <= %s AND r.ratio_date <= %s
+                  AND r.ratio_date >= %s
+                ORDER BY r.symbol, r.published_date DESC, r.ratio_date DESC
+            )
+            SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY pe)
+                       FILTER (WHERE pe BETWEEN 2 AND 50),
+                   count(*) FILTER (WHERE pe BETWEEN 2 AND 50),
+                   percentile_cont(0.5) WITHIN GROUP (ORDER BY pb)
+                       FILTER (WHERE pb BETWEEN 0.2 AND 10),
+                   count(*) FILTER (WHERE pb BETWEEN 0.2 AND 10)
+            FROM latest
+        """, (sector, symbol, as_of, as_of, as_of - timedelta(days=550)))
+        if not peers:
+            return {}
+        pe, pe_count, pb, pb_count = peers[0]
+        financial = sector in {"BANKS", "FINANCIAL_SERVICES"}
+        inputs: Dict[str, Any] = {}
+        if eps > 0 and pe_count >= 5 and pe is not None:
+            inputs["pe_price"] = round(eps * float(pe), 2)
+        if financial and bvps > 0 and pb_count >= 5 and pb is not None:
+            inputs["pb_price"] = round(bvps * float(pb), 2)
+        if inputs:
+            inputs["source"] = {
+                "method": "PUBLISHED_SECTOR_PEERS_MEDIAN",
+                "as_of": as_of.isoformat(),
+                "period_end": statement["period_end"],
+                "published_date": statement["published_date"],
+                "sector": sector,
+                "peers_pe": int(pe_count),
+                "peers_pb": int(pb_count),
+                "median_pe": float(pe) if pe is not None else None,
+                "median_pb": float(pb) if pb is not None else None,
+            }
+        return inputs
 
     def get_latest_ratios(self, symbol: str, as_of: Optional[date] = None) -> Optional[Dict[str, Any]]:
         """Lấy chỉ số tài chính gần nhất của cổ phiếu (P/E, P/B, ROE, ROA, Debt/Equity...)."""
@@ -104,6 +166,7 @@ class FinancialRepository:
                     "ev_ebitda": float(r[10]) if r[10] is not None else 0.0,
                     "yoy_revenue_growth": float(r[11]) if r[11] is not None else 0.0,
                     "yoy_earnings_growth": float(r[12]) if r[12] is not None else 0.0,
+                    "published_date": r[13].isoformat() if hasattr(r[13], "isoformat") and r[13] else str(r[13]) if r[13] else None,
                 }
         except Exception as e:
             logger.warning(f"Lỗi khi đọc financial_ratios cho {symbol} ({e})")

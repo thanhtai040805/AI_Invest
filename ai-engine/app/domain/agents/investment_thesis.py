@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from app.core.base_agent import BaseAgent
+from app.domain.repositories.financial_repository import FinancialRepository
 from app.domain.rules.thesis_engine import ThesisEngine
 from app.domain.rules.catalyst_validator import CatalystValidator
 
@@ -75,18 +76,21 @@ class InvestmentThesisAgent(BaseAgent):
         target_date = event_data.get("market_data_date") or event_data.get("target_date")
         if isinstance(target_date, str):
             target_date = date.fromisoformat(target_date[:10])
-        val_inputs = dict(event_data.get("valuation_inputs") or research_report.get("valuation_inputs") or {})
+        val_inputs = dict(event_data.get("valuation_inputs") or {})
         if not val_inputs:
             val_inputs = {
                 "pe_price": research_report.get("pe_price") or research_report.get("pe_comp_price"),
                 "ev_ebitda_price": research_report.get("ev_ebitda_price") or research_report.get("ev_ebitda_comp_price"),
                 "dcf_price": research_report.get("dcf_price"),
+                "pb_price": research_report.get("pb_price") or research_report.get("pb_comp_price"),
             }
-        else:
-            if not val_inputs.get("pe_price") and val_inputs.get("pe_comp_price"):
-                val_inputs["pe_price"] = val_inputs["pe_comp_price"]
-            if not val_inputs.get("ev_ebitda_price") and val_inputs.get("ev_ebitda_comp_price"):
-                val_inputs["ev_ebitda_price"] = val_inputs["ev_ebitda_comp_price"]
+            val_inputs = {k: float(v) for k, v in val_inputs.items() if v is not None and float(v or 0) > 0}
+        if not val_inputs:
+            try:
+                val_inputs = FinancialRepository().get_peer_valuation_inputs(ticker, target_date or date.today())
+            except Exception as exc:
+                logger.warning("Không thể định giá point-in-time cho %s: %s", ticker, exc)
+                val_inputs = {}
         timeline_months = int(event_data.get("timeline_months", 3))
         seq_num = int(event_data.get("seq_num", 1))
         custom_catalyst_desc = event_data.get("custom_catalyst_desc")

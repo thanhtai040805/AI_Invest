@@ -341,7 +341,7 @@ class UniverseDiscoveryAgent(BaseAgent):
             else:
                 try:
                     beneish_res = await asyncio.to_thread(
-                        self.beneish_engine.calculate_m_score, symbol, target_date
+                        self.beneish_engine.calculate_m_score, symbol, market_data_date
                     )
                     m_score = beneish_res.get("m_score")
                     b_status = beneish_res.get("status", "PASS")

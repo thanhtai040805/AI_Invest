@@ -1,32 +1,14 @@
-# Rule 03: Zero-Waste & Garbage Prevention Policy
+# Rule 03: Keep Task Changes Clean
 
-## 1. Zero Garbage Files Policy
-AI agents often leave debris behind when experimenting or debugging. This clutters git history, creates confusion for other developers, and leads to accidental deployment of temporary scripts.
+Keep temporary work and generated output out of production code. Use the
+repository's existing scratch, experiment, or ignored-data location when one
+fits; do not create a new convention for a one-off task.
 
-### Strictly Forbidden Files in Production Directories:
-- **NO Temporary Scripts**: `test_temp.py`, `check.py`, `script2.py`, `scratch.py` inside `app/`, `src/`, or `domain/`.
-- **NO Backup Duplicates**: `service_copy.py`, `model.py.bak`, `router_old.py`.
-- **NO Dump Files**: `test_output.json`, `debug.log`, `result.txt` scattered in code folders.
-- **NO Commented-out Dead Codeblocks**: Stacks of commented-out code that serve no runtime purpose.
+Before handoff:
 
----
-
-## 2. Permitted Scratch & Test Locations
-If temporary data or exploratory scripts are strictly required during development:
-1. **Agent Scratch Directory**: `<appDataDir>\brain\<conversation-id>\scratch\` (Persisted for agent lifecycle).
-2. **Dedicated Project Experiments Folder**:
-   - `ai-engine/experiments/` (for quant / ML sandbox work).
-   - `.data/temp/` (gitignored local cache).
-3. **Always Clean Up**:
-   - Delete temporary files before completing the task.
-   - Run `git status` mentally or via CLI to verify that only intentional, production-ready files are modified or added.
-
----
-
-## 3. Pre-Completion Hygiene Checklist
-Before marking any task as complete, verify:
-- [ ] No unneeded files created in source trees.
-- [ ] No unused imports (`ruff check` or linter clean).
-- [ ] No debug `print()` statements left in production code (use structured logger).
-- [ ] All modified files follow proper formatting and lint rules.
-- [ ] Existing comments and docstrings unrelated to changes are preserved.
+- Remove temporary files created for this task when they are no longer needed.
+- Do not delete, rewrite, or clean files that predate the task or contain user
+  work.
+- Remove debug output, dead code, and unused imports introduced by the change.
+- Check the final diff/status for accidental artifacts. Run a linter only when
+  it is a relevant project check, not as a universal ritual.

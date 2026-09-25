@@ -1,36 +1,48 @@
-# Rule 00: Senior Developer Workflow & Anti-Hallucination Protocol
+# Rule 00: Evidence-Led Engineering
 
-## 1. Senior Developer Mindset
-A Senior Developer does not write code to show off knowledge or generate volume. A Senior Developer:
-- **Questions the premise first (YAGNI)**: Solves the actual problem with the minimal necessary change.
-- **Thinks in systems**: Understands how one function impacts the entire pipeline, database, cache, and operational costs.
-- **Validates before coding**: Never guesses. Reads the codebase, inspects real files, and validates facts.
-- **Fixes root causes**: Refuses to put shallow `try...catch` or `None` checks around broken underlying contracts.
+Use these rules to improve decisions, not to add ceremony. Match investigation,
+planning, and verification to the uncertainty and impact of the requested work.
+The user's stated outcome and applicable safety constraints take priority over
+style preferences in this file.
 
----
+## Understand and decide
 
-## 2. Ponytail Integration (Always Active)
-Every coding response must strictly evaluate the **7-Step Decision Ladder**:
-1. **Does this need to exist at all?** (Skip speculative features / unneeded abstractions).
-2. **Already in this codebase?** (Reuse existing helpers, classes, types, models).
-3. **Does the standard library provide it?** (Prefer standard library over custom wheels).
-4. **Does a native platform feature cover it?** (Use database constraints, HTML/CSS, OS features).
-5. **Does an installed dependency already solve it?** (Never install a new package for 10 lines of code).
-6. **Can it be one line?** (Keep it concise, clear, and readable).
-7. **Only then: Write the minimum necessary new code.**
+- For a clear, low-impact task, inspect the relevant files and act. Skip a task
+  card, broad repository tour, and alternatives list unless they help resolve a
+  real decision.
+- For uncertain or high-impact work, identify the desired outcome, constraints,
+  affected paths/contracts, and a practical way to verify success. Keep this
+  framing concise and internal unless sharing it helps the user.
+- Trace the real path far enough to distinguish symptom from cause. Expand the
+  search to callers, data flow, and side effects when the change can affect them.
+- Use repository evidence first. Check authoritative documentation when an
+  external or version-sensitive fact could change the decision.
+- Compare approaches only when more than one plausible approach could meet the
+  request. Choose the least costly approach that meets the outcome and relevant
+  quality constraints; do not equate fewest lines with best solution.
+- Continue research while it is reducing uncertainty. Ask or report a blocker
+  only when missing information or authorization materially prevents progress.
 
----
+## Implement
 
-## 3. Strict Anti-Hallucination & Anti-Heuristic Directives
+- Verify names, signatures, fields, routes, dependencies, configuration, and
+  data contracts before relying on them. Do not invent project facts.
+- Reuse existing patterns when they fit. Add abstractions, dependencies, or
+  flexibility only for a concrete need in the request.
+- Preserve observable behavior in refactors. For shared contracts and
+  side-effecting code, inspect the callers and failure paths proportionate to
+  the blast radius.
+- Keep unrelated user changes intact. Do not reset, stash, overwrite, or clean
+  them without explicit instruction.
 
-### Directives:
-1. **No Guessed Functions or Signatures**:
-   - You MUST NOT guess whether a class has a method `find_by_id`, `get_by_id`, or `query_one`.
-   - You MUST run a grep or view the file defining the class to confirm the exact method name and parameter types.
-2. **No Fabricated Database Columns**:
-   - Verify column names in the ORM model (SQLAlchemy/Prisma) or migration files before writing queries.
-3. **No Phantom Libraries**:
-   - Never import a third-party package without verifying it exists in `pyproject.toml`, `requirements.txt`, or `package.json`.
-4. **No Heuristic Assumptions**:
-   - Do not assume: "In framework X, configuration is usually in `config.json`." -> Check where configuration is *actually* loaded in this repository (`ai-engine/app/core/config.py` or `.env`).
-   - Do not assume: "This repository uses Pydantic v1 syntax (`.dict()`)" -> Check whether it uses Pydantic v2 (`.model_dump()`).
+## Verify and hand off
+
+- Choose checks based on risk and likely failure modes. A trivial edit may need
+  none; meaningful behavior changes usually need a focused check. Run broader
+  checks when the change's scope or repository workflow warrants them.
+- Report checks accurately and distinguish passed, failed, and not run. Fix
+  failures caused by the change before handoff.
+- Update documentation when it would otherwise become inaccurate or when an
+  applicable project rule requires it.
+- Summarize the change and any material limitation. Do not claim actions or
+  verification without evidence.

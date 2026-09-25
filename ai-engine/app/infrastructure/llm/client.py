@@ -26,7 +26,7 @@ def clean_and_parse_json(raw_text: str) -> Dict[str, Any]:
     Bóc tách và parse an toàn chuỗi JSON từ LLM output:
     1. Cắt bỏ markdown code block: ```json ... ``` hoặc ``` ... ```
     2. Tìm block {...} hợp lệ nếu có văn bản kèm theo.
-    3. Thử tải JSON và trả về dictionary.
+    3. Thử tải JSON và tự động sửa các lỗi phổ biến (trailing commas, unclosed strings, truncated brackets).
     """
     text = (raw_text or "").strip()
     if not text:
@@ -38,19 +38,71 @@ def clean_and_parse_json(raw_text: str) -> Dict[str, Any]:
     if match_fence:
         text = match_fence.group(1).strip()
 
-    # 2. Nếu vẫn chưa parse được hoặc không có fence, tìm cặp ngoặc {} đầu tiên và cuối cùng
-    if not (text.startswith("{") and text.endswith("}")):
-        start_idx = text.find("{")
+    # 2. Tìm điểm bắt đầu của JSON object '{'
+    start_idx = text.find("{")
+    if start_idx != -1:
         end_idx = text.rfind("}")
-        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-            text = text[start_idx : end_idx + 1].strip()
+        if end_idx != -1 and end_idx > start_idx:
+            candidate = text[start_idx : end_idx + 1].strip()
+        else:
+            candidate = text[start_idx:].strip()
+    else:
+        candidate = text
 
+    # Thử parse chuẩn trước
     try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        # 3. Thử sửa lỗi dấu phẩy thừa trước ngoặc đóng (trailing commas)
-        fixed_text = re.sub(r",\s*([\]}])", r"\1", text)
+        return json.loads(candidate)
+    except Exception:
+        pass
+
+    # 3. Thử sửa lỗi dấu phẩy thừa trước ngoặc đóng (trailing commas)
+    fixed_text = re.sub(r",\s*([\]}])", r"\1", candidate)
+    try:
         return json.loads(fixed_text)
+    except Exception:
+        pass
+
+    # 4. Tự động sửa chữa JSON bị ngắt giữa chừng (Truncated JSON / Unterminated String repair)
+    in_string = False
+    escape = False
+    open_brackets: list[str] = []
+
+    for char in candidate:
+        if escape:
+            escape = False
+            continue
+        if char == "\\":
+            escape = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if not in_string:
+            if char in ("{", "["):
+                open_brackets.append(char)
+            elif char == "}":
+                if open_brackets and open_brackets[-1] == "{":
+                    open_brackets.pop()
+            elif char == "]":
+                if open_brackets and open_brackets[-1] == "[":
+                    open_brackets.pop()
+
+    repaired = candidate
+    if in_string:
+        repaired += '"'
+
+    # Xóa dấu phẩy treo ở cuối chuỗi
+    repaired = re.sub(r",\s*$", "", repaired.strip())
+
+    # Đóng tất cả các ngoặc mở còn lại theo thứ tự đảo ngược
+    for b in reversed(open_brackets):
+        if b == "{":
+            repaired += "}"
+        elif b == "[":
+            repaired += "]"
+
+    repaired = re.sub(r",\s*([\]}])", r"\1", repaired)
+    return json.loads(repaired)
 
 
 class UnifiedLLMClient:

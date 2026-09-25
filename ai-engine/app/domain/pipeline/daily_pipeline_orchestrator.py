@@ -363,7 +363,9 @@ class DailyInvestmentPipeline:
             reverse=True,
         )
         candidate_metadata = {str(c["ticker"]).upper(): c for c in sorted_candidates}
-        selected_tickers = [c["ticker"] for c in sorted_candidates[:max(max_candidates * 2, 5)]]
+        # Historical full-universe replay must research every eligible symbol until order capacity is filled.
+        research_candidates = sorted_candidates if replay_at and candidate_tickers is None else sorted_candidates[:max(max_candidates * 2, 5)]
+        selected_tickers = [c["ticker"] for c in research_candidates]
 
         # =========================================================================
         # CHUỖI PHA 4 -> PHA 11: NGHIÊN CỨU, PHẢN BIỆN, CIO, SIZING, RISK & THỰC THI
@@ -455,6 +457,19 @@ class DailyInvestmentPipeline:
             if res_cio.get("status") != "SUCCESS" or final_resolution not in {"PROCEED_WITH_PENALTY", "APPROVE_CONDITIONAL"} or weight_cap <= 0.0:
                 logger.warning(f"[Pha 7 - {ticker}] CIO phủ quyết giải ngân đối với {ticker}: {cio_data.get('rationale')}")
                 continue
+
+            pilot_position = bool(
+                replay_at
+                and conviction == "B"
+                and float(research_report.get("business_quality_score", 0.0)) >= 90.0
+                and regime == "RANGE_BOUND"
+                and breadth_ma20_pct is not None
+                and float(breadth_ma20_pct) >= 40.0
+                and counter_verdict == "PROCEED"
+                and not any(p.get("ticker") == ticker for p in replay_positions)
+            )
+            if pilot_position:
+                weight_cap = min(weight_cap, 0.05)
 
             # ── PHA 8: AGENT-06 (PORTFOLIO ALLOCATION & KELLY SIZING) ──
             logger.info(f"[Pha 8 - {ticker}] Kích hoạt Agent-06: Phân bổ Vốn Kelly & Áp trần Điều 4...")
@@ -569,6 +584,7 @@ class DailyInvestmentPipeline:
                 "take_profit_pct": 0.15,
                 "execution_mode": exec_data.get("execution_mode", self.multi_agent_mode.value),
                 "execution_status": exec_data.get("status", "UNKNOWN"),
+                "entry_type": "PILOT" if pilot_position else "STANDARD",
                 "action": "SHADOW_PAPER_TRADE_ONLY",
                 "rationale": f"[12-AGENT] CSS={research_report.get('css', 0):.1f} | CTS={cts_score:.1f} | CIO={final_resolution}",
             }

@@ -19,6 +19,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 if hasattr(sys.stderr, "reconfigure"):
@@ -92,21 +94,16 @@ def bars_for_day(day: date) -> dict[str, dict]:
     results = {}
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
-            SELECT symbol, open
+            SELECT symbol, open, data_source
             FROM ohlcv_intraday_1m
             WHERE (time AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = %s
               AND (time AT TIME ZONE 'Asia/Ho_Chi_Minh')::time = '09:45:00'
         """, (day,))
-        for sym, open_p in cur.fetchall():
+        for sym, open_p, data_source in cur.fetchall():
             price = float(open_p) * 1000.0 if open_p and 0 < float(open_p) < 1000.0 else float(open_p or 0)
             if price > 0:
-                results[str(sym).upper()] = {"price": price, "source": "DNSE_1M_OPEN"}
+                results[str(sym).upper()] = {"price": price, "source": data_source}
 
-        cur.execute("SELECT ticker, close_adj FROM market_data_daily WHERE date = %s", (day,))
-        for ticker, close_adj in cur.fetchall():
-            sym = str(ticker).upper()
-            if sym not in results and close_adj and float(close_adj) > 0:
-                results[sym] = {"price": float(close_adj), "source": "EOD_CLOSE"}
     return results
 
 
@@ -125,9 +122,15 @@ def fill_pending(
         symbol, side = order["symbol"], order["side"]
         bar = bars.get(symbol)
         if not bar or bar["price"] <= 0:
-            remaining.append(order)
+            if order.get("entry_type") != "PILOT":
+                remaining.append(order)
             continue
         quantity = round_to_lot(int(order["quantity"]))
+        if order.get("entry_type") == "PILOT":
+            if bar["source"] != "DNSE":
+                continue
+            account = repository.get_account_state(user_id=account_id, as_of=mark_as_of)
+            quantity = min(quantity, round_to_lot(int(float(account["total_nav"]) * 0.05 / bar["price"])))
         if quantity <= 0:
             continue
         try:
@@ -208,9 +211,9 @@ def get_portfolio_state(
     }
 
 
-def enqueue_order(pending: list[dict], symbol: str, side: str, quantity: int) -> None:
+def enqueue_order(pending: list[dict], symbol: str, side: str, quantity: int, entry_type: str = "STANDARD") -> None:
     if quantity > 0 and not any(o["symbol"] == symbol and o["side"] == side for o in pending):
-        pending.append({"symbol": symbol, "side": side, "quantity": quantity})
+        pending.append({"symbol": symbol, "side": side, "quantity": quantity, "entry_type": entry_type})
 
 
 async def run(args: argparse.Namespace) -> None:
@@ -315,7 +318,7 @@ async def run(args: argparse.Namespace) -> None:
         for order in result.get("multi_agent_instructions", []):
             approved_shares = int(order.get("approved_shares", 0))
             if approved_shares > 0:
-                enqueue_order(pending_orders, order["ticker"], "BUY", approved_shares)
+                enqueue_order(pending_orders, order["ticker"], "BUY", approved_shares, order.get("entry_type", "STANDARD"))
 
         ret = (portfolio["total_nav"] / previous_nav - 1) if previous_nav > 0 else 0.0
         returns_series.append(ret)
@@ -340,7 +343,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Chạy Historical Paper Trading trực tiếp trên PostgreSQL (Zero SQLite)")
     parser.add_argument("--end", default=(datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date() - timedelta(days=1)).isoformat())
     parser.add_argument("--days", type=int, default=30)
-    parser.add_argument("--symbols", nargs="+", default=["FPT", "VCB", "SSI", "MBB", "MWG"])
+    parser.add_argument("--symbols", nargs="+", default=None, help="Optional ticker subset; default scans all eligible HOSE stocks")
     parser.add_argument("--max-candidates", type=int, default=3)
     parser.add_argument("--capital", type=float, default=1_000_000_000)
     parser.add_argument("--account-id", default=os.getenv("MULTI_AGENT_ACCOUNT_ID", "940b0c70-2010-42f3-b947-797e6419b794"))

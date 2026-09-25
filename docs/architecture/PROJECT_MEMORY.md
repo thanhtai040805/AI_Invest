@@ -358,3 +358,18 @@ AIInvest is an autonomous investment and financial forensics organization engine
 - **Governance & Pipeline Standardization**:
   - Standardized `daily_pipeline_orchestrator` and `system_governance` to remove hardcoded `UNVERIFIED_REPLAY_GOVERNANCE` status and database name verification, returning standard `COMPLIANT` execution status.
 
+## 2026-09-25 — Fundamental Point-in-time Peer Valuation Inputs & Adaptive Target Pricing
+
+- **Point-in-time Peer Multiple Hydration (`FinancialRepository.get_peer_valuation_inputs`)**:
+  - Implemented point-in-time EPS and BVPS valuation priced at the median multiple (`percentile_cont(0.5)`) of published HOSE sector peers using `financial_ratios` and `financial_statements`.
+  - Calculates `pe_price` (EPS * peer median P/E) and `pb_price` (BVPS * peer median P/B for financial/banking sectors) with peer minimum sample count $\ge 5$ and time-decay boundary $\le 550$ days.
+  - Returns complete audit metadata including `method: PUBLISHED_SECTOR_PEERS_MEDIAN`, `as_of`, `period_end`, `published_date`, `peers_pe`, and `peers_pb`.
+- **Intrinsic Valuation Input Computation (`FinancialRepository.compute_valuation_inputs`)**:
+  - Computes fundamental target prices from stock-level historical ratios (`pe`, `pb`, `ev_ebitda`, `yoy_earnings_growth`) relative to sector fair multiples.
+- **Adaptive Valuation in Thesis Engine (`ThesisEngine.calculate_adaptive_target_price`)**:
+  - Enhanced to accept `pb_comp_price` alongside `pe_comp_price`, `ev_ebitda_comp_price`, and `dcf_price`.
+  - Financial firms (Banks, Securities, Insurance) automatically use equity multiples (PE + PB), eliminating distortion from inapplicable bank EV/EBITDA.
+  - Enforces margin of safety gate (`price_target >= current_price * 1.15`).
+- **End-to-End Pipeline Verification**:
+  - Verified 30-day replay execution on PostgreSQL: Agent-04 successfully generated structured theses for qualified candidates (`MBB`, `VCB`, `FPT`, `SSI`, `MWG`), flowing cleanly into Counter-Thesis (CTS scoring), Strategy CIO arbitration, and Portfolio Risk gates without `DATA_MISSING` errors.
+

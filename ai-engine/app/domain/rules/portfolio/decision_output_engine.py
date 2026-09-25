@@ -33,6 +33,7 @@ class DecisionOutputEngine:
         dynamic_res: Any,
         liquidity_res: Any,
         rebalance_res: Any,
+        adtv20_shares: float,
         decision_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         d_id = decision_id or str(uuid.uuid4())
@@ -138,6 +139,7 @@ class DecisionOutputEngine:
             "target_price": price,
             "price": price,
             "sector": construction_res.sector,
+            "adtv20_shares": adtv20_shares,
             "conviction": conviction,
             "source_p_b": prob_res.source_description,
             "rationale": rationale_text,

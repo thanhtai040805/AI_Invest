@@ -1,32 +1,21 @@
-# Rule 04: Mandatory Documentation & Diagram Synchronization (Zero-Outdated Docs Policy)
+# Rule 04: Keep Impacted Documentation Accurate
 
-## 1. Context & Objective
-Architectural drift and outdated documentation ("stale docs") are severe technical debts that lead to agent hallucinations, broken assumptions, and integration failures.
+Update documentation or diagrams when a change makes them inaccurate, changes a
+contract or system relationship they describe, or an applicable project process
+requires an update. Do not edit architecture docs or diagrams for unrelated
+implementation changes.
 
-Whenever an engineer or AI agent performs a **commit**, **major functional change**, or **architectural refactoring**, all corresponding documentation and diagrams **MUST be updated atomically in the same change**.
+Use the mappings below to find likely references, then confirm that the
+referenced document actually describes the behavior being changed:
 
----
+| Change area | Likely reference |
+|---|---|
+| Services, ports, protocols, network boundaries, gateway routes | `docs/architecture/IT_SYSTEM_ARCHITECTURE.md` and relevant diagrams |
+| BCTC ingestion, MinerU OCR, SAG hashing, GIL/MOAT, quant debate, HOSE execution | `docs/architecture/PROJECT_MEMORY.md` and `docs/diagrams/paper-grade-algorithmic-data-flow.html` |
+| Prisma/SQLAlchemy schema or migrations | Persistence documentation and relevant entity/store diagrams |
+| HOSE settlement, price bands, risk model | Project memory and relevant risk documentation/diagrams |
 
-## 2. Synchronization Matrix
-
-| Nature of Change | Impacted Code / Area | Required Documentation Update | Required Diagram Update |
-|---|---|---|---|
-| **System Architecture / Services** | New microservice, changed port, network boundary, protocol, or gateway routing | [IT_SYSTEM_ARCHITECTURE.md](file:///d:/AIInvest/docs/architecture/IT_SYSTEM_ARCHITECTURE.md) | Relevant existing file in `docs/diagrams/` |
-| **Pipeline & Evidence Lifecycle** | BCTC ingestion, MinerU OCR, SAG v2 hashing, GIL/MOAT rules, quant debate, or HOSE execution | [PROJECT_MEMORY.md](file:///d:/AIInvest/docs/architecture/PROJECT_MEMORY.md) | [paper-grade-algorithmic-data-flow.html](file:///d:/AIInvest/docs/diagrams/paper-grade-algorithmic-data-flow.html) |
-| **Database Models & Schemas** | Prisma schema migration, SQLAlchemy models, new tables or altered columns | [IT_SYSTEM_ARCHITECTURE.md](file:///d:/AIInvest/docs/architecture/IT_SYSTEM_ARCHITECTURE.md) (Persistence section) | Update entity/store references in relevant diagrams |
-| **Domain Rules & Exchange Logic** | HOSE T+2.5 settlement, ±7% price bands, risk models | [PROJECT_MEMORY.md](file:///d:/AIInvest/docs/architecture/PROJECT_MEMORY.md) & [IT_SYSTEM_ARCHITECTURE.md](file:///d:/AIInvest/docs/architecture/IT_SYSTEM_ARCHITECTURE.md) | Update Risk Node annotations |
-
----
-
-## 3. Pre-Commit / Pre-Completion Architecture Gate
-
-Before finalizing any task or declaring completion:
-1. **Did this change introduce, deprecate, or modify an architectural component?**
-   - If YES, verify that `docs/architecture/` files reflect the change.
-2. **Did this change modify any data flow or service relationship?**
-   - If YES, update the corresponding HTML diagram in `docs/diagrams/`.
-3. **Did all modified diagrams pass the `/diagram-design` self-check?**
-   - Run: `python "C:\Users\This PC\.gemini\config\skills\diagram-design\scripts\self_check.py" <diagram_path>`
-   - Result must be `OK`.
-4. **Stale Docs Gate**:
-   - A pull request or commit that updates code without updating out-of-sync documentation is strictly rejected.
+For an impacted diagram, follow its existing visual conventions and run the
+repository's documented validator if one is available and relevant. Do not
+invent diagram requirements or run a machine-specific validator path unless the
+project still provides it.

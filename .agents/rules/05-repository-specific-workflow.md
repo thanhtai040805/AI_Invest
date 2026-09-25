@@ -1,43 +1,28 @@
-# Rule 05: Repository-Specific Workflow & Architecture Memory
+# Rule 05: AIInvest Context
 
-## 1. Project Memory Gate
+Use this file and the repository architecture map as orientation. Verify current
+code, configuration, and project documentation before relying on a detail; the
+repository may evolve faster than these notes.
 
-Before any complex feature or refactoring task, read `docs/architecture/PROJECT_MEMORY.md` to understand the current system landscape and inter-module contracts.
+## Architecture guide
 
-## 2. Detailed Layer Boundaries
+- `ai-engine/app/domain/`: domain concepts, value objects, exceptions, business
+  calculations, and repository contracts.
+- `ai-engine/app/application/`: use cases, services, pipelines, handlers, and
+  orchestration.
+- `ai-engine/app/infrastructure/`: concrete repositories, sessions, Redis,
+  queues, OCR, storage, and external connectors.
+- `ai-engine/app/presentation/`: FastAPI, DTOs, validation, transport, and CLI.
+- `ai-engine/app/core/`: configuration, telemetry, security, and connections.
+- `ai-engine/app/adapters/`, `backtest/`, and `eval/`: adapters, simulation,
+  and evaluation respectively.
+- `SAG/`: financial evidence engine; `back-end/`: NestJS/Prisma; `front-end/`:
+  Next.js.
 
-- `ai-engine/app/domain/`: pure entities, value objects, exceptions, business calculations, and abstract repository contracts. No SQL, SQLAlchemy, FastAPI, HTTP, or external SDKs.
-- `ai-engine/app/application/`: use cases, application services, pipelines, event handlers, and orchestration. No raw HTTP transport or direct SQL table definitions.
-- `ai-engine/app/infrastructure/`: concrete repositories, database sessions, Redis, queues, OCR, storage, and external connectors. No portfolio allocation or other core business decisions.
-- `ai-engine/app/presentation/`: FastAPI routers, endpoints, DTOs, validation, status codes, WebSockets, and CLI commands. No inline business logic, quant calculations, or direct database queries.
-- `ai-engine/app/core/`: configuration, telemetry, security, and connection/session management. No domain logic or use cases.
+Prefer the owning layer when the current code supports it. Avoid broad
+reorganization to satisfy this guide during a localized task.
 
-Do not place one-off utilities, raw SQL, endpoints, business logic, or test output in the wrong layer. Reuse existing helpers or place new code in the layer that owns the concern.
+## Documentation
 
-The broader repository map is:
-
-- `ai-engine/app/adapters/`: format adapters and legacy bridges.
-- `ai-engine/app/backtest/`: quant simulation, backtest engine, and portfolio mathematics.
-- `ai-engine/app/eval/`: model evaluations and benchmark metrics.
-- `SAG/`: financial evidence engine for MOAT/GIL extraction and line citations.
-- `back-end/`: NestJS and Prisma API services.
-- `front-end/`: Next.js App Router UI.
-
-## 3. Documentation Synchronization Details
-
-When a change affects one of these areas, update the corresponding documentation and diagram atomically:
-
-| Change | Documentation | Diagram |
-|---|---|---|
-| New service, port, protocol, network boundary, or gateway route | `docs/architecture/IT_SYSTEM_ARCHITECTURE.md` | Relevant file in `docs/diagrams/` |
-| BCTC ingestion, MinerU OCR, SAG v2 hashing, GIL/MOAT rules, quant debate, or HOSE execution | `docs/architecture/PROJECT_MEMORY.md` | `docs/diagrams/paper-grade-algorithmic-data-flow.html` |
-| Prisma/SQLAlchemy schema or migration | Persistence and data dictionary sections of `docs/architecture/IT_SYSTEM_ARCHITECTURE.md` | Relevant entity/store diagram |
-| HOSE settlement, price bands, or risk model | `PROJECT_MEMORY.md` and `IT_SYSTEM_ARCHITECTURE.md` | Relevant risk-node annotations |
-
-Any modified diagram must use orthogonal `r=8` lines, label masks with at least 6px margins, no more than two coral focal accents, and pass:
-
-```powershell
-python "C:\Users\This PC\.gemini\config\skills\diagram-design\scripts\self_check.py" <diagram.html>
-```
-
-Code that diverges from affected documentation or diagrams is incomplete.
+Use Rule 04's mapping as a navigation aid. Update only the references made
+inaccurate by the change or required by a current project process.

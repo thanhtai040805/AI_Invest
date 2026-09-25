@@ -1,65 +1,35 @@
-# Rule 01: Clean Architecture & Strict Folder Responsibilities
+# Rule 01: Repository Architecture Map
 
-In AIInvest, every folder has a strict single responsibility. Code must NEVER be placed in a directory not architected for that concern.
+This map describes intended responsibilities in AIInvest. Use it to orient
+changes, then verify the target area's actual structure and established
+patterns. Do not move code or invent layers merely to make a change match this
+map. If current code and this map disagree in a way that affects the task,
+follow the working contracts and call out the documentation drift when useful.
 
----
+## Repository overview
 
-## 1. Monorepo Layer Breakdown
+- `ai-engine/app/domain/`: domain concepts and business calculations.
+- `ai-engine/app/application/`: use cases, workflows, and orchestration.
+- `ai-engine/app/infrastructure/`: persistence and external system adapters.
+- `ai-engine/app/presentation/`: API, CLI, and transport-facing code.
+- `ai-engine/app/core/`: shared runtime concerns such as configuration,
+  telemetry, security, and connection management.
+- `ai-engine/app/adapters/`: format adapters and legacy bridges.
+- `ai-engine/app/backtest/`: simulation and portfolio mathematics.
+- `ai-engine/app/eval/`: model evaluation and benchmark metrics.
+- `SAG/`: financial evidence engine.
+- `back-end/`: NestJS and Prisma services.
+- `front-end/`: Next.js application.
 
-```
-AIInvest/
-├── ai-engine/               # Autonomous Quant Organization & ML Pipeline
-│   └── app/
-│       ├── domain/          # PURE Domain layer (Entities, Value Objects, Abstract Repos)
-│       ├── application/     # Application use-cases, pipelines, orchestrators
-│       ├── infrastructure/  # DB (SQLAlchemy/Postgres), Redis, MinerU OCR, SAG Connector
-│       ├── presentation/    # FastAPI routers, endpoint controllers, HTTP DTOs, CLI
-│       ├── adapters/        # Format adapters, legacy bridges
-│       ├── core/            # Config, telemetry, security, database session managers
-│       ├── backtest/        # Quant simulation, backtest engine, portfolio math
-│       └── eval/            # Model evaluations and benchmark metrics
-├── SAG/                     # Financial Evidence Engine (MOAT/GIL extraction, line citations)
-├── back-end/                # NestJS / Prisma API services
-└── front-end/               # Next.js 15+ App Router UI
-```
+## Responsibility guide
 
----
+Keep business decisions independent of transport and storage where the existing
+architecture supports that boundary. Keep HTTP handling, persistence, and
+external integrations in their established owners. Endpoints should generally
+validate/translate requests, invoke application behavior, and shape responses;
+infrastructure should provide technical capabilities rather than quietly own
+business policy.
 
-## 2. Directory Responsibility Boundaries
-
-### Layer 1: `ai-engine/app/domain/` (The Core)
-- **ALLOWED**: Pure business models, domain entities, value objects, domain exceptions, abstract repository interfaces (Protocols/ABCs), business calculation functions.
-- **STRICTLY FORBIDDEN**:
-  - NO SQL queries, SQLAlchemy session calls, or raw database drivers.
-  - NO FastAPI routers, HTTP request/response schemas, or headers.
-  - NO external API calls (e.g. MinIO, MinerU, Telegram, OpenAI/Gemini SDK directly).
-  - NO helper functions that belong to application or infrastructure.
-
-### Layer 2: `ai-engine/app/application/` (Orchestration & Use Cases)
-- **ALLOWED**: Application services, multi-step business pipelines (e.g., `bctc_to_sag_pipeline`), event handlers, quant workflow orchestrators.
-- **STRICTLY FORBIDDEN**:
-  - NO raw HTTP transport details (status codes, JSON serialization).
-  - NO direct SQL table definitions.
-  - Interacts with domain entities and repository interfaces, not raw database tables.
-
-### Layer 3: `ai-engine/app/infrastructure/` (Technical Details & External Adapters)
-- **ALLOWED**: Concrete database repositories (PostgreSQL implementations of domain repository interfaces), Redis cache providers, Celery/Kafka queue workers, OCR clients (MinerU), SAG connector client, MinIO/S3 file storage.
-- **STRICTLY FORBIDDEN**:
-  - NO business logic decisions (e.g. buy/sell logic, portfolio risk weights). Infrastructure only provides data and execution capabilities.
-
-### Layer 4: `ai-engine/app/presentation/` (Presentation & Transport)
-- **ALLOWED**: FastAPI router files, APIRouter endpoints, Pydantic Request/Response DTOs, query param validation, status codes, WebSocket handlers.
-- **STRICTLY FORBIDDEN**:
-  - NO business logic or quant calculations written inline inside endpoints.
-  - Endpoints must only parse requests, invoke application services, and return DTOs.
-
----
-
-## 3. Placement Violation Examples & Corrections
-
-| Violation (Anti-Pattern) | Why It Is Wrong | Correct Location |
-|---|---|---|
-| Putting a FastAPI `@router.post` endpoint inside `domain/repositories/` | Repositories manage persistence, not HTTP requests. | `app/presentation/api/` or `app/presentation/routers/` |
-| Writing raw SQL queries inside `domain/models/` | Domain models must be pure and decoupled from storage. | `app/infrastructure/repositories/` |
-| Putting an ad-hoc math helper in a new random file `app/my_utils.py` | Pollutes root directory with untracked utility files. | Reuse or place in `app/core/` or `app/domain/services/` |
-| Storing test output or dump files in `app/domain/` | Clutters production source tree. | Designated `.data/`, `experiments/`, or `scratch/` |
+These are design goals, not a reason to force a broad refactor into an unrelated
+task. Follow the nearest working pattern unless evidence shows it is the source
+of the problem or the requested change requires a boundary decision.

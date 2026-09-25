@@ -80,7 +80,8 @@ class ThesisEngine:
         ev_ebitda_comp_price: float,
         dcf_price: float,
         regime_label: str = "BULL_TRENDING",
-        sector: str = "Manufacturing"
+        sector: str = "Manufacturing",
+        pb_comp_price: float = 0.0,
     ) -> Dict[str, Any]:
         """
         Tính toán Target Price động và biên dao động giá (target_range):
@@ -94,8 +95,14 @@ class ThesisEngine:
         pe = float(pe_comp_price or 0.0)
         ev = float(ev_ebitda_comp_price or 0.0)
         dcf = float(dcf_price or 0.0)
+        pb = float(pb_comp_price or 0.0)
 
-        if timeline_months <= 3:
+        if pb > 0:
+            # Financial firms use equity multiples; EV/EBITDA is not meaningful for banks.
+            components = [(name, value) for name, value in (("PE", pe), ("PB", pb)) if value > 0]
+            base_case = round(sum(value for _, value in components) / len(components), 0)
+            valuation_method = f"{sector}_Financial ({' + '.join(name for name, _ in components)})"
+        elif timeline_months <= 3:
             # Timeline ngắn hạn (<= 3M): Loại bỏ DCF, sử dụng P/E và/hoặc EV/EBITDA
             components = []
             if pe > 0:
@@ -302,10 +309,14 @@ class ThesisEngine:
                 ev_ebitda_comp_price=float(val_inputs.get("ev_ebitda_price") or val_inputs.get("ev_ebitda_comp_price") or 0.0),
                 dcf_price=float(val_inputs.get("dcf_price") or 0.0),
                 regime_label=regime_label,
-                sector=sector
+                sector=sector,
+                pb_comp_price=float(val_inputs.get("pb_price") or 0.0),
             )
         except ValueError as exc:
             return False, {}, f"REJECTED: DATA_MISSING: {str(exc)}"
+
+        if price_target_info["base_case"] < current_price * 1.15:
+            return False, {}, "WAIT / SKIP: Biên an toàn định giá dưới 15%."
 
         # 6. Pre-Mortem Scenarios
         pre_mortem = self.generate_pre_mortem_scenarios(
@@ -332,6 +343,7 @@ class ThesisEngine:
                 "conviction_level": conviction,
                 "css_score": round(css_score, 1),
                 "independent_signals": independent_signals,
+                "valuation_source": val_inputs.get("source"),
             },
             "thesis_body": {
                 "why_now": f"Ngòi nổ '{catalyst_info['primary_type']}' bước vào giai đoạn hiện thực hóa, hỗ trợ bởi dòng tiền và tăng trưởng lợi nhuận.",

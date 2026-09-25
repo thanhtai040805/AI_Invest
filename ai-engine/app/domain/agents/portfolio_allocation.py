@@ -237,6 +237,7 @@ class PortfolioAllocationAgent(BaseAgent):
                 dynamic_res=mock_dynamic,
                 liquidity_res=mock_liq,
                 rebalance_res=rebalance_reject,
+                adtv20_shares=adtv20,
             )
             self.repository.save_decision(output_reject["data"])
             return output_reject
@@ -358,6 +359,7 @@ class PortfolioAllocationAgent(BaseAgent):
             dynamic_res=dynamic_res,
             liquidity_res=liquidity_res,
             rebalance_res=rebalance_res,
+            adtv20_shares=adtv20,
         )
 
         # Tự động lưu quyết định phân bổ vốn vào CSDL PostgreSQL (bảng portfolio_decisions)
