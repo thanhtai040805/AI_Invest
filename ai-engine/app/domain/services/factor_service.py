@@ -40,8 +40,38 @@ class FactorService:
                            gross_margin, net_margin, yoy_revenue_growth, yoy_earnings_growth
                     FROM financial_ratios
                     WHERE symbol = %s AND frequency = 'quarterly' AND ratio_date <= %s
-                      AND published_date IS NOT NULL AND published_date <= %s
-                    ORDER BY published_date DESC, ratio_date DESC
+                      AND (
+                        CASE
+                            WHEN published_date IS NOT NULL
+                                 AND (published_date - ratio_date) BETWEEN 10 AND 120
+                                 AND published_date < '2026-09-01'
+                            THEN published_date
+                            ELSE ratio_date + (
+                                CASE EXTRACT(QUARTER FROM ratio_date)
+                                    WHEN 1 THEN 45
+                                    WHEN 2 THEN 55
+                                    WHEN 3 THEN 45
+                                    ELSE 35
+                                END
+                            )::integer
+                        END
+                      ) <= %s
+                    ORDER BY (
+                        CASE
+                            WHEN published_date IS NOT NULL
+                                 AND (published_date - ratio_date) BETWEEN 10 AND 120
+                                 AND published_date < '2026-09-01'
+                            THEN published_date
+                            ELSE ratio_date + (
+                                CASE EXTRACT(QUARTER FROM ratio_date)
+                                    WHEN 1 THEN 45
+                                    WHEN 2 THEN 55
+                                    WHEN 3 THEN 45
+                                    ELSE 35
+                                END
+                            )::integer
+                        END
+                    ) DESC, ratio_date DESC
                     LIMIT 1
                     """,
                     (sym, target_date, target_date),

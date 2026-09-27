@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 
 from app.domain.repositories.financial_repository import FinancialRepository
 from app.domain.rules.thesis_engine import ThesisEngine
@@ -40,7 +40,7 @@ def test_published_bank_valuation_and_margin_of_safety():
     assert not passed and "15%" in reason
 
 
-def test_pilot_fill_requires_real_bar_and_stays_within_five_percent():
+def test_pilot_fill_requires_real_bar_and_stays_within_five_percent(monkeypatch):
     class Repository:
         def __init__(self):
             self.executions = []
@@ -51,6 +51,15 @@ def test_pilot_fill_requires_real_bar_and_stays_within_five_percent():
         def record_replay_execution(self, symbol, side, quantity, price, **kwargs):
             self.executions.append((symbol, side, quantity, price))
             return {"shares": quantity, "executed_price": price}
+
+    from experiments import replay_agent_pipeline as replay
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo("Asia/Ho_Chi_Minh")
+    mock_quotes = [
+        {"time": datetime(2026, 9, 24, 9, 15, 1, tzinfo=tz), "bid": [],
+         "offer": [{"price": 60.0, "qtty": 1000}]},
+    ]
+    monkeypatch.setattr(replay, "quote_history", lambda *_: mock_quotes)
 
     repo = Repository()
     order = {"symbol": "MBB", "side": "BUY", "quantity": 1000, "entry_type": "PILOT"}

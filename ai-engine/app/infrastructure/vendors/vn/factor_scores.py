@@ -147,8 +147,22 @@ def _extract_fin_stmts(cur, symbols: list[str], as_of: date) -> dict[str, dict[s
              AND fs.statement_type IN ('BS', 'IS', 'CF')
              AND fs.frequency = 'quarterly'
              AND fs.period_end <= %s
-             AND fs.published_date IS NOT NULL
-             AND fs.published_date <= %s
+             AND (
+                CASE
+                    WHEN fs.published_date IS NOT NULL
+                         AND (fs.published_date - fs.period_end) BETWEEN 10 AND 120
+                         AND fs.published_date < '2026-09-01'
+                    THEN fs.published_date
+                    ELSE fs.period_end + (
+                        CASE EXTRACT(QUARTER FROM fs.period_end)
+                            WHEN 1 THEN 45
+                            WHEN 2 THEN 55
+                            WHEN 3 THEN 45
+                            ELSE 35
+                        END
+                    )::integer
+                END
+             ) <= %s
            ORDER BY fs.symbol, fs.statement_type, fs.period_end DESC""",
         (symbols, as_of, as_of),
     )
@@ -203,8 +217,22 @@ def _extract_multi_stmts(
              AND fs.statement_type IN ('BS', 'IS', 'CF')
              AND fs.frequency = 'quarterly'
              AND fs.period_end <= %s
-             AND fs.published_date IS NOT NULL
-             AND fs.published_date <= %s
+             AND (
+                CASE
+                    WHEN fs.published_date IS NOT NULL
+                         AND (fs.published_date - fs.period_end) BETWEEN 10 AND 120
+                         AND fs.published_date < '2026-09-01'
+                    THEN fs.published_date
+                    ELSE fs.period_end + (
+                        CASE EXTRACT(QUARTER FROM fs.period_end)
+                            WHEN 1 THEN 45
+                            WHEN 2 THEN 55
+                            WHEN 3 THEN 45
+                            ELSE 35
+                        END
+                    )::integer
+                END
+             ) <= %s
            ORDER BY fs.symbol, fs.statement_type, fs.period_end DESC""",
         (symbols, as_of, as_of),
     )
@@ -387,8 +415,22 @@ def compute_factor_scores(
            WHERE symbol = ANY(%s)
              AND frequency = 'quarterly'
              AND ratio_date <= %s
-             AND published_date IS NOT NULL
-             AND published_date <= %s
+             AND (
+                CASE
+                    WHEN published_date IS NOT NULL
+                         AND (published_date - ratio_date) BETWEEN 10 AND 120
+                         AND published_date < '2026-09-01'
+                    THEN published_date
+                    ELSE ratio_date + (
+                        CASE EXTRACT(QUARTER FROM ratio_date)
+                            WHEN 1 THEN 45
+                            WHEN 2 THEN 55
+                            WHEN 3 THEN 45
+                            ELSE 35
+                        END
+                    )::integer
+                END
+             ) <= %s
            ORDER BY symbol, ratio_date DESC""",
         (symbols, score_date, score_date),
     )

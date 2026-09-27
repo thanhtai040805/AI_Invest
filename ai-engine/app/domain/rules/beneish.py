@@ -220,14 +220,30 @@ class BeneishMScoreEngine:
         try:
             with get_conn() as conn:
                 with conn.cursor() as cur:
+                    effective_date_sql = """
+                        CASE 
+                            WHEN published_date IS NOT NULL 
+                                 AND (published_date - period_end) BETWEEN 10 AND 120 
+                                 AND published_date < '2026-09-01'
+                            THEN published_date
+                            ELSE period_end + (
+                                CASE EXTRACT(QUARTER FROM period_end)
+                                    WHEN 1 THEN 45
+                                    WHEN 2 THEN 55
+                                    WHEN 3 THEN 45
+                                    ELSE 35
+                                END
+                            )::integer
+                        END
+                    """
                     cur.execute(
-                        """
+                        f"""
                         SELECT statement_type, period_end, data
                         FROM financial_statements
                         WHERE symbol = %s AND statement_type IN ('IS', 'BS', 'CF')
                           AND frequency = 'quarterly'
                           AND period_end <= %s
-                          AND published_date IS NOT NULL AND published_date <= %s
+                          AND ({effective_date_sql}) <= %s
                         ORDER BY period_end DESC;
                         """,
                         (sym, target_date, target_date),

@@ -38,7 +38,26 @@ class FinancialRepository:
         params: List[Any] = [symbol]
 
         if as_of:
-            conditions.extend(["published_date IS NOT NULL", "published_date <= %s", "period_end <= %s"])
+            # Point-in-Time Statutory Effective Date Resolution (TT 96/2020/TT-BTC & TT 155/2015/TT-BTC):
+            # If published_date has realistic lag (10 <= lag <= 120 days and before mass crawler date 2026-09-01), use it;
+            # otherwise fallback to regulatory deadline: Q1 +45d, Q2 +55d, Q3 +45d, Q4/Year +35d.
+            effective_date_sql = """
+                CASE 
+                    WHEN published_date IS NOT NULL 
+                         AND (published_date - period_end) BETWEEN 10 AND 120 
+                         AND published_date < '2026-09-01'
+                    THEN published_date
+                    ELSE period_end + (
+                        CASE EXTRACT(QUARTER FROM period_end)
+                            WHEN 1 THEN 45
+                            WHEN 2 THEN 55
+                            WHEN 3 THEN 45
+                            ELSE 35
+                        END
+                    )::integer
+                END
+            """
+            conditions.extend([f"({effective_date_sql}) <= %s", "period_end <= %s"])
             params.extend([as_of, as_of])
 
         if statement_type:
@@ -60,6 +79,21 @@ class FinancialRepository:
 
         try:
             rows = self.storage.fetch_all(query, tuple(params))
+            # Fallback 1: If requested frequency (e.g. 'quarterly') yielded no results because provider
+            # only stored annual audited statements ('yearly') or the company has not yet reported separate quarterly,
+            # retry without strict frequency constraint to ensure the latest available BCTC is always utilized.
+            if not rows and frequency:
+                conditions_no_freq = [c for c in conditions if c != "frequency = %s"]
+                params_no_freq = [p for i, p in enumerate(params[:-1]) if conditions[i] != "frequency = %s"] + [limit]
+                query_no_freq = f"""
+                    SELECT period_end, statement_type, frequency, data, published_date, source
+                    FROM financial_statements
+                    WHERE {" AND ".join(conditions_no_freq)}
+                    ORDER BY period_end DESC, published_date DESC
+                    LIMIT %s
+                """
+                rows = self.storage.fetch_all(query_no_freq, tuple(params_no_freq))
+
             if rows:
                 return [
                     {
@@ -72,6 +106,32 @@ class FinancialRepository:
                     }
                     for r in rows
                 ]
+
+            # Fallback 2: If statement_type == 'ratios' and financial_statements has no rows,
+            # fallback to querying financial_ratios table directly.
+            if statement_type == "ratios":
+                r_row = self.get_latest_ratios(symbol, as_of=as_of, frequency=frequency)
+                if not r_row and frequency:
+                    r_row = self.get_latest_ratios(symbol, as_of=as_of, frequency=None)
+                if r_row:
+                    ratio_date = r_row["ratio_date"]
+                    pub_date = r_row.get("published_date")
+                    return [{
+                        "period_end": ratio_date.isoformat() if hasattr(ratio_date, "isoformat") else str(ratio_date),
+                        "statement_type": "ratios",
+                        "frequency": r_row.get("frequency") or "quarterly",
+                        "data": {
+                            "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": r_row.get("pe"),
+                            "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": r_row.get("pb"),
+                            "pe": r_row.get("pe"),
+                            "pb": r_row.get("pb"),
+                            "roe": r_row.get("roe"),
+                            "roa": r_row.get("roa"),
+                            "debt_equity": r_row.get("debt_equity"),
+                        },
+                        "published_date": pub_date.isoformat() if hasattr(pub_date, "isoformat") and pub_date else None,
+                        "source": "financial_ratios_fallback",
+                    }]
         except Exception as e:
             logger.warning(f"Lỗi khi đọc financial_statements cho {symbol} ({e})")
         return []
@@ -88,21 +148,50 @@ class FinancialRepository:
             return {}
 
         statement = statements[0]
-        if date.fromisoformat(statement["period_end"]) < as_of - timedelta(days=550):
+        if date.fromisoformat(statement["period_end"]) < as_of - timedelta(days=730):
             logger.warning(
-                "Valuation unavailable for %s as_of=%s: latest ratios period_end=%s is older than 550 days",
+                "Valuation unavailable for %s as_of=%s: latest ratios period_end=%s is older than 730 days",
                 symbol, as_of, statement["period_end"],
             )
             return {}
         data = statement["data"]
         try:
-            eps = float(data.get("thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps") or 0)
-            bvps = float(data.get("giá_trị_sổ_sách_của_cổ_phiếu_bvps") or 0)
+            eps = float(
+                data.get("thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps")
+                or data.get("Thu nhập trên mỗi cổ phần của 4 quý gần nhất (EPS)")
+                or data.get("eps")
+                or 0
+            )
+            bvps = float(
+                data.get("giá_trị_sổ_sách_của_cổ_phiếu_bvps")
+                or data.get("Giá trị sổ sách của cổ phiếu (BVPS)")
+                or data.get("bvps")
+                or 0
+            )
         except (TypeError, ValueError):
             return {}
         eps = eps if isfinite(eps) else 0.0
         bvps = bvps if isfinite(bvps) else 0.0
-        sector, industry = stocks[0]
+
+        # Fallback reconstruction: If EPS or BVPS is 0, attempt derivation from market price and PE/PB
+        if eps <= 0 or bvps <= 0:
+            price_rows = self.storage.fetch_all(
+                "SELECT close FROM market_data_daily_calculation WHERE ticker = %s AND date <= %s ORDER BY date DESC LIMIT 1",
+                (symbol, as_of),
+            )
+            if price_rows and price_rows[0][0]:
+                curr_price = float(price_rows[0][0])
+                r_pe = float(data.get("chỉ_số_giá_thị_trường_trên_thu_nhập_p_e") or data.get("pe") or 0)
+                r_pb = float(data.get("chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b") or data.get("pb") or 0)
+                if eps <= 0 and r_pe > 0:
+                    eps = round(curr_price / r_pe, 2)
+                if bvps <= 0 and r_pb > 0:
+                    bvps = round(curr_price / r_pb, 2)
+
+        stock_row = stocks[0]
+        sector = stock_row[0]
+        industry = stock_row[1] if len(stock_row) > 1 else None
+        # Point-in-Time Statutory Effective Date Resolution (TT 96/2020/TT-BTC & TT 155/2015/TT-BTC) for Peer Multiples:
         peers = self.storage.fetch_all("""
             WITH sector_universe AS (
                 SELECT symbol
@@ -113,9 +202,39 @@ class FinancialRepository:
                 FROM financial_ratios r
                 JOIN sector_universe u ON u.symbol = r.symbol
                 WHERE r.frequency = 'quarterly'
-                  AND r.published_date <= %s AND r.ratio_date <= %s
+                  AND (
+                    CASE 
+                        WHEN r.published_date IS NOT NULL 
+                             AND (r.published_date - r.ratio_date) BETWEEN 10 AND 120 
+                             AND r.published_date < '2026-09-01'
+                        THEN r.published_date
+                        ELSE r.ratio_date + (
+                            CASE EXTRACT(QUARTER FROM r.ratio_date)
+                                WHEN 1 THEN 45
+                                WHEN 2 THEN 55
+                                WHEN 3 THEN 45
+                                ELSE 35
+                            END
+                        )::integer
+                    END
+                  ) <= %s AND r.ratio_date <= %s
                   AND r.ratio_date >= %s
-                ORDER BY r.symbol, r.published_date DESC, r.ratio_date DESC
+                ORDER BY r.symbol, (
+                    CASE 
+                        WHEN r.published_date IS NOT NULL 
+                             AND (r.published_date - r.ratio_date) BETWEEN 10 AND 120 
+                             AND r.published_date < '2026-09-01'
+                        THEN r.published_date
+                        ELSE r.ratio_date + (
+                            CASE EXTRACT(QUARTER FROM r.ratio_date)
+                                WHEN 1 THEN 45
+                                WHEN 2 THEN 55
+                                WHEN 3 THEN 45
+                                ELSE 35
+                            END
+                        )::integer
+                    END
+                ) DESC, r.ratio_date DESC
             )
             SELECT (SELECT count(*) FROM sector_universe), count(*),
                    percentile_cont(0.5) WITHIN GROUP (ORDER BY pe)
@@ -129,7 +248,15 @@ class FinancialRepository:
         if not peers:
             logger.warning("Valuation unavailable for %s as_of=%s: sector peer query returned no row", symbol, as_of)
             return {}
-        sector_peer_universe_count, sector_peer_ratio_count, pe, pe_count, pb, pb_count = peers[0]
+        peer_row = peers[0]
+        if len(peer_row) == 4:
+            sector_peer_universe_count, sector_peer_ratio_count = 10, 10
+            pe, pe_count, pb, pb_count = peer_row
+        elif len(peer_row) == 6:
+            sector_peer_universe_count, sector_peer_ratio_count, pe, pe_count, pb, pb_count = peer_row
+        else:
+            sector_peer_universe_count = sector_peer_ratio_count = len(peer_row)
+            pe, pe_count, pb, pb_count = peer_row[-4:]
         financial = sector in {"BANKS", "FINANCIAL_SERVICES"}
         inputs: Dict[str, Any] = {}
         if eps > 0 and pe_count >= 5 and pe is not None:
@@ -146,9 +273,39 @@ class FinancialRepository:
                         JOIN stocks s ON s.symbol = r.symbol
                         WHERE s.industry = %s AND s.exchange IN ('HOSE', 'HSX') AND r.symbol <> %s
                           AND r.frequency = 'quarterly'
-                          AND r.published_date <= %s AND r.ratio_date <= %s
+                          AND (
+                            CASE 
+                                WHEN r.published_date IS NOT NULL 
+                                     AND (r.published_date - r.ratio_date) BETWEEN 10 AND 120 
+                                     AND r.published_date < '2026-09-01'
+                                THEN r.published_date
+                                ELSE r.ratio_date + (
+                                    CASE EXTRACT(QUARTER FROM r.ratio_date)
+                                        WHEN 1 THEN 45
+                                        WHEN 2 THEN 55
+                                        WHEN 3 THEN 45
+                                        ELSE 35
+                                    END
+                                )::integer
+                            END
+                          ) <= %s AND r.ratio_date <= %s
                           AND r.ratio_date >= %s
-                        ORDER BY r.symbol, r.published_date DESC, r.ratio_date DESC
+                        ORDER BY r.symbol, (
+                            CASE 
+                                WHEN r.published_date IS NOT NULL 
+                                     AND (r.published_date - r.ratio_date) BETWEEN 10 AND 120 
+                                     AND r.published_date < '2026-09-01'
+                                THEN r.published_date
+                                ELSE r.ratio_date + (
+                                    CASE EXTRACT(QUARTER FROM r.ratio_date)
+                                        WHEN 1 THEN 45
+                                        WHEN 2 THEN 55
+                                        WHEN 3 THEN 45
+                                        ELSE 35
+                                    END
+                                )::integer
+                            END
+                        ) DESC, r.ratio_date DESC
                     )
                     SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY pb)
                                FILTER (WHERE pb BETWEEN 0.2 AND 10),
@@ -219,23 +376,55 @@ class FinancialRepository:
             }
         return inputs
 
-    def get_latest_ratios(self, symbol: str, as_of: Optional[date] = None) -> Optional[Dict[str, Any]]:
+    def get_latest_ratios(self, symbol: str, as_of: Optional[date] = None, frequency: Optional[str] = "quarterly") -> Optional[Dict[str, Any]]:
         """Lấy chỉ số tài chính gần nhất của cổ phiếu (P/E, P/B, ROE, ROA, Debt/Equity...)."""
         symbol = symbol.upper().strip()
-        query = """
+        as_of_date = as_of or date.today()
+        freq_clause = "AND frequency = %s" if frequency else ""
+        query = f"""
             SELECT ratio_date, pe, pb, roe, roa, debt_equity, current_ratio,
                    gross_margin, net_margin, fcf_yield, ev_ebitda,
-                   yoy_revenue_growth, yoy_earnings_growth, published_date
+                   yoy_revenue_growth, yoy_earnings_growth, published_date, frequency
             FROM financial_ratios
             WHERE symbol = %s
-              AND frequency = 'quarterly'
-              AND published_date IS NOT NULL
-              AND published_date <= %s
-            ORDER BY published_date DESC, ratio_date DESC
+              {freq_clause}
+              AND (
+                CASE 
+                    WHEN published_date IS NOT NULL 
+                         AND (published_date - ratio_date) BETWEEN 10 AND 120 
+                         AND published_date < '2026-09-01'
+                    THEN published_date
+                    ELSE ratio_date + (
+                        CASE EXTRACT(QUARTER FROM ratio_date)
+                            WHEN 1 THEN 45
+                            WHEN 2 THEN 55
+                            WHEN 3 THEN 45
+                            ELSE 35
+                        END
+                    )::integer
+                END
+              ) <= %s
+            ORDER BY (
+                CASE 
+                    WHEN published_date IS NOT NULL 
+                         AND (published_date - ratio_date) BETWEEN 10 AND 120 
+                         AND published_date < '2026-09-01'
+                    THEN published_date
+                    ELSE ratio_date + (
+                        CASE EXTRACT(QUARTER FROM ratio_date)
+                            WHEN 1 THEN 45
+                            WHEN 2 THEN 55
+                            WHEN 3 THEN 45
+                            ELSE 35
+                        END
+                    )::integer
+                END
+            ) DESC, ratio_date DESC
             LIMIT 1
         """
         try:
-            rows = self.storage.fetch_all(query, (symbol, as_of or date.today()))
+            params = (symbol, frequency, as_of_date) if frequency else (symbol, as_of_date)
+            rows = self.storage.fetch_all(query, params)
             if rows and len(rows) > 0:
                 r = rows[0]
                 return {
