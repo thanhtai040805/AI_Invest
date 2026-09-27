@@ -996,14 +996,40 @@ class PortfolioRepository:
     def save_decision(self, decision: Dict[str, Any]) -> bool:
         """Lưu quyết định phân bổ vốn vào bảng portfolio_decisions."""
         try:
+            from zoneinfo import ZoneInfo
+            from datetime import time as day_time
+
             query = """
                 INSERT INTO portfolio_decisions (
                     decision_id, date, ticker, action, target_shares, allocated_weight_pct, rationale, created_at
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (decision_id) DO NOTHING
             """
-            now = datetime.now()
-            target_date = now.date()
+
+            is_replay = bool(decision.get("is_replay", False))
+            target_date_raw = decision.get("target_date") or decision.get("date") or decision.get("analysis_date")
+            if isinstance(target_date_raw, datetime):
+                target_date = target_date_raw.date()
+            elif isinstance(target_date_raw, str):
+                try:
+                    from datetime import date as _date
+                    target_date = _date.fromisoformat(target_date_raw.split("T")[0])
+                except Exception:
+                    if is_replay:
+                        raise ValueError("Replay decision requires a valid target_date")
+                    target_date = datetime.now().date()
+            elif isinstance(target_date_raw, date):
+                target_date = target_date_raw
+            else:
+                if is_replay:
+                    raise ValueError("Replay decision requires a target_date")
+                target_date = datetime.now().date()
+
+            if is_replay:
+                now = datetime.combine(target_date, day_time(9, 45), tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+            else:
+                now = datetime.now()
+
             did_raw = decision.get("decision_id")
             try:
                 if did_raw:

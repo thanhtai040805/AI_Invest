@@ -5,69 +5,7 @@ import {
   Button,
   Panel,
   PanelHead,
-  SectionEyebrow,
 } from "@/components/ui"
-
-export function Notifications() {
-  const groups = {
-    "Thị trường": ["VN-Index đóng cửa +0.72%"],
-    "Danh mục": ["Vị thế HPG tăng trưởng 16.1%"],
-    "Tác tử AI": ["Tín hiệu tích lũy mới trên mã MBB"],
-    "Cộng đồng": ["Nguyễn Minh Anh đã công bố luận điểm mới"],
-    "Môi giới": ["Chuyên viên bạn theo dõi vừa đăng tín hiệu"],
-  }
-  return (
-    <Page
-      title="Thông báo"
-      sub="Phân nhóm theo nguồn dữ liệu."
-      actions={<Button variant="ghost">Đánh dấu tất cả đã đọc</Button>}
-    >
-      <div className="space-y-4">
-        {Object.entries(groups).map(([g, items]) => (
-          <Panel key={g}>
-            <SectionEyebrow>{g}</SectionEyebrow>
-            {items.map((n, i) => (
-              <div key={i} className="flex items-center gap-3 py-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-mineral" />
-                <span className="text-[13px] text-secondary">{n}</span>
-                <span className="ml-auto text-[11px] text-muted">2h</span>
-              </div>
-            ))}
-          </Panel>
-        ))}
-      </div>
-    </Page>
-  )
-}
-
-export function Activity() {
-  const events = [
-    "Xem phân tích AI về HPG",
-    "Lưu luận điểm: Tăng trưởng tín dụng MBB",
-    "Khớp lệnh mua · FPT",
-    "Theo dõi Nguyễn Minh Anh",
-    "Kích hoạt cảnh báo: Khối lượng HPG",
-    "Xem nghiên cứu: Ngành Ngân hàng",
-  ]
-  return (
-    <Page title="Nhật ký hoạt động" sub="Dòng thời gian hoạt động của bạn trên AIInvest.">
-      <Panel>
-        <div className="space-y-0">
-          {events.map((e, i) => (
-            <div
-              key={i}
-              className="flex gap-4 py-3 border-b border-line last:border-0"
-            >
-              <span className="tnum text-[11px] text-muted w-10">{i + 1}h</span>
-              <span className="w-1.5 h-1.5 rounded-full bg-mineral mt-1.5" />
-              <span className="text-[13px] text-secondary">{e}</span>
-            </div>
-          ))}
-        </div>
-      </Panel>
-    </Page>
-  )
-}
 
 export default function Help() {
   return (

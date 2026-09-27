@@ -389,3 +389,19 @@ AIInvest is an autonomous investment and financial forensics organization engine
 - ML workspace accepts validated inclusive `from`/`to` dates for accuracy and fund performance. The UI defaults to all history and supports 15/30/60 calendar days or explicit dates. Prediction date selection remains independent; current holdings show cost/share, market/share, total cost, market value, unrealized P&L and percentage.
 - Historical net P&L compares closing NAV with the prior close before the selected period, including open holdings and actual execution costs; it assumes no external contributions/withdrawals. The first snapshot is an opening baseline. This is distinct from prediction accuracy/reference-price returns.
 - Executions persist gross value, brokerage fee, transfer tax and signed cash delta so displayed rounded VWAP cannot distort cash reconciliation. The 37 standalone replay receipts were recovered from original paper trade prices and reconcile exactly to 331,147,413 VND; neither account cash nor decisions were changed. Baseline 2026-08-11 and all 30 verified replay close marks were recovered from the completed replay report.
+
+## 2026-09-27 — 12 Sovereign Agents Front-end Full Architectural Synchronization
+
+- Synchronized the War Room UI (`front-end/src/app/(workspace)/agent/page.tsx`) with the official 12 Sovereign Agents architecture specification (`docs/diagrams/full-12-agents-sovereign-architecture.html`):
+  - **Agent 01 (Market Surveillance)**: Dedicated card displaying HMM Regime (`RANGE_BOUND`/`BULL_MARKET`/`BEAR_MARKET`), VIX-VN Analog, CSAD herd measure, Adv/Decl ratio, GARCH cash buffer target, market breadth > MA20, and HMM probability distribution.
+  - **Agent 02 (Universe Discovery)**: Dedicated card displaying Layer-0 Hard Law filtering, Beneish M-Score gate ($M \le -1.78$), Liquidity gate (ADTV20 $\ge 15$ tỷ VND), and expandable exclusion logs.
+  - **Agent 03 (Equity Research)**: Dedicated card per ticker showing Composite Stock Score (CSS e.g. 75.04/100), Conviction tier (Hạng A/B/C), Percentile, 6-factor quant bars (F1 Value, F2 Quality, F3 Momentum, F4 Earnings, F5 Flow, F6 Technical), and fundamental valuation multiples (P/E, P/B, ROE, D/E).
+  - **Agent 04 (Investment Thesis)** & **Agent 05 (Counter-Thesis / Devil's Advocate)**: Investment narrative, price targets, confirming signals, invalidation rules, alongside Red Team critique, CTS score, holes/challenges, and execution constraints.
+  - **Agent 06 (Portfolio Allocation)**: Quarter-Kelly math trace ($p, b$, Quarter Kelly raw, market regime scaler, incremental weight, min cash buffer, deadband check) and allocation history.
+  - **Agent 07 (Portfolio Risk)**: 5-Layer Pre-trade Risk Gateway & Supreme Veto display (`PASS`/`APPROVE`/`REDUCE`/`BLOCK`), original shares vs approved shares (with reduction % e.g. -53.3%), approved weight % NAV, min cash target %, 5 Gatekeeper checklist (Beneish M-Score, single stock limit $\le 15\%$, sector limit $\le 35\%$, GARCH ES 97.5% tail risk, cash buffer), and drawdown/CDC tier.
+  - **Agent 08 (Trade Execution)**: Adaptive TWAP / Limit slicing schedule and broker connection state.
+  - **Agent 09 (Position Monitoring)**: Real-time PnL %, distance to stop loss %, thesis health status (`HEALTHY`/`WARNING`/`INVALIDATED`), and visual T0–T5 Defense Ladder (T0 circuit breaker, T1 absorption, T2 clearing, T3 trailing-stop, T4–T5 invalidation liquidation).
+  - **Agent 10 (Reinforcement Learning)**: Rolling Information Coefficient (IC) scores across factors F1–F6, Empirical Bayes Shrinkage protocol, and MRALEngine calibration status.
+  - **Agent 11 (System Governance)**: SHA-256 Merkle chain verification, 5 Hard Laws enforcement checklist, broker API latency (ms), and failsafe status.
+  - **Agent 12 (Strategy CIO)**: Executive verdict banner and CIO Resolution Dossier with severity tier, conditions, and Kelly penalty factor $\lambda$.
+

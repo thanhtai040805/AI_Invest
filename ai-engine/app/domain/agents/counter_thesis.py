@@ -217,6 +217,8 @@ class CounterThesisAgent(BaseAgent):
 
         # 5. Lưu phán quyết vào CSDL qua IntelligenceRepository
         try:
+            verdict_output["target_date"] = event_data.get("target_date") or event_data.get("date")
+            verdict_output["is_replay"] = event_data.get("is_replay", False)
             intel_repo.save_counter_thesis_verdict(verdict_output)
         
             # 5.1 Cập nhật trạng thái của Investment Thesis theo phán quyết Devil's Advocate

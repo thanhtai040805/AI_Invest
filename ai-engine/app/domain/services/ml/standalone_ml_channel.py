@@ -35,6 +35,7 @@ from dotenv import load_dotenv
 from app.domain.repositories.portfolio_repository import PortfolioRepository
 from app.domain.services.ml.feature_forge import feature_forge
 from app.domain.services.ml.graph_contagion_engine import graph_engine
+from app.domain.services.ml.dual_tier_sniper_engine import dual_tier_engine
 from app.domain.services.ml.hybrid_stacking_ranker import (
     beneish_engine,
     hybrid_stacking_ranker,
@@ -115,7 +116,7 @@ class StandaloneMLChannel:
         self,
         target_date: Optional[Union[date, str]] = None,
         candidate_tickers: Optional[List[str]] = None,
-        limit_universe: int = 40,
+        limit_universe: int = 100,
     ) -> pd.DataFrame:
         """
         Quét dữ liệu thực tế và chạy suy luận 3 nhánh qua hybrid_stacking_ranker.pkl.
@@ -148,6 +149,18 @@ class StandaloneMLChannel:
 
         if not tickers:
             return pd.DataFrame()
+
+        # Lớp 0 Forensic Gate: Loại bỏ các mã có dấu hiệu gian lận BCTC (Beneish M-Score > -1.78)
+        try:
+            df_beneish = beneish_engine.fetch_and_compute_scores(tickers)
+            if not df_beneish.empty:
+                df_beneish_filtered = df_beneish[df_beneish["effective_date"] <= pd.Timestamp(run_date_str)]
+                if not df_beneish_filtered.empty:
+                    latest_beneish = df_beneish_filtered.sort_values("effective_date").groupby("ticker").last()
+                    manipulators = set(latest_beneish[latest_beneish["is_manipulator"] == 1].index.str.upper())
+                    tickers = [t for t in tickers if t.upper() not in manipulators]
+        except Exception as e_ben:
+            logger.warning(f"Lỗi kiểm tra Beneish Lớp 0: {e_ben}")
 
         # Nạp dữ liệu OHLCV lịch sử cho các tickers
         try:
@@ -231,6 +244,7 @@ class StandaloneMLChannel:
         nav: Optional[float] = None,
         replay_prices: Optional[Dict[str, float]] = None,
         buy_block_reason: Optional[str] = None,
+        min_z_threshold: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Vận hành chu trình tự động độc lập hoàn chỉnh:
@@ -322,7 +336,23 @@ class StandaloneMLChannel:
         # Persist every signal and its decision together with the pending order.
         # Locking the user serializes daily decisions against fills and other cycles.
         qualified_orders: List[Dict[str, Any]] = []
-        sorted_df = preds_df.sort_values("pred_score", ascending=False)
+        sorted_df = preds_df.sort_values("pred_score", ascending=False).copy()
+        effective_z_threshold = (
+            min_z_threshold
+            if min_z_threshold is not None
+            else (
+                float(os.getenv("STANDALONE_MIN_Z_THRESHOLD"))
+                if os.getenv("STANDALONE_MIN_Z_THRESHOLD")
+                else None
+            )
+        )
+        if "z_score" not in sorted_df.columns:
+            mean_score = sorted_df["pred_score"].mean()
+            std_score = sorted_df["pred_score"].std()
+            if std_score == 0 or np.isnan(std_score):
+                std_score = 1.0
+            sorted_df["z_score"] = (sorted_df["pred_score"] - mean_score) / std_score
+
         prices = dict(replay_prices or {})
         if not is_replay:
             from app.domain.repositories.market_data_repository import MarketDataRepository
@@ -347,6 +377,8 @@ class StandaloneMLChannel:
             pending_tickers = {str(row[0]).upper() for row in pending}
             reserved = sum(float(row[1]) * float(row[2]) + max(float(row[1]) * float(row[2]) * 0.001, 10000.0) for row in pending)
             remaining_cash = max(0.0, float(cash_row[0]) - reserved)
+            allowed_tickers = {str(t).upper().strip() for t in candidate_tickers} if candidate_tickers else None
+
             for index, (_, row) in enumerate(sorted_df.iterrows()):
                 ticker = str(row["ticker"]).upper().strip()
                 raw_close = float(row.get("close", 0.0))
@@ -354,6 +386,7 @@ class StandaloneMLChannel:
                 limit_price = prices.get(ticker, reference_price)
                 scores = [float(row.get(key, float("nan"))) for key in ("rank_pred", "mom_pred", "surv_prob", "pred_score")]
                 rank_pred, mom_pred, surv_prob, pred_score = scores
+                z_score = float(row.get("z_score", pred_score))
                 feature_date = row["feature_date"]
                 if isinstance(feature_date, datetime):
                     feature_date = feature_date.date()
@@ -361,6 +394,21 @@ class StandaloneMLChannel:
                     feature_date = date.fromisoformat(feature_date)
                 if not isinstance(feature_date, date) or feature_date >= target_date_obj:
                     raise ValueError("ML features must precede the decision session")
+
+                # Dynamic sizing chuẩn EXP-016: Tier A+ (12% NAV), Tier A (5% NAV)
+                if z_score >= 3.80:
+                    target_weight = 0.12
+                    tier = "TIER_A_PLUS"
+                    conviction = "A+"
+                elif z_score >= 2.85:
+                    target_weight = 0.05
+                    tier = "TIER_A"
+                    conviction = "A"
+                else:
+                    target_weight = self.position_weight
+                    tier = "TIER_B"
+                    conviction = "B"
+
                 shares = 0
                 reason = "SELECTED"
                 if not all(math.isfinite(n) for n in [reference_price, limit_price, *scores]) or reference_price <= 0 or limit_price <= 0 or not 0 <= surv_prob <= 1:
@@ -369,6 +417,10 @@ class StandaloneMLChannel:
                     reason = "NO_HISTORICAL_PRICE"
                 elif buy_block_reason:
                     reason = buy_block_reason
+                elif allowed_tickers is not None and ticker not in allowed_tickers:
+                    reason = "OUTSIDE_SNIPER_GATE"
+                elif effective_z_threshold is not None and z_score < effective_z_threshold:
+                    reason = "NO_SNIPER_SETUP"
                 elif index >= max_candidates:
                     reason = "OUTSIDE_TOP_K"
                 elif ticker in held_tickers:
@@ -376,7 +428,7 @@ class StandaloneMLChannel:
                 elif ticker in pending_tickers:
                     reason = "ORDER_ALREADY_PENDING"
                 else:
-                    capital = min(current_nav * self.position_weight, remaining_cash)
+                    capital = min(current_nav * target_weight, remaining_cash)
                     # Include the same brokerage fee used by PortfolioRepository.
                     budget = min(capital / 1.001, max(0.0, capital - 10000.0))
                     shares = int(budget / limit_price / 100) * 100
@@ -384,6 +436,7 @@ class StandaloneMLChannel:
                         reason = "INSUFFICIENT_BUDGET"
                 decision = "BUY" if shares > 0 else "SKIP"
                 order_id = str(uuid.uuid4()) if shares > 0 else None
+
                 cur.execute("""
                     INSERT INTO standalone_ml_predictions (
                       account_id, predict_date, feature_date, ticker, rank_pred, mom_pred,
@@ -392,9 +445,13 @@ class StandaloneMLChannel:
                     ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (predict_date, ticker, account_id) DO NOTHING RETURNING id
                 """, (self.account_id, target_date_obj, feature_date, ticker,
-                      *[n if math.isfinite(n) else None for n in scores], shares,
+                      rank_pred if math.isfinite(rank_pred) else None,
+                      mom_pred if math.isfinite(mom_pred) else None,
+                      surv_prob if math.isfinite(surv_prob) else None,
+                      z_score if math.isfinite(z_score) else (pred_score if math.isfinite(pred_score) else None),
+                      shares,
                       reference_price if math.isfinite(reference_price) and reference_price > 0 else None,
-                      self.position_weight, exec_mode.value, decision, reason, order_id, getattr(self.model, "model_version", None)))
+                      target_weight, exec_mode.value, decision, reason, order_id, getattr(self.model, "model_version", None)))
                 if not cur.fetchone():
                     continue  # Daily snapshot is immutable; never requeue or invalidate its accuracy.
                 if not order_id:
@@ -407,13 +464,13 @@ class StandaloneMLChannel:
                 pending_tickers.add(ticker)
                 qualified_orders.append({
                     "ticker": ticker, "account_id": self.account_id, "order_id": order_id,
-                    "shares": shares, "price": limit_price, "target_weight_pct": self.position_weight,
-                    "rank_pred": rank_pred, "pred_score": pred_score, "z_score": pred_score,
-                    "tier": "TIER_A_PLUS" if pred_score >= 1.0 else "TIER_A",
-                    "conviction": "A+" if pred_score >= 1.0 else "A",
+                    "shares": shares, "price": limit_price, "target_weight_pct": target_weight,
+                    "rank_pred": rank_pred, "pred_score": pred_score, "z_score": z_score,
+                    "tier": tier,
+                    "conviction": conviction,
                     "surv_prob": surv_prob, "mom_pred": mom_pred, "execution_mode": exec_mode.value,
                     "execution_status": pending_status, "action": "SHADOW_PAPER_TRADE_ONLY",
-                    "rationale": f"[STANDALONE PURE-ML] P(Surv)={surv_prob:.1%} | E[Mom3D]={mom_pred:+.2%} | Z={pred_score:+.2f}",
+                    "rationale": f"[STANDALONE PURE-ML] P(Surv)={surv_prob:.1%} | E[Mom3D]={mom_pred:+.2%} | Z={z_score:+.2f}sigma | {tier} ({target_weight:.0%})",
                 })
 
         logger.info(
@@ -456,13 +513,35 @@ class StandaloneMLChannel:
                 current_price = shadow_fill(book, "SELL", 100, 1.0, now=now)
             except ValueError:
                 continue  # Stale/empty depth cannot produce an artificial protective fill.
-            self._peak_prices[ticker] = max(self._peak_prices.get(ticker, float(position["average_price"])), current_price)
-            stop = risk.check_position(
-                ticker, quantity, float(position["average_price"]), current_price,
-                float(account["total_nav"]), available_shares=quantity,
-                market_data={"peak_price": self._peak_prices[ticker], "days_held": (now.date() - position["opened_at"].date()).days if position.get("opened_at") else 0},
-            )
-            if not stop or stop.quantity <= 0:
+            entry = float(position["average_price"])
+            self._peak_prices[ticker] = max(self._peak_prices.get(ticker, entry), current_price)
+            days_held = (now.date() - position["opened_at"].date()).days if position.get("opened_at") else 0
+            gain_from_entry = (current_price - entry) / entry
+            peak_gain = (self._peak_prices[ticker] - entry) / entry
+
+            sell_quantity = 0
+            # Rule 1: Breakeven Shield (+2.5% -> +0.2%)
+            if peak_gain >= 0.025 and gain_from_entry <= 0.002:
+                sell_quantity = quantity
+            # Rule 2: Hard Stop (-3.5%)
+            elif gain_from_entry <= -0.035:
+                sell_quantity = quantity
+            # Rule 3: Take Profit (+6.0%)
+            elif gain_from_entry >= 0.060:
+                sell_quantity = quantity
+            # Rule 4: Time Stop (5 days)
+            elif days_held >= 5:
+                sell_quantity = quantity
+            else:
+                stop = risk.check_position(
+                    ticker, quantity, entry, current_price,
+                    float(account["total_nav"]), available_shares=quantity,
+                    market_data={"peak_price": self._peak_prices[ticker], "days_held": days_held},
+                )
+                if stop and stop.quantity > 0:
+                    sell_quantity = stop.quantity
+
+            if sell_quantity <= 0:
                 continue
             with get_conn() as conn, conn.cursor() as cur:
                 cur.execute("SELECT id FROM users WHERE id = %s FOR UPDATE", (self.account_id,))
@@ -472,7 +551,7 @@ class StandaloneMLChannel:
                 if cur.fetchone():
                     continue
                 cur.execute("INSERT INTO orders (id,user_id,symbol,side,order_type,price,quantity,status,created_at) VALUES (%s,%s,%s,'SELL','SHADOW_ML_LIMIT',%s,%s,'PENDING_SHADOW',%s)",
-                    (str(uuid.uuid4()), self.account_id, ticker, current_price * 0.985, stop.quantity, now.replace(tzinfo=None)))
+                    (str(uuid.uuid4()), self.account_id, ticker, current_price * 0.985, sell_quantity, now.replace(tzinfo=None)))
                 queued += 1
         return {"monitored": len(positions), "queued": queued}
 

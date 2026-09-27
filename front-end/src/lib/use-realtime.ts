@@ -35,28 +35,37 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
   const [lastTickAt, setLastTickAt] = useState<Date | null>(null)
   const [flash, setFlash] = useState<"gain" | "loss" | null>(null)
   const flashTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const hasRealtimePriceRef = useRef(false)
+
+  useEffect(() => {
+    hasRealtimePriceRef.current = false
+  }, [symbol])
 
   useEffect(() => {
     if (initialStock) {
       setStock((prev) => {
         if (!prev) return initialStock
+        const price = hasRealtimePriceRef.current ? (prev.price ?? initialStock.price) : initialStock.price
+        const changePct = hasRealtimePriceRef.current ? (prev.changePct ?? initialStock.changePct) : initialStock.changePct
+        const volume = hasRealtimePriceRef.current ? (prev.volume ?? initialStock.volume) : initialStock.volume
+
         if (
           prev.symbol === initialStock.symbol &&
-          prev.price === initialStock.price &&
-          prev.changePct === initialStock.changePct &&
+          prev.price === price &&
+          prev.changePct === changePct &&
           prev.ref === initialStock.ref &&
           prev.ceiling === initialStock.ceiling &&
           prev.floor === initialStock.floor &&
-          prev.volume === initialStock.volume &&
+          prev.volume === volume &&
           prev.name === initialStock.name
         ) {
           return prev
         }
         return {
           ...initialStock,
-          price: prev.price ?? initialStock.price,
-          changePct: prev.changePct ?? initialStock.changePct,
-          volume: prev.volume ?? initialStock.volume,
+          price,
+          changePct,
+          volume,
           ref: prev.ref ?? initialStock.ref,
           ceiling: prev.ceiling ?? initialStock.ceiling,
           floor: prev.floor ?? initialStock.floor,
@@ -91,6 +100,7 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
 
     function onPrice(data: PriceTick) {
       if (!data) return
+      hasRealtimePriceRef.current = true
       setIsLive(true)
       setLastTickAt(new Date())
 

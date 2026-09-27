@@ -296,6 +296,8 @@ class InvestmentThesisAgent(BaseAgent):
                 "pre_mortem_scenarios": structured_payload["thesis_body"]["pre_mortem"],
                 "target_price_range": structured_payload["thesis_body"]["price_target"]["target_range"],
                 "status": "PENDING_COUNTER_ANALYSIS",
+                "target_date": event_data.get("target_date") or event_data.get("date"),
+                "is_replay": event_data.get("is_replay", False),
             })
             if not save_ok:
                 logger.error(f"[InvestmentThesisAgent] CSDL không thể lưu thesis_id: {structured_payload['thesis_id']}")

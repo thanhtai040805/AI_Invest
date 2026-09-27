@@ -18,6 +18,8 @@ interface ApiStockProfile { name?: string; industry?: string; sector?: string }
 interface ApiFactors { value?: number; quality?: number; momentum?: number; growth?: number; flow?: number; technical?: number }
 interface ApiFundamentals { pe?: number; pb?: number; roe?: number; eps?: number; gross_margin?: number }
 
+const SUB_INDICATORS = ["VOL"]
+
 function OrderBook({ customBids, customAsks, basePrice = 25000 }: { customBids?: [number, number][]; customAsks?: [number, number][]; basePrice?: number }) {
   const p = basePrice > 0 ? basePrice : 25000
   const step = p < 10000 ? 10 : p < 50000 ? 50 : 100
@@ -186,7 +188,7 @@ function Stock({ symbol }: { symbol: string }) {
         <div className="space-y-4">
           <Panel>
             <PanelHead title="Biểu đồ giá" sub="Nến trực tiếp · công cụ vẽ, chỉ báo kỹ thuật & phóng to" action={<Pill tone="teal"><i className="h-1.5 w-1.5 rounded-full bg-gain animate-pulse" />Trực tiếp</Pill>} />
-            <KLineChart ticker={s.symbol} name={s.name} basePrice={s.price} precision={0} height={420} subIndicators={["VOL"]} drawingBar />
+            <KLineChart ticker={s.symbol} name={s.name} basePrice={s.price} precision={0} height={420} subIndicators={SUB_INDICATORS} drawingBar />
             <div className="mt-3 flex items-center gap-4 text-[11px] text-muted">
               <span>KL {s.volume}</span>
               <span className="ml-auto tnum">Biên độ {fmt(s.floor)} – {fmt(s.ceiling)}</span>

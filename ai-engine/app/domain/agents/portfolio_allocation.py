@@ -239,6 +239,8 @@ class PortfolioAllocationAgent(BaseAgent):
                 rebalance_res=rebalance_reject,
                 adtv20_shares=adtv20,
             )
+            output_reject["data"]["target_date"] = event_data.get("target_date") or event_data.get("date")
+            output_reject["data"]["is_replay"] = event_data.get("is_replay", False)
             self.repository.save_decision(output_reject["data"])
             return output_reject
 
@@ -363,6 +365,8 @@ class PortfolioAllocationAgent(BaseAgent):
         )
 
         # Tự động lưu quyết định phân bổ vốn vào CSDL PostgreSQL (bảng portfolio_decisions)
+        output["data"]["target_date"] = event_data.get("target_date") or event_data.get("date")
+        output["data"]["is_replay"] = event_data.get("is_replay", False)
         self.repository.save_decision(output["data"])
 
         # Bắn sự kiện lên RabbitMQ Topic Exchange (EventTopics.ORDER_INSTRUCTION & REBALANCE_PLANNED)

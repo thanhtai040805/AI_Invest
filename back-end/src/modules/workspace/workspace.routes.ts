@@ -5,6 +5,7 @@ import { authMiddleware, optionalAuth, AuthRequest } from '../../middleware/auth
 
 const router = Router();
 const db = prisma as any;
+const multiAgentAccountId = process.env.MULTI_AGENT_ACCOUNT_ID?.trim() || '940b0c70-2010-42f3-b947-797e6419b794';
 const calendarDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value => {
     const parsed = new Date(`${value}T00:00:00Z`);
     return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
@@ -60,19 +61,36 @@ router.get('/agent', optionalAuth, (req: AuthRequest, res, next) => send(res, ne
           ORDER BY id DESC LIMIT $2`, date || null, limit)
       : db[model] ? await db[model].findMany({ where: date ? { created_at: dateWindow(date) } : {}, take: limit, orderBy: { id: 'desc' } }).catch(() => []) : [],
   })));
-  const [theses, counterTheses, resolutions, mainAccount, dateRows] = await Promise.all([
+  const [theses, counterTheses, resolutions, mainAccount, dateRows, decisions, positionHealth] = await Promise.all([
     db.$queryRawUnsafe(`SELECT * FROM (${thesisSource}) records WHERE ($1::text IS NULL OR analysis_date = $1::date) ORDER BY generated_at DESC NULLS LAST LIMIT 200`, date || null),
     db.$queryRawUnsafe(`SELECT * FROM (${counterSource}) records WHERE ($1::text IS NULL OR analysis_date = $1::date) ORDER BY generated_at DESC NULLS LAST LIMIT 200`, date || null),
-    db.$queryRawUnsafe("SELECT * FROM cio_resolutions WHERE ($1::text IS NULL OR (created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date) ORDER BY created_at DESC LIMIT 200;", date || null),
-    db.$queryRawUnsafe("SELECT * FROM portfolio_account WHERE account_id = 'MAIN_FUND' LIMIT 1;").catch(() => []),
+    db.$queryRawUnsafe(`SELECT c.*, COALESCE((c.verdict_payload->>'target_date')::date, t.analysis_date) AS analysis_date
+      FROM cio_resolutions c LEFT JOIN log_investment_thesis t ON t.thesis_id::text = c.thesis_id::text
+      WHERE ($1::text IS NULL OR COALESCE((c.verdict_payload->>'target_date')::date, t.analysis_date, (c.created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date) = $1::date)
+      ORDER BY c.created_at DESC LIMIT 200;`, date || null),
+    db.$queryRawUnsafe('SELECT * FROM portfolio_account WHERE account_id = $1 LIMIT 1;', multiAgentAccountId).catch(() => []),
     db.$queryRawUnsafe(`SELECT DISTINCT to_char(analysis_date, 'YYYY-MM-DD') AS date FROM (
-      ${agentModels.filter(model => model !== 'log_investment_thesis').concat('cio_resolutions').map(model => `SELECT (created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS analysis_date FROM ${model}`).join(' UNION ALL ')}
-      UNION ALL SELECT COALESCE(analysis_date, (created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date) FROM log_investment_thesis
+      SELECT date AS analysis_date FROM log_market_surveillance
+      UNION ALL SELECT date AS analysis_date FROM log_universe_discovery
+      UNION ALL SELECT date AS analysis_date FROM log_equity_research
+      UNION ALL SELECT date AS analysis_date FROM log_portfolio_risk
+      UNION ALL SELECT date AS analysis_date FROM log_reinforcement_learning
+      UNION ALL SELECT COALESCE(analysis_date, (created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date) AS analysis_date FROM log_investment_thesis
+      UNION ALL SELECT (created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS analysis_date FROM log_counter_thesis
+      UNION ALL SELECT (created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS analysis_date FROM log_portfolio_allocation
+      UNION ALL SELECT (created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS analysis_date FROM log_trade_execution
+      UNION ALL SELECT (created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS analysis_date FROM log_position_monitoring
+      UNION ALL SELECT (created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS analysis_date FROM log_strategy_cio
+      UNION ALL SELECT COALESCE((c.verdict_payload->>'target_date')::date, t.analysis_date, (c.created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date) AS analysis_date
+        FROM cio_resolutions c LEFT JOIN log_investment_thesis t ON t.thesis_id::text = c.thesis_id::text
       UNION ALL SELECT analysis_date FROM (${thesisSource}) theses
       UNION ALL SELECT analysis_date FROM (${counterSource}) verdicts
+      UNION ALL SELECT date AS analysis_date FROM portfolio_decisions
     ) records WHERE analysis_date IS NOT NULL ORDER BY date DESC`),
+    db.$queryRawUnsafe("SELECT * FROM portfolio_decisions WHERE ($1::text IS NULL OR date = $1::date) ORDER BY created_at DESC, decision_id DESC LIMIT 200", date || null),
+    db.$queryRawUnsafe("SELECT ticker, current_pnl_pct, distance_to_stop_loss_pct, thesis_health_status, last_updated FROM position_health_ticks ORDER BY ticker"),
   ]);
-  return { logs, theses, counterTheses, resolutions, dates: dateRows.map((row: any) => row.date), risks: [], account: mainAccount[0] || null, mode: 'SHADOW' };
+  return { logs, theses, counterTheses, resolutions, decisions, positionHealth, dates: dateRows.map((row: any) => row.date), risks: [], account: mainAccount[0] || null, mode: 'SHADOW' };
 }));
 
 router.get('/ml-fund', optionalAuth, (req: AuthRequest, res, next) => send(res, next, async () => {

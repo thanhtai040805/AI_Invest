@@ -86,7 +86,7 @@ router.get('/:symbol/profile', (req, res, next) => {
   );
 });
 
-async function dbStockOHLCV(symbol: string, limit = 60) {
+async function dbStockOHLCV(symbol: string, limit = 300) {
   const rows = await prisma.$queryRaw<Array<any>>`
     SELECT date,
            (open_adj * 1000)::float8 AS open,
@@ -113,7 +113,7 @@ router.get('/:symbol/ohlcv', (req, res, next) => {
     cached(cacheKey, config.cacheTtl.ohlcv, async () => {
       const live = await aiEngineService.getOHLCV(symbol, { interval, start, end }).catch(() => null);
       if (live && Array.isArray(live) && (live as any[]).length > 0) return live;
-      return dbStockOHLCV(symbol, 60);
+      return dbStockOHLCV(symbol, 300);
     }),
   );
 });

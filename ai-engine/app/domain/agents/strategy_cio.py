@@ -1,4 +1,4 @@
-﻿"""AGENT-12: Strategy CIO Agent (IOS v5.1 Institutional Sovereign Architecture)
+"""AGENT-12: Strategy CIO Agent (IOS v5.1 Institutional Sovereign Architecture)
 
 Chá»©c nÄƒng & Tháº©m quyá»n Thá»ƒ cháº¿:
 1. Trá»ng tĂ i Tá»‘i cao (Conflict Arbitration): PhĂ¢n Ä‘á»‹nh 3 Táº§ng Rá»§i ro (Hard Law vs Critical Risk vs Normal Risk).
@@ -133,12 +133,36 @@ class StrategyCIOAgent(BaseAgent):
         try:
             with get_conn() as conn:
                 with conn.cursor() as cur:
+                    # --- Replay-safe: parameterize created_at ---
+                    from datetime import time as day_time, date as _date
+                    from zoneinfo import ZoneInfo
+                    target_date_raw = payload.get("target_date") or payload.get("date")
+                    is_replay = bool(payload.get("is_replay", False))
+                    if isinstance(target_date_raw, str):
+                        try:
+                            td = _date.fromisoformat(target_date_raw.split("T")[0])
+                        except Exception:
+                            td = None
+                    elif isinstance(target_date_raw, datetime):
+                        td = target_date_raw.date()
+                    elif isinstance(target_date_raw, _date):
+                        td = target_date_raw
+                    else:
+                        td = None
+
+                    if is_replay and not td:
+                        raise ValueError("Replay resolution requires a valid target_date")
+                    if is_replay:
+                        created_at = datetime.combine(td, day_time(9, 45), tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+                    else:
+                        created_at = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
+
                     cur.execute("""
                         INSERT INTO cio_resolutions (
                             resolution_id, thesis_id, decision_type, ticker,
                             debate_summary, final_resolution, verdict_payload,
                             previous_hash, decision_hash, governance_cosign, created_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP);
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
                     """, (
                         safe_res_uuid,
                         safe_thesis_id,
@@ -149,7 +173,8 @@ class StrategyCIOAgent(BaseAgent):
                         Json(payload),
                         self.last_decision_hash,
                         decision_hash,
-                        gov_cosign
+                        gov_cosign,
+                        created_at,
                     ))
             self.last_decision_hash = decision_hash
         except Exception as e:
@@ -354,17 +379,17 @@ class StrategyCIOAgent(BaseAgent):
                 weight_cap = 0.08
                 penalty_factor = 0.50
                 rationale = (
-                    f"CIO phĂ¡n quyáº¿t [Táº¦NG 3 - NORMAL RISK]: Cháº¥p thuáº­n giáº£i ngĂ¢n tháº­n trá»ng cho mĂ£ {ticker}. "
-                    f"Ghi nháº­n cĂ¡c cáº£nh bĂ¡o thá»‹ trÆ°á»ng/Ä‘á»‹nh giĂ¡ tá»« Counter-Thesis (CTS={cts_score:.1f}). "
-                    f"Ăp tráº§n tá»· trá»ng an toĂ n {weight_cap*100:.1f}% NAV vĂ  Ă¡p dá»¥ng há»‡ sá»‘ pháº¡t Kelly lambda={penalty_factor:.2f}."
+                    f"CIO phán quyết [TẦNG 3 - NORMAL RISK]: Chấp thuận giải ngân thận trọng cho mã {ticker}. "
+                    f"Ghi nhận các cảnh báo thị trường/định giá từ Counter-Thesis (CTS={cts_score:.1f}). "
+                    f"Áp trần tỷ trọng an toàn {weight_cap*100:.1f}% NAV và áp dụng hệ số phạt Kelly lambda={penalty_factor:.2f}."
                 )
                 conditions = ["APPLY_RISK_PENALTY_0_5", "MAX_POSITION_WEIGHT_CAP_8PCT", "TIGHT_TRAILING_STOP_LOSS"]
             else:
                 weight_cap = 0.15
                 penalty_factor = 1.0
                 rationale = (
-                    f"CIO phĂ¡n quyáº¿t [Táº¦NG 3 - NORMAL RISK]: PhĂª duyá»‡t toĂ n diá»‡n luáº­n Ä‘iá»ƒm Ä‘áº§u tÆ° cho {ticker}. "
-                    f"Tá»· lá»‡ Risk/Reward vÆ°á»£t trá»™i, rá»§i ro thÆ°Æ¡ng máº¡i á»Ÿ má»©c tháº¥p (CTS={cts_score:.1f})."
+                    f"CIO phán quyết [TẦNG 3 - NORMAL RISK]: Phê duyệt toàn diện luận điểm đầu tư cho {ticker}. "
+                    f"Tỷ lệ Risk/Reward vượt trội, rủi ro thương mại ở mức thấp (CTS={cts_score:.1f})."
                 )
                 conditions = ["STANDARD_QUARTER_KELLY_SIZING", "ROUTINE_MONITORING"]
             severity_tier = "TIER_3_NORMAL_BUSINESS_RISK"
@@ -373,6 +398,8 @@ class StrategyCIOAgent(BaseAgent):
             "resolution_id": resolution_id,
             "thesis_id": str(thesis_id),
             "ticker": ticker,
+            "target_date": conflict_data.get("target_date"),
+            "is_replay": bool(conflict_data.get("is_replay", False)),
             "severity_tier": severity_tier,
             "final_resolution": final_res,
             "weight_cap": weight_cap,
@@ -867,6 +894,10 @@ class StrategyCIOAgent(BaseAgent):
         # 4. PhĂ¢n xá»­ Xung Ä‘á»™t Luáº­n Ä‘iá»ƒm (Thesis vs Counter-Thesis hoáº·c Portfolio vs Risk)
         if "conflict" in event_data or action == "resolve_conflict":
             conflict_payload = event_data.get("conflict") or event_data
+            if "target_date" in event_data:
+                conflict_payload["target_date"] = event_data["target_date"]
+            if "is_replay" in event_data:
+                conflict_payload["is_replay"] = event_data["is_replay"]
             res = await self.resolve_conflict(conflict_payload)
             trace = {
                 "debate_synthesis": {

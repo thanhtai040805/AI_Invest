@@ -30,19 +30,42 @@ export async function getPositions(userId: string): Promise<PositionView[]> {
     include: { stock: true },
   });
 
+  const symbols = Array.from(new Set(positions.map((p) => p.symbol)));
+  const fallbackPrices: Record<string, number> = {};
+  if (symbols.length > 0) {
+    try {
+      const rows = (await (prisma as any).$queryRawUnsafe(`
+        SELECT ticker, (close_unadj * 1000)::float AS current_price
+        FROM (
+          SELECT ticker, close_unadj,
+                 ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY date DESC) as rn
+          FROM market_data_daily
+          WHERE ticker = ANY($1::text[])
+        ) t WHERE rn = 1
+      `, symbols)) as { ticker: string; current_price: number }[];
+      for (const r of rows) {
+        if (r.ticker && r.current_price != null) {
+          fallbackPrices[r.ticker] = Number(r.current_price);
+        }
+      }
+    } catch {
+      // fallback ignore
+    }
+  }
+
   return Promise.all(
     positions.map(async (pos) => {
       const quote = await aiEngineService.getQuote(pos.symbol).catch(() => null);
       const rawPrice = Number(quote?.price);
       const price = Number.isFinite(rawPrice) && rawPrice > 0
         ? (rawPrice < 500 ? Math.round(rawPrice * 1000) : rawPrice)
-        : Number(pos.avgPrice);
+        : (fallbackPrices[pos.symbol] ?? Number(pos.avgPrice));
       const marketValue = price * pos.quantity;
       const cost = Number(pos.avgPrice) * pos.quantity;
       return {
         id: pos.id,
         symbol: pos.symbol,
-        name: pos.stock.name,
+        name: pos.stock?.name || pos.symbol,
         quantity: pos.quantity,
         avgPrice: Number(pos.avgPrice),
         currentPrice: price,

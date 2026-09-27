@@ -121,7 +121,7 @@ class DualTierSniperEngine:
                     breakeven_trigger_pct=0.025, # Move stop to +0.2% when profit >= +2.5%
                     hard_stop_pct=-0.035, # Hard stop at -3.5%
                     take_profit_pct=None, # Runner mode with dynamic trailing
-                    rationale=f"Rank #{rank_idx} | High Conviction Z={z_val:.2f} >= {self.tier_a_plus_z_threshold}σ (Full Size, Runner Mode)"
+                    rationale=f"Rank #{rank_idx} | High Conviction Z={z_val:.2f} >= {self.tier_a_plus_z_threshold} sigma (Full Size, Runner Mode)"
                 )
                 instructions.append(inst)
                 
@@ -137,7 +137,7 @@ class DualTierSniperEngine:
                     breakeven_trigger_pct=0.025,
                     hard_stop_pct=-0.030, # Tighter stop at -3.0%
                     take_profit_pct=0.060, # Lock profit at +6.0%
-                    rationale=f"Rank #{rank_idx} | Moderate Conviction Z={z_val:.2f} >= {self.tier_a_z_threshold}σ (Half Size, Swing Lock Mode)"
+                    rationale=f"Rank #{rank_idx} | Moderate Conviction Z={z_val:.2f} >= {self.tier_a_z_threshold} sigma (Half Size, Swing Lock Mode)"
                 )
                 instructions.append(inst)
                 

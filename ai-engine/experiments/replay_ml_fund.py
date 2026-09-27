@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.domain.services.ml.standalone_ml_channel import StandaloneMLChannel
-from app.domain.services.ml.hybrid_stacking_ranker import HybridStackingRanker
+from app.domain.services.ml.hybrid_stacking_ranker import HybridStackingRanker, beneish_engine
 from app.domain.rules.stop_loss import StopLossEngine
 from app.domain.services.ml.dual_tier_sniper_engine import dual_tier_engine
 import pandas as pd
@@ -67,24 +67,50 @@ async def run(args):
             signal_time = datetime.combine(day, time(9,45), VN)
             bars = bars_for_day(day)
             state = repository.get_account_state(user_id=args.account_id, as_of=mark)
-            predictions = channel.predict_universe(target_date=day)
+            predictions = channel.predict_universe(target_date=day, limit_universe=100)
             if predictions.empty:
                 raise ValueError(f"No predictions for {day}")
             with get_conn() as conn:
                 vnindex = pd.read_sql("SELECT date, close FROM market_data_daily_calculation WHERE ticker='VNINDEX' AND date<%s ORDER BY date",conn,params=(day,)).set_index('date')
             vnindex.index=pd.to_datetime(vnindex.index)
             regime=dual_tier_engine.evaluate_macro_regime(vnindex,pd.Timestamp(mark))
+
+            # Layer 0 Forensic Gate: Exclude financial statement manipulators (M > -1.78)
+            clean_preds = predictions.copy()
+            try:
+                df_beneish = beneish_engine.fetch_and_compute_scores(predictions['ticker'].tolist())
+                if not df_beneish.empty:
+                    df_beneish_filtered = df_beneish[df_beneish["effective_date"] <= pd.Timestamp(day)]
+                    if not df_beneish_filtered.empty:
+                        latest_beneish = df_beneish_filtered.sort_values("effective_date").groupby("ticker").last()
+                        manipulators = set(latest_beneish[latest_beneish["is_manipulator"] == 1].index.str.upper())
+                        clean_preds = predictions[~predictions['ticker'].str.upper().isin(manipulators)].copy()
+            except Exception as e_ben:
+                logger.warning(f"Beneish filtering error on {day}: {e_ben}")
+
+            # Sniper Gate: Z >= 3.80 (Tier A+) or Z >= 2.85 (Tier A in Bull Expansion)
+            inst_trades = dual_tier_engine.generate_trade_allocations(
+                candidate_scores=clean_preds[['ticker', 'pred_score', 'adtv20_bil']],
+                regime=regime,
+                top_k=args.max_candidates
+            )
+            selected_tickers = [i.ticker for i in inst_trades]
+            buy_block = "BEAR_DEFENSE" if regime == "BEAR_DEFENSE" else ("NO_SNIPER_SETUP" if not selected_tickers else None)
+
             positions = repository.get_open_positions(user_id=args.account_id, as_of=mark, as_of_time=signal_time)
             tracked = {str(p['ticker']).upper() for p in positions}
-            tracked.update(str(t).upper() for t in predictions.sort_values('pred_score',ascending=False).head(args.max_candidates)['ticker'])
+            if selected_tickers:
+                tracked.update(str(t).upper() for t in selected_tickers)
             # Fetch historical depth before persisting the day's decisions.
             quotes = {ticker:quote_history(day,ticker) for ticker in sorted(tracked)}
             if any(not rows for rows in quotes.values()):
                 raise ValueError(f"Historical depth missing for {day}: {[t for t,r in quotes.items() if not r]}")
             original_predict = channel.predict_universe
-            channel.predict_universe = lambda **kw: predictions
+            channel.predict_universe = lambda **kw: clean_preds
             try:
-                result = await channel.run_autonomous_cycle(day, execution_mode='REPLAY', nav=float(state['total_nav']), max_candidates=args.max_candidates, buy_block_reason="BEAR_DEFENSE" if regime=="BEAR_DEFENSE" else None,
+                result = await channel.run_autonomous_cycle(day, candidate_tickers=selected_tickers if selected_tickers else None,
+                    execution_mode='REPLAY', nav=float(state['total_nav']), max_candidates=args.max_candidates, buy_block_reason=buy_block,
+                    min_z_threshold=2.85,
                     replay_prices={ticker:float(b['price']) for ticker,b in bars.items()})
             finally:
                 channel.predict_universe = original_predict
@@ -102,14 +128,36 @@ async def run(args):
                     peaks[ticker] = max(peaks.get(ticker,entry),current_price)
                     opened = position.get('opened_at')
                     available = 0 if calculate_is_t25_locked(opened,stamp) else int(position['shares'])
-                    stop = risk.check_position(ticker,int(position['shares']),entry,current_price,float(state['total_nav']),
-                        market_data={'peak_price':peaks[ticker], 'days_held':(day-opened.date()).days if opened else 0}, available_shares=available)
-                    if stop and stop.quantity>0:
-                        order_id=str(uuid.uuid4())
-                        with get_conn() as conn,conn.cursor() as cur:
-                            cur.execute("INSERT INTO orders (id,user_id,symbol,side,order_type,price,quantity,status,created_at) VALUES (%s,%s,%s,'SELL','REPLAY_ML_STOP',%s,%s,'PENDING_REPLAY',%s)",
-                                (order_id,args.account_id,ticker,current_price*.985,stop.quantity,stamp.replace(tzinfo=None)))
-                        waiting.append({'id':order_id,'ticker':ticker,'side':'SELL','shares':stop.quantity,'price':current_price*.985,'created_at':stamp})
+                    if available > 0:
+                        sell_reason = None
+                        days_held = (day - opened.date()).days if opened else 0
+                        gain_from_entry = (current_price - entry) / entry
+                        peak_gain = (peaks[ticker] - entry) / entry
+
+                        # Rule 1: Breakeven Shield (+2.5% -> +0.2%)
+                        if peak_gain >= 0.025 and gain_from_entry <= 0.002:
+                            sell_reason = "T25_BREAKEVEN"
+                        # Rule 2: Hard Stop (-3.5%)
+                        elif gain_from_entry <= -0.035:
+                            sell_reason = "T25_HARD_STOP"
+                        # Rule 3: Take Profit (+6.0%)
+                        elif gain_from_entry >= 0.060:
+                            sell_reason = "T25_SWING_TP"
+                        # Rule 4: Time Stop (5 trading days)
+                        elif days_held >= 5:
+                            sell_reason = "T25_TIME_5D"
+                        else:
+                            stop = risk.check_position(ticker, int(position['shares']), entry, current_price, float(state['total_nav']),
+                                market_data={'peak_price': peaks[ticker], 'days_held': days_held}, available_shares=available)
+                            if stop and stop.quantity > 0:
+                                sell_reason = stop.rule_level or "STOP_LOSS"
+
+                        if sell_reason:
+                            order_id = str(uuid.uuid4())
+                            with get_conn() as conn, conn.cursor() as cur:
+                                cur.execute("INSERT INTO orders (id,user_id,symbol,side,order_type,price,quantity,status,created_at) VALUES (%s,%s,%s,'SELL','REPLAY_ML_STOP',%s,%s,'PENDING_REPLAY',%s)",
+                                    (order_id, args.account_id, ticker, current_price * 0.985, available, stamp.replace(tzinfo=None)))
+                            waiting.append({'id': order_id, 'ticker': ticker, 'side': 'SELL', 'shares': available, 'price': current_price * 0.985, 'created_at': stamp})
                 for order in list(waiting):
                     if order['ticker']!=ticker or stamp<=order['created_at']:
                         continue

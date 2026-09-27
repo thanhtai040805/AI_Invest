@@ -233,6 +233,19 @@ class IntelligenceRepository:
                 status = EXCLUDED.status
         """
         now = datetime.now(timezone.utc)
+        # --- Replay-safe: pin created_at to target_date 09:45 VN when replaying ---
+        target_date_raw = thesis_data.get("target_date") or thesis_data.get("date") or thesis_data.get("analysis_date")
+        is_replay = bool(thesis_data.get("is_replay", False))
+        if is_replay and target_date_raw:
+            from datetime import date as _date, time as day_time
+            from zoneinfo import ZoneInfo
+            if isinstance(target_date_raw, str):
+                td = _date.fromisoformat(target_date_raw.split("T")[0])
+            elif isinstance(target_date_raw, datetime):
+                td = target_date_raw.date()
+            else:
+                td = target_date_raw
+            now = datetime.combine(td, day_time(9, 45), tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
         try:
             self.storage.execute(
                 query,
@@ -362,7 +375,21 @@ class IntelligenceRepository:
                 rationale = EXCLUDED.rationale,
                 evaluated_at = EXCLUDED.evaluated_at
         """
-        now = datetime.now(timezone.utc)
+        # --- Replay-safe: pin evaluated_at to target_date 09:45 VN when replaying ---
+        target_date_raw = verdict_data.get("target_date") or verdict_data.get("date") or verdict_data.get("analysis_date")
+        is_replay = bool(verdict_data.get("is_replay", False))
+        if is_replay and target_date_raw:
+            from datetime import date as _date, time as day_time
+            from zoneinfo import ZoneInfo
+            if isinstance(target_date_raw, str):
+                td = _date.fromisoformat(target_date_raw.split("T")[0])
+            elif isinstance(target_date_raw, datetime):
+                td = target_date_raw.date()
+            else:
+                td = target_date_raw
+            now = datetime.combine(td, day_time(9, 45), tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+        else:
+            now = datetime.now(timezone.utc)
         try:
             self.storage.execute(
                 query,

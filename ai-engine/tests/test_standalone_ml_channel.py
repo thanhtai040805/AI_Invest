@@ -9,8 +9,8 @@ Kiểm thử toàn diện:
 
 import asyncio
 import os
-import pytest
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from app.domain.services.ml.standalone_ml_channel import (
     StandaloneExecutionMode,
@@ -54,9 +54,16 @@ def test_standalone_prediction_universe():
 
 def test_standalone_autonomous_cycle():
     """Kiểm tra chu trình tự hành tạo lệnh và sizing 20% NAV / vị thế."""
+    today_str = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date().isoformat()
+    from app.infrastructure.database.pg_pool import get_conn
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM standalone_ml_predictions WHERE account_id = %s AND predict_date = %s", (standalone_ml_channel.account_id, today_str))
+        cur.execute("DELETE FROM orders WHERE user_id = %s AND side = 'BUY' AND status IN ('PENDING_SHADOW', 'PENDING_REPLAY')", (standalone_ml_channel.account_id,))
+        conn.commit()
+
     async def _run():
         res = await standalone_ml_channel.run_autonomous_cycle(
-            target_date="2026-09-04",
+            target_date=today_str,
             candidate_tickers=["FPT", "HPG", "VNM"],
             execution_mode=StandaloneExecutionMode.SHADOW_RUNNER,
             max_candidates=2,

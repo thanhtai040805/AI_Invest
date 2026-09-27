@@ -13,18 +13,55 @@ interface PriceTick { price?: number; close?: number; volume?: number }
 class RealMarketDatafeed implements Datafeed {
   private socketUnsub?: () => void
   private lastCandle?: KLineData
+  private historyCache: KLineData[] | null = null
+  private hasMoreHistory = true
+  private isFetching = false
+  private currentTicker = ""
+  private fallbackPrice = 25000
+
+  constructor(fallbackPrice = 25000) {
+    this.fallbackPrice = fallbackPrice > 0 ? fallbackPrice : 25000
+  }
+
+  setFallbackPrice(p: number) {
+    if (p > 0) this.fallbackPrice = p
+  }
 
   async searchSymbols(): Promise<SymbolInfo[]> {
     return []
   }
 
-  async getHistoryKLineData(symbol: SymbolInfo, period: Period, _from: number, _to: number): Promise<KLineData[]> {
+  async getHistoryKLineData(symbol: SymbolInfo, period: Period, from: number, to: number): Promise<KLineData[]> {
     void period
-    void _from
-    void _to
     const sym = symbol.ticker.toUpperCase()
+
+    // Reset cache if ticker changed
+    if (this.currentTicker !== sym) {
+      this.currentTicker = sym
+      this.historyCache = null
+      this.hasMoreHistory = true
+    }
+
+    // If history is already loaded and klinecharts is requesting older data (loadMore)
+    if (this.historyCache !== null) {
+      const oldestLoaded = this.historyCache[0]?.timestamp ?? 0
+      if (to <= oldestLoaded) {
+        // No older candles available in this window. Return empty array to signal hasMore = false
+        this.hasMoreHistory = false
+        return []
+      }
+      const inRange = this.historyCache.filter((c) => c.timestamp >= from && c.timestamp <= to)
+      return inRange.length > 0 ? inRange : []
+    }
+
+    // Prevent concurrent duplicate initial fetches
+    if (this.isFetching) {
+      return []
+    }
+
+    this.isFetching = true
     try {
-      const candles = await stockApi.ohlcv(sym) as ApiCandle[]
+      const candles = (await stockApi.ohlcv(sym, { limit: 300 })) as ApiCandle[]
       if (Array.isArray(candles) && candles.length > 0) {
         const sorted = [...candles].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
         const formatted: KLineData[] = sorted.map((c) => {
@@ -44,16 +81,23 @@ class RealMarketDatafeed implements Datafeed {
             turnover: volume * close,
           }
         })
+        this.historyCache = formatted
         this.lastCandle = formatted[formatted.length - 1]
+        if (formatted.length < 300) {
+          this.hasMoreHistory = false
+        }
         return formatted
       }
     } catch (err) {
       console.warn(`[KLineChart] Failed to fetch real OHLCV for ${sym}:`, err)
+    } finally {
+      this.isFetching = false
     }
 
     // Fallback if no history exists for ticker
+    this.hasMoreHistory = false
     const now = Date.now()
-    const basePrice = symbol.pricePrecision ? 25000 : 25000
+    const basePrice = this.fallbackPrice
     const fallback: KLineData = {
       timestamp: now,
       open: basePrice,
@@ -63,6 +107,7 @@ class RealMarketDatafeed implements Datafeed {
       volume: 1000,
       turnover: basePrice * 1000,
     }
+    this.historyCache = [fallback]
     this.lastCandle = fallback
     return [fallback]
   }
@@ -151,18 +196,42 @@ const defaultPeriods: Period[] = [
   { multiplier: 1, timespan: "month", text: "1M" },
 ]
 
+const DEFAULT_SUB_INDICATORS = ["VOL"]
+
 export function KLineChart({
-  ticker, name, basePrice, precision = 2, height = 360, subIndicators = ["VOL"], drawingBar = false,
+  ticker,
+  name,
+  basePrice = 25000,
+  precision = 2,
+  height = 360,
+  subIndicators = DEFAULT_SUB_INDICATORS,
+  drawingBar = false,
 }: {
-  ticker: string; name: string; basePrice: number; precision?: number; height?: number
-  subIndicators?: string[]; drawingBar?: boolean
+  ticker: string
+  name: string
+  basePrice?: number
+  precision?: number
+  height?: number
+  subIndicators?: string[]
+  drawingBar?: boolean
 }) {
   const ref = useRef<HTMLDivElement>(null)
+  const feedRef = useRef<RealMarketDatafeed | null>(null)
+  const subIndicatorsKey = subIndicators.join(",")
+
+  // Update fallback price without tearing down the chart instance
+  useEffect(() => {
+    if (feedRef.current && basePrice > 0) {
+      feedRef.current.setFallbackPrice(basePrice)
+    }
+  }, [basePrice])
 
   useEffect(() => {
     if (!ref.current) return
     const container = ref.current
-    const feed = new RealMarketDatafeed()
+    const feed = new RealMarketDatafeed(basePrice)
+    feedRef.current = feed
+
     try {
       new KLineChartPro({
         container,
@@ -180,12 +249,13 @@ export function KLineChart({
     } catch (e) {
       console.error("KLineChartPro init failed", e)
     }
+
     return () => {
-      // pro exposes no dispose(); stop the live feed and tear down its DOM
       feed.unsubscribe()
+      feedRef.current = null
       container.innerHTML = ""
     }
-  }, [ticker, name, basePrice, precision, drawingBar, subIndicators])
+  }, [ticker, name, precision, drawingBar, subIndicatorsKey])
 
   return <div ref={ref} className="klc-pro w-full overflow-hidden rounded-[8px] border border-line" style={{ height }} />
 }
