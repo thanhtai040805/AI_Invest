@@ -38,19 +38,41 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
 
   useEffect(() => {
     if (initialStock) {
-      // Sync refreshed quote props into the live state after the API request resolves.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setStock((prev) => ({
-        ...initialStock,
-        price: prev?.price ?? initialStock.price,
-        changePct: prev?.changePct ?? initialStock.changePct,
-        volume: prev?.volume ?? initialStock.volume,
-        ref: prev?.ref ?? initialStock.ref,
-        ceiling: prev?.ceiling ?? initialStock.ceiling,
-        floor: prev?.floor ?? initialStock.floor,
-      }))
+      setStock((prev) => {
+        if (!prev) return initialStock
+        if (
+          prev.symbol === initialStock.symbol &&
+          prev.price === initialStock.price &&
+          prev.changePct === initialStock.changePct &&
+          prev.ref === initialStock.ref &&
+          prev.ceiling === initialStock.ceiling &&
+          prev.floor === initialStock.floor &&
+          prev.volume === initialStock.volume &&
+          prev.name === initialStock.name
+        ) {
+          return prev
+        }
+        return {
+          ...initialStock,
+          price: prev.price ?? initialStock.price,
+          changePct: prev.changePct ?? initialStock.changePct,
+          volume: prev.volume ?? initialStock.volume,
+          ref: prev.ref ?? initialStock.ref,
+          ceiling: prev.ceiling ?? initialStock.ceiling,
+          floor: prev.floor ?? initialStock.floor,
+        }
+      })
     }
-  }, [initialStock])
+  }, [
+    initialStock?.symbol,
+    initialStock?.price,
+    initialStock?.changePct,
+    initialStock?.ref,
+    initialStock?.ceiling,
+    initialStock?.floor,
+    initialStock?.volume,
+    initialStock?.name,
+  ])
 
   useEffect(() => {
     if (!symbol) return
@@ -157,11 +179,24 @@ export function useRealtimeMarket(initialIndices?: {
 
   useEffect(() => {
     if (initialIndices) {
-      // Sync server supplied initial indices when the parent refreshes its data.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setIndices(initialIndices)
+      setIndices((prev) => {
+        if (
+          prev?.vnIndexVal === initialIndices.vnIndexVal &&
+          prev?.vnIndexPct === initialIndices.vnIndexPct &&
+          prev?.vn30Val === initialIndices.vn30Val &&
+          prev?.vn30Pct === initialIndices.vn30Pct
+        ) {
+          return prev
+        }
+        return initialIndices
+      })
     }
-  }, [initialIndices])
+  }, [
+    initialIndices?.vnIndexVal,
+    initialIndices?.vnIndexPct,
+    initialIndices?.vn30Val,
+    initialIndices?.vn30Pct,
+  ])
 
   useEffect(() => {
     const socket = getSocket()

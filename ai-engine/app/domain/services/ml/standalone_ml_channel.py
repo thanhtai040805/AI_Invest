@@ -14,16 +14,18 @@ Các đặc tính cốt lõi:
 4. Continuous Accuracy Tracking: Đo đạc và đối soát độ chính xác thực tế trên thị trường:
    - Realized Survival Rate vs Predicted Probability.
    - Directional Win Rate vs Predicted 3D Momentum.
-   - Realized PnL & Brier Score sau T+2.5 / T+3 phiên.
+   - Reference-price return after 3 observed sessions, separate from executed fund PnL.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import os
 import uuid
 from datetime import date, datetime, timedelta
 from enum import Enum
+from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
@@ -47,6 +49,7 @@ class StandaloneExecutionMode(str, Enum):
     LIVE = "LIVE"
     SHADOW_RUNNER = "SHADOW_RUNNER"
     DISABLED = "DISABLED"
+    REPLAY = "REPLAY"
 
 
 class StandaloneMLChannel:
@@ -59,6 +62,7 @@ class StandaloneMLChannel:
         account_id: Optional[str] = None,
         initial_nav: float = 500_000_000.0,
         position_weight: float = 0.20,
+        model=None,
     ):
         self.account_id = (
             account_id
@@ -69,59 +73,35 @@ class StandaloneMLChannel:
             os.getenv("STANDALONE_ML_POSITION_WEIGHT", str(position_weight))
         )
         self.portfolio_repo = PortfolioRepository()
-
-        # Đảm bảo khởi tạo tài khoản và bảng lưu trữ dự báo
-        self._ensure_storage_and_account()
+        self.model = model or hybrid_stacking_ranker
+        self._peak_prices: Dict[str, float] = {}
 
     def _ensure_storage_and_account(self) -> None:
-        """Đảm bảo tài khoản riêng và bảng theo dõi dự báo tồn tại trong PostgreSQL."""
-        try:
-            with get_conn() as conn:
-                with conn.cursor() as cur:
-                    # 1. Bảng lưu trữ và đối soát dự báo ML
-                    cur.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS standalone_ml_predictions (
-                            id SERIAL PRIMARY KEY,
-                            account_id VARCHAR(100) NOT NULL DEFAULT 'standalone-pure-ml-fund-account',
-                            predict_date DATE NOT NULL,
-                            ticker VARCHAR(20) NOT NULL,
-                            rank_pred FLOAT,
-                            mom_pred FLOAT,
-                            surv_prob FLOAT,
-                            pred_score_z FLOAT,
-                            shares INT,
-                            price FLOAT,
-                            target_weight_pct FLOAT,
-                            execution_mode VARCHAR(30),
-                            realized_min_lock_ret FLOAT,
-                            realized_3d_ret FLOAT,
-                            survival_outcome BOOLEAN,
-                            accuracy_evaluated_at TIMESTAMPTZ,
-                            created_at TIMESTAMPTZ DEFAULT NOW(),
-                            UNIQUE (predict_date, ticker, account_id)
-                        );
-                        """
-                    )
-                    # 2. Khởi tạo tài khoản riêng trong bảng users nếu chưa có
-                    cur.execute(
-                        """
-                        INSERT INTO users (id, email, password_hash, display_name, cash_balance, win_rate)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (id) DO NOTHING;
-                        """,
-                        (
-                            self.account_id,
-                            f"{self.account_id}@aiinvest.internal",
-                            "internal_system_account",
-                            "Standalone Pure-ML Fund (IOS v5.1)",
-                            self.default_nav,
-                            0.0,
-                        ),
-                    )
-                conn.commit()
-        except Exception as e:
-            logger.warning(f"[StandaloneMLChannel] Khởi tạo CSDL: {e}")
+        """Create the dedicated user only; table schema is managed by Prisma."""
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                # 2. Khởi tạo tài khoản riêng trong bảng users nếu chưa có
+                cur.execute(
+                    """
+                    INSERT INTO users (id, email, password_hash, display_name, cash_balance, win_rate)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO NOTHING;
+                    """,
+                    (
+                        self.account_id,
+                        f"{self.account_id}@aiinvest.internal",
+                        "internal_system_account",
+                        "Standalone Pure-ML Fund (IOS v5.1)",
+                        self.default_nav,
+                        0.0,
+                    ),
+                )
+                cur.execute(
+                    "INSERT INTO portfolio_account (account_id, cash_balance, total_nav, peak_nav, drawdown_tier, updated_at) "
+                    "SELECT id, cash_balance, cash_balance, cash_balance, 'GREEN', CURRENT_TIMESTAMP FROM users WHERE id = %s "
+                    "ON CONFLICT (account_id) DO NOTHING",
+                    (self.account_id,),
+                )
 
     def get_account_state(self) -> Dict[str, Any]:
         """Lấy trạng thái số dư và NAV độc lập của tài khoản Standalone Pure-ML."""
@@ -143,7 +123,7 @@ class StandaloneMLChannel:
         run_date_str = (
             target_date.isoformat()
             if isinstance(target_date, date)
-            else (str(target_date) if target_date else date.today().isoformat())
+            else (str(target_date) if target_date else datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date().isoformat())
         )
 
         tickers: List[str] = []
@@ -155,12 +135,12 @@ class StandaloneMLChannel:
                     q = """
                         SELECT ticker, SUM(close * volume_continuous) as total_val
                         FROM market_data_daily_calculation
-                        WHERE date >= '2026-01-01' AND ticker != 'VNINDEX'
+                        WHERE date >= %s::date - INTERVAL '1 year' AND date < %s::date AND ticker != 'VNINDEX'
                         GROUP BY ticker
                         ORDER BY total_val DESC
                         LIMIT %s;
                     """
-                    df_t = pd.read_sql(q, conn, params=(limit_universe,))
+                    df_t = pd.read_sql(q, conn, params=(run_date_str, run_date_str, limit_universe))
                     tickers = df_t["ticker"].tolist()
             except Exception as e:
                 logger.error(f"Lỗi nạp Universe từ DB: {e}")
@@ -176,10 +156,10 @@ class StandaloneMLChannel:
                     SELECT ticker, date, open, high, low, close, volume_continuous as volume
                     FROM market_data_daily_calculation
                     WHERE ticker IN ({','.join([repr(t) for t in tickers])})
-                    AND date >= '2025-01-01' AND date <= %s
+                    AND date >= %s::date - INTERVAL '3 years' AND date < %s::date
                     ORDER BY ticker, date ASC;
                 """
-                df_data = pd.read_sql(q_data, conn, params=(run_date_str,))
+                df_data = pd.read_sql(q_data, conn, params=(run_date_str, run_date_str))
         except Exception as e:
             logger.error(f"Lỗi truy vấn OHLCV: {e}")
             return pd.DataFrame()
@@ -232,13 +212,14 @@ class StandaloneMLChannel:
 
         eval_df = pd.concat(combined_list)
         # Đảm bảo toàn bộ 51 features của mô hình đều có mặt
-        for col in hybrid_stacking_ranker.feature_cols:
+        for col in self.model.feature_cols:
             if col not in eval_df.columns:
                 eval_df[col] = 0.0
 
         # 3. Chạy dự báo qua mô hình Hybrid Stacking
-        preds_df = hybrid_stacking_ranker.predict_hybrid_scores(eval_df)
+        preds_df = self.model.predict_hybrid_scores(eval_df)
         preds_df["close"] = eval_df["close"].values
+        preds_df["feature_date"] = eval_df.index.date
         return preds_df
 
     async def run_autonomous_cycle(
@@ -248,6 +229,8 @@ class StandaloneMLChannel:
         execution_mode: Optional[Union[StandaloneExecutionMode, str]] = None,
         max_candidates: int = 5,
         nav: Optional[float] = None,
+        replay_prices: Optional[Dict[str, float]] = None,
+        buy_block_reason: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Vận hành chu trình tự động độc lập hoàn chỉnh:
@@ -260,7 +243,7 @@ class StandaloneMLChannel:
         run_date_str = (
             target_date.isoformat()
             if isinstance(target_date, date)
-            else (str(target_date) if target_date else date.today().isoformat())
+            else (str(target_date) if target_date else datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date().isoformat())
         )
         target_date_obj = (
             date.fromisoformat(run_date_str)
@@ -293,8 +276,26 @@ class StandaloneMLChannel:
                 "orders": [],
             }
 
-        account_state = self.get_account_state()
-        current_nav = nav or float(account_state.get("total_nav", account_state.get("cash_balance", self.default_nav)))
+        today = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date()
+        is_replay = exec_mode == StandaloneExecutionMode.REPLAY
+        if is_replay:
+            trained_through = getattr(self.model, "trained_through", None)
+            if target_date_obj >= today or replay_prices is None:
+                raise ValueError("ML replay requires a historical session and historical prices")
+            if not trained_through or date.fromisoformat(trained_through) >= target_date_obj:
+                raise ValueError("Replay model must be trained strictly before the replay session")
+        elif target_date_obj != today or replay_prices is not None:
+            raise ValueError("Live ML queue is today-only; historical prices require REPLAY mode")
+        if not math.isfinite(self.position_weight) or not 0 < self.position_weight <= 1:
+            raise ValueError("ML position weight must be in (0, 1]")
+        if not is_replay:
+            self._ensure_storage_and_account()
+        account_state = self.portfolio_repo.get_account_state(
+            user_id=self.account_id, as_of=target_date_obj - timedelta(days=1) if is_replay else None
+        )
+        current_nav = float(nav if nav is not None else account_state["total_nav"])
+        if not math.isfinite(current_nav) or current_nav < 0:
+            raise ValueError("Invalid ML NAV")
         cash_balance = float(account_state.get("cash_balance", current_nav))
 
         logger.info(
@@ -318,134 +319,102 @@ class StandaloneMLChannel:
                 "orders": [],
             }
 
-        # Lấy danh sách cổ phiếu hiện đang nắm giữ để tránh mua trùng
-        held_tickers = {str(p.get("symbol", p.get("ticker"))).upper().strip() for p in self.get_open_positions()}
-        remaining_cash = max(0.0, cash_balance)
-
-        # Lọc và sắp xếp ứng viên theo pred_score giảm dần
-        sorted_df = preds_df.sort_values("pred_score", ascending=False)
-        selected_candidates = sorted_df.head(max_candidates)
-
+        # Persist every signal and its decision together with the pending order.
+        # Locking the user serializes daily decisions against fills and other cycles.
         qualified_orders: List[Dict[str, Any]] = []
-        target_capital_per_pos = current_nav * self.position_weight
+        sorted_df = preds_df.sort_values("pred_score", ascending=False)
+        prices = dict(replay_prices or {})
+        if not is_replay:
+            from app.domain.repositories.market_data_repository import MarketDataRepository
+            market_repo = MarketDataRepository()
+            for _, row in sorted_df.head(max_candidates).iterrows():
+                ticker = str(row["ticker"]).upper().strip()
+                quote = market_repo.get_realtime_or_latest_price(ticker, allow_eod_fallback=False, socket_only=True)
+                if quote and math.isfinite(float(quote)) and quote > 0:
+                    prices[ticker] = float(quote)
+        pending_status = "PENDING_REPLAY" if is_replay else "PENDING_SHADOW"
+        order_type = "REPLAY_ML_LIMIT" if is_replay else "SHADOW_ML_LIMIT"
 
-        for _, row in selected_candidates.iterrows():
-            ticker = str(row["ticker"]).upper().strip()
-            raw_close = float(row.get("close", 0.0))
-            if raw_close <= 0:
-                continue
-
-            # Ưu tiên lấy giá Realtime từ DNSE OpenAPI / WebSocket
-            try:
-                from app.domain.repositories.market_data_repository import MarketDataRepository
-                m_repo = MarketDataRepository()
-                rt_price = m_repo.get_realtime_or_latest_price(ticker)
-                if rt_price and rt_price > 0:
-                    close_price = float(rt_price)
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("SELECT cash_balance FROM users WHERE id = %s FOR UPDATE", (self.account_id,))
+            cash_row = cur.fetchone()
+            if not cash_row or cash_row[0] is None:
+                raise LookupError("ML account cash balance is unavailable")
+            cur.execute("SELECT symbol FROM positions WHERE user_id = %s AND quantity > 0", (self.account_id,))
+            held_tickers = {str(row[0]).upper() for row in cur.fetchall()}
+            cur.execute("SELECT symbol, quantity, price FROM orders WHERE user_id = %s AND side = 'BUY' AND status IN ('PENDING_SHADOW', 'PENDING_REPLAY')", (self.account_id,))
+            pending = cur.fetchall()
+            pending_tickers = {str(row[0]).upper() for row in pending}
+            reserved = sum(float(row[1]) * float(row[2]) + max(float(row[1]) * float(row[2]) * 0.001, 10000.0) for row in pending)
+            remaining_cash = max(0.0, float(cash_row[0]) - reserved)
+            for index, (_, row) in enumerate(sorted_df.iterrows()):
+                ticker = str(row["ticker"]).upper().strip()
+                raw_close = float(row.get("close", 0.0))
+                reference_price = raw_close * 1000.0 if raw_close < 1000.0 else raw_close
+                limit_price = prices.get(ticker, reference_price)
+                scores = [float(row.get(key, float("nan"))) for key in ("rank_pred", "mom_pred", "surv_prob", "pred_score")]
+                rank_pred, mom_pred, surv_prob, pred_score = scores
+                feature_date = row["feature_date"]
+                if isinstance(feature_date, datetime):
+                    feature_date = feature_date.date()
+                elif isinstance(feature_date, str):
+                    feature_date = date.fromisoformat(feature_date)
+                if not isinstance(feature_date, date) or feature_date >= target_date_obj:
+                    raise ValueError("ML features must precede the decision session")
+                shares = 0
+                reason = "SELECTED"
+                if not all(math.isfinite(n) for n in [reference_price, limit_price, *scores]) or reference_price <= 0 or limit_price <= 0 or not 0 <= surv_prob <= 1:
+                    reason = "INVALID_PREDICTION"
+                elif is_replay and ticker not in prices:
+                    reason = "NO_HISTORICAL_PRICE"
+                elif buy_block_reason:
+                    reason = buy_block_reason
+                elif index >= max_candidates:
+                    reason = "OUTSIDE_TOP_K"
+                elif ticker in held_tickers:
+                    reason = "ALREADY_HELD"
+                elif ticker in pending_tickers:
+                    reason = "ORDER_ALREADY_PENDING"
                 else:
-                    close_price = raw_close * 1000.0 if raw_close < 1000.0 else raw_close
-            except Exception:
-                close_price = raw_close * 1000.0 if raw_close < 1000.0 else raw_close
-
-            # Tránh mua trùng lặp nếu đã nắm giữ vị thế mã này trong tài khoản
-            if ticker in held_tickers and not candidate_tickers:
-                continue
-
-            # Kiểm tra số dư tiền mặt khả dụng
-            if remaining_cash < close_price * 100 and not candidate_tickers:
-                logger.info(f"[Standalone ML Fund] Tiền mặt khả dụng ({remaining_cash:,.0f} VND) không đủ mở thêm vị thế {ticker}.")
-                continue
-
-            surv_prob = float(row.get("surv_prob", 0.50))
-            mom_pred = float(row.get("mom_pred", 0.0))
-            pred_score = float(row.get("pred_score", 0.0))
-            rank_pred = float(row.get("rank_pred", 0.0))
-
-            # Tính số lượng cổ phiếu theo chuẩn lô 100 sàn HOSE, không vượt quá tiền mặt
-            alloc_capital = min(target_capital_per_pos, remaining_cash) if remaining_cash > 0 else target_capital_per_pos
-            shares = int(alloc_capital / close_price / 100) * 100
-            if shares <= 0:
-                shares = 100
-
-            order_val = shares * close_price
-            if order_val > remaining_cash and remaining_cash >= close_price * 100:
-                shares = int(remaining_cash / close_price / 100) * 100
-                order_val = shares * close_price
-
-            remaining_cash = max(0.0, remaining_cash - order_val)
-
-            tier = "TIER_A_PLUS" if pred_score >= 1.0 else "TIER_A"
-            conviction = "A+" if pred_score >= 1.0 else "A"
-
-            order_record = {
-                "ticker": ticker,
-                "account_id": self.account_id,
-                "tier": tier,
-                "conviction": conviction,
-                "z_score": round(pred_score, 2),
-                "pred_score": round(pred_score, 2),
-                "surv_prob": round(surv_prob, 4),
-                "mom_pred": round(mom_pred, 4),
-                "shares": shares,
-                "price": close_price,
-                "target_weight_pct": self.position_weight,
-                "execution_mode": exec_mode.value,
-                "action": "SHADOW_PAPER_TRADE_ONLY",
-                "rationale": (
-                    f"[STANDALONE PURE-ML] P(Surv)={surv_prob:.1%} | "
-                    f"E[Mom3D]={mom_pred:+.2%} | Z={pred_score:+.2f}"
-                ),
-            }
-            qualified_orders.append(order_record)
-
-            # Lưu snapshot dự báo vào bảng standalone_ml_predictions
-            try:
-                with get_conn() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            """
-                            INSERT INTO standalone_ml_predictions (
-                                account_id, predict_date, ticker, rank_pred, mom_pred,
-                                surv_prob, pred_score_z, shares, price, target_weight_pct, execution_mode
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            ON CONFLICT (predict_date, ticker, account_id) DO UPDATE SET
-                                rank_pred = EXCLUDED.rank_pred,
-                                mom_pred = EXCLUDED.mom_pred,
-                                surv_prob = EXCLUDED.surv_prob,
-                                pred_score_z = EXCLUDED.pred_score_z,
-                                shares = EXCLUDED.shares,
-                                price = EXCLUDED.price,
-                                execution_mode = EXCLUDED.execution_mode;
-                            """,
-                            (
-                                self.account_id,
-                                target_date_obj,
-                                ticker,
-                                rank_pred,
-                                mom_pred,
-                                surv_prob,
-                                pred_score,
-                                shares,
-                                close_price,
-                                self.position_weight,
-                                exec_mode.value,
-                            ),
-                        )
-                    conn.commit()
-            except Exception as e:
-                logger.debug(f"Lưu dự báo standalone_ml_predictions: {e}")
-
-            # Nếu chạy SHADOW_RUNNER, tự động khớp paper trade vào tài khoản độc lập
-            if exec_mode == StandaloneExecutionMode.SHADOW_RUNNER:
-                try:
-                    order_record["order_id"] = self.portfolio_repo.create_shadow_pending_order(
-                        ticker=ticker, shares=shares, limit_price=close_price,
-                        user_id=self.account_id, order_type="SHADOW_ML_LIMIT",
-                    )
-                    order_record["execution_status"] = "PENDING_SHADOW"
-                except Exception as e_pt:
-                    order_record["execution_status"] = "QUEUE_FAILED"
-                    logger.warning("Could not queue Shadow order for %s: %s", ticker, e_pt)
+                    capital = min(current_nav * self.position_weight, remaining_cash)
+                    # Include the same brokerage fee used by PortfolioRepository.
+                    budget = min(capital / 1.001, max(0.0, capital - 10000.0))
+                    shares = int(budget / limit_price / 100) * 100
+                    if shares <= 0:
+                        reason = "INSUFFICIENT_BUDGET"
+                decision = "BUY" if shares > 0 else "SKIP"
+                order_id = str(uuid.uuid4()) if shares > 0 else None
+                cur.execute("""
+                    INSERT INTO standalone_ml_predictions (
+                      account_id, predict_date, feature_date, ticker, rank_pred, mom_pred,
+                      surv_prob, pred_score_z, shares, price, target_weight_pct, execution_mode,
+                      decision, decision_reason, order_id, model_version
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (predict_date, ticker, account_id) DO NOTHING RETURNING id
+                """, (self.account_id, target_date_obj, feature_date, ticker,
+                      *[n if math.isfinite(n) else None for n in scores], shares,
+                      reference_price if math.isfinite(reference_price) and reference_price > 0 else None,
+                      self.position_weight, exec_mode.value, decision, reason, order_id, getattr(self.model, "model_version", None)))
+                if not cur.fetchone():
+                    continue  # Daily snapshot is immutable; never requeue or invalidate its accuracy.
+                if not order_id:
+                    continue
+                created_at = datetime.combine(target_date_obj, datetime.min.time()).replace(hour=9, minute=45) if is_replay else datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).replace(tzinfo=None)
+                cur.execute("""INSERT INTO orders (id, user_id, symbol, side, order_type, price, quantity, status, created_at)
+                    VALUES (%s, %s, %s, 'BUY', %s, %s, %s, %s, %s)
+                """, (order_id, self.account_id, ticker, order_type, limit_price, shares, pending_status, created_at))
+                remaining_cash -= shares * limit_price + max(shares * limit_price * 0.001, 10000.0)
+                pending_tickers.add(ticker)
+                qualified_orders.append({
+                    "ticker": ticker, "account_id": self.account_id, "order_id": order_id,
+                    "shares": shares, "price": limit_price, "target_weight_pct": self.position_weight,
+                    "rank_pred": rank_pred, "pred_score": pred_score, "z_score": pred_score,
+                    "tier": "TIER_A_PLUS" if pred_score >= 1.0 else "TIER_A",
+                    "conviction": "A+" if pred_score >= 1.0 else "A",
+                    "surv_prob": surv_prob, "mom_pred": mom_pred, "execution_mode": exec_mode.value,
+                    "execution_status": pending_status, "action": "SHADOW_PAPER_TRADE_ONLY",
+                    "rationale": f"[STANDALONE PURE-ML] P(Surv)={surv_prob:.1%} | E[Mom3D]={mom_pred:+.2%} | Z={pred_score:+.2f}",
+                })
 
         logger.info(
             f"[Standalone ML Fund] Hoàn tất chu trình: Đề xuất {len(qualified_orders)} lệnh "
@@ -462,6 +431,50 @@ class StandaloneMLChannel:
             "orders": qualified_orders,
             "predictions_count": len(preds_df),
         }
+
+    async def monitor_positions(self) -> Dict[str, Any]:
+        """Protect only ML holdings; sell orders still wait for executable live depth."""
+        if os.getenv("STANDALONE_ML_MODE", "SHADOW_RUNNER") != "SHADOW_RUNNER":
+            return {"monitored": 0, "queued": 0}
+        from app.domain.rules.stop_loss import StopLossEngine
+        from app.domain.rules.execution.shadow_fill import shadow_fill
+        from app.infrastructure.external_api.market_data_service import market_data_svc
+        from app.domain.repositories.portfolio_repository import calculate_is_t25_locked
+
+        account = self.get_account_state()
+        positions = self.get_open_positions()
+        now = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
+        risk = StopLossEngine()
+        queued = 0
+        for position in positions:
+            ticker = str(position["ticker"]).upper()
+            quantity = int(position["shares"])
+            if quantity < 100 or calculate_is_t25_locked(position.get("opened_at"), now):
+                continue
+            try:
+                book = await market_data_svc.get_order_book(ticker)
+                current_price = shadow_fill(book, "SELL", 100, 1.0, now=now)
+            except ValueError:
+                continue  # Stale/empty depth cannot produce an artificial protective fill.
+            self._peak_prices[ticker] = max(self._peak_prices.get(ticker, float(position["average_price"])), current_price)
+            stop = risk.check_position(
+                ticker, quantity, float(position["average_price"]), current_price,
+                float(account["total_nav"]), available_shares=quantity,
+                market_data={"peak_price": self._peak_prices[ticker], "days_held": (now.date() - position["opened_at"].date()).days if position.get("opened_at") else 0},
+            )
+            if not stop or stop.quantity <= 0:
+                continue
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute("SELECT id FROM users WHERE id = %s FOR UPDATE", (self.account_id,))
+                if not cur.fetchone():
+                    raise LookupError("ML account is unavailable")
+                cur.execute("SELECT id FROM orders WHERE user_id = %s AND symbol = %s AND side = 'SELL' AND status = 'PENDING_SHADOW'", (self.account_id, ticker))
+                if cur.fetchone():
+                    continue
+                cur.execute("INSERT INTO orders (id,user_id,symbol,side,order_type,price,quantity,status,created_at) VALUES (%s,%s,%s,'SELL','SHADOW_ML_LIMIT',%s,%s,'PENDING_SHADOW',%s)",
+                    (str(uuid.uuid4()), self.account_id, ticker, current_price * 0.985, stop.quantity, now.replace(tzinfo=None)))
+                queued += 1
+        return {"monitored": len(positions), "queued": queued}
 
     def evaluate_forward_accuracy(self, lookback_days: int = 60) -> Dict[str, Any]:
         """
@@ -482,11 +495,11 @@ class StandaloneMLChannel:
                 with conn.cursor() as cur:
                     cur.execute(
                         """
-                        SELECT id, predict_date, ticker, price, surv_prob, mom_pred
+                        SELECT id, COALESCE(feature_date, predict_date), ticker, price, surv_prob, mom_pred
                         FROM standalone_ml_predictions
                         WHERE account_id = %s
                         AND accuracy_evaluated_at IS NULL
-                        AND predict_date <= CURRENT_DATE - INTERVAL '3 days'
+                        AND COALESCE(feature_date, predict_date) < (now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date
                         ORDER BY predict_date ASC;
                         """,
                         (self.account_id,),
@@ -505,7 +518,7 @@ class StandaloneMLChannel:
                     q_post = """
                         SELECT date, low, close
                         FROM market_data_daily_calculation
-                        WHERE ticker = %s AND date > %s
+                        WHERE ticker = %s AND date > %s AND date <= (now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date
                         ORDER BY date ASC
                         LIMIT 3;
                     """
@@ -565,10 +578,11 @@ class StandaloneMLChannel:
                     """
                     SELECT surv_prob, mom_pred, realized_min_lock_ret, realized_3d_ret, survival_outcome
                     FROM standalone_ml_predictions
-                    WHERE account_id = %s AND accuracy_evaluated_at IS NOT NULL;
+                    WHERE account_id = %s AND accuracy_evaluated_at IS NOT NULL
+                      AND predict_date BETWEEN (now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date - (%s - 1) AND (now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date;
                     """,
                     conn,
-                    params=(self.account_id,),
+                    params=(self.account_id, lookback_days),
                 )
 
             if not df_all.empty:

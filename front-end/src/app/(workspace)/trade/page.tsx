@@ -80,7 +80,7 @@ export default function Trade() {
     }
   }, [quoteData, symbol])
 
-  const { stock: rtStock, flash } = useRealtimeStock(symbol, {
+  const initialStock = useMemo(() => ({
     symbol: liveQuote.symbol,
     name: liveQuote.name,
     price: liveQuote.price,
@@ -101,17 +101,21 @@ export default function Trade() {
     pe: 12,
     foreign: liveQuote.flow,
     spark: [],
-  })
+  }), [liveQuote])
+
+  const { stock: rawStock, flash } = useRealtimeStock(symbol, initialStock)
+  const rtStock = rawStock || initialStock
 
   // Real chart points
   const chartPoints = useMemo(() => {
     if (Array.isArray(historyData) && historyData.length > 0) {
-      return historyData.slice(-30).map((h: {close?: number; close_adj?: number}) => {
+      const valid = historyData.slice(-30).map((h: {close?: number; close_adj?: number}) => {
         const c = Number(h.close ?? h.close_adj ?? 0)
         return c < 500 && c > 0 ? c * 1000 : c
-      }).filter((v: number) => v > 0)
+      }).filter((v: number) => Number.isFinite(v) && v > 0)
+      if (valid.length > 0) return valid
     }
-    return rtStock.price > 0 ? [rtStock.price] : []
+    return rtStock.price > 0 ? [rtStock.price, rtStock.price] : []
   }, [historyData, rtStock.price])
 
   const currentPrice = rtStock.price || liveQuote.price

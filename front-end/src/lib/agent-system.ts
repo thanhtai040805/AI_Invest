@@ -118,38 +118,16 @@ export interface RunItem {
 
 export const defaultRuns: RunItem[] = [
   {
-    id: "run-live",
-    label: "Phiên chiều (Tự hành)",
-    time: "14:15",
-    triggered: "Hệ thống AI Engine",
+    id: "run-0945",
+    label: "Phiên 09:45 (Tự hành)",
+    time: "09:45",
+    triggered: "Autonomous Pipeline · Khớp lệnh liên tục HOSE",
     agentsRun: 12,
     cases: [
       { symbol: "HPG", status: "Confirmed", note: "Biên lợi nhuận và dòng tiền nước ngoài duy trì tốt" },
       { symbol: "MBB", status: "Confirmed", note: "Khối ngoại mua ròng tiếp diễn ở nhóm ngân hàng" },
       { symbol: "FPT", status: "Updated", note: "Đà tăng trưởng công nghệ duy trì ở vùng đỉnh" },
       { symbol: "SSI", status: "Watching", note: "Thanh khoản mở rộng, theo dõi hấp thụ cung" },
-    ],
-  },
-  {
-    id: "run-midday",
-    label: "Tổng hợp giữa phiên",
-    time: "11:30",
-    triggered: "Định kỳ trưa",
-    agentsRun: 12,
-    cases: [
-      { symbol: "HPG", status: "Updated", note: "Hấp thụ tốt lực bán phiên sáng" },
-      { symbol: "FPT", status: "Confirmed", note: "Sức mạnh giá tương đối RS vượt trội" },
-    ],
-  },
-  {
-    id: "run-morning",
-    label: "Quét đầu phiên sáng",
-    time: "09:15",
-    triggered: "Biến động thanh khoản",
-    agentsRun: 11,
-    cases: [
-      { symbol: "SSI", status: "New", note: "Đột biến khối lượng mở phiên" },
-      { symbol: "HPG", status: "New", note: "Khối lượng đạt 2.1x trung bình 20 phiên" },
     ],
   },
 ]

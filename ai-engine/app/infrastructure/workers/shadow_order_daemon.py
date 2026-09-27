@@ -45,7 +45,7 @@ class ShadowOrderDaemon:
 
                 if order["order_type"] == "SHADOW_ML_LIMIT":
                     self.repository.execute_order_transaction(
-                        ticker=order["ticker"], action="BUY", shares=order["shares"],
+                        ticker=order["ticker"], action=order["side"], shares=order["shares"],
                         executed_price=fill_price, target_price=order["limit_price"],
                         execution_mode="SHADOW_PAPER", user_id=order["user_id"],
                         status="FILLED", pending_order_id=order["order_id"],

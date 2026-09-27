@@ -1,4 +1,4 @@
-# Rule 01: Repository Architecture Map
+# Rule 01: AIInvest Architecture Map
 
 This map describes intended responsibilities in AIInvest. Use it to orient
 changes, then verify the target area's actual structure and established
@@ -8,15 +8,17 @@ follow the working contracts and call out the documentation drift when useful.
 
 ## Repository overview
 
-- `ai-engine/app/domain/`: domain concepts and business calculations.
-- `ai-engine/app/application/`: use cases, workflows, and orchestration.
-- `ai-engine/app/infrastructure/`: persistence and external system adapters.
-- `ai-engine/app/presentation/`: API, CLI, and transport-facing code.
+- `ai-engine/app/domain/`: domain concepts, value objects, exceptions, business
+  calculations, and repository contracts.
+- `ai-engine/app/application/`: use cases, services, pipelines, handlers, and
+  orchestration.
+- `ai-engine/app/infrastructure/`: concrete repositories, sessions, Redis,
+  queues, OCR, storage, and external connectors.
+- `ai-engine/app/presentation/`: FastAPI, DTOs, validation, transport, and CLI.
 - `ai-engine/app/core/`: shared runtime concerns such as configuration,
   telemetry, security, and connection management.
-- `ai-engine/app/adapters/`: format adapters and legacy bridges.
-- `ai-engine/app/backtest/`: simulation and portfolio mathematics.
-- `ai-engine/app/eval/`: model evaluation and benchmark metrics.
+- `ai-engine/app/adapters/`, `backtest/`, and `eval/`: adapters, simulation,
+  and evaluation respectively.
 - `SAG/`: financial evidence engine.
 - `back-end/`: NestJS and Prisma services.
 - `front-end/`: Next.js application.

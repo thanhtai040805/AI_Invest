@@ -68,7 +68,7 @@ class InvestmentThesisAgent(BaseAgent):
             - market_context: Dict[str, Any] (từ Agent-01)
             - valuation_inputs: {pe_price, ev_ebitda_price, dcf_price}
             - timeline_months: int (1, 3, 6; mặc định 3)
-            - seq_num: int (mặc định 1)
+            - seq_num: int (tùy chọn; mặc định tạo phiên bản riêng)
             - custom_catalyst_desc: str (tùy chọn)
         """
         research_report = event_data.get("research_report", {})
@@ -97,7 +97,7 @@ class InvestmentThesisAgent(BaseAgent):
                 logger.warning("Không thể định giá point-in-time cho %s: %s", ticker, exc)
                 val_inputs = {}
         timeline_months = int(event_data.get("timeline_months", 3))
-        seq_num = int(event_data.get("seq_num", 1))
+        seq_num = int(event_data["seq_num"]) if event_data.get("seq_num") is not None else None
         custom_catalyst_desc = event_data.get("custom_catalyst_desc")
 
         # 1. Sàng lọc theo bằng chứng tài chính độc lập và ngưỡng Conviction.

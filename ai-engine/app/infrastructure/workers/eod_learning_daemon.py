@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import date, datetime, time as dt_time
 from typing import Any, Dict, Optional
 from zoneinfo import ZoneInfo
@@ -84,6 +85,25 @@ class EODLearningDaemon:
             "Tự động kích hoạt EOD Causal Learning Pipeline..."
         )
         self._last_status = "RUNNING_SCHEDULED"
+        # Persist the independent ML fund close even if the multi-agent EOD run fails.
+        try:
+            from app.domain.repositories.portfolio_repository import PortfolioRepository
+            from app.infrastructure.database.pg_pool import get_conn
+            account_id = os.getenv("STANDALONE_ML_ACCOUNT_ID", "standalone-pure-ml-fund-account").strip()
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1 FROM portfolio_account WHERE account_id=%s", (account_id,))
+                    exists = cur.fetchone() is not None
+                    cur.execute("SELECT count(*) FROM positions p WHERE p.user_id=%s AND p.quantity>0 AND NOT EXISTS (SELECT 1 FROM market_data_daily d WHERE d.ticker=p.symbol AND d.date=%s AND d.close_unadj IS NOT NULL)", (account_id, now.date()))
+                    missing = cur.fetchone()[0]
+            if exists and not missing:
+                PortfolioRepository().record_replay_mark(user_id=account_id, mark_as_of=now.date())
+            elif missing:
+                logger.warning("ML closing NAV deferred: %s positions lack today's close", missing)
+                return  # Retry after daily prices become available.
+        except Exception:
+            logger.exception("ML closing NAV failed; will retry")
+            return
         try:
             res = await self.runner.run(target_date=today_str, force=False)
             self._last_run_date = today_str

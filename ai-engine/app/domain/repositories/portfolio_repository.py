@@ -11,12 +11,23 @@ import os
 import uuid
 from copy import deepcopy
 from datetime import date, datetime, time, timedelta
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from app.adapters.postgres_adapter import PostgresAdapter
 
 logger = logging.getLogger(__name__)
+
+
+def execution_amounts(shares: int, price: float, action: str) -> Tuple[float, float, float, float]:
+    """Keep cash receipts independent of the rounded displayed average fill price."""
+    gross = (Decimal(str(price)) * shares).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    fee = max(gross * Decimal("0.001"), Decimal("10000"))
+    tax = gross * Decimal("0.001") if action in ("SELL", "SELL_MP") else Decimal("0")
+    delta = -gross - fee if action == "BUY" else max(Decimal("0"), gross - fee - tax)
+    delta = delta.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return tuple(float(value) for value in (gross, fee, tax, delta))
 
 
 def calculate_is_t25_locked(opened_at: Any, now_dt: Optional[datetime] = None) -> bool:
@@ -243,6 +254,7 @@ class PortfolioRepository:
                         "available_shares": available_shares,
                         "locked_t25_shares": locked_shares,
                         "average_price": avg_p,
+                        "opened_at": opened_at,
                         "avg_price": avg_p,
                         "current_price": current_p,
                         "market_value": mkt_val,
@@ -382,6 +394,7 @@ class PortfolioRepository:
         user_id: str,
         executed_at: datetime,
         mark_as_of: date,
+        pending_order_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Atomically persist a simulated fill to the explicitly allowlisted replay DB."""
         ticker = ticker.upper().strip()
@@ -398,16 +411,25 @@ class PortfolioRepository:
         if mark_as_of >= execution_local.date():
             raise ValueError("Daily replay mark must be strictly before the fill date")
 
-        trade_value = float(shares * executed_price)
-        brokerage_fee = max(trade_value * 0.001, 10_000.0)
-        tax = trade_value * 0.001 if action == "SELL" else 0.0
-        cash_delta = -(trade_value + brokerage_fee) if action == "BUY" else trade_value - brokerage_fee - tax
-        order_id = str(uuid.uuid4())
+        trade_value, brokerage_fee, tax, cash_delta = execution_amounts(shares, executed_price, action)
+        order_id = str(pending_order_id or uuid.uuid4())
         position_id = str(uuid.uuid4())
         account_before = deepcopy(self._in_memory_account)
 
         try:
             self.storage.begin()
+            if pending_order_id:
+                pending = self.storage.fetch_all(
+                    "SELECT user_id, symbol, side, quantity, status, price FROM orders WHERE id = %s FOR UPDATE",
+                    (pending_order_id,),
+                )
+                if not pending or str(pending[0][4]) != "PENDING_REPLAY":
+                    raise ValueError("Replay order is no longer pending")
+                uid, symbol, side, quantity, _, limit_price = pending[0]
+                if str(uid) != user_id or str(symbol).upper() != ticker or side != action or int(quantity) != shares:
+                    raise ValueError("Replay order details mismatch")
+                if (action == "BUY" and executed_price > float(limit_price)) or (action == "SELL" and executed_price < float(limit_price)):
+                    raise ValueError("Replay fill exceeds limit price")
             users = self.storage.fetch_all(
                 "SELECT cash_balance FROM users WHERE id = %s FOR UPDATE", (user_id,)
             )
@@ -450,15 +472,39 @@ class PortfolioRepository:
                 else:
                     self.storage.execute("DELETE FROM positions WHERE id = %s", (row_id,))
 
+            if pending_order_id:
+                self.storage.execute("UPDATE orders SET status = 'FILLED_REPLAY', price = %s WHERE id = %s", (executed_price, order_id))
+            else:
+                self.storage.execute(
+                    "INSERT INTO orders (id, user_id, symbol, side, order_type, price, quantity, status, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (order_id, user_id, ticker, action, "REPLAY_MARKET", executed_price, shares, "FILLED_REPLAY", execution_db_timestamp),
+                )
             self.storage.execute(
-                "INSERT INTO orders (id, user_id, symbol, side, order_type, price, quantity, status, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                (order_id, user_id, ticker, action, "REPLAY_MARKET", executed_price, shares, "FILLED_REPLAY", execution_db_timestamp),
-            )
-            self.storage.execute(
-                "INSERT INTO order_executions (order_id, ticker, action, shares, executed_price, target_price, slippage_bps, execution_mode, executed_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                (order_id, ticker, action, shares, executed_price, executed_price, 0.0, "POSTGRES_REPLAY", execution_local),
+                "INSERT INTO order_executions (order_id, ticker, action, shares, executed_price, target_price, slippage_bps, execution_mode, executed_at, gross_value, brokerage_fee, transfer_tax, cash_delta) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (order_id, ticker, action, shares, executed_price, executed_price, 0.0, "POSTGRES_REPLAY", execution_local, trade_value, brokerage_fee, tax, cash_delta),
             )
 
+            if pending_order_id and action == "BUY":
+                self.storage.execute(
+                    "INSERT INTO paper_trades (ticker, action, price, date, confidence, thesis, status, quantity, created_at, account_id) VALUES (%s, %s, %s, %s, 0.8, 'ML_REPLAY', 'OPEN', %s, CURRENT_TIMESTAMP, %s)",
+                    (ticker, action, executed_price, execution_local, shares, user_id),
+                )
+            if pending_order_id and action == "SELL":
+                trades = self.storage.fetch_all(
+                    "SELECT id, price, quantity FROM paper_trades WHERE ticker = %s AND account_id = %s AND status = 'OPEN' ORDER BY date, id FOR UPDATE", (ticker, user_id)
+                )
+                left = shares
+                for trade_id, entry_price, quantity in trades:
+                    if left <= 0:
+                        break
+                    used = min(left, int(quantity))
+                    pnl = (executed_price / float(entry_price) - 1) * 100
+                    if used == int(quantity):
+                        self.storage.execute("UPDATE paper_trades SET status='CLOSED', resolve_price=%s, pnl=%s, resolved_at=%s WHERE id=%s", (executed_price, pnl, execution_local, trade_id))
+                    else:
+                        self.storage.execute("UPDATE paper_trades SET quantity=quantity-%s WHERE id=%s", (used, trade_id))
+                        self.storage.execute("INSERT INTO paper_trades (ticker,action,price,date,confidence,thesis,status,quantity,resolve_price,pnl,resolved_at,created_at,account_id) VALUES (%s,'BUY',%s,%s,0.8,'ML_REPLAY_PARTIAL','CLOSED',%s,%s,%s,%s,CURRENT_TIMESTAMP,%s)", (ticker, entry_price, execution_local, used, executed_price, pnl, execution_local, user_id))
+                    left -= used
             account = self.get_account_state(user_id=user_id, as_of=mark_as_of)
             self.storage.execute(
                 "INSERT INTO portfolio_account (account_id, cash_balance, total_nav, peak_nav, drawdown_tier, updated_at) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (account_id) DO UPDATE SET cash_balance = EXCLUDED.cash_balance, total_nav = EXCLUDED.total_nav, peak_nav = EXCLUDED.peak_nav, drawdown_tier = EXCLUDED.drawdown_tier, updated_at = EXCLUDED.updated_at",
@@ -499,6 +545,10 @@ class PortfolioRepository:
             self.storage.execute(
                 "INSERT INTO portfolio_account (account_id, cash_balance, total_nav, peak_nav, drawdown_tier, updated_at) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (account_id) DO UPDATE SET cash_balance = EXCLUDED.cash_balance, total_nav = EXCLUDED.total_nav, peak_nav = EXCLUDED.peak_nav, drawdown_tier = EXCLUDED.drawdown_tier, updated_at = EXCLUDED.updated_at",
                 (user_id, account["cash_balance"], account["total_nav"], account["peak_nav"], account["drawdown_tier"], marked_at),
+            )
+            self.storage.execute(
+                "INSERT INTO portfolio_nav_history (account_id, date, total_nav, cash_balance) VALUES (%s, %s, %s, %s) ON CONFLICT (account_id, date) DO UPDATE SET total_nav = EXCLUDED.total_nav, cash_balance = EXCLUDED.cash_balance",
+                (user_id, mark_as_of, account["total_nav"], account["cash_balance"]),
             )
             self.storage.commit()
             return {**account, "mark_as_of": mark_as_of.isoformat(), "mark_type": "LAST_DAILY_CLOSE_ON_OR_BEFORE_AS_OF"}
@@ -616,7 +666,7 @@ class PortfolioRepository:
         if not target_uid:
             raise RuntimeError("Portfolio user_id is required")
 
-        trade_value = float(executed_price * shares)
+        trade_value, brokerage_fee, tax, cash_delta = execution_amounts(shares, executed_price, action)
         order_id = str(pending_order_id or uuid.uuid4())
         pos_id = str(uuid.uuid4())
         now = datetime.now()
@@ -626,13 +676,9 @@ class PortfolioRepository:
 
         # 1. Cập nhật In-Memory Cache; rollback nếu DB không commit được.
         # Tính toán phí môi giới (0.10%) và thuế chuyển nhượng (0.10% khi bán)
-        fee_rate = 0.0010
-        min_fee = 10000.0
-        tax_rate = 0.0010
-        brokerage_fee = max(trade_value * fee_rate, min_fee)
 
         if action == "BUY":
-            total_deduct = trade_value + brokerage_fee
+            total_deduct = -cash_delta
             self._in_memory_account["cash_balance"] -= total_deduct
             if ticker in self._in_memory_positions:
                 pos = self._in_memory_positions[ticker]
@@ -654,8 +700,7 @@ class PortfolioRepository:
                     "weight_pct": (trade_value / self._in_memory_account["total_nav"]) * 100.0,
                 }
         elif action in ("SELL", "SELL_MP"):
-            tax = trade_value * tax_rate
-            net_credit = max(0.0, trade_value - brokerage_fee - tax)
+            net_credit = cash_delta
             self._in_memory_account["cash_balance"] += net_credit
             if ticker in self._in_memory_positions:
                 pos = self._in_memory_positions[ticker]
@@ -756,13 +801,14 @@ class PortfolioRepository:
                 sql_order_exec = """
                     INSERT INTO order_executions (
                         order_id, ticker, action, shares, executed_price,
-                        target_price, slippage_bps, execution_mode, executed_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        target_price, slippage_bps, execution_mode, executed_at,
+                        gross_value, brokerage_fee, transfer_tax, cash_delta
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT DO NOTHING
                 """
                 self.storage.execute(
                     sql_order_exec,
-                    (order_id, ticker, action, shares, executed_price, target_price, slippage_bps, execution_mode, now)
+                    (order_id, ticker, action, shares, executed_price, target_price, slippage_bps, execution_mode, now, trade_value, brokerage_fee, tax, cash_delta)
                 )
 
                 # Đồng bộ bảng portfolio_account
@@ -856,20 +902,20 @@ class PortfolioRepository:
 
     def create_shadow_pending_order(
         self, ticker: str, shares: int, limit_price: float, user_id: Optional[str] = None,
-        order_type: str = "SHADOW_LIMIT",
+        order_type: str = "SHADOW_LIMIT", side: str = "BUY",
     ) -> str:
         """Persist a day-only Shadow limit order without changing cash or positions."""
         ticker = ticker.upper().strip()
         if (not ticker or shares <= 0 or limit_price <= 0
-                or order_type not in ("SHADOW_LIMIT", "SHADOW_ML_LIMIT")):
+                or order_type not in ("SHADOW_LIMIT", "SHADOW_ML_LIMIT") or side not in ("BUY", "SELL")):
             raise ValueError("Invalid Shadow pending order")
         target_uid = user_id or self.account_id
         order_id = str(uuid.uuid4())
         now = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).replace(tzinfo=None)
         self.storage.execute(
             "INSERT INTO orders (id, user_id, symbol, side, order_type, price, quantity, status, created_at) "
-            "VALUES (%s, %s, %s, 'BUY', %s, %s, %s, 'PENDING_SHADOW', %s)",
-            (order_id, target_uid, ticker.upper().strip(), order_type, limit_price, shares, now),
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDING_SHADOW', %s)",
+            (order_id, target_uid, ticker.upper().strip(), side, order_type, limit_price, shares, now),
         )
         return order_id
 

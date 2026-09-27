@@ -54,6 +54,12 @@ class PositionMonitoringDaemon:
         mode_tag = "URGENT (60s)" if current_sleep == self.urgent_interval else "NORMAL (300s)"
         logger.info(f"[PositionDaemon] Bắt đầu nhịp giám sát vị thế [{mode_tag}] lúc {now.strftime('%H:%M:%S')}...")
 
+        ml_monitoring = None
+        try:
+            from app.domain.services.ml.standalone_ml_channel import standalone_ml_channel
+            ml_monitoring = await standalone_ml_channel.monitor_positions()
+        except Exception:
+            logger.exception("Standalone ML position monitoring failed")
         try:
             res = await AgentRegistry.dispatch("position_monitoring", {
                 "current_time": now.isoformat(),
@@ -72,7 +78,7 @@ class PositionMonitoringDaemon:
                     f"StopLoss Triggers: {emergency_count} | Invalidations: {invalidation_count} | "
                     f"Đã Dispatch sang Agent-08: {dispatched_count} lệnh."
                 )
-                return data
+                return {**data, "ml_monitoring": ml_monitoring}
             else:
                 logger.error(f"[PositionDaemon] Agent-09 trả về lỗi: {res.get('error')}")
                 return {"error": res.get("error")}

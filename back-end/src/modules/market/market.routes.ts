@@ -103,7 +103,7 @@ async function dbHeatmap() {
         JOIN market_data_daily_calculation c ON c.ticker = d.ticker AND c.date = d.date
         JOIN recent_dates r ON c.date = r.date
         JOIN stocks s ON s.symbol = d.ticker
-        GROUP BY COALESCE(s.sector, 'Khác'), d.date
+        GROUP BY COALESCE(s.sector, 'Khác'), c.date
       )
       SELECT sector, json_agg(avg_price ORDER BY date ASC) AS sparkline
       FROM sector_daily

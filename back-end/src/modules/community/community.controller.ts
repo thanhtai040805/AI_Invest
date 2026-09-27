@@ -60,7 +60,7 @@ export const communityController = {
     try {
       const { limit = '20', cursor } = req.query;
       const take = parseInt(limit as string, 10) || 20;
-      
+
       const posts = await prisma.post.findMany({
         take,
         ...(cursor ? { skip: 1, cursor: { id: cursor as string } } : {}),
@@ -84,14 +84,8 @@ export const communityController = {
       // Ensure the AI-Bot user exists
       let aiBot = await prisma.user.findFirst({ where: { email: 'bot@aiinvest.com' } });
       if (!aiBot) {
-        aiBot = await prisma.user.create({
-          data: {
-            id: 'ai-bot-id-static',
-            displayName: 'AI-Bot',
-            email: 'bot@aiinvest.com',
-            passwordHash: 'none',
-          }
-        });
+        console.error('AI-Bot user not found');
+        return res.status(500).json({ error: 'Internal server error: AI-Bot user not found. Please contact admin.' });
       }
 
       const post = await prisma.post.create({

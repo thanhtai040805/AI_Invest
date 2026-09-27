@@ -16,6 +16,7 @@ import abc
 import json
 import logging
 from datetime import datetime, timezone, date
+from zoneinfo import ZoneInfo
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 
 from app.application.ports.event_bus import EventMessage
@@ -151,8 +152,19 @@ class BaseAgent(abc.ABC):
                     or (output_data.get("thesis_body", {}).get("pre_mortem") if isinstance(output_data.get("thesis_body"), dict) else [])
                     or []
                 )
-                sql = "INSERT INTO log_investment_thesis (thesis_id, ticker, pre_mortem_scenarios, thesis_text, created_at) VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)"
-                params = (thesis_id, ticker, json.dumps(pre_mortem, default=str), json.dumps(output_data, default=str))
+                analysis_date = event_data.get("target_date") or event_data.get("date")
+                if isinstance(analysis_date, datetime):
+                    if analysis_date.tzinfo is None:
+                        raise ValueError("Analysis timestamp must include a timezone")
+                    analysis_date = analysis_date.astimezone(ZoneInfo("Asia/Ho_Chi_Minh")).date()
+                elif isinstance(analysis_date, str):
+                    analysis_date = date.fromisoformat(analysis_date)
+                elif analysis_date is None:
+                    if event_data.get("is_replay"):
+                        raise ValueError("Replay audit requires target_date")
+                    analysis_date = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date()
+                sql = "INSERT INTO log_investment_thesis (thesis_id, ticker, pre_mortem_scenarios, thesis_text, analysis_date, is_replay, created_at) VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)"
+                params = (thesis_id, ticker, json.dumps(pre_mortem, default=str), json.dumps(output_data, default=str), analysis_date, bool(event_data.get("is_replay", False)))
             elif self.log_table == "log_counter_thesis":
                 thesis_id = output_data.get("thesis_id") or str(uuid.uuid4())
                 verdict = str(output_data.get("verdict", "PROCEED"))[:16]

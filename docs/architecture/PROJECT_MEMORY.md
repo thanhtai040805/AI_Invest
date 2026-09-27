@@ -373,3 +373,19 @@ AIInvest is an autonomous investment and financial forensics organization engine
 - **End-to-End Pipeline Verification**:
   - Verified 30-day replay execution on PostgreSQL: Agent-04 successfully generated structured theses for qualified candidates (`MBB`, `VCB`, `FPT`, `SSI`, `MWG`), flowing cleanly into Counter-Thesis (CTS scoring), Strategy CIO arbitration, and Portfolio Risk gates without `DATA_MISSING` errors.
 
+
+
+## 2026-09-27 — Thesis Replay Audit Dates
+
+- `log_investment_thesis.analysis_date` stores the pipeline `target_date`, including rejected/skipped thesis snapshots. Replay uses the simulated session day rather than the prior `market_data_date`. `is_replay` identifies replay provenance; `created_at` remains the actual database write timestamp.
+- Both new columns are nullable for pre-existing logs: old output-only snapshots did not retain replay context. No automatic backfill from thesis IDs, row order, or wall-clock timestamps is performed. Recovering those dates requires independently retained run evidence or a new replay.
+- Research history filters and available-date markers use `analysis_date`, with Vietnam write day as an explicitly labeled legacy fallback. The UI displays the analysis day and actual write time separately.
+
+- ML Fund fixes (2026-09-27): daily immutable decision snapshots and pending orders share one transaction; candidate lists do not bypass cash/holdings guards. Budget includes commission and queued-order reserves. Replay model artifact is separate from production; historical execution uses DNSE timestamped depth and an explicit account, never present-day quotes. The existing standalone account was authorized for historical testing without reset. Initial plan: train through 2026-07-10 (before 52 latest sessions), replay the latest 30 sessions ending 2026-09-25; actual outcome is recorded in artifacts/ml-replay-20260927/report.json.
+
+## 2026-09-27 — ML fund historical performance
+
+- `portfolio_nav_history(account_id,date,total_nav,cash_balance)` stores immutable historical dates with idempotent close updates. Replay records an opening baseline and each session close; the scheduled EOD worker records the independent ML account after today's position prices are available, retrying rather than recording stale marks.
+- ML workspace accepts validated inclusive `from`/`to` dates for accuracy and fund performance. The UI defaults to all history and supports 15/30/60 calendar days or explicit dates. Prediction date selection remains independent; current holdings show cost/share, market/share, total cost, market value, unrealized P&L and percentage.
+- Historical net P&L compares closing NAV with the prior close before the selected period, including open holdings and actual execution costs; it assumes no external contributions/withdrawals. The first snapshot is an opening baseline. This is distinct from prediction accuracy/reference-price returns.
+- Executions persist gross value, brokerage fee, transfer tax and signed cash delta so displayed rounded VWAP cannot distort cash reconciliation. The 37 standalone replay receipts were recovered from original paper trade prices and reconcile exactly to 331,147,413 VND; neither account cash nor decisions were changed. Baseline 2026-08-11 and all 30 verified replay close marks were recovered from the completed replay report.

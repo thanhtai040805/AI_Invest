@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from app.adapters.postgres_adapter import PostgresAdapter
@@ -230,10 +230,9 @@ class IntelligenceRepository:
                 invalidation_conditions = EXCLUDED.invalidation_conditions,
                 pre_mortem_scenarios = EXCLUDED.pre_mortem_scenarios,
                 target_price_range = EXCLUDED.target_price_range,
-                status = EXCLUDED.status,
-                created_at = EXCLUDED.created_at
+                status = EXCLUDED.status
         """
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         try:
             self.storage.execute(
                 query,
@@ -349,15 +348,21 @@ class IntelligenceRepository:
                 block_reasons, holes, execution_constraints, rationale, evaluated_at
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (thesis_id) DO UPDATE SET
+                base_cts = EXCLUDED.base_cts,
+                interaction_multiplier = EXCLUDED.interaction_multiplier,
+                regime_multiplier = EXCLUDED.regime_multiplier,
                 cts_score = EXCLUDED.cts_score,
                 verdict = EXCLUDED.verdict,
+                rule_of_three_passed = EXCLUDED.rule_of_three_passed,
+                is_capitulation_rebound = EXCLUDED.is_capitulation_rebound,
                 block_reasons = EXCLUDED.block_reasons,
+                holes = EXCLUDED.holes,
                 execution_constraints = EXCLUDED.execution_constraints,
 
                 rationale = EXCLUDED.rationale,
                 evaluated_at = EXCLUDED.evaluated_at
         """
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         try:
             self.storage.execute(
                 query,

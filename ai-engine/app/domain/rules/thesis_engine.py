@@ -1,7 +1,7 @@
 """AGENT-04: Thesis Engine (IOS v5.1)
 
 Quy tắc nghiệp vụ cốt lõi:
-1. Cấu trúc ID chuẩn hóa: THESIS_HOSE_{TICKER}_{YEAR}Q{Q}_{SEQ}
+1. Cấu trúc ID: THESIS_HOSE_{TICKER}_{YEAR}Q{Q}_{REVISION}; phiên bản riêng mặc định, SEQ khi chỉ định.
 2. Lọc Hard Filter lớp 0 (Beneish/Audit) & Kiểm tra CSS >= 65 (Conviction >= B).
 3. Tự động nhận diện Ngòi nổ (Catalyst Selection) từ phân phối 6 nhân tố (F1-F6).
 4. Định giá thích ứng đa mô hình (Adaptive Valuation) theo Sector & Timeline (1M, 3M, 6M).
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, timezone
+from uuid import uuid4
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -23,13 +24,14 @@ class ThesisEngine:
     Quy tắc định lượng và sinh cấu trúc luận điểm đầu tư cho Agent-04.
     """
 
-    def generate_thesis_id(self, ticker: str, target_date: Optional[date] = None, seq_num: int = 1) -> str:
-        """Sinh mã định danh thesis chuẩn hóa: THESIS_HOSE_{TICKER}_{YEAR}Q{Q}_{SEQ:03d}"""
+    def generate_thesis_id(self, ticker: str, target_date: Optional[date] = None, seq_num: Optional[int] = None) -> str:
+        """Use a unique revision by default; retain explicit sequence IDs for callers."""
         t_date = target_date or date.today()
         year = t_date.year
         quarter = (t_date.month - 1) // 3 + 1
         clean_ticker = str(ticker).upper().strip()
-        return f"THESIS_HOSE_{clean_ticker}_{year}Q{quarter}_{seq_num:03d}"
+        revision = f"{seq_num:03d}" if seq_num is not None else uuid4().hex[:16]
+        return f"THESIS_HOSE_{clean_ticker}_{year}Q{quarter}_{revision}"
 
     def determine_catalyst(
         self,
@@ -259,7 +261,7 @@ class ThesisEngine:
         market_context: Dict[str, Any],
         valuation_inputs: Optional[Dict[str, Any]] = None,
         timeline_months: int = 3,
-        seq_num: int = 1,
+        seq_num: Optional[int] = None,
         custom_catalyst_desc: Optional[str] = None
     ) -> Tuple[bool, Dict[str, Any], str]:
         """

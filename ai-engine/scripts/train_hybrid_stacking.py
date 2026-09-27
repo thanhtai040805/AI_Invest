@@ -20,6 +20,9 @@ import os
 import sys
 import logging
 import argparse
+from datetime import date
+from zoneinfo import ZoneInfo
+from datetime import datetime
 import numpy as np
 import pandas as pd
 from typing import Dict, Tuple
@@ -47,20 +50,20 @@ EXPORT_DEFAULT_PATH = os.path.abspath(
 )
 
 
-def fetch_training_data() -> Tuple[Dict[str, pd.DataFrame], pd.DataFrame]:
+def fetch_training_data(cutoff: str) -> Tuple[Dict[str, pd.DataFrame], pd.DataFrame]:
     """Fetch Top 100 liquid tickers on HOSE with full OHLCV history."""
     logger.info("Fetching Top 100 liquid tickers from DB (EXP-016 Universe)...")
     query_tickers = """
         SELECT ticker, SUM(close * volume_continuous) as total_val
         FROM market_data_daily_calculation
-        WHERE date >= '2020-01-01'
+        WHERE date >= '2020-01-01' AND date <= %s::date
         GROUP BY ticker
         ORDER BY total_val DESC
         LIMIT 100;
     """
     try:
         with get_conn() as conn:
-            df_tickers = pd.read_sql(query_tickers, conn)
+            df_tickers = pd.read_sql(query_tickers, conn, params=(cutoff,))
             tickers = df_tickers['ticker'].tolist()
             if 'VNINDEX' not in tickers:
                 tickers.append('VNINDEX')
@@ -71,10 +74,10 @@ def fetch_training_data() -> Tuple[Dict[str, pd.DataFrame], pd.DataFrame]:
                 SELECT ticker, date, open as open, high as high, low as low, close as close, volume_continuous as volume
                 FROM market_data_daily_calculation
                 WHERE ticker IN ({','.join([f"'{t}'" for t in tickers])})
-                AND date >= '{FEATURE_HISTORY_START}' AND date <= '2026-12-31'
+                AND date >= '{FEATURE_HISTORY_START}' AND date <= %s::date
                 ORDER BY ticker, date;
             """
-            df_data = pd.read_sql(query_data, conn)
+            df_data = pd.read_sql(query_data, conn, params=(cutoff,))
     except Exception as e:
         logger.error(f"Database query error: {e}")
         raise
@@ -257,9 +260,13 @@ def build_master_dataset(data_dict: Dict[str, pd.DataFrame]):
     for ticker, feats in base_features_dict.items():
         g_feats = graph_dict.get(ticker)
         if g_feats is not None and not g_feats.empty:
-            merged = pd.concat([feats, g_feats], axis=1).dropna()
+            merged = pd.concat([feats, g_feats], axis=1)
         else:
-            merged = feats.dropna()
+            merged = feats.copy()
+        label_cols = [c for c in merged if c.startswith('fwd_')]
+        merged = merged.dropna(subset=label_cols)
+        feature_columns = [c for c in merged if c not in label_cols and c != 'ticker']
+        merged[feature_columns] = merged[feature_columns].replace([np.inf, -np.inf], np.nan).fillna(0.0)
         combined_list.append(merged)
 
     master_df = pd.concat(combined_list).sort_index()
@@ -373,12 +380,14 @@ def run_walk_forward_evaluation(master_df: pd.DataFrame, feature_cols: list, vni
     return df_trades
 
 
-def train_and_export(export_path: str = None, run_walk_forward: bool = True):
+def train_and_export(export_path: str = None, run_walk_forward: bool = True, cutoff: str = None):
     logger.info("=== [START] Training Production Hybrid Stacking Ranker (EXP-016 Standard) ===")
     if export_path is None:
         export_path = os.getenv("HYBRID_MODEL_EXPORT_PATH") or EXPORT_DEFAULT_PATH
 
-    data_dict, vnindex_df = fetch_training_data()
+    cutoff = cutoff or datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date().isoformat()
+    date.fromisoformat(cutoff)
+    data_dict, vnindex_df = fetch_training_data(cutoff)
     master_df, feature_cols = build_master_dataset(data_dict)
 
     # 1. Run Walk-Forward Evaluation if requested
@@ -391,9 +400,13 @@ def train_and_export(export_path: str = None, run_walk_forward: bool = True):
         "Fitting Final Production Model on %d clean samples (from %s to present, %d features)...",
         len(clean_master_df), TRAIN_START, len(feature_cols)
     )
+    if clean_master_df.empty:
+        raise ValueError("No fully observed training labels before cutoff")
     hybrid_stacking_ranker.fit(clean_master_df, feature_cols)
+    hybrid_stacking_ranker.trained_through = cutoff
 
     # 3. Export Artifact
+    export_path = os.path.abspath(export_path)
     os.makedirs(os.path.dirname(export_path), exist_ok=True)
     hybrid_stacking_ranker.save_model(export_path)
     file_size_kb = os.path.getsize(export_path) / 1024
@@ -404,9 +417,11 @@ def train_and_export(export_path: str = None, run_walk_forward: bool = True):
 def main():
     parser = argparse.ArgumentParser(description="EXP-016 Production Trainer & Walk-Forward Evaluator")
     parser.add_argument("--fast", action="store_true", help="Skip Walk-Forward evaluation and export production model directly")
+    parser.add_argument("--cutoff", type=str, help="Last observable data date, inclusive (YYYY-MM-DD)")
+    parser.add_argument("--export-path", type=str, help="Separate model artifact path for historical evaluation")
     args = parser.parse_args()
 
-    train_and_export(run_walk_forward=not args.fast)
+    train_and_export(export_path=args.export_path, run_walk_forward=not args.fast, cutoff=args.cutoff)
 
 
 if __name__ == "__main__":

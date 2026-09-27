@@ -141,6 +141,8 @@ class HybridStackingRanker:
         )
         self.feature_cols: List[str] = []
         self.is_fitted: bool = False
+        self.trained_through: str | None = None
+        self.model_version: str | None = None
 
     def fit(self, train_df: pd.DataFrame, feature_cols: List[str]):
         self.feature_cols = feature_cols
@@ -205,6 +207,7 @@ class HybridStackingRanker:
             'regressor': self.regressor,
             'survival_gate': self.survival_gate,
             'feature_cols': self.feature_cols,
+            'trained_through': self.trained_through,
             'is_fitted': self.is_fitted
         }
         joblib.dump(bundle, model_path)
@@ -218,12 +221,16 @@ class HybridStackingRanker:
             logger.warning(f"Model file not found at {model_path}")
             return False
         try:
+            import hashlib
+            with open(model_path, 'rb') as model_file:
+                self.model_version = hashlib.sha256(model_file.read()).hexdigest()
             bundle = joblib.load(model_path)
             self.ranker = bundle['ranker']
             self.regressor = bundle['regressor']
             self.survival_gate = bundle['survival_gate']
             self.feature_cols = bundle.get('feature_cols', [])
             self.is_fitted = bundle.get('is_fitted', True)
+            self.trained_through = bundle.get('trained_through')
             logger.info(f"HybridStackingRanker loaded successfully from {model_path}")
             return True
         except Exception as e:

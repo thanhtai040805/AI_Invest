@@ -733,6 +733,8 @@ model log_investment_thesis {
   ticker               String    @db.VarChar(16)
   pre_mortem_scenarios Json
   thesis_text          String
+  analysis_date        DateTime? @db.Date
+  is_replay            Boolean?
   created_at           DateTime? @default(now()) @db.Timestamptz(6)
 }
 
@@ -843,6 +845,11 @@ model order_executions {
   slippage_bps   Decimal   @db.Decimal(8, 2)
   execution_mode String    @db.VarChar(16)
   executed_at    DateTime? @default(now()) @db.Timestamptz(6)
+
+  gross_value    Decimal? @db.Decimal(18, 2)
+  brokerage_fee  Decimal? @db.Decimal(18, 6)
+  transfer_tax   Decimal? @db.Decimal(18, 6)
+  cash_delta     Decimal? @db.Decimal(18, 2)
 
   @@index([executed_at], map: "idx_executions_date")
 }
@@ -1049,6 +1056,14 @@ model standalone_ml_predictions {
   account_id            String    @default("standalone-pure-ml-fund-account") @db.VarChar(64)
 
   @@unique([predict_date, ticker, account_id], map: "standalone_ml_predictions_predict_date_ticker_account_id_key")
+  feature_date          DateTime? @db.Date
+  decision              String?   @db.VarChar(16)
+  decision_reason       String?   @db.VarChar(64)
+  order_id              String?   @db.VarChar(64)
+  model_version         String?   @db.VarChar(64)
+
+  @@index([order_id], map: "standalone_ml_predictions_order_id_idx")
+
 }
 
 model violation_reports {
@@ -1064,4 +1079,12 @@ model violation_reports {
   resolution_status String?   @default("PENDING") @db.VarChar(32)
   cio_resolution_id String?   @db.VarChar(64)
   resolved_at       DateTime? @db.Timestamptz(6)
+}
+model portfolio_nav_history {
+  account_id   String   @db.VarChar(255)
+  date         DateTime @db.Date
+  total_nav    Decimal  @db.Decimal(18, 2)
+  cash_balance Decimal  @db.Decimal(18, 2)
+
+  @@id([account_id, date])
 }

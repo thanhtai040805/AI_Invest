@@ -211,11 +211,11 @@ class FeatureForge:
                 out['insider_signal'] = 0.0
 
             # 3. Financial Ratios (Parameterized query)
-            q_fin = "SELECT ratio_date as date, pe, pb, roe FROM financial_ratios WHERE symbol = %s AND frequency = 'quarterly'"
+            q_fin = "SELECT GREATEST(ratio_date, published_date) as date, pe, pb, roe FROM financial_ratios WHERE symbol = %s AND frequency = 'quarterly' AND published_date IS NOT NULL ORDER BY published_date, ratio_date"
             fin_df = pd.read_sql(q_fin, conn, params=(ticker,))
             if not fin_df.empty:
                 fin_df['date'] = pd.to_datetime(fin_df['date']).astype('datetime64[ns]')
-                fin_df = fin_df.set_index('date').sort_index()
+                fin_df = fin_df.drop_duplicates('date', keep='last').set_index('date').sort_index()
                 # Merge ASOF with aligned datetime types
                 left_df = pd.DataFrame({'date': pd.to_datetime(df.index).astype('datetime64[ns]')}).sort_values('date')
                 merged = pd.merge_asof(

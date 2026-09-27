@@ -39,7 +39,7 @@ def test_shadow_order_is_persisted_without_touching_cash_or_positions():
     sql, params = storage.executed[0]
     assert "INSERT INTO orders" in sql
     assert "PENDING_SHADOW" in sql
-    assert params[1:6] == ("account", "FPT", "SHADOW_LIMIT", 25000, 100)
+    assert params[1:7] == ("account", "FPT", "BUY", "SHADOW_LIMIT", 25000, 100)
     assert order_id
 
 

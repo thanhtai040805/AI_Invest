@@ -100,11 +100,31 @@ export function Conviction({ level }: { level: "Strong" | "Moderate" | "Weak" | 
 
 // ── Sparkline ──────────────────────────────────────────────────
 export function Sparkline({ data, up, width = 68, height = 22 }: { data: number[]; up?: boolean; width?: number; height?: number }) {
-  const min = Math.min(...data), max = Math.max(...data)
+  if (!data || data.length === 0) return null
+  const validData = data.filter((v) => Number.isFinite(v))
+  if (validData.length === 0) return null
+
+  const min = Math.min(...validData), max = Math.max(...validData)
   const range = max - min || 1
-  const rising = up ?? data[data.length - 1] >= data[0]
-  const pts = data.map((v, i) => `${(i / (data.length - 1)) * width},${height - ((v - min) / range) * (height - 3) - 1.5}`).join(" ")
+  const rising = up ?? (validData.length > 1 ? validData[validData.length - 1] >= validData[0] : true)
   const color = rising ? "var(--color-gain)" : "var(--color-loss)"
+
+  if (validData.length === 1) {
+    const y = height / 2
+    return (
+      <svg width={width} height={height} className="overflow-visible" aria-hidden>
+        <line x1={0} y1={y} x2={width} y2={y} stroke={color} strokeWidth="1.4" />
+      </svg>
+    )
+  }
+
+  const denom = Math.max(validData.length - 1, 1)
+  const pts = validData.map((v, i) => {
+    const x = (i / denom) * width
+    const y = height - ((v - min) / range) * (height - 3) - 1.5
+    return `${Number.isFinite(x) ? x : 0},${Number.isFinite(y) ? y : height / 2}`
+  }).join(" ")
+
   return (
     <svg width={width} height={height} className="overflow-visible" aria-hidden>
       <polyline points={pts} fill="none" stroke={color} strokeWidth="1.4" strokeLinejoin="round" strokeLinecap="round" />
@@ -114,23 +134,53 @@ export function Sparkline({ data, up, width = 68, height = 22 }: { data: number[
 
 // ── Readable market chart ──────────────────────────────────────
 export function MarketLineChart({ series, height = 220 }: { series: { label: string; data: number[]; color: string; dashed?: boolean }[]; height?: number }) {
-  const values = series.flatMap((item) => item.data)
-  const min = Math.min(...values), max = Math.max(...values), range = max - min || 1
-  const len = Math.max(...series.map((s) => s.data.length))
-  const yAt = (v: number) => 46 - ((v - min) / range) * 40
-  const path = (data: number[]) => data.map((v, i) => `${(i / (data.length - 1)) * 100},${yAt(v)}`).join(" ")
+  const validSeries = series.map((s) => ({
+    ...s,
+    data: (s.data || []).filter((v) => Number.isFinite(v)),
+  }))
+  const values = validSeries.flatMap((item) => item.data)
+  const min = values.length > 0 ? Math.min(...values) : 0
+  const max = values.length > 0 ? Math.max(...values) : 100
+  const range = max - min || 1
+  const len = Math.max(0, ...validSeries.map((s) => s.data.length))
+
+  const yAt = (v: number) => {
+    if (!Number.isFinite(v)) return 25
+    return 46 - ((v - min) / range) * 40
+  }
+
+  const path = (data: number[]) => {
+    if (!data || data.length === 0) return ""
+    if (data.length === 1) {
+      const y = yAt(data[0])
+      return `0,${y} 100,${y}`
+    }
+    const denom = Math.max(data.length - 1, 1)
+    return data
+      .map((v, i) => {
+        const x = (i / denom) * 100
+        const y = yAt(v)
+        return `${Number.isFinite(x) ? x : 0},${Number.isFinite(y) ? y : 25}`
+      })
+      .join(" ")
+  }
+
   const ref = useRef<HTMLDivElement>(null)
   const [hover, setHover] = useState<number | null>(null)
   const dates = ["05 Aug", "12 Aug", "19 Aug", "26 Aug", "05 Sep"]
 
   const onMove = (e: React.PointerEvent) => {
+    if (len <= 1) return
     const el = ref.current
     if (!el) return
     const rect = el.getBoundingClientRect()
+    if (!rect.width) return
     const ratio = Math.min(Math.max((e.clientX - rect.left) / rect.width, 0), 1)
     setHover(Math.round(ratio * (len - 1)))
   }
-  const xPct = hover === null ? 0 : (hover / (len - 1)) * 100
+
+  const denom = Math.max(len - 1, 1)
+  const xPct = hover === null || len <= 1 ? 0 : Math.min(100, Math.max(0, (hover / denom) * 100))
 
   return (
     <div className="relative select-none" style={{ height }} ref={ref} onPointerMove={onMove} onPointerLeave={() => setHover(null)}>
@@ -138,22 +188,37 @@ export function MarketLineChart({ series, height = 220 }: { series: { label: str
       <div className="absolute inset-x-0 top-1/2 border-t border-dashed border-line" />
       <div className="absolute inset-x-0 bottom-[13%] border-t border-dashed border-line" />
       <svg viewBox="0 0 100 50" preserveAspectRatio="none" className="relative w-full h-full overflow-visible" aria-label="One month performance chart" role="img">
-        {hover !== null && <line x1={xPct} x2={xPct} y1="2" y2="48" stroke="var(--color-mineral)" strokeWidth="0.5" strokeDasharray="1.5 1.5" vectorEffect="non-scaling-stroke" />}
-        {series.map((item) => <polyline key={item.label} points={path(item.data)} fill="none" stroke={item.color} strokeWidth="0.72" strokeDasharray={item.dashed ? "2 1.5" : undefined} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />)}
-        {hover !== null && series.map((item) => {
-          const v = item.data[Math.min(hover, item.data.length - 1)]
-          return <circle key={item.label} cx={xPct} cy={yAt(v)} r="1.4" fill="var(--color-surface)" stroke={item.color} strokeWidth="0.7" vectorEffect="non-scaling-stroke" />
+        {hover !== null && len > 1 && Number.isFinite(xPct) && (
+          <line x1={xPct} x2={xPct} y1="2" y2="48" stroke="var(--color-mineral)" strokeWidth="0.5" strokeDasharray="1.5 1.5" vectorEffect="non-scaling-stroke" />
+        )}
+        {validSeries.map((item) => {
+          const pts = path(item.data)
+          return pts ? (
+            <polyline key={item.label} points={pts} fill="none" stroke={item.color} strokeWidth="0.72" strokeDasharray={item.dashed ? "2 1.5" : undefined} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+          ) : null
+        })}
+        {hover !== null && len > 1 && Number.isFinite(xPct) && validSeries.map((item) => {
+          const idx = Math.min(hover, item.data.length - 1)
+          const v = item.data[idx]
+          if (!Number.isFinite(v)) return null
+          const cy = yAt(v)
+          if (!Number.isFinite(cy)) return null
+          return <circle key={item.label} cx={xPct} cy={cy} r="1.4" fill="var(--color-surface)" stroke={item.color} strokeWidth="0.7" vectorEffect="non-scaling-stroke" />
         })}
       </svg>
-      {hover !== null && (
+      {hover !== null && len > 1 && Number.isFinite(xPct) && (
         <div className="pointer-events-none absolute top-1 z-10 rounded-[7px] border border-line bg-surface px-2.5 py-1.5 shadow-[0_8px_24px_rgba(24,32,29,.12)]" style={{ left: `${xPct}%`, transform: `translateX(${xPct > 60 ? "-108%" : "8px"})` }}>
-          {series.map((item) => (
-            <div key={item.label} className="flex items-center gap-2 text-[11px] leading-tight">
-              <span className="h-0.5 w-3 rounded-full" style={{ background: item.color }} />
-              <span className="text-secondary">{item.label}</span>
-              <span className="ml-auto tnum font-mono font-medium text-ink">{fmt(Math.round(item.data[Math.min(hover, item.data.length - 1)]))}</span>
-            </div>
-          ))}
+          {validSeries.map((item) => {
+            const idx = Math.min(hover, item.data.length - 1)
+            const v = item.data[idx]
+            return (
+              <div key={item.label} className="flex items-center gap-2 text-[11px] leading-tight">
+                <span className="h-0.5 w-3 rounded-full" style={{ background: item.color }} />
+                <span className="text-secondary">{item.label}</span>
+                <span className="ml-auto tnum font-mono font-medium text-ink">{Number.isFinite(v) ? fmt(Math.round(v)) : "—"}</span>
+              </div>
+            )
+          })}
         </div>
       )}
       <div className="absolute inset-x-0 bottom-0 flex justify-between pt-2 text-[10px] font-mono text-muted">{dates.map((d) => <span key={d}>{d}</span>)}</div>
