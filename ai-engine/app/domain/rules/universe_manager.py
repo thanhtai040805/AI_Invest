@@ -90,16 +90,16 @@ class UniverseManager:
                     """
                     WITH recent_days AS (
                         SELECT DISTINCT date 
-                        FROM market_data_daily 
+                        FROM market_data_daily_calculation 
                         WHERE date <= %s
                         ORDER BY date DESC 
                         LIMIT 20
                     )
                     SELECT ticker, 
-                           AVG(close_adj * volume_total * 1000) as adtv20_vnd,
+                           AVG(close * volume_total * 1000) as adtv20_vnd,
                            MIN(date) as min_date,
                            COUNT(*) as trade_days
-                    FROM market_data_daily
+                    FROM market_data_daily_calculation
                     WHERE date IN (SELECT date FROM recent_days) AND ticker = ANY(%s)
                     GROUP BY ticker
                     """,
@@ -218,7 +218,7 @@ class UniverseManager:
                 """
                 SELECT yoy_revenue_growth, debt_equity
                 FROM financial_ratios
-                WHERE symbol = %s
+                WHERE symbol = %s AND frequency = 'quarterly'
                 ORDER BY ratio_date DESC
                 LIMIT 3
                 """,

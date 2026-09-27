@@ -162,11 +162,13 @@ class EquityResearchAgent(BaseAgent):
                 else:
                     storage = PostgresAdapter()
                     p_rows = storage.fetch_all(
-                        "SELECT close_adj FROM market_data_daily WHERE ticker = %s AND date <= %s ORDER BY date DESC LIMIT 1",
+                        "SELECT close FROM market_data_daily_calculation WHERE ticker = %s AND date <= %s ORDER BY date DESC LIMIT 1",
                         (ticker, market_data_date)
                     )
                     if p_rows and p_rows[0][0]:
                         current_price = float(p_rows[0][0])
+                        if current_price < 1000:
+                            current_price *= 1000  # market_data_daily prices are stored in thousands of VND.
             except Exception:
                 current_price = 0.0
         if current_price <= 0:

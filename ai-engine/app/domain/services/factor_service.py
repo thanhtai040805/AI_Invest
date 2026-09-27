@@ -39,7 +39,7 @@ class FactorService:
                     SELECT pe, pb, ev_ebitda, roe, roa, debt_equity, current_ratio,
                            gross_margin, net_margin, yoy_revenue_growth, yoy_earnings_growth
                     FROM financial_ratios
-                    WHERE symbol = %s AND ratio_date <= %s
+                    WHERE symbol = %s AND frequency = 'quarterly' AND ratio_date <= %s
                       AND published_date IS NOT NULL AND published_date <= %s
                     ORDER BY published_date DESC, ratio_date DESC
                     LIMIT 1
@@ -51,8 +51,8 @@ class FactorService:
                 # 2. Lấy 60 phiên giao dịch gần nhất từ market_data_daily
                 cur.execute(
                     """
-                    SELECT close_adj, volume_total, foreign_net_vol, date
-                    FROM market_data_daily
+                    SELECT close, volume_total, foreign_net_vol, date
+                    FROM market_data_daily_calculation
                     WHERE ticker = %s AND date <= %s
                     ORDER BY date DESC
                     LIMIT 60

@@ -174,16 +174,16 @@ class UniverseDiscoveryAgent(BaseAgent):
                         """
                         WITH recent_days AS (
                             SELECT DISTINCT date 
-                            FROM market_data_daily 
+                            FROM market_data_daily_calculation 
                             WHERE date <= %s
                             ORDER BY date DESC 
                             LIMIT 20
                         )
                         SELECT ticker, 
-                               AVG(close_adj * volume_total * 1000) as adtv20_vnd,
+                               AVG(close * volume_total * 1000) as adtv20_vnd,
                                AVG(volume_total) as adtv20_shares,
                                COUNT(*) as trade_days
-                        FROM market_data_daily
+                        FROM market_data_daily_calculation
                         WHERE date IN (SELECT date FROM recent_days) AND ticker = ANY(%s)
                         GROUP BY ticker
                         """,

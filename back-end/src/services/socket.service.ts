@@ -7,6 +7,18 @@ import prisma from '../config/database';
 
 const MAX_SUBSCRIPTIONS_PER_SOCKET = 50;
 
+async function latestDbQuote(symbol: string) {
+  const rows = await prisma.$queryRaw<Array<Record<string, any>>>`
+    SELECT d.date, d.close_adj, d.open_adj, d.high_adj, d.low_adj, d.volume_total,
+           c.open AS raw_open, c.close AS raw_close
+    FROM market_data_daily d
+    LEFT JOIN market_data_daily_calculation c ON c.ticker=d.ticker AND c.date=d.date
+    WHERE d.ticker=${symbol}
+    ORDER BY d.date DESC LIMIT 1
+  `;
+  return rows[0] ?? null;
+}
+
 interface SocketMetadata {
   subscribedSymbols: Set<string>;
   subscribedMarket: boolean;
@@ -57,17 +69,14 @@ class SocketService {
         await subscriptionService.addSymbol(sym);
 
         // Immediately push latest quote from DB to this socket
-        prisma.market_data_daily.findFirst({
-          where: { ticker: sym },
-          orderBy: { date: 'desc' },
-        }).then((row) => {
+        latestDbQuote(sym).then((row) => {
           if (row) {
             const price = (row.close_adj ?? 0) * 1000;
             const ref = (row.open_adj ?? row.close_adj ?? 0) * 1000;
             const ceiling = (row.high_adj ?? row.close_adj ?? 0) * 1000;
             const floor = (row.low_adj ?? row.close_adj ?? 0) * 1000;
-            const changePct = row.open_adj && row.open_adj !== 0
-              ? (((row.close_adj ?? 0) - row.open_adj) / row.open_adj) * 100
+            const changePct = row.raw_open && row.raw_open !== 0 && row.raw_close != null
+              ? ((row.raw_close - row.raw_open) / row.raw_open) * 100
               : 0;
 
             socket.emit(`stock:price:${sym}`, {
@@ -109,12 +118,13 @@ class SocketService {
 
         // Immediately push latest indices from DB to this socket
         prisma.$queryRaw<Array<Record<string, unknown>>>`
-          SELECT ticker AS symbol, date, close_adj AS value,
-                 CASE WHEN open_adj IS NOT NULL AND open_adj <> 0
-                   THEN ((close_adj - open_adj) / open_adj) * 100 ELSE 0 END AS change_pct
-          FROM market_data_daily
-          WHERE ticker IN ('VNINDEX', 'VN-INDEX', 'VN30', 'HNXINDEX', 'UPCOMINDEX')
-            AND date = (SELECT MAX(date) FROM market_data_daily WHERE ticker IN ('VNINDEX', 'VN-INDEX', 'VN30', 'HNXINDEX', 'UPCOMINDEX'))
+          SELECT c.ticker AS symbol, c.date, d.close_adj AS value,
+                 CASE WHEN c.open IS NOT NULL AND c.open <> 0
+                   THEN ((c.close - c.open) / c.open) * 100 ELSE 0 END AS change_pct
+          FROM market_data_daily_calculation c
+          JOIN market_data_daily d USING (ticker, date)
+          WHERE c.ticker IN ('VNINDEX', 'VN-INDEX', 'VN30', 'HNXINDEX', 'UPCOMINDEX')
+            AND c.date = (SELECT MAX(date) FROM market_data_daily WHERE ticker IN ('VNINDEX', 'VN-INDEX', 'VN30', 'HNXINDEX', 'UPCOMINDEX'))
         `.then((indices) => {
           if (indices.length > 0) {
             socket.emit('market:indices', { indices, timestamp: new Date().toISOString() });
@@ -165,12 +175,13 @@ class SocketService {
 
         if (hasMarketSubscribers) {
           const indices = await prisma.$queryRaw<Array<Record<string, unknown>>>`
-            SELECT ticker AS symbol, date, close_adj AS value,
-                   CASE WHEN open_adj IS NOT NULL AND open_adj <> 0
-                     THEN ((close_adj - open_adj) / open_adj) * 100 ELSE 0 END AS change_pct
-            FROM market_data_daily
-            WHERE ticker IN ('VNINDEX', 'VN-INDEX', 'VN30', 'HNXINDEX', 'UPCOMINDEX')
-              AND date = (SELECT MAX(date) FROM market_data_daily WHERE ticker IN ('VNINDEX', 'VN-INDEX', 'VN30', 'HNXINDEX', 'UPCOMINDEX'))
+            SELECT c.ticker AS symbol, c.date, d.close_adj AS value,
+                   CASE WHEN c.open IS NOT NULL AND c.open <> 0
+                     THEN ((c.close - c.open) / c.open) * 100 ELSE 0 END AS change_pct
+            FROM market_data_daily_calculation c
+            JOIN market_data_daily d USING (ticker, date)
+            WHERE c.ticker IN ('VNINDEX', 'VN-INDEX', 'VN30', 'HNXINDEX', 'UPCOMINDEX')
+              AND c.date = (SELECT MAX(date) FROM market_data_daily WHERE ticker IN ('VNINDEX', 'VN-INDEX', 'VN30', 'HNXINDEX', 'UPCOMINDEX'))
           `.catch(() => []);
           if (indices.length > 0) {
             this.emitMarketIndices({ indices, timestamp: new Date().toISOString() });
@@ -178,18 +189,15 @@ class SocketService {
         }
 
         for (const sym of activeSymbols) {
-          const row = await prisma.market_data_daily.findFirst({
-            where: { ticker: sym },
-            orderBy: { date: 'desc' },
-          }).catch(() => null);
+          const row = await latestDbQuote(sym).catch(() => null);
 
           if (row) {
             const price = (row.close_adj ?? 0) * 1000;
             const ref = (row.open_adj ?? row.close_adj ?? 0) * 1000;
             const ceiling = (row.high_adj ?? row.close_adj ?? 0) * 1000;
             const floor = (row.low_adj ?? row.close_adj ?? 0) * 1000;
-            const changePct = row.open_adj && row.open_adj !== 0
-              ? (((row.close_adj ?? 0) - row.open_adj) / row.open_adj) * 100
+            const changePct = row.raw_open && row.raw_open !== 0 && row.raw_close != null
+              ? ((row.raw_close - row.raw_open) / row.raw_open) * 100
               : 0;
 
             this.emitStockPrice(sym, {

@@ -68,7 +68,7 @@ class MarketSurveillanceAgent(BaseAgent):
                 with conn.cursor() as cur:
                     # 1. Xác định ngày có dữ liệu gần nhất <= target_d
                     cur.execute(
-                        "SELECT MAX(date) FROM market_data_daily WHERE date <= %s",
+                        "SELECT MAX(date) FROM market_data_daily_calculation WHERE date <= %s",
                         (target_d,)
                     )
                     row_max = cur.fetchone()
@@ -82,14 +82,14 @@ class MarketSurveillanceAgent(BaseAgent):
                     cur.execute("""
                         SELECT 
                             COUNT(*) as total_stocks,
-                            SUM(CASE WHEN close_adj > open_adj THEN 1 ELSE 0 END) as advancing,
-                            SUM(CASE WHEN close_adj < open_adj THEN 1 ELSE 0 END) as declining,
-                            SUM(CASE WHEN close_adj = open_adj THEN 1 ELSE 0 END) as unchanged,
-                            SUM(CASE WHEN close_adj <= open_adj * 0.931 THEN 1 ELSE 0 END) as floor_count,
-                            SUM(CASE WHEN close_adj >= open_adj * 1.069 THEN 1 ELSE 0 END) as ceiling_count,
+                            SUM(CASE WHEN close > open THEN 1 ELSE 0 END) as advancing,
+                            SUM(CASE WHEN close < open THEN 1 ELSE 0 END) as declining,
+                            SUM(CASE WHEN close = open THEN 1 ELSE 0 END) as unchanged,
+                            SUM(CASE WHEN close <= open * 0.931 THEN 1 ELSE 0 END) as floor_count,
+                            SUM(CASE WHEN close >= open * 1.069 THEN 1 ELSE 0 END) as ceiling_count,
                             COALESCE(SUM(foreign_net_vol), 0) as foreign_net_vol,
                             COALESCE(SUM(volume_total), 0) as total_market_volume
-                        FROM market_data_daily 
+                        FROM market_data_daily_calculation 
                         WHERE date = %s AND ticker != 'VNINDEX'
                     """, (eff_date,))
                     row_breadth = cur.fetchone()
@@ -125,15 +125,15 @@ class MarketSurveillanceAgent(BaseAgent):
                     start_ma50 = eff_date - timedelta(days=120)
                     cur.execute("""
                         WITH windowed AS (
-                            SELECT ticker, date, close_adj,
-                                   AVG(close_adj) OVER (PARTITION BY ticker ORDER BY date ROWS BETWEEN 49 PRECEDING AND CURRENT ROW) as ma50,
-                                   COUNT(close_adj) OVER (PARTITION BY ticker ORDER BY date ROWS BETWEEN 49 PRECEDING AND CURRENT ROW) as cnt
-                            FROM market_data_daily 
+                            SELECT ticker, date, close,
+                                   AVG(close) OVER (PARTITION BY ticker ORDER BY date ROWS BETWEEN 49 PRECEDING AND CURRENT ROW) as ma50,
+                                   COUNT(close) OVER (PARTITION BY ticker ORDER BY date ROWS BETWEEN 49 PRECEDING AND CURRENT ROW) as cnt
+                            FROM market_data_daily_calculation 
                             WHERE date <= %s AND date >= %s AND ticker != 'VNINDEX'
                         )
                         SELECT 
                             COUNT(*) as total,
-                            SUM(CASE WHEN close_adj > ma50 THEN 1 ELSE 0 END) as above_ma50
+                            SUM(CASE WHEN close > ma50 THEN 1 ELSE 0 END) as above_ma50
                         FROM windowed
                         WHERE date = %s AND cnt >= 30
                     """, (eff_date, start_ma50, eff_date))
@@ -151,13 +151,13 @@ class MarketSurveillanceAgent(BaseAgent):
 
                     cur.execute("""
                         WITH windowed AS (
-                            SELECT ticker, date, close_adj,
-                                   AVG(close_adj) OVER (PARTITION BY ticker ORDER BY date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) AS ma20,
-                                   COUNT(close_adj) OVER (PARTITION BY ticker ORDER BY date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) AS cnt
-                            FROM market_data_daily
+                            SELECT ticker, date, close,
+                                   AVG(close) OVER (PARTITION BY ticker ORDER BY date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) AS ma20,
+                                   COUNT(close) OVER (PARTITION BY ticker ORDER BY date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) AS cnt
+                            FROM market_data_daily_calculation
                             WHERE date <= %s AND date >= %s AND ticker != 'VNINDEX'
                         )
-                        SELECT COUNT(*), SUM(CASE WHEN close_adj > ma20 THEN 1 ELSE 0 END)
+                        SELECT COUNT(*), SUM(CASE WHEN close > ma20 THEN 1 ELSE 0 END)
                         FROM windowed WHERE date = %s AND cnt >= 20
                     """, (eff_date, start_ma50, eff_date))
                     row_ma20 = cur.fetchone()
@@ -171,9 +171,9 @@ class MarketSurveillanceAgent(BaseAgent):
                     # 4. Lấy chuỗi lịch sử VNINDEX kèm vol_ma20, macro và foreign flow cho HMM & GARCH
                     cur.execute("""
                         WITH vni AS (
-                            SELECT date, open_adj as open, high_adj as high, low_adj as low, close_adj as close, volume_total as volume,
+                            SELECT date, open, high, low, close, volume_total as volume,
                                    AVG(volume_total) OVER(ORDER BY date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) as vol_ma20
-                            FROM market_data_daily 
+                            FROM market_data_daily_calculation 
                             WHERE ticker = 'VNINDEX' AND date <= %s
                         ),
                         macro AS (
@@ -219,8 +219,8 @@ class MarketSurveillanceAgent(BaseAgent):
 
                     # 5. Dữ liệu ATC của các mã giao dịch mạnh
                     cur.execute("""
-                        SELECT ticker, volume_continuous, volume_atc, volume_total, close_adj, open_adj, vwap, is_etf_rebalance_day
-                        FROM market_data_daily
+                        SELECT ticker, volume_continuous, volume_atc, volume_total, close, open, vwap, is_etf_rebalance_day
+                        FROM market_data_daily_calculation
                         WHERE date = %s AND volume_total > 50000
                         ORDER BY volume_atc DESC LIMIT 50
                     """, (eff_date,))
@@ -246,8 +246,8 @@ class MarketSurveillanceAgent(BaseAgent):
                     # 6. Dữ liệu rổ VN30 cho Distortion Monitor
                     vn30_list = self.universe_manager._get_vn30_list()
                     cur.execute("""
-                        SELECT ticker, close_adj, open_adj, volume_total, market_cap
-                        FROM market_data_daily
+                        SELECT ticker, close, open, volume_total, market_cap
+                        FROM market_data_daily_calculation
                         WHERE date = %s AND ticker = ANY(%s)
                     """, (eff_date, vn30_list))
                     vn30_rows = cur.fetchall()
@@ -268,18 +268,18 @@ class MarketSurveillanceAgent(BaseAgent):
                     # 7. Lấy chuỗi 60 phiên của top cổ phiếu thanh khoản để tính CSAD
                     start_csad = eff_date - timedelta(days=100)
                     cur.execute("""
-                        SELECT ticker, date, close_adj
-                        FROM market_data_daily
+                        SELECT ticker, date, close
+                        FROM market_data_daily_calculation
                         WHERE date >= %s AND date <= %s AND ticker IN (
-                            SELECT ticker FROM market_data_daily 
-                            WHERE date = %s AND volume_total * close_adj >= 15000000
+                            SELECT ticker FROM market_data_daily_calculation 
+                            WHERE date = %s AND volume_total * close >= 15000000
                         )
                         ORDER BY date ASC
                     """, (start_csad, eff_date, eff_date))
                     csad_raw_rows = cur.fetchall()
                     if csad_raw_rows:
-                        df_raw = pd.DataFrame(csad_raw_rows, columns=["ticker", "date", "close_adj"])
-                        pivoted = df_raw.pivot(index="date", columns="ticker", values="close_adj").pct_change().dropna()
+                        df_raw = pd.DataFrame(csad_raw_rows, columns=["ticker", "date", "close"])
+                        pivoted = df_raw.pivot(index="date", columns="ticker", values="close").pct_change().dropna()
                         hydrated["stock_returns_df"] = pivoted
                     else:
                         hydrated["stock_returns_df"] = None

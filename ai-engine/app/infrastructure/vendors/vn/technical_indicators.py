@@ -166,7 +166,7 @@ def compute_for_symbol(cur, symbol: str) -> int:
     """Compute technical indicators for one symbol, upsert into table. Returns row count."""
     cur.execute(
         """SELECT time, open, high, low, close, volume
-           FROM ohlcv WHERE symbol = %s ORDER BY time ASC""",
+           FROM ohlcv_unadjusted WHERE symbol = %s ORDER BY time ASC""",
         (symbol,),
     )
     rows = cur.fetchall()
@@ -231,10 +231,23 @@ def refresh_all() -> dict:
             if idx > 0 and idx % 50 == 0:
                 logger.info("  Progress: %d/%d symbols, %d rows", idx, len(symbols), total_rows)
 
+        cur.execute("""
+            DELETE FROM technical_indicators ti
+            WHERE NOT EXISTS (
+                SELECT 1 FROM market_data_daily md
+                WHERE md.ticker = ti.symbol
+                  AND md.date = ti.calc_date
+                  AND md.close_unadj > 0
+            )
+        """)
+        stale_rows = cur.rowcount
+        conn.commit()
+
         logger.info(
-            "Technical indicators done: %d rows for %d symbols", total_rows, len(symbols)
+            "Technical indicators done: %d rows for %d symbols; removed %d rows outside unadjusted coverage",
+            total_rows, len(symbols), stale_rows,
         )
-        return {"rows": total_rows, "symbols": len(symbols)}
+        return {"rows": total_rows, "symbols": len(symbols), "stale_rows_removed": stale_rows}
     finally:
         cur.close()
         conn.close()
@@ -248,7 +261,7 @@ def refresh_incremental(symbols: Optional[list[str]] = None) -> dict:
         if symbols is None:
             cur.execute(
                 """SELECT DISTINCT o.symbol
-                   FROM ohlcv o
+                   FROM ohlcv_unadjusted o
                    WHERE o.symbol IN (SELECT symbol FROM stocks WHERE exchange IN ('HOSE','HSX'))
                    AND o.time::date > COALESCE(
                        (SELECT MAX(calc_date) FROM technical_indicators ti WHERE ti.symbol = o.symbol),

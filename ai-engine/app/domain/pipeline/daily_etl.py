@@ -103,6 +103,7 @@ class DailyETLPipeline:
                 ("insider_trades", self.step_insider_trades),
                 ("foreign_flow", self.step_foreign_flow),
                 ("financial_ratios", self.step_financial_ratios),
+                ("corporate_actions", self.step_corporate_actions),
                 ("corporate_documents", self.step_corporate_documents),
                 ("factor_scores", self.step_factor_scores),
                 ("macro_indicators", self.step_macro_indicators),
@@ -267,14 +268,25 @@ class DailyETLPipeline:
 
     async def step_financial_ratios(self) -> Dict[str, Any]:
         """Fetch latest financial statements from CafeF REST API, upsert to DB."""
-        logger.info("ETL: financial_ratios — fetching from CafeF...")
+        logger.info("ETL: financial_ratios — fetching from AlphaStock...")
         try:
-            from app.infrastructure.data_pipelines.financial_etl_cafef import refresh_incremental
+            from app.infrastructure.data_pipelines.financial_etl_alphastock import refresh_incremental
             result = await asyncio.to_thread(refresh_incremental)
             logger.info("ETL: financial_ratios — %d rows", result.get("rows", 0))
             return {"status": "success", **result}
         except Exception as e:
             logger.error("ETL: financial_ratios failed: %s", e)
+            return {"status": "failed", "error": str(e)}
+
+    async def step_corporate_actions(self) -> Dict[str, Any]:
+        """Refresh corporate actions from vnstock VCI events."""
+        logger.info("ETL: corporate_actions — fetching vnstock VCI events...")
+        try:
+            from app.infrastructure.data_pipelines.corporate_actions import refresh_incremental
+            partition_index = self.trade_date.weekday() if self.trade_date else None
+            return await asyncio.to_thread(refresh_incremental, partition_index=partition_index)
+        except Exception as e:
+            logger.error("ETL: corporate_actions failed: %s", e)
             return {"status": "failed", "error": str(e)}
 
     # ── Step: Corporate Documents (BCTC & Governance PDFs) ───────────

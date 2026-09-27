@@ -121,18 +121,17 @@ class PortfolioRepository:
                 mark_date = as_of.date() if isinstance(as_of, datetime) else as_of
                 query_pos = """
                     SELECT p.symbol, p.quantity,
-                           CASE WHEN %s::date IS NULL THEN COALESCE(md.close_adj * 1000, p.avg_price)
-                                ELSE md.close_adj * 1000 END AS current_price
+                           md.close_unadj * 1000 AS current_price
                     FROM positions p
                     LEFT JOIN LATERAL (
-                        SELECT close_adj FROM market_data_daily
+                        SELECT close_unadj FROM market_data_daily
                         WHERE ticker = p.symbol AND (%s::date IS NULL OR date <= %s::date)
                         ORDER BY date DESC LIMIT 1
                     ) md ON TRUE
                     WHERE p.user_id = %s AND p.quantity > 0
                 """
-                rows_pos = self.storage.fetch_all(query_pos, (mark_date, mark_date, mark_date, uid))
-                if as_of is not None and any(r[2] is None for r in rows_pos):
+                rows_pos = self.storage.fetch_all(query_pos, (mark_date, mark_date, uid))
+                if any(r[2] is None for r in rows_pos):
                     as_of_error = f"Missing market mark as of {mark_date} for replay account {uid}"
                     raise LookupError(f"Missing market mark as of {mark_date} for replay account {uid}")
                 positions_val = sum(float(r[1]) * float(r[2]) for r in rows_pos) if rows_pos else 0.0
@@ -180,18 +179,17 @@ class PortfolioRepository:
                 mark_date = as_of.date() if isinstance(as_of, datetime) else as_of
                 query = """
                     SELECT p.symbol, p.quantity, p.avg_price, p.opened_at,
-                           CASE WHEN %s::date IS NULL THEN COALESCE(md.close_adj * 1000, p.avg_price)
-                                ELSE md.close_adj * 1000 END AS current_price
+                           md.close_unadj * 1000 AS current_price
                     FROM positions p
                     LEFT JOIN LATERAL (
-                        SELECT close_adj FROM market_data_daily
+                        SELECT close_unadj FROM market_data_daily
                         WHERE ticker = p.symbol AND (%s::date IS NULL OR date <= %s::date)
                         ORDER BY date DESC LIMIT 1
                     ) md ON TRUE
                     WHERE p.user_id = %s AND p.quantity > 0
                     ORDER BY quantity DESC
                 """
-                rows = self.storage.fetch_all(query, (mark_date, mark_date, mark_date, target_uid))
+                rows = self.storage.fetch_all(query, (mark_date, mark_date, target_uid))
             else:
                 query = """
                     SELECT symbol, quantity, avg_price, opened_at
@@ -202,7 +200,7 @@ class PortfolioRepository:
                 rows = self.storage.fetch_all(query)
 
             if rows is not None:
-                if as_of is not None and any(len(r) < 5 or r[4] is None for r in rows):
+                if any(len(r) < 5 or r[4] is None for r in rows):
                     as_of_error = f"Missing market mark as of {mark_date} for replay account {target_uid}"
                     raise LookupError(as_of_error)
                 results = []

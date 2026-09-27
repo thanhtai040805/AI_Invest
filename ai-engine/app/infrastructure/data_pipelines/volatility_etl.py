@@ -126,7 +126,7 @@ def _get_top_liquid(cur, n: int = GARCH_TOP_N) -> list[str]:
     cutoff = date.today() - timedelta(days=90)
     cur.execute("""
         SELECT o.symbol, AVG(o.close * o.volume) as avg_value
-        FROM ohlcv o
+        FROM ohlcv_unadjusted o
         WHERE o.time::date >= %s
         GROUP BY o.symbol
         ORDER BY avg_value DESC
@@ -141,7 +141,7 @@ def compute_garch_for_symbol(cur, symbol: str) -> dict | None:
     Returns {garch_vol_20d, garch_vol_60d} or None on failure.
     """
     cur.execute(
-        """SELECT time, close FROM ohlcv
+        """SELECT time, close FROM ohlcv_unadjusted
            WHERE symbol = %s ORDER BY time DESC LIMIT %s""",
         (symbol, GARCH_LOOKBACK),
     )

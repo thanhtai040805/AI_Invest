@@ -1,5 +1,6 @@
 generator client {
   provider = "prisma-client-js"
+  previewFeatures = ["views"]
 }
 
 datasource db {
@@ -317,6 +318,7 @@ model corporate_actions {
 model financial_ratios {
   symbol              String
   ratio_date          DateTime  @db.Date
+  frequency           String    @default("quarterly")
   pe                  Float?
   pb                  Float?
   roe                 Float?
@@ -332,7 +334,7 @@ model financial_ratios {
   updated_at          DateTime? @default(now()) @db.Timestamptz(6)
   published_date      DateTime? @db.Date
 
-  @@id([symbol, ratio_date])
+  @@id([symbol, ratio_date, frequency])
 }
 
 model financial_statements {
@@ -414,7 +416,7 @@ model job_states {
 model knowledge_documents {
   id                    Int       @id(map: "news_events_pkey") @default(autoincrement())
   symbol                String
-  published_date        DateTime  @db.Timestamptz(6)
+  published_date        DateTime? @db.Timestamptz(6)
   title                 String
   url                   String?
   source                String?   @default("cafef")
@@ -494,6 +496,44 @@ model market_data_daily {
   @@id([ticker, date])
   @@index([date(sort: Desc)], map: "idx_market_data_daily_date")
   @@index([ticker, date(sort: Desc)], map: "idx_market_data_daily_ticker")
+}
+
+view market_data_daily_calculation {
+  ticker               String
+  date                 DateTime @db.Date
+  open                 Float?
+  high                 Float?
+  low                  Float?
+  close                Float?
+  vwap                 Float?
+  volume_continuous    BigInt?
+  volume_atc           BigInt?
+  volume_ato           BigInt?
+  volume_total         BigInt?
+  foreign_buy_vol      BigInt?
+  foreign_sell_vol     BigInt?
+  foreign_net_vol      BigInt?
+  is_etf_rebalance_day Boolean?
+  adtv20_continuous    Float?
+  market_cap           Float?
+  raw_factor           Float?
+  data_source          String?
+
+  @@unique([ticker, date])
+  @@map("market_data_daily_calculation")
+}
+
+view ohlcv_unadjusted {
+  time       DateTime @db.Date
+  symbol     String
+  open       Float?
+  high       Float?
+  low        Float?
+  close      Float?
+  volume     BigInt?
+
+  @@unique([time, symbol])
+  @@map("ohlcv_unadjusted")
 }
 
 model market_regime {

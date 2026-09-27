@@ -40,7 +40,7 @@ def batch_has_content(articles: list[dict]) -> list[bool]:
 
 def upsert_article(art: dict, source: str) -> bool:
     """Upsert one article into knowledge_documents. Returns True if inserted, False if existed."""
-    pub_date = art.get("published_date") or datetime.now(timezone.utc)
+    pub_date = art.get("published_date")
     content = art.get("article_content", "")
     images = art.get("article_images") or []
     pdf_urls = art.get("article_pdf_urls") or []
@@ -85,7 +85,7 @@ def upsert_article(art: dict, source: str) -> bool:
             if has_data:
                 cur.execute(
                     """UPDATE knowledge_documents SET
-                       published_date = COALESCE(%s, knowledge_documents.published_date),
+                       published_date = %s,
                        doc_type = CASE WHEN %s::text IS NOT NULL AND knowledge_documents.doc_type = 'news' THEN %s ELSE knowledge_documents.doc_type END,
                        article_content = COALESCE(knowledge_documents.article_content, %s),
                        article_images = CASE

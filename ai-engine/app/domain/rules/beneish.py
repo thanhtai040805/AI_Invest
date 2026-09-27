@@ -35,6 +35,7 @@ EXCLUDED_SECTORS = [
 
 # Chuẩn hóa các bộ key tìm kiếm trong CSDL financial_statements (VAS Thông tư 200/BTC)
 REV_KEYS = [
+    "net_sales",
     "3_doanh_thu_thuần_về_bán_hàng_và_cung_cấp_dịch_vụ",
     "3. Doanh thu thuần về bán hàng và cung cấp dịch vụ",
     "1_doanh_thu_bán_hàng_và_cung_cấp_dịch_vụ",
@@ -44,6 +45,7 @@ REV_KEYS = [
 ]
 
 REC_KEYS = [
+    "accounts_receivable",
     "iii_các_khoản_phải_thu_ngắn_hạn",
     "III. Các khoản phải thu ngắn hạn",
     "1_phải_thu_ngắn_hạn_của_khách_hàng",
@@ -53,24 +55,30 @@ REC_KEYS = [
 ]
 
 COGS_KEYS = [
+    "cost_of_sales",
     "4_giá_vốn_hàng_bán",
     "4. Giá vốn hàng bán",
     "giá_vốn_hàng_bán",
 ]
 
+GROSS_PROFIT_KEYS = ["gross_profit", "gross profit", "lợi nhuận gộp", "loi_nhuan_gop"]
+
 TA_KEYS = [
+    "total_assets",
     "tổng_cộng_tài_sản",
     "TỔNG CỘNG TÀI SẢN",
     "tổng cộng tài sản",
 ]
 
 CA_KEYS = [
+    "current_assets",
     "a_tài_sản_ngắn_hạn",
     "A. TÀI SẢN NGẮN HẠN",
     "tài sản ngắn hạn",
 ]
 
 PPE_KEYS = [
+    "fixed_assets",
     "ii_tài_sản_cố_định",
     "II. Tài sản cố định",
     "1_tài_sản_cố_định_hữu_hình",
@@ -80,24 +88,29 @@ PPE_KEYS = [
 ]
 
 DEBT_KEYS = [
+    "liabilities",
     "c_nợ_phải_trả",
     "C. NỢ PHẢI TRẢ",
     "nợ phải trả",
 ]
 
 SGA_SALE_KEYS = [
+    "selling_expenses",
     "9_chi_phí_bán_hàng",
     "9. Chi phí bán hàng",
     "chi_phí_bán_hàng",
 ]
 
 SGA_ADMIN_KEYS = [
+    "general_and_admin_expenses",
+    "general_and_administrative_expenses",
     "10_chi_phí_quản_lý_doanh_nghiệp",
     "10. Chi phí quản lý doanh nghiệp",
     "chi_phí_quản_lý_doanh_nghiệp",
 ]
 
 DEPR_CF_KEYS = [
+    "depreciation_and_amortization",
     "khấu_hao_tscđ_và_bđsđt",
     "Khấu hao TSCĐ và BĐSĐT",
     "Khấu hao TSCĐ",
@@ -115,6 +128,7 @@ DEPR_BS_ACC_KEYS = [
 ]
 
 CFO_KEYS = [
+    "net_cash_inflows_outflows_from_operating_activities",
     "lưu_chuyển_tiền_thuần_từ_hoạt_động_kinh_doanh",
     "Lưu chuyển tiền thuần từ hoạt động kinh doanh",
     "I. Lưu chuyển tiền từ hoạt động kinh doanh",
@@ -211,6 +225,7 @@ class BeneishMScoreEngine:
                         SELECT statement_type, period_end, data
                         FROM financial_statements
                         WHERE symbol = %s AND statement_type IN ('IS', 'BS', 'CF')
+                          AND frequency = 'quarterly'
                           AND period_end <= %s
                           AND published_date IS NOT NULL AND published_date <= %s
                         ORDER BY period_end DESC;
@@ -243,6 +258,7 @@ class BeneishMScoreEngine:
             rev0, rev1 = _extract_val(is0, REV_KEYS), _extract_val(is1, REV_KEYS)
             rec0, rec1 = _extract_val(bs0, REC_KEYS), _extract_val(bs1, REC_KEYS)
             cogs0, cogs1 = _extract_val(is0, COGS_KEYS), _extract_val(is1, COGS_KEYS)
+            gross_profit0, gross_profit1 = _extract_val(is0, GROSS_PROFIT_KEYS), _extract_val(is1, GROSS_PROFIT_KEYS)
             ta0, ta1 = _extract_val(bs0, TA_KEYS), _extract_val(bs1, TA_KEYS)
             ca0, ca1 = _extract_val(bs0, CA_KEYS), _extract_val(bs1, CA_KEYS)
             ppe0, ppe1 = _extract_val(bs0, PPE_KEYS), _extract_val(bs1, PPE_KEYS)
@@ -251,7 +267,8 @@ class BeneishMScoreEngine:
             can_calc_5 = (
                 rev0 and rev1 and rev0 > 0 and rev1 > 0
                 and rec0 is not None and rec1 is not None and rec0 >= 0 and rec1 >= 0
-                and cogs0 is not None and cogs1 is not None
+                and (cogs0 is not None or gross_profit0 is not None)
+                and (cogs1 is not None or gross_profit1 is not None)
                 and ta0 and ta1 and ta0 > 0 and ta1 > 0
                 and ca0 is not None and ca1 is not None
                 and ppe0 is not None and ppe1 is not None
@@ -265,8 +282,8 @@ class BeneishMScoreEngine:
                 dsri = max(0.1, min(10.0, ratio_rec0 / ratio_rec1)) if ratio_rec1 > 0 else 1.0
 
                 # 2. GMI (Gross Margin Index)
-                gm0 = (rev0 - cogs0) / rev0
-                gm1 = (rev1 - cogs1) / rev1
+                gm0 = gross_profit0 / rev0 if gross_profit0 is not None else (rev0 - abs(cogs0)) / rev0
+                gm1 = gross_profit1 / rev1 if gross_profit1 is not None else (rev1 - abs(cogs1)) / rev1
                 gmi = max(0.1, min(10.0, gm1 / gm0)) if gm0 > 0 else 1.0
 
                 # 3. AQI (Asset Quality Index)
@@ -288,13 +305,9 @@ class BeneishMScoreEngine:
                 cf0 = cf_by_period.get(t0)
                 cf1 = cf_by_period.get(t1)
 
-                sga0_part1 = _extract_val(is0, SGA_SALE_KEYS) or 0.0
-                sga0_part2 = _extract_val(is0, SGA_ADMIN_KEYS) or 0.0
-                sga0 = sga0_part1 + sga0_part2
-
-                sga1_part1 = _extract_val(is1, SGA_SALE_KEYS) or 0.0
-                sga1_part2 = _extract_val(is1, SGA_ADMIN_KEYS) or 0.0
-                sga1 = sga1_part1 + sga1_part2
+                sga0_parts = (_extract_val(is0, SGA_SALE_KEYS), _extract_val(is0, SGA_ADMIN_KEYS))
+                sga1_parts = (_extract_val(is1, SGA_SALE_KEYS), _extract_val(is1, SGA_ADMIN_KEYS))
+                sga0, sga1 = sum(abs(v) for v in sga0_parts if v is not None), sum(abs(v) for v in sga1_parts if v is not None)
 
                 dep0 = _extract_val(cf0, DEPR_CF_KEYS)
                 dep1 = _extract_val(cf1, DEPR_CF_KEYS)
@@ -317,7 +330,8 @@ class BeneishMScoreEngine:
 
                 # Quyết định: Mô hình 8 biến (Mode 1) hay Mô hình 5 biến (Mode 2)
                 has_full_8 = (
-                    sga0 > 0 and sga1 > 0
+                    all(v is not None for v in (*sga0_parts, *sga1_parts))
+                    and sga0 > 0 and sga1 > 0
                     and dep0 is not None and dep1 is not None
                     and cfo0 is not None
                     and ni0 is not None
@@ -412,11 +426,13 @@ class BeneishMScoreEngine:
                         SELECT ratio_date, gross_margin, debt_equity, yoy_revenue_growth,
                                current_ratio, roe, roa
                         FROM financial_ratios
-                        WHERE symbol = %s AND ratio_date <= %s
+                        WHERE symbol = %s AND frequency = 'quarterly'
+                          AND ratio_date <= %s
+                          AND published_date IS NOT NULL AND published_date <= %s
                         ORDER BY ratio_date DESC
                         LIMIT 2
                         """,
-                        (sym, target_date),
+                        (sym, target_date, target_date),
                     )
                     r_rows = cur.fetchall()
         except Exception as e:

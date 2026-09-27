@@ -142,7 +142,7 @@ class VNICTester:
             """SELECT symbol, ratio_date, published_date, pe, pb, roe, gross_margin, net_margin,
                       fcf_yield, ev_ebitda, yoy_revenue_growth, yoy_earnings_growth
                FROM financial_ratios
-               WHERE symbol = ANY(%s) AND published_date IS NOT NULL
+               WHERE symbol = ANY(%s) AND frequency = 'quarterly' AND published_date IS NOT NULL
                ORDER BY symbol, ratio_date, published_date""",
             (symbols,),
         )
@@ -211,19 +211,19 @@ class VNICTester:
     def load_full_ohlcv(self, symbols, start, end):
         """Load OHLCV with daily value (close*volume) for liquidity filter.
 
-        No fallback: skips rows where both adj_close and close are None.
+        Uses only unadjusted prices; symbols outside that coverage are omitted.
         """
         self.cur.execute(
-            """SELECT symbol, time::date as dt, adj_close, close, volume
-               FROM ohlcv
+            """SELECT symbol, time::date as dt, close, volume
+               FROM ohlcv_unadjusted
                WHERE time::date >= %s AND time::date <= %s AND symbol = ANY(%s)
                ORDER BY symbol, time""",
             (start, end, symbols),
         )
         records = defaultdict(list)
         skipped = 0
-        for sym, dt, ac, cl, vol in self.cur.fetchall():
-            c = float(ac) if ac is not None else (float(cl) if cl is not None else None)
+        for sym, dt, cl, vol in self.cur.fetchall():
+            c = float(cl) if cl is not None else None
             if c is None or not math.isfinite(c):
                 skipped += 1
                 continue
@@ -244,7 +244,7 @@ class VNICTester:
     def get_symbols_at(self, dt):
         """Universe at date = all symbols with volume > 0 on that day."""
         self.cur.execute(
-            "SELECT DISTINCT symbol FROM ohlcv WHERE time::date = %s AND volume > 0",
+            "SELECT DISTINCT symbol FROM ohlcv_unadjusted WHERE time::date = %s AND volume > 0",
             (dt,),
         )
         return {r[0] for r in self.cur.fetchall()}
@@ -634,6 +634,7 @@ class VNICTester:
                    fcf_yield, ev_ebitda, yoy_revenue_growth, yoy_earnings_growth
             FROM financial_ratios
             WHERE symbol = ANY(%s) AND ratio_date <= %s
+              AND frequency = 'quarterly'
               AND published_date IS NOT NULL AND published_date <= %s
             ORDER BY symbol, ratio_date DESC, published_date DESC
         """, (symbols, dt, dt))

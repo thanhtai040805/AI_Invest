@@ -31,7 +31,7 @@ def _parse_cafef_date(val):
     try:
         ms = int(val.replace("/Date(", "").replace(")/", ""))
         return datetime.fromtimestamp(ms / 1000, tz=TZ_VN).date()
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OSError, OverflowError):
         return None
 
 
@@ -122,6 +122,19 @@ def _process_symbols(symbols: list[str], storage: StoragePort) -> dict:
             rows = _parse_rows(sym, raw)
             if not rows:
                 continue
+
+            existing = set(storage.fetch_all(
+                "SELECT trade_date, trader_name, quantity, trade_type FROM insider_trades WHERE symbol = %s",
+                (sym,),
+            ))
+            new_rows = []
+            for row in rows:
+                key = (row[1], row[2], row[7], row[6])
+                if key not in existing:
+                    existing.add(key)
+                    new_rows.append(row)
+            if not new_rows:
+                continue
             
             storage.execute_values(
                 """INSERT INTO insider_trades
@@ -133,10 +146,10 @@ def _process_symbols(symbols: list[str], storage: StoragePort) -> dict:
                     plan_begin_date, plan_end_date, real_end_date)
                    VALUES %s
                    ON CONFLICT (symbol, trade_date, trader_name, quantity, trade_type) DO NOTHING""",
-                rows,
+                new_rows,
                 page_size=100,
             )
-            total_new += len(rows)
+            total_new += len(new_rows)
             time.sleep(RATE_LIMIT_DELAY)
         except Exception as e:
             logger.warning("Failed for %s: %s", sym, e)

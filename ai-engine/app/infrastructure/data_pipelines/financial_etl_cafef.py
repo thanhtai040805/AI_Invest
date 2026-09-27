@@ -35,7 +35,48 @@ FISCAL_CALENDARS = {
     "CTD": (6, 30, 0),
     "FIR": (9, 30, 0),
     "HSG": (9, 30, 0),
+    "SFC": (9, 30, 0),
     "TIX": (9, 30, 0),
+}
+
+def _asset_total_override(value: int) -> dict[str, int]:
+    return {"tong_cong_tai_san": value, "t\u1ed5ng_c\u1ed9ng_t\u00e0i_s\u1ea3n": value,
+            "T\u1ed4NG C\u1ed8NG T\u00c0I S\u1ea2N": value, "t\u1ed5ng c\u1ed9ng t\u00e0i s\u1ea3n": value}
+
+
+def _funds_total_override(value: int) -> dict[str, int]:
+    return {"tong_cong_nguon_von": value, "tong_cong_no_phai_tra_va_von_chu_so_huu": value,
+            "T\u1ed4NG C\u1ed8NG NGU\u1ed2N V\u1ed0N": value,
+            "T\u1ed4NG N\u1ee2 PH\u1ea2I TR\u1ea2 V\u00c0 V\u1ed0N CH\u1ee6 S\u1ede H\u1eeeU": value}
+
+
+_ISSUER_BS_OVERRIDES = {
+    ("SFC", date(2023, 9, 30)): {
+        "tong_cong_tai_san": 292261659477,
+        "T\u1ed4NG C\u1ed8NG T\u00c0I S\u1ea2N": 292261659477,
+        "t\u1ed5ng c\u1ed9ng t\u00e0i s\u1ea3n": 292261659477,
+        "tong_cong_nguon_von": 292261659477,
+        "T\u1ed4NG C\u1ed8NG NGU\u1ed2N V\u1ed0N": 292261659477,
+        "t\u1ed5ng c\u1ed9ng ngu\u1ed3n v\u1ed1n": 292261659477,
+        "no_phai_tra": 106622966717,
+        "c_no_phai_tra": 106622966717,
+        "N\u1ee2 PH\u1ea2I TR\u1ea2": 106622966717,
+        "C. N\u1ee2 PH\u1ea2I TR\u1ea2": 106622966717,
+        "n\u1ee3 ph\u1ea3i tr\u1ea3": 106622966717,
+        "c. n\u1ee3 ph\u1ea3i tr\u1ea3": 106622966717,
+        "von_chu_so_huu": 185638692760,
+        "d_von_chu_so_huu": 185638692760,
+        "V\u1ed0N CH\u1ee6 S\u1ede H\u1eeeU": 185638692760,
+        "D. V\u1ed0N CH\u1ee6 S\u1ede H\u1eeeU": 185638692760,
+        "v\u1ed1n ch\u1ee7 s\u1edf h\u1eefu": 185638692760,
+        "d. v\u1ed1n ch\u1ee7 s\u1edf h\u1eefu": 185638692760,
+    },
+    ("HSG", date(2024, 9, 30)): _asset_total_override(19565620935157),
+    ("EIB", date(2012, 6, 30)): _asset_total_override(185988504000000),
+    ("DSE", date(2016, 6, 30)): _funds_total_override(170727105847),
+    ("DSE", date(2022, 6, 30)): _asset_total_override(5027654663442),
+    ("FPT", date(2015, 12, 31)): _asset_total_override(25980454620722),
+    ("BID", date(2014, 6, 30)): _asset_total_override(579021817708487),
 }
 
 _HEADERS = {
@@ -90,12 +131,24 @@ def _period_label_to_date(label: str, symbol: str = "") -> Optional[date]:
     return date(year, month, monthrange(year, month)[1])
 
 
+def _period_label_to_frequency(label: str) -> Optional[str]:
+    return "quarterly" if re.fullmatch(r"(?:Q[1-4]-\d{4}|\d{4}-Q[1-4])", label or "", re.I) else (
+        "yearly" if re.fullmatch(r"\d{4}", label or "") else None
+    )
+
+
 def _ascii(value: str) -> str:
     return "".join(ch for ch in unicodedata.normalize("NFKD", value.lower()) if not unicodedata.combining(ch))
 
 
 def _document_period_label(title: str, url: str) -> Optional[str]:
     url_text = _ascii(unquote(url)).replace("_", " ").replace("%20", " ")
+    text = _ascii(unquote(title)).replace("_", " ").replace("%20", " ")
+    for candidate in (url_text, text):
+        fiscal_quarter = re.search(r"(?:q|quy)\s*([1-4])\D{0,18}(20\d{2})\s*[-/]\s*(20\d{2})", candidate)
+        if fiscal_quarter:
+            return f"Q{fiscal_quarter.group(1)}-{fiscal_quarter.group(3)}"
+
     for pattern, year_group, quarter_group in (
         (r"(?<!\d)(20\d{2})\s*q\s*([1-4])(?!\d)", 1, 2),
         (r"(?<!\d)(\d{2})\s*q\s*([1-4])(?!\d)", 1, 2),
@@ -108,31 +161,49 @@ def _document_period_label(title: str, url: str) -> Optional[str]:
                 year += 2000
             return f"Q{quarter.group(quarter_group)}-{year}"
 
-    text = _ascii(unquote(title)).replace("_", " ").replace("%20", " ")
+    half_year = re.search(r"(?:6\s*thang|ban nien|semiannual|half.year).*?(20\d{2})", text)
+    if half_year:
+        return f"Q2-{half_year.group(1)}"
     quarter = re.search(r"(?:quy|q)\s*([1-4])\D{0,18}(20\d{2})", text)
     if quarter:
         return f"Q{quarter.group(1)}-{quarter.group(2)}"
+    fiscal_year = re.search(r"(?:nien\s*do|fiscal\s*year|nam|year)\D{0,18}(20\d{2})\s*[-/]\s*(20\d{2})", text)
+    if fiscal_year:
+        return fiscal_year.group(2)
     annual = re.search(r"(?:nam|year|cn)\D{0,18}(20\d{2})", text)
     return annual.group(1) if annual else None
 
 
-def _cafef_availability_by_period(cur, symbol: str) -> dict[str, date]:
-    """Use upload time from a report URL, falling back to when this system first crawled it."""
+def _cafef_availability_by_period(
+    cur, symbol: str, *, fetch_cafef_metadata: bool = True,
+) -> dict[str, date]:
+    """Get filing dates only when a CafeF report URL exposes an upload timestamp."""
     from app.infrastructure.knowledge_base.crawlers.vn.cafef_document_crawl import _url_available_at
 
     cur.execute(
-        """SELECT title, url, article_pdf_urls, published_date
+        """SELECT title, url, article_pdf_urls
            FROM knowledge_documents
            WHERE symbol = %s AND source = 'cafef_docs'
              AND doc_type = 'financial_statement'""",
         (symbol,),
     )
-    seen_at_by_url: dict[str, date] = {}
     fallback_rows = cur.fetchall()
-    for _, url, pdf_urls, published_date in fallback_rows:
-        for link in [str(url or ""), *(str(item) for item in (pdf_urls or []))]:
-            if link and published_date:
-                seen_at_by_url[link] = published_date
+    result: dict[str, date] = {}
+
+    def add(label: Optional[str], available: Any) -> None:
+        if not label or not available:
+            return
+        if isinstance(available, datetime):
+            available = available.astimezone(TZ_VN).date() if available.tzinfo else available.date()
+        result[label] = max(result.get(label, available), available)
+
+    for title, url, pdf_urls in fallback_rows:
+        candidates = [str(url or ""), *(str(item) for item in (pdf_urls or []))]
+        label = _document_period_label(str(title or ""), " ".join(candidates))
+        add(label, next((available for link in candidates if (available := _url_available_at(link))), None))
+
+    if not fetch_cafef_metadata:
+        return result
 
     try:
         response = _CLIENT.get(
@@ -147,8 +218,6 @@ def _cafef_availability_by_period(cur, symbol: str) -> dict[str, date]:
         logger.warning("CafeF document metadata unavailable for %s: %s", symbol, exc)
         documents = []
 
-    result: dict[str, date] = {}
-    observed_at = datetime.now(timezone.utc)
     for item in documents:
         time_label = str(item.get("Time") or "")
         match = re.fullmatch(r"Q([1-4])/(20\d{2})", time_label, re.I)
@@ -160,32 +229,73 @@ def _cafef_availability_by_period(cur, symbol: str) -> dict[str, date]:
                 continue
             label = match.group(1)
         url = str(item.get("Link") or "")
-        available = _url_available_at(url) or seen_at_by_url.get(url) or observed_at
-        if isinstance(available, datetime):
-            available = available.date()
-        result[label] = max(result.get(label, available), available)
-
-    if result:
-        return result
-
-    # If CafeF's document endpoint is down, use already-crawled records only.
-    result = {}
-    for title, url, pdf_urls, published_date in fallback_rows:
-        candidates = [str(url or ""), *(str(item) for item in (pdf_urls or []))]
-        available = None
-        for link in candidates:
-            if link:
-                available = _url_available_at(link)
-                if available:
-                    break
-        if available is None:
-            available = published_date
-        label = _document_period_label(str(title or ""), " ".join(candidates))
-        if label and available:
-            if isinstance(available, datetime):
-                available = available.date()
-            result[label] = max(result.get(label, available), available)
+        add(label, _url_available_at(url))
     return result
+
+
+def refresh_published_dates() -> dict[str, int]:
+    """Rebuild PIT dates from source filing timestamps; unknown dates stay NULL."""
+    conn = psycopg2.connect(DB_URL)
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT DISTINCT symbol FROM financial_statements ORDER BY symbol")
+        symbols = [row[0] for row in cur.fetchall()]
+        updated = known_periods = unknown_periods = 0
+        for index, symbol in enumerate(symbols):
+            availability = _cafef_availability_by_period(
+                cur, symbol, fetch_cafef_metadata=False,
+            )
+            by_period = {
+                (period_end, frequency): available
+                for label, available in availability.items()
+                if (period_end := _period_label_to_date(label, symbol)) is not None
+                and available >= period_end
+                and (frequency := _period_label_to_frequency(label)) is not None
+            }
+            cur.execute(
+                "SELECT period_end, frequency, source, published_date FROM financial_statements WHERE symbol = %s",
+                (symbol,),
+            )
+            periods: dict[tuple[date, str], list[tuple[str, Optional[date]]]] = {}
+            for period_end, frequency, source, existing_date in cur.fetchall():
+                periods.setdefault((period_end, frequency), []).append((str(source or ""), existing_date))
+            for (period_end, frequency), rows in periods.items():
+                published = by_period.get((period_end, frequency))
+                if published is None:
+                    vci_dates = [dt for source, dt in rows if source == "vnstock_vci" and dt]
+                    published = max(vci_dates) if vci_dates else None
+                known_periods += published is not None
+                unknown_periods += published is None
+                cur.execute(
+                    """UPDATE financial_statements SET published_date = %s
+                       WHERE symbol = %s AND period_end = %s AND frequency = %s
+                         AND (COALESCE(source, '') <> 'vnstock_vci' OR %s IS NOT NULL)
+                         AND published_date IS DISTINCT FROM %s""",
+                    (published, symbol, period_end, frequency, by_period.get((period_end, frequency)), published),
+                )
+                updated += cur.rowcount
+                cur.execute(
+                    """UPDATE financial_ratios SET published_date = %s
+                       WHERE symbol = %s AND ratio_date = %s AND frequency = %s
+                         AND published_date IS DISTINCT FROM %s""",
+                    (published, symbol, period_end, frequency, published),
+                )
+            if index and index % BATCH_SIZE == 0:
+                conn.commit()
+                logger.info("PIT date repair progress: %d/%d symbols", index, len(symbols))
+        conn.commit()
+        return {
+            "symbols": len(symbols),
+            "updated_statement_rows": updated,
+            "periods_with_verified_date": known_periods,
+            "periods_without_verified_date": unknown_periods,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
 
 
 def _slugify(text: str) -> str:
@@ -204,16 +314,111 @@ def _slugify(text: str) -> str:
 
 def _upsert(
     cur, symbol: str, period_end: date, stmt_type: str, freq: str,
-    data: dict, published_date: Optional[date],
+    data: dict, published_date: Optional[date], *, fill_only: bool = False,
 ):
+    if not any(isinstance(value, (int, float)) and math.isfinite(value) and value != 0 for value in data.values()):
+        return
+    conflict = (
+        "DO UPDATE SET data = EXCLUDED.data, source = EXCLUDED.source, fetched_at = NOW(), "
+        "published_date = COALESCE(EXCLUDED.published_date, financial_statements.published_date) "
+        "WHERE financial_statements.source = 'alphastock' "
+        "AND (SELECT count(*) FROM jsonb_each(financial_statements.data) "
+        "WHERE value <> 'null'::jsonb) < 8"
+    ) if fill_only else (
+        "DO UPDATE SET data = EXCLUDED.data, source = EXCLUDED.source, fetched_at = NOW(), "
+        "published_date = COALESCE(EXCLUDED.published_date, financial_statements.published_date)"
+    )
     cur.execute(
         """INSERT INTO financial_statements
            (symbol, period_end, statement_type, frequency, data, source, published_date)
            VALUES (%s, %s, %s, %s, %s, %s, %s)
            ON CONFLICT (symbol, period_end, statement_type, frequency)
-           DO UPDATE SET data = EXCLUDED.data, source = EXCLUDED.source, fetched_at = NOW(), published_date = EXCLUDED.published_date""",
+           {conflict}""".format(conflict=conflict),
         (symbol, period_end, stmt_type, freq, Json(_clean_nan(data)), "cafef", published_date),
     )
+
+
+def _latest_completed_quarter(today: date) -> tuple[date, str]:
+    quarter = (today.month - 1) // 3
+    year = today.year
+    if quarter == 0:
+        year -= 1
+        quarter = 4
+    month = quarter * 3
+    return date(year, month, monthrange(year, month)[1]), f"{year}-Q{quarter}"
+
+
+def _fetch_vci_missing_quarter(cur, symbols: Optional[list[str]] = None) -> dict[str, int]:
+    """Fill CafeF gaps from VCI; VCI has no publication date, so first-seen is the PIT cutoff."""
+    period_end, label = _latest_completed_quarter(date.today())
+    cur.execute(
+        """SELECT s.symbol, t.statement_type
+           FROM stocks s
+           CROSS JOIN (VALUES ('BS'), ('IS'), ('CF')) AS t(statement_type)
+           LEFT JOIN financial_statements fs
+             ON fs.symbol = s.symbol AND fs.period_end = %s
+            AND fs.statement_type = t.statement_type AND fs.frequency = 'quarterly'
+           WHERE s.exchange IN ('HOSE', 'HSX') AND fs.symbol IS NULL
+             AND (%s::text[] IS NULL OR s.symbol = ANY(%s::text[]))
+           ORDER BY s.symbol, t.statement_type""",
+        (period_end, symbols, symbols),
+    )
+    missing: dict[str, set[str]] = {}
+    for symbol, statement_type in cur.fetchall():
+        missing.setdefault(symbol, set()).add(statement_type)
+    if not missing:
+        return {"rows": 0, "symbols": 0, "errors": 0}
+
+    from vnstock.api.financial import Finance
+
+    inserted = errors = 0
+    available = date.today()  # Conservative first-observed date; never backdate VCI into replay history.
+    methods = {"BS": "balance_sheet", "IS": "income_statement", "CF": "cash_flow"}
+    for index, (symbol, statement_types) in enumerate(missing.items()):
+        savepoint = f"vci_symbol_{index}"
+        cur.execute(f"SAVEPOINT {savepoint}")
+        try:
+            finance = Finance(symbol=symbol, source="VCI", period="quarter", get_all=True)
+            for statement_type in statement_types:
+                frame = getattr(finance, methods[statement_type])()
+                if frame is None or frame.empty or label not in frame.columns:
+                    continue
+                data = {}
+                for row in frame.to_dict(orient="records"):
+                    value = row.get(label)
+                    if value is None:
+                        continue
+                    try:
+                        numeric_value = value.item() if hasattr(value, "item") else value
+                        if not math.isfinite(float(numeric_value)):
+                            continue
+                    except (TypeError, ValueError):
+                        continue
+                    item_id = row.get("item_id")
+                    if isinstance(item_id, str) and item_id.strip():
+                        data[item_id] = numeric_value
+                    for key in ("item", "item_en"):
+                        if isinstance(row.get(key), str) and row[key].strip():
+                            data[row[key]] = numeric_value
+                            data[row[key].lower()] = numeric_value
+                if not data:
+                    continue
+                cur.execute(
+                    """INSERT INTO financial_statements
+                       (symbol, period_end, statement_type, frequency, data, source, published_date)
+                       VALUES (%s, %s, %s, 'quarterly', %s, 'vnstock_vci', %s)
+                       ON CONFLICT (symbol, period_end, statement_type, frequency) DO NOTHING""",
+                    (symbol, period_end, statement_type, Json(_clean_nan(data)), available),
+                )
+                inserted += cur.rowcount
+            cur.execute(f"RELEASE SAVEPOINT {savepoint}")
+        except Exception as exc:
+            cur.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            cur.execute(f"RELEASE SAVEPOINT {savepoint}")
+            logger.warning("VCI financial fallback failed for %s (%s): %s", symbol, label, exc)
+            errors += 1
+    logger.info("VCI financial fallback %s: %d rows, %d symbols, %d errors", label, inserted, len(missing), errors)
+    return {"rows": inserted, "symbols": len(missing), "errors": errors}
 
 
 def _fetch_cafef_endpoint(url: str, params: dict) -> Optional[dict]:
@@ -400,10 +605,15 @@ def _parse_ratios(val: dict) -> dict[str, dict[str, Any]]:
     return periods
 
 
-def fetch_and_store_financials(symbol: str, cur, max_quarters: int = 80) -> dict[str, Any]:
+def fetch_and_store_financials(
+    symbol: str, cur, max_quarters: int = 80, *, fill_only: bool = False,
+    refresh_ratios: bool = True, backfill: bool = False, include_ratios: bool = True,
+) -> dict[str, Any]:
     """Fetch all financial statements for one symbol from CafeF and upsert into DB."""
     total_upserted = 0
     clean_sym = symbol.strip().upper()
+    today = date.today()
+    history_start = date(today.year - 15, today.month, min(today.day, monthrange(today.year - 15, today.month)[1]))
 
     # Determine is_bank
     cur.execute("SELECT industry, sector FROM stocks WHERE symbol = %s", (clean_sym,))
@@ -430,7 +640,7 @@ def fetch_and_store_financials(symbol: str, cur, max_quarters: int = 80) -> dict
         ("yearly", cdkt_a, kqkd_a, lctt_a, None),
     ]
 
-    available_by_period = _cafef_availability_by_period(cur, clean_sym)
+    latest_quarter, _ = _latest_completed_quarter(date.today())
 
     for freq, raw_bs, raw_is, raw_cf, raw_ratios in runs:
         parsed_bs = _parse_cdkt(raw_bs, is_bank) if raw_bs else {}
@@ -440,30 +650,40 @@ def fetch_and_store_financials(symbol: str, cur, max_quarters: int = 80) -> dict
 
         all_period_labels = set(parsed_bs.keys()) | set(parsed_is.keys()) | set(parsed_cf.keys()) | set(parsed_r.keys())
         for pl in all_period_labels:
+            label_frequency = _period_label_to_frequency(pl)
+            if label_frequency and label_frequency != freq:
+                continue
             pe = _period_label_to_date(pl, clean_sym)
-            if not pe or pe > datetime.now(TZ_VN).date():
+            if not pe or pe < history_start or pe > datetime.now(TZ_VN).date():
                 if pe:
                     logger.warning("Skipping future CafeF period %s for %s", pl, clean_sym)
                 continue
-            available = available_by_period.get(pl)
+            if pl in parsed_bs:
+                parsed_bs[pl].update(_ISSUER_BS_OVERRIDES.get((clean_sym, pe), {}))
+            available = (
+                date.today()
+                if not backfill and freq == "quarterly" and pe == latest_quarter
+                else None
+            )
 
             if pl in parsed_bs and parsed_bs[pl]:
-                _upsert(cur, clean_sym, pe, "BS", freq, parsed_bs[pl], available)
+                _upsert(cur, clean_sym, pe, "BS", freq, parsed_bs[pl], available, fill_only=fill_only)
                 total_upserted += 1
             if pl in parsed_is and parsed_is[pl]:
-                _upsert(cur, clean_sym, pe, "IS", freq, parsed_is[pl], available)
+                _upsert(cur, clean_sym, pe, "IS", freq, parsed_is[pl], available, fill_only=fill_only)
                 total_upserted += 1
             if pl in parsed_cf and parsed_cf[pl]:
-                _upsert(cur, clean_sym, pe, "CF", freq, parsed_cf[pl], available)
+                _upsert(cur, clean_sym, pe, "CF", freq, parsed_cf[pl], available, fill_only=fill_only)
                 total_upserted += 1
-            if pl in parsed_r and parsed_r[pl]:
-                _upsert(cur, clean_sym, pe, "ratios", freq, parsed_r[pl], available)
+            if include_ratios and pl in parsed_r and parsed_r[pl]:
+                _upsert(cur, clean_sym, pe, "ratios", freq, parsed_r[pl], available, fill_only=fill_only)
                 total_upserted += 1
 
-    try:
-        _store_derived_ratios(clean_sym, cur)
-    except Exception as e:
-        logger.warning("Derived ratios failed for %s: %s", clean_sym, e)
+    if refresh_ratios:
+        try:
+            _store_derived_ratios(clean_sym, cur)
+        except Exception as e:
+            logger.warning("Derived ratios failed for %s: %s", clean_sym, e)
 
     return {"symbol": clean_sym, "rows": total_upserted}
 
@@ -547,13 +767,14 @@ _CASH_KEYS = ["tiền và các khoản tương đương tiền", "i_tiền_và_c
 _EBITDA_KEYS = ["ebitda", "ebit", "lợi nhuận thuần từ hoạt động kinh doanh"]
 _EVEBITDA_KEYS = ["ev/ebitda", "giá trị doanh nghiệp trên lợi nhuận trước thuế, khấu hao và lãi vay"]
 _GM_KEYS = ["lợi nhuận gộp", "gross margin", "gộp biên", "gross_margin", "tỷ suất lợi nhuận gộp biên"]
+_GROSS_PROFIT_KEYS = ["gross_profit", "gross profit", "lợi nhuận gộp", "loi nhuan gop"]
 _NM_KEYS = ["lợi nhuận ròng", "net margin", "sinh lợi trên doanh thu", "net_margin", "tỷ suất sinh lợi trên doanh thu thuần"]
 
 
 def _store_derived_ratios(symbol: str, cur) -> None:
     """Compute and store financial_ratios for ALL available periods."""
     cur.execute(
-        """SELECT period_end, statement_type, data, published_date
+        """SELECT period_end, frequency, statement_type, data, published_date
            FROM financial_statements
            WHERE symbol = %s
            ORDER BY period_end DESC""",
@@ -565,21 +786,23 @@ def _store_derived_ratios(symbol: str, cur) -> None:
 
     import json
 
-    periods: dict[date, dict[str, dict]] = {}
-    availability_by_period: dict[date, date] = {}
-    for pe, st, raw, available in stmt_rows:
+    periods: dict[tuple[date, str], dict[str, dict]] = {}
+    availability_by_period: dict[tuple[date, str], date] = {}
+    for pe, frequency, st, raw, available in stmt_rows:
         data = raw if isinstance(raw, dict) else (json.loads(raw) if isinstance(raw, str) else {})
-        periods.setdefault(pe, {})[st] = data
+        key = (pe, frequency)
+        periods.setdefault(key, {})[st] = data
         if available:
-            availability_by_period[pe] = max(availability_by_period.get(pe, available), available)
+            availability_by_period[key] = max(availability_by_period.get(key, available), available)
 
     sorted_periods = sorted(periods.keys(), reverse=True)
 
-    for pe in sorted_periods:
-        bs_data = periods[pe].get("BS", {})
-        inc_data = periods[pe].get("IS", {})
-        cf_data = periods[pe].get("CF", {})
-        rat_data = periods[pe].get("ratios", {})
+    for pe, frequency in sorted_periods:
+        key = (pe, frequency)
+        bs_data = periods[key].get("BS", {})
+        inc_data = periods[key].get("IS", {})
+        cf_data = periods[key].get("CF", {})
+        rat_data = periods[key].get("ratios", {})
 
         if not bs_data or not inc_data:
             continue
@@ -599,14 +822,18 @@ def _store_derived_ratios(symbol: str, cur) -> None:
 
         revenue = _extract_value([inc_data], _REVENUE_KEYS)
         cogs = _extract_value([inc_data], _COGS_KEYS)
+        gross_profit = _extract_value([inc_data], _GROSS_PROFIT_KEYS)
         ni = _extract_value([inc_data], _NI_KEYS)
         cfo = _extract_value([cf_data], _CFO_KEYS)
         capex_raw = _extract_value([cf_data], _CAPEX_KEYS)
         capex = abs(capex_raw) if capex_raw is not None else None
 
         gross_margin_fb = None
-        if revenue is not None and cogs is not None and revenue != 0:
-            gross_margin_fb = (revenue - cogs) / revenue
+        if revenue is not None and revenue != 0:
+            if gross_profit is not None:
+                gross_margin_fb = gross_profit / revenue
+            elif cogs is not None:
+                gross_margin_fb = (revenue - abs(cogs)) / revenue
         net_margin_fb = None
         if ni is not None and revenue is not None and revenue != 0:
             net_margin_fb = ni / revenue
@@ -638,8 +865,14 @@ def _store_derived_ratios(symbol: str, cur) -> None:
 
         current_ratio = _extract_value([rat_data], _CR_KEYS)
         if current_ratio is None:
-            ca = _extract_value([bs_data], ["tài sản ngắn hạn", "ngắn hạn", "a_tài_sản_ngắn_hạn"])
-            cl = _extract_value([bs_data], ["nợ ngắn hạn", "i_nợ_ngắn_hạn"])
+            ca = next((float(bs_data[k]) for k in (
+                "a_tài_sản_ngắn_hạn", "a_tai_san_ngan_han", "A. TÀI SẢN NGẮN HẠN",
+                "tài_sản_ngắn_hạn", "tai_san_ngan_han", "Tài sản ngắn hạn",
+            ) if isinstance(bs_data.get(k), (int, float))), None)
+            cl = next((float(bs_data[k]) for k in (
+                "i_nợ_ngắn_hạn", "i_no_ngan_han", "I. Nợ ngắn hạn",
+                "nợ_ngắn_hạn", "no_ngan_han", "Nợ ngắn hạn",
+            ) if isinstance(bs_data.get(k), (int, float))), None)
             if ca is not None and cl is not None and cl != 0:
                 current_ratio = ca / cl
 
@@ -664,9 +897,9 @@ def _store_derived_ratios(symbol: str, cur) -> None:
 
         tgt = pe - timedelta(days=365)
         prev_inc = None
-        for other_pe in sorted_periods:
-            if other_pe <= tgt:
-                prev_inc = periods[other_pe].get("IS")
+        for other_pe, other_frequency in sorted_periods:
+            if other_frequency == frequency and other_pe <= tgt:
+                prev_inc = periods[(other_pe, other_frequency)].get("IS")
                 break
         yoy_rev = None
         yoy_ni = None
@@ -678,15 +911,15 @@ def _store_derived_ratios(symbol: str, cur) -> None:
             if ni is not None and ni_prev is not None and ni_prev != 0:
                 yoy_ni = (ni - ni_prev) / abs(ni_prev)
 
-        published_date = availability_by_period.get(pe)
+        published_date = availability_by_period.get(key)
 
         cur.execute(
             """INSERT INTO financial_ratios
-               (symbol, ratio_date, pe, pb, roe, roa, debt_equity, current_ratio,
+               (symbol, ratio_date, frequency, pe, pb, roe, roa, debt_equity, current_ratio,
                 gross_margin, net_margin, fcf_yield, ev_ebitda,
                 yoy_revenue_growth, yoy_earnings_growth, published_date)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-               ON CONFLICT (symbol, ratio_date)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               ON CONFLICT (symbol, ratio_date, frequency)
                DO UPDATE SET
                    pe = EXCLUDED.pe, pb = EXCLUDED.pb,
                    roe = EXCLUDED.roe, roa = EXCLUDED.roa,
@@ -698,11 +931,35 @@ def _store_derived_ratios(symbol: str, cur) -> None:
                    ev_ebitda = EXCLUDED.ev_ebitda,
                    yoy_revenue_growth = EXCLUDED.yoy_revenue_growth,
                    yoy_earnings_growth = EXCLUDED.yoy_earnings_growth,
-                   published_date = EXCLUDED.published_date,
+                   published_date = COALESCE(EXCLUDED.published_date, financial_ratios.published_date),
                    updated_at = NOW()""",
-            (symbol, pe, vn_pe, vn_pb, final_roe, final_roa, debt_equity, current_ratio,
+            (symbol, pe, frequency, vn_pe, vn_pb, final_roe, final_roa, debt_equity, current_ratio,
              final_gm, final_nm, fcf_yield, ev_ebitda, yoy_rev, yoy_ni, published_date),
         )
+
+
+def rebuild_derived_ratios_from_statements(limit: Optional[int] = None) -> dict[str, int]:
+    """Recompute ratios from stored statements only; this does not call any provider."""
+    conn = psycopg2.connect(DB_URL)
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT DISTINCT symbol FROM financial_statements ORDER BY symbol")
+        symbols = [row[0] for row in cur.fetchall()]
+        if limit is not None:
+            symbols = symbols[:limit]
+        for index, symbol in enumerate(symbols, 1):
+            _store_derived_ratios(symbol, cur)
+            if index % BATCH_SIZE == 0:
+                conn.commit()
+                logger.info("Financial ratios rebuild: %d/%d symbols", index, len(symbols))
+        conn.commit()
+        return {"symbols": len(symbols)}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
 
 
 def refresh_all(limit: Optional[int] = None) -> dict:
@@ -763,9 +1020,6 @@ def refresh_incremental() -> dict:
         stale_symbols = [s for s in all_symbols if s not in recent_symbols and s not in EXCLUDED_SYMBOLS]
         logger.info("CafeF Financial ETL incremental: %d stale symbols", len(stale_symbols))
 
-        if not stale_symbols:
-            return {"rows": 0, "symbols": 0, "note": "all symbols up to date"}
-
         total_rows = 0
         errors = 0
         for idx, sym in enumerate(stale_symbols):
@@ -784,8 +1038,15 @@ def refresh_incremental() -> dict:
                 conn.commit()
         conn.commit()
 
+        fallback = _fetch_vci_missing_quarter(cur)
+        conn.commit()
         logger.info("CafeF Financial ETL incremental done: %d rows, %d errors", total_rows, errors)
-        return {"rows": total_rows, "symbols": len(stale_symbols) - errors, "errors": errors}
+        return {
+            "rows": total_rows,
+            "symbols": len(stale_symbols) - errors,
+            "errors": errors,
+            "vci_fallback": fallback,
+        }
     finally:
         cur.close()
         conn.close()

@@ -9,6 +9,8 @@ from typing import Optional
 
 from app.config.settings import get_settings
 from app.infrastructure.external_api.dnse.api.client import DNSEClient
+from app.infrastructure.vendors.vn.sector_groups import SYMBOL_OVERRIDES, classify
+from psycopg2.extras import Json
 
 TZ_VN = timezone(timedelta(hours=7))
 CW_PATTERN = re.compile(r'^C[A-Z]{2,4}\d{4,6}$')
@@ -113,7 +115,7 @@ def upsert_today(cur, rows: list[tuple]):
             float(r[3]),  # high_adj
             float(r[4]),  # low_adj
             float(r[5]),  # close_adj
-            float(r[5]),  # close_unadj
+            None,  # close_unadj is populated from CafeF; DNSE only provides close_adj
             float(r[5]),  # vwap
             int(r[6]),    # volume_continuous
             int(r[6]),    # volume_total
@@ -132,7 +134,7 @@ def upsert_today(cur, rows: list[tuple]):
             high_adj = EXCLUDED.high_adj,
             low_adj = EXCLUDED.low_adj,
             close_adj = EXCLUDED.close_adj,
-            close_unadj = EXCLUDED.close_unadj,
+            close_unadj = COALESCE(market_data_daily.close_unadj, EXCLUDED.close_unadj),
             vwap = EXCLUDED.vwap,
             volume_continuous = EXCLUDED.volume_continuous,
             volume_total = EXCLUDED.volume_total,
@@ -185,6 +187,7 @@ def sync_stocks(
         name = item.get("companyName") or item.get("CompanyName") or sym
         exchange = item.get("market") or item.get("Market") or "HOSE"
         industry = (item.get("industryName") or item.get("IndustryName") or "").strip() or None
+        sector = classify(industry, sym) if industry or sym in SYMBOL_OVERRIDES else None
 
         ceiling = None
         floor = None
@@ -218,24 +221,60 @@ def sync_stocks(
             pass
 
         cur.execute("""
-            INSERT INTO stocks (symbol, name, exchange, industry, market_cap, ceiling, floor, ref_price, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO stocks (symbol, name, exchange, industry, sector, market_cap, ceiling, floor, ref_price, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (symbol) DO UPDATE SET
                 name = EXCLUDED.name,
                 exchange = EXCLUDED.exchange,
                 industry = COALESCE(EXCLUDED.industry, stocks.industry),
+                sector = COALESCE(EXCLUDED.sector, stocks.sector),
                 market_cap = EXCLUDED.market_cap,
                 ceiling = EXCLUDED.ceiling,
                 floor = EXCLUDED.floor,
                 ref_price = EXCLUDED.ref_price,
                 updated_at = EXCLUDED.updated_at
-        """, (sym, name, exchange, industry, market_cap, ceiling, floor, ref_price, now_str))
+        """, (sym, name, exchange, industry, sector, market_cap, ceiling, floor, ref_price, now_str))
         count += 1
+
+    cur.execute("""SELECT s.symbol, s.name FROM stocks s
+                    LEFT JOIN instrument_master im ON im.symbol = s.symbol
+                    WHERE im.symbol IS NULL OR im.isin IS NULL OR im.first_listed IS NULL
+                       OR im.metadata IS NULL OR im.metadata = '{}'::jsonb
+                    ORDER BY s.symbol""")
+    missing_metadata = cur.fetchall()
+    secdef_count = 0
+    for sym, name in missing_metadata:
+        try:
+            status, body = client.get_security_definition(sym)
+            payload = json.loads(body) if isinstance(body, str) else body
+            payload = payload.get("data", payload) if isinstance(payload, dict) else {}
+            if status != 200 or not isinstance(payload, dict):
+                print(f"[SyncStocks] DNSE secdef unavailable for {sym}: HTTP {status}")
+                continue
+            isin = payload.get("isin")
+            listed = payload.get("listingDate")
+            delisted = payload.get("finalTradeDate")
+            metadata = {key: payload[key] for key in ("marketId", "indexName", "symbolType", "securityGroupId") if key in payload}
+            cur.execute("""INSERT INTO instrument_master (symbol, isin, name, first_listed, delist_date, metadata)
+                           VALUES (%s, %s, %s, %s, %s, %s)
+                           ON CONFLICT (symbol) DO UPDATE SET
+                             isin = COALESCE(instrument_master.isin, EXCLUDED.isin),
+                             name = COALESCE(instrument_master.name, EXCLUDED.name),
+                             first_listed = COALESCE(instrument_master.first_listed, EXCLUDED.first_listed),
+                             delist_date = COALESCE(instrument_master.delist_date, EXCLUDED.delist_date),
+                             metadata = CASE WHEN instrument_master.metadata IS NULL OR instrument_master.metadata = '{}'::jsonb
+                                             THEN EXCLUDED.metadata ELSE instrument_master.metadata END,
+                             updated_at = NOW()""",
+                        (sym, isin, name, date.fromisoformat(listed[:10]) if listed else None,
+                         date.fromisoformat(delisted[:10]) if delisted else None, Json(metadata)))
+            secdef_count += cur.rowcount
+        except Exception as exc:
+            print(f"[SyncStocks] DNSE secdef failed for {sym}: {exc}")
 
     conn.commit()
     cur.close()
     conn.close()
-    print(f"[SyncStocks] Upserted {count} stocks")
+    print(f"[SyncStocks] Upserted {count} stocks; instrument master secdef rows: {secdef_count}")
     return count
 
 

@@ -118,7 +118,7 @@ class GARCHCashEngine:
             with get_conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute("""
-                        SELECT close_adj FROM market_data_daily
+                        SELECT close FROM market_data_daily_calculation
                         WHERE ticker = 'VNINDEX' AND date <= %s
                         ORDER BY date DESC LIMIT %s
                     """, (target_date, window + 1))
@@ -127,7 +127,7 @@ class GARCHCashEngine:
                     # Fallback nếu target_date chưa có dữ liệu (lấy snapshot gần nhất)
                     if len(rows) < 20:
                         cur.execute("""
-                            SELECT close_adj FROM market_data_daily
+                            SELECT close FROM market_data_daily_calculation
                             WHERE ticker = 'VNINDEX'
                             ORDER BY date DESC LIMIT %s
                         """, (window + 1,))

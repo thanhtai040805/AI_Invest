@@ -108,7 +108,7 @@ async def get_technical_indicators(symbol: str):
     end = datetime.now().strftime("%Y-%m-%d")
     start = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
     
-    ohlcv = await market_data_svc.get_ohlcv(symbol.upper(), interval="1D", start=start, end=end)
+    ohlcv = await market_data_svc.get_calculation_ohlcv(symbol.upper(), start=start, end=end)
     bars = ohlcv.get("data", [])
     if not bars:
         return {"error": f"No price data available for {symbol.upper()} to compute indicators."}
@@ -159,7 +159,7 @@ async def get_ai_context(symbol: str):
     # Fetch OHLCV for technicals/risk
     end = datetime.now().strftime("%Y-%m-%d")
     start = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
-    ohlcv = await market_data_svc.get_ohlcv(symbol.upper(), interval="1D", start=start, end=end)
+    ohlcv = await market_data_svc.get_calculation_ohlcv(symbol.upper(), start=start, end=end)
     bars = ohlcv.get("data", [])
 
     ohlcv_df = None
@@ -207,7 +207,7 @@ async def get_factor_scores(symbol: str):
 
     end = datetime.now().strftime("%Y-%m-%d")
     start = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
-    ohlcv = await market_data_svc.get_ohlcv(symbol.upper(), interval="1D", start=start, end=end)
+    ohlcv = await market_data_svc.get_calculation_ohlcv(symbol.upper(), start=start, end=end)
     bars = ohlcv.get("data", [])
 
     technicals = {}
@@ -254,7 +254,7 @@ async def get_market_extras(symbol: str):
 
     end = datetime.now().strftime("%Y-%m-%d")
     start = (datetime.now() - timedelta(days=120)).strftime("%Y-%m-%d")
-    ohlcv = await market_data_svc.get_ohlcv(symbol.upper(), interval="1D", start=start, end=end)
+    ohlcv = await market_data_svc.get_calculation_ohlcv(symbol.upper(), start=start, end=end)
     bars = ohlcv.get("data", [])
 
     if not bars:

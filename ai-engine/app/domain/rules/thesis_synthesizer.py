@@ -28,6 +28,28 @@ THESIS_SYNTHESIZER_SYSTEM_PROMPT = (
     "4. Trả về đúng định dạng JSON Schema yêu cầu, không kèm văn bản ngoài JSON."
 )
 
+THESIS_SYNTHESIZER_SYSTEM_PROMPT += " Return exactly one JSON object with only the six schema keys; do not add keys or a second JSON object. Keep each text field to one concise sentence and each list to at most three short items."
+
+THESIS_NARRATIVE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "investment_style": {
+            "type": "string",
+            "enum": ["CYCLICAL_GROWTH", "DEEP_VALUE", "SPECIAL_SITUATION_TURNAROUND", "QUALITY_COMPOUNDER"],
+        },
+        "why_now": {"type": "string"},
+        "why_this_stock": {"type": "string"},
+        "catalyst_description": {"type": "string"},
+        "pre_mortem": {"type": "array", "items": {"type": "string"}},
+        "invalidation_triggers": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": [
+        "investment_style", "why_now", "why_this_stock", "catalyst_description",
+        "pre_mortem", "invalidation_triggers",
+    ],
+    "additionalProperties": False,
+}
+
 
 class ThesisSynthesizer:
     """
@@ -159,7 +181,9 @@ Hãy tổng hợp luận điểm đầu tư chuyên sâu theo đúng cấu trúc
 
         try:
             if hasattr(self.llm_client, "complete_json"):
-                data = await self.llm_client.complete_json(messages)
+                data = await self.llm_client.complete_json(
+                    messages, max_tokens=700, json_schema=THESIS_NARRATIVE_SCHEMA
+                )
             else:
                 resp = await self.llm_client.chat(messages)
                 from app.infrastructure.llm.client import clean_and_parse_json

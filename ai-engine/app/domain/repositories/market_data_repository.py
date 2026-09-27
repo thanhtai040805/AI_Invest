@@ -48,8 +48,8 @@ class MarketDataRepository:
 
         where_clause = " AND ".join(conditions)
         query = f"""
-            SELECT time, open, high, low, close, volume, adj_close, adj_factor
-            FROM ohlcv
+            SELECT time, open, high, low, close, volume
+            FROM ohlcv_unadjusted
             WHERE {where_clause}
             ORDER BY time DESC
             LIMIT %s
@@ -67,8 +67,6 @@ class MarketDataRepository:
                         "low": float(r[3]),
                         "close": float(r[4]),
                         "volume": int(r[5]),
-                        "adj_close": float(r[6]) if r[6] is not None else float(r[4]),
-                        "adj_factor": float(r[7]) if r[7] is not None else 1.0,
                     }
                     for r in rows
                 ]
@@ -85,25 +83,27 @@ class MarketDataRepository:
     ) -> List[Dict[str, Any]]:
         """Lấy dữ liệu thị trường chi tiết (ADTV20, Continuous Volume, Market Cap)."""
         ticker = ticker.upper().strip()
-        conditions = ["ticker = %s"]
+        conditions = ["md.ticker = %s"]
         params: List[Any] = [ticker]
 
         if start_date:
-            conditions.append("date >= %s")
+            conditions.append("md.date >= %s")
             params.append(start_date)
         if end_date:
-            conditions.append("date <= %s")
+            conditions.append("md.date <= %s")
             params.append(end_date)
 
         where_clause = " AND ".join(conditions)
         query = f"""
-            SELECT date, open_adj, high_adj, low_adj, close_adj, vwap,
-                   volume_continuous, volume_atc, volume_ato, volume_total,
-                   foreign_buy_vol, foreign_sell_vol, foreign_net_vol,
-                   adtv20_continuous, market_cap
-            FROM market_data_daily
+            SELECT md.date, md.open_adj, md.high_adj, md.low_adj, md.close_adj, md.close_unadj,
+                   calc.open, calc.high, calc.low, calc.vwap,
+                   md.volume_continuous, md.volume_atc, md.volume_ato, md.volume_total,
+                   md.foreign_buy_vol, md.foreign_sell_vol, md.foreign_net_vol,
+                   calc.adtv20_continuous, calc.market_cap
+            FROM market_data_daily md
+            LEFT JOIN market_data_daily_calculation calc USING (ticker, date)
             WHERE {where_clause}
-            ORDER BY date DESC
+            ORDER BY md.date DESC
             LIMIT %s
         """
         params.append(limit)
@@ -118,14 +118,19 @@ class MarketDataRepository:
                         "high_adj": float(r[2]) if r[2] is not None else 0.0,
                         "low_adj": float(r[3]) if r[3] is not None else 0.0,
                         "close_adj": float(r[4]) if r[4] is not None else 0.0,
-                        "vwap": float(r[5]) if r[5] is not None else 0.0,
-                        "volume_continuous": int(r[6]) if r[6] is not None else 0,
-                        "volume_atc": int(r[7]) if r[7] is not None else 0,
-                        "volume_ato": int(r[8]) if r[8] is not None else 0,
-                        "volume_total": int(r[9]) if r[9] is not None else 0,
-                        "foreign_net_vol": int(r[12]) if r[12] is not None else 0,
-                        "adtv20_continuous": float(r[13]) if r[13] is not None else 0.0,
-                        "market_cap": float(r[14]) if r[14] is not None else 0.0,
+                        "close_unadj": float(r[5]) if r[5] is not None else None,
+                        "open": float(r[6]) if r[6] is not None else None,
+                        "high": float(r[7]) if r[7] is not None else None,
+                        "low": float(r[8]) if r[8] is not None else None,
+                        "close": float(r[5]) if r[5] is not None else None,
+                        "vwap": float(r[9]) if r[9] is not None else 0.0,
+                        "volume_continuous": int(r[10]) if r[10] is not None else 0,
+                        "volume_atc": int(r[11]) if r[11] is not None else 0,
+                        "volume_ato": int(r[12]) if r[12] is not None else 0,
+                        "volume_total": int(r[13]) if r[13] is not None else 0,
+                        "foreign_net_vol": int(r[16]) if r[16] is not None else 0,
+                        "adtv20_continuous": float(r[17]) if r[17] is not None else 0.0,
+                        "market_cap": float(r[18]) if r[18] is not None else 0.0,
                     }
                     for r in rows
                 ]
@@ -138,17 +143,18 @@ class MarketDataRepository:
                     return [
                         {
                             "date": o["time"][:10],
-                            "open_adj": o["open"],
-                            "high_adj": o["high"],
-                            "low_adj": o["low"],
-                            "close_adj": o["close"],
+                            "open": o["open"],
+                            "high": o["high"],
+                            "low": o["low"],
+                            "close_unadj": o["close"],
+                            "close": o["close"],
                             "vwap": o["close"],
                             "volume_continuous": o["volume"],
                             "volume_atc": 0,
                             "volume_ato": 0,
                             "volume_total": o["volume"],
                             "foreign_net_vol": 0,
-                            "adtv20_continuous": float(o["volume"]),
+                            "adtv20_continuous": 0.0,
                             "market_cap": 0.0,
                         }
                         for o in ohlcv_rows
@@ -164,17 +170,18 @@ class MarketDataRepository:
                     return [
                         {
                             "date": o["time"][:10],
-                            "open_adj": o["open"],
-                            "high_adj": o["high"],
-                            "low_adj": o["low"],
-                            "close_adj": o["close"],
+                            "open": o["open"],
+                            "high": o["high"],
+                            "low": o["low"],
+                            "close_unadj": o["close"],
+                            "close": o["close"],
                             "vwap": o["close"],
                             "volume_continuous": o["volume"],
                             "volume_atc": 0,
                             "volume_ato": 0,
                             "volume_total": o["volume"],
                             "foreign_net_vol": 0,
-                            "adtv20_continuous": float(o["volume"]),
+                            "adtv20_continuous": 0.0,
                             "market_cap": 0.0,
                         }
                         for o in ohlcv_rows
@@ -190,7 +197,7 @@ class MarketDataRepository:
             # 1. Ưu tiên market_data_daily
             rows = self.storage.fetch_all(
                 """
-                SELECT COALESCE(close_unadj, close_adj) FROM market_data_daily
+                SELECT close FROM market_data_daily_calculation
                 WHERE ticker = %s AND date < %s
                 ORDER BY date DESC LIMIT 1
                 """,
@@ -201,7 +208,7 @@ class MarketDataRepository:
             # 2. Fallback sang ohlcv
             rows_ohlcv = self.storage.fetch_all(
                 """
-                SELECT close FROM ohlcv
+                SELECT close FROM ohlcv_unadjusted
                 WHERE symbol = %s AND time < %s
                 ORDER BY time DESC LIMIT 1
                 """,
@@ -598,11 +605,12 @@ class MarketDataRepository:
         if allow_eod_fallback:
             daily = self.get_market_data_daily(symbol_clean, limit=1)
             if daily:
-                if daily[0].get("close_adj") and float(daily[0]["close_adj"]) > 0:
-                    price = float(daily[0]["close_adj"])
+                eod_close = daily[0].get("close_unadj")
+                if eod_close and float(eod_close) > 0:
+                    price = float(eod_close)
                     if price < 1000.0:  # Chuẩn hóa đơn vị nghìn đồng sàn HOSE sang VND
                         price = price * 1000.0
-                    logger.info(f"[EOD Fallback] Sử dụng giá đóng cửa ngày hôm qua (close_adj={price:,.0f} VND) cho {symbol_clean}.")
+                    logger.info(f"[EOD Fallback] Sử dụng giá đóng cửa unadjusted gần nhất ({price:,.0f} VND) cho {symbol_clean}.")
                     return price
                 elif daily[0].get("close") and float(daily[0]["close"]) > 0:
                     price = float(daily[0]["close"])

@@ -92,8 +92,8 @@ def check_price_limit(data: List[Dict], target_date: date, max_change_pct: float
     violations = []
     for r in data:
         if r.get("date") != target_date: continue
-        close = r.get("close_adj", 0)
-        prev = r.get("prev_close_adj", 0)
+        close = r.get("close_unadj", 0)
+        prev = r.get("prev_close_unadj", 0)
         if prev and prev > 0:
             change = abs(close / prev - 1) * 100
             if change > max_change_pct:

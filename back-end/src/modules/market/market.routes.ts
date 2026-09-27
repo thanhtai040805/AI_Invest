@@ -24,12 +24,13 @@ async function dbSnapshot(exchange?: string) {
            COALESCE((d.low_adj * 1000)::float8, (d.close_adj * 1000)::float8) AS floor,
            (d.close_adj * 1000)::float8 AS price,
            d.volume_total::float8 AS volume,
-           COALESCE((d.foreign_net_vol * d.close_adj * 1000 / 1e9)::float8, 0) AS foreign_flow,
-           CASE WHEN d.open_adj IS NOT NULL AND d.open_adj <> 0
-             THEN ((d.close_adj - d.open_adj) / d.open_adj) * 100 ELSE 0 END AS change_pct,
+           COALESCE((d.foreign_net_vol * c.close * 1000 / 1e9)::float8, 0) AS foreign_flow,
+           CASE WHEN c.open IS NOT NULL AND c.open <> 0
+             THEN ((c.close - c.open) / c.open) * 100 ELSE 0 END AS change_pct,
            COALESCE((t.indicators->>'rsi_14')::float8, 50) AS rs,
            COALESCE((t.indicators->>'momentum_1m')::float8, 0) AS momentum
     FROM market_data_daily d
+    LEFT JOIN market_data_daily_calculation c ON c.ticker = d.ticker AND c.date = d.date
     LEFT JOIN instrument_master i ON i.symbol = d.ticker
     LEFT JOIN technical_indicators t ON t.symbol = d.ticker AND t.calc_date = d.date
     WHERE d.date = (SELECT MAX(date) FROM market_data_daily)
@@ -42,12 +43,13 @@ async function dbSnapshot(exchange?: string) {
 async function dbIndices() {
   const [rows, historyRows] = await Promise.all([
     prisma.$queryRaw<Array<Record<string, unknown>>>`
-      SELECT ticker AS symbol, date, close_adj AS value,
-             CASE WHEN open_adj IS NOT NULL AND open_adj <> 0
-               THEN ((close_adj - open_adj) / open_adj) * 100 ELSE 0 END AS change_pct
-      FROM market_data_daily
-      WHERE ticker IN ('VNINDEX', 'VN-INDEX', 'VN30', 'HNXINDEX', 'UPCOMINDEX')
-        AND date = (SELECT MAX(date) FROM market_data_daily WHERE ticker IN ('VNINDEX', 'VN-INDEX', 'VN30', 'HNXINDEX', 'UPCOMINDEX'))
+      SELECT c.ticker AS symbol, c.date, d.close_adj AS value,
+             CASE WHEN c.open IS NOT NULL AND c.open <> 0
+               THEN ((c.close - c.open) / c.open) * 100 ELSE 0 END AS change_pct
+      FROM market_data_daily_calculation c
+      JOIN market_data_daily d USING (ticker, date)
+      WHERE c.ticker IN ('VNINDEX', 'VN-INDEX', 'VN30', 'HNXINDEX', 'UPCOMINDEX')
+        AND c.date = (SELECT MAX(date) FROM market_data_daily WHERE ticker IN ('VNINDEX', 'VN-INDEX', 'VN30', 'HNXINDEX', 'UPCOMINDEX'))
     `,
     prisma.$queryRaw<Array<{ ticker: string; date: Date; close_adj: number }>>`
       SELECT ticker, date, close_adj
@@ -82,10 +84,12 @@ async function dbHeatmap() {
       WITH latest AS (SELECT MAX(date) AS date FROM market_data_daily)
       SELECT COALESCE(s.sector, 'Khác') AS sector,
              COUNT(*)::int AS count,
-             AVG(CASE WHEN d.open_adj IS NOT NULL AND d.open_adj <> 0 THEN ((d.close_adj-d.open_adj)/d.open_adj)*100 ELSE 0 END)::float8 AS change_pct,
-             SUM(COALESCE(d.market_cap, 0))::float8 AS market_cap,
+             AVG(CASE WHEN c.open IS NOT NULL AND c.open <> 0 THEN ((c.close-c.open)/c.open)*100 ELSE 0 END)::float8 AS change_pct,
+             SUM(COALESCE(c.market_cap, 0))::float8 AS market_cap,
              SUM(COALESCE(d.foreign_net_vol, 0))::float8 AS foreign_flow
-      FROM market_data_daily d JOIN latest l ON d.date=l.date
+      FROM market_data_daily d
+      JOIN market_data_daily_calculation c ON c.ticker=d.ticker AND c.date=d.date
+      JOIN latest l ON d.date=l.date
       LEFT JOIN stocks s ON s.symbol=d.ticker GROUP BY COALESCE(s.sector, 'Khác')
       ORDER BY market_cap DESC
     `,
@@ -94,9 +98,10 @@ async function dbHeatmap() {
         SELECT DISTINCT date FROM market_data_daily ORDER BY date DESC LIMIT 15
       ),
       sector_daily AS (
-        SELECT COALESCE(s.sector, 'Khác') AS sector, d.date, AVG(d.close_adj * 1000)::float8 AS avg_price
+        SELECT COALESCE(s.sector, 'Khác') AS sector, c.date, AVG(c.close * 1000)::float8 AS avg_price
         FROM market_data_daily d
-        JOIN recent_dates r ON d.date = r.date
+        JOIN market_data_daily_calculation c ON c.ticker = d.ticker AND c.date = d.date
+        JOIN recent_dates r ON c.date = r.date
         JOIN stocks s ON s.symbol = d.ticker
         GROUP BY COALESCE(s.sector, 'Khác'), d.date
       )

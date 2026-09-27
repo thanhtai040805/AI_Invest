@@ -104,7 +104,12 @@ class FeatureForge:
         
         return out
         
-    def _compute_frac_diff_features(self, df: pd.DataFrame, ticker: str) -> pd.DataFrame:
+    def _compute_frac_diff_features(
+        self,
+        df: pd.DataFrame,
+        ticker: str,
+        frac_diff_d: Optional[tuple[float, float]] = None,
+    ) -> pd.DataFrame:
         """Apply fractional differentiation to non-stationary features like Price and Volume."""
         out = pd.DataFrame(index=df.index)
         
@@ -113,26 +118,21 @@ class FeatureForge:
             out['vol_diff'] = df['volume'].pct_change()
             return out
             
-        # Find or use cached optimal d for close
-        cache_key_c = f"{ticker}_close_d"
-        if cache_key_c not in self._optimal_d_cache:
-            d = find_optimal_d(np.log(df['close']).dropna())
-            self._optimal_d_cache[cache_key_c] = d
+        if frac_diff_d is not None:
+            d, d_v = frac_diff_d
         else:
+            cache_key_c = f"{ticker}_close_d"
+            if cache_key_c not in self._optimal_d_cache:
+                self._optimal_d_cache[cache_key_c] = find_optimal_d(np.log(df['close']).dropna())
             d = self._optimal_d_cache[cache_key_c]
-            
-        out['close_frac_diff'] = frac_diff_ffd(np.log(df['close']), d)
-        
-        # Find or use cached optimal d for volume
-        cache_key_v = f"{ticker}_vol_d"
-        if cache_key_v not in self._optimal_d_cache:
-            # Volume is strictly positive, log is safe if we add 1
-            d_v = find_optimal_d(np.log(df['volume'] + 1).dropna())
-            self._optimal_d_cache[cache_key_v] = d_v
-        else:
+            cache_key_v = f"{ticker}_vol_d"
+            if cache_key_v not in self._optimal_d_cache:
+                self._optimal_d_cache[cache_key_v] = find_optimal_d(np.log(df['volume'] + 1).dropna())
             d_v = self._optimal_d_cache[cache_key_v]
             
-        out['vol_frac_diff'] = frac_diff_ffd(np.log(df['volume'] + 1), d_v)
+        out['close_frac_diff'] = frac_diff_ffd(np.log(df['close']), d, fallback_prefix=True)
+
+        out['vol_frac_diff'] = frac_diff_ffd(np.log(df['volume'] + 1), d_v, fallback_prefix=True)
         
         return out
         
@@ -211,13 +211,13 @@ class FeatureForge:
                 out['insider_signal'] = 0.0
 
             # 3. Financial Ratios (Parameterized query)
-            q_fin = "SELECT published_date as date, pe, pb, roe FROM financial_ratios WHERE symbol = %s AND published_date IS NOT NULL"
+            q_fin = "SELECT ratio_date as date, pe, pb, roe FROM financial_ratios WHERE symbol = %s AND frequency = 'quarterly'"
             fin_df = pd.read_sql(q_fin, conn, params=(ticker,))
             if not fin_df.empty:
-                fin_df['date'] = pd.to_datetime(fin_df['date'])
+                fin_df['date'] = pd.to_datetime(fin_df['date']).astype('datetime64[ns]')
                 fin_df = fin_df.set_index('date').sort_index()
                 # Merge ASOF with aligned datetime types
-                left_df = pd.DataFrame({'date': pd.to_datetime(df.index)}).sort_values('date')
+                left_df = pd.DataFrame({'date': pd.to_datetime(df.index).astype('datetime64[ns]')}).sort_values('date')
                 merged = pd.merge_asof(
                     left_df, 
                     fin_df.reset_index(), 
@@ -260,7 +260,7 @@ class FeatureForge:
             conn = None
             try:
                 conn = psycopg2.connect(DB_URL)
-                q_vn = "SELECT date, close_adj FROM market_data_daily WHERE ticker='VNINDEX'"
+                q_vn = "SELECT date, close FROM market_data_daily_calculation WHERE ticker='VNINDEX'"
                 vn_df = pd.read_sql(q_vn, conn)
                 if not vn_df.empty:
                     vn_df['date'] = pd.to_datetime(vn_df['date'])
@@ -277,7 +277,7 @@ class FeatureForge:
                 
         if self._vnindex_df is not None and not self._vnindex_df.empty:
             # Join VNINDEX close
-            temp = df[['close']].join(self._vnindex_df['close_adj'].rename('vn_close'), how='left').ffill()
+            temp = df[['close']].join(self._vnindex_df['close'].rename('vn_close'), how='left').ffill()
             ticker_ret = temp['close'].pct_change()
             vn_ret = temp['vn_close'].pct_change()
             
@@ -296,7 +296,12 @@ class FeatureForge:
                 
         return out
 
-    def generate(self, df: pd.DataFrame, ticker: str = "UNKNOWN") -> pd.DataFrame:
+    def generate(
+        self,
+        df: pd.DataFrame,
+        ticker: str = "UNKNOWN",
+        frac_diff_d: Optional[tuple[float, float]] = None,
+    ) -> pd.DataFrame:
         """
         Generate all features for a single ticker.
         """
@@ -308,7 +313,7 @@ class FeatureForge:
             self._compute_price_momentum(df),
             self._compute_liquidity_turnover(df),
             self._compute_microstructure(df),
-            self._compute_frac_diff_features(df, ticker),
+            self._compute_frac_diff_features(df, ticker, frac_diff_d),
             self._compute_hose_limits(df),
             self._compute_fundamental_flow(df, ticker),
             self._compute_relative_strength(df, ticker)

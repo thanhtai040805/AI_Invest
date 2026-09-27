@@ -176,15 +176,25 @@ class InvestmentThesisAgent(BaseAgent):
                 "status": "REJECTED" if "REJECT" in message else "WAIT_OR_SKIP",
                 "reason": message,
             }
+            valuation_diagnostics = val_inputs.get("valuation_diagnostics") or {}
             if "Không đủ 3 tín hiệu" in message:
                 res_data["reason_codes"] = ["INDEPENDENT_SIGNALS_BELOW_3"]
             elif "DATA_MISSING" in message:
-                res_data["reason_codes"] = ["VALUATION_INPUTS_MISSING"]
+                if str(valuation_diagnostics.get("reason_code", "")).startswith("PEER_"):
+                    res_data["reason_codes"] = ["VALUATION_PEER_COVERAGE_INSUFFICIENT"]
+                    res_data["valuation_status"] = "INSUFFICIENT_PEER_COVERAGE"
+                elif valuation_diagnostics.get("reason_code") == "EPS_NONPOSITIVE_PB_UNSUPPORTED":
+                    res_data["reason_codes"] = ["VALUATION_METHOD_UNAVAILABLE_FOR_FUNDAMENTALS"]
+                    res_data["valuation_status"] = "NO_SUPPORTED_MULTIPLE_FOR_CURRENT_FUNDAMENTALS"
+                else:
+                    res_data["reason_codes"] = ["VALUATION_INPUTS_MISSING"]
+                if valuation_diagnostics:
+                    res_data["valuation_diagnostics"] = valuation_diagnostics
             elif "Biên an toàn" in message:
                 res_data["reason_codes"] = ["MARGIN_OF_SAFETY_BELOW_15"]
             else:
                 res_data["reason_codes"] = ["THESIS_VALIDATION_FAILED"]
-            if "DATA_MISSING" in message:
+            if "DATA_MISSING" in message and "valuation_status" not in res_data:
                 res_data["valuation_status"] = "NO_FUNDAMENTAL_TARGET"
             return {
                 "data": res_data,

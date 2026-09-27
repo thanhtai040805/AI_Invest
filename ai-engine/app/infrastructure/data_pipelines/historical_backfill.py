@@ -11,7 +11,7 @@ import psycopg2
 from app.infrastructure.data_pipelines.ohlcv_ingestion_service import ohlcv_ingestion_svc
 from app.domain.rules.market.macro_service import backfill_historical_macro_10y, refresh_macro
 from app.infrastructure.vendors.vn.technical_indicators import refresh_incremental as refresh_ti
-from app.infrastructure.data_pipelines.financial_etl_cafef import refresh_incremental as refresh_fi
+from app.infrastructure.data_pipelines.financial_etl_alphastock import refresh_all as refresh_fi
 from app.infrastructure.vendors.vn.foreign_flow import refresh_incremental as refresh_ff
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -75,7 +75,7 @@ def backfill_tech():
         logger.error(f"Technical error: {e}")
 
 def backfill_financial():
-    logger.info("Refreshing Financial Ratios incrementally...")
+    logger.info("Refreshing Financial Statements from AlphaStock with backfill dates...")
     try:
         res = refresh_fi()
         logger.info(f"Financial Ratios refresh complete: {res}")

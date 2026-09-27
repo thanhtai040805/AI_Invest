@@ -64,11 +64,11 @@ class HMMClassifier:
             limit_clause = "LIMIT %s" if days_history else ""
             query = f"""
                 WITH vni AS (
-                    SELECT date, close_adj as close, volume_total as volume,
-                           AVG(close_adj) OVER(ORDER BY date ROWS BETWEEN 49 PRECEDING AND CURRENT ROW) as ma50,
-                           AVG(close_adj) OVER(ORDER BY date ROWS BETWEEN 199 PRECEDING AND CURRENT ROW) as ma200,
+                    SELECT date, close, volume_total as volume,
+                           AVG(close) OVER(ORDER BY date ROWS BETWEEN 49 PRECEDING AND CURRENT ROW) as ma50,
+                           AVG(close) OVER(ORDER BY date ROWS BETWEEN 199 PRECEDING AND CURRENT ROW) as ma200,
                            AVG(volume_total) OVER(ORDER BY date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) as vol_ma20
-                    FROM market_data_daily
+                    FROM market_data_daily_calculation
                     WHERE ticker = 'VNINDEX'
                 ),
                 br AS (

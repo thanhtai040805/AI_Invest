@@ -157,7 +157,7 @@ def fetch_documents(
         published = (
             datetime.fromtimestamp(int(millis.group(1)) / 1000, tz=timezone.utc)
             if millis
-            else datetime.now(timezone.utc)
+            else None
         )
         result.append(
             {
@@ -193,7 +193,7 @@ def refresh_documents(
             if not rows:
                 break
             for article in rows:
-                if article["published_date"] < cutoff:
+                if article["published_date"] and article["published_date"] < cutoff:
                     continue
                 total += int(upsert_article(article, source=DOCUMENT_SOURCE))
                 with get_cursor() as cur:
@@ -205,7 +205,8 @@ def refresh_documents(
                     )
             # Vietstock is newest-first in practice. Stop once the whole page
             # is older than the requested window; avoid crawling deep history.
-            if max(article["published_date"] for article in rows) < cutoff:
+            dated = [article["published_date"] for article in rows if article["published_date"]]
+            if dated and max(dated) < cutoff:
                 break
             page += 1
     return total
@@ -233,10 +234,12 @@ def run(
             lambda symbol: (symbol, refresh_documents(symbol, selected_types, max_years=max_years)),
             selected,
         )
-        for symbol, count in results:
+        for index, (symbol, count) in enumerate(results, 1):
             inserted += count
             if count:
                 new_symbols.append(symbol)
+            if index % 25 == 0 or index == len(selected):
+                print(f"Vietstock document backfill: {index}/{len(selected)} symbols processed")
     return {
         "status": "success",
         "source": DOCUMENT_SOURCE,

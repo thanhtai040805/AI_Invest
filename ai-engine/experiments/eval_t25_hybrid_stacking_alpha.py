@@ -21,6 +21,7 @@ import sys
 import logging
 import numpy as np
 import pandas as pd
+from collections import Counter
 from sklearn.linear_model import Ridge
 import lightgbm as lgb
 
@@ -28,12 +29,15 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.
 
 from app.infrastructure.database.pg_pool import get_conn
 from app.domain.services.ml.feature_forge import feature_forge
+from app.domain.services.ml.frac_diff import find_optimal_d, frac_diff_ffd
 from app.domain.services.ml.graph_contagion_engine import graph_engine
 from app.domain.services.ml.cross_sectional_ranker import CrossSectionalRanker
 from app.domain.services.ml.dual_tier_sniper_engine import dual_tier_engine
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+FEATURE_HISTORY_START = "2012-01-01"
+TRAIN_START = pd.Timestamp("2018-01-01")
 
 
 # ────────────────────────────────────────────────────
@@ -231,8 +235,8 @@ class HybridStackingRanker:
 def fetch_data():
     logger.info("Fetching Top 100 liquid tickers from DB...")
     query_tickers = """
-        SELECT ticker, SUM(close_adj * volume_continuous) as total_val
-        FROM market_data_daily
+        SELECT ticker, SUM(close * volume_continuous) as total_val
+        FROM market_data_daily_calculation
         WHERE date >= '2020-01-01'
         GROUP BY ticker
         ORDER BY total_val DESC
@@ -246,10 +250,10 @@ def fetch_data():
                 tickers.append('VNINDEX')
 
             query_data = f"""
-                SELECT ticker, date, open_adj as open, high_adj as high, low_adj as low, close_adj as close, volume_continuous as volume
-                FROM market_data_daily
+                SELECT ticker, date, open as open, high as high, low as low, close as close, volume_continuous as volume
+                FROM market_data_daily_calculation
                 WHERE ticker IN ({','.join([f"'{t}'" for t in tickers])})
-                AND date >= '2014-01-01' AND date <= '2026-12-31'
+                AND date >= '{FEATURE_HISTORY_START}' AND date <= '2026-12-31'
                 ORDER BY ticker, date;
             """
             df_data = pd.read_sql(query_data, conn)
@@ -279,7 +283,8 @@ def run_t25_walk_forward():
     for ticker, df in data_dict.items():
         if ticker == 'VNINDEX':
             continue
-        feats = feature_forge.generate(df, ticker)
+        # Placeholder differencing is replaced inside each walk-forward fold.
+        feats = feature_forge.generate(df, ticker, frac_diff_d=(1.0, 1.0))
         if not feats.empty:
             feats['ticker'] = ticker
             feats['close'] = df['close']
@@ -302,13 +307,12 @@ def run_t25_walk_forward():
     for ticker, feats in base_features_dict.items():
         g_feats = graph_dict.get(ticker)
         if g_feats is not None and not g_feats.empty:
-            merged = pd.concat([feats, g_feats], axis=1).dropna()
+            merged = pd.concat([feats, g_feats], axis=1, sort=False)
         else:
-            merged = feats.dropna()
+            merged = feats
         combined_list.append(merged)
 
     master_df = pd.concat(combined_list).sort_index()
-    master_df = CrossSectionalRanker.compute_forward_alpha_target(master_df, forward_window=5)
 
     fwd_cols = [c for c in master_df.columns if c.startswith('fwd_')]
     exclude_cols = (
@@ -324,14 +328,53 @@ def run_t25_walk_forward():
     trade_log_t25_hybrid = []
 
     for ty in test_years:
-        train_mask = master_df.index < f"{ty}-01-01"
-        test_mask = (master_df.index >= f"{ty}-01-01") & (master_df.index <= f"{ty}-12-31")
+        fold_start = pd.Timestamp(f"{ty}-01-01")
+        fold_end = pd.Timestamp(f"{ty + 1}-01-01")
+        fold_features = []
+        fold_d_close = []
+        fold_d_volume = []
+        for ticker, base_feats in base_features_dict.items():
+            prices = data_dict[ticker]
+            calibration = prices.loc[prices.index < fold_start]
+            d_close = find_optimal_d(np.log(calibration['close']).dropna())
+            d_volume = find_optimal_d(np.log(calibration['volume'] + 1).dropna())
+            fold_d_close.append(d_close)
+            fold_d_volume.append(d_volume)
 
-        train_df = master_df[train_mask].copy()
-        test_df = master_df[test_mask].copy()
+            fold_feats = base_feats.copy()
+            fold_feats['close_frac_diff'] = frac_diff_ffd(
+                np.log(prices['close']), d_close, fallback_prefix=True
+            )
+            fold_feats['vol_frac_diff'] = frac_diff_ffd(
+                np.log(prices['volume'] + 1), d_volume, fallback_prefix=True
+            )
+            fold_feats = fold_feats.loc[fold_feats.index >= TRAIN_START]
+
+            g_feats = graph_dict.get(ticker)
+            if g_feats is not None and not g_feats.empty:
+                fold_feats = pd.concat([fold_feats, g_feats], axis=1, sort=False)
+            fold_features.append(fold_feats)
+
+        fold_df = pd.concat(fold_features).sort_index()
+        fold_df = CrossSectionalRanker.compute_forward_alpha_target(fold_df, forward_window=5)
+        train_dates = vnindex_df.index[(vnindex_df.index >= TRAIN_START) & (vnindex_df.index < fold_start)]
+        if len(train_dates) <= 5:
+            continue
+        purge_start = train_dates[-5]
+        train_mask = (fold_df.index >= TRAIN_START) & (fold_df.index < purge_start)
+        test_mask = (fold_df.index >= fold_start) & (fold_df.index < fold_end)
+
+        train_df = fold_df[train_mask].copy()
+        test_df = fold_df[test_mask].copy()
 
         if train_df.empty or test_df.empty:
+            logger.warning("Fold %d skipped: train_rows=%d test_rows=%d", ty, len(train_df), len(test_df))
             continue
+
+        logger.info(
+            "Fold %d: train=%d rows, test=%d rows, close d=%s, volume d=%s",
+            ty, len(train_df), len(test_df), dict(Counter(fold_d_close)), dict(Counter(fold_d_volume)),
+        )
 
         # 1. Fit Single LambdaMART
         single_ranker = CrossSectionalRanker(n_estimators=100, learning_rate=0.05, max_depth=5)

@@ -35,17 +35,22 @@ router.get('/:symbol/news', (req, res, next) => {
 });
 
 async function dbStockQuote(symbol: string) {
-  const row = await prisma.market_data_daily.findFirst({
-    where: { ticker: symbol },
-    orderBy: { date: 'desc' },
-  });
+  const rows = await prisma.$queryRaw<Array<any>>`
+    SELECT d.date, d.close_adj, d.open_adj, d.high_adj, d.low_adj, d.volume_total,
+           c.open AS raw_open, c.close AS raw_close
+    FROM market_data_daily d
+    LEFT JOIN market_data_daily_calculation c ON c.ticker=d.ticker AND c.date=d.date
+    WHERE d.ticker=${symbol}
+    ORDER BY d.date DESC LIMIT 1
+  `;
+  const row = rows[0];
   if (!row) return null;
   const price = (row.close_adj ?? 0) * 1000;
   const ref = (row.open_adj ?? row.close_adj ?? 0) * 1000;
   const ceiling = (row.high_adj ?? row.close_adj ?? 0) * 1000;
   const floor = (row.low_adj ?? row.close_adj ?? 0) * 1000;
-  const changePct = row.open_adj && row.open_adj !== 0
-    ? (((row.close_adj ?? 0) - row.open_adj) / row.open_adj) * 100
+  const changePct = row.raw_open && row.raw_open !== 0 && row.raw_close != null
+    ? ((row.raw_close - row.raw_open) / row.raw_open) * 100
     : 0;
   return {
     symbol,

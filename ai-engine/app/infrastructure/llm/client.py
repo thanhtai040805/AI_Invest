@@ -115,6 +115,8 @@ class UnifiedLLMClient:
         self.providers: List[Dict[str, Any]] = []
         self._cooldown_until: Dict[str, float] = {}
         self._last_provider: Optional[str] = None
+        self._last_model: Optional[str] = None
+        self._last_request_id: Optional[str] = None
 
         if api_key and base_url and model:
             self.providers.append({
@@ -237,6 +239,8 @@ class UnifiedLLMClient:
                                         p_name, p_model, elapsed, p_name != self.providers[0]["name"], request_id,
                                     )
                                 self._last_provider = p_name
+                                self._last_model = str(data.get("model") or p_model)
+                                self._last_request_id = request_id
                                 return content
                         elapsed = time.perf_counter() - request_started
                         request_id = resp.headers.get("x-evomap-request-id") or resp.headers.get("x-request-id") or resp.headers.get("request-id", "unknown")
@@ -292,20 +296,36 @@ class UnifiedLLMClient:
         prompt_or_messages: Union[str, List[Dict[str, str]]],
         temperature: float = 0.1,
         max_tokens: int = 2000,
+        json_schema: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Request JSON mode once and parse the response."""
+        """Request JSON or strict schema-constrained JSON once, then parse it."""
+        response_format = (
+            {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "structured_response",
+                    "strict": True,
+                    "schema": json_schema,
+                },
+            }
+            if json_schema
+            else {"type": "json_object"}
+        )
         raw = await self.chat(
             prompt_or_messages,
             temperature=temperature,
             max_tokens=max_tokens,
-            response_format={"type": "json_object"},
+            response_format=response_format,
         )
         try:
             return clean_and_parse_json(raw)
         except Exception as e:
             logger.warning(
-                "[UnifiedLLMClient] JSON parsing failed after provider=%s (%s): %r",
-                self._last_provider or "unknown", type(e).__name__, e,
+                "[UnifiedLLMClient] JSON parsing failed after provider=%s model=%s request_id=%s (%s): %r; response_len=%d response_prefix=%r",
+                self._last_provider or "unknown",
+                self._last_model or "unknown",
+                self._last_request_id or "unknown",
+                type(e).__name__, e, len(raw), raw[:240],
             )
             raise
 

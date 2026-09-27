@@ -33,7 +33,12 @@ def get_weights_ffd(d: float, threshold: float = 1e-5) -> np.ndarray:
         k += 1
     return np.array(w[::-1]).reshape(-1, 1)
 
-def frac_diff_ffd(series: pd.Series, d: float, threshold: float = 1e-5) -> pd.Series:
+def frac_diff_ffd(
+    series: pd.Series,
+    d: float,
+    threshold: float = 1e-5,
+    fallback_prefix: bool = False,
+) -> pd.Series:
     """
     Apply fractional differentiation to a pandas Series using fixed-width window.
     
@@ -41,6 +46,7 @@ def frac_diff_ffd(series: pd.Series, d: float, threshold: float = 1e-5) -> pd.Se
         series: Original non-stationary time series (e.g. price)
         d: fractional differentiation value (0 < d < 1)
         threshold: minimum weight value
+        fallback_prefix: use standard differences until the full FFD window exists
     Returns:
         Stationary time series
     """
@@ -65,6 +71,8 @@ def frac_diff_ffd(series: pd.Series, d: float, threshold: float = 1e-5) -> pd.Se
     pad[:] = np.nan
     
     padded_res = np.concatenate((pad, res))
+    if fallback_prefix:
+        padded_res[:width - 1] = series.diff().to_numpy()[:width - 1]
     return pd.Series(padded_res, index=series.index)
 
 def find_optimal_d(
@@ -92,6 +100,8 @@ def find_optimal_d(
         elif d == 1:
             diffed = series.diff().dropna()
         else:
+            if len(series) < len(get_weights_ffd(d, weight_threshold)):
+                continue
             diffed = frac_diff_ffd(series, d, weight_threshold).dropna()
             
         if len(diffed) < 20: # Not enough data for ADF test

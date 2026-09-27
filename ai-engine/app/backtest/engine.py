@@ -270,9 +270,9 @@ def run_backtest(runs_root: str) -> str:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """SELECT date, open_adj * 1000, high_adj * 1000, low_adj * 1000,
-                          close_adj * 1000, volume_total
-                   FROM market_data_daily
+                """SELECT date, open * 1000, high * 1000, low * 1000,
+                          close * 1000, volume_total
+                   FROM market_data_daily_calculation
                    WHERE ticker = %s AND date BETWEEN %s AND %s
                    ORDER BY date""",
                 (symbol, config["start_date"], config["end_date"]),

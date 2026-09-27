@@ -73,7 +73,7 @@ def market_dates(end: date, count: int) -> list[date]:
         days = [row[0] for row in cur.fetchall()]
     if not days:
         with get_conn() as conn, conn.cursor() as cur:
-            cur.execute("SELECT DISTINCT date FROM market_data_daily WHERE date <= %s ORDER BY date DESC LIMIT %s", (end, count))
+            cur.execute("SELECT DISTINCT date FROM market_data_daily_calculation WHERE date <= %s ORDER BY date DESC LIMIT %s", (end, count))
             days = [row[0] for row in cur.fetchall()]
     return sorted(days)
 
@@ -86,7 +86,7 @@ def previous_market_date(current: date) -> date:
         row = cur.fetchone()
         if row and row[0]:
             return row[0]
-        cur.execute("SELECT max(date) FROM market_data_daily WHERE date < %s", (current,))
+        cur.execute("SELECT max(date) FROM market_data_daily_calculation WHERE date < %s", (current,))
         row = cur.fetchone()
         return row[0] if row and row[0] else current - timedelta(days=1)
 

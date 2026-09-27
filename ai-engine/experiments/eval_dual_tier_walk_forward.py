@@ -22,8 +22,8 @@ logger = logging.getLogger(__name__)
 def fetch_data():
     logger.info("Fetching Top 100 liquid tickers from DB...")
     query_tickers = """
-        SELECT ticker, SUM(close_adj * volume_continuous) as total_val
-        FROM market_data_daily
+        SELECT ticker, SUM(close * volume_continuous) as total_val
+        FROM market_data_daily_calculation
         WHERE date >= '2020-01-01'
         GROUP BY ticker
         ORDER BY total_val DESC
@@ -37,8 +37,8 @@ def fetch_data():
                 tickers.append('VNINDEX')
             
             query_data = f"""
-                SELECT ticker, date, open_adj as open, high_adj as high, low_adj as low, close_adj as close, volume_continuous as volume
-                FROM market_data_daily
+                SELECT ticker, date, open as open, high as high, low as low, close as close, volume_continuous as volume
+                FROM market_data_daily_calculation
                 WHERE ticker IN ({','.join([f"'{t}'" for t in tickers])})
                 AND date >= '2014-01-01' AND date <= '2026-12-31'
                 ORDER BY ticker, date;

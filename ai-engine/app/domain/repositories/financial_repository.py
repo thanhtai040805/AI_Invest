@@ -30,6 +30,7 @@ class FinancialRepository:
         statement_type: Optional[str] = None,
         limit: int = 8,
         as_of: Optional[date] = None,
+        frequency: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Lấy danh sách các kỳ BCTC gần nhất của cổ phiếu."""
         symbol = symbol.upper().strip()
@@ -43,6 +44,9 @@ class FinancialRepository:
         if statement_type:
             conditions.append("statement_type = %s")
             params.append(statement_type)
+        if frequency:
+            conditions.append("frequency = %s")
+            params.append(frequency)
 
         where_clause = " AND ".join(conditions)
         query = f"""
@@ -75,13 +79,20 @@ class FinancialRepository:
     def get_peer_valuation_inputs(self, symbol: str, as_of: date) -> Dict[str, Any]:
         """Point-in-time EPS/BVPS priced at the median multiple of published sector peers."""
         symbol = symbol.upper().strip()
-        stocks = self.storage.fetch_all("SELECT sector FROM stocks WHERE symbol = %s", (symbol,))
-        statements = self.get_financial_statements(symbol, statement_type="ratios", limit=1, as_of=as_of)
+        stocks = self.storage.fetch_all("SELECT sector, industry FROM stocks WHERE symbol = %s", (symbol,))
+        statements = self.get_financial_statements(
+            symbol, statement_type="ratios", limit=1, as_of=as_of, frequency="quarterly",
+        )
         if not stocks or not statements:
+            logger.warning("Valuation unavailable for %s as_of=%s: missing stock metadata or published ratios statement", symbol, as_of)
             return {}
 
         statement = statements[0]
         if date.fromisoformat(statement["period_end"]) < as_of - timedelta(days=550):
+            logger.warning(
+                "Valuation unavailable for %s as_of=%s: latest ratios period_end=%s is older than 550 days",
+                symbol, as_of, statement["period_end"],
+            )
             return {}
         data = statement["data"]
         try:
@@ -91,18 +102,23 @@ class FinancialRepository:
             return {}
         eps = eps if isfinite(eps) else 0.0
         bvps = bvps if isfinite(bvps) else 0.0
-        sector = stocks[0][0]
+        sector, industry = stocks[0]
         peers = self.storage.fetch_all("""
-            WITH latest AS (
+            WITH sector_universe AS (
+                SELECT symbol
+                FROM stocks
+                WHERE sector = %s AND exchange IN ('HOSE', 'HSX') AND symbol <> %s
+            ), latest AS (
                 SELECT DISTINCT ON (r.symbol) r.symbol, r.pe, r.pb
                 FROM financial_ratios r
-                JOIN stocks s ON s.symbol = r.symbol
-                WHERE s.sector = %s AND s.exchange = 'HOSE' AND r.symbol <> %s
+                JOIN sector_universe u ON u.symbol = r.symbol
+                WHERE r.frequency = 'quarterly'
                   AND r.published_date <= %s AND r.ratio_date <= %s
                   AND r.ratio_date >= %s
                 ORDER BY r.symbol, r.published_date DESC, r.ratio_date DESC
             )
-            SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY pe)
+            SELECT (SELECT count(*) FROM sector_universe), count(*),
+                   percentile_cont(0.5) WITHIN GROUP (ORDER BY pe)
                        FILTER (WHERE pe BETWEEN 2 AND 50),
                    count(*) FILTER (WHERE pe BETWEEN 2 AND 50),
                    percentile_cont(0.5) WITHIN GROUP (ORDER BY pb)
@@ -111,25 +127,95 @@ class FinancialRepository:
             FROM latest
         """, (sector, symbol, as_of, as_of, as_of - timedelta(days=550)))
         if not peers:
+            logger.warning("Valuation unavailable for %s as_of=%s: sector peer query returned no row", symbol, as_of)
             return {}
-        pe, pe_count, pb, pb_count = peers[0]
+        sector_peer_universe_count, sector_peer_ratio_count, pe, pe_count, pb, pb_count = peers[0]
         financial = sector in {"BANKS", "FINANCIAL_SERVICES"}
         inputs: Dict[str, Any] = {}
         if eps > 0 and pe_count >= 5 and pe is not None:
             inputs["pe_price"] = round(eps * float(pe), 2)
         if financial and bvps > 0 and pb_count >= 5 and pb is not None:
             inputs["pb_price"] = round(bvps * float(pb), 2)
+        industry_pb_count = 0
+        if not inputs and sector in {"OTHER_INDUSTRIALS", "CONSUMER_SERVICES"} and bvps > 0:
+            if industry:
+                industry_peers = self.storage.fetch_all("""
+                    WITH latest AS (
+                        SELECT DISTINCT ON (r.symbol) r.symbol, r.pb
+                        FROM financial_ratios r
+                        JOIN stocks s ON s.symbol = r.symbol
+                        WHERE s.industry = %s AND s.exchange IN ('HOSE', 'HSX') AND r.symbol <> %s
+                          AND r.frequency = 'quarterly'
+                          AND r.published_date <= %s AND r.ratio_date <= %s
+                          AND r.ratio_date >= %s
+                        ORDER BY r.symbol, r.published_date DESC, r.ratio_date DESC
+                    )
+                    SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY pb)
+                               FILTER (WHERE pb BETWEEN 0.2 AND 10),
+                           count(*) FILTER (WHERE pb BETWEEN 0.2 AND 10)
+                    FROM latest
+                """, (industry, symbol, as_of, as_of, as_of - timedelta(days=550)))
+                industry_pb, industry_pb_count = industry_peers[0] if industry_peers else (None, 0)
+                # Four exact-industry peers are required when the broader sector is not a clean valuation cohort.
+                if bvps > 0 and industry_pb is not None and industry_pb_count >= 4:
+                    inputs["pb_price"] = round(bvps * float(industry_pb), 2)
+                    inputs["source"] = {
+                        "method": "PUBLISHED_INDUSTRY_PEERS_MEDIAN",
+                        "as_of": as_of.isoformat(),
+                        "period_end": statement["period_end"],
+                        "published_date": statement["published_date"],
+                        "sector": sector,
+                        "industry": industry,
+                        "peers_pb": int(industry_pb_count),
+                        "median_pb": float(industry_pb),
+                    }
         if inputs:
-            inputs["source"] = {
-                "method": "PUBLISHED_SECTOR_PEERS_MEDIAN",
-                "as_of": as_of.isoformat(),
-                "period_end": statement["period_end"],
-                "published_date": statement["published_date"],
-                "sector": sector,
-                "peers_pe": int(pe_count),
-                "peers_pb": int(pb_count),
-                "median_pe": float(pe) if pe is not None else None,
-                "median_pb": float(pb) if pb is not None else None,
+            if "source" not in inputs:
+                inputs["source"] = {
+                    "method": "PUBLISHED_SECTOR_PEERS_MEDIAN",
+                    "as_of": as_of.isoformat(),
+                    "period_end": statement["period_end"],
+                    "published_date": statement["published_date"],
+                    "sector": sector,
+                    "peers_pe": int(pe_count),
+                    "peers_pb": int(pb_count),
+                    "median_pe": float(pe) if pe is not None else None,
+                    "median_pb": float(pb) if pb is not None else None,
+                }
+        else:
+            logger.warning(
+                "Valuation unavailable for %s as_of=%s sector=%s industry=%s: EPS=%.2f BVPS=%.2f; sector peers=%d, ratios=%d, valid PE=%d/5, PB=%d/5; industry PB peers=%d/4",
+                symbol, as_of, sector, industry, eps, bvps, int(sector_peer_universe_count or 0),
+                int(sector_peer_ratio_count or 0), int(pe_count or 0), int(pb_count or 0),
+                int(industry_pb_count or 0),
+            )
+            peer_universe_too_small = int(sector_peer_universe_count or 0) < 5
+            peer_data_missing = int(sector_peer_ratio_count or 0) < int(sector_peer_universe_count or 0)
+            no_supported_multiple = eps <= 0 and not financial and bvps > 0
+            return {
+                "valuation_diagnostics": {
+                    "reason_code": (
+                        "EPS_NONPOSITIVE_PB_UNSUPPORTED" if no_supported_multiple else
+                        "PEER_UNIVERSE_TOO_SMALL" if peer_universe_too_small else
+                        "PEER_RATIO_DATA_MISSING" if peer_data_missing else
+                        "PEER_MULTIPLES_INVALID" if eps > 0 or bvps > 0 else
+                        "FUNDAMENTAL_METRICS_NONPOSITIVE"
+                    ),
+                    "sector": sector,
+                    "industry": industry,
+                    "peer_market": "HOSE",
+                    "sector_peer_universe_count": int(sector_peer_universe_count or 0),
+                    "sector_peer_ratio_covered_count": int(sector_peer_ratio_count or 0),
+                    "sector_peer_universe_shortfall": max(0, 5 - int(sector_peer_universe_count or 0)),
+                    "valid_peer_pe": int(pe_count or 0),
+                    "required_peer_pe": 5,
+                    "valid_peer_pb": int(pb_count or 0),
+                    "required_peer_pb": 5,
+                    "valid_industry_peer_pb": int(industry_pb_count or 0),
+                    "required_industry_peer_pb": 4,
+                    "pb_allowed_for_sector": financial,
+                    "as_of": as_of.isoformat(),
+                }
             }
         return inputs
 
@@ -142,6 +228,7 @@ class FinancialRepository:
                    yoy_revenue_growth, yoy_earnings_growth, published_date
             FROM financial_ratios
             WHERE symbol = %s
+              AND frequency = 'quarterly'
               AND published_date IS NOT NULL
               AND published_date <= %s
             ORDER BY published_date DESC, ratio_date DESC

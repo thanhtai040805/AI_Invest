@@ -1,14 +1,14 @@
 """Beta/Alpha ETL — compute real market-relative risk metrics using VNINDEX.
 
 Methodology:
-  - Market proxy: VNINDEX daily returns (from macro_indicators DB table)
+  - Market proxy: VNINDEX daily returns (from market_data_daily_calculation)
   - Beta (1y/3y): Cov(R_i, R_m) / Var(R_m), 252 trading days/year
   - Alpha (1y): R_i - [R_f + Beta * (R_m - R_f)], annualized
   - Risk-free rate: SBV refinancing rate from macro_indicators (latest)
   - R_squared: goodness-of-fit for the market model
 
 Architecture:
-  - Reads: macro_indicators (VNINDEX returns), ohlcv (stock prices)
+  - Reads: market_data_daily_calculation (VNINDEX), ohlcv_unadjusted (stock prices)
   - Writes: technical_indicators.indicators JSONB (beta_1y, beta_3y, alpha_1y, r_squared_1y)
   - Performance: vectorized batch computation, single DB pass per symbol
 """
@@ -31,38 +31,24 @@ LOOKBACK_3Y = 756
 MIN_OBS = 60
 
 
+def _lookback_start(end_date: date, sessions: int, buffer_days: int) -> date:
+    return end_date - timedelta(days=round(sessions * 365.25 / 252) + buffer_days)
+
+
 def _load_vnindex_returns(cur, end_date: date, lookback: int) -> pd.Series:
-    """Load VNINDEX daily returns from VietFin API (full history, not DB).
-
-    macro_indicators only stores daily snapshots (sparse).
-    VietFin provides complete daily OHLCV history -> proper alignment.
-
-    Returns Series indexed by date with decimal returns.
-    """
-    from vietfin import vf
-
-    start = end_date - timedelta(days=lookback + 120)
-    try:
-        r = vf.index.price.historical(
-            symbol="vnindex",
-            start_date=start.strftime("%Y-%m-%d"),
-            end_date=end_date.strftime("%Y-%m-%d"),
-            interval="1d",
-            provider="dnse",
-        )
-        hist = r.to_df()
-        if hist is None or hist.empty or "close" not in hist.columns:
-            return pd.Series(dtype=float)
-
-        df = hist[["close"]].copy()
-        df["ret"] = df["close"].astype(float).pct_change()
-        df = df.dropna()
-        s = pd.Series(df["ret"].values, index=pd.to_datetime(df.index), dtype=float)
-        s.index = s.index.date
-        return s
-    except Exception as e:
-        logger.warning("VietFin VNINDEX fetch failed: %s", e)
+    """Load index returns from the same raw-price calculation view as stock returns."""
+    start = _lookback_start(end_date, lookback, 120)
+    cur.execute(
+        """SELECT date, close FROM market_data_daily_calculation
+           WHERE ticker = 'VNINDEX' AND date >= %s AND date <= %s
+           ORDER BY date""",
+        (start, end_date),
+    )
+    rows = cur.fetchall()
+    if len(rows) < MIN_OBS:
         return pd.Series(dtype=float)
+    df = pd.DataFrame(rows, columns=["date", "close"]).set_index("date").astype(float)
+    return df["close"].pct_change().dropna()
 
 
 def _load_stock_returns(cur, symbol: str, end_date: date, lookback: int) -> pd.Series:
@@ -70,9 +56,9 @@ def _load_stock_returns(cur, symbol: str, end_date: date, lookback: int) -> pd.S
 
     Returns Series indexed by date.
     """
-    start = end_date - timedelta(days=lookback + 60)
+    start = _lookback_start(end_date, lookback, 60)
     cur.execute(
-        """SELECT time::date as dt, close FROM ohlcv
+        """SELECT time::date as dt, close FROM ohlcv_unadjusted
            WHERE symbol = %s AND time::date >= %s AND time::date <= %s
            ORDER BY time""",
         (symbol, start, end_date),
@@ -122,7 +108,13 @@ def compute_beta_alpha(
     common_all = stock_returns.dropna().index.intersection(market_returns.dropna().index).sort_values()
 
     for label, lookback in [("1y", LOOKBACK_1Y), ("3y", LOOKBACK_3Y)]:
-        common = common_all[-lookback:] if len(common_all) >= lookback else common_all
+        if label == "3y" and len(common_all) < lookback:
+            result[f"beta_{label}"] = None
+            result[f"alpha_{label}"] = None
+            result[f"r_squared_{label}"] = None
+            result[f"n_obs_{label}"] = len(common_all)
+            continue
+        common = common_all[-lookback:]
         if len(common) < MIN_OBS:
             result[f"beta_{label}"] = None
             result[f"alpha_{label}"] = None
@@ -215,11 +207,11 @@ def refresh_beta_alpha(symbols: list[str] | None = None) -> dict:
                 if cur.fetchone() is None:
                     continue
 
-                stock_ret_1y = _load_stock_returns(cur, sym, calc_date, LOOKBACK_1Y)
-                if len(stock_ret_1y) < MIN_OBS:
+                stock_returns = _load_stock_returns(cur, sym, calc_date, LOOKBACK_3Y)
+                if len(stock_returns) < MIN_OBS:
                     continue
 
-                ba = compute_beta_alpha(stock_ret_1y, vnindex_1y, risk_free)
+                ba = compute_beta_alpha(stock_returns, vnindex_3y, risk_free)
 
                 # Load existing indicators and merge
                 cur.execute(
@@ -230,9 +222,7 @@ def refresh_beta_alpha(symbols: list[str] | None = None) -> dict:
                 if row is None:
                     continue
                 indicators = row[0] if isinstance(row[0], dict) else json.loads(row[0])
-                for k, v in ba.items():
-                    if v is not None:
-                        indicators[k] = v
+                indicators.update(ba)
 
                 cur.execute(
                     "UPDATE technical_indicators SET indicators = %s, updated_at = NOW() WHERE symbol = %s AND calc_date = %s",

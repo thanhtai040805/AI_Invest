@@ -153,8 +153,8 @@ class StandaloneMLChannel:
             try:
                 with get_conn() as conn:
                     q = """
-                        SELECT ticker, SUM(close_adj * volume_continuous) as total_val
-                        FROM market_data_daily
+                        SELECT ticker, SUM(close * volume_continuous) as total_val
+                        FROM market_data_daily_calculation
                         WHERE date >= '2026-01-01' AND ticker != 'VNINDEX'
                         GROUP BY ticker
                         ORDER BY total_val DESC
@@ -173,9 +173,8 @@ class StandaloneMLChannel:
         try:
             with get_conn() as conn:
                 q_data = f"""
-                    SELECT ticker, date, open_adj as open, high_adj as high, low_adj as low,
-                           close_adj as close, volume_continuous as volume
-                    FROM market_data_daily
+                    SELECT ticker, date, open, high, low, close, volume_continuous as volume
+                    FROM market_data_daily_calculation
                     WHERE ticker IN ({','.join([repr(t) for t in tickers])})
                     AND date >= '2025-01-01' AND date <= %s
                     ORDER BY ticker, date ASC;
@@ -504,8 +503,8 @@ class StandaloneMLChannel:
                 with get_conn() as conn:
                     # Lấy 3 phiên giao dịch tiếp theo
                     q_post = """
-                        SELECT date, low_adj, close_adj
-                        FROM market_data_daily
+                        SELECT date, low, close
+                        FROM market_data_daily_calculation
                         WHERE ticker = %s AND date > %s
                         ORDER BY date ASC
                         LIMIT 3;
@@ -513,9 +512,9 @@ class StandaloneMLChannel:
                     df_post = pd.read_sql(q_post, conn, params=(ticker, p_date))
 
                 if len(df_post) >= 3 and p_price > 0:
-                    low_1 = float(df_post["low_adj"].iloc[0])
-                    low_2 = float(df_post["low_adj"].iloc[1])
-                    close_3 = float(df_post["close_adj"].iloc[2])
+                    low_1 = float(df_post["low"].iloc[0])
+                    low_2 = float(df_post["low"].iloc[1])
+                    close_3 = float(df_post["close"].iloc[2])
 
                     # Chuẩn hóa giá tương lai sang VNĐ đầy đủ nếu lưu đơn vị nghìn đồng
                     if low_1 < 1000.0:

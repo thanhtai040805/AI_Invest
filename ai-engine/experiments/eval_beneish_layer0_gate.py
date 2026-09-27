@@ -33,7 +33,7 @@ import psycopg2
 from sklearn.linear_model import Ridge
 import lightgbm as lgb
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../")))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from app.infrastructure.database.pg_pool import get_conn, DB_URL
 from app.domain.services.ml.feature_forge import feature_forge
@@ -67,6 +67,7 @@ class BeneishMScoreEngine:
                    yoy_revenue_growth, yoy_earnings_growth, roe, roa
             FROM financial_ratios
             WHERE symbol IN ({','.join([f"'{t}'" for t in tickers])})
+              AND frequency = 'quarterly'
             ORDER BY symbol, ratio_date;
         """
         df_r = pd.read_sql(query_ratios, conn)
@@ -76,8 +77,32 @@ class BeneishMScoreEngine:
             logger.warning("No financial ratios found for tickers.")
             return pd.DataFrame()
 
-        df_r['published_date'] = pd.to_datetime(df_r['published_date'])
-        df_r['ratio_date'] = pd.to_datetime(df_r['ratio_date'])
+        df_r['ratio_date'] = pd.to_datetime(df_r['ratio_date']).astype('datetime64[ns]')
+        df_r['published_date'] = pd.to_datetime(df_r['published_date']).astype('datetime64[ns]')
+
+        # Point-in-Time Effective Disclosure Date Resolution (Zero Look-Ahead Bias):
+        lag_days = (df_r['published_date'] - df_r['ratio_date']).dt.days
+        is_real_pub = (
+            df_r['published_date'].notna()
+            & (lag_days >= 10)
+            & (lag_days <= 120)
+            & (df_r['published_date'] < pd.Timestamp('2026-09-01'))
+        )
+        quarter = df_r['ratio_date'].dt.quarter
+        fallback_days = np.where(
+            quarter == 1, 45,
+            np.where(
+                quarter == 2, 55,
+                np.where(
+                    quarter == 3, 45,
+                    35
+                )
+            )
+        )
+        fallback_dt = df_r['ratio_date'] + pd.to_timedelta(fallback_days, unit='D')
+        df_r['effective_date'] = np.where(is_real_pub, df_r['published_date'], fallback_dt)
+        df_r['effective_date'] = pd.to_datetime(df_r['effective_date']).astype('datetime64[ns]')
+        # End PIT effective_date resolution
 
         # Compute Beneish proxies from financial ratios
         # 1. SGI (Sales Growth Index): (1 + yoy_revenue_growth)
@@ -127,7 +152,7 @@ class BeneishMScoreEngine:
         flagged_count = df_r['is_manipulator'].sum()
         logger.info(f"Total High Risk Quarters Flagged (M > -1.78): {flagged_count} ({flagged_count/len(df_r)*100:.2f}%)")
         
-        return df_r[['ticker', 'published_date', 'beneish_m_score', 'is_manipulator']]
+        return df_r[['ticker', 'ratio_date', 'effective_date', 'beneish_m_score', 'is_manipulator']]
 
 beneish_engine = BeneishMScoreEngine()
 
@@ -264,8 +289,8 @@ class HybridStackingRanker:
 def fetch_data():
     logger.info("Fetching Top 100 liquid tickers from DB...")
     query_tickers = """
-        SELECT ticker, SUM(close_adj * volume_continuous) as total_val
-        FROM market_data_daily
+        SELECT ticker, SUM(close * volume_continuous) as total_val
+        FROM market_data_daily_calculation
         WHERE date >= '2020-01-01'
         GROUP BY ticker
         ORDER BY total_val DESC
@@ -279,8 +304,8 @@ def fetch_data():
                 tickers.append('VNINDEX')
 
             query_data = f"""
-                SELECT ticker, date, open_adj as open, high_adj as high, low_adj as low, close_adj as close, volume_continuous as volume
-                FROM market_data_daily
+                SELECT ticker, date, open as open, high as high, low as low, close as close, volume_continuous as volume
+                FROM market_data_daily_calculation
                 WHERE ticker IN ({','.join([f"'{t}'" for t in tickers])})
                 AND date >= '2014-01-01' AND date <= '2026-12-31'
                 ORDER BY ticker, date;
@@ -350,7 +375,7 @@ def run_exp016_walk_forward():
     # Merge Beneish M-Score by date (asof published_date to avoid look-ahead bias)
     if not df_beneish.empty:
         # Create ticker lookup for published dates
-        df_beneish = df_beneish.sort_values('published_date')
+        df_beneish = df_beneish.sort_values('effective_date')
         
         # Merge via merge_asof per ticker
         merged_beneish_list = []
@@ -360,9 +385,9 @@ def run_exp016_walk_forward():
                 t_df_reset = t_df.reset_index()
                 m_asof = pd.merge_asof(
                     t_df_reset.sort_values('date'),
-                    b_sub[['published_date', 'beneish_m_score', 'is_manipulator']],
+                    b_sub[['effective_date', 'beneish_m_score', 'is_manipulator']],
                     left_on='date',
-                    right_on='published_date',
+                    right_on='effective_date',
                     direction='backward'
                 )
                 m_asof['is_manipulator'] = m_asof['is_manipulator'].fillna(0).astype(int)
@@ -380,7 +405,7 @@ def run_exp016_walk_forward():
     fwd_cols = [c for c in master_df.columns if c.startswith('fwd_')]
     exclude_cols = (
         {'ticker', 'close', 'high', 'low', 'forward_ret', 'alpha_forward_ret',
-         'rank_label', 'adtv20_bil', 'published_date', 'beneish_m_score', 'is_manipulator'}
+         'rank_label', 'adtv20_bil', 'published_date', 'ratio_date', 'effective_date', 'beneish_m_score', 'is_manipulator'}
         | set(fwd_cols)
     )
     feature_cols = [c for c in master_df.columns if c not in exclude_cols]
@@ -391,7 +416,7 @@ def run_exp016_walk_forward():
     blocked_trades_count = 0
 
     for ty in test_years:
-        train_mask = master_df.index < f"{ty}-01-01"
+        train_mask = (master_df.index >= "2018-01-01") & (master_df.index < f"{ty}-01-01")
         test_mask = (master_df.index >= f"{ty}-01-01") & (master_df.index <= f"{ty}-12-31")
 
         train_df = master_df[train_mask].copy()

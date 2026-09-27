@@ -62,6 +62,40 @@ def _query_pg_ohlcv(symbol: str, start: Optional[str] = None, end: Optional[str]
         return []
 
 
+def _query_pg_calculation_ohlcv(symbol: str, start: Optional[str] = None, end: Optional[str] = None) -> List[Dict]:
+    """Read only unadjusted OHLC for price calculations; never falls back to display prices."""
+    try:
+        import psycopg2
+        conn = psycopg2.connect(_PG_URL)
+        cur = conn.cursor()
+        where = ["ticker = %s"]
+        params: list = [symbol.upper()]
+        if start:
+            where.append("date >= %s::date")
+            params.append(start)
+        if end:
+            where.append("date <= %s::date")
+            params.append(end)
+        cur.execute(
+            f"SELECT date, open, high, low, close, volume_total FROM market_data_daily_calculation WHERE {' AND '.join(where)} ORDER BY date",
+            params,
+        )
+        rows = [{
+            "time": r[0].isoformat(),
+            "open": float(r[1]), "high": float(r[2]), "low": float(r[3]),
+            "close": float(r[4]), "volume": int(r[5] or 0),
+        } for r in cur.fetchall() if all(v is not None for v in r[1:5])]
+        cur.close()
+        conn.close()
+        return rows
+    except Exception:
+        import logging
+        logging.getLogger("ai_engine.market_data").exception(
+            "Failed to load unadjusted calculation OHLC for %s", symbol.upper()
+        )
+        return []
+
+
 class MarketDataService:
     def __init__(self) -> None:
         self._hub = get_stream_hub()
@@ -234,6 +268,10 @@ class MarketDataService:
                 c["vwap"] = val / volume if volume > 0 else close
                 c["adj_close"] = c.get("adj_close", close)
         return res
+
+    async def get_calculation_ohlcv(self, symbol: str, start: Optional[str] = None, end: Optional[str] = None) -> Dict:
+        data = _query_pg_calculation_ohlcv(symbol, start, end)
+        return {"symbol": symbol.upper(), "data": data, "source": "postgres-unadjusted"}
 
     async def _get_ohlcv_raw(self, symbol: str, interval: str = "1D", start: Optional[str] = None, end: Optional[str] = None) -> Dict:
         import logging

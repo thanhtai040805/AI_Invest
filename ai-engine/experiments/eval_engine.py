@@ -29,8 +29,8 @@ def fetch_universe_data(top_n=150, start_date='2012-01-01', end_date='2026-12-31
     
     # 1. Find Top N tickers based on ADTV20 over the recent period
     query_tickers = f"""
-        SELECT ticker, SUM(close_adj * volume_continuous) as total_val
-        FROM market_data_daily
+        SELECT ticker, SUM(close * volume_continuous) as total_val
+        FROM market_data_daily_calculation
         WHERE date >= '2020-01-01'
         GROUP BY ticker
         ORDER BY total_val DESC
@@ -47,8 +47,8 @@ def fetch_universe_data(top_n=150, start_date='2012-01-01', end_date='2026-12-31
             
             # 2. Fetch data for these tickers
             query_data = f"""
-                SELECT ticker, date, open_adj as open, high_adj as high, low_adj as low, close_adj as close, volume_continuous as volume
-                FROM market_data_daily
+                SELECT ticker, date, open as open, high as high, low as low, close as close, volume_continuous as volume
+                FROM market_data_daily_calculation
                 WHERE ticker IN ({','.join([f"'{t}'" for t in tickers])})
                 AND date >= '{start_date}' AND date <= '{end_date}'
                 ORDER BY ticker, date;

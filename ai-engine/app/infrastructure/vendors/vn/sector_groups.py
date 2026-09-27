@@ -1,8 +1,8 @@
-"""Sector Group Classification — 16 ICB Level-2 groups for VN market.
+"""Sector Group Classification — industry groups for the VN market.
 
 Based on actual DB industry names from stocks table (398 symbols).
 Three-tier fallback:
-  - classify_icb(): returns 16-group ICB code
+  - classify_icb(): returns the configured sector-group code
   - classify_major(): returns 3-group (FINANCIALS / REAL_ESTATE / OTHERS) for backward compat
   - classify_safe(): classifies with auto-fallback to OTHER_INDUSTRIALS if n<4 in eval context
 
@@ -30,6 +30,7 @@ RETAIL_TRADE           = "RETAIL_TRADE"
 HEALTHCARE             = "HEALTHCARE"
 UTILITIES              = "UTILITIES"
 AGRICULTURE            = "AGRICULTURE"
+CONSUMER_SERVICES      = "CONSUMER_SERVICES"
 OTHER_INDUSTRIALS      = "OTHER_INDUSTRIALS"
 
 # ── Backward-compat aliases ─────────────────────────────────────────
@@ -40,7 +41,7 @@ ICB_SECTORS = {
     BANKS, FINANCIAL_SERVICES, REAL_ESTATE, CONSTRUCTION,
     CONSTRUCTION_MATERIALS, BASIC_RESOURCES, CHEMICALS, OIL_GAS,
     FOOD_BEVERAGE, TECHNOLOGY, INDUSTRIAL_GOODS, TRANSPORTATION,
-    RETAIL_TRADE, HEALTHCARE, UTILITIES, AGRICULTURE,
+    RETAIL_TRADE, HEALTHCARE, UTILITIES, AGRICULTURE, CONSUMER_SERVICES,
     OTHER_INDUSTRIALS,
 }
 
@@ -101,6 +102,9 @@ INDUSTRY_MAP: dict[str, str] = {
     "dau khi":            OIL_GAS,
     "lọc hóa dầu":        OIL_GAS,
 
+    # CONSUMER_SERVICES
+    "dịch vụ lưu trú": CONSUMER_SERVICES,
+
     # FOOD_BEVERAGE
     "thực phẩm":           FOOD_BEVERAGE,
     "thuc pham":           FOOD_BEVERAGE,
@@ -116,6 +120,7 @@ INDUSTRY_MAP: dict[str, str] = {
     "phần mềm":             TECHNOLOGY,
 
     # INDUSTRIAL_GOODS
+    "dệt may":            INDUSTRIAL_GOODS,
     "sx hàng gia dụng":      INDUSTRIAL_GOODS,
     "sx phụ trợ":            INDUSTRIAL_GOODS,
     "sx thiết bị, máy móc":  INDUSTRIAL_GOODS,
@@ -304,18 +309,13 @@ SYMBOL_OVERRIDES: dict[str, str] = {
     "GEX": INDUSTRIAL_GOODS, # Gelex — DB says "Thiết bị điện" (electrical equip)
     "REE": CONSTRUCTION,     # Already above
 
-    # ===== OTHER_INDUSTRIALS (hospitality, services) =====
-    "DAH": OTHER_INDUSTRIALS,  # DB says "Dịch vụ lưu trú, ăn uống"
-    "DSN": OTHER_INDUSTRIALS,  # Same
-    "NVT": OTHER_INDUSTRIALS,  # Same
-    "VNG": OTHER_INDUSTRIALS,  # Same
-    "VPL": OTHER_INDUSTRIALS,  # Same
+    # ===== OTHER_INDUSTRIALS =====
     "ADG": OTHER_INDUSTRIALS,  # Media — but let's keep as OTHER_INDUSTRIALS
 }
 
 
 def classify(industry: Optional[str], symbol: str) -> str:
-    """Classify stock into 16-group ICB sector.
+    """Classify stock into its configured sector group.
 
     Priority:
       1. Symbol-level override (fixes DB misclassifications)
@@ -351,6 +351,7 @@ MAJOR_GROUP_MAP: dict[str, str] = {
     HEALTHCARE:         OTHERS,
     UTILITIES:          OTHERS,
     AGRICULTURE:        OTHERS,
+    CONSUMER_SERVICES:  OTHERS,
     OTHER_INDUSTRIALS:  OTHERS,
 }
 

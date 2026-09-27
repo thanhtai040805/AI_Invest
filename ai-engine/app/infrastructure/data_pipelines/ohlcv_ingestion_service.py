@@ -172,7 +172,7 @@ class OHLCVIngestionService:
                 d["high"],
                 d["low"],
                 d["close"],
-                d["close"], # close_unadj
+                None, # close_unadj is populated from CafeF; DNSE only provides close_adj
                 d["close"], # vwap (khởi tạo tạm)
                 v_cont,
                 v_atc,
@@ -191,7 +191,7 @@ class OHLCVIngestionService:
                 high_adj = EXCLUDED.high_adj,
                 low_adj = EXCLUDED.low_adj,
                 close_adj = EXCLUDED.close_adj,
-                close_unadj = EXCLUDED.close_unadj,
+                close_unadj = COALESCE(market_data_daily.close_unadj, EXCLUDED.close_unadj),
                 volume_continuous = EXCLUDED.volume_continuous,
                 volume_atc = EXCLUDED.volume_atc,
                 volume_ato = EXCLUDED.volume_ato,

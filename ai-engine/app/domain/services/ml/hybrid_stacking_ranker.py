@@ -23,8 +23,7 @@ logger = logging.getLogger(__name__)
 
 class BeneishMScoreEngine:
     """
-    Computes Beneish M-Score for HOSE universe using published financial statements.
-    Ensures zero look-ahead bias by strictly matching on published_date.
+    Computes Beneish M-Score by quarterly financial-ratio period.
     """
     def __init__(self):
         self.scores_cache = {}
@@ -40,7 +39,7 @@ class BeneishMScoreEngine:
                            gross_margin, net_margin, current_ratio, debt_equity,
                            yoy_revenue_growth, yoy_earnings_growth, roe, roa
                     FROM financial_ratios
-                    WHERE symbol = ANY(%s)
+                    WHERE symbol = ANY(%s) AND frequency = 'quarterly'
                     ORDER BY symbol, ratio_date;
                 """
                 df_r = pd.read_sql(query_ratios, conn, params=(list(tickers),))
@@ -51,8 +50,34 @@ class BeneishMScoreEngine:
         if df_r.empty:
             return pd.DataFrame()
 
-        df_r['published_date'] = pd.to_datetime(df_r['published_date'])
-        df_r['ratio_date'] = pd.to_datetime(df_r['ratio_date'])
+        df_r['ratio_date'] = pd.to_datetime(df_r['ratio_date']).astype('datetime64[ns]')
+        df_r['published_date'] = pd.to_datetime(df_r['published_date']).astype('datetime64[ns]')
+
+        # Point-in-Time Effective Disclosure Date Resolution (Zero Look-Ahead Bias):
+        # 1. If published_date is a genuine, realistic disclosure date (10 <= lag <= 120 days, not mass crawler dump):
+        lag_days = (df_r['published_date'] - df_r['ratio_date']).dt.days
+        is_real_pub = (
+            df_r['published_date'].notna()
+            & (lag_days >= 10)
+            & (lag_days <= 120)
+            & (df_r['published_date'] < pd.Timestamp('2026-09-01'))
+        )
+        # 2. Otherwise (crawl timestamp or backfilled artifact), synthesize point-in-time filing date
+        # based on statutory disclosure deadlines in Vietnam (TT 96/2020/TT-BTC & TT 155/2015/TT-BTC):
+        quarter = df_r['ratio_date'].dt.quarter
+        fallback_days = np.where(
+            quarter == 1, 45,  # Q1 filing deadline (May 15)
+            np.where(
+                quarter == 2, 55,  # Q2 reviewed semi-annual filing deadline (Aug 24)
+                np.where(
+                    quarter == 3, 45,  # Q3 filing deadline (Nov 14)
+                    35  # Q4 preliminary quarterly filing deadline (Feb 04)
+                )
+            )
+        )
+        fallback_dt = df_r['ratio_date'] + pd.to_timedelta(fallback_days, unit='D')
+        df_r['effective_date'] = np.where(is_real_pub, df_r['published_date'], fallback_dt)
+        df_r['effective_date'] = pd.to_datetime(df_r['effective_date']).astype('datetime64[ns]')
 
         # Compute Beneish proxies with safe data cleaning and outlier clipping
         df_r['sgi'] = (1.0 + df_r['yoy_revenue_growth'].fillna(0.0)).clip(0.2, 5.0)
@@ -84,7 +109,7 @@ class BeneishMScoreEngine:
         )
 
         df_r['is_manipulator'] = (df_r['beneish_m_score'] > -1.78).astype(int)
-        return df_r[['ticker', 'published_date', 'beneish_m_score', 'is_manipulator']]
+        return df_r[['ticker', 'ratio_date', 'effective_date', 'beneish_m_score', 'is_manipulator']]
 
 beneish_engine = BeneishMScoreEngine()
 

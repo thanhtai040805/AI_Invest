@@ -366,8 +366,8 @@ def compute_factor_scores(
 
     # 2. Load OHLCV (400 days back)
     cur.execute(
-        """SELECT symbol, time::date, adj_close, volume
-           FROM ohlcv
+        """SELECT symbol, time::date, close, volume
+           FROM ohlcv_unadjusted
            WHERE time::date <= %s AND time::date >= %s
              AND symbol = ANY(%s)
            ORDER BY symbol, time DESC""",
@@ -385,6 +385,7 @@ def compute_factor_scores(
                   yoy_revenue_growth, yoy_earnings_growth
            FROM financial_ratios
            WHERE symbol = ANY(%s)
+             AND frequency = 'quarterly'
              AND ratio_date <= %s
              AND published_date IS NOT NULL
              AND published_date <= %s
@@ -1294,8 +1295,8 @@ def refresh_all(
             WITH adtv AS (
                 SELECT 
                     ticker,
-                    AVG(close_adj * volume_total) as adtv_val
-                FROM market_data_daily
+                    AVG(close * volume_total) as adtv_val
+                FROM market_data_daily_calculation
                 WHERE date >= %s AND date <= %s
                 GROUP BY ticker
             ),
@@ -1303,7 +1304,7 @@ def refresh_all(
                 SELECT 
                     ticker,
                     COUNT(CASE WHEN volume_total > 0 THEN 1 END) as trading_days
-                FROM market_data_daily
+                FROM market_data_daily_calculation
                 WHERE date >= %s AND date <= %s
                 GROUP BY ticker
             )
@@ -1329,6 +1330,8 @@ def refresh_all(
         if not rows:
             logger.warning("No factor scores computed")
             return {"rows": 0, "symbols": 0}
+
+        cur.execute("DELETE FROM factor_scores WHERE score_date = %s", (score_date,))
 
         psycopg2.extras.execute_values(
             cur,

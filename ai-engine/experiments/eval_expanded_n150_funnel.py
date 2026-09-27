@@ -26,8 +26,8 @@ def fetch_expanded_universe_data(top_n=150, start_date='2014-01-01', end_date='2
     logger.info(f"Fetching Expanded Top {top_n} liquid tickers from DB...")
     
     query_tickers = f"""
-        SELECT ticker, SUM(close_adj * volume_continuous) as total_val
-        FROM market_data_daily
+        SELECT ticker, SUM(close * volume_continuous) as total_val
+        FROM market_data_daily_calculation
         WHERE date >= '2020-01-01'
         GROUP BY ticker
         ORDER BY total_val DESC
@@ -43,8 +43,8 @@ def fetch_expanded_universe_data(top_n=150, start_date='2014-01-01', end_date='2
             logger.info(f"Selected Expanded Universe of {len(tickers)} tickers.")
             
             query_data = f"""
-                SELECT ticker, date, open_adj as open, high_adj as high, low_adj as low, close_adj as close, volume_continuous as volume
-                FROM market_data_daily
+                SELECT ticker, date, open as open, high as high, low as low, close as close, volume_continuous as volume
+                FROM market_data_daily_calculation
                 WHERE ticker IN ({','.join([f"'{t}'" for t in tickers])})
                 AND date >= '{start_date}' AND date <= '{end_date}'
                 ORDER BY ticker, date;

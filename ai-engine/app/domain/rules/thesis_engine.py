@@ -98,10 +98,10 @@ class ThesisEngine:
         pb = float(pb_comp_price or 0.0)
 
         if pb > 0:
-            # Financial firms use equity multiples; EV/EBITDA is not meaningful for banks.
+            # P/B is supplied only when the peer cohort supports equity-multiple valuation.
             components = [(name, value) for name, value in (("PE", pe), ("PB", pb)) if value > 0]
             base_case = round(sum(value for _, value in components) / len(components), 0)
-            valuation_method = f"{sector}_Financial ({' + '.join(name for name, _ in components)})"
+            valuation_method = f"{sector}_Equity_Multiples ({' + '.join(name for name, _ in components)})"
         elif timeline_months <= 3:
             # Timeline ngắn hạn (<= 3M): Loại bỏ DCF, sử dụng P/E và/hoặc EV/EBITDA
             components = []
@@ -316,7 +316,9 @@ class ThesisEngine:
                 pb_comp_price=float(val_inputs.get("pb_price") or 0.0),
             )
         except ValueError as exc:
-            return False, {}, f"REJECTED: DATA_MISSING: {str(exc)}"
+            # Missing/insufficient valuation evidence is a no-trade decision, not
+            # a rejection of the issuer or its financial statements.
+            return False, {}, f"WAIT_OR_SKIP: {str(exc)}"
 
         if price_target_info["base_case"] < current_price * 1.15:
             return False, {}, "WAIT / SKIP: Biên an toàn định giá dưới 15%."
