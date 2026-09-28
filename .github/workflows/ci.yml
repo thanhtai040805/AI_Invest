@@ -71,11 +71,13 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: pip install ruff pytest -r requirements.txt
       - run: ruff check app tests/unit --select E9,F63,F7,F82
+      # Beneish M-score cases query financial statements from a seeded local DB.
       - run: >-
           python -m pytest -q
           tests/unit/test_shadow_fill.py
           tests/unit/test_trade_execution_no_mock_fill.py
           tests/unit/test_mathematical_integrity.py
+          -k "not TestDualEngineBeneishMScore"
 
   compose:
     name: Docker Compose configuration

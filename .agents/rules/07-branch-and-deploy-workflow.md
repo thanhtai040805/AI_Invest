@@ -7,8 +7,8 @@ checks pass. Use `feat/<short-name>` for features, `fix/<short-name>` for fixes,
 and `codex/<short-name>` for other agent-owned work.
 
 CI runs on pull requests targeting `main` and pushes to `main`. Release images
-are published only from a successful CI run on
-`main`, tagged with the full commit SHA in GitHub Container Registry (GHCR).
+are published only from a successful CI run on `main`, tagged with the full
+commit SHA in GitHub Container Registry (GHCR).
 Deploy only a SHA whose CI passed and whose four release images exist in GHCR;
 production deployment is started manually through the `Deploy to VPS` workflow.
 
