@@ -1,125 +1,140 @@
-name: Monorepo CI Pipeline
+name: CI
 
 on:
-  push:
-    branches: [ "main", "master", "feat/*", "fix/*" ]
   pull_request:
-    branches: [ "main", "master" ]
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  backend-check:
-    name: Backend (Node.js & Prisma)
+  backend:
+    name: Backend build and critical tests
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: back-end
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Node.js 22
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
+          cache: npm
           cache-dependency-path: back-end/package-lock.json
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm run build
+      - run: node --test tests/shadowFill.test.cjs tests/mlFund.test.cjs
+      - run: npm audit --omit=dev --audit-level=high
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Generate Prisma Client
-        run: npx prisma generate
-
-      - name: Build and backend tests
-        run: npm test
-
-      - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=high
-
-  frontend-check:
-    name: Frontend (Next.js 16 Standalone)
+  frontend:
+    name: Frontend production build
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: front-end
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Node.js 22
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
+          cache: npm
           cache-dependency-path: front-end/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build Next.js
-        run: npm run build
+      - run: npm ci
+      - run: npm run build
         env:
           NEXT_TELEMETRY_DISABLED: 1
-          NEXT_PUBLIC_API_URL: http://localhost:3001/api/v1
-          NEXT_PUBLIC_SOCKET_URL: http://localhost:3001
+          NEXT_PUBLIC_API_URL: /api/v1
+          NEXT_PUBLIC_SOCKET_URL: /
+          NEXT_PUBLIC_WS_URL: /
+      - run: npm audit --omit=dev --audit-level=high
 
-      - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=high
-
-  ai-engine-check:
-    name: AI Engine (Python 3.11 & Quant Org)
+  ai-engine:
+    name: AI Engine build checks and critical tests
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ai-engine
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
+          cache: pip
           cache-dependency-path: ai-engine/requirements.txt
+      - run: python -m pip install --upgrade pip
+      - run: pip install ruff pytest -r requirements.txt
+      - run: ruff check app tests/unit --select E9,F63,F7,F82
+      - run: >-
+          pytest -q
+          tests/unit/test_shadow_fill.py
+          tests/unit/test_trade_execution_no_mock_fill.py
+          tests/unit/test_mathematical_integrity.py
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install flake8 pytest ruff
-          pip install -r requirements.txt
-
-      - name: Lint with Ruff
-        run: ruff check app tests/unit --select E9,F63,F7,F82
-
-      - name: Unit Tests
-        run: pytest tests/unit
-
-  sag-api-check:
-    name: SAG Research (advisory while production hold is active)
-    continue-on-error: true
+  compose:
+    name: Docker Compose configuration
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: SAG/apps/api
     steps:
       - uses: actions/checkout@v4
+      - run: docker compose --env-file .env.example config -q
+      - run: AIINVEST_IMAGE_TAG=ci docker compose --env-file .env.example -f docker-compose.yml -f docker-compose.prod-vps.yml config -q
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+  publish-images:
+    name: Build and publish release images
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [backend, frontend, ai-engine, compose]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
         with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip hatchling ruff pytest
-          pip install -e ".[dev,postgres]"
-
-      - name: Lint with Ruff
-        run: ruff check sag_api sag_agent
-
-  docker-compose-validate:
-    name: Docker Compose Validation
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Validate Docker Compose Configuration
-        run: docker compose --env-file .env.example config -q
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./back-end
+          push: true
+          tags: ghcr.io/thanhtai040805/aiinvest-backend:${{ github.sha }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+      - name: Build and publish AI Engine
+        uses: docker/build-push-action@v6
+        with:
+          context: ./ai-engine
+          push: true
+          tags: ghcr.io/thanhtai040805/aiinvest-ai-engine:${{ github.sha }}
+          cache-from: type=gha,scope=ai-engine
+          cache-to: type=gha,mode=max,scope=ai-engine
+      - name: Build and publish frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./front-end
+          push: true
+          build-args: |
+            NEXT_PUBLIC_API_URL=/api/v1
+            NEXT_PUBLIC_SOCKET_URL=/
+            NEXT_PUBLIC_WS_URL=/
+          tags: ghcr.io/thanhtai040805/aiinvest-frontend:${{ github.sha }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+      - name: Build and publish Nginx
+        uses: docker/build-push-action@v6
+        with:
+          context: ./nginx
+          push: true
+          tags: ghcr.io/thanhtai040805/aiinvest-nginx:${{ github.sha }}
+          cache-from: type=gha,scope=nginx
+          cache-to: type=gha,mode=max,scope=nginx

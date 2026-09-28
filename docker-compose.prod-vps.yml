@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg18
+    volumes: !override
+      - pgdata:/var/lib/postgresql
+
+  migrate:
+    image: ghcr.io/thanhtai040805/aiinvest-backend:${AIINVEST_IMAGE_TAG:?AIINVEST_IMAGE_TAG must be set}
+
+  backend:
+    image: ghcr.io/thanhtai040805/aiinvest-backend:${AIINVEST_IMAGE_TAG:?AIINVEST_IMAGE_TAG must be set}
+
+  ai-engine:
+    image: ghcr.io/thanhtai040805/aiinvest-ai-engine:${AIINVEST_IMAGE_TAG:?AIINVEST_IMAGE_TAG must be set}
+
+  frontend:
+    image: ghcr.io/thanhtai040805/aiinvest-frontend:${AIINVEST_IMAGE_TAG:?AIINVEST_IMAGE_TAG must be set}
+
+  nginx:
+    image: ghcr.io/thanhtai040805/aiinvest-nginx:${AIINVEST_IMAGE_TAG:?AIINVEST_IMAGE_TAG must be set}

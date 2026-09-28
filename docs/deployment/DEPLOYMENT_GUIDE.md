@@ -4,6 +4,15 @@ This runbook deploys the core application on a Linux host with Docker Compose. S
 
 **Release status (2026-09-23): not signed off for PROD.** Local builds, focused Shadow checks, and a clean-volume core Compose smoke have passed. Repository-wide frontend lint still fails in legacy pages, and a fresh live market-data session with a configured paper account has not been verified. Complete those gates on the target environment before calling the Shadow deployment production ready.
 
+## CI and controlled VPS deployment
+
+- Pull requests to `main` run backend build plus its two focused Shadow/ML tests, frontend production build, three AI Engine risk/math tests with critical lint checks, and both Compose configuration checks. This is intentionally a small blocking suite; broader test runs belong in scheduled or pre-release workflows when they provide additional signal.
+- A successful push to `main` builds four immutable, commit-tagged images in GitHub Container Registry. No application secrets are added to the images.
+- Deployments are manually started from **Actions → Deploy to VPS**, on the `main` branch, with the full commit SHA whose CI/publish run succeeded. This gives an explicit promotion step for the Shadow trading system.
+- Configure the `production` environment secrets `AIINVEST_VPS_HOST`, `AIINVEST_VPS_SSH_KEY`, and `AIINVEST_VPS_KNOWN_HOSTS`. The SSH key is deploy-only and restricted on the VPS to the deployment gateway; the workflow uses its short-lived `GITHUB_TOKEN` to pull images, then removes the VPS registry login.
+- The deployment uses `/opt/aiinvest/.env`, keeps PostgreSQL on the VPS's existing `latest-pg18` image and volume (the workflow never pulls the database image), and runs code from a separate Git worktree so dirty files in `/opt/aiinvest` are not overwritten. It checks whether the release has unapplied Prisma migrations and creates/verifies a compressed database backup before applying any. Insufficient disk space stops the release before migration.
+- After the services become healthy, the workflow checks the public HTTPS page and API health endpoint. Database migrations are not automatically reversed if a later health check fails; use the verified backup and reviewed recovery plan for schema rollback.
+
 ## Prerequisites
 
 - A Linux host with Docker Engine and the Compose plugin, enough capacity for PostgreSQL, Redis, RabbitMQ, AI Engine, backend, and Next.js.

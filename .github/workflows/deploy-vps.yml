@@ -1,0 +1,68 @@
+name: Deploy to VPS
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Full commit SHA whose CI passed and images were published
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-vps-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Promote verified images to VPS
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha }}
+      - uses: docker/setup-buildx-action@v3
+      - name: Verify requested commit and all release images
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$COMMIT_SHA"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          docker buildx version >/dev/null
+          for image in aiinvest-backend aiinvest-ai-engine aiinvest-frontend aiinvest-nginx; do
+            docker buildx imagetools inspect "ghcr.io/thanhtai040805/${image}:${COMMIT_SHA}" >/dev/null
+          done
+      - name: Configure pinned SSH access
+        env:
+          VPS_SSH_KEY: ${{ secrets.AIINVEST_VPS_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.AIINVEST_VPS_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_KEY" > "$HOME/.ssh/aiinvest_deploy"
+          chmod 600 "$HOME/.ssh/aiinvest_deploy"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+      - name: Deploy release
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VPS_HOST: ${{ secrets.AIINVEST_VPS_HOST }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          printf '%s\n%s\n' "$COMMIT_SHA" "$GHCR_TOKEN" | ssh \
+            -i "$HOME/.ssh/aiinvest_deploy" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            "root@${VPS_HOST}"
