@@ -15,3 +15,9 @@ production deployment is started manually through the `Deploy to VPS` workflow.
 The deploy script keeps a database backup under `/opt/aiinvest-backups` before
 applying pending database migrations. These backups are separate from the
 container images and are created only when such a deployment runs.
+
+After a deployment passes container and public health checks, it retains the
+current and immediately previous AIInvest application image releases, removes
+older release tags and legacy aliases for AIInvest application images from the
+VPS, and prunes the VPS Docker build cache. This cleanup does not remove
+infrastructure images, containers, volumes, or GitHub Actions build caches.
