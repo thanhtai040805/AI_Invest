@@ -6,6 +6,7 @@ type Sector = { name: string; vn: string; weight: number; changePct: number; for
 import { marketApi, workspaceApi } from "@/lib/api";
 import { useResource } from "@/lib/api/use-resource";
 import { DataState } from "@/components/data-state";
+import { useRealtimeMarket } from "@/lib/use-realtime";
 import {
   Button,
   Panel,
@@ -17,7 +18,7 @@ import {
 import { KLineChart } from "@/components/KLineChart";
 import type { ApiMarketStock } from "@/types";
 
-type DashboardSector = Sector & { sparkline?: number[] };
+type DashboardSector = Sector & { sparkline?: number[]; foreignKnown?: boolean };
 interface ApiSectorRow { name?: string; sector?: string; nameVi?: string; weight?: number; marketWeight?: number; market_cap?: number; changePct?: number; change_pct?: number; change?: number; foreign?: number; foreignFlow?: number; foreign_flow?: number; sparkline?: number[] }
 
 function MarketMap({ sectors }: { sectors: DashboardSector[] }) {
@@ -30,9 +31,7 @@ function MarketMap({ sectors }: { sectors: DashboardSector[] }) {
         const ground = positive
           ? `color-mix(in srgb, var(--color-gain) ${10 + strength * 30}%, var(--color-surface))`
           : `color-mix(in srgb, var(--color-loss) ${10 + strength * 30}%, var(--color-surface))`;
-        const data = Array.isArray(sector.sparkline) && sector.sparkline.length > 1
-          ? sector.sparkline
-          : [100, 100 + sector.changePct];
+        const data = Array.isArray(sector.sparkline) && sector.sparkline.length > 1 ? sector.sparkline : null;
         return (
           <div
             key={sector.name}
@@ -59,12 +58,11 @@ function MarketMap({ sectors }: { sectors: DashboardSector[] }) {
                 />
               </div>
               <div className="absolute inset-x-3 bottom-3 flex items-end justify-between gap-2">
-                <Sparkline data={data} up={positive} width={72} height={25} />
+                {data ? <Sparkline data={data} up={positive} width={72} height={25} /> : <span className="text-[10px] text-muted">—</span>}
                 <span
                   className={`text-[10px] font-mono ${sector.foreign >= 0 ? "text-gain" : "text-loss"}`}
                 >
-                  {sector.foreign >= 0 ? "+" : ""}
-                  {sector.foreign}B NN
+                  {sector.foreignKnown ? `${sector.foreign >= 0 ? "+" : ""}${sector.foreign.toFixed(1)}B NN` : "—"}
                 </span>
               </div>
             </Link>
@@ -79,9 +77,11 @@ function DashboardView({
   sectors,
   indices,
   pulse,
+  isLive,
 }: {
   sectors: Sector[];
   indices: Record<string, number>;
+  isLive: boolean;
   pulse?: {
     state: string;
     liquidity: string;
@@ -110,9 +110,9 @@ function DashboardView({
             title="VN-Index & VN30"
             sub="Nến thời gian thực · Phiên HOSE · Con trỏ, phóng to & chỉ báo"
             action={
-              <Pill tone="teal">
-                <i className="h-1.5 w-1.5 rounded-full bg-gain animate-pulse" />
-                Trực tiếp
+              <Pill tone={isLive ? "teal" : "neutral"}>
+                <i className={`h-1.5 w-1.5 rounded-full ${isLive ? "bg-gain animate-pulse" : "bg-muted"}`} />
+                {isLive ? "Trực tiếp" : "Dữ liệu gần nhất"}
               </Pill>
             }
           />
@@ -123,13 +123,9 @@ function DashboardView({
               </div>
               <div className="mt-1 flex items-baseline gap-3">
                 <span className="font-mono text-[30px] font-semibold tracking-tight text-ink">
-                  {(indices.vnindex ?? 0).toLocaleString("vi-VN")}
+                  {indices.vnindex > 0 ? indices.vnindex.toLocaleString("vi-VN") : "—"}
                 </span>
-                <PercentChange
-                  value={indices.vnindexChange ?? 0}
-                  arrow={false}
-                  className="text-[14px]"
-                />
+                {indices.vnindex > 0 && <PercentChange value={indices.vnindexChange ?? 0} arrow={false} className="text-[14px]" />}
               </div>
             </div>
             <div className="border-l border-line pl-5">
@@ -138,20 +134,15 @@ function DashboardView({
               </div>
               <div className="mt-1 flex items-baseline gap-3">
                 <span className="font-mono text-[30px] font-semibold tracking-tight text-ink">
-                  {(indices.vn30 ?? 0).toLocaleString("vi-VN")}
+                  {indices.vn30 > 0 ? indices.vn30.toLocaleString("vi-VN") : "—"}
                 </span>
-                <PercentChange
-                  value={indices.vn30Change ?? 0}
-                  arrow={false}
-                  className="text-[14px]"
-                />
+                {indices.vn30 > 0 && <PercentChange value={indices.vn30Change ?? 0} arrow={false} className="text-[14px]" />}
               </div>
             </div>
           </div>
           <KLineChart
             ticker="VNINDEX"
             name="VN-Index"
-            basePrice={indices.vnindex || 1}
             precision={2}
             height={360}
           />
@@ -160,11 +151,11 @@ function DashboardView({
           <PanelHead title="Nhịp đập thị trường" sub="Cấu trúc dòng tiền & thị trường thời gian thực" />
           <div className="divide-y divide-line">
             {[
-              ["Trạng thái thị trường", pulse?.state || "Xu hướng tăng · Biến động thấp", "teal"],
-              ["Thanh khoản", pulse?.liquidity || "18.7T VNĐ", "ink"],
-              ["Độ rộng thị trường", pulse?.breadth || "246 tăng / 118 giảm", "ink"],
-              ["Khối ngoại", pulse?.foreign || "+412B ròng", pulse?.foreignTone || "gain"],
-              ["Nhóm dẫn dắt", pulse?.leadership || "Ngân hàng · Chứng khoán · Thép", "ink"],
+              ["Trạng thái thị trường", pulse?.state || "—", "teal"],
+              ["Thanh khoản", pulse?.liquidity || "—", "ink"],
+              ["Độ rộng thị trường", pulse?.breadth || "—", "ink"],
+              ["Khối ngoại", pulse?.foreign || "—", pulse?.foreignTone || "gain"],
+              ["Nhóm dẫn dắt", pulse?.leadership || "—", "ink"],
             ].map(([label, value, tone]) => (
               <div
                 key={label}
@@ -186,7 +177,7 @@ function DashboardView({
         <Panel>
           <PanelHead
             title="Bản đồ nhiệt ngành"
-            sub="Màu sắc = Biến động ngày · Diện tích = Vốn hóa · Đường kẻ = Xu hướng 1 tháng"
+            sub="Màu sắc = biến động ngày · Diện tích = vốn hóa · Đường kẻ = lịch sử ngành khi có dữ liệu"
             action={
               <Link to="/markets">
                 <Button variant="ghost">Mở bảng giá</Button>
@@ -201,6 +192,7 @@ function DashboardView({
 }
 
 export default function Dashboard() {
+  const { heatmap: liveHeatmap, indices: liveIndices, isLive, breadth: liveBreadth, liquidity: liveLiquidity, snapshot: liveSnapshot } = useRealtimeMarket();
   const resource = useResource(async () => {
     const [overview, indexPayload, heatmap, snap] = await Promise.all([
       workspaceApi.overview().catch(() => null),
@@ -219,25 +211,26 @@ export default function Dashboard() {
       weight: Number(row.weight || row.marketWeight || row.market_cap || 1),
       changePct: Number(row.changePct || row.change_pct || row.change || 0),
       foreign: Number(row.foreign || row.foreignFlow || row.foreign_flow || 0),
+      foreignKnown: row.foreign_flow != null || row.foreignFlow != null || row.foreign != null,
       sparkline: row.sparkline,
     }));
     const rawStocks: ApiMarketStock[] = Array.isArray(snap?.stocks) ? snap.stocks : [];
     const advancing = rawStocks.filter((s) => Number(s.change_pct) > 0).length;
     const declining = rawStocks.filter((s) => Number(s.change_pct) < 0).length;
-    const totalVal = rawStocks.reduce((sum, s) => sum + Number(s.price ?? 0) * Number(s.volume ?? 0), 0);
+    const hasForeign = rawStocks.some((s) => s.foreign_flow != null);
     const foreignSum = Math.round(rawStocks.reduce((sum, s) => sum + Number(s.foreign_flow ?? 0), 0));
     const topLeaders = sectorRows.slice(0, 3).map((r) => r.sector || r.name).filter(Boolean).join(" · ");
 
     const regimeLabel = overview?.regime?.regime_label || overview?.regime?.dominant_regime;
-    const stateStr = regimeLabel ? `${regimeLabel} · Tin cậy ${(Number(overview?.regime?.confidence ?? 0.8) * 100).toFixed(0)}%` : "Tích lũy · Biên độ hẹp";
+    const stateStr = regimeLabel ? `${regimeLabel} · Tin cậy ${(Number(overview?.regime?.confidence ?? 0) * 100).toFixed(0)}%` : "—";
 
     const pulse = {
       state: stateStr,
-      liquidity: totalVal > 0 ? `${(totalVal / 1e12).toFixed(1)}T VNĐ` : "18.5T VNĐ",
-      breadth: rawStocks.length > 0 ? `${advancing} tăng / ${declining} giảm` : "Cân bằng",
-      foreign: `${foreignSum >= 0 ? "+" : ""}${foreignSum}B ròng`,
+      liquidity: "—",
+      breadth: rawStocks.length > 0 ? `${advancing} tăng / ${declining} giảm` : "—",
+      foreign: hasForeign ? `${foreignSum >= 0 ? "+" : ""}${foreignSum}B ròng` : "—",
       foreignTone: foreignSum >= 0 ? "gain" : "loss",
-      leadership: topLeaders || "Ngân hàng · Thép · Công nghệ",
+      leadership: topLeaders || "—",
     };
 
     return {
@@ -251,5 +244,41 @@ export default function Dashboard() {
       },
     };
   }, []);
-  return <DataState loading={resource.loading} error={resource.error} empty={!resource.data?.sectors.length} retry={() => void resource.reload()}>{resource.data && <DashboardView {...resource.data} />}</DataState>;
+  const liveRows = liveHeatmap?.sectors;
+  const liveTotal = liveRows?.reduce((sum, item) => sum + Number(item.weight ?? item.count ?? 0), 0) ?? 0;
+  const latestForeignFlow = new Map((resource.data?.sectors ?? []).map((sector) => [sector.name, sector.foreign]));
+  const realtimeSectors: DashboardSector[] | undefined = liveRows?.map((row) => {
+    const count = Number(row.weight ?? row.count ?? 0);
+    return {
+      name: String(row.name || row.sector || "—"),
+      vn: String(row.nameVi || row.name || row.sector || "—"),
+      weight: liveTotal > 0 ? (count / liveTotal) * 100 : 0,
+      changePct: Number(row.changePct || row.change_pct || row.change || 0),
+      foreign: Number(row.foreign_flow ?? row.foreignFlow ?? row.foreign ?? latestForeignFlow.get(String(row.name || row.sector || "")) ?? 0),
+      foreignKnown: row.foreign_flow != null || row.foreignFlow != null || row.foreign != null,
+      sparkline: Array.isArray(row.sparkline) ? row.sparkline as number[] : undefined,
+    };
+  });
+  const liveStocks = liveSnapshot?.stocks;
+  const liveForeign = liveStocks?.some((stock) => stock.foreign_flow != null)
+    ? liveStocks.reduce((sum, stock) => sum + Number(stock.foreign_flow ?? 0), 0)
+    : undefined;
+  const seedPulse = resource.data?.pulse;
+  const pulse = {
+    state: seedPulse?.state ?? "—",
+    breadth: liveBreadth ? `${liveBreadth.advancers ?? 0} tăng / ${liveBreadth.decliners ?? 0} giảm` : seedPulse?.breadth ?? "—",
+    liquidity: liveLiquidity ? `${(Number(liveLiquidity.totalValueBillion) / 1000).toFixed(1)}T VNĐ` : seedPulse?.liquidity ?? "—",
+    foreign: liveForeign != null ? `${liveForeign >= 0 ? "+" : ""}${liveForeign.toFixed(0)}B ròng` : seedPulse?.foreign ?? "—",
+    foreignTone: liveForeign != null ? (liveForeign >= 0 ? "gain" : "loss") : seedPulse?.foreignTone ?? "gain",
+    leadership: seedPulse?.leadership ?? "—",
+  };
+  const seedIndices = resource.data?.indices;
+  const indices = {
+    vnindex: liveIndices?.vnIndexVal ? Number(liveIndices.vnIndexVal.replaceAll(",", "")) : seedIndices?.vnindex ?? 0,
+    vnindexChange: liveIndices?.vnIndexPct ?? seedIndices?.vnindexChange ?? 0,
+    vn30: liveIndices?.vn30Val ? Number(liveIndices.vn30Val.replaceAll(",", "")) : seedIndices?.vn30 ?? 0,
+    vn30Change: liveIndices?.vn30Pct ?? seedIndices?.vn30Change ?? 0,
+  };
+  const sectors = realtimeSectors ?? resource.data?.sectors ?? [];
+  return <DataState loading={resource.loading && !sectors.length} error={sectors.length ? null : resource.error} empty={!sectors.length} retry={() => void resource.reload()}><DashboardView sectors={sectors} indices={indices} pulse={pulse} isLive={isLive} /></DataState>;
 }

@@ -51,11 +51,14 @@ class DnseRestClient:
         return {
             "symbol": symbol.upper(),
             "name": getattr(s, "symbol", symbol),
-            "price": to_vnd_price(ref),
+            "price": 0,
+            "ref": to_vnd_price(ref),
             "prevClose": to_vnd_price(ref),
             "ceiling": to_vnd_price(getattr(s, "ceiling_price", 0)),
             "floor": to_vnd_price(getattr(s, "floor_price", 0)),
             "exchange": "HOSE",
+            "source": "dnse-security-definition",
+            "stale": True,
         }
 
     def get_ohlcv(self, symbol: str, interval: str = "1D", start: Optional[str] = None, end: Optional[str] = None) -> List[Dict]:

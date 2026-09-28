@@ -6,7 +6,8 @@ import { Link } from "@/lib/router"
 import { Button, EmptyState, Panel, PanelHead, PercentChange, fmt } from "@/components/ui"
 import { workspaceApi, marketApi } from "@/lib/api"
 import { useResource } from "@/lib/api/use-resource"
-import type { Stock } from "@/types"
+import { useRealtimeMarket } from "@/lib/use-realtime"
+import type { ApiMarketStock } from "@/types"
 
 interface WatchlistData {
   id: string
@@ -15,17 +16,16 @@ interface WatchlistData {
   createdAt?: string
 }
 
-const EMPTY_STOCKS: Stock[] = []
-
 export default function WatchlistPage() {
   const [newSymbol, setNewSymbol] = useState("")
   const [isAdding, setIsAdding] = useState(false)
 
   const watchlistsRes = useResource(() => workspaceApi.watchlists().catch(() => []), [])
-  const snapshotRes = useResource(() => marketApi.snapshot().catch(() => ({ items: [] })), [])
+  const snapshotRes = useResource(() => marketApi.snapshot().catch(() => null), [])
+  const { snapshot } = useRealtimeMarket()
 
   const rawWatchlists = (watchlistsRes.data as WatchlistData[]) || []
-  const stockItems = (snapshotRes.data as { items?: Stock[] })?.items ?? EMPTY_STOCKS
+  const stockItems = (snapshot?.stocks ?? snapshotRes.data?.stocks ?? []) as ApiMarketStock[]
 
   // Default watchlist if user has none in DB yet
   const activeWatchlist = rawWatchlists[0] || {
@@ -35,32 +35,8 @@ export default function WatchlistPage() {
   }
 
   const trackedStocks = useMemo(() => {
-    return activeWatchlist.symbols.map((sym) => {
-      const live = stockItems.find((s) => s.symbol === sym)
-      if (live) return live
-      return {
-        symbol: sym,
-        name: sym,
-        price: 30000,
-        changePct: 0,
-        volume: "—",
-        ref: 30000,
-        ceiling: 32100,
-        floor: 27900,
-        risk: "Moderate" as const,
-        sector: "Thị trường",
-        rsi: 50,
-        momentum: 50,
-        beneish: "PASS" as const,
-        flow: 0,
-        rs: 50,
-        factor: "Tích lũy",
-        weight: 10,
-        pe: 12,
-        foreign: 0,
-        spark: [30, 30, 30],
-      }
-    })
+    const bySymbol = new Map(stockItems.map((stock: ApiMarketStock) => [stock.symbol, stock]))
+    return activeWatchlist.symbols.map((symbol) => ({ symbol, stock: bySymbol.get(symbol) }))
   }, [activeWatchlist.symbols, stockItems])
 
   const handleAddSymbol = async () => {
@@ -121,7 +97,7 @@ export default function WatchlistPage() {
         <div className="px-5 pt-4 pb-2">
           <PanelHead
             title="Bảng giá & Chỉ số giám sát"
-            sub={`${trackedStocks.length} mã đang theo dõi · Dữ liệu kết nối trực tiếp từ sàn HOSE`}
+            sub={`${trackedStocks.length} mã đang theo dõi · HOSE · Cập nhật khi nhận tick DNSE`}
           />
         </div>
 
@@ -153,34 +129,34 @@ export default function WatchlistPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
-                {trackedStocks.map((s) => (
-                  <tr key={s.symbol} className="hover:bg-soft/50 transition-colors">
+                {trackedStocks.map(({ symbol, stock }) => (
+                  <tr key={symbol} className="hover:bg-soft/50 transition-colors">
                     <td className="py-3 px-5 font-mono font-bold">
-                      <Link to={`/stock/${s.symbol}`} className="text-ink hover:underline">
-                        {s.symbol}
+                      <Link to={`/stock/${symbol}`} className="text-ink hover:underline">
+                        {symbol}
                       </Link>
                     </td>
                     <td className="py-3 px-3 text-secondary truncate max-w-[200px]">
-                      {s.name}
+                      {stock?.name || symbol}
                     </td>
                     <td className="py-3 px-3 text-right font-mono font-semibold text-ink tnum">
-                      {fmt(s.price || s.ref)}
+                      {stock?.price ? fmt(stock.price) : "—"}
                     </td>
                     <td className="py-3 px-3 text-right">
-                      <PercentChange value={s.changePct} />
+                      {stock?.change_pct != null ? <PercentChange value={stock.change_pct} /> : "—"}
                     </td>
                     <td className="py-3 px-3 text-right font-mono text-secondary tnum">
-                      {s.volume || "—"}
+                      {stock?.volume != null ? Number(stock.volume).toLocaleString("vi-VN") : "—"}
                     </td>
                     <td className="py-3 px-3 text-right font-mono text-muted tnum">
-                      {s.pe?.toFixed(1) || "12.5"}
+                      —
                     </td>
                     <td className="py-3 px-3 text-right font-mono text-teal tnum">
-                      {s.rsi || 50}
+                      —
                     </td>
                     <td className="py-3 pr-5 text-right">
                       <button
-                        onClick={() => handleRemoveSymbol(s.symbol)}
+                        onClick={() => handleRemoveSymbol(symbol)}
                         className="text-[11.5px] text-muted hover:text-loss transition-colors px-2 py-1 rounded hover:bg-loss/10"
                         title="Xóa khỏi watchlist"
                       >

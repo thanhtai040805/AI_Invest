@@ -15,52 +15,64 @@ const rowsOf = (value: unknown, key: string): unknown[] => {
 };
 
 async function dbSnapshot(exchange?: string) {
+  const exchangeFilter = exchange?.toUpperCase() ?? 'HOSE';
   const rows = await prisma.$queryRaw<Array<Record<string, unknown>>>`
     SELECT d.ticker AS symbol,
-           COALESCE(i.name, d.ticker) AS name,
+           COALESCE(i.name, s.name, d.ticker) AS name,
            d.date,
-           COALESCE((d.open_adj * 1000)::float8, (d.close_adj * 1000)::float8) AS ref,
-           COALESCE((d.high_adj * 1000)::float8, (d.close_adj * 1000)::float8) AS ceiling,
-           COALESCE((d.low_adj * 1000)::float8, (d.close_adj * 1000)::float8) AS floor,
-           (d.close_adj * 1000)::float8 AS price,
+           COALESCE((prev.close * 1000)::float8,
+             (CASE WHEN ABS(s.ref_price) < 500 THEN s.ref_price * 1000 ELSE s.ref_price END)::float8,
+             (c.open * 1000)::float8) AS ref,
+           (CASE WHEN ABS(s.ceiling) < 500 THEN s.ceiling * 1000 ELSE s.ceiling END)::float8 AS ceiling,
+           (CASE WHEN ABS(s.floor) < 500 THEN s.floor * 1000 ELSE s.floor END)::float8 AS floor,
+           (COALESCE(c.close, d.close_adj) * 1000)::float8 AS price,
            d.volume_total::float8 AS volume,
-           COALESCE((d.foreign_net_vol * c.close * 1000 / 1e9)::float8, 0) AS foreign_flow,
-           CASE WHEN c.open IS NOT NULL AND c.open <> 0
-             THEN ((c.close - c.open) / c.open) * 100 ELSE 0 END AS change_pct,
-           COALESCE((t.indicators->>'rsi_14')::float8, 50) AS rs,
-           COALESCE((t.indicators->>'momentum_1m')::float8, 0) AS momentum
+           NULL::float8 AS foreign_flow,
+           CASE WHEN prev.close <> 0
+             THEN ((c.close - prev.close) / prev.close) * 100 ELSE NULL END AS change_pct,
+           NULL::float8 AS rs,
+           (t.indicators->>'momentum_1m')::float8 AS momentum
     FROM market_data_daily d
+    JOIN stocks s ON s.symbol = d.ticker
     LEFT JOIN market_data_daily_calculation c ON c.ticker = d.ticker AND c.date = d.date
+    LEFT JOIN LATERAL (
+      SELECT close FROM market_data_daily_calculation
+      WHERE ticker=d.ticker AND date < d.date ORDER BY date DESC LIMIT 1
+    ) prev ON TRUE
     LEFT JOIN instrument_master i ON i.symbol = d.ticker
     LEFT JOIN technical_indicators t ON t.symbol = d.ticker AND t.calc_date = d.date
-    WHERE d.date = (SELECT MAX(date) FROM market_data_daily)
+    WHERE d.date = (SELECT MAX(md.date) FROM market_data_daily md JOIN stocks ss ON ss.symbol=md.ticker WHERE ss.exchange='HOSE')
+      AND (${exchangeFilter}::text IS NULL OR s.exchange = ${exchangeFilter})
     ORDER BY d.volume_total DESC NULLS LAST
-    LIMIT 100
   `;
-  return { stocks: rows, asOf: rows[0]?.date ?? null, source: 'postgres', stale: true, exchange: exchange ?? null };
+  return { stocks: rows, asOf: rows[0]?.date ?? null, source: 'postgres', stale: true, exchange: exchangeFilter };
 }
 
 async function dbIndices() {
   const [rows, historyRows] = await Promise.all([
     prisma.$queryRaw<Array<Record<string, unknown>>>`
-      SELECT c.ticker AS symbol, c.date, d.close_adj AS value,
-             CASE WHEN c.open IS NOT NULL AND c.open <> 0
-               THEN ((c.close - c.open) / c.open) * 100 ELSE 0 END AS change_pct
+      SELECT c.ticker AS symbol, c.date, COALESCE(c.close, d.close_adj) AS value,
+             CASE WHEN prev.close <> 0
+               THEN ((c.close - prev.close) / prev.close) * 100 ELSE NULL END AS change_pct
       FROM market_data_daily_calculation c
       JOIN market_data_daily d USING (ticker, date)
-      WHERE c.ticker IN ('VNINDEX', 'VN-INDEX', 'VN30', 'HNXINDEX', 'UPCOMINDEX')
-        AND c.date = (SELECT MAX(date) FROM market_data_daily WHERE ticker IN ('VNINDEX', 'VN-INDEX', 'VN30', 'HNXINDEX', 'UPCOMINDEX'))
+      LEFT JOIN LATERAL (
+        SELECT close FROM market_data_daily_calculation
+        WHERE ticker=c.ticker AND date < c.date ORDER BY date DESC LIMIT 1
+      ) prev ON TRUE
+      WHERE c.ticker IN ('VNINDEX', 'VN-INDEX', 'VN30', 'VN100')
+        AND c.date = (SELECT MAX(date) FROM market_data_daily WHERE ticker IN ('VNINDEX', 'VN-INDEX', 'VN30', 'VN100'))
     `,
     prisma.$queryRaw<Array<{ ticker: string; date: Date; close_adj: number }>>`
       SELECT ticker, date, close_adj
       FROM market_data_daily
-      WHERE ticker IN ('VNINDEX', 'VN-INDEX', 'VN30')
+      WHERE ticker IN ('VNINDEX', 'VN-INDEX', 'VN30', 'VN100')
       ORDER BY date DESC
       LIMIT 60
     `.catch(() => [] as Array<{ ticker: string; date: Date; close_adj: number }>),
   ]);
 
-  const historyMap: Record<string, number[]> = { VNINDEX: [], VN30: [] };
+  const historyMap: Record<string, number[]> = { VNINDEX: [], VN30: [], VN100: [] };
   const sorted = [...historyRows].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   for (const r of sorted) {
     const sym = r.ticker === 'VN-INDEX' ? 'VNINDEX' : r.ticker;
@@ -79,51 +91,30 @@ async function dbIndices() {
 }
 
 async function dbHeatmap() {
-  const [sectors, histories] = await Promise.all([
-    prisma.$queryRaw<Array<Record<string, unknown>>>`
+  const sectors = await prisma.$queryRaw<Array<Record<string, unknown>>>`
       WITH latest AS (SELECT MAX(date) AS date FROM market_data_daily)
       SELECT COALESCE(s.sector, 'Khác') AS sector,
              COUNT(*)::int AS count,
-             AVG(CASE WHEN c.open IS NOT NULL AND c.open <> 0 THEN ((c.close-c.open)/c.open)*100 ELSE 0 END)::float8 AS change_pct,
+             COALESCE((SUM(CASE WHEN prev.close <> 0
+               THEN ((c.close-prev.close)/prev.close)*100*COALESCE(c.market_cap, 0) ELSE 0 END)
+               / NULLIF(SUM(COALESCE(c.market_cap, 0)), 0)),
+               AVG(CASE WHEN prev.close <> 0 THEN ((c.close-prev.close)/prev.close)*100 END))::float8 AS change_pct,
              SUM(COALESCE(c.market_cap, 0))::float8 AS market_cap,
-             SUM(COALESCE(d.foreign_net_vol, 0))::float8 AS foreign_flow
+             NULL::float8 AS foreign_flow
       FROM market_data_daily d
       JOIN market_data_daily_calculation c ON c.ticker=d.ticker AND c.date=d.date
       JOIN latest l ON d.date=l.date
-      LEFT JOIN stocks s ON s.symbol=d.ticker GROUP BY COALESCE(s.sector, 'Khác')
+      JOIN stocks s ON s.symbol=d.ticker
+      LEFT JOIN LATERAL (
+        SELECT close FROM market_data_daily_calculation
+        WHERE ticker=d.ticker AND date < d.date ORDER BY date DESC LIMIT 1
+      ) prev ON TRUE
+      WHERE s.exchange = 'HOSE'
+      GROUP BY COALESCE(s.sector, 'Khác')
       ORDER BY market_cap DESC
-    `,
-    prisma.$queryRaw<Array<{ sector: string; sparkline: number[] }>>`
-      WITH recent_dates AS (
-        SELECT DISTINCT date FROM market_data_daily ORDER BY date DESC LIMIT 15
-      ),
-      sector_daily AS (
-        SELECT COALESCE(s.sector, 'Khác') AS sector, c.date, AVG(c.close * 1000)::float8 AS avg_price
-        FROM market_data_daily d
-        JOIN market_data_daily_calculation c ON c.ticker = d.ticker AND c.date = d.date
-        JOIN recent_dates r ON c.date = r.date
-        JOIN stocks s ON s.symbol = d.ticker
-        GROUP BY COALESCE(s.sector, 'Khác'), c.date
-      )
-      SELECT sector, json_agg(avg_price ORDER BY date ASC) AS sparkline
-      FROM sector_daily
-      GROUP BY sector
-    `.catch(() => [] as Array<{ sector: string; sparkline: number[] }>),
-  ]);
+    `;
 
-  const historyMap = new Map<string, number[]>();
-  for (const h of histories) {
-    if (h.sector && Array.isArray(h.sparkline)) {
-      historyMap.set(h.sector, h.sparkline);
-    }
-  }
-
-  const enriched = sectors.map((s) => ({
-    ...s,
-    sparkline: historyMap.get(String(s.sector)) ?? [],
-  }));
-
-  return { sectors: enriched, asOf: sectors[0] ? await prisma.market_data_daily.findFirst({ orderBy: { date: 'desc' }, select: { date: true } }).then(x => x?.date ?? null) : null, source: 'postgres', stale: true };
+  return { sectors, asOf: sectors[0] ? await prisma.market_data_daily.findFirst({ orderBy: { date: 'desc' }, select: { date: true } }).then(x => x?.date ?? null) : null, source: 'postgres', stale: true };
 }
 
 async function handle(
@@ -194,6 +185,15 @@ router.get('/search', (req, res, next) => {
     return;
   }
   return handle(req, res, next, () => aiEngineService.searchSymbols(q));
+});
+
+router.get('/stream-assignment/:symbol', (req, res, next) => {
+  const symbol = String(req.params.symbol ?? '').trim().toUpperCase();
+  if (!/^[A-Z0-9]{1,10}$/.test(symbol)) {
+    res.status(400).json({ error: 'Invalid HOSE symbol' });
+    return;
+  }
+  return handle(req, res, next, () => aiEngineService.getStreamAssignment(symbol));
 });
 
 router.post('/backfill/trigger', async (req, res, next) => {

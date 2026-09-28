@@ -36,22 +36,30 @@ router.get('/:symbol/news', (req, res, next) => {
 
 async function dbStockQuote(symbol: string) {
   const rows = await prisma.$queryRaw<Array<any>>`
-    SELECT d.date, d.close_adj, d.open_adj, d.high_adj, d.low_adj, d.volume_total,
-           c.open AS raw_open, c.close AS raw_close
+    SELECT d.date, d.close_adj, d.volume_total,
+           c.close AS raw_close, prev.close AS prior_close,
+           s.ref_price, s.ceiling, s.floor
     FROM market_data_daily d
     LEFT JOIN market_data_daily_calculation c ON c.ticker=d.ticker AND c.date=d.date
+    LEFT JOIN stocks s ON s.symbol=d.ticker
+    LEFT JOIN LATERAL (
+      SELECT close FROM market_data_daily_calculation
+      WHERE ticker=d.ticker AND date < d.date ORDER BY date DESC LIMIT 1
+    ) prev ON TRUE
     WHERE d.ticker=${symbol}
     ORDER BY d.date DESC LIMIT 1
   `;
   const row = rows[0];
   if (!row) return null;
-  const price = (row.close_adj ?? 0) * 1000;
-  const ref = (row.open_adj ?? row.close_adj ?? 0) * 1000;
-  const ceiling = (row.high_adj ?? row.close_adj ?? 0) * 1000;
-  const floor = (row.low_adj ?? row.close_adj ?? 0) * 1000;
-  const changePct = row.raw_open && row.raw_open !== 0 && row.raw_close != null
-    ? ((row.raw_close - row.raw_open) / row.raw_open) * 100
-    : 0;
+  const toVnd = (value: unknown) => {
+    const n = Number(value ?? 0);
+    return n > 0 && n < 500 ? n * 1000 : n;
+  };
+  const price = toVnd(row.raw_close ?? row.close_adj);
+  const ref = row.prior_close != null ? toVnd(row.prior_close) : toVnd(row.ref_price);
+  const ceiling = toVnd(row.ceiling);
+  const floor = toVnd(row.floor);
+  const changePct = ref > 0 && price > 0 ? ((price - ref) / ref) * 100 : null;
   return {
     symbol,
     price,
@@ -61,6 +69,8 @@ async function dbStockQuote(symbol: string) {
     volume: Number(row.volume_total ?? 0),
     change_pct: changePct,
     asOf: row.date,
+    source: 'postgres',
+    stale: true,
   };
 }
 
@@ -112,8 +122,9 @@ router.get('/:symbol/ohlcv', (req, res, next) => {
   return handle(req, res, next, () =>
     cached(cacheKey, config.cacheTtl.ohlcv, async () => {
       const live = await aiEngineService.getOHLCV(symbol, { interval, start, end }).catch(() => null);
-      if (live && Array.isArray(live) && (live as any[]).length > 0) return live;
-      return dbStockOHLCV(symbol, 300);
+      const candles = Array.isArray(live) ? live : (live as { data?: unknown } | null)?.data;
+      if (Array.isArray(candles) && candles.length > 0) return candles;
+      return interval.toUpperCase() === '1D' ? dbStockOHLCV(symbol, 300) : [];
     }),
   );
 });

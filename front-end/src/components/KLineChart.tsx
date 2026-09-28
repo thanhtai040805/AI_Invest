@@ -4,10 +4,17 @@ import type { KLineData } from "klinecharts"
 import "@klinecharts/pro/dist/klinecharts-pro.css"
 
 import { stockApi } from "@/lib/api"
-import { getSocket } from "@/lib/socket"
+import { getSocket, retainOhlc, retainStock } from "@/lib/socket"
 
-interface ApiCandle { date: string; open?: number; high?: number; low?: number; close: number; volume?: number }
-interface PriceTick { price?: number; close?: number; volume?: number }
+interface ApiCandle { date?: string; time?: number | string; timestamp?: number | string; open?: number; high?: number; low?: number; close: number; volume?: number }
+interface OhlcTick { symbol?: string; resolution?: string; timestamp?: number; open?: number; high?: number; low?: number; close?: number; volume?: number }
+
+function dnseResolution(period: Period): string | null {
+  if (period.timespan === "minute") return period.multiplier === 60 ? "1H" : String(period.multiplier)
+  if (period.timespan === "day") return "1D"
+  if (period.timespan === "week") return "1W"
+  return null
+}
 
 // ── Real Vietnamese market data feed connected to PostgreSQL & WebSocket ──
 class RealMarketDatafeed implements Datafeed {
@@ -17,27 +24,20 @@ class RealMarketDatafeed implements Datafeed {
   private hasMoreHistory = true
   private isFetching = false
   private currentTicker = ""
-  private fallbackPrice = 25000
-
-  constructor(fallbackPrice = 25000) {
-    this.fallbackPrice = fallbackPrice > 0 ? fallbackPrice : 25000
-  }
-
-  setFallbackPrice(p: number) {
-    if (p > 0) this.fallbackPrice = p
-  }
+  private currentResolution = ""
 
   async searchSymbols(): Promise<SymbolInfo[]> {
     return []
   }
 
   async getHistoryKLineData(symbol: SymbolInfo, period: Period, from: number, to: number): Promise<KLineData[]> {
-    void period
     const sym = symbol.ticker.toUpperCase()
+    const resolution = dnseResolution(period) ?? "1D"
 
     // Reset cache if ticker changed
-    if (this.currentTicker !== sym) {
+    if (this.currentTicker !== sym || this.currentResolution !== resolution) {
       this.currentTicker = sym
+      this.currentResolution = resolution
       this.historyCache = null
       this.hasMoreHistory = true
     }
@@ -61,11 +61,17 @@ class RealMarketDatafeed implements Datafeed {
 
     this.isFetching = true
     try {
-      const candles = (await stockApi.ohlcv(sym, { limit: 300 })) as ApiCandle[]
+      const candles = (await stockApi.ohlcv(sym, { limit: 300, interval: resolution })) as ApiCandle[]
       if (Array.isArray(candles) && candles.length > 0) {
-        const sorted = [...candles].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+        const candleTime = (c: ApiCandle) => {
+          const raw = c.timestamp ?? c.time ?? c.date
+          if (typeof raw === "string" && !/^\d+$/.test(raw)) return new Date(raw).getTime()
+          const numeric = Number(raw ?? 0)
+          return numeric > 1e12 ? numeric : numeric * 1000
+        }
+        const sorted = [...candles].sort((a, b) => candleTime(a) - candleTime(b))
         const formatted: KLineData[] = sorted.map((c) => {
-          const timestamp = new Date(c.date).getTime()
+          const timestamp = candleTime(c)
           const open = Number(c.open ?? c.close)
           const high = Number(c.high ?? Math.max(open, Number(c.close)))
           const low = Number(c.low ?? Math.min(open, Number(c.close)))
@@ -78,7 +84,6 @@ class RealMarketDatafeed implements Datafeed {
             low,
             close,
             volume,
-            turnover: volume * close,
           }
         })
         this.historyCache = formatted
@@ -94,55 +99,47 @@ class RealMarketDatafeed implements Datafeed {
       this.isFetching = false
     }
 
-    // Fallback if no history exists for ticker
+    // An empty chart is preferable to a fabricated market candle.
     this.hasMoreHistory = false
-    const now = Date.now()
-    const basePrice = this.fallbackPrice
-    const fallback: KLineData = {
-      timestamp: now,
-      open: basePrice,
-      high: basePrice,
-      low: basePrice,
-      close: basePrice,
-      volume: 1000,
-      turnover: basePrice * 1000,
-    }
-    this.historyCache = [fallback]
-    this.lastCandle = fallback
-    return [fallback]
+    this.historyCache = []
+    return []
   }
 
-  subscribe(symbol: SymbolInfo, _period: Period, callback: DatafeedSubscribeCallback): void {
+  subscribe(symbol: SymbolInfo, period: Period, callback: DatafeedSubscribeCallback): void {
+    this.unsubscribe()
     const sym = symbol.ticker.toUpperCase()
+    const resolution = dnseResolution(period)
     const socket = getSocket()
+    if (!resolution) return
 
-    const onPrice = (data: PriceTick) => {
-      if (!data) return
-      const price = Number(data.price ?? data.close)
-      if (!price) return
-
-      const vol = Number(data.volume ?? 0)
-      if (this.lastCandle) {
-        const updated: KLineData = {
-          ...this.lastCandle,
-          close: price,
-          high: Math.max(this.lastCandle.high, price),
-          low: Math.min(this.lastCandle.low, price),
-          volume: vol || this.lastCandle.volume,
-          turnover: (vol || Number(this.lastCandle.volume)) * price,
-        }
-        this.lastCandle = updated
-        callback(updated)
+    const onCandle = (data: OhlcTick) => {
+      if (data?.symbol !== sym || data.resolution !== resolution) return
+      const rawTime = Number(data.timestamp ?? 0)
+      const timestamp = rawTime > 1e12 ? rawTime : rawTime * 1000
+      if (!timestamp || (this.lastCandle && timestamp < this.lastCandle.timestamp)) return
+      const candle: KLineData = {
+        timestamp,
+        open: Number(data.open ?? 0),
+        high: Number(data.high ?? 0),
+        low: Number(data.low ?? 0),
+        close: Number(data.close ?? 0),
+        volume: Number(data.volume ?? 0),
       }
+      if (!candle.open || !candle.close) return
+      this.lastCandle = candle
+      callback(candle)
     }
 
-    if (!socket.connected) socket.connect()
-    socket.emit("subscribe:symbol", sym)
-    socket.on(`stock:price:${sym}`, onPrice)
+    const releaseStock = ["VNINDEX", "VN30", "VN100"].includes(sym) ? () => {} : retainStock(sym)
+    const releaseOhlc = retainOhlc(sym, resolution)
+    socket.on(`stock:ohlc:${sym}`, onCandle)
+    socket.on(`stock:ohlcClosed:${sym}`, onCandle)
 
     this.socketUnsub = () => {
-      socket.emit("unsubscribe:symbol", sym)
-      socket.off(`stock:price:${sym}`, onPrice)
+      releaseOhlc()
+      releaseStock()
+      socket.off(`stock:ohlc:${sym}`, onCandle)
+      socket.off(`stock:ohlcClosed:${sym}`, onCandle)
     }
   }
 
@@ -193,7 +190,6 @@ const defaultPeriods: Period[] = [
   { multiplier: 60, timespan: "minute", text: "1H" },
   { multiplier: 1, timespan: "day", text: "1D" },
   { multiplier: 1, timespan: "week", text: "1W" },
-  { multiplier: 1, timespan: "month", text: "1M" },
 ]
 
 const DEFAULT_SUB_INDICATORS = ["VOL"]
@@ -201,7 +197,6 @@ const DEFAULT_SUB_INDICATORS = ["VOL"]
 export function KLineChart({
   ticker,
   name,
-  basePrice = 25000,
   precision = 2,
   height = 360,
   subIndicators = DEFAULT_SUB_INDICATORS,
@@ -209,7 +204,6 @@ export function KLineChart({
 }: {
   ticker: string
   name: string
-  basePrice?: number
   precision?: number
   height?: number
   subIndicators?: string[]
@@ -219,17 +213,10 @@ export function KLineChart({
   const feedRef = useRef<RealMarketDatafeed | null>(null)
   const subIndicatorsKey = subIndicators.join(",")
 
-  // Update fallback price without tearing down the chart instance
-  useEffect(() => {
-    if (feedRef.current && basePrice > 0) {
-      feedRef.current.setFallbackPrice(basePrice)
-    }
-  }, [basePrice])
-
   useEffect(() => {
     if (!ref.current) return
     const container = ref.current
-    const feed = new RealMarketDatafeed(basePrice)
+    const feed = new RealMarketDatafeed()
     feedRef.current = feed
 
     try {

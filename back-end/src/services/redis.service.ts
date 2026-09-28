@@ -3,25 +3,48 @@ import { config } from '../config';
 
 class RedisService {
   private client: Redis | null = null;
+  private retryTimer: NodeJS.Timeout | null = null;
+  private stopping = false;
+  private connectedHandlers: Array<() => Promise<void>> = [];
+
+  onConnected(handler: () => Promise<void>): void {
+    this.connectedHandlers.push(handler);
+  }
+
+  private retry(): void {
+    if (this.stopping || this.retryTimer) return;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      void this.connect();
+    }, 5000);
+  }
 
   async connect(): Promise<void> {
     if (this.client) return;
 
-    this.client = new Redis(config.redisUrl, {
+    const client = new Redis(config.redisUrl, {
       maxRetriesPerRequest: 1,
       retryStrategy: () => null,
       lazyConnect: true,
       enableOfflineQueue: false,
     });
 
-    this.client.on('error', () => {});
+    this.client = client;
+    client.on('error', () => {});
+    client.on('end', () => {
+      if (this.client === client) this.client = null;
+      this.retry();
+    });
 
     try {
-      await this.client.connect();
+      await client.connect();
       console.log('[Redis] Connected');
+      for (const handler of this.connectedHandlers) await handler().catch((err) => console.warn('[Redis] Registry sync failed:', err));
     } catch {
       console.log('[Redis] Redis offline — running in direct PostgreSQL mode');
-      this.client = null;
+      client.disconnect();
+      if (this.client === client) this.client = null;
+      this.retry();
     }
   }
 
@@ -51,6 +74,9 @@ class RedisService {
   }
 
   async disconnect(): Promise<void> {
+    this.stopping = true;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
     if (this.client) {
       await this.client.quit();
       this.client = null;

@@ -25,7 +25,7 @@ from .exceptions import (
     ConnectionClosed,
 )
 from .models import Trade, Quote, Ohlc, Order, AccountUpdate, ExpectedPrice, SecurityDefinition, TradeExtra, \
-    MarketIndex, ForeignInvestor, Position
+    MarketIndex, EstimatedMarketIndex, ForeignInvestor, Position
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -51,6 +51,7 @@ _MSG_TYPE_MAP = {
     "dp": ("position_event", Position, "position"),
     "ep": ("position_event", Position, "position"),
     "mi": ("market_index", MarketIndex, None),
+    "emi": ("estimated_market_index", EstimatedMarketIndex, "marketIndex"),
     "a": ("account", AccountUpdate, None),
     "f": ("foreign", ForeignInvestor, None),
 }
@@ -307,6 +308,16 @@ class TradingClient:
 
         if on_market_index:
             self.on("market_index", on_market_index)
+
+    async def subscribe_estimated_market_index(
+            self, market_index: str, on_estimated_market_index=None, encoding="json"
+    ) -> None:
+        channel = f"estimated_market_index.{market_index}.json"
+        if encoding == "msgpack":
+            channel = f"estimated_market_index.{market_index}.msgpack"
+        await self._subscribe_channel(channel, [])
+        if on_estimated_market_index:
+            self.on("estimated_market_index", on_estimated_market_index)
 
     async def subscribe_quotes(
             self, symbols: List[str], on_quote: Optional[Callable[[Quote], None]] = None, encoding="json", board_id=None
@@ -630,7 +641,7 @@ class TradingClient:
         elif msg_type in _MSG_TYPE_MAP:
             event, model_cls, field = _MSG_TYPE_MAP[msg_type]
             if field is not None and field != "":
-                obj = model_cls.from_dict(data[field])
+                obj = model_cls.from_dict(data.get(field) or data)
                 obj.receivedAt = data["_receivedAt"]
             else:
                 obj = model_cls.from_dict(data)
