@@ -81,7 +81,60 @@ compose up -d --no-build --pull never --wait --wait-timeout 240
 curl --retry 12 --retry-delay 5 --retry-connrefused --max-time 15 -fsSI https://aiinvest.cloud/ >/dev/null
 curl --retry 12 --retry-delay 5 --retry-connrefused --max-time 15 -fsS https://aiinvest.cloud/api/health >/dev/null
 
+deployed_sha=""
+if [[ -f "$state_dir/current" ]]; then
+  deployed_sha="$(<"$state_dir/current")"
+  [[ "$deployed_sha" =~ ^[0-9a-f]{40}$ ]] || deployed_sha=""
+fi
 printf '%s\n' "$release_sha" >"$state_dir/current"
 chmod 600 "$state_dir/current"
+
+# Keep the deployed release and the immediately preceding deployed release.
+previous_sha=""
+if [[ -f "$state_dir/previous" ]]; then
+  previous_sha="$(<"$state_dir/previous")"
+  [[ "$previous_sha" =~ ^[0-9a-f]{40}$ && "$previous_sha" != "$release_sha" ]] || previous_sha=""
+fi
+if [[ -n "${deployed_sha:-}" && "$deployed_sha" != "$release_sha" ]]; then
+  previous_sha="$deployed_sha"
+fi
+if [[ -n "$previous_sha" ]]; then
+  printf '%s\n' "$previous_sha" >"$state_dir/previous"
+  chmod 600 "$state_dir/previous"
+else
+  rm -f "$state_dir/previous"
+fi
+
+app_repositories=(
+  ghcr.io/thanhtai040805/aiinvest-backend
+  ghcr.io/thanhtai040805/aiinvest-ai-engine
+  ghcr.io/thanhtai040805/aiinvest-frontend
+  ghcr.io/thanhtai040805/aiinvest-nginx
+  aiinvest-backend
+  aiinvest-ai-engine
+  aiinvest-frontend
+  aiinvest-nginx
+)
+stale_images=()
+while IFS= read -r image_ref; do
+  repository="${image_ref%:*}"
+  tag="${image_ref##*:}"
+  for app_repository in "${app_repositories[@]}"; do
+    [[ "$repository" == "$app_repository" ]] || continue
+    if [[ "$tag" != "$release_sha" && "$tag" != "$previous_sha" ]]; then
+      stale_images+=("$image_ref")
+    fi
+    break
+  done
+done < <(docker image ls --format '{{.Repository}}:{{.Tag}}')
+
+if ((${#stale_images[@]})); then
+  echo "Removing obsolete AIInvest images: ${stale_images[*]}"
+  docker image rm "${stale_images[@]}" || echo "Warning: one or more obsolete images could not be removed" >&2
+fi
+
+echo "Pruning unused Docker build cache"
+docker builder prune --all --force || echo "Warning: Docker build cache pruning failed" >&2
+
 compose ps
 echo "Deployment $release_sha is healthy"
