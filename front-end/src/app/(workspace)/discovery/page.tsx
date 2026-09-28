@@ -9,32 +9,34 @@ import {
   Panel,
   PanelHead,
   PercentChange,
-  RiskLabel,
   Sparkline,
 } from "@/components/ui"
 import { marketApi } from "@/lib/api"
 import { useResource } from "@/lib/api/use-resource"
+import { useRealtimeMarket } from "@/lib/use-realtime"
 import type { ApiMarketSnapshot, ApiMarketStock } from "@/types"
+type DiscoveryStock = Stock & { momentumKnown: boolean; rsKnown: boolean; foreignKnown: boolean }
 
 export default function Discovery() {
   const resource = useResource(() => marketApi.snapshot().catch(() => null), [])
+  const { snapshot } = useRealtimeMarket()
 
-  const stockList = useMemo<Stock[]>(() => {
-    const raw = resource.data as ApiMarketSnapshot | null
+  const stockList = useMemo<DiscoveryStock[]>(() => {
+    const raw = snapshot ?? resource.data as ApiMarketSnapshot | null
     const apiStocks = Array.isArray(raw?.stocks) ? raw.stocks : []
     if (!apiStocks.length) return []
 
     return (apiStocks as ApiMarketStock[]).map((r) => {
       const sym = String(r.symbol)
       const mom = Math.round(Number(r.momentum ?? 0))
-      const rsVal = Math.round(Number(r.rs ?? 50))
-      const flowBn = Math.round(Number(r.foreign_flow ?? 0))
+      const rsVal = Math.round(Number(r.rs ?? 0))
+      const flowBn = Number(r.foreign_flow ?? 0)
       const change = Number(Number(r.change_pct ?? 0).toFixed(2))
 
       return {
         symbol: sym,
         name: String(r.name || sym),
-        sector: "HOSE",
+        sector: String(r.industry || "HOSE"),
         price: Number(r.price ?? 0),
         changePct: change,
         ref: Number(r.ref ?? r.price ?? 0),
@@ -42,34 +44,37 @@ export default function Discovery() {
         floor: Number(r.floor ?? r.price ?? 0),
         volume: String(r.volume || "0"),
         foreign: flowBn,
-        weight: 2.0,
+        weight: 0,
         momentum: mom,
+        momentumKnown: r.momentum != null,
         rs: rsVal,
+        rsKnown: r.rs != null,
+        foreignKnown: r.foreign_flow != null,
         flow: flowBn,
-        factor: mom > 60 ? "Momentum" : rsVal > 60 ? "Quality" : "Value",
+        factor: "",
         risk: change <= -3 ? "Elevated" : change <= -1 ? "Moderate" : "Low",
-        beneish: "PASS",
-        spark: [100, 100 + change],
-      } as Stock
+        beneish: "WARNING",
+        spark: Array.isArray(r.sparkline) && r.sparkline.length > 1 ? r.sparkline : [],
+      } as DiscoveryStock
     })
-  }, [resource.data])
+  }, [resource.data, snapshot])
 
   const buckets = useMemo(() => {
     if (!stockList.length) return []
 
-    const pick = (list: Stock[]) => list.slice(0, 3).map((s) => s.symbol)
+    const pick = (list: DiscoveryStock[]) => list.slice(0, 3).map((s) => s.symbol)
     return [
       {
         name: "Bùng nổ xung lực",
-        syms: pick([...stockList].sort((a, b) => b.momentum - a.momentum)),
+        syms: pick([...stockList].filter((s) => s.momentumKnown).sort((a, b) => b.momentum - a.momentum)),
       },
       {
         name: "Tích lũy khối lượng",
-        syms: pick([...stockList].filter((s) => s.flow > 0).sort((a, b) => b.flow - a.flow)),
+        syms: pick([...stockList].filter((s) => s.foreignKnown && s.flow > 0).sort((a, b) => b.flow - a.flow)),
       },
       {
         name: "Sức mạnh giá (RS)",
-        syms: pick([...stockList].sort((a, b) => b.rs - a.rs)),
+        syms: pick([...stockList].filter((s) => s.rsKnown).sort((a, b) => b.rs - a.rs)),
       },
       {
         name: "Định giá chiết khấu",
@@ -77,11 +82,11 @@ export default function Discovery() {
       },
       {
         name: "Dòng tiền tổ chức",
-        syms: pick([...stockList].sort((a, b) => Math.abs(b.foreign) - Math.abs(a.foreign))),
+        syms: pick([...stockList].filter((s) => s.foreignKnown).sort((a, b) => Math.abs(b.foreign) - Math.abs(a.foreign))),
       },
       {
-        name: "Cảnh báo rủi ro",
-        syms: pick([...stockList].filter((s) => s.risk !== "Low").sort((a, b) => a.changePct - b.changePct)),
+        name: "Giảm mạnh trong ngày",
+        syms: pick([...stockList].filter((s) => s.changePct <= -1).sort((a, b) => a.changePct - b.changePct)),
       },
     ].filter((b) => b.syms.length > 0)
   }, [stockList])
@@ -133,17 +138,8 @@ export default function Discovery() {
               </div>
               <div className="divide-y divide-line">
                 {b.syms.map((sym) => {
-                  const s = stockList.find((x) => x.symbol === sym) || {
-                    symbol: sym,
-                    name: sym,
-                    price: 50000,
-                    changePct: 0,
-                    spark: [100, 100],
-                    rsi: 50,
-                    pe: 12,
-                    foreignFlow: 0,
-                    risk: "Moderate" as const,
-                  }
+                  const s = stockList.find((x) => x.symbol === sym)
+                  if (!s) return null
                   return (
                     <div
                       key={sym}
@@ -158,12 +154,11 @@ export default function Discovery() {
                       <span className="text-[12.5px] text-secondary flex-1 min-w-0 truncate">
                         {s.name}
                       </span>
-                      <Sparkline data={s.spark} width={60} height={18} />
+                      {s.spark.length > 1 ? <Sparkline data={s.spark} width={60} height={18} /> : <span className="w-[60px] text-center text-muted">—</span>}
                       <PercentChange
                         value={s.changePct}
                         className="text-[12.5px] w-16 text-right"
                       />
-                      <RiskLabel risk={s.risk} />
                       <Link to={`/stock/${sym}`}>
                         <Button variant="quiet">Phân tích</Button>
                       </Link>

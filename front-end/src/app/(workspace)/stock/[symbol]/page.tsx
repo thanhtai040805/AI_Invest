@@ -20,14 +20,9 @@ interface ApiFundamentals { pe?: number; pb?: number; roe?: number; eps?: number
 
 const SUB_INDICATORS = ["VOL"]
 
-function OrderBook({ customBids, customAsks, basePrice = 25000 }: { customBids?: [number, number][]; customAsks?: [number, number][]; basePrice?: number }) {
-  const p = basePrice > 0 ? basePrice : 25000
-  const step = p < 10000 ? 10 : p < 50000 ? 50 : 100
-  const defaultBids: [number, number][] = [1, 2, 3].map((i) => [p - i * step, Math.round((10 + (i * 3) % 7) * 1200)])
-  const defaultAsks: [number, number][] = [1, 2, 3].map((i) => [p + i * step, Math.round((8 + (i * 5) % 9) * 1100)])
-
-  const bids = customBids && customBids.length > 0 ? customBids : defaultBids
-  const asks = customAsks && customAsks.length > 0 ? customAsks : defaultAsks
+function OrderBook({ customBids, customAsks }: { customBids?: [number, number][]; customAsks?: [number, number][] }) {
+  const bids = customBids ?? []
+  const asks = customAsks ?? []
   const allV = [...bids.map((b) => b[1]), ...asks.map((a) => a[1])]
   const maxV = Math.max(...allV, 1000)
 
@@ -42,11 +37,11 @@ function OrderBook({ customBids, customAsks, basePrice = 25000 }: { customBids?:
     <div className="grid grid-cols-2 gap-3">
       <div>
         <div className="text-[11px] uppercase tracking-wide text-muted mb-1 px-2">Dư mua · Bid</div>
-        {bids.map((b, i) => <Row key={i} p={b[0]} v={b[1]} side="bid" />)}
+        {bids.length ? bids.map((b, i) => <Row key={i} p={b[0]} v={b[1]} side="bid" />) : <span className="px-2 text-[12px] text-muted">Chưa có báo giá</span>}
       </div>
       <div>
         <div className="text-[11px] uppercase tracking-wide text-muted mb-1 px-2 text-right">Ask · Dư bán</div>
-        {asks.map((a, i) => <Row key={i} p={a[0]} v={a[1]} side="ask" />)}
+        {asks.length ? asks.map((a, i) => <Row key={i} p={a[0]} v={a[1]} side="ask" />) : <span className="px-2 text-[12px] text-muted">Chưa có báo giá</span>}
       </div>
     </div>
   )
@@ -57,24 +52,24 @@ function Stock({ symbol }: { symbol: string }) {
   const defaultStock = useMemo(() => ({
     symbol,
     name: symbol,
-    price: 30000,
+    price: 0,
     changePct: 0,
-    ref: 30000,
-    ceiling: 32100,
-    floor: 27900,
+    ref: 0,
+    ceiling: 0,
+    floor: 0,
     risk: "Moderate" as const,
-    volume: "1.2M",
+    volume: "—",
     sector: "Thị trường",
-    rsi: 50,
-    momentum: 50,
+    rsi: 0,
+    momentum: 0,
     beneish: "PASS" as const,
     flow: 0,
-    rs: 50,
-    factor: "Tích lũy",
-    weight: 10,
-    pe: 12,
+    rs: 0,
+    factor: "",
+    weight: 0,
+    pe: 0,
     foreign: 0,
-    spark: [30, 30, 30],
+    spark: [],
   }), [symbol])
   const resource = useResource(() => Promise.all([
     stockApi.quote(symbol).catch(() => null),
@@ -120,23 +115,16 @@ function Stock({ symbol }: { symbol: string }) {
         ["Kỹ thuật", Number(factorsRes.technical ?? 64)],
       ] as const
     }
-    return [
-      ["Định giá", Math.round(s.rsi > 50 ? 65 : 55)],
-      ["Chất lượng", 74],
-      ["Xung lực", s.momentum || 68],
-      ["Tăng trưởng", 66],
-      ["Dòng tiền", Math.round(s.flow ? Math.min(Math.max(s.flow * 2, 40), 90) : 60)],
-      ["Kỹ thuật", s.rsi || 50],
-    ] as const
+    return [] as const
   }, [factorsRes, s])
 
   const liveFundamentals = useMemo(() => {
     const f = fundamentalsRes || {}
-    const pe = f.pe ? `${Number(f.pe).toFixed(1)}×` : `${s.pe?.toFixed(1) || "12.8"}×`
-    const pb = f.pb ? `${Number(f.pb).toFixed(1)}×` : "1.6×"
-    const roe = f.roe ? `${(Number(f.roe) * 100).toFixed(1)}%` : "14.2%"
-    const eps = f.eps ? fmt(Math.round(Number(f.eps))) : fmt(Math.round(s.price / 12.8))
-    const grossMargin = f.gross_margin ? `${(Number(f.gross_margin) * 100).toFixed(1)}%` : "13.2%"
+    const pe = f.pe != null ? `${Number(f.pe).toFixed(1)}×` : "—"
+    const pb = f.pb != null ? `${Number(f.pb).toFixed(1)}×` : "—"
+    const roe = f.roe != null ? `${(Number(f.roe) * 100).toFixed(1)}%` : "—"
+    const eps = f.eps != null ? fmt(Math.round(Number(f.eps))) : "—"
+    const grossMargin = f.gross_margin != null ? `${(Number(f.gross_margin) * 100).toFixed(1)}%` : "—"
     return { pe, pb, roe, eps, grossMargin }
   }, [fundamentalsRes, s])
 
@@ -157,9 +145,9 @@ function Stock({ symbol }: { symbol: string }) {
           <div>
             <div className="flex items-baseline gap-3">
               <span className={`text-[36px] font-semibold tnum font-mono leading-none transition-colors duration-300 ${flash === "gain" ? "text-gain" : flash === "loss" ? "text-loss" : "text-ink"}`}>
-                {fmt(s.price)}
+                {s.price > 0 ? fmt(s.price) : "—"}
               </span>
-              <PercentChange value={s.changePct} className="text-[15px]" />
+              {s.price > 0 ? <PercentChange value={s.changePct} className="text-[15px]" /> : <span className="text-muted">—</span>}
               {isLive && (
                 <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
@@ -172,12 +160,12 @@ function Stock({ symbol }: { symbol: string }) {
             {[["Tham chiếu", s.ref, "text-neutral"], ["Trần", s.ceiling, "text-mineral"], ["Sàn", s.floor, "text-teal"]].map(([l, v, c]) => (
               <div key={l as string}>
                 <div className="text-[11px] uppercase tracking-wide text-muted">{l as string}</div>
-                <div className={`tnum font-mono ${c}`}>{fmt(v as number)}</div>
+                <div className={`tnum font-mono ${c}`}>{Number(v) > 0 ? fmt(v as number) : "—"}</div>
               </div>
             ))}
             <div>
               <div className="text-[11px] uppercase tracking-wide text-muted">Beneish M-Score</div>
-              <div className="mt-0.5"><Pill tone={s.beneish === "PASS" ? "teal" : "warning"}>{s.beneish}</Pill></div>
+              <div className="mt-0.5 text-muted">—</div>
             </div>
           </div>
         </div>
@@ -187,8 +175,8 @@ function Stock({ symbol }: { symbol: string }) {
         {/* Left: chart + order book */}
         <div className="space-y-4">
           <Panel>
-            <PanelHead title="Biểu đồ giá" sub="Nến trực tiếp · công cụ vẽ, chỉ báo kỹ thuật & phóng to" action={<Pill tone="teal"><i className="h-1.5 w-1.5 rounded-full bg-gain animate-pulse" />Trực tiếp</Pill>} />
-            <KLineChart ticker={s.symbol} name={s.name} basePrice={s.price} precision={0} height={420} subIndicators={SUB_INDICATORS} drawingBar />
+            <PanelHead title="Biểu đồ giá" sub="Nến DNSE · công cụ vẽ, chỉ báo kỹ thuật & phóng to" action={<Pill tone={isLive ? "teal" : "neutral"}><i className={`h-1.5 w-1.5 rounded-full ${isLive ? "bg-gain animate-pulse" : "bg-muted"}`} />{isLive ? "Trực tiếp" : "Dữ liệu gần nhất"}</Pill>} />
+            <KLineChart ticker={s.symbol} name={s.name} precision={0} height={420} subIndicators={SUB_INDICATORS} drawingBar />
             <div className="mt-3 flex items-center gap-4 text-[11px] text-muted">
               <span>KL {s.volume}</span>
               <span className="ml-auto tnum">Biên độ {fmt(s.floor)} – {fmt(s.ceiling)}</span>
@@ -196,7 +184,6 @@ function Stock({ symbol }: { symbol: string }) {
           </Panel>
           <Panel>
             <OrderBook
-              basePrice={s.price}
               customBids={orderbook?.bids?.map((b) => [b.price, b.volume])}
               customAsks={orderbook?.asks?.map((a) => [a.price, a.volume])}
             />
@@ -212,7 +199,7 @@ function Stock({ symbol }: { symbol: string }) {
             {(tab === "Ma trận nhân tố" || tab === "Factor Matrix" || tab === "Moat Analysis" || tab === "Graph Intelligence") && (
               <div className="space-y-3">
                 <p className="text-[12px] text-muted">Điểm số định lượng các yếu tố F1–F6 từ mô hình AI Invest.</p>
-                {liveFactors.map(([l, v]) => <FactorBar key={l} label={l} value={v} />)}
+                {liveFactors.length ? liveFactors.map(([l, v]) => <FactorBar key={l} label={l} value={v} />) : <p className="text-muted">Chưa có dữ liệu nhân tố.</p>}
               </div>
             )}
             {(tab === "Tài chính" || tab === "Financials") && (

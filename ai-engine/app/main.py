@@ -49,14 +49,13 @@ async def health():
 
 @app.get("/health/detailed")
 async def health_detailed():
-    from app.infrastructure.external_api.dnse.redis_pub import get_rate_limiter
+    from app.infrastructure.external_api.dnse.redis_pub import get_publish_stats
     hub = get_stream_hub()
-    limiter = get_rate_limiter()
     return {
         "status": "ok",
         "timestamp": datetime.now().isoformat(),
         "stream_hub": hub.status(),
-        "rate_limiter": limiter.stats,
+        "redis_publish": get_publish_stats(),
         "market_session": {
             "state": hub._session_mgr.get_market_state().value,
             "is_open": hub._session_mgr.is_market_open(),

@@ -182,9 +182,30 @@ class AIEngineService {
     });
   }
 
+  async subscribeStreamOhlc(symbols: string[], resolution: string) {
+    return this.circuitBreaker.execute(async () => {
+      const { data } = await this.client.post('/api/stream/subscribe/ohlc', { symbols, resolution });
+      return data;
+    });
+  }
+
+  async unsubscribeStreamOhlc(symbols: string[], resolution: string) {
+    return this.circuitBreaker.execute(async () => {
+      const { data } = await this.client.post('/api/stream/unsubscribe/ohlc', { symbols, resolution });
+      return data;
+    });
+  }
+
   async getStreamStatus() {
     return this.circuitBreaker.execute(async () => {
       const { data } = await this.client.get('/api/stream/status');
+      return data;
+    });
+  }
+
+  async getStreamAssignment(symbol: string) {
+    return this.circuitBreaker.execute(async () => {
+      const { data } = await this.client.get(`/api/stream/assignment/${encodeURIComponent(symbol)}`);
       return data;
     });
   }

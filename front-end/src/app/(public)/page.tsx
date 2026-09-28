@@ -81,7 +81,7 @@ function PortfolioRiskFrame() {
 
 function MarketPulse() {
   const [indexSeed, setIndexSeed] = useState<{ vnIndexVal: string; vnIndexPct: number; vn30Val: string; vn30Pct: number } | undefined>()
-  const { indices: liveIndices, isLive } = useRealtimeMarket(indexSeed)
+  const { indices: liveIndices, isLive, snapshot: liveSnapshot, breadth: liveBreadth, liquidity: liveLiquidity } = useRealtimeMarket(indexSeed)
   const [indexDate, setIndexDate] = useState<string>("")
   const [historySeries, setHistorySeries] = useState<number[]>([])
   const [liquidity, setLiquidity] = useState<string>("—")
@@ -95,6 +95,24 @@ function MarketPulse() {
       ? prev
       : [...prev, value].slice(-60))
   }, [liveIndices?.vnIndexVal])
+
+  useEffect(() => {
+    const stocks = liveSnapshot?.stocks
+    if (!stocks?.length) return
+    if (!stocks.some((stock) => stock.foreign_flow != null)) return
+    const totalForeign = stocks.reduce((sum, stock) => sum + Number(stock.foreign_flow ?? 0), 0)
+    setForeignFlow(totalForeign >= 0 ? `+${totalForeign.toFixed(0)}B` : `${totalForeign.toFixed(0)}B`)
+  }, [liveSnapshot])
+
+  useEffect(() => {
+    const value = Number(liveLiquidity?.totalValueBillion)
+    if (Number.isFinite(value) && value >= 0) setLiquidity(`${(value / 1000).toFixed(1)}T`)
+  }, [liveLiquidity])
+
+  useEffect(() => {
+    if (!liveBreadth) return
+    setAdvDec(`${liveBreadth.advancers ?? 0} / ${liveBreadth.decliners ?? 0}`)
+  }, [liveBreadth])
 
   useEffect(() => {
     let mounted = true
@@ -127,16 +145,13 @@ function MarketPulse() {
         const dec = stocks.filter((s) => (s.change_pct ?? 0) < 0).length
         setAdvDec(`${adv} / ${dec}`)
 
-        let totalLiq = 0
         let totalForeign = 0
         for (const s of stocks) {
-          totalLiq += (s.price || 0) * (s.volume || 0)
           totalForeign += (s.foreign_flow || 0)
         }
-        if (totalLiq > 0) {
-          setLiquidity((totalLiq / 1e12).toFixed(1) + "T")
+        if (stocks.some((stock) => stock.foreign_flow != null)) {
+          setForeignFlow(totalForeign >= 0 ? `+${totalForeign.toFixed(0)}B` : `${totalForeign.toFixed(0)}B`)
         }
-        setForeignFlow(totalForeign >= 0 ? `+${totalForeign.toFixed(0)}B` : `${totalForeign.toFixed(0)}B`)
       }
     })
 
@@ -153,7 +168,7 @@ function MarketPulse() {
         </span>
         <span className={`ml-auto flex items-center gap-1.5 text-[10px] ${isLive ? "text-gain" : "text-muted"}`}>
           <i className={`h-1.5 w-1.5 rounded-full ${isLive ? "bg-gain animate-pulse" : "bg-muted"}`} />
-          {isLive ? "TRỰC TIẾP · DỮ LIỆU SÀN" : "ĐANG KẾT NỐI DỮ LIỆU SÀN"}
+          {isLive ? "TRỰC TIẾP · DỮ LIỆU SÀN" : liveIndices?.vnIndexVal ? "DỮ LIỆU GẦN NHẤT" : "CHƯA CÓ DỮ LIỆU SÀN"}
         </span>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-[1.35fr_.9fr]">

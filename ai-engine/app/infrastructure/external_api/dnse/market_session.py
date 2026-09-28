@@ -33,7 +33,7 @@ class MarketState(Enum):
 
 class MarketSessionManager:
     HOSE_SCHEDULE = {
-        "pre_open_start": dt_time(8, 30),
+        "pre_open_start": dt_time(7, 55),
         "opening_auction_start": dt_time(9, 0),
         "continuous_morning_start": dt_time(9, 15),
         "lunch_break_start": dt_time(11, 30),
