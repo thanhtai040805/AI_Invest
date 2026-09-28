@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main, 'feat/**', 'fix/**', 'codex/**']
+    branches: [main]
 
 permissions:
   contents: read
@@ -72,7 +72,7 @@ jobs:
       - run: pip install ruff pytest -r requirements.txt
       - run: ruff check app tests/unit --select E9,F63,F7,F82
       - run: >-
-          pytest -q
+          python -m pytest -q
           tests/unit/test_shadow_fill.py
           tests/unit/test_trade_execution_no_mock_fill.py
           tests/unit/test_mathematical_integrity.py
