@@ -421,7 +421,13 @@ class TradingClient:
         await self._connection.send(encoded)
 
         # Store subscription for reconnection
-        self._subscriptions[channel] = {"symbols": symbols, "kwargs": kwargs}
+        existing = self._subscriptions.get(channel, {})
+        existing_symbols = existing.get("symbols", [])
+        if symbols and existing_symbols:
+            stored_symbols = list(dict.fromkeys([*existing_symbols, *symbols]))
+        else:
+            stored_symbols = list(symbols)
+        self._subscriptions[channel] = {"symbols": stored_symbols, "kwargs": kwargs}
 
         logger.info(f"Subscribed to {channel}: {symbols}")
 

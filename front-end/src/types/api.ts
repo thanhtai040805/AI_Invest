@@ -15,8 +15,12 @@ export interface ApiMarketStock {
 
 export interface ApiMarketIndex {
   symbol?: string
+  name?: string
   value?: number
   change_pct?: number
+  change?: number
+  changePercent?: number
+  lastUpdate?: string
   date?: string
 }
 

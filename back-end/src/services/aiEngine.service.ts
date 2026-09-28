@@ -113,7 +113,7 @@ class AIEngineService {
 
   async getFundamentals(symbol: string) {
     return this.circuitBreaker.execute(async () => {
-      const { data } = await this.client.get(`/api/stock/${symbol}/fundamentals`);
+      const { data } = await this.client.get(`/api/stock/${symbol}/fundamentals`, { timeout: 30_000 });
       return data;
     });
   }
@@ -175,6 +175,13 @@ class AIEngineService {
     });
   }
 
+  async unsubscribeStreamSymbols(symbols: string[]) {
+    return this.circuitBreaker.execute(async () => {
+      const { data } = await this.client.post('/api/stream/unsubscribe', { symbols });
+      return data;
+    });
+  }
+
   async getStreamStatus() {
     return this.circuitBreaker.execute(async () => {
       const { data } = await this.client.get('/api/stream/status');
@@ -195,7 +202,7 @@ class AIEngineService {
 
   async getFactorScores(symbol: string) {
     return this.circuitBreaker.execute(async () => {
-      const { data } = await this.client.get(`/api/stock/${symbol}/factor-scores`);
+      const { data } = await this.client.get(`/api/stock/${symbol}/factor-scores`, { timeout: 30_000 });
       return data;
     });
   }

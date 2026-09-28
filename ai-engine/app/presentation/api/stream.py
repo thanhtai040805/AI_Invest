@@ -20,6 +20,14 @@ async def subscribe_symbols(body: SubscribeRequest):
     return {"subscribed": symbols, "status": hub.status()}
 
 
+@router.post("/unsubscribe")
+async def unsubscribe_symbols(body: SubscribeRequest):
+    hub = get_stream_hub()
+    symbols = [s.upper() for s in body.symbols if s.strip()]
+    hub.unsubscribe_symbols(symbols)
+    return {"unsubscribed": symbols, "status": hub.status()}
+
+
 @router.get("/status")
 async def stream_status():
     return get_stream_hub().status()

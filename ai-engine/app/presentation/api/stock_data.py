@@ -3,8 +3,10 @@ Stock Data router — profile, OHLCV, quote, orderbook, trades, fundamentals.
 """
 
 from fastapi import APIRouter, Query
+from fastapi.encoders import jsonable_encoder
 from typing import Any, Dict, Optional
 
+from app.core.common import clean_nan
 from app.infrastructure.external_api.market_data_service import market_data_svc
 
 router = APIRouter()
@@ -42,7 +44,7 @@ async def get_trades(symbol: str):
 
 @router.get("/{symbol}/fundamentals")
 async def get_fundamentals(symbol: str):
-    return await market_data_svc.get_fundamentals(symbol.upper())
+    return clean_nan(jsonable_encoder(await market_data_svc.get_fundamentals(symbol.upper())))
 
 
 @router.get("/intraday/{symbol}")
@@ -226,7 +228,7 @@ async def get_factor_scores(symbol: str):
             risk = DataEnricher.compute_risk_metrics(symbol.upper(), close_prices, dates)
 
     scores = DataEnricher.compute_factor_scores(symbol.upper(), fundamentals, technicals, risk)
-    return {"symbol": symbol.upper(), "factor_scores": scores}
+    return clean_nan(jsonable_encoder({"symbol": symbol.upper(), "factor_scores": scores}))
 
 
 @router.get("/{symbol}/foreign-flow")

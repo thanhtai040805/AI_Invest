@@ -15,7 +15,7 @@ class SubscriptionService {
     } catch {}
   }
 
-  async removeSymbol(symbol: string): Promise<void> {
+  async removeSymbol(symbol: string): Promise<number> {
     const sym = symbol.toUpperCase();
     const next = Math.max(0, (this.memSymbols.get(sym) ?? 0) - 1);
     if (next === 0) this.memSymbols.delete(sym);
@@ -23,7 +23,9 @@ class SubscriptionService {
     try {
       const count = await redisService.getClient().hincrby(SUBSCRIBED_SYMBOLS_KEY, sym, -1);
       if (count <= 0) await redisService.getClient().hdel(SUBSCRIBED_SYMBOLS_KEY, sym);
+      return Math.max(0, count);
     } catch {}
+    return next;
   }
 
   async getSubscribedSymbols(): Promise<string[]> {

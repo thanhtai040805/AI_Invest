@@ -105,7 +105,12 @@ class SocketService {
         const currentMeta = this.socketMeta.get(socket.id);
         if (!currentMeta?.subscribedSymbols.delete(sym)) return;
         socket.leave(`stock:${sym}`);
-        await subscriptionService.removeSymbol(sym);
+        const remaining = await subscriptionService.removeSymbol(sym);
+        if (remaining === 0 && config.dnse.enabled) {
+          aiEngineService.unsubscribeStreamSymbols([sym]).catch((err) => {
+            console.warn(`[Socket.IO] DNSE unsubscribe ${sym}:`, err.message);
+          });
+        }
       });
 
       socket.on('subscribe:market', async () => {
@@ -145,7 +150,12 @@ class SocketService {
         if (meta) {
           for (const sym of meta.subscribedSymbols) {
             socket.leave(`stock:${sym}`);
-            await subscriptionService.removeSymbol(sym);
+            const remaining = await subscriptionService.removeSymbol(sym);
+            if (remaining === 0 && config.dnse.enabled) {
+              aiEngineService.unsubscribeStreamSymbols([sym]).catch((err) => {
+                console.warn(`[Socket.IO] DNSE unsubscribe ${sym}:`, err.message);
+              });
+            }
           }
           if (meta.subscribedMarket) {
             socket.leave('market:overview');

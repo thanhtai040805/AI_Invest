@@ -5,14 +5,20 @@ import re
 from typing import Any, Dict, List, Optional
 
 
-def clean_nan(data: Dict[str, Any]) -> Dict[str, Any]:
-    """Replace NaN/Inf in dict values with None for safe JSON serialization."""
-    if not isinstance(data, dict):
-        return data
-    return {
-        k: (None if isinstance(v, float) and (math.isnan(v) or math.isinf(v)) else v)
-        for k, v in data.items()
-    }
+def clean_nan(data: Any) -> Any:
+    """Recursively replace non-finite numeric values with None for JSON."""
+    if isinstance(data, dict):
+        return {key: clean_nan(value) for key, value in data.items()}
+    if isinstance(data, (list, tuple)):
+        return [clean_nan(value) for value in data]
+    if isinstance(data, float):
+        return data if math.isfinite(data) else None
+    if hasattr(data, "item"):
+        try:
+            return clean_nan(data.item())
+        except (ValueError, TypeError):
+            pass
+    return data
 
 
 def safe_div(numerator: Optional[float], denominator: Optional[float], default: float = 0.0) -> float:

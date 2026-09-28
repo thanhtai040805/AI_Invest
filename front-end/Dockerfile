@@ -17,6 +17,7 @@ ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:3001/api/v1}
 ENV NEXT_PUBLIC_SOCKET_URL=${NEXT_PUBLIC_SOCKET_URL:-http://localhost:3001}
 ENV NEXT_PUBLIC_WS_URL=${NEXT_PUBLIC_WS_URL:-http://localhost:3001}
 ENV NEXT_TELEMETRY_DISABLED=1
+RUN mkdir -p public
 RUN npm run build
 
 FROM base AS runner

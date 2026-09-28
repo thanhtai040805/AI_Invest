@@ -226,30 +226,31 @@ export function useRealtimeMarket(initialIndices?: {
       if (!list.length) return
 
       const indices = list as ApiMarketIndex[]
-      const vnIndexItem = indices.find((x) => String(x.symbol).includes("VNINDEX") || String(x.symbol).includes("VN-INDEX"))
-      const vn30Item = indices.find((x) => String(x.symbol).includes("VN30"))
+      const getName = (item: ApiMarketIndex) => String(item.name ?? item.symbol ?? "").toUpperCase().replaceAll("-", "")
+      const vnIndexItem = indices.find((x) => getName(x) === "VNINDEX")
+      const vn30Item = indices.find((x) => getName(x) === "VN30")
+      if (!vnIndexItem && !vn30Item) return
 
       setIndices((prev) => ({
-        vnIndexVal: vnIndexItem
+        vnIndexVal: vnIndexItem && Number.isFinite(Number(vnIndexItem.value))
           ? Number(vnIndexItem.value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-          : (prev?.vnIndexVal ?? "1,284.32"),
-        vnIndexPct: vnIndexItem ? Number(Number(vnIndexItem.change_pct).toFixed(2)) : (prev?.vnIndexPct ?? 0.72),
-        vn30Val: vn30Item
+          : prev?.vnIndexVal ?? "—",
+        vnIndexPct: vnIndexItem ? Number(vnIndexItem.changePercent ?? vnIndexItem.change_pct ?? 0) : prev?.vnIndexPct ?? 0,
+        vn30Val: vn30Item && Number.isFinite(Number(vn30Item.value))
           ? Number(vn30Item.value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-          : (prev?.vn30Val ?? "1,351.27"),
-        vn30Pct: vn30Item ? Number(Number(vn30Item.change_pct).toFixed(2)) : (prev?.vn30Pct ?? 0.48),
+          : prev?.vn30Val ?? "—",
+        vn30Pct: vn30Item ? Number(vn30Item.changePercent ?? vn30Item.change_pct ?? 0) : prev?.vn30Pct ?? 0,
       }))
-    }
-
-    if (socket.connected) {
-      onConnect()
-    } else {
-      socket.connect()
     }
 
     socket.on("connect", onConnect)
     socket.on("disconnect", onDisconnect)
     socket.on("market:indices", onIndices)
+    if (socket.connected) {
+      onConnect()
+    } else {
+      socket.connect()
+    }
 
     return () => {
       socket.emit("unsubscribe:market")

@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from app.config.settings import get_settings
+from app.infrastructure.external_api.dnse.price_units import to_vnd_price
 from app.infrastructure.external_api.dnse.api.client import DNSEClient
 
 logger = logging.getLogger(__name__)
@@ -147,10 +148,10 @@ class DnseIntradayTool:
 
                 result.append({
                     "time": time_str,
-                    "open": float(opens[i]) if i < len(opens) else 0.0,
-                    "high": float(highs[i]) if i < len(highs) else 0.0,
-                    "low": float(lows[i]) if i < len(lows) else 0.0,
-                    "close": float(closes[i]) if i < len(closes) else 0.0,
+                    "open": to_vnd_price(opens[i]) if i < len(opens) else 0.0,
+                    "high": to_vnd_price(highs[i]) if i < len(highs) else 0.0,
+                    "low": to_vnd_price(lows[i]) if i < len(lows) else 0.0,
+                    "close": to_vnd_price(closes[i]) if i < len(closes) else 0.0,
                     "volume": int(volumes[i]) if i < len(volumes) else 0,
                 })
 

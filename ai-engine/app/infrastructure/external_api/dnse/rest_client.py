@@ -7,6 +7,7 @@ import httpx
 from typing import Any, Dict, List, Optional
 
 from app.config.settings import get_settings
+from app.infrastructure.external_api.dnse.price_units import to_vnd_price
 
 try:
     from dnse import DnseClient, BoardId
@@ -50,10 +51,10 @@ class DnseRestClient:
         return {
             "symbol": symbol.upper(),
             "name": getattr(s, "symbol", symbol),
-            "price": ref,
-            "prevClose": ref,
-            "ceiling": float(getattr(s, "ceiling_price", 0) or 0),
-            "floor": float(getattr(s, "floor_price", 0) or 0),
+            "price": to_vnd_price(ref),
+            "prevClose": to_vnd_price(ref),
+            "ceiling": to_vnd_price(getattr(s, "ceiling_price", 0)),
+            "floor": to_vnd_price(getattr(s, "floor_price", 0)),
             "exchange": "HOSE",
         }
 

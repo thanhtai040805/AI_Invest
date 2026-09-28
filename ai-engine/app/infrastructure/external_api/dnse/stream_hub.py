@@ -18,8 +18,8 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
-from app.infrastructure.external_api.dnse.api.client import DNSEClient
 from app.infrastructure.external_api.dnse.websocket.client import TradingClient
+from app.infrastructure.external_api.dnse.price_units import to_vnd_price
 from app.config.settings import get_settings
 from app.infrastructure.external_api.dnse.redis_pub import (
     publish_json,
@@ -59,6 +59,8 @@ class DnseStreamHub:
         self._foreign: Dict[str, Dict[str, Any]] = {}
         self._sec_def: Dict[str, Dict[str, Any]] = {}
         self._subscribed: Set[str] = set()
+        self._active_symbols: Set[str] = set()
+        self._requested_symbols: Dict[str, None] = {}
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._lock = threading.Lock()
 
@@ -94,6 +96,8 @@ class DnseStreamHub:
             "running": self._running,
             "connected": self._connected,
             "subscribed_count": len(self._subscribed),
+            "active_symbols": len(self._active_symbols),
+            "pending_symbols": max(0, len(self._requested_symbols) - len(self._active_symbols)),
             "cached_quotes": len(self._quotes),
             "market_state": self._session_mgr.get_market_state().value,
             "is_market_open": self._session_mgr.is_market_open(),
@@ -151,8 +155,22 @@ class DnseStreamHub:
             return ohlc if ohlc.get("type") == "live" else None
 
     def subscribe_symbols(self, symbols: List[str]) -> None:
-        for sym in symbols:
-            self._subscribed.add(sym.upper())
+        with self._lock:
+            for sym in symbols:
+                normalized = sym.strip().upper()
+                if normalized:
+                    self._requested_symbols.setdefault(normalized, None)
+            self._refresh_symbols_locked()
+
+    def unsubscribe_symbols(self, symbols: List[str]) -> None:
+        with self._lock:
+            for sym in symbols:
+                self._requested_symbols.pop(sym.strip().upper(), None)
+            self._refresh_symbols_locked()
+
+    def _refresh_symbols_locked(self) -> None:
+        self._subscribed = set(self._requested_symbols)
+        self._active_symbols = set(list(self._requested_symbols)[:98])
 
     def start(self) -> None:
         if self._running:
@@ -211,9 +229,9 @@ class DnseStreamHub:
 
     def _map_trade(self, data: Any) -> Dict[str, Any]:
         sym = str(getattr(data, "symbol", "") or "").upper()
-        price = float(getattr(data, "price", 0) or 0)
-        volume = int(getattr(data, "volume", 0) or 0)
-        change = float(getattr(data, "change", 0) or 0)
+        price = to_vnd_price(getattr(data, "price", 0))
+        volume = int(getattr(data, "totalVolumeTraded", 0) or 0)
+        change = to_vnd_price(getattr(data, "change", 0))
         pct = float(getattr(data, "change_percent", 0) or getattr(data, "pct_change", 0) or 0)
         return {
             "symbol": sym,
@@ -223,9 +241,9 @@ class DnseStreamHub:
             "changePercent": pct,
             "volume": volume,
             "tradingValue": price * volume,
-            "open": price,
-            "high": price,
-            "low": price,
+            "open": to_vnd_price(getattr(data, "openPrice", price) or price),
+            "high": to_vnd_price(getattr(data, "highestPrice", price) or price),
+            "low": to_vnd_price(getattr(data, "lowestPrice", price) or price),
             "prevClose": price - change if change else price,
             "ceiling": 0,
             "floor": 0,
@@ -234,32 +252,29 @@ class DnseStreamHub:
         }
 
     def _map_quote(self, data: Any, symbol: str) -> Dict[str, Any]:
-        bids = []
-        asks = []
-        for i in range(1, 11):
-            bid_price = getattr(data, f"bid{i}", None)
-            bid_vol = getattr(data, f"bid_volume{i}", None)
-            ask_price = getattr(data, f"ask{i}", None)
-            ask_vol = getattr(data, f"ask_volume{i}", None)
-            if bid_price and bid_vol:
-                bids.append({"price": float(bid_price), "volume": int(bid_vol)})
-            if ask_price and ask_vol:
-                asks.append({"price": float(ask_price), "volume": int(ask_vol)})
+        bids = [
+            {"price": to_vnd_price(level.price), "volume": int(level.quantity)}
+            for level in (getattr(data, "bid", None) or [])
+        ]
+        asks = [
+            {"price": to_vnd_price(level.price), "volume": int(level.quantity)}
+            for level in (getattr(data, "offer", None) or [])
+        ]
         return {
             "symbol": symbol,
             "bids": bids,
             "asks": asks,
-            "lastUpdate": datetime.now().astimezone().isoformat(),
+            "lastUpdate": getattr(data, "time", None) or datetime.now().astimezone().isoformat(),
         }
 
     def _map_ohlc(self, data: Any) -> Dict[str, Any]:
         sym = str(getattr(data, "symbol", "") or "").upper()
         return {
             "symbol": sym,
-            "open": float(getattr(data, "open", 0) or 0),
-            "high": float(getattr(data, "high", 0) or 0),
-            "low": float(getattr(data, "low", 0) or 0),
-            "close": float(getattr(data, "close", 0) or 0),
+            "open": to_vnd_price(getattr(data, "open", 0)),
+            "high": to_vnd_price(getattr(data, "high", 0)),
+            "low": to_vnd_price(getattr(data, "low", 0)),
+            "close": to_vnd_price(getattr(data, "close", 0)),
             "volume": int(getattr(data, "volume", 0) or 0),
             "resolution": getattr(data, "resolution", "1"),
             "timestamp": getattr(data, "timestamp", None),
@@ -267,14 +282,14 @@ class DnseStreamHub:
         }
 
     def _map_market_index(self, data: Any) -> Dict[str, Any]:
-        name = getattr(data, "market_index", "") or ""
+        name = getattr(data, "indexName", "") or ""
         return {
             "name": name.upper(),
-            "value": float(getattr(data, "index_value", 0) or 0),
-            "change": float(getattr(data, "change", 0) or 0),
-            "changePercent": float(getattr(data, "pct_change", 0) or 0),
-            "volume": int(getattr(data, "total_volume", 0) or 0),
-            "lastUpdate": datetime.now().isoformat(),
+            "value": float(getattr(data, "valueIndexes", 0) or 0),
+            "change": float(getattr(data, "changedValue", 0) or 0),
+            "changePercent": float(getattr(data, "changedRatio", 0) or 0),
+            "volume": int(getattr(data, "totalVolumeTraded", 0) or 0),
+            "lastUpdate": getattr(data, "transactTime", None) or datetime.now().isoformat(),
         }
 
     def _map_foreign(self, data: Any) -> Dict[str, Any]:
@@ -305,9 +320,9 @@ class DnseStreamHub:
             "symbol": sym,
             "name": getattr(data, "company_name", "") or "",
             "exchange": getattr(data, "exchange", "") or "",
-            "ceiling": float(getattr(data, "ceiling_price", 0) or 0),
-            "floor": float(getattr(data, "floor_price", 0) or 0),
-            "prevClose": float(getattr(data, "previous_close", 0) or 0),
+            "ceiling": to_vnd_price(getattr(data, "ceiling_price", 0)),
+            "floor": to_vnd_price(getattr(data, "floor_price", 0)),
+            "prevClose": to_vnd_price(getattr(data, "previous_close", 0)),
             "lastUpdate": datetime.now().isoformat(),
         }
 
@@ -319,7 +334,7 @@ class DnseStreamHub:
             return
         payload = {
             "symbol": sym,
-            "expectedPrice": float(getattr(data, "expected_price", 0) or 0),
+            "expectedPrice": to_vnd_price(getattr(data, "expected_price", 0)),
             "matchedVolume": int(getattr(data, "matched_volume", 0) or 0),
             "receivedAt": getattr(data, "receivedAt", None),
             "lastUpdate": datetime.now().isoformat(),
@@ -445,7 +460,7 @@ class DnseStreamHub:
             return
         payload = {
             "symbol": sym,
-            "price": float(getattr(data, "price", 0) or 0),
+            "price": to_vnd_price(getattr(data, "price", 0)),
             "volume": int(getattr(data, "volume", 0) or 0),
             "orderId": getattr(data, "order_id", "") or "",
             "matchType": getattr(data, "match_type", "") or "",
@@ -569,46 +584,7 @@ class DnseStreamHub:
         set_cache("market:heatmap", payload, 10)
         publish_json("heatmap", payload)
 
-    def _get_core_symbols(self) -> List[str]:
-        client = DNSEClient(
-            api_key=self._settings.dnse_api_key,
-            api_secret=self._settings.dnse_api_secret,
-            base_url=self._settings.dnse_base_url,
-        )
-        core_symbols = []
-        for market in ["STO"]:
-            page = 1
-            while True:
-                status, body = client.get_instruments(
-                    symbol="",
-                    market_id=market,
-                    security_group_id="ST",
-                    index_name="",
-                    limit=100,
-                    page=page,
-                )
-                if status != 200:
-                    break
-                parsed = json.loads(body) if isinstance(body, str) else body
-                data_list = parsed if isinstance(parsed, list) else parsed.get("data", [])
-                if not data_list:
-                    break
-                for item in data_list:
-                    sym = item.get("symbol")
-                    if sym:
-                        core_symbols.append(sym)
-                if len(data_list) < 100:
-                    break
-                page += 1
-        print(f"[DNSE] Fetched {len(core_symbols)} symbols")
-        return core_symbols
-
     def _run_ws_loop(self) -> None:
-        symbols = list(self._subscribed) if self._subscribed else self._get_core_symbols()
-        if not symbols:
-            print("[DNSE Stream] No symbols to subscribe")
-            return
-
         async def run_async():
             client = TradingClient(
                 api_key=self._settings.dnse_api_key,
@@ -624,50 +600,17 @@ class DnseStreamHub:
             # Replay missed messages from Redis Streams
             replayed = self._replay_missed_streams()
 
-            print(f"[DNSE] Subscribing to {len(symbols)} symbols across all channels...")
-            await client.subscribe_expected_price(
-                symbols, on_expected_price=self._on_expected_price,
-                encoding=self._settings.encoding, board_id=self._settings.board_id,
-            )
-            await client.subscribe_foreign_trading(
-                symbols, on_trade=self._on_foreign_trading,
-                encoding=self._settings.encoding, board_id=self._settings.board_id,
-            )
-            await client.subscribe_quotes(
-                symbols, on_quote=self._on_quote, encoding=self._settings.encoding, board_id=self._settings.board_id
-            )
-            await client.subscribe_sec_def(
-                symbols, on_sec_def=self._on_sec_def,
-                encoding=self._settings.encoding, board_id=self._settings.board_id,
-            )
-            await client.subscribe_trade_extra(
-                symbols, on_trade_extra=self._on_trade_extra,
-                encoding=self._settings.encoding, board_id=self._settings.board_id,
-            )
-            await client.subscribe_trades(
-                symbols, on_trade=self._on_trade, encoding=self._settings.encoding, board_id=self._settings.board_id
-            )
-            await client.subscribe_ohlc_closed(
-                symbols, resolution="1", on_ohlc=self._on_ohlc_closed, encoding=self._settings.encoding
-            )
-            await client.subscribe_ohlc_closed(
-                symbols, resolution="1D", on_ohlc=self._on_ohlc_closed, encoding=self._settings.encoding
-            )
-            await client.subscribe_ohlc(
-                symbols, resolution="1", on_ohlc=self._on_ohlc, encoding=self._settings.encoding
-            )
-            await client.subscribe_ohlc(
-                symbols, resolution="1D", on_ohlc=self._on_ohlc, encoding=self._settings.encoding
-            )
-            await client.subscribe_market_index(
-                market_index="HNX", on_market_index=self._on_market_index, encoding=self._settings.encoding
-            )
-            await client.subscribe_market_index(
-                market_index="HOSE", on_market_index=self._on_market_index, encoding=self._settings.encoding
-            )
-            print("[DNSE] All channels subscribed. Listening for data...")
+            print(f"[DNSE] Subscribing to up to {len(self._active_symbols)} requested stock symbols...")
+            client.on("quote", self._on_quote)
+            client.on("trade", self._on_trade)
+            client.on("market_index", self._on_market_index)
+            await client.subscribe_market_index(market_index="HNX", encoding=self._settings.encoding)
+            await client.subscribe_market_index(market_index="VNINDEX", encoding=self._settings.encoding)
+            await client.subscribe_market_index(market_index="VN30", encoding=self._settings.encoding)
+            applied_symbols: Set[str] = set()
+            print("[DNSE] Market index channels subscribed. Listening for data...")
 
-            # Check market state every 60s instead of sleeping 8h blindly
+            # Apply subscription changes while keeping the channel count bounded.
             while self._running:
                 if not self._session_mgr.is_market_open():
                     state = self._session_mgr.get_market_state().value
@@ -675,7 +618,27 @@ class DnseStreamHub:
                     await client.disconnect()
                     self._connected = False
                     return
-                await asyncio.sleep(60)
+                with self._lock:
+                    target_symbols = set(self._active_symbols)
+                added = target_symbols - applied_symbols
+                removed = applied_symbols - target_symbols
+                if added:
+                    batch = sorted(added)
+                    await client.subscribe_quotes(
+                        batch, encoding=self._settings.encoding, board_id=self._settings.board_id
+                    )
+                    await client.subscribe_trades(
+                        batch, encoding=self._settings.encoding, board_id=self._settings.board_id
+                    )
+                    applied_symbols.update(added)
+                    print(f"[DNSE] Subscribed {len(added)} requested symbols")
+                if removed:
+                    board = self._settings.board_id
+                    await client.unsubscribe(f"top_price.{board}.{self._settings.encoding}", sorted(removed))
+                    await client.unsubscribe(f"tick.{board}.{self._settings.encoding}", sorted(removed))
+                    applied_symbols.difference_update(removed)
+                    print(f"[DNSE] Unsubscribed {len(removed)} inactive symbols")
+                await asyncio.sleep(1)
 
         retry_count = 0
         max_retries = 20

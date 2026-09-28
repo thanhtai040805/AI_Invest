@@ -26,6 +26,7 @@ function Logo({ onClick }: { onClick?: () => void }) {
 }
 
 import { marketApi, stockApi, portfolioApi } from "@/lib/api"
+import { useRealtimeMarket } from "@/lib/use-realtime"
 import type { ApiMarketIndex, ApiMarketStock, ApiNewsItem } from "@/types"
 
 function PortfolioRiskFrame() {
@@ -79,11 +80,21 @@ function PortfolioRiskFrame() {
 }
 
 function MarketPulse() {
-  const [indexData, setIndexData] = useState<{ value: number; change_pct: number; date: string } | null>(null)
+  const [indexSeed, setIndexSeed] = useState<{ vnIndexVal: string; vnIndexPct: number; vn30Val: string; vn30Pct: number } | undefined>()
+  const { indices: liveIndices, isLive } = useRealtimeMarket(indexSeed)
+  const [indexDate, setIndexDate] = useState<string>("")
   const [historySeries, setHistorySeries] = useState<number[]>([])
   const [liquidity, setLiquidity] = useState<string>("—")
   const [foreignFlow, setForeignFlow] = useState<string>("—")
   const [advDec, setAdvDec] = useState<string>("—")
+
+  useEffect(() => {
+    const value = Number(liveIndices?.vnIndexVal?.replaceAll(",", ""))
+    if (!Number.isFinite(value) || value <= 0) return
+    setHistorySeries((prev) => prev.length > 0 && prev[prev.length - 1] === value
+      ? prev
+      : [...prev, value].slice(-60))
+  }, [liveIndices?.vnIndexVal])
 
   useEffect(() => {
     let mounted = true
@@ -93,13 +104,17 @@ function MarketPulse() {
 
       if (indRes.status === "fulfilled" && indRes.value?.indices) {
         const indices = indRes.value.indices as ApiMarketIndex[]
-        const vn = indices.find((x) => x.symbol === "VNINDEX" || x.symbol === "VN-INDEX") || indices[0]
+        const getName = (item: ApiMarketIndex) => String(item.name ?? item.symbol ?? "").toUpperCase().replaceAll("-", "")
+        const vn = indices.find((x) => getName(x) === "VNINDEX")
+        const vn30 = indices.find((x) => getName(x) === "VN30")
         if (vn) {
-          setIndexData({
-            value: Number(vn.value) || 1830.44,
-            change_pct: Number(vn.change_pct) || 0,
-            date: vn.date ? new Date(vn.date).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }).toUpperCase() : "LIVE",
+          setIndexSeed({
+            vnIndexVal: Number(vn.value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+            vnIndexPct: Number(vn.changePercent ?? vn.change_pct ?? 0),
+            vn30Val: vn30 ? Number(vn30.value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—",
+            vn30Pct: vn30 ? Number(vn30.changePercent ?? vn30.change_pct ?? 0) : 0,
           })
+          setIndexDate(vn.lastUpdate ? new Date(vn.lastUpdate).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }).toUpperCase() : "")
         }
         if (indRes.value.history?.VNINDEX && Array.isArray(indRes.value.history.VNINDEX) && indRes.value.history.VNINDEX.length > 0) {
           setHistorySeries(indRes.value.history.VNINDEX)
@@ -128,8 +143,7 @@ function MarketPulse() {
     return () => { mounted = false }
   }, [])
 
-  const defaultSeries = [1810, 1815, 1818, 1822, 1825, 1820, 1828, 1830.44]
-  const displaySeries = historySeries.length > 0 ? historySeries : defaultSeries
+  const displaySeries = historySeries
 
   return (
     <div className="overflow-hidden rounded-[14px] border border-line-strong bg-surface shadow-[0_24px_60px_rgba(24,32,29,.12)]">
@@ -137,9 +151,9 @@ function MarketPulse() {
         <span className="font-mono text-[11px] text-muted">
           THỊ TRƯỜNG / TỔNG QUAN
         </span>
-        <span className="ml-auto flex items-center gap-1.5 text-[10px] text-gain">
-          <i className="h-1.5 w-1.5 rounded-full bg-gain animate-pulse" />
-          TRỰC TIẾP · DỮ LIỆU SÀN
+        <span className={`ml-auto flex items-center gap-1.5 text-[10px] ${isLive ? "text-gain" : "text-muted"}`}>
+          <i className={`h-1.5 w-1.5 rounded-full ${isLive ? "bg-gain animate-pulse" : "bg-muted"}`} />
+          {isLive ? "TRỰC TIẾP · DỮ LIỆU SÀN" : "ĐANG KẾT NỐI DỮ LIỆU SÀN"}
         </span>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-[1.35fr_.9fr]">
@@ -151,19 +165,19 @@ function MarketPulse() {
               </div>
               <div className="mt-1 flex items-baseline gap-2">
                 <span className="font-mono text-[29px] font-semibold tracking-tight text-ink">
-                  {indexData?.value ? indexData.value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "1,830.44"}
+                  {liveIndices?.vnIndexVal ?? "—"}
                 </span>
                 <PercentChange
-                  value={indexData?.change_pct ?? 0.53}
+                  value={liveIndices?.vnIndexPct ?? 0}
                   arrow={false}
                   className="text-[13px]"
                 />
               </div>
             </div>
             <div className="text-right text-[10px] text-muted">
-              {indexData?.date || "08 SEP 2026"}
+              {indexDate || "—"}
               <br />
-              <span className="text-teal">Xu hướng tăng</span>
+              <span className="text-teal">{liveIndices?.vnIndexVal ? "VN-Index" : "Chưa có dữ liệu"}</span>
             </div>
           </div>
           <div className="pt-4">
