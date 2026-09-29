@@ -44,6 +44,7 @@ from app.infrastructure.external_api.dnse.models import (
     ValidatedSecurityDef,
     validate_payload,
 )
+from app.infrastructure.external_api.sector_heatmap import build_sector_heatmap
 
 DNSE_CONNECTION_LIMIT = 10
 RESERVED_DNSE_CONNECTIONS = 2
@@ -916,35 +917,7 @@ class DnseStreamHub:
         stocks = self._get_market_stocks()
         if not stocks:
             return
-        sector_map: Dict[str, Dict] = {}
-        for s in stocks:
-            name = s.get("sector") or "Khác"
-            if name not in sector_map:
-                sector_map[name] = {"name": name, "change": 0.0, "changeSum": 0.0, "count": 0, "totalVol": 0, "marketCap": 0.0, "foreignFlow": 0.0, "foreignCount": 0, "liveCount": 0}
-            market_cap = float(s.get("marketCap") or 0)
-            change_pct = float(s.get("changePercent") or 0)
-            sector_map[name]["change"] += change_pct * market_cap
-            sector_map[name]["changeSum"] += change_pct
-            sector_map[name]["count"] += 1
-            sector_map[name]["marketCap"] += market_cap
-            sector_map[name]["totalVol"] += s.get("volume", 0)
-            sector_map[name]["foreignFlow"] += float(s.get("foreign_flow") or 0)
-            sector_map[name]["foreignCount"] += "foreign_flow" in s
-            sector_map[name]["liveCount"] += s.get("source") == "dnse-ws"
-        sectors = []
-        for n, d in sector_map.items():
-            avg_change = round(d["change"] / d["marketCap"] if d["marketCap"] else d["changeSum"] / d["count"], 2)
-            sectors.append({
-                "name": n,
-                "change": avg_change,
-                "weight": d["marketCap"],
-                "count": d["count"],
-                "liveCount": d["liveCount"],
-                "foreign_flow": d["foreignFlow"] if d["foreignCount"] else None,
-                "totalVolume": d["totalVol"],
-                "color": "bg-secondary" if avg_change >= 0 else "bg-error",
-            })
-        sectors.sort(key=lambda sector: sector["weight"], reverse=True)
+        sectors = build_sector_heatmap(stocks, include_live_count=True)
         payload = {"sectors": sectors, "lastUpdate": datetime.now().isoformat()}
         set_cache("market:heatmap", payload, 10)
         publish_json("heatmap", payload)

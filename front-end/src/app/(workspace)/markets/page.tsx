@@ -34,14 +34,11 @@ export default function Markets() {
 
     const indexName = (item: ApiMarketIndex) => String(item.symbol ?? item.name ?? "").toUpperCase().replaceAll("-", "")
     const vnIndexItem = indicesList.find((x) => indexName(x) === "VNINDEX")
-    const vn30Item = indicesList.find((x) => indexName(x) === "VN30")
     const vn100Item = indicesList.find((x) => indexName(x) === "VN100")
 
     const indicesData = {
       vnIndexVal: vnIndexItem ? Number(vnIndexItem.value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—",
       vnIndexPct: vnIndexItem ? Number(vnIndexItem.changePercent ?? vnIndexItem.change_pct ?? 0) : 0,
-      vn30Val: vn30Item ? Number(vn30Item.value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—",
-      vn30Pct: vn30Item ? Number(vn30Item.changePercent ?? vn30Item.change_pct ?? 0) : 0,
       vn100Val: vn100Item ? Number(vn100Item.value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—",
       vn100Pct: vn100Item ? Number(vn100Item.changePercent ?? vn100Item.change_pct ?? 0) : 0,
     }
@@ -107,11 +104,6 @@ export default function Markets() {
             label: "VN-Index",
             value: currentIndices.vnIndexVal,
             sub: currentIndices.vnIndexVal !== "—" ? <PercentChange value={currentIndices.vnIndexPct} arrow={false} /> : "—",
-          },
-          {
-            label: "VN30",
-            value: currentIndices.vn30Val,
-            sub: currentIndices.vn30Val !== "—" ? <PercentChange value={currentIndices.vn30Pct} arrow={false} /> : "—",
           },
           {
             label: "VN100",

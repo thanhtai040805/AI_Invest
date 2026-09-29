@@ -12,6 +12,7 @@ export interface PositionView {
   avgPrice: number;
   currentPrice: number;
   marketValue: number;
+  weight: number | null;
   pnl: number;
   pnlPercent: number;
 }
@@ -24,11 +25,14 @@ export async function getUserCash(userId: string): Promise<number> {
   return Number(user.cashBalance);
 }
 
-export async function getPositions(userId: string): Promise<PositionView[]> {
-  const positions = await prisma.position.findMany({
-    where: { userId },
-    include: { stock: true },
-  });
+export async function getPositions(userId: string, cashBalance?: number): Promise<PositionView[]> {
+  const [positions, cash] = await Promise.all([
+    prisma.position.findMany({
+      where: { userId },
+      include: { stock: true },
+    }),
+    cashBalance === undefined ? getUserCash(userId) : Promise.resolve(cashBalance),
+  ]);
 
   const symbols = Array.from(new Set(positions.map((p) => p.symbol)));
   const fallbackPrices: Record<string, number> = {};
@@ -53,7 +57,7 @@ export async function getPositions(userId: string): Promise<PositionView[]> {
     }
   }
 
-  return Promise.all(
+  const valuedPositions = await Promise.all(
     positions.map(async (pos) => {
       const quote = await aiEngineService.getQuote(pos.symbol).catch(() => null);
       const rawPrice = Number(quote?.price);
@@ -75,11 +79,17 @@ export async function getPositions(userId: string): Promise<PositionView[]> {
       };
     }),
   );
+
+  const nav = cash + valuedPositions.reduce((sum, position) => sum + position.marketValue, 0);
+  return valuedPositions.map((position) => ({
+    ...position,
+    weight: nav > 0 ? (position.marketValue / nav) * 100 : null,
+  }));
 }
 
 export async function getSummary(userId: string) {
   const cash = await getUserCash(userId);
-  const positions = await getPositions(userId);
+  const positions = await getPositions(userId, cash);
   const marketValue = positions.reduce((s, p) => s + p.marketValue, 0);
   const totalCost = positions.reduce((s, p) => s + p.avgPrice * p.quantity, 0);
   const pnl = marketValue - totalCost;

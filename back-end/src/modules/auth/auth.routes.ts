@@ -6,6 +6,7 @@ import { z } from 'zod';
 import prisma from '../../config/database';
 import { config } from '../../config';
 import { authMiddleware, AuthRequest } from '../../middleware/auth';
+import { authLimiter } from '../../middleware/rateLimiter';
 
 const router = Router();
 const db = prisma as any;
@@ -116,7 +117,7 @@ function buildUserResponse(user: { id: string; email: string; displayName: strin
   return { id: user.id, email: user.email, displayName: user.displayName };
 }
 
-router.post('/register', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/register', authLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { email, password, displayName } = registerSchema.parse(req.body);
 
@@ -147,7 +148,7 @@ router.post('/register', async (req: Request, res: Response, next: NextFunction)
   }
 });
 
-router.post('/login', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/login', authLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { email, password } = loginSchema.parse(req.body);
 

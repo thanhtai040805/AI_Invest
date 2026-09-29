@@ -136,7 +136,7 @@ export default function Portfolio() {
                   <td className="py-3 pl-5"><Link to={`/stock/${p.symbol}`} className="font-mono font-medium text-ink hover:underline">{p.symbol}</Link></td>
                   <td className="text-right px-3 tnum font-mono text-secondary">{fmt(p.entry)}</td>
                   <td className="text-right px-3 tnum font-mono text-ink">{fmt(p.current)}</td>
-                  <td className="text-right px-3 tnum font-mono text-ink">{p.weight}%</td>
+                  <td className="text-right px-3 tnum font-mono text-ink">{p.weight.toLocaleString("en-US", { maximumFractionDigits: 2 })}%</td>
                   <td className="text-right px-3"><PercentChange value={p.pnl} arrow={false} /></td>
                   <td className="text-right px-3 tnum font-mono text-secondary">{p.recWeight}%</td>
                   <td className="text-right px-3 tnum font-mono text-mineral">{p.kelly}%</td>

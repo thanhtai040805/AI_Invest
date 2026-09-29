@@ -12,7 +12,6 @@ import { config } from './config';
 import { errorHandler } from './middleware/errorHandler';
 import {
   apiLimiter,
-  authLimiter,
   aiLimiter,
   marketLimiter,
   screenerLimiter,
@@ -116,7 +115,7 @@ app.get('/api/health/detailed', async (_req, res) => {
 
 // ── API Routes (per-route rate limiting) ───────────────
 app.use('/api/v1', apiLimiter);
-app.use('/api/v1/auth', authLimiter, authRoutes);
+app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/market', marketLimiter, marketRoutes);
 app.use('/api/v1/stock', marketLimiter, stockRoutes);
 app.use('/api/v1/stock', marketLimiter, stockAdminRoutes);
