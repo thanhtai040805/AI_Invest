@@ -4,7 +4,7 @@ from typing import Any
 
 
 def to_vnd_price(value: Any) -> float:
-    """Normalize DNSE equity prices to the VND units used by stored OHLCV."""
+    """Normalize DNSE equity prices to the VND units exposed by market APIs."""
     try:
         price = float(value or 0)
     except (TypeError, ValueError):

@@ -52,10 +52,10 @@ def _query_pg_ohlcv(symbol: str, start: Optional[str] = None, end: Optional[str]
                 ts_str = str(ts)[:10]
             rows.append({
                 "time": ts_str,
-                "open": to_vnd_price(r[1]),
-                "high": to_vnd_price(r[2]),
-                "low": to_vnd_price(r[3]),
-                "close": to_vnd_price(r[4]),
+                "open": float(r[1]),
+                "high": float(r[2]),
+                "low": float(r[3]),
+                "close": float(r[4]),
                 "volume": int(r[5]),
             })
         cur.close()
@@ -264,6 +264,8 @@ class MarketDataService:
         data = res.get("data", [])
         if data:
             for c in data:
+                for field in ("open", "high", "low", "close"):
+                    c[field] = to_vnd_price(c.get(field, 0.0))
                 close = float(c.get("close", 0.0))
                 volume = float(c.get("volume", 0.0))
                 val = float(c.get("value", c.get("turnover", close * volume)))

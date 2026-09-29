@@ -66,13 +66,14 @@ export async function backfillOhlcv(
   if (candles.length === 0) return 0;
 
   type CandleRow = { time: string; open: number; high: number; low: number; close: number; volume: number };
+  const toStoredPrice = (price: number) => Math.abs(price) > 500 ? price / 1000 : price;
   const rows = candles.map((c: CandleRow) => ({
     time: new Date(c.time),
     symbol: symbol.toUpperCase(),
-    open: new Decimal(c.open),
-    high: new Decimal(c.high),
-    low: new Decimal(c.low),
-    close: new Decimal(c.close),
+    open: new Decimal(toStoredPrice(c.open)),
+    high: new Decimal(toStoredPrice(c.high)),
+    low: new Decimal(toStoredPrice(c.low)),
+    close: new Decimal(toStoredPrice(c.close)),
     volume: BigInt(c.volume ?? 0),
   }));
 
