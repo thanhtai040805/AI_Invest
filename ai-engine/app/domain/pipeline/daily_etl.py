@@ -1,14 +1,8 @@
 """Daily ETL Pipeline — post-market-close data ingestion & derived metrics orchestrator (IOS v5.1).
 
-Runs at 18:00-19:00 VN time sequentially:
-  18:00 → OHLCV backfill (from DNSE REST, sync stocks + 1D OHLCV)
-  18:05 → Technical indicators (40+ per symbol, SMA/EMA/RSI/MACD/BB/ATR)
-  18:10 → GARCH/EWMA Volatility (top liquid symbols)
-  18:15 → Insider trades (CafeF API)
-  18:20 → Foreign flow (Vietstock / DNSE flow)
-  18:25 → Financial ratios (CafeF API incremental refresh for newly published reports)
-  18:30 → Factor scores (Pre-compute F1-F6 factor scores for all HOSE stocks)
-  18:35 → Macro indicators (SBV, vi.money, yfinance, VietFin)
+Scheduled from 15:00 VN time after the HOSE closing auction. OHLCV availability
+is checked first; downstream calculations wait for a retry if today's candles
+have not arrived yet.
 
 Note on Architectural Separation & Ingestion Policy:
 - Market-relative risk metrics (Beta/Alpha): Excluded from Daily ETL as Agents compute them directly.
@@ -120,9 +114,28 @@ class DailyETLPipeline:
                 try:
                     logger.info("ETL executing step: %s", name)
                     results[name] = await func()
+                    if name == "ohlcv_backfill" and int(results[name].get("target_rows", 0)) <= 0:
+                        reason = f"No OHLCV candles available for {self.trade_date}; retry after source data arrives"
+                        logger.warning("ETL waiting for EOD data: %s", reason)
+                        set_failed(JOB_NAME, reason)
+                        return {
+                            "status": "WAITING_FOR_EOD_DATA",
+                            "trade_date": str(self.trade_date),
+                            "steps": results,
+                            "reason": reason,
+                        }
                 except Exception as e:
                     logger.error("ETL step %s failed: %s", name, e)
                     results[name] = {"status": "failed", "error": str(e)}
+                    if name == "ohlcv_backfill":
+                        reason = f"OHLCV backfill failed for {self.trade_date}: {e}"
+                        set_failed(JOB_NAME, reason)
+                        return {
+                            "status": "FAILED",
+                            "trade_date": str(self.trade_date),
+                            "steps": results,
+                            "reason": reason,
+                        }
 
             set_completed(JOB_NAME, results)
             logger.info("=== DailyETL done ===")

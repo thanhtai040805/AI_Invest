@@ -79,6 +79,7 @@ export function Pill({ children, tone = "neutral" }: { children: ReactNode; tone
 }
 
 export function RiskLabel({ risk }: { risk: string }) {
+  const labels: Record<string, string> = { Low: "Thấp", Moderate: "Trung bình", Elevated: "Cao", High: "Rất cao" }
   const tone = risk === "Low" ? "teal" : risk === "Moderate" ? "gold" : risk === "Elevated" ? "warning" : "loss"
   const dots = risk === "Low" ? 1 : risk === "Moderate" ? 2 : risk === "Elevated" ? 3 : 4
   return (
@@ -88,7 +89,7 @@ export function RiskLabel({ risk }: { risk: string }) {
           <span key={i} className={`w-1 h-3 rounded-full ${i < dots ? (tone === "teal" ? "bg-teal" : tone === "gold" ? "bg-gold" : tone === "warning" ? "bg-warning" : "bg-loss") : "bg-line-strong"}`} />
         ))}
       </span>
-      {risk}
+      {labels[risk] ?? risk}
     </span>
   )
 }

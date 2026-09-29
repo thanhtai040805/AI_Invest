@@ -88,7 +88,7 @@ async def lifespan(app: FastAPI):
         from app.infrastructure.workers.daily_etl_daemon import etl_daemon
         etl_task = asyncio.create_task(etl_daemon.start())
         tasks.append((etl_task, etl_daemon))
-        logger.info("[Lifespan] Daily ETL Daemon (18:00 Post-Market Cron) đã được khởi động.")
+        logger.info("[Lifespan] Daily ETL Daemon (15:00 EOD check with retry) đã được khởi động.")
     except Exception as e_etl:
         logger.warning(f"[Lifespan] Không thể khởi động Daily ETL Daemon: {e_etl}")
 
