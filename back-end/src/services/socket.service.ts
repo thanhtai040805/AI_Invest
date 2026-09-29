@@ -87,7 +87,7 @@ class SocketService {
               floor,
               volume: Number(row.volume_total ?? 0),
               change_pct: changePct,
-              timestamp: new Date().toISOString(),
+              timestamp: row.date,
             });
           }
         }).catch(() => {});

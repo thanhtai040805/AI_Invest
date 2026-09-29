@@ -6,8 +6,35 @@ import "@klinecharts/pro/dist/klinecharts-pro.css"
 import { stockApi } from "@/lib/api"
 import { getSocket } from "@/lib/socket"
 
-interface ApiCandle { date: string; open?: number; high?: number; low?: number; close: number; volume?: number }
-interface PriceTick { price?: number; close?: number; volume?: number }
+interface ApiCandle { date?: string; time?: number | string; timestamp?: number | string; open?: number; high?: number; low?: number; close: number; volume?: number }
+interface PriceTick { price?: number; close?: number; open?: number; high?: number; low?: number; volume?: number; timestamp?: number | string }
+
+function toChartPrice(value: number): number {
+  return value > 0 && value < 500 ? value * 1000 : value
+}
+
+function candleTimestamp(candle: ApiCandle): number {
+  return parseTimestamp(candle.timestamp ?? candle.time ?? candle.date)
+}
+
+function parseTimestamp(raw?: number | string): number {
+  if (typeof raw === "string" && !/^\d+$/.test(raw)) return new Date(raw).getTime()
+  const numeric = Number(raw ?? 0)
+  return numeric > 1e12 ? numeric : numeric * 1000
+}
+
+const vietnamDateFormatter = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Ho_Chi_Minh",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+})
+
+function vietnamDateKey(timestamp: number): string {
+  const parts = vietnamDateFormatter.formatToParts(timestamp)
+  const part = (type: string) => parts.find((item) => item.type === type)?.value ?? ""
+  return `${part("year")}-${part("month")}-${part("day")}`
+}
 
 // ── Real Vietnamese market data feed connected to PostgreSQL & WebSocket ──
 class RealMarketDatafeed implements Datafeed {
@@ -61,15 +88,16 @@ class RealMarketDatafeed implements Datafeed {
 
     this.isFetching = true
     try {
-      const candles = (await stockApi.ohlcv(sym, { limit: 300 })) as ApiCandle[]
+      const response = await stockApi.ohlcv(sym, { limit: 300 })
+      const candles = (Array.isArray(response) ? response : (response as { data?: ApiCandle[] })?.data) as ApiCandle[]
       if (Array.isArray(candles) && candles.length > 0) {
-        const sorted = [...candles].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+        const sorted = [...candles].sort((a, b) => candleTimestamp(a) - candleTimestamp(b))
         const formatted: KLineData[] = sorted.map((c) => {
-          const timestamp = new Date(c.date).getTime()
-          const open = Number(c.open ?? c.close)
-          const high = Number(c.high ?? Math.max(open, Number(c.close)))
-          const low = Number(c.low ?? Math.min(open, Number(c.close)))
-          const close = Number(c.close)
+          const timestamp = candleTimestamp(c)
+          const close = toChartPrice(Number(c.close))
+          const open = toChartPrice(Number(c.open ?? c.close))
+          const high = toChartPrice(Number(c.high ?? Math.max(open, close)))
+          const low = toChartPrice(Number(c.low ?? Math.min(open, close)))
           const volume = Number(c.volume ?? 0)
           return {
             timestamp,
@@ -118,22 +146,33 @@ class RealMarketDatafeed implements Datafeed {
 
     const onPrice = (data: PriceTick) => {
       if (!data) return
-      const price = Number(data.price ?? data.close)
+      const price = toChartPrice(Number(data.price ?? data.close))
       if (!price) return
 
       const vol = Number(data.volume ?? 0)
-      if (this.lastCandle) {
-        const updated: KLineData = {
-          ...this.lastCandle,
-          close: price,
-          high: Math.max(this.lastCandle.high, price),
-          low: Math.min(this.lastCandle.low, price),
-          volume: vol || this.lastCandle.volume,
-          turnover: (vol || Number(this.lastCandle.volume)) * price,
-        }
-        this.lastCandle = updated
-        callback(updated)
+      const eventTime = parseTimestamp(data.timestamp) || Date.now()
+      if (this.lastCandle && eventTime < this.lastCandle.timestamp) return
+      const currentDate = vietnamDateKey(eventTime)
+      const lastDate = this.lastCandle ? vietnamDateKey(this.lastCandle.timestamp) : ""
+      const sameSession = !!this.lastCandle && currentDate === lastDate
+      const open = toChartPrice(Number(data.open ?? (sameSession ? this.lastCandle?.open : price)))
+      const high = toChartPrice(Number(data.high ?? price))
+      const low = toChartPrice(Number(data.low ?? price))
+      const updated: KLineData = {
+        timestamp: sameSession ? this.lastCandle!.timestamp : Date.parse(`${currentDate}T00:00:00Z`),
+        open,
+        high: Math.max(high, price, sameSession ? this.lastCandle!.high : high),
+        low: Math.min(low, price, sameSession ? this.lastCandle!.low : low),
+        close: price,
+        volume: vol || (sameSession ? this.lastCandle!.volume : 0),
+        turnover: (vol || (sameSession ? Number(this.lastCandle!.volume) : 0)) * price,
       }
+      this.lastCandle = updated
+      if (this.historyCache) {
+        if (sameSession) this.historyCache[this.historyCache.length - 1] = updated
+        else this.historyCache.push(updated)
+      }
+      callback(updated)
     }
 
     if (!socket.connected) socket.connect()
