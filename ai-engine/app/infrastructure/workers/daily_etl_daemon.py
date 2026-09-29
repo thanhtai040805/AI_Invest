@@ -2,11 +2,11 @@
 
 Chức năng:
 - Chạy nền tự động trong tiến trình AI Engine.
-- Canh đúng 18:00 hàng ngày (sau khi các công ty chứng khoán & sở giao dịch chốt nến ngày).
+- Bắt đầu kiểm tra dữ liệu cuối phiên từ 15:00; thử lại nếu DNSE chưa có nến ngày.
 - Nhận diện ngày giao dịch (Thứ 2 - Thứ 6).
 - Tự động kích hoạt DailyETLPipeline thực thi nạp OHLCV, tính technical indicators,
   volatility, foreign flow, insider trades và pre-compute factor scores F1-F6.
-- Đảm bảo Idempotency: Không bao giờ chạy trùng lặp 2 lần cho cùng một ngày giao dịch.
+- Retry mỗi 15 phút nếu dữ liệu OHLCV phiên chưa sẵn sàng; chỉ khóa ngày sau khi ETL chạy xong.
 """
 
 from __future__ import annotations
@@ -22,9 +22,10 @@ logger = logging.getLogger("ai_engine.daemon.daily_etl")
 
 
 class DailyETLDaemon:
-    """Daemon tự động kích hoạt nạp dữ liệu cuối ngày (18:00 Post-Market ETL Cron)."""
+    """Daemon tự động kích hoạt nạp dữ liệu cuối phiên từ 15:00 VN."""
 
-    TRIGGER_TIME = dt_time(17, 0)  # 17:00 hàng ngày (sau khi sở HOSE/HNX chốt sổ chính thức)
+    TRIGGER_TIME = dt_time(15, 0)
+    RETRY_INTERVAL = timedelta(minutes=15)
 
     def __init__(
         self,
@@ -35,6 +36,7 @@ class DailyETLDaemon:
         self.interval = check_interval_seconds
         self._running = False
         self._last_run_date: Optional[str] = None
+        self._last_attempt_at: Optional[datetime] = None
         self._last_status: str = "IDLE"
         self._last_result: Optional[Dict[str, Any]] = None
 
@@ -43,7 +45,7 @@ class DailyETLDaemon:
         """Trạng thái hiện tại của Daily ETL Daemon phục vụ API & Monitoring."""
         return {
             "is_running": self._running,
-            "target_trigger_time": "17:00:00",
+            "target_trigger_time": self.TRIGGER_TIME.strftime("%H:%M:%S"),
             "last_run_date": self._last_run_date,
             "last_status": self._last_status,
             "last_result": self._last_result,
@@ -56,8 +58,10 @@ class DailyETLDaemon:
         logger.info(f"[DailyETLDaemon] Nhận lệnh kích hoạt thủ công cho ngày: {today_str}")
         self._last_status = "RUNNING_MANUAL"
         res = await self.pipeline.run(trade_date=run_d)
-        self._last_run_date = today_str
-        self._last_status = res.get("status", "COMPLETED")
+        status = res.get("status", "SUCCESS")
+        if status not in {"WAITING_FOR_EOD_DATA", "FAILED"}:
+            self._last_run_date = today_str
+        self._last_status = status
         self._last_result = res
         return res
 
@@ -71,26 +75,36 @@ class DailyETLDaemon:
         if not is_trading_day(today):
             return
 
-        # 2. Kiểm tra giờ đã chạm 18:00 chưa
+        # 2. Bắt đầu kiểm tra sau giờ đóng phiên.
         current_time = now_vn.time()
         if current_time < self.TRIGGER_TIME:
             return
 
-        # 3. Kiểm tra tính Idempotent: Đã chạy cho ngày hôm nay chưa
+        # 3. Chỉ khóa ngày sau khi pipeline báo thành công.
         if self._last_run_date == today_str:
             return
 
+        if (
+            self._last_attempt_at is not None
+            and self._last_attempt_at.date() == today
+            and now_vn - self._last_attempt_at < self.RETRY_INTERVAL
+        ):
+            return
+
         logger.info(
-            f"[DailyETLDaemon] ĐÃ ĐẾN 18:00 ({now_vn.strftime('%H:%M:%S')}) NGÀY GIAO DỊCH {today_str}! "
+            f"[DailyETLDaemon] Kiểm tra EOD lúc {now_vn.strftime('%H:%M:%S')} ngày giao dịch {today_str}. "
             "Tự động kích hoạt Daily ETL Data Ingestion Pipeline..."
         )
+        self._last_attempt_at = now_vn
         self._last_status = "RUNNING_SCHEDULED"
         try:
             res = await self.pipeline.run(trade_date=today)
-            self._last_run_date = today_str
-            self._last_status = res.get("status", "SUCCESS")
+            status = res.get("status", "SUCCESS")
+            if status not in {"WAITING_FOR_EOD_DATA", "FAILED"}:
+                self._last_run_date = today_str
+            self._last_status = status
             self._last_result = res
-            logger.info(f"[DailyETLDaemon] Pipeline 18:00 ngày {today_str} hoàn tất với trạng thái: {self._last_status}")
+            logger.info(f"[DailyETLDaemon] Pipeline ngày {today_str} kết thúc với trạng thái: {self._last_status}")
         except Exception as e:
             self._last_status = f"FAILED: {e}"
             logger.error(f"[DailyETLDaemon] Lỗi khi chạy scheduled Daily ETL pipeline: {e}", exc_info=True)
@@ -98,7 +112,7 @@ class DailyETLDaemon:
     async def start(self) -> None:
         """Bắt đầu vòng lặp chạy nền của Daemon."""
         self._running = True
-        logger.info("[DailyETLDaemon] KHỞI ĐỘNG Daily ETL Daemon (Tự động kích hoạt 18:00 Thứ 2 - Thứ 6)...")
+        logger.info("[DailyETLDaemon] KHỞI ĐỘNG Daily ETL Daemon (kiểm tra EOD từ 15:00 Thứ 2 - Thứ 6)...")
 
         while self._running:
             try:

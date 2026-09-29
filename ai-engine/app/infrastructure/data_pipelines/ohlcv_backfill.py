@@ -307,8 +307,10 @@ def run_daily_backfill(
         symbol_map = dict(list(symbol_map.items())[:max_symbols])
 
     today_str = datetime.now(TZ_VN).strftime("%Y-%m-%d")
+    expected_date = target_date or datetime.now(TZ_VN).date()
     count = 0
     total_rows = 0
+    target_rows = 0
     start_time = time.time()
 
     for sym, _ in symbol_map.items():
@@ -326,6 +328,8 @@ def run_daily_backfill(
         rows = []
         for i in range(len(result['t'])):
             candle_date = datetime.fromtimestamp(result['t'][i], tz=TZ_VN).date()
+            if candle_date == expected_date:
+                target_rows += 1
             rows.append((
                 candle_date, sym,
                 result.get('o', [0])[i],
@@ -396,5 +400,10 @@ def run_daily_backfill(
         print(f"  [DailyBackfill] Warning: Failed to sync VNINDEX: {e_idx}")
 
     print(f"[DailyBackfill] DONE: {count} symbols, {total_rows} rows in {duration:.0f}s")
-    return {"total_symbols": count, "total_rows": total_rows, "duration_seconds": duration}
+    return {
+        "total_symbols": count,
+        "total_rows": total_rows,
+        "target_rows": target_rows,
+        "duration_seconds": duration,
+    }
 

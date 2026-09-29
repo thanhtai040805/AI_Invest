@@ -90,32 +90,42 @@ function recordDate(row: RecordData) {
 }
 
 function Value({ value }: { value: unknown }) {
+  const [expanded, setExpanded] = useState(false)
   if (typeof value === "string" && /^[\[{]/.test(value.trim())) {
     try { value = JSON.parse(value) } catch { /* Legacy free text */ }
   }
   if (value === null || value === undefined || value === "") return <span className="text-muted">Chưa có dữ liệu</span>
   if (Array.isArray(value)) {
     if (!value.length) return <span className="text-muted">Không có mục nào</span>
+    const visible = expanded ? value : value.slice(0, 5)
     return (
-      <ul className="space-y-1.5 border-l-2 border-line/60 pl-3">
-        {value.map((item, i) => (
-          <li key={i} className="text-sm leading-relaxed"><Value value={item} /></li>
-        ))}
-      </ul>
+      <div className="min-w-0">
+        <ul className="space-y-3">
+          {visible.map((item, i) => (
+            <li key={i} className="min-w-0 border-l-2 border-line/60 pl-3 text-sm leading-relaxed">
+              <Value value={item} />
+            </li>
+          ))}
+        </ul>
+        {value.length > 5 && <button type="button" className="mt-2 text-xs font-medium text-mineral hover:underline" onClick={() => setExpanded(open => !open)}>
+          {expanded ? "Thu gọn" : `Xem thêm ${value.length - 5} mục`}
+        </button>}
+      </div>
     )
   }
   if (typeof value === "object") {
     return (
-      <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-sm">
+      <dl className="grid min-w-0 grid-cols-1 gap-x-5 gap-y-2 text-sm sm:grid-cols-2">
         {Object.entries(value).map(([key, item]) => (
-          <div key={key} className="border-b border-line/40 pb-1.5">
+          <div key={key} className={`min-w-0 border-b border-line/40 pb-1.5 ${(item !== null && typeof item === "object") || (typeof item === "string" && item.length > 100) ? "sm:col-span-2" : ""}`}>
             <dt className="text-xs font-medium text-secondary">{fieldNames[key] || key.replaceAll("_", " ")}</dt>
-            <dd className="mt-0.5 break-words font-medium text-ink"><Value value={item} /></dd>
+            <dd className="mt-0.5 min-w-0 break-words font-medium text-ink [overflow-wrap:anywhere]"><Value value={item} /></dd>
           </div>
         ))}
       </dl>
     )
   }
+  if (typeof value === "string" && value.length > 100) return <p className="max-w-[110ch] whitespace-pre-wrap">{cleanText(value)}</p>
   return <span>{typeof value === "boolean" ? (value ? "Đạt" : "Không") : cleanText(String(value))}</span>
 }
 
@@ -244,7 +254,7 @@ function CounterThesisSection({ counter }: { counter?: RecordData }) {
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line pb-3">
         <div className="flex items-center gap-2">
           <span className="text-[11px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-warning/10 text-warning border border-warning/20">
-            AGENT 05 · COUNTER-THESIS (DEVIL'S ADVOCATE)
+            AGENT 05 · COUNTER-THESIS (DEVIL&apos;S ADVOCATE)
           </span>
           <span className="text-xs text-muted font-medium">Phản biện độc lập & Thẩm định rủi ro</span>
         </div>
@@ -876,7 +886,7 @@ function PortfolioRiskSection({ entry, ticker }: { entry?: RecordData; ticker: s
   )
 }
 
-function TradeExecutionSection({ selectedPlans, entry, ticker }: { selectedPlans: RecordData[]; entry?: RecordData; ticker: string }) {
+function TradeExecutionSection({ selectedPlans, ticker }: { selectedPlans: RecordData[]; ticker: string }) {
   const activePlan = selectedPlans[0]
   const dec = activePlan ? allocationDecision(activePlan.action) : null
 
@@ -1159,7 +1169,7 @@ function LogDetailViewer({ agent, entry }: { agent: string; entry: RecordData })
         </section>
       )}
 
-      <div className="grid gap-5 md:grid-cols-2">
+      <div className="grid min-w-0 gap-5 md:grid-cols-2">
         {filtered.map(([key, value]) => {
           // If this is kelly_math_steps and already rendered custom above, skip
           if (isAlloc && key === "kelly_math_steps") return null
@@ -1194,8 +1204,9 @@ function LogDetailViewer({ agent, entry }: { agent: string; entry: RecordData })
             )
           }
 
+          const fullWidth = (value !== null && typeof value === "object") || (typeof value === "string" && value.length > 100)
           return (
-            <section key={key} className="min-w-0">
+            <section key={key} className={`min-w-0 ${fullWidth ? "md:col-span-2" : ""}`}>
               <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-teal">{fieldNames[key] || key.replaceAll("_", " ")}</h4>
               <Value value={value} />
             </section>
@@ -1203,6 +1214,60 @@ function LogDetailViewer({ agent, entry }: { agent: string; entry: RecordData })
         })}
       </div>
     </div>
+  )
+}
+
+function AgentSkeleton() {
+  return (
+    <div role="status" aria-label="Đang tải quyết định và nhật ký" className="mx-auto max-w-[1600px] space-y-6 p-4 lg:p-6">
+      <span className="sr-only">Đang tải quyết định và nhật ký…</span>
+      <div className="animate-pulse space-y-6" aria-hidden="true">
+        <div className="space-y-4 border-b border-line pb-6">
+          <div className="h-4 w-44 rounded bg-soft" />
+          <div className="grid grid-cols-2 gap-5 lg:grid-cols-4">
+            {[1, 2, 3, 4].map(i => <div key={i} className="space-y-3"><div className="h-3 w-24 rounded bg-soft" /><div className="h-7 w-3/4 rounded bg-soft" /></div>)}
+          </div>
+        </div>
+        <div className="grid gap-5 lg:grid-cols-2">
+          {[1, 2].map(i => <div key={i} className="space-y-4 rounded-xl border border-line bg-surface p-5"><div className="h-5 w-1/2 rounded bg-soft" /><div className="h-4 w-3/4 rounded bg-soft" /><div className="h-24 rounded bg-soft" /></div>)}
+        </div>
+        <div className="grid gap-5 md:grid-cols-[220px_minmax(0,1fr)]">
+          <div className="h-64 rounded-xl border border-line bg-surface p-4"><div className="h-5 w-28 rounded bg-soft" /></div>
+          <div className="space-y-4 rounded-xl border border-line bg-surface p-5"><div className="h-5 w-1/3 rounded bg-soft" /><div className="h-4 w-2/3 rounded bg-soft" /><div className="h-32 rounded bg-soft" /></div>
+        </div>
+        <div className="space-y-4 rounded-xl border border-line bg-surface p-5"><div className="h-6 w-40 rounded bg-soft" />{[1, 2, 3].map(i => <div key={i} className="h-16 rounded bg-soft" />)}</div>
+      </div>
+    </div>
+  )
+}
+
+function AgentLogRow({ agent, entry, index }: { agent: string; entry: RecordData; index: number }) {
+  const [opened, setOpened] = useState(false)
+  const out = logOutput(agent, entry)
+  const status = out.status || out.alert_level || out.verdict || out.final_resolution
+  const ticker = logSymbol(agent, entry)
+  return (
+    <details onToggle={event => setOpened(event.currentTarget.open)} className="group px-5 py-4 open:bg-paper/50">
+      <summary className="cursor-pointer list-none rounded focus-visible:outline-2 focus-visible:outline-mineral">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span className="text-sm font-semibold">{agents[agent] || agent}</span>
+          <span className="rounded bg-soft px-2 py-0.5 font-mono text-xs">{ticker || "Hệ thống / không gắn mã"}</span>
+          <time className="text-xs tabular-nums text-secondary font-mono">{time(timestamp(entry))}</time>
+          {status != null && <span className="break-all text-xs font-semibold px-2 py-0.5 rounded bg-soft text-ink">{String(status)}</span>}
+          <span className="ml-auto text-xs font-medium text-teal group-open:hidden">Mở log ↓</span>
+          <span className="ml-auto hidden text-xs font-medium text-teal group-open:inline">Thu gọn ↑</span>
+        </div>
+        <p className="mt-2 max-w-[110ch] text-sm leading-relaxed text-secondary">{logSummary(agent, entry)}</p>
+        {entry.analysis_date != null && <p className="mt-1 text-xs text-muted">Ngày phân tích: {displayDate(vietnamDate(entry.analysis_date))}{entry.is_replay ? " · Chạy lại dữ liệu lịch sử" : ""}</p>}
+      </summary>
+      {opened && <>
+        <LogDetailViewer agent={agent} entry={entry} />
+        <details className="mt-3">
+          <summary className="cursor-pointer text-xs font-medium text-muted hover:underline">Dữ liệu gốc JSON · #{String(entry.id ?? index)}</summary>
+          <pre className="mt-2 max-h-80 overflow-auto rounded-lg bg-soft p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-all">{JSON.stringify(entry, null, 2)}</pre>
+        </details>
+      </>}
+    </details>
   )
 }
 
@@ -1246,11 +1311,8 @@ export default function WarRoom() {
   const posMonEntry = (date ? logs.filter(l => recordDate(l.entry) === date) : logs).find(l => l.agent === "position_monitoring" && (l.entry.ticker === active || logSymbol(l.agent, l.entry) === active))?.entry || logs.find(l => l.agent === "position_monitoring" && (l.entry.ticker === active || logSymbol(l.agent, l.entry) === active))?.entry
   const rlEntry = (date ? logs.filter(l => recordDate(l.entry) === date) : logs).find(l => l.agent === "reinforcement_learning")?.entry || logs.find(l => l.agent === "reinforcement_learning")?.entry
   const govEntry = (date ? logs.filter(l => recordDate(l.entry) === date) : logs).find(l => l.agent === "system_governance")?.entry || logs.find(l => l.agent === "system_governance")?.entry
-  const execEntry = (date ? logs.filter(l => recordDate(l.entry) === date) : logs).find(l => l.agent === "trade_execution" && (l.entry.ticker === active || logSymbol(l.agent, l.entry) === active))?.entry || logs.find(l => l.agent === "trade_execution" && (l.entry.ticker === active || logSymbol(l.agent, l.entry) === active))?.entry
-
   // Clean formatted debate summary
   const summaryText = cleanText(resolution?.debate_summary || "")
-  const hasTierTag = summaryText.includes("[TẦNG")
   const tierMatch = summaryText.match(/\[(TẦNG\s*\d+[^\]]*)\]/i)
   const tierTag = tierMatch ? tierMatch[1] : null
   const cleanSummaryBody = tierMatch ? summaryText.replace(tierMatch[0], "").trim() : summaryText
@@ -1270,10 +1332,9 @@ export default function WarRoom() {
         </div>
       </header>
 
-      <div className="mx-auto max-w-[1600px] space-y-6 p-4 lg:p-6">
-        {resource.error && <div role="alert" className="rounded-lg border border-loss/30 bg-loss/5 p-4 text-sm text-loss">Không tải được báo cáo. <button className="underline" onClick={() => void resource.reload()}>Thử lại</button></div>}
-        {resource.loading && <div role="status" className="animate-pulse rounded-lg bg-soft p-8 text-secondary">Đang tải quyết định và nhật ký…</div>}
-
+      {resource.loading ? <AgentSkeleton /> : resource.error ? (
+        <div className="mx-auto max-w-[1600px] p-4 lg:p-6"><div role="alert" className="rounded-lg border border-loss/30 bg-loss/5 p-4 text-sm text-loss">Không tải được báo cáo. <button className="underline" onClick={() => void resource.reload()}>Thử lại</button></div></div>
+      ) : <div className="mx-auto max-w-[1600px] space-y-6 p-4 lg:p-6">
         <section aria-labelledby="performance-title" className="border-b border-line pb-5">
           <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
             <h2 id="performance-title" className="text-base font-semibold">Kết quả tài khoản</h2>
@@ -1432,7 +1493,7 @@ export default function WarRoom() {
               <PortfolioRiskSection entry={riskEntry} ticker={active} />
 
               {/* Layer 4: Trade Execution & Adaptive Slicing (Agent 08) */}
-              <TradeExecutionSection selectedPlans={selectedPlans} entry={execEntry} ticker={active} />
+              <TradeExecutionSection selectedPlans={selectedPlans} ticker={active} />
 
               {/* Layer 4: Position Monitoring & T0-T5 Defense Ladder (Agent 09) */}
               <PositionMonitoringSection position={position} entry={posMonEntry} ticker={active} />
@@ -1481,38 +1542,7 @@ export default function WarRoom() {
           )}
 
           <div className="divide-y divide-line">
-            {shownLogs.slice(0, logLimit).map((log, index) => {
-              const out = logOutput(log.agent, log.entry)
-              const status = out.status || out.alert_level || out.verdict || out.final_resolution
-              const ticker = logSymbol(log.agent, log.entry)
-              return (
-                <details key={`${log.agent}-${log.entry.id ?? index}`} className="group px-5 py-4 open:bg-paper/50">
-                  <summary className="cursor-pointer list-none rounded focus-visible:outline-2 focus-visible:outline-mineral">
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                      <span className="text-sm font-semibold">{agents[log.agent] || log.agent}</span>
-                      <span className="rounded bg-soft px-2 py-0.5 font-mono text-xs">{ticker || "Hệ thống / không gắn mã"}</span>
-                      <time className="text-xs tabular-nums text-secondary font-mono">{time(timestamp(log.entry))}</time>
-                      {status != null && <span className="break-all text-xs font-semibold px-2 py-0.5 rounded bg-soft text-ink">{String(status)}</span>}
-                      <span className="ml-auto text-xs font-medium text-teal group-open:hidden">Mở log ↓</span>
-                      <span className="ml-auto hidden text-xs font-medium text-teal group-open:inline">Thu gọn ↑</span>
-                    </div>
-                    <p className="mt-2 max-w-[110ch] text-sm leading-relaxed text-secondary">{logSummary(log.agent, log.entry)}</p>
-                    {log.entry.analysis_date != null && (
-                      <p className="mt-1 text-xs text-muted">Ngày phân tích: {displayDate(vietnamDate(log.entry.analysis_date))}{log.entry.is_replay ? " · Chạy lại dữ liệu lịch sử" : ""}</p>
-                    )}
-                  </summary>
-
-                  <LogDetailViewer agent={log.agent} entry={log.entry} />
-
-                  <details className="mt-3">
-                    <summary className="cursor-pointer text-xs font-medium text-muted hover:underline">Dữ liệu gốc JSON · #{String(log.entry.id ?? index)}</summary>
-                    <pre className="mt-2 max-h-80 overflow-auto rounded-lg bg-soft p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-all">
-                      {JSON.stringify(log.entry, null, 2)}
-                    </pre>
-                  </details>
-                </details>
-              )
-            })}
+            {shownLogs.slice(0, logLimit).map((log, index) => <AgentLogRow key={`${log.agent}-${log.entry.id ?? index}`} agent={log.agent} entry={log.entry} index={index} />)}
           </div>
 
           {shownLogs.length > logLimit && (
@@ -1526,7 +1556,7 @@ export default function WarRoom() {
             Đã tải tối đa 200 bản ghi gần nhất mỗi agent. Chọn một ngày để thu hẹp lịch sử.
           </p>
         </section>
-      </div>
+      </div>}
     </div>
   )
 }
