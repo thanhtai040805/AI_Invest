@@ -172,7 +172,7 @@ class OHLCVIngestionService:
                 d["high"],
                 d["low"],
                 d["close"],
-                d["close"],  # Initialize close_unadj from the source close; later upserts preserve it.
+                None,  # DNSE provides adjusted close; preserve any existing unadjusted close.
                 d["close"], # vwap (khởi tạo tạm)
                 v_cont,
                 v_atc,
