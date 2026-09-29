@@ -58,12 +58,10 @@ function NotificationBell() {
 }
 
 function TopBar({ onSearch }: { onSearch: () => void }) {
-  const market = useResource(() => Promise.all([marketApi.indices(), marketApi.snapshot()]), [])
-  const indices = Array.isArray(market.data?.[0]) ? market.data[0] : (market.data?.[0]?.data ?? market.data?.[0]?.indices ?? [])
-  const snapshot = market.data?.[1]?.data ?? market.data?.[1] ?? {}
+  const market = useResource(() => marketApi.indices(), [])
+  const indices = Array.isArray(market.data) ? market.data : (market.data?.data ?? market.data?.indices ?? [])
   const findIndex = (symbol: string) => indices.find((item: Record<string, unknown>) => String(item.symbol ?? item.code ?? item.name).toUpperCase().includes(symbol)) ?? {}
   const vn = findIndex("VNINDEX")
-  const vn30 = findIndex("VN30")
   const stat = (label: string, value: string, sub?: ReactNode) => (
     <div className="flex flex-col justify-center px-4 border-l border-line first:border-l-0">
       <span className="text-[10px] font-medium tracking-wide text-muted uppercase leading-none">{label}</span>
@@ -74,15 +72,6 @@ function TopBar({ onSearch }: { onSearch: () => void }) {
     <header className="h-14 bg-surface border-b border-line flex items-center pl-5 pr-4 shrink-0">
       <div className="flex items-center min-w-0">
         {stat("VN-Index", numberValue(vn.value ?? vn.close ?? vn.price).toLocaleString("vi-VN", { minimumFractionDigits: 2 }), <PercentChange value={numberValue(vn.changePct ?? vn.change_percent)} className="text-[11px]" arrow={false} />)}
-        {stat("VN30", numberValue(vn30.value ?? vn30.close ?? vn30.price).toLocaleString("vi-VN", { minimumFractionDigits: 2 }), <PercentChange value={numberValue(vn30.changePct ?? vn30.change_percent)} className="text-[11px]" arrow={false} />)}
-        <div className="hidden lg:contents">
-          {stat("Thanh khoản", String(snapshot.liquidity ?? snapshot.totalValue ?? "—"))}
-          {stat("Khối ngoại", String(snapshot.foreignFlow ?? snapshot.foreign_net ?? "—"))}
-        </div>
-        <div className="hidden xl:flex flex-col justify-center px-4 border-l border-line">
-          <span className="text-[10px] font-medium tracking-wide text-muted uppercase leading-none">Chế độ thị trường</span>
-          <span className="text-[12px] text-ink mt-1 leading-none">{String(snapshot.regime ?? "Chưa có dữ liệu")}</span>
-        </div>
       </div>
       <div className="ml-auto flex items-center gap-2">
         <button

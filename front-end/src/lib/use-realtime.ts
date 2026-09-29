@@ -200,8 +200,6 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
 export function useRealtimeMarket(initialIndices?: {
   vnIndexVal: string
   vnIndexPct: number
-  vn30Val: string
-  vn30Pct: number
   vn100Val?: string
   vn100Pct?: number
 }) {
@@ -222,8 +220,6 @@ export function useRealtimeMarket(initialIndices?: {
         if (
           prev?.vnIndexVal === initialIndices.vnIndexVal &&
           prev?.vnIndexPct === initialIndices.vnIndexPct &&
-          prev?.vn30Val === initialIndices.vn30Val &&
-          prev?.vn30Pct === initialIndices.vn30Pct &&
           prev?.vn100Val === initialIndices.vn100Val &&
           prev?.vn100Pct === initialIndices.vn100Pct
         ) {
@@ -235,8 +231,6 @@ export function useRealtimeMarket(initialIndices?: {
   }, [
     initialIndices?.vnIndexVal,
     initialIndices?.vnIndexPct,
-    initialIndices?.vn30Val,
-    initialIndices?.vn30Pct,
     initialIndices?.vn100Val,
     initialIndices?.vn100Pct,
   ])
@@ -263,9 +257,8 @@ export function useRealtimeMarket(initialIndices?: {
       const indices = list as ApiMarketIndex[]
       const getName = (item: ApiMarketIndex) => String(item.name ?? item.symbol ?? "").toUpperCase().replaceAll("-", "")
       const vnIndexItem = indices.find((x) => getName(x) === "VNINDEX")
-      const vn30Item = indices.find((x) => getName(x) === "VN30")
       const vn100Item = indices.find((x) => getName(x) === "VN100")
-      if (!vnIndexItem && !vn30Item && !vn100Item) return
+      if (!vnIndexItem && !vn100Item) return
       if (!data.isSnapshot && vnIndexItem) {
         const receivedAt = Number(vnIndexItem.receivedAt ?? 0) * 1000
         const fresh = receivedAt > 0 && Date.now() - receivedAt < 15_000
@@ -278,10 +271,6 @@ export function useRealtimeMarket(initialIndices?: {
           ? Number(vnIndexItem.value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
           : prev?.vnIndexVal ?? "—",
         vnIndexPct: vnIndexItem ? Number(vnIndexItem.changePercent ?? vnIndexItem.change_pct ?? 0) : prev?.vnIndexPct ?? 0,
-        vn30Val: vn30Item && Number.isFinite(Number(vn30Item.value))
-          ? Number(vn30Item.value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-          : prev?.vn30Val ?? "—",
-        vn30Pct: vn30Item ? Number(vn30Item.changePercent ?? vn30Item.change_pct ?? 0) : prev?.vn30Pct ?? 0,
         vn100Val: vn100Item && Number.isFinite(Number(vn100Item.value))
           ? Number(vn100Item.value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
           : prev?.vn100Val ?? "—",

@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from app.config.settings import get_settings
 from app.infrastructure.external_api.dnse.stream_hub import get_stream_hub
+from app.infrastructure.external_api.sector_heatmap import build_sector_heatmap
 from app.infrastructure.external_api.dnse.market_session import MarketSessionManager
 from app.infrastructure.external_api.dnse.rest_client import get_rest_client
 from app.infrastructure.external_api.dnse.redis_pub import (
@@ -668,35 +669,7 @@ class MarketDataService:
             pass
 
         snap = await self.get_snapshot()
-        sector_map: Dict[str, Dict] = {}
-        for s in snap.get("stocks", []):
-            name = s.get("sector") or "Khác"
-            if name not in sector_map:
-                sector_map[name] = {"name": name, "change": 0.0, "changeSum": 0.0, "count": 0, "totalVol": 0, "marketCap": 0.0, "foreignFlow": 0.0, "foreignCount": 0}
-            market_cap = float(s.get("marketCap") or 0)
-            change_pct = float(s.get("changePercent") or s.get("change_pct") or 0)
-            sector_map[name]["change"] += change_pct * market_cap
-            sector_map[name]["changeSum"] += change_pct
-            sector_map[name]["count"] += 1
-            sector_map[name]["marketCap"] += market_cap
-            sector_map[name]["totalVol"] += s.get("volume", 0)
-            sector_map[name]["foreignFlow"] += float(s.get("foreign_flow") or 0)
-            sector_map[name]["foreignCount"] += s.get("foreign_flow") is not None
-
-        sectors = []
-        for n, d in sector_map.items():
-            avg_change = round(d["change"] / d["marketCap"] if d["marketCap"] else d["changeSum"] / d["count"], 2)
-            sectors.append({
-                "name": n,
-                "change": avg_change,
-                "weight": d["marketCap"],
-                "count": d["count"],
-                "foreign_flow": d["foreignFlow"] if d["foreignCount"] else None,
-                "totalVolume": d["totalVol"],
-                "color": "bg-secondary" if avg_change >= 0 else "bg-error",
-            })
-
-        return {"sectors": sectors, "source": "computed"}
+        return {"sectors": build_sector_heatmap(snap.get("stocks", [])), "source": "computed"}
 
     async def screen_stocks(self, filters: Dict) -> Dict:
         from app.domain.services.screener_service import screener_svc

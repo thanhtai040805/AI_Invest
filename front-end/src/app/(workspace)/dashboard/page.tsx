@@ -2,7 +2,7 @@
 
 import { Page } from "@/components/Shell";
 import { Link } from "@/lib/router";
-type Sector = { name: string; vn: string; weight: number; changePct: number; foreign: number };
+type Sector = { name: string; vn: string; weight: number; count: number; changePct: number; foreign: number };
 import { marketApi, workspaceApi } from "@/lib/api";
 import { useResource } from "@/lib/api/use-resource";
 import { DataState } from "@/components/data-state";
@@ -19,13 +19,15 @@ import { KLineChart } from "@/components/KLineChart";
 import type { ApiMarketStock } from "@/types";
 
 type DashboardSector = Sector & { sparkline?: number[]; foreignKnown?: boolean };
-interface ApiSectorRow { name?: string; sector?: string; nameVi?: string; weight?: number; marketWeight?: number; market_cap?: number; changePct?: number; change_pct?: number; change?: number; foreign?: number; foreignFlow?: number; foreign_flow?: number; sparkline?: number[] }
+interface ApiSectorRow { name?: string; sector?: string; nameVi?: string; weight?: number; marketWeight?: number; market_cap?: number; count?: number; changePct?: number; change_pct?: number; change?: number; foreign?: number; foreignFlow?: number; foreign_flow?: number; sparkline?: number[] }
 
 function MarketMap({ sectors }: { sectors: DashboardSector[] }) {
-  const total = sectors.reduce((sum, sector) => sum + sector.weight, 0);
+  const hasMarketCap = sectors.some((sector) => sector.weight > 0);
+  const total = sectors.reduce((sum, sector) => sum + (hasMarketCap ? sector.weight : sector.count), 0);
   return (
     <div className="grid grid-cols-2 sm:grid-cols-4 auto-rows-[118px] gap-1.5">
       {sectors.map((sector) => {
+        const weight = hasMarketCap ? sector.weight : sector.count;
         const positive = sector.changePct >= 0;
         const strength = Math.min(Math.abs(sector.changePct) / 4, 1);
         const ground = positive
@@ -35,7 +37,7 @@ function MarketMap({ sectors }: { sectors: DashboardSector[] }) {
         return (
           <div
             key={sector.name}
-            className={`${sector.weight >= 18 ? "sm:col-span-2" : ""}`}
+            className={`${weight >= 18 ? "sm:col-span-2" : ""}`}
             style={{ background: ground }}
           >
             <Link
@@ -48,7 +50,7 @@ function MarketMap({ sectors }: { sectors: DashboardSector[] }) {
                     {sector.name}
                   </div>
                   <div className="mt-0.5 text-[10px] text-secondary">
-                    {((sector.weight / total) * 100).toFixed(0)}% tỷ trọng
+                    {total > 0 ? `${((weight / total) * 100).toFixed(0)}% ${hasMarketCap ? "tỷ trọng" : "theo số mã"}` : "—"}
                   </div>
                 </div>
                 <PercentChange
@@ -107,7 +109,7 @@ function DashboardView({
       <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.65fr)_350px] gap-4">
         <Panel>
           <PanelHead
-            title="VN-Index & VN30"
+            title="VN-Index"
             sub="Nến thời gian thực · Phiên HOSE · Con trỏ, phóng to & chỉ báo"
             action={
               <Pill tone={isLive ? "teal" : "neutral"}>
@@ -116,7 +118,7 @@ function DashboardView({
               </Pill>
             }
           />
-          <div className="grid grid-cols-2 gap-5 border-b border-line pb-4 mb-4">
+          <div className="grid grid-cols-1 gap-5 border-b border-line pb-4 mb-4">
             <div>
               <div className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted">
                 VN-Index
@@ -126,17 +128,6 @@ function DashboardView({
                   {indices.vnindex > 0 ? indices.vnindex.toLocaleString("vi-VN") : "—"}
                 </span>
                 {indices.vnindex > 0 && <PercentChange value={indices.vnindexChange ?? 0} arrow={false} className="text-[14px]" />}
-              </div>
-            </div>
-            <div className="border-l border-line pl-5">
-              <div className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted">
-                VN30
-              </div>
-              <div className="mt-1 flex items-baseline gap-3">
-                <span className="font-mono text-[30px] font-semibold tracking-tight text-ink">
-                  {indices.vn30 > 0 ? indices.vn30.toLocaleString("vi-VN") : "—"}
-                </span>
-                {indices.vn30 > 0 && <PercentChange value={indices.vn30Change ?? 0} arrow={false} className="text-[14px]" />}
               </div>
             </div>
           </div>
@@ -177,7 +168,7 @@ function DashboardView({
         <Panel>
           <PanelHead
             title="Bản đồ nhiệt ngành"
-            sub="Màu sắc = biến động ngày · Diện tích = vốn hóa · Đường kẻ = lịch sử ngành khi có dữ liệu"
+            sub="Màu sắc = biến động ngày · Diện tích = vốn hóa khi có dữ liệu, nếu thiếu dùng số mã · Đường kẻ = lịch sử ngành khi có dữ liệu"
             action={
               <Link to="/markets">
                 <Button variant="ghost">Mở bảng giá</Button>
@@ -203,12 +194,12 @@ export default function Dashboard() {
     const indexRows = Array.isArray(indexPayload) ? indexPayload : indexPayload?.data || indexPayload?.indices || [];
     const findIndex = (name: string) => indexRows.find((row: Record<string, unknown>) => String(row.symbol || row.code || row.name).toUpperCase().includes(name));
     const vn = findIndex("VNINDEX") || findIndex("VN-INDEX") || {};
-    const vn30 = findIndex("VN30") || {};
     const sectorRows: ApiSectorRow[] = Array.isArray(heatmap) ? heatmap : heatmap?.sectors || heatmap?.data || [];
     const sectors: DashboardSector[] = sectorRows.map((row) => ({
       name: String(row.name || row.sector || "—"),
       vn: String(row.nameVi || row.name || row.sector || "—"),
-      weight: Number(row.weight || row.marketWeight || row.market_cap || 1),
+      weight: Number(row.weight ?? row.marketWeight ?? row.market_cap ?? 0),
+      count: Number(row.count ?? 0),
       changePct: Number(row.changePct || row.change_pct || row.change || 0),
       foreign: Number(row.foreign || row.foreignFlow || row.foreign_flow || 0),
       foreignKnown: row.foreign_flow != null || row.foreignFlow != null || row.foreign != null,
@@ -239,8 +230,6 @@ export default function Dashboard() {
       indices: {
         vnindex: Number(vn.value || vn.indexValue || vn.close || 0),
         vnindexChange: Number(vn.changePct || vn.change_pct || vn.change || 0),
-        vn30: Number(vn30.value || vn30.indexValue || vn30.close || 0),
-        vn30Change: Number(vn30.changePct || vn30.change_pct || vn30.change || 0),
       },
     };
   }, []);
@@ -253,6 +242,7 @@ export default function Dashboard() {
       name: String(row.name || row.sector || "—"),
       vn: String(row.nameVi || row.name || row.sector || "—"),
       weight: liveTotal > 0 ? (count / liveTotal) * 100 : 0,
+      count: Number(row.count ?? 0),
       changePct: Number(row.changePct || row.change_pct || row.change || 0),
       foreign: Number(row.foreign_flow ?? row.foreignFlow ?? row.foreign ?? latestForeignFlow.get(String(row.name || row.sector || "")) ?? 0),
       foreignKnown: row.foreign_flow != null || row.foreignFlow != null || row.foreign != null,
@@ -276,8 +266,6 @@ export default function Dashboard() {
   const indices = {
     vnindex: liveIndices?.vnIndexVal ? Number(liveIndices.vnIndexVal.replaceAll(",", "")) : seedIndices?.vnindex ?? 0,
     vnindexChange: liveIndices?.vnIndexPct ?? seedIndices?.vnindexChange ?? 0,
-    vn30: liveIndices?.vn30Val ? Number(liveIndices.vn30Val.replaceAll(",", "")) : seedIndices?.vn30 ?? 0,
-    vn30Change: liveIndices?.vn30Pct ?? seedIndices?.vn30Change ?? 0,
   };
   const sectors = realtimeSectors ?? resource.data?.sectors ?? [];
   return <DataState loading={resource.loading && !sectors.length} error={sectors.length ? null : resource.error} empty={!sectors.length} retry={() => void resource.reload()}><DashboardView sectors={sectors} indices={indices} pulse={pulse} isLive={isLive} /></DataState>;

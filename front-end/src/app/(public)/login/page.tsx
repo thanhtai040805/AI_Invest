@@ -11,17 +11,22 @@ export default function Login() {
   const { navigate } = useRouter()
   const [email, setEmail] = useState("")
   const [pw, setPw] = useState("")
-  const [err, setErr] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
   const submit = async () => {
     if (!/.+@.+\..+/.test(email) || pw.length < 6) {
-      setErr(true)
+      setErr("Vui lòng nhập email hợp lệ và mật khẩu có ít nhất 6 ký tự.")
       return
     }
     try {
       await login(email, pw)
       navigate("/dashboard")
-    } catch {
-      setErr(true)
+    } catch (error) {
+      const status = (error as { status?: number })?.status
+      setErr(status === 429
+        ? "Bạn đã thử đăng nhập quá nhiều lần. Vui lòng chờ trước khi thử lại."
+        : status === 401
+          ? "Email hoặc mật khẩu không đúng."
+          : "Không thể đăng nhập lúc này. Vui lòng thử lại sau.")
     }
   }
   return (
@@ -51,15 +56,15 @@ export default function Login() {
           label="Địa chỉ Email"
           type="email"
           value={email}
-          onChange={setEmail}
+          onChange={(value) => { setEmail(value); setErr(null) }}
           placeholder="you@firm.vn"
-          error={err ? "Vui lòng nhập đúng email và mật khẩu." : undefined}
+          error={err ?? undefined}
         />
         <Field
           label="Mật khẩu"
           type="password"
           value={pw}
-          onChange={setPw}
+          onChange={(value) => { setPw(value); setErr(null) }}
           placeholder="••••••••"
         />
         <Button type="submit" variant="primary" className="h-11 w-full">

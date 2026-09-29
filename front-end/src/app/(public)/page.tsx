@@ -80,7 +80,7 @@ function PortfolioRiskFrame() {
 }
 
 function MarketPulse() {
-  const [indexSeed, setIndexSeed] = useState<{ vnIndexVal: string; vnIndexPct: number; vn30Val: string; vn30Pct: number } | undefined>()
+  const [indexSeed, setIndexSeed] = useState<{ vnIndexVal: string; vnIndexPct: number } | undefined>()
   const { indices: liveIndices, isLive, snapshot: liveSnapshot, breadth: liveBreadth, liquidity: liveLiquidity } = useRealtimeMarket(indexSeed)
   const [indexDate, setIndexDate] = useState<string>("")
   const [historySeries, setHistorySeries] = useState<number[]>([])
@@ -124,13 +124,10 @@ function MarketPulse() {
         const indices = indRes.value.indices as ApiMarketIndex[]
         const getName = (item: ApiMarketIndex) => String(item.name ?? item.symbol ?? "").toUpperCase().replaceAll("-", "")
         const vn = indices.find((x) => getName(x) === "VNINDEX")
-        const vn30 = indices.find((x) => getName(x) === "VN30")
         if (vn) {
           setIndexSeed({
             vnIndexVal: Number(vn.value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
             vnIndexPct: Number(vn.changePercent ?? vn.change_pct ?? 0),
-            vn30Val: vn30 ? Number(vn30.value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—",
-            vn30Pct: vn30 ? Number(vn30.changePercent ?? vn30.change_pct ?? 0) : 0,
           })
           setIndexDate(vn.lastUpdate ? new Date(vn.lastUpdate).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }).toUpperCase() : "")
         }

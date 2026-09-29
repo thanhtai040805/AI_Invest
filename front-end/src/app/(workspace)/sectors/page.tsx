@@ -11,7 +11,7 @@ import { marketApi } from "@/lib/api"
 import { useResource } from "@/lib/api/use-resource"
 import { useRealtimeMarket } from "@/lib/use-realtime"
 
-interface ApiSector { name?: string; sector?: string; foreign_flow?: number | null; count?: number; liveCount?: number; weight?: number; change?: number; change_pct?: number; sparkline?: number[]; totalVolume?: number }
+interface ApiSector { name?: string; sector?: string; foreign_flow?: number | null; count?: number; liveCount?: number; weight?: number; market_cap?: number; marketCap?: number; change?: number; change_pct?: number; sparkline?: number[]; totalVolume?: number }
 interface ApiHeatmap { sectors?: ApiSector[] }
 
 export default function Sectors() {
@@ -28,18 +28,21 @@ export default function Sectors() {
         sector.foreign_flow,
       ]),
     )
-    const totalWeight = apiSectors.reduce((sum, sector) => sum + Number(sector.weight ?? sector.count ?? 0), 0)
+    const marketCapTotal = apiSectors.reduce((sum, sector) => sum + Number(sector.weight ?? sector.market_cap ?? sector.marketCap ?? 0), 0)
+    const weightByCount = marketCapTotal <= 0
+    const totalWeight = apiSectors.reduce((sum, sector) => sum + Number(weightByCount ? sector.count ?? 0 : sector.weight ?? sector.market_cap ?? sector.marketCap ?? 0), 0)
 
     return (apiSectors as ApiSector[]).slice(0, 12).map((s) => {
       const sectorName = String(s.name || s.sector || "")
       const foreignRaw = s.foreign_flow ?? latestForeignFlow.get(sectorName)
       const foreignBn = foreignRaw != null ? Number(foreignRaw) : null
       const change = Number(s.change ?? s.change_pct ?? 0)
-      const sectorWeight = Number(s.weight ?? s.count ?? 0)
+      const sectorWeight = Number(weightByCount ? s.count ?? 0 : s.weight ?? s.market_cap ?? s.marketCap ?? 0)
       return {
         name: sectorName || "General",
         vn: sectorName || "Ngành",
         weight: totalWeight > 0 ? (sectorWeight / totalWeight) * 100 : 0,
+        weightByCount,
         changePct: Number(change.toFixed(2)),
         foreign: foreignBn,
         count: s.count,
@@ -63,7 +66,7 @@ export default function Sectors() {
                   {s.name}
                 </div>
                 <div className="text-[12px] text-muted">
-                  {s.vn} · {s.weight.toFixed(1)}% tỷ trọng{s.liveCount != null && s.count != null ? ` · ${s.liveCount}/${s.count} mã có tick` : ""}
+                  {s.vn} · {s.weight.toFixed(1)}% {s.weightByCount ? "theo số mã" : "tỷ trọng"}{s.liveCount != null && s.count != null ? ` · ${s.liveCount}/${s.count} mã có tick` : ""}
                 </div>
               </div>
               <div className="text-right">

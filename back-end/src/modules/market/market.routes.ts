@@ -92,25 +92,36 @@ async function dbIndices() {
 
 async function dbHeatmap() {
   const sectors = await prisma.$queryRaw<Array<Record<string, unknown>>>`
-      WITH latest AS (SELECT MAX(date) AS date FROM market_data_daily)
-      SELECT COALESCE(s.sector, 'Khác') AS sector,
+      WITH latest AS (SELECT MAX(date) AS date FROM market_data_daily),
+      valid_returns AS (
+        SELECT COALESCE(s.sector, 'Khác') AS sector,
+               c.market_cap,
+               ((c.close - prev.close) / prev.close) * 100 AS change_pct
+        FROM market_data_daily d
+        JOIN market_data_daily_calculation c ON c.ticker=d.ticker AND c.date=d.date
+        JOIN latest l ON d.date=l.date
+        JOIN stocks s ON s.symbol=d.ticker
+        LEFT JOIN LATERAL (
+          SELECT close FROM market_data_daily_calculation
+          WHERE ticker=d.ticker AND date < d.date ORDER BY date DESC LIMIT 1
+        ) prev ON TRUE
+        WHERE s.exchange = 'HOSE'
+          AND c.close > 0
+          AND prev.close > 0
+          AND (s.floor IS NULL OR s.floor = 0 OR c.close * 1000 >= CASE WHEN ABS(s.floor) < 500 THEN s.floor * 1000 ELSE s.floor END)
+          AND (s.ceiling IS NULL OR s.ceiling = 0 OR c.close * 1000 <= CASE WHEN ABS(s.ceiling) < 500 THEN s.ceiling * 1000 ELSE s.ceiling END)
+      )
+      SELECT sector,
              COUNT(*)::int AS count,
-             COALESCE((SUM(CASE WHEN prev.close <> 0
-               THEN ((c.close-prev.close)/prev.close)*100*COALESCE(c.market_cap, 0) ELSE 0 END)
-               / NULLIF(SUM(COALESCE(c.market_cap, 0)), 0)),
-               AVG(CASE WHEN prev.close <> 0 THEN ((c.close-prev.close)/prev.close)*100 END))::float8 AS change_pct,
-             SUM(COALESCE(c.market_cap, 0))::float8 AS market_cap,
+             COALESCE(
+               SUM(change_pct * GREATEST(COALESCE(market_cap, 0), 0))
+                 / NULLIF(SUM(GREATEST(COALESCE(market_cap, 0), 0)), 0),
+               AVG(change_pct)
+             )::float8 AS change_pct,
+             SUM(GREATEST(COALESCE(market_cap, 0), 0))::float8 AS market_cap,
              NULL::float8 AS foreign_flow
-      FROM market_data_daily d
-      JOIN market_data_daily_calculation c ON c.ticker=d.ticker AND c.date=d.date
-      JOIN latest l ON d.date=l.date
-      JOIN stocks s ON s.symbol=d.ticker
-      LEFT JOIN LATERAL (
-        SELECT close FROM market_data_daily_calculation
-        WHERE ticker=d.ticker AND date < d.date ORDER BY date DESC LIMIT 1
-      ) prev ON TRUE
-      WHERE s.exchange = 'HOSE'
-      GROUP BY COALESCE(s.sector, 'Khác')
+      FROM valid_returns
+      GROUP BY sector
       ORDER BY market_cap DESC
     `;
 

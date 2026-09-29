@@ -7,7 +7,17 @@ type Auth = { authed: boolean; loading: boolean; name: string; user: User | null
 const Ctx = createContext<Auth | null>(null)
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null); const [loading, setLoading] = useState(true)
-  useEffect(() => { let active = true; authApi.me().then(value => { if (active) setUser(value) }).catch(() => {}).finally(() => { if (active) setLoading(false) }); return () => { active = false } }, [])
+  useEffect(() => {
+    if (!tokenStore.get()) {
+      // The auth check is browser-only because it reads localStorage.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setLoading(false)
+      return
+    }
+    let active = true
+    authApi.me().then(value => { if (active) setUser(value) }).catch(() => {}).finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
+  }, [])
   const login = async (email: string, password: string) => { const result = await authApi.login(email, password); tokenStore.set(result.accessToken); setUser(result.user) }
   const register = async (name: string, email: string, password: string) => { const result = await authApi.register(email, password, name); tokenStore.set(result.accessToken); setUser(result.user) }
   const logout = async () => { try { await authApi.logout() } finally { tokenStore.clear(); setUser(null); window.location.assign("/") } }
