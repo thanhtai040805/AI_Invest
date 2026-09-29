@@ -172,7 +172,7 @@ class OHLCVIngestionService:
                 d["high"],
                 d["low"],
                 d["close"],
-                None, # close_unadj is populated from CafeF; DNSE only provides close_adj
+                d["close"],  # Initialize close_unadj from the source close; later upserts preserve it.
                 d["close"], # vwap (khởi tạo tạm)
                 v_cont,
                 v_atc,

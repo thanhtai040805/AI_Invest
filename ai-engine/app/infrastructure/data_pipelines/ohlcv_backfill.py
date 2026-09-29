@@ -115,7 +115,7 @@ def upsert_today(cur, rows: list[tuple]):
             float(r[3]),  # high_adj
             float(r[4]),  # low_adj
             float(r[5]),  # close_adj
-            None,  # close_unadj is populated from CafeF; DNSE only provides close_adj
+            float(r[5]),  # Initialize close_unadj from the source close; preserve it on later upserts.
             float(r[5]),  # vwap
             int(r[6]),    # volume_continuous
             int(r[6]),    # volume_total
