@@ -6,8 +6,9 @@ Data sources: PostgreSQL (historical daily) → Redis (recent 1-min) → in-memo
 """
 
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 from app.config.settings import get_settings
 from app.infrastructure.external_api.dnse.stream_hub import get_stream_hub
@@ -18,8 +19,10 @@ from app.infrastructure.external_api.dnse.redis_pub import (
     get_list_range,
     get_sorted_set_range,
 )
+from app.infrastructure.external_api.dnse.price_units import to_vnd_price
 
 _PG_URL = os.getenv("DATABASE_URL", "postgresql://postgres:123@localhost:5432/aiinvest")
+TZ_VN = ZoneInfo("Asia/Ho_Chi_Minh")
 
 
 def _query_pg_ohlcv(symbol: str, start: Optional[str] = None, end: Optional[str] = None) -> List[Dict]:
@@ -266,6 +269,8 @@ class MarketDataService:
         data = res.get("data", [])
         if data:
             for c in data:
+                for field in ("open", "high", "low", "close"):
+                    c[field] = to_vnd_price(c.get(field, 0.0))
                 close = float(c.get("close", 0.0))
                 volume = float(c.get("volume", 0.0))
                 turnover = c.get("value", c.get("turnover"))
@@ -348,7 +353,8 @@ class MarketDataService:
 
         # 2. For daily interval: PostgreSQL (historical) + Redis 1-min (today's live)
         if resolution == "1D":
-            today_str = datetime.now().strftime("%Y-%m-%d")
+            today = datetime.now(TZ_VN).date()
+            today_str = today.isoformat()
             historical_data: List[Dict] = []
             today_candle: Optional[Dict] = None
 
@@ -360,6 +366,32 @@ class MarketDataService:
                     logger.info(f"OHLCV {sym} {interval}: got {len(historical_data)} candles from PostgreSQL")
             except Exception as e:
                 logger.warning(f"OHLCV {sym} {interval}: PostgreSQL error: {e}")
+
+            # Refresh the recent window so a missed end-of-day backfill does not
+            # leave an otherwise healthy PostgreSQL history one session behind.
+            recent_start = (today - timedelta(days=30)).isoformat()
+            refresh_start = max(start, recent_start) if start else recent_start
+            if end is None or end >= recent_start:
+                try:
+                    rest_data = await self._fetch_rest_ohlcv(
+                        sym, interval, refresh_start, end, logger
+                    )
+                    rest_rows = rest_data.get("data", []) if rest_data else []
+                    if rest_rows:
+                        merged_by_date = {
+                            str(row.get("time", row.get("date", "")))[:10]: row
+                            for row in historical_data
+                        }
+                        for row in rest_rows:
+                            candle_date = str(row.get("time", row.get("date", "")))[:10]
+                            if candle_date:
+                                merged_by_date[candle_date] = row
+                        historical_data = sorted(
+                            merged_by_date.values(),
+                            key=lambda row: str(row.get("time", row.get("date", ""))),
+                        )
+                except Exception as e:
+                    logger.warning(f"OHLCV {sym} {interval}: recent REST refresh failed: {e}")
 
             # 2b. Fallback to REST if PostgreSQL is empty
             if not historical_data:

@@ -7,7 +7,34 @@ import { stockApi } from "@/lib/api"
 import { getSocket, retainOhlc, retainStock } from "@/lib/socket"
 
 interface ApiCandle { date?: string; time?: number | string; timestamp?: number | string; open?: number; high?: number; low?: number; close: number; volume?: number }
-interface OhlcTick { symbol?: string; resolution?: string; timestamp?: number; open?: number; high?: number; low?: number; close?: number; volume?: number }
+interface OhlcTick { symbol?: string; resolution?: string; timestamp?: number | string; open?: number; high?: number; low?: number; close?: number; volume?: number }
+
+function toChartPrice(value: number): number {
+  return value > 0 && value < 500 ? value * 1000 : value
+}
+
+function parseTimestamp(raw?: number | string): number {
+  if (typeof raw === "string" && !/^\d+$/.test(raw)) return new Date(raw).getTime()
+  const numeric = Number(raw ?? 0)
+  return numeric > 1e12 ? numeric : numeric * 1000
+}
+
+function candleTimestamp(candle: ApiCandle): number {
+  return parseTimestamp(candle.timestamp ?? candle.time ?? candle.date)
+}
+
+const vietnamDateFormatter = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Ho_Chi_Minh",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+})
+
+function vietnamDateKey(timestamp: number): string {
+  const parts = vietnamDateFormatter.formatToParts(timestamp)
+  const part = (type: string) => parts.find((item) => item.type === type)?.value ?? ""
+  return `${part("year")}-${part("month")}-${part("day")}`
+}
 
 function dnseResolution(period: Period): string | null {
   if (period.timespan === "minute") return period.multiplier === 60 ? "1H" : String(period.multiplier)
@@ -39,6 +66,7 @@ class RealMarketDatafeed implements Datafeed {
       this.currentTicker = sym
       this.currentResolution = resolution
       this.historyCache = null
+      this.lastCandle = undefined
       this.hasMoreHistory = true
     }
 
@@ -61,21 +89,16 @@ class RealMarketDatafeed implements Datafeed {
 
     this.isFetching = true
     try {
-      const candles = (await stockApi.ohlcv(sym, { limit: 300, interval: resolution })) as ApiCandle[]
+      const response = await stockApi.ohlcv(sym, { limit: 300, interval: resolution })
+      const candles = (Array.isArray(response) ? response : (response as { data?: ApiCandle[] })?.data) as ApiCandle[]
       if (Array.isArray(candles) && candles.length > 0) {
-        const candleTime = (c: ApiCandle) => {
-          const raw = c.timestamp ?? c.time ?? c.date
-          if (typeof raw === "string" && !/^\d+$/.test(raw)) return new Date(raw).getTime()
-          const numeric = Number(raw ?? 0)
-          return numeric > 1e12 ? numeric : numeric * 1000
-        }
-        const sorted = [...candles].sort((a, b) => candleTime(a) - candleTime(b))
+        const sorted = [...candles].sort((a, b) => candleTimestamp(a) - candleTimestamp(b))
         const formatted: KLineData[] = sorted.map((c) => {
-          const timestamp = candleTime(c)
-          const open = Number(c.open ?? c.close)
-          const high = Number(c.high ?? Math.max(open, Number(c.close)))
-          const low = Number(c.low ?? Math.min(open, Number(c.close)))
-          const close = Number(c.close)
+          const timestamp = candleTimestamp(c)
+          const close = toChartPrice(Number(c.close))
+          const open = toChartPrice(Number(c.open ?? c.close))
+          const high = toChartPrice(Number(c.high ?? Math.max(open, close)))
+          const low = toChartPrice(Number(c.low ?? Math.min(open, close)))
           const volume = Number(c.volume ?? 0)
           return {
             timestamp,
@@ -102,6 +125,7 @@ class RealMarketDatafeed implements Datafeed {
     // An empty chart is preferable to a fabricated market candle.
     this.hasMoreHistory = false
     this.historyCache = []
+    this.lastCandle = undefined
     return []
   }
 
@@ -114,19 +138,31 @@ class RealMarketDatafeed implements Datafeed {
 
     const onCandle = (data: OhlcTick) => {
       if (data?.symbol !== sym || data.resolution !== resolution) return
-      const rawTime = Number(data.timestamp ?? 0)
-      const timestamp = rawTime > 1e12 ? rawTime : rawTime * 1000
-      if (!timestamp || (this.lastCandle && timestamp < this.lastCandle.timestamp)) return
+      const eventTime = parseTimestamp(data.timestamp)
+      if (!eventTime) return
+      const isDaily = resolution === "1D"
+      const currentDate = vietnamDateKey(eventTime)
+      const lastDate = this.lastCandle ? vietnamDateKey(this.lastCandle.timestamp) : ""
+      const sameSession = isDaily && !!this.lastCandle && currentDate === lastDate
+      if (this.lastCandle && eventTime < this.lastCandle.timestamp && !sameSession) return
+      const close = toChartPrice(Number(data.close ?? 0))
       const candle: KLineData = {
-        timestamp,
-        open: Number(data.open ?? 0),
-        high: Number(data.high ?? 0),
-        low: Number(data.low ?? 0),
-        close: Number(data.close ?? 0),
+        timestamp: sameSession ? this.lastCandle!.timestamp : isDaily ? Date.parse(`${currentDate}T00:00:00Z`) : eventTime,
+        open: toChartPrice(Number(data.open ?? (sameSession ? this.lastCandle!.open : close))),
+        high: Math.max(toChartPrice(Number(data.high ?? close)), close, sameSession ? this.lastCandle!.high : close),
+        low: Math.min(toChartPrice(Number(data.low ?? close)), close, sameSession ? this.lastCandle!.low : close),
+        close,
         volume: Number(data.volume ?? 0),
       }
       if (!candle.open || !candle.close) return
       this.lastCandle = candle
+      if (this.historyCache) {
+        const index = this.historyCache.findIndex((item) =>
+          item.timestamp === candle.timestamp || (isDaily && vietnamDateKey(item.timestamp) === currentDate),
+        )
+        if (index >= 0) this.historyCache[index] = candle
+        else this.historyCache.push(candle)
+      }
       callback(candle)
     }
 

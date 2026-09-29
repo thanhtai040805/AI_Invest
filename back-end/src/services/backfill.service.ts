@@ -118,7 +118,7 @@ export async function autoBackfillIfNeeded(): Promise<{ triggered: boolean; reas
 
   const existingLog = await getTodaySessionLog();
   if (existingLog) {
-    if (existingLog.status === 'COMPLETED') {
+    if (existingLog.status === 'COMPLETED' && existingLog.ohlcvCount > 0) {
       return { triggered: false, reason: `${dateStr} session already backfilled (${existingLog.stockCount} stocks, ${existingLog.ohlcvCount} candles)` };
     }
     if (existingLog.status === 'BACKFILLING') {
@@ -142,6 +142,9 @@ export async function autoBackfillIfNeeded(): Promise<{ triggered: boolean; reas
 
     const stocks = await prisma.stock.findMany({ select: { symbol: true } });
     const ohlcvCount = await backfillTodayOhlcv(stocks.map((s: any) => s.symbol));
+    if (ohlcvCount === 0) {
+      throw new Error('No OHLCV candles were backfilled; the session remains retryable');
+    }
 
     await updateSessionLog(log.id, {
       status: 'COMPLETED',

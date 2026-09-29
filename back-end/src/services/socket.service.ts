@@ -51,7 +51,7 @@ function dailyQuoteSnapshot(symbol: string, row: Record<string, any>) {
     floor,
     volume: Number(row.volume_total ?? 0),
     change_pct: changePct,
-    timestamp: new Date().toISOString(),
+    timestamp: row.date,
     isSnapshot: true,
   };
 }

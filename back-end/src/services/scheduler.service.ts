@@ -5,6 +5,7 @@ import { aiEngineService } from './aiEngine.service';
 import { socketService } from './socket.service';
 import { subscriptionService } from './subscription.service';
 import { syncStocksFromEngine, backfillOhlcv } from './stockSync.service';
+import { autoBackfillIfNeeded } from './backfill.service';
 
 function parseRedisConnection(): { host: string; port: number; username?: string; password?: string; db?: number } {
   const url = new URL(config.redisUrl);
@@ -73,6 +74,13 @@ export function initScheduler(): void {
             }
           }),
         );
+      }
+
+      if (type === 'eod-backfill-check') {
+        const result = await autoBackfillIfNeeded();
+        if (result.triggered || result.reason.startsWith('Backfill failed:')) {
+          console.log(`[Scheduler] ${result.reason}`);
+        }
       }
     },
     { connection: REDIS_CONNECTION, concurrency: 3 },
@@ -149,6 +157,12 @@ async function scheduleRecurringJobs(): Promise<void> {
 
   await stockQueue.add('daily-stock-sync', { type: 'daily' }, {
     repeat: { every: 24 * 60 * 60 * 1000 },
+    removeOnComplete: 3,
+    removeOnFail: 3,
+  });
+
+  await marketQueue.add('eod-backfill-check', { type: 'eod-backfill-check' }, {
+    repeat: { every: 15 * 60 * 1000 },
     removeOnComplete: 3,
     removeOnFail: 3,
   });
