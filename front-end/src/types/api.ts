@@ -3,11 +3,17 @@ export interface ApiMarketStock {
   name?: string
   price?: number
   change_pct?: number
+  changePercent?: number
   ref?: number
   ceiling?: number
   floor?: number
   volume?: number
+  tradingValue?: number
+  industry?: string
+  exchange?: string
   foreign_flow?: number
+  source?: string
+  stale?: boolean
   momentum?: number
   rs?: number
   sparkline?: number[]
@@ -21,12 +27,15 @@ export interface ApiMarketIndex {
   change?: number
   changePercent?: number
   lastUpdate?: string
+  receivedAt?: number
   date?: string
 }
 
 export interface ApiMarketSnapshot {
   stocks?: ApiMarketStock[]
   items?: ApiMarketStock[]
+  total?: number
+  liveSymbols?: number
 }
 
 export interface ApiNewsItem {

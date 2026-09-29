@@ -126,7 +126,14 @@ class MarketDataService:
             try:
                 rest_indices = self._rest.get_market_indices()
                 if rest_indices:
-                    return {"indices": rest_indices, "source": "dnse-rest"}
+                    hose_indices = [
+                        item for item in rest_indices
+                        if (
+                            str(item.get("name") or item.get("indexName") or item.get("symbol") or "")
+                            .upper().replace("-", "") in {"VNINDEX", "VN30", "VN100"}
+                        )
+                    ]
+                    return {"indices": hose_indices, "source": "dnse-rest"}
             except Exception:
                 pass
 
@@ -156,64 +163,62 @@ class MarketDataService:
         }
 
     async def get_snapshot(self, exchange: Optional[str] = None) -> Dict:
-        """Return ALL stocks from DNSE hub.
-        
-        Strategy:
-        1. Get ALL symbols from DNSE REST (if not cached)
-        2. Merge with live data from Redis/hub
-        3. Filter by exchange if requested
-        """
+        """Return the database HOSE universe with the latest DNSE updates."""
         import json
 
         live_stocks: Dict[str, Dict] = {}
+        board = self._hub.get_market_board_snapshot()
+        has_database_universe = bool(board.get("stocks"))
+        for stock in board.get("stocks", []):
+            if stock.get("symbol"):
+                live_stocks[stock["symbol"]] = stock
 
-        # 1. Try Redis snapshot cache first (fastest)
-        try:
-            r = get_redis()
-            cached = r.get("market:snapshot")
-            if cached:
-                snap = json.loads(cached)
-                for s in snap.get("stocks", []):
-                    if s.get("symbol"):
-                        live_stocks[s["symbol"]] = s
-        except Exception:
-            pass
+        # Use Redis's live snapshot only when the database universe is unavailable.
+        if not has_database_universe:
+            try:
+                r = get_redis()
+                cached = r.get("market:snapshot")
+                if cached:
+                    snap = json.loads(cached)
+                    for s in snap.get("stocks", []):
+                        if s.get("symbol"):
+                            live_stocks[s["symbol"]] = s
+            except Exception:
+                pass
 
         # 2. Enrich with live hub data (most recent ticks)
         with self._hub._lock:
             hub_quotes = dict(self._hub._quotes)
-            hub_sec_def = dict(self._hub._sec_def)
+            universe_symbols = set(self._hub._universe_symbols)
 
         for sym, quote in hub_quotes.items():
+            if has_database_universe and sym not in universe_symbols:
+                continue
             if sym in live_stocks:
                 live_stocks[sym] = {**live_stocks[sym], **quote}
             else:
                 live_stocks[sym] = quote
 
-        # 3. If still no data, fetch symbol list from REST and merge with hub
-        if not live_stocks:
-            all_symbols = self._hub._subscribed if self._hub._subscribed else self._hub._get_core_symbols()
-            for sym in all_symbols:
-                sym = sym.upper()
-                quote = hub_quotes.get(sym)
-                sec_def = hub_sec_def.get(sym)
-                merged = {}
-                if sec_def:
-                    merged.update(sec_def)
-                if quote:
-                    merged.update(quote)
-                if merged:
-                    live_stocks[sym] = merged
-
-        stocks = list(live_stocks.values())
+        stocks = [
+            stock for stock in live_stocks.values()
+            if str(stock.get("exchange") or "HOSE").upper() == "HOSE"
+        ]
+        stocks.sort(key=lambda stock: float(stock.get("volume", 0) or 0), reverse=True)
 
         if exchange:
             stocks = [s for s in stocks if s.get("exchange", "HOSE").upper() == exchange.upper()]
 
+        live_symbols = sum(
+            1 for symbol, quote in hub_quotes.items()
+            if symbol in universe_symbols and quote.get("source") == "dnse-ws"
+        )
         return {
             "stocks": stocks,
             "total": len(stocks),
-            "source": "dnse-ws" if live_stocks else "empty",
+            "source": "mixed" if live_symbols else "postgres" if stocks else "empty",
+            "stale": not bool(live_symbols),
+            "liveSymbols": live_symbols,
+            "coverage": live_symbols / len(universe_symbols) if universe_symbols else 0,
         }
 
     async def get_stock_list(self, exchange: Optional[str] = None) -> Dict:
@@ -268,9 +273,11 @@ class MarketDataService:
                     c[field] = to_vnd_price(c.get(field, 0.0))
                 close = float(c.get("close", 0.0))
                 volume = float(c.get("volume", 0.0))
-                val = float(c.get("value", c.get("turnover", close * volume)))
-                c["value"] = val
-                c["vwap"] = val / volume if volume > 0 else close
+                turnover = c.get("value", c.get("turnover"))
+                if turnover is not None:
+                    value = float(turnover)
+                    c["value"] = value
+                    c["vwap"] = value / volume if volume > 0 else None
                 c["adj_close"] = c.get("adj_close", close)
         return res
 
@@ -525,6 +532,9 @@ class MarketDataService:
 
     async def get_quote(self, symbol: str) -> Dict:
         sym = symbol.upper()
+        with self._hub._lock:
+            if sym not in self._hub._universe_symbols:
+                return {"symbol": sym, "price": 0, "source": "unsupported"}
         self._hub.subscribe_symbols([sym])
 
         try:
@@ -640,17 +650,10 @@ class MarketDataService:
         except Exception:
             pass
 
-        snap = await self.get_snapshot()
-        stocks = snap.get("stocks", [])
-        total_value = sum(s.get("tradingValue", 0) for s in stocks) / 1e9
-        top_by_volume = sorted(stocks, key=lambda s: s.get("volume", 0), reverse=True)[:10]
-
         return {
-            "totalValueBillion": round(total_value, 2),
-            "stockCount": len(stocks),
-            "topByVolume": top_by_volume,
+            "totalValueBillion": None,
             "lastUpdate": datetime.now().isoformat(),
-            "source": "computed",
+            "source": "unavailable",
         }
 
     async def get_heatmap(self) -> Dict:
@@ -667,20 +670,28 @@ class MarketDataService:
         snap = await self.get_snapshot()
         sector_map: Dict[str, Dict] = {}
         for s in snap.get("stocks", []):
-            name = s.get("industry", s.get("sector", "Khác"))
+            name = s.get("sector") or "Khác"
             if name not in sector_map:
-                sector_map[name] = {"name": name, "change": 0.0, "count": 0, "totalVol": 0}
-            sector_map[name]["change"] += s.get("changePercent", 0)
+                sector_map[name] = {"name": name, "change": 0.0, "changeSum": 0.0, "count": 0, "totalVol": 0, "marketCap": 0.0, "foreignFlow": 0.0, "foreignCount": 0}
+            market_cap = float(s.get("marketCap") or 0)
+            change_pct = float(s.get("changePercent") or s.get("change_pct") or 0)
+            sector_map[name]["change"] += change_pct * market_cap
+            sector_map[name]["changeSum"] += change_pct
             sector_map[name]["count"] += 1
+            sector_map[name]["marketCap"] += market_cap
             sector_map[name]["totalVol"] += s.get("volume", 0)
+            sector_map[name]["foreignFlow"] += float(s.get("foreign_flow") or 0)
+            sector_map[name]["foreignCount"] += s.get("foreign_flow") is not None
 
         sectors = []
         for n, d in sector_map.items():
-            avg_change = round(d["change"] / max(d["count"], 1), 2)
+            avg_change = round(d["change"] / d["marketCap"] if d["marketCap"] else d["changeSum"] / d["count"], 2)
             sectors.append({
                 "name": n,
                 "change": avg_change,
-                "weight": d["count"],
+                "weight": d["marketCap"],
+                "count": d["count"],
+                "foreign_flow": d["foreignFlow"] if d["foreignCount"] else None,
                 "totalVolume": d["totalVol"],
                 "color": "bg-secondary" if avg_change >= 0 else "bg-error",
             })

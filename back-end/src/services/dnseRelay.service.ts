@@ -4,7 +4,7 @@ import { redisService } from './redis.service';
 import { socketService } from './socket.service';
 
 const CACHE_TTL: Record<string, number> = {
-  indices: 3,
+  indices: 15,
   breadth: 5,
   snapshot: 3,
   liquidity: 5,
@@ -24,11 +24,19 @@ const STREAM_KEYS: Record<string, string> = {
   ohlcClosed: 'dnse:stream:ohlc_closed:',
 };
 
-const MAX_REPLAY_PER_STREAM = 50;
-
 class DnseRelayService {
   private subscriber: Redis | null = null;
-  private lastStreamIds: Map<string, string> = new Map();
+  private retryTimer: NodeJS.Timeout | null = null;
+  private starting = false;
+  private stopping = false;
+
+  private retry(): void {
+    if (this.stopping || this.retryTimer) return;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      void this.start();
+    }, 5000);
+  }
 
   async start(): Promise<void> {
     if (!config.dnse.enabled) {
@@ -36,9 +44,12 @@ class DnseRelayService {
       return;
     }
 
+    if (this.starting || this.subscriber) return;
+    this.starting = true;
     const url = new URL(config.redisUrl);
+    let subscriber: Redis | null = null;
     try {
-      this.subscriber = new Redis({
+      subscriber = new Redis({
         host: url.hostname || 'localhost',
         port: parseInt(url.port || '6379', 10),
         username: url.username || undefined,
@@ -50,74 +61,70 @@ class DnseRelayService {
         enableOfflineQueue: false,
       });
 
-      this.subscriber.on('error', () => {});
-      await this.subscriber.connect();
+      subscriber.on('error', () => {});
+      await subscriber.connect();
+      this.subscriber = subscriber;
+      subscriber.on('end', () => {
+        if (this.subscriber === subscriber) this.subscriber = null;
+        this.retry();
+      });
+      subscriber.on('pmessage', (_pattern, channel, message) => {
+        try {
+          this.handleMessage(channel, JSON.parse(message));
+        } catch (err) {
+          console.error('[DNSE Relay] Invalid message:', err);
+        }
+      });
+      const pattern = `${config.dnse.redisChannelPrefix}:*`;
+      await this.replayMissedStreams();
+      await subscriber.psubscribe(pattern);
       console.log('[DNSE Relay] Redis subscriber connected successfully');
+      console.log(`[DNSE Relay] Listening on ${pattern}`);
     } catch {
       console.log('[DNSE Relay] Redis offline — WebSocket relay standing by');
-      if (this.subscriber) {
-        this.subscriber.disconnect();
-        this.subscriber = null;
-      }
-      return;
+      if (subscriber) subscriber.disconnect();
+      if (this.subscriber === subscriber) this.subscriber = null;
+      this.retry();
+    } finally {
+      this.starting = false;
     }
-
-    await this.replayMissedStreams();
-
-    const pattern = `${config.dnse.redisChannelPrefix}:*`;
-    await this.subscriber.psubscribe(pattern);
-
-    this.subscriber.on('pmessage', (_pattern, channel, message) => {
-      try {
-        const data = JSON.parse(message);
-        this.handleMessage(channel, data);
-      } catch (err) {
-        console.error('[DNSE Relay] Invalid message:', err);
-      }
-    });
-
-    console.log(`[DNSE Relay] Listening on ${pattern}`);
   }
 
   private async replayMissedStreams(): Promise<void> {
     if (!this.subscriber) return;
 
-    console.log('[DNSE Relay] Checking Redis Streams for missed messages...');
+    console.log('[DNSE Relay] Restoring latest Redis Stream values...');
     let totalReplayed = 0;
 
-    for (const [type, prefix] of Object.entries(STREAM_KEYS)) {
+    for (const prefix of Object.values(STREAM_KEYS)) {
       try {
-        const keys = await this.subscriber.keys(`${prefix}*`);
-        for (const key of keys) {
-          const lastId = this.lastStreamIds.get(key) || '0';
-          const entries = await this.subscriber.xrange(key, lastId, '+', 'COUNT', MAX_REPLAY_PER_STREAM);
-
-          if (entries && Array.isArray(entries)) {
-            for (const entry of entries) {
-              try {
-                const [id, fieldsArr] = entry as [string, string[]];
-                const fields: Record<string, string> = {};
-                for (let i = 0; i < fieldsArr.length; i += 2) {
-                  fields[fieldsArr[i]] = fieldsArr[i + 1];
-                }
-                const data = JSON.parse(fields.data);
-                const suffix = key.replace('dnse:stream:', '');
-                this.handleMessage(`${config.dnse.redisChannelPrefix}:${suffix}`, data);
-                totalReplayed++;
-                this.lastStreamIds.set(key, id);
-              } catch {
-                // skip malformed entries
-              }
+        let cursor = '0';
+        do {
+          const [next, keys] = await this.subscriber.scan(cursor, 'MATCH', `${prefix}*`, 'COUNT', 100);
+          cursor = next;
+          for (const key of keys) {
+            const [entry] = await this.subscriber.xrevrange(key, '+', '-', 'COUNT', 1);
+            if (!entry) continue;
+            const fieldsArr = entry[1];
+            const fields: Record<string, string> = {};
+            for (let i = 0; i < fieldsArr.length; i += 2) fields[fieldsArr[i]] = fieldsArr[i + 1];
+            try {
+              const data = { ...JSON.parse(fields.data), isSnapshot: true };
+              const suffix = key.replace('dnse:stream:', '');
+              this.handleMessage(`${config.dnse.redisChannelPrefix}:${suffix}`, data);
+              totalReplayed++;
+            } catch {
+              // skip malformed entries
             }
           }
-        }
+        } while (cursor !== '0');
       } catch (err) {
         console.warn(`[DNSE Relay] Stream replay failed for ${prefix}:`, err);
       }
     }
 
     if (totalReplayed > 0) {
-      console.log(`[DNSE Relay] Replayed ${totalReplayed} missed messages from Redis Streams`);
+      console.log(`[DNSE Relay] Restored ${totalReplayed} latest values from Redis Streams`);
     } else {
       console.log('[DNSE Relay] No missed messages in Redis Streams');
     }
@@ -164,7 +171,7 @@ class DnseRelayService {
       case suffix.startsWith('trade:'): {
         const symbol = suffix.replace('trade:', '').toUpperCase();
         socketService.emitStockPrice(symbol, data);
-        socketService.emitTrade(symbol, data);
+        if (!(data as { isSnapshot?: boolean }).isSnapshot) socketService.emitTrade(symbol, data);
         void redisService.setCache(`stock:${symbol}:quote`, data, CACHE_TTL.trade);
         break;
       }
@@ -224,6 +231,9 @@ class DnseRelayService {
   }
 
   async stop(): Promise<void> {
+    this.stopping = true;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
     if (this.subscriber) {
       await this.subscriber.quit();
       this.subscriber = null;

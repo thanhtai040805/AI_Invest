@@ -2,15 +2,15 @@
 
 import json
 import time
+import threading
 from typing import Any, Optional, List
 
 import redis
 
 from app.config.settings import get_settings
-from app.infrastructure.external_api.dnse.rate_limiter import RateLimitedPublisher
-
 _client: Optional[redis.Redis] = None
-_rate_limiter: Optional[RateLimitedPublisher] = None
+_publish_stats = {"published": 0, "failed": 0}
+_stats_lock = threading.Lock()
 
 
 def _channel(suffix: str) -> str:
@@ -29,25 +29,19 @@ def get_redis() -> redis.Redis:
     return _client
 
 
-def get_rate_limiter() -> RateLimitedPublisher:
-    global _rate_limiter
-    if _rate_limiter is None:
-        _rate_limiter = RateLimitedPublisher(
-            high_freq_rate=10.0,
-            high_freq_capacity=20.0,
-            low_freq_rate=2.0,
-            low_freq_capacity=5.0,
-        )
-    return _rate_limiter
+def get_publish_stats() -> dict:
+    with _stats_lock:
+        return dict(_publish_stats)
 
 
-def publish_json(suffix: str, payload: Any, bypass_rate_limit: bool = False) -> None:
+def publish_json(suffix: str, payload: Any) -> None:
     try:
-        if not bypass_rate_limit:
-            if not get_rate_limiter().should_publish(suffix):
-                return
         get_redis().publish(_channel(suffix), json.dumps(payload, default=str))
+        with _stats_lock:
+            _publish_stats["published"] += 1
     except Exception as e:
+        with _stats_lock:
+            _publish_stats["failed"] += 1
         print(f"[DNSE Redis] publish {suffix} failed: {e}")
 
 
@@ -58,10 +52,13 @@ def publish_batch(items: list[tuple[str, Any]]) -> None:
         pipe = r.pipeline()
         for suffix, payload in items:
             channel = _channel(suffix)
-            if get_rate_limiter().should_publish(suffix):
-                pipe.publish(channel, json.dumps(payload, default=str))
+            pipe.publish(channel, json.dumps(payload, default=str))
         pipe.execute()
+        with _stats_lock:
+            _publish_stats["published"] += len(items)
     except Exception as e:
+        with _stats_lock:
+            _publish_stats["failed"] += len(items)
         print(f"[DNSE Redis] batch publish failed: {e}")
 
 

@@ -9,8 +9,11 @@ All models support parsing from both abbreviated (MessagePack) and full (JSON) f
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from decimal import Decimal
 from typing import Optional, List, Dict, Any, Tuple
+
+TZ_VN = ZoneInfo("Asia/Ho_Chi_Minh")
 
 
 def parse_timestamp(v: Any, date_only: bool = False) -> Optional[str]:
@@ -30,6 +33,7 @@ def parse_timestamp(v: Any, date_only: bool = False) -> Optional[str]:
 
         if isinstance(v, str):
             dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+            dt = dt.astimezone(TZ_VN) if dt.tzinfo else dt.replace(tzinfo=TZ_VN)
             if date_only:
                 return dt.strftime("%Y-%m-%d")
             return dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]  # Cut to milliseconds
@@ -37,7 +41,7 @@ def parse_timestamp(v: Any, date_only: bool = False) -> Optional[str]:
         if isinstance(v, dict):
             seconds = v.get("Seconds", v.get("seconds", 0))
             nanos = v.get("Nanos", v.get("nanos", 0))
-            dt = datetime.fromtimestamp(seconds + nanos / 1e9)
+            dt = datetime.fromtimestamp(seconds + nanos / 1e9, TZ_VN)
             if date_only:
                 return dt.strftime("%Y-%m-%d")
             return dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]  # Cut to milliseconds
@@ -45,9 +49,9 @@ def parse_timestamp(v: Any, date_only: bool = False) -> Optional[str]:
         if isinstance(v, (int, float)):
             # If already in milliseconds (>1e12), convert to seconds
             if v > 1e12:
-                dt = datetime.fromtimestamp(v / 1000)
+                dt = datetime.fromtimestamp(v / 1000, TZ_VN)
             else:
-                dt = datetime.fromtimestamp(v)
+                dt = datetime.fromtimestamp(v, TZ_VN)
             if date_only:
                 return dt.strftime("%Y-%m-%d")
             return dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]  # Cut to milliseconds
@@ -64,7 +68,7 @@ class PriceLevel:
     def from_dict(cls, data: Dict[str, Any]) -> "PriceLevel":
         return cls(
             price=data.get("price"),
-            quantity=data.get("qtty")
+            quantity=data.get("quantity", data.get("qtty", 0))
         )
 
 
@@ -261,6 +265,37 @@ class MarketIndex:
             marketId=data.get("marketId"),
             tradingSessionId=data.get("tradingSessionId"),
             transactTime=parse_timestamp(data.get("transactTime")),
+            receivedAt=data.get("_receivedAt"),
+        )
+
+
+@dataclass
+class EstimatedMarketIndex:
+    indexName: str
+    changedRatio: float
+    changedValue: float
+    valueIndexes: float
+    fluctuationUpIssueCount: int
+    fluctuationDownIssueCount: int
+    fluctuationSteadinessIssueCount: int
+    grossTradeAmount: float
+    totalVolumeTraded: int
+    time: Optional[str] = None
+    receivedAt: Optional[float] = field(default=None, repr=False)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EstimatedMarketIndex":
+        return cls(
+            indexName=data.get("indexName"),
+            changedRatio=data.get("changedRatio"),
+            changedValue=data.get("changedValue"),
+            valueIndexes=data.get("valueIndexes"),
+            fluctuationUpIssueCount=data.get("fluctuationUpIssueCount", 0),
+            fluctuationDownIssueCount=data.get("fluctuationDownIssueCount", 0),
+            fluctuationSteadinessIssueCount=data.get("fluctuationSteadinessIssueCount", 0),
+            grossTradeAmount=data.get("grossTradeAmount", 0),
+            totalVolumeTraded=data.get("totalVolumeTraded", 0),
+            time=data.get("time"),
             receivedAt=data.get("_receivedAt"),
         )
 
