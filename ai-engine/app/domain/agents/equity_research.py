@@ -298,6 +298,14 @@ class EquityResearchAgent(BaseAgent):
                 ticker=ticker,
                 factor_raw_metrics={
                     **raw_factor_metrics,
+                    "f1_value": round(f1_value, 2),
+                    "f2_quality": round(f2_quality, 2),
+                    "f3_momentum": round(f3_momentum, 2),
+                    "f4_earnings": round(f4_earnings, 2),
+                    "f5_flow": round(f5_flow, 2),
+                    "f6_technical": round(f6_technical, 2),
+                    "css": round(css, 2),
+                    "conviction": conviction,
                     "research_gate": {
                         "eligible_for_thesis": eligible_for_thesis,
                         "reason_codes": eligibility_reasons,
