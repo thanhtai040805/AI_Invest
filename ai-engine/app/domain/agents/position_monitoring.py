@@ -112,26 +112,10 @@ class PositionMonitoringAgent(BaseAgent):
                     sql, (event_id, ticker, triggered_price, loss_nav, bypass_id, triggered_at)
                 )
 
-            # Đồng bộ sang bảng paper_trades: Đóng vị thế và ghi nhận P&L thực tế phục vụ Agent-10 học tăng cường
-            sql_paper = """
-                UPDATE paper_trades
-                SET status = 'CLOSED',
-                    resolve_price = %s,
-                    pnl = %s,
-                    resolved_at = COALESCE(%s::timestamptz, CURRENT_TIMESTAMP)
-                WHERE ticker = %s AND status = 'OPEN'
-                  AND account_id = %s
-            """
-            account_id = self.repository.account_id
-            for order in stop_loss_orders:
-                ticker = order["ticker"]
-                triggered_price = float(order.get("triggered_price", 0.0))
-                pnl_pct = float(order.get("current_pnl_pct", 0.0))
-                self.repository.storage.execute(
-                    sql_paper, (triggered_price, pnl_pct, triggered_at, ticker, account_id)
-                )
+            # A stop alert is not an execution. PortfolioRepository closes
+            # only the filled quantity, at the actual price, in its transaction.
         except Exception as e:
-            logger.debug(f"Không thể ghi stop_loss_events hoặc paper_trades vào DB ({e})")
+            logger.debug(f"Không thể ghi stop_loss_events vào DB ({e})")
 
     async def process(self, event_data: Dict[str, Any]) -> Dict[str, Any]:
         """

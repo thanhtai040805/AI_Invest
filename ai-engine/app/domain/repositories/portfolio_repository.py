@@ -484,17 +484,17 @@ class PortfolioRepository:
                 (order_id, ticker, action, shares, executed_price, executed_price, 0.0, "POSTGRES_REPLAY", execution_local, trade_value, brokerage_fee, tax, cash_delta),
             )
 
-            if pending_order_id and action == "BUY":
+            if action == "BUY":
                 self.storage.execute(
                     "INSERT INTO paper_trades (ticker, action, price, date, confidence, thesis, status, quantity, created_at, account_id) VALUES (%s, %s, %s, %s, 0.8, 'ML_REPLAY', 'OPEN', %s, CURRENT_TIMESTAMP, %s)",
                     (ticker, action, executed_price, execution_local, shares, user_id),
                 )
-            if pending_order_id and action == "SELL":
+            if action == "SELL":
                 trades = self.storage.fetch_all(
-                    "SELECT id, price, quantity FROM paper_trades WHERE ticker = %s AND account_id = %s AND status = 'OPEN' ORDER BY date, id FOR UPDATE", (ticker, user_id)
+                    "SELECT id, price, quantity, date FROM paper_trades WHERE ticker = %s AND account_id = %s AND status = 'OPEN' ORDER BY date, id FOR UPDATE", (ticker, user_id)
                 )
                 left = shares
-                for trade_id, entry_price, quantity in trades:
+                for trade_id, entry_price, quantity, entry_date in trades:
                     if left <= 0:
                         break
                     used = min(left, int(quantity))
@@ -503,7 +503,7 @@ class PortfolioRepository:
                         self.storage.execute("UPDATE paper_trades SET status='CLOSED', resolve_price=%s, pnl=%s, resolved_at=%s WHERE id=%s", (executed_price, pnl, execution_local, trade_id))
                     else:
                         self.storage.execute("UPDATE paper_trades SET quantity=quantity-%s WHERE id=%s", (used, trade_id))
-                        self.storage.execute("INSERT INTO paper_trades (ticker,action,price,date,confidence,thesis,status,quantity,resolve_price,pnl,resolved_at,created_at,account_id) VALUES (%s,'BUY',%s,%s,0.8,'ML_REPLAY_PARTIAL','CLOSED',%s,%s,%s,%s,CURRENT_TIMESTAMP,%s)", (ticker, entry_price, execution_local, used, executed_price, pnl, execution_local, user_id))
+                        self.storage.execute("INSERT INTO paper_trades (ticker,action,price,date,confidence,thesis,status,quantity,resolve_price,pnl,resolved_at,created_at,account_id) VALUES (%s,'BUY',%s,%s,0.8,'REPLAY_PARTIAL','CLOSED',%s,%s,%s,%s,CURRENT_TIMESTAMP,%s)", (ticker, entry_price, entry_date, used, executed_price, pnl, execution_local, user_id))
                     left -= used
             account = self.get_account_state(user_id=user_id, as_of=mark_as_of)
             self.storage.execute(
@@ -841,7 +841,7 @@ class PortfolioRepository:
                     elif action in ("SELL", "SELL_MP"):
                         # FIFO Tranche resolution trong paper_trades
                         sql_get_open = """
-                            SELECT id, price, quantity FROM paper_trades
+                            SELECT id, price, quantity, date FROM paper_trades
                             WHERE ticker = %s AND account_id = %s AND status = 'OPEN'
                             ORDER BY date ASC, id ASC
                         """
@@ -872,7 +872,7 @@ class PortfolioRepository:
                                 self.storage.execute("""
                                     INSERT INTO paper_trades (ticker, action, price, date, confidence, thesis, status, quantity, resolve_price, pnl, resolved_at, created_at, account_id)
                                     VALUES (%s, 'BUY', %s, %s, 0.8, 'PARTIAL_FILL_CLOSE', 'CLOSED', %s, %s, %s, %s, %s, %s)
-                                """, (ticker, t_price, now, rem_sell, executed_price, pnl, now, now, str(target_uid)))
+                                """, (ticker, t_price, trade[3], rem_sell, executed_price, pnl, now, now, str(target_uid)))
                                 rem_sell = 0
                 except Exception:
                     raise

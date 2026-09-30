@@ -385,7 +385,7 @@ AIInvest is an autonomous investment and financial forensics organization engine
 
 ## 2026-09-27 — ML fund historical performance
 
-- `portfolio_nav_history(account_id,date,total_nav,cash_balance)` stores immutable historical dates with idempotent close updates. Replay records an opening baseline and each session close; the scheduled EOD worker records the independent ML account after today's position prices are available, retrying rather than recording stale marks.
+- `portfolio_nav_history(account_id,date,total_nav,cash_balance)` stores immutable historical dates with idempotent close updates. Replay records an opening baseline and each session close; the scheduled EOD worker records both Multi-Agent and independent ML accounts after every held symbol has today's valid close, retrying each account independently rather than recording stale marks.
 - ML workspace accepts validated inclusive `from`/`to` dates for accuracy and fund performance. The UI defaults to all history and supports 15/30/60 calendar days or explicit dates. Prediction date selection remains independent; current holdings show cost/share, market/share, total cost, market value, unrealized P&L and percentage.
 - Historical net P&L compares closing NAV with the prior close before the selected period, including open holdings and actual execution costs; it assumes no external contributions/withdrawals. The first snapshot is an opening baseline. This is distinct from prediction accuracy/reference-price returns.
 - Executions persist gross value, brokerage fee, transfer tax and signed cash delta so displayed rounded VWAP cannot distort cash reconciliation. The 37 standalone replay receipts were recovered from original paper trade prices and reconcile exactly to 331,147,413 VND; neither account cash nor decisions were changed. Baseline 2026-08-11 and all 30 verified replay close marks were recovered from the completed replay report.
@@ -405,3 +405,12 @@ AIInvest is an autonomous investment and financial forensics organization engine
   - **Agent 11 (System Governance)**: SHA-256 Merkle chain verification, 5 Hard Laws enforcement checklist, broker API latency (ms), and failsafe status.
   - **Agent 12 (Strategy CIO)**: Executive verdict banner and CIO Resolution Dossier with severity tier, conditions, and Kelly penalty factor $\lambda$.
 
+
+
+### 2026-09-30: Portfolio accounting and live valuation corrections
+
+- Portfolio and Agent share the same current valuation service; account IDs remain explicit (user account versus configured Multi-Agent fund). Realized/unrealized P&L use execution receipts and moving average costs including fees; they fail closed when receipts do not reconcile to positions. No tick writes to PostgreSQL.
+- Portfolio reads existing `portfolio_nav_history` instead of fabricating a one-point curve. Missing closes remain visible; no historical price is invented or relabeled as live. Daily P&L needs the preceding session baseline. Alpha/beta require aligned VNINDEX returns.
+- A stop-loss alert no longer closes `paper_trades`. Only actual fills in the execution transaction close the filled FIFO quantity at the actual price. Agent 10 recomputes legacy paper returns and only accepts rows backed by account-specific buy/sell execution receipts. Orphan FPT rows observed on production are preserved for audit and excluded; this change does not silently delete/rewrite them.
+- A trade outside the cached security-definition price band invalidates the reference/change fields, preserving the trade price. A fresh timestamp alone does not certify reference prices or corporate-action adjustments.
+- Historical NAV gaps and missing SSI daily closes require source-verified recovery after review; this branch does not mutate production data or assume an adjusted candle is an unadjusted mark.

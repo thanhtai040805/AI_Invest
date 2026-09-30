@@ -76,3 +76,43 @@ def test_replay_cannot_fill_above_limit():
         execute(PortfolioRepository(storage),price=25050)
     assert storage.rolled_back
     assert storage.calls==[]
+
+
+def test_multi_replay_without_pending_order_creates_learning_lot(monkeypatch):
+    storage = Storage()
+    repository = PortfolioRepository(storage)
+    monkeypatch.setattr(repository, 'get_account_state', lambda **kw: {
+        'cash_balance': 7_500_000, 'total_nav': 10_000_000,
+        'peak_nav': 10_000_000, 'drawdown_tier': 'GREEN'})
+    repository.record_replay_execution('HPG', 'BUY', 100, 24900, user_id='multi',
+        executed_at=datetime(2026, 8, 13, 10, tzinfo=ZoneInfo('Asia/Ho_Chi_Minh')),
+        mark_as_of=date(2026, 8, 12))
+    assert storage.committed
+    assert any('INSERT INTO orders' in sql for sql, _ in storage.calls)
+    assert any('INSERT INTO paper_trades' in sql and params[-1] == 'multi'
+               for sql, params in storage.calls)
+
+
+def test_multi_partial_sale_closes_only_filled_quantity_and_keeps_entry_date(monkeypatch):
+    entry_date = datetime(2026, 8, 10, 10)
+    class SellStorage(Storage):
+        def fetch_all(self, sql, params=None):
+            if 'SELECT id, quantity, avg_price, opened_at' in sql:
+                return [('position', 100, 20000, entry_date)]
+            if 'SELECT id, price, quantity, date FROM paper_trades' in sql:
+                return [('lot', 20000, 100, entry_date)]
+            return super().fetch_all(sql, params)
+    storage = SellStorage()
+    repository = PortfolioRepository(storage)
+    monkeypatch.setattr(repository, 'get_account_state', lambda **kw: {
+        'cash_balance': 10_000_000, 'total_nav': 11_000_000,
+        'peak_nav': 11_000_000, 'drawdown_tier': 'GREEN'})
+    repository.record_replay_execution('HPG', 'SELL', 40, 25000, user_id='multi',
+        executed_at=datetime(2026, 8, 14, 14, tzinfo=ZoneInfo('Asia/Ho_Chi_Minh')),
+        mark_as_of=date(2026, 8, 13))
+    assert storage.committed
+    assert any('quantity=quantity-%s' in sql and params == (40, 'lot') for sql, params in storage.calls)
+    closed = next(params for sql, params in storage.calls if 'INSERT INTO paper_trades' in sql)
+    assert closed[2] == entry_date
+    assert closed[3] == 40
+    assert closed[5] == 25

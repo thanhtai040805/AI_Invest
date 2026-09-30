@@ -28,6 +28,19 @@ _PG_URL = os.getenv("DATABASE_URL", "postgresql://postgres:123@localhost:5432/ai
 TZ_VN = ZoneInfo("Asia/Ho_Chi_Minh")
 
 
+def quote_with_freshness(quote: Dict) -> Dict:
+    """Keep last-trade prices, but never label an old in-memory quote as live."""
+    try:
+        received = float(quote.get("receivedAt") or 0)
+        if received > 1_000_000_000_000:
+            received /= 1000
+        age = datetime.now().timestamp() - received
+        stale = received <= 0 or not -1 <= age <= 30
+    except (TypeError, ValueError):
+        stale = True
+    return {**quote, "stale": quote.get("stale", False) or stale}
+
+
 def _query_pg_ohlcv(symbol: str, start: Optional[str] = None, end: Optional[str] = None) -> List[Dict]:
     """Query daily OHLCV from PostgreSQL."""
     try:
@@ -562,13 +575,13 @@ class MarketDataService:
             cached = r.get(f"stock:{sym}:quote")
             if cached:
                 import json
-                return json.loads(cached)
+                return quote_with_freshness(json.loads(cached))
         except Exception:
             pass
 
         cached = self._hub.get_quote(sym)
         if cached:
-            return cached
+            return quote_with_freshness(cached)
 
         if self._rest.is_live:
             try:

@@ -2,7 +2,7 @@
 
 Chức năng:
 - Chạy nền tự động trong tiến trình AI Engine.
-- Canh đúng 15:15 hàng ngày (sau khi phiên ATC sàn HOSE kết thúc và nến EOD hoàn tất).
+- Canh đúng 17:30 hàng ngày (sau khi phiên ATC sàn HOSE kết thúc và nến EOD hoàn tất).
 - Nhận diện ngày giao dịch (Thứ 2 - Thứ 6 qua MarketSessionManager).
 - Tự động kích hoạt EODPipelineRunner thực thi 5 pha học nhân quả và hiệu chuẩn ma trận Kelly.
 - Đảm bảo Idempotency: Không bao giờ chạy trùng lặp 2 lần cho cùng một ngày giao dịch (trừ khi có lệnh force).
@@ -24,7 +24,7 @@ logger = logging.getLogger("ai_engine.daemon.eod_learning")
 
 
 class EODLearningDaemon:
-    """Daemon tự động kích hoạt Causal Learning cuối phiên (15:15 EOD Cron)."""
+    """Daemon tự động kích hoạt Causal Learning cuối phiên (17:30 EOD Cron)."""
 
     TRIGGER_TIME = dt_time(17, 30)  # 17:30 hàng ngày (sau khi Daily ETL nạp đủ dữ liệu EOD sạch lúc 17:00)
 
@@ -71,7 +71,7 @@ class EODLearningDaemon:
         if not self.session_mgr.is_trading_day(now):
             return
 
-        # 2. Kiểm tra giờ đã chạm 15:15 chưa
+        # 2. Kiểm tra giờ đã chạm 17:30 chưa
         current_time = now.time()
         if current_time < self.TRIGGER_TIME:
             return
@@ -81,34 +81,46 @@ class EODLearningDaemon:
             return
 
         logger.info(
-            f"[EODDaemon] ĐÃ ĐẾN 15:15 ({now.strftime('%H:%M:%S')}) NGÀY GIAO DỊCH {today_str}! "
+            f"[EODDaemon] ĐÃ ĐẾN 17:30 ({now.strftime('%H:%M:%S')}) NGÀY GIAO DỊCH {today_str}! "
             "Tự động kích hoạt EOD Causal Learning Pipeline..."
         )
         self._last_status = "RUNNING_SCHEDULED"
-        # Persist the independent ML fund close even if the multi-agent EOD run fails.
+        # Persist both funds independently of the learning pipeline. Do not mark
+        # an account with yesterday's price and label it as today's close.
         try:
             from app.domain.repositories.portfolio_repository import PortfolioRepository
             from app.infrastructure.database.pg_pool import get_conn
-            account_id = os.getenv("STANDALONE_ML_ACCOUNT_ID", "standalone-pure-ml-fund-account").strip()
-            with get_conn() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT 1 FROM portfolio_account WHERE account_id=%s", (account_id,))
-                    exists = cur.fetchone() is not None
-                    cur.execute("SELECT count(*) FROM positions p WHERE p.user_id=%s AND p.quantity>0 AND NOT EXISTS (SELECT 1 FROM market_data_daily d WHERE d.ticker=p.symbol AND d.date=%s AND d.close_unadj IS NOT NULL)", (account_id, now.date()))
-                    missing = cur.fetchone()[0]
-            if exists and not missing:
-                PortfolioRepository().record_replay_mark(user_id=account_id, mark_as_of=now.date())
-            elif missing:
-                logger.warning("ML closing NAV deferred: %s positions lack today's close", missing)
-                return  # Retry after daily prices become available.
+            accounts = {
+                os.getenv("STANDALONE_ML_ACCOUNT_ID", "standalone-pure-ml-fund-account").strip(),
+                os.getenv("MULTI_AGENT_ACCOUNT_ID", "940b0c70-2010-42f3-b947-797e6419b794").strip(),
+            }
+            missing_close = False
+            for account_id in sorted(accounts):
+                try:
+                    with get_conn() as conn:
+                        with conn.cursor() as cur:
+                            cur.execute("SELECT 1 FROM portfolio_account WHERE account_id=%s", (account_id,))
+                            exists = cur.fetchone() is not None
+                            cur.execute("SELECT count(*) FROM positions p WHERE p.user_id=%s AND p.quantity>0 AND NOT EXISTS (SELECT 1 FROM market_data_daily d WHERE d.ticker=p.symbol AND d.date=%s AND d.close_unadj>0)", (account_id, now.date()))
+                            missing = cur.fetchone()[0]
+                    if exists and not missing:
+                        PortfolioRepository().record_replay_mark(user_id=account_id, mark_as_of=now.date())
+                    elif exists and missing:
+                        logger.warning("Closing NAV deferred for %s: %s positions lack today's close", account_id, missing)
+                        missing_close = True
+                except Exception:
+                    logger.exception("Closing NAV failed for %s; will retry", account_id)
+                    missing_close = True
+            if missing_close:
+                return  # Retry without blocking the other fund's close mark.
         except Exception:
-            logger.exception("ML closing NAV failed; will retry")
+            logger.exception("Closing NAV failed; will retry")
             return
         try:
             res = await self.runner.run(target_date=today_str, force=False)
             self._last_run_date = today_str
             self._last_status = res.get("status", "SUCCESS")
-            logger.info(f"[EODDaemon] Pipeline 15:15 ngày {today_str} hoàn tất với trạng thái: {self._last_status}")
+            logger.info(f"[EODDaemon] Pipeline 17:30 ngày {today_str} hoàn tất với trạng thái: {self._last_status}")
         except Exception as e:
             self._last_status = f"FAILED: {e}"
             logger.error(f"[EODDaemon] Lỗi khi chạy scheduled EOD pipeline: {e}", exc_info=True)
@@ -116,7 +128,7 @@ class EODLearningDaemon:
     async def start(self) -> None:
         """Bắt đầu vòng lặp chạy nền của Daemon."""
         self._running = True
-        logger.info("[EODDaemon] KHỞI ĐỘNG EOD Learning Daemon (Tự động kích hoạt 15:15 Thứ 2 - Thứ 6)...")
+        logger.info("[EODDaemon] KHỞI ĐỘNG EOD Learning Daemon (Tự động kích hoạt 17:30 Thứ 2 - Thứ 6)...")
 
         while self._running:
             try:

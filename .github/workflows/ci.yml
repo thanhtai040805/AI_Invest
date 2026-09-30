@@ -30,7 +30,7 @@ jobs:
       - run: npm ci
       - run: npx prisma generate
       - run: npm run build
-      - run: node --test tests/shadowFill.test.cjs tests/mlFund.test.cjs
+      - run: node --test tests/*.test.cjs
       - run: npm audit --omit=dev --audit-level=high
 
   frontend:
@@ -77,6 +77,8 @@ jobs:
           tests/unit/test_shadow_fill.py
           tests/unit/test_trade_execution_no_mock_fill.py
           tests/unit/test_mathematical_integrity.py
+          tests/unit/test_portfolio_eod_and_quotes.py
+          tests/unit/test_replay_ml_execution.py
           -k "not TestDualEngineBeneishMScore"
 
   compose:

@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { FinancialCalendar } from "@/components/FinancialCalendar"
 import { workspaceApi } from "@/lib/api"
+import { usePortfolio, type PortfolioSnapshot } from "@/lib/use-portfolio"
 import { useResource } from "@/lib/api/use-resource"
 import { displayDate, vietnamDate } from "@/lib/financial-date"
 import { Link } from "@/lib/router"
@@ -923,7 +924,7 @@ function PositionMonitoringSection({ position, entry, ticker }: { position?: Rec
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 rounded-lg bg-soft/50 border border-line p-3">
         <div>
-          <span className="block text-[11px] text-muted">Lãi/Lỗ hiện tại (PnL)</span>
+          <span className="block text-[11px] text-muted">Lãi/lỗ theo giá gần nhất (sau phí mua)</span>
           <span className={`text-lg font-bold font-mono ${pnl === null ? "text-secondary" : pnl < 0 ? "text-loss" : "text-gain"}`}>
             {number(pnl, "%")}
           </span>
@@ -951,8 +952,8 @@ function PositionMonitoringSection({ position, entry, ticker }: { position?: Rec
       {!position && !entry && <p className="rounded-lg border border-dashed border-line p-3 text-xs text-secondary">Chưa có snapshot hoặc log giám sát cho mã này.</p>}
 
       <div className="text-[10px] text-muted border-t border-line/60 pt-2 flex justify-between">
-        <span>{position ? "Snapshot gần nhất · không theo bộ lọc ngày" : entry ? "Log Agent 09 · theo ngày đã chọn" : "Chưa có dữ liệu giám sát"}</span>
-        <span>{position ? time(position.last_updated) : entry ? time(timestamp(entry)) : ""}</span>
+        <span>{position ? "Giá định giá gần nhất · không theo bộ lọc ngày" : entry ? "Log Agent 09 · theo ngày đã chọn" : "Chưa có dữ liệu giám sát"}</span>
+        <span>{position ? time(position.price_as_of) : entry ? time(timestamp(entry)) : ""}</span>
       </div>
     </article>
   )
@@ -1213,13 +1214,15 @@ export default function WarRoom() {
   const [logLimit, setLogLimit] = useState(30)
   const resource = useResource(() => workspaceApi.agent(date || undefined), [date])
   const data = resource.data as AgentResponse | null
-  const ready = !resource.loading && !resource.error
+  const accountResource = useResource<PortfolioSnapshot>(() => workspaceApi.agentPortfolio(), [])
+  const portfolio = usePortfolio(accountResource.data, accountResource.reload)
+  const ready = !!resource.data
   const theses = ready ? newest(data?.theses || []).filter(row => !date || recordDate(row) === date) : []
   const resolutions = ready ? data?.resolutions || [] : []
   const plans = ready ? newest(data?.decisions || []) : []
   const logs = ready ? (data?.logs || []).flatMap(group => (group.entries || []).map(entry => ({ agent: group.agent, entry })))
     .sort((a, b) => (Date.parse(timestamp(b.entry)) || 0) - (Date.parse(timestamp(a.entry)) || 0)) : []
-  const symbols = [...new Set([...theses, ...plans, ...(ready ? data?.positionHealth || [] : [])].map(row => String(row.ticker || "")).filter(Boolean))]
+  const symbols = [...new Set([...theses, ...plans, ...(portfolio?.positions.map(p => ({ ticker: p.symbol })) ?? [])].map(row => String(row.ticker || "")).filter(Boolean))]
   const visibleSymbols = symbols.filter(item => item.toLowerCase().includes(search.toLowerCase()))
   const active = visibleSymbols.includes(symbol) ? symbol : visibleSymbols[0] || ""
   const thesis = theses.find(row => row.ticker === active)
@@ -1228,9 +1231,11 @@ export default function WarRoom() {
   const verdict = decision(resolution)
   const selectedPlans = newest(plans.filter(row => row.ticker === active && (!date || recordDate(row) === date)))
   const planForReview = selectedPlans[0]
-  const position = ready ? data?.positionHealth?.find(row => row.ticker === active) : undefined
+  const health = ready ? data?.positionHealth?.find(row => row.ticker === active) : undefined
+  const valuedPosition = portfolio?.positions.find(row => row.symbol === active)
+  const position: RecordData | undefined = valuedPosition ? { ...health, ticker: active, current_pnl_pct: valuedPosition.pnlPercent, price_as_of: valuedPosition.priceAsOf } : undefined
   const pnl = numeric(position?.current_pnl_pct)
-  const account = ready ? data?.account : undefined
+  const summary = portfolio?.summary
   const scopedLogs = logs.filter(log => scope === "all" || (scope === "symbol" ? !!active && logSymbol(log.agent, log.entry) === active : !logSymbol(log.agent, log.entry)))
   const shownLogs = scopedLogs.filter(log => agent === "all" || log.agent === agent)
   const target = numeric(thesis?.target_price)
@@ -1278,24 +1283,29 @@ export default function WarRoom() {
         <div className="flex flex-wrap items-center gap-3">
           <FinancialCalendar label="Ngày phân tích" allowAll={false} value={date} dates={data?.dates || []} onChange={value => { setDate(value); setLogLimit(30) }} />
           <a href="#agent-logs" className={`${control} font-medium`}>Xem nhật ký ↓</a>
-          <button className={control} onClick={() => void resource.reload()} disabled={resource.loading}>Làm mới</button>
+          <button className={control} onClick={() => { void resource.reload(); void accountResource.reload() }} disabled={resource.loading || accountResource.loading}>Làm mới</button>
         </div>
       </header>
 
-      {resource.loading ? <AgentSkeleton /> : resource.error ? (
+      {!resource.data && resource.loading ? <AgentSkeleton /> : !resource.data && resource.error ? (
         <div className="mx-auto max-w-[1600px] p-4 lg:p-6"><div role="alert" className="rounded-lg border border-loss/30 bg-loss/5 p-4 text-sm text-loss">Không tải được báo cáo. <button className="underline" onClick={() => void resource.reload()}>Thử lại</button></div></div>
       ) : <div className="mx-auto max-w-[1600px] space-y-6 p-4 lg:p-6">
         <section aria-labelledby="performance-title" className="border-b border-line pb-5">
           <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
             <h2 id="performance-title" className="text-base font-semibold">Kết quả tài khoản</h2>
-            <p className="text-xs text-secondary">Ảnh chụp gần nhất · {time(account?.updated_at)} · không theo bộ lọc ngày</p>
+            <p className="text-xs text-secondary">Quỹ Multi-Agent · {summary?.accountId} · Trạng thái hiện tại, không theo bộ lọc ngày</p>
           </div>
-          <dl className="grid grid-cols-2 gap-5 lg:grid-cols-4">
-            <Metric label="Tổng tài sản (NAV)" value={number(account?.total_nav, " ₫")} />
-            <Metric label="Tiền mặt" value={number(account?.cash_balance, " ₫")} />
-            <Metric label="Lãi/lỗ đã chốt" value="Chưa có dữ liệu" note="Chưa có báo cáo tổng lãi/lỗ của các lệnh đã đóng." />
-            <Metric label="Lãi/lỗ vị thế" value="Xem theo mã" note="Theo trạng thái giám sát gần nhất; không cộng các tỷ lệ thành lãi/lỗ toàn quỹ." />
+          <dl className="grid grid-cols-2 gap-5 lg:grid-cols-3">
+            <Metric label="Tổng tài sản (NAV)" value={number(summary?.nav, " ₫")} />
+            <Metric label="Tiền mặt" value={number(summary?.cash, " ₫")} />
+            <Metric label="Lãi/lỗ đã chốt" value={number(summary?.realizedPnl, " ₫")} note="Sau phí mua, phí bán và thuế." />
+            <Metric label="Lãi/lỗ chưa chốt" value={number(summary?.unrealizedPnl, " ₫")} note="Giá vốn gồm phí mua; chưa trừ phí bán dự kiến." />
+            <Metric label="Tổng lãi/lỗ" value={number(summary?.totalPnl, " ₫")} note="Đã chốt + chưa chốt." />
+            <Metric label="Lợi nhuận tài khoản" value={number(summary?.totalReturnPct, "%")} note="Tính trên vốn ban đầu đã đối soát." />
           </dl>
+          {summary && !summary.ledgerComplete && <p role="status" className="mt-3 text-xs text-warning">Sổ khớp lệnh chưa đối soát đủ với vị thế. Lãi/lỗ sau phí chưa xác định.</p>}
+          {!!summary?.stalePrices.length && <p role="status" className="mt-3 text-xs text-secondary">Giá gần nhất hoặc đóng cửa: {summary.stalePrices.join(", ")}. Cập nhật tài khoản lúc {time(summary.valuedAt)}.</p>}
+          {accountResource.error && <p role="status" className="mt-3 text-xs text-warning">Chưa làm mới được tài khoản; đang hiển thị dữ liệu lần tải gần nhất.</p>}
         </section>
 
         {/* Layer 1: Macro Surveillance & Universe Discovery (Agent 01 & Agent 02) */}
@@ -1381,8 +1391,8 @@ export default function WarRoom() {
                   </dl>
                   <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
                     <div>
-                      <h3 className="text-sm font-medium">Lãi/lỗ vị thế {active} · giám sát gần nhất</h3>
-                      <p className="mt-1 text-xs text-secondary">{position ? `${time(position.last_updated)} · không theo bộ lọc ngày` : "Chưa có trạng thái giám sát cho mã này."}</p>
+                      <h3 className="text-sm font-medium">Lãi/lỗ vị thế {active} · sau phí mua</h3>
+                      <p className="mt-1 text-xs text-secondary">{position ? `${time(position.price_as_of)} · không theo bộ lọc ngày` : "Chưa có trạng thái giám sát cho mã này."}</p>
                     </div>
                     <strong className={`text-2xl tabular-nums ${pnl === null ? "text-secondary" : pnl < 0 ? "text-loss" : "text-gain"}`}>
                       {number(pnl, "%")}
