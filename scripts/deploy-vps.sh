@@ -77,7 +77,10 @@ if ((${#pending_migrations[@]})); then
 fi
 
 compose pull migrate ai-engine backend frontend nginx
-compose up -d --no-build --pull never --wait --wait-timeout 240
+# Apply database migrations, then update only stateless app services. In
+# particular, do not reconcile Redis here: its existing data volume is live.
+compose run --rm --no-deps migrate
+compose up -d --no-deps --no-build --pull never --wait --wait-timeout 240 ai-engine backend frontend nginx
 curl --retry 12 --retry-delay 5 --retry-connrefused --max-time 15 -fsSI https://aiinvest.cloud/ >/dev/null
 curl --retry 12 --retry-delay 5 --retry-connrefused --max-time 15 -fsS https://aiinvest.cloud/api/health >/dev/null
 
