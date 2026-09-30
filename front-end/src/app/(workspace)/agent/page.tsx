@@ -653,9 +653,10 @@ function MacroUniverseSection({ msEntry, udEntry }: { msEntry?: RecordData; udEn
 
 function EquityResearchSection({ entry, ticker }: { entry?: RecordData; ticker: string }) {
   const metrics = object(entry?.factor_raw_metrics)
-  const css = numeric(metrics.css)
-  const conviction = String(metrics.conviction || "")
-  const percentile = numeric(metrics.percentile)
+  const researchGate = object(metrics.research_gate)
+  const css = numeric(metrics.css) ?? numeric(researchGate.css)
+  const conviction = String(metrics.conviction || researchGate.conviction || "")
+  const percentile = numeric(metrics.percentile) ?? numeric(researchGate.percentile)
   const pe = numeric(metrics.pe)
   const pb = numeric(metrics.pb)
   const roe = numeric(metrics.roe)
@@ -670,7 +671,6 @@ function EquityResearchSection({ entry, ticker }: { entry?: RecordData; ticker: 
     { key: "f6_technical", label: "F6 · Kỹ thuật (Technical)", score: numeric(metrics.f6_technical), note: "Vị thế MA20/MA50, khối lượng đột biến" },
   ]
 
-  const researchGate = object(metrics.research_gate)
   const eligible = typeof researchGate.eligible_for_thesis === "boolean" ? researchGate.eligible_for_thesis : null
 
   return (
@@ -745,7 +745,7 @@ function EquityResearchSection({ entry, ticker }: { entry?: RecordData; ticker: 
           </div>
         </>
       ) : (
-        <p className="text-sm text-secondary">Chưa ghi nhận bản ghi phân tích nhân tố riêng cho {ticker} trong phiên này.</p>
+        <p className="text-sm text-secondary">{entry ? `Bản ghi Agent-03 của ${ticker} không có điểm CSS.` : `Chưa ghi nhận bản ghi phân tích nhân tố riêng cho ${ticker} trong phiên này.`}</p>
       )}
     </article>
   )
