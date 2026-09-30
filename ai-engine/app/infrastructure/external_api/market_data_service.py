@@ -5,6 +5,8 @@ NO mock data merged with live data. Mock mode is separate (DNSE_ENABLED=false).
 Data sources: PostgreSQL (historical daily) → Redis (recent 1-min) → in-memory hub (live) → DNSE REST API.
 """
 
+import asyncio
+import math
 import os
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -153,12 +155,29 @@ class MarketDataService:
 
         snap = await self.get_snapshot()
         stocks = snap.get("stocks", [])
-        adv = sum(1 for s in stocks if s.get("changePercent", 0) > 0)
-        dec = sum(1 for s in stocks if s.get("changePercent", 0) < 0)
+        changes = []
+        for stock in stocks:
+            raw_change = stock.get("changePercent")
+            if raw_change is None:
+                raw_change = stock.get("change_pct")
+            try:
+                change = float(raw_change)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(change):
+                changes.append(change)
+
+        total = len(stocks)
+        adv = sum(1 for change in changes if change > 0)
+        dec = sum(1 for change in changes if change < 0)
         return {
             "advancers": adv,
             "decliners": dec,
-            "unchanged": len(stocks) - adv - dec,
+            "unchanged": sum(1 for change in changes if change == 0),
+            "available": len(changes),
+            "unknown": total - len(changes),
+            "total": total,
+            "coverage": len(changes) / total if total else 0,
             "lastUpdate": datetime.now().isoformat(),
             "source": snap.get("source", "computed"),
         }
@@ -564,16 +583,27 @@ class MarketDataService:
         self._hub.subscribe_symbols([sym])
         market_state = self._session.get_market_state().value
 
+        def with_freshness(book: Dict) -> Dict:
+            received_at = book.get("receivedAt")
+            try:
+                received_at = float(received_at)
+                if received_at < 1_000_000_000_000:
+                    received_at *= 1000
+            except (TypeError, ValueError):
+                received_at = 0
+            fresh = received_at > 0 and datetime.now().timestamp() * 1000 - received_at < 15_000
+            return {**book, "receivedAt": received_at or None, "stale": not fresh}
+
         cached = self._hub.get_orderbook(sym)
         if cached:
-            return {**cached, "marketState": market_state}
+            return {**with_freshness(cached), "marketState": market_state}
 
         try:
             r = get_redis()
             ob_cached = r.get(f"stock:{sym}:orderbook")
             if ob_cached:
                 import json
-                return {**json.loads(ob_cached), "marketState": market_state}
+                return {**with_freshness(json.loads(ob_cached)), "marketState": market_state}
         except Exception:
             pass
 
@@ -600,7 +630,7 @@ class MarketDataService:
 
         from app.infrastructure.data_pipelines.data_enricher import DataEnricher
         try:
-            enriched = DataEnricher.fetch_vnstock_financials(sym)
+            enriched = await asyncio.to_thread(DataEnricher.fetch_vnstock_financials, sym)
             result.update(enriched)
             result["source"] = "vnstock+enricher"
         except Exception as e:
@@ -609,7 +639,7 @@ class MarketDataService:
 
         if self._rest.is_live and (not result.get("income_statement") or not result.get("ratios")):
             try:
-                rest_fund = self._rest.get_fundamentals(sym)
+                rest_fund = await asyncio.to_thread(self._rest.get_fundamentals, sym)
                 if rest_fund:
                     for k, v in rest_fund.items():
                         if k not in result:

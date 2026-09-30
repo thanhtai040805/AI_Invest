@@ -14,13 +14,13 @@ class ValidatedTrade(BaseModel):
     symbol: str = Field(..., min_length=1, max_length=10)
     price: float = Field(..., ge=0)
     volume: int = Field(..., ge=0)
-    change: float = Field(default=0)
-    change_percent: float = Field(default=0, alias="changePercent")
+    change: Optional[float] = Field(default=None)
+    change_percent: Optional[float] = Field(default=None, alias="changePercent")
     trading_value: float = Field(default=0, alias="tradingValue")
     open: float = Field(default=0)
     high: float = Field(default=0)
     low: float = Field(default=0)
-    prev_close: float = Field(default=0, alias="prevClose")
+    prev_close: Optional[float] = Field(default=None, alias="prevClose")
     ceiling: float = Field(default=0)
     floor: float = Field(default=0)
     trend: str = Field(default="steady")
@@ -50,10 +50,10 @@ class ValidatedOrderBook(BaseModel):
 
 class ValidatedMarketIndex(BaseModel):
     name: str = Field(..., min_length=1)
-    value: float = Field(..., ge=0)
-    change: float = Field(default=0)
-    change_percent: float = Field(default=0, alias="changePercent")
-    volume: int = Field(default=0)
+    value: Optional[float] = Field(default=None, ge=0)
+    change: Optional[float] = Field(default=None)
+    change_percent: Optional[float] = Field(default=None, alias="changePercent")
+    volume: Optional[int] = Field(default=None)
     last_update: Optional[str] = Field(default=None, alias="lastUpdate")
 
 

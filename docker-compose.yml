@@ -28,6 +28,8 @@ services:
       --maxmemory 512mb
       --maxmemory-policy noeviction
       --appendonly yes
+    volumes:
+      - redisdata:/data
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}", "ping"]
       interval: 5s
@@ -297,4 +299,5 @@ services:
 
 volumes:
   pgdata:
+  redisdata:
   sag_pgdata:

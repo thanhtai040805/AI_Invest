@@ -4,6 +4,7 @@ let socket: Socket | null = null
 const stockRefs = new Map<string, number>()
 const ohlcRefs = new Map<string, number>()
 let marketRefs = 0
+let marketOrderbookRefs = 0
 
 export function getSocket() {
   if (!socket) {
@@ -15,6 +16,7 @@ export function getSocket() {
     socket.on("connect", () => {
       for (const symbol of stockRefs.keys()) socket?.emit("subscribe:symbol", symbol)
       if (marketRefs > 0) socket?.emit("subscribe:market")
+      if (marketOrderbookRefs > 0) socket?.emit("subscribe:market-orderbooks")
       for (const key of ohlcRefs.keys()) {
         const [resolution, symbol] = key.split(":")
         socket?.emit("subscribe:ohlc", { symbol, resolution })
@@ -33,6 +35,18 @@ export function retainMarket(): () => void {
   return () => {
     marketRefs = Math.max(0, marketRefs - 1)
     if (marketRefs === 0 && connection.connected) connection.emit("unsubscribe:market")
+  }
+}
+
+export function retainMarketOrderbooks(): () => void {
+  const current = marketOrderbookRefs
+  marketOrderbookRefs++
+  const connection = getSocket()
+  if (current === 0 && connection.connected) connection.emit("subscribe:market-orderbooks")
+  if (!connection.connected) connection.connect()
+  return () => {
+    marketOrderbookRefs = Math.max(0, marketOrderbookRefs - 1)
+    if (marketOrderbookRefs === 0 && connection.connected) connection.emit("unsubscribe:market-orderbooks")
   }
 }
 

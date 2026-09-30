@@ -392,6 +392,36 @@ class MarketDataRepository:
             logger.warning(f"Lỗi khi đọc technical_indicators cho {symbol} ({e})")
         return None
 
+    def get_latest_technical_indicators_for_symbols(self, symbols: List[str]) -> Dict[str, Dict[str, Any]]:
+        """Read each symbol's latest stored technical row in one query."""
+        normalized = sorted({symbol.upper().strip() for symbol in symbols if symbol})
+        if not normalized:
+            return {}
+        try:
+            rows = self.storage.fetch_all(
+                """
+                SELECT DISTINCT ON (symbol) symbol, indicators
+                FROM technical_indicators
+                WHERE symbol = ANY(%s)
+                ORDER BY symbol, calc_date DESC
+                """,
+                (normalized,),
+            )
+        except Exception as exc:
+            logger.warning("Could not load screener technical indicators: %s", exc)
+            return {}
+
+        result: Dict[str, Dict[str, Any]] = {}
+        for symbol, indicators in rows:
+            if isinstance(indicators, str):
+                try:
+                    indicators = json.loads(indicators)
+                except json.JSONDecodeError:
+                    continue
+            if isinstance(indicators, dict):
+                result[str(symbol).upper()] = indicators
+        return result
+
     def get_foreign_flow(self, symbol: str, limit: int = 30) -> List[Dict[str, Any]]:
         """Lấy lịch sử dòng tiền ngoại theo ngày."""
         symbol = symbol.upper().strip()

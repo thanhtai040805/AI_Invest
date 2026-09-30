@@ -64,7 +64,12 @@ def publish_batch(items: list[tuple[str, Any]]) -> None:
 
 def set_cache(key: str, payload: Any, ttl: int = 5) -> None:
     try:
-        get_redis().setex(key, ttl, json.dumps(payload, default=str))
+        client = get_redis()
+        serialized = json.dumps(payload, default=str)
+        if ttl > 0:
+            client.setex(key, ttl, serialized)
+        else:
+            client.set(key, serialized)
     except Exception as e:
         print(f"[DNSE Redis] set cache {key} failed: {e}")
 

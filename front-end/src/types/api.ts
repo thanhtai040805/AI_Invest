@@ -1,20 +1,21 @@
 export interface ApiMarketStock {
   symbol?: string
   name?: string
-  price?: number
-  change_pct?: number
-  changePercent?: number
-  ref?: number
+  price?: number | null
+  change_pct?: number | null
+  changePercent?: number | null
+  ref?: number | null
   ceiling?: number
   floor?: number
-  volume?: number
+  volume?: number | null
   tradingValue?: number
   industry?: string
   exchange?: string
-  foreign_flow?: number
+  foreign_flow?: number | null
+  foreignFlow?: number | null
   source?: string
   stale?: boolean
-  momentum?: number
+  momentum?: number | null
   rs?: number
   sparkline?: number[]
 }
@@ -22,10 +23,10 @@ export interface ApiMarketStock {
 export interface ApiMarketIndex {
   symbol?: string
   name?: string
-  value?: number
-  change_pct?: number
-  change?: number
-  changePercent?: number
+  value?: number | null
+  change_pct?: number | null
+  change?: number | null
+  changePercent?: number | null
   lastUpdate?: string
   receivedAt?: number
   date?: string

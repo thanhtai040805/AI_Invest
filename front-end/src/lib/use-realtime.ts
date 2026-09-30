@@ -1,18 +1,25 @@
 "use client"
 
 import { useState, useEffect, useRef } from "react"
-import { getSocket, retainMarket, retainStock } from "./socket"
+import { getSocket, retainMarket, retainMarketOrderbooks, retainStock } from "./socket"
 import type { Stock } from "@/types"
 import type { ApiMarketIndex, ApiMarketStock } from "@/types"
 
-interface PriceTick { price?: number; close?: number; ref?: number; prevClose?: number; ceiling?: number; floor?: number; change_pct?: number; changePercent?: number; volume?: number; matchVolume?: number; isSnapshot?: boolean }
-interface OrderBookTick { bids?: RealtimeOrderBookLevel[]; asks?: RealtimeOrderBookLevel[]; isSnapshot?: boolean }
+interface PriceTick { price?: number; close?: number; ref?: number | null; prevClose?: number | null; ceiling?: number; floor?: number; change_pct?: number | null; changePercent?: number | null; volume?: number; matchVolume?: number; isSnapshot?: boolean }
+interface OrderBookTick { bids?: RealtimeOrderBookLevel[]; asks?: RealtimeOrderBookLevel[]; receivedAt?: number; source?: string; stale?: boolean; isSnapshot?: boolean }
 interface TradeTick { time?: string; price?: number; volume?: number; matchVolume?: number; side?: "BUY" | "SELL"; isSnapshot?: boolean }
 interface MarketIndicesTick { indices?: ApiMarketIndex[]; isSnapshot?: boolean }
 interface MarketSnapshotTick { stocks?: ApiMarketStock[]; total?: number; liveSymbols?: number; isSnapshot?: boolean }
 interface MarketHeatmapTick { sectors?: Array<Record<string, unknown>>; isSnapshot?: boolean }
-interface MarketBreadthTick { advancers?: number; decliners?: number; unchanged?: number; isSnapshot?: boolean }
-interface MarketLiquidityTick { totalValueBillion?: number | null; isSnapshot?: boolean }
+interface MarketBreadthTick { advancers?: number; decliners?: number; unchanged?: number; available?: number; unknown?: number; total?: number; coverage?: number; isSnapshot?: boolean }
+interface MarketLiquidityTick { totalValueBillion?: number | null; lastUpdate?: string; source?: string; approximate?: boolean; stale?: boolean; isSnapshot?: boolean }
+interface MarketOrderBookTick extends RealtimeOrderBook {
+  symbol?: string
+  receivedAt?: number
+  lastUpdate?: string
+  source?: string
+  stale?: boolean
+}
 
 export interface RealtimeOrderBookLevel {
   price: number
@@ -24,6 +31,16 @@ export interface RealtimeOrderBook {
   asks: RealtimeOrderBookLevel[]
 }
 
+interface RealtimeStockOrderBook extends RealtimeOrderBook {
+  symbol: string
+  receivedAt: number
+}
+
+export interface RealtimeMarketOrderBook extends RealtimeOrderBook {
+  receivedAt: number
+  lastUpdate?: string
+}
+
 export interface RealtimeTrade {
   time: string
   price: number
@@ -33,7 +50,7 @@ export interface RealtimeTrade {
 
 export function useRealtimeStock(symbol: string, initialStock?: Stock) {
   const [stock, setStock] = useState<Stock | undefined>(initialStock)
-  const [orderbook, setOrderbook] = useState<RealtimeOrderBook | null>(null)
+  const [orderbook, setOrderbook] = useState<RealtimeStockOrderBook | null>(null)
   const [trades, setTrades] = useState<RealtimeTrade[]>([])
   const [isLive, setIsLive] = useState(false)
   const [lastTickAt, setLastTickAt] = useState<Date | null>(null)
@@ -51,7 +68,7 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
       setStock((prev) => {
         if (!prev) return initialStock
         const price = hasRealtimePriceRef.current ? (prev.price ?? initialStock.price) : initialStock.price
-        const changePct = hasRealtimePriceRef.current ? (prev.changePct ?? initialStock.changePct) : initialStock.changePct
+        const changePct = hasRealtimePriceRef.current ? prev.changePct : initialStock.changePct
         const volume = hasRealtimePriceRef.current ? (prev.volume ?? initialStock.volume) : initialStock.volume
 
         if (
@@ -71,7 +88,7 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
           price,
           changePct,
           volume,
-          ref: prev.ref ?? initialStock.ref,
+          ref: hasRealtimePriceRef.current ? prev.ref : initialStock.ref,
           ceiling: prev.ceiling ?? initialStock.ceiling,
           floor: prev.floor ?? initialStock.floor,
         }
@@ -123,15 +140,25 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
           flashTimeoutRef.current = setTimeout(() => setFlash(null), 1000)
         }
 
+        const rawRef = data.ref !== undefined ? data.ref : data.prevClose
+        const ref = rawRef === undefined ? prev.ref : rawRef === null ? null : Number(rawRef)
+        const hasChange = data.change_pct !== undefined || data.changePercent !== undefined
+        const rawChange = data.change_pct !== undefined ? data.change_pct : data.changePercent
+        const changePct = !hasChange
+          ? prev.changePct
+          : rawChange == null
+            ? null
+            : Number.isFinite(Number(rawChange))
+              ? Number(Number(rawChange).toFixed(2))
+              : null
+
         return {
           ...prev,
           price: newPrice || prev.price,
-          ref: Number(data.ref ?? data.prevClose ?? prev.ref),
+          ref,
           ceiling: Number(data.ceiling || prev.ceiling),
           floor: Number(data.floor || prev.floor),
-          changePct: data.change_pct !== undefined || data.changePercent !== undefined
-            ? Number(Number(data.change_pct ?? data.changePercent).toFixed(2))
-            : prev.changePct,
+          changePct,
           volume: data.volume ? String(data.volume) : prev.volume,
         }
       })
@@ -139,14 +166,23 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
 
     function onOrderBook(data: OrderBookTick) {
       if (!data) return
+      let receivedAt = Number(data.receivedAt ?? 0)
+      if (receivedAt > 0 && receivedAt < 1_000_000_000_000) receivedAt *= 1000
+      const age = Date.now() - receivedAt
+      if (data.source !== "dnse-ws" || data.stale || !Number.isFinite(receivedAt) || !receivedAt || age < -5_000 || age >= 15_000) {
+        setOrderbook(null)
+        return
+      }
       if (!data.isSnapshot) {
         setIsLive(true)
         lastRealtimeMessageAt.current = Date.now()
       }
       if (data.bids || data.asks) {
         setOrderbook({
+          symbol: sym,
           bids: Array.isArray(data.bids) ? data.bids : [],
           asks: Array.isArray(data.asks) ? data.asks : [],
+          receivedAt,
         })
       }
     }
@@ -180,6 +216,7 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
     socket.on(`stock:trades:${sym}`, onTrade)
     const freshnessTimer = window.setInterval(() => {
       if (lastRealtimeMessageAt.current && Date.now() - lastRealtimeMessageAt.current > 30_000) setIsLive(false)
+      setOrderbook((current) => current && Date.now() - current.receivedAt >= 15_000 ? null : current)
     }, 1_000)
 
     return () => {
@@ -194,14 +231,14 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
     }
   }, [symbol])
 
-  return { stock, orderbook, trades, isLive, lastTickAt, flash }
+  return { stock, orderbook: orderbook?.symbol === symbol.trim().toUpperCase() ? orderbook : null, trades, isLive, lastTickAt, flash }
 }
 
 export function useRealtimeMarket(initialIndices?: {
   vnIndexVal: string
-  vnIndexPct: number
+  vnIndexPct: number | null
   vn100Val?: string
-  vn100Pct?: number
+  vn100Pct?: number | null
 }) {
   const [indices, setIndices] = useState(initialIndices)
   const [isLive, setIsLive] = useState(false)
@@ -255,7 +292,12 @@ export function useRealtimeMarket(initialIndices?: {
       if (!list.length) return
 
       const indices = list as ApiMarketIndex[]
-      const getName = (item: ApiMarketIndex) => String(item.name ?? item.symbol ?? "").toUpperCase().replaceAll("-", "")
+      const getName = (item: ApiMarketIndex) => String(item.symbol ?? item.name ?? "").toUpperCase().replaceAll("-", "")
+      const indexChange = (item: ApiMarketIndex) => {
+        const raw = item.changePercent ?? item.change_pct
+        const value = raw == null ? NaN : Number(raw)
+        return Number.isFinite(value) ? value : null
+      }
       const vnIndexItem = indices.find((x) => getName(x) === "VNINDEX")
       const vn100Item = indices.find((x) => getName(x) === "VN100")
       if (!vnIndexItem && !vn100Item) return
@@ -267,14 +309,14 @@ export function useRealtimeMarket(initialIndices?: {
       }
 
       setIndices((prev) => ({
-        vnIndexVal: vnIndexItem && Number.isFinite(Number(vnIndexItem.value))
-          ? Number(vnIndexItem.value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+        vnIndexVal: vnIndexItem && vnIndexItem.value != null && Number.isFinite(Number(vnIndexItem.value)) && Number(vnIndexItem.value) > 0
+          ? Number(vnIndexItem.value).toLocaleString("vi-VN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
           : prev?.vnIndexVal ?? "—",
-        vnIndexPct: vnIndexItem ? Number(vnIndexItem.changePercent ?? vnIndexItem.change_pct ?? 0) : prev?.vnIndexPct ?? 0,
-        vn100Val: vn100Item && Number.isFinite(Number(vn100Item.value))
-          ? Number(vn100Item.value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+        vnIndexPct: vnIndexItem ? indexChange(vnIndexItem) : prev?.vnIndexPct ?? null,
+        vn100Val: vn100Item && vn100Item.value != null && Number.isFinite(Number(vn100Item.value)) && Number(vn100Item.value) > 0
+          ? Number(vn100Item.value).toLocaleString("vi-VN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
           : prev?.vn100Val ?? "—",
-        vn100Pct: vn100Item ? Number(vn100Item.changePercent ?? vn100Item.change_pct ?? 0) : prev?.vn100Pct ?? 0,
+        vn100Pct: vn100Item ? indexChange(vn100Item) : prev?.vn100Pct ?? null,
       }))
     }
 
@@ -296,7 +338,12 @@ export function useRealtimeMarket(initialIndices?: {
     }
 
     function onLiquidity(data: MarketLiquidityTick) {
-      if (data?.totalValueBillion != null && Number.isFinite(Number(data.totalValueBillion))) setLiquidity(data)
+      if (!data) {
+        setLiquidity(null)
+        return
+      }
+      const value = data.totalValueBillion
+      setLiquidity(value == null || Number.isFinite(Number(value)) ? data : { ...data, totalValueBillion: null })
     }
 
     const freshnessTimer = window.setInterval(() => {
@@ -332,4 +379,73 @@ export function useRealtimeMarket(initialIndices?: {
   }, [])
 
   return { indices, isLive, snapshot, heatmap, heatmapLive, breadth, liquidity }
+}
+
+export function useRealtimeMarketOrderBooks(
+  initial: Record<string, MarketOrderBookTick> = {},
+): Record<string, RealtimeMarketOrderBook> {
+  const [orderbooks, setOrderbooks] = useState<Record<string, RealtimeMarketOrderBook>>({})
+  const pendingOrderBooks = useRef(new Map<string, RealtimeMarketOrderBook>())
+  const updateFrame = useRef<number | null>(null)
+
+  useEffect(() => {
+    setOrderbooks((current) => {
+      const next: Record<string, RealtimeMarketOrderBook> = {}
+      for (const [symbol, book] of Object.entries(initial)) {
+        const receivedAt = Number(book.receivedAt ?? 0)
+        const age = Date.now() - receivedAt
+        if (book.source === "dnse-ws" && !book.stale && Number.isFinite(receivedAt) && receivedAt > 0 && age >= -5_000 && age < 15_000) {
+          next[symbol] = { ...book, receivedAt }
+        }
+      }
+      for (const [symbol, book] of Object.entries(current)) {
+        if (book.receivedAt >= (next[symbol]?.receivedAt ?? 0)) next[symbol] = book
+      }
+      return next
+    })
+  }, [initial])
+
+  useEffect(() => {
+    const socket = getSocket()
+    function onOrderBook(data: MarketOrderBookTick) {
+      const symbol = String(data?.symbol ?? "").trim().toUpperCase()
+      if (!symbol || data.source !== "dnse-ws" || !Array.isArray(data.bids) || !Array.isArray(data.asks)) return
+      let receivedAt = Number(data.receivedAt ?? 0)
+      if (receivedAt > 0 && receivedAt < 1_000_000_000_000) receivedAt *= 1000
+      if (!receivedAt || !Number.isFinite(receivedAt)) receivedAt = Date.now()
+      const age = Date.now() - receivedAt
+      if (data.stale || age < -5_000 || age >= 15_000) return
+      pendingOrderBooks.current.set(symbol, { bids: data.bids, asks: data.asks, receivedAt, lastUpdate: data.lastUpdate })
+      if (updateFrame.current !== null) return
+      updateFrame.current = window.requestAnimationFrame(() => {
+        updateFrame.current = null
+        const updates: Record<string, RealtimeMarketOrderBook> = {}
+        for (const [updatedSymbol, book] of pendingOrderBooks.current) updates[updatedSymbol] = book
+        pendingOrderBooks.current.clear()
+        setOrderbooks((current) => ({ ...current, ...updates }))
+      })
+    }
+    socket.on("market:orderbook", onOrderBook)
+    const release = retainMarketOrderbooks()
+    const pruneTimer = window.setInterval(() => {
+      const now = Date.now()
+      setOrderbooks((current) => {
+        const fresh = Object.fromEntries(Object.entries(current).filter(([, book]) => {
+          const age = now - book.receivedAt
+          return age >= -5_000 && age < 15_000
+        }))
+        return Object.keys(fresh).length === Object.keys(current).length ? current : fresh
+      })
+    }, 1_000)
+    return () => {
+      release()
+      socket.off("market:orderbook", onOrderBook)
+      window.clearInterval(pruneTimer)
+      if (updateFrame.current !== null) window.cancelAnimationFrame(updateFrame.current)
+      updateFrame.current = null
+      pendingOrderBooks.current.clear()
+    }
+  }, [])
+
+  return orderbooks
 }

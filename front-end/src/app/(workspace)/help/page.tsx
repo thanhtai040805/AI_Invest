@@ -1,52 +1,65 @@
 "use client"
 
 import { Page } from "@/components/Shell"
-import {
-  Button,
-  Panel,
-  PanelHead,
-} from "@/components/ui"
+import { Link } from "@/lib/router"
+import { Panel, PanelHead } from "@/components/ui"
+
+const guides = [
+  {
+    title: "Luận điểm đầu tư",
+    description: "Xem luận điểm và lịch sử phân tích được lưu từ AI Engine.",
+    href: "/research",
+    action: "Mở nghiên cứu",
+  },
+  {
+    title: "Quản trị rủi ro",
+    description: "Đối chiếu trạng thái rủi ro và các quyết định có trong log hệ thống.",
+    href: "/agent",
+    action: "Mở War Room",
+  },
+  {
+    title: "Mô hình AI",
+    description: "Xem báo cáo và dữ liệu của kênh ML tự hành.",
+    href: "/ml-fund",
+    action: "Mở báo cáo ML",
+  },
+  {
+    title: "Thuật ngữ thị trường",
+    description: "Đối chiếu giá, biến động và thanh khoản từ bảng dữ liệu thị trường.",
+    href: "/markets",
+    action: "Mở bảng giá",
+  },
+  {
+    title: "Bắt đầu sử dụng",
+    description: "Mở trang tổng quan để xem trạng thái dữ liệu và các khu vực làm việc.",
+    href: "/dashboard",
+    action: "Mở tổng quan",
+  },
+]
 
 export default function Help() {
   return (
     <Page
       title="Trợ giúp & Phương pháp luận"
-      sub="Tài liệu hướng dẫn, thuật ngữ và cơ chế định lượng của AIInvest."
+      sub="Mở trực tiếp các khu vực có dữ liệu và thao tác đang được hỗ trợ."
     >
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {[
-          ["Phương pháp luận nghiên cứu", "Cách thức xây dựng luận điểm từ các dẫn chứng xác thực."],
-          [
-            "Phương pháp quản trị rủi ro",
-            "Cơ chế tính toán tổn thất kỳ vọng (ES) và quy chế cắt giảm rủi ro Drawdown.",
-          ],
-          [
-            "Phương pháp luận AI",
-            "Cách thức các tín hiệu chuyển từ quan sát định lượng sang luận điểm đầu tư.",
-          ],
-          ["Thuật ngữ thị trường", "Giá trần, giá sàn, khối ngoại, thanh khoản và các chỉ số chuyên sâu."],
-          ["Tài liệu hướng dẫn", "Bắt đầu sử dụng và làm chủ không gian làm việc AIInvest."],
-          ["Liên hệ hỗ trợ", "Kết nối trực tiếp với đội ngũ phát triển AIInvest."],
-        ].map(([t, d]) => (
-          <Panel key={t}>
-            <div className="text-[15px] font-semibold text-ink">{t}</div>
-            <p className="text-[13px] text-muted mt-1.5 leading-relaxed">{d}</p>
-          </Panel>
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {guides.map((guide) => (
+          <Link key={guide.href} to={guide.href} className="group">
+            <Panel className="h-full transition-colors group-hover:border-ink/30">
+              <div className="text-[15px] font-semibold text-ink">{guide.title}</div>
+              <p className="mt-1.5 text-[13px] leading-relaxed text-muted">{guide.description}</p>
+              <span className="mt-4 inline-block text-[12px] font-medium text-mineral">{guide.action} →</span>
+            </Panel>
+          </Link>
         ))}
       </div>
+
       <Panel className="mt-4">
-        <PanelHead
-          title="Gửi tin nhắn cho quản trị viên"
-          sub="Gửi câu hỏi về tài khoản, nguồn dữ liệu hoặc quy trình giao dịch."
-        />
-        <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3">
-          <input
-            aria-label="Tin nhắn gửi quản trị viên"
-            placeholder="Mô tả nội dung bạn cần hỗ trợ…"
-            className="h-10 rounded-[7px] border border-line bg-paper px-3 text-[13px] text-ink outline-none placeholder:text-muted focus:border-mineral"
-          />
-          <Button variant="primary">Gửi tin nhắn</Button>
-        </div>
+        <PanelHead title="Liên hệ hỗ trợ" />
+        <p className="text-[13px] leading-relaxed text-secondary">
+          Kênh gửi yêu cầu hỗ trợ chưa được kết nối trong ứng dụng.
+        </p>
       </Panel>
     </Page>
   )

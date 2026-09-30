@@ -5,7 +5,7 @@ import { Link } from "@/lib/router"
 import { portfolioApi } from "@/lib/api"
 import { useResource } from "@/lib/api/use-resource"
 import { DataState } from "@/components/data-state"
-import { Button, MetricStrip, Panel, PanelHead, PercentChange, RiskLabel, fmt } from "@/components/ui"
+import { Button, MetricStrip, Panel, PanelHead, PercentChange, fmt } from "@/components/ui"
 
 function EquityCurve({ points }: { points?: { date: string; value: number }[] }) {
   const curvePoints = Array.isArray(points) ? points.map(p => p.value).filter((value): value is number => typeof value === "number" && Number.isFinite(value)) : []
@@ -19,17 +19,17 @@ function EquityCurve({ points }: { points?: { date: string; value: number }[] })
   )
 }
 
-type PositionRow = { symbol: string; entry: number | null; current: number | null; weight: number | null; pnl: number | null; recWeight: number | null; kelly: number | null; risk: string | null; stop: number | null }
+type PositionRow = { symbol: string; quantity: number | null; entry: number | null; current: number | null; marketValue: number | null; weight: number | null; pnl: number | null; pnlPercent: number | null }
 const n = (value: unknown): number | null => value === null || value === undefined || value === "" || !Number.isFinite(Number(value)) ? null : Number(value)
 const displayNumber = (value: number | null) => value === null ? "—" : fmt(value)
-const displayPercent = (value: number | null) => value === null ? "—" : `${value.toLocaleString("en-US", { maximumFractionDigits: 2 })}%`
+const displayPercent = (value: number | null) => value === null ? "—" : `${value.toLocaleString("vi-VN", { maximumFractionDigits: 2 })}%`
 const list = (value: unknown): Record<string, unknown>[] => Array.isArray(value) ? value : Array.isArray((value as { data?: unknown[] })?.data) ? (value as { data: Record<string, unknown>[] }).data : []
 
 export default function Portfolio() {
   const resource = useResource(() => Promise.all([portfolioApi.summary(), portfolioApi.positions(), portfolioApi.performance(), portfolioApi.risks(), portfolioApi.orders()]), [])
   const [summaryRaw, positionsRaw, perfRaw, risksRaw, ordersRaw] = resource.data ?? []
   const summary = (summaryRaw?.data ?? summaryRaw ?? {}) as Record<string, unknown>
-  const positions: PositionRow[] = list(positionsRaw).map(row => ({ symbol: String(row.symbol ?? row.ticker ?? "—"), entry: n(row.entry ?? row.avgPrice), current: n(row.current ?? row.currentPrice), weight: n(row.weight), pnl: n(row.pnlPercent ?? row.pnl), recWeight: n(row.recommendedWeight), kelly: n(row.kelly), risk: typeof row.risk === "string" ? row.risk : null, stop: n(row.stop ?? row.stopPrice) }))
+  const positions: PositionRow[] = list(positionsRaw).map(row => ({ symbol: String(row.symbol ?? row.ticker ?? "—"), quantity: n(row.quantity), entry: n(row.avgPrice ?? row.entry), current: n(row.currentPrice ?? row.current), marketValue: n(row.marketValue), weight: n(row.weight), pnl: n(row.pnl), pnlPercent: n(row.pnlPercent) }))
   const summaryRisk = (risksRaw?.data ?? risksRaw ?? {}) as Record<string, unknown>
   const riskMetrics = [
     ["Hệ số Sharpe", n(summaryRisk.sharpe)],
@@ -38,14 +38,14 @@ export default function Portfolio() {
     ["Sụt giảm tối đa", n(summaryRisk.maxDrawdown)],
   ] as const
   const todayReturn = n(summary.todayReturn ?? summary.dayChangePct)
-  const totalReturn = n(summary.totalReturnPct ?? summary.returnPct)
+  const totalReturn = Number(summary.totalCost) > 0 ? n(summary.pnlPercent ?? summary.totalProfitPercent ?? summary.totalReturnPct ?? summary.returnPct) : null
   const liveOrders = list(ordersRaw)
   if (resource.loading || resource.error || !resource.data) return <Page title="Danh mục"><DataState loading={resource.loading} error={resource.error} empty={!resource.loading && !resource.data} retry={() => void resource.reload()}><></></DataState></Page>
   return (
     <Page
       title="Danh mục đầu tư"
       sub="Độ chịu tải rủi ro · Phân bổ tài sản · Quản trị sụt giảm vốn"
-      actions={<><Button variant="secondary">Xuất danh mục</Button><Link to="/trade"><Button variant="primary">Tái cân bằng</Button></Link></>}
+      actions={<Link to="/trade"><Button variant="primary">Đặt lệnh</Button></Link>}
     >
       <MetricStrip items={[
         { label: "NAV", value: displayNumber(n(summary.nav ?? summary.totalValue)), sub: <span className="text-muted">Giá trị tài sản ròng</span> },
@@ -56,7 +56,7 @@ export default function Portfolio() {
 
       <div className="grid grid-cols-1 lg:grid-cols-[1.5fr_1fr] gap-4 mt-4">
         <Panel>
-          <PanelHead title="Lịch sử NAV danh mục" />
+          <PanelHead title="Lịch sử NAV danh mục" sub="API hiện chỉ có ảnh chụp NAV gần nhất; chưa có chuỗi lịch sử để vẽ." />
           <EquityCurve points={(perfRaw as { equityCurve?: { date: string; value: number }[] } | null)?.equityCurve} />
         </Panel>
         <Panel>
@@ -69,28 +69,28 @@ export default function Portfolio() {
       </div>
 
       <Panel className="mt-4" flush>
-        <div className="p-5 pb-3"><PanelHead title="Vị thế nắm giữ" sub={`${positions.length} mã đang nắm giữ · Chỉ số phân bổ thiếu dữ liệu hiển thị —`} /></div>
+        <div className="p-5 pb-3"><PanelHead title="Vị thế nắm giữ" sub={`${positions.length} mã · Chỉ hiển thị trường API đang cung cấp`} /></div>
         <div className="overflow-x-auto">
           <table className="w-full text-[13px] min-w-[900px]">
             <thead><tr className="text-[11px] uppercase tracking-wide text-muted border-y border-line">
-              {["Mã CP", "Giá vốn", "Thị giá", "Tỷ trọng", "Lãi/Lỗ", "Tỷ trọng chuẩn", "¼ Kelly", "Rủi ro", "Chặn lỗ"].map((h, i) => (
-                <th key={h} className={`font-medium py-2.5 ${i === 0 ? "text-left pl-5" : i >= 1 && i <= 6 ? "text-right px-3" : "text-left px-3"} ${i === 8 ? "pr-5" : ""}`}>{h}</th>
+              {["Mã CP", "Số lượng", "Giá vốn", "Thị giá", "Giá trị thị trường", "Tỷ trọng NAV", "Lãi/Lỗ (₫)", "Lãi/Lỗ (%)"].map((h, i) => (
+                <th key={h} className={`font-medium py-2.5 ${i === 0 ? "text-left pl-5" : "text-right px-3"} ${i === 7 ? "pr-5" : ""}`}>{h}</th>
               ))}
             </tr></thead>
             <tbody className="divide-y divide-line">
               {positions.map((p) => (
                 <tr key={p.symbol} className="hover:bg-soft/50 transition-colors">
                   <td className="py-3 pl-5"><Link to={`/stock/${p.symbol}`} className="font-mono font-medium text-ink hover:underline">{p.symbol}</Link></td>
+                  <td className="text-right px-3 tnum font-mono text-secondary">{p.quantity === null ? "—" : p.quantity.toLocaleString("vi-VN")}</td>
                   <td className="text-right px-3 tnum font-mono text-secondary">{displayNumber(p.entry)}</td>
                   <td className="text-right px-3 tnum font-mono text-ink">{displayNumber(p.current)}</td>
+                  <td className="text-right px-3 tnum font-mono text-ink">{displayNumber(p.marketValue)}</td>
                   <td className="text-right px-3 tnum font-mono text-ink">{displayPercent(p.weight)}</td>
-                  <td className="text-right px-3">{p.pnl === null ? "—" : <PercentChange value={p.pnl} arrow={false} />}</td>
-                  <td className="text-right px-3 tnum font-mono text-secondary">{displayPercent(p.recWeight)}</td>
-                  <td className="text-right px-3 tnum font-mono text-mineral">{displayPercent(p.kelly)}</td>
-                  <td className="px-3">{p.risk ? <RiskLabel risk={p.risk} /> : "—"}</td>
-                  <td className="pr-5 tnum font-mono text-loss">{displayNumber(p.stop)}</td>
+                  <td className={`text-right px-3 tnum font-mono ${p.pnl === null ? "text-muted" : p.pnl >= 0 ? "text-gain" : "text-loss"}`}>{p.pnl === null ? "—" : `${p.pnl >= 0 ? "+" : ""}${fmt(p.pnl)} ₫`}</td>
+                  <td className="pr-5 text-right">{p.pnlPercent === null ? "—" : <PercentChange value={p.pnlPercent} arrow={false} />}</td>
                 </tr>
               ))}
+              {!positions.length && <tr><td colSpan={8} className="py-8 text-center text-[13px] text-muted">Chưa có vị thế trong tài khoản này.</td></tr>}
             </tbody>
           </table>
         </div>

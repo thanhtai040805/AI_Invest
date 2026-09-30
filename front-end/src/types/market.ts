@@ -5,8 +5,8 @@ export interface Stock {
   name: string
   sector: string
   price: number
-  changePct: number
-  ref: number
+  changePct: number | null
+  ref: number | null
   ceiling: number
   floor: number
   volume: string
@@ -16,8 +16,8 @@ export interface Stock {
   rs: number // relative strength percentile
   flow: number // -100..100
   factor: string
-  risk: "Low" | "Moderate" | "Elevated" | "High"
-  beneish: "PASS" | "WARNING"
+  risk: "Low" | "Moderate" | "Elevated" | "High" | "Unknown"
+  beneish: "PASS" | "WARNING" | "UNKNOWN"
   spark: number[]
   rsi?: number
   pe?: number

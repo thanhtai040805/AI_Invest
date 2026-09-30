@@ -212,7 +212,7 @@ function InvestmentThesisSection({ thesis }: { thesis?: RecordData }) {
           <span className="font-semibold uppercase tracking-wider text-warning block">
             Điều kiện tự vô hiệu hóa luận điểm (Invalidation Conditions):
           </span>
-          <p className="text-secondary text-[11px]">Nếu xảy ra bất kỳ điều kiện nào dưới đây, luận điểm sẽ bị hủy bỏ ngay lập tức:</p>
+            <p className="text-secondary text-[11px]">Dùng các điều kiện dưới đây để xem xét lại luận điểm khi có dữ liệu mới:</p>
           <ul className="space-y-1 list-disc list-inside text-ink">
             {invalidations.map((item, i) => (
               <li key={i} className="leading-relaxed">{cleanText(String(item))}</li>
@@ -260,7 +260,7 @@ function CounterThesisSection({ counter }: { counter?: RecordData }) {
         </div>
         {cts !== null && (
           <span className={`font-mono text-xs font-semibold px-2 py-0.5 rounded border ${cts >= 80 ? "bg-loss/10 text-loss border-loss/20" : cts >= 50 ? "bg-warning/10 text-warning border-warning/20" : "bg-teal/10 text-teal border-teal/20"}`}>
-            CTS: {cts.toFixed(1)}/100 · {String(counter?.verdict || "CONDITIONAL")}
+            CTS: {cts.toFixed(1)}/100{counter?.verdict ? ` · ${String(counter.verdict)}` : ""}
           </span>
         )}
       </div>
@@ -329,10 +329,10 @@ function CounterThesisSection({ counter }: { counter?: RecordData }) {
           </summary>
           <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 gap-2 bg-soft/40 p-3 rounded-lg border border-line">
             <div><span className="text-muted block text-[11px]">Điểm CTS cơ sở</span><span className="font-mono font-semibold">{String(counter.base_cts ?? "—")}</span></div>
-            <div><span className="text-muted block text-[11px]">Hệ số tương tác</span><span className="font-mono font-semibold">×{String(counter.interaction_multiplier ?? "1.0")}</span></div>
-            <div><span className="text-muted block text-[11px]">Hệ số chế độ TT</span><span className="font-mono font-semibold">×{String(counter.regime_multiplier ?? "1.0")}</span></div>
-            <div><span className="text-muted block text-[11px]">Quy tắc 3 tín hiệu</span><span className="font-medium">{counter.rule_of_three_passed ? "Đạt (Rule of 3)" : "Không đạt"}</span></div>
-            <div><span className="text-muted block text-[11px]">Bán tháo kỹ thuật</span><span className="font-medium">{counter.is_capitulation_rebound ? "Có" : "Không"}</span></div>
+            <div><span className="text-muted block text-[11px]">Hệ số tương tác</span><span className="font-mono font-semibold">{counter.interaction_multiplier == null ? "—" : `×${String(counter.interaction_multiplier)}`}</span></div>
+            <div><span className="text-muted block text-[11px]">Hệ số chế độ TT</span><span className="font-mono font-semibold">{counter.regime_multiplier == null ? "—" : `×${String(counter.regime_multiplier)}`}</span></div>
+            <div><span className="text-muted block text-[11px]">Quy tắc 3 tín hiệu</span><span className="font-medium">{typeof counter.rule_of_three_passed === "boolean" ? counter.rule_of_three_passed ? "Đạt (Rule of 3)" : "Không đạt" : "—"}</span></div>
+            <div><span className="text-muted block text-[11px]">Bán tháo kỹ thuật</span><span className="font-medium">{typeof counter.is_capitulation_rebound === "boolean" ? counter.is_capitulation_rebound ? "Có" : "Không" : "—"}</span></div>
             <div><span className="text-muted block text-[11px]">Thời điểm đánh giá</span><span className="font-mono">{time(counter.evaluated_at)}</span></div>
           </div>
         </details>
@@ -343,10 +343,11 @@ function CounterThesisSection({ counter }: { counter?: RecordData }) {
 
 function CioResolutionDossier({ resolution }: { resolution: RecordData }) {
   const payload = object(resolution.verdict_payload)
-  const conditions = Array.isArray(payload.conditions) ? (payload.conditions as string[]) : []
+  const hasConditions = Array.isArray(payload.conditions)
+  const conditions = hasConditions ? (payload.conditions as string[]) : []
   const weightCap = numeric(payload.weight_cap ?? payload.allocated_weight_cap)
   const penalty = numeric(payload.penalty_factor)
-  const tier = String(payload.severity_tier || resolution.decision_type || "TIER_3_NORMAL_BUSINESS_RISK")
+  const tier = String(payload.severity_tier || resolution.decision_type || "")
   const hash = String(resolution.decision_hash || payload.decision_hash || "")
   const [open, setOpen] = useState(true)
 
@@ -361,7 +362,7 @@ function CioResolutionDossier({ resolution }: { resolution: RecordData }) {
         </div>
         <div className="flex items-center gap-2">
           <span className="text-xs px-2.5 py-0.5 rounded bg-teal/10 text-teal font-medium border border-teal/20">
-            {conditions.length} điều kiện ràng buộc
+            {hasConditions ? `${conditions.length} điều kiện ràng buộc` : "Chưa có danh sách điều kiện"}
           </span>
           <button onClick={() => setOpen(!open)} className="text-xs text-mineral font-medium hover:underline">
             {open ? "Thu gọn ↑" : "Mở rộng ↓"}
@@ -391,7 +392,7 @@ function CioResolutionDossier({ resolution }: { resolution: RecordData }) {
                 })}
               </div>
             ) : (
-              <p className="text-xs text-secondary">Không có điều kiện phạt bổ sung. Áp dụng quy chuẩn định cỡ vốn thông thường.</p>
+              <p className="text-xs text-secondary">{hasConditions ? "Bản ghi xác nhận không có điều kiện bổ sung." : "Bản ghi không cung cấp danh sách điều kiện."}</p>
             )}
           </div>
 
@@ -399,7 +400,7 @@ function CioResolutionDossier({ resolution }: { resolution: RecordData }) {
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 rounded-lg bg-soft/50 border border-line p-3">
             <div>
               <span className="block text-[11px] text-muted">Tầng rủi ro (Severity Tier)</span>
-              <span className="font-semibold text-xs text-ink">{tier.includes("TIER_3") ? "Tầng 3 (Rủi ro thường)" : tier.includes("TIER_2") ? "Tầng 2 (Nguy cơ cận biên)" : tier.includes("TIER_1") ? "Tầng 1 (Vi phạm Hard Law)" : tier}</span>
+              <span className="font-semibold text-xs text-ink">{!tier ? "—" : tier.includes("TIER_3") ? "Tầng 3 (Rủi ro thường)" : tier.includes("TIER_2") ? "Tầng 2 (Nguy cơ cận biên)" : tier.includes("TIER_1") ? "Tầng 1 (Vi phạm Hard Law)" : tier}</span>
             </div>
             <div>
               <span className="block text-[11px] text-muted">Trần tỷ trọng an toàn</span>
@@ -407,11 +408,11 @@ function CioResolutionDossier({ resolution }: { resolution: RecordData }) {
             </div>
             <div>
               <span className="block text-[11px] text-muted">Hệ số phạt Kelly (λ)</span>
-              <span className="font-mono font-semibold text-xs text-ink">{penalty !== null ? penalty.toFixed(2) : "1.00"}</span>
+              <span className="font-mono font-semibold text-xs text-ink">{penalty !== null ? penalty.toFixed(2) : "—"}</span>
             </div>
             <div>
               <span className="block text-[11px] text-muted">Thẩm quyền phán quyết</span>
-              <span className="font-semibold text-xs text-teal">{String(resolution.decision_type || "Trọng tài Hiến pháp")}</span>
+              <span className="font-semibold text-xs text-teal">{String(resolution.decision_type || "—")}</span>
             </div>
           </div>
 
@@ -427,10 +428,6 @@ function CioResolutionDossier({ resolution }: { resolution: RecordData }) {
                 <span className="bg-soft px-1.5 py-0.5 rounded border border-line">{hash.slice(0, 16)}…</span>
               </div>
             )}
-            <div>
-              <span className="text-muted">Chứng thực: </span>
-              <span className="text-gain font-semibold">CHẤP THUẬN HỢP LỆ</span>
-            </div>
           </div>
         </div>
       )}
@@ -453,11 +450,11 @@ function KellyMathTrace({ trace, weight }: { trace: RecordData; weight?: unknown
         <div><span className="text-muted block text-[11px]">Xác suất thắng ($P$)</span><span className="font-mono font-semibold">{p !== null ? `${(p * 100).toFixed(1)}%` : "—"}</span></div>
         <div><span className="text-muted block text-[11px]">Tỷ lệ lãi/lỗ ($b$)</span><span className="font-mono font-semibold">{b !== null ? b.toFixed(2) : "—"}</span></div>
         <div><span className="text-muted block text-[11px]">Quarter Kelly gốc</span><span className="font-mono font-semibold">{quarterKelly !== null ? `${(quarterKelly * 100).toFixed(1)}%` : "—"}</span></div>
-        <div><span className="text-muted block text-[11px]">Hệ số thị trường</span><span className="font-mono font-semibold">×{regimeScaler !== null ? regimeScaler.toFixed(2) : "1.00"}</span></div>
+        <div><span className="text-muted block text-[11px]">Hệ số thị trường</span><span className="font-mono font-semibold">{regimeScaler !== null ? `×${regimeScaler.toFixed(2)}` : "—"}</span></div>
         <div><span className="text-muted block text-[11px]">Mục tiêu danh mục</span><span className="font-mono font-semibold text-teal">{portTarget !== null ? `${(portTarget * 100).toFixed(2)}% NAV` : "—"}</span></div>
         <div><span className="text-muted block text-[11px]">Đề xuất tăng tỷ trọng</span><span className="font-mono font-semibold text-gain">{incWeight !== null ? `+${(incWeight * 100).toFixed(2)}% NAV` : weight != null ? `${weight}% NAV` : "—"}</span></div>
-        <div><span className="text-muted block text-[11px]">Ngưỡng Deadband</span><span className="font-medium">{trace.deadband_passed ? "Đạt điều kiện" : "Bỏ qua"}</span></div>
-        <div><span className="text-muted block text-[11px]">Dự trữ tiền mặt tối thiểu</span><span className="font-mono font-semibold">{minCash !== null ? `${(minCash * 100).toFixed(0)}% NAV` : "40% NAV"}</span></div>
+        <div><span className="text-muted block text-[11px]">Ngưỡng Deadband</span><span className="font-medium">{typeof trace.deadband_passed === "boolean" ? trace.deadband_passed ? "Đạt điều kiện" : "Bỏ qua" : "—"}</span></div>
+        <div><span className="text-muted block text-[11px]">Dự trữ tiền mặt tối thiểu</span><span className="font-mono font-semibold">{minCash !== null ? `${(minCash * 100).toFixed(0)}% NAV` : "—"}</span></div>
       </div>
     </div>
   )
@@ -465,8 +462,8 @@ function KellyMathTrace({ trace, weight }: { trace: RecordData; weight?: unknown
 
 function MacroUniverseSection({ msEntry, udEntry }: { msEntry?: RecordData; udEntry?: RecordData }) {
   const msOutputs = object(msEntry?.outputs)
-  const regime = String(msOutputs.current_regime || "RANGE_BOUND")
-  const alertLevel = String(msOutputs.alert_level || "GREEN")
+  const regime = String(msOutputs.current_regime || "")
+  const alertLevel = String(msOutputs.alert_level || "")
   const vix = numeric(msOutputs.vix_vn_analog)
   const csad = numeric(msOutputs.csad_score)
   const advDecl = numeric(msOutputs.adv_decl_ratio)
@@ -483,7 +480,7 @@ function MacroUniverseSection({ msEntry, udEntry }: { msEntry?: RecordData; udEn
     BULL_MARKET: { label: "Tăng trưởng (Bull Market)", tone: "bg-gain/10 text-gain border-gain/20", desc: "Xu hướng tăng giá chủ đạo, mở rộng tỷ trọng giải ngân." },
     BEAR_MARKET: { label: "Suy thoái (Bear Market)", tone: "bg-loss/10 text-loss border-loss/20", desc: "Thị trường con gấu rủi ro cao, ưu tiên nắm giữ tiền mặt." },
   }
-  const currentRegime = regimeInfo[regime] || { label: regime, tone: "bg-soft text-ink border-line", desc: "Chế độ giám sát nền tảng hoạt động bình thường." }
+  const currentRegime = regimeInfo[regime] || { label: regime || "Chưa có dữ liệu", tone: "bg-soft text-secondary border-line", desc: regime ? "Chưa có mô tả cho chế độ này." : "Chưa có bản ghi giám sát thị trường trong phạm vi đã chọn." }
 
   return (
     <div className="grid gap-5 lg:grid-cols-2 items-stretch">
@@ -514,31 +511,31 @@ function MacroUniverseSection({ msEntry, udEntry }: { msEntry?: RecordData; udEn
           <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 gap-2.5">
             <div className="rounded-lg bg-soft/50 border border-line p-2.5">
               <span className="text-[10px] text-muted block">VIX-VN Analog</span>
-              <span className="font-mono text-sm font-bold text-ink">{vix !== null ? vix.toFixed(2) : "17.84"}</span>
-              <span className="text-[10px] text-secondary block mt-0.5">{vix && vix > 20 ? "Biến động cao" : "Ổn định"}</span>
+              <span className="font-mono text-sm font-bold text-ink">{vix !== null ? vix.toFixed(2) : "—"}</span>
+              <span className="text-[10px] text-secondary block mt-0.5">{vix === null ? "Chưa có quan sát" : vix > 20 ? "Trên ngưỡng 20" : "Dưới ngưỡng 20"}</span>
             </div>
             <div className="rounded-lg bg-soft/50 border border-line p-2.5">
               <span className="text-[10px] text-muted block">Chỉ số bầy đàn CSAD</span>
-              <span className="font-mono text-sm font-bold text-ink">{csad !== null ? csad.toFixed(4) : "0.0191"}</span>
-              <span className="text-[10px] text-secondary block mt-0.5">{String(msOutputs.herding_status || "Bình thường")}</span>
+              <span className="font-mono text-sm font-bold text-ink">{csad !== null ? csad.toFixed(4) : "—"}</span>
+              <span className="text-[10px] text-secondary block mt-0.5">{msOutputs.herding_status ? String(msOutputs.herding_status) : "Chưa có kết luận"}</span>
             </div>
             <div className="rounded-lg bg-soft/50 border border-line p-2.5">
               <span className="text-[10px] text-muted block">Tỷ lệ Tăng/Giảm (A/D)</span>
-              <span className="font-mono text-sm font-bold text-ink">{advDecl !== null ? advDecl.toFixed(2) : "0.53"}</span>
-              <span className="text-[10px] text-secondary block mt-0.5">{advDecl && advDecl < 1 ? "Bên bán áp đảo" : "Tích cực"}</span>
+              <span className="font-mono text-sm font-bold text-ink">{advDecl !== null ? advDecl.toFixed(2) : "—"}</span>
+              <span className="text-[10px] text-secondary block mt-0.5">{advDecl === null ? "Chưa có quan sát" : advDecl < 1 ? "Số mã giảm nhiều hơn tăng" : advDecl > 1 ? "Số mã tăng nhiều hơn giảm" : "Cân bằng"}</span>
             </div>
             <div className="rounded-lg bg-soft/50 border border-line p-2.5">
               <span className="text-[10px] text-muted block">Dự trữ TM GARCH</span>
-              <span className="font-mono text-sm font-bold text-teal">{cashTarget !== null ? `${cashTarget.toFixed(1)}%` : "15.7%"} NAV</span>
+              <span className="font-mono text-sm font-bold text-teal">{cashTarget !== null ? `${cashTarget.toFixed(1)}% NAV` : "—"}</span>
               <span className="text-[10px] text-secondary block mt-0.5">Mục tiêu phòng thủ</span>
             </div>
             <div className="rounded-lg bg-soft/50 border border-line p-2.5 sm:col-span-2">
               <span className="text-[10px] text-muted block">Độ rộng thị trường &gt; MA20</span>
               <div className="flex items-center gap-2 mt-1">
-                <div className="flex-1 bg-line/60 rounded-full h-2 overflow-hidden">
-                  <div className="bg-sky-500 h-2 rounded-full" style={{ width: `${Math.min(100, Math.max(0, breadthMa20 ?? 26.5))}%` }} />
-                </div>
-                <span className="font-mono text-xs font-semibold text-ink">{breadthMa20 !== null ? `${breadthMa20.toFixed(1)}%` : "26.5%"}</span>
+                {breadthMa20 !== null ? <>
+                  <div className="flex-1 bg-line/60 rounded-full h-2 overflow-hidden"><div className="bg-sky-500 h-2 rounded-full" style={{ width: `${Math.min(100, Math.max(0, breadthMa20))}%` }} /></div>
+                  <span className="font-mono text-xs font-semibold text-ink">{breadthMa20.toFixed(1)}%</span>
+                </> : <span className="text-xs text-muted">Chưa có dữ liệu độ rộng</span>}
               </div>
             </div>
           </div>
@@ -549,7 +546,7 @@ function MacroUniverseSection({ msEntry, udEntry }: { msEntry?: RecordData; udEn
               <div className="grid grid-cols-3 gap-2 text-center">
                 {Object.entries(hmmProbs).map(([k, prob]) => {
                   const val = numeric(prob)
-                  const pct = val !== null ? (val * 100).toFixed(1) : "0"
+                  const pct = val !== null ? (val * 100).toFixed(1) : "—"
                   return (
                     <div key={k} className="p-1 rounded bg-surface border border-line/50">
                       <span className="block text-[10px] text-secondary truncate">{k.replace("_MARKET", "")}</span>
@@ -563,7 +560,7 @@ function MacroUniverseSection({ msEntry, udEntry }: { msEntry?: RecordData; udEn
         </div>
         <div className="text-[10px] text-muted border-t border-line/60 pt-2 flex justify-between">
           <span>Động cơ: RegimeEngineV2 · GARCH Cash Optimizer</span>
-          <span>{msEntry ? time(timestamp(msEntry)) : "Chế độ giám sát liên tục"}</span>
+          <span>{msEntry ? time(timestamp(msEntry)) : "Chưa có log trong phạm vi này"}</span>
         </div>
       </article>
 
@@ -577,8 +574,8 @@ function MacroUniverseSection({ msEntry, udEntry }: { msEntry?: RecordData; udEn
               </span>
               <span className="text-xs text-muted font-medium">Khám phá vũ trụ & Lọc cứng Lớp 0</span>
             </div>
-            <span className="text-xs px-2 py-0.5 rounded bg-gain/10 text-gain font-medium border border-gain/20">
-              Beneish M-Score & Thanh khoản ADTV20
+            <span className="text-xs px-2 py-0.5 rounded bg-soft text-secondary font-medium border border-line">
+              Điều kiện lọc · không phải kết quả lượt chạy
             </span>
           </div>
 
@@ -589,33 +586,33 @@ function MacroUniverseSection({ msEntry, udEntry }: { msEntry?: RecordData; udEn
           <div className="mt-3 space-y-2">
             <div className="flex items-center justify-between rounded-lg bg-soft/50 border border-line p-2.5 text-xs">
               <div className="flex items-center gap-2">
-                <span className="text-gain font-bold">✓</span>
+                <span className="text-muted font-bold">•</span>
                 <div>
                   <span className="font-semibold text-ink block">Lọc cứng Beneish M-Score (M ≤ -1.78)</span>
                   <span className="text-[10px] text-secondary">Loại trừ rủi ro thao túng báo cáo tài chính doanh nghiệp</span>
                 </div>
               </div>
-              <span className="font-mono font-semibold text-teal text-xs">CHUẨN HOSE</span>
+              <span className="font-mono font-semibold text-secondary text-xs">M ≤ -1,78</span>
             </div>
 
             <div className="flex items-center justify-between rounded-lg bg-soft/50 border border-line p-2.5 text-xs">
               <div className="flex items-center gap-2">
-                <span className="text-gain font-bold">✓</span>
+                <span className="text-muted font-bold">•</span>
                 <div>
                   <span className="font-semibold text-ink block">Ngưỡng thanh khoản tối thiểu (ADTV20 ≥ 15 tỷ VND)</span>
                   <span className="text-[10px] text-secondary">Đảm bảo dòng tiền ra vào khả thi không gãy giá</span>
                 </div>
               </div>
-              <span className="font-mono font-semibold text-teal text-xs">&gt; 15 TỶ/PHIÊN</span>
+              <span className="font-mono font-semibold text-secondary text-xs">ADTV20 ≥ 15 tỷ</span>
             </div>
 
             <div className="flex items-center justify-between rounded-lg bg-soft/50 border border-line p-2.5 text-xs">
               <div className="flex items-center gap-2">
-                <span className="text-gain font-bold">✓</span>
+                <span className="text-muted font-bold">•</span>
                 <div>
                   <span className="font-semibold text-ink block">Danh sách loại trừ rủi ro</span>
                   <span className="text-[10px] text-secondary">
-                    {exclusions.length > 0 ? `Đã phát hiện và loại bỏ ${exclusions.length} mã vi phạm tiêu chí Lớp 0` : "Đã kích hoạt quét tự động toàn sàn"}
+                    {!udEntry ? "Chưa có log lượt quét trong phạm vi này" : exclusions.length > 0 ? `Lượt chạy ghi nhận ${exclusions.length} mã bị loại` : "Lượt chạy không ghi nhận mã bị loại"}
                   </span>
                 </div>
               </div>
@@ -647,7 +644,7 @@ function MacroUniverseSection({ msEntry, udEntry }: { msEntry?: RecordData; udEn
         </div>
         <div className="text-[10px] text-muted border-t border-line/60 pt-2 flex justify-between">
           <span>Động cơ: BeneishMScoreEngine · LiquidityFilter</span>
-          <span>{udEntry ? time(timestamp(udEntry)) : "Bộ lọc hoạt động liên tục"}</span>
+          <span>{udEntry ? time(timestamp(udEntry)) : "Chưa có log trong phạm vi này"}</span>
         </div>
       </article>
     </div>
@@ -657,7 +654,7 @@ function MacroUniverseSection({ msEntry, udEntry }: { msEntry?: RecordData; udEn
 function EquityResearchSection({ entry, ticker }: { entry?: RecordData; ticker: string }) {
   const metrics = object(entry?.factor_raw_metrics)
   const css = numeric(metrics.css)
-  const conviction = String(metrics.conviction || "—")
+  const conviction = String(metrics.conviction || "")
   const percentile = numeric(metrics.percentile)
   const pe = numeric(metrics.pe)
   const pb = numeric(metrics.pb)
@@ -674,7 +671,7 @@ function EquityResearchSection({ entry, ticker }: { entry?: RecordData; ticker: 
   ]
 
   const researchGate = object(metrics.research_gate)
-  const eligible = researchGate.eligible_for_thesis !== false
+  const eligible = typeof researchGate.eligible_for_thesis === "boolean" ? researchGate.eligible_for_thesis : null
 
   return (
     <article className="rounded-xl border border-line bg-surface p-5 space-y-4">
@@ -686,8 +683,8 @@ function EquityResearchSection({ entry, ticker }: { entry?: RecordData; ticker: 
           <span className="text-xs text-muted font-medium">Chấm điểm đa nhân tố F1–F6 & Điểm tổng hợp CSS · {ticker}</span>
         </div>
         <div className="flex items-center gap-2">
-          <span className={`text-xs px-2 py-0.5 rounded font-semibold border ${conviction === "A" ? "bg-gain/10 text-gain border-gain/20" : "bg-warning/10 text-warning border-warning/20"}`}>
-            Hạng {conviction}
+          <span className={`text-xs px-2 py-0.5 rounded font-semibold border ${conviction ? conviction === "A" ? "bg-gain/10 text-gain border-gain/20" : "bg-warning/10 text-warning border-warning/20" : "bg-soft text-secondary border-line"}`}>
+            {conviction ? `Hạng ${conviction}` : "Chưa xếp hạng"}
           </span>
           {percentile !== null && (
             <span className="text-xs font-mono px-2 py-0.5 rounded bg-soft text-ink border border-line">
@@ -714,8 +711,8 @@ function EquityResearchSection({ entry, ticker }: { entry?: RecordData; ticker: 
             </div>
             <div>
               <span className="block text-[11px] text-muted">Điều kiện lập luận điểm</span>
-              <span className={`text-xs font-semibold px-1.5 py-0.5 rounded inline-block mt-1 ${eligible ? "bg-gain/10 text-gain" : "bg-loss/10 text-loss"}`}>
-                {eligible ? "✓ Đạt chuẩn đầu tư" : "Chưa đạt chuẩn"}
+              <span className={`text-xs font-semibold px-1.5 py-0.5 rounded inline-block mt-1 ${eligible === null ? "bg-soft text-secondary" : eligible ? "bg-gain/10 text-gain" : "bg-loss/10 text-loss"}`}>
+                {eligible === null ? "Chưa có dữ liệu" : eligible ? "Đạt chuẩn đầu tư" : "Chưa đạt chuẩn"}
               </span>
             </div>
           </div>
@@ -725,19 +722,14 @@ function EquityResearchSection({ entry, ticker }: { entry?: RecordData; ticker: 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               {factors.map(f => {
                 const s = f.score
-                const pct = s !== null ? Math.min(100, Math.max(0, s)) : 0
+                const pct = s !== null ? Math.min(100, Math.max(0, s)) : null
                 return (
                   <div key={f.key} className="rounded-lg bg-soft/40 border border-line p-2.5">
                     <div className="flex items-center justify-between text-xs mb-1">
                       <span className="font-semibold text-ink">{f.label}</span>
                       <span className="font-mono font-bold text-ink">{s !== null ? s.toFixed(1) : "—"}</span>
                     </div>
-                    <div className="bg-line/60 rounded-full h-1.5 overflow-hidden mb-1">
-                      <div
-                        className={`h-1.5 rounded-full ${pct >= 70 ? "bg-gain" : pct >= 50 ? "bg-teal" : pct >= 30 ? "bg-warning" : "bg-loss"}`}
-                        style={{ width: `${pct}%` }}
-                      />
-                    </div>
+                    {pct !== null && <div className="bg-line/60 rounded-full h-1.5 overflow-hidden mb-1"><div className={`h-1.5 rounded-full ${pct >= 70 ? "bg-gain" : pct >= 50 ? "bg-teal" : pct >= 30 ? "bg-warning" : "bg-loss"}`} style={{ width: `${pct}%` }} /></div>}
                     <span className="text-[10px] text-secondary block">{f.note}</span>
                   </div>
                 )
@@ -762,18 +754,20 @@ function EquityResearchSection({ entry, ticker }: { entry?: RecordData; ticker: 
 function PortfolioRiskSection({ entry, ticker }: { entry?: RecordData; ticker: string }) {
   const garch = object(entry?.garch_cash_trace)
   const dec = object(garch.decision)
-  const action = String(dec.action || garch.risk_status || "PASS")
+  const action = String(dec.action || garch.risk_status || "")
   const origShares = numeric(dec.original_shares)
   const approvedShares = numeric(dec.approved_shares)
   const reduction = numeric(dec.exposure_reduction_pct)
   const approvedWeight = numeric(dec.approved_weight_pct)
   const minCash = numeric(dec.min_cash_target_pct)
   const rationale = cleanText(String(dec.rationale || ""))
-  const governance = object(garch.governance)
-  const limits = object(governance.risk_limits)
+  const hardLaws = object(garch.hard_laws)
   const cdc = object(garch.cdc)
   const drawdown = object(garch.drawdown)
   const tailRisk = object(garch.tail_risk)
+  const tape = object(garch.tape_anomaly)
+  const breadth = object(garch.market_breadth)
+  const proposedCheck = object(garch.proposed_order_check)
 
   const actionConfig: Record<string, { label: string; tone: string }> = {
     PASS: { label: "THÔNG QUA (PASS)", tone: "bg-gain/10 text-gain border-gain/20" },
@@ -781,7 +775,15 @@ function PortfolioRiskSection({ entry, ticker }: { entry?: RecordData; ticker: s
     REDUCE: { label: "CẮT GIẢM QUY MÔ (REDUCE)", tone: "bg-warning/10 text-warning border-warning/20" },
     BLOCK: { label: "VETO / CHẶN LỆNH (BLOCK)", tone: "bg-loss/10 text-loss border-loss/20" },
   }
-  const currentAction = actionConfig[action] || { label: action, tone: "bg-soft text-ink border-line" }
+  const currentAction = actionConfig[action] || { label: "CHƯA CÓ KẾT QUẢ", tone: "bg-soft text-secondary border-line" }
+  const checks = [
+    ...Object.entries(hardLaws).filter(([key]) => key !== "all_passed").map(([key, value]) => [key.replaceAll("_", " "), value] as const),
+    ...(tape.severity != null ? [["Dị thường giá/khối lượng", tape.severity] as const] : []),
+    ...(tailRisk.tail_risk_verdict != null ? [["Tail risk", tailRisk.tail_risk_verdict] as const] : []),
+    ...(drawdown.tier != null ? [["Drawdown", drawdown.tier] as const] : []),
+    ...(breadth.health_tier != null ? [["Độ rộng thị trường", breadth.health_tier] as const] : []),
+    ...(proposedCheck.passed != null ? [["Kiểm tra lệnh đề xuất", proposedCheck.passed] as const] : []),
+  ]
 
   return (
     <article className="rounded-xl border border-line bg-surface p-5 space-y-4">
@@ -798,7 +800,7 @@ function PortfolioRiskSection({ entry, ticker }: { entry?: RecordData; ticker: s
       </div>
 
       <p className="text-xs text-secondary leading-relaxed">
-        Agent 07 sở hữu quyền Veto tối cao độc lập với CIO. Lệnh giải ngân từ Agent 06 chỉ được thực thi sau khi vượt qua toàn bộ 5 cổng kiểm soát rủi ro dưới đây.
+        Chỉ các trạng thái có trong bản ghi Agent 07 mới được hiển thị. Thiếu trường kiểm soát không được xem là đã thông qua.
       </p>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 rounded-lg bg-soft/50 border border-line p-3">
@@ -808,7 +810,7 @@ function PortfolioRiskSection({ entry, ticker }: { entry?: RecordData; ticker: s
         </div>
         <div>
           <span className="block text-[11px] text-muted">Khối lượng phê duyệt an toàn</span>
-          <span className="font-mono font-bold text-xs text-gain">{approvedShares !== null ? `${number(approvedShares)} CP` : "—"}</span>
+          <span className="font-mono font-bold text-xs text-ink">{approvedShares !== null ? `${number(approvedShares)} CP` : "—"}</span>
           {reduction !== null && reduction > 0 && (
             <span className="text-[10px] text-loss font-semibold ml-1">(-{reduction.toFixed(1)}%)</span>
           )}
@@ -819,7 +821,7 @@ function PortfolioRiskSection({ entry, ticker }: { entry?: RecordData; ticker: s
         </div>
         <div>
           <span className="block text-[11px] text-muted">Dự trữ tiền mặt tối thiểu</span>
-          <span className="font-mono font-semibold text-xs text-ink">{minCash !== null ? `${minCash.toFixed(0)}% NAV` : "40% NAV"}</span>
+          <span className="font-mono font-semibold text-xs text-ink">{minCash !== null ? `${minCash.toFixed(0)}% NAV` : "—"}</span>
         </div>
       </div>
 
@@ -830,65 +832,33 @@ function PortfolioRiskSection({ entry, ticker }: { entry?: RecordData; ticker: s
         </div>
       )}
 
-      <div className="space-y-2">
-        <h4 className="text-xs font-semibold uppercase tracking-wider text-muted">Kết quả thẩm định 5 cổng kiểm soát rủi ro (5-Layer Gates):</h4>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-          <div className="p-2.5 rounded-lg border border-line bg-soft/40 text-xs">
-            <div className="flex items-center justify-between">
-              <span className="font-semibold text-ink">Cổng 1: Hard Law Veto</span>
-              <span className="text-gain font-bold">✓ PASS</span>
-            </div>
-            <span className="text-[10px] text-secondary block mt-1">Beneish M-Score ≤ -1.78 & Blacklist check</span>
-          </div>
-
-          <div className="p-2.5 rounded-lg border border-line bg-soft/40 text-xs">
-            <div className="flex items-center justify-between">
-              <span className="font-semibold text-ink">Cổng 2: Trần cổ phiếu lẻ</span>
-              <span className="text-gain font-bold">✓ PASS</span>
-            </div>
-            <span className="text-[10px] text-secondary block mt-1">Tỷ trọng ≤ {limits.max_single_stock_pct != null ? `${limits.max_single_stock_pct}%` : "15%"} NAV ({approvedWeight ?? 0}% ≤ 15%)</span>
-          </div>
-
-          <div className="p-2.5 rounded-lg border border-line bg-soft/40 text-xs">
-            <div className="flex items-center justify-between">
-              <span className="font-semibold text-ink">Cổng 3: Tập trung ngành</span>
-              <span className="text-gain font-bold">✓ PASS</span>
-            </div>
-            <span className="text-[10px] text-secondary block mt-1">Tỷ trọng ngành ≤ {limits.max_sector_pct != null ? `${limits.max_sector_pct}%` : "35%"} NAV</span>
-          </div>
-
-          <div className="p-2.5 rounded-lg border border-line bg-soft/40 text-xs">
-            <div className="flex items-center justify-between">
-              <span className="font-semibold text-ink">Cổng 4: Biến động & ES 97.5%</span>
-              <span className="text-teal font-bold">{action === "REDUCE" ? "HẠ TỶ TRỌNG" : "✓ PASS"}</span>
-            </div>
-            <span className="text-[10px] text-secondary block mt-1">GARCH Tail Risk · {tailRisk.tail_risk_verdict ? String(tailRisk.tail_risk_verdict) : "Kiểm soát an toàn"}</span>
-          </div>
-
-          <div className="p-2.5 rounded-lg border border-line bg-soft/40 text-xs">
-            <div className="flex items-center justify-between">
-              <span className="font-semibold text-ink">Cổng 5: Đệm tiền mặt tối thiểu</span>
-              <span className="text-gain font-bold">✓ ĐẠT</span>
-            </div>
-            <span className="text-[10px] text-secondary block mt-1">Duy trì ≥ {minCash !== null ? `${minCash}%` : "40%"} NAV dự phòng rủi ro thanh khoản</span>
-          </div>
-
-          <div className="p-2.5 rounded-lg border border-line bg-soft/40 text-xs">
-            <div className="flex items-center justify-between">
-              <span className="font-semibold text-ink">Tầng Drawdown & CDC</span>
-              <span className="font-mono text-ink text-[11px] font-semibold">{String(drawdown.tier || "GREEN")} · {String(cdc.tier || "NORMAL")}</span>
-            </div>
-            <span className="text-[10px] text-secondary block mt-1">{drawdown.re_risking_state ? String(drawdown.re_risking_state) : "Giám sát sụt giảm tài sản"}</span>
-          </div>
-        </div>
-      </div>
+      {checks.length > 0 ? <div className="space-y-2">
+        <h4 className="text-xs font-semibold uppercase tracking-wider text-muted">Tín hiệu kiểm soát được ghi nhận</h4>
+        <dl className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {checks.map(([label, value]) => <div key={label} className="rounded-lg border border-line bg-soft/40 p-2.5 text-xs">
+            <dt className="font-semibold capitalize text-secondary">{label}</dt>
+            <dd className="mt-1 break-words font-mono text-ink">{typeof value === "boolean" ? (value ? "Đạt" : "Không đạt") : cleanText(String(value))}</dd>
+          </div>)}
+        </dl>
+      </div> : <p className="rounded-lg border border-dashed border-line p-3 text-xs text-secondary">Bản ghi này không có chi tiết từng cổng kiểm soát.</p>}
+      {entry && <p className="text-[11px] text-muted">Bản ghi Agent 07 · {time(timestamp(entry))}</p>}
+      {!entry && <p className="text-[11px] text-muted">Chưa có bản ghi Agent 07 cho mã và ngày đang chọn.</p>}
     </article>
   )
 }
 
-function TradeExecutionSection({ selectedPlans, ticker }: { selectedPlans: RecordData[]; ticker: string }) {
-  const activePlan = selectedPlans[0]
-  const dec = activePlan ? allocationDecision(activePlan.action) : null
+function TradeExecutionSection({ activePlan, riskEntry, executionEntry, ticker }: { activePlan?: RecordData; riskEntry?: RecordData; executionEntry?: RecordData; ticker: string }) {
+  const risk = logOutput("portfolio_risk", riskEntry || {})
+  const decisionData = object(risk.decision)
+  const approvedShares = numeric(decisionData.approved_shares)
+  const planShares = numeric(activePlan?.target_shares)
+  const execution = logOutput("trade_execution", executionEntry || {})
+  const executionMetrics = object(execution.execution_metrics)
+  const executionPlan = object(execution.execution_plan)
+  const rawStatus = String(execution.status || execution.execution_decision || "")
+  const statusLabels: Record<string, string> = { SKIPPED_ZERO_SHARES: "Bỏ qua · số lượng được duyệt bằng 0", EXECUTE: "Đã tạo kết quả thực thi", EXECUTED: "Đã thực thi", FILLED: "Đã khớp", PARTIALLY_FILLED: "Khớp một phần", REJECTED: "Bị từ chối" }
+  const executionState = approvedShares === 0 ? "Bị chặn · Agent 07 duyệt 0 cổ phiếu" : approvedShares === null ? "Chưa có kết quả duyệt từ Agent 07" : executionEntry ? (statusLabels[rawStatus] || rawStatus || "Có log thực thi, thiếu trạng thái") : `Đã duyệt ${number(approvedShares)} cổ phiếu · chưa có log xác nhận thực thi`
+  const executionTone = approvedShares === 0 || ["REJECTED", "SKIPPED_ZERO_SHARES"].includes(rawStatus) ? "bg-loss/10 text-loss border-loss/20" : approvedShares === null || !executionEntry ? "bg-soft text-secondary border-line" : "bg-gain/10 text-gain border-gain/20"
 
   return (
     <article className="rounded-xl border border-line bg-surface p-5 space-y-4">
@@ -897,36 +867,32 @@ function TradeExecutionSection({ selectedPlans, ticker }: { selectedPlans: Recor
           <span className="text-[11px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-emerald-600/10 text-emerald-600 border border-emerald-600/20">
             AGENT 08 · TRADE EXECUTION
           </span>
-          <span className="text-xs text-muted font-medium">Thực thi lệnh thông minh & Cắt lát thời gian (TWAP / Slicing) · {ticker}</span>
+        <span className="text-xs text-muted font-medium">Kết quả thực thi trong nhật ký Agent 08 · {ticker}</span>
         </div>
-        {dec && (
-          <span className={`text-xs px-2.5 py-0.5 rounded font-semibold border ${dec.tone}`}>
-            Lệnh: {dec.label} {activePlan?.target_shares ? `${number(activePlan.target_shares)} CP` : ""}
-          </span>
-        )}
+        <span className={`text-xs px-2.5 py-1 rounded font-semibold border ${executionTone}`}>{executionState}</span>
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 rounded-lg bg-soft/50 border border-line p-3 text-xs">
         <div>
-          <span className="block text-[10px] text-muted">Phương thức thực thi</span>
-          <span className="font-semibold text-ink">Adaptive TWAP / Limit</span>
+          <span className="block text-[10px] text-muted">Khối lượng kế hoạch Agent 06</span>
+          <span className="font-semibold text-ink">{planShares === null ? "—" : `${number(planShares)} CP`}</span>
         </div>
         <div>
-          <span className="block text-[10px] text-muted">Kiểm soát trượt giá</span>
-          <span className="font-mono font-semibold text-gain">≤ 0.3%</span>
+          <span className="block text-[10px] text-muted">Khối lượng duyệt Agent 07</span>
+          <span className="font-mono font-semibold text-ink">{approvedShares === null ? "—" : `${number(approvedShares)} CP`}</span>
         </div>
         <div>
-          <span className="block text-[10px] text-muted">Thời điểm đẩy lệnh</span>
-          <span className="font-semibold text-ink">Phiên liên tục (Khớp lệnh chủ động)</span>
+          <span className="block text-[10px] text-muted">Phương thức ghi trong log</span>
+          <span className="font-semibold text-ink">{String(execution.execution_mode ?? executionPlan.strategy ?? "—")}</span>
         </div>
         <div>
-          <span className="block text-[10px] text-muted">Trạng thái cổng kết nối</span>
-          <span className="font-semibold text-gain">Sẵn sàng (Broker Ready)</span>
+          <span className="block text-[10px] text-muted">Khối lượng đã khớp</span>
+          <span className="font-mono font-semibold text-ink">{numeric(executionMetrics.executed_quantity ?? execution.shares) === null ? "—" : `${number(executionMetrics.executed_quantity ?? execution.shares)} CP`}</span>
         </div>
       </div>
-      <p className="text-xs text-secondary leading-relaxed">
-        Agent 08 tiếp nhận khối lượng đã được Agent 07 phê duyệt để chia nhỏ thành các lô cắt lát thích ứng, bảo đảm không gây sốc thanh khoản và hạn chế tối đa chi phí trượt giá trên sàn HOSE.
-      </p>
+      <p className="text-xs text-secondary leading-relaxed">{executionMetrics.slippage != null || execution.slippage_bps != null ? `Trượt giá ghi nhận: ${execution.slippage_bps != null ? `${number(execution.slippage_bps)} bps` : `${number(Number(executionMetrics.slippage) * 10000)} bps`}.` : "Không có số liệu trượt giá trong log."} {executionEntry ? `Log Agent 08 · ${time(timestamp(executionEntry))}.` : "Chưa có bản ghi Agent 08 phù hợp."}</p>
+      {(riskEntry || executionEntry) && <p className="text-[11px] text-muted">Ghép log theo mã và ngày. Hiện chưa có mã lượt chạy chung để xác nhận tuyệt đối chúng thuộc cùng một pipeline.</p>}
+      {!activePlan && <p className="text-[11px] text-muted">Chưa có quyết định phân bổ Agent 06 cho mã này trong phạm vi đang chọn.</p>}
     </article>
   )
 }
@@ -934,9 +900,10 @@ function TradeExecutionSection({ selectedPlans, ticker }: { selectedPlans: Recor
 function PositionMonitoringSection({ position, entry, ticker }: { position?: RecordData; entry?: RecordData; ticker: string }) {
   const pnl = numeric(position?.current_pnl_pct ?? entry?.pnl_pct)
   const stopLossDistance = numeric(position?.distance_to_stop_loss_pct)
-  const healthStatus = String(position?.thesis_health_status || (entry?.thesis_invalidated ? "INVALIDATED" : entry?.stop_loss_triggered ? "TRIGGERED" : "HEALTHY"))
-  const stopLossTriggered = Boolean(entry?.stop_loss_triggered)
-  const thesisInvalidated = Boolean(entry?.thesis_invalidated)
+  const healthStatus = String(position?.thesis_health_status || (entry?.thesis_invalidated === true ? "INVALIDATED" : entry?.stop_loss_triggered === true ? "TRIGGERED" : ""))
+  const stopLossTriggered = typeof entry?.stop_loss_triggered === "boolean" ? entry.stop_loss_triggered : null
+  const thesisInvalidated = typeof entry?.thesis_invalidated === "boolean" ? entry.thesis_invalidated : null
+  const healthTone = !healthStatus ? "bg-soft text-secondary border-line" : healthStatus === "HEALTHY" ? "bg-gain/10 text-gain border-gain/20" : healthStatus === "WARNING" ? "bg-warning/10 text-warning border-warning/20" : "bg-loss/10 text-loss border-loss/20"
 
   return (
     <article className="rounded-xl border border-line bg-surface p-5 space-y-4">
@@ -945,11 +912,11 @@ function PositionMonitoringSection({ position, entry, ticker }: { position?: Rec
           <span className="text-[11px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-amber-500/10 text-amber-600 border border-amber-500/20">
             AGENT 09 · POSITION MONITORING
           </span>
-          <span className="text-xs text-muted font-medium">Canh gác vị thế thời gian thực & Thang phòng thủ T0–T5 · {ticker}</span>
+          <span className="text-xs text-muted font-medium">Trạng thái trong snapshot và log Agent 09 · {ticker}</span>
         </div>
         <div className="flex items-center gap-2">
-          <span className={`text-xs px-2 py-0.5 rounded font-semibold border ${healthStatus === "HEALTHY" ? "bg-gain/10 text-gain border-gain/20" : healthStatus === "WARNING" ? "bg-warning/10 text-warning border-warning/20" : "bg-loss/10 text-loss border-loss/20"}`}>
-            {healthStatus === "HEALTHY" ? "Vị thế Khỏe mạnh" : healthStatus === "WARNING" ? "Cảnh báo Vi phạm" : "Luận điểm Mất hiệu lực"}
+          <span className={`text-xs px-2 py-0.5 rounded font-semibold border ${healthTone}`}>
+            {!healthStatus ? "Chưa có trạng thái" : healthStatus === "HEALTHY" ? "Vị thế khỏe mạnh" : healthStatus === "WARNING" ? "Cảnh báo vi phạm" : healthStatus === "INVALIDATED" || healthStatus === "TRIGGERED" ? "Luận điểm mất hiệu lực" : healthStatus}
           </span>
         </div>
       </div>
@@ -964,52 +931,28 @@ function PositionMonitoringSection({ position, entry, ticker }: { position?: Rec
         <div>
           <span className="block text-[11px] text-muted">Khoảng cách đến Stop-Loss</span>
           <span className="text-lg font-bold font-mono text-ink">
-            {stopLossDistance !== null ? `${stopLossDistance.toFixed(2)}%` : "2.00%"}
+            {stopLossDistance !== null ? `${stopLossDistance.toFixed(2)}%` : "—"}
           </span>
         </div>
         <div>
           <span className="block text-[11px] text-muted">Kích hoạt cắt lỗ cứng</span>
-          <span className={`text-xs font-semibold px-2 py-0.5 rounded inline-block mt-1 ${stopLossTriggered ? "bg-loss/20 text-loss font-bold" : "bg-gain/10 text-gain"}`}>
-            {stopLossTriggered ? "ĐÃ KÍCH HOẠT" : "An toàn (Chưa vi phạm)"}
+          <span className={`text-xs font-semibold px-2 py-0.5 rounded inline-block mt-1 ${stopLossTriggered === true ? "bg-loss/20 text-loss font-bold" : stopLossTriggered === false ? "bg-soft text-secondary" : "bg-soft text-secondary"}`}>
+            {stopLossTriggered === true ? "ĐÃ KÍCH HOẠT" : stopLossTriggered === false ? "Chưa kích hoạt" : "Chưa có dữ liệu"}
           </span>
         </div>
         <div>
           <span className="block text-[11px] text-muted">Trạng thái luận điểm</span>
-          <span className={`text-xs font-semibold px-2 py-0.5 rounded inline-block mt-1 ${thesisInvalidated ? "bg-loss/20 text-loss font-bold" : "bg-gain/10 text-gain"}`}>
-            {thesisInvalidated ? "VÔ HIỆU HÓA" : "Đang duy trì hiệu lực"}
+          <span className={`text-xs font-semibold px-2 py-0.5 rounded inline-block mt-1 ${thesisInvalidated === true ? "bg-loss/20 text-loss font-bold" : "bg-soft text-secondary"}`}>
+            {thesisInvalidated === true ? "VÔ HIỆU HÓA" : thesisInvalidated === false ? "Chưa bị vô hiệu" : "Chưa có dữ liệu"}
           </span>
         </div>
       </div>
 
-      <div className="space-y-2">
-        <h4 className="text-xs font-semibold uppercase tracking-wider text-muted">Thang phòng thủ chu kỳ nắm giữ T0–T5 (T0–T5 Defense Ladder):</h4>
-        <div className="grid grid-cols-1 sm:grid-cols-5 gap-2 text-xs">
-          <div className="rounded-lg bg-soft/40 border border-line p-2 text-center">
-            <span className="font-bold text-sky-500 block text-[11px]">T0 · Khớp lệnh</span>
-            <span className="text-[10px] text-secondary mt-0.5 block">Ngắt mạch trượt giá</span>
-          </div>
-          <div className="rounded-lg bg-soft/40 border border-line p-2 text-center">
-            <span className="font-bold text-teal block text-[11px]">T1 · Hấp thụ</span>
-            <span className="text-[10px] text-secondary mt-0.5 block">Đo áp lực bán T+1</span>
-          </div>
-          <div className="rounded-lg bg-soft/40 border border-line p-2 text-center">
-            <span className="font-bold text-indigo-400 block text-[11px]">T2 · Bù trừ</span>
-            <span className="text-[10px] text-secondary mt-0.5 block">Kiểm soát giao hàng</span>
-          </div>
-          <div className="rounded-lg bg-soft/40 border border-line p-2 text-center">
-            <span className="font-bold text-gain block text-[11px]">T3 · Cổ phiếu về</span>
-            <span className="text-[10px] text-secondary mt-0.5 block">Kích hoạt Trailing-Stop</span>
-          </div>
-          <div className="rounded-lg bg-soft/40 border border-line p-2 text-center">
-            <span className="font-bold text-amber-500 block text-[11px]">T4–T5 · Canh gác</span>
-            <span className="text-[10px] text-secondary mt-0.5 block">Thanh lý tự động nếu gãy</span>
-          </div>
-        </div>
-      </div>
+      {!position && !entry && <p className="rounded-lg border border-dashed border-line p-3 text-xs text-secondary">Chưa có snapshot hoặc log giám sát cho mã này.</p>}
 
       <div className="text-[10px] text-muted border-t border-line/60 pt-2 flex justify-between">
-        <span>Cơ chế bảo vệ: Hard Stop-Loss 2% NAV · Invalidation Trigger Engine</span>
-        <span>{position ? time(position.last_updated) : "Cập nhật liên tục theo phiên"}</span>
+        <span>{position ? "Snapshot gần nhất · không theo bộ lọc ngày" : entry ? "Log Agent 09 · theo ngày đã chọn" : "Chưa có dữ liệu giám sát"}</span>
+        <span>{position ? time(position.last_updated) : entry ? time(timestamp(entry)) : ""}</span>
       </div>
     </article>
   )
@@ -1019,9 +962,12 @@ function OfflineGovernanceSection({ rlEntry, govEntry }: { rlEntry?: RecordData;
   const icScores = object(rlEntry?.ic_rolling_scores)
   const rlSignals = object(rlEntry?.reward_signals)
   const govAudit = object(govEntry?.audit_trail_verification)
-  const systemStatus = String(govAudit.system_status || "COMPLIANT")
+  const systemStatus = String(govAudit.system_status || "")
   const latency = numeric(govAudit.broker_latency_ms)
   const recordsVerified = numeric(govAudit.chain_records_verified)
+  const chainIntegrity = typeof govAudit.chain_integrity_valid === "boolean" ? govAudit.chain_integrity_valid : null
+  const failsafeTriggered = typeof govAudit.failsafe_triggered === "boolean" ? govAudit.failsafe_triggered : govAudit.failsafe_status === "ACTIVE" ? true : govAudit.failsafe_status === "INACTIVE" ? false : null
+  const enforcedLaws = Array.isArray(govAudit.hard_laws_enforced) ? govAudit.hard_laws_enforced : []
 
   return (
     <div className="grid gap-5 lg:grid-cols-2 items-stretch">
@@ -1035,8 +981,8 @@ function OfflineGovernanceSection({ rlEntry, govEntry }: { rlEntry?: RecordData;
               </span>
               <span className="text-xs text-muted font-medium">Tự học Bayes & Hiệu chuẩn trọng số IC</span>
             </div>
-            <span className="text-xs px-2 py-0.5 rounded bg-teal/10 text-teal font-medium border border-teal/20">
-              {rlEntry ? "Đã hiệu chuẩn phiên" : "Chế độ Standby (Chạy EOD)"}
+            <span className={`text-xs px-2 py-0.5 rounded font-medium border ${rlEntry ? "bg-soft text-secondary border-line" : "bg-soft text-muted border-line"}`}>
+              {rlEntry ? "Có bản ghi Agent 10" : "Chưa có log trong phạm vi này"}
             </span>
           </div>
 
@@ -1045,7 +991,7 @@ function OfflineGovernanceSection({ rlEntry, govEntry }: { rlEntry?: RecordData;
           </p>
 
           <div className="mt-3 space-y-2">
-            <span className="text-[11px] font-semibold text-muted block uppercase tracking-wider">Hệ số hiệu chỉnh trọng số (Rolling Information Coefficient):</span>
+              <span className="text-[11px] font-semibold text-muted block uppercase tracking-wider">Điểm IC ghi trong log Agent 10:</span>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
               {Object.keys(icScores).length > 0 ? (
                 Object.entries(icScores).map(([factor, score]) => {
@@ -1058,27 +1004,20 @@ function OfflineGovernanceSection({ rlEntry, govEntry }: { rlEntry?: RecordData;
                   )
                 })
               ) : (
-                <>
-                  <div className="rounded-lg bg-soft/50 border border-line p-2"><span className="text-[10px] text-muted block">F1 Value</span><span className="font-mono font-bold text-ink">+0.040</span></div>
-                  <div className="rounded-lg bg-soft/50 border border-line p-2"><span className="text-[10px] text-muted block">F2 Quality</span><span className="font-mono font-bold text-ink">+0.050</span></div>
-                  <div className="rounded-lg bg-soft/50 border border-line p-2"><span className="text-[10px] text-muted block">F3 Momentum</span><span className="font-mono font-bold text-ink">+0.025</span></div>
-                  <div className="rounded-lg bg-soft/50 border border-line p-2"><span className="text-[10px] text-muted block">F4 Earnings</span><span className="font-mono font-bold text-ink">+0.075</span></div>
-                  <div className="rounded-lg bg-soft/50 border border-line p-2"><span className="text-[10px] text-muted block">F5 Flow</span><span className="font-mono font-bold text-ink">+0.065</span></div>
-                  <div className="rounded-lg bg-soft/50 border border-line p-2"><span className="text-[10px] text-muted block">F6 Technical</span><span className="font-mono font-bold text-ink">+0.030</span></div>
-                </>
+                <p className="col-span-full rounded-lg border border-dashed border-line p-3 text-xs text-secondary">{rlEntry ? "Bản ghi Agent 10 không có điểm IC." : "Không có log Agent 10 trong phạm vi này."}</p>
               )}
             </div>
           </div>
 
           <div className="mt-3 rounded-lg bg-soft/30 border border-line p-2.5 text-xs space-y-1">
             <span className="text-[10px] text-muted block">Giao thức học:</span>
-            <span className="font-medium text-ink block">{cleanText(String(rlSignals.learning_protocol || "Empirical Bayes Shrinkage & Rank IC Causal Attribution"))}</span>
+            <span className="font-medium text-ink block">{rlSignals.learning_protocol ? cleanText(String(rlSignals.learning_protocol)) : "Chưa có thông tin giao thức trong log."}</span>
           </div>
         </div>
 
         <div className="text-[10px] text-muted border-t border-line/60 pt-2 flex justify-between">
           <span>Động cơ: MRALEngine · Bayes Weight Calibration</span>
-          <span>{rlEntry ? time(timestamp(rlEntry)) : "Tự động kích hoạt cuối ngày giao dịch"}</span>
+          <span>{rlEntry ? time(timestamp(rlEntry)) : "Chưa có log trong phạm vi này"}</span>
         </div>
       </article>
 
@@ -1090,50 +1029,44 @@ function OfflineGovernanceSection({ rlEntry, govEntry }: { rlEntry?: RecordData;
               <span className="text-[11px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-rose-500/10 text-rose-600 border border-rose-500/20">
                 AGENT 11 · SYSTEM GOVERNANCE
               </span>
-              <span className="text-xs text-muted font-medium">Sổ cái bất biến SHA-256 & Bảo vệ Hiến pháp</span>
+              <span className="text-xs text-muted font-medium">Kết quả kiểm toán trong log Agent 11</span>
             </div>
-            <span className={`text-xs px-2 py-0.5 rounded font-semibold border ${systemStatus === "COMPLIANT" ? "bg-gain/10 text-gain border-gain/20" : "bg-warning/10 text-warning border-warning/20"}`}>
-              {systemStatus === "COMPLIANT" ? "✓ TUÂN THỦ HIẾN PHÁP" : systemStatus}
+            <span className={`text-xs px-2 py-0.5 rounded font-semibold border ${!systemStatus ? "bg-soft text-secondary border-line" : systemStatus === "COMPLIANT" ? "bg-gain/10 text-gain border-gain/20" : "bg-warning/10 text-warning border-warning/20"}`}>
+              {systemStatus || "Chưa có trạng thái"}
             </span>
           </div>
 
           <p className="mt-3 text-xs leading-relaxed text-secondary">
-            Cơ quan tư pháp tối cao của hệ thống. Kiểm toán toàn diện chuỗi liên kết Merkle SHA-256 không thể giả mạo, đo lường độ trễ kết nối broker và cưỡng chế thực thi 5 Điều Hiến pháp.
+            Agent 11 ghi nhận tính toàn vẹn chuỗi kiểm toán, độ trễ broker, trạng thái failsafe và các quy tắc có trong báo cáo.
           </p>
 
           <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-xs">
             <div className="rounded-lg bg-soft/50 border border-line p-2.5">
               <span className="text-[10px] text-muted block">Toàn vẹn Merkle Chain</span>
-              <span className="font-mono text-sm font-bold text-gain">HỢP LỆ</span>
-              <span className="text-[10px] text-secondary block mt-0.5">{recordsVerified ? `${recordsVerified.toLocaleString()} bản ghi` : "71,414 bản ghi"}</span>
+              <span className={`font-mono text-sm font-bold ${chainIntegrity === null ? "text-secondary" : chainIntegrity ? "text-gain" : "text-loss"}`}>{chainIntegrity === null ? "Chưa có dữ liệu" : chainIntegrity ? "Hợp lệ" : "Có lỗi"}</span>
+              <span className="text-[10px] text-secondary block mt-0.5">{recordsVerified !== null ? `${recordsVerified.toLocaleString("vi-VN")} bản ghi` : "Chưa có số lượng"}</span>
             </div>
             <div className="rounded-lg bg-soft/50 border border-line p-2.5">
               <span className="text-[10px] text-muted block">Độ trễ Broker API</span>
-              <span className="font-mono text-sm font-bold text-ink">{latency !== null ? `${latency} ms` : "42 ms"}</span>
-              <span className="text-[10px] text-secondary block mt-0.5">Kết nối bình thường</span>
+              <span className="font-mono text-sm font-bold text-ink">{latency !== null ? `${latency.toLocaleString("vi-VN")} ms` : "—"}</span>
+              <span className="text-[10px] text-secondary block mt-0.5">{latency !== null ? "Độ trễ ghi nhận trong báo cáo" : "Chưa có độ trễ trong báo cáo"}</span>
             </div>
             <div className="rounded-lg bg-soft/50 border border-line p-2.5">
               <span className="text-[10px] text-muted block">Cơ chế Failsafe</span>
-              <span className="font-mono text-sm font-bold text-gain">BÌNH THƯỜNG</span>
-              <span className="text-[10px] text-secondary block mt-0.5">Chưa kích hoạt ngắt mạch</span>
+              <span className={`font-mono text-sm font-bold ${failsafeTriggered === null ? "text-secondary" : failsafeTriggered ? "text-loss" : "text-gain"}`}>{failsafeTriggered === null ? "Chưa có dữ liệu" : failsafeTriggered ? "Đã kích hoạt" : "Chưa kích hoạt"}</span>
+              <span className="text-[10px] text-secondary block mt-0.5">{govAudit.failsafe_reason ? cleanText(String(govAudit.failsafe_reason)) : "Trạng thái theo log Agent 11"}</span>
             </div>
           </div>
 
           <div className="mt-3 rounded-lg border border-line bg-soft/30 p-2.5 text-xs space-y-1.5">
-            <span className="text-[10px] font-semibold text-muted block uppercase tracking-wider">5 Điều Hiến pháp được bảo vệ cưỡng chế:</span>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 text-[11px] text-secondary">
-              <div>✓ Điều 1: Cắt lỗ cứng 2% NAV</div>
-              <div>✓ Điều 2: Giới hạn thanh khoản ADTV20</div>
-              <div>✓ Điều 3: Quy tắc 3 tín hiệu độc lập</div>
-              <div>✓ Điều 4: Trần 15% cổ phiếu & 35% ngành</div>
-              <div className="sm:col-span-2">✓ Điều 5: Cổng lọc sạch Beneish Lớp 0 (M ≤ -1.78)</div>
-            </div>
+            <span className="text-[10px] font-semibold text-muted block uppercase tracking-wider">Quy tắc được liệt kê trong báo cáo:</span>
+            {enforcedLaws.length ? <ul className="grid grid-cols-1 sm:grid-cols-2 gap-1 text-[11px] text-secondary">{enforcedLaws.map((law, index) => <li key={`${String(law)}-${index}`}>· {cleanText(String(law)).replaceAll("_", " ")}</li>)}</ul> : <p className="text-[11px] text-secondary">Bản ghi không liệt kê quy tắc.</p>}
           </div>
         </div>
 
         <div className="text-[10px] text-muted border-t border-line/60 pt-2 flex justify-between">
           <span>Sổ cái: SHA-256 Merkle Chain Verifier</span>
-          <span>{govEntry ? time(timestamp(govEntry)) : "Kiểm toán liên tục mọi giao dịch"}</span>
+          <span>{govEntry ? time(timestamp(govEntry)) : "Chưa có log trong phạm vi này"}</span>
         </div>
       </article>
     </div>
@@ -1272,7 +1205,7 @@ function AgentLogRow({ agent, entry, index }: { agent: string; entry: RecordData
 }
 
 export default function WarRoom() {
-  const [date, setDate] = useState("")
+  const [date, setDate] = useState(() => vietnamDate())
   const [symbol, setSymbol] = useState("")
   const [search, setSearch] = useState("")
   const [agent, setAgent] = useState("all")
@@ -1293,7 +1226,8 @@ export default function WarRoom() {
   const resolution = thesis ? related(resolutions, thesis) : undefined
   const counter = thesis ? related(data?.counterTheses || [], thesis) : undefined
   const verdict = decision(resolution)
-  const selectedPlans = plans.filter(row => row.ticker === active)
+  const selectedPlans = newest(plans.filter(row => row.ticker === active && (!date || recordDate(row) === date)))
+  const planForReview = selectedPlans[0]
   const position = ready ? data?.positionHealth?.find(row => row.ticker === active) : undefined
   const pnl = numeric(position?.current_pnl_pct)
   const account = ready ? data?.account : undefined
@@ -1303,14 +1237,30 @@ export default function WarRoom() {
   const entry = numeric(thesis?.entry_price_estimated)
   const upside = target !== null && entry !== null && entry > 0 ? (target / entry - 1) * 100 : null
 
-  // Entries for 12 Sovereign Agents
-  const msEntry = (date ? logs.filter(l => recordDate(l.entry) === date) : logs).find(l => l.agent === "market_surveillance")?.entry || logs.find(l => l.agent === "market_surveillance")?.entry
-  const udEntry = (date ? logs.filter(l => recordDate(l.entry) === date) : logs).find(l => l.agent === "universe_discovery")?.entry || logs.find(l => l.agent === "universe_discovery")?.entry
-  const eqEntry = (date ? logs.filter(l => recordDate(l.entry) === date) : logs).find(l => l.agent === "equity_research" && (l.entry.ticker === active || logSymbol(l.agent, l.entry) === active))?.entry || logs.find(l => l.agent === "equity_research" && (l.entry.ticker === active || logSymbol(l.agent, l.entry) === active))?.entry
-  const riskEntry = (date ? logs.filter(l => recordDate(l.entry) === date) : logs).find(l => l.agent === "portfolio_risk" && (logSymbol(l.agent, l.entry) === active || object(l.entry.garch_cash_trace).ticker === active || l.entry.ticker === active))?.entry || logs.find(l => l.agent === "portfolio_risk" && (logSymbol(l.agent, l.entry) === active || object(l.entry.garch_cash_trace).ticker === active || l.entry.ticker === active))?.entry
-  const posMonEntry = (date ? logs.filter(l => recordDate(l.entry) === date) : logs).find(l => l.agent === "position_monitoring" && (l.entry.ticker === active || logSymbol(l.agent, l.entry) === active))?.entry || logs.find(l => l.agent === "position_monitoring" && (l.entry.ticker === active || logSymbol(l.agent, l.entry) === active))?.entry
-  const rlEntry = (date ? logs.filter(l => recordDate(l.entry) === date) : logs).find(l => l.agent === "reinforcement_learning")?.entry || logs.find(l => l.agent === "reinforcement_learning")?.entry
-  const govEntry = (date ? logs.filter(l => recordDate(l.entry) === date) : logs).find(l => l.agent === "system_governance")?.entry || logs.find(l => l.agent === "system_governance")?.entry
+  // Keep related panels on the selected analysis day; never silently substitute a different day's log.
+  const entriesFor = (agentCode: string) => logs.filter(log => log.agent === agentCode && (!date || recordDate(log.entry) === date))
+  const latestEntry = (agentCode: string) => entriesFor(agentCode)[0]?.entry
+  const matchingEntries = (agentCode: string) => entriesFor(agentCode).filter(log => active && (logSymbol(log.agent, log.entry) === active || log.entry.ticker === active || object(log.entry.garch_cash_trace).ticker === active))
+  const relatedDay = date || (planForReview ? recordDate(planForReview) : "")
+  const relatedEntries = (agentCode: string) => {
+    const candidates = matchingEntries(agentCode)
+    const sameDay = relatedDay ? candidates.filter(log => recordDate(log.entry) === relatedDay) : candidates
+    if (relatedDay && !sameDay.length) return []
+    const referenceTime = planForReview ? Date.parse(timestamp(planForReview)) : Number.NaN
+    return [...sameDay].sort((a, b) => {
+      const aTime = Date.parse(timestamp(a.entry)) || 0
+      const bTime = Date.parse(timestamp(b.entry)) || 0
+      return Number.isFinite(referenceTime) ? Math.abs(aTime - referenceTime) - Math.abs(bTime - referenceTime) : bTime - aTime
+    })
+  }
+  const msEntry = latestEntry("market_surveillance")
+  const udEntry = latestEntry("universe_discovery")
+  const eqEntry = matchingEntries("equity_research")[0]?.entry
+  const riskEntry = relatedEntries("portfolio_risk")[0]?.entry
+  const executionEntry = relatedEntries("trade_execution")[0]?.entry
+  const posMonEntry = matchingEntries("position_monitoring")[0]?.entry
+  const rlEntry = latestEntry("reinforcement_learning")
+  const govEntry = latestEntry("system_governance")
   // Clean formatted debate summary
   const summaryText = cleanText(resolution?.debate_summary || "")
   const tierMatch = summaryText.match(/\[(TẦNG\s*\d+[^\]]*)\]/i)
@@ -1326,7 +1276,7 @@ export default function WarRoom() {
           <p className="mt-1 text-sm text-secondary">Kết luận, bằng chứng và kết quả trong cùng một góc nhìn.</p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          <FinancialCalendar label="Ngày phân tích" value={date} dates={data?.dates || []} onChange={value => { setDate(value); setLogLimit(30) }} />
+          <FinancialCalendar label="Ngày phân tích" allowAll={false} value={date} dates={data?.dates || []} onChange={value => { setDate(value); setLogLimit(30) }} />
           <a href="#agent-logs" className={`${control} font-medium`}>Xem nhật ký ↓</a>
           <button className={control} onClick={() => void resource.reload()} disabled={resource.loading}>Làm mới</button>
         </div>
@@ -1426,7 +1376,7 @@ export default function WarRoom() {
                   <dl className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
                     <Metric label="Giá vào dự kiến" value={number(entry, " ₫")} />
                     <Metric label="Giá mục tiêu" value={number(target, " ₫")} />
-                    <Metric label="Ngưỡng vô hiệu" value={number(thesis?.invalidation_threshold, " ₫")} />
+                    <Metric label="Điều kiện vô hiệu" value={Array.isArray(thesis?.invalidation_conditions) ? thesis.invalidation_conditions.map(item => cleanText(String(item))).filter(Boolean).join("; ") || "Chưa có dữ liệu" : "Chưa có dữ liệu"} />
                     <Metric label="Kỳ vọng đến mục tiêu" value={number(upside, "%")} note="So với giá vào dự kiến, chưa trừ phí; không phải lãi đã đạt." />
                   </dl>
                   <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
@@ -1493,7 +1443,7 @@ export default function WarRoom() {
               <PortfolioRiskSection entry={riskEntry} ticker={active} />
 
               {/* Layer 4: Trade Execution & Adaptive Slicing (Agent 08) */}
-              <TradeExecutionSection selectedPlans={selectedPlans} ticker={active} />
+              <TradeExecutionSection activePlan={planForReview} riskEntry={riskEntry} executionEntry={executionEntry} ticker={active} />
 
               {/* Layer 4: Position Monitoring & T0-T5 Defense Ladder (Agent 09) */}
               <PositionMonitoringSection position={position} entry={posMonEntry} ticker={active} />
@@ -1513,7 +1463,7 @@ export default function WarRoom() {
           <div className="space-y-4 border-b border-line p-5">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <h2 id="logs-title" className="text-xl font-semibold tracking-tight">Nhật ký agent</h2>
-              <span className="text-sm text-secondary">{shownLogs.length} / {logs.length} bản ghi đã tải · {displayDate(date)}</span>
+              <span className="text-sm text-secondary">{shownLogs.length} bản ghi khớp bộ lọc · đang hiển thị {Math.min(logLimit, shownLogs.length)} · {displayDate(date)}</span>
             </div>
             <p className="text-sm text-secondary">Đọc kết quả, lý do và dữ liệu gốc theo thời gian. Nội dung được tối ưu hóa để loại bỏ trường lặp.</p>
             <div className="flex flex-wrap gap-3">

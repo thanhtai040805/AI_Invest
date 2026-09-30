@@ -2,8 +2,8 @@ import { useRef, useState, type ReactNode } from "react"
 
 // ── Number formatting ──────────────────────────────────────────
 export const metricTone: Record<string, string> = { gain: "text-gain", loss: "text-loss", warning: "text-warning", teal: "text-teal", mineral: "text-mineral", neutral: "text-ink" }
-export const fmt = (n: number) => n.toLocaleString("en-US")
-export const fmtPct = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`
+export const fmt = (n: number) => n.toLocaleString("vi-VN")
+export const fmtPct = (n: number) => `${n >= 0 ? "+" : ""}${n.toLocaleString("vi-VN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`
 
 // ── Button ─────────────────────────────────────────────────────
 type BtnVariant = "primary" | "secondary" | "ghost" | "quiet"
@@ -79,9 +79,9 @@ export function Pill({ children, tone = "neutral" }: { children: ReactNode; tone
 }
 
 export function RiskLabel({ risk }: { risk: string }) {
-  const labels: Record<string, string> = { Low: "Thấp", Moderate: "Trung bình", Elevated: "Cao", High: "Rất cao" }
-  const tone = risk === "Low" ? "teal" : risk === "Moderate" ? "gold" : risk === "Elevated" ? "warning" : "loss"
-  const dots = risk === "Low" ? 1 : risk === "Moderate" ? 2 : risk === "Elevated" ? 3 : 4
+  const labels: Record<string, string> = { Low: "Thấp", Moderate: "Trung bình", Elevated: "Cao", High: "Rất cao", Unknown: "Chưa có dữ liệu" }
+  const tone = risk === "Low" ? "teal" : risk === "Moderate" ? "gold" : risk === "Elevated" ? "warning" : risk === "High" ? "loss" : "neutral"
+  const dots = risk === "Low" ? 1 : risk === "Moderate" ? 2 : risk === "Elevated" ? 3 : risk === "High" ? 4 : 0
   return (
     <span className="inline-flex items-center gap-1.5 text-[12px] text-secondary">
       <span className="flex gap-0.5" aria-hidden>
@@ -114,7 +114,7 @@ export function Sparkline({ data, up, width = 68, height = 22 }: { data: number[
     const y = height / 2
     return (
       <svg width={width} height={height} className="overflow-visible" aria-hidden>
-        <line x1={0} y1={y} x2={width} y2={y} stroke={color} strokeWidth="1.4" />
+        <circle cx={width / 2} cy={y} r="1.7" fill="var(--color-muted)" />
       </svg>
     )
   }
@@ -134,7 +134,7 @@ export function Sparkline({ data, up, width = 68, height = 22 }: { data: number[
 }
 
 // ── Readable market chart ──────────────────────────────────────
-export function MarketLineChart({ series, height = 220 }: { series: { label: string; data: number[]; color: string; dashed?: boolean }[]; height?: number }) {
+export function MarketLineChart({ series, height = 220, xLabels }: { series: { label: string; data: number[]; color: string; dashed?: boolean }[]; height?: number; xLabels?: [string, string, string] }) {
   const validSeries = series.map((s) => ({
     ...s,
     data: (s.data || []).filter((v) => Number.isFinite(v)),
@@ -152,10 +152,7 @@ export function MarketLineChart({ series, height = 220 }: { series: { label: str
 
   const path = (data: number[]) => {
     if (!data || data.length === 0) return ""
-    if (data.length === 1) {
-      const y = yAt(data[0])
-      return `0,${y} 100,${y}`
-    }
+    if (data.length === 1) return ""
     const denom = Math.max(data.length - 1, 1)
     return data
       .map((v, i) => {
@@ -168,7 +165,7 @@ export function MarketLineChart({ series, height = 220 }: { series: { label: str
 
   const ref = useRef<HTMLDivElement>(null)
   const [hover, setHover] = useState<number | null>(null)
-  const dates = ["05 Aug", "12 Aug", "19 Aug", "26 Aug", "05 Sep"]
+  const axisLabels = xLabels ?? ["Đầu chuỗi", "Giữa chuỗi", "Cuối chuỗi"]
 
   const onMove = (e: React.PointerEvent) => {
     if (len <= 1) return
@@ -188,7 +185,7 @@ export function MarketLineChart({ series, height = 220 }: { series: { label: str
       <div className="absolute inset-x-0 top-[13%] border-t border-dashed border-line" />
       <div className="absolute inset-x-0 top-1/2 border-t border-dashed border-line" />
       <div className="absolute inset-x-0 bottom-[13%] border-t border-dashed border-line" />
-      <svg viewBox="0 0 100 50" preserveAspectRatio="none" className="relative w-full h-full overflow-visible" aria-label="One month performance chart" role="img">
+      <svg viewBox="0 0 100 50" preserveAspectRatio="none" className="relative w-full h-full overflow-visible" aria-label="Biểu đồ biến động thị trường" role="img">
         {hover !== null && len > 1 && Number.isFinite(xPct) && (
           <line x1={xPct} x2={xPct} y1="2" y2="48" stroke="var(--color-mineral)" strokeWidth="0.5" strokeDasharray="1.5 1.5" vectorEffect="non-scaling-stroke" />
         )}
@@ -222,7 +219,7 @@ export function MarketLineChart({ series, height = 220 }: { series: { label: str
           })}
         </div>
       )}
-      <div className="absolute inset-x-0 bottom-0 flex justify-between pt-2 text-[10px] font-mono text-muted">{dates.map((d) => <span key={d}>{d}</span>)}</div>
+      {len > 1 ? <div className="absolute inset-x-0 bottom-0 flex justify-between pt-2 text-[10px] font-mono text-muted">{axisLabels.map((label, index) => <span key={`${label}-${index}`}>{label}</span>)}</div> : <div className="absolute inset-x-0 bottom-0 pt-2 text-center text-[10px] text-muted">{len === 1 ? "Chưa đủ điểm để vẽ xu hướng" : "Chưa có dữ liệu chuỗi"}</div>}
     </div>
   )
 }
@@ -243,8 +240,9 @@ export function FactorBar({ label, value, tone = "mineral" }: { label: string; v
 
 // ── Market Signal Rail (signature) ─────────────────────────────
 export function MetricStrip({ items }: { items: { label: string; value: ReactNode; sub?: ReactNode }[] }) {
+  const columns = items.length === 3 ? "md:grid-cols-3" : "md:grid-cols-4"
   return (
-    <div className="grid grid-cols-2 md:grid-cols-4 divide-x divide-line border border-line rounded-[10px] bg-surface overflow-hidden">
+    <div className={`grid grid-cols-2 ${columns} divide-x divide-line border border-line rounded-[10px] bg-surface overflow-hidden`}>
       {items.map((it) => (
         <div key={it.label} className="px-5 py-4">
           <div className="text-[11px] font-medium tracking-wide text-muted uppercase">{it.label}</div>

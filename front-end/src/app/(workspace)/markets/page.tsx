@@ -13,34 +13,49 @@ import {
 } from "@/components/ui"
 import { marketApi } from "@/lib/api"
 import { useResource } from "@/lib/api/use-resource"
-import { useRealtimeMarket } from "@/lib/use-realtime"
+import { useRealtimeMarket, useRealtimeMarketOrderBooks } from "@/lib/use-realtime"
 import type { ApiMarketIndex, ApiMarketSnapshot, ApiMarketStock } from "@/types"
 
 interface ApiIndices { indices?: ApiMarketIndex[] }
-type MarketRow = Stock & { foreignKnown: boolean; changeKnown: boolean; momentumKnown: boolean; source?: string }
+interface ApiSnapshot extends ApiMarketSnapshot { source?: string; stale?: boolean; asOf?: string; foreignFlowAsOf?: string | null }
+interface ApiOrderBookLevel { price: number; volume: number }
+interface ApiOrderBook { symbol?: string; bids: ApiOrderBookLevel[]; asks: ApiOrderBookLevel[]; receivedAt?: number; stale?: boolean; lastUpdate?: string; source?: string }
+interface ApiOrderBooks { orderbooks?: Record<string, ApiOrderBook> }
+interface ApiLiquidity { totalValueBillion?: number | null; approximate?: boolean; stale?: boolean; source?: string; lastUpdate?: string; asOf?: string }
+type MarketRow = Stock & { foreignKnown: boolean; momentumKnown: boolean; source?: string; stale?: boolean }
 
 export default function Markets() {
   const resource = useResource(() => Promise.all([
     marketApi.indices().catch(() => null),
     marketApi.snapshot().catch(() => null),
+    marketApi.liquidity().catch(() => null),
+    marketApi.orderbooks().catch(() => null),
   ]), [])
 
   const { snapshot: liveSnapshot, indices: liveIndices, isLive, liquidity: liveLiquidity } = useRealtimeMarket()
   const { indicesData: initialIndices, stockList } = useMemo(() => {
-    const [indicesRes, snapshotRes] = (resource.data || []) as [ApiIndices | null, ApiMarketSnapshot | null]
+    const [indicesRes, snapshotRes] = (resource.data || []) as [ApiIndices | null, ApiSnapshot | null, ApiLiquidity | null, ApiOrderBooks | null]
     const indicesList = Array.isArray(indicesRes?.indices) ? indicesRes.indices : []
     const rawStocks = Array.isArray(liveSnapshot?.stocks) && liveSnapshot.stocks.length
       ? liveSnapshot.stocks : Array.isArray(snapshotRes?.stocks) ? snapshotRes.stocks : []
+    const databaseStocks = new Map((snapshotRes?.stocks ?? []).map((stock) => [String(stock.symbol).toUpperCase(), stock]))
 
     const indexName = (item: ApiMarketIndex) => String(item.symbol ?? item.name ?? "").toUpperCase().replaceAll("-", "")
     const vnIndexItem = indicesList.find((x) => indexName(x) === "VNINDEX")
-    const vn100Item = indicesList.find((x) => indexName(x) === "VN100")
 
+    const indexValue = (item?: ApiMarketIndex) => {
+      if (item?.value == null) return "—"
+      const value = Number(item?.value)
+      return Number.isFinite(value) && value > 0 ? value.toLocaleString("vi-VN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"
+    }
+    const indexChange = (item?: ApiMarketIndex) => {
+      const raw = item?.changePercent ?? item?.change_pct
+      const value = raw == null ? NaN : Number(raw)
+      return Number.isFinite(value) ? value : null
+    }
     const indicesData = {
-      vnIndexVal: vnIndexItem ? Number(vnIndexItem.value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—",
-      vnIndexPct: vnIndexItem ? Number(vnIndexItem.changePercent ?? vnIndexItem.change_pct ?? 0) : 0,
-      vn100Val: vn100Item ? Number(vn100Item.value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—",
-      vn100Pct: vn100Item ? Number(vn100Item.changePercent ?? vn100Item.change_pct ?? 0) : 0,
+      vnIndexVal: indexValue(vnIndexItem),
+      vnIndexPct: indexChange(vnIndexItem),
     }
 
     if (!rawStocks.length) {
@@ -48,31 +63,41 @@ export default function Markets() {
     }
 
     const liveStocks: MarketRow[] = (rawStocks as ApiMarketStock[]).map((r) => {
-      const volNum = Number(r.volume ?? 0)
-      const volStr = volNum >= 1e6 ? `${(volNum / 1e6).toFixed(1)}M` : `${(volNum / 1e3).toFixed(0)}k`
+      const databaseStock = databaseStocks.get(String(r.symbol).toUpperCase())
+      const volNum = r.volume == null ? null : Number(r.volume)
+      const volStr = volNum === null || !Number.isFinite(volNum) ? "—" : volNum >= 1e6 ? `${(volNum / 1e6).toFixed(1)}M` : volNum >= 1e3 ? `${(volNum / 1e3).toFixed(0)}k` : fmt(volNum)
+      const rawChange = r.changePercent ?? r.change_pct
+      const changeValue = rawChange == null ? NaN : Number(rawChange)
+      const rawForeign = r.foreign_flow ?? r.foreignFlow ?? databaseStock?.foreign_flow ?? databaseStock?.foreignFlow
+      const foreignValue = rawForeign == null ? NaN : Number(rawForeign)
+      const momentumValue = r.momentum == null ? NaN : Number(r.momentum)
+      const hasChange = Number.isFinite(changeValue)
+      const hasForeignFlow = Number.isFinite(foreignValue)
+      const hasMomentum = Number.isFinite(momentumValue)
+      const isSocketSnapshot = Array.isArray(liveSnapshot?.stocks) && liveSnapshot.stocks.length > 0
 
       return {
         symbol: String(r.symbol),
         name: String(r.name || r.symbol),
-        sector: String(r.industry || "HOSE"),
+        sector: String(r.industry || "—"),
         price: Number(r.price ?? 0),
-        changePct: Number(Number(r.change_pct ?? 0).toFixed(2)),
-        ref: Number(r.ref ?? r.price ?? 0),
+        changePct: hasChange ? Number(changeValue.toFixed(2)) : null,
+        ref: r.ref == null || !Number.isFinite(Number(r.ref)) ? null : Number(r.ref),
         ceiling: Number(r.ceiling ?? 0),
         floor: Number(r.floor ?? 0),
         volume: volStr,
-        foreign: Number(r.foreign_flow ?? 0),
-        foreignKnown: r.foreign_flow != null,
-        changeKnown: r.change_pct != null,
-        momentumKnown: r.momentum != null,
-        source: r.source,
+        foreign: hasForeignFlow ? foreignValue : 0,
+        foreignKnown: hasForeignFlow,
+        momentumKnown: hasMomentum,
+        source: r.source ?? (isSocketSnapshot ? undefined : snapshotRes?.source),
+        stale: r.stale ?? (isSocketSnapshot ? undefined : snapshotRes?.stale),
         weight: 0,
-        momentum: Math.round(Number(r.momentum ?? 0)),
+        momentum: hasMomentum ? Math.round(momentumValue) : 0,
         rs: Math.round(Number(r.rs ?? 0)),
-        flow: Math.round(Number(r.foreign_flow ?? 0)),
+        flow: hasForeignFlow ? Math.round(foreignValue) : 0,
         factor: "",
-        risk: "Low",
-        beneish: "PASS",
+        risk: "Unknown",
+        beneish: "UNKNOWN",
         spark: [],
       }
     })
@@ -81,14 +106,23 @@ export default function Markets() {
   }, [resource.data, liveSnapshot])
 
   const currentIndices = liveIndices || initialIndices
-  const foreignBillion = stockList.reduce((sum, stock) => sum + stock.foreign, 0)
-  const hasForeign = stockList.some((stock) => stock.foreignKnown)
-  const liquidityBillion = Number(liveLiquidity?.totalValueBillion ?? 0)
+  const foreignBillion = stockList.reduce((sum, stock) => sum + (stock.foreignKnown ? stock.foreign : 0), 0)
+  const foreignKnownCount = stockList.filter((stock) => stock.foreignKnown).length
+  const hasForeign = foreignKnownCount > 0
+  const [, snapshotRes, liquidityRes, orderbooksRes] = (resource.data || []) as [ApiIndices | null, ApiSnapshot | null, ApiLiquidity | null, ApiOrderBooks | null]
+  const liveLiquidityAt = Date.parse(String(liveLiquidity?.lastUpdate ?? ""))
+  const liquidity = (liveLiquidityAt > 0 && Date.now() - liveLiquidityAt < 15_000 ? liveLiquidity : liquidityRes) as ApiLiquidity | null
+  const liquidityBillion = Number(liquidity?.totalValueBillion ?? 0)
+  const initialOrderbooks = useMemo(() => orderbooksRes?.orderbooks ?? {}, [orderbooksRes])
+  const orderbooks = useRealtimeMarketOrderBooks(initialOrderbooks)
+  const foreignAsOf = snapshotRes?.foreignFlowAsOf
+    ? new Date(snapshotRes.foreignFlowAsOf).toLocaleDateString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })
+    : null
 
   return (
     <Page
       title="Bảng giá trực tuyến"
-      sub="HOSE · Giá khớp thời gian thực, biên độ trần/sàn, thanh khoản và khối ngoại."
+      sub="HOSE · Giá, biên độ, thanh khoản, khối ngoại và giá Bid/Ask trong thời gian dữ liệu còn trực tiếp."
       actions={
         isLive ? (
           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-[12px] font-medium bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
@@ -103,17 +137,13 @@ export default function Markets() {
           {
             label: "VN-Index",
             value: currentIndices.vnIndexVal,
-            sub: currentIndices.vnIndexVal !== "—" ? <PercentChange value={currentIndices.vnIndexPct} arrow={false} /> : "—",
+            sub: currentIndices.vnIndexVal !== "—" && currentIndices.vnIndexPct != null ? <PercentChange value={currentIndices.vnIndexPct} arrow={false} /> : "—",
           },
-          {
-            label: "VN100",
-            value: currentIndices.vn100Val ?? "—",
-            sub: currentIndices.vn100Val && currentIndices.vn100Val !== "—" ? <PercentChange value={currentIndices.vn100Pct ?? 0} arrow={false} /> : "—",
-          },
-          { label: "Thanh khoản", value: liquidityBillion > 0 ? `${(liquidityBillion / 1000).toFixed(1)}T` : "—" },
+          { label: "Thanh khoản", value: liquidityBillion > 0 ? `${(liquidityBillion / 1000).toFixed(1)}T` : "—", sub: liquidity?.approximate ? `Ước tính theo giá đóng cửa${liquidity.asOf ? ` · ${new Date(liquidity.asOf).toLocaleDateString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })}` : ""}` : liquidityBillion > 0 ? "DNSE trực tiếp" : "Chưa có dữ liệu" },
           {
             label: "Khối ngoại",
             value: hasForeign ? <span className={foreignBillion >= 0 ? "text-gain" : "text-loss"}>{foreignBillion >= 0 ? "+" : ""}{foreignBillion.toFixed(0)}B</span> : "—",
+            sub: `${foreignKnownCount}/${stockList.length} mã có dữ liệu${foreignAsOf ? ` · ${foreignAsOf}` : ""}`,
           },
         ]}
       />
@@ -121,11 +151,11 @@ export default function Markets() {
         <div className="p-5 pb-2">
           <PanelHead
             title="Bảng theo dõi sàn HOSE"
-            sub={`Giá tính bằng VNĐ · Khối ngoại tính bằng tỷ VNĐ · ${liveSnapshot?.liveSymbols ?? 0}/${liveSnapshot?.total ?? stockList.length} mã đã nhận tick phiên này`}
+            sub={`Giá tính bằng VNĐ · Khối ngoại tính bằng tỷ VNĐ · Bid/Ask chỉ hiện khi còn nhận tick · ${liveSnapshot ? `${liveSnapshot.liveSymbols ?? stockList.filter(stock => stock.source === "dnse-ws").length}/${liveSnapshot.total ?? stockList.length} mã có tick trong snapshot` : stockList.length ? `${stockList.length} mã từ snapshot gần nhất` : "Chưa có snapshot dữ liệu"}${snapshotRes?.stale && !liveSnapshot ? ` · dữ liệu cuối ngày${snapshotRes.asOf ? ` ${new Date(snapshotRes.asOf).toLocaleDateString("vi-VN")}` : ""}` : ""}`}
           />
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full text-[13px] min-w-[1000px]">
+          <table className="w-full text-[13px] min-w-[1220px]">
             <thead>
               <tr className="text-[10px] uppercase tracking-wide text-muted border-y border-line">
                 {[
@@ -135,6 +165,8 @@ export default function Markets() {
                   "Sàn",
                   "Tham chiếu",
                   "Khớp lệnh",
+                  "Bid · giá / KL",
+                  "Ask · giá / KL",
                   "Biến động",
                   "Khối lượng",
                   "Khối ngoại",
@@ -150,8 +182,12 @@ export default function Markets() {
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
-              {stockList.map((s) => (
-                <tr
+              {!stockList.length && <tr><td colSpan={12} className="px-5 py-10 text-center text-sm text-secondary">{resource.loading ? "Đang tải dữ liệu thị trường…" : "Chưa có dữ liệu bảng giá cho snapshot này."}</td></tr>}
+              {stockList.map((s) => {
+                const book = orderbooks[s.symbol]
+                const bid = book?.bids?.[0]
+                const ask = book?.asks?.[0]
+                return <tr
                   key={s.symbol}
                   className="hover:bg-soft/50 transition-colors"
                 >
@@ -162,7 +198,7 @@ export default function Markets() {
                     >
                       {s.symbol}
                     </Link>
-                    {s.source !== "dnse-ws" && <span className="ml-1 text-[10px] font-normal text-muted" title="Chưa nhận tick DNSE trong phiên">· chờ tick</span>}
+                    {s.source === "dnse-ws" ? <span className="ml-1 text-[10px] font-normal text-gain">· tick</span> : s.stale || s.source === "postgres" ? <span className="ml-1 text-[10px] font-normal text-muted" title="Giá đóng cửa trong cơ sở dữ liệu">· cuối ngày</span> : <span className="ml-1 text-[10px] font-normal text-muted" title="Nguồn của hàng giá chưa được xác nhận">· nguồn chưa rõ</span>}
                   </td>
                   <td className="px-3 text-secondary">{s.name}</td>
                   <td className="px-3 text-right font-mono text-[12px] text-gold">
@@ -172,13 +208,19 @@ export default function Markets() {
                     {s.floor > 0 ? fmt(s.floor) : "—"}
                   </td>
                   <td className="px-3 text-right font-mono text-[12px] text-secondary">
-                    {s.ref > 0 ? fmt(s.ref) : "—"}
+                    {s.ref != null && s.ref > 0 ? fmt(s.ref) : "—"}
                   </td>
                   <td className="px-3 text-right tnum font-mono font-semibold text-ink">
                     {s.price > 0 ? fmt(s.price) : "—"}
                   </td>
+                  <td className="px-3 text-right font-mono text-[11px]">
+                    {bid ? <><span className="text-gain">{fmt(bid.price)}</span><span className="ml-1 text-muted">{fmt(bid.volume)}</span></> : "—"}
+                  </td>
+                  <td className="px-3 text-right font-mono text-[11px]">
+                    {ask ? <><span className="text-loss">{fmt(ask.price)}</span><span className="ml-1 text-muted">{fmt(ask.volume)}</span></> : "—"}
+                  </td>
                   <td className="px-3 text-right">
-                    {s.changeKnown ? <PercentChange value={s.changePct} arrow={false} /> : "—"}
+                    {s.changePct != null && Number.isFinite(s.changePct) ? <><PercentChange value={s.changePct} arrow={false} />{Math.abs(s.changePct) >= 20 && <span className="ml-1 block text-[10px] text-warning" title="Đối chiếu giá tham chiếu và sự kiện doanh nghiệp trước khi diễn giải">Biến động lớn · cần đối chiếu</span>}</> : "—"}
                   </td>
                   <td className="px-3 text-right tnum font-mono text-secondary">
                     {s.volume}
@@ -192,7 +234,7 @@ export default function Markets() {
                     {s.momentumKnown ? s.momentum : "—"}
                   </td>
                 </tr>
-              ))}
+              })}
             </tbody>
           </table>
         </div>

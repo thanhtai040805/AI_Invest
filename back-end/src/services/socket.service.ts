@@ -5,6 +5,7 @@ import { subscriptionService } from './subscription.service';
 import { aiEngineService } from './aiEngine.service';
 import prisma from '../config/database';
 import { redisService } from './redis.service';
+import { bestOrderBookLevel } from '../modules/market/market.utils';
 
 const MAX_SUBSCRIPTIONS_PER_SOCKET = 400;
 const STREAM_CHANGE_BATCH_MS = 50;
@@ -12,10 +13,16 @@ const HOSE_INDEXES = new Set(['VNINDEX', 'VN30', 'VN100']);
 
 async function latestDbQuote(symbol: string) {
   const rows = await prisma.$queryRaw<Array<Record<string, any>>>`
-    SELECT d.date, d.close_adj, d.open_adj, d.high_adj, d.low_adj, d.volume_total,
-           c.open AS raw_open, c.close AS raw_close
+    SELECT d.date, d.close_adj, d.volume_total,
+           c.close AS raw_close, prev.close AS prior_close,
+           s.ref_price, s.ceiling, s.floor
     FROM market_data_daily d
     LEFT JOIN market_data_daily_calculation c ON c.ticker=d.ticker AND c.date=d.date
+    LEFT JOIN stocks s ON s.symbol=d.ticker
+    LEFT JOIN LATERAL (
+      SELECT close FROM market_data_daily_calculation
+      WHERE ticker=d.ticker AND date < d.date ORDER BY date DESC LIMIT 1
+    ) prev ON TRUE
     WHERE d.ticker=${symbol}
     ORDER BY d.date DESC LIMIT 1
   `;
@@ -24,24 +31,32 @@ async function latestDbQuote(symbol: string) {
 
 async function latestDbIndices() {
   return prisma.$queryRaw<Array<Record<string, unknown>>>`
-    SELECT c.ticker AS symbol, c.date, d.close_adj AS value,
-           CASE WHEN c.open IS NOT NULL AND c.open <> 0
-             THEN ((c.close - c.open) / c.open) * 100 ELSE 0 END AS change_pct
+    SELECT c.ticker AS symbol, c.date, c.close AS value,
+           CASE WHEN prev.close IS NOT NULL AND prev.close <> 0
+             THEN ((c.close - prev.close) / prev.close) * 100 ELSE NULL END AS change_pct
     FROM market_data_daily_calculation c
     JOIN market_data_daily d USING (ticker, date)
+    LEFT JOIN LATERAL (
+      SELECT close FROM market_data_daily_calculation
+      WHERE ticker=c.ticker AND date < c.date ORDER BY date DESC LIMIT 1
+    ) prev ON TRUE
     WHERE c.ticker IN ('VNINDEX', 'VN-INDEX', 'VN30', 'VN100')
       AND c.date = (SELECT MAX(date) FROM market_data_daily WHERE ticker IN ('VNINDEX', 'VN-INDEX', 'VN30', 'VN100'))
   `;
 }
 
 function dailyQuoteSnapshot(symbol: string, row: Record<string, any>) {
-  const price = (row.close_adj ?? 0) * 1000;
-  const ref = (row.open_adj ?? row.close_adj ?? 0) * 1000;
-  const ceiling = (row.high_adj ?? row.close_adj ?? 0) * 1000;
-  const floor = (row.low_adj ?? row.close_adj ?? 0) * 1000;
-  const changePct = row.raw_open && row.raw_open !== 0 && row.raw_close != null
-    ? ((row.raw_close - row.raw_open) / row.raw_open) * 100
-    : 0;
+  const toVnd = (value: unknown) => {
+    const number = Number(value ?? 0);
+    return number > 0 && number < 500 ? number * 1000 : number;
+  };
+  const rawClose = Number(row.raw_close);
+  const priorClose = Number(row.prior_close);
+  const price = toVnd(Number.isFinite(rawClose) && rawClose > 0 ? row.raw_close : row.close_adj);
+  const ref = toVnd(Number.isFinite(priorClose) && priorClose > 0 ? row.prior_close : row.ref_price);
+  const ceiling = toVnd(row.ceiling);
+  const floor = toVnd(row.floor);
+  const changePct = ref > 0 && price > 0 ? ((price - ref) / ref) * 100 : null;
 
   return {
     symbol,
@@ -54,6 +69,14 @@ function dailyQuoteSnapshot(symbol: string, row: Record<string, any>) {
     timestamp: row.date,
     isSnapshot: true,
   };
+}
+
+function orderBookSnapshot(book: Record<string, unknown>) {
+  let receivedAt = Number(book.receivedAt ?? 0);
+  if (receivedAt > 0 && receivedAt < 1_000_000_000_000) receivedAt *= 1000;
+  const age = Date.now() - receivedAt;
+  const stale = !receivedAt || age < -5_000 || age >= 15_000;
+  return { ...book, receivedAt: receivedAt || null, stale, isSnapshot: true };
 }
 
 interface SocketMetadata {
@@ -72,6 +95,8 @@ class SocketService {
   private streamChangeTimer: NodeJS.Timeout | null = null;
   private pendingStreamChanges = new Map<string, boolean>();
   private pendingOhlcChanges = new Map<string, boolean>();
+  private pendingMarketOrderBooks = new Map<string, Record<string, unknown>>();
+  private marketOrderBookTimer: NodeJS.Timeout | null = null;
 
   private queueStreamChange(symbol: string, subscribed: boolean): void {
     this.pendingStreamChanges.set(symbol, subscribed);
@@ -195,7 +220,7 @@ class SocketService {
             redisService.getCache<Record<string, unknown>>(`stock:${sym}:orderbook`).catch(() => null),
             redisService.getCache<Record<string, unknown>>(`stock:${sym}:foreign`).catch(() => null),
           ]);
-          if (book) socket.emit(`stock:orderbook:${sym}`, { ...book, isSnapshot: true });
+          if (book) socket.emit(`stock:orderbook:${sym}`, orderBookSnapshot(book));
           if (foreign) socket.emit(`stock:foreign:${sym}`, { ...foreign, isSnapshot: true });
         }
 
@@ -280,6 +305,14 @@ class SocketService {
             });
           }
         }).catch(() => {});
+      });
+
+      socket.on('subscribe:market-orderbooks', () => {
+        socket.join('market:orderbooks');
+      });
+
+      socket.on('unsubscribe:market-orderbooks', () => {
+        socket.leave('market:orderbooks');
       });
 
       socket.on('unsubscribe:market', async () => {
@@ -367,6 +400,24 @@ class SocketService {
   emitOrderBook(symbol: string, data: unknown): void {
     const sym = symbol.toUpperCase();
     this.io.to(`stock:${sym}`).emit(`stock:orderbook:${sym}`, data);
+    const book = (data ?? {}) as Record<string, unknown>;
+    const bid = bestOrderBookLevel(book.bids, true);
+    const ask = bestOrderBookLevel(book.asks, false);
+    this.pendingMarketOrderBooks.set(sym, {
+      symbol: sym,
+      bids: bid ? [bid] : [],
+      asks: ask ? [ask] : [],
+      receivedAt: book.receivedAt,
+      lastUpdate: book.lastUpdate,
+      source: book.source,
+    });
+    if (this.marketOrderBookTimer) return;
+    this.marketOrderBookTimer = setTimeout(() => {
+      this.marketOrderBookTimer = null;
+      const updates = [...this.pendingMarketOrderBooks.values()];
+      this.pendingMarketOrderBooks.clear();
+      for (const update of updates) this.io.to('market:orderbooks').emit('market:orderbook', update);
+    }, 100);
   }
 
   emitTrade(symbol: string, data: unknown): void {
@@ -437,6 +488,11 @@ class SocketService {
       clearInterval(this.tickerInterval);
       this.tickerInterval = null;
     }
+    if (this.marketOrderBookTimer) {
+      clearTimeout(this.marketOrderBookTimer);
+      this.marketOrderBookTimer = null;
+    }
+    this.pendingMarketOrderBooks.clear();
     this.io?.close();
     this.socketMeta.clear();
   }

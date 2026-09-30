@@ -127,7 +127,7 @@ class AIEngineService {
 
   async screenStocks(filters: Record<string, unknown>) {
     return this.circuitBreaker.execute(async () => {
-      const { data } = await this.client.post('/api/screener/filter', filters);
+      const { data } = await this.client.post('/api/screener/filter', filters, { timeout: 120_000 });
       return data;
     });
   }
@@ -149,21 +149,28 @@ class AIEngineService {
 
   async submitBacktest(body: Record<string, unknown>) {
     return this.circuitBreaker.execute(async () => {
-      const { data } = await this.client.post('/api/backtest/run', body);
+      const { data } = await this.client.post('/api/backtest/run', body, { timeout: 120_000 });
       return data;
     });
   }
 
-  async getBacktestStatus(jobId: string) {
+  async getBacktestStatus(jobId: string, userId: string) {
     return this.circuitBreaker.execute(async () => {
-      const { data } = await this.client.get(`/api/backtest/status/${jobId}`);
+      const { data } = await this.client.get(`/api/backtest/status/${jobId}`, { params: { user_id: userId } });
       return data;
     });
   }
 
-  async getBacktestHistory() {
+  async getBacktestHistory(userId: string) {
     return this.circuitBreaker.execute(async () => {
-      const { data } = await this.client.get('/api/backtest/history');
+      const { data } = await this.client.get('/api/backtest/history', { params: { user_id: userId } });
+      return data;
+    });
+  }
+
+  async getBacktestResults(runId: string, userId: string) {
+    return this.circuitBreaker.execute(async () => {
+      const { data } = await this.client.get(`/api/backtest/results/${encodeURIComponent(runId)}`, { params: { user_id: userId } });
       return data;
     });
   }

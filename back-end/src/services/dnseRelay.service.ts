@@ -11,7 +11,6 @@ const CACHE_TTL: Record<string, number> = {
   heatmap: 10,
   trade: 2,
   tradeExtra: 2,
-  orderbook: 2,
   foreign: 5,
   expectedPrice: 2,
   ohlc: 2,
@@ -186,7 +185,6 @@ class DnseRelayService {
       case suffix.startsWith('orderbook:'): {
         const symbol = suffix.replace('orderbook:', '').toUpperCase();
         socketService.emitOrderBook(symbol, data);
-        void redisService.setCache(`stock:${symbol}:orderbook`, data, CACHE_TTL.orderbook);
         break;
       }
 

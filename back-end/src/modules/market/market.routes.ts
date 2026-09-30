@@ -3,7 +3,9 @@ import { config } from '../../config';
 import { aiEngineService } from '../../services/aiEngine.service';
 import { cached } from '../../utils/cache';
 import prisma from '../../config/database';
+import { redisService } from '../../services/redis.service';
 import { autoBackfillIfNeeded, getBackfillHistory } from '../../services/backfill.service';
+import { bestOrderBookLevel } from './market.utils';
 
 const router = Router();
 
@@ -13,6 +15,74 @@ const rowsOf = (value: unknown, key: string): unknown[] => {
   const rows = (value as Payload | null)?.[key];
   return Array.isArray(rows) ? rows : [];
 };
+
+type DbForeignFlow = { symbol: string; foreign_flow: number | null; foreign_flow_date: Date | null };
+
+async function dbForeignFlows(): Promise<DbForeignFlow[]> {
+  return cached('market:foreign-flow:daily', 60, () => prisma.$queryRaw<DbForeignFlow[]>`
+    WITH latest AS (
+      SELECT MAX(ff.trade_date) AS trade_date
+      FROM foreign_flow ff
+      JOIN stocks s ON s.symbol = ff.symbol
+      WHERE s.exchange = 'HOSE'
+    )
+    SELECT ff.symbol,
+           (COALESCE(ff.net_value, 0) / 1000000000.0)::float8 AS foreign_flow,
+           ff.trade_date AS foreign_flow_date
+    FROM foreign_flow ff
+    JOIN stocks s ON s.symbol = ff.symbol
+    JOIN latest l ON l.trade_date = ff.trade_date
+    WHERE s.exchange = 'HOSE'
+  `);
+}
+
+async function withDbForeignFlows(snapshot: Payload): Promise<Payload> {
+  const flows = await dbForeignFlows().catch(() => []);
+  const bySymbol = new Map(flows.map((flow) => [flow.symbol, flow]));
+  const stocks = rowsOf(snapshot, 'stocks').map((value) => {
+    const stock = value as Payload;
+    const symbol = String(stock.symbol ?? '').toUpperCase();
+    const flow = bySymbol.get(symbol);
+    const current = stock.foreign_flow ?? stock.foreignFlow;
+    if (current != null && Number.isFinite(Number(current))) return stock;
+    return flow ? { ...stock, foreign_flow: flow.foreign_flow, foreign_flow_date: flow.foreign_flow_date } : stock;
+  });
+  return { ...snapshot, stocks, foreignFlowAsOf: flows[0]?.foreign_flow_date ?? null };
+}
+
+async function dbLiquidity(): Promise<Payload> {
+  return cached('market:liquidity:estimate', 60, async () => {
+    const rows = await prisma.$queryRaw<Array<{ date: Date; total_value_billion: number | null; stock_count: number }>>`
+      WITH latest AS (
+        SELECT MAX(d.date) AS date
+        FROM market_data_daily d
+        JOIN stocks s ON s.symbol = d.ticker
+        WHERE s.exchange = 'HOSE'
+      )
+      SELECT d.date,
+             (SUM(COALESCE(d.volume_total, 0)::numeric * COALESCE(NULLIF(d.close_unadj, 0), NULLIF(d.close_adj, 0))::numeric * 1000)
+               / 1000000000.0)::float8 AS total_value_billion,
+             COUNT(*) FILTER (
+               WHERE COALESCE(d.volume_total, 0) > 0
+                 AND COALESCE(NULLIF(d.close_unadj, 0), NULLIF(d.close_adj, 0)) > 0
+             )::int AS stock_count
+      FROM market_data_daily d
+      JOIN stocks s ON s.symbol = d.ticker AND s.exchange = 'HOSE'
+      JOIN latest l ON l.date = d.date
+      GROUP BY d.date
+    `;
+    const row = rows[0];
+    return {
+      totalValueBillion: row?.total_value_billion && row.total_value_billion > 0 ? row.total_value_billion : null,
+      stockCount: row?.stock_count ?? 0,
+      lastUpdate: row?.date ?? null,
+      asOf: row?.date ?? null,
+      source: 'postgres-close-estimate',
+      approximate: true,
+      stale: true,
+    };
+  });
+}
 
 async function dbSnapshot(exchange?: string) {
   const exchangeFilter = exchange?.toUpperCase() ?? 'HOSE';
@@ -45,7 +115,7 @@ async function dbSnapshot(exchange?: string) {
       AND (${exchangeFilter}::text IS NULL OR s.exchange = ${exchangeFilter})
     ORDER BY d.volume_total DESC NULLS LAST
   `;
-  return { stocks: rows, asOf: rows[0]?.date ?? null, source: 'postgres', stale: true, exchange: exchangeFilter };
+  return withDbForeignFlows({ stocks: rows, asOf: rows[0]?.date ?? null, source: 'postgres', stale: true, exchange: exchangeFilter });
 }
 
 async function dbIndices() {
@@ -92,40 +162,104 @@ async function dbIndices() {
 
 async function dbHeatmap() {
   const sectors = await prisma.$queryRaw<Array<Record<string, unknown>>>`
-      WITH latest AS (SELECT MAX(date) AS date FROM market_data_daily),
-      valid_returns AS (
-        SELECT COALESCE(s.sector, 'Khác') AS sector,
-               c.market_cap,
-               ((c.close - prev.close) / prev.close) * 100 AS change_pct
-        FROM market_data_daily d
-        JOIN market_data_daily_calculation c ON c.ticker=d.ticker AND c.date=d.date
-        JOIN latest l ON d.date=l.date
-        JOIN stocks s ON s.symbol=d.ticker
-        LEFT JOIN LATERAL (
-          SELECT close FROM market_data_daily_calculation
-          WHERE ticker=d.ticker AND date < d.date ORDER BY date DESC LIMIT 1
-        ) prev ON TRUE
-        WHERE s.exchange = 'HOSE'
-          AND c.close > 0
-          AND prev.close > 0
-          AND (s.floor IS NULL OR s.floor = 0 OR c.close * 1000 >= CASE WHEN ABS(s.floor) < 500 THEN s.floor * 1000 ELSE s.floor END)
-          AND (s.ceiling IS NULL OR s.ceiling = 0 OR c.close * 1000 <= CASE WHEN ABS(s.ceiling) < 500 THEN s.ceiling * 1000 ELSE s.ceiling END)
-      )
-      SELECT sector,
+    WITH date_range AS (
+      SELECT DISTINCT d.date
+      FROM market_data_daily d
+      JOIN stocks s ON s.symbol = d.ticker
+      WHERE s.exchange = 'HOSE'
+      ORDER BY d.date DESC
+      LIMIT 61
+    ),
+    latest AS (SELECT MAX(date) AS date FROM date_range),
+    raw_history AS (
+      SELECT d.ticker,
+             d.date,
+             COALESCE(s.sector, 'Khác') AS sector,
+             CASE WHEN d.close_unadj > 0 AND d.close_adj <> 0 THEN d.close_unadj END AS close,
+             CASE WHEN d.close_unadj > 0 AND d.close_adj <> 0
+               THEN d.market_cap * d.close_unadj / NULLIF(d.close_adj, 0) END AS market_cap,
+             s.floor,
+             s.ceiling,
+             LAG(CASE WHEN d.close_unadj > 0 AND d.close_adj <> 0 THEN d.close_unadj END)
+               OVER (PARTITION BY d.ticker ORDER BY d.date) AS previous_close
+      FROM market_data_daily d
+      JOIN date_range dr ON dr.date = d.date
+      JOIN stocks s ON s.symbol = d.ticker AND s.exchange = 'HOSE'
+      WHERE d.close_unadj > 0 AND d.close_adj <> 0
+    ),
+    valid_returns AS (
+      SELECT date,
+             sector,
+             market_cap,
+             (((close - previous_close) / previous_close) * 100)::float8 AS change_pct
+      FROM raw_history
+      WHERE close > 0
+        AND previous_close > 0
+        AND (date <> (SELECT date FROM latest)
+          OR ((floor IS NULL OR floor = 0 OR close * 1000 >= CASE WHEN ABS(floor) < 500 THEN floor * 1000 ELSE floor END)
+          AND (ceiling IS NULL OR ceiling = 0 OR close * 1000 <= CASE WHEN ABS(ceiling) < 500 THEN ceiling * 1000 ELSE ceiling END)))
+    ),
+    daily AS (
+      SELECT date,
+             sector,
              COUNT(*)::int AS count,
              COALESCE(
                SUM(change_pct * GREATEST(COALESCE(market_cap, 0), 0))
                  / NULLIF(SUM(GREATEST(COALESCE(market_cap, 0), 0)), 0),
                AVG(change_pct)
              )::float8 AS change_pct,
-             SUM(GREATEST(COALESCE(market_cap, 0), 0))::float8 AS market_cap,
-             NULL::float8 AS foreign_flow
+             SUM(GREATEST(COALESCE(market_cap, 0), 0))::float8 AS market_cap
       FROM valid_returns
+      GROUP BY date, sector
+    ),
+    sector_history AS (
+      SELECT sector,
+             (ARRAY_AGG(count ORDER BY date DESC))[1] AS count,
+             (ARRAY_AGG(change_pct ORDER BY date DESC))[1] AS change_pct,
+             (ARRAY_AGG(market_cap ORDER BY date DESC))[1] AS market_cap,
+             ARRAY_AGG(change_pct ORDER BY date) AS sparkline,
+             MAX(date) AS as_of
+      FROM daily
       GROUP BY sector
-      ORDER BY market_cap DESC
-    `;
+    ),
+    foreign_date AS (
+      SELECT MAX(ff.trade_date) AS date
+      FROM foreign_flow ff
+      JOIN stocks s ON s.symbol = ff.symbol
+      WHERE s.exchange = 'HOSE'
+    ),
+    foreign_by_sector AS (
+      SELECT COALESCE(s.sector, 'Khác') AS sector,
+             (SUM(COALESCE(ff.net_value, 0)) / 1000000000.0)::float8 AS foreign_flow
+      FROM foreign_flow ff
+      JOIN foreign_date fd ON fd.date = ff.trade_date
+      JOIN stocks s ON s.symbol = ff.symbol AND s.exchange = 'HOSE'
+      GROUP BY COALESCE(s.sector, 'Khác')
+    )
+    SELECT h.sector, h.count, h.change_pct, h.market_cap, h.sparkline,
+           f.foreign_flow, fd.date AS foreign_as_of, h.as_of
+    FROM sector_history h
+    CROSS JOIN foreign_date fd
+    LEFT JOIN foreign_by_sector f USING (sector)
+    ORDER BY h.market_cap DESC NULLS LAST
+  `;
 
-  return { sectors, asOf: sectors[0] ? await prisma.market_data_daily.findFirst({ orderBy: { date: 'desc' }, select: { date: true } }).then(x => x?.date ?? null) : null, source: 'postgres', stale: true };
+  const normalizedSectors: Payload[] = sectors.map((sector): Payload => {
+    const dailyReturns = Array.isArray(sector.sparkline) ? sector.sparkline.map(Number).filter(Number.isFinite) : [];
+    let indexValue = 100;
+    const sparkline = dailyReturns.map((change) => {
+      indexValue *= 1 + change / 100;
+      return Number(indexValue.toFixed(2));
+    });
+    return { ...sector, sparkline };
+  });
+  return {
+    sectors: normalizedSectors,
+    asOf: normalizedSectors[0]?.as_of ?? null,
+    foreignFlowAsOf: normalizedSectors[0]?.foreign_as_of ?? null,
+    source: 'postgres',
+    stale: true,
+  };
 }
 
 async function handle(
@@ -155,26 +289,85 @@ router.get('/breadth', (req, res, next) =>
 );
 
 router.get('/liquidity', (req, res, next) =>
-  handle(req, res, next, () =>
-    cached('market:liquidity', config.cacheTtl.snapshot, () => aiEngineService.getLiquidity()),
-  ),
+  handle(req, res, next, async () => {
+    const live = await aiEngineService.getLiquidity().catch(() => null) as Payload | null;
+    const value = live?.totalValueBillion;
+    const updatedAt = Date.parse(String(live?.lastUpdate ?? ''));
+    const fresh = updatedAt > 0 && Date.now() - updatedAt < 15_000;
+    if (value != null && Number.isFinite(Number(value)) && Number(value) > 0 && fresh) {
+      return { ...live, approximate: false, stale: false };
+    }
+    return dbLiquidity();
+  }),
 );
+
+router.get('/orderbooks', (req, res, next) => handle(req, res, next, async () => {
+  const rows = await prisma.$queryRaw<Array<{ symbol: string }>>`
+    SELECT symbol FROM stocks WHERE exchange = 'HOSE' ORDER BY symbol
+  `;
+  const symbols = rows.map((row) => row.symbol.toUpperCase());
+  const books = await redisService.getCacheMany<Payload>(symbols.map((symbol) => `stock:${symbol}:orderbook`)).catch(() => []);
+  const now = Date.now();
+  const orderbooks: Record<string, Payload> = {};
+  books.forEach((book, index) => {
+    if (!book) return;
+    let receivedAt = Number(book.receivedAt ?? 0);
+    if (receivedAt > 0 && receivedAt < 1_000_000_000_000) receivedAt *= 1000;
+    if (!receivedAt) receivedAt = Date.parse(String(book.lastUpdate ?? '')) || 0;
+    const age = now - receivedAt;
+    if (!receivedAt || age < -5_000 || age >= 15_000) return;
+    const bid = bestOrderBookLevel(book.bids, true);
+    const ask = bestOrderBookLevel(book.asks, false);
+    orderbooks[symbols[index]] = {
+      ...book,
+      symbol: symbols[index],
+      bids: bid ? [bid] : [],
+      asks: ask ? [ask] : [],
+      receivedAt: receivedAt || null,
+      stale: false,
+    };
+  });
+  return { orderbooks, source: 'redis' };
+}));
 
 router.get('/snapshot', (req, res, next) => {
   const exchange = req.query.exchange as string | undefined;
-  const cacheKey = exchange ? `market:snapshot:${exchange}` : 'market:snapshot';
+  const cacheKey = exchange ? `market:snapshot:api:${exchange.toUpperCase()}` : 'market:snapshot:api';
   return handle(req, res, next, () =>
     cached(cacheKey, config.cacheTtl.snapshot, async () => {
       const live = await aiEngineService.getMarketSnapshot(exchange).catch(() => null);
-      return rowsOf(live, 'stocks').length ? live : dbSnapshot(exchange);
+      return rowsOf(live, 'stocks').length ? withDbForeignFlows(live as Payload) : dbSnapshot(exchange);
     }),
   );
 });
 
 router.get('/heatmap', (req, res, next) => handle(req, res, next, () =>
-  cached('market:heatmap', config.cacheTtl.snapshot, async () => {
-    const live = await aiEngineService.getHeatmap().catch(() => null);
-    return rowsOf(live, 'sectors').length ? live : dbHeatmap();
+  cached('market:heatmap:api', 60, async () => {
+    const [live, history] = await Promise.all([
+      aiEngineService.getHeatmap().catch(() => null),
+      cached('market:heatmap:history', 300, () => dbHeatmap()).catch(() => ({ sectors: [], source: 'postgres', stale: true })),
+    ]);
+    const historySectors = rowsOf(history, 'sectors') as Payload[];
+    if (!rowsOf(live, 'sectors').length) return history;
+    const historyByName = new Map(historySectors.map((sector) => [String(sector.sector ?? sector.name ?? ''), sector]));
+    const sectors = rowsOf(live, 'sectors').map((value) => {
+      const sector = value as Payload;
+      const historySector = historyByName.get(String(sector.name ?? sector.sector ?? ''));
+      return {
+        ...sector,
+        sparkline: Array.isArray(historySector?.sparkline) && historySector.sparkline.length > 1
+          ? historySector.sparkline
+          : sector.sparkline ?? [],
+        // DB flow is the complete daily sector total; a live heatmap can cover only part of a sector.
+        foreign_flow: historySector?.foreign_flow ?? null,
+      };
+    });
+    return {
+      ...(live as Payload),
+      sectors,
+      historyAsOf: (history as Payload | null)?.asOf ?? null,
+      foreignFlowAsOf: (history as Payload | null)?.foreignFlowAsOf ?? null,
+    };
   }),
 ));
 

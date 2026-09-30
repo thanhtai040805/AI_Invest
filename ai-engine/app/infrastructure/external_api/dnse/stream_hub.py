@@ -13,6 +13,7 @@ Production features:
 
 import asyncio
 import json
+import math
 import threading
 import time
 from datetime import datetime, time as dt_time
@@ -332,11 +333,11 @@ class DnseStreamHub:
                 symbol = str(stock.get("symbol") or "").strip().upper()
                 if not symbol:
                     continue
-                open_price = float(stock.get("open") or 0)
                 close_price = float(stock.get("close") or 0)
-                reference_price = to_vnd_price(stock.get("ref_price")) or open_price * 1000
+                reference_price = to_vnd_price(stock.get("ref_price"))
+                reference_price = reference_price if reference_price > 0 else None
                 price = close_price * 1000
-                change_pct = ((price - reference_price) / reference_price * 100) if reference_price else 0
+                change_pct = ((price - reference_price) / reference_price * 100) if reference_price else None
                 self._market_baseline[symbol] = {
                     **self._stock_metadata[symbol],
                     "symbol": symbol,
@@ -527,7 +528,29 @@ class DnseStreamHub:
             sym = suffix.replace("trade:", "").upper()
             with self._lock:
                 if sym in self._universe_symbols:
-                    self._quotes[sym] = {**data, "source": "dnse-replay", "stale": True}
+                    raw_price = data.get("price")
+                    raw_reference = self._stock_metadata.get(sym, {}).get("refPrice")
+                    try:
+                        price = float(raw_price)
+                        reference = float(raw_reference)
+                    except (TypeError, ValueError):
+                        price = reference = 0
+                    reference = reference if math.isfinite(reference) and reference > 0 else None
+                    price = price if math.isfinite(price) and price > 0 else None
+                    change = price - reference if price is not None and reference is not None else None
+                    change_pct = change / reference * 100 if change is not None and reference is not None else None
+                    self._quotes[sym] = {
+                        **data,
+                        "price": price,
+                        "change": change,
+                        "changePercent": change_pct,
+                        "change_pct": change_pct,
+                        "ref": reference,
+                        "prevClose": reference,
+                        "trend": "unknown" if change_pct is None else "up" if change_pct > 0 else "down" if change_pct < 0 else "steady",
+                        "source": "dnse-replay",
+                        "stale": True,
+                    }
 
     def _map_trade(self, data: Any) -> Dict[str, Any]:
         sym = str(getattr(data, "symbol", "") or "").upper()
@@ -535,9 +558,10 @@ class DnseStreamHub:
         price = to_vnd_price(getattr(data, "price", 0))
         volume = int(getattr(data, "totalVolumeTraded", 0) or 0)
         open_price = to_vnd_price(getattr(data, "openPrice", 0))
-        prev_close = float(metadata.get("refPrice", 0) or 0) or open_price
-        change = price - prev_close if prev_close else 0
-        pct = change / prev_close * 100 if prev_close else 0
+        prev_close = float(metadata.get("refPrice", 0) or 0)
+        prev_close = prev_close if prev_close > 0 else None
+        change = price - prev_close if prev_close else None
+        pct = change / prev_close * 100 if prev_close else None
         return {
             "symbol": sym,
             "name": metadata.get("name", sym),
@@ -556,10 +580,10 @@ class DnseStreamHub:
             "open": open_price or price,
             "high": to_vnd_price(getattr(data, "highestPrice", price) or price),
             "low": to_vnd_price(getattr(data, "lowestPrice", price) or price),
-            "prevClose": prev_close or price,
+            "prevClose": prev_close,
             "ceiling": metadata.get("ceiling", 0),
             "floor": metadata.get("floor", 0),
-            "trend": "up" if pct > 0 else "down" if pct < 0 else "steady",
+            "trend": "unknown" if pct is None else "up" if pct > 0 else "down" if pct < 0 else "steady",
             "lastUpdate": getattr(data, "time", None) or datetime.now().astimezone().isoformat(),
             "receivedAt": getattr(data, "receivedAt", None),
             "source": "dnse-ws",
@@ -580,6 +604,9 @@ class DnseStreamHub:
             "bids": bids,
             "asks": asks,
             "lastUpdate": getattr(data, "time", None) or datetime.now().astimezone().isoformat(),
+            "receivedAt": int(time.time() * 1000),
+            "source": "dnse-ws",
+            "stale": False,
         }
 
     def _map_ohlc(self, data: Any) -> Dict[str, Any]:
@@ -598,13 +625,21 @@ class DnseStreamHub:
 
     def _map_market_index(self, data: Any) -> Dict[str, Any]:
         name = getattr(data, "indexName", "") or ""
+        def optional_number(value: Any) -> Optional[float]:
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                return None
+            return parsed if math.isfinite(parsed) else None
+
+        volume = optional_number(getattr(data, "totalVolumeTraded", None))
         return {
             "name": name.upper(),
-            "value": float(getattr(data, "valueIndexes", 0) or 0),
-            "change": float(getattr(data, "changedValue", 0) or 0),
-            "changePercent": float(getattr(data, "changedRatio", 0) or 0),
-            "volume": int(getattr(data, "totalVolumeTraded", 0) or 0),
-            "tradingValueRaw": float(getattr(data, "grossTradeAmount", 0) or 0),
+            "value": optional_number(getattr(data, "valueIndexes", None)),
+            "change": optional_number(getattr(data, "changedValue", None)),
+            "changePercent": optional_number(getattr(data, "changedRatio", None)),
+            "volume": int(volume) if volume is not None else None,
+            "tradingValueRaw": optional_number(getattr(data, "grossTradeAmount", None)),
             "lastUpdate": getattr(data, "transactTime", None)
             or getattr(data, "time", None)
             or datetime.now().isoformat(),
@@ -773,7 +808,7 @@ class DnseStreamHub:
             return
         with self._lock:
             self._orderbooks[sym] = book
-        set_cache(f"stock:{sym}:orderbook", book, 2)
+        set_cache(f"stock:{sym}:orderbook", book, 0)
         publish_json(f"orderbook:{sym}", book)
 
     def _on_sec_def(self, data: Any) -> None:
@@ -799,7 +834,7 @@ class DnseStreamHub:
                     baseline.update({key: value for key, value in (
                         ("ref", payload["prevClose"]), ("ceiling", payload["ceiling"]), ("floor", payload["floor"])
                     ) if value > 0})
-                    if payload["prevClose"]:
+                    if payload["prevClose"] and baseline["price"] > 0:
                         change = (baseline["price"] - payload["prevClose"]) / payload["prevClose"] * 100
                         baseline.update(changePct=change, changePercent=change)
         set_cache(f"stock:{sym}:sec_def", payload, 3600)
@@ -889,13 +924,30 @@ class DnseStreamHub:
         self._publish_breadth(snap["stocks"])
 
     def _publish_breadth(self, stocks: List[Dict]) -> None:
-        adv = sum(1 for s in stocks if s.get("changePercent", 0) > 0)
-        dec = sum(1 for s in stocks if s.get("changePercent", 0) < 0)
-        unch = len(stocks) - adv - dec
+        changes = []
+        for stock in stocks:
+            raw_change = stock.get("changePercent")
+            if raw_change is None:
+                raw_change = stock.get("change_pct")
+            try:
+                change = float(raw_change)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(change):
+                changes.append(change)
+
+        adv = sum(1 for change in changes if change > 0)
+        dec = sum(1 for change in changes if change < 0)
+        unch = sum(1 for change in changes if change == 0)
+        total = len(stocks)
         payload = {
             "advancers": adv,
             "decliners": dec,
             "unchanged": unch,
+            "available": len(changes),
+            "unknown": total - len(changes),
+            "total": total,
+            "coverage": len(changes) / total if total else 0,
             "lastUpdate": datetime.now().isoformat(),
         }
         set_cache("market:breadth", payload, 5)
@@ -904,7 +956,7 @@ class DnseStreamHub:
     def _publish_liquidity_from_index(self, index: Dict[str, Any]) -> None:
         stocks = self._get_market_stocks()
         payload = {
-            "totalValueBillion": index.get("tradingValueRaw", 0),
+            "totalValueBillion": index.get("tradingValueRaw"),
             "stockCount": len(stocks),
             "topByVolume": sorted(stocks, key=lambda s: s.get("volume", 0), reverse=True)[:10],
             "lastUpdate": index["lastUpdate"],

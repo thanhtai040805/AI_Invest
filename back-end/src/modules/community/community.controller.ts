@@ -295,14 +295,14 @@ export const communityController = {
           u.id,
           u.display_name as "displayName",
           u.win_rate as "winRate",
-          COUNT(DISTINCT r.id) as reaction_count,
-          COUNT(DISTINCT p.id) as post_count
+          COUNT(DISTINCT r.id) as "reactionCount",
+          COUNT(DISTINCT p.id) as "postCount"
         FROM users u
         LEFT JOIN posts p ON p.author_id = u.id
         LEFT JOIN reactions r ON r.post_id = p.id
         WHERE u.display_name IS NOT NULL
         GROUP BY u.id, u.display_name, u.win_rate
-        ORDER BY reaction_count DESC, post_count DESC
+        ORDER BY "reactionCount" DESC, "postCount" DESC
         LIMIT 5
       ` as any[];
 
