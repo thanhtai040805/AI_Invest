@@ -11,7 +11,7 @@ const nav = [
   { group: "Thông tin", items: [["Nghiên cứu", "/research"], ["Cộng đồng", "/community"], ["Cài đặt", "/settings"], ["Trợ giúp", "/help"]] },
 ].map(section => ({ ...section, items: section.items.map(([label, route]) => ({ label, route })) }))
 
-const numberValue = (value: unknown) => Number(value ?? 0)
+const numberValue = (value: unknown) => value == null || value === "" || !Number.isFinite(Number(value)) ? null : Number(value)
 
 function UserMenu() {
   const { name, logout } = useAuth()
@@ -53,8 +53,19 @@ function NotificationBell() {
     document.addEventListener("mousedown", onDoc)
     return () => document.removeEventListener("mousedown", onDoc)
   }, [])
-  const notes = [["Thị trường", "VN-Index đóng cửa +0.72%", "2m", "bg-gain"], ["Danh mục", "Vị thế HPG tăng trưởng +16.1%", "18m", "bg-teal"], ["AI", "Tín hiệu tích lũy gia tăng tại MBB", "34m", "bg-mineral"], ["Khớp lệnh", "Lệnh HPG đang chờ khớp", "1h", "bg-warning"]]
-  return <div ref={ref} className="relative"><button aria-label="Thông báo" onClick={() => setOpen((value) => !value)} className="relative grid h-9 w-9 place-items-center rounded-[7px] border border-line bg-surface text-secondary transition-colors hover:border-ink/30 hover:text-ink"><span className="text-[17px] leading-none">♢</span><span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-gain ring-2 ring-surface" /></button>{open && <div className="absolute right-0 z-40 mt-2 w-[340px] rounded-[10px] border border-line-strong bg-surface py-2 shadow-xl shadow-ink/10"><div className="flex items-center justify-between px-3 pb-2"><span className="text-[13px] font-semibold text-ink">Thông báo</span><button className="text-[11px] text-mineral hover:underline">Đánh dấu đã đọc</button></div><div className="border-t border-line">{notes.map(([kind, text, time, tone]) => <button key={text} className="flex w-full gap-3 px-3 py-3 text-left hover:bg-soft/70"><span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${tone}`} /><span className="min-w-0 flex-1"><span className="block text-[11px] font-medium text-muted">{kind}</span><span className="block text-[12.5px] leading-snug text-secondary">{text}</span></span><span className="font-mono text-[10px] text-muted">{time}</span></button>)}</div></div>}</div>
+  return (
+    <div ref={ref} className="relative">
+      <button aria-label="Thông báo" aria-expanded={open} onClick={() => setOpen((value) => !value)} className="grid h-9 w-9 place-items-center rounded-[7px] border border-line bg-surface text-secondary transition-colors hover:border-ink/30 hover:text-ink">
+        <span className="text-[17px] leading-none">♢</span>
+      </button>
+      {open && (
+        <div className="absolute right-0 z-40 mt-2 w-[320px] rounded-[10px] border border-line-strong bg-surface p-4 shadow-xl shadow-ink/10">
+          <h2 className="text-[13px] font-semibold text-ink">Thông báo</h2>
+          <p className="mt-2 text-[12px] leading-relaxed text-secondary">Chưa có thông báo từ hệ thống.</p>
+        </div>
+      )}
+    </div>
+  )
 }
 
 function TopBar({ onSearch }: { onSearch: () => void }) {
@@ -62,6 +73,13 @@ function TopBar({ onSearch }: { onSearch: () => void }) {
   const indices = Array.isArray(market.data) ? market.data : (market.data?.data ?? market.data?.indices ?? [])
   const findIndex = (symbol: string) => indices.find((item: Record<string, unknown>) => String(item.symbol ?? item.code ?? item.name).toUpperCase().includes(symbol)) ?? {}
   const vn = findIndex("VNINDEX")
+  const rawIndexValue = numberValue(vn.value ?? vn.close ?? vn.price)
+  const indexValue = rawIndexValue != null && rawIndexValue > 0 ? rawIndexValue : null
+  const changePct = numberValue(vn.changePct ?? vn.changePercent ?? vn.change_pct ?? vn.change_percent)
+  let receivedAt = Number(vn.receivedAt ?? 0)
+  if (receivedAt > 0 && receivedAt < 1_000_000_000_000) receivedAt *= 1000
+  const age = Date.now() - receivedAt
+  const isLive = Number.isFinite(receivedAt) && receivedAt > 0 && age >= 0 && age < 30_000
   const stat = (label: string, value: string, sub?: ReactNode) => (
     <div className="flex flex-col justify-center px-4 border-l border-line first:border-l-0">
       <span className="text-[10px] font-medium tracking-wide text-muted uppercase leading-none">{label}</span>
@@ -71,7 +89,7 @@ function TopBar({ onSearch }: { onSearch: () => void }) {
   return (
     <header className="h-14 bg-surface border-b border-line flex items-center pl-5 pr-4 shrink-0">
       <div className="flex items-center min-w-0">
-        {stat("VN-Index", numberValue(vn.value ?? vn.close ?? vn.price).toLocaleString("vi-VN", { minimumFractionDigits: 2 }), <PercentChange value={numberValue(vn.changePct ?? vn.change_percent)} className="text-[11px]" arrow={false} />)}
+        {stat("VN-Index", indexValue === null ? "—" : indexValue.toLocaleString("vi-VN", { minimumFractionDigits: 2 }), changePct === null ? <span className="text-muted">—</span> : <PercentChange value={changePct} className="text-[11px]" arrow={false} />)}
       </div>
       <div className="ml-auto flex items-center gap-2">
         <button
@@ -83,7 +101,7 @@ function TopBar({ onSearch }: { onSearch: () => void }) {
         </button>
         <NotificationBell />
         <div className="flex items-center gap-1.5 h-9 px-2.5 rounded-[7px] bg-soft text-[11px] text-secondary">
-          <span className={`w-1.5 h-1.5 rounded-full ${market.error ? "bg-loss" : "bg-gain animate-pulse"}`} /> {market.error ? "Mất kết nối" : "Trực tiếp"}
+          <span className={`w-1.5 h-1.5 rounded-full ${market.error ? "bg-loss" : isLive ? "bg-gain animate-pulse" : "bg-muted"}`} /> {market.error ? "Mất kết nối" : isLive ? "Trực tiếp" : "Dữ liệu gần nhất"}
         </div>
         <UserMenu />
       </div>

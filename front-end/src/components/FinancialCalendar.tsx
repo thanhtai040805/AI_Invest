@@ -3,7 +3,7 @@
 import { useId, useRef, useState } from "react"
 import { displayDate, validDate, vietnamDate } from "@/lib/financial-date"
 
-export function FinancialCalendar({ value, onChange, dates = [], label = "Chọn ngày", allowAll = true, availableOnly = false }: {
+export function FinancialCalendar({ value, onChange, dates = [], label = "Chọn ngày", allowAll = false, availableOnly = false }: {
   value: string; onChange: (date: string) => void; dates?: string[]; label?: string; allowAll?: boolean; availableOnly?: boolean
 }) {
   const id = useId()
@@ -18,7 +18,7 @@ export function FinancialCalendar({ value, onChange, dates = [], label = "Chọn
   const count = new Date(Date.UTC(year, mon, 0)).getUTCDate()
   const available = new Set(dataDates)
   function select(date: string) {
-    if (date && availableOnly && !available.has(date)) {
+    if (date && availableOnly && date !== today && !available.has(date)) {
       setError(dataDates[0] ? `Ngày này chưa có bản lưu. Ngày mới nhất: ${displayDate(dataDates[0])}.` : "Chưa có ngày nào có bản lưu cho bộ lọc này.")
       return
     }
@@ -56,14 +56,14 @@ export function FinancialCalendar({ value, onChange, dates = [], label = "Chọn
         {Array.from({length: count}, (_, i) => {
           const date = `${month}-${String(i + 1).padStart(2, "0")}`
           const weekend = (offset + i) % 7 > 4
-          return <button key={date} type="button" disabled={date > today || (availableOnly && !available.has(date))} aria-pressed={date === value} aria-label={`${displayDate(date)}${available.has(date) ? ", có dữ liệu" : availableOnly ? ", chưa có bản lưu" : ""}${weekend ? ", cuối tuần" : ""}`} onClick={() => select(date)}
+          return <button key={date} type="button" disabled={date > today || (availableOnly && date !== today && !available.has(date))} aria-pressed={date === value} aria-label={`${displayDate(date)}${available.has(date) ? ", có dữ liệu" : availableOnly ? ", chưa có bản lưu" : ""}${weekend ? ", cuối tuần" : ""}`} onClick={() => select(date)}
             className={`relative h-9 rounded-md text-[12px] font-mono disabled:opacity-25 focus-visible:outline-2 focus-visible:outline-mineral ${date === value ? "bg-ink text-paper" : weekend ? "bg-soft text-muted hover:bg-line" : "hover:bg-soft"} ${date === today ? "ring-1 ring-inset ring-mineral" : ""}`}>
             {i + 1}{available.has(date) && <span className={`absolute bottom-1 left-1/2 h-1 w-1 -translate-x-1/2 rounded-full ${date === value ? "bg-paper" : "bg-mineral"}`} />}
           </button>
         })}
       </div>
-      <div className="mt-3 flex flex-wrap gap-2 border-t border-line pt-3 text-[11px]">{allowAll && <button type="button" onClick={() => select("")} className="rounded border border-line px-2 py-1">Tất cả ngày</button>}<button type="button" disabled={availableOnly && !available.has(today)} onClick={() => select(today)} className="rounded border border-line px-2 py-1 disabled:opacity-30">Hôm nay</button>{dataDates[0] && <button type="button" onClick={() => select(dataDates[0])} className="rounded border border-line px-2 py-1">Có dữ liệu mới nhất</button>}</div>
-      {availableOnly && <p className="mt-2 text-[11px] text-secondary">Chỉ chọn được ngày có bản lưu phù hợp với bộ lọc mã cổ phiếu.</p>}
+      <div className="mt-3 flex flex-wrap gap-2 border-t border-line pt-3 text-[11px]">{allowAll && <button type="button" onClick={() => select("")} className="rounded border border-line px-2 py-1">Tất cả ngày</button>}<button type="button" onClick={() => select(today)} className="rounded border border-line px-2 py-1">Hôm nay</button>{dataDates[0] && <button type="button" onClick={() => select(dataDates[0])} className="rounded border border-line px-2 py-1">Có dữ liệu mới nhất</button>}</div>
+      {availableOnly && <p className="mt-2 text-[11px] text-secondary">Chỉ chọn ngày có bản lưu; hôm nay vẫn có thể chọn khi chưa có bản ghi.</p>}
       <p className="mt-3 text-[10px] leading-relaxed text-muted">● Có dữ liệu · Nền xám: cuối tuần.<br/>Ngày lưu phân tích có thể ngoài phiên giao dịch. Dấu dữ liệu không xác nhận sàn mở cửa hay ngày thanh toán T+.</p>
     </div>
   </div>

@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react"
 import { FinancialCalendar } from "@/components/FinancialCalendar"
-import { displayDate } from "@/lib/financial-date"
+import { displayDate, vietnamDate } from "@/lib/financial-date"
 import { Page } from "@/components/Shell"
 import { Button, Panel, PanelHead, Pill } from "@/components/ui"
 import { Link } from "@/lib/router"
@@ -54,7 +54,7 @@ export default function ResearchPage() {
   const resource = useResource(() => workspaceApi.research(), [])
   const [thesisView, setThesisView] = useState<"latest" | "history">("latest")
   const [historyTicker, setHistoryTicker] = useState("")
-  const [historyDate, setHistoryDate] = useState("")
+  const [historyDate, setHistoryDate] = useState(() => vietnamDate())
   const [historyPage, setHistoryPage] = useState(1)
   const [historyRetry, setHistoryRetry] = useState(0)
   const [history, setHistory] = useState<{
@@ -81,6 +81,11 @@ export default function ResearchPage() {
   const thesisLoading = thesisView === "history" ? history.loading : resource.loading
   const thesisError = thesisView === "history" ? history.error : resource.error
   function clearHistoryFilters() {
+    setHistoryTicker("")
+    setHistoryDate(vietnamDate())
+    setHistoryPage(1)
+  }
+  function showAllHistory() {
     setHistoryTicker("")
     setHistoryDate("")
     setHistoryPage(1)
@@ -115,8 +120,8 @@ export default function ResearchPage() {
               <input aria-label="Lọc lịch sử theo mã cổ phiếu" placeholder="Mã CP, ví dụ HPG" value={historyTicker}
                 maxLength={16} onChange={e => { setHistoryTicker(e.target.value.trim().toUpperCase()); setHistoryPage(1) }}
                 className="h-8 px-3 rounded-[6px] border border-line bg-surface text-[12px] w-44" />
-              <FinancialCalendar label="Ngày phân tích luận điểm" availableOnly value={historyDate} dates={history.data?.dates} onChange={date => { setHistoryDate(date); setHistoryPage(1) }} />
-              <Button onClick={clearHistoryFilters}>Xóa bộ lọc</Button>
+              <FinancialCalendar label="Ngày phân tích luận điểm" allowAll availableOnly value={historyDate} dates={history.data?.dates} onChange={date => { setHistoryDate(date); setHistoryPage(1) }} />
+              <Button onClick={clearHistoryFilters}>Hôm nay</Button>
               <span className="text-[12px] text-muted">{history.loading ? "Đang tải lịch sử..." : `${history.data?.total ?? 0} bản lưu`}</span>
             </>}
           </div>
@@ -133,8 +138,8 @@ export default function ResearchPage() {
               <Panel className="col-span-full text-center py-8 text-muted text-[13px]">Đang tải luận điểm đầu tư...</Panel>
             ) : visibleTheses.length === 0 ? (
               <Panel className="col-span-full text-center py-8 text-muted text-[13px]">
-                {thesisError ? "Dữ liệu chưa tải được." : thesisView === "history" ? historyDate ? "Không có bản lưu trong ngày đã chọn. Chọn ngày có dấu dữ liệu hoặc xóa bộ lọc để xem toàn bộ lịch sử." : "Chưa có lịch sử phù hợp với bộ lọc." : "Chưa có luận điểm đầu tư nào được ghi nhận."}
-                {thesisView === "history" && !thesisError && (historyDate || historyTicker) && <div className="mt-3"><Button onClick={clearHistoryFilters}>Xem toàn bộ lịch sử</Button></div>}
+                {thesisError ? "Dữ liệu chưa tải được." : thesisView === "history" ? historyDate ? "Không có bản lưu trong ngày đã chọn. Chọn ngày có dữ liệu gần nhất bên trên." : "Chưa có lịch sử phù hợp với bộ lọc." : "Chưa có luận điểm đầu tư nào được ghi nhận."}
+                {thesisView === "history" && !thesisError && (historyDate || historyTicker) && <div className="mt-3"><Button onClick={showAllHistory}>Xem toàn bộ lịch sử</Button></div>}
               </Panel>
             ) : (
               visibleTheses.map((t) => {
@@ -177,7 +182,7 @@ export default function ResearchPage() {
 
                     {t.target_price_range && (
                       <div className="text-[12.5px] font-mono text-ink mt-2 mb-3">
-                        Mục tiêu: <span className="text-gain font-semibold">{t.target_price_range[0]?.toLocaleString()}</span> – <span className="text-gain font-semibold">{t.target_price_range[1]?.toLocaleString()}</span> đ
+                        Mục tiêu: <span className="text-gain font-semibold">{t.target_price_range[0]?.toLocaleString("vi-VN")}</span> – <span className="text-gain font-semibold">{t.target_price_range[1]?.toLocaleString("vi-VN")}</span> đ
                       </div>
                     )}
 

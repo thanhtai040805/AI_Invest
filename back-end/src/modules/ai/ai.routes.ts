@@ -27,6 +27,7 @@ router.post('/backtest', authMiddleware, async (req: AuthRequest, res: Response,
       strategy_config: { type: body.strategy, params: body.params ?? {} },
       initial_capital: body.capital,
       source: 'auto',
+      user_id: req.userId!,
     });
     res.status(202).json(result);
   } catch (err) {
@@ -34,18 +35,33 @@ router.post('/backtest', authMiddleware, async (req: AuthRequest, res: Response,
   }
 });
 
-router.get('/backtest/history', authMiddleware, async (req, res, next) => {
+router.get('/backtest/history', authMiddleware, async (req: AuthRequest, res, next) => {
   try {
-    const result = await aiEngineService.getBacktestHistory();
+    const result = await aiEngineService.getBacktestHistory(req.userId!);
     res.json(result);
   } catch (err) {
     next(err);
   }
 });
 
-router.get('/backtest/:id/status', authMiddleware, async (req, res, next) => {
+router.get('/backtest/:id/results', authMiddleware, async (req: AuthRequest, res, next) => {
   try {
-    const result = await aiEngineService.getBacktestStatus(req.params.id);
+    if (!/^vn_[A-Z0-9.-]{1,16}_\d{4}-\d{2}-\d{2}_\d{4}-\d{2}-\d{2}(?:_[a-f0-9]{32})?$/.test(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid backtest run id' });
+    }
+    const result = await aiEngineService.getBacktestResults(req.params.id, req.userId!);
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/backtest/:id/status', authMiddleware, async (req: AuthRequest, res, next) => {
+  try {
+    if (!/^vn_[A-Z0-9.-]{1,16}_\d{4}-\d{2}-\d{2}_\d{4}-\d{2}-\d{2}(?:_[a-f0-9]{32})?$/.test(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid backtest run id' });
+    }
+    const result = await aiEngineService.getBacktestStatus(req.params.id, req.userId!);
     res.json(result);
   } catch (err) {
     next(err);

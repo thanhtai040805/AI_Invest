@@ -55,8 +55,10 @@ async function dbStockQuote(symbol: string) {
     const n = Number(value ?? 0);
     return n > 0 && n < 500 ? n * 1000 : n;
   };
-  const price = toVnd(row.raw_close ?? row.close_adj);
-  const ref = row.prior_close != null ? toVnd(row.prior_close) : toVnd(row.ref_price);
+  const rawClose = Number(row.raw_close);
+  const priorClose = Number(row.prior_close);
+  const price = toVnd(Number.isFinite(rawClose) && rawClose > 0 ? row.raw_close : row.close_adj);
+  const ref = Number.isFinite(priorClose) && priorClose > 0 ? toVnd(row.prior_close) : toVnd(row.ref_price);
   const ceiling = toVnd(row.ceiling);
   const floor = toVnd(row.floor);
   const changePct = ref > 0 && price > 0 ? ((price - ref) / ref) * 100 : null;
@@ -134,7 +136,8 @@ router.get('/:symbol/quote', (req, res, next) => {
   return handle(req, res, next, () =>
     cached(`stock:${symbol}:quote`, config.cacheTtl.quote, async () => {
       const live = await aiEngineService.getQuote(symbol).catch(() => null);
-      return live || dbStockQuote(symbol);
+      const livePrice = Number((live as any)?.price ?? (live as any)?.close ?? 0);
+      return Number.isFinite(livePrice) && livePrice > 0 ? live : dbStockQuote(symbol);
     }),
   );
 });
@@ -142,7 +145,7 @@ router.get('/:symbol/quote', (req, res, next) => {
 router.get('/:symbol/orderbook', (req, res, next) => {
   const symbol = symbolParam(req);
   return handle(req, res, next, () =>
-    cached(`stock:${symbol}:orderbook`, config.cacheTtl.orderbook, async () => {
+    cached(`api:stock:${symbol}:orderbook`, config.cacheTtl.orderbook, async () => {
       const live = await aiEngineService.getOrderBook(symbol).catch(() => null);
       if (live && (live as any).bids) return live;
       return { symbol, bids: [], asks: [] };

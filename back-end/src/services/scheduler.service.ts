@@ -66,7 +66,6 @@ export function initScheduler(): void {
                 aiEngineService.getOrderBook(symbol),
               ]);
               await redisService.setCache(`stock:${symbol}:quote`, quote, config.cacheTtl.quote);
-              await redisService.setCache(`stock:${symbol}:orderbook`, orderbook, config.cacheTtl.orderbook);
               socketService.emitStockPrice(symbol, quote);
               socketService.emitOrderBook(symbol, orderbook);
             } catch (err) {

@@ -1,127 +1,72 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import { Page } from "@/components/Shell"
-import {
-  Panel,
-  PanelHead,
-} from "@/components/ui"
+import { Panel, PanelHead } from "@/components/ui"
+
+const sections = [
+  "Hồ sơ cá nhân",
+  "Bảo mật",
+  "Giao dịch",
+  "Quản trị rủi ro",
+  "Tùy chọn AI",
+  "Thông báo",
+  "Giao diện",
+  "Ngôn ngữ & Vùng",
+  "Quyền riêng tư",
+  "Công ty chứng khoán",
+  "Gói hội viên",
+  "Nâng cao",
+]
+
+const currentFormats = [
+  ["Ngôn ngữ", "Tiếng Việt"],
+  ["Định dạng số và tiền", "vi-VN · VND"],
+  ["Ngày tháng", "DD/MM/YYYY"],
+  ["Múi giờ", "Asia/Ho_Chi_Minh (UTC+7)"],
+]
 
 export default function Settings() {
   const [active, setActive] = useState("Ngôn ngữ & Vùng")
-  const [lang, setLang] = useState("vi")
 
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem("aiinvest_lang")
-      // Restore the persisted preference after client hydration.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      if (saved) setLang(saved)
-    } catch {}
-  }, [])
-
-  const sections = [
-    "Hồ sơ cá nhân",
-    "Bảo mật",
-    "Giao dịch",
-    "Quản trị rủi ro",
-    "Tùy chọn AI",
-    "Thông báo",
-    "Giao diện",
-    "Ngôn ngữ & Vùng",
-    "Quyền riêng tư",
-    "Công ty chứng khoán",
-    "Gói hội viên",
-    "Nâng cao",
-  ]
   return (
-    <Page title="Cài đặt" sub="Cấu hình không gian làm việc của bạn.">
-      <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-4">
+    <Page title="Cài đặt" sub="Thông tin cài đặt hiện có trong không gian làm việc.">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[220px_1fr]">
         <Panel className="h-fit">
-          <div className="space-y-0.5">
-            {sections.map((s) => (
+          <nav aria-label="Các mục cài đặt" className="space-y-0.5">
+            {sections.map((section) => (
               <button
-                key={s}
-                onClick={() => setActive(s)}
-                className={`w-full text-left h-8 px-2.5 rounded-[6px] text-[13px] ${active === s ? "bg-soft text-ink font-medium" : "text-secondary hover:bg-soft/60"}`}
+                key={section}
+                type="button"
+                aria-current={active === section ? "page" : undefined}
+                onClick={() => setActive(section)}
+                className={"h-8 w-full rounded-[6px] px-2.5 text-left text-[13px] " + (active === section ? "bg-soft font-medium text-ink" : "text-secondary hover:bg-soft/60")}
               >
-                {s}
+                {section}
               </button>
             ))}
-          </div>
+          </nav>
         </Panel>
+
         <Panel>
           <PanelHead title={active} />
           {active === "Ngôn ngữ & Vùng" ? (
-            <div className="space-y-5">
-              {[
-                ["Ngôn ngữ hiển thị", ["Tiếng Việt (Mặc định)", "English"]],
-                ["Định dạng tiền tệ", ["Việt Nam đồng (₫)", "Quốc tế (VND)"]],
-                ["Định dạng ngày tháng", ["DD/MM/YYYY", "YYYY-MM-DD"]],
-                ["Múi giờ giao dịch", ["Hà Nội (UTC+7)", "UTC"]],
-              ].map(([l, opts]) => (
-                <div key={l as string}>
-                  <div className="text-[13px] text-ink mb-2">{l as string}</div>
-                  <div className="flex gap-1 bg-soft rounded-[8px] p-1 w-fit">
-                    {(opts as string[]).map((o, i) => (
-                      <button
-                        key={o}
-                        onClick={() => {
-                          if (l === "Ngôn ngữ hiển thị") {
-                            const newLang = i === 0 ? "vi" : "en"
-                            setLang(newLang)
-                            try { localStorage.setItem("aiinvest_lang", newLang) } catch {}
-                          }
-                        }}
-                        className={`px-3 h-7 rounded-[6px] text-[12px] ${
-                          (l === "Ngôn ngữ hiển thị" ? (lang === "vi" ? i === 0 : i === 1) : i === 0)
-                            ? "bg-surface text-ink shadow-sm font-medium"
-                            : "text-muted hover:text-ink"
-                        }`}
-                      >
-                        {o}
-                      </button>
-                    ))}
+            <>
+              <dl className="divide-y divide-line">
+                {currentFormats.map(([label, value]) => (
+                  <div key={label} className="flex flex-wrap items-center justify-between gap-2 py-3 first:pt-0">
+                    <dt className="text-[13px] text-secondary">{label}</dt>
+                    <dd className="text-[13px] font-medium text-ink">{value}</dd>
                   </div>
-                </div>
-              ))}
-              <p className="text-[12px] text-muted pt-2 border-t border-line">
-                Cài đặt ngôn ngữ và định dạng số được lưu vào không gian làm việc của bạn.
+                ))}
+              </dl>
+              <p className="mt-3 border-t border-line pt-3 text-[12px] leading-relaxed text-muted">
+                Các giá trị trên đang được ứng dụng sử dụng; thay đổi tùy chọn chưa được hỗ trợ.
               </p>
-            </div>
-          ) : active === "Tùy chọn AI" ? (
-            <div className="space-y-5">
-              {[
-                ["Tần suất tín hiệu", ["Thấp", "Cân bằng", "Cao"]],
-                ["Độ sâu giải thích", ["Ngắn gọn", "Tiêu chuẩn", "Chi tiết"]],
-                [
-                  "Độ nhạy rủi ro",
-                  ["Thận trọng", "Vừa phải", "Tích cực"],
-                ],
-                ["Độ phức tạp phân tích", ["Cơ bản", "Tiêu chuẩn", "Chuyên sâu"]],
-              ].map(([l, opts]) => (
-                <div key={l as string}>
-                  <div className="text-[13px] text-ink mb-2">{l as string}</div>
-                  <div className="flex gap-1 bg-soft rounded-[8px] p-1 w-fit">
-                    {(opts as string[]).map((o, i) => (
-                      <button
-                        key={o}
-                        className={`px-3 h-7 rounded-[6px] text-[12px] ${i === 1 ? "bg-surface text-ink shadow-sm" : "text-muted"}`}
-                      >
-                        {o}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ))}
-              <p className="text-[12px] text-muted pt-2 border-t border-line">
-                Cài đặt AI giúp điều chỉnh cách hiển thị dữ liệu phân tích. Các thông số này không
-                đảm bảo hiệu quả đầu tư.
-              </p>
-            </div>
+            </>
           ) : (
-            <p className="text-[13.5px] text-secondary">
-              Quản lý cài đặt {active.toLowerCase()} tại đây.
+            <p className="rounded-lg border border-dashed border-line px-4 py-6 text-[13px] leading-relaxed text-secondary">
+              Mục này chưa có cài đặt được kết nối với hệ thống.
             </p>
           )}
         </Panel>

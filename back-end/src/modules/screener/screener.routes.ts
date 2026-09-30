@@ -19,6 +19,8 @@ const filterSchema = z.object({
   roeMax: z.number().optional(),
   rsiMin: z.number().optional(),
   rsiMax: z.number().optional(),
+  deMin: z.number().optional(),
+  deMax: z.number().optional(),
   marketCapMin: z.number().optional(),
   marketCapMax: z.number().optional(),
   volumeMin: z.number().optional(),

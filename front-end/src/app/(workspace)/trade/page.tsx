@@ -22,15 +22,15 @@ export default function Trade() {
   const [symbol, setSymbol] = useState("HPG")
   const [side, setSide] = useState<"Buy" | "Sell">("Buy")
   const [ord, setOrd] = useState("Limit")
-  const [quantity, setQuantity] = useState("1,000")
+  const [quantity, setQuantity] = useState("100")
   const [priceInput, setPriceInput] = useState("")
   const [orderPending, setOrderPending] = useState(false)
   const [orderMessage, setOrderMessage] = useState("")
 
   // Fetch real summary & orders from portfolio
-  const portfolioRes = useResource(() => Promise.all([
-    portfolioApi.summary().catch(() => null),
-    portfolioApi.orders().catch(() => []),
+  const portfolioRes = useResource(() => Promise.allSettled([
+    portfolioApi.summary(),
+    portfolioApi.orders(),
   ]), [])
 
   // Fetch real quote & history for the selected symbol
@@ -40,7 +40,9 @@ export default function Trade() {
     stockApi.orderbook(symbol).catch(() => null),
   ]), [symbol])
 
-  const [summaryData, ordersData] = portfolioRes.data || [null, []]
+  const [summaryResult, ordersResult] = portfolioRes.data || []
+  const summaryData = summaryResult?.status === "fulfilled" ? summaryResult.value : null
+  const ordersData = ordersResult?.status === "fulfilled" && Array.isArray(ordersResult.value) ? ordersResult.value : null
   const [quoteData, historyData, loadedBookData] = stockRes.data || [null, [], null]
   const bookData = stockRes.loading ? null : loadedBookData
 
@@ -50,33 +52,44 @@ export default function Trade() {
         symbol,
         name: symbol,
         price: 0,
-        ref: 0,
+        ref: null,
         ceiling: 0,
         floor: 0,
-        changePct: 0,
-        volume: "0",
+        changePct: null,
+        volume: "—",
         flow: 0,
+        hasFlow: false,
       }
     }
     const qPrice = Number(quoteData.price ?? quoteData.close ?? 0)
     const price = qPrice < 500 && qPrice > 0 ? Math.round(qPrice * 1000) : Math.round(qPrice)
-    const ref = Number(quoteData.ref ?? quoteData.open ?? price)
-    const refPrice = ref < 500 && ref > 0 ? Math.round(ref * 1000) : Math.round(ref)
-    const ceil = Number(quoteData.ceiling ?? refPrice)
-    const flr = Number(quoteData.floor ?? refPrice)
-    const changePct = Number(quoteData.change_pct ?? (refPrice > 0 ? ((price - refPrice) / refPrice) * 100 : 0))
-    const vol = Number(quoteData.volume ?? quoteData.volume_total ?? 0)
+    const rawRef = quoteData.ref ?? quoteData.prior_close
+    const ref = rawRef == null ? null : Number(rawRef)
+    const refPrice = ref == null || !Number.isFinite(ref) ? null : ref < 500 && ref > 0 ? Math.round(ref * 1000) : Math.round(ref)
+    const normalizePrice = (value: unknown) => {
+      const parsed = Number(value)
+      return parsed > 0 && parsed < 500 ? Math.round(parsed * 1000) : Math.round(parsed)
+    }
+    const ceil = normalizePrice(quoteData.ceiling ?? 0)
+    const flr = normalizePrice(quoteData.floor ?? 0)
+    const rawChange = quoteData.changePct ?? quoteData.change_pct ?? quoteData.change_percent
+    const changePct = rawChange == null ? null : Number(rawChange)
+    const rawVolume = quoteData.volume ?? quoteData.volume_total
+    const vol = rawVolume == null ? null : Number(rawVolume)
+    const rawFlow = quoteData.foreign_flow ?? quoteData.foreign_net_vol
+    const flow = rawFlow == null ? NaN : Number(rawFlow)
 
     return {
       symbol,
       name: quoteData.name || symbol,
       price,
       ref: refPrice,
-      ceiling: Math.round(ceil),
-      floor: Math.round(flr),
-      changePct: Number(changePct.toFixed(2)),
-      volume: vol >= 1e6 ? `${(vol / 1e6).toFixed(1)}M` : `${Math.round(vol / 1e3)}k`,
-      flow: Math.round(Number(quoteData.foreign_flow ?? quoteData.foreign_net_vol ?? 0)),
+      ceiling: ceil,
+      floor: flr,
+      changePct: changePct === null || !Number.isFinite(changePct) ? null : Number(changePct.toFixed(2)),
+      volume: vol === null || !Number.isFinite(vol) ? "—" : vol >= 1e6 ? `${(vol / 1e6).toFixed(1)}M` : vol >= 1e3 ? `${(vol / 1e3).toFixed(0)}k` : fmt(vol),
+      flow: Number.isFinite(flow) ? Math.round(flow) : 0,
+      hasFlow: Number.isFinite(flow),
     }
   }, [quoteData, symbol])
 
@@ -88,23 +101,25 @@ export default function Trade() {
     ref: liveQuote.ref,
     ceiling: liveQuote.ceiling,
     floor: liveQuote.floor,
-    risk: "Moderate" as const,
+    risk: "Unknown" as const,
     volume: liveQuote.volume,
     sector: "HOSE",
-    rsi: 55,
-    momentum: 60,
-    beneish: "PASS" as const,
+    rsi: 0,
+    momentum: 0,
+    beneish: "UNKNOWN" as const,
     flow: liveQuote.flow,
-    rs: 60,
-    factor: "Tích lũy",
-    weight: 10,
-    pe: 12,
+    rs: 0,
+    factor: "",
+    weight: 0,
+    pe: 0,
     foreign: liveQuote.flow,
     spark: [],
   }), [liveQuote])
 
-  const { stock: rawStock, flash } = useRealtimeStock(symbol, initialStock)
+  const { stock: rawStock, flash, isLive } = useRealtimeStock(symbol, initialStock)
   const rtStock = rawStock || initialStock
+  const rawChange = quoteData?.changePct ?? quoteData?.change_pct ?? quoteData?.change_percent
+  const quoteChange = rawChange == null ? NaN : Number(rawChange)
 
   // Real chart points
   const chartPoints = useMemo(() => {
@@ -115,19 +130,39 @@ export default function Trade() {
       }).filter((v: number) => Number.isFinite(v) && v > 0)
       if (valid.length > 0) return valid
     }
-    return rtStock.price > 0 ? [rtStock.price, rtStock.price] : []
-  }, [historyData, rtStock.price])
+    return []
+  }, [historyData])
+
+  const chartLabels = useMemo<[string, string, string] | undefined>(() => {
+    const rows = Array.isArray(historyData) ? (historyData.slice(-30) as { date?: string; time?: string; close?: number; close_adj?: number }[]).filter(row => {
+      const close = Number(row.close ?? row.close_adj ?? 0)
+      return Number.isFinite(close) && close > 0
+    }) : []
+    if (rows.length < 2) return undefined
+    const label = (row: { date?: string; time?: string }) => {
+      const date = new Date(String(row.date ?? row.time ?? ""))
+      return Number.isFinite(date.getTime()) ? date.toLocaleDateString("vi-VN", { day: "2-digit", month: "short" }) : "—"
+    }
+    return [label(rows[0]), label(rows[Math.floor((rows.length - 1) / 2)]), label(rows[rows.length - 1])]
+  }, [historyData])
 
   const currentPrice = rtStock.price || liveQuote.price
-  const parsedQty = parseInt(quantity.replace(/,/g, ""), 10) || 0
+  const quoteAvailable = currentPrice > 0
+  const liveChange = isLive && rtStock.price > 0 && rtStock.ref != null && rtStock.ref > 0 ? ((rtStock.price - rtStock.ref) / rtStock.ref) * 100 : null
+  const shownChange = Number.isFinite(quoteChange) ? quoteChange : liveChange
+  const hasChangePct = shownChange !== null
+  const parsedQty = Number(quantity.replace(/,/g, ""))
   const orderPrice = priceInput ? Number(priceInput.replace(/,/g, "")) : currentPrice
-  const estValue = parsedQty * orderPrice
-  const estFee = Math.max(Math.round(estValue * 0.001), 10000)
+  const estimateAvailable = quoteAvailable && Number.isInteger(parsedQty) && parsedQty > 0 && Number.isFinite(orderPrice) && orderPrice > 0
+  const estValue = estimateAvailable ? parsedQty * orderPrice : null
+  const estFee = estValue === null ? null : Math.max(Math.round(estValue * 0.001), 10000)
 
-  const cash = Number(summaryData?.cashBalance ?? summaryData?.cash ?? 0)
-  const orders = (Array.isArray(ordersData) ? ordersData : []) as ShadowOrder[]
-  const openOrdersCount = orders.filter((o) => o.status === "PENDING" || o.status === "OPEN").length
-  const filledOrdersCount = orders.filter((o) => o.status === "FILLED" && new Date(o.createdAt).toDateString() === new Date().toDateString()).length
+  const rawCash = summaryData?.cashBalance ?? summaryData?.cash
+  const parsedCash = rawCash == null ? NaN : Number(rawCash)
+  const cash = Number.isFinite(parsedCash) ? parsedCash : null
+  const orders = (ordersData ?? []) as ShadowOrder[]
+  const openOrdersCount = ordersData === null ? null : orders.filter((o) => o.status === "PENDING" || o.status === "OPEN").length
+  const filledOrdersCount = ordersData === null ? null : orders.filter((o) => o.status === "FILLED" && new Date(o.createdAt).toDateString() === new Date().toDateString()).length
 
   async function submitOrder() {
     setOrderMessage("")
@@ -189,17 +224,17 @@ export default function Trade() {
                 <span className={`text-[24px] font-mono font-bold transition-colors ${
                   flash === "gain" ? "text-gain" : flash === "loss" ? "text-loss" : "text-ink"
                 }`}>
-                  {fmt(currentPrice)}
+                  {quoteAvailable ? fmt(currentPrice) : "—"}
                 </span>
-                <PercentChange value={rtStock.changePct} />
+                {!hasChangePct ? <span className="text-[12px] text-muted">Chưa có biến động</span> : <PercentChange value={shownChange ?? 0} />}
               </div>
             </div>
             <div className="text-right text-[11px] font-mono">
               <div className="text-muted">Khối lượng: <span className="text-ink font-semibold">{rtStock.volume}</span></div>
               <div className="flex gap-2 mt-1">
-                <span className="text-loss">Sàn: {fmt(rtStock.floor)}</span>
-                <span className="text-muted">TC: {fmt(rtStock.ref)}</span>
-                <span className="text-gain">Trần: {fmt(rtStock.ceiling)}</span>
+                <span className="text-loss">Sàn: {rtStock.floor > 0 ? fmt(rtStock.floor) : "—"}</span>
+                <span className="text-muted">TC: {rtStock.ref != null && rtStock.ref > 0 ? fmt(rtStock.ref) : "—"}</span>
+                <span className="text-gain">Trần: {rtStock.ceiling > 0 ? fmt(rtStock.ceiling) : "—"}</span>
               </div>
             </div>
           </div>
@@ -210,17 +245,18 @@ export default function Trade() {
               {
                 label: symbol,
                 data: chartPoints,
-                color: rtStock.changePct >= 0 ? "var(--color-gain)" : "var(--color-loss)",
+                color: !hasChangePct ? "var(--color-muted)" : Number(shownChange) >= 0 ? "var(--color-gain)" : "var(--color-loss)",
               },
             ]}
+            xLabels={chartLabels}
           />
 
           <div className="grid grid-cols-4 gap-3 mt-4 text-[12px]">
             {[
-              ["Lệnh mở", String(openOrdersCount)],
-              ["Khớp hôm nay", String(filledOrdersCount)],
-              ["Sức mua khả dụng", fmt(cash)],
-              ["Khối ngoại ròng", `${liveQuote.flow >= 0 ? "+" : ""}${liveQuote.flow}k`],
+              ["Lệnh mở", openOrdersCount === null ? "—" : String(openOrdersCount)],
+              ["Khớp hôm nay", filledOrdersCount === null ? "—" : String(filledOrdersCount)],
+              ["Sức mua khả dụng", cash === null ? "—" : fmt(cash)],
+              ["Khối ngoại ròng", liveQuote.hasFlow ? `${liveQuote.flow >= 0 ? "+" : ""}${liveQuote.flow.toLocaleString("vi-VN")}` : "—"],
             ].map(([l, v]) => (
               <div key={l} className="border border-line rounded-[8px] p-3">
                 <div className="text-muted text-[11px] uppercase tracking-wide">{l}</div>
@@ -275,7 +311,7 @@ export default function Trade() {
             <div>
               <label className="text-secondary font-medium">Mức giá đặt (VND)</label>
               <input
-                value={priceInput || String(currentPrice)}
+              value={priceInput || (currentPrice > 0 ? String(currentPrice) : "")}
                 onChange={(e) => setPriceInput(e.target.value)}
                 className="mt-1 w-full h-9 border border-line rounded-[6px] px-3 tnum font-mono text-ink outline-none focus:border-mineral bg-surface"
               />
@@ -284,9 +320,9 @@ export default function Trade() {
 
           <div className="mt-4 pt-4 border-t border-line space-y-2 text-[12px]">
             {[
-              ["Giá trị lệnh dự tính", fmt(estValue)],
-              ["Phí giao dịch ước tính (0,10%, tối thiểu 10.000đ)", fmt(estFee)],
-              ["Thuế bán ước tính (0,10%)", side === "Sell" ? fmt(Math.round(estValue * 0.001)) : "—"],
+              ["Giá trị lệnh dự tính", estValue === null ? "—" : fmt(estValue)],
+              ["Phí giao dịch ước tính (0,10%, tối thiểu 10.000đ)", estFee === null ? "—" : fmt(estFee)],
+              ["Thuế bán ước tính (0,10%)", side === "Sell" && estValue !== null ? fmt(Math.round(estValue * 0.001)) : "—"],
             ].map(([l, v]) => (
               <div key={l} className="flex justify-between">
                 <span className="text-muted">{l}</span>
@@ -298,11 +334,12 @@ export default function Trade() {
           <Button
             variant="primary"
             onClick={() => void submitOrder()}
-            disabled={orderPending || !bookData || ord === "ATO" || ord === "ATC"}
+            disabled={orderPending || !quoteAvailable || ord === "ATO" || ord === "ATC"}
             className={`w-full mt-4 ${side === "Buy" ? "bg-gain hover:bg-gain" : "bg-loss hover:bg-loss"} text-white`}
           >
             Xác nhận {side === "Buy" ? "Mua" : "Bán"} {symbol}
           </Button>
+          {!quoteAvailable && <p className="mt-2 text-[12px] text-warning">Chưa có giá hợp lệ cho {symbol}; tải lại dữ liệu trước khi đặt lệnh.</p>}
           {orderMessage && <p role="status" className="mt-2 text-[12px] text-secondary">{orderMessage}</p>}
           {(ord === "ATO" || ord === "ATC") && <p className="mt-2 text-[12px] text-muted">Chưa hỗ trợ mô phỏng khớp lệnh định kỳ.</p>}
         </Panel>
@@ -312,7 +349,9 @@ export default function Trade() {
         <Panel>
           <PanelHead title="Sổ lệnh chờ và khớp gần nhất" sub="Nhật ký lệnh tài khoản từ PostgreSQL" />
           <div className="overflow-x-auto">
-            {orders.length > 0 ? (
+            {ordersData === null ? (
+              <div className="py-6 text-center text-muted text-[12px]">Không thể tải lịch sử lệnh.</div>
+            ) : orders.length > 0 ? (
               <table className="w-full text-[12.5px]">
                 <thead>
                   <tr className="border-b border-line text-muted text-[10px] uppercase font-semibold">
@@ -328,7 +367,7 @@ export default function Trade() {
                     <tr key={o.id}>
                       <td className="py-2 font-mono font-bold text-ink">{o.symbol}</td>
                       <td className={o.side === "BUY" ? "text-gain font-semibold" : "text-loss font-semibold"}>{o.side || "BUY"}</td>
-                      <td className="text-right font-mono tnum">{Number(o.quantity).toLocaleString()}</td>
+                      <td className="text-right font-mono tnum">{Number(o.quantity).toLocaleString("vi-VN")}</td>
                       <td className="text-right font-mono tnum">{fmt(Number(o.price))}</td>
                       <td className="text-right"><Pill tone={o.status === "FILLED" ? "gain" : "teal"}>{o.status}</Pill></td>
                     </tr>
@@ -342,25 +381,27 @@ export default function Trade() {
         </Panel>
 
         <Panel>
-          <PanelHead title="Sổ lệnh chào mua / chào bán" sub={`Feed ${bookData?.lastUpdate ? new Date(bookData.lastUpdate).toLocaleString("vi-VN") : "chưa có dữ liệu"}; khớp lệnh cần dữ liệu dưới 10 giây`} action={<Button variant="quiet" onClick={() => void stockRes.reload()}>Làm mới</Button>} />
+          <PanelHead title="Sổ lệnh chào mua / chào bán" sub={`${bookData?.lastUpdate ? `Feed ${new Date(bookData.lastUpdate).toLocaleString("vi-VN")}` : "Chưa có sổ lệnh từ nguồn dữ liệu"}; giá khớp cần dữ liệu dưới 10 giây`} action={<Button variant="quiet" onClick={() => void stockRes.reload()}>Làm mới</Button>} />
           <div className="grid grid-cols-2 gap-3 text-[12px] font-mono">
             <div>
               <div className="text-[10.5px] uppercase text-muted mb-1 px-1 font-semibold">Dư mua (Bids)</div>
               {(bookData?.bids ?? []).slice(0, 3).map((level: {price: number; volume: number}, i: number) => (
                 <div key={i} className="flex justify-between py-1 px-2 border-b border-line">
                   <span className="text-gain">{fmt(level.price < 500 ? level.price * 1000 : level.price)}</span>
-                  <span className="text-secondary">{level.volume.toLocaleString()}</span>
+                  <span className="text-secondary">{level.volume.toLocaleString("vi-VN")}</span>
                 </div>
               ))}
+              {!bookData?.bids?.length && <p className="px-2 py-2 text-[11px] text-muted">Không có mức dư mua.</p>}
             </div>
             <div>
               <div className="text-[10.5px] uppercase text-muted mb-1 px-1 text-right font-semibold">Dư bán (Asks)</div>
               {(bookData?.asks ?? []).slice(0, 3).map((level: {price: number; volume: number}, i: number) => (
                 <div key={i} className="flex justify-between py-1 px-2 border-b border-line">
                   <span className="text-loss">{fmt(level.price < 500 ? level.price * 1000 : level.price)}</span>
-                  <span className="text-secondary">{level.volume.toLocaleString()}</span>
+                  <span className="text-secondary">{level.volume.toLocaleString("vi-VN")}</span>
                 </div>
               ))}
+              {!bookData?.asks?.length && <p className="px-2 py-2 text-right text-[11px] text-muted">Không có mức dư bán.</p>}
             </div>
           </div>
         </Panel>

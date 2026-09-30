@@ -29,34 +29,37 @@ import { marketApi, stockApi, portfolioApi } from "@/lib/api"
 import { useRealtimeMarket } from "@/lib/use-realtime"
 import type { ApiMarketIndex, ApiMarketStock, ApiNewsItem } from "@/types"
 
+function formatBreadth(advancers: number, decliners: number, available?: number, total?: number) {
+  if (available === 0) return total ? `Chưa có dữ liệu · 0/${total} mã` : "—";
+  const coverage = available != null && total != null && total > 0 && available < total
+    ? ` · ${available}/${total} mã`
+    : "";
+  return `${advancers} / ${decliners}${coverage}`;
+}
+
 function PortfolioRiskFrame() {
-  const [navText, setNavText] = useState("1.00B")
-  const [returnText, setReturnText] = useState("+0.00%")
-  const [tier, setTier] = useState<"NORMAL" | "CAUTION" | "PROTECTION">("NORMAL")
+  const [summary, setSummary] = useState<{ nav?: number; pnl?: number; pnlPercent?: number; positionCount?: number } | null>(null)
+  const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
-    portfolioApi.summary().then((s) => {
-      if (s && s.nav) {
-        setNavText((s.nav / 1e9).toFixed(2) + "B")
-        const ret = s.total_return ?? 0
-        setReturnText(ret >= 0 ? `+${ret.toFixed(2)}%` : `${ret.toFixed(2)}%`)
-        if (s.drawdown_tier) setTier(s.drawdown_tier)
-      }
-    }).catch(() => {})
+    portfolioApi.summary().then((data) => setSummary(data ?? null)).catch(() => setSummary(null)).finally(() => setLoaded(true))
   }, [])
+
+  const money = (value?: number) => value != null && Number.isFinite(Number(value)) ? `${Number(value).toLocaleString("vi-VN", { maximumFractionDigits: 0 })} ₫` : "—"
+  const hasPositions = Number(summary?.positionCount ?? 0) > 0
+  const pnl = summary?.pnlPercent != null && Number.isFinite(Number(summary.pnlPercent)) ? Number(summary.pnlPercent) : null
+  const rows = [
+    ["NAV", money(summary?.nav), "text-ink"],
+    ["Lãi/lỗ vị thế", hasPositions && pnl !== null ? `${pnl > 0 ? "+" : ""}${pnl.toLocaleString("vi-VN", { maximumFractionDigits: 2 })}%` : "—", pnl === null ? "text-secondary" : pnl < 0 ? "text-loss" : "text-gain"],
+  ]
 
   return (
     <div className="rounded-[12px] border border-line bg-surface p-6">
       <div className="text-[10px] font-semibold tracking-[.14em] text-muted">
-        KHUNG QUẢN TRỊ DANH MỤC / RỦI RO
+        TÓM TẮT DANH MỤC
       </div>
       <div className="mt-5 grid grid-cols-2 gap-4">
-        {[
-          ["NAV", navText, "text-ink"],
-          ["Lợi nhuận", returnText, returnText.startsWith("-") ? "text-loss" : "text-gain"],
-          ["Tổn thất kỳ vọng", "−4.8%", "text-ink"],
-          ["Ngân sách rủi ro", tier === "NORMAL" ? "100%" : "62%", "text-teal"],
-        ].map(([l, v, c]) => (
+        {rows.map(([l, v, c]) => (
           <div key={l} className="border-b border-line pb-3">
             <div className="text-[11px] text-muted">{l}</div>
             <div className={`mt-1 font-mono text-[18px] font-semibold ${c}`}>
@@ -65,22 +68,13 @@ function PortfolioRiskFrame() {
           </div>
         ))}
       </div>
-      <div className="mt-5 flex items-center gap-2 text-[12px] text-secondary">
-        <span className={`h-2 flex-1 rounded-full ${tier === "NORMAL" ? "bg-teal" : "bg-line-strong"}`} />
-        <span className={`h-2 flex-1 rounded-full ${tier === "CAUTION" ? "bg-warning" : "bg-line-strong"}`} />
-        <span className={`h-2 flex-1 rounded-full ${tier === "PROTECTION" ? "bg-loss" : "bg-line-strong"}`} />
-      </div>
-      <div className="mt-2 flex justify-between text-[10px] text-muted">
-        <span>Bình thường</span>
-        <span>Thận trọng</span>
-        <span>Phòng vệ</span>
-      </div>
+      <p className="mt-4 text-[11px] leading-relaxed text-secondary">{summary ? hasPositions ? "Lãi/lỗ tính trên giá vốn vị thế hiện tại; chưa có chuỗi NAV lịch sử." : "Tài khoản chưa có vị thế để tính lãi/lỗ." : loaded ? "Đăng nhập để xem NAV và trạng thái danh mục của bạn." : "Đang tải số liệu tài khoản…"}</p>
     </div>
   )
 }
 
 function MarketPulse() {
-  const [indexSeed, setIndexSeed] = useState<{ vnIndexVal: string; vnIndexPct: number } | undefined>()
+  const [indexSeed, setIndexSeed] = useState<{ vnIndexVal: string; vnIndexPct: number | null } | undefined>()
   const { indices: liveIndices, isLive, snapshot: liveSnapshot, breadth: liveBreadth, liquidity: liveLiquidity } = useRealtimeMarket(indexSeed)
   const [indexDate, setIndexDate] = useState<string>("")
   const [historySeries, setHistorySeries] = useState<number[]>([])
@@ -89,7 +83,7 @@ function MarketPulse() {
   const [advDec, setAdvDec] = useState<string>("—")
 
   useEffect(() => {
-    const value = Number(liveIndices?.vnIndexVal?.replaceAll(",", ""))
+    const value = Number(liveIndices?.vnIndexVal?.replaceAll(".", "").replace(",", "."))
     if (!Number.isFinite(value) || value <= 0) return
     setHistorySeries((prev) => prev.length > 0 && prev[prev.length - 1] === value
       ? prev
@@ -98,20 +92,37 @@ function MarketPulse() {
 
   useEffect(() => {
     const stocks = liveSnapshot?.stocks
-    if (!stocks?.length) return
-    if (!stocks.some((stock) => stock.foreign_flow != null)) return
-    const totalForeign = stocks.reduce((sum, stock) => sum + Number(stock.foreign_flow ?? 0), 0)
+    if (!stocks?.length) {
+      setForeignFlow("—")
+      return
+    }
+    if (!stocks.some((stock) => stock.foreign_flow != null)) {
+      setForeignFlow("—")
+      return
+    }
+    if (!stocks.every((stock) => stock.foreign_flow != null && Number.isFinite(Number(stock.foreign_flow)))) {
+      setForeignFlow("—")
+      return
+    }
+    const totalForeign = stocks.reduce((sum, stock) => sum + Number(stock.foreign_flow), 0)
     setForeignFlow(totalForeign >= 0 ? `+${totalForeign.toFixed(0)}B` : `${totalForeign.toFixed(0)}B`)
   }, [liveSnapshot])
 
   useEffect(() => {
-    const value = Number(liveLiquidity?.totalValueBillion)
+    const rawValue = liveLiquidity?.totalValueBillion
+    if (rawValue == null) {
+      setLiquidity("—")
+      return
+    }
+    const value = Number(rawValue)
     if (Number.isFinite(value) && value >= 0) setLiquidity(`${(value / 1000).toFixed(1)}T`)
   }, [liveLiquidity])
 
   useEffect(() => {
     if (!liveBreadth) return
-    setAdvDec(`${liveBreadth.advancers ?? 0} / ${liveBreadth.decliners ?? 0}`)
+    if (typeof liveBreadth.advancers === "number" && typeof liveBreadth.decliners === "number") {
+      setAdvDec(formatBreadth(liveBreadth.advancers, liveBreadth.decliners, liveBreadth.available, liveBreadth.total))
+    }
   }, [liveBreadth])
 
   useEffect(() => {
@@ -122,14 +133,18 @@ function MarketPulse() {
 
       if (indRes.status === "fulfilled" && indRes.value?.indices) {
         const indices = indRes.value.indices as ApiMarketIndex[]
-        const getName = (item: ApiMarketIndex) => String(item.name ?? item.symbol ?? "").toUpperCase().replaceAll("-", "")
+        const getName = (item: ApiMarketIndex) => String(item.symbol ?? item.name ?? "").toUpperCase().replaceAll("-", "")
         const vn = indices.find((x) => getName(x) === "VNINDEX")
-        if (vn) {
+        const indexValue = Number(vn?.value)
+        if (vn?.value != null && Number.isFinite(indexValue) && indexValue > 0) {
+          const rawChange = vn.changePercent ?? vn.change_pct
+          const parsedChange = rawChange == null ? NaN : Number(rawChange)
           setIndexSeed({
-            vnIndexVal: Number(vn.value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
-            vnIndexPct: Number(vn.changePercent ?? vn.change_pct ?? 0),
+            vnIndexVal: indexValue.toLocaleString("vi-VN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+            vnIndexPct: Number.isFinite(parsedChange) ? parsedChange : null,
           })
-          setIndexDate(vn.lastUpdate ? new Date(vn.lastUpdate).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }).toUpperCase() : "")
+          const date = vn.lastUpdate ?? vn.date
+          setIndexDate(date && Number.isFinite(Date.parse(date)) ? new Date(date).toLocaleDateString("vi-VN", { day: "2-digit", month: "short", year: "numeric" }) : "")
         }
         if (indRes.value.history?.VNINDEX && Array.isArray(indRes.value.history.VNINDEX) && indRes.value.history.VNINDEX.length > 0) {
           setHistorySeries(indRes.value.history.VNINDEX)
@@ -138,16 +153,17 @@ function MarketPulse() {
 
       if (snapRes.status === "fulfilled" && snapRes.value?.stocks) {
         const stocks = snapRes.value.stocks as ApiMarketStock[]
-        const adv = stocks.filter((s) => (s.change_pct ?? 0) > 0).length
-        const dec = stocks.filter((s) => (s.change_pct ?? 0) < 0).length
-        setAdvDec(`${adv} / ${dec}`)
-
-        let totalForeign = 0
-        for (const s of stocks) {
-          totalForeign += (s.foreign_flow || 0)
-        }
-        if (stocks.some((stock) => stock.foreign_flow != null)) {
+        const changes = stocks.map((stock) => stock.changePercent ?? stock.change_pct)
+          .filter((value): value is number => value != null && Number.isFinite(Number(value)))
+          .map(Number)
+        const adv = changes.filter((change) => change > 0).length
+        const dec = changes.filter((change) => change < 0).length
+        setAdvDec(formatBreadth(adv, dec, changes.length, stocks.length))
+        if (stocks.length && stocks.every((stock) => stock.foreign_flow != null && Number.isFinite(Number(stock.foreign_flow)))) {
+          const totalForeign = stocks.reduce((sum, stock) => sum + Number(stock.foreign_flow), 0)
           setForeignFlow(totalForeign >= 0 ? `+${totalForeign.toFixed(0)}B` : `${totalForeign.toFixed(0)}B`)
+        } else {
+          setForeignFlow("—")
         }
       }
     })
@@ -179,15 +195,11 @@ function MarketPulse() {
                 <span className="font-mono text-[29px] font-semibold tracking-tight text-ink">
                   {liveIndices?.vnIndexVal ?? "—"}
                 </span>
-                <PercentChange
-                  value={liveIndices?.vnIndexPct ?? 0}
-                  arrow={false}
-                  className="text-[13px]"
-                />
+                {liveIndices?.vnIndexPct != null ? <PercentChange value={liveIndices.vnIndexPct} arrow={false} className="text-[13px]" /> : <span className="text-[13px] text-muted">—</span>}
               </div>
             </div>
             <div className="text-right text-[10px] text-muted">
-              {indexDate || "—"}
+              {isLive ? new Date().toLocaleDateString("vi-VN", { day: "2-digit", month: "short", year: "numeric" }) : indexDate || "—"}
               <br />
               <span className="text-teal">{liveIndices?.vnIndexVal ? "VN-Index" : "Chưa có dữ liệu"}</span>
             </div>
@@ -209,18 +221,18 @@ function MarketPulse() {
           <div className="text-[10px] font-semibold tracking-[.14em] text-muted">
             CHẾ ĐỘ THỊ TRƯỜNG
           </div>
-          <div className="mt-2 text-[18px] font-semibold tracking-tight text-ink">
-            Tích cực
+          <div className="mt-2 text-[18px] font-semibold tracking-tight text-secondary">
+            Chưa có đánh giá
           </div>
           <p className="mt-1 text-[12px] leading-relaxed text-secondary">
-            Độ rộng và thanh khoản thị trường củng cố đà tăng dẫn dắt bởi nhóm ngân hàng.
+            Nguồn dữ liệu hiện tại chưa cung cấp kết luận chế độ thị trường hoặc nhóm dẫn dắt.
           </p>
           <div className="mt-5 space-y-2.5">
             {[
-              ["Thanh khoản", liquidity !== "—" ? liquidity : "18.7T", "text-ink"],
-              ["Dòng tiền ngoại", foreignFlow !== "—" ? foreignFlow : "+182B", foreignFlow.startsWith("-") ? "text-loss" : "text-gain"],
-              ["Số mã tăng / giảm", advDec !== "—" ? advDec : "58 / 42", "text-ink"],
-              ["Trạng thái thị trường", "Phiên bình thường", "text-teal"],
+              ["Thanh khoản", liquidity, "text-ink"],
+              ["Dòng tiền ngoại", foreignFlow, foreignFlow === "—" ? "text-muted" : foreignFlow.startsWith("-") ? "text-loss" : "text-gain"],
+              ["Số mã tăng / giảm", advDec, "text-ink"],
+              ["Trạng thái dữ liệu", isLive ? "Đang nhận tick" : indexDate ? `Dữ liệu đến ${indexDate}` : "Chưa có dữ liệu", isLive ? "text-teal" : "text-secondary"],
             ].map(([l, v, t]) => (
               <div
                 key={l}
@@ -260,7 +272,7 @@ function AskDemo() {
           <span className="text-[13px] font-semibold text-ink">
             Hỏi đáp AIInvest
           </span>
-          <Pill tone="teal">Chế độ dẫn chứng</Pill>
+          <Pill tone="neutral">Minh họa · không phải phân tích trực tiếp</Pill>
         </div>
       </div>
       <div className="p-5">
@@ -270,7 +282,7 @@ function AskDemo() {
         {asked && (
           <div className="mt-4 border-l-2 border-teal pl-4">
             <div className="text-[10px] font-semibold uppercase tracking-[.14em] text-teal">
-              Câu trả lời · 14:27 ICT
+              Câu trả lời minh họa
             </div>
             <p className="mt-2 text-[13px] leading-relaxed text-secondary">
               {answers[query]}
@@ -318,13 +330,11 @@ function Pipeline() {
   const [active, setActive] = useState(3)
   const [showDetail, setShowDetail] = useState(false)
   const step = pipeline[active]
-  const statusOf = (i: number) =>
-    i < 6 ? "Completed" : i === 6 ? "Working" : "Waiting"
   return (
     <div className="grid grid-cols-1 overflow-hidden rounded-[12px] border border-line-strong bg-surface lg:grid-cols-[1fr_320px]">
+      <p className="border-b border-line bg-paper px-5 py-2.5 text-[11px] text-secondary lg:col-span-2">Luồng và kết quả bên dưới là nội dung minh họa, không phải trạng thái của một lượt chạy hiện tại.</p>
       <div className="max-h-[520px] divide-y divide-line overflow-y-auto">
         {pipeline.map((p, i) => {
-          const status = statusOf(i)
           return (
             <button
               onClick={() => {
@@ -337,18 +347,14 @@ function Pipeline() {
               <span className="w-6 shrink-0 font-mono text-[11px] text-muted">
                 {p.id}
               </span>
-              <span
-                className={`h-2 w-2 shrink-0 rounded-full ${status === "Completed" ? "bg-teal" : status === "Working" ? "bg-mineral animate-pulse" : "bg-line-strong"}`}
-              />
+              <span className="h-2 w-2 shrink-0 rounded-full bg-line-strong" />
               <span className="min-w-0 flex-1">
                 <span className="block text-[13px] font-semibold text-ink">
                   {p.name}
                 </span>
                 <span className="block text-[11px] text-secondary">{p.vn}</span>
               </span>
-              <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted">
-                {p.phase}
-              </span>
+              <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted">Bước quy trình</span>
             </button>
           )
         })}
@@ -408,26 +414,27 @@ function Pipeline() {
 
 function ResearchCase() {
   const [tab, setTab] = useState("Luận điểm")
-  const [quote, setQuote] = useState<{ price: number; change_pct: number } | null>(null)
+  const [quote, setQuote] = useState<{ price: number; change_pct: number | null } | null>(null)
 
   useEffect(() => {
     stockApi.quote("HPG").then((q) => {
-      if (q && q.price) setQuote({ price: q.price, change_pct: q.change_pct ?? 0 })
+      const price = Number(q?.price ?? q?.close)
+      const rawChange = q?.change_pct
+      const change = rawChange == null ? NaN : Number(rawChange)
+      if (Number.isFinite(price) && price > 0) setQuote({ price, change_pct: Number.isFinite(change) ? change : null })
     }).catch(() => {})
   }, [])
 
-  const currentPrice = quote?.price || 21850
-  const changePct = quote?.change_pct ?? 1.39
+  const currentPrice = quote?.price ?? null
+  const changePct = quote?.change_pct ?? null
 
   return (
     <div className="rounded-[13px] border border-line-strong bg-surface shadow-sm">
       <div className="flex flex-wrap items-center gap-3 border-b border-line px-5 py-4">
-        <span className="font-mono text-[17px] font-semibold text-ink">
-          HPG
-        </span>
+        <span className="font-mono text-[17px] font-semibold text-ink">HPG · Hồ sơ minh họa</span>
         <span className="text-[13px] text-secondary">Hòa Phát Group</span>
-        <span className="ml-auto font-mono text-[14px] text-ink">{currentPrice.toLocaleString()}đ</span>
-        <PercentChange value={changePct} arrow={false} className="text-[13px]" />
+        <span className="ml-auto font-mono text-[14px] text-ink">{currentPrice !== null ? `${currentPrice.toLocaleString("vi-VN")} ₫` : "—"}</span>
+        {changePct !== null ? <PercentChange value={changePct} arrow={false} className="text-[13px]" /> : <span className="text-[13px] text-muted">Chưa có biến động</span>}
       </div>
       <div className="px-5 pt-2">
         <Tabs
@@ -440,7 +447,7 @@ function ResearchCase() {
         {(tab === "Luận điểm" || tab === "Thesis") ? (
           <div>
             <div className="text-[10px] font-semibold uppercase tracking-[.14em] text-muted">
-              Đánh giá hiện tại
+              Luận điểm ví dụ
             </div>
             <h3 className="mt-2 font-serif text-[24px] leading-tight text-ink">
               Xu hướng tích lũy gia tăng khi biên lợi nhuận ngành thép hồi phục.
@@ -450,14 +457,13 @@ function ResearchCase() {
               sản lượng tiêu thụ nội địa phục hồi tạo nên luận điểm đầu tư vững chắc.
             </p>
             <div className="mt-4 flex gap-2">
-              <Pill tone="teal">Xu hướng tích cực</Pill>
-              <Pill tone="gold">Độ tin cậy trung bình</Pill>
+              <Pill tone="neutral">Minh họa · không phải khuyến nghị</Pill>
             </div>
           </div>
         ) : (
           <div>
             <div className="text-[10px] font-semibold uppercase tracking-[.14em] text-muted">
-              Phân tích {tab}
+              Ví dụ · {tab}
             </div>
             <h3 className="mt-2 text-[19px] font-semibold text-ink">
               {(tab === "Tài chính" || tab === "Financials")
@@ -500,6 +506,7 @@ function ResearchCase() {
 function EvidenceExplorer() {
   const [source, setSource] = useState(0)
   const [docs, setDocs] = useState<Array<{ source: string; detail: string; date: string; type: string }>>([])
+  const hasLiveDocs = docs.length > 0
 
   useEffect(() => {
     stockApi.news("HPG").then((items) => {
@@ -521,6 +528,7 @@ function EvidenceExplorer() {
   return (
     <div className="rounded-[12px] border border-line-strong bg-surface">
       <div className="grid grid-cols-1 md:grid-cols-[240px_1fr]">
+        <div className="border-b border-line bg-paper px-4 py-2 text-[11px] text-secondary md:col-span-2">{hasLiveDocs ? "Nguồn từ thư viện tài liệu hiện có." : "Nội dung bên dưới là ví dụ minh họa; chưa tải được tài liệu của HPG."}</div>
         <div className="border-b border-line bg-paper p-3 md:border-b-0 md:border-r">
           {items.slice(0, 4).map((item, i) => (
             <button
@@ -551,7 +559,7 @@ function EvidenceExplorer() {
             “{current.detail}”
           </p>
           <div className="mt-6 border-t border-line pt-4 text-[12px] leading-relaxed text-secondary">
-            <span className="font-semibold text-ink">Traceability:</span> Nguồn từ cơ sở dữ liệu 48,285 tài liệu BCTC & Báo cáo quản trị doanh nghiệp HOSE.
+            <span className="font-semibold text-ink">Truy xuất nguồn:</span> {hasLiveDocs ? "Nội dung lấy từ tài liệu đã tải ở trên." : "Chưa có tài liệu hiện hành để xác minh nội dung ví dụ."}
           </div>
         </div>
       </div>

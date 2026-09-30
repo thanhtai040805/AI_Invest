@@ -459,6 +459,50 @@ class FinancialRepository:
             "net_margin": 0.12,
         }
 
+    def get_latest_screening_ratios_for_symbols(self, symbols: List[str], as_of: Optional[date] = None) -> Dict[str, Dict[str, Any]]:
+        """Load current published screening ratios for a symbol set in one query."""
+        normalized = sorted({symbol.upper().strip() for symbol in symbols if symbol})
+        if not normalized:
+            return {}
+
+        query = """
+            WITH visible_ratios AS (
+                SELECT symbol, ratio_date, pe, pb, roe, debt_equity,
+                       CASE
+                           WHEN published_date IS NOT NULL
+                                AND (published_date - ratio_date) BETWEEN 10 AND 120
+                                AND published_date < '2026-09-01'
+                           THEN published_date
+                           ELSE ratio_date + (
+                               CASE EXTRACT(QUARTER FROM ratio_date)
+                                   WHEN 1 THEN 45 WHEN 2 THEN 55 WHEN 3 THEN 45 ELSE 35
+                               END
+                           )::integer
+                       END AS available_at
+                FROM financial_ratios
+                WHERE symbol = ANY(%s) AND frequency = 'quarterly'
+            )
+            SELECT DISTINCT ON (symbol) symbol, pe, pb, roe, debt_equity
+            FROM visible_ratios
+            WHERE available_at <= %s
+            ORDER BY symbol, available_at DESC, ratio_date DESC
+        """
+        try:
+            rows = self.storage.fetch_all(query, (normalized, as_of or date.today()))
+        except Exception as exc:
+            logger.warning("Could not load screener financial ratios: %s", exc)
+            return {}
+
+        return {
+            str(row[0]).upper(): {
+                "pe": float(row[1]) if row[1] is not None else None,
+                "pb": float(row[2]) if row[2] is not None else None,
+                "roe": float(row[3]) if row[3] is not None else None,
+                "de": float(row[4]) if row[4] is not None else None,
+            }
+            for row in rows
+        }
+
     def get_corporate_actions(self, symbol: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Lấy lịch sử sự kiện doanh nghiệp và hệ số điều chỉnh giá."""
         symbol = symbol.upper().strip()

@@ -65,6 +65,19 @@ class RedisService {
     }
   }
 
+  async getCacheMany<T>(keys: string[]): Promise<(T | null)[]> {
+    if (!keys.length) return [];
+    const rawValues = await this.getClient().mget(...keys);
+    return rawValues.map((raw) => {
+      if (!raw) return null;
+      try {
+        return JSON.parse(raw) as T;
+      } catch {
+        return null;
+      }
+    });
+  }
+
   async setCache(key: string, value: unknown, ttlSeconds: number): Promise<void> {
     await this.getClient().set(key, JSON.stringify(value), 'EX', ttlSeconds);
   }

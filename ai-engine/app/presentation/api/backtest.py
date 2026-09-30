@@ -7,11 +7,12 @@ import json
 import os
 import tempfile
 import re
+import uuid
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 router = APIRouter(tags=["Backtest"])
@@ -25,6 +26,7 @@ class BacktestRequest(BaseModel):
     source: str = Field(default="dnse", description="Data source: dnse, vietfin, auto")
     use_macro_risk: bool = Field(default=True, description="Enable Institutional Macro Risk Shield")
     initial_capital: float = Field(default=1_000_000_000, gt=0)
+    user_id: str = Field(..., min_length=1)
 
 
 _SIGNAL_TEMPLATE = '''"""Signal engine for {symbol} — auto-generated from strategy config."""
@@ -120,9 +122,21 @@ def _render_signal_body(config: Dict[str, Any]) -> str:
 
 
 def _run_directory(run_id: str) -> Path:
-    if not re.fullmatch(r"vn_[A-Z0-9.-]{1,16}_\d{4}-\d{2}-\d{2}_\d{4}-\d{2}-\d{2}", run_id):
+    if not re.fullmatch(r"vn_[A-Z0-9.-]{1,16}_\d{4}-\d{2}-\d{2}_\d{4}-\d{2}-\d{2}(?:_[a-f0-9]{32})?", run_id):
         raise HTTPException(status_code=400, detail="Invalid run_id")
     return Path(os.getenv("RUNS_DIR", tempfile.gettempdir())) / "backtest_runs" / run_id
+
+
+def _owned_run_directory(run_id: str, user_id: str) -> Optional[Path]:
+    run_directory = _run_directory(run_id)
+    try:
+        with open(run_directory / "config.json", encoding="utf-8") as config_file:
+            config = json.load(config_file)
+        if not isinstance(config, dict):
+            return None
+        return run_directory if str(config.get("user_id") or "") == user_id else None
+    except (OSError, json.JSONDecodeError):
+        return None
 
 
 @router.post("/run")
@@ -134,7 +148,7 @@ async def run_backtest_route(request: BacktestRequest):
         end = date.fromisoformat(request.end_date)
         if start >= end:
             raise HTTPException(status_code=400, detail="start_date must be before end_date")
-        run_id = f"vn_{symbol}_{request.start_date}_{request.end_date}"
+        run_id = f"vn_{symbol}_{request.start_date}_{request.end_date}_{uuid.uuid4().hex}"
 
         # Create a temp run directory with config.json + signal_engine.py
         runs_root = _run_directory(run_id)
@@ -151,6 +165,7 @@ async def run_backtest_route(request: BacktestRequest):
             "use_macro_risk": request.use_macro_risk,
             "strategy_config": request.strategy_config,
             "initial_capital": request.initial_capital,
+            "user_id": request.user_id,
         }
         (runs_root / "config.json").write_text(
             json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -224,9 +239,9 @@ async def run_backtest_route(request: BacktestRequest):
 
 
 @router.get("/status/{run_id}")
-async def get_backtest_status(run_id: str):
-    runs_root = _run_directory(run_id)
-    if not runs_root.exists():
+async def get_backtest_status(run_id: str, user_id: str = Query(...)):
+    runs_root = _owned_run_directory(run_id, user_id)
+    if not runs_root or not runs_root.exists():
         return {"run_id": run_id, "status": "not_found"}
     return {
         "run_id": run_id,
@@ -235,24 +250,31 @@ async def get_backtest_status(run_id: str):
 
 
 @router.get("/history")
-async def get_backtest_history():
+async def get_backtest_history(user_id: str = Query(...)):
     runs_root = Path(os.getenv("RUNS_DIR", tempfile.gettempdir())) / "backtest_runs"
     if not runs_root.exists():
         return {"runs": []}
     try:
-        runs = sorted(
-            [d.name for d in runs_root.iterdir() if d.is_dir()],
-            reverse=True,
-        )[:20]
-        return {"runs": runs}
+        completed = []
+        for directory in runs_root.iterdir():
+            if not directory.is_dir() or not (directory / "metrics.json").is_file():
+                continue
+            try:
+                owned = _owned_run_directory(directory.name, user_id)
+            except HTTPException:
+                continue
+            if owned:
+                completed.append(directory)
+        latest = sorted(completed, key=lambda directory: directory.stat().st_mtime, reverse=True)[:20]
+        return {"runs": [directory.name for directory in latest]}
     except Exception:
         return {"runs": []}
 
 
 @router.get("/results/{run_id}")
-async def get_backtest_results(run_id: str):
-    runs_root = _run_directory(run_id)
-    if not runs_root.exists():
+async def get_backtest_results(run_id: str, user_id: str = Query(...)):
+    runs_root = _owned_run_directory(run_id, user_id)
+    if not runs_root or not runs_root.exists():
         return {"run_id": run_id, "status": "not_found"}
 
     metrics: Dict[str, Any] = {}
@@ -260,12 +282,13 @@ async def get_backtest_results(run_id: str):
     trade_list: List[Dict[str, Any]] = []
 
     metrics_path = runs_root / "metrics.json"
-    if metrics_path.exists():
-        try:
-            with open(metrics_path, encoding="utf-8") as f:
-                metrics = json.load(f)
-        except Exception:
-            pass
+    if not metrics_path.is_file():
+        return {"run_id": run_id, "status": "running"}
+    try:
+        with open(metrics_path, encoding="utf-8") as f:
+            metrics = json.load(f)
+    except Exception:
+        return {"run_id": run_id, "status": "not_completed"}
 
     equity_path = runs_root / "equity.csv"
     if equity_path.exists():

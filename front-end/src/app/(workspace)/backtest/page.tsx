@@ -2,395 +2,226 @@
 
 import { useEffect, useState } from "react"
 import { Page } from "@/components/Shell"
-import {
-  Button,
-  MetricStrip,
-  Panel,
-  PanelHead,
-  Pill,
-} from "@/components/ui"
-import { aiApi, portfolioApi, workspaceApi } from "@/lib/api"
+import { Button, MetricStrip, Panel, PanelHead, Pill, fmt } from "@/components/ui"
+import { aiApi } from "@/lib/api"
 
-interface EquityPoint {
-  date: string
-  value: number
+const todayLocal = () => {
+  const date = new Date()
+  date.setMinutes(date.getMinutes() - date.getTimezoneOffset())
+  return date.toISOString().slice(0, 10)
 }
 
-interface RiskData {
-  sharpe: number | null
-  alpha: number | null
-  beta: number | null
-  maxDrawdown: number | null
-  message?: string
+interface EquityPoint { date: string; equity: number }
+interface BacktestTrade { date?: string; side?: string; price?: number; quantity?: number }
+interface BacktestResult {
+  run_id?: string
+  status?: string
+  metrics?: Record<string, number | null | undefined>
+  equity_curve?: EquityPoint[]
+  trades?: BacktestTrade[]
 }
 
-interface PaperTrade {
-  id: number
-  ticker: string
-  action: string
-  price: number
-  quantity: number | null
-  confidence: number | null
-  status: string | null
-  pnl: number | null
-  date: string
-  created_at: string
-}
+const numberFrom = (value: string) => Number(value.replace(/[,.\s]/g, ""))
+const money = (value: unknown) => Number.isFinite(Number(value)) ? `${fmt(Number(value))} ₫` : "—"
 
 export default function Backtest() {
   const [symbol, setSymbol] = useState("FPT")
   const [strategy, setStrategy] = useState("sma_cross")
   const [startDate, setStartDate] = useState("2024-01-01")
-  const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10))
-  const [capital, setCapital] = useState("1,000,000,000")
-
+  const [endDate, setEndDate] = useState(todayLocal)
+  const [capital, setCapital] = useState("1000000000")
   const [loading, setLoading] = useState(true)
   const [running, setRunning] = useState(false)
-  const [runStatus, setRunStatus] = useState<string | null>(null)
+  const [historyRuns, setHistoryRuns] = useState<string[]>([])
+  const [selectedRun, setSelectedRun] = useState("")
+  const [result, setResult] = useState<BacktestResult | null>(null)
+  const [message, setMessage] = useState("")
 
-  const [equityCurve, setEquityCurve] = useState<EquityPoint[]>([])
-  const [risks, setRisks] = useState<RiskData | null>(null)
-  const [trades, setTrades] = useState<PaperTrade[]>([])
-  const [nav, setNav] = useState<number | null>(null)
-
-  const loadData = async () => {
+  const loadHistory = async () => {
+    setLoading(true)
     try {
-      const [perfRes, riskRes, mlFundRes] = await Promise.allSettled([
-        portfolioApi.performance(),
-        portfolioApi.risks(),
-        workspaceApi.mlFund(),
-      ])
-
-      if (perfRes.status === "fulfilled" && perfRes.value?.equityCurve) {
-        setEquityCurve(perfRes.value.equityCurve)
+      const response = await aiApi.backtestHistory()
+      const runs = Array.isArray(response?.runs) ? response.runs.map(String) : []
+      setHistoryRuns(runs)
+      if (selectedRun && !runs.includes(selectedRun)) {
+        setSelectedRun("")
+        setResult(null)
       }
-      if (riskRes.status === "fulfilled" && riskRes.value) {
-        setRisks(riskRes.value)
-      }
-      if (mlFundRes.status === "fulfilled" && mlFundRes.value) {
-        const data = mlFundRes.value
-        if (Array.isArray(data.trades)) {
-          setTrades(data.trades)
-        }
-        if (data.account?.nav) {
-          setNav(Number(data.account.nav))
-        } else if (data.mainAccount?.nav) {
-          setNav(Number(data.mainAccount.nav))
-        }
-      }
-    } catch (e) {
-      console.error("Failed to load backtest data", e)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Không tải được lịch sử backtest.")
     } finally {
       setLoading(false)
     }
   }
 
   useEffect(() => {
-    // Initial page state is already loading; fetching here must not reset it synchronously.
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- loadData updates state only after its asynchronous requests settle.
-    loadData()
+    // Load only the backtest run index; portfolio and ML Fund data are separate products.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- loadHistory updates state after its asynchronous request settles.
+    void loadHistory()
   }, [])
 
-  const handleRunBacktest = async () => {
+  const loadRun = async (runId: string) => {
+    setSelectedRun(runId)
+    setMessage("")
+    if (!runId) {
+      setResult(null)
+      return
+    }
+    setResult(null)
+    setLoading(true)
     try {
-      setRunning(true)
-      setRunStatus("Dispatching execution job...")
-      const res = await aiApi.backtest({
-        symbol: symbol.toUpperCase(),
+      const response = await aiApi.backtestResults(runId)
+      if (response?.status !== "completed") {
+        setResult(null)
+        setMessage(response?.status === "not_found" ? "Không tìm thấy kết quả của lượt chạy này." : `Lượt chạy hiện có trạng thái: ${response?.status ?? "không xác định"}.`)
+        return
+      }
+      setResult(response)
+    } catch (error) {
+      setResult(null)
+      setMessage(error instanceof Error ? error.message : "Không tải được kết quả backtest.")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const runBacktest = async () => {
+    const cleanSymbol = symbol.trim().toUpperCase()
+    const initialCapital = numberFrom(capital)
+    if (!/^[A-Z0-9.-]{1,16}$/.test(cleanSymbol)) {
+      setMessage("Nhập mã cổ phiếu gồm 1–16 ký tự chữ, số, dấu chấm hoặc gạch ngang.")
+      return
+    }
+    if (startDate >= endDate) {
+      setMessage("Ngày bắt đầu phải trước ngày kết thúc.")
+      return
+    }
+    if (!Number.isFinite(initialCapital) || initialCapital <= 0) {
+      setMessage("Vốn ban đầu phải lớn hơn 0.")
+      return
+    }
+
+    setRunning(true)
+    setResult(null)
+    setSelectedRun("")
+    setMessage("Đang chạy backtest…")
+    try {
+      const response = await aiApi.backtest({
+        symbol: cleanSymbol,
         strategy,
         startDate,
         endDate,
         params: {},
-        capital: Number(capital.replace(/,/g, "")),
+        capital: initialCapital,
       })
-      if (Array.isArray(res?.equity_curve)) {
-        setEquityCurve(res.equity_curve.map((point: { date: string; equity: number }) => ({ date: point.date, value: Number(point.equity) })))
+      if (response?.status !== "success") {
+        setMessage(response?.logs || "Backtest không hoàn tất thành công.")
+        return
       }
-      if (Array.isArray(res?.trades)) setTrades(res.trades)
-      if (res?.metrics) {
-        setRisks({
-          sharpe: Number(res.metrics.sharpe_ratio ?? 0),
-          alpha: null,
-          beta: null,
-          maxDrawdown: Number(res.metrics.max_drawdown ?? 0) * 100,
-        })
-      }
-      setRunStatus(res?.status === "success" ? `Hoàn tất ${res.metrics?.total_trades ?? 0} giao dịch` : "Backtest thất bại")
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Backtest execution timed out or queued"
-      setRunStatus(msg)
+      setResult(response)
+      setSelectedRun(String(response.run_id ?? ""))
+      setMessage(`Hoàn tất · ${response.metrics?.total_trades ?? response.trades?.length ?? 0} giao dịch`)
+      const historyResponse = await aiApi.backtestHistory().catch(() => null)
+      if (Array.isArray(historyResponse?.runs)) setHistoryRuns(historyResponse.runs.map(String))
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Không thể chạy backtest.")
     } finally {
       setRunning(false)
     }
   }
 
-  // Calculate return from equity curve
-  const initialValue = equityCurve.length > 0 ? equityCurve[0].value : 0
-  const latestValue = equityCurve.length > 0 ? equityCurve[equityCurve.length - 1].value : (nav || 0)
-  const totalReturn = initialValue > 0 ? ((latestValue - initialValue) / initialValue) * 100 : 0
-
-  // Win rate from real paper trades
-  const resolvedTrades = trades.filter((t) => t.pnl !== null)
-  const winningTrades = resolvedTrades.filter((t) => (t.pnl ?? 0) > 0)
-  const winRate = resolvedTrades.length > 0
-    ? Math.round((winningTrades.length / resolvedTrades.length) * 100)
-    : 0
-
-  // SVG Chart points calculation
-  const chartHeight = 180
-  const chartWidth = 560
-  const padding = 20
-  const values = equityCurve.map((p) => p.value)
+  const curve = (result?.equity_curve ?? []).filter(point => Number.isFinite(Number(point.equity)))
+  const trades = result?.trades ?? []
+  const metrics = result?.metrics ?? {}
+  const chartWidth = 560, chartHeight = 180, padding = 20
+  const values = curve.map(point => Number(point.equity))
   const minVal = values.length ? Math.min(...values) * 0.98 : 0
   const maxVal = values.length ? Math.max(...values) * 1.02 : 1
   const range = maxVal - minVal || 1
-
-  const pointsString = equityCurve
-    .map((p, i) => {
-      const x = padding + (i / Math.max(equityCurve.length - 1, 1)) * (chartWidth - padding * 2)
-      const y = chartHeight - padding - ((p.value - minVal) / range) * (chartHeight - padding * 2)
-      return `${x.toFixed(1)},${y.toFixed(1)}`
-    })
-    .join(" ")
+  const points = curve.map((point, index) => {
+    const x = padding + index / Math.max(curve.length - 1, 1) * (chartWidth - padding * 2)
+    const y = chartHeight - padding - ((Number(point.equity) - minVal) / range) * (chartHeight - padding * 2)
+    return `${x.toFixed(1)},${y.toFixed(1)}`
+  }).join(" ")
 
   return (
     <Page
       title="Thử nghiệm Backtest"
-      sub="Môi trường nghiên cứu và kiểm định chiến lược định lượng."
-      actions={
-        <>
-          <Button variant="secondary" onClick={loadData} disabled={loading || running}>
-            Làm mới dữ liệu
-          </Button>
-          <Button variant="primary" onClick={handleRunBacktest} disabled={running}>
-            {running ? "Đang chạy..." : "Chạy Backtest"}
-          </Button>
-        </>
-      }
+      sub="Kết quả chỉ hiển thị từ các lượt chạy của bộ máy backtest."
+      actions={<>
+        <Button variant="secondary" onClick={() => void loadHistory()} disabled={loading || running}>Làm mới</Button>
+        <Button variant="primary" onClick={() => void runBacktest()} disabled={running || loading}>{running ? "Đang chạy…" : "Chạy backtest"}</Button>
+      </>}
     >
-      {runStatus && (
-        <div className="mb-4 rounded-[8px] border border-line bg-surface p-3 text-[12px] flex items-center justify-between">
-          <span className="font-mono text-ink">{runStatus}</span>
-          <button onClick={() => setRunStatus(null)} className="text-muted hover:text-ink text-[11px]">
-            Đóng
-          </button>
-        </div>
-      )}
-
-      <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-4">
+      {message && <div role="status" className="mb-4 rounded-lg border border-line bg-surface px-4 py-3 text-sm text-secondary">{message}</div>}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">
         <Panel className="h-fit">
           <PanelHead title="Cấu hình chiến lược" />
-          <div className="space-y-3 text-[12px] p-1">
-            <div>
-              <label className="text-secondary">Danh mục / Mã CP</label>
-              <input
-                value={symbol}
-                onChange={(e) => setSymbol(e.target.value)}
-                className="mt-1 w-full h-8 border border-line rounded-[6px] px-2.5 font-mono text-ink bg-paper"
-              />
-            </div>
-            <div>
-              <label className="text-secondary">Mô hình chiến lược</label>
-              <select
-                value={strategy}
-                onChange={(e) => setStrategy(e.target.value)}
-                className="mt-1 w-full h-8 border border-line rounded-[6px] px-2 font-mono text-ink bg-paper"
-              >
+          <div className="space-y-3 p-1 text-[12px]">
+            <label className="block text-secondary">Mã cổ phiếu
+              <input value={symbol} onChange={event => setSymbol(event.target.value)} maxLength={16} className="mt-1 h-9 w-full rounded-md border border-line bg-paper px-2.5 font-mono text-ink" />
+            </label>
+            <label className="block text-secondary">Chiến lược
+              <select value={strategy} onChange={event => setStrategy(event.target.value)} className="mt-1 h-9 w-full rounded-md border border-line bg-paper px-2 font-mono text-ink">
                 <option value="sma_cross">Giao cắt trung bình động</option>
                 <option value="rsi">Đảo chiều RSI</option>
                 <option value="bollinger">Dải Bollinger</option>
-                <option value="Reinforcement Learning">Học tăng cường thích ứng</option>
               </select>
-            </div>
+            </label>
             <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="text-secondary">Ngày bắt đầu</label>
-                <input
-                  type="date"
-                  value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
-                  className="mt-1 w-full h-8 border border-line rounded-[6px] px-2 font-mono text-ink bg-paper text-[11px]"
-                />
-              </div>
-              <div>
-                <label className="text-secondary">Ngày kết thúc</label>
-                <input
-                  type="date"
-                  value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
-                  className="mt-1 w-full h-8 border border-line rounded-[6px] px-2 font-mono text-ink bg-paper text-[11px]"
-                />
-              </div>
+              <label className="text-secondary">Ngày bắt đầu<input type="date" value={startDate} onChange={event => setStartDate(event.target.value)} className="mt-1 h-9 w-full rounded-md border border-line bg-paper px-2 font-mono text-[11px] text-ink" /></label>
+              <label className="text-secondary">Ngày kết thúc<input type="date" value={endDate} onChange={event => setEndDate(event.target.value)} className="mt-1 h-9 w-full rounded-md border border-line bg-paper px-2 font-mono text-[11px] text-ink" /></label>
             </div>
-            <div>
-              <label className="text-secondary">Vốn ban đầu (VNĐ)</label>
-              <input
-                value={capital}
-                onChange={(e) => setCapital(e.target.value)}
-                className="mt-1 w-full h-8 border border-line rounded-[6px] px-2.5 font-mono text-ink bg-paper tnum"
-              />
-            </div>
-            <div>
-              <label className="text-secondary">Tần suất tái cân bằng</label>
-              <div className="mt-1 h-8 border border-line rounded-[6px] flex items-center px-2.5 tnum font-mono text-ink bg-paper">
-                Hàng tháng / Thích ứng T+2.5
-              </div>
-            </div>
-            <div>
-              <label className="text-secondary">Phí & thuế giao dịch</label>
-              <div className="mt-1 h-8 border border-line rounded-[6px] flex items-center px-2.5 tnum font-mono text-ink bg-paper">
-                0.15% mỗi vòng khớp lệnh
-              </div>
-            </div>
-            <Button
-              variant="primary"
-              className="w-full mt-2"
-              onClick={handleRunBacktest}
-              disabled={running}
-            >
-              {running ? "Đang chạy mô phỏng..." : "Bắt đầu mô phỏng"}
-            </Button>
+            <label className="block text-secondary">Vốn ban đầu (VNĐ)
+              <input inputMode="numeric" value={capital} onChange={event => setCapital(event.target.value)} className="mt-1 h-9 w-full rounded-md border border-line bg-paper px-2.5 font-mono text-ink" />
+            </label>
+            <p className="rounded-md bg-soft px-3 py-2 text-[11px] leading-relaxed text-secondary">Phí, thuế và cách khớp lệnh do bộ máy backtest trả về; màn hình không giả định các thông số chưa có trong kết quả.</p>
+            <Button variant="primary" className="w-full" onClick={() => void runBacktest()} disabled={running || loading}>{running ? "Đang mô phỏng…" : "Bắt đầu mô phỏng"}</Button>
           </div>
         </Panel>
 
-        <div className="space-y-4">
-          <MetricStrip
-            items={[
-              {
-                label: "Tổng lợi nhuận",
-                value: (
-                  <span className={totalReturn >= 0 ? "text-gain" : "text-loss"}>
-                    {totalReturn >= 0 ? `+${totalReturn.toFixed(1)}%` : `${totalReturn.toFixed(1)}%`}
-                  </span>
-                ),
-              },
-              {
-                label: "Tỷ số Sharpe",
-                value: risks?.sharpe != null ? risks.sharpe.toFixed(2) : "—",
-              },
-              {
-                label: "Sụt giảm tối đa",
-                value: (
-                  <span className="text-loss">
-                    {risks?.maxDrawdown != null ? `${risks.maxDrawdown.toFixed(1)}%` : "—"}
-                  </span>
-                ),
-              },
-              {
-                label: "Tỷ lệ thắng",
-                value: `${winRate}%`,
-              },
-            ]}
-          />
-
+        <div className="min-w-0 space-y-4">
           <Panel>
-            <PanelHead
-              title="Đường cong tài sản & Hiệu suất rủi ro"
-              sub={`Mô phỏng NAV danh mục lịch sử · ${startDate} đến ${endDate}`}
-            />
-            {equityCurve.length > 1 ? (
-              <div className="h-56 bg-paper border border-line rounded-[8px] p-2 flex flex-col justify-between">
-                <svg className="w-full h-full" viewBox={`0 0 ${chartWidth} ${chartHeight}`} preserveAspectRatio="none">
-                  <polyline
-                    fill="none"
-                    stroke="#1D9E75"
-                    strokeWidth="2.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    points={pointsString}
-                  />
-                </svg>
-                <div className="flex justify-between text-[10px] font-mono text-muted px-2">
-                  <span>{equityCurve[0].date}</span>
-                  <span>{equityCurve[equityCurve.length - 1].date}</span>
-                </div>
-              </div>
-            ) : (
-              <div className="h-56 bg-paper border border-line rounded-[8px] grid place-items-center text-[12px] text-muted font-mono">
-                {loading ? "Đang tải dữ liệu định lượng từ CSDL..." : "Chưa có lượt chạy nào. Bấm 'Bắt đầu mô phỏng' để vẽ đường cong."}
-              </div>
-            )}
-
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4 text-[13px]">
-              <div>
-                <div className="text-[11px] uppercase text-muted">Alpha</div>
-                <div className="tnum font-mono text-ink text-[15px]">
-                  {risks?.alpha != null ? `${risks.alpha > 0 ? `+${risks.alpha}%` : `${risks.alpha}%`}` : "+4.2%"}
-                </div>
-              </div>
-              <div>
-                <div className="text-[11px] uppercase text-muted">Beta</div>
-                <div className="tnum font-mono text-ink text-[15px]">
-                  {risks?.beta != null ? risks.beta.toFixed(2) : "0.92"}
-                </div>
-              </div>
-              <div>
-                <div className="text-[11px] uppercase text-muted">Lệnh mô phỏng</div>
-                <div className="tnum font-mono text-ink text-[15px]">
-                  {trades.length} bản ghi
-                </div>
-              </div>
-              <div>
-                <div className="text-[11px] uppercase text-muted">NAV Danh mục</div>
-                <div className="tnum font-mono text-ink text-[15px]">
-                  {latestValue > 0 ? (latestValue / 1e9).toFixed(3) + "B VNĐ" : "1.000B VNĐ"}
-                </div>
-              </div>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <PanelHead title="Kết quả backtest" sub={result?.run_id ? `Mã lượt chạy: ${result.run_id}` : "Chưa chọn hoặc chạy backtest."} />
+              <label className="text-xs text-secondary">Lịch sử
+                <select value={selectedRun} onChange={event => void loadRun(event.target.value)} disabled={loading || running} className="ml-2 max-w-[280px] rounded-md border border-line bg-paper px-2 py-1.5 font-mono text-[11px] text-ink">
+                  <option value="">Lượt hiện tại</option>
+                  {historyRuns.map(run => <option key={run} value={run}>{run}</option>)}
+                </select>
+              </label>
             </div>
+            <MetricStrip items={[
+              { label: "CAGR", value: metrics.cagr == null ? "—" : <span className={Number(metrics.cagr) >= 0 ? "text-gain" : "text-loss"}>{(Number(metrics.cagr) * 100).toLocaleString("vi-VN", { maximumFractionDigits: 2 })}%</span> },
+              { label: "Sharpe", value: metrics.sharpe_ratio == null ? "—" : Number(metrics.sharpe_ratio).toFixed(2) },
+              { label: "Sụt giảm tối đa", value: metrics.max_drawdown == null ? "—" : `${(Number(metrics.max_drawdown) * 100).toLocaleString("vi-VN", { maximumFractionDigits: 2 })}%` },
+              { label: "Giao dịch", value: metrics.total_trades ?? trades.length },
+            ]} />
+            {curve.length > 1 ? <div className="mt-4 h-56 rounded-lg border border-line bg-paper p-2">
+              <svg className="h-[calc(100%-24px)] w-full" viewBox={`0 0 ${chartWidth} ${chartHeight}`} preserveAspectRatio="none"><polyline fill="none" stroke="var(--color-gain)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" points={points} /></svg>
+              <div className="flex justify-between px-2 text-[10px] font-mono text-muted"><span>{curve[0].date}</span><span>{curve[curve.length - 1].date}</span></div>
+            </div> : <div className="mt-4 grid h-48 place-items-center rounded-lg border border-dashed border-line bg-paper px-6 text-center text-sm text-muted">{loading ? "Đang tải kết quả…" : "Chạy backtest hoặc chọn một lượt đã lưu để xem đường tài sản."}</div>}
+            <dl className="mt-4 grid grid-cols-2 gap-4 text-sm md:grid-cols-3">
+              <div><dt className="text-xs text-muted">NAV cuối kỳ</dt><dd className="mt-1 font-mono text-ink">{metrics.ending_equity == null ? "—" : money(metrics.ending_equity)}</dd></div>
+              <div><dt className="text-xs text-muted">Chi phí giao dịch</dt><dd className="mt-1 font-mono text-ink">{metrics.total_costs == null ? "—" : money(metrics.total_costs)}</dd></div>
+              <div><dt className="text-xs text-muted">Lượt chạy</dt><dd className="mt-1 font-mono text-ink">{result?.status ?? "—"}</dd></div>
+            </dl>
           </Panel>
 
           <Panel>
-            <PanelHead
-              title="Nhật ký khớp lệnh & Giao dịch thử"
-              sub={`Dữ liệu khớp lệnh mô phỏng từ CSDL (${trades.length} lệnh)`}
-            />
+            <PanelHead title="Giao dịch mô phỏng" sub={`${trades.length} giao dịch trong lượt chạy đang chọn`} />
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-[12px] font-mono">
-                <thead className="border-b border-line text-muted">
-                  <tr>
-                    <th className="py-2 px-3">Ngày</th>
-                    <th className="py-2 px-3">Mã CP</th>
-                    <th className="py-2 px-3">Chiều</th>
-                    <th className="py-2 px-3 text-right">Giá đặt</th>
-                    <th className="py-2 px-3 text-right">Khối lượng</th>
-                    <th className="py-2 px-3 text-center">Độ tin cậy</th>
-                    <th className="py-2 px-3 text-center">Trạng thái</th>
-                    <th className="py-2 px-3 text-right">Lãi/Lỗ</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-line">
-                  {trades.slice(0, 8).map((t) => (
-                    <tr key={t.id} className="hover:bg-surface/50">
-                      <td className="py-2 px-3 text-muted text-[11px]">
-                        {new Date(t.date || t.created_at).toLocaleDateString("vi-VN")}
-                      </td>
-                      <td className="py-2 px-3 font-semibold text-ink">{t.ticker}</td>
-                      <td className="py-2 px-3">
-                        <Pill tone={t.action === "BUY" ? "gain" : "loss"}>{t.action}</Pill>
-                      </td>
-                      <td className="py-2 px-3 text-right text-ink">
-                        {t.price?.toLocaleString()}đ
-                      </td>
-                      <td className="py-2 px-3 text-right text-muted">
-                        {t.quantity?.toLocaleString() || "—"}
-                      </td>
-                      <td className="py-2 px-3 text-center text-teal">
-                        {t.confidence != null ? `${(t.confidence * 100).toFixed(0)}%` : "—"}
-                      </td>
-                      <td className="py-2 px-3 text-right">
-                        <span className="text-[11px] text-muted">{t.status || "OPEN"}</span>
-                      </td>
-                    </tr>
-                  ))}
-                  {trades.length === 0 && (
-                    <tr>
-                      <td colSpan={7} className="py-8 text-center text-muted">
-                        No paper trade records logged in database.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
+              <table className="w-full min-w-[560px] text-left text-[12px] font-mono">
+                <thead className="border-b border-line text-muted"><tr><th className="px-3 py-2">Ngày</th><th className="px-3 py-2">Chiều</th><th className="px-3 py-2 text-right">Giá</th><th className="px-3 py-2 text-right">Khối lượng</th></tr></thead>
+                <tbody className="divide-y divide-line">{trades.slice(0, 200).map((trade, index) => <tr key={`${trade.date}-${index}`}>
+                  <td className="px-3 py-2 text-secondary">{trade.date ? new Date(trade.date).toLocaleDateString("vi-VN") : "—"}</td>
+                  <td className="px-3 py-2"><Pill tone={String(trade.side).toLowerCase() === "buy" ? "gain" : "loss"}>{trade.side ?? "—"}</Pill></td>
+                  <td className="px-3 py-2 text-right">{trade.price == null ? "—" : money(trade.price)}</td>
+                  <td className="px-3 py-2 text-right">{trade.quantity == null ? "—" : Number(trade.quantity).toLocaleString("vi-VN")}</td>
+                </tr>)}
+                {!trades.length && <tr><td colSpan={4} className="py-8 text-center text-sm text-muted">Chưa có giao dịch trong kết quả này.</td></tr>}</tbody>
               </table>
+              {trades.length > 200 && <p className="pt-3 text-center text-xs text-muted">Đang hiển thị 200 trên {trades.length} giao dịch.</p>}
             </div>
           </Panel>
         </div>
