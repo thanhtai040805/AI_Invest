@@ -196,7 +196,18 @@ class ReinforcementLearningAgent(BaseAgent):
                 import os
                 account_id = os.getenv("MULTI_AGENT_ACCOUNT_ID", "940b0c70-2010-42f3-b947-797e6419b794")
                 rows_trades = self.storage.fetch_all(
-                    "SELECT ticker, pnl, confidence FROM paper_trades WHERE account_id = %s AND pnl IS NOT NULL AND status = 'CLOSED' AND resolved_at < %s ORDER BY resolved_at DESC LIMIT 50",
+                    """SELECT p.ticker, (p.resolve_price-p.price)/p.price*100, p.confidence
+                    FROM paper_trades p
+                    WHERE p.account_id=%s AND p.status='CLOSED' AND p.resolved_at<%s
+                      AND p.price>0 AND p.resolve_price>0 AND p.quantity>0
+                      AND EXISTS (SELECT 1 FROM orders o JOIN order_executions e ON e.order_id::text=o.id
+                        WHERE o.user_id=p.account_id AND o.symbol=p.ticker AND e.action='BUY'
+                          AND abs(e.executed_price-p.price)<0.01 AND e.executed_at<=p.resolved_at AT TIME ZONE 'Asia/Ho_Chi_Minh')
+                      AND EXISTS (SELECT 1 FROM orders o JOIN order_executions e ON e.order_id::text=o.id
+                        WHERE o.user_id=p.account_id AND o.symbol=p.ticker AND e.action IN ('SELL','SELL_MP')
+                          AND abs(e.executed_price-p.resolve_price)<0.01 AND e.shares>=p.quantity
+                          AND (e.executed_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date=p.resolved_at::date)
+                    ORDER BY p.resolved_at DESC LIMIT 50""",
                     (account_id, target_date),
                 )
                 if rows_trades:

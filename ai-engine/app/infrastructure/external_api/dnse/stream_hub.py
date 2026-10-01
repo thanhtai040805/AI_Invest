@@ -560,6 +560,15 @@ class DnseStreamHub:
         open_price = to_vnd_price(getattr(data, "openPrice", 0))
         prev_close = float(metadata.get("refPrice", 0) or 0)
         prev_close = prev_close if prev_close > 0 else None
+        ceiling = float(metadata.get("ceiling", 0) or 0)
+        floor = float(metadata.get("floor", 0) or 0)
+        reference_status = "available" if prev_close else "missing"
+        # A stale security definition must not turn a valid trade into a false
+        # daily return (e.g. SSI 20,150 against a legacy reference of 36,050).
+        if (floor > 0 and price < floor) or (ceiling > 0 and price > ceiling):
+            prev_close = None
+            ceiling = floor = 0.0
+            reference_status = "inconsistent"
         change = price - prev_close if prev_close else None
         pct = change / prev_close * 100 if prev_close else None
         return {
@@ -581,8 +590,9 @@ class DnseStreamHub:
             "high": to_vnd_price(getattr(data, "highestPrice", price) or price),
             "low": to_vnd_price(getattr(data, "lowestPrice", price) or price),
             "prevClose": prev_close,
-            "ceiling": metadata.get("ceiling", 0),
-            "floor": metadata.get("floor", 0),
+            "ceiling": ceiling,
+            "floor": floor,
+            "referenceStatus": reference_status,
             "trend": "unknown" if pct is None else "up" if pct > 0 else "down" if pct < 0 else "steady",
             "lastUpdate": getattr(data, "time", None) or datetime.now().astimezone().isoformat(),
             "receivedAt": getattr(data, "receivedAt", None),

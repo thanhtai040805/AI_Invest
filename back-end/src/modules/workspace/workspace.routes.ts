@@ -2,6 +2,7 @@ import { Router, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import prisma from '../../config/database';
 import { authMiddleware, optionalAuth, AuthRequest } from '../../middleware/auth';
+import { getSnapshot } from '../../services/portfolio.service';
 
 const router = Router();
 const db = prisma as any;
@@ -28,6 +29,10 @@ router.get('/overview', (_req, res, next) => send(res, next, async () => {
   ]);
   return { regime, factors, risks: [], news };
 }));
+
+router.get('/agent/portfolio', optionalAuth, (_req, res, next) =>
+  send(res, next, () => getSnapshot(multiAgentAccountId)),
+);
 
 router.get('/agent', optionalAuth, (req: AuthRequest, res, next) => send(res, next, async () => {
   const { date } = dateQuery.parse(req.query);
@@ -68,7 +73,7 @@ router.get('/agent', optionalAuth, (req: AuthRequest, res, next) => send(res, ne
       FROM cio_resolutions c LEFT JOIN log_investment_thesis t ON t.thesis_id::text = c.thesis_id::text
       WHERE ($1::text IS NULL OR COALESCE((c.verdict_payload->>'target_date')::date, t.analysis_date, (c.created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date) = $1::date)
       ORDER BY c.created_at DESC LIMIT 200;`, date || null),
-    db.$queryRawUnsafe('SELECT * FROM portfolio_account WHERE account_id = $1 LIMIT 1;', multiAgentAccountId).catch(() => []),
+    db.$queryRawUnsafe('SELECT * FROM portfolio_account WHERE account_id = $1 LIMIT 1;', multiAgentAccountId),
     db.$queryRawUnsafe(`SELECT DISTINCT to_char(analysis_date, 'YYYY-MM-DD') AS date FROM (
       SELECT date AS analysis_date FROM log_market_surveillance
       UNION ALL SELECT date AS analysis_date FROM log_universe_discovery
@@ -88,9 +93,13 @@ router.get('/agent', optionalAuth, (req: AuthRequest, res, next) => send(res, ne
       UNION ALL SELECT date AS analysis_date FROM portfolio_decisions
     ) records WHERE analysis_date IS NOT NULL ORDER BY date DESC`),
     db.$queryRawUnsafe("SELECT * FROM portfolio_decisions WHERE ($1::text IS NULL OR date = $1::date) ORDER BY created_at DESC, decision_id DESC LIMIT 200", date || null),
-    db.$queryRawUnsafe("SELECT ticker, current_pnl_pct, distance_to_stop_loss_pct, thesis_health_status, last_updated FROM position_health_ticks ORDER BY ticker"),
+    db.$queryRawUnsafe(`SELECT h.* FROM position_health_ticks h JOIN positions p ON p.symbol=h.ticker
+      WHERE p.user_id=$1 AND p.quantity>0 ORDER BY h.ticker`, multiAgentAccountId),
   ]);
-  return { logs, theses, counterTheses, resolutions, decisions, positionHealth, dates: dateRows.map((row: any) => row.date), risks: [], account: mainAccount[0] || null, mode: 'SHADOW' };
+  // Legacy account/health fields are monitoring snapshots. Current valuation is
+  // served separately so minute refreshes never reload the entire audit log.
+  return { logs, theses, counterTheses, resolutions, decisions, positionHealth,
+    dates: dateRows.map((row: any) => row.date), risks: [], account: mainAccount[0] || null, mode: 'SHADOW' };
 }));
 
 router.get('/ml-fund', optionalAuth, (req: AuthRequest, res, next) => send(res, next, async () => {

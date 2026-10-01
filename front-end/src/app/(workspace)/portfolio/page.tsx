@@ -3,6 +3,7 @@
 import { Page } from "@/components/Shell"
 import { Link } from "@/lib/router"
 import { portfolioApi } from "@/lib/api"
+import { usePortfolio, type PortfolioSnapshot } from "@/lib/use-portfolio"
 import { useResource } from "@/lib/api/use-resource"
 import { DataState } from "@/components/data-state"
 import { Button, MetricStrip, Panel, PanelHead, PercentChange, fmt } from "@/components/ui"
@@ -19,61 +20,68 @@ function EquityCurve({ points }: { points?: { date: string; value: number }[] })
   )
 }
 
-type PositionRow = { symbol: string; quantity: number | null; entry: number | null; current: number | null; marketValue: number | null; weight: number | null; pnl: number | null; pnlPercent: number | null }
+type PositionRow = { symbol: string; quantity: number | null; entry: number | null; current: number | null; marketValue: number | null; weight: number | null; pnl: number | null; pnlPercent: number | null; priceAsOf: string | null; stale: boolean }
 const n = (value: unknown): number | null => value === null || value === undefined || value === "" || !Number.isFinite(Number(value)) ? null : Number(value)
 const displayNumber = (value: number | null) => value === null ? "—" : fmt(value)
 const displayPercent = (value: number | null) => value === null ? "—" : `${value.toLocaleString("vi-VN", { maximumFractionDigits: 2 })}%`
-const list = (value: unknown): Record<string, unknown>[] => Array.isArray(value) ? value : Array.isArray((value as { data?: unknown[] })?.data) ? (value as { data: Record<string, unknown>[] }).data : []
 
 export default function Portfolio() {
-  const resource = useResource(() => Promise.all([portfolioApi.summary(), portfolioApi.positions(), portfolioApi.performance(), portfolioApi.risks(), portfolioApi.orders()]), [])
-  const [summaryRaw, positionsRaw, perfRaw, risksRaw, ordersRaw] = resource.data ?? []
-  const summary = (summaryRaw?.data ?? summaryRaw ?? {}) as Record<string, unknown>
-  const positions: PositionRow[] = list(positionsRaw).map(row => ({ symbol: String(row.symbol ?? row.ticker ?? "—"), quantity: n(row.quantity), entry: n(row.avgPrice ?? row.entry), current: n(row.currentPrice ?? row.current), marketValue: n(row.marketValue), weight: n(row.weight), pnl: n(row.pnl), pnlPercent: n(row.pnlPercent) }))
-  const summaryRisk = (risksRaw?.data ?? risksRaw ?? {}) as Record<string, unknown>
+  const resource = useResource<PortfolioSnapshot>(() => portfolioApi.snapshot(), [])
+  const snapshot = usePortfolio(resource.data, resource.reload)
+  const summary = snapshot?.summary
+  const positions: PositionRow[] = (snapshot?.positions ?? []).map(row => ({ symbol: row.symbol, quantity: row.quantity, entry: row.costBasis !== null && row.quantity > 0 ? row.costBasis / row.quantity : null, current: row.currentPrice, marketValue: row.marketValue, weight: row.weight, pnl: row.pnl, pnlPercent: row.pnlPercent, priceAsOf: row.priceAsOf, stale: row.stale }))
+  const summaryRisk = snapshot?.risks
   const riskMetrics = [
-    ["Hệ số Sharpe", n(summaryRisk.sharpe)],
-    ["Alpha", n(summaryRisk.alpha)],
-    ["Beta", n(summaryRisk.beta)],
-    ["Sụt giảm tối đa", n(summaryRisk.maxDrawdown)],
+    ["Hệ số Sharpe", n(summaryRisk?.sharpe)],
+    ["Alpha", n(summaryRisk?.alpha)],
+    ["Beta", n(summaryRisk?.beta)],
+    ["Sụt giảm tối đa", n(summaryRisk?.maxDrawdown)],
   ] as const
-  const todayReturn = n(summary.todayReturn ?? summary.dayChangePct)
-  const totalReturn = Number(summary.totalCost) > 0 ? n(summary.pnlPercent ?? summary.totalProfitPercent ?? summary.totalReturnPct ?? summary.returnPct) : null
-  const liveOrders = list(ordersRaw)
-  if (resource.loading || resource.error || !resource.data) return <Page title="Danh mục"><DataState loading={resource.loading} error={resource.error} empty={!resource.loading && !resource.data} retry={() => void resource.reload()}><></></DataState></Page>
+  const todayReturn = n(summary?.dailyPnLPercent)
+  const totalReturn = n(summary?.totalReturnPct)
+  const liveOrders = snapshot?.orders ?? []
+  if ((!resource.data && resource.loading) || (!resource.data && resource.error) || !snapshot || !summary) return <Page title="Danh mục"><DataState loading={resource.loading} error={resource.error} empty={!resource.loading && !resource.data} retry={() => void resource.reload()}><></></DataState></Page>
   return (
     <Page
       title="Danh mục đầu tư"
-      sub="Độ chịu tải rủi ro · Phân bổ tài sản · Quản trị sụt giảm vốn"
-      actions={<Link to="/trade"><Button variant="primary">Đặt lệnh</Button></Link>}
+      sub={`Tài khoản ${summary.accountId} · Giá cập nhật theo thị trường`}
+      actions={<div className="flex gap-2"><Button onClick={() => void resource.reload()}>Làm mới</Button><Link to="/trade"><Button variant="primary">Đặt lệnh</Button></Link></div>}
     >
       <MetricStrip items={[
-        { label: "NAV", value: displayNumber(n(summary.nav ?? summary.totalValue)), sub: <span className="text-muted">Giá trị tài sản ròng</span> },
+        { label: "NAV", value: displayNumber(n(summary.nav)), sub: <span className="text-muted">Giá trị tài sản ròng</span> },
         { label: "Hôm nay", value: todayReturn === null ? "—" : <PercentChange value={todayReturn} arrow={false} /> },
-        { label: "Lợi nhuận", value: totalReturn === null ? "—" : <PercentChange value={totalReturn} arrow={false} /> },
-        { label: "Tiền mặt", value: displayNumber(n(summary.cash ?? summary.cashBalance)) },
+        { label: "Lợi nhuận tài khoản", value: totalReturn === null ? "—" : <PercentChange value={totalReturn} arrow={false} /> },
+        { label: "Tiền mặt", value: displayNumber(n(summary.cash)) },
       ]} />
 
+      <MetricStrip items={[
+        { label: "Lãi/lỗ đã chốt", value: displayNumber(summary.realizedPnl), sub: "Sau phí và thuế" },
+        { label: "Lãi/lỗ chưa chốt", value: displayNumber(summary.unrealizedPnl), sub: "Giá vốn gồm phí mua" },
+        { label: "Tổng lãi/lỗ", value: displayNumber(summary.totalPnl), sub: "Đã chốt + chưa chốt" },
+      ]} />
+      {!summary.ledgerComplete && <p role="status" className="mt-3 text-sm text-warning">Sổ khớp lệnh chưa đối soát đủ với vị thế. Lãi/lỗ sau phí chưa xác định.</p>}
+      {!!summary.stalePrices.length && <p role="status" className="mt-3 text-sm text-muted">Giá gần nhất hoặc giá đóng cửa: {summary.stalePrices.join(", ")}. Xem thời điểm giá từng mã.</p>}
+      {resource.error && <p role="status" className="mt-3 text-sm text-warning">Chưa làm mới được trạng thái tài khoản. Đang hiển thị dữ liệu lần tải gần nhất.</p>}
       <div className="grid grid-cols-1 lg:grid-cols-[1.5fr_1fr] gap-4 mt-4">
         <Panel>
-          <PanelHead title="Lịch sử NAV danh mục" sub="API hiện chỉ có ảnh chụp NAV gần nhất; chưa có chuỗi lịch sử để vẽ." />
-          <EquityCurve points={(perfRaw as { equityCurve?: { date: string; value: number }[] } | null)?.equityCurve} />
+          <PanelHead title="Lịch sử NAV danh mục" sub={`NAV cuối ngày · ${snapshot.performance.equityCurve.length} điểm · cập nhật đến ${snapshot.performance.asOf ?? "chưa có dữ liệu"}`} />
+          <EquityCurve points={snapshot.performance.equityCurve} />
         </Panel>
         <Panel>
           <PanelHead title="Chỉ số rủi ro" sub="Tính từ lịch sử NAV khi có đủ dữ liệu" />
           <div className="grid grid-cols-2 gap-4">
             {riskMetrics.map(([label, value]) => <div key={label}><div className="text-[11px] text-muted">{label}</div><div className="mt-1 font-mono text-[15px] text-ink">{value === null ? "—" : label === "Sụt giảm tối đa" || label === "Alpha" ? `${value}%` : value.toFixed(2)}</div></div>)}
           </div>
-          {riskMetrics.every(([, value]) => value === null) && <p className="mt-4 text-[12px] text-muted">Chưa đủ lịch sử NAV ngày để tính các chỉ số rủi ro.</p>}
+          <p className="mt-4 text-[12px] text-muted">{summaryRisk?.message}</p>
         </Panel>
       </div>
 
       <Panel className="mt-4" flush>
-        <div className="p-5 pb-3"><PanelHead title="Vị thế nắm giữ" sub={`${positions.length} mã · Chỉ hiển thị trường API đang cung cấp`} /></div>
+        <div className="p-5 pb-3"><PanelHead title="Vị thế nắm giữ" sub={`${positions.length} mã · Lãi/lỗ sau phí mua; chưa trừ phí bán dự kiến`} /></div>
         <div className="overflow-x-auto">
           <table className="w-full text-[13px] min-w-[900px]">
             <thead><tr className="text-[11px] uppercase tracking-wide text-muted border-y border-line">
-              {["Mã CP", "Số lượng", "Giá vốn", "Thị giá", "Giá trị thị trường", "Tỷ trọng NAV", "Lãi/Lỗ (₫)", "Lãi/Lỗ (%)"].map((h, i) => (
+              {["Mã CP", "Số lượng", "Giá vốn gồm phí", "Thị giá", "Giá trị thị trường", "Tỷ trọng NAV", "Lãi/Lỗ (₫)", "Lãi/Lỗ (%)"].map((h, i) => (
                 <th key={h} className={`font-medium py-2.5 ${i === 0 ? "text-left pl-5" : "text-right px-3"} ${i === 7 ? "pr-5" : ""}`}>{h}</th>
               ))}
             </tr></thead>
@@ -83,7 +91,7 @@ export default function Portfolio() {
                   <td className="py-3 pl-5"><Link to={`/stock/${p.symbol}`} className="font-mono font-medium text-ink hover:underline">{p.symbol}</Link></td>
                   <td className="text-right px-3 tnum font-mono text-secondary">{p.quantity === null ? "—" : p.quantity.toLocaleString("vi-VN")}</td>
                   <td className="text-right px-3 tnum font-mono text-secondary">{displayNumber(p.entry)}</td>
-                  <td className="text-right px-3 tnum font-mono text-ink">{displayNumber(p.current)}</td>
+                  <td className="text-right px-3 tnum font-mono text-ink">{displayNumber(p.current)}<div className="mt-1 text-[10px] text-muted">{p.priceAsOf ? new Date(p.priceAsOf).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" }) : "Thiếu giá"}{p.stale ? " · Gần nhất" : ""}</div></td>
                   <td className="text-right px-3 tnum font-mono text-ink">{displayNumber(p.marketValue)}</td>
                   <td className="text-right px-3 tnum font-mono text-ink">{displayPercent(p.weight)}</td>
                   <td className={`text-right px-3 tnum font-mono ${p.pnl === null ? "text-muted" : p.pnl >= 0 ? "text-gain" : "text-loss"}`}>{p.pnl === null ? "—" : `${p.pnl >= 0 ? "+" : ""}${fmt(p.pnl)} ₫`}</td>

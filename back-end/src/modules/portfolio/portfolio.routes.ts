@@ -6,6 +6,10 @@ import * as portfolioService from '../../services/portfolio.service';
 const router = Router();
 router.use(authMiddleware);
 
+router.get('/snapshot', async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try { res.json(await portfolioService.getSnapshot(req.userId!)); } catch (err) { next(err); }
+});
+
 const orderSchema = z.object({
   symbol: z.string().trim().regex(/^[A-Za-z0-9.-]{1,16}$/).transform((value) => value.toUpperCase()),
   side: z.enum(['BUY', 'SELL']),
