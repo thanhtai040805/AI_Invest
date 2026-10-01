@@ -27,6 +27,8 @@ docs/
 - [ALGORITHMS_AND_FINANCIAL_MODELS.md](file:///d:/AIInvest/docs/architecture/ALGORITHMS_AND_FINANCIAL_MODELS.md): Đặc tả chi tiết toán học: Beneish M-Score (M8/M5), Sloan Accruals (Le & Tran 2022), Rủi ro thanh toán sàn HOSE T+2.5 (13.51%), Quy mô vị thế Half/Quarter-Kelly theo Market Regime, Hard Laws Điều 1, 2, 4, và Chuỗi băm bất biến CIO.
 - [PROJECT_MEMORY.md](file:///d:/AIInvest/docs/architecture/PROJECT_MEMORY.md): Bộ nhớ kiến trúc hệ thống, danh mục trách nhiệm từng thư mục và các quy chuẩn chống suy đoán.
 
+- [AGENT_INVESTMENT_PRINCIPLES.md](architecture/AGENT_INVESTMENT_PRINCIPLES.md): Nguyên tắc chọn cổ phiếu, cắt lỗ và quản trị danh mục hiện có, viết bằng tiếng Việt và đối chiếu trực tiếp mã nguồn.
+
 ### Thư Viện Sơ Đồ Trực Quan (Interactive Diagrams Hub)
 Được thiết kế theo tiêu chuẩn editorial của `/diagram-design` và meta-skill `scientific-diagram-prompt-crafter`:
 - [paper-grade-algorithmic-data-flow.html](file:///d:/AIInvest/docs/diagrams/paper-grade-algorithmic-data-flow.html): Luồng biến đổi thuật toán & dữ liệu chuẩn NeurIPS/SIGMOD (Bố cục 2 pha Offline/Online, băm dòng `quote_hash` SHA-256, chiếu siêu đồ thị $M:N$, không gian vector 1024 chiều, bộ lọc ngưỡng sàn động, dồn ứ hàng đợi Queue Accumulator, điều khiển Step Motion và bảng khảo sát chi tiết Inspector Drawer).

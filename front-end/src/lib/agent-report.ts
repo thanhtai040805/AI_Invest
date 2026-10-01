@@ -73,12 +73,12 @@ export function decision(resolution?: RecordData) {
   const code = String(resolution?.final_resolution || "")
   if (["PROCEED_WITH_PENALTY", "APPROVE_CONDITIONAL"].includes(code)) {
     if (numeric(object(resolution?.verdict_payload).weight_cap) === 0)
-      return { label: "Bỏ qua / Chặn tỷ trọng", tone: "text-warning bg-warning/10", code }
+      return { label: "Không phân bổ vốn", tone: "text-warning bg-warning/10", code }
     return { label: "Phê duyệt có điều kiện", tone: "text-gain bg-gain/10", code }
   }
   if (code === "FORCE_DOWNSIZE") return { label: "Yêu cầu hạ tỷ trọng", tone: "text-loss bg-loss/10", code }
   if (["CONFIRM_BLOCK", "UPHOLD_BLOCK", "DISCRETIONARY_BLOCK"].includes(code))
-    return { label: "Bác bỏ / Veto giải ngân", tone: "text-loss bg-loss/10", code }
+    return { label: "Chưa được chấp thuận đầu tư", tone: "text-loss bg-loss/10", code }
   if (code === "APPROVE")
     return { label: "Phê duyệt toàn diện", tone: "text-gain bg-gain/10", code }
   return { label: "Chưa có quyết định", tone: "text-secondary bg-soft", code }
@@ -91,17 +91,165 @@ export function allocationDecision(action: unknown) {
   return { label, tone, code }
 }
 
-export const conditionLabels: Record<string, { label: string; desc: string; tone: string }> = {
-  APPLY_RISK_PENALTY_0_5: { label: "Hệ số phạt Kelly λ = 0.50", desc: "Giảm 50% quy mô vốn theo khuyến nghị phản biện", tone: "border-warning/30 bg-warning/5 text-warning" },
-  APPLY_RISK_PENALTY_0_25: { label: "Hệ số phạt Kelly λ = 0.25", desc: "Giảm 75% quy mô vốn", tone: "border-loss/30 bg-loss/5 text-loss" },
-  MAX_POSITION_WEIGHT_CAP_8PCT: { label: "Trần tỷ trọng 8.0% NAV", desc: "Giới hạn an toàn tối đa 8% tổng tài sản", tone: "border-mineral/30 bg-mineral/5 text-mineral" },
-  MAX_POSITION_WEIGHT_CAP_5PCT: { label: "Trần tỷ trọng 5.0% NAV", desc: "Giới hạn giải ngân tối đa 5% tổng tài sản", tone: "border-mineral/30 bg-mineral/5 text-mineral" },
-  MAX_POSITION_WEIGHT_CAP_15PCT: { label: "Trần tỷ trọng 15.0% NAV", desc: "Mức trần chuẩn danh mục", tone: "border-teal/30 bg-teal/5 text-teal" },
-  TIGHT_TRAILING_STOP_LOSS: { label: "Siết chặt Trailing Stop-Loss", desc: "Nâng mức cắt lỗ linh hoạt bảo toàn vốn", tone: "border-loss/30 bg-loss/5 text-loss" },
-  STANDARD_QUARTER_KELLY_SIZING: { label: "Định cỡ Quarter-Kelly chuẩn", desc: "Tối ưu hóa lợi nhuận theo rủi ro tiêu chuẩn", tone: "border-teal/30 bg-teal/5 text-teal" },
-  ROUTINE_MONITORING: { label: "Giám sát tự hành định kỳ", desc: "Theo dõi rủi ro và biến động qua hệ thống", tone: "border-line bg-soft text-secondary" },
-  RETURN_TO_RESEARCH_QUEUE: { label: "Trả về hàng đợi nghiên cứu", desc: "Yêu cầu bổ sung dữ liệu luận điểm", tone: "border-warning/30 bg-warning/5 text-warning" },
-  SUSPEND_PURCHASE_UNTIL_AUDITED: { label: "Đình chỉ mua đến khi kiểm toán", desc: "Tạm dừng giải ngân cho đến khi kiểm toán hoàn tất", tone: "border-loss/30 bg-loss/5 text-loss" },
+/** Translate stored research into prose without changing its financial conclusions. */
+export function investmentText(value: unknown): string {
+  return cleanText(value)
+    .replace(/\[(?:TẦNG|TIER)[^\]]*\]/gi, "")
+    .replace(/\([^)]*(?:\bCSS\b|\bF[1-6]\s*[=:]|\bscore\b)[^)]*\)/gi, "")
+    .replace(/\bBusiness Quality\s*\([\d.]+\)/gi, "chất lượng tài chính")
+    .replace(/\bCSS\s*\([\d.]+\)/g, "đánh giá tổng hợp")
+    .replace(/\bBusiness Quality\b/gi, "chất lượng tài chính")
+    .replace(/\bCSS\b/g, "đánh giá tổng hợp")
+    .replace(/\bCTS\s*[=:]?\s*\d+(?:\.\d+)?(?:\s*\/\s*100)?/gi, "kết quả thẩm định")
+    .replace(/(?:áp dụng\s+)?hệ số phạt\s*(?:Kelly)?\s*(?:lambda|λ|\\lambda)?\s*[=:]?\s*0\.50?\b/gi, "quy mô giải ngân được giảm một nửa")
+    .replace(/(?:áp dụng\s+)?hệ số phạt\s*(?:Kelly)?\s*(?:lambda|λ|\\lambda)?\s*[=:]?\s*0\.25\b/gi, "quy mô giải ngân còn một phần tư")
+    .replace(/(?:áp dụng\s+)?hệ số phạt\s*(?:Kelly)?\s*(?:lambda|λ|\\lambda)?\s*[=:]?\s*[\d.]+/gi, "quy mô giải ngân đã được điều chỉnh")
+    .replace(/\bGPM\b/g, "biên lợi nhuận gộp")
+    .replace(/\bMA(\d+)\b/g, "đường giá trung bình $1 phiên")
+    .replace(/\bVolume\b/gi, "khối lượng giao dịch")
+    .replace(/(\d+(?:\.\d+)?)\s*bps\b/gi, (_, bps: string) => `${Number(bps) / 100} điểm phần trăm`)
+    .replace(/\s*>\s*(?=\d)/g, " hơn ")
+    .replace(/Thỏa mãn 100% tiêu chuẩn an toàn vốn thể chế\.?/gi, "Lệnh đáp ứng các bước kiểm soát rủi ro được ghi nhận.")
+    .replace(/\s{2,}/g, " ")
+    .trim()
+}
+
+export function thesisDetails(thesis?: RecordData) {
+  const snapshot = object(thesis?.thesis_snapshot)
+  const body = snapshot.thesis_id && snapshot.thesis_id !== thesis?.thesis_id ? {} : object(snapshot.thesis_body)
+  const months = numeric(thesis?.timeline_months) ?? numeric(String(body.timeline || "").replace(/M$/i, ""))
+  const entry = numeric(thesis?.entry_price_estimated)
+  const target = numeric(thesis?.target_price) ?? numeric(object(body.price_target).base_case)
+  return {
+    body,
+    months: months !== null && months > 0 ? months : null,
+    entry: entry !== null && entry > 0 ? entry : null,
+    target: target !== null && target > 0 ? target : null,
+    whyStock: investmentText(body.why_this_stock ?? thesis?.why_this_stock),
+    whyNow: investmentText(body.why_now ?? thesis?.why_now),
+    catalyst: investmentText(object(body.catalyst).description ?? thesis?.catalyst_description ?? thesis?.thesis_statement),
+    risks: Array.isArray(thesis?.invalidation_conditions) ? thesis.invalidation_conditions : Array.isArray(object(body.exit_conditions).invalidation_triggers) ? object(body.exit_conditions).invalidation_triggers as unknown[] : [],
+  }
+}
+
+export const investmentHorizons = [
+  { key: "swing", label: "Lướt sóng" },
+  { key: "medium", label: "Trung hạn" },
+  { key: "long", label: "Dài hạn" },
+] as const
+
+// Display groups only; the saved timeline, target and execution policy are unchanged.
+export function horizonGroup(months: number | null) {
+  return months === null || months <= 0 ? null : months <= 1 ? "swing" : months <= 6 ? "medium" : "long"
+}
+
+export function confirmationNarratives(value: unknown) {
+  const signals = object(value)
+  const financial = String(signals.signal_1_factor || "")
+  const flow = String(signals.signal_2_surveillance || "")
+  const macro = String(signals.signal_3_macro_hmm || "")
+  const passed = (text: string) => /^PASS\b/i.test(text.trim())
+  const earnings = numeric(financial.match(/F4(?:\s+score)?\s*=\s*([\d.]+)/i)?.[1])
+  const momentum = numeric(flow.match(/F3\s+Momentum\s*=\s*([\d.]+)/i)?.[1])
+  const moneyFlow = numeric(flow.match(/F5\s+Flow\s*=\s*([\d.]+)/i)?.[1])
+  const regime = macro.match(/Regime\s*=\s*([A-Z_]+)/i)?.[1] || ""
+  const market = /BEAR|CRISIS|CONTRACTION/i.test(regime) ? "đang bất lợi" : /BULL|EXPANSION/i.test(regime) ? "đang hỗ trợ" : "đáp ứng bộ lọc thị trường"
+  return [
+    { key: "business", label: "Cơ bản doanh nghiệp", text: !financial ? "Chưa có kết luận điều kiện cơ bản trong bản ghi này." : !passed(financial) ? "Cổ phiếu chưa đáp ứng điều kiện cơ bản để tiếp tục lập luận điểm." : earnings !== null && earnings >= 60 ? "Tăng trưởng lợi nhuận đạt ngưỡng lựa chọn của hệ thống. Chất lượng doanh nghiệp và động lực tăng trưởng được giải thích trong luận điểm bên trên." : "Đánh giá tổng hợp hoặc định giá đạt điều kiện để tiếp tục nghiên cứu. Kết quả này cần đọc cùng bằng chứng doanh nghiệp trong luận điểm." },
+    { key: "macro", label: "Bối cảnh vĩ mô", text: !macro ? "Chưa có kết luận vĩ mô gắn với luận điểm này." : /IDIOSYNCRATIC_VETO/i.test(macro) ? "Thị trường đang bất lợi; cổ phiếu được tiếp tục xem xét nhờ chất lượng tài chính và động lượng riêng. Điều kiện này chưa xác nhận vĩ mô hỗ trợ." : passed(macro) ? `Bối cảnh thị trường ${market}, cho phép tiếp tục xem xét cơ hội đầu tư.` : "Bối cảnh thị trường bất lợi và chưa đáp ứng điều kiện xem xét giải ngân." },
+    { key: "technical", label: "Dòng tiền và phân tích kỹ thuật", text: !flow ? "Chưa có xác nhận về dòng tiền, xu hướng giá hoặc điểm mua kỹ thuật." : !passed(flow) ? "Dòng tiền và động lượng giá chưa đạt điều kiện theo dõi cơ hội mua." : `Đã đạt điều kiện ${momentum !== null && momentum >= 60 && moneyFlow !== null && moneyFlow >= 60 ? "về dòng tiền và xu hướng giá" : momentum !== null && momentum >= 60 ? "về xu hướng giá" : moneyFlow !== null && moneyFlow >= 60 ? "về dòng tiền" : "theo dõi dòng tiền hoặc xu hướng giá"}. Bản ghi này chưa xác nhận một điểm mua kỹ thuật cụ thể.` },
+  ]
+}
+
+export function monitoredRisks(values: unknown[]) {
+  const groups = [
+    { key: "business", label: "Câu chuyện doanh nghiệp", items: [] as string[] },
+    { key: "macro", label: "Vĩ mô", items: [] as string[] },
+    { key: "technical", label: "Phân tích kỹ thuật", items: [] as string[] },
+  ]
+  for (const value of values) {
+    const text = investmentText(value)
+    if (!text) continue
+    const normalized = text.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase().replace(/đ/g, "d")
+    const group = /lai suat|ty gia|lam phat|tin dung|vi mo|macro|cau tieu thu|suy thoai/.test(normalized) ? groups[1] : /duong gia trung binh|ma\d|khoi luong|ky thuat|gia gay|gia thung|swing|rsi|macd/.test(normalized) ? groups[2] : groups[0]
+    if (!group.items.includes(text)) group.items.push(text)
+  }
+  return groups
+}
+
+export function thesisReview(thesis?: RecordData, counter?: RecordData, resolution?: RecordData) {
+  const same = (row?: RecordData) => !!thesis?.thesis_id && row?.thesis_id === thesis.thesis_id
+  if (same(resolution)) {
+    const result = decision(resolution)
+    if (["PROCEED_WITH_PENALTY", "APPROVE_CONDITIONAL", "FORCE_DOWNSIZE", "CONFIRM_BLOCK", "UPHOLD_BLOCK", "DISCRETIONARY_BLOCK", "APPROVE"].includes(result.code))
+      return { ...result, complete: true }
+  }
+  if (same(counter)) {
+    const code = String(counter?.verdict || "")
+    if (/BLOCK|REJECT/i.test(code)) return { label: "Chưa được chấp thuận đầu tư", tone: "text-loss bg-loss/10", code, complete: true }
+    if (["PROCEED", "APPROVE", "CONDITIONAL"].includes(code))
+      return { label: "Đã thẩm định · chờ kết luận đầu tư", tone: "text-warning bg-warning/10", code, complete: false }
+  }
+  return { label: "Chờ hoàn tất thẩm định", tone: "text-secondary bg-soft", code: "", complete: false }
+}
+
+/** Risk approval must identify this allocation, never another same-ticker order. */
+export function approvedOrder(plan: RecordData | undefined, riskLogs: RecordData[]) {
+  const riskEntry = plan?.decision_id ? newest(riskLogs).find(row => object(object(row.es_97_5_inputs).proposed_order).decision_id === plan.decision_id) : undefined
+  const proposal = object(object(riskEntry?.es_97_5_inputs).proposed_order)
+  const sourceSide = String(proposal.side || "")
+  const side = String(plan?.action === "REBALANCE" ? sourceSide : plan?.action || "")
+  const expectedSide = side === "REDUCE" ? "SELL" : side
+  const conflictingSide = ["BUY", "SELL"].includes(sourceSide) && ["BUY", "SELL"].includes(expectedSide) && sourceSide !== expectedSide
+  const riskOutput = object(riskEntry?.garch_cash_trace)
+  const risk = object(riskOutput.decision)
+  const rawShares = numeric(risk.approved_shares)
+  const shares = rawShares !== null && rawShares >= 0 && Number.isInteger(rawShares) ? rawShares : null
+  const price = numeric(risk.price ?? risk.target_price)
+  const weight = numeric(risk.approved_weight_pct)
+  const idle = ["HOLD", "SKIP"].includes(side)
+  const blocked = risk.action === "BLOCK" || riskOutput.risk_status === "BLOCK" || shares === 0
+  const ready = !!riskEntry && ["PASS", "REDUCE"].includes(String(risk.action || "")) && ["BUY", "SELL", "REDUCE"].includes(side) && shares !== null && !conflictingSide
+  const result = !plan ? { label: "Chưa có quyết định", tone: "text-secondary bg-soft", code: "" }
+    : idle ? allocationDecision(side)
+    : blocked ? { label: side === "BUY" ? "Chưa mua · lệnh bị chặn" : ["SELL", "REDUCE"].includes(side) ? "Chưa bán · lệnh bị chặn" : "Không giao dịch · lệnh bị chặn", tone: "text-loss bg-loss/10", code: "BLOCK" }
+    : ready ? allocationDecision(side)
+    : { label: "Chờ quyết định cuối cùng", tone: "text-warning bg-warning/10", code: "PENDING" }
+  return {
+    ...result, riskEntry,
+    shares: idle || blocked ? 0 : ready ? shares : null,
+    price: ready && !blocked && price !== null && price > 0 ? price : null,
+    weight: ready && !blocked && weight !== null && weight >= 0 && weight <= 100 ? weight : null,
+    rationale: investmentText(ready || blocked ? risk.rationale : idle ? plan?.rationale : ""),
+    approved: idle || blocked || ready,
+  }
+}
+
+export function executionRecord(row: RecordData) {
+  const execution = logOutput("trade_execution", row)
+  const metrics = object(execution.execution_metrics)
+  const sides = [execution.action, object(execution.order).direction, execution.side, object(execution.execution_plan).side]
+    .filter((value): value is string => typeof value === "string" && ["BUY", "SELL"].includes(value))
+  const side = new Set(sides).size === 1 ? sides[0] : ""
+  const mode = String(execution.execution_mode || "")
+  // Successful shadow fills retain the execution strategy's market regime.
+  const simulated = ["SHADOW", "PAPER", "PAPER_TRADING", "NORMAL", "STRESS", "CRISIS"].includes(mode)
+  const replay = ["REPLAY", "POSTGRES_REPLAY"].includes(mode) || execution.status === "FILLED_REPLAY"
+  const status = String(execution.status || execution.execution_decision || "")
+  const quantity = numeric(metrics.executed_quantity ?? execution.shares)
+  const price = numeric(metrics.average_execution_price ?? execution.executed_price)
+  const filled = ["EXECUTED", "PARTIALLY_EXECUTED", "FILLED", "FILLED_REPLAY", "PARTIALLY_FILLED"].includes(status) && quantity !== null && quantity > 0 && Number.isInteger(quantity) && price !== null && price > 0
+  const pending = ["PENDING_SHADOW", "PENDING", "NEW", "EXECUTE"].includes(status)
+  const stopped = /BLOCK|CANCEL|SKIP|REJECT/.test(status)
+  return {
+    id: String(execution.order_id || row.id || ""),
+    side: allocationDecision(side),
+    label: filled ? status.startsWith("PARTIALLY") ? "Khớp một phần" : "Đã ghi nhận khớp" : pending ? "Đang chờ khớp" : stopped ? "Chưa thực hiện" : "Chưa xác nhận khớp",
+    shares: filled ? quantity : pending || stopped ? 0 : null,
+    price: filled ? price : null,
+    simulated,
+    replay,
+  }
 }
 
 export function logSummary(agent: string, row: RecordData): string {
