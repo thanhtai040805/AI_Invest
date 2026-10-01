@@ -3,6 +3,8 @@ import { config } from '../../config';
 import { aiEngineService } from '../../services/aiEngine.service';
 import { cached } from '../../utils/cache';
 import prisma from '../../config/database';
+import { redisService } from '../../services/redis.service';
+import { hasMarketPrice, marketQuoteSnapshot } from '../../services/marketQuote.service';
 
 const router = Router();
 
@@ -119,14 +121,18 @@ router.get('/:symbol/ohlcv', (req, res, next) => {
   const interval = (req.query.interval as string) ?? '1D';
   const start = req.query.start as string | undefined;
   const end = req.query.end as string | undefined;
-  const cacheKey = `stock:${symbol}:ohlcv:${interval}:${start ?? ''}:${end ?? ''}`;
+  const requestedLimit = typeof req.query.limit === 'string' ? Number(req.query.limit) : NaN;
+  const limit = Number.isSafeInteger(requestedLimit) && requestedLimit > 0
+    ? Math.min(requestedLimit, 1000)
+    : 300;
+  const cacheKey = `stock:${symbol}:ohlcv:${interval}:${start ?? ''}:${end ?? ''}:${limit}`;
 
   return handle(req, res, next, () =>
     cached(cacheKey, config.cacheTtl.ohlcv, async () => {
-      const live = await aiEngineService.getOHLCV(symbol, { interval, start, end }).catch(() => null);
+      const live = await aiEngineService.getOHLCV(symbol, { interval, start, end, limit }).catch(() => null);
       const candles = Array.isArray(live) ? live : (live as { data?: unknown } | null)?.data;
       if (Array.isArray(candles) && candles.length > 0) return candles;
-      return interval.toUpperCase() === '1D' ? dbStockOHLCV(symbol, 300) : [];
+      return interval.toUpperCase() === '1D' ? dbStockOHLCV(symbol, limit) : [];
     }),
   );
 });
@@ -134,11 +140,12 @@ router.get('/:symbol/ohlcv', (req, res, next) => {
 router.get('/:symbol/quote', (req, res, next) => {
   const symbol = symbolParam(req);
   return handle(req, res, next, () =>
-    cached(`stock:${symbol}:quote`, config.cacheTtl.quote, async () => {
-      const live = await aiEngineService.getQuote(symbol).catch(() => null);
-      const livePrice = Number((live as any)?.price ?? (live as any)?.close ?? 0);
-      return Number.isFinite(livePrice) && livePrice > 0 ? live : dbStockQuote(symbol);
-    }),
+    (async () => {
+      const latest = await redisService.getCache<Record<string, unknown>>(`stock:${symbol}:quote`).catch(() => null);
+      if (hasMarketPrice(latest)) return marketQuoteSnapshot(latest);
+      const fallback = await dbStockQuote(symbol);
+      return fallback ? marketQuoteSnapshot(fallback) : null;
+    })(),
   );
 });
 

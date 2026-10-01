@@ -3,17 +3,22 @@ import { Decimal } from '@prisma/client/runtime/library';
 export interface ExecutionReceipt {
   symbol: string; side: string; shares: number | null;
   gross_value: unknown; brokerage_fee: unknown; transfer_tax: unknown; cash_delta: unknown;
+  executedDate?: string; executionId?: string;
 }
 
 export interface CostPosition { symbol: string; quantity: number; avgPrice: unknown }
 
 /** Moving average cost, with buy fees allocated proportionally on partial sales. */
-export function accountLedger(receipts: ExecutionReceipt[], positions: CostPosition[], cash: number) {
+export function accountLedger(receipts: ExecutionReceipt[], positions: CostPosition[], cash: number,
+  period?: { from?: string; to?: string }) {
   const lots = new Map<string, { quantity: number; gross: Decimal; net: Decimal }>();
   let realized = new Decimal(0), delta = new Decimal(0), fees = new Decimal(0);
+  let periodRealized = new Decimal(0);
+  const sales: { id?: string; date?: string; symbol: string; shares: number; cost: number; proceeds: number; pnl: number }[] = [];
+  const money = (value: Decimal) => Number(value.toDecimalPlaces(2));
   let complete = true;
   for (const receipt of receipts) {
-    if (!receipt.shares || !Number.isInteger(receipt.shares) || receipt.shares <= 0 ||
+    if (!receipt.shares || !Number.isInteger(receipt.shares) || receipt.shares <= 0 || (period && !receipt.executedDate) ||
         [receipt.gross_value, receipt.brokerage_fee, receipt.transfer_tax, receipt.cash_delta].some(v => v == null)) {
       complete = false;
       continue;
@@ -40,7 +45,12 @@ export function accountLedger(receipts: ExecutionReceipt[], positions: CostPosit
     } else if (lot.quantity >= receipt.shares) {
       const fraction = new Decimal(receipt.shares).div(lot.quantity);
       const soldCost = lot.net.mul(fraction);
-      realized = realized.plus(cashDelta).minus(soldCost);
+      const salePnl = cashDelta.minus(soldCost);
+      realized = realized.plus(salePnl);
+      if (!period || (receipt.executedDate && (!period.from || receipt.executedDate >= period.from) &&
+          (!period.to || receipt.executedDate <= period.to))) periodRealized = periodRealized.plus(salePnl);
+      sales.push({ id: receipt.executionId, date: receipt.executedDate, symbol: receipt.symbol,
+        shares: receipt.shares, cost: money(soldCost), proceeds: money(cashDelta), pnl: money(salePnl) });
       lot.gross = lot.gross.minus(lot.gross.mul(fraction));
       lot.net = lot.net.minus(soldCost);
       lot.quantity -= receipt.shares;
@@ -56,11 +66,12 @@ export function accountLedger(receipts: ExecutionReceipt[], positions: CostPosit
         lot.gross.minus(new Decimal(String(position.avgPrice)).mul(position.quantity)).abs().gt(position.quantity * 0.005 + 0.01)) complete = false;
   }
   if ([...lots].some(([symbol, lot]) => lot.quantity > 0 && !positions.some(p => p.symbol === symbol))) complete = false;
-  const money = (value: Decimal) => Number(value.toDecimalPlaces(2));
   const costBySymbol = Object.fromEntries([...lots].map(([symbol, lot]) => [symbol, money(lot.net)]));
   return {
     complete,
     realizedPnl: complete ? money(realized) : null,
+    periodRealizedPnl: complete ? money(periodRealized) : null,
+    sales: complete ? sales : null,
     costBySymbol: complete ? costBySymbol : {},
     openingCash: complete ? money(new Decimal(cash).minus(delta)) : null,
     fees: complete ? money(fees) : null,

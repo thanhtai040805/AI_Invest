@@ -151,7 +151,7 @@ export default function Markets() {
         <div className="p-5 pb-2">
           <PanelHead
             title="Bảng theo dõi sàn HOSE"
-            sub={`Giá tính bằng VNĐ · Khối ngoại tính bằng tỷ VNĐ · Bid/Ask chỉ hiện khi còn nhận tick · ${liveSnapshot ? `${liveSnapshot.liveSymbols ?? stockList.filter(stock => stock.source === "dnse-ws").length}/${liveSnapshot.total ?? stockList.length} mã có tick trong snapshot` : stockList.length ? `${stockList.length} mã từ snapshot gần nhất` : "Chưa có snapshot dữ liệu"}${snapshotRes?.stale && !liveSnapshot ? ` · dữ liệu cuối ngày${snapshotRes.asOf ? ` ${new Date(snapshotRes.asOf).toLocaleDateString("vi-VN")}` : ""}` : ""}`}
+            sub={`Giá tính bằng VNĐ · Khối ngoại tính bằng tỷ VNĐ · Bid/Ask hiển thị snapshot gần nhất, dữ liệu cũ được đánh dấu · ${liveSnapshot ? `${liveSnapshot.liveSymbols ?? stockList.filter(stock => stock.source === "dnse-ws").length}/${liveSnapshot.total ?? stockList.length} mã có tick trong snapshot` : stockList.length ? `${stockList.length} mã từ snapshot gần nhất` : "Chưa có snapshot dữ liệu"}${snapshotRes?.stale && !liveSnapshot ? ` · dữ liệu cuối ngày${snapshotRes.asOf ? ` ${new Date(snapshotRes.asOf).toLocaleDateString("vi-VN")}` : ""}` : ""}`}
           />
         </div>
         <div className="overflow-x-auto">
@@ -214,10 +214,10 @@ export default function Markets() {
                     {s.price > 0 ? fmt(s.price) : "—"}
                   </td>
                   <td className="px-3 text-right font-mono text-[11px]">
-                    {bid ? <><span className="text-gain">{fmt(bid.price)}</span><span className="ml-1 text-muted">{fmt(bid.volume)}</span></> : "—"}
+                    {bid ? <><span className={book?.stale ? "text-muted" : "text-gain"}>{fmt(bid.price)}</span><span className="ml-1 text-muted">{fmt(bid.volume)}</span>{book?.stale && <span className="ml-1 text-amber-700" title={book.receivedAt > 0 ? `Orderbook cũ · nhận lúc ${new Date(book.receivedAt).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })}` : "Orderbook cũ · không rõ thời điểm"}>· cũ</span>}</> : "—"}
                   </td>
                   <td className="px-3 text-right font-mono text-[11px]">
-                    {ask ? <><span className="text-loss">{fmt(ask.price)}</span><span className="ml-1 text-muted">{fmt(ask.volume)}</span></> : "—"}
+                    {ask ? <><span className={book?.stale ? "text-muted" : "text-loss"}>{fmt(ask.price)}</span><span className="ml-1 text-muted">{fmt(ask.volume)}</span>{book?.stale && <span className="ml-1 text-amber-700" title={book.receivedAt > 0 ? `Orderbook cũ · nhận lúc ${new Date(book.receivedAt).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })}` : "Orderbook cũ · không rõ thời điểm"}>· cũ</span>}</> : "—"}
                   </td>
                   <td className="px-3 text-right">
                     {s.changePct != null && Number.isFinite(s.changePct) ? <><PercentChange value={s.changePct} arrow={false} />{Math.abs(s.changePct) >= 20 && <span className="ml-1 block text-[10px] text-warning" title="Đối chiếu giá tham chiếu và sự kiện doanh nghiệp trước khi diễn giải">Biến động lớn · cần đối chiếu</span>}</> : "—"}

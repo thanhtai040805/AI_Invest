@@ -6,6 +6,7 @@ import { aiEngineService } from './aiEngine.service';
 import prisma from '../config/database';
 import { redisService } from './redis.service';
 import { bestOrderBookLevel } from '../modules/market/market.utils';
+import { hasMarketPrice, marketQuoteSnapshot } from './marketQuote.service';
 
 const MAX_SUBSCRIPTIONS_PER_SOCKET = 400;
 const STREAM_CHANGE_BATCH_MS = 50;
@@ -67,6 +68,7 @@ function dailyQuoteSnapshot(symbol: string, row: Record<string, any>) {
     volume: Number(row.volume_total ?? 0),
     change_pct: changePct,
     timestamp: row.date,
+    source: 'postgres',
     isSnapshot: true,
   };
 }
@@ -204,15 +206,12 @@ class SocketService {
         currentMeta.subscribedSymbols.add(sym);
         const subscriberCount = await subscriptionService.addSymbol(sym);
 
-        // Prefer the latest DNSE value; use PostgreSQL only for the legacy polling mode.
-        const cachedQuote = config.dnse.enabled
-          ? await redisService.getCache<Record<string, unknown>>(`stock:${sym}:quote`).catch(() => null)
-          : null;
-        if (cachedQuote) {
-          socket.emit(`stock:price:${sym}`, { ...cachedQuote, isSnapshot: true });
-        } else if (!config.dnse.enabled) {
+        const cachedQuote = await redisService.getCache<Record<string, unknown>>(`stock:${sym}:quote`).catch(() => null);
+        if (hasMarketPrice(cachedQuote)) {
+          socket.emit(`stock:price:${sym}`, marketQuoteSnapshot(cachedQuote));
+        } else {
           latestDbQuote(sym).then((row) => {
-            if (row) socket.emit(`stock:price:${sym}`, dailyQuoteSnapshot(sym, row));
+            if (row) socket.emit(`stock:price:${sym}`, marketQuoteSnapshot(dailyQuoteSnapshot(sym, row)));
           }).catch(() => {});
         }
         if (config.dnse.enabled) {

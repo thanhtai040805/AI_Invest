@@ -115,7 +115,7 @@ def upsert_today(cur, rows: list[tuple]):
             float(r[3]),  # high_adj
             float(r[4]),  # low_adj
             float(r[5]),  # close_adj
-            None,  # DNSE provides adjusted close; preserve any existing unadjusted close.
+            float(r[5]),  # Seed the raw close; keep it when adjusted history is rebuilt.
             float(r[5]),  # vwap
             int(r[6]),    # volume_continuous
             int(r[6]),    # volume_total
@@ -398,6 +398,11 @@ def run_daily_backfill(
                     print("  [DailyBackfill] [OK] VNINDEX synced into ohlcv and market_data_daily")
     except Exception as e_idx:
         print(f"  [DailyBackfill] Warning: Failed to sync VNINDEX: {e_idx}")
+
+    if target_rows > 0:
+        from app.infrastructure.data_pipelines.latest_quote_cache import refresh_latest_quote_cache
+        cached_symbols = refresh_latest_quote_cache()
+        print(f"[DailyBackfill] Refreshed {cached_symbols} persistent Redis EOD quote snapshots")
 
     print(f"[DailyBackfill] DONE: {count} symbols, {total_rows} rows in {duration:.0f}s")
     return {

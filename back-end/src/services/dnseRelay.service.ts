@@ -9,7 +9,7 @@ const CACHE_TTL: Record<string, number> = {
   snapshot: 3,
   liquidity: 5,
   heatmap: 10,
-  trade: 2,
+  trade: 0,
   tradeExtra: 2,
   foreign: 5,
   expectedPrice: 2,

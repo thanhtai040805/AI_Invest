@@ -6,6 +6,7 @@ import prisma from '../../config/database';
 import { redisService } from '../../services/redis.service';
 import { autoBackfillIfNeeded, getBackfillHistory } from '../../services/backfill.service';
 import { bestOrderBookLevel } from './market.utils';
+import { hasMarketPrice, marketQuoteSnapshot } from '../../services/marketQuote.service';
 
 const router = Router();
 
@@ -116,6 +117,30 @@ async function dbSnapshot(exchange?: string) {
     ORDER BY d.volume_total DESC NULLS LAST
   `;
   return withDbForeignFlows({ stocks: rows, asOf: rows[0]?.date ?? null, source: 'postgres', stale: true, exchange: exchangeFilter });
+}
+
+async function withRedisQuotes(snapshot: Payload): Promise<Payload> {
+  const stocks = rowsOf(snapshot, 'stocks') as Payload[];
+  if (!stocks.length) return snapshot;
+
+  const symbols = stocks.map((stock) => String(stock.symbol ?? '').toUpperCase());
+  const quotes = await redisService.getCacheMany<Record<string, unknown>>(
+    symbols.map((symbol) => `stock:${symbol}:quote`),
+  ).catch(() => []);
+  let redisQuoteCount = 0;
+  const mergedStocks = stocks.map((stock, index) => {
+    const quote = quotes[index];
+    if (!hasMarketPrice(quote)) return stock;
+    redisQuoteCount += 1;
+    return { ...stock, ...marketQuoteSnapshot(quote), symbol: symbols[index] };
+  });
+
+  return {
+    ...snapshot,
+    stocks: mergedStocks,
+    quoteSource: redisQuoteCount ? 'redis-latest' : snapshot.source ?? 'postgres',
+    redisQuoteCount,
+  };
 }
 
 async function dbIndices() {
@@ -315,7 +340,7 @@ router.get('/orderbooks', (req, res, next) => handle(req, res, next, async () =>
     if (receivedAt > 0 && receivedAt < 1_000_000_000_000) receivedAt *= 1000;
     if (!receivedAt) receivedAt = Date.parse(String(book.lastUpdate ?? '')) || 0;
     const age = now - receivedAt;
-    if (!receivedAt || age < -5_000 || age >= 15_000) return;
+    if (book.source !== 'dnse-ws' || !Array.isArray(book.bids) || !Array.isArray(book.asks)) return;
     const bid = bestOrderBookLevel(book.bids, true);
     const ask = bestOrderBookLevel(book.asks, false);
     orderbooks[symbols[index]] = {
@@ -323,8 +348,8 @@ router.get('/orderbooks', (req, res, next) => handle(req, res, next, async () =>
       symbol: symbols[index],
       bids: bid ? [bid] : [],
       asks: ask ? [ask] : [],
-      receivedAt: receivedAt || null,
-      stale: false,
+      receivedAt,
+      stale: !receivedAt || age < -5_000 || age >= 15_000,
     };
   });
   return { orderbooks, source: 'redis' };
@@ -336,7 +361,10 @@ router.get('/snapshot', (req, res, next) => {
   return handle(req, res, next, () =>
     cached(cacheKey, config.cacheTtl.snapshot, async () => {
       const live = await aiEngineService.getMarketSnapshot(exchange).catch(() => null);
-      return rowsOf(live, 'stocks').length ? withDbForeignFlows(live as Payload) : dbSnapshot(exchange);
+      const snapshot = rowsOf(live, 'stocks').length
+        ? await withDbForeignFlows(live as Payload)
+        : await dbSnapshot(exchange);
+      return withRedisQuotes(snapshot);
     }),
   );
 });

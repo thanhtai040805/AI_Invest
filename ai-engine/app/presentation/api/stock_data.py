@@ -23,8 +23,9 @@ async def get_ohlcv(
     interval: str = Query("1D"),
     start: Optional[str] = Query(None),
     end: Optional[str] = Query(None),
+    limit: int = Query(300, ge=1, le=1000),
 ):
-    return await market_data_svc.get_ohlcv(symbol.upper(), interval, start, end)
+    return await market_data_svc.get_ohlcv(symbol.upper(), interval, start, end, limit)
 
 
 @router.get("/{symbol}/quote")

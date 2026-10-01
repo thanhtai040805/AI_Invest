@@ -8,7 +8,7 @@ Data sources: PostgreSQL (historical daily) → Redis (recent 1-min) → in-memo
 import asyncio
 import math
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
@@ -41,7 +41,7 @@ def quote_with_freshness(quote: Dict) -> Dict:
     return {**quote, "stale": quote.get("stale", False) or stale}
 
 
-def _query_pg_ohlcv(symbol: str, start: Optional[str] = None, end: Optional[str] = None) -> List[Dict]:
+def _query_pg_ohlcv(symbol: str, start: Optional[str] = None, end: Optional[str] = None, limit: Optional[int] = None) -> List[Dict]:
     """Query daily OHLCV from PostgreSQL."""
     try:
         import psycopg2
@@ -55,10 +55,11 @@ def _query_pg_ohlcv(symbol: str, start: Optional[str] = None, end: Optional[str]
         if end:
             where += " AND time <= %s::timestamptz"
             params.append(end)
-        cur.execute(
-            f"SELECT time, open, high, low, close, volume FROM ohlcv WHERE {where} ORDER BY time",
-            params,
-        )
+        query = f"SELECT time, open, high, low, close, volume FROM ohlcv WHERE {where} ORDER BY time DESC"
+        if limit is not None:
+            query += " LIMIT %s"
+            params.append(limit)
+        cur.execute(query, params)
         rows = []
         for r in cur.fetchall():
             ts = r[0]
@@ -74,6 +75,7 @@ def _query_pg_ohlcv(symbol: str, start: Optional[str] = None, end: Optional[str]
                 "close": float(r[4]),
                 "volume": int(r[5]),
             })
+        rows.reverse()
         cur.close()
         conn.close()
         return rows
@@ -297,9 +299,12 @@ class MarketDataService:
 
         return {"symbol": sym, "name": sym}
 
-    async def get_ohlcv(self, symbol: str, interval: str = "1D", start: Optional[str] = None, end: Optional[str] = None) -> Dict:
-        res = await self._get_ohlcv_raw(symbol, interval, start, end)
+    async def get_ohlcv(self, symbol: str, interval: str = "1D", start: Optional[str] = None, end: Optional[str] = None, limit: Optional[int] = None) -> Dict:
+        res = await self._get_ohlcv_raw(symbol, interval, start, end, limit)
         data = res.get("data", [])
+        if limit is not None and len(data) > limit:
+            data = data[-limit:]
+            res = {**res, "data": data}
         if data:
             for c in data:
                 for field in ("open", "high", "low", "close"):
@@ -318,7 +323,7 @@ class MarketDataService:
         data = _query_pg_calculation_ohlcv(symbol, start, end)
         return {"symbol": symbol.upper(), "data": data, "source": "postgres-unadjusted"}
 
-    async def _get_ohlcv_raw(self, symbol: str, interval: str = "1D", start: Optional[str] = None, end: Optional[str] = None) -> Dict:
+    async def _get_ohlcv_raw(self, symbol: str, interval: str = "1D", start: Optional[str] = None, end: Optional[str] = None, limit: Optional[int] = None) -> Dict:
         import logging
         logger = logging.getLogger("ai_engine.market_data")
         
@@ -343,7 +348,9 @@ class MarketDataService:
         if resolution == "1":
             key = f"ohlc_closed:{sym}:1"
             try:
-                hist = get_sorted_set_range(key)
+                hist = await asyncio.to_thread(get_sorted_set_range, key)
+                if limit is not None:
+                    hist = hist[-limit:]
                 if hist:
                     logger.info(f"OHLCV {sym} {interval}: got {len(hist)} 1-min candles from Redis")
             except Exception as e:
@@ -393,40 +400,15 @@ class MarketDataService:
 
             # 2a. Get historical daily candles from PostgreSQL (faster + persistent)
             try:
-                pg_rows = _query_pg_ohlcv(sym, start, end)
+                pg_rows = await asyncio.to_thread(_query_pg_ohlcv, sym, start, end, limit)
                 if pg_rows:
                     historical_data = pg_rows
                     logger.info(f"OHLCV {sym} {interval}: got {len(historical_data)} candles from PostgreSQL")
             except Exception as e:
                 logger.warning(f"OHLCV {sym} {interval}: PostgreSQL error: {e}")
 
-            # Refresh the recent window so a missed end-of-day backfill does not
-            # leave an otherwise healthy PostgreSQL history one session behind.
-            recent_start = (today - timedelta(days=30)).isoformat()
-            refresh_start = max(start, recent_start) if start else recent_start
-            if end is None or end >= recent_start:
-                try:
-                    rest_data = await self._fetch_rest_ohlcv(
-                        sym, interval, refresh_start, end, logger
-                    )
-                    rest_rows = rest_data.get("data", []) if rest_data else []
-                    if rest_rows:
-                        merged_by_date = {
-                            str(row.get("time", row.get("date", "")))[:10]: row
-                            for row in historical_data
-                        }
-                        for row in rest_rows:
-                            candle_date = str(row.get("time", row.get("date", "")))[:10]
-                            if candle_date:
-                                merged_by_date[candle_date] = row
-                        historical_data = sorted(
-                            merged_by_date.values(),
-                            key=lambda row: str(row.get("time", row.get("date", ""))),
-                        )
-                except Exception as e:
-                    logger.warning(f"OHLCV {sym} {interval}: recent REST refresh failed: {e}")
-
-            # 2b. Fallback to REST if PostgreSQL is empty
+            # Keep DNSE REST off the daily chart hot path; PostgreSQL is the
+            # historical source and REST is only used when it has no rows.
             if not historical_data:
                 rest_data = await self._fetch_rest_ohlcv(sym, interval, start, end, logger)
                 if rest_data:
@@ -436,7 +418,7 @@ class MarketDataService:
             # 2c. Get today's candle from Redis 1-min aggregation (overrides PostgreSQL today)
             try:
                 min_key = f"ohlc_closed:{sym}:1"
-                min_hist = get_sorted_set_range(min_key)
+                min_hist = await asyncio.to_thread(get_sorted_set_range, min_key)
                 if min_hist:
                     live = self._hub.get_ohlc_live(sym)
                     if live and live.get("resolution") == "1":
@@ -487,7 +469,7 @@ class MarketDataService:
             # 2e. Final fallback: Redis closed 1D candles
             try:
                 key_1d = f"ohlc_closed:{sym}:1D"
-                hist_1d = get_sorted_set_range(key_1d)
+                hist_1d = await asyncio.to_thread(get_sorted_set_range, key_1d)
                 if hist_1d:
                     data = [{"time": pt.get("timestamp") or pt.get("lastUpdate"), "open": pt.get("open", 0), "high": pt.get("high", 0), "low": pt.get("low", 0), "close": pt.get("close", 0), "volume": pt.get("volume", 0)} for pt in hist_1d]
                     return {"symbol": sym, "interval": interval, "data": data, "source": "dnse-ws-1d"}
@@ -504,21 +486,14 @@ class MarketDataService:
 
     async def _fetch_rest_ohlcv(self, symbol: str, interval: str, start: Optional[str], end: Optional[str], logger: Any) -> Optional[Dict]:
         """Fetch OHLCV from DNSE REST API or public fallback."""
-        if self._rest.is_live:
-            try:
-                logger.info(f"OHLCV {symbol} {interval}: fetching from DNSE REST")
-                rest_ohlcv = self._rest.get_ohlcv(symbol, interval, start, end)
-                if rest_ohlcv:
-                    return {"symbol": symbol, "interval": interval, "data": rest_ohlcv, "source": "dnse-rest"}
-            except Exception as e:
-                logger.warning(f"OHLCV {symbol} {interval}: DNSE REST error: {e}")
-        else:
-            try:
-                rest_ohlcv = self._rest.get_ohlcv(symbol, interval, start, end)
-                if rest_ohlcv:
-                    return {"symbol": symbol, "interval": interval, "data": rest_ohlcv, "source": "dnse-public"}
-            except Exception as e:
-                logger.warning(f"OHLCV {symbol} {interval}: public API error: {e}")
+        source = "dnse-rest" if self._rest.is_live else "dnse-public"
+        try:
+            logger.info(f"OHLCV {symbol} {interval}: fetching from {source}")
+            rest_ohlcv = await asyncio.to_thread(self._rest.get_ohlcv, symbol, interval, start, end)
+            if rest_ohlcv:
+                return {"symbol": symbol, "interval": interval, "data": rest_ohlcv, "source": source}
+        except Exception as e:
+            logger.warning(f"OHLCV {symbol} {interval}: {source} error: {e}")
         return None
 
     def _aggregate_to_daily(self, minute_candles: List[Dict]) -> List[Dict]:

@@ -172,7 +172,7 @@ class OHLCVIngestionService:
                 d["high"],
                 d["low"],
                 d["close"],
-                None,  # DNSE provides adjusted close; preserve any existing unadjusted close.
+                d["close"],  # Seed the raw close; corporate-action adjustment may later change close_adj.
                 d["close"], # vwap (khởi tạo tạm)
                 v_cont,
                 v_atc,

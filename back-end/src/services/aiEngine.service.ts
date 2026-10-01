@@ -83,7 +83,7 @@ class AIEngineService {
     });
   }
 
-  async getOHLCV(symbol: string, params: { interval?: string; start?: string; end?: string }) {
+  async getOHLCV(symbol: string, params: { interval?: string; start?: string; end?: string; limit?: number }) {
     return this.circuitBreaker.execute(async () => {
       const { data } = await this.client.get(`/api/stock/${symbol}/ohlcv`, { params });
       return data;

@@ -65,7 +65,9 @@ export function initScheduler(): void {
                 aiEngineService.getQuote(symbol),
                 aiEngineService.getOrderBook(symbol),
               ]);
-              await redisService.setCache(`stock:${symbol}:quote`, quote, config.cacheTtl.quote);
+              if (Number((quote as any)?.price ?? 0) > 0) {
+                await redisService.setCache(`stock:${symbol}:quote`, quote, 0);
+              }
               socketService.emitStockPrice(symbol, quote);
               socketService.emitOrderBook(symbol, orderbook);
             } catch (err) {
