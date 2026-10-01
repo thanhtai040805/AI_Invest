@@ -3,6 +3,7 @@ import { z } from 'zod';
 import prisma from '../../config/database';
 import { authMiddleware, optionalAuth, AuthRequest } from '../../middleware/auth';
 import { getSnapshot } from '../../services/portfolio.service';
+import { accountLedger, ExecutionReceipt } from '../../services/portfolioAccounting';
 
 const router = Router();
 const db = prisma as any;
@@ -106,16 +107,30 @@ router.get('/ml-fund', optionalAuth, (req: AuthRequest, res, next) => send(res, 
   const { date, from, to } = z.object({ date: calendarDate, from: calendarDate, to: calendarDate })
     .refine(q => !q.from || !q.to || q.from <= q.to, 'Ngày bắt đầu phải trước ngày kết thúc').parse(req.query);
   const accountId = process.env.STANDALONE_ML_ACCOUNT_ID?.trim() || 'standalone-pure-ml-fund-account';
-  const [accounts, positions, predictions, dateRows, accuracyRows, history] = await Promise.all([
-    db.$queryRawUnsafe(`SELECT a.account_id, u.cash_balance, a.updated_at
+  const { accounts, positions, receipts, snapshots } = await db.$transaction(async (tx: any) => {
+    const [accounts, positions, receipts, snapshots] = await Promise.all([
+    tx.$queryRawUnsafe(`SELECT a.account_id, u.cash_balance, a.updated_at
       FROM portfolio_account a LEFT JOIN users u ON u.id = a.account_id WHERE a.account_id = $1`, accountId),
-    db.$queryRawUnsafe(`SELECT p.id, p.symbol, p.quantity, p.avg_price,
-        md.close_unadj * 1000 AS current_price, md.date AS price_date
+    tx.$queryRawUnsafe(`SELECT p.id, p.symbol, p.quantity, p.avg_price,
+        md.close_unadj * 1000 AS current_price, to_char(md.date,'YYYY-MM-DD') AS price_date
       FROM positions p LEFT JOIN LATERAL (
         SELECT close_unadj, date FROM market_data_daily
-        WHERE ticker = p.symbol AND date <= (now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date
+        WHERE ticker = p.symbol AND date <= (now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AND close_unadj > 0
         ORDER BY date DESC LIMIT 1
       ) md ON TRUE WHERE p.user_id = $1 AND p.quantity > 0 ORDER BY p.symbol`, accountId),
+    tx.$queryRawUnsafe(`SELECT o.symbol, CASE WHEN e.action=o.side OR
+        (e.action IN ('SELL','SELL_MP') AND o.side IN ('SELL','SELL_MP')) THEN o.side END AS side,
+        e.shares, e.gross_value, e.brokerage_fee, e.transfer_tax, e.cash_delta,
+        e.order_id::text AS "executionId", to_char(e.executed_at AT TIME ZONE 'Asia/Ho_Chi_Minh','YYYY-MM-DD') AS "executedDate"
+      FROM orders o LEFT JOIN order_executions e ON e.order_id::text=o.id
+      WHERE o.user_id=$1 AND (e.order_id IS NOT NULL OR o.status IN ('FILLED','FILLED_REPLAY','EXECUTED','PARTIALLY_EXECUTED'))
+      ORDER BY e.executed_at NULLS LAST, o.created_at, o.id`, accountId),
+    tx.$queryRawUnsafe(`SELECT to_char(date,'YYYY-MM-DD') AS date, total_nav::float, cash_balance::float
+      FROM portfolio_nav_history WHERE account_id=$1 AND date <= (now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date ORDER BY date`, accountId),
+    ]);
+    return { accounts, positions, receipts, snapshots };
+  }, { isolationLevel: 'RepeatableRead' });
+  const [predictions, dateRows, accuracyRows, history, predictionSummary] = await Promise.all([
     db.$queryRawUnsafe(`SELECT p.*, o.status AS order_status, o.price AS order_price
       FROM standalone_ml_predictions p LEFT JOIN orders o ON o.id = p.order_id
       WHERE p.account_id = $1 AND p.predict_date = COALESCE($2::date,
@@ -136,43 +151,75 @@ router.get('/ml-fund', optionalAuth, (req: AuthRequest, res, next) => send(res, 
       WHERE account_id = $1 AND accuracy_evaluated_at IS NOT NULL
         AND ($2::date IS NULL OR predict_date >= $2::date) AND ($3::date IS NULL OR predict_date <= $3::date)
       ORDER BY predict_date DESC, ticker LIMIT 200`, accountId, from || null, to || null),
+    db.$queryRawUnsafe(`SELECT to_char(predict_date,'YYYY-MM-DD') AS date,
+        to_char(max(feature_date),'YYYY-MM-DD') AS feature_date,
+        count(*)::int AS total_predictions, count(accuracy_evaluated_at)::int AS evaluated
+      FROM standalone_ml_predictions WHERE account_id=$1
+        AND ($2::date IS NULL OR predict_date >= $2::date) AND ($3::date IS NULL OR predict_date <= $3::date)
+      GROUP BY predict_date ORDER BY predict_date DESC`, accountId, from || null, to || null),
   ]);
-  const markedPositions = positions.map((p: any) => ({ ...p,
-    market_value: p.current_price == null ? null : Number(p.current_price) * p.quantity,
-  }));
   const cash = accounts[0]?.cash_balance == null ? null : Number(accounts[0].cash_balance);
+  const ledger = accountLedger(receipts as ExecutionReceipt[], positions.map((p: any) => ({
+    symbol: p.symbol, quantity: p.quantity, avgPrice: p.avg_price,
+  })), cash ?? 0, { from, to });
+  const ledgerComplete = cash !== null && ledger.complete;
+  const markedPositions = positions.map((p: any) => {
+    const market_value = p.current_price == null ? null : Number(p.current_price) * p.quantity;
+    const cost_basis = ledgerComplete ? ledger.costBySymbol[p.symbol] ?? null : null;
+    return { ...p, market_value, cost_basis,
+      unrealized_pnl: market_value !== null && cost_basis !== null ? market_value - cost_basis : null };
+  });
   const nav = cash == null || markedPositions.some((p: any) => p.market_value == null)
     ? null : cash + markedPositions.reduce((sum: number, p: any) => sum + p.market_value, 0);
-  const snapshots = await db.$queryRawUnsafe(`SELECT to_char(date, 'YYYY-MM-DD') AS date,
-      total_nav::float, cash_balance::float FROM portfolio_nav_history
-      WHERE account_id=$1 ORDER BY date`, accountId);
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Ho_Chi_Minh' }).format(new Date());
+  const marketDates = snapshots.length ? await db.$queryRawUnsafe(`SELECT DISTINCT to_char(date,'YYYY-MM-DD') AS trading_date
+      FROM market_data_daily WHERE date BETWEEN $1::date AND $2::date ORDER BY trading_date`, snapshots[0].date, to || today) : [];
+  const tradingDates = marketDates.map((row: any) => row.trading_date);
+  const snapshotByDate = new Map<string, any>(snapshots.map((s: any) => [s.date, s]));
+  const missingDates = tradingDates.filter((date: string) => !snapshotByDate.has(date) && (!from || date >= from) && (!to || date <= to));
   // The first snapshot is the opening baseline, not a performance observation.
   const selected = snapshots.slice(1).filter((s: any) => (!from || s.date >= from) && (!to || s.date <= to));
-  const firstIndex = selected.length ? snapshots.findIndex((s: any) => s.date === selected[0].date) : -1;
-  const baseline = firstIndex > 0 ? snapshots[firstIndex - 1] : null;
-  const last = selected.at(-1);
-  const executionStats = await db.$queryRawUnsafe(`SELECT count(*)::int AS fills,
-      sum(e.brokerage_fee + e.transfer_tax)::float AS fees,
-      count(*) FILTER (WHERE e.cash_delta IS NULL)::int AS missing_receipts
-    FROM order_executions e JOIN orders o ON o.id=e.order_id::text
-    WHERE o.user_id=$1 AND ($2::date IS NULL OR (e.executed_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date >= $2::date)
-      AND ($3::date IS NULL OR (e.executed_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date <= $3::date)`, accountId, from || null, to || null);
+  const baselineDate = from && snapshots.length && from > snapshots[0].date
+    ? tradingDates.filter((date: string) => date < from).at(-1) ?? null : snapshots[0]?.date ?? null;
+  const baseline = baselineDate ? snapshotByDate.get(baselineDate) : null;
+  const closingDate = to ? tradingDates.filter((date: string) => !from || date >= from).at(-1) ?? null : selected.at(-1)?.date ?? null;
+  const last = closingDate && selected.length ? snapshotByDate.get(closingDate) : null;
+  const periodReceipts = (receipts as ExecutionReceipt[]).filter(r => r.executedDate &&
+    (!from || r.executedDate >= from) && (!to || r.executedDate <= to));
+  const executionStats = {
+    fills: periodReceipts.length,
+    fees: ledgerComplete ? Number(periodReceipts.reduce((sum, r) => sum + Number(r.brokerage_fee) + Number(r.transfer_tax), 0).toFixed(2)) : null,
+    missing_receipts: (receipts as ExecutionReceipt[]).filter(r => !r.executedDate ||
+      [r.cash_delta, r.gross_value, r.brokerage_fee, r.transfer_tax].some(v => v == null)).length,
+  };
   const performance = {
-    baselineDate: baseline?.date || null, startDate: selected[0]?.date || null, endDate: last?.date || null,
+    baselineDate, closingDate, startDate: selected[0]?.date || null, endDate: last?.date || null,
     openingNav: baseline?.total_nav ?? null, closingNav: last?.total_nav ?? null,
     pnl: baseline && last ? last.total_nav - baseline.total_nav : null,
     returnPct: baseline?.total_nav > 0 && last ? (last.total_nav / baseline.total_nav - 1) * 100 : null,
-    ...executionStats[0],
-    sessions: selected.map((s: any, index: number) => {
-      const previous = index ? selected[index - 1] : baseline;
-      return { ...s, dailyPnl: previous ? s.total_nav - previous.total_nav : null,
+    ...executionStats,
+    sessions: selected.map((s: any) => {
+      const previousIndex = snapshots.findIndex((point: any) => point.date === s.date) - 1;
+      const previous = previousIndex >= 0 ? snapshots[previousIndex] : null;
+      const marketIndex = tradingDates.indexOf(s.date);
+      const previousSessionDate = marketIndex > 0 ? tradingDates[marketIndex - 1] : null;
+      return { ...s, previousNavDate: previous?.date ?? null, previousSessionDate,
+        dailyPnl: previous && previous.date === previousSessionDate ? s.total_nav - previous.total_nav : null,
         cumulativePnl: baseline ? s.total_nav - baseline.total_nav : null };
     }),
+    missingDates,
+    equityCurve: snapshots.filter((s: any) => (!from || s.date >= from) && (!to || s.date <= to))
+      .map((s: any) => ({ date: s.date, value: s.total_nav })),
   };
+  const sales = ledgerComplete ? ledger.sales!.filter(s => s.date && (!from || s.date >= from) && (!to || s.date <= to)).reverse() : null;
   return {
-    account: accounts[0] ? { ...accounts[0], cash_balance: cash, total_nav: nav } : null,
+    account: accounts[0] ? { ...accounts[0], cash_balance: cash,
+      total_nav: snapshots.at(-1)?.total_nav ?? null, estimated_nav: nav } : null,
+    latestClose: snapshots.at(-1) ?? null,
+    trading: { ledgerComplete, realizedPnl: ledgerComplete ? ledger.periodRealizedPnl : null, sales },
     accountId, positions: markedPositions, predictions,
     dates: dateRows.map((row: any) => row.date), selectedDate: date || dateRows[0]?.date || null,
+    navDates: snapshots.map((s: any) => s.date), predictionSummary,
     accuracy: accuracyRows[0], history, historyLimit: 200, performance, range: { from: from || null, to: to || null }, mode: 'PAPER',
   };
 }));

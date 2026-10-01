@@ -893,7 +893,7 @@ class DnseStreamHub:
             self._trades[sym].append(trade)
             if len(self._trades[sym]) > 100:
                 self._trades[sym] = self._trades[sym][-100:]
-        set_cache(f"stock:{sym}:quote", trade, 2)
+        set_cache(f"stock:{sym}:quote", trade, 0)
         push_to_list(f"trade:{sym}", trade, max_len=100, ttl=300)
         publish_json(f"trade:{sym}", trade)
         add_to_stream(f"dnse:stream:trade:{sym}", {

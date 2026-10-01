@@ -34,11 +34,13 @@ export interface RealtimeOrderBook {
 interface RealtimeStockOrderBook extends RealtimeOrderBook {
   symbol: string
   receivedAt: number
+  stale: boolean
 }
 
 export interface RealtimeMarketOrderBook extends RealtimeOrderBook {
   receivedAt: number
   lastUpdate?: string
+  stale: boolean
 }
 
 export interface RealtimeTrade {
@@ -169,22 +171,19 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
       let receivedAt = Number(data.receivedAt ?? 0)
       if (receivedAt > 0 && receivedAt < 1_000_000_000_000) receivedAt *= 1000
       const age = Date.now() - receivedAt
-      if (data.source !== "dnse-ws" || data.stale || !Number.isFinite(receivedAt) || !receivedAt || age < -5_000 || age >= 15_000) {
-        setOrderbook(null)
-        return
-      }
-      if (!data.isSnapshot) {
+      if (data.source !== "dnse-ws" || !Number.isFinite(receivedAt) || !Array.isArray(data.bids) || !Array.isArray(data.asks)) return
+      const stale = data.stale === true || !receivedAt || age < -5_000 || age >= 15_000
+      if (!data.isSnapshot && !stale) {
         setIsLive(true)
         lastRealtimeMessageAt.current = Date.now()
       }
-      if (data.bids || data.asks) {
-        setOrderbook({
-          symbol: sym,
-          bids: Array.isArray(data.bids) ? data.bids : [],
-          asks: Array.isArray(data.asks) ? data.asks : [],
-          receivedAt,
-        })
-      }
+      setOrderbook({
+        symbol: sym,
+        bids: data.bids,
+        asks: data.asks,
+        receivedAt,
+        stale,
+      })
     }
 
     function onTrade(data: TradeTick) {
@@ -216,7 +215,12 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
     socket.on(`stock:trades:${sym}`, onTrade)
     const freshnessTimer = window.setInterval(() => {
       if (lastRealtimeMessageAt.current && Date.now() - lastRealtimeMessageAt.current > 30_000) setIsLive(false)
-      setOrderbook((current) => current && Date.now() - current.receivedAt >= 15_000 ? null : current)
+      setOrderbook((current) => {
+        if (!current) return current
+        const age = Date.now() - current.receivedAt
+        const stale = !current.receivedAt || age < -5_000 || age >= 15_000
+        return stale === current.stale ? current : { ...current, stale }
+      })
     }, 1_000)
 
     return () => {
@@ -392,10 +396,15 @@ export function useRealtimeMarketOrderBooks(
     setOrderbooks((current) => {
       const next: Record<string, RealtimeMarketOrderBook> = {}
       for (const [symbol, book] of Object.entries(initial)) {
-        const receivedAt = Number(book.receivedAt ?? 0)
+        let receivedAt = Number(book.receivedAt ?? 0)
+        if (receivedAt > 0 && receivedAt < 1_000_000_000_000) receivedAt *= 1000
+        if (!receivedAt) receivedAt = Date.parse(String(book.lastUpdate ?? "")) || 0
         const age = Date.now() - receivedAt
-        if (book.source === "dnse-ws" && !book.stale && Number.isFinite(receivedAt) && receivedAt > 0 && age >= -5_000 && age < 15_000) {
-          next[symbol] = { ...book, receivedAt }
+        if (book.source !== "dnse-ws" || !Array.isArray(book.bids) || !Array.isArray(book.asks)) continue
+        next[symbol] = {
+          ...book,
+          receivedAt,
+          stale: book.stale === true || !receivedAt || !Number.isFinite(receivedAt) || age < -5_000 || age >= 15_000,
         }
       }
       for (const [symbol, book] of Object.entries(current)) {
@@ -412,10 +421,15 @@ export function useRealtimeMarketOrderBooks(
       if (!symbol || data.source !== "dnse-ws" || !Array.isArray(data.bids) || !Array.isArray(data.asks)) return
       let receivedAt = Number(data.receivedAt ?? 0)
       if (receivedAt > 0 && receivedAt < 1_000_000_000_000) receivedAt *= 1000
-      if (!receivedAt || !Number.isFinite(receivedAt)) receivedAt = Date.now()
+      if (!receivedAt || !Number.isFinite(receivedAt)) receivedAt = Date.parse(String(data.lastUpdate ?? "")) || 0
       const age = Date.now() - receivedAt
-      if (data.stale || age < -5_000 || age >= 15_000) return
-      pendingOrderBooks.current.set(symbol, { bids: data.bids, asks: data.asks, receivedAt, lastUpdate: data.lastUpdate })
+      pendingOrderBooks.current.set(symbol, {
+        bids: data.bids,
+        asks: data.asks,
+        receivedAt,
+        lastUpdate: data.lastUpdate,
+        stale: data.stale === true || !receivedAt || age < -5_000 || age >= 15_000,
+      })
       if (updateFrame.current !== null) return
       updateFrame.current = window.requestAnimationFrame(() => {
         updateFrame.current = null
@@ -427,20 +441,25 @@ export function useRealtimeMarketOrderBooks(
     }
     socket.on("market:orderbook", onOrderBook)
     const release = retainMarketOrderbooks()
-    const pruneTimer = window.setInterval(() => {
-      const now = Date.now()
+    const freshnessTimer = window.setInterval(() => {
       setOrderbooks((current) => {
-        const fresh = Object.fromEntries(Object.entries(current).filter(([, book]) => {
-          const age = now - book.receivedAt
-          return age >= -5_000 && age < 15_000
-        }))
-        return Object.keys(fresh).length === Object.keys(current).length ? current : fresh
+        let changed = false
+        const next = { ...current }
+        for (const [symbol, book] of Object.entries(current)) {
+          const age = Date.now() - book.receivedAt
+          const stale = !book.receivedAt || age < -5_000 || age >= 15_000
+          if (stale !== book.stale) {
+            next[symbol] = { ...book, stale }
+            changed = true
+          }
+        }
+        return changed ? next : current
       })
     }, 1_000)
     return () => {
       release()
       socket.off("market:orderbook", onOrderBook)
-      window.clearInterval(pruneTimer)
+      window.clearInterval(freshnessTimer)
       if (updateFrame.current !== null) window.cancelAnimationFrame(updateFrame.current)
       updateFrame.current = null
       pendingOrderBooks.current.clear()

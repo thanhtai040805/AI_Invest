@@ -27,14 +27,14 @@ const db = {
   $queryRawUnsafe: query,
   $transaction: async work => work(db),
 };
-require.cache[require.resolve('../dist/config/database')] = { loaded: true, exports: { __esModule: true, default: db } };
-require.cache[require.resolve('../dist/services/aiEngine.service')] = { loaded: true, exports: {
+require.cache[require.resolve('../../dist/config/database')] = { loaded: true, exports: { __esModule: true, default: db } };
+require.cache[require.resolve('../../dist/services/aiEngine.service')] = { loaded: true, exports: {
   aiEngineService: {
     getQuote: async symbol => { quoteCalls.push(symbol); return { price: 20000, source: 'dnse-ws', receivedAt: quoteStamp ?? Date.now() - quoteAge }; },
     getOrderBook: async () => ({ marketState: 'continuous_morning', lastUpdate: new Date().toISOString(), asks: [{ price: 10000, volume: 100 }] }),
   },
 } };
-const service = require('../dist/services/portfolio.service');
+const service = require('../../dist/services/portfolio.service');
 
 test('one snapshot values each symbol once, reads account history and reconciles all P&L', async () => {
   const snapshot = await service.getSnapshot(accountId);

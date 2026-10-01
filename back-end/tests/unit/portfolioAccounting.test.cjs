@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { accountLedger, portfolioRisk, quoteMark } = require('../dist/services/portfolioAccounting');
+const { accountLedger, portfolioRisk, quoteMark } = require('../../dist/services/portfolioAccounting');
 const receipt = (side, shares, gross, fee, tax = 0) => ({ symbol: 'AAA', side, shares,
   gross_value: gross, brokerage_fee: fee, transfer_tax: tax,
   cash_delta: side === 'BUY' ? -gross - fee : gross - fee - tax });
@@ -22,6 +22,23 @@ test('fully sold accounts retain realized profit and have no unrealized cost', (
   assert.equal(ledger.realizedPnl, 178800);
   assert.equal(ledger.openingCash, 10000000);
   assert.equal(ledger.costBySymbol.AAA, 0);
+});
+
+test('sales in a period retain earlier buy costs and partial sale fees', () => {
+  const receipts = [
+    { ...receipt('BUY', 100, 1000000, 10000), executedDate: '2026-09-25' },
+    { ...receipt('SELL', 40, 480000, 10000, 480), executedDate: '2026-09-28' },
+    { ...receipt('SELL', 60, 660000, 10000, 660), executedDate: '2026-09-29' },
+  ];
+  const ledger = accountLedger(receipts, [], 10000000 + receipts.reduce((sum, r) => sum + r.cash_delta, 0),
+    { from: '2026-09-29', to: '2026-09-29' });
+  assert.equal(ledger.complete, true);
+  assert.equal(ledger.periodRealizedPnl, 43340);
+  assert.equal(ledger.realizedPnl, 108860);
+  assert.equal(ledger.sales[1].cost, 606000);
+  assert.equal(ledger.sales[1].proceeds, 649340);
+  const missingTime = accountLedger([{ ...receipts[0], executedDate: undefined }, ...receipts.slice(1)], [], 10000000, {});
+  assert.equal(missingTime.periodRealizedPnl, null);
 });
 
 test('missing receipts, unmatched positions, oversales and invalid cash receipts fail closed', () => {

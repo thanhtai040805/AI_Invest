@@ -79,7 +79,11 @@ class RedisService {
   }
 
   async setCache(key: string, value: unknown, ttlSeconds: number): Promise<void> {
-    await this.getClient().set(key, JSON.stringify(value), 'EX', ttlSeconds);
+    const client = this.getClient();
+    const serialized = JSON.stringify(value);
+    // Use SET without EX for durable latest-value snapshots.
+    if (ttlSeconds > 0) await client.set(key, serialized, 'EX', ttlSeconds);
+    else await client.set(key, serialized);
   }
 
   async deleteCache(key: string): Promise<void> {

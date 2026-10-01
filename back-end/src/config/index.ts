@@ -48,7 +48,6 @@ export const config = {
     indices: 2,
     breadth: 5,
     snapshot: 3,
-    quote: 1,
     orderbook: 1,
     ohlcv: 60,
     profile: 3600,
