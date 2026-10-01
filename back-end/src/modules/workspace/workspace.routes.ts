@@ -46,10 +46,10 @@ router.get('/agent', optionalAuth, (req: AuthRequest, res, next) => send(res, ne
   ];
   // Audit timestamps are authoritative for legacy state rows with shifted timestamps.
   // Replay analysis dates remain separate from the actual write time.
-  const thesisSource = `SELECT t.*, COALESCE(l.created_at, t.created_at) AS generated_at,
+  const thesisSource = `SELECT t.*, l.thesis_text AS thesis_snapshot, COALESCE(l.created_at, t.created_at) AS generated_at,
       COALESCE(l.analysis_date, (COALESCE(l.created_at, t.created_at) AT TIME ZONE 'Asia/Ho_Chi_Minh')::date) AS analysis_date
     FROM investment_theses t LEFT JOIN LATERAL (
-      SELECT created_at, analysis_date FROM log_investment_thesis
+      SELECT created_at, analysis_date, thesis_text FROM log_investment_thesis
       WHERE thesis_id::text = t.thesis_id ORDER BY created_at DESC NULLS LAST, id DESC LIMIT 1
     ) l ON TRUE`;
   const counterSource = `SELECT v.*, COALESCE(l.created_at, v.evaluated_at) AS generated_at,

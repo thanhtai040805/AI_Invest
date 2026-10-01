@@ -69,6 +69,7 @@ function NotificationBell() {
 }
 
 function TopBar({ onSearch }: { onSearch: () => void }) {
+  const { navigate } = useRouter()
   const market = useResource(() => marketApi.indices(), [])
   const indices = Array.isArray(market.data) ? market.data : (market.data?.data ?? market.data?.indices ?? [])
   const findIndex = (symbol: string) => indices.find((item: Record<string, unknown>) => String(item.symbol ?? item.code ?? item.name).toUpperCase().includes(symbol)) ?? {}
@@ -87,20 +88,25 @@ function TopBar({ onSearch }: { onSearch: () => void }) {
     </div>
   )
   return (
-    <header className="h-14 bg-surface border-b border-line flex items-center pl-5 pr-4 shrink-0">
-      <div className="flex items-center min-w-0">
+    <header className="h-14 bg-surface border-b border-line flex items-center gap-2 px-4 md:pl-5 shrink-0">
+      <select aria-label="Điều hướng" value="" onChange={event => navigate(event.target.value)} className="h-9 min-w-0 rounded-[7px] border border-line bg-surface px-2 text-sm text-ink md:hidden">
+        <option value="" disabled>Điều hướng</option>
+        {nav.map(section => <optgroup key={section.group} label={section.group}>{section.items.map(item => <option key={item.route} value={item.route}>{item.label}</option>)}</optgroup>)}
+      </select>
+      <div className="hidden items-center min-w-0 md:flex">
         {stat("VN-Index", indexValue === null ? "—" : indexValue.toLocaleString("vi-VN", { minimumFractionDigits: 2 }), changePct === null ? <span className="text-muted">—</span> : <PercentChange value={changePct} className="text-[11px]" arrow={false} />)}
       </div>
       <div className="ml-auto flex items-center gap-2">
         <button
           onClick={onSearch}
-          className="flex items-center gap-2 h-9 pl-3 pr-2 rounded-[7px] border border-line-strong text-muted hover:border-ink/30 hover:text-secondary transition-colors text-[13px] w-56"
+          aria-label="Tìm mã cổ phiếu hoặc luận điểm"
+          className="flex items-center gap-2 h-9 px-3 md:pr-2 rounded-[7px] border border-line-strong text-muted hover:border-ink/30 hover:text-secondary transition-colors text-[13px] md:w-56"
         >
-          <span>Tìm mã CP, luận điểm…</span>
-          <kbd className="ml-auto text-[10px] font-mono bg-soft border border-line rounded px-1.5 py-0.5 text-secondary">⌘K</kbd>
+          <span className="md:hidden">Tìm kiếm</span><span className="hidden md:inline">Tìm mã CP, luận điểm…</span>
+          <kbd className="ml-auto hidden md:inline text-[10px] font-mono bg-soft border border-line rounded px-1.5 py-0.5 text-secondary">⌘K</kbd>
         </button>
         <NotificationBell />
-        <div className="flex items-center gap-1.5 h-9 px-2.5 rounded-[7px] bg-soft text-[11px] text-secondary">
+        <div className="hidden md:flex items-center gap-1.5 h-9 px-2.5 rounded-[7px] bg-soft text-[11px] text-secondary">
           <span className={`w-1.5 h-1.5 rounded-full ${market.error ? "bg-loss" : isLive ? "bg-gain animate-pulse" : "bg-muted"}`} /> {market.error ? "Mất kết nối" : isLive ? "Trực tiếp" : "Dữ liệu gần nhất"}
         </div>
         <UserMenu />
@@ -112,7 +118,7 @@ function TopBar({ onSearch }: { onSearch: () => void }) {
 function Sidebar() {
   const { path } = useRouter()
   return (
-    <aside className="w-[228px] shrink-0 bg-surface border-r border-line flex flex-col h-full">
+    <aside className="hidden md:flex w-[228px] shrink-0 bg-surface border-r border-line flex-col h-full">
       <Link to="/dashboard" className="h-14 flex items-center gap-2.5 px-5 border-b border-line shrink-0">
         <span className="w-7 h-7 rounded-[7px] bg-ink text-paper grid place-items-center font-serif text-[15px] leading-none">A</span>
         <span className="font-semibold text-[15px] tracking-tight text-ink">AIInvest</span>
