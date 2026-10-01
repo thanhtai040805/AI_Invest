@@ -22,3 +22,17 @@ def test_shadow_fill_requires_fresh_executable_depth():
         shadow_fill({**book, "bids": []}, "SELL", 100, 24000, now)
     with pytest.raises(ValueError, match="continuous trading"):
         shadow_fill({**book, "marketState": "closing_auction"}, "BUY", 100, 25100, now)
+
+
+def test_shadow_fill_interprets_naive_dnse_timestamp_as_vietnam_time():
+    now = datetime(2026, 10, 1, 3, 58, 30, tzinfo=timezone.utc)
+    book = {
+        "marketState": "continuous_morning",
+        "lastUpdate": "2026-10-01 10:58:25.495",
+        "bids": [{"price": 10150, "volume": 300}],
+        "asks": [],
+    }
+
+    assert shadow_fill(book, "SELL", 100, 10000, now) == 10150
+    with pytest.raises(ValueError, match="stale"):
+        shadow_fill(book, "SELL", 100, 10000, now + timedelta(seconds=6))
