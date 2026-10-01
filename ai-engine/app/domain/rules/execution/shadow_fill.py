@@ -1,6 +1,9 @@
 """Conservative paper fill from recent displayed order-book depth."""
 
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 
 def shadow_fill(book: dict, side: str, shares: int, limit_price: float, now: datetime | None = None) -> float:
@@ -12,7 +15,9 @@ def shadow_fill(book: dict, side: str, shares: int, limit_price: float, now: dat
     except (ValueError, TypeError):
         raise ValueError("Live order book timestamp is unavailable") from None
     if updated.tzinfo is None:
-        updated = updated.astimezone()
+        # DNSE sends naive order-book timestamps in Vietnam local time. Attach
+        # that timezone explicitly instead of inheriting the host's timezone.
+        updated = updated.replace(tzinfo=VN_TZ)
     now = now or datetime.now(timezone.utc)
     age = (now - updated).total_seconds()
     if not 0 <= age <= 10:
