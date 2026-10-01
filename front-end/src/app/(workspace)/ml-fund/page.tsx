@@ -8,6 +8,7 @@ import { displayDate, vietnamDate } from "@/lib/financial-date"
 import { workspaceApi } from "@/lib/api"
 import { useResource } from "@/lib/api/use-resource"
 import { Link } from "@/lib/router"
+import { NavLineChart } from "@/components/NavLineChart"
 
 type Numeric = number | string | null
 interface Prediction {
@@ -171,17 +172,9 @@ function SaleHistory({ data }: { data: MLFundData }) {
 
 function NavHistory({ data }: { data: MLFundData }) {
   const performance = data.performance
-  const points = (performance.equityCurve ?? performance.sessions.map(s => ({ date: s.date, value: Number(s.total_nav) }))).filter(p => Number.isFinite(p.value) && p.value > 0)
+  const points = (performance.equityCurve ?? performance.sessions.map(s => ({ date: s.date, value: numeric(s.total_nav) })))
+    .map(point => ({ ...point, value: point.value !== null && point.value > 0 ? point.value : null }))
   const missing = performance.missingDates ?? []
-  const values = points.map(p => p.value).filter(Number.isFinite)
-  const min = Math.min(...values), max = Math.max(...values), span = Math.max(max - min, 1)
-  const start = points.length ? Date.parse(points[0].date) : 0
-  const duration = points.length ? Math.max(Date.parse(points.at(-1)!.date) - start, 86400000) : 1
-  const position = (p: { date: string; value: number }) => `${(Date.parse(p.date) - start) / duration * 100},${39 - (p.value - min) / span * 38}`
-  const path = points.map((p, i) => {
-    const hasGap = i > 0 && missing.some(date => date > points[i - 1].date && date < p.date)
-    return `${i === 0 || hasGap ? "M" : "L"}${position(p)}`
-  }).join(" ")
   const sessions = [
     ...performance.sessions.map(s => ({ date: s.date, snapshot: s })),
     ...missing.map(date => ({ date, snapshot: null })),
@@ -196,11 +189,7 @@ function NavHistory({ data }: { data: MLFundData }) {
     ].map(([label, value]) => <div key={label}><div className="text-[10px] uppercase text-muted">{label}</div><div className="mt-1 font-mono text-[16px]">{value}</div></div>)}</div>
     <p className="mb-4 text-[11px] text-muted">NAV cuối phiên gồm tiền mặt và giá trị vị thế theo giá đóng cửa. Chênh lệch NAV gồm cả lãi/lỗ chưa bán, với giả định quỹ paper không nạp/rút vốn ngoài giao dịch. Thiếu mốc đầu hoặc cuối thì chưa tính biến động cả kỳ.</p>
     {missing.length > 0 && <p role="status" className="mb-4 text-[12px] text-warning">Chưa ghi nhận NAV cuối ngày: {missing.map(day).join(", ")}. Dự báo có dữ liệu không đồng nghĩa đã có NAV. Chưa tính lãi/lỗ một phiên khi thiếu NAV phiên trước.</p>}
-    {values.length >= 2 && <div className="mb-5">
-      <div className="mb-2 flex justify-between text-[11px] text-muted"><span>{money(min)}</span><span>{money(max)}</span></div>
-      <svg role="img" aria-label="Biểu đồ NAV cuối ngày" viewBox="0 0 100 40" preserveAspectRatio="none" className="h-40 w-full"><path d={path} fill="none" stroke="var(--color-teal)" strokeWidth="0.7" />{points.map(p => <circle key={p.date} cx={(Date.parse(p.date) - start) / duration * 100} cy={39 - (p.value - min) / span * 38} r="0.6" fill="var(--color-teal)"><title>{day(p.date)}: {money(p.value)}</title></circle>)}</svg>
-      <div className="mt-2 flex justify-between text-[11px] text-muted"><span>{day(points[0].date)}</span><span>{day(points.at(-1)!.date)}</span></div>
-    </div>}
+    <div className="mb-5"><NavLineChart points={points} missingDates={missing} /></div>
     {!sessions.length ? <p className="text-[13px] text-muted">Chưa có NAV cuối ngày trong kỳ này. Chọn “Toàn bộ lịch sử” để xem các phiên đã lưu.</p> : <div className="max-h-80 overflow-auto"><table className="w-full min-w-[620px] text-[12px]">
       <thead className="sticky top-0 bg-surface"><tr className="border-b border-line text-muted">{["Phiên", "NAV cuối ngày", "Tiền mặt", "Biến động NAV phiên", "Biến động từ mốc đầu"].map(t => <th key={t} className="py-2 pr-3 text-right font-medium">{t}</th>)}</tr></thead>
       <tbody>{sessions.map(({ date, snapshot: s }) => <tr key={date} className="border-b border-line"><td className="py-3 pr-3 text-right font-mono whitespace-nowrap">{day(date)}</td>{s ? <><td className="pr-3 text-right font-mono whitespace-nowrap">{money(s.total_nav)}</td><td className="pr-3 text-right font-mono whitespace-nowrap">{money(s.cash_balance)}</td><td className={`pr-3 text-right whitespace-nowrap ${pnlTone(s.dailyPnl)}`}><span className="font-mono">{money(s.dailyPnl)}</span>{s.dailyPnl == null && s.previousSessionDate && <div className="text-[10px] text-muted">Thiếu NAV {day(s.previousSessionDate)}</div>}</td><td className={`pr-3 text-right font-mono whitespace-nowrap ${pnlTone(s.cumulativePnl)}`}>{money(s.cumulativePnl)}</td></> : <td colSpan={4} className="pr-3 text-right text-warning">Chưa ghi nhận NAV cuối ngày</td>}</tr>)}</tbody>

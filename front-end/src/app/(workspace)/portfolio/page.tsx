@@ -7,18 +7,7 @@ import { usePortfolio, type PortfolioSnapshot } from "@/lib/use-portfolio"
 import { useResource } from "@/lib/api/use-resource"
 import { DataState } from "@/components/data-state"
 import { Button, MetricStrip, Panel, PanelHead, PercentChange, fmt } from "@/components/ui"
-
-function EquityCurve({ points }: { points?: { date: string; value: number }[] }) {
-  const curvePoints = Array.isArray(points) ? points.map(p => p.value).filter((value): value is number => typeof value === "number" && Number.isFinite(value)) : []
-  if (curvePoints.length < 2) return <p className="grid h-52 place-items-center text-center text-[13px] text-muted">Chưa đủ lịch sử NAV để vẽ đường tăng trưởng.</p>
-  const min = Math.min(...curvePoints), max = Math.max(...curvePoints), range = Math.max(max - min, 1)
-  const path = (d: number[]) => d.map((v, i) => `${(i / Math.max(d.length - 1, 1)) * 100},${40 - ((v - min) / range) * 38 - 1}`).join(" ")
-  return (
-    <svg viewBox="0 0 100 40" preserveAspectRatio="none" className="w-full h-52">
-      <polyline points={path(curvePoints)} fill="none" stroke="var(--color-teal)" strokeWidth="0.7" />
-    </svg>
-  )
-}
+import { NavLineChart } from "@/components/NavLineChart"
 
 type PositionRow = { symbol: string; quantity: number | null; entry: number | null; current: number | null; marketValue: number | null; weight: number | null; pnl: number | null; pnlPercent: number | null; priceAsOf: string | null; stale: boolean }
 const n = (value: unknown): number | null => value === null || value === undefined || value === "" || !Number.isFinite(Number(value)) ? null : Number(value)
@@ -65,7 +54,7 @@ export default function Portfolio() {
       <div className="grid grid-cols-1 lg:grid-cols-[1.5fr_1fr] gap-4 mt-4">
         <Panel>
           <PanelHead title="Lịch sử NAV danh mục" sub={`NAV cuối ngày · ${snapshot.performance.equityCurve.length} điểm · cập nhật đến ${snapshot.performance.asOf ?? "chưa có dữ liệu"}`} />
-          <EquityCurve points={snapshot.performance.equityCurve} />
+          <NavLineChart points={snapshot.performance.equityCurve} />
         </Panel>
         <Panel>
           <PanelHead title="Chỉ số rủi ro" sub="Tính từ lịch sử NAV khi có đủ dữ liệu" />
