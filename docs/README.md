@@ -28,6 +28,7 @@ docs/
 - [PROJECT_MEMORY.md](file:///d:/AIInvest/docs/architecture/PROJECT_MEMORY.md): Bộ nhớ kiến trúc hệ thống, danh mục trách nhiệm từng thư mục và các quy chuẩn chống suy đoán.
 
 - [AGENT_INVESTMENT_PRINCIPLES.md](architecture/AGENT_INVESTMENT_PRINCIPLES.md): Nguyên tắc chọn cổ phiếu, cắt lỗ và quản trị danh mục hiện có, viết bằng tiếng Việt và đối chiếu trực tiếp mã nguồn.
+- [SHORT_HORIZON_PROFIT_RESEARCH.md](architecture/SHORT_HORIZON_PROFIT_RESEARCH.md): Challenger học lợi nhuận ròng ngắn hạn, protocol train/calibration, mô phỏng danh mục và kết quả nghiên cứu ngày 02/10/2026.
 
 ### Thư Viện Sơ Đồ Trực Quan (Interactive Diagrams Hub)
 Được thiết kế theo tiêu chuẩn editorial của `/diagram-design` và meta-skill `scientific-diagram-prompt-crafter`:
