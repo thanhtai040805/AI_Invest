@@ -146,6 +146,90 @@ function Metric({ label, value, note }: { label: string; value: string; note?: s
   )
 }
 
+function CatalystSection({ thesis, report }: { thesis: RecordData; report: ReturnType<typeof thesisDetails> }) {
+  const catalyst = object(report.body.catalyst)
+  const catalystType = String(catalyst.primary_type ?? thesis.catalyst_type ?? "")
+  const priceTarget = object(report.body.price_target)
+  const validation = object(object(thesis.thesis_snapshot).input_validation)
+  const signals = object(validation.independent_signals)
+  const signal1 = String(signals.signal_1_factor ?? "")
+  const signal2 = String(signals.signal_2_surveillance ?? "")
+  const f4 = numeric(signal1.match(/F4(?:\s+score)?\s*[=:]\s*([\d.]+)/i)?.[1])
+  const f5 = numeric(signal2.match(/F5\s+Flow\s*[=:]\s*([\d.]+)/i)?.[1])
+  const f3 = numeric(signal2.match(/F3\s+Momentum\s*[=:]\s*([\d.]+)/i)?.[1])
+  const valuationMethod = investmentText(priceTarget.valuation_method)
+  const typeInfo: Record<string, { label: string; rule: string; score: string }> = {
+    "Earnings Expansion": {
+      label: "Mở rộng lợi nhuận",
+      rule: "Thesis Engine chọn nhánh này khi F4 Earnings ≥ 70.",
+      score: f4 === null ? "Điểm F4 không có trong snapshot luận điểm." : `F4 được lưu trong tín hiệu xác nhận: ${number(f4)}/100.`,
+    },
+    "Sector Rotation": {
+      label: "Luân chuyển dòng tiền ngành",
+      rule: "Chọn khi F5 Flow ≥ 70, hoặc F3 Momentum ≥ 70 đồng thời F5 Flow ≥ 60.",
+      score: f3 === null && f5 === null ? "Điểm F3/F5 không có trong snapshot luận điểm." : `F3 Momentum: ${number(f3)}/100 · F5 Flow: ${number(f5)}/100.`,
+    },
+    Undervaluation: {
+      label: "Định giá thấp",
+      rule: "Chọn khi F1 Value ≥ 70, hoặc F1 Value ≥ 65 đồng thời F2 Quality ≥ 65.",
+      score: "Điểm F1/F2 không được lưu trong snapshot luận điểm.",
+    },
+    "Value Unlock": {
+      label: "Mở khóa giá trị",
+      rule: "Nhánh mặc định khi các ngưỡng F4, F5/F3 và F1/F2 phía trên không được kích hoạt.",
+      score: "Điểm F1/F2/F3/F4/F5 đầy đủ không được lưu cùng bản ghi này.",
+    },
+  }
+  const typeDetail = typeInfo[catalystType]
+  const missingEvidence = [
+    "Sự kiện hoặc dự án cụ thể, kèm nguồn và ngày công bố.",
+    "Tác động định lượng lên sản lượng/giá bán/biên lợi nhuận rồi tới lợi nhuận ròng hoặc EPS.",
+    "Mốc thời gian xảy ra sự kiện; thời hạn đầu tư chỉ là chân trời của luận điểm.",
+    "Xác suất thành công, kịch bản thất bại và mức đóng góp riêng của catalyst vào giá mục tiêu.",
+  ]
+
+  return (
+    <section aria-labelledby="catalyst-detail-title" className="rounded-lg border border-warning/30 bg-warning/5 p-4 sm:p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 id="catalyst-detail-title" className="text-sm font-semibold text-ink">Điều gì có thể đưa giá đến mục tiêu?</h3>
+          <p className="mt-2 max-w-[90ch] whitespace-pre-wrap text-sm leading-7 text-secondary">
+            {report.catalyst || "Bản báo cáo chưa cung cấp mô tả catalyst."}
+          </p>
+        </div>
+        {catalystType && <span className="rounded-md bg-surface px-2.5 py-1 text-xs font-medium text-ink">{typeDetail?.label || catalystType}</span>}
+      </div>
+
+      <div className="mt-5 grid gap-4 lg:grid-cols-2">
+        <div className="rounded-md border border-line bg-surface p-4">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-secondary">Hệ thống bóc tách từ đâu?</h4>
+          <p className="mt-2 text-sm leading-6 text-ink">{typeDetail?.rule || "Không có loại catalyst có cấu trúc trong bản ghi này."}</p>
+          <p className="mt-2 text-xs leading-5 text-secondary">{typeDetail?.score || "Không có điểm nhân tố để đối chiếu trong snapshot luận điểm."}</p>
+          <p className="mt-3 border-t border-line pt-3 text-xs leading-5 text-secondary">
+            Quy tắc chỉ chọn loại catalyst từ điểm nhân tố. Câu mô tả có thể là câu mặc định hoặc được LLM viết lại từ loại catalyst, ngành, bằng chứng chất lượng doanh nghiệp, một số chỉ số tài chính, tín hiệu thị trường, mục tiêu giá và thời hạn. Snapshot không ghi nhánh nào đã tạo câu này. Prompt có yêu cầu nêu dự án/công suất/mốc thương mại hóa, nhưng không bắt buộc trích nguồn; vì vậy câu mô tả chưa phải bằng chứng đã xác minh.
+          </p>
+        </div>
+
+        <div className="rounded-md border border-line bg-surface p-4">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-secondary">Liên hệ với giá mục tiêu</h4>
+          <p className="mt-2 text-sm leading-6 text-ink">Thời hạn luận điểm: {report.months === null ? "Chưa có dữ liệu" : number(report.months, " tháng")} · Mốc xảy ra catalyst: chưa được lưu.</p>
+          <p className="mt-2 text-sm leading-6 text-ink">Phương pháp được ghi nhận: {valuationMethod || "Chưa có dữ liệu"}.</p>
+          <p className="mt-2 text-xs leading-5 text-secondary">
+            Bản ghi có giá mục tiêu và phương pháp định giá, nhưng không lưu các đầu vào thành phần hoặc phép tính cho thấy catalyst làm tăng lợi nhuận bao nhiêu và giải thích phần nào của mức giá đó.
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-4 rounded-md border border-line bg-surface p-4">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-secondary">Còn thiếu để có thể kiểm chứng câu chuyện</h4>
+        <ul className="mt-3 grid gap-x-6 gap-y-2 text-sm leading-6 text-secondary md:grid-cols-2">
+          {missingEvidence.map(item => <li key={item} className="border-l-2 border-warning/50 pl-3">{item}</li>)}
+        </ul>
+      </div>
+    </section>
+  )
+}
+
 function InvestmentThesisSection({ thesis, counter, resolution }: { thesis?: RecordData; counter?: RecordData; resolution?: RecordData }) {
   if (!thesis) return <article className="rounded-xl border border-line bg-surface p-5 lg:p-6"><h2 className="text-lg font-semibold">Luận điểm đầu tư</h2><p className="mt-3 text-sm leading-7 text-secondary">Chưa có luận điểm cho mã và ngày đang xem. Giá mua, mục tiêu và câu chuyện đầu tư sẽ hiển thị khi có bản phân tích được ghi nhận.</p></article>
   const report = thesisDetails(thesis)
@@ -187,13 +271,13 @@ function InvestmentThesisSection({ thesis, counter, resolution }: { thesis?: Rec
           {[
             ["Vì sao chọn doanh nghiệp này?", report.whyStock],
             ["Vì sao xem xét đầu tư lúc này?", report.whyNow],
-            ["Điều gì có thể đưa giá đến mục tiêu?", report.catalyst],
           ].map(([label, text]) => (
             <div key={label}>
               <h3 className="mb-2 text-sm font-semibold text-ink">{label}</h3>
               <p className="max-w-[80ch] whitespace-pre-wrap text-sm leading-7 text-secondary">{text || "Bản báo cáo chưa cung cấp diễn giải cho nội dung này."}</p>
             </div>
           ))}
+          <CatalystSection thesis={thesis} report={report} />
         </section>
 
         <section aria-labelledby="investment-conditions-title" className="border-t border-line pt-6">
