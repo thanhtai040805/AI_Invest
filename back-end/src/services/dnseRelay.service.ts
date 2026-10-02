@@ -9,18 +9,13 @@ const CACHE_TTL: Record<string, number> = {
   snapshot: 3,
   liquidity: 5,
   heatmap: 10,
-  trade: 0,
+  trade: 0, // overwrite the latest quote and keep it across market closures
   tradeExtra: 2,
   foreign: 5,
   expectedPrice: 2,
   ohlc: 2,
-  ohlcClosed: 10,
+  ohlcClosed: 0, // keep the latest closed bar as a persistent snapshot
   secDef: 3600,
-};
-
-const STREAM_KEYS: Record<string, string> = {
-  trade: 'dnse:stream:trade:',
-  ohlcClosed: 'dnse:stream:ohlc_closed:',
 };
 
 class DnseRelayService {
@@ -75,7 +70,7 @@ class DnseRelayService {
         }
       });
       const pattern = `${config.dnse.redisChannelPrefix}:*`;
-      await this.replayMissedStreams();
+      await this.replayLatestSnapshots();
       await subscriber.psubscribe(pattern);
       console.log('[DNSE Relay] Redis subscriber connected successfully');
       console.log(`[DNSE Relay] Listening on ${pattern}`);
@@ -89,43 +84,91 @@ class DnseRelayService {
     }
   }
 
-  private async replayMissedStreams(): Promise<void> {
+  private async replayLatestSnapshots(): Promise<void> {
     if (!this.subscriber) return;
 
-    console.log('[DNSE Relay] Restoring latest Redis Stream values...');
+    console.log('[DNSE Relay] Restoring persistent Redis snapshots...');
+    await this.migrateLegacyStreams();
     let totalReplayed = 0;
 
-    for (const prefix of Object.values(STREAM_KEYS)) {
+    for (const pattern of ['stock:*:quote', 'stock:*:ohlc_closed']) {
       try {
         let cursor = '0';
         do {
-          const [next, keys] = await this.subscriber.scan(cursor, 'MATCH', `${prefix}*`, 'COUNT', 100);
+          const [next, keys] = await this.subscriber.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
           cursor = next;
           for (const key of keys) {
-            const [entry] = await this.subscriber.xrevrange(key, '+', '-', 'COUNT', 1);
-            if (!entry) continue;
-            const fieldsArr = entry[1];
-            const fields: Record<string, string> = {};
-            for (let i = 0; i < fieldsArr.length; i += 2) fields[fieldsArr[i]] = fieldsArr[i + 1];
             try {
-              const data = { ...JSON.parse(fields.data), isSnapshot: true };
-              const suffix = key.replace('dnse:stream:', '');
+              const raw = await this.subscriber.get(key);
+              if (!raw) continue;
+              const match = key.match(/^stock:(.+):(quote|ohlc_closed)$/);
+              if (!match) continue;
+              const [, symbol, kind] = match;
+              const suffix = kind === 'quote' ? `trade:${symbol}` : `ohlc_closed:${symbol}`;
+              const data = { ...JSON.parse(raw), isSnapshot: true };
               this.handleMessage(`${config.dnse.redisChannelPrefix}:${suffix}`, data);
               totalReplayed++;
             } catch {
-              // skip malformed entries
+              // skip missing or malformed snapshots
             }
           }
         } while (cursor !== '0');
       } catch (err) {
-        console.warn(`[DNSE Relay] Stream replay failed for ${prefix}:`, err);
+        console.warn(`[DNSE Relay] Snapshot replay failed for ${pattern}:`, err);
       }
     }
 
     if (totalReplayed > 0) {
-      console.log(`[DNSE Relay] Restored ${totalReplayed} latest values from Redis Streams`);
+      console.log(`[DNSE Relay] Restored ${totalReplayed} persistent latest values`);
     } else {
-      console.log('[DNSE Relay] No missed messages in Redis Streams');
+      console.log('[DNSE Relay] No persistent snapshots to restore');
+    }
+  }
+
+  private async migrateLegacyStreams(): Promise<void> {
+    if (!this.subscriber) return;
+
+    let retiredStreams = 0;
+    const legacyStreams = [
+      { pattern: 'dnse:stream:trade:*', prefix: 'dnse:stream:trade:', keySuffix: 'quote' },
+      { pattern: 'dnse:stream:ohlc_closed:*', prefix: 'dnse:stream:ohlc_closed:', keySuffix: 'ohlc_closed' },
+    ];
+    for (const { pattern, prefix, keySuffix } of legacyStreams) {
+      try {
+        let cursor = '0';
+        do {
+          const [next, keys] = await this.subscriber.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
+          cursor = next;
+          for (const key of keys) {
+            const symbol = key.slice(prefix.length);
+            const snapshotKey = `stock:${symbol}:${keySuffix}`;
+            try {
+              const existing = await this.subscriber.get(snapshotKey);
+              if (existing) {
+                await this.subscriber.persist(snapshotKey);
+              } else {
+                const [entry] = await this.subscriber.xrevrange(key, '+', '-', 'COUNT', 1);
+                const fields: Record<string, string> = {};
+                if (entry) {
+                  const fieldsArr = entry[1];
+                  for (let i = 0; i < fieldsArr.length; i += 2) fields[fieldsArr[i]] = fieldsArr[i + 1];
+                  if (!fields.data) continue;
+                  JSON.parse(fields.data);
+                  await this.subscriber.set(snapshotKey, fields.data);
+                }
+              }
+              retiredStreams += await this.subscriber.unlink(key);
+            } catch (err) {
+              console.warn(`[DNSE Relay] Legacy stream migration failed for ${key}:`, err);
+            }
+          }
+        } while (cursor !== '0');
+      } catch (err) {
+        console.warn(`[DNSE Relay] Legacy stream scan failed for ${pattern}:`, err);
+      }
+    }
+    if (retiredStreams > 0) {
+      console.log(`[DNSE Relay] Preserved latest snapshots and removed ${retiredStreams} legacy streams`);
     }
   }
 

@@ -1,14 +1,14 @@
 """
 DNSE WebSocket market stream hub.
 
-Runs TradingClient in a background thread, caches latest ticks,
-and publishes to Redis for the Node.js Socket.IO relay.
+Runs TradingClient in a background thread, stores the latest market snapshots,
+and publishes live updates to Redis for the Node.js Socket.IO relay.
 
 Production features:
 - MarketSessionManager: auto-connect/disconnect based on VN trading hours
 - Coalesced market snapshots with per-trade events
 - Liquidity + Heatmap real-time aggregation
-- Dual-write: Pub/Sub (real-time) + Streams (durable replay)
+- Persistent latest-value keys plus Pub/Sub for real-time updates
 """
 
 import asyncio
@@ -29,7 +29,6 @@ from app.infrastructure.external_api.dnse.redis_pub import (
     get_list_range,
     add_to_sorted_set,
     get_sorted_set_range,
-    add_to_stream,
 )
 from app.infrastructure.external_api.dnse.market_session import MarketSessionManager, MarketState, TZ_VN
 from app.infrastructure.database.connection import get_raw_connection
@@ -489,8 +488,8 @@ class DnseStreamHub:
         self._running = False
         self._connected = False
 
-    def _replay_missed_streams(self) -> int:
-        """Restore the latest trade for this session as a stale seed."""
+    def _replay_latest_quotes(self) -> int:
+        """Restore today's persistent latest quote keys as stale seeds."""
         try:
             from app.infrastructure.external_api.dnse.redis_pub import get_redis
             r = get_redis()
@@ -499,27 +498,26 @@ class DnseStreamHub:
 
         total_replayed = 0
         try:
-            for key in r.scan_iter("dnse:stream:trade:*", count=100):
+            for key in r.scan_iter("stock:*:quote", count=100):
                 key_str = key.decode() if isinstance(key, bytes) else key
-                entries = r.xrevrange(key_str, "+", "-", count=1)
-                if not entries:
+                value = r.get(key_str)
+                if not value:
                     continue
-                _, fields = entries[0]
                 try:
-                    data = json.loads(fields.get("data", "{}"))
+                    data = json.loads(value)
                     trade_date = str(data.get("time") or data.get("lastUpdate") or "")[:10]
                     if trade_date != datetime.now(TZ_VN).date().isoformat():
                         continue
-                    suffix = key_str.replace("dnse:stream:", "")
-                    self._handle_replayed_message(suffix, data)
+                    symbol = key_str[len("stock:"):-len(":quote")].upper()
+                    self._handle_replayed_message(f"trade:{symbol}", data)
                     total_replayed += 1
                 except Exception:
                     pass
         except Exception as e:
-            print(f"[DNSE Stream] Stream replay error: {e}")
+            print(f"[DNSE Stream] Latest quote replay error: {e}")
 
         if total_replayed > 0:
-            print(f"[DNSE Stream] Restored {total_replayed} current-session trade seeds")
+            print(f"[DNSE Stream] Restored {total_replayed} current-session quote snapshots")
         return total_replayed
 
     def _handle_replayed_message(self, suffix: str, data: Dict[str, Any]) -> None:
@@ -779,15 +777,10 @@ class DnseStreamHub:
         resolution = payload.get("resolution", "1")
         with self._lock:
             self._ohlc[sym] = {**payload, "type": "closed"}
-        set_cache(f"stock:{sym}:ohlc_closed", payload, 10)
+        set_cache(f"stock:{sym}:ohlc_closed", payload, 0)  # overwrite latest snapshot; no TTL
         ohlc_key = f"ohlc_closed:{sym}:{resolution}"
         add_to_sorted_set(ohlc_key, timestamp, payload, ttl=86400)
         publish_json(f"ohlc_closed:{sym}", payload)
-        add_to_stream(f"dnse:stream:ohlc_closed:{sym}", {
-            "symbol": sym,
-            "data": json.dumps(payload, default=str),
-            "ts": str(timestamp),
-        })
 
     def _on_ohlc(self, data: Any) -> None:
         self._last_message_at = time.time()
@@ -893,13 +886,9 @@ class DnseStreamHub:
             self._trades[sym].append(trade)
             if len(self._trades[sym]) > 100:
                 self._trades[sym] = self._trades[sym][-100:]
-        set_cache(f"stock:{sym}:quote", trade, 0)
+        set_cache(f"stock:{sym}:quote", trade, 0)  # overwrite latest snapshot; no TTL
         push_to_list(f"trade:{sym}", trade, max_len=100, ttl=300)
         publish_json(f"trade:{sym}", trade)
-        add_to_stream(f"dnse:stream:trade:{sym}", {
-            "symbol": sym,
-            "data": json.dumps(trade, default=str),
-        })
         self._queue_market_flush()
 
     def _queue_market_flush(self) -> None:
@@ -1004,7 +993,7 @@ class DnseStreamHub:
             applied_by_connection: List[Dict[str, Set[str]]] = []
             with self._lock:
                 self._estimated_vn30 = None
-            replayed = self._replay_missed_streams()
+            replayed = self._replay_latest_quotes()
             if replayed:
                 print(f"[DNSE] Replayed {replayed} messages before connecting")
 
