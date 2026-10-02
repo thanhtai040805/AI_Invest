@@ -167,8 +167,8 @@ def trim_sorted_set_by_score(key: str, max_score: float, min_score: float = "-in
         print(f"[DNSE Redis] zremrangebyscore {key} failed: {e}")
 
 
-def add_to_stream(key: str, payload: Any, max_len: int = 10000) -> None:
-    """Add event to Redis Stream for durable replay."""
+def add_to_stream(key: str, payload: Any, max_len: int = 100) -> None:
+    """Keep a short replay buffer; long-term history belongs in market-data storage."""
     try:
         r = get_redis()
         r.xadd(key, payload, maxlen=max_len, approximate=True)
