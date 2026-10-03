@@ -79,6 +79,8 @@ jobs:
           tests/unit/test_mathematical_integrity.py
           tests/unit/test_portfolio_eod_and_quotes.py
           tests/unit/test_replay_ml_execution.py
+          tests/unit/test_short_horizon_profit_portfolio.py
+          tests/unit/test_short_horizon_profit_research.py
           -k "not TestDualEngineBeneishMScore"
 
   compose:

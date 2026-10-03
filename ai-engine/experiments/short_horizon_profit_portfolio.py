@@ -63,8 +63,10 @@ class PortfolioPolicy:
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
-        if self.minimum_holding_sessions < 3 or self.holding_sessions < self.minimum_holding_sessions:
-            raise ValueError("Holding horizons must permit at least three holding sessions")
+        if (not 3 <= self.minimum_holding_sessions <= 5
+                or self.holding_sessions not in (3, 5)
+                or self.holding_sessions < self.minimum_holding_sessions):
+            raise ValueError("Planned holding horizons must be 3 or 5 sessions and meet the minimum holding period")
         if self.minimum_liquidity_observations > self.liquidity_lookback_sessions:
             raise ValueError("Liquidity observations exceed the lookback")
         if not isinstance(self.sell_cash_settlement_sessions, int) or isinstance(self.sell_cash_settlement_sessions, bool) or self.sell_cash_settlement_sessions < 0:
@@ -77,7 +79,7 @@ class PortfolioPolicy:
 
 TRADE_COLUMNS = [
     "ticker", "decision_date", "entry_date", "exit_date", "planned_exit_date",
-    "holding_sessions", "shares", "entry_price_vnd", "exit_price_vnd",
+    "holding_sessions", "actual_holding_sessions", "shares", "entry_price_vnd", "exit_price_vnd",
     "buy_notional", "buy_fee", "entry_cash_cost", "sell_notional", "sell_fee",
     "sell_tax", "exit_cash_credit", "net_pnl_vnd", "net_return",
     "p_profit", "expected_net_return", "downside_q10",
@@ -191,7 +193,7 @@ def simulate_portfolio(
             downside = float(row["downside_q10"])
             horizon_raw = next((row[key] for key in ("horizon_sessions", "holding_sessions", "horizon") if key in row and pd.notna(row[key])), policy.holding_sessions)
             horizon = int(horizon_raw)
-            if float(horizon_raw) != horizon or horizon < policy.minimum_holding_sessions:
+            if float(horizon_raw) != horizon or horizon not in (3, 5) or horizon < policy.minimum_holding_sessions:
                 raise ValueError("Invalid horizon")
         except (TypeError, ValueError, OverflowError):
             rejected["INVALID_FORECAST"] += 1
@@ -335,6 +337,7 @@ def simulate_portfolio(
                     "amount": credit})
             trades.append({key: position.get(key) for key in TRADE_COLUMNS} | {
                 "exit_date": day, "exit_price_vnd": fill_price,
+                "actual_holding_sessions": index - position["entry_index"] + 1,
                 "sell_notional": notional, "sell_fee": fee, "sell_tax": tax,
                 "exit_cash_credit": credit, "net_pnl_vnd": pnl,
                 "net_return": pnl / position["entry_cash_cost"],
@@ -367,6 +370,13 @@ def simulate_portfolio(
     losses = trades_df.loc[trades_df["net_pnl_vnd"] < 0]
     gross_profit = float(wins["net_pnl_vnd"].sum())
     gross_loss = float(-losses["net_pnl_vnd"].sum())
+    # Measure after all exits at each close, including sessions with no exits.
+    # An earlier winning exit cannot conceal a larger loss at the same close.
+    realized_pnl = trades_df.groupby("exit_date")["net_pnl_vnd"].sum().reindex(nav_df["date"], fill_value=0.0).cumsum()
+    positive_sessions = realized_pnl.gt(0)
+    first_positive_date = realized_pnl.index[positive_sessions][0] if positive_sessions.any() else None
+    first_positive_offset = int(positive_sessions.to_numpy().argmax()) if positive_sessions.any() else None
+    actual_holding = trades_df["actual_holding_sessions"]
     cagr = None
     if not nav_df.empty:
         elapsed_days = (nav_df["date"].iloc[-1] - nav_df["date"].iloc[0]).days
@@ -393,6 +403,13 @@ def simulate_portfolio(
         "expectancy_net_return": float(closed_returns.mean()) if len(trades_df) else None,
         "expectancy_net_pnl_vnd": float(trades_df["net_pnl_vnd"].mean()) if len(trades_df) else None,
         "closed_net_pnl_vnd": float(trades_df["net_pnl_vnd"].sum()),
+        "first_positive_realized_pnl_date": first_positive_date.date().isoformat() if first_positive_date is not None else None,
+        "sessions_to_first_positive_realized_pnl": first_positive_offset,
+        "realized_pnl_vnd_at_20_sessions": float(realized_pnl.iloc[19]) if len(realized_pnl) >= 20 else None,
+        "profitable_realized_session_fraction": float(positive_sessions.mean()) if len(positive_sessions) else 0.0,
+        "mean_actual_holding_sessions": float(actual_holding.mean()) if len(trades_df) else None,
+        "max_actual_holding_sessions": int(actual_holding.max()) if len(trades_df) else None,
+        "trades_exceeding_planned_horizon": int(actual_holding.gt(trades_df["holding_sessions"]).sum()),
         "max_drawdown": float((1.0 - nav_df["total_nav"] / nav_df["total_nav"].cummax().clip(lower=policy.initial_cash)).max()) if not nav_df.empty else 0.0,
         "cagr": cagr,
         "max_equity_exposure": float(nav_df["equity_exposure"].max()) if not nav_df.empty else 0.0,

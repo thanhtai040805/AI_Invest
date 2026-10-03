@@ -2,6 +2,11 @@
 
 Ngày lập: **02/10/2026**. Trạng thái: **challenger nghiên cứu offline**.
 
+Cập nhật mục tiêu ngày **03/10/2026**: ML chỉ phục vụ lướt sóng, ưu tiên
+lợi nhuận ròng sau mọi chi phí và thời gian đến lúc tổng lãi đã chốt dương.
+H3 là kỳ hạn thử nghiệm chính; H5 là kỳ hạn so sánh được hỗ trợ. Tỷ lệ thắng
+được báo cáo cùng payoff và rủi ro, không phải điều kiện thay thế lợi nhuận.
+
 ## 1. Mục tiêu và phạm vi
 
 Challenger học khả năng một giao dịch theo chính sách đã định sẽ có lợi nhuận
@@ -151,7 +156,8 @@ gốc và cutoff không lùi. `predict(...)` từ chối ngày bằng hoặc tr�
 
 ## 5. Protocol train, development, holdout và diagnostic
 
-Có **12 candidate chính sách**:
+Mặc định có **12 candidate chính sách**; `--families` và `--horizons` cho phép
+khai báo trước một tập con để tập trung training:
 
 ```text
 2 family × 2 horizon × 3 gate = 12 candidate
@@ -166,9 +172,10 @@ Có **12 candidate chính sách**:
 Các ngưỡng trên là giả định nghiên cứu được khai báo trước holdout; chưa phải
 ngưỡng vận hành đã được xác nhận.
 
-Cửa sổ dữ liệu bắt đầu từ 01/01 của năm `prediction_start.year − 5`; ba tháng
-cuối trước prediction start được dành cho calibration. Với prediction start
-vào 01/01, phần fit còn khoảng bốn năm chín tháng trước khi purge label:
+Cửa sổ dữ liệu bắt đầu từ `prediction_start − training_window_months`;
+`--training-window-months` mặc định là 60. Ba tháng cuối trước prediction
+start được dành riêng cho calibration. Với cấu hình mặc định và prediction
+start vào 01/01, phần fit còn khoảng bốn năm chín tháng trước khi purge label:
 
 | Evaluation | Bắt đầu fit | Bắt đầu calibration | Evaluation period |
 |---|---|---|---|
@@ -184,7 +191,13 @@ forecast tháng mới. Base estimators vẫn chỉ fit trước năm evaluation.
 giao dịch không bị cắt ở biên từng tháng. Trong diagnostic, label của tháng
 trước có thể được dùng từ tháng tiếp theo khi đã hoàn tất.
 
-Mỗi lần chạy khai báo 12 candidate. Hai lần gồm **24 candidate-policy-mode**,
+`--calibration-mode monthly-refit` train lại estimator, imputer/scaler và
+calibration trước mỗi tháng có forecast. Cửa sổ lùi từ đầu tháng mới; block
+calibration ba tháng và purge theo label end vẫn được giữ. Mỗi lần fit có
+artifact riêng; artifact cuối kỳ chứa model mới nhất đã thực sự dùng để
+forecast. Không cắt giao dịch tại biên tháng hoặc đổi gate theo kết quả tháng.
+
+Hai lần chạy đầu ngày 02/10 mỗi lần khai báo 12 candidate, gồm **24 candidate-policy-mode**,
 không phải 24 kiến trúc khác nhau. Quyết định nghiên cứu monthly được đưa ra
 sau khi đã xem kết quả lần đầu; năm 2026 của lần thứ hai được đánh dấu
 `holdout_previously_inspected=true`. Không xem đó là xác nhận độc lập mới.
@@ -200,16 +213,20 @@ Purge theo **ngày outcome thực sự kết thúc**:
 - Runner yêu cầu ít nhất 1.000 train rows và 500 calibration rows; model yêu
   cầu cả nhãn có lãi và không có lãi trong mỗi block.
 
-Mỗi family/horizon fit riêng cho từng năm DEV; ba gate dùng chung forecast.
-DEV có 12 lần fit và 36 lượt mô phỏng candidate-năm. Runner ưu tiên candidate
-đạt tất cả DEV limits, rồi chọn mean annual NAV return cao nhất. Nếu không
-candidate nào đạt, candidate được chọn chỉ có vai trò diagnostic.
+Mỗi family/horizon có forecast riêng; ba gate dùng chung forecast. Cấu hình
+mặc định annual có 12 lần fit DEV và 36 lượt mô phỏng candidate-năm; monthly
+refit tạo thêm model trước từng tháng. Runner ưu tiên candidate đạt tất cả
+DEV limits, rồi chọn mean annual NAV return cao nhất. Nếu return bằng nhau,
+ưu tiên thời gian đến tổng lãi đã chốt dương ngắn hơn. Nếu không candidate
+nào đạt, candidate được chọn chỉ có vai trò diagnostic.
 
 `selection_lock.json` được ghi **trước khi đánh giá holdout**. Sau đó chỉ
 family/horizon đã chọn được fit với dữ liệu trước 2026 và gate được giữ cố
 định. Không điều chỉnh cấu hình theo kết quả holdout. Dataset lịch sử có thể
 được dựng trước; feature/universe phải vẫn causal và candidate selection chỉ
-dùng DEV outcomes.
+dùng DEV outcomes. Với monthly-refit, lịch train đã khai báo tiếp tục dùng
+những outcome hoàn tất trước tháng forecast, trong khi family, horizon và
+gate đã chọn vẫn giữ nguyên.
 
 Holdout là chronological out-of-sample đối với fit và selection, không phải
 cam kết con người chưa từng xem thị trường giai đoạn đó. Tháng 8–9/2026 đã
@@ -254,6 +271,11 @@ open/volume hợp lệ bị hủy; exit không có close/volume hợp lệ đư�
 fill bằng giá forward-filled. Vị thế chưa thoát được giữ trong sổ cùng stale
 mark và cảnh báo, không bị xóa khỏi NAV.
 
+Policy và horizon override của forecast chỉ chấp nhận H3/H5. Nếu thiếu quote
+khớp hợp lệ tại ngày exit dự kiến, exit tiếp tục bị hoãn; giới hạn kỳ hạn
+không tạo fill giả. CSV trade ghi thêm `actual_holding_sessions`; báo cáo có
+mean/max thời gian giữ thực tế và số trade vượt kỳ hạn đã định.
+
 Sale proceeds sau fee/tax được ghi receivable trong NAV và chuyển thành cash
 tại close T+2, khả dụng cho open phiên tiếp theo. Đây là giả định cash-only
 bảo thủ của simulator. DNSE mô tả kỳ thanh toán tiền bán T+2 và dịch vụ ứng
@@ -272,13 +294,13 @@ portfolio gồm NAV return/drawdown/exposure, net closed win rate, average
 win/loss, expectancy, profit factor, PnL từng cổ phiếu, rejections, open
 positions và receivables. Win rate một mình không đủ xác nhận profitability.
 
-DEV limits hiện tại: ít nhất 150 closed trades cộng ba năm, win rate ít nhất
-55%, PF ít nhất 1.20, mean net trade return ít nhất 0.20%, drawdown từng năm
+DEV limits hiện tại: ít nhất 150 closed trades cộng ba năm, PF ít nhất 1.20,
+mean net trade return ít nhất 0.20%, drawdown từng năm
 không quá 10%, và NAV return dương ở mỗi năm. Candidate hoàn toàn không có
 trade lỗ được xử lý bằng trạng thái PF riêng với positive gross profit.
 
-Holdout gate yêu cầu DEV đã đạt, ít nhất 50 closed trades, win rate ít nhất
-55%, PF ít nhất 1.20 hoặc trạng thái không có trade lỗ, expectancy ít nhất
+Holdout gate yêu cầu DEV đã đạt, ít nhất 50 closed trades,
+PF ít nhất 1.20 hoặc trạng thái không có trade lỗ, expectancy ít nhất
 0.20%, NAV return dương, drawdown không quá 10%, và NAV return vẫn dương ở
 friction stress. Các ngưỡng là tiêu chí nghiên cứu cố định, không bảo đảm mẫu
 đủ lớn hoặc độc lập. DEV từng năm và holdout cuối kỳ còn vị thế không thoát
@@ -286,7 +308,20 @@ friction stress. Các ngưỡng là tiêu chí nghiên cứu cố định, khôn
 circuit breaker để bảo đảm một giới hạn lỗ cứng trong giao dịch thực tế.
 
 Runner bổ sung bootstrap PnL realized theo tuần, gồm cả tuần không giao dịch.
-Khoảng báo cáo chỉ mang tính mô tả: chưa hiệu chỉnh việc chọn 12 candidate và
+Từ 03/10, win rate là metric mô tả; bỏ yêu cầu 55% ở gate đánh giá không làm
+thay đổi cổng p_profit của lệnh mua. Lợi nhuận phụ thuộc cả xác suất, lãi khi
+thắng, lỗ khi thua và chi phí. Kết quả các lần chạy 02/10 vẫn được giữ nguyên
+với protocol và gate đã khóa khi đó.
+
+Các metric tốc độ dùng tổng PnL ròng đã đóng tại cuối từng phiên, sau khi cộng
+tất cả lệnh cùng ngày: `first_positive_realized_pnl_date`,
+`sessions_to_first_positive_realized_pnl` (0 tại decision close đầu tiên),
+`realized_pnl_vnd_at_20_sessions` (null nếu chưa đủ 20 phiên) và
+`profitable_realized_session_fraction`. Một lệnh thắng riêng lẻ không được
+xem là cả tài khoản đã có lãi. NAV vẫn tính receivable chưa thanh toán;
+realized PnL tại exit không đồng nghĩa tiền bán đã dùng được ngay.
+
+Khoảng báo cáo chỉ mang tính mô tả: chưa hiệu chỉnh việc chọn candidate và
 tuần có thể còn phụ thuộc nối tiếp. Không diễn giải thành khoảng bảo đảm lợi
 nhuận tương lai.
 
@@ -417,8 +452,9 @@ python scripts/research_short_horizon_profit.py --bars scratch/short_horizon_dai
 python scripts/research_short_horizon_profit.py --bars scratch/short_horizon_daily_bars_2026-10-02.csv.gz --output scratch/profit_research_monthly_new --calibration-mode monthly --allow-missing-index-sessions --holdout-previously-inspected
 ```
 
-Đã thực thi train, forecast, chronological portfolio evaluation và tái dựng
-PnL trên dữ liệu thật. Không chạy hoặc thêm unit test. Không deploy, đổi cấu
+Các lần chạy 02/10 đã thực thi train, forecast, chronological portfolio
+evaluation và tái dựng PnL trên dữ liệu thật, chưa chạy hoặc thêm unit test.
+Không deploy, đổi cấu
 hình PROD hoặc đặt lệnh. Quy trình này áp dụng policy hiện tại đồng nhất cho
 lịch sử nghiên cứu; không tái tạo mọi biểu phí/lô/settlement từng năm cũ.
 
@@ -443,3 +479,66 @@ lịch sử nghiên cứu; không tái tạo mọi biểu phí/lô/settlement t�
 Các lỗi chất lượng đầu vào đã được chặn trong challenger local. Lịch sử nguồn,
 entitlement và khả năng execution chưa được chứng nhận. Thay thuật toán trên
 cùng dữ liệu hiện tại chưa giải quyết được yêu cầu sinh lời cao.
+
+## 10. Training tập trung H3 ngày 03/10/2026
+
+Giả thuyết được khai báo trước lần chạy: estimator giữ nguyên cả năm có thể
+không thích ứng với thị trường lướt sóng. Thử một cửa sổ 24 tháng, gồm 21 tháng
+fit và ba tháng calibration, train lại toàn bộ trước mỗi tháng. Chỉ dùng
+`boosted`, H3 và ba gate cũ; không thêm feature, sweep tham số, đổi sizing
+hoặc sửa chi phí. Dataset được dựng lại từ cùng bản xuất có SHA256 đã ghi.
+
+Trước đó, thử bỏ cổng xác suất trên forecast DEV đã lưu, giữ EV > 0 và mọi
+giả định danh mục. Mean annual NAV của bản annual giảm từ +3,5379% xuống
+−0,1707%; bản monthly giảm từ +2,4258% xuống −0,6478%. Một số thời điểm có lãi
+sớm hơn nhưng năm 2025 thua nhiều hơn. Vì vậy lần full refit vẫn giữ các cổng
+p_profit cũ. Không chọn ngưỡng bằng kết quả 2026.
+
+Command của lần chạy đã hoàn tất:
+
+```powershell
+Set-Location 'D:\AIInvest\ai-engine'
+python scripts/research_short_horizon_profit.py --bars scratch/short_horizon_daily_bars_2026-10-02.csv.gz --output scratch/profit_research_2026-10-03_v5_refit_h3 --calibration-mode monthly-refit --training-window-months 24 --families boosted --horizons 3 --allow-missing-index-sessions --holdout-previously-inspected
+```
+
+### Development 2023–2025
+
+| Gate H3 | NAV 2023 | NAV 2024 | NAV 2025 | Closed trades | PF net | Mean net trade return |
+|---|---:|---:|---:|---:|---:|---:|
+| open | −2,8905% | −2,7686% | −11,3293% | 129 | 0,4538 | −1,7191% |
+| selective | 0,0000% | +0,6594% | −3,7352% | 30 | 0,6569 | −1,1668% |
+| strict | 0,0000% | 0,0000% | −1,4715% | 15 | 0,7523 | −1,1949% |
+
+Không candidate đạt DEV gate. `boosted_h3_strict` là lựa chọn diagnostic vì
+mean annual NAV ít âm nhất; hai năm không giao dịch không phải bằng chứng
+sinh lời. Với gate open, 2023 chưa có tổng lãi đã chốt dương; 2024 lần đầu
+dương ngày 25/04 nhưng cuối năm vẫn lỗ, 2025 lần đầu dương ngày 10/03 rồi
+cuối năm lỗ 11,3293%. Có lãi sớm từng lúc chưa đáp ứng mục tiêu cuối kỳ.
+
+### Evaluation 2026 đã từng xem
+
+Candidate đã khóa `boosted_h3_strict`, NAV khởi đầu 1 tỷ VND:
+
+| Period | NAV net | PnL net VND | Closed trades | Win rate | PF | Max DD |
+|---|---:|---:|---:|---:|---:|---:|
+| 01–07/2026, reused diagnostic | −2,8232% | −28.231.776 | 10 | 10,00% | 0,0934 | 2,8232% |
+| 08–01/10/2026, previously inspected | 0,0000% | 0 | 0 | — | — | 0,0000% |
+
+Friction 100 bps làm period đầu còn −3,5623%. Tổng lãi đã chốt chưa từng
+dương trong period đầu; period sau không có giao dịch. Mọi trade đã đóng
+đều giữ đúng ba phiên; không có exit bị hoãn vượt horizon trong lần chạy.
+Trạng thái: **`REJECTED_PROFITABILITY_GATE`**. Full refit 24 tháng không cải
+thiện hướng này; artifact mới không đủ điều kiện thay Standalone hiện tại.
+
+Artifacts nằm tại `D:/AIInvest/ai-engine/scratch/profit_research_2026-10-03_v5_refit_h3/`:
+protocol với code/data hash, dataset/metadata H3, model từng tháng, DEV
+forecast, selection lock, report và CSV trade/NAV/stock/stress. Forecast
+được đối chiếu với model qua tháng và metadata cutoff; chưa có model hash
+trên từng row forecast. Sổ giá, entitlement, cohort thực khớp và một kỳ
+forward mới vẫn cần được xác minh trước khi xét cấp vốn thực.
+
+Kiểm tra tập trung: **22 tests passed**, bao gồm purge theo outcome, thay
+estimator trước mỗi tháng, payoff bất đối xứng, timing PnL theo cuối phiên,
+giới hạn H3/H5 và trì hoãn exit không thể khớp. Hai file test được đưa vào
+CI AI Engine. Thay đổi chỉ nằm ở nghiên cứu, test, CI và tài liệu; không có
+ghi DB/SAG, deploy hay đặt lệnh broker trong lần này.

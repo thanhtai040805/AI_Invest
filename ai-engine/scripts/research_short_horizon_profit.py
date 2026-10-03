@@ -2,7 +2,7 @@
 
 No database, broker, production configuration or existing model is modified.
 Run from ai-engine with --bars pointing at a provenance-recorded CSV/parquet.
-Development years select one of twelve predeclared candidates. That choice is
+Development years select among a finite set of predeclared candidates. That choice is
 written before the final holdout is opened. Historical holdout is chronological
 out-of-sample, not a claim that nobody previously inspected the market period.
 """
@@ -30,7 +30,7 @@ FAMILIES = ("linear", "boosted")
 HORIZONS = (3, 5)
 GATES = {"open": (0.50, 0.0), "selective": (0.55, 0.001), "strict": (0.60, 0.002)}
 RESEARCH_LIMITS = {
-    "min_closed_trades": 150, "min_win_rate": 0.55,
+    "min_closed_trades": 150,
     "min_profit_factor": 1.20, "min_expectancy": 0.002,
     "max_drawdown": 0.10, "positive_each_development_year": True,
 }
@@ -52,10 +52,13 @@ def model_features(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     return frame.set_index(["date", "ticker"])[columns]
 
 
-def fit_before(dataset, metadata, family, prediction_start, output, n_jobs):
+def fit_before(dataset, metadata, family, prediction_start, output, n_jobs,
+               training_window_months=60):
+    if not isinstance(training_window_months, int) or isinstance(training_window_months, bool) or training_window_months < 12:
+        raise ValueError("Training window must include at least twelve historical months")
     start = pd.Timestamp(prediction_start)
     calibration_start = start - pd.DateOffset(months=3)
-    training_start = pd.Timestamp(year=start.year - 5, month=1, day=1)
+    training_start = start - pd.DateOffset(months=training_window_months)
     usable = dataset["universe_eligible"] & dataset["label_status"].eq("ok")
     train = dataset.loc[usable & dataset["date"].ge(training_start)
                         & dataset["date"].lt(calibration_start)
@@ -73,13 +76,24 @@ def fit_before(dataset, metadata, family, prediction_start, output, n_jobs):
         trained_through=cutoff.date().isoformat(),
         metadata={"dataset": metadata, "research_only": True,
                   "purge": "label_end_date strictly before the next block",
+                  "training_window_months": training_window_months,
                   "prediction_start": start.date().isoformat()},
     )
     model.save(output)
     return model
 
 
-def forecasts_for(model, dataset, metadata, start, end, calendar, calibration_mode="annual"):
+def forecasts_for(model, dataset, metadata, start, end, calendar, calibration_mode="annual",
+                  training_window_months=60, model_output_dir=None):
+    """Return forecasts and the last fitted model, with each outcome purged.
+
+    monthly refreshes calibration only; monthly-refit also replaces all base
+    estimators and preprocessing using a rolling historical training window.
+    """
+    if calibration_mode not in {"annual", "monthly", "monthly-refit"}:
+        raise ValueError("Unknown calibration mode")
+    if calibration_mode == "monthly-refit" and model_output_dir is None:
+        raise ValueError("Monthly refit requires a directory for model provenance")
     period_calendar = calendar[(calendar >= pd.Timestamp(start)) & (calendar <= pd.Timestamp(end))]
     if len(period_calendar) <= metadata["horizon_sessions"]:
         raise ValueError("Evaluation period is shorter than the holding horizon")
@@ -93,21 +107,31 @@ def forecasts_for(model, dataset, metadata, start, end, calendar, calibration_mo
         chunks = []
         for month, month_rows in rows.groupby(rows["date"].dt.to_period("M"), sort=True):
             month_start = month.start_time
-            calibration = dataset.loc[dataset["universe_eligible"] & dataset["label_status"].eq("ok")
-                                      & dataset["date"].ge(month_start - pd.DateOffset(months=3))
-                                      & dataset["date"].lt(month_start)
-                                      & dataset["label_end_date"].lt(month_start)]
-            if len(calibration) < 500:
-                raise ValueError(f"Insufficient completed labels before {month}: {len(calibration)}")
-            cutoff = calibration["label_end_date"].max().date().isoformat()
-            model.recalibrate(model_features(calibration, metadata["feature_columns"]),
-                              calibration.set_index(["date", "ticker"])["net_return"], trained_through=cutoff)
+            if calibration_mode == "monthly-refit":
+                if month_start > pd.Timestamp(model.metadata["prediction_start"]):
+                    selection = model.metadata.get("selection")
+                    artifact = Path(model_output_dir) / f"model_{model.family}_h{metadata['horizon_sessions']}_{month}.joblib"
+                    model = fit_before(dataset, metadata, model.family, month_start,
+                                       artifact, model.n_jobs, training_window_months)
+                    if selection is not None:
+                        model.metadata["selection"] = selection
+                        model.save(artifact)
+            else:
+                calibration = dataset.loc[dataset["universe_eligible"] & dataset["label_status"].eq("ok")
+                                          & dataset["date"].ge(month_start - pd.DateOffset(months=3))
+                                          & dataset["date"].lt(month_start)
+                                          & dataset["label_end_date"].lt(month_start)]
+                if len(calibration) < 500:
+                    raise ValueError(f"Insufficient completed labels before {month}: {len(calibration)}")
+                cutoff = calibration["label_end_date"].max().date().isoformat()
+                model.recalibrate(model_features(calibration, metadata["feature_columns"]),
+                                  calibration.set_index(["date", "ticker"])["net_return"], trained_through=cutoff)
             chunks.append(model.predict(model_features(month_rows, metadata["feature_columns"])).reset_index())
         predictions = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame(columns=["date", "ticker", *model.OUTPUT_COLUMNS])
     predictions = predictions.merge(rows, on=["date", "ticker"], validate="one_to_one")
     predictions["decision_date"] = predictions["date"]
     predictions["horizon_sessions"] = metadata["horizon_sessions"]
-    return predictions
+    return predictions, model
 
 
 def prediction_metrics(predictions):
@@ -163,13 +187,18 @@ def aggregate_development(records):
     expectancy = sum((item["expectancy_net_return"] or 0) * item["closed_trades"] for item in records) / trades if trades else 0
     drawdown = max(item["max_drawdown"] for item in records)
     returns = [item["total_return"] for item in records]
+    profit_delays = [item["sessions_to_first_positive_realized_pnl"] for item in records]
+    early_pnl = [item["realized_pnl_vnd_at_20_sessions"] for item in records]
     summary = {"closed_trades": trades, "win_rate": wins / trades if trades else None,
                "profit_factor": profit / loss if loss else None,
                "expectancy": expectancy, "max_annual_drawdown": drawdown,
                "annual_nav_returns": returns, "mean_annual_nav_return": float(np.mean(returns)),
+               "first_positive_realized_pnl_dates": [item["first_positive_realized_pnl_date"] for item in records],
+               "mean_sessions_to_first_positive_realized_pnl": float(np.mean(profit_delays)) if all(value is not None for value in profit_delays) else None,
+               "mean_first_20_session_net_pnl_vnd": float(np.mean(early_pnl)) if all(value is not None for value in early_pnl) else None,
                "resolved_inventory_each_year": all(not item["open_positions"] for item in records)}
     summary["passes_development_gate"] = bool(
-        trades >= RESEARCH_LIMITS["min_closed_trades"] and summary["win_rate"] >= RESEARCH_LIMITS["min_win_rate"]
+        trades >= RESEARCH_LIMITS["min_closed_trades"]
         and ((loss == 0 and profit > 0) or (summary["profit_factor"] is not None and summary["profit_factor"] >= RESEARCH_LIMITS["min_profit_factor"]))
         and expectancy >= RESEARCH_LIMITS["min_expectancy"] and drawdown <= RESEARCH_LIMITS["max_drawdown"]
         and all(value > 0 for value in returns) and summary["resolved_inventory_each_year"]
@@ -233,12 +262,21 @@ def main():
     parser.add_argument("--holdout-end", default="2026-07-31")
     parser.add_argument("--diagnostic-end", default="2026-10-01")
     parser.add_argument("--n-jobs", type=int, default=4)
-    parser.add_argument("--calibration-mode", choices=["annual", "monthly"], default="annual")
+    parser.add_argument("--calibration-mode", choices=["annual", "monthly", "monthly-refit"], default="annual")
+    parser.add_argument("--training-window-months", type=int, default=60,
+                        help="Historical window including the separate final three calibration months")
+    parser.add_argument("--families", choices=FAMILIES, nargs="+", default=list(FAMILIES))
+    parser.add_argument("--horizons", choices=HORIZONS, type=int, nargs="+", default=list(HORIZONS))
     parser.add_argument("--holdout-previously-inspected", action="store_true",
                         help="Record that the final period is a reused diagnostic rather than an untouched holdout")
     parser.add_argument("--allow-missing-index-sessions", action="store_true",
                         help="Keep observed stock sessions by inserting index rows with NaN prices; never forward-fill index levels")
     args = parser.parse_args()
+    if args.training_window_months < 12:
+        raise ValueError("Training window must include at least twelve historical months")
+    families = list(dict.fromkeys(args.families))
+    horizons = list(dict.fromkeys(args.horizons))
+    candidate_count = len(families) * len(horizons) * len(GATES)
     if args.output.exists() and any(args.output.iterdir()):
         raise ValueError("Output must be empty: preserve earlier research results and selection locks")
     args.output.mkdir(parents=True, exist_ok=True)
@@ -268,7 +306,8 @@ def main():
     source_hash = sha256(args.bars.read_bytes()).hexdigest()
     write_json(args.output / "protocol.json", {
         "source_path": args.bars.resolve(), "source_sha256": source_hash,
-        "families": FAMILIES, "horizons": HORIZONS, "gates": GATES,
+        "families": families, "horizons": horizons, "gates": GATES,
+        "candidate_count": candidate_count, "training_window_months": args.training_window_months,
         "development_years": years, "holdout_start": args.holdout_start, "holdout_end": args.holdout_end,
         "calibration_mode": args.calibration_mode, "holdout_previously_inspected": args.holdout_previously_inspected,
         "code_sha256": {str(path.relative_to(Path(__file__).parents[1])): sha256(path.read_bytes()).hexdigest()
@@ -276,24 +315,27 @@ def main():
                                      Path(__file__).parents[1] / "experiments/short_horizon_profit_dataset.py",
                                      Path(__file__).parents[1] / "experiments/short_horizon_profit_portfolio.py"]},
         "research_limits": RESEARCH_LIMITS, "default_portfolio_policy": asdict(PortfolioPolicy()),
-        "selection": "passes gates first, then highest mean annual NAV return on development only; if none pass, diagnostic winner only",
+        "selection": "passes net-profit gates first, then highest mean annual NAV return, then shorter time to positive realized net PnL on development only; if none pass, diagnostic winner only",
+        "win_rate_role": "descriptive; asymmetric profitable payoffs need not win most trades",
         "freeze": "No hyperparameter or threshold adaptation after holdout results",
         "quality": quality, "missing_index_policy": "NaN placeholders, no synthetic/forward-filled prices" if missing_index_dates else "complete observed index calendar",
     })
     datasets, metadata_by_horizon = {}, {}
-    candidate_records = {f"{family}_h{horizon}_{gate}": [] for family in FAMILIES for horizon in HORIZONS for gate in GATES}
-    for horizon in HORIZONS:
+    candidate_records = {f"{family}_h{horizon}_{gate}": [] for family in families for horizon in horizons for gate in GATES}
+    for horizon in horizons:
         print(f"BUILD H{horizon}", flush=True)
         dataset, metadata = build_dataset(bars, horizon_sessions=horizon)
         dataset.to_parquet(args.output / f"dataset_h{horizon}.parquet", index=False)
         write_json(args.output / f"dataset_h{horizon}_metadata.json", metadata)
         datasets[horizon], metadata_by_horizon[horizon] = dataset, metadata
-        for family in FAMILIES:
+        for family in families:
             for year in years:
                 start, end = f"{year}-01-01", f"{year}-12-31"
                 model = fit_before(dataset, metadata, family, start,
-                                   args.output / f"model_{family}_h{horizon}_{year}.joblib", args.n_jobs)
-                predictions = forecasts_for(model, dataset, metadata, start, end, calendar, args.calibration_mode)
+                                   args.output / f"model_{family}_h{horizon}_{year}.joblib", args.n_jobs,
+                                   args.training_window_months)
+                predictions, model = forecasts_for(model, dataset, metadata, start, end, calendar, args.calibration_mode,
+                                                   args.training_window_months, args.output)
                 model.save(args.output / f"model_{family}_h{horizon}_{year}_last_calibration.joblib")
                 predictions.to_parquet(args.output / f"forecasts_{family}_h{horizon}_{year}.parquet", index=False)
                 write_json(args.output / f"forecast_metrics_{family}_h{horizon}_{year}.json", prediction_metrics(predictions))
@@ -305,22 +347,28 @@ def main():
                     candidate_records[f"{family}_h{horizon}_{gate}"].append(metrics)
                     print(f"DEV {year} {family} H{horizon} {gate}: return={metrics['total_return']:.2%}, trades={len(trades)}, win={metrics['win_rate_closed_net']}", flush=True)
     summaries = {key: aggregate_development(values) for key, values in candidate_records.items()}
-    ranked = sorted(summaries, key=lambda key: (summaries[key]["passes_development_gate"], summaries[key]["mean_annual_nav_return"], key), reverse=True)
+    ranked = sorted(summaries, key=lambda key: (
+        summaries[key]["passes_development_gate"], summaries[key]["mean_annual_nav_return"],
+        -(summaries[key]["mean_sessions_to_first_positive_realized_pnl"]
+          if summaries[key]["mean_sessions_to_first_positive_realized_pnl"] is not None else float("inf")), key,
+    ), reverse=True)
     winner = ranked[0]
     selection = {"selected": winner, "development_gate_passed": summaries[winner]["passes_development_gate"],
                  "candidates": summaries, "annual_detail": candidate_records,
                  "promotion_status": "RESEARCH_ONLY_PENDING_HOLDOUT" if summaries[winner]["passes_development_gate"] else "REJECTED_DEVELOPMENT_DIAGNOSTIC_ONLY",
-                 "calibration_mode": args.calibration_mode}
+                  "calibration_mode": args.calibration_mode, "training_window_months": args.training_window_months}
     write_json(args.output / "selection_lock.json", selection)
     print(f"LOCKED {winner}; development pass={selection['development_gate_passed']}", flush=True)
     family, horizon_text, gate = winner.split("_")
     horizon = int(horizon_text[1:])
     dataset, metadata = datasets[horizon], metadata_by_horizon[horizon]
-    model = fit_before(dataset, metadata, family, args.holdout_start, args.output / "selected_model.joblib", args.n_jobs)
+    model = fit_before(dataset, metadata, family, args.holdout_start, args.output / "selected_model.joblib", args.n_jobs,
+                       args.training_window_months)
     policy = policy_for(horizon, gate)
     model.metadata["selection"] = {"candidate": winner, "development_gate_passed": selection["development_gate_passed"], "policy": asdict(policy)}
     model.save(args.output / "selected_model.joblib")
     results = {"selected": winner, "calibration_mode": args.calibration_mode,
+               "training_window_months": args.training_window_months,
                "development_gate_passed": selection["development_gate_passed"],
                "holdout_previously_inspected": args.holdout_previously_inspected, "evaluation": {}}
     periods = {"holdout": (args.holdout_start, args.holdout_end),
@@ -328,7 +376,8 @@ def main():
     for label, (start, end) in periods.items():
         if pd.Timestamp(end) <= pd.Timestamp(start):
             continue
-        predictions = forecasts_for(model, dataset, metadata, start, end, calendar, args.calibration_mode)
+        predictions, model = forecasts_for(model, dataset, metadata, start, end, calendar, args.calibration_mode,
+                                           args.training_window_months, args.output)
         predictions.to_parquet(args.output / f"{label}_predictions.parquet", index=False)
         period_bars = bars.loc[bars["date"].between(pd.Timestamp(start), pd.Timestamp(end))]
         trades, nav, base = run_portfolio(predictions, period_bars, policy, args.output / label)
@@ -348,14 +397,14 @@ def main():
     holdout = results["evaluation"]["holdout"]["portfolio"]
     stress = results["evaluation"]["holdout"]["friction_100bps"]
     results["empirical_gate_passed"] = bool(selection["development_gate_passed"]
-        and holdout["closed_trades"] >= 50 and (holdout["win_rate_closed_net"] or 0) >= .55
+        and holdout["closed_trades"] >= 50
         and ((holdout["profit_factor"] or 0) >= 1.2 or holdout["profit_factor_status"] == "NO_LOSING_TRADES") and holdout["total_return"] > 0
         and (holdout["expectancy_net_return"] or 0) >= .002
         and holdout["max_drawdown"] <= .10 and stress["total_return"] > 0
         and not holdout["open_positions"] and not stress["open_positions"])
     results["production_status"] = "NOT_ELIGIBLE_DATA_EXECUTION_VALIDATION_REQUIRED" if results["empirical_gate_passed"] else "REJECTED_PROFITABILITY_GATE"
     results["limitations"] = [
-        "No guaranteed future profitability; selection spans 12 predeclared candidates and still has selection risk.",
+        f"No guaranteed future profitability; selection spans {candidate_count} predeclared candidates and still has selection risk.",
         "Historical data and corporate adjustments may be revised; export has no original publication-time ledger.",
         "Raw price profit excludes cash/stock/rights entitlements; adjusted OHLC features use the provider's current history.",
         "Next-open/close fills are daily-bar proxies, not replayed order-book executions; no price-band queue/partial-fill evidence.",
