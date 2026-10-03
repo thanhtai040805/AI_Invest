@@ -165,12 +165,3 @@ def trim_sorted_set_by_score(key: str, max_score: float, min_score: float = "-in
         r.zremrangebyscore(key, min_score, max_score)
     except Exception as e:
         print(f"[DNSE Redis] zremrangebyscore {key} failed: {e}")
-
-
-def add_to_stream(key: str, payload: Any, max_len: int = 10000) -> None:
-    """Add event to Redis Stream for durable replay."""
-    try:
-        r = get_redis()
-        r.xadd(key, payload, maxlen=max_len, approximate=True)
-    except Exception as e:
-        print(f"[DNSE Redis] xadd {key} failed: {e}")

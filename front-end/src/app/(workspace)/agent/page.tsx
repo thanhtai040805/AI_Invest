@@ -10,6 +10,7 @@ import { Link } from "@/lib/router"
 import {
   approvedOrder,
   confirmationNarratives,
+  decision as resolutionDecision,
   executionRecord,
   horizonGroup,
   investmentHorizons,
@@ -75,6 +76,7 @@ const fieldNames: Record<string, string> = {
   weight_cap: "Trần tỷ trọng (NAV)", action_type: "Hành động", status: "Trạng thái",
   thesis_id: "Mã luận điểm", order_id: "Mã lệnh", decision_hash: "Mã kiểm toán",
   confirming_signals: "Tín hiệu xác nhận", invalidation_conditions: "Điều kiện vô hiệu",
+  signal_1_factor: "Nền tảng và lợi nhuận", signal_2_surveillance: "Dòng tiền và tín hiệu thị trường", signal_3_macro_hmm: "Bối cảnh vĩ mô",
   debate_summary: "Tổng hợp quyết định", executive_rationale: "Lý do điều hành",
   severity_tier: "Tầng rủi ro",
 }
@@ -146,12 +148,104 @@ function Metric({ label, value, note }: { label: string; value: string; note?: s
   )
 }
 
+function DecisionEvidenceSection({ thesis, counter, resolution, plan, riskLogs }: { thesis?: RecordData; counter?: RecordData; resolution?: RecordData; plan?: RecordData; riskLogs: RecordData[] }) {
+  const thesisId = thesis?.thesis_id
+  const matchedCounter = thesisId && counter?.thesis_id === thesisId ? counter : undefined
+  const matchedResolution = thesisId && resolution?.thesis_id === thesisId ? resolution : undefined
+  const report = thesis ? thesisDetails(thesis) : undefined
+  const orderDecision = approvedOrder(plan, riskLogs)
+  const independentSignals = object(object(thesis?.input_validation).independent_signals)
+  const thesisNarratives = [report?.whyStock, report?.whyNow, report?.catalyst].filter((value): value is string => !!value)
+  const targetDetails = object(report?.body.price_target)
+  const valuationSource = object(thesis?.input_validation).valuation_source
+  const counterReview = object(matchedCounter?.llm_review)
+  const resolutionPayload = object(matchedResolution?.verdict_payload)
+  const constraints = object(matchedCounter?.execution_constraints)
+  const stopOverride = numeric(constraints.stop_loss_pct_override)
+  const counterReasons = [...(Array.isArray(matchedCounter?.block_reasons) ? matchedCounter.block_reasons : []), ...(Array.isArray(matchedCounter?.holes) ? matchedCounter.holes : [])]
+    .map(value => cleanText(typeof value === "string" ? value : JSON.stringify(value))).filter((value, index, values) => !!value && values.indexOf(value) === index)
+  const counterNarrative = cleanText(String(counterReview.rationale || matchedCounter?.rationale || ""))
+  const fatalFlaw = counterReview.fatal_flaw === true
+  const fatalFlawDescription = typeof counterReview.fatal_flaw === "string" ? cleanText(counterReview.fatal_flaw) : "AI gắn cờ lỗi nghiêm trọng; xem lý do và trích dẫn trong nội dung phản biện bên dưới."
+  const blindspotPenalty = numeric(counterReview.blindspot_penalty)
+  const cioNarrative = cleanText(String(resolutionPayload.executive_rationale || matchedResolution?.debate_summary || ""))
+  const valuationMethod = typeof targetDetails.valuation_method === "string" ? targetDetails.valuation_method : ""
+  const valuationMeasures = [...new Set(valuationMethod.match(/EV\/EBITDA|PE|P\/B|DCF/g) || [])]
+  const targetRange = Array.isArray(targetDetails.target_range) ? targetDetails.target_range.map(numeric).filter((value): value is number => value !== null) : []
+
+  return (
+    <section aria-labelledby="decision-evidence-title" className="@container rounded-xl border border-line bg-surface p-5 lg:p-6">
+      <header className="border-b border-line pb-4">
+        <h2 id="decision-evidence-title" className="text-base font-semibold">Căn cứ của quyết định giao dịch</h2>
+        <p className="mt-1.5 text-xs leading-relaxed text-secondary">Theo dấu luận điểm, phản biện và phán quyết được lưu cho mã/ngày đang xem. Mục tiêu định giá, giá lệnh được duyệt và giá khớp là các mức giá khác nhau.</p>
+      </header>
+
+      <div className="mt-4 grid items-start gap-4 @2xl:grid-cols-2">
+        <article className="min-w-0 rounded-lg border border-line p-4">
+          <h3 className="text-sm font-semibold">Luận điểm thuận</h3>
+          {Object.keys(independentSignals).length > 0 && (
+            <ul className="mt-3 space-y-2 text-sm leading-relaxed text-secondary">
+              {Object.entries(independentSignals).map(([key, value]) => <li key={key}><span className="font-medium text-ink">{fieldNames[key] || key.replaceAll("_", " ")}: </span>{cleanText(String(value))}</li>)}
+            </ul>
+          )}
+          {thesisNarratives.length > 0 ? (
+            <div className="mt-3 space-y-3 text-sm leading-relaxed text-secondary">
+              {thesisNarratives.map((narrative, index) => <p key={`${index}-${narrative}`}>{narrative}</p>)}
+            </div>
+          ) : !Object.keys(independentSignals).length && <p className="mt-3 text-sm text-secondary">Bản ghi Thesis không lưu diễn giải hoặc tín hiệu xác nhận.</p>}
+          {report && numeric(object(report.body.business_quality).score) !== null && <p className="mt-3 border-t border-line pt-3 text-xs text-secondary">Chất lượng tài chính ghi nhận: <strong className="text-ink">{number(object(report.body.business_quality).score, "/100")}</strong></p>}
+        </article>
+
+        <article className="min-w-0 rounded-lg border border-line p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold">Phản biện</h3>
+            <span className="rounded bg-soft px-2 py-1 text-xs font-medium">{matchedCounter?.verdict ? String(matchedCounter.verdict) : "Chưa có phán quyết"}{numeric(matchedCounter?.cts_score) !== null ? ` · CTS ${number(matchedCounter?.cts_score, "/100")}` : ""}</span>
+          </div>
+          {counterNarrative && <p className="mt-3 text-sm leading-relaxed text-secondary">{counterNarrative}</p>}
+          {blindspotPenalty !== null && <p className="mt-2 text-xs text-secondary">Mức rủi ro bổ sung do AI ghi nhận: <strong className="text-ink">{number(blindspotPenalty, " điểm CTS")}</strong></p>}
+          {fatalFlaw && <p className="mt-3 rounded-md bg-loss/5 p-3 text-sm leading-relaxed text-loss"><strong>Lỗi nghiêm trọng do AI phản biện ghi nhận:</strong> {fatalFlawDescription}</p>}
+          {!!counterReasons.length && <ul className="mt-3 list-disc space-y-1 pl-5 text-xs leading-relaxed text-secondary">{counterReasons.map(reason => <li key={reason}>{reason}</li>)}</ul>}
+          {!matchedCounter && <p className="mt-3 text-sm text-secondary">Chưa có phản biện gắn đúng mã luận điểm này.</p>}
+          {Object.keys(constraints).length > 0 && <div className="mt-3 border-t border-line pt-3 text-xs leading-relaxed text-warning">
+            <strong>Điều kiện Counter đề xuất:</strong>{" "}
+            {[constraints.max_position_size_multiplier != null && `quy mô ×${constraints.max_position_size_multiplier}`, stopOverride !== null && `stop-loss ${number(stopOverride * 100, "%")}`, Array.isArray(constraints.tranche_allocation) && `chia ${constraints.tranche_allocation.length} đợt`, numeric(constraints.entry_ceiling_price) !== null && `giá trần ${number(constraints.entry_ceiling_price, " ₫")}`].filter(Boolean).join(" · ")}.
+            <span className="mt-1 block">Chưa có liên kết đủ để xác nhận các điều kiện này đã áp dụng cho lệnh cụ thể.</span>
+          </div>}
+        </article>
+
+        <article className="min-w-0 rounded-lg border border-line p-4 @2xl:col-span-2">
+          <h3 className="text-sm font-semibold">Phán quyết và hành động</h3>
+          <p className="mt-2 text-xs leading-relaxed text-secondary">Thesis mở hồ sơ để thẩm định; Counter ghi nhận phản biện; CIO đưa ra phán quyết. Quyết định danh mục ghi hành động, còn kiểm soát rủi ro xác nhận khối lượng và giá được duyệt.</p>
+          {matchedResolution && <p className="mt-3"><span className="rounded bg-soft px-2 py-1 text-xs font-medium">CIO · {resolutionDecision(matchedResolution).label}</span></p>}
+          {cioNarrative ? <p className="mt-3 text-sm leading-relaxed text-secondary">{cioNarrative}</p> : <p className="mt-3 text-sm text-secondary">{matchedResolution ? `Mã phán quyết: ${String(matchedResolution.final_resolution || "Chưa lưu")}.` : "Chưa có phán quyết CIO gắn đúng mã luận điểm này."}</p>}
+          <p className="mt-3 border-t border-line pt-3 text-sm"><span className="text-secondary">Quyết định danh mục: </span><strong>{orderDecision.label}</strong></p>
+          {orderDecision.rationale && <p className="mt-2 text-xs leading-relaxed text-secondary">{orderDecision.rationale}</p>}
+          {plan && thesis && plan.thesis_id !== thesisId && <p role="status" className="mt-3 text-xs leading-relaxed text-warning">Đối chiếu theo mã và ngày; bản ghi danh mục chưa có mã luận điểm để nối trực tiếp.</p>}
+        </article>
+      </div>
+
+      <div className="mt-4 rounded-lg bg-soft/50 p-4">
+        <h3 className="text-sm font-semibold">Các mức giá trong hồ sơ</h3>
+        <div className="mt-3 grid gap-3 @md:grid-cols-2 @5xl:grid-cols-4">
+          <Metric label="Giá tham chiếu khi lập luận điểm" value={number(report?.entry, " ₫")} />
+          <Metric label="Mục tiêu cơ sở của Thesis" value={number(report?.target, " ₫")} note={targetRange.length === 2 ? `Khoảng mục tiêu đã lưu: ${number(Math.min(...targetRange), " ₫")} – ${number(Math.max(...targetRange), " ₫")}` : numeric(targetDetails.bull_case) !== null ? `Kịch bản thuận: ${number(targetDetails.bull_case, " ₫")}` : undefined} />
+          <Metric label="Giá lệnh được duyệt" value={orderDecision.price === null ? "Chưa có" : number(orderDecision.price, " ₫")} />
+          <Metric label="Cơ sở định giá được ghi nhận" value={valuationMeasures.length ? valuationMeasures.join(" · ") : valuationMethod || "Chưa lưu phương pháp"} note={typeof valuationSource === "string" && valuationSource ? `Nguồn: ${cleanText(valuationSource)}` : "Bản ghi không lưu nguồn định giá để truy xuất."} />
+        </div>
+        {!valuationMethod && <p role="status" className="mt-3 text-xs text-warning">Không đủ dấu vết trong bản ghi để giải thích phương pháp tạo giá mục tiêu.</p>}
+        <p className="mt-3 text-xs leading-relaxed text-secondary">Giá khớp được ghi riêng trong nhật ký thực thi. Nhật ký hiện đối chiếu theo mã/ngày, không có liên kết trực tiếp tới mã quyết định danh mục.</p>
+      </div>
+    </section>
+  )
+}
+
 function InvestmentThesisSection({ thesis, counter, resolution }: { thesis?: RecordData; counter?: RecordData; resolution?: RecordData }) {
   if (!thesis) return <article className="rounded-xl border border-line bg-surface p-5 lg:p-6"><h2 className="text-lg font-semibold">Luận điểm đầu tư</h2><p className="mt-3 text-sm leading-7 text-secondary">Chưa có luận điểm cho mã và ngày đang xem. Giá mua, mục tiêu và câu chuyện đầu tư sẽ hiển thị khi có bản phân tích được ghi nhận.</p></article>
   const report = thesisDetails(thesis)
   const review = thesisReview(thesis, counter, resolution)
+  const matchedCounter = counter?.thesis_id === thesis.thesis_id ? counter : undefined
   const blocked = /BLOCK|REJECT/i.test(review.code) || numeric(object(resolution?.verdict_payload).weight_cap) === 0
-  const constraints = counter?.thesis_id === thesis?.thesis_id ? object(counter?.execution_constraints) : {}
+  const constraints = object(matchedCounter?.execution_constraints)
   const stopOverride = numeric(constraints.stop_loss_pct_override)
   const storedStop = numeric(object(report.body.exit_conditions).hard_stop_loss_price)
   const stop = report.entry && stopOverride !== null && stopOverride > 0 && stopOverride < 1 ? report.entry * (1 - stopOverride) : storedStop !== null && storedStop > 0 ? storedStop : null
@@ -159,18 +253,18 @@ function InvestmentThesisSection({ thesis, counter, resolution }: { thesis?: Rec
   const upside = report.entry && report.target ? (report.target / report.entry - 1) * 100 : null
   const category = horizonGroup(report.months)
   const conclusion = investmentText(resolution?.debate_summary)
+  const cioDecision = resolution ? resolutionDecision(resolution) : undefined
   const conditions = confirmationNarratives(thesis?.confirming_signals)
   const risks = monitoredRisks(report.risks)
 
   return (
-    <article className="rounded-xl border border-line bg-surface">
+    <article className="@container rounded-xl border border-line bg-surface">
       <header className="border-b border-line p-5 lg:p-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="text-lg font-semibold tracking-tight">Luận điểm đầu tư sau thẩm định</h2>
           <span className={"rounded-md px-2.5 py-1 text-xs font-medium " + review.tone}>{review.label}</span>
         </div>
         <p className="mt-2 text-xs leading-relaxed text-secondary">Bản phân tích {time(thesis && timestamp(thesis))}. Kết luận thẩm định được đối chiếu theo đúng phiên bản luận điểm.</p>
-        {conclusion && <p className="mt-4 max-w-[80ch] whitespace-pre-wrap text-sm leading-7 text-ink">{conclusion}</p>}
         {!review.complete && <p role="status" className="mt-3 text-sm text-warning">Luận điểm đang chờ kết luận đầy đủ; giá và mục tiêu dưới đây là dữ liệu phân tích đã ghi nhận.</p>}
         {blocked && <p role="status" className="mt-3 text-sm text-loss">Luận điểm này chưa được chấp thuận đầu tư. Giá và mục tiêu bên dưới là dữ liệu phân tích đã ghi nhận.</p>}
       </header>
@@ -183,17 +277,14 @@ function InvestmentThesisSection({ thesis, counter, resolution }: { thesis?: Rec
           <Metric label="Thời hạn đã phân tích" value={report.months === null ? "Chưa xác định" : number(report.months, " tháng")} />
         </dl>
 
-        <section aria-label="Câu chuyện đầu tư" className="space-y-5 border-t border-line pt-6">
-          {[
-            ["Vì sao chọn doanh nghiệp này?", report.whyStock],
-            ["Vì sao xem xét đầu tư lúc này?", report.whyNow],
-            ["Điều gì có thể đưa giá đến mục tiêu?", report.catalyst],
-          ].map(([label, text]) => (
-            <div key={label}>
-              <h3 className="mb-2 text-sm font-semibold text-ink">{label}</h3>
-              <p className="max-w-[80ch] whitespace-pre-wrap text-sm leading-7 text-secondary">{text || "Bản báo cáo chưa cung cấp diễn giải cho nội dung này."}</p>
+        <section aria-label="Phán quyết CIO" className="border-t border-line pt-6">
+          <article className="border-l-2 border-ink pl-5">
+            <div className="flex flex-wrap items-center gap-3">
+              <p className="text-xs font-semibold uppercase tracking-wider text-secondary">Phán quyết CIO</p>
+              {cioDecision && <span className={"rounded-md px-2.5 py-1 text-xs font-semibold " + cioDecision.tone}>{cioDecision.label}</span>}
             </div>
-          ))}
+            {conclusion ? <p className="mt-3 max-w-[85ch] whitespace-pre-wrap text-sm leading-7 text-ink">{conclusion}</p> : <p className="mt-3 text-sm leading-7 text-secondary">Chưa có phán quyết CIO gắn với phiên bản luận điểm này.</p>}
+          </article>
         </section>
 
         <section aria-labelledby="investment-conditions-title" className="border-t border-line pt-6">
@@ -979,9 +1070,9 @@ export default function WarRoom() {
 
       {!resource.data && resource.loading ? <AgentSkeleton /> : !resource.data && resource.error ? (
         <div className="mx-auto max-w-[1600px] p-4 lg:p-6"><div role="alert" className="rounded-lg border border-loss/30 bg-loss/5 p-4 text-sm text-loss">Không tải được báo cáo. <button className="underline" onClick={() => void resource.reload()}>Thử lại</button></div></div>
-      ) : <div className="mx-auto max-w-[1600px] space-y-6 p-4 lg:p-6">
-        <details className="rounded-xl border border-line bg-surface p-5">
-          <summary className="cursor-pointer text-sm font-medium focus-visible:outline-2 focus-visible:outline-mineral">Kết quả tài khoản hiện tại</summary>
+      ) : <div className="@container mx-auto max-w-[1600px] space-y-6 p-4 lg:p-6">
+        <section className="rounded-xl border border-line bg-surface p-5">
+          <h2 className="text-sm font-medium">Kết quả tài khoản hiện tại</h2>
           <p className="mb-4 mt-4 text-xs text-secondary">Quỹ Multi-Agent · {summary?.accountId} · Trạng thái hiện tại, không theo bộ lọc ngày</p>
           <dl className="grid grid-cols-2 gap-5 lg:grid-cols-3">
             <Metric label="Tổng tài sản (NAV)" value={number(summary?.nav, " ₫")} />
@@ -994,22 +1085,22 @@ export default function WarRoom() {
           {summary && !summary.ledgerComplete && <p role="status" className="mt-3 text-xs text-warning">Sổ khớp lệnh chưa đối soát đủ với vị thế. Lãi/lỗ sau phí chưa xác định.</p>}
           {!!summary?.stalePrices.length && <p role="status" className="mt-3 text-xs text-secondary">Giá gần nhất hoặc đóng cửa: {summary.stalePrices.join(", ")}. Cập nhật tài khoản lúc {time(summary.valuedAt)}.</p>}
           {accountResource.error && <p role="status" className="mt-3 text-xs text-warning">Chưa làm mới được tài khoản; đang hiển thị dữ liệu lần tải gần nhất.</p>}
-        </details>
+        </section>
 
         {/* Layer 1: Macro Surveillance & Universe Discovery (Agent 01 & Agent 02) */}
-        <details className="rounded-xl border border-line bg-surface p-5">
-          <summary className="cursor-pointer text-sm font-medium focus-visible:outline-2 focus-visible:outline-mineral">Dữ liệu thị trường và kết quả sàng lọc</summary>
+        <section className="rounded-xl border border-line bg-surface p-5">
+          <h2 className="text-sm font-medium">Dữ liệu thị trường và kết quả sàng lọc</h2>
           <div className="mt-5"><MacroUniverseSection msEntry={msEntry} udEntry={udEntry} /></div>
-        </details>
+        </section>
 
-        <div className="grid items-start gap-5 md:grid-cols-[220px_minmax(0,1fr)]">
+        <div className="grid items-start gap-5 @5xl:grid-cols-[220px_minmax(0,1fr)]">
           <aside className="min-w-0 rounded-xl border border-line bg-surface p-3">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="font-semibold">Cổ phiếu</h2>
               <span className="text-sm tabular-nums text-secondary">{symbols.length}</span>
             </div>
             <input aria-label="Tìm mã cổ phiếu" placeholder="Tìm mã cổ phiếu…" value={search} onChange={e => setSearch(e.target.value)} className={`${control} mb-3 w-full`} />
-            <nav aria-label="Chọn mã phân tích" className="flex max-h-[480px] gap-2 overflow-auto md:block md:space-y-1">
+            <nav aria-label="Chọn mã phân tích" className="flex max-h-none gap-2 overflow-auto @5xl:max-h-[480px] @5xl:block @5xl:space-y-1">
               {visibleSymbols.map(item => {
                 const t = theses.find(row => row.ticker === item)
                 const plan = plans.find(row => row.ticker === item)
@@ -1019,7 +1110,7 @@ export default function WarRoom() {
                     key={item}
                     onClick={() => setSymbol(item)}
                     aria-pressed={active === item}
-                    className={`w-full shrink-0 rounded-lg border-l-2 px-3 py-3 text-left transition-colors focus-visible:outline-2 focus-visible:outline-mineral max-md:w-44 ${active === item ? "border-teal bg-soft" : "border-transparent hover:bg-paper"}`}
+                    className={`w-44 shrink-0 rounded-lg border-l-2 px-3 py-3 text-left transition-colors focus-visible:outline-2 focus-visible:outline-mineral @5xl:w-full ${active === item ? "border-teal bg-soft" : "border-transparent hover:bg-paper"}`}
                   >
                     <span className="block font-mono text-base font-semibold">{item}</span>
                     <span className={`mt-1 inline-block rounded px-1.5 py-0.5 text-xs font-medium ${d.tone}`}>{d.label}</span>
@@ -1035,14 +1126,15 @@ export default function WarRoom() {
           <section className="min-w-0 space-y-5" aria-label="Chi tiết quyết định">
             {active ? <>
               <FinalOrderSection ticker={active} plan={planForReview} riskLogs={entriesFor("portfolio_risk").map(log => log.entry)} executionEntries={matchingEntries("trade_execution").map(log => log.entry)} position={valuedPosition} portfolioAvailable={!!portfolio} />
+              <DecisionEvidenceSection thesis={thesis} counter={counter} resolution={resolution} plan={planForReview} riskLogs={entriesFor("portfolio_risk").map(log => log.entry)} />
               <InvestmentThesisSection thesis={thesis} counter={counter} resolution={resolution} />
-              <details className="rounded-xl border border-line bg-surface p-5">
-                <summary className="cursor-pointer text-sm font-medium focus-visible:outline-2 focus-visible:outline-mineral">Dữ liệu phân tích và theo dõi vị thế</summary>
+              <section className="rounded-xl border border-line bg-surface p-5">
+                <h2 className="text-sm font-medium">Dữ liệu phân tích và theo dõi vị thế</h2>
                 <div className="mt-5 space-y-5">
                   <EquityResearchSection entry={eqEntry} ticker={active} />
                   <PositionMonitoringSection position={position} entry={posMonEntry} ticker={active} />
                 </div>
-              </details>
+              </section>
             </> : (
               <div className="rounded-xl border border-dashed border-line p-8 text-sm text-secondary">
                 Chọn một mã để xem quyết định. Nhật ký hệ thống vẫn có thể được xem bên dưới.
@@ -1052,10 +1144,10 @@ export default function WarRoom() {
         </div>
 
         {/* Layer 5: Offline Governance & Continuous Learning (Agent 10 & Agent 11) */}
-        <details className="rounded-xl border border-line bg-surface p-5">
-          <summary className="cursor-pointer text-sm font-medium focus-visible:outline-2 focus-visible:outline-mineral">Kết quả học và kiểm toán hệ thống</summary>
+        <section className="rounded-xl border border-line bg-surface p-5">
+          <h2 className="text-sm font-medium">Kết quả học và kiểm toán hệ thống</h2>
           <div className="mt-5"><OfflineGovernanceSection rlEntry={rlEntry} govEntry={govEntry} /></div>
-        </details>
+        </section>
 
         {/* Agent Logs section */}
         <details id="agent-logs" className="rounded-xl border border-line bg-surface">
