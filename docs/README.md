@@ -29,6 +29,7 @@ docs/
 
 - [AGENT_INVESTMENT_PRINCIPLES.md](architecture/AGENT_INVESTMENT_PRINCIPLES.md): Nguyên tắc chọn cổ phiếu, cắt lỗ và quản trị danh mục hiện có, viết bằng tiếng Việt và đối chiếu trực tiếp mã nguồn.
 - [SHORT_HORIZON_PROFIT_RESEARCH.md](architecture/SHORT_HORIZON_PROFIT_RESEARCH.md): Challenger học lợi nhuận ròng ngắn hạn, protocol train/calibration, mô phỏng danh mục và kết quả nghiên cứu ngày 02/10/2026.
+- [BROKER_SWING_ML.md](architecture/BROKER_SWING_ML.md): Hướng ML lướt sóng mới gồm market context, chuyên gia setup, học giữ/thoát, điều phối vốn; temporal training và kết quả thực nghiệm đầu tiên.
 
 ### Thư Viện Sơ Đồ Trực Quan (Interactive Diagrams Hub)
 Được thiết kế theo tiêu chuẩn editorial của `/diagram-design` và meta-skill `scientific-diagram-prompt-crafter`:

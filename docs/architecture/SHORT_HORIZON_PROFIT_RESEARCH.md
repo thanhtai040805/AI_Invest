@@ -2,6 +2,11 @@
 
 Ngày lập: **02/10/2026**. Trạng thái: **challenger nghiên cứu offline**.
 
+**Cập nhật 03/10/2026: hướng H3/H5 cố định đã được thay trong thiết kế nghiên
+cứu mới bởi [ML lướt sóng nhiều luồng](BROKER_SWING_ML.md).** Tài liệu này và
+mã nguồn tương ứng được giữ làm lịch sử thực nghiệm/đối chứng. Các kỳ hạn,
+family và calibration bên dưới mô tả challenger cũ.
+
 Cập nhật mục tiêu ngày **03/10/2026**: ML chỉ phục vụ lướt sóng, ưu tiên
 lợi nhuận ròng sau mọi chi phí và thời gian đến lúc tổng lãi đã chốt dương.
 H3 là kỳ hạn thử nghiệm chính; H5 là kỳ hạn so sánh được hỗ trợ. Tỷ lệ thắng
