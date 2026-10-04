@@ -66,18 +66,21 @@ class MLAlphaPredictor:
         # Extract key factor signals: Momentum, FracDiff, Microstructure PIN, Foreign Flow
         mom_20d = latest_features.get('mom_20d', pd.Series([0.0])).iloc[0]
         sharpe_20d = latest_features.get('sharpe_20d', pd.Series([0.0])).iloc[0]
-        ff_ratio = latest_features.get('foreign_flow_ratio_20d', pd.Series([0.0])).iloc[0]
+        ff_ratio = latest_features.get('foreign_flow_ratio_20d', pd.Series([np.nan])).iloc[0]
         order_imbalance = latest_features.get('order_flow_imbalance_proxy', pd.Series([0.0])).iloc[0]
         turnover_anom = latest_features.get('turnover_anomaly', pd.Series([1.0])).iloc[0]
 
         # Standardized Composite Score
-        raw_score = (
-            0.30 * np.tanh(sharpe_20d)
-            + 0.25 * np.tanh(mom_20d * 5.0)
-            + 0.20 * np.tanh(ff_ratio * 3.0)
-            + 0.15 * np.tanh(order_imbalance)
-            + 0.10 * np.tanh(turnover_anom - 1.0)
-        )
+        components = [
+            (0.30, sharpe_20d),
+            (0.25, mom_20d * 5.0),
+            (0.20, ff_ratio * 3.0),
+            (0.15, order_imbalance),
+            (0.10, turnover_anom - 1.0),
+        ]
+        available = [(weight, np.tanh(value)) for weight, value in components if pd.notna(value)]
+        weight_total = sum(weight for weight, _ in available)
+        raw_score = sum(weight * value for weight, value in available) / weight_total if weight_total else 0.0
 
         # Map to calibrated 0.0 - 1.0 scale
         final_alpha = float(1.0 / (1.0 + np.exp(-raw_score * 2.5)))

@@ -165,7 +165,7 @@ class VNICTester:
         self._cache_foreign: dict[str, list[dict]] = defaultdict(list)
         for r in self.cur.fetchall():
             self._cache_foreign[r[0]].append({
-                "dt": r[1], "net": float(r[2]) if r[2] else 0.0,
+                "dt": r[1], "net": float(r[2]) if r[2] is not None else None,
                 "room_rem": float(r[3]) if r[3] else 0.0,
                 "room_lim": float(r[4]) if r[4] else 0.0,
             })
@@ -338,7 +338,7 @@ class VNICTester:
         # ── DB-pulled factors ─────────────────────────────────────
         fin = self._load_fundamentals(dt, list(ohlcv.keys()))
         meta = self._load_meta(list(ohlcv.keys()))
-        foreign = self._load_foreign(dt, list(ohlcv.keys()))
+        foreign = self._load_foreign(dt, list(ohlcv.keys()), ohlcv)
         insider = self._load_insider(dt, list(ohlcv.keys()))
         fin_st = self._load_financial_statements(dt, list(ohlcv.keys()))
 
@@ -528,9 +528,11 @@ class VNICTester:
 
             # ---- Money flow: FOREIGN_NET_5D ----
             if mcap is not None and mcap > 0:
-                net_val = ff.get("net_value", 0)
-                if isinstance(net_val, (int, float)):
+                net_val = ff.get("net_value")
+                if isinstance(net_val, (int, float)) and math.isfinite(net_val):
                     row["FOREIGN_NET_5D"] = net_val / mcap
+                else:
+                    nd.setdefault("FOREIGN_NET_5D", "incomplete or absent foreign-flow observations")
             else:
                 nd.setdefault("FOREIGN_NET_5D", f"mcap={'missing' if m is None else mcap}")
 
@@ -569,12 +571,6 @@ class VNICTester:
                     ttm_nm = ttm["net_income"] / ttm["revenue"]
                     if math.isfinite(ttm_nm):
                         row["NM"] = ttm_nm
-
-        # ── Post-processing: zero-fill FOREIGN_NET_5D ──────────────
-        for sym, row in results.items():
-            if "FOREIGN_NET_5D" not in row or row["FOREIGN_NET_5D"] is None or not math.isfinite(row["FOREIGN_NET_5D"]):
-                row["FOREIGN_NET_5D"] = 0.0
-                nd.setdefault(sym, {}).setdefault("FOREIGN_NET_5D", "zero-filled (no foreign activity)")
 
         # Compute per-factor ICB sector-neutral percentile ranks
         factor_ranks = {}
@@ -656,13 +652,27 @@ class VNICTester:
                        "ceiling": float(r[2]) if r[2] else None,
                        "floor": float(r[3]) if r[3] else None} for r in self.cur.fetchall()}
 
-    def _load_foreign(self, dt, symbols):
+    def _load_foreign(self, dt, symbols, ohlcv):
         if hasattr(self, "_cache_foreign"):
             cutoff_30d = dt - timedelta(days=30)
             rooms = {}
             for sym in symbols:
                 rows = self._cache_foreign.get(sym, [])
-                net_30d = sum(r["net"] for r in rows if cutoff_30d <= r["dt"] <= dt)
+                window_rows = [r for r in rows if cutoff_30d <= r["dt"] <= dt]
+                observed = {r["dt"] for r in window_rows}
+                prices = ohlcv.get(sym)
+                expected = {
+                    ts.date() if hasattr(ts, "date") else ts
+                    for ts in prices.index
+                    if cutoff_30d <= (ts.date() if hasattr(ts, "date") else ts) <= dt
+                } if prices is not None else set()
+                window_available = prices is not None and prices.index.min().date() <= cutoff_30d
+                complete = (
+                    bool(expected) and window_available
+                    and expected.issubset(observed)
+                    and all(r["net"] is not None for r in window_rows if r["dt"] in expected)
+                )
+                net_30d = sum(r["net"] for r in window_rows if r["dt"] in expected) if complete else None
                 latest = None
                 for r in reversed(rows):
                     if r["dt"] <= dt:
@@ -670,18 +680,20 @@ class VNICTester:
                         break
                 rooms[sym] = {
                     "net_value": net_30d,
-                    "room_remaining": latest["room_rem"] if latest else 0.0,
-                    "room_limit": latest["room_lim"] if latest else 0.0,
+                    "room_remaining": latest["room_rem"] if latest else None,
+                    "room_limit": latest["room_lim"] if latest else None,
                 }
             return rooms
         cutoff_30d = dt - timedelta(days=30)
         self.cur.execute("""
-            SELECT symbol, SUM(net_value) as net_30d
+            SELECT symbol, trade_date, net_value
             FROM foreign_flow
             WHERE trade_date >= %s AND trade_date <= %s AND symbol = ANY(%s)
-            GROUP BY symbol
+            ORDER BY symbol, trade_date
         """, (cutoff_30d, dt, symbols))
-        net = dict(self.cur.fetchall())
+        observed_rows = defaultdict(dict)
+        for symbol, trade_date, net_value in self.cur.fetchall():
+            observed_rows[symbol][trade_date] = float(net_value) if net_value is not None else None
         self.cur.execute("""
             SELECT DISTINCT ON (symbol) symbol, room_remaining, room_limit
             FROM foreign_flow
@@ -690,12 +702,24 @@ class VNICTester:
         """, (symbols, dt))
         rooms = {}
         for r in self.cur.fetchall():
-            rooms[r[0]] = {"room_remaining": float(r[1]) if r[1] else 0,
-                           "room_limit": float(r[2]) if r[2] else 0}
+            rooms[r[0]] = {"room_remaining": float(r[1]) if r[1] is not None else None,
+                           "room_limit": float(r[2]) if r[2] is not None else None}
         for sym in symbols:
-            if sym not in rooms:
-                rooms[sym] = {"room_remaining": 0, "room_limit": 0}
-            rooms[sym]["net_value"] = net.get(sym, 0)
+            prices = ohlcv.get(sym)
+            expected = {
+                ts.date() if hasattr(ts, "date") else ts
+                for ts in prices.index
+                if cutoff_30d <= (ts.date() if hasattr(ts, "date") else ts) <= dt
+            } if prices is not None else set()
+            window_available = prices is not None and prices.index.min().date() <= cutoff_30d
+            observations = observed_rows.get(sym, {})
+            complete = (
+                bool(expected) and window_available
+                and expected.issubset(observations)
+                and all(observations[d] is not None for d in expected)
+            )
+            rooms.setdefault(sym, {"room_remaining": None, "room_limit": None})
+            rooms[sym]["net_value"] = sum(observations[d] for d in expected) if complete else None
         return rooms
 
     def _load_insider(self, dt, symbols):

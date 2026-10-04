@@ -29,7 +29,7 @@ def _parse_ms_date(val: str) -> Optional[date]:
         return None
     try:
         ts = int(val.replace("/Date(", "").replace(")/", ""))
-        return datetime.fromtimestamp(ts / 1000.0).date()
+        return datetime.fromtimestamp(ts / 1000.0, tz=timezone.utc).astimezone(TZ_VN).date()
     except Exception:
         return None
 
@@ -171,8 +171,8 @@ def parse_rows(raw_rows: list[dict], symbol: str) -> list[tuple]:
     return rows
 
 def _get_hose_symbols(storage: StoragePort) -> list[str]:
-    """Get list of distinct HOSE symbols from ohlcv."""
-    query = "SELECT DISTINCT symbol FROM ohlcv ORDER BY symbol;"
+    """Get current HOSE-listed symbols from the instrument master."""
+    query = "SELECT symbol FROM stocks WHERE exchange = 'HOSE' ORDER BY symbol;"
     try:
         import psycopg2
         conn = psycopg2.connect(DB_URL)
@@ -207,6 +207,77 @@ def refresh_incremental() -> dict:
             time.sleep(0.1)
         
     return {"rows": total_rows, "symbols_processed": len(symbols)}
+
+def refresh_available_history(max_workers: int = 3) -> dict:
+    """Reconcile Vietstock's available history against its current session dates.
+
+    Vietstock currently returns about one year of daily rows. Replace that
+    source's rows per symbol in a transaction so legacy date-parsing errors and
+    missed sessions are repaired without touching older CafeF-only history.
+    """
+    end_date = datetime.now(TZ_VN).date()
+    requested_start = end_date - timedelta(days=365)
+    storage = PostgresAdapter(DB_URL)
+    symbols = _get_hose_symbols(storage)
+    if not symbols:
+        return {"rows": 0, "symbols": 0, "errors": 0, "status": "no_hose_symbols"}
+
+    def _worker(symbol: str):
+        with httpx.Client(headers=_HEADERS, timeout=15, follow_redirects=True) as client:
+            token = get_vietstock_token(client, symbol)
+            if not token:
+                raise RuntimeError(f"No Vietstock token for {symbol}")
+            raw = fetch_foreign_flow_for_symbol(
+                symbol, requested_start, end_date, token=token, client=client,
+            )
+        rows = parse_rows(raw, symbol)
+        if not rows:
+            raise RuntimeError(f"Vietstock returned no parseable history for {symbol}")
+        dates = [row[1] for row in rows]
+        if len(dates) != len(set(dates)):
+            raise RuntimeError(f"Vietstock returned duplicate dates for {symbol}")
+        if any(dt.weekday() >= 5 for dt in dates):
+            raise RuntimeError(f"Vietstock returned weekend dates for {symbol}")
+
+        # A prior UTC/local-time parse can leave the first row one day early.
+        # Clear only Vietstock data from that boundary, then atomically replace
+        # it with correctly parsed rows. CafeF history outside collisions stays.
+        replace_from = min(dates) - timedelta(days=1)
+        with storage.transaction() as cur:
+            cur.execute(
+                "DELETE FROM foreign_flow WHERE symbol = %s AND source = 'vietstock' "
+                "AND trade_date >= %s AND trade_date <= %s",
+                (symbol, replace_from, end_date),
+            )
+            _insert_rows(storage, rows)
+        return len(rows), min(dates), max(dates)
+
+    total_rows = 0
+    refreshed = 0
+    errors = []
+    oldest_date = None
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_worker, symbol): symbol for symbol in symbols}
+        for future in as_completed(futures):
+            symbol = futures[future]
+            try:
+                count, first_date, last_date = future.result()
+                total_rows += count
+                refreshed += 1
+                oldest_date = min(oldest_date, first_date) if oldest_date else first_date
+            except Exception as exc:
+                errors.append(symbol)
+                logger.error("Vietstock history reconciliation failed for %s: %s", symbol, exc)
+
+    return {
+        "rows": total_rows,
+        "symbols": refreshed,
+        "errors": len(errors),
+        "error_symbols": sorted(errors),
+        "requested_start": requested_start.isoformat(),
+        "available_start": oldest_date.isoformat() if oldest_date else None,
+        "end_date": end_date.isoformat(),
+    }
 
 def _get_completed_symbols(storage: StoragePort, min_rows: int = 1000) -> set[str]:
     """Get symbols that already have substantial history in foreign_flow."""
@@ -282,7 +353,7 @@ def _insert_rows(storage: StoragePort, rows: list[tuple]):
     query = """
         INSERT INTO foreign_flow
         (symbol, trade_date, buy_volume, sell_volume, buy_value, sell_value,
-         net_volume, net_value, room_remaining, room_limit, ownership_pct)
+         net_volume, net_value, room_remaining, room_limit, ownership_pct, source)
         VALUES %s
         ON CONFLICT (symbol, trade_date)
         DO UPDATE SET
@@ -295,10 +366,11 @@ def _insert_rows(storage: StoragePort, rows: list[tuple]):
             room_remaining = EXCLUDED.room_remaining,
             room_limit     = EXCLUDED.room_limit,
             ownership_pct  = EXCLUDED.ownership_pct,
-            source         = 'vietstock'
+            source         = EXCLUDED.source
     """
     try:
-        storage.execute_values(query, rows, page_size=100)
+        storage.execute_values(query, [(*row, "vietstock") for row in rows], page_size=100)
     except Exception as e:
-        logger.error(f"Failed to persist foreign flow: {e}")
+        logger.error("Failed to persist foreign flow: %s", e)
+        raise
 
