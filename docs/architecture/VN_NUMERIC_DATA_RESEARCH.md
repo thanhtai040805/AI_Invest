@@ -165,8 +165,8 @@ CafeF và 5.307 Vietstock; khóa mã/ngày không trùng); 29.913 dòng
 dòng `macro_indicators`/32 chỉ báo. Hai insider rows có ngày 1900-01-01,
 dấu hiệu cần xử lý như dữ liệu ngày bất thường.
 
-Theo đúng truy vấn universe trong trainer, top 100 mã hiện tại có 280.474
-bar từ 2014 tới 02/10/2026. Chỉ 138.510 bar (49,4%) khớp một dòng
+Theo đúng truy vấn universe trong trainer tới cutoff 02/10/2026, top 100 mã
+được chọn có 280.474 bar từ 2014 tới 02/10/2026. Chỉ 138.510 bar (49,4%) khớp một dòng
 `foreign_flow` cùng mã/ngày; 18.403 dòng khớp có net flow bằng 0 và 120.107
 dòng khác 0. Vì `FeatureForge` left-join rồi fill missing bằng 0, mã/ngày
 không có dòng có thể bị nhập nhằng với dòng flow bằng 0 ở feature. Trong cùng
@@ -174,6 +174,21 @@ không có dòng có thể bị nhập nhằng với dòng flow bằng 0 ở fea
 có `volume_ato` hoặc `volume_atc` dương (tổng ATO 128.588.800, ATC
 884.223.200 đơn vị). Vì vậy tên cột continuous chưa được chứng minh là volume
 liên tục thuần.
+
+Tách theo năm cho thấy top100 foreign-flow coverage là 0% trong 2014–15,
+34,3% trong 2016, 56–60% trong 2017–19 và ổn định khoảng 56–57% mỗi năm từ
+2020 đến 2026. Bảng có các trường buy/sell/net volume và value, gần như đầy
+đủ; phép kiểm tra số học tìm thấy 80 dòng CafeF và 42 dòng Vietstock mà net
+không bằng buy trừ sell. Cần xác minh rounding/định nghĩa trước khi loại bỏ
+hay dùng các dòng này.
+
+`foreign_net_vol` trong daily view không thể dùng thay cho bảng riêng:
+trong 498.231 ngày-mã CafeF giao nhau giữa hai bảng, có 302.922 trường hợp
+bảng riêng có flow khác 0 nhưng daily view bằng 0; chỉ 206 trường hợp cả hai
+khác 0 và cùng giá trị. Daily view ghi `dnse_history` cho phần lớn lịch sử,
+nhưng foreign net khác 0 chỉ xuất hiện ở 3/768.746 dòng nguồn đó. Ranker gọi
+bảng `foreign_flow` riêng, nên cần giữ đúng đường dữ liệu này và kiểm tra
+missing-vs-zero ngay trong feature output.
 
 `macro_indicators` có 3.025 dòng `vninbr_interbank_rate` từ 02/12/2014 tới
 26/09/2026. Bảng `market_regime` hiện chỉ có 57 ngày từ 10/07/2026 tới
