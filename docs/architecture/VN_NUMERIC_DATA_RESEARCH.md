@@ -319,6 +319,20 @@ mô tả; chưa đủ contract để đánh giá khả năng khớp lệnh và l
 Cần xác minh payload gốc, semantics điều chỉnh, vintage/availability và nguồn
 volume có phân tách phiên.
 
+Vòng truy nguyên nguồn ngày 04/10/2026 (`SOURCE_LINEAGE_PRICE_PROVENANCE_20261004`)
+đã lần theo writer DNSE hiện có: endpoint `/price/ohlc` trả các mảng nến
+`t/o/h/l/c/v`, nhưng writer gán chúng vào trường `*_adj` và seed
+`close_unadj` bằng cùng giá close. Khi upsert, code có thể ghi đè adjusted OHLC
+và `data_source` nhưng giữ `close_unadj` cũ qua `COALESCE`; đây là rủi ro trộn
+nguồn/vintage, chưa phải kết luận rằng từng hàng hiện tại đã bị trộn. Các nhãn
+legacy `cafef_unadj`, `dnse_history` và các nhãn ratio/index/neighbor fill
+không truy được về writer hiện có trong checkout. Tài liệu DNSE được kiểm tra
+chỉ xác nhận các endpoint lịch sử tồn tại; chưa chứng minh payload thực tế,
+thời hạn lịch sử, adjustment semantics, revision/availability hay quyền lưu
+trữ nghiên cứu. Cần một cặp payload nguồn và row LOCAL có hash cùng thời điểm
+tải, rồi mới phân loại/sửa các nhãn legacy. Không có payload nào được tải
+trong vòng này.
+
 Volume snapshot vẫn chưa tách được giao dịch liên tục khỏi ATO/ATC/thỏa thuận;
 quyền, vintage và universe PIT còn thiếu. Vì thế dữ liệu **chưa đủ sạch/đầy đủ
 để mở nghiên cứu edge** dù lỗi OHLC đã được cách ly.

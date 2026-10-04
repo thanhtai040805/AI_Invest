@@ -71,6 +71,16 @@
         "stored_adj_factor_semantics": "UNRESOLVED; direct and reciprocal conventions both fail at tolerance in this audit",
         "decision": "Descriptive price integrity checks only; do not use as verified executable raw/PIT history for profitability research"
       },
+      "source_lineage_audit": {
+        "date": "2026-10-04",
+        "artifact": "scratch/vn_swing_lab/repairs/SOURCE_LINEAGE_PRICE_PROVENANCE_20261004/evaluation.json",
+        "status": "NO_SOURCE_CONTRACT_VERIFIED",
+        "current_DNSE_writer": "Maps GET /price/ohlc t/o/h/l/c/v into adjusted fields and seeds close_unadj from the same close; public docs reviewed do not settle raw/adjusted semantics or historical revisions/availability.",
+        "upsert_vintage_risk": "Overwrites adjusted OHLC and data_source but retains a prior non-null close_unadj; source/vintage mixing is possible, not confirmed on individual rows.",
+        "historical_source_labels_untraceable": ["cafef_unadj", "dnse_history", "dnse_event_ratio_fill", "dnse_ratio_fill", "dnse_index_fill", "dnse_index_ratio_1_fill", "dnse_neighbor_ratio_fill"],
+        "documented_working_date_limit": "DNSE endpoint describes a rolling one-year window; does not provide a full historical calendar",
+        "next_evidence": "A hashed paired provider payload and LOCAL row with retrieval/source vintage, plus service retention and research-use entitlement; recover original loaders for legacy labels."
+      },
       "candidate_sources": ["Current frozen daily export", "DNSE", "exchange market data"],
       "source_urls": ["https://developers.dnse.com.vn/docs/dnse/market-data/"],
       "next_evidence": "Verify original provider payloads and raw/adjusted/corporate-action semantics; obtain dated source vintages/availability; define the stored adjustment-factor convention; establish total-volume treatment of auctions/negotiated trades from source payloads"
