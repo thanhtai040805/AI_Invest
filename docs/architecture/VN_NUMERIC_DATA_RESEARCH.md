@@ -256,16 +256,35 @@ minh đây là sai số thay vì khác phạm vi khớp lệnh/thỏa thuận; g
 fields và không dùng phép suy diễn để sửa chúng. Vì thiếu provenance và định
 nghĩa trường, flow vẫn chưa qua gate dùng làm tín hiệu lịch sử PIT.
 
-Một rà soát riêng trên bảng LOCAL `ohlcv` tìm thấy 3.249 bar vi phạm ít nhất
-một bất biến `low <= open/close <= high` hoặc `high >= low`; trong đó có 445
-bar close cao hơn high và 925 bar close thấp hơn low. `ohlcv_unadjusted` lặp
-lại từ view dựa trên `market_data_daily`, không phải nguồn độc lập; cả 3.249 bar
-này vẫn vi phạm range ở view đó, và OHLC khác với bảng `ohlcv` ở 3.168 bar.
-Chưa có payload nguồn/vintage độc lập để sửa giá; các bar này phải được cách
-ly khỏi phép đo giá cho đến khi lấy được nguồn đúng. Volume snapshot cũng chưa
-tách được giao dịch liên tục khỏi ATO/ATC/thỏa thuận. Vì vậy lần cleanup này
-chỉ loại ngày flow ngoài phiên đã xác định; dữ liệu tổng thể vẫn **chưa sạch
-để mở nghiên cứu edge**.
+Rà soát LOCAL tìm thấy 3.249 bar vi phạm quan hệ OHLC; trong đó 445 close cao
+hơn high và 925 close thấp hơn low. Cả 3.249 khóa ticker/ngày cũng vi phạm ở
+các trường adjusted của `market_data_daily`; view `market_data_daily_calculation`
+nhân/chia các trường ấy bằng close ratio và không phải một nguồn sửa độc lập.
+Phân bố `data_source` trong các dòng lỗi: 2.211 `cafef_unadj`, 795 `dnse_history`,
+211 `dnse_event_ratio_fill`, 26 `dnse_index_ratio_1_fill`, 3
+`dnse_neighbor_ratio_fill` và 3 `dnse_index_fill`. Phân bố này chỉ cho biết
+nguồn/giai đoạn ghi trong DB, chưa xác định được cơ chế gốc gây sai giá.
+
+Kiểm tra sau cleanup bằng so sánh float tuyệt đối từng báo cáo thêm 35.404
+dòng close lệch biên high/low trong `market_data_daily_calculation`. Đối chiếu
+preimage cho thấy cả 35.404 sai khác chỉ do làm tròn phép nhân double: gap lớn
+nhất `1e-13` đơn vị giá, không dòng nào vượt `1e-9`; high/low và open không vi
+phạm. Đây không phải 35.404 nến lỗi mới và không bị sửa. Khi kiểm tra view
+tính toán phải dùng tolerance; candle đầu vào vẫn được kiểm range nghiêm.
+
+Đã cách ly trên LOCAL ngày 04/10/2026: giữ nguyên preimage của 3.249 dòng trong
+`scratch/vn_swing_lab/repairs/OHLC_INVALID_LOCAL_20261004/`, xóa chúng khỏi bảng
+nghiên cứu `ohlcv` (cột giá có ràng buộc NOT NULL), đồng thời đặt
+`open_adj/high_adj/low_adj/close_adj/close_unadj` thành NULL cho đúng 3.249 khóa
+ở `market_data_daily`. Volume, provenance và các trường khác không đổi; PROD
+không bị sửa. Sau transaction còn 0 vi phạm OHLC trong bảng `ohlcv`. Thay đổi
+được chặn tái diễn ở các ba đường nạp đã tìm thấy: historical ingestion,
+daily backfill và CLI backfill đều bỏ qua candle có giá không hữu hạn, không
+dương hoặc nằm ngoài high/low. Đây chưa phải bằng chứng phục hồi được giá gốc.
+
+Volume snapshot vẫn chưa tách được giao dịch liên tục khỏi ATO/ATC/thỏa thuận;
+quyền, vintage và universe PIT còn thiếu. Vì thế dữ liệu **chưa đủ sạch/đầy đủ
+để mở nghiên cứu edge** dù lỗi OHLC đã được cách ly.
 
 Không chạy `refresh_all`, vì hàm này ghi trực tiếp vào `foreign_flow`. Trước
 khi cân nhắc chạy, cần sửa/đánh giá ba bẫy trong code: `skip_existing` coi

@@ -27,7 +27,26 @@
       "id": "PRICES_AND_EXECUTION_VOLUME", "priority": 0,
       "metrics": ["raw and adjusted OHLC", "executed notional", "continuous/ATO/ATC/negotiated volumes", "VWAP from observed trades"],
       "role": "Repair baseline price and liquidity measurements before inferring an edge",
-      "local_status": "EXPORT_EXISTS_SEMANTICS_UNVERIFIED", "candidate_sources": ["Current frozen daily export", "DNSE", "exchange market data"],
+      "local_status": "INVALID_OHLC_QUARANTINED_SEMANTICS_UNVERIFIED",
+      "local_cleanup": {
+        "date": "2026-10-04",
+        "database": "LOCAL aiinvest only; PROD unchanged",
+        "ohlc_invalid_bars_quarantined": 3249,
+        "post_cleanup_ohlc_invalid_bars": 0,
+        "source_adjusted_price_fields_nulled": 3249,
+        "preimage_directory": "scratch/vn_swing_lab/repairs/OHLC_INVALID_LOCAL_20261004",
+        "source_cause": "UNRESOLVED: source labels include CafeF, DNSE history and adjustment-fill paths; no independent raw OHLC vintage is available",
+        "volume_fields_changed": false
+      },
+      "calculation_view_precision_audit": {
+        "date": "2026-10-04",
+        "strict_float_comparison_rows_flagged": 35404,
+        "classified_as": "FLOAT_ROUNDING_ONLY",
+        "maximum_close_boundary_gap": "1e-13 view units",
+        "rows_above_1e-9_tolerance": 0,
+        "mutation": "none; not additional malformed bars"
+      },
+      "candidate_sources": ["Current frozen daily export", "DNSE", "exchange market data"],
       "source_urls": ["https://developers.dnse.com.vn/docs/dnse/market-data/"],
       "next_evidence": "Audit raw OHLC consistency, reconstructed factors, volume definitions, source transitions and original vintage"
     },

@@ -18,6 +18,7 @@ _ai_root = os.path.dirname(os.path.dirname(_script_dir))
 sys.path.insert(0, _ai_root)
 
 from app.config.settings import get_settings
+from app.infrastructure.data_pipelines.ohlc_validation import is_valid_ohlc
 
 CW_PATTERN = __import__('re').compile(r'^C[A-Z]{2,4}\d{4,6}$')
 ETF_PREFIXES = ('FUE', 'FU_', 'E1', 'KIS', 'SSI')
@@ -149,6 +150,11 @@ def process_symbol(client, symbol, start_date):
                     result.get('c', [0] * len(result['t']))[i],
                     int(result.get('v', [0] * len(result['t']))[i]),
                 ))
+            valid_rows = [row for row in rows if is_valid_ohlc(row[2], row[3], row[4], row[5])]
+            invalid_count = len(rows) - len(valid_rows)
+            if invalid_count:
+                print(f"  [DataQuality] Skipped {invalid_count} OHLC-invalid bars for {symbol}")
+            rows = valid_rows
             if rows:
                 conn = get_db_conn()
                 cur = conn.cursor()

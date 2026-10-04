@@ -14,6 +14,7 @@ import yfinance as yf
 from app.config.settings import get_settings
 from app.infrastructure.external_api.dnse.api.client import DNSEClient
 from app.infrastructure.external_api.dnse.intraday_tool import get_intraday_tool
+from app.infrastructure.data_pipelines.ohlc_validation import is_valid_ohlc
 
 logger = logging.getLogger(__name__)
 TZ_VN = timezone(timedelta(hours=7))
@@ -150,12 +151,13 @@ class OHLCVIngestionService:
         import psycopg2
         from psycopg2.extras import execute_values
         
-        conn = psycopg2.connect(self.db_url)
-        cur = conn.cursor()
-        
         # Chuẩn bị dữ liệu cho bulk insert
         rows = []
+        invalid_rows = 0
         for d in data:
+            if not is_valid_ohlc(d.get("open"), d.get("high"), d.get("low"), d.get("close")):
+                invalid_rows += 1
+                continue
             # Nếu chưa có volume separation, thử lấy (giới hạn cho ngày gần nhất để tránh overload)
             v_split = d.get("v_split")
             if not v_split and d["date"] >= (date.today() - timedelta(days=2)):
@@ -180,6 +182,14 @@ class OHLCVIngestionService:
                 d["volume_total"],
                 d["data_source"]
             ))
+
+        if invalid_rows:
+            logger.warning("Skipped %d OHLC-invalid bars before market_data_daily upsert", invalid_rows)
+        if not rows:
+            return 0
+
+        conn = psycopg2.connect(self.db_url)
+        cur = conn.cursor()
             
         execute_values(cur, """
             INSERT INTO market_data_daily (

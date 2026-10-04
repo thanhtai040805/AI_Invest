@@ -89,6 +89,11 @@ xem tới **02/10/2026**; không đổi phần này thành untouched holdout tro
 nghiệm kế tiếp. Artifact scratch cần được bảo quản cùng hash: nó là đầu vào
 local, không được giả định luôn tồn tại trên máy hoặc checkout khác.
 
+Rà soát bản LOCAL database snapshot riêng ngày 04/10/2026 phát hiện thêm
+3.249 bar OHLC-invalid ở 305 mã. Đã quarantine giá LOCAL, giữ preimage có
+hash và thêm xác thực ở ba đường nạp; số 2.884 phía trên thuộc frozen CSV
+được xuất trước đó, không phải cùng một tập đo.
+
 **LAB001** do [research_swing_lab_feasibility.py](../../ai-engine/scripts/research_swing_lab_feasibility.py)
 thực hiện, chỉ dùng DEV 2023–2025, deadline **900 giây**. Tách gross movement,
 cost drag, calibration và exit; so ledger cùng policy với chi phí bằng 0
