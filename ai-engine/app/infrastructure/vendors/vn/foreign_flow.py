@@ -62,8 +62,10 @@ def fetch_foreign_flow_for_symbol(
     end_str = end_date.strftime("%Y-%m-%d")
     
     all_data = []
+    seen_pages = set()
     page_index = 1
     page_size = 250
+    max_pages = 25
     url_api = "https://finance.vietstock.vn/data/gettradingresult"
     
     close_client = False
@@ -90,7 +92,7 @@ def fetch_foreign_flow_for_symbol(
                 "Code": symbol,
                 "OrderBy": "",
                 "OrderDirection": "desc",
-                "Page": str(page_index),
+                "PageIndex": str(page_index),
                 "PageSize": str(page_size),
                 "FromDate": start_str,
                 "ToDate": end_str,
@@ -111,11 +113,27 @@ def fetch_foreign_flow_for_symbol(
                 rows = data.get("Data", [])
                 if not rows:
                     break
+
+                page_dates = tuple(row.get("TradingDate") for row in rows)
+                if page_dates in seen_pages:
+                    logger.warning("Repeated Vietstock page %d for %s; stopping", page_index, symbol)
+                    break
+                seen_pages.add(page_dates)
                     
                 all_data.extend(rows)
-                
-                # Check pagination & safety brake (max 25 pages = 6,250 trading days ~ 25 years)
-                if len(rows) < page_size or page_index >= 25:
+
+                try:
+                    total_rows = int(data.get("Rows"))
+                except (TypeError, ValueError):
+                    total_rows = None
+
+                # Vietstock reports total matches in `Rows`; some responses omit it.
+                if total_rows is not None and len(all_data) >= total_rows:
+                    break
+                if total_rows is None and len(rows) < page_size:
+                    break
+                if page_index >= max_pages:
+                    logger.warning("Vietstock page limit (%d) reached for %s", max_pages, symbol)
                     break
                     
                 page_index += 1
