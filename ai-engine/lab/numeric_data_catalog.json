@@ -53,9 +53,27 @@
         "rows_above_1e-9_tolerance": 0,
         "mutation": "none; not additional malformed bars"
       },
+      "price_basis_audit": {
+        "date": "2026-10-04",
+        "artifact": "scratch/vn_swing_lab/repairs/PRICE_BASIS_AUDIT_LOCAL_20261004/evaluation.json",
+        "database": "LOCAL aiinvest; read-only; PROD unchanged",
+        "market_data_daily_rows": 1186633,
+        "symbols_including_indices": 408,
+        "date_range": ["2000-07-28", "2026-10-02"],
+        "calculation_view_rows": 1183384,
+        "tolerance_adjusted_ohlc_violations": 0,
+        "tolerance_calculation_view_ohlc_violations": 0,
+        "raw_ohlc_independent_observation": false,
+        "calculation_view_method": "raw_factor=close_unadj/close_adj; open/high/low are adjusted fields multiplied by that same-row ratio; close=close_unadj",
+        "publication_vintage_fields": ["created_at only; ingestion time is not source availability"],
+        "stored_adj_factor_unreconciled_rows": 1025902,
+        "stored_adj_factor_comparable_rows": 1183384,
+        "stored_adj_factor_semantics": "UNRESOLVED; direct and reciprocal conventions both fail at tolerance in this audit",
+        "decision": "Descriptive price integrity checks only; do not use as verified executable raw/PIT history for profitability research"
+      },
       "candidate_sources": ["Current frozen daily export", "DNSE", "exchange market data"],
       "source_urls": ["https://developers.dnse.com.vn/docs/dnse/market-data/"],
-      "next_evidence": "Verify raw/adjusted vintage and rights; establish total-volume treatment of auctions/negotiated trades from source payloads"
+      "next_evidence": "Verify original provider payloads and raw/adjusted/corporate-action semantics; obtain dated source vintages/availability; define the stored adjustment-factor convention; establish total-volume treatment of auctions/negotiated trades from source payloads"
     },
     {
       "id": "FOREIGN_AND_PROPRIETARY_FLOW", "priority": 1,

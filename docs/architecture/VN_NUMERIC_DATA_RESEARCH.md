@@ -298,6 +298,27 @@ khi split intraday không có; ADTV chỉ tính khi đủ 20 phiên có split đ
 Không suy continuous bằng phép trừ auction khỏi total. `volume_total` vẫn chưa
 xác minh có bao gồm negotiated/auction hay không.
 
+Audit giá basis trên DB LOCAL sau cleanup ngày 04/10/2026 (manifest
+`DATA_AUDIT_PRICE_BASIS_LOCAL_20261004`) xác nhận 1.186.633 dòng
+`market_data_daily`/408 mã, từ 28/07/2000 đến 02/10/2026; calculation view có
+1.183.384 dòng vì 3.249 khóa thiếu giá đã quarantine. OHLC điều chỉnh và giá
+trong view không còn vi phạm kiểm tra phạm vi ở tolerance đã đăng ký. Kết quả
+này chỉ xác nhận tính nhất quán số học. Định nghĩa view cho thấy
+`raw_factor = close_unadj / close_adj`, rồi dựng open/high/low bằng cách nhân
+OHLC điều chỉnh cùng dòng với factor đó; close lấy từ `close_unadj`. Đây không
+phải một quan sát raw độc lập. Schema có `created_at` nhưng không có
+`published_at`, `received_at`, `available_at`, `revision_id` hay
+`source_record_id`; thời điểm ghi DB không chứng minh lúc dữ liệu nguồn có thể
+được dùng.
+
+Cột `adj_factor` lưu sẵn không khớp với tỷ lệ close tái dựng theo cả quy ước
+trực tiếp lẫn nghịch đảo ở 1.025.902/1.183.384 dòng có thể so sánh. Chưa xác
+định được ý nghĩa/cách nạp cột này theo từng nguồn, nên không dùng nó làm
+feature và cũng không tự sửa/xóa chỉ từ audit này. Dữ liệu hỗ trợ kiểm tra giá
+mô tả; chưa đủ contract để đánh giá khả năng khớp lệnh và lợi nhuận lướt sóng.
+Cần xác minh payload gốc, semantics điều chỉnh, vintage/availability và nguồn
+volume có phân tách phiên.
+
 Volume snapshot vẫn chưa tách được giao dịch liên tục khỏi ATO/ATC/thỏa thuận;
 quyền, vintage và universe PIT còn thiếu. Vì thế dữ liệu **chưa đủ sạch/đầy đủ
 để mở nghiên cứu edge** dù lỗi OHLC đã được cách ly.
