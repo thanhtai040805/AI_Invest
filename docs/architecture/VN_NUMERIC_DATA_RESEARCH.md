@@ -205,6 +205,28 @@ và phép join cho thấy bảng này khớp khoảng 49,4% bar trong rổ train
 row count và code join vẫn không chứng minh nguồn đúng, số liệu hợp lệ hay
 đúng thời điểm được biết.
 
+### Thử endpoint Vietstock trong `foreign_flow.py`
+
+Đã gọi đường fetch của script ở chế độ chỉ đọc cho FPT, truyền khoảng
+04/10/2016–04/10/2026 và giữ kết quả trong bộ nhớ. Vietstock trả 247 ngày,
+từ 06/10/2025 đến 02/10/2026. Gọi riêng các khoảng 2016–17, năm 2020 và
+năm 2024 đều trả 0 dòng. Với phép thử này, chia request theo năm cũng không
+khôi phục được lịch sử cũ; chưa thể khẳng định các mã/API khác có giới hạn
+giống hệt, nhưng script hiện không thể backfill 10 năm bằng Vietstock.
+
+DB PROD đã có FPT foreign-flow cho 2.464/2.495 phiên bar trong cùng khoảng
+10 năm: 2.454 matched rows từ CafeF và 10 từ Vietstock; 31 phiên không có
+row khớp và 3 dòng flow nằm ngoài lịch bar. Đây là coverage của một mã, không
+đại diện toàn universe; ngày không có row chưa phân biệt được không phát sinh
+giao dịch ngoại với thiếu dữ liệu nguồn.
+
+Không chạy `refresh_all`, vì hàm này ghi trực tiếp vào `foreign_flow`. Trước
+khi cân nhắc chạy, cần sửa/đánh giá ba bẫy trong code: `skip_existing` coi
+1.000 dòng là đã xong chứ không kiểm đủ 10 năm; INSERT mới bỏ qua cột `source`
+nên nhận default `cafef` dù tải Vietstock (chỉ nhánh conflict đặt
+`vietstock`); `_insert_rows` nuốt lỗi DB nên caller vẫn có thể đếm dòng là
+đã nạp. Không có backfill PROD nào được thực hiện trong lần thử này.
+
 LAB003 kiểm kê bars đóng băng và một số feature số dẫn xuất theo nguồn/năm;
 ghi nhận missing/zero/nonfinite, kiểm tra OHLC/volume, liệt kê trường nguồn
 và hash code/input. Export có 1.011.757 dòng, 407 mã từ 05/01/2015 đến
