@@ -40,7 +40,7 @@ class HardLawEngine:
         self, 
         order: ProposedOrder, 
         portfolio: PortfolioState, 
-        adtv20_continuous: float,
+        adtv20_continuous: Optional[float],
         risk_limits: Optional[Dict[str, float]] = None,
     ) -> HardLawCheck:
         """Kiểm tra một lệnh đề xuất với các Hard Laws thể chế chuẩn sàn HOSE."""
@@ -48,6 +48,9 @@ class HardLawEngine:
         max_stop_loss_pct = (float(risk_limits.get("hard_stop_loss_pct", 2.0)) / 100.0) if risk_limits else 0.02
         max_stock_pct = (float(risk_limits.get("max_single_stock_pct", 15.0)) / 100.0) if risk_limits else 0.15
         max_sector_pct = (float(risk_limits.get("max_sector_pct", 35.0)) / 100.0) if risk_limits else 0.35
+
+        if adtv20_continuous is None or adtv20_continuous <= 0:
+            return HardLawCheck(False, HardLaw.DIEU_2, "Thiếu ADTV20 continuous đã xác minh; không thể xác nhận sức chứa thanh khoản.")
         
         # 1. Kiểm tra Điều 1 (Luật Tồn Tại & Rủi ro kẹt hàng T+2.5) - Chỉ áp dụng cho lệnh BUY
         if order.side == "BUY":

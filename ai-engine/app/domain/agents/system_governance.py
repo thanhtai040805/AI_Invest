@@ -263,7 +263,8 @@ class SystemGovernanceAgent(BaseAgent):
             locked_t25_value=float(locked_t25),
         )
 
-        adtv20 = float(event_data.get("adtv20", 2_000_000.0))
+        adtv20_value = event_data.get("adtv20")
+        adtv20 = float(adtv20_value) if adtv20_value is not None else None
         signals_count = int(event_data.get("confirming_signals_count", 3))
         beneish_ok = bool(event_data.get("beneish_passed", True))
         available_sh = event_data.get("available_shares")

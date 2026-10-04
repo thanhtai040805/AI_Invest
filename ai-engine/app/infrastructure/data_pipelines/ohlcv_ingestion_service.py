@@ -96,7 +96,7 @@ class OHLCVIngestionService:
             logger.error(f"Error fetching from DNSE for {symbol}: {e}")
             return []
 
-    def fetch_intraday_for_volume_split(self, symbol: str, target_date: date) -> Dict[str, int]:
+    def fetch_intraday_for_volume_split(self, symbol: str, target_date: date) -> Dict[str, Optional[int]]:
         """Lấy dữ liệu intraday 1m để phân tách volume continuous vs ATC.
         
         Nguyên tắc: Candle cuối cùng (thường là 14:45:00) chứa volume ATC.
@@ -110,7 +110,7 @@ class OHLCVIngestionService:
             candles = tool.fetch(symbol.upper(), resolution="1", from_ts=from_ts, to_ts=to_ts)
             
             if not candles:
-                return {"continuous": 0, "atc": 0, "ato": 0}
+                return {"continuous": None, "atc": None, "ato": None}
                 
             # Phân tích volume dựa trên timestamp (giờ VN)
             # ATO: ~09:15:00
@@ -141,7 +141,7 @@ class OHLCVIngestionService:
             }
         except Exception as e:
             logger.warning(f"Could not fetch intraday for volume split {symbol} on {target_date}: {e}")
-            return {"continuous": 0, "atc": 0, "ato": 0}
+            return {"continuous": None, "atc": None, "ato": None}
 
     def save_market_data(self, data: List[Dict[str, Any]]) -> int:
         """Lưu dữ liệu vào bảng market_data_daily."""
@@ -163,9 +163,9 @@ class OHLCVIngestionService:
             if not v_split and d["date"] >= (date.today() - timedelta(days=2)):
                 v_split = self.fetch_intraday_for_volume_split(d["ticker"], d["date"])
             
-            v_cont = v_split.get("continuous", d["volume_total"]) if v_split else d["volume_total"]
-            v_atc = v_split.get("atc", 0) if v_split else 0
-            v_ato = v_split.get("ato", 0) if v_split else 0
+            v_cont = v_split.get("continuous") if v_split else None
+            v_atc = v_split.get("atc") if v_split else None
+            v_ato = v_split.get("ato") if v_split else None
             
             rows.append((
                 d["ticker"],
@@ -215,14 +215,15 @@ class OHLCVIngestionService:
         conn.close()
         return count
 
-    def calculate_adtv20_continuous(self, symbol: str, target_date: date) -> float:
-        """Tính ADTV20 dựa trên volume_continuous (loại bỏ ATC/ATO)."""
+    def calculate_adtv20_continuous(self, symbol: str, target_date: date) -> Optional[float]:
+        """Calculate ADTV only when all 20 input sessions have observed splits."""
         import psycopg2
         conn = psycopg2.connect(self.db_url)
         cur = conn.cursor()
         
         cur.execute("""
-            SELECT AVG(volume_continuous)
+            SELECT CASE WHEN COUNT(*) = 20 AND COUNT(volume_continuous) = 20
+                        THEN AVG(volume_continuous) END
             FROM (
                 SELECT volume_continuous
                 FROM market_data_daily
@@ -233,7 +234,7 @@ class OHLCVIngestionService:
         """, (symbol.upper(), target_date))
         
         result = cur.fetchone()
-        adtv = float(result[0]) if result and result[0] else 0.0
+        adtv = float(result[0]) if result and result[0] is not None else None
         
         # Cập nhật ngược lại vào DB
         cur.execute("""

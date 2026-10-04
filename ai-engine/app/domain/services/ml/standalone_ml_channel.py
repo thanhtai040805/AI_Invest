@@ -136,7 +136,8 @@ class StandaloneMLChannel:
                     q = """
                         SELECT ticker, SUM(close * volume_continuous) as total_val
                         FROM market_data_daily_calculation
-                        WHERE date >= %s::date - INTERVAL '1 year' AND date < %s::date AND ticker != 'VNINDEX'
+                        WHERE date >= %s::date - INTERVAL '1 year' AND date < %s::date
+                          AND ticker != 'VNINDEX' AND volume_continuous IS NOT NULL
                         GROUP BY ticker
                         ORDER BY total_val DESC
                         LIMIT %s;
@@ -145,7 +146,7 @@ class StandaloneMLChannel:
                     tickers = df_t["ticker"].tolist()
             except Exception as e:
                 logger.error(f"Lỗi nạp Universe từ DB: {e}")
-                tickers = ["FPT", "HPG", "VNM", "SSI", "MWG", "VIC", "TCB", "MBB"]
+                tickers = []
 
         if not tickers:
             return pd.DataFrame()
@@ -185,6 +186,9 @@ class StandaloneMLChannel:
         for ticker in tickers:
             df_sym = df_data[df_data["ticker"] == ticker].copy()
             if len(df_sym) >= 30:
+                if df_sym["volume"].isna().any():
+                    logger.warning("Skip %s: volume_continuous is incomplete across the model lookback", ticker)
+                    continue
                 data_dict[ticker] = df_sym.set_index("date").sort_index()
 
         if not data_dict:

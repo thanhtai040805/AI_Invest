@@ -124,8 +124,10 @@ def upsert_today(cur, rows: list[tuple]):
             float(r[5]),  # close_adj
             float(r[5]),  # Seed the raw close; keep it when adjusted history is rebuilt.
             float(r[5]),  # vwap
-            int(r[6]),    # volume_continuous
-            int(r[6]),    # volume_total
+            None,         # Daily candles do not identify auction/continuous volume split.
+            None,         # Unknown ATO/ATC cannot be recorded as zero.
+            None,
+            int(r[6]),    # Observed total volume from the daily candle.
             "dnse_daily", # data_source
         )
         for r in valid_rows
@@ -133,9 +135,9 @@ def upsert_today(cur, rows: list[tuple]):
     cur.executemany("""
         INSERT INTO market_data_daily (
             ticker, date, open_adj, high_adj, low_adj, close_adj, close_unadj,
-            vwap, volume_continuous, volume_total, data_source
+            vwap, volume_continuous, volume_atc, volume_ato, volume_total, data_source
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (ticker, date) DO UPDATE SET
             open_adj = EXCLUDED.open_adj,
             high_adj = EXCLUDED.high_adj,
@@ -144,6 +146,8 @@ def upsert_today(cur, rows: list[tuple]):
             close_unadj = COALESCE(market_data_daily.close_unadj, EXCLUDED.close_unadj),
             vwap = EXCLUDED.vwap,
             volume_continuous = EXCLUDED.volume_continuous,
+            volume_atc = EXCLUDED.volume_atc,
+            volume_ato = EXCLUDED.volume_ato,
             volume_total = EXCLUDED.volume_total,
             data_source = EXCLUDED.data_source
     """, mkt_rows)

@@ -282,6 +282,19 @@ không bị sửa. Sau transaction còn 0 vi phạm OHLC trong bảng `ohlcv`. T
 daily backfill và CLI backfill đều bỏ qua candle có giá không hữu hạn, không
 dương hoặc nằm ngoài high/low. Đây chưa phải bằng chứng phục hồi được giá gốc.
 
+Rà soát volume LOCAL cho thấy cả 1.186.633/1.186.633 dòng gán
+`volume_continuous = volume_total`; trong 5.938 dòng còn có ATO/ATC dương nên
+đẳng thức mâu thuẫn trực tiếp với split. Code nạp cũng điền total vào continuous
+khi thiếu intraday và điền zero vào auction fields. Vì DB không có cờ vintage
+cho split quan sát và split mặc định, đã snapshot đầy đủ rồi đặt
+`volume_continuous` cùng `adtv20_continuous` thành NULL cho toàn bộ bản LOCAL.
+Các trường `volume_atc` và `volume_ato` không có per-row provenance nên cũng
+được đặt NULL; toàn bộ giá trị trước đó vẫn nằm trong snapshot nén có hash.
+`volume_total` và mọi trường không liên quan được giữ. Writer hiện ghi NULL
+khi split intraday không có; ADTV chỉ tính khi đủ 20 phiên có split đã quan sát.
+Không suy continuous bằng phép trừ auction khỏi total. `volume_total` vẫn chưa
+xác minh có bao gồm negotiated/auction hay không.
+
 Volume snapshot vẫn chưa tách được giao dịch liên tục khỏi ATO/ATC/thỏa thuận;
 quyền, vintage và universe PIT còn thiếu. Vì thế dữ liệu **chưa đủ sạch/đầy đủ
 để mở nghiên cứu edge** dù lỗi OHLC đã được cách ly.

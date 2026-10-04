@@ -93,6 +93,9 @@ Rà soát bản LOCAL database snapshot riêng ngày 04/10/2026 phát hiện th�
 3.249 bar OHLC-invalid ở 305 mã. Đã quarantine giá LOCAL, giữ preimage có
 hash và thêm xác thực ở ba đường nạp; số 2.884 phía trên thuộc frozen CSV
 được xuất trước đó, không phải cùng một tập đo.
+Các trường volume continuous/ATO/ATC không có split provenance trong snapshot
+này nên đã đặt NULL cùng ADTV dẫn xuất trên 1.186.633 dòng LOCAL;
+volume_total được giữ.
 
 **LAB001** do [research_swing_lab_feasibility.py](../../ai-engine/scripts/research_swing_lab_feasibility.py)
 thực hiện, chỉ dùng DEV 2023–2025, deadline **900 giây**. Tách gross movement,

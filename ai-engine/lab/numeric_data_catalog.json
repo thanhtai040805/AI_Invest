@@ -27,14 +27,21 @@
       "id": "PRICES_AND_EXECUTION_VOLUME", "priority": 0,
       "metrics": ["raw and adjusted OHLC", "executed notional", "continuous/ATO/ATC/negotiated volumes", "VWAP from observed trades"],
       "role": "Repair baseline price and liquidity measurements before inferring an edge",
-      "local_status": "INVALID_OHLC_QUARANTINED_SEMANTICS_UNVERIFIED",
+      "local_status": "OHLC_QUARANTINED_VOLUME_SPLITS_UNAVAILABLE_SEMANTICS_UNVERIFIED",
       "local_cleanup": {
         "date": "2026-10-04",
         "database": "LOCAL aiinvest only; PROD unchanged",
         "ohlc_invalid_bars_quarantined": 3249,
         "post_cleanup_ohlc_invalid_bars": 0,
         "source_adjusted_price_fields_nulled": 3249,
+        "unverified_volume_continuous_rows_nulled": 1186633,
+        "unverified_volume_atc_rows_nulled": 1186633,
+        "unverified_volume_ato_rows_nulled": 1186633,
+        "unverified_adtv20_continuous_rows_nulled": 1186633,
+        "volume_total_preserved": true,
+        "volume_total_definition": "UNVERIFIED whether negotiated/auction volume is included",
         "preimage_directory": "scratch/vn_swing_lab/repairs/OHLC_INVALID_LOCAL_20261004",
+        "volume_preimage": "scratch/vn_swing_lab/repairs/VOLUME_SPLIT_QUARANTINE_LOCAL_20261004/volume_fields_before_quarantine.csv.gz",
         "source_cause": "UNRESOLVED: source labels include CafeF, DNSE history and adjustment-fill paths; no independent raw OHLC vintage is available",
         "volume_fields_changed": false
       },
@@ -48,7 +55,7 @@
       },
       "candidate_sources": ["Current frozen daily export", "DNSE", "exchange market data"],
       "source_urls": ["https://developers.dnse.com.vn/docs/dnse/market-data/"],
-      "next_evidence": "Audit raw OHLC consistency, reconstructed factors, volume definitions, source transitions and original vintage"
+      "next_evidence": "Verify raw/adjusted vintage and rights; establish total-volume treatment of auctions/negotiated trades from source payloads"
     },
     {
       "id": "FOREIGN_AND_PROPRIETARY_FLOW", "priority": 1,
