@@ -214,6 +214,13 @@ năm 2024 đều trả 0 dòng. Với phép thử này, chia request theo năm c
 khôi phục được lịch sử cũ; chưa thể khẳng định các mã/API khác có giới hạn
 giống hệt, nhưng script hiện không thể backfill 10 năm bằng Vietstock.
 
+Đúng là có vấn đề phân trang phía client: sau trang đầu 247 `< page_size=250`,
+vòng lặp thoát ngay và không yêu cầu trang kế tiếp. Thử Page=2 và Page=3 thủ
+công với cùng request vẫn trả lại chính 247 ngày giống hệt trang đầu (response
+có `Rows=0`), nên chỉ bỏ điều kiện dừng chưa đủ; cần xác minh giao thức phân
+trang/parameter mà endpoint thực sự hỗ trợ. Chưa kết luận đây là trần lịch sử
+không thể vượt qua cho tới khi request pagination đúng được xác nhận.
+
 DB PROD đã có FPT foreign-flow cho 2.464/2.495 phiên bar trong cùng khoảng
 10 năm: 2.454 matched rows từ CafeF và 10 từ Vietstock; 31 phiên không có
 row khớp và 3 dòng flow nằm ngoài lịch bar. Đây là coverage của một mã, không
