@@ -36,6 +36,16 @@
       "metrics": ["foreign buy/sell volume and value", "net foreign flow", "foreign room", "proprietary buy/sell value", "matched versus negotiated flow"],
       "role": "Test persistent or temporary flow pressure independently of price/volume proxies",
       "local_status": "ABSENT_FROM_FROZEN_BARS_EXPORT", "candidate_sources": ["DNSE", "exchange/provider historical flow dataset"],
+      "local_research_database_snapshot": {
+        "snapshot_date": "2026-10-04",
+        "database": "LOCAL copy of PROD snapshot; PROD unchanged",
+        "rows_after_quarantine": 566966,
+        "latest_20_ohlcv_pair_coverage": "7406/7406",
+        "historical_observed_span_pair_coverage": "543538/547637",
+        "known_non_session_rows_quarantined": 225,
+        "pit_provenance": "UNVERIFIED: source and created_at exist; source_record_id, published_at, available_at and revision_id absent",
+        "net_field_semantics": "UNVERIFIED: 1005 Vietstock and 7 CafeF rows have net fields inconsistent with gross buy/sell arithmetic; source definitions not sufficient to correct"
+      },
       "source_urls": ["https://developers.dnse.com.vn/docs/dnse/get-foreign-trading/", "https://www.hnx.vn/vi-vn/dich-vu-cctt/du-lieu-cung-cap-list.html"],
       "next_evidence": "Sample real payloads, cumulative versus interval semantics, historical depth, EOD corrections, subscriptions and usage rights; room is not ownership"
     },

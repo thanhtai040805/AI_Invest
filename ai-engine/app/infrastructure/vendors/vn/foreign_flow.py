@@ -149,11 +149,15 @@ def fetch_foreign_flow_for_symbol(
     return all_data
 
 def parse_rows(raw_rows: list[dict], symbol: str) -> list[tuple]:
-    """Parse Vietstock API response into DB rows."""
+    """Parse Vietstock rows, excluding dates when the exchange is closed."""
     rows = []
+    weekend_rows = 0
     for s in raw_rows:
         dt = _parse_ms_date(s.get("TradingDate"))
         if not dt:
+            continue
+        if dt.weekday() >= 5:
+            weekend_rows += 1
             continue
             
         rows.append((
@@ -168,6 +172,8 @@ def parse_rows(raw_rows: list[dict], symbol: str) -> list[tuple]:
             int(s.get("TotalRoom", 0) or 0),
             float(s.get("OwnedRatio", 0) or 0),
         ))
+    if weekend_rows:
+        logger.warning("Skipped %d weekend foreign-flow rows for %s", weekend_rows, symbol)
     return rows
 
 def _get_hose_symbols(storage: StoragePort) -> list[str]:

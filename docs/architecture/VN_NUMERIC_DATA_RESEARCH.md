@@ -228,6 +228,45 @@ row khớp và 3 dòng flow nằm ngoài lịch bar. Đây là coverage của m�
 đại diện toàn universe; ngày không có row chưa phân biệt được không phát sinh
 giao dịch ngoại với thiếu dữ liệu nguồn.
 
+### Bản LOCAL sau reconciliation foreign flow và cách ly ngày ngoài phiên (04/10/2026)
+
+Đã đối chiếu lại bảng `foreign_flow` trong DB LOCAL được khôi phục từ snapshot
+PROD; không ghi ngược lên PROD. Refresh Vietstock trả 99.558 dòng cho 407 mã
+HOSE trong cửa sổ API còn sẵn 06/10/2025–02/10/2026. Ghép theo các cặp mã–phiên
+có nến trong 20 phiên index gần nhất đạt 7.406/7.406 (405 mã có nến trong cửa
+sổ). Đây là coverage hiện tại sau reconciliation, không sửa được lịch sử cũ:
+trên toàn khoảng bảng có quan sát, còn 4.099 phiên nến thiếu dòng flow trong
+547.637 cặp (99,252% khớp). Không có row vẫn là `unknown`, không phải zero-flow.
+
+Trong 467.607 dòng CafeF trước cleanup có 225 dòng ngày 06/06/2026, là thứ Bảy
+và không có nến HOSE. Đã lưu đủ dòng gốc cùng hash trong artifact quarantine
+LOCAL, sau đó loại đúng 225 dòng khỏi bảng phân tích; không tự dời chúng sang
+thứ Sáu hay thứ Hai. Trong sáu trường mua/bán/net kiểm tra, 224 dòng không
+trùng phiên kề nào, một dòng trùng phiên trước. Giá trị đó không đủ xác định
+ngày sự kiện thật. Sau cleanup: bảng có 566.966 dòng (CafeF 467.382,
+Vietstock 99.584), không còn ngày cuối tuần ở hai nguồn, và coverage 20 phiên
+gần nhất vẫn 100%. Có 23.428 foreign-flow rows không có OHLCV cùng mã/ngày;
+không thể coi toàn bộ là lỗi ngày vì mã có thể không phát sinh nến trong phiên.
+
+Schema bảng chỉ có `source` và `created_at` để nhận diện nguồn/thời điểm lưu;
+không có `source_record_id`, `published_at`, `available_at` hay `revision_id`.
+Sau refresh còn 7 dòng CafeF và 1.005 dòng Vietstock mà `net_volume` hoặc
+`net_value` không bằng gross buy trừ sell. Chưa có hợp đồng trường nào chứng
+minh đây là sai số thay vì khác phạm vi khớp lệnh/thỏa thuận; giữ nguyên raw
+fields và không dùng phép suy diễn để sửa chúng. Vì thiếu provenance và định
+nghĩa trường, flow vẫn chưa qua gate dùng làm tín hiệu lịch sử PIT.
+
+Một rà soát riêng trên bảng LOCAL `ohlcv` tìm thấy 3.249 bar vi phạm ít nhất
+một bất biến `low <= open/close <= high` hoặc `high >= low`; trong đó có 445
+bar close cao hơn high và 925 bar close thấp hơn low. `ohlcv_unadjusted` lặp
+lại từ view dựa trên `market_data_daily`, không phải nguồn độc lập; cả 3.249 bar
+này vẫn vi phạm range ở view đó, và OHLC khác với bảng `ohlcv` ở 3.168 bar.
+Chưa có payload nguồn/vintage độc lập để sửa giá; các bar này phải được cách
+ly khỏi phép đo giá cho đến khi lấy được nguồn đúng. Volume snapshot cũng chưa
+tách được giao dịch liên tục khỏi ATO/ATC/thỏa thuận. Vì vậy lần cleanup này
+chỉ loại ngày flow ngoài phiên đã xác định; dữ liệu tổng thể vẫn **chưa sạch
+để mở nghiên cứu edge**.
+
 Không chạy `refresh_all`, vì hàm này ghi trực tiếp vào `foreign_flow`. Trước
 khi cân nhắc chạy, cần sửa/đánh giá ba bẫy trong code: `skip_existing` coi
 1.000 dòng là đã xong chứ không kiểm đủ 10 năm; INSERT mới bỏ qua cột `source`
