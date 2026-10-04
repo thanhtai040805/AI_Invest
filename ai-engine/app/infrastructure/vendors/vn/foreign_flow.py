@@ -4,6 +4,7 @@ Pre-compute daily foreign trading flow for all HOSE symbols.
 import logging
 import time
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 import httpx
@@ -32,6 +33,21 @@ def _parse_ms_date(val: str) -> Optional[date]:
         return datetime.fromtimestamp(ts / 1000.0, tz=timezone.utc).astimezone(TZ_VN).date()
     except Exception:
         return None
+
+def _optional_decimal(value) -> Optional[Decimal]:
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        result = Decimal(str(value))
+        return result if result.is_finite() else None
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+def _optional_int(value) -> Optional[int]:
+    result = _optional_decimal(value)
+    if result is None or result != result.to_integral_value():
+        return None
+    return int(result)
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -152,6 +168,8 @@ def parse_rows(raw_rows: list[dict], symbol: str) -> list[tuple]:
     """Parse Vietstock rows, excluding dates when the exchange is closed."""
     rows = []
     weekend_rows = 0
+    inconsistent_net_volume = 0
+    inconsistent_net_value = 0
     for s in raw_rows:
         dt = _parse_ms_date(s.get("TradingDate"))
         if not dt:
@@ -160,20 +178,41 @@ def parse_rows(raw_rows: list[dict], symbol: str) -> list[tuple]:
             weekend_rows += 1
             continue
             
+        buy_volume = _optional_int(s.get("TotalForeignBuyVol"))
+        sell_volume = _optional_int(s.get("TotalForeignSellVol"))
+        buy_value = _optional_decimal(s.get("TotalForeignBuyVal"))
+        sell_value = _optional_decimal(s.get("TotalForeignSellVal"))
+        net_volume = _optional_int(s.get("ForeignDiffBuySellVol"))
+        net_value = _optional_decimal(s.get("ForeignDiffBuySellVal"))
+        room_remaining = _optional_int(s.get("RemainRoom"))
+        room_limit = _optional_int(s.get("TotalRoom"))
+        ownership_pct = _optional_decimal(s.get("OwnedRatio"))
+        if buy_volume is not None and sell_volume is not None and net_volume is not None and net_volume != buy_volume - sell_volume:
+            net_volume = None
+            inconsistent_net_volume += 1
+        if buy_value is not None and sell_value is not None and net_value is not None and net_value != buy_value - sell_value:
+            net_value = None
+            inconsistent_net_value += 1
+
         rows.append((
             symbol, dt,
-            int(s.get("TotalForeignBuyVol", 0) or 0),
-            int(s.get("TotalForeignSellVol", 0) or 0),
-            float(s.get("TotalForeignBuyVal", 0) or 0),
-            float(s.get("TotalForeignSellVal", 0) or 0),
-            int(s.get("ForeignDiffBuySellVol", 0) or 0),
-            float(s.get("ForeignDiffBuySellVal", 0) or 0),
-            int(s.get("RemainRoom", 0) or 0),
-            int(s.get("TotalRoom", 0) or 0),
-            float(s.get("OwnedRatio", 0) or 0),
+            buy_volume,
+            sell_volume,
+            float(buy_value) if buy_value is not None else None,
+            float(sell_value) if sell_value is not None else None,
+            net_volume,
+            float(net_value) if net_value is not None else None,
+            room_remaining,
+            room_limit,
+            float(ownership_pct) if ownership_pct is not None else None,
         ))
     if weekend_rows:
         logger.warning("Skipped %d weekend foreign-flow rows for %s", weekend_rows, symbol)
+    if inconsistent_net_volume or inconsistent_net_value:
+        logger.warning(
+            "Nullified inconsistent Vietstock net fields for %s: volume=%d value=%d",
+            symbol, inconsistent_net_volume, inconsistent_net_value,
+        )
     return rows
 
 def _get_hose_symbols(storage: StoragePort) -> list[str]:

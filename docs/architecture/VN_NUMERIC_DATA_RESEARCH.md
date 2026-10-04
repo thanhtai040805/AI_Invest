@@ -250,11 +250,14 @@ không thể coi toàn bộ là lỗi ngày vì mã có thể không phát sinh 
 
 Schema bảng chỉ có `source` và `created_at` để nhận diện nguồn/thời điểm lưu;
 không có `source_record_id`, `published_at`, `available_at` hay `revision_id`.
-Sau refresh còn 7 dòng CafeF và 1.005 dòng Vietstock mà `net_volume` hoặc
-`net_value` không bằng gross buy trừ sell. Chưa có hợp đồng trường nào chứng
-minh đây là sai số thay vì khác phạm vi khớp lệnh/thỏa thuận; giữ nguyên raw
-fields và không dùng phép suy diễn để sửa chúng. Vì thiếu provenance và định
-nghĩa trường, flow vẫn chưa qua gate dùng làm tín hiệu lịch sử PIT.
+Audit trước cleanup có 7 dòng CafeF và 1.005 dòng Vietstock mà ít nhất một
+trường net không bằng gross buy trừ sell: 1.011 `net_volume` và 1.012
+`net_value` fields mâu thuẫn. Trên LOCAL đã snapshot đủ dòng gốc, rồi đặt NULL
+chỉ các field mâu thuẫn; gross, ngày, source và field net nào khớp được giữ.
+Sau đó còn 0 mismatch ở các bộ gross/net đầy đủ. Parser Vietstock cũng giữ
+missing thành NULL và loại net không khớp trước khi ghi lại. Giá trị net còn
+lại vẫn thiếu định nghĩa trường, `available_at` và revision provenance; flow
+chưa qua gate dùng làm tín hiệu lịch sử PIT.
 
 Rà soát LOCAL tìm thấy 3.249 bar vi phạm quan hệ OHLC; trong đó 445 close cao
 hơn high và 925 close thấp hơn low. Cả 3.249 khóa ticker/ngày cũng vi phạm ở

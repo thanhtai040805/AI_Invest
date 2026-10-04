@@ -70,7 +70,14 @@
         "historical_observed_span_pair_coverage": "543538/547637",
         "known_non_session_rows_quarantined": 225,
         "pit_provenance": "UNVERIFIED: source and created_at exist; source_record_id, published_at, available_at and revision_id absent",
-        "net_field_semantics": "UNVERIFIED: 1005 Vietstock and 7 CafeF rows have net fields inconsistent with gross buy/sell arithmetic; source definitions not sufficient to correct"
+        "net_arithmetic_cleanup": {
+          "rows_quarantined": 1012,
+          "net_volume_fields_nulled": 1011,
+          "net_value_fields_nulled": 1012,
+          "remaining_complete_arithmetic_mismatches": 0,
+          "preimage": "scratch/vn_swing_lab/repairs/FOREIGN_FLOW_NET_MISMATCH_LOCAL_20261004/net_mismatch_rows.csv",
+          "source_contract": "UNVERIFIED: arithmetic consistency does not establish matched/negotiated scope or point-in-time availability"
+        }
       },
       "source_urls": ["https://developers.dnse.com.vn/docs/dnse/get-foreign-trading/", "https://www.hnx.vn/vi-vn/dich-vu-cctt/du-lieu-cung-cap-list.html"],
       "next_evidence": "Sample real payloads, cumulative versus interval semantics, historical depth, EOD corrections, subscriptions and usage rights; room is not ownership"
