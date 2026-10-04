@@ -192,12 +192,13 @@ def family_state(protocol, records):
     budget = int(protocol["max_failed_iterations_per_family"])
     for family in sorted(protocol["families"], key=lambda item: item["priority"]):
         own = [record for record in records if record["family"] == family["id"]]
-        failed = sum(record["status"] == "REJECTED" for record in own)
+        failed = sum(record["status"] == "REJECTED" for record in own) if family.get("counts_against_failure_budget", True) else 0
         blocked = family.get("retired", False) or failed >= budget
         gap_records = [record for record in own if record["status"] == "NEEDS_DATA"]
         needs_data = (not family.get("data_available") or (gap_records and not family.get("data_resolution")))
         states.append({**family, "failed_iterations": failed, "remaining_failed_iterations": max(0, budget - failed),
                        "state": "RETIRED" if blocked else ("NEEDS_DATA" if needs_data else "READY"),
+                       "technical_run_failures": sum(record["status"] == "REJECTED" for record in own) if not family.get("counts_against_failure_budget", True) else 0,
                        "observed_data_gaps": [r["state"].get("evidence", {}).get("data_gaps", []) for r in gap_records],
                        "registered_or_running": [r["id"] for r in own if r["status"] in {"REGISTERED", "RUNNING", "AWAITING_RECORD"}]})
     return states
@@ -254,6 +255,8 @@ def register(ledger, protocol, value, imported=False):
         raise ValueError("Family must be one of the protocol's economic mechanisms")
     if not imported and family["state"] != "READY":
         raise ValueError(f"Family {family['id']} is {family['state']}: {family['required_data']}")
+    if not imported and value["family"] not in protocol.get("active_research_families", [item["id"] for item in protocol["families"]]):
+        raise ValueError(f"Family is deferred during {protocol.get('workflow_stage', 'current research stage')}; verify numerical data first")
     if not imported and len(family["registered_or_running"]) >= family["remaining_failed_iterations"]:
         raise ValueError("Pending registrations already consume this family's remaining failure budget")
     if value.get("kind") not in ({"imported"} if imported else {"diagnostic", "economic_model"}):
@@ -403,6 +406,8 @@ def start(ledger, protocol, identifier):
             family = next(item for item in family_state(protocol, records) if item["id"] == manifest["family"])
             if family["state"] != "READY":
                 raise ValueError("Family budget or data availability no longer permits execution")
+            if manifest["family"] not in protocol.get("active_research_families", [item["id"] for item in protocol["families"]]):
+                raise ValueError("Current workflow requires numerical data research before algorithm execution")
             verify(manifest)
             version = ledger / "protocol_versions" / f"{manifest['protocol_sha256']}.json"
             if not version.exists() or file_hash(version) != manifest["protocol_sha256"]:
@@ -595,11 +600,13 @@ def next_action(ledger, protocol):
         if selected["status"] == "RUNNING" and not (process_alive(selected["state"].get("controller_pid"), selected["state"].get("time")) or process_alive(selected["state"].get("child_pid"), selected["state"].get("time"))):
             action = "record"
         return {"action": action, "id": selected["id"], "status": selected["status"]}
-    ready = [f for f in family_state(protocol, records) if f["state"] == "READY"
+    allowed = protocol.get("active_research_families", [item["id"] for item in protocol["families"]])
+    ready = [f for f in family_state(protocol, records) if f["state"] == "READY" and f["id"] in allowed
              and not (f["id"] == "feasibility-audit" and any(r["family"] == f["id"] for r in records))]
     missing = [f for f in family_state(protocol, records) if f["state"] == "NEEDS_DATA"]
-    return {"action": "Preregister the next independent economic hypothesis" if ready else "Collect required data or declare the remaining families exhausted",
+    return {"action": ("Verify or collect the next numerical source; preregister only when inputs change" if protocol.get("workflow_stage") == "NUMERIC_DATA_RESEARCH" else "Preregister the next independent economic hypothesis") if ready else "Collect required data or declare the remaining families exhausted",
             "family": ready[0] if ready else None, "missing_data_families": missing,
+            "workflow_stage": protocol.get("workflow_stage"),
             "rule": "Two failed iterations retire a family; missing data in one family does not stop other actionable research"}
 
 

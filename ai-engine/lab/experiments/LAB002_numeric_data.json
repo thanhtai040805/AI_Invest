@@ -1,0 +1,33 @@
+{
+  "id": "LAB002_numeric_data",
+  "family": "numeric-data-audit",
+  "kind": "diagnostic",
+  "hypothesis": "The frozen research export does not yet contain verified independent Vietnamese numeric flow, execution and monetary data; numerical column names and realtime source code do not establish historical observations.",
+  "falsification": "Report actual raw field coverage, numeric null/zero/nonfinite profiles, OHLC consistency, volume separation and publication vintage fields. Source documentation and schema presence alone cannot establish observational completeness or a profitable edge.",
+  "next_decision": "Keep algorithm research deferred. Verify source price/volume semantics and PIT universe/rights, then collect authentic flow/quotes with available-at provenance for one economic hypothesis; exclude synthetic/default observations.",
+  "source_paths": [
+    "scratch/short_horizon_daily_bars_2026-10-02.csv.gz",
+    "scratch/broker_swing_research_2026-10-03_v2/entry_dataset.parquet",
+    "scratch/broker_swing_research_2026-10-03_v2/dataset_metadata.json",
+    "lab/numeric_data_catalog.json"
+  ],
+  "code_paths": [
+    "scripts/research_vn_numeric_data.py",
+    "app/infrastructure/data_pipelines/data_enricher.py",
+    "app/infrastructure/data_pipelines/ohlcv_ingestion_service.py",
+    "app/domain/services/ml/feature_forge.py",
+    "app/infrastructure/external_api/dnse/redis_pub.py"
+  ],
+  "command": [
+    "python", "scripts/research_vn_numeric_data.py",
+    "--bars", "scratch/short_horizon_daily_bars_2026-10-02.csv.gz",
+    "--dataset", "scratch/broker_swing_research_2026-10-03_v2/entry_dataset.parquet",
+    "--metadata", "scratch/broker_swing_research_2026-10-03_v2/dataset_metadata.json",
+    "--catalog", "lab/numeric_data_catalog.json",
+    "--output", "scratch/vn_swing_lab/runs/LAB002_numeric_data"
+  ],
+  "results_path": "scratch/vn_swing_lab/runs/LAB002_numeric_data/summary.json",
+  "output_dir": "scratch/vn_swing_lab/runs/LAB002_numeric_data",
+  "evaluation_periods": [{"start": "2015-01-05", "end": "2026-10-02", "role": "diagnostic"}],
+  "max_wall_seconds": 900
+}

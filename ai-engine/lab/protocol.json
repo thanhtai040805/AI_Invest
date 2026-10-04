@@ -9,13 +9,17 @@
   "default_max_wall_seconds": 900,
   "maximum_max_wall_seconds": 3600,
   "max_failed_iterations_per_family": 2,
+  "workflow_stage": "NUMERIC_DATA_RESEARCH",
+  "active_research_families": ["numeric-data-audit"],
+  "stage_exit": "Verify a numeric source contract, payload coverage, units, availability timestamps and missing/default semantics for a specific economic hypothesis before enabling algorithm research",
   "economic_evidence_contract": "NOT_VALIDATED",
   "forward_candidate_promotion": "CLOSED_UNTIL_SESSION_CASH_AND_SOURCE_CONTRACTS_ARE_VALIDATED",
   "inspected_periods": [
     {"start": "2015-01-05", "end": "2026-10-02", "reason": "Existing ML research, source exports and PROD results already inspected; never a fresh holdout"}
   ],
   "allowed_entrypoints": [
-    "scripts/research_swing_lab_feasibility.py"
+    "scripts/research_swing_lab_feasibility.py",
+    "scripts/research_vn_numeric_data.py"
   ],
   "universe_counterfactuals": {
     "required": ["VN30_PIT", "LIQUID_NON_VN30_PIT", "LIQUID_UNION_PIT"],
@@ -41,6 +45,7 @@
     "profit_confirmation": "Offline output can never produce PROFIT_CONFIRMED; actual broker reconciliation and separate live authorization are required"
   },
   "families": [
+    {"id": "numeric-data-audit", "priority": -1, "required_data": ["Frozen local exports, feature metadata and numeric source catalog"], "data_available": true, "counts_against_failure_budget": false, "question": "Which Vietnamese numerical observations exist, are trustworthy, were available at decision time and can support a falsifiable swing hypothesis?"},
     {"id": "feasibility-audit", "priority": 0, "required_data": ["Existing daily export and rejected run artifacts"], "data_available": true, "question": "Audit what data can support a cash profitable swing decision and identify executable economic hypotheses"},
     {"id": "SETTLEMENT_FLOW_CONTINUATION", "priority": 1, "required_data": ["Daily raw and adjusted OHLC, continuous volume, exchange calendar"], "data_available": true, "question": "Does confirmed price and volume continuation survive settlement lock and all trading costs?"},
     {"id": "LIQUIDITY_SHOCK_REVERSAL", "priority": 2, "required_data": ["Daily raw and adjusted OHLC, continuous volume, exchange calendar"], "data_available": true, "question": "Does a liquidity shock followed by a confirmed reversal produce positive net action value?"},

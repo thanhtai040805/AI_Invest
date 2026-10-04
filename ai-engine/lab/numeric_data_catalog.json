@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "reviewed_on": "2026-10-04",
+  "scope": "Vietnamese equities swing research; numerical observations and calculations only",
+  "excluded": ["news text", "sentiment", "embeddings", "LLM inferred scores", "hash derived synthetic values", "SAG outputs while SAG_CLOSED"],
+  "required_observation_fields": ["entity", "metric", "value", "unit", "event_time", "published_at", "received_at", "available_at", "effective_from", "effective_to", "source", "source_record_id", "source_sha256", "revision_id", "quality_status", "missing_reason"],
+  "rules": {
+    "missing": "Null with reason, never an artificial zero or neutral observation",
+    "zero": "Valid only when the source explicitly observed zero; distinguish not reported, not subscribed and not applicable",
+    "time": "Use only records with available_at <= decision time; event date and period end do not establish availability",
+    "revisions": "Preserve original vintages and corrections; latest snapshots cannot be joined backward as historical observations",
+    "derived": "Store formula and upstream hashes; derived candles are not independent external information",
+    "rights": "Separate feature-adjusted prices from executable raw prices and actual cash/share entitlements",
+    "source_verification": "Documentation verified is not payload, historical coverage or usage-right verification",
+    "numeric_documents": "Tabulated numerical disclosures may be parsed with source evidence; narrative text is not a model feature"
+  },
+  "streams": [
+    {
+      "id": "UNIVERSE_AND_ENTITLEMENTS", "priority": 0,
+      "metrics": ["listing and delisting dates", "VN30 dated membership", "venue/tick/lot/bands", "shares outstanding/free float", "cash dividend per share", "stock and rights ratios", "ex date/record date/payment date"],
+      "role": "Define the tradable universe and reconcile price movement with actual wealth",
+      "local_status": "UNVERIFIED_HISTORY", "candidate_sources": ["HOSE", "HNX", "VSDC", "issuer numerical disclosures"],
+      "source_urls": ["https://developers.dnse.com.vn/docs/dnse/get-symbol-secdef/", "https://vsdc.vn/vi/sd/XAz40d2Q-9j569TvBgLQaQ"],
+      "next_evidence": "Dated constituent files and listing coverage; exact rights cash/share records; publication/effective times, historical secdef payload"
+    },
+    {
+      "id": "PRICES_AND_EXECUTION_VOLUME", "priority": 0,
+      "metrics": ["raw and adjusted OHLC", "executed notional", "continuous/ATO/ATC/negotiated volumes", "VWAP from observed trades"],
+      "role": "Repair baseline price and liquidity measurements before inferring an edge",
+      "local_status": "EXPORT_EXISTS_SEMANTICS_UNVERIFIED", "candidate_sources": ["Current frozen daily export", "DNSE", "exchange market data"],
+      "source_urls": ["https://developers.dnse.com.vn/docs/dnse/market-data/"],
+      "next_evidence": "Audit raw OHLC consistency, reconstructed factors, volume definitions, source transitions and original vintage"
+    },
+    {
+      "id": "FOREIGN_AND_PROPRIETARY_FLOW", "priority": 1,
+      "metrics": ["foreign buy/sell volume and value", "net foreign flow", "foreign room", "proprietary buy/sell value", "matched versus negotiated flow"],
+      "role": "Test persistent or temporary flow pressure independently of price/volume proxies",
+      "local_status": "ABSENT_FROM_FROZEN_BARS_EXPORT", "candidate_sources": ["DNSE", "exchange/provider historical flow dataset"],
+      "source_urls": ["https://developers.dnse.com.vn/docs/dnse/get-foreign-trading/", "https://www.hnx.vn/vi-vn/dich-vu-cctt/du-lieu-cung-cap-list.html"],
+      "next_evidence": "Sample real payloads, cumulative versus interval semantics, historical depth, EOD corrections, subscriptions and usage rights; room is not ownership"
+    },
+    {
+      "id": "TRADES_QUOTES_AND_AUCTIONS", "priority": 1,
+      "metrics": ["timestamped trades", "bid/ask price and quantity", "spread", "depth imbalance", "auction expected price and matched quantity", "limit queue and zero executable liquidity"],
+      "role": "Revalidate entry and measure costs, executable capacity and exit feasibility after settlement",
+      "local_status": "REALTIME_CODE_NOT_ARCHIVED_RESEARCH_HISTORY", "candidate_sources": ["DNSE historical quotes/trades and realtime feed"],
+      "source_urls": ["https://developers.dnse.com.vn/docs/dnse/get-quotes/", "https://developers.dnse.com.vn/docs/dnse/get-history-trades/"],
+      "next_evidence": "Paired quote/trade samples with sequence and timestamps; retention depth and licensing; best-level imbalance is not full order flow or queue position"
+    },
+    {
+      "id": "DERIVATIVES_CONTEXT", "priority": 2,
+      "metrics": ["index futures price", "cash index", "basis", "days to expiry", "open interest", "volume", "foreign/proprietary derivatives activity"],
+      "role": "Numerical risk and price-discovery context for equity positions",
+      "local_status": "NO_LAB_HISTORY_VERIFIED", "candidate_sources": ["HNX", "DNSE"],
+      "source_urls": ["https://web02.hnx.vn/vi-vn/phai-sinh/ket-qua-giao-dich.html"],
+      "next_evidence": "Synchronised spot/futures timestamps, contract expiries and roll policy; OI alone cannot identify buying direction or investor intent"
+    },
+    {
+      "id": "ETF_CREATION_REDEMPTION", "priority": 2,
+      "metrics": ["NAV per unit", "fund units outstanding", "creation/redemption units", "portfolio weights", "market price premium/discount", "rebalance quantities"],
+      "role": "Measure mechanically concentrated demand in index constituents",
+      "local_status": "PUBLIC_NUMERIC_DISCLOSURES_NOT_INGESTED", "candidate_sources": ["SSIAM and other fund managers"],
+      "source_urls": ["https://ssiam.com.vn/quy-etf-ssiam-vn30?nav_page=19"],
+      "next_evidence": "Dated unit and basket records with publication lag; NAV increase alone is not inflow; secondary ETF turnover is not fund creation"
+    },
+    {
+      "id": "FX_AND_MONEY_MARKET", "priority": 2,
+      "metrics": ["USD/VND reference and bank bid/ask rates", "overnight/one-week interbank rates and turnover", "OMO/t-bill outstanding and auction quantities", "government yields"],
+      "role": "Monetary/liquidity regime and sector exposure context",
+      "local_status": "MACRO_CODE_AND_SCHEMA_NOT_PIT_HISTORY", "candidate_sources": ["SBV", "HNX", "bank quoted FX"],
+      "source_urls": ["https://www.sbv.gov.vn/documents/d/sbv_portal/527697", "https://www.sbv.gov.vn/"],
+      "next_evidence": "Verify current publication schedules and vintage history; reference rate is not executable FX and announcement date differs from measurement date"
+    },
+    {
+      "id": "BREADTH_SECTORS_AND_CORRELATION", "priority": 1,
+      "metrics": ["advancers/decliners", "limit-up/down count", "sector returns and turnover", "market concentration", "dated cross-sectional correlation"],
+      "role": "Control common market/sector effects and study the stock-selection funnel",
+      "local_status": "PARTLY_DERIVABLE_PIT_UNIVERSE_NOT_VERIFIED", "candidate_sources": ["Validated bar universe plus dated sector and membership metadata"],
+      "source_urls": [],
+      "next_evidence": "Dated denominator and suspended/delisted constituents; do not calculate historical breadth on today's survivors"
+    },
+    {
+      "id": "NUMERIC_FUNDAMENTALS_AND_CREDIT", "priority": 3,
+      "metrics": ["quarterly revenue/profit/CFO/debt", "announced versus executed insider share transactions", "aggregate broker margin debt", "CPI/trade/IIP numerical series"],
+      "role": "Slow risk/context variables, only if incremental relevance is demonstrated for the swing horizon",
+      "local_status": "PUBLICATION_VINTAGES_NOT_VERIFIED_SAG_CLOSED", "candidate_sources": ["Independent permitted issuer numerical disclosures", "official statistical series"],
+      "source_urls": [],
+      "next_evidence": "Available-at filings and revisions, unit/consolidation definitions; aggregate quarterly margin is not daily stock-level forced-sale data; no SAG access"
+    },
+    {
+      "id": "BROKER_EXECUTION_AND_SETTLEMENT", "priority": 0,
+      "metrics": ["order/fill/fee/tax quantities", "cash and sale receivables", "sellable and unsettled shares", "partial fills/rejections", "execution slippage"],
+      "role": "Define tradable action labels and reconcile net NAV at the tested size",
+      "local_status": "PAPER_REPLAY_NOT_ACTUAL_BROKER_PROFIT", "candidate_sources": ["Authorized broker read-only ledgers when available"],
+      "source_urls": ["https://developers.dnse.com.vn/"],
+      "next_evidence": "Read-only broker evidence contract and explicitly distinguished paper/live origin; research NAV does not authorize live orders"
+    }
+  ],
+  "stage_exit_evidence": ["Specific hypothesis and required numeric streams", "Real source sample and provenance", "Coverage and missing/default audit by ticker/date/regime", "Units, event/publication/availability and revisions verified", "PIT universe and rights obligations explicit", "Executable cost/capacity labels or research-only limitations explicit", "Preregistered OHLCV/cash controls before incremental-value evaluation"],
+  "no_universal_download_requirement": "Audit all categories, collect the smallest credible dataset for one hypothesis; more columns are not proof of profitability"
+}
