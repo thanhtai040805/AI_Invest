@@ -142,6 +142,48 @@ xóa kết quả cũ; hạ mức tin cậy cho feature đó tới khi provenance
 
 ## Kết quả kiểm toán dữ liệu
 
+### Đối chiếu PROD chỉ đọc (04/10/2026)
+
+Container `ai-engine` đang chạy image gắn revision `1d5170065507`; SHA-256 của
+ba file train/inference trong container khớp với source revision đó. File
+ranker mặc định có trong container là
+`hybrid_stacking_ranker.pkl` (SHA-256
+`d50837bebd3c2d29e66aa3ccb3836e9d2af80e33f727b1fd7e4eecf25c888046`); HMM
+artifact là `hmm_regime_v2.pkl`. Không deserialize pickle, nên chưa xác minh
+feature schema hoặc ngày train nằm bên trong artifact. Trạng thái image/code
+đang chạy không chứng minh từng trường đã được đọc thành công trong lần dự báo.
+
+PostgreSQL PROD có 1.186.633 dòng
+`market_data_daily_calculation`/408 mã từ 28/07/2000 đến 02/10/2026;
+523.204 dòng `foreign_flow`/409 mã từ 27/06/2016 đến 01/10/2026 (517.897
+CafeF và 5.307 Vietstock; khóa mã/ngày không trùng); 29.913 dòng
+`insider_trades`/402 mã; 26.634 dòng `financial_ratios`/407 mã; và 17.864
+dòng `macro_indicators`/32 chỉ báo. Hai insider rows có ngày 1900-01-01,
+dấu hiệu cần xử lý như dữ liệu ngày bất thường.
+
+Theo đúng truy vấn universe trong trainer, top 100 mã hiện tại có 280.474
+bar từ 2014 tới 02/10/2026. Chỉ 138.510 bar (49,4%) khớp một dòng
+`foreign_flow` cùng mã/ngày; 18.403 dòng khớp có net flow bằng 0 và 120.107
+dòng khác 0. Vì `FeatureForge` left-join rồi fill missing bằng 0, mã/ngày
+không có dòng có thể bị nhập nhằng với dòng flow bằng 0 ở feature. Trong cùng
+280.474 bar, `volume_continuous` luôn bằng `volume_total`, nhưng 1.712 bar vẫn
+có `volume_ato` hoặc `volume_atc` dương (tổng ATO 128.588.800, ATC
+884.223.200 đơn vị). Vì vậy tên cột continuous chưa được chứng minh là volume
+liên tục thuần.
+
+`macro_indicators` có 3.025 dòng `vninbr_interbank_rate` từ 02/12/2014 tới
+26/09/2026. Bảng `market_regime` hiện chỉ có 57 ngày từ 10/07/2026 tới
+01/10/2026; HMM train ghép các ngày cũ còn lại bằng breadth mặc định 50.
+Nhánh HMM thay flow ngoại thiếu bằng 0. Đây là lỗ hổng coverage đáng kể nếu
+các chuỗi trong bảng được dùng cho train HMM như code mô tả.
+
+Đây là kiểm tra schema, count, range và join coverage trực tiếp trên PROD chỉ
+đọc; không phải audit mọi giá trị hoặc xác minh provenance/available-at.
+Đặc biệt, nội dung frozen export LAB003 thiếu raw flow không đại diện đầy đủ
+cho DB PROD: DB có flow table, nhưng chỉ phủ một phần bar của rổ train. Tên
+table, row count và code join vẫn không chứng minh nguồn đúng, số liệu hợp lệ
+hay đúng thời điểm được biết.
+
 LAB003 kiểm kê bars đóng băng và một số feature số dẫn xuất theo nguồn/năm;
 ghi nhận missing/zero/nonfinite, kiểm tra OHLC/volume, liệt kê trường nguồn
 và hash code/input. Export có 1.011.757 dòng, 407 mã từ 05/01/2015 đến
@@ -157,7 +199,7 @@ They are not measured neutral flow. Static code also has a foreign value
 fallback computed from a ticker hash, but the audit does not prove that
 fallback ran for any particular PROD prediction.
 
-Kiểm toán local này không truy vấn PROD, gọi provider, nạp model pickle,
+Audit LAB003 trên file local không gọi provider, nạp model pickle,
 truy cập SAG hay train model. Kết quả vẫn là `DIAGNOSTIC_ONLY`; một đường code
 hoặc trang API không tự xác minh được dữ liệu, tín hiệu dòng tiền hay khả năng
 sinh lời. Lần chạy đầu dừng vì lỗi định dạng báo cáo; lần chạy đã sửa và đăng
