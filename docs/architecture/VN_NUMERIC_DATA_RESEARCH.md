@@ -64,15 +64,19 @@ có đủ lịch sử hoặc HMM đó đã được dùng trong một quyết đ
    trong label. `date`, `ratio_date` hay `trade_date` không thay cho timestamp
    nguồn biết được quan sát. Thiếu availability/revision history thì chưa
    chứng minh feature hoặc label PIT.
-3. **Dòng tiền ngoại:** dataset OHLCV frozen có 1.011.757 bar/407 mã nhưng
-   các cột bar chỉ là OHLC, volume và adjusted OHLC; không có raw foreign
-   buy/sell hay proprietary flow. Trong tập feature broker-swing,
+3. **Dòng tiền ngoại:** `foreign_flow` là bảng riêng, không nằm trong bảng
+   bars. Trainer gọi `FeatureForge`, và `FeatureForge` truy vấn bảng riêng
+   trực tiếp theo mã/ngày. Frozen bars export có 1.011.757 bar/407 mã nhưng
+   chỉ chứa OHLC, volume và adjusted OHLC; nó không chứa raw foreign buy/sell
+   hay proprietary flow. Riêng broker-swing derived dataset, các cột
    `foreign_flow_ratio` và `foreign_flow_ratio_5d` **thiếu ở toàn bộ
-   1.008.861 dòng**; đó là missing, không phải số 0 quan sát được.
-   `FeatureForge` điền thiếu
-   flow thành 0; `DataEnricher.fetch_foreign_flow` có fallback tính giá trị
-   từ MD5 của ticker. Static code chứng minh một đường có thể sinh số giả,
-   **chưa chứng minh** đường đó đã được gọi trong một prediction PROD cụ thể.
+   1.008.861 dòng**; tên cột này khác với feature production
+   `foreign_flow_ratio_20d`, nên không thể dùng kết quả đó để suy ra coverage
+   bảng PROD. Production `FeatureForge` tự truy vấn bảng riêng và điền 0 khi
+   không có dòng. Một pipeline khác,
+   `DataEnricher.fetch_foreign_flow`, có fallback tính giá trị từ MD5 ticker;
+   code cho thấy đường này tồn tại, **chưa chứng minh** nó được gọi trong một
+   prediction PROD cụ thể.
 4. **Thanh khoản/vi cấu trúc:** volume ngày không phải volume liên tục nếu
    phần ATO/ATC/thỏa thuận chưa tách đúng; mã hóa nhánh fallback chưa tách
    thành volume liên tục=volume tổng. `order_flow_imbalance_proxy` được tính
@@ -179,10 +183,12 @@ các chuỗi trong bảng được dùng cho train HMM như code mô tả.
 
 Đây là kiểm tra schema, count, range và join coverage trực tiếp trên PROD chỉ
 đọc; không phải audit mọi giá trị hoặc xác minh provenance/available-at.
-Đặc biệt, nội dung frozen export LAB003 thiếu raw flow không đại diện đầy đủ
-cho DB PROD: DB có flow table, nhưng chỉ phủ một phần bar của rổ train. Tên
-table, row count và code join vẫn không chứng minh nguồn đúng, số liệu hợp lệ
-hay đúng thời điểm được biết.
+`foreign_flow` được kiểm tra độc lập với bars: LAB003 không có raw flow vì
+frozen export không chứa bảng này và một số cột feature dẫn xuất đang missing;
+điều đó không có nghĩa bảng PROD `foreign_flow` vắng mặt. PROD có bảng riêng,
+và phép join cho thấy bảng này khớp khoảng 49,4% bar trong rổ train. Tên table,
+row count và code join vẫn không chứng minh nguồn đúng, số liệu hợp lệ hay
+đúng thời điểm được biết.
 
 LAB003 kiểm kê bars đóng băng và một số feature số dẫn xuất theo nguồn/năm;
 ghi nhận missing/zero/nonfinite, kiểm tra OHLC/volume, liệt kê trường nguồn
@@ -194,10 +200,12 @@ bằng `volume_total` ở mọi dòng; `continuous_volume_share` chỉ có một
 1. Export này không chứng minh volume khớp liên tục đã được tách khỏi đấu giá.
 Các dòng volume bằng 0 không có mã lý do trong file.
 
-The two derived foreign-flow columns are missing in **all 1.008.861 rows**.
-They are not measured neutral flow. Static code also has a foreign value
-fallback computed from a ticker hash, but the audit does not prove that
-fallback ran for any particular PROD prediction.
+The two columns in this frozen broker-swing derived dataset are missing in
+**all 1.008.861 rows**; they are not measured neutral flow. Their names differ
+from production FeatureForge's `foreign_flow_ratio_20d`, and this local export
+does not measure coverage in the separate PROD `foreign_flow` table. A distinct
+static enrichment path has a ticker-hash fallback, but this audit does not
+prove it ran for any particular PROD prediction.
 
 Audit LAB003 trên file local không gọi provider, nạp model pickle,
 truy cập SAG hay train model. Kết quả vẫn là `DIAGNOSTIC_ONLY`; một đường code
