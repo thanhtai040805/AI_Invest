@@ -1,0 +1,48 @@
+{
+  "id": "LAB001_feasibility",
+  "family": "feasibility-audit",
+  "kind": "diagnostic",
+  "hypothesis": "Separate observed gross price movement, transaction cost drag, entry calibration and exit decisions on the frozen 2023-2025 development evidence before selecting a new economic mechanism for Vietnamese swing trading.",
+  "falsification": "No claim that an algorithm or universe is profitable is accepted from this diagnostic. Missing historical VN30 membership prevents VN30 attribution. Missing executable quotes, corporate entitlements or censored labels must remain explicit limitations rather than artificial profitable fills.",
+  "next_decision": "Retire failed legacy architectures. Select the next bounded family from settlement-aware flow continuation, liquidity-shock reversal or incremental portfolio action value using development evidence. A universe effect requires point-in-time membership before it can be measured.",
+  "source_paths": [
+    "scratch/short_horizon_daily_bars_2026-10-02.csv.gz",
+    "scratch/broker_swing_research_2026-10-03_v2/protocol.json",
+    "scratch/broker_swing_research_2026-10-03_v2/entry_dataset.parquet",
+    "scratch/broker_swing_research_2026-10-03_v2/dataset_metadata.json",
+    "scratch/broker_swing_research_2026-10-03_v2/dev_2023/entry_forecasts.parquet",
+    "scratch/broker_swing_research_2026-10-03_v2/dev_2023/exit_forecasts.parquet",
+    "scratch/broker_swing_research_2026-10-03_v2/dev_2023/observed_policy_outcomes.parquet",
+    "scratch/broker_swing_research_2026-10-03_v2/dev_2023/full_trades.csv",
+    "scratch/broker_swing_research_2026-10-03_v2/dev_2023/static_exit_same_entry_trades.csv",
+    "scratch/broker_swing_research_2026-10-03_v2/dev_2024/entry_forecasts.parquet",
+    "scratch/broker_swing_research_2026-10-03_v2/dev_2024/exit_forecasts.parquet",
+    "scratch/broker_swing_research_2026-10-03_v2/dev_2024/observed_policy_outcomes.parquet",
+    "scratch/broker_swing_research_2026-10-03_v2/dev_2024/full_trades.csv",
+    "scratch/broker_swing_research_2026-10-03_v2/dev_2024/static_exit_same_entry_trades.csv",
+    "scratch/broker_swing_research_2026-10-03_v2/dev_2025/entry_forecasts.parquet",
+    "scratch/broker_swing_research_2026-10-03_v2/dev_2025/exit_forecasts.parquet",
+    "scratch/broker_swing_research_2026-10-03_v2/dev_2025/observed_policy_outcomes.parquet",
+    "scratch/broker_swing_research_2026-10-03_v2/dev_2025/full_trades.csv",
+    "scratch/broker_swing_research_2026-10-03_v2/dev_2025/static_exit_same_entry_trades.csv"
+  ],
+  "code_paths": [
+    "scripts/research_swing_lab_feasibility.py",
+    "experiments/broker_swing_portfolio.py"
+  ],
+  "command": [
+    "python",
+    "scripts/research_swing_lab_feasibility.py",
+    "--bars", "scratch/short_horizon_daily_bars_2026-10-02.csv.gz",
+    "--research", "scratch/broker_swing_research_2026-10-03_v2",
+    "--output", "scratch/vn_swing_lab/runs/LAB001_feasibility",
+    "--nav", "1000000000",
+    "--development-years", "2023", "2024", "2025"
+  ],
+  "results_path": "scratch/vn_swing_lab/runs/LAB001_feasibility/summary.json",
+  "output_dir": "scratch/vn_swing_lab/runs/LAB001_feasibility",
+  "evaluation_periods": [
+    {"start": "2023-01-01", "end": "2025-12-31", "role": "development"}
+  ],
+  "max_wall_seconds": 900
+}

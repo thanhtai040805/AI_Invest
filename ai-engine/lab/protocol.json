@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "name": "Vietnam short swing ML LAB",
+  "scope": "Local research and paper evidence; no database, SAG, broker, deployment or live capital actions",
+  "initial_nav_vnd": 1000000000,
+  "live_capital_authorization": null,
+  "live_risk_authorization": null,
+  "ledger_directory": "scratch/vn_swing_lab",
+  "default_max_wall_seconds": 900,
+  "maximum_max_wall_seconds": 3600,
+  "max_failed_iterations_per_family": 2,
+  "economic_evidence_contract": "NOT_VALIDATED",
+  "forward_candidate_promotion": "CLOSED_UNTIL_SESSION_CASH_AND_SOURCE_CONTRACTS_ARE_VALIDATED",
+  "inspected_periods": [
+    {"start": "2015-01-05", "end": "2026-10-02", "reason": "Existing ML research, source exports and PROD results already inspected; never a fresh holdout"}
+  ],
+  "allowed_entrypoints": [
+    "scripts/research_swing_lab_feasibility.py"
+  ],
+  "universe_counterfactuals": {
+    "required": ["VN30_PIT", "LIQUID_NON_VN30_PIT", "LIQUID_UNION_PIT"],
+    "comparison": "Same decision dates, policy, capital, costs, settlement and eligibility controls; count all three trials",
+    "membership_fields": ["ticker", "venue", "published_at", "effective_from", "effective_to", "source"],
+    "unknown_membership": "VN30_ATTRIBUTION_UNAVAILABLE; never treat unknown membership as non-VN30",
+    "current_snapshot_backfill": "Forbidden; historical membership and listing/delisting coverage are required"
+  },
+  "criteria": {
+    "minimum_development_closed_trades": 150,
+    "minimum_evaluation_closed_trades": 50,
+    "minimum_profit_factor": 1.2,
+    "minimum_expectancy_net_return": 0.002,
+    "maximum_drawdown": 0.10,
+    "positive_net_nav_each_period": true,
+    "positive_closed_net_pnl_each_period": true,
+    "positive_stress_net_nav_each_period": true,
+    "maximum_stale_marks": 0,
+    "maximum_open_positions": 0,
+    "maximum_unsettled_receivable_vnd": 0,
+    "research_assumption": "10% maximum drawdown is a research screening limit, not approved live risk",
+    "win_rate_role": "Descriptive only; never a profitability gate",
+    "profit_confirmation": "Offline output can never produce PROFIT_CONFIRMED; actual broker reconciliation and separate live authorization are required"
+  },
+  "families": [
+    {"id": "feasibility-audit", "priority": 0, "required_data": ["Existing daily export and rejected run artifacts"], "data_available": true, "question": "Audit what data can support a cash profitable swing decision and identify executable economic hypotheses"},
+    {"id": "SETTLEMENT_FLOW_CONTINUATION", "priority": 1, "required_data": ["Daily raw and adjusted OHLC, continuous volume, exchange calendar"], "data_available": true, "question": "Does confirmed price and volume continuation survive settlement lock and all trading costs?"},
+    {"id": "LIQUIDITY_SHOCK_REVERSAL", "priority": 2, "required_data": ["Daily raw and adjusted OHLC, continuous volume, exchange calendar"], "data_available": true, "question": "Does a liquidity shock followed by a confirmed reversal produce positive net action value?"},
+    {"id": "PORTFOLIO_ACTION_VALUE", "priority": 3, "required_data": ["Daily export, existing trade and cash ledgers"], "data_available": true, "question": "Does switching between BUY, HOLD, EXIT and cash improve net capital return under the same budget?"},
+    {"id": "UNIVERSE_PIT_EFFECT", "priority": 4, "required_data": ["Historical dated VN30 membership, historical listing and delisting coverage"], "data_available": false, "question": "Holding policy, costs and capital fixed, does historical VN30 membership change net outcomes versus matched liquid cohorts?"},
+    {"id": "legacy-broker-arbitration", "priority": 99, "retired": true, "required_data": [], "data_available": true, "question": "Retired after existing broker swing profitability rejection; another algorithm label is not a new economic hypothesis"},
+    {"id": "legacy-short-horizon-boosted", "priority": 99, "retired": true, "required_data": [], "data_available": true, "question": "Retired after existing short horizon profitability rejection; do not repeat threshold or refit sweeps"}
+  ],
+  "existing_rejections": [
+    {"id": "EXISTING_broker_swing_v2", "family": "legacy-broker-arbitration", "directory": "scratch/broker_swing_research_2026-10-03_v2", "results": "results.json", "expected_status_key": "promotion_status", "expected_status": "REJECTED_PROFITABILITY"},
+    {"id": "EXISTING_profit_v5", "family": "legacy-short-horizon-boosted", "directory": "scratch/profit_research_2026-10-03_v5_refit_h3", "results": "report.json", "expected_status_key": "production_status", "expected_status": "REJECTED_PROFITABILITY_GATE"}
+  ]
+}
