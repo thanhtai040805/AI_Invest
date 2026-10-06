@@ -126,18 +126,25 @@ def check_volume_non_negative(data: List[Dict], target_date: date) -> DataQualit
 def check_volume_separation(data: List[Dict], target_date: date) -> DataQualityCheck:
     chk = DataQualityCheck("CHECK-04", "Volume Separation", CheckSeverity.WARNING)
     mismatches = []
+    missing = []
     for r in data:
         if r.get("date") != target_date: continue
         total = r.get("volume_total")
-        cont = r.get("volume_continuous", 0)
-        atc = r.get("volume_atc", 0)
-        ato = r.get("volume_ato", 0)
+        cont = r.get("volume_continuous")
+        atc = r.get("volume_atc")
+        ato = r.get("volume_ato")
+        if total is None or cont is None or atc is None or ato is None:
+            missing.append(r["ticker"])
+            continue
         if total is not None and abs(total - (cont + atc + ato)) > 1:
             mismatches.append(r["ticker"])
             
     if mismatches:
         chk.status = CheckStatus.FAIL
         chk.reason = f"Volume mismatch: {', '.join(mismatches)}"
+    elif missing:
+        chk.status = CheckStatus.WARNING
+        chk.reason = f"Volume split unavailable: {', '.join(missing)}"
     return chk
 
 

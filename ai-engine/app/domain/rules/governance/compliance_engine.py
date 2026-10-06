@@ -105,7 +105,7 @@ class GovernanceComplianceEngine:
         self,
         order: ProposedOrder,
         portfolio: PortfolioState,
-        adtv20_continuous: float,
+        adtv20_continuous: Optional[float],
         issuing_agent: str,
         order_intent: str = "BUY",
         confirming_signals_count: int = 3,

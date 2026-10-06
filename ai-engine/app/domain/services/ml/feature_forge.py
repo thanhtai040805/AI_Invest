@@ -184,13 +184,13 @@ class FeatureForge:
             if not ff_df.empty:
                 ff_df['date'] = pd.to_datetime(ff_df['date'])
                 ff_df = ff_df.set_index('date').sort_index()
-                # Join and calculate rolling ratio
-                temp = df[['volume']].join(ff_df, how='left').fillna(0)
-                net_vol_20d = temp['net_volume'].rolling(20, min_periods=1).sum()
+                # Missing rows mean unknown coverage; explicit zero values are valid.
+                temp = df[['volume']].join(ff_df, how='left')
+                net_vol_20d = temp['net_volume'].rolling(20, min_periods=20).sum()
                 total_vol_20d = temp['volume'].rolling(20, min_periods=1).sum()
-                out['foreign_flow_ratio_20d'] = (net_vol_20d / (total_vol_20d + 1e-8)).fillna(0)
+                out['foreign_flow_ratio_20d'] = net_vol_20d / (total_vol_20d + 1e-8)
             else:
-                out['foreign_flow_ratio_20d'] = 0.0
+                out['foreign_flow_ratio_20d'] = np.nan
 
             # 2. Insider Trades (Net shares bought in last 90 days - Parameterized query)
             q_in = "SELECT trade_date as date, trade_type, quantity FROM insider_trades WHERE symbol = %s"
@@ -234,7 +234,7 @@ class FeatureForge:
                 out['roe'] = np.nan
         except Exception as e:
             logger.error(f"Error fetching fundamentals for {ticker}: {e}")
-            out['foreign_flow_ratio_20d'] = 0.0
+            out['foreign_flow_ratio_20d'] = np.nan
             out['insider_net_90d'] = 0.0
             out['insider_signal'] = 0.0
             out['pe'] = np.nan

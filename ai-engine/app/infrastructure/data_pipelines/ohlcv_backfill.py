@@ -10,6 +10,7 @@ from typing import Optional
 from app.config.settings import get_settings
 from app.infrastructure.external_api.dnse.api.client import DNSEClient
 from app.infrastructure.vendors.vn.sector_groups import SYMBOL_OVERRIDES, classify
+from app.infrastructure.data_pipelines.ohlc_validation import is_valid_ohlc
 from psycopg2.extras import Json
 
 TZ_VN = timezone(timedelta(hours=7))
@@ -94,7 +95,13 @@ def fetch_today_ohlcv(client, symbol: str, target_date: Optional[date] = None, d
 
 def upsert_today(cur, rows: list[tuple]):
     if not rows:
-        return
+        return 0
+    valid_rows = [row for row in rows if len(row) >= 7 and is_valid_ohlc(row[2], row[3], row[4], row[5])]
+    invalid_count = len(rows) - len(valid_rows)
+    if invalid_count:
+        print(f"[DailyBackfill] Skipped {invalid_count} OHLC-invalid bars")
+    if not valid_rows:
+        return 0
     cur.executemany("""
         INSERT INTO ohlcv (time, symbol, open, high, low, close, volume)
         VALUES (%s, %s, %s, %s, %s, %s, %s)
@@ -104,7 +111,7 @@ def upsert_today(cur, rows: list[tuple]):
             low = EXCLUDED.low,
             close = EXCLUDED.close,
             volume = EXCLUDED.volume
-    """, rows)
+    """, valid_rows)
 
     # Đồng bộ sang bảng market_data_daily cho toàn bộ 12 Agents và EOD Pipeline
     mkt_rows = [
@@ -117,18 +124,20 @@ def upsert_today(cur, rows: list[tuple]):
             float(r[5]),  # close_adj
             float(r[5]),  # Seed the raw close; keep it when adjusted history is rebuilt.
             float(r[5]),  # vwap
-            int(r[6]),    # volume_continuous
-            int(r[6]),    # volume_total
+            None,         # Daily candles do not identify auction/continuous volume split.
+            None,         # Unknown ATO/ATC cannot be recorded as zero.
+            None,
+            int(r[6]),    # Observed total volume from the daily candle.
             "dnse_daily", # data_source
         )
-        for r in rows
+        for r in valid_rows
     ]
     cur.executemany("""
         INSERT INTO market_data_daily (
             ticker, date, open_adj, high_adj, low_adj, close_adj, close_unadj,
-            vwap, volume_continuous, volume_total, data_source
+            vwap, volume_continuous, volume_atc, volume_ato, volume_total, data_source
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (ticker, date) DO UPDATE SET
             open_adj = EXCLUDED.open_adj,
             high_adj = EXCLUDED.high_adj,
@@ -137,9 +146,12 @@ def upsert_today(cur, rows: list[tuple]):
             close_unadj = COALESCE(market_data_daily.close_unadj, EXCLUDED.close_unadj),
             vwap = EXCLUDED.vwap,
             volume_continuous = EXCLUDED.volume_continuous,
+            volume_atc = EXCLUDED.volume_atc,
+            volume_ato = EXCLUDED.volume_ato,
             volume_total = EXCLUDED.volume_total,
             data_source = EXCLUDED.data_source
     """, mkt_rows)
+    return len(valid_rows)
 
 
 def sync_stocks(
@@ -328,8 +340,6 @@ def run_daily_backfill(
         rows = []
         for i in range(len(result['t'])):
             candle_date = datetime.fromtimestamp(result['t'][i], tz=TZ_VN).date()
-            if candle_date == expected_date:
-                target_rows += 1
             rows.append((
                 candle_date, sym,
                 result.get('o', [0])[i],
@@ -342,13 +352,17 @@ def run_daily_backfill(
         if rows:
             conn = get_db_conn()
             cur = conn.cursor()
-            upsert_today(cur, rows)
+            saved = upsert_today(cur, rows)
             conn.commit()
             cur.close()
             conn.close()
-            total_rows += len(rows)
-            if rows:
-                print(f"    [OK] {len(rows)} rows")
+            total_rows += saved
+            target_rows += sum(
+                row[0] == expected_date and is_valid_ohlc(row[2], row[3], row[4], row[5])
+                for row in rows
+            )
+            if saved:
+                print(f"    [OK] {saved} rows")
 
         if progress_callback:
             progress_callback(sym, count, len(symbol_map))
