@@ -28,8 +28,6 @@ docs/
 - [PROJECT_MEMORY.md](file:///d:/AIInvest/docs/architecture/PROJECT_MEMORY.md): Bộ nhớ kiến trúc hệ thống, danh mục trách nhiệm từng thư mục và các quy chuẩn chống suy đoán.
 
 - [AGENT_INVESTMENT_PRINCIPLES.md](architecture/AGENT_INVESTMENT_PRINCIPLES.md): Nguyên tắc chọn cổ phiếu, cắt lỗ và quản trị danh mục hiện có, viết bằng tiếng Việt và đối chiếu trực tiếp mã nguồn.
-- [VN_SWING_ML_LAB.md](architecture/VN_SWING_ML_LAB.md): LAB nghiên cứu ML lướt sóng với NAV 1 tỷ, vòng thử có giới hạn, đối chứng universe và mục tiêu lợi nhuận ròng thực tế.
-- [VN_NUMERIC_DATA_RESEARCH.md](architecture/VN_NUMERIC_DATA_RESEARCH.md): Kiểm toán dữ liệu số Việt Nam, provenance/PIT và nguồn flow, vi cấu trúc, phái sinh, ETF, vĩ mô trước khi mở thuật toán.
 
 ### Thư Viện Sơ Đồ Trực Quan (Interactive Diagrams Hub)
 Được thiết kế theo tiêu chuẩn editorial của `/diagram-design` và meta-skill `scientific-diagram-prompt-crafter`:
