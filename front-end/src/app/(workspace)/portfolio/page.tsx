@@ -76,9 +76,9 @@ export default function Portfolio() {
             </tr></thead>
             <tbody className="divide-y divide-line">
               {positions.map((p) => (
-                <tr key={p.symbol} className="hover:bg-soft/50 transition-colors">
-                  <td className="py-3 pl-5"><Link to={`/stock/${p.symbol}`} className="font-mono font-medium text-ink hover:underline">{p.symbol}</Link></td>
-                  <td className="text-right px-3 tnum font-mono text-secondary">{p.quantity === null ? "—" : p.quantity.toLocaleString("vi-VN")}</td>
+                <tr key={p.symbol} className="relative hover:bg-soft/50 focus-within:bg-soft/50 transition-colors">
+                  <td className="py-3 pl-5"><Link to={`/stock/${p.symbol}`} className="relative z-10 font-mono font-medium text-ink hover:underline">{p.symbol}</Link></td>
+                  <td className="text-right px-3 tnum font-mono text-secondary"><Link to={`/agent?ticker=${encodeURIComponent(p.symbol)}#investment-thesis`} className="after:absolute after:inset-0 after:cursor-pointer focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:outline-mineral focus-visible:after:-outline-offset-2" title={`Xem luận điểm đầu tư ${p.symbol}`}><span className="sr-only">Xem luận điểm đầu tư {p.symbol} · </span>{p.quantity === null ? "—" : p.quantity.toLocaleString("vi-VN")}</Link></td>
                   <td className="text-right px-3 tnum font-mono text-secondary">{displayNumber(p.entry)}</td>
                   <td className="text-right px-3 tnum font-mono text-ink">{displayNumber(p.current)}<div className="mt-1 text-[10px] text-muted">{p.priceAsOf ? new Date(p.priceAsOf).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" }) : "Thiếu giá"}{p.stale ? " · Gần nhất" : ""}</div></td>
                   <td className="text-right px-3 tnum font-mono text-ink">{displayNumber(p.marketValue)}</td>

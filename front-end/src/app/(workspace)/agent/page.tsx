@@ -1,6 +1,7 @@
 "use client"
 
-import { useState } from "react"
+import { Suspense, useEffect, useState } from "react"
+import { useSearchParams } from "next/navigation"
 import { FinancialCalendar } from "@/components/FinancialCalendar"
 import { workspaceApi } from "@/lib/api"
 import { usePortfolio, type PortfolioPosition, type PortfolioSnapshot } from "@/lib/use-portfolio"
@@ -1011,9 +1012,18 @@ function AgentLogRow({ agent, entry, index }: { agent: string; entry: RecordData
   )
 }
 
-export default function WarRoom() {
-  const [date, setDate] = useState(() => vietnamDate())
-  const [symbol, setSymbol] = useState("")
+export default function WarRoomPage() {
+  return <Suspense fallback={<AgentSkeleton />}><WarRoomRoute /></Suspense>
+}
+
+function WarRoomRoute() {
+  const requestedSymbol = useSearchParams().get("ticker")?.trim().toUpperCase() || ""
+  return <WarRoom key={requestedSymbol} requestedSymbol={requestedSymbol} />
+}
+
+function WarRoom({ requestedSymbol }: { requestedSymbol: string }) {
+  const [date, setDate] = useState(() => requestedSymbol ? "" : vietnamDate())
+  const [symbol, setSymbol] = useState(requestedSymbol)
   const [search, setSearch] = useState("")
   const [agent, setAgent] = useState("all")
   const [scope, setScope] = useState("all")
@@ -1028,7 +1038,7 @@ export default function WarRoom() {
   const plans = ready ? newest(data?.decisions || []) : []
   const logs = ready ? (data?.logs || []).flatMap(group => (group.entries || []).map(entry => ({ agent: group.agent, entry })))
     .sort((a, b) => (Date.parse(timestamp(b.entry)) || 0) - (Date.parse(timestamp(a.entry)) || 0)) : []
-  const symbols = [...new Set([...theses, ...plans, ...(portfolio?.positions.map(p => ({ ticker: p.symbol })) ?? [])].map(row => String(row.ticker || "")).filter(Boolean))]
+  const symbols = [...new Set([requestedSymbol, ...[...theses, ...plans, ...(portfolio?.positions.map(p => ({ ticker: p.symbol })) ?? [])].map(row => String(row.ticker || ""))].filter(Boolean))]
   const visibleSymbols = symbols.filter(item => item.toLowerCase().includes(search.toLowerCase()))
   const active = visibleSymbols.includes(symbol) ? symbol : visibleSymbols[0] || ""
   const thesis = theses.find(row => row.ticker === active)
@@ -1053,6 +1063,12 @@ export default function WarRoom() {
   const rlEntry = latestEntry("reinforcement_learning")
   const govEntry = latestEntry("system_governance")
 
+  useEffect(() => {
+    if (ready && requestedSymbol && window.location.hash === "#investment-thesis") {
+      document.getElementById("investment-thesis")?.scrollIntoView({ block: "start" })
+    }
+  }, [ready, requestedSymbol])
+
   return (
     <div className="min-h-full bg-paper text-ink">
       <header className="flex flex-wrap items-center justify-between gap-4 border-b border-line bg-surface px-5 py-5 lg:px-8">
@@ -1062,7 +1078,7 @@ export default function WarRoom() {
           <p className="mt-1 text-sm text-secondary">Phân bổ cuối cùng, mục tiêu và câu chuyện đầu tư sau thẩm định.</p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          <FinancialCalendar label="Ngày phân tích" allowAll={false} value={date} dates={data?.dates || []} onChange={value => { setDate(value); setLogLimit(30) }} />
+          <FinancialCalendar label="Ngày phân tích" allowAll={!!requestedSymbol} value={date} dates={data?.dates || []} onChange={value => { setDate(value); setLogLimit(30) }} />
           <a href="#agent-logs" onClick={() => document.getElementById("agent-logs")?.setAttribute("open", "")} className={`${control} font-medium`}>Xem nhật ký ↓</a>
           <button className={control} onClick={() => { void resource.reload(); void accountResource.reload() }} disabled={resource.loading || accountResource.loading}>Làm mới</button>
         </div>
@@ -1127,7 +1143,7 @@ export default function WarRoom() {
             {active ? <>
               <FinalOrderSection ticker={active} plan={planForReview} riskLogs={entriesFor("portfolio_risk").map(log => log.entry)} executionEntries={matchingEntries("trade_execution").map(log => log.entry)} position={valuedPosition} portfolioAvailable={!!portfolio} />
               <DecisionEvidenceSection thesis={thesis} counter={counter} resolution={resolution} plan={planForReview} riskLogs={entriesFor("portfolio_risk").map(log => log.entry)} />
-              <InvestmentThesisSection thesis={thesis} counter={counter} resolution={resolution} />
+              <div id="investment-thesis" className="scroll-mt-5"><InvestmentThesisSection thesis={thesis} counter={counter} resolution={resolution} /></div>
               <section className="rounded-xl border border-line bg-surface p-5">
                 <h2 className="text-sm font-medium">Dữ liệu phân tích và theo dõi vị thế</h2>
                 <div className="mt-5 space-y-5">
