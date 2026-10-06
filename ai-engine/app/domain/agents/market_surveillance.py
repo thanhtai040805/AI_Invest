@@ -222,6 +222,7 @@ class MarketSurveillanceAgent(BaseAgent):
                         SELECT ticker, volume_continuous, volume_atc, volume_total, close, open, vwap, is_etf_rebalance_day
                         FROM market_data_daily_calculation
                         WHERE date = %s AND volume_total > 50000
+                          AND volume_continuous IS NOT NULL AND volume_atc IS NOT NULL
                         ORDER BY volume_atc DESC LIMIT 50
                     """, (eff_date,))
                     atc_rows = cur.fetchall()
