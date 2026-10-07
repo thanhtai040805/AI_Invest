@@ -4,6 +4,29 @@ from types import SimpleNamespace
 
 from app.infrastructure.external_api.sector_heatmap import build_sector_heatmap
 from app.infrastructure.external_api.dnse import redis_pub, stream_hub
+from app.infrastructure.data_pipelines import ohlcv_backfill
+
+
+def test_stock_master_sync_keeps_ssi_and_preserves_capital_when_dnse_omits_it(monkeypatch):
+    assert ohlcv_backfill.is_real_stock("SSI")
+    assert ohlcv_backfill.is_real_stock("SHB")
+    assert not ohlcv_backfill.is_real_stock("FUEVFVND")
+    assert not ohlcv_backfill.is_real_stock("CSSI2501")
+    assert not ohlcv_backfill.is_real_stock("SSIAM")
+    capitals = [None, 0, -1, "bad", float("nan"), float("inf"), 123456]
+    instruments = [{"symbol": "SSI" if index == 0 else f"STOCK{index}", "marketCap": cap} for index, cap in enumerate(capitals)]
+    statements = []
+    cursor = SimpleNamespace(execute=lambda sql, params=None: statements.append((sql, params)), fetchall=lambda: [], close=lambda: None)
+    connection = SimpleNamespace(cursor=lambda: cursor, commit=lambda: None, close=lambda: None)
+    monkeypatch.setattr(ohlcv_backfill, "get_settings", lambda: SimpleNamespace(dnse_api_key="", dnse_api_secret="", dnse_base_url=""))
+    monkeypatch.setattr(ohlcv_backfill, "DNSEClient", lambda **kwargs: object())
+    monkeypatch.setattr(ohlcv_backfill, "get_all_stocks", lambda client, exchanges: instruments)
+    monkeypatch.setattr(ohlcv_backfill, "get_db_conn", lambda: connection)
+
+    assert ohlcv_backfill.sync_stocks() == len(instruments)
+    upserts = [(sql, params) for sql, params in statements if "INSERT INTO stocks" in sql]
+    assert [params[5] for _, params in upserts] == [None] * 6 + [123456]
+    assert all("market_cap = COALESCE(EXCLUDED.market_cap, stocks.market_cap)" in sql for sql, _ in upserts)
 
 
 def test_sector_counts_include_symbols_without_valid_prices_or_reference():

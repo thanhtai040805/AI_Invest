@@ -390,8 +390,6 @@ router.get('/heatmap', (req, res, next) => handle(req, res, next, () =>
       const historySector = historyByName.get(String(sector.name ?? sector.sector ?? ''));
       return {
         ...sector,
-        market_cap: historySector?.market_cap,
-        market_cap_count: historySector?.market_cap_count,
         sparkline: Array.isArray(historySector?.sparkline) && historySector.sparkline.length > 1
           ? historySector.sparkline
           : sector.sparkline ?? [],

@@ -10,7 +10,8 @@ export function sectorWeights(sectors: SectorWeightInput[]) {
   const weightByCount = !sectors.length || sectors.some((sector, index) => {
     const coverage = positive(sector.market_cap) > 0
       ? sector.market_cap_count ?? sector.marketCapCount : sector.marketCapCount ?? sector.market_cap_count;
-    return capitals[index] <= 0 || (coverage != null && (!Number.isFinite(Number(coverage)) || Number(coverage) < positive(sector.count)));
+    return capitals[index] <= 0 || positive(sector.count) <= 0
+      || positive(coverage) !== positive(sector.count);
   });
   const values = weightByCount ? sectors.map((sector) => positive(sector.count)) : capitals;
   const total = values.reduce((sum, value) => sum + value, 0);

@@ -13,6 +13,8 @@ test('partial capital data uses stock counts for every sector, with a total of 1
   assert.deepEqual(result.weights, sectors.map((sector) => sector.count / 110 * 100));
   assert(Math.abs(result.weights.reduce((sum, weight) => sum + weight, 0) - 100) < 1e-10);
   assert.equal(sectorWeights([{ weight: 100, count: 2, marketCapCount: 1 }, { weight: 50, count: 1, marketCapCount: 1 }]).weightByCount, true);
+  assert.equal(sectorWeights([{ weight: 100, count: 2 }, { weight: 50, count: 1 }]).weightByCount, true);
+  assert.equal(sectorWeights([{ weight: 100, count: 2, marketCapCount: 3 }, { weight: 50, count: 1, marketCapCount: 1 }]).weightByCount, true);
 });
 
 test('complete capital data uses the same percentages for REST and realtime payloads', () => {
@@ -20,7 +22,7 @@ test('complete capital data uses the same percentages for REST and realtime payl
   const live = [{ weight: 60, count: 3, marketCapCount: 3 }, { weight: 40, count: 2, marketCapCount: 2 }];
   assert.deepEqual(sectorWeights(rest), { weights: [60, 40], weightByCount: false });
   assert.deepEqual(sectorWeights(live), sectorWeights(rest));
-  assert.deepEqual(sectorWeights([{ market_cap: 0, weight: 60, count: 3 }, { market_cap: 0, weight: 40, count: 2 }]), sectorWeights(rest));
+  assert.deepEqual(sectorWeights([{ market_cap: 0, weight: 60, count: 3, marketCapCount: 3 }, { market_cap: 0, weight: 40, count: 2, marketCapCount: 2 }]), sectorWeights(rest));
   assert.deepEqual(sectorWeights([{ weight: NaN, count: 1 }, { weight: Infinity, count: 3 }]).weights, [25, 75]);
   assert.deepEqual(sectorWeights([]).weights, []);
 });
