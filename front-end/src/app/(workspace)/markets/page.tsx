@@ -22,7 +22,7 @@ interface ApiOrderBookLevel { price: number; volume: number }
 interface ApiOrderBook { symbol?: string; bids: ApiOrderBookLevel[]; asks: ApiOrderBookLevel[]; receivedAt?: number; stale?: boolean; lastUpdate?: string; source?: string }
 interface ApiOrderBooks { orderbooks?: Record<string, ApiOrderBook> }
 interface ApiLiquidity { totalValueBillion?: number | null; approximate?: boolean; stale?: boolean; source?: string; lastUpdate?: string; asOf?: string }
-type MarketRow = Stock & { foreignKnown: boolean; momentumKnown: boolean; source?: string; stale?: boolean }
+type MarketRow = Stock & { foreignKnown: boolean; momentumKnown: boolean; source?: string; stale?: boolean; priceBandAsOf?: string | null }
 
 export default function Markets() {
   const resource = useResource(() => Promise.all([
@@ -85,6 +85,7 @@ export default function Markets() {
         ref: r.ref == null || !Number.isFinite(Number(r.ref)) ? null : Number(r.ref),
         ceiling: Number(r.ceiling ?? 0),
         floor: Number(r.floor ?? 0),
+        priceBandAsOf: r.priceBandAsOf,
         volume: volStr,
         foreign: hasForeignFlow ? foreignValue : 0,
         foreignKnown: hasForeignFlow,
@@ -151,7 +152,7 @@ export default function Markets() {
         <div className="p-5 pb-2">
           <PanelHead
             title="Bảng theo dõi sàn HOSE"
-            sub={`Giá tính bằng VNĐ · Khối ngoại tính bằng tỷ VNĐ · Bid/Ask hiển thị snapshot gần nhất, dữ liệu cũ được đánh dấu · ${liveSnapshot ? `${liveSnapshot.liveSymbols ?? stockList.filter(stock => stock.source === "dnse-ws").length}/${liveSnapshot.total ?? stockList.length} mã có tick trong snapshot` : stockList.length ? `${stockList.length} mã từ snapshot gần nhất` : "Chưa có snapshot dữ liệu"}${snapshotRes?.stale && !liveSnapshot ? ` · dữ liệu cuối ngày${snapshotRes.asOf ? ` ${new Date(snapshotRes.asOf).toLocaleDateString("vi-VN")}` : ""}` : ""}`}
+            sub={`Giá tính bằng VNĐ · Khối ngoại tính bằng tỷ VNĐ · Bid/Ask hiển thị snapshot gần nhất, dữ liệu cũ được đánh dấu · ${liveSnapshot ? `${liveSnapshot.liveSymbols ?? stockList.filter(stock => stock.source === "dnse-ws").length}/${liveSnapshot.total ?? stockList.length} mã có tick trong snapshot` : stockList.length ? `${stockList.length} mã từ snapshot gần nhất` : "Chưa có snapshot dữ liệu"}${snapshotRes?.stale && !liveSnapshot ? ` · dữ liệu cuối ngày${snapshotRes.asOf ? ` ${new Date(snapshotRes.asOf).toLocaleDateString("vi-VN")}` : ""}` : ""}${stockList.some(stock => stock.priceBandAsOf) ? " · Trần/sàn theo bản tin DNSE gần nhất (xem ngày khi rê chuột)" : ""}`}
           />
         </div>
         <div className="overflow-x-auto">
@@ -187,6 +188,7 @@ export default function Markets() {
                 const book = orderbooks[s.symbol]
                 const bid = book?.bids?.[0]
                 const ask = book?.asks?.[0]
+                const bandTitle = s.priceBandAsOf ? `Trần/sàn DNSE cập nhật ${new Date(s.priceBandAsOf).toLocaleDateString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })}` : undefined
                 return <tr
                   key={s.symbol}
                   className="hover:bg-soft/50 transition-colors"
@@ -201,10 +203,10 @@ export default function Markets() {
                     {s.source === "dnse-ws" ? <span className="ml-1 text-[10px] font-normal text-gain">· tick</span> : s.stale || s.source === "postgres" ? <span className="ml-1 text-[10px] font-normal text-muted" title="Giá đóng cửa trong cơ sở dữ liệu">· cuối ngày</span> : <span className="ml-1 text-[10px] font-normal text-muted" title="Nguồn của hàng giá chưa được xác nhận">· nguồn chưa rõ</span>}
                   </td>
                   <td className="px-3 text-secondary">{s.name}</td>
-                  <td className="px-3 text-right font-mono text-[12px] text-gold">
+                  <td className="px-3 text-right font-mono text-[12px] text-gold" title={bandTitle}>
                     {s.ceiling > 0 ? fmt(s.ceiling) : "—"}
                   </td>
-                  <td className="px-3 text-right font-mono text-[12px] text-mineral">
+                  <td className="px-3 text-right font-mono text-[12px] text-mineral" title={bandTitle}>
                     {s.floor > 0 ? fmt(s.floor) : "—"}
                   </td>
                   <td className="px-3 text-right font-mono text-[12px] text-secondary">

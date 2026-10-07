@@ -4,7 +4,7 @@ import { aiEngineService } from '../../services/aiEngine.service';
 import { cached } from '../../utils/cache';
 import prisma from '../../config/database';
 import { redisService } from '../../services/redis.service';
-import { hasMarketPrice, marketQuoteSnapshot } from '../../services/marketQuote.service';
+import { hasMarketPrice, marketQuoteSnapshot, mergeMarketQuote } from '../../services/marketQuote.service';
 
 const router = Router();
 
@@ -141,10 +141,12 @@ router.get('/:symbol/quote', (req, res, next) => {
   const symbol = symbolParam(req);
   return handle(req, res, next, () =>
     (async () => {
-      const latest = await redisService.getCache<Record<string, unknown>>(`stock:${symbol}:quote`).catch(() => null);
-      if (hasMarketPrice(latest)) return marketQuoteSnapshot(latest);
+      const [latest, security] = await redisService.getCacheMany<Record<string, unknown>>(
+        [`stock:${symbol}:quote`, `stock:${symbol}:sec_def`],
+      ).catch(() => []);
+      if (hasMarketPrice(latest)) return mergeMarketQuote({}, latest, security);
       const fallback = await dbStockQuote(symbol);
-      return fallback ? marketQuoteSnapshot(fallback) : null;
+      return fallback ? mergeMarketQuote(marketQuoteSnapshot(fallback), null, security) : null;
     })(),
   );
 });

@@ -27,6 +27,8 @@ export async function syncStocksFromEngine(): Promise<number> {
   let count = 0;
   for (const row of stocks) {
     if (!row.symbol) continue;
+    const capital = Math.round(Number(row.marketCap));
+    const marketCap = Number.isSafeInteger(capital) && capital > 0 ? BigInt(capital) : undefined;
     await prisma.stock.upsert({
       where: { symbol: row.symbol },
       create: {
@@ -37,7 +39,7 @@ export async function syncStocksFromEngine(): Promise<number> {
         ceiling: row.ceiling != null ? new Decimal(row.ceiling) : undefined,
         floor: row.floor != null ? new Decimal(row.floor) : undefined,
         refPrice: row.prevClose != null ? new Decimal(row.prevClose) : undefined,
-        marketCap: row.marketCap != null ? BigInt(Math.round(row.marketCap)) : undefined,
+        marketCap,
       },
       update: {
         name: row.name ?? row.symbol,
@@ -46,7 +48,7 @@ export async function syncStocksFromEngine(): Promise<number> {
         ceiling: row.ceiling != null ? new Decimal(row.ceiling) : undefined,
         floor: row.floor != null ? new Decimal(row.floor) : undefined,
         refPrice: row.prevClose != null ? new Decimal(row.prevClose) : undefined,
-        marketCap: row.marketCap != null ? BigInt(Math.round(row.marketCap)) : undefined,
+        marketCap,
       },
     });
     count++;

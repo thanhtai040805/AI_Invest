@@ -2,6 +2,7 @@
 
 import json
 import logging
+from math import isfinite
 from datetime import datetime, timedelta, timezone
 
 from app.infrastructure.external_api.dnse.redis_pub import get_redis
@@ -15,6 +16,14 @@ def _to_vnd(value) -> float | None:
         return None
     price = float(value)
     return price * 1000 if 0 < price < 500 else price
+
+
+def _cached_quote(raw) -> dict:
+    try:
+        value = json.loads(raw) if raw else {}
+        return value if isinstance(value, dict) else {}
+    except (TypeError, ValueError):
+        return {}
 
 
 def refresh_latest_quote_cache() -> int:
@@ -55,8 +64,22 @@ def refresh_latest_quote_cache() -> int:
             return 0
 
         redis = get_redis()
+        definitions = redis.mget([f"stock:{row[0]}:sec_def" for row in rows])
+        prior_quotes = redis.mget([f"stock:{row[0]}:quote" for row in rows])
         pipe = redis.pipeline(transaction=False)
-        for symbol, trade_date, raw_price, raw_ref, volume, name, ceiling, floor in rows:
+        for row, definition_raw, prior_raw in zip(rows, definitions, prior_quotes):
+            symbol, trade_date, raw_price, raw_ref, volume, name, ceiling, floor = row
+            security = _cached_quote(definition_raw)
+            prior_quote = _cached_quote(prior_raw)
+            bands = {}
+            for value in [security, {"ceiling": _to_vnd(ceiling), "floor": _to_vnd(floor)}, prior_quote]:
+                try:
+                    upper, lower = float(value.get("ceiling") or 0), float(value.get("floor") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if all(isfinite(price) and price > 0 for price in (upper, lower)) and upper >= lower:
+                    bands = value
+                    break
             price = _to_vnd(raw_price)
             ref = _to_vnd(raw_ref)
             change = price - ref if price and ref else None
@@ -73,8 +96,9 @@ def refresh_latest_quote_cache() -> int:
                 "changePercent": change_pct,
                 "change_pct": change_pct,
                 "volume": int(volume or 0),
-                "ceiling": _to_vnd(ceiling),
-                "floor": _to_vnd(floor),
+                "ceiling": bands.get("ceiling"),
+                "floor": bands.get("floor"),
+                "priceBandAsOf": security.get("lastUpdate") if bands is security else bands.get("priceBandAsOf"),
                 "timestamp": date,
                 "asOf": date,
                 "lastUpdate": f"{date}T15:00:00+07:00",
