@@ -2,7 +2,7 @@
 
 import { Page } from "@/components/Shell";
 import { Link } from "@/lib/router";
-type Sector = { name: string; vn: string; weight: number; count: number; changePct: number | null; foreign: number | null };
+type Sector = { name: string; vn: string; weight: number; weightByCount: boolean; count: number; changePct: number | null; foreign: number | null };
 import { marketApi, workspaceApi } from "@/lib/api";
 import { useResource } from "@/lib/api/use-resource";
 import { DataState } from "@/components/data-state";
@@ -17,17 +17,16 @@ import {
 } from "@/components/ui";
 import { KLineChart } from "@/components/KLineChart";
 import type { ApiMarketStock } from "@/types";
+import { sectorWeights } from "@/lib/sector-weights";
 
 type DashboardSector = Sector & { sparkline?: number[]; foreignKnown?: boolean };
-interface ApiSectorRow { name?: string; sector?: string; nameVi?: string; weight?: number; marketWeight?: number; market_cap?: number; count?: number; changePct?: number; change_pct?: number; change?: number; foreign?: number; foreignFlow?: number; foreign_flow?: number; sparkline?: number[] }
+interface ApiSectorRow { name?: string; sector?: string; nameVi?: string; weight?: number; marketWeight?: number; market_cap?: number; marketCap?: number; marketCapCount?: number; market_cap_count?: number; count?: number; changePct?: number; change_pct?: number; change?: number; foreign?: number; foreignFlow?: number; foreign_flow?: number; sparkline?: number[] }
 
 function MarketMap({ sectors }: { sectors: DashboardSector[] }) {
-  const hasMarketCap = sectors.some((sector) => sector.weight > 0);
-  const total = sectors.reduce((sum, sector) => sum + (hasMarketCap ? sector.weight : sector.count), 0);
   return (
     <div className="grid grid-cols-2 sm:grid-cols-4 auto-rows-[118px] gap-1.5">
       {sectors.map((sector) => {
-        const weight = hasMarketCap ? sector.weight : sector.count;
+        const weight = sector.weight;
         const positive = sector.changePct === null ? null : sector.changePct >= 0;
         const strength = sector.changePct === null ? 0 : Math.min(Math.abs(sector.changePct) / 4, 1);
         const ground = positive === null ? "var(--color-surface)" : positive
@@ -50,7 +49,7 @@ function MarketMap({ sectors }: { sectors: DashboardSector[] }) {
                     {sector.name}
                   </div>
                   <div className="mt-0.5 text-[10px] text-secondary">
-                    {total > 0 ? `${((weight / total) * 100).toFixed(0)}% ${hasMarketCap ? "tỷ trọng" : "theo số mã"}` : "—"}
+                    {`${weight.toFixed(1)}% ${sector.weightByCount ? "theo số mã" : "vốn hóa"}`}
                   </div>
                 </div>
                 {sector.changePct !== null ? <PercentChange value={sector.changePct} arrow={false} className="text-[12px] shrink-0" /> : <span className="text-[12px] text-muted">—</span>}
@@ -109,7 +108,7 @@ function DashboardView({
       ["Khối ngoại", pulse?.foreign ?? ""],
       ["Nhóm dẫn dắt", pulse?.leadership ?? ""],
       [],
-      ["Ngành", "Mã", "Tỷ trọng hoặc số lượng", "Biến động (%)", "Khối ngoại"],
+      ["Ngành", "Mã", "Tỷ trọng (%)", "Biến động (%)", "Khối ngoại"],
       ...sectors.map((sector) => [sector.name, sector.count, sector.weight, sector.changePct, sector.foreign] as (string | number | null)[]),
     ];
     const csv = rows.map((row) => row.map((value) => {
@@ -226,15 +225,17 @@ export default function Dashboard() {
     const findIndex = (name: string) => indexRows.find((row: Record<string, unknown>) => String(row.symbol || row.code || row.name).toUpperCase().includes(name));
     const vn = findIndex("VNINDEX") || findIndex("VN-INDEX") || {};
     const sectorRows: ApiSectorRow[] = Array.isArray(heatmap) ? heatmap : heatmap?.sectors || heatmap?.data || [];
+    const { weights, weightByCount } = sectorWeights(sectorRows);
     const optionalNumber = (value: unknown) => {
       if (value == null) return null;
       const number = Number(value);
       return Number.isFinite(number) ? number : null;
     };
-    const sectors: DashboardSector[] = sectorRows.map((row) => ({
+    const sectors: DashboardSector[] = sectorRows.map((row, index) => ({
       name: String(row.name || row.sector || "—"),
       vn: String(row.nameVi || row.name || row.sector || "—"),
-      weight: Number(row.weight ?? row.marketWeight ?? row.market_cap ?? 0),
+      weight: weights[index],
+      weightByCount,
       count: Number(row.count ?? 0),
       changePct: optionalNumber(row.changePct ?? row.change_pct ?? row.change),
       foreign: optionalNumber(row.foreign ?? row.foreignFlow ?? row.foreign_flow),
@@ -280,22 +281,22 @@ export default function Dashboard() {
     };
   }, []);
   const liveRows = liveHeatmap?.sectors;
-  const liveTotal = liveRows?.reduce((sum, item) => sum + Number(item.weight ?? item.count ?? 0), 0) ?? 0;
+  const liveWeights = sectorWeights(liveRows ?? []);
   const optionalNumber = (value: unknown) => {
     if (value == null) return null;
     const number = Number(value);
     return Number.isFinite(number) ? number : null;
   };
   const dailyForeignBySector = new Map((resource.data?.sectors ?? []).map((sector) => [sector.name, sector.foreign]));
-  const realtimeSectors: DashboardSector[] | undefined = liveRows?.map((row) => {
-    const count = Number(row.weight ?? row.count ?? 0);
+  const realtimeSectors: DashboardSector[] | undefined = liveRows?.map((row, index) => {
     const name = String(row.name || row.sector || "—");
     const changePct = optionalNumber(row.changePct ?? row.change_pct ?? row.change);
     const foreign = optionalNumber(dailyForeignBySector.get(name));
     return {
       name,
       vn: String(row.nameVi || name),
-      weight: liveTotal > 0 ? (count / liveTotal) * 100 : 0,
+      weight: liveWeights.weights[index],
+      weightByCount: liveWeights.weightByCount,
       count: Number(row.count ?? 0),
       changePct,
       foreign,

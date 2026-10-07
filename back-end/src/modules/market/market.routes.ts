@@ -6,7 +6,7 @@ import prisma from '../../config/database';
 import { redisService } from '../../services/redis.service';
 import { autoBackfillIfNeeded, getBackfillHistory } from '../../services/backfill.service';
 import { bestOrderBookLevel } from './market.utils';
-import { hasMarketPrice, marketQuoteSnapshot } from '../../services/marketQuote.service';
+import { hasMarketPrice, mergeMarketQuote } from '../../services/marketQuote.service';
 
 const router = Router();
 
@@ -124,15 +124,15 @@ async function withRedisQuotes(snapshot: Payload): Promise<Payload> {
   if (!stocks.length) return snapshot;
 
   const symbols = stocks.map((stock) => String(stock.symbol ?? '').toUpperCase());
-  const quotes = await redisService.getCacheMany<Record<string, unknown>>(
-    symbols.map((symbol) => `stock:${symbol}:quote`),
-  ).catch(() => []);
+  const [quotes, securityDefinitions] = await Promise.all([
+    redisService.getCacheMany<Record<string, unknown>>(symbols.map((symbol) => `stock:${symbol}:quote`)).catch(() => []),
+    redisService.getCacheMany<Record<string, unknown>>(symbols.map((symbol) => `stock:${symbol}:sec_def`)).catch(() => []),
+  ]);
   let redisQuoteCount = 0;
   const mergedStocks = stocks.map((stock, index) => {
     const quote = quotes[index];
-    if (!hasMarketPrice(quote)) return stock;
-    redisQuoteCount += 1;
-    return { ...stock, ...marketQuoteSnapshot(quote), symbol: symbols[index] };
+    if (hasMarketPrice(quote)) redisQuoteCount += 1;
+    return { ...mergeMarketQuote(stock, quote, securityDefinitions[index]), symbol: symbols[index] };
   });
 
   return {
@@ -187,7 +187,11 @@ async function dbIndices() {
 
 async function dbHeatmap() {
   const sectors = await prisma.$queryRaw<Array<Record<string, unknown>>>`
-    WITH date_range AS (
+    WITH universe AS (
+      SELECT COALESCE(sector, 'Khác') AS sector, COUNT(*)::int AS count
+      FROM stocks WHERE exchange = 'HOSE' GROUP BY COALESCE(sector, 'Khác')
+    ),
+    date_range AS (
       SELECT DISTINCT d.date
       FROM market_data_daily d
       JOIN stocks s ON s.symbol = d.ticker
@@ -228,6 +232,7 @@ async function dbHeatmap() {
       SELECT date,
              sector,
              COUNT(*)::int AS count,
+             COUNT(*) FILTER (WHERE market_cap > 0)::int AS market_cap_count,
              COALESCE(
                SUM(change_pct * GREATEST(COALESCE(market_cap, 0), 0))
                  / NULLIF(SUM(GREATEST(COALESCE(market_cap, 0), 0)), 0),
@@ -240,6 +245,7 @@ async function dbHeatmap() {
     sector_history AS (
       SELECT sector,
              (ARRAY_AGG(count ORDER BY date DESC))[1] AS count,
+             (ARRAY_AGG(market_cap_count ORDER BY date DESC))[1] AS market_cap_count,
              (ARRAY_AGG(change_pct ORDER BY date DESC))[1] AS change_pct,
              (ARRAY_AGG(market_cap ORDER BY date DESC))[1] AS market_cap,
              ARRAY_AGG(change_pct ORDER BY date) AS sparkline,
@@ -261,12 +267,13 @@ async function dbHeatmap() {
       JOIN stocks s ON s.symbol = ff.symbol AND s.exchange = 'HOSE'
       GROUP BY COALESCE(s.sector, 'Khác')
     )
-    SELECT h.sector, h.count, h.change_pct, h.market_cap, h.sparkline,
+    SELECT u.sector, u.count, h.market_cap_count, h.change_pct, h.market_cap, h.sparkline,
            f.foreign_flow, fd.date AS foreign_as_of, h.as_of
-    FROM sector_history h
+    FROM universe u
+    LEFT JOIN sector_history h USING (sector)
     CROSS JOIN foreign_date fd
     LEFT JOIN foreign_by_sector f USING (sector)
-    ORDER BY h.market_cap DESC NULLS LAST
+    ORDER BY u.count DESC
   `;
 
   const normalizedSectors: Payload[] = sectors.map((sector): Payload => {
@@ -383,6 +390,8 @@ router.get('/heatmap', (req, res, next) => handle(req, res, next, () =>
       const historySector = historyByName.get(String(sector.name ?? sector.sector ?? ''));
       return {
         ...sector,
+        market_cap: historySector?.market_cap,
+        market_cap_count: historySector?.market_cap_count,
         sparkline: Array.isArray(historySector?.sparkline) && historySector.sparkline.length > 1
           ? historySector.sparkline
           : sector.sparkline ?? [],

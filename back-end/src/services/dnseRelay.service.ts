@@ -15,7 +15,7 @@ const CACHE_TTL: Record<string, number> = {
   expectedPrice: 2,
   ohlc: 2,
   ohlcClosed: 0, // keep the latest closed bar as a persistent snapshot
-  secDef: 3600,
+  secDef: 0, // keep the latest price bands across market closures and restarts
 };
 
 class DnseRelayService {
@@ -262,7 +262,7 @@ class DnseRelayService {
       case suffix.startsWith('sec_def:'): {
         const symbol = suffix.replace('sec_def:', '').toUpperCase();
         socketService.emitSecurityDefinition(symbol, data);
-        void redisService.setCache(`stock:${symbol}:secDef`, data, CACHE_TTL.secDef);
+        void redisService.setCache(`stock:${symbol}:sec_def`, data, CACHE_TTL.secDef);
         break;
       }
 

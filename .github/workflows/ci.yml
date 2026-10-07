@@ -47,6 +47,7 @@ jobs:
           cache: npm
           cache-dependency-path: front-end/package-lock.json
       - run: npm ci
+      - run: npm run test:market
       - run: npm run build
         env:
           NEXT_TELEMETRY_DISABLED: 1
@@ -79,6 +80,8 @@ jobs:
           tests/unit/test_mathematical_integrity.py
           tests/unit/test_portfolio_eod_and_quotes.py
           tests/unit/test_replay_ml_execution.py
+          tests/unit/test_market_data_snapshots.py
+          tests/unit/test_latest_quote_cache.py
           -k "not TestDualEngineBeneishMScore"
 
   compose:
