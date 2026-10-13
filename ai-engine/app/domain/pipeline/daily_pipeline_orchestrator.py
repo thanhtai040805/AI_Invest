@@ -397,6 +397,7 @@ class DailyInvestmentPipeline:
         monitored_positions_created: List[Dict[str, Any]] = []
         research_gate_decisions: List[Dict[str, Any]] = []
         thesis_gate_decisions: List[Dict[str, Any]] = []
+        portfolio_refresh_failed = False
 
         for ticker in selected_tickers:
             if len(qualified_orders_multi_agent) >= max_candidates:
@@ -621,6 +622,16 @@ class DailyInvestmentPipeline:
             else:
                 exec_data = {"status": "DISABLED", "shares": 0}
 
+            if exec_data.get("status") == "EXECUTED" and not replay_at:
+                try:
+                    portfolio_state = self._load_current_portfolio_state(multi_agent_account_id, None)
+                    current_nav = float(portfolio_state["total_nav"])
+                    replay_positions = portfolio_state["positions"]
+                    replay_cash = float(portfolio_state["cash_vnd"])
+                except Exception:
+                    logger.exception("[Pha 10 - %s] Could not refresh portfolio after execution; stopping further multi-agent orders.", ticker)
+                    portfolio_refresh_failed = True
+
             # Đóng gói Lệnh Multi-Agent Book
             css_score_val = float(research_report.get("css", 75.0))
             z_score_val = round((css_score_val - 50.0) / 10.0, 2)
@@ -678,6 +689,8 @@ class DailyInvestmentPipeline:
                 "event_type": "TRADE_FILLED" if exec_data.get("status") == "EXECUTED" else "TRADE_NOT_FILLED",
                 "details": exec_data,
             })
+            if portfolio_refresh_failed:
+                break
 
         research_status_counts = Counter(item["status"] for item in research_gate_decisions)
         research_reason_counts = Counter(
@@ -774,9 +787,12 @@ class DailyInvestmentPipeline:
         )
         logger.info(f"================================================================================")
 
+        if portfolio_refresh_failed:
+            pipeline_trace["portfolio_state_refresh"] = {"status": "FAILED_AFTER_EXECUTION"}
+
         return {
             "date": run_date_str,
-            "status": "SUCCESS",
+            "status": "FAILED" if portfolio_refresh_failed else "SUCCESS",
             "regime": regime,
             "session_context": session_context,
             "cash_ratio": cash_ratio,

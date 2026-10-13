@@ -191,7 +191,7 @@ class PortfolioRepository:
                 query = """
                     SELECT p.symbol, p.quantity, p.avg_price, p.opened_at,
                            md.close_unadj * 1000 AS current_price,
-                           COALESCE(NULLIF(s.sector, ''), s.industry, 'Unknown') AS sector
+                           COALESCE(NULLIF(BTRIM(s.sector), ''), NULLIF(BTRIM(s.industry), ''), 'Unknown') AS sector
                     FROM positions p
                     LEFT JOIN LATERAL (
                         SELECT close_unadj FROM market_data_daily

@@ -21,7 +21,7 @@ def test_open_positions_include_sector_for_allocation_and_risk_checks():
     positions = repository.get_open_positions(user_id="account-1")
 
     assert "LEFT JOIN stocks s ON s.symbol = p.symbol" in storage.position_query
-    assert "COALESCE(NULLIF(s.sector, ''), s.industry, 'Unknown')" in storage.position_query
+    assert "COALESCE(NULLIF(BTRIM(s.sector), ''), NULLIF(BTRIM(s.industry), ''), 'Unknown')" in storage.position_query
     assert positions[0]["ticker"] == "FPT"
     assert positions[0]["sector"] == "Technology"
     assert positions[0]["market_value"] == 600_000_000.0
