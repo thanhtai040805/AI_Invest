@@ -466,9 +466,27 @@ class DnseStreamHub:
                     self.set_market_universe([dict(zip(columns, row)) for row in cur.fetchall()])
             finally:
                 conn.close()
+            self._restore_security_definitions()
             print(f"[DNSE Stream] Loaded {len(self._universe_symbols)} HOSE symbols from stocks table")
         except Exception as e:
             print(f"[DNSE Stream] Could not load stock universe from database: {e}")
+
+    def _restore_security_definitions(self) -> None:
+        """Restore the latest bands when starting after the premarket feed ended."""
+        from app.infrastructure.external_api.dnse.redis_pub import get_redis
+
+        try:
+            symbols = sorted(self._universe_symbols)
+            values = get_redis().mget([f"stock:{symbol}:sec_def" for symbol in symbols]) if symbols else []
+            for raw in values:
+                if not raw:
+                    continue
+                try:
+                    self._apply_security_definition(json.loads(raw))
+                except (TypeError, ValueError, AttributeError):
+                    continue
+        except Exception as e:
+            print(f"[DNSE Stream] Security-definition restore unavailable: {type(e).__name__}")
 
     def start(self) -> None:
         if self._running:
@@ -590,6 +608,7 @@ class DnseStreamHub:
             "prevClose": prev_close,
             "ceiling": ceiling,
             "floor": floor,
+            "priceBandAsOf": metadata.get("priceBandAsOf"),
             "referenceStatus": reference_status,
             "trend": "unknown" if pct is None else "up" if pct > 0 else "down" if pct < 0 else "steady",
             "lastUpdate": getattr(data, "time", None) or datetime.now().astimezone().isoformat(),
@@ -685,7 +704,7 @@ class DnseStreamHub:
             "ceiling": to_vnd_price(getattr(data, "ceilingPrice", 0)),
             "floor": to_vnd_price(getattr(data, "floorPrice", 0)),
             "prevClose": to_vnd_price(getattr(data, "basicPrice", 0)),
-            "lastUpdate": datetime.now().isoformat(),
+            "lastUpdate": datetime.now(TZ_VN).isoformat(),
         }
 
     def _on_expected_price(self, data: Any) -> None:
@@ -825,24 +844,44 @@ class DnseStreamHub:
         if validated is None:
             self._validation_rejects += 1
             return
+        if not self._apply_security_definition(payload):
+            self._validation_rejects += 1
+            return
+        set_cache(f"stock:{sym}:sec_def", payload, 0)
+        with self._lock:
+            quote = dict(self._quotes[sym]) if sym in self._quotes else None
+        if quote:
+            set_cache(f"stock:{sym}:quote", quote, 0)
+        publish_json(f"sec_def:{sym}", payload)
+        self._queue_market_flush()
+
+    def _apply_security_definition(self, payload: Dict[str, Any]) -> bool:
+        sym = payload.get("symbol")
+        ceiling, floor = float(payload.get("ceiling") or 0), float(payload.get("floor") or 0)
+        reference = float(payload.get("prevClose") or 0)
+        if not sym or not all(math.isfinite(value) and value > 0 for value in (ceiling, floor)) or ceiling < floor:
+            return False
+        bands = {"ceiling": ceiling, "floor": floor, "priceBandAsOf": payload.get("lastUpdate")}
+        current_reference = (math.isfinite(reference) and reference > 0
+                             and str(payload.get("lastUpdate") or "")[:10] == datetime.now(TZ_VN).date().isoformat())
         with self._lock:
             self._sec_def[sym] = payload
             if sym in self._stock_metadata:
                 metadata = self._stock_metadata[sym]
-                metadata.update({key: value for key, value in (
-                    ("refPrice", payload["prevClose"]), ("ceiling", payload["ceiling"]), ("floor", payload["floor"])
-                ) if value > 0})
+                metadata.update(bands)
+                if current_reference:
+                    metadata["refPrice"] = reference
                 baseline = self._market_baseline.get(sym)
                 if baseline:
-                    baseline.update({key: value for key, value in (
-                        ("ref", payload["prevClose"]), ("ceiling", payload["ceiling"]), ("floor", payload["floor"])
-                    ) if value > 0})
-                    if payload["prevClose"] and baseline["price"] > 0:
-                        change = (baseline["price"] - payload["prevClose"]) / payload["prevClose"] * 100
-                        baseline.update(changePct=change, changePercent=change)
-        set_cache(f"stock:{sym}:sec_def", payload, 3600)
-        publish_json(f"sec_def:{sym}", payload)
-        self._queue_market_flush()
+                    baseline.update(bands)
+                    if current_reference:
+                        baseline["ref"] = reference
+                        if baseline["price"] > 0:
+                            change = (baseline["price"] - reference) / reference * 100
+                            baseline.update(changePct=change, changePercent=change, change_pct=change)
+            if sym in self._quotes:
+                self._quotes[sym].update(bands)
+        return True
 
     def _on_trade_extra(self, data: Any) -> None:
         self._last_message_at = time.time()

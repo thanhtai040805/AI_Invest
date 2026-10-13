@@ -7,6 +7,7 @@ export interface ApiMarketStock {
   ref?: number | null
   ceiling?: number
   floor?: number
+  priceBandAsOf?: string | null
   volume?: number | null
   tradingValue?: number
   industry?: string

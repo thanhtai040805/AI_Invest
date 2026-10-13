@@ -6,7 +6,7 @@ import { aiEngineService } from './aiEngine.service';
 import prisma from '../config/database';
 import { redisService } from './redis.service';
 import { bestOrderBookLevel } from '../modules/market/market.utils';
-import { hasMarketPrice, marketQuoteSnapshot } from './marketQuote.service';
+import { hasMarketPrice, marketQuoteSnapshot, mergeMarketQuote } from './marketQuote.service';
 
 const MAX_SUBSCRIPTIONS_PER_SOCKET = 400;
 const STREAM_CHANGE_BATCH_MS = 50;
@@ -206,12 +206,14 @@ class SocketService {
         currentMeta.subscribedSymbols.add(sym);
         const subscriberCount = await subscriptionService.addSymbol(sym);
 
-        const cachedQuote = await redisService.getCache<Record<string, unknown>>(`stock:${sym}:quote`).catch(() => null);
+        const [cachedQuote, security] = await redisService.getCacheMany<Record<string, unknown>>(
+          [`stock:${sym}:quote`, `stock:${sym}:sec_def`],
+        ).catch(() => []);
         if (hasMarketPrice(cachedQuote)) {
-          socket.emit(`stock:price:${sym}`, marketQuoteSnapshot(cachedQuote));
+          socket.emit(`stock:price:${sym}`, mergeMarketQuote({}, cachedQuote, security));
         } else {
           latestDbQuote(sym).then((row) => {
-            if (row) socket.emit(`stock:price:${sym}`, marketQuoteSnapshot(dailyQuoteSnapshot(sym, row)));
+            if (row) socket.emit(`stock:price:${sym}`, mergeMarketQuote(marketQuoteSnapshot(dailyQuoteSnapshot(sym, row)), null, security));
           }).catch(() => {});
         }
         if (config.dnse.enabled) {

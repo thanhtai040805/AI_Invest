@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test:market": "node --experimental-strip-types --test tests/sectorWeights.test.cjs"
   },
   "dependencies": {
     "@klinecharts/pro": "^0.1.1",

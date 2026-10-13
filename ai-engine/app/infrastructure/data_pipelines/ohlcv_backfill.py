@@ -23,7 +23,7 @@ def is_real_stock(sym: str) -> bool:
         return False
     if CW_PATTERN.match(sym):
         return False
-    if sym.startswith(ETF_PREFIXES):
+    if sym != 'SSI' and sym.startswith(ETF_PREFIXES):
         return False
     return True
 
@@ -228,8 +228,8 @@ def sync_stocks(
             mc = item.get("marketCap") or item.get("MarketCap") or item.get("market_cap")
             if mc is not None:
                 market_cap = int(mc) if not isinstance(mc, int) else mc
-            market_cap = int(market_cap) if market_cap else None
-        except (ValueError, TypeError):
+            market_cap = market_cap if market_cap is not None and market_cap > 0 else None
+        except (ValueError, TypeError, OverflowError):
             pass
 
         cur.execute("""
@@ -240,7 +240,7 @@ def sync_stocks(
                 exchange = EXCLUDED.exchange,
                 industry = COALESCE(EXCLUDED.industry, stocks.industry),
                 sector = COALESCE(EXCLUDED.sector, stocks.sector),
-                market_cap = EXCLUDED.market_cap,
+                market_cap = COALESCE(EXCLUDED.market_cap, stocks.market_cap),
                 ceiling = EXCLUDED.ceiling,
                 floor = EXCLUDED.floor,
                 ref_price = EXCLUDED.ref_price,

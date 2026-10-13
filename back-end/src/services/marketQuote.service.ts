@@ -29,3 +29,17 @@ export function marketQuoteSnapshot(quote: QuotePayload, now = Date.now()): Quot
 
   return { ...quote, stale, isSnapshot: true };
 }
+
+export function mergeMarketQuote(stock: QuotePayload, quote?: QuotePayload | null, security?: QuotePayload | null): QuotePayload {
+  const merged = hasMarketPrice(quote) ? { ...stock, ...marketQuoteSnapshot(quote) } : { ...stock };
+  // Price bands arrive separately from trades; a cached EOD null must not erase them.
+  const bands = [security, merged, stock].find((value) => value
+    && [value.ceiling, value.floor].every((price) => Number.isFinite(Number(price)) && Number(price) > 0)
+    && Number(value.ceiling) >= Number(value.floor));
+  if (bands) {
+    merged.ceiling = Number(bands.ceiling);
+    merged.floor = Number(bands.floor);
+    merged.priceBandAsOf = bands === security ? bands.lastUpdate : bands.priceBandAsOf;
+  }
+  return merged;
+}
