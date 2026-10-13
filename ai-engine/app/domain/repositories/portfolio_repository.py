@@ -190,13 +190,15 @@ class PortfolioRepository:
                 mark_date = as_of.date() if isinstance(as_of, datetime) else as_of
                 query = """
                     SELECT p.symbol, p.quantity, p.avg_price, p.opened_at,
-                           md.close_unadj * 1000 AS current_price
+                           md.close_unadj * 1000 AS current_price,
+                           COALESCE(NULLIF(s.sector, ''), s.industry, 'Unknown') AS sector
                     FROM positions p
                     LEFT JOIN LATERAL (
                         SELECT close_unadj FROM market_data_daily
                         WHERE ticker = p.symbol AND (%s::date IS NULL OR date <= %s::date)
                         ORDER BY date DESC LIMIT 1
                     ) md ON TRUE
+                    LEFT JOIN stocks s ON s.symbol = p.symbol
                     WHERE p.user_id = %s AND p.quantity > 0
                     ORDER BY quantity DESC
                 """
@@ -259,6 +261,7 @@ class PortfolioRepository:
                         "current_price": current_p,
                         "market_value": mkt_val,
                         "weight_pct": w_pct,
+                        "sector": str(r[5]) if len(r) > 5 and r[5] else "Unknown",
                     })
                 return results
         except Exception as e:

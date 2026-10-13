@@ -36,6 +36,39 @@ def test_pipeline_exports_and_backward_compatibility():
     assert CompatDailyETLPipeline is DailyETLPipeline
 
 
+def test_live_portfolio_snapshot_includes_existing_holdings_and_real_cash():
+    runner = DailyInvestmentPipeline(
+        multi_agent_mode=ExecutionMode.DISABLED.value,
+        standalone_ml_mode=ExecutionMode.DISABLED.value,
+    )
+
+    class PortfolioStub:
+        def get_account_state(self, user_id=None):
+            assert user_id == "account-1"
+            return {"cash_balance": 400_000_000.0, "total_nav": 1_000_000_000.0, "peak_nav": 1_100_000_000.0}
+
+        def get_open_positions(self, user_id=None):
+            assert user_id == "account-1"
+            return [{
+                "ticker": "FPT",
+                "shares": 1000,
+                "current_price": 600_000.0,
+                "market_value": 600_000_000.0,
+                "sector": "Technology",
+                "locked_t25_shares": 200,
+            }]
+
+    runner.portfolio_repo = PortfolioStub()
+    state = runner._load_current_portfolio_state("account-1", None)
+
+    assert state["total_nav"] == 1_000_000_000.0
+    assert state["peak_nav"] == 1_100_000_000.0
+    assert state["cash_vnd"] == 400_000_000.0
+    assert state["positions"][0]["ticker"] == "FPT"
+    assert state["sector_exposure"] == {"Technology": 600_000_000.0}
+    assert state["locked_t25_value"] == 120_000_000.0
+
+
 def test_12_agent_pipeline_bull_execution():
     """Kiểm tra DailyInvestmentPipeline điều phối toàn vẹn chuỗi 12 Agents cho ngày thị trường Bull/Normal."""
     async def _test():

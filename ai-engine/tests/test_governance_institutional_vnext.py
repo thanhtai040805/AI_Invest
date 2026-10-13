@@ -15,6 +15,7 @@ from datetime import datetime
 from app.core.registry import AgentRegistry
 import app.domain.agents  # Tự động nạp và đăng ký 12 Agents
 from app.domain.rules.hard_laws import ProposedOrder, PortfolioState
+from app.domain.rules.failsafe import FailsafeStatus, failsafe_engine
 from app.domain.rules.governance.compliance_engine import GovernanceComplianceEngine, ComplianceVerdict, RiskSeverity
 from app.domain.rules.governance.change_engine import GovernanceChangeEngine, ChangeRequest, ChangeStatus
 from app.eval.audit_trail import AuditTrailEngine
@@ -139,6 +140,24 @@ def test_compliance_authority_matrix_and_hose_policy():
     assert res_short.violated_rule == "HOSE_SHORT_SELLING_PROHIBITION"
 
 
+def test_shadow_mode_does_not_infer_broker_failure_but_live_mode_fails_closed():
+    governance = AgentRegistry.get_agent("system_governance")
+    assert governance.failsafe_engine is failsafe_engine
+    failsafe_engine.reset()
+
+    shadow_result = governance._check_broker_failsafe({"execution_mode": "SHADOW_RUNNER"})
+    assert shadow_result == (False, "", None)
+    assert failsafe_engine.status == FailsafeStatus.INACTIVE
+
+    live_result = governance._check_broker_failsafe({"execution_mode": "LIVE"})
+    assert live_result[0] is True
+    assert "BROKER_DISCONNECTED" in live_result[1]
+    assert live_result[2] is None
+    assert failsafe_engine.status == FailsafeStatus.ACTIVE
+
+    failsafe_engine.reset()
+
+
 # =============================================================================
 # 2. KIỂM THỬ TRỤ CỘT 2: AUDIT TRAIL & HASH CHAIN TOÀN VẸN MẬT MÃ
 # =============================================================================
@@ -238,6 +257,7 @@ def test_governance_decision_gate_pass_and_block_with_escalation():
             "sector": "Technology",
         }
         res_pass = await AgentRegistry.dispatch("system_governance", {
+            "execution_mode": "SHADOW_RUNNER",
             "order": valid_order,
             "portfolio": {"total_nav": 1_000_000_000.0, "positions": {}, "locked_t25_value": 0.0},
             "issuing_agent": "portfolio_allocation",
@@ -260,6 +280,7 @@ def test_governance_decision_gate_pass_and_block_with_escalation():
             "sector": "Technology",
         }
         res_block = await AgentRegistry.dispatch("system_governance", {
+            "execution_mode": "SHADOW_RUNNER",
             "order": breach_order,
             "portfolio": {
                 "total_nav": 1_000_000_000.0,

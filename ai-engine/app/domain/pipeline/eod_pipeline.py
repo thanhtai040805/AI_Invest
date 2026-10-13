@@ -179,13 +179,18 @@ class EODPipelineRunner:
             # PHA 5: AGENT-11 (SYSTEM GOVERNANCE & CRYPTOGRAPHIC AUDIT)
             # -------------------------------------------------------------
             logger.info("[EOD Pipeline - Pha 5] Kích hoạt Agent-11: Kiểm toán hệ thống & Băm SHA-256 Sổ Cái...")
+            execution_mode = os.getenv("MULTI_AGENT_MODE", "SHADOW_RUNNER").upper()
+            if execution_mode == "LIVE":
+                execution_mode = "DISABLED"
+            elif execution_mode not in {"SHADOW_RUNNER", "DISABLED"}:
+                execution_mode = "SHADOW_RUNNER"
             res_gov = await AgentRegistry.dispatch("system_governance", {
+                "execution_mode": execution_mode,
                 "actions_to_audit": [
                     {"agent_id": "position_monitoring", "event_type": "EOD_SETTLEMENT", "details": mon_data},
                     {"agent_id": "market_surveillance", "event_type": "REGIME_DECISION", "details": surv_data},
                     {"agent_id": "reinforcement_learning", "event_type": "CAUSAL_ADAPTATION", "details": rl_data},
                 ],
-                "broker_heartbeat": {"is_connected": True, "latency_ms": 50.0, "missed_beats": 0},
             })
 
             gov_data = res_gov.get("result", {}).get("data", {}) if res_gov.get("status") == "SUCCESS" else {}

@@ -284,6 +284,7 @@ class TradeExecutionAgent(BaseAgent):
                     "issuing_agent": issuing_agent,
                     "order_intent": order_intent,
                     "failsafe_override": is_override,
+                    "execution_mode": event_data.get("execution_mode", "SHADOW_RUNNER"),
                     "adtv20": adtv20,
                     "confirming_signals_count": decision.get("confirming_signals_count", 3),
                     "beneish_passed": decision.get("beneish_passed", True),

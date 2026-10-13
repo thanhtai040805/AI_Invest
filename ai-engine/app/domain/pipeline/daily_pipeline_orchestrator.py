@@ -77,6 +77,30 @@ class DailyInvestmentPipeline:
             f"Standalone ML Mode = '{self.standalone_ml_mode.value}'"
         )
 
+    def _load_current_portfolio_state(self, user_id: str, current_nav: Optional[float]) -> Dict[str, Any]:
+        account = self.portfolio_repo.get_account_state(user_id=user_id)
+        positions = self.portfolio_repo.get_open_positions(user_id=user_id)
+        nav = float(current_nav if current_nav is not None else account.get("total_nav", 1_000_000_000.0))
+        sector_exposure: Dict[str, float] = {}
+        locked_t25_value = 0.0
+        for position in positions:
+            shares = int(position.get("shares", position.get("quantity", 0)))
+            current_price = float(position.get("current_price", position.get("average_price", 0.0)))
+            sector = str(position.get("sector") or "").strip()
+            market_value = float(position.get("market_value", shares * current_price))
+            if sector:
+                sector_exposure[sector] = sector_exposure.get(sector, 0.0) + market_value
+            locked_t25_value += int(position.get("locked_t25_shares", 0)) * current_price
+        return {
+            "total_nav": nav,
+            "peak_nav": float(account.get("peak_nav", nav)),
+            "cash_vnd": float(account.get("cash_balance", nav)),
+            "positions": positions,
+            "sector_exposure": sector_exposure,
+            "locked_t25_value": locked_t25_value,
+            "returns_series": [],
+        }
+
     async def _monitor_open_positions(self, is_bear_defense: bool = False) -> List[Dict[str, Any]]:
         """Keep exits/risk monitoring alive when new analysis is unavailable."""
         instructions: List[Dict[str, Any]] = []
@@ -167,13 +191,12 @@ class DailyInvestmentPipeline:
                     ),
                     "returns_series": [],
                 }
+            portfolio_state = replay_portfolio
         else:
-            replay_positions = []
-            replay_cash = current_nav or 1_000_000_000.0
-
-        if current_nav is None:
-            acc_st = self.portfolio_repo.get_account_state(user_id=multi_agent_account_id)
-            current_nav = float(acc_st.get("total_nav", 1_000_000_000.0))
+            portfolio_state = self._load_current_portfolio_state(multi_agent_account_id, current_nav)
+            current_nav = float(portfolio_state["total_nav"])
+            replay_positions = portfolio_state["positions"]
+            replay_cash = float(portfolio_state["cash_vnd"])
 
         if standalone_nav is None:
             standalone_nav = (
@@ -269,6 +292,7 @@ class DailyInvestmentPipeline:
             # Ghi nhận sự kiện phòng vệ vốn vào System Governance
             if not replay_at:
                 await AgentRegistry.dispatch("system_governance", {
+                    "execution_mode": self.multi_agent_mode.value,
                     "actions_to_audit": [
                         {
                             "agent_id": "market_surveillance",
@@ -523,8 +547,8 @@ class DailyInvestmentPipeline:
                 "investment_thesis": thesis_data,
                 "counter_thesis": counter_data,
                 "total_nav": current_nav,
-                "cash_balance": replay_cash if replay_at else current_nav,
-                "positions": replay_positions if replay_at else [],
+                "cash_balance": replay_cash,
+                "positions": replay_positions,
                 "kelly_matrix": kelly_matrix,
                 "weight_cap": weight_cap,
                 "regime": regime,
@@ -554,13 +578,7 @@ class DailyInvestmentPipeline:
                     "breadth_ma20_pct": breadth_ma20_pct,
                     "regime": regime,
                 },
-                "portfolio": replay_portfolio if replay_at and replay_portfolio else {
-                    "total_nav": current_nav,
-                    "peak_nav": current_nav,
-                    "cash_vnd": current_nav,
-                    "positions": [],
-                    "returns_series": [],
-                },
+                "portfolio": portfolio_state,
                 **replay_context,
             })
             risk_data = res_risk.get("result", {}).get("data", {}) if res_risk.get("status") == "SUCCESS" else {}
@@ -581,6 +599,7 @@ class DailyInvestmentPipeline:
             execution_instruction["ticker"] = ticker
             execution_instruction["approved_shares"] = approved_shares
             execution_instruction["target_price"] = current_price
+            execution_instruction["sector"] = proposed_order.get("sector", sector)
 
             if replay_at:
                 exec_data = {
@@ -595,6 +614,7 @@ class DailyInvestmentPipeline:
                     "order_instruction": execution_instruction,
                     "adtv20_shares": candidate_metadata.get(ticker, {}).get("adtv20_shares", 0.0),
                     "orderbook": orderbook,
+                    "execution_mode": self.multi_agent_mode.value,
                 })
                 exec_data = res_exec.get("result", {}).get("data", {}) if res_exec.get("status") == "SUCCESS" else {}
                 logger.info(f"[Pha 10 - {ticker}] Trạng thái thực thi: {exec_data.get('status', 'UNKNOWN')}")
@@ -728,10 +748,10 @@ class DailyInvestmentPipeline:
         # =========================================================================
         logger.info("\n[Pha 12] Kích hoạt Agent-11: Thẩm định Tuân thủ Hiến pháp & Băm Sổ cái SHA-256...")
         res_gov = await AgentRegistry.dispatch("system_governance", {
+            "execution_mode": self.multi_agent_mode.value,
             "actions_to_audit": actions_to_audit if actions_to_audit else [
                 {"agent_id": "daily_pipeline_orchestrator", "event_type": "PIPELINE_RUN_COMPLETED", "details": {"date": run_date_str}}
             ],
-            "broker_heartbeat": {"latency_ms": 42.0, "is_connected": True, "missed_beats": 0},
             **replay_context,
         })
         gov_data = res_gov.get("result", {}).get("data", {}) if res_gov and res_gov.get("status") == "SUCCESS" else {}
