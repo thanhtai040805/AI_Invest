@@ -14,8 +14,9 @@ Chức năng:
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime, time, timezone
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 from app.core.base_agent import BaseAgent
 from app.domain.repositories.financial_repository import FinancialRepository
@@ -215,24 +216,51 @@ class InvestmentThesisAgent(BaseAgent):
                 if direct_evidence:
                     business_quality_data.update(direct_evidence)
 
-                sector = str(research_report.get("sector", "General"))
+                try:
+                    from app.domain.rules.thesis_financial_evidence import build_financial_evidence
+
+                    raw_time = event_data.get("current_time")
+                    if isinstance(raw_time, datetime):
+                        observed_at = raw_time
+                    elif raw_time:
+                        observed_at = datetime.fromisoformat(str(raw_time).replace("Z", "+00:00"))
+                        if observed_at.tzinfo is None:
+                            observed_at = observed_at.replace(tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+                    elif event_data.get("target_date") or target_date:
+                        financial_date = event_data.get("target_date") or target_date
+                        if isinstance(financial_date, str):
+                            financial_date = date.fromisoformat(financial_date[:10])
+                        observed_at = datetime.combine(
+                            financial_date, time(9, 45), tzinfo=ZoneInfo("Asia/Ho_Chi_Minh")
+                        )
+                    else:
+                        observed_at = datetime.now(timezone.utc)
+                    financial_snapshot = FinancialRepository().get_thesis_financial_snapshot(ticker, observed_at)
+                    financial_evidence = build_financial_evidence(financial_snapshot)
+                except Exception as financial_error:
+                    logger.warning("Không thể đọc snapshot BCTC cho %s: %s", ticker, financial_error)
+                    financial_evidence = {
+                        "sector": research_report.get("sector"),
+                        "industry": research_report.get("industry"),
+                        "formatted": "BCTC gần nhất: Chưa có trong dữ liệu; cần bản ghi có thời điểm DB quan sát trước thời điểm phân tích.",
+                        "ratios": None,
+                    }
+
+                sector = str(financial_evidence.get("sector") or research_report.get("sector", "General"))
+                industry = financial_evidence.get("industry") or research_report.get("industry")
+                financial_evidence["sector"] = sector
+                financial_evidence["industry"] = industry
                 catalyst_type = structured_payload["thesis_body"]["catalyst"]["primary_type"]
                 price_target_info = structured_payload["thesis_body"]["price_target"]
                 independent_signals = structured_payload["input_validation"].get("independent_signals")
 
-                financial_metrics = {
-                    "pe": research_report.get("pe") or event_data.get("pe"),
-                    "pb": research_report.get("pb") or event_data.get("pb"),
-                    "roe": research_report.get("roe") or event_data.get("roe"),
-                    "roic": research_report.get("roic") or event_data.get("roic"),
-                    "gpm": research_report.get("gpm") or research_report.get("gross_profit_margin"),
-                    "earnings_growth": research_report.get("earnings_growth"),
-                    "f4_score": research_report.get("f4_earnings"),
-                }
+                from app.domain.rules.thesis_financial_evidence import build_core_metrics
+                financial_metrics = build_core_metrics(research_report, event_data, financial_evidence)
 
                 narrative = await self.thesis_synthesizer.synthesize_thesis_narrative(
                     ticker=ticker,
                     sector=sector,
+                    industry=industry,
                     business_quality_data=business_quality_data,
                     catalyst_type=catalyst_type,
                     price_target_info=price_target_info,
@@ -240,6 +268,7 @@ class InvestmentThesisAgent(BaseAgent):
                     timeline_months=timeline_months,
                     independent_signals=independent_signals,
                     financial_metrics=financial_metrics,
+                    financial_evidence=financial_evidence,
                 )
                 if narrative:
                     structured_payload["thesis_body"]["why_now"] = narrative["why_now"]
