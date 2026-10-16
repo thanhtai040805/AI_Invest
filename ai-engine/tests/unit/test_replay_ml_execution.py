@@ -25,6 +25,14 @@ def test_daily_nav_is_persisted_with_close_mark(monkeypatch):
     assert storage.committed
 
 
+def test_reset_clears_only_the_account_replay_history():
+    storage = Storage()
+    PortfolioRepository(storage).reset_paper_trading_account("replay-account")
+
+    assert ("DELETE FROM paper_trades WHERE account_id = %s", ("replay-account",)) in storage.calls
+    assert ("DELETE FROM portfolio_nav_history WHERE account_id = %s", ("replay-account",)) in storage.calls
+
+
 class Storage:
     def __init__(self, status='PENDING_REPLAY'):
         self.status=status

@@ -246,11 +246,22 @@ def fill_pending(
     quote_cache: dict[tuple[date, str], list[dict]] | None = None,
 ) -> list[dict]:
     remaining = []
+    market_tz = ZoneInfo("Asia/Ho_Chi_Minh")
+    expires_at = datetime.combine(day, day_time(14, 45), market_tz)
     for order in pending_orders:
         symbol, side = order["symbol"], order["side"]
         if symbols is not None and symbol not in symbols:
             remaining.append(order)
             continue
+        requested_at = order.get("not_before")
+        if requested_at is not None:
+            requested_at = (
+                requested_at.astimezone(market_tz)
+                if requested_at.tzinfo else requested_at.replace(tzinfo=market_tz)
+            )
+            if requested_at.date() != day:
+                continue
+            order["not_before"] = requested_at
         bar = bars.get(symbol)
         if not bar or bar["price"] <= 0:
             if order.get("entry_type") != "PILOT":
@@ -265,9 +276,6 @@ def fill_pending(
             quantity = min(quantity, round_to_lot(int(float(account["total_nav"]) * 0.05 / limit_price)))
         if quantity <= 0:
             continue
-        requested_at = order.get("not_before")
-        if requested_at is not None:
-            requested_at = requested_at.astimezone(ZoneInfo("Asia/Ho_Chi_Minh"))
         if requested_at and requested_at.date() == day:
             earliest = requested_at
             require_later_snapshot = True
@@ -287,9 +295,18 @@ def fill_pending(
             snapshots, earliest, key=lambda snapshot: snapshot["time"]
         )
         last_seen = None
+        expired = False
         for snapshot_index in range(first, len(snapshots)):
             snapshot = snapshots[snapshot_index]
             if until is not None and snapshot["time"] >= until:
+                break
+            snapshot_time = snapshot["time"]
+            snapshot_time = (
+                snapshot_time.astimezone(market_tz)
+                if snapshot_time.tzinfo else snapshot_time.replace(tzinfo=market_tz)
+            )
+            if snapshot_time >= expires_at:
+                expired = True
                 break
             last_seen = snapshot["time"]
             book = replay_book({**snapshot, "symbol": symbol})
@@ -346,14 +363,20 @@ def fill_pending(
             if left <= 0:
                 break
         if left > 0:
+            until_local = None
+            if until is not None:
+                until_local = until.astimezone(market_tz) if until.tzinfo else until.replace(tzinfo=market_tz)
+            if expired or (until_local is not None and until_local >= expires_at):
+                continue
             order["quantity"] = left
             if until is not None and last_seen is not None:
                 current = order.get("not_before")
-                current_local = current.astimezone(ZoneInfo("Asia/Ho_Chi_Minh")) if current else None
+                current_local = current.astimezone(market_tz) if current and current.tzinfo else current
                 if current_local is None or current_local.date() != day or last_seen > current:
-                    order["not_before"] = last_seen.astimezone(ZoneInfo("Asia/Ho_Chi_Minh"))
-            elif order.get("not_before") and order["not_before"].date() != day:
-                order.pop("not_before", None)
+                    order["not_before"] = (
+                        last_seen.astimezone(market_tz)
+                        if last_seen.tzinfo else last_seen.replace(tzinfo=market_tz)
+                    )
             remaining.append(order)
     return remaining
 
@@ -778,6 +801,7 @@ async def run(args: argparse.Namespace) -> None:
                 else:
                     active_symbols.discard(symbol)
 
+        pending_orders.clear()  # Live PROD shadow orders expire at 14:45 each session.
         closing_mark = repo.record_replay_mark(user_id=account_id, mark_as_of=day)
         closing_positions = repo.get_open_positions(
             user_id=account_id, as_of=day,

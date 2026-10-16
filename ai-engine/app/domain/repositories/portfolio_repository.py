@@ -601,6 +601,8 @@ class PortfolioRepository:
         - order_executions
         - orders
         - positions
+        - paper_trades
+        - portfolio_nav_history
         - Reset cash_balance và total_nav về initial_capital (1 tỷ)
         - Tùy chọn (clean_agents_and_logs=True): Xóa toàn bộ kết quả quyết định và 12 bảng Logs của Agents.
         """
@@ -616,6 +618,8 @@ class PortfolioRepository:
             self.storage.execute("DELETE FROM orders WHERE user_id = %s", (target_uid,))
             # 3. Xóa positions
             self.storage.execute("DELETE FROM positions WHERE user_id = %s", (target_uid,))
+            self.storage.execute("DELETE FROM paper_trades WHERE account_id = %s", (target_uid,))
+            self.storage.execute("DELETE FROM portfolio_nav_history WHERE account_id = %s", (target_uid,))
             # 4. Khôi phục số dư users
             self.storage.execute("UPDATE users SET cash_balance = %s WHERE id = %s", (initial_capital, target_uid))
             # 5. Khôi phục portfolio_account

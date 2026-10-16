@@ -65,7 +65,7 @@ def test_replay_advances_quote_cursor_across_database_timezone(monkeypatch):
     repo = Repository()
     pending = [{
         "symbol": "PVT", "side": "BUY", "quantity": 200, "limit_price": 23_500,
-        "not_before": datetime(2026, 9, 7, 9, 45, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh")),
+        "not_before": datetime(2026, 9, 8, 9, 15, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh")),
     }]
     cache = {(day, "PVT"): snapshots}
     for snapshot in snapshots:
@@ -78,6 +78,52 @@ def test_replay_advances_quote_cursor_across_database_timezone(monkeypatch):
 
     assert [fill[0] for fill in repo.fills] == [100, 100]
     assert [fill[1] for fill in repo.fills] == [snapshots[0]["time"], snapshots[1]["time"]]
+    assert pending == []
+
+
+def test_replay_drops_pending_order_from_previous_session(monkeypatch):
+    day = date(2026, 9, 8)
+    tz = ZoneInfo("Asia/Ho_Chi_Minh")
+    snapshots = [{
+        "time": datetime(2026, 9, 8, 9, 15, 1, tzinfo=tz),
+        "bid": [], "offer": [{"price": 22.55, "qtty": 1000}],
+    }]
+    monkeypatch.setattr(replay, "quote_history", lambda *_: snapshots)
+
+    class Repository:
+        def record_replay_execution(self, *_args, **_kwargs):
+            raise AssertionError("an expired order must not fill")
+
+    pending = replay.fill_pending(
+        day, {"HVN": {"price": 22_550, "source": "DNSE"}},
+        [{"symbol": "HVN", "side": "BUY", "quantity": 400, "limit_price": 22_550,
+          "not_before": datetime(2026, 9, 7, 9, 45, tzinfo=tz)}],
+        Repository(), "account", date(2026, 9, 7), until=snapshots[0]["time"] + timedelta(microseconds=1),
+        symbols={"HVN"}, quote_cache={(day, "HVN"): snapshots},
+    )
+
+    assert pending == []
+
+
+def test_replay_drops_unfilled_order_at_prod_expiry_time(monkeypatch):
+    day = date(2026, 9, 8)
+    tz = ZoneInfo("Asia/Ho_Chi_Minh")
+    snapshot_time = datetime(2026, 9, 8, 14, 45, tzinfo=tz)
+    snapshots = [{"time": snapshot_time, "bid": [], "offer": [{"price": 22.55, "qtty": 1000}]}]
+    monkeypatch.setattr(replay, "quote_history", lambda *_: snapshots)
+
+    class Repository:
+        def record_replay_execution(self, *_args, **_kwargs):
+            raise AssertionError("an order must not fill at or after 14:45")
+
+    pending = replay.fill_pending(
+        day, {"HVN": {"price": 22_550, "source": "DNSE"}},
+        [{"symbol": "HVN", "side": "BUY", "quantity": 100, "limit_price": 22_550,
+          "not_before": datetime(2026, 9, 8, 9, 45, tzinfo=tz)}],
+        Repository(), "account", date(2026, 9, 7), until=snapshot_time + timedelta(microseconds=1),
+        symbols={"HVN"}, quote_cache={(day, "HVN"): snapshots},
+    )
+
     assert pending == []
 
 
