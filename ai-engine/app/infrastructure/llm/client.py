@@ -100,7 +100,7 @@ def clean_and_parse_json(raw_text: str) -> Dict[str, Any]:
 
 
 class UnifiedLLMClient:
-    """OpenAI-compatible LLM client with Xkiro primary and EvoMap fallback."""
+    """OpenAI-compatible LLM client with environment-selected provider routing."""
 
     COOLDOWN_SECONDS: float = 60.0
 
@@ -125,7 +125,15 @@ class UnifiedLLMClient:
                 "base_url": base_url.rstrip("/"),
                 "model": model,
             })
-        else:
+        elif settings.multi_agent_llm_provider == "deepinfra":
+            if settings.deepinfra_api_key:
+                self.providers.append({
+                    "name": "DEEPINFRA_MIMO",
+                    "api_key": settings.deepinfra_api_key,
+                    "base_url": settings.llm_base_url.rstrip("/"),
+                    "model": "XiaomiMiMo/MiMo-V2.6-Flash",
+                })
+        elif settings.multi_agent_llm_provider == "existing":
             if settings.xkiro_api_key:
                 self.providers.append({
                     "name": "XKIRO_QWEN",
@@ -143,6 +151,8 @@ class UnifiedLLMClient:
                     "base_url": "https://api.evomap.ai/v1",
                     "model": "evomap-deepseek-v4-flash",
                 })
+        else:
+            raise ValueError(f"Unsupported MULTI_AGENT_LLM_PROVIDER: {settings.multi_agent_llm_provider!r}")
 
     @property
     def is_configured(self) -> bool:
@@ -168,9 +178,9 @@ class UnifiedLLMClient:
         max_tokens: int = 1500,
         response_format: Optional[Dict[str, str]] = None,
     ) -> str:
-        """Send a completion through Xkiro, falling back to EvoMap on failure."""
+        """Send a completion through configured providers in priority order."""
         if not self.is_configured:
-            message = "No LLM provider configured; set XKIRO_API_KEY or EVOMAP_API_KEY."
+            message = "No LLM provider configured; check DEEPINFRA_API_KEY or XKIRO_API_KEY/EVOMAP_API_KEY for the selected route."
             logger.error("[UnifiedLLMClient] %s", message)
             raise ValueError(message)
 
@@ -299,6 +309,7 @@ class UnifiedLLMClient:
         json_schema: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Request JSON or strict schema-constrained JSON once, then parse it."""
+        # DeepInfra's MiMo endpoint documents JSON mode, not strict JSON Schema.
         response_format = (
             {
                 "type": "json_schema",
@@ -308,7 +319,7 @@ class UnifiedLLMClient:
                     "schema": json_schema,
                 },
             }
-            if json_schema
+            if json_schema and self.provider != "DEEPINFRA_MIMO"
             else {"type": "json_object"}
         )
         raw = await self.chat(

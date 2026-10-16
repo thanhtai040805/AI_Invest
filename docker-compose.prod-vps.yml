@@ -12,6 +12,10 @@ services:
 
   ai-engine:
     image: ghcr.io/thanhtai040805/aiinvest-ai-engine:${AIINVEST_IMAGE_TAG:?AIINVEST_IMAGE_TAG must be set}
+    environment:
+      - MULTI_AGENT_LLM_PROVIDER=deepinfra
+      - DEEPINFRA_API_KEY=${DEEPINFRA_API_KEY:-}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://api.deepinfra.com/v1/openai}
 
   frontend:
     image: ghcr.io/thanhtai040805/aiinvest-frontend:${AIINVEST_IMAGE_TAG:?AIINVEST_IMAGE_TAG must be set}

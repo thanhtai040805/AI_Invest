@@ -11,6 +11,7 @@ from app.infrastructure.llm.client import UnifiedLLMClient
 def test_xkiro_and_evomap_are_configured_in_priority_order():
     async def _run():
         mock_settings = MagicMock()
+        mock_settings.multi_agent_llm_provider = "existing"
         mock_settings.xkiro_api_key = "xkiro_test"
         mock_settings.evomap_api_key = "evomap_test"
 
@@ -33,6 +34,7 @@ def test_xkiro_and_evomap_are_configured_in_priority_order():
 def test_provider_cooldown_marks_provider_unavailable():
     async def _run():
         mock_settings = MagicMock()
+        mock_settings.multi_agent_llm_provider = "existing"
         mock_settings.xkiro_api_key = "xkiro_test"
         mock_settings.evomap_api_key = ""
 
@@ -44,6 +46,59 @@ def test_provider_cooldown_marks_provider_unavailable():
             assert client._is_slot_available(p_name) is True
             client._cooldown_until[p_name] = now + 60.0
             assert client._is_slot_available(p_name) is False
+
+    asyncio.run(_run())
+
+
+def test_deepinfra_route_uses_only_mimo_flash():
+    mock_settings = MagicMock()
+    mock_settings.multi_agent_llm_provider = "deepinfra"
+    mock_settings.deepinfra_api_key = "deepinfra_test"
+    mock_settings.llm_base_url = "https://api.deepinfra.com/v1/openai/"
+    mock_settings.xkiro_api_key = "xkiro_test"
+    mock_settings.evomap_api_key = "evomap_test"
+
+    with patch("app.infrastructure.llm.client.get_settings", return_value=mock_settings):
+        client = UnifiedLLMClient()
+
+    assert client.providers == [{
+        "name": "DEEPINFRA_MIMO",
+        "api_key": "deepinfra_test",
+        "base_url": "https://api.deepinfra.com/v1/openai",
+        "model": "XiaomiMiMo/MiMo-V2.6-Flash",
+    }]
+
+
+def test_deepinfra_route_does_not_fall_back_when_api_key_is_missing():
+    mock_settings = MagicMock()
+    mock_settings.multi_agent_llm_provider = "deepinfra"
+    mock_settings.deepinfra_api_key = ""
+    mock_settings.llm_base_url = "https://api.deepinfra.com/v1/openai"
+    mock_settings.xkiro_api_key = "xkiro_test"
+    mock_settings.evomap_api_key = "evomap_test"
+
+    with patch("app.infrastructure.llm.client.get_settings", return_value=mock_settings):
+        client = UnifiedLLMClient()
+
+    assert client.providers == []
+
+
+def test_deepinfra_uses_json_object_format_for_schema_requests():
+    from unittest.mock import AsyncMock
+
+    async def _run():
+        mock_settings = MagicMock()
+        mock_settings.multi_agent_llm_provider = "deepinfra"
+        mock_settings.deepinfra_api_key = "deepinfra_test"
+        mock_settings.llm_base_url = "https://api.deepinfra.com/v1/openai"
+
+        with patch("app.infrastructure.llm.client.get_settings", return_value=mock_settings):
+            client = UnifiedLLMClient()
+        client.chat = AsyncMock(return_value="{}")
+
+        await client.complete_json("return an object", json_schema={"type": "object"})
+
+        assert client.chat.await_args.kwargs["response_format"] == {"type": "json_object"}
 
     asyncio.run(_run())
 
