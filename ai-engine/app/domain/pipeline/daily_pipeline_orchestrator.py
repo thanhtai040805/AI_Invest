@@ -430,6 +430,7 @@ class DailyInvestmentPipeline:
             logger.info(f"[Pha 5 - {ticker}] Kích hoạt Agent-04: Xây dựng Luận đề & Xác thực Điều 3 (3 Tín hiệu)...")
             res_thesis = await AgentRegistry.dispatch("investment_thesis", {
                 "research_report": research_report,
+                "business_quality_data": res_res["result"].get("trace", {}).get("business_quality_data") or {},
                 "market_context": {"current_regime": regime, "session_context": session_context},
                 **replay_context,
             })

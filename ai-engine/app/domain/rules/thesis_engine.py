@@ -55,19 +55,23 @@ class ThesisEngine:
         # Ưu tiên 1: Tăng trưởng lợi nhuận đột biến (F4 Earnings)
         if f4_earn >= 70.0:
             primary_type = "Earnings Expansion"
-            desc = custom_catalyst_desc or f"Tăng trưởng lợi nhuận vượt trội (F4={f4_earn:.1f}) nhờ mở rộng công suất và cải thiện biên lợi nhuận."
         # Ưu tiên 2: Dòng tiền và xoay vòng ngành (F5 Flow & F3 Momentum)
         elif f5_flow >= 70.0 or (f3_mom >= 70.0 and f5_flow >= 60.0):
             primary_type = "Sector Rotation"
-            desc = custom_catalyst_desc or f"Dòng tiền tổ chức và khối ngoại luân chuyển mạnh vào nhóm {sector} (F5={f5_flow:.1f})."
         # Ưu tiên 3: Định giá rẻ sâu và chất lượng cơ bản cao (F1 Value & F2 Quality)
         elif f1_val >= 70.0 or (f1_val >= 65.0 and f2_qual >= 65.0):
             primary_type = "Undervaluation"
-            desc = custom_catalyst_desc or f"Định giá chiết khấu sâu so với giá trị nội tại (F1={f1_val:.1f}, F2={f2_qual:.1f})."
         # Mặc định: Mở khóa giá trị doanh nghiệp
         else:
             primary_type = "Value Unlock"
-            desc = custom_catalyst_desc or f"Tái cấu trúc hoạt động kinh doanh và tối ưu hóa chi phí vận hành tại nhóm ngành {sector}."
+        desc = custom_catalyst_desc or (
+            f"[BẢN CHẤT] [Suy luận] {primary_type} là loại giả thuyết do factor engine phân loại; "
+            "Chưa có trong dữ liệu về tên hoặc quy mô sự kiện | "
+            "[TRẠNG THÁI & BẰNG CHỨNG] Chưa xác định được từ dữ liệu | "
+            "[LỘ TRÌNH] Chưa có trong dữ liệu về mốc công bố | "
+            "[CẦU NỐI SANG DÒNG TIỀN] Chưa đủ dữ liệu để định lượng; cần doanh thu, biên, CapEx và nguồn vốn liên quan | "
+            "[ĐIỂM YẾU] Chưa có trong dữ liệu về tiến độ hoặc vốn đầu tư làm mức nền."
+        )
 
         return {
             "primary_type": primary_type,
@@ -159,11 +163,11 @@ class ThesisEngine:
         sector: str,
         catalyst_type: str
     ) -> List[str]:
-        """Tự động sinh tối thiểu 3 kịch bản sai lầm (Pre-Mortem Analysis) cụ thể."""
+        """Create three evidence-safe fallback risk categories for Agent-04."""
         return [
-            f"Kịch bản 1 (Industry Risk): Chi phí nguyên vật liệu đầu vào ngành {sector} tăng đột biến bào mòn biên lợi nhuận gộp.",
-            f"Kịch bản 2 (Macro & Demand Compression): Cầu tiêu thụ suy yếu do tăng trưởng tín dụng chậm và áp lực lãi suất.",
-            f"Kịch bản 3 (Execution / Catalyst Delay): Tiến độ hiện thực hóa ngòi nổ '{catalyst_type}' bị chậm từ 1 đến 2 quý so với kỳ vọng ban đầu."
+            f"RỦI RO ĐẦU VÀO/VĨ MÔ: Kịch bản giả định biến đầu vào hoặc vĩ mô bất lợi tác động đến {sector}; Chưa đủ dữ liệu để định lượng, cần mức nền và độ nhạy.",
+            "RỦI RO CẠNH TRANH/PHÁP LÝ/KHÁCH HÀNG: Kịch bản giả định bất lợi làm giảm doanh thu hoặc chất lượng tài sản; Chưa có trong dữ liệu về đối thủ, pháp lý hoặc khách hàng cần theo dõi.",
+            f"RỦI RO THỰC THI/TIẾN ĐỘ NGÒI NỔ: Kịch bản giả định loại catalyst '{catalyst_type}' không thành hiện thực; Chưa có trong dữ liệu về mốc công bố hoặc tiến độ để định lượng."
         ]
 
     def generate_exit_conditions(
@@ -176,9 +180,9 @@ class ThesisEngine:
         return {
             "hard_stop_loss_price": float(stop_price),
             "invalidation_triggers": [
-                "Biên lợi nhuận gộp (GPM) sụt giảm > 200 bps trong BCTC quý gần nhất.",
-                "Chỉ số Beneish M-Score vượt ngưỡng -1.78 (báo động rủi ro gian lận kế toán).",
-                "Giá gãy MA50 kèm Volume giao dịch > 200% trung bình 20 phiên."
+                "Trigger 1: Chưa đủ dữ liệu để định lượng; cần chỉ số kết quả kinh doanh hoặc chất lượng tài sản và mức nền theo kỳ.",
+                "Trigger 2: Chưa đủ dữ liệu để định lượng; cần mốc catalyst đã công bố và kỳ công bố làm căn cứ.",
+                "Trigger 3: Chưa đủ dữ liệu để định lượng; cần mức nền CFO, nợ/vốn và số kỳ theo dõi phù hợp ngành."
             ]
         }
 
@@ -353,8 +357,8 @@ class ThesisEngine:
                 "valuation_source": val_inputs.get("source"),
             },
             "thesis_body": {
-                "why_now": f"Ngòi nổ '{catalyst_info['primary_type']}' bước vào giai đoạn hiện thực hóa, hỗ trợ bởi dòng tiền và tăng trưởng lợi nhuận.",
-                "why_this_stock": f"Mã {ticker_clean} (Ngành {sector}) có Business Quality ({quality_score:.1f}) và CSS ({css_score:.1f}) thuộc nhóm được xem xét trong Universe.",
+                "why_now": "[ĐIỂM NGOẶT] Chưa đủ dữ liệu để định lượng; cần mức nền và kỳ BCTC | [CƠ CHẾ] Chưa có trong dữ liệu về biến số quyết định | [XÁC NHẬN TỪ THỊ TRƯỜNG] Chưa có trong dữ liệu.",
+                "why_this_stock": "[PHONG CÁCH] Chưa đủ dữ liệu để phân loại; cần lịch sử lợi nhuận, dòng tiền và động lực lợi nhuận | [CHẤT LƯỢNG LỢI NHUẬN] Chưa có trong dữ liệu về evidence/trụ cột cụ thể để xác nhận chuyển đổi lợi nhuận thành tiền | [CẤU TRÚC TÀI CHÍNH] Chưa có trong dữ liệu về nợ, thanh khoản hoặc khả năng trả lãi theo ngành | [ĐIỀU KIỆN ĐỂ MỤC TIÊU GIÁ ĐÚNG] Chưa đủ dữ liệu để định lượng; cần giả định lợi nhuận/dòng tiền tương ứng với mục tiêu giá | [ĐIỂM YẾU TÀI CHÍNH] Chưa có thêm dữ liệu cho phần này.",
                 "business_quality": {
                     "score": round(quality_score, 2),
                     "status": research_report.get("business_quality_status", "FINANCIAL_QUALITY"),
