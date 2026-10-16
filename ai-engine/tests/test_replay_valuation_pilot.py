@@ -38,6 +38,8 @@ def test_published_bank_valuation_and_margin_of_safety():
     passed, _, reason = engine.build_structured_thesis_output(
         "MBB", research, {"current_regime": "RANGE_BOUND"}, inputs)
     assert not passed and "15%" in reason
+    assert "12.00%" in reason
+    assert "25,000" in reason and "28,000" in reason and "28,750" in reason
 
 
 def test_pilot_fill_requires_real_bar_and_stays_within_five_percent(monkeypatch):

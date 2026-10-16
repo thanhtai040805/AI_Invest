@@ -6,6 +6,7 @@ và Lịch sử khớp lệnh (bảng orders & order_executions) kết nối Pos
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import uuid
@@ -426,6 +427,7 @@ class PortfolioRepository:
         executed_at: datetime,
         mark_as_of: date,
         pending_order_id: Optional[str] = None,
+        decision_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Atomically persist a simulated fill to the explicitly allowlisted replay DB."""
         ticker = ticker.upper().strip()
@@ -511,8 +513,8 @@ class PortfolioRepository:
                     (order_id, user_id, ticker, action, "REPLAY_MARKET", executed_price, shares, "FILLED_REPLAY", execution_db_timestamp),
                 )
             self.storage.execute(
-                "INSERT INTO order_executions (order_id, ticker, action, shares, executed_price, target_price, slippage_bps, execution_mode, executed_at, gross_value, brokerage_fee, transfer_tax, cash_delta) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                (order_id, ticker, action, shares, executed_price, executed_price, 0.0, "POSTGRES_REPLAY", execution_local, trade_value, brokerage_fee, tax, cash_delta),
+                "INSERT INTO order_executions (order_id, ticker, action, shares, executed_price, target_price, slippage_bps, execution_mode, executed_at, gross_value, brokerage_fee, transfer_tax, cash_delta, decision_context) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (order_id, ticker, action, shares, executed_price, executed_price, 0.0, "POSTGRES_REPLAY", execution_local, trade_value, brokerage_fee, tax, cash_delta, json.dumps(decision_context, default=str) if decision_context is not None else None),
             )
 
             if action == "BUY":
@@ -682,6 +684,7 @@ class PortfolioRepository:
         user_id: Optional[str] = None,
         status: str = "FILLED",
         pending_order_id: Optional[str] = None,
+        decision_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Thực hiện giao dịch nguyên tử (Atomic Execution):
@@ -835,13 +838,13 @@ class PortfolioRepository:
                     INSERT INTO order_executions (
                         order_id, ticker, action, shares, executed_price,
                         target_price, slippage_bps, execution_mode, executed_at,
-                        gross_value, brokerage_fee, transfer_tax, cash_delta
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        gross_value, brokerage_fee, transfer_tax, cash_delta, decision_context
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT DO NOTHING
                 """
                 self.storage.execute(
                     sql_order_exec,
-                    (order_id, ticker, action, shares, executed_price, target_price, slippage_bps, execution_mode, now, trade_value, brokerage_fee, tax, cash_delta)
+                    (order_id, ticker, action, shares, executed_price, target_price, slippage_bps, execution_mode, now, trade_value, brokerage_fee, tax, cash_delta, json.dumps(decision_context, default=str) if decision_context is not None else None)
                 )
 
                 # Đồng bộ bảng portfolio_account
@@ -936,6 +939,7 @@ class PortfolioRepository:
     def create_shadow_pending_order(
         self, ticker: str, shares: int, limit_price: float, user_id: Optional[str] = None,
         order_type: str = "SHADOW_LIMIT", side: str = "BUY",
+        decision_context: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Persist a day-only Shadow limit order without changing cash or positions."""
         ticker = ticker.upper().strip()
@@ -946,22 +950,23 @@ class PortfolioRepository:
         order_id = str(uuid.uuid4())
         now = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).replace(tzinfo=None)
         self.storage.execute(
-            "INSERT INTO orders (id, user_id, symbol, side, order_type, price, quantity, status, created_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDING_SHADOW', %s)",
-            (order_id, target_uid, ticker.upper().strip(), side, order_type, limit_price, shares, now),
+            "INSERT INTO orders (id, user_id, symbol, side, order_type, price, quantity, status, created_at, decision_context) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDING_SHADOW', %s, %s)",
+            (order_id, target_uid, ticker, side, order_type, limit_price, shares, now,
+             json.dumps(decision_context, default=str) if decision_context is not None else None),
         )
         return order_id
 
     def get_pending_shadow_orders(self) -> List[Dict[str, Any]]:
         rows = self.storage.fetch_all(
-            "SELECT id, user_id, symbol, side, price, quantity, order_type FROM orders "
+            "SELECT id, user_id, symbol, side, price, quantity, order_type, decision_context FROM orders "
             "WHERE status = 'PENDING_SHADOW' AND order_type IN ('SHADOW_LIMIT', 'SHADOW_ML_LIMIT') "
             "ORDER BY created_at"
         )
         return [
             {"order_id": str(r[0]), "user_id": str(r[1]), "ticker": str(r[2]),
              "side": str(r[3]), "limit_price": float(r[4]), "shares": int(r[5]),
-             "order_type": str(r[6])}
+             "order_type": str(r[6]), "decision_context": r[7]}
             for r in rows
         ]
 

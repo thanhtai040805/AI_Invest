@@ -322,8 +322,15 @@ class ThesisEngine:
             # a rejection of the issuer or its financial statements.
             return False, {}, f"WAIT_OR_SKIP: {str(exc)}"
 
-        if price_target_info["base_case"] < current_price * 1.15:
-            return False, {}, "WAIT / SKIP: Biên an toàn định giá dưới 15%."
+        base_case_price = float(price_target_info["base_case"])
+        required_target_price = current_price * 1.15
+        if base_case_price < required_target_price:
+            margin_of_safety_pct = (base_case_price / current_price - 1.0) * 100.0
+            return False, {}, (
+                f"WAIT / SKIP: Biên an toàn định giá {margin_of_safety_pct:.2f}% (<15%): "
+                f"giá hiện tại {current_price:,.0f} VND, giá mục tiêu cơ sở "
+                f"{base_case_price:,.0f} VND, cần tối thiểu {required_target_price:,.0f} VND."
+            )
 
         # 6. Pre-Mortem Scenarios
         pre_mortem = self.generate_pre_mortem_scenarios(

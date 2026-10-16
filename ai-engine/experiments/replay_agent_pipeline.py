@@ -303,6 +303,7 @@ def fill_pending(
                 result = repository.record_replay_execution(
                     symbol, side, fill_qty, fill_price, user_id=account_id,
                     executed_at=snapshot["time"], mark_as_of=mark_as_of,
+                    decision_context=order.get("decision_context"),
                 )
             except ValueError as exc:
                 reason = str(exc)
@@ -320,6 +321,7 @@ def fill_pending(
                     result = repository.record_replay_execution(
                         symbol, side, fill_qty, fill_price, user_id=account_id,
                         executed_at=snapshot["time"], mark_as_of=mark_as_of,
+                        decision_context=order.get("decision_context"),
                     )
                 else:
                     logger.warning(f"Replay fill rejected {symbol} {side}: {exc}")
@@ -339,6 +341,7 @@ def fill_pending(
                     "cost": max(gross * 0.001, 10_000.0) + (gross * 0.001 if side == "SELL" else 0.0),
                     "source": "DNSE_HISTORICAL_ORDER_BOOK",
                     "reason": order.get("reason"),
+                    "decision_context": order.get("decision_context"),
                 })
             if left <= 0:
                 break
@@ -389,6 +392,7 @@ def get_portfolio_state(
 def enqueue_order(
     pending: list[dict], symbol: str, side: str, quantity: int, entry_type: str = "STANDARD",
     limit_price: float | None = None, not_before: datetime | None = None, reason: str | None = None,
+    decision_context: dict | None = None,
 ) -> None:
     if quantity > 0 and not any(o["symbol"] == symbol and o["side"] == side for o in pending):
         order = {"symbol": symbol, "side": side, "quantity": quantity, "entry_type": entry_type}
@@ -398,6 +402,8 @@ def enqueue_order(
             order["not_before"] = not_before
         if reason:
             order["reason"] = reason
+        if decision_context is not None:
+            order["decision_context"] = decision_context
         pending.append(order)
 
 
@@ -500,6 +506,20 @@ async def monitor_intraday_bar(
             "limit_price": price * 0.985,
             "not_before": event_time,
             "reason": stop_order.get("reason"),
+            "decision_context": stop_order.get("decision_context") or {
+                "source_agent": "position_monitoring",
+                "stop_event_id": stop_order.get("stop_order_id"),
+                "account_id": account_id,
+                "rule_level": stop_order.get("rule_level"),
+                "reason": stop_order.get("reason"),
+                "suggested_action": stop_order.get("suggested_action"),
+                "entry_price": float(position["average_price"]),
+                "current_price": price,
+                "peak_price": peak_prices[symbol],
+                "current_pnl_pct": stop_order.get("current_pnl_pct"),
+                "current_pnl_nav_pct": stop_order.get("current_pnl_nav_pct"),
+                "holding_days": holding_days_since(position.get("opened_at"), event_time),
+            },
         }
         unfilled = fill_pending(day, {symbol: {"price": price, "source": "DNSE"}}, [order],
                                repository, account_id, mark_as_of, fills_log,
@@ -725,6 +745,7 @@ async def run(args: argparse.Namespace) -> None:
                     pending_orders, symbol, "BUY", approved_shares,
                     order.get("entry_type", "STANDARD"), limit_price=ref_price,
                     not_before=signal_time, reason=order.get("rationale"),
+                    decision_context=order.get("decision_context"),
                 )
 
         tracked = active_symbols | {order["symbol"] for order in pending_orders}

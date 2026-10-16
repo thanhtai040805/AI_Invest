@@ -572,6 +572,54 @@ class DailyInvestmentPipeline:
             risk_status = risk_data.get("risk_status", "REJECT")
             risk_decision = risk_data.get("decision", {})
             approved_shares = int(risk_decision.get("approved_shares", 0))
+            thesis_body = thesis_data.get("thesis_body") or {}
+            price_target = thesis_body.get("price_target") or {}
+            decision_context = {
+                "source_agent": "daily_pipeline_orchestrator",
+                "research": {
+                    "conviction": conviction,
+                    "css": research_report.get("css"),
+                    "current_price": current_price,
+                    "cts_score": cts_score,
+                    "thesis_id": thesis_data.get("thesis_id"),
+                    "thesis_status": thesis_data.get("status"),
+                    "thesis": {
+                        "why_now": thesis_body.get("why_now"),
+                        "why_this_stock": thesis_body.get("why_this_stock"),
+                        "catalyst": (thesis_body.get("catalyst") or {}).get("description"),
+                        "base_case_target_price": price_target.get("base_case"),
+                        "valuation_method": price_target.get("valuation_method"),
+                        "independent_signals": (thesis_data.get("input_validation") or {}).get("independent_signals"),
+                    },
+                    "counter_thesis": {
+                        "verdict": counter_data.get("verdict"),
+                        "rationale": counter_data.get("rationale"),
+                        "block_reasons": counter_data.get("block_reasons"),
+                        "holes": counter_data.get("holes"),
+                    },
+                    "cio": {
+                        "resolution": final_resolution,
+                        "rationale": cio_data.get("executive_rationale") or cio_data.get("rationale"),
+                        "conditions": cio_data.get("conditions"),
+                        "weight_cap": weight_cap,
+                    },
+                },
+                "allocation": {
+                    "requested_shares": target_shares,
+                    "target_weight_pct": alloc_data.get("target_weight_pct"),
+                    "rationale": alloc_data.get("rationale"),
+                },
+                "risk": {
+                    "decision_id": risk_data.get("decision_id"),
+                    "status": risk_status,
+                    "requested_shares": risk_decision.get("original_shares", target_shares),
+                    "approved_shares": approved_shares,
+                    "rationale": risk_decision.get("rationale"),
+                    "sizing_trace": risk_decision.get("sizing_trace"),
+                    "hard_laws": risk_data.get("hard_laws"),
+                    "tape_anomaly": risk_data.get("tape_anomaly"),
+                },
+            }
 
             logger.info(f"[Pha 9 - {ticker}] Phán quyết Risk: '{risk_status}' | Số lượng duyệt: {approved_shares:,} cổ phiếu.")
 
@@ -587,6 +635,7 @@ class DailyInvestmentPipeline:
             execution_instruction["approved_shares"] = approved_shares
             execution_instruction["target_price"] = current_price
             execution_instruction["sector"] = proposed_order.get("sector", portfolio_sector)
+            execution_instruction["decision_context"] = decision_context
 
             if replay_at:
                 exec_data = {
@@ -640,6 +689,7 @@ class DailyInvestmentPipeline:
                 "entry_type": "PILOT" if pilot_position else "STANDARD",
                 "action": "SHADOW_PAPER_TRADE_ONLY",
                 "rationale": f"[12-AGENT] CSS={research_report.get('css', 0):.1f} | CTS={cts_score:.1f} | CIO={final_resolution}",
+                "decision_context": decision_context,
             }
             qualified_orders_multi_agent.append(order_record_ma)
 

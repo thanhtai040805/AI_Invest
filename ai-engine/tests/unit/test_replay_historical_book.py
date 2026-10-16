@@ -20,7 +20,7 @@ def test_replay_fills_partial_quantity_only_from_timestamped_depth(monkeypatch):
             self.fills = []
 
         def record_replay_execution(self, symbol, side, shares, price, **kwargs):
-            self.fills.append((symbol, side, shares, price, kwargs["executed_at"]))
+            self.fills.append((symbol, side, shares, price, kwargs["executed_at"], kwargs.get("decision_context")))
             return {"shares": shares, "executed_price": price}
 
     repo = Repository()
@@ -28,7 +28,8 @@ def test_replay_fills_partial_quantity_only_from_timestamped_depth(monkeypatch):
     remaining = replay.fill_pending(
         day,
         {"PVT": {"price": 23_000, "source": "DNSE"}},
-        [{"symbol": "PVT", "side": "BUY", "quantity": 300, "limit_price": 23_500}],
+        [{"symbol": "PVT", "side": "BUY", "quantity": 300, "limit_price": 23_500,
+          "decision_context": {"allocation": {"rationale": "approved"}}}],
         repo,
         "account",
         date(2026, 9, 23),
@@ -39,6 +40,7 @@ def test_replay_fills_partial_quantity_only_from_timestamped_depth(monkeypatch):
     assert [fill[2] for fill in repo.fills] == [100, 200]
     assert [fill[3] for fill in repo.fills] == [23_100, 23_150]
     assert all(fill[4] == snapshots[i]["time"] for i, fill in enumerate(repo.fills))
+    assert all(fill[5] == {"allocation": {"rationale": "approved"}} for fill in repo.fills)
     assert sum(fill["quantity"] for fill in fill_log) == 300
 
 
