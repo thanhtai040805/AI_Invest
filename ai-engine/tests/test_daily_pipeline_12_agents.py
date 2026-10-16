@@ -12,6 +12,7 @@ import asyncio
 from datetime import date
 import pytest
 
+from app.core.registry import AgentRegistry
 from app.domain.pipeline import (
     DailyInvestmentPipeline,
     ExecutionMode,
@@ -138,3 +139,50 @@ def test_12_agent_pipeline_bear_defense_mode():
         assert len(res["standalone_ml_instructions"]) == 0
 
     asyncio.run(_test())
+
+
+def test_historical_replay_researches_beyond_live_shortlist(monkeypatch):
+    researched = []
+    candidates = [
+        {"ticker": ticker, "universe_group": "A", "adtv20": 100 - index}
+        for index, ticker in enumerate(["VIC", "VHM", "SHB", "HPG", "SSI", "TCB", "CTG"])
+    ]
+
+    async def fake_dispatch(cls, agent_name, event_data):
+        if agent_name == "market_surveillance":
+            data = {"current_regime": "RANGE_BOUND", "session_context": "Normal", "halted_tickers": []}
+        elif agent_name == "reinforcement_learning":
+            data = {"policy_weights": {}, "kelly_matrix": {}, "cdc_triggered": False}
+        elif agent_name == "universe_discovery":
+            data = {"eligible_count": len(candidates), "discovery_list": candidates}
+        elif agent_name == "equity_research":
+            researched.append(event_data["ticker"])
+            data = {
+                "conviction": "C", "current_price": 100.0, "css": 50.0,
+                "eligible_for_thesis": False, "eligibility_reasons": ["CSS_BELOW_60"],
+            }
+        elif agent_name == "system_governance":
+            data = {"system_status": "COMPLIANT", "audit_block_hash": "a" * 64}
+        else:
+            raise AssertionError(f"Unexpected agent: {agent_name}")
+        return {"status": "SUCCESS", "result": {"data": data}}
+
+    monkeypatch.setattr(AgentRegistry, "dispatch", classmethod(fake_dispatch))
+    runner = DailyInvestmentPipeline(
+        multi_agent_mode=ExecutionMode.DISABLED.value,
+        standalone_ml_mode=ExecutionMode.DISABLED.value,
+    )
+    replay_portfolio = {
+        "total_nav": 1_000_000_000.0, "peak_nav": 1_000_000_000.0,
+        "cash_vnd": 1_000_000_000.0, "positions": [], "sector_exposure": {},
+        "locked_t25_value": 0.0, "returns_series": [],
+    }
+
+    result = asyncio.run(runner.run(
+        target_date="2026-08-24", candidate_tickers=None, max_candidates=3,
+        current_nav=1_000_000_000.0, standalone_nav=500_000_000.0,
+        replay_portfolio=replay_portfolio,
+    ))
+
+    assert researched == [candidate["ticker"] for candidate in candidates]
+    assert result["trace"]["phases"]["phase_4_equity_research_gate"]["selected_count"] == 7

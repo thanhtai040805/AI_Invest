@@ -370,8 +370,12 @@ class DailyInvestmentPipeline:
             reverse=True,
         )
         candidate_metadata = {str(c["ticker"]).upper(): c for c in sorted_candidates}
-        # Live and replay use the same prioritized deep-research shortlist.
-        research_candidates = sorted_candidates[:max(max_candidates * 2, 5)]
+        # Historical full-universe replay must research every eligible symbol until order capacity is filled.
+        research_candidates = (
+            sorted_candidates
+            if replay_at and candidate_tickers is None
+            else sorted_candidates[:max(max_candidates * 2, 5)]
+        )
         selected_tickers = [c["ticker"] for c in research_candidates]
 
         # =========================================================================
