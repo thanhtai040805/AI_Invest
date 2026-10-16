@@ -200,12 +200,25 @@ def quote_events_for_day(
     return sorted(events)
 
 
+def closing_auction_data(day: date, symbol: str) -> tuple[float, int] | None:
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT close_unadj, volume_atc FROM market_data_daily WHERE ticker = %s AND date = %s",
+            (symbol, day),
+        )
+        row = cur.fetchone()
+    return (float(row[0] or 0), int(row[1] or 0)) if row else None
+
+
 def replay_book(snapshot: dict) -> dict:
-    local_time = snapshot["time"].astimezone(ZoneInfo("Asia/Ho_Chi_Minh"))
+    stamp = snapshot["time"]
+    vn_tz = ZoneInfo("Asia/Ho_Chi_Minh")
+    local_time = stamp.astimezone(vn_tz) if stamp.tzinfo else stamp.replace(tzinfo=vn_tz)
     clock = local_time.time()
     state = (
         "continuous_morning" if day_time(9, 15) <= clock < day_time(11, 30)
         else "continuous_afternoon" if day_time(13, 0) <= clock < day_time(14, 30)
+        else "closing_auction" if day_time(14, 30) <= clock < day_time(14, 45)
         else "closed"
     )
     return {
@@ -310,7 +323,7 @@ def fill_pending(
                 break
             last_seen = snapshot["time"]
             book = replay_book({**snapshot, "symbol": symbol})
-            if book["marketState"] == "closed":
+            if book["marketState"] in {"closed", "closing_auction"}:
                 continue
             fill_qty = round_to_lot(min(left, executable_shares(book, side, limit_price)))
             if fill_qty <= 0:
@@ -379,6 +392,110 @@ def fill_pending(
                     )
             remaining.append(order)
     return remaining
+
+
+def fill_closing_auction(
+    day: date,
+    pending_orders: list[dict],
+    repository: PortfolioRepository,
+    account_id: str,
+    mark_as_of: date,
+    fills_log: list[dict],
+    quote_cache: dict[tuple[date, str], list[dict]],
+) -> None:
+    """Match eligible replay orders at the historical, unadjusted ATC close."""
+    market_tz = ZoneInfo("Asia/Ho_Chi_Minh")
+    executed_at = datetime.combine(day, day_time(14, 45), market_tz)
+    for order in pending_orders:
+        symbol, side = order["symbol"], order["side"]
+        requested_at = order.get("not_before")
+        if requested_at is not None:
+            requested_at = requested_at.astimezone(market_tz) if requested_at.tzinfo else requested_at.replace(tzinfo=market_tz)
+            if requested_at >= executed_at:
+                logger.warning("Replay ATC order expired without fill: %s %s (SUBMITTED_AFTER_ATC)", symbol, side)
+                continue
+
+        auction = closing_auction_data(day, symbol)
+        if not auction or auction[0] <= 0 or auction[1] <= 0:
+            reason = "ATC_MARKET_DATA_UNAVAILABLE" if not auction or auction[0] <= 0 else "ATC_ZERO_VOLUME"
+            logger.warning("Replay ATC order expired without fill: %s %s (%s)", symbol, side, reason)
+            continue
+
+        close_price = price_to_vnd(auction[0])
+        limit_price = float(order.get("limit_price") or close_price)
+        if (side == "BUY" and close_price > limit_price) or (side == "SELL" and close_price < limit_price):
+            logger.warning("Replay ATC order expired without fill: %s %s (ATC_LIMIT_NOT_MARKETABLE)", symbol, side)
+            continue
+
+        auction_start = datetime.combine(day, day_time(14, 30), market_tz)
+        snapshots = quote_cache.get((day, symbol), [])
+        atc_snapshots = []
+        for snapshot in snapshots:
+            snapshot_time = snapshot["time"]
+            snapshot_time = snapshot_time.astimezone(market_tz) if snapshot_time.tzinfo else snapshot_time.replace(tzinfo=market_tz)
+            if auction_start <= snapshot_time < executed_at:
+                atc_snapshots.append((snapshot_time, snapshot))
+        last_atc = max(atc_snapshots, key=lambda item: item[0]) if atc_snapshots else None
+        if not last_atc or (executed_at - last_atc[0]).total_seconds() > 10:
+            logger.warning("Replay ATC order expired without fill: %s %s (ATC_BOOK_MISSING_OR_STALE)", symbol, side)
+            continue
+
+        book = replay_book({**last_atc[1], "symbol": symbol})
+        depth = executable_shares(book, side, limit_price)
+        # shortcut: volume_atc is only a total-volume cap; use side-specific matched queue data when DNSE provides it.
+        quantity = round_to_lot(min(int(order["quantity"]), depth, auction[1]))
+        if quantity <= 0:
+            logger.warning("Replay ATC order expired without fill: %s %s (ATC_NO_EXECUTABLE_LOT)", symbol, side)
+            continue
+
+        try:
+            result = repository.record_replay_execution(
+                symbol, side, quantity, close_price, user_id=account_id,
+                executed_at=executed_at, mark_as_of=mark_as_of,
+                decision_context=order.get("decision_context"),
+            )
+        except ValueError as exc:
+            if "Insufficient" not in str(exc) or side != "BUY":
+                logger.warning("Replay ATC fill rejected %s %s: %s", symbol, side, exc)
+                continue
+            account = repository.get_account_state(user_id=account_id, as_of=mark_as_of)
+            while quantity > 0:
+                gross = close_price * quantity
+                if gross + max(gross * 0.001, 10_000.0) <= float(account.get("cash_balance", 0)):
+                    break
+                quantity -= 100
+            if quantity <= 0:
+                logger.warning("Replay ATC order expired without fill: %s %s (INSUFFICIENT_CASH)", symbol, side)
+                continue
+            try:
+                result = repository.record_replay_execution(
+                    symbol, side, quantity, close_price, user_id=account_id,
+                    executed_at=executed_at, mark_as_of=mark_as_of,
+                    decision_context=order.get("decision_context"),
+                )
+            except Exception as retry_exc:
+                logger.warning("Replay ATC fill failed %s %s: %s", symbol, side, retry_exc)
+                continue
+        except Exception as exc:
+            logger.warning("Replay ATC fill failed %s %s: %s", symbol, side, exc)
+            continue
+
+        filled = int(result["shares"])
+        gross = float(result["executed_price"]) * filled
+        fills_log.append({
+            "day": day.isoformat(), "time": executed_at.isoformat(),
+            "symbol": symbol, "side": side, "quantity": filled,
+            "price": result["executed_price"],
+            "cost": max(gross * 0.001, 10_000.0) + (gross * 0.001 if side == "SELL" else 0.0),
+            "source": "DNSE_HISTORICAL_ATC_AUCTION",
+            "reason": order.get("reason"),
+            "decision_context": order.get("decision_context"),
+        })
+        if filled < int(order["quantity"]):
+            logger.warning(
+                "Replay ATC partial fill: %s %s filled=%s residual=%s",
+                symbol, side, filled, int(order["quantity"]) - filled,
+            )
 
 
 def get_portfolio_state(
@@ -780,7 +897,13 @@ async def run(args: argparse.Namespace) -> None:
         ] + [
             (timestamp, 1, "quote", symbol) for timestamp, symbol in quote_events if timestamp > signal_time
         ]
+        auction_close_time = datetime.combine(day, day_time(14, 45), ZoneInfo("Asia/Ho_Chi_Minh"))
+        afternoon_events.append((auction_close_time, -1, "auction", None))
         for timestamp, _priority, kind, payload in sorted(afternoon_events, key=event_key):
+            if kind == "auction":
+                fill_closing_auction(day, pending_orders, repo, account_id, mark_as_of, fills_history, quote_cache)
+                pending_orders.clear()
+                continue
             if kind == "bar":
                 await monitor_intraday_bar(
                     day, payload, repo, account_id, mark_as_of, pending_orders,
@@ -801,7 +924,7 @@ async def run(args: argparse.Namespace) -> None:
                 else:
                     active_symbols.discard(symbol)
 
-        pending_orders.clear()  # Live PROD shadow orders expire at 14:45 each session.
+        pending_orders.clear()  # Orders raised after ATC expiry cannot carry into another session.
         closing_mark = repo.record_replay_mark(user_id=account_id, mark_as_of=day)
         closing_positions = repo.get_open_positions(
             user_id=account_id, as_of=day,

@@ -127,14 +127,71 @@ def test_replay_drops_unfilled_order_at_prod_expiry_time(monkeypatch):
     assert pending == []
 
 
-def test_replay_excludes_lunch_and_auction_books_from_fills():
-    book = replay.replay_book({
+def test_replay_marks_lunch_closed_and_atc_as_closing_auction():
+    lunch_book = replay.replay_book({
         "symbol": "PVT",
         "time": datetime(2026, 9, 24, 12, 0, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh")),
         "bid": [{"price": 23.1, "qtty": 100}],
         "offer": [{"price": 23.15, "qtty": 100}],
     })
-    assert book["marketState"] == "closed"
+    auction_book = replay.replay_book({
+        "symbol": "PVT",
+        "time": datetime(2026, 9, 24, 14, 30),
+        "bid": [{"price": 23.1, "qtty": 100}],
+        "offer": [{"price": 23.15, "qtty": 100}],
+    })
+    assert lunch_book["marketState"] == "closed"
+    assert auction_book["marketState"] == "closing_auction"
+
+
+def test_replay_fills_eligible_order_at_unadjusted_atc_close(monkeypatch):
+    day = date(2026, 9, 18)
+    decision_context = {"source_agent": "investment_risk"}
+    monkeypatch.setattr(replay, "closing_auction_data", lambda *_: (12.90, 2_786_500))
+
+    class Repository:
+        def __init__(self):
+            self.fills = []
+
+        def record_replay_execution(self, symbol, side, shares, price, **kwargs):
+            self.fills.append((symbol, side, shares, price, kwargs))
+            return {"shares": shares, "executed_price": price}
+
+    repo = Repository()
+    fill_log = []
+    replay.fill_closing_auction(
+        day,
+        [{"symbol": "MSB", "side": "BUY", "quantity": 900, "limit_price": 12_950,
+          "not_before": datetime(2026, 9, 18, 9, 45, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh")),
+          "decision_context": decision_context}],
+        repo, "account", date(2026, 9, 17), fill_log,
+        {(day, "MSB"): [{
+            "time": datetime(2026, 9, 18, 14, 44, 59, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh")),
+            "bid": [], "offer": [{"price": 12.95, "qtty": 1_250}],
+        }]},
+    )
+
+    assert len(repo.fills) == 1
+    assert repo.fills[0][:4] == ("MSB", "BUY", 900, 12_900)
+    assert repo.fills[0][4]["executed_at"] == datetime(
+        2026, 9, 18, 14, 45, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh")
+    )
+    assert repo.fills[0][4]["decision_context"] == decision_context
+    assert fill_log[0]["source"] == "DNSE_HISTORICAL_ATC_AUCTION"
+
+
+def test_replay_does_not_atc_fill_when_close_is_outside_limit(monkeypatch):
+    monkeypatch.setattr(replay, "closing_auction_data", lambda *_: (13.00, 2_000_000))
+
+    class Repository:
+        def record_replay_execution(self, *_args, **_kwargs):
+            raise AssertionError("a non-marketable order must not fill at ATC")
+
+    replay.fill_closing_auction(
+        date(2026, 9, 18),
+        [{"symbol": "MSB", "side": "BUY", "quantity": 900, "limit_price": 12_950}],
+        Repository(), "account", date(2026, 9, 17), [], {},
+    )
 
 
 def test_replay_book_reads_dnse_quantity_field():
