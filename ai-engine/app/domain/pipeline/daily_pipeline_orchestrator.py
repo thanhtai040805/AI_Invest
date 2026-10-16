@@ -101,35 +101,40 @@ class DailyInvestmentPipeline:
             "returns_series": [],
         }
 
-    async def _monitor_open_positions(self, is_bear_defense: bool = False) -> List[Dict[str, Any]]:
+    async def _monitor_open_positions(
+        self, portfolio_state: Dict[str, Any], is_bear_defense: bool = False
+    ) -> List[Dict[str, Any]]:
         """Keep exits/risk monitoring alive when new analysis is unavailable."""
-        instructions: List[Dict[str, Any]] = []
+        positions = []
+        for position in portfolio_state.get("positions", []):
+            ticker = position.get("ticker", position.get("symbol"))
+            quantity = int(position.get("shares", position.get("quantity", 0)))
+            if not ticker or quantity <= 0:
+                continue
+            positions.append({
+                **position,
+                "ticker": ticker,
+                "entry_price": float(position.get("average_price", position.get("avg_price", 0.0))),
+                "quantity": quantity,
+                "available_shares": int(position.get("available_shares", quantity)),
+                "locked_t25_shares": int(position.get("locked_t25_shares", 0)),
+                "current_price": None,
+            })
+        if not positions:
+            return []
+
         try:
-            positions = self.portfolio_repo.get_open_positions()
-            account = self.portfolio_repo.get_account_state()
-            nav = float(account.get("total_nav", 1_000_000_000.0))
-            for position in positions:
-                ticker = position.get("ticker", position.get("symbol"))
-                quantity = int(position.get("shares", position.get("quantity", 0)))
-                average_price = float(position.get("average_price", position.get("avg_price", 0.0)))
-                if not ticker or quantity <= 0:
-                    continue
-                result = await AgentRegistry.dispatch("position_monitoring", {
-                    "position": {
-                        "ticker": ticker,
-                        "average_price": average_price,
-                        "quantity": quantity,
-                    },
-                    "nav": nav,
-                    "is_bear_defense": is_bear_defense,
-                })
-                if result.get("status") == "SUCCESS":
-                    data = result.get("result", {}).get("data", {})
-                    if data.get("action") in ("EMERGENCY_STOP_LOSS", "SELL", "REDUCE"):
-                        instructions.append(data)
+            result = await AgentRegistry.dispatch("position_monitoring", {
+                "positions": positions,
+                "nav": float(portfolio_state.get("total_nav", 0.0)),
+                "is_bear_defense": is_bear_defense,
+            })
+            if result.get("status") == "SUCCESS":
+                data = result.get("result", {}).get("data", {})
+                return data.get("stop_loss_orders", [])
         except Exception as error:
             logger.error("[DailyPipeline] Existing position monitoring failed: %s", error)
-        return instructions
+        return []
 
     async def run(
         self,
@@ -263,29 +268,9 @@ class DailyInvestmentPipeline:
             emergency_instructions = []
             if not replay_at:
                 try:
-                    from app.domain.repositories.portfolio_repository import PortfolioRepository
-                    p_repo = PortfolioRepository()
-                    open_positions = p_repo.get_open_positions()
-                    acc_state = p_repo.get_account_state()
-                    cur_nav = float(acc_state.get("total_nav", 1_000_000_000.0))
-                    for pos in open_positions:
-                        p_ticker = pos.get("ticker", pos.get("symbol"))
-                        p_qty = int(pos.get("shares", pos.get("quantity", 0)))
-                        p_avg = float(pos.get("average_price", pos.get("avg_price", 0.0)))
-                        if p_ticker and p_qty > 0:
-                            res_mon = await AgentRegistry.dispatch("position_monitoring", {
-                                "position": {
-                                    "ticker": p_ticker,
-                                    "average_price": p_avg,
-                                    "quantity": p_qty,
-                                },
-                                "nav": cur_nav,
-                                "is_bear_defense": True,
-                            })
-                            if res_mon.get("status") == "SUCCESS":
-                                m_data = res_mon.get("result", {}).get("data", {})
-                                if m_data.get("action") in ("EMERGENCY_STOP_LOSS", "SELL", "REDUCE"):
-                                    emergency_instructions.append(m_data)
+                    emergency_instructions = await self._monitor_open_positions(
+                        portfolio_state, is_bear_defense=True
+                    )
                 except Exception as e_pos:
                     logger.error(f"[DailyPipeline] Lỗi quét bảo vệ vị thế khi Bear Market: {e_pos}")
 
@@ -365,7 +350,7 @@ class DailyInvestmentPipeline:
         }
 
         if eligible_count == 0 or not discovery_list:
-            hold_instructions = [] if replay_at else await self._monitor_open_positions()
+            hold_instructions = [] if replay_at else await self._monitor_open_positions(portfolio_state)
             logger.warning("[Daily Investment Pipeline] Không có mã nào vượt qua bộ lọc Universe / Lớp 0 Beneish.")
             return {
                 "date": run_date_str,
@@ -426,6 +411,7 @@ class DailyInvestmentPipeline:
             conviction = research_report.get("conviction", "C")
             current_price = float(research_report.get("current_price", 0.0))
             sector = research_report.get("sector", "General")
+            portfolio_sector = candidate_metadata.get(ticker, {}).get("portfolio_sector") or sector
 
             logger.info(f"[Pha 4 - {ticker}] Conviction = '{conviction}' | CSS = {research_report.get('css', 0):.1f} | Price = {current_price:,.0f}")
 
@@ -539,7 +525,7 @@ class DailyInvestmentPipeline:
                     "ticker": ticker,
                     "conviction": conviction,
                     "price": current_price,
-                    "sector": sector,
+                    "sector": portfolio_sector,
                     "adtv20": candidate_metadata.get(ticker, {}).get("adtv20", 0.0),
                     "adtv20_vnd": candidate_metadata.get(ticker, {}).get("adtv20_vnd", 0.0),
                     "adtv20_shares": candidate_metadata.get(ticker, {}).get("adtv20_shares", 0.0),
@@ -600,7 +586,7 @@ class DailyInvestmentPipeline:
             execution_instruction["ticker"] = ticker
             execution_instruction["approved_shares"] = approved_shares
             execution_instruction["target_price"] = current_price
-            execution_instruction["sector"] = proposed_order.get("sector", sector)
+            execution_instruction["sector"] = proposed_order.get("sector", portfolio_sector)
 
             if replay_at:
                 exec_data = {

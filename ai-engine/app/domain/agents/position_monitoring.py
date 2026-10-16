@@ -191,6 +191,19 @@ class PositionMonitoringAgent(BaseAgent):
 
             swing_low = pos.get("swing_low") or pos.get("swing_low_price")
             holding_days = int(pos.get("holding_days") or pos.get("days_held", 0))
+            opened_at = pos.get("opened_at")
+            if holding_days <= 0 and opened_at:
+                try:
+                    opened_dt = (
+                        datetime.fromisoformat(str(opened_at).replace("Z", "+00:00"))
+                        if isinstance(opened_at, str) else opened_at
+                    )
+                    if isinstance(opened_dt, datetime):
+                        if opened_dt.tzinfo and eval_dt.tzinfo:
+                            opened_dt = opened_dt.astimezone(eval_dt.tzinfo)
+                        holding_days = max(0, (eval_dt.date() - opened_dt.date()).days)
+                except (TypeError, ValueError):
+                    logger.debug("Could not derive holding days from opened_at for %s", ticker)
             expected_timeline = int(pos.get("expected_timeline_days", 90))
             last_order_unfilled = bool(pos.get("last_order_unfilled", False))
 

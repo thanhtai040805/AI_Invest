@@ -29,6 +29,7 @@ from app.backtest.cost_model import round_to_lot
 from app.core.base_agent import BaseAgent
 from app.core.registry import AgentRegistry
 from app.domain.pipeline.daily_pipeline_orchestrator import DailyInvestmentPipeline
+from app.domain.repositories.market_data_repository import MarketDataRepository
 from app.domain.repositories.portfolio_repository import PortfolioRepository
 from app.domain.rules.execution.shadow_fill import shadow_fill
 from app.infrastructure.database.pg_pool import get_conn
@@ -136,6 +137,11 @@ def intraday_bars_for_day(
                         "symbol": symbol, "time": stamp, "open": row["open"], "high": row["high"],
                         "low": row["low"], "close": row["close"], "volume": row["volume"],
                     })
+            bars.sort(key=lambda bar: bar["time"])
+            previous_volumes = []
+            for bar in bars:
+                bar["ma20_volume"] = sum(previous_volumes[-20:]) / 20 if len(previous_volumes) >= 20 else 0.0
+                previous_volumes.append(float(bar["volume"] or 0))
             bar_cache[key] = bars
             if not bars:
                 logger.warning("Replay DNSE OHLCV history empty: %s %s", symbol, day)
@@ -383,6 +389,23 @@ def price_to_vnd(value: float) -> float:
     return value * 1000.0 if 0 < value < 1000.0 else value
 
 
+def holding_days_since(opened_at: object, current_time: datetime) -> int:
+    if isinstance(opened_at, str):
+        try:
+            opened_at = datetime.fromisoformat(opened_at)
+        except ValueError:
+            return 0
+    if isinstance(opened_at, datetime):
+        if opened_at.tzinfo and current_time.tzinfo:
+            opened_at = opened_at.astimezone(current_time.tzinfo)
+        opened_date = opened_at.date()
+    elif isinstance(opened_at, date):
+        opened_date = opened_at
+    else:
+        return 0
+    return max(0, (current_time.date() - opened_date).days)
+
+
 async def monitor_intraday_bar(
     day: date,
     bar: dict,
@@ -394,6 +417,8 @@ async def monitor_intraday_bar(
     peak_prices: dict[str, float],
     active_symbols: set[str],
     quote_cache: dict[tuple[date, str], list[dict]],
+    market_repository: MarketDataRepository,
+    swing_low_cache: dict[tuple[str, date], float | None],
 ) -> None:
     symbol = str(bar["symbol"]).upper()
     if symbol not in active_symbols:
@@ -411,6 +436,12 @@ async def monitor_intraday_bar(
     if not position:
         return
 
+    swing_key = (symbol, mark_as_of)
+    if swing_key not in swing_low_cache:
+        history = market_repository.get_ohlcv(symbol, end_date=mark_as_of, limit=20)
+        lows = [price_to_vnd(float(item["low"])) for item in history if float(item.get("low") or 0) > 0]
+        swing_low_cache[swing_key] = min(lows) if lows else None
+
     peak_prices[symbol] = max(peak_prices.get(symbol, float(position["average_price"])), price_to_vnd(bar["high"]))
     result = await AgentRegistry.dispatch("position_monitoring", {
         "positions": [{
@@ -418,7 +449,19 @@ async def monitor_intraday_bar(
             "entry_price": float(position["average_price"]),
             "current_price": price,
             "peak_price": peak_prices[symbol],
+            "swing_low": swing_low_cache[swing_key],
+            "holding_days": holding_days_since(position.get("opened_at"), event_time),
         }],
+        "market_ticks": {
+            symbol: {
+                "price": price,
+                "current_candle": {
+                    key: price_to_vnd(float(bar[key])) if key != "volume" else float(bar[key] or 0)
+                    for key in ("open", "high", "low", "close", "volume")
+                },
+                "ma20_volume": bar["ma20_volume"],
+            }
+        },
         "nav": repository.get_account_state(user_id=account_id, as_of=mark_as_of).get("total_nav", 0),
         "current_time": event_time.isoformat(),
         "target_date": day.isoformat(),
@@ -457,6 +500,8 @@ async def monitor_intraday_bar(
 async def run(args: argparse.Namespace) -> None:
     account_id = args.account_id or os.getenv("MULTI_AGENT_ACCOUNT_ID", "940b0c70-2010-42f3-b947-797e6419b794")
     repo = PortfolioRepository()
+    market_repository = MarketDataRepository(repo.storage)
+    swing_low_cache: dict[tuple[str, date], float | None] = {}
 
     end_date = date.fromisoformat(args.end)
     now_vn = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
@@ -567,6 +612,7 @@ async def run(args: argparse.Namespace) -> None:
                 await monitor_intraday_bar(
                     day, payload, repo, account_id, mark_as_of, pending_orders,
                     fills_history, peak_prices, active_symbols, quote_cache,
+                    market_repository, swing_low_cache,
                 )
                 continue
             symbol = payload
@@ -638,6 +684,7 @@ async def run(args: argparse.Namespace) -> None:
                 await monitor_intraday_bar(
                     day, payload, repo, account_id, mark_as_of, pending_orders,
                     fills_history, peak_prices, active_symbols, quote_cache,
+                    market_repository, swing_low_cache,
                 )
                 continue
             symbol = payload
