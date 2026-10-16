@@ -41,7 +41,7 @@ async def lifespan(app: FastAPI):
 
     # ── 4. Background Daemons ────────────────────────────────────────
     # Khởi động:
-    # 1. Daily Pipeline Daemon (09:15 Mở phiên - 12 Agents & Standalone ML)
+    # 1. Daily Pipeline Daemon (09:45 - 12 Agents & Standalone ML)
     # 2. Position Monitoring Daemon (09:00 - 14:45 Trong phiên - Realtime Ticks & Stop Loss)
     # 3. EOD Learning Daemon (15:15 Cuối phiên - Causal Learning & PnL Settlement)
     tasks = []
@@ -64,7 +64,7 @@ async def lifespan(app: FastAPI):
             from app.infrastructure.workers.daily_pipeline_daemon import daily_daemon
             daily_task = asyncio.create_task(daily_daemon.start())
             tasks.append((daily_task, daily_daemon))
-            logger.info("[Lifespan] Daily Pipeline Daemon (09:15 Morning Cron) đã được khởi động.")
+            logger.info("[Lifespan] Daily Pipeline Daemon (09:45 Morning Cron) đã được khởi động.")
         except Exception as e_daily:
             logger.warning(f"[Lifespan] Không thể khởi động Daily Pipeline Daemon: {e_daily}")
 

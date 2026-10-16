@@ -1,7 +1,7 @@
-"""Event-driven historical paper replay using normalized OHLCV and DNSE history.
+"""Event-driven historical paper replay using raw trade OHLCV and DNSE depth.
 
-Agent decisions use each session's normalized 09:45 input; stops and fills use
-DNSE OHLCV events and displayed depth fetched on demand.
+Agent decisions use each session's last raw trade candle available by 09:45;
+stops and fills use full-session raw trade candles and displayed depth on demand.
 """
 
 from __future__ import annotations
@@ -67,26 +67,17 @@ class ReplayAudit:
 
 def market_dates(end: date, count: int) -> list[date]:
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("""SELECT DISTINCT (time AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS day
-                       FROM ohlcv_intraday_1m
-                       WHERE (time AT TIME ZONE 'Asia/Ho_Chi_Minh')::date <= %s
-                       ORDER BY day DESC LIMIT %s""", (end, count))
+        cur.execute(
+            """SELECT DISTINCT date FROM market_data_daily_calculation
+               WHERE date <= %s ORDER BY date DESC LIMIT %s""",
+            (end, count),
+        )
         days = [row[0] for row in cur.fetchall()]
-    if not days:
-        with get_conn() as conn, conn.cursor() as cur:
-            cur.execute("SELECT DISTINCT date FROM market_data_daily_calculation WHERE date <= %s ORDER BY date DESC LIMIT %s", (end, count))
-            days = [row[0] for row in cur.fetchall()]
     return sorted(days)
 
 
 def previous_market_date(current: date) -> date:
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("""SELECT max((time AT TIME ZONE 'Asia/Ho_Chi_Minh')::date)
-                       FROM ohlcv_intraday_1m
-                       WHERE (time AT TIME ZONE 'Asia/Ho_Chi_Minh')::date < %s""", (current,))
-        row = cur.fetchone()
-        if row and row[0]:
-            return row[0]
         cur.execute("SELECT max(date) FROM market_data_daily_calculation WHERE date < %s", (current,))
         row = cur.fetchone()
         return row[0] if row and row[0] else current - timedelta(days=1)
@@ -94,17 +85,42 @@ def previous_market_date(current: date) -> date:
 
 def bars_for_day(day: date) -> dict[str, dict]:
     results = {}
+    vn = ZoneInfo("Asia/Ho_Chi_Minh")
+    start = datetime.combine(day, day_time(9, 0), vn)
+    signal_time = datetime.combine(day, day_time(9, 45), vn)
+    end = signal_time + timedelta(minutes=1)
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
-            SELECT symbol, open, data_source
+            SELECT DISTINCT ON (symbol) symbol, time, open, close, data_source
             FROM ohlcv_intraday_1m
-            WHERE (time AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = %s
-              AND (time AT TIME ZONE 'Asia/Ho_Chi_Minh')::time = '09:45:00'
-        """, (day,))
-        for sym, open_p, data_source in cur.fetchall():
-            price = float(open_p) * 1000.0 if open_p and 0 < float(open_p) < 1000.0 else float(open_p or 0)
+            WHERE time >= %s AND time < %s
+            ORDER BY symbol, time DESC
+        """, (start, end))
+        for sym, stamp, open_p, close_p, data_source in cur.fetchall():
+            exact_bar = stamp == signal_time
+            raw_price = open_p if exact_bar else close_p
+            price = float(raw_price) * 1000.0 if raw_price and 0 < float(raw_price) < 1000.0 else float(raw_price or 0)
             if price > 0:
-                results[str(sym).upper()] = {"price": price, "source": data_source}
+                source = data_source if exact_bar else "LOCF_INTRADAY"
+                results[str(sym).upper()] = {"price": price, "source": source}
+
+        cur.execute("SELECT symbol FROM stocks WHERE exchange = 'HOSE'")
+        missing = [str(row[0]).upper() for row in cur.fetchall() if str(row[0]).upper() not in results]
+        if missing:
+            cur.execute("""
+                SELECT DISTINCT ON (symbol) symbol, close FROM (
+                    SELECT ticker AS symbol, date, close_unadj AS close, 1 AS priority
+                    FROM market_data_daily
+                    WHERE ticker = ANY(%s) AND date < %s AND close_unadj > 0
+                    UNION ALL
+                    SELECT symbol, time AS date, close, 0 AS priority
+                    FROM ohlcv_unadjusted
+                    WHERE symbol = ANY(%s) AND time < %s AND close > 0
+                ) raw_closes ORDER BY symbol, date DESC, priority DESC
+            """, (missing, day, missing, day))
+            for sym, close_p in cur.fetchall():
+                price = float(close_p) * 1000.0 if 0 < float(close_p) < 1000.0 else float(close_p)
+                results[str(sym).upper()] = {"price": price, "source": "FORWARD_FILL"}
 
     return results
 
@@ -124,9 +140,9 @@ def intraday_bars_for_day(
         bars = bar_cache.get(key)
         if bars is None:
             try:
-                rows = tool.fetch(symbol, "1", int(start.timestamp()), int(end.timestamp()), strict=True)
+                rows = tool.fetch_raw_trade_bars(symbol, int(start.timestamp()), int(end.timestamp()))
             except Exception:
-                logger.exception("Replay DNSE OHLCV history failed: %s %s", symbol, day)
+                logger.exception("Replay DNSE raw trade history failed: %s %s", symbol, day)
                 raise
             bars = []
             for row in rows:
@@ -144,7 +160,7 @@ def intraday_bars_for_day(
                 previous_volumes.append(float(bar["volume"] or 0))
             bar_cache[key] = bars
             if not bars:
-                logger.warning("Replay DNSE OHLCV history empty: %s %s", symbol, day)
+                logger.warning("Replay DNSE raw trade history empty: %s %s", symbol, day)
         events.extend(bars)
     return sorted(events, key=lambda bar: (bar["time"], bar["symbol"]))
 
@@ -517,16 +533,57 @@ async def run(args: argparse.Namespace) -> None:
 
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
-            SELECT count(*), count(DISTINCT (time AT TIME ZONE 'Asia/Ho_Chi_Minh')::date)
-            FROM ohlcv_intraday_1m
-            WHERE (time AT TIME ZONE 'Asia/Ho_Chi_Minh')::date BETWEEN %s AND %s
-              AND (time AT TIME ZONE 'Asia/Ho_Chi_Minh')::time = '09:45:00'
+            SELECT count(*), count(DISTINCT day),
+                   count(*) FILTER (
+                       WHERE data_source IS NULL
+                          OR data_source NOT IN ('DNSE_TRADES_RAW', 'LOCF_INTRADAY', 'FORWARD_FILL')
+                   )
+            FROM (
+                SELECT time AT TIME ZONE 'Asia/Ho_Chi_Minh' AS local_time,
+                       (time AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS day,
+                       data_source
+                FROM ohlcv_intraday_1m
+            ) inputs
+            WHERE day BETWEEN %s AND %s AND local_time::time = TIME '09:45'
         """, (days[0], days[-1]))
-        scan_rows, scan_days = cur.fetchone()
-    if not scan_rows or scan_days != len(days):
+        scan_rows, scan_days, invalid_rows = cur.fetchone()
+        cur.execute("""
+            SELECT count(*) FROM (
+                SELECT (time AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS day, symbol
+                FROM ohlcv_intraday_1m
+                WHERE (time AT TIME ZONE 'Asia/Ho_Chi_Minh')::date BETWEEN %s AND %s
+                  AND (time AT TIME ZONE 'Asia/Ho_Chi_Minh')::time = TIME '09:45'
+                GROUP BY 1, 2 HAVING count(*) <> 1
+            ) duplicates
+        """, (days[0], days[-1]))
+        duplicate_symbol_days = cur.fetchone()[0]
+        cur.execute("""
+            SELECT count(*) FROM (
+                SELECT d.date, s.symbol
+                FROM (SELECT DISTINCT date FROM market_data_daily_calculation WHERE date BETWEEN %s AND %s) d
+                CROSS JOIN (SELECT DISTINCT symbol FROM stocks WHERE exchange = 'HOSE') s
+                WHERE EXISTS (
+                    SELECT 1 FROM market_data_daily m
+                    WHERE m.ticker = s.symbol AND m.date < d.date
+                      AND m.close_unadj > 0
+                ) OR EXISTS (
+                    SELECT 1 FROM ohlcv_unadjusted o
+                    WHERE o.symbol = s.symbol AND o.time < d.date AND o.close > 0
+                )
+            ) expected
+            LEFT JOIN ohlcv_intraday_1m i
+              ON i.symbol = expected.symbol
+             AND i.time >= (expected.date + TIME '09:45') AT TIME ZONE 'Asia/Ho_Chi_Minh'
+             AND i.time < (expected.date + TIME '09:46') AT TIME ZONE 'Asia/Ho_Chi_Minh'
+            WHERE i.symbol IS NULL
+        """, (days[0], days[-1]))
+        missing_fills = cur.fetchone()[0]
+    if not scan_rows or scan_days != len(days) or invalid_rows or duplicate_symbol_days or missing_fills:
         raise RuntimeError(
-            f"Normalized 09:45 OHLCV scan inputs are incomplete: {scan_rows} rows/{scan_days} days; "
-            f"expected {len(days)} trading days"
+            f"Raw Intraday 09:45 inputs are incomplete or mixed: {scan_rows} rows/{scan_days} days, "
+            f"{invalid_rows} invalid rows, {duplicate_symbol_days} duplicate symbol-days, "
+            f"{missing_fills} missing symbols with a previous close; "
+            f"expected {len(days)} trading days with one raw candle per symbol"
         )
 
     if args.reset:

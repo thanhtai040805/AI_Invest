@@ -44,6 +44,7 @@ class DailyPipelineDaemon:
         self._last_status: str = "IDLE"
         self._last_result: Optional[Dict[str, Any]] = None
         self._task: Optional[asyncio.Task] = None
+        self._last_intraday_date: Optional[str] = None
 
         raw_time = trigger_time_str or os.getenv("DAILY_PIPELINE_TRIGGER_TIME", "09:45")
         try:
@@ -76,12 +77,20 @@ class DailyPipelineDaemon:
         candidate_tickers: Optional[list] = None,
     ) -> Dict[str, Any]:
         """Kích hoạt thủ công Daily Pipeline tức thì (qua REST API hoặc Admin CLI)."""
-        run_d = target_date or date.today().isoformat()
+        now_vn = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
+        run_d = target_date or now_vn.date().isoformat()
         logger.info(f"[DailyPipelineDaemon] Nhận lệnh kích hoạt thủ công cho ngày: {run_d} (force={force})")
         job_name = "daily_investment_pipeline"
         with exclusive_job(job_name) as acquired:
             if not acquired:
                 raise RuntimeError("Daily pipeline is already running")
+            try:
+                if run_d == now_vn.date().isoformat():
+                    await self._ensure_morning_intraday(now_vn.date())
+            except Exception as e:
+                self._last_status = f"FAILED: intraday ingestion: {e}"
+                logger.error("[DailyPipelineDaemon] DNSE intraday ingestion failed: %s", e, exc_info=True)
+                raise
             previous = get_job(job_name)
             if not force and previous and previous.get("status") == "completed" and previous.get("metadata", {}).get("run_date") == run_d:
                 self._last_status = "ALREADY_COMPLETED"
@@ -101,6 +110,20 @@ class DailyPipelineDaemon:
                 logger.error(f"[DailyPipelineDaemon] Lỗi khi chạy manual pipeline: {e}", exc_info=True)
                 raise
 
+    async def _ensure_morning_intraday(self, target_date: date) -> None:
+        """Persist the 09:00–09:45 DNSE window once per trading date."""
+        today_vn = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
+        target_day = target_date.isoformat()
+        if target_day != today_vn.date().isoformat() or today_vn.time() < dt_time(9, 45):
+            return
+        if self._last_intraday_date == target_day:
+            return
+        from app.infrastructure.data_pipelines.intraday_ohlcv_ingestion import persist_morning_intraday_bars
+
+        result = await asyncio.to_thread(persist_morning_intraday_bars, target_date)
+        self._last_intraday_date = target_day
+        logger.info("[DailyPipelineDaemon] DNSE intraday persisted for %s: %s", target_day, result)
+
     async def _check_and_trigger(self) -> None:
         """Kiểm tra điều kiện giờ và ngày giao dịch để tự động kích hoạt."""
         now = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
@@ -110,13 +133,19 @@ class DailyPipelineDaemon:
         if not self.session_mgr.is_trading_day(now):
             return
 
-        # 2. Kiểm tra giờ đã chạm mốc trigger chưa (09:15)
+        # 2. Kiểm tra giờ đã chạm mốc trigger chưa (09:45)
         current_time = now.time()
         if current_time < self.trigger_time:
             return
 
         # 3. Kiểm tra tính Idempotent: Đã chạy thành công cho ngày hôm nay chưa
         if self._last_run_date == today_str:
+            if self._last_intraday_date != today_str:
+                try:
+                    await self.trigger_manual(target_date=today_str)
+                except Exception as e:
+                    self._last_status = f"FAILED: intraday ingestion: {e}"
+                    logger.error("[DailyPipelineDaemon] DNSE intraday ingestion failed: %s", e, exc_info=True)
             return
 
         logger.info(
