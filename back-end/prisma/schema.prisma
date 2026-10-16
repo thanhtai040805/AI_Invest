@@ -66,6 +66,7 @@ model Position {
   symbol   String
   quantity Int
   avgPrice Decimal  @map("avg_price") @db.Decimal(12, 2)
+  peakPrice Decimal @default(0) @map("peak_price") @db.Decimal(12, 2)
   openedAt DateTime @default(now()) @map("opened_at")
   stock    Stock    @relation(fields: [symbol], references: [symbol])
   user     User     @relation(fields: [userId], references: [id])

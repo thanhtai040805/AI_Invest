@@ -53,7 +53,6 @@ class PositionMonitoringAgent(BaseAgent):
         self.repository = repository or PortfolioRepository()
         self._market_data_repo = market_data_repo
         self.auto_dispatch = auto_dispatch
-        self._peak_price_cache: Dict[str, float] = {}
 
     @property
     def market_data_repo(self):
@@ -163,6 +162,7 @@ class PositionMonitoringAgent(BaseAgent):
                     "holding_days": p.get("holding_days", 0),
                     "swing_low": p.get("swing_low") or (p.get("average_price", 0.0) * 0.95),
                     "peak_price": p.get("peak_price", 0.0),
+                    "user_id": p.get("user_id", getattr(self.repository, "account_id", None)),
                 }
                 for p in db_positions
             ]
@@ -259,16 +259,26 @@ class PositionMonitoringAgent(BaseAgent):
                 logger.warning("[PositionMonitoringAgent] Bỏ qua %s vì không có giá socket hiện tại.", ticker)
                 continue
 
-            # 2. CẬP NHẬT VÀ LƯU GIỮ GIÁ ĐỈNH (PEAK_PRICE) PHỤC VỤ TRAILING STOP
-            cached_peak = self._peak_price_cache.get(ticker, 0.0)
+            # 2. CẬP NHẬT ĐỈNH GIÁ BỀN VỮNG TRÊN VỊ THẾ ĐANG MỞ
             initial_pos_peak = float(pos.get("peak_price") or pos.get("highest_price", 0.0))
-            peak_price = max(
-                initial_pos_peak,
-                cached_peak,
-                current_price,
-                entry_price,
+            peak_price = max(initial_pos_peak, current_price, entry_price)
+            peak_user_id = (
+                pos.get("user_id")
+                or pos.get("account_id")
+                or event_data.get("replay_account_id")
+                or getattr(self.repository, "account_id", None)
             )
-            self._peak_price_cache[ticker] = peak_price
+            persist_peak = getattr(self.repository, "update_position_peak_price", None)
+            if peak_user_id and callable(persist_peak):
+                try:
+                    stored_peak = persist_peak(ticker, peak_price, user_id=str(peak_user_id))
+                    if stored_peak is not None:
+                        peak_price = max(peak_price, float(stored_peak))
+                except Exception as e_peak:
+                    logger.warning(
+                        "Could not persist peak price for %s/account %s: %s",
+                        ticker, peak_user_id, e_peak,
+                    )
 
             # 3. Kiểm tra Hệ thống phòng thủ đa tầng qua StopLossEngine
             market_data = {

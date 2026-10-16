@@ -160,11 +160,18 @@ export async function placeOrder(
         const newAvg = (Number(existing.avgPrice) * existing.quantity + notional) / newQty;
         await tx.position.update({
           where: { id: existing.id },
-          data: { quantity: newQty, avgPrice: new Decimal(newAvg) },
+          data: {
+            quantity: newQty,
+            avgPrice: new Decimal(newAvg),
+            peakPrice: new Decimal(Math.max(Number(existing.peakPrice), fillPrice)),
+          },
         });
       } else {
         await tx.position.create({
-          data: { userId, symbol, quantity: input.quantity, avgPrice: new Decimal(fillPrice) },
+          data: {
+            userId, symbol, quantity: input.quantity, avgPrice: new Decimal(fillPrice),
+            peakPrice: new Decimal(fillPrice),
+          },
         });
       }
       await tx.user.update({ where: { id: userId }, data: { cashBalance: { increment: cashDelta } } });
