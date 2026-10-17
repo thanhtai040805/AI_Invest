@@ -50,7 +50,7 @@ def test_provider_cooldown_marks_provider_unavailable():
     asyncio.run(_run())
 
 
-def test_deepinfra_route_uses_only_mimo_flash():
+def test_deepinfra_route_uses_only_gpt_oss_120b():
     mock_settings = MagicMock()
     mock_settings.multi_agent_llm_provider = "deepinfra"
     mock_settings.deepinfra_api_key = "deepinfra_test"
@@ -62,10 +62,10 @@ def test_deepinfra_route_uses_only_mimo_flash():
         client = UnifiedLLMClient()
 
     assert client.providers == [{
-        "name": "DEEPINFRA_MIMO",
+        "name": "DEEPINFRA_GPT_OSS_120B",
         "api_key": "deepinfra_test",
         "base_url": "https://api.deepinfra.com/v1/openai",
-        "model": "XiaomiMiMo/MiMo-V2.6-Flash",
+        "model": "openai/gpt-oss-120b",
     }]
 
 
@@ -147,5 +147,46 @@ def test_provider_failure_log_includes_model_status_and_request_id(caplog):
         assert "HTTP 503" in caplog.text
         assert "request_id=request-123" in caplog.text
         assert "upstream unavailable" in caplog.text
+
+    asyncio.run(_run())
+
+
+def test_chat_retries_once_after_transport_timeout():
+    import asyncio
+    import httpx
+    from unittest.mock import AsyncMock, patch
+
+    class Response:
+        status_code = 200
+        headers = {"x-request-id": "retry-success"}
+
+        @staticmethod
+        def json():
+            return {"choices": [{"message": {"content": "recovered"}}]}
+
+    class Client:
+        attempts = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise httpx.ReadTimeout("provider response timed out")
+            return Response()
+
+    async def _run():
+        client = UnifiedLLMClient(api_key="test", base_url="https://example.invalid/v1", model="test-model")
+        request_client = Client()
+        with patch("app.infrastructure.llm.client.httpx.AsyncClient", return_value=request_client):
+            with patch("app.infrastructure.llm.client.asyncio.sleep", new=AsyncMock()) as sleep:
+                assert await client.chat("hello") == "recovered"
+
+        assert request_client.attempts == 2
+        sleep.assert_awaited_once_with(1.0)
 
     asyncio.run(_run())
