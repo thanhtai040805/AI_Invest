@@ -66,6 +66,7 @@ model Position {
   symbol   String
   quantity Int
   avgPrice Decimal  @map("avg_price") @db.Decimal(12, 2)
+  peakPrice Decimal @default(0) @map("peak_price") @db.Decimal(12, 2)
   openedAt DateTime @default(now()) @map("opened_at")
   stock    Stock    @relation(fields: [symbol], references: [symbol])
   user     User     @relation(fields: [userId], references: [id])
@@ -84,6 +85,7 @@ model Order {
   quantity  Int
   status    String   @default("PENDING")
   createdAt DateTime @default(now()) @map("created_at")
+  decisionContext Json? @map("decision_context") @db.JsonB
   stock     Stock    @relation(fields: [symbol], references: [symbol])
   user      User     @relation(fields: [userId], references: [id])
 
@@ -850,6 +852,7 @@ model order_executions {
   brokerage_fee  Decimal? @db.Decimal(18, 6)
   transfer_tax   Decimal? @db.Decimal(18, 6)
   cash_delta     Decimal? @db.Decimal(18, 2)
+  decision_context Json?  @db.JsonB
 
   @@index([executed_at], map: "idx_executions_date")
 }

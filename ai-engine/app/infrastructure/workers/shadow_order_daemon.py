@@ -49,6 +49,7 @@ class ShadowOrderDaemon:
                         executed_price=fill_price, target_price=order["limit_price"],
                         execution_mode="SHADOW_PAPER", user_id=order["user_id"],
                         status="FILLED", pending_order_id=order["order_id"],
+                        decision_context=order.get("decision_context"),
                     )
                     filled += 1
                     continue
@@ -62,6 +63,7 @@ class ShadowOrderDaemon:
                         "max_price": order["limit_price"],
                         "user_id": order["user_id"],
                         "pending_order_id": order["order_id"],
+                        "decision_context": order.get("decision_context"),
                     },
                     "orderbook": book,
                     "adtv20": 2_500_000,

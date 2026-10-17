@@ -178,7 +178,8 @@ CREATE TABLE IF NOT EXISTS order_executions (
     target_price NUMERIC(12,2) NOT NULL,
     slippage_bps NUMERIC(8,2) NOT NULL,
     execution_mode VARCHAR(16) NOT NULL,
-    executed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    executed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    decision_context JSONB
 );
 
 CREATE TABLE IF NOT EXISTS slippage_records (
@@ -206,6 +207,7 @@ CREATE TABLE IF NOT EXISTS stop_loss_events (
     triggered_price NUMERIC(12,2) NOT NULL,
     loss_pct_nav NUMERIC(6,2) NOT NULL,
     bypass_order_id UUID,
+    decision_context JSONB,
     triggered_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 

@@ -245,7 +245,7 @@ class MarketDataRepository:
             )
             if rows and rows[0]:
                 r = rows[0]
-                is_ff = (r[7] == "FORWARD_FILL") if len(r) > 7 else False
+                source = r[7] if len(r) > 7 else "DNSE"
                 return {
                     "time": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
                     "symbol": symbol,
@@ -254,8 +254,8 @@ class MarketDataRepository:
                     "low": float(r[4]),
                     "close": float(r[5]),
                     "volume": int(r[6]),
-                    "data_source": r[7] if len(r) > 7 else "DNSE",
-                    "is_synthetic": is_ff,
+                    "data_source": source,
+                    "is_synthetic": source in {"FORWARD_FILL", "LOCF_INTRADAY"},
                 }
 
             # Lớp 2: Lùi lại tìm nến khớp gần nhất trong cùng phiên giao dịch (LOCF - Last Observation Carried Forward)
@@ -616,11 +616,21 @@ class MarketDataRepository:
         except Exception as e:
             logger.debug(f"Không thể đọc security_info từ DNSE OpenAPI ({e})")
 
-        # 3. DNSE REST API Intraday (Nến 1m)
+        # 3. DNSE raw matched trades, used when stream and security info are unavailable.
         try:
             from app.infrastructure.external_api.dnse.intraday_tool import DnseIntradayTool
             tool = DnseIntradayTool()
-            intraday_candles = tool.fetch(symbol_clean, resolution="1")
+            now_vn = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
+            session_start = now_vn.replace(hour=9, minute=0, second=0, microsecond=0)
+            intraday_candles = (
+                tool.fetch_raw_trade_bars(
+                    symbol_clean,
+                    from_ts=int(session_start.timestamp()),
+                    to_ts=int(now_vn.timestamp()),
+                    latest_bar_only=True,
+                )
+                if now_vn >= session_start else []
+            )
             if intraday_candles and len(intraday_candles) > 0:
                 latest_candle = intraday_candles[-1]
                 price = float(latest_candle.get("close", 0.0))

@@ -6,6 +6,7 @@ và Lịch sử khớp lệnh (bảng orders & order_executions) kết nối Pos
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import uuid
@@ -190,20 +191,24 @@ class PortfolioRepository:
                 mark_date = as_of.date() if isinstance(as_of, datetime) else as_of
                 query = """
                     SELECT p.symbol, p.quantity, p.avg_price, p.opened_at,
-                           md.close_unadj * 1000 AS current_price
+                           md.close_unadj * 1000 AS current_price,
+                           COALESCE(NULLIF(BTRIM(s.sector), ''), NULLIF(BTRIM(s.industry), ''), 'Unknown') AS sector,
+                           p.peak_price
                     FROM positions p
                     LEFT JOIN LATERAL (
                         SELECT close_unadj FROM market_data_daily
                         WHERE ticker = p.symbol AND (%s::date IS NULL OR date <= %s::date)
                         ORDER BY date DESC LIMIT 1
                     ) md ON TRUE
+                    LEFT JOIN stocks s ON s.symbol = p.symbol
                     WHERE p.user_id = %s AND p.quantity > 0
                     ORDER BY quantity DESC
                 """
                 rows = self.storage.fetch_all(query, (mark_date, mark_date, target_uid))
             else:
                 query = """
-                    SELECT symbol, quantity, avg_price, opened_at
+                    SELECT symbol, quantity, avg_price, opened_at, avg_price AS current_price,
+                           'Unknown'::text AS sector, peak_price
                     FROM positions
                     WHERE quantity > 0
                     ORDER BY quantity DESC
@@ -249,6 +254,7 @@ class PortfolioRepository:
                     results.append({
                         "ticker": str(r[0]),
                         "symbol": str(r[0]),
+                        "user_id": str(target_uid) if target_uid else None,
                         "shares": total_shares,
                         "quantity": total_shares,
                         "available_shares": available_shares,
@@ -259,6 +265,8 @@ class PortfolioRepository:
                         "current_price": current_p,
                         "market_value": mkt_val,
                         "weight_pct": w_pct,
+                        "sector": str(r[5]) if len(r) > 5 and r[5] else "Unknown",
+                        "peak_price": float(r[6]) if len(r) > 6 and r[6] is not None else avg_p,
                     })
                 return results
         except Exception as e:
@@ -282,6 +290,30 @@ class PortfolioRepository:
             pos_copy["locked_t25_shares"] = locked
             in_mem_list.append(pos_copy)
         return in_mem_list
+
+    def update_position_peak_price(
+        self, ticker: str, observed_peak: float, user_id: Optional[str] = None
+    ) -> Optional[float]:
+        """Atomically retain the highest observed price on the account's open position."""
+        ticker = str(ticker).upper().strip()
+        observed_peak = float(observed_peak)
+        if not ticker or observed_peak <= 0:
+            raise ValueError("Ticker and positive observed peak are required")
+
+        target_uid = user_id or self.account_id
+        if not target_uid:
+            return None
+
+        rows = self.storage.fetch_all(
+            """
+            UPDATE positions
+            SET peak_price = GREATEST(COALESCE(peak_price, avg_price), avg_price, %s)
+            WHERE user_id = %s AND symbol = %s AND quantity > 0
+            RETURNING peak_price
+            """,
+            (observed_peak, target_uid, ticker),
+        )
+        return float(rows[0][0]) if rows else None
 
     def get_active_campaign(self, ticker: str) -> Optional[Dict[str, Any]]:
         """Lấy chiến dịch gom/xả đa phiên đang hoạt động của một mã cổ phiếu."""
@@ -395,6 +427,7 @@ class PortfolioRepository:
         executed_at: datetime,
         mark_as_of: date,
         pending_order_id: Optional[str] = None,
+        decision_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Atomically persist a simulated fill to the explicitly allowlisted replay DB."""
         ticker = ticker.upper().strip()
@@ -456,13 +489,13 @@ class PortfolioRepository:
                     new_qty = int(old_qty) + shares
                     avg_price = (float(old_avg) * int(old_qty) + executed_price * shares) / new_qty
                     self.storage.execute(
-                        "UPDATE positions SET quantity = %s, avg_price = %s, opened_at = %s WHERE id = %s",
-                        (new_qty, avg_price, execution_db_timestamp, row_id),
+                        "UPDATE positions SET quantity = %s, avg_price = %s, opened_at = %s, peak_price = GREATEST(peak_price, avg_price, %s) WHERE id = %s",
+                        (new_qty, avg_price, execution_db_timestamp, executed_price, row_id),
                     )
                 else:
                     self.storage.execute(
-                        "INSERT INTO positions (id, user_id, symbol, quantity, avg_price, opened_at) VALUES (%s, %s, %s, %s, %s, %s)",
-                        (position_id, user_id, ticker, shares, executed_price, execution_db_timestamp),
+                        "INSERT INTO positions (id, user_id, symbol, quantity, avg_price, opened_at, peak_price) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                        (position_id, user_id, ticker, shares, executed_price, execution_db_timestamp, executed_price),
                     )
             else:
                 row_id, old_qty = existing[0][0], int(existing[0][1])
@@ -480,8 +513,8 @@ class PortfolioRepository:
                     (order_id, user_id, ticker, action, "REPLAY_MARKET", executed_price, shares, "FILLED_REPLAY", execution_db_timestamp),
                 )
             self.storage.execute(
-                "INSERT INTO order_executions (order_id, ticker, action, shares, executed_price, target_price, slippage_bps, execution_mode, executed_at, gross_value, brokerage_fee, transfer_tax, cash_delta) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                (order_id, ticker, action, shares, executed_price, executed_price, 0.0, "POSTGRES_REPLAY", execution_local, trade_value, brokerage_fee, tax, cash_delta),
+                "INSERT INTO order_executions (order_id, ticker, action, shares, executed_price, target_price, slippage_bps, execution_mode, executed_at, gross_value, brokerage_fee, transfer_tax, cash_delta, decision_context) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (order_id, ticker, action, shares, executed_price, executed_price, 0.0, "POSTGRES_REPLAY", execution_local, trade_value, brokerage_fee, tax, cash_delta, json.dumps(decision_context, default=str) if decision_context is not None else None),
             )
 
             if action == "BUY":
@@ -568,6 +601,8 @@ class PortfolioRepository:
         - order_executions
         - orders
         - positions
+        - paper_trades
+        - portfolio_nav_history
         - Reset cash_balance và total_nav về initial_capital (1 tỷ)
         - Tùy chọn (clean_agents_and_logs=True): Xóa toàn bộ kết quả quyết định và 12 bảng Logs của Agents.
         """
@@ -583,6 +618,8 @@ class PortfolioRepository:
             self.storage.execute("DELETE FROM orders WHERE user_id = %s", (target_uid,))
             # 3. Xóa positions
             self.storage.execute("DELETE FROM positions WHERE user_id = %s", (target_uid,))
+            self.storage.execute("DELETE FROM paper_trades WHERE account_id = %s", (target_uid,))
+            self.storage.execute("DELETE FROM portfolio_nav_history WHERE account_id = %s", (target_uid,))
             # 4. Khôi phục số dư users
             self.storage.execute("UPDATE users SET cash_balance = %s WHERE id = %s", (initial_capital, target_uid))
             # 5. Khôi phục portfolio_account
@@ -651,6 +688,7 @@ class PortfolioRepository:
         user_id: Optional[str] = None,
         status: str = "FILLED",
         pending_order_id: Optional[str] = None,
+        decision_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Thực hiện giao dịch nguyên tử (Atomic Execution):
@@ -690,6 +728,7 @@ class PortfolioRepository:
                 pos["average_price"] = new_avg
                 pos["current_price"] = executed_price
                 pos["market_value"] = new_shares * executed_price
+                pos["peak_price"] = max(float(pos.get("peak_price", old_avg)), executed_price)
             else:
                 self._in_memory_positions[ticker] = {
                     "ticker": ticker,
@@ -698,6 +737,7 @@ class PortfolioRepository:
                     "current_price": executed_price,
                     "market_value": trade_value,
                     "weight_pct": (trade_value / self._in_memory_account["total_nav"]) * 100.0,
+                    "peak_price": executed_price,
                 }
         elif action in ("SELL", "SELL_MP"):
             net_credit = cash_delta
@@ -750,14 +790,14 @@ class PortfolioRepository:
                     pid, old_q, old_avg = existing[0]
                     new_q = int(old_q) + shares
                     new_avg = ((float(old_avg) * int(old_q)) + (executed_price * shares)) / new_q
-                    sql_update_pos = "UPDATE positions SET quantity = %s, avg_price = %s, opened_at = %s WHERE id = %s"
-                    self.storage.execute(sql_update_pos, (new_q, new_avg, now, pid))
+                    sql_update_pos = "UPDATE positions SET quantity = %s, avg_price = %s, opened_at = %s, peak_price = GREATEST(peak_price, avg_price, %s) WHERE id = %s"
+                    self.storage.execute(sql_update_pos, (new_q, new_avg, now, executed_price, pid))
                 else:
                     sql_insert_pos = """
-                        INSERT INTO positions (id, user_id, symbol, quantity, avg_price, opened_at)
-                        VALUES (%s, %s, %s, %s, %s, %s)
+                        INSERT INTO positions (id, user_id, symbol, quantity, avg_price, opened_at, peak_price)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """
-                    self.storage.execute(sql_insert_pos, (pos_id, target_uid, ticker, shares, executed_price, now))
+                    self.storage.execute(sql_insert_pos, (pos_id, target_uid, ticker, shares, executed_price, now, executed_price))
             elif action in ("SELL", "SELL_MP"):
                 sql_check = "SELECT id, quantity, opened_at FROM positions WHERE user_id = %s AND symbol = %s FOR UPDATE"
                 existing = self.storage.fetch_all(sql_check, (target_uid, ticker))
@@ -802,13 +842,13 @@ class PortfolioRepository:
                     INSERT INTO order_executions (
                         order_id, ticker, action, shares, executed_price,
                         target_price, slippage_bps, execution_mode, executed_at,
-                        gross_value, brokerage_fee, transfer_tax, cash_delta
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        gross_value, brokerage_fee, transfer_tax, cash_delta, decision_context
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT DO NOTHING
                 """
                 self.storage.execute(
                     sql_order_exec,
-                    (order_id, ticker, action, shares, executed_price, target_price, slippage_bps, execution_mode, now, trade_value, brokerage_fee, tax, cash_delta)
+                    (order_id, ticker, action, shares, executed_price, target_price, slippage_bps, execution_mode, now, trade_value, brokerage_fee, tax, cash_delta, json.dumps(decision_context, default=str) if decision_context is not None else None)
                 )
 
                 # Đồng bộ bảng portfolio_account
@@ -903,6 +943,7 @@ class PortfolioRepository:
     def create_shadow_pending_order(
         self, ticker: str, shares: int, limit_price: float, user_id: Optional[str] = None,
         order_type: str = "SHADOW_LIMIT", side: str = "BUY",
+        decision_context: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Persist a day-only Shadow limit order without changing cash or positions."""
         ticker = ticker.upper().strip()
@@ -913,22 +954,23 @@ class PortfolioRepository:
         order_id = str(uuid.uuid4())
         now = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).replace(tzinfo=None)
         self.storage.execute(
-            "INSERT INTO orders (id, user_id, symbol, side, order_type, price, quantity, status, created_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDING_SHADOW', %s)",
-            (order_id, target_uid, ticker.upper().strip(), side, order_type, limit_price, shares, now),
+            "INSERT INTO orders (id, user_id, symbol, side, order_type, price, quantity, status, created_at, decision_context) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDING_SHADOW', %s, %s)",
+            (order_id, target_uid, ticker, side, order_type, limit_price, shares, now,
+             json.dumps(decision_context, default=str) if decision_context is not None else None),
         )
         return order_id
 
     def get_pending_shadow_orders(self) -> List[Dict[str, Any]]:
         rows = self.storage.fetch_all(
-            "SELECT id, user_id, symbol, side, price, quantity, order_type FROM orders "
+            "SELECT id, user_id, symbol, side, price, quantity, order_type, decision_context FROM orders "
             "WHERE status = 'PENDING_SHADOW' AND order_type IN ('SHADOW_LIMIT', 'SHADOW_ML_LIMIT') "
             "ORDER BY created_at"
         )
         return [
             {"order_id": str(r[0]), "user_id": str(r[1]), "ticker": str(r[2]),
              "side": str(r[3]), "limit_price": float(r[4]), "shares": int(r[5]),
-             "order_type": str(r[6])}
+             "order_type": str(r[6]), "decision_context": r[7]}
             for r in rows
         ]
 

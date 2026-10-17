@@ -11,6 +11,7 @@ Kiểm thử toàn diện các lớp phòng thủ:
 """
 
 import asyncio
+import json
 import pytest
 from app.domain.rules.stop_loss import StopLossEngine, StopLossOrder
 from app.domain.agents.position_monitoring import PositionMonitoringAgent
@@ -159,7 +160,27 @@ def test_floor_lock_unfilled_reset():
 def test_agent09_invalidation_sla_14h():
     """Kiểm tra SLA xử lý Invalidation: trước 14:00 thì Escalate, sau 14:00 thì Auto Exit."""
     async def _test():
-        agent = PositionMonitoringAgent(repository=PortfolioRepository())
+        class Storage:
+            def __init__(self):
+                self.statements = []
+
+            def execute(self, sql, params=None):
+                self.statements.append((sql, params))
+
+        class Repository:
+            account_id = "monitor-account"
+
+            def __init__(self):
+                self.storage = Storage()
+
+            def get_account_state(self):
+                return {"total_nav": 1_000_000_000.0}
+
+            def update_position_peak_price(self, _ticker, observed_peak, **_kwargs):
+                return observed_peak
+
+        repo = Repository()
+        agent = PositionMonitoringAgent(repository=repo)
 
         # Trường hợp A: Lúc 10:30 sáng (Trước 14:00)
         res_morning = await agent.process({
@@ -191,6 +212,7 @@ def test_agent09_invalidation_sla_14h():
             "current_time": "2026-09-04T14:05:00",
             "positions": [{
                 "ticker": "FPT",
+                "user_id": "monitor-account",
                 "quantity": 1000,
                 "available_shares": 1000,
                 "entry_price": 130_000.0,
@@ -212,6 +234,14 @@ def test_agent09_invalidation_sla_14h():
         assert exit_order["suggested_action"] == "AUTO_EXIT_INVALIDATED_THESIS"
         assert exit_order["urgency"] == "EMERGENCY"
         assert exit_order["quantity"] == 1000
+        assert exit_order["account_id"] == "monitor-account"
+        assert exit_order["decision_context"]["account_id"] == "monitor-account"
+        assert exit_order["decision_context"]["invalidation_reason"] == "Chủ tịch đăng ký bán thoái vốn"
+        stop_event = next(
+            params for sql, params in repo.storage.statements
+            if "INSERT INTO stop_loss_events" in sql
+        )
+        assert json.loads(stop_event[5])["account_id"] == "monitor-account"
 
     asyncio.run(_test())
 

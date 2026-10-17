@@ -1,3 +1,4 @@
+import json
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -24,6 +25,14 @@ def test_daily_nav_is_persisted_with_close_mark(monkeypatch):
     assert storage.committed
 
 
+def test_reset_clears_only_the_account_replay_history():
+    storage = Storage()
+    PortfolioRepository(storage).reset_paper_trading_account("replay-account")
+
+    assert ("DELETE FROM paper_trades WHERE account_id = %s", ("replay-account",)) in storage.calls
+    assert ("DELETE FROM portfolio_nav_history WHERE account_id = %s", ("replay-account",)) in storage.calls
+
+
 class Storage:
     def __init__(self, status='PENDING_REPLAY'):
         self.status=status
@@ -42,10 +51,10 @@ class Storage:
     def rollback(self): self.rolled_back=True
 
 
-def execute(repository, price=24900):
+def execute(repository, price=24900, decision_context=None):
     return repository.record_replay_execution('HPG','BUY',100,price,user_id='ml',
         executed_at=datetime(2026,8,13,9,46,tzinfo=ZoneInfo('Asia/Ho_Chi_Minh')),
-        mark_as_of=date(2026,8,12),pending_order_id='pending-ml')
+        mark_as_of=date(2026,8,12),pending_order_id='pending-ml',decision_context=decision_context)
 
 
 def test_ml_replay_fill_updates_original_order_and_all_account_tables(monkeypatch):
@@ -68,6 +77,21 @@ def test_replay_cannot_fill_an_order_twice():
         execute(PortfolioRepository(storage))
     assert storage.rolled_back
     assert storage.calls==[]
+
+
+def test_replay_fill_persists_decision_context(monkeypatch):
+    storage = Storage()
+    repository = PortfolioRepository(storage)
+    monkeypatch.setattr(repository, 'get_account_state', lambda **kw: {
+        'cash_balance': 7_500_000, 'total_nav': 10_000_000,
+        'peak_nav': 10_000_000, 'drawdown_tier': 'GREEN'})
+    context = {"risk": {"status": "REDUCE", "approved_shares": 100}}
+
+    execute(repository, decision_context=context)
+
+    sql, params = next((sql, params) for sql, params in storage.calls if 'INSERT INTO order_executions' in sql)
+    assert "decision_context" in sql
+    assert json.loads(params[-1]) == context
 
 
 def test_replay_cannot_fill_above_limit():

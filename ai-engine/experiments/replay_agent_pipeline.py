@@ -1,7 +1,7 @@
-"""Event-driven historical paper replay using normalized OHLCV and DNSE history.
+"""Event-driven historical paper replay using raw trade OHLCV and DNSE depth.
 
-Agent decisions use each session's normalized 09:45 input; stops and fills use
-DNSE OHLCV events and displayed depth fetched on demand.
+Agent decisions use each session's last raw trade candle available by 09:45;
+stops and fills use full-session raw trade candles and displayed depth on demand.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from app.backtest.cost_model import round_to_lot
 from app.core.base_agent import BaseAgent
 from app.core.registry import AgentRegistry
 from app.domain.pipeline.daily_pipeline_orchestrator import DailyInvestmentPipeline
+from app.domain.repositories.market_data_repository import MarketDataRepository
 from app.domain.repositories.portfolio_repository import PortfolioRepository
 from app.domain.rules.execution.shadow_fill import shadow_fill
 from app.infrastructure.database.pg_pool import get_conn
@@ -66,26 +67,17 @@ class ReplayAudit:
 
 def market_dates(end: date, count: int) -> list[date]:
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("""SELECT DISTINCT (time AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS day
-                       FROM ohlcv_intraday_1m
-                       WHERE (time AT TIME ZONE 'Asia/Ho_Chi_Minh')::date <= %s
-                       ORDER BY day DESC LIMIT %s""", (end, count))
+        cur.execute(
+            """SELECT DISTINCT date FROM market_data_daily_calculation
+               WHERE date <= %s ORDER BY date DESC LIMIT %s""",
+            (end, count),
+        )
         days = [row[0] for row in cur.fetchall()]
-    if not days:
-        with get_conn() as conn, conn.cursor() as cur:
-            cur.execute("SELECT DISTINCT date FROM market_data_daily_calculation WHERE date <= %s ORDER BY date DESC LIMIT %s", (end, count))
-            days = [row[0] for row in cur.fetchall()]
     return sorted(days)
 
 
 def previous_market_date(current: date) -> date:
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("""SELECT max((time AT TIME ZONE 'Asia/Ho_Chi_Minh')::date)
-                       FROM ohlcv_intraday_1m
-                       WHERE (time AT TIME ZONE 'Asia/Ho_Chi_Minh')::date < %s""", (current,))
-        row = cur.fetchone()
-        if row and row[0]:
-            return row[0]
         cur.execute("SELECT max(date) FROM market_data_daily_calculation WHERE date < %s", (current,))
         row = cur.fetchone()
         return row[0] if row and row[0] else current - timedelta(days=1)
@@ -93,17 +85,42 @@ def previous_market_date(current: date) -> date:
 
 def bars_for_day(day: date) -> dict[str, dict]:
     results = {}
+    vn = ZoneInfo("Asia/Ho_Chi_Minh")
+    start = datetime.combine(day, day_time(9, 0), vn)
+    signal_time = datetime.combine(day, day_time(9, 45), vn)
+    end = signal_time + timedelta(minutes=1)
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
-            SELECT symbol, open, data_source
+            SELECT DISTINCT ON (symbol) symbol, time, open, close, data_source
             FROM ohlcv_intraday_1m
-            WHERE (time AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = %s
-              AND (time AT TIME ZONE 'Asia/Ho_Chi_Minh')::time = '09:45:00'
-        """, (day,))
-        for sym, open_p, data_source in cur.fetchall():
-            price = float(open_p) * 1000.0 if open_p and 0 < float(open_p) < 1000.0 else float(open_p or 0)
+            WHERE time >= %s AND time < %s
+            ORDER BY symbol, time DESC
+        """, (start, end))
+        for sym, stamp, open_p, close_p, data_source in cur.fetchall():
+            exact_bar = stamp == signal_time
+            raw_price = open_p if exact_bar else close_p
+            price = float(raw_price) * 1000.0 if raw_price and 0 < float(raw_price) < 1000.0 else float(raw_price or 0)
             if price > 0:
-                results[str(sym).upper()] = {"price": price, "source": data_source}
+                source = data_source if exact_bar else "LOCF_INTRADAY"
+                results[str(sym).upper()] = {"price": price, "source": source}
+
+        cur.execute("SELECT symbol FROM stocks WHERE exchange = 'HOSE'")
+        missing = [str(row[0]).upper() for row in cur.fetchall() if str(row[0]).upper() not in results]
+        if missing:
+            cur.execute("""
+                SELECT DISTINCT ON (symbol) symbol, close FROM (
+                    SELECT ticker AS symbol, date, close_unadj AS close, 1 AS priority
+                    FROM market_data_daily
+                    WHERE ticker = ANY(%s) AND date < %s AND close_unadj > 0
+                    UNION ALL
+                    SELECT symbol, time AS date, close, 0 AS priority
+                    FROM ohlcv_unadjusted
+                    WHERE symbol = ANY(%s) AND time < %s AND close > 0
+                ) raw_closes ORDER BY symbol, date DESC, priority DESC
+            """, (missing, day, missing, day))
+            for sym, close_p in cur.fetchall():
+                price = float(close_p) * 1000.0 if 0 < float(close_p) < 1000.0 else float(close_p)
+                results[str(sym).upper()] = {"price": price, "source": "FORWARD_FILL"}
 
     return results
 
@@ -123,9 +140,9 @@ def intraday_bars_for_day(
         bars = bar_cache.get(key)
         if bars is None:
             try:
-                rows = tool.fetch(symbol, "1", int(start.timestamp()), int(end.timestamp()), strict=True)
+                rows = tool.fetch_raw_trade_bars(symbol, int(start.timestamp()), int(end.timestamp()))
             except Exception:
-                logger.exception("Replay DNSE OHLCV history failed: %s %s", symbol, day)
+                logger.exception("Replay DNSE raw trade history failed: %s %s", symbol, day)
                 raise
             bars = []
             for row in rows:
@@ -136,9 +153,14 @@ def intraday_bars_for_day(
                         "symbol": symbol, "time": stamp, "open": row["open"], "high": row["high"],
                         "low": row["low"], "close": row["close"], "volume": row["volume"],
                     })
+            bars.sort(key=lambda bar: bar["time"])
+            previous_volumes = []
+            for bar in bars:
+                bar["ma20_volume"] = sum(previous_volumes[-20:]) / 20 if len(previous_volumes) >= 20 else 0.0
+                previous_volumes.append(float(bar["volume"] or 0))
             bar_cache[key] = bars
             if not bars:
-                logger.warning("Replay DNSE OHLCV history empty: %s %s", symbol, day)
+                logger.warning("Replay DNSE raw trade history empty: %s %s", symbol, day)
         events.extend(bars)
     return sorted(events, key=lambda bar: (bar["time"], bar["symbol"]))
 
@@ -178,12 +200,25 @@ def quote_events_for_day(
     return sorted(events)
 
 
+def closing_auction_data(day: date, symbol: str) -> tuple[float, int] | None:
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT close_unadj, volume_atc FROM market_data_daily WHERE ticker = %s AND date = %s",
+            (symbol, day),
+        )
+        row = cur.fetchone()
+    return (float(row[0] or 0), int(row[1] or 0)) if row else None
+
+
 def replay_book(snapshot: dict) -> dict:
-    local_time = snapshot["time"].astimezone(ZoneInfo("Asia/Ho_Chi_Minh"))
+    stamp = snapshot["time"]
+    vn_tz = ZoneInfo("Asia/Ho_Chi_Minh")
+    local_time = stamp.astimezone(vn_tz) if stamp.tzinfo else stamp.replace(tzinfo=vn_tz)
     clock = local_time.time()
     state = (
         "continuous_morning" if day_time(9, 15) <= clock < day_time(11, 30)
         else "continuous_afternoon" if day_time(13, 0) <= clock < day_time(14, 30)
+        else "closing_auction" if day_time(14, 30) <= clock < day_time(14, 45)
         else "closed"
     )
     return {
@@ -224,11 +259,22 @@ def fill_pending(
     quote_cache: dict[tuple[date, str], list[dict]] | None = None,
 ) -> list[dict]:
     remaining = []
+    market_tz = ZoneInfo("Asia/Ho_Chi_Minh")
+    expires_at = datetime.combine(day, day_time(14, 45), market_tz)
     for order in pending_orders:
         symbol, side = order["symbol"], order["side"]
         if symbols is not None and symbol not in symbols:
             remaining.append(order)
             continue
+        requested_at = order.get("not_before")
+        if requested_at is not None:
+            requested_at = (
+                requested_at.astimezone(market_tz)
+                if requested_at.tzinfo else requested_at.replace(tzinfo=market_tz)
+            )
+            if requested_at.date() != day:
+                continue
+            order["not_before"] = requested_at
         bar = bars.get(symbol)
         if not bar or bar["price"] <= 0:
             if order.get("entry_type") != "PILOT":
@@ -243,9 +289,6 @@ def fill_pending(
             quantity = min(quantity, round_to_lot(int(float(account["total_nav"]) * 0.05 / limit_price)))
         if quantity <= 0:
             continue
-        requested_at = order.get("not_before")
-        if requested_at is not None:
-            requested_at = requested_at.astimezone(ZoneInfo("Asia/Ho_Chi_Minh"))
         if requested_at and requested_at.date() == day:
             earliest = requested_at
             require_later_snapshot = True
@@ -265,13 +308,22 @@ def fill_pending(
             snapshots, earliest, key=lambda snapshot: snapshot["time"]
         )
         last_seen = None
+        expired = False
         for snapshot_index in range(first, len(snapshots)):
             snapshot = snapshots[snapshot_index]
             if until is not None and snapshot["time"] >= until:
                 break
+            snapshot_time = snapshot["time"]
+            snapshot_time = (
+                snapshot_time.astimezone(market_tz)
+                if snapshot_time.tzinfo else snapshot_time.replace(tzinfo=market_tz)
+            )
+            if snapshot_time >= expires_at:
+                expired = True
+                break
             last_seen = snapshot["time"]
             book = replay_book({**snapshot, "symbol": symbol})
-            if book["marketState"] == "closed":
+            if book["marketState"] in {"closed", "closing_auction"}:
                 continue
             fill_qty = round_to_lot(min(left, executable_shares(book, side, limit_price)))
             if fill_qty <= 0:
@@ -281,6 +333,7 @@ def fill_pending(
                 result = repository.record_replay_execution(
                     symbol, side, fill_qty, fill_price, user_id=account_id,
                     executed_at=snapshot["time"], mark_as_of=mark_as_of,
+                    decision_context=order.get("decision_context"),
                 )
             except ValueError as exc:
                 reason = str(exc)
@@ -298,6 +351,7 @@ def fill_pending(
                     result = repository.record_replay_execution(
                         symbol, side, fill_qty, fill_price, user_id=account_id,
                         executed_at=snapshot["time"], mark_as_of=mark_as_of,
+                        decision_context=order.get("decision_context"),
                     )
                 else:
                     logger.warning(f"Replay fill rejected {symbol} {side}: {exc}")
@@ -317,20 +371,131 @@ def fill_pending(
                     "cost": max(gross * 0.001, 10_000.0) + (gross * 0.001 if side == "SELL" else 0.0),
                     "source": "DNSE_HISTORICAL_ORDER_BOOK",
                     "reason": order.get("reason"),
+                    "decision_context": order.get("decision_context"),
                 })
             if left <= 0:
                 break
         if left > 0:
+            until_local = None
+            if until is not None:
+                until_local = until.astimezone(market_tz) if until.tzinfo else until.replace(tzinfo=market_tz)
+            if expired or (until_local is not None and until_local >= expires_at):
+                continue
             order["quantity"] = left
             if until is not None and last_seen is not None:
                 current = order.get("not_before")
-                current_local = current.astimezone(ZoneInfo("Asia/Ho_Chi_Minh")) if current else None
+                current_local = current.astimezone(market_tz) if current and current.tzinfo else current
                 if current_local is None or current_local.date() != day or last_seen > current:
-                    order["not_before"] = last_seen.astimezone(ZoneInfo("Asia/Ho_Chi_Minh"))
-            elif order.get("not_before") and order["not_before"].date() != day:
-                order.pop("not_before", None)
+                    order["not_before"] = (
+                        last_seen.astimezone(market_tz)
+                        if last_seen.tzinfo else last_seen.replace(tzinfo=market_tz)
+                    )
             remaining.append(order)
     return remaining
+
+
+def fill_closing_auction(
+    day: date,
+    pending_orders: list[dict],
+    repository: PortfolioRepository,
+    account_id: str,
+    mark_as_of: date,
+    fills_log: list[dict],
+    quote_cache: dict[tuple[date, str], list[dict]],
+) -> None:
+    """Match eligible replay orders at the historical, unadjusted ATC close."""
+    market_tz = ZoneInfo("Asia/Ho_Chi_Minh")
+    executed_at = datetime.combine(day, day_time(14, 45), market_tz)
+    for order in pending_orders:
+        symbol, side = order["symbol"], order["side"]
+        requested_at = order.get("not_before")
+        if requested_at is not None:
+            requested_at = requested_at.astimezone(market_tz) if requested_at.tzinfo else requested_at.replace(tzinfo=market_tz)
+            if requested_at >= executed_at:
+                logger.warning("Replay ATC order expired without fill: %s %s (SUBMITTED_AFTER_ATC)", symbol, side)
+                continue
+
+        auction = closing_auction_data(day, symbol)
+        if not auction or auction[0] <= 0 or auction[1] <= 0:
+            reason = "ATC_MARKET_DATA_UNAVAILABLE" if not auction or auction[0] <= 0 else "ATC_ZERO_VOLUME"
+            logger.warning("Replay ATC order expired without fill: %s %s (%s)", symbol, side, reason)
+            continue
+
+        close_price = price_to_vnd(auction[0])
+        limit_price = float(order.get("limit_price") or close_price)
+        if (side == "BUY" and close_price > limit_price) or (side == "SELL" and close_price < limit_price):
+            logger.warning("Replay ATC order expired without fill: %s %s (ATC_LIMIT_NOT_MARKETABLE)", symbol, side)
+            continue
+
+        auction_start = datetime.combine(day, day_time(14, 30), market_tz)
+        snapshots = quote_cache.get((day, symbol), [])
+        atc_snapshots = []
+        for snapshot in snapshots:
+            snapshot_time = snapshot["time"]
+            snapshot_time = snapshot_time.astimezone(market_tz) if snapshot_time.tzinfo else snapshot_time.replace(tzinfo=market_tz)
+            if auction_start <= snapshot_time < executed_at:
+                atc_snapshots.append((snapshot_time, snapshot))
+        last_atc = max(atc_snapshots, key=lambda item: item[0]) if atc_snapshots else None
+        if not last_atc or (executed_at - last_atc[0]).total_seconds() > 10:
+            logger.warning("Replay ATC order expired without fill: %s %s (ATC_BOOK_MISSING_OR_STALE)", symbol, side)
+            continue
+
+        book = replay_book({**last_atc[1], "symbol": symbol})
+        depth = executable_shares(book, side, limit_price)
+        # shortcut: volume_atc is only a total-volume cap; use side-specific matched queue data when DNSE provides it.
+        quantity = round_to_lot(min(int(order["quantity"]), depth, auction[1]))
+        if quantity <= 0:
+            logger.warning("Replay ATC order expired without fill: %s %s (ATC_NO_EXECUTABLE_LOT)", symbol, side)
+            continue
+
+        try:
+            result = repository.record_replay_execution(
+                symbol, side, quantity, close_price, user_id=account_id,
+                executed_at=executed_at, mark_as_of=mark_as_of,
+                decision_context=order.get("decision_context"),
+            )
+        except ValueError as exc:
+            if "Insufficient" not in str(exc) or side != "BUY":
+                logger.warning("Replay ATC fill rejected %s %s: %s", symbol, side, exc)
+                continue
+            account = repository.get_account_state(user_id=account_id, as_of=mark_as_of)
+            while quantity > 0:
+                gross = close_price * quantity
+                if gross + max(gross * 0.001, 10_000.0) <= float(account.get("cash_balance", 0)):
+                    break
+                quantity -= 100
+            if quantity <= 0:
+                logger.warning("Replay ATC order expired without fill: %s %s (INSUFFICIENT_CASH)", symbol, side)
+                continue
+            try:
+                result = repository.record_replay_execution(
+                    symbol, side, quantity, close_price, user_id=account_id,
+                    executed_at=executed_at, mark_as_of=mark_as_of,
+                    decision_context=order.get("decision_context"),
+                )
+            except Exception as retry_exc:
+                logger.warning("Replay ATC fill failed %s %s: %s", symbol, side, retry_exc)
+                continue
+        except Exception as exc:
+            logger.warning("Replay ATC fill failed %s %s: %s", symbol, side, exc)
+            continue
+
+        filled = int(result["shares"])
+        gross = float(result["executed_price"]) * filled
+        fills_log.append({
+            "day": day.isoformat(), "time": executed_at.isoformat(),
+            "symbol": symbol, "side": side, "quantity": filled,
+            "price": result["executed_price"],
+            "cost": max(gross * 0.001, 10_000.0) + (gross * 0.001 if side == "SELL" else 0.0),
+            "source": "DNSE_HISTORICAL_ATC_AUCTION",
+            "reason": order.get("reason"),
+            "decision_context": order.get("decision_context"),
+        })
+        if filled < int(order["quantity"]):
+            logger.warning(
+                "Replay ATC partial fill: %s %s filled=%s residual=%s",
+                symbol, side, filled, int(order["quantity"]) - filled,
+            )
 
 
 def get_portfolio_state(
@@ -367,6 +532,7 @@ def get_portfolio_state(
 def enqueue_order(
     pending: list[dict], symbol: str, side: str, quantity: int, entry_type: str = "STANDARD",
     limit_price: float | None = None, not_before: datetime | None = None, reason: str | None = None,
+    decision_context: dict | None = None,
 ) -> None:
     if quantity > 0 and not any(o["symbol"] == symbol and o["side"] == side for o in pending):
         order = {"symbol": symbol, "side": side, "quantity": quantity, "entry_type": entry_type}
@@ -376,11 +542,30 @@ def enqueue_order(
             order["not_before"] = not_before
         if reason:
             order["reason"] = reason
+        if decision_context is not None:
+            order["decision_context"] = decision_context
         pending.append(order)
 
 
 def price_to_vnd(value: float) -> float:
     return value * 1000.0 if 0 < value < 1000.0 else value
+
+
+def holding_days_since(opened_at: object, current_time: datetime) -> int:
+    if isinstance(opened_at, str):
+        try:
+            opened_at = datetime.fromisoformat(opened_at)
+        except ValueError:
+            return 0
+    if isinstance(opened_at, datetime):
+        if opened_at.tzinfo and current_time.tzinfo:
+            opened_at = opened_at.astimezone(current_time.tzinfo)
+        opened_date = opened_at.date()
+    elif isinstance(opened_at, date):
+        opened_date = opened_at
+    else:
+        return 0
+    return max(0, (current_time.date() - opened_date).days)
 
 
 async def monitor_intraday_bar(
@@ -394,6 +579,8 @@ async def monitor_intraday_bar(
     peak_prices: dict[str, float],
     active_symbols: set[str],
     quote_cache: dict[tuple[date, str], list[dict]],
+    market_repository: MarketDataRepository,
+    swing_low_cache: dict[tuple[str, date], float | None],
 ) -> None:
     symbol = str(bar["symbol"]).upper()
     if symbol not in active_symbols:
@@ -411,6 +598,12 @@ async def monitor_intraday_bar(
     if not position:
         return
 
+    swing_key = (symbol, mark_as_of)
+    if swing_key not in swing_low_cache:
+        history = market_repository.get_ohlcv(symbol, end_date=mark_as_of, limit=20)
+        lows = [price_to_vnd(float(item["low"])) for item in history if float(item.get("low") or 0) > 0]
+        swing_low_cache[swing_key] = min(lows) if lows else None
+
     peak_prices[symbol] = max(peak_prices.get(symbol, float(position["average_price"])), price_to_vnd(bar["high"]))
     result = await AgentRegistry.dispatch("position_monitoring", {
         "positions": [{
@@ -418,7 +611,19 @@ async def monitor_intraday_bar(
             "entry_price": float(position["average_price"]),
             "current_price": price,
             "peak_price": peak_prices[symbol],
+            "swing_low": swing_low_cache[swing_key],
+            "holding_days": holding_days_since(position.get("opened_at"), event_time),
         }],
+        "market_ticks": {
+            symbol: {
+                "price": price,
+                "current_candle": {
+                    key: price_to_vnd(float(bar[key])) if key != "volume" else float(bar[key] or 0)
+                    for key in ("open", "high", "low", "close", "volume")
+                },
+                "ma20_volume": bar["ma20_volume"],
+            }
+        },
         "nav": repository.get_account_state(user_id=account_id, as_of=mark_as_of).get("total_nav", 0),
         "current_time": event_time.isoformat(),
         "target_date": day.isoformat(),
@@ -441,6 +646,20 @@ async def monitor_intraday_bar(
             "limit_price": price * 0.985,
             "not_before": event_time,
             "reason": stop_order.get("reason"),
+            "decision_context": stop_order.get("decision_context") or {
+                "source_agent": "position_monitoring",
+                "stop_event_id": stop_order.get("stop_order_id"),
+                "account_id": account_id,
+                "rule_level": stop_order.get("rule_level"),
+                "reason": stop_order.get("reason"),
+                "suggested_action": stop_order.get("suggested_action"),
+                "entry_price": float(position["average_price"]),
+                "current_price": price,
+                "peak_price": peak_prices[symbol],
+                "current_pnl_pct": stop_order.get("current_pnl_pct"),
+                "current_pnl_nav_pct": stop_order.get("current_pnl_nav_pct"),
+                "holding_days": holding_days_since(position.get("opened_at"), event_time),
+            },
         }
         unfilled = fill_pending(day, {symbol: {"price": price, "source": "DNSE"}}, [order],
                                repository, account_id, mark_as_of, fills_log,
@@ -457,6 +676,8 @@ async def monitor_intraday_bar(
 async def run(args: argparse.Namespace) -> None:
     account_id = args.account_id or os.getenv("MULTI_AGENT_ACCOUNT_ID", "940b0c70-2010-42f3-b947-797e6419b794")
     repo = PortfolioRepository()
+    market_repository = MarketDataRepository(repo.storage)
+    swing_low_cache: dict[tuple[str, date], float | None] = {}
 
     end_date = date.fromisoformat(args.end)
     now_vn = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
@@ -472,16 +693,57 @@ async def run(args: argparse.Namespace) -> None:
 
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
-            SELECT count(*), count(DISTINCT (time AT TIME ZONE 'Asia/Ho_Chi_Minh')::date)
-            FROM ohlcv_intraday_1m
-            WHERE (time AT TIME ZONE 'Asia/Ho_Chi_Minh')::date BETWEEN %s AND %s
-              AND (time AT TIME ZONE 'Asia/Ho_Chi_Minh')::time = '09:45:00'
+            SELECT count(*), count(DISTINCT day),
+                   count(*) FILTER (
+                       WHERE data_source IS NULL
+                          OR data_source NOT IN ('DNSE_TRADES_RAW', 'LOCF_INTRADAY', 'FORWARD_FILL')
+                   )
+            FROM (
+                SELECT time AT TIME ZONE 'Asia/Ho_Chi_Minh' AS local_time,
+                       (time AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS day,
+                       data_source
+                FROM ohlcv_intraday_1m
+            ) inputs
+            WHERE day BETWEEN %s AND %s AND local_time::time = TIME '09:45'
         """, (days[0], days[-1]))
-        scan_rows, scan_days = cur.fetchone()
-    if not scan_rows or scan_days != len(days):
+        scan_rows, scan_days, invalid_rows = cur.fetchone()
+        cur.execute("""
+            SELECT count(*) FROM (
+                SELECT (time AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS day, symbol
+                FROM ohlcv_intraday_1m
+                WHERE (time AT TIME ZONE 'Asia/Ho_Chi_Minh')::date BETWEEN %s AND %s
+                  AND (time AT TIME ZONE 'Asia/Ho_Chi_Minh')::time = TIME '09:45'
+                GROUP BY 1, 2 HAVING count(*) <> 1
+            ) duplicates
+        """, (days[0], days[-1]))
+        duplicate_symbol_days = cur.fetchone()[0]
+        cur.execute("""
+            SELECT count(*) FROM (
+                SELECT d.date, s.symbol
+                FROM (SELECT DISTINCT date FROM market_data_daily_calculation WHERE date BETWEEN %s AND %s) d
+                CROSS JOIN (SELECT DISTINCT symbol FROM stocks WHERE exchange = 'HOSE') s
+                WHERE EXISTS (
+                    SELECT 1 FROM market_data_daily m
+                    WHERE m.ticker = s.symbol AND m.date < d.date
+                      AND m.close_unadj > 0
+                ) OR EXISTS (
+                    SELECT 1 FROM ohlcv_unadjusted o
+                    WHERE o.symbol = s.symbol AND o.time < d.date AND o.close > 0
+                )
+            ) expected
+            LEFT JOIN ohlcv_intraday_1m i
+              ON i.symbol = expected.symbol
+             AND i.time >= (expected.date + TIME '09:45') AT TIME ZONE 'Asia/Ho_Chi_Minh'
+             AND i.time < (expected.date + TIME '09:46') AT TIME ZONE 'Asia/Ho_Chi_Minh'
+            WHERE i.symbol IS NULL
+        """, (days[0], days[-1]))
+        missing_fills = cur.fetchone()[0]
+    if not scan_rows or scan_days != len(days) or invalid_rows or duplicate_symbol_days or missing_fills:
         raise RuntimeError(
-            f"Normalized 09:45 OHLCV scan inputs are incomplete: {scan_rows} rows/{scan_days} days; "
-            f"expected {len(days)} trading days"
+            f"Raw Intraday 09:45 inputs are incomplete or mixed: {scan_rows} rows/{scan_days} days, "
+            f"{invalid_rows} invalid rows, {duplicate_symbol_days} duplicate symbol-days, "
+            f"{missing_fills} missing symbols with a previous close; "
+            f"expected {len(days)} trading days with one raw candle per symbol"
         )
 
     if args.reset:
@@ -567,6 +829,7 @@ async def run(args: argparse.Namespace) -> None:
                 await monitor_intraday_bar(
                     day, payload, repo, account_id, mark_as_of, pending_orders,
                     fills_history, peak_prices, active_symbols, quote_cache,
+                    market_repository, swing_low_cache,
                 )
                 continue
             symbol = payload
@@ -622,6 +885,7 @@ async def run(args: argparse.Namespace) -> None:
                     pending_orders, symbol, "BUY", approved_shares,
                     order.get("entry_type", "STANDARD"), limit_price=ref_price,
                     not_before=signal_time, reason=order.get("rationale"),
+                    decision_context=order.get("decision_context"),
                 )
 
         tracked = active_symbols | {order["symbol"] for order in pending_orders}
@@ -633,11 +897,18 @@ async def run(args: argparse.Namespace) -> None:
         ] + [
             (timestamp, 1, "quote", symbol) for timestamp, symbol in quote_events if timestamp > signal_time
         ]
+        auction_close_time = datetime.combine(day, day_time(14, 45), ZoneInfo("Asia/Ho_Chi_Minh"))
+        afternoon_events.append((auction_close_time, -1, "auction", None))
         for timestamp, _priority, kind, payload in sorted(afternoon_events, key=event_key):
+            if kind == "auction":
+                fill_closing_auction(day, pending_orders, repo, account_id, mark_as_of, fills_history, quote_cache)
+                pending_orders.clear()
+                continue
             if kind == "bar":
                 await monitor_intraday_bar(
                     day, payload, repo, account_id, mark_as_of, pending_orders,
                     fills_history, peak_prices, active_symbols, quote_cache,
+                    market_repository, swing_low_cache,
                 )
                 continue
             symbol = payload
@@ -653,6 +924,7 @@ async def run(args: argparse.Namespace) -> None:
                 else:
                     active_symbols.discard(symbol)
 
+        pending_orders.clear()  # Orders raised after ATC expiry cannot carry into another session.
         closing_mark = repo.record_replay_mark(user_id=account_id, mark_as_of=day)
         closing_positions = repo.get_open_positions(
             user_id=account_id, as_of=day,

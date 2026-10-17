@@ -284,6 +284,7 @@ class TradeExecutionAgent(BaseAgent):
                     "issuing_agent": issuing_agent,
                     "order_intent": order_intent,
                     "failsafe_override": is_override,
+                    "execution_mode": event_data.get("execution_mode", "SHADOW_RUNNER"),
                     "adtv20": adtv20,
                     "confirming_signals_count": decision.get("confirming_signals_count", 3),
                     "beneish_passed": decision.get("beneish_passed", True),
@@ -391,6 +392,14 @@ class TradeExecutionAgent(BaseAgent):
 
         # 7. Shadow fills require recent executable displayed depth.
         from app.domain.rules.execution.shadow_fill import shadow_fill
+        decision_context = decision.get("decision_context") or {
+            "source_agent": issuing_agent,
+            "order_intent": order_intent,
+            "reason": decision.get("reason") or decision.get("rationale"),
+            "rule_level": decision.get("rule_level"),
+            "suggested_action": decision.get("suggested_action"),
+            "risk_sizing_trace": decision.get("sizing_trace"),
+        }
         try:
             orderbook = event_data.get("orderbook")
             if not isinstance(orderbook, dict):
@@ -436,6 +445,7 @@ class TradeExecutionAgent(BaseAgent):
                         shares=shares,
                         limit_price=max_price,
                         user_id=decision.get("user_id") or event_data.get("user_id"),
+                        decision_context=decision_context,
                     )
                     return {"data": {
                         "execution_decision": "WAIT",
@@ -484,6 +494,7 @@ class TradeExecutionAgent(BaseAgent):
             user_id=decision.get("user_id") or event_data.get("user_id"),
             pending_order_id=pending_order_id,
             status=status_str,
+            decision_context=decision_context,
         )
 
         # 9. PHÂN TẦNG THANH KHOẢN & GỬI FEEDBACK HỌC TĂNG CƯỜNG (AGENT-10)

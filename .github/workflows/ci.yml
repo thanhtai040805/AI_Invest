@@ -82,6 +82,10 @@ jobs:
           tests/unit/test_replay_ml_execution.py
           tests/unit/test_market_data_snapshots.py
           tests/unit/test_latest_quote_cache.py
+          tests/unit/test_eod_governance_execution_mode.py
+          tests/unit/test_portfolio_repository_sector_hydration.py
+          tests/unit/test_daily_pipeline_portfolio_refresh.py
+          tests/test_governance_institutional_vnext.py::test_shadow_mode_does_not_infer_broker_failure_but_live_mode_fails_closed
           -k "not TestDualEngineBeneishMScore"
 
   compose:

@@ -311,6 +311,7 @@ class PortfolioRiskAgent(BaseAgent):
             "severity": "NONE",
             "reason": "Chưa có dữ liệu nến hoặc không phát hiện dị thường.",
         }
+        sizing_trace: Optional[Dict[str, Any]] = None
 
         if proposed_order_raw:
             order_ticker = str(proposed_order_raw.get("ticker", "UNKNOWN")).upper().strip()
@@ -448,6 +449,36 @@ class PortfolioRiskAgent(BaseAgent):
             # =========================================================================
             if breadth_inputs_missing:
                 reasons_list.append(f"INSUFFICIENT_DATA: missing as-of market inputs: {', '.join(missing_breadth_inputs)}.")
+            breadth_scale = 0.50 if breadth_eval.action_recommended == "REDUCE_SIZE" else 1.0
+            tape_scale = 0.70 if tape_anomaly_map["severity"] == TapeAnomalySeverity.WARNING else 1.0
+            sizing_trace = {
+                "requested_shares": original_shares,
+                "scaling_factors": {
+                    "drawdown_recovery": {
+                        "factor": dd_eval.exposure_scale_factor,
+                        "tier": dd_eval.tier.value,
+                        "state": dd_eval.re_risking_state,
+                        "reason": dd_eval.action_description,
+                    },
+                    "capital_degradation": {
+                        "factor": cdc_eval.sizing_scale_factor,
+                        "tier": cdc_eval.tier.value,
+                    },
+                    "market_breadth": {
+                        "factor": breadth_scale,
+                        "action": breadth_eval.action_recommended,
+                        "tier": breadth_eval.health_tier.value,
+                    },
+                    "tape_anomaly": {
+                        "factor": tape_scale,
+                        "severity": tape_anomaly_map["severity"],
+                        "reason": tape_anomaly_map["reason"],
+                    },
+                },
+                "t25_max_safe_shares": t25_check.max_safe_shares,
+                "t25_reason": t25_check.reason,
+                "lot_size": 100,
+            }
             # Điều kiện BLOCK Tuyệt đối:
             is_blocked = (
                 (not hl_check.passed)
@@ -463,6 +494,11 @@ class PortfolioRiskAgent(BaseAgent):
             if is_blocked:
                 action = "BLOCK"
                 approved_shares = 0
+                sizing_trace.update({
+                    "applied": False,
+                    "approved_shares": 0,
+                    "block_reasons": list(reasons_list),
+                })
             else:
                 # Tính toán hệ số co giãn quy mô vị thế (Scaling Factor)
                 scale_factors = [
@@ -482,10 +518,19 @@ class PortfolioRiskAgent(BaseAgent):
 
                 # Làm tròn lô 100 cổ phiếu sàn HOSE
                 approved_shares = (calculated_shares // 100) * 100 if calculated_shares >= 100 else 0
+                sizing_trace.update({
+                    "applied": True,
+                    "combined_scale_factor": combined_scale,
+                    "shares_after_scaling": int(original_shares * combined_scale),
+                    "shares_after_t25_cap": calculated_shares,
+                    "approved_shares": approved_shares,
+                    "block_reasons": [],
+                })
 
                 if approved_shares <= 0:
                     action = "BLOCK"
                     reasons_list.append("Sau khi áp dụng hệ số co giãn rủi ro, số lượng cổ phiếu khả dụng < 100 cổ.")
+                    sizing_trace["block_reasons"] = list(reasons_list)
                 elif approved_shares < original_shares:
                     action = "REDUCE"
                     reduction_pct = round((1.0 - (approved_shares / original_shares)) * 100, 1)
@@ -554,6 +599,7 @@ class PortfolioRiskAgent(BaseAgent):
                 "exposure_reduction_pct": round((1.0 - (approved_shares / original_shares)) * 100, 1) if original_shares > 0 else 0.0,
                 "min_cash_target_pct": min_cash_target,
                 "rationale": final_rationale,
+                "sizing_trace": sizing_trace,
             },
             # Backward compatibility fields for legacy callers
             "drawdown_tier": dd_eval.tier.value,

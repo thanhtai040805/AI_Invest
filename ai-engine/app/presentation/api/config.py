@@ -31,13 +31,18 @@ async def get_config():
         from app.config.settings import get_settings
         
         settings = get_settings()
+        if settings.multi_agent_llm_provider == "deepinfra":
+            llm_provider = "DEEPINFRA_MIMO"
+        else:
+            llm_provider = "XKIRO_QWEN" if settings.xkiro_api_key else "EVOMAP_DEEPSEEK" if settings.evomap_api_key else "NONE"
         
         return {
             "dnse_enabled": settings.dnse_enabled,
             "dnse_configured": settings.dnse_configured,
-            "llm_provider": "XKIRO_QWEN" if settings.xkiro_api_key else "EVOMAP_DEEPSEEK" if settings.evomap_api_key else "NONE",
+            "llm_provider": llm_provider,
             "xkiro_configured": bool(settings.xkiro_api_key),
             "evomap_configured": bool(settings.evomap_api_key),
+            "deepinfra_configured": bool(settings.deepinfra_api_key),
         }
         
     except Exception as e:

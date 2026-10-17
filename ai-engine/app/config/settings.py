@@ -34,8 +34,11 @@ class Settings:
     portfolio_automation_enabled: bool
     multi_agent_account_id: str
 
-    # Multi-agent LLM routing: Xkiro primary, EvoMap fallback.
+    # Multi-agent LLM routing.
     xkiro_api_key: str
+    deepinfra_api_key: str
+    llm_base_url: str
+    multi_agent_llm_provider: str
     llm_routing_mode: str
     llm_fallback_hardcoded: bool
 
@@ -65,6 +68,9 @@ def get_settings() -> Settings:
 
         evomap_api_key=os.getenv("EVOMAP_API_KEY", ""),
         xkiro_api_key=os.getenv("XKIRO_API_KEY", ""),
+        deepinfra_api_key=os.getenv("DEEPINFRA_API_KEY", ""),
+        llm_base_url=os.getenv("LLM_BASE_URL") or "https://api.deepinfra.com/v1/openai",
+        multi_agent_llm_provider=os.getenv("MULTI_AGENT_LLM_PROVIDER", "existing").strip().lower(),
         sag_api_base=os.getenv("SAG_API_BASE", "http://localhost:8000/api/v2"),
         sag_service_token=os.getenv("SAG_SERVICE_TOKEN", ""),
         sag_analysis_hold=os.getenv("SAG_ANALYSIS_HOLD", "true").lower() in ("1", "true", "yes"),

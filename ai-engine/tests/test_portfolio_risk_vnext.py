@@ -278,6 +278,10 @@ def test_portfolio_risk_agent_full_gateway():
         assert data_reduce["decision"]["action"] == "REDUCE"
         assert data_reduce["decision"]["approved_shares"] < 2000
         assert data_reduce["decision"]["approved_shares"] == 1500  # -25% do Yellow Tier
+        sizing_trace = data_reduce["decision"]["sizing_trace"]
+        assert sizing_trace["scaling_factors"]["drawdown_recovery"]["factor"] == 0.75
+        assert sizing_trace["shares_after_scaling"] == 1500
+        assert sizing_trace["approved_shares"] == 1500
 
         # Case 3: Lệnh bị chặn hoàn toàn (BLOCK) do phát hiện VSA Churning (Phân phối ngầm)
         event_block_vsa = {

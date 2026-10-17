@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 from contextlib import contextmanager
 from datetime import datetime
@@ -44,11 +45,16 @@ def test_stop_alert_never_closes_a_paper_lot_without_a_fill():
     agent = object.__new__(PositionMonitoringAgent)
     agent.repository = SimpleNamespace(storage=SimpleNamespace(execute=lambda sql, params: statements.append((sql, params))))
     agent._persist_stop_loss_events([{
-        "ticker": "FPT", "triggered_price": 131000, "current_pnl_pct": 0.77,
-        "quantity": 100, "dispatch_status": "PENDING_SHADOW",
+        "stop_order_id": "stop-event-1", "ticker": "FPT", "triggered_price": 131000, "current_pnl_pct": 0.77,
+        "quantity": 100, "dispatch_status": "PENDING_SHADOW", "rule_level": "TRAILING_STOP",
+        "reason": "Peak giveback crossed the stop threshold.",
+        "decision_context": {"stop_event_id": "stop-event-1", "rule_level": "TRAILING_STOP", "reason": "Peak giveback crossed the stop threshold."},
     }])
     assert len(statements) == 1
     assert "INSERT INTO stop_loss_events" in statements[0][0]
+    assert "decision_context" in statements[0][0]
+    assert json.loads(statements[0][1][5])["stop_event_id"] == "stop-event-1"
+    assert json.loads(statements[0][1][5])["rule_level"] == "TRAILING_STOP"
     assert not any("paper_trades" in sql for sql, _ in statements)
 
 

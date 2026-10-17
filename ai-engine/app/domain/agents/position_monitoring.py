@@ -19,6 +19,7 @@ Chức năng:
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import datetime
@@ -53,7 +54,6 @@ class PositionMonitoringAgent(BaseAgent):
         self.repository = repository or PortfolioRepository()
         self._market_data_repo = market_data_repo
         self.auto_dispatch = auto_dispatch
-        self._peak_price_cache: Dict[str, float] = {}
 
     @property
     def market_data_repo(self):
@@ -99,8 +99,8 @@ class PositionMonitoringAgent(BaseAgent):
             return
         try:
             sql = """
-                INSERT INTO stop_loss_events (event_id, ticker, triggered_price, loss_pct_nav, bypass_order_id, triggered_at)
-                VALUES (%s, %s, %s, %s, %s, COALESCE(%s::timestamptz, CURRENT_TIMESTAMP))
+                INSERT INTO stop_loss_events (event_id, ticker, triggered_price, loss_pct_nav, bypass_order_id, decision_context, triggered_at)
+                VALUES (%s, %s, %s, %s, %s, %s::jsonb, COALESCE(%s::timestamptz, CURRENT_TIMESTAMP))
             """
             for order in stop_loss_orders:
                 event_id = order.get("stop_order_id") or str(uuid.uuid4())
@@ -108,8 +108,18 @@ class PositionMonitoringAgent(BaseAgent):
                 loss_nav = float(order.get("current_pnl_nav_pct", 0.0))
                 bypass_id = event_id if order.get("bypass_portfolio_agent") else None
                 triggered_price = float(order.get("triggered_price", 0.0))
+                decision_context = order.get("decision_context") or {
+                    key: order[key]
+                    for key in (
+                        "account_id", "rule_level", "reason", "suggested_action", "urgency",
+                        "entry_price", "triggered_price", "peak_price", "current_pnl_pct",
+                        "current_pnl_nav_pct", "available_shares", "locked_t25_shares",
+                    )
+                    if key in order
+                }
                 self.repository.storage.execute(
-                    sql, (event_id, ticker, triggered_price, loss_nav, bypass_id, triggered_at)
+                    sql, (event_id, ticker, triggered_price, loss_nav, bypass_id,
+                          json.dumps(decision_context, default=str), triggered_at)
                 )
 
             # A stop alert is not an execution. PortfolioRepository closes
@@ -163,6 +173,7 @@ class PositionMonitoringAgent(BaseAgent):
                     "holding_days": p.get("holding_days", 0),
                     "swing_low": p.get("swing_low") or (p.get("average_price", 0.0) * 0.95),
                     "peak_price": p.get("peak_price", 0.0),
+                    "user_id": p.get("user_id", getattr(self.repository, "account_id", None)),
                 }
                 for p in db_positions
             ]
@@ -191,6 +202,19 @@ class PositionMonitoringAgent(BaseAgent):
 
             swing_low = pos.get("swing_low") or pos.get("swing_low_price")
             holding_days = int(pos.get("holding_days") or pos.get("days_held", 0))
+            opened_at = pos.get("opened_at")
+            if holding_days <= 0 and opened_at:
+                try:
+                    opened_dt = (
+                        datetime.fromisoformat(str(opened_at).replace("Z", "+00:00"))
+                        if isinstance(opened_at, str) else opened_at
+                    )
+                    if isinstance(opened_dt, datetime):
+                        if opened_dt.tzinfo and eval_dt.tzinfo:
+                            opened_dt = opened_dt.astimezone(eval_dt.tzinfo)
+                        holding_days = max(0, (eval_dt.date() - opened_dt.date()).days)
+                except (TypeError, ValueError):
+                    logger.debug("Could not derive holding days from opened_at for %s", ticker)
             expected_timeline = int(pos.get("expected_timeline_days", 90))
             last_order_unfilled = bool(pos.get("last_order_unfilled", False))
 
@@ -246,16 +270,26 @@ class PositionMonitoringAgent(BaseAgent):
                 logger.warning("[PositionMonitoringAgent] Bỏ qua %s vì không có giá socket hiện tại.", ticker)
                 continue
 
-            # 2. CẬP NHẬT VÀ LƯU GIỮ GIÁ ĐỈNH (PEAK_PRICE) PHỤC VỤ TRAILING STOP
-            cached_peak = self._peak_price_cache.get(ticker, 0.0)
+            # 2. CẬP NHẬT ĐỈNH GIÁ BỀN VỮNG TRÊN VỊ THẾ ĐANG MỞ
             initial_pos_peak = float(pos.get("peak_price") or pos.get("highest_price", 0.0))
-            peak_price = max(
-                initial_pos_peak,
-                cached_peak,
-                current_price,
-                entry_price,
+            peak_price = max(initial_pos_peak, current_price, entry_price)
+            peak_user_id = (
+                pos.get("user_id")
+                or pos.get("account_id")
+                or event_data.get("replay_account_id")
+                or getattr(self.repository, "account_id", None)
             )
-            self._peak_price_cache[ticker] = peak_price
+            persist_peak = getattr(self.repository, "update_position_peak_price", None)
+            if peak_user_id and callable(persist_peak):
+                try:
+                    stored_peak = persist_peak(ticker, peak_price, user_id=str(peak_user_id))
+                    if stored_peak is not None:
+                        peak_price = max(peak_price, float(stored_peak))
+                except Exception as e_peak:
+                    logger.warning(
+                        "Could not persist peak price for %s/account %s: %s",
+                        ticker, peak_user_id, e_peak,
+                    )
 
             # 3. Kiểm tra Hệ thống phòng thủ đa tầng qua StopLossEngine
             market_data = {
@@ -316,9 +350,32 @@ class PositionMonitoringAgent(BaseAgent):
                         "rule_level": stop_order.rule_level,
                         "reason": stop_order.reason,
                         "suggested_action": stop_order.suggested_action,
+                        "account_id": str(peak_user_id) if peak_user_id is not None else None,
                         "triggered_price": current_price,
+                        "entry_price": entry_price,
+                        "peak_price": peak_price,
                         "current_pnl_pct": round(pnl_pct, 2),
                         "current_pnl_nav_pct": round(pnl_nav_pct, 2),
+                        "decision_context": {
+                            "source_agent": "position_monitoring",
+                            "stop_event_id": order_id,
+                            "account_id": str(peak_user_id) if peak_user_id is not None else None,
+                            "rule_level": stop_order.rule_level,
+                            "reason": stop_order.reason,
+                            "suggested_action": stop_order.suggested_action,
+                            "urgency": stop_order.urgency,
+                            "entry_price": entry_price,
+                            "current_price": current_price,
+                            "peak_price": peak_price,
+                            "current_pnl_pct": round(pnl_pct, 2),
+                            "current_pnl_nav_pct": round(pnl_nav_pct, 2),
+                            "available_shares": available_shares,
+                            "locked_t25_shares": locked_t25_shares,
+                            "holding_days": holding_days,
+                            "swing_low_price": swing_low,
+                            "current_candle": current_candle,
+                            "ma20_volume": ma20_vol,
+                        },
                         "bypass_portfolio_agent": True,
                         "target_execution": "EXECUTION_AGENT_DIRECT_ROUTE",
                         "failsafe_override": failsafe_active,
@@ -339,6 +396,10 @@ class PositionMonitoringAgent(BaseAgent):
                         if available_shares > 0:
                             sell_qty = self.stop_loss_engine.round_hose_lot(available_shares)
                             order_id = str(uuid.uuid4())
+                            exit_reason = (
+                                f"SLA 14:00 Vi phạm: Luận điểm đầu tư {ticker} bị Invalidation và quá 14:00 "
+                                "không có phản hồi từ Portfolio Agent. Buộc bán khẩn cấp trước phiên ATC."
+                            )
                             inval_order = {
                                 "stop_order_id": order_id,
                                 "ticker": ticker,
@@ -354,14 +415,36 @@ class PositionMonitoringAgent(BaseAgent):
                                 "locked_t25_shares": locked_t25_shares,
                                 "urgency": "EMERGENCY",
                                 "rule_level": "THESIS_INVALIDATION_AUTO_EXIT",
-                                "reason": (
-                                    f"SLA 14:00 Vi phạm: Luận điểm đầu tư {ticker} bị Invalidation và quá 14:00 "
-                                    "không có phản hồi từ Portfolio Agent. Buộc bán khẩn cấp trước phiên ATC."
-                                ),
+                                "reason": exit_reason,
                                 "suggested_action": "AUTO_EXIT_INVALIDATED_THESIS",
+                                "account_id": str(peak_user_id) if peak_user_id is not None else None,
+                                "entry_price": entry_price,
                                 "triggered_price": current_price,
+                                "peak_price": peak_price,
                                 "current_pnl_pct": round(pnl_pct, 2),
                                 "current_pnl_nav_pct": round(pnl_nav_pct, 2),
+                                "decision_context": {
+                                    "source_agent": "position_monitoring",
+                                    "stop_event_id": order_id,
+                                    "account_id": str(peak_user_id) if peak_user_id is not None else None,
+                                    "rule_level": "THESIS_INVALIDATION_AUTO_EXIT",
+                                    "reason": exit_reason,
+                                    "invalidation_event_type": inv.get("event_type", "CATALYST_FAILED"),
+                                    "invalidation_reason": inv.get("reason", "Luận điểm đầu tư bị phá vỡ"),
+                                    "suggested_action": "AUTO_EXIT_INVALIDATED_THESIS",
+                                    "urgency": "EMERGENCY",
+                                    "entry_price": entry_price,
+                                    "current_price": current_price,
+                                    "peak_price": peak_price,
+                                    "current_pnl_pct": round(pnl_pct, 2),
+                                    "current_pnl_nav_pct": round(pnl_nav_pct, 2),
+                                    "available_shares": available_shares,
+                                    "locked_t25_shares": locked_t25_shares,
+                                    "holding_days": holding_days,
+                                    "swing_low_price": swing_low,
+                                    "current_candle": current_candle,
+                                    "ma20_volume": ma20_vol,
+                                },
                                 "bypass_portfolio_agent": True,
                                 "target_execution": "EXECUTION_AGENT_DIRECT_ROUTE",
                                 "failsafe_override": failsafe_active,

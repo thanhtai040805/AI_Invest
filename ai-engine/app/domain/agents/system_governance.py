@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 from app.core.base_agent import BaseAgent
 from app.core.registry import AgentRegistry
 from app.eval.audit_trail import AuditTrailEngine
-from app.domain.rules.failsafe import FailsafeEngine, FailsafeStatus
+from app.domain.rules.failsafe import FailsafeStatus, failsafe_engine
 from app.domain.rules.hard_laws import ProposedOrder, PortfolioState
 from app.domain.rules.governance.compliance_engine import (
     GovernanceComplianceEngine,
@@ -54,12 +54,37 @@ class SystemGovernanceAgent(BaseAgent):
         self.compliance_engine = GovernanceComplianceEngine()
         self.audit_trail = AuditTrailEngine()
         self.change_engine = GovernanceChangeEngine()
-        self.failsafe_engine = FailsafeEngine(
-            heartbeat_interval=30.0,
-            latency_threshold_ms=1500.0,
-            missed_heartbeats_limit=3,
-        )
+        self.failsafe_engine = failsafe_engine
         self._init_and_sync_governance_rules_to_db()
+
+    def _check_broker_failsafe(self, event_data: Dict[str, Any]) -> tuple[bool, str, Optional[float]]:
+        execution_mode = str(event_data.get("execution_mode", "LIVE")).upper()
+        if execution_mode in {"SHADOW_RUNNER", "SHADOW", "SHADOW_PAPER", "PAPER_TRADING", "DISABLED"}:
+            active = self.failsafe_engine.status == FailsafeStatus.ACTIVE
+            return active, "FAILSAFE_ALREADY_ACTIVE" if active else "", None
+
+        heartbeat = event_data.get("broker_heartbeat")
+        if not isinstance(heartbeat, dict):
+            latency_ms = None
+            is_connected = False
+            missed_beats = self.failsafe_engine.missed_heartbeats_limit
+        else:
+            latency_ms = float(heartbeat.get("latency_ms", 0.0))
+            is_connected = bool(heartbeat.get("is_connected", False))
+            missed_beats = int(heartbeat.get("missed_beats", self.failsafe_engine.missed_heartbeats_limit))
+
+        if not is_connected or missed_beats >= self.failsafe_engine.missed_heartbeats_limit:
+            reason = f"BROKER_DISCONNECTED: Missed {missed_beats} heartbeats."
+            self.failsafe_engine.status = FailsafeStatus.ACTIVE
+        elif latency_ms is not None and latency_ms > self.failsafe_engine.latency_threshold_ms:
+            reason = f"HIGH_LATENCY_SPIKE: Broker latency reached {latency_ms:.0f}ms (> {self.failsafe_engine.latency_threshold_ms:.0f}ms limit)."
+            self.failsafe_engine.status = FailsafeStatus.ACTIVE
+        else:
+            reason = ""
+            self.failsafe_engine.status = FailsafeStatus.INACTIVE
+            self.failsafe_engine.record_heartbeat(latency_ms or 0.0)
+
+        return self.failsafe_engine.status == FailsafeStatus.ACTIVE, reason, latency_ms
 
     def _init_and_sync_governance_rules_to_db(self) -> None:
         """
@@ -172,20 +197,8 @@ class SystemGovernanceAgent(BaseAgent):
             stop_loss_price = float(stop_loss_price)
         sector = str(raw_order.get("sector") or raw_portfolio.get("positions", {}).get(ticker, {}).get("sector", "Unknown"))
 
-        # 1. Kiểm tra Failsafe Broker Connection
-        broker_hb = event_data.get("broker_heartbeat") or {"latency_ms": 120.0, "is_connected": True, "missed_beats": 0}
-        latency_ms = float(broker_hb.get("latency_ms", 120.0))
-        is_connected = bool(broker_hb.get("is_connected", True))
-        missed_beats = int(broker_hb.get("missed_beats", 0))
-
-        if not is_connected or missed_beats >= 3 or latency_ms > 1500.0:
-            self.failsafe_engine.status = FailsafeStatus.ACTIVE
-            failsafe_active = True
-            failsafe_reason = f"BROKER_DISCONNECT_OR_LATENCY_SPIKE ({latency_ms:.0f}ms, Missed={missed_beats})"
-        else:
-            self.failsafe_engine.status = FailsafeStatus.INACTIVE
-            failsafe_active = False
-            failsafe_reason = ""
+        # 1. Broker heartbeat is required for LIVE; shadow trading has no broker connection.
+        failsafe_active, failsafe_reason, _ = self._check_broker_failsafe(event_data)
 
         # Cho phép lệnh BÁN phòng vệ khẩn cấp từ position_monitoring hoặc có failsafe_override
         is_defensive_sell = side == "SELL" and (
@@ -243,7 +256,16 @@ class SystemGovernanceAgent(BaseAgent):
                     nav = float(acc_st.get("total_nav", 1_000_000_000.0))
                 if positions is None:
                     db_positions = p_repo.get_open_positions()
-                    positions = {p["ticker"]: p.get("shares", 0) for p in db_positions}
+                    positions = {
+                        p["ticker"]: {
+                            "quantity": p.get("shares", 0),
+                            "current_price": p.get("current_price", p.get("average_price", 0.0)),
+                            "market_value": p.get("market_value", 0.0),
+                            "sector": p.get("sector", "Unknown"),
+                            "locked_t25_shares": p.get("locked_t25_shares", 0),
+                        }
+                        for p in db_positions
+                    }
             except Exception as e:
                 logger.debug(f"[SystemGovernanceAgent] Auto-hydration portfolio state gặp lỗi: {e}")
                 if nav <= 0.0:
@@ -251,10 +273,24 @@ class SystemGovernanceAgent(BaseAgent):
                 if positions is None:
                     positions = {}
 
+        portfolio_positions = list(positions.values()) if isinstance(positions, dict) else positions
+        if not isinstance(portfolio_positions, list):
+            portfolio_positions = []
         if sector_exposure is None:
             sector_exposure = {}
+            for position in portfolio_positions:
+                sector = str(position.get("sector") or "").strip()
+                if sector:
+                    market_value = float(position.get("market_value", 0.0))
+                    if market_value <= 0.0:
+                        market_value = int(position.get("quantity", position.get("shares", 0))) * float(position.get("current_price", 0.0))
+                    sector_exposure[sector] = sector_exposure.get(sector, 0.0) + market_value
         if locked_t25 is None:
-            locked_t25 = 0.0
+            locked_t25 = sum(
+                int(position.get("locked_t25_shares", 0))
+                * float(position.get("current_price", position.get("average_price", 0.0)))
+                for position in portfolio_positions
+            )
 
         portfolio_state = PortfolioState(
             nav=nav,
@@ -430,26 +466,8 @@ class SystemGovernanceAgent(BaseAgent):
             return await self.evaluate_change_request_gate(event_data)
 
         # 3. Rẽ nhánh Audit Trail & Heartbeat Kiểm toán định kỳ (EOD)
-        broker_hb = event_data.get("broker_heartbeat") or {"latency_ms": 0.0, "is_connected": False, "missed_beats": 3}
         actions_to_audit = event_data.get("actions_to_audit", [])
-
-        latency_ms = float(broker_hb.get("latency_ms", 120.0))
-        is_connected = bool(broker_hb.get("is_connected", True))
-        missed_beats = int(broker_hb.get("missed_beats", 0))
-
-        failsafe_active = False
-        failsafe_reason = ""
-
-        if not is_connected or missed_beats >= 3:
-            failsafe_active = True
-            failsafe_reason = f"BROKER_DISCONNECTED: Missed {missed_beats} heartbeats."
-            self.failsafe_engine.status = FailsafeStatus.ACTIVE
-        elif latency_ms > 1500.0:
-            failsafe_active = True
-            failsafe_reason = f"HIGH_LATENCY_SPIKE: Broker latency reached {latency_ms:.0f}ms (> 1500ms limit)."
-            self.failsafe_engine.status = FailsafeStatus.ACTIVE
-        else:
-            self.failsafe_engine.status = FailsafeStatus.INACTIVE
+        failsafe_active, failsafe_reason, latency_ms = self._check_broker_failsafe(event_data)
 
         # Ghi nhận các hành động vào Sổ cái Bất biến SHA-256
         audited_records_count = 0

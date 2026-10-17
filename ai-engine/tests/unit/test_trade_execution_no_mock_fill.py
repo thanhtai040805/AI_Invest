@@ -56,6 +56,47 @@ def test_emergency_sell_without_live_depth_is_not_filled(monkeypatch):
     assert not repo.executed
 
 
+def test_shadow_pending_buy_persists_decision_context(monkeypatch):
+    async def approve_governance(cls, agent_name, event):
+        return {
+            "status": "SUCCESS",
+            "result": {"data": {"verdict": "APPROVE", "governance_token": "test"}},
+        }
+
+    monkeypatch.setattr(AgentRegistry, "dispatch", classmethod(approve_governance))
+
+    class Repository:
+        pending_order = None
+
+        def get_account_state(self):
+            return {"total_nav": 1_000_000_000}
+
+        def create_shadow_pending_order(self, **kwargs):
+            self.pending_order = kwargs
+            return "pending-order-1"
+
+    context = {"source_agent": "portfolio_allocation", "reason": "MOS passed"}
+    repo = Repository()
+    agent = TradeExecutionAgent(repository=repo)
+    agent.eae_engine.determine_market_phase = lambda _now: "CONTINUOUS"
+    failsafe_engine.reset()
+
+    result = asyncio.run(agent.process({
+        "order_instruction": {
+            "ticker": "PVT", "side": "BUY", "approved_shares": 100,
+            "price": 25_000, "max_price": 25_000, "decision_context": context,
+        },
+        "orderbook": {
+            "symbol": "PVT", "bids": [], "asks": [],
+            "marketState": "continuous_morning",
+            "lastUpdate": datetime.now(timezone.utc).isoformat(),
+        },
+    }))
+
+    assert result["data"]["status"] == "PENDING_SHADOW"
+    assert repo.pending_order["decision_context"] == context
+
+
 def test_missing_decision_price_does_not_query_rest_or_daily_fallback(monkeypatch):
     async def approve_governance(cls, agent_name, event):
         return {

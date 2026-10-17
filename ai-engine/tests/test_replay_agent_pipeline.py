@@ -1,14 +1,22 @@
-from datetime import date
+from datetime import date, datetime
 from unittest.mock import MagicMock
+from zoneinfo import ZoneInfo
+
+import experiments.replay_agent_pipeline as replay
 from experiments.replay_agent_pipeline import fill_pending, ReplayAudit
 
 
-def test_fill_pending_executes_order():
+def test_fill_pending_executes_order(monkeypatch):
     mock_repo = MagicMock()
     mock_repo.record_replay_execution.return_value = {
         "executed_price": 50000.0,
         "shares": 100,
     }
+    monkeypatch.setattr(replay, "quote_history", lambda *_: [{
+        "time": datetime(2026, 9, 23, 9, 15, 1, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh")),
+        "bid": [],
+        "offer": [{"price": 50.0, "qtty": 100}],
+    }])
     bars = {"FPT": {"price": 50000.0, "source": "DNSE_1M_OPEN"}}
     pending = [{"symbol": "FPT", "side": "BUY", "quantity": 100}]
     fills_log = []

@@ -153,7 +153,8 @@ class UniverseDiscoveryAgent(BaseAgent):
                     cur.execute(
                         """
                         SELECT symbol, trading_status, audit_opinion, market_cap,
-                               COALESCE(industry, sector, '') as industry
+                               COALESCE(industry, sector, '') as industry,
+                               COALESCE(NULLIF(BTRIM(sector), ''), NULLIF(BTRIM(industry), ''), 'Unknown') AS portfolio_sector
                         FROM stocks
                         WHERE symbol = ANY(%s)
                         """,
@@ -165,6 +166,7 @@ class UniverseDiscoveryAgent(BaseAgent):
                             "audit_opinion": str(r[2] or "UNQUALIFIED").upper().strip(),
                             "market_cap": float(r[3] or 0.0),
                             "industry": str(r[4] or "").strip(),
+                            "portfolio_sector": str(r[5] or "Unknown").strip(),
                         }
                         for r in cur.fetchall()
                     }
@@ -420,6 +422,7 @@ class UniverseDiscoveryAgent(BaseAgent):
 
             discovery_list.append({
                 "ticker": symbol,
+                "portfolio_sector": meta.get("portfolio_sector", "Unknown"),
                 "universe_group": u_group,
                 "trading_status": db_status if db_status else TradingStatus.NORMAL.value,
                 "beneish_status": b_status,
