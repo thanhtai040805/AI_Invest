@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -103,6 +104,8 @@ class UnifiedLLMClient:
     """OpenAI-compatible LLM client with environment-selected provider routing."""
 
     COOLDOWN_SECONDS: float = 60.0
+    TRANSIENT_RETRIES: int = 1
+    RETRY_DELAY_SECONDS: float = 1.0
 
     def __init__(
         self,
@@ -128,10 +131,10 @@ class UnifiedLLMClient:
         elif settings.multi_agent_llm_provider == "deepinfra":
             if settings.deepinfra_api_key:
                 self.providers.append({
-                    "name": "DEEPINFRA_MIMO",
+                    "name": "DEEPINFRA_GPT_OSS_120B",
                     "api_key": settings.deepinfra_api_key,
                     "base_url": settings.llm_base_url.rstrip("/"),
-                    "model": "XiaomiMiMo/MiMo-V2.6-Flash",
+                    "model": "openai/gpt-oss-120b",
                 })
         elif settings.multi_agent_llm_provider == "existing":
             if settings.xkiro_api_key:
@@ -189,7 +192,7 @@ class UnifiedLLMClient:
         else:
             messages = prompt_or_messages
 
-        timeout = httpx.Timeout(connect=5.0, read=40.0, write=5.0, pool=5.0)
+        timeout = httpx.Timeout(connect=10.0, read=75.0, write=10.0, pool=10.0)
         last_error = None
 
         candidates = await self._get_ordered_candidates()
@@ -222,11 +225,23 @@ class UnifiedLLMClient:
             resp = None
             try:
                 async with httpx.AsyncClient(timeout=timeout) as client:
-                    resp = await client.post(
-                        f"{p_url}/chat/completions",
-                        headers=headers,
-                        json=payload,
-                    )
+                    for attempt in range(self.TRANSIENT_RETRIES + 1):
+                        try:
+                            resp = await client.post(
+                                f"{p_url}/chat/completions",
+                                headers=headers,
+                                json=payload,
+                            )
+                            break
+                        except (httpx.TimeoutException, httpx.NetworkError):
+                            if attempt >= self.TRANSIENT_RETRIES:
+                                raise
+                            logger.warning(
+                                "[UnifiedLLMClient] Provider %s model=%s had a transient transport error on attempt %d/%d; retrying in %.1fs.",
+                                p_name, p_model, attempt + 1, self.TRANSIENT_RETRIES + 1,
+                                self.RETRY_DELAY_SECONDS,
+                            )
+                            await asyncio.sleep(self.RETRY_DELAY_SECONDS)
 
                     if resp.status_code == 200:
                         data = resp.json()
@@ -309,7 +324,7 @@ class UnifiedLLMClient:
         json_schema: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Request JSON or strict schema-constrained JSON once, then parse it."""
-        # DeepInfra's MiMo endpoint documents JSON mode, not strict JSON Schema.
+        # Keep DeepInfra on JSON mode; other providers may use strict JSON Schema.
         response_format = (
             {
                 "type": "json_schema",
@@ -319,7 +334,7 @@ class UnifiedLLMClient:
                     "schema": json_schema,
                 },
             }
-            if json_schema and self.provider != "DEEPINFRA_MIMO"
+            if json_schema and self.provider != "DEEPINFRA_GPT_OSS_120B"
             else {"type": "json_object"}
         )
         raw = await self.chat(
