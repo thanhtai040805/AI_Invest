@@ -131,10 +131,10 @@ class UnifiedLLMClient:
         elif settings.multi_agent_llm_provider == "deepinfra":
             if settings.deepinfra_api_key:
                 self.providers.append({
-                    "name": "DEEPINFRA_GPT_OSS_120B",
+                    "name": "DEEPINFRA",
                     "api_key": settings.deepinfra_api_key,
                     "base_url": settings.llm_base_url.rstrip("/"),
-                    "model": "openai/gpt-oss-120b",
+                    "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
                 })
         elif settings.multi_agent_llm_provider == "existing":
             if settings.xkiro_api_key:
@@ -334,7 +334,7 @@ class UnifiedLLMClient:
                     "schema": json_schema,
                 },
             }
-            if json_schema and self.provider != "DEEPINFRA_GPT_OSS_120B"
+            if json_schema and self.provider != "DEEPINFRA"
             else {"type": "json_object"}
         )
         raw = await self.chat(

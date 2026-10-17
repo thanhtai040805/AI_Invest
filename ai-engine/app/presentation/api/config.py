@@ -32,7 +32,7 @@ async def get_config():
         
         settings = get_settings()
         if settings.multi_agent_llm_provider == "deepinfra":
-            llm_provider = "DEEPINFRA_GPT_OSS_120B"
+            llm_provider = "DEEPINFRA"
         else:
             llm_provider = "XKIRO_QWEN" if settings.xkiro_api_key else "EVOMAP_DEEPSEEK" if settings.evomap_api_key else "NONE"
         

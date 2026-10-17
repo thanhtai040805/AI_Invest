@@ -50,7 +50,7 @@ def test_provider_cooldown_marks_provider_unavailable():
     asyncio.run(_run())
 
 
-def test_deepinfra_route_uses_only_gpt_oss_120b():
+def test_deepinfra_route_uses_only_deepseek_v4_flash_0731():
     mock_settings = MagicMock()
     mock_settings.multi_agent_llm_provider = "deepinfra"
     mock_settings.deepinfra_api_key = "deepinfra_test"
@@ -62,10 +62,10 @@ def test_deepinfra_route_uses_only_gpt_oss_120b():
         client = UnifiedLLMClient()
 
     assert client.providers == [{
-        "name": "DEEPINFRA_GPT_OSS_120B",
+        "name": "DEEPINFRA",
         "api_key": "deepinfra_test",
         "base_url": "https://api.deepinfra.com/v1/openai",
-        "model": "openai/gpt-oss-120b",
+        "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
     }]
 
 
