@@ -7,7 +7,9 @@ import {
   Button, Panel, PanelHead, Pill, PercentChange, fmt,
 } from "@/components/ui"
 import { KLineChart } from "@/components/KLineChart"
-import { stockApi, workspaceApi } from "@/lib/api"
+import { marketApi, stockApi, workspaceApi } from "@/lib/api"
+import { StockVsaStrip, type SuperStockItem, type SuperStocksPayload } from "@/components/SuperStocksTable"
+import { formatSectorName } from "@/lib/sector-weights"
 import { useResource } from "@/lib/api/use-resource"
 import { useRealtimeStock } from "@/lib/use-realtime"
 import { Link } from "@/lib/router"
@@ -77,8 +79,10 @@ function Stock({ symbol }: { symbol: string }) {
   const resource = useResource(() => Promise.all([
     stockApi.quote(symbol).catch(() => null),
     stockApi.profile(symbol).catch(() => null),
+    marketApi.superStocks(symbol).catch(() => null),
   ]), [symbol])
-  const [quoteRes, profileRes] = (resource.data || []) as [ApiStockQuote | null, ApiStockProfile | null]
+  const [quoteRes, profileRes, vsaRes] = (resource.data || []) as [ApiStockQuote | null, ApiStockProfile | null, SuperStocksPayload | null]
+  const vsaItem: SuperStockItem | null = Array.isArray(vsaRes?.items) && vsaRes!.items!.length > 0 ? vsaRes!.items![0] : null
 
   const initialStock = useMemo(() => {
     if (!quoteRes && !profileRes) return defaultStock
@@ -138,7 +142,7 @@ function Stock({ symbol }: { symbol: string }) {
   return (
     <Page
       title={s.name && s.name !== s.symbol ? `${s.symbol} · ${s.name}` : s.symbol}
-      sub={s.sector || "Chưa có dữ liệu ngành"}
+      sub={s.sector ? formatSectorName(s.sector) : "Chưa có dữ liệu ngành"}
       actions={<>
         <Button variant="secondary" onClick={() => void addToWatchlist()} disabled={watchlistPending}>{watchlistPending ? "Đang lưu…" : "Thêm vào theo dõi"}</Button>
         <Link to="/trade"><Button variant="primary">Đặt lệnh</Button></Link>
@@ -176,6 +180,8 @@ function Stock({ symbol }: { symbol: string }) {
           </div>
         </div>
       </Panel>
+
+      <StockVsaStrip item={vsaItem} />
 
       <div className="space-y-4">
         <Panel>

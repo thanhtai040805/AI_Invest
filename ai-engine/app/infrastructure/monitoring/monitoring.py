@@ -179,9 +179,17 @@ def check_database_health() -> Dict[str, Any]:
 def check_dnse_hub_health() -> Dict[str, Any]:
     """Check DNSE WebSocket stream hub status and connection."""
     try:
+        from app.config.settings import get_settings
         from app.infrastructure.external_api.dnse.stream_hub import get_stream_hub
         hub = get_stream_hub()
         status = hub.status() if hasattr(hub, "status") else {}
+        if not get_settings().dnse_enabled:
+            return {
+                "source": "dnse_hub",
+                "connected": False,
+                "status": status,
+                "healthy": True,
+            }
         is_connected = status.get("connected", False)
 
         if not is_connected:

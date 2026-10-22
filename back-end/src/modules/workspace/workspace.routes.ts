@@ -4,6 +4,7 @@ import prisma from '../../config/database';
 import { authMiddleware, optionalAuth, AuthRequest } from '../../middleware/auth';
 import { getSnapshot } from '../../services/portfolio.service';
 import { accountLedger, ExecutionReceipt } from '../../services/portfolioAccounting';
+import { cached } from '../../utils/cache';
 
 const router = Router();
 const db = prisma as any;
@@ -22,14 +23,16 @@ const send = async (res: Response, next: NextFunction, work: () => Promise<unkno
   try { res.json(await work()); } catch (error) { next(error); }
 };
 
-router.get('/overview', (_req, res, next) => send(res, next, async () => {
-  const [regime, factors, news] = await Promise.all([
-    db.market_regime.findFirst({ orderBy: { date: 'desc' } }),
-    db.factorScore.findMany({ orderBy: { score_date: 'desc' }, take: 20 }),
-    db.knowledge_documents.findMany({ orderBy: { published_date: 'desc' }, take: 8 }).catch(() => []),
-  ]);
-  return { regime, factors, risks: [], news };
-}));
+router.get('/overview', (_req, res, next) => send(res, next, () =>
+  cached('workspace:overview', 60, async () => {
+    const [regime, factors, news] = await Promise.all([
+      db.market_regime.findFirst({ orderBy: { date: 'desc' } }),
+      db.factorScore.findMany({ orderBy: { score_date: 'desc' }, take: 20 }),
+      db.knowledge_documents.findMany({ orderBy: { published_date: 'desc' }, take: 8 }).catch(() => []),
+    ]);
+    return { regime, factors, risks: [], news };
+  }),
+));
 
 router.get('/agent/portfolio', optionalAuth, (_req, res, next) =>
   send(res, next, () => getSnapshot(multiAgentAccountId)),

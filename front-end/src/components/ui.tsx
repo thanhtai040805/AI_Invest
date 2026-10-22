@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from "react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
 
 // ── Number formatting ──────────────────────────────────────────
 export const metricTone: Record<string, string> = { gain: "text-gain", loss: "text-loss", warning: "text-warning", teal: "text-teal", mineral: "text-mineral", neutral: "text-ink" }
@@ -309,6 +309,138 @@ export function Tabs({ tabs, active, onChange }: { tabs: string[]; active: strin
           {active === t && <span className="absolute left-2 right-2 -bottom-px h-[2px] bg-ink rounded-full" />}
         </button>
       ))}
+    </div>
+  )
+}
+
+// ── Custom Select Dropdown ─────────────────────────────────────
+export interface SelectOption {
+  value: string
+  label: string
+  group?: string
+  meta?: string
+}
+
+export function CustomSelect({
+  value,
+  onChange,
+  options,
+  placeholder = "Chọn…",
+  ariaLabel,
+  className = "",
+  align = "left",
+}: {
+  value: string
+  onChange: (value: string) => void
+  options: SelectOption[]
+  placeholder?: string
+  ariaLabel?: string
+  className?: string
+  align?: "left" | "right"
+}) {
+  const [open, setOpen] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handlePointerDown = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false)
+    }
+    document.addEventListener("mousedown", handlePointerDown)
+    document.addEventListener("keydown", handleKeyDown)
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown)
+      document.removeEventListener("keydown", handleKeyDown)
+    }
+  }, [open])
+
+  const selected = options.find((o) => o.value === value)
+  const groups = Array.from(new Set(options.map((o) => o.group || "")))
+
+  return (
+    <div ref={containerRef} className={`relative ${className}`}>
+      <button
+        type="button"
+        aria-label={ariaLabel}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        className={`flex h-8 w-full items-center justify-between gap-2 rounded-[6px] border px-2.5 text-[12px] font-medium transition-colors ${
+          open
+            ? "border-ink bg-surface text-ink"
+            : "border-line bg-surface text-ink hover:border-line-strong"
+        }`}
+      >
+        <span className="truncate">{selected ? selected.label : placeholder}</span>
+        <svg
+          viewBox="0 0 12 12"
+          className={`h-3 w-3 shrink-0 text-muted transition-transform ${open ? "rotate-180 text-ink" : ""}`}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          aria-hidden
+        >
+          <path d="M2.5 4.5L6 8l3.5-3.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+
+      {open && (
+        <div
+          role="listbox"
+          aria-label={ariaLabel}
+          className={`absolute top-full mt-1 z-30 min-w-full w-max max-w-[260px] max-h-[280px] overflow-y-auto rounded-[8px] border border-line-strong bg-surface py-1 shadow-[0_10px_28px_rgba(24,32,29,0.12)] ${
+            align === "right" ? "right-0" : "left-0"
+          }`}
+        >
+          {groups.map((grp) => {
+            const grpOptions = options.filter((o) => (o.group || "") === grp)
+            return (
+              <div key={grp || "__default"}>
+                {grp && (
+                  <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted">
+                    {grp}
+                  </div>
+                )}
+                {grpOptions.map((opt) => {
+                  const isActive = opt.value === value
+                  return (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      role="option"
+                      aria-selected={isActive}
+                      onClick={() => {
+                        onChange(opt.value)
+                        setOpen(false)
+                      }}
+                      className={`flex w-full items-center justify-between gap-3 px-3 py-1.5 text-left text-[12px] transition-colors ${
+                        isActive
+                          ? "bg-soft font-semibold text-ink"
+                          : "text-secondary hover:bg-soft/60 hover:text-ink"
+                      }`}
+                    >
+                      <span className="truncate">{opt.label}</span>
+                      <span className="flex items-center gap-1.5 shrink-0">
+                        {opt.meta && <span className="font-mono text-[10.5px] text-muted">{opt.meta}</span>}
+                        {isActive && (
+                          <span className="font-mono text-[11px] text-teal" aria-hidden>
+                            ✓
+                          </span>
+                        )}
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }

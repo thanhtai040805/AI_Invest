@@ -9,7 +9,7 @@ class AIEngineService {
   constructor() {
     this.client = axios.create({
       baseURL: config.aiEngineUrl,
-      timeout: 2_500,
+      timeout: 800,
       headers: {
         'Content-Type': 'application/json',
         'X-Admin-Token': config.aiEngineAdminToken,
@@ -17,9 +17,9 @@ class AIEngineService {
     });
 
     this.circuitBreaker = new CircuitBreaker({
-      failureThreshold: 5,
-      recoveryTimeoutMs: 30_000,
-      halfOpenMaxAttempts: 3,
+      failureThreshold: 2,
+      recoveryTimeoutMs: 60_000,
+      halfOpenMaxAttempts: 1,
     });
   }
 

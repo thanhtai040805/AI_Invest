@@ -20,17 +20,25 @@ function parseRedisConnection(): { host: string; port: number; username?: string
 
 const REDIS_CONNECTION = parseRedisConnection();
 
-const marketQueue = new Queue('market-sync', { connection: REDIS_CONNECTION });
-const stockQueue = new Queue('stock-sync', { connection: REDIS_CONNECTION });
-const ohlcvQueue = new Queue('ohlcv-backfill', { connection: REDIS_CONNECTION });
+let marketQueue: Queue | null = null;
+let stockQueue: Queue | null = null;
+let ohlcvQueue: Queue | null = null;
 
 let marketWorker: Worker | null = null;
 let stockWorker: Worker | null = null;
 let ohlcvWorker: Worker | null = null;
+let schedulerStarted = false;
 
 const MAX_REALTIME_SYMBOLS = 30;
 
-export function initScheduler(): void {
+function startBullWorkers(): void {
+  if (schedulerStarted || !redisService.isConnected()) return;
+  schedulerStarted = true;
+
+  marketQueue = new Queue('market-sync', { connection: REDIS_CONNECTION });
+  stockQueue = new Queue('stock-sync', { connection: REDIS_CONNECTION });
+  ohlcvQueue = new Queue('ohlcv-backfill', { connection: REDIS_CONNECTION });
+
   marketWorker = new Worker(
     'market-sync',
     async (job) => {
@@ -114,11 +122,23 @@ export function initScheduler(): void {
     console.error(`[Scheduler] market-sync job ${job?.id} failed:`, err.message);
   });
 
-  scheduleRecurringJobs();
+  void scheduleRecurringJobs();
   console.log('[Scheduler] Workers initialized');
 }
 
+export function initScheduler(): void {
+  if (redisService.isConnected()) {
+    startBullWorkers();
+  } else {
+    console.log('[Scheduler] Redis offline — BullMQ workers deferred until Redis connects');
+    redisService.onConnected(async () => {
+      startBullWorkers();
+    });
+  }
+}
+
 async function scheduleRecurringJobs(): Promise<void> {
+  if (!marketQueue || !stockQueue) return;
   for (const queue of [marketQueue, stockQueue]) {
     const existing = await queue.getRepeatableJobs();
     for (const job of existing) {
@@ -126,32 +146,9 @@ async function scheduleRecurringJobs(): Promise<void> {
     }
   }
 
-  // When DNSE WebSocket relay is active, skip HTTP polling (avoids rate limits)
+  // Skip background HTTP polling in both DNSE relay mode and local static DB/Redis view mode
   if (!config.dnse.enabled) {
-    await marketQueue.add('sync-indices', { type: 'indices' }, {
-      repeat: { every: 3000 },
-      removeOnComplete: 10,
-      removeOnFail: 5,
-    });
-
-    await marketQueue.add('sync-breadth', { type: 'breadth' }, {
-      repeat: { every: 10000 },
-      removeOnComplete: 10,
-      removeOnFail: 5,
-    });
-
-    await marketQueue.add('sync-snapshot', { type: 'snapshot' }, {
-      repeat: { every: 5000 },
-      removeOnComplete: 10,
-      removeOnFail: 5,
-    });
-
-    await marketQueue.add('stock-ticks', { type: 'stock-ticks' }, {
-      repeat: { every: 1000 },
-      removeOnComplete: 5,
-      removeOnFail: 5,
-    });
-    console.log('[Scheduler] Legacy poll jobs scheduled (DNSE disabled)');
+    console.log('[Scheduler] Realtime market poll skipped (DNSE_ENABLED=false — static DB/Redis view mode)');
   } else {
     console.log('[Scheduler] Market poll skipped — DNSE WebSocket relay active');
   }
@@ -176,6 +173,10 @@ export async function queueOhlcvBackfill(
   symbol: string,
   options?: { interval?: string; start?: string; end?: string },
 ): Promise<string> {
+  if (!ohlcvQueue) {
+    const count = await backfillOhlcv(symbol.toUpperCase(), options?.interval ?? '1D', options?.start, options?.end);
+    return `inline-${symbol.toUpperCase()}-${count}`;
+  }
   const job = await ohlcvQueue.add('backfill', {
     symbol: symbol.toUpperCase(),
     interval: options?.interval ?? '1D',
@@ -189,4 +190,7 @@ export function shutdownScheduler(): void {
   marketWorker?.close();
   stockWorker?.close();
   ohlcvWorker?.close();
+  void marketQueue?.close();
+  void stockQueue?.close();
+  void ohlcvQueue?.close();
 }

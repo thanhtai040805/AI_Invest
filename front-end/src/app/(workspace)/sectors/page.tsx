@@ -6,20 +6,15 @@ import { Panel, PercentChange, MarketLineChart } from "@/components/ui"
 import { marketApi } from "@/lib/api"
 import { useResource } from "@/lib/api/use-resource"
 import { useRealtimeMarket } from "@/lib/use-realtime"
-import { sectorWeights } from "@/lib/sector-weights"
+import { sectorWeights, formatSectorName } from "@/lib/sector-weights"
+import { SectorStrengthChart, type SectorStrengthPayload } from "@/components/SectorStrengthChart"
 
 interface ApiSector { name?: string; sector?: string; foreign_flow?: number | null; count?: number; liveCount?: number; weight?: number; market_cap?: number; marketCap?: number; marketCapCount?: number; market_cap_count?: number; change?: number; change_pct?: number; sparkline?: number[]; totalVolume?: number }
 interface ApiHeatmap { sectors?: ApiSector[] }
 
-const sectorLabels: Record<string, string> = {
-  "Basic Materials": "Nguyên vật liệu", Industrials: "Công nghiệp", "Consumer Cyclical": "Hàng tiêu dùng không thiết yếu",
-  "Consumer Defensive": "Hàng tiêu dùng thiết yếu", "Financial Services": "Dịch vụ tài chính", "Real Estate": "Bất động sản",
-  Technology: "Công nghệ", "Communication Services": "Dịch vụ truyền thông", Energy: "Năng lượng",
-  Utilities: "Tiện ích", Healthcare: "Y tế",
-}
-
 export default function Sectors() {
   const resource = useResource(() => marketApi.heatmap().catch(() => null), [])
+  const strengthResource = useResource(() => marketApi.sectorStrength().catch(() => null), [])
   const { heatmap: liveHeatmap, heatmapLive } = useRealtimeMarket()
 
   const sectorList = useMemo(() => {
@@ -43,7 +38,7 @@ export default function Sectors() {
       const change = rawChange == null ? NaN : Number(rawChange)
       return {
         name: sectorName || "General",
-        vn: sectorName || "Ngành",
+        vn: formatSectorName(sectorName || "Ngành"),
         weight: weights[index],
         weightByCount,
         changePct: Number.isFinite(change) ? Number(change.toFixed(2)) : null,
@@ -60,11 +55,18 @@ export default function Sectors() {
 
   return (
     <Page
-      title="Luân chuyển dòng tiền ngành"
-      sub={`Xu hướng ngành tính từ giá đóng cửa 60 phiên, chuẩn hóa điểm gốc 100; khối ngoại theo dữ liệu gần nhất trong DB.${heatmapLive ? " · Biến động phiên đang nhận tick DNSE" : ""}`}
+      title="Sức mạnh & Luân chuyển dòng tiền ngành"
+      sub={`So sánh sức mạnh tương đối 18 nhóm ngành HOSE (1T / 3T / 6T / 1N), cổ phiếu dẫn dắt từng ngành và dòng tiền khối ngoại.${heatmapLive ? " · Biến động phiên đang nhận tick DNSE" : ""}`}
     >
+      <div className="mb-5">
+        <SectorStrengthChart
+          data={strengthResource.data as SectorStrengthPayload | null}
+          loading={strengthResource.loading}
+        />
+      </div>
+
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-line bg-surface px-4 py-3 text-xs text-secondary">
-        <span>Biến động phiên dùng màu và dấu mũi tên; tỷ trọng theo vốn hóa khi đủ dữ liệu, nếu thiếu dùng số mã toàn bộ HOSE.</span>
+        <span>Chi tiết từng nhóm ngành: biến động phiên, tỷ trọng vốn hóa HOSE, dòng tiền khối ngoại và đường xu hướng 60 phiên.</span>
         <span className="flex items-center gap-2"><span className="text-gain">▲ Tăng</span><span className="text-loss">▼ Giảm</span><span className="text-muted">· số 0 cân bằng</span></span>
         {!hasHistory && <span className="w-full text-muted">Nguồn heatmap hiện chỉ trả biến động phiên; chưa có chuỗi lịch sử ngành.</span>}
       </div>
@@ -74,10 +76,10 @@ export default function Sectors() {
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-[15px] font-semibold text-ink">
-                  {sectorLabels[s.name] || s.name}
+                  {formatSectorName(s.name)}
                 </div>
                 <div className="text-[12px] text-muted">
-                  {s.vn} · {s.weight.toFixed(1)}% {s.weightByCount ? "theo số mã" : "vốn hóa"}{s.liveCount != null && s.count != null ? ` · ${s.liveCount}/${s.count} mã có tick` : ""}
+                  {s.name} · {s.weight.toFixed(1)}% {s.weightByCount ? "theo số mã" : "vốn hóa"}{s.liveCount != null && s.count != null ? ` · ${s.liveCount}/${s.count} mã có tick` : ""}
                 </div>
               </div>
               <div className="text-right">
@@ -94,7 +96,7 @@ export default function Sectors() {
                 height={88}
                 series={[
                   {
-                    label: sectorLabels[s.name] || s.name,
+                    label: formatSectorName(s.name),
                     data: s.sparkline,
                     color:
                       s.changePct === null || s.changePct >= 0

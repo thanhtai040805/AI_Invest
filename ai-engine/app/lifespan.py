@@ -36,6 +36,9 @@ async def lifespan(app: FastAPI):
         if get_settings().dnse_enabled:
             get_stream_hub().start()
             logger.info("[Lifespan] DNSE realtime stream hub đã được khởi động.")
+        else:
+            get_stream_hub()._load_market_universe()
+            logger.info("[Lifespan] DNSE stream tắt (DNSE_ENABLED=false) — chỉ nạp dữ liệu nền từ PostgreSQL/Redis.")
     except Exception as e_stream:
         logger.warning(f"[Lifespan] Không thể khởi động DNSE stream hub: {e_stream}")
 

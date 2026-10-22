@@ -27,7 +27,7 @@ import { autoBackfillIfNeeded } from './services/backfill.service';
 
 // Route modules
 import authRoutes from './modules/auth/auth.routes';
-import marketRoutes from './modules/market/market.routes';
+import marketRoutes, { warmMarketCaches } from './modules/market/market.routes';
 import stockRoutes from './modules/stock/stock.routes';
 import stockAdminRoutes from './modules/stock/stock.admin.routes';
 import screenerRoutes from './modules/screener/screener.routes';
@@ -62,7 +62,7 @@ app.use(helmet({
   hsts: isProduction ? { maxAge: 31536000, includeSubDomains: true, preload: true } : false,
 }));
 
-const corsOrigins = isProduction
+const corsOrigins = config.corsOrigin.includes(',')
   ? config.corsOrigin.split(',').map((o) => o.trim())
   : config.corsOrigin;
 
@@ -159,6 +159,7 @@ async function bootstrap(): Promise<void> {
   ║   Security: ${isProduction ? 'production' : 'development'}                    ║
   ╚══════════════════════════════════════════════╝
     `);
+    void warmMarketCaches().catch((err) => console.warn('[Bootstrap] Market cache warm failed:', err));
   });
 }
 

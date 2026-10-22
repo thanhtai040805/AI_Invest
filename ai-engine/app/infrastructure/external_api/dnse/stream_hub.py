@@ -100,6 +100,8 @@ class DnseStreamHub:
 
     @property
     def mode(self) -> str:
+        if not self._settings.dnse_enabled:
+            return "disabled"
         if self._settings.dnse_api_key and self._settings.dnse_api_secret:
             with self._lock:
                 return "live" if self._connected else "connecting"
@@ -491,10 +493,12 @@ class DnseStreamHub:
     def start(self) -> None:
         if self._running:
             return
+        self._load_market_universe()
+        if not self._settings.dnse_enabled:
+            return
         self._running = True
 
         if self._settings.dnse_api_key and self._settings.dnse_api_secret:
-            self._load_market_universe()
             self._restore_subscriptions()
             self._thread = threading.Thread(
                 target=self._run_ws_loop, daemon=True, name="dnse-ws"

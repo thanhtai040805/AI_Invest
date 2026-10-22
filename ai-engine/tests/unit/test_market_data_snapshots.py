@@ -71,3 +71,21 @@ def test_security_bands_survive_restart_and_update_an_existing_snapshot(monkeypa
     assert {key for key, _, _ in writes} == {"stock:FPT:sec_def", "stock:FPT:quote"}
     assert all(ttl == 0 for _, _, ttl in writes)
     assert hub._quotes["FPT"]["ref"] == 62800
+
+
+def test_stream_hub_loads_universe_without_starting_ws_when_dnse_disabled(monkeypatch):
+    monkeypatch.setattr(
+        stream_hub,
+        "get_settings",
+        lambda: SimpleNamespace(dnse_enabled=False, dnse_api_key="key", dnse_api_secret="secret"),
+    )
+    hub = stream_hub.DnseStreamHub()
+    loaded = []
+    monkeypatch.setattr(hub, "_load_market_universe", lambda: loaded.append(True))
+
+    hub.start()
+
+    assert loaded == [True]
+    assert hub.mode == "disabled"
+    assert not hub.is_running
+    assert hub._thread is None

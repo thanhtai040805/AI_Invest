@@ -37,45 +37,53 @@ router.get('/:symbol/news', (req, res, next) => {
 });
 
 async function dbStockQuote(symbol: string) {
-  const rows = await prisma.$queryRaw<Array<any>>`
-    SELECT d.date, d.close_adj, d.volume_total,
-           c.close AS raw_close, prev.close AS prior_close,
-           s.ref_price, s.ceiling, s.floor
-    FROM market_data_daily d
-    LEFT JOIN market_data_daily_calculation c ON c.ticker=d.ticker AND c.date=d.date
-    LEFT JOIN stocks s ON s.symbol=d.ticker
-    LEFT JOIN LATERAL (
-      SELECT close FROM market_data_daily_calculation
-      WHERE ticker=d.ticker AND date < d.date ORDER BY date DESC LIMIT 1
-    ) prev ON TRUE
-    WHERE d.ticker=${symbol}
-    ORDER BY d.date DESC LIMIT 1
-  `;
-  const row = rows[0];
-  if (!row) return null;
-  const toVnd = (value: unknown) => {
-    const n = Number(value ?? 0);
-    return n > 0 && n < 500 ? n * 1000 : n;
-  };
-  const rawClose = Number(row.raw_close);
-  const priorClose = Number(row.prior_close);
-  const price = toVnd(Number.isFinite(rawClose) && rawClose > 0 ? row.raw_close : row.close_adj);
-  const ref = Number.isFinite(priorClose) && priorClose > 0 ? toVnd(row.prior_close) : toVnd(row.ref_price);
-  const ceiling = toVnd(row.ceiling);
-  const floor = toVnd(row.floor);
-  const changePct = ref > 0 && price > 0 ? ((price - ref) / ref) * 100 : null;
-  return {
-    symbol,
-    price,
-    ref,
-    ceiling,
-    floor,
-    volume: Number(row.volume_total ?? 0),
-    change_pct: changePct,
-    asOf: row.date,
-    source: 'postgres',
-    stale: true,
-  };
+  return cached(`stock:${symbol}:db-quote`, 15, async () => {
+    const rows = await prisma.$queryRaw<Array<any>>`
+      SELECT d.date,
+             d.close_adj,
+             d.volume_total,
+             COALESCE(NULLIF(d.close_unadj, 0), NULLIF(d.close_adj, 0)) AS raw_close,
+             prev.close AS prior_close,
+             s.ref_price,
+             s.ceiling,
+             s.floor
+      FROM market_data_daily d
+      LEFT JOIN stocks s ON s.symbol = d.ticker
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(NULLIF(close_unadj, 0), NULLIF(close_adj, 0)) AS close
+        FROM market_data_daily
+        WHERE ticker = d.ticker AND date < d.date
+        ORDER BY date DESC LIMIT 1
+      ) prev ON TRUE
+      WHERE d.ticker = ${symbol}
+      ORDER BY d.date DESC LIMIT 1
+    `;
+    const row = rows[0];
+    if (!row) return null;
+    const toVnd = (value: unknown) => {
+      const n = Number(value ?? 0);
+      return n > 0 && n < 500 ? n * 1000 : n;
+    };
+    const rawClose = Number(row.raw_close);
+    const priorClose = Number(row.prior_close);
+    const price = toVnd(Number.isFinite(rawClose) && rawClose > 0 ? row.raw_close : row.close_adj);
+    const ref = Number.isFinite(priorClose) && priorClose > 0 ? toVnd(row.prior_close) : toVnd(row.ref_price);
+    const ceiling = toVnd(row.ceiling);
+    const floor = toVnd(row.floor);
+    const changePct = ref > 0 && price > 0 ? ((price - ref) / ref) * 100 : null;
+    return {
+      symbol,
+      price,
+      ref,
+      ceiling,
+      floor,
+      volume: Number(row.volume_total ?? 0),
+      change_pct: changePct,
+      asOf: row.date,
+      source: 'postgres',
+      stale: true,
+    };
+  });
 }
 
 async function dbStockProfile(symbol: string) {

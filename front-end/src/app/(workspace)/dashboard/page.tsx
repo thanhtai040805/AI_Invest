@@ -13,62 +13,14 @@ import {
   PanelHead,
   PercentChange,
   Pill,
-  Sparkline,
 } from "@/components/ui";
 import { KLineChart } from "@/components/KLineChart";
 import type { ApiMarketStock } from "@/types";
-import { sectorWeights } from "@/lib/sector-weights";
+import { sectorWeights, formatSectorName } from "@/lib/sector-weights";
+import { SuperStocksTable, type SuperStocksPayload } from "@/components/SuperStocksTable";
 
 type DashboardSector = Sector & { sparkline?: number[]; foreignKnown?: boolean };
 interface ApiSectorRow { name?: string; sector?: string; nameVi?: string; weight?: number; marketWeight?: number; market_cap?: number; marketCap?: number; marketCapCount?: number; market_cap_count?: number; count?: number; changePct?: number; change_pct?: number; change?: number; foreign?: number; foreignFlow?: number; foreign_flow?: number; sparkline?: number[] }
-
-function MarketMap({ sectors }: { sectors: DashboardSector[] }) {
-  return (
-    <div className="grid grid-cols-2 sm:grid-cols-4 auto-rows-[118px] gap-1.5">
-      {sectors.map((sector) => {
-        const weight = sector.weight;
-        const positive = sector.changePct === null ? null : sector.changePct >= 0;
-        const strength = sector.changePct === null ? 0 : Math.min(Math.abs(sector.changePct) / 4, 1);
-        const ground = positive === null ? "var(--color-surface)" : positive
-          ? `color-mix(in srgb, var(--color-gain) ${10 + strength * 30}%, var(--color-surface))`
-          : `color-mix(in srgb, var(--color-loss) ${10 + strength * 30}%, var(--color-surface))`;
-        const data = Array.isArray(sector.sparkline) && sector.sparkline.length > 1 ? sector.sparkline : null;
-        return (
-          <div
-            key={sector.name}
-            className={`${weight >= 18 ? "sm:col-span-2" : ""}`}
-            style={{ background: ground }}
-          >
-            <Link
-              to="/sectors"
-              className="relative block h-full overflow-hidden border border-line rounded-[8px] p-3 transition-colors hover:border-ink/35"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <div className="text-[13px] font-semibold text-ink leading-tight">
-                    {sector.name}
-                  </div>
-                  <div className="mt-0.5 text-[10px] text-secondary">
-                    {`${weight.toFixed(1)}% ${sector.weightByCount ? "theo số mã" : "vốn hóa"}`}
-                  </div>
-                </div>
-                {sector.changePct !== null ? <PercentChange value={sector.changePct} arrow={false} className="text-[12px] shrink-0" /> : <span className="text-[12px] text-muted">—</span>}
-              </div>
-              <div className="absolute inset-x-3 bottom-3 flex items-end justify-between gap-2">
-                {data ? <Sparkline data={data} up={data[data.length - 1] >= data[0]} width={72} height={25} /> : <span className="text-[10px] text-muted">—</span>}
-                <span
-                  className={`text-[10px] font-mono ${sector.foreign == null ? "text-muted" : sector.foreign >= 0 ? "text-gain" : "text-loss"}`}
-                >
-                  {sector.foreign === null ? "—" : (sector.foreign >= 0 ? "+" : "") + sector.foreign.toFixed(1) + "B NN"}
-                </span>
-              </div>
-            </Link>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
 
 function formatBreadth(advancers: number, decliners: number, available?: number, total?: number) {
   if (available === 0) return total ? `Chưa có dữ liệu biến động · 0/${total} mã` : "—";
@@ -83,10 +35,14 @@ function DashboardView({
   indices,
   pulse,
   isLive,
+  superStocks,
+  extraLoading,
 }: {
   sectors: Sector[];
   indices: { vnindex: number; vnindexChange: number | null };
   isLive: boolean;
+  superStocks?: SuperStocksPayload | null;
+  extraLoading?: boolean;
   pulse?: {
     state: string;
     liquidity: string;
@@ -109,7 +65,7 @@ function DashboardView({
       ["Nhóm dẫn dắt", pulse?.leadership ?? ""],
       [],
       ["Ngành", "Mã", "Tỷ trọng (%)", "Biến động (%)", "Khối ngoại"],
-      ...sectors.map((sector) => [sector.name, sector.count, sector.weight, sector.changePct, sector.foreign] as (string | number | null)[]),
+      ...sectors.map((sector) => [formatSectorName(sector.name), sector.count, sector.weight, sector.changePct, sector.foreign] as (string | number | null)[]),
     ];
     const csv = rows.map((row) => row.map((value) => {
       const text = String(value ?? "");
@@ -126,10 +82,13 @@ function DashboardView({
   return (
     <Page
       title="Tổng quan thị trường"
-      sub="Thị trường chứng khoán Việt Nam · Phiên giao dịch HOSE · Chỉ số trực tiếp"
+      sub="Thị trường chứng khoán Việt Nam · Phiên giao dịch HOSE · Danh mục Siêu phẩm VSA & Dòng tiền"
       actions={
         <>
           <Button variant="secondary" onClick={exportReport}>Xuất báo cáo CSV</Button>
+          <Link to="/sectors">
+            <Button variant="secondary">Sức mạnh ngành</Button>
+          </Link>
           <Link to="/discovery">
             <Button variant="primary">Khám phá Alpha</Button>
           </Link>
@@ -194,19 +153,8 @@ function DashboardView({
         </Panel>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 mt-4">
-        <Panel>
-          <PanelHead
-            title="Bản đồ nhiệt ngành"
-            sub="Màu sắc = biến động ngày · Diện tích = vốn hóa khi có dữ liệu, nếu thiếu dùng số mã · Đường kẻ = lịch sử ngành khi có dữ liệu"
-            action={
-              <Link to="/markets">
-                <Button variant="ghost">Mở bảng giá</Button>
-              </Link>
-            }
-          />
-          <MarketMap sectors={sectors} />
-        </Panel>
+      <div className="mt-4">
+        <SuperStocksTable data={superStocks} loading={extraLoading} showVolumeSurge />
       </div>
     </Page>
   );
@@ -214,6 +162,10 @@ function DashboardView({
 
 export default function Dashboard() {
   const { heatmap: liveHeatmap, indices: liveIndices, isLive, breadth: liveBreadth, liquidity: liveLiquidity, snapshot: liveSnapshot } = useRealtimeMarket();
+  const extraResource = useResource(async () => {
+    const superStocks = await marketApi.superStocks().catch(() => null);
+    return { superStocks: superStocks as SuperStocksPayload | null };
+  }, []);
   const resource = useResource(async () => {
     const [overview, indexPayload, heatmap, snap] = await Promise.all([
       workspaceApi.overview().catch(() => null),
@@ -256,7 +208,7 @@ export default function Dashboard() {
         return change !== null && change > 0;
       })
       .sort((a, b) => Number(b.changePct ?? b.change_pct ?? b.change) - Number(a.changePct ?? a.change_pct ?? a.change))
-      .slice(0, 3).map((row) => row.sector || row.name).filter(Boolean).join(" · ");
+      .slice(0, 3).map((row) => formatSectorName(String(row.sector || row.name || ""))).filter(Boolean).join(" · ");
 
     const regimeLabel = overview?.regime?.regime_label || overview?.regime?.dominant_regime;
     const confidence = overview?.regime?.confidence;
@@ -327,5 +279,5 @@ export default function Dashboard() {
     vnindexChange: liveIndices?.vnIndexPct ?? seedIndices?.vnindexChange ?? null,
   };
   const sectors = realtimeSectors ?? resource.data?.sectors ?? [];
-  return <DataState loading={resource.loading && !sectors.length} error={sectors.length ? null : resource.error} empty={!sectors.length} retry={() => void resource.reload()}><DashboardView sectors={sectors} indices={indices} pulse={pulse} isLive={isLive} /></DataState>;
+  return <DataState loading={resource.loading && !sectors.length} error={sectors.length ? null : resource.error} empty={!sectors.length} retry={() => void resource.reload()}><DashboardView sectors={sectors} indices={indices} pulse={pulse} isLive={isLive} superStocks={extraResource.data?.superStocks} extraLoading={extraResource.loading} /></DataState>;
 }

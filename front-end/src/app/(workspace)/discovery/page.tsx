@@ -1,10 +1,11 @@
 "use client"
 
-import { useState, type FormEvent } from "react"
+import { useEffect, useState, type FormEvent } from "react"
 import { Page } from "@/components/Shell"
 import { Link } from "@/lib/router"
-import { Button, EmptyState, Panel, PanelHead, PercentChange, fmt } from "@/components/ui"
-import { screenerApi } from "@/lib/api"
+import { Button, CustomSelect, EmptyState, Panel, PanelHead, PercentChange, Tabs, fmt, type SelectOption } from "@/components/ui"
+import { marketApi, screenerApi } from "@/lib/api"
+import { SuperStocksTable, type SuperStocksPayload } from "@/components/SuperStocksTable"
 import { useResource } from "@/lib/api/use-resource"
 import type { ApiMarketStock } from "@/types"
 
@@ -136,8 +137,29 @@ function hasCriteria(filters: Record<string, unknown>): boolean {
   return Object.keys(filters).some((key) => key !== "sort" && key !== "sortDir")
 }
 
+const DISCOVERY_TABS = [
+  "Danh mục Siêu phẩm (VSA & Dòng tiền)",
+  "Bộ lọc Đa tiêu chí (P/E, ROE, RSI)",
+]
+
 export default function Discovery() {
+  const [activeTab, setActiveTab] = useState<string>(DISCOVERY_TABS[0])
+  const [initialSector, setInitialSector] = useState<string>("")
   const [draft, setDraft] = useState<FilterDraft>(EMPTY_DRAFT)
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search)
+      const sec = params.get("sector")
+      if (sec) setInitialSector(sec)
+      if (params.get("tab") === "screener") setActiveTab(DISCOVERY_TABS[1])
+    }
+  }, [])
+
+  const superStocksResource = useResource<SuperStocksPayload | null>(
+    async () => (await marketApi.superStocks().catch(() => null)) as SuperStocksPayload | null,
+    [],
+  )
   const [results, setResults] = useState<ScreenerResults | null>(null)
   const [activeFilters, setActiveFilters] = useState<Record<string, unknown>>({})
   const [loading, setLoading] = useState(false)
@@ -254,8 +276,19 @@ export default function Discovery() {
   return (
     <Page
       title="Khám phá Alpha"
-      sub="Sàng lọc theo chỉ số tài chính và kỹ thuật có dữ liệu từ API."
+      sub="Danh mục Siêu phẩm VSA (Rũ nến · Test cung · Dòng tiền · Tiền áp đảo) & Bộ sàng lọc đa tiêu chí HOSE"
     >
+      <div className="mb-4">
+        <Tabs tabs={DISCOVERY_TABS} active={activeTab} onChange={setActiveTab} />
+      </div>
+
+      {activeTab === DISCOVERY_TABS[0] ? (
+        <SuperStocksTable
+          data={superStocksResource.data}
+          loading={superStocksResource.loading}
+          initialSector={initialSector}
+        />
+      ) : (
       <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-4 items-start">
         <div className="space-y-4">
           <Panel>
@@ -314,31 +347,35 @@ export default function Discovery() {
                 />
               </label>
 
-              <label className="block">
+              <div className="block">
                 <span className="text-secondary">Sắp xếp theo</span>
-                <select
+                <CustomSelect
                   value={draft.sort}
-                  onChange={(event) => setDraft((current) => ({ ...current, sort: event.target.value }))}
-                  className="mt-1 h-9 w-full rounded-[6px] border border-line bg-surface px-2.5 text-ink outline-none focus:border-mineral"
-                >
-                  <option value="changePercent">Biến động (%)</option>
-                  <option value="roe">ROE (%)</option>
-                  <option value="pe">P/E</option>
-                  <option value="pb">P/B</option>
-                  <option value="volume">Khối lượng</option>
-                </select>
-              </label>
-              <label className="block">
+                  onChange={(val) => setDraft((current) => ({ ...current, sort: val }))}
+                  options={[
+                    { value: "changePercent", label: "Biến động (%)" },
+                    { value: "roe", label: "ROE (%)" },
+                    { value: "pe", label: "P/E" },
+                    { value: "pb", label: "P/B" },
+                    { value: "volume", label: "Khối lượng" },
+                  ]}
+                  ariaLabel="Sắp xếp theo"
+                  className="mt-1 w-full"
+                />
+              </div>
+              <div className="block">
                 <span className="text-secondary">Thứ tự</span>
-                <select
+                <CustomSelect
                   value={draft.sortDir}
-                  onChange={(event) => setDraft((current) => ({ ...current, sortDir: event.target.value as "asc" | "desc" }))}
-                  className="mt-1 h-9 w-full rounded-[6px] border border-line bg-surface px-2.5 text-ink outline-none focus:border-mineral"
-                >
-                  <option value="desc">Giảm dần</option>
-                  <option value="asc">Tăng dần</option>
-                </select>
-              </label>
+                  onChange={(val) => setDraft((current) => ({ ...current, sortDir: val as "asc" | "desc" }))}
+                  options={[
+                    { value: "desc", label: "Giảm dần" },
+                    { value: "asc", label: "Tăng dần" },
+                  ]}
+                  ariaLabel="Thứ tự sắp xếp"
+                  className="mt-1 w-full"
+                />
+              </div>
               <Button type="submit" variant="primary" className="w-full" disabled={loading}>
                 {loading ? "Đang sàng lọc…" : "Áp dụng bộ lọc"}
               </Button>
@@ -350,33 +387,27 @@ export default function Discovery() {
 
           <Panel>
             <PanelHead title="Bộ lọc đã lưu" />
-            <label className="block">
-              <span className="sr-only">Chọn bộ lọc mẫu hoặc đã lưu</span>
-              <select
-                defaultValue=""
-                onChange={(event) => {
-                  if (event.target.value) loadPreset(event.target.value)
-                  event.target.value = ""
-                }}
-                className="h-9 w-full rounded-[6px] border border-line bg-surface px-2.5 text-[12px] text-ink outline-none focus:border-mineral"
-              >
-                <option value="">Chọn bộ lọc…</option>
-                {Boolean(builtinPresets.data?.length) && (
-                  <optgroup label="Bộ lọc mẫu">
-                    {builtinPresets.data?.map((preset) => (
-                      <option key={preset.id} value={presetValue("builtin", preset.id)}>{preset.name}</option>
-                    ))}
-                  </optgroup>
-                )}
-                {Boolean(savedPresets.data?.length) && (
-                  <optgroup label="Bộ lọc của tôi">
-                    {savedPresets.data?.map((preset) => (
-                      <option key={preset.id} value={presetValue("saved", preset.id)}>{preset.name}</option>
-                    ))}
-                  </optgroup>
-                )}
-              </select>
-            </label>
+            <CustomSelect
+              value=""
+              placeholder="Chọn bộ lọc…"
+              ariaLabel="Chọn bộ lọc mẫu hoặc đã lưu"
+              onChange={(val) => {
+                if (val) loadPreset(val)
+              }}
+              options={[
+                ...(builtinPresets.data?.map((preset): SelectOption => ({
+                  value: presetValue("builtin", preset.id),
+                  label: preset.name,
+                  group: "Bộ lọc mẫu",
+                })) ?? []),
+                ...(savedPresets.data?.map((preset): SelectOption => ({
+                  value: presetValue("saved", preset.id),
+                  label: preset.name,
+                  group: "Bộ lọc của tôi",
+                })) ?? []),
+              ]}
+              className="w-full"
+            />
             <div className="mt-3 space-y-2">
               <label className="block">
                 <span className="text-secondary text-[12px]">Tên bộ lọc</span>
@@ -469,6 +500,7 @@ export default function Discovery() {
           )}
         </Panel>
       </div>
+      )}
     </Page>
   )
 }
