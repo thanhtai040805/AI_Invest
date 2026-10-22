@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { sectorWeights } = require('../src/lib/sector-weights.ts');
+const { sectorWeights, formatSectorName } = require('../src/lib/sector-weights.ts');
 
 test('partial capital data uses stock counts for every sector, with a total of 100%', () => {
   const sectors = [
@@ -25,4 +25,12 @@ test('complete capital data uses the same percentages for REST and realtime payl
   assert.deepEqual(sectorWeights([{ market_cap: 0, weight: 60, count: 3, marketCapCount: 3 }, { market_cap: 0, weight: 40, count: 2, marketCapCount: 2 }]), sectorWeights(rest));
   assert.deepEqual(sectorWeights([{ weight: NaN, count: 1 }, { weight: Infinity, count: 3 }]).weights, [25, 75]);
   assert.deepEqual(sectorWeights([]).weights, []);
+});
+
+test('formatSectorName maps ICB sector codes to Vietnamese sector labels', () => {
+  assert.equal(formatSectorName('BANKS'), 'Ngân hàng');
+  assert.equal(formatSectorName('FINANCIAL_SERVICES'), 'Chứng khoán');
+  assert.equal(formatSectorName('REAL_ESTATE'), 'Bất động sản');
+  assert.equal(formatSectorName('CONSTRUCTION_MATERIALS'), 'Vật liệu xây dựng');
+  assert.equal(formatSectorName('Unknown Sector'), 'Unknown Sector');
 });

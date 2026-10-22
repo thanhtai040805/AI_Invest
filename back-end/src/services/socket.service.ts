@@ -7,43 +7,58 @@ import prisma from '../config/database';
 import { redisService } from './redis.service';
 import { bestOrderBookLevel } from '../modules/market/market.utils';
 import { hasMarketPrice, marketQuoteSnapshot, mergeMarketQuote } from './marketQuote.service';
+import { cached } from '../utils/cache';
 
 const MAX_SUBSCRIPTIONS_PER_SOCKET = 400;
 const STREAM_CHANGE_BATCH_MS = 50;
 const HOSE_INDEXES = new Set(['VNINDEX', 'VN30', 'VN100']);
 
 async function latestDbQuote(symbol: string) {
-  const rows = await prisma.$queryRaw<Array<Record<string, any>>>`
-    SELECT d.date, d.close_adj, d.volume_total,
-           c.close AS raw_close, prev.close AS prior_close,
-           s.ref_price, s.ceiling, s.floor
-    FROM market_data_daily d
-    LEFT JOIN market_data_daily_calculation c ON c.ticker=d.ticker AND c.date=d.date
-    LEFT JOIN stocks s ON s.symbol=d.ticker
-    LEFT JOIN LATERAL (
-      SELECT close FROM market_data_daily_calculation
-      WHERE ticker=d.ticker AND date < d.date ORDER BY date DESC LIMIT 1
-    ) prev ON TRUE
-    WHERE d.ticker=${symbol}
-    ORDER BY d.date DESC LIMIT 1
-  `;
-  return rows[0] ?? null;
+  return cached(`socket:db-quote:${symbol}`, 15, async () => {
+    const rows = await prisma.$queryRaw<Array<Record<string, any>>>`
+      SELECT d.date,
+             d.close_adj,
+             d.volume_total,
+             COALESCE(NULLIF(d.close_unadj, 0), NULLIF(d.close_adj, 0)) AS raw_close,
+             prev.close AS prior_close,
+             s.ref_price,
+             s.ceiling,
+             s.floor
+      FROM market_data_daily d
+      LEFT JOIN stocks s ON s.symbol = d.ticker
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(NULLIF(close_unadj, 0), NULLIF(close_adj, 0)) AS close
+        FROM market_data_daily
+        WHERE ticker = d.ticker AND date < d.date
+        ORDER BY date DESC LIMIT 1
+      ) prev ON TRUE
+      WHERE d.ticker = ${symbol}
+      ORDER BY d.date DESC LIMIT 1
+    `;
+    return rows[0] ?? null;
+  });
 }
 
 async function latestDbIndices() {
-  return prisma.$queryRaw<Array<Record<string, unknown>>>`
-    SELECT c.ticker AS symbol, c.date, c.close AS value,
-           CASE WHEN prev.close IS NOT NULL AND prev.close <> 0
-             THEN ((c.close - prev.close) / prev.close) * 100 ELSE NULL END AS change_pct
-    FROM market_data_daily_calculation c
-    JOIN market_data_daily d USING (ticker, date)
-    LEFT JOIN LATERAL (
-      SELECT close FROM market_data_daily_calculation
-      WHERE ticker=c.ticker AND date < c.date ORDER BY date DESC LIMIT 1
-    ) prev ON TRUE
-    WHERE c.ticker IN ('VNINDEX', 'VN-INDEX', 'VN30', 'VN100')
-      AND c.date = (SELECT MAX(date) FROM market_data_daily WHERE ticker IN ('VNINDEX', 'VN-INDEX', 'VN30', 'VN100'))
-  `;
+  return cached('socket:db-indices', 10, () =>
+    prisma.$queryRaw<Array<Record<string, unknown>>>`
+      SELECT d.ticker AS symbol,
+             d.date,
+             COALESCE(NULLIF(d.close_unadj, 0), d.close_adj) AS value,
+             CASE WHEN prev.close IS NOT NULL AND prev.close <> 0
+               THEN ((COALESCE(NULLIF(d.close_unadj, 0), d.close_adj) - prev.close) / prev.close) * 100
+               ELSE NULL END AS change_pct
+      FROM market_data_daily d
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(NULLIF(close_unadj, 0), close_adj) AS close
+        FROM market_data_daily
+        WHERE ticker = d.ticker AND date < d.date
+        ORDER BY date DESC LIMIT 1
+      ) prev ON TRUE
+      WHERE d.ticker IN ('VNINDEX', 'VN-INDEX', 'VN30', 'VN100')
+        AND d.date = (SELECT MAX(date) FROM market_data_daily WHERE ticker IN ('VNINDEX', 'VN-INDEX', 'VN30', 'VN100'))
+    `,
+  );
 }
 
 function dailyQuoteSnapshot(symbol: string, row: Record<string, any>) {
@@ -216,14 +231,12 @@ class SocketService {
             if (row) socket.emit(`stock:price:${sym}`, mergeMarketQuote(marketQuoteSnapshot(dailyQuoteSnapshot(sym, row)), null, security));
           }).catch(() => {});
         }
-        if (config.dnse.enabled) {
-          const [book, foreign] = await Promise.all([
-            redisService.getCache<Record<string, unknown>>(`stock:${sym}:orderbook`).catch(() => null),
-            redisService.getCache<Record<string, unknown>>(`stock:${sym}:foreign`).catch(() => null),
-          ]);
-          if (book) socket.emit(`stock:orderbook:${sym}`, orderBookSnapshot(book));
-          if (foreign) socket.emit(`stock:foreign:${sym}`, { ...foreign, isSnapshot: true });
-        }
+        const [book, foreign] = await Promise.all([
+          redisService.getCache<Record<string, unknown>>(`stock:${sym}:orderbook`).catch(() => null),
+          redisService.getCache<Record<string, unknown>>(`stock:${sym}:foreign`).catch(() => null),
+        ]);
+        if (book) socket.emit(`stock:orderbook:${sym}`, orderBookSnapshot(book));
+        if (foreign) socket.emit(`stock:foreign:${sym}`, { ...foreign, isSnapshot: true });
 
         if (config.dnse.enabled && subscriberCount === 1) this.queueStreamChange(sym, true);
         console.log(`[Socket.IO] ${socket.id} joined ${room} (${currentMeta.subscribedSymbols.size} symbols)`);
@@ -281,14 +294,12 @@ class SocketService {
         console.log(`[Socket.IO] ${socket.id} joined market:overview`);
 
         // Prefer the Redis snapshot updated by DNSE; use PostgreSQL as a fallback seed.
-        const cached = config.dnse.enabled
-          ? await Promise.all(
-              ['indices', 'snapshot', 'breadth', 'liquidity', 'heatmap'].map(async (name) => ({
-                name,
-                data: await redisService.getCache<Record<string, unknown>>(`market:${name}`).catch(() => null),
-              })),
-            )
-          : [];
+        const cached = await Promise.all(
+          ['indices', 'snapshot', 'breadth', 'liquidity', 'heatmap'].map(async (name) => ({
+            name,
+            data: await redisService.getCache<Record<string, unknown>>(`market:${name}`).catch(() => null),
+          })),
+        );
         for (const { name, data } of cached) {
           if (data) socket.emit(`market:${name}`, { ...data, isSnapshot: true });
         }
@@ -349,7 +360,6 @@ class SocketService {
       });
     });
 
-    if (!config.dnse.enabled) this.startTicker();
     return this.io;
   }
 

@@ -7,6 +7,10 @@ class RedisService {
   private stopping = false;
   private connectedHandlers: Array<() => Promise<void>> = [];
 
+  isConnected(): boolean {
+    return this.client !== null;
+  }
+
   onConnected(handler: () => Promise<void>): void {
     this.connectedHandlers.push(handler);
   }
@@ -16,7 +20,7 @@ class RedisService {
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null;
       void this.connect();
-    }, 5000);
+    }, 30_000);
   }
 
   async connect(): Promise<void> {

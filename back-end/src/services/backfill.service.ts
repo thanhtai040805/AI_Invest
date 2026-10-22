@@ -1,5 +1,6 @@
 import { Decimal } from '@prisma/client/runtime/library';
 import prisma from '../config/database';
+import { config } from '../config';
 import { aiEngineService } from './aiEngine.service';
 import { syncStocksFromEngine, backfillOhlcv } from './stockSync.service';
 
@@ -109,6 +110,9 @@ async function backfillTodayOhlcv(symbols: string[]): Promise<number> {
 }
 
 export async function autoBackfillIfNeeded(): Promise<{ triggered: boolean; reason: string }> {
+  if (!config.dnse.enabled) {
+    return { triggered: false, reason: 'Auto-backfill skipped (DNSE_ENABLED=false)' };
+  }
   const vnDate = getVietnamDate();
   const dateStr = vnDate.toISOString().split('T')[0];
 
