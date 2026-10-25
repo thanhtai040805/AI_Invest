@@ -50,7 +50,7 @@ def test_provider_cooldown_marks_provider_unavailable():
     asyncio.run(_run())
 
 
-def test_deepinfra_route_uses_only_deepseek_v4_flash_0731():
+def test_deepinfra_route_uses_only_deepseek_v41_flash():
     mock_settings = MagicMock()
     mock_settings.multi_agent_llm_provider = "deepinfra"
     mock_settings.deepinfra_api_key = "deepinfra_test"
@@ -65,7 +65,7 @@ def test_deepinfra_route_uses_only_deepseek_v4_flash_0731():
         "name": "DEEPINFRA",
         "api_key": "deepinfra_test",
         "base_url": "https://api.deepinfra.com/v1/openai",
-        "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+        "model": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
     }]
 
 
@@ -188,5 +188,32 @@ def test_chat_retries_once_after_transport_timeout():
 
         assert request_client.attempts == 2
         sleep.assert_awaited_once_with(1.0)
+
+    asyncio.run(_run())
+
+
+def test_transient_timeout_retries_once_on_the_same_model():
+    import httpx
+    import pytest
+    from unittest.mock import AsyncMock
+
+    async def _run():
+        for failure_count in (1, 2):
+            client = UnifiedLLMClient(api_key="test", base_url="https://example.invalid/v1", model="test-model")
+            response = MagicMock(status_code=200, headers={})
+            response.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
+            transport = MagicMock()
+            transport.post = AsyncMock(side_effect=[httpx.ReadTimeout("timed out")] * failure_count + [response])
+            transport.__aenter__ = AsyncMock(return_value=transport)
+            transport.__aexit__ = AsyncMock(return_value=None)
+            with patch("app.infrastructure.llm.client.httpx.AsyncClient", return_value=transport), \
+                    patch("app.infrastructure.llm.client.asyncio.sleep", new_callable=AsyncMock):
+                if failure_count == 1:
+                    assert await client.chat("hello") == "ok"
+                else:
+                    with pytest.raises(RuntimeError, match="All configured LLM providers failed"):
+                        await client.chat("hello")
+            assert transport.post.await_count == 2
+            assert all(call.kwargs["json"]["model"] == "test-model" for call in transport.post.await_args_list)
 
     asyncio.run(_run())

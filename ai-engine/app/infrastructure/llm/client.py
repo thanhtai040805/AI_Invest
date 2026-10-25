@@ -1,4 +1,4 @@
-"""Unified OpenAI-compatible LLM client for Xkiro and EvoMap."""
+"""Unified OpenAI-compatible LLM client for DeepInfra, Xkiro and EvoMap."""
 
 from __future__ import annotations
 
@@ -134,7 +134,7 @@ class UnifiedLLMClient:
                     "name": "DEEPINFRA",
                     "api_key": settings.deepinfra_api_key,
                     "base_url": settings.llm_base_url.rstrip("/"),
-                    "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+                    "model": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
                 })
         elif settings.multi_agent_llm_provider == "existing":
             if settings.xkiro_api_key:
