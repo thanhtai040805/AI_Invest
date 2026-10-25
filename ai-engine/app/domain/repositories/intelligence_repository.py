@@ -13,6 +13,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from app.adapters.postgres_adapter import PostgresAdapter
+from app.domain.repositories.replay_factor_snapshot import current_factor_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -24,10 +25,12 @@ class IntelligenceRepository:
         self.storage = storage or PostgresAdapter()
 
     def get_factor_score(self, symbol: str, score_date: Optional[date] = None) -> Optional[Dict[str, Any]]:
-        """Lấy điểm số Factor Scores gần nhất của cổ phiếu từ bảng factor_scores."""
+        """Read the exact score date when supplied, otherwise the latest live score."""
         if not symbol:
             raise ValueError("[IntelligenceRepository] symbol không được rỗng.")
         symbol = str(symbol).upper().strip()
+        snapshot = current_factor_snapshot()
+        snapshot_rows = snapshot.factor_rows(symbol, score_date) if snapshot else None
         if score_date:
             query = """
                 SELECT symbol, score_date, value_score, quality_score, momentum_3m,
@@ -51,7 +54,7 @@ class IntelligenceRepository:
             params = (symbol,)
 
         try:
-            rows = self.storage.fetch_all(query, params)
+            rows = snapshot_rows if snapshot_rows is not None else self.storage.fetch_all(query, params)
             if rows and len(rows) > 0:
                 r = rows[0]
                 details = r[10] if isinstance(r[10], dict) else {}
@@ -94,7 +97,9 @@ class IntelligenceRepository:
         factor_details_extra: Optional[Dict[str, Any]] = None,
         percentile: Optional[float] = None,
     ) -> bool:
-        """Lưu kết quả tính điểm Factor Score của Research Agent vào bảng factor_scores."""
+        """Persist producer factor scores; Agents keep decision outputs in audit logs."""
+        if current_factor_snapshot() is not None:
+            raise RuntimeError("Replay cannot write source factor_scores; use the Research audit log")
         if not symbol:
             raise ValueError("[IntelligenceRepository] symbol không được rỗng.")
         symbol = str(symbol).upper().strip()
