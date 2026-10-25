@@ -255,6 +255,7 @@ class CounterThesisAgent(BaseAgent):
             "final_cts": report.final_cts,
             "verdict": verdict_str,
             "llm_review": verdict_output["llm_review"],
+            "llm_audit": report.llm_audit,
         }
 
         return {"data": verdict_output, "trace": trace}
