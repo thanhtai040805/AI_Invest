@@ -17,6 +17,7 @@ import psycopg2
 from psycopg2.extras import Json
 
 from app.infrastructure.database.pg_pool import DB_URL
+from app.domain.services import financial_fields as fields
 
 logger = logging.getLogger(__name__)
 
@@ -540,14 +541,14 @@ def _parse_kqkd(val: dict, is_bank: bool) -> dict[str, dict[str, Any]]:
                     periods[t_label]["Trong đó: Chi phí đi vay"] = val_num
                     periods[t_label]["trong_do_chi_phi_lai_vay"] = val_num
                     periods[t_label]["chi phí lãi vay"] = val_num
-                elif "doanh thu thuần" in name.lower():
+                elif fields.financial_label(name) == fields.financial_label("doanh thu thuần về bán hàng và cung cấp dịch vụ"):
                     periods[t_label]["doanh thu thuần"] = val_num
                     periods[t_label]["3_doanh_thu_thuan"] = val_num
                     periods[t_label]["3_doanh_thu_thuan_ve_ban_hang_va_cung_cap_dich_vu"] = val_num
-                elif "giá vốn hàng bán" in name.lower():
+                elif fields.financial_label(name) == fields.financial_label("giá vốn hàng bán"):
                     periods[t_label]["giá vốn hàng bán"] = val_num
                     periods[t_label]["4_gia_von_hang_ban"] = val_num
-                elif "lợi nhuận sau thuế thu nhập doanh nghiệp" in name.lower() or "lợi nhuận sau thuế" in name.lower():
+                elif fields.financial_label(name) in {fields.financial_label(k) for k in fields.NI_KEYS[:-1]}:
                     periods[t_label]["lợi nhuận sau thuế"] = val_num
                     periods[t_label]["18_loi_nhuan_sau_thue"] = val_num
     return periods
@@ -576,7 +577,7 @@ def _parse_lctt(val: dict, is_bank: bool) -> dict[str, dict[str, Any]]:
                 periods[t_label][code] = val_num
                 if name:
                     _add_key_variants(periods[t_label], name, val_num)
-                    if "lưu chuyển tiền thuần từ hoạt động kinh doanh" in name.lower():
+                    if fields.financial_label(name) in {fields.financial_label(k) for k in fields.CFO_KEYS}:
                         periods[t_label]["Lưu chuyển tiền thuần từ hoạt động kinh doanh"] = val_num
                         periods[t_label]["luu_chuyen_tien_thuan_tu_hoat_dong_kinh_doanh"] = val_num
                         periods[t_label]["tiền thuần từ hđkd"] = val_num
@@ -659,7 +660,7 @@ def fetch_and_store_financials(
                     logger.warning("Skipping future CafeF period %s for %s", pl, clean_sym)
                 continue
             if pl in parsed_bs:
-                parsed_bs[pl].update(_ISSUER_BS_OVERRIDES.get((clean_sym, pe), {}))
+                parsed_bs[pl] = fields.apply_financial_overrides(parsed_bs[pl], _ISSUER_BS_OVERRIDES.get((clean_sym, pe), {}))
             available = (
                 date.today()
                 if not backfill and freq == "quarterly" and pe == latest_quarter
@@ -692,83 +693,42 @@ def _extract_value(fs_rows: list, keywords: list[str], default: Optional[float] 
     for row in fs_rows:
         if isinstance(row, (tuple, list)) and len(row) >= 3:
             data = row[2]
-        elif isinstance(row, (tuple, list)) and len(row) >= 1:
+        elif isinstance(row, (tuple, list)) and row:
             data = row[0]
         else:
             data = row
-        if isinstance(data, dict):
-            for k, v in data.items():
-                if any(kw.lower() in k.lower() for kw in keywords):
-                    if isinstance(v, (int, float)):
-                        return float(v)
-        elif isinstance(data, str):
+        if isinstance(data, str):
             import json
             try:
-                d = json.loads(data)
-                for k, v in d.items():
-                    if any(kw.lower() in k.lower() for kw in keywords):
-                        if isinstance(v, (int, float)):
-                            return float(v)
+                data = json.loads(data)
             except (json.JSONDecodeError, TypeError):
-                pass
+                continue
+        value = fields.extract_financial_value(data, keywords)
+        if value is not None:
+            return value
     return default
 
 
-_REVENUE_KEYS = [
-    "doanh thu thuần", "doanh thu thuan", "3_doanh_thu_thuần",
-    "doanh thu bán hàng", "thu nhập lãi thuần",
-    "doanh thu phí bảo hiểm thuần",
-]
-
-_COGS_KEYS = ["giá vốn hàng bán", "gia von hang ban", "giá_vốn", "4_giá_vốn_hàng_bán"]
-
-_NI_KEYS = [
-    "18_lợi_nhuận_sau_thuế",
-    "lợi nhuận sau thuế thu nhập doanh nghiệp",
-    "lợi nhuận sau thuế", "loi nhuan sau thue", "lợi_nhuận_sau_thuế",
-    "29_lợi_nhuận_sau_thuế", "xiii_lợi_nhuận_sau_thuế",
-]
-
-_ASSET_KEYS = [
-    "tổng cộng tài sản", "tong cong tai san", "tổng_cộng_tài_sản",
-    "tổng cộng tài sản (270=100+200)", "tổng tài sản",
-]
-
-_LIAB_KEYS = ["tổng nợ phải trả", "tong no phai tra", "c_nợ_phải_trả", "C. NỢ PHẢI TRẢ", "nợ phải trả", "C NỢ PHẢI TRẢ"]
-
-_EQUITY_KEYS = [
-    "vốn chủ sở hữu", "von chu so huu", "i_vốn_chủ_sở_hữu",
-    "vốn chủ sở hữu (400=410+430)", "b_vốn_chủ_sở_hữu", "d vốn chủ sở hữu", "D. VỐN CHỦ SỞ HỮU",
-]
-
-_CFO_KEYS = [
-    "lưu chuyển tiền thuần từ hoạt động kinh doanh",
-    "luu chuyen tien thuan tu hoat dong kinh doanh",
-    "lưu_chuyển_tiền_thuần_từ_hoạt_động_kinh_doanh",
-]
-
-_CAPEX_KEYS = [
-    "tiền chi để mua sắm, xây dựng tscđ",
-    "tien chi de mua sam xay dung tscd",
-    "tiền chi mua sắm, xây dựng tscđ",
-    "tiền_mua_tài_sản_cố_định",
-    "5_tiền_mua_tài_sản_cố_định",
-    "mua sắm tscđ",
-]
-
-_PE_KEYS = ["p/e", "chỉ số p/e", "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e", "pe"]
-_PB_KEYS = ["p/b", "chỉ số p/b", "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b", "pb"]
-_ROE_KEYS = ["roe", "tỷ suất lợi nhuận trên vốn chủ sở hữu"]
-_ROA_KEYS = ["roa", "tỷ suất sinh lợi trên tổng tài sản"]
-
-_DE_KEYS = ["nợ trên vốn", "debt/equity", "d/e", "nợ vay trên vốn", "debt_equity"]
-_CR_KEYS = ["thanh toán hiện hành", "current ratio", "current_ratio"]
-_CASH_KEYS = ["tiền và các khoản tương đương tiền", "i_tiền_và_các_khoản", "tiền và tương đương tiền", "1. tiền"]
-_EBITDA_KEYS = ["ebitda", "ebit", "lợi nhuận thuần từ hoạt động kinh doanh"]
-_EVEBITDA_KEYS = ["ev/ebitda", "giá trị doanh nghiệp trên lợi nhuận trước thuế, khấu hao và lãi vay"]
-_GM_KEYS = ["lợi nhuận gộp", "gross margin", "gộp biên", "gross_margin", "tỷ suất lợi nhuận gộp biên"]
-_GROSS_PROFIT_KEYS = ["gross_profit", "gross profit", "lợi nhuận gộp", "loi nhuan gop"]
-_NM_KEYS = ["lợi nhuận ròng", "net margin", "sinh lợi trên doanh thu", "net_margin", "tỷ suất sinh lợi trên doanh thu thuần"]
+_REVENUE_KEYS = fields.REVENUE_KEYS
+_COGS_KEYS = fields.COGS_KEYS
+_NI_KEYS = fields.NI_KEYS
+_ASSET_KEYS = fields.ASSET_KEYS
+_LIAB_KEYS = fields.LIAB_KEYS
+_EQUITY_KEYS = fields.EQUITY_KEYS
+_CFO_KEYS = fields.CFO_KEYS
+_CAPEX_KEYS = fields.CAPEX_KEYS
+_PE_KEYS = fields.PE_KEYS
+_PB_KEYS = fields.PB_KEYS
+_ROE_KEYS = fields.ROE_KEYS
+_ROA_KEYS = fields.ROA_KEYS
+_DE_KEYS = fields.DE_KEYS
+_CR_KEYS = fields.CR_KEYS
+_CASH_KEYS = fields.CASH_KEYS
+_EBITDA_KEYS = fields.EBITDA_KEYS
+_EVEBITDA_KEYS = fields.EVEBITDA_KEYS
+_GM_KEYS = fields.GM_KEYS
+_GROSS_PROFIT_KEYS = fields.GROSS_PROFIT_KEYS
+_NM_KEYS = fields.NM_KEYS
 
 
 def _store_derived_ratios(symbol: str, cur) -> None:
@@ -865,14 +825,8 @@ def _store_derived_ratios(symbol: str, cur) -> None:
 
         current_ratio = _extract_value([rat_data], _CR_KEYS)
         if current_ratio is None:
-            ca = next((float(bs_data[k]) for k in (
-                "a_tài_sản_ngắn_hạn", "a_tai_san_ngan_han", "A. TÀI SẢN NGẮN HẠN",
-                "tài_sản_ngắn_hạn", "tai_san_ngan_han", "Tài sản ngắn hạn",
-            ) if isinstance(bs_data.get(k), (int, float))), None)
-            cl = next((float(bs_data[k]) for k in (
-                "i_nợ_ngắn_hạn", "i_no_ngan_han", "I. Nợ ngắn hạn",
-                "nợ_ngắn_hạn", "no_ngan_han", "Nợ ngắn hạn",
-            ) if isinstance(bs_data.get(k), (int, float))), None)
+            ca = fields.extract_financial_value(bs_data, fields.CA_KEYS)
+            cl = fields.extract_financial_value(bs_data, fields.CL_KEYS)
             if ca is not None and cl is not None and cl != 0:
                 current_ratio = ca / cl
 
@@ -882,13 +836,11 @@ def _store_derived_ratios(symbol: str, cur) -> None:
 
         ev_ebitda = _extract_value([rat_data], _EVEBITDA_KEYS)
         if ev_ebitda is None and mcap is not None:
-            interest_debt = _extract_value([bs_data], [
-                "vay_và_nợ_thuê_tài_chính", "Vay và nợ thuê tài chính", "vay_nợ_tài_chính"
-            ])
+            interest_debt = fields.interest_bearing_debt(bs_data)
             debt_for_ev = interest_debt if interest_debt is not None else liab
             if debt_for_ev is not None:
                 cash = _extract_value([bs_data], _CASH_KEYS) or 0
-                st_inv = _extract_value([bs_data], ["đầu_tư_tài_chính_ngắn_hạn", "Đầu tư tài chính ngắn hạn"]) or 0
+                st_inv = fields.extract_financial_value(bs_data, fields.SHORT_INVESTMENT_KEYS) or 0
                 ev = mcap + debt_for_ev - (cash + st_inv)
                 ebitda = _extract_value([inc_data], _EBITDA_KEYS)
                 if ebitda is not None and ebitda != 0:
