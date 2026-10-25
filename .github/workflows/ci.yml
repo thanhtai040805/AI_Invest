@@ -76,6 +76,7 @@ jobs:
       - run: >-
           python -m pytest -q
           tests/unit/test_shadow_fill.py
+          tests/unit/test_market_surveillance_time.py
           tests/unit/test_trade_execution_no_mock_fill.py
           tests/unit/test_mathematical_integrity.py
           tests/unit/test_portfolio_eod_and_quotes.py

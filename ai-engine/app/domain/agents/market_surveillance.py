@@ -21,6 +21,7 @@ import json
 import logging
 from datetime import datetime, date, timedelta
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
@@ -36,6 +37,7 @@ from app.infrastructure.database.pg_pool import get_conn
 from app.infrastructure.external_api.market_data_service import MarketDataService
 
 logger = logging.getLogger(__name__)
+VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 
 class MarketSurveillanceAgent(BaseAgent):
@@ -294,7 +296,7 @@ class MarketSurveillanceAgent(BaseAgent):
         """
         Xử lý toàn bộ tín hiệu thị trường đầu vào và phân phối bối cảnh.
         """
-        raw_time = event_data.get("current_time") or event_data.get("date") or datetime.now()
+        raw_time = event_data.get("current_time") or event_data.get("date") or datetime.now(VN_TZ)
         if isinstance(raw_time, str):
             try:
                 now = datetime.fromisoformat(raw_time)
@@ -305,6 +307,7 @@ class MarketSurveillanceAgent(BaseAgent):
         else:
             now = raw_time
 
+        now = now.replace(tzinfo=VN_TZ) if now.tzinfo is None else now.astimezone(VN_TZ)
         target_d = now.date()
 
         # 1. Quản lý ngữ cảnh phiên giao dịch HOSE
@@ -317,14 +320,14 @@ class MarketSurveillanceAgent(BaseAgent):
 
         # 1b. Cầu nối Dữ liệu Thời gian Thực qua DNSE API (chạy khi trong giờ giao dịch hoặc có yêu cầu realtime)
         dnse_live_data = None
-        is_today = (target_d == date.today())
+        is_today = (target_d == datetime.now(VN_TZ).date())
         if is_today and (is_intraday_active or is_realtime_requested):
             try:
                 live_breadth = await self.market_data_service.get_breadth()
                 live_indices = await self.market_data_service.get_indices()
                 live_snap = await self.market_data_service.get_snapshot(exchange="HOSE")
                 stocks = live_snap.get("stocks", [])
-                if stocks and len(stocks) > 0:
+                if stocks and not live_snap.get("stale", False):
                     dnse_live_data = {
                         "stocks": stocks,
                         "breadth": live_breadth,
@@ -374,9 +377,15 @@ class MarketSurveillanceAgent(BaseAgent):
             adv = sum(1 for s in stocks if float(s.get("changePercent", 0.0) or 0.0) > 0)
             dec = sum(1 for s in stocks if float(s.get("changePercent", 0.0) or 0.0) < 0)
             unc = len(stocks) - adv - dec
-            floor_cnt = sum(1 for s in stocks if float(s.get("changePercent", 0.0) or 0.0) <= -6.9 or (float(s.get("matchPrice", 0.0) or 0.0) <= float(s.get("floorPrice", 0.0) or 0.0) and float(s.get("floorPrice", 0.0) or 0.0) > 0))
-            ceil_cnt = sum(1 for s in stocks if float(s.get("changePercent", 0.0) or 0.0) >= 6.9 or (float(s.get("matchPrice", 0.0) or 0.0) >= float(s.get("ceilingPrice", 0.0) or 0.0) and float(s.get("ceilingPrice", 0.0) or 0.0) > 0))
-            tot_vol = sum(float(s.get("totalVolume", 0.0) or 0.0) for s in stocks)
+            floor_cnt = sum(
+                1 for s in stocks if float(s.get("changePercent") or 0.0) <= -6.9
+                or 0 < float(s.get("price") or 0.0) <= float(s.get("floor") or 0.0)
+            )
+            ceil_cnt = sum(
+                1 for s in stocks if float(s.get("changePercent") or 0.0) >= 6.9
+                or 0 < float(s.get("ceiling") or 0.0) <= float(s.get("price") or 0.0)
+            )
+            tot_vol = sum(float(s.get("volume") or 0.0) for s in stocks)
             adv_decl = adv / max(dec, 1)
             breadth_stats = {
                 "total_stocks": len(stocks),
@@ -395,10 +404,10 @@ class MarketSurveillanceAgent(BaseAgent):
             adv_decl_ratio = round(adv_decl, 3)
 
             for idx in dnse_live_data["indices"].get("indices", []):
-                sym_i = str(idx.get("symbol") or idx.get("indexId") or "").upper()
+                sym_i = str(idx.get("name") or idx.get("indexName") or idx.get("symbol") or idx.get("indexId") or "").upper()
                 if "VNINDEX" in sym_i or "VN-INDEX" in sym_i:
-                    chg_pct = float(idx.get("changePercent", 0.0) or 0.0)
-                    vni_return = chg_pct / 100.0 if abs(chg_pct) > 0.5 else chg_pct
+                    if idx.get("changePercent") is not None:
+                        vni_return = float(idx["changePercent"]) / 100.0
                     break
 
         # 3. Phát hiện cổ phiếu bị Tạm ngừng / Đình chỉ giao dịch (Halt / Suspended)
