@@ -9,9 +9,10 @@ Quản lý dữ liệu tài chính phục vụ phân tích cơ bản, định gi
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from math import isfinite
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 from app.adapters.postgres_adapter import PostgresAdapter
 
@@ -135,6 +136,88 @@ class FinancialRepository:
         except Exception as e:
             logger.warning(f"Lỗi khi đọc financial_statements cho {symbol} ({e})")
         return []
+
+    def get_thesis_financial_snapshot(
+        self, symbol: str, as_of_time: datetime,
+    ) -> Dict[str, Any]:
+        """Read rows whose current stored fetch/update timestamp is within the thesis cutoff."""
+        symbol = symbol.upper().strip()
+        vietnam_tz = ZoneInfo("Asia/Ho_Chi_Minh")
+        as_of_time = (
+            as_of_time.replace(tzinfo=vietnam_tz)
+            if as_of_time.tzinfo is None else as_of_time.astimezone(vietnam_tz)
+        )
+        as_of = as_of_time.date()
+        stock_rows = self.storage.fetch_all(
+            "SELECT sector, industry FROM stocks WHERE symbol = %s", (symbol,),
+        )
+        statements = self.storage.fetch_all(
+            """
+            SELECT period_end, statement_type, frequency, data, published_date, source, fetched_at
+            FROM financial_statements
+            WHERE symbol = %s AND statement_type IN ('IS', 'BS', 'CF')
+              AND period_end <= %s AND fetched_at IS NOT NULL AND fetched_at <= %s
+            ORDER BY period_end DESC,
+                     CASE WHEN frequency = 'quarterly' THEN 1 ELSE 0 END DESC,
+                     fetched_at DESC
+            LIMIT 300
+            """,
+            (symbol, as_of, as_of_time),
+        )
+        ratio_rows = self.storage.fetch_all(
+            """
+            SELECT ratio_date, frequency, pe, pb, roe, gross_margin,
+                   yoy_earnings_growth, ev_ebitda, debt_equity, current_ratio,
+                   published_date, updated_at
+            FROM financial_ratios
+            WHERE symbol = %s AND ratio_date <= %s
+              AND updated_at IS NOT NULL AND updated_at <= %s
+            ORDER BY ratio_date DESC,
+                     CASE WHEN frequency = 'quarterly' THEN 1 ELSE 0 END DESC,
+                     updated_at DESC
+            LIMIT 1
+            """,
+            (symbol, as_of, as_of_time),
+        )
+
+        statement_rows = [
+            {
+                "period_end": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
+                "statement_type": str(r[1]),
+                "frequency": str(r[2]),
+                "data": r[3] if isinstance(r[3], dict) else {},
+                "published_date": r[4].isoformat() if hasattr(r[4], "isoformat") and r[4] else None,
+                "source": str(r[5]) if r[5] else None,
+                "fetched_at": r[6].isoformat() if hasattr(r[6], "isoformat") and r[6] else None,
+            }
+            for r in statements
+        ]
+        ratio = None
+        if ratio_rows:
+            r = ratio_rows[0]
+            ratio = {
+                "ratio_date": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
+                "frequency": str(r[1]),
+                "pe": float(r[2]) if r[2] is not None else None,
+                "pb": float(r[3]) if r[3] is not None else None,
+                "roe": float(r[4]) if r[4] is not None else None,
+                "gross_margin": float(r[5]) if r[5] is not None else None,
+                "yoy_earnings_growth": float(r[6]) if r[6] is not None else None,
+                "ev_ebitda": float(r[7]) if r[7] is not None else None,
+                "debt_equity": float(r[8]) if r[8] is not None else None,
+                "current_ratio": float(r[9]) if r[9] is not None else None,
+                "published_date": r[10].isoformat() if hasattr(r[10], "isoformat") and r[10] else None,
+                "updated_at": r[11].isoformat() if hasattr(r[11], "isoformat") and r[11] else None,
+            }
+        return {
+            "symbol": symbol,
+            "sector": stock_rows[0][0] if stock_rows else None,
+            "industry": stock_rows[0][1] if stock_rows else None,
+            "as_of": as_of.isoformat(),
+            "observed_at": as_of_time.isoformat(),
+            "statements": statement_rows,
+            "ratios": ratio,
+        }
 
     def get_peer_valuation_inputs(self, symbol: str, as_of: date) -> Dict[str, Any]:
         """Point-in-time EPS/BVPS priced at the median multiple of published sector peers."""
