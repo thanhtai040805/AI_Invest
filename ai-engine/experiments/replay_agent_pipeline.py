@@ -30,7 +30,8 @@ from app.core.base_agent import BaseAgent
 from app.core.registry import AgentRegistry
 from app.domain.pipeline.daily_pipeline_orchestrator import DailyInvestmentPipeline
 from app.domain.repositories.market_data_repository import MarketDataRepository
-from app.domain.repositories.portfolio_repository import PortfolioRepository
+from app.domain.repositories.portfolio_repository import PortfolioRepository, calculate_is_t25_locked
+from app.domain.repositories.replay_factor_snapshot import ReplayFactorSnapshot
 from app.domain.rules.execution.shadow_fill import shadow_fill
 from app.infrastructure.database.pg_pool import get_conn
 from app.infrastructure.external_api.dnse.intraday_tool import get_intraday_tool
@@ -43,26 +44,26 @@ def dumps(value: object) -> str:
 
 
 class ReplayAudit:
-    """Lightweight in-memory audit event recorder (Pure Python, Zero SQLite)."""
+    """Collect Replay audit counts without retaining every event payload in memory."""
 
     def __init__(self):
-        self.events: list[dict] = []
+        self.event_count = 0
+        self.agent_calls: dict[str, int] = {}
+        self.agent_errors = 0
         self.last_hash = "GENESIS_REPLAY"
 
     def log_event(self, agent_id: str, event_type: str, details: dict) -> str:
         event_id = str(uuid.uuid4())
         self.last_hash = event_id
-        self.events.append({
-            "id": event_id,
-            "agent": agent_id,
-            "event_type": event_type,
-            "details": details,
-            "current_hash": event_id,
-        })
+        self.event_count += 1
+        if event_type == "AGENT_RESULT":
+            self.agent_calls[agent_id] = self.agent_calls.get(agent_id, 0) + 1
+        elif event_type == "AGENT_ERROR":
+            self.agent_errors += 1
         return event_id
 
     def verify_full_chain(self) -> tuple[bool, int, str | None]:
-        return True, len(self.events), None
+        return True, self.event_count, None
 
 
 def market_dates(end: date, count: int) -> list[date]:
@@ -568,6 +569,69 @@ def holding_days_since(opened_at: object, current_time: datetime) -> int:
     return max(0, (current_time.date() - opened_date).days)
 
 
+def replay_position_at_time(position: dict, event_time: datetime) -> dict:
+    """Refresh the time-sensitive T+2.5 split without re-reading unchanged position rows."""
+    snapshot = dict(position)
+    shares = int(snapshot.get("shares") or snapshot.get("quantity", 0))
+    locked = calculate_is_t25_locked(snapshot.get("opened_at"), event_time)
+    snapshot["available_shares"] = 0 if locked else shares
+    snapshot["locked_t25_shares"] = shares if locked else 0
+    return snapshot
+
+
+def cache_replay_positions(
+    replay_state: dict,
+    positions: list[dict],
+    active_symbols: set[str],
+    peak_prices: dict[str, float],
+) -> None:
+    replay_state["positions"] = {str(p["ticker"]).upper(): p for p in positions}
+    active_symbols.clear()
+    active_symbols.update(replay_state["positions"])
+    for symbol, position in replay_state["positions"].items():
+        average = float(position.get("average_price") or 0.0)
+        peak_prices[symbol] = max(
+            peak_prices.get(symbol, average),
+            average,
+            float(position.get("peak_price") or 0.0),
+        )
+
+
+def persist_replay_peak_prices(
+    repository: PortfolioRepository,
+    account_id: str,
+    positions: list[dict],
+    peak_prices: dict[str, float],
+    day: date,
+) -> None:
+    for position in positions:
+        symbol = str(position["ticker"]).upper()
+        try:
+            repository.update_position_peak_price(
+                symbol, peak_prices.get(symbol, float(position["average_price"])), user_id=account_id
+            )
+        except Exception:
+            logger.exception("Replay peak-price checkpoint failed for %s on %s", symbol, day)
+
+
+def refresh_replay_state(
+    repository: PortfolioRepository,
+    account_id: str,
+    mark_as_of: date,
+    event_time: datetime,
+    replay_state: dict,
+    active_symbols: set[str],
+    peak_prices: dict[str, float],
+) -> None:
+    positions = repository.get_open_positions(
+        user_id=account_id, as_of=mark_as_of, as_of_time=event_time
+    )
+    cache_replay_positions(replay_state, positions, active_symbols, peak_prices)
+    replay_state["nav"] = repository.get_account_state(
+        user_id=account_id, as_of=mark_as_of
+    ).get("total_nav", 0.0)
+
+
 async def monitor_intraday_bar(
     day: date,
     bar: dict,
@@ -581,6 +645,7 @@ async def monitor_intraday_bar(
     quote_cache: dict[tuple[date, str], list[dict]],
     market_repository: MarketDataRepository,
     swing_low_cache: dict[tuple[str, date], float | None],
+    replay_state: dict,
 ) -> None:
     symbol = str(bar["symbol"]).upper()
     if symbol not in active_symbols:
@@ -591,12 +656,10 @@ async def monitor_intraday_bar(
     if price <= 0:
         return
     event_time = bar["time"]
-    positions = repository.get_open_positions(
-        user_id=account_id, as_of=mark_as_of, as_of_time=event_time
-    )
-    position = next((pos for pos in positions if pos["ticker"].upper() == symbol), None)
+    position = replay_state["positions"].get(symbol)
     if not position:
         return
+    position = replay_position_at_time(position, event_time)
 
     swing_key = (symbol, mark_as_of)
     if swing_key not in swing_low_cache:
@@ -624,7 +687,7 @@ async def monitor_intraday_bar(
                 "ma20_volume": bar["ma20_volume"],
             }
         },
-        "nav": repository.get_account_state(user_id=account_id, as_of=mark_as_of).get("total_nav", 0),
+        "nav": replay_state["nav"],
         "current_time": event_time.isoformat(),
         "target_date": day.isoformat(),
         "market_data_date": mark_as_of.isoformat(),
@@ -634,6 +697,7 @@ async def monitor_intraday_bar(
     })
     data = result.get("result", {}).get("data", {})
     stop_orders = data.get("stop_loss_orders", [])
+    fill_count_before_stops = len(fills_log)
     for stop_order in stop_orders:
         quantity = int(stop_order.get("quantity", 0))
         if quantity <= 0:
@@ -665,31 +729,48 @@ async def monitor_intraday_bar(
                                repository, account_id, mark_as_of, fills_log,
                                until=event_time, symbols={symbol}, quote_cache=quote_cache)
         pending_orders.extend(unfilled)
-        if not unfilled:
-            remaining_positions = repository.get_open_positions(
-                user_id=account_id, as_of=mark_as_of, as_of_time=event_time
-            )
-            if not any(pos["ticker"].upper() == symbol for pos in remaining_positions):
-                active_symbols.discard(symbol)
+    if len(fills_log) > fill_count_before_stops:
+        refresh_replay_state(
+            repository, account_id, mark_as_of, event_time,
+            replay_state, active_symbols, peak_prices,
+        )
 
 
 async def run(args: argparse.Namespace) -> None:
-    account_id = args.account_id or os.getenv("MULTI_AGENT_ACCOUNT_ID", "940b0c70-2010-42f3-b947-797e6419b794")
-    repo = PortfolioRepository()
-    market_repository = MarketDataRepository(repo.storage)
-    swing_low_cache: dict[tuple[str, date], float | None] = {}
-
     end_date = date.fromisoformat(args.end)
     now_vn = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
     if end_date > now_vn.date() or (end_date == now_vn.date() and now_vn.time() < day_time(15, 0)):
         raise ValueError("Replay can include today's session only after the 15:00 market close.")
-
     days = market_dates(end_date, args.days)
     if not days:
         print(f"Không có dữ liệu ngày giao dịch trước ngày {end_date}.")
         return
     if len(days) > 52:
         raise ValueError(f"DNSE historical bid/ask is available for at most 52 sessions; requested {len(days)}.")
+    as_of_dates = [day - timedelta(days=1) if day < now_vn.date() else day for day in days]
+    snapshot_path = getattr(args, "factor_snapshot", None) or Path(
+        "scratch/output", f"replay_factor_snapshot_{uuid.uuid4().hex}.json"
+    )
+    snapshot_path = Path(snapshot_path)
+    if snapshot_path.exists():
+        snapshot = ReplayFactorSnapshot.load(snapshot_path)
+    else:
+        snapshot = ReplayFactorSnapshot.capture(as_of_dates)
+        snapshot.save(snapshot_path)
+    snapshot.require_dates(as_of_dates)
+    snapshot.require_current_source()
+    print(f"[FACTOR INPUT SNAPSHOT] {snapshot_path.resolve()} | version={snapshot.version} | sha256={snapshot.sha256} | source writes disabled", flush=True)
+    if snapshot.version == 1:
+        print("[FACTOR INPUT WARNING] Legacy cache snapshot: not rebuilt from source and may contain prior replay outputs.", flush=True)
+    with snapshot.activate():
+        await _run_sessions(args, days)
+
+
+async def _run_sessions(args: argparse.Namespace, days: list[date]) -> None:
+    account_id = args.account_id or os.getenv("MULTI_AGENT_ACCOUNT_ID", "940b0c70-2010-42f3-b947-797e6419b794")
+    repo = PortfolioRepository()
+    market_repository = MarketDataRepository(repo.storage)
+    swing_low_cache: dict[tuple[str, date], float | None] = {}
 
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
@@ -718,7 +799,7 @@ async def run(args: argparse.Namespace) -> None:
         """, (days[0], days[-1]))
         duplicate_symbol_days = cur.fetchone()[0]
         cur.execute("""
-            SELECT count(*) FROM (
+            SELECT count(DISTINCT expected.symbol) FROM (
                 SELECT d.date, s.symbol
                 FROM (SELECT DISTINCT date FROM market_data_daily_calculation WHERE date BETWEEN %s AND %s) d
                 CROSS JOIN (SELECT DISTINCT symbol FROM stocks WHERE exchange = 'HOSE') s
@@ -737,12 +818,13 @@ async def run(args: argparse.Namespace) -> None:
              AND i.time < (expected.date + TIME '09:46') AT TIME ZONE 'Asia/Ho_Chi_Minh'
             WHERE i.symbol IS NULL
         """, (days[0], days[-1]))
-        missing_fills = cur.fetchone()[0]
-    if not scan_rows or scan_days != len(days) or invalid_rows or duplicate_symbol_days or missing_fills:
+        missing_symbols = cur.fetchone()[0]
+    # bars_for_day() forward-fills a missing 09:45 snapshot from the prior close for one ticker.
+    if not scan_rows or scan_days != len(days) or invalid_rows or duplicate_symbol_days or missing_symbols > 1:
         raise RuntimeError(
             f"Raw Intraday 09:45 inputs are incomplete or mixed: {scan_rows} rows/{scan_days} days, "
             f"{invalid_rows} invalid rows, {duplicate_symbol_days} duplicate symbol-days, "
-            f"{missing_fills} missing symbols with a previous close; "
+            f"{missing_symbols} missing symbols with a previous close; "
             f"expected {len(days)} trading days with one raw candle per symbol"
         )
 
@@ -811,8 +893,14 @@ async def run(args: argparse.Namespace) -> None:
             user_id=account_id, as_of=mark_as_of,
             as_of_time=datetime.combine(day, day_time(9, 15), ZoneInfo("Asia/Ho_Chi_Minh")),
         )
-        active_symbols = {position["ticker"].upper() for position in start_positions}
-        peak_prices = {position["ticker"].upper(): float(position["average_price"]) for position in start_positions}
+        active_symbols: set[str] = set()
+        peak_prices: dict[str, float] = {}
+        replay_state = {"positions": {}, "nav": None}
+        cache_replay_positions(replay_state, start_positions, active_symbols, peak_prices)
+        if active_symbols:
+            replay_state["nav"] = repo.get_account_state(
+                user_id=account_id, as_of=mark_as_of
+            ).get("total_nav", 0.0)
         morning_bar_events = intraday_bars_for_day(day, active_symbols, bar_cache)
         tracked = active_symbols | {order["symbol"] for order in pending_orders}
         quote_events = quote_events_for_day(day, tracked, quote_cache)
@@ -829,7 +917,7 @@ async def run(args: argparse.Namespace) -> None:
                 await monitor_intraday_bar(
                     day, payload, repo, account_id, mark_as_of, pending_orders,
                     fills_history, peak_prices, active_symbols, quote_cache,
-                    market_repository, swing_low_cache,
+                    market_repository, swing_low_cache, replay_state,
                 )
                 continue
             symbol = payload
@@ -839,13 +927,14 @@ async def run(args: argparse.Namespace) -> None:
                 until=timestamp + timedelta(microseconds=1), symbols={symbol}, quote_cache=quote_cache,
             )
             if len(fills_history) > previous_fill_count:
-                positions = repo.get_open_positions(user_id=account_id, as_of=mark_as_of, as_of_time=timestamp)
-                if any(position["ticker"].upper() == symbol for position in positions):
-                    active_symbols.add(symbol)
-                else:
-                    active_symbols.discard(symbol)
+                refresh_replay_state(
+                    repo, account_id, mark_as_of, timestamp,
+                    replay_state, active_symbols, peak_prices,
+                )
 
         portfolio = get_portfolio_state(day, repo, account_id, mark_as_of, returns_series)
+        cache_replay_positions(replay_state, portfolio["positions"], active_symbols, peak_prices)
+        replay_state["nav"] = portfolio["total_nav"]
         for position in portfolio["positions"]:
             bar = bars.get(position["ticker"].upper())
             if bar:
@@ -908,7 +997,7 @@ async def run(args: argparse.Namespace) -> None:
                 await monitor_intraday_bar(
                     day, payload, repo, account_id, mark_as_of, pending_orders,
                     fills_history, peak_prices, active_symbols, quote_cache,
-                    market_repository, swing_low_cache,
+                    market_repository, swing_low_cache, replay_state,
                 )
                 continue
             symbol = payload
@@ -918,11 +1007,10 @@ async def run(args: argparse.Namespace) -> None:
                 until=timestamp + timedelta(microseconds=1), symbols={symbol}, quote_cache=quote_cache,
             )
             if len(fills_history) > previous_fill_count:
-                positions = repo.get_open_positions(user_id=account_id, as_of=mark_as_of, as_of_time=timestamp)
-                if any(position["ticker"].upper() == symbol for position in positions):
-                    active_symbols.add(symbol)
-                else:
-                    active_symbols.discard(symbol)
+                refresh_replay_state(
+                    repo, account_id, mark_as_of, timestamp,
+                    replay_state, active_symbols, peak_prices,
+                )
 
         pending_orders.clear()  # Orders raised after ATC expiry cannot carry into another session.
         closing_mark = repo.record_replay_mark(user_id=account_id, mark_as_of=day)
@@ -930,6 +1018,11 @@ async def run(args: argparse.Namespace) -> None:
             user_id=account_id, as_of=day,
             as_of_time=datetime.combine(day, day_time(15, 0), ZoneInfo("Asia/Ho_Chi_Minh")),
         )
+        persist_replay_peak_prices(repo, account_id, closing_positions, peak_prices, day)
+        position_monitor = AgentRegistry.get_agent("position_monitoring")
+        flush_replay_state = getattr(position_monitor, "flush_replay_state", None)
+        if callable(flush_replay_state):
+            flush_replay_state()
         ret = (float(closing_mark["total_nav"]) / previous_nav - 1) if previous_nav > 0 else 0.0
         returns_series.append(ret)
         previous_nav = float(closing_mark["total_nav"])
@@ -944,13 +1037,8 @@ async def run(args: argparse.Namespace) -> None:
 
     print(f"\n================================================================================")
     end_state = repo.get_account_state(user_id=account_id, as_of=days[-1])
-    agent_calls = {}
-    agent_errors = 0
-    for event in audit.events:
-        if event["event_type"] == "AGENT_RESULT":
-            agent_calls[event["agent"]] = agent_calls.get(event["agent"], 0) + 1
-        elif event["event_type"] == "AGENT_ERROR":
-            agent_errors += 1
+    agent_calls = audit.agent_calls
+    agent_errors = audit.agent_errors
     fees = sum(float(fill["cost"]) for fill in fills_history)
     total_return_pct = (float(end_state["total_nav"]) / args.capital - 1) * 100 if args.capital else 0.0
     print(f"HOÀN TẤT HISTORICAL PAPER TRADING: {len(days)} phiên.")
@@ -976,6 +1064,7 @@ def main() -> None:
     parser.add_argument("--capital", type=float, default=1_000_000_000)
     parser.add_argument("--account-id", default=os.getenv("MULTI_AGENT_ACCOUNT_ID", "940b0c70-2010-42f3-b947-797e6419b794"))
     parser.add_argument("--reset", action="store_true", help="Reset tài khoản và dọn dẹp CSDL về ban đầu")
+    parser.add_argument("--factor-snapshot", type=Path, help="Load an existing factor snapshot, or capture it before reset if the path is new")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.WARNING)

@@ -5,6 +5,7 @@
   Pha 2: Agent-10 (Reinforcement Learning) — Cung cấp Adaptive Policy Weights F1-F6 & Bayesian Kelly
   Pha 3: Agent-02 (Universe Discovery) — Lớp 0 Forensic Accounting Gate (Beneish M-Score <= -1.78) & ADTV20
   Pha 4: Agent-03 (Equity Research) — Đánh giá đa nhân tố F1-F6 + Business Quality -> Conviction Level (A+, A, B)
+  Replay: kiểm tra sớm giới hạn phân bổ/rủi ro gốc trước Pha 5; không bỏ qua mã đang nắm giữ.
   Pha 5: Agent-04 (Investment Thesis) — Tổng hợp Luận đề Đầu tư & Kiểm định 3 Tín hiệu Độc lập (Điều 3)
   Pha 6: Agent-05 (Counter Thesis) — Phản biện Đa chiều (Devil's Advocate), CTS Score & Bẫy Thanh khoản
   Pha 7: Agent-12 (Strategy CIO) — Trọng tài Thể chế Tối cao phân định mâu thuẫn & áp trần weight_cap
@@ -18,6 +19,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 from collections import Counter
 from datetime import date, datetime, time, timedelta
@@ -30,6 +32,12 @@ from dotenv import load_dotenv
 from app.core.registry import AgentRegistry
 import app.domain.agents  # Nạp và tự động đăng ký đủ 12 Agents vào Registry
 from app.domain.repositories.portfolio_repository import PortfolioRepository
+from app.domain.rules.portfolio.construction_engine import PortfolioConstructionEngine
+from app.domain.rules.portfolio.dynamic_allocation_engine import DynamicAllocationEngine
+from app.domain.rules.portfolio.liquidity_engine import LiquidityEngine
+from app.domain.rules.risk.breadth_risk_engine import BreadthRiskEngine
+from app.domain.rules.risk.drawdown_recovery_protocol import DrawdownRecoveryProtocol, DrawdownTier
+from app.domain.rules.risk.t25_exposure_manager import T25ExposureManager
 from app.domain.services.ml.standalone_ml_channel import standalone_ml_channel
 from app.infrastructure.database.pg_pool import get_conn
 
@@ -71,11 +79,72 @@ class DailyInvestmentPipeline:
             self.standalone_ml_mode = ExecutionMode.DISABLED
 
         self.portfolio_repo = PortfolioRepository()
+        self._construction_engine = PortfolioConstructionEngine()
+        self._dynamic_engine = DynamicAllocationEngine()
+        self._liquidity_engine = LiquidityEngine()
+        self._breadth_engine = BreadthRiskEngine()
+        self._drawdown_protocol = DrawdownRecoveryProtocol()
+        self._t25_manager = T25ExposureManager()
         logger.info(
             f"[DailyInvestmentPipeline] Khởi tạo thành công: "
             f"Multi-Agent Mode = '{self.multi_agent_mode.value}' | "
             f"Standalone ML Mode = '{self.standalone_ml_mode.value}'"
         )
+
+    def _precheck_allocation_feasibility(
+        self,
+        ticker: str,
+        current_price: float,
+        sector: str,
+        adtv20_shares: float,
+        current_nav: float,
+        cash_balance: float,
+        existing_positions: List[Dict[str, Any]],
+        regime: str,
+        peak_nav: float,
+        locked_t25_value: float,
+        distribution_days: Optional[int],
+        breadth_ma20_pct: Optional[float],
+    ) -> tuple[bool, str]:
+        """Skip Replay LLM calls only when even an optimistic new BUY cannot execute."""
+        if any(str(p.get("ticker") or p.get("symbol", "")).upper() == ticker.upper()
+               for p in existing_positions):
+            return True, "EXISTING_POSITION"
+        if (not all(math.isfinite(v) for v in (current_price, current_nav, cash_balance, adtv20_shares))
+                or min(current_price, current_nav, cash_balance, adtv20_shares) <= 0):
+            return True, "SKIP_PRECHECK_MISSING_INPUTS"
+
+        if distribution_days is not None and breadth_ma20_pct is not None:
+            breadth = self._breadth_engine.evaluate_market_breadth(distribution_days, breadth_ma20_pct)
+            if breadth.action_recommended == "BLOCK_BUY":
+                return False, "PRE_RISK_BREADTH_BLOCK_BUY"
+        drawdown = self._drawdown_protocol.evaluate_drawdown(current_nav, peak_nav)
+        if drawdown.tier == DrawdownTier.RED:
+            return False, "PRE_RISK_DRAWDOWN_RED"
+        capacity = self._t25_manager.check_t25_capacity(
+            nav=current_nav, locked_t25_value=locked_t25_value,
+            proposed_order_value=current_price * 100, price=current_price,
+        )
+        if not capacity.passed and capacity.max_safe_shares == 0:
+            return False, "PRE_RISK_T25_CAPACITY_FULL"
+
+        # Use the largest permitted target and lowest cash constraint: later Agents may only reduce it.
+        construction = self._construction_engine.construct(
+            ticker=ticker, preliminary_target=self._construction_engine.max_single_stock_pct,
+            sector=sector, total_nav=current_nav, existing_positions=existing_positions,
+            macro_weight_cap=self._construction_engine.max_single_stock_pct,
+        )
+        dynamic = self._dynamic_engine.evaluate_allocation(
+            portfolio_target=construction.portfolio_target, ticker=ticker, regime_str=regime,
+            total_nav=current_nav, cash_balance=cash_balance, existing_positions=existing_positions,
+        )
+        liquidity = self._liquidity_engine.evaluate_liquidity(
+            ticker=ticker, portfolio_target=dynamic.adjusted_target, price=current_price,
+            total_nav=current_nav, current_shares=0, adtv20=adtv20_shares,
+        )
+        if liquidity.incremental_shares <= 0:
+            return False, "PRE_ALLOC_NO_EXECUTABLE_LOT"
+        return True, "FEASIBLE"
 
     def _load_current_portfolio_state(self, user_id: str, current_nav: Optional[float]) -> Dict[str, Any]:
         account = self.portfolio_repo.get_account_state(user_id=user_id)
@@ -384,13 +453,8 @@ class DailyInvestmentPipeline:
         thesis_gate_decisions: List[Dict[str, Any]] = []
         portfolio_refresh_failed = False
 
-        for ticker in selected_tickers:
-            if len(qualified_orders_multi_agent) >= max_candidates:
-                break
-
+        async def prepare_candidate(ticker: str) -> Dict[str, Any]:
             logger.info(f"\n--- [AGENT CHAIN] Xử lý chuyên sâu mã cổ phiếu: {ticker} ---")
-
-            # ── PHA 4: AGENT-03 (EQUITY RESEARCH) ──
             logger.info(f"[Pha 4 - {ticker}] Kích hoạt Agent-03: Phân tích 6 nhóm Factor & Business Quality...")
             res_res = await AgentRegistry.dispatch("equity_research", {
                 "ticker": ticker,
@@ -399,20 +463,20 @@ class DailyInvestmentPipeline:
                 **replay_context,
             })
             if res_res.get("status") != "SUCCESS":
-                research_gate_decisions.append({
-                    "ticker": ticker,
-                    "status": "RESEARCH_FAILED",
-                    "reason_codes": ["EQUITY_RESEARCH_FAILED"],
-                })
                 logger.warning(f"[Pha 4 - {ticker}] Equity Research thất bại. Bỏ qua.")
-                continue
+                return {
+                    "ticker": ticker, "status": "SKIP",
+                    "research_gate_decision": {
+                        "ticker": ticker, "status": "RESEARCH_FAILED",
+                        "reason_codes": ["EQUITY_RESEARCH_FAILED"],
+                    },
+                }
 
             research_report = res_res["result"]["data"]
             conviction = research_report.get("conviction", "C")
             current_price = float(research_report.get("current_price", 0.0))
             sector = research_report.get("sector", "General")
             portfolio_sector = candidate_metadata.get(ticker, {}).get("portfolio_sector") or sector
-
             logger.info(f"[Pha 4 - {ticker}] Conviction = '{conviction}' | CSS = {research_report.get('css', 0):.1f} | Price = {current_price:,.0f}")
 
             reason_codes = research_report.get("eligibility_reasons")
@@ -420,24 +484,48 @@ class DailyInvestmentPipeline:
                 reason_codes = ["RESEARCH_GATE_DECISION_MISSING"]
             if not research_report.get("eligible_for_thesis") and not reason_codes:
                 reason_codes = ["RESEARCH_GATE_FAILED_WITHOUT_REASON"]
-            research_gate_decisions.append({
+            research_gate_decision = {
                 "ticker": ticker,
                 "status": "PASS" if research_report.get("eligible_for_thesis") and not reason_codes else "EXCLUDED",
                 "reason_codes": reason_codes,
                 "conviction": conviction,
                 "css": research_report.get("css"),
                 "current_price": current_price,
-            })
+            }
             if not research_report.get("eligible_for_thesis") or reason_codes:
                 logger.info(
                     f"[Pha 4 - {ticker}] Research gate=EXCLUDED | reason_codes={reason_codes} | "
                     f"Conviction={conviction} | CSS={research_report.get('css', 0):.1f} | Price={current_price:,.0f}"
                 )
-                continue
+                return {
+                    "ticker": ticker, "status": "SKIP",
+                    "research_gate_decision": research_gate_decision,
+                }
 
             logger.info(f"[Pha 4 - {ticker}] Research gate=PASS")
+            if replay_at:
+                candidate = candidate_metadata.get(ticker, {})
+                feasible, pre_alloc_reason = self._precheck_allocation_feasibility(
+                    ticker=ticker, current_price=current_price, sector=str(portfolio_sector).strip(),
+                    adtv20_shares=float(candidate.get("adtv20_shares") or candidate.get("adtv20", 0.0)),
+                    current_nav=current_nav, cash_balance=replay_cash,
+                    existing_positions=replay_positions, regime=regime,
+                    peak_nav=float(portfolio_state.get("peak_nav", current_nav)),
+                    locked_t25_value=float(portfolio_state.get("locked_t25_value", 0.0)),
+                    distribution_days=distribution_days, breadth_ma20_pct=breadth_ma20_pct,
+                )
+                if not feasible:
+                    logger.info("[Pha 4.5 - %s] Skip LLM: %s", ticker, pre_alloc_reason)
+                    return {
+                        "ticker": ticker, "status": "SKIP",
+                        "research_gate_decision": research_gate_decision,
+                        "thesis_gate_decision": {
+                            "ticker": ticker, "status": "SKIPPED_PRE_ALLOC",
+                            "reason_codes": [pre_alloc_reason],
+                            "reason": "Replay precheck: no executable new BUY under existing rules.",
+                        },
+                    }
 
-            # ── PHA 5: AGENT-04 (INVESTMENT THESIS) ──
             logger.info(f"[Pha 5 - {ticker}] Kích hoạt Agent-04: Xây dựng Luận đề & Xác thực Điều 3 (3 Tín hiệu)...")
             res_thesis = await AgentRegistry.dispatch("investment_thesis", {
                 "research_report": research_report,
@@ -449,23 +537,25 @@ class DailyInvestmentPipeline:
             thesis_reason_codes = thesis_result_data.get("reason_codes") or (
                 ["INVESTMENT_THESIS_FAILED"] if thesis_status == "AGENT_FAILED" else []
             )
-            thesis_gate_decisions.append({
+            thesis_gate_decision = {
                 "ticker": ticker,
                 "status": thesis_status,
                 "reason_codes": thesis_reason_codes,
                 "reason": thesis_result_data.get("reason"),
-            })
+            }
             if res_thesis.get("status") != "SUCCESS" or thesis_status in ["REJECTED", "WAIT_OR_SKIP", "DEFERRED"]:
                 logger.info(
                     f"[Pha 5 - {ticker}] Thesis={thesis_status} | reason_codes={thesis_reason_codes} | "
                     f"reason={thesis_result_data.get('reason', 'agent dispatch failed')}"
                 )
-                continue
+                return {
+                    "ticker": ticker, "status": "SKIP",
+                    "research_gate_decision": research_gate_decision,
+                    "thesis_gate_decision": thesis_gate_decision,
+                }
 
             thesis_data = thesis_result_data
             logger.info(f"[Pha 5 - {ticker}] Luận đề hợp lệ (Thesis ID: {thesis_data.get('thesis_id')}).")
-
-            # ── PHA 6: AGENT-05 (COUNTER THESIS - DEVIL'S ADVOCATE) ──
             logger.info(f"[Pha 6 - {ticker}] Kích hoạt Agent-05: Phản biện Đa chiều (Devil's Advocate) & Tính CTS Score...")
             res_counter = await AgentRegistry.dispatch("counter_thesis", {
                 "investment_thesis": thesis_data,
@@ -477,9 +567,47 @@ class DailyInvestmentPipeline:
             counter_verdict = counter_data.get("verdict")
             if res_counter.get("status") != "SUCCESS" or counter_verdict not in {"PROCEED", "CONDITIONAL", "BLOCK"}:
                 logger.warning(f"[Pha 6 - {ticker}] Counter Thesis response missing or invalid; rejecting candidate.")
-                continue
+                return {
+                    "ticker": ticker, "status": "SKIP",
+                    "research_gate_decision": research_gate_decision,
+                    "thesis_gate_decision": thesis_gate_decision,
+                }
             cts_score = float(counter_data.get("cts_score", 0.0))
             logger.info(f"[Pha 6 - {ticker}] Phán quyết Counter-Thesis: '{counter_verdict}' | CTS Score = {cts_score:.1f}")
+            return {
+                "ticker": ticker, "status": "READY",
+                "research_gate_decision": research_gate_decision,
+                "thesis_gate_decision": thesis_gate_decision,
+                "research_report": research_report,
+                "conviction": conviction,
+                "current_price": current_price,
+                "portfolio_sector": portfolio_sector,
+                "thesis_data": thesis_data,
+                "counter_data": counter_data,
+                "counter_verdict": counter_verdict,
+                "cts_score": cts_score,
+            }
+
+        for ticker in selected_tickers:
+            if len(qualified_orders_multi_agent) >= max_candidates:
+                break
+            # Match PROD: complete allocation/risk before preparing the next candidate.
+            prepared = await prepare_candidate(ticker)
+            if prepared.get("research_gate_decision"):
+                research_gate_decisions.append(prepared["research_gate_decision"])
+            if prepared.get("thesis_gate_decision"):
+                thesis_gate_decisions.append(prepared["thesis_gate_decision"])
+            if prepared["status"] != "READY":
+                continue
+
+            research_report = prepared["research_report"]
+            conviction = prepared["conviction"]
+            current_price = prepared["current_price"]
+            portfolio_sector = prepared["portfolio_sector"]
+            thesis_data = prepared["thesis_data"]
+            counter_data = prepared["counter_data"]
+            counter_verdict = prepared["counter_verdict"]
+            cts_score = prepared["cts_score"]
 
             # ── PHA 7: AGENT-12 (STRATEGY CIO ARBITRATION) ──
             logger.info(f"[Pha 7 - {ticker}] Kích hoạt Agent-12: Trọng tài Chiến lược Phân định Tranh chấp...")
