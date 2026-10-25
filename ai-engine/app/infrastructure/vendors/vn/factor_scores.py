@@ -25,6 +25,7 @@ import psycopg2
 import psycopg2.extras
 
 from app.infrastructure.database.pg_pool import DB_URL
+from app.domain.services import financial_fields as fields
 from app.infrastructure.vendors.vn.sector_groups import (
     classify_major as classify,
     FINANCIALS, REAL_ESTATE, OTHERS,
@@ -37,6 +38,7 @@ from app.domain.services.quant.factor_orthogonalization import (
 )
 
 logger = logging.getLogger(__name__)
+FACTOR_SOURCE_VERSION = "vn-core-prod-rank-v1"
 
 # ── Full VN factor registry (Tier A + B + C + salvage) ─────────────────
 VN_FACTORS = {
@@ -174,12 +176,8 @@ def _extract_fin_stmts(cur, symbols: list[str], as_of: date) -> dict[str, dict[s
 
 
 def _get_val(data: dict, keywords: list[str], default: Optional[float] = None) -> Optional[float]:
-    """Extract numeric value from flat dict by keyword substring match."""
-    for k, v in data.items():
-        if isinstance(k, str) and any(kw.lower() in k.lower() for kw in keywords):
-            if isinstance(v, (int, float)):
-                return float(v)
-    return default
+    value = fields.extract_financial_value(data, keywords)
+    return value if value is not None else default
 
 
 # ── Tet lunar calendar lookup (approximate dates 2020-2030) ────────────
@@ -208,13 +206,15 @@ def _tet_signal(d: date) -> float:
 
 def _extract_multi_stmts(
     cur, symbols: list[str], as_of: date, n_quarters: int = 5
-) -> dict[str, list[dict[str, Any]]]:
+) -> dict[str, dict[str, list[dict[str, Any]]]]:
     """Extract last N quarters of BS/IS/CF for each symbol (for Piotroski F)."""
     cur.execute(
-        """SELECT fs.symbol, fs.statement_type, fs.period_end, fs.data
-           FROM financial_statements fs
-           WHERE fs.symbol = ANY(%s)
-             AND fs.statement_type IN ('BS', 'IS', 'CF')
+        """SELECT u.symbol, t.statement_type, latest.period_end, latest.data
+           FROM unnest(%s::text[]) AS u(symbol)
+           CROSS JOIN (VALUES ('BS'), ('IS'), ('CF')) AS t(statement_type)
+           CROSS JOIN LATERAL (
+             SELECT fs.period_end, fs.data FROM financial_statements fs
+             WHERE fs.symbol = u.symbol AND fs.statement_type = t.statement_type
              AND fs.frequency = 'quarterly'
              AND fs.period_end <= %s
              AND (
@@ -233,31 +233,24 @@ def _extract_multi_stmts(
                     )::integer
                 END
              ) <= %s
-           ORDER BY fs.symbol, fs.statement_type, fs.period_end DESC""",
-        (symbols, as_of, as_of),
+             ORDER BY fs.period_end DESC LIMIT %s
+           ) latest
+           ORDER BY u.symbol, t.statement_type, latest.period_end DESC""",
+        (symbols, as_of, as_of, n_quarters),
     )
-    result: dict[str, list[dict[str, Any]]] = {}
+    result: dict[str, dict[str, list[dict[str, Any]]]] = {}
     for sym, st, pe, raw in cur.fetchall():
         data = raw if isinstance(raw, dict) else (json.loads(raw) if isinstance(raw, str) else {})
-        result.setdefault(sym, []).append({
+        result.setdefault(sym, {}).setdefault(st, []).append({
             "statement_type": st, "period_end": pe, "data": data,
         })
-    # Keep only the first n_quarters per symbol per statement_type
-    filtered: dict[str, dict[str, list[dict]]] = {}
-    for sym, entries in result.items():
-        by_type: dict[str, list[dict]] = {}
-        for e in entries:
-            by_type.setdefault(e["statement_type"], []).append(e)
-        for st in list(by_type.keys()):
-            by_type[st] = sorted(by_type[st], key=lambda x: x["period_end"], reverse=True)[:n_quarters]
-        filtered[sym] = by_type
-    return filtered
+    return result
 
 
-# ── Sector-group scoring (unchanged from v1) ─────────────────────────
+# ── Sector-group scoring ─────────────────────────
 
 def compute_value_score(df: pd.DataFrame, group: str) -> pd.Series:
-    """Compute Value Score per sector group (unchanged)."""
+    """Compute the PROD sector Value Score used in details and composite."""
     if df.empty:
         return pd.Series(dtype=float)
     df = df.copy()
@@ -302,7 +295,7 @@ def compute_value_score(df: pd.DataFrame, group: str) -> pd.Series:
 
 
 def compute_quality_score(df: pd.DataFrame, group: str) -> pd.Series:
-    """Compute Quality Score per sector group (unchanged)."""
+    """Compute the PROD sector Quality Score used in details and composite."""
     if df.empty:
         return pd.Series(dtype=float)
     df = df.copy()
@@ -382,10 +375,13 @@ def compute_factor_scores(
     """Compute VN-core factor scores with new Tier A factors."""
     # 1. Load technical indicators
     cur.execute(
-        """SELECT symbol, indicators
-           FROM technical_indicators
-           WHERE calc_date = %s AND symbol = ANY(%s)""",
-        (score_date, symbols),
+        """SELECT u.symbol, latest.indicators FROM unnest(%s::text[]) AS u(symbol)
+           CROSS JOIN LATERAL (
+             SELECT indicators FROM technical_indicators
+             WHERE symbol = u.symbol AND calc_date <= %s
+             ORDER BY calc_date DESC LIMIT 1
+           ) latest ORDER BY u.symbol""",
+        (symbols, score_date),
     )
     tech_map: dict[str, dict] = {}
     for sym, ind_json in cur.fetchall():
@@ -410,7 +406,7 @@ def compute_factor_scores(
     cur.execute(
         """SELECT DISTINCT ON (symbol) symbol, pe, pb, roe, roa, debt_equity, gross_margin,
                   net_margin, fcf_yield, ev_ebitda,
-                  yoy_revenue_growth, yoy_earnings_growth
+                  yoy_revenue_growth, yoy_earnings_growth, ratio_date, published_date
            FROM financial_ratios
            WHERE symbol = ANY(%s)
              AND frequency = 'quarterly'
@@ -442,6 +438,8 @@ def compute_factor_scores(
             "debt_equity": r[5], "gross_margin": r[6],
             "net_margin": r[7], "fcf_yield": r[8], "ev_ebitda": r[9],
             "yoy_revenue_growth": r[10], "yoy_earnings_growth": r[11],
+            "ratio_date": r[12],
+            "published_date": r[13],
         }
     logger.info("  Loaded financial ratios for %d symbols", len(fin_map))
 
@@ -545,10 +543,13 @@ def compute_factor_scores(
 
     # 12. Load foreign_flow room_remaining (latest per symbol)
     cur.execute(
-        """SELECT DISTINCT ON (symbol) symbol, room_remaining, room_limit, ownership_pct
-           FROM foreign_flow
-           WHERE symbol = ANY(%s) AND trade_date <= %s
-           ORDER BY symbol, trade_date DESC""",
+        """SELECT u.symbol, latest.room_remaining, latest.room_limit, latest.ownership_pct
+           FROM unnest(%s::text[]) AS u(symbol)
+           CROSS JOIN LATERAL (
+             SELECT room_remaining, room_limit, ownership_pct FROM foreign_flow
+             WHERE symbol = u.symbol AND trade_date <= %s
+             ORDER BY trade_date DESC LIMIT 1
+           ) latest ORDER BY u.symbol""",
         (symbols, score_date),
     )
     room_map: dict[str, dict[str, float]] = {}
@@ -561,11 +562,11 @@ def compute_factor_scores(
     logger.info("  Loaded foreign room for %d symbols", len(room_map))
 
     # ─── Classify symbols into sector groups ────────────────────────
+    cur.execute("SELECT symbol, sector, industry FROM stocks WHERE symbol = ANY(%s)", (symbols,))
+    sectors = {sym: (sector, industry) for sym, sector, industry in cur.fetchall()}
     fin_syms, re_syms, other_syms = [], [], []
     for sym in symbols:
-        cur.execute("SELECT industry FROM stocks WHERE symbol = %s", (sym,))
-        row = cur.fetchone()
-        industry = row[0] if row else None
+        sector, industry = sectors.get(sym, (None, None))
         g = classify(industry, sym)
         if g == FINANCIALS:
             fin_syms.append(sym)
@@ -598,6 +599,7 @@ def compute_factor_scores(
         row: dict[str, Any] = {"symbol": sym}
         group = sym_groups.get(sym, OTHERS)
         row["sector_group"] = group
+        row["ratio_period"] = fin.get("ratio_date")
         row["ceiling_streak"] = tech.get("ceiling_streak", 0)
 
         # ── Existing value factor raw inputs ─────────────────────
@@ -614,20 +616,15 @@ def compute_factor_scores(
 
         # ── Existing quality factor raw inputs ───────────────────
         roe = fin.get("roe")
-        row["roe_norm"] = roe / 100.0 if roe is not None else None
+        row["roe_norm"] = fields.financial_number(roe)  # Core ratios already use fractions.
         row["yoy_revenue_growth"] = fin.get("yoy_revenue_growth")
         row["yoy_earnings_growth"] = fin.get("yoy_earnings_growth")
         row["de_inv"] = 1.0 / row["debt_equity"] if row["debt_equity"] and row["debt_equity"] > 0 else None
 
         # ── NIM for FINANCIALS ───────────────────────────────────
         if group == FINANCIALS:
-            bs = stmt.get("BS", {}).get("data", {})
-            inc = stmt.get("IS", {}).get("data", {})
-            interest_income = _get_val(inc, ["doanh thu hoạt động tài chính", "6_doanh_thu_hoạt_động_tài_chính"])
-            interest_expense = _get_val(inc, ["chi phí tài chính", "8_chi_phí_tài_chính", "trong_đó_chi_phí_lãi_vay"])
-            net_interest = (interest_income or 0) - (interest_expense or 0)
-            total_assets = _get_val(bs, ["tổng cộng tài sản", "tổng_cộng_tài_sản"])
-            row["nim"] = net_interest / total_assets if total_assets and total_assets > 0 else None
+            # Financial revenue / total assets is not bank NIM; no verified NIM source yet.
+            row["nim"] = None
             row["car"] = None
             row["npl_inv"] = None
             row["loan_growth"] = None
@@ -637,7 +634,7 @@ def compute_factor_scores(
         if group == REAL_ESTATE:
             bs = stmt.get("BS", {}).get("data", {})
             inc = stmt.get("IS", {}).get("data", {})
-            _rev = _get_val(inc, ["doanh thu thuần", "3_doanh_thu_thuần"])
+            _rev = _get_val(inc, fields.REVENUE_KEYS)
             _inv = _get_val(bs, ["hàng tồn kho", "iv_hàng_tồn_kho", "1_hàng_tồn_kho", "hàng tồn kho ròng"])
             if _rev is not None and _inv is not None and _inv > 0:
                 row["inv_turnover"] = _rev / _inv
@@ -646,9 +643,9 @@ def compute_factor_scores(
 
         # ── Existing accrual / F_Score (for backward compat) ────
         cf = stmt.get("CF", {}).get("data", {})
-        cfo = _get_val(cf, ["lưu chuyển tiền thuần từ hoạt động kinh doanh", "lưu_chuyển_tiền_thuần_từ_hoạt_động_kinh_doanh"])
-        ni = _get_val(stmt.get("IS", {}).get("data", {}), ["lợi nhuận sau thuế", "18_lợi_nhuận_sau_thuế"])
-        ta = _get_val(stmt.get("BS", {}).get("data", {}), ["tổng cộng tài sản", "tổng_cộng_tài_sản"])
+        cfo = _get_val(cf, fields.CFO_KEYS)
+        ni = _get_val(stmt.get("IS", {}).get("data", {}), fields.NI_KEYS)
+        ta = _get_val(stmt.get("BS", {}).get("data", {}), fields.ASSET_KEYS)
         if ni is not None and cfo is not None and ta is not None and ta > 0:
             accrual = (ni - cfo) / ta
             row["accrual_inv"] = 1.0 / abs(accrual) if accrual != 0 else 10.0
@@ -800,12 +797,12 @@ def compute_factor_scores(
         # ── ALTMAN Z' for EM: 6.56*WC/TA + 3.26*RE/TA + 6.72*EBIT/TA + 1.05*BV/TL
         bs_data = stmt.get("BS", {}).get("data", {})
         inc_data = stmt.get("IS", {}).get("data", {})
-        ca = _get_val(bs_data, ["a_tài_sản_ngắn_hạn", "tài sản ngắn hạn"])
-        cl = _get_val(bs_data, ["i_nợ_ngắn_hạn", "nợ ngắn hạn"])
+        ca = _get_val(bs_data, fields.CA_KEYS)
+        cl = _get_val(bs_data, fields.CL_KEYS)
         re = _get_val(bs_data, ["lợi nhuận sau thuế chưa phân phối", "lợi nhuận chưa phân phối"])
         ebit = _get_val(inc_data, ["lợi nhuận từ hoạt động kinh doanh", "ebit", "lợi nhuận thuần từ hoạt động kinh doanh"])
-        eq = _get_val(bs_data, ["vốn chủ sở hữu", "d_vốn_chủ_sở_hữu", "i_vốn_chủ_sở_hữu"])
-        tl = _get_val(bs_data, ["c_nợ_phải_trả", "tổng nợ phải trả", "nợ phải trả"])
+        eq = _get_val(bs_data, fields.EQUITY_KEYS)
+        tl = _get_val(bs_data, fields.LIAB_KEYS)
         if all(v is not None for v in [ca, cl, ta, re, ebit, eq, tl]) and ta > 0 and tl > 0:
             wc = ca - cl
             altman_z = (
@@ -842,7 +839,7 @@ def compute_factor_scores(
             return None
 
         # 1. ROA > 0
-        roa_q = _get_val(inc_data, ["lợi nhuận sau thuế", "18_lợi_nhuận_sau_thuế"])
+        roa_q = _get_val(inc_data, fields.NI_KEYS)
         roa_ta = ta
         if roa_q is not None and roa_ta is not None and roa_ta > 0 and roa_q > 0:
             piotroski += 1
@@ -852,8 +849,8 @@ def compute_factor_scores(
             piotroski += 1
 
         # 3. ΔROA > 0 (ROA improved)
-        roa_prev = _stmt_val_offset(is_hist, "IS", ["lợi nhuận sau thuế", "18_lợi_nhuận_sau_thuế"], 4)
-        ta_prev = _stmt_val_offset(bs_hist, "BS", ["tổng cộng tài sản", "tổng_cộng_tài_sản"], 4)
+        roa_prev = _stmt_val_offset(is_hist, "IS", fields.NI_KEYS, 4)
+        ta_prev = _stmt_val_offset(bs_hist, "BS", fields.ASSET_KEYS, 4)
         if roa_q is not None and roa_ta is not None and roa_ta > 0:
             cur_roa = roa_q / roa_ta
             if roa_prev is not None and ta_prev is not None and ta_prev > 0:
@@ -866,8 +863,8 @@ def compute_factor_scores(
             piotroski += 1
 
         # 5. ΔLeverage: long-term debt / total assets decreased
-        lt_debt = _get_val(bs_data, ["vay và nợ thuê tài chính dài hạn", "nợ dài hạn", "vay dài hạn"])
-        lt_debt_prev = _stmt_val_offset(bs_hist, "BS", ["vay và nợ thuê tài chính dài hạn", "nợ dài hạn", "vay dài hạn"], 4)
+        lt_debt = _get_val(bs_data, fields.LONG_BORROWING_KEYS)
+        lt_debt_prev = _stmt_val_offset(bs_hist, "BS", fields.LONG_BORROWING_KEYS, 4)
         if lt_debt is not None and ta is not None and ta > 0:
             cur_lev = lt_debt / ta
             if lt_debt_prev is not None and ta_prev is not None and ta_prev > 0:
@@ -878,8 +875,8 @@ def compute_factor_scores(
         # 6. ΔLiquidity: current ratio increased
         if ca is not None and cl is not None and cl > 0:
             cur_cr = ca / cl
-            ca_prev = _stmt_val_offset(bs_hist, "BS", ["a_tài_sản_ngắn_hạn", "tài sản ngắn hạn"], 4)
-            cl_prev = _stmt_val_offset(bs_hist, "BS", ["i_nợ_ngắn_hạn", "nợ ngắn hạn"], 4)
+            ca_prev = _stmt_val_offset(bs_hist, "BS", fields.CA_KEYS, 4)
+            cl_prev = _stmt_val_offset(bs_hist, "BS", fields.CL_KEYS, 4)
             if ca_prev is not None and cl_prev is not None and cl_prev > 0:
                 prev_cr = ca_prev / cl_prev
                 if cur_cr > prev_cr:
@@ -887,15 +884,15 @@ def compute_factor_scores(
 
         # 7. No new shares (equity / par value ~ unchanged)
         # Simplified: check if total equity hasn't grown faster than retained earnings
-        eq_prev = _stmt_val_offset(bs_hist, "BS", ["vốn chủ sở hữu", "d_vốn_chủ_sở_hữu", "i_vốn_chủ_sở_hữu"], 4)
+        eq_prev = _stmt_val_offset(bs_hist, "BS", fields.EQUITY_KEYS, 4)
         if eq is not None and eq_prev is not None and eq <= eq_prev * 1.02:
             piotroski += 1
 
         # 8. ΔMargin: gross margin increased
-        gm_cur = _get_val(inc_data, ["giá vốn hàng bán", "4_giá_vốn_hàng_bán"])
-        rev_cur = _get_val(inc_data, ["doanh thu thuần", "3_doanh_thu_thuần"])
-        gm_prev = _stmt_val_offset(is_hist, "IS", ["giá vốn hàng bán", "4_giá_vốn_hàng_bán"], 4)
-        rev_prev = _stmt_val_offset(is_hist, "IS", ["doanh thu thuần", "3_doanh_thu_thuần"], 4)
+        gm_cur = _get_val(inc_data, fields.COGS_KEYS)
+        rev_cur = _get_val(inc_data, fields.REVENUE_KEYS)
+        gm_prev = _stmt_val_offset(is_hist, "IS", fields.COGS_KEYS, 4)
+        rev_prev = _stmt_val_offset(is_hist, "IS", fields.REVENUE_KEYS, 4)
         if rev_cur is not None and gm_cur is not None and rev_cur > 0:
             cur_gm_pct = (rev_cur - gm_cur) / rev_cur
             if rev_prev is not None and gm_prev is not None and rev_prev > 0:
@@ -980,9 +977,8 @@ def compute_factor_scores(
     for group_name, group_df in df.groupby("sector_group"):
         if group_df.empty:
             continue
-        idx = group_df.index
-        all_value.loc[idx] = compute_value_score(group_df, group_name)
-        all_quality.loc[idx] = compute_quality_score(group_df, group_name)
+        all_value.loc[group_df.index] = compute_value_score(group_df, group_name)
+        all_quality.loc[group_df.index] = compute_quality_score(group_df, group_name)
     m = compute_momentum_score(df)
 
     # ─── Composite (V1 backward compatible) ─────────────────────────
@@ -1168,68 +1164,35 @@ def compute_factor_scores(
         sym_idx = sym["symbol"]
         s = sym["sector_group"]
 
-        # Legacy scores (same as v1)
+        # PROD keeps sector detail/composite scores distinct from exported F1/F2.
         vs = all_value.get(sym_idx, 0.0)
         qs = all_quality.get(sym_idx, 0.0)
         ms = m.get(sym_idx, 0.0)
         cs = composite.get(sym_idx, 0.0)
         pr = percentile.get(sym_idx, 0.0)
 
-        # Legacy factor sub-scores (same as v1)
-        value_scores = []
-        if s == FINANCIALS:
-            for c in ["pb_inv", "roe_norm", "nim", "fcf_yield"]:
-                val = None
-                r = factor_ranks.get(c)
-                if r is not None and sym_idx in r.index:
-                    vv = r.get(sym_idx)
-                    val = float(vv) if pd.notna(vv) else None
-                value_scores.append(val)
-        elif s == REAL_ESTATE:
-            for c in ["pe_inv", "pb_inv", "evebitda_inv", "fcf_yield"]:
-                val = None
-                r2 = factor_ranks.get(c)
-                if r2 is not None and sym_idx in r2.index:
-                    vv = r2.get(sym_idx)
-                    val = float(vv) if pd.notna(vv) else None
-                value_scores.append(val)
-        else:
-            for c in ["pe_inv", "pb_inv", "fcf_yield", "evebitda_inv", "gross_margin", "net_margin"]:
-                val = None
-                r3 = factor_ranks.get(c)
-                if r3 is not None and sym_idx in r3.index:
-                    vv = r3.get(sym_idx)
-                    val = float(vv) if pd.notna(vv) else None
-                value_scores.append(val)
-        valid_value_scores = [v for v in value_scores if v is not None]
-        value_score_out = float(np.mean(valid_value_scores)) if valid_value_scores else None
+        def _factor_val(raw_col: str) -> Optional[float]:
+            rs = factor_ranks.get(raw_col)
+            if rs is not None and sym_idx in rs.index:
+                vv = rs.get(sym_idx)
+                return float(vv) if pd.notna(vv) else None
+            return None
 
-        quality_scores = []
+        # Export the PROD equal-weight mean of global component ranks.
         if s == FINANCIALS:
-            for c in ["roe_norm", "yoy_earnings_growth"]:
-                val = None
-                r4 = factor_ranks.get(c)
-                if r4 is not None and sym_idx in r4.index:
-                    vv = r4.get(sym_idx)
-                    val = float(vv) if pd.notna(vv) else None
-                quality_scores.append(val)
+            value_columns = ["pb_inv", "roe_norm", "nim", "fcf_yield"]
+            quality_columns = ["roe_norm", "yoy_earnings_growth"]
         elif s == REAL_ESTATE:
-            for c in ["roe_norm", "net_margin", "yoy_revenue_growth", "yoy_earnings_growth"]:
-                val = None
-                r5 = factor_ranks.get(c)
-                if r5 is not None and sym_idx in r5.index:
-                    vv = r5.get(sym_idx)
-                    val = float(vv) if pd.notna(vv) else None
-                quality_scores.append(val)
+            value_columns = ["pe_inv", "pb_inv", "evebitda_inv", "fcf_yield"]
+            quality_columns = ["roe_norm", "net_margin", "yoy_revenue_growth", "yoy_earnings_growth"]
         else:
-            for c in ["roe_norm", "yoy_revenue_growth", "yoy_earnings_growth", "net_margin"]:
-                val = None
-                r6 = factor_ranks.get(c)
-                if r6 is not None and sym_idx in r6.index:
-                    vv = r6.get(sym_idx)
-                    val = float(vv) if pd.notna(vv) else None
-                quality_scores.append(val)
-        valid_quality_scores = [v for v in quality_scores if v is not None]
+            value_columns = ["pe_inv", "pb_inv", "fcf_yield", "evebitda_inv", "gross_margin", "net_margin"]
+            quality_columns = ["roe_norm", "yoy_revenue_growth", "yoy_earnings_growth", "net_margin"]
+        value_scores = [_factor_val(column) for column in value_columns]
+        quality_scores = [_factor_val(column) for column in quality_columns]
+        valid_value_scores = [value for value in value_scores if value is not None]
+        valid_quality_scores = [value for value in quality_scores if value is not None]
+        value_score_out = float(np.mean(valid_value_scores)) if valid_value_scores else None
         quality_score_out = float(np.mean(valid_quality_scores)) if valid_quality_scores else None
 
         # Legacy momentum sub-scores
@@ -1261,13 +1224,6 @@ def compute_factor_scores(
         liquidity_score_out = float(np.mean(valid_liq)) if valid_liq else None
 
         # ── NEW: Tier A score values (individual factor ranks) ────
-        def _factor_val(raw_col: str) -> Optional[float]:
-            rs = factor_ranks.get(raw_col)
-            if rs is not None and sym_idx in rs.index:
-                vv = rs.get(sym_idx)
-                return float(vv) if pd.notna(vv) else None
-            return None
-
         _earn = _factor_val("earnings_yield_raw")
         _acc = _factor_val("accrual_ratio_raw")
         _ff = _factor_val("foreign_net_5d_raw")
@@ -1290,6 +1246,34 @@ def compute_factor_scores(
         details["value_score"] = round(float(vs), 1) if pd.notna(vs) else None
         details["quality_score"] = round(float(qs), 1) if pd.notna(qs) else None
         details["momentum_score"] = round(float(ms), 1) if pd.notna(ms) else None
+        fin = fin_map.get(sym_idx, {})
+        details["source"] = {
+            "version": FACTOR_SOURCE_VERSION,
+            "as_of": score_date.isoformat(),
+            "sector": sectors.get(sym_idx, (None, None))[0],
+            "sector_group": s,
+            "ratio_date": str(fin["ratio_date"]) if fin.get("ratio_date") else None,
+            "published_date": str(fin["published_date"]) if fin.get("published_date") else None,
+            "ratio_frequency": "quarterly",
+            "roe_unit": "fraction",
+            "roe_basis": "REPORTED_PERIOD_NOT_ANNUALIZED_OR_TTM",
+            "flow_window": "UNVERIFIED_QUARTER_OR_YTD",
+            "equity_basis": "UNVERIFIED_END_OR_AVERAGE",
+            "quality_peer_count": len(df),
+            "quality_benchmark": "PROD_GLOBAL_ELIGIBLE_UNIVERSE",
+            "quality_aggregation": "PROD_EQUAL_WEIGHT_AVAILABLE_COMPONENTS_WITH_SECTOR_FALLBACK",
+            "detail_benchmark": "PROD_SECTOR_GROUP_WITHOUT_PERIOD_SPLIT",
+            "sector_classification": "PROD_INDUSTRY_AND_SYMBOL_OVERRIDES",
+            "availability_policy": "published_date_or_reporting_lag_heuristic",
+            # shortcut: historical stock metadata is unavailable; certify PIT before promotion.
+            "stock_metadata_basis": "CURRENT_NOT_CERTIFIED_POINT_IN_TIME",
+            "nim_status": "UNAVAILABLE_NO_VERIFIED_SOURCE" if s == FINANCIALS else "NOT_APPLICABLE",
+        }
+        details["financial_inputs"] = {
+            key: fields.financial_number(fin.get(key))
+            for key in ("pe", "pb", "roe", "roa", "debt_equity", "gross_margin", "net_margin",
+                        "yoy_revenue_growth", "yoy_earnings_growth")
+        }
         details = {k: v for k, v in details.items() if v is not None}
         details_json = json.dumps(details, ensure_ascii=False)
 
@@ -1315,6 +1299,52 @@ def compute_factor_scores(
     return output_rows
 
 
+def select_scoring_symbols(cur, score_date: date) -> list[str]:
+    """Reuse the existing producer liquidity universe for source ranks."""
+    # Liquid Universe Filter (Fix 2)
+    # adtv_val >= 5,000,000 (representing 5 billion VND/day, since prices are divided by 1000 in DB)
+    # trading_days >= 45 in the last 60 calendar days (approx 90 calendar days lookback)
+    start_20d = score_date - timedelta(days=30)
+    start_60d = score_date - timedelta(days=90)
+
+    cur.execute("""
+        WITH adtv AS (
+            SELECT
+                ticker,
+                AVG(close * volume_total) as adtv_val
+            FROM market_data_daily_calculation
+            WHERE date >= %s AND date <= %s
+            GROUP BY ticker
+        ),
+        trades AS (
+            SELECT
+                ticker,
+                COUNT(CASE WHEN volume_total > 0 THEN 1 END) as trading_days
+            FROM market_data_daily_calculation
+            WHERE date >= %s AND date <= %s
+            GROUP BY ticker
+        )
+        SELECT s.symbol FROM stocks s
+        JOIN adtv a ON s.symbol = a.ticker
+        JOIN trades t ON s.symbol = t.ticker
+        WHERE s.exchange IN ('HOSE','HSX')
+          AND s.trading_status = 'NORMAL'
+          AND a.adtv_val >= 5000000
+          AND t.trading_days >= 45
+        ORDER BY s.symbol
+    """, (start_20d, score_date, start_60d, score_date))
+    symbols = [r[0] for r in cur.fetchall()]
+
+    if not symbols:
+        logger.info("Liquid universe query returned empty, falling back to all HOSE/HSX symbols")
+        cur.execute("SELECT symbol FROM stocks WHERE exchange IN ('HOSE','HSX') ORDER BY symbol")
+        symbols = [r[0] for r in cur.fetchall()]
+
+    logger.info("Computing factor scores for %d symbols (liquid universe)", len(symbols))
+
+    return symbols
+
+
 def refresh_all(
     score_date: Optional[date] = None,
     orthogonalizer: Optional[FactorOrthogonalizer] = None,
@@ -1327,46 +1357,7 @@ def refresh_all(
             cur.execute("SELECT MAX(calc_date) FROM technical_indicators")
             score_date = cur.fetchone()[0]
 
-        # Liquid Universe Filter (Fix 2)
-        # adtv_val >= 5,000,000 (representing 5 billion VND/day, since prices are divided by 1000 in DB)
-        # trading_days >= 45 in the last 60 calendar days (approx 90 calendar days lookback)
-        start_20d = score_date - timedelta(days=30)
-        start_60d = score_date - timedelta(days=90)
-        
-        cur.execute("""
-            WITH adtv AS (
-                SELECT 
-                    ticker,
-                    AVG(close * volume_total) as adtv_val
-                FROM market_data_daily_calculation
-                WHERE date >= %s AND date <= %s
-                GROUP BY ticker
-            ),
-            trades AS (
-                SELECT 
-                    ticker,
-                    COUNT(CASE WHEN volume_total > 0 THEN 1 END) as trading_days
-                FROM market_data_daily_calculation
-                WHERE date >= %s AND date <= %s
-                GROUP BY ticker
-            )
-            SELECT s.symbol FROM stocks s
-            JOIN adtv a ON s.symbol = a.ticker
-            JOIN trades t ON s.symbol = t.ticker
-            WHERE s.exchange IN ('HOSE','HSX')
-              AND s.trading_status = 'NORMAL'
-              AND a.adtv_val >= 5000000
-              AND t.trading_days >= 45
-            ORDER BY s.symbol
-        """, (start_20d, score_date, start_60d, score_date))
-        symbols = [r[0] for r in cur.fetchall()]
-        
-        if not symbols:
-            logger.info("Liquid universe query returned empty, falling back to all HOSE/HSX symbols")
-            cur.execute("SELECT symbol FROM stocks WHERE exchange IN ('HOSE','HSX') ORDER BY symbol")
-            symbols = [r[0] for r in cur.fetchall()]
-            
-        logger.info("Computing factor scores for %d symbols (liquid universe)", len(symbols))
+        symbols = select_scoring_symbols(cur, score_date)
 
         rows = compute_factor_scores(symbols, score_date, cur, orthogonalizer=orthogonalizer)
         if not rows:
