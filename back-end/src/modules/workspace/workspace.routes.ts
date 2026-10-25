@@ -287,11 +287,11 @@ router.get('/research/thesis-history', (req, res, next) => send(res, next, async
   return { theses, total, page: query.page, pageSize, dates: dateRows.map((row: any) => row.date) };
 }));
 
-const watchlistSchema = z.object({ name: z.string().min(1).max(80), symbols: z.array(z.string()).default([]) });
+const watchlistSchema = z.object({ name: z.string().min(1).max(80), symbols: z.array(z.string()).optional() });
 router.post('/watchlists', authMiddleware, async (req: AuthRequest, res, next) => {
   try {
     const body = watchlistSchema.parse(req.body);
-    const item = await db.watchlist.create({ data: { userId: req.userId!, name: body.name, symbols: body.symbols.map(s => s.toUpperCase()) } });
+    const item = await db.watchlist.create({ data: { userId: req.userId!, name: body.name, symbols: (body.symbols ?? []).map(s => s.toUpperCase()) } });
     res.status(201).json(item);
   } catch (error) { next(error); }
 });
