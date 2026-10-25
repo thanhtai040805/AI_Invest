@@ -19,6 +19,7 @@ from datetime import date
 from typing import Any, Dict, List, Optional
 
 from app.infrastructure.database.pg_pool import get_conn
+from app.domain.services import financial_fields as fields
 from app.domain.repositories.universe_repository import UniverseRepository
 from app.infrastructure.vendors.vn.sector_groups import classify, BANKS, FINANCIAL_SERVICES, REAL_ESTATE
 
@@ -33,16 +34,8 @@ EXCLUDED_SECTORS = [
     "Tài chính khác",
 ]
 
-# Chuẩn hóa các bộ key tìm kiếm trong CSDL financial_statements (VAS Thông tư 200/BTC)
-REV_KEYS = [
-    "net_sales",
-    "3_doanh_thu_thuần_về_bán_hàng_và_cung_cấp_dịch_vụ",
-    "3. Doanh thu thuần về bán hàng và cung cấp dịch vụ",
-    "1_doanh_thu_bán_hàng_và_cung_cấp_dịch_vụ",
-    "1. Doanh thu bán hàng và cung cấp dịch vụ",
-    "doanh_thu_thuần_về_bán_hàng_và_cung_cấp_dịch_vụ",
-    "doanh thu thuần",
-]
+# Canonical field identities are shared with the financial-ratio ETL.
+REV_KEYS = fields.REVENUE_KEYS
 
 REC_KEYS = [
     "accounts_receivable",
@@ -54,28 +47,13 @@ REC_KEYS = [
     "các_khoản_phải_thu_ngắn_hạn",
 ]
 
-COGS_KEYS = [
-    "cost_of_sales",
-    "4_giá_vốn_hàng_bán",
-    "4. Giá vốn hàng bán",
-    "giá_vốn_hàng_bán",
-]
+COGS_KEYS = fields.COGS_KEYS
 
-GROSS_PROFIT_KEYS = ["gross_profit", "gross profit", "lợi nhuận gộp", "loi_nhuan_gop"]
+GROSS_PROFIT_KEYS = fields.GROSS_PROFIT_KEYS
 
-TA_KEYS = [
-    "total_assets",
-    "tổng_cộng_tài_sản",
-    "TỔNG CỘNG TÀI SẢN",
-    "tổng cộng tài sản",
-]
+TA_KEYS = fields.ASSET_KEYS
 
-CA_KEYS = [
-    "current_assets",
-    "a_tài_sản_ngắn_hạn",
-    "A. TÀI SẢN NGẮN HẠN",
-    "tài sản ngắn hạn",
-]
+CA_KEYS = fields.CA_KEYS
 
 PPE_KEYS = [
     "fixed_assets",
@@ -87,12 +65,7 @@ PPE_KEYS = [
     "tài sản cố định",
 ]
 
-DEBT_KEYS = [
-    "liabilities",
-    "c_nợ_phải_trả",
-    "C. NỢ PHẢI TRẢ",
-    "nợ phải trả",
-]
+DEBT_KEYS = fields.LIAB_KEYS
 
 SGA_SALE_KEYS = [
     "selling_expenses",
@@ -127,44 +100,13 @@ DEPR_BS_ACC_KEYS = [
     "hao mòn lũy kế",
 ]
 
-CFO_KEYS = [
-    "net_cash_inflows_outflows_from_operating_activities",
-    "lưu_chuyển_tiền_thuần_từ_hoạt_động_kinh_doanh",
-    "Lưu chuyển tiền thuần từ hoạt động kinh doanh",
-    "I. Lưu chuyển tiền từ hoạt động kinh doanh",
-    "i. lưu chuyển tiền từ hoạt động kinh doanh",
-    "I - Lưu chuyển tiền thuần từ hoạt động kinh doanh",
-    "Lưu chuyển tiền tệ ròng từ các hoạt động sản xuất kinh doanh",
-    "lưu_chuyển_tiền_tệ_ròng_từ_các_hoạt_động_sản_xuất_kinh_doanh",
-    "Lưu chuyển thuần từ hoạt động kinh doanh",
-    "Lưu chuyển tiền từ hoạt động kinh doanh",
-    "i_lưu_chuyển_tiền_thuần_từ_hoạt_động_kinh_doanh",
-    "i_lưu_chuyển_tiền_từ_hoạt_động_kinh_doanh",
-]
+CFO_KEYS = fields.CFO_KEYS
 
-NI_KEYS = [
-    "18_lợi_nhuận_sau_thuế_thu_nhập_doanh_nghiệp",
-    "18. Lợi nhuận sau thuế thu nhập doanh nghiệp",
-    "lợi_nhuận_sau_thuế_thu_nhập_doanh_nghiệp",
-    "Lợi nhuận sau thuế thu nhập doanh nghiệp",
-    "lợi nhuận sau thuế",
-]
+NI_KEYS = fields.NI_KEYS
 
 
 def _extract_val(data_dict: Optional[Dict[str, Any]], keys: List[str]) -> Optional[float]:
-    """Trích xuất giá trị số từ từ điển BCTC không phân biệt hoa thường."""
-    if not data_dict:
-        return None
-    d_norm = {str(k).lower().strip(): v for k, v in data_dict.items() if v is not None}
-    for k in keys:
-        k_norm = k.lower().strip()
-        if k_norm in d_norm:
-            try:
-                val = float(d_norm[k_norm])
-                return val
-            except (ValueError, TypeError):
-                continue
-    return None
+    return fields.extract_financial_value(data_dict, keys)
 
 
 class BeneishMScoreEngine:

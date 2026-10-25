@@ -22,6 +22,7 @@ import numpy as np
 
 from app.core.base_agent import BaseAgent
 from app.adapters.postgres_adapter import PostgresAdapter
+from app.domain.repositories.replay_factor_snapshot import current_factor_snapshot, LEARNING_FACTOR_SQL
 from app.eval.mral import MRALEngine
 from app.domain.rules.learning.causal_learning_engines import (
     FactorPerformanceEngine,
@@ -220,15 +221,9 @@ class ReinforcementLearningAgent(BaseAgent):
         if not factor_preds:
             # Tra cứu từ bảng factor_scores (chuẩn PostgreSQL / Prisma schema)
             try:
-                rows_factors = self.storage.fetch_all(
-                    """
-                    SELECT symbol, value_score, quality_score, momentum_1m, earnings_yield_score, foreign_flow_score, composite_score
-                    FROM factor_scores
-                    WHERE score_date <= %s
-                    ORDER BY score_date DESC LIMIT 100
-                    """,
-                    (data_as_of,),
-                )
+                snapshot = current_factor_snapshot()
+                rows_factors = (snapshot.learning_rows(data_as_of) if snapshot else
+                                self.storage.fetch_all(LEARNING_FACTOR_SQL, (data_as_of,)))
                 if rows_factors:
                     for r in rows_factors:
                         factor_preds[str(r[0])] = {
@@ -485,6 +480,7 @@ class ReinforcementLearningAgent(BaseAgent):
             "learning_protocol": "Empirical Bayes Shrinkage & Rank IC Causal Attribution",
             "calibration_timestamp": datetime.now().isoformat(),
             "db_persistence": "COMMITTED_POSTGRESQL" if persisted else "NOT_PERSISTED",
+            "factor_snapshot_sha256": current_factor_snapshot().sha256 if current_factor_snapshot() else None,
         }
 
         # Bắn sự kiện lên RabbitMQ Event Bus

@@ -17,11 +17,12 @@ import hashlib
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
-from app.core.base_agent import BaseAgent
+from app.core.base_agent import BaseAgent, _resolve_target_date
 from app.core.registry import AgentRegistry
 from app.eval.audit_trail import AuditTrailEngine
 
@@ -846,6 +847,60 @@ class StrategyCIOAgent(BaseAgent):
     # =========================================================================
     # PROCESS DISPATCHER
     # =========================================================================
+    def _observe_prior_suspension(self, event_data: Dict[str, Any], resolution: Dict[str, Any]) -> Dict[str, Any]:
+        """Observe historical conditions without changing arbitration or the hash chain."""
+        conflict = event_data.get("conflict") or event_data
+        observation = {
+            "mode": "OBSERVATION_ONLY",
+            "prior_suspension": None,
+            "current_thesis_id": resolution["thesis_id"],
+            "current_resolution": resolution["final_resolution"],
+            "current_conditions": resolution["conditions"],
+            "current_counter_verdict": conflict.get("counter_verdict") or conflict.get("counter_view", "PROCEED"),
+            "current_cts_score": conflict.get("cts_score"),
+            "current_block_reasons": conflict.get("block_reasons", []),
+            "account_id": event_data.get("replay_account_id"),
+            "history_scope": "TICKER_AND_REPLAY_MODE; LEDGER_HAS_NO_ACCOUNT_OR_RUN_ID",
+            # shortcut: prior suspensions are not enforced; review observed transitions before adding a gate.
+            "clearance_check": "NOT_IMPLEMENTED_BY_CURRENT_POLICY",
+            "prior_condition_enforced": False,
+        }
+        try:
+            from app.infrastructure.database.pg_pool import get_conn
+            is_replay = bool(resolution.get("is_replay", False))
+            cutoff = (
+                datetime.combine(_resolve_target_date(event_data, resolution, True), time.min, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+                if is_replay else datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
+            )
+            observation["lookup_before"] = cutoff.isoformat()
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT resolution_id, thesis_id, final_resolution, verdict_payload, created_at
+                        FROM cio_resolutions
+                        WHERE ticker = %s AND decision_type = 'CONFLICT_RESOLUTION'
+                          AND created_at < %s
+                          AND COALESCE(verdict_payload->>'is_replay', 'false') = %s
+                          AND resolution_id <> %s
+                          AND verdict_payload->'conditions' @> '["SUSPEND_PURCHASE_UNTIL_AUDITED"]'::jsonb
+                        ORDER BY created_at DESC, resolution_id DESC LIMIT 1
+                    """, (resolution["ticker"], cutoff, "true" if is_replay else "false", resolution["resolution_id"]))
+                    row = cur.fetchone()
+            observation["lookup_status"] = "FOUND" if row else "NOT_FOUND"
+            if row:
+                observation["prior_suspension"] = {
+                    "resolution_id": str(row[0]), "thesis_id": row[1],
+                    "final_resolution": row[2], "conditions": (row[3] or {}).get("conditions", []),
+                    "executive_rationale": (row[3] or {}).get("executive_rationale"),
+                    "created_at": row[4].isoformat(),
+                    "same_thesis": str(row[1]) == str(resolution["thesis_id"]),
+                }
+            logger.info("CIO suspension observation for %s: %s", resolution["ticker"], json.dumps(observation, default=str))
+        except Exception as exc:
+            observation.update({"lookup_status": "ERROR", "error_type": type(exc).__name__, "error": str(exc)})
+            logger.warning("CIO suspension observation failed for %s: %s", resolution["ticker"], exc)
+        return observation
+
     async def process(self, event_data: Dict[str, Any]) -> Dict[str, Any]:
         return await self._process_event(event_data)
 
@@ -900,6 +955,7 @@ class StrategyCIOAgent(BaseAgent):
                 conflict_payload["is_replay"] = event_data["is_replay"]
             res = await self.resolve_conflict(conflict_payload)
             trace = {
+                "suspension_observation": self._observe_prior_suspension(event_data, res),
                 "debate_synthesis": {
                     "final_verdict": res["final_resolution"],
                     "severity_tier": res.get("severity_tier"),

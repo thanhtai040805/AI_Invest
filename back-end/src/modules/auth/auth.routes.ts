@@ -141,7 +141,7 @@ router.post('/register', authLimiter, async (req: Request, res: Response, next: 
     });
   } catch (err: any) {
     if (err.name === 'ZodError') {
-      res.status(400).json({ error: 'Validation error', details: err.errors });
+      res.status(400).json({ error: 'Validation error', details: err.issues });
       return;
     }
     next(err);
@@ -173,7 +173,7 @@ router.post('/login', authLimiter, async (req: Request, res: Response, next: Nex
     });
   } catch (err: any) {
     if (err.name === 'ZodError') {
-      res.status(400).json({ error: 'Validation error', details: err.errors });
+      res.status(400).json({ error: 'Validation error', details: err.issues });
       return;
     }
     next(err);
@@ -225,7 +225,7 @@ router.post('/refresh', async (req: Request, res: Response, next: NextFunction) 
       return;
     }
     if (err.name === 'ZodError') {
-      res.status(400).json({ error: 'Validation error', details: err.errors });
+      res.status(400).json({ error: 'Validation error', details: err.issues });
       return;
     }
     next(err);
@@ -250,7 +250,7 @@ router.post('/logout', async (req: Request, res: Response, next: NextFunction) =
     res.status(204).send();
   } catch (err: any) {
     if (err.name === 'ZodError') {
-      res.status(400).json({ error: 'Validation error', details: err.errors });
+      res.status(400).json({ error: 'Validation error', details: err.issues });
       return;
     }
     next(err);

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -90,22 +91,36 @@ class ThesisSynthesizer:
         bull_case = price_target_info.get("bull_case", base_case)
         upside_pct = round(((base_case / current_price) - 1.0) * 100.0, 1) if current_price > 0 else 0.0
 
-        fin = financial_metrics or {}
+        fin = {}
+        for key in ("pe", "pb", "roe", "roic", "gpm", "earnings_growth", "f4_score"):
+            value = (financial_metrics or {}).get(key)
+            try:
+                number = float(value)
+                if not isinstance(value, bool) and math.isfinite(number):
+                    fin[key] = number
+            except (TypeError, ValueError):
+                pass
         fin_lines = []
-        if fin.get("pe"):
+        if fin.get("pe") is not None:
             fin_lines.append(f"- P/E hiện tại: {float(fin['pe']):.1f}x")
-        if fin.get("pb"):
+        if fin.get("pb") is not None:
             fin_lines.append(f"- P/B hiện tại: {float(fin['pb']):.2f}x")
-        if fin.get("roe"):
-            fin_lines.append(f"- ROE: {float(fin['roe']):.1f}%")
-        if fin.get("roic"):
+        if fin.get("roe") is not None:
+            fin_lines.append(f"- ROE kỳ báo cáo: {float(fin['roe']):.1f}% (chưa xác nhận annualized/TTM)")
+            fin_lines.append("- Cơ sở ROE: không so trực tiếp với ngưỡng ROE năm; không tự nhân 4. "
+                             "Tần suất quarterly chưa chứng minh dòng lợi nhuận là riêng quý hay lũy kế; "
+                             "chưa xác minh vốn chủ sở hữu cuối kỳ hay bình quân.")
+        if fin.get("roic") is not None:
             fin_lines.append(f"- ROIC: {float(fin['roic']):.1f}%")
-        if fin.get("gpm"):
+        if fin.get("gpm") is not None:
             fin_lines.append(f"- Biên lãi gộp (GPM): {float(fin['gpm']):.1f}%")
         if fin.get("earnings_growth") is not None:
             fin_lines.append(f"- Tăng trưởng lợi nhuận báo cáo: {float(fin['earnings_growth']):.1f}%")
         if fin.get("f4_score") is not None:
             fin_lines.append(f"- Điểm factor F4 earnings: {float(fin['f4_score']):.1f}/100")
+        source = (financial_metrics or {}).get("source")
+        if source:
+            fin_lines.append(f"- Nguồn và thời điểm dữ liệu (tỷ số phần trăm đã đổi sang %): {json.dumps(source, ensure_ascii=False)}")
 
         user_content = f"""
 Cổ phiếu: {clean_ticker} (Ngành: {sector})

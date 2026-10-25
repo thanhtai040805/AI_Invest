@@ -220,15 +220,14 @@ class InvestmentThesisAgent(BaseAgent):
                 price_target_info = structured_payload["thesis_body"]["price_target"]
                 independent_signals = structured_payload["input_validation"].get("independent_signals")
 
-                financial_metrics = {
-                    "pe": research_report.get("pe") or event_data.get("pe"),
-                    "pb": research_report.get("pb") or event_data.get("pb"),
-                    "roe": research_report.get("roe") or event_data.get("roe"),
-                    "roic": research_report.get("roic") or event_data.get("roic"),
-                    "gpm": research_report.get("gpm") or research_report.get("gross_profit_margin"),
-                    "earnings_growth": research_report.get("earnings_growth"),
-                    "f4_score": research_report.get("f4_earnings"),
-                }
+                financial_metrics = dict(research_report.get("financial_metrics") or {})
+                for name in ("pe", "pb", "roe", "roic", "gpm", "earnings_growth"):
+                    if name not in financial_metrics:
+                        value = research_report.get(name)
+                        if value is None:
+                            value = research_report.get("gross_profit_margin") if name == "gpm" else event_data.get(name)
+                        financial_metrics[name] = value
+                financial_metrics["f4_score"] = research_report.get("f4_earnings")
 
                 narrative = await self.thesis_synthesizer.synthesize_thesis_narrative(
                     ticker=ticker,
@@ -278,6 +277,7 @@ class InvestmentThesisAgent(BaseAgent):
                 "trace": {"decision": "SKIP_PEAI_HOLD"},
             }
         structured_payload["input_validation"]["peai_status"] = peai_status
+        structured_payload["input_validation"]["financial_metrics"] = research_report.get("financial_metrics") or {}
 
         # 4. Lưu luận điểm đầu tư vào CSDL qua IntelligenceRepository
         try:
@@ -321,6 +321,7 @@ class InvestmentThesisAgent(BaseAgent):
             "thesis_id": structured_payload["thesis_id"],
             "peai_status": peai_status,
             "status": "TRANSFER_TO_COUNTER_THESIS",
+            "financial_metrics": research_report.get("financial_metrics"),
         }
 
         return {"data": structured_payload, "trace": trace}

@@ -1,0 +1,85 @@
+{
+  "basis": "Retained LOCAL replay evidence 2026-10-25; offline controls, no accounts, IDs, prompts or credentials",
+  "local_closed_return_pct_sep07": [
+    -1.2987012987012987,
+    -1.3568521031207599,
+    -0.975609756097561,
+    -0.7317073170731708,
+    0.27137042062415195,
+    -0.975609756097561,
+    -0.975609756097561,
+    -2.0527859237536656,
+    -2.0527859237536656,
+    2.7137042062415198,
+    -1.7595307917888565,
+    2.3066485753052914,
+    0.4329004329004329,
+    2.8469750889679712,
+    -0.43668122270742354,
+    19.317211948790895,
+    0.4329004329004329,
+    0.9279475982532752,
+    0.9279475982532752,
+    0.8658008658008658,
+    1.0676156583629894,
+    1.0676156583629894,
+    1.0676156583629894,
+    1.0676156583629894,
+    1.0676156583629894,
+    1.0676156583629894,
+    0.6406926406926406,
+    -1.8140589569160999,
+    -2.708803611738149
+  ],
+  "missing_prod_ctg_loss_return_pct": [
+    -2.803738317757009,
+    -2.64797507788162
+  ],
+  "expected_local_A": {
+    "win_rate_p": 0.5556,
+    "payoff_ratio_b": 1.63,
+    "sample_size": 29
+  },
+  "expected_with_ctg_losses_A": {
+    "win_rate_p": 0.5357,
+    "payoff_ratio_b": 1.53,
+    "sample_size": 31
+  },
+  "hag_signal_control": {
+    "changed_only": "f3_momentum",
+    "old": 41.96,
+    "new": 62.12,
+    "held_constant": {
+      "factors": {
+        "f1_value": 77.96,
+        "f2_quality": 95.0,
+        "f3_momentum": 41.96,
+        "f4_earnings": 94.26,
+        "f5_flow": 38.42,
+        "f6_technical": 47.99
+      },
+      "css": 68.96,
+      "quality": 95.0,
+      "regime": "RANGE_BOUND"
+    },
+    "before": [
+      false,
+      {
+        "signal_1_factor": "PASS (F4 score=94.3/100, CSS=69.0)",
+        "signal_2_surveillance": "FAIL (F5 Flow=38.4, F3 Momentum=42.0 đều dưới 60)",
+        "signal_3_macro_hmm": "PASS (Regime=RANGE_BOUND)"
+      },
+      2
+    ],
+    "after": [
+      true,
+      {
+        "signal_1_factor": "PASS (F4 score=94.3/100, CSS=69.0)",
+        "signal_2_surveillance": "PASS (F5 Flow=38.4, F3 Momentum=62.1)",
+        "signal_3_macro_hmm": "PASS (Regime=RANGE_BOUND)"
+      },
+      3
+    ],
+    "status": "PASS"
+  }
+}

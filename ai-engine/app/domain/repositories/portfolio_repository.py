@@ -520,7 +520,7 @@ class PortfolioRepository:
             if action == "BUY":
                 self.storage.execute(
                     "INSERT INTO paper_trades (ticker, action, price, date, confidence, thesis, status, quantity, created_at, account_id) VALUES (%s, %s, %s, %s, 0.8, 'ML_REPLAY', 'OPEN', %s, CURRENT_TIMESTAMP, %s)",
-                    (ticker, action, executed_price, execution_local, shares, user_id),
+                    (ticker, action, executed_price, execution_db_timestamp, shares, user_id),
                 )
             if action == "SELL":
                 trades = self.storage.fetch_all(
@@ -533,10 +533,10 @@ class PortfolioRepository:
                     used = min(left, int(quantity))
                     pnl = (executed_price / float(entry_price) - 1) * 100
                     if used == int(quantity):
-                        self.storage.execute("UPDATE paper_trades SET status='CLOSED', resolve_price=%s, pnl=%s, resolved_at=%s WHERE id=%s", (executed_price, pnl, execution_local, trade_id))
+                        self.storage.execute("UPDATE paper_trades SET status='CLOSED', resolve_price=%s, pnl=%s, resolved_at=%s WHERE id=%s", (executed_price, pnl, execution_db_timestamp, trade_id))
                     else:
                         self.storage.execute("UPDATE paper_trades SET quantity=quantity-%s WHERE id=%s", (used, trade_id))
-                        self.storage.execute("INSERT INTO paper_trades (ticker,action,price,date,confidence,thesis,status,quantity,resolve_price,pnl,resolved_at,created_at,account_id) VALUES (%s,'BUY',%s,%s,0.8,'REPLAY_PARTIAL','CLOSED',%s,%s,%s,%s,CURRENT_TIMESTAMP,%s)", (ticker, entry_price, entry_date, used, executed_price, pnl, execution_local, user_id))
+                        self.storage.execute("INSERT INTO paper_trades (ticker,action,price,date,confidence,thesis,status,quantity,resolve_price,pnl,resolved_at,created_at,account_id) VALUES (%s,'BUY',%s,%s,0.8,'REPLAY_PARTIAL','CLOSED',%s,%s,%s,%s,CURRENT_TIMESTAMP,%s)", (ticker, entry_price, entry_date, used, executed_price, pnl, execution_db_timestamp, user_id))
                     left -= used
             account = self.get_account_state(user_id=user_id, as_of=mark_as_of)
             self.storage.execute(
@@ -638,7 +638,7 @@ class PortfolioRepository:
                 DECLARE 
                     tbl text;
                     tables text[] := ARRAY[
-                        'portfolio_decisions', 'investment_theses', 'counter_thesis_verdicts',
+                        'portfolio_decisions', 'portfolio_campaigns', 'investment_theses', 'counter_thesis_verdicts',
                         'cio_resolutions', 'cio_strategic_directives', 'strategic_allocations',
                         'stop_loss_events', 'position_health_ticks', 'risk_snapshots',
                         'slippage_records', 'audit_reports', 'violation_reports',

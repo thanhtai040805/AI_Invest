@@ -76,6 +76,7 @@ jobs:
       - run: >-
           python -m pytest -q
           tests/unit/test_shadow_fill.py
+          tests/unit/test_market_surveillance_time.py
           tests/unit/test_trade_execution_no_mock_fill.py
           tests/unit/test_mathematical_integrity.py
           tests/unit/test_portfolio_eod_and_quotes.py
@@ -85,6 +86,15 @@ jobs:
           tests/unit/test_eod_governance_execution_mode.py
           tests/unit/test_portfolio_repository_sector_hydration.py
           tests/unit/test_daily_pipeline_portfolio_refresh.py
+          tests/unit/test_factor_source_basis.py
+          tests/unit/test_financial_mapping.py
+          tests/unit/test_replay_factor_snapshot.py
+          tests/unit/test_thesis_evidence_and_audit.py
+          tests/unit/test_replay_agent_precheck.py
+          tests/unit/test_replay_domino_controls.py
+          tests/unit/test_position_monitoring_peak_persistence.py
+          tests/unit/test_unified_llm_rotation.py
+          tests/test_replay_agent_pipeline.py
           tests/test_governance_institutional_vnext.py::test_shadow_mode_does_not_infer_broker_failure_but_live_mode_fails_closed
           -k "not TestDualEngineBeneishMScore"
 

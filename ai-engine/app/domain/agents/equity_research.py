@@ -5,13 +5,14 @@ Chức năng:
 - Truy vấn Financial Quality từ dữ liệu tài chính nội bộ.
 - Tính toán điểm Composite Stock Score (CSS) thích ứng qua CSSScoringEngine với các factor tài chính và thị trường.
 - Gán mức độ tự tin (Conviction Level: A+, A, B, C, D, E) và sinh Research Report hoàn chỉnh.
-- Bảng nghiệp vụ quản lý: factor_scores
+- Bảng nghiệp vụ quản lý: factor_scores (nguồn chỉ đọc); kết quả Research chỉ lưu audit.
 - Bảng log audit: log_equity_research
 """
 
 from __future__ import annotations
 
 import logging
+import math
 from datetime import date, datetime
 from typing import Any, Dict, Optional
 import pandas as pd
@@ -20,6 +21,8 @@ from app.core.base_agent import BaseAgent
 from app.domain.rules.scoring import CSSScoringEngine
 from app.domain.services.factor_service import FactorService
 from app.domain.repositories.intelligence_repository import IntelligenceRepository
+from app.domain.repositories.replay_factor_snapshot import current_factor_snapshot
+from app.domain.repositories.financial_repository import FinancialRepository
 from app.adapters.postgres_adapter import PostgresAdapter
 from app.domain.rules.market.hmm_classifier import MarketRegime
 
@@ -35,7 +38,7 @@ class EquityResearchAgent(BaseAgent):
     def __init__(self):
         super().__init__(
             agent_name="equity_research",
-            state_tables=["factor_scores"],
+            state_tables=[],
             log_table="log_equity_research",
             enabled=True,
         )
@@ -99,6 +102,7 @@ class EquityResearchAgent(BaseAgent):
         factor_overrides = event_data.get("factor_overrides", {})
         raw_factor_metrics: Dict[str, Any] = {}
         factor_source = "COMPUTED"
+        snapshot = current_factor_snapshot()
 
         if factor_overrides:
             f1_value = float(factor_overrides.get("f1_value", 65.0))
@@ -112,10 +116,14 @@ class EquityResearchAgent(BaseAgent):
         else:
             # Ưu tiên kiểm tra CSDL factor_scores
             db_factors = self.intel_repo.get_factor_score(ticker, score_date=market_data_date)
+            rebuilt_source = snapshot is not None and snapshot.version == 2
+            if rebuilt_source and db_factors is None:
+                raise ValueError(f"Rebuilt factor snapshot has no inputs for {ticker} at {market_data_date}")
             has_db_valid = (
                 db_factors is not None
                 and (
-                    db_factors.get("f3_momentum") != 50.0
+                    rebuilt_source
+                    or db_factors.get("f3_momentum") != 50.0
                     or db_factors.get("f4_earnings") != 50.0
                     or db_factors.get("f5_flow") != 50.0
                 )
@@ -129,7 +137,7 @@ class EquityResearchAgent(BaseAgent):
                 f5_flow = float(db_factors.get("f5_flow", 50.0))
                 f6_technical = float(db_factors.get("f6_technical", 50.0))
                 raw_factor_metrics = db_factors.get("factor_details", {})
-                factor_source = "POSTGRES_FACTOR_SCORES"
+                factor_source = "REBUILT_FACTOR_SNAPSHOT" if rebuilt_source else "POSTGRES_FACTOR_SCORES"
             else:
                 # Tính toán ĐỘNG thực tế từ financial_ratios và market_data_daily
                 computed = self.factor_service.compute_factors_for_ticker(ticker, market_data_date)
@@ -255,6 +263,34 @@ class EquityResearchAgent(BaseAgent):
             eligibility_reasons.append("CURRENT_PRICE_MISSING_OR_NONPOSITIVE")
         eligible_for_thesis = not eligibility_reasons
 
+        if snapshot is not None and snapshot.version == 2 and not factor_overrides:
+            origin = raw_factor_metrics["source"]
+            ratios = {**raw_factor_metrics["financial_inputs"], "ratio_date": origin["ratio_date"],
+                      "published_date": origin.get("published_date"), "frequency": origin["ratio_frequency"]}
+        else:
+            ratios = FinancialRepository().get_latest_ratios(ticker, as_of=market_data_date, allow_defaults=False) or {}
+        financial_metrics = {}
+        for name, column, scale in (
+            ("pe", "pe", 1.0), ("pb", "pb", 1.0), ("roe", "roe", 100.0),
+            ("gpm", "gross_margin", 100.0), ("earnings_growth", "yoy_earnings_growth", 100.0),
+        ):
+            value = ratios.get(column)
+            financial_metrics[name] = float(value) * scale if value is not None and math.isfinite(float(value) * scale) else None
+        financial_metrics["source"] = {
+            "table": "financial_ratios",
+            "status": "AVAILABLE" if ratios.get("ratio_date") else "MISSING",
+            "as_of": market_data_date.isoformat(),
+            "ratio_date": ratios.get("ratio_date"),
+            "published_date": ratios.get("published_date"),
+            "frequency": ratios.get("frequency"),
+            "percentage_unit": "percent",
+            "roe_basis": "REPORTED_PERIOD_NOT_ANNUALIZED_OR_TTM",
+            "flow_window": "UNVERIFIED_QUARTER_OR_YTD",
+            "equity_basis": "UNVERIFIED_END_OR_AVERAGE",
+            "factor_snapshot_sha256": snapshot.sha256 if snapshot else None,
+            "availability_policy": "published_date_or_reporting_lag_heuristic",
+        }
+
         research_report = {
             "ticker": ticker,
             "sector": sector,
@@ -275,25 +311,13 @@ class EquityResearchAgent(BaseAgent):
             "eligible_for_thesis": eligible_for_thesis,
             "eligibility_reasons": eligibility_reasons,
             "applied_weights": applied_weights,
+            "financial_metrics": financial_metrics,
         }
 
         # =========================================================================
-        # 4. Ghi nhận dữ liệu vào Bảng Nghiệp vụ & Bảng Log Audit
+        # 4. Ghi kết quả quyết định vào Log Audit, giữ nguyên nguồn factor
         # =========================================================================
         try:
-            self.intel_repo.save_factor_score(
-                symbol=ticker,
-                f1_value=f1_value,
-                f2_quality=f2_quality,
-                f3_momentum=f3_momentum,
-                f4_earnings=f4_earnings,
-                f5_flow=f5_flow,
-                f6_technical=f6_technical,
-                css=css,
-                conviction=conviction,
-                score_date=target_d,
-                factor_details_extra=raw_factor_metrics,
-            )
             self.intel_repo.log_equity_research(
                 ticker=ticker,
                 factor_raw_metrics={
@@ -306,6 +330,13 @@ class EquityResearchAgent(BaseAgent):
                     "f6_technical": round(f6_technical, 2),
                     "css": round(css, 2),
                     "conviction": conviction,
+                    "financial_metrics": financial_metrics,
+                    "factor_input": {
+                        "snapshot_sha256": snapshot.sha256 if snapshot else None,
+                        "source": factor_source,
+                        "as_of": market_data_date.isoformat(),
+                        "persistence": "AUDIT_ONLY",
+                    },
                     "research_gate": {
                         "eligible_for_thesis": eligible_for_thesis,
                         "reason_codes": eligibility_reasons,
@@ -330,6 +361,7 @@ class EquityResearchAgent(BaseAgent):
             "business_quality_data": business_quality_data,
             "regime_applied": regime_str,
             "data_quality_flag": data_quality_flag,
+            "financial_metrics": financial_metrics,
         }
 
         return {"data": research_report, "trace": trace}

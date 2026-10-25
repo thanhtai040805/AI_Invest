@@ -1,5 +1,5 @@
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -31,6 +31,16 @@ def test_reset_clears_only_the_account_replay_history():
 
     assert ("DELETE FROM paper_trades WHERE account_id = %s", ("replay-account",)) in storage.calls
     assert ("DELETE FROM portfolio_nav_history WHERE account_id = %s", ("replay-account",)) in storage.calls
+
+
+def test_reset_with_agent_cleanup_clears_portfolio_campaigns():
+    storage = Storage()
+    PortfolioRepository(storage).reset_paper_trading_account(
+        "replay-account", clean_agents_and_logs=True
+    )
+
+    cleanup_sql = next(sql for sql, _ in storage.calls if "DO $$" in sql)
+    assert "'portfolio_campaigns'" in cleanup_sql
 
 
 class Storage:
@@ -109,15 +119,20 @@ def test_multi_replay_without_pending_order_creates_learning_lot(monkeypatch):
         'cash_balance': 7_500_000, 'total_nav': 10_000_000,
         'peak_nav': 10_000_000, 'drawdown_tier': 'GREEN'})
     repository.record_replay_execution('HPG', 'BUY', 100, 24900, user_id='multi',
-        executed_at=datetime(2026, 8, 13, 10, tzinfo=ZoneInfo('Asia/Ho_Chi_Minh')),
+        executed_at=datetime(2026, 8, 13, 3, tzinfo=timezone.utc),
         mark_as_of=date(2026, 8, 12))
     assert storage.committed
     assert any('INSERT INTO orders' in sql for sql, _ in storage.calls)
     assert any('INSERT INTO paper_trades' in sql and params[-1] == 'multi'
                for sql, params in storage.calls)
+    paper = next(params for sql, params in storage.calls if 'INSERT INTO paper_trades' in sql)
+    assert paper[3] == datetime(2026, 8, 13, 10)
+    receipt = next(params for sql, params in storage.calls if 'INSERT INTO order_executions' in sql)
+    assert receipt[8] == datetime(2026, 8, 13, 10, tzinfo=ZoneInfo('Asia/Ho_Chi_Minh'))
 
 
-def test_multi_partial_sale_closes_only_filled_quantity_and_keeps_entry_date(monkeypatch):
+@pytest.mark.parametrize('shares', [40, 100])
+def test_multi_sale_keeps_vietnam_learning_timestamps(monkeypatch, shares):
     entry_date = datetime(2026, 8, 10, 10)
     class SellStorage(Storage):
         def fetch_all(self, sql, params=None):
@@ -131,12 +146,17 @@ def test_multi_partial_sale_closes_only_filled_quantity_and_keeps_entry_date(mon
     monkeypatch.setattr(repository, 'get_account_state', lambda **kw: {
         'cash_balance': 10_000_000, 'total_nav': 11_000_000,
         'peak_nav': 11_000_000, 'drawdown_tier': 'GREEN'})
-    repository.record_replay_execution('HPG', 'SELL', 40, 25000, user_id='multi',
+    repository.record_replay_execution('HPG', 'SELL', shares, 25000, user_id='multi',
         executed_at=datetime(2026, 8, 14, 14, tzinfo=ZoneInfo('Asia/Ho_Chi_Minh')),
         mark_as_of=date(2026, 8, 13))
     assert storage.committed
-    assert any('quantity=quantity-%s' in sql and params == (40, 'lot') for sql, params in storage.calls)
-    closed = next(params for sql, params in storage.calls if 'INSERT INTO paper_trades' in sql)
-    assert closed[2] == entry_date
-    assert closed[3] == 40
-    assert closed[5] == 25
+    if shares == 40:
+        assert any('quantity=quantity-%s' in sql and params == (40, 'lot') for sql, params in storage.calls)
+        closed = next(params for sql, params in storage.calls if 'INSERT INTO paper_trades' in sql)
+        assert closed[2] == entry_date
+        assert closed[3] == 40
+        assert closed[5] == 25
+        assert closed[6] == datetime(2026, 8, 14, 14)
+    else:
+        closed = next(params for sql, params in storage.calls if "SET status='CLOSED'" in sql)
+        assert closed == (25000, 25, datetime(2026, 8, 14, 14), 'lot')

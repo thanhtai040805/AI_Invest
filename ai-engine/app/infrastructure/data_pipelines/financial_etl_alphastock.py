@@ -11,6 +11,7 @@ import psycopg2
 from psycopg2.extras import Json
 
 from app.infrastructure.database.pg_pool import DB_URL
+from app.domain.services.financial_fields import apply_financial_overrides
 
 logger = logging.getLogger(__name__)
 
@@ -219,7 +220,7 @@ def fetch_and_store_financials(
 
                 if db_stmt == "BS":
                     overrides = _ISSUER_BS_OVERRIDES if db_freq == "quarterly" else _ISSUER_BS_YEARLY_OVERRIDES
-                    result_data.update(overrides.get((symbol, period_end), {}))
+                    result_data = apply_financial_overrides(result_data, overrides.get((symbol, period_end), {}))
 
                 # Schema compatibility: published_date records when we crawled this row.
                 crawl_date = date.today()

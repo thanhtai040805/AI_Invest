@@ -15,6 +15,7 @@ Chức năng:
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import math
 from dataclasses import dataclass, field
@@ -72,6 +73,7 @@ class CounterThesisReport:
     llm_blindspot_penalty: float = 0.0
     llm_fatal_flaw: bool = False
     llm_rationale: str = ""
+    llm_audit: Dict[str, Any] = field(default_factory=dict)
 
 
 class CounterThesisEngine:
@@ -232,7 +234,9 @@ class CounterThesisEngine:
         self,
         ticker: str,
         thesis_payload: Dict[str, Any],
-        signals: List[str]
+        signals: List[str],
+        *,
+        audit: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Optional[bool], float, bool, List[str], str]:
         """
         LLM Semantic Inquisitor:
@@ -244,6 +248,15 @@ class CounterThesisEngine:
         """
         holes = []
         rationale = "Đạt yêu cầu phản biện định tính từ LLM."
+        audit = audit if audit is not None else {}
+        audit.update({
+            "status": "NOT_CONFIGURED",
+            "validator_policy": "two_distinct_fields_with_exact_substring_quotes",
+            # shortcut: citation presence is checked, not semantic proof; review policy after observing logs.
+            "semantic_sufficiency_checked": False,
+            "accepted_fatal_flaw": False,
+            "citations": [],
+        })
 
         if not self.llm_client:
             if self.require_llm:
@@ -277,6 +290,14 @@ class CounterThesisEngine:
             "rationale": "Phân tích phản biện chi tiết"
         }}
         """
+        audit.update({
+            "status": "REQUESTED",
+            "prompt": prompt,
+            "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+        })
+        providers = getattr(self.llm_client, "providers", None)
+        if isinstance(providers, list):
+            audit["configured_routes"] = [{"provider": p.get("name"), "model": p.get("model")} for p in providers if isinstance(p, dict)]
         try:
             if hasattr(self.llm_client, "complete_json"):
                 data = await self.llm_client.complete_json(prompt)
@@ -285,6 +306,7 @@ class CounterThesisEngine:
                 from app.infrastructure.llm.client import clean_and_parse_json
                 data = clean_and_parse_json(resp)
 
+            audit["parsed_response"] = data
             missing = {"is_truly_independent", "blindspot_penalty", "fatal_flaw"} - data.keys()
             if missing:
                 raise ValueError(f"LLM response missing required fields: {', '.join(sorted(missing))}")
@@ -322,27 +344,42 @@ class CounterThesisEngine:
             raw_holes = data.get("holes", [])
             holes = [str(h).strip() for h in raw_holes if str(h).strip()] if isinstance(raw_holes, list) else []
             rationale = str(data.get("rationale") or rationale).strip()
+            audit["requested_fatal_flaw"] = fatal_flaw
             if fatal_flaw:
                 cited_paths = set()
                 evidence = data.get("fatal_flaw_evidence", [])
                 if isinstance(evidence, list):
                     for item in evidence:
                         if not isinstance(item, dict):
+                            audit["citations"].append({"item": item, "result": "INVALID_EVIDENCE_ITEM"})
                             continue
                         path, quote = item.get("path"), item.get("quote")
+                        citation = {"path": path, "quote": quote}
+                        audit["citations"].append(citation)
                         value: Any = thesis_payload
                         try:
                             for part in str(path).split("."):
                                 value = value[int(part)] if isinstance(value, list) else value[part]
                         except (KeyError, IndexError, TypeError, ValueError):
+                            citation["result"] = "PATH_NOT_RESOLVED"
                             continue
+                        citation["field_value"] = value
                         if isinstance(value, (str, int, float, bool)) and str(quote or "") and str(quote) in str(value):
                             cited_paths.add(str(path))
+                            citation["result"] = "EXACT_SUBSTRING_MATCH"
+                        else:
+                            citation["result"] = "QUOTE_EMPTY_OR_NOT_IN_SCALAR_FIELD"
+                audit["matched_distinct_paths"] = sorted(cited_paths)
                 if len(cited_paths) < 2:
                     fatal_flaw = False
                     holes.append("Unverified LLM fatal-flaw claim: fewer than two exact citations from distinct thesis fields.")
+                audit["fatal_validation_result"] = "ACCEPTED_TWO_DISTINCT_FIELDS" if fatal_flaw else "DOWNGRADED_INSUFFICIENT_CITATIONS"
+            else:
+                audit["fatal_validation_result"] = "MODEL_DID_NOT_ASSERT_FATAL"
+            audit.update({"status": "REVIEWED", "accepted_fatal_flaw": fatal_flaw})
             return is_indep, penalty, fatal_flaw, holes, rationale
         except Exception as e:
+            audit.update({"status": "ERROR", "error_type": type(e).__name__, "error": str(e), "fallback": "QUANTITATIVE_GATES_ONLY"})
             logger.warning("LLM Devil's Advocate failed for %s (%s): %r; quantitative gates remain active.", ticker, type(e).__name__, e)
             return None, 0.0, False, ["LLM semantic review unavailable; quantitative Rule-of-Three and CTS remain active."], f"LLM_ERROR: {type(e).__name__}"
 
@@ -388,10 +425,12 @@ class CounterThesisEngine:
         signals = passed_signals
 
         # 1. Gọi LLM Devil's Advocate để thẩm định ngữ cảnh & tính độc lập thực sự
+        llm_audit: Dict[str, Any] = {}
         llm_indep, llm_blindspot_penalty, fatal_flaw, llm_holes, llm_rationale = await self.analyze_thesis_with_llm(
             ticker=ticker_clean,
             thesis_payload=thesis_payload,
-            signals=signals
+            signals=signals,
+            audit=llm_audit,
         )
 
         # 2. Kiểm tra Hard Law Điều 3 (Rule of Three) kết hợp LLM
@@ -421,6 +460,7 @@ class CounterThesisEngine:
             current_price=current_price,
             is_capitulation=is_capitulation
         )
+        score_only_verdict = verdict.value
 
         if not rule_of_three_passed:
             verdict = Verdict.BLOCK
@@ -435,6 +475,22 @@ class CounterThesisEngine:
             all_holes.append(f"Capitulation Trigger: {'; '.join(capitulation_reasons)}")
 
         constraints_dict = constraints.to_dict() if constraints else None
+        llm_audit["gate_trace"] = {
+            "risk_features": risk_features,
+            "base_quant_cts": base_quant_cts,
+            "blindspot_penalty": llm_blindspot_penalty,
+            "base_cts": base_cts,
+            "interaction_multiplier": interaction_multiplier,
+            "regime": regime_label,
+            "regime_multiplier": regime_multiplier,
+            "final_cts": final_cts,
+            "score_only_verdict": score_only_verdict,
+            "passed_signal_families": sorted(passed_families),
+            "rule_of_three_passed": rule_of_three_passed,
+            "fatal_veto_applied": fatal_flaw,
+            "final_verdict": verdict.value,
+            "block_reasons": list(block_reasons),
+        }
 
         return CounterThesisReport(
             thesis_id=thesis_id,
@@ -454,6 +510,7 @@ class CounterThesisEngine:
             llm_blindspot_penalty=llm_blindspot_penalty,
             llm_fatal_flaw=fatal_flaw,
             llm_rationale=llm_rationale,
+            llm_audit=llm_audit,
         )
 
 

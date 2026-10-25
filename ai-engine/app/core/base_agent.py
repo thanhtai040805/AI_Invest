@@ -218,7 +218,10 @@ class BaseAgent(abc.ABC):
                 params = ("RULE_ALL", "GOVERNANCE_AUDIT", json.dumps(output_data, default=str), created_timestamp)
             elif self.log_table == "log_strategy_cio":
                 sql = "INSERT INTO log_strategy_cio (trigger_type, debate_synthesis, resolution_payload, created_at) VALUES (%s, %s, %s, %s)"
-                params = ("CIO_ARBITRATION", str(output_data.get("executive_rationale", "")), json.dumps(output_data, default=str), created_timestamp)
+                logged_payload = dict(output_data)
+                if "suspension_observation" in computation_trace:
+                    logged_payload["suspension_observation"] = computation_trace["suspension_observation"]
+                params = ("CIO_ARBITRATION", str(output_data.get("executive_rationale", "")), json.dumps(logged_payload, default=str), created_timestamp)
             else:
                 return
 

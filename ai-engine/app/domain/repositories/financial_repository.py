@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
-from math import isfinite
+from app.domain.services import financial_fields as fields
 from typing import Any, Dict, List, Optional
 
 from app.adapters.postgres_adapter import PostgresAdapter
@@ -155,23 +155,8 @@ class FinancialRepository:
             )
             return {}
         data = statement["data"]
-        try:
-            eps = float(
-                data.get("thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps")
-                or data.get("Thu nhập trên mỗi cổ phần của 4 quý gần nhất (EPS)")
-                or data.get("eps")
-                or 0
-            )
-            bvps = float(
-                data.get("giá_trị_sổ_sách_của_cổ_phiếu_bvps")
-                or data.get("Giá trị sổ sách của cổ phiếu (BVPS)")
-                or data.get("bvps")
-                or 0
-            )
-        except (TypeError, ValueError):
-            return {}
-        eps = eps if isfinite(eps) else 0.0
-        bvps = bvps if isfinite(bvps) else 0.0
+        eps = fields.extract_financial_value(data, fields.EPS_KEYS) or 0.0
+        bvps = fields.extract_financial_value(data, fields.BVPS_KEYS) or 0.0
 
         # Fallback reconstruction: If EPS or BVPS is 0, attempt derivation from market price and PE/PB
         if eps <= 0 or bvps <= 0:
@@ -181,8 +166,8 @@ class FinancialRepository:
             )
             if price_rows and price_rows[0][0]:
                 curr_price = float(price_rows[0][0])
-                r_pe = float(data.get("chỉ_số_giá_thị_trường_trên_thu_nhập_p_e") or data.get("pe") or 0)
-                r_pb = float(data.get("chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b") or data.get("pb") or 0)
+                r_pe = fields.extract_financial_value(data, fields.PE_KEYS) or 0.0
+                r_pb = fields.extract_financial_value(data, fields.PB_KEYS) or 0.0
                 if eps <= 0 and r_pe > 0:
                     eps = round(curr_price / r_pe, 2)
                 if bvps <= 0 and r_pb > 0:
@@ -376,7 +361,7 @@ class FinancialRepository:
             }
         return inputs
 
-    def get_latest_ratios(self, symbol: str, as_of: Optional[date] = None, frequency: Optional[str] = "quarterly") -> Optional[Dict[str, Any]]:
+    def get_latest_ratios(self, symbol: str, as_of: Optional[date] = None, frequency: Optional[str] = "quarterly", *, allow_defaults: bool = True) -> Optional[Dict[str, Any]]:
         """Lấy chỉ số tài chính gần nhất của cổ phiếu (P/E, P/B, ROE, ROA, Debt/Equity...)."""
         symbol = symbol.upper().strip()
         as_of_date = as_of or date.today()
@@ -427,25 +412,25 @@ class FinancialRepository:
             rows = self.storage.fetch_all(query, params)
             if rows and len(rows) > 0:
                 r = rows[0]
-                return {
+                result = {
                     "symbol": symbol,
                     "ratio_date": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
-                    "pe": float(r[1]) if r[1] is not None else 0.0,
-                    "pb": float(r[2]) if r[2] is not None else 0.0,
-                    "roe": float(r[3]) if r[3] is not None else 0.0,
-                    "roa": float(r[4]) if r[4] is not None else 0.0,
-                    "debt_equity": float(r[5]) if r[5] is not None else 0.0,
-                    "current_ratio": float(r[6]) if r[6] is not None else 0.0,
-                    "gross_margin": float(r[7]) if r[7] is not None else 0.0,
-                    "net_margin": float(r[8]) if r[8] is not None else 0.0,
-                    "fcf_yield": float(r[9]) if r[9] is not None else 0.0,
-                    "ev_ebitda": float(r[10]) if r[10] is not None else 0.0,
-                    "yoy_revenue_growth": float(r[11]) if r[11] is not None else 0.0,
-                    "yoy_earnings_growth": float(r[12]) if r[12] is not None else 0.0,
                     "published_date": r[13].isoformat() if hasattr(r[13], "isoformat") and r[13] else str(r[13]) if r[13] else None,
+                    "frequency": r[14],
                 }
+                for index, key in enumerate((
+                    "pe", "pb", "roe", "roa", "debt_equity", "current_ratio",
+                    "gross_margin", "net_margin", "fcf_yield", "ev_ebitda",
+                    "yoy_revenue_growth", "yoy_earnings_growth",
+                ), start=1):
+                    result[key] = float(r[index]) if r[index] is not None else (0.0 if allow_defaults else None)
+                return result
         except Exception as e:
             logger.warning(f"Lỗi khi đọc financial_ratios cho {symbol} ({e})")
+
+        # Narrative evidence must preserve missing data instead of inventing ratios.
+        if not allow_defaults:
+            return None
 
         # Fallback dữ liệu mặc định an toàn
         return {

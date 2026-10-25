@@ -25,9 +25,11 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from app.core.base_agent import BaseAgent
+from app.core.base_agent import BaseAgent, _resolve_created_at, _resolve_target_date
 from app.domain.rules.stop_loss import StopLossEngine, StopLossOrder
 from app.domain.repositories.portfolio_repository import PortfolioRepository
+from app.infrastructure.database.pg_pool import get_conn
+from psycopg2.extras import execute_values
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,59 @@ class PositionMonitoringAgent(BaseAgent):
         self.repository = repository or PortfolioRepository()
         self._market_data_repo = market_data_repo
         self.auto_dispatch = auto_dispatch
+        self._replay_health_ticks: Dict[str, Dict[str, Any]] = {}
+        self._replay_audit_rows: List[tuple] = []
+
+    async def _log_audit_trace(
+        self,
+        event_data: Dict[str, Any],
+        computation_trace: Dict[str, Any],
+        output_data: Dict[str, Any],
+        status: str,
+    ) -> None:
+        if not event_data.get("is_replay") or status != "SUCCESS":
+            await super()._log_audit_trace(event_data, computation_trace, output_data, status)
+            return
+        try:
+            target_date = _resolve_target_date(event_data, output_data, True)
+            created_at = _resolve_created_at(target_date, True)
+            ticker = output_data.get("ticker") or event_data.get("ticker") or "PORTFOLIO"
+            if isinstance(ticker, list):
+                ticker = ticker[0] if ticker else "PORTFOLIO"
+            self._replay_audit_rows.append((
+                str(ticker).upper()[:16],
+                float(output_data.get("pnl_pct", 0.0)),
+                bool(output_data.get("stop_loss_triggered", False)),
+                bool(output_data.get("thesis_invalidated", False)),
+                created_at,
+            ))
+            if len(self._replay_audit_rows) >= 1000:
+                self.flush_replay_audit()
+        except Exception as exc:
+            logger.warning("Could not buffer Replay monitoring audit row: %s", exc)
+
+    def flush_replay_audit(self) -> None:
+        if not self._replay_audit_rows:
+            return
+        rows = self._replay_audit_rows
+        try:
+            with get_conn() as conn, conn.cursor() as cur:
+                execute_values(
+                    cur,
+                    "INSERT INTO log_position_monitoring (ticker, pnl_pct, stop_loss_triggered, thesis_invalidated, created_at) VALUES %s",
+                    rows,
+                    page_size=1000,
+                )
+        except Exception:
+            logger.exception("Could not flush Replay monitoring audit batch (%d rows)", len(rows))
+        else:
+            del self._replay_audit_rows[:len(rows)]
+
+    def flush_replay_state(self) -> None:
+        if self._replay_health_ticks:
+            self._persist_health_ticks(list(self._replay_health_ticks.values()))
+            self._replay_health_ticks.clear()
+        self.flush_replay_audit()
 
     @property
     def market_data_repo(self):
@@ -139,8 +194,11 @@ class PositionMonitoringAgent(BaseAgent):
             - current_time: str (ISO datetime để kiểm tra mốc 14:00)
             - auto_dispatch: bool (Tự động chuyển tiếp lệnh khẩn cấp sang Agent-08)
         """
-        account_state = self.repository.get_account_state()
-        nav = float(event_data.get("nav", account_state.get("total_nav", 1000000000.0)))
+        if event_data.get("nav") is None:
+            account_state = self.repository.get_account_state()
+            nav = float(account_state.get("total_nav", 1000000000.0))
+        else:
+            nav = float(event_data["nav"])
         failsafe_active = bool(event_data.get("failsafe_active", False) or event_data.get("failsafe", False))
         auto_dispatch = bool(event_data.get("auto_dispatch", self.auto_dispatch))
 
@@ -280,7 +338,7 @@ class PositionMonitoringAgent(BaseAgent):
                 or getattr(self.repository, "account_id", None)
             )
             persist_peak = getattr(self.repository, "update_position_peak_price", None)
-            if peak_user_id and callable(persist_peak):
+            if peak_user_id and callable(persist_peak) and not event_data.get("is_replay"):
                 try:
                     stored_peak = persist_peak(ticker, peak_price, user_id=str(peak_user_id))
                     if stored_peak is not None:
@@ -522,7 +580,10 @@ class PositionMonitoringAgent(BaseAgent):
                         order["dispatch_status"] = f"DISPATCH_ERROR: {e_dispatch}"
 
         # 7. GHI NHẬN PERSISTENCE VÀO CSDL (TABLES NGHIỆP VỤ)
-        self._persist_health_ticks(monitored_positions)
+        if event_data.get("is_replay"):
+            self._replay_health_ticks.update({pos["ticker"]: pos for pos in monitored_positions})
+        else:
+            self._persist_health_ticks(monitored_positions)
         if stop_loss_orders:
             self._persist_stop_loss_events(
                 stop_loss_orders,

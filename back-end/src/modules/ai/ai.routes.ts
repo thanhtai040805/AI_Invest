@@ -13,7 +13,7 @@ const backtestSchema = z.object({
   strategy: z.enum(['sma_cross', 'rsi', 'bollinger']),
   startDate: z.string().date(),
   endDate: z.string().date(),
-  params: z.record(z.unknown()).optional(),
+  params: z.record(z.string(), z.unknown()).optional(),
   capital: z.coerce.number().finite().positive().optional(),
 });
 
