@@ -12,6 +12,8 @@ from psycopg2.extras import RealDictCursor
 DB_URL = os.getenv("DATABASE_URL", "postgresql://postgres:123@localhost:5432/aiinvest")
 DB_POOL_MIN_CONN = int(os.getenv("DB_POOL_MIN_CONN", "2"))
 DB_POOL_MAX_CONN = int(os.getenv("DB_POOL_MAX_CONN", "20"))
+# Naive paper-trade columns use Vietnam wall time.
+DB_CONNECTION_OPTIONS = "-c timezone=Asia/Ho_Chi_Minh"
 
 _pool: Optional[pg_pool.ThreadedConnectionPool] = None
 _lock = threading.Lock()
@@ -26,6 +28,7 @@ def get_pool() -> pg_pool.ThreadedConnectionPool:
                     minconn=DB_POOL_MIN_CONN,
                     maxconn=DB_POOL_MAX_CONN,
                     dsn=DB_URL,
+                    options=DB_CONNECTION_OPTIONS,
                 )
     return _pool
 
