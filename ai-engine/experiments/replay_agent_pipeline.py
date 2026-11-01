@@ -745,8 +745,8 @@ async def run(args: argparse.Namespace) -> None:
     if not days:
         print(f"Không có dữ liệu ngày giao dịch trước ngày {end_date}.")
         return
-    if len(days) > 52:
-        raise ValueError(f"DNSE historical bid/ask is available for at most 52 sessions; requested {len(days)}.")
+    # Requests fetch each session separately. Do not infer provider retention
+    # from the number of requested sessions; validate the actual inputs below.
     as_of_dates = [day - timedelta(days=1) if day < now_vn.date() else day for day in days]
     snapshot_path = getattr(args, "factor_snapshot", None) or Path(
         "scratch/output", f"replay_factor_snapshot_{uuid.uuid4().hex}.json"

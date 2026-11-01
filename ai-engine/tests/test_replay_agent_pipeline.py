@@ -127,3 +127,22 @@ def test_intraday_monitor_uses_cached_position_and_nav(monkeypatch):
     assert event["nav"] == 1_000_000_000.0
     assert event["positions"][0]["available_shares"] == 1000
     assert event["positions"][0]["locked_t25_shares"] == 0
+def test_replay_accepts_more_than_52_sessions_with_snapshot_and_input_checks(monkeypatch, tmp_path):
+    from datetime import timedelta
+
+    days = [date(2026, 8, 12) + timedelta(days=i) for i in range(55)]
+    snapshot = MagicMock()
+    path = tmp_path / "factor_snapshot.json"
+    path.write_text("{}")
+    monkeypatch.setattr(replay, "market_dates", lambda end, count: days)
+    monkeypatch.setattr(replay.ReplayFactorSnapshot, "load", lambda p: snapshot)
+    observed = []
+
+    async def sessions(args, actual):
+        observed.extend(actual)
+
+    monkeypatch.setattr(replay, "_run_sessions", sessions)
+    asyncio.run(replay.run(SimpleNamespace(end="2026-10-05", days=55, factor_snapshot=path)))
+    assert observed == days
+    snapshot.require_dates.assert_called_once_with([day - timedelta(days=1) for day in days])
+    snapshot.require_current_source.assert_called_once()

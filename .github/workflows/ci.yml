@@ -88,6 +88,8 @@ jobs:
           tests/unit/test_daily_pipeline_portfolio_refresh.py
           tests/unit/test_factor_source_basis.py
           tests/unit/test_financial_mapping.py
+          tests/unit/test_financial_backfill_command.py
+          tests/unit/test_financial_statement_store.py
           tests/unit/test_replay_factor_snapshot.py
           tests/unit/test_thesis_evidence_and_audit.py
           tests/unit/test_replay_agent_precheck.py

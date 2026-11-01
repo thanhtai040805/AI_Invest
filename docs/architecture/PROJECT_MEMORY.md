@@ -407,6 +407,12 @@ AIInvest is an autonomous investment and financial forensics organization engine
 
 
 
+### 2026-11-01: Financial reset backfill uses the target's own statements
+
+- Financial ingestion and stored-data repair share exact field normalization, provider source precedence and a pure ratio calculator. Explicit full/backfill refresh normalizes retained rows outside the fetched history window, rebuilds ratios after primary/fallback ingestion, and rolls back a symbol's statement changes if ratio calculation fails. Normal incremental writes keep the recent-period scope; full backfill can replace historical rows.
+- The owner explicitly rejected a revision store/history-freeze design for this reset workflow. There is no history schema, migration or trigger in this change. `scripts/backfill_financials.py` previews and applies a target-specific mapping/ratio repair with before-value guards and a fixed-point check, without requiring a LOCAL baseline DB or importing snapshot rows. Full source re-crawl remains the existing AlphaStock/CafeF/VCI ETL entry point. Financial backfill does not run Replay or rebuild factor inputs. Operational commands and source-unit/publication limitations are documented in `ai-engine/scripts/FINANCIAL_BACKFILL.md`.
+- The isolated PR code completed a fresh-source crawl of 407 symbols from a PROD-derived financial clone, using 3,256 newly captured primary/fallback responses and 238 fresh financial frames, with zero ETL/fallback errors. Post-crawl preview found zero remaining statement/ratio changes across 97,395 statements and 27,097 ratios. An independent raw metric-code check matched 4,094,907 values across 62,261 AlphaStock rows; existing BS override periods and source-filing accuracy are outside that check. Historical baseline comparison remains DIFFERENT; current source values are not restored to old snapshot values. Target-only preview/apply also completed on a separate clone. Focused tests passed all 73 including PostgreSQL cases; the CI-selected Python suite passed 198 with 5 PostgreSQL tests skipped there and covered separately. No new trading Replay or PROD write was performed.
+
 ### 2026-09-30: Portfolio accounting and live valuation corrections
 
 - Portfolio and Agent share the same current valuation service; account IDs remain explicit (user account versus configured Multi-Agent fund). Realized/unrealized P&L use execution receipts and moving average costs including fees; they fail closed when receipts do not reconcile to positions. No tick writes to PostgreSQL.

@@ -74,18 +74,20 @@ def extract_financial_value(data: dict | None, aliases: Iterable[str]) -> float 
 
 
 REVENUE_KEYS = [
-    "doanh thu thuần về bán hàng và cung cấp dịch vụ", "doanh thu thuần", "net_sales",
-    "thu nhập lãi thuần", "doanh thu phí bảo hiểm thuần", "doanh thu thuần hoạt động kinh doanh bảo hiểm",
+    "doanh thu thuần về bán hàng và cung cấp dịch vụ", "doanh thu thuần", "net_sales", "net_revenue",
+    "thu nhập lãi thuần", "net_interest_income", "doanh thu thuần từ HĐKD BH",
+    "doanh thu thuần hoạt động kinh doanh bảo hiểm", "total_net_revenue_from_insurance_business",
+    "doanh thu phí bảo hiểm thuần",
     "cộng doanh thu hoạt động (01->11)", "doanh thu hoạt động", "doanh thu bán hàng và cung cấp dịch vụ",
 ]
-COGS_KEYS = ["giá vốn hàng bán", "cost_of_sales"]
+COGS_KEYS = ["giá vốn hàng bán", "cost_of_sales", "cost_of_goods_sold"]
 NI_KEYS = [
     "lợi nhuận sau thuế thu nhập doanh nghiệp", "lợi nhuận kế toán sau thuế TNDN", "lợi nhuận kế toán sau thuế",
-    "lợi nhuận sau thuế (XI-XII)", "lợi nhuận sau thuế", "net_income",
+    "lợi nhuận sau thuế (XI-XII)", "lợi nhuận sau thuế", "net_income", "net_profit_after_tax", "profit_after_tax",
 ]
 ASSET_KEYS = ["tổng cộng tài sản", "tổng tài sản", "total_assets"]
 LIAB_KEYS = ["tổng nợ phải trả", "nợ phải trả", "total_liabilities", "liabilities"]
-EQUITY_KEYS = ["vốn chủ sở hữu", "vốn và các quỹ", "total_equity", "equity"]
+EQUITY_KEYS = ["vốn chủ sở hữu", "vốn và các quỹ", "total_equity", "equity", "owners_equity", "owner's equity"]
 CFO_KEYS = [
     "lưu chuyển tiền thuần từ hoạt động kinh doanh", "lưu chuyển tiền tệ ròng từ các hoạt động sản xuất kinh doanh",
     "lưu chuyển thuần từ hoạt động kinh doanh", "lưu chuyển tiền từ hoạt động kinh doanh",
@@ -97,7 +99,7 @@ CAPEX_KEYS = [
     "tiền chi mua sắm, xây dựng TSCĐ", "tiền chi để mua sắm, xây dựng TSCĐ",
     "tiền mua tài sản cố định", "mua sắm tài sản cố định", "mua sắm TSCĐ", "capital_expenditures",
 ]
-PE_KEYS = ["chỉ số giá thị trường trên thu nhập (P/E)", "chỉ số P/E", "P/E", "pe"]
+PE_KEYS = ["chỉ số giá thị trường trên thu nhập (P/E)", "chỉ số P/E", "P/E", "pe", "rt_value_pe", "P/E cơ bản"]
 PB_KEYS = ["chỉ số giá thị trường trên giá trị sổ sách (P/B)", "chỉ số P/B", "P/B", "pb"]
 ROE_KEYS = ["ROE", "tỷ suất lợi nhuận trên vốn chủ sở hữu"]
 ROA_KEYS = ["ROA", "tỷ suất sinh lợi trên tổng tài sản"]
@@ -112,6 +114,35 @@ EVEBITDA_KEYS = ["giá trị doanh nghiệp trên lợi nhuận trước thuế,
 GM_KEYS = ["gross_margin", "tỷ suất lợi nhuận gộp biên", "tỷ suất lợi nhuận gộp", "biên lợi nhuận gộp"]
 GROSS_PROFIT_KEYS = ["lợi nhuận gộp về bán hàng và cung cấp dịch vụ", "lợi nhuận gộp của hoạt động kinh doanh", "gross_profit", "lợi nhuận gộp"]
 NM_KEYS = ["net_margin", "tỷ suất sinh lợi trên doanh thu thuần", "sinh lợi trên doanh thu", "biên lợi nhuận ròng"]
+
+
+class UnknownFinancialRatioSchema(ValueError):
+    """The source supplied profitability rates without a known unit contract."""
+
+
+def normalize_statement_ratio_units(data: dict, source: str | None) -> dict:
+    """Convert observed provider percentage-point schemas to fractions."""
+    labels = {financial_label(key) for keys in (ROE_KEYS, ROA_KEYS, GM_KEYS, NM_KEYS) for key in keys}
+    if source == "cafef":
+        if not ({"ROE", "ROA", "GOS", "ROS"} & data.keys()) and any(
+            financial_label(key) in labels and financial_number(value) is not None for key, value in data.items()
+        ):
+            raise UnknownFinancialRatioSchema("CafeF profitability rates have no recognized unit schema")
+        return {key: financial_number(value) / 100.0
+                if (key in {"ROE", "ROA", "GOS", "ROS"} or financial_label(key) in labels)
+                and financial_number(value) is not None else value
+                for key, value in data.items()}
+    if source != "alphastock":
+        return data
+    if not ({"roe_trailling", "roa_trailling"} & data.keys()):
+        if not any(key.startswith("rt_prt_") for key in data) and any(
+            financial_label(key) in labels and financial_number(value) is not None for key, value in data.items()
+        ):
+            raise UnknownFinancialRatioSchema("AlphaStock profitability rates have no recognized unit schema")
+        return data
+    return {key: financial_number(value) / 100.0
+            if financial_label(key) in labels and financial_number(value) is not None else value
+            for key, value in data.items()}
 EPS_KEYS = ["thu nhập trên mỗi cổ phần của 4 quý gần nhất (EPS)", "eps"]
 BVPS_KEYS = ["giá trị sổ sách của cổ phiếu (BVPS)", "bvps"]
 BORROWING_KEYS = ["vay và nợ thuê tài chính", "vay nợ tài chính", "interest_bearing_debt"]
@@ -150,4 +181,33 @@ def apply_financial_overrides(data: dict, overrides: dict) -> dict:
         values[name] = value
     result = {k: values.get(identity(k), v) for k, v in data.items()}
     result.update(overrides)
+    return result
+
+
+def normalize_financial_statement(
+    data: dict, statement_type: str, source: str | None, overrides: dict | None = None,
+) -> dict:
+    """Repair legacy convenience aliases using authoritative lines in the same statement."""
+    result = dict(data)
+    if statement_type == "BS":
+        result = apply_financial_overrides(result, overrides or {})
+    if source != "cafef":
+        return result
+    if statement_type == "IS":
+        total = extract_financial_value(data, NI_KEYS)
+        if total is not None:
+            for key in ("lợi nhuận sau thuế", "18_loi_nhuan_sau_thue"):
+                if key in result and financial_number(result[key]) is not None:
+                    result[key] = total
+    if statement_type == "CF":
+        total = extract_financial_value(data, CFO_KEYS)
+        stages = [financial_number(value) for key, value in data.items()
+                  if "luu chuyen tien thuan tu hoat dong kinh doanh truoc" in financial_label(key)]
+        if total is not None:
+            for key in ("Lưu chuyển tiền thuần từ hoạt động kinh doanh",
+                        "luu_chuyen_tien_thuan_tu_hoat_dong_kinh_doanh", "tiền thuần từ hđkd"):
+                old = financial_number(result.get(key))
+                if old is not None and any(value is not None and math.isclose(old, value, rel_tol=1e-10, abs_tol=1e-12)
+                                           for value in stages) and not math.isclose(old, total, rel_tol=1e-10, abs_tol=1e-12):
+                    result[key] = total
     return result

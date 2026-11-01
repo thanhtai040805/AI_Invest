@@ -146,3 +146,65 @@ def test_securities_total_accounting_income_without_tax_abbreviation():
     inc = {"LỢI NHUẬN KẾ TOÁN SAU THUẾ": 502617939631,
            "Lợi nhuận sau thuế phân bổ cho chủ sở hữu": 502617939631}
     assert fields.extract_financial_value(inc, fields.NI_KEYS) == 502617939631
+
+
+@pytest.mark.parametrize("is_bank", [False, True])
+def test_insurance_crawl_preserves_baseline_total_revenue_and_reserve_codes(is_bank):
+    # BVH Q2/2016: captured CafeF codes, independently retained in the LOCAL baseline.
+    raw = {"templace": [
+        {"code": "8", "name": "3. Doanh thu phí bảo hiểm thuần"},
+        {"code": "15", "name": "5. Doanh thu thuần từ HĐKD BH"},
+        {"code": "22", "name": "7.1 Tăng dự phòng nghiệp vụ bảo hiểm gốc"},
+        {"code": "60", "name": "28. Lợi nhuận sau thuế thu nhập doanh nghiệp"},
+        {"code": "61", "name": "29. Lợi nhuận sau thuế của cổ đông Công ty mẹ"},
+    ], "data": [{"time": "Q2-2016", "year": 2016, "data": [
+        {"code": "8", "value": 0}, {"code": "15", "value": 4679369810000},
+        {"code": "21", "value": 560200000}, {"code": "22", "value": 1573662890000},
+        {"code": "60", "value": 397429420000}, {"code": "61", "value": 14085830000},
+    ]}]}
+    data = etl._parse_kqkd(raw, is_bank)["Q2-2016"]
+    assert fields.extract_financial_value(data, fields.REVENUE_KEYS) == 4679369810000
+    assert data["doanh thu thuần"] == 4679369810000
+    assert data["7.1 Tăng dự phòng nghiệp vụ bảo hiểm gốc"] == 1573662890000
+    assert data["lợi nhuận sau thuế"] == 397429420000
+    rows = [(date(2016, 6, 30), "quarterly", kind, value, None, "cafef") for kind, value in (
+        ("BS", {"total_assets": 10000000000000, "equity": 5000000000000}), ("IS", data),
+    )]
+    assert etl.derive_financial_ratios("BVH", rows)[0][10] == pytest.approx(397429420000 / 4679369810000)
+
+
+@pytest.mark.parametrize("year,expected", [(2025, 100), (2026, 200)])
+def test_general_template_retains_year_specific_financial_income_shift(year, expected):
+    raw = {"templace": [{"code": "22", "name": "6. Doanh thu hoạt động tài chính"}],
+           "data": [{"time": f"Q2-{year}", "year": year, "data": [
+               {"code": "21", "value": 100}, {"code": "22", "value": 200},
+           ]}]}
+    assert etl._parse_kqkd(raw, False)[f"Q2-{year}"]["6. Doanh thu hoạt động tài chính"] == expected
+
+
+@pytest.mark.parametrize("total_label", [
+    "5. Doanh thu thuần từ HĐKD BH", "Doanh thu thuần hoạt động kinh doanh bảo hiểm",
+    "7_total_net_revenue_from_insurance_business",
+])
+def test_insurance_total_revenue_precedes_net_premium_component(total_label):
+    data = {"3. Doanh thu phí bảo hiểm thuần": 0, total_label: 4679369810000}
+    assert fields.extract_financial_value(data, fields.REVENUE_KEYS) == 4679369810000
+
+
+def test_retained_statement_normalization_detects_a_concurrent_change():
+    class Cursor:
+        rowcount = 0
+        queries = []
+
+        def execute(self, query, params):
+            self.queries.append(query)
+
+        def fetchall(self):
+            return [(date(2000, 3, 31), "quarterly", "IS", {
+                "18. Lợi nhuận sau thuế thu nhập doanh nghiệp": 10, "lợi nhuận sau thuế": 8,
+            }, None, "cafef")]
+
+    cur = Cursor()
+    with pytest.raises(RuntimeError, match="changed while normalizing"):
+        etl._store_derived_ratios("TEST", cur, normalize_statements=True)
+    assert not any(query.lstrip().startswith("INSERT") for query in cur.queries)
