@@ -11,7 +11,8 @@ import psycopg2
 from psycopg2.extras import Json
 
 from app.infrastructure.database.pg_pool import DB_URL
-from app.domain.services.financial_fields import apply_financial_overrides
+from app.infrastructure.data_pipelines.financial_statement_store import MIN_STATEMENT_FIELDS, upsert_financial_statement
+from app.domain.services import financial_fields as fields
 
 logger = logging.getLogger(__name__)
 
@@ -66,16 +67,14 @@ def _clean_nan(data: dict[str, Any]) -> dict[str, Any]:
 
 def _upsert(
     cur, symbol: str, period_end: date, stmt_type: str, freq: str,
-    data: dict, published_date: Optional[date],
+    data: dict, published_date: Optional[date], *, allow_historical_updates: bool = False,
 ):
-    cur.execute(
-        """INSERT INTO financial_statements
-           (symbol, period_end, statement_type, frequency, data, source, published_date)
-           VALUES (%s, %s, %s, %s, %s, %s, %s)
-           ON CONFLICT (symbol, period_end, statement_type, frequency)
-           DO UPDATE SET data = EXCLUDED.data, source = EXCLUDED.source, fetched_at = NOW(),
-                         published_date = COALESCE(EXCLUDED.published_date, financial_statements.published_date)""",
-        (symbol, period_end, stmt_type, freq, Json(_clean_nan(data)), "alphastock", published_date),
+    data = normalize_statement(symbol, period_end, stmt_type, freq, data)
+    if stmt_type == "ratios":
+        fields.normalize_statement_ratio_units(data, "alphastock")
+    upsert_financial_statement(
+        cur, symbol, period_end, stmt_type, freq, Json(_clean_nan(data)),
+        "alphastock", published_date, allow_historical_updates=allow_historical_updates,
     )
 
 
@@ -151,6 +150,12 @@ _ISSUER_BS_OVERRIDES = {
 _ISSUER_BS_YEARLY_OVERRIDES = {("CRC", date(2025, 12, 31)): _asset_total_override(1389278620184)}
 
 
+def normalize_statement(symbol: str, period_end: date, statement_type: str, frequency: str, data: dict) -> dict:
+    overrides = _ISSUER_BS_OVERRIDES if frequency == "quarterly" else _ISSUER_BS_YEARLY_OVERRIDES
+    values = overrides.get((symbol, period_end), {}) if statement_type == "BS" else {}
+    return fields.normalize_financial_statement(data, statement_type, "alphastock", values)
+
+
 def _latest_completed_quarter(today: date) -> date:
     quarter = (today.month - 1) // 3
     year = today.year
@@ -218,31 +223,25 @@ def fetch_and_store_financials(
                     if name:
                         result_data[name] = val
 
-                if db_stmt == "BS":
-                    overrides = _ISSUER_BS_OVERRIDES if db_freq == "quarterly" else _ISSUER_BS_YEARLY_OVERRIDES
-                    result_data = apply_financial_overrides(result_data, overrides.get((symbol, period_end), {}))
-
                 # Schema compatibility: published_date records when we crawled this row.
                 crawl_date = date.today()
                 _upsert(
                     cur, symbol, period_end, db_stmt, db_freq, result_data,
-                    crawl_date,
+                    crawl_date, allow_historical_updates=backfill,
                 )
                 total += 1
 
     if refresh_ratios:
-        try:
-            _store_derived_ratios(symbol, cur)
-        except Exception as e:
-            logger.warning("Derived ratios failed for %s: %s", symbol, e)
+        # Let the caller roll back this symbol's statement writes on any failure.
+        _store_derived_ratios(symbol, cur, normalize_statements=backfill)
 
     return {"symbol": symbol, "rows": total}
 
 
-def _store_derived_ratios(symbol: str, cur) -> None:
+def _store_derived_ratios(symbol: str, cur, *, normalize_statements: bool = False) -> None:
     # Share the frequency-aware calculation used by the existing pipeline.
     from app.infrastructure.data_pipelines.financial_etl_cafef import _store_derived_ratios as store
-    store(symbol, cur)
+    store(symbol, cur, normalize_statements=normalize_statements)
 
 
 def _has_complete_latest_quarter(cur, symbol: str) -> bool:
@@ -254,7 +253,7 @@ def _has_complete_latest_quarter(cur, symbol: str) -> bool:
     )
     usable = {
         statement_type for statement_type, data in cur.fetchall()
-        if isinstance(data, dict) and sum(value is not None for value in data.values()) >= 8
+        if isinstance(data, dict) and sum(value is not None for value in data.values()) >= MIN_STATEMENT_FIELDS
     }
     return usable == {"BS", "IS", "CF"}
 
@@ -296,6 +295,7 @@ def refresh_all() -> dict:
                 total_rows += _fill_missing_with_cafef(
                     sym, cur, refresh_ratios=False, backfill=True, include_ratios=False
                 )
+                _store_derived_ratios(sym, cur, normalize_statements=True)
                 cur.execute(f"RELEASE SAVEPOINT {sp_name}")
             except Exception as e:
                 cur.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
@@ -306,7 +306,7 @@ def refresh_all() -> dict:
                 conn.commit()
                 logger.info("  Progress: %d/%d symbols, %d rows", idx, len(symbols), total_rows)
         from app.infrastructure.data_pipelines.financial_etl_cafef import _fetch_vci_missing_quarter
-        vci_fallback = _fetch_vci_missing_quarter(cur)
+        vci_fallback = _fetch_vci_missing_quarter(cur, normalize_statements=True)
         conn.commit()
 
         logger.info("AlphaStock Financial ETL done: %d rows, %d errors", total_rows, errors)
@@ -350,7 +350,7 @@ def refresh_incremental(*, backfill: bool = False) -> dict:
                 result = fetch_and_store_financials(sym, cur, backfill=backfill)
                 total_rows += result["rows"]
                 if not _has_complete_latest_quarter(cur, sym):
-                    total_rows += _fill_missing_with_cafef(sym, cur)
+                    total_rows += _fill_missing_with_cafef(sym, cur, backfill=backfill)
                     cafef_fallback_symbols += 1
                 cur.execute(f"RELEASE SAVEPOINT {sp_name}")
             except Exception as e:
