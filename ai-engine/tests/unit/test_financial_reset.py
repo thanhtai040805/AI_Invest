@@ -5,10 +5,41 @@ from datetime import date
 import psycopg2
 from psycopg2.extras import Json, execute_values
 import pytest
+from datetime import timedelta
 
 from app.infrastructure.data_pipelines.financial_statement_store import stage_financial_reset, publish_financial_reset
 from app.domain.repositories.replay_factor_snapshot import LEARNING_FACTOR_SQL
 from app.infrastructure.data_pipelines.financial_etl_cafef import _store_derived_ratios
+from app.infrastructure.vendors.vn.factor_scores import compute_factor_scores
+
+
+@pytest.mark.parametrize('observations',[61,129,130])
+def test_vn_momentum_uses_its_own_window_and_preserves_negative_earnings(conn,observations):
+    asof=date(2026,8,11)
+    days=[]
+    day=asof
+    while len(days)<observations:
+        if day.weekday()<5:days.append(day)
+        day-=timedelta(days=1)
+    with conn.cursor() as cur:
+        for table,columns in {
+            'ohlcv_unadjusted':'symbol text,time timestamp,close double precision,volume double precision',
+            'technical_indicators':'symbol text,calc_date date,indicators jsonb',
+            'stocks':'symbol text,market_cap double precision,sector text,industry text,ceiling double precision,floor double precision',
+            'foreign_flow':'symbol text,trade_date date,net_value double precision,net_volume bigint,room_remaining double precision,room_limit double precision,ownership_pct double precision',
+            'insider_trades':'symbol text,trade_date date,trade_type text,quantity bigint',
+            'macro_indicators':'indicator_name text,indicator_date date,value double precision',
+        }.items():
+            cur.execute(f'CREATE TEMP TABLE {table} ({columns}) ON COMMIT DROP')
+        for symbol,pe in [('NEGTEST',-10),('POSTEST',10)]:
+            cur.execute("INSERT INTO financial_ratios (symbol,ratio_date,frequency,pe,pb,roe,published_date) VALUES (%s,'2026-03-31','quarterly',%s,1,.1,'2026-05-20')",(symbol,pe))
+            execute_values(cur,'INSERT INTO ohlcv_unadjusted (symbol,time,close,volume) VALUES %s',
+                           [(symbol,day,20+(observations-i)/10,1000000) for i,day in enumerate(days)])
+        rows={r[0]:r for r in compute_factor_scores(['NEGTEST','POSTEST'],asof,cur)}
+        assert rows['NEGTEST'][5] is not None  # F3 needs 61 closes, not 130.
+        assert rows['POSTEST'][5] is not None
+        assert rows['NEGTEST'][12] is not None
+        assert rows['NEGTEST'][12]<rows['POSTEST'][12]  # Signed E/P ranks loss below profit.
 
 
 @pytest.fixture

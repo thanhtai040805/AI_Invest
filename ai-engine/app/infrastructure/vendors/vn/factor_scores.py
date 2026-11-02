@@ -665,7 +665,7 @@ def compute_factor_scores(
             row["f_score"] = None
 
         # ── Momentum raw inputs (existing) ──────────────────────
-        if len(ohlcv) >= 130:
+        if len(ohlcv) >= 21:
             closes = [c for _, c, _ in ohlcv]
             c = np.array(closes)
             c0 = c[0] if c[0] > 0 else None
@@ -700,9 +700,9 @@ def compute_factor_scores(
         # ═══════════════════════════════════════════════════════════
 
         # ── EARNINGS_YIELD: EPS_TTM / price ──────────────────────
-        # If PE > 0: earnings_yield = 1/PE
-        # If PE <= 0 or None: try NI_ttm/market_cap from statements
-        if pe is not None and pe > 0:
+        # A reported negative P/E carries a negative earnings yield, not a missing value.
+        # With no usable P/E, retain the existing statement-based fallback.
+        if pe is not None and pe != 0:
             row["earnings_yield_raw"] = 1.0 / pe
         elif ni is not None and mcap is not None and mcap > 0:
             # Annualize latest quarter NI
