@@ -45,7 +45,6 @@ class FactorService:
                         CASE
                             WHEN published_date IS NOT NULL
                                  AND (published_date - ratio_date) BETWEEN 10 AND 120
-                                 AND published_date < '2026-09-01'
                             THEN published_date
                             ELSE ratio_date + (
                                 CASE EXTRACT(QUARTER FROM ratio_date)
@@ -61,7 +60,6 @@ class FactorService:
                         CASE
                             WHEN published_date IS NOT NULL
                                  AND (published_date - ratio_date) BETWEEN 10 AND 120
-                                 AND published_date < '2026-09-01'
                             THEN published_date
                             ELSE ratio_date + (
                                 CASE EXTRACT(QUARTER FROM ratio_date)

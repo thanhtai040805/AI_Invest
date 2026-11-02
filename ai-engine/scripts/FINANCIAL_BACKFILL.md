@@ -175,23 +175,6 @@ in thousand VND and is converted explicitly to VND for this estimate. Reported
 zero/negative per-share inputs are never replaced by implied positive values.
 Matching recalculated factors does not establish EPS/BVPS or valuation parity.
 
-Historical reproduction is a separate, explicit Replay use case. The standard
-Replay CLI accepts `--historical-inputs <manifest.json>` with an existing
-`--factor-snapshot`. The manifest must declare
-`purpose=HISTORICAL_BASELINE_REPRODUCTION`, identify the target database,
-pin the snapshot SHA-256, and match row counts and complete-content fingerprints
-for all three restored source tables. Replay verifies these before account reset.
-For a remote database the manifest must also pin `target_host` exactly as used
-by the database connection. Without that field only localhost is accepted.
-Fingerprint comparisons use Vietnam time so timestamps hash consistently across hosts.
-This mode preserves an archived cache for historical comparison; it does not
-retag legacy cache, rebuild factors, approve fresh backfill, or change live cache
-acceptance. Without this flag, the normal producer/date checks still apply.
-For exact historical behavior this mode also permits the calculator's legacy
-defaults on missing dynamic inputs, with explicit warnings. These observations
-remain incomplete historical inputs; they are not certified live factors and
-cannot be persisted while the Replay snapshot is active.
-
 Run mapping preview again after a full crawl or repair: zero proposed changes
 confirms that stored data and the calculator agree. Also check source coverage
 and error counts; a fixed point alone does not prove source-report accuracy.
@@ -202,67 +185,73 @@ as an actual filing timestamp. Verify the same code on a PROD-derived clone
 before applying it to PROD. A connection failure during commit requires checking
 the target state before retrying.
 
-## Continue the approved baseline through the latest closed session
+## Verify the full interval with one producer
 
-Use the standard Replay with `--start 2026-08-12`; this overrides `--days`.
-There is no 52-session cap. Without `--end`, the CLI includes today's available
-market session after 15:00 Vietnam time, otherwise the latest earlier session.
-Removing a count cap does not extend a provider's historical API retention.
-Raw trades and depth for old dates must still be available from the original
-provider/cache; a missing history warning must be investigated if parity fails.
+The acceptance interval starts on 2026-08-12 and extends through the latest closed
+market session. Use one VN producer, the same eligible-universe rules, and the
+previous calendar day as factor as-of for every session. Do not splice archived
+factors/defaults into the first 28 dates and compute later dates differently.
+The approved NAV baseline remains unchanged; its 1,984 observed F1–F6 vectors
+are an external comparison reference, never an input to the new calculation.
+The archived-cache bypass and date-window continuation flags were removed from
+this PR. Earlier restoration acceptance only demonstrates historical reproduction.
 
-```bash
-python -u experiments/replay_agent_pipeline.py \
-  --start 2026-08-12 --reset --max-candidates 3 --capital 1000000000 \
-  --account-id 940b0c70-2010-42f3-b947-797e6419b794 \
-  --factor-snapshot /approved/baseline/frozen_original_cache_v1.json \
-  --historical-inputs /approved/baseline/target_manifest.json \
-  --baseline-reference /approved/baseline/reference.json \
-  --audit-output /evidence/replay-unique-run
-```
+Validate data on an isolated LOCAL copy of PROD source tables before Replay.
+The source copy must exclude portfolio and SAG outputs and preserve a manifest
+of the source transaction, filters, counts and file hashes. Compute every eligible
+symbol on every date without reading `factor_scores`, record incomplete inputs,
+compare the 28-session observations after computation, repeat the full calculation,
+and verify all three financial/factor source tables remain unchanged. Zero batch
+errors and repeatability are necessary but do not establish completeness or filing
+accuracy. Never fill missing scores with 50 to make coverage pass.
 
-The reference is exclusively `cache_readonly_replay_28_20261025_NAV_1005857685`.
-Ship its adjacent `effective_F1_F6.json`, preserve their hashes, and use a new
-evidence directory for every attempt. This is explicit historical restoration.
+Financial availability now uses the same reported-publication/lag validation rule
+on every date. The former hardcoded 2026-09-01 exception was removed from the
+financial repository, dynamic service and VN producer. A plausible reported date
+(10–120 days after the period) is respected; otherwise the existing reporting-lag
+heuristic applies. A heuristic is not a verified filing date; legacy publication
+metadata and the remaining sources must be certified before production promotion.
 
-Before account reset, Replay verifies the restored three source tables and the
-exact archive, calendar prefix, account, capital and scanner settings. It builds
-later dates with the existing VN producer in a read-only transaction. Every
-eligible producer symbol must be returned; F1–F6 must be finite within 0–100,
-with producer/as-of provenance and nonmissing P/E, P/B and ROE. These checks
-establish factor availability, not independent source-filing certification.
-The approved archive and its learning inputs remain intact for the first 28
-dates. Later learning inputs use that day's VN producer, sorted by symbol.
-New computed factors are saved in the run snapshot, never published over source
-`factor_scores` by Replay.
+VN momentum components retain their formulas but use their own available windows:
+21 closes for the one-month component, 61 for F3, 126 for the six-month component.
+The former shared 130-close gate incorrectly suppressed valid F3 observations.
+A reported negative P/E now produces signed E/P rather than dropping the factor
+or replacing the TTM signal with annualized quarterly earnings. Missing/zero P/E
+still needs verified source inputs; no new numeric defaults were added.
 
-For each of the first 28 closes, `daily_baseline_comparison.jsonl` records exact
-NAV/cash differences, differences in every observed F1–F6 vector and source
-path, fills, pipeline phase diagnostics, snapshot SHA and agent error count.
-Any difference stops before the next session. The account retains the failed
-session's state for diagnosis; this is not an automatic rollback. Inspect the
-recorded factor differences, source fingerprints, fills/decision contexts and
-code release before assigning a cause. Do not change thresholds to force parity.
-Only after all 28 sessions match does execution continue without further NAV
-baseline comparisons. Later missing VN cache inputs stop the run, even if an
-agent wrapper catches its exception; generic dynamic fallback and the eight
-legacy historical defaults are unavailable outside the archive dates.
-Preflight/runtime failures also write `failure.json`.
+The standard Replay accepts `--start 2026-08-12` to override `--days`, with no
+52-session count cap. Without `--end`, today's session is eligible only after
+15:00 Vietnam time. Explicit paper replay context also applies to that same-day
+session; its factor as-of is the prior day, consistently with earlier sessions.
+Removing a count cap does not extend provider API retention. Full raw trades and
+depth still need independent coverage checks before a run can be certified.
 
-Production rollout uses the existing `aiinvest` database, with no separate PROD
-replay database. Prepare the PR, pass CI, deploy its main release SHA via the
-existing deployment workflow and verify health. Before restoring any tables or
-resetting the account, preserve and verify a backup, prevent concurrent portfolio
-automation/ETL writes during the run, restore the approved three tables in one
-transaction, and pin the exact connection host/database in the manifest. Keep
-the source archive immutable. This plan does not enable live broker orders.
+Read-only checks on 2026-11-02 found PROD market data through 2026-11-02, but
+only 1 of 409 stock rows had positive market cap. VN F5 requires market cap;
+foreign-flow records alone are insufficient. The full LOCAL uniform audit and its
+source evidence are kept under ignored scratch output, outside the production PR.
+Do not certify future factor completeness from the earlier cached baseline run.
 
-Read-only checks on 2026-11-02 found PROD market data through 2026-11-02, but only
-1 of 409 stock records had positive `stocks.market_cap` (LOCAL: 1 of 408).
-VN F5 divides foreign net value by this market cap, so foreign-flow rows alone
-cannot provide complete F5. The LOCAL first-future-date preflight (2026-09-23
-as-of) failed even when tested with PROD flow in a LOCAL temporary table.
-Populate verified, correctly scaled market-cap inputs and rerun full date/symbol
-coverage before PROD reset. Do not fill missing values with 50 or infer units
-from magnitude. Full continuation is not yet certified by the prior 28-session
-historical acceptance result.
+A controlled LOCAL comparison used the same calculator and market/support inputs
+throughout, swapping only the two financial tables with frozen baseline inputs.
+All first-28-session VN outputs were unchanged; financial changes affected 1,771
+symbol-days only from 2026-10-15 onward, in F1/F2/F4. Both variants still differed
+from all 1,984 observed historical vectors. For 1,165 archived cached observations
+with sufficient raw metadata, F1/F3/F6 reproduce the generic FactorService formulas
+within rounding tolerance; baseline F6 there uses price/MA, whereas VN F6 uses
+volatility ranks. The other 405 cached observations lack that provenance evidence.
+Do not describe a uniform VN calculation as baseline-equivalent or attribute all
+baseline differences to financial-table data.
+
+No explicit DMX/LPS exception was found in LOCAL or running PROD source. The VN
+liquid universe permits 45 observed trading days, while F3 needs 61 closes.
+Their 22 missing F3 observations occur only after the baseline window. Classify
+them as insufficient history/eligibility, not evidence of backfill data loss.
+Do not silently add ticker exclusions to make completeness metrics pass.
+
+Production uses the existing `aiinvest` database, never a separate PROD replay DB.
+Only after source/factor acceptance passes: pass PR CI, deploy a successful main
+release SHA through the existing workflow, preserve a verified backup, prevent
+concurrent writers, and use standard Replay `--reset`. No PROD restoration/reset
+or deployment is authorized by a failed data-only check. No live broker mode or
+SAG integration is enabled by this work.

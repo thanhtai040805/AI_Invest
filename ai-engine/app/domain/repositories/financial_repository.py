@@ -39,13 +39,12 @@ class FinancialRepository:
 
         if as_of:
             # Point-in-Time Statutory Effective Date Resolution (TT 96/2020/TT-BTC & TT 155/2015/TT-BTC):
-            # If published_date has realistic lag (10 <= lag <= 120 days and before mass crawler date 2026-09-01), use it;
-            # otherwise fallback to regulatory deadline: Q1 +45d, Q2 +55d, Q3 +45d, Q4/Year +35d.
+            # Use the reported date when its lag is plausible (10 <= lag <= 120 days);
+            # otherwise use a reporting-lag heuristic, not a certified filing timestamp.
             effective_date_sql = """
                 CASE 
                     WHEN published_date IS NOT NULL 
                          AND (published_date - period_end) BETWEEN 10 AND 120 
-                         AND published_date < '2026-09-01'
                     THEN published_date
                     ELSE period_end + (
                         CASE EXTRACT(QUARTER FROM period_end)
@@ -204,7 +203,6 @@ class FinancialRepository:
                     CASE 
                         WHEN r.published_date IS NOT NULL 
                              AND (r.published_date - r.ratio_date) BETWEEN 10 AND 120 
-                             AND r.published_date < '2026-09-01'
                         THEN r.published_date
                         ELSE r.ratio_date + (
                             CASE EXTRACT(QUARTER FROM r.ratio_date)
@@ -221,7 +219,6 @@ class FinancialRepository:
                     CASE 
                         WHEN r.published_date IS NOT NULL 
                              AND (r.published_date - r.ratio_date) BETWEEN 10 AND 120 
-                             AND r.published_date < '2026-09-01'
                         THEN r.published_date
                         ELSE r.ratio_date + (
                             CASE EXTRACT(QUARTER FROM r.ratio_date)
@@ -275,7 +272,6 @@ class FinancialRepository:
                             CASE 
                                 WHEN r.published_date IS NOT NULL 
                                      AND (r.published_date - r.ratio_date) BETWEEN 10 AND 120 
-                                     AND r.published_date < '2026-09-01'
                                 THEN r.published_date
                                 ELSE r.ratio_date + (
                                     CASE EXTRACT(QUARTER FROM r.ratio_date)
@@ -292,7 +288,6 @@ class FinancialRepository:
                             CASE 
                                 WHEN r.published_date IS NOT NULL 
                                      AND (r.published_date - r.ratio_date) BETWEEN 10 AND 120 
-                                     AND r.published_date < '2026-09-01'
                                 THEN r.published_date
                                 ELSE r.ratio_date + (
                                     CASE EXTRACT(QUARTER FROM r.ratio_date)
@@ -391,7 +386,6 @@ class FinancialRepository:
                 CASE 
                     WHEN published_date IS NOT NULL 
                          AND (published_date - ratio_date) BETWEEN 10 AND 120 
-                         AND published_date < '2026-09-01'
                     THEN published_date
                     ELSE ratio_date + (
                         CASE EXTRACT(QUARTER FROM ratio_date)
@@ -407,7 +401,6 @@ class FinancialRepository:
                 CASE 
                     WHEN published_date IS NOT NULL 
                          AND (published_date - ratio_date) BETWEEN 10 AND 120 
-                         AND published_date < '2026-09-01'
                     THEN published_date
                     ELSE ratio_date + (
                         CASE EXTRACT(QUARTER FROM ratio_date)
@@ -470,7 +463,6 @@ class FinancialRepository:
                        CASE
                            WHEN published_date IS NOT NULL
                                 AND (published_date - ratio_date) BETWEEN 10 AND 120
-                                AND published_date < '2026-09-01'
                            THEN published_date
                            ELSE ratio_date + (
                                CASE EXTRACT(QUARTER FROM ratio_date)

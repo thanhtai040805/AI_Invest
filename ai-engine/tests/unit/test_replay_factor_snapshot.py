@@ -26,35 +26,6 @@ from app.domain.rules.scoring import CSSScoringEngine
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize('failure',[None,'purpose','snapshot','database','table'])
-def test_historical_reproduction_requires_exact_restored_local_inputs(tmp_path,monkeypatch,failure):
-    snapshot=ReplayFactorSnapshot(data())
-    fingerprint={'rows':1,'sha256':hashlib.sha256(b'row').hexdigest()}
-    manifest={'purpose':'HISTORICAL_BASELINE_REPRODUCTION','target_database':'local_archive',
-              'factor_snapshot_sha256':snapshot.sha256,
-              'tables':{t:dict(fingerprint) for t in ('financial_statements','financial_ratios','factor_scores')}}
-    connection=MagicMock()
-    connection.get_dsn_parameters.return_value={'host':'localhost','dbname':'local_archive'}
-    cursor=connection.cursor.return_value.__enter__.return_value
-    cursor.fetchall.return_value=[('row',)]
-    context=MagicMock();context.return_value.__enter__.return_value=connection
-    monkeypatch.setattr('app.domain.repositories.replay_factor_snapshot.get_conn',context)
-    if failure=='purpose':manifest['purpose']='CURRENT_CACHE_CERTIFICATION'
-    if failure=='snapshot':manifest['factor_snapshot_sha256']='wrong'
-    if failure=='database':connection.get_dsn_parameters.return_value={'host':'prod.example','dbname':'local_archive'}
-    if failure=='table':manifest['tables']['factor_scores']['sha256']='changed'
-    path=tmp_path/'archive.json';path.write_text(json.dumps(manifest),encoding='utf8')
-    if failure:
-        with pytest.raises(ValueError):snapshot.require_historical_inputs(path)
-        assert not snapshot.historical_reproduction
-    else:
-        snapshot.require_historical_inputs(path)
-        assert snapshot.historical_reproduction
-        assert all('SELECT' in call.args[0] or 'READ ONLY' in call.args[0]
-                   or call.args[0] == "SET LOCAL TIME ZONE 'Asia/Ho_Chi_Minh'"
-                   for call in cursor.execute.call_args_list)
-
-
 def load_class(filename, name, **extra):
     path = ROOT / 'app/domain/agents' / filename
     tree = ast.parse(path.read_text(encoding='utf-8'))
@@ -80,39 +51,6 @@ def dated_data(quality=69.87):
     result=data(quality)
     result['factor_rows'][0][10]=dated_details(f2_quality=quality)
     return result
-
-
-@pytest.mark.parametrize('failure', [None, 'missing_symbol', 'missing_pe', 'invalid_score'])
-def test_extend_archive_with_complete_vn_scores_only(monkeypatch, failure):
-    import sys
-    import types
-    source = ReplayFactorSnapshot(data())
-    source.historical_reproduction = True
-    day = date(2026, 8, 24)
-    details = {'source': {'producer': 'VN_FACTOR_SCORES', 'as_of': str(day), 'cache_complete': True},
-               'financial_inputs': {'pe': None if failure == 'missing_pe' else 10, 'pb': 1, 'roe': .1}}
-    row = ['CTG', day, *([60.] * 18), json.dumps(details)]
-    if failure == 'invalid_score':
-        row[5] = None
-    module = types.ModuleType('app.infrastructure.vendors.vn.factor_scores')
-    module.select_scoring_symbols = lambda cur, day: ['CTG']
-    module.compute_factor_scores = lambda *args: [] if failure == 'missing_symbol' else [row]
-    monkeypatch.setitem(sys.modules, module.__name__, module)
-    connection = MagicMock()
-    monkeypatch.setattr('app.domain.repositories.replay_factor_snapshot.get_conn', lambda: connection)
-    if failure:
-        with pytest.raises(ValueError, match='coverage|Incomplete'):
-            source.extend_with_vn_producer([day])
-        return
-    combined = source.extend_with_vn_producer([date(2026,8,21), day])
-    assert source.sha256 == ReplayFactorSnapshot(data()).sha256
-    assert combined.factor_rows('CTG', date(2026,8,21)) == source.factor_rows('CTG', date(2026,8,21))
-    assert combined.allows_historical_defaults(date(2026,8,21))
-    assert not combined.allows_historical_defaults(day)
-    assert combined.factor_rows('CTG', day)[0][2:8] == [60.] * 6
-    sql = ' '.join(str(call) for call in connection.mock_calls)
-    assert 'READ ONLY' in sql
-    assert 'INSERT' not in sql and 'UPDATE' not in sql and 'DELETE' not in sql
 
 
 def test_saved_snapshot_is_defensive_and_reusable_and_rejects_tampering(tmp_path):
@@ -191,7 +129,7 @@ def test_capture_uses_one_read_only_repeatable_read_transaction(monkeypatch):
 
 
 @pytest.mark.parametrize('replay',[False,True])
-@pytest.mark.parametrize('source',['cache','missing','neutral','historical_missing'])
+@pytest.mark.parametrize('source',['cache','missing','neutral'])
 def test_research_reads_cache_or_generic_and_only_writes_audit(monkeypatch,replay,source):
     cls = load_class('equity_research.py','EquityResearchAgent')
     agent = cls.__new__(cls); agent.scoring_engine=CSSScoringEngine(); agent.factor_service=MagicMock()
@@ -200,16 +138,13 @@ def test_research_reads_cache_or_generic_and_only_writes_audit(monkeypatch,repla
     cached=deepcopy(factors)
     if source=='neutral': cached.update(f3_momentum=50.,f4_earnings=50.,f5_flow=50.)
     agent.intel_repo=MagicMock()
-    agent.intel_repo.get_factor_score.return_value=None if source in ('missing','historical_missing') else cached
-    agent.factor_service.compute_factors_for_ticker.return_value={**factors,'raw_metrics':{'missing_inputs':['pe']} if source=='historical_missing' else {}}
+    agent.intel_repo.get_factor_score.return_value=None if source=='missing' else cached
+    agent.factor_service.compute_factors_for_ticker.return_value={**factors,'raw_metrics':{}}
     monkeypatch.setattr(FinancialRepository,'__init__',lambda self:None)
     monkeypatch.setattr(FinancialRepository,'get_latest_ratios',lambda *args,**kwargs:{})
     event=dict(ticker='CTG',sector='BANKS',current_price=32100,target_date='2026-08-24',
                market_data_date='2026-08-21',policy_weights={'f1_value':1.},is_replay=replay)
-    snapshot=ReplayFactorSnapshot(data())
-    snapshot.historical_reproduction=True
-    with snapshot.activate() if source=='historical_missing' else nullcontext():
-        result=asyncio.run(agent.process(event))
+    result=asyncio.run(agent.process(event))
     assert {key:result['data'][key] for key in factors if key.startswith('f') and key!='factor_details'} == {
         key:value for key,value in factors.items() if key!='factor_details'}
     assert result['data']['css']==75.

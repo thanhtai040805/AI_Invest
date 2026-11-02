@@ -153,7 +153,6 @@ def _extract_fin_stmts(cur, symbols: list[str], as_of: date) -> dict[str, dict[s
                 CASE
                     WHEN fs.published_date IS NOT NULL
                          AND (fs.published_date - fs.period_end) BETWEEN 10 AND 120
-                         AND fs.published_date < '2026-09-01'
                     THEN fs.published_date
                     ELSE fs.period_end + (
                         CASE EXTRACT(QUARTER FROM fs.period_end)
@@ -221,7 +220,6 @@ def _extract_multi_stmts(
                 CASE
                     WHEN fs.published_date IS NOT NULL
                          AND (fs.published_date - fs.period_end) BETWEEN 10 AND 120
-                         AND fs.published_date < '2026-09-01'
                     THEN fs.published_date
                     ELSE fs.period_end + (
                         CASE EXTRACT(QUARTER FROM fs.period_end)
@@ -415,7 +413,6 @@ def compute_factor_scores(
                 CASE
                     WHEN published_date IS NOT NULL
                          AND (published_date - ratio_date) BETWEEN 10 AND 120
-                         AND published_date < '2026-09-01'
                     THEN published_date
                     ELSE ratio_date + (
                         CASE EXTRACT(QUARTER FROM ratio_date)

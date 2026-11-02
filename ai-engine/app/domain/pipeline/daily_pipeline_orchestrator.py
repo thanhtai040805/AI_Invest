@@ -227,7 +227,8 @@ class DailyInvestmentPipeline:
         target_date_obj = date.fromisoformat(run_date_str) if isinstance(run_date_str, str) else run_date_str
         replay_at = datetime.combine(
             target_date_obj, time(9, 45), tzinfo=ZoneInfo("Asia/Ho_Chi_Minh")
-        ) if target_date_obj < datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date() else None
+        ) if (replay_portfolio is not None or replay_account_id is not None
+              or target_date_obj < datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date()) else None
         market_data_date = target_date_obj - timedelta(days=1) if replay_at else target_date_obj
         multi_agent_account_id = replay_account_id or os.getenv("MULTI_AGENT_ACCOUNT_ID", "940b0c70-2010-42f3-b947-797e6419b794")
 
