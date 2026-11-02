@@ -237,9 +237,19 @@ throughout, swapping only the two financial tables with frozen baseline inputs.
 All first-28-session VN outputs were unchanged; financial changes affected 1,771
 symbol-days only from 2026-10-15 onward, in F1/F2/F4. Both variants still differed
 from all 1,984 observed historical vectors. For 1,165 archived cached observations
-with sufficient raw metadata, F1/F3/F6 reproduce the generic FactorService formulas
-within rounding tolerance; baseline F6 there uses price/MA, whereas VN F6 uses
-volatility ranks. The other 405 cached observations lack that provenance evidence.
+with sufficient raw metadata, F1/F3/F6 reproduce the generic FactorService formulas;
+baseline F6 there uses price/MA. The remaining 405 cached observations have VN
+component-rank metadata: all six exported factors reconstruct within 0.061, the
+bound allowed by their one-decimal saved ranks. VN F4 is earnings yield and F6
+volatility ranks; Generic F4 is YoY growth and F6 price/MA. These are two factor
+families inside one historical cache/fallback pipeline, not one shared formula.
+Of the 405 VN observations, 400 have no saved F5 rank and consume 50; 14 have no
+saved F4 rank and consume 50. Eight Generic dynamic observations also use old
+financial defaults. The original reader and Generic implementation from Git
+reproduce all 1,984 observations/source paths exactly with the archived cache,
+but that does not prove fresh cache regeneration or source completeness.
+Generic cached F2/F4 still have 96/87 observations without a matching available
+historical financial-input set; do not infer missing inputs from target scores.
 Do not describe a uniform VN calculation as baseline-equivalent or attribute all
 baseline differences to financial-table data.
 
