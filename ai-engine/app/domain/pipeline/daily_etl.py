@@ -137,6 +137,11 @@ class DailyETLPipeline:
                             "reason": reason,
                         }
 
+            if results.get("factor_scores", {}).get("status") == "failed":
+                reason = f"Factor inputs or persistence incomplete for {self.trade_date}"
+                set_failed(JOB_NAME, reason)
+                return {"status": "FAILED", "trade_date": str(self.trade_date),
+                        "steps": results, "reason": reason}
             set_completed(JOB_NAME, results)
             logger.info("=== DailyETL done ===")
             return results
@@ -336,6 +341,9 @@ class DailyETLPipeline:
             from app.domain.services.factor_service import FactorService
             service = FactorService()
             result = await asyncio.to_thread(service.compute_daily_factors, self.trade_date)
+            if (result.get("errors") or not result.get("total_symbols")
+                    or result.get("symbols_computed") != result.get("total_symbols")):
+                return {"status": "failed", **result}
             logger.info("ETL: factor_scores — completed: %s", result)
             return {"status": "success", **result}
         except Exception as e:

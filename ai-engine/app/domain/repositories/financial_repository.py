@@ -155,23 +155,36 @@ class FinancialRepository:
             )
             return {}
         data = statement["data"]
-        eps = fields.extract_financial_value(data, fields.EPS_KEYS) or 0.0
-        bvps = fields.extract_financial_value(data, fields.BVPS_KEYS) or 0.0
+        eps = fields.extract_financial_value(data, fields.EPS_KEYS)
+        bvps = fields.extract_financial_value(data, fields.BVPS_KEYS)
+        eps_method = "REPORTED" if eps is not None else "MISSING"
+        bvps_method = "REPORTED" if bvps is not None else "MISSING"
 
-        # Fallback reconstruction: If EPS or BVPS is 0, attempt derivation from market price and PE/PB
-        if eps <= 0 or bvps <= 0:
+        # Reconstruct only absent metrics. A reported loss or zero is evidence,
+        # not permission to replace it with a positive implied earning/book value.
+        if eps is None or bvps is None:
             price_rows = self.storage.fetch_all(
                 "SELECT close FROM market_data_daily_calculation WHERE ticker = %s AND date <= %s ORDER BY date DESC LIMIT 1",
                 (symbol, as_of),
             )
             if price_rows and price_rows[0][0]:
-                curr_price = float(price_rows[0][0])
+                # This table's close is in thousand VND; valuation prices and
+                # per-share fundamentals are in VND. Do not infer units by size.
+                curr_price = float(price_rows[0][0]) * 1000.0
                 r_pe = fields.extract_financial_value(data, fields.PE_KEYS) or 0.0
                 r_pb = fields.extract_financial_value(data, fields.PB_KEYS) or 0.0
-                if eps <= 0 and r_pe > 0:
+                if eps is None and r_pe > 0:
                     eps = round(curr_price / r_pe, 2)
-                if bvps <= 0 and r_pb > 0:
+                    eps_method = "IMPLIED_FROM_MARKET_CLOSE_AND_PE"
+                if bvps is None and r_pb > 0:
                     bvps = round(curr_price / r_pb, 2)
+                    bvps_method = "IMPLIED_FROM_MARKET_CLOSE_AND_PB"
+        per_share_inputs = {
+            "eps": eps, "eps_method": eps_method,
+            "bvps": bvps, "bvps_method": bvps_method, "currency": "VND",
+        }
+        eps = eps if eps is not None else 0.0
+        bvps = bvps if bvps is not None else 0.0
 
         stock_row = stocks[0]
         sector = stock_row[0]
@@ -359,6 +372,7 @@ class FinancialRepository:
                     "as_of": as_of.isoformat(),
                 }
             }
+        inputs["source"]["per_share_inputs"] = per_share_inputs
         return inputs
 
     def get_latest_ratios(self, symbol: str, as_of: Optional[date] = None, frequency: Optional[str] = "quarterly", *, allow_defaults: bool = True) -> Optional[Dict[str, Any]]:

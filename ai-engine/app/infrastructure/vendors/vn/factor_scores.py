@@ -1248,6 +1248,12 @@ def compute_factor_scores(
         details["momentum_score"] = round(float(ms), 1) if pd.notna(ms) else None
         fin = fin_map.get(sym_idx, {})
         details["source"] = {
+            "producer": "VN_FACTOR_SCORES",
+            "cache_complete": all(pd.notna(value) and 0 <= float(value) <= 100 for value in (
+                value_score_out if value_score_out is not None else vs,
+                quality_score_out if quality_score_out is not None else qs,
+                mom3, _earn, _ff, volatility_score_out,
+            )),
             "version": FACTOR_SOURCE_VERSION,
             "as_of": score_date.isoformat(),
             "sector": sectors.get(sym_idx, (None, None))[0],

@@ -18,6 +18,16 @@ command = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(command)
 
 
+def test_mapping_repair_invalidates_cache_in_same_transaction():
+    calls=[]
+    class Cursor:
+        rowcount=1
+        def execute(self,query,params):calls.append((query,params))
+    command.apply_changes(Cursor(),[{'table':'financial_statements','key':['TEST',date(2026,6,30),'IS','quarterly'],'before':{'net_income':1},'after':{'net_income':2}}])
+    assert 'DELETE FROM factor_scores' in calls[-1][0]
+    assert calls[-1][1]==(['TEST'],)
+
+
 def test_preview_repairs_target_rows_without_provider_or_writes(monkeypatch):
     def forbidden(*args, **kwargs):
         raise AssertionError("Preview attempted provider request or DB write")
@@ -134,6 +144,7 @@ def test_ratio_units_use_source_schema_for_backfill_and_future_ingestion():
         )
 
         class Cursor:
+            rowcount = 0
             def execute(self, query, params):
                 if query.lstrip().startswith("INSERT"):
                     self.values = params
@@ -394,6 +405,8 @@ def test_ingestion_propagates_any_ratio_rebuild_failure(monkeypatch, provider):
 
 def test_full_financial_refresh_rebuilds_after_both_sources(monkeypatch):
     calls = []
+    monkeypatch.setattr(alpha, "stage_financial_reset", lambda cur: calls.append("stage"))
+    monkeypatch.setattr(alpha, "publish_financial_reset", lambda cur, symbols: calls.append("publish") or {})
 
     class Cursor:
         def execute(self, query, params=None):
@@ -433,51 +446,23 @@ def test_full_financial_refresh_rebuilds_after_both_sources(monkeypatch):
         lambda *a, **k: calls.append("vci") or {"rows": 0},
     )
     result = alpha.refresh_all()
-    assert calls == ["alpha", "cafef", "derive", "vci"]
+    assert calls == ["stage", "alpha", "cafef", "derive", "vci", "publish"]
     assert result["errors"] == 0
 
 
-def test_incremental_backfill_forwards_history_repair_to_cafef(monkeypatch):
+def test_incremental_backfill_uses_complete_atomic_reset(monkeypatch):
     calls = []
-
-    class Cursor:
-        def execute(self, query, params=None):
-            self.query = query
-
-        def fetchall(self):
-            return [("TEST",)] if "SELECT symbol FROM stocks" in self.query else []
-
-        def close(self):
-            pass
-
-    class Connection:
-        def cursor(self):
-            return Cursor()
-
-        def commit(self):
-            pass
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(alpha.psycopg2, "connect", lambda *a, **k: Connection())
-    monkeypatch.setattr(
-        alpha,
-        "fetch_and_store_financials",
-        lambda *a, **k: calls.append(("alpha", k)) or {"rows": 1},
-    )
-    monkeypatch.setattr(alpha, "_has_complete_latest_quarter", lambda *a: False)
-    monkeypatch.setattr(
-        alpha,
-        "_fill_missing_with_cafef",
-        lambda *a, **k: calls.append(("cafef", k)) or 0,
-    )
-    assert alpha.refresh_incremental(backfill=True)["errors"] == 0
-    assert calls == [("alpha", {"backfill": True}), ("cafef", {"backfill": True})]
+    expected = {"errors":0,"reset_counts":{"financial_statements":3}}
+    monkeypatch.setattr(alpha,"refresh_all",lambda: calls.append("full_reset") or expected)
+    assert alpha.refresh_incremental(backfill=True) is expected
+    assert calls == ["full_reset"]
 
 
 def test_cafef_full_refresh_enables_historical_statement_repairs(monkeypatch):
     calls = []
+    from app.infrastructure.data_pipelines import financial_statement_store as store
+    monkeypatch.setattr(store,"stage_financial_reset",lambda cur: None)
+    monkeypatch.setattr(store,"publish_financial_reset",lambda cur,symbols: {})
 
     class Cursor:
         def execute(self, query, params=None):

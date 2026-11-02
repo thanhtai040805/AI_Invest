@@ -74,10 +74,11 @@ def extract_financial_value(data: dict | None, aliases: Iterable[str]) -> float 
 
 
 REVENUE_KEYS = [
+    "is_total_net_revenue_from_insurance_business", "total_net_revenue_from_insurance_business",
+    "doanh thu thuần từ hoạt động kinh doanh bảo hiểm", "doanh thu thuần từ HĐKD BH",
+    "doanh thu thuần hoạt động kinh doanh bảo hiểm",
     "doanh thu thuần về bán hàng và cung cấp dịch vụ", "doanh thu thuần", "net_sales", "net_revenue",
-    "thu nhập lãi thuần", "net_interest_income", "doanh thu thuần từ HĐKD BH",
-    "doanh thu thuần hoạt động kinh doanh bảo hiểm", "total_net_revenue_from_insurance_business",
-    "doanh thu phí bảo hiểm thuần",
+    "thu nhập lãi thuần", "net_interest_income",
     "cộng doanh thu hoạt động (01->11)", "doanh thu hoạt động", "doanh thu bán hàng và cung cấp dịch vụ",
 ]
 COGS_KEYS = ["giá vốn hàng bán", "cost_of_sales", "cost_of_goods_sold"]
@@ -112,7 +113,12 @@ SHORT_INVESTMENT_KEYS = ["đầu tư tài chính ngắn hạn", "short_term_inve
 EBITDA_KEYS = ["EBITDA", "lợi nhuận trước thuế, khấu hao và lãi vay"]
 EVEBITDA_KEYS = ["giá trị doanh nghiệp trên lợi nhuận trước thuế, khấu hao và lãi vay (EV/EBITDA)", "EV/EBITDA"]
 GM_KEYS = ["gross_margin", "tỷ suất lợi nhuận gộp biên", "tỷ suất lợi nhuận gộp", "biên lợi nhuận gộp"]
-GROSS_PROFIT_KEYS = ["lợi nhuận gộp về bán hàng và cung cấp dịch vụ", "lợi nhuận gộp của hoạt động kinh doanh", "gross_profit", "lợi nhuận gộp"]
+GROSS_PROFIT_KEYS = [
+    "is_gross_insurance_operating_profit", "gross_insurance_operating_profit",
+    "lợi nhuận gộp hoạt động kinh doanh bảo hiểm",
+    "lợi nhuận gộp về bán hàng và cung cấp dịch vụ", "lợi nhuận gộp của hoạt động kinh doanh",
+    "gross_profit", "lợi nhuận gộp",
+]
 NM_KEYS = ["net_margin", "tỷ suất sinh lợi trên doanh thu thuần", "sinh lợi trên doanh thu", "biên lợi nhuận ròng"]
 
 

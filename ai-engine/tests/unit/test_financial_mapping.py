@@ -85,6 +85,7 @@ def test_source_parsers_preserve_final_cfo_and_consolidated_income():
 
 
 class NoWriteCursor:
+    rowcount = 0
     def __init__(self, rows):
         self.rows, self.inserts = rows, []
 

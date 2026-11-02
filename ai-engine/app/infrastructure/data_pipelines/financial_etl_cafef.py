@@ -637,12 +637,17 @@ def fetch_and_store_financials(
     cdkt_q = _fetch_cafef_endpoint(f"{API_BASE}/v2/BCTC/GetReportCDKT", {"symbol": clean_sym, "pageIndex": 1, "pageSize": max_quarters, "reportType": "ALL", "TypeTime": "QUY"})
     kqkd_q = _fetch_cafef_endpoint(f"{API_BASE}/v1/BCTC/GetReportDetail", {"symbol": clean_sym, "pageIndex": 1, "pageSize": max_quarters, "reportType": "KQKD", "TypeTime": "QUY"})
     lctt_q = _fetch_cafef_endpoint(f"{API_BASE}/v1/BCTC/GetReportLCTT", {"symbol": clean_sym, "pageIndex": 1, "pageSize": max_quarters, "reportType": "ALL", "TypeTime": "QUY"})
-    ratios_q = _fetch_cafef_endpoint(f"{API_BASE}/v2/BCTC/FinancialIndicators", {"symbol": clean_sym, "pageIndex": 1, "pageSize": max_quarters})
+    ratios_q = (_fetch_cafef_endpoint(f"{API_BASE}/v2/BCTC/FinancialIndicators", {"symbol": clean_sym, "pageIndex": 1, "pageSize": max_quarters})
+                if include_ratios else None)
 
     # 2. Fetch Annual data (TypeTime=NAM)
     cdkt_a = _fetch_cafef_endpoint(f"{API_BASE}/v2/BCTC/GetReportCDKT", {"symbol": clean_sym, "pageIndex": 1, "pageSize": 20, "reportType": "ALL", "TypeTime": "NAM"})
     kqkd_a = _fetch_cafef_endpoint(f"{API_BASE}/v1/BCTC/GetReportDetail", {"symbol": clean_sym, "pageIndex": 1, "pageSize": 20, "reportType": "KQKD", "TypeTime": "NAM"})
     lctt_a = _fetch_cafef_endpoint(f"{API_BASE}/v1/BCTC/GetReportLCTT", {"symbol": clean_sym, "pageIndex": 1, "pageSize": 20, "reportType": "ALL", "TypeTime": "NAM"})
+
+    required = (cdkt_q, kqkd_q, lctt_q, cdkt_a, kqkd_a, lctt_a) + ((ratios_q,) if include_ratios else ())
+    if backfill and any(value is None for value in required):
+        raise ValueError(f"CafeF backfill response incomplete for {clean_sym}")
 
     runs = [
         ("quarterly", cdkt_q, kqkd_q, lctt_q, ratios_q),
@@ -825,9 +830,10 @@ def derive_financial_ratios(symbol: str, stmt_rows: list) -> list[tuple]:
             fcf = cfo - capex
 
         mcap = None
-        if vn_pe is not None and ni is not None:
-            ttm_ni = ni * 4 if abs(ni) < 5e11 else ni
-            mcap = vn_pe * ttm_ni
+        # A flow's magnitude cannot establish whether it is quarterly, YTD or TTM.
+        # Annual statements supply a full-year basis; quarterly TTM is unverified.
+        if frequency == "yearly" and vn_pe is not None and vn_pe > 0 and ni is not None and ni > 0:
+            mcap = vn_pe * ni
 
         debt_equity = _extract_value([rat_data], _DE_KEYS)
         if debt_equity is None and liab is not None and equity is not None and equity != 0:
@@ -842,27 +848,21 @@ def derive_financial_ratios(symbol: str, stmt_rows: list) -> list[tuple]:
 
         fcf_yield = None
         if fcf is not None and mcap is not None and mcap != 0:
-            fcf_yield = (fcf * 4) / mcap
+            fcf_yield = fcf / mcap
 
         ev_ebitda = _extract_value([rat_data], _EVEBITDA_KEYS)
         if ev_ebitda is None and mcap is not None:
             interest_debt = fields.interest_bearing_debt(bs_data)
-            debt_for_ev = interest_debt if interest_debt is not None else liab
-            if debt_for_ev is not None:
-                cash = _extract_value([bs_data], _CASH_KEYS) or 0
-                st_inv = fields.extract_financial_value(bs_data, fields.SHORT_INVESTMENT_KEYS) or 0
-                ev = mcap + debt_for_ev - (cash + st_inv)
+            cash = _extract_value([bs_data], _CASH_KEYS)
+            st_inv = fields.extract_financial_value(bs_data, fields.SHORT_INVESTMENT_KEYS)
+            if interest_debt is not None and cash is not None and st_inv is not None:
+                ev = mcap + interest_debt - (cash + st_inv)
                 ebitda = _extract_value([inc_data], _EBITDA_KEYS)
                 if ebitda is not None and ebitda != 0:
-                    ttm_ebitda = ebitda * 4 if abs(ebitda) < 5e11 else ebitda
-                    ev_ebitda = ev / ttm_ebitda
+                    ev_ebitda = ev / ebitda
 
-        tgt = pe - timedelta(days=365)
-        prev_inc = None
-        for other_pe, other_frequency in sorted_periods:
-            if other_frequency == frequency and other_pe <= tgt:
-                prev_inc = periods[(other_pe, other_frequency)].get("IS")
-                break
+        tgt = date(pe.year - 1, pe.month, min(pe.day, monthrange(pe.year - 1, pe.month)[1]))
+        prev_inc = periods.get((tgt, frequency), {}).get("IS")
         yoy_rev = None
         yoy_ni = None
         if prev_inc:
@@ -911,6 +911,7 @@ def _store_derived_ratios(symbol: str, cur, *, normalize_statements: bool = Fals
             if cur.rowcount != 1:
                 raise RuntimeError(f"Statement changed while normalizing {symbol}/{pe}/{kind}/{frequency}")
             stmt_rows[index] = (pe, frequency, kind, fixed, published, source)
+    changed_periods = []
     for values in derive_financial_ratios(symbol, stmt_rows):
         cur.execute(
             """INSERT INTO financial_ratios
@@ -931,9 +932,28 @@ def _store_derived_ratios(symbol: str, cur, *, normalize_statements: bool = Fals
                    yoy_revenue_growth = EXCLUDED.yoy_revenue_growth,
                    yoy_earnings_growth = EXCLUDED.yoy_earnings_growth,
                    published_date = COALESCE(EXCLUDED.published_date, financial_ratios.published_date),
-                   updated_at = NOW()""",
+                   updated_at = NOW()
+               WHERE (financial_ratios.pe, financial_ratios.pb, financial_ratios.roe, financial_ratios.roa,
+                      financial_ratios.debt_equity, financial_ratios.current_ratio, financial_ratios.gross_margin,
+                      financial_ratios.net_margin, financial_ratios.fcf_yield, financial_ratios.ev_ebitda,
+                      financial_ratios.yoy_revenue_growth, financial_ratios.yoy_earnings_growth, financial_ratios.published_date)
+                 IS DISTINCT FROM
+                     (EXCLUDED.pe, EXCLUDED.pb, EXCLUDED.roe, EXCLUDED.roa, EXCLUDED.debt_equity,
+                      EXCLUDED.current_ratio, EXCLUDED.gross_margin, EXCLUDED.net_margin, EXCLUDED.fcf_yield,
+                      EXCLUDED.ev_ebitda, EXCLUDED.yoy_revenue_growth, EXCLUDED.yoy_earnings_growth,
+                      COALESCE(EXCLUDED.published_date, financial_ratios.published_date))""",
             values,
         )
+        if cur.rowcount:
+            changed_periods.append(values[1])
+    if changed_periods:
+        # Staged batches invalidate only when publish_financial_reset commits
+        # their scope. Direct/incremental ratio updates invalidate atomically here.
+        cur.execute("SELECT 'financial_ratios'::regclass = 'public.financial_ratios'::regclass", ())
+        if cur.fetchone()[0]:
+            cur.execute("""DELETE FROM public.factor_scores WHERE score_date >= %s
+                           AND (symbol=%s OR factor_details->'source'->>'producer'='VN_FACTOR_SCORES')""",
+                        (min(changed_periods), symbol))
 
 
 def rebuild_derived_ratios_from_statements(limit: Optional[int] = None) -> dict[str, int]:
@@ -961,7 +981,8 @@ def rebuild_derived_ratios_from_statements(limit: Optional[int] = None) -> dict[
 
 
 def refresh_all(limit: Optional[int] = None) -> dict:
-    """Full refresh: refetch all symbols from CafeF."""
+    """Atomically rebuild the selected symbols from CafeF."""
+    from app.infrastructure.data_pipelines.financial_statement_store import stage_financial_reset, publish_financial_reset
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
     try:
@@ -970,6 +991,9 @@ def refresh_all(limit: Optional[int] = None) -> dict:
         symbols = [s for s in symbols if s not in EXCLUDED_SYMBOLS]
         if limit:
             symbols = symbols[:limit]
+        if not symbols:
+            raise ValueError("No symbols selected for financial reset")
+        stage_financial_reset(cur)
 
         logger.info("CafeF Financial ETL: %d symbols (%d excluded)", len(symbols), len(EXCLUDED_SYMBOLS))
 
@@ -986,14 +1010,17 @@ def refresh_all(limit: Optional[int] = None) -> dict:
                 cur.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
                 cur.execute(f"RELEASE SAVEPOINT {sp_name}")
                 logger.warning("Failed for %s: %s", sym, e)
-                errors += 1
+                raise
             if idx > 0 and idx % BATCH_SIZE == 0:
-                conn.commit()
                 logger.info("  Progress: %d/%d symbols, %d rows", idx, len(symbols), total_rows)
+        reset_counts = publish_financial_reset(cur, symbols)
         conn.commit()
 
         logger.info("CafeF Financial ETL done: %d rows, %d errors", total_rows, errors)
-        return {"rows": total_rows, "symbols": len(symbols) - errors, "errors": errors}
+        return {"rows": total_rows, "symbols": len(symbols) - errors, "errors": errors, "reset_counts": reset_counts}
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         cur.close()
         conn.close()

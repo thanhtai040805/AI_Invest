@@ -11,7 +11,9 @@ import psycopg2
 from psycopg2.extras import Json
 
 from app.infrastructure.database.pg_pool import DB_URL
-from app.infrastructure.data_pipelines.financial_statement_store import MIN_STATEMENT_FIELDS, upsert_financial_statement
+from app.infrastructure.data_pipelines.financial_statement_store import (
+    MIN_STATEMENT_FIELDS, upsert_financial_statement, stage_financial_reset, publish_financial_reset,
+)
 from app.domain.services import financial_fields as fields
 
 logger = logging.getLogger(__name__)
@@ -181,7 +183,11 @@ def fetch_and_store_financials(
     """Fetch all financial statements for one symbol from AlphaStock and upsert into DB."""
     result = _get_workspace(symbol)
     if not result:
+        if backfill:
+            raise ValueError(f"AlphaStock backfill response unavailable for {symbol}")
         return {"symbol": symbol, "rows": 0}
+    if backfill and not isinstance(result.get("statements"), dict):
+        raise ValueError(f"AlphaStock backfill statement schema unavailable for {symbol}")
 
     total = 0
     today = date.today()
@@ -223,11 +229,13 @@ def fetch_and_store_financials(
                     if name:
                         result_data[name] = val
 
-                # Schema compatibility: published_date records when we crawled this row.
-                crawl_date = date.today()
+                # Observation time is fetched_at; a missing publication date stays unknown.
+                published_date = _as_date(row.get("published_at"))
+                if published_date is not None and not period_end <= published_date <= today:
+                    raise ValueError(f"Invalid AlphaStock publication date for {symbol}/{period_end}")
                 _upsert(
                     cur, symbol, period_end, db_stmt, db_freq, result_data,
-                    crawl_date, allow_historical_updates=backfill,
+                    published_date, allow_historical_updates=backfill,
                 )
                 total += 1
 
@@ -272,13 +280,16 @@ def _fill_missing_with_cafef(
 
 
 def refresh_all() -> dict:
-    """Refresh AlphaStock as primary and fill missing statements from fallback providers."""
+    """Atomically rebuild the selected symbols from current provider responses."""
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
     try:
         cur.execute("SELECT symbol FROM stocks WHERE exchange IN ('HOSE','HSX') ORDER BY symbol")
         symbols = [r[0] for r in cur.fetchall()]
         symbols = [s for s in symbols if s not in EXCLUDED_SYMBOLS]
+        if not symbols:
+            raise ValueError("No symbols selected for financial reset")
+        stage_financial_reset(cur)
         logger.info("AlphaStock Financial ETL: %d symbols (%d excluded)",
                      len(symbols), len(EXCLUDED_SYMBOLS))
 
@@ -301,12 +312,14 @@ def refresh_all() -> dict:
                 cur.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
                 cur.execute(f"RELEASE SAVEPOINT {sp_name}")
                 logger.warning("Failed for %s: %s", sym, e)
-                errors += 1
+                raise
             if idx > 0 and idx % BATCH_SIZE == 0:
-                conn.commit()
                 logger.info("  Progress: %d/%d symbols, %d rows", idx, len(symbols), total_rows)
         from app.infrastructure.data_pipelines.financial_etl_cafef import _fetch_vci_missing_quarter
-        vci_fallback = _fetch_vci_missing_quarter(cur, normalize_statements=True)
+        vci_fallback = _fetch_vci_missing_quarter(cur, symbols=symbols, normalize_statements=True)
+        if vci_fallback.get("errors", 0):
+            raise ValueError("VCI fallback failed during financial reset")
+        reset_counts = publish_financial_reset(cur, symbols)
         conn.commit()
 
         logger.info("AlphaStock Financial ETL done: %d rows, %d errors", total_rows, errors)
@@ -315,7 +328,11 @@ def refresh_all() -> dict:
             "symbols": len(symbols) - errors,
             "errors": errors,
             "vci_fallback": vci_fallback,
+            "reset_counts": reset_counts,
         }
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         cur.close()
         conn.close()
@@ -323,6 +340,8 @@ def refresh_all() -> dict:
 
 def refresh_incremental(*, backfill: bool = False) -> dict:
     """Incremental: only fetch symbols missing recent financial data."""
+    if backfill:
+        return refresh_all()
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
     try:

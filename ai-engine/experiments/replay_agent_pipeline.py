@@ -31,7 +31,8 @@ from app.core.registry import AgentRegistry
 from app.domain.pipeline.daily_pipeline_orchestrator import DailyInvestmentPipeline
 from app.domain.repositories.market_data_repository import MarketDataRepository
 from app.domain.repositories.portfolio_repository import PortfolioRepository, calculate_is_t25_locked
-from app.domain.repositories.replay_factor_snapshot import ReplayFactorSnapshot
+from app.domain.repositories.replay_factor_snapshot import ReplayFactorSnapshot, current_factor_snapshot
+from app.domain.repositories.replay_baseline_check import ReplayBaselineCheck
 from app.domain.rules.execution.shadow_fill import shadow_fill
 from app.infrastructure.database.pg_pool import get_conn
 from app.infrastructure.external_api.dnse.intraday_tool import get_intraday_tool
@@ -741,7 +742,18 @@ async def run(args: argparse.Namespace) -> None:
     now_vn = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
     if end_date > now_vn.date() or (end_date == now_vn.date() and now_vn.time() < day_time(15, 0)):
         raise ValueError("Replay can include today's session only after the 15:00 market close.")
-    days = market_dates(end_date, args.days)
+    start = getattr(args, "start", None)
+    if start:
+        start_date = date.fromisoformat(start)
+        if start_date > end_date:
+            raise ValueError("Replay start must not follow end")
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT date FROM market_data_daily_calculation WHERE date BETWEEN %s AND %s ORDER BY date", (start_date, end_date))
+            days = [row[0] for row in cur.fetchall()]
+    else:
+        if args.days <= 0:
+            raise ValueError("Replay days must be positive")
+        days = market_dates(end_date, args.days)
     if not days:
         print(f"Không có dữ liệu ngày giao dịch trước ngày {end_date}.")
         return
@@ -757,13 +769,47 @@ async def run(args: argparse.Namespace) -> None:
     else:
         snapshot = ReplayFactorSnapshot.capture(as_of_dates)
         snapshot.save(snapshot_path)
-    snapshot.require_dates(as_of_dates)
+    reference = getattr(args, "baseline_reference", None)
+    if not reference:
+        snapshot.require_dates(as_of_dates)
     snapshot.require_current_source()
+    historical_inputs = getattr(args, "historical_inputs", None)
+    if historical_inputs:
+        snapshot.require_historical_inputs(Path(historical_inputs))
+        print("[HISTORICAL REPRODUCTION] Verified restored archive and target database.", flush=True)
+    else:
+        snapshot.require_current_cache()
     print(f"[FACTOR INPUT SNAPSHOT] {snapshot_path.resolve()} | version={snapshot.version} | sha256={snapshot.sha256} | source writes disabled", flush=True)
-    if snapshot.version == 1:
-        print("[FACTOR INPUT WARNING] Legacy cache snapshot: not rebuilt from source and may contain prior replay outputs.", flush=True)
-    with snapshot.activate():
-        await _run_sessions(args, days)
+    if snapshot.version == 1 and not historical_inputs:
+        print("[FACTOR CACHE] Producer/as-of cache verified; missing cache uses the existing dynamic calculation.", flush=True)
+    check = None
+    if reference:
+        if not historical_inputs or not args.reset or not start:
+            raise ValueError("Baseline continuation requires --start, --reset and --historical-inputs")
+        check = ReplayBaselineCheck(Path(reference), days, snapshot.sha256, args.account_id,
+                                    args.capital, args.max_candidates, args.symbols,
+                                    Path(args.audit_output))
+    try:
+        if check:
+            if snapshot._dates != {str(day) for day in as_of_dates[:28]}:
+                raise ValueError("Archived snapshot must cover exactly the first 28 baseline as-of dates")
+            snapshot = snapshot.extend_with_vn_producer(as_of_dates)
+            snapshot.require_dates(as_of_dates)
+            args.baseline_check = check
+            snapshot.save(Path(args.audit_output) / "effective_factor_snapshot.json")
+        with snapshot.activate():
+            await _run_sessions(args, days)
+    except Exception as exc:
+        if check:
+            (Path(args.audit_output) / "failure.json").write_text(dumps({
+                "error_type": type(exc).__name__, "error": str(exc),
+                "factor_failures": snapshot.factor_failures,
+                "factor_snapshot_sha256": snapshot.sha256,
+            }), encoding="utf-8")
+        raise
+    finally:
+        if check:
+            check.close()
 
 
 async def _run_sessions(args: argparse.Namespace, days: list[date]) -> None:
@@ -944,6 +990,9 @@ async def _run_sessions(args: argparse.Namespace, days: list[date]) -> None:
                 )
                 active_symbols.add(position["ticker"].upper())
 
+        active_snapshot = current_factor_snapshot()
+        if active_snapshot is not None:
+            active_snapshot.factor_observations.clear()
         result = await runner.run(
             target_date=day,
             current_nav=portfolio["total_nav"],
@@ -952,6 +1001,8 @@ async def _run_sessions(args: argparse.Namespace, days: list[date]) -> None:
             replay_portfolio=portfolio,
             replay_account_id=account_id,
         )
+        if active_snapshot is not None and active_snapshot.factor_failures:
+            raise RuntimeError(f"Replay stopped: incomplete factors: {active_snapshot.factor_failures}")
         phases = result.get("trace", {}).get("phases", {})
         for phase_key, label in (
             ("phase_4_equity_research_gate", "Research gate"),
@@ -1026,6 +1077,15 @@ async def _run_sessions(args: argparse.Namespace, days: list[date]) -> None:
         ret = (float(closing_mark["total_nav"]) / previous_nav - 1) if previous_nav > 0 else 0.0
         returns_series.append(ret)
         previous_nav = float(closing_mark["total_nav"])
+        baseline_check = getattr(args, "baseline_check", None)
+        if baseline_check:
+            baseline_check.check(day, closing_mark, {
+                "pipeline_status": result.get("status"), "phases": phases,
+                "fills": [fill for fill in fills_history if str(fill.get("day")) == str(day)],
+                "factors": active_snapshot.factor_observations,
+                "factor_snapshot_sha256": active_snapshot.sha256,
+                "agent_errors": audit.agent_errors,
+            })
         print(
             f"[{current_day}] close NAV: {previous_nav:>14,.0f} VND | "
             f"Cash: {closing_mark['cash_balance']:>14,.0f} VND | "
@@ -1057,14 +1117,19 @@ async def _run_sessions(args: argparse.Namespace, days: list[date]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Chạy Historical Paper Trading trực tiếp trên PostgreSQL (Zero SQLite)")
-    parser.add_argument("--end", default=(datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date() - timedelta(days=1)).isoformat())
+    now = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
+    parser.add_argument("--end", default=(now.date() if now.time() >= day_time(15, 0) else now.date() - timedelta(days=1)).isoformat())
     parser.add_argument("--days", type=int, default=30)
+    parser.add_argument("--start", help="Inclusive first session; overrides --days with no session-count cap")
     parser.add_argument("--symbols", nargs="+", default=None, help="Optional explicit ticker filter; default scans the production HOSE stock master")
     parser.add_argument("--max-candidates", type=int, default=3)
     parser.add_argument("--capital", type=float, default=1_000_000_000)
     parser.add_argument("--account-id", default=os.getenv("MULTI_AGENT_ACCOUNT_ID", "940b0c70-2010-42f3-b947-797e6419b794"))
     parser.add_argument("--reset", action="store_true", help="Reset tài khoản và dọn dẹp CSDL về ban đầu")
     parser.add_argument("--factor-snapshot", type=Path, help="Load an existing factor snapshot, or capture it before reset if the path is new")
+    parser.add_argument("--historical-inputs", type=Path, help="Historical reproduction manifest; verifies target host/database and all three source tables before reset")
+    parser.add_argument("--baseline-reference", type=Path, help="Compare first 28 sessions to the approved original baseline; later dates use VN producer")
+    parser.add_argument("--audit-output", type=Path, default=Path("scratch/output/replay_baseline_check"), help="New evidence directory for this run")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.WARNING)

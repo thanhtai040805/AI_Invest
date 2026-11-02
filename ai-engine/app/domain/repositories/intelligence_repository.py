@@ -13,7 +13,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from app.adapters.postgres_adapter import PostgresAdapter
-from app.domain.repositories.replay_factor_snapshot import current_factor_snapshot
+from app.domain.repositories.replay_factor_snapshot import current_factor_snapshot, factor_cache_row_is_usable
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,9 @@ class IntelligenceRepository:
             rows = snapshot_rows if snapshot_rows is not None else self.storage.fetch_all(query, params)
             if rows and len(rows) > 0:
                 r = rows[0]
+                if snapshot is None and not factor_cache_row_is_usable(r):
+                    logger.warning("Ignoring factor cache without valid producer/as-of inputs: %s/%s", symbol, r[1])
+                    return None
                 details = r[10] if isinstance(r[10], dict) else {}
                 f3 = float(r[4]) if r[4] is not None else float(details.get("f3_momentum", 50.0))
                 f4 = float(r[5]) if r[5] is not None else float(details.get("f4_earnings", 50.0))
@@ -104,6 +107,10 @@ class IntelligenceRepository:
             raise ValueError("[IntelligenceRepository] symbol không được rỗng.")
         symbol = str(symbol).upper().strip()
         target_date = score_date or date.today()
+        source = (factor_details_extra or {}).get("source", {})
+        if (not isinstance(source, dict) or source.get("producer") != "FACTOR_SERVICE"
+                or source.get("as_of") != target_date.isoformat() or source.get("cache_complete") is not True):
+            raise ValueError("Factor cache writes require complete producer inputs for the same score date")
 
         target_percentile = percentile
         if target_percentile is None and factor_details_extra and "percentile" in factor_details_extra:
@@ -130,6 +137,7 @@ class IntelligenceRepository:
                 target_percentile = round(min(max(css, 0.0), 100.0), 2)
 
         details_payload = {
+            **(factor_details_extra or {}),
             "f1_value": f1_value,
             "f2_quality": f2_quality,
             "f3_momentum": f3_momentum,
@@ -140,9 +148,9 @@ class IntelligenceRepository:
             "css": css,
             "percentile": target_percentile,
         }
-        if factor_details_extra:
-            details_payload.update(factor_details_extra)
-
+        if not factor_cache_row_is_usable((symbol, target_date, f1_value, f2_quality, f3_momentum,
+                                          f4_earnings, f5_flow, f6_technical, css, target_percentile, details_payload)):
+            raise ValueError("Cannot persist incomplete or invalid factor cache values")
         factor_details = json.dumps(details_payload, ensure_ascii=False, default=str)
 
         query = """

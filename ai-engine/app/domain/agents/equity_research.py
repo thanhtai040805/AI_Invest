@@ -123,6 +123,8 @@ class EquityResearchAgent(BaseAgent):
                 db_factors is not None
                 and (
                     rebuilt_source
+                    or (snapshot is not None and snapshot.historical_dates is not None
+                        and not snapshot.allows_historical_defaults(market_data_date))
                     or db_factors.get("f3_momentum") != 50.0
                     or db_factors.get("f4_earnings") != 50.0
                     or db_factors.get("f5_flow") != 50.0
@@ -139,8 +141,21 @@ class EquityResearchAgent(BaseAgent):
                 raw_factor_metrics = db_factors.get("factor_details", {})
                 factor_source = "REBUILT_FACTOR_SNAPSHOT" if rebuilt_source else "POSTGRES_FACTOR_SCORES"
             else:
+                if (snapshot is not None and snapshot.historical_dates is not None
+                        and not snapshot.allows_historical_defaults(market_data_date)):
+                    failure = {"ticker": ticker, "as_of": str(market_data_date),
+                               "reason": "VN_FACTOR_CACHE_MISSING"}
+                    snapshot.factor_failures.append(failure)
+                    raise ValueError(f"Incomplete replay factor coverage: {failure}")
                 # Tính toán ĐỘNG thực tế từ financial_ratios và market_data_daily
                 computed = self.factor_service.compute_factors_for_ticker(ticker, market_data_date)
+                missing = computed.get("raw_metrics", {}).get("missing_inputs", [])
+                if missing and not (snapshot is not None and snapshot.allows_historical_defaults(market_data_date)):
+                    return {"data": {"ticker": ticker, "status": "DEFERRED",
+                                     "reason": "FACTOR_INPUTS_MISSING", "missing_inputs": missing},
+                            "trace": {"valid": False}}
+                if missing:
+                    logger.warning("Historical factor defaults reproduced for %s/%s: %s", ticker, market_data_date, missing)
                 f1_value = float(computed.get("f1_value", 50.0))
                 base_f2 = float(computed.get("f2_quality", 50.0))
                 f2_quality = round(base_f2, 2)
@@ -313,6 +328,12 @@ class EquityResearchAgent(BaseAgent):
             "applied_weights": applied_weights,
             "financial_metrics": financial_metrics,
         }
+        if snapshot is not None:
+            snapshot.factor_observations[ticker] = {
+                "symbol": ticker, "as_of": str(market_data_date), "source": factor_source,
+                **{key: research_report[key] for key in (
+                    "f1_value", "f2_quality", "f3_momentum", "f4_earnings", "f5_flow", "f6_technical")},
+            }
 
         # =========================================================================
         # 4. Ghi kết quả quyết định vào Log Audit, giữ nguyên nguồn factor

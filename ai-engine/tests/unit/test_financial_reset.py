@@ -1,0 +1,171 @@
+"""Reset and learning-order contracts against a disposable LOCAL PostgreSQL DB."""
+import os
+from datetime import date
+
+import psycopg2
+from psycopg2.extras import Json, execute_values
+import pytest
+
+from app.infrastructure.data_pipelines.financial_statement_store import stage_financial_reset, publish_financial_reset
+from app.domain.repositories.replay_factor_snapshot import LEARNING_FACTOR_SQL
+from app.infrastructure.data_pipelines.financial_etl_cafef import _store_derived_ratios
+
+
+@pytest.fixture
+def conn():
+    url = os.environ.get('FINANCIAL_TEST_DATABASE_URL')
+    if not url:
+        pytest.skip('Requires a disposable LOCAL financial reset test database')
+    cfg = psycopg2.extensions.parse_dsn(url)
+    if cfg.get('host') not in ('localhost', '127.0.0.1', '::1') or not cfg.get('dbname', '').startswith('aiinvest_backfill_audit_'):
+        pytest.fail('Reset integration tests require a disposable LOCAL audit database')
+    connection = psycopg2.connect(url)
+    try:
+        yield connection
+    finally:
+        connection.rollback()
+        connection.close()
+
+
+def seed(cur, schema, symbol, value):
+    for kind in ('BS', 'IS'):
+        cur.execute(f'INSERT INTO {schema}.financial_statements (symbol,period_end,statement_type,frequency,data,source) VALUES (%s,%s,%s,%s,%s,%s)',
+                    (symbol, date(2025,12,31), kind, 'quarterly', Json({'amount':value}), 'cafef'))
+    cur.execute(f'INSERT INTO {schema}.financial_ratios (symbol,ratio_date,frequency,roe) VALUES (%s,%s,%s,%s)',
+                (symbol,date(2025,12,31),'quarterly',value))
+
+
+def test_reset_replaces_selected_history_preserving_other_symbols(conn):
+    with conn.cursor() as cur:
+        seed(cur,'public','RESET_TEST',1)
+        seed(cur,'public','OUTSIDE_TEST',9)
+        cur.execute("INSERT INTO public.factor_scores(symbol,score_date,composite_score) VALUES ('RESET_TEST','2025-12-31',50),('OUTSIDE_TEST','2025-12-31',60)")
+        cur.execute("INSERT INTO public.financial_ratios(symbol,ratio_date,frequency) VALUES ('RESET_TEST','2000-01-01','quarterly')")
+        stage_financial_reset(cur)
+        seed(cur,'pg_temp','RESET_TEST',2)
+        assert publish_financial_reset(cur,['RESET_TEST']) == {'financial_statements':2,'financial_ratios':1,'factor_scores_invalidated':1}
+        cur.execute("SELECT symbol,roe FROM public.financial_ratios WHERE symbol IN ('RESET_TEST','OUTSIDE_TEST') ORDER BY symbol")
+        assert cur.fetchall() == [('OUTSIDE_TEST',9),('RESET_TEST',2)]
+        cur.execute("SELECT symbol FROM public.factor_scores WHERE symbol IN ('RESET_TEST','OUTSIDE_TEST')")
+        assert cur.fetchall()==[('OUTSIDE_TEST',)]
+
+
+def test_incomplete_batch_cannot_replace_previous_data(conn):
+    with conn.cursor() as cur:
+        seed(cur,'public','RESET_TEST',1)
+        cur.execute("INSERT INTO public.factor_scores(symbol,score_date,composite_score) VALUES ('RESET_TEST','2025-12-31',50)")
+        cur.execute('SAVEPOINT before_batch')
+        stage_financial_reset(cur)
+        with pytest.raises(ValueError,match='Incomplete'):
+            publish_financial_reset(cur,['RESET_TEST'])
+        cur.execute('ROLLBACK TO SAVEPOINT before_batch')
+        cur.execute("SELECT roe FROM public.financial_ratios WHERE symbol='RESET_TEST'")
+        assert cur.fetchall()==[(1,)]
+        cur.execute("SELECT composite_score FROM public.factor_scores WHERE symbol='RESET_TEST'")
+        assert cur.fetchall()==[(50,)]
+
+
+def test_reset_rejects_loss_of_reported_eps_bvps_instead_of_patching_old_values(conn):
+    with conn.cursor() as cur:
+        seed(cur,'public','RESET_TEST',1)
+        cur.execute("INSERT INTO public.financial_statements(symbol,period_end,statement_type,frequency,data,source) VALUES ('RESET_TEST','2025-12-31','ratios','quarterly',%s,'alphastock')",
+                    (Json({'eps':0,'bvps':10000}),))
+        stage_financial_reset(cur)
+        seed(cur,'pg_temp','RESET_TEST',2)
+        cur.execute("INSERT INTO pg_temp.financial_statements(symbol,period_end,statement_type,frequency,data,source) VALUES ('RESET_TEST','2025-12-31','ratios','quarterly',%s,'alphastock')",
+                    (Json({'eps':None,'bvps':None,'pe':10}),))
+        with pytest.raises(ValueError,match='erase 2 reported per-share inputs'):
+            publish_financial_reset(cur,['RESET_TEST'])
+        cur.execute("SELECT data FROM public.financial_statements WHERE symbol='RESET_TEST' AND statement_type='ratios'")
+        assert cur.fetchone()[0]=={'eps':0,'bvps':10000}
+
+
+def test_out_of_scope_stage_is_rejected(conn):
+    with conn.cursor() as cur:
+        stage_financial_reset(cur)
+        seed(cur,'pg_temp','RESET_TEST',2)
+        seed(cur,'pg_temp','OUTSIDE_TEST',3)
+        with pytest.raises(ValueError,match='out-of-scope'):
+            publish_financial_reset(cur,['RESET_TEST'])
+
+
+def test_rollback_restores_financials_and_invalidated_factors_together(conn):
+    with conn.cursor() as cur:
+        seed(cur,'public','RESET_TEST',1)
+        cur.execute("INSERT INTO public.factor_scores(symbol,score_date,composite_score) VALUES ('RESET_TEST','2025-12-31',50)")
+        cur.execute('SAVEPOINT before_reset')
+        stage_financial_reset(cur)
+        seed(cur,'pg_temp','RESET_TEST',2)
+        publish_financial_reset(cur,['RESET_TEST'])
+        cur.execute('ROLLBACK TO SAVEPOINT before_reset')
+        cur.execute("SELECT roe FROM public.financial_ratios WHERE symbol='RESET_TEST'")
+        assert cur.fetchall()==[(1,)]
+        cur.execute("SELECT composite_score FROM public.factor_scores WHERE symbol='RESET_TEST'")
+        assert cur.fetchall()==[(50,)]
+
+
+def test_learning_selection_is_independent_of_physical_insertion_order(conn):
+    with conn.cursor() as cur:
+        cur.execute('''CREATE TEMP TABLE factor_scores(symbol text,score_date date,value_score float,
+            quality_score float,momentum_1m float,earnings_yield_score float,
+            foreign_flow_score float,composite_score float,factor_details jsonb) ON COMMIT DROP''')
+        details=Json({'source':{'producer':'FACTOR_SERVICE','as_of':'2026-08-11','cache_complete':True}})
+        rows=[(f'SYM{i:03}',date(2026,8,11),i,i,i,i,i,i,details) for i in range(150)]
+        execute_values(cur,'INSERT INTO pg_temp.factor_scores VALUES %s',rows)
+        cur.execute(LEARNING_FACTOR_SQL,(date(2026,8,11),));first=cur.fetchall()
+        cur.execute('TRUNCATE pg_temp.factor_scores')
+        execute_values(cur,'INSERT INTO pg_temp.factor_scores VALUES %s',list(reversed(rows)))
+        cur.execute(LEARNING_FACTOR_SQL,(date(2026,8,11),));second=cur.fetchall()
+        assert first==second
+        assert [r[0] for r in first]==[f'SYM{i:03}' for i in range(100)]
+
+
+def test_learning_excludes_undated_or_mismatched_cache(conn):
+    with conn.cursor() as cur:
+        cur.execute('''CREATE TEMP TABLE factor_scores(symbol text,score_date date,value_score float,
+            quality_score float,momentum_1m float,earnings_yield_score float,
+            foreign_flow_score float,composite_score float,factor_details jsonb) ON COMMIT DROP''')
+        for symbol,details in [('OLD',{}),('SHIFTED',{'source':{'producer':'FACTOR_SERVICE','as_of':'2026-08-10','cache_complete':True}}),
+                               ('STRING_STATUS',{'source':{'producer':'FACTOR_SERVICE','as_of':'2026-08-11','cache_complete':'true'}}),
+                               ('GOOD',{'source':{'producer':'FACTOR_SERVICE','as_of':'2026-08-11','cache_complete':True}})]:
+            cur.execute('INSERT INTO pg_temp.factor_scores VALUES (%s,%s,50,50,50,50,50,50,%s)',(symbol,date(2026,8,11),Json(details)))
+        cur.execute(LEARNING_FACTOR_SQL,(date(2026,8,11),))
+        assert [row[0] for row in cur.fetchall()]==['GOOD']
+
+
+def seed_ratio_inputs(cur, schema='public'):
+    for kind,data in [('BS',{'total_assets':2000,'equity':1000}),('IS',{'net_income':100,'net_revenue':500})]:
+        cur.execute(f'INSERT INTO {schema}.financial_statements(symbol,period_end,statement_type,frequency,data,source) VALUES (%s,%s,%s,%s,%s,%s)',
+                    ('CACHE_TEST',date(2025,12,31),kind,'quarterly',Json(data),'cafef'))
+
+
+def test_ratio_changes_invalidate_affected_dates_and_vn_peer_ranks(conn):
+    with conn.cursor() as cur:
+        seed_ratio_inputs(cur)
+        _store_derived_ratios('CACHE_TEST',cur)
+        cur.execute("INSERT INTO public.factor_scores(symbol,score_date,composite_score) VALUES ('CACHE_TEST','2025-09-30',50),('CACHE_TEST','2025-12-31',50),('OUTSIDE_TEST','2025-12-31',50)")
+        cur.execute("INSERT INTO public.factor_scores(symbol,score_date,composite_score,factor_details) VALUES ('PEER_TEST','2025-12-31',50,%s)",(Json({'source':{'producer':'VN_FACTOR_SCORES'}}),))
+        cur.execute("UPDATE public.financial_statements SET data=%s WHERE symbol='CACHE_TEST' AND statement_type='IS'",(Json({'net_income':200,'net_revenue':500}),))
+        _store_derived_ratios('CACHE_TEST',cur)
+        cur.execute("SELECT symbol,score_date FROM public.factor_scores WHERE symbol IN ('CACHE_TEST','OUTSIDE_TEST','PEER_TEST') ORDER BY symbol,score_date")
+        assert cur.fetchall()==[('CACHE_TEST',date(2025,9,30)),('OUTSIDE_TEST',date(2025,12,31))]
+
+
+def test_unchanged_ratio_recalculation_preserves_cache(conn):
+    with conn.cursor() as cur:
+        seed_ratio_inputs(cur)
+        _store_derived_ratios('CACHE_TEST',cur)
+        cur.execute("INSERT INTO public.factor_scores(symbol,score_date,composite_score) VALUES ('CACHE_TEST','2025-12-31',50)")
+        _store_derived_ratios('CACHE_TEST',cur)
+        cur.execute("SELECT composite_score FROM public.factor_scores WHERE symbol='CACHE_TEST'")
+        assert cur.fetchall()==[(50,)]
+
+
+def test_staged_ratio_recalculation_does_not_invalidate_public_cache_before_publish(conn):
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO public.factor_scores(symbol,score_date,composite_score) VALUES ('CACHE_TEST','2025-12-31',50)")
+        stage_financial_reset(cur)
+        seed_ratio_inputs(cur,'pg_temp')
+        _store_derived_ratios('CACHE_TEST',cur)
+        cur.execute("SELECT composite_score FROM public.factor_scores WHERE symbol='CACHE_TEST'")
+        assert cur.fetchall()==[(50,)]

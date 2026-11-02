@@ -37,7 +37,8 @@ class FactorService:
                 cur.execute(
                     """
                     SELECT pe, pb, ev_ebitda, roe, roa, debt_equity, current_ratio,
-                           gross_margin, net_margin, yoy_revenue_growth, yoy_earnings_growth
+                           gross_margin, net_margin, yoy_revenue_growth, yoy_earnings_growth,
+                           ratio_date, published_date
                     FROM financial_ratios
                     WHERE symbol = %s AND frequency = 'quarterly' AND ratio_date <= %s
                       AND (
@@ -92,15 +93,35 @@ class FactorService:
                 mkt_rows = cur.fetchall()
 
         # Dữ liệu mặc định nếu thiếu
-        pe = float(fin_row[0] or 15.0) if fin_row else 15.0
-        pb = float(fin_row[1] or 2.0) if fin_row else 2.0
-        ev_ebitda = float(fin_row[2] or 12.0) if fin_row else 12.0
-        roe = float(fin_row[3] or 0.05) if fin_row else 0.05
-        roa = float(fin_row[4] or 0.03) if fin_row else 0.03
-        debt_equity = float(fin_row[5] or 0.8) if fin_row else 0.8
-        net_margin = float(fin_row[8] or 0.10) if fin_row else 0.10
-        yoy_rev = float(fin_row[9] or 0.0) if fin_row else 0.0
-        yoy_earn = float(fin_row[10] or 0.0) if fin_row else 0.0
+        def financial_value(index, default):
+            value = fin_row[index] if fin_row else None
+            return float(value) if value is not None else default
+
+        pe = financial_value(0, 15.0)
+        pb = financial_value(1, 2.0)
+        ev_ebitda = financial_value(2, 12.0)
+        roe = financial_value(3, 0.05)
+        roa = financial_value(4, 0.03)
+        debt_equity = financial_value(5, 0.8)
+        net_margin = financial_value(8, 0.10)
+        yoy_rev = financial_value(9, 0.0)
+        yoy_earn = financial_value(10, 0.0)
+        required_financials = {0: "pe", 1: "pb", 3: "roe", 5: "debt_equity",
+                               8: "net_margin", 9: "yoy_revenue_growth", 10: "yoy_earnings_growth"}
+        missing_inputs = [name for index, name in required_financials.items()
+                          if not fin_row or fin_row[index] is None or not np.isfinite(float(fin_row[index]))]
+        # A zero return/margin/debt balance is valid. A reported zero valuation
+        # multiple cannot be interpreted as a free asset or silently imputed.
+        if fin_row:
+            missing_inputs.extend(name + "_zero" for index, name in ((0, "pe"), (1, "pb"))
+                                  if fin_row[index] == 0)
+        if len(mkt_rows) < 60:
+            missing_inputs.append("market_window_60")
+        if any(row[0] is None or not np.isfinite(float(row[0])) or float(row[0]) <= 0 for row in mkt_rows):
+            missing_inputs.append("market_close")
+        for index, name in ((1, "market_volume"), (2, "market_foreign_flow")):
+            if any(row[index] is None or not np.isfinite(float(row[index])) for row in mkt_rows):
+                missing_inputs.append(name)
 
         p0 = float(mkt_rows[0][0]) if mkt_rows and mkt_rows[0][0] else 50.0
         p20 = float(mkt_rows[min(19, len(mkt_rows) - 1)][0]) if mkt_rows else p0
@@ -152,6 +173,16 @@ class FactorService:
         f6_technical = max(10.0, min(95.0, 50.0 + (tech_ma20 * 200.0) + (tech_ma50 * 100.0)))
 
         raw_metrics = {
+            "source": {
+                "producer": "FACTOR_SERVICE",
+                "as_of": target_date.isoformat(),
+                "market_data_date": mkt_rows[0][3].isoformat() if mkt_rows else None,
+                "ratio_date": fin_row[11].isoformat() if fin_row else None,
+                "published_date": fin_row[12].isoformat() if fin_row and fin_row[12] else None,
+                "availability_policy": "published_date_or_reporting_lag_heuristic",
+                "cache_complete": not missing_inputs,
+            },
+            "missing_inputs": missing_inputs,
             "pe": pe,
             "pb": pb,
             "roe": roe,
@@ -184,9 +215,13 @@ class FactorService:
         intel_repo = IntelligenceRepository()
 
         count = 0
+        errors = {}
         for sym in symbols:
             try:
                 factors = self.compute_factors_for_ticker(sym, target_date)
+                missing = factors.get("raw_metrics", {}).get("missing_inputs", [])
+                if missing:
+                    raise ValueError(f"Missing factor inputs: {', '.join(missing)}")
                 css = round(
                     0.2 * factors["f1_value"]
                     + 0.2 * factors["f2_quality"]
@@ -197,7 +232,7 @@ class FactorService:
                     2,
                 )
                 conviction = "A" if css >= 70 else ("B" if css >= 60 else ("C" if css >= 50 else "D"))
-                intel_repo.save_factor_score(
+                saved = intel_repo.save_factor_score(
                     symbol=sym,
                     f1_value=factors["f1_value"],
                     f2_quality=factors["f2_quality"],
@@ -208,10 +243,15 @@ class FactorService:
                     css=css,
                     conviction=conviction,
                     score_date=target_date,
+                    factor_details_extra=factors["raw_metrics"],
                 )
+                if saved is False:
+                    raise RuntimeError("Factor persistence failed")
                 count += 1
             except Exception as e:
-                logger.debug(f"Không thể tính factors cho {sym}: {e}")
+                errors[sym] = str(e)
+                logger.warning(f"Không thể tính factors cho {sym}: {e}")
 
         logger.info(f"Hoàn thành tính toán Factor Scores cho {count}/{len(symbols)} mã vào {target_date}")
-        return {"symbols_computed": count, "total_symbols": len(symbols), "date": str(target_date)}
+        return {"symbols_computed": count, "total_symbols": len(symbols), "date": str(target_date),
+                "errors": errors}

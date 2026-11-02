@@ -168,6 +168,10 @@ def plan(cur):
             row["table"] == "financial_statements" for row in changes
         ),
         ratio_updates=sum(row["table"] == "financial_ratios" for row in changes),
+        factor_cache_invalidation={
+            "symbols": sorted({row["key"][0] for row in changes}),
+            "all_vn_peer_ranks": bool(changes),
+        },
     )
 
 
@@ -209,6 +213,10 @@ def apply_changes(cur, changes):
             raise ValueError(
                 f"Before-value guard failed for {change['table']}/{change['key']}"
             )
+    if changes:
+        cur.execute("""DELETE FROM factor_scores WHERE symbol=ANY(%s)
+                       OR factor_details->'source'->>'producer'='VN_FACTOR_SCORES'""",
+                    (sorted({change["key"][0] for change in changes}),))
 
 
 def main(argv=None):
