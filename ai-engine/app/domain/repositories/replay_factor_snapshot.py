@@ -11,17 +11,19 @@ from pathlib import Path
 
 from app.infrastructure.database.pg_pool import get_conn
 from app.domain.services.financial_fields import financial_number
+from app.domain.services.factor_service import FACTOR_SOURCE_VERSION
 
 
-LEARNING_FACTOR_SQL = """
-    SELECT symbol, value_score, quality_score, momentum_1m,
-           earnings_yield_score, foreign_flow_score, composite_score
+LEARNING_FACTOR_SQL = f"""
+    SELECT symbol, value_score, quality_score, momentum_3m,
+           earnings_yield_score, foreign_flow_score, volatility_score, composite_score
     FROM factor_scores
-    WHERE score_date <= %s
+    WHERE score_date = %s
       AND factor_details->'source'->>'as_of' = score_date::text
-      AND factor_details->'source'->>'producer' IN ('FACTOR_SERVICE', 'VN_FACTOR_SCORES')
+      AND factor_details->'source'->>'producer' = 'FACTOR_SERVICE'
+      AND factor_details->'source'->>'version' = '{FACTOR_SOURCE_VERSION}'
       AND factor_details->'source'->'cache_complete' = 'true'::jsonb
-    ORDER BY score_date DESC, symbol ASC LIMIT 100
+    ORDER BY symbol ASC LIMIT 100
 """
 _active: ContextVar[ReplayFactorSnapshot | None] = ContextVar("replay_factor_snapshot", default=None)
 
@@ -37,19 +39,21 @@ def factor_cache_row_is_usable(row) -> bool:
     if not isinstance(source, dict):
         return False
     usable = (
-        source.get("producer") in ("FACTOR_SERVICE", "VN_FACTOR_SCORES")
+        source.get("producer") == "FACTOR_SERVICE"
+        and source.get("version") == FACTOR_SOURCE_VERSION
         and source.get("as_of") == str(row[1])
         and source.get("cache_complete") is True
+        and not details.get("missing_inputs")
         and all((value := financial_number(raw)) is not None and 0 <= value <= 100
                 for raw in row[2:8])
     )
     if not usable:
         return False
-    if source["producer"] == "FACTOR_SERVICE":
-        keys = ("f1_value", "f2_quality", "f3_momentum", "f4_earnings", "f5_flow", "f6_technical")
-        return all(financial_number(details.get(key)) == financial_number(value)
-                   for key, value in zip(keys, row[2:8]))
-    return True
+    keys = ("f1_value", "f2_quality", "f3_momentum", "f4_earnings", "f5_flow", "f6_technical")
+    return (all(financial_number(details.get(key)) == financial_number(value)
+                for key, value in zip(keys, row[2:8]))
+            and financial_number(row[8]) is not None
+            and financial_number(details.get("css")) == financial_number(row[8]))
 
 
 class ReplayFactorSnapshot:
@@ -73,7 +77,7 @@ class ReplayFactorSnapshot:
             if self.version == 2 and (not isinstance(row[10], dict) or not row[10].get("source", {}).get("version")):
                 raise ValueError("Rebuilt factor snapshot requires source provenance")
             self._rows[key] = row
-        if any(len(row) != 7 for rows in self._data["learning_rows"].values() for row in rows):
+        if any(len(row) not in (7, 8) for rows in self._data["learning_rows"].values() for row in rows):
             raise ValueError("Invalid replay learning factor row")
 
     def _day(self, as_of: date) -> str:
@@ -94,7 +98,6 @@ class ReplayFactorSnapshot:
             self._day(day)
 
     def require_current_source(self) -> None:
-        from app.infrastructure.vendors.vn.factor_scores import FACTOR_SOURCE_VERSION
         if self.version == 2 and self._data.get("source_version") != FACTOR_SOURCE_VERSION:
             raise ValueError("Rebuilt factor snapshot source version differs from the current producer")
         if self.version == 2 and self._data.get("source_code_sha256") != self._source_hashes():
@@ -112,7 +115,7 @@ class ReplayFactorSnapshot:
     def _source_hashes() -> dict:
         root = Path(__file__).resolve().parents[2]
         return {path: hashlib.sha256((root / path).read_bytes()).hexdigest() for path in (
-            "infrastructure/vendors/vn/factor_scores.py", "infrastructure/vendors/vn/sector_groups.py",
+            "domain/services/factor_service.py",
             "domain/services/financial_fields.py", "domain/repositories/replay_factor_snapshot.py",
         )}
 
@@ -165,7 +168,7 @@ class ReplayFactorSnapshot:
                     [row[0], *(financial_number(value) for value in row[1:])]
                     for row in cur.fetchall()
                 ]
-        return cls(dict(version=1, source_policy="PROD_EXACT_DATE_CACHE_WITH_GENERIC_FALLBACK",
+        return cls(dict(version=1, source_policy="GENERIC_EXACT_DATE_CACHE_WITH_GENERIC_FALLBACK",
                         rejected_factor_rows=len(cached) - len(factor_rows),
                         as_of_dates=[day.isoformat() for day in dates],
                         factor_rows=factor_rows, learning_rows=learning_rows))

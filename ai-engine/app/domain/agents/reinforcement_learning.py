@@ -226,14 +226,16 @@ class ReinforcementLearningAgent(BaseAgent):
                                 self.storage.fetch_all(LEARNING_FACTOR_SQL, (data_as_of,)))
                 if rows_factors:
                     for r in rows_factors:
+                        if len(r) != 8:
+                            raise ValueError("Learning requires six Generic factors for the exact as-of date")
                         factor_preds[str(r[0])] = {
-                            "f1_value": float(r[1] or 50.0),
-                            "f2_quality": float(r[2] or 50.0),
-                            "f3_momentum": float(r[3] or 50.0),
-                            "f4_earnings": float(r[4] or 50.0),
-                            "f5_flow": float(r[5] or 50.0),
-                            "f6_technical": float(r[3] or 50.0),
-                            "css": float(r[6] or 50.0),
+                            "f1_value": float(r[1]),
+                            "f2_quality": float(r[2]),
+                            "f3_momentum": float(r[3]),
+                            "f4_earnings": float(r[4]),
+                            "f5_flow": float(r[5]),
+                            "f6_technical": float(r[6]),
+                            "css": float(r[7]),
                         }
                 else:
                     missing_flags.append("NO_FACTOR_SCORES_IN_DB")

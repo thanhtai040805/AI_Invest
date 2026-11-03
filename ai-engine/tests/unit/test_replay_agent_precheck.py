@@ -112,7 +112,7 @@ class ReplayPrecheckTests(unittest.TestCase):
             (True, False, 100_000_000.0, False),
             (True, False, 1_000_000_000.0, True),
             (True, True, 100_000_000.0, True),
-            (False, False, 100_000_000.0, True),
+            (False, False, 100_000_000.0, False),  # Explicit replay_portfolio keeps the replay precheck active.
         ):
             calls = []
 

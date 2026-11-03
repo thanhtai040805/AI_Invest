@@ -9,6 +9,7 @@ from datetime import timedelta
 
 from app.infrastructure.data_pipelines.financial_statement_store import stage_financial_reset, publish_financial_reset
 from app.domain.repositories.replay_factor_snapshot import LEARNING_FACTOR_SQL
+from app.domain.services.factor_service import FACTOR_SOURCE_VERSION
 from app.infrastructure.data_pipelines.financial_etl_cafef import _store_derived_ratios
 from app.infrastructure.vendors.vn.factor_scores import compute_factor_scores
 
@@ -138,10 +139,10 @@ def test_rollback_restores_financials_and_invalidated_factors_together(conn):
 def test_learning_selection_is_independent_of_physical_insertion_order(conn):
     with conn.cursor() as cur:
         cur.execute('''CREATE TEMP TABLE factor_scores(symbol text,score_date date,value_score float,
-            quality_score float,momentum_1m float,earnings_yield_score float,
-            foreign_flow_score float,composite_score float,factor_details jsonb) ON COMMIT DROP''')
-        details=Json({'source':{'producer':'FACTOR_SERVICE','as_of':'2026-08-11','cache_complete':True}})
-        rows=[(f'SYM{i:03}',date(2026,8,11),i,i,i,i,i,i,details) for i in range(150)]
+            quality_score float,momentum_3m float,earnings_yield_score float,
+            foreign_flow_score float,volatility_score float,composite_score float,factor_details jsonb) ON COMMIT DROP''')
+        details=Json({'source':{'producer':'FACTOR_SERVICE','version':FACTOR_SOURCE_VERSION,'as_of':'2026-08-11','cache_complete':True}})
+        rows=[(f'SYM{i:03}',date(2026,8,11),i,i,i,i,i,17.,i,details) for i in range(150)]
         execute_values(cur,'INSERT INTO pg_temp.factor_scores VALUES %s',rows)
         cur.execute(LEARNING_FACTOR_SQL,(date(2026,8,11),));first=cur.fetchall()
         cur.execute('TRUNCATE pg_temp.factor_scores')
@@ -149,19 +150,38 @@ def test_learning_selection_is_independent_of_physical_insertion_order(conn):
         cur.execute(LEARNING_FACTOR_SQL,(date(2026,8,11),));second=cur.fetchall()
         assert first==second
         assert [r[0] for r in first]==[f'SYM{i:03}' for i in range(100)]
+        assert first[0][3] == 0 and first[0][6] == 17.  # F3 and F6 are independent.
 
 
 def test_learning_excludes_undated_or_mismatched_cache(conn):
     with conn.cursor() as cur:
         cur.execute('''CREATE TEMP TABLE factor_scores(symbol text,score_date date,value_score float,
-            quality_score float,momentum_1m float,earnings_yield_score float,
-            foreign_flow_score float,composite_score float,factor_details jsonb) ON COMMIT DROP''')
+            quality_score float,momentum_3m float,earnings_yield_score float,
+            foreign_flow_score float,volatility_score float,composite_score float,factor_details jsonb) ON COMMIT DROP''')
         for symbol,details in [('OLD',{}),('SHIFTED',{'source':{'producer':'FACTOR_SERVICE','as_of':'2026-08-10','cache_complete':True}}),
                                ('STRING_STATUS',{'source':{'producer':'FACTOR_SERVICE','as_of':'2026-08-11','cache_complete':'true'}}),
-                               ('GOOD',{'source':{'producer':'FACTOR_SERVICE','as_of':'2026-08-11','cache_complete':True}})]:
-            cur.execute('INSERT INTO pg_temp.factor_scores VALUES (%s,%s,50,50,50,50,50,50,%s)',(symbol,date(2026,8,11),Json(details)))
+                               ('VN',{'source':{'producer':'VN_FACTOR_SCORES','version':FACTOR_SOURCE_VERSION,'as_of':'2026-08-11','cache_complete':True}}),
+                               ('GOOD',{'source':{'producer':'FACTOR_SERVICE','version':FACTOR_SOURCE_VERSION,'as_of':'2026-08-11','cache_complete':True}})]:
+            cur.execute('INSERT INTO pg_temp.factor_scores VALUES (%s,%s,50,50,50,50,50,50,50,%s)',(symbol,date(2026,8,11),Json(details)))
         cur.execute(LEARNING_FACTOR_SQL,(date(2026,8,11),))
         assert [row[0] for row in cur.fetchall()]==['GOOD']
+        cur.execute(LEARNING_FACTOR_SQL,(date(2026,8,12),))
+        assert cur.fetchall()==[]  # Never carry yesterday's cache into a missing day.
+
+
+def test_vn_composite_cannot_overwrite_generic_css(conn):
+    from app.infrastructure.vendors.vn.composite_pipeline import load_factor_details, write_composite_scores
+    with conn.cursor() as cur:
+        day=date(2025,12,31)
+        cur.execute('CREATE TEMP TABLE factor_scores(symbol text,score_date date,composite_score float,factor_details jsonb,updated_at timestamptz) ON COMMIT DROP')
+        for symbol,producer in [('GENERIC_COMPOSITE_TEST','FACTOR_SERVICE'),('VN_COMPOSITE_TEST','VN_FACTOR_SCORES')]:
+            cur.execute('INSERT INTO pg_temp.factor_scores(symbol,score_date,composite_score,factor_details) VALUES (%s,%s,77,%s)',
+                        (symbol,day,Json({'source':{'producer':producer},'css':77})))
+        assert set(load_factor_details(day,cur=cur))=={'VN_COMPOSITE_TEST'}
+        assert load_factor_details(day,['GENERIC_COMPOSITE_TEST'],cur)=={}
+        write_composite_scores(day,{symbol:{'composite':.5} for symbol in ['GENERIC_COMPOSITE_TEST','VN_COMPOSITE_TEST']},[],cur)
+        cur.execute("SELECT symbol,composite_score,factor_details->>'css' FROM pg_temp.factor_scores ORDER BY symbol")
+        assert cur.fetchall()==[('GENERIC_COMPOSITE_TEST',77.,'77'),('VN_COMPOSITE_TEST',.5,'77')]
 
 
 def seed_ratio_inputs(cur, schema='public'):

@@ -12,7 +12,8 @@ Academic basis:
   Earnings:    Surprise proxy via YoY growth (no analyst consensus)
   Size:        log(mcap) — small cap premium confirmed in VN
 
-31 factors across 9 groups, stored as cross-sectional percentile ranks (0-100).
+31 analysis factors across 9 groups, returned as cross-sectional percentile ranks (0-100).
+These ranks do not implement the production Generic F1-F6 cache contract.
 """
 import json
 import logging
@@ -21,10 +22,6 @@ from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
-import psycopg2
-import psycopg2.extras
-
-from app.infrastructure.database.pg_pool import DB_URL
 from app.domain.services import financial_fields as fields
 from app.infrastructure.vendors.vn.sector_groups import (
     classify_major as classify,
@@ -1352,72 +1349,5 @@ def refresh_all(
     score_date: Optional[date] = None,
     orthogonalizer: Optional[FactorOrthogonalizer] = None,
 ) -> dict:
-    """Full refresh: compute factor scores for all HOSE symbols."""
-    conn = psycopg2.connect(DB_URL)
-    cur = conn.cursor()
-    try:
-        if score_date is None:
-            cur.execute("SELECT MAX(calc_date) FROM technical_indicators")
-            score_date = cur.fetchone()[0]
-
-        symbols = select_scoring_symbols(cur, score_date)
-
-        rows = compute_factor_scores(symbols, score_date, cur, orthogonalizer=orthogonalizer)
-        if not rows:
-            logger.warning("No factor scores computed")
-            return {"rows": 0, "symbols": 0}
-
-        cur.execute("DELETE FROM factor_scores WHERE score_date = %s", (score_date,))
-
-        psycopg2.extras.execute_values(
-            cur,
-            """INSERT INTO factor_scores
-               (symbol, score_date,
-                value_score, quality_score, momentum_1m, momentum_3m, momentum_12m,
-                size_score, volatility_score, liquidity_score,
-                composite_score, percentile,
-                earnings_yield_score, accrual_score,
-                foreign_flow_score, insider_score, conditional_mom_score,
-                earnings_surprise_score, distress_score, piotroski_score,
-                factor_details)
-               VALUES %s
-               ON CONFLICT (symbol, score_date)
-               DO UPDATE SET
-                   value_score = EXCLUDED.value_score,
-                   quality_score = EXCLUDED.quality_score,
-                   momentum_1m = EXCLUDED.momentum_1m,
-                   momentum_3m = EXCLUDED.momentum_3m,
-                   momentum_12m = EXCLUDED.momentum_12m,
-                   size_score = EXCLUDED.size_score,
-                   volatility_score = EXCLUDED.volatility_score,
-                   liquidity_score = EXCLUDED.liquidity_score,
-                   composite_score = EXCLUDED.composite_score,
-                   percentile = EXCLUDED.percentile,
-                   earnings_yield_score = EXCLUDED.earnings_yield_score,
-                   accrual_score = EXCLUDED.accrual_score,
-                   foreign_flow_score = EXCLUDED.foreign_flow_score,
-                   insider_score = EXCLUDED.insider_score,
-                   conditional_mom_score = EXCLUDED.conditional_mom_score,
-                   earnings_surprise_score = EXCLUDED.earnings_surprise_score,
-                   distress_score = EXCLUDED.distress_score,
-                   piotroski_score = EXCLUDED.piotroski_score,
-                   factor_details = EXCLUDED.factor_details,
-                   updated_at = NOW()""",
-            rows,
-            page_size=500,
-        )
-        conn.commit()
-
-        cur.execute("SELECT COUNT(*) FROM factor_scores WHERE score_date = %s", (score_date,))
-        final_count = cur.fetchone()[0]
-
-        logger.info("Factor scores done: %d rows for date %s", final_count, score_date)
-        return {
-            "rows": final_count,
-            "symbols": len(rows),
-            "score_date": str(score_date),
-            "factor_count": len(rows[0]) if rows else 0,
-        }
-    finally:
-        cur.close()
-        conn.close()
+    """VN ranks remain available for analysis, never as the Generic F1-F6 cache."""
+    raise RuntimeError("VN ranks cannot write factor_scores; use FactorService.compute_daily_factors")

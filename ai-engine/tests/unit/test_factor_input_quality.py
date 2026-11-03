@@ -93,6 +93,42 @@ def test_partial_factor_batch_is_failed_without_switching_producers(monkeypatch)
     fallback.assert_not_called()
 
 
+def test_factor_exception_never_falls_back_to_vn(monkeypatch):
+    from app.domain.pipeline.daily_etl import DailyETLPipeline
+    compute=MagicMock(side_effect=RuntimeError('source unavailable'))
+    monkeypatch.setattr('app.domain.services.factor_service.FactorService',lambda:SimpleNamespace(compute_daily_factors=compute))
+    fallback=MagicMock(side_effect=AssertionError('Different factor definitions must not replace Generic'))
+    monkeypatch.setattr('app.infrastructure.vendors.vn.factor_scores.refresh_all',fallback)
+    result=asyncio.run(DailyETLPipeline.step_factor_scores(SimpleNamespace(trade_date=date(2026,8,20))))
+    assert result=={'status':'failed','error':'source unavailable'}
+    fallback.assert_not_called()
+
+
+def test_daily_rebuild_invalidates_old_scores_even_when_inputs_are_missing(inputs,monkeypatch):
+    inputs.rowcount=3
+    service=FactorService.__new__(FactorService)
+    def compute(symbol,day):
+        assert inputs.execute.call_args.args[0].startswith('DELETE FROM factor_scores')
+        return {'raw_metrics':{'missing_inputs':['pe']}}
+    service.compute_factors_for_ticker=compute
+    repository=MagicMock()
+    monkeypatch.setattr('app.domain.repositories.intelligence_repository.IntelligenceRepository',lambda:repository)
+    result=service.compute_daily_factors(date(2026,8,20),['test'])
+    assert result['factor_scores_invalidated']==3
+    assert result['symbols_computed']==0
+    assert result['errors']=={'TEST':'Missing factor inputs: pe'}
+    repository.save_factor_score.assert_not_called()
+
+
+def test_vn_producer_cannot_write_generic_cache(monkeypatch):
+    from app.infrastructure.vendors.vn import factor_scores
+    compute=MagicMock(side_effect=AssertionError('VN cache must not be produced'))
+    monkeypatch.setattr(factor_scores,'compute_factor_scores',compute)
+    with pytest.raises(RuntimeError,match='cannot write factor_scores'):
+        factor_scores.refresh_all(date(2026,8,20))
+    compute.assert_not_called()
+
+
 def test_daily_job_is_not_marked_completed_with_incomplete_factors(monkeypatch):
     from app.domain.pipeline import daily_etl
     pipeline=daily_etl.DailyETLPipeline()

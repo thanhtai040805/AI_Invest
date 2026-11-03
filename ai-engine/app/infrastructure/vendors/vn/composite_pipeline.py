@@ -317,13 +317,15 @@ def load_factor_details(score_date: date, symbols: Optional[list[str]] = None, c
             cur.execute(
                 """SELECT symbol, factor_details
                    FROM factor_scores
-                   WHERE score_date = %s AND symbol = ANY(%s)""",
+                   WHERE score_date = %s AND symbol = ANY(%s)
+                     AND factor_details->'source'->>'producer'='VN_FACTOR_SCORES'""",
                 (score_date, symbols),
             )
         else:
             cur.execute(
                 """SELECT symbol, factor_details
-                   FROM factor_scores WHERE score_date = %s""",
+                   FROM factor_scores WHERE score_date = %s
+                     AND factor_details->'source'->>'producer'='VN_FACTOR_SCORES'""",
                 (score_date,),
             )
         result = {}
@@ -401,17 +403,18 @@ def write_composite_scores(score_date: date, results: dict[str, dict], portfolio
         if rows:
             psycopg2.extras.execute_values(
                 cur,
-                """INSERT INTO factor_scores (symbol, score_date, composite_score, factor_details)
-                   VALUES %s
-                   ON CONFLICT (symbol, score_date)
-                   DO UPDATE SET
-                       composite_score = EXCLUDED.composite_score,
+                """UPDATE factor_scores SET
+                       composite_score = incoming.composite_score::double precision,
                        factor_details = jsonb_set(
                            COALESCE(factor_scores.factor_details, '{}'::jsonb),
                            '{composite_pipeline}',
-                           EXCLUDED.factor_details::jsonb
+                           incoming.factor_details::jsonb
                        ),
-                       updated_at = NOW()""",
+                       updated_at = NOW()
+                   FROM (VALUES %s) AS incoming(symbol,score_date,composite_score,factor_details)
+                   WHERE factor_scores.symbol=incoming.symbol
+                     AND factor_scores.score_date=incoming.score_date::date
+                     AND factor_scores.factor_details->'source'->>'producer'='VN_FACTOR_SCORES'""",
                 [(r[0], r[1], float(r[2]) if r[2] is not None else None, r[3]) for r in rows],
                 page_size=500,
             )

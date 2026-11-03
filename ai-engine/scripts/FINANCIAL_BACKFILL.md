@@ -129,21 +129,41 @@ Neither this input gate nor the mapping fix changes F4/F6 formulas.
 
 ## Cache producer and date checks
 
-Producer rows record `source.producer`, `source.as_of` and `source.cache_complete`
+Generic is the sole production F1-F6 definition: F4 is YoY revenue/earnings
+growth and F6 is price versus MA20/MA50. VN percentile ranks are a different
+model and must not replace these values. The ETL has no VN fallback; its VN
+refresh entry point rejects cache writes, and VN composite scoring cannot
+overwrite Generic rows.
+
+Producer rows record `source.producer=FACTOR_SERVICE`,
+`source.version=generic-f1-f6-v1`, `source.as_of` and `source.cache_complete`
 inside the existing `factor_details` JSON. FactorService also records the actual
 market-data date and selected financial period/publication date. This introduces
 no history tables, revision storage or schema migration. An as-of tag certifies
 the calculation's requested date, not an unknown filing publication date.
 
-Live Research rejects untraceable, incomplete or date-mismatched cached vectors
+Research rejects old-version, VN, untraceable, incomplete or date-mismatched cached vectors
 and uses the existing dynamic calculation/defer path. Generic cached columns
-must also agree with their canonical F1-F6 JSON values. Source writers cannot
+and CSS must agree with their canonical JSON values. Source writers cannot
 carry a prior as-of tag into a new score date or let extra metadata overwrite
-the newly calculated factors. RL's learning query applies the same producer,
-as-of and completion filters to avoid learning from the old decision cache.
+the newly calculated factors. A valid neutral vector is still usable; a score
+of 50 is not itself evidence that a cache is missing. RL reads exact-as-of
+Generic rows, with separate F3 and F6 columns and no previous-day cache carry.
 
 After a financial reset, rebuild the requested as-of range with the existing
-daily factor producer before resuming consumers. Existing rows without these
+daily factor producer before resuming consumers:
+`FactorService().compute_daily_factors(as_of, symbols=eligible_symbols)`.
+The batch deletes that date/symbol scope before recomputing, including stale
+rows whose new inputs are missing. It returns both `factor_scores_invalidated`
+and per-symbol `errors`; incomplete inputs are not cached and any errors mean
+the requested scope is not ready. Normal daily ETL uses the same method with
+the default HOSE/HSX scope.
+
+For historical Replay preparation, `as_of` is the previous calendar day of
+each requested trading session, including weekend dates. Rebuild the entire
+requested session range with this same method; do not splice producers at the
+28-session boundary. This operation does not run Replay or reset a portfolio.
+Existing rows without these
 tags must be recalculated, rather than stamped with a tag after the fact.
 Replay captures only usable cache rows; missing rows retain the existing
 dynamic fallback. Before account reset or any trading sessions, a supplied
@@ -265,3 +285,24 @@ release SHA through the existing workflow, preserve a verified backup, prevent
 concurrent writers, and use standard Replay `--reset`. No PROD restoration/reset
 or deployment is authorized by a failed data-only check. No live broker mode or
 SAG integration is enabled by this work.
+
+## LOCAL Generic cache rebuild check — 2026-11-03
+
+On the disposable LOCAL input-copy database, 12,714 old cache rows were removed
+and the current Generic producer processed the same 7,541 eligible symbol-days
+over 56 sessions (2026-08-12 through 2026-11-02). All 7,433 complete vectors
+were persisted and read through the real repository with zero differences from
+the independently calculated vectors. All 108 incomplete vectors had no cache
+row. Learning's 5,600 selected rows matched all six corresponding cache values,
+including independent F3/F6. The first 28 sessions had 3,777 valid vectors and
+two incomplete inputs; the next 28 had 3,656 valid and 106 incomplete.
+
+The source-copy fixture originally omitted the unique key needed by the existing
+upsert. Its PRIMARY KEY(symbol,score_date) was restored only in the disposable
+LOCAL database; no application schema migration was introduced. The frozen
+baseline's three tables and both financial tables in the input copy were
+unchanged by the cache rebuild. No fresh financial crawl, Replay, PROD write or
+SAG operation ran. This validates the cache lifecycle and calculator/reader
+agreement, not filing accuracy, publication metadata or equality with the old
+mixed Generic/VN baseline cache. The publication-period selection issue and
+the 108 missing-input observations remain unresolved acceptance items.

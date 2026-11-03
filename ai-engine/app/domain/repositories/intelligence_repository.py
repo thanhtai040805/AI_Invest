@@ -57,7 +57,7 @@ class IntelligenceRepository:
             rows = snapshot_rows if snapshot_rows is not None else self.storage.fetch_all(query, params)
             if rows and len(rows) > 0:
                 r = rows[0]
-                if snapshot is None and not factor_cache_row_is_usable(r):
+                if not factor_cache_row_is_usable(r):
                     logger.warning("Ignoring factor cache without valid producer/as-of inputs: %s/%s", symbol, r[1])
                     return None
                 details = r[10] if isinstance(r[10], dict) else {}

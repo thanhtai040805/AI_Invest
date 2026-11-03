@@ -17,6 +17,7 @@ from app.application.ports.storage import StoragePort
 from app.adapters.postgres_adapter import PostgresAdapter
 
 logger = logging.getLogger(__name__)
+FACTOR_SOURCE_VERSION = "generic-f1-f6-v1"
 
 
 class FactorService:
@@ -173,6 +174,7 @@ class FactorService:
         raw_metrics = {
             "source": {
                 "producer": "FACTOR_SERVICE",
+                "version": FACTOR_SOURCE_VERSION,
                 "as_of": target_date.isoformat(),
                 "market_data_date": mkt_rows[0][3].isoformat() if mkt_rows else None,
                 "ratio_date": fin_row[11].isoformat() if fin_row else None,
@@ -202,12 +204,18 @@ class FactorService:
             "raw_metrics": raw_metrics,
         }
 
-    def compute_daily_factors(self, target_date: date):
+    def compute_daily_factors(self, target_date: date, symbols: Optional[List[str]] = None):
         """Tính toán F1-F6 và lưu trữ vào bảng factor_scores cho toàn sàn."""
         with get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT symbol FROM stocks WHERE exchange = 'HOSE'")
-                symbols = [r[0] for r in cur.fetchall()]
+                if symbols is None:
+                    cur.execute("SELECT symbol FROM stocks WHERE exchange IN ('HOSE','HSX') ORDER BY symbol")
+                    symbols = [r[0] for r in cur.fetchall()]
+                symbols = sorted({str(symbol).upper().strip() for symbol in symbols if str(symbol).strip()})
+                # A failed recomputation must not leave the previous score usable.
+                cur.execute("DELETE FROM factor_scores WHERE score_date=%s AND symbol=ANY(%s)",
+                            (target_date, symbols))
+                invalidated = cur.rowcount
 
         from app.domain.repositories.intelligence_repository import IntelligenceRepository
         intel_repo = IntelligenceRepository()
@@ -252,4 +260,4 @@ class FactorService:
 
         logger.info(f"Hoàn thành tính toán Factor Scores cho {count}/{len(symbols)} mã vào {target_date}")
         return {"symbols_computed": count, "total_symbols": len(symbols), "date": str(target_date),
-                "errors": errors}
+                "factor_scores_invalidated": invalidated, "errors": errors}

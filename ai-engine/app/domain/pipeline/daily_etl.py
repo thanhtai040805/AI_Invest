@@ -347,15 +347,8 @@ class DailyETLPipeline:
             logger.info("ETL: factor_scores — completed: %s", result)
             return {"status": "success", **result}
         except Exception as e:
-            logger.warning("ETL: FactorService compute_daily_factors failed, trying vendor fallback: %s", e)
-            try:
-                from app.infrastructure.vendors.vn.factor_scores import refresh_all
-                result = await asyncio.to_thread(refresh_all, self.trade_date)
-                logger.info("ETL: factor_scores (fallback) — %d rows", result.get("rows", 0))
-                return {"status": "success", **result}
-            except Exception as e2:
-                logger.error("ETL: factor_scores fallback also failed: %s", e2)
-                return {"status": "failed", "error": str(e2)}
+            logger.error("ETL: Generic factor computation failed: %s", e)
+            return {"status": "failed", "error": str(e)}
 
     # ── Step: Composite Scoring ─────────────────────────────────────
 

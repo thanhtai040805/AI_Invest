@@ -119,15 +119,7 @@ class EquityResearchAgent(BaseAgent):
             rebuilt_source = snapshot is not None and snapshot.version == 2
             if rebuilt_source and db_factors is None:
                 raise ValueError(f"Rebuilt factor snapshot has no inputs for {ticker} at {market_data_date}")
-            has_db_valid = (
-                db_factors is not None
-                and (
-                    rebuilt_source
-                    or db_factors.get("f3_momentum") != 50.0
-                    or db_factors.get("f4_earnings") != 50.0
-                    or db_factors.get("f5_flow") != 50.0
-                )
-            )
+            has_db_valid = db_factors is not None
 
             if has_db_valid:
                 f1_value = float(db_factors.get("f1_value", 50.0))
@@ -268,12 +260,7 @@ class EquityResearchAgent(BaseAgent):
             eligibility_reasons.append("CURRENT_PRICE_MISSING_OR_NONPOSITIVE")
         eligible_for_thesis = not eligibility_reasons
 
-        if snapshot is not None and snapshot.version == 2 and not factor_overrides:
-            origin = raw_factor_metrics["source"]
-            ratios = {**raw_factor_metrics["financial_inputs"], "ratio_date": origin["ratio_date"],
-                      "published_date": origin.get("published_date"), "frequency": origin["ratio_frequency"]}
-        else:
-            ratios = FinancialRepository().get_latest_ratios(ticker, as_of=market_data_date, allow_defaults=False) or {}
+        ratios = FinancialRepository().get_latest_ratios(ticker, as_of=market_data_date, allow_defaults=False) or {}
         financial_metrics = {}
         for name, column, scale in (
             ("pe", "pe", 1.0), ("pb", "pb", 1.0), ("roe", "roe", 100.0),
