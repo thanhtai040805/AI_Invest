@@ -85,6 +85,7 @@ COGS_KEYS = ["giá vốn hàng bán", "cost_of_sales", "cost_of_goods_sold"]
 NI_KEYS = [
     "lợi nhuận sau thuế thu nhập doanh nghiệp", "lợi nhuận kế toán sau thuế TNDN", "lợi nhuận kế toán sau thuế",
     "lợi nhuận sau thuế (XI-XII)", "lợi nhuận sau thuế", "net_income", "net_profit_after_tax", "profit_after_tax",
+    "net_profit_loss_after_tax",
 ]
 ASSET_KEYS = ["tổng cộng tài sản", "tổng tài sản", "total_assets"]
 LIAB_KEYS = ["tổng nợ phải trả", "nợ phải trả", "total_liabilities", "liabilities"]

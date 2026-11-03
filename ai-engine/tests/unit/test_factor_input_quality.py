@@ -66,7 +66,7 @@ def test_missing_market_inputs_are_not_treated_as_zero(inputs,index,name):
 
 @pytest.mark.parametrize('missing,persisted,expected_count',[(['pe'],True,0),([],False,0),([],True,1)])
 def test_daily_batch_counts_only_complete_successfully_persisted_scores(inputs,monkeypatch,missing,persisted,expected_count):
-    inputs.fetchall.return_value=[('TEST',)]
+    inputs.fetchall.return_value=[('TEST',60)]
     repository=MagicMock()
     repository.save_factor_score.return_value=persisted
     monkeypatch.setattr('app.domain.repositories.intelligence_repository.IntelligenceRepository',lambda:repository)
@@ -127,6 +127,18 @@ def test_vn_producer_cannot_write_generic_cache(monkeypatch):
     with pytest.raises(RuntimeError,match='cannot write factor_scores'):
         factor_scores.refresh_all(date(2026,8,20))
     compute.assert_not_called()
+
+
+def test_daily_default_reports_short_history_without_hiding_financial_errors(inputs,monkeypatch):
+    inputs.fetchall.return_value=[('NEW',59),('READY',60)]
+    service=FactorService.__new__(FactorService)
+    service.compute_factors_for_ticker=MagicMock(return_value={'raw_metrics':{'missing_inputs':['pe']}})
+    monkeypatch.setattr('app.domain.repositories.intelligence_repository.IntelligenceRepository',MagicMock())
+    result=service.compute_daily_factors(date(2026,8,20))
+    assert result['ineligible_symbols']=={'NEW':{'reason':'FACTOR_HISTORY_INSUFFICIENT','observations':59,'required':60}}
+    assert result['total_symbols']==1 and result['errors']=={'READY':'Missing factor inputs: pe'}
+    service.compute_factors_for_ticker.assert_called_once_with('READY',date(2026,8,20))
+    assert inputs.execute.call_args.args[1]==(date(2026,8,20),['NEW','READY'])
 
 
 def test_daily_job_is_not_marked_completed_with_incomplete_factors(monkeypatch):

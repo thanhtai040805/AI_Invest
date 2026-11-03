@@ -18,6 +18,7 @@ from app.adapters.postgres_adapter import PostgresAdapter
 
 logger = logging.getLogger(__name__)
 FACTOR_SOURCE_VERSION = "generic-f1-f6-v1"
+MIN_MARKET_OBSERVATIONS = 60
 
 
 class FactorService:
@@ -114,7 +115,7 @@ class FactorService:
         if fin_row:
             missing_inputs.extend(name + "_zero" for index, name in ((0, "pe"), (1, "pb"))
                                   if fin_row[index] == 0)
-        if len(mkt_rows) < 60:
+        if len(mkt_rows) < MIN_MARKET_OBSERVATIONS:
             missing_inputs.append("market_window_60")
         if any(row[0] is None or not np.isfinite(float(row[0])) or float(row[0]) <= 0 for row in mkt_rows):
             missing_inputs.append("market_close")
@@ -206,15 +207,27 @@ class FactorService:
 
     def compute_daily_factors(self, target_date: date, symbols: Optional[List[str]] = None):
         """Tính toán F1-F6 và lưu trữ vào bảng factor_scores cho toàn sàn."""
+        ineligible = {}
         with get_conn() as conn:
             with conn.cursor() as cur:
                 if symbols is None:
-                    cur.execute("SELECT symbol FROM stocks WHERE exchange IN ('HOSE','HSX') ORDER BY symbol")
-                    symbols = [r[0] for r in cur.fetchall()]
+                    cur.execute("""SELECT s.symbol,
+                        (SELECT count(*) FROM (
+                            SELECT close FROM market_data_daily_calculation m
+                            WHERE m.ticker=s.symbol AND m.date<=%s
+                            ORDER BY m.date DESC LIMIT %s
+                        ) history WHERE close>0) AS observations
+                        FROM stocks s WHERE exchange IN ('HOSE','HSX') ORDER BY s.symbol""",
+                                (target_date, MIN_MARKET_OBSERVATIONS))
+                    rows = cur.fetchall()
+                    symbols = [symbol for symbol, count in rows if count >= MIN_MARKET_OBSERVATIONS]
+                    ineligible = {symbol: {"reason": "FACTOR_HISTORY_INSUFFICIENT", "observations": count,
+                                           "required": MIN_MARKET_OBSERVATIONS}
+                                  for symbol, count in rows if count < MIN_MARKET_OBSERVATIONS}
                 symbols = sorted({str(symbol).upper().strip() for symbol in symbols if str(symbol).strip()})
                 # A failed recomputation must not leave the previous score usable.
                 cur.execute("DELETE FROM factor_scores WHERE score_date=%s AND symbol=ANY(%s)",
-                            (target_date, symbols))
+                            (target_date, sorted(set(symbols) | ineligible.keys())))
                 invalidated = cur.rowcount
 
         from app.domain.repositories.intelligence_repository import IntelligenceRepository
@@ -260,4 +273,4 @@ class FactorService:
 
         logger.info(f"Hoàn thành tính toán Factor Scores cho {count}/{len(symbols)} mã vào {target_date}")
         return {"symbols_computed": count, "total_symbols": len(symbols), "date": str(target_date),
-                "factor_scores_invalidated": invalidated, "errors": errors}
+                "factor_scores_invalidated": invalidated, "ineligible_symbols": ineligible, "errors": errors}

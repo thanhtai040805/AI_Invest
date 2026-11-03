@@ -27,6 +27,7 @@ from app.domain.repositories.universe_repository import UniverseRepository
 from app.infrastructure.database.pg_pool import get_conn
 from app.domain.rules.market.session_context_manager import SessionContextManager
 from app.infrastructure.external_api.market_data_service import MarketDataService
+from app.domain.services.factor_service import MIN_MARKET_OBSERVATIONS
 
 logger = logging.getLogger(__name__)
 
@@ -205,8 +206,8 @@ class UniverseDiscoveryAgent(BaseAgent):
                     cur.execute(
                         """
                         SELECT ticker, MIN(date), COUNT(*)
-                        FROM market_data_daily
-                        WHERE ticker = ANY(%s) AND date <= %s
+                        FROM market_data_daily_calculation
+                        WHERE ticker = ANY(%s) AND date <= %s AND close > 0
                         GROUP BY ticker
                         """,
                         (tickers, market_data_date),
@@ -288,6 +289,19 @@ class UniverseDiscoveryAgent(BaseAgent):
                     "universe_group": UniverseGroup.EXCLUDED.value,
                     "trading_status": db_status,
                     "beneish_status": "UNKNOWN",
+                })
+                continue
+
+            # Apply Generic's history requirement before any ticker/VN30 exception.
+            observed_days = listing_map.get(symbol, {}).get("total_days", 0)
+            if observed_days < MIN_MARKET_OBSERVATIONS:
+                exclusion_log.append({
+                    "ticker": symbol, "reason": "FACTOR_HISTORY_INSUFFICIENT",
+                    "detail": f"Generic requires {MIN_MARKET_OBSERVATIONS} price observations; available={observed_days}.",
+                })
+                state_securities_to_save.append({
+                    "ticker": symbol, "universe_group": UniverseGroup.EXCLUDED.value,
+                    "trading_status": db_status, "beneish_status": "UNKNOWN",
                 })
                 continue
 

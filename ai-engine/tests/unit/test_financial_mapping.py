@@ -149,6 +149,25 @@ def test_securities_total_accounting_income_without_tax_abbreviation():
     assert fields.extract_financial_value(inc, fields.NI_KEYS) == 502617939631
 
 
+@pytest.mark.parametrize('label',['net_profit_loss_after_tax','Net profit/(loss) after tax','NET PROFIT/(LOSS) AFTER TAX'])
+@pytest.mark.parametrize('income',[0.,-100.,228457671479.])
+def test_vci_total_net_income_alias_preserves_zero_and_losses(label,income):
+    data={label:income,'Net profit attributable to owners of parent':999.}
+    assert fields.extract_financial_value(data,fields.NI_KEYS)==income
+
+
+def test_vci_net_income_alias_rebuilds_roe_margin_and_growth():
+    from app.infrastructure.data_pipelines.financial_etl_cafef import derive_financial_ratios
+    rows=[]
+    for year,ni in [(2025,10.),(2026,20.)]:
+        period=date(year,6,30)
+        rows.extend([(period,'quarterly','BS',{'total_assets':200.,'total_liabilities':100.,'equity':100.},None,'vnstock_vci'),
+                     (period,'quarterly','IS',{'net_revenue':100.,'net_profit_loss_after_tax':ni},None,'vnstock_vci')])
+    derived={row[1]:row for row in derive_financial_ratios('TEST',rows)}[date(2026,6,30)]
+    assert derived[5]==.2 and derived[10]==.2 and derived[14]==1.
+    assert derived[3] is None and derived[4] is None  # No invented valuation multiples.
+
+
 @pytest.mark.parametrize("is_bank", [False, True])
 def test_insurance_crawl_preserves_baseline_total_revenue_and_reserve_codes(is_bank):
     # BVH Q2/2016: captured CafeF codes, independently retained in the LOCAL baseline.

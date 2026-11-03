@@ -99,6 +99,11 @@ def upsert_financial_statement(
         conflict_guard = "TRUE"
     insert_guard = "TRUE" if allow_historical_updates else "incoming.period_end >= %s::date"
     update_guard = "TRUE" if allow_historical_updates else "financial_statements.period_end >= %s::date"
+    publication_value = ("EXCLUDED.published_date" if allow_historical_updates else
+                         "COALESCE(EXCLUDED.published_date, financial_statements.published_date)")
+    publication_changed = ("financial_statements.published_date IS DISTINCT FROM EXCLUDED.published_date"
+                           if allow_historical_updates else
+                           "EXCLUDED.published_date IS NOT NULL AND financial_statements.published_date IS DISTINCT FROM EXCLUDED.published_date")
 
     query = f"""INSERT INTO financial_statements
                    (symbol, period_end, statement_type, frequency, data, source, published_date)
@@ -111,13 +116,12 @@ def upsert_financial_statement(
                DO UPDATE SET data = EXCLUDED.data,
                              source = EXCLUDED.source,
                              fetched_at = NOW(),
-                             published_date = COALESCE(EXCLUDED.published_date, financial_statements.published_date)
+                             published_date = {publication_value}
                WHERE {conflict_guard}
                  AND {update_guard}
                  AND (financial_statements.data IS DISTINCT FROM EXCLUDED.data
                       OR financial_statements.source IS DISTINCT FROM EXCLUDED.source
-                      OR (EXCLUDED.published_date IS NOT NULL
-                          AND financial_statements.published_date IS DISTINCT FROM EXCLUDED.published_date))"""
+                      OR ({publication_changed}))"""
     params = (symbol, period_end, statement_type, frequency, data, source, published_date)
     if not allow_historical_updates:
         cutoff = date.today() - timedelta(days=90)

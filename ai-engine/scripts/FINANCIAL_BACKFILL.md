@@ -39,6 +39,10 @@ AlphaStock publication dates come from `published_at`; absence remains NULL.
 Observation time belongs in `fetched_at`. This does not independently certify
 publication vintage: readers still contain a reporting-lag heuristic, and the
 provider can omit publication, currency or consolidation metadata.
+Explicit backfill replaces unknown publication dates with NULL in both statements
+and derived ratios, including when financial values are unchanged. Ordinary
+incremental refresh preserves an existing date when the response has none.
+This prevents an old crawl timestamp from surviving an explicit historical reset.
 
 ## Repair mappings using statements already stored in the target
 
@@ -157,7 +161,10 @@ The batch deletes that date/symbol scope before recomputing, including stale
 rows whose new inputs are missing. It returns both `factor_scores_invalidated`
 and per-symbol `errors`; incomplete inputs are not cached and any errors mean
 the requested scope is not ready. Normal daily ETL uses the same method with
-the default HOSE/HSX scope.
+the default HOSE/HSX scope with at least 60 positive price observations. Short
+history is reported in `ineligible_symbols` as `FACTOR_HISTORY_INSUFFICIENT`,
+separately from missing financial inputs. Universe Discovery uses the same
+minimum, including for VN30; there are no DMX/LPS-specific exceptions.
 
 For historical Replay preparation, `as_of` is the previous calendar day of
 each requested trading session, including weekend dates. Rebuild the entire
@@ -306,3 +313,35 @@ SAG operation ran. This validates the cache lifecycle and calculator/reader
 agreement, not filing accuracy, publication metadata or equality with the old
 mixed Generic/VN baseline cache. The publication-period selection issue and
 the 108 missing-input observations remain unresolved acceptance items.
+
+## Source-input fixes and fresh-source check — 2026-11-03
+
+The shared net-income mapping now recognizes VCI `net_profit_loss_after_tax`
+and its human-readable labels. It preserves total versus parent-only profit,
+zero values, losses and the existing conflict checks. Ratios derive ROE, net
+margin and YoY earnings from the same mapped total; missing PE/PB are not inferred
+from a different financial period. Generic formulas and weights are unchanged.
+
+A subsequent TEMP-table test replaced all financial inputs for the eight affected
+symbols from newly captured AlphaStock responses and retained the existing inputs
+for other symbols, uniformly across all 56 sessions. On the original 7,541
+symbol-days, 22 DMX/LPS observations were explicitly history-ineligible and one
+AAN observation still lacked a same-quarter prior-year income statement. The
+remaining 7,518 vectors were complete and their newly written TEMP cache matched
+the calculator exactly. First 28 sessions: 3,778 cached and one AAN input gap;
+next 28: 3,740 cached with zero financial gaps and 22 explicit history exclusions.
+The 22 exclusions are not repaired financial data or fabricated price history.
+
+The fresh source supplied current-quarter PE/PB for SBT/TCH/CMG, GEL's missing
+prior-year report, and HSL's Q2 revenue. HSL's Q1 revenue is reported as zero;
+NI/revenue for that quarter remains undefined and is not silently set to zero.
+Unknown publication dates follow the existing uniform reporting lag and are
+not certified issuer publication dates.
+
+No financial reset was published: the guard found that replacing the eight-symbol
+scope would erase 308 previously present EPS/BVPS values on matching periods.
+AlphaStock currently returns these fields empty; tested CafeF/VCI responses did
+not establish the required replacement per-share inputs for those same periods.
+The existing guard was retained and the transaction rolled back. Public LOCAL
+financial/cache tables, the frozen baseline and PROD were unchanged. This test
+does not authorize a production rollout or certify the source-data contract.

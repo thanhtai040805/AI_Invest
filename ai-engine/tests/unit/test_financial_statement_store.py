@@ -141,6 +141,27 @@ def test_postgres_backfill_source_precedence(source, field_count, replace):
         conn.close()
 
 
+@pytest.mark.parametrize('backfill',[False,True])
+def test_only_explicit_backfill_clears_legacy_publication_when_source_date_is_unknown(backfill):
+    url=os.environ.get('FINANCIAL_TEST_DATABASE_URL')
+    if not url:pytest.skip('Requires disposable LOCAL PostgreSQL')
+    conn=psycopg2.connect(url)
+    try:
+        with conn.cursor() as cur:
+            cur.execute('''CREATE TEMP TABLE financial_statements(symbol text,period_end date,statement_type text,
+                frequency text,data jsonb,source text,published_date date,fetched_at timestamptz DEFAULT NOW(),
+                PRIMARY KEY(symbol,period_end,statement_type,frequency)) ON COMMIT DROP''')
+            period=date.today()-timedelta(days=30)
+            published=period+timedelta(days=10)
+            args=('TEST',period,'IS','quarterly',Json({'net_income':10}),'alphastock')
+            upsert_financial_statement(cur,*args,published,allow_historical_updates=True)
+            upsert_financial_statement(cur,*args,None,allow_historical_updates=backfill)
+            cur.execute('SELECT published_date FROM financial_statements')
+            assert cur.fetchone()[0]==(None if backfill else published)
+    finally:
+        conn.rollback();conn.close()
+
+
 @pytest.mark.parametrize("normalize_history", [False, True])
 def test_postgres_explicit_backfill_repairs_retained_historical_aliases(
     normalize_history,

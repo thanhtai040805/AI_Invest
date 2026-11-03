@@ -556,7 +556,7 @@ def _parse_kqkd(val: dict, is_bank: bool) -> dict[str, dict[str, Any]]:
                 elif fields.financial_label(name) == fields.financial_label("giá vốn hàng bán"):
                     periods[t_label]["giá vốn hàng bán"] = val_num
                     periods[t_label]["4_gia_von_hang_ban"] = val_num
-                elif fields.financial_label(name) in {fields.financial_label(k) for k in fields.NI_KEYS[:-1]}:
+                elif fields.financial_label(name) in {fields.financial_label(k) for k in fields.NI_KEYS}:
                     periods[t_label]["lợi nhuận sau thuế"] = val_num
                     periods[t_label]["18_loi_nhuan_sau_thue"] = val_num
     return periods
@@ -912,9 +912,11 @@ def _store_derived_ratios(symbol: str, cur, *, normalize_statements: bool = Fals
                 raise RuntimeError(f"Statement changed while normalizing {symbol}/{pe}/{kind}/{frequency}")
             stmt_rows[index] = (pe, frequency, kind, fixed, published, source)
     changed_periods = []
+    publication_value = ("EXCLUDED.published_date" if normalize_statements else
+                         "COALESCE(EXCLUDED.published_date, financial_ratios.published_date)")
     for values in derive_financial_ratios(symbol, stmt_rows):
         cur.execute(
-            """INSERT INTO financial_ratios
+            f"""INSERT INTO financial_ratios
                (symbol, ratio_date, frequency, pe, pb, roe, roa, debt_equity, current_ratio,
                 gross_margin, net_margin, fcf_yield, ev_ebitda,
                 yoy_revenue_growth, yoy_earnings_growth, published_date)
@@ -931,7 +933,7 @@ def _store_derived_ratios(symbol: str, cur, *, normalize_statements: bool = Fals
                    ev_ebitda = EXCLUDED.ev_ebitda,
                    yoy_revenue_growth = EXCLUDED.yoy_revenue_growth,
                    yoy_earnings_growth = EXCLUDED.yoy_earnings_growth,
-                   published_date = COALESCE(EXCLUDED.published_date, financial_ratios.published_date),
+                   published_date = {publication_value},
                    updated_at = NOW()
                WHERE (financial_ratios.pe, financial_ratios.pb, financial_ratios.roe, financial_ratios.roa,
                       financial_ratios.debt_equity, financial_ratios.current_ratio, financial_ratios.gross_margin,
@@ -941,7 +943,7 @@ def _store_derived_ratios(symbol: str, cur, *, normalize_statements: bool = Fals
                      (EXCLUDED.pe, EXCLUDED.pb, EXCLUDED.roe, EXCLUDED.roa, EXCLUDED.debt_equity,
                       EXCLUDED.current_ratio, EXCLUDED.gross_margin, EXCLUDED.net_margin, EXCLUDED.fcf_yield,
                       EXCLUDED.ev_ebitda, EXCLUDED.yoy_revenue_growth, EXCLUDED.yoy_earnings_growth,
-                      COALESCE(EXCLUDED.published_date, financial_ratios.published_date))""",
+                      {publication_value})""",
             values,
         )
         if cur.rowcount:

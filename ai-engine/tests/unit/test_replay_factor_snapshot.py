@@ -170,7 +170,7 @@ def test_agent_callers_never_write_source_factors():
 def test_daily_producer_still_persists_factors(monkeypatch):
     from app.domain.services.factor_service import FactorService
     connection=MagicMock()
-    connection.cursor.return_value.__enter__.return_value.fetchall.return_value=[('CTG',)]
+    connection.cursor.return_value.__enter__.return_value.fetchall.return_value=[('CTG',60)]
     get_conn=MagicMock(); get_conn.return_value.__enter__.return_value=connection
     monkeypatch.setattr('app.domain.services.factor_service.get_conn',get_conn)
     repository=MagicMock()

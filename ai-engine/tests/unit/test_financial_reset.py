@@ -190,6 +190,17 @@ def seed_ratio_inputs(cur, schema='public'):
                     ('CACHE_TEST',date(2025,12,31),kind,'quarterly',Json(data),'cafef'))
 
 
+@pytest.mark.parametrize('backfill',[False,True])
+def test_ratio_backfill_replaces_legacy_publication_metadata(conn,backfill):
+    with conn.cursor() as cur:
+        seed_ratio_inputs(cur)
+        _store_derived_ratios('CACHE_TEST',cur)
+        cur.execute("UPDATE public.financial_ratios SET published_date='2026-10-23' WHERE symbol='CACHE_TEST'")
+        _store_derived_ratios('CACHE_TEST',cur,normalize_statements=backfill)
+        cur.execute("SELECT published_date FROM public.financial_ratios WHERE symbol='CACHE_TEST'")
+        assert cur.fetchone()[0]==(None if backfill else date(2026,10,23))
+
+
 def test_ratio_changes_invalidate_affected_dates_and_vn_peer_ranks(conn):
     with conn.cursor() as cur:
         seed_ratio_inputs(cur)

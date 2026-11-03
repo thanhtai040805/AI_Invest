@@ -23,6 +23,7 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 from app.domain.services import financial_fields as fields
+from app.domain.services.factor_service import MIN_MARKET_OBSERVATIONS
 from app.infrastructure.vendors.vn.sector_groups import (
     classify_major as classify,
     FINANCIALS, REAL_ESTATE, OTHERS,
@@ -1331,14 +1332,17 @@ def select_scoring_symbols(cur, score_date: date) -> list[str]:
           AND s.trading_status = 'NORMAL'
           AND a.adtv_val >= 5000000
           AND t.trading_days >= 45
+          AND (SELECT count(*) FROM (
+              SELECT close FROM market_data_daily_calculation h
+              WHERE h.ticker=s.symbol AND h.date<=%s ORDER BY h.date DESC LIMIT %s
+          ) history WHERE close>0) >= %s
         ORDER BY s.symbol
-    """, (start_20d, score_date, start_60d, score_date))
+    """, (start_20d, score_date, start_60d, score_date,
+          score_date, MIN_MARKET_OBSERVATIONS, MIN_MARKET_OBSERVATIONS))
     symbols = [r[0] for r in cur.fetchall()]
 
     if not symbols:
-        logger.info("Liquid universe query returned empty, falling back to all HOSE/HSX symbols")
-        cur.execute("SELECT symbol FROM stocks WHERE exchange IN ('HOSE','HSX') ORDER BY symbol")
-        symbols = [r[0] for r in cur.fetchall()]
+        logger.info("No symbols satisfy liquidity and Generic price-history requirements")
 
     logger.info("Computing factor scores for %d symbols (liquid universe)", len(symbols))
 
