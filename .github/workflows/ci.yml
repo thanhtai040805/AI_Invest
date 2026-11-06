@@ -85,6 +85,7 @@ jobs:
           tests/unit/test_eod_governance_execution_mode.py
           tests/unit/test_portfolio_repository_sector_hydration.py
           tests/unit/test_daily_pipeline_portfolio_refresh.py
+          tests/test_daily_etl_daemon.py
           tests/unit/test_unified_llm_rotation.py
           tests/test_daily_pipeline_12_agents.py::test_historical_replay_researches_beyond_live_shortlist
           tests/test_governance_institutional_vnext.py::test_shadow_mode_does_not_infer_broker_failure_but_live_mode_fails_closed

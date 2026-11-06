@@ -9,6 +9,33 @@ from app.infrastructure.workers import daily_etl_daemon as daemon_module
 from app.domain.pipeline import daily_etl as daily_etl_module
 
 
+@pytest.fixture(autouse=True)
+def no_promoted_snapshot(monkeypatch):
+    monkeypatch.setattr(daemon_module, "get_job", lambda _: None)
+
+
+def test_promoted_snapshot_survives_restart_but_next_session_still_runs(monkeypatch):
+    clock = {"now": datetime(2026, 11, 6, 18, tzinfo=TZ_VN)}
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock["now"]
+    monkeypatch.setattr(daemon_module, "datetime", Clock)
+    monkeypatch.setattr(daemon_module, "get_job", lambda _: {"status": "completed", "metadata": {"through": "2026-11-06"}})
+    calls = []
+    class Pipeline:
+        async def run(self, trade_date=None):
+            calls.append(trade_date)
+            return {"status": "SUCCESS"}
+    daemon = DailyETLDaemon(pipeline=Pipeline())
+    asyncio.run(daemon._check_and_trigger())
+    assert calls == []
+    assert daemon.status["last_status"] == "ALREADY_VALIDATED_SNAPSHOT"
+    clock["now"] = datetime(2026, 11, 9, 18, tzinfo=TZ_VN)
+    asyncio.run(daemon._check_and_trigger())
+    assert calls == [clock["now"].date()]
+
+
 def test_daily_etl_daemon_initialization():
     """Kiểm tra khởi tạo DailyETLDaemon và cấu hình giờ trigger 15:00."""
     daemon = DailyETLDaemon()

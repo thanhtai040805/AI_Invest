@@ -17,6 +17,7 @@ from datetime import date, datetime, time as dt_time, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from app.domain.pipeline.daily_etl import DailyETLPipeline, is_trading_day, TZ_VN
+from app.infrastructure.monitoring.job_state_service import get_job
 
 logger = logging.getLogger("ai_engine.daemon.daily_etl")
 
@@ -82,6 +83,12 @@ class DailyETLDaemon:
 
         # 3. Chỉ khóa ngày sau khi pipeline báo thành công.
         if self._last_run_date == today_str:
+            return
+
+        snapshot = get_job("validated_data_snapshot")
+        if snapshot and snapshot.get("status") == "completed" and snapshot.get("metadata", {}).get("through") == today_str:
+            self._last_run_date = today_str
+            self._last_status = "ALREADY_VALIDATED_SNAPSHOT"
             return
 
         if (
