@@ -1,4 +1,4 @@
-"""Unified OpenAI-compatible LLM client for DeepInfra, Xkiro and EvoMap."""
+"""Unified OpenAI-compatible LLM client for Xkiro and EvoMap."""
 
 from __future__ import annotations
 

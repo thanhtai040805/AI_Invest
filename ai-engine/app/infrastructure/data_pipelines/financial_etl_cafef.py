@@ -17,8 +17,6 @@ import psycopg2
 from psycopg2.extras import Json
 
 from app.infrastructure.database.pg_pool import DB_URL
-from app.infrastructure.data_pipelines.financial_statement_store import upsert_financial_statement
-from app.domain.services import financial_fields as fields
 
 logger = logging.getLogger(__name__)
 
@@ -314,23 +312,29 @@ def _slugify(text: str) -> str:
     return t.strip("_")
 
 
-def normalize_statement(symbol: str, period_end: date, statement_type: str, frequency: str, data: dict) -> dict:
-    overrides = _ISSUER_BS_OVERRIDES.get((symbol, period_end), {}) if statement_type == "BS" else {}
-    return fields.normalize_financial_statement(data, statement_type, "cafef", overrides)
-
-
 def _upsert(
     cur, symbol: str, period_end: date, stmt_type: str, freq: str,
     data: dict, published_date: Optional[date], *, fill_only: bool = False,
-    allow_historical_updates: bool = False,
 ):
-    data = normalize_statement(symbol, period_end, stmt_type, freq, data)
     if not any(isinstance(value, (int, float)) and math.isfinite(value) and value != 0 for value in data.values()):
         return
-    upsert_financial_statement(
-        cur, symbol, period_end, stmt_type, freq, Json(_clean_nan(data)),
-        "cafef", published_date, fill_only=fill_only,
-        allow_historical_updates=allow_historical_updates,
+    conflict = (
+        "DO UPDATE SET data = EXCLUDED.data, source = EXCLUDED.source, fetched_at = NOW(), "
+        "published_date = COALESCE(EXCLUDED.published_date, financial_statements.published_date) "
+        "WHERE financial_statements.source = 'alphastock' "
+        "AND (SELECT count(*) FROM jsonb_each(financial_statements.data) "
+        "WHERE value <> 'null'::jsonb) < 8"
+    ) if fill_only else (
+        "DO UPDATE SET data = EXCLUDED.data, source = EXCLUDED.source, fetched_at = NOW(), "
+        "published_date = COALESCE(EXCLUDED.published_date, financial_statements.published_date)"
+    )
+    cur.execute(
+        """INSERT INTO financial_statements
+           (symbol, period_end, statement_type, frequency, data, source, published_date)
+           VALUES (%s, %s, %s, %s, %s, %s, %s)
+           ON CONFLICT (symbol, period_end, statement_type, frequency)
+           {conflict}""".format(conflict=conflict),
+        (symbol, period_end, stmt_type, freq, Json(_clean_nan(data)), "cafef", published_date),
     )
 
 
@@ -344,9 +348,7 @@ def _latest_completed_quarter(today: date) -> tuple[date, str]:
     return date(year, month, monthrange(year, month)[1]), f"{year}-Q{quarter}"
 
 
-def _fetch_vci_missing_quarter(
-    cur, symbols: Optional[list[str]] = None, *, normalize_statements: bool = False,
-) -> dict[str, int]:
+def _fetch_vci_missing_quarter(cur, symbols: Optional[list[str]] = None) -> dict[str, int]:
     """Fill CafeF gaps from VCI; VCI has no publication date, so first-seen is the PIT cutoff."""
     period_end, label = _latest_completed_quarter(date.today())
     cur.execute(
@@ -374,7 +376,6 @@ def _fetch_vci_missing_quarter(
     methods = {"BS": "balance_sheet", "IS": "income_statement", "CF": "cash_flow"}
     for index, (symbol, statement_types) in enumerate(missing.items()):
         savepoint = f"vci_symbol_{index}"
-        inserted_before = inserted
         cur.execute(f"SAVEPOINT {savepoint}")
         try:
             finance = Finance(symbol=symbol, source="VCI", period="quarter", get_all=True)
@@ -410,13 +411,10 @@ def _fetch_vci_missing_quarter(
                     (symbol, period_end, statement_type, Json(_clean_nan(data)), available),
                 )
                 inserted += cur.rowcount
-            if inserted > inserted_before:
-                _store_derived_ratios(symbol, cur, normalize_statements=normalize_statements)
             cur.execute(f"RELEASE SAVEPOINT {savepoint}")
         except Exception as exc:
             cur.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
             cur.execute(f"RELEASE SAVEPOINT {savepoint}")
-            inserted = inserted_before
             logger.warning("VCI financial fallback failed for %s (%s): %s", symbol, label, exc)
             errors += 1
     logger.info("VCI financial fallback %s: %d rows, %d symbols, %d errors", label, inserted, len(missing), errors)
@@ -504,13 +502,6 @@ def _parse_kqkd(val: dict, is_bank: bool) -> dict[str, dict[str, Any]]:
         code_str = str(t.get("code") or t.get("number"))
         t_map[code_str] = t.get("name", "")
 
-    # The 2026 code shift belongs to the general template, not every non-bank issuer.
-    legacy_shift = fields.financial_label(t_map.get("22", "")) == fields.financial_label("Doanh thu hoạt động tài chính")
-    net_revenue_labels = {fields.financial_label(name) for name in (
-        "Doanh thu thuần về bán hàng và cung cấp dịch vụ", "Doanh thu thuần",
-        "Doanh thu thuần từ HĐKD BH", "Doanh thu thuần hoạt động kinh doanh bảo hiểm",
-    )}
-
     periods: dict[str, dict[str, Any]] = {}
     for p in val.get("data", []):
         t_label = p.get("time")
@@ -523,7 +514,7 @@ def _parse_kqkd(val: dict, is_bank: bool) -> dict[str, dict[str, Any]]:
 
         for code_str, name in t_map.items():
             val_num = None
-            if not legacy_shift:
+            if is_bank:
                 it = next((x for x in period_data if str(x.get("code")) == code_str), None)
                 val_num = it.get("value") if it else None
             else:
@@ -549,14 +540,14 @@ def _parse_kqkd(val: dict, is_bank: bool) -> dict[str, dict[str, Any]]:
                     periods[t_label]["Trong đó: Chi phí đi vay"] = val_num
                     periods[t_label]["trong_do_chi_phi_lai_vay"] = val_num
                     periods[t_label]["chi phí lãi vay"] = val_num
-                elif fields.financial_label(name) in net_revenue_labels:
+                elif "doanh thu thuần" in name.lower():
                     periods[t_label]["doanh thu thuần"] = val_num
                     periods[t_label]["3_doanh_thu_thuan"] = val_num
                     periods[t_label]["3_doanh_thu_thuan_ve_ban_hang_va_cung_cap_dich_vu"] = val_num
-                elif fields.financial_label(name) == fields.financial_label("giá vốn hàng bán"):
+                elif "giá vốn hàng bán" in name.lower():
                     periods[t_label]["giá vốn hàng bán"] = val_num
                     periods[t_label]["4_gia_von_hang_ban"] = val_num
-                elif fields.financial_label(name) in {fields.financial_label(k) for k in fields.NI_KEYS[:-1]}:
+                elif "lợi nhuận sau thuế thu nhập doanh nghiệp" in name.lower() or "lợi nhuận sau thuế" in name.lower():
                     periods[t_label]["lợi nhuận sau thuế"] = val_num
                     periods[t_label]["18_loi_nhuan_sau_thue"] = val_num
     return periods
@@ -585,7 +576,7 @@ def _parse_lctt(val: dict, is_bank: bool) -> dict[str, dict[str, Any]]:
                 periods[t_label][code] = val_num
                 if name:
                     _add_key_variants(periods[t_label], name, val_num)
-                    if fields.financial_label(name) in {fields.financial_label(k) for k in fields.CFO_KEYS}:
+                    if "lưu chuyển tiền thuần từ hoạt động kinh doanh" in name.lower():
                         periods[t_label]["Lưu chuyển tiền thuần từ hoạt động kinh doanh"] = val_num
                         periods[t_label]["luu_chuyen_tien_thuan_tu_hoat_dong_kinh_doanh"] = val_num
                         periods[t_label]["tiền thuần từ hđkd"] = val_num
@@ -665,8 +656,10 @@ def fetch_and_store_financials(
             pe = _period_label_to_date(pl, clean_sym)
             if not pe or pe < history_start or pe > datetime.now(TZ_VN).date():
                 if pe:
-                    logger.warning("Skipping CafeF period %s outside %s..%s for %s", pl, history_start, today, clean_sym)
+                    logger.warning("Skipping future CafeF period %s for %s", pl, clean_sym)
                 continue
+            if pl in parsed_bs:
+                parsed_bs[pl].update(_ISSUER_BS_OVERRIDES.get((clean_sym, pe), {}))
             available = (
                 date.today()
                 if not backfill and freq == "quarterly" and pe == latest_quarter
@@ -674,25 +667,23 @@ def fetch_and_store_financials(
             )
 
             if pl in parsed_bs and parsed_bs[pl]:
-                _upsert(cur, clean_sym, pe, "BS", freq, parsed_bs[pl], available,
-                        fill_only=fill_only, allow_historical_updates=backfill)
+                _upsert(cur, clean_sym, pe, "BS", freq, parsed_bs[pl], available, fill_only=fill_only)
                 total_upserted += 1
             if pl in parsed_is and parsed_is[pl]:
-                _upsert(cur, clean_sym, pe, "IS", freq, parsed_is[pl], available,
-                        fill_only=fill_only, allow_historical_updates=backfill)
+                _upsert(cur, clean_sym, pe, "IS", freq, parsed_is[pl], available, fill_only=fill_only)
                 total_upserted += 1
             if pl in parsed_cf and parsed_cf[pl]:
-                _upsert(cur, clean_sym, pe, "CF", freq, parsed_cf[pl], available,
-                        fill_only=fill_only, allow_historical_updates=backfill)
+                _upsert(cur, clean_sym, pe, "CF", freq, parsed_cf[pl], available, fill_only=fill_only)
                 total_upserted += 1
             if include_ratios and pl in parsed_r and parsed_r[pl]:
-                _upsert(cur, clean_sym, pe, "ratios", freq, parsed_r[pl], available,
-                        fill_only=fill_only, allow_historical_updates=backfill)
+                _upsert(cur, clean_sym, pe, "ratios", freq, parsed_r[pl], available, fill_only=fill_only)
                 total_upserted += 1
 
     if refresh_ratios:
-        # Let the caller roll back this symbol's statement writes on any failure.
-        _store_derived_ratios(clean_sym, cur, normalize_statements=backfill)
+        try:
+            _store_derived_ratios(clean_sym, cur)
+        except Exception as e:
+            logger.warning("Derived ratios failed for %s: %s", clean_sym, e)
 
     return {"symbol": clean_sym, "rows": total_upserted}
 
@@ -701,71 +692,110 @@ def _extract_value(fs_rows: list, keywords: list[str], default: Optional[float] 
     for row in fs_rows:
         if isinstance(row, (tuple, list)) and len(row) >= 3:
             data = row[2]
-        elif isinstance(row, (tuple, list)) and row:
+        elif isinstance(row, (tuple, list)) and len(row) >= 1:
             data = row[0]
         else:
             data = row
-        if isinstance(data, str):
+        if isinstance(data, dict):
+            for k, v in data.items():
+                if any(kw.lower() in k.lower() for kw in keywords):
+                    if isinstance(v, (int, float)):
+                        return float(v)
+        elif isinstance(data, str):
             import json
             try:
-                data = json.loads(data)
+                d = json.loads(data)
+                for k, v in d.items():
+                    if any(kw.lower() in k.lower() for kw in keywords):
+                        if isinstance(v, (int, float)):
+                            return float(v)
             except (json.JSONDecodeError, TypeError):
-                continue
-        value = fields.extract_financial_value(data, keywords)
-        if value is not None:
-            return value
+                pass
     return default
 
 
-_REVENUE_KEYS = fields.REVENUE_KEYS
-_COGS_KEYS = fields.COGS_KEYS
-_NI_KEYS = fields.NI_KEYS
-_ASSET_KEYS = fields.ASSET_KEYS
-_LIAB_KEYS = fields.LIAB_KEYS
-_EQUITY_KEYS = fields.EQUITY_KEYS
-_CFO_KEYS = fields.CFO_KEYS
-_CAPEX_KEYS = fields.CAPEX_KEYS
-_PE_KEYS = fields.PE_KEYS
-_PB_KEYS = fields.PB_KEYS
-_ROE_KEYS = fields.ROE_KEYS
-_ROA_KEYS = fields.ROA_KEYS
-_DE_KEYS = fields.DE_KEYS
-_CR_KEYS = fields.CR_KEYS
-_CASH_KEYS = fields.CASH_KEYS
-_EBITDA_KEYS = fields.EBITDA_KEYS
-_EVEBITDA_KEYS = fields.EVEBITDA_KEYS
-_GM_KEYS = fields.GM_KEYS
-_GROSS_PROFIT_KEYS = fields.GROSS_PROFIT_KEYS
-_NM_KEYS = fields.NM_KEYS
+_REVENUE_KEYS = [
+    "doanh thu thuần", "doanh thu thuan", "3_doanh_thu_thuần",
+    "doanh thu bán hàng", "thu nhập lãi thuần",
+    "doanh thu phí bảo hiểm thuần",
+]
+
+_COGS_KEYS = ["giá vốn hàng bán", "gia von hang ban", "giá_vốn", "4_giá_vốn_hàng_bán"]
+
+_NI_KEYS = [
+    "18_lợi_nhuận_sau_thuế",
+    "lợi nhuận sau thuế thu nhập doanh nghiệp",
+    "lợi nhuận sau thuế", "loi nhuan sau thue", "lợi_nhuận_sau_thuế",
+    "29_lợi_nhuận_sau_thuế", "xiii_lợi_nhuận_sau_thuế",
+]
+
+_ASSET_KEYS = [
+    "tổng cộng tài sản", "tong cong tai san", "tổng_cộng_tài_sản",
+    "tổng cộng tài sản (270=100+200)", "tổng tài sản",
+]
+
+_LIAB_KEYS = ["tổng nợ phải trả", "tong no phai tra", "c_nợ_phải_trả", "C. NỢ PHẢI TRẢ", "nợ phải trả", "C NỢ PHẢI TRẢ"]
+
+_EQUITY_KEYS = [
+    "vốn chủ sở hữu", "von chu so huu", "i_vốn_chủ_sở_hữu",
+    "vốn chủ sở hữu (400=410+430)", "b_vốn_chủ_sở_hữu", "d vốn chủ sở hữu", "D. VỐN CHỦ SỞ HỮU",
+]
+
+_CFO_KEYS = [
+    "lưu chuyển tiền thuần từ hoạt động kinh doanh",
+    "luu chuyen tien thuan tu hoat dong kinh doanh",
+    "lưu_chuyển_tiền_thuần_từ_hoạt_động_kinh_doanh",
+]
+
+_CAPEX_KEYS = [
+    "tiền chi để mua sắm, xây dựng tscđ",
+    "tien chi de mua sam xay dung tscd",
+    "tiền chi mua sắm, xây dựng tscđ",
+    "tiền_mua_tài_sản_cố_định",
+    "5_tiền_mua_tài_sản_cố_định",
+    "mua sắm tscđ",
+]
+
+_PE_KEYS = ["p/e", "chỉ số p/e", "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e", "pe"]
+_PB_KEYS = ["p/b", "chỉ số p/b", "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b", "pb"]
+_ROE_KEYS = ["roe", "tỷ suất lợi nhuận trên vốn chủ sở hữu"]
+_ROA_KEYS = ["roa", "tỷ suất sinh lợi trên tổng tài sản"]
+
+_DE_KEYS = ["nợ trên vốn", "debt/equity", "d/e", "nợ vay trên vốn", "debt_equity"]
+_CR_KEYS = ["thanh toán hiện hành", "current ratio", "current_ratio"]
+_CASH_KEYS = ["tiền và các khoản tương đương tiền", "i_tiền_và_các_khoản", "tiền và tương đương tiền", "1. tiền"]
+_EBITDA_KEYS = ["ebitda", "ebit", "lợi nhuận thuần từ hoạt động kinh doanh"]
+_EVEBITDA_KEYS = ["ev/ebitda", "giá trị doanh nghiệp trên lợi nhuận trước thuế, khấu hao và lãi vay"]
+_GM_KEYS = ["lợi nhuận gộp", "gross margin", "gộp biên", "gross_margin", "tỷ suất lợi nhuận gộp biên"]
+_GROSS_PROFIT_KEYS = ["gross_profit", "gross profit", "lợi nhuận gộp", "loi nhuan gop"]
+_NM_KEYS = ["lợi nhuận ròng", "net margin", "sinh lợi trên doanh thu", "net_margin", "tỷ suất sinh lợi trên doanh thu thuần"]
 
 
-def derive_financial_ratios(symbol: str, stmt_rows: list) -> list[tuple]:
-    """Calculate the existing ratio formulas without fetching or writing data."""
+def _store_derived_ratios(symbol: str, cur) -> None:
+    """Compute and store financial_ratios for ALL available periods."""
+    cur.execute(
+        """SELECT period_end, frequency, statement_type, data, published_date
+           FROM financial_statements
+           WHERE symbol = %s
+           ORDER BY period_end DESC""",
+        (symbol,),
+    )
+    stmt_rows = cur.fetchall()
     if not stmt_rows:
-        return []
+        return
 
     import json
 
     periods: dict[tuple[date, str], dict[str, dict]] = {}
     availability_by_period: dict[tuple[date, str], date] = {}
-    reported_rate_periods: set[tuple[date, str]] = set()
-    for row in stmt_rows:
-        pe, frequency, st, raw, available = row[:5]
-        source = row[5] if len(row) > 5 else None
+    for pe, frequency, st, raw, available in stmt_rows:
         data = raw if isinstance(raw, dict) else (json.loads(raw) if isinstance(raw, str) else {})
-        if st == "ratios":
-            if source == "alphastock" or (
-                source == "cafef" and {"ROE", "ROA", "GOS", "ROS"} & data.keys()
-            ):
-                reported_rate_periods.add((pe, frequency))
-            data = fields.normalize_statement_ratio_units(data, source)
         key = (pe, frequency)
         periods.setdefault(key, {})[st] = data
         if available:
             availability_by_period[key] = max(availability_by_period.get(key, available), available)
 
     sorted_periods = sorted(periods.keys(), reverse=True)
-    results = []
 
     for pe, frequency in sorted_periods:
         key = (pe, frequency)
@@ -815,10 +845,10 @@ def derive_financial_ratios(symbol: str, stmt_rows: list) -> list[tuple]:
         if ni is not None and assets is not None and assets != 0:
             roa_fb = ni / assets
 
-        final_roe = roe_fb if key in reported_rate_periods and roe_fb is not None else vn_roe if vn_roe is not None else roe_fb
-        final_roa = roa_fb if key in reported_rate_periods and roa_fb is not None else vn_roa if vn_roa is not None else roa_fb
-        final_gm = gross_margin_fb if key in reported_rate_periods and gross_margin_fb is not None else vn_gm if vn_gm is not None else gross_margin_fb
-        final_nm = net_margin_fb if key in reported_rate_periods and net_margin_fb is not None else vn_nm if vn_nm is not None else net_margin_fb
+        final_roe = vn_roe if vn_roe is not None else roe_fb
+        final_roa = vn_roa if vn_roa is not None else roa_fb
+        final_gm = vn_gm if vn_gm is not None else gross_margin_fb
+        final_nm = vn_nm if vn_nm is not None else net_margin_fb
 
         fcf = None
         if cfo is not None and capex is not None:
@@ -835,8 +865,14 @@ def derive_financial_ratios(symbol: str, stmt_rows: list) -> list[tuple]:
 
         current_ratio = _extract_value([rat_data], _CR_KEYS)
         if current_ratio is None:
-            ca = fields.extract_financial_value(bs_data, fields.CA_KEYS)
-            cl = fields.extract_financial_value(bs_data, fields.CL_KEYS)
+            ca = next((float(bs_data[k]) for k in (
+                "a_tài_sản_ngắn_hạn", "a_tai_san_ngan_han", "A. TÀI SẢN NGẮN HẠN",
+                "tài_sản_ngắn_hạn", "tai_san_ngan_han", "Tài sản ngắn hạn",
+            ) if isinstance(bs_data.get(k), (int, float))), None)
+            cl = next((float(bs_data[k]) for k in (
+                "i_nợ_ngắn_hạn", "i_no_ngan_han", "I. Nợ ngắn hạn",
+                "nợ_ngắn_hạn", "no_ngan_han", "Nợ ngắn hạn",
+            ) if isinstance(bs_data.get(k), (int, float))), None)
             if ca is not None and cl is not None and cl != 0:
                 current_ratio = ca / cl
 
@@ -846,11 +882,13 @@ def derive_financial_ratios(symbol: str, stmt_rows: list) -> list[tuple]:
 
         ev_ebitda = _extract_value([rat_data], _EVEBITDA_KEYS)
         if ev_ebitda is None and mcap is not None:
-            interest_debt = fields.interest_bearing_debt(bs_data)
+            interest_debt = _extract_value([bs_data], [
+                "vay_và_nợ_thuê_tài_chính", "Vay và nợ thuê tài chính", "vay_nợ_tài_chính"
+            ])
             debt_for_ev = interest_debt if interest_debt is not None else liab
             if debt_for_ev is not None:
                 cash = _extract_value([bs_data], _CASH_KEYS) or 0
-                st_inv = fields.extract_financial_value(bs_data, fields.SHORT_INVESTMENT_KEYS) or 0
+                st_inv = _extract_value([bs_data], ["đầu_tư_tài_chính_ngắn_hạn", "Đầu tư tài chính ngắn hạn"]) or 0
                 ev = mcap + debt_for_ev - (cash + st_inv)
                 ebitda = _extract_value([inc_data], _EBITDA_KEYS)
                 if ebitda is not None and ebitda != 0:
@@ -875,43 +913,6 @@ def derive_financial_ratios(symbol: str, stmt_rows: list) -> list[tuple]:
 
         published_date = availability_by_period.get(key)
 
-        results.append(
-            (symbol, pe, frequency, vn_pe, vn_pb, final_roe, final_roa, debt_equity, current_ratio,
-             final_gm, final_nm, fcf_yield, ev_ebitda, yoy_rev, yoy_ni, published_date)
-        )
-    return results
-
-
-def _store_derived_ratios(symbol: str, cur, *, normalize_statements: bool = False) -> None:
-    """Rebuild ratios; explicit backfills also repair retained statement aliases."""
-    cur.execute(
-        """SELECT period_end, frequency, statement_type, data, published_date, source
-           FROM financial_statements WHERE symbol = %s ORDER BY period_end DESC""",
-        (symbol,),
-    )
-    stmt_rows = cur.fetchall()
-    if normalize_statements:
-        from app.infrastructure.data_pipelines.financial_etl_alphastock import normalize_statement as normalize_alpha
-
-        normalizers = {"cafef": normalize_statement, "alphastock": normalize_alpha}
-        for index, (pe, frequency, kind, data, published, source) in enumerate(stmt_rows):
-            normalize = normalizers.get(source)
-            if normalize is None:
-                continue
-            fixed = normalize(symbol, pe, kind, frequency, data)
-            if fixed == data:
-                continue
-            # Provider history can omit retained rows; repair from their own source lines.
-            cur.execute(
-                """UPDATE financial_statements SET data=%s
-                   WHERE symbol=%s AND period_end=%s AND statement_type=%s AND frequency=%s
-                     AND data=%s AND source=%s""",
-                (Json(fixed), symbol, pe, kind, frequency, Json(data), source),
-            )
-            if cur.rowcount != 1:
-                raise RuntimeError(f"Statement changed while normalizing {symbol}/{pe}/{kind}/{frequency}")
-            stmt_rows[index] = (pe, frequency, kind, fixed, published, source)
-    for values in derive_financial_ratios(symbol, stmt_rows):
         cur.execute(
             """INSERT INTO financial_ratios
                (symbol, ratio_date, frequency, pe, pb, roe, roa, debt_equity, current_ratio,
@@ -932,7 +933,8 @@ def _store_derived_ratios(symbol: str, cur, *, normalize_statements: bool = Fals
                    yoy_earnings_growth = EXCLUDED.yoy_earnings_growth,
                    published_date = COALESCE(EXCLUDED.published_date, financial_ratios.published_date),
                    updated_at = NOW()""",
-            values,
+            (symbol, pe, frequency, vn_pe, vn_pb, final_roe, final_roa, debt_equity, current_ratio,
+             final_gm, final_nm, fcf_yield, ev_ebitda, yoy_rev, yoy_ni, published_date),
         )
 
 
@@ -979,7 +981,7 @@ def refresh_all(limit: Optional[int] = None) -> dict:
             sp_name = f"sp_{idx}"
             cur.execute(f"SAVEPOINT {sp_name}")
             try:
-                result = fetch_and_store_financials(sym, cur, backfill=True)
+                result = fetch_and_store_financials(sym, cur)
                 total_rows += result["rows"]
                 cur.execute(f"RELEASE SAVEPOINT {sp_name}")
             except Exception as e:
