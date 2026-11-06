@@ -141,7 +141,19 @@ def test_12_agent_pipeline_bear_defense_mode():
     asyncio.run(_test())
 
 
-def test_historical_replay_researches_beyond_live_shortlist(monkeypatch):
+@pytest.mark.parametrize("target_date", ["2026-08-24", "2026-11-06"])
+def test_historical_replay_researches_beyond_live_shortlist(monkeypatch, target_date):
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    from app.domain.pipeline import daily_pipeline_orchestrator as module
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 11, 6, 16, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh")).astimezone(tz)
+
+    monkeypatch.setattr(module, "datetime", FixedDateTime)
+    monkeypatch.setattr(module.standalone_ml_channel, "get_account_state", lambda: pytest.fail("Replay read the unrelated ML account"))
     researched = []
     candidates = [
         {"ticker": ticker, "universe_group": "A", "adtv20": 100 - index}
@@ -150,6 +162,8 @@ def test_historical_replay_researches_beyond_live_shortlist(monkeypatch):
 
     async def fake_dispatch(cls, agent_name, event_data):
         if agent_name == "market_surveillance":
+            assert event_data["is_replay"] is True
+            assert event_data["market_data_date"] == (date.fromisoformat(target_date) - timedelta(days=1)).isoformat()
             data = {"current_regime": "RANGE_BOUND", "session_context": "Normal", "halted_tickers": []}
         elif agent_name == "reinforcement_learning":
             data = {"policy_weights": {}, "kelly_matrix": {}, "cdc_triggered": False}
@@ -179,8 +193,8 @@ def test_historical_replay_researches_beyond_live_shortlist(monkeypatch):
     }
 
     result = asyncio.run(runner.run(
-        target_date="2026-08-24", candidate_tickers=None, max_candidates=3,
-        current_nav=1_000_000_000.0, standalone_nav=500_000_000.0,
+        target_date=target_date, candidate_tickers=None, max_candidates=3,
+        current_nav=1_000_000_000.0,
         replay_portfolio=replay_portfolio,
     ))
 
