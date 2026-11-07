@@ -45,7 +45,51 @@ function clientCached<T>(key: string, ttlMs: number, fetcher: () => Promise<T>):
   return run()
 }
 
-export const authApi = { me: () => apiClient.get("/auth/me").then(r => r.data), login: (email: string, password: string) => apiClient.post("/auth/login", { email, password }).then(r => r.data), register: (email: string, password: string, displayName: string) => apiClient.post("/auth/register", { email, password, displayName }).then(r => r.data), logout: () => apiClient.post("/auth/logout") }
+export const authApi = {
+  me: () => apiClient.get("/auth/me").then(r => r.data),
+  login: (email: string, password: string) =>
+    apiClient.post("/auth/login", { email, password }).then(r => r.data),
+  sendRegisterCode: (email: string, displayName?: string) =>
+    apiClient.post("/auth/register/send-code", { email, displayName }).then(r => r.data),
+  register: (
+    email: string,
+    password: string,
+    displayName: string,
+    verificationCode?: string,
+    verificationToken?: string
+  ) =>
+    apiClient
+      .post("/auth/register", {
+        email,
+        password,
+        displayName,
+        verificationCode,
+        verificationToken,
+      })
+      .then(r => r.data),
+  forgotPassword: (email: string) =>
+    apiClient.post("/auth/forgot-password", { email }).then(r => r.data),
+  verifyResetCode: (email: string, code: string, resetToken: string) =>
+    apiClient
+      .post("/auth/verify-reset-code", { email, code, resetToken })
+      .then(r => r.data),
+  resetPassword: (
+    email: string,
+    code: string,
+    resetToken: string,
+    newPassword: string
+  ) =>
+    apiClient
+      .post("/auth/reset-password", { email, code, resetToken, newPassword })
+      .then(r => r.data),
+  googleLogin: (payload: {
+    credential?: string
+    accessToken?: string
+    email?: string
+    displayName?: string
+  }) => apiClient.post("/auth/google", payload).then(r => r.data),
+  logout: () => apiClient.post("/auth/logout"),
+}
 export const marketApi = {
   indices: () => clientCached("market:indices", 8_000, () => apiClient.get("/market/indices").then(r => r.data)),
   breadth: () => clientCached("market:breadth", 8_000, () => apiClient.get("/market/breadth").then(r => r.data)),
