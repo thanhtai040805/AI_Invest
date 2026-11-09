@@ -75,7 +75,7 @@ export function Pill({ children, tone = "neutral" }: { children: ReactNode; tone
     loss: "bg-loss/10 text-loss border-loss/25",
     warning: "bg-warning/12 text-warning border-warning/30",
   }
-  return <span className={`inline-flex items-center gap-1 text-[11px] font-medium px-2 h-[22px] rounded-full border ${map[tone]}`}>{children}</span>
+  return <span className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[11px] font-medium px-2.5 h-[22px] rounded-full border ${map[tone]}`}>{children}</span>
 }
 
 export function RiskLabel({ risk }: { risk: string }) {
