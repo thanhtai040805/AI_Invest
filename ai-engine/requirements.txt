@@ -28,6 +28,8 @@ statsmodels>=0.14,<1
 stockstats>=0.6,<1
 uvicorn[standard]>=0.30,<1
 --extra-index-url https://vnstocks.com/api/simple
+# vnstock 4.x uses the retired v2 runtime; pin the last compatible build.
+vnai==2.6.4
 vnstock==4.0.9
 websocket-client>=1.8,<2
 websockets>=13,<16
