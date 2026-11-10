@@ -9,6 +9,13 @@ services:
 
   backend:
     image: ghcr.io/thanhtai040805/aiinvest-backend:${AIINVEST_IMAGE_TAG:?AIINVEST_IMAGE_TAG must be set}
+    volumes:
+      - type: bind
+        source: ./back-end/.env
+        target: /app/.env
+        read_only: true
+        bind:
+          create_host_path: false
 
   ai-engine:
     image: ghcr.io/thanhtai040805/aiinvest-ai-engine:${AIINVEST_IMAGE_TAG:?AIINVEST_IMAGE_TAG must be set}
