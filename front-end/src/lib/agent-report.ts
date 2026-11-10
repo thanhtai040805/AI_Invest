@@ -37,6 +37,7 @@ export function cleanText(text: unknown): string {
     .replace(/v[aà\s\?]+[aá\s\?]+p d\?ng h\? s\? ph\?t/gi, "và áp dụng hệ số phạt")
     .replace(/vĂ\xa0 Ă¡p dá»¥ng há»\x87 sá»\x91 pháº¡t/g, "và áp dụng hệ số phạt")
     .replace(/vĂ  Ă¡p dá»¥ng há»‡ sá»‘ pháº¡t/g, "và áp dụng hệ số phạt")
+    .replace(/PhĂª duyá»‡t toĂ n diá»‡t luáº­n Ä‘iá»ƒm Ä‘áº§u tÆ°/g, "Phê duyệt toàn diện luận điểm đầu tư")
     .replace(/PhĂª duyá»‡t toĂ n diá»‡n luáº­n Ä‘iá»ƒm Ä‘áº§u tÆ°/g, "Phê duyệt toàn diện luận điểm đầu tư")
     .replace(/Tá»· lá»‡ Risk\/Reward vÆ°á»£t trá»™i, rá»§i ro thÆ°Æ¡ng máº¡i á»Ÿ má»©c tháº¥p/g, "Tỷ lệ Risk/Reward vượt trội, rủi ro thương mại ở mức thấp")
     .replace(/Luáº­n Ä‘iá»ƒm/g, "Luận điểm")
@@ -254,6 +255,74 @@ export function executionRecord(row: RecordData) {
 
 export function logSummary(agent: string, row: RecordData): string {
   const out = logOutput(agent, row)
+  if (agent === "equity_research") {
+    const gate = object(out.research_gate)
+    const css = numeric(out.css) ?? numeric(gate.css)
+    const conv = String(out.conviction || gate.conviction || "")
+    const pct = numeric(out.percentile) ?? numeric(gate.percentile)
+    const parts = [
+      css !== null ? `Điểm CSS ${css.toFixed(1)}/100` : "",
+      conv ? `Hạng ${conv}` : "",
+      pct !== null ? `Top ${(100 - pct).toFixed(1)}%` : "",
+      numeric(out.f2_quality) !== null ? `F2 Chất lượng ${numeric(out.f2_quality)?.toFixed(1)}` : "",
+      numeric(out.f4_earnings) !== null ? `F4 Lợi nhuận ${numeric(out.f4_earnings)?.toFixed(1)}` : "",
+      numeric(out.f5_flow) !== null ? `F5 Dòng tiền ${numeric(out.f5_flow)?.toFixed(1)}` : "",
+      numeric(out.f3_momentum) !== null ? `F3 Động lượng ${numeric(out.f3_momentum)?.toFixed(1)}` : "",
+    ].filter(Boolean)
+    if (parts.length > 0) return parts.join(" · ")
+  }
+  if (agent === "market_surveillance") {
+    const regime = String(out.current_regime || "")
+    const vix = numeric(out.vix_vn_analog)
+    const cash = numeric(out.garch_cash_target_pct)
+    const breadth = numeric(out.breadth_above_ma20_pct)
+    const parts = [
+      regime ? `Chế độ ${regime}` : "",
+      vix !== null ? `VIX-VN ${vix.toFixed(2)}` : "",
+      cash !== null ? `Dự trữ GARCH ${cash.toFixed(1)}% NAV` : "",
+      breadth !== null ? `Độ rộng > MA20: ${breadth.toFixed(1)}%` : "",
+    ].filter(Boolean)
+    if (parts.length > 0) return parts.join(" · ")
+  }
+  if (agent === "reinforcement_learning") {
+    const ic = object(row.ic_rolling_scores)
+    const protocol = cleanText(object(row.reward_signals).learning_protocol)
+    const icParts = Object.entries(ic)
+      .map(([k, v]) => {
+        const n = numeric(v)
+        return n !== null ? `${k.replace("_", " ").toUpperCase()} ${n > 0 ? `+${n.toFixed(3)}` : n.toFixed(3)}` : ""
+      })
+      .filter(Boolean)
+      .slice(0, 4)
+    if (protocol || icParts.length > 0) {
+      return [protocol || "Hiệu chuẩn trọng số Bayes", icParts.length ? `IC: ${icParts.join(", ")}` : ""].filter(Boolean).join(" · ")
+    }
+  }
+  if (agent === "system_governance") {
+    if (out.cr_id || out.reason) {
+      return cleanText(
+        [
+          out.cr_id ? `Kiểm định RL ${String(out.cr_id)}` : "",
+          out.status ? `Trạng thái: ${String(out.status)}` : "",
+          out.reason ? String(out.reason) : "",
+        ]
+          .filter(Boolean)
+          .join(" · ")
+      )
+    }
+    const sysStatus = String(out.system_status || "")
+    const verified = numeric(out.chain_records_verified)
+    if (sysStatus || verified !== null) {
+      return [
+        sysStatus ? `Trạng thái ${sysStatus}` : "Kiểm toán hệ thống",
+        verified !== null ? `Merkle Chain hợp lệ (${verified.toLocaleString("vi-VN")} bản ghi)` : "",
+      ].filter(Boolean).join(" · ")
+    }
+  }
+  if (agent === "universe_discovery") {
+    const exclusions = Array.isArray(out.exclusion_log) ? out.exclusion_log.length : Array.isArray(row.exclusion_log) ? row.exclusion_log.length : null
+    if (exclusions !== null) return `Lọc cứng Lớp 0 (Beneish M-Score & ADTV20) · Ghi nhận ${exclusions} mã bị loại trừ rủi ro`
+  }
   for (const key of ["debate_summary", "executive_rationale", "rationale", "debate_challenge_text", "debate_synthesis", "thesis_statement", "reason", "message", "final_resolution", "verdict", "status", "action_type"])
     if (typeof out[key] === "string" && out[key]) return cleanText(out[key])
   if (agent === "position_monitoring" && numeric(out.pnl_pct) !== null) return `Lãi/lỗ của lượt giám sát: ${out.pnl_pct}% · có thể là trung bình nhiều vị thế`

@@ -369,7 +369,11 @@ def _fetch_vci_missing_quarter(cur, symbols: Optional[list[str]] = None) -> dict
     if not missing:
         return {"rows": 0, "symbols": 0, "errors": 0}
 
-    from vnstock.api.financial import Finance
+    try:
+        from vnstock.api.financial import Finance
+    except (ImportError, SystemExit):
+        logger.warning("VCI financial fallback unavailable for %d symbols", len(missing))
+        return {"rows": 0, "symbols": len(missing), "errors": len(missing)}
 
     inserted = errors = 0
     available = date.today()  # Conservative first-observed date; never backdate VCI into replay history.
@@ -412,11 +416,14 @@ def _fetch_vci_missing_quarter(cur, symbols: Optional[list[str]] = None) -> dict
                 )
                 inserted += cur.rowcount
             cur.execute(f"RELEASE SAVEPOINT {savepoint}")
-        except Exception as exc:
+        except (Exception, SystemExit) as exc:
             cur.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
             cur.execute(f"RELEASE SAVEPOINT {savepoint}")
             logger.warning("VCI financial fallback failed for %s (%s): %s", symbol, label, exc)
             errors += 1
+            if isinstance(exc, SystemExit):
+                errors += len(missing) - index - 1
+                break
     logger.info("VCI financial fallback %s: %d rows, %d symbols, %d errors", label, inserted, len(missing), errors)
     return {"rows": inserted, "symbols": len(missing), "errors": errors}
 

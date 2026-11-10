@@ -1,411 +1,2690 @@
 "use client"
 
-import { useState, useMemo } from "react"
-import { Page } from "@/components/Shell"
-import {
-  Button,
-  Panel,
-  PanelHead,
-  Pill,
-  MarketLineChart,
-  PercentChange,
-  fmt,
-} from "@/components/ui"
-import { stockApi, portfolioApi } from "@/lib/api"
-import { useResource } from "@/lib/api/use-resource"
-import { useRealtimeStock } from "@/lib/use-realtime"
-import type { ApiProblem } from "@/lib/api/client"
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { marketApi, portfolioApi, stockApi } from "@/lib/api"
+import { getSocket, retainOhlc } from "@/lib/socket"
+import { useRealtimeMarket, useRealtimeStock } from "@/lib/use-realtime"
+import { usePortfolio, type PortfolioPosition, type PortfolioSnapshot } from "@/lib/use-portfolio"
+import { fmt, fmtPct, Panel, PanelHead, Pill } from "@/components/ui"
+import type { ApiMarketStock, Stock } from "@/types"
 
-type ShadowOrder = { id: string; symbol: string; side: "BUY" | "SELL"; quantity: number; price: string | number | null; status: string; createdAt: string }
+const DEFAULT_SYMBOLS = ["HPG", "FPT", "SSI", "MBB", "TCB", "VCB"]
 
-export default function Trade() {
-  const [symbol, setSymbol] = useState("HPG")
-  const [side, setSide] = useState<"Buy" | "Sell">("Buy")
-  const [ord, setOrd] = useState("Limit")
-  const [quantity, setQuantity] = useState("100")
+interface RawCandle {
+  date?: string
+  time?: string | number
+  timestamp?: string | number
+  open?: number
+  high?: number
+  low?: number
+  close?: number
+  volume?: number
+}
+
+interface LiveOhlcTick {
+  symbol?: string
+  resolution?: string
+  timestamp?: number | string
+  open?: number
+  high?: number
+  low?: number
+  close?: number
+  volume?: number
+}
+
+interface CandlePoint {
+  date: string
+  label: string
+  open: number
+  high: number
+  low: number
+  close: number
+  volume: number
+  sma20: number | null
+}
+
+interface BookLevel {
+  price: number
+  volume: number
+}
+
+interface OrderbookState {
+  symbol: string
+  bids: BookLevel[]
+  asks: BookLevel[]
+  receivedAt: number | null
+  lastUpdate: string | null
+  stale: boolean
+}
+
+interface TradeOrderRecord {
+  id: string
+  symbol: string
+  stockName?: string
+  sector?: string | null
+  exchange?: string | null
+  side: "BUY" | "SELL"
+  orderType: string
+  price: number
+  quantity: number
+  status: string
+  createdAt?: string
+}
+
+const vnDateFormatter = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Ho_Chi_Minh",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+})
+
+function toVnDateKey(raw?: string | number | Date): string {
+  if (raw == null || raw === "") return ""
+  if (typeof raw === "string" && /^\d{4}-\d{2}-\d{2}/.test(raw)) return raw.slice(0, 10)
+  const d =
+    raw instanceof Date
+      ? raw
+      : typeof raw === "number"
+        ? new Date(raw > 1e12 ? raw : raw * 1000)
+        : /^\d+$/.test(raw)
+          ? new Date(Number(raw) > 1e12 ? Number(raw) : Number(raw) * 1000)
+          : new Date(raw)
+  if (Number.isNaN(d.getTime())) return ""
+  const parts = vnDateFormatter.formatToParts(d)
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? ""
+  return `${get("year")}-${get("month")}-${get("day")}`
+}
+
+const fmtPrice = (n: number | null | undefined) =>
+  n != null && Number.isFinite(Number(n)) && Number(n) > 0 ? fmt(Math.round(Number(n))) : "—"
+
+const fmtVND = (n: number | null | undefined) =>
+  n != null && Number.isFinite(Number(n)) ? fmt(Math.round(Number(n))) : "0"
+
+const fmtNumber = (n: number | null | undefined) =>
+  n != null && Number.isFinite(Number(n)) ? fmt(Math.round(Number(n))) : "0"
+
+const fmtPercent = (n: number | null | undefined) =>
+  n != null && Number.isFinite(Number(n)) ? fmtPct(Number(n)) : "0,00%"
+
+const toneText = (val: number | null | undefined) => {
+  const v = Number(val ?? 0)
+  if (v > 0) return "text-[var(--color-gain)]"
+  if (v < 0) return "text-[var(--color-loss)]"
+  return "text-[var(--color-ref)]"
+}
+
+/**
+ * Chuẩn 5 màu bảng điện chứng khoán Việt Nam (HOSE):
+ * Tím (Trần) · Xanh lá (> TC) · Vàng (= TC) · Đỏ (< TC) · Xanh sàn (Sàn)
+ */
+function hosePriceTone(
+  price: number | null | undefined,
+  ref: number | null | undefined,
+  ceiling?: number | null,
+  floor?: number | null
+): string {
+  const p = Number(price ?? 0)
+  if (!Number.isFinite(p) || p <= 0) return "text-[var(--color-muted)]"
+  const c = Number(ceiling ?? 0)
+  const f = Number(floor ?? 0)
+  const r = Number(ref ?? 0)
+  if (c > 0 && p >= c) return "text-[var(--color-ceiling)]"
+  if (f > 0 && p <= f) return "text-[var(--color-floor)]"
+  if (r > 0) {
+    if (p === r) return "text-[var(--color-ref)]"
+    return p > r ? "text-[var(--color-gain)]" : "text-[var(--color-loss)]"
+  }
+  return "text-[var(--color-ink)]"
+}
+
+function toVndPrice(value: unknown, fallback = 0): number {
+  const n = Number(value ?? fallback)
+  if (!Number.isFinite(n) || n <= 0) return fallback
+  return n < 500 ? Math.round(n * 1000) : Math.round(n)
+}
+
+function getTickStep(price: number): number {
+  if (price < 10_000) return 10
+  if (price < 50_000) return 50
+  return 100
+}
+
+function roundToTick(price: number): number {
+  const step = getTickStep(price)
+  return Math.max(step, Math.round(price / step) * step)
+}
+
+function resolveCoherentBands(ref: number, price: number, rawCeiling: number, rawFloor: number) {
+  const anchor = ref > 0 ? ref : price
+  if (anchor <= 0) return { ceiling: 0, floor: 0 }
+  const step = getTickStep(anchor)
+  const calcCeiling = Math.floor((anchor * 1.07) / step) * step
+  const calcFloor = Math.ceil((anchor * 0.93) / step) * step
+
+  const isCoherent =
+    rawCeiling > anchor &&
+    rawFloor > 0 &&
+    rawFloor < anchor &&
+    Math.abs(rawCeiling / anchor - 1.07) <= 0.008 &&
+    Math.abs(rawFloor / anchor - 0.93) <= 0.008 &&
+    (price <= 0 || (price >= rawFloor && price <= rawCeiling))
+
+  if (isCoherent) {
+    return { ceiling: rawCeiling, floor: rawFloor }
+  }
+  return {
+    ceiling: price > 0 ? Math.max(calcCeiling, price) : calcCeiling,
+    floor: price > 0 ? Math.min(calcFloor, price) : calcFloor,
+  }
+}
+
+function formatCompactVol(vol: number): string {
+  if (!Number.isFinite(vol) || vol <= 0) return "0"
+  if (vol >= 1_000_000) return `${(vol / 1_000_000).toFixed(2).replace(".", ",")} tr`
+  if (vol >= 1_000) return `${(vol / 1_000).toFixed(1).replace(".", ",")} K`
+  return fmtNumber(vol)
+}
+
+/**
+ * Hiển thị khối lượng chuẩn bảng giá HOSE:
+ * Giữ nguyên đơn vị cổ phiếu (VD: 125.400) để trader đọc lô chính xác,
+ * chỉ rút gọn triệu khi >= 10.000.000 CP để không tràn cột.
+ */
+function formatBookVolume(vol: number): string {
+  if (!Number.isFinite(vol) || vol <= 0) return "—"
+  if (vol >= 10_000_000) return `${(vol / 1_000_000).toFixed(2).replace(".", ",")} tr`
+  return fmtNumber(vol)
+}
+
+function normalizeBookLevels(raw: unknown, side: "BID" | "ASK"): BookLevel[] {
+  if (!Array.isArray(raw)) return []
+  const byPrice = new Map<number, number>()
+  for (const item of raw) {
+    let rawPrice: unknown
+    let rawVol: unknown
+    if (Array.isArray(item)) {
+      rawPrice = item[0]
+      rawVol = item[1]
+    } else if (item && typeof item === "object") {
+      const rec = item as Record<string, unknown>
+      rawPrice = rec.price ?? rec.p
+      rawVol = rec.volume ?? rec.q ?? rec.quantity
+    }
+    const price = toVndPrice(rawPrice, 0)
+    const volume = Math.round(Number(rawVol ?? 0))
+    if (price > 0 && Number.isFinite(volume) && volume > 0) {
+      byPrice.set(price, (byPrice.get(price) ?? 0) + volume)
+    }
+  }
+  const levels = Array.from(byPrice.entries()).map(([price, volume]) => ({ price, volume }))
+  levels.sort((a, b) => (side === "BID" ? b.price - a.price : a.price - b.price))
+  return levels.slice(0, 3)
+}
+
+function formatTimeVi(msOrDate?: number | Date | null): string {
+  if (!msOrDate) return ""
+  const d = msOrDate instanceof Date ? msOrDate : new Date(msOrDate)
+  if (Number.isNaN(d.getTime())) return ""
+  return d.toLocaleTimeString("vi-VN", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  })
+}
+
+function formatDateTimeVi(iso?: string): { date: string; time: string } {
+  if (!iso) return { date: "—", time: "" }
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return { date: iso.slice(0, 10), time: "" }
+  return {
+    date: d.toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric" }),
+    time: d.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" }),
+  }
+}
+
+function computeOrderFinancials(side: "BUY" | "SELL", price: number, quantity: number) {
+  const gross = Math.max(0, Math.round(price * quantity))
+  const fee = gross > 0 ? Math.max(Math.round(gross * 0.001), 10_000) : 0
+  const tax = side === "SELL" && gross > 0 ? Math.round(gross * 0.001) : 0
+  const netCash = side === "BUY" ? -(gross + fee) : gross - fee - tax
+  return { gross, fee, tax, netCash, totalCostOrProceeds: Math.abs(netCash) }
+}
+
+function formatFeedStampVi(ms?: number | null, iso?: string | null): string {
+  const d = ms && ms > 0 ? new Date(ms) : iso ? new Date(iso) : null
+  if (!d || Number.isNaN(d.getTime())) return ""
+  const timeStr = d.toLocaleTimeString("vi-VN", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  })
+  const dateStr = d.toLocaleDateString("vi-VN", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    day: "2-digit",
+    month: "2-digit",
+  })
+  return `${timeStr} ${dateStr}`
+}
+
+function mapStockQuote(
+  symbol: string,
+  quote: Record<string, unknown> | null,
+  profile: Record<string, unknown> | null
+): Stock {
+  const price = toVndPrice(quote?.price ?? quote?.close)
+  const rawRefCandidate = quote?.ref ?? quote?.prevClose ?? quote?.prior_close
+  const ref = rawRefCandidate == null ? price : toVndPrice(rawRefCandidate, price)
+  const rawChange =
+    quote?.change_pct ?? quote?.changePercent ?? quote?.changePct ?? quote?.change_percent
+  const changePct =
+    rawChange != null && Number.isFinite(Number(rawChange))
+      ? Number(Number(rawChange).toFixed(2))
+      : ref > 0 && price > 0
+        ? Number((((price - ref) / ref) * 100).toFixed(2))
+        : 0
+  const rawCeiling = toVndPrice(quote?.ceiling, 0)
+  const rawFloor = toVndPrice(quote?.floor, 0)
+  const { ceiling, floor } = resolveCoherentBands(ref, price, rawCeiling, rawFloor)
+  const volNum = Number(quote?.volume ?? quote?.volume_total ?? 0)
+  const rawName = String(profile?.name ?? quote?.name ?? symbol).trim()
+
+  return {
+    symbol,
+    name: rawName && rawName.toUpperCase() !== symbol.toUpperCase() ? rawName : `Cổ phiếu ${symbol}`,
+    sector: String(profile?.industry ?? profile?.sector ?? "HOSE"),
+    price,
+    changePct,
+    ref,
+    ceiling,
+    floor,
+    volume: volNum > 0 ? formatCompactVol(volNum) : "—",
+    foreign: Number(quote?.foreign_flow ?? quote?.foreign_net_vol ?? 0),
+    weight: 0,
+    momentum: 0,
+    rs: 0,
+    flow: 0,
+    factor: "Neutral",
+    risk: "Unknown",
+    beneish: "UNKNOWN",
+    spark: [],
+  }
+}
+
+/* ============================================================================
+ * COMPONENT 1: BIỂU ĐỒ GIÁ & KHỐI LƯỢNG TRỰC TIẾP
+ * ============================================================================ */
+function PriceVolumeChart({
+  symbol,
+  candles,
+  chartRange,
+  onChangeRange,
+  chartType,
+  onChangeChartType,
+  showSma,
+  onToggleSma,
+  orderSide,
+  orderPrice,
+  currentPrice,
+  refPrice,
+  isLive,
+  onPickPriceFromChart,
+}: {
+  symbol: string
+  candles: CandlePoint[]
+  chartRange: 30 | 60 | 120
+  onChangeRange: (r: 30 | 60 | 120) => void
+  chartType: "candle" | "line"
+  onChangeChartType: (t: "candle" | "line") => void
+  showSma: boolean
+  onToggleSma: () => void
+  orderSide: "BUY" | "SELL"
+  orderPrice: number
+  currentPrice: number
+  refPrice: number
+  isLive: boolean
+  onPickPriceFromChart: (price: number) => void
+}) {
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null)
+
+  const visibleCandles = useMemo(() => {
+    const slice = candles.slice(-chartRange)
+    return slice.length > 0 ? slice : candles
+  }, [candles, chartRange])
+
+  const activeCandle = useMemo(() => {
+    if (!visibleCandles.length) return null
+    if (hoverIdx !== null && visibleCandles[hoverIdx]) return visibleCandles[hoverIdx]
+    return visibleCandles[visibleCandles.length - 1]
+  }, [visibleCandles, hoverIdx])
+
+  const prevCandle = useMemo(() => {
+    if (!visibleCandles.length) return null
+    const idx = hoverIdx !== null ? hoverIdx : visibleCandles.length - 1
+    return idx > 0 ? visibleCandles[idx - 1] : visibleCandles[0]
+  }, [visibleCandles, hoverIdx])
+
+  const W = 780
+  const H = 212
+  const PAD_L = 10
+  const PAD_R = 66
+  const PRICE_TOP = 10
+  const PRICE_BOT = 146
+  const VOL_TOP = 162
+  const VOL_BOT = 194
+  const plotW = W - PAD_L - PAD_R
+  const priceH = PRICE_BOT - PRICE_TOP
+  const volH = VOL_BOT - VOL_TOP
+
+  const { minPrice, maxPrice, maxVol } = useMemo(() => {
+    if (!visibleCandles.length) {
+      const base = currentPrice || 20_000
+      return { minPrice: base * 0.94, maxPrice: base * 1.06, maxVol: 1_000_000 }
+    }
+    const lows = visibleCandles.map((c) => c.low).filter((v) => v > 0)
+    const highs = visibleCandles.map((c) => c.high).filter((v) => v > 0)
+    let lo = Math.min(...lows)
+    let hi = Math.max(...highs)
+
+    if (orderPrice > 0 && orderPrice >= lo * 0.88 && orderPrice <= hi * 1.12) {
+      lo = Math.min(lo, orderPrice)
+      hi = Math.max(hi, orderPrice)
+    }
+
+    const span = Math.max(hi - lo, (hi || 10_000) * 0.04)
+    const pad = span * 0.08
+    const mv = Math.max(...visibleCandles.map((c) => c.volume), 1)
+    return {
+      minPrice: Math.max(0, lo - pad),
+      maxPrice: hi + pad,
+      maxVol: mv,
+    }
+  }, [visibleCandles, currentPrice, orderPrice])
+
+  const priceToY = useCallback(
+    (p: number) => {
+      const span = Math.max(maxPrice - minPrice, 1)
+      const ratio = (p - minPrice) / span
+      return PRICE_BOT - Math.max(0, Math.min(1, ratio)) * priceH
+    },
+    [maxPrice, minPrice, priceH, PRICE_BOT]
+  )
+
+  const volToY = useCallback(
+    (v: number) => {
+      const ratio = Math.max(0, Math.min(1, v / Math.max(maxVol, 1)))
+      return VOL_BOT - ratio * volH
+    },
+    [maxVol, volH, VOL_BOT]
+  )
+
+  const n = Math.max(visibleCandles.length, 1)
+  const stepX = plotW / n
+  const xAt = useCallback((i: number) => PAD_L + stepX * (i + 0.5), [PAD_L, stepX])
+  const candleBodyW = Math.max(3, Math.min(10, stepX * 0.62))
+
+  const priceTicks = useMemo(() => {
+    const ticks: number[] = []
+    for (let i = 0; i <= 3; i++) {
+      const val = minPrice + ((maxPrice - minPrice) * i) / 3
+      ticks.push(roundToTick(val))
+    }
+    return ticks
+  }, [minPrice, maxPrice])
+
+  const { smaPath, closeLinePath, closeAreaPath } = useMemo(() => {
+    if (!visibleCandles.length) return { smaPath: "", closeLinePath: "", closeAreaPath: "" }
+    const smaPts: string[] = []
+    const closePts: string[] = []
+    visibleCandles.forEach((c, i) => {
+      const x = xAt(i).toFixed(1)
+      const yc = priceToY(c.close).toFixed(1)
+      closePts.push(`${i === 0 ? "M" : "L"}${x},${yc}`)
+      if (c.sma20 && c.sma20 > 0) {
+        const ys = priceToY(c.sma20).toFixed(1)
+        smaPts.push(`${smaPts.length === 0 ? "M" : "L"}${x},${ys}`)
+      }
+    })
+    const firstX = xAt(0).toFixed(1)
+    const lastX = xAt(visibleCandles.length - 1).toFixed(1)
+    return {
+      smaPath: smaPts.join(" "),
+      closeLinePath: closePts.join(" "),
+      closeAreaPath: `${closePts.join(" ")} L${lastX},${PRICE_BOT} L${firstX},${PRICE_BOT} Z`,
+    }
+  }, [visibleCandles, xAt, priceToY, PRICE_BOT])
+
+  const orderLineY =
+    orderPrice > 0 && orderPrice >= minPrice && orderPrice <= maxPrice ? priceToY(orderPrice) : null
+
+  const candleDeltaPct =
+    activeCandle && prevCandle && prevCandle.close > 0
+      ? ((activeCandle.close - prevCandle.close) / prevCandle.close) * 100
+      : 0
+
+  return (
+    <div className="flex flex-col">
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-[var(--color-line)]">
+        <div className="flex items-center gap-2">
+          <div className="inline-flex rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface-2)] p-0.5">
+            {([30, 60, 120] as const).map((r) => (
+              <button
+                key={r}
+                type="button"
+                onClick={() => onChangeRange(r)}
+                className={`px-2.5 py-1 text-[11.5px] font-medium rounded-[4px] transition-colors whitespace-nowrap ${
+                  chartRange === r
+                    ? "bg-[var(--color-ink)] text-[var(--color-paper)]"
+                    : "text-[var(--color-muted)] hover:text-[var(--color-ink)]"
+                }`}
+              >
+                {r} phiên
+              </button>
+            ))}
+          </div>
+
+          <div className="inline-flex rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface-2)] p-0.5">
+            <button
+              type="button"
+              onClick={() => onChangeChartType("candle")}
+              className={`px-2.5 py-1 text-[11.5px] font-medium rounded-[4px] transition-colors whitespace-nowrap ${
+                chartType === "candle"
+                  ? "bg-[var(--color-ink)] text-[var(--color-paper)]"
+                  : "text-[var(--color-muted)] hover:text-[var(--color-ink)]"
+              }`}
+            >
+              Biểu đồ nến
+            </button>
+            <button
+              type="button"
+              onClick={() => onChangeChartType("line")}
+              className={`px-2.5 py-1 text-[11.5px] font-medium rounded-[4px] transition-colors whitespace-nowrap ${
+                chartType === "line"
+                  ? "bg-[var(--color-ink)] text-[var(--color-paper)]"
+                  : "text-[var(--color-muted)] hover:text-[var(--color-ink)]"
+              }`}
+            >
+              Đường giá
+            </button>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2.5 text-[11.5px]">
+          <button
+            type="button"
+            onClick={onToggleSma}
+            className={`inline-flex items-center gap-1.5 rounded-[var(--radius-sm)] border px-2.5 py-1 font-medium transition-colors whitespace-nowrap ${
+              showSma
+                ? "border-[var(--color-mineral)]/40 bg-[var(--color-mineral-soft)] text-[var(--color-mineral)]"
+                : "border-[var(--color-line)] text-[var(--color-muted)] hover:text-[var(--color-ink)]"
+            }`}
+          >
+            <span className="h-1.5 w-2.5 rounded-full bg-[var(--color-mineral)]" />
+            MA 20
+          </button>
+          <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] text-[var(--color-muted)] whitespace-nowrap">
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${
+                isLive ? "bg-[var(--color-gain)] animate-pulse" : "bg-[var(--color-mineral)]"
+              }`}
+            />
+            {isLive ? "Nến cập nhật trực tiếp" : "Chạm vào nến để lấy giá"}
+          </span>
+        </div>
+      </div>
+
+      {/* Single-Line OHLCV Readout */}
+      <div className="flex items-center justify-between gap-3 py-2 text-[11.5px] font-mono tabular-nums border-b border-[var(--color-line)]/60 overflow-x-auto whitespace-nowrap">
+        {activeCandle ? (
+          <>
+            <div className="flex items-center gap-3">
+              <span className="font-sans font-semibold text-[var(--color-ink)]">
+                Phiên {activeCandle.label}
+              </span>
+              <span className="text-[var(--color-muted)]">
+                Mở <strong className="text-[var(--color-ink-2)]">{fmtPrice(activeCandle.open)}</strong>
+              </span>
+              <span className="text-[var(--color-muted)]">
+                Cao <strong className="text-[var(--color-gain)]">{fmtPrice(activeCandle.high)}</strong>
+              </span>
+              <span className="text-[var(--color-muted)]">
+                Thấp <strong className="text-[var(--color-loss)]">{fmtPrice(activeCandle.low)}</strong>
+              </span>
+              <span className="text-[var(--color-muted)]">
+                Đóng{" "}
+                <strong className={toneText(candleDeltaPct)}>
+                  {fmtPrice(activeCandle.close)} ({fmtPercent(candleDeltaPct)})
+                </strong>
+              </span>
+              {showSma && activeCandle.sma20 ? (
+                <span className="text-[var(--color-mineral)]">
+                  MA20 <strong>{fmtPrice(Math.round(activeCandle.sma20))}</strong>
+                </span>
+              ) : null}
+            </div>
+            <div className="text-[var(--color-muted)] shrink-0">
+              KL <strong className="text-[var(--color-ink-2)]">{formatCompactVol(activeCandle.volume)}</strong>
+            </div>
+          </>
+        ) : (
+          <span className="font-sans text-[var(--color-muted)]">Đang đồng bộ biểu đồ {symbol}...</span>
+        )}
+      </div>
+
+      {/* Clean SVG Chart */}
+      <div className="relative mt-1 select-none">
+        <svg
+          viewBox={`0 0 ${W} ${H}`}
+          className="w-full h-[192px] overflow-visible cursor-crosshair"
+          onMouseLeave={() => setHoverIdx(null)}
+        >
+          <defs>
+            <linearGradient id="tradePriceAreaGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="var(--color-mineral)" stopOpacity="0.16" />
+              <stop offset="100%" stopColor="var(--color-mineral)" stopOpacity="0.0" />
+            </linearGradient>
+          </defs>
+
+          {/* Price Gridlines */}
+          {priceTicks.map((tick, idx) => {
+            const y = priceToY(tick)
+            return (
+              <g key={idx}>
+                <line
+                  x1={PAD_L}
+                  y1={y}
+                  x2={W - PAD_R}
+                  y2={y}
+                  stroke="var(--color-line)"
+                  strokeDasharray="2 3"
+                  strokeWidth="1"
+                />
+                <text
+                  x={W - PAD_R + 8}
+                  y={y + 3.5}
+                  fill="var(--color-muted)"
+                  fontSize="10"
+                  fontFamily="var(--font-mono)"
+                >
+                  {fmtPrice(tick)}
+                </text>
+              </g>
+            )
+          })}
+
+          {/* Reference Price (TC) Line */}
+          {refPrice >= minPrice && refPrice <= maxPrice && (
+            <line
+              x1={PAD_L}
+              y1={priceToY(refPrice)}
+              x2={W - PAD_R}
+              y2={priceToY(refPrice)}
+              stroke="var(--color-ref)"
+              strokeDasharray="3 3"
+              strokeWidth="1"
+              opacity="0.65"
+            />
+          )}
+
+          {/* Candles or Line */}
+          {chartType === "line" ? (
+            <>
+              <path d={closeAreaPath} fill="url(#tradePriceAreaGrad)" />
+              <path
+                d={closeLinePath}
+                fill="none"
+                stroke="var(--color-mineral)"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </>
+          ) : (
+            visibleCandles.map((c, i) => {
+              const x = xAt(i)
+              const yOpen = priceToY(c.open)
+              const yClose = priceToY(c.close)
+              const yHigh = priceToY(c.high)
+              const yLow = priceToY(c.low)
+              const isUp = c.close >= c.open
+              const color = isUp ? "var(--color-gain)" : "var(--color-loss)"
+              const bodyTop = Math.min(yOpen, yClose)
+              const bodyHeight = Math.max(2, Math.abs(yClose - yOpen))
+              const isHovered = hoverIdx === i
+
+              return (
+                <g key={c.date}>
+                  {isHovered && (
+                    <line
+                      x1={x}
+                      y1={PRICE_TOP}
+                      x2={x}
+                      y2={VOL_BOT}
+                      stroke="var(--color-ink)"
+                      strokeDasharray="2 2"
+                      strokeWidth="1"
+                      opacity="0.28"
+                    />
+                  )}
+                  <line
+                    x1={x}
+                    y1={yHigh}
+                    x2={x}
+                    y2={yLow}
+                    stroke={color}
+                    strokeWidth={isHovered ? "1.7" : "1.2"}
+                  />
+                  <rect
+                    x={x - candleBodyW / 2}
+                    y={bodyTop}
+                    width={candleBodyW}
+                    height={bodyHeight}
+                    rx="1.2"
+                    fill={color}
+                    opacity={isHovered ? 1 : 0.88}
+                  />
+                </g>
+              )
+            })
+          )}
+
+          {/* MA 20 Line */}
+          {showSma && smaPath && (
+            <path
+              d={smaPath}
+              fill="none"
+              stroke="var(--color-mineral)"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              opacity="0.85"
+            />
+          )}
+
+          {/* Subtle Order Target Price Line + Right-Axis Tag Only */}
+          {orderLineY !== null && (
+            <g
+              style={{
+                transform: `translateY(${orderLineY}px)`,
+                transition: "transform 200ms cubic-bezier(0.22, 1, 0.36, 1)",
+              }}
+            >
+              <line
+                x1={PAD_L}
+                y1={0}
+                x2={W - PAD_R}
+                y2={0}
+                stroke={orderSide === "BUY" ? "var(--color-gain)" : "var(--color-loss)"}
+                strokeWidth="1.2"
+                strokeDasharray="4 3"
+                opacity="0.85"
+              />
+              <rect
+                x={W - PAD_R + 4}
+                y={-9.5}
+                width={58}
+                height={19}
+                rx={4}
+                fill={orderSide === "BUY" ? "var(--color-gain)" : "var(--color-loss)"}
+              />
+              <text
+                x={W - PAD_R + 33}
+                y={3.5}
+                textAnchor="middle"
+                fill="var(--color-paper)"
+                fontSize="10"
+                fontFamily="var(--font-mono)"
+                fontWeight="700"
+              >
+                {fmtPrice(orderPrice)}
+              </text>
+            </g>
+          )}
+
+          {/* Divider between Price and Volume */}
+          <line
+            x1={PAD_L}
+            y1={VOL_TOP - 8}
+            x2={W - PAD_R}
+            y2={VOL_TOP - 8}
+            stroke="var(--color-line)"
+            strokeWidth="1"
+          />
+
+          {/* Volume Histogram */}
+          {visibleCandles.map((c, i) => {
+            const x = xAt(i)
+            const yTop = volToY(c.volume)
+            const h = Math.max(1.5, VOL_BOT - yTop)
+            const isUp = c.close >= c.open
+            return (
+              <rect
+                key={`vol-${c.date}`}
+                x={x - candleBodyW / 2}
+                y={yTop}
+                width={candleBodyW}
+                height={h}
+                rx="1"
+                fill={isUp ? "var(--color-gain)" : "var(--color-loss)"}
+                opacity={hoverIdx === i ? 0.8 : 0.36}
+              />
+            )
+          })}
+
+          {/* X-Axis Dates */}
+          {visibleCandles.length > 1 &&
+            [
+              0,
+              Math.floor(visibleCandles.length * 0.25),
+              Math.floor(visibleCandles.length * 0.5),
+              Math.floor(visibleCandles.length * 0.75),
+              visibleCandles.length - 1,
+            ]
+              .filter((v, idx, arr) => arr.indexOf(v) === idx)
+              .map((idx) => {
+                const c = visibleCandles[idx]
+                if (!c) return null
+                return (
+                  <text
+                    key={`lbl-${idx}`}
+                    x={xAt(idx)}
+                    y={H - 4}
+                    textAnchor={
+                      idx === 0 ? "start" : idx === visibleCandles.length - 1 ? "end" : "middle"
+                    }
+                    fill="var(--color-muted)"
+                    fontSize="10"
+                    fontFamily="var(--font-mono)"
+                  >
+                    {c.label}
+                  </text>
+                )
+              })}
+
+          {/* Hit Columns for Hover & Click */}
+          {visibleCandles.map((c, i) => (
+            <rect
+              key={`hit-${c.date}`}
+              x={PAD_L + i * stepX}
+              y={PRICE_TOP}
+              width={stepX}
+              height={VOL_BOT - PRICE_TOP}
+              fill="transparent"
+              onMouseEnter={() => setHoverIdx(i)}
+              onClick={() => onPickPriceFromChart(roundToTick(c.close))}
+            />
+          ))}
+        </svg>
+      </div>
+    </div>
+  )
+}
+
+/* ============================================================================
+ * COMPONENT 2: BẢNG CHÀO MUA – BÁN CHUẨN HOSE (T-BOARD 3 BƯỚC GIÁ LIVE)
+ * - Đối xứng chuẩn bảng điện chứng khoán Việt Nam:
+ *   Trái (Dư mua · Bid): Bậc | KL Mua | Giá Mua  <-->  Giá Bán | KL Bán | Bậc :Phải (Ask · Dư bán)
+ * - Giá Mua 1 (cao nhất) và Giá Bán 1 (thấp nhất) đối diện nhau qua trục Spread trung tâm
+ * - Áp dụng chuẩn 5 màu giá HOSE (Trần tím · Tăng xanh · TC vàng · Giảm đỏ · Sàn xanh lơ)
+ * - Tự động cập nhật 100% qua WebSocket DNSE (không có nút Làm mới thủ công, không bịa số liệu)
+ * ============================================================================ */
+function BidAskOrderbook({
+  bids,
+  asks,
+  refPrice,
+  ceilingPrice,
+  floorPrice,
+  selectedOrderPrice,
+  isLiveStream,
+  orderbookStale,
+  receivedAt,
+  lastUpdate,
+  socketConnected,
+  onSelectPrice,
+}: {
+  bids: BookLevel[]
+  asks: BookLevel[]
+  refPrice: number
+  ceilingPrice: number
+  floorPrice: number
+  selectedOrderPrice: number
+  isLiveStream: boolean
+  orderbookStale: boolean
+  receivedAt: number | null
+  lastUpdate: string | null
+  socketConnected: boolean
+  onSelectPrice: (price: number) => void
+}) {
+  const hasRealDepth = bids.length > 0 || asks.length > 0
+  const bestBid = bids[0]?.price ?? 0
+  const bestAsk = asks[0]?.price ?? 0
+  const spread = bestBid > 0 && bestAsk > 0 && bestAsk >= bestBid ? bestAsk - bestBid : null
+  const spreadPct =
+    spread !== null && bestBid > 0 ? ((spread / bestBid) * 100).toFixed(2).replace(".", ",") : null
+
+  const totalBidVol = useMemo(() => bids.reduce((sum, b) => sum + b.volume, 0), [bids])
+  const totalAskVol = useMemo(() => asks.reduce((sum, a) => sum + a.volume, 0), [asks])
+  const totalBookVol = totalBidVol + totalAskVol
+  const bidPct = totalBookVol > 0 ? Math.round((totalBidVol / totalBookVol) * 100) : 50
+  const askPct = totalBookVol > 0 ? 100 - bidPct : 50
+
+  const maxLevelVol = useMemo(
+    () => Math.max(...bids.map((b) => b.volume), ...asks.map((a) => a.volume), 1),
+    [bids, asks]
+  )
+
+  const liveTime = formatTimeVi(receivedAt)
+  const snapshotStamp = formatFeedStampVi(receivedAt, lastUpdate)
+  const isRealtimeBook = hasRealDepth && !orderbookStale
+
+  return (
+    <div className="mt-3 pt-3 border-t border-[var(--color-line)]">
+      {/* Header Row: Title + Live Stream Telemetry (Zero manual refresh button) */}
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <h3 className="text-[13.5px] font-semibold text-[var(--color-ink)] whitespace-nowrap">
+            Bảng chào Mua / Bán (Bid · Ask)
+          </h3>
+          <span className="hidden sm:inline text-[11.5px] text-[var(--color-muted)] whitespace-nowrap">
+            · 3 bước giá chuẩn HOSE
+          </span>
+        </div>
+
+        <div className="flex items-center gap-3 font-mono text-[11px] tabular-nums whitespace-nowrap">
+          {spread !== null && (
+            <span className="rounded bg-[var(--color-surface-2)] px-2 py-0.5 text-[var(--color-ink-2)] border border-[var(--color-line)]">
+              Chênh lệch: <strong>{fmtPrice(spread)} ₫</strong>
+              {spreadPct ? ` (${spreadPct}%)` : ""}
+            </span>
+          )}
+
+          <span className="inline-flex items-center gap-1.5 text-[var(--color-muted)]">
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${
+                isRealtimeBook || isLiveStream
+                  ? "bg-[var(--color-gain)] animate-pulse"
+                  : socketConnected
+                    ? "bg-[var(--color-mineral)] animate-pulse"
+                    : "bg-[var(--color-ref)]"
+              }`}
+            />
+            {isRealtimeBook
+              ? `Trực tiếp${liveTime ? ` · ${liveTime}` : ""}`
+              : hasRealDepth
+                ? `Feed ${snapshotStamp || "phiên gần nhất"}`
+                : socketConnected
+                  ? "Tự động nhận trực tiếp"
+                  : "Đang kết nối luồng giá…"}
+          </span>
+        </div>
+      </div>
+
+      {/* Unified T-Board Container */}
+      <div className="overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)]">
+        <div className="grid grid-cols-1 md:grid-cols-2 md:divide-x md:divide-[var(--color-line-strong)]">
+          {/* TRÁI: DƯ MUA (BID) — Giá Mua sát trục giữa */}
+          <div>
+            <div className="grid grid-cols-[58px_1fr_88px] items-center border-b border-[var(--color-line)] bg-[var(--color-surface-2)]/85 px-3 py-1.5 font-mono text-[10.5px] uppercase tracking-[0.06em] text-[var(--color-muted)] whitespace-nowrap">
+              <span>Dư mua</span>
+              <span className="text-right">KL mua</span>
+              <span className="text-right font-semibold text-[var(--color-gain)]">Giá mua</span>
+            </div>
+
+            <div className="divide-y divide-[var(--color-line)]/60">
+              {[0, 1, 2].map((idx) => {
+                const level = bids[idx]
+                const rank = idx + 1
+                if (!level) {
+                  return (
+                    <div
+                      key={`bid-empty-${rank}`}
+                      className="grid h-[33px] grid-cols-[58px_1fr_88px] items-center px-3 font-mono text-[12px] tabular-nums text-[var(--color-muted)] whitespace-nowrap"
+                    >
+                      <span className="text-[11px]">Mua {rank}</span>
+                      <span className="text-right">—</span>
+                      <span className="text-right">—</span>
+                    </div>
+                  )
+                }
+
+                const depthPct = Math.max(6, Math.round((level.volume / maxLevelVol) * 100))
+                const isSelected = selectedOrderPrice === level.price
+                const tone = hosePriceTone(level.price, refPrice, ceilingPrice, floorPrice)
+
+                return (
+                  <button
+                    key={`bid-${rank}-${level.price}`}
+                    type="button"
+                    onClick={() => onSelectPrice(level.price)}
+                    title={`Chọn giá Mua ${rank}: ${fmtPrice(level.price)} ₫`}
+                    className={`group relative grid h-[33px] w-full grid-cols-[58px_1fr_88px] items-center overflow-hidden px-3 text-left font-mono text-[12.5px] tabular-nums transition-colors whitespace-nowrap ${
+                      isSelected
+                        ? "bg-[var(--color-gain-soft)]/50 ring-1 ring-inset ring-[var(--color-gain)]/50"
+                        : "hover:bg-[var(--color-surface-2)]/75"
+                    }`}
+                  >
+                    {/* Thanh độ sâu thanh khoản neo từ trục Spread trung tâm tỏa sang trái */}
+                    <span
+                      className="pointer-events-none absolute inset-y-0.5 right-0 bg-[var(--color-gain)]/14 transition-[width] duration-300"
+                      style={{ width: `${depthPct}%` }}
+                    />
+                    <span
+                      className={`relative text-[11px] ${
+                        rank === 1
+                          ? "font-semibold text-[var(--color-ink)]"
+                          : "text-[var(--color-muted)] group-hover:text-[var(--color-ink-2)]"
+                      }`}
+                    >
+                      Mua {rank}
+                    </span>
+                    <span
+                      className={`relative text-right ${
+                        rank === 1 ? "font-medium text-[var(--color-ink)]" : "text-[var(--color-ink-2)]"
+                      }`}
+                    >
+                      {formatBookVolume(level.volume)}
+                    </span>
+                    <span
+                      className={`relative text-right ${rank === 1 ? "font-bold" : "font-semibold"} ${tone}`}
+                    >
+                      {fmtPrice(level.price)}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* PHẢI: DƯ BÁN (ASK) — Giá Bán sát trục giữa */}
+          <div className="border-t border-[var(--color-line)] md:border-t-0">
+            <div className="grid grid-cols-[88px_1fr_58px] items-center border-b border-[var(--color-line)] bg-[var(--color-surface-2)]/85 px-3 py-1.5 font-mono text-[10.5px] uppercase tracking-[0.06em] text-[var(--color-muted)] whitespace-nowrap">
+              <span className="font-semibold text-[var(--color-loss)]">Giá bán</span>
+              <span className="text-right">KL bán</span>
+              <span className="text-right">Dư bán</span>
+            </div>
+
+            <div className="divide-y divide-[var(--color-line)]/60">
+              {[0, 1, 2].map((idx) => {
+                const level = asks[idx]
+                const rank = idx + 1
+                if (!level) {
+                  return (
+                    <div
+                      key={`ask-empty-${rank}`}
+                      className="grid h-[33px] grid-cols-[88px_1fr_58px] items-center px-3 font-mono text-[12px] tabular-nums text-[var(--color-muted)] whitespace-nowrap"
+                    >
+                      <span>—</span>
+                      <span className="text-right">—</span>
+                      <span className="text-right text-[11px]">Bán {rank}</span>
+                    </div>
+                  )
+                }
+
+                const depthPct = Math.max(6, Math.round((level.volume / maxLevelVol) * 100))
+                const isSelected = selectedOrderPrice === level.price
+                const tone = hosePriceTone(level.price, refPrice, ceilingPrice, floorPrice)
+
+                return (
+                  <button
+                    key={`ask-${rank}-${level.price}`}
+                    type="button"
+                    onClick={() => onSelectPrice(level.price)}
+                    title={`Chọn giá Bán ${rank}: ${fmtPrice(level.price)} ₫`}
+                    className={`group relative grid h-[33px] w-full grid-cols-[88px_1fr_58px] items-center overflow-hidden px-3 text-left font-mono text-[12.5px] tabular-nums transition-colors whitespace-nowrap ${
+                      isSelected
+                        ? "bg-[var(--color-loss-soft)]/50 ring-1 ring-inset ring-[var(--color-loss)]/50"
+                        : "hover:bg-[var(--color-surface-2)]/75"
+                    }`}
+                  >
+                    {/* Thanh độ sâu thanh khoản neo từ trục Spread trung tâm tỏa sang phải */}
+                    <span
+                      className="pointer-events-none absolute inset-y-0.5 left-0 bg-[var(--color-loss)]/14 transition-[width] duration-300"
+                      style={{ width: `${depthPct}%` }}
+                    />
+                    <span className={`relative ${rank === 1 ? "font-bold" : "font-semibold"} ${tone}`}>
+                      {fmtPrice(level.price)}
+                    </span>
+                    <span
+                      className={`relative text-right ${
+                        rank === 1 ? "font-medium text-[var(--color-ink)]" : "text-[var(--color-ink-2)]"
+                      }`}
+                    >
+                      {formatBookVolume(level.volume)}
+                    </span>
+                    <span
+                      className={`relative text-right text-[11px] ${
+                        rank === 1
+                          ? "font-semibold text-[var(--color-ink)]"
+                          : "text-[var(--color-muted)] group-hover:text-[var(--color-ink-2)]"
+                      }`}
+                    >
+                      Bán {rank}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+
+        {/* Thanh tổng kết tỷ trọng Dư Mua / Dư Bán */}
+        <div className="flex items-center justify-between gap-3 border-t border-[var(--color-line)] bg-[var(--color-surface-2)]/55 px-3 py-1.5 font-mono text-[11px] tabular-nums whitespace-nowrap">
+          {hasRealDepth ? (
+            <>
+              <span className="font-medium text-[var(--color-gain)]">
+                Tổng mua: <strong>{formatBookVolume(totalBidVol)}</strong> ({bidPct}%)
+              </span>
+              <div className="hidden sm:flex h-1.5 flex-1 max-w-[200px] overflow-hidden rounded-full bg-[var(--color-line)]">
+                <div
+                  className="bg-[var(--color-gain)] transition-[width] duration-300"
+                  style={{ width: `${bidPct}%` }}
+                />
+                <div
+                  className="bg-[var(--color-loss)] transition-[width] duration-300"
+                  style={{ width: `${askPct}%` }}
+                />
+              </div>
+              <span className="font-medium text-[var(--color-loss)]">
+                ({askPct}%) <strong>{formatBookVolume(totalAskVol)}</strong> :Tổng bán
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="text-[var(--color-muted)]">Tổng mua: —</span>
+              <span className="truncate font-sans text-[11px] text-[var(--color-muted)]">
+                Chờ dữ liệu chào Mua / Bán từ phiên giao dịch HOSE (09:00–15:00)
+              </span>
+              <span className="text-[var(--color-muted)]">Tổng bán: —</span>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ============================================================================
+ * MAIN PAGE: GIAO DỊCH CỔ PHIẾU (/trade) — 100% LIVE STREAMING & CHUẨN HOSE
+ * ============================================================================ */
+export default function TradePage() {
+  const [baseSnapshot, setBaseSnapshot] = useState<PortfolioSnapshot | null>(null)
+  const reloadPortfolio = useCallback(async () => {
+    try {
+      const snap = (await portfolioApi.snapshot()) as PortfolioSnapshot
+      setBaseSnapshot(snap)
+    } catch {
+      // keep previous snapshot
+    }
+  }, [])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void reloadPortfolio()
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [reloadPortfolio])
+
+  const portfolioData = usePortfolio(baseSnapshot, reloadPortfolio)
+
+  const [symbol, setSymbol] = useState(() => {
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search).get("symbol")?.trim().toUpperCase()
+      if (p && /^[A-Z0-9]{1,10}$/.test(p)) return p
+    }
+    return "HPG"
+  })
+  const [searchQuery, setSearchQuery] = useState("")
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [seedUniverse, setSeedUniverse] = useState<ApiMarketStock[]>([])
+  const searchBoxRef = useRef<HTMLDivElement | null>(null)
+
+  const [initialStock, setInitialStock] = useState<Stock | undefined>(undefined)
+  const [rawCandles, setRawCandles] = useState<RawCandle[]>([])
+  const [apiOrderbook, setApiOrderbook] = useState<OrderbookState>({
+    symbol: "HPG",
+    bids: [],
+    asks: [],
+    receivedAt: null,
+    lastUpdate: null,
+    stale: true,
+  })
+  const [liveForeignBillion, setLiveForeignBillion] = useState<number | null>(null)
+  const [socketConnected, setSocketConnected] = useState<boolean>(() =>
+    typeof window !== "undefined" ? getSocket().connected : false
+  )
+
+  // Chart state
+  const [chartRange, setChartRange] = useState<30 | 60 | 120>(60)
+  const [chartType, setChartType] = useState<"candle" | "line">("candle")
+  const [showSma, setShowSma] = useState(true)
+
+  // Order Ticket state
+  const [side, setSide] = useState<"BUY" | "SELL">(() => {
+    if (typeof window !== "undefined") {
+      const s = new URLSearchParams(window.location.search).get("side")?.trim().toUpperCase()
+      if (s === "BUY" || s === "SELL") return s
+    }
+    return "BUY"
+  })
+  const [orderType, setOrderType] = useState<"LO" | "MP">("LO")
+  const [qtyInput, setQtyInput] = useState("100")
   const [priceInput, setPriceInput] = useState("")
-  const [orderPending, setOrderPending] = useState(false)
-  const [orderMessage, setOrderMessage] = useState("")
+  const [priceInputFlash, setPriceInputFlash] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [orderNotice, setOrderNotice] = useState<{
+    tone: "gain" | "loss"
+    text: string
+    orderId?: string
+  } | null>(null)
 
-  // Fetch real summary & orders from portfolio
-  const portfolioRes = useResource(() => Promise.allSettled([
-    portfolioApi.summary(),
-    portfolioApi.orders(),
-  ]), [])
+  // Order History state
+  const [ledgerFilter, setLedgerFilter] = useState<"ALL" | "SYMBOL" | "BUY" | "SELL">("ALL")
+  const [ledgerSearch, setLedgerSearch] = useState("")
+  const [selectedOrderReceipt, setSelectedOrderReceipt] = useState<TradeOrderRecord | null>(null)
 
-  // Fetch real quote & history for the selected symbol
-  const stockRes = useResource(() => Promise.all([
-    stockApi.quote(symbol).catch(() => null),
-    stockApi.ohlcv(symbol).catch(() => []),
-    stockApi.orderbook(symbol).catch(() => null),
-  ]), [symbol])
+  // Live market-wide snapshot via WebSocket
+  const { snapshot: liveMarketSnapshot } = useRealtimeMarket()
 
-  const [summaryResult, ordersResult] = portfolioRes.data || []
-  const summaryData = summaryResult?.status === "fulfilled" ? summaryResult.value : null
-  const ordersData = ordersResult?.status === "fulfilled" && Array.isArray(ordersResult.value) ? ordersResult.value : null
-  const [quoteData, historyData, loadedBookData] = stockRes.data || [null, [], null]
-  const bookData = stockRes.loading ? null : loadedBookData
+  useEffect(() => {
+    let active = true
+    marketApi
+      .snapshot()
+      .then((snap) => {
+        if (!active) return
+        const list = Array.isArray((snap as { stocks?: unknown })?.stocks)
+          ? ((snap as { stocks: ApiMarketStock[] }).stocks ?? [])
+          : []
+        setSeedUniverse(list)
+      })
+      .catch(() => {})
+    return () => {
+      active = false
+    }
+  }, [])
 
-  const liveQuote = useMemo(() => {
-    if (!quoteData) {
-      return {
-        symbol,
-        name: symbol,
-        price: 0,
-        ref: null,
-        ceiling: 0,
-        floor: 0,
-        changePct: null,
-        volume: "—",
-        flow: 0,
-        hasFlow: false,
+  const marketUniverse = useMemo(() => {
+    if (Array.isArray(liveMarketSnapshot?.stocks) && liveMarketSnapshot.stocks.length > 0) {
+      return liveMarketSnapshot.stocks
+    }
+    return seedUniverse
+  }, [liveMarketSnapshot?.stocks, seedUniverse])
+
+  useEffect(() => {
+    function handleOutside(e: MouseEvent) {
+      if (searchBoxRef.current && !searchBoxRef.current.contains(e.target as Node)) {
+        setSearchOpen(false)
       }
     }
-    const qPrice = Number(quoteData.price ?? quoteData.close ?? 0)
-    const price = qPrice < 500 && qPrice > 0 ? Math.round(qPrice * 1000) : Math.round(qPrice)
-    const rawRef = quoteData.ref ?? quoteData.prior_close
-    const ref = rawRef == null ? null : Number(rawRef)
-    const refPrice = ref == null || !Number.isFinite(ref) ? null : ref < 500 && ref > 0 ? Math.round(ref * 1000) : Math.round(ref)
-    const normalizePrice = (value: unknown) => {
-      const parsed = Number(value)
-      return parsed > 0 && parsed < 500 ? Math.round(parsed * 1000) : Math.round(parsed)
+    document.addEventListener("mousedown", handleOutside)
+    return () => document.removeEventListener("mousedown", handleOutside)
+  }, [])
+
+  const selectSymbol = (nextSym: string, nextSide?: "BUY" | "SELL", prefillQty?: number) => {
+    const clean = nextSym.trim().toUpperCase()
+    if (!clean) return
+    setSymbol(clean)
+    setPriceInput("")
+    setOrderNotice(null)
+    setLiveForeignBillion(null)
+    setSearchOpen(false)
+    setSearchQuery("")
+    if (nextSide) setSide(nextSide)
+    if (prefillQty && prefillQty >= 100) {
+      setQtyInput(String(Math.floor(prefillQty / 100) * 100))
     }
-    const ceil = normalizePrice(quoteData.ceiling ?? 0)
-    const flr = normalizePrice(quoteData.floor ?? 0)
-    const rawChange = quoteData.changePct ?? quoteData.change_pct ?? quoteData.change_percent
-    const changePct = rawChange == null ? null : Number(rawChange)
-    const rawVolume = quoteData.volume ?? quoteData.volume_total
-    const vol = rawVolume == null ? null : Number(rawVolume)
-    const rawFlow = quoteData.foreign_flow ?? quoteData.foreign_net_vol
-    const flow = rawFlow == null ? NaN : Number(rawFlow)
-
-    return {
-      symbol,
-      name: quoteData.name || symbol,
-      price,
-      ref: refPrice,
-      ceiling: ceil,
-      floor: flr,
-      changePct: changePct === null || !Number.isFinite(changePct) ? null : Number(changePct.toFixed(2)),
-      volume: vol === null || !Number.isFinite(vol) ? "—" : vol >= 1e6 ? `${(vol / 1e6).toFixed(1)}M` : vol >= 1e3 ? `${(vol / 1e3).toFixed(0)}k` : fmt(vol),
-      flow: Number.isFinite(flow) ? Math.round(flow) : 0,
-      hasFlow: Number.isFinite(flow),
-    }
-  }, [quoteData, symbol])
-
-  const initialStock = useMemo(() => ({
-    symbol: liveQuote.symbol,
-    name: liveQuote.name,
-    price: liveQuote.price,
-    changePct: liveQuote.changePct,
-    ref: liveQuote.ref,
-    ceiling: liveQuote.ceiling,
-    floor: liveQuote.floor,
-    risk: "Unknown" as const,
-    volume: liveQuote.volume,
-    sector: "HOSE",
-    rsi: 0,
-    momentum: 0,
-    beneish: "UNKNOWN" as const,
-    flow: liveQuote.flow,
-    rs: 0,
-    factor: "",
-    weight: 0,
-    pe: 0,
-    foreign: liveQuote.flow,
-    spark: [],
-  }), [liveQuote])
-
-  const { stock: rawStock, flash, isLive } = useRealtimeStock(symbol, initialStock)
-  const rtStock = rawStock || initialStock
-  const rawChange = quoteData?.changePct ?? quoteData?.change_pct ?? quoteData?.change_percent
-  const quoteChange = rawChange == null ? NaN : Number(rawChange)
-
-  // Real chart points
-  const chartPoints = useMemo(() => {
-    if (Array.isArray(historyData) && historyData.length > 0) {
-      const valid = historyData.slice(-30).map((h: {close?: number; close_adj?: number}) => {
-        const c = Number(h.close ?? h.close_adj ?? 0)
-        return c < 500 && c > 0 ? c * 1000 : c
-      }).filter((v: number) => Number.isFinite(v) && v > 0)
-      if (valid.length > 0) return valid
-    }
-    return []
-  }, [historyData])
-
-  const chartLabels = useMemo<[string, string, string] | undefined>(() => {
-    const rows = Array.isArray(historyData) ? (historyData.slice(-30) as { date?: string; time?: string; close?: number; close_adj?: number }[]).filter(row => {
-      const close = Number(row.close ?? row.close_adj ?? 0)
-      return Number.isFinite(close) && close > 0
-    }) : []
-    if (rows.length < 2) return undefined
-    const label = (row: { date?: string; time?: string }) => {
-      const date = new Date(String(row.date ?? row.time ?? ""))
-      return Number.isFinite(date.getTime()) ? date.toLocaleDateString("vi-VN", { day: "2-digit", month: "short" }) : "—"
-    }
-    return [label(rows[0]), label(rows[Math.floor((rows.length - 1) / 2)]), label(rows[rows.length - 1])]
-  }, [historyData])
-
-  const currentPrice = rtStock.price || liveQuote.price
-  const quoteAvailable = currentPrice > 0
-  const liveChange = isLive && rtStock.price > 0 && rtStock.ref != null && rtStock.ref > 0 ? ((rtStock.price - rtStock.ref) / rtStock.ref) * 100 : null
-  const shownChange = Number.isFinite(quoteChange) ? quoteChange : liveChange
-  const hasChangePct = shownChange !== null
-  const parsedQty = Number(quantity.replace(/,/g, ""))
-  const orderPrice = priceInput ? Number(priceInput.replace(/,/g, "")) : currentPrice
-  const estimateAvailable = quoteAvailable && Number.isInteger(parsedQty) && parsedQty > 0 && Number.isFinite(orderPrice) && orderPrice > 0
-  const estValue = estimateAvailable ? parsedQty * orderPrice : null
-  const estFee = estValue === null ? null : Math.max(Math.round(estValue * 0.001), 10000)
-
-  const rawCash = summaryData?.cashBalance ?? summaryData?.cash
-  const parsedCash = rawCash == null ? NaN : Number(rawCash)
-  const cash = Number.isFinite(parsedCash) ? parsedCash : null
-  const orders = (ordersData ?? []) as ShadowOrder[]
-  const openOrdersCount = ordersData === null ? null : orders.filter((o) => o.status === "PENDING" || o.status === "OPEN").length
-  const filledOrdersCount = ordersData === null ? null : orders.filter((o) => o.status === "FILLED" && new Date(o.createdAt).toDateString() === new Date().toDateString()).length
-
-  async function submitOrder() {
-    setOrderMessage("")
-    if (!Number.isInteger(parsedQty) || parsedQty < 100 || parsedQty % 100 !== 0 || parsedQty > 500000) {
-      setOrderMessage("Khối lượng phải là lô 100, tối đa 500.000 cổ phiếu.")
-      return
-    }
-    if (ord === "Limit" && (!Number.isFinite(orderPrice) || orderPrice <= 0)) {
-      setOrderMessage("Cần nhập giá LO hợp lệ.")
-      return
-    }
-    setOrderPending(true)
-    try {
-      const result = await portfolioApi.order({
-        symbol, side: side.toUpperCase(), orderType: ord === "Limit" ? "LO" : ord === "Market" ? "MP" : ord,
-        quantity: parsedQty, ...(ord === "Limit" ? { price: orderPrice } : {}),
-      })
-      setOrderMessage(`Lệnh ảo ${result.status}: ${fmt(Number(result.price))} VND/cp.`)
-      await portfolioRes.reload()
-    } catch (error) {
-      setOrderMessage((error as ApiProblem).message || "Không thể gửi lệnh ảo.")
-    } finally {
-      setOrderPending(false)
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href)
+      url.searchParams.set("symbol", clean)
+      window.history.replaceState({}, "", url.toString())
     }
   }
 
-  return (
-    <Page
-      title="Giao dịch & Khớp lệnh"
-      sub={`${symbol} · Đặt lệnh có kiểm soát rủi ro và tuân thủ kỷ luật danh mục.`}
-      actions={
-        <div className="flex items-center gap-2">
-          <div className="flex gap-1 bg-surface p-1 rounded-[6px] border border-line">
-            {["HPG", "FPT", "MBB", "SSI", "TCB"].map((s) => (
-              <button
-                key={s}
-                onClick={() => { setSymbol(s); setPriceInput("") }}
-                className={`px-2.5 py-0.5 rounded-[4px] font-mono text-[11px] font-medium transition-colors ${
-                  symbol === s ? "bg-ink text-paper" : "text-secondary hover:text-ink"
-                }`}
-              >
-                {s}
-              </button>
-            ))}
-          </div>
-          <Pill tone="teal">Shadow · không gửi lệnh thật</Pill>
-        </div>
+  const syncOrderbookSnapshot = useCallback((sym: string) => {
+    const targetSym = sym.trim().toUpperCase()
+    stockApi
+      .orderbook(targetSym)
+      .then((ob) => {
+        const rec = (ob ?? {}) as Record<string, unknown>
+        const lastUpdate = rec.lastUpdate ? String(rec.lastUpdate) : null
+        let receivedAt = Number(rec.receivedAt ?? 0)
+        if (receivedAt > 0 && receivedAt < 1_000_000_000_000) receivedAt *= 1000
+        if (!receivedAt && lastUpdate) {
+          receivedAt = Date.parse(lastUpdate) || 0
+        }
+        const stale = rec.stale === true || !receivedAt || Date.now() - receivedAt >= 15_000
+        setApiOrderbook({
+          symbol: targetSym,
+          bids: normalizeBookLevels(rec.bids, "BID"),
+          asks: normalizeBookLevels(rec.asks, "ASK"),
+          receivedAt: receivedAt > 0 ? receivedAt : null,
+          lastUpdate,
+          stale,
+        })
+      })
+      .catch(() =>
+        setApiOrderbook({
+          symbol: targetSym,
+          bids: [],
+          asks: [],
+          receivedAt: null,
+          lastUpdate: null,
+          stale: true,
+        })
+      )
+  }, [])
+
+  // Initial seed per symbol (REST seed, then WebSocket takes over 100% live)
+  useEffect(() => {
+    let active = true
+    const targetSym = symbol.trim().toUpperCase()
+    Promise.all([
+      stockApi.quote(targetSym).catch(() => null),
+      stockApi.profile(targetSym).catch(() => null),
+      stockApi.ohlcv(targetSym, { limit: 130, interval: "1D" }).catch(() => []),
+      stockApi.orderbook(targetSym).catch(() => null),
+    ]).then(([quote, profile, ohlcv, ob]) => {
+      if (!active) return
+      const mapped = mapStockQuote(
+        targetSym,
+        quote as Record<string, unknown> | null,
+        profile as Record<string, unknown> | null
+      )
+      setInitialStock(mapped)
+      setPriceInput((prev) => (prev ? prev : mapped.price > 0 ? String(mapped.price) : ""))
+      const candleList = Array.isArray(ohlcv)
+        ? ohlcv
+        : Array.isArray((ohlcv as { data?: unknown })?.data)
+          ? ((ohlcv as { data: RawCandle[] }).data ?? [])
+          : []
+      setRawCandles(candleList as RawCandle[])
+
+      const rec = (ob ?? {}) as Record<string, unknown>
+      const lastUpdate = rec.lastUpdate ? String(rec.lastUpdate) : null
+      let receivedAt = Number(rec.receivedAt ?? 0)
+      if (receivedAt > 0 && receivedAt < 1_000_000_000_000) receivedAt *= 1000
+      if (!receivedAt && lastUpdate) {
+        receivedAt = Date.parse(lastUpdate) || 0
       }
-    >
-      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_340px] gap-4">
-        <Panel>
-          <div className="flex items-center justify-between mb-3">
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="text-[17px] font-bold font-mono text-ink">{symbol}</span>
-                <span className="text-[14px] text-secondary">{rtStock.name}</span>
-              </div>
-              <div className="flex items-baseline gap-2 mt-0.5">
-                <span className={`text-[24px] font-mono font-bold transition-colors ${
-                  flash === "gain" ? "text-gain" : flash === "loss" ? "text-loss" : "text-ink"
-                }`}>
-                  {quoteAvailable ? fmt(currentPrice) : "—"}
-                </span>
-                {!hasChangePct ? <span className="text-[12px] text-muted">Chưa có biến động</span> : <PercentChange value={shownChange ?? 0} />}
-              </div>
-            </div>
-            <div className="text-right text-[11px] font-mono">
-              <div className="text-muted">Khối lượng: <span className="text-ink font-semibold">{rtStock.volume}</span></div>
-              <div className="flex gap-2 mt-1">
-                <span className="text-loss">Sàn: {rtStock.floor > 0 ? fmt(rtStock.floor) : "—"}</span>
-                <span className="text-muted">TC: {rtStock.ref != null && rtStock.ref > 0 ? fmt(rtStock.ref) : "—"}</span>
-                <span className="text-gain">Trần: {rtStock.ceiling > 0 ? fmt(rtStock.ceiling) : "—"}</span>
-              </div>
-            </div>
+      const stale = rec.stale === true || !receivedAt || Date.now() - receivedAt >= 15_000
+      setApiOrderbook({
+        symbol: targetSym,
+        bids: normalizeBookLevels(rec.bids, "BID"),
+        asks: normalizeBookLevels(rec.asks, "ASK"),
+        receivedAt: receivedAt > 0 ? receivedAt : null,
+        lastUpdate,
+        stale,
+      })
+    })
+    return () => {
+      active = false
+    }
+  }, [symbol])
+
+  // Subscribe to live 1D OHLC candles, foreign flow & automatic reconnect sync
+  useEffect(() => {
+    const sym = symbol.trim().toUpperCase()
+    if (!sym) return
+    const socket = getSocket()
+    const releaseOhlc = retainOhlc(sym, "1D")
+
+    const onConnect = () => {
+      setSocketConnected(true)
+      syncOrderbookSnapshot(sym)
+      void reloadPortfolio()
+    }
+
+    const onDisconnect = () => {
+      setSocketConnected(false)
+    }
+
+    const onOhlcTick = (data: LiveOhlcTick) => {
+      if (!data || (data.symbol && data.symbol.toUpperCase() !== sym)) return
+      if (data.resolution && data.resolution.toUpperCase() !== "1D") return
+      const close = toVndPrice(data.close)
+      if (close <= 0) return
+      const tickDateKey = toVnDateKey(data.timestamp) || toVnDateKey(new Date())
+      setRawCandles((prev) => {
+        if (!prev.length) {
+          return [
+            {
+              date: tickDateKey,
+              open: toVndPrice(data.open, close),
+              high: Math.max(toVndPrice(data.high, close), close),
+              low: Math.min(toVndPrice(data.low, close), close),
+              close,
+              volume: Number(data.volume ?? 0),
+            },
+          ]
+        }
+        const next = [...prev]
+        const last = next[next.length - 1]
+        const lastKey = toVnDateKey(last.date ?? last.time ?? last.timestamp)
+        if (lastKey && lastKey === tickDateKey) {
+          const prevOpen = toVndPrice(last.open, close)
+          const prevHigh = toVndPrice(last.high, close)
+          const prevLow = toVndPrice(last.low, close)
+          next[next.length - 1] = {
+            ...last,
+            open: toVndPrice(data.open, prevOpen),
+            high: Math.max(toVndPrice(data.high, prevHigh), close, prevHigh),
+            low: Math.min(toVndPrice(data.low, prevLow), close, prevLow),
+            close,
+            volume: Math.max(Number(data.volume ?? 0), Number(last.volume ?? 0)),
+          }
+        } else if (!lastKey || tickDateKey > lastKey) {
+          next.push({
+            date: tickDateKey,
+            open: toVndPrice(data.open, close),
+            high: Math.max(toVndPrice(data.high, close), close),
+            low: Math.min(toVndPrice(data.low, close), close),
+            close,
+            volume: Number(data.volume ?? 0),
+          })
+        }
+        return next
+      })
+    }
+
+    const onForeignTick = (data: Record<string, unknown>) => {
+      if (!data) return
+      const rawFlow = data.foreign_flow ?? data.netValueBillion
+      if (rawFlow != null && Number.isFinite(Number(rawFlow))) {
+        setLiveForeignBillion(Number(rawFlow))
+        return
+      }
+      const netVnd =
+        data.netValue != null
+          ? Number(data.netValue)
+          : data.buyValue != null || data.sellValue != null
+            ? Number(data.buyValue ?? 0) - Number(data.sellValue ?? 0)
+            : NaN
+      if (Number.isFinite(netVnd)) {
+        setLiveForeignBillion(netVnd / 1_000_000_000)
+      }
+    }
+
+    socket.on("connect", onConnect)
+    socket.on("disconnect", onDisconnect)
+    socket.on(`stock:ohlc:${sym}`, onOhlcTick)
+    socket.on(`stock:ohlcClosed:${sym}`, onOhlcTick)
+    socket.on(`stock:foreign:${sym}`, onForeignTick)
+
+    return () => {
+      releaseOhlc()
+      socket.off("connect", onConnect)
+      socket.off("disconnect", onDisconnect)
+      socket.off(`stock:ohlc:${sym}`, onOhlcTick)
+      socket.off(`stock:ohlcClosed:${sym}`, onOhlcTick)
+      socket.off(`stock:foreign:${sym}`, onForeignTick)
+    }
+  }, [symbol, syncOrderbookSnapshot, reloadPortfolio])
+
+  const {
+    stock: liveStock,
+    orderbook: wsOrderbook,
+    isLive,
+    lastTickAt,
+    flash,
+  } = useRealtimeStock(symbol, initialStock)
+
+  const snapshotMatch = useMemo(
+    () => marketUniverse.find((item) => String(item.symbol ?? "").toUpperCase() === symbol),
+    [marketUniverse, symbol]
+  )
+
+  const stock = useMemo(() => {
+    const base = liveStock ?? initialStock ?? mapStockQuote(symbol, null, null)
+    const price = toVndPrice(base.price)
+    const rawRef = base.ref != null && base.ref > 0 ? toVndPrice(base.ref, price) : price
+    const { ceiling, floor } = resolveCoherentBands(
+      rawRef,
+      price,
+      toVndPrice(base.ceiling, 0),
+      toVndPrice(base.floor, 0)
+    )
+    const snapName = String(snapshotMatch?.name ?? "").trim()
+    const cleanName =
+      base.name && !base.name.startsWith("Cổ phiếu ") && base.name.toUpperCase() !== symbol
+        ? base.name
+        : snapName && snapName.toUpperCase() !== symbol
+          ? snapName
+          : `Cổ phiếu ${symbol}`
+    const foreignFlow =
+      liveForeignBillion != null
+        ? liveForeignBillion
+        : snapshotMatch?.foreign_flow != null && Number.isFinite(Number(snapshotMatch.foreign_flow))
+          ? Number(snapshotMatch.foreign_flow)
+          : null
+    const rawVolStr = String(base.volume ?? "").trim()
+    const parsedVolNum = /^\d+(\.\d+)?$/.test(rawVolStr) ? Number(rawVolStr) : NaN
+    const snapVolNum = Number(snapshotMatch?.volume ?? 0)
+    const displayVolume = Number.isFinite(parsedVolNum) && parsedVolNum > 0
+      ? formatCompactVol(parsedVolNum)
+      : rawVolStr && rawVolStr !== "—" && rawVolStr !== "0"
+        ? rawVolStr
+        : snapVolNum > 0
+          ? formatCompactVol(snapVolNum)
+          : "—"
+
+    const priceDiff = rawRef > 0 && price > 0 ? price - rawRef : 0
+    const changePct =
+      base.changePct != null && Number.isFinite(Number(base.changePct))
+        ? Number(Number(base.changePct).toFixed(2))
+        : rawRef > 0 && price > 0
+          ? Number((((price - rawRef) / rawRef) * 100).toFixed(2))
+          : 0
+
+    return {
+      ...base,
+      price,
+      ref: rawRef,
+      ceiling,
+      floor,
+      changePct,
+      volume: displayVolume,
+      name: cleanName,
+      foreignFlow,
+      priceDiff,
+    }
+  }, [liveStock, initialStock, snapshotMatch, liveForeignBillion, symbol])
+
+  const candles: CandlePoint[] = useMemo(() => {
+    const valid = rawCandles
+      .map((item) => {
+        const close = toVndPrice(item.close)
+        const open = toVndPrice(item.open, close)
+        const high = Math.max(toVndPrice(item.high, close), open, close)
+        const low = Math.min(toVndPrice(item.low, close), open, close)
+        const volume = Number(item.volume ?? 0)
+        const rawDate = String(item.date ?? item.time ?? item.timestamp ?? "")
+        const d = new Date(rawDate)
+        const label = Number.isNaN(d.getTime())
+          ? rawDate.slice(0, 10)
+          : d.toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit" })
+        return { date: rawDate, label, open, high, low, close, volume }
+      })
+      .filter((c) => c.close > 0)
+
+    // Merge live matched price into the latest session candle so chart updates tick-by-tick
+    if (isLive && stock.price > 0 && valid.length > 0) {
+      const todayKey = toVnDateKey(new Date())
+      const lastIdx = valid.length - 1
+      const last = valid[lastIdx]
+      const lastKey = toVnDateKey(last.date)
+      if (!lastKey || lastKey === todayKey) {
+        valid[lastIdx] = {
+          ...last,
+          close: stock.price,
+          high: Math.max(last.high, stock.price),
+          low: Math.min(last.low, stock.price),
+        }
+      }
+    }
+
+    return valid.map((c, idx) => {
+      if (idx < 19) return { ...c, sma20: null }
+      const windowSlice = valid.slice(idx - 19, idx + 1)
+      const avg = windowSlice.reduce((s, item) => s + item.close, 0) / 20
+      return { ...c, sma20: avg }
+    })
+  }, [rawCandles, isLive, stock.price])
+
+  const latestCandle = candles.length > 0 ? candles[candles.length - 1] : null
+
+  // Real-time Orderbook state: strictly exchange-sourced (wsOrderbook + REST seed scoped per symbol)
+  const resolvedOrderbook = useMemo<OrderbookState>(() => {
+    const cleanSym = symbol.trim().toUpperCase()
+    const matchedApi =
+      apiOrderbook.symbol === cleanSym
+        ? apiOrderbook
+        : {
+            symbol: cleanSym,
+            bids: [],
+            asks: [],
+            receivedAt: null,
+            lastUpdate: null,
+            stale: true,
+          }
+
+    if (wsOrderbook && wsOrderbook.symbol === cleanSym) {
+      const wsBids = normalizeBookLevels(wsOrderbook.bids, "BID")
+      const wsAsks = normalizeBookLevels(wsOrderbook.asks, "ASK")
+      const wsTs = wsOrderbook.receivedAt || 0
+      const apiTs = matchedApi.receivedAt || 0
+      if (wsBids.length > 0 || wsAsks.length > 0 || wsTs >= apiTs) {
+        return {
+          symbol: cleanSym,
+          bids: wsBids,
+          asks: wsAsks,
+          receivedAt: wsOrderbook.receivedAt || matchedApi.receivedAt,
+          lastUpdate: matchedApi.lastUpdate,
+          stale: wsOrderbook.stale,
+        }
+      }
+    }
+    return matchedApi
+  }, [wsOrderbook, apiOrderbook, symbol])
+
+  const activeBids = resolvedOrderbook.bids
+  const activeAsks = resolvedOrderbook.asks
+  const bestBidPrice = activeBids[0]?.price ?? 0
+  const bestAskPrice = activeAsks[0]?.price ?? 0
+
+  const fillPriceInput = (newPrice: number) => {
+    if (!Number.isFinite(newPrice) || newPrice <= 0) return
+    setOrderType("LO")
+    setPriceInput(String(Math.round(newPrice)))
+    setPriceInputFlash(true)
+    window.setTimeout(() => setPriceInputFlash(false), 360)
+  }
+
+  const positions: PortfolioPosition[] = useMemo(
+    () => portfolioData?.positions ?? [],
+    [portfolioData?.positions]
+  )
+
+  const orders: TradeOrderRecord[] = useMemo(() => {
+    const raw = portfolioData?.orders ?? []
+    return raw.map((o) => ({
+      id: String(o.id ?? ""),
+      symbol: String(o.symbol ?? "").toUpperCase(),
+      stockName: o.stockName ? String(o.stockName) : undefined,
+      sector: o.sector ? String(o.sector) : null,
+      exchange: o.exchange ? String(o.exchange) : "HOSE",
+      side: String(o.side ?? "BUY").toUpperCase() === "SELL" ? "SELL" : "BUY",
+      orderType: String(o.orderType ?? "LO"),
+      price: toVndPrice(o.price),
+      quantity: Number(o.quantity ?? 0),
+      status: String(o.status ?? "FILLED"),
+      createdAt: o.createdAt ? String(o.createdAt) : undefined,
+    }))
+  }, [portfolioData?.orders])
+
+  const buyingPower = Number(portfolioData?.summary?.cash ?? 0)
+
+  const currentPosition = useMemo(
+    () => positions.find((p) => p.symbol.toUpperCase() === symbol.toUpperCase()) ?? null,
+    [positions, symbol]
+  )
+
+  const quickSymbols = useMemo(() => {
+    const held = positions.map((p) => p.symbol.toUpperCase())
+    const merged = Array.from(new Set([symbol, ...held, ...DEFAULT_SYMBOLS]))
+    return merged.slice(0, 6)
+  }, [positions, symbol])
+
+  const searchResults = useMemo(() => {
+    const q = searchQuery.trim().toUpperCase()
+    if (!q) return marketUniverse.slice(0, 8)
+    return marketUniverse
+      .filter(
+        (item) =>
+          String(item.symbol ?? "").toUpperCase().includes(q) ||
+          String(item.name ?? "").toUpperCase().includes(q)
+      )
+      .slice(0, 8)
+  }, [marketUniverse, searchQuery])
+
+  const quantity = Number(qtyInput || 0)
+  const validLotQty = Number.isInteger(quantity) && quantity >= 100 && quantity % 100 === 0
+  const parsedLimitPrice = Number(priceInput || 0)
+  const mpCounterPrice =
+    side === "BUY"
+      ? bestAskPrice > 0
+        ? bestAskPrice
+        : stock.price
+      : bestBidPrice > 0
+        ? bestBidPrice
+        : stock.price
+  const effectivePrice =
+    orderType === "MP" ? mpCounterPrice : parsedLimitPrice > 0 ? parsedLimitPrice : stock.price
+  const priceStep = getTickStep(effectivePrice || stock.price || 20_000)
+
+  const financials = useMemo(
+    () => computeOrderFinancials(side, effectivePrice, validLotQty ? quantity : 0),
+    [side, effectivePrice, validLotQty, quantity]
+  )
+
+  const maxBuyableShares = useMemo(() => {
+    const unitPrice = effectivePrice || stock.price
+    if (unitPrice <= 0 || buyingPower <= 10_000) return 0
+    const rawShares = Math.floor((buyingPower - 10_000) / (unitPrice * 1.001))
+    return Math.max(0, Math.floor(rawShares / 100) * 100)
+  }, [effectivePrice, stock.price, buyingPower])
+
+  const heldShares = currentPosition?.quantity ?? 0
+
+  const priceBandWarning = useMemo(() => {
+    if (orderType !== "LO" || effectivePrice <= 0) return null
+    if (stock.ceiling > 0 && effectivePrice > stock.ceiling) {
+      return `Giá đặt vượt trần phiên (${fmtPrice(stock.ceiling)} ₫)`
+    }
+    if (stock.floor > 0 && effectivePrice < stock.floor) {
+      return `Giá đặt thấp hơn sàn phiên (${fmtPrice(stock.floor)} ₫)`
+    }
+    return null
+  }, [orderType, effectivePrice, stock.ceiling, stock.floor])
+
+  const validationError = useMemo(() => {
+    if (priceBandWarning) return priceBandWarning
+    if (!validLotQty) return "Khối lượng đặt phải là bội số lô 100 cổ phiếu"
+    if (side === "BUY" && financials.totalCostOrProceeds > buyingPower) {
+      return "Vượt quá sức mua khả dụng (đã tính phí)"
+    }
+    if (side === "SELL" && quantity > heldShares) {
+      return heldShares === 0
+        ? `Tài khoản hiện không nắm giữ ${symbol} để bán`
+        : `Số lượng bán vượt số dư khả dụng (${fmtNumber(heldShares)} CP)`
+    }
+    return null
+  }, [
+    priceBandWarning,
+    validLotQty,
+    side,
+    financials.totalCostOrProceeds,
+    buyingPower,
+    quantity,
+    heldShares,
+    symbol,
+  ])
+
+  const canSubmit = !submitting && !validationError && effectivePrice > 0
+
+  async function handleSubmitOrder() {
+    if (!canSubmit) return
+    setSubmitting(true)
+    setOrderNotice(null)
+    try {
+      const created = (await portfolioApi.order({
+        symbol,
+        side,
+        orderType,
+        quantity,
+        price: orderType === "LO" ? effectivePrice : undefined,
+      })) as Record<string, unknown>
+      await reloadPortfolio()
+      setOrderNotice({
+        tone: "gain",
+        text: `Đã khớp lệnh ${side === "BUY" ? "MUA" : "BÁN"} ${fmtNumber(quantity)} ${symbol} tại giá ${fmtPrice(Number(created?.price ?? effectivePrice))} ₫.`,
+        orderId: created?.id ? String(created.id) : undefined,
+      })
+    } catch (e: unknown) {
+      const rawMsg =
+        (e as { response?: { data?: { error?: string } } })?.response?.data?.error ||
+        (e instanceof Error ? e.message : "Không thể đặt lệnh.")
+      const viMsg =
+        rawMsg.includes("continuous trading session") || rawMsg.includes("Circuit breaker")
+          ? "Ngoài giờ khớp lệnh liên tục HOSE (09:15–11:30 & 13:00–14:30)."
+          : rawMsg.includes("stale") || rawMsg.includes("unavailable")
+            ? "Sổ lệnh trực tiếp đang tạm nghỉ hoặc chưa có dữ liệu mới."
+            : rawMsg
+      setOrderNotice({
+        tone: "loss",
+        text: viMsg,
+      })
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const filteredOrders = useMemo(() => {
+    return orders.filter((ord) => {
+      if (ledgerFilter === "SYMBOL" && ord.symbol.toUpperCase() !== symbol.toUpperCase()) return false
+      if (ledgerFilter === "BUY" && ord.side !== "BUY") return false
+      if (ledgerFilter === "SELL" && ord.side !== "SELL") return false
+      if (ledgerSearch.trim()) {
+        const q = ledgerSearch.trim().toUpperCase()
+        const matchSym = ord.symbol.toUpperCase().includes(q)
+        const matchSector = String(ord.sector ?? "").toUpperCase().includes(q)
+        if (!matchSym && !matchSector) return false
+      }
+      return true
+    })
+  }, [orders, ledgerFilter, symbol, ledgerSearch])
+
+  const lastTickTime = formatTimeVi(lastTickAt)
+  const mainPriceTone = hosePriceTone(stock.price, stock.ref, stock.ceiling, stock.floor)
+
+  return (
+    <div className="max-w-[1360px] mx-auto px-6 lg:px-8 py-6 space-y-4">
+      {/* ====================================================================
+       * 1. THANH TIÊU ĐỀ, TRẠNG THÁI LIVE STREAM & CHỌN NHANH MÃ CỔ PHIẾU
+       * ==================================================================== */}
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="font-display text-[26px] font-semibold tracking-tight text-[var(--color-ink)] leading-none">
+            Giao dịch & Khớp lệnh
+          </h1>
+          <Pill tone={isLive ? "gain" : socketConnected ? "teal" : "neutral"}>
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${
+                isLive
+                  ? "bg-[var(--color-gain)] animate-pulse"
+                  : socketConnected
+                    ? "bg-[var(--color-mineral)] animate-pulse"
+                    : "bg-[var(--color-muted)]"
+              }`}
+            />
+            {isLive
+              ? `Trực tiếp HOSE${lastTickTime ? ` · ${lastTickTime}` : ""}`
+              : socketConnected
+                ? "Tự động cập nhật · Ngoài phiên khớp lệnh"
+                : "Đang kết nối luồng trực tiếp…"}
+          </Pill>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Quick Symbol Chips */}
+          <div className="flex items-center gap-1.5">
+            {quickSymbols.map((sym) => {
+              const isCurrent = sym === symbol
+              const isHeld = positions.some((p) => p.symbol.toUpperCase() === sym)
+              return (
+                <button
+                  key={sym}
+                  type="button"
+                  onClick={() => selectSymbol(sym)}
+                  className={`inline-flex h-8 items-center gap-1.5 rounded-[var(--radius-sm)] border px-2.5 font-mono text-[12px] font-medium transition-colors whitespace-nowrap ${
+                    isCurrent
+                      ? "border-[var(--color-ink)] bg-[var(--color-ink)] text-[var(--color-paper)]"
+                      : "border-[var(--color-line)] bg-[var(--color-surface)] text-[var(--color-ink-2)] hover:border-[var(--color-ink)]"
+                  }`}
+                >
+                  {isHeld && (
+                    <span
+                      className={`h-1.5 w-1.5 rounded-full ${
+                        isCurrent ? "bg-[var(--color-paper)]" : "bg-[var(--color-gain)]"
+                      }`}
+                    />
+                  )}
+                  {sym}
+                </button>
+              )
+            })}
           </div>
 
-          <MarketLineChart
-            height={190}
-            series={[
-              {
-                label: symbol,
-                data: chartPoints,
-                color: !hasChangePct ? "var(--color-muted)" : Number(shownChange) >= 0 ? "var(--color-gain)" : "var(--color-loss)",
-              },
-            ]}
-            xLabels={chartLabels}
-          />
+          {/* Search Input (Live Market Universe) */}
+          <div ref={searchBoxRef} className="relative">
+            <div className="flex h-8 items-center rounded-[var(--radius-sm)] border border-[var(--color-line-strong)] bg-[var(--color-surface)] px-2.5 focus-within:border-[var(--color-ink)]">
+              <input
+                type="text"
+                value={searchQuery}
+                onFocus={() => setSearchOpen(true)}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value)
+                  setSearchOpen(true)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && searchResults.length > 0) {
+                    selectSymbol(String(searchResults[0].symbol ?? "HPG"))
+                  }
+                }}
+                placeholder="Tìm mã hoặc tên công ty..."
+                className="w-[180px] bg-transparent text-[12px] text-[var(--color-ink)] placeholder:text-[var(--color-muted)] focus:outline-none"
+              />
+            </div>
 
-          <div className="grid grid-cols-4 gap-3 mt-4 text-[12px]">
-            {[
-              ["Lệnh mở", openOrdersCount === null ? "—" : String(openOrdersCount)],
-              ["Khớp hôm nay", filledOrdersCount === null ? "—" : String(filledOrdersCount)],
-              ["Sức mua khả dụng", cash === null ? "—" : fmt(cash)],
-              ["Khối ngoại ròng", liveQuote.hasFlow ? `${liveQuote.flow >= 0 ? "+" : ""}${liveQuote.flow.toLocaleString("vi-VN")}` : "—"],
-            ].map(([l, v]) => (
-              <div key={l} className="border border-line rounded-[8px] p-3">
-                <div className="text-muted text-[11px] uppercase tracking-wide">{l}</div>
-                <div className="tnum font-mono text-ink text-[15px] font-semibold mt-0.5">
-                  {v}
+            {searchOpen && (
+              <div className="absolute right-0 z-40 mt-1.5 w-[310px] rounded-[var(--radius-md)] border border-[var(--color-line-strong)] bg-[var(--color-surface)] p-1.5 shadow-xl">
+                <div className="max-h-[250px] overflow-y-auto divide-y divide-[var(--color-line)]/50">
+                  {searchResults.map((item) => {
+                    const sym = String(item.symbol ?? "").toUpperCase()
+                    const pr = toVndPrice(item.price)
+                    const chg = Number(item.change_pct ?? 0)
+                    return (
+                      <button
+                        key={sym}
+                        type="button"
+                        onClick={() => selectSymbol(sym)}
+                        className="flex w-full items-center justify-between gap-2 rounded-[var(--radius-sm)] px-2.5 py-2 text-left hover:bg-[var(--color-surface-2)] transition-colors"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-mono text-[12.5px] font-bold text-[var(--color-ink)]">
+                              {sym}
+                            </span>
+                            <span className="truncate text-[11.5px] text-[var(--color-muted)]">
+                              {String(item.name ?? sym)}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="shrink-0 text-right font-mono text-[11.5px] tabular-nums">
+                          <div className="font-semibold text-[var(--color-ink)]">{fmtPrice(pr)}</div>
+                          <div className={`text-[10.5px] ${toneText(chg)}`}>{fmtPercent(chg)}</div>
+                        </div>
+                      </button>
+                    )
+                  })}
                 </div>
               </div>
-            ))}
-          </div>
-        </Panel>
-
-        <Panel>
-          <div className="grid grid-cols-2 gap-1 mb-4 p-1 bg-soft rounded-[8px]">
-            {(["Buy", "Sell"] as const).map((s) => (
-              <button
-                key={s}
-                onClick={() => setSide(s)}
-                className={`h-8 rounded-[6px] text-[13px] font-medium transition-colors ${
-                  side === s
-                    ? (s === "Buy" ? "bg-gain text-white" : "bg-loss text-white")
-                    : "text-secondary hover:text-ink"
-                }`}
-              >
-                {s === "Buy" ? "Mua" : "Bán"}
-              </button>
-            ))}
-          </div>
-
-          <div className="flex gap-1 mb-4">
-            {["Limit", "Market", "ATO", "ATC"].map((o) => (
-              <button
-                key={o}
-                onClick={() => setOrd(o)}
-                className={`flex-1 h-7 rounded-[6px] text-[11px] font-medium transition-colors ${
-                  ord === o ? "bg-ink text-paper" : "text-muted hover:bg-soft"
-                }`}
-              >
-                {o}
-              </button>
-            ))}
-          </div>
-
-          <div className="space-y-3 text-[12px]">
-            <div>
-              <label className="text-secondary font-medium">Khối lượng (Lô 100)</label>
-              <input
-                value={quantity}
-                onChange={(e) => setQuantity(e.target.value)}
-                className="mt-1 w-full h-9 border border-line rounded-[6px] px-3 tnum font-mono text-ink outline-none focus:border-mineral bg-surface"
-              />
-            </div>
-            <div>
-              <label className="text-secondary font-medium">Mức giá đặt (VND)</label>
-              <input
-              value={priceInput || (currentPrice > 0 ? String(currentPrice) : "")}
-                onChange={(e) => setPriceInput(e.target.value)}
-                className="mt-1 w-full h-9 border border-line rounded-[6px] px-3 tnum font-mono text-ink outline-none focus:border-mineral bg-surface"
-              />
-            </div>
-          </div>
-
-          <div className="mt-4 pt-4 border-t border-line space-y-2 text-[12px]">
-            {[
-              ["Giá trị lệnh dự tính", estValue === null ? "—" : fmt(estValue)],
-              ["Phí giao dịch ước tính (0,10%, tối thiểu 10.000đ)", estFee === null ? "—" : fmt(estFee)],
-              ["Thuế bán ước tính (0,10%)", side === "Sell" && estValue !== null ? fmt(Math.round(estValue * 0.001)) : "—"],
-            ].map(([l, v]) => (
-              <div key={l} className="flex justify-between">
-                <span className="text-muted">{l}</span>
-                <span className="tnum font-mono text-ink font-semibold">{v}</span>
-              </div>
-            ))}
-          </div>
-
-          <Button
-            variant="primary"
-            onClick={() => void submitOrder()}
-            disabled={orderPending || !quoteAvailable || ord === "ATO" || ord === "ATC"}
-            className={`w-full mt-4 ${side === "Buy" ? "bg-gain hover:bg-gain" : "bg-loss hover:bg-loss"} text-white`}
-          >
-            Xác nhận {side === "Buy" ? "Mua" : "Bán"} {symbol}
-          </Button>
-          {!quoteAvailable && <p className="mt-2 text-[12px] text-warning">Chưa có giá hợp lệ cho {symbol}; tải lại dữ liệu trước khi đặt lệnh.</p>}
-          {orderMessage && <p role="status" className="mt-2 text-[12px] text-secondary">{orderMessage}</p>}
-          {(ord === "ATO" || ord === "ATC") && <p className="mt-2 text-[12px] text-muted">Chưa hỗ trợ mô phỏng khớp lệnh định kỳ.</p>}
-        </Panel>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
-        <Panel>
-          <PanelHead title="Sổ lệnh chờ và khớp gần nhất" sub="Nhật ký lệnh tài khoản từ PostgreSQL" />
-          <div className="overflow-x-auto">
-            {ordersData === null ? (
-              <div className="py-6 text-center text-muted text-[12px]">Không thể tải lịch sử lệnh.</div>
-            ) : orders.length > 0 ? (
-              <table className="w-full text-[12.5px]">
-                <thead>
-                  <tr className="border-b border-line text-muted text-[10px] uppercase font-semibold">
-                    <th className="py-2 text-left">Mã</th>
-                    <th className="py-2 text-left">Chiều</th>
-                    <th className="py-2 text-right">Khối lượng</th>
-                    <th className="py-2 text-right">Giá đặt</th>
-                    <th className="py-2 text-right">Trạng thái</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-line">
-                  {orders.slice(0, 8).map((o) => (
-                    <tr key={o.id}>
-                      <td className="py-2 font-mono font-bold text-ink">{o.symbol}</td>
-                      <td className={o.side === "BUY" ? "text-gain font-semibold" : "text-loss font-semibold"}>{o.side || "BUY"}</td>
-                      <td className="text-right font-mono tnum">{Number(o.quantity).toLocaleString("vi-VN")}</td>
-                      <td className="text-right font-mono tnum">{fmt(Number(o.price))}</td>
-                      <td className="text-right"><Pill tone={o.status === "FILLED" ? "gain" : "teal"}>{o.status}</Pill></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            ) : (
-              <div className="py-6 text-center text-muted text-[12px]">Chưa có lệnh nào trong phiên hôm nay.</div>
             )}
           </div>
+        </div>
+      </div>
+
+      {/* ====================================================================
+       * 2. THANH THÔNG TIN MÃ CỔ PHIẾU TRỰC TIẾP (CÂN ĐỐI TOÀN CHIỀU NGANG)
+       * ==================================================================== */}
+      <Panel className="!px-5 !py-3.5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between lg:divide-x lg:divide-[var(--color-line)]">
+          {/* Cột 1: Định danh & Giá khớp trực tiếp (có hiệu ứng nháy tick realtime) */}
+          <div className="flex items-center justify-between sm:justify-start gap-6 lg:pr-6 shrink-0">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="font-display text-[24px] font-bold tracking-tight text-[var(--color-ink)] leading-none">
+                  {stock.symbol}
+                </span>
+                <span className="rounded bg-[var(--color-surface-2)] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[var(--color-muted)]">
+                  HOSE
+                </span>
+                {currentPosition && (
+                  <span className="rounded bg-[var(--color-gain-soft)] px-2 py-0.5 font-mono text-[10px] font-semibold text-[var(--color-gain)] whitespace-nowrap">
+                    Đang giữ {fmtNumber(currentPosition.quantity)} CP
+                  </span>
+                )}
+              </div>
+              <p className="mt-1 max-w-[220px] truncate text-[12px] text-[var(--color-muted)]">
+                {stock.name}
+              </p>
+            </div>
+
+            <div
+              className={`rounded-[var(--radius-sm)] px-2.5 py-1 font-mono tabular-nums text-right sm:text-left whitespace-nowrap transition-colors duration-300 ${
+                flash === "gain"
+                  ? "bg-[var(--color-gain-soft)]"
+                  : flash === "loss"
+                    ? "bg-[var(--color-loss-soft)]"
+                    : ""
+              }`}
+            >
+              <div className={`text-[23px] font-bold leading-none ${mainPriceTone}`}>
+                {fmtPrice(stock.price)} <span className="text-[13px] font-normal">₫</span>
+              </div>
+              <div className={`mt-1 text-[12px] font-medium ${mainPriceTone}`}>
+                {stock.priceDiff > 0 ? "▲ " : stock.priceDiff < 0 ? "▼ " : ""}
+                {fmtVND(Math.abs(stock.priceDiff))} ({fmtPercent(stock.changePct)})
+              </div>
+            </div>
+          </div>
+
+          {/* Cột 2: Mốc Giá Trần / Tham Chiếu / Sàn chuẩn HOSE (Bấm để điền giá) */}
+          <div className="grid grid-cols-3 gap-2 lg:px-6 shrink-0">
+            <button
+              type="button"
+              onClick={() => fillPriceInput(stock.ceiling)}
+              title="Chạm để điền giá Trần"
+              className="rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface-2)]/60 px-3 py-1.5 text-center hover:border-[var(--color-ceiling)] transition-colors whitespace-nowrap"
+            >
+              <span className="block text-[10px] uppercase tracking-wider text-[var(--color-muted)]">
+                Trần
+              </span>
+              <span className="mt-0.5 block font-mono text-[13px] font-semibold text-[var(--color-ceiling)] tabular-nums">
+                {fmtPrice(stock.ceiling)}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => fillPriceInput(stock.ref ?? stock.price)}
+              title="Chạm để điền giá Tham chiếu"
+              className="rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface-2)]/60 px-3 py-1.5 text-center hover:border-[var(--color-ref)] transition-colors whitespace-nowrap"
+            >
+              <span className="block text-[10px] uppercase tracking-wider text-[var(--color-muted)]">
+                Tham chiếu
+              </span>
+              <span className="mt-0.5 block font-mono text-[13px] font-semibold text-[var(--color-ref)] tabular-nums">
+                {fmtPrice(stock.ref ?? stock.price)}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => fillPriceInput(stock.floor)}
+              title="Chạm để điền giá Sàn"
+              className="rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface-2)]/60 px-3 py-1.5 text-center hover:border-[var(--color-floor)] transition-colors whitespace-nowrap"
+            >
+              <span className="block text-[10px] uppercase tracking-wider text-[var(--color-muted)]">
+                Sàn
+              </span>
+              <span className="mt-0.5 block font-mono text-[13px] font-semibold text-[var(--color-floor)] tabular-nums">
+                {fmtPrice(stock.floor)}
+              </span>
+            </button>
+          </div>
+
+          {/* Cột 3: Thống kê phiên trực tiếp */}
+          <div className="flex flex-wrap items-center justify-between gap-6 lg:pl-6 flex-1">
+            <div className="whitespace-nowrap">
+              <div className="text-[11px] text-[var(--color-muted)]">KL khớp phiên</div>
+              <div className="mt-0.5 font-mono text-[13.5px] font-semibold text-[var(--color-ink)] tabular-nums">
+                {stock.volume}
+              </div>
+            </div>
+            <div className="whitespace-nowrap">
+              <div className="text-[11px] text-[var(--color-muted)]">Thấp – Cao phiên</div>
+              <div className="mt-0.5 font-mono text-[13.5px] font-semibold text-[var(--color-ink)] tabular-nums">
+                {latestCandle ? `${fmtPrice(latestCandle.low)} – ${fmtPrice(latestCandle.high)}` : "—"}
+              </div>
+            </div>
+            <div className="whitespace-nowrap">
+              <div className="text-[11px] text-[var(--color-muted)]">Khối ngoại</div>
+              <div
+                className={`mt-0.5 font-mono text-[13.5px] font-semibold tabular-nums ${
+                  stock.foreignFlow != null ? toneText(stock.foreignFlow) : "text-[var(--color-ink)]"
+                }`}
+              >
+                {stock.foreignFlow != null
+                  ? `${stock.foreignFlow >= 0 ? "+" : ""}${stock.foreignFlow.toFixed(1).replace(".", ",")} tỷ`
+                  : "—"}
+              </div>
+            </div>
+          </div>
+        </div>
+      </Panel>
+
+      {/* ====================================================================
+       * 3. KHU VỰC GIAO DỊCH CHÍNH 2 CỘT RỘNG RÃI (8 : 4)
+       * ==================================================================== */}
+      <div className="grid gap-4 xl:grid-cols-12 items-stretch">
+        {/* CỘT TRÁI (8/12): BIỂU ĐỒ GIÁ + BẢNG CHÀO MUA/BÁN CHUẨN HOSE */}
+        <Panel className="xl:col-span-8 !p-4 flex flex-col justify-between">
+          <PriceVolumeChart
+            symbol={symbol}
+            candles={candles}
+            chartRange={chartRange}
+            onChangeRange={setChartRange}
+            chartType={chartType}
+            onChangeChartType={setChartType}
+            showSma={showSma}
+            onToggleSma={() => setShowSma((s) => !s)}
+            orderSide={side}
+            orderPrice={effectivePrice}
+            currentPrice={stock.price}
+            refPrice={stock.ref ?? stock.price}
+            isLive={isLive}
+            onPickPriceFromChart={(picked) => fillPriceInput(picked)}
+          />
+
+          <BidAskOrderbook
+            bids={activeBids}
+            asks={activeAsks}
+            refPrice={stock.ref ?? stock.price}
+            ceilingPrice={stock.ceiling}
+            floorPrice={stock.floor}
+            selectedOrderPrice={effectivePrice}
+            isLiveStream={isLive}
+            orderbookStale={resolvedOrderbook.stale}
+            receivedAt={resolvedOrderbook.receivedAt}
+            lastUpdate={resolvedOrderbook.lastUpdate}
+            socketConnected={socketConnected}
+            onSelectPrice={(p) => fillPriceInput(p)}
+          />
         </Panel>
 
-        <Panel>
-          <PanelHead title="Sổ lệnh chào mua / chào bán" sub={`${bookData?.lastUpdate ? `Feed ${new Date(bookData.lastUpdate).toLocaleString("vi-VN")}` : "Chưa có sổ lệnh từ nguồn dữ liệu"}; giá khớp cần dữ liệu dưới 10 giây`} action={<Button variant="quiet" onClick={() => void stockRes.reload()}>Làm mới</Button>} />
-          <div className="grid grid-cols-2 gap-3 text-[12px] font-mono">
-            <div>
-              <div className="text-[10.5px] uppercase text-muted mb-1 px-1 font-semibold">Dư mua (Bids)</div>
-              {(bookData?.bids ?? []).slice(0, 3).map((level: {price: number; volume: number}, i: number) => (
-                <div key={i} className="flex justify-between py-1 px-2 border-b border-line">
-                  <span className="text-gain">{fmt(level.price < 500 ? level.price * 1000 : level.price)}</span>
-                  <span className="text-secondary">{level.volume.toLocaleString("vi-VN")}</span>
-                </div>
-              ))}
-              {!bookData?.bids?.length && <p className="px-2 py-2 text-[11px] text-muted">Không có mức dư mua.</p>}
+        {/* CỘT PHẢI (4/12): PHIẾU ĐẶT LỆNH */}
+        <Panel className="xl:col-span-4 !p-4 flex flex-col justify-between">
+          <div className="space-y-3">
+            {/* Header Phiếu lệnh */}
+            <div className="flex items-center justify-between pb-2.5 border-b border-[var(--color-line)]">
+              <h2 className="text-[15px] font-semibold text-[var(--color-ink)]">Phiếu đặt lệnh</h2>
+              <span className="font-mono text-[12.5px] font-semibold text-[var(--color-muted)]">
+                Mã: <strong className="text-[var(--color-ink)]">{symbol}</strong>
+              </span>
             </div>
-            <div>
-              <div className="text-[10.5px] uppercase text-muted mb-1 px-1 text-right font-semibold">Dư bán (Asks)</div>
-              {(bookData?.asks ?? []).slice(0, 3).map((level: {price: number; volume: number}, i: number) => (
-                <div key={i} className="flex justify-between py-1 px-2 border-b border-line">
-                  <span className="text-loss">{fmt(level.price < 500 ? level.price * 1000 : level.price)}</span>
-                  <span className="text-secondary">{level.volume.toLocaleString("vi-VN")}</span>
-                </div>
-              ))}
-              {!bookData?.asks?.length && <p className="px-2 py-2 text-right text-[11px] text-muted">Không có mức dư bán.</p>}
+
+            {/* 1. Chọn Mua / Bán */}
+            <div className="grid grid-cols-2 gap-1 rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface-2)] p-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setSide("BUY")
+                  setOrderNotice(null)
+                }}
+                className={`rounded-[5px] py-1.5 text-[13px] font-semibold transition-colors whitespace-nowrap ${
+                  side === "BUY"
+                    ? "bg-[var(--color-gain)] text-[var(--color-paper)]"
+                    : "text-[var(--color-muted)] hover:text-[var(--color-ink)]"
+                }`}
+              >
+                Mua cổ phiếu
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSide("SELL")
+                  setOrderNotice(null)
+                }}
+                className={`rounded-[5px] py-1.5 text-[13px] font-semibold transition-colors whitespace-nowrap ${
+                  side === "SELL"
+                    ? "bg-[var(--color-loss)] text-[var(--color-paper)]"
+                    : "text-[var(--color-muted)] hover:text-[var(--color-ink)]"
+                }`}
+              >
+                Bán cổ phiếu
+              </button>
             </div>
+
+            {/* 2. Loại lệnh LO / MP */}
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setOrderType("LO")}
+                className={`rounded-[var(--radius-sm)] border py-1.5 text-[12px] font-medium transition-colors whitespace-nowrap ${
+                  orderType === "LO"
+                    ? "border-[var(--color-ink)] bg-[var(--color-ink)] text-[var(--color-paper)]"
+                    : "border-[var(--color-line)] bg-[var(--color-surface-2)] text-[var(--color-muted)] hover:text-[var(--color-ink)]"
+                }`}
+              >
+                LO · Lệnh giới hạn
+              </button>
+              <button
+                type="button"
+                onClick={() => setOrderType("MP")}
+                className={`rounded-[var(--radius-sm)] border py-1.5 text-[12px] font-medium transition-colors whitespace-nowrap ${
+                  orderType === "MP"
+                    ? "border-[var(--color-ink)] bg-[var(--color-ink)] text-[var(--color-paper)]"
+                    : "border-[var(--color-line)] bg-[var(--color-surface-2)] text-[var(--color-muted)] hover:text-[var(--color-ink)]"
+                }`}
+              >
+                MP · Giá thị trường
+              </button>
+            </div>
+
+            {/* 3. Thông tin Sức mua / Cổ phiếu đang giữ */}
+            <div className="rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface-2)]/65 px-3 py-2 text-[12px] space-y-1">
+              {side === "BUY" ? (
+                <>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[var(--color-muted)]">Sức mua khả dụng</span>
+                    <strong className="font-mono text-[var(--color-ink)] tabular-nums whitespace-nowrap">
+                      {fmtVND(buyingPower)} ₫
+                    </strong>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[var(--color-muted)]">KL mua tối đa</span>
+                    <strong className="font-mono text-[var(--color-gain)] tabular-nums whitespace-nowrap">
+                      {fmtNumber(maxBuyableShares)} CP
+                    </strong>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[var(--color-muted)]">Số dư khả dụng ({symbol})</span>
+                    <strong className="font-mono text-[var(--color-ink)] tabular-nums whitespace-nowrap">
+                      {fmtNumber(heldShares)} CP
+                    </strong>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[var(--color-muted)]">Giá vốn trung bình</span>
+                    <strong className="font-mono text-[var(--color-ink-2)] tabular-nums whitespace-nowrap">
+                      {currentPosition ? `${fmtPrice(currentPosition.avgPrice)} ₫` : "—"}
+                    </strong>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* 4. Khối lượng đặt (Lô 100 CP) */}
+            <div>
+              <div className="flex items-center justify-between text-[12px] mb-1">
+                <span className="text-[var(--color-muted)]">Khối lượng (Lô 100 CP)</span>
+                <span className="font-mono text-[11.5px] text-[var(--color-ink-2)] tabular-nums">
+                  {Math.floor(quantity / 100)} lô
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setQtyInput(String(Math.max(100, (Math.floor(quantity / 100) - 1) * 100)))}
+                  className="h-9 w-9 shrink-0 rounded-[var(--radius-sm)] border border-[var(--color-line-strong)] bg-[var(--color-surface-2)] font-mono text-[15px] font-bold text-[var(--color-ink)] hover:border-[var(--color-ink)] transition-colors"
+                >
+                  −
+                </button>
+                <input
+                  type="number"
+                  step={100}
+                  min={100}
+                  value={qtyInput}
+                  onChange={(e) => setQtyInput(e.target.value)}
+                  className="h-9 w-full rounded-[var(--radius-sm)] border border-[var(--color-line-strong)] bg-[var(--color-surface)] px-3 text-center font-mono text-[14px] font-semibold text-[var(--color-ink)] tabular-nums focus:border-[var(--color-ink)] focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => setQtyInput(String(Math.max(100, (Math.floor(quantity / 100) + 1) * 100)))}
+                  className="h-9 w-9 shrink-0 rounded-[var(--radius-sm)] border border-[var(--color-line-strong)] bg-[var(--color-surface-2)] font-mono text-[15px] font-bold text-[var(--color-ink)] hover:border-[var(--color-ink)] transition-colors"
+                >
+                  +
+                </button>
+              </div>
+
+              <div className="mt-1.5 grid grid-cols-4 gap-1.5">
+                {([0.25, 0.5, 0.75, 1] as const).map((ratio) => {
+                  const maxBase = side === "BUY" ? maxBuyableShares : heldShares
+                  const targetQty =
+                    maxBase >= 100 ? Math.max(100, Math.floor((maxBase * ratio) / 100) * 100) : 100
+                  return (
+                    <button
+                      key={ratio}
+                      type="button"
+                      onClick={() => setQtyInput(String(targetQty))}
+                      className="rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface-2)] py-1 font-mono text-[11.5px] font-medium text-[var(--color-ink-2)] hover:border-[var(--color-ink)] transition-colors whitespace-nowrap"
+                    >
+                      {ratio === 1 ? "Tối đa" : `${ratio * 100}%`}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+
+            {/* 5. Mức giá đặt (VND) */}
+            {orderType === "LO" ? (
+              <div>
+                <div className="flex items-center justify-between text-[12px] mb-1">
+                  <span className="text-[var(--color-muted)]">Giá đặt (VND)</span>
+                  <span className="font-mono text-[11.5px] text-[var(--color-muted)]">
+                    Bước giá: {fmtPrice(priceStep)} ₫
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      fillPriceInput(Math.max(stock.floor || priceStep, effectivePrice - priceStep))
+                    }
+                    className="h-9 w-9 shrink-0 rounded-[var(--radius-sm)] border border-[var(--color-line-strong)] bg-[var(--color-surface-2)] font-mono text-[15px] font-bold text-[var(--color-ink)] hover:border-[var(--color-ink)] transition-colors"
+                  >
+                    −
+                  </button>
+                  <input
+                    type="number"
+                    step={priceStep}
+                    value={priceInput}
+                    onChange={(e) => setPriceInput(e.target.value)}
+                    className={`h-9 w-full rounded-[var(--radius-sm)] border bg-[var(--color-surface)] px-3 text-center font-mono text-[14px] font-semibold text-[var(--color-ink)] tabular-nums focus:outline-none transition-shadow ${
+                      priceInputFlash
+                        ? "border-[var(--color-gain)] shadow-[0_0_0_3px_rgba(27,107,74,0.18)]"
+                        : "border-[var(--color-line-strong)] focus:border-[var(--color-ink)]"
+                    }`}
+                  />
+                  <button
+                    type="button"
+                    onClick={() =>
+                      fillPriceInput(
+                        stock.ceiling > 0
+                          ? Math.min(stock.ceiling, effectivePrice + priceStep)
+                          : effectivePrice + priceStep
+                      )
+                    }
+                    className="h-9 w-9 shrink-0 rounded-[var(--radius-sm)] border border-[var(--color-line-strong)] bg-[var(--color-surface-2)] font-mono text-[15px] font-bold text-[var(--color-ink)] hover:border-[var(--color-ink)] transition-colors"
+                  >
+                    +
+                  </button>
+                </div>
+
+                {/* Nút chọn nhanh giá: Ưu tiên Mua 1 / TC / Bán 1 khi có sổ lệnh thật, hoặc Sàn / Thị giá / Trần ngoài giờ */}
+                {bestBidPrice > 0 || bestAskPrice > 0 ? (
+                  <div className="mt-1.5 grid grid-cols-3 gap-1.5">
+                    <button
+                      type="button"
+                      disabled={bestBidPrice <= 0}
+                      onClick={() => fillPriceInput(bestBidPrice)}
+                      className="rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface-2)] px-2 py-1 text-center font-mono tabular-nums hover:border-[var(--color-gain)] disabled:opacity-45 transition-colors whitespace-nowrap"
+                    >
+                      <span className="block text-[10px] font-sans text-[var(--color-muted)]">Mua 1</span>
+                      <span
+                        className={`block text-[12px] font-semibold ${hosePriceTone(
+                          bestBidPrice,
+                          stock.ref,
+                          stock.ceiling,
+                          stock.floor
+                        )}`}
+                      >
+                        {fmtPrice(bestBidPrice)}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => fillPriceInput(stock.ref ?? stock.price)}
+                      className="rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface-2)] px-2 py-1 text-center font-mono tabular-nums hover:border-[var(--color-ref)] transition-colors whitespace-nowrap"
+                    >
+                      <span className="block text-[10px] font-sans text-[var(--color-muted)]">Tham chiếu</span>
+                      <span className="block text-[12px] font-semibold text-[var(--color-ref)]">
+                        {fmtPrice(stock.ref ?? stock.price)}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={bestAskPrice <= 0}
+                      onClick={() => fillPriceInput(bestAskPrice)}
+                      className="rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface-2)] px-2 py-1 text-center font-mono tabular-nums hover:border-[var(--color-loss)] disabled:opacity-45 transition-colors whitespace-nowrap"
+                    >
+                      <span className="block text-[10px] font-sans text-[var(--color-muted)]">Bán 1</span>
+                      <span
+                        className={`block text-[12px] font-semibold ${hosePriceTone(
+                          bestAskPrice,
+                          stock.ref,
+                          stock.ceiling,
+                          stock.floor
+                        )}`}
+                      >
+                        {fmtPrice(bestAskPrice)}
+                      </span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="mt-1.5 grid grid-cols-3 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => fillPriceInput(stock.floor)}
+                      className="rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface-2)] px-2 py-1 text-center font-mono tabular-nums hover:border-[var(--color-floor)] transition-colors whitespace-nowrap"
+                    >
+                      <span className="block text-[10px] font-sans text-[var(--color-muted)]">Giá sàn</span>
+                      <span className="block text-[12px] font-semibold text-[var(--color-floor)]">
+                        {fmtPrice(stock.floor)}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => fillPriceInput(stock.price)}
+                      className="rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface-2)] px-2 py-1 text-center font-mono tabular-nums hover:border-[var(--color-ink)] transition-colors whitespace-nowrap"
+                    >
+                      <span className="block text-[10px] font-sans text-[var(--color-muted)]">Thị giá</span>
+                      <span className={`block text-[12px] font-semibold ${mainPriceTone}`}>
+                        {fmtPrice(stock.price)}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => fillPriceInput(stock.ceiling)}
+                      className="rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface-2)] px-2 py-1 text-center font-mono tabular-nums hover:border-[var(--color-ceiling)] transition-colors whitespace-nowrap"
+                    >
+                      <span className="block text-[10px] font-sans text-[var(--color-muted)]">Giá trần</span>
+                      <span className="block text-[12px] font-semibold text-[var(--color-ceiling)]">
+                        {fmtPrice(stock.ceiling)}
+                      </span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface-2)] px-3.5 py-2.5 text-[12px] text-[var(--color-ink-2)] leading-relaxed">
+                Lệnh <strong>MP</strong> khớp ngay tại mức giá đối ứng tốt nhất trên sổ lệnh trực tiếp (
+                {side === "BUY" ? "Giá Bán 1" : "Giá Mua 1"} tạm tính:{" "}
+                <strong className="font-mono">{fmtPrice(mpCounterPrice)} ₫</strong>).
+              </div>
+            )}
+          </div>
+
+          {/* 6. Tóm tắt giá trị lệnh & Nút xác nhận */}
+          <div className="mt-3 pt-3 border-t border-[var(--color-line)] space-y-2.5">
+            <div className="space-y-1 text-[12px]">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[var(--color-muted)]">Giá trị lệnh</span>
+                <span className="font-mono text-[var(--color-ink-2)] tabular-nums whitespace-nowrap">
+                  {fmtVND(financials.gross)} ₫
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[var(--color-muted)]">
+                  Phí & thuế tạm tính ({side === "SELL" ? "0,20%" : "0,10%"})
+                </span>
+                <span className="font-mono text-[var(--color-ink-2)] tabular-nums whitespace-nowrap">
+                  {fmtVND(financials.fee + financials.tax)} ₫
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-[var(--color-line)]/70">
+                <span className="font-medium text-[var(--color-ink)]">
+                  {side === "BUY" ? "Tổng thanh toán" : "Tiền ròng nhận về"}
+                </span>
+                <span
+                  className={`font-mono text-[14.5px] font-bold tabular-nums whitespace-nowrap ${
+                    side === "BUY" ? "text-[var(--color-ink)]" : "text-[var(--color-gain)]"
+                  }`}
+                >
+                  {fmtVND(financials.totalCostOrProceeds)} ₫
+                </span>
+              </div>
+            </div>
+
+            {validationError && (
+              <div className="rounded-[var(--radius-sm)] border border-[var(--color-loss)]/40 bg-[var(--color-loss-soft)] px-3 py-1.5 text-[11.5px] font-medium text-[var(--color-loss)]">
+                {validationError}
+              </div>
+            )}
+
+            {orderNotice && (
+              <div
+                className={`rounded-[var(--radius-sm)] border px-3 py-1.5 text-[11.5px] ${
+                  orderNotice.tone === "gain"
+                    ? "border-[var(--color-gain)]/40 bg-[var(--color-gain-soft)] text-[var(--color-gain)]"
+                    : "border-[var(--color-loss)]/40 bg-[var(--color-loss-soft)] text-[var(--color-loss)]"
+                }`}
+              >
+                <div>{orderNotice.text}</div>
+                {orderNotice.orderId && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const found = orders.find((o) => o.id === orderNotice.orderId)
+                      if (found) setSelectedOrderReceipt(found)
+                    }}
+                    className="mt-1 font-mono text-[11px] underline"
+                  >
+                    Xem chi tiết khớp lệnh →
+                  </button>
+                )}
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={handleSubmitOrder}
+              disabled={!canSubmit}
+              className={`h-10 w-full rounded-[var(--radius-sm)] text-[13px] font-semibold text-[var(--color-paper)] transition-opacity whitespace-nowrap ${
+                side === "BUY" ? "bg-[var(--color-gain)]" : "bg-[var(--color-loss)]"
+              } disabled:opacity-40 disabled:cursor-not-allowed`}
+            >
+              {submitting
+                ? "Đang gửi lệnh..."
+                : `Đặt lệnh ${side === "BUY" ? "Mua" : "Bán"} ${fmtNumber(validLotQty ? quantity : 0)} ${symbol}`}
+            </button>
           </div>
         </Panel>
       </div>
-    </Page>
+
+      {/* ====================================================================
+       * 4. LỊCH SỬ ĐẶT LỆNH GẦN ĐÂY
+       * ==================================================================== */}
+      <Panel>
+        <PanelHead
+          title="Lịch sử đặt lệnh"
+          sub={`Danh sách lệnh giao dịch của tài khoản (${orders.length} lệnh) · Bấm vào dòng lệnh để xem chi tiết phí.`}
+          action={
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="inline-flex rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface-2)] p-0.5">
+                {(
+                  [
+                    { id: "ALL", label: `Tất cả (${orders.length})` },
+                    {
+                      id: "SYMBOL",
+                      label: `${symbol} (${orders.filter((o) => o.symbol.toUpperCase() === symbol).length})`,
+                    },
+                    { id: "BUY", label: "Mua" },
+                    { id: "SELL", label: "Bán" },
+                  ] as const
+                ).map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setLedgerFilter(tab.id)}
+                    className={`px-2.5 py-1 text-[11.5px] font-medium rounded-[4px] transition-colors whitespace-nowrap ${
+                      ledgerFilter === tab.id
+                        ? "bg-[var(--color-ink)] text-[var(--color-paper)]"
+                        : "text-[var(--color-muted)] hover:text-[var(--color-ink)]"
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+
+              <input
+                type="text"
+                value={ledgerSearch}
+                onChange={(e) => setLedgerSearch(e.target.value)}
+                placeholder="Lọc mã CP..."
+                className="h-8 w-[150px] rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface)] px-2.5 text-[12px] text-[var(--color-ink)] placeholder:text-[var(--color-muted)] focus:border-[var(--color-ink)] focus:outline-none"
+              />
+            </div>
+          }
+        />
+
+        <div className="overflow-x-auto border-t border-[var(--color-line)] pt-1">
+          <table className="w-full text-left text-[12.5px]">
+            <thead>
+              <tr className="border-b border-[var(--color-line)] text-[10.5px] font-mono uppercase tracking-[0.08em] text-[var(--color-muted)] whitespace-nowrap">
+                <th className="py-2.5 pr-3">Thời gian</th>
+                <th className="py-2.5 px-3">Mã CP</th>
+                <th className="py-2.5 px-3">Loại lệnh</th>
+                <th className="py-2.5 px-3 text-right">Khối lượng</th>
+                <th className="py-2.5 px-3 text-right">Giá khớp</th>
+                <th className="py-2.5 px-3 text-right">Phí & Thuế</th>
+                <th className="py-2.5 px-3 text-right">Tổng giá trị</th>
+                <th className="py-2.5 pl-3 text-right">Trạng thái</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[var(--color-line)]/70 font-mono tabular-nums">
+              {filteredOrders.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="py-8 text-center font-sans text-[13px] text-[var(--color-muted)]">
+                    Chưa có lệnh giao dịch nào khớp với bộ lọc.
+                  </td>
+                </tr>
+              ) : (
+                filteredOrders.slice(0, 20).map((ord) => {
+                  const dt = formatDateTimeVi(ord.createdAt)
+                  const fin = computeOrderFinancials(ord.side, Number(ord.price), Number(ord.quantity))
+                  const isBuy = ord.side === "BUY"
+                  return (
+                    <tr
+                      key={ord.id}
+                      onClick={() => setSelectedOrderReceipt(ord)}
+                      className="cursor-pointer hover:bg-[var(--color-surface-2)]/65 transition-colors"
+                    >
+                      <td className="py-2.5 pr-3 whitespace-nowrap">
+                        <span className="text-[12px] text-[var(--color-ink)]">{dt.date}</span>
+                        {dt.time && (
+                          <span className="ml-1.5 text-[11px] text-[var(--color-muted)]">{dt.time}</span>
+                        )}
+                      </td>
+                      <td className="py-2.5 px-3 whitespace-nowrap">
+                        <span className="font-bold text-[var(--color-ink)]">{ord.symbol}</span>
+                        {ord.sector && (
+                          <span className="ml-2 font-sans text-[11.5px] text-[var(--color-muted)]">
+                            {ord.sector}
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-2.5 px-3 whitespace-nowrap">
+                        <span
+                          className={`inline-flex items-center rounded px-2 py-0.5 text-[10.5px] font-semibold ${
+                            isBuy
+                              ? "bg-[var(--color-gain-soft)] text-[var(--color-gain)]"
+                              : "bg-[var(--color-loss-soft)] text-[var(--color-loss)]"
+                          }`}
+                        >
+                          {isBuy ? "Mua" : "Bán"} · {ord.orderType || "LO"}
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-semibold text-[var(--color-ink)] whitespace-nowrap">
+                        {fmtNumber(ord.quantity)} CP
+                      </td>
+                      <td className="py-2.5 px-3 text-right text-[var(--color-ink)] whitespace-nowrap">
+                        {fmtPrice(ord.price)} ₫
+                      </td>
+                      <td className="py-2.5 px-3 text-right text-[var(--color-muted)] whitespace-nowrap">
+                        {fmtVND(fin.fee + fin.tax)} ₫
+                      </td>
+                      <td
+                        className={`py-2.5 px-3 text-right font-semibold whitespace-nowrap ${
+                          isBuy ? "text-[var(--color-ink)]" : "text-[var(--color-gain)]"
+                        }`}
+                      >
+                        {isBuy ? "−" : "+"}
+                        {fmtVND(fin.totalCostOrProceeds)} ₫
+                      </td>
+                      <td
+                        className="py-2.5 pl-3 text-right whitespace-nowrap"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div className="inline-flex items-center gap-2">
+                          <span className="rounded-full bg-[var(--color-gain-soft)] px-2 py-0.5 font-sans text-[11px] font-medium text-[var(--color-gain)]">
+                            Đã khớp
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              selectSymbol(ord.symbol, ord.side, ord.quantity)
+                              fillPriceInput(Number(ord.price))
+                              window.scrollTo({ top: 0, behavior: "smooth" })
+                            }}
+                            className="rounded border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-0.5 font-sans text-[11px] font-medium text-[var(--color-ink-2)] hover:border-[var(--color-ink)] transition-colors"
+                          >
+                            Đặt lại
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
+
+      {/* ====================================================================
+       * DRAWER: CHI TIẾT KHỚP LỆNH
+       * ==================================================================== */}
+      {selectedOrderReceipt && (
+        <div
+          className="fixed inset-0 z-50 flex justify-end bg-black/35 backdrop-blur-[2px]"
+          onClick={() => setSelectedOrderReceipt(null)}
+        >
+          <div
+            className="flex h-full w-full max-w-[420px] flex-col justify-between border-l border-[var(--color-line-strong)] bg-[var(--color-paper)] p-6 shadow-2xl overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="space-y-5">
+              <div className="flex items-start justify-between gap-3 border-b border-[var(--color-line)] pb-4">
+                <div>
+                  <span className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-[var(--color-muted)]">
+                    Chi tiết lệnh giao dịch
+                  </span>
+                  <h3 className="mt-1 font-display text-[22px] font-semibold text-[var(--color-ink)]">
+                    {selectedOrderReceipt.side === "BUY" ? "Mua" : "Bán"} {selectedOrderReceipt.symbol}
+                  </h3>
+                  <p className="text-[12px] text-[var(--color-muted)]">
+                    {selectedOrderReceipt.sector || "HOSE"}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedOrderReceipt(null)}
+                  className="rounded-[var(--radius-sm)] border border-[var(--color-line)] px-2.5 py-1 text-[12px] text-[var(--color-muted)] hover:border-[var(--color-ink)] hover:text-[var(--color-ink)]"
+                >
+                  Đóng ✕
+                </button>
+              </div>
+
+              {(() => {
+                const fin = computeOrderFinancials(
+                  selectedOrderReceipt.side,
+                  Number(selectedOrderReceipt.price),
+                  Number(selectedOrderReceipt.quantity)
+                )
+                const dt = formatDateTimeVi(selectedOrderReceipt.createdAt)
+                const isBuy = selectedOrderReceipt.side === "BUY"
+
+                return (
+                  <div className="space-y-4 font-mono text-[12px] tabular-nums">
+                    <div className="rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)] p-4 space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <span className="font-sans text-[var(--color-muted)]">Mã lệnh</span>
+                        <span className="text-[var(--color-ink)] font-semibold">
+                          #{String(selectedOrderReceipt.id).slice(0, 12)}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="font-sans text-[var(--color-muted)]">Thời gian khớp</span>
+                        <span className="text-[var(--color-ink)]">
+                          {dt.date} {dt.time}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="font-sans text-[var(--color-muted)]">Trạng thái</span>
+                        <span className="rounded bg-[var(--color-gain-soft)] px-2 py-0.5 text-[10.5px] font-semibold text-[var(--color-gain)]">
+                          Đã khớp · {selectedOrderReceipt.orderType || "LO"}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)] p-4 space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <span className="font-sans text-[var(--color-muted)]">Khối lượng</span>
+                        <strong className="text-[var(--color-ink)]">
+                          {fmtNumber(selectedOrderReceipt.quantity)} CP
+                        </strong>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="font-sans text-[var(--color-muted)]">Giá khớp</span>
+                        <strong className="text-[var(--color-ink)]">
+                          {fmtPrice(selectedOrderReceipt.price)} ₫
+                        </strong>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="font-sans text-[var(--color-muted)]">Giá trị gốc</span>
+                        <span className="text-[var(--color-ink-2)]">{fmtVND(fin.gross)} ₫</span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="font-sans text-[var(--color-muted)]">Phí giao dịch (0,10%)</span>
+                        <span className="text-[var(--color-loss)]">−{fmtVND(fin.fee)} ₫</span>
+                      </div>
+                      {!isBuy && (
+                        <div className="flex items-center justify-between">
+                          <span className="font-sans text-[var(--color-muted)]">Thuế bán (0,10%)</span>
+                          <span className="text-[var(--color-loss)]">−{fmtVND(fin.tax)} ₫</span>
+                        </div>
+                      )}
+                      <div className="flex items-center justify-between border-t border-[var(--color-line)] pt-2.5 text-[13.5px]">
+                        <span className="font-sans font-semibold text-[var(--color-ink)]">
+                          {isBuy ? "Tổng thanh toán" : "Tiền ròng nhận về"}
+                        </span>
+                        <strong className={isBuy ? "text-[var(--color-ink)]" : "text-[var(--color-gain)]"}>
+                          {isBuy ? "−" : "+"}
+                          {fmtVND(fin.totalCostOrProceeds)} ₫
+                        </strong>
+                      </div>
+                    </div>
+                  </div>
+                )
+              })()}
+            </div>
+
+            <div className="mt-6 grid grid-cols-2 gap-2.5 pt-4 border-t border-[var(--color-line)]">
+              <button
+                type="button"
+                onClick={() => {
+                  selectSymbol(selectedOrderReceipt.symbol)
+                  setSelectedOrderReceipt(null)
+                }}
+                className="rounded-[var(--radius-sm)] border border-[var(--color-line-strong)] bg-[var(--color-surface)] py-2.5 text-[12.5px] font-medium text-[var(--color-ink)] hover:border-[var(--color-ink)] transition-colors"
+              >
+                Xem biểu đồ {selectedOrderReceipt.symbol}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  selectSymbol(
+                    selectedOrderReceipt.symbol,
+                    selectedOrderReceipt.side,
+                    selectedOrderReceipt.quantity
+                  )
+                  fillPriceInput(Number(selectedOrderReceipt.price))
+                  setSelectedOrderReceipt(null)
+                  window.scrollTo({ top: 0, behavior: "smooth" })
+                }}
+                className="rounded-[var(--radius-sm)] bg-[var(--color-ink)] py-2.5 text-[12.5px] font-semibold text-[var(--color-paper)] hover:opacity-90 transition-opacity"
+              >
+                Đặt lại lệnh này
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   )
 }

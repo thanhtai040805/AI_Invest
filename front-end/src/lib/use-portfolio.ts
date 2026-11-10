@@ -4,7 +4,8 @@ import { useEffect, useMemo, useState } from "react"
 import { getSocket, retainStock } from "./socket"
 
 export interface PortfolioPosition {
-  id: string; symbol: string; quantity: number; avgPrice: number;
+  id: string; symbol: string; name?: string; sector?: string | null; exchange?: string | null;
+  quantity: number; avgPrice: number;
   currentPrice: number | null; marketValue: number | null; costBasis: number | null;
   pnl: number | null; pnlPercent: number | null; weight: number | null;
   priceAsOf: string | null; priceSource: string; stale: boolean;
@@ -18,7 +19,11 @@ export interface PortfolioSnapshot {
     valuedAt: string; stalePrices: string[];
   }
   positions: PortfolioPosition[];
-  performance: { equityCurve: { date: string; value: number }[]; asOf: string | null };
+  performance: {
+    equityCurve: { date: string; value: number }[];
+    benchmarkCurve?: { date: string; value: number }[];
+    asOf: string | null;
+  };
   risks: { sharpe: number | null; alpha: number | null; beta: number | null; maxDrawdown: number | null; message: string };
   orders: Record<string, unknown>[];
 }

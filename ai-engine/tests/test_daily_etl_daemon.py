@@ -1,7 +1,10 @@
 """Test Suite: Daily ETL Daemon (15:00 Post-Market Data Ingestion Cron)."""
 
 import asyncio
+import sys
 from datetime import datetime, timezone, timedelta
+from types import SimpleNamespace
+from unittest.mock import Mock, call
 import pytest
 
 from app.infrastructure.workers.daily_etl_daemon import DailyETLDaemon, etl_daemon, TZ_VN
@@ -12,6 +15,26 @@ from app.domain.pipeline import daily_etl as daily_etl_module
 @pytest.fixture(autouse=True)
 def no_promoted_snapshot(monkeypatch):
     monkeypatch.setattr(daemon_module, "get_job", lambda _: None)
+
+
+@pytest.mark.parametrize("installed", [False, True])
+def test_financial_etl_vci_unavailable_is_nonfatal(monkeypatch, installed):
+    from app.infrastructure.data_pipelines.financial_etl_cafef import _fetch_vci_missing_quarter
+
+    finance = Mock(side_effect=SystemExit("provider retired"))
+    module = SimpleNamespace(Finance=finance) if installed else None
+    monkeypatch.setitem(sys.modules, "vnstock.api.financial", module)
+    cursor = Mock()
+    cursor.fetchall.return_value = [("FPT", "BS"), ("VNM", "IS")]
+
+    assert _fetch_vci_missing_quarter(cursor) == {"rows": 0, "symbols": 2, "errors": 2}
+    assert finance.call_count == int(installed)
+    if installed:
+        assert cursor.execute.call_args_list[1:] == [
+            call("SAVEPOINT vci_symbol_0"),
+            call("ROLLBACK TO SAVEPOINT vci_symbol_0"),
+            call("RELEASE SAVEPOINT vci_symbol_0"),
+        ]
 
 
 def test_promoted_snapshot_survives_restart_but_next_session_still_runs(monkeypatch):

@@ -9,6 +9,8 @@ export interface PositionView {
   id: string;
   symbol: string;
   name: string;
+  sector?: string | null;
+  exchange?: string | null;
   quantity: number;
   avgPrice: number;
   currentPrice: number | null;
@@ -44,7 +46,12 @@ export async function getSnapshot(userId: string) {
         ORDER BY e.executed_at NULLS LAST, o.created_at, o.id`, userId),
       tx.$queryRawUnsafe<NavPoint[]>(`SELECT to_char(date,'YYYY-MM-DD') AS date, total_nav::float AS value
         FROM portfolio_nav_history WHERE account_id=$1 AND date <= $2::date ORDER BY date`, userId, today),
-      tx.order.findMany({ where: { userId }, orderBy: { createdAt: 'desc' }, take: 100 }),
+      tx.order.findMany({
+        where: { userId },
+        orderBy: { createdAt: 'desc' },
+        take: 100,
+        include: { stock: { select: { name: true, sector: true, exchange: true } } },
+      }),
     ]);
     return { cash: Number(user.cashBalance), positions, receipts, history, orders };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
@@ -75,6 +82,8 @@ export async function getSnapshot(userId: string) {
     const costBasis = ledger.complete ? ledger.costBySymbol[pos.symbol] ?? 0 : null;
     const pnl = marketValue === null || costBasis === null ? null : marketValue - costBasis;
     return { id: pos.id, symbol: pos.symbol, name: pos.stock?.name || pos.symbol,
+      sector: pos.stock?.sector ?? pos.stock?.industry ?? null,
+      exchange: pos.stock?.exchange ?? null,
       quantity: pos.quantity, avgPrice: Number(pos.avgPrice), currentPrice: price, marketValue, costBasis,
       weight: null, pnl, pnlPercent: pnl !== null && costBasis && costBasis > 0 ? pnl / costBasis * 100 : null,
       priceAsOf: mark?.priceAsOf ?? close?.price_date ?? null,
@@ -109,8 +118,17 @@ export async function getSnapshot(userId: string) {
     stalePrices: positions.filter(p => p.stale).map(p => p.symbol),
   };
   for (const p of positions) p.weight = nav && p.marketValue !== null ? p.marketValue / nav * 100 : null;
-  return { summary, positions, performance: { equityCurve: state.history, asOf: last?.date ?? null },
-    risks: portfolioRisk(state.history, benchmark), orders: state.orders };
+  const orders = state.orders.map((ord: any) => {
+    const { stock, ...rest } = ord;
+    return {
+      ...rest,
+      stockName: stock?.name ?? ord.symbol,
+      sector: stock?.sector ?? null,
+      exchange: stock?.exchange ?? null,
+    };
+  });
+  return { summary, positions, performance: { equityCurve: state.history, benchmarkCurve: benchmark, asOf: last?.date ?? null },
+    risks: portfolioRisk(state.history, benchmark), orders };
 }
 
 export async function getPositions(userId: string) { return (await getSnapshot(userId)).positions; }
