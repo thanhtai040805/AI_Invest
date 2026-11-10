@@ -24,6 +24,13 @@
 
   --color-gain: #2b805b;
   --color-loss: #b55250;
+  --color-ceiling: #7c32a8;
+  --color-floor: #0e7490;
+  --color-ref: #a87618;
+  --color-gain-soft: rgba(43, 128, 91, 0.1);
+  --color-loss-soft: rgba(181, 82, 80, 0.1);
+  --color-surface-2: #eef1ef;
+  --radius-sm: 6px;
   --color-warning: #a97a31;
   --color-critical: #a94343;
   --color-neutral: #6b7470;
