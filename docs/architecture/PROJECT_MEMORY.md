@@ -519,6 +519,8 @@ AIInvest is an autonomous investment and financial forensics organization engine
 - **Zero-Lag Batched Guilloché Canvas & `100dvh` Laptop Auth Proportions (`front-end/src/app/(public)/_components/auth.tsx`, `login/page.tsx`, `signup/page.tsx`)**:
   - Optimized `TopographicGuillocheCanvas` by precomputing `Float32Array` spatial/angular lookup tables on resize (eliminating per-vertex `Math.pow`, `Math.exp`, and redundant `sin`/`cos`), batching 90 contour paths into 8 style-bucketed `ctx.stroke()` calls, capping `dpr <= 1.5` with `{ desynchronized: true }`, yielding main-thread frame budget during keyboard input, and replacing `backdrop-blur-[6px]` over the live canvas with crisp opaque editorial paper (`bg-surface/96`).
   - Locked desktop `AuthShell` to `lg:h-dvh lg:max-h-dvh lg:overflow-hidden` with calibrated laptop typography and vertical rhythm so `/login` and `/signup` fit `1366×768` / `1536×864` laptop viewports (`~680–740px` inner height) with zero vertical scrollbar.
+- **Multi-Run Intraday Deduplication for `/agent` `msHistory` & `rlHistory` (`back-end/src/modules/workspace/workspace.routes.ts`)**:
+  - Upgraded `msHistory` (`LIMIT 15`) and `rlHistory` (`LIMIT 5`) queries in `GET /api/v1/workspace/agent` to `SELECT DISTINCT ON (COALESCE(date, (created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date)) ... WHERE (... <= $1::date) ORDER BY ... DESC, id DESC` so multiple intraday pipeline runs on the same trading day never exhaust the `LIMIT 15` window (which previously collapsed the 15-row slice to 2 sessions on PROD), and historical calendar selections accurately load the trailing 15 sessions up to `$1::date`.
 
 
 
