@@ -6,6 +6,7 @@ import { getSocket, retainOhlc } from "@/lib/socket"
 import { useRealtimeMarket, useRealtimeStock } from "@/lib/use-realtime"
 import { usePortfolio, type PortfolioPosition, type PortfolioSnapshot } from "@/lib/use-portfolio"
 import { fmt, fmtPct, Panel, PanelHead, Pill } from "@/components/ui"
+import { TradingViewChart } from "@/lib/tv-chart"
 import type { ApiMarketStock, Stock } from "@/types"
 
 const DEFAULT_SYMBOLS = ["HPG", "FPT", "SSI", "MBB", "TCB", "VCB"]
@@ -313,515 +314,6 @@ function mapStockQuote(
     beneish: "UNKNOWN",
     spark: [],
   }
-}
-
-/* ============================================================================
- * COMPONENT 1: BIỂU ĐỒ GIÁ & KHỐI LƯỢNG TRỰC TIẾP
- * ============================================================================ */
-function PriceVolumeChart({
-  symbol,
-  candles,
-  chartRange,
-  onChangeRange,
-  chartType,
-  onChangeChartType,
-  showSma,
-  onToggleSma,
-  orderSide,
-  orderPrice,
-  currentPrice,
-  refPrice,
-  isLive,
-  onPickPriceFromChart,
-}: {
-  symbol: string
-  candles: CandlePoint[]
-  chartRange: 30 | 60 | 120
-  onChangeRange: (r: 30 | 60 | 120) => void
-  chartType: "candle" | "line"
-  onChangeChartType: (t: "candle" | "line") => void
-  showSma: boolean
-  onToggleSma: () => void
-  orderSide: "BUY" | "SELL"
-  orderPrice: number
-  currentPrice: number
-  refPrice: number
-  isLive: boolean
-  onPickPriceFromChart: (price: number) => void
-}) {
-  const [hoverIdx, setHoverIdx] = useState<number | null>(null)
-
-  const visibleCandles = useMemo(() => {
-    const slice = candles.slice(-chartRange)
-    return slice.length > 0 ? slice : candles
-  }, [candles, chartRange])
-
-  const activeCandle = useMemo(() => {
-    if (!visibleCandles.length) return null
-    if (hoverIdx !== null && visibleCandles[hoverIdx]) return visibleCandles[hoverIdx]
-    return visibleCandles[visibleCandles.length - 1]
-  }, [visibleCandles, hoverIdx])
-
-  const prevCandle = useMemo(() => {
-    if (!visibleCandles.length) return null
-    const idx = hoverIdx !== null ? hoverIdx : visibleCandles.length - 1
-    return idx > 0 ? visibleCandles[idx - 1] : visibleCandles[0]
-  }, [visibleCandles, hoverIdx])
-
-  const W = 780
-  const H = 212
-  const PAD_L = 10
-  const PAD_R = 66
-  const PRICE_TOP = 10
-  const PRICE_BOT = 146
-  const VOL_TOP = 162
-  const VOL_BOT = 194
-  const plotW = W - PAD_L - PAD_R
-  const priceH = PRICE_BOT - PRICE_TOP
-  const volH = VOL_BOT - VOL_TOP
-
-  const { minPrice, maxPrice, maxVol } = useMemo(() => {
-    if (!visibleCandles.length) {
-      const base = currentPrice || 20_000
-      return { minPrice: base * 0.94, maxPrice: base * 1.06, maxVol: 1_000_000 }
-    }
-    const lows = visibleCandles.map((c) => c.low).filter((v) => v > 0)
-    const highs = visibleCandles.map((c) => c.high).filter((v) => v > 0)
-    let lo = Math.min(...lows)
-    let hi = Math.max(...highs)
-
-    if (orderPrice > 0 && orderPrice >= lo * 0.88 && orderPrice <= hi * 1.12) {
-      lo = Math.min(lo, orderPrice)
-      hi = Math.max(hi, orderPrice)
-    }
-
-    const span = Math.max(hi - lo, (hi || 10_000) * 0.04)
-    const pad = span * 0.08
-    const mv = Math.max(...visibleCandles.map((c) => c.volume), 1)
-    return {
-      minPrice: Math.max(0, lo - pad),
-      maxPrice: hi + pad,
-      maxVol: mv,
-    }
-  }, [visibleCandles, currentPrice, orderPrice])
-
-  const priceToY = useCallback(
-    (p: number) => {
-      const span = Math.max(maxPrice - minPrice, 1)
-      const ratio = (p - minPrice) / span
-      return PRICE_BOT - Math.max(0, Math.min(1, ratio)) * priceH
-    },
-    [maxPrice, minPrice, priceH, PRICE_BOT]
-  )
-
-  const volToY = useCallback(
-    (v: number) => {
-      const ratio = Math.max(0, Math.min(1, v / Math.max(maxVol, 1)))
-      return VOL_BOT - ratio * volH
-    },
-    [maxVol, volH, VOL_BOT]
-  )
-
-  const n = Math.max(visibleCandles.length, 1)
-  const stepX = plotW / n
-  const xAt = useCallback((i: number) => PAD_L + stepX * (i + 0.5), [PAD_L, stepX])
-  const candleBodyW = Math.max(3, Math.min(10, stepX * 0.62))
-
-  const priceTicks = useMemo(() => {
-    const ticks: number[] = []
-    for (let i = 0; i <= 3; i++) {
-      const val = minPrice + ((maxPrice - minPrice) * i) / 3
-      ticks.push(roundToTick(val))
-    }
-    return ticks
-  }, [minPrice, maxPrice])
-
-  const { smaPath, closeLinePath, closeAreaPath } = useMemo(() => {
-    if (!visibleCandles.length) return { smaPath: "", closeLinePath: "", closeAreaPath: "" }
-    const smaPts: string[] = []
-    const closePts: string[] = []
-    visibleCandles.forEach((c, i) => {
-      const x = xAt(i).toFixed(1)
-      const yc = priceToY(c.close).toFixed(1)
-      closePts.push(`${i === 0 ? "M" : "L"}${x},${yc}`)
-      if (c.sma20 && c.sma20 > 0) {
-        const ys = priceToY(c.sma20).toFixed(1)
-        smaPts.push(`${smaPts.length === 0 ? "M" : "L"}${x},${ys}`)
-      }
-    })
-    const firstX = xAt(0).toFixed(1)
-    const lastX = xAt(visibleCandles.length - 1).toFixed(1)
-    return {
-      smaPath: smaPts.join(" "),
-      closeLinePath: closePts.join(" "),
-      closeAreaPath: `${closePts.join(" ")} L${lastX},${PRICE_BOT} L${firstX},${PRICE_BOT} Z`,
-    }
-  }, [visibleCandles, xAt, priceToY, PRICE_BOT])
-
-  const orderLineY =
-    orderPrice > 0 && orderPrice >= minPrice && orderPrice <= maxPrice ? priceToY(orderPrice) : null
-
-  const candleDeltaPct =
-    activeCandle && prevCandle && prevCandle.close > 0
-      ? ((activeCandle.close - prevCandle.close) / prevCandle.close) * 100
-      : 0
-
-  return (
-    <div className="flex flex-col">
-      {/* Toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-[var(--color-line)]">
-        <div className="flex items-center gap-2">
-          <div className="inline-flex rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface-2)] p-0.5">
-            {([30, 60, 120] as const).map((r) => (
-              <button
-                key={r}
-                type="button"
-                onClick={() => onChangeRange(r)}
-                className={`px-2.5 py-1 text-[11.5px] font-medium rounded-[4px] transition-colors whitespace-nowrap ${
-                  chartRange === r
-                    ? "bg-[var(--color-ink)] text-[var(--color-paper)]"
-                    : "text-[var(--color-muted)] hover:text-[var(--color-ink)]"
-                }`}
-              >
-                {r} phiên
-              </button>
-            ))}
-          </div>
-
-          <div className="inline-flex rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface-2)] p-0.5">
-            <button
-              type="button"
-              onClick={() => onChangeChartType("candle")}
-              className={`px-2.5 py-1 text-[11.5px] font-medium rounded-[4px] transition-colors whitespace-nowrap ${
-                chartType === "candle"
-                  ? "bg-[var(--color-ink)] text-[var(--color-paper)]"
-                  : "text-[var(--color-muted)] hover:text-[var(--color-ink)]"
-              }`}
-            >
-              Biểu đồ nến
-            </button>
-            <button
-              type="button"
-              onClick={() => onChangeChartType("line")}
-              className={`px-2.5 py-1 text-[11.5px] font-medium rounded-[4px] transition-colors whitespace-nowrap ${
-                chartType === "line"
-                  ? "bg-[var(--color-ink)] text-[var(--color-paper)]"
-                  : "text-[var(--color-muted)] hover:text-[var(--color-ink)]"
-              }`}
-            >
-              Đường giá
-            </button>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2.5 text-[11.5px]">
-          <button
-            type="button"
-            onClick={onToggleSma}
-            className={`inline-flex items-center gap-1.5 rounded-[var(--radius-sm)] border px-2.5 py-1 font-medium transition-colors whitespace-nowrap ${
-              showSma
-                ? "border-[var(--color-mineral)]/40 bg-[var(--color-mineral-soft)] text-[var(--color-mineral)]"
-                : "border-[var(--color-line)] text-[var(--color-muted)] hover:text-[var(--color-ink)]"
-            }`}
-          >
-            <span className="h-1.5 w-2.5 rounded-full bg-[var(--color-mineral)]" />
-            MA 20
-          </button>
-          <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] text-[var(--color-muted)] whitespace-nowrap">
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${
-                isLive ? "bg-[var(--color-gain)] animate-pulse" : "bg-[var(--color-mineral)]"
-              }`}
-            />
-            {isLive ? "Nến cập nhật trực tiếp" : "Chạm vào nến để lấy giá"}
-          </span>
-        </div>
-      </div>
-
-      {/* Single-Line OHLCV Readout */}
-      <div className="flex items-center justify-between gap-3 py-2 text-[11.5px] font-mono tabular-nums border-b border-[var(--color-line)]/60 overflow-x-auto whitespace-nowrap">
-        {activeCandle ? (
-          <>
-            <div className="flex items-center gap-3">
-              <span className="font-sans font-semibold text-[var(--color-ink)]">
-                Phiên {activeCandle.label}
-              </span>
-              <span className="text-[var(--color-muted)]">
-                Mở <strong className="text-[var(--color-ink-2)]">{fmtPrice(activeCandle.open)}</strong>
-              </span>
-              <span className="text-[var(--color-muted)]">
-                Cao <strong className="text-[var(--color-gain)]">{fmtPrice(activeCandle.high)}</strong>
-              </span>
-              <span className="text-[var(--color-muted)]">
-                Thấp <strong className="text-[var(--color-loss)]">{fmtPrice(activeCandle.low)}</strong>
-              </span>
-              <span className="text-[var(--color-muted)]">
-                Đóng{" "}
-                <strong className={toneText(candleDeltaPct)}>
-                  {fmtPrice(activeCandle.close)} ({fmtPercent(candleDeltaPct)})
-                </strong>
-              </span>
-              {showSma && activeCandle.sma20 ? (
-                <span className="text-[var(--color-mineral)]">
-                  MA20 <strong>{fmtPrice(Math.round(activeCandle.sma20))}</strong>
-                </span>
-              ) : null}
-            </div>
-            <div className="text-[var(--color-muted)] shrink-0">
-              KL <strong className="text-[var(--color-ink-2)]">{formatCompactVol(activeCandle.volume)}</strong>
-            </div>
-          </>
-        ) : (
-          <span className="font-sans text-[var(--color-muted)]">Đang đồng bộ biểu đồ {symbol}...</span>
-        )}
-      </div>
-
-      {/* Clean SVG Chart */}
-      <div className="relative mt-1 select-none">
-        <svg
-          viewBox={`0 0 ${W} ${H}`}
-          className="w-full h-[192px] overflow-visible cursor-crosshair"
-          onMouseLeave={() => setHoverIdx(null)}
-        >
-          <defs>
-            <linearGradient id="tradePriceAreaGrad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="var(--color-mineral)" stopOpacity="0.16" />
-              <stop offset="100%" stopColor="var(--color-mineral)" stopOpacity="0.0" />
-            </linearGradient>
-          </defs>
-
-          {/* Price Gridlines */}
-          {priceTicks.map((tick, idx) => {
-            const y = priceToY(tick)
-            return (
-              <g key={idx}>
-                <line
-                  x1={PAD_L}
-                  y1={y}
-                  x2={W - PAD_R}
-                  y2={y}
-                  stroke="var(--color-line)"
-                  strokeDasharray="2 3"
-                  strokeWidth="1"
-                />
-                <text
-                  x={W - PAD_R + 8}
-                  y={y + 3.5}
-                  fill="var(--color-muted)"
-                  fontSize="10"
-                  fontFamily="var(--font-mono)"
-                >
-                  {fmtPrice(tick)}
-                </text>
-              </g>
-            )
-          })}
-
-          {/* Reference Price (TC) Line */}
-          {refPrice >= minPrice && refPrice <= maxPrice && (
-            <line
-              x1={PAD_L}
-              y1={priceToY(refPrice)}
-              x2={W - PAD_R}
-              y2={priceToY(refPrice)}
-              stroke="var(--color-ref)"
-              strokeDasharray="3 3"
-              strokeWidth="1"
-              opacity="0.65"
-            />
-          )}
-
-          {/* Candles or Line */}
-          {chartType === "line" ? (
-            <>
-              <path d={closeAreaPath} fill="url(#tradePriceAreaGrad)" />
-              <path
-                d={closeLinePath}
-                fill="none"
-                stroke="var(--color-mineral)"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </>
-          ) : (
-            visibleCandles.map((c, i) => {
-              const x = xAt(i)
-              const yOpen = priceToY(c.open)
-              const yClose = priceToY(c.close)
-              const yHigh = priceToY(c.high)
-              const yLow = priceToY(c.low)
-              const isUp = c.close >= c.open
-              const color = isUp ? "var(--color-gain)" : "var(--color-loss)"
-              const bodyTop = Math.min(yOpen, yClose)
-              const bodyHeight = Math.max(2, Math.abs(yClose - yOpen))
-              const isHovered = hoverIdx === i
-
-              return (
-                <g key={c.date}>
-                  {isHovered && (
-                    <line
-                      x1={x}
-                      y1={PRICE_TOP}
-                      x2={x}
-                      y2={VOL_BOT}
-                      stroke="var(--color-ink)"
-                      strokeDasharray="2 2"
-                      strokeWidth="1"
-                      opacity="0.28"
-                    />
-                  )}
-                  <line
-                    x1={x}
-                    y1={yHigh}
-                    x2={x}
-                    y2={yLow}
-                    stroke={color}
-                    strokeWidth={isHovered ? "1.7" : "1.2"}
-                  />
-                  <rect
-                    x={x - candleBodyW / 2}
-                    y={bodyTop}
-                    width={candleBodyW}
-                    height={bodyHeight}
-                    rx="1.2"
-                    fill={color}
-                    opacity={isHovered ? 1 : 0.88}
-                  />
-                </g>
-              )
-            })
-          )}
-
-          {/* MA 20 Line */}
-          {showSma && smaPath && (
-            <path
-              d={smaPath}
-              fill="none"
-              stroke="var(--color-mineral)"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              opacity="0.85"
-            />
-          )}
-
-          {/* Subtle Order Target Price Line + Right-Axis Tag Only */}
-          {orderLineY !== null && (
-            <g
-              style={{
-                transform: `translateY(${orderLineY}px)`,
-                transition: "transform 200ms cubic-bezier(0.22, 1, 0.36, 1)",
-              }}
-            >
-              <line
-                x1={PAD_L}
-                y1={0}
-                x2={W - PAD_R}
-                y2={0}
-                stroke={orderSide === "BUY" ? "var(--color-gain)" : "var(--color-loss)"}
-                strokeWidth="1.2"
-                strokeDasharray="4 3"
-                opacity="0.85"
-              />
-              <rect
-                x={W - PAD_R + 4}
-                y={-9.5}
-                width={58}
-                height={19}
-                rx={4}
-                fill={orderSide === "BUY" ? "var(--color-gain)" : "var(--color-loss)"}
-              />
-              <text
-                x={W - PAD_R + 33}
-                y={3.5}
-                textAnchor="middle"
-                fill="var(--color-paper)"
-                fontSize="10"
-                fontFamily="var(--font-mono)"
-                fontWeight="700"
-              >
-                {fmtPrice(orderPrice)}
-              </text>
-            </g>
-          )}
-
-          {/* Divider between Price and Volume */}
-          <line
-            x1={PAD_L}
-            y1={VOL_TOP - 8}
-            x2={W - PAD_R}
-            y2={VOL_TOP - 8}
-            stroke="var(--color-line)"
-            strokeWidth="1"
-          />
-
-          {/* Volume Histogram */}
-          {visibleCandles.map((c, i) => {
-            const x = xAt(i)
-            const yTop = volToY(c.volume)
-            const h = Math.max(1.5, VOL_BOT - yTop)
-            const isUp = c.close >= c.open
-            return (
-              <rect
-                key={`vol-${c.date}`}
-                x={x - candleBodyW / 2}
-                y={yTop}
-                width={candleBodyW}
-                height={h}
-                rx="1"
-                fill={isUp ? "var(--color-gain)" : "var(--color-loss)"}
-                opacity={hoverIdx === i ? 0.8 : 0.36}
-              />
-            )
-          })}
-
-          {/* X-Axis Dates */}
-          {visibleCandles.length > 1 &&
-            [
-              0,
-              Math.floor(visibleCandles.length * 0.25),
-              Math.floor(visibleCandles.length * 0.5),
-              Math.floor(visibleCandles.length * 0.75),
-              visibleCandles.length - 1,
-            ]
-              .filter((v, idx, arr) => arr.indexOf(v) === idx)
-              .map((idx) => {
-                const c = visibleCandles[idx]
-                if (!c) return null
-                return (
-                  <text
-                    key={`lbl-${idx}`}
-                    x={xAt(idx)}
-                    y={H - 4}
-                    textAnchor={
-                      idx === 0 ? "start" : idx === visibleCandles.length - 1 ? "end" : "middle"
-                    }
-                    fill="var(--color-muted)"
-                    fontSize="10"
-                    fontFamily="var(--font-mono)"
-                  >
-                    {c.label}
-                  </text>
-                )
-              })}
-
-          {/* Hit Columns for Hover & Click */}
-          {visibleCandles.map((c, i) => (
-            <rect
-              key={`hit-${c.date}`}
-              x={PAD_L + i * stepX}
-              y={PRICE_TOP}
-              width={stepX}
-              height={VOL_BOT - PRICE_TOP}
-              fill="transparent"
-              onMouseEnter={() => setHoverIdx(i)}
-              onClick={() => onPickPriceFromChart(roundToTick(c.close))}
-            />
-          ))}
-        </svg>
-      </div>
-    </div>
-  )
 }
 
 /* ============================================================================
@@ -1157,11 +649,6 @@ export default function TradePage() {
     typeof window !== "undefined" ? getSocket().connected : false
   )
 
-  // Chart state
-  const [chartRange, setChartRange] = useState<30 | 60 | 120>(60)
-  const [chartType, setChartType] = useState<"candle" | "line">("candle")
-  const [showSma, setShowSma] = useState(true)
-
   // Order Ticket state
   const [side, setSide] = useState<"BUY" | "SELL">(() => {
     if (typeof window !== "undefined") {
@@ -1174,6 +661,7 @@ export default function TradePage() {
   const [qtyInput, setQtyInput] = useState("100")
   const [priceInput, setPriceInput] = useState("")
   const [priceInputFlash, setPriceInputFlash] = useState(false)
+  const [showDraftOrderOnChart, setShowDraftOrderOnChart] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [orderNotice, setOrderNotice] = useState<{
     tone: "gain" | "loss"
@@ -1228,6 +716,7 @@ export default function TradePage() {
     if (!clean) return
     setSymbol(clean)
     setPriceInput("")
+    setShowDraftOrderOnChart(false)
     setOrderNotice(null)
     setLiveForeignBillion(null)
     setSearchOpen(false)
@@ -1578,6 +1067,7 @@ export default function TradePage() {
     if (!Number.isFinite(newPrice) || newPrice <= 0) return
     setOrderType("LO")
     setPriceInput(String(Math.round(newPrice)))
+    setShowDraftOrderOnChart(true)
     setPriceInputFlash(true)
     window.setTimeout(() => setPriceInputFlash(false), 360)
   }
@@ -1707,6 +1197,7 @@ export default function TradePage() {
         price: orderType === "LO" ? effectivePrice : undefined,
       })) as Record<string, unknown>
       await reloadPortfolio()
+      setShowDraftOrderOnChart(false)
       setOrderNotice({
         tone: "gain",
         text: `Đã khớp lệnh ${side === "BUY" ? "MUA" : "BÁN"} ${fmtNumber(quantity)} ${symbol} tại giá ${fmtPrice(Number(created?.price ?? effectivePrice))} ₫.`,
@@ -1988,23 +1479,49 @@ export default function TradePage() {
        * 3. KHU VỰC GIAO DỊCH CHÍNH 2 CỘT RỘNG RÃI (8 : 4)
        * ==================================================================== */}
       <div className="grid gap-4 xl:grid-cols-12 items-stretch">
-        {/* CỘT TRÁI (8/12): BIỂU ĐỒ GIÁ + BẢNG CHÀO MUA/BÁN CHUẨN HOSE */}
-        <Panel className="xl:col-span-8 !p-4 flex flex-col justify-between">
-          <PriceVolumeChart
+        {/* CỘT TRÁI (8/12): BIỂU ĐỒ TRADINGVIEW PRO + BẢNG CHÀO MUA/BÁN CHUẨN HOSE */}
+        <Panel className="xl:col-span-8 !p-3 flex flex-col justify-between gap-3">
+          <TradingViewChart
             symbol={symbol}
-            candles={candles}
-            chartRange={chartRange}
-            onChangeRange={setChartRange}
-            chartType={chartType}
-            onChangeChartType={setChartType}
-            showSma={showSma}
-            onToggleSma={() => setShowSma((s) => !s)}
-            orderSide={side}
-            orderPrice={effectivePrice}
-            currentPrice={stock.price}
-            refPrice={stock.ref ?? stock.price}
-            isLive={isLive}
-            onPickPriceFromChart={(picked) => fillPriceInput(picked)}
+            seedCandles={candles}
+            height={580}
+            trading={{
+              symbol,
+              stockName: stock.name,
+              exchange: "HOSE",
+              currentPrice: stock.price,
+              refPrice: stock.ref ?? stock.price,
+              ceilingPrice: stock.ceiling,
+              floorPrice: stock.floor,
+              isLive,
+              orderSide: side,
+              orderType,
+              orderPrice: effectivePrice,
+              orderQuantity: validLotQty ? quantity : 100,
+              hasDraftOrder: showDraftOrderOnChart && orderType === "LO" && parsedLimitPrice > 0,
+              bestBidPrice,
+              bestAskPrice,
+              positionAvgPrice: currentPosition ? toVndPrice(currentPosition.avgPrice) : null,
+              positionQuantity: currentPosition?.quantity ?? null,
+              openOrders: orders
+                .filter(
+                  (o) =>
+                    o.symbol.toUpperCase() === symbol.toUpperCase() &&
+                    (o.status === "PENDING" || o.status === "OPEN")
+                )
+                .map((o) => ({
+                  id: o.id,
+                  side: o.side,
+                  orderType: o.orderType,
+                  price: o.price,
+                  quantity: o.quantity,
+                  status: o.status,
+                })),
+              onPickPriceFromChart: (picked) => fillPriceInput(picked),
+              onClearOrderPrice: () => setShowDraftOrderOnChart(false),
+              onChangeOrderSide: (newSide) => setSide(newSide),
+              onSymbolChange: (newSym) => selectSymbol(newSym),
+            }}
           />
 
           <BidAskOrderbook
@@ -2202,7 +1719,10 @@ export default function TradePage() {
                     type="number"
                     step={priceStep}
                     value={priceInput}
-                    onChange={(e) => setPriceInput(e.target.value)}
+                    onChange={(e) => {
+                      setPriceInput(e.target.value)
+                      setShowDraftOrderOnChart(e.target.value.trim() !== "")
+                    }}
                     className={`h-9 w-full rounded-[var(--radius-sm)] border bg-[var(--color-surface)] px-3 text-center font-mono text-[14px] font-semibold text-[var(--color-ink)] tabular-nums focus:outline-none transition-shadow ${
                       priceInputFlash
                         ? "border-[var(--color-gain)] shadow-[0_0_0_3px_rgba(27,107,74,0.18)]"

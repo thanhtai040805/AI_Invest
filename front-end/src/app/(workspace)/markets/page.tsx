@@ -303,227 +303,6 @@ function formatVnDate(iso?: string | null): string | null {
   })
 }
 
-interface VnIndexTrendChartProps {
-  history: number[]
-  isGain: boolean
-}
-
-const VnIndexTrendChart = memo(function VnIndexTrendChart({
-  history,
-  isGain,
-}: VnIndexTrendChartProps) {
-  const [hoverIdx, setHoverIdx] = useState<number | null>(null)
-
-  const series = useMemo(() => {
-    const clean = history.filter((n) => Number.isFinite(n) && n > 0)
-    return clean.slice(-30)
-  }, [history])
-
-  const stats = useMemo(() => {
-    if (series.length < 2) return null
-    const min = Math.min(...series)
-    const max = Math.max(...series)
-    const span = Math.max(max - min, 1)
-    const last20 = series.slice(-20)
-    const ma20 = last20.reduce((acc, v) => acc + v, 0) / last20.length
-    const startVal = series[0]
-    const endVal = series[series.length - 1]
-    const periodDiffPct = startVal > 0 ? ((endVal - startVal) / startVal) * 100 : 0
-
-    const W = 320
-    const H = 86
-    const padX = 4
-    const padY = 10
-    const plotW = W - padX * 2
-    const plotH = H - padY * 2
-
-    const points = series.map((val, idx) => {
-      const x = padX + (idx / (series.length - 1)) * plotW
-      const y = padY + (1 - (val - min) / span) * plotH
-      return { x, y, val, idx }
-    })
-
-    const linePath = points
-      .map((p, idx) => `${idx === 0 ? "M" : "L"}${p.x.toFixed(1)},${p.y.toFixed(1)}`)
-      .join(" ")
-    const areaPath = `${linePath} L${points[points.length - 1].x.toFixed(1)},${H} L${points[0].x.toFixed(1)},${H} Z`
-    const ma20Y = padY + (1 - Math.min(Math.max((ma20 - min) / span, 0), 1)) * plotH
-
-    return {
-      W,
-      H,
-      min,
-      max,
-      ma20,
-      ma20Y,
-      periodDiffPct,
-      points,
-      linePath,
-      areaPath,
-    }
-  }, [series])
-
-  if (!stats) {
-    return (
-      <div className="h-[86px] flex items-center justify-center text-[11.5px] text-muted font-mono">
-        Đang tải chuỗi 30 phiên VN-Index…
-      </div>
-    )
-  }
-
-  const activePoint =
-    hoverIdx != null && stats.points[hoverIdx]
-      ? stats.points[hoverIdx]
-      : stats.points[stats.points.length - 1]
-  const strokeColor = isGain ? "var(--color-gain)" : "var(--color-loss)"
-  const gradId = isGain ? "vniAreaGain" : "vniAreaLoss"
-
-  return (
-    <div className="mt-2">
-      <div className="flex items-center justify-between text-[11px] font-mono tnum text-muted mb-1">
-        <span>
-          {hoverIdx != null
-            ? `Phiên T-${stats.points.length - 1 - hoverIdx}: `
-            : `MA20 (${stats.ma20.toLocaleString("vi-VN", { maximumFractionDigits: 1 })}): `}
-          <strong className="text-ink font-semibold">
-            {hoverIdx != null
-              ? activePoint.val.toLocaleString("vi-VN", {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2,
-                })
-              : `${activePoint.val >= stats.ma20 ? "Trên" : "Dưới"} ${(
-                  ((activePoint.val - stats.ma20) / stats.ma20) *
-                  100
-                )
-                  .toFixed(2)
-                  .replace(".", ",")}%`}
-          </strong>
-        </span>
-        <span>
-          Biên 30P:{" "}
-          <span className="text-secondary">
-            {stats.min.toLocaleString("vi-VN", { maximumFractionDigits: 0 })}–
-            {stats.max.toLocaleString("vi-VN", { maximumFractionDigits: 0 })}
-          </span>
-        </span>
-      </div>
-
-      <div
-        className="relative h-[86px] w-full select-none"
-        onMouseLeave={() => setHoverIdx(null)}
-      >
-        <svg
-          viewBox={`0 0 ${stats.W} ${stats.H}`}
-          className="h-full w-full overflow-visible"
-          preserveAspectRatio="none"
-        >
-          <defs>
-            <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={strokeColor} stopOpacity="0.22" />
-              <stop offset="100%" stopColor={strokeColor} stopOpacity="0.01" />
-            </linearGradient>
-          </defs>
-
-          {/* Đường lưới ngang Đỉnh / Đáy 30 phiên */}
-          <line
-            x1="0"
-            y1="10"
-            x2={stats.W}
-            y2="10"
-            stroke="var(--color-line)"
-            strokeWidth="1"
-          />
-          <line
-            x1="0"
-            y1={stats.H - 10}
-            x2={stats.W}
-            y2={stats.H - 10}
-            stroke="var(--color-line)"
-            strokeWidth="1"
-          />
-
-          {/* Đường trung bình động MA20 nét đứt */}
-          <line
-            x1="0"
-            y1={stats.ma20Y}
-            x2={stats.W}
-            y2={stats.ma20Y}
-            stroke="var(--color-ref)"
-            strokeWidth="1"
-            strokeDasharray="3 3"
-            opacity="0.75"
-          />
-
-          {/* Vùng màu & Đường giá VN-Index */}
-          <path d={stats.areaPath} fill={`url(#${gradId})`} />
-          <path
-            d={stats.linePath}
-            fill="none"
-            stroke={strokeColor}
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-
-          {/* Crosshair khi di chuột */}
-          {hoverIdx != null && (
-            <line
-              x1={activePoint.x}
-              y1="4"
-              x2={activePoint.x}
-              y2={stats.H - 4}
-              stroke="var(--color-ink)"
-              strokeWidth="1"
-              strokeDasharray="2 2"
-              opacity="0.45"
-            />
-          )}
-
-          {/* Điểm chốt hiện tại hoặc đang hover */}
-          <circle
-            cx={activePoint.x}
-            cy={activePoint.y}
-            r="3.2"
-            fill={strokeColor}
-            stroke="var(--color-surface)"
-            strokeWidth="1.5"
-          />
-
-          {/* Vùng bắt sự kiện hover mượt theo từng phiên */}
-          {stats.points.map((pt, idx) => {
-            const colW = stats.W / stats.points.length
-            return (
-              <rect
-                key={pt.idx}
-                x={idx * colW}
-                y="0"
-                width={colW}
-                height={stats.H}
-                fill="transparent"
-                className="cursor-crosshair"
-                onMouseEnter={() => setHoverIdx(idx)}
-              />
-            )
-          })}
-        </svg>
-
-        {/* Nhãn chú thích trực tiếp trên đồ thị */}
-        <span className="pointer-events-none absolute right-1 top-0.5 rounded bg-surface/85 px-1 font-mono text-[9.5px] text-muted tnum">
-          Đỉnh {stats.max.toLocaleString("vi-VN", { maximumFractionDigits: 1 })}
-        </span>
-        <span className="pointer-events-none absolute right-1 bottom-0.5 rounded bg-surface/85 px-1 font-mono text-[9.5px] text-muted tnum">
-          Đáy {stats.min.toLocaleString("vi-VN", { maximumFractionDigits: 1 })}
-        </span>
-      </div>
-      <div className="mt-1 flex items-center justify-between font-mono text-[9.5px] text-muted tnum">
-        <span>T-30 phiên</span>
-        <span className="text-ref">-- Đường TB động MA20 ({stats.ma20.toLocaleString("vi-VN", { maximumFractionDigits: 1 })})</span>
-        <span>Hiện tại</span>
-      </div>
-    </div>
-  )
-})
-
 interface MarketBoardRowProps {
   item: MarketBoardItem
   book?: RealtimeMarketOrderBook
@@ -940,7 +719,7 @@ export default function Markets() {
     return map
   }, [superStocksRes])
 
-  const { initialIndices, vnIndexPointDiff, vnIndexHistory, boardItems } = useMemo(() => {
+  const { initialIndices, vnIndexPointDiff, boardItems } = useMemo(() => {
     const indicesList = Array.isArray(indicesRes?.indices) ? indicesRes.indices : []
     const normalizeIndexSym = (item: ApiMarketIndex) =>
       String(item.symbol ?? item.name ?? "")
@@ -948,6 +727,10 @@ export default function Markets() {
         .replaceAll("-", "")
 
     const vnIndexItem = indicesList.find((x) => normalizeIndexSym(x) === "VNINDEX")
+    const vn30Item =
+      indicesList.find((x) => normalizeIndexSym(x) === "VN30") ??
+      indicesList.find((x) => normalizeIndexSym(x) === "VN30_ESTIMATED")
+    const vn100Item = indicesList.find((x) => normalizeIndexSym(x) === "VN100")
 
     const fmtIndexVal = (item?: ApiMarketIndex) => {
       const v = Number(item?.value ?? NaN)
@@ -964,16 +747,23 @@ export default function Markets() {
     const spark = Array.isArray(indicesRes?.history?.VNINDEX) ? indicesRes.history.VNINDEX : []
     const latestVni = Number(vnIndexItem?.value ?? spark[spark.length - 1] ?? NaN)
     const prevVni = spark.length >= 2 ? Number(spark[spark.length - 2]) : NaN
+    const vniPct = fmtIndexPct(vnIndexItem)
     const pointDiff =
       vnIndexItem?.change != null && Number.isFinite(Number(vnIndexItem.change))
         ? Number(vnIndexItem.change)
         : Number.isFinite(latestVni) && Number.isFinite(prevVni) && prevVni > 0
           ? latestVni - prevVni
-          : null
+          : Number.isFinite(latestVni) && latestVni > 0 && vniPct != null
+            ? latestVni - latestVni / (1 + vniPct / 100)
+            : null
 
     const parsedIndices = {
       vnIndexVal: fmtIndexVal(vnIndexItem),
-      vnIndexPct: fmtIndexPct(vnIndexItem),
+      vnIndexPct: vniPct,
+      vn30Val: vn30Item ? fmtIndexVal(vn30Item) : undefined,
+      vn30Pct: vn30Item ? fmtIndexPct(vn30Item) : null,
+      vn100Val: vn100Item ? fmtIndexVal(vn100Item) : undefined,
+      vn100Pct: vn100Item ? fmtIndexPct(vn100Item) : null,
     }
 
     const isSocketSnapshot =
@@ -1061,7 +851,6 @@ export default function Markets() {
     return {
       initialIndices: parsedIndices,
       vnIndexPointDiff: pointDiff,
-      vnIndexHistory: spark,
       boardItems: items,
     }
   }, [indicesRes, snapshotRes, liveSnapshot, sectorMap])
@@ -1140,6 +929,7 @@ export default function Markets() {
     let foreignBuyCount = 0
     let foreignSellCount = 0
     let totalMatchedShares = 0
+    let tradedCount = 0
     let computedValueBillion = 0
     let liveTickCount = 0
     let vn30Count = 0
@@ -1230,6 +1020,7 @@ export default function Markets() {
       }
 
       totalMatchedShares += item.rawVolume
+      if (item.rawVolume > 0) tradedCount += 1
       computedValueBillion += item.valueBillion
       if (item.isLiveTick) liveTickCount += 1
     }
@@ -1274,6 +1065,7 @@ export default function Markets() {
       foreignBuyCount,
       foreignSellCount,
       totalMatchedShares,
+      tradedCount,
       computedValueBillion,
       liveTickCount,
       vn30Count,
@@ -1448,6 +1240,44 @@ export default function Markets() {
   const currentVniVal = liveIndices?.vnIndexVal || initialIndices.vnIndexVal
   const currentVniPct =
     liveIndices?.vnIndexPct !== undefined ? liveIndices.vnIndexPct : initialIndices.vnIndexPct
+  const currentVniPointDiff =
+    liveIndices?.vnIndexChange !== undefined && liveIndices.vnIndexChange !== null
+      ? liveIndices.vnIndexChange
+      : vnIndexPointDiff
+  const currentVn30Val = liveIndices?.vn30Val || initialIndices.vn30Val
+  const currentVn30Pct =
+    liveIndices?.vn30Pct !== undefined ? liveIndices.vn30Pct : initialIndices.vn30Pct
+  const currentVn100Val =
+    liveIndices?.vn100Val && liveIndices.vn100Val !== "—"
+      ? liveIndices.vn100Val
+      : initialIndices.vn100Val && initialIndices.vn100Val !== "—"
+        ? initialIndices.vn100Val
+        : undefined
+  const currentVn100Pct =
+    liveIndices?.vn100Pct !== undefined ? liveIndices.vn100Pct : initialIndices.vn100Pct
+
+  const vnIndexRefFormatted = useMemo(() => {
+    if (!currentVniVal || currentVniVal === "—") return "—"
+    const numericVni = Number(currentVniVal.replace(/\./g, "").replace(",", "."))
+    if (!Number.isFinite(numericVni) || numericVni <= 0) return "—"
+    const refVal =
+      currentVniPointDiff != null && Number.isFinite(currentVniPointDiff)
+        ? numericVni - currentVniPointDiff
+        : currentVniPct != null && Number.isFinite(currentVniPct) && currentVniPct > -99
+          ? numericVni / (1 + currentVniPct / 100)
+          : NaN
+    return Number.isFinite(refVal) && refVal > 0
+      ? refVal.toLocaleString("vi-VN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      : "—"
+  }, [currentVniVal, currentVniPointDiff, currentVniPct])
+
+  const breadthTotal = Math.max(
+    1,
+    marketStats.gainCount + marketStats.refCount + marketStats.lossCount
+  )
+  const gainWidthPct = (marketStats.gainCount / breadthTotal) * 100
+  const refWidthPct = (marketStats.refCount / breadthTotal) * 100
+  const lossWidthPct = Math.max(0, 100 - gainWidthPct - refWidthPct)
 
   const liveLiquidityAt = Date.parse(String(liveLiquidity?.lastUpdate ?? ""))
   const activeLiquidity = (
@@ -1519,14 +1349,14 @@ export default function Markets() {
       {/* 1. BỨC TRANH TOÀN CẢNH SÀN HOSE — 3 ĐỒ THỊ TRỰC QUAN GIẢI THÍCH XU HƯỚNG, ĐỘ RỘNG & DÒNG TIỀN */}
       <Panel flush className="overflow-hidden">
         <div className="grid grid-cols-1 lg:grid-cols-12 divide-y lg:divide-y-0 lg:divide-x divide-line">
-          {/* KHỐI 1: ĐỒ THỊ VÙNG VN-INDEX 30 PHIÊN & TƯƠNG QUAN MA20 */}
+          {/* KHỐI 1: CHỈ SỐ VN-INDEX & CẤU TRÚC PHIÊN HOSE */}
           <div className="lg:col-span-4 p-4 flex flex-col justify-between bg-surface">
             <div>
               <div className="flex items-start justify-between gap-2">
                 <div>
                   <div className="flex items-center gap-2">
                     <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">
-                      VN-Index · 30 Phiên
+                      VN-Index
                     </span>
                     <span className="rounded bg-soft px-1.5 py-0.5 font-mono text-[10px] text-secondary tnum">
                       HOSE
@@ -1547,14 +1377,14 @@ export default function Markets() {
                         }`}
                       >
                         {currentVniPct > 0 ? "▲ " : currentVniPct < 0 ? "▼ " : ""}
-                        {vnIndexPointDiff != null
-                          ? `${Math.abs(vnIndexPointDiff).toLocaleString("vi-VN", {
+                        {currentVniPointDiff != null
+                          ? `${Math.abs(currentVniPointDiff).toLocaleString("vi-VN", {
                               minimumFractionDigits: 2,
                               maximumFractionDigits: 2,
                             })} (`
                           : ""}
                         {currentVniPct === 0 ? "0,00%" : fmtPct(currentVniPct)}
-                        {vnIndexPointDiff != null ? ")" : ""}
+                        {currentVniPointDiff != null ? ")" : ""}
                       </span>
                     )}
                   </div>
@@ -1573,10 +1403,110 @@ export default function Markets() {
                 </div>
               </div>
 
-              <VnIndexTrendChart
-                history={vnIndexHistory}
-                isGain={(currentVniPct ?? 0) >= 0}
-              />
+              <div className="mt-3 space-y-2.5">
+                <div>
+                  <div className="flex items-center justify-between text-[11px] font-mono tnum mb-1.5">
+                    <span className="text-gain font-semibold">
+                      ▲ {marketStats.gainCount} tăng ({Math.round(gainWidthPct)}%)
+                    </span>
+                    <span className="text-ref font-medium">■ {marketStats.refCount} TC</span>
+                    <span className="text-loss font-semibold">
+                      ▼ {marketStats.lossCount} giảm ({Math.round(lossWidthPct)}%)
+                    </span>
+                  </div>
+                  <div className="h-2 w-full rounded-full bg-soft overflow-hidden flex gap-[1px]">
+                    <div
+                      className="h-full bg-gain transition-all duration-300"
+                      style={{ width: `${gainWidthPct.toFixed(1)}%` }}
+                    />
+                    <div
+                      className="h-full bg-ref/80 transition-all duration-300"
+                      style={{ width: `${refWidthPct.toFixed(1)}%` }}
+                    />
+                    <div
+                      className="h-full bg-loss transition-all duration-300"
+                      style={{ width: `${lossWidthPct.toFixed(1)}%` }}
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-1.5">
+                  <div className="rounded-[6px] bg-soft/45 border border-line/70 px-2.5 py-1.5">
+                    <div className="text-[10px] uppercase tracking-wider text-muted">
+                      Tham chiếu
+                    </div>
+                    <div className="font-mono text-[12px] font-semibold text-ink tnum mt-0.5">
+                      {vnIndexRefFormatted}
+                    </div>
+                  </div>
+
+                  {currentVn30Val && currentVn30Val !== "—" ? (
+                    <div className="rounded-[6px] bg-soft/45 border border-line/70 px-2.5 py-1.5">
+                      <div className="flex items-center justify-between gap-1 text-[10px] uppercase tracking-wider text-muted">
+                        <span>VN30</span>
+                        {currentVn30Pct != null && (
+                          <span
+                            className={`font-mono tnum ${
+                              currentVn30Pct > 0
+                                ? "text-gain"
+                                : currentVn30Pct < 0
+                                  ? "text-loss"
+                                  : "text-ref"
+                            }`}
+                          >
+                            {currentVn30Pct === 0 ? "0,00%" : fmtPct(currentVn30Pct)}
+                          </span>
+                        )}
+                      </div>
+                      <div className="font-mono text-[12px] font-semibold text-ink tnum mt-0.5">
+                        {currentVn30Val}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="rounded-[6px] bg-soft/45 border border-line/70 px-2.5 py-1.5">
+                      <div className="text-[10px] uppercase tracking-wider text-muted">
+                        Mã khớp lệnh
+                      </div>
+                      <div className="font-mono text-[12px] font-semibold text-ink tnum mt-0.5">
+                        {marketStats.tradedCount}/{boardItems.length} mã
+                      </div>
+                    </div>
+                  )}
+
+                  {currentVn100Val ? (
+                    <div className="rounded-[6px] bg-soft/45 border border-line/70 px-2.5 py-1.5">
+                      <div className="flex items-center justify-between gap-1 text-[10px] uppercase tracking-wider text-muted">
+                        <span>VN100</span>
+                        {currentVn100Pct != null && (
+                          <span
+                            className={`font-mono tnum ${
+                              currentVn100Pct > 0
+                                ? "text-gain"
+                                : currentVn100Pct < 0
+                                  ? "text-loss"
+                                  : "text-ref"
+                            }`}
+                          >
+                            {currentVn100Pct === 0 ? "0,00%" : fmtPct(currentVn100Pct)}
+                          </span>
+                        )}
+                      </div>
+                      <div className="font-mono text-[12px] font-semibold text-ink tnum mt-0.5">
+                        {currentVn100Val}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="rounded-[6px] bg-soft/45 border border-line/70 px-2.5 py-1.5">
+                      <div className="text-[10px] uppercase tracking-wider text-muted">
+                        GTGD ≥ 30 tỷ
+                      </div>
+                      <div className="font-mono text-[12px] font-semibold text-ink tnum mt-0.5">
+                        {marketStats.cashflowFocusCount} mã
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
 
             <div className="mt-2.5 pt-2 border-t border-line flex items-center justify-between text-[11px] text-secondary">
