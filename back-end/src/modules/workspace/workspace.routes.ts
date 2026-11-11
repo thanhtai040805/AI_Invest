@@ -124,8 +124,22 @@ router.get('/agent', optionalAuth, (req: AuthRequest, res, next) => send(res, ne
     db.$queryRawUnsafe("SELECT * FROM portfolio_decisions WHERE ($1::text IS NULL OR date = $1::date) ORDER BY created_at DESC, decision_id DESC LIMIT 200", date || null),
     db.$queryRawUnsafe(`SELECT h.* FROM position_health_ticks h JOIN positions p ON p.symbol=h.ticker
       WHERE p.user_id=$1 AND p.quantity>0 ORDER BY h.ticker`, multiAgentAccountId),
-    db.$queryRawUnsafe('SELECT * FROM log_market_surveillance ORDER BY date DESC NULLS LAST, id DESC LIMIT 15').catch(() => []),
-    db.$queryRawUnsafe('SELECT * FROM log_reinforcement_learning ORDER BY date DESC NULLS LAST, id DESC LIMIT 5').catch(() => []),
+    db.$queryRawUnsafe(
+      `SELECT DISTINCT ON (COALESCE(date, (created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date)) *
+       FROM log_market_surveillance
+       WHERE ($1::text IS NULL OR COALESCE(date, (created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date) <= $1::date)
+       ORDER BY COALESCE(date, (created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date) DESC, id DESC
+       LIMIT 15`,
+      date || null
+    ).catch(() => []),
+    db.$queryRawUnsafe(
+      `SELECT DISTINCT ON (COALESCE(date, (created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date)) *
+       FROM log_reinforcement_learning
+       WHERE ($1::text IS NULL OR COALESCE(date, (created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date) <= $1::date)
+       ORDER BY COALESCE(date, (created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date) DESC, id DESC
+       LIMIT 5`,
+      date || null
+    ).catch(() => []),
   ]);
   // Legacy account/health fields are monitoring snapshots. Current valuation is
   // served separately so minute refreshes never reload the entire audit log.
