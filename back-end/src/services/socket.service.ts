@@ -1,5 +1,6 @@
 import { Server as HttpServer } from 'http';
 import { Server, Socket } from 'socket.io';
+import jwt from 'jsonwebtoken';
 import { config } from '../config';
 import { subscriptionService } from './subscription.service';
 import { aiEngineService } from './aiEngine.service';
@@ -189,6 +190,30 @@ class SocketService {
         connectedAt: new Date(),
       };
       this.socketMeta.set(socket.id, meta);
+
+      const handshakeToken =
+        typeof socket.handshake?.auth?.token === 'string' ? socket.handshake.auth.token : null;
+      if (handshakeToken) {
+        try {
+          const decoded = jwt.verify(handshakeToken, config.jwt.accessSecret) as { userId?: string };
+          if (decoded?.userId) {
+            socket.join(`user:${decoded.userId}`);
+          }
+        } catch {
+          // Allow unauthenticated market sockets
+        }
+      }
+
+      socket.on('subscribe:portfolio', (rawToken?: string) => {
+        const token = typeof rawToken === 'string' && rawToken ? rawToken : handshakeToken;
+        if (!token) return;
+        try {
+          const decoded = jwt.verify(token, config.jwt.accessSecret) as { userId?: string };
+          if (decoded?.userId) socket.join(`user:${decoded.userId}`);
+        } catch {
+          // Ignore expired token
+        }
+      });
 
       console.log(`[Socket.IO] Client connected: ${socket.id} (total: ${this.io.engine.clientsCount})`);
 
@@ -404,11 +429,18 @@ class SocketService {
   }
 
   emitStockPrice(symbol: string, data: unknown): void {
+    if (!this.io) return;
     const sym = symbol.toUpperCase();
     this.io.to(`stock:${sym}`).emit(`stock:price:${sym}`, data);
   }
 
+  emitOrderUpdated(userId: string, data: unknown): void {
+    if (!this.io || !userId) return;
+    this.io.to(`user:${userId}`).emit('portfolio:order_updated', data);
+  }
+
   emitOrderBook(symbol: string, data: unknown): void {
+    if (!this.io) return;
     const sym = symbol.toUpperCase();
     this.io.to(`stock:${sym}`).emit(`stock:orderbook:${sym}`, data);
     const book = (data ?? {}) as Record<string, unknown>;

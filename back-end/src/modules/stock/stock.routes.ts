@@ -5,6 +5,7 @@ import { cached } from '../../utils/cache';
 import prisma from '../../config/database';
 import { redisService } from '../../services/redis.service';
 import { hasMarketPrice, marketQuoteSnapshot, mergeMarketQuote } from '../../services/marketQuote.service';
+import { liveOrderGateway, ExternalOrderBookSnapshot } from '../../services/matchingEngine';
 
 const router = Router();
 
@@ -36,8 +37,41 @@ router.get('/:symbol/news', (req, res, next) => {
   );
 });
 
+const INDEX_SYMBOLS = new Set([
+  'VNINDEX',
+  'VN-INDEX',
+  '^VNINDEX',
+  'VN30',
+  'VN100',
+  'HNX',
+  'HNXINDEX',
+  'HNX30',
+  'UPCOM',
+  'UPCOMINDEX',
+]);
+
+function isIndexSymbol(symbol: string): boolean {
+  return INDEX_SYMBOLS.has(symbol.trim().toUpperCase());
+}
+
+function indexTickerCandidates(symbol: string): string[] {
+  const clean = symbol.trim().toUpperCase();
+  if (clean === 'VNINDEX' || clean === 'VN-INDEX' || clean === '^VNINDEX') {
+    return ['VNINDEX', 'VN-INDEX', '^VNINDEX'];
+  }
+  if (clean === 'HNX' || clean === 'HNXINDEX') {
+    return ['HNXINDEX', 'HNX', '^HNX'];
+  }
+  if (clean === 'UPCOM' || clean === 'UPCOMINDEX') {
+    return ['UPCOMINDEX', 'UPCOM', '^UPCOM'];
+  }
+  return [clean];
+}
+
 async function dbStockQuote(symbol: string) {
-  return cached(`stock:${symbol}:db-quote`, 15, async () => {
+  const isIndex = isIndexSymbol(symbol);
+  const candidates = isIndex ? indexTickerCandidates(symbol) : [symbol];
+  return cached(`stock:v2:${symbol}:db-quote`, 15, async () => {
     const rows = await prisma.$queryRaw<Array<any>>`
       SELECT d.date,
              d.close_adj,
@@ -55,21 +89,23 @@ async function dbStockQuote(symbol: string) {
         WHERE ticker = d.ticker AND date < d.date
         ORDER BY date DESC LIMIT 1
       ) prev ON TRUE
-      WHERE d.ticker = ${symbol}
+      WHERE d.ticker = ANY(${candidates}::text[])
       ORDER BY d.date DESC LIMIT 1
     `;
     const row = rows[0];
     if (!row) return null;
-    const toVnd = (value: unknown) => {
+    const toScale = (value: unknown) => {
       const n = Number(value ?? 0);
-      return n > 0 && n < 500 ? n * 1000 : n;
+      if (!Number.isFinite(n) || n <= 0) return 0;
+      if (isIndex) return Number(n.toFixed(2));
+      return n < 500 ? n * 1000 : n;
     };
     const rawClose = Number(row.raw_close);
     const priorClose = Number(row.prior_close);
-    const price = toVnd(Number.isFinite(rawClose) && rawClose > 0 ? row.raw_close : row.close_adj);
-    const ref = Number.isFinite(priorClose) && priorClose > 0 ? toVnd(row.prior_close) : toVnd(row.ref_price);
-    const ceiling = toVnd(row.ceiling);
-    const floor = toVnd(row.floor);
+    const price = toScale(Number.isFinite(rawClose) && rawClose > 0 ? row.raw_close : row.close_adj);
+    const ref = Number.isFinite(priorClose) && priorClose > 0 ? toScale(row.prior_close) : toScale(row.ref_price);
+    const ceiling = isIndex ? 0 : toScale(row.ceiling);
+    const floor = isIndex ? 0 : toScale(row.floor);
     const changePct = ref > 0 && price > 0 ? ((price - ref) / ref) * 100 : null;
     return {
       symbol,
@@ -87,6 +123,22 @@ async function dbStockQuote(symbol: string) {
 }
 
 async function dbStockProfile(symbol: string) {
+  if (isIndexSymbol(symbol)) {
+    const labelMap: Record<string, string> = {
+      VNINDEX: 'Chỉ số VN-Index (HOSE)',
+      'VN-INDEX': 'Chỉ số VN-Index (HOSE)',
+      VN30: 'Chỉ số VN30 (HOSE)',
+      VN100: 'Chỉ số VN100 (HOSE)',
+      HNXINDEX: 'Chỉ số HNX-Index',
+      UPCOMINDEX: 'Chỉ số UPCoM-Index',
+    };
+    return {
+      symbol,
+      name: labelMap[symbol] || symbol,
+      industry: 'INDEX',
+      shares_outstanding: null,
+    };
+  }
   const row = await prisma.instrument_master.findUnique({
     where: { symbol },
   });
@@ -109,12 +161,54 @@ router.get('/:symbol/profile', (req, res, next) => {
 });
 
 async function dbStockOHLCV(symbol: string, limit = 300) {
+  const isIndex = isIndexSymbol(symbol);
+  if (isIndex) {
+    const candidates = indexTickerCandidates(symbol);
+    const rows = await prisma.$queryRaw<Array<any>>`
+      SELECT date,
+             COALESCE(NULLIF(open_adj, 0), NULLIF(close_unadj, 0), close_adj)::float8 AS open,
+             COALESCE(NULLIF(high_adj, 0), NULLIF(close_unadj, 0), close_adj)::float8 AS high,
+             COALESCE(NULLIF(low_adj, 0), NULLIF(close_unadj, 0), close_adj)::float8 AS low,
+             COALESCE(NULLIF(close_unadj, 0), close_adj)::float8 AS close,
+             COALESCE(volume_total, 0)::float8 AS volume
+      FROM market_data_daily
+      WHERE ticker = ANY(${candidates}::text[])
+        AND COALESCE(NULLIF(close_unadj, 0), close_adj, 0) > 0
+      ORDER BY date DESC
+      LIMIT ${limit}
+    `;
+    if (rows.length > 0) {
+      return rows.reverse().map((r) => ({
+        date: r.date,
+        open: r.open > 100_000 ? Number((r.open / 1000).toFixed(2)) : Number(Number(r.open).toFixed(2)),
+        high: r.high > 100_000 ? Number((r.high / 1000).toFixed(2)) : Number(Number(r.high).toFixed(2)),
+        low: r.low > 100_000 ? Number((r.low / 1000).toFixed(2)) : Number(Number(r.low).toFixed(2)),
+        close: r.close > 100_000 ? Number((r.close / 1000).toFixed(2)) : Number(Number(r.close).toFixed(2)),
+        volume: Number(r.volume ?? 0),
+      }));
+    }
+    const viewRows = await prisma.$queryRaw<Array<any>>`
+      SELECT time AS date,
+             open::float8 AS open,
+             high::float8 AS high,
+             low::float8 AS low,
+             close::float8 AS close,
+             COALESCE(volume, 0)::float8 AS volume
+      FROM ohlcv_unadjusted
+      WHERE symbol = ANY(${candidates}::text[])
+        AND COALESCE(close, 0) > 0
+      ORDER BY time DESC
+      LIMIT ${limit}
+    `.catch(() => []);
+    return viewRows.reverse();
+  }
+
   const rows = await prisma.$queryRaw<Array<any>>`
     SELECT date,
-           (open_adj * 1000)::float8 AS open,
-           (high_adj * 1000)::float8 AS high,
-           (low_adj * 1000)::float8 AS low,
-           (close_adj * 1000)::float8 AS close,
+           (CASE WHEN close_adj > 0 AND close_adj < 1000 THEN open_adj * 1000 ELSE open_adj END)::float8 AS open,
+           (CASE WHEN close_adj > 0 AND close_adj < 1000 THEN high_adj * 1000 ELSE high_adj END)::float8 AS high,
+           (CASE WHEN close_adj > 0 AND close_adj < 1000 THEN low_adj * 1000 ELSE low_adj END)::float8 AS low,
+           (CASE WHEN close_adj > 0 AND close_adj < 1000 THEN close_adj * 1000 ELSE close_adj END)::float8 AS close,
            volume_total::float8 AS volume
     FROM market_data_daily
     WHERE ticker = ${symbol}
@@ -133,7 +227,7 @@ router.get('/:symbol/ohlcv', (req, res, next) => {
   const limit = Number.isSafeInteger(requestedLimit) && requestedLimit > 0
     ? Math.min(requestedLimit, 1000)
     : 300;
-  const cacheKey = `stock:${symbol}:ohlcv:${interval}:${start ?? ''}:${end ?? ''}:${limit}`;
+  const cacheKey = `stock:v2:${symbol}:ohlcv:${interval}:${start ?? ''}:${end ?? ''}:${limit}`;
 
   return handle(req, res, next, () =>
     cached(cacheKey, config.cacheTtl.ohlcv, async () => {
@@ -161,13 +255,16 @@ router.get('/:symbol/quote', (req, res, next) => {
 
 router.get('/:symbol/orderbook', (req, res, next) => {
   const symbol = symbolParam(req);
-  return handle(req, res, next, () =>
-    cached(`api:stock:${symbol}:orderbook`, config.cacheTtl.orderbook, async () => {
+  return handle(req, res, next, async () => {
+    const external = await cached(`api:stock:${symbol}:orderbook`, config.cacheTtl.orderbook, async () => {
       const live = await aiEngineService.getOrderBook(symbol).catch(() => null);
-      if (live && (live as any).bids) return live;
-      return { symbol, bids: [], asks: [] };
-    }),
-  );
+      if (live && Array.isArray((live as ExternalOrderBookSnapshot).bids)) return live as ExternalOrderBookSnapshot;
+      const redisBook = await redisService.getCache<ExternalOrderBookSnapshot>(`stock:${symbol}:orderbook`).catch(() => null);
+      if (redisBook && Array.isArray(redisBook.bids)) return redisBook;
+      return { symbol, bids: [], asks: [], stale: true } as ExternalOrderBookSnapshot;
+    });
+    return liveOrderGateway.getMergedOrderBook(symbol, external);
+  });
 });
 
 router.get('/:symbol/trades', (req, res, next) => {
