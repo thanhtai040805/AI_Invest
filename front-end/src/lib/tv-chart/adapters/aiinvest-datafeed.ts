@@ -18,9 +18,32 @@ export interface RawInputCandle {
   volume?: number
 }
 
-export function toVndPrice(raw: unknown, fallback = 0): number {
+const INDEX_SYMBOLS = new Set([
+  "VNINDEX",
+  "VN-INDEX",
+  "^VNINDEX",
+  "VN30",
+  "VN100",
+  "HNX",
+  "HNXINDEX",
+  "HNX30",
+  "UPCOM",
+  "UPCOMINDEX",
+])
+
+export function isIndexSymbol(symbol?: string | null): boolean {
+  if (!symbol) return false
+  return INDEX_SYMBOLS.has(symbol.trim().toUpperCase())
+}
+
+export function toVndPrice(raw: unknown, fallback = 0, isIndex = false): number {
   const n = Number(raw)
   if (!Number.isFinite(n) || n <= 0) return fallback
+  if (isIndex) {
+    // Auto-heal any legacy 1000x scaled index points (e.g. 1,746,900 -> 1746.90)
+    const idxVal = n > 100_000 ? n / 1_000 : n
+    return Number(idxVal.toFixed(2))
+  }
   const vnd = n < 1_000 ? n * 1_000 : n
   return Math.round(vnd)
 }
@@ -31,8 +54,9 @@ export function getHoseTickStep(priceVnd: number): number {
   return 100
 }
 
-export function roundToHoseTick(priceVnd: number): number {
+export function roundToHoseTick(priceVnd: number, isIndex = false): number {
   if (!Number.isFinite(priceVnd) || priceVnd <= 0) return 0
+  if (isIndex) return Number(priceVnd.toFixed(2))
   const step = getHoseTickStep(priceVnd)
   return Math.round(priceVnd / step) * step
 }
@@ -72,17 +96,21 @@ export function formatTimeframeLabel(ts: number, rawDate: string, tf: TvTimefram
   return d.toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit" })
 }
 
-export function normalizeRawCandles(rawList: RawInputCandle[], tf: TvTimeframe = "1D"): TvCandle[] {
+export function normalizeRawCandles(
+  rawList: RawInputCandle[],
+  tf: TvTimeframe = "1D",
+  isIndex = false
+): TvCandle[] {
   if (!Array.isArray(rawList) || rawList.length === 0) return []
   const out: TvCandle[] = []
 
   for (let i = 0; i < rawList.length; i++) {
     const item = rawList[i]
-    const close = toVndPrice(item.close)
+    const close = toVndPrice(item.close, 0, isIndex)
     if (close <= 0) continue
-    const open = toVndPrice(item.open, close)
-    const high = Math.max(toVndPrice(item.high, close), open, close)
-    const low = Math.min(toVndPrice(item.low, close), open, close)
+    const open = toVndPrice(item.open, close, isIndex)
+    const high = Math.max(toVndPrice(item.high, close, isIndex), open, close)
+    const low = Math.min(toVndPrice(item.low, close, isIndex), open, close)
     const volume = Math.max(0, Number(item.volume ?? 0))
 
     const rawTime = item.timestamp ?? item.time ?? item.date ?? ""
@@ -156,7 +184,7 @@ function aggregateCandles(daily: TvCandle[], mode: "1W" | "1M" | "3M" | "6M" | "
  * when backend returns daily history for an intraday resolution.
  * Preserves exact daily Open, High, Low, Close, and Volume sum.
  */
-function synthesizeIntradayFromDaily(daily: TvCandle[], tf: TvTimeframe): TvCandle[] {
+function synthesizeIntradayFromDaily(daily: TvCandle[], tf: TvTimeframe, isIndex = false): TvCandle[] {
   if (!daily.length) return []
   // Check if already intraday (median gap < 12 hours)
   if (daily.length >= 3) {
@@ -226,7 +254,7 @@ function synthesizeIntradayFromDaily(daily: TvCandle[], tf: TvTimeframe): TvCand
           // Deterministic small oscillation seeded by dIdx + k
           const wave = Math.sin((dIdx * 7 + k * 2.3) * 1.1) * (day.high - day.low) * 0.06 * Math.sin(t * Math.PI)
           const raw = a.price + (b.price - a.price) * t + wave
-          return Math.max(day.low, Math.min(day.high, roundToHoseTick(raw)))
+          return Math.max(day.low, Math.min(day.high, roundToHoseTick(raw, isIndex)))
         }
       }
       return day.close
@@ -247,9 +275,10 @@ function synthesizeIntradayFromDaily(daily: TvCandle[], tf: TvTimeframe): TvCand
       const barTs = startTs + k * cfg.stepSeconds * 1000
       const openP = k === 0 ? day.open : prevClose
       const closeP = k === n - 1 ? day.close : interpPrice(k)
-      const span = Math.max(getHoseTickStep(closeP), Math.round((day.high - day.low) / (n * 0.9)))
-      let highP = Math.min(day.high, Math.max(openP, closeP) + roundToHoseTick(span * 0.45))
-      let lowP = Math.max(day.low, Math.min(openP, closeP) - roundToHoseTick(span * 0.45))
+      const minStep = isIndex ? 0.05 : getHoseTickStep(closeP)
+      const span = Math.max(minStep, (day.high - day.low) / (n * 0.9))
+      let highP = Math.min(day.high, Math.max(openP, closeP) + roundToHoseTick(span * 0.45, isIndex))
+      let lowP = Math.max(day.low, Math.min(openP, closeP) - roundToHoseTick(span * 0.45, isIndex))
       if (k === highPos) highP = day.high
       if (k === lowPos) lowP = day.low
 
@@ -278,6 +307,7 @@ export async function fetchTimeframeCandles(
   seedDailyCandles: RawInputCandle[] = []
 ): Promise<TvCandle[]> {
   const cleanSym = symbol.trim().toUpperCase()
+  const isIndex = isIndexSymbol(cleanSym)
   const isAggregatedMacro =
     timeframe === "1W" ||
     timeframe === "1M" ||
@@ -305,21 +335,21 @@ export async function fetchTimeframeCandles(
         ? ((res as { data: RawInputCandle[] }).data ?? [])
         : seedDailyCandles
 
-    const normalized = normalizeRawCandles(list.length ? list : seedDailyCandles, timeframe)
+    const normalized = normalizeRawCandles(list.length ? list : seedDailyCandles, timeframe, isIndex)
     if (isAggregatedMacro) {
       return aggregateCandles(normalized, timeframe)
     }
     if (timeframe !== "1D") {
-      return synthesizeIntradayFromDaily(normalized, timeframe)
+      return synthesizeIntradayFromDaily(normalized, timeframe, isIndex)
     }
     return normalized
   } catch {
-    const fallback = normalizeRawCandles(seedDailyCandles, timeframe)
+    const fallback = normalizeRawCandles(seedDailyCandles, timeframe, isIndex)
     if (isAggregatedMacro) {
       return aggregateCandles(fallback, timeframe)
     }
     if (timeframe !== "1D") {
-      return synthesizeIntradayFromDaily(fallback, timeframe)
+      return synthesizeIntradayFromDaily(fallback, timeframe, isIndex)
     }
     return fallback
   }

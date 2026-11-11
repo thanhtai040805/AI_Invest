@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
-import { Link, useRouter } from "../lib/router"
+import { Link, STOCK_MODAL_EVENT, openStockModal, useRouter, type StockModalEventDetail } from "../lib/router"
 import { useAuth } from "../lib/auth"
 import { marketApi } from "../lib/api"
 import { useResource } from "../lib/api/use-resource"
+import { StockDetailModal } from "./StockDetailView"
 import { PercentChange } from "./ui"
 
 const nav = [
@@ -151,17 +152,43 @@ function Sidebar() {
 function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { navigate } = useRouter()
   const [q, setQ] = useState("")
+  const tickerCandidate = useMemo(() => {
+    const trimmed = q.trim().toUpperCase()
+    return /^[A-Z0-9]{3,5}$/.test(trimmed) ? trimmed : null
+  }, [q])
+
   const allItems = useMemo(() => {
     const routes = nav.flatMap((s) => s.items.map((i) => ({ type: "Điều hướng", label: i.label, route: i.route, hint: s.group })))
     const commands = [
       { type: "Lệnh thao tác", label: "So sánh HPG và HSG", route: "/discovery", hint: "So sánh" },
       { type: "Lệnh thao tác", label: "Kiểm tra rủi ro danh mục", route: "/portfolio", hint: "Danh mục" },
-      { type: "Lệnh thao tác", label: "Kiểm tra sổ lệnh đang chờ", route: "/portfolio", hint: "Danh mục" },
+      { type: "Lệnh thao tác", label: "Kiểm tra sổ lệnh đang chờ", route: "/trade", hint: "Giao dịch" },
     ]
     return [...commands, ...routes]
   }, [])
 
-  const results = q ? allItems.filter((i) => i.label.toLowerCase().includes(q.toLowerCase())) : allItems.slice(0, 10)
+  const results = useMemo(() => {
+    const filtered = q ? allItems.filter((i) => i.label.toLowerCase().includes(q.toLowerCase())) : allItems.slice(0, 10)
+    if (tickerCandidate) {
+      return [
+        {
+          type: "Cổ phiếu",
+          label: `Mở bảng phân tích ${tickerCandidate} ngay tại trang`,
+          route: `/stock/${tickerCandidate}`,
+          hint: "Popup nghiên cứu",
+        },
+        {
+          type: "Cổ phiếu",
+          label: `Đặt lệnh giao dịch ${tickerCandidate}`,
+          route: `/trade?symbol=${tickerCandidate}`,
+          hint: "Khớp lệnh LIVE",
+        },
+        ...filtered,
+      ]
+    }
+    return filtered
+  }, [allItems, q, tickerCandidate])
+
   const grouped = results.reduce<Record<string, typeof results>>((acc, r) => {
     (acc[r.type] ??= []).push(r)
     return acc
@@ -175,8 +202,18 @@ function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void 
         <div className="flex items-center gap-3 px-4 min-h-[52px] border-b border-line py-3.5">
           <span className="text-muted">⌘</span>
           <input
-            autoFocus value={q} onChange={(e) => setQ(e.target.value)}
-            placeholder="Tìm kiếm hoặc gõ lệnh… (⌘K)"
+            autoFocus
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && results[0]) {
+                e.preventDefault()
+                navigate(results[0].route)
+                setQ("")
+                onClose()
+              }
+            }}
+            placeholder="Nhập mã CP (VD: HPG, FPT, VCB) hoặc gõ lệnh… (⌘K)"
             className="flex-1 bg-transparent outline-none text-[14px] text-ink placeholder:text-muted"
           />
           <kbd className="text-[10px] font-mono bg-soft border border-line rounded px-1.5 py-0.5 text-muted">ESC</kbd>
@@ -188,7 +225,7 @@ function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void 
               {items.map((r) => (
                 <button
                   key={r.type + r.label}
-                  onClick={() => { navigate(r.route); onClose() }}
+                  onClick={() => { navigate(r.route); setQ(""); onClose() }}
                   className="w-full flex items-center gap-3 px-2 h-9 rounded-[6px] text-left hover:bg-soft transition-colors group"
                 >
                   <span className="text-[13px] text-ink">{r.label}</span>
@@ -205,7 +242,13 @@ function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void 
 }
 
 export function Shell({ children }: { children: ReactNode }) {
+  const { path } = useRouter()
   const [cmd, setCmd] = useState(false)
+  const [modalState, setModalState] = useState<{ symbol: string | null; symbols: string[] }>({
+    symbol: null,
+    symbols: [],
+  })
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setCmd((v) => !v) }
@@ -214,6 +257,26 @@ export function Shell({ children }: { children: ReactNode }) {
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
   }, [])
+
+  useEffect(() => {
+    const onOpenModal = (e: Event) => {
+      const detail = (e as CustomEvent<StockModalEventDetail>).detail
+      if (!detail?.symbol) return
+      setModalState({
+        symbol: detail.symbol.trim().toUpperCase(),
+        symbols: Array.isArray(detail.symbols) && detail.symbols.length > 0 ? detail.symbols : [],
+      })
+    }
+    window.addEventListener(STOCK_MODAL_EVENT, onOpenModal)
+    return () => window.removeEventListener(STOCK_MODAL_EVENT, onOpenModal)
+  }, [])
+
+  useEffect(() => {
+    setModalState((prev) => (prev.symbol ? { symbol: null, symbols: [] } : prev))
+  }, [path])
+
+  const activeIdx = modalState.symbol ? modalState.symbols.indexOf(modalState.symbol) : -1
+
   return (
     <div className="flex h-full bg-paper">
       <Sidebar />
@@ -222,6 +285,23 @@ export function Shell({ children }: { children: ReactNode }) {
         <main className="flex-1 overflow-y-auto">{children}</main>
       </div>
       <CommandPalette open={cmd} onClose={() => setCmd(false)} />
+      {modalState.symbol && (
+        <StockDetailModal
+          open={Boolean(modalState.symbol)}
+          symbol={modalState.symbol}
+          onClose={() => setModalState({ symbol: null, symbols: [] })}
+          onSelectPrev={
+            activeIdx > 0
+              ? () => setModalState((s) => ({ ...s, symbol: s.symbols[activeIdx - 1] ?? s.symbol }))
+              : undefined
+          }
+          onSelectNext={
+            activeIdx >= 0 && activeIdx < modalState.symbols.length - 1
+              ? () => setModalState((s) => ({ ...s, symbol: s.symbols[activeIdx + 1] ?? s.symbol }))
+              : undefined
+          }
+        />
+      )}
     </div>
   )
 }

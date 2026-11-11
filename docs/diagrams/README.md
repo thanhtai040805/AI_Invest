@@ -15,6 +15,18 @@ Thư mục này chứa các sơ đồ trực quan tương tác khoa học độc
 | **Cây Quyết Định Toán Học & Kiến Trúc TCG (GIL)** | [gil-decision-tree-gating.html](file:///d:/AIInvest/docs/diagrams/gil-decision-tree-gating.html) | Scientific TCG & Decision Tree (NeurIPS/ICLR/SIGMOD) | Kiến trúc 2 giai đoạn quy mô lớn: **Giai đoạn 1**: Thiết lập Đồ thị Doanh nghiệp Thời gian (**Temporal Corporate Graph - TCG** Pipeline từ `gil_service.py`) gồm Entity Layer phân giải $V_{\text{corp}}, V_{\text{person}}, V_{\text{spv}}$, chiếu ra 3 đồ thị đa tầng độc lập diện tích lớn (**Ownership Graph** $G_{\text{own}}$, **Governance Graph** $G_{\text{gov}}$, **Financial Flow Graph** $G_{\text{flow}}$) và hộp hợp nhất TCG với Bất biến phạm vi kế toán $\text{Scope}(x)=\text{Scope}(y)$; **Giai đoạn 2**: Cây quyết định bậc thang 4 cổng chặn với các đồ thị con thực tế, kích thước lớn ($r \ge 18\text{px}$, nhãn số tiền VND và % sở hữu rõ ràng): Gate 0 (Đồ thị đứt gãy), Gate 1 (Chu trình rút ruột động Motif M1), Gate 2 (Lưới 4 Motif thực tế: M2 Phễu nội bộ, M3 Rút vốn ngoại vi, M4 Lệch kiểm soát - dòng tiền, M5 Đảo kỳ hạn thời gian) và Gate 3 (Cây Arborescence DAG chuẩn mực & Kelly Sizing). Tích hợp Preset Switcher 4 kịch bản, Dynamic Flow Opacity và Inspector Drawer chi tiết. |
 | **Danh Mục Master Prompt Sơ Đồ Khoa Học Cho Mọi Giải Thuật** | [SCIENTIFIC_ALGORITHMS_PROMPT_CATALOG.md](file:///d:/AIInvest/docs/diagrams/SCIENTIFIC_ALGORITHMS_PROMPT_CATALOG.md) | Academic Specification Engine (NeurIPS/ICLR/SIGMOD) | Đặc tả 6 tầng nhận thức và 7 bộ Master Prompt hoàn chỉnh cho toàn bộ hệ thống giải thuật `ai-engine` (Vi phân phân số FFD, Lan truyền cú sốc đồ thị 15 ngành/9 tập đoàn, Trung hòa & trực giao hóa nhân tố, Thao túng BCTC Beneish kép, Hard Laws & Kelly phân tầng, Pipeline AST băm SHA-256). |
 
+### 1.1 Luồng Khớp Lệnh Trực Tuyến Chuẩn LIVE & Zero-GC Arena L3 Order Book (`back-end/src/services/matchingEngine.ts`)
+
+```mermaid
+flowchart LR
+  U["Giao diện Đặt lệnh (/trade)\nLO · MP · ATO · ATC · Amend · Cancel"] -->|"POST / PATCH / DELETE\n/api/v1/portfolio/order"| OMS["PortfolioService OMS\nKiểm tra Biên độ Trần/Sàn · Lô 100\nPhong tỏa lockedCash & lockedShares (T+2.5)"]
+  DNSE["DNSE Realtime Relay\nTick + Sổ lệnh L1–L3"] -->|"Redis stock:{sym}:orderbook\n+ onLiveMarketTick"| GW["LiveOrderGateway\nHợp nhất Thanh khoản L1–L3\n& Quét khớp VWAP đa mức giá"]
+  OMS --> GW
+  GW <-->|"O(1) clz32 Bitset · Zero-GC TypedArray\n> 4.5M–18.1M orders/sec"| LOB["ArenaOrderBook (L3 FIFO)\nSTP · MTL · Call Auction ATO/ATC"]
+  GW -->|"FILLED / PARTIALLY_FILLED /\nPENDING / CANCELLED"| LEDGER["PostgreSQL Repeatable Read\norders · order_executions · positions\nĐối soát bất biến accountLedger"]
+  GW -->|"Socket.IO user:{id}\nportfolio:order_updated"| U
+```
+
 > [!NOTE]
 > Các sơ đồ phân rã cũ đã được tinh gọn và làm sạch khỏi thư mục nhằm tránh phân mảnh và không đồng nhất tiêu chuẩn thiết kế. Để tái tạo bất kỳ sơ đồ chuyên sâu nào theo chuẩn khoa học mới, sử dụng meta-skill: `scientific-diagram-prompt-crafter` và tham khảo [SCIENTIFIC_ALGORITHMS_PROMPT_CATALOG.md](file:///d:/AIInvest/docs/diagrams/SCIENTIFIC_ALGORITHMS_PROMPT_CATALOG.md).
 

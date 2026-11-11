@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { getSocket, retainOhlc } from "@/lib/socket"
 import {
   fetchTimeframeCandles,
+  isIndexSymbol,
   normalizeRawCandles,
   roundToHoseTick,
   toVndPrice,
@@ -66,6 +67,8 @@ export interface TradingViewChartProps {
   initialTimeframe?: TvTimeframe
   initialStyle?: TvChartStyle
   height?: number
+  precision?: number
+  compact?: boolean
   className?: string
 }
 
@@ -156,18 +159,28 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
   initialTimeframe = "1D",
   initialStyle = "candles",
   height = 610,
+  precision,
+  compact = false,
   className = "",
 }) => {
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasWrapperRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
+  const isIndex = useMemo(
+    () => isIndexSymbol(symbol) || (precision != null && precision > 0),
+    [symbol, precision]
+  )
+  const effectivePrecision = precision ?? (isIndex ? 2 : 0)
+
   // Chart Core State
   const [timeframe, setTimeframe] = useState<TvTimeframe>(initialTimeframe)
   const [activeDateRange, setActiveDateRange] = useState<TvDateRange | null>("6M")
   const [chartStyle, setChartStyle] = useState<TvChartStyle>(initialStyle)
   const [candles, setCandles] = useState<TvCandle[]>(() =>
-    seedCandles && seedCandles.length > 0 ? normalizeRawCandles(seedCandles, initialTimeframe) : []
+    seedCandles && seedCandles.length > 0
+      ? normalizeRawCandles(seedCandles, initialTimeframe, isIndex)
+      : []
   )
   const [loadingData, setLoadingData] = useState(false)
 
@@ -416,7 +429,7 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
         if (cancelled) return
         if (res.length > 0) {
           setCandles(res)
-          const defaultBars = Math.min(res.length, timeframe === "1D" ? 95 : 110)
+          const defaultBars = Math.min(res.length, timeframe === "1D" ? (compact ? 65 : 95) : 110)
           setViewport((prev) => ({
             ...prev,
             startIndex: Math.max(0, res.length - defaultBars),
@@ -446,7 +459,7 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
   // Sync seedCandles if parent updates 1D candles in real time (never shrink 250-bar history to 130-bar seed)
   useEffect(() => {
     if (timeframe !== "1D" || !seedCandles || seedCandles.length === 0) return
-    const normalized = normalizeRawCandles(seedCandles, "1D")
+    const normalized = normalizeRawCandles(seedCandles, "1D", isIndex)
     if (normalized.length === 0) return
 
     setCandles((prev) => {
@@ -489,9 +502,9 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
       }
       return next
     })
-  }, [seedCandles, timeframe, settings.rightOffsetBars])
+  }, [seedCandles, timeframe, settings.rightOffsetBars, isIndex])
 
-  // Subscribe to Live Socket.IO OHLC Stream
+  // Subscribe to Live Socket.IO OHLC Stream (+ market:indices stream for VNINDEX/VN30/VN100)
   useEffect(() => {
     if (!symbol) return
     const sock = getSocket()
@@ -505,11 +518,11 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
       volume?: number
     }) => {
       if (String(payload?.symbol ?? "").toUpperCase() !== symbol.toUpperCase()) return
-      const close = toVndPrice(payload.close)
+      const close = toVndPrice(payload.close, 0, isIndex)
       if (close <= 0) return
-      const open = toVndPrice(payload.open, close)
-      const high = Math.max(toVndPrice(payload.high, close), open, close)
-      const low = Math.min(toVndPrice(payload.low, close), open, close)
+      const open = toVndPrice(payload.open, close, isIndex)
+      const high = Math.max(toVndPrice(payload.high, close, isIndex), open, close)
+      const low = Math.min(toVndPrice(payload.low, close, isIndex), open, close)
       const vol = Math.max(0, Number(payload.volume ?? 0))
 
       setCandles((prev) => {
@@ -527,21 +540,61 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
         return next
       })
     }
+
+    const onIndicesUpdate = (payload: unknown) => {
+      if (!isIndex) return
+      const rows = Array.isArray(payload)
+        ? payload
+        : Array.isArray((payload as { indices?: unknown })?.indices)
+          ? ((payload as { indices: Array<Record<string, unknown>> }).indices ?? [])
+          : []
+      const cleanSym = symbol.trim().toUpperCase().replace("-", "")
+      const match = rows.find(
+        (r: Record<string, unknown>) =>
+          String(r?.symbol ?? r?.code ?? r?.name ?? "")
+            .toUpperCase()
+            .replace("-", "") === cleanSym
+      )
+      if (!match) return
+      const val = toVndPrice(match.value ?? match.price ?? match.close, 0, true)
+      if (val <= 0) return
+      setCandles((prev) => {
+        if (prev.length === 0) return prev
+        const last = prev[prev.length - 1]
+        if (Math.abs(last.close - val) < 0.005) return prev
+        const next = [...prev]
+        next[next.length - 1] = {
+          ...last,
+          close: val,
+          high: Math.max(last.high, val),
+          low: Math.min(last.low, val),
+        }
+        return next
+      })
+    }
+
     sock.on("ohlc:update", onOhlcUpdate)
+    if (isIndex) {
+      sock.on("market:indices", onIndicesUpdate)
+    }
     return () => {
       sock.off("ohlc:update", onOhlcUpdate)
+      if (isIndex) {
+        sock.off("market:indices", onIndicesUpdate)
+      }
       release()
     }
-  }, [symbol])
+  }, [symbol, isIndex])
 
   // Also sync latest candle close with trading.currentPrice
   useEffect(() => {
     const livePrice = trading?.currentPrice ?? 0
     if (livePrice <= 0) return
+    const eps = isIndex ? 0.005 : 1
     setCandles((prev) => {
       if (prev.length === 0) return prev
       const last = prev[prev.length - 1]
-      if (Math.abs(last.close - livePrice) < 1) return prev
+      if (Math.abs(last.close - livePrice) < eps) return prev
       const next = [...prev]
       next[next.length - 1] = {
         ...last,
@@ -551,7 +604,7 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
       }
       return next
     })
-  }, [trading?.currentPrice])
+  }, [trading?.currentPrice, isIndex])
 
   // Bar Replay Timer
   useEffect(() => {
@@ -567,24 +620,47 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
     return () => window.clearInterval(timer)
   }, [replay.active, replay.playing, replay.speedMs, candles.length])
 
-  // ResizeObserver for Responsive High-DPI Canvas
+  // Keep React `isFullscreen` strictly synchronized when browser exits Fullscreen natively (e.g. pressing Esc)
+  useEffect(() => {
+    const syncFullscreen = () => {
+      const doc = document as Document & { webkitFullscreenElement?: Element | null }
+      const fsEl = document.fullscreenElement ?? doc.webkitFullscreenElement ?? null
+      const active = Boolean(fsEl && containerRef.current && fsEl === containerRef.current)
+      setIsFullscreen(active)
+    }
+    document.addEventListener("fullscreenchange", syncFullscreen)
+    document.addEventListener("webkitfullscreenchange", syncFullscreen)
+    return () => {
+      document.removeEventListener("fullscreenchange", syncFullscreen)
+      document.removeEventListener("webkitfullscreenchange", syncFullscreen)
+    }
+  }, [])
+
+  // ResizeObserver for Responsive High-DPI Canvas (with post-fullscreen settle frames)
   useEffect(() => {
     const el = canvasWrapperRef.current
     if (!el) return
     const updateSize = () => {
       const rect = el.getBoundingClientRect()
-      if (rect.width > 50 && rect.height > 50) {
-        setCanvasSize({
-          width: Math.floor(rect.width),
-          height: Math.floor(rect.height),
-        })
+      if (rect.width > 40 && rect.height > 40) {
+        const nextW = Math.floor(rect.width)
+        const nextH = Math.floor(rect.height)
+        setCanvasSize((prev) =>
+          prev.width === nextW && prev.height === nextH ? prev : { width: nextW, height: nextH }
+        )
       }
     }
     updateSize()
+    const rafId = window.requestAnimationFrame(updateSize)
+    const settleTimer = window.setTimeout(updateSize, 90)
     const ro = new ResizeObserver(updateSize)
     ro.observe(el)
-    return () => ro.disconnect()
-  }, [isFullscreen, height])
+    return () => {
+      window.cancelAnimationFrame(rafId)
+      window.clearTimeout(settleTimer)
+      ro.disconnect()
+    }
+  }, [isFullscreen, height, compact])
 
   // Compute Display Candles across all 16 Chart Styles (incl. Heikin-Ashi, Renko, Line Break, Kagi, P&F, Range)
   const effectiveCandles = useMemo(() => {
@@ -642,14 +718,19 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
     [computedIndicators]
   )
 
+  const isEmbeddedCompact = compact && !isFullscreen
+
   const subPaneIndicators = useMemo(
-    () => computedIndicators.filter((c) => !c.meta.overlay),
-    [computedIndicators]
+    () => (isEmbeddedCompact ? [] : computedIndicators.filter((c) => !c.meta.overlay)),
+    [computedIndicators, isEmbeddedCompact]
   )
 
   const strategyIndicators = useMemo(
-    () => computedIndicators.filter((c) => c.instance.visible && Boolean(c.strategyReport)),
-    [computedIndicators]
+    () =>
+      isEmbeddedCompact
+        ? []
+        : computedIndicators.filter((c) => c.instance.visible && Boolean(c.strategyReport)),
+    [computedIndicators, isEmbeddedCompact]
   )
 
   // Compute Layout & Coordinate Metrics
@@ -663,7 +744,8 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
       settings,
       overlayIndicators,
       subPaneIndicators,
-      trading
+      trading,
+      effectivePrecision
     )
   }, [
     canvasSize.width,
@@ -674,6 +756,7 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
     overlayIndicators,
     subPaneIndicators,
     trading,
+    effectivePrecision,
   ])
 
   // Determine Hovered Bar Index & Active Candle for Legend/Data Window
@@ -720,10 +803,10 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
       return {
         barIndex: magnetMode !== "off" ? clampedIdx : Math.round(rawBarIndex * 10) / 10,
         timestamp: candle?.timestamp ?? Date.now(),
-        price: roundToHoseTick(price),
+        price: roundToHoseTick(price, isIndex),
       }
     },
-    [metrics.coordConverter, displayCandles, magnetMode]
+    [metrics.coordConverter, displayCandles, magnetMode, isIndex]
   )
 
   // Render High-DPI Canvas Frame
@@ -766,6 +849,7 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
       mousePos,
       isDraggingOrderLine,
       zoomBox,
+      precision: effectivePrecision,
     })
 
     ctx.restore()
@@ -789,6 +873,7 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
     mousePos,
     isDraggingOrderLine,
     zoomBox,
+    effectivePrecision,
   ])
 
   // Keyboard Shortcuts (Esc, Delete/Backspace, Ctrl+Z / Ctrl+Y)
@@ -812,6 +897,11 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
           setSelectedDrawingId(null)
         } else if (activeTool !== "cursor_cross") {
           setActiveTool("cursor_cross")
+        } else if (isFullscreen) {
+          if (document.fullscreenElement) {
+            document.exitFullscreen?.().catch(() => {})
+          }
+          setIsFullscreen(false)
         }
       } else if ((e.key === "Delete" || e.key === "Backspace") && selectedDrawingId) {
         e.preventDefault()
@@ -844,6 +934,7 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
     draftDrawing,
     selectedDrawingId,
     activeTool,
+    isFullscreen,
     drawings,
     undoStack,
     redoStack,
@@ -1635,20 +1726,36 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
     }
   }, [symbol, timeframe])
 
-  // Fullscreen Toggle
+  // Fullscreen Toggle (Synchronized with Browser Fullscreen API + Clean Fallback)
   const handleToggleFullscreen = useCallback(() => {
     const el = containerRef.current
     if (!el) return
-    if (!document.fullscreenElement) {
-      el.requestFullscreen?.().catch(() => {
-        setIsFullscreen((v) => !v)
-      })
-      setIsFullscreen(true)
+    const doc = document as Document & {
+      webkitFullscreenElement?: Element | null
+      webkitExitFullscreen?: () => Promise<void> | void
+    }
+    const activeFs = document.fullscreenElement ?? doc.webkitFullscreenElement ?? null
+    if (!activeFs && !isFullscreen) {
+      const req =
+        el.requestFullscreen?.bind(el) ??
+        (el as HTMLElement & { webkitRequestFullscreen?: () => Promise<void> })
+          .webkitRequestFullscreen?.bind(el)
+      if (req) {
+        Promise.resolve(req())
+          .then(() => setIsFullscreen(true))
+          .catch(() => setIsFullscreen(true))
+      } else {
+        setIsFullscreen(true)
+      }
     } else {
-      document.exitFullscreen?.().catch(() => {})
+      if (activeFs) {
+        const exit =
+          document.exitFullscreen?.bind(document) ?? doc.webkitExitFullscreen?.bind(doc)
+        Promise.resolve(exit?.()).catch(() => {})
+      }
       setIsFullscreen(false)
     }
-  }, [])
+  }, [isFullscreen])
 
   // Selected Drawing Object
   const selectedDrawing = useMemo(
@@ -1686,133 +1793,215 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
     <div
       ref={containerRef}
       data-name="tv-chart-root"
-      style={{ height: isFullscreen ? "100vh" : `${height}px` }}
+      style={{ height: isFullscreen ? "100dvh" : `${height}px` }}
       className={`relative flex flex-col rounded-xl border overflow-hidden select-none transition-colors ${
         isDark
           ? "bg-[#131722] border-[#2A2E39] text-[#D1D4DC]"
           : "bg-white border-[#E0E3EB] text-[#131722]"
-      } ${isFullscreen ? "fixed inset-0 z-50 rounded-none" : ""} ${className}`}
+      } ${isFullscreen ? "fixed inset-0 z-[120] rounded-none" : ""} ${className}`}
     >
-      {/* 1. Top Header Toolbar */}
-      <TopHeaderToolbar
-        symbol={symbol}
-        timeframe={timeframe}
-        chartStyle={chartStyle}
-        indicators={indicators}
-        favoriteIds={favoriteIds}
-        comparisons={comparisons}
-        replay={replay}
-        canUndo={undoStack.length > 0}
-        canRedo={redoStack.length > 0}
-        isFullscreen={isFullscreen}
-        isDark={isDark}
-        onSymbolChange={trading?.onSymbolChange}
-        onTimeframeChange={(tf) => {
-          setTimeframe(tf)
-          setActiveDateRange(null)
-        }}
-        onChartStyleChange={setChartStyle}
-        onOpenIndicatorsModal={() => {
-          setEditingIndicatorId(null)
-          setIndicatorsModalOpen(true)
-        }}
-        onQuickToggleIndicator={(id: TvIndicatorId) => {
-          setIndicators((prev) => {
-            const exists = prev.find((i) => i.id === id)
-            if (exists) {
-              return prev.filter((i) => i.instanceId !== exists.instanceId)
-            }
-            const meta = getIndicatorMetadata(id)
-            if (meta.category === "strategy") {
-              setStrategyTesterOpen(true)
-            }
-            return [...prev, createIndicatorInstance(id)]
-          })
-        }}
-        onToggleComparison={handleToggleComparison}
-        onToggleReplay={() =>
-          setReplay((prev) => ({
-            ...prev,
-            active: !prev.active,
-            selectingStartBar: !prev.active,
-            playing: false,
-            cutoffIndex: Math.max(10, candles.length - 15),
-          }))
-        }
-        onReplaySelectCut={() =>
-          setReplay((prev) => ({ ...prev, selectingStartBar: true, playing: false }))
-        }
-        onReplayPlayPause={() =>
-          setReplay((prev) => ({ ...prev, playing: !prev.playing, selectingStartBar: false }))
-        }
-        onReplayStep={() =>
-          setReplay((prev) => ({
-            ...prev,
-            playing: false,
-            cutoffIndex: Math.min(candles.length - 1, prev.cutoffIndex + 1),
-          }))
-        }
-        onReplaySpeedChange={(ms) => setReplay((prev) => ({ ...prev, speedMs: ms }))}
-        onUndo={() => {
-          if (undoStack.length === 0) return
-          const prev = undoStack[undoStack.length - 1]
-          setUndoStack((u) => u.slice(0, -1))
-          setRedoStack((r) => [...r, drawings])
-          commitDrawings(prev, false)
-        }}
-        onRedo={() => {
-          if (redoStack.length === 0) return
-          const next = redoStack[redoStack.length - 1]
-          setRedoStack((r) => r.slice(0, -1))
-          setUndoStack((u) => [...u, drawings])
-          commitDrawings(next, false)
-        }}
-        onOpenObjectTree={() => setObjectTreeOpen(true)}
-        onOpenSettings={() => setSettingsModalOpen(true)}
-        onToggleFullscreen={handleToggleFullscreen}
-        onTakeSnapshot={handleTakeSnapshot}
-      />
+      {/* 1. Top Header Toolbar (or Sleek Compact Bar when embedded in Market Pulse) */}
+      {isEmbeddedCompact ? (
+        <div
+          className={`flex items-center justify-between gap-2 px-2.5 h-8 border-b text-[11px] shrink-0 ${
+            isDark
+              ? "bg-[#131722] border-[#2A2E39] text-[#D1D4DC]"
+              : "bg-[#F8F9FD] border-[#E0E3EB] text-[#131722]"
+          }`}
+        >
+          <div className="flex items-center gap-1">
+            {(["15m", "1H", "1D", "1W", "1M"] as TvTimeframe[]).map((tf) => (
+              <button
+                key={tf}
+                type="button"
+                onClick={() => {
+                  setTimeframe(tf)
+                  setActiveDateRange(null)
+                }}
+                className={`px-1.5 py-0.5 rounded font-mono text-[10.5px] font-semibold transition-colors ${
+                  timeframe === tf
+                    ? "bg-[#2962FF] text-white"
+                    : "opacity-75 hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/10"
+                }`}
+              >
+                {tf}
+              </button>
+            ))}
+            <div className="w-px h-3.5 bg-current/15 mx-0.5" />
+            <button
+              type="button"
+              onClick={() => setChartStyle((s) => (s === "area" ? "candles" : "area"))}
+              className="px-1.5 py-0.5 rounded text-[10.5px] font-medium opacity-80 hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/10"
+              title="Chuyển đổi Nến / Miền"
+            >
+              {chartStyle === "area" ? "Miền" : "Nến"}
+            </button>
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => {
+                const defaultBars = Math.min(displayCandles.length, timeframe === "1D" ? 65 : 90)
+                setViewport((vp) => ({
+                  ...vp,
+                  startIndex: Math.max(0, displayCandles.length - defaultBars),
+                  endIndex: displayCandles.length - 1 + settings.rightOffsetBars,
+                  autoScale: true,
+                  manualPriceScaleFactor: 1,
+                  manualPricePanDelta: 0,
+                }))
+              }}
+              title="Đặt lại khung nhìn mặc định"
+              className="px-1.5 py-0.5 rounded text-[11px] font-medium opacity-75 hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/10"
+            >
+              ↺
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setEditingIndicatorId(null)
+                setIndicatorsModalOpen(true)
+              }}
+              className="px-1.5 py-0.5 rounded text-[10.5px] font-medium opacity-80 hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/10"
+            >
+              Chỉ báo
+            </button>
+            <button
+              type="button"
+              onClick={handleToggleFullscreen}
+              title="Mở rộng toàn bộ công cụ TradingView Pro (Nhấn Esc để thu nhỏ)"
+              className="px-1.5 py-0.5 rounded bg-[#2962FF]/10 text-[#2962FF] hover:bg-[#2962FF] hover:text-white font-semibold text-[10.5px] transition-colors"
+            >
+              ⤢ Pro
+            </button>
+          </div>
+        </div>
+      ) : (
+        <TopHeaderToolbar
+          symbol={symbol}
+          timeframe={timeframe}
+          chartStyle={chartStyle}
+          indicators={indicators}
+          favoriteIds={favoriteIds}
+          comparisons={comparisons}
+          replay={replay}
+          canUndo={undoStack.length > 0}
+          canRedo={redoStack.length > 0}
+          isFullscreen={isFullscreen}
+          isDark={isDark}
+          onSymbolChange={trading?.onSymbolChange}
+          onTimeframeChange={(tf) => {
+            setTimeframe(tf)
+            setActiveDateRange(null)
+          }}
+          onChartStyleChange={setChartStyle}
+          onOpenIndicatorsModal={() => {
+            setEditingIndicatorId(null)
+            setIndicatorsModalOpen(true)
+          }}
+          onQuickToggleIndicator={(id: TvIndicatorId) => {
+            setIndicators((prev) => {
+              const exists = prev.find((i) => i.id === id)
+              if (exists) {
+                return prev.filter((i) => i.instanceId !== exists.instanceId)
+              }
+              const meta = getIndicatorMetadata(id)
+              if (meta.category === "strategy") {
+                setStrategyTesterOpen(true)
+              }
+              return [...prev, createIndicatorInstance(id)]
+            })
+          }}
+          onToggleComparison={handleToggleComparison}
+          onToggleReplay={() =>
+            setReplay((prev) => ({
+              ...prev,
+              active: !prev.active,
+              selectingStartBar: !prev.active,
+              playing: false,
+              cutoffIndex: Math.max(10, candles.length - 15),
+            }))
+          }
+          onReplaySelectCut={() =>
+            setReplay((prev) => ({ ...prev, selectingStartBar: true, playing: false }))
+          }
+          onReplayPlayPause={() =>
+            setReplay((prev) => ({ ...prev, playing: !prev.playing, selectingStartBar: false }))
+          }
+          onReplayStep={() =>
+            setReplay((prev) => ({
+              ...prev,
+              playing: false,
+              cutoffIndex: Math.min(candles.length - 1, prev.cutoffIndex + 1),
+            }))
+          }
+          onReplaySpeedChange={(ms) => setReplay((prev) => ({ ...prev, speedMs: ms }))}
+          onUndo={() => {
+            if (undoStack.length === 0) return
+            const prev = undoStack[undoStack.length - 1]
+            setUndoStack((u) => u.slice(0, -1))
+            setRedoStack((r) => [...r, drawings])
+            commitDrawings(prev, false)
+          }}
+          onRedo={() => {
+            if (redoStack.length === 0) return
+            const next = redoStack[redoStack.length - 1]
+            setRedoStack((r) => r.slice(0, -1))
+            setUndoStack((u) => [...u, drawings])
+            commitDrawings(next, false)
+          }}
+          onOpenObjectTree={() => setObjectTreeOpen(true)}
+          onOpenSettings={() => setSettingsModalOpen(true)}
+          onToggleFullscreen={handleToggleFullscreen}
+          onTakeSnapshot={handleTakeSnapshot}
+        />
+      )}
 
       {/* 2. Middle Workspace: Left Drawing Toolbar + Multi-Pane Canvas Stage */}
       <div className="flex-1 flex min-h-0 relative overflow-hidden">
-        <LeftDrawingToolbar
-          activeTool={activeTool}
-          magnetMode={magnetMode}
-          keepDrawing={keepDrawing}
-          lockAllDrawings={lockAllDrawings}
-          hideAllDrawings={hideAllDrawings}
-          drawingsCount={drawings.length}
-          isZoomMode={isZoomMode}
-          isDark={isDark}
-          onSelectTool={(tool) => {
-            setIsZoomMode(false)
-            setZoomBox(null)
-            setActiveTool(tool)
-            setDraftDrawing(null)
-          }}
-          onCycleMagnetMode={() =>
-            setMagnetMode((m) => (m === "off" ? "weak" : m === "weak" ? "strong" : "off"))
-          }
-          onToggleKeepDrawing={() => setKeepDrawing((v) => !v)}
-          onToggleLockAll={() => setLockAllDrawings((v) => !v)}
-          onToggleHideAll={() => setHideAllDrawings((v) => !v)}
-          onClearDrawings={() => {
-            commitDrawings([])
-            setSelectedDrawingId(null)
-          }}
-          onClearIndicators={() => setIndicators([])}
-          onZoomIn={() => zoomByFactor(0.78)}
-          onZoomOut={() => zoomByFactor(1.28)}
-          onToggleZoomMode={() => {
-            setIsZoomMode((v) => !v)
-            setZoomBox(null)
-            setDraftDrawing(null)
-            setActiveTool("cursor_cross")
-          }}
-        />
+        {!isEmbeddedCompact && (
+          <LeftDrawingToolbar
+            activeTool={activeTool}
+            magnetMode={magnetMode}
+            keepDrawing={keepDrawing}
+            lockAllDrawings={lockAllDrawings}
+            hideAllDrawings={hideAllDrawings}
+            drawingsCount={drawings.length}
+            isZoomMode={isZoomMode}
+            isDark={isDark}
+            onSelectTool={(tool) => {
+              setIsZoomMode(false)
+              setZoomBox(null)
+              setActiveTool(tool)
+              setDraftDrawing(null)
+            }}
+            onCycleMagnetMode={() =>
+              setMagnetMode((m) => (m === "off" ? "weak" : m === "weak" ? "strong" : "off"))
+            }
+            onToggleKeepDrawing={() => setKeepDrawing((v) => !v)}
+            onToggleLockAll={() => setLockAllDrawings((v) => !v)}
+            onToggleHideAll={() => setHideAllDrawings((v) => !v)}
+            onClearDrawings={() => {
+              commitDrawings([])
+              setSelectedDrawingId(null)
+            }}
+            onClearIndicators={() => setIndicators([])}
+            onZoomIn={() => zoomByFactor(0.78)}
+            onZoomOut={() => zoomByFactor(1.28)}
+            onToggleZoomMode={() => {
+              setIsZoomMode((v) => !v)
+              setZoomBox(null)
+              setDraftDrawing(null)
+              setActiveTool("cursor_cross")
+            }}
+          />
+        )}
 
         {/* Canvas Container */}
-        <div ref={canvasWrapperRef} className="flex-1 relative min-w-0 min-h-0 overflow-hidden">
+        <div
+          ref={canvasWrapperRef}
+          className="group/tvcanvas flex-1 relative min-w-0 min-h-0 overflow-hidden"
+        >
           {/* Floating Contextual Drawing Toolbar (when a drawing is selected) */}
           {selectedDrawing && (
             <FloatingDrawingToolbar
@@ -1858,6 +2047,9 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
             subPanes={metrics.subPanes}
             comparisons={comparisons}
             hoveredBarIndex={hoveredBarIndex}
+            precision={effectivePrecision}
+            compact={isEmbeddedCompact}
+            isHovering={mousePos.inside}
             onToggleIndicatorVisible={(instanceId) =>
               setIndicators((prev) =>
                 prev.map((i) => (i.instanceId === instanceId ? { ...i, visible: !i.visible } : i))
@@ -2048,7 +2240,7 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
               width: `${canvasSize.width}px`,
               height: `${canvasSize.height}px`,
             }}
-            className={`block touch-none ${canvasCursorClass}`}
+            className={`absolute inset-0 block touch-none ${canvasCursorClass}`}
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
@@ -2077,34 +2269,36 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
       />
 
       {/* 3. Bottom Date Ranges & Scale Mode Toolbar */}
-      <BottomToolbar
-        activeRange={activeDateRange}
-        scaleMode={viewport.scaleMode}
-        autoScale={viewport.autoScale}
-        isDark={isDark}
-        trading={trading}
-        onSelectDateRange={handleSelectDateRange}
-        onToggleScaleMode={(mode: TvScaleMode) =>
-          setViewport((vp) => ({ ...vp, scaleMode: mode }))
-        }
-        onToggleAutoScale={() =>
-          setViewport((vp) => ({
-            ...vp,
-            autoScale: !vp.autoScale,
-            manualPriceScaleFactor: 1,
-            manualPricePanDelta: 0,
-          }))
-        }
-        onGoToLatest={() => {
-          const span = Math.max(20, viewport.endIndex - viewport.startIndex)
-          const end = displayCandles.length - 1 + settings.rightOffsetBars
-          setViewport((vp) => ({
-            ...vp,
-            startIndex: Math.max(0, end - span),
-            endIndex: end,
-          }))
-        }}
-      />
+      {!isEmbeddedCompact && (
+        <BottomToolbar
+          activeRange={activeDateRange}
+          scaleMode={viewport.scaleMode}
+          autoScale={viewport.autoScale}
+          isDark={isDark}
+          trading={trading}
+          onSelectDateRange={handleSelectDateRange}
+          onToggleScaleMode={(mode: TvScaleMode) =>
+            setViewport((vp) => ({ ...vp, scaleMode: mode }))
+          }
+          onToggleAutoScale={() =>
+            setViewport((vp) => ({
+              ...vp,
+              autoScale: !vp.autoScale,
+              manualPriceScaleFactor: 1,
+              manualPricePanDelta: 0,
+            }))
+          }
+          onGoToLatest={() => {
+            const span = Math.max(20, viewport.endIndex - viewport.startIndex)
+            const end = displayCandles.length - 1 + settings.rightOffsetBars
+            setViewport((vp) => ({
+              ...vp,
+              startIndex: Math.max(0, end - span),
+              endIndex: end,
+            }))
+          }}
+        />
+      )}
 
       {/* 4. Modals: Indicators, Metrics & Strategies (287+ Unlocked Items), Object Tree & Data Window, Chart Settings */}
       <IndicatorsModal

@@ -491,7 +491,7 @@ export interface TvTradingOverlay {
   floorPrice: number
   isLive: boolean
   orderSide: "BUY" | "SELL"
-  orderType?: "LO" | "MP"
+  orderType?: "LO" | "MP" | "ATO" | "ATC"
   orderPrice: number
   /** True only when user explicitly entered or picked a custom limit order price */
   hasDraftOrder?: boolean

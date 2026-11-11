@@ -120,7 +120,7 @@ body {
 
   100% {
     opacity: 1;
-    transform: translate3d(0, 0, 0);
+    transform: none;
   }
 }
 
@@ -363,27 +363,4 @@ body {
 
 ::selection {
   background: color-mix(in srgb, var(--color-mineral) 22%, transparent);
-}
-
-/* KLineChart Pro — matched to the Daylight palette */
-.klc-pro .klinecharts-pro {
-  --klinecharts-pro-primary-color: var(--color-mineral);
-  --klinecharts-pro-hover-background-color: var(--color-soft);
-  --klinecharts-pro-background-color: var(--color-surface);
-  --klinecharts-pro-popover-background-color: var(--color-surface);
-  --klinecharts-pro-text-color: var(--color-ink);
-  --klinecharts-pro-text-second-color: var(--color-muted);
-  --klinecharts-pro-border-color: var(--color-line);
-  --klinecharts-pro-selected-color: color-mix(in srgb, var(--color-mineral) 12%, transparent);
-  font-family: var(--font-sans);
-}
-
-.klc-pro .klinecharts-pro-period-bar,
-.klc-pro .klinecharts-pro-symbol-search-modal,
-.klc-pro .klinecharts-pro-indicator-modal {
-  font-family: var(--font-sans);
-}
-
-.klc-pro .klinecharts-pro-period-bar .icon-close {
-  color: var(--color-muted);
 }

@@ -97,39 +97,178 @@ function TopographicGuillocheCanvas() {
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
-    const ctx = canvas.getContext("2d")
+    const ctx =
+      canvas.getContext("2d", { alpha: true, desynchronized: true }) ??
+      canvas.getContext("2d")
     if (!ctx) return
 
     let animationFrameId = 0
     let width = 0
     let height = 0
     let dpr = 1
+    let canvasLeft = 0
+    let canvasTop = 0
+    let isPageVisible = !document.hidden
+    let typingCooldownUntil = 0
+    let pointerActiveUntil = 0
+    let lastFrameAt = 0
 
     const pointer = { x: 0.65, y: 0.55, targetX: 0.65, targetY: 0.55 }
+
+    // Precomputed static lookup tables for Layer 1 (20 rings x 144 angular steps)
+    const RING_COUNT = 20
+    const RING_STEPS = 144
+    const ringVerts = RING_STEPS + 1
+    const cosTheta = new Float32Array(ringVerts)
+    const sinTheta = new Float32Array(ringVerts)
+    const sin5T = new Float32Array(ringVerts)
+    const cos5T = new Float32Array(ringVerts)
+    const cos9T = new Float32Array(ringVerts)
+    const sin9T = new Float32Array(ringVerts)
+    const sin3T = new Float32Array(ringVerts)
+    const cos3T = new Float32Array(ringVerts)
+    for (let s = 0; s <= RING_STEPS; s++) {
+      const theta = (s / RING_STEPS) * Math.PI * 2
+      cosTheta[s] = Math.cos(theta) * 1.08
+      sinTheta[s] = Math.sin(theta) * 0.92
+      sin5T[s] = Math.sin(theta * 5)
+      cos5T[s] = Math.cos(theta * 5)
+      cos9T[s] = Math.cos(theta * 9)
+      sin9T[s] = Math.sin(theta * 9)
+      sin3T[s] = Math.sin(theta * 3)
+      cos3T[s] = Math.cos(theta * 3)
+    }
+
+    // Precomputed spatial X lookup tables (rebuilt only on resize -> zero Math.pow in render)
+    const X_STEP = 8
+    let sampleCount = 0
+    let xCoords = new Float32Array(0)
+    let goldBaseSpine = new Float32Array(0)
+    let mainBaseSpine = new Float32Array(0)
+    let cos17 = new Float32Array(0)
+    let sin17 = new Float32Array(0)
+    let sin21 = new Float32Array(0)
+    let cos21 = new Float32Array(0)
+    let cos35 = new Float32Array(0)
+    let sin35 = new Float32Array(0)
+    let sin16 = new Float32Array(0)
+    let cos16 = new Float32Array(0)
+    let cos22 = new Float32Array(0)
+    let sin22 = new Float32Array(0)
+    let sin32 = new Float32Array(0)
+    let cos32 = new Float32Array(0)
+    let cos50 = new Float32Array(0)
+    let sin50 = new Float32Array(0)
+    let scratchSpine = new Float32Array(0)
+
+    const GOLD_COUNT = 24
+    const LINE_COUNT = 46
+    const lineSinPi = new Float32Array(LINE_COUNT)
+    for (let i = 0; i < LINE_COUNT; i++) {
+      lineSinPi[i] = Math.sin((i / (LINE_COUNT - 1)) * Math.PI)
+    }
+
+    const rebuildSpatialTables = () => {
+      const count = Math.floor((width + 24) / X_STEP) + 2
+      sampleCount = count
+      xCoords = new Float32Array(count)
+      goldBaseSpine = new Float32Array(count)
+      mainBaseSpine = new Float32Array(count)
+      cos17 = new Float32Array(count)
+      sin17 = new Float32Array(count)
+      sin21 = new Float32Array(count)
+      cos21 = new Float32Array(count)
+      cos35 = new Float32Array(count)
+      sin35 = new Float32Array(count)
+      sin16 = new Float32Array(count)
+      cos16 = new Float32Array(count)
+      cos22 = new Float32Array(count)
+      sin22 = new Float32Array(count)
+      sin32 = new Float32Array(count)
+      cos32 = new Float32Array(count)
+      cos50 = new Float32Array(count)
+      sin50 = new Float32Array(count)
+      scratchSpine = new Float32Array(count)
+
+      for (let k = 0; k < count; k++) {
+        const x = -12 + k * X_STEP
+        xCoords[k] = x
+        const nx = Math.max(0, x / width)
+        goldBaseSpine[k] = height * 0.72 - Math.pow(nx, 1.35) * height * 0.26
+        mainBaseSpine[k] = height * 0.7 - Math.pow(nx, 1.4) * height * 0.28
+
+        const a17 = nx * Math.PI * 1.7
+        cos17[k] = Math.cos(a17)
+        sin17[k] = Math.sin(a17)
+
+        const a21 = nx * Math.PI * 2.1
+        sin21[k] = Math.sin(a21)
+        cos21[k] = Math.cos(a21)
+
+        const a35 = nx * Math.PI * 3.5
+        cos35[k] = Math.cos(a35)
+        sin35[k] = Math.sin(a35)
+
+        const a16 = nx * Math.PI * 1.6
+        sin16[k] = Math.sin(a16)
+        cos16[k] = Math.cos(a16)
+
+        const a22 = nx * Math.PI * 2.2
+        cos22[k] = Math.cos(a22)
+        sin22[k] = Math.sin(a22)
+
+        const a32 = nx * Math.PI * 3.2
+        sin32[k] = Math.sin(a32)
+        cos32[k] = Math.cos(a32)
+
+        const a50 = nx * Math.PI * 5.0
+        cos50[k] = Math.cos(a50)
+        sin50[k] = Math.sin(a50)
+      }
+    }
 
     const handleResize = () => {
       const parent = canvas.parentElement
       if (!parent) return
       const rect = parent.getBoundingClientRect()
+      canvasLeft = rect.left
+      canvasTop = rect.top
       width = Math.max(rect.width, 320)
-      height = Math.max(rect.height, 480)
-      dpr = Math.min(window.devicePixelRatio || 1, 2.5)
+      height = Math.max(rect.height, 420)
+      // Cap DPR at 1.5x: crisp anti-aliased hairlines with 64% fewer pixels than 2.5x
+      dpr = Math.min(window.devicePixelRatio || 1, 1.5)
       canvas.width = Math.floor(width * dpr)
       canvas.height = Math.floor(height * dpr)
       canvas.style.width = `${width}px`
       canvas.style.height = `${height}px`
+      rebuildSpatialTables()
     }
 
     const handleMouseMove = (e: MouseEvent) => {
-      const rect = canvas.getBoundingClientRect()
-      if (rect.width <= 0 || rect.height <= 0) return
-      pointer.targetX = (e.clientX - rect.left) / rect.width
-      pointer.targetY = (e.clientY - rect.top) / rect.height
+      if (width <= 0 || height <= 0) return
+      const rx = (e.clientX - canvasLeft) / width
+      const ry = (e.clientY - canvasTop) / height
+      if (rx >= -0.15 && rx <= 1.15 && ry >= -0.1 && ry <= 1.1) {
+        pointer.targetX = Math.max(0, Math.min(1, rx))
+        pointer.targetY = Math.max(0, Math.min(1, ry))
+        pointerActiveUntil = performance.now() + 320
+      }
+    }
+
+    const handleKeyDown = () => {
+      // Yield 100% main-thread frame budget while user types in auth inputs
+      typingCooldownUntil = performance.now() + 180
+    }
+
+    const handleVisibilityChange = () => {
+      isPageVisible = !document.hidden
     }
 
     handleResize()
-    window.addEventListener("resize", handleResize)
+    window.addEventListener("resize", handleResize, { passive: true })
     window.addEventListener("mousemove", handleMouseMove, { passive: true })
+    window.addEventListener("keydown", handleKeyDown, { passive: true })
+    document.addEventListener("visibilitychange", handleVisibilityChange)
 
     const prefersReducedMotion = window.matchMedia(
       "(prefers-reduced-motion: reduce)"
@@ -137,149 +276,212 @@ function TopographicGuillocheCanvas() {
 
     const startTime = performance.now()
 
+    const traceRingPath = (rIdx: number, elapsed: number, topoCx: number, topoCy: number, baseRadius: number) => {
+      const ru = rIdx / (RING_COUNT - 1)
+      const rBase = baseRadius * (0.22 + ru * 1.05)
+      const p1 = elapsed * 0.22 + ru * 2.4
+      const cP1 = Math.cos(p1) * 14 * ru
+      const sP1 = Math.sin(p1) * 14 * ru
+
+      const p2 = elapsed * 0.16 + ru * 3.2
+      const amp2 = 7 * (1 - ru * 0.25)
+      const cP2 = Math.cos(p2) * amp2
+      const sP2 = Math.sin(p2) * amp2
+
+      const p3 = -elapsed * 0.1 + ru * 1.5
+      const cP3 = Math.cos(p3) * 10
+      const sP3 = Math.sin(p3) * 10
+
+      for (let s = 0; s <= RING_STEPS; s++) {
+        const h1 = sin5T[s] * cP1 + cos5T[s] * sP1
+        const h2 = cos9T[s] * cP2 + sin9T[s] * sP2
+        const h3 = sin3T[s] * cP3 + cos3T[s] * sP3
+        const radius = rBase + h1 + h2 + h3
+        const px = topoCx + cosTheta[s] * radius
+        const py = topoCy + sinTheta[s] * radius
+        if (s === 0) ctx.moveTo(px, py)
+        else ctx.lineTo(px, py)
+      }
+      ctx.closePath()
+    }
+
     const render = (now: number) => {
+      if (!prefersReducedMotion) {
+        animationFrameId = window.requestAnimationFrame(render)
+      }
+      if (!isPageVisible) return
+      if (!prefersReducedMotion && now < typingCooldownUntil) return
+
+      // 60fps when pointer interacts with canvas, 30fps silky ambient drift when idle
+      const minInterval = now < pointerActiveUntil ? 15 : 32
+      if (!prefersReducedMotion && lastFrameAt > 0 && now - lastFrameAt < minInterval) {
+        return
+      }
+      lastFrameAt = now
+
       const elapsed = prefersReducedMotion ? 2.8 : (now - startTime) * 0.001
 
-      // Ultra-smooth exponential damping for cursor response
-      pointer.x += (pointer.targetX - pointer.x) * 0.035
-      pointer.y += (pointer.targetY - pointer.y) * 0.035
+      pointer.x += (pointer.targetX - pointer.x) * 0.05
+      pointer.y += (pointer.targetY - pointer.y) * 0.05
 
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
       ctx.clearRect(0, 0, width, height)
 
       // ---------------------------------------------------------------------
-      // LAYER 1: Upper-Right Topographic Elevation Contours (20 Rings)
+      // LAYER 1: Batched Upper-Right Topographic Elevation Contours (3 strokes instead of 20)
       // ---------------------------------------------------------------------
       const topoCx = width * 0.86
       const topoCy = height * 0.21
       const baseRadius = Math.min(width, height) * 0.27
-      const rings = 20
-      const steps = 240
 
-      for (let rIdx = 0; rIdx < rings; rIdx++) {
-        const ru = rIdx / (rings - 1)
-        const ringScale = 0.22 + ru * 1.05
-        const isGoldRing = rIdx % 5 === 0
-        const isIndexRing = rIdx % 4 === 0
-
-        ctx.beginPath()
-        for (let s = 0; s <= steps; s++) {
-          const theta = (s / steps) * Math.PI * 2
-          const h1 = Math.sin(theta * 5 + elapsed * 0.22 + ru * 2.4) * 14 * ru
-          const h2 =
-            Math.cos(theta * 9 - elapsed * 0.16 - ru * 3.2) * 7 * (1 - ru * 0.25)
-          const h3 = Math.sin(theta * 3 - elapsed * 0.1 + ru * 1.5) * 10
-          const radius = baseRadius * ringScale + h1 + h2 + h3
-          const px = topoCx + Math.cos(theta) * radius * 1.08
-          const py = topoCy + Math.sin(theta) * radius * 0.92
-          if (s === 0) ctx.moveTo(px, py)
-          else ctx.lineTo(px, py)
+      ctx.beginPath()
+      for (let rIdx = 0; rIdx < RING_COUNT; rIdx++) {
+        if (rIdx % 5 !== 0 && rIdx % 4 !== 0) {
+          traceRingPath(rIdx, elapsed, topoCx, topoCy, baseRadius)
         }
-        ctx.closePath()
-        ctx.lineWidth = isGoldRing ? 0.85 : isIndexRing ? 0.8 : 0.55
-        ctx.strokeStyle = isGoldRing
-          ? `rgba(176, 138, 67, ${(0.11 + (1 - ru) * 0.12).toFixed(3)})`
-          : isIndexRing
-            ? `rgba(63, 98, 89, ${(0.14 + Math.sin(ru * Math.PI) * 0.12).toFixed(3)})`
-            : `rgba(63, 98, 89, ${(0.07 + Math.sin(ru * Math.PI) * 0.09).toFixed(3)})`
-        ctx.stroke()
+      }
+      ctx.lineWidth = 0.55
+      ctx.strokeStyle = "rgba(63, 98, 89, 0.13)"
+      ctx.stroke()
+
+      ctx.beginPath()
+      for (let rIdx = 0; rIdx < RING_COUNT; rIdx++) {
+        if (rIdx % 4 === 0 && rIdx % 5 !== 0) {
+          traceRingPath(rIdx, elapsed, topoCx, topoCy, baseRadius)
+        }
+      }
+      ctx.lineWidth = 0.8
+      ctx.strokeStyle = "rgba(63, 98, 89, 0.22)"
+      ctx.stroke()
+
+      ctx.beginPath()
+      for (let rIdx = 0; rIdx < RING_COUNT; rIdx += 5) {
+        traceRingPath(rIdx, elapsed, topoCx, topoCy, baseRadius)
+      }
+      ctx.lineWidth = 0.85
+      ctx.strokeStyle = "rgba(176, 138, 67, 0.19)"
+      ctx.stroke()
+
+      // ---------------------------------------------------------------------
+      // LAYER 2: Batched Warm-Gold Counter-Harmonic Silk Ribbon (2 strokes instead of 24)
+      // ---------------------------------------------------------------------
+      const cGoldSpine = Math.cos(elapsed * 0.3) * 32
+      const sGoldSpine = Math.sin(elapsed * 0.3) * 32
+      for (let k = 0; k < sampleCount; k++) {
+        scratchSpine[k] = goldBaseSpine[k] + cos17[k] * cGoldSpine + sin17[k] * sGoldSpine
       }
 
-      // ---------------------------------------------------------------------
-      // LAYER 2: Secondary Warm-Gold Counter-Harmonic Silk Ribbon (24 Lines)
-      // ---------------------------------------------------------------------
-      const goldCount = 24
-      const xStep = 5
-      for (let i = 0; i < goldCount; i++) {
-        const u = i / (goldCount - 1)
-        const v = u - 0.5
-        const isAccent = i % 5 === 0
+      const traceGoldLine = (i: number) => {
+        const u = i / (GOLD_COUNT - 1)
+        const vAmp = (u - 0.5) * 150
+        const pTwist = elapsed * 0.24 + u * 1.45
+        const cT = Math.cos(pTwist) * vAmp
+        const sT = Math.sin(pTwist) * vAmp
 
-        ctx.beginPath()
-        for (let x = -12; x <= width + 12; x += xStep) {
-          const nx = x / width
-          const spine =
-            height * 0.72 -
-            Math.pow(nx, 1.35) * height * 0.26 +
-            Math.cos(nx * Math.PI * 1.7 - elapsed * 0.3) * 32
-          const twist = Math.sin(nx * Math.PI * 2.1 + elapsed * 0.24 + u * 1.45)
-          const ripple =
-            Math.cos(nx * Math.PI * 3.5 - elapsed * 0.36 + u * 3.1) * 18
-          const y = spine + v * 150 * twist + ripple
+        const pRip = -elapsed * 0.36 + u * 3.1
+        const cR = Math.cos(pRip) * 18
+        const sR = Math.sin(pRip) * 18
 
-          if (x === -12) ctx.moveTo(x, y)
-          else ctx.lineTo(x, y)
+        for (let k = 0; k < sampleCount; k++) {
+          const y =
+            scratchSpine[k] +
+            (sin21[k] * cT + cos21[k] * sT) +
+            (cos35[k] * cR - sin35[k] * sR)
+          if (k === 0) ctx.moveTo(xCoords[k], y)
+          else ctx.lineTo(xCoords[k], y)
         }
-        ctx.lineWidth = isAccent ? 0.9 : 0.55
-        ctx.strokeStyle = isAccent
-          ? "rgba(176, 138, 67, 0.26)"
-          : `rgba(176, 138, 67, ${(0.09 + Math.sin(u * Math.PI) * 0.1).toFixed(3)})`
-        ctx.stroke()
       }
 
+      ctx.beginPath()
+      for (let i = 0; i < GOLD_COUNT; i++) {
+        if (i % 5 !== 0) traceGoldLine(i)
+      }
+      ctx.lineWidth = 0.55
+      ctx.strokeStyle = "rgba(176, 138, 67, 0.15)"
+      ctx.stroke()
+
+      ctx.beginPath()
+      for (let i = 0; i < GOLD_COUNT; i += 5) {
+        traceGoldLine(i)
+      }
+      ctx.lineWidth = 0.9
+      ctx.strokeStyle = "rgba(176, 138, 67, 0.26)"
+      ctx.stroke()
+
       // ---------------------------------------------------------------------
-      // LAYER 3: Primary Topographic & Guilloché Contour Field (46 Lines)
+      // LAYER 3: Batched Primary Topographic & Guilloché Contour Field (3 strokes instead of 46)
       // ---------------------------------------------------------------------
-      const lineCount = 46
       const mousePx = pointer.x * width
       const mousePy = pointer.y * height
+      const cMainSpine = Math.cos(elapsed * 0.38) * 36
+      const sMainSpine = Math.sin(elapsed * 0.38) * 36
+      for (let k = 0; k < sampleCount; k++) {
+        scratchSpine[k] = mainBaseSpine[k] + (sin16[k] * cMainSpine - cos16[k] * sMainSpine)
+      }
 
-      for (let i = 0; i < lineCount; i++) {
-        const u = i / (lineCount - 1)
-        const v = u - 0.5
-        const isIndexContour = i % 6 === 0
+      const invBellRadiusSq = 1 / 52000
+      const traceMainLine = (i: number) => {
+        const u = i / (LINE_COUNT - 1)
+        const vAmp = (u - 0.5) * 175
+        const liftAmp = 20 * lineSinPi[i]
 
-        ctx.beginPath()
-        for (let x = -12; x <= width + 12; x += xStep) {
-          const nx = x / width
+        const pFold = elapsed * 0.3 + u * 1.3
+        const cF = Math.cos(pFold) * vAmp
+        const sF = Math.sin(pFold) * vAmp
 
-          const ySpine =
-            height * 0.70 -
-            Math.pow(nx, 1.4) * height * 0.28 +
-            Math.sin(nx * Math.PI * 1.6 - elapsed * 0.38) * 36
+        const pWave = -elapsed * 0.42 + u * 3.5
+        const cW = Math.cos(pWave) * 24
+        const sW = Math.sin(pWave) * 24
 
-          const foldTwist = Math.cos(
-            nx * Math.PI * 2.2 + elapsed * 0.3 + u * 1.3
-          )
-          const primaryWave =
-            Math.sin(nx * Math.PI * 3.2 - elapsed * 0.42 + u * 3.5) * 24
-          const microTerrain =
-            Math.cos(nx * Math.PI * 5.0 + elapsed * 0.24 - u * 2.2) * 7
+        const pMicro = elapsed * 0.24 - u * 2.2
+        const cM = Math.cos(pMicro) * 7
+        const sM = Math.sin(pMicro) * 7
 
+        for (let k = 0; k < sampleCount; k++) {
+          const x = xCoords[k]
+          const ySpine = scratchSpine[k]
           const dx = x - mousePx
           const dy = ySpine - mousePy
           const distSq = dx * dx + dy * dy
           const mouseLift =
-            Math.exp(-distSq / 72000) * 20 * Math.sin(u * Math.PI)
+            distSq < 220000 ? (liftAmp / (1 + distSq * invBellRadiusSq)) : 0
 
           const y =
             ySpine +
-            v * 175 * foldTwist +
-            primaryWave +
-            microTerrain -
+            (cos22[k] * cF - sin22[k] * sF) +
+            (sin32[k] * cW + cos32[k] * sW) +
+            (cos50[k] * cM - sin50[k] * sM) -
             mouseLift
 
-          if (x === -12) ctx.moveTo(x, y)
+          if (k === 0) ctx.moveTo(x, y)
           else ctx.lineTo(x, y)
         }
-
-        if (isIndexContour) {
-          ctx.lineWidth = 1.05
-          ctx.strokeStyle =
-            i % 12 === 0
-              ? "rgba(63, 98, 89, 0.40)"
-              : "rgba(70, 103, 121, 0.34)"
-        } else {
-          ctx.lineWidth = 0.68
-          const alpha = 0.11 + Math.sin(u * Math.PI) * 0.14
-          ctx.strokeStyle = `rgba(63, 98, 89, ${alpha.toFixed(3)})`
-        }
-        ctx.stroke()
       }
 
-      if (!prefersReducedMotion) {
-        animationFrameId = window.requestAnimationFrame(render)
+      // Soft outer & inner contours batched in 2 alpha bands + 1 crisp index band
+      ctx.beginPath()
+      for (let i = 0; i < LINE_COUNT; i++) {
+        if (i % 6 !== 0 && lineSinPi[i] < 0.65) traceMainLine(i)
       }
+      ctx.lineWidth = 0.65
+      ctx.strokeStyle = "rgba(63, 98, 89, 0.14)"
+      ctx.stroke()
+
+      ctx.beginPath()
+      for (let i = 0; i < LINE_COUNT; i++) {
+        if (i % 6 !== 0 && lineSinPi[i] >= 0.65) traceMainLine(i)
+      }
+      ctx.lineWidth = 0.7
+      ctx.strokeStyle = "rgba(63, 98, 89, 0.22)"
+      ctx.stroke()
+
+      ctx.beginPath()
+      for (let i = 0; i < LINE_COUNT; i += 6) {
+        traceMainLine(i)
+      }
+      ctx.lineWidth = 1.05
+      ctx.strokeStyle = "rgba(63, 98, 89, 0.38)"
+      ctx.stroke()
     }
 
     animationFrameId = window.requestAnimationFrame(render)
@@ -288,6 +490,8 @@ function TopographicGuillocheCanvas() {
       window.cancelAnimationFrame(animationFrameId)
       window.removeEventListener("resize", handleResize)
       window.removeEventListener("mousemove", handleMouseMove)
+      window.removeEventListener("keydown", handleKeyDown)
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
     }
   }, [])
 
@@ -295,72 +499,72 @@ function TopographicGuillocheCanvas() {
     <canvas
       ref={canvasRef}
       aria-hidden="true"
-      className="pointer-events-none absolute inset-0 z-0 h-full w-full"
+      className="pointer-events-none absolute inset-0 z-0 h-full w-full will-change-transform [contain:strict]"
     />
   )
 }
 
 export function AuthStageShowReel() {
   return (
-    <div className="relative flex h-full flex-col justify-between">
+    <div className="relative flex h-full min-h-0 flex-col justify-between">
       {/* Top Editorial Classification */}
-      <div className="flex items-center justify-between border-b border-line pb-4">
+      <div className="flex items-center justify-between border-b border-line pb-3">
         <Pill tone="mineral">Trí tuệ nhân tạo đầu tư chứng khoán · Việt Nam</Pill>
         <span className="font-mono text-[11px] tracking-[0.08em] text-secondary">
           HOSE · HNX · UPCOM
         </span>
       </div>
 
-      {/* Center Editorial Narrative (Zero Sliding Content, 100% Symmetrical & Locked Layout) */}
-      <div className="my-auto py-8">
-        <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted">
+      {/* Center Editorial Narrative (Zero Sliding Content, 100% Symmetrical & Laptop Viewport-Fit) */}
+      <div className="my-auto py-2 xl:py-4">
+        <div className="text-[10.5px] font-semibold uppercase tracking-[0.16em] text-muted">
           Không gian nghiên cứu định lượng
         </div>
 
-        <h2 className="mt-3.5 font-serif text-[34px] leading-[1.1] tracking-[-0.025em] text-ink xl:text-[40px]">
+        <h2 className="mt-2 font-serif text-[clamp(26px,2.35vw,38px)] leading-[1.12] tracking-[-0.025em] text-ink">
           Khoảng lặng lý tính giữa tín hiệu
           <br />
           <span className="text-teal">và quyết định đầu tư.</span>
         </h2>
 
-        <p className="mt-4 max-w-lg text-[15px] leading-relaxed text-secondary">
+        <p className="mt-2.5 max-w-lg text-[13.5px] leading-relaxed text-secondary xl:text-[14.5px]">
           AIInvest hợp nhất bối cảnh vĩ mô, dữ liệu cổ phiếu chuẩn hóa, phân tích đa tác tử và trích dẫn báo cáo tài chính nguyên bản trong một mặt phẳng làm việc tĩnh tại.
         </p>
 
-        {/* Static, Non-Sliding Editorial Plate Over Living 60fps Guilloché Waves */}
-        <div className="mt-10 rounded-[14px] border border-line-strong bg-surface/84 p-6 shadow-[0_24px_60px_rgba(24,32,29,0.06)] backdrop-blur-[6px]">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line pb-3.5">
+        {/* Crisp Opaque Editorial Plate (Zero GPU backdrop-blur readback over Canvas) */}
+        <div className="mt-5 rounded-[14px] border border-line-strong bg-surface/96 p-4 shadow-[0_18px_44px_rgba(24,32,29,0.06)] xl:mt-7 xl:p-5.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line pb-2.5">
             <div className="flex items-center gap-2">
-              <span className="font-mono text-[13px] font-semibold text-ink">
+              <span className="font-mono text-[12.5px] font-semibold text-ink">
                 HPG · Luận điểm mẫu
               </span>
-              <span className="text-[12.5px] text-secondary">
+              <span className="text-[12px] text-secondary">
                 Tập đoàn Hòa Phát
               </span>
             </div>
             <Pill tone="neutral">BCTC Kiểm toán · Thuyết minh 14.2</Pill>
           </div>
 
-          <blockquote className="mt-4 border-l-2 border-gold pl-4 font-serif text-[16.5px] leading-relaxed text-ink">
+          <blockquote className="mt-3 border-l-2 border-gold pl-3.5 font-serif text-[14.5px] leading-relaxed text-ink xl:text-[16px]">
             “Điều quan trọng không phải câu trả lời nhanh hơn, mà là một luận điểm đầu tư bạn có thể tự mình kiểm chứng đến tận tài liệu gốc.”
           </blockquote>
 
-          {/* 3 Strictly Symmetrical, Equal-Height Pillars with Smooth Hover Physics */}
-          <div className="mt-5 grid grid-cols-3 divide-x divide-line border-t border-line pt-4">
+          {/* 3 Strictly Symmetrical, Equal-Height Pillars */}
+          <div className="mt-3.5 grid grid-cols-3 divide-x divide-line border-t border-line pt-3">
             {EDITORIAL_PILLARS.map((pillar) => (
               <div
                 key={pillar.title}
-                className="group relative flex flex-col justify-between px-3.5 first:pl-0 last:pr-0 transition-colors duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]"
+                className="group relative flex flex-col justify-between px-3 first:pl-0 last:pr-0 transition-colors duration-300"
               >
                 <div>
-                  <div className="font-mono text-[20px] font-semibold leading-none text-ink tnum transition-colors duration-500 group-hover:text-teal">
+                  <div className="font-mono text-[18px] font-semibold leading-none text-ink tnum transition-colors duration-300 group-hover:text-teal xl:text-[20px]">
                     {pillar.num}
                   </div>
-                  <div className="mt-1.5 text-[12px] font-semibold text-ink">
+                  <div className="mt-1 text-[11.5px] font-semibold text-ink">
                     {pillar.title}
                   </div>
                 </div>
-                <p className="mt-1 text-[11px] leading-[1.45] text-secondary">
+                <p className="mt-0.5 text-[10.5px] leading-[1.4] text-secondary xl:text-[11px]">
                   {pillar.desc}
                 </p>
               </div>
@@ -370,7 +574,7 @@ export function AuthStageShowReel() {
       </div>
 
       {/* Bottom Footnote */}
-      <div className="flex flex-wrap items-center justify-between gap-4 border-t border-line pt-4 text-[12px] text-secondary">
+      <div className="flex flex-wrap items-center justify-between gap-4 border-t border-line pt-3 text-[11.5px] text-secondary">
         <span>Công cụ hỗ trợ nghiên cứu độc lập</span>
         <span>Không lưu ký tài sản · Không đặt lệnh hộ</span>
       </div>
@@ -404,7 +608,7 @@ export function AuthShell({
   const signupHref = buildAuthHref("/signup", { email, next: nextParam })
 
   return (
-    <div className="min-h-screen w-full bg-surface text-ink lg:grid lg:grid-cols-[minmax(430px,44%)_1fr]">
+    <div className="min-h-dvh w-full bg-surface text-ink lg:grid lg:h-dvh lg:max-h-dvh lg:grid-cols-[minmax(420px,43%)_1fr] lg:overflow-hidden">
       {/* Skip link for keyboard accessibility */}
       <a
         href="#auth-main"
@@ -418,15 +622,15 @@ export function AuthShell({
       ===================================================================== */}
       <main
         id="auth-main"
-        className="flex min-h-screen flex-col justify-between bg-surface px-6 py-8 sm:px-12 lg:px-14 xl:px-20"
+        className="flex min-h-dvh flex-col justify-between bg-surface px-6 py-4 sm:px-10 lg:h-dvh lg:min-h-0 lg:overflow-y-auto lg:px-12 lg:py-5 xl:px-18 xl:py-6"
       >
         {/* Top Header */}
-        <header className="flex items-center justify-between">
+        <header className="flex shrink-0 items-center justify-between">
           <Logo onClick={() => navigate("/")} />
           <button
             type="button"
             onClick={() => navigate("/")}
-            className="inline-flex items-center gap-1.5 rounded-[7px] px-2.5 py-1.5 text-[13px] font-medium text-secondary transition-colors hover:bg-soft hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-mineral"
+            className="inline-flex items-center gap-1.5 rounded-[7px] px-2.5 py-1 text-[12.5px] font-medium text-secondary transition-colors hover:bg-soft hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-mineral"
           >
             <span aria-hidden="true">←</span>
             <span>Trang chủ</span>
@@ -434,11 +638,11 @@ export function AuthShell({
         </header>
 
         {/* Center Form */}
-        <div className="mx-auto my-auto w-full max-w-[380px] py-10">
+        <div className="mx-auto my-auto w-full max-w-[380px] py-2 xl:py-4">
           {/* Subtle Mode Switcher */}
           <nav
             aria-label="Chuyển đổi chế độ xác thực"
-            className="inline-flex items-center rounded-[9px] border border-line bg-paper p-1"
+            className="inline-flex items-center rounded-[8px] border border-line bg-paper p-0.5"
           >
             <button
               type="button"
@@ -446,7 +650,7 @@ export function AuthShell({
               onClick={() => {
                 if (mode !== "login") navigate(loginHref)
               }}
-              className={`rounded-[6px] px-3.5 py-1.5 text-[12.5px] font-medium transition-all focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-mineral ${
+              className={`rounded-[6px] px-3 py-1 text-[12px] font-medium transition-all focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-mineral ${
                 mode === "login"
                   ? "bg-surface text-ink shadow-xs"
                   : "text-secondary hover:text-ink"
@@ -460,7 +664,7 @@ export function AuthShell({
               onClick={() => {
                 if (mode !== "signup") navigate(signupHref)
               }}
-              className={`rounded-[6px] px-3.5 py-1.5 text-[12.5px] font-medium transition-all focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-mineral ${
+              className={`rounded-[6px] px-3 py-1 text-[12px] font-medium transition-all focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-mineral ${
                 mode === "signup"
                   ? "bg-surface text-ink shadow-xs"
                   : "text-secondary hover:text-ink"
@@ -471,28 +675,28 @@ export function AuthShell({
           </nav>
 
           {/* Editorial Heading */}
-          <div className="mt-6">
-            <h1 className="font-serif text-[32px] font-medium leading-[1.12] tracking-[-0.025em] text-ink sm:text-[34px]">
+          <div className="mt-3.5 xl:mt-4">
+            <h1 className="font-serif text-[27px] font-medium leading-[1.12] tracking-[-0.025em] text-ink xl:text-[31px]">
               {title}
             </h1>
-            <p className="mt-2.5 text-[14px] leading-relaxed text-secondary">
+            <p className="mt-1.5 text-[13px] leading-snug text-secondary xl:text-[13.5px]">
               {sub}
             </p>
           </div>
 
           {/* Form Content */}
-          <div className="mt-7">{children}</div>
+          <div className="mt-4 xl:mt-5">{children}</div>
 
           {/* Footer Switch Link */}
           {footer && (
-            <div className="mt-6 border-t border-line pt-5 text-[13px] text-secondary">
+            <div className="mt-3.5 border-t border-line pt-3 text-[12.5px] text-secondary xl:mt-4 xl:pt-3.5">
               {footer}
             </div>
           )}
         </div>
 
         {/* Bottom Legal Line */}
-        <footer className="flex flex-wrap items-center justify-between gap-2 text-[11.5px] text-muted">
+        <footer className="flex shrink-0 flex-wrap items-center justify-between gap-2 text-[11px] text-muted">
           <span>© 2026 AIInvest</span>
           <span>Bảo mật TLS 1.3 · Dữ liệu nghiên cứu độc lập</span>
         </footer>
@@ -503,7 +707,7 @@ export function AuthShell({
       ===================================================================== */}
       <aside
         aria-label="Giới thiệu nền tảng phân tích định lượng AIInvest"
-        className="relative hidden overflow-hidden border-l border-line bg-paper px-10 py-8 lg:flex xl:px-14 xl:py-10"
+        className="relative hidden overflow-hidden border-l border-line bg-paper px-9 py-5 lg:flex lg:h-dvh lg:min-h-0 xl:px-14 xl:py-7"
       >
         {/* Exact 58px Architectural Grid from `page.tsx` */}
         <div
@@ -518,10 +722,10 @@ export function AuthShell({
           }}
         />
 
-        {/* 60fps Retina Fine-Line Topographic & Guilloché Wave Canvas */}
+        {/* Batched Zero-Lag Fine-Line Topographic & Guilloché Wave Canvas */}
         <TopographicGuillocheCanvas />
 
-        <div className="relative z-10 mx-auto flex w-full max-w-[600px] flex-col">
+        <div className="relative z-10 mx-auto flex h-full min-h-0 w-full max-w-[580px] flex-col">
           <AuthStageShowReel />
         </div>
       </aside>
@@ -582,7 +786,7 @@ export function Field({
       <div className="flex items-center justify-between gap-2">
         <label
           htmlFor={inputId}
-          className="block text-[13px] font-medium text-ink"
+          className="block text-[12.5px] font-medium text-ink"
         >
           {label}
         </label>
@@ -603,7 +807,7 @@ export function Field({
         aria-describedby={describedBy}
         onChange={(e) => onChange(e.target.value)}
         onBlur={onBlur}
-        className={`mt-1.5 h-11 w-full rounded-[8px] border bg-surface px-3.5 text-[14px] text-ink outline-none transition-all duration-150 placeholder:text-disabled disabled:cursor-not-allowed disabled:bg-soft disabled:text-secondary ${
+        className={`mt-1 h-10 w-full rounded-[8px] border bg-surface px-3.5 text-[13.5px] text-ink outline-none transition-all duration-150 placeholder:text-disabled disabled:cursor-not-allowed disabled:bg-soft disabled:text-secondary ${
           error
             ? "border-loss focus:border-loss focus:ring-3 focus:ring-loss/12"
             : "border-line-strong hover:border-ink/35 focus:border-mineral focus:ring-3 focus:ring-mineral/12"
@@ -614,7 +818,7 @@ export function Field({
         <p
           id={errorId}
           role="alert"
-          className="mt-1.5 flex items-center gap-1.5 text-[12px] font-medium text-loss"
+          className="mt-1 flex items-center gap-1.5 text-[11.5px] font-medium text-loss"
         >
           <span aria-hidden="true">●</span>
           <span>{error}</span>
@@ -622,7 +826,7 @@ export function Field({
       )}
 
       {!error && hint && (
-        <p id={hintId} className="mt-1.5 text-[12px] text-secondary">
+        <p id={hintId} className="mt-1 text-[11.5px] text-secondary">
           {hint}
         </p>
       )}
@@ -693,14 +897,14 @@ export function PasswordField({
       <div className="flex items-center justify-between gap-2">
         <label
           htmlFor={inputId}
-          className="block text-[13px] font-medium text-ink"
+          className="block text-[12.5px] font-medium text-ink"
         >
           {label}
         </label>
         {rightLabel}
       </div>
 
-      <div className="relative mt-1.5">
+      <div className="relative mt-1">
         <input
           id={inputId}
           name={name}
@@ -719,7 +923,7 @@ export function PasswordField({
           }}
           onKeyDown={handleKeyEvent}
           onKeyUp={handleKeyEvent}
-          className={`h-11 w-full rounded-[8px] border bg-surface pl-3.5 pr-11 text-[14px] text-ink outline-none transition-all duration-150 placeholder:text-disabled disabled:cursor-not-allowed disabled:bg-soft disabled:text-secondary ${
+          className={`h-10 w-full rounded-[8px] border bg-surface pl-3.5 pr-10 text-[13.5px] text-ink outline-none transition-all duration-150 placeholder:text-disabled disabled:cursor-not-allowed disabled:bg-soft disabled:text-secondary ${
             error
               ? "border-loss focus:border-loss focus:ring-3 focus:ring-loss/12"
               : "border-line-strong hover:border-ink/35 focus:border-mineral focus:ring-3 focus:ring-mineral/12"
@@ -892,7 +1096,7 @@ export function PasswordStrengthMeter({
           : "text-gain"
 
   return (
-    <div id={id} className="mt-2.5 space-y-2" aria-live="polite">
+    <div id={id} className="mt-1.5 space-y-1" aria-live="polite">
       <div className="grid grid-cols-4 gap-1.5" aria-hidden="true">
         {[1, 2, 3, 4].map((level) => (
           <div
@@ -904,8 +1108,8 @@ export function PasswordStrengthMeter({
         ))}
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-2 text-[11.5px]">
-        <div className="flex flex-wrap items-center gap-2.5 text-secondary">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+        <div className="flex flex-wrap items-center gap-2 text-secondary">
           {result.criteria
             .filter((c) => c.key !== "recommendedLength")
             .map((c) => (
@@ -990,9 +1194,9 @@ export function AuthAlert({
 
 export function AuthDivider({ label = "hoặc tiếp tục với email" }: { label?: string }) {
   return (
-    <div className="relative flex items-center py-1" aria-hidden="true">
+    <div className="relative flex items-center py-0.5" aria-hidden="true">
       <div className="flex-grow border-t border-line" />
-      <span className="mx-3 shrink-0 text-[11.5px] font-medium text-secondary">
+      <span className="mx-3 shrink-0 text-[11px] font-medium text-secondary">
         {label}
       </span>
       <div className="flex-grow border-t border-line" />
@@ -1155,7 +1359,7 @@ export function GoogleAuthButton({
         type="button"
         disabled={disabled || loading}
         onClick={handleGoogleClick}
-        className="flex h-11 w-full items-center justify-center gap-2.5 rounded-[10px] border border-line-strong bg-surface px-4 text-[13.5px] font-medium text-ink shadow-2xs transition-all hover:border-ink/40 hover:bg-paper active:scale-[0.997] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-mineral disabled:cursor-not-allowed disabled:opacity-60"
+        className="flex h-10 w-full items-center justify-center gap-2.5 rounded-[9px] border border-line-strong bg-surface px-4 text-[13px] font-medium text-ink shadow-2xs transition-all hover:border-ink/40 hover:bg-paper active:scale-[0.997] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-mineral disabled:cursor-not-allowed disabled:opacity-60"
       >
         {loading ? (
           <span

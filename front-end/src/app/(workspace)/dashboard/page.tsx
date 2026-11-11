@@ -14,7 +14,7 @@ import {
   PercentChange,
   Pill,
 } from "@/components/ui";
-import { KLineChart } from "@/components/KLineChart";
+import { TradingViewChart } from "@/lib/tv-chart";
 import type { ApiMarketStock } from "@/types";
 import { sectorWeights, formatSectorName } from "@/lib/sector-weights";
 import { SuperStocksTable, type SuperStocksPayload } from "@/components/SuperStocksTable";
@@ -120,11 +120,10 @@ function DashboardView({
               </div>
             </div>
           </div>
-          <KLineChart
-            ticker="VNINDEX"
-            name="VN-Index"
+          <TradingViewChart
+            symbol="VNINDEX"
             precision={2}
-            height={360}
+            height={420}
           />
         </Panel>
         <Panel>

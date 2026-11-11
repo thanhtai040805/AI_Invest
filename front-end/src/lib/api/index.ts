@@ -112,7 +112,20 @@ export const stockApi = {
   technical: (s: string) => clientCached(`stock:technical:${s}`, 30_000, () => apiClient.get(`/stock/${s}/technical-indicators`).then(r => r.data)),
   news: (s: string) => clientCached(`stock:news:${s}`, 60_000, () => apiClient.get(`/stock/${s}/news`).then(r => r.data)),
 }
-export const portfolioApi = { snapshot: () => apiClient.get("/portfolio/snapshot").then(r => r.data), summary: () => apiClient.get("/portfolio/summary").then(r => r.data), positions: () => apiClient.get("/portfolio/positions").then(r => r.data), performance: () => apiClient.get("/portfolio/performance").then(r => r.data), risks: () => apiClient.get("/portfolio/risk-metrics").then(r => r.data), orders: () => apiClient.get("/portfolio/orders").then(r => r.data), order: (body: unknown) => apiClient.post("/portfolio/order", body).then(r => r.data) }
+export const portfolioApi = {
+  snapshot: () => apiClient.get("/portfolio/snapshot").then(r => r.data),
+  summary: () => apiClient.get("/portfolio/summary").then(r => r.data),
+  positions: () => apiClient.get("/portfolio/positions").then(r => r.data),
+  performance: () => apiClient.get("/portfolio/performance").then(r => r.data),
+  risks: () => apiClient.get("/portfolio/risk-metrics").then(r => r.data),
+  orders: () => apiClient.get("/portfolio/orders").then(r => r.data),
+  order: (body: unknown) => apiClient.post("/portfolio/order", body).then(r => r.data),
+  amendOrder: (id: string, body: { price?: number; quantity?: number }) =>
+    apiClient.patch(`/portfolio/order/${encodeURIComponent(id)}`, body).then(r => r.data),
+  cancelOrder: (id: string) =>
+    apiClient.delete(`/portfolio/order/${encodeURIComponent(id)}`).then(r => r.data),
+  engineStats: () => apiClient.get("/portfolio/engine-stats").then(r => r.data),
+}
 export const workspaceApi = {
   agentPortfolio: () => clientCached("workspace:agentPortfolio", 15_000, () => apiClient.get("/workspace/agent/portfolio").then(r => r.data)),
   thesisHistory: (params: { page: number; ticker?: string; date?: string }) => apiClient.get("/workspace/research/thesis-history", { params }).then(r => r.data),

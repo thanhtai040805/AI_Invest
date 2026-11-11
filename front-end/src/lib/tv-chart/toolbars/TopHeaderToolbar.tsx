@@ -293,13 +293,13 @@ export function TopHeaderToolbar({
 
   return (
     <div
-      className={`flex h-[38px] shrink-0 flex-nowrap items-center justify-between gap-1 border-b px-2 select-none text-[12px] z-30 ${
+      className={`@container flex h-[38px] shrink-0 flex-nowrap items-center justify-between gap-1 border-b px-2 select-none text-[12px] z-30 ${
         isDark
           ? "border-[#2A2E39] bg-[#131722] text-[#D1D4DC]"
           : "border-[#E0E3EB] bg-white text-[#131722]"
       }`}
     >
-      {/* LEFT SECTION: Strictly Single-Row (No flex-wrap) */}
+      {/* LEFT SECTION: Strictly Single-Row (No flex-wrap, container-responsive) */}
       <div className="flex min-w-0 flex-nowrap items-center gap-0.5">
         {/* 1. Symbol Search */}
         <div ref={symRef} className="relative shrink-0">
@@ -409,7 +409,7 @@ export function TopHeaderToolbar({
 
         {/* 3. Timeframes: Pinned Inline + Full 20-Interval Ultimate Dropdown (1s..12M) */}
         <div ref={tfRef} id="header-toolbar-intervals" className="relative flex shrink-0 items-center gap-0.5">
-          <div className="hidden md:flex items-center gap-0.5">
+          <div className="hidden @[760px]:flex items-center gap-0.5">
             {PINNED_TIMEFRAMES.map((tfId) => {
               const active = timeframe === tfId
               return (
@@ -441,7 +441,7 @@ export function TopHeaderToolbar({
             title="Mở toàn bộ 20 khung thời gian (1s Giây Ultimate → 12M Năm)"
             className="inline-flex h-7 items-center gap-1 rounded px-1.5 font-mono text-[11px] hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
           >
-            <span className="md:hidden font-bold text-[#2962FF]">{timeframe}</span>
+            <span className="@[760px]:hidden font-bold text-[#2962FF]">{timeframe}</span>
             <span className="opacity-70">▾</span>
           </button>
 
@@ -583,7 +583,7 @@ export function TopHeaderToolbar({
             title={`Mở Chỉ báo, chỉ số và chiến lược (${TV_INDICATOR_LIST.length} Tập lệnh Free + Pro + Ultimate)`}
           >
             <TvIcon name="header-toolbar-indicators" size={19} />
-            <span className="text-[12px]">Chỉ báo</span>
+            <span className="hidden @[540px]:inline text-[12px]">Chỉ báo</span>
             {visibleIndicatorCount > 0 && (
               <span className="rounded-full bg-[#2962FF]/15 px-1.5 py-0.2 font-mono text-[10.5px] font-bold text-[#2962FF]">
                 {visibleIndicatorCount}
@@ -661,7 +661,7 @@ export function TopHeaderToolbar({
           }`}
         >
           <TvIcon name="header-toolbar-replay" size={19} />
-          <span className="hidden lg:inline">Replay</span>
+          <span className="hidden @[860px]:inline">Replay</span>
         </button>
       </div>
 
@@ -672,7 +672,7 @@ export function TopHeaderToolbar({
           onClick={onUndo}
           disabled={!canUndo}
           title="Hoàn tác nét vẽ (Ctrl+Z)"
-          className="inline-flex h-7 w-7 items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-30 transition-colors"
+          className="hidden @[480px]:inline-flex h-7 w-7 items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-30 transition-colors"
         >
           <TvIcon name="header-toolbar-undo-redo" size={18} />
         </button>
@@ -681,12 +681,12 @@ export function TopHeaderToolbar({
           onClick={onRedo}
           disabled={!canRedo}
           title="Làm lại nét vẽ (Ctrl+Y)"
-          className="inline-flex h-7 w-7 items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-30 transition-colors"
+          className="hidden @[480px]:inline-flex h-7 w-7 items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-30 transition-colors"
         >
           <TvIcon name="redo" size={18} />
         </button>
 
-        <span className="mx-0.5 h-4 w-px bg-current/12" />
+        <span className="hidden @[480px]:inline-block mx-0.5 h-4 w-px bg-current/12" />
 
         <button
           type="button"
@@ -713,9 +713,14 @@ export function TopHeaderToolbar({
           id="header-toolbar-fullscreen"
           onClick={onToggleFullscreen}
           title={isFullscreen ? "Thoát toàn màn hình (Esc)" : "Toàn màn hình (Fullscreen)"}
-          className="inline-flex h-7 w-7 items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+          className={`inline-flex h-7 items-center justify-center gap-1 rounded px-1.5 transition-colors ${
+            isFullscreen
+              ? "bg-[#2962FF]/15 text-[#2962FF] hover:bg-[#2962FF]/25 font-semibold"
+              : "w-7 px-0 hover:bg-black/5 dark:hover:bg-white/5"
+          }`}
         >
           <TvIcon name="header-toolbar-fullscreen" size={19} />
+          {isFullscreen && <span className="hidden @[640px]:inline text-[11px]">Thu nhỏ</span>}
         </button>
 
         <button

@@ -2,6 +2,7 @@ import Redis from 'ioredis';
 import { config } from '../config';
 import { redisService } from './redis.service';
 import { socketService } from './socket.service';
+import { liveOrderGateway, ExternalOrderBookSnapshot } from './matchingEngine';
 
 const CACHE_TTL: Record<string, number> = {
   indices: 15,
@@ -9,6 +10,7 @@ const CACHE_TTL: Record<string, number> = {
   snapshot: 3,
   liquidity: 5,
   heatmap: 10,
+  orderbook: 15,
   trade: 0, // overwrite the latest quote and keep it across market closures
   tradeExtra: 2,
   foreign: 5,
@@ -213,7 +215,10 @@ class DnseRelayService {
       case suffix.startsWith('trade:'): {
         const symbol = suffix.replace('trade:', '').toUpperCase();
         socketService.emitStockPrice(symbol, data);
-        if (!(data as { isSnapshot?: boolean }).isSnapshot) socketService.emitTrade(symbol, data);
+        if (!(data as { isSnapshot?: boolean }).isSnapshot) {
+          socketService.emitTrade(symbol, data);
+          liveOrderGateway.onExternalTrade(symbol, data);
+        }
         void redisService.setCache(`stock:${symbol}:quote`, data, CACHE_TTL.trade);
         break;
       }
@@ -227,7 +232,10 @@ class DnseRelayService {
 
       case suffix.startsWith('orderbook:'): {
         const symbol = suffix.replace('orderbook:', '').toUpperCase();
-        socketService.emitOrderBook(symbol, data);
+        liveOrderGateway.onExternalOrderBook(symbol, data);
+        const merged = liveOrderGateway.getMergedOrderBook(symbol, data as ExternalOrderBookSnapshot);
+        socketService.emitOrderBook(symbol, merged);
+        void redisService.setCache(`stock:${symbol}:orderbook`, data, CACHE_TTL.orderbook);
         break;
       }
 
