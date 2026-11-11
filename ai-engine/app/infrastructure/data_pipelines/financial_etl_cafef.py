@@ -372,7 +372,7 @@ def _fetch_vci_missing_quarter(cur, symbols: Optional[list[str]] = None) -> dict
     try:
         from vnstock.api.financial import Finance
     except (ImportError, SystemExit):
-        logger.warning("VCI financial fallback unavailable for %d symbols", len(missing))
+        logger.debug("Optional VCI financial fallback not installed (%d symbols pending filing)", len(missing))
         return {"rows": 0, "symbols": len(missing), "errors": len(missing)}
 
     inserted = errors = 0
@@ -661,8 +661,9 @@ def fetch_and_store_financials(
             if label_frequency and label_frequency != freq:
                 continue
             pe = _period_label_to_date(pl, clean_sym)
-            if not pe or pe < history_start or pe > datetime.now(TZ_VN).date():
-                if pe:
+            today_vn = datetime.now(TZ_VN).date()
+            if not pe or pe < history_start or pe > today_vn:
+                if pe and pe > today_vn:
                     logger.warning("Skipping future CafeF period %s for %s", pl, clean_sym)
                 continue
             if pl in parsed_bs:

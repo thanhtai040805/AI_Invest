@@ -19,19 +19,29 @@ from app.domain.rules.portfolio import (
 )
 
 
+TEST_ACCOUNT_ID = "09a20ece-727e-4c5d-bdb4-cf0d0da9b6f5"
+
+
 @pytest.fixture(autouse=True)
-def clean_portfolio_db():
+def clean_portfolio_db(monkeypatch):
+    monkeypatch.setenv("MULTI_AGENT_ACCOUNT_ID", TEST_ACCOUNT_ID)
     try:
         repo = PortfolioRepository()
-        repo.storage.execute("UPDATE users SET cash_balance = 1000000000.0")
-        repo.storage.execute("DELETE FROM positions WHERE symbol IN ('HPG', 'VNM', 'FPT')")
+        repo.storage.execute("UPDATE users SET cash_balance = 1000000000.0 WHERE id = %s", (TEST_ACCOUNT_ID,))
+        repo.storage.execute(
+            "DELETE FROM positions WHERE user_id = %s AND symbol IN ('HPG', 'VNM', 'FPT')",
+            (TEST_ACCOUNT_ID,),
+        )
     except Exception:
         pass
     yield
     try:
         repo = PortfolioRepository()
-        repo.storage.execute("UPDATE users SET cash_balance = 1000000000.0")
-        repo.storage.execute("DELETE FROM positions WHERE symbol IN ('HPG', 'VNM', 'FPT')")
+        repo.storage.execute("UPDATE users SET cash_balance = 1000000000.0 WHERE id = %s", (TEST_ACCOUNT_ID,))
+        repo.storage.execute(
+            "DELETE FROM positions WHERE user_id = %s AND symbol IN ('HPG', 'VNM', 'FPT')",
+            (TEST_ACCOUNT_ID,),
+        )
     except Exception:
         pass
 
@@ -225,9 +235,10 @@ def test_four_output_groups_complete_contract():
         repo._in_memory_account["total_nav"] = 1000000000.0
         repo._in_memory_positions.clear()
         try:
-            repo.storage.execute("DELETE FROM positions WHERE symbol = 'HPG'")
-            repo.storage.execute("DELETE FROM investment_theses WHERE ticker = 'HPG'")
-            repo.storage.execute("DELETE FROM counter_thesis_verdicts WHERE ticker = 'HPG'")
+            repo.storage.execute(
+                "DELETE FROM positions WHERE user_id = %s AND symbol = 'HPG'",
+                (TEST_ACCOUNT_ID,),
+            )
         except Exception:
             pass
 

@@ -30,9 +30,9 @@ class FeatureForge:
         out = pd.DataFrame(index=df.index)
         
         # 1. Standard Momentum
-        daily_ret = df['close'].pct_change()
+        daily_ret = df['close'].pct_change(fill_method=None)
         for window in [5, 10, 20, 60, 120]:
-            out[f'mom_{window}d'] = df['close'].pct_change(window)
+            out[f'mom_{window}d'] = df['close'].pct_change(window, fill_method=None)
             vol = daily_ret.rolling(window).std()
             out[f'ret_vol_{window}d'] = vol
             
@@ -78,7 +78,7 @@ class FeatureForge:
         out['price_to_vwap_20d'] = df['close'] / (vwap_20d + 1e-8)
         
         # Amihud Illiquidity (Absolute Return / Volume)
-        ret_abs = df['close'].pct_change().abs()
+        ret_abs = df['close'].pct_change(fill_method=None).abs()
         out['amihud_illiquidity'] = (ret_abs / (df['volume'] + 1e-8)).rolling(20).mean()
         
         # Kyle's Lambda Proxy (Price Impact)
@@ -114,8 +114,8 @@ class FeatureForge:
         out = pd.DataFrame(index=df.index)
         
         if not self.use_frac_diff:
-            out['close_diff'] = df['close'].pct_change()
-            out['vol_diff'] = df['volume'].pct_change()
+            out['close_diff'] = df['close'].pct_change(fill_method=None)
+            out['vol_diff'] = df['volume'].pct_change(fill_method=None)
             return out
             
         if frac_diff_d is not None:
@@ -148,7 +148,7 @@ class FeatureForge:
         out = pd.DataFrame(index=df.index)
         
         prev_close = df['close'].shift(1)
-        ret = df['close'].pct_change()
+        ret = df['close'].pct_change(fill_method=None)
         
         # Use percentage thresholds for ceiling/floor because adjusted prices
         # invalidate the exact absolute price tick calculations.
@@ -278,8 +278,8 @@ class FeatureForge:
         if self._vnindex_df is not None and not self._vnindex_df.empty:
             # Join VNINDEX close
             temp = df[['close']].join(self._vnindex_df['close'].rename('vn_close'), how='left').ffill()
-            ticker_ret = temp['close'].pct_change()
-            vn_ret = temp['vn_close'].pct_change()
+            ticker_ret = temp['close'].pct_change(fill_method=None)
+            vn_ret = temp['vn_close'].pct_change(fill_method=None)
             
             # RS: (1 + ticker_ret) / (1 + vn_ret) over N days
             for window in [10, 20, 60]:

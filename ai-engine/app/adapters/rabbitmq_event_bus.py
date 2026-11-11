@@ -67,10 +67,19 @@ class RabbitMQEventBus(EventBusPort):
         try:
             import aio_pika
 
+            if self._connection is not None:
+                try:
+                    await self._connection.close()
+                except Exception:
+                    pass
+                self._connection = None
+
             connection = await aio_pika.connect_robust(
                 self.rabbitmq_url,
                 timeout=5.0,
                 reconnect_interval=5.0,
+                heartbeat=30,
+                client_properties={"connection_name": "aiinvest-ai-engine"},
             )
             channel = await connection.channel()
             await channel.set_qos(prefetch_count=10)

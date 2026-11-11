@@ -14,21 +14,33 @@ from app.domain.agents.trade_execution import TradeExecutionAgent
 from app.domain.agents.position_monitoring import PositionMonitoringAgent
 
 
+TEST_ACCOUNT_ID = "09a20ece-727e-4c5d-bdb4-cf0d0da9b6f5"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_test_account(monkeypatch):
+    monkeypatch.setenv("MULTI_AGENT_ACCOUNT_ID", TEST_ACCOUNT_ID)
+
+
 def reset_test_db(repo: PortfolioRepository):
     """Reset tài khoản và vị thế kiểm thử về trạng thái chuẩn ban đầu."""
+    uid = repo._in_memory_account["account_id"]
     try:
-        # Reset số dư user
         repo.storage.execute(
             "UPDATE users SET cash_balance = 1000000000.0 WHERE id = %s",
-            (repo._in_memory_account["account_id"],)
+            (uid,),
         )
-        # Xóa các vị thế test
         repo.storage.execute(
-            "DELETE FROM positions WHERE symbol IN ('FPT', 'VNM', 'HPG')",
+            "DELETE FROM positions WHERE user_id = %s AND symbol IN ('FPT', 'VNM', 'HPG')",
+            (uid,),
         )
-        # Xóa các orders test
         repo.storage.execute(
-            "DELETE FROM orders WHERE symbol IN ('FPT', 'VNM', 'HPG')",
+            "DELETE FROM order_executions WHERE order_id::text IN (SELECT id FROM orders WHERE user_id = %s AND symbol IN ('FPT', 'VNM', 'HPG'))",
+            (uid,),
+        )
+        repo.storage.execute(
+            "DELETE FROM orders WHERE user_id = %s AND symbol IN ('FPT', 'VNM', 'HPG')",
+            (uid,),
         )
     except Exception:
         pass

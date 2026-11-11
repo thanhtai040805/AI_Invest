@@ -7,6 +7,9 @@ Dictates session-specific anomaly thresholds and lunch break polling pause.
 from datetime import datetime, time
 from enum import Enum
 from typing import Dict, Any, Tuple
+from zoneinfo import ZoneInfo
+
+TZ_VN = ZoneInfo("Asia/Ho_Chi_Minh")
 
 
 class HOSEMarketSession(Enum):
@@ -28,10 +31,12 @@ class SessionContextManager:
     @staticmethod
     def get_session(current_time: datetime) -> HOSEMarketSession:
         """
-        Determines the current HOSE market session based on time.
+        Determines the current HOSE market session based on time (normalized to Asia/Ho_Chi_Minh when timezone-aware).
         """
+        if isinstance(current_time, datetime) and current_time.tzinfo is not None:
+            current_time = current_time.astimezone(TZ_VN)
         t = current_time.time() if isinstance(current_time, datetime) else current_time
-        
+
         # Weekend check
         if isinstance(current_time, datetime) and current_time.weekday() in (5, 6):
             return HOSEMarketSession.CLOSED

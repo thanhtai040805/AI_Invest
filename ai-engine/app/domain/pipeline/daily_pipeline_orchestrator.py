@@ -150,15 +150,17 @@ class DailyInvestmentPipeline:
         Thực thi toàn diện chuỗi 12 Pha của hệ thống tự hành cho ngày giao dịch.
         NAV được truy vấn động học trực tiếp từ CSDL PostgreSQL (users & positions).
         """
+        tz_vn = ZoneInfo("Asia/Ho_Chi_Minh")
+        now_vn = datetime.now(tz_vn)
         run_date_str = (
             target_date.isoformat()
             if isinstance(target_date, date)
-            else (str(target_date) if target_date else date.today().isoformat())
+            else (str(target_date) if target_date else now_vn.date().isoformat())
         )
         target_date_obj = date.fromisoformat(run_date_str) if isinstance(run_date_str, str) else run_date_str
-        is_replay = replay_portfolio is not None or replay_account_id is not None or target_date_obj < datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date()
+        is_replay = replay_portfolio is not None or replay_account_id is not None or target_date_obj < now_vn.date()
         replay_at = datetime.combine(
-            target_date_obj, time(9, 45), tzinfo=ZoneInfo("Asia/Ho_Chi_Minh")
+            target_date_obj, time(9, 45), tzinfo=tz_vn
         ) if is_replay else None
         market_data_date = target_date_obj - timedelta(days=1) if replay_at else target_date_obj
         multi_agent_account_id = replay_account_id or os.getenv("MULTI_AGENT_ACCOUNT_ID", "940b0c70-2010-42f3-b947-797e6419b794")
@@ -222,7 +224,13 @@ class DailyInvestmentPipeline:
         # PHA 1: AGENT-01 (MARKET SURVEILLANCE & MACRO REGIME)
         # =========================================================================
         logger.info("[Pha 1] Kích hoạt Agent-01: Giám sát Vĩ mô & Định vị Market Regime...")
-        res_surv = await AgentRegistry.dispatch("market_surveillance", replay_context)
+        res_surv = await AgentRegistry.dispatch(
+            "market_surveillance",
+            {
+                **replay_context,
+                **({"is_realtime": True} if replay_at is None else {}),
+            },
+        )
         surv_data = res_surv.get("result", {}).get("data", {}) if res_surv.get("status") == "SUCCESS" else {}
         if res_surv.get("status") != "SUCCESS" or not surv_data.get("current_regime"):
             pipeline_trace["phases"]["phase_1_market_surveillance"] = {"status": "FAILED_OR_INCOMPLETE"}
@@ -540,6 +548,7 @@ class DailyInvestmentPipeline:
                 "kelly_matrix": kelly_matrix,
                 "weight_cap": weight_cap,
                 "regime": regime,
+                "defer_order_event": True,
                 **replay_context,
             })
             if res_alloc.get("status") != "SUCCESS":
@@ -623,6 +632,17 @@ class DailyInvestmentPipeline:
             }
 
             logger.info(f"[Pha 9 - {ticker}] Phán quyết Risk: '{risk_status}' | Số lượng duyệt: {approved_shares:,} cổ phiếu.")
+
+            reconcile_fn = getattr(self.portfolio_repo, "reconcile_decision_after_risk", None)
+            if callable(reconcile_fn):
+                reconcile_fn(
+                    decision_id=proposed_order.get("decision_id") or alloc_data.get("decision_id"),
+                    ticker=ticker,
+                    risk_status=risk_status,
+                    approved_shares=approved_shares,
+                    approved_weight_pct=risk_decision.get("approved_weight_pct"),
+                    risk_rationale=str(risk_decision.get("rationale") or ""),
+                )
 
             if approved_shares <= 0 or risk_status not in ["PASS", "REDUCE"]:
                 logger.warning(f"[Pha 9 - {ticker}] Lệnh bị Risk Agent chặn/từ chối.")

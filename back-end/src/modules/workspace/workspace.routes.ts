@@ -62,15 +62,40 @@ router.get('/agent', optionalAuth, (req: AuthRequest, res, next) => send(res, ne
       SELECT created_at FROM log_counter_thesis WHERE thesis_id::text = v.thesis_id
       ORDER BY created_at DESC NULLS LAST, id DESC LIMIT 1
     ) l ON TRUE`;
-  const logs = await Promise.all(agentModels.map(async (model) => ({
-    agent: model.replace('log_', ''),
-    entries: model === 'log_investment_thesis'
-      ? await db.$queryRawUnsafe(`SELECT * FROM log_investment_thesis
+  const dateColumnModels = new Set([
+    'log_market_surveillance', 'log_universe_discovery', 'log_equity_research',
+    'log_portfolio_risk', 'log_reinforcement_learning',
+  ]);
+  const logs = await Promise.all(agentModels.map(async (model) => {
+    const rowLimit = model === 'log_portfolio_risk' ? Math.max(limit, 200) : limit;
+    let entries: unknown[] = [];
+    if (model === 'log_investment_thesis') {
+      entries = await db.$queryRawUnsafe(`SELECT * FROM log_investment_thesis
           WHERE ($1::text IS NULL OR COALESCE(analysis_date, (created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date) = $1::date)
-          ORDER BY id DESC LIMIT $2`, date || null, limit)
-      : db[model] ? await db[model].findMany({ where: date ? { created_at: dateWindow(date) } : {}, take: limit, orderBy: { id: 'desc' } }).catch(() => []) : [],
-  })));
-  const [theses, counterTheses, resolutions, mainAccount, dateRows, decisions, positionHealth] = await Promise.all([
+          ORDER BY id DESC LIMIT $2`, date || null, rowLimit);
+    } else if (dateColumnModels.has(model)) {
+      entries = await db.$queryRawUnsafe(`SELECT * FROM ${model}
+          WHERE ($1::text IS NULL OR COALESCE(date, (created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date) = $1::date)
+          ORDER BY date DESC NULLS LAST, id DESC LIMIT $2`, date || null, rowLimit).catch(() => []);
+    } else if (model === 'log_counter_thesis') {
+      entries = await db.$queryRawUnsafe(`SELECT c.* FROM log_counter_thesis c
+          LEFT JOIN LATERAL (
+            SELECT analysis_date FROM log_investment_thesis t
+            WHERE t.thesis_id::text = c.thesis_id::text
+            ORDER BY t.created_at DESC NULLS LAST, t.id DESC LIMIT 1
+          ) lt ON TRUE
+          WHERE ($1::text IS NULL OR COALESCE(lt.analysis_date, (c.created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date) = $1::date)
+          ORDER BY c.id DESC LIMIT $2`, date || null, rowLimit).catch(() => []);
+    } else if (db[model]) {
+      entries = await db[model].findMany({
+        where: date ? { created_at: dateWindow(date) } : {},
+        take: rowLimit,
+        orderBy: { id: 'desc' },
+      }).catch(() => []);
+    }
+    return { agent: model.replace('log_', ''), entries };
+  }));
+  const [theses, counterTheses, resolutions, mainAccount, dateRows, decisions, positionHealth, msHistory, rlHistory] = await Promise.all([
     db.$queryRawUnsafe(`SELECT * FROM (${thesisSource}) records WHERE ($1::text IS NULL OR analysis_date = $1::date) ORDER BY generated_at DESC NULLS LAST LIMIT 200`, date || null),
     db.$queryRawUnsafe(`SELECT * FROM (${counterSource}) records WHERE ($1::text IS NULL OR analysis_date = $1::date) ORDER BY generated_at DESC NULLS LAST LIMIT 200`, date || null),
     db.$queryRawUnsafe(`SELECT c.*, COALESCE((c.verdict_payload->>'target_date')::date, t.analysis_date) AS analysis_date
@@ -99,10 +124,12 @@ router.get('/agent', optionalAuth, (req: AuthRequest, res, next) => send(res, ne
     db.$queryRawUnsafe("SELECT * FROM portfolio_decisions WHERE ($1::text IS NULL OR date = $1::date) ORDER BY created_at DESC, decision_id DESC LIMIT 200", date || null),
     db.$queryRawUnsafe(`SELECT h.* FROM position_health_ticks h JOIN positions p ON p.symbol=h.ticker
       WHERE p.user_id=$1 AND p.quantity>0 ORDER BY h.ticker`, multiAgentAccountId),
+    db.$queryRawUnsafe('SELECT * FROM log_market_surveillance ORDER BY date DESC NULLS LAST, id DESC LIMIT 15').catch(() => []),
+    db.$queryRawUnsafe('SELECT * FROM log_reinforcement_learning ORDER BY date DESC NULLS LAST, id DESC LIMIT 5').catch(() => []),
   ]);
   // Legacy account/health fields are monitoring snapshots. Current valuation is
   // served separately so minute refreshes never reload the entire audit log.
-  return { logs, theses, counterTheses, resolutions, decisions, positionHealth,
+  return { logs, theses, counterTheses, resolutions, decisions, positionHealth, msHistory, rlHistory,
     dates: dateRows.map((row: any) => row.date), risks: [], account: mainAccount[0] || null, mode: 'SHADOW' };
 }));
 

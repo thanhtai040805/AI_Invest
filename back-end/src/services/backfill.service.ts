@@ -26,7 +26,8 @@ function isMarketClosed(date: Date = getVietnamDate()): boolean {
   const minutes = date.getMinutes();
   const totalMinutes = hours * 60 + minutes;
 
-  return totalMinutes >= 14 * 60 + 45;
+  // Wait until 15:00 ICT (after HOSE 14:30-14:45 ATC + 14:45-15:00 Negotiated/PLO settlement)
+  return totalMinutes >= 15 * 60;
 }
 
 function getVietnamHolidays(year: number): string[] {
@@ -122,7 +123,8 @@ export async function autoBackfillIfNeeded(): Promise<{ triggered: boolean; reas
 
   const existingLog = await getTodaySessionLog();
   if (existingLog) {
-    if (existingLog.status === 'COMPLETED' && existingLog.ohlcvCount > 0) {
+    const minExpectedCandles = Math.max(1, Math.floor((existingLog.stockCount || 350) * 0.8));
+    if (existingLog.status === 'COMPLETED' && existingLog.ohlcvCount >= minExpectedCandles) {
       return { triggered: false, reason: `${dateStr} session already backfilled (${existingLog.stockCount} stocks, ${existingLog.ohlcvCount} candles)` };
     }
     if (existingLog.status === 'BACKFILLING') {
@@ -150,14 +152,17 @@ export async function autoBackfillIfNeeded(): Promise<{ triggered: boolean; reas
       throw new Error('No OHLCV candles were backfilled; the session remains retryable');
     }
 
+    const minCompleteThreshold = Math.max(1, Math.floor((stocks.length || stockCount || 350) * 0.8));
+    const finalStatus = ohlcvCount >= minCompleteThreshold ? 'COMPLETED' : 'PARTIAL';
+
     await updateSessionLog(log.id, {
-      status: 'COMPLETED',
+      status: finalStatus,
       stockCount,
       ohlcvCount,
     });
 
-    console.log(`[Backfill] ${dateStr} completed: ${stockCount} stocks, ${ohlcvCount} candles`);
-    return { triggered: true, reason: `Backfilled ${stockCount} stocks, ${ohlcvCount} candles for ${dateStr}` };
+    console.log(`[Backfill] ${dateStr} ${finalStatus.toLowerCase()}: ${stockCount} stocks, ${ohlcvCount} candles`);
+    return { triggered: true, reason: `Backfilled ${stockCount} stocks, ${ohlcvCount} candles (${finalStatus}) for ${dateStr}` };
   } catch (err: any) {
     if (log) {
       await updateSessionLog(log.id, { status: 'FAILED', error: err.message });

@@ -120,6 +120,59 @@ async def _search_cafef_insider_news(symbol: str, max_results: int = 10) -> List
     return results[:max_results]
 
 
+def _get_db_insider_records(symbol: str) -> Dict[str, List[Dict[str, Any]]]:
+    """Hydrate shareholders and officers from PostgreSQL insider_trades (CafeF GDCoDong ETL)."""
+    from app.infrastructure.database.pg_pool import get_cursor
+
+    shareholders: List[Dict[str, Any]] = []
+    officers: List[Dict[str, Any]] = []
+    seen_sh: set[str] = set()
+    seen_of: set[str] = set()
+    try:
+        with get_cursor() as cur:
+            cur.execute(
+                """
+                SELECT trader_name, trader_position, trade_type, quantity, shares_after, ownership_pct, trade_date
+                FROM insider_trades
+                WHERE symbol = %s
+                ORDER BY trade_date DESC
+                LIMIT 50
+                """,
+                (symbol.upper(),),
+            )
+            for row in cur.fetchall():
+                name = str(row[0] or "").strip()
+                pos = str(row[1] or "").strip()
+                shares_after = int(row[4] or 0)
+                own_pct = float(row[5] or 0.0)
+                t_date = row[6].isoformat() if hasattr(row[6], "isoformat") else str(row[6] or "")
+                if not name:
+                    continue
+                if own_pct >= 5.0 and name not in seen_sh:
+                    seen_sh.add(name)
+                    shareholders.append({
+                        "type": "MAJOR_SHAREHOLDER",
+                        "name": name,
+                        "sharesOwned": shares_after,
+                        "ownershipPct": own_pct,
+                        "updateDate": t_date[:10],
+                        "source": "insider_trades_db",
+                    })
+                if pos and name not in seen_of:
+                    seen_of.add(name)
+                    officers.append({
+                        "type": "OFFICER",
+                        "name": name,
+                        "position": pos,
+                        "fromDate": t_date[:10],
+                        "source": "insider_trades_db",
+                    })
+    except Exception as e:
+        logger.debug("insider_trades DB lookup skipped for %s: %s", symbol, e)
+
+    return {"shareholders": shareholders, "officers": officers}
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -141,6 +194,10 @@ async def get_insider_data(symbol: str) -> Dict[str, Any]:
     shareholders = _get_vnstock_shareholders(symbol)
     officers = _get_vnstock_officers(symbol)
     ownership = _get_vnstock_ownership(symbol)
+    if not shareholders and not officers:
+        db_insider = _get_db_insider_records(symbol)
+        shareholders = db_insider["shareholders"]
+        officers = db_insider["officers"]
     news = await _search_cafef_insider_news(symbol)
 
     # Build summary

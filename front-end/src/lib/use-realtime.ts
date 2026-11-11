@@ -241,6 +241,9 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
 export function useRealtimeMarket(initialIndices?: {
   vnIndexVal: string
   vnIndexPct: number | null
+  vnIndexChange?: number | null
+  vn30Val?: string
+  vn30Pct?: number | null
   vn100Val?: string
   vn100Pct?: number | null
 }) {
@@ -303,8 +306,11 @@ export function useRealtimeMarket(initialIndices?: {
         return Number.isFinite(value) ? value : null
       }
       const vnIndexItem = indices.find((x) => getName(x) === "VNINDEX")
+      const vn30Item =
+        indices.find((x) => getName(x) === "VN30") ??
+        indices.find((x) => getName(x) === "VN30_ESTIMATED")
       const vn100Item = indices.find((x) => getName(x) === "VN100")
-      if (!vnIndexItem && !vn100Item) return
+      if (!vnIndexItem && !vn30Item && !vn100Item) return
       if (!data.isSnapshot && vnIndexItem) {
         const receivedAt = Number(vnIndexItem.receivedAt ?? 0) * 1000
         const fresh = receivedAt > 0 && Date.now() - receivedAt < 15_000
@@ -312,11 +318,20 @@ export function useRealtimeMarket(initialIndices?: {
         if (fresh) lastIndicesAt.current = receivedAt
       }
 
+      const rawVniDiff = vnIndexItem?.change
+      const parsedVniDiff =
+        rawVniDiff != null && Number.isFinite(Number(rawVniDiff)) ? Number(rawVniDiff) : undefined
+
       setIndices((prev) => ({
         vnIndexVal: vnIndexItem && vnIndexItem.value != null && Number.isFinite(Number(vnIndexItem.value)) && Number(vnIndexItem.value) > 0
           ? Number(vnIndexItem.value).toLocaleString("vi-VN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
           : prev?.vnIndexVal ?? "—",
         vnIndexPct: vnIndexItem ? indexChange(vnIndexItem) : prev?.vnIndexPct ?? null,
+        vnIndexChange: parsedVniDiff !== undefined ? parsedVniDiff : prev?.vnIndexChange ?? null,
+        vn30Val: vn30Item && vn30Item.value != null && Number.isFinite(Number(vn30Item.value)) && Number(vn30Item.value) > 0
+          ? Number(vn30Item.value).toLocaleString("vi-VN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+          : prev?.vn30Val,
+        vn30Pct: vn30Item ? indexChange(vn30Item) : prev?.vn30Pct ?? null,
         vn100Val: vn100Item && vn100Item.value != null && Number.isFinite(Number(vn100Item.value)) && Number(vn100Item.value) > 0
           ? Number(vn100Item.value).toLocaleString("vi-VN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
           : prev?.vn100Val ?? "—",

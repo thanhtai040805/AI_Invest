@@ -145,9 +145,9 @@ def upsert_today(cur, rows: list[tuple]):
             close_adj = EXCLUDED.close_adj,
             close_unadj = COALESCE(market_data_daily.close_unadj, EXCLUDED.close_unadj),
             vwap = EXCLUDED.vwap,
-            volume_continuous = EXCLUDED.volume_continuous,
-            volume_atc = EXCLUDED.volume_atc,
-            volume_ato = EXCLUDED.volume_ato,
+            volume_continuous = COALESCE(EXCLUDED.volume_continuous, market_data_daily.volume_continuous),
+            volume_atc = COALESCE(EXCLUDED.volume_atc, market_data_daily.volume_atc),
+            volume_ato = COALESCE(EXCLUDED.volume_ato, market_data_daily.volume_ato),
             volume_total = EXCLUDED.volume_total,
             data_source = EXCLUDED.data_source
     """, mkt_rows)

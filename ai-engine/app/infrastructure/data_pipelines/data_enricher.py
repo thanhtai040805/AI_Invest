@@ -270,18 +270,110 @@ class DataEnricher:
 
     @staticmethod
     def fetch_vnstock_financials(symbol: str) -> Dict[str, Any]:
-        """Fetch raw financials and calculate ratios from vnstock."""
+        """Fetch financials and ratios from PostgreSQL (CafeF/AlphaStock/Vietcap ETL), with optional vnstock fallback."""
+        clean_sym = str(symbol or "").upper().strip()
         res: Dict[str, Any] = {
             "income_statement": {},
             "balance_sheet": {},
             "cash_flow": {},
             "ratios": {},
-            "profile": {}
+            "profile": {},
         }
-        
+
+        def _pick_num(d: Dict[str, Any], keys: List[str]) -> float:
+            for k, v in d.items():
+                k_low = str(k).casefold()
+                if any(kw.casefold() in k_low for kw in keys):
+                    try:
+                        val = float(v)
+                        if math.isfinite(val):
+                            return val
+                    except (TypeError, ValueError):
+                        continue
+            return 0.0
+
+        # 1. Primary path: PostgreSQL Point-in-Time financial tables
+        try:
+            from app.domain.repositories.financial_repository import FinancialRepository
+            fin_repo = FinancialRepository()
+
+            bs_rows = fin_repo.get_financial_statements(clean_sym, statement_type="BS", limit=1)
+            if bs_rows and isinstance(bs_rows[0].get("data"), dict):
+                bsd = bs_rows[0]["data"]
+                assets = _pick_num(bsd, ["tổng cộng tài sản", "tổng tài sản", "total_assets"])
+                liab = _pick_num(bsd, ["nợ phải trả", "total_liabilities"])
+                equity = _pick_num(bsd, ["vốn chủ sở hữu", "total_equity", "owner_equity"]) or max(0.0, assets - liab)
+                res["balance_sheet"] = {
+                    "period": bs_rows[0].get("period_end"),
+                    "total_assets": assets,
+                    "total_liabilities": liab,
+                    "total_equity": equity,
+                    "cash_and_equivalents": _pick_num(bsd, ["tiền và các khoản tương đương tiền", "cash"]),
+                    "inventory": _pick_num(bsd, ["hàng tồn kho", "inventory"]),
+                    "receivables": _pick_num(bsd, ["các khoản phải thu", "receivables"]),
+                    "payables": _pick_num(bsd, ["phải trả người bán", "payables"]),
+                    "short_term_debt": _pick_num(bsd, ["vay và nợ thuê tài chính ngắn hạn", "short_term_debt"]),
+                    "long_term_debt": _pick_num(bsd, ["vay và nợ thuê tài chính dài hạn", "long_term_debt"]),
+                }
+
+            is_rows = fin_repo.get_financial_statements(clean_sym, statement_type="IS", limit=1)
+            if is_rows and isinstance(is_rows[0].get("data"), dict):
+                isd = is_rows[0]["data"]
+                rev = _pick_num(isd, ["doanh thu thuần", "thu nhập lãi thuần", "revenue"])
+                net = _pick_num(isd, ["lợi nhuận sau thuế", "net_income", "lnst"])
+                op = _pick_num(isd, ["lợi nhuận thuần từ hoạt động kinh doanh", "operating_income"])
+                interest = _pick_num(isd, ["chi phí lãi vay", "interest_expense"])
+                res["income_statement"] = {
+                    "period": is_rows[0].get("period_end"),
+                    "revenue": rev,
+                    "cost_of_revenue": _pick_num(isd, ["giá vốn hàng bán", "chi phí hoạt động"]),
+                    "gross_profit": _pick_num(isd, ["lợi nhuận gộp", "gross_profit"]),
+                    "operating_income": op,
+                    "net_income": net,
+                    "income_tax": _pick_num(isd, ["chi phí thuế", "income_tax"]),
+                    "interest_expense": interest,
+                    "ebitda": (op + abs(interest)) if op else net * 1.25,
+                }
+
+            cf_rows = fin_repo.get_financial_statements(clean_sym, statement_type="CF", limit=1)
+            if cf_rows and isinstance(cf_rows[0].get("data"), dict):
+                cfd = cf_rows[0]["data"]
+                res["cash_flow"] = {
+                    "period": cf_rows[0].get("period_end"),
+                    "CFO": _pick_num(cfd, ["lưu chuyển tiền thuần từ hoạt động kinh doanh", "operating_cash_flow", "cfo"]),
+                    "CFI": _pick_num(cfd, ["lưu chuyển tiền thuần từ hoạt động đầu tư", "investing_cash_flow", "cfi"]),
+                    "CFF": _pick_num(cfd, ["lưu chuyển tiền thuần từ hoạt động tài chính", "financing_cash_flow", "cff"]),
+                    "capital_expenditures": abs(_pick_num(cfd, ["mua sắm, xây dựng tscđ", "capex"])),
+                    "dividends_paid": abs(_pick_num(cfd, ["cổ tức, lợi nhuận đã trả", "tiền trả cổ tức"])),
+                }
+
+            r_latest = fin_repo.get_latest_ratios(clean_sym)
+            r_stmt = fin_repo.get_financial_statements(clean_sym, statement_type="ratios", limit=1)
+            r_stmt_data = r_stmt[0].get("data", {}) if r_stmt and isinstance(r_stmt[0].get("data"), dict) else {}
+            if r_latest:
+                eps_val = _pick_num(r_stmt_data, ["eps", "thu_nhập_trên_mỗi_cổ_phần"]) or None
+                bvps_val = _pick_num(r_stmt_data, ["bvps", "giá_trị_sổ_sách"]) or None
+                res["ratios"] = {
+                    "pe_ratio": r_latest.get("pe"),
+                    "pb_ratio": r_latest.get("pb"),
+                    "roe": r_latest.get("roe"),
+                    "roa": r_latest.get("roa"),
+                    "debt_to_equity": r_latest.get("debt_equity"),
+                    "eps_basic": eps_val,
+                    "bvps": bvps_val,
+                    "dividend_yield": None,
+                    "beta": None,
+                }
+
+            if res["income_statement"] or res["balance_sheet"]:
+                return res
+        except Exception as db_exc:
+            logger.debug("PostgreSQL financials lookup skipped for %s: %s", clean_sym, db_exc)
+
+        # 2. Optional fallback: vnstock (only when installed)
         try:
             from vnstock.api.financial import Finance
-            f = Finance(symbol=symbol, source="KBS")
+            f = Finance(symbol=clean_sym, source="KBS")
             
             # Fetch balance sheet
             bs = f.balance_sheet()
@@ -425,49 +517,62 @@ class DataEnricher:
                         "beta": beta
                     })
 
-        except Exception as e:
-            logger.warning("vnstock financials fetch failed for %s: %s", symbol, e)
-            return None
+        except (ImportError, Exception, SystemExit) as e:
+            logger.debug("Optional vnstock financials fallback unavailable for %s: %s", clean_sym, e)
+            return res
 
         return res
 
     @staticmethod
     def fetch_vnstock_profile(symbol: str) -> Dict[str, Any]:
-        """Fetch stock listing details and profile from vnstock."""
+        """Fetch stock listing details and profile from PostgreSQL stocks table (with optional vnstock fallback)."""
+        clean_sym = str(symbol or "").upper().strip()
+        try:
+            from app.infrastructure.database.pg_pool import get_cursor
+            with get_cursor() as cur:
+                cur.execute(
+                    "SELECT symbol, name, exchange, industry, sector FROM stocks WHERE symbol = %s LIMIT 1",
+                    (clean_sym,),
+                )
+                row = cur.fetchone()
+                if row:
+                    return {
+                        "symbol": str(row[0] or clean_sym).upper(),
+                        "name": str(row[1] or clean_sym),
+                        "exchange": str(row[2] or "HOSE"),
+                        "industry": str(row[3] or row[4] or "Chưa xác định"),
+                        "sector": str(row[4] or row[3] or "Chưa xác định"),
+                        "lot_size": 100,
+                        "currency": "VND",
+                    }
+        except Exception as db_exc:
+            logger.debug("PostgreSQL profile lookup failed for %s: %s", clean_sym, db_exc)
+
         res: Dict[str, Any] = {}
         try:
             from vnstock import Vnstock
-            stock = Vnstock().stock(symbol=symbol, source="KBS")
+            stock = Vnstock().stock(symbol=clean_sym, source="KBS")
             profile = stock.company.overview()
             if profile is not None and not profile.empty:
                 row = profile.iloc[0].to_dict()
                 res = {
-                    "symbol": symbol.upper(),
-                    "name": row.get("symbol", symbol),
+                    "symbol": clean_sym,
+                    "name": row.get("symbol", clean_sym),
                     "exchange": row.get("exchange", "HOSE"),
                     "industry": row.get("company_type", "Chưa xác định"),
                     "sector": row.get("company_type", "Chưa xác định"),
                     "employees": row.get("number_of_employees", 100),
                     "website": str(row.get("website", "")),
                     "description": str(row.get("business_model", "")),
-                    "founded_year": 2000,
-                    "headquarters": "Hà Nội, Việt Nam",
-                    "ceo": "Nguyễn Văn A",
-                    "cfo": "Trần Thị B",
-                    "board_chairman": "Phạm Văn C",
-                    "listing_date": "2015-01-01",
-                    "isin": f"VN000000{symbol.upper()}",
                     "lot_size": 100,
                     "tick_size": 10,
-                    "free_float": 45.0,
                     "shares_outstanding": int(row.get("outstanding_shares", 100_000_000)),
-                    "shares_float": int(row.get("outstanding_shares", 100_000_000) * 0.45),
-                    "currency": "VND"
+                    "currency": "VND",
                 }
-        except Exception:
+        except (ImportError, Exception, SystemExit):
             return None
-        
-        return res
+
+        return res or None
 
     @staticmethod
     def get_macro_indicators() -> Dict[str, Any]:
@@ -971,12 +1076,11 @@ class DataEnricher:
             except Exception:
                 pass
 
-        # vnstock new API for shareholders
+        # vnstock new API for shareholders (optional fallback)
         if not res:
             try:
                 from vnstock.api.financial import Finance
                 f = Finance(symbol=symbol, source="KBS")
-                # Try to get total equity for ownership calculation
                 bs = f.balance_sheet()
                 if bs is not None and not bs.empty:
                     cols = [c for c in bs.columns if c not in ("item", "item_en", "item_id")]
@@ -984,12 +1088,11 @@ class DataEnricher:
                         latest = cols[-1]
                         eq_row = bs[bs["item"].str.contains("VỐN CHỦ SỞ HỮU|TỔNG CỘNG TÀI SẢN", na=False)]
                         if not eq_row.empty:
-                            # Use as proxy - real ownership needs shareholder list
                             pass
-            except Exception:
+            except (ImportError, Exception, SystemExit):
                 pass
 
-        # vnstock old API for shareholders
+        # vnstock old API for shareholders (optional fallback)
         if not res:
             try:
                 from vnstock import Vnstock
@@ -999,7 +1102,7 @@ class DataEnricher:
                     foreign_rows = ownership[ownership['type'].str.contains('nước ngoài|foreign', case=False, na=False)]
                     if not foreign_rows.empty:
                         res['foreign_ownership_pct'] = float(foreign_rows.iloc[0].get('ratio', 0) * 100)
-            except Exception:
+            except (ImportError, Exception, SystemExit):
                 pass
 
         # Defaults
@@ -1019,117 +1122,150 @@ class DataEnricher:
 
     @staticmethod
     def fetch_dividend_events(symbol: str) -> Dict[str, Any]:
-        """Fetch dividend and corporate event data from vnstock."""
+        """Fetch dividend and corporate event data from PostgreSQL corporate_actions (with optional vnstock fallback)."""
+        clean_sym = str(symbol or "").upper().strip()
         res: Dict[str, Any] = {
             'dividends': [],
             'events': [],
             'summary': {}
         }
-        # Try new vnstock API (Finance.ratio for dividend data)
-        try:
-            from vnstock.api.financial import Finance
-            f = Finance(symbol=symbol, source="KBS")
-            
-            # Get ratio data which includes dividend yield
-            ratio = f.ratio()
-            if ratio is not None and not ratio.empty:
-                cols = [c for c in ratio.columns if c not in ("item", "item_en", "item_id")]
-                if cols:
-                    latest_ratio_period = cols[-1]
-                    div_yield_row = ratio[ratio["item"].str.contains("cổ tức|dividend", na=False)]
-                    if not div_yield_row.empty:
-                        div_yield_val = div_yield_row.iloc[0].get(latest_ratio_period, 0)
-                        if pd.notna(div_yield_val) and div_yield_val > 0:
-                            res['summary']['dividend_yield_ratio'] = float(div_yield_val)
-        except Exception:
-            pass
 
-        # Try vnstock new API Quote for events
+        # 1. Primary path: PostgreSQL corporate_actions table (populated by Vietcap IQ O(1) batch ETL)
         try:
-            from vnstock.api.quote import Quote
-            q = Quote(symbol=symbol, source="VCI")
-            hist = q.history(period="1y")
-            if hist is not None and not hist.empty:
-                pass  # quote data available
-        except Exception:
-            pass
+            from app.infrastructure.database.pg_pool import get_cursor
+            with get_cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT action_date, action_type, value, ratio, currency, record_date, note, source
+                    FROM corporate_actions
+                    WHERE symbol = %s
+                    ORDER BY action_date DESC
+                    LIMIT 15
+                    """,
+                    (clean_sym,),
+                )
+                rows = cur.fetchall()
+            if rows:
+                for row in rows:
+                    act_date, act_type, val, ratio, currency, rec_date, note, src = row
+                    entry: Dict[str, Any] = {
+                        "exDate": str(act_date) if act_date else None,
+                        "type": str(act_type or ""),
+                        "value": float(val) if val is not None else None,
+                        "ratio": float(ratio) if ratio is not None else None,
+                        "currency": str(currency or "VND"),
+                        "recordDate": str(rec_date) if rec_date else None,
+                        "note": str(note or ""),
+                        "source": str(src or "corporate_actions"),
+                    }
+                    entry_clean = {k: v for k, v in entry.items() if v is not None}
+                    res['events'].append(entry_clean)
+                    if act_type in ("DIVIDEND", "STOCK_DIVIDEND"):
+                        res['dividends'].append(entry_clean)
 
-        # Try vnstock company events via new API
-        try:
-            from vnstock.api.financial import Finance
-            f2 = Finance(symbol=symbol, source="KBS")
-            # Get all financial data
-            all_data = f2.get_all()
-            if all_data:
-                res['financials_available'] = True
-        except Exception:
-            pass
+                latest_evt = rows[0]
+                res['summary']['event_type'] = str(latest_evt[1] or "")
+                res['summary']['ex_date_event'] = str(latest_evt[0]) if latest_evt[0] else None
+                if latest_evt[3] is not None:
+                    res['summary']['ratio'] = str(latest_evt[3])
 
-        # Also try old API as fallback for dividends
-        try:
-            from vnstock import Vnstock
-            stock = Vnstock().stock(symbol=symbol, source="KBS")
-            divs = stock.company.dividends()
-            if divs is not None and not divs.empty:
-                for _, row in divs.head(10).iterrows():
-                    entry = {}
-                    for col in divs.columns:
-                        val = row[col]
-                        if pd.notna(val):
-                            entry[col] = str(val) if not isinstance(val, (int, float)) else val
-                    if entry:
-                        res['dividends'].append(entry)
-                latest = divs.iloc[0]
-                ex_date = latest.get('exDate') if pd.notna(latest.get('exDate', None)) else None
-                if ex_date:
-                    res['summary']['ex_dividend_date'] = str(ex_date)
-                rec_date = latest.get('recordDate') if pd.notna(latest.get('recordDate', None)) else None
-                if rec_date:
-                    res['summary']['record_date'] = str(rec_date)
-                pay_date = latest.get('paymentDate') if pd.notna(latest.get('paymentDate', None)) else None
-                if pay_date:
-                    res['summary']['payment_date'] = str(pay_date)
-                for col in ['cashDividend', 'value', 'dividend', 'amount']:
-                    if col in divs.columns:
-                        val = latest.get(col)
-                        if pd.notna(val):
-                            res['summary']['dividend_amount'] = float(val)
-                            break
-                div_type = latest.get('type') if pd.notna(latest.get('type', None)) else None
-                if div_type:
-                    res['summary']['dividend_type'] = str(div_type)
-        except Exception:
-            pass
+                div_rows = [r for r in rows if r[1] in ("DIVIDEND", "STOCK_DIVIDEND")]
+                if div_rows:
+                    latest_div = div_rows[0]
+                    res['summary']['ex_dividend_date'] = str(latest_div[0]) if latest_div[0] else None
+                    res['summary']['dividend_type'] = "Cash" if latest_div[1] == "DIVIDEND" else "Stock"
+                    if latest_div[2] is not None:
+                        res['summary']['dividend_amount'] = float(latest_div[2])
+                    if latest_div[5] is not None:
+                        res['summary']['record_date'] = str(latest_div[5])
+                res['summary'].setdefault('payment_date', None)
+                res['summary'].setdefault('adjustment_factor', 1.0)
+                return res
+        except Exception as db_exc:
+            logger.debug("PostgreSQL corporate_actions lookup skipped for %s: %s", clean_sym, db_exc)
 
-        # Corporate events via old API
+        # 2. Optional fallback: vnstock (only if installed in runtime)
         try:
-            from vnstock import Vnstock
-            stock = Vnstock().stock(symbol=symbol, source="KBS")
-            events = stock.company.events()
-            if events is not None and not events.empty:
-                for _, row in events.head(10).iterrows():
-                    entry = {}
-                    for col in events.columns:
-                        val = row[col]
-                        if pd.notna(val):
-                            entry[col] = str(val) if not isinstance(val, (int, float)) else val
-                    if entry:
-                        res['events'].append(entry)
-                latest_event = events.iloc[0]
-                evt_type = latest_event.get('type') if pd.notna(latest_event.get('type', '')) else None
-                if evt_type:
-                    res['summary']['event_type'] = str(evt_type)
-                evt_date = latest_event.get('exDate') if pd.notna(latest_event.get('exDate', '')) else None
-                if evt_date:
-                    res['summary']['ex_date_event'] = str(evt_date)
-                evt_ratio = latest_event.get('ratio') if pd.notna(latest_event.get('ratio', '')) else None
-                if evt_ratio:
-                    res['summary']['ratio'] = str(evt_ratio)
-        except Exception as e:
-            logger.warning("Failed to fetch dividend events for %s: %s", symbol, e)
+            import importlib.util
+            has_vnstock = importlib.util.find_spec("vnstock") is not None
+        except Exception:
+            has_vnstock = False
+
+        if has_vnstock:
+            try:
+                from vnstock.api.financial import Finance
+                f = Finance(symbol=clean_sym, source="KBS")
+                ratio = f.ratio()
+                if ratio is not None and not ratio.empty:
+                    cols = [c for c in ratio.columns if c not in ("item", "item_en", "item_id")]
+                    if cols:
+                        latest_ratio_period = cols[-1]
+                        div_yield_row = ratio[ratio["item"].str.contains("cổ tức|dividend", na=False)]
+                        if not div_yield_row.empty:
+                            div_yield_val = div_yield_row.iloc[0].get(latest_ratio_period, 0)
+                            if pd.notna(div_yield_val) and div_yield_val > 0:
+                                res['summary']['dividend_yield_ratio'] = float(div_yield_val)
+            except (ImportError, Exception, SystemExit):
+                pass
+
+            try:
+                from vnstock import Vnstock
+                stock = Vnstock().stock(symbol=clean_sym, source="KBS")
+                divs = stock.company.dividends()
+                if divs is not None and not divs.empty:
+                    for _, row in divs.head(10).iterrows():
+                        entry = {}
+                        for col in divs.columns:
+                            val = row[col]
+                            if pd.notna(val):
+                                entry[col] = str(val) if not isinstance(val, (int, float)) else val
+                        if entry:
+                            res['dividends'].append(entry)
+                    latest = divs.iloc[0]
+                    ex_date = latest.get('exDate') if pd.notna(latest.get('exDate', None)) else None
+                    if ex_date:
+                        res['summary']['ex_dividend_date'] = str(ex_date)
+                    rec_date = latest.get('recordDate') if pd.notna(latest.get('recordDate', None)) else None
+                    if rec_date:
+                        res['summary']['record_date'] = str(rec_date)
+                    pay_date = latest.get('paymentDate') if pd.notna(latest.get('paymentDate', None)) else None
+                    if pay_date:
+                        res['summary']['payment_date'] = str(pay_date)
+                    for col in ['cashDividend', 'value', 'dividend', 'amount']:
+                        if col in divs.columns:
+                            val = latest.get(col)
+                            if pd.notna(val):
+                                res['summary']['dividend_amount'] = float(val)
+                                break
+                    div_type = latest.get('type') if pd.notna(latest.get('type', None)) else None
+                    if div_type:
+                        res['summary']['dividend_type'] = str(div_type)
+
+                events = stock.company.events()
+                if events is not None and not events.empty:
+                    for _, row in events.head(10).iterrows():
+                        entry = {}
+                        for col in events.columns:
+                            val = row[col]
+                            if pd.notna(val):
+                                entry[col] = str(val) if not isinstance(val, (int, float)) else val
+                        if entry:
+                            res['events'].append(entry)
+                    latest_event = events.iloc[0]
+                    evt_type = latest_event.get('type') if pd.notna(latest_event.get('type', '')) else None
+                    if evt_type:
+                        res['summary']['event_type'] = str(evt_type)
+                    evt_date = latest_event.get('exDate') if pd.notna(latest_event.get('exDate', '')) else None
+                    if evt_date:
+                        res['summary']['ex_date_event'] = str(evt_date)
+                    evt_ratio = latest_event.get('ratio') if pd.notna(latest_event.get('ratio', '')) else None
+                    if evt_ratio:
+                        res['summary']['ratio'] = str(evt_ratio)
+            except (ImportError, Exception, SystemExit) as e:
+                logger.debug("Optional vnstock dividend events fallback failed for %s: %s", clean_sym, e)
 
         # Fallback summary
-        h = int(hashlib.md5(symbol.encode()).hexdigest()[:8], 16)
+        h = int(hashlib.md5(clean_sym.encode()).hexdigest()[:8], 16)
         res['summary'].setdefault('dividend_amount', 500 + (h % 2000))
         res['summary'].setdefault('dividend_type', 'Cash')
         res['summary'].setdefault('ex_dividend_date', f"2025-{6 + (h % 6):02d}-{10 + (h % 15):02d}")

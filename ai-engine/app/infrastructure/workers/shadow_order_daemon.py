@@ -21,6 +21,40 @@ class ShadowOrderDaemon:
         self._running = False
         self._last_expiry_check = 0.0
         self._has_pending_orders = False
+        self._adtv20_cache: dict[str, float] = {}
+
+    def _resolve_adtv20(self, ticker: str, decision_context: object = None) -> float:
+        sym = str(ticker or "").upper().strip()
+        if sym in self._adtv20_cache:
+            return self._adtv20_cache[sym]
+        if isinstance(decision_context, dict):
+            alloc = decision_context.get("allocation")
+            if isinstance(alloc, dict) and alloc.get("adtv20_shares"):
+                val = float(alloc["adtv20_shares"])
+                if val > 0:
+                    self._adtv20_cache[sym] = val
+                    return val
+        try:
+            rows = self.repository.storage.fetch_all(
+                """
+                SELECT AVG(volume_total)
+                FROM (
+                    SELECT volume_total
+                    FROM market_data_daily
+                    WHERE ticker = %s AND volume_total > 0
+                    ORDER BY date DESC
+                    LIMIT 20
+                ) recent
+                """,
+                (sym,),
+            )
+            if rows and rows[0][0] and float(rows[0][0]) > 0:
+                adtv = float(rows[0][0])
+                self._adtv20_cache[sym] = adtv
+                return adtv
+        except Exception as exc:
+            logger.debug("ShadowOrderDaemon ADTV20 lookup fallback for %s: %s", sym, exc)
+        return 2_500_000.0
 
     async def run_single_tick(self) -> int:
         loop = asyncio.get_running_loop()
@@ -66,7 +100,7 @@ class ShadowOrderDaemon:
                         "decision_context": order.get("decision_context"),
                     },
                     "orderbook": book,
-                    "adtv20": 2_500_000,
+                    "adtv20": self._resolve_adtv20(order["ticker"], order.get("decision_context")),
                 })
                 data = result.get("result", {}).get("data", {}) if result.get("status") == "SUCCESS" else {}
                 if data.get("status") == "EXECUTED":

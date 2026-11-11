@@ -17,6 +17,13 @@ from app.domain.rules.stop_loss import StopLossEngine, StopLossOrder
 from app.domain.agents.position_monitoring import PositionMonitoringAgent
 from app.domain.repositories.portfolio_repository import PortfolioRepository
 
+TEST_ACCOUNT_ID = "09a20ece-727e-4c5d-bdb4-cf0d0da9b6f5"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_test_account(monkeypatch):
+    monkeypatch.setenv("MULTI_AGENT_ACCOUNT_ID", TEST_ACCOUNT_ID)
+
 
 def test_priority_hard_stop_overrides_time_stop():
     """Kiểm tra Hard Stop (-2% NAV) phải luôn được ưu tiên số 1, không bị Time Stop cướp quyền."""
@@ -355,7 +362,7 @@ def test_agent09_auto_dispatch_to_agent08(monkeypatch):
         }))
         repo = PortfolioRepository()
         user_id = repo._in_memory_account["account_id"]
-        repo.storage.execute("DELETE FROM positions WHERE symbol = 'HPG'")
+        repo.storage.execute("DELETE FROM positions WHERE user_id = %s AND symbol = 'HPG'", (user_id,))
         repo.storage.execute(
             "INSERT INTO positions (id, user_id, symbol, quantity, avg_price, opened_at) VALUES (%s, %s, 'HPG', %s, %s, %s)",
             (str(uuid.uuid4()), user_id, 10_000, 30_000.0, datetime.now() - timedelta(days=5)),
@@ -386,7 +393,13 @@ def test_agent09_auto_dispatch_to_agent08(monkeypatch):
             assert exec_report["status"] in ("EXECUTED", "PARTIALLY_EXECUTED")
             assert exec_report["ticker"] == "HPG"
         finally:
-            repo.storage.execute("DELETE FROM positions WHERE symbol = 'HPG'")
+            repo.storage.execute("DELETE FROM positions WHERE user_id = %s AND symbol = 'HPG'", (user_id,))
+            repo.storage.execute(
+                "DELETE FROM order_executions WHERE order_id::text IN (SELECT id FROM orders WHERE user_id = %s AND symbol = 'HPG')",
+                (user_id,),
+            )
+            repo.storage.execute("DELETE FROM orders WHERE user_id = %s AND symbol = 'HPG'", (user_id,))
+            repo.storage.execute("UPDATE users SET cash_balance = 1000000000.0 WHERE id = %s", (user_id,))
 
     asyncio.run(_test())
 
@@ -400,7 +413,7 @@ def test_agent08_allows_defensive_sell_during_failsafe(monkeypatch):
         from app.domain.agents.trade_execution import TradeExecutionAgent
         repo = PortfolioRepository()
         user_id = repo._in_memory_account["account_id"]
-        repo.storage.execute("DELETE FROM positions WHERE symbol = 'HPG'")
+        repo.storage.execute("DELETE FROM positions WHERE user_id = %s AND symbol = 'HPG'", (user_id,))
         repo.storage.execute(
             "INSERT INTO positions (id, user_id, symbol, quantity, avg_price, opened_at) VALUES (%s, %s, 'HPG', %s, %s, %s)",
             (str(uuid.uuid4()), user_id, 10_000, 30_000.0, datetime.now() - timedelta(days=5)),
@@ -441,7 +454,13 @@ def test_agent08_allows_defensive_sell_during_failsafe(monkeypatch):
             assert res_sell["data"]["status"] in ("EXECUTED", "PARTIALLY_EXECUTED")
             assert res_sell["data"]["shares"] == 1000
         finally:
-            repo.storage.execute("DELETE FROM positions WHERE symbol = 'HPG'")
+            repo.storage.execute("DELETE FROM positions WHERE user_id = %s AND symbol = 'HPG'", (user_id,))
+            repo.storage.execute(
+                "DELETE FROM order_executions WHERE order_id::text IN (SELECT id FROM orders WHERE user_id = %s AND symbol = 'HPG')",
+                (user_id,),
+            )
+            repo.storage.execute("DELETE FROM orders WHERE user_id = %s AND symbol = 'HPG'", (user_id,))
+            repo.storage.execute("UPDATE users SET cash_balance = 1000000000.0 WHERE id = %s", (user_id,))
 
     asyncio.run(_test())
 

@@ -21,8 +21,11 @@ import json
 import logging
 from datetime import datetime, date, timedelta
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
+
+TZ_VN = ZoneInfo("Asia/Ho_Chi_Minh")
 
 from app.core.base_agent import BaseAgent
 from app.domain.rules.market.session_context_manager import SessionContextManager, HOSEMarketSession
@@ -79,19 +82,41 @@ class MarketSurveillanceAgent(BaseAgent):
                     hydrated["effective_date"] = eff_date
 
                     # 2. Độ rộng thị trường, Advance/Decline, Sóng Sàn (Floor Lock) & Sóng Trần (Ceiling)
+                    # Chuẩn sàn HOSE: Giá tham chiếu là giá đóng cửa phiên liền trước (LAG(close)), fallback sang open cho mã mới niêm yết.
+                    start_ref = eff_date - timedelta(days=15)
                     cur.execute("""
+                        WITH lagged AS (
+                            SELECT
+                                date,
+                                ticker,
+                                close,
+                                open,
+                                LAG(close) OVER (PARTITION BY ticker ORDER BY date) AS prev_close,
+                                foreign_net_vol,
+                                volume_total
+                            FROM market_data_daily_calculation
+                            WHERE date <= %s AND date >= %s AND ticker != 'VNINDEX'
+                        ),
+                        today_ref AS (
+                            SELECT
+                                close,
+                                COALESCE(NULLIF(prev_close, 0), open) AS ref_price,
+                                foreign_net_vol,
+                                volume_total
+                            FROM lagged
+                            WHERE date = %s
+                        )
                         SELECT 
                             COUNT(*) as total_stocks,
-                            SUM(CASE WHEN close > open THEN 1 ELSE 0 END) as advancing,
-                            SUM(CASE WHEN close < open THEN 1 ELSE 0 END) as declining,
-                            SUM(CASE WHEN close = open THEN 1 ELSE 0 END) as unchanged,
-                            SUM(CASE WHEN close <= open * 0.931 THEN 1 ELSE 0 END) as floor_count,
-                            SUM(CASE WHEN close >= open * 1.069 THEN 1 ELSE 0 END) as ceiling_count,
+                            SUM(CASE WHEN close > ref_price THEN 1 ELSE 0 END) as advancing,
+                            SUM(CASE WHEN close < ref_price THEN 1 ELSE 0 END) as declining,
+                            SUM(CASE WHEN close = ref_price THEN 1 ELSE 0 END) as unchanged,
+                            SUM(CASE WHEN ref_price > 0 AND close <= ref_price * 0.931 THEN 1 ELSE 0 END) as floor_count,
+                            SUM(CASE WHEN ref_price > 0 AND close >= ref_price * 1.069 THEN 1 ELSE 0 END) as ceiling_count,
                             COALESCE(SUM(foreign_net_vol), 0) as foreign_net_vol,
                             COALESCE(SUM(volume_total), 0) as total_market_volume
-                        FROM market_data_daily_calculation 
-                        WHERE date = %s AND ticker != 'VNINDEX'
-                    """, (eff_date,))
+                        FROM today_ref
+                    """, (eff_date, start_ref, eff_date))
                     row_breadth = cur.fetchone()
                     if row_breadth and row_breadth[0]:
                         total_s = int(row_breadth[0])
@@ -168,18 +193,13 @@ class MarketSurveillanceAgent(BaseAgent):
                         hydrated["breadth_above_ma20_pct"] = None
                         hydrated["breadth_ma20_valid"] = False
 
-                    # 4. Lấy chuỗi lịch sử VNINDEX kèm vol_ma20, macro và foreign flow cho HMM & GARCH
+                    # 4. Lấy chuỗi lịch sử VNINDEX kèm vol_ma20, macro (ASOF <= vni.date) và foreign flow cho HMM & GARCH
                     cur.execute("""
                         WITH vni AS (
                             SELECT date, open, high, low, close, volume_total as volume,
                                    AVG(volume_total) OVER(ORDER BY date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) as vol_ma20
                             FROM market_data_daily_calculation 
                             WHERE ticker = 'VNINDEX' AND date <= %s
-                        ),
-                        macro AS (
-                            SELECT indicator_date as date, value as vninbr_interbank_rate
-                            FROM macro_indicators
-                            WHERE indicator_name = 'vninbr_interbank_rate'
                         ),
                         ff AS (
                             SELECT trade_date as date, sum(net_value) as net_foreign_value
@@ -190,7 +210,14 @@ class MarketSurveillanceAgent(BaseAgent):
                                macro.vninbr_interbank_rate,
                                COALESCE(ff.net_foreign_value, 0) as net_foreign_value
                         FROM vni
-                        LEFT JOIN macro ON vni.date = macro.date
+                        LEFT JOIN LATERAL (
+                            SELECT value AS vninbr_interbank_rate
+                            FROM macro_indicators
+                            WHERE indicator_name = 'vninbr_interbank_rate'
+                              AND indicator_date <= vni.date
+                            ORDER BY indicator_date DESC
+                            LIMIT 1
+                        ) macro ON TRUE
                         LEFT JOIN ff ON vni.date = ff.date
                         ORDER BY vni.date ASC
                     """, (eff_date,))
@@ -211,7 +238,7 @@ class MarketSurveillanceAgent(BaseAgent):
                         prev_c = float(df_vni["close"].iloc[-2]) if len(df_vni) >= 2 else last_c
                         vni_ret = (last_c - prev_c) / prev_c if prev_c > 0 else 0.0
                         hydrated["vni_return"] = vni_ret
-                        hydrated["index_returns"] = df_vni["close"].pct_change().dropna()
+                        hydrated["index_returns"] = df_vni["close"].pct_change(fill_method=None).dropna()
                     else:
                         hydrated["df_vni"] = None
                         hydrated["vni_return"] = 0.0
@@ -244,20 +271,34 @@ class MarketSurveillanceAgent(BaseAgent):
                         }
                     hydrated["order_book"] = order_book_sim
 
-                    # 6. Dữ liệu rổ VN30 cho Distortion Monitor
+                    # 6. Dữ liệu rổ VN30 cho Distortion Monitor (so với giá tham chiếu prev_close)
                     vn30_list = self.universe_manager._get_vn30_list()
                     cur.execute("""
-                        SELECT ticker, close, open, volume_total, market_cap
-                        FROM market_data_daily_calculation
-                        WHERE date = %s AND ticker = ANY(%s)
-                    """, (eff_date, vn30_list))
+                        WITH vn30_lagged AS (
+                            SELECT
+                                date,
+                                ticker,
+                                close,
+                                open,
+                                LAG(close) OVER (PARTITION BY ticker ORDER BY date) AS prev_close,
+                                volume_total,
+                                market_cap
+                            FROM market_data_daily_calculation
+                            WHERE date <= %s AND date >= %s AND ticker = ANY(%s)
+                        )
+                        SELECT ticker, close, open, volume_total, market_cap, prev_close
+                        FROM vn30_lagged
+                        WHERE date = %s
+                    """, (eff_date, start_ref, vn30_list, eff_date))
                     vn30_rows = cur.fetchall()
                     vn30_returns = {}
                     vn30_weights = {}
                     caps = {}
                     for r in vn30_rows:
                         sym, c_p, o_p, vol, mcap = r[0], float(r[1] or 0), float(r[2] or 0), float(r[3] or 0), r[4]
-                        ret = (c_p - o_p) / o_p if o_p > 0 else 0.0
+                        prev_p = float(r[5] or 0) if len(r) > 5 and r[5] is not None else 0.0
+                        ref_p = prev_p if prev_p > 0 else o_p
+                        ret = (c_p - ref_p) / ref_p if ref_p > 0 else 0.0
                         vn30_returns[sym] = ret
                         caps[sym] = float(mcap) if mcap else (c_p * (vol or 1000000))
                     tot_cap = sum(caps.values()) or 1.0
@@ -280,7 +321,13 @@ class MarketSurveillanceAgent(BaseAgent):
                     csad_raw_rows = cur.fetchall()
                     if csad_raw_rows:
                         df_raw = pd.DataFrame(csad_raw_rows, columns=["ticker", "date", "close"])
-                        pivoted = df_raw.pivot(index="date", columns="ticker", values="close").pct_change().dropna()
+                        df_raw["date"] = pd.to_datetime(df_raw["date"])
+                        df_raw["close"] = pd.to_numeric(df_raw["close"], errors="coerce")
+                        pivoted = (
+                            df_raw.pivot(index="date", columns="ticker", values="close")
+                            .pct_change(fill_method=None)
+                            .dropna(how="all")
+                        )
                         hydrated["stock_returns_df"] = pivoted
                     else:
                         hydrated["stock_returns_df"] = None
@@ -294,16 +341,19 @@ class MarketSurveillanceAgent(BaseAgent):
         """
         Xử lý toàn bộ tín hiệu thị trường đầu vào và phân phối bối cảnh.
         """
-        raw_time = event_data.get("current_time") or event_data.get("date") or datetime.now()
+        raw_time = event_data.get("current_time") or event_data.get("date") or datetime.now(TZ_VN)
         if isinstance(raw_time, str):
             try:
                 now = datetime.fromisoformat(raw_time)
             except Exception:
-                now = datetime.combine(date.fromisoformat(raw_time), datetime.min.time().replace(hour=14, minute=45))
+                now = datetime.combine(date.fromisoformat(raw_time), datetime.min.time().replace(hour=14, minute=45), tzinfo=TZ_VN)
         elif isinstance(raw_time, date) and not isinstance(raw_time, datetime):
-            now = datetime.combine(raw_time, datetime.min.time().replace(hour=14, minute=45))
+            now = datetime.combine(raw_time, datetime.min.time().replace(hour=14, minute=45), tzinfo=TZ_VN)
         else:
             now = raw_time
+
+        if isinstance(now, datetime) and now.tzinfo is not None:
+            now = now.astimezone(TZ_VN)
 
         target_d = now.date()
 
@@ -313,11 +363,12 @@ class MarketSurveillanceAgent(BaseAgent):
 
         is_intraday_active = self.session_manager.is_order_matching_active(session)
         is_realtime_requested = bool(event_data.get("is_realtime", False))
+        is_replay_run = bool(event_data.get("is_replay", False))
         data_source_mode = "POSTGRESQL_EOD"
 
         # 1b. Cầu nối Dữ liệu Thời gian Thực qua DNSE API (chạy khi trong giờ giao dịch hoặc có yêu cầu realtime)
         dnse_live_data = None
-        is_today = (target_d == date.today())
+        is_today = (target_d == datetime.now(TZ_VN).date()) and not is_replay_run
         if is_today and (is_intraday_active or is_realtime_requested):
             try:
                 live_breadth = await self.market_data_service.get_breadth()

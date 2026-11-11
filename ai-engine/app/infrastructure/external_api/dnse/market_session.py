@@ -28,6 +28,7 @@ class MarketState(Enum):
     LUNCH_BREAK = "lunch_break"
     CONTINUOUS_AFTERNOON = "continuous_afternoon"
     CLOSING_AUCTION = "closing_auction"
+    NEGOTIATED = "negotiated"
     CLOSED = "closed"
 
 
@@ -40,6 +41,7 @@ class MarketSessionManager:
         "continuous_afternoon_start": dt_time(13, 0),
         "closing_auction_start": dt_time(14, 30),
         "market_close": dt_time(14, 45),
+        "negotiated_end": dt_time(15, 0),
     }
 
     HNX_SCHEDULE = {
@@ -95,6 +97,8 @@ class MarketSessionManager:
             return MarketState.CONTINUOUS_AFTERNOON
         elif t < sched["market_close"]:
             return MarketState.CLOSING_AUCTION
+        elif t < sched.get("negotiated_end", dt_time(15, 0)):
+            return MarketState.NEGOTIATED
         else:
             return MarketState.CLOSED
 
@@ -116,6 +120,7 @@ class MarketSessionManager:
             MarketState.LUNCH_BREAK,
             MarketState.CONTINUOUS_AFTERNOON,
             MarketState.CLOSING_AUCTION,
+            MarketState.NEGOTIATED,
         )
 
     def next_state_change(self, dt: Optional[datetime] = None) -> tuple[MarketState, float]:
@@ -130,7 +135,8 @@ class MarketSessionManager:
             (MarketState.LUNCH_BREAK, sched["lunch_break_start"]),
             (MarketState.CONTINUOUS_AFTERNOON, sched["continuous_afternoon_start"]),
             (MarketState.CLOSING_AUCTION, sched["closing_auction_start"]),
-            (MarketState.CLOSED, sched["market_close"]),
+            (MarketState.NEGOTIATED, sched["market_close"]),
+            (MarketState.CLOSED, sched.get("negotiated_end", dt_time(15, 0))),
         ]
 
         for state, t in transitions:
