@@ -369,47 +369,48 @@ class PortfolioAllocationAgent(BaseAgent):
         output["data"]["is_replay"] = event_data.get("is_replay", False)
         self.repository.save_decision(output["data"])
 
-        # Bắn sự kiện lên RabbitMQ Topic Exchange (EventTopics.ORDER_INSTRUCTION & REBALANCE_PLANNED)
-        try:
-            from app.core.event_topics import EventTopics
-            out_data = output.get("data", {})
-            inc_shares = out_data.get("capital_allocation", {}).get("incremental_shares", 0)
-            act = str(out_data.get("action", "HOLD")).upper()
+        # Bắn sự kiện lên RabbitMQ Topic Exchange (chỉ phát trực tiếp khi không bị hoãn chờ cổng Pha 9 PortfolioRisk)
+        if not bool(event_data.get("defer_order_event", False)):
+            try:
+                from app.core.event_topics import EventTopics
+                out_data = output.get("data", {})
+                inc_shares = out_data.get("capital_allocation", {}).get("incremental_shares", 0)
+                act = str(out_data.get("action", "HOLD")).upper()
 
-            if act in ("BUY", "SELL", "REBALANCE") and abs(inc_shares) > 0:
-                await self.publish_event(
-                    topic=EventTopics.ORDER_INSTRUCTION,
-                    payload={
-                        "decision_id": out_data.get("decision_id"),
-                        "ticker": ticker,
-                        "action": act,
-                        "side": out_data.get("side", "HOLD"),
-                        "shares": abs(inc_shares),
-                        "target_shares": out_data.get("target_shares", 0),
-                        "price": price,
-                        "allocated_amount_vnd": out_data.get("allocated_amount_vnd", 0.0),
-                        "allocated_weight_pct": out_data.get("allocated_weight_pct", 0.0),
-                        "execution_urgency": out_data.get("portfolio_decision", {}).get("execution_urgency", "NORMAL"),
-                        "rationale": out_data.get("rationale", ""),
-                        "campaign": out_data.get("campaign"),
-                        "timestamp": out_data.get("timestamp"),
-                    },
-                )
-            elif act == "REBALANCE":
-                await self.publish_event(
-                    topic=EventTopics.REBALANCE_PLANNED,
-                    payload={
-                        "decision_id": out_data.get("decision_id"),
-                        "ticker": ticker,
-                        "portfolio_target": out_data.get("capital_allocation", {}).get("portfolio_target", 0.0),
-                        "executable_target": out_data.get("capital_allocation", {}).get("executable_target", 0.0),
-                        "incremental_shares": inc_shares,
-                        "rebalance_reasons": out_data.get("decision_log", {}).get("reason", []),
-                        "timestamp": out_data.get("timestamp"),
-                    },
-                )
-        except Exception as e_pub:
-            logger.warning(f"[PortfolioAllocationAgent] Không thể phát sự kiện phân bổ vốn lên RabbitMQ ({e_pub})")
+                if act in ("BUY", "SELL", "REBALANCE") and abs(inc_shares) > 0:
+                    await self.publish_event(
+                        topic=EventTopics.ORDER_INSTRUCTION,
+                        payload={
+                            "decision_id": out_data.get("decision_id"),
+                            "ticker": ticker,
+                            "action": act,
+                            "side": out_data.get("side", "HOLD"),
+                            "shares": abs(inc_shares),
+                            "target_shares": out_data.get("target_shares", 0),
+                            "price": price,
+                            "allocated_amount_vnd": out_data.get("allocated_amount_vnd", 0.0),
+                            "allocated_weight_pct": out_data.get("allocated_weight_pct", 0.0),
+                            "execution_urgency": out_data.get("portfolio_decision", {}).get("execution_urgency", "NORMAL"),
+                            "rationale": out_data.get("rationale", ""),
+                            "campaign": out_data.get("campaign"),
+                            "timestamp": out_data.get("timestamp"),
+                        },
+                    )
+                elif act == "REBALANCE":
+                    await self.publish_event(
+                        topic=EventTopics.REBALANCE_PLANNED,
+                        payload={
+                            "decision_id": out_data.get("decision_id"),
+                            "ticker": ticker,
+                            "portfolio_target": out_data.get("capital_allocation", {}).get("portfolio_target", 0.0),
+                            "executable_target": out_data.get("capital_allocation", {}).get("executable_target", 0.0),
+                            "incremental_shares": inc_shares,
+                            "rebalance_reasons": out_data.get("decision_log", {}).get("reason", []),
+                            "timestamp": out_data.get("timestamp"),
+                        },
+                    )
+            except Exception as e_pub:
+                logger.warning(f"[PortfolioAllocationAgent] Không thể phát sự kiện phân bổ vốn lên RabbitMQ ({e_pub})")
 
         # Đảm bảo ghi audit log vào log_portfolio_allocation ngay cả khi gọi trực tiếp qua process()
         if not event_data.get("_from_run_event"):

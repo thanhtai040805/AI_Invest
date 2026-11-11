@@ -209,7 +209,10 @@ export function approvedOrder(plan: RecordData | undefined, riskLogs: RecordData
   const price = numeric(risk.price ?? risk.target_price)
   const weight = numeric(risk.approved_weight_pct)
   const idle = ["HOLD", "SKIP"].includes(side)
-  const blocked = risk.action === "BLOCK" || riskOutput.risk_status === "BLOCK" || shares === 0
+  const planRationale = String(plan?.rationale || "")
+  const reconciledBlocked = !riskEntry && numeric(plan?.target_shares) === 0 && /^\[BLOCKED_BY_RISK\]/i.test(planRationale)
+  const reconciledReason = reconciledBlocked ? planRationale.replace(/^\[BLOCKED_BY_RISK\]\s*/i, "").split(" | ")[0] : ""
+  const blocked = risk.action === "BLOCK" || riskOutput.risk_status === "BLOCK" || shares === 0 || reconciledBlocked
   const ready = !!riskEntry && ["PASS", "REDUCE"].includes(String(risk.action || "")) && ["BUY", "SELL", "REDUCE"].includes(side) && shares !== null && !conflictingSide
   const result = !plan ? { label: "Chưa có quyết định", tone: "text-secondary bg-soft", code: "" }
     : idle ? allocationDecision(side)
@@ -221,7 +224,7 @@ export function approvedOrder(plan: RecordData | undefined, riskLogs: RecordData
     shares: idle || blocked ? 0 : ready ? shares : null,
     price: ready && !blocked && price !== null && price > 0 ? price : null,
     weight: ready && !blocked && weight !== null && weight >= 0 && weight <= 100 ? weight : null,
-    rationale: investmentText(ready || blocked ? risk.rationale : idle ? plan?.rationale : ""),
+    rationale: investmentText(ready || blocked ? (risk.rationale || reconciledReason) : idle ? plan?.rationale : ""),
     approved: idle || blocked || ready,
   }
 }

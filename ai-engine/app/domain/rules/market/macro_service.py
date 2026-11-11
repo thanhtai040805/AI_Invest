@@ -144,11 +144,11 @@ def get_macro_snapshot(
     return result
 
 
-def refresh_macro() -> Dict[str, Any]:
+def refresh_macro(target_date: Optional[date] = None) -> Dict[str, Any]:
     """Force-refresh macro data from sources and persist to DB."""
     global _read_cache, _read_cache_ts
     fresh = _fetch_all_macro()
-    _persist_macro(fresh)
+    _persist_macro(fresh, target_date=target_date)
     _read_cache = fresh
     _read_cache_ts = datetime.now(TZ_UTC)
     return dict(fresh)
@@ -249,6 +249,8 @@ def _fetch_all_macro() -> Dict[str, Any]:
 
     # ── 4b. Interbank rates ─────────────────────────────────────────
     _fetch_interbank_rates(res)
+    if "vninbr_interbank_rate" not in res and "interbank_on" in res:
+        res["vninbr_interbank_rate"] = float(res["interbank_on"])
 
     # ── 4c. OMO & Bills ─────────────────────────────────────────────
     _fetch_omo_bills(res)
@@ -281,19 +283,43 @@ def _fetch_yfinance(res: Dict[str, Any]):
 
 
 def _fetch_tradingview(res: Dict[str, Any]):
-    """Fetch Vietnam Interest Rate from TradingView."""
+    """Fetch Vietnam Interest Rate (VNINTR) & Interbank Rate (VNINBR) via TradingView Scanner REST API (with optional tvDatafeed fallback)."""
     try:
-        from tvDatafeed import TvDatafeed, Interval
-        tv = TvDatafeed()
-        df_intr = tv.get_hist(symbol='VNINTR', exchange='ECONOMICS', interval=Interval.in_daily, n_bars=5)
-        if df_intr is not None and not df_intr.empty:
-            res["vnintr_interest_rate"] = float(df_intr['close'].iloc[-1])
-            
-        df_inbr = tv.get_hist(symbol='VNINBR', exchange='ECONOMICS', interval=Interval.in_daily, n_bars=5)
-        if df_inbr is not None and not df_inbr.empty:
-            res["vninbr_interbank_rate"] = float(df_inbr['close'].iloc[-1])
+        resp = httpx.post(
+            "https://scanner.tradingview.com/global/scan",
+            json={
+                "symbols": {"tickers": ["ECONOMICS:VNINBR", "ECONOMICS:VNINTR"]},
+                "columns": ["close"],
+            },
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            for item in resp.json().get("data", []):
+                symbol = item.get("s")
+                vals = item.get("d") or []
+                if vals and vals[0] is not None:
+                    if symbol == "ECONOMICS:VNINBR":
+                        res["vninbr_interbank_rate"] = float(vals[0])
+                    elif symbol == "ECONOMICS:VNINTR":
+                        res["vnintr_interest_rate"] = float(vals[0])
     except Exception as e:
-        logger.warning(f"Failed to fetch TradingView: {e}")
+        logger.warning(f"Failed to fetch TradingView Scanner REST: {e}")
+
+    if "vninbr_interbank_rate" not in res or "vnintr_interest_rate" not in res:
+        try:
+            from tvDatafeed import TvDatafeed, Interval
+            tv = TvDatafeed()
+            if "vnintr_interest_rate" not in res:
+                df_intr = tv.get_hist(symbol='VNINTR', exchange='ECONOMICS', interval=Interval.in_daily, n_bars=5)
+                if df_intr is not None and not df_intr.empty:
+                    res["vnintr_interest_rate"] = float(df_intr['close'].iloc[-1])
+            if "vninbr_interbank_rate" not in res:
+                df_inbr = tv.get_hist(symbol='VNINBR', exchange='ECONOMICS', interval=Interval.in_daily, n_bars=5)
+                if df_inbr is not None and not df_inbr.empty:
+                    res["vninbr_interbank_rate"] = float(df_inbr['close'].iloc[-1])
+        except Exception as e:
+            logger.debug(f"tvDatafeed fallback unavailable: {e}")
 
     try:
         gold = yf.Ticker("GC=F")
@@ -543,8 +569,8 @@ _SOURCES: Dict[str, str] = {
     "vix": "yfinance",
     "usd_vnd_exchange": "yfinance",
     "gold_price_vnd": "yfinance",
-    "vnintr_interest_rate": "tvDatafeed",
-    "vninbr_interbank_rate": "tvDatafeed",
+    "vnintr_interest_rate": "TradingView Scanner",
+    "vninbr_interbank_rate": "TradingView Scanner",
     "cpi": "vi.money (GSO)",
     "cpi_headline_index": "vi.money (GSO)",
     "cpi_mom_pct": "vi.money (GSO)",
@@ -565,12 +591,12 @@ _READ_ONLY_KEYS = {"cpi_year", "cpi_month"}
 
 # ── Internal: Persist to DB ──────────────────────────────────────────────
 
-def _persist_macro(data: Dict[str, Any]):
+def _persist_macro(data: Dict[str, Any], target_date: Optional[date] = None):
     """Upsert all scalar indicators into macro_indicators table.
 
     Non-scalar keys (ending in _fetched_at, _unit, _source) are skipped.
     """
-    today = date.today()
+    today = target_date or datetime.now(TZ_VN).date()
     rows: List[Tuple[date, str, float, str, str]] = []
     for k, v in data.items():
         if k.endswith("_fetched_at") or k.endswith("_unit") or k.endswith("_source"):

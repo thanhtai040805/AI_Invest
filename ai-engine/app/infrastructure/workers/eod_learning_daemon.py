@@ -54,7 +54,7 @@ class EODLearningDaemon:
 
     async def trigger_manual(self, target_date: Optional[str] = None, force: bool = False) -> Dict[str, Any]:
         """Kích hoạt thủ công EOD pipeline tức thì (qua REST API hoặc CLI)."""
-        run_d = target_date or date.today().isoformat()
+        run_d = target_date or datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date().isoformat()
         logger.info(f"[EODDaemon] Nhận lệnh kích hoạt thủ công cho ngày: {run_d} (force={force})")
         self._last_status = "RUNNING_MANUAL"
         res = await self.runner.run(target_date=run_d, force=force)

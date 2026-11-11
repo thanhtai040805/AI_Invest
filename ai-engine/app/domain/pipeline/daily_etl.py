@@ -124,7 +124,7 @@ class DailyETLPipeline:
                             "steps": results,
                             "reason": reason,
                         }
-                except Exception as e:
+                except (Exception, SystemExit) as e:
                     logger.error("ETL step %s failed: %s", name, e)
                     results[name] = {"status": "failed", "error": str(e)}
                     if name == "ohlcv_backfill":
@@ -292,13 +292,13 @@ class DailyETLPipeline:
             return {"status": "failed", "error": str(e)}
 
     async def step_corporate_actions(self) -> Dict[str, Any]:
-        """Refresh corporate actions from vnstock VCI events."""
-        logger.info("ETL: corporate_actions — fetching vnstock VCI events...")
+        """Refresh corporate actions from Vietcap IQ O(1) batch events (with safe fallback)."""
+        logger.info("ETL: corporate_actions — fetching VCI corporate events...")
         try:
             from app.infrastructure.data_pipelines.corporate_actions import refresh_incremental
             partition_index = self.trade_date.weekday() if self.trade_date else None
             return await asyncio.to_thread(refresh_incremental, partition_index=partition_index)
-        except Exception as e:
+        except (Exception, SystemExit) as e:
             logger.error("ETL: corporate_actions failed: %s", e)
             return {"status": "failed", "error": str(e)}
 
@@ -389,7 +389,7 @@ class DailyETLPipeline:
         try:
             from app.domain.rules.market.macro_service import refresh_macro, clear_cache
             clear_cache()
-            data = refresh_macro()
+            data = await asyncio.to_thread(refresh_macro, self.trade_date)
             logger.info("ETL: macro_indicators persisted %d indicators", len(data))
             return {
                 "status": "success",

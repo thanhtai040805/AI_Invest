@@ -234,7 +234,7 @@ class GraphContagionEngine:
         
         for ticker, df in market_data_dict.items():
             if 'close' in df.columns:
-                returns_dict[ticker] = df['close'].pct_change()
+                returns_dict[ticker] = df['close'].pct_change(fill_method=None)
                 if 'volume' in df.columns:
                     volumes_dict[ticker] = df['volume']
                     # Relative volume ratio (vs 20d MA)

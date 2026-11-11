@@ -1049,9 +1049,11 @@ class PortfolioRepository:
             """
 
             is_replay = bool(decision.get("is_replay", False))
+            tz_vn = ZoneInfo("Asia/Ho_Chi_Minh")
+            now_vn = datetime.now(tz_vn)
             target_date_raw = decision.get("target_date") or decision.get("date") or decision.get("analysis_date")
             if isinstance(target_date_raw, datetime):
-                target_date = target_date_raw.date()
+                target_date = target_date_raw.astimezone(tz_vn).date() if target_date_raw.tzinfo else target_date_raw.date()
             elif isinstance(target_date_raw, str):
                 try:
                     from datetime import date as _date
@@ -1059,18 +1061,18 @@ class PortfolioRepository:
                 except Exception:
                     if is_replay:
                         raise ValueError("Replay decision requires a valid target_date")
-                    target_date = datetime.now().date()
+                    target_date = now_vn.date()
             elif isinstance(target_date_raw, date):
                 target_date = target_date_raw
             else:
                 if is_replay:
                     raise ValueError("Replay decision requires a target_date")
-                target_date = datetime.now().date()
+                target_date = now_vn.date()
 
             if is_replay:
-                now = datetime.combine(target_date, day_time(9, 45), tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+                now = datetime.combine(target_date, day_time(9, 45), tzinfo=tz_vn)
             else:
-                now = datetime.now()
+                now = now_vn
 
             did_raw = decision.get("decision_id")
             try:
@@ -1096,6 +1098,81 @@ class PortfolioRepository:
             return True
         except Exception as e:
             logger.debug(f"Lỗi khi lưu portfolio_decisions: {e}")
+            return False
+
+    def reconcile_decision_after_risk(
+        self,
+        decision_id: Optional[str],
+        ticker: str,
+        risk_status: str,
+        approved_shares: int,
+        approved_weight_pct: Optional[float] = None,
+        risk_rationale: str = "",
+    ) -> bool:
+        """Đồng bộ kết quả thẩm định Pha 9 (PortfolioRiskAgent) ngược lại bảng portfolio_decisions & portfolio_campaigns."""
+        ticker_clean = str(ticker or "").upper().strip()[:16]
+        status_upper = str(risk_status or "BLOCK").upper().strip()
+        is_blocked = approved_shares <= 0 or status_upper not in ("PASS", "REDUCE")
+        clean_reason = str(risk_rationale or "").strip()
+
+        if is_blocked and ticker_clean:
+            mem_camp = self._in_memory_campaigns.get(ticker_clean)
+            if mem_camp and mem_camp.get("status") == "IN_PROGRESS" and int(mem_camp.get("accumulated_shares", 0)) == 0:
+                mem_camp["status"] = "CANCELLED_BY_RISK"
+            try:
+                self.storage.execute(
+                    """
+                    UPDATE portfolio_campaigns
+                    SET status = 'CANCELLED_BY_RISK', updated_at = %s
+                    WHERE ticker = %s AND status = 'IN_PROGRESS' AND COALESCE(accumulated_shares, 0) = 0
+                    """,
+                    (datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).replace(tzinfo=None), ticker_clean),
+                )
+            except Exception as e_camp:
+                logger.debug(f"Không thể cập nhật hủy campaign khi Risk chặn ({e_camp})")
+
+        if not decision_id:
+            return False
+        try:
+            uuid.UUID(str(decision_id))
+            did = str(decision_id)
+        except Exception:
+            return False
+
+        try:
+            if is_blocked:
+                prefix = f"[BLOCKED_BY_RISK] {clean_reason} | " if clean_reason else "[BLOCKED_BY_RISK] "
+                self.storage.execute(
+                    """
+                    UPDATE portfolio_decisions
+                    SET target_shares = 0,
+                        allocated_weight_pct = 0.0,
+                        rationale = CASE
+                            WHEN rationale LIKE '[BLOCKED_BY_RISK]%%' THEN rationale
+                            ELSE %s || COALESCE(rationale, '')
+                        END
+                    WHERE decision_id = %s
+                    """,
+                    (prefix, did),
+                )
+            elif status_upper == "REDUCE":
+                prefix = f"[REDUCED_BY_RISK -> {int(approved_shares)} CP] {clean_reason} | " if clean_reason else f"[REDUCED_BY_RISK -> {int(approved_shares)} CP] "
+                self.storage.execute(
+                    """
+                    UPDATE portfolio_decisions
+                    SET target_shares = %s,
+                        allocated_weight_pct = COALESCE(%s, allocated_weight_pct),
+                        rationale = CASE
+                            WHEN rationale LIKE '[REDUCED_BY_RISK%%' THEN rationale
+                            ELSE %s || COALESCE(rationale, '')
+                        END
+                    WHERE decision_id = %s
+                    """,
+                    (int(approved_shares), float(approved_weight_pct) if approved_weight_pct is not None else None, prefix, did),
+                )
+            return True
+        except Exception as e:
+            logger.debug(f"Không thể đồng bộ kết quả Risk vào portfolio_decisions ({e})")
             return False
 
     def get_latest_decision(self, ticker: str) -> Optional[Dict[str, Any]]:

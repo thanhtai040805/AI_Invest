@@ -21,6 +21,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, time
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
+
+TZ_VN = ZoneInfo("Asia/Ho_Chi_Minh")
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +193,7 @@ class ExecutionAdaptationEngine:
             horizon = "1_SESSION"
 
         # 4. Kiểm tra phiên giao dịch và bẫy ATC
-        now_dt = current_time or datetime.now()
+        now_dt = current_time or datetime.now(TZ_VN)
         market_phase = self.determine_market_phase(now_dt)
         avoid_atc_dump = (atc_conc > 0.30 and exec_mode == ExecutionMode.STRESS)
 
@@ -306,6 +309,8 @@ class ExecutionAdaptationEngine:
         - Pha 2 (14:30 - 14:42:00): Dynamic IEP Pegging bám sát giá khớp dự kiến.
         - Pha 3 (14:42:00 - 14:44:15): Anomaly Kill-Switch hủy lệnh khẩn cấp nếu có thao túng.
         """
+        if isinstance(current_time, datetime) and current_time.tzinfo is not None:
+            current_time = current_time.astimezone(TZ_VN)
         t = current_time.time()
 
         # Pha 1: Pre-ATC Skim (14:15 - 14:28:30)
@@ -390,6 +395,8 @@ class ExecutionAdaptationEngine:
 
     def determine_market_phase(self, current_time: datetime) -> str:
         """Xác định phiên giao dịch sàn HOSE."""
+        if isinstance(current_time, datetime) and current_time.tzinfo is not None:
+            current_time = current_time.astimezone(TZ_VN)
         t = current_time.time()
         if t < time(9, 0):
             return "PRE_MARKET"
