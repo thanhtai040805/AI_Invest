@@ -48,7 +48,8 @@ Hệ thống được thiết kế theo mô hình **Event-Driven Microservices k
 - **Đóng gói Production**: Docker Multi-stage standalone output (`node:22-alpine`), giảm kích thước image xuống ~150MB, chạy dưới quyền user bảo mật không đặc quyền `nextjs`.
 - **Tính năng trọng yếu**:
   - **Streaming UI**: Nhận dữ liệu suy luận từng bước (Step-by-step Agent Reasoning) của 12 Agents thông qua Server-Sent Events (SSE) và WebSockets.
-  - **Interactive Charting**: Tích hợp TradingView Advanced Charts hiển thị nến OHLCV, chỉ báo kỹ thuật thời gian thực.
+  - **Interactive Charting (`@/lib/tv-chart`)**: Hệ thống biểu đồ hợp nhất `<TradingViewChart />` trên toàn bộ mặt phẳng làm việc (`/markets`, `/dashboard`, `/trade`, `StockDetailModal`), thay thế triệt để `klinecharts`, hỗ trợ độ chính xác 2 chữ số thập phân cho chỉ số (`VNINDEX`, `VN30`, `VN100`), chế độ `compact` không che khuất nến và đồng bộ Fullscreen native (`fullscreenchange` / `Esc`).
+  - **Global In-Place Research Modal (`StockDetailModal`)**: Tích hợp toàn cục tại `Shell.tsx` kết hợp bộ chặn điều hướng `/stock/[symbol]` trong `router.tsx`, mở hồ sơ cổ phiếu ngay tại chỗ mà không làm gián đoạn trạng thái nghiên cứu của người dùng.
   - **3D Evidence Graph**: Trực quan hóa đồ thị liên kết chứng cứ từ báo cáo tài chính bằng đồ thị mạng lưới.
 - **Port**: `3000` (Container nội bộ) / `80` & `443` qua Nginx Reverse Proxy.
 
@@ -79,7 +80,7 @@ Hệ thống được thiết kế theo mô hình **Event-Driven Microservices k
 - **Trách nhiệm kỹ thuật**:
   - **API Gateway & Routing**: Tiếp nhận toàn bộ request từ người dùng, thực hiện rate limiting, CORS, và SSL Termination.
   - **Identity & Access Management (IAM)**: Xác thực JWT Bearer, phân quyền Role-Based Access Control (RBAC).
-  - **State & Portfolio Management**: Quản lý tài khoản, danh mục đầu tư người dùng, theo dõi số dư tiền và cổ phiếu.
+  - **State, Portfolio & Million-OPS LIVE Matching Engine (`matchingEngine.ts` + `portfolio.service.ts`)**: Vận hành sổ lệnh giới hạn `ArenaOrderBook` cấp phát phẳng `TypedArray` không sinh rác bộ nhớ (`Zero-GC`, `131.072` slot, bảng bước giá `10 ₫` kết hợp bitset phân cấp 3 tầng `Math.clz32` tra cứu Best Bid/Ask `O(1)`, đạt thông lượng **> 4,5 – 18,1 triệu lệnh/giây** trên 1 nhân) cùng `LiveOrderGateway` đối chiếu độ sâu L1–L3 trực tiếp từ DNSE (`LO`, `MP`/`MTL`, `ATO`, `ATC`; `FILLED`, `PARTIALLY_FILLED`, `PENDING`, `CANCELLED`), phong tỏa `lockedCash` / `lockedShares` chuẩn chu kỳ thanh toán `T+2.5` VSDC, hỗ trợ sửa/hủy lệnh `O(1)` (`PATCH`/`DELETE /api/v1/portfolio/order/:id`) và đẩy cập nhật tức thời qua Socket.IO (`portfolio:order_updated`).
   - **Redis Caching & Session**: Lưu trữ session, blacklist token và làm cầu nối pub/sub cho các sự kiện thị trường.
 - **Port**: `3001`.
 

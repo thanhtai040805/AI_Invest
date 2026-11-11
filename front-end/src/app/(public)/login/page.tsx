@@ -408,7 +408,7 @@ export default function Login() {
             e.preventDefault()
             void submitLogin()
           }}
-          className="space-y-4"
+          className="space-y-3"
         >
           {serverError && (
             <AuthAlert
@@ -505,12 +505,12 @@ export default function Login() {
             </label>
           </div>
 
-          <div className="pt-1.5">
+          <div className="pt-1">
             <Button
               type="submit"
               variant="primary"
               disabled={isDisabled}
-              className="group h-11 w-full rounded-[10px] text-[14.5px] font-medium shadow-[0_2px_6px_rgba(24,32,29,0.14)] transition-all active:scale-[0.995] disabled:cursor-not-allowed disabled:opacity-60"
+              className="group h-10 w-full rounded-[9px] text-[14px] font-medium shadow-[0_2px_6px_rgba(24,32,29,0.14)] transition-all active:scale-[0.995] disabled:cursor-not-allowed disabled:opacity-60"
             >
               {submitting ? (
                 <span className="inline-flex items-center gap-2">
@@ -587,12 +587,12 @@ export default function Login() {
             }}
           />
 
-          <div className="pt-1.5">
+          <div className="pt-1">
             <Button
               type="submit"
               variant="primary"
               disabled={isDisabled}
-              className="group h-11 w-full rounded-[10px] text-[14.5px] font-medium shadow-[0_2px_6px_rgba(24,32,29,0.14)] transition-all active:scale-[0.995] disabled:cursor-not-allowed disabled:opacity-60"
+              className="group h-10 w-full rounded-[9px] text-[14px] font-medium shadow-[0_2px_6px_rgba(24,32,29,0.14)] transition-all active:scale-[0.995] disabled:cursor-not-allowed disabled:opacity-60"
             >
               {submitting ? (
                 <span className="inline-flex items-center gap-2">
@@ -654,12 +654,12 @@ export default function Login() {
             onResend={() => void submitForgotRequest(true)}
           />
 
-          <div className="pt-1.5">
+          <div className="pt-1">
             <Button
               type="submit"
               variant="primary"
               disabled={isDisabled}
-              className="group h-11 w-full rounded-[10px] text-[14.5px] font-medium shadow-[0_2px_6px_rgba(24,32,29,0.14)] transition-all active:scale-[0.995] disabled:cursor-not-allowed disabled:opacity-60"
+              className="group h-10 w-full rounded-[9px] text-[14px] font-medium shadow-[0_2px_6px_rgba(24,32,29,0.14)] transition-all active:scale-[0.995] disabled:cursor-not-allowed disabled:opacity-60"
             >
               {submitting ? (
                 <span className="inline-flex items-center gap-2">
@@ -746,12 +746,12 @@ export default function Login() {
             }}
           />
 
-          <div className="pt-1.5">
+          <div className="pt-1">
             <Button
               type="submit"
               variant="primary"
               disabled={isDisabled}
-              className="group h-11 w-full rounded-[10px] text-[14.5px] font-medium shadow-[0_2px_6px_rgba(24,32,29,0.14)] transition-all active:scale-[0.995] disabled:cursor-not-allowed disabled:opacity-60"
+              className="group h-10 w-full rounded-[9px] text-[14px] font-medium shadow-[0_2px_6px_rgba(24,32,29,0.14)] transition-all active:scale-[0.995] disabled:cursor-not-allowed disabled:opacity-60"
             >
               {submitting ? (
                 <span className="inline-flex items-center gap-2">
