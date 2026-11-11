@@ -38,6 +38,8 @@ interface AgentResponse {
   resolutions?: RecordData[]
   decisions?: RecordData[]
   positionHealth?: RecordData[]
+  msHistory?: RecordData[]
+  rlHistory?: RecordData[]
   logs?: { agent: string; entries?: RecordData[] }[]
   account?: RecordData
   mode?: string
@@ -359,15 +361,20 @@ function AccountSummaryStrip({
   const [hoveredCurveIdx, setHoveredCurveIdx] = useState<number | null>(null)
 
   const rawSummary = (summary || portfolio?.summary || {}) as Record<string, unknown>
-  const openingCash = numeric(summary?.openingCash) ?? 1_000_000_000
-  const nav = numeric(summary?.nav) ?? 1_009_825_317
-  const cash = numeric(summary?.cash) ?? 1_009_825_317
-  const realized = numeric(summary?.realizedPnl) ?? 9_825_317
-  const unrealized = numeric(summary?.unrealizedPnl) ?? 0
-  const totalPnl = numeric(summary?.totalPnl) ?? realized + unrealized
-  const feesPaid = numeric(rawSummary.fees) ?? 2_135_683
+  const hasLiveSummary = numeric(summary?.nav) !== null
+  const openingCash = hasLiveSummary
+    ? numeric(summary?.openingCash) ?? numeric(summary?.nav) ?? 1_000_000_000
+    : 1_000_000_000
+  const nav = hasLiveSummary ? numeric(summary?.nav)! : 1_009_825_317
+  const cash = hasLiveSummary ? numeric(summary?.cash) ?? nav : 1_009_825_317
+  const realized = hasLiveSummary ? numeric(summary?.realizedPnl) ?? 0 : 9_825_317
+  const unrealized = hasLiveSummary ? numeric(summary?.unrealizedPnl) ?? 0 : 0
+  const totalPnl = hasLiveSummary ? numeric(summary?.totalPnl) ?? nav - openingCash : realized + unrealized
+  const feesPaid = hasLiveSummary ? numeric(rawSummary.fees) ?? 0 : 2_135_683
   const grossTradingProfit = realized + feesPaid
-  const retPct = numeric(summary?.totalReturnPct) ?? (openingCash > 0 ? (totalPnl / openingCash) * 100 : 0.98)
+  const retPct = hasLiveSummary
+    ? numeric(summary?.totalReturnPct) ?? (openingCash > 0 ? (totalPnl / openingCash) * 100 : 0)
+    : 0.98
   const cashRatio = nav > 0 ? Math.min(100, Math.max(0, (cash / nav) * 100)) : 100
   const openPositionsCount = portfolio?.positions?.length ?? 0
 
@@ -548,7 +555,7 @@ function AccountSummaryStrip({
                   textAnchor="end"
                   className="fill-muted font-mono text-[8.5px]"
                 >
-                  1,012tỷ
+                  {(maxCurveVal / 1_000_000_000).toFixed(3).replace(".", ",")}tỷ
                 </text>
                 <text
                   x={chartLeft + 6}
@@ -3005,13 +3012,12 @@ function WarRoom({ requestedSymbol }: { requestedSymbol: string }) {
 
   const resource = useResource(async () => {
     const today = vietnamDate()
-    const fullPromise = (workspaceApi.agent(undefined) as Promise<AgentResponse>).catch(() => null)
     const resolveReport = async (): Promise<AgentResponse> => {
       if (selectedDate !== null) {
         return (await workspaceApi.agent(selectedDate || undefined)) as AgentResponse
       }
       if (requestedSymbol) {
-        return ((await fullPromise) ?? (await workspaceApi.agent(undefined))) as AgentResponse
+        return (await workspaceApi.agent(undefined)) as AgentResponse
       }
       const todayRes = (await workspaceApi.agent(today)) as AgentResponse
       const hasTodayData =
@@ -3024,13 +3030,13 @@ function WarRoom({ requestedSymbol }: { requestedSymbol: string }) {
       return todayRes
     }
 
-    const [report, full] = await Promise.all([resolveReport(), fullPromise])
-    const msGroup = (full?.logs || report?.logs || []).find(g => g.agent === "market_surveillance")
-    const rlGroup = (full?.logs || report?.logs || []).find(g => g.agent === "reinforcement_learning")
+    const report = await resolveReport()
+    const msGroup = (report?.logs || []).find(g => g.agent === "market_surveillance")
+    const rlGroup = (report?.logs || []).find(g => g.agent === "reinforcement_learning")
     return {
       report,
-      msEntries: msGroup?.entries || [],
-      rlEntries: rlGroup?.entries || [],
+      msEntries: report?.msHistory?.length ? report.msHistory : msGroup?.entries || [],
+      rlEntries: report?.rlHistory?.length ? report.rlHistory : rlGroup?.entries || [],
     }
   }, [selectedDate, requestedSymbol])
 

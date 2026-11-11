@@ -49,7 +49,7 @@ export async function getSnapshot(userId: string) {
       tx.order.findMany({
         where: { userId },
         orderBy: { createdAt: 'desc' },
-        take: 100,
+        take: 2000,
         include: { stock: { select: { name: true, sector: true, exchange: true } } },
       }),
     ]);
@@ -216,7 +216,7 @@ export async function placeOrder(
 export async function getPerformance(userId: string) { return (await getSnapshot(userId)).performance; }
 
 export async function getOrders(userId: string) {
-  return prisma.order.findMany({ where: { userId }, orderBy: { createdAt: 'desc' }, take: 100 });
+  return prisma.order.findMany({ where: { userId }, orderBy: { createdAt: 'desc' }, take: 2000 });
 }
 
 export async function getRiskMetrics(userId: string) { return (await getSnapshot(userId)).risks; }

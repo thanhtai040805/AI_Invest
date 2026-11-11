@@ -30,21 +30,26 @@ def test_all_12_agents_registered():
     assert len(agent_names) >= 12
 
 
-def test_end_to_end_12_agent_pipeline():
+TEST_ACCOUNT_ID = "09a20ece-727e-4c5d-bdb4-cf0d0da9b6f5"
+
+
+def test_end_to_end_12_agent_pipeline(monkeypatch):
     """Chạy mô phỏng tuần tự luồng dữ liệu khép kín (Closed-Loop) qua toàn bộ 12 Agents."""
+    monkeypatch.setenv("MULTI_AGENT_ACCOUNT_ID", TEST_ACCOUNT_ID)
     async def _test():
-        # Clean up any leftover test state in DB to ensure deterministic test run
+        # Clean up any leftover test state for the isolated test account only
         try:
             from app.infrastructure.database.pg_pool import get_conn
             with get_conn() as conn:
                 with conn.cursor() as cur:
-                    cur.execute("DELETE FROM positions WHERE symbol IN ('FPT', 'HPG', 'VNM');")
-                    cur.execute("DELETE FROM paper_trades WHERE ticker IN ('FPT', 'HPG', 'VNM');")
-                    cur.execute("DELETE FROM order_executions WHERE ticker IN ('FPT', 'HPG', 'VNM');")
-                    cur.execute("DELETE FROM investment_theses WHERE ticker IN ('FPT', 'HPG', 'VNM');")
-                    cur.execute("DELETE FROM counter_thesis_verdicts WHERE ticker IN ('FPT', 'HPG', 'VNM');")
-                    cur.execute("DELETE FROM portfolio_campaigns WHERE ticker IN ('FPT', 'HPG', 'VNM');")
-                    cur.execute("UPDATE users SET cash_balance = 1000000000.00 WHERE id = '940b0c70-2010-42f3-b947-797e6419b794';")
+                    cur.execute("DELETE FROM positions WHERE user_id = %s AND symbol IN ('FPT', 'HPG', 'VNM');", (TEST_ACCOUNT_ID,))
+                    cur.execute("DELETE FROM paper_trades WHERE account_id = %s AND ticker IN ('FPT', 'HPG', 'VNM');", (TEST_ACCOUNT_ID,))
+                    cur.execute(
+                        "DELETE FROM order_executions WHERE order_id::text IN (SELECT id FROM orders WHERE user_id = %s AND symbol IN ('FPT', 'HPG', 'VNM'));",
+                        (TEST_ACCOUNT_ID,),
+                    )
+                    cur.execute("DELETE FROM orders WHERE user_id = %s AND symbol IN ('FPT', 'HPG', 'VNM');", (TEST_ACCOUNT_ID,))
+                    cur.execute("UPDATE users SET cash_balance = 1000000000.00 WHERE id = %s;", (TEST_ACCOUNT_ID,))
                 conn.commit()
         except Exception:
             pass
