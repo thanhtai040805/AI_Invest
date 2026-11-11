@@ -3,6 +3,7 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Page } from "@/components/Shell"
 import { StockDetailModal } from "@/components/StockDetailView"
+import { TradingViewChart } from "@/lib/tv-chart"
 import {
   Button,
   CustomSelect,
@@ -627,7 +628,11 @@ export default function Markets() {
   const [sortDir, setSortDir] = useState<SortDir>("desc")
   const [page, setPage] = useState<number>(1)
   const [pageSize, setPageSize] = useState<number>(30)
-  const [activeSymbol, setActiveSymbol] = useState<string | null>(null)
+  const [activeSymbol, setActiveSymbol] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null
+    const sym = new URLSearchParams(window.location.search).get("symbol")?.trim().toUpperCase()
+    return sym && /^[A-Z0-9]{2,10}$/.test(sym) ? sym : null
+  })
 
   // Watchlist state (derived from workspaceApi + localStorage fallback)
   const [localFallbackStars] = useState<string[]>(() => {
@@ -1403,18 +1408,27 @@ export default function Markets() {
                 </div>
               </div>
 
-              <div className="mt-3 space-y-2.5">
+              <div className="mt-2.5 space-y-2">
+                {/* Biểu đồ VN-Index trực tiếp bằng tv-chart (hỗ trợ 15m/1H/1D/1W/1M, Chỉ báo & Toàn màn hình Pro) */}
+                <TradingViewChart
+                  symbol="VNINDEX"
+                  precision={2}
+                  compact
+                  height={208}
+                  className="!rounded-[8px]"
+                />
+
                 <div>
-                  <div className="flex items-center justify-between text-[11px] font-mono tnum mb-1.5">
+                  <div className="flex items-center justify-between text-[11px] font-mono tnum mb-1">
                     <span className="text-gain font-semibold">
                       ▲ {marketStats.gainCount} tăng ({Math.round(gainWidthPct)}%)
                     </span>
-                    <span className="text-ref font-medium">■ {marketStats.refCount} TC</span>
+                    <span className="text-ref font-medium">■ {marketStats.refCount} TC (TC: {vnIndexRefFormatted})</span>
                     <span className="text-loss font-semibold">
                       ▼ {marketStats.lossCount} giảm ({Math.round(lossWidthPct)}%)
                     </span>
                   </div>
-                  <div className="h-2 w-full rounded-full bg-soft overflow-hidden flex gap-[1px]">
+                  <div className="h-1.5 w-full rounded-full bg-soft overflow-hidden flex gap-[1px]">
                     <div
                       className="h-full bg-gain transition-all duration-300"
                       style={{ width: `${gainWidthPct.toFixed(1)}%` }}
@@ -1428,83 +1442,6 @@ export default function Markets() {
                       style={{ width: `${lossWidthPct.toFixed(1)}%` }}
                     />
                   </div>
-                </div>
-
-                <div className="grid grid-cols-3 gap-1.5">
-                  <div className="rounded-[6px] bg-soft/45 border border-line/70 px-2.5 py-1.5">
-                    <div className="text-[10px] uppercase tracking-wider text-muted">
-                      Tham chiếu
-                    </div>
-                    <div className="font-mono text-[12px] font-semibold text-ink tnum mt-0.5">
-                      {vnIndexRefFormatted}
-                    </div>
-                  </div>
-
-                  {currentVn30Val && currentVn30Val !== "—" ? (
-                    <div className="rounded-[6px] bg-soft/45 border border-line/70 px-2.5 py-1.5">
-                      <div className="flex items-center justify-between gap-1 text-[10px] uppercase tracking-wider text-muted">
-                        <span>VN30</span>
-                        {currentVn30Pct != null && (
-                          <span
-                            className={`font-mono tnum ${
-                              currentVn30Pct > 0
-                                ? "text-gain"
-                                : currentVn30Pct < 0
-                                  ? "text-loss"
-                                  : "text-ref"
-                            }`}
-                          >
-                            {currentVn30Pct === 0 ? "0,00%" : fmtPct(currentVn30Pct)}
-                          </span>
-                        )}
-                      </div>
-                      <div className="font-mono text-[12px] font-semibold text-ink tnum mt-0.5">
-                        {currentVn30Val}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="rounded-[6px] bg-soft/45 border border-line/70 px-2.5 py-1.5">
-                      <div className="text-[10px] uppercase tracking-wider text-muted">
-                        Mã khớp lệnh
-                      </div>
-                      <div className="font-mono text-[12px] font-semibold text-ink tnum mt-0.5">
-                        {marketStats.tradedCount}/{boardItems.length} mã
-                      </div>
-                    </div>
-                  )}
-
-                  {currentVn100Val ? (
-                    <div className="rounded-[6px] bg-soft/45 border border-line/70 px-2.5 py-1.5">
-                      <div className="flex items-center justify-between gap-1 text-[10px] uppercase tracking-wider text-muted">
-                        <span>VN100</span>
-                        {currentVn100Pct != null && (
-                          <span
-                            className={`font-mono tnum ${
-                              currentVn100Pct > 0
-                                ? "text-gain"
-                                : currentVn100Pct < 0
-                                  ? "text-loss"
-                                  : "text-ref"
-                            }`}
-                          >
-                            {currentVn100Pct === 0 ? "0,00%" : fmtPct(currentVn100Pct)}
-                          </span>
-                        )}
-                      </div>
-                      <div className="font-mono text-[12px] font-semibold text-ink tnum mt-0.5">
-                        {currentVn100Val}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="rounded-[6px] bg-soft/45 border border-line/70 px-2.5 py-1.5">
-                      <div className="text-[10px] uppercase tracking-wider text-muted">
-                        GTGD ≥ 30 tỷ
-                      </div>
-                      <div className="font-mono text-[12px] font-semibold text-ink tnum mt-0.5">
-                        {marketStats.cashflowFocusCount} mã
-                      </div>
-                    </div>
-                  )}
                 </div>
               </div>
             </div>

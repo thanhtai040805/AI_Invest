@@ -2,17 +2,16 @@
 
 import React, { useEffect, useMemo, useState } from "react"
 import { createPortal } from "react-dom"
-import { KLineChart } from "@/components/KLineChart"
+import { TradingViewChart } from "@/lib/tv-chart"
 import { Button, Pill, fmt, fmtPct } from "@/components/ui"
 import { marketApi, stockApi, workspaceApi } from "@/lib/api"
 import { useResource } from "@/lib/api/use-resource"
-import { Link } from "@/lib/router"
+import { Link, useRouter } from "@/lib/router"
 import { formatSectorName } from "@/lib/sector-weights"
 import { useRealtimeStock } from "@/lib/use-realtime"
 import type { SuperStockItem, SuperStocksPayload } from "@/components/SuperStocksTable"
 import type { ApiMarketSnapshot } from "@/types"
 
-const SUB_INDICATORS = ["VOL"]
 const LOCAL_WATCHLIST_KEY = "aiinvest_markets_watchlist_v1"
 
 const VN30_SET = new Set([
@@ -243,6 +242,7 @@ export function StockDetailContent({
     }
   })
 
+  const { navigate } = useRouter()
   const isStarred =
     externalStarred !== undefined ? externalStarred : localStars.includes(symbol)
 
@@ -784,7 +784,7 @@ export function StockDetailContent({
               {isStarred ? "Đang theo dõi" : "Theo dõi"}
             </Button>
 
-            <Link to={`/trade?symbol=${symbol}`}>
+            <Link to={`/trade?symbol=${symbol}`} onClick={onClose}>
               <Button variant="primary" className="!h-8 !px-3.5 !text-[12px]">
                 Đặt lệnh {symbol} →
               </Button>
@@ -989,15 +989,41 @@ export function StockDetailContent({
       {/* 2. NỘI DUNG TAB 1: "GIAO DỊCH" — BỐ CỤC 3 CỘT CHUẨN SSI iBOARD & DNSE */}
       {mainTab === "TRADING" && (
         <div className="grid grid-cols-1 lg:grid-cols-12 divide-y lg:divide-y-0 lg:divide-x divide-line bg-surface">
-          {/* CỘT 1 (7/12): BIỂU ĐỒ KỸ THUẬT KLINECHART CHIẾM TRỌN CHIỀU CAO */}
-          <div className="lg:col-span-7 p-2.5 bg-surface flex flex-col justify-between">
-            <KLineChart
-              ticker={symbol}
-              name={s.name}
+          {/* CỘT 1 (7/12): BIỂU ĐỒ KỸ THUẬT TRADINGVIEW PRO CHIẾM TRỌN CHIỀU CAO */}
+          <div className="lg:col-span-7 p-2 bg-surface flex flex-col justify-between">
+            <TradingViewChart
+              symbol={symbol}
+              seedCandles={candles.map((c) => ({
+                timestamp: c.ts,
+                open: c.open,
+                high: c.high,
+                low: c.low,
+                close: c.close,
+                volume: c.volume,
+              }))}
               precision={0}
-              height={isModal ? 485 : 530}
-              subIndicators={SUB_INDICATORS}
-              drawingBar
+              height={isModal ? 505 : 545}
+              trading={{
+                symbol,
+                stockName: s.name,
+                exchange: "HOSE",
+                currentPrice: price,
+                refPrice: ref ?? price,
+                ceilingPrice: ceiling,
+                floorPrice: floor,
+                isLive,
+                orderSide: "BUY",
+                orderType: "LO",
+                orderPrice: price,
+                orderQuantity: 100,
+                hasDraftOrder: false,
+                bestBidPrice: bookLadder.bids[0]?.price ?? 0,
+                bestAskPrice: bookLadder.asks[0]?.price ?? 0,
+                onPickPriceFromChart: (picked) => {
+                  onClose?.()
+                  navigate(`/trade?symbol=${symbol}&price=${Math.round(picked)}`)
+                },
+              }}
             />
           </div>
 

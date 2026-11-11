@@ -67,7 +67,13 @@ interface TradeOrderRecord {
   side: "BUY" | "SELL"
   orderType: string
   price: number
+  limitPrice?: number
+  avgFillPrice?: number | null
   quantity: number
+  filledQuantity?: number
+  remainingQuantity?: number
+  lockedCash?: number
+  lockedShares?: number
   status: string
   createdAt?: string
 }
@@ -657,12 +663,28 @@ export default function TradePage() {
     }
     return "BUY"
   })
-  const [orderType, setOrderType] = useState<"LO" | "MP">("LO")
+  const [orderType, setOrderType] = useState<"LO" | "MP" | "ATO" | "ATC">("LO")
   const [qtyInput, setQtyInput] = useState("100")
-  const [priceInput, setPriceInput] = useState("")
+  const [priceInput, setPriceInput] = useState(() => {
+    if (typeof window !== "undefined") {
+      const p = Number(new URLSearchParams(window.location.search).get("price") ?? 0)
+      if (Number.isFinite(p) && p > 0) return String(Math.round(p))
+    }
+    return ""
+  })
   const [priceInputFlash, setPriceInputFlash] = useState(false)
-  const [showDraftOrderOnChart, setShowDraftOrderOnChart] = useState(false)
+  const [showDraftOrderOnChart, setShowDraftOrderOnChart] = useState(() => {
+    if (typeof window !== "undefined") {
+      const p = Number(new URLSearchParams(window.location.search).get("price") ?? 0)
+      return Number.isFinite(p) && p > 0
+    }
+    return false
+  })
   const [submitting, setSubmitting] = useState(false)
+  const [actionOrderId, setActionOrderId] = useState<string | null>(null)
+  const [amendingOrder, setAmendingOrder] = useState<TradeOrderRecord | null>(null)
+  const [amendPriceInput, setAmendPriceInput] = useState("")
+  const [amendQtyInput, setAmendQtyInput] = useState("")
   const [orderNotice, setOrderNotice] = useState<{
     tone: "gain" | "loss"
     text: string
@@ -670,7 +692,7 @@ export default function TradePage() {
   } | null>(null)
 
   // Order History state
-  const [ledgerFilter, setLedgerFilter] = useState<"ALL" | "SYMBOL" | "BUY" | "SELL">("ALL")
+  const [ledgerFilter, setLedgerFilter] = useState<"ALL" | "OPEN" | "SYMBOL" | "BUY" | "SELL">("ALL")
   const [ledgerSearch, setLedgerSearch] = useState("")
   const [selectedOrderReceipt, setSelectedOrderReceipt] = useState<TradeOrderRecord | null>(null)
 
@@ -896,11 +918,17 @@ export default function TradePage() {
       }
     }
 
+    const onOrderUpdated = () => {
+      syncOrderbookSnapshot(sym)
+      void reloadPortfolio()
+    }
+
     socket.on("connect", onConnect)
     socket.on("disconnect", onDisconnect)
     socket.on(`stock:ohlc:${sym}`, onOhlcTick)
     socket.on(`stock:ohlcClosed:${sym}`, onOhlcTick)
     socket.on(`stock:foreign:${sym}`, onForeignTick)
+    socket.on("portfolio:order_updated", onOrderUpdated)
 
     return () => {
       releaseOhlc()
@@ -909,6 +937,7 @@ export default function TradePage() {
       socket.off(`stock:ohlc:${sym}`, onOhlcTick)
       socket.off(`stock:ohlcClosed:${sym}`, onOhlcTick)
       socket.off(`stock:foreign:${sym}`, onForeignTick)
+      socket.off("portfolio:order_updated", onOrderUpdated)
     }
   }, [symbol, syncOrderbookSnapshot, reloadPortfolio])
 
@@ -1079,22 +1108,55 @@ export default function TradePage() {
 
   const orders: TradeOrderRecord[] = useMemo(() => {
     const raw = portfolioData?.orders ?? []
-    return raw.map((o) => ({
-      id: String(o.id ?? ""),
-      symbol: String(o.symbol ?? "").toUpperCase(),
-      stockName: o.stockName ? String(o.stockName) : undefined,
-      sector: o.sector ? String(o.sector) : null,
-      exchange: o.exchange ? String(o.exchange) : "HOSE",
-      side: String(o.side ?? "BUY").toUpperCase() === "SELL" ? "SELL" : "BUY",
-      orderType: String(o.orderType ?? "LO"),
-      price: toVndPrice(o.price),
-      quantity: Number(o.quantity ?? 0),
-      status: String(o.status ?? "FILLED"),
-      createdAt: o.createdAt ? String(o.createdAt) : undefined,
-    }))
+    return raw.map((o) => {
+      const qty = Number(o.quantity ?? 0)
+      const status = String(o.status ?? "FILLED").toUpperCase()
+      const filledQty =
+        o.filledQuantity != null
+          ? Number(o.filledQuantity)
+          : status === "FILLED"
+            ? qty
+            : 0
+      const remQty =
+        o.remainingQuantity != null
+          ? Number(o.remainingQuantity)
+          : status === "PENDING" || status === "PARTIALLY_FILLED"
+            ? Math.max(0, qty - filledQty)
+            : 0
+      const resolvedPrice = toVndPrice(o.price)
+      const limitPrice = o.limitPrice != null ? toVndPrice(o.limitPrice, resolvedPrice) : resolvedPrice
+      const avgFillPrice =
+        o.avgFillPrice != null && Number(o.avgFillPrice) > 0
+          ? toVndPrice(o.avgFillPrice)
+          : filledQty > 0
+            ? resolvedPrice
+            : null
+      return {
+        id: String(o.id ?? ""),
+        symbol: String(o.symbol ?? "").toUpperCase(),
+        stockName: o.stockName ? String(o.stockName) : undefined,
+        sector: o.sector ? String(o.sector) : null,
+        exchange: o.exchange ? String(o.exchange) : "HOSE",
+        side: String(o.side ?? "BUY").toUpperCase() === "SELL" ? "SELL" : "BUY",
+        orderType: String(o.orderType ?? "LO").toUpperCase(),
+        price: resolvedPrice,
+        limitPrice,
+        avgFillPrice,
+        quantity: qty,
+        filledQuantity: filledQty,
+        remainingQuantity: remQty,
+        lockedCash: Number(o.lockedCash ?? 0),
+        lockedShares: Number(o.lockedShares ?? 0),
+        status,
+        createdAt: o.createdAt ? String(o.createdAt) : undefined,
+      }
+    })
   }, [portfolioData?.orders])
 
-  const buyingPower = Number(portfolioData?.summary?.cash ?? 0)
+  const buyingPower = Number(
+    portfolioData?.summary?.buyingPower ?? portfolioData?.summary?.cash ?? 0
+  )
+  const lockedCashTotal = Number(portfolioData?.summary?.lockedCash ?? 0)
 
   const currentPosition = useMemo(
     () => positions.find((p) => p.symbol.toUpperCase() === symbol.toUpperCase()) ?? null,
@@ -1130,8 +1192,22 @@ export default function TradePage() {
       : bestBidPrice > 0
         ? bestBidPrice
         : stock.price
+  const auctionReferencePrice =
+    side === "BUY"
+      ? stock.ceiling > 0
+        ? stock.ceiling
+        : stock.price
+      : stock.floor > 0
+        ? stock.floor
+        : stock.price
   const effectivePrice =
-    orderType === "MP" ? mpCounterPrice : parsedLimitPrice > 0 ? parsedLimitPrice : stock.price
+    orderType === "MP"
+      ? mpCounterPrice
+      : orderType === "ATO" || orderType === "ATC"
+        ? auctionReferencePrice
+        : parsedLimitPrice > 0
+          ? parsedLimitPrice
+          : stock.price
   const priceStep = getTickStep(effectivePrice || stock.price || 20_000)
 
   const financials = useMemo(
@@ -1147,6 +1223,9 @@ export default function TradePage() {
   }, [effectivePrice, stock.price, buyingPower])
 
   const heldShares = currentPosition?.quantity ?? 0
+  const sellableShares = currentPosition?.sellableQuantity ?? heldShares
+  const lockedSellShares = currentPosition?.lockedQuantity ?? 0
+  const pendingT2Shares = currentPosition?.pendingT2Quantity ?? 0
 
   const priceBandWarning = useMemo(() => {
     if (orderType !== "LO" || effectivePrice <= 0) return null
@@ -1156,6 +1235,10 @@ export default function TradePage() {
     if (stock.floor > 0 && effectivePrice < stock.floor) {
       return `Giá đặt thấp hơn sàn phiên (${fmtPrice(stock.floor)} ₫)`
     }
+    const reqStep = getTickStep(effectivePrice)
+    if (effectivePrice % reqStep !== 0) {
+      return `Giá đặt phải tuân theo bước giá HOSE (${fmtPrice(reqStep)} ₫)`
+    }
     return null
   }, [orderType, effectivePrice, stock.ceiling, stock.floor])
 
@@ -1163,12 +1246,14 @@ export default function TradePage() {
     if (priceBandWarning) return priceBandWarning
     if (!validLotQty) return "Khối lượng đặt phải là bội số lô 100 cổ phiếu"
     if (side === "BUY" && financials.totalCostOrProceeds > buyingPower) {
-      return "Vượt quá sức mua khả dụng (đã tính phí)"
+      return "Vượt quá sức mua khả dụng (đã trừ tiền phong tỏa chờ khớp)"
     }
-    if (side === "SELL" && quantity > heldShares) {
+    if (side === "SELL" && quantity > sellableShares) {
       return heldShares === 0
         ? `Tài khoản hiện không nắm giữ ${symbol} để bán`
-        : `Số lượng bán vượt số dư khả dụng (${fmtNumber(heldShares)} CP)`
+        : lockedSellShares > 0
+          ? `Vượt số dư khả dụng (${fmtNumber(sellableShares)} CP khả dụng · ${fmtNumber(lockedSellShares)} CP đang chờ bán)`
+          : `Số lượng bán vượt số dư khả dụng (${fmtNumber(sellableShares)} CP)`
     }
     return null
   }, [
@@ -1178,7 +1263,9 @@ export default function TradePage() {
     financials.totalCostOrProceeds,
     buyingPower,
     quantity,
+    sellableShares,
     heldShares,
+    lockedSellShares,
     symbol,
   ])
 
@@ -1196,11 +1283,27 @@ export default function TradePage() {
         quantity,
         price: orderType === "LO" ? effectivePrice : undefined,
       })) as Record<string, unknown>
+      syncOrderbookSnapshot(symbol)
       await reloadPortfolio()
       setShowDraftOrderOnChart(false)
+
+      const createdStatus = String(created?.status ?? "FILLED").toUpperCase()
+      const filledQty = Number(created?.filledQuantity ?? (createdStatus === "FILLED" ? quantity : 0))
+      const remQty = Number(created?.remainingQuantity ?? Math.max(0, quantity - filledQty))
+      const avgPx = toVndPrice(created?.avgFillPrice ?? created?.price, effectivePrice)
+      const limPx = toVndPrice(created?.limitPrice ?? created?.price, effectivePrice)
+      const sideLabel = side === "BUY" ? "MUA" : "BÁN"
+
+      const noticeText =
+        createdStatus === "FILLED"
+          ? `Đã khớp 100% lệnh ${orderType} ${sideLabel} ${fmtNumber(quantity)} ${symbol} tại giá bình quân ${fmtPrice(avgPx)} ₫.`
+          : createdStatus === "PARTIALLY_FILLED"
+            ? `Khớp 1 phần (${fmtNumber(filledQty)}/${fmtNumber(quantity)} CP) tại ${fmtPrice(avgPx)} ₫ · Còn ${fmtNumber(remQty)} CP đang chờ khớp tại ${fmtPrice(limPx)} ₫.`
+            : `Lệnh ${orderType} ${sideLabel} ${fmtNumber(quantity)} ${symbol} (${orderType === "ATO" || orderType === "ATC" ? orderType : `${fmtPrice(limPx)} ₫`}) đã vào Sổ lệnh LIVE chờ đối ứng.`
+
       setOrderNotice({
         tone: "gain",
-        text: `Đã khớp lệnh ${side === "BUY" ? "MUA" : "BÁN"} ${fmtNumber(quantity)} ${symbol} tại giá ${fmtPrice(Number(created?.price ?? effectivePrice))} ₫.`,
+        text: noticeText,
         orderId: created?.id ? String(created.id) : undefined,
       })
     } catch (e: unknown) {
@@ -1222,8 +1325,81 @@ export default function TradePage() {
     }
   }
 
+  async function handleCancelOrder(ord: TradeOrderRecord) {
+    if (!ord.id || actionOrderId) return
+    setActionOrderId(ord.id)
+    try {
+      await portfolioApi.cancelOrder(ord.id)
+      syncOrderbookSnapshot(ord.symbol)
+      await reloadPortfolio()
+      if (selectedOrderReceipt?.id === ord.id) {
+        setSelectedOrderReceipt(null)
+      }
+      setOrderNotice({
+        tone: "gain",
+        text: `Đã hủy phần chờ khớp (${fmtNumber(ord.remainingQuantity ?? ord.quantity)} CP) của lệnh ${ord.side === "BUY" ? "MUA" : "BÁN"} ${ord.symbol} — giải phóng ký quỹ tức thì.`,
+      })
+    } catch (e: unknown) {
+      const rawMsg =
+        (e as { response?: { data?: { error?: string } } })?.response?.data?.error ||
+        (e instanceof Error ? e.message : "Không thể hủy lệnh.")
+      setOrderNotice({ tone: "loss", text: rawMsg })
+    } finally {
+      setActionOrderId(null)
+    }
+  }
+
+  function openAmendDialog(ord: TradeOrderRecord) {
+    setAmendingOrder(ord)
+    setAmendPriceInput(String(Math.round(ord.limitPrice || ord.price || stock.price)))
+    setAmendQtyInput(String(ord.quantity))
+  }
+
+  async function handleConfirmAmend() {
+    if (!amendingOrder || actionOrderId) return
+    const nextPrice = Number(amendPriceInput || 0)
+    const nextQty = Number(amendQtyInput || 0)
+    if (!Number.isInteger(nextQty) || nextQty < 100 || nextQty % 100 !== 0) {
+      setOrderNotice({ tone: "loss", text: "Khối lượng sửa lệnh phải là bội số lô 100 CP." })
+      return
+    }
+    setActionOrderId(amendingOrder.id)
+    try {
+      await portfolioApi.amendOrder(amendingOrder.id, {
+        price: amendingOrder.orderType === "LO" && nextPrice > 0 ? nextPrice : undefined,
+        quantity: nextQty,
+      })
+      syncOrderbookSnapshot(amendingOrder.symbol)
+      await reloadPortfolio()
+      setOrderNotice({
+        tone: "gain",
+        text: `Đã cập nhật lệnh ${amendingOrder.symbol}: ${fmtNumber(nextQty)} CP${amendingOrder.orderType === "LO" ? ` · giá ${fmtPrice(nextPrice)} ₫` : ""}.`,
+      })
+      setAmendingOrder(null)
+    } catch (e: unknown) {
+      const rawMsg =
+        (e as { response?: { data?: { error?: string } } })?.response?.data?.error ||
+        (e instanceof Error ? e.message : "Không thể sửa lệnh.")
+      setOrderNotice({ tone: "loss", text: rawMsg })
+    } finally {
+      setActionOrderId(null)
+    }
+  }
+
+  const openOrdersTotalCount = useMemo(
+    () => orders.filter((o) => o.status === "PENDING" || o.status === "PARTIALLY_FILLED").length,
+    [orders]
+  )
+
   const filteredOrders = useMemo(() => {
     return orders.filter((ord) => {
+      if (
+        ledgerFilter === "OPEN" &&
+        ord.status !== "PENDING" &&
+        ord.status !== "PARTIALLY_FILLED"
+      ) {
+        return false
+      }
       if (ledgerFilter === "SYMBOL" && ord.symbol.toUpperCase() !== symbol.toUpperCase()) return false
       if (ledgerFilter === "BUY" && ord.side !== "BUY") return false
       if (ledgerFilter === "SELL" && ord.side !== "SELL") return false
@@ -1507,14 +1683,14 @@ export default function TradePage() {
                 .filter(
                   (o) =>
                     o.symbol.toUpperCase() === symbol.toUpperCase() &&
-                    (o.status === "PENDING" || o.status === "OPEN")
+                    (o.status === "PENDING" || o.status === "PARTIALLY_FILLED" || o.status === "OPEN")
                 )
                 .map((o) => ({
                   id: o.id,
                   side: o.side,
                   orderType: o.orderType,
-                  price: o.price,
-                  quantity: o.quantity,
+                  price: o.limitPrice && o.limitPrice > 0 ? o.limitPrice : o.price,
+                  quantity: o.remainingQuantity && o.remainingQuantity > 0 ? o.remainingQuantity : o.quantity,
                   status: o.status,
                 })),
               onPickPriceFromChart: (picked) => fillPriceInput(picked),
@@ -1583,33 +1759,33 @@ export default function TradePage() {
               </button>
             </div>
 
-            {/* 2. Loại lệnh LO / MP */}
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => setOrderType("LO")}
-                className={`rounded-[var(--radius-sm)] border py-1.5 text-[12px] font-medium transition-colors whitespace-nowrap ${
-                  orderType === "LO"
-                    ? "border-[var(--color-ink)] bg-[var(--color-ink)] text-[var(--color-paper)]"
-                    : "border-[var(--color-line)] bg-[var(--color-surface-2)] text-[var(--color-muted)] hover:text-[var(--color-ink)]"
-                }`}
-              >
-                LO · Lệnh giới hạn
-              </button>
-              <button
-                type="button"
-                onClick={() => setOrderType("MP")}
-                className={`rounded-[var(--radius-sm)] border py-1.5 text-[12px] font-medium transition-colors whitespace-nowrap ${
-                  orderType === "MP"
-                    ? "border-[var(--color-ink)] bg-[var(--color-ink)] text-[var(--color-paper)]"
-                    : "border-[var(--color-line)] bg-[var(--color-surface-2)] text-[var(--color-muted)] hover:text-[var(--color-ink)]"
-                }`}
-              >
-                MP · Giá thị trường
-              </button>
+            {/* 2. Loại lệnh chuẩn HOSE: LO / MP / ATO / ATC */}
+            <div className="grid grid-cols-4 gap-1.5">
+              {(
+                [
+                  { id: "LO", sub: "Giới hạn" },
+                  { id: "MP", sub: "Thị trường" },
+                  { id: "ATO", sub: "Mở cửa" },
+                  { id: "ATC", sub: "Đóng cửa" },
+                ] as const
+              ).map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setOrderType(item.id)}
+                  className={`rounded-[var(--radius-sm)] border py-1.5 px-1 text-center transition-colors whitespace-nowrap ${
+                    orderType === item.id
+                      ? "border-[var(--color-ink)] bg-[var(--color-ink)] text-[var(--color-paper)]"
+                      : "border-[var(--color-line)] bg-[var(--color-surface-2)] text-[var(--color-muted)] hover:text-[var(--color-ink)]"
+                  }`}
+                >
+                  <span className="block font-mono text-[12px] font-bold leading-tight">{item.id}</span>
+                  <span className="block text-[9.5px] opacity-80 leading-tight">{item.sub}</span>
+                </button>
+              ))}
             </div>
 
-            {/* 3. Thông tin Sức mua / Cổ phiếu đang giữ */}
+            {/* 3. Thông tin Sức mua / Cổ phiếu đang giữ & Ký quỹ */}
             <div className="rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface-2)]/65 px-3 py-2 text-[12px] space-y-1">
               {side === "BUY" ? (
                 <>
@@ -1619,6 +1795,14 @@ export default function TradePage() {
                       {fmtVND(buyingPower)} ₫
                     </strong>
                   </div>
+                  {lockedCashTotal > 0 && (
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[var(--color-muted)]">Tiền phong tỏa chờ khớp</span>
+                      <span className="font-mono text-[11.5px] text-[var(--color-ref)] tabular-nums whitespace-nowrap">
+                        {fmtVND(lockedCashTotal)} ₫
+                      </span>
+                    </div>
+                  )}
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-[var(--color-muted)]">KL mua tối đa</span>
                     <strong className="font-mono text-[var(--color-gain)] tabular-nums whitespace-nowrap">
@@ -1631,9 +1815,25 @@ export default function TradePage() {
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-[var(--color-muted)]">Số dư khả dụng ({symbol})</span>
                     <strong className="font-mono text-[var(--color-ink)] tabular-nums whitespace-nowrap">
-                      {fmtNumber(heldShares)} CP
+                      {fmtNumber(sellableShares)} CP
                     </strong>
                   </div>
+                  {lockedSellShares > 0 && (
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[var(--color-muted)]">KL phong tỏa chờ bán</span>
+                      <span className="font-mono text-[11.5px] text-[var(--color-ref)] tabular-nums whitespace-nowrap">
+                        {fmtNumber(lockedSellShares)} CP
+                      </span>
+                    </div>
+                  )}
+                  {pendingT2Shares > 0 && (
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[var(--color-muted)]">Chờ về VSDC (T+2.5)</span>
+                      <span className="font-mono text-[11.5px] text-[var(--color-muted)] tabular-nums whitespace-nowrap">
+                        {fmtNumber(pendingT2Shares)} CP
+                      </span>
+                    </div>
+                  )}
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-[var(--color-muted)]">Giá vốn trung bình</span>
                     <strong className="font-mono text-[var(--color-ink-2)] tabular-nums whitespace-nowrap">
@@ -1679,7 +1879,7 @@ export default function TradePage() {
 
               <div className="mt-1.5 grid grid-cols-4 gap-1.5">
                 {([0.25, 0.5, 0.75, 1] as const).map((ratio) => {
-                  const maxBase = side === "BUY" ? maxBuyableShares : heldShares
+                  const maxBase = side === "BUY" ? maxBuyableShares : sellableShares
                   const targetQty =
                     maxBase >= 100 ? Math.max(100, Math.floor((maxBase * ratio) / 100) * 100) : 100
                   return (
@@ -1829,11 +2029,16 @@ export default function TradePage() {
                   </div>
                 )}
               </div>
+            ) : orderType === "MP" ? (
+              <div className="rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface-2)] px-3.5 py-2.5 text-[12px] text-[var(--color-ink-2)] leading-relaxed">
+                Lệnh <strong>MP</strong> quét khớp ngay qua các bước giá {side === "BUY" ? "Bán" : "Mua"} tốt nhất trên Sổ lệnh LIVE ({side === "BUY" ? "Bán 1" : "Mua 1"} tạm tính:{" "}
+                <strong className="font-mono">{fmtPrice(mpCounterPrice)} ₫</strong>); phần dư tự chuyển thành <strong>LO</strong> theo quy tắc MTL HOSE.
+              </div>
             ) : (
               <div className="rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface-2)] px-3.5 py-2.5 text-[12px] text-[var(--color-ink-2)] leading-relaxed">
-                Lệnh <strong>MP</strong> khớp ngay tại mức giá đối ứng tốt nhất trên sổ lệnh trực tiếp (
-                {side === "BUY" ? "Giá Bán 1" : "Giá Mua 1"} tạm tính:{" "}
-                <strong className="font-mono">{fmtPrice(mpCounterPrice)} ₫</strong>).
+                Lệnh <strong>{orderType}</strong> ưu tiên khớp tại phiên định kỳ{" "}
+                {orderType === "ATO" ? "mở cửa (09:00–09:15)" : "đóng cửa (14:30–14:45)"} HOSE · Ký quỹ tạm tính theo giá{" "}
+                {side === "BUY" ? "Trần" : "Sàn"} (<strong className="font-mono">{fmtPrice(auctionReferencePrice)} ₫</strong>).
               </div>
             )}
           </div>
@@ -1893,7 +2098,7 @@ export default function TradePage() {
                     }}
                     className="mt-1 font-mono text-[11px] underline"
                   >
-                    Xem chi tiết khớp lệnh →
+                    Xem chi tiết lệnh →
                   </button>
                 )}
               </div>
@@ -1909,25 +2114,26 @@ export default function TradePage() {
             >
               {submitting
                 ? "Đang gửi lệnh..."
-                : `Đặt lệnh ${side === "BUY" ? "Mua" : "Bán"} ${fmtNumber(validLotQty ? quantity : 0)} ${symbol}`}
+                : `Đặt lệnh ${orderType} ${side === "BUY" ? "Mua" : "Bán"} ${fmtNumber(validLotQty ? quantity : 0)} ${symbol}`}
             </button>
           </div>
         </Panel>
       </div>
 
       {/* ====================================================================
-       * 4. LỊCH SỬ ĐẶT LỆNH GẦN ĐÂY
+       * 4. SỔ LỆNH LIVE & LỊCH SỬ GIAO DỊCH
        * ==================================================================== */}
       <Panel>
         <PanelHead
-          title="Lịch sử đặt lệnh"
-          sub={`Danh sách lệnh giao dịch của tài khoản (${orders.length} lệnh) · Bấm vào dòng lệnh để xem chi tiết phí.`}
+          title="Sổ lệnh LIVE & Lịch sử giao dịch"
+          sub={`Tổng ${orders.length} lệnh (${openOrdersTotalCount} lệnh đang chờ khớp trên sổ) · Hỗ trợ Sửa / Hủy O(1) theo thời gian thực.`}
           action={
             <div className="flex flex-wrap items-center gap-2">
               <div className="inline-flex rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface-2)] p-0.5">
                 {(
                   [
                     { id: "ALL", label: `Tất cả (${orders.length})` },
+                    { id: "OPEN", label: `Chờ khớp (${openOrdersTotalCount})` },
                     {
                       id: "SYMBOL",
                       label: `${symbol} (${orders.filter((o) => o.symbol.toUpperCase() === symbol).length})`,
@@ -1969,11 +2175,11 @@ export default function TradePage() {
                 <th className="py-2.5 pr-3">Thời gian</th>
                 <th className="py-2.5 px-3">Mã CP</th>
                 <th className="py-2.5 px-3">Loại lệnh</th>
-                <th className="py-2.5 px-3 text-right">Khối lượng</th>
-                <th className="py-2.5 px-3 text-right">Giá khớp</th>
+                <th className="py-2.5 px-3 text-right">KL khớp / Đặt</th>
+                <th className="py-2.5 px-3 text-right">Giá đặt / Khớp</th>
                 <th className="py-2.5 px-3 text-right">Phí & Thuế</th>
-                <th className="py-2.5 px-3 text-right">Tổng giá trị</th>
-                <th className="py-2.5 pl-3 text-right">Trạng thái</th>
+                <th className="py-2.5 px-3 text-right">Giá trị / Phong tỏa</th>
+                <th className="py-2.5 pl-3 text-right">Trạng thái & Thao tác</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--color-line)]/70 font-mono tabular-nums">
@@ -1984,10 +2190,41 @@ export default function TradePage() {
                   </td>
                 </tr>
               ) : (
-                filteredOrders.slice(0, 20).map((ord) => {
+                filteredOrders.slice(0, 25).map((ord) => {
                   const dt = formatDateTimeVi(ord.createdAt)
-                  const fin = computeOrderFinancials(ord.side, Number(ord.price), Number(ord.quantity))
+                  const isOpen = ord.status === "PENDING" || ord.status === "PARTIALLY_FILLED"
+                  const isCancelled = ord.status === "CANCELLED"
+                  const filledQty = ord.filledQuantity ?? (ord.status === "FILLED" ? ord.quantity : 0)
+                  const basisQty = filledQty > 0 ? filledQty : ord.quantity
+                  const basisPrice =
+                    filledQty > 0 && ord.avgFillPrice
+                      ? ord.avgFillPrice
+                      : ord.limitPrice || ord.price
+                  const fin = computeOrderFinancials(ord.side, Number(basisPrice), Number(basisQty))
                   const isBuy = ord.side === "BUY"
+                  const busy = actionOrderId === ord.id
+
+                  const statusMeta =
+                    ord.status === "FILLED"
+                      ? {
+                          label: "Đã khớp",
+                          cls: "bg-[var(--color-gain-soft)] text-[var(--color-gain)]",
+                        }
+                      : ord.status === "PARTIALLY_FILLED"
+                        ? {
+                            label: "Khớp 1 phần",
+                            cls: "bg-amber-500/15 text-[var(--color-ref)]",
+                          }
+                        : ord.status === "PENDING"
+                          ? {
+                              label: "Chờ khớp",
+                              cls: "bg-[var(--color-surface-2)] text-[var(--color-ink)] border border-[var(--color-line-strong)]",
+                            }
+                          : {
+                              label: isCancelled && filledQty > 0 ? "Hủy phần dư" : "Đã hủy",
+                              cls: "bg-[var(--color-surface-2)] text-[var(--color-muted)]",
+                            }
+
                   return (
                     <tr
                       key={ord.id}
@@ -2020,41 +2257,93 @@ export default function TradePage() {
                         </span>
                       </td>
                       <td className="py-2.5 px-3 text-right font-semibold text-[var(--color-ink)] whitespace-nowrap">
-                        {fmtNumber(ord.quantity)} CP
+                        {fmtNumber(filledQty)}/{fmtNumber(ord.quantity)} CP
                       </td>
                       <td className="py-2.5 px-3 text-right text-[var(--color-ink)] whitespace-nowrap">
-                        {fmtPrice(ord.price)} ₫
+                        {ord.avgFillPrice && filledQty > 0 ? (
+                          <div>
+                            <div className="font-semibold">{fmtPrice(ord.avgFillPrice)} ₫</div>
+                            {isOpen && ord.limitPrice ? (
+                              <div className="text-[10.5px] text-[var(--color-muted)]">
+                                Đặt: {fmtPrice(ord.limitPrice)} ₫
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : ord.orderType === "ATO" || ord.orderType === "ATC" ? (
+                          <span>{ord.orderType}</span>
+                        ) : (
+                          <span>{fmtPrice(ord.limitPrice || ord.price)} ₫</span>
+                        )}
                       </td>
                       <td className="py-2.5 px-3 text-right text-[var(--color-muted)] whitespace-nowrap">
-                        {fmtVND(fin.fee + fin.tax)} ₫
+                        {filledQty > 0 ? `${fmtVND(fin.fee + fin.tax)} ₫` : "—"}
                       </td>
                       <td
                         className={`py-2.5 px-3 text-right font-semibold whitespace-nowrap ${
-                          isBuy ? "text-[var(--color-ink)]" : "text-[var(--color-gain)]"
+                          isCancelled && filledQty === 0
+                            ? "text-[var(--color-muted)]"
+                            : isBuy
+                              ? "text-[var(--color-ink)]"
+                              : "text-[var(--color-gain)]"
                         }`}
                       >
-                        {isBuy ? "−" : "+"}
-                        {fmtVND(fin.totalCostOrProceeds)} ₫
+                        {isCancelled && filledQty === 0 ? (
+                          "—"
+                        ) : isOpen && filledQty === 0 && isBuy && (ord.lockedCash ?? 0) > 0 ? (
+                          <span className="text-[var(--color-ref)]">
+                            🔒 {fmtVND(ord.lockedCash ?? 0)} ₫
+                          </span>
+                        ) : (
+                          <>
+                            {isBuy ? "−" : "+"}
+                            {fmtVND(fin.totalCostOrProceeds)} ₫
+                          </>
+                        )}
                       </td>
                       <td
                         className="py-2.5 pl-3 text-right whitespace-nowrap"
                         onClick={(e) => e.stopPropagation()}
                       >
-                        <div className="inline-flex items-center gap-2">
-                          <span className="rounded-full bg-[var(--color-gain-soft)] px-2 py-0.5 font-sans text-[11px] font-medium text-[var(--color-gain)]">
-                            Đã khớp
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              selectSymbol(ord.symbol, ord.side, ord.quantity)
-                              fillPriceInput(Number(ord.price))
-                              window.scrollTo({ top: 0, behavior: "smooth" })
-                            }}
-                            className="rounded border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-0.5 font-sans text-[11px] font-medium text-[var(--color-ink-2)] hover:border-[var(--color-ink)] transition-colors"
+                        <div className="inline-flex items-center gap-1.5">
+                          <span
+                            className={`rounded-full px-2 py-0.5 font-sans text-[11px] font-medium ${statusMeta.cls}`}
                           >
-                            Đặt lại
-                          </button>
+                            {statusMeta.label}
+                          </span>
+                          {isOpen ? (
+                            <>
+                              {ord.orderType === "LO" && (
+                                <button
+                                  type="button"
+                                  disabled={busy}
+                                  onClick={() => openAmendDialog(ord)}
+                                  className="rounded border border-[var(--color-line-strong)] bg-[var(--color-surface)] px-2 py-0.5 font-sans text-[11px] font-medium text-[var(--color-ink)] hover:border-[var(--color-ink)] disabled:opacity-45 transition-colors"
+                                >
+                                  Sửa
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => handleCancelOrder(ord)}
+                                className="rounded border border-[var(--color-loss)]/45 bg-[var(--color-loss-soft)] px-2 py-0.5 font-sans text-[11px] font-semibold text-[var(--color-loss)] hover:border-[var(--color-loss)] disabled:opacity-45 transition-colors"
+                              >
+                                {busy ? "…" : "Hủy"}
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                selectSymbol(ord.symbol, ord.side, ord.quantity)
+                                fillPriceInput(Number(ord.limitPrice || ord.price))
+                                window.scrollTo({ top: 0, behavior: "smooth" })
+                              }}
+                              className="rounded border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-0.5 font-sans text-[11px] font-medium text-[var(--color-ink-2)] hover:border-[var(--color-ink)] transition-colors"
+                            >
+                              Đặt lại
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -2067,7 +2356,100 @@ export default function TradePage() {
       </Panel>
 
       {/* ====================================================================
-       * DRAWER: CHI TIẾT KHỚP LỆNH
+       * MODAL: SỬA LỆNH LIVE (AMEND ORDER O(1))
+       * ==================================================================== */}
+      {amendingOrder && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onClick={() => setAmendingOrder(null)}
+        >
+          <div
+            className="w-full max-w-[400px] rounded-[var(--radius-md)] border border-[var(--color-line-strong)] bg-[var(--color-paper)] p-5 shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between border-b border-[var(--color-line)] pb-3">
+              <div>
+                <span className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-[var(--color-muted)]">
+                  Sửa lệnh trên Sổ lệnh LIVE
+                </span>
+                <h3 className="mt-0.5 font-display text-[19px] font-semibold text-[var(--color-ink)]">
+                  {amendingOrder.side === "BUY" ? "Mua" : "Bán"} {amendingOrder.symbol} ·{" "}
+                  {amendingOrder.orderType}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAmendingOrder(null)}
+                className="rounded border border-[var(--color-line)] px-2 py-0.5 text-[12px] text-[var(--color-muted)] hover:text-[var(--color-ink)]"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-3 text-[12.5px]">
+              <div className="rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface-2)] px-3 py-2 font-mono text-[11.5px] flex items-center justify-between">
+                <span className="font-sans text-[var(--color-muted)]">Đã khớp / Tổng đặt</span>
+                <strong className="text-[var(--color-ink)]">
+                  {fmtNumber(amendingOrder.filledQuantity ?? 0)} / {fmtNumber(amendingOrder.quantity)} CP
+                </strong>
+              </div>
+
+              {amendingOrder.orderType === "LO" && (
+                <div>
+                  <label className="block text-[12px] text-[var(--color-muted)] mb-1">
+                    Giá giới hạn mới (VND)
+                  </label>
+                  <input
+                    type="number"
+                    step={getTickStep(Number(amendPriceInput) || amendingOrder.price || 20_000)}
+                    value={amendPriceInput}
+                    onChange={(e) => setAmendPriceInput(e.target.value)}
+                    className="h-9 w-full rounded-[var(--radius-sm)] border border-[var(--color-line-strong)] bg-[var(--color-surface)] px-3 font-mono text-[14px] font-semibold text-[var(--color-ink)] focus:border-[var(--color-ink)] focus:outline-none"
+                  />
+                </div>
+              )}
+
+              <div>
+                <label className="block text-[12px] text-[var(--color-muted)] mb-1">
+                  Tổng khối lượng lệnh mới (Lô 100 CP)
+                </label>
+                <input
+                  type="number"
+                  step={100}
+                  min={Math.max(100, Math.ceil(((amendingOrder.filledQuantity ?? 0) + 100) / 100) * 100)}
+                  value={amendQtyInput}
+                  onChange={(e) => setAmendQtyInput(e.target.value)}
+                  className="h-9 w-full rounded-[var(--radius-sm)] border border-[var(--color-line-strong)] bg-[var(--color-surface)] px-3 font-mono text-[14px] font-semibold text-[var(--color-ink)] focus:border-[var(--color-ink)] focus:outline-none"
+                />
+                <p className="mt-1 text-[11px] text-[var(--color-muted)]">
+                  Giảm khối lượng khi giữ nguyên giá sẽ bảo toàn thứ tự ưu tiên thời gian (FIFO HOSE).
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 pt-2 border-t border-[var(--color-line)]">
+              <button
+                type="button"
+                onClick={() => setAmendingOrder(null)}
+                className="h-9 rounded-[var(--radius-sm)] border border-[var(--color-line-strong)] bg-[var(--color-surface)] text-[12.5px] font-medium text-[var(--color-ink)]"
+              >
+                Đóng
+              </button>
+              <button
+                type="button"
+                disabled={actionOrderId === amendingOrder.id}
+                onClick={handleConfirmAmend}
+                className="h-9 rounded-[var(--radius-sm)] bg-[var(--color-ink)] text-[12.5px] font-semibold text-[var(--color-paper)] disabled:opacity-45"
+              >
+                {actionOrderId === amendingOrder.id ? "Đang lưu..." : "Xác nhận sửa lệnh"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ====================================================================
+       * DRAWER: CHI TIẾT LỆNH GIAO DỊCH
        * ==================================================================== */}
       {selectedOrderReceipt && (
         <div
@@ -2101,13 +2483,32 @@ export default function TradePage() {
               </div>
 
               {(() => {
+                const filledQty =
+                  selectedOrderReceipt.filledQuantity ??
+                  (selectedOrderReceipt.status === "FILLED" ? selectedOrderReceipt.quantity : 0)
+                const remQty =
+                  selectedOrderReceipt.remainingQuantity ??
+                  Math.max(0, selectedOrderReceipt.quantity - filledQty)
+                const basisQty = filledQty > 0 ? filledQty : selectedOrderReceipt.quantity
+                const basisPrice =
+                  filledQty > 0 && selectedOrderReceipt.avgFillPrice
+                    ? selectedOrderReceipt.avgFillPrice
+                    : selectedOrderReceipt.limitPrice || selectedOrderReceipt.price
                 const fin = computeOrderFinancials(
                   selectedOrderReceipt.side,
-                  Number(selectedOrderReceipt.price),
-                  Number(selectedOrderReceipt.quantity)
+                  Number(basisPrice),
+                  Number(basisQty)
                 )
                 const dt = formatDateTimeVi(selectedOrderReceipt.createdAt)
                 const isBuy = selectedOrderReceipt.side === "BUY"
+                const statusLabel =
+                  selectedOrderReceipt.status === "FILLED"
+                    ? "Đã khớp"
+                    : selectedOrderReceipt.status === "PARTIALLY_FILLED"
+                      ? "Khớp 1 phần"
+                      : selectedOrderReceipt.status === "PENDING"
+                        ? "Đang chờ khớp"
+                        : "Đã hủy"
 
                 return (
                   <div className="space-y-4 font-mono text-[12px] tabular-nums">
@@ -2119,34 +2520,54 @@ export default function TradePage() {
                         </span>
                       </div>
                       <div className="flex items-center justify-between">
-                        <span className="font-sans text-[var(--color-muted)]">Thời gian khớp</span>
+                        <span className="font-sans text-[var(--color-muted)]">Thời gian đặt</span>
                         <span className="text-[var(--color-ink)]">
                           {dt.date} {dt.time}
                         </span>
                       </div>
                       <div className="flex items-center justify-between">
                         <span className="font-sans text-[var(--color-muted)]">Trạng thái</span>
-                        <span className="rounded bg-[var(--color-gain-soft)] px-2 py-0.5 text-[10.5px] font-semibold text-[var(--color-gain)]">
-                          Đã khớp · {selectedOrderReceipt.orderType || "LO"}
+                        <span className="rounded bg-[var(--color-surface-2)] px-2 py-0.5 text-[10.5px] font-semibold text-[var(--color-ink)]">
+                          {statusLabel} · {selectedOrderReceipt.orderType || "LO"}
                         </span>
                       </div>
                     </div>
 
                     <div className="rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)] p-4 space-y-2.5">
                       <div className="flex items-center justify-between">
-                        <span className="font-sans text-[var(--color-muted)]">Khối lượng</span>
+                        <span className="font-sans text-[var(--color-muted)]">KL đã khớp / Tổng đặt</span>
                         <strong className="text-[var(--color-ink)]">
-                          {fmtNumber(selectedOrderReceipt.quantity)} CP
+                          {fmtNumber(filledQty)} / {fmtNumber(selectedOrderReceipt.quantity)} CP
                         </strong>
                       </div>
+                      {remQty > 0 && (
+                        <div className="flex items-center justify-between">
+                          <span className="font-sans text-[var(--color-muted)]">KL đang chờ khớp</span>
+                          <span className="text-[var(--color-ref)] font-semibold">
+                            {fmtNumber(remQty)} CP
+                          </span>
+                        </div>
+                      )}
                       <div className="flex items-center justify-between">
-                        <span className="font-sans text-[var(--color-muted)]">Giá khớp</span>
+                        <span className="font-sans text-[var(--color-muted)]">
+                          {filledQty > 0 ? "Giá khớp bình quân" : "Giá đặt"}
+                        </span>
                         <strong className="text-[var(--color-ink)]">
-                          {fmtPrice(selectedOrderReceipt.price)} ₫
+                          {fmtPrice(basisPrice)} ₫
                         </strong>
                       </div>
+                      {(selectedOrderReceipt.lockedCash ?? 0) > 0 && (
+                        <div className="flex items-center justify-between">
+                          <span className="font-sans text-[var(--color-muted)]">Tiền đang phong tỏa</span>
+                          <span className="text-[var(--color-ref)]">
+                            {fmtVND(selectedOrderReceipt.lockedCash ?? 0)} ₫
+                          </span>
+                        </div>
+                      )}
                       <div className="flex items-center justify-between">
-                        <span className="font-sans text-[var(--color-muted)]">Giá trị gốc</span>
+                        <span className="font-sans text-[var(--color-muted)]">
+                          Giá trị {filledQty > 0 ? "đã khớp" : "dự kiến"}
+                        </span>
                         <span className="text-[var(--color-ink-2)]">{fmtVND(fin.gross)} ₫</span>
                       </div>
                       <div className="flex items-center justify-between">
@@ -2174,34 +2595,72 @@ export default function TradePage() {
               })()}
             </div>
 
-            <div className="mt-6 grid grid-cols-2 gap-2.5 pt-4 border-t border-[var(--color-line)]">
-              <button
-                type="button"
-                onClick={() => {
-                  selectSymbol(selectedOrderReceipt.symbol)
-                  setSelectedOrderReceipt(null)
-                }}
-                className="rounded-[var(--radius-sm)] border border-[var(--color-line-strong)] bg-[var(--color-surface)] py-2.5 text-[12.5px] font-medium text-[var(--color-ink)] hover:border-[var(--color-ink)] transition-colors"
-              >
-                Xem biểu đồ {selectedOrderReceipt.symbol}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  selectSymbol(
-                    selectedOrderReceipt.symbol,
-                    selectedOrderReceipt.side,
-                    selectedOrderReceipt.quantity
-                  )
-                  fillPriceInput(Number(selectedOrderReceipt.price))
-                  setSelectedOrderReceipt(null)
-                  window.scrollTo({ top: 0, behavior: "smooth" })
-                }}
-                className="rounded-[var(--radius-sm)] bg-[var(--color-ink)] py-2.5 text-[12.5px] font-semibold text-[var(--color-paper)] hover:opacity-90 transition-opacity"
-              >
-                Đặt lại lệnh này
-              </button>
-            </div>
+            {selectedOrderReceipt.status === "PENDING" ||
+            selectedOrderReceipt.status === "PARTIALLY_FILLED" ? (
+              <div className="mt-6 grid grid-cols-2 gap-2.5 pt-4 border-t border-[var(--color-line)]">
+                {selectedOrderReceipt.orderType === "LO" ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const target = selectedOrderReceipt
+                      setSelectedOrderReceipt(null)
+                      openAmendDialog(target)
+                    }}
+                    className="rounded-[var(--radius-sm)] border border-[var(--color-line-strong)] bg-[var(--color-surface)] py-2.5 text-[12.5px] font-semibold text-[var(--color-ink)] hover:border-[var(--color-ink)] transition-colors"
+                  >
+                    Sửa lệnh này
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      selectSymbol(selectedOrderReceipt.symbol)
+                      setSelectedOrderReceipt(null)
+                    }}
+                    className="rounded-[var(--radius-sm)] border border-[var(--color-line-strong)] bg-[var(--color-surface)] py-2.5 text-[12.5px] font-medium text-[var(--color-ink)] hover:border-[var(--color-ink)] transition-colors"
+                  >
+                    Xem biểu đồ {selectedOrderReceipt.symbol}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  disabled={actionOrderId === selectedOrderReceipt.id}
+                  onClick={() => handleCancelOrder(selectedOrderReceipt)}
+                  className="rounded-[var(--radius-sm)] bg-[var(--color-loss)] py-2.5 text-[12.5px] font-semibold text-[var(--color-paper)] hover:opacity-90 disabled:opacity-45 transition-opacity"
+                >
+                  Hủy phần chờ khớp
+                </button>
+              </div>
+            ) : (
+              <div className="mt-6 grid grid-cols-2 gap-2.5 pt-4 border-t border-[var(--color-line)]">
+                <button
+                  type="button"
+                  onClick={() => {
+                    selectSymbol(selectedOrderReceipt.symbol)
+                    setSelectedOrderReceipt(null)
+                  }}
+                  className="rounded-[var(--radius-sm)] border border-[var(--color-line-strong)] bg-[var(--color-surface)] py-2.5 text-[12.5px] font-medium text-[var(--color-ink)] hover:border-[var(--color-ink)] transition-colors"
+                >
+                  Xem biểu đồ {selectedOrderReceipt.symbol}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    selectSymbol(
+                      selectedOrderReceipt.symbol,
+                      selectedOrderReceipt.side,
+                      selectedOrderReceipt.quantity
+                    )
+                    fillPriceInput(Number(selectedOrderReceipt.limitPrice || selectedOrderReceipt.price))
+                    setSelectedOrderReceipt(null)
+                    window.scrollTo({ top: 0, behavior: "smooth" })
+                  }}
+                  className="rounded-[var(--radius-sm)] bg-[var(--color-ink)] py-2.5 text-[12.5px] font-semibold text-[var(--color-paper)] hover:opacity-90 transition-opacity"
+                >
+                  Đặt lại lệnh này
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

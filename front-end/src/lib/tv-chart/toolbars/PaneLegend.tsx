@@ -25,6 +25,9 @@ export interface PaneLegendProps {
   subPanes: PaneLayoutBox[]
   comparisons: TvComparisonSeries[]
   hoveredBarIndex: number
+  precision?: number
+  compact?: boolean
+  isHovering?: boolean
   onToggleIndicatorVisible: (instanceId: string) => void
   onRemoveIndicator: (instanceId: string) => void
   onToggleIndicatorCollapsed: (instanceId: string) => void
@@ -52,6 +55,9 @@ export const PaneLegend: React.FC<PaneLegendProps> = ({
   subPanes,
   comparisons,
   hoveredBarIndex,
+  precision = 0,
+  compact = false,
+  isHovering = false,
   onToggleIndicatorVisible,
   onRemoveIndicator,
   onToggleIndicatorCollapsed,
@@ -98,6 +104,41 @@ export const PaneLegend: React.FC<PaneLegendProps> = ({
   const bidPrice = trading?.bestBidPrice || (closeVal > 0 ? closeVal - 50 : 0)
   const askPrice = trading?.bestAskPrice || (closeVal > 0 ? closeVal + 50 : 0)
   const spread = askPrice > 0 && bidPrice > 0 ? Math.max(0, askPrice - bidPrice) : 0
+
+  if (compact) {
+    if (!isHovering || !activeCandle) return null
+    return (
+      <div
+        data-name="legend-compact-hover"
+        className={`absolute top-1 left-2 z-10 inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded text-[10px] font-mono whitespace-nowrap pointer-events-none select-none max-w-[calc(100%-86px)] overflow-hidden ${
+          isDark ? "bg-[#131722]/90 text-[#D1D4DC]" : "bg-white/92 text-[#131722]"
+        } shadow-2xs`}
+      >
+        <span>
+          <span className="opacity-55 mr-0.5">O</span>
+          <span className={priceColorClass}>{fmtPriceVnd(activeCandle.open, precision)}</span>
+        </span>
+        <span>
+          <span className="opacity-55 mr-0.5">H</span>
+          <span className={priceColorClass}>{fmtPriceVnd(activeCandle.high, precision)}</span>
+        </span>
+        <span>
+          <span className="opacity-55 mr-0.5">L</span>
+          <span className={priceColorClass}>{fmtPriceVnd(activeCandle.low, precision)}</span>
+        </span>
+        <span>
+          <span className="opacity-55 mr-0.5">C</span>
+          <span className={`font-semibold ${priceColorClass}`}>
+            {fmtPriceVnd(activeCandle.close, precision)}
+          </span>
+        </span>
+        <span className={`font-semibold ${priceColorClass}`}>
+          ({changePct >= 0 ? "+" : ""}
+          {changePct.toFixed(2)}%)
+        </span>
+      </div>
+    )
+  }
 
   return (
     <>
@@ -152,41 +193,47 @@ export const PaneLegend: React.FC<PaneLegendProps> = ({
 
           {activeCandle && settings.showSeriesOHLC && (
             <div className="flex flex-wrap items-center gap-x-2 text-[11px] font-mono">
-              <span>
-                <span className="opacity-55 mr-0.5">O</span>
-                <span className={priceColorClass}>{fmtPriceVnd(activeCandle.open)}</span>
-              </span>
-              <span>
-                <span className="opacity-55 mr-0.5">H</span>
-                <span className={priceColorClass}>{fmtPriceVnd(activeCandle.high)}</span>
-              </span>
-              <span>
-                <span className="opacity-55 mr-0.5">L</span>
-                <span className={priceColorClass}>{fmtPriceVnd(activeCandle.low)}</span>
-              </span>
+              {!compact && (
+                <>
+                  <span>
+                    <span className="opacity-55 mr-0.5">O</span>
+                    <span className={priceColorClass}>{fmtPriceVnd(activeCandle.open, precision)}</span>
+                  </span>
+                  <span>
+                    <span className="opacity-55 mr-0.5">H</span>
+                    <span className={priceColorClass}>{fmtPriceVnd(activeCandle.high, precision)}</span>
+                  </span>
+                  <span>
+                    <span className="opacity-55 mr-0.5">L</span>
+                    <span className={priceColorClass}>{fmtPriceVnd(activeCandle.low, precision)}</span>
+                  </span>
+                </>
+              )}
               <span>
                 <span className="opacity-55 mr-0.5">C</span>
                 <span className={`font-semibold ${priceColorClass}`}>
-                  {fmtPriceVnd(activeCandle.close)}
+                  {fmtPriceVnd(activeCandle.close, precision)}
                 </span>
               </span>
               {settings.showBarChangeValues && (
                 <span className={`font-semibold ${priceColorClass}`}>
                   {changeAbs >= 0 ? "+" : ""}
-                  {fmtPriceVnd(changeAbs)} ({changePct >= 0 ? "+" : ""}
+                  {fmtPriceVnd(changeAbs, precision)} ({changePct >= 0 ? "+" : ""}
                   {changePct.toFixed(2)}%)
                 </span>
               )}
-              <span>
-                <span className="opacity-55 mr-0.5">KL</span>
-                <span className="font-semibold opacity-85">{formatVolume(activeCandle.volume)}</span>
-              </span>
+              {!compact && (
+                <span>
+                  <span className="opacity-55 mr-0.5">KL</span>
+                  <span className="font-semibold opacity-85">{formatVolume(activeCandle.volume)}</span>
+                </span>
+              )}
             </div>
           )}
         </div>
 
         {/* Row 2: Authentic TradingView Quick Sell / Spread / Buy Pill (Clean, zero HOSE clutter) */}
-        {!legendCollapsed && trading && (
+        {!compact && !legendCollapsed && trading && precision === 0 && (
           <div className="inline-flex items-center gap-1 pointer-events-auto w-fit">
             <button
               type="button"
@@ -197,14 +244,14 @@ export const PaneLegend: React.FC<PaneLegendProps> = ({
               title="Đặt lệnh BÁN tại giá chào mua tốt nhất"
               className="flex items-center gap-1.5 px-2 py-0.5 rounded border border-[#F23645]/45 bg-white/90 dark:bg-[#131722]/90 hover:bg-[#F23645] text-[#F23645] hover:text-white transition-colors text-[11px] font-mono shadow-2xs"
             >
-              <span className="font-bold">{fmtPriceVnd(bidPrice)}</span>
+              <span className="font-bold">{fmtPriceVnd(bidPrice, precision)}</span>
               <span className="font-sans font-bold text-[9.5px] uppercase tracking-wider opacity-85">
                 BÁN
               </span>
             </button>
 
             <span className="text-[10px] font-mono opacity-55 px-0.5">
-              {spread > 0 ? fmtPriceVnd(spread) : "0"}
+              {spread > 0 ? fmtPriceVnd(spread, precision) : "0"}
             </span>
 
             <button
@@ -216,7 +263,7 @@ export const PaneLegend: React.FC<PaneLegendProps> = ({
               title="Đặt lệnh MUA tại giá chào bán tốt nhất"
               className="flex items-center gap-1.5 px-2 py-0.5 rounded border border-[#2962FF]/45 bg-white/90 dark:bg-[#131722]/90 hover:bg-[#2962FF] text-[#2962FF] hover:text-white transition-colors text-[11px] font-mono shadow-2xs"
             >
-              <span className="font-bold">{fmtPriceVnd(askPrice)}</span>
+              <span className="font-bold">{fmtPriceVnd(askPrice, precision)}</span>
               <span className="font-sans font-bold text-[9.5px] uppercase tracking-wider opacity-85">
                 MUA
               </span>
@@ -262,7 +309,7 @@ export const PaneLegend: React.FC<PaneLegendProps> = ({
           })}
 
         {/* Row 4+: Active Main-Pane Overlay Indicators (with Collapsible Group Header when >= 2) */}
-        {!legendCollapsed && overlayIndicators.length > 0 && (
+        {!compact && !legendCollapsed && overlayIndicators.length > 0 && (
           <>
             {!studiesCollapsed &&
               overlayIndicators.map((comp) => (
@@ -469,10 +516,10 @@ export const PaneLegend: React.FC<PaneLegendProps> = ({
         )
       })}
 
-      {/* Floating Bottom-Center TradingView Control Bar (Zoom Out / Zoom In / Scroll / Reset) */}
+      {/* Floating Bottom-Center TradingView Control Bar (Hover-Reveal, Zero Text Wrap) */}
       <div
         data-name="control-bar"
-        className={`absolute bottom-8 left-1/2 -translate-x-1/2 z-10 flex items-center gap-0.5 px-1.5 py-0.5 rounded-lg border shadow-md opacity-70 hover:opacity-100 transition-opacity select-none ${
+        className={`absolute bottom-8 left-1/2 -translate-x-1/2 z-10 flex items-center gap-0.5 px-1.5 py-0.5 rounded-lg border shadow-md whitespace-nowrap opacity-0 pointer-events-none group-hover/tvcanvas:opacity-85 group-hover/tvcanvas:pointer-events-auto hover:!opacity-100 transition-opacity duration-150 select-none ${
           isDark
             ? "bg-[#1E222D]/95 border-[#2A2E39] text-[#D1D4DC]"
             : "bg-white/95 border-[#E0E3EB] text-[#131722]"
@@ -482,7 +529,7 @@ export const PaneLegend: React.FC<PaneLegendProps> = ({
           type="button"
           onClick={onZoomOut}
           title="Thu nhỏ biểu đồ (Zoom Out)"
-          className="w-6 h-6 rounded flex items-center justify-center hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+          className="w-6 h-6 shrink-0 rounded flex items-center justify-center hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
         >
           <TvIcon name="control-bar" size={16} />
         </button>
@@ -490,16 +537,16 @@ export const PaneLegend: React.FC<PaneLegendProps> = ({
           type="button"
           onClick={onZoomIn}
           title="Phóng to biểu đồ (Zoom In)"
-          className="w-6 h-6 rounded flex items-center justify-center hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+          className="w-6 h-6 shrink-0 rounded flex items-center justify-center hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
         >
           <TvIcon name="control-bar-zoom-in-button" size={16} />
         </button>
-        <div className="w-px h-3.5 bg-current/15 mx-0.5" />
+        <div className="w-px h-3.5 shrink-0 bg-current/15 mx-0.5" />
         <button
           type="button"
           onClick={onPanLeft}
           title="Cuộn sang trái (Lịch sử)"
-          className="w-6 h-6 rounded flex items-center justify-center hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+          className="w-6 h-6 shrink-0 rounded flex items-center justify-center hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
         >
           <TvIcon name="control-bar-scroll-left-button" size={15} className="-scale-x-100" />
         </button>
@@ -507,19 +554,19 @@ export const PaneLegend: React.FC<PaneLegendProps> = ({
           type="button"
           onClick={onPanRight}
           title="Cuộn sang phải (Hiện tại)"
-          className="w-6 h-6 rounded flex items-center justify-center hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+          className="w-6 h-6 shrink-0 rounded flex items-center justify-center hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
         >
           <TvIcon name="control-bar-scroll-right-button" size={15} />
         </button>
-        <div className="w-px h-3.5 bg-current/15 mx-0.5" />
+        <div className="w-px h-3.5 shrink-0 bg-current/15 mx-0.5" />
         <button
           type="button"
           onClick={onResetView}
           title="Đặt lại khung nhìn chuẩn (Reset Chart View)"
-          className="px-1.5 h-6 rounded flex items-center gap-1 hover:bg-black/5 dark:hover:bg-white/10 text-[10.5px] font-medium transition-colors"
+          className="px-1.5 h-6 shrink-0 rounded flex items-center gap-1 whitespace-nowrap hover:bg-black/5 dark:hover:bg-white/10 text-[10.5px] font-medium transition-colors"
         >
           <TvIcon name="control-bar-reset-scale-button" size={15} />
-          <span className="hidden sm:inline">Mặc định</span>
+          <span className="hidden sm:inline whitespace-nowrap">Mặc định</span>
         </button>
       </div>
     </>

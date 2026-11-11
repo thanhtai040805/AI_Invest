@@ -1,18 +1,21 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import { tokenStore } from "./api/client"
 import { getSocket, retainStock } from "./socket"
 
 export interface PortfolioPosition {
   id: string; symbol: string; name?: string; sector?: string | null; exchange?: string | null;
-  quantity: number; avgPrice: number;
+  quantity: number; lockedQuantity?: number; sellableQuantity?: number; pendingT2Quantity?: number;
+  avgPrice: number;
   currentPrice: number | null; marketValue: number | null; costBasis: number | null;
   pnl: number | null; pnlPercent: number | null; weight: number | null;
   priceAsOf: string | null; priceSource: string; stale: boolean;
 }
 export interface PortfolioSnapshot {
   summary: {
-    accountId: string; nav: number | null; cash: number; totalCost: number | null;
+    accountId: string; nav: number | null; cash: number; lockedCash?: number; buyingPower?: number; openOrdersCount?: number;
+    totalCost: number | null;
     openingCash: number | null; realizedPnl: number | null; unrealizedPnl: number | null;
     totalPnl: number | null; totalReturnPct: number | null; ledgerComplete: boolean;
     dailyBaseline: number | null; dailyPnL: number | null; dailyPnLPercent: number | null;
@@ -70,9 +73,22 @@ export function usePortfolio(base: PortfolioSnapshot | null | undefined, reload:
       }
       if (++elapsed % 60 === 0 && document.visibilityState === "visible") void reload()
     }, 1000)
-    const reconnect = () => { void reload() }
+    const syncAccountRoom = () => {
+      const tok = tokenStore.get()
+      if (tok) socket.emit("subscribe:portfolio", tok)
+    }
+    const reconnect = () => { syncAccountRoom(); void reload() }
+    const onOrderUpdated = () => { void reload() }
+    if (!socket.connected) socket.connect()
+    else syncAccountRoom()
     socket.on("connect", reconnect)
-    return () => { clearInterval(timer); socket.off("connect", reconnect); releases.forEach(release => release()) }
+    socket.on("portfolio:order_updated", onOrderUpdated)
+    return () => {
+      clearInterval(timer)
+      socket.off("connect", reconnect)
+      socket.off("portfolio:order_updated", onOrderUpdated)
+      releases.forEach(release => release())
+    }
   }, [accountId, symbols, reload])
 
   return useMemo(() => {

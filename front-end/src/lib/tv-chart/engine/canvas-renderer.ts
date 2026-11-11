@@ -52,6 +52,7 @@ export interface RenderFrameParams {
   mousePos: { x: number; y: number; inside: boolean }
   isDraggingOrderLine: boolean
   zoomBox?: { x1: number; y1: number; x2: number; y2: number } | null
+  precision?: number
 }
 
 export interface RenderFrameMetrics {
@@ -70,8 +71,14 @@ export interface RenderFrameMetrics {
   coordConverter: DrawingCoordConverter
 }
 
-export function fmtPriceVnd(price: number): string {
+export function fmtPriceVnd(price: number, precision = 0): string {
   if (!Number.isFinite(price)) return "—"
+  if (precision > 0) {
+    return price.toLocaleString("vi-VN", {
+      minimumFractionDigits: precision,
+      maximumFractionDigits: precision,
+    })
+  }
   return Math.round(price).toLocaleString("vi-VN")
 }
 
@@ -139,7 +146,8 @@ export function computeChartMetrics(
   settings: TvChartSettings,
   overlayIndicators: TvIndicatorComputed[],
   subPaneIndicators: TvIndicatorComputed[],
-  trading?: TvTradingOverlay
+  trading?: TvTradingOverlay,
+  precision = 0
 ): RenderFrameMetrics {
   const plotLeft = 0
   const plotRight = Math.max(120, width - PRICE_AXIS_WIDTH)
@@ -236,20 +244,22 @@ export function computeChartMetrics(
   const candleMax = rawMax
 
   // Include visible overlay indicator bounds (clamped reasonably around candle price range)
+  const hasCandleRange = Number.isFinite(candleMin) && Number.isFinite(candleMax) && candleMax > 0
+  const floorClamp = hasCandleRange ? candleMin * 0.72 : 0
+  const ceilClamp = hasCandleRange ? candleMax * 1.38 : Infinity
+
   for (const ov of overlayIndicators) {
     if (!ov.instance.visible) continue
     for (const plot of ov.plots) {
       for (let i = iStart; i <= iEnd; i++) {
         const v = plot.values[i]
-        if (v != null && Number.isFinite(v) && v > 0) {
+        if (v != null && Number.isFinite(v) && v > 0 && v >= floorClamp && v <= ceilClamp) {
           if (v < rawMin) rawMin = v
           if (v > rawMax) rawMax = v
         }
       }
     }
-    if (Number.isFinite(candleMin) && Number.isFinite(candleMax)) {
-      const floorClamp = candleMin * 0.72
-      const ceilClamp = candleMax * 1.38
+    if (hasCandleRange) {
       if (ov.polylines) {
         for (const pl of ov.polylines) {
           for (const pt of pl.points) {
@@ -287,12 +297,12 @@ export function computeChartMetrics(
   }
 
   if (!Number.isFinite(rawMin) || !Number.isFinite(rawMax) || rawMax <= rawMin) {
-    const fallback = trading?.currentPrice || 20_000
+    const fallback = trading?.currentPrice || (precision > 0 ? 1_750 : 20_000)
     rawMin = fallback * 0.95
     rawMax = fallback * 1.05
   }
 
-  const span = Math.max(100, rawMax - rawMin)
+  const span = Math.max(precision > 0 ? 0.5 : 100, rawMax - rawMin)
   const pad = span * 0.09
   let minPrice = rawMin - pad
   let maxPrice = rawMax + pad
@@ -307,8 +317,10 @@ export function computeChartMetrics(
   const baseCandle = displayCandles[iStart] ?? displayCandles[0]
   const basePrice = baseCandle?.close > 0 ? baseCandle.close : (minPrice + maxPrice) / 2
 
-  const mTop = mainPane.top + 10
-  const mBot = Math.max(mTop + 20, mainPane.bottom - 10)
+  const topMargin = mainPane.height <= 220 ? 10 : 28
+  const botMargin = mainPane.height <= 220 ? 8 : 12
+  const mTop = mainPane.top + topMargin
+  const mBot = Math.max(mTop + 20, mainPane.bottom - botMargin)
   const mH = mBot - mTop
 
   const priceToY = (price: number): number => {
@@ -390,6 +402,7 @@ export function renderChartFrame(params: RenderFrameParams): RenderFrameMetrics 
     mousePos,
     isDraggingOrderLine,
     zoomBox,
+    precision = 0,
   } = params
 
   const metrics = computeChartMetrics(
@@ -401,7 +414,8 @@ export function renderChartFrame(params: RenderFrameParams): RenderFrameMetrics 
     settings,
     overlayIndicators,
     subPaneIndicators,
-    trading
+    trading,
+    precision
   )
 
   const {
@@ -1389,6 +1403,27 @@ export function renderChartFrame(params: RenderFrameParams): RenderFrameMetrics 
       }
     }
 
+    // Standard TradingView Last Price Dotted Line even when trading overlay is omitted (e.g. VNINDEX)
+    const fallbackLastBar = displayCandles[displayCandles.length - 1]
+    const effectiveLastPrice =
+      trading && trading.currentPrice > 0 ? trading.currentPrice : fallbackLastBar?.close ?? 0
+
+    if (!trading && effectiveLastPrice > 0 && fallbackLastBar) {
+      const curColor = fallbackLastBar.close >= fallbackLastBar.open ? upColor : downColor
+      const yCur = Math.round(coordConverter.priceToY(effectiveLastPrice)) + 0.5
+      if (yCur >= mainPane.top && yCur <= mainPane.bottom) {
+        ctx.save()
+        ctx.strokeStyle = curColor
+        ctx.lineWidth = 1
+        ctx.setLineDash([2, 2])
+        ctx.beginPath()
+        ctx.moveTo(plotLeft, yCur)
+        ctx.lineTo(plotRight, yCur)
+        ctx.stroke()
+        ctx.restore()
+      }
+    }
+
     // 2.6 Saved & Active Draft Drawings
     for (const d of drawings) {
       renderSingleDrawing(
@@ -1413,20 +1448,18 @@ export function renderChartFrame(params: RenderFrameParams): RenderFrameMetrics 
     let yOrdPill: number | null = null
     let yCurPill: number | null = null
 
-    if (trading) {
-      if (settings.showOrderLine && trading.hasDraftOrder && trading.orderPrice > 0) {
-        const yO = coordConverter.priceToY(trading.orderPrice)
-        if (yO >= mainPane.top + 9 && yO <= mainPane.bottom - 9) {
-          yOrdPill = yO
-          occupiedYs.push(yO)
-        }
+    if (trading && settings.showOrderLine && trading.hasDraftOrder && trading.orderPrice > 0) {
+      const yO = coordConverter.priceToY(trading.orderPrice)
+      if (yO >= mainPane.top + 9 && yO <= mainPane.bottom - 9) {
+        yOrdPill = yO
+        occupiedYs.push(yO)
       }
-      if (trading.currentPrice > 0) {
-        const yC = coordConverter.priceToY(trading.currentPrice)
-        if (yC >= mainPane.top + 9 && yC <= mainPane.bottom - 9) {
-          yCurPill = yC
-          occupiedYs.push(yC)
-        }
+    }
+    if (effectiveLastPrice > 0) {
+      const yC = coordConverter.priceToY(effectiveLastPrice)
+      if (yC >= mainPane.top + 9 && yC <= mainPane.bottom - 9) {
+        yCurPill = yC
+        occupiedYs.push(yC)
       }
     }
     if (
@@ -1454,39 +1487,37 @@ export function renderChartFrame(params: RenderFrameParams): RenderFrameMetrics 
       const labelText =
         viewport.scaleMode === "percentage"
           ? `${(((pVal - basePrice) / Math.max(1, basePrice)) * 100).toFixed(2)}%`
-          : fmtPriceVnd(pVal)
+          : fmtPriceVnd(pVal, precision)
       ctx.fillText(labelText, plotRight + 7, y)
     }
 
-    if (trading) {
-      if (yCurPill !== null) {
-        const lastBar = displayCandles[displayCandles.length - 1]
-        const curColor = lastBar
-          ? lastBar.close >= lastBar.open
-            ? upColor
-            : downColor
-          : trading.currentPrice >= trading.refPrice
-            ? upColor
-            : downColor
-        drawAxisPill(
-          ctx,
-          plotRight,
-          yCurPill,
-          PRICE_AXIS_WIDTH,
-          fmtPriceVnd(trading.currentPrice),
-          curColor
-        )
-      }
-      if (yOrdPill !== null) {
-        drawAxisPill(
-          ctx,
-          plotRight,
-          yOrdPill,
-          PRICE_AXIS_WIDTH,
-          fmtPriceVnd(trading.orderPrice),
-          trading.orderSide === "BUY" ? upColor : downColor
-        )
-      }
+    if (yCurPill !== null && effectiveLastPrice > 0) {
+      const lastBar = displayCandles[displayCandles.length - 1]
+      const curColor = lastBar
+        ? lastBar.close >= lastBar.open
+          ? upColor
+          : downColor
+        : trading && trading.currentPrice >= trading.refPrice
+          ? upColor
+          : downColor
+      drawAxisPill(
+        ctx,
+        plotRight,
+        yCurPill,
+        PRICE_AXIS_WIDTH,
+        fmtPriceVnd(effectiveLastPrice, precision),
+        curColor
+      )
+    }
+    if (trading && yOrdPill !== null) {
+      drawAxisPill(
+        ctx,
+        plotRight,
+        yOrdPill,
+        PRICE_AXIS_WIDTH,
+        fmtPriceVnd(trading.orderPrice, precision),
+        trading.orderSide === "BUY" ? upColor : downColor
+      )
     }
     ctx.restore()
   }
@@ -1999,7 +2030,7 @@ export function renderChartFrame(params: RenderFrameParams): RenderFrameMetrics 
       const label =
         viewport.scaleMode === "percentage"
           ? `${(((hoverPrice - basePrice) / Math.max(1, basePrice)) * 100).toFixed(2)}%`
-          : fmtPriceVnd(hoverPrice)
+          : fmtPriceVnd(hoverPrice, precision)
       drawAxisPill(ctx, plotRight, cy, PRICE_AXIS_WIDTH, label, textInk, bgColor)
 
       // TradingView "+" button on right border to quick-pick price

@@ -1,26 +1,20 @@
 "use client"
 
-import { useParams } from "next/navigation"
-import { Page } from "@/components/Shell"
-import { StockDetailContent } from "@/components/StockDetailView"
-import { Link } from "@/lib/router"
-import { Button } from "@/components/ui"
+import { useEffect } from "react"
+import { useParams, useRouter } from "next/navigation"
 
-export default function StockDetailPage() {
+export default function StockDetailRedirectPage() {
   const { symbol } = useParams<{ symbol: string }>()
-  const cleanSymbol = (symbol || "HPG").toUpperCase()
+  const router = useRouter()
+  const cleanSymbol = (symbol || "HPG").trim().toUpperCase()
+
+  useEffect(() => {
+    router.replace(`/markets?symbol=${encodeURIComponent(cleanSymbol)}`)
+  }, [cleanSymbol, router])
 
   return (
-    <Page
-      title={`Chi tiết mã ${cleanSymbol}`}
-      sub="Cấu trúc giá, đồ thị kỹ thuật, sổ lệnh bước giá, dòng tiền VSA và giao dịch khối ngoại."
-      actions={
-        <Link to="/markets">
-          <Button variant="secondary">← Quay lại Bảng giá HOSE</Button>
-        </Link>
-      }
-    >
-      <StockDetailContent symbol={cleanSymbol} />
-    </Page>
+    <div className="flex min-h-[40vh] items-center justify-center text-[13px] text-muted font-mono">
+      Đang mở bảng phân tích {cleanSymbol}…
+    </div>
   )
 }

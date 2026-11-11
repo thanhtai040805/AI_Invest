@@ -330,8 +330,17 @@ function normalizeOrdersAndRoundTrips(rawOrders: Record<string, unknown>[]): {
     if (!symbol) continue
     const side: "BUY" | "SELL" = String(raw.side || "").toUpperCase() === "BUY" ? "BUY" : "SELL"
     const orderType = String(raw.orderType || "LO").toUpperCase()
+    const status = String(raw.status ?? "FILLED").toUpperCase()
     const quantity = Number(raw.quantity ?? raw.filledQuantity ?? 0)
-    const rawPrice = Number(raw.price ?? raw.limitPrice ?? raw.avgFillPrice ?? 0)
+    const filledQty =
+      raw.filledQuantity != null
+        ? Number(raw.filledQuantity)
+        : status === "FILLED"
+          ? quantity
+          : 0
+    const rawPrice = Number(
+      (filledQty > 0 ? raw.avgFillPrice : null) ?? raw.price ?? raw.limitPrice ?? 0
+    )
     const price = rawPrice > 0 && rawPrice < 500 ? Math.round(rawPrice * 1000) : Math.round(rawPrice)
     if (!Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(price) || price <= 0) continue
 
@@ -347,13 +356,15 @@ function normalizeOrdersAndRoundTrips(rawOrders: Record<string, unknown>[]): {
       exchange,
       side,
       orderType,
-      quantity,
+      quantity: filledQty > 0 ? filledQty : quantity,
       price,
-      totalValue: quantity * price,
-      status: String(raw.status ?? "FILLED"),
+      totalValue: (filledQty > 0 ? filledQty : quantity) * price,
+      status,
       createdAt,
     }
     normalizedOrders.push(norm)
+
+    if (filledQty <= 0) continue
 
     if (!bySym[symbol]) {
       bySym[symbol] = {
@@ -376,12 +387,12 @@ function normalizeOrdersAndRoundTrips(rawOrders: Record<string, unknown>[]): {
     bucket.orders.push(norm)
 
     if (side === "BUY") {
-      bucket.buyVal += quantity * price
-      bucket.buyQty += quantity
+      bucket.buyVal += filledQty * price
+      bucket.buyQty += filledQty
       buyCount += 1
     } else {
-      bucket.sellVal += quantity * price
-      bucket.sellQty += quantity
+      bucket.sellVal += filledQty * price
+      bucket.sellQty += filledQty
       sellCount += 1
     }
   }
