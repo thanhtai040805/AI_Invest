@@ -13,6 +13,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from app.adapters.postgres_adapter import PostgresAdapter
+from app.core.time_utils import coerce_vn_date, today_vn
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +99,7 @@ class IntelligenceRepository:
         if not symbol:
             raise ValueError("[IntelligenceRepository] symbol không được rỗng.")
         symbol = str(symbol).upper().strip()
-        target_date = score_date or date.today()
+        target_date = score_date or today_vn()
 
         target_percentile = percentile
         if target_percentile is None and factor_details_extra and "percentile" in factor_details_extra:
@@ -184,7 +185,7 @@ class IntelligenceRepository:
         if not ticker:
             raise ValueError("[IntelligenceRepository] ticker không được rỗng.")
         ticker = str(ticker).upper().strip()
-        target_date = research_date or date.today()
+        target_date = research_date or today_vn()
         query = """
             INSERT INTO log_equity_research (
                 ticker, date, factor_raw_metrics, business_quality_evidence,
@@ -242,7 +243,7 @@ class IntelligenceRepository:
             if isinstance(target_date_raw, str):
                 td = _date.fromisoformat(target_date_raw.split("T")[0])
             elif isinstance(target_date_raw, datetime):
-                td = target_date_raw.date()
+                td = coerce_vn_date(target_date_raw)
             else:
                 td = target_date_raw
             now = datetime.combine(td, day_time(9, 45), tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
@@ -384,7 +385,7 @@ class IntelligenceRepository:
             if isinstance(target_date_raw, str):
                 td = _date.fromisoformat(target_date_raw.split("T")[0])
             elif isinstance(target_date_raw, datetime):
-                td = target_date_raw.date()
+                td = coerce_vn_date(target_date_raw)
             else:
                 td = target_date_raw
             now = datetime.combine(td, day_time(9, 45), tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
@@ -554,7 +555,7 @@ class IntelligenceRepository:
                 cdc_active = EXCLUDED.cdc_active,
                 updated_at = CURRENT_TIMESTAMP
         """
-        req_date = snapshot_data.get("date") or date.today()
+        req_date = snapshot_data.get("date") or today_vn()
         if hasattr(req_date, "isoformat"):
             req_date = req_date.isoformat()
         try:

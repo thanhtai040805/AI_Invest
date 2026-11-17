@@ -12,6 +12,8 @@ import logging
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
+from app.core.time_utils import now_vn
+
 logger = logging.getLogger(__name__)
 
 CIO_SYSTEM_PERSONA = (
@@ -49,7 +51,7 @@ class StrategicMemoGenerator:
         target_date: Optional[str] = None,
     ) -> List[Dict[str, str]]:
         """Xây dựng prompt chuẩn hóa theo cấu trúc 4 phần của CIO."""
-        t_date = target_date or datetime.now().strftime("%d/%m/%Y")
+        t_date = target_date or now_vn().strftime("%d/%m/%Y")
         clean_ticker = str(ticker).upper().strip()
 
         # Chuẩn bị dữ liệu tài chính độc lập
@@ -197,7 +199,7 @@ Hãy trình bày đúng theo định dạng Markdown sau:
         quote = (business_quality_data or {}).get("evidence_quote", "Chưa có trích dẫn bằng chứng cụ thể.")
         verdict = (counter_payload or {}).get("verdict", "PROCEED")
         cts = (counter_payload or {}).get("cts_score", 0.0)
-        today_str = datetime.now().strftime("%d/%m/%Y")
+        today_str = now_vn().strftime("%d/%m/%Y")
 
         return f"""# BÁO CÁO CẬP NHẬT CHIẾN LƯỢC: {company_name} ({ticker})
 **Chủ đề:** Thẩm định thực chất dòng tiền và rủi ro cấu trúc tại {ticker}  

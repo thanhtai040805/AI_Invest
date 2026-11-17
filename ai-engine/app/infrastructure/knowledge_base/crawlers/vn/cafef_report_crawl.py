@@ -19,6 +19,9 @@ import asyncio, csv, logging, os, re, sys
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 import httpx
 from bs4 import BeautifulSoup
@@ -213,7 +216,7 @@ async def scrape_category(
 
         if cutoff and r.date:
             try:
-                d = datetime.strptime(r.date, "%d/%m/%Y").replace(tzinfo=timezone.utc)
+                d = datetime.strptime(r.date, "%d/%m/%Y").replace(tzinfo=VN_TZ)
                 if d < cutoff:
                     continue
             except ValueError:
@@ -281,10 +284,10 @@ async def main():
         art_list = []
         for r in all_reports:
             try:
-                published_date = datetime.strptime(r.date.strip(), "%d/%m/%Y %H:%M").replace(tzinfo=timezone.utc)
+                published_date = datetime.strptime(r.date.strip(), "%d/%m/%Y %H:%M").replace(tzinfo=VN_TZ)
             except ValueError:
                 try:
-                    published_date = datetime.strptime(r.date.strip(), "%d/%m/%Y").replace(tzinfo=timezone.utc)
+                    published_date = datetime.strptime(r.date.strip(), "%d/%m/%Y").replace(tzinfo=VN_TZ)
                 except ValueError:
                     published_date = datetime.now(timezone.utc)
 

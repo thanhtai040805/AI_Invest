@@ -18,6 +18,7 @@ import os
 from datetime import date
 from typing import Any, Dict, List, Optional
 
+from app.core.time_utils import today_vn
 from app.infrastructure.database.pg_pool import get_conn
 from app.domain.repositories.universe_repository import UniverseRepository
 from app.infrastructure.vendors.vn.sector_groups import classify, BANKS, FINANCIAL_SERVICES, REAL_ESTATE
@@ -175,7 +176,7 @@ class BeneishMScoreEngine:
         """Tính toán M-Score cho một ticker dựa trên BCTC chuẩn thực tế (BS, IS, CF)."""
         sym = str(ticker).upper().strip()
         if target_date is None:
-            target_date = date.today()
+            target_date = today_vn()
 
         # 1. Kiểm tra ngành của cổ phiếu
         industry = ""
@@ -534,7 +535,7 @@ class BeneishMScoreEngine:
                         UPDATE stocks
                         SET beneish_score = %s,
                             beneish_status = %s,
-                            beneish_updated = CURRENT_DATE
+                            beneish_updated = (NOW() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date
                         WHERE symbol = %s
                         """,
                         (m_score if m_score != -99.0 else None, status, sym),

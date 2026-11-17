@@ -1718,7 +1718,8 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
     try {
       const url = canvas.toDataURL("image/png")
       const link = document.createElement("a")
-      link.download = `AIInvest_${symbol}_${timeframe}_${new Date().toISOString().slice(0, 10)}.png`
+      const vnToday = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Ho_Chi_Minh" }).format(new Date())
+      link.download = `AIInvest_${symbol}_${timeframe}_${vnToday}.png`
       link.href = url
       link.click()
     } catch {

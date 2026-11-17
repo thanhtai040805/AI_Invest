@@ -26,6 +26,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from app.core.base_agent import BaseAgent
+from app.core.time_utils import UTC_TZ, VN_TZ, now_vn
 from app.domain.rules.stop_loss import StopLossEngine, StopLossOrder
 from app.domain.repositories.portfolio_repository import PortfolioRepository
 
@@ -148,11 +149,16 @@ class PositionMonitoringAgent(BaseAgent):
         eval_time_str = event_data.get("current_time")
         if eval_time_str:
             try:
-                eval_dt = datetime.fromisoformat(str(eval_time_str))
+                parsed_eval = datetime.fromisoformat(str(eval_time_str).replace("Z", "+00:00"))
+                eval_dt = (
+                    parsed_eval.astimezone(VN_TZ)
+                    if parsed_eval.tzinfo is not None
+                    else parsed_eval.replace(tzinfo=VN_TZ)
+                )
             except Exception:
-                eval_dt = datetime.now()
+                eval_dt = now_vn()
         else:
-            eval_dt = datetime.now()
+            eval_dt = now_vn()
         is_past_14h = eval_dt.hour >= 14
 
         positions_raw = event_data.get("positions", [])
@@ -170,6 +176,7 @@ class PositionMonitoringAgent(BaseAgent):
                     "locked_t25_shares": p.get("locked_t25_shares", 0),
                     "entry_price": p.get("average_price", 0.0),
                     "current_price": None,  # Để Agent 9 tự động fetch giá realtime
+                    "opened_at": p.get("opened_at"),
                     "holding_days": p.get("holding_days", 0),
                     "swing_low": p.get("swing_low") or (p.get("average_price", 0.0) * 0.95),
                     "peak_price": p.get("peak_price", 0.0),
@@ -210,9 +217,12 @@ class PositionMonitoringAgent(BaseAgent):
                         if isinstance(opened_at, str) else opened_at
                     )
                     if isinstance(opened_dt, datetime):
-                        if opened_dt.tzinfo and eval_dt.tzinfo:
-                            opened_dt = opened_dt.astimezone(eval_dt.tzinfo)
-                        holding_days = max(0, (eval_dt.date() - opened_dt.date()).days)
+                        opened_vn = (
+                            opened_dt.astimezone(VN_TZ)
+                            if opened_dt.tzinfo is not None
+                            else opened_dt.replace(tzinfo=UTC_TZ).astimezone(VN_TZ)
+                        )
+                        holding_days = max(0, (eval_dt.date() - opened_vn.date()).days)
                 except (TypeError, ValueError):
                     logger.debug("Could not derive holding days from opened_at for %s", ticker)
             expected_timeline = int(pos.get("expected_timeline_days", 90))

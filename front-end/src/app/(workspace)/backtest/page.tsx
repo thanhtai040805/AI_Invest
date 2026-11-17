@@ -6,9 +6,7 @@ import { Button, MetricStrip, Panel, PanelHead, Pill, fmt } from "@/components/u
 import { aiApi } from "@/lib/api"
 
 const todayLocal = () => {
-  const date = new Date()
-  date.setMinutes(date.getMinutes() - date.getTimezoneOffset())
-  return date.toISOString().slice(0, 10)
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Ho_Chi_Minh" }).format(new Date())
 }
 
 interface EquityPoint { date: string; equity: number }

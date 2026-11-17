@@ -23,7 +23,7 @@ import logging
 import math
 import os
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from enum import Enum
 from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional, Union
@@ -32,6 +32,7 @@ import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
 
+from app.core.time_utils import UTC_TZ, VN_TZ, now_utc_naive, now_vn, today_vn, to_utc_naive
 from app.domain.repositories.portfolio_repository import PortfolioRepository
 from app.domain.services.ml.feature_forge import feature_forge
 from app.domain.services.ml.graph_contagion_engine import graph_engine
@@ -460,7 +461,11 @@ class StandaloneMLChannel:
                     continue  # Daily snapshot is immutable; never requeue or invalidate its accuracy.
                 if not order_id:
                     continue
-                created_at = datetime.combine(target_date_obj, datetime.min.time()).replace(hour=9, minute=45) if is_replay else datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).replace(tzinfo=None)
+                created_at = (
+                    to_utc_naive(datetime.combine(target_date_obj, time(9, 45), tzinfo=VN_TZ))
+                    if is_replay
+                    else now_utc_naive()
+                )
                 cur.execute("""INSERT INTO orders (id, user_id, symbol, side, order_type, price, quantity, status, created_at)
                     VALUES (%s, %s, %s, 'BUY', %s, %s, %s, %s, %s)
                 """, (order_id, self.account_id, ticker, order_type, limit_price, shares, pending_status, created_at))
@@ -504,7 +509,7 @@ class StandaloneMLChannel:
 
         account = self.get_account_state()
         positions = self.get_open_positions()
-        now = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
+        now = now_vn()
         risk = StopLossEngine()
         queued = 0
         for position in positions:
@@ -519,7 +524,16 @@ class StandaloneMLChannel:
                 continue  # Stale/empty depth cannot produce an artificial protective fill.
             entry = float(position["average_price"])
             self._peak_prices[ticker] = max(self._peak_prices.get(ticker, entry), current_price)
-            days_held = (now.date() - position["opened_at"].date()).days if position.get("opened_at") else 0
+            opened_raw = position.get("opened_at")
+            if isinstance(opened_raw, datetime):
+                opened_vn_date = (
+                    opened_raw.astimezone(VN_TZ)
+                    if opened_raw.tzinfo is not None
+                    else opened_raw.replace(tzinfo=UTC_TZ).astimezone(VN_TZ)
+                ).date()
+                days_held = (now.date() - opened_vn_date).days
+            else:
+                days_held = 0
             gain_from_entry = (current_price - entry) / entry
             peak_gain = (self._peak_prices[ticker] - entry) / entry
 
@@ -555,7 +569,7 @@ class StandaloneMLChannel:
                 if cur.fetchone():
                     continue
                 cur.execute("INSERT INTO orders (id,user_id,symbol,side,order_type,price,quantity,status,created_at) VALUES (%s,%s,%s,'SELL','SHADOW_ML_LIMIT',%s,%s,'PENDING_SHADOW',%s)",
-                    (str(uuid.uuid4()), self.account_id, ticker, current_price * 0.985, sell_quantity, now.replace(tzinfo=None)))
+                    (str(uuid.uuid4()), self.account_id, ticker, current_price * 0.985, sell_quantity, to_utc_naive(now)))
                 queued += 1
         return {"monitored": len(positions), "queued": queued}
 

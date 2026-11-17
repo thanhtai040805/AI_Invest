@@ -14,6 +14,7 @@ from math import isfinite
 from typing import Any, Dict, List, Optional
 
 from app.adapters.postgres_adapter import PostgresAdapter
+from app.core.time_utils import today_vn
 
 logger = logging.getLogger(__name__)
 
@@ -379,7 +380,7 @@ class FinancialRepository:
     def get_latest_ratios(self, symbol: str, as_of: Optional[date] = None, frequency: Optional[str] = "quarterly") -> Optional[Dict[str, Any]]:
         """Lấy chỉ số tài chính gần nhất của cổ phiếu (P/E, P/B, ROE, ROA, Debt/Equity...)."""
         symbol = symbol.upper().strip()
-        as_of_date = as_of or date.today()
+        as_of_date = as_of or today_vn()
         freq_clause = "AND frequency = %s" if frequency else ""
         query = f"""
             SELECT ratio_date, pe, pb, roe, roa, debt_equity, current_ratio,
@@ -488,7 +489,7 @@ class FinancialRepository:
             ORDER BY symbol, available_at DESC, ratio_date DESC
         """
         try:
-            rows = self.storage.fetch_all(query, (normalized, as_of or date.today()))
+            rows = self.storage.fetch_all(query, (normalized, as_of or today_vn()))
         except Exception as exc:
             logger.warning("Could not load screener financial ratios: %s", exc)
             return {}

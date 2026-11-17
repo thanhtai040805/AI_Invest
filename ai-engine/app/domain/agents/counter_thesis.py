@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 from datetime import date
 
 from app.core.base_agent import BaseAgent
+from app.core.time_utils import today_vn
 from app.domain.rules.counter_thesis import CounterThesisEngine, Verdict
 from app.domain.rules.beneish import beneish_engine
 
@@ -58,7 +59,7 @@ class CounterThesisAgent(BaseAgent):
         if not ticker:
             raise ValueError("[CounterThesisAgent] Thiếu thông tin mã cổ phiếu (ticker) trong thesis hoặc event_data.")
         ticker = str(ticker).upper().strip()
-        as_of = event_data.get("target_date") or event_data.get("date") or event_data.get("as_of_date") or date.today()
+        as_of = event_data.get("target_date") or event_data.get("date") or event_data.get("as_of_date") or today_vn()
         if isinstance(as_of, str):
             as_of = date.fromisoformat(as_of[:10])
 

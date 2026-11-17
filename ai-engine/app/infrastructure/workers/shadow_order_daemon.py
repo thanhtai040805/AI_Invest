@@ -25,14 +25,15 @@ class ShadowOrderDaemon:
 
     def _resolve_adtv20(self, ticker: str, decision_context: object = None) -> float:
         sym = str(ticker or "").upper().strip()
-        if sym in self._adtv20_cache:
-            return self._adtv20_cache[sym]
+        cache = self.__dict__.setdefault("_adtv20_cache", {})
+        if sym in cache:
+            return cache[sym]
         if isinstance(decision_context, dict):
             alloc = decision_context.get("allocation")
             if isinstance(alloc, dict) and alloc.get("adtv20_shares"):
                 val = float(alloc["adtv20_shares"])
                 if val > 0:
-                    self._adtv20_cache[sym] = val
+                    cache[sym] = val
                     return val
         try:
             rows = self.repository.storage.fetch_all(
@@ -50,7 +51,7 @@ class ShadowOrderDaemon:
             )
             if rows and rows[0][0] and float(rows[0][0]) > 0:
                 adtv = float(rows[0][0])
-                self._adtv20_cache[sym] = adtv
+                cache[sym] = adtv
                 return adtv
         except Exception as exc:
             logger.debug("ShadowOrderDaemon ADTV20 lookup fallback for %s: %s", sym, exc)

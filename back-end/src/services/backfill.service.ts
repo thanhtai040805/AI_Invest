@@ -6,25 +6,25 @@ import { syncStocksFromEngine, backfillOhlcv } from './stockSync.service';
 
 const VIETNAM_TIMEZONE_OFFSET = 7;
 
-function getVietnamDate(): Date {
-  const now = new Date();
-  const utc = now.getTime() + now.getTimezoneOffset() * 60_000;
-  return new Date(utc + VIETNAM_TIMEZONE_OFFSET * 3_600_000);
+function getVietnamParts(now: Date = new Date()) {
+  const vn = new Date(now.getTime() + VIETNAM_TIMEZONE_OFFSET * 3_600_000);
+  return {
+    year: vn.getUTCFullYear(),
+    dayOfWeek: vn.getUTCDay(),
+    hours: vn.getUTCHours(),
+    minutes: vn.getUTCMinutes(),
+    dateStr: vn.toISOString().slice(0, 10),
+  };
 }
 
-function isTradingDay(date: Date = getVietnamDate()): boolean {
-  const day = date.getDay();
-  if (day === 0 || day === 6) return false;
-
-  const dateStr = date.toISOString().split('T')[0];
-  const holidays = getVietnamHolidays(date.getFullYear());
-  return !holidays.includes(dateStr);
+function isTradingDay(vn = getVietnamParts()): boolean {
+  if (vn.dayOfWeek === 0 || vn.dayOfWeek === 6) return false;
+  const holidays = getVietnamHolidays(vn.year);
+  return !holidays.includes(vn.dateStr);
 }
 
-function isMarketClosed(date: Date = getVietnamDate()): boolean {
-  const hours = date.getHours();
-  const minutes = date.getMinutes();
-  const totalMinutes = hours * 60 + minutes;
+function isMarketClosed(vn = getVietnamParts()): boolean {
+  const totalMinutes = vn.hours * 60 + vn.minutes;
 
   // Wait until 15:00 ICT (after HOSE 14:30-14:45 ATC + 14:45-15:00 Negotiated/PLO settlement)
   return totalMinutes >= 15 * 60;
@@ -49,9 +49,8 @@ function getVietnamHolidays(year: number): string[] {
 }
 
 async function getTodaySessionLog(): Promise<any | null> {
-  const vnDate = getVietnamDate();
-  const startOfDay = new Date(vnDate);
-  startOfDay.setHours(0, 0, 0, 0);
+  const { dateStr } = getVietnamParts();
+  const startOfDay = new Date(`${dateStr}T00:00:00.000Z`);
 
   return prisma.marketSessionLog.findFirst({
     where: {
@@ -64,9 +63,8 @@ async function getTodaySessionLog(): Promise<any | null> {
 }
 
 async function createSessionLog(): Promise<any> {
-  const vnDate = getVietnamDate();
-  const startOfDay = new Date(vnDate);
-  startOfDay.setHours(0, 0, 0, 0);
+  const { dateStr } = getVietnamParts();
+  const startOfDay = new Date(`${dateStr}T00:00:00.000Z`);
 
   return prisma.marketSessionLog.create({
     data: {
@@ -95,8 +93,7 @@ async function backfillTodaySnapshot(): Promise<number> {
 }
 
 async function backfillTodayOhlcv(symbols: string[]): Promise<number> {
-  const vnDate = getVietnamDate();
-  const todayStr = vnDate.toISOString().split('T')[0];
+  const { dateStr: todayStr } = getVietnamParts();
 
   let total = 0;
   for (const symbol of symbols) {
@@ -114,10 +111,10 @@ export async function autoBackfillIfNeeded(): Promise<{ triggered: boolean; reas
   if (!config.dnse.enabled) {
     return { triggered: false, reason: 'Auto-backfill skipped (DNSE_ENABLED=false)' };
   }
-  const vnDate = getVietnamDate();
-  const dateStr = vnDate.toISOString().split('T')[0];
+  const vn = getVietnamParts();
+  const { dateStr } = vn;
 
-  if (!isTradingDay(vnDate)) {
+  if (!isTradingDay(vn)) {
     return { triggered: false, reason: `${dateStr} is not a trading day (weekend/holiday)` };
   }
 
@@ -132,8 +129,8 @@ export async function autoBackfillIfNeeded(): Promise<{ triggered: boolean; reas
     }
   }
 
-  if (!isMarketClosed(vnDate)) {
-    return { triggered: false, reason: `Market still open (${vnDate.getHours()}:${String(vnDate.getMinutes()).padStart(2, '0')} VN time)` };
+  if (!isMarketClosed(vn)) {
+    return { triggered: false, reason: `Market still open (${vn.hours}:${String(vn.minutes).padStart(2, '0')} VN time)` };
   }
 
   console.log(`[Backfill] Triggering auto-backfill for ${dateStr}...`);

@@ -16,11 +16,12 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Any, Dict, List, Optional
 import numpy as np
 
 from app.core.base_agent import BaseAgent
+from app.core.time_utils import VN_TZ, coerce_vn_date, now_vn, today_vn, to_utc_naive
 from app.adapters.postgres_adapter import PostgresAdapter
 from app.eval.mral import MRALEngine
 from app.domain.rules.learning.causal_learning_engines import (
@@ -95,7 +96,7 @@ class ReinforcementLearningAgent(BaseAgent):
                     learning_epoch = EXCLUDED.learning_epoch,
                     updated_at = CURRENT_TIMESTAMP;
             """
-            epoch = int(datetime.now().strftime("%Y%m%d"))
+            epoch = int(now_vn().strftime("%Y%m%d"))
             self.storage.execute(
                 sql_weights,
                 (
@@ -171,12 +172,13 @@ class ReinforcementLearningAgent(BaseAgent):
             - forward_returns: Dict[str, float] (ticker -> realized_return_20d)
             - business_quality_evidence: Dict[str, Dict[str, Any]] (tùy chọn: ticker -> evidence metadata)
         """
-        target_date = event_data.get("target_date", date.today())
-        if isinstance(target_date, str):
-            target_date = date.fromisoformat(target_date[:10])
+        target_date = coerce_vn_date(event_data.get("target_date"), default=today_vn())
+        is_replay = bool(event_data.get("is_replay", False))
         data_as_of = event_data.get("market_data_date") or target_date
         if isinstance(data_as_of, str):
             data_as_of = date.fromisoformat(data_as_of[:10])
+        elif isinstance(data_as_of, datetime):
+            data_as_of = coerce_vn_date(data_as_of)
         regime = str(event_data.get("regime", "BULL_MARKET")).upper().strip()
         realized_trades: List[Dict[str, Any]] = event_data.get("realized_trades", [])
         factor_preds: Dict[str, Dict[str, float]] = event_data.get("factor_predictions", {})
@@ -195,6 +197,11 @@ class ReinforcementLearningAgent(BaseAgent):
             try:
                 import os
                 account_id = os.getenv("MULTI_AGENT_ACCOUNT_ID", "940b0c70-2010-42f3-b947-797e6419b794")
+                resolved_cutoff = to_utc_naive(
+                    datetime.combine(target_date, time(0, 0), tzinfo=VN_TZ)
+                    if is_replay
+                    else datetime.combine(target_date, time(23, 59, 59, 999999), tzinfo=VN_TZ)
+                )
                 rows_trades = self.storage.fetch_all(
                     """SELECT p.ticker, (p.resolve_price-p.price)/p.price*100, p.confidence
                     FROM paper_trades p
@@ -202,13 +209,13 @@ class ReinforcementLearningAgent(BaseAgent):
                       AND p.price>0 AND p.resolve_price>0 AND p.quantity>0
                       AND EXISTS (SELECT 1 FROM orders o JOIN order_executions e ON e.order_id::text=o.id
                         WHERE o.user_id=p.account_id AND o.symbol=p.ticker AND e.action='BUY'
-                          AND abs(e.executed_price-p.price)<0.01 AND e.executed_at<=p.resolved_at AT TIME ZONE 'Asia/Ho_Chi_Minh')
+                          AND abs(e.executed_price-p.price)<0.01 AND e.executed_at<=(p.resolved_at AT TIME ZONE 'UTC'))
                       AND EXISTS (SELECT 1 FROM orders o JOIN order_executions e ON e.order_id::text=o.id
                         WHERE o.user_id=p.account_id AND o.symbol=p.ticker AND e.action IN ('SELL','SELL_MP')
                           AND abs(e.executed_price-p.resolve_price)<0.01 AND e.shares>=p.quantity
-                          AND (e.executed_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date=p.resolved_at::date)
+                          AND (e.executed_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date=((p.resolved_at AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh')::date)
                     ORDER BY p.resolved_at DESC LIMIT 50""",
-                    (account_id, target_date),
+                    (account_id, resolved_cutoff),
                 )
                 if rows_trades:
                     realized_trades = [{"ticker": r[0], "pnl": float(r[1]), "conviction": r[2] or "A"} for r in rows_trades]

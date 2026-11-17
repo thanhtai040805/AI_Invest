@@ -694,7 +694,7 @@ class MarketSurveillanceAgent(BaseAgent):
                                 date, regime_label, breadth_ma50, breadth_ma200,
                                 breadth_rsi_oversold, breadth_rsi_overbought,
                                 market_volume_sma20_ratio, net_foreign_flow_bil, created_at
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, (NOW() AT TIME ZONE 'UTC'))
                             ON CONFLICT (date) DO UPDATE SET
                                 regime_label = EXCLUDED.regime_label,
                                 breadth_ma50 = EXCLUDED.breadth_ma50,

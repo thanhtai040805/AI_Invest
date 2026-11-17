@@ -61,13 +61,16 @@ export function roundToHoseTick(priceVnd: number, isIndex = false): number {
   return Math.round(priceVnd / step) * step
 }
 
+const VN_OFFSET_MS = 7 * 3_600_000
+
 export function formatTimeframeLabel(ts: number, rawDate: string, tf: TvTimeframe): string {
-  const d = new Date(ts)
-  if (Number.isNaN(d.getTime())) return rawDate.slice(0, 10)
+  const raw = new Date(ts)
+  if (Number.isNaN(raw.getTime())) return rawDate.slice(0, 10)
+  const d = new Date(ts + VN_OFFSET_MS)
   if (tf === "1s" || tf === "5s" || tf === "15s" || tf === "30s") {
-    const hh = String(d.getHours()).padStart(2, "0")
-    const min = String(d.getMinutes()).padStart(2, "0")
-    const sec = String(d.getSeconds()).padStart(2, "0")
+    const hh = String(d.getUTCHours()).padStart(2, "0")
+    const min = String(d.getUTCMinutes()).padStart(2, "0")
+    const sec = String(d.getUTCSeconds()).padStart(2, "0")
     return `${hh}:${min}:${sec}`
   }
   if (
@@ -82,18 +85,22 @@ export function formatTimeframeLabel(ts: number, rawDate: string, tf: TvTimefram
     tf === "3H" ||
     tf === "4H"
   ) {
-    const dd = String(d.getDate()).padStart(2, "0")
-    const mm = String(d.getMonth() + 1).padStart(2, "0")
-    const hh = String(d.getHours()).padStart(2, "0")
-    const min = String(d.getMinutes()).padStart(2, "0")
+    const dd = String(d.getUTCDate()).padStart(2, "0")
+    const mm = String(d.getUTCMonth() + 1).padStart(2, "0")
+    const hh = String(d.getUTCHours()).padStart(2, "0")
+    const min = String(d.getUTCMinutes()).padStart(2, "0")
     return `${dd}/${mm} ${hh}:${min}`
   }
   if (tf === "1M" || tf === "3M" || tf === "6M" || tf === "12M") {
-    const mm = String(d.getMonth() + 1).padStart(2, "0")
-    const yyyy = d.getFullYear()
+    const mm = String(d.getUTCMonth() + 1).padStart(2, "0")
+    const yyyy = d.getUTCFullYear()
     return tf === "12M" ? `${yyyy}` : `${mm}/${yyyy}`
   }
-  return d.toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit" })
+  return raw.toLocaleDateString("vi-VN", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    day: "2-digit",
+    month: "2-digit",
+  })
 }
 
 export function normalizeRawCandles(
@@ -140,23 +147,23 @@ function aggregateCandles(daily: TvCandle[], mode: "1W" | "1M" | "3M" | "6M" | "
   const buckets = new Map<string, TvCandle>()
 
   for (const c of daily) {
-    const d = new Date(c.timestamp)
+    const d = new Date(c.timestamp + VN_OFFSET_MS)
     let key: string
     if (mode === "1M") {
-      key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
+      key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`
     } else if (mode === "3M") {
-      const q = Math.floor(d.getMonth() / 3) + 1
-      key = `${d.getFullYear()}-Q${q}`
+      const q = Math.floor(d.getUTCMonth() / 3) + 1
+      key = `${d.getUTCFullYear()}-Q${q}`
     } else if (mode === "6M") {
-      const h = d.getMonth() < 6 ? 1 : 2
-      key = `${d.getFullYear()}-H${h}`
+      const h = d.getUTCMonth() < 6 ? 1 : 2
+      key = `${d.getUTCFullYear()}-H${h}`
     } else if (mode === "12M") {
-      key = `${d.getFullYear()}`
+      key = `${d.getUTCFullYear()}`
     } else {
       // ISO Week bucket (Monday start)
-      const day = d.getDay() || 7
+      const day = d.getUTCDay() || 7
       const monday = new Date(d.getTime() - (day - 1) * 86_400_000)
-      key = `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, "0")}-${String(monday.getDate()).padStart(2, "0")}`
+      key = `${monday.getUTCFullYear()}-${String(monday.getUTCMonth() + 1).padStart(2, "0")}-${String(monday.getUTCDate()).padStart(2, "0")}`
     }
 
     const existing = buckets.get(key)
@@ -225,9 +232,8 @@ function synthesizeIntradayFromDaily(daily: TvCandle[], tf: TvTimeframe, isIndex
   for (let dIdx = 0; dIdx < recentDays.length; dIdx++) {
     const day = recentDays[dIdx]
     const n = cfg.count
-    const baseDate = new Date(day.timestamp)
-    baseDate.setHours(9, 15, 0, 0)
-    const startTs = baseDate.getTime()
+    const vnBase = new Date(day.timestamp + VN_OFFSET_MS)
+    const startTs = Date.UTC(vnBase.getUTCFullYear(), vnBase.getUTCMonth(), vnBase.getUTCDate(), 9, 15, 0, 0) - VN_OFFSET_MS
 
     const isBullDay = day.close >= day.open
     const lowPos = isBullDay ? Math.max(1, Math.floor(n * 0.28)) : Math.min(n - 2, Math.floor(n * 0.72))

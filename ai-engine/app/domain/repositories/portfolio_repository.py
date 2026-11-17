@@ -11,12 +11,21 @@ import logging
 import os
 import uuid
 from copy import deepcopy
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from app.adapters.postgres_adapter import PostgresAdapter
+from app.core.time_utils import (
+    UTC_TZ,
+    VN_TZ,
+    coerce_vn_date,
+    now_utc,
+    now_utc_naive,
+    now_vn,
+    today_vn,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,23 +51,27 @@ def calculate_is_t25_locked(opened_at: Any, now_dt: Optional[datetime] = None) -
         return False
     try:
         if isinstance(opened_at, str):
-            opened_dt = datetime.fromisoformat(opened_at)
+            opened_dt = datetime.fromisoformat(opened_at.replace("Z", "+00:00"))
         else:
             opened_dt = opened_at
 
+        caller_passed_naive_now = now_dt is not None and getattr(now_dt, "tzinfo", None) is None
         if now_dt is None:
-            if hasattr(opened_dt, "tzinfo") and opened_dt.tzinfo is not None:
-                now_dt = datetime.now(opened_dt.tzinfo)
-            else:
-                now_dt = datetime.now()
+            now_vn_dt = now_vn()
+        elif getattr(now_dt, "tzinfo", None) is not None:
+            now_vn_dt = now_dt.astimezone(VN_TZ)
         else:
-            if hasattr(opened_dt, "tzinfo") and opened_dt.tzinfo is not None and getattr(now_dt, "tzinfo", None) is None:
-                now_dt = now_dt.replace(tzinfo=opened_dt.tzinfo)
-            elif (not hasattr(opened_dt, "tzinfo") or opened_dt.tzinfo is None) and getattr(now_dt, "tzinfo", None) is not None:
-                opened_dt = opened_dt.replace(tzinfo=now_dt.tzinfo)
+            now_vn_dt = now_dt.replace(tzinfo=VN_TZ)
 
-        opened_date = opened_dt.date()
-        current_date = now_dt.date()
+        if getattr(opened_dt, "tzinfo", None) is not None:
+            opened_vn_dt = opened_dt.astimezone(VN_TZ)
+        elif caller_passed_naive_now:
+            opened_vn_dt = opened_dt.replace(tzinfo=VN_TZ)
+        else:
+            opened_vn_dt = opened_dt.replace(tzinfo=UTC_TZ).astimezone(VN_TZ)
+
+        opened_date = opened_vn_dt.date()
+        current_date = now_vn_dt.date()
 
         if current_date <= opened_date:
             return True
@@ -74,7 +87,7 @@ def calculate_is_t25_locked(opened_at: Any, now_dt: Optional[datetime] = None) -
             return True
         elif b_days == 2:
             # Ngày T+2: VSDC trả chứng khoán vào 11:30 trưa để giao dịch phiên chiều (13:00)
-            return now_dt.time() < time(11, 30)
+            return now_vn_dt.time() < time(11, 30)
         else:
             return False
     except Exception as e:
@@ -130,7 +143,7 @@ class PortfolioRepository:
                 win_rate_val = float(win_rate) if win_rate is not None else 0.0
 
                 # 2. Tính tổng giá trị danh mục vị thế từ bảng positions
-                mark_date = as_of.date() if isinstance(as_of, datetime) else as_of
+                mark_date = (as_of.astimezone(VN_TZ).date() if as_of.tzinfo is not None else as_of.date()) if isinstance(as_of, datetime) else as_of
                 query_pos = """
                     SELECT p.symbol, p.quantity,
                            md.close_unadj * 1000 AS current_price
@@ -188,7 +201,7 @@ class PortfolioRepository:
         as_of_error = None
         try:
             if target_uid:
-                mark_date = as_of.date() if isinstance(as_of, datetime) else as_of
+                mark_date = (as_of.astimezone(VN_TZ).date() if as_of.tzinfo is not None else as_of.date()) if isinstance(as_of, datetime) else as_of
                 query = """
                     SELECT p.symbol, p.quantity, p.avg_price, p.opened_at,
                            md.close_unadj * 1000 AS current_price,
@@ -234,9 +247,11 @@ class PortfolioRepository:
                         raise
                     tot_nav = tot_pos_val
 
-                t_plus_2_time = as_of_time or (as_of if isinstance(as_of, datetime) else (
-                    datetime.combine(as_of, time(9, 45), ZoneInfo("Asia/Ho_Chi_Minh")) if as_of else datetime.now()
-                ))
+                t_plus_2_time = as_of_time or (
+                    (as_of.astimezone(VN_TZ) if as_of.tzinfo is not None else as_of.replace(tzinfo=VN_TZ))
+                    if isinstance(as_of, datetime)
+                    else (datetime.combine(as_of, time(9, 45), VN_TZ) if as_of else now_vn())
+                )
                 for r in rows:
                     total_shares = int(r[1])
                     avg_p = float(r[2])
@@ -353,7 +368,7 @@ class PortfolioRepository:
         """Tạo mới hoặc cập nhật chiến dịch gom/xả đa phiên."""
         ticker = str(campaign_data["ticker"]).upper().strip()
         cid = campaign_data.get("campaign_id") or str(uuid.uuid4())
-        now = datetime.now()
+        now = now_utc()
         record = {
             "campaign_id": cid,
             "ticker": ticker,
@@ -411,7 +426,7 @@ class PortfolioRepository:
 
         try:
             query = "UPDATE portfolio_campaigns SET status = 'COMPLETED', updated_at = %s WHERE campaign_id = %s"
-            self.storage.execute(query, (datetime.now(), campaign_id))
+            self.storage.execute(query, (now_utc(), campaign_id))
         except Exception as e:
             logger.debug(f"Lỗi update campaign status ({e})")
 
@@ -436,10 +451,9 @@ class PortfolioRepository:
             raise ValueError("Invalid replay execution")
         if not user_id or not isinstance(executed_at, datetime) or not isinstance(mark_as_of, date) or isinstance(mark_as_of, datetime):
             raise ValueError("Replay user, execution timestamp, and mark date are required")
-        vietnam_tz = ZoneInfo("Asia/Ho_Chi_Minh")
-        execution_local = executed_at.replace(tzinfo=vietnam_tz) if executed_at.tzinfo is None else executed_at.astimezone(vietnam_tz)
-        execution_db_timestamp = execution_local.replace(tzinfo=None)
-        if mark_as_of >= datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date():
+        execution_local = executed_at.replace(tzinfo=VN_TZ) if executed_at.tzinfo is None else executed_at.astimezone(VN_TZ)
+        execution_db_timestamp = execution_local.astimezone(UTC_TZ).replace(tzinfo=None)
+        if mark_as_of >= today_vn():
             raise ValueError("PostgreSQL replay marks must be strictly historical")
         if mark_as_of >= execution_local.date():
             raise ValueError("Daily replay mark must be strictly before the fill date")
@@ -520,7 +534,7 @@ class PortfolioRepository:
             if action == "BUY":
                 self.storage.execute(
                     "INSERT INTO paper_trades (ticker, action, price, date, confidence, thesis, status, quantity, created_at, account_id) VALUES (%s, %s, %s, %s, 0.8, 'ML_REPLAY', 'OPEN', %s, CURRENT_TIMESTAMP, %s)",
-                    (ticker, action, executed_price, execution_local, shares, user_id),
+                    (ticker, action, executed_price, execution_db_timestamp, shares, user_id),
                 )
             if action == "SELL":
                 trades = self.storage.fetch_all(
@@ -533,10 +547,10 @@ class PortfolioRepository:
                     used = min(left, int(quantity))
                     pnl = (executed_price / float(entry_price) - 1) * 100
                     if used == int(quantity):
-                        self.storage.execute("UPDATE paper_trades SET status='CLOSED', resolve_price=%s, pnl=%s, resolved_at=%s WHERE id=%s", (executed_price, pnl, execution_local, trade_id))
+                        self.storage.execute("UPDATE paper_trades SET status='CLOSED', resolve_price=%s, pnl=%s, resolved_at=%s WHERE id=%s", (executed_price, pnl, execution_db_timestamp, trade_id))
                     else:
                         self.storage.execute("UPDATE paper_trades SET quantity=quantity-%s WHERE id=%s", (used, trade_id))
-                        self.storage.execute("INSERT INTO paper_trades (ticker,action,price,date,confidence,thesis,status,quantity,resolve_price,pnl,resolved_at,created_at,account_id) VALUES (%s,'BUY',%s,%s,0.8,'REPLAY_PARTIAL','CLOSED',%s,%s,%s,%s,CURRENT_TIMESTAMP,%s)", (ticker, entry_price, entry_date, used, executed_price, pnl, execution_local, user_id))
+                        self.storage.execute("INSERT INTO paper_trades (ticker,action,price,date,confidence,thesis,status,quantity,resolve_price,pnl,resolved_at,created_at,account_id) VALUES (%s,'BUY',%s,%s,0.8,'REPLAY_PARTIAL','CLOSED',%s,%s,%s,%s,CURRENT_TIMESTAMP,%s)", (ticker, entry_price, entry_date, used, executed_price, pnl, execution_db_timestamp, user_id))
                     left -= used
             account = self.get_account_state(user_id=user_id, as_of=mark_as_of)
             self.storage.execute(
@@ -707,7 +721,9 @@ class PortfolioRepository:
         trade_value, brokerage_fee, tax, cash_delta = execution_amounts(shares, executed_price, action)
         order_id = str(pending_order_id or uuid.uuid4())
         pos_id = str(uuid.uuid4())
-        now = datetime.now()
+        now_vn_dt = now_vn()
+        now_utc_aware = now_vn_dt.astimezone(UTC_TZ)
+        now_utc_db = now_utc_aware.replace(tzinfo=None)
 
         account_before = deepcopy(self._in_memory_account)
         positions_before = deepcopy(self._in_memory_positions)
@@ -791,19 +807,19 @@ class PortfolioRepository:
                     new_q = int(old_q) + shares
                     new_avg = ((float(old_avg) * int(old_q)) + (executed_price * shares)) / new_q
                     sql_update_pos = "UPDATE positions SET quantity = %s, avg_price = %s, opened_at = %s, peak_price = GREATEST(peak_price, avg_price, %s) WHERE id = %s"
-                    self.storage.execute(sql_update_pos, (new_q, new_avg, now, executed_price, pid))
+                    self.storage.execute(sql_update_pos, (new_q, new_avg, now_utc_db, executed_price, pid))
                 else:
                     sql_insert_pos = """
                         INSERT INTO positions (id, user_id, symbol, quantity, avg_price, opened_at, peak_price)
                         VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """
-                    self.storage.execute(sql_insert_pos, (pos_id, target_uid, ticker, shares, executed_price, now, executed_price))
+                    self.storage.execute(sql_insert_pos, (pos_id, target_uid, ticker, shares, executed_price, now_utc_db, executed_price))
             elif action in ("SELL", "SELL_MP"):
                 sql_check = "SELECT id, quantity, opened_at FROM positions WHERE user_id = %s AND symbol = %s FOR UPDATE"
                 existing = self.storage.fetch_all(sql_check, (target_uid, ticker))
                 if not existing or int(existing[0][1]) < shares:
                     raise ValueError("Insufficient shares to sell")
-                if calculate_is_t25_locked(existing[0][2], now):
+                if calculate_is_t25_locked(existing[0][2], now_vn_dt):
                     raise ValueError("Shares are locked by T+2.5 settlement")
                 if existing:
                     pid, old_q, _opened_at = existing[0]
@@ -814,7 +830,7 @@ class PortfolioRepository:
                         try:
                             self.storage.execute(
                                 "UPDATE portfolio_campaigns SET status = 'CANCELLED', updated_at = %s WHERE ticker = %s AND status = 'IN_PROGRESS'",
-                                (now, ticker),
+                                (now_utc_aware, ticker),
                             )
                             if ticker in self._in_memory_campaigns:
                                 self._in_memory_campaigns[ticker]["status"] = "CANCELLED"
@@ -833,7 +849,7 @@ class PortfolioRepository:
                 self.storage.execute(
                     "INSERT INTO orders (id, user_id, symbol, side, order_type, price, quantity, status, created_at) "
                     "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                    (order_id, target_uid, ticker, action, execution_mode, executed_price, shares, status, now),
+                    (order_id, target_uid, ticker, action, execution_mode, executed_price, shares, status, now_utc_db),
                 )
 
             # 2.4 Đồng thời ghi vào order_executions, portfolio_positions & portfolio_account để đồng bộ các Agent
@@ -848,7 +864,7 @@ class PortfolioRepository:
                 """
                 self.storage.execute(
                     sql_order_exec,
-                    (order_id, ticker, action, shares, executed_price, target_price, slippage_bps, execution_mode, now, trade_value, brokerage_fee, tax, cash_delta, json.dumps(decision_context, default=str) if decision_context is not None else None)
+                    (order_id, ticker, action, shares, executed_price, target_price, slippage_bps, execution_mode, now_utc_aware, trade_value, brokerage_fee, tax, cash_delta, json.dumps(decision_context, default=str) if decision_context is not None else None)
                 )
 
                 # Đồng bộ bảng portfolio_account
@@ -864,7 +880,7 @@ class PortfolioRepository:
                 """
                 self.storage.execute(
                     sql_account,
-                    (str(target_uid), acc_state["cash_balance"], acc_state["total_nav"], acc_state["peak_nav"], acc_state.get("drawdown_tier", "GREEN"), now)
+                    (str(target_uid), acc_state["cash_balance"], acc_state["total_nav"], acc_state["peak_nav"], acc_state.get("drawdown_tier", "GREEN"), now_utc_aware)
                 )
 
                 # Đồng bộ bảng paper_trades phục vụ học tăng cường (Agent-10)
@@ -876,7 +892,7 @@ class PortfolioRepository:
                         """
                         self.storage.execute(
                             sql_paper,
-                            (ticker, action, executed_price, now, 0.8, "EXECUTION_AGENT_ORDER", shares, now, str(target_uid))
+                            (ticker, action, executed_price, now_utc_db, 0.8, "EXECUTION_AGENT_ORDER", shares, now_utc_db, str(target_uid))
                         )
                     elif action in ("SELL", "SELL_MP"):
                         # FIFO Tranche resolution trong paper_trades
@@ -900,7 +916,7 @@ class PortfolioRepository:
                                         pnl = %s,
                                         resolved_at = %s
                                     WHERE id = %s
-                                """, (executed_price, pnl, now, t_id))
+                                """, (executed_price, pnl, now_utc_db, t_id))
                                 rem_sell -= t_qty
                             else:
                                 pnl = round(((executed_price - t_price) / t_price * 100), 2) if t_price > 0 else 0.0
@@ -912,7 +928,7 @@ class PortfolioRepository:
                                 self.storage.execute("""
                                     INSERT INTO paper_trades (ticker, action, price, date, confidence, thesis, status, quantity, resolve_price, pnl, resolved_at, created_at, account_id)
                                     VALUES (%s, 'BUY', %s, %s, 0.8, 'PARTIAL_FILL_CLOSE', 'CLOSED', %s, %s, %s, %s, %s, %s)
-                                """, (ticker, t_price, trade[3], rem_sell, executed_price, pnl, now, now, str(target_uid)))
+                                """, (ticker, t_price, trade[3], rem_sell, executed_price, pnl, now_utc_db, now_utc_db, str(target_uid)))
                                 rem_sell = 0
                 except Exception:
                     raise
@@ -937,7 +953,7 @@ class PortfolioRepository:
             "trade_value_vnd": trade_value,
             "remaining_cash": self._in_memory_account["cash_balance"],
             "status": status,
-            "timestamp": now.isoformat(),
+            "timestamp": now_vn_dt.isoformat(),
         }
 
     def create_shadow_pending_order(
@@ -952,7 +968,7 @@ class PortfolioRepository:
             raise ValueError("Invalid Shadow pending order")
         target_uid = user_id or self.account_id
         order_id = str(uuid.uuid4())
-        now = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).replace(tzinfo=None)
+        now = now_utc_naive()
         self.storage.execute(
             "INSERT INTO orders (id, user_id, symbol, side, order_type, price, quantity, status, created_at, decision_context) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDING_SHADOW', %s, %s)",
@@ -975,11 +991,12 @@ class PortfolioRepository:
         ]
 
     def expire_pending_shadow_orders(self) -> int:
-        now = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
+        now = now_vn()
         rows = self.storage.fetch_all(
             "UPDATE orders SET status = 'EXPIRED' WHERE status = 'PENDING_SHADOW' "
             "AND order_type IN ('SHADOW_LIMIT', 'SHADOW_ML_LIMIT') "
-            "AND (created_at::date < %s OR %s >= TIME '14:45') RETURNING id",
+            "AND (((created_at AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh')::date < %s "
+            "OR %s >= TIME '14:45') RETURNING id",
             (now.date(), now.time().replace(tzinfo=None)),
         )
         return len(rows)
@@ -1001,13 +1018,12 @@ class PortfolioRepository:
     ) -> bool:
         """Ghi nhận hồ sơ trượt giá vào bảng slippage_records (PostgreSQL & In-memory fallback)."""
         ticker_clean = str(ticker).upper().strip()
-        t_date = target_date or datetime.now().date()
+        t_date = target_date or today_vn()
         if isinstance(t_date, str):
-            from datetime import date
             try:
                 t_date = date.fromisoformat(t_date)
             except Exception:
-                t_date = datetime.now().date()
+                t_date = today_vn()
 
         record = {
             "ticker": ticker_clean,
@@ -1126,7 +1142,7 @@ class PortfolioRepository:
                     SET status = 'CANCELLED_BY_RISK', updated_at = %s
                     WHERE ticker = %s AND status = 'IN_PROGRESS' AND COALESCE(accumulated_shares, 0) = 0
                     """,
-                    (datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).replace(tzinfo=None), ticker_clean),
+                    (now_utc(), ticker_clean),
                 )
             except Exception as e_camp:
                 logger.debug(f"Không thể cập nhật hủy campaign khi Risk chặn ({e_camp})")
@@ -1220,7 +1236,7 @@ class PortfolioRepository:
         """Lấy danh sách các quyết định phân bổ vốn theo ngày."""
         try:
             if not target_date:
-                target_date = datetime.now().date()
+                target_date = today_vn()
             query = """
                 SELECT decision_id, date, ticker, action, target_shares, allocated_weight_pct, rationale, created_at
                 FROM portfolio_decisions

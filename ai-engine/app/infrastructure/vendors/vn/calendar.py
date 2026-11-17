@@ -7,7 +7,17 @@ from typing import Dict, Any, Optional, List, Union
 from datetime import date, datetime, time, timedelta
 from enum import Enum
 
+from app.core.time_utils import VN_TZ, now_vn
+
 logger = logging.getLogger(__name__)
+
+
+def _ensure_vn_dt(dt: Optional[datetime]) -> datetime:
+    if dt is None:
+        return now_vn()
+    if dt.tzinfo is not None:
+        return dt.astimezone(VN_TZ)
+    return dt
 
 
 class TradingSession(str, Enum):
@@ -143,9 +153,11 @@ class VNCalendar:
             bool: True if trading day
         """
         if date is None:
-            date = datetime.now()
+            date = now_vn()
         elif isinstance(date, str):
             date = datetime.strptime(date, "%Y-%m-%d")
+        elif isinstance(date, datetime):
+            date = _ensure_vn_dt(date)
         
         # Check if weekday
         if date.weekday() not in self.TRADING_DAYS:
@@ -174,8 +186,7 @@ class VNCalendar:
         Returns:
             bool: True if trading time
         """
-        if dt is None:
-            dt = datetime.now()
+        dt = _ensure_vn_dt(dt)
         
         # Check if trading day
         if not self.is_trading_day(dt):
@@ -199,8 +210,7 @@ class VNCalendar:
         Returns:
             TradingSession or None if not in session
         """
-        if dt is None:
-            dt = datetime.now()
+        dt = _ensure_vn_dt(dt)
         
         if not self.is_trading_day(dt):
             return None
@@ -240,8 +250,7 @@ class VNCalendar:
         Returns:
             datetime: Settlement date
         """
-        if trade_date is None:
-            trade_date = datetime.now()
+        trade_date = _ensure_vn_dt(trade_date)
         
         settlement_date = trade_date
         added_days = 0
@@ -319,8 +328,7 @@ class VNCalendar:
         Returns:
             datetime: Next trading day
         """
-        if date is None:
-            date = datetime.now()
+        date = _ensure_vn_dt(date)
         
         next_day = date + timedelta(days=1)
         
@@ -339,8 +347,7 @@ class VNCalendar:
         Returns:
             datetime: Previous trading day
         """
-        if date is None:
-            date = datetime.now()
+        date = _ensure_vn_dt(date)
         
         prev_day = date - timedelta(days=1)
         

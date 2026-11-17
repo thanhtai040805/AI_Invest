@@ -332,8 +332,9 @@ function Intraday15mCountdown() {
     return () => window.clearInterval(id)
   }, [])
   if (!now) return null
-  const minutes = now.getHours() * 60 + now.getMinutes()
-  const seconds = minutes * 60 + now.getSeconds()
+  const vn = new Date(now.getTime() + 7 * 3_600_000)
+  const minutes = vn.getUTCHours() * 60 + vn.getUTCMinutes()
+  const seconds = minutes * 60 + vn.getUTCSeconds()
   const startSec = 9 * 3600
   const endSec = (14 * 60 + 45) * 60
   if (seconds < startSec || seconds >= endSec) return null
@@ -417,7 +418,8 @@ export function SuperStocksTable({
     }
 
     const now = new Date()
-    const vnMin = now.getHours() * 60 + now.getMinutes()
+    const vnNow = new Date(now.getTime() + 7 * 3_600_000)
+    const vnMin = vnNow.getUTCHours() * 60 + vnNow.getUTCMinutes()
     const isTrading = vnMin >= 9 * 60 && vnMin <= 14 * 60 + 45
     const elapsedMin = !isTrading
       ? 255

@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.base_agent import BaseAgent
 from app.core.registry import AgentRegistry
+from app.core.time_utils import coerce_vn_date, now_vn, today_vn
 from app.eval.audit_trail import AuditTrailEngine
 
 logger = logging.getLogger(__name__)
@@ -144,7 +145,7 @@ class StrategyCIOAgent(BaseAgent):
                         except Exception:
                             td = None
                     elif isinstance(target_date_raw, datetime):
-                        td = target_date_raw.date()
+                        td = coerce_vn_date(target_date_raw)
                     elif isinstance(target_date_raw, _date):
                         td = target_date_raw
                     else:
@@ -503,7 +504,7 @@ class StrategyCIOAgent(BaseAgent):
         Ban hĂ nh Chá»‰ thá»‹ Chiáº¿n lÆ°á»£c VÄ© mĂ´ cáº¥p Quá»¹ (Monthly Strategic Directive).
         TĂ­ch há»£p Bá»™ KĂ­ch Hoáº¡t Há»§y Bá» Kháº©n Cáº¥p (Flash Invalidation Trigger) trong phiĂªn.
         """
-        directive_id = f"CIO-DIR-{datetime.now().strftime('%Y%m')}-{uuid.uuid4().hex[:4].upper()}"
+        directive_id = f"CIO-DIR-{now_vn().strftime('%Y%m')}-{uuid.uuid4().hex[:4].upper()}"
 
         credit_growth = float(macro_inputs.get("credit_growth_yoy", 12.5))
         sbv_rate = float(macro_inputs.get("sbv_policy_rate", 4.5))
@@ -542,7 +543,7 @@ class StrategyCIOAgent(BaseAgent):
             f"Má»¥c tiĂªu tiá»n máº·t chiáº¿n lÆ°á»£c: {cash_target}%. CIO chá»‰ cáº¥p rĂ ng buá»™c tráº§n ngĂ nh, khĂ´ng stock-pick."
         )
 
-        effective_from = datetime.now(timezone.utc).date().isoformat()
+        effective_from = today_vn().isoformat()
         directive_payload = {
             "directive_id": directive_id,
             "policy_version": "v5.1_IOS",
