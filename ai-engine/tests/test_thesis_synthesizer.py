@@ -1,4 +1,4 @@
-"""Unit tests for ThesisSynthesizer (Agent-04 narrative enrichment with SAG MOAT)."""
+"""Unit tests for the Agent-04 narrative contract."""
 
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
@@ -6,93 +6,92 @@ from unittest.mock import AsyncMock, MagicMock
 from app.domain.rules.thesis_synthesizer import ThesisSynthesizer
 
 
-def test_thesis_synthesizer_prompt_structure():
-    synthesizer = ThesisSynthesizer()
-    messages = synthesizer.build_prompt(
-        ticker="HPG",
-        sector="Materials",
-        moat_data={
-            "moat_score": 88.0,
-            "evidence_quote": "Công nghệ luyện thép lò cao BOF khép kín tự chủ 80% điện nhiệt dư",
-            "pillars": {
-                "Cost Advantage": {"score": 95.0, "verdict": "STRONG"},
-                "Efficient Scale": {"score": 85.0, "verdict": "STRONG"}
-            }
+def valid_narrative():
+    return {
+        "investment_style": "DEEP_VALUE",
+        "why_now": "[ĐIỂM NGOẶT] Chưa đủ dữ liệu để định lượng; cần mức nền và kỳ BCTC. | [CƠ CHẾ] Chưa có trong dữ liệu về biến số quyết định. | [XÁC NHẬN TỪ THỊ TRƯỜNG] Chưa có trong dữ liệu.",
+        "why_this_stock": "[PHONG CÁCH] [Suy luận] DEEP_VALUE gần nhất vì input chưa chứng minh phong cách khác. | [CHẤT LƯỢNG LỢI NHUẬN] Chưa có trong dữ liệu về chuyển đổi lợi nhuận thành tiền. | [CẤU TRÚC TÀI CHÍNH] Chưa có trong dữ liệu về nợ và khả năng trả lãi. | [ĐIỀU KIỆN ĐỂ MỤC TIÊU GIÁ ĐÚNG] Chưa đủ dữ liệu để định lượng; cần lợi nhuận/dòng tiền nền. | [ĐIỂM YẾU TÀI CHÍNH] Chưa có thêm dữ liệu cho phần này.",
+        "catalyst_description": "[BẢN CHẤT] Chưa có trong dữ liệu về tên và quy mô sự kiện. | [TRẠNG THÁI & BẰNG CHỨNG] Chưa xác định được từ dữ liệu. | [LỘ TRÌNH] Chưa có trong dữ liệu về mốc công bố. | [CẦU NỐI SANG DÒNG TIỀN] Chưa đủ dữ liệu để định lượng; cần doanh thu, biên và vốn đầu tư. | [ĐIỂM YẾU] Chưa có trong dữ liệu về tiến độ và vốn làm mức nền.",
+        "pre_mortem": [
+            "RỦI RO ĐẦU VÀO/VĨ MÔ: giả định chi phí tăng; tác động lên biên chưa có số nền; mức thiệt hại chưa đủ dữ liệu; theo dõi BCTC. Liên kết: Trigger 1",
+            "RỦI RO CẠNH TRANH/PHÁP LÝ/KHÁCH HÀNG: giả định mất khách hàng; tác động doanh thu chưa có dữ liệu; theo dõi công bố tiếp theo. Liên kết: Trigger 2",
+            "RỦI RO THỰC THI/TIẾN ĐỘ NGÒI NỔ: giả định catalyst chậm; chưa có mốc nền để định lượng; theo dõi bằng chứng mới. Liên kết: Trigger 3",
+        ],
+        "invalidation_triggers": [
+            "Trigger 1: Chưa đủ dữ liệu để định lượng; cần chỉ số kết quả kinh doanh và kỳ BCTC làm mức nền.",
+            "Trigger 2: Chưa đủ dữ liệu để định lượng; cần mốc catalyst đã công bố làm căn cứ.",
+            "Trigger 3: Chưa đủ dữ liệu để định lượng; cần CFO, nợ/vốn và số kỳ theo dõi.",
+        ],
+    }
+
+
+def test_thesis_synthesizer_prompt_includes_sector_data_and_missing_fields():
+    messages = ThesisSynthesizer().build_prompt(
+        ticker="TCB",
+        sector="BANKS",
+        industry="Ngân hàng",
+        business_quality_data={
+            "business_quality_score": 88.0,
+            "evidence_quote": "Thu nhập lãi thuần tăng theo dữ liệu đầu vào",
+            "pillars": {"Cash Conversion": {"score": 70, "verdict": "WATCH"}},
         },
         catalyst_type="Earnings Expansion",
-        price_target_info={"base_case": 35000.0, "bull_case": 40000.0},
-        current_price=28000.0,
+        price_target_info={"base_case": 35000, "bull_case": 40000},
+        current_price=28000,
         timeline_months=3,
+        financial_metrics={"pe": 12.5, "roe": 18.2, "_gpm_not_applicable": True, "_sources": {"pe": "Agent-03"}},
+        financial_evidence={"formatted": "BCTC gần nhất: IS 2026-06-30; nguồn alphastock."},
+        independent_signals={"F4": "PASS"},
     )
-
-    sys_content = messages[0]["content"]
-    user_content = messages[1]["content"]
-
-    assert "Head of Equity Strategy" in sys_content
-    assert "HPG" in user_content
-    assert "BOF khép kín tự chủ 80% điện" in user_content
-    assert "Cost Advantage" in user_content
-    assert "why_now" in user_content
-    assert "why_this_stock" in user_content
-    assert "investment_style" in user_content
-    assert "pre_mortem" in user_content
-    assert "invalidation_triggers" in user_content
+    system, user = (message["content"] for message in messages)
+    assert "Chỉ dùng dữ kiện có trong user input" in system
+    assert "Không áp dụng theo ngành tài chính" in user
+    assert "BCTC gần nhất: IS 2026-06-30" in user
+    assert "ngành con DB: Ngân hàng" in user
+    assert "ROIC: Chưa có trong dữ liệu" in user
+    assert "F4 là điểm factor, không phải tỷ lệ tăng trưởng" in user
+    assert '"invalidation_triggers"' in user
 
 
-def test_thesis_synthesizer_mock_synthesis():
-    async def _run():
+def test_thesis_synthesizer_accepts_only_complete_bounded_narrative():
+    async def run():
         mock_llm = MagicMock()
-        mock_llm.complete_json = AsyncMock(return_value={
-            "investment_style": "CYCLICAL_GROWTH",
-            "why_now": "Dung Quất 2 giai đoạn 1 bắt đầu chạy thử nghiệm, đưa HPG bước vào chu kỳ siêu tăng trưởng sản lượng HRC.",
-            "why_this_stock": "HPG sở hữu lợi thế chi phí sản xuất tuyệt đối (Moat 88/100) nhờ lò cao BOF khép kín và tự chủ điện.",
-            "catalyst_description": "Vận hành thương mại Dung Quất 2 bổ sung 2.8 triệu tấn HRC/năm.",
-            "pre_mortem": [
-                "Kịch bản 1: Giá thép HRC Trung Quốc tiếp tục bán phá giá trước khi có thuế AD chính thức.",
-                "Kịch bản 2: Giá quặng sắt thế giới tăng vọt bào mòn biên lợi nhuận gộp.",
-                "Kịch bản 3: Tiến độ lò cao Dung Quất 2 bị trễ 1 quý do sự cố kỹ thuật."
-            ],
-            "invalidation_triggers": [
-                "Biên EBITDA mảng thép HRC giảm xuống dưới 14%.",
-                "Tiến độ Dung Quất 2 hoãn vận hành thương mại quá tháng 6/2025.",
-                "Thị phần thép xây dựng nội địa giảm dưới 32%."
-            ]
-        })
-
+        mock_llm.complete_json = AsyncMock(return_value=valid_narrative())
         synthesizer = ThesisSynthesizer(llm_client=mock_llm)
-        narrative = await synthesizer.synthesize_thesis_narrative(
-            ticker="HPG",
-            sector="Materials",
-            moat_data={"moat_score": 88.0},
-            catalyst_type="Earnings Expansion",
-            price_target_info={"base_case": 35000.0},
-            current_price=28000.0,
-            timeline_months=3,
-            financial_metrics={"pe": 12.5, "roe": 18.2, "gpm": 16.5},
+        result = await synthesizer.synthesize_thesis_narrative(
+            ticker="HPG", sector="INDUSTRIAL_GOODS", business_quality_data={},
+            catalyst_type="Undervaluation", price_target_info={"base_case": 35000},
+            current_price=28000, timeline_months=3,
         )
+        assert result == valid_narrative()
+        assert mock_llm.complete_json.await_args.kwargs["max_tokens"] == 3000
 
-        assert narrative is not None
-        assert narrative["investment_style"] == "CYCLICAL_GROWTH"
-        assert "Dung Quất 2" in narrative["why_now"]
-        assert "lò cao BOF" in narrative["why_this_stock"]
-        assert len(narrative["pre_mortem"]) == 3
-        assert len(narrative["invalidation_triggers"]) == 3
-
-    asyncio.run(_run())
+    asyncio.run(run())
 
 
-def test_thesis_synthesizer_fallback_when_none():
-    async def _run():
-        synthesizer = ThesisSynthesizer(llm_client=None)
-        narrative = await synthesizer.synthesize_thesis_narrative(
-            ticker="HPG",
-            sector="Materials",
-            moat_data={},
-            catalyst_type="Earnings Expansion",
-            price_target_info={"base_case": 35000.0},
-            current_price=28000.0,
-            timeline_months=3,
+def test_thesis_synthesizer_rejects_wrong_structure_and_list_count():
+    async def run():
+        response = valid_narrative()
+        response["pre_mortem"] = response["pre_mortem"][:2]
+        mock_llm = MagicMock()
+        mock_llm.complete_json = AsyncMock(return_value=response)
+        result = await ThesisSynthesizer(llm_client=mock_llm).synthesize_thesis_narrative(
+            ticker="HPG", sector="INDUSTRIAL_GOODS", business_quality_data={},
+            catalyst_type="Undervaluation", price_target_info={"base_case": 35000},
+            current_price=28000, timeline_months=3,
         )
-        assert narrative is None
+        assert result is None
 
-    asyncio.run(_run())
+    asyncio.run(run())
+
+
+def test_thesis_synthesizer_returns_none_without_llm():
+    async def run():
+        result = await ThesisSynthesizer().synthesize_thesis_narrative(
+            ticker="HPG", sector="INDUSTRIAL_GOODS", business_quality_data={},
+            catalyst_type="Undervaluation", price_target_info={"base_case": 35000},
+            current_price=28000, timeline_months=3,
+        )
+        assert result is None
+
+    asyncio.run(run())
