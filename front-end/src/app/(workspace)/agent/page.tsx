@@ -2140,15 +2140,6 @@ function ResearchThesisSection({
   const targetRange: [number, number] | null =
     rangeMin !== null && rangeMax !== null ? [rangeMin, rangeMax] : null
 
-  const rawSignals = object(
-    thesis?.confirming_signals ||
-      object(snapshot.input_validation).independent_signals ||
-      snapshot.confirming_signals
-  )
-  const signals = Object.values(rawSignals)
-    .map((v) => (typeof v === "string" ? cleanText(v) : investmentText(v)))
-    .filter(Boolean)
-
   const rawInvalidations = Array.isArray(thesis?.invalidation_conditions)
     ? thesis.invalidation_conditions
     : Array.isArray(object(body.exit_conditions).invalidation_triggers)
@@ -2268,22 +2259,6 @@ function ResearchThesisSection({
             {targetRange[1].toLocaleString("vi-VN")}
           </span>{" "}
           đ
-        </div>
-      )}
-
-      {signals.length > 0 && (
-        <div className="mt-3 pt-3 border-t border-line text-[12px]">
-          <div className="text-[10.5px] uppercase tracking-wide text-muted mb-1 font-semibold">
-            Tín hiệu xác nhận
-          </div>
-          <ul className="space-y-1 text-secondary">
-            {signals.map((sig, i) => (
-              <li key={i} className="flex gap-1.5">
-                <span className="text-gain">✓</span>
-                <span>{sig}</span>
-              </li>
-            ))}
-          </ul>
         </div>
       )}
 
