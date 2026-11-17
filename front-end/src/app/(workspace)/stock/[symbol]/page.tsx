@@ -9,7 +9,7 @@ export default function StockDetailRedirectPage() {
   const cleanSymbol = (symbol || "HPG").trim().toUpperCase()
 
   useEffect(() => {
-    router.replace(`/markets?symbol=${encodeURIComponent(cleanSymbol)}`)
+    router.replace(`/trade?symbol=${encodeURIComponent(cleanSymbol)}`)
   }, [cleanSymbol, router])
 
   return (

@@ -37,3 +37,6 @@ artifacts/
 /.env
 /.env.production
 /nginx/certs/
+
+# Graphify local knowledge graph (auto-rebuilt via git hooks / `graphify update .`)
+graphify-out/

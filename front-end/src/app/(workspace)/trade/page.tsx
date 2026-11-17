@@ -6,7 +6,12 @@ import { getSocket, retainOhlc } from "@/lib/socket"
 import { useRealtimeMarket, useRealtimeStock } from "@/lib/use-realtime"
 import { usePortfolio, type PortfolioPosition, type PortfolioSnapshot } from "@/lib/use-portfolio"
 import { fmt, fmtPct, Panel, PanelHead, Pill } from "@/components/ui"
-import { TradingViewChart } from "@/lib/tv-chart"
+import {
+  TradingViewChart,
+  isIndexSymbol,
+  resolveSeriesPriceScale,
+  scaleCandlePrice,
+} from "@/lib/tv-chart"
 import type { ApiMarketStock, Stock } from "@/types"
 
 const DEFAULT_SYMBOLS = ["HPG", "FPT", "SSI", "MBB", "TCB", "VCB"]
@@ -651,7 +656,10 @@ export default function TradePage() {
   const searchBoxRef = useRef<HTMLDivElement | null>(null)
 
   const [initialStock, setInitialStock] = useState<Stock | undefined>(undefined)
-  const [rawCandles, setRawCandles] = useState<RawCandle[]>([])
+  const [candleBundle, setCandleBundle] = useState<{ symbol: string; items: RawCandle[] }>({
+    symbol: "",
+    items: [],
+  })
   const [apiOrderbook, setApiOrderbook] = useState<OrderbookState>({
     symbol: "HPG",
     bids: [],
@@ -747,6 +755,8 @@ export default function TradePage() {
     const clean = nextSym.trim().toUpperCase()
     if (!clean) return
     setSymbol(clean)
+    setInitialStock(undefined)
+    setCandleBundle({ symbol: clean, items: [] })
     setPriceInput("")
     setShowDraftOrderOnChart(false)
     setOrderNotice(null)
@@ -805,7 +815,7 @@ export default function TradePage() {
     Promise.all([
       stockApi.quote(targetSym).catch(() => null),
       stockApi.profile(targetSym).catch(() => null),
-      stockApi.ohlcv(targetSym, { limit: 130, interval: "1D" }).catch(() => []),
+      stockApi.ohlcv(targetSym, { limit: 5000, interval: "1D" }).catch(() => []),
       stockApi.orderbook(targetSym).catch(() => null),
     ]).then(([quote, profile, ohlcv, ob]) => {
       if (!active) return
@@ -821,7 +831,7 @@ export default function TradePage() {
         : Array.isArray((ohlcv as { data?: unknown })?.data)
           ? ((ohlcv as { data: RawCandle[] }).data ?? [])
           : []
-      setRawCandles(candleList as RawCandle[])
+      setCandleBundle({ symbol: targetSym, items: candleList as RawCandle[] })
 
       const rec = (ob ?? {}) as Record<string, unknown>
       const lastUpdate = rec.lastUpdate ? String(rec.lastUpdate) : null
@@ -868,18 +878,23 @@ export default function TradePage() {
       const close = toVndPrice(data.close)
       if (close <= 0) return
       const tickDateKey = toVnDateKey(data.timestamp) || toVnDateKey(new Date())
-      setRawCandles((prev) => {
+      setCandleBundle((bundle) => {
+        if (bundle.symbol !== sym) return bundle
+        const prev = bundle.items
         if (!prev.length) {
-          return [
-            {
-              date: tickDateKey,
-              open: toVndPrice(data.open, close),
-              high: Math.max(toVndPrice(data.high, close), close),
-              low: Math.min(toVndPrice(data.low, close), close),
-              close,
-              volume: Number(data.volume ?? 0),
-            },
-          ]
+          return {
+            symbol: sym,
+            items: [
+              {
+                date: tickDateKey,
+                open: toVndPrice(data.open, close),
+                high: Math.max(toVndPrice(data.high, close), close),
+                low: Math.min(toVndPrice(data.low, close), close),
+                close,
+                volume: Number(data.volume ?? 0),
+              },
+            ],
+          }
         }
         const next = [...prev]
         const last = next[next.length - 1]
@@ -906,7 +921,7 @@ export default function TradePage() {
             volume: Number(data.volume ?? 0),
           })
         }
-        return next
+        return { symbol: sym, items: next }
       })
     }
 
@@ -965,7 +980,9 @@ export default function TradePage() {
   )
 
   const stock = useMemo(() => {
-    const base = liveStock ?? initialStock ?? mapStockQuote(symbol, null, null)
+    const matchedLive = liveStock?.symbol?.toUpperCase() === symbol ? liveStock : undefined
+    const matchedInit = initialStock?.symbol?.toUpperCase() === symbol ? initialStock : undefined
+    const base = matchedLive ?? matchedInit ?? mapStockQuote(symbol, null, null)
     const price = toVndPrice(base.price)
     const rawRef = base.ref != null && base.ref > 0 ? toVndPrice(base.ref, price) : price
     const { ceiling, floor } = resolveCoherentBands(
@@ -1021,12 +1038,15 @@ export default function TradePage() {
   }, [liveStock, initialStock, snapshotMatch, liveForeignBillion, symbol])
 
   const candles: CandlePoint[] = useMemo(() => {
+    const rawCandles = candleBundle.symbol === symbol ? candleBundle.items : []
+    const isIdx = isIndexSymbol(symbol)
+    const scale = resolveSeriesPriceScale(rawCandles, isIdx)
     const valid = rawCandles
       .map((item) => {
-        const close = toVndPrice(item.close)
-        const open = toVndPrice(item.open, close)
-        const high = Math.max(toVndPrice(item.high, close), open, close)
-        const low = Math.min(toVndPrice(item.low, close), open, close)
+        const close = scaleCandlePrice(item.close, 0, scale, isIdx)
+        const open = scaleCandlePrice(item.open, close, scale, isIdx)
+        const high = Math.max(scaleCandlePrice(item.high, close, scale, isIdx), open, close)
+        const low = Math.min(scaleCandlePrice(item.low, close, scale, isIdx), open, close)
         const volume = Number(item.volume ?? 0)
         const rawDate = String(item.date ?? item.time ?? item.timestamp ?? "")
         const d = new Date(rawDate)
@@ -1038,12 +1058,13 @@ export default function TradePage() {
       .filter((c) => c.close > 0)
 
     // Merge live matched price into the latest session candle so chart updates tick-by-tick
-    if (isLive && stock.price > 0 && valid.length > 0) {
+    if (isLive && stock.symbol === symbol && stock.price > 0 && valid.length > 0) {
       const todayKey = toVnDateKey(new Date())
       const lastIdx = valid.length - 1
       const last = valid[lastIdx]
       const lastKey = toVnDateKey(last.date)
-      if (!lastKey || lastKey === todayKey) {
+      const isCoherentBand = Math.abs(stock.price - last.open) / Math.max(1, last.open) <= 0.2
+      if (isCoherentBand && (!lastKey || lastKey === todayKey)) {
         valid[lastIdx] = {
           ...last,
           close: stock.price,
@@ -1059,7 +1080,7 @@ export default function TradePage() {
       const avg = windowSlice.reduce((s, item) => s + item.close, 0) / 20
       return { ...c, sma20: avg }
     })
-  }, [rawCandles, isLive, stock.price])
+  }, [candleBundle, symbol, isLive, stock.symbol, stock.price])
 
   const latestCandle = candles.length > 0 ? candles[candles.length - 1] : null
 

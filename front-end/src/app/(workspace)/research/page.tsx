@@ -143,7 +143,6 @@ export default function ResearchPage() {
               </Panel>
             ) : (
               visibleTheses.map((t) => {
-                const signals = t.confirming_signals ? Object.values(t.confirming_signals) : []
                 const invalidations = t.invalidation_conditions || []
                 const generatedAt = t.generated_at || t.created_at
                 const status = thesisStatus[t.status] ?? { label: t.status || "Không rõ", tone: "neutral" }
@@ -183,17 +182,6 @@ export default function ResearchPage() {
                     {t.target_price_range && (
                       <div className="text-[12.5px] font-mono text-ink mt-2 mb-3">
                         Mục tiêu: <span className="text-gain font-semibold">{t.target_price_range[0]?.toLocaleString("vi-VN")}</span> – <span className="text-gain font-semibold">{t.target_price_range[1]?.toLocaleString("vi-VN")}</span> đ
-                      </div>
-                    )}
-
-                    {signals.length > 0 && (
-                      <div className="mt-3 pt-3 border-t border-line text-[12px]">
-                        <div className="text-[10.5px] uppercase tracking-wide text-muted mb-1 font-semibold">Tín hiệu xác nhận</div>
-                        <ul className="space-y-1 text-secondary">
-                          {signals.map((sig, i) => (
-                            <li key={i} className="flex gap-1.5"><span className="text-gain">✓</span>{sig}</li>
-                          ))}
-                        </ul>
                       </div>
                     )}
 

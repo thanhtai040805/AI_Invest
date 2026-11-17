@@ -40,7 +40,6 @@ def test_pipeline_exports_and_backward_compatibility():
 def test_live_portfolio_snapshot_includes_existing_holdings_and_real_cash():
     runner = DailyInvestmentPipeline(
         multi_agent_mode=ExecutionMode.DISABLED.value,
-        standalone_ml_mode=ExecutionMode.DISABLED.value,
     )
 
     class PortfolioStub:
@@ -75,13 +74,11 @@ def test_12_agent_pipeline_bull_execution():
     async def _test():
         runner = DailyInvestmentPipeline(
             multi_agent_mode=ExecutionMode.SHADOW_RUNNER.value,
-            standalone_ml_mode=ExecutionMode.LIVE.value,
         )
 
         res = await runner.run(
             target_date="2026-08-28",
             current_nav=1_000_000_000.0,
-            standalone_nav=500_000_000.0,
             candidate_tickers=["FPT", "VNM", "HPG"],
             max_candidates=2,
         )
@@ -111,12 +108,6 @@ def test_12_agent_pipeline_bull_execution():
             assert order["price"] > 0
             assert order["target_weight_pct"] <= 0.15  # Tuân thủ nghiêm ngặt Điều 4 Hard Law
 
-        orders_sa = res.get("standalone_ml_instructions", [])
-        for order in orders_sa:
-            assert order["shares"] > 0
-            assert order["price"] > 0
-            assert order["target_weight_pct"] <= 0.20
-
     asyncio.run(_test())
 
 
@@ -136,7 +127,6 @@ def test_12_agent_pipeline_bear_defense_mode():
         assert res["cash_ratio"] == 1.0
         assert res["status"] in ["BEAR_DEFENSE_100PCT_CASH", "SUCCESS"]
         assert len(res["multi_agent_instructions"]) == 0
-        assert len(res["standalone_ml_instructions"]) == 0
 
     asyncio.run(_test())
 
@@ -153,7 +143,6 @@ def test_historical_replay_researches_beyond_live_shortlist(monkeypatch, target_
             return datetime(2026, 11, 6, 16, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh")).astimezone(tz)
 
     monkeypatch.setattr(module, "datetime", FixedDateTime)
-    monkeypatch.setattr(module.standalone_ml_channel, "get_account_state", lambda: pytest.fail("Replay read the unrelated ML account"))
     researched = []
     candidates = [
         {"ticker": ticker, "universe_group": "A", "adtv20": 100 - index}
@@ -184,7 +173,6 @@ def test_historical_replay_researches_beyond_live_shortlist(monkeypatch, target_
     monkeypatch.setattr(AgentRegistry, "dispatch", classmethod(fake_dispatch))
     runner = DailyInvestmentPipeline(
         multi_agent_mode=ExecutionMode.DISABLED.value,
-        standalone_ml_mode=ExecutionMode.DISABLED.value,
     )
     replay_portfolio = {
         "total_nav": 1_000_000_000.0, "peak_nav": 1_000_000_000.0,

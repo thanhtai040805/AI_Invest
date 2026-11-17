@@ -4,7 +4,6 @@ CI đã build backend trước khi chạy `npm run test:critical`. Lệnh này l
 file cụ thể, không tự phát hiện hoặc chạy toàn bộ test trong repository:
 
 - `shadowFill.test.cjs`: không khớp giả khi thiếu depth hoặc dữ liệu cũ.
-- `mlFund.test.cjs`: hợp đồng API quỹ ML, tài khoản và ngày hiệu lực.
 - `unit/portfolioAccounting.test.cjs`: công thức kế toán, phí, đối soát NAV,
   giá có thời điểm và lợi suất lịch sử. Các hàm thuần; không gọi DB/network.
 

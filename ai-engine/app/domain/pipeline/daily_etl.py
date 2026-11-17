@@ -91,13 +91,13 @@ class DailyETLPipeline:
             # Các bước ETL cốt lõi cho toàn bộ hệ thống: Ingestion & Derived Metrics
             step_callables: List[tuple[str, Callable[[], Coroutine[Any, Any, Dict[str, Any]]]]] = [
                 ("ohlcv_backfill", self.step_ohlcv_backfill),
+                ("corporate_actions", self.step_corporate_actions),
                 ("technical_indicators", self.step_technical_indicators),
                 ("garch_volatility", self.step_garch_volatility),
                 ("beta_alpha", self.step_beta_alpha),
                 ("insider_trades", self.step_insider_trades),
                 ("foreign_flow", self.step_foreign_flow),
                 ("financial_ratios", self.step_financial_ratios),
-                ("corporate_actions", self.step_corporate_actions),
                 ("corporate_documents", self.step_corporate_documents),
                 ("factor_scores", self.step_factor_scores),
                 ("macro_indicators", self.step_macro_indicators),
@@ -292,12 +292,26 @@ class DailyETLPipeline:
             return {"status": "failed", "error": str(e)}
 
     async def step_corporate_actions(self) -> Dict[str, Any]:
-        """Refresh corporate actions from Vietcap IQ O(1) batch events (with safe fallback)."""
+        """Refresh corporate actions and reconcile full-history adjusted prices."""
         logger.info("ETL: corporate_actions — fetching VCI corporate events...")
         try:
             from app.infrastructure.data_pipelines.corporate_actions import refresh_incremental
+            from app.infrastructure.data_pipelines.ohlcv_backfill import reconcile_adjusted_prices
+
             partition_index = self.trade_date.weekday() if self.trade_date else None
-            return await asyncio.to_thread(refresh_incremental, partition_index=partition_index)
+            ca_result = await asyncio.to_thread(refresh_incremental, partition_index=partition_index)
+            try:
+                adj_res = await asyncio.to_thread(
+                    reconcile_adjusted_prices,
+                    target_date=self.trade_date,
+                    lookback_days=21,
+                )
+            except Exception as adj_exc:
+                logger.warning("ETL: adj_reconciliation failed: %s", adj_exc)
+                adj_res = {"status": "failed", "error": str(adj_exc)}
+
+            base = ca_result if isinstance(ca_result, dict) else {"result": ca_result}
+            return {**base, "adj_reconciliation": adj_res}
         except (Exception, SystemExit) as e:
             logger.error("ETL: corporate_actions failed: %s", e)
             return {"status": "failed", "error": str(e)}

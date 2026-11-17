@@ -91,7 +91,6 @@ def test_shadow_execution_refreshes_portfolio_before_next_candidate(monkeypatch,
     monkeypatch.setattr(market_data_svc, "get_order_book", fake_order_book)
     runner = DailyInvestmentPipeline(
         multi_agent_mode=ExecutionMode.SHADOW_RUNNER.value,
-        standalone_ml_mode=ExecutionMode.DISABLED.value,
     )
     runner.portfolio_repo = portfolio
 
@@ -99,7 +98,6 @@ def test_shadow_execution_refreshes_portfolio_before_next_candidate(monkeypatch,
         target_date=datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date().isoformat(),
         candidate_tickers=["FPT", "VNM"],
         max_candidates=2,
-        standalone_nav=500_000_000.0,
     ))
 
     if fail_refresh:

@@ -104,6 +104,9 @@ export {
 export {
   fetchTimeframeCandles,
   normalizeRawCandles,
+  isIndexSymbol,
+  resolveSeriesPriceScale,
+  scaleCandlePrice,
   getHoseTickStep,
   roundToHoseTick,
   toVndPrice,

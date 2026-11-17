@@ -67,7 +67,7 @@ export function Link({
 }) {
   const stockSym = extractStockModalSymbol(to)
   if (stockSym) {
-    const fallbackHref = `/markets?symbol=${encodeURIComponent(stockSym)}`
+    const fallbackHref = `/trade?symbol=${encodeURIComponent(stockSym)}`
     const handleStockClick = (e: MouseEvent<HTMLAnchorElement>) => {
       if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) {
         onClick?.()

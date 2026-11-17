@@ -152,6 +152,66 @@ function clampViewport(
   return { startIndex, endIndex }
 }
 
+const VN_OFFSET_MS = 7 * 3_600_000
+
+function computeRangeViewport(
+  bars: TvCandle[],
+  range: TvDateRange | null,
+  rightOffsetBars: number,
+  timeframe: TvTimeframe,
+  compact: boolean
+): { startIndex: number; endIndex: number } {
+  const total = bars.length
+  if (total === 0) return { startIndex: 0, endIndex: 90 }
+  const end = total - 1 + rightOffsetBars
+  if (range === "ALL") {
+    return { startIndex: 0, endIndex: end }
+  }
+  if (!range) {
+    const defaultBars = Math.min(total, timeframe === "1D" ? (compact ? 65 : 120) : 140)
+    return { startIndex: Math.max(0, total - defaultBars), endIndex: end }
+  }
+
+  const anchorTs = bars[total - 1].timestamp
+  let cutoffTs: number
+  if (range === "YTD") {
+    const vnYear = new Date(anchorTs + VN_OFFSET_MS).getUTCFullYear()
+    cutoffTs = Date.UTC(vnYear, 0, 1) - VN_OFFSET_MS
+  } else {
+    const dayMs = 86_400_000
+    const daysByRange: Record<Exclude<TvDateRange, "YTD" | "ALL">, number> = {
+      "1D": 1,
+      "5D": 7,
+      "1M": 30,
+      "3M": 92,
+      "6M": 183,
+      "1Y": 365,
+      "5Y": 5 * 365,
+    }
+    cutoffTs = anchorTs - daysByRange[range] * dayMs
+  }
+
+  const firstIdx = bars.findIndex((c) => c.timestamp >= cutoffTs)
+  const rawStart = firstIdx >= 0 ? firstIdx : 0
+  const isDailyOrHigher =
+    timeframe === "1D" ||
+    timeframe === "1W" ||
+    timeframe === "1M" ||
+    timeframe === "3M" ||
+    timeframe === "6M" ||
+    timeframe === "12M"
+  const minBars = Math.min(
+    total,
+    range === "1D" ? (isDailyOrHigher ? 12 : 18) : range === "5D" ? (isDailyOrHigher ? 15 : 24) : 12
+  )
+  const startIndex = Math.max(0, Math.min(total - minBars, rawStart))
+  return { startIndex, endIndex: end }
+}
+
+function sameVnDay(tsA: number, tsB: number): boolean {
+  return Math.floor((tsA + VN_OFFSET_MS) / 86_400_000) === Math.floor((tsB + VN_OFFSET_MS) / 86_400_000)
+}
+
 export const TradingViewChart: React.FC<TradingViewChartProps> = ({
   symbol,
   seedCandles,
@@ -167,9 +227,18 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
   const canvasWrapperRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
+  const propSymbolUpper = symbol.trim().toUpperCase()
+  const [overrideSymbol, setOverrideSymbol] = useState<{ propSymbol: string; selected: string } | null>(
+    null
+  )
+  const activeSymbol =
+    !trading?.onSymbolChange && overrideSymbol?.propSymbol === propSymbolUpper
+      ? overrideSymbol.selected
+      : propSymbolUpper
+
   const isIndex = useMemo(
-    () => isIndexSymbol(symbol) || (precision != null && precision > 0),
-    [symbol, precision]
+    () => isIndexSymbol(activeSymbol) || (precision != null && precision > 0),
+    [activeSymbol, precision]
   )
   const effectivePrecision = precision ?? (isIndex ? 2 : 0)
 
@@ -177,12 +246,30 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
   const [timeframe, setTimeframe] = useState<TvTimeframe>(initialTimeframe)
   const [activeDateRange, setActiveDateRange] = useState<TvDateRange | null>("6M")
   const [chartStyle, setChartStyle] = useState<TvChartStyle>(initialStyle)
-  const [candles, setCandles] = useState<TvCandle[]>(() =>
-    seedCandles && seedCandles.length > 0
-      ? normalizeRawCandles(seedCandles, initialTimeframe, isIndex)
-      : []
+  const chartKey = `${activeSymbol}:${timeframe}`
+
+  const matchingSeed = useMemo(
+    () =>
+      timeframe === "1D" &&
+      seedCandles &&
+      seedCandles.length > 0 &&
+      (!trading?.symbol || trading.symbol.trim().toUpperCase() === activeSymbol)
+        ? seedCandles
+        : undefined,
+    [timeframe, seedCandles, trading?.symbol, activeSymbol]
   )
-  const [loadingData, setLoadingData] = useState(false)
+
+  const [candleState, setCandleState] = useState<{ key: string; candles: TvCandle[] }>(() => ({
+    key: chartKey,
+    candles: matchingSeed ? normalizeRawCandles(matchingSeed, timeframe, isIndex) : [],
+  }))
+  const [settledKey, setSettledKey] = useState<string>("")
+  const loadingData = settledKey !== chartKey
+
+  const candles = useMemo(() => {
+    if (candleState.key === chartKey) return candleState.candles
+    return matchingSeed ? normalizeRawCandles(matchingSeed, timeframe, isIndex) : []
+  }, [candleState, chartKey, matchingSeed, timeframe, isIndex])
 
   // Settings & Indicators State
   const [settings, setSettings] = useState<TvChartSettings>(() => {
@@ -388,7 +475,7 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
   // Load & Persist Drawings per Symbol
   useEffect(() => {
     try {
-      const key = `aiinvest_tv_drawings_${symbol.toUpperCase()}`
+      const key = `aiinvest_tv_drawings_${activeSymbol}`
       const saved = window.localStorage.getItem(key)
       setDrawings(saved ? JSON.parse(saved) : [])
       setUndoStack([])
@@ -398,7 +485,7 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
     } catch {
       setDrawings([])
     }
-  }, [symbol])
+  }, [activeSymbol])
 
   const commitDrawings = useCallback(
     (next: TvDrawingObject[], recordUndo = true) => {
@@ -408,7 +495,7 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
           setRedoStack([])
         }
         try {
-          const key = `aiinvest_tv_drawings_${symbol.toUpperCase()}`
+          const key = `aiinvest_tv_drawings_${activeSymbol}`
           window.localStorage.setItem(key, JSON.stringify(next))
         } catch {
           // ignore
@@ -416,24 +503,46 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
         return next
       })
     },
-    [symbol]
+    [activeSymbol]
   )
 
-  // Fetch Multi-Timeframe Candles when symbol or timeframe changes
+  const activeDateRangeRef = useRef<TvDateRange | null>(activeDateRange)
+  const rightOffsetRef = useRef<number>(settings.rightOffsetBars)
+  const matchingSeedRef = useRef<RawInputCandle[] | undefined>(matchingSeed)
+  const chartStyleRef = useRef<TvChartStyle>(chartStyle)
+  useEffect(() => {
+    activeDateRangeRef.current = activeDateRange
+  }, [activeDateRange])
+  useEffect(() => {
+    rightOffsetRef.current = settings.rightOffsetBars
+  }, [settings.rightOffsetBars])
+  useEffect(() => {
+    matchingSeedRef.current = matchingSeed
+  }, [matchingSeed])
+  useEffect(() => {
+    chartStyleRef.current = chartStyle
+  }, [chartStyle])
+
+  // Fetch Multi-Timeframe Candles when activeSymbol or timeframe changes
   useEffect(() => {
     let cancelled = false
-    setLoadingData(true)
 
-    fetchTimeframeCandles(symbol, timeframe, seedCandles)
+    fetchTimeframeCandles(activeSymbol, timeframe, matchingSeedRef.current)
       .then((res) => {
         if (cancelled) return
         if (res.length > 0) {
-          setCandles(res)
-          const defaultBars = Math.min(res.length, timeframe === "1D" ? (compact ? 65 : 95) : 110)
+          setCandleState({ key: chartKey, candles: res })
+          const styledRes = transformSeriesForChartStyle(res, chartStyleRef.current)
+          const vpRange = computeRangeViewport(
+            styledRes,
+            activeDateRangeRef.current,
+            rightOffsetRef.current,
+            timeframe,
+            compact
+          )
           setViewport((prev) => ({
             ...prev,
-            startIndex: Math.max(0, res.length - defaultBars),
-            endIndex: res.length - 1 + settings.rightOffsetBars,
+            ...vpRange,
             autoScale: true,
             manualPriceScaleFactor: 1,
             manualPricePanDelta: 0,
@@ -445,52 +554,45 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
             selectingStartBar: false,
             cutoffIndex: res.length - 1,
           }))
+        } else {
+          setCandleState({ key: chartKey, candles: [] })
         }
       })
       .finally(() => {
-        if (!cancelled) setLoadingData(false)
+        if (!cancelled) setSettledKey(chartKey)
       })
 
     return () => {
       cancelled = true
     }
-  }, [symbol, timeframe]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeSymbol, timeframe, chartKey, compact])
 
-  // Sync seedCandles if parent updates 1D candles in real time (never shrink 250-bar history to 130-bar seed)
+  // Sync matchingSeed if parent updates 1D candles in real time (never overwrite deep history or cross-symbol)
   useEffect(() => {
-    if (timeframe !== "1D" || !seedCandles || seedCandles.length === 0) return
-    const normalized = normalizeRawCandles(seedCandles, "1D", isIndex)
+    if (timeframe !== "1D" || !matchingSeed || matchingSeed.length === 0) return
+    const normalized = normalizeRawCandles(matchingSeed, "1D", isIndex)
     if (normalized.length === 0) return
 
-    setCandles((prev) => {
-      if (prev.length === 0) {
-        const defaultBars = Math.min(normalized.length, 95)
-        setViewport((vp) => ({
-          ...vp,
-          startIndex: Math.max(0, normalized.length - defaultBars),
-          endIndex: normalized.length - 1 + settings.rightOffsetBars,
-        }))
-        return normalized
-      }
+    setCandleState((state) => {
+      if (state.key !== chartKey || state.candles.length === 0) return state
+      const prev = state.candles
       if (normalized.length > prev.length + 5) {
-        const defaultBars = Math.min(normalized.length, 95)
-        setViewport((vp) => ({
-          ...vp,
-          startIndex: Math.max(0, normalized.length - defaultBars),
-          endIndex: normalized.length - 1 + settings.rightOffsetBars,
-        }))
-        return normalized
+        return { key: chartKey, candles: normalized }
       }
-      // Merge only the latest bar tick without clobbering deeper historical candles
       const seedLast = normalized[normalized.length - 1]
       const prevLast = prev[prev.length - 1]
+      if (!sameVnDay(seedLast.timestamp, prevLast.timestamp)) return state
+      const maxJump = isIndex ? 0.12 : 0.2
+      if (Math.abs(seedLast.close - prevLast.open) / Math.max(1, prevLast.open) > maxJump) {
+        return state
+      }
       if (
         prevLast.close === seedLast.close &&
         prevLast.high === seedLast.high &&
         prevLast.low === seedLast.low &&
         prevLast.volume === seedLast.volume
       ) {
-        return prev
+        return state
       }
       const next = [...prev]
       next[next.length - 1] = {
@@ -500,15 +602,15 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
         low: Math.min(prevLast.low, seedLast.low),
         volume: Math.max(prevLast.volume, seedLast.volume),
       }
-      return next
+      return { key: chartKey, candles: next }
     })
-  }, [seedCandles, timeframe, settings.rightOffsetBars, isIndex])
+  }, [matchingSeed, timeframe, chartKey, isIndex])
 
   // Subscribe to Live Socket.IO OHLC Stream (+ market:indices stream for VNINDEX/VN30/VN100)
   useEffect(() => {
-    if (!symbol) return
+    if (!activeSymbol) return
     const sock = getSocket()
-    const release = retainOhlc(symbol, "1D")
+    const release = retainOhlc(activeSymbol, "1D")
     const onOhlcUpdate = (payload: {
       symbol?: string
       open?: number
@@ -517,7 +619,7 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
       close?: number
       volume?: number
     }) => {
-      if (String(payload?.symbol ?? "").toUpperCase() !== symbol.toUpperCase()) return
+      if (String(payload?.symbol ?? "").toUpperCase() !== activeSymbol) return
       const close = toVndPrice(payload.close, 0, isIndex)
       if (close <= 0) return
       const open = toVndPrice(payload.open, close, isIndex)
@@ -525,11 +627,13 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
       const low = Math.min(toVndPrice(payload.low, close, isIndex), open, close)
       const vol = Math.max(0, Number(payload.volume ?? 0))
 
-      setCandles((prev) => {
-        if (prev.length === 0) return prev
-        const next = [...prev]
+      setCandleState((state) => {
+        if (state.key !== chartKey || state.candles.length === 0) return state
+        const next = [...state.candles]
         const lastIdx = next.length - 1
         const last = next[lastIdx]
+        const maxJump = isIndex ? 0.12 : 0.2
+        if (Math.abs(close - last.open) / Math.max(1, last.open) > maxJump) return state
         next[lastIdx] = {
           ...last,
           close,
@@ -537,7 +641,7 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
           low: Math.min(last.low, low),
           volume: vol > 0 ? Math.max(last.volume, vol) : last.volume,
         }
-        return next
+        return { key: chartKey, candles: next }
       })
     }
 
@@ -548,7 +652,7 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
         : Array.isArray((payload as { indices?: unknown })?.indices)
           ? ((payload as { indices: Array<Record<string, unknown>> }).indices ?? [])
           : []
-      const cleanSym = symbol.trim().toUpperCase().replace("-", "")
+      const cleanSym = activeSymbol.replace("-", "")
       const match = rows.find(
         (r: Record<string, unknown>) =>
           String(r?.symbol ?? r?.code ?? r?.name ?? "")
@@ -558,18 +662,19 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
       if (!match) return
       const val = toVndPrice(match.value ?? match.price ?? match.close, 0, true)
       if (val <= 0) return
-      setCandles((prev) => {
-        if (prev.length === 0) return prev
-        const last = prev[prev.length - 1]
-        if (Math.abs(last.close - val) < 0.005) return prev
-        const next = [...prev]
+      setCandleState((state) => {
+        if (state.key !== chartKey || state.candles.length === 0) return state
+        const last = state.candles[state.candles.length - 1]
+        if (Math.abs(last.close - val) < 0.005) return state
+        if (Math.abs(val - last.open) / Math.max(1, last.open) > 0.12) return state
+        const next = [...state.candles]
         next[next.length - 1] = {
           ...last,
           close: val,
           high: Math.max(last.high, val),
           low: Math.min(last.low, val),
         }
-        return next
+        return { key: chartKey, candles: next }
       })
     }
 
@@ -584,27 +689,31 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
       }
       release()
     }
-  }, [symbol, isIndex])
+  }, [activeSymbol, isIndex, chartKey])
 
-  // Also sync latest candle close with trading.currentPrice
+  // Also sync latest 1D candle close with trading.currentPrice (strictly same-symbol + band-checked)
   useEffect(() => {
+    if (timeframe !== "1D") return
+    if (trading?.symbol && trading.symbol.trim().toUpperCase() !== activeSymbol) return
     const livePrice = trading?.currentPrice ?? 0
     if (livePrice <= 0) return
     const eps = isIndex ? 0.005 : 1
-    setCandles((prev) => {
-      if (prev.length === 0) return prev
-      const last = prev[prev.length - 1]
-      if (Math.abs(last.close - livePrice) < eps) return prev
-      const next = [...prev]
+    setCandleState((state) => {
+      if (state.key !== chartKey || state.candles.length === 0) return state
+      const last = state.candles[state.candles.length - 1]
+      if (Math.abs(last.close - livePrice) < eps) return state
+      const maxJump = isIndex ? 0.12 : 0.2
+      if (Math.abs(livePrice - last.open) / Math.max(1, last.open) > maxJump) return state
+      const next = [...state.candles]
       next[next.length - 1] = {
         ...last,
         close: livePrice,
         high: Math.max(last.high, livePrice),
         low: Math.min(last.low, livePrice),
       }
-      return next
+      return { key: chartKey, candles: next }
     })
-  }, [trading?.currentPrice, isIndex])
+  }, [timeframe, trading?.symbol, trading?.currentPrice, activeSymbol, chartKey, isIndex])
 
   // Bar Replay Timer
   useEffect(() => {
@@ -708,10 +817,10 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
       computeIndicator(displayCandles, inst, {
         visibleStart: vpStartBar,
         visibleEnd: vpEndBar,
-        symbol,
+        symbol: activeSymbol,
       })
     )
-  }, [displayCandles, indicators, vpStartBar, vpEndBar, symbol])
+  }, [displayCandles, indicators, vpStartBar, vpEndBar, activeSymbol])
 
   const overlayIndicators = useMemo(
     () => computedIndicators.filter((c) => c.meta.overlay),
@@ -1659,31 +1768,23 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
   const handleSelectDateRange = useCallback(
     (range: TvDateRange) => {
       setActiveDateRange(range)
-      const total = displayCandles.length
-      if (total === 0) return
-
-      const rangeBarsMap: Record<TvDateRange, number> = {
-        "1D": 24,
-        "5D": 35,
-        "1M": 30,
-        "3M": 66,
-        "6M": 130,
-        YTD: 160,
-        "1Y": 250,
-        "5Y": total,
-        ALL: total,
-      }
-      const count = Math.min(total, rangeBarsMap[range] ?? 100)
+      if (displayCandles.length === 0) return
+      const vpRange = computeRangeViewport(
+        displayCandles,
+        range,
+        settings.rightOffsetBars,
+        timeframe,
+        compact
+      )
       setViewport((prev) => ({
         ...prev,
-        startIndex: Math.max(0, total - count),
-        endIndex: total - 1 + settings.rightOffsetBars,
+        ...vpRange,
         autoScale: true,
         manualPriceScaleFactor: 1,
         manualPricePanDelta: 0,
       }))
     },
-    [displayCandles.length, settings.rightOffsetBars]
+    [displayCandles, settings.rightOffsetBars, timeframe, compact]
   )
 
   // Comparison Series Toggle
@@ -1719,13 +1820,13 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
       const url = canvas.toDataURL("image/png")
       const link = document.createElement("a")
       const vnToday = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Ho_Chi_Minh" }).format(new Date())
-      link.download = `AIInvest_${symbol}_${timeframe}_${vnToday}.png`
+      link.download = `AIInvest_${activeSymbol}_${timeframe}_${vnToday}.png`
       link.href = url
       link.click()
     } catch {
       // ignore
     }
-  }, [symbol, timeframe])
+  }, [activeSymbol, timeframe])
 
   // Fullscreen Toggle (Synchronized with Browser Fullscreen API + Clean Fallback)
   const handleToggleFullscreen = useCallback(() => {
@@ -1879,7 +1980,7 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
         </div>
       ) : (
         <TopHeaderToolbar
-          symbol={symbol}
+          symbol={activeSymbol}
           timeframe={timeframe}
           chartStyle={chartStyle}
           indicators={indicators}
@@ -1890,7 +1991,15 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
           canRedo={redoStack.length > 0}
           isFullscreen={isFullscreen}
           isDark={isDark}
-          onSymbolChange={trading?.onSymbolChange}
+          onSymbolChange={(nextSym) => {
+            const clean = nextSym.trim().toUpperCase()
+            if (!clean) return
+            if (trading?.onSymbolChange) {
+              trading.onSymbolChange(clean)
+            } else {
+              setOverrideSymbol({ propSymbol: propSymbolUpper, selected: clean })
+            }
+          }}
           onTimeframeChange={(tf) => {
             setTimeframe(tf)
             setActiveDateRange(null)
@@ -2036,7 +2145,7 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
 
           {/* Top-Left Pane Legend + Sub-Pane Headers + Floating Zoom/Pan Controls */}
           <PaneLegend
-            symbol={symbol}
+            symbol={activeSymbol}
             stockName={trading?.stockName}
             exchange={trading?.exchange || "HOSE"}
             timeframe={timeframe}
@@ -2191,7 +2300,7 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
           {/* Loading Badge */}
           {loadingData && (
             <div className="absolute top-2.5 right-24 z-20 px-2.5 py-1 rounded-full bg-[#2962FF] text-white text-[11px] font-semibold shadow-md animate-pulse">
-              Đang tải dữ liệu {symbol} ({timeframe})...
+              Đang tải dữ liệu {activeSymbol} ({timeframe})...
             </div>
           )}
 
@@ -2369,7 +2478,7 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
       <ObjectTreeModal
         isOpen={objectTreeOpen}
         isDark={isDark}
-        symbol={symbol}
+        symbol={activeSymbol}
         activeCandle={activeCandle}
         hoveredBarIndex={hoveredBarIndex}
         trading={trading}

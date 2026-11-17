@@ -4,7 +4,8 @@
  * ============================================================================ */
 "use client"
 
-import React, { useEffect, useRef, useState } from "react"
+import React, { useEffect, useMemo, useRef, useState } from "react"
+import { marketApi } from "@/lib/api"
 import { TvIcon } from "../icons/tv-icons"
 import { getIndicatorMetadata, TV_INDICATOR_LIST, TV_INDICATOR_REGISTRY } from "../indicators/registry"
 import type {
@@ -190,6 +191,9 @@ const POPULAR_VN_SYMBOLS = [
   { symbol: "VNM", name: "Vinamilk" },
   { symbol: "MSN", name: "Tập đoàn Masan" },
   { symbol: "GMD", name: "Gemadept" },
+  { symbol: "VNINDEX", name: "Chỉ số VN-Index (HOSE)" },
+  { symbol: "VN30", name: "Chỉ số VN30 (HOSE)" },
+  { symbol: "HNXINDEX", name: "Chỉ số HNX-Index" },
 ]
 
 export interface TopHeaderToolbarProps {
@@ -255,12 +259,41 @@ export function TopHeaderToolbar({
   const [tfMenuOpen, setTfMenuOpen] = useState(false)
   const [favMenuOpen, setFavMenuOpen] = useState(false)
   const [symFilter, setSymFilter] = useState("")
+  const [universeSymbols, setUniverseSymbols] = useState<{ symbol: string; name: string }[]>([])
 
   const styleRef = useRef<HTMLDivElement>(null)
   const compareRef = useRef<HTMLDivElement>(null)
   const symRef = useRef<HTMLDivElement>(null)
   const tfRef = useRef<HTMLDivElement>(null)
   const favRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!symMenuOpen || universeSymbols.length > 0) return
+    let cancelled = false
+    marketApi
+      .snapshot()
+      .then((snap) => {
+        if (cancelled) return
+        const rows = Array.isArray((snap as { stocks?: unknown })?.stocks)
+          ? ((snap as { stocks: Array<{ symbol?: string; name?: string }> }).stocks ?? [])
+          : []
+        const bySym = new Map<string, string>()
+        for (const p of POPULAR_VN_SYMBOLS) bySym.set(p.symbol, p.name)
+        for (const r of rows) {
+          const sym = String(r?.symbol ?? "").trim().toUpperCase()
+          if (!sym) continue
+          const nm = String(r?.name ?? "").trim()
+          if (!bySym.has(sym) || nm) {
+            bySym.set(sym, nm || bySym.get(sym) || sym)
+          }
+        }
+        setUniverseSymbols(Array.from(bySym.entries()).map(([symbol, name]) => ({ symbol, name })))
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [symMenuOpen, universeSymbols.length])
 
   useEffect(() => {
     function handleOutside(e: MouseEvent) {
@@ -277,11 +310,23 @@ export function TopHeaderToolbar({
 
   const currentStyleMeta = CHART_STYLES.find((s) => s.id === chartStyle) || CHART_STYLES[0]
   const visibleIndicatorCount = indicators.filter((i) => i.visible).length
-  const filteredSymbols = POPULAR_VN_SYMBOLS.filter(
-    (s) =>
-      s.symbol.includes(symFilter.trim().toUpperCase()) ||
-      s.name.toLowerCase().includes(symFilter.trim().toLowerCase())
-  )
+  const filteredSymbols = useMemo(() => {
+    const source = universeSymbols.length > 0 ? universeSymbols : POPULAR_VN_SYMBOLS
+    const q = symFilter.trim()
+    const qUp = q.toUpperCase()
+    const qLow = q.toLowerCase()
+    if (!q) return source.slice(0, 40)
+    const startsWithMatches: { symbol: string; name: string }[] = []
+    const otherMatches: { symbol: string; name: string }[] = []
+    for (const s of source) {
+      if (s.symbol.startsWith(qUp)) {
+        startsWithMatches.push(s)
+      } else if (s.symbol.includes(qUp) || s.name.toLowerCase().includes(qLow)) {
+        otherMatches.push(s)
+      }
+    }
+    return [...startsWithMatches, ...otherMatches].slice(0, 40)
+  }, [universeSymbols, symFilter])
 
   const validFavProp = (favoriteIds ?? []).filter((id) => Boolean(TV_INDICATOR_REGISTRY[id]))
   const quickFavIds = validFavProp.length > 0 ? validFavProp : DEFAULT_FAVORITE_IDS

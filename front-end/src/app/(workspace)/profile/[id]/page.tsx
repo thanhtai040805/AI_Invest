@@ -29,7 +29,7 @@ function BrokerProfile({ id }: { id: string }) {
     <Page
       title={expert?.displayName || "Hồ sơ cộng đồng"}
       sub="Thông tin thành viên được trả về từ bảng xếp hạng cộng đồng."
-      actions={<Link to="/community"><Button variant="secondary">Quay lại cộng đồng</Button></Link>}
+      actions={<Link to="/agent"><Button variant="secondary">Về AI War Room</Button></Link>}
     >
       {expertsRes.loading ? (
         <Panel className="py-10 text-center text-[13px] text-muted">Đang tải hồ sơ cộng đồng…</Panel>
@@ -39,7 +39,7 @@ function BrokerProfile({ id }: { id: string }) {
         <EmptyState
           title="Không tìm thấy hồ sơ"
           body="API cộng đồng hiện chỉ trả về năm thành viên đứng đầu. Hồ sơ này không nằm trong danh sách hiện có."
-          action={<Link to="/community"><Button variant="primary">Mở cộng đồng</Button></Link>}
+          action={<Link to="/agent"><Button variant="primary">Về AI War Room</Button></Link>}
         />
       ) : (
         <Panel>

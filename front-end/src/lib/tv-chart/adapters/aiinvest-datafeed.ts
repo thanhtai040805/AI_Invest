@@ -5,141 +5,29 @@
 
 import { stockApi } from "@/lib/api"
 import type { TvCandle, TvTimeframe } from "../types"
+import {
+  formatTimeframeLabel,
+  getHoseTickStep,
+  isIndexSymbol,
+  normalizeRawCandles,
+  resolveSeriesPriceScale,
+  roundToHoseTick,
+  scaleCandlePrice,
+  toVndPrice,
+  VN_OFFSET_MS,
+  type RawInputCandle,
+} from "./candle-scale"
 
-export interface RawInputCandle {
-  date?: string
-  time?: string | number
-  timestamp?: string | number
-  label?: string
-  open?: number
-  high?: number
-  low?: number
-  close?: number
-  volume?: number
-}
-
-const INDEX_SYMBOLS = new Set([
-  "VNINDEX",
-  "VN-INDEX",
-  "^VNINDEX",
-  "VN30",
-  "VN100",
-  "HNX",
-  "HNXINDEX",
-  "HNX30",
-  "UPCOM",
-  "UPCOMINDEX",
-])
-
-export function isIndexSymbol(symbol?: string | null): boolean {
-  if (!symbol) return false
-  return INDEX_SYMBOLS.has(symbol.trim().toUpperCase())
-}
-
-export function toVndPrice(raw: unknown, fallback = 0, isIndex = false): number {
-  const n = Number(raw)
-  if (!Number.isFinite(n) || n <= 0) return fallback
-  if (isIndex) {
-    // Auto-heal any legacy 1000x scaled index points (e.g. 1,746,900 -> 1746.90)
-    const idxVal = n > 100_000 ? n / 1_000 : n
-    return Number(idxVal.toFixed(2))
-  }
-  const vnd = n < 1_000 ? n * 1_000 : n
-  return Math.round(vnd)
-}
-
-export function getHoseTickStep(priceVnd: number): number {
-  if (priceVnd < 10_000) return 10
-  if (priceVnd < 50_000) return 50
-  return 100
-}
-
-export function roundToHoseTick(priceVnd: number, isIndex = false): number {
-  if (!Number.isFinite(priceVnd) || priceVnd <= 0) return 0
-  if (isIndex) return Number(priceVnd.toFixed(2))
-  const step = getHoseTickStep(priceVnd)
-  return Math.round(priceVnd / step) * step
-}
-
-const VN_OFFSET_MS = 7 * 3_600_000
-
-export function formatTimeframeLabel(ts: number, rawDate: string, tf: TvTimeframe): string {
-  const raw = new Date(ts)
-  if (Number.isNaN(raw.getTime())) return rawDate.slice(0, 10)
-  const d = new Date(ts + VN_OFFSET_MS)
-  if (tf === "1s" || tf === "5s" || tf === "15s" || tf === "30s") {
-    const hh = String(d.getUTCHours()).padStart(2, "0")
-    const min = String(d.getUTCMinutes()).padStart(2, "0")
-    const sec = String(d.getUTCSeconds()).padStart(2, "0")
-    return `${hh}:${min}:${sec}`
-  }
-  if (
-    tf === "1m" ||
-    tf === "3m" ||
-    tf === "5m" ||
-    tf === "15m" ||
-    tf === "30m" ||
-    tf === "45m" ||
-    tf === "1H" ||
-    tf === "2H" ||
-    tf === "3H" ||
-    tf === "4H"
-  ) {
-    const dd = String(d.getUTCDate()).padStart(2, "0")
-    const mm = String(d.getUTCMonth() + 1).padStart(2, "0")
-    const hh = String(d.getUTCHours()).padStart(2, "0")
-    const min = String(d.getUTCMinutes()).padStart(2, "0")
-    return `${dd}/${mm} ${hh}:${min}`
-  }
-  if (tf === "1M" || tf === "3M" || tf === "6M" || tf === "12M") {
-    const mm = String(d.getUTCMonth() + 1).padStart(2, "0")
-    const yyyy = d.getUTCFullYear()
-    return tf === "12M" ? `${yyyy}` : `${mm}/${yyyy}`
-  }
-  return raw.toLocaleDateString("vi-VN", {
-    timeZone: "Asia/Ho_Chi_Minh",
-    day: "2-digit",
-    month: "2-digit",
-  })
-}
-
-export function normalizeRawCandles(
-  rawList: RawInputCandle[],
-  tf: TvTimeframe = "1D",
-  isIndex = false
-): TvCandle[] {
-  if (!Array.isArray(rawList) || rawList.length === 0) return []
-  const out: TvCandle[] = []
-
-  for (let i = 0; i < rawList.length; i++) {
-    const item = rawList[i]
-    const close = toVndPrice(item.close, 0, isIndex)
-    if (close <= 0) continue
-    const open = toVndPrice(item.open, close, isIndex)
-    const high = Math.max(toVndPrice(item.high, close, isIndex), open, close)
-    const low = Math.min(toVndPrice(item.low, close, isIndex), open, close)
-    const volume = Math.max(0, Number(item.volume ?? 0))
-
-    const rawTime = item.timestamp ?? item.time ?? item.date ?? ""
-    let ts = typeof rawTime === "number" ? (rawTime < 1e12 ? rawTime * 1000 : rawTime) : Date.parse(String(rawTime))
-    if (!Number.isFinite(ts) || ts <= 0) {
-      ts = Date.now() - (rawList.length - 1 - i) * 86_400_000
-    }
-    const dateStr = String(item.date ?? item.time ?? new Date(ts).toISOString())
-    const label = formatTimeframeLabel(ts, dateStr, tf)
-    out.push({
-      timestamp: ts,
-      date: dateStr,
-      label,
-      open,
-      high,
-      low,
-      close,
-      volume,
-    })
-  }
-
-  return out.sort((a, b) => a.timestamp - b.timestamp)
+export {
+  formatTimeframeLabel,
+  getHoseTickStep,
+  isIndexSymbol,
+  normalizeRawCandles,
+  resolveSeriesPriceScale,
+  roundToHoseTick,
+  scaleCandlePrice,
+  toVndPrice,
+  type RawInputCandle,
 }
 
 function aggregateCandles(daily: TvCandle[], mode: "1W" | "1M" | "3M" | "6M" | "12M"): TvCandle[] {
@@ -224,7 +112,7 @@ function synthesizeIntradayFromDaily(daily: TvCandle[], tf: TvTimeframe, isIndex
   const isSecondTf = tf.endsWith("s")
   const sliceCount = Math.min(
     daily.length,
-    isSecondTf ? 4 : tf === "1m" || tf === "3m" || tf === "5m" ? 16 : 35
+    isSecondTf ? 10 : tf === "1m" || tf === "3m" ? 45 : tf === "5m" || tf === "15m" ? 90 : 200
   )
   const recentDays = daily.slice(-sliceCount)
   const result: TvCandle[] = []
@@ -307,6 +195,14 @@ function synthesizeIntradayFromDaily(daily: TvCandle[], tf: TvTimeframe, isIndex
   return result
 }
 
+function extractOhlcList(res: unknown): RawInputCandle[] | null {
+  if (Array.isArray(res)) return res as RawInputCandle[]
+  if (res && typeof res === "object" && Array.isArray((res as { data?: unknown }).data)) {
+    return (res as { data: RawInputCandle[] }).data
+  }
+  return null
+}
+
 export async function fetchTimeframeCandles(
   symbol: string,
   timeframe: TvTimeframe,
@@ -329,17 +225,22 @@ export async function fetchTimeframeCandles(
     timeframe === "4H" ||
     timeframe === "1D"
   const apiInterval = isAggregatedMacro || !isSupportedApiTf ? "1D" : timeframe
+  const requestLimit = apiInterval === "1D" ? 5000 : 1500
 
   try {
     const res = await stockApi.ohlcv(cleanSym, {
-      limit: isAggregatedMacro ? 500 : 250,
+      limit: requestLimit,
       interval: apiInterval,
     })
-    const list: RawInputCandle[] = Array.isArray(res)
-      ? res
-      : Array.isArray((res as { data?: unknown })?.data)
-        ? ((res as { data: RawInputCandle[] }).data ?? [])
-        : seedDailyCandles
+    let list: RawInputCandle[] = extractOhlcList(res) ?? seedDailyCandles
+
+    if (apiInterval !== "1D" && list.length < 30) {
+      const dailyRes = await stockApi.ohlcv(cleanSym, { limit: 5000, interval: "1D" }).catch(() => null)
+      const dailyList = extractOhlcList(dailyRes)
+      if (dailyList && dailyList.length > list.length) {
+        list = dailyList
+      }
+    }
 
     const normalized = normalizeRawCandles(list.length ? list : seedDailyCandles, timeframe, isIndex)
     if (isAggregatedMacro) {

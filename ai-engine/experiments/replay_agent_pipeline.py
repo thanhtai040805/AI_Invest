@@ -786,7 +786,7 @@ async def run(args: argparse.Namespace) -> None:
         return result
 
     AgentRegistry.dispatch = record_dispatch
-    runner = DailyInvestmentPipeline(multi_agent_mode="DISABLED", standalone_ml_mode="DISABLED")
+    runner = DailyInvestmentPipeline(multi_agent_mode="DISABLED")
 
     pending_orders: list[dict] = []
     returns_series: list[float] = []

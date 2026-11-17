@@ -2,11 +2,16 @@
 
 import React, { useEffect, useMemo, useState } from "react"
 import { createPortal } from "react-dom"
-import { TradingViewChart } from "@/lib/tv-chart"
+import {
+  TradingViewChart,
+  isIndexSymbol,
+  resolveSeriesPriceScale,
+  scaleCandlePrice,
+} from "@/lib/tv-chart"
 import { Button, Pill, fmt, fmtPct } from "@/components/ui"
 import { marketApi, stockApi, workspaceApi } from "@/lib/api"
 import { useResource } from "@/lib/api/use-resource"
-import { Link, useRouter } from "@/lib/router"
+import { Link, openStockModal, useRouter } from "@/lib/router"
 import { formatSectorName } from "@/lib/sector-weights"
 import { useRealtimeStock } from "@/lib/use-realtime"
 import type { SuperStockItem, SuperStocksPayload } from "@/components/SuperStocksTable"
@@ -277,19 +282,23 @@ export function StockDetailContent({
   }
 
   const resource = useResource(
-    () =>
-      Promise.all([
-        stockApi.quote(symbol).catch(() => null),
-        stockApi.profile(symbol).catch(() => null),
-        marketApi.superStocks(symbol).catch(() => null),
-        stockApi.ohlcv(symbol, { limit: 65, interval: "1D" }).catch(() => null),
-        stockApi.news(symbol).catch(() => null),
+    async () => {
+      const targetSym = symbol
+      const payload = await Promise.all([
+        stockApi.quote(targetSym).catch(() => null),
+        stockApi.profile(targetSym).catch(() => null),
+        marketApi.superStocks(targetSym).catch(() => null),
+        stockApi.ohlcv(targetSym, { limit: 5000, interval: "1D" }).catch(() => null),
+        stockApi.news(targetSym).catch(() => null),
         marketApi.snapshot().catch(() => null),
-      ]),
+      ])
+      return { symbol: targetSym, payload }
+    },
     [symbol]
   )
 
-  const [quoteRes, profileRes, vsaRes, ohlcvRes, newsRes, snapshotRes] = (resource.data || []) as [
+  const matchedPayload = resource.data?.symbol === symbol ? resource.data.payload : undefined
+  const [quoteRes, profileRes, vsaRes, ohlcvRes, newsRes, snapshotRes] = (matchedPayload || []) as [
     ApiStockQuote | null,
     ApiStockProfile | null,
     SuperStocksPayload | null,
@@ -312,13 +321,15 @@ export function StockDetailContent({
       : Array.isArray((ohlcvRes as { data?: ApiOhlcvCandle[] })?.data)
         ? ((ohlcvRes as { data?: ApiOhlcvCandle[] }).data ?? [])
         : []
+    const isIdx = isIndexSymbol(symbol)
+    const scale = resolveSeriesPriceScale(rawList, isIdx)
 
     return rawList
       .map((c) => {
-        const close = toVndPrice(c.close)
-        const open = toVndPrice(c.open ?? c.close)
-        const high = toVndPrice(c.high ?? Math.max(open, close))
-        const low = toVndPrice(c.low ?? Math.min(open, close))
+        const close = scaleCandlePrice(c.close, 0, scale, isIdx)
+        const open = scaleCandlePrice(c.open ?? c.close, close, scale, isIdx)
+        const high = Math.max(scaleCandlePrice(c.high ?? close, close, scale, isIdx), open, close)
+        const low = Math.min(scaleCandlePrice(c.low ?? close, close, scale, isIdx), open, close)
         const volume = Number(c.volume ?? 0)
         const rawTime = c.date ?? c.timestamp ?? c.time ?? ""
         const ts =
@@ -339,7 +350,7 @@ export function StockDetailContent({
       })
       .filter((c) => c.close > 0)
       .sort((a, b) => a.ts - b.ts)
-  }, [ohlcvRes])
+  }, [ohlcvRes, symbol])
 
   const newsList = useMemo(() => {
     const rawList = Array.isArray(newsRes)
@@ -1023,6 +1034,7 @@ export function StockDetailContent({
                   onClose?.()
                   navigate(`/trade?symbol=${symbol}&price=${Math.round(picked)}`)
                 },
+                onSymbolChange: (newSym) => openStockModal(newSym),
               }}
             />
           </div>

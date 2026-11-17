@@ -1,16 +1,55 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
-import { Link, STOCK_MODAL_EVENT, openStockModal, useRouter, type StockModalEventDetail } from "../lib/router"
+import {
+  BookOpenText,
+  BriefcaseBusiness,
+  ChartCandlestick,
+  Compass,
+  Cpu,
+  Layers,
+  PanelLeftOpen,
+  type LucideIcon,
+} from "lucide-react"
+import { Link, STOCK_MODAL_EVENT, useRouter, type StockModalEventDetail } from "../lib/router"
 import { useAuth } from "../lib/auth"
 import { marketApi } from "../lib/api"
 import { useResource } from "../lib/api/use-resource"
 import { StockDetailModal } from "./StockDetailView"
 import { PercentChange } from "./ui"
 
-const nav = [
-  { group: "Không gian làm việc", items: [["Tổng quan", "/dashboard"], ["AI War Room", "/agent"], ["Danh mục", "/portfolio"], ["ML Tự hành", "/ml-fund"]] },
-  { group: "Thị trường", items: [["Khám phá", "/discovery"], ["Giao dịch", "/trade"], ["Backtest", "/backtest"], ["Thị trường", "/markets"], ["Ngành", "/sectors"], ["Theo dõi", "/watchlist"]] },
-  { group: "Thông tin", items: [["Nghiên cứu", "/research"], ["Cộng đồng", "/community"], ["Cài đặt", "/settings"], ["Trợ giúp", "/help"]] },
-].map(section => ({ ...section, items: section.items.map(([label, route]) => ({ label, route })) }))
+interface NavItem {
+  label: string
+  route: string
+  icon: LucideIcon
+}
+
+interface NavGroup {
+  group: string
+  items: NavItem[]
+}
+
+const nav: NavGroup[] = [
+  {
+    group: "Không gian làm việc",
+    items: [
+      { label: "AI War Room", route: "/agent", icon: Cpu },
+      { label: "Danh mục", route: "/portfolio", icon: BriefcaseBusiness },
+    ],
+  },
+  {
+    group: "Thị trường",
+    items: [
+      { label: "Khám phá", route: "/discovery", icon: Compass },
+      { label: "Giao dịch", route: "/trade", icon: ChartCandlestick },
+      { label: "Ngành", route: "/sectors", icon: Layers },
+    ],
+  },
+  {
+    group: "Thông tin",
+    items: [
+      { label: "Nghiên cứu", route: "/research", icon: BookOpenText },
+    ],
+  },
+]
 
 const numberValue = (value: unknown) => value == null || value === "" || !Number.isFinite(Number(value)) ? null : Number(value)
 
@@ -34,7 +73,7 @@ function UserMenu() {
             <div className="text-[13px] font-medium text-ink truncate">{name}</div>
             <div className="text-[11px] text-muted">Không gian cá nhân</div>
           </div>
-          {[["Hồ sơ", "/profile/me"], ["Cài đặt", "/settings"], ["Trợ giúp", "/help"]].map(([l, r]) => (
+          {[["Hồ sơ", "/profile/me"]].map(([l, r]) => (
             <button key={l} onClick={() => { navigate(r); setOpen(false) }} className="w-full text-left px-3 h-8 text-[13px] text-secondary hover:bg-soft hover:text-ink transition-colors">{l}</button>
           ))}
           <div className="border-t border-line mt-1 pt-1">
@@ -118,33 +157,157 @@ function TopBar({ onSearch }: { onSearch: () => void }) {
 
 function Sidebar() {
   const { path } = useRouter()
+  const [collapsed, setCollapsed] = useState(true)
+  const [hoveredTip, setHoveredTip] = useState<{ label: string; top: number; left: number } | null>(null)
+
+  const showTip = (label: string, el: HTMLElement) => {
+    if (!collapsed) return
+    const rect = el.getBoundingClientRect()
+    setHoveredTip({
+      label,
+      top: rect.top + rect.height / 2,
+      left: rect.right + 10,
+    })
+  }
+
+  const hideTip = () => setHoveredTip(null)
+
   return (
-    <aside className="hidden md:flex w-[228px] shrink-0 bg-surface border-r border-line flex-col h-full">
-      <Link to="/dashboard" className="h-14 flex items-center gap-2.5 px-5 border-b border-line shrink-0">
-        <span className="w-7 h-7 rounded-[7px] bg-ink text-paper grid place-items-center font-serif text-[15px] leading-none">A</span>
-        <span className="font-semibold text-[15px] tracking-tight text-ink">AIInvest</span>
-        <span className="ml-auto text-[10px] font-mono text-muted">v5.1</span>
-      </Link>
-      <nav className="flex-1 overflow-y-auto py-3 px-3">
-        {nav.map((section) => (
-          <div key={section.group} className="mb-4">
-            <div className="text-[10px] font-semibold tracking-[0.14em] uppercase text-muted px-2 mb-1.5">{section.group}</div>
-            {section.items.map((item) => {
-              const active = path === item.route || (item.route !== "/dashboard" && path.startsWith(item.route) && item.route.length > 8)
-              return (
-                <Link
-                  key={item.route}
-                  to={item.route}
-                  className={`flex items-center h-8 px-2 rounded-[6px] text-[13px] transition-colors ${active ? "bg-soft text-ink font-medium" : "text-secondary hover:text-ink hover:bg-soft/60"}`}
-                >
-                  <span className={`w-1 h-4 rounded-full mr-2.5 transition-colors ${active ? "bg-mineral" : "bg-transparent"}`} />
-                  {item.label}
-                </Link>
-              )
-            })}
+    <aside
+      aria-label="Thanh điều hướng không gian làm việc"
+      className={`hidden md:flex shrink-0 bg-surface border-r border-line flex-col h-full transition-[width] duration-200 ease-out ${
+        collapsed ? "w-[64px]" : "w-[224px]"
+      }`}
+    >
+      <div
+        className="border-b border-line shrink-0"
+        onMouseEnter={(e) => showTip("AIInvest · AI War Room", e.currentTarget)}
+        onMouseLeave={hideTip}
+        onFocusCapture={(e) => showTip("AIInvest · AI War Room", e.currentTarget)}
+        onBlurCapture={hideTip}
+      >
+        <Link
+          to="/agent"
+          onClick={hideTip}
+          title="AIInvest — Về AI War Room"
+          className={`h-14 flex items-center ${
+            collapsed ? "justify-center px-2" : "gap-2.5 px-5"
+          }`}
+        >
+          <span className="w-7 h-7 rounded-[7px] bg-ink text-paper grid place-items-center font-serif text-[15px] leading-none shrink-0">
+            A
+          </span>
+          {!collapsed && (
+            <>
+              <span className="font-semibold text-[15px] tracking-tight text-ink">AIInvest</span>
+              <span className="ml-auto text-[10px] font-mono text-muted">v5.1</span>
+            </>
+          )}
+        </Link>
+      </div>
+
+      <nav
+        onScroll={hideTip}
+        className={`flex-1 overflow-y-auto overflow-x-hidden ${collapsed ? "py-3 px-2" : "py-3 px-3"}`}
+      >
+        {nav.map((section, groupIdx) => (
+          <div key={section.group} className={collapsed ? (groupIdx > 0 ? "mt-2.5 pt-2.5 border-t border-line" : "") : "mb-4"}>
+            {!collapsed && (
+              <div className="text-[10px] font-semibold tracking-[0.14em] uppercase text-muted px-2 mb-1.5">
+                {section.group}
+              </div>
+            )}
+            <div className={collapsed ? "flex flex-col items-center gap-1" : "space-y-0.5"}>
+              {section.items.map((item) => {
+                const active = path === item.route || path.startsWith(`${item.route}/`)
+                const Icon = item.icon
+                return (
+                  <div
+                    key={item.route}
+                    className={collapsed ? "flex justify-center" : undefined}
+                    onMouseEnter={(e) => showTip(item.label, e.currentTarget)}
+                    onMouseLeave={hideTip}
+                    onFocusCapture={(e) => showTip(item.label, e.currentTarget)}
+                    onBlurCapture={hideTip}
+                  >
+                    <Link
+                      to={item.route}
+                      onClick={hideTip}
+                      className={
+                        collapsed
+                          ? `relative flex items-center justify-center h-10 w-10 rounded-[8px] transition-colors ${
+                              active
+                                ? "bg-soft text-ink border border-line-strong/75"
+                                : "text-secondary hover:text-ink hover:bg-soft/70"
+                            }`
+                          : `flex w-full items-center h-8 px-2 rounded-[6px] text-[13px] transition-colors ${
+                              active
+                                ? "bg-soft text-ink font-medium"
+                                : "text-secondary hover:text-ink hover:bg-soft/60"
+                            }`
+                      }
+                    >
+                      {collapsed ? (
+                        <span className="grid h-full w-full place-items-center" aria-label={item.label}>
+                          {active && (
+                            <span className="absolute left-0.5 top-2 bottom-2 w-[3px] rounded-full bg-mineral" />
+                          )}
+                          <Icon className="h-[19px] w-[19px] shrink-0" strokeWidth={1.75} aria-hidden="true" />
+                        </span>
+                      ) : (
+                        <>
+                          <span className={`w-1 h-4 rounded-full mr-2.5 transition-colors ${active ? "bg-mineral" : "bg-transparent"}`} />
+                          <span>{item.label}</span>
+                        </>
+                      )}
+                    </Link>
+                  </div>
+                )
+              })}
+            </div>
           </div>
         ))}
       </nav>
+
+      <div className="border-t border-line p-2 shrink-0">
+        <button
+          type="button"
+          onClick={() => {
+            hideTip()
+            setCollapsed((prev) => !prev)
+          }}
+          aria-expanded={!collapsed}
+          aria-label={collapsed ? "Mở rộng thanh điều hướng" : "Thu gọn thanh điều hướng"}
+          onMouseEnter={(e) => collapsed && showTip("Mở rộng thanh điều hướng", e.currentTarget)}
+          onMouseLeave={hideTip}
+          onFocus={(e) => collapsed && showTip("Mở rộng thanh điều hướng", e.currentTarget)}
+          onBlur={hideTip}
+          className={
+            collapsed
+              ? "mx-auto grid h-10 w-10 place-items-center rounded-[8px] text-secondary hover:bg-soft hover:text-ink transition-colors"
+              : "flex h-9 w-full items-center justify-between rounded-[7px] px-3 text-[12.5px] font-medium text-secondary hover:bg-soft hover:text-ink transition-colors"
+          }
+        >
+          {collapsed ? (
+            <PanelLeftOpen className="h-[19px] w-[19px]" strokeWidth={1.75} aria-hidden="true" />
+          ) : (
+            <>
+              <span>Thu gọn menu</span>
+              <span className="font-mono text-[11px] text-muted">«</span>
+            </>
+          )}
+        </button>
+      </div>
+
+      {collapsed && hoveredTip && (
+        <div
+          role="tooltip"
+          style={{ top: hoveredTip.top, left: hoveredTip.left }}
+          className="fixed z-[90] -translate-y-1/2 pointer-events-none rounded-[7px] bg-ink px-2.5 py-1.5 text-[12.5px] font-medium text-paper shadow-lg shadow-ink/15 whitespace-nowrap"
+        >
+          {hoveredTip.label}
+        </div>
+      )}
     </aside>
   )
 }

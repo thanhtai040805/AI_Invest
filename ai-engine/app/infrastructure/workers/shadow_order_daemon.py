@@ -6,7 +6,6 @@ import logging
 import app.domain.agents  # Register the existing trade execution agent.
 from app.core.registry import AgentRegistry
 from app.domain.repositories.portfolio_repository import PortfolioRepository
-from app.domain.rules.execution.shadow_fill import shadow_fill
 from app.infrastructure.external_api.dnse.market_session import MarketSessionManager, MarketState
 from app.infrastructure.external_api.market_data_service import market_data_svc
 
@@ -76,18 +75,6 @@ class ShadowOrderDaemon:
         for order in orders:
             try:
                 book = await market_data_svc.get_order_book(order["ticker"])
-                fill_price = shadow_fill(book, order["side"], order["shares"], order["limit_price"])
-
-                if order["order_type"] == "SHADOW_ML_LIMIT":
-                    self.repository.execute_order_transaction(
-                        ticker=order["ticker"], action=order["side"], shares=order["shares"],
-                        executed_price=fill_price, target_price=order["limit_price"],
-                        execution_mode="SHADOW_PAPER", user_id=order["user_id"],
-                        status="FILLED", pending_order_id=order["order_id"],
-                        decision_context=order.get("decision_context"),
-                    )
-                    filled += 1
-                    continue
 
                 result = await AgentRegistry.dispatch("trade_execution", {
                     "order_instruction": {

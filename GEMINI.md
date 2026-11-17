@@ -3,7 +3,7 @@
 This file enforces the exact same rules defined in [AGENTS.md](file:///d:/AIInvest/AGENTS.md).
 
 ## Core Principles Recap:
-1. **Ponytail Philosophy (Always Active)**: Follow the 7-Step Ladder: YAGNI -> Existing codebase -> Standard library -> Native platform -> Installed dependency -> One line -> Minimal code.
+1. **Graphify-First Discovery + Ponytail Philosophy (Always Active)**: See [02-graphify-and-ponytail-workflow.md](file:///d:/AIInvest/.agents/rules/02-graphify-and-ponytail-workflow.md) and [graphify.md](file:///d:/AIInvest/.agents/rules/graphify.md). Query `graphify-out/` (`graphify query`, `graphify explain`, `graphify path`) before broad file sweeps, then follow the Ponytail 7-Step Ladder: YAGNI -> Existing codebase -> Standard library -> Native platform -> Installed dependency -> One line -> Minimal code.
 2. **Anti-Hallucination & Anti-Heuristic**: Always verify symbols, method signatures, database columns, and imports in actual files before writing code.
 3. **Strict Folder Boundaries**:
    - `domain/`: Pure business logic & abstract interfaces. No SQL, no FastAPI, no external SDKs.

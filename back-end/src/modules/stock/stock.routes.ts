@@ -160,7 +160,7 @@ router.get('/:symbol/profile', (req, res, next) => {
   );
 });
 
-async function dbStockOHLCV(symbol: string, limit = 300) {
+async function dbStockOHLCV(symbol: string, limit = 1500) {
   const isIndex = isIndexSymbol(symbol);
   if (isIndex) {
     const candidates = indexTickerCandidates(symbol);
@@ -205,17 +205,30 @@ async function dbStockOHLCV(symbol: string, limit = 300) {
 
   const rows = await prisma.$queryRaw<Array<any>>`
     SELECT date,
-           (CASE WHEN close_adj > 0 AND close_adj < 1000 THEN open_adj * 1000 ELSE open_adj END)::float8 AS open,
-           (CASE WHEN close_adj > 0 AND close_adj < 1000 THEN high_adj * 1000 ELSE high_adj END)::float8 AS high,
-           (CASE WHEN close_adj > 0 AND close_adj < 1000 THEN low_adj * 1000 ELSE low_adj END)::float8 AS low,
-           (CASE WHEN close_adj > 0 AND close_adj < 1000 THEN close_adj * 1000 ELSE close_adj END)::float8 AS close,
+           open_adj::float8 AS open,
+           high_adj::float8 AS high,
+           low_adj::float8 AS low,
+           close_adj::float8 AS close,
            volume_total::float8 AS volume
     FROM market_data_daily
     WHERE ticker = ${symbol}
     ORDER BY date DESC
     LIMIT ${limit}
   `;
-  return rows.reverse();
+  const chronological = rows.reverse();
+  const maxClose = chronological.reduce((m, r) => {
+    const c = Number(r.close);
+    return Number.isFinite(c) && c > m ? c : m;
+  }, 0);
+  const scale = maxClose > 0 && maxClose < 1000 ? 1000 : 1;
+  return chronological.map((r) => ({
+    date: r.date,
+    open: Math.round(Number(r.open) * scale),
+    high: Math.round(Number(r.high) * scale),
+    low: Math.round(Number(r.low) * scale),
+    close: Math.round(Number(r.close) * scale),
+    volume: Number(r.volume ?? 0),
+  }));
 }
 
 router.get('/:symbol/ohlcv', (req, res, next) => {
@@ -225,8 +238,8 @@ router.get('/:symbol/ohlcv', (req, res, next) => {
   const end = req.query.end as string | undefined;
   const requestedLimit = typeof req.query.limit === 'string' ? Number(req.query.limit) : NaN;
   const limit = Number.isSafeInteger(requestedLimit) && requestedLimit > 0
-    ? Math.min(requestedLimit, 1000)
-    : 300;
+    ? Math.min(requestedLimit, 5000)
+    : 1500;
   const cacheKey = `stock:v2:${symbol}:ohlcv:${interval}:${start ?? ''}:${end ?? ''}:${limit}`;
 
   return handle(req, res, next, () =>

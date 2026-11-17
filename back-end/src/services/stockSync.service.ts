@@ -80,15 +80,20 @@ export async function backfillOhlcv(
   }));
 
   for (const row of rows) {
+    const adjClose = Number(row.close);
     await prisma.ohlcv.upsert({
       where: { time_symbol: { time: row.time, symbol: row.symbol } },
-      create: row,
+      create: {
+        ...row,
+        adj_close: adjClose,
+      },
       update: {
         open: row.open,
         high: row.high,
         low: row.low,
         close: row.close,
         volume: row.volume,
+        adj_close: adjClose,
       },
     });
   }

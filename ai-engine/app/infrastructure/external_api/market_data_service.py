@@ -22,10 +22,38 @@ from app.infrastructure.external_api.dnse.redis_pub import (
     get_list_range,
     get_sorted_set_range,
 )
-from app.infrastructure.external_api.dnse.price_units import to_vnd_price
 
 _PG_URL = os.getenv("DATABASE_URL", "postgresql://postgres:123@localhost:5432/aiinvest")
 TZ_VN = ZoneInfo("Asia/Ho_Chi_Minh")
+_INDEX_SYMBOLS = frozenset({
+    "VNINDEX", "VN-INDEX", "^VNINDEX", "VN30", "VN100",
+    "HNX", "HNXINDEX", "HNX30", "UPCOM", "UPCOMINDEX",
+})
+
+
+def _is_index_symbol(symbol: str) -> bool:
+    return symbol.strip().upper() in _INDEX_SYMBOLS
+
+
+def _normalize_ohlcv_series(rows: List[Dict], symbol: str) -> List[Dict]:
+    """Scale kVND OHLCV candles uniformly at the series level; keep index points unscaled."""
+    if not rows:
+        return rows
+    is_idx = _is_index_symbol(symbol)
+    if is_idx:
+        for row in rows:
+            for field in ("open", "high", "low", "close"):
+                v = float(row.get(field, 0.0) or 0.0)
+                row[field] = round(v / 1000.0, 2) if v > 100_000 else round(v, 2)
+        return rows
+    max_close = max((float(r.get("close", 0.0) or 0.0) for r in rows), default=0.0)
+    scale = 1000.0 if 0 < max_close < 1000.0 else 1.0
+    if scale != 1.0:
+        for row in rows:
+            for field in ("open", "high", "low", "close"):
+                v = float(row.get(field, 0.0) or 0.0)
+                row[field] = round(v * scale, 2)
+    return rows
 
 
 def quote_with_freshness(quote: Dict) -> Dict:
@@ -41,44 +69,55 @@ def quote_with_freshness(quote: Dict) -> Dict:
     return {**quote, "stale": quote.get("stale", False) or stale}
 
 
+def _fetch_ohlcv_rows(cur: Any, symbol: str, start: Optional[str], end: Optional[str], limit: Optional[int]) -> List[Dict]:
+    where = "symbol = %s"
+    params: list = [symbol]
+    if start:
+        where += " AND time >= %s::timestamptz"
+        params.append(start)
+    if end:
+        where += " AND time <= %s::timestamptz"
+        params.append(end)
+    query = f"SELECT time, open, high, low, close, volume FROM ohlcv WHERE {where} ORDER BY time DESC"
+    if limit is not None:
+        query += " LIMIT %s"
+        params.append(limit)
+    cur.execute(query, params)
+    rows = []
+    for r in cur.fetchall():
+        ts = r[0]
+        ts_str = ts.strftime("%Y-%m-%dT%H:%M:%S%z") if isinstance(ts, datetime) else str(ts)[:10]
+        rows.append({
+            "time": ts_str,
+            "open": float(r[1]),
+            "high": float(r[2]),
+            "low": float(r[3]),
+            "close": float(r[4]),
+            "volume": int(r[5]),
+        })
+    rows.reverse()
+    return _normalize_ohlcv_series(rows, symbol)
+
+
 def _query_pg_ohlcv(symbol: str, start: Optional[str] = None, end: Optional[str] = None, limit: Optional[int] = None) -> List[Dict]:
-    """Query daily OHLCV from PostgreSQL."""
+    """Query daily OHLCV from PostgreSQL via connection pool with direct fallback."""
+    try:
+        from app.infrastructure.database.pg_pool import get_cursor
+        with get_cursor() as cur:
+            return _fetch_ohlcv_rows(cur, symbol, start, end, limit)
+    except Exception:
+        pass
     try:
         import psycopg2
         conn = psycopg2.connect(_PG_URL)
-        cur = conn.cursor()
-        where = "symbol = %s"
-        params: list = [symbol]
-        if start:
-            where += " AND time >= %s::timestamptz"
-            params.append(start)
-        if end:
-            where += " AND time <= %s::timestamptz"
-            params.append(end)
-        query = f"SELECT time, open, high, low, close, volume FROM ohlcv WHERE {where} ORDER BY time DESC"
-        if limit is not None:
-            query += " LIMIT %s"
-            params.append(limit)
-        cur.execute(query, params)
-        rows = []
-        for r in cur.fetchall():
-            ts = r[0]
-            if isinstance(ts, datetime):
-                ts_str = ts.strftime("%Y-%m-%dT%H:%M:%S%z")
-            else:
-                ts_str = str(ts)[:10]
-            rows.append({
-                "time": ts_str,
-                "open": float(r[1]),
-                "high": float(r[2]),
-                "low": float(r[3]),
-                "close": float(r[4]),
-                "volume": int(r[5]),
-            })
-        rows.reverse()
-        cur.close()
-        conn.close()
-        return rows
+        try:
+            cur = conn.cursor()
+            try:
+                return _fetch_ohlcv_rows(cur, symbol, start, end, limit)
+            finally:
+                cur.close()
+        finally:
+            conn.close()
     except Exception:
         return []
 
@@ -306,9 +345,13 @@ class MarketDataService:
             data = data[-limit:]
             res = {**res, "data": data}
         if data:
+            # Guard: only scale raw kVND sources uniformly; live WS/REST already pass through to_vnd_price
+            source = str(res.get("source") or "")
+            if source not in ("dnse-ws", "dnse-ws-1d", "dnse-rest", "dnse-public"):
+                _normalize_ohlcv_series(data, symbol)
+            elif _is_index_symbol(symbol):
+                _normalize_ohlcv_series(data, symbol)
             for c in data:
-                for field in ("open", "high", "low", "close"):
-                    c[field] = to_vnd_price(c.get(field, 0.0))
                 close = float(c.get("close", 0.0))
                 volume = float(c.get("volume", 0.0))
                 turnover = c.get("value", c.get("turnover"))
@@ -331,7 +374,7 @@ class MarketDataService:
         
         RESOLUTION_MAP = {
             "1m": "1", "3m": "3", "5m": "5", "15m": "15", "30m": "30",
-            "1H": "1H", "1h": "1H",
+            "1H": "1H", "1h": "1H", "4H": "1H", "4h": "1H",
             "1D": "1D", "1d": "1D", "1W": "1W", "1w": "1W",
             "1": "1", "3": "3", "5": "5", "15": "15", "30": "30",
         }
@@ -491,6 +534,8 @@ class MarketDataService:
             logger.info(f"OHLCV {symbol} {interval}: fetching from {source}")
             rest_ohlcv = await asyncio.to_thread(self._rest.get_ohlcv, symbol, interval, start, end)
             if rest_ohlcv:
+                if _is_index_symbol(symbol):
+                    _normalize_ohlcv_series(rest_ohlcv, symbol)
                 return {"symbol": symbol, "interval": interval, "data": rest_ohlcv, "source": source}
         except Exception as e:
             logger.warning(f"OHLCV {symbol} {interval}: {source} error: {e}")
