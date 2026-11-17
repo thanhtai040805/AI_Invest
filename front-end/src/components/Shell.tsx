@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import {
   BookOpenText,
-  BrainCircuit,
   BriefcaseBusiness,
   ChartCandlestick,
   Compass,
@@ -34,7 +33,6 @@ const nav: NavGroup[] = [
     items: [
       { label: "AI War Room", route: "/agent", icon: Cpu },
       { label: "Danh mục", route: "/portfolio", icon: BriefcaseBusiness },
-      { label: "ML Tự hành", route: "/ml-fund", icon: BrainCircuit },
     ],
   },
   {

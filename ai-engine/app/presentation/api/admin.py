@@ -45,14 +45,13 @@ async def trigger_daily_pipeline(
     target_date: Optional[str] = Query(None, description="Ngày chạy định dạng YYYY-MM-DD (mặc định hôm nay)"),
     force: bool = Query(False, description="Bắt buộc chạy lại nếu đã chạy trong ngày"),
 ):
-    """Kích hoạt thủ công chu trình Daily Investment Pipeline (12 Agents + Standalone ML)."""
+    """Kích hoạt thủ công chu trình Daily Investment Pipeline (12 Agents)."""
     from app.infrastructure.workers.daily_pipeline_daemon import daily_daemon
     res = await daily_daemon.trigger_manual(target_date=target_date, force=force)
     return {
         "message": f"Daily Pipeline completed for date {res.get('date')}",
         "status": res.get("status"),
         "multi_agent_orders": len(res.get("multi_agent_instructions", [])),
-        "standalone_ml_orders": len(res.get("standalone_ml_instructions", [])),
         "governance_status": res.get("governance_status"),
         "audit_sha256": res.get("audit_sha256"),
     }

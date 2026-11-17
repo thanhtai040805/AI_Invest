@@ -39,7 +39,7 @@ def test_daily_daemon_trading_day_filter():
 
 
 def test_daily_daemon_manual_trigger():
-    """Kiểm tra trigger_manual của DailyPipelineDaemon điều phối cả Multi-Agent và Standalone ML."""
+    """Kiểm tra trigger_manual của DailyPipelineDaemon điều phối Multi-Agent pipeline."""
     async def _test():
         daemon = DailyPipelineDaemon()
         res = await daemon.trigger_manual(
@@ -51,7 +51,6 @@ def test_daily_daemon_manual_trigger():
         assert res["status"] == "SUCCESS"
         assert res["date"] == "2026-08-24"
         assert "multi_agent_instructions" in res
-        assert "standalone_ml_instructions" in res
         assert res["governance_status"] in ["COMPLIANT", "AUDIT_PASSED"]
 
         st = daemon.status
@@ -81,5 +80,4 @@ def test_admin_api_daily_pipeline_endpoints():
     assert "Daily Pipeline completed" in data_trigger["message"]
     assert data_trigger["status"] == "SUCCESS"
     assert "multi_agent_orders" in data_trigger
-    assert "standalone_ml_orders" in data_trigger
     assert "governance_status" in data_trigger

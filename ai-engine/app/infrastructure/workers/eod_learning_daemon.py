@@ -91,7 +91,6 @@ class EODLearningDaemon:
             from app.domain.repositories.portfolio_repository import PortfolioRepository
             from app.infrastructure.database.pg_pool import get_conn
             accounts = {
-                os.getenv("STANDALONE_ML_ACCOUNT_ID", "standalone-pure-ml-fund-account").strip(),
                 os.getenv("MULTI_AGENT_ACCOUNT_ID", "940b0c70-2010-42f3-b947-797e6419b794").strip(),
             }
             missing_close = False

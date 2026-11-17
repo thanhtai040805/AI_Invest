@@ -12,11 +12,9 @@ import { displayDate, vietnamDate } from "@/lib/financial-date"
 import { Link } from "@/lib/router"
 import {
   approvedOrder,
-  confirmationNarratives,
   decision as resolutionDecision,
   executionRecord,
   investmentText,
-  monitoredRisks,
   thesisDetails,
   thesisReview,
   cleanText,
@@ -2064,237 +2062,263 @@ function EquityResearchSection({
   )
 }
 
-function AdversarialDebateSection({
+const RESEARCH_THESIS_STATUS: Record<string, { label: string; tone: string }> = {
+  APPROVED_ACTIVE: { label: "Được duyệt", tone: "gain" },
+  CONDITIONAL_APPROVED: { label: "Duyệt có điều kiện", tone: "warning" },
+  REJECTED: { label: "Bị từ chối", tone: "loss" },
+  PENDING_COUNTER_ANALYSIS: { label: "Chờ phản biện", tone: "neutral" },
+  ACTIVE: { label: "Đang hoạt động", tone: "teal" },
+}
+
+function formatThesisDay(value: string) {
+  const ts = Date.parse(value)
+  if (!Number.isFinite(ts)) return ""
+  return new Date(ts).toLocaleDateString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })
+}
+
+function ResearchThesisSection({
+  ticker,
   thesis,
   counter,
 }: {
+  ticker: string
   thesis?: RecordData
   counter?: RecordData
 }) {
   if (!thesis && !counter) return null
 
-  const matchedCounter = thesis?.thesis_id && counter?.thesis_id === thesis.thesis_id ? counter : counter
-  const report = thesis ? thesisDetails(thesis) : undefined
-  const snapshot = object(thesis?.thesis_snapshot)
-  const independentSignals = object(
-    object(thesis?.input_validation).independent_signals ||
+  const matchedCounter =
+    !thesis?.thesis_id || !counter?.thesis_id || counter.thesis_id === thesis.thesis_id
+      ? counter
+      : undefined
+
+  let snapshot: RecordData = {}
+  if (typeof thesis?.thesis_snapshot === "string") {
+    try {
+      snapshot = object(JSON.parse(thesis.thesis_snapshot))
+    } catch {
+      snapshot = {}
+    }
+  } else {
+    snapshot = object(thesis?.thesis_snapshot)
+  }
+  const body = object(snapshot.thesis_body)
+
+  const tickerStr = String(thesis?.ticker || matchedCounter?.ticker || ticker || "")
+  const catalystType = cleanText(
+    String(
+      thesis?.catalyst_type ||
+        object(body.catalyst).primary_type ||
+        snapshot.catalyst_type ||
+        "Cơ bản"
+    )
+  )
+  const catalystDescription = cleanText(
+    String(
+      thesis?.catalyst_description ||
+        object(body.catalyst).description ||
+        snapshot.catalyst_description ||
+        ""
+    )
+  )
+  const whyNow = cleanText(
+    String(thesis?.why_now || body.why_now || snapshot.why_now || "")
+  )
+  const whyThisStock = cleanText(
+    String(thesis?.why_this_stock || body.why_this_stock || snapshot.why_this_stock || "")
+  )
+
+  const rawRange = Array.isArray(thesis?.target_price_range)
+    ? thesis.target_price_range
+    : Array.isArray(object(body.price_target).target_range)
+      ? (object(body.price_target).target_range as unknown[])
+      : Array.isArray(snapshot.target_price_range)
+        ? (snapshot.target_price_range as unknown[])
+        : null
+  const rangeMin = rawRange && rawRange.length >= 2 ? numeric(rawRange[0]) : null
+  const rangeMax = rawRange && rawRange.length >= 2 ? numeric(rawRange[1]) : null
+  const targetRange: [number, number] | null =
+    rangeMin !== null && rangeMax !== null ? [rangeMin, rangeMax] : null
+
+  const rawSignals = object(
+    thesis?.confirming_signals ||
       object(snapshot.input_validation).independent_signals ||
-      thesis?.confirming_signals
+      snapshot.confirming_signals
   )
-  const preMortemScenarios = (
-    Array.isArray(thesis?.pre_mortem_scenarios)
-      ? thesis.pre_mortem_scenarios
-      : Array.isArray(report?.body.pre_mortem)
-        ? (report.body.pre_mortem as unknown[])
-        : []
-  )
-    .map(item => investmentText(item))
+  const signals = Object.values(rawSignals)
+    .map((v) => (typeof v === "string" ? cleanText(v) : investmentText(v)))
     .filter(Boolean)
-  const bqScore = numeric(object(report?.body.business_quality).score)
-  const conditions = confirmationNarratives(thesis?.confirming_signals || independentSignals)
-  const risks = monitoredRisks(report?.risks || [])
 
-  const counterReview = object(matchedCounter?.llm_review)
-  const counterNarrative = cleanText(String(counterReview.rationale || matchedCounter?.rationale || ""))
-  const blindspotPenalty = numeric(counterReview.blindspot_penalty)
+  const rawInvalidations = Array.isArray(thesis?.invalidation_conditions)
+    ? thesis.invalidation_conditions
+    : Array.isArray(object(body.exit_conditions).invalidation_triggers)
+      ? (object(body.exit_conditions).invalidation_triggers as unknown[])
+      : Array.isArray(snapshot.invalidation_conditions)
+        ? (snapshot.invalidation_conditions as unknown[])
+        : []
+  const invalidations = rawInvalidations
+    .map((v) => (typeof v === "string" ? cleanText(v) : investmentText(v)))
+    .filter(Boolean)
+
+  const statusKey = String(thesis?.status || snapshot.status || "")
+  const status = RESEARCH_THESIS_STATUS[statusKey] ?? {
+    label: statusKey || "Không rõ",
+    tone: "neutral",
+  }
+  const generatedAt = String(
+    thesis?.generated_at ||
+      thesis?.created_at ||
+      matchedCounter?.generated_at ||
+      matchedCounter?.evaluated_at ||
+      ""
+  )
+  const analysisDate = thesis?.analysis_date ? String(thesis.analysis_date).slice(0, 10) : ""
+  const thesisId = String(thesis?.thesis_id || matchedCounter?.thesis_id || "")
+
   const ctsScore = numeric(matchedCounter?.cts_score)
-  const counterReasons = [
-    ...(Array.isArray(matchedCounter?.block_reasons) ? matchedCounter.block_reasons : []),
-    ...(Array.isArray(matchedCounter?.holes) ? matchedCounter.holes : []),
-  ]
-    .map(value => cleanText(typeof value === "string" ? value : JSON.stringify(value)))
-    .filter((value, index, values) => !!value && values.indexOf(value) === index)
-
-  const counterSentences = counterNarrative
-    ? counterNarrative
-        .split(/(?<=\.)\s+/)
-        .map(s => s.trim())
-        .filter(Boolean)
-    : []
-  const counterLead = counterSentences[0] || ""
-  const counterSupporting = counterSentences.slice(1)
-
-  const thesisPillars = [
-    { code: "1", label: "Luận điểm cốt lõi", text: report?.whyStock },
-    { code: "2", label: "Động lực hiện tại", text: report?.whyNow },
-    { code: "3", label: "Yếu tố xúc tác định giá", text: report?.catalyst },
-  ].filter((item): item is { code: string; label: string; text: string } => !!item.text)
-
-  const bullPower = bqScore ?? 75
-  const bearPower = ctsScore ?? 33.3
-  const bullShare = Math.min(85, Math.max(15, (bullPower / Math.max(1, bullPower + bearPower)) * 100))
-  const flatRisks = risks.flatMap(group => group.items.map(text => ({ groupLabel: group.label, text })))
+  const baseCts = numeric(matchedCounter?.base_cts)
+  const interMult = numeric(matchedCounter?.interaction_multiplier)
+  const regMult = numeric(matchedCounter?.regime_multiplier)
+  const expectedCTS =
+    baseCts !== null && interMult !== null && regMult !== null
+      ? Math.min(100, Math.round(baseCts * interMult * regMult * 10) / 10)
+      : null
+  const inconsistentCTS =
+    ctsScore !== null && expectedCTS !== null && Math.abs(expectedCTS - ctsScore) > 0.1
+  const constraintReason = cleanText(
+    String(object(matchedCounter?.execution_constraints).reason || "")
+  )
+  const rationale = cleanText(
+    String(matchedCounter?.rationale || object(matchedCounter?.llm_review).rationale || "")
+  )
+  const holes = (Array.isArray(matchedCounter?.holes) ? matchedCounter.holes : [])
+    .map((h) => cleanText(typeof h === "string" ? h : JSON.stringify(h)))
+    .filter(Boolean)
 
   return (
-    <Panel flush className="min-w-0 overflow-hidden">
-      <div className="border-b border-line px-5 pt-4 pb-1">
-        <PanelHead
-          title="Bàn Tranh Biện Đối Kháng: Luận Điểm Mua & Phản Biện Độc Lập"
-          sub="Đặt luận điểm đầu tư (Agent 04) đối diện trực tiếp với phản biện độc lập (Agent 05) để kiểm chứng rủi ro"
-          action={
-            <div className="flex items-center gap-2">
-              {bqScore !== null && <Pill tone="gain">Chất lượng BCTC {bqScore}/100</Pill>}
-              {ctsScore !== null && <Pill tone="warning">Phản biện CTS {ctsScore.toFixed(1)}/100</Pill>}
-            </div>
-          }
-        />
-      </div>
+    <Panel>
+      <PanelHead
+        title="Luận điểm đầu tư & Phản biện (Nghiên cứu)"
+        sub="Dữ liệu gốc từ Agent 04 (lập luận điểm) và Agent 05 (phản biện độc lập), đồng bộ trực tiếp với phân hệ Nghiên cứu."
+      />
 
-      {/* Compact Balance Bar */}
-      <div className="border-b border-line bg-paper/40 px-5 py-2.5">
-        <div className="flex items-center justify-between text-xs">
-          <span className="font-semibold text-gain">Luận điểm thuận ({bullShare.toFixed(0)}%)</span>
-          <span className="text-[11px] text-secondary">Cán cân định lượng</span>
-          <span className="font-semibold text-warning">Áp lực phản biện ({(100 - bullShare).toFixed(0)}%)</span>
-        </div>
-        <div className="mt-1.5 flex h-1.5 w-full overflow-hidden rounded-full bg-soft">
-          <div className="h-full bg-gain" style={{ width: `${bullShare}%` }} />
-          <div className="h-full bg-warning" style={{ width: `${100 - bullShare}%` }} />
-        </div>
-      </div>
-
-      {/* Concise 2-Column Comparison */}
-      <div className="grid divide-y divide-line lg:grid-cols-2 lg:divide-y-0 lg:divide-x">
-        {/* Left: Bull Thesis Pillars + Independent Confirmation Signals */}
-        <div className="p-5">
-          <div className="mb-3 flex items-center justify-between">
-            <span className="text-xs font-semibold text-gain">Luận điểm Mua (3 trụ cột)</span>
-            <span className="text-[11px] text-muted">Hội tụ 3 tín hiệu độc lập</span>
-          </div>
-
-          {thesisPillars.length > 0 ? (
-            <div className="divide-y divide-line/60">
-              {thesisPillars.map(pillar => (
-                <div key={pillar.code} className="py-2.5 first:pt-0 last:pb-0">
-                  <div className="text-xs font-semibold text-ink">
-                    {pillar.code}. {pillar.label}
-                  </div>
-                  <p className="mt-1 text-[13px] leading-relaxed text-secondary">{pillar.text}</p>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-secondary">Chưa có diễn giải chi tiết cho luận điểm mua.</p>
-          )}
-
-          {conditions.length > 0 && (
-            <div className="mt-4 border-t border-line pt-3.5">
-              <div className="mb-2 text-xs font-semibold text-ink">
-                3 Tín hiệu xác nhận độc lập
-              </div>
-              <ul className="space-y-1.5">
-                {conditions.map(c => (
-                  <li
-                    key={c.key}
-                    className="rounded border border-gain/20 bg-gain/[0.03] px-3 py-2 text-xs leading-relaxed"
-                  >
-                    <span className="font-semibold text-gain">{c.label}: </span>
-                    <span className="text-secondary">{c.text}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
-
-        {/* Right: Lead Rebuttal + Top 3 Blindspots */}
-        <div className="p-5">
-          <div className="mb-3 flex items-center justify-between">
-            <span className="text-xs font-semibold text-warning">Phản biện Độc lập &amp; Điểm mù</span>
-            {blindspotPenalty !== null && (
-              <span className="tnum font-mono text-[11px] text-secondary">
-                Điểm trừ rủi ro: {number(blindspotPenalty, "/20")}
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          {tickerStr ? (
+            <Link to={`/stock/${tickerStr}`}>
+              <span className="font-mono text-[16px] font-bold text-ink hover:underline cursor-pointer">
+                {tickerStr}
               </span>
-            )}
-          </div>
+            </Link>
+          ) : null}
+          <Pill tone="gold">{catalystType || "Cơ bản"}</Pill>
+        </div>
+        <Pill tone={status.tone}>{status.label}</Pill>
+      </div>
 
-          {counterLead ? (
-            <p className="border-l-2 border-warning pl-3 text-[13px] font-medium leading-relaxed text-ink">
-              {counterLead}
+      {catalystDescription && (
+        <p className="text-[13px] leading-relaxed text-ink mt-3">{catalystDescription}</p>
+      )}
+      {whyNow && (
+        <p className="text-[12px] leading-relaxed text-secondary mt-2">
+          <strong>Tại sao lúc này: </strong>
+          {whyNow}
+        </p>
+      )}
+      {whyThisStock && (
+        <p className="text-[12px] leading-relaxed text-secondary mt-2">
+          <strong>Tại sao mã này: </strong>
+          {whyThisStock}
+        </p>
+      )}
+
+      {matchedCounter && (
+        <div className="mt-3 pt-3 border-t border-line text-[12px] space-y-2">
+          {ctsScore !== null && <div className="font-mono">CTS: {ctsScore.toFixed(1)}/100</div>}
+          {inconsistentCTS && (
+            <p className="text-warning">
+              Các thành phần CTS đã lưu không khớp điểm cuối. Cần đối soát lần chạy gốc.
             </p>
-          ) : (
-            <p className="text-sm text-secondary">Chưa có bản ghi phản biện cho luận điểm này.</p>
           )}
+          {constraintReason && <p className="text-warning">{constraintReason}</p>}
+          <details>
+            <summary className="cursor-pointer text-secondary">
+              Lý do phản biện &amp; rủi ro
+            </summary>
+            <p className="mt-2 leading-relaxed text-secondary">
+              {rationale || "Chưa có lý do phản biện."}
+            </p>
+            {holes.map((hole, i) => (
+              <p key={i} className="mt-2 text-secondary">
+                • {hole}
+              </p>
+            ))}
+          </details>
+        </div>
+      )}
 
-          {counterReasons.length > 0 && (
-            <div className="mt-4">
-              <div className="mb-2 text-xs font-semibold text-ink">
-                Giả định bị chất vấn ({counterReasons.length} điểm mù)
-              </div>
-              <ul className="space-y-2">
-                {counterReasons.slice(0, 3).map((reason, idx) => (
-                  <li key={idx} className="flex items-start gap-2 rounded border border-line/70 bg-paper/45 px-3 py-2 text-xs leading-relaxed text-secondary">
-                    <span className="tnum mt-0.5 font-mono font-semibold text-warning">0{idx + 1}</span>
-                    <span className="text-ink">{reason}</span>
-                  </li>
-                ))}
-              </ul>
+      {targetRange && (
+        <div className="text-[12.5px] font-mono text-ink mt-2 mb-3">
+          Mục tiêu:{" "}
+          <span className="text-gain font-semibold">
+            {targetRange[0].toLocaleString("vi-VN")}
+          </span>{" "}
+          –{" "}
+          <span className="text-gain font-semibold">
+            {targetRange[1].toLocaleString("vi-VN")}
+          </span>{" "}
+          đ
+        </div>
+      )}
+
+      {signals.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-line text-[12px]">
+          <div className="text-[10.5px] uppercase tracking-wide text-muted mb-1 font-semibold">
+            Tín hiệu xác nhận
+          </div>
+          <ul className="space-y-1 text-secondary">
+            {signals.map((sig, i) => (
+              <li key={i} className="flex gap-1.5">
+                <span className="text-gain">✓</span>
+                <span>{sig}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {invalidations.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-line text-[12px]">
+          <div className="text-[10.5px] uppercase tracking-wide text-muted mb-1 font-semibold">
+            Điều kiện vi phạm hủy bỏ
+          </div>
+          <ul className="space-y-1 text-secondary">
+            {invalidations.map((inv, i) => (
+              <li key={i} className="flex gap-1.5">
+                <span className="text-loss">✗</span>
+                <span>{inv}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center justify-between gap-2 mt-4 pt-3 border-t border-line text-[11px] text-muted font-mono">
+        <span className="break-all">{thesisId ? `ID: ${thesisId}` : ""}</span>
+        <div className="text-right space-y-1">
+          {analysisDate && (
+            <div className="text-secondary">Ngày phân tích {displayDate(analysisDate)}</div>
+          )}
+          {generatedAt && formatThesisDay(generatedAt) && (
+            <div>
+              Lập luận điểm: {formatThesisDay(generatedAt)} ·{" "}
+              {new Date(generatedAt).toLocaleTimeString("vi-VN", {
+                timeZone: "Asia/Ho_Chi_Minh",
+              })}
             </div>
           )}
         </div>
       </div>
-
-      {/* Progressive Disclosure Drawer for Secondary Details (Eliminates Text Overload) */}
-      {(conditions.length > 0 || counterSupporting.length > 0 || preMortemScenarios.length > 0 || flatRisks.length > 0 || counterReasons.length > 3) && (
-        <details className="border-t border-line bg-paper/35 px-5 py-3">
-          <summary className="cursor-pointer text-xs font-semibold text-mineral">
-            Xem chi tiết 3 tín hiệu xác nhận, kịch bản Pre-Mortem &amp; {flatRisks.length} điều kiện vô hiệu hóa tự động ↓
-          </summary>
-          <div className="mt-4 grid gap-5 border-t border-line pt-4 lg:grid-cols-2">
-            <div className="space-y-3">
-              <div className="text-xs font-semibold text-ink">Kiểm chứng 3 nhóm tín hiệu độc lập</div>
-              <dl className="divide-y divide-line/60 rounded border border-line bg-surface px-3.5 py-1 text-xs">
-                {conditions.map(c => (
-                  <div key={c.key} className="py-2.5">
-                    <dt className="font-semibold text-ink">✓ {c.label}</dt>
-                    <dd className="mt-0.5 leading-relaxed text-secondary">{c.text}</dd>
-                  </div>
-                ))}
-              </dl>
-
-              {preMortemScenarios.length > 0 && (
-                <div className="pt-1">
-                  <div className="mb-1.5 text-xs font-semibold text-ink">Kịch bản tự kiểm định Pre-Mortem</div>
-                  <ul className="space-y-1.5 text-xs text-secondary">
-                    {preMortemScenarios.map((sc, i) => (
-                      <li key={i} className="border-l-2 border-teal pl-2.5 leading-relaxed">{sc}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-
-            <div className="space-y-3">
-              {flatRisks.length > 0 && (
-                <div>
-                  <div className="mb-1.5 text-xs font-semibold text-loss">
-                    Điều kiện vô hiệu hóa tự động ({flatRisks.length} ngưỡng)
-                  </div>
-                  <div className="divide-y divide-line/60 rounded border border-line bg-surface px-3.5 py-1 text-xs">
-                    {flatRisks.map((r, i) => (
-                      <div key={i} className="py-2">
-                        <span className="font-semibold text-loss">Ngưỡng 0{i + 1} ({r.groupLabel}): </span>
-                        <span className="text-secondary">{r.text}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {counterSupporting.length > 0 && (
-                <div>
-                  <div className="mb-1.5 text-xs font-semibold text-ink">Luận cứ phản biện bổ sung</div>
-                  <ul className="space-y-1.5 text-xs text-secondary">
-                    {counterSupporting.map((s, i) => (
-                      <li key={i} className="border-l-2 border-warning pl-2.5 leading-relaxed">{s}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-          </div>
-        </details>
-      )}
     </Panel>
   )
 }
@@ -2858,7 +2882,7 @@ function WarRoom({ requestedSymbol }: { requestedSymbol: string }) {
         (todayRes?.theses?.length ?? 0) > 0 ||
         (todayRes?.decisions?.length ?? 0) > 0 ||
         (todayRes?.logs?.some(g => (g.entries?.length ?? 0) > 0) ?? false)
-      if (!hasTodayData && todayRes?.dates?.length && !todayRes.dates.includes(today)) {
+      if (todayRes?.dates?.length && (!hasTodayData || !todayRes.dates.includes(today))) {
         return (await workspaceApi.agent(todayRes.dates[0])) as AgentResponse
       }
       return todayRes
@@ -3130,8 +3154,8 @@ function WarRoom({ requestedSymbol }: { requestedSymbol: string }) {
                   {/* 6-Factor Quantitative Radar Section */}
                   <EquityResearchSection entry={eqEntry} ticker={active} />
 
-                  {/* Concise Bull vs. Bear Comparison */}
-                  <AdversarialDebateSection thesis={thesis} counter={counter} />
+                  {/* Research Thesis & Counter-Verdict Card */}
+                  <ResearchThesisSection ticker={active} thesis={thesis} counter={counter} />
                 </div>
               ) : (
                 <Panel className="p-8 text-sm text-secondary">

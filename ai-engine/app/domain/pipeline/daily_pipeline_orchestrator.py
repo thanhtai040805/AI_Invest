@@ -30,7 +30,6 @@ from dotenv import load_dotenv
 from app.core.registry import AgentRegistry
 import app.domain.agents  # Nạp và tự động đăng ký đủ 12 Agents vào Registry
 from app.domain.repositories.portfolio_repository import PortfolioRepository
-from app.domain.services.ml.standalone_ml_channel import standalone_ml_channel
 from app.infrastructure.database.pg_pool import get_conn
 
 load_dotenv()
@@ -51,30 +50,20 @@ class DailyInvestmentPipeline:
     def __init__(
         self,
         multi_agent_mode: str = os.getenv("MULTI_AGENT_MODE", ExecutionMode.SHADOW_RUNNER.value),
-        standalone_ml_mode: str = os.getenv("STANDALONE_ML_MODE", ExecutionMode.SHADOW_RUNNER.value),
     ):
         try:
             self.multi_agent_mode = ExecutionMode(multi_agent_mode)
         except ValueError:
             self.multi_agent_mode = ExecutionMode.SHADOW_RUNNER
 
-        try:
-            self.standalone_ml_mode = ExecutionMode(standalone_ml_mode)
-        except ValueError:
-            self.standalone_ml_mode = ExecutionMode.SHADOW_RUNNER
-
         if self.multi_agent_mode == ExecutionMode.LIVE:
             logger.critical("LIVE multi-agent execution is disabled: no broker order gateway is implemented")
             self.multi_agent_mode = ExecutionMode.DISABLED
-        if self.standalone_ml_mode == ExecutionMode.LIVE:
-            logger.critical("LIVE standalone execution is disabled: no broker order gateway is implemented")
-            self.standalone_ml_mode = ExecutionMode.DISABLED
 
         self.portfolio_repo = PortfolioRepository()
         logger.info(
             f"[DailyInvestmentPipeline] Khởi tạo thành công: "
-            f"Multi-Agent Mode = '{self.multi_agent_mode.value}' | "
-            f"Standalone ML Mode = '{self.standalone_ml_mode.value}'"
+            f"Multi-Agent Mode = '{self.multi_agent_mode.value}'"
         )
 
     def _load_current_portfolio_state(self, user_id: str, current_nav: Optional[float]) -> Dict[str, Any]:
@@ -140,7 +129,6 @@ class DailyInvestmentPipeline:
         self,
         target_date: Optional[Union[date, str]] = None,
         current_nav: Optional[float] = None,
-        standalone_nav: Optional[float] = None,
         candidate_tickers: Optional[List[str]] = None,
         max_candidates: int = 3,
         replay_portfolio: Optional[Dict[str, Any]] = None,
@@ -206,16 +194,10 @@ class DailyInvestmentPipeline:
             replay_positions = portfolio_state["positions"]
             replay_cash = float(portfolio_state["cash_vnd"])
 
-        if standalone_nav is None:
-            standalone_nav = (
-                500_000_000.0 if replay_at else
-                float(standalone_ml_channel.get_account_state().get("total_nav", 500_000_000.0))
-            )
-
         logger.info(f"================================================================================")
         logger.info(f"[Daily Investment Pipeline] KHỞI ĐỘNG CHU TRÌNH 12 AGENT CHO NGÀY: {run_date_str}")
-        logger.info(f"[NAV TỪ CSDL] Multi-Agent NAV: {current_nav:,.0f} VND (Acc: {multi_agent_account_id}) | Standalone NAV: {standalone_nav:,.0f} VND (Acc: {standalone_ml_channel.account_id})")
-        logger.info(f"[EXECUTION MODES] Multi-Agent: {self.multi_agent_mode.value} | Standalone: {self.standalone_ml_mode.value}")
+        logger.info(f"[NAV TỪ CSDL] Multi-Agent NAV: {current_nav:,.0f} VND (Acc: {multi_agent_account_id})")
+        logger.info(f"[EXECUTION MODE] Multi-Agent: {self.multi_agent_mode.value}")
         logger.info(f"================================================================================")
 
         actions_to_audit: List[Dict[str, Any]] = []
@@ -238,7 +220,6 @@ class DailyInvestmentPipeline:
                 "date": run_date_str,
                 "status": "MARKET_SURVEILLANCE_UNAVAILABLE",
                 "multi_agent_instructions": [],
-                "standalone_ml_instructions": [],
                 "trace": pipeline_trace,
             }
         
@@ -303,9 +284,7 @@ class DailyInvestmentPipeline:
                 "cash_ratio": 1.0,
                 "status": "BEAR_DEFENSE_100PCT_CASH",
                 "multi_agent_mode": self.multi_agent_mode.value,
-                "standalone_ml_mode": self.standalone_ml_mode.value,
                 "multi_agent_instructions": emergency_instructions,
-                "standalone_ml_instructions": [],
                 "trace": pipeline_trace,
             }
 
@@ -368,7 +347,6 @@ class DailyInvestmentPipeline:
                 "cash_ratio": cash_ratio,
                 "status": "NO_ELIGIBLE_UNIVERSE",
                 "multi_agent_instructions": hold_instructions,
-                "standalone_ml_instructions": [],
                 "trace": pipeline_trace,
             }
 
@@ -780,40 +758,6 @@ class DailyInvestmentPipeline:
         )
 
         # =========================================================================
-        # STANDALONE PURE-ML FUND: KÊNH TỰ VẬN HÀNH ĐỘC LẬP (ACCOUNT RIÊNG BIỆT)
-        # =========================================================================
-        if not replay_at and self.standalone_ml_mode != ExecutionMode.DISABLED and not is_bear_or_crisis:
-            logger.info(
-                f"\n[Standalone Pure-ML Fund] Khởi động kênh tự hành độc lập "
-                f"(Account: '{standalone_ml_channel.account_id}' | Mode: '{self.standalone_ml_mode.value}')..."
-            )
-            try:
-                sa_candidates = candidate_tickers if candidate_tickers else selected_tickers
-                sa_res = await standalone_ml_channel.run_autonomous_cycle(
-                    target_date=target_date_obj,
-                    candidate_tickers=sa_candidates,
-                    execution_mode=self.standalone_ml_mode.value,
-                    max_candidates=max_candidates,
-                    nav=standalone_nav,
-                )
-                qualified_orders_standalone = sa_res.get("orders", [])
-
-                for ord_sa in qualified_orders_standalone:
-                    actions_to_audit.append({
-                        "agent_id": "standalone_ml_fund",
-                        "event_type": "STANDALONE_ORDER_GENERATED",
-                        "details": ord_sa,
-                    })
-
-                # Tự động đối soát độ chính xác thực tế
-                standalone_ml_channel.evaluate_forward_accuracy(lookback_days=60)
-            except Exception as e_sa:
-                logger.error(f"[Standalone Pure-ML Fund] Lỗi thực thi chu trình: {e_sa}", exc_info=True)
-                qualified_orders_standalone = []
-        else:
-            qualified_orders_standalone = []
-
-        # =========================================================================
         # PHA 12: AGENT-11 (SYSTEM GOVERNANCE & CRYPTOGRAPHIC LEDGER)
         # =========================================================================
         logger.info("\n[Pha 12] Kích hoạt Agent-11: Thẩm định Tuân thủ Hiến pháp & Băm Sổ cái SHA-256...")
@@ -839,7 +783,6 @@ class DailyInvestmentPipeline:
         logger.info(
             f"[Daily Investment Pipeline] HOÀN TẤT THÀNH CÔNG: "
             f"Multi-Agent: {len(qualified_orders_multi_agent)} lệnh | "
-            f"Standalone ML: {len(qualified_orders_standalone)} lệnh | "
             f"Governance: {gov_status}"
         )
         logger.info(f"================================================================================")
@@ -854,9 +797,7 @@ class DailyInvestmentPipeline:
             "session_context": session_context,
             "cash_ratio": cash_ratio,
             "multi_agent_mode": self.multi_agent_mode.value,
-            "standalone_ml_mode": self.standalone_ml_mode.value,
             "multi_agent_instructions": qualified_orders_multi_agent,
-            "standalone_ml_instructions": qualified_orders_standalone,
             "governance_status": gov_status,
             "audit_sha256": audit_sha256,
             "trace": pipeline_trace,

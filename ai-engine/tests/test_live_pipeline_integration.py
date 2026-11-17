@@ -25,7 +25,6 @@ async def _run_live_pipeline():
         res = await pipeline.run(
             target_date=test_date,
             current_nav=1_000_000_000.0,
-            standalone_nav=500_000_000.0
         )
         
         print(f"Date: {res.get('date')} | Regime: {res.get('regime')} | Target Cash: {res.get('cash_ratio'):.2%}")
@@ -35,13 +34,8 @@ async def _run_live_pipeline():
         for o in orders_ma:
             print(f"  Ticker: {o['ticker']:<6} | Tier: {o['tier']:<12} | Z-Score: {o['z_score']:+.2f} | Weight: {o['target_weight_pct']:.1%} | HardStop: {o['hard_stop_pct']:.1%}")
             
-        orders_sa = res.get('standalone_ml_instructions', [])
-        print(f"[BOOK 2: STANDALONE PURE-ML FUND ORDERS] ({len(orders_sa)} orders)")
-        for o in orders_sa:
-            print(f"  Ticker: {o['ticker']:<6} | Tier: {o['tier']:<12} | Z-Score: {o['z_score']:+.2f} | Weight: {o['target_weight_pct']:.1%} | Mode: {o['execution_mode']}")
-            
     print("\n" + "=" * 80)
-    print("ALL TESTS PASSED! Multi-Agent and Standalone ML Book are fully validated.")
+    print("ALL TESTS PASSED! Multi-Agent Book is fully validated.")
 
 
 def test_live_pipeline():

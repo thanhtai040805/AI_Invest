@@ -131,7 +131,6 @@ export const workspaceApi = {
   thesisHistory: (params: { page: number; ticker?: string; date?: string }) => apiClient.get("/workspace/research/thesis-history", { params }).then(r => r.data),
   overview: () => clientCached("workspace:overview", 30_000, () => apiClient.get("/workspace/overview").then(r => r.data)),
   agent: (date?: string) => apiClient.get("/workspace/agent", { params: { date } }).then(r => r.data),
-  mlFund: (date?: string, range?: { from?: string; to?: string }) => apiClient.get("/workspace/ml-fund", { params: { date, ...range } }).then(r => r.data),
   research: () => clientCached("workspace:research", 30_000, () => apiClient.get("/workspace/research").then(r => r.data)),
   watchlists: () => apiClient.get("/workspace/watchlists").then(r => r.data),
   createWatchlist: (body: { name: string; symbols: string[] }) => apiClient.post("/workspace/watchlists", body).then(r => r.data),

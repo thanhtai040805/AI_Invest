@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:market": "node --experimental-strip-types --test tests/sectorWeights.test.cjs"
+    "test:market": "node --experimental-strip-types --test tests/sectorWeights.test.cjs tests/ohlcvScale.test.cjs"
   },
   "dependencies": {
     "axios": "^1.16.0",

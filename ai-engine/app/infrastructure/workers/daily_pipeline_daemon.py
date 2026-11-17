@@ -65,7 +65,6 @@ class DailyPipelineDaemon:
                 "date": self._last_result.get("date") if self._last_result else None,
                 "status": self._last_result.get("status") if self._last_result else None,
                 "multi_agent_orders": len(self._last_result.get("multi_agent_instructions", [])) if self._last_result else 0,
-                "standalone_ml_orders": len(self._last_result.get("standalone_ml_instructions", [])) if self._last_result else 0,
                 "governance_status": self._last_result.get("governance_status") if self._last_result else None,
             } if self._last_result else None,
         }
@@ -94,7 +93,7 @@ class DailyPipelineDaemon:
             previous = get_job(job_name)
             if not force and previous and previous.get("status") == "completed" and previous.get("metadata", {}).get("run_date") == run_d:
                 self._last_status = "ALREADY_COMPLETED"
-                return {"date": run_d, "status": "ALREADY_COMPLETED", "multi_agent_instructions": [], "standalone_ml_instructions": []}
+                return {"date": run_d, "status": "ALREADY_COMPLETED", "multi_agent_instructions": []}
             self._last_status = "RUNNING_MANUAL"
             set_running(job_name, {"run_date": run_d})
             try:
@@ -151,7 +150,7 @@ class DailyPipelineDaemon:
         logger.info(
             f"[DailyPipelineDaemon] ĐÃ ĐẾN GIỜ GIAO DỊCH {self.trigger_time.strftime('%H:%M')} "
             f"({now.strftime('%H:%M:%S')}) NGÀY {today_str}! "
-            "Tự động kích hoạt Daily Investment Pipeline (12 Agents + Standalone ML)..."
+            "Tự động kích hoạt Daily Investment Pipeline (12 Agents)..."
         )
         self._last_status = "RUNNING_SCHEDULED"
         try:
@@ -162,8 +161,7 @@ class DailyPipelineDaemon:
             logger.info(
                 f"[DailyPipelineDaemon] Pipeline ngày {today_str} hoàn tất thành công: "
                 f"Status={self._last_status} | "
-                f"Multi-Agent={len(res.get('multi_agent_instructions', []))} lệnh | "
-                f"Standalone ML={len(res.get('standalone_ml_instructions', []))} lệnh"
+                f"Multi-Agent={len(res.get('multi_agent_instructions', []))} lệnh"
             )
         except Exception as e:
             self._last_status = f"FAILED: {e}"

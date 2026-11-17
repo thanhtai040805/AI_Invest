@@ -89,3 +89,25 @@ def test_stream_hub_loads_universe_without_starting_ws_when_dnse_disabled(monkey
     assert hub.mode == "disabled"
     assert not hub.is_running
     assert hub._thread is None
+
+
+def test_ohlcv_series_normalization_avoids_double_scaling_and_preserves_indices():
+    from app.infrastructure.external_api.market_data_service import _normalize_ohlcv_series
+
+    kvnd_hpg = [
+        {"time": "2012-04-12", "open": 0.98, "high": 1.01, "low": 0.96, "close": 0.99, "volume": 1000},
+        {"time": "2012-04-16", "open": 0.98, "high": 1.03, "low": 0.97, "close": 1.03, "volume": 1200},
+        {"time": "2026-11-16", "open": 29.50, "high": 29.80, "low": 29.40, "close": 29.69, "volume": 15000},
+    ]
+    scaled = _normalize_ohlcv_series([dict(r) for r in kvnd_hpg], "HPG")
+    assert [r["close"] for r in scaled] == [990.0, 1030.0, 29690.0]
+
+    already_vnd = _normalize_ohlcv_series(scaled, "HPG")
+    assert [r["close"] for r in already_vnd] == [990.0, 1030.0, 29690.0]
+
+    vnindex = [
+        {"time": "2012-04-12", "open": 380.25, "high": 385.10, "low": 378.40, "close": 384.90, "volume": 50000},
+        {"time": "2026-11-16", "open": 1740.10, "high": 1752.30, "low": 1738.00, "close": 1746.90, "volume": 70000},
+    ]
+    idx_out = _normalize_ohlcv_series([dict(r) for r in vnindex], "VNINDEX")
+    assert [r["close"] for r in idx_out] == [384.9, 1746.9]

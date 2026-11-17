@@ -61,7 +61,6 @@ def test_stop_alert_never_closes_a_paper_lot_without_a_fill():
 @pytest.mark.parametrize("missing_main,failed_main", [(False, False), (True, False), (False, True)])
 def test_eod_marks_each_fund_and_retries_missing_prices_independently(monkeypatch, missing_main, failed_main):
     monkeypatch.setenv("MULTI_AGENT_ACCOUNT_ID", "main")
-    monkeypatch.setenv("STANDALONE_ML_ACCOUNT_ID", "ml")
     class Clock(datetime):
         @classmethod
         def now(cls, tz=None):
@@ -90,7 +89,6 @@ def test_eod_marks_each_fund_and_retries_missing_prices_independently(monkeypatc
     daemon = eod_module.EODLearningDaemon(runner=SimpleNamespace(run=run))
     daemon.session_mgr = SimpleNamespace(is_trading_day=lambda now: True)
     asyncio.run(daemon._check_and_trigger())
-    assert ("ml", "2026-09-30") in marks
     if missing_main or failed_main:
         assert daemon._last_run_date is None
         assert runs == []

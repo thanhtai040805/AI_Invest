@@ -964,7 +964,7 @@ class PortfolioRepository:
         """Persist a day-only Shadow limit order without changing cash or positions."""
         ticker = ticker.upper().strip()
         if (not ticker or shares <= 0 or limit_price <= 0
-                or order_type not in ("SHADOW_LIMIT", "SHADOW_ML_LIMIT") or side not in ("BUY", "SELL")):
+                or order_type != "SHADOW_LIMIT" or side not in ("BUY", "SELL")):
             raise ValueError("Invalid Shadow pending order")
         target_uid = user_id or self.account_id
         order_id = str(uuid.uuid4())
@@ -980,7 +980,7 @@ class PortfolioRepository:
     def get_pending_shadow_orders(self) -> List[Dict[str, Any]]:
         rows = self.storage.fetch_all(
             "SELECT id, user_id, symbol, side, price, quantity, order_type, decision_context FROM orders "
-            "WHERE status = 'PENDING_SHADOW' AND order_type IN ('SHADOW_LIMIT', 'SHADOW_ML_LIMIT') "
+            "WHERE status = 'PENDING_SHADOW' AND order_type = 'SHADOW_LIMIT' "
             "ORDER BY created_at"
         )
         return [
@@ -994,7 +994,7 @@ class PortfolioRepository:
         now = now_vn()
         rows = self.storage.fetch_all(
             "UPDATE orders SET status = 'EXPIRED' WHERE status = 'PENDING_SHADOW' "
-            "AND order_type IN ('SHADOW_LIMIT', 'SHADOW_ML_LIMIT') "
+            "AND order_type = 'SHADOW_LIMIT' "
             "AND (((created_at AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh')::date < %s "
             "OR %s >= TIME '14:45') RETURNING id",
             (now.date(), now.time().replace(tzinfo=None)),

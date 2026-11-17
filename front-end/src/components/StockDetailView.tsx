@@ -2,7 +2,12 @@
 
 import React, { useEffect, useMemo, useState } from "react"
 import { createPortal } from "react-dom"
-import { TradingViewChart } from "@/lib/tv-chart"
+import {
+  TradingViewChart,
+  isIndexSymbol,
+  resolveSeriesPriceScale,
+  scaleCandlePrice,
+} from "@/lib/tv-chart"
 import { Button, Pill, fmt, fmtPct } from "@/components/ui"
 import { marketApi, stockApi, workspaceApi } from "@/lib/api"
 import { useResource } from "@/lib/api/use-resource"
@@ -316,13 +321,15 @@ export function StockDetailContent({
       : Array.isArray((ohlcvRes as { data?: ApiOhlcvCandle[] })?.data)
         ? ((ohlcvRes as { data?: ApiOhlcvCandle[] }).data ?? [])
         : []
+    const isIdx = isIndexSymbol(symbol)
+    const scale = resolveSeriesPriceScale(rawList, isIdx)
 
     return rawList
       .map((c) => {
-        const close = toVndPrice(c.close)
-        const open = toVndPrice(c.open ?? c.close)
-        const high = toVndPrice(c.high ?? Math.max(open, close))
-        const low = toVndPrice(c.low ?? Math.min(open, close))
+        const close = scaleCandlePrice(c.close, 0, scale, isIdx)
+        const open = scaleCandlePrice(c.open ?? c.close, close, scale, isIdx)
+        const high = Math.max(scaleCandlePrice(c.high ?? close, close, scale, isIdx), open, close)
+        const low = Math.min(scaleCandlePrice(c.low ?? close, close, scale, isIdx), open, close)
         const volume = Number(c.volume ?? 0)
         const rawTime = c.date ?? c.timestamp ?? c.time ?? ""
         const ts =
@@ -343,7 +350,7 @@ export function StockDetailContent({
       })
       .filter((c) => c.close > 0)
       .sort((a, b) => a.ts - b.ts)
-  }, [ohlcvRes])
+  }, [ohlcvRes, symbol])
 
   const newsList = useMemo(() => {
     const rawList = Array.isArray(newsRes)

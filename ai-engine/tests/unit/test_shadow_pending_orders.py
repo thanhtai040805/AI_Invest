@@ -24,7 +24,6 @@ class Storage:
         if "SELECT id, user_id, symbol, side, price, quantity, order_type, decision_context FROM orders" in sql:
             return [
                 ("id1", "account", "FPT", "BUY", 25000, 100, "SHADOW_LIMIT", {"reason": "approved entry"}),
-                ("id2", "ml-account", "HPG", "BUY", 30000, 200, "SHADOW_ML_LIMIT", {"reason": "ML signal"}),
             ]
         raise AssertionError(sql)
 
@@ -69,15 +68,14 @@ def test_already_filled_shadow_order_cannot_debit_cash_twice():
     assert repo._in_memory_account["cash_balance"] == original_cash
 
 
-def test_pending_scan_includes_both_shadow_channels():
+def test_pending_scan_includes_shadow_channel():
     orders = PortfolioRepository(Storage()).get_pending_shadow_orders()
 
-    assert [order["order_type"] for order in orders] == ["SHADOW_LIMIT", "SHADOW_ML_LIMIT"]
+    assert [order["order_type"] for order in orders] == ["SHADOW_LIMIT"]
     assert orders[0]["decision_context"] == {"reason": "approved entry"}
-    assert orders[1]["decision_context"] == {"reason": "ML signal"}
 
 
-@pytest.mark.parametrize("order_type", ["SHADOW_LIMIT", "SHADOW_ML_LIMIT"])
+@pytest.mark.parametrize("order_type", ["SHADOW_LIMIT"])
 def test_shadow_daemon_forwards_context_to_delayed_fill(monkeypatch, order_type):
     context = {"reason": "approved entry", "rule_level": "MOS_PASS"}
     captured = {}
@@ -93,9 +91,6 @@ def test_shadow_daemon_forwards_context_to_delayed_fill(monkeypatch, order_type)
                 "order_type": order_type, "decision_context": context,
             }]
 
-        def execute_order_transaction(self, **kwargs):
-            captured["execution"] = kwargs
-
     class Registry:
         @classmethod
         async def dispatch(cls, agent_name, event):
@@ -107,7 +102,6 @@ def test_shadow_daemon_forwards_context_to_delayed_fill(monkeypatch, order_type)
 
     monkeypatch.setattr(shadow_module, "AgentRegistry", Registry)
     monkeypatch.setattr(shadow_module.market_data_svc, "get_order_book", order_book)
-    monkeypatch.setattr(shadow_module, "shadow_fill", lambda *_args: 25_000)
 
     daemon = object.__new__(shadow_module.ShadowOrderDaemon)
     daemon.session = SimpleNamespace(get_market_state=lambda: MarketState.CONTINUOUS_MORNING)
@@ -118,8 +112,5 @@ def test_shadow_daemon_forwards_context_to_delayed_fill(monkeypatch, order_type)
         return await daemon.run_single_tick()
 
     assert asyncio.run(run_tick()) == 1
-    if order_type == "SHADOW_ML_LIMIT":
-        assert captured["execution"]["decision_context"] == context
-    else:
-        assert captured["dispatch"][0] == "trade_execution"
-        assert captured["dispatch"][1]["order_instruction"]["decision_context"] == context
+    assert captured["dispatch"][0] == "trade_execution"
+    assert captured["dispatch"][1]["order_instruction"]["decision_context"] == context

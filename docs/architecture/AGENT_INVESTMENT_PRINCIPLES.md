@@ -91,29 +91,13 @@ Phần này cần nêu **quan sát điều gì, mức nào/sự kiện nào đá
 
 Hệ thống hiện dùng thời gian luận điểm bằng số tháng, có các cách định giá cho khoảng đến ba tháng và trên ba tháng. Chưa có ba bộ chính sách riêng được triển khai đầy đủ cho “lướt sóng”, “trung hạn” và “dài hạn”. Có thể tổ chức báo cáo theo thời gian được trả về, nhưng không nên tự tạo mục tiêu hoặc quy tắc cắt lỗ mới chỉ vì đổi nhãn kỳ hạn.
 
-## 6. Kênh Standalone ML có bộ quy tắc riêng
+## 6. Kênh Standalone ML đã ngừng vận hành ("một thất bại không thể từ chối")
 
-Standalone ML xếp hạng ứng viên bằng mô hình và tạo lệnh cho tài khoản riêng. Nó không đi qua toàn bộ chuỗi nghiên cứu, luận điểm, phản biện, phân bổ và risk gate của Multi-Agent. Hệ thống lưu các dự báo và chỉ xem xét số ứng viên hàng đầu theo giới hạn do caller truyền; dữ liệu đặc trưng phải có trước phiên quyết định. Mã đã giữ hoặc đã có lệnh chờ sẽ không được mua lặp lại trong chu kỳ này.
-
-| Nội dung | Hành vi của Standalone ML đang vận hành trong service |
-|---|---|
-| Quy mô nhóm cao nhất | 12% NAV cho ứng viên đạt ngưỡng xếp hạng A+. |
-| Quy mô nhóm tiếp theo | 5% NAV cho ứng viên đạt ngưỡng xếp hạng A. |
-| Nhóm dưới các ngưỡng trên | Dùng cấu hình tỷ trọng riêng; mặc định constructor là 20% NAV. Ngưỡng lọc có thể được caller hoặc biến môi trường áp thêm. |
-| Bảo vệ hòa vốn | Khi từng lãi từ 2,5%, nếu giảm về lãi 0,2% hoặc thấp hơn thì xếp lệnh bán toàn bộ. |
-| Cắt lỗ | Khi giảm từ giá vốn 3,5% thì xếp lệnh bán toàn bộ. |
-| Chốt lời | Khi lãi từ 6% thì xếp lệnh bán toàn bộ. |
-| Thời gian nắm giữ | Từ 5 ngày theo lịch thì xếp lệnh bán toàn bộ; phép đếm này không phải 5 phiên giao dịch. |
-| Điều kiện trước khi bán | Phải có ít nhất 100 cổ phiếu, đã hết khóa thanh toán và có dữ liệu sổ lệnh mới, đủ điều kiện thực thi. |
-
-Monitor ML áp các điều kiện bán trên cho tất cả tier trong service; nó chưa phân tách A+ để giữ vị thế chạy dài và A để chốt ở 6%. File `dual_tier_sniper_engine.py` có mô tả chiến lược khác: A+ giữ theo xu hướng, A cắt ở 3% và chốt 6%, lọc thanh khoản 10 tỷ đồng và đổi nhóm theo xu hướng chỉ số. Các lệnh gọi engine này xuất hiện trong scripts/experiments; service Standalone đang import nhưng chưa gọi trực tiếp bộ lọc đó. Không dùng mô tả thí nghiệm làm luật đã được áp dụng mặc định cho tài khoản ML.
-
-Standalone không kiểm tra đầy đủ các trần 15% một mã, 35% một ngành và đệm tiền mặt như Multi-Agent trong hàm xếp lệnh này. Số lượng mua bị giới hạn bởi tiền mặt còn lại, đã trừ phần dự phòng cho lệnh chờ và phí. Các mức 12%, 5% và tỷ trọng cấu hình là mục tiêu cho lệnh đang xét, không phải bằng chứng đã qua risk gate Multi-Agent.
+Kênh `Standalone Pure-ML Fund` (`/ml-fund`, `standalone_ml_channel.py`, `SHADOW_ML_LIMIT`) đã bị loại bỏ hoàn toàn khỏi hệ thống sản xuất và được ghi nhận là **một thất bại không thể từ chối**. Việc tách rời mô hình xếp hạng ML thuần túy khỏi quy trình luận điểm cơ bản nhân quả, phản biện đối kháng (Agent 05) và kiểm soát rủi ro đa tầng không đem lại độ tin cậy vận hành thực tế. Kiến trúc **12 Multi-Agent** hiện là kênh đầu tư tự hành duy nhất của AIInvest.
 
 ## 7. Giới hạn thực thi cần phản ánh đúng trên UI
 
-- **Chỉ ghi đã khớp khi có xác nhận thực thi.** Trade Execution đang dùng khớp mô phỏng từ sổ lệnh thật. Sổ lệnh phải nằm trong phiên khớp liên tục, cập nhật trong 10 giây và có đủ lượng ở mức giá cho phép. Thiếu bên mua, giá chưa tới hoặc dữ liệu cũ thì chưa khớp; lệnh bán khẩn cấp cũng không được tạo giá khớp giả. Cơ chế Shadow hiện yêu cầu đủ khối lượng lệnh, không mô phỏng khớp một phần từ độ sâu thiếu.
-- **Chưa có đường đặt lệnh broker thật trong Standalone ML.** Chọn LIVE sẽ bị service từ chối. Từ “thực thi” trên báo cáo hiện cần đi kèm trạng thái mô phỏng/Shadow khi đó là nguồn thực tế.
+- **Chỉ ghi đã khớp khi có xác nhận thực thi.** Trade Execution đang dùng khớp mô phỏng từ sổ lệnh thật. Sổ lệnh phải nằm trong phiên khớp liên tục, cập nhật trong 10 giây và có đủ lượng ở mức giá cho phép. Thiếu bên mua, giá chưa tới hoặc dữ liệu cũ thì chưa khớp; lệnh bán khẩn cấp cũng không được tạo giá khớp giả. Cơ chế Shadow hiện yêu cầu đủ khối lượng lệnh, không mô phỏng khớp một phần từ độ sâu thiếu; từ "thực thi" trên báo cáo cần đi kèm trạng thái mô phỏng/Shadow khi đó là nguồn thực tế.
 - **Chờ thanh toán không thể bị bỏ qua để cắt lỗ.** Repository AI khóa T và T+1, mở khóa từ 11:30 ngày T+2 theo bộ đếm ngày làm việc. Hàm này bỏ cuối tuần nhưng chưa loại ngày nghỉ lễ; không nên trình bày như một bộ lịch thanh toán hoàn chỉnh. Giao dịch còn cần phiên thị trường phù hợp sau khi mở khóa.
 - **Kho dữ liệu chưa quản lý từng lô mua riêng trong vị thế.** Khi mua thêm, repository AI cập nhật thời điểm mở của cả vị thế; lượng cũ có thể bị xem là khóa cùng lượng mới. Đây là giới hạn của cách lưu vị thế hiện tại, ảnh hưởng số khả dụng báo cáo.
 - **“100% tiền mặt” trong trạng thái phòng thủ là mục tiêu/chặn mua.** Pipeline hằng ngày dừng mua sớm khi thị trường giảm hoặc khủng hoảng và quét giám sát vị thế; nó không tự bán mọi vị thế chỉ để đạt 100% tiền mặt. UI không được coi trạng thái này là tiền mặt thực tế đã đạt 100%.
@@ -153,7 +137,5 @@ Các mốc dưới đây là vị trí đối chiếu mã nguồn; số dòng c�
 | Khóa T+2, cập nhật thời điểm cả vị thế khi mua thêm | `ai-engine/app/domain/repositories/portfolio_repository.py:33`, `:752` |
 | Luồng thủ công back-end | `back-end/src/services/portfolio.service.ts:119`, `:156`, `:171`, `:179` |
 | Pipeline phòng thủ, portfolio rỗng ngoài replay, BUY và các nhãn 7%/15% | `ai-engine/app/domain/pipeline/daily_pipeline_orchestrator.py:233`, `:512`, `:548`, `:580`, `:608` |
-| ML từ chối LIVE, dữ liệu trước ngày quyết định, xếp hạng, tỷ trọng và hàng chờ | `ai-engine/app/domain/services/ml/standalone_ml_channel.py:281`, `:340`, `:395`, `:398`, `:412` |
-| Bốn điều kiện bán đang dùng ở monitor ML | `ai-engine/app/domain/services/ml/standalone_ml_channel.py:492`, `:523` |
 | Chiến lược Dual Tier riêng | `ai-engine/app/domain/services/ml/dual_tier_sniper_engine.py:48`, `:75`, `:112` |
 | Quy tắc SAG đang đóng | `.agents/rules/06-sag-analysis-hold.md:1` |

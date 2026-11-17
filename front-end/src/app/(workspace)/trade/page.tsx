@@ -6,7 +6,12 @@ import { getSocket, retainOhlc } from "@/lib/socket"
 import { useRealtimeMarket, useRealtimeStock } from "@/lib/use-realtime"
 import { usePortfolio, type PortfolioPosition, type PortfolioSnapshot } from "@/lib/use-portfolio"
 import { fmt, fmtPct, Panel, PanelHead, Pill } from "@/components/ui"
-import { TradingViewChart } from "@/lib/tv-chart"
+import {
+  TradingViewChart,
+  isIndexSymbol,
+  resolveSeriesPriceScale,
+  scaleCandlePrice,
+} from "@/lib/tv-chart"
 import type { ApiMarketStock, Stock } from "@/types"
 
 const DEFAULT_SYMBOLS = ["HPG", "FPT", "SSI", "MBB", "TCB", "VCB"]
@@ -1034,12 +1039,14 @@ export default function TradePage() {
 
   const candles: CandlePoint[] = useMemo(() => {
     const rawCandles = candleBundle.symbol === symbol ? candleBundle.items : []
+    const isIdx = isIndexSymbol(symbol)
+    const scale = resolveSeriesPriceScale(rawCandles, isIdx)
     const valid = rawCandles
       .map((item) => {
-        const close = toVndPrice(item.close)
-        const open = toVndPrice(item.open, close)
-        const high = Math.max(toVndPrice(item.high, close), open, close)
-        const low = Math.min(toVndPrice(item.low, close), open, close)
+        const close = scaleCandlePrice(item.close, 0, scale, isIdx)
+        const open = scaleCandlePrice(item.open, close, scale, isIdx)
+        const high = Math.max(scaleCandlePrice(item.high, close, scale, isIdx), open, close)
+        const low = Math.min(scaleCandlePrice(item.low, close, scale, isIdx), open, close)
         const volume = Number(item.volume ?? 0)
         const rawDate = String(item.date ?? item.time ?? item.timestamp ?? "")
         const d = new Date(rawDate)
