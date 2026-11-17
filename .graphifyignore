@@ -1,0 +1,27 @@
+# Exclude dependencies, build artifacts, caches, and Rule 06 held directories
+node_modules/
+.next/
+dist/
+build/
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+coverage/
+
+# Held / external / generated artifacts
+SAG/
+artifacts/
+graphify-out/
+ai-engine/.data/
+ai-engine/scratch/
+ai-engine/data/
+*.db
+*.log
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
+*.pdf
