@@ -224,7 +224,7 @@ function synthesizeIntradayFromDaily(daily: TvCandle[], tf: TvTimeframe, isIndex
   const isSecondTf = tf.endsWith("s")
   const sliceCount = Math.min(
     daily.length,
-    isSecondTf ? 4 : tf === "1m" || tf === "3m" || tf === "5m" ? 16 : 35
+    isSecondTf ? 10 : tf === "1m" || tf === "3m" ? 45 : tf === "5m" || tf === "15m" ? 90 : 200
   )
   const recentDays = daily.slice(-sliceCount)
   const result: TvCandle[] = []
@@ -307,6 +307,14 @@ function synthesizeIntradayFromDaily(daily: TvCandle[], tf: TvTimeframe, isIndex
   return result
 }
 
+function extractOhlcList(res: unknown): RawInputCandle[] | null {
+  if (Array.isArray(res)) return res as RawInputCandle[]
+  if (res && typeof res === "object" && Array.isArray((res as { data?: unknown }).data)) {
+    return (res as { data: RawInputCandle[] }).data
+  }
+  return null
+}
+
 export async function fetchTimeframeCandles(
   symbol: string,
   timeframe: TvTimeframe,
@@ -329,17 +337,22 @@ export async function fetchTimeframeCandles(
     timeframe === "4H" ||
     timeframe === "1D"
   const apiInterval = isAggregatedMacro || !isSupportedApiTf ? "1D" : timeframe
+  const requestLimit = apiInterval === "1D" ? 5000 : 1500
 
   try {
     const res = await stockApi.ohlcv(cleanSym, {
-      limit: isAggregatedMacro ? 500 : 250,
+      limit: requestLimit,
       interval: apiInterval,
     })
-    const list: RawInputCandle[] = Array.isArray(res)
-      ? res
-      : Array.isArray((res as { data?: unknown })?.data)
-        ? ((res as { data: RawInputCandle[] }).data ?? [])
-        : seedDailyCandles
+    let list: RawInputCandle[] = extractOhlcList(res) ?? seedDailyCandles
+
+    if (apiInterval !== "1D" && list.length < 30) {
+      const dailyRes = await stockApi.ohlcv(cleanSym, { limit: 5000, interval: "1D" }).catch(() => null)
+      const dailyList = extractOhlcList(dailyRes)
+      if (dailyList && dailyList.length > list.length) {
+        list = dailyList
+      }
+    }
 
     const normalized = normalizeRawCandles(list.length ? list : seedDailyCandles, timeframe, isIndex)
     if (isAggregatedMacro) {

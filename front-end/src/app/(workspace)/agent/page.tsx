@@ -1111,12 +1111,7 @@ function MarketAndUniversePanel({
 
   const msOutputs = object(msEntry?.outputs)
   const regime = String(msOutputs.current_regime || "")
-  const vix = numeric(msOutputs.vix_vn_analog)
-  const csad = numeric(msOutputs.csad_score)
-  const advDecl = numeric(msOutputs.adv_decl_ratio)
   const cashTarget = numeric(msOutputs.garch_cash_target_pct)
-  const breadthMa20 = numeric(msOutputs.breadth_above_ma20_pct)
-  const breadthMa50 = numeric(msOutputs.breadth_above_ma50_pct)
   const hmmProbs = object(msOutputs.hmm_probabilities)
 
   const pBear = (numeric(hmmProbs.BEAR_MARKET ?? hmmProbs.BEAR) ?? 0) * 100
@@ -1242,55 +1237,6 @@ function MarketAndUniversePanel({
           }
         />
       </div>
-
-      {/* 4-Metric Single-Line Strip */}
-      <dl className="grid grid-cols-2 divide-y divide-line border-b border-line bg-paper/35 sm:grid-cols-4 sm:divide-y-0 sm:divide-x">
-        <div className="px-5 py-2.5">
-          <dt className="whitespace-nowrap text-[11px] font-medium text-muted">Chỉ số Biến động (VIX-VN)</dt>
-          <dd className="mt-0.5 flex items-baseline justify-between gap-2 whitespace-nowrap">
-            <span className="tnum font-mono text-[18px] font-semibold text-ink">
-              {vix !== null ? vix.toFixed(2) : "—"}
-            </span>
-            <span className="text-[11px] text-secondary">
-              {vix === null ? "" : vix > 20 ? "Dao động cao" : "Biên độ ổn định (<20)"}
-            </span>
-          </dd>
-        </div>
-
-        <div className="px-5 py-2.5">
-          <dt className="whitespace-nowrap text-[11px] font-medium text-muted">Độ phân tán dòng tiền (CSAD)</dt>
-          <dd className="mt-0.5 flex items-baseline justify-between gap-2 whitespace-nowrap">
-            <span className="tnum font-mono text-[18px] font-semibold text-ink">
-              {csad !== null ? csad.toFixed(4) : "—"}
-            </span>
-            <span className="text-[11px] text-secondary">Phân hóa chọn lọc</span>
-          </dd>
-        </div>
-
-        <div className="px-5 py-2.5">
-          <dt className="whitespace-nowrap text-[11px] font-medium text-muted">Độ rộng mã vượt MA20 / MA50</dt>
-          <dd className="mt-0.5 flex items-baseline justify-between gap-2 whitespace-nowrap">
-            <span className="tnum font-mono text-[18px] font-semibold text-gain">
-              {breadthMa20 !== null ? `${breadthMa20.toFixed(1)}%` : "—"}
-            </span>
-            <span className="tnum font-mono text-[11px] text-secondary">
-              {breadthMa50 !== null ? `MA50: ${breadthMa50.toFixed(0)}% (Chuẩn ≥50%)` : "Mốc 50%"}
-            </span>
-          </dd>
-        </div>
-
-        <div className="bg-soft/45 px-5 py-2.5">
-          <dt className="whitespace-nowrap text-[11px] font-medium text-teal">Tỷ lệ Dự trữ Tiền mặt (GARCH)</dt>
-          <dd className="mt-0.5 flex items-baseline justify-between gap-2 whitespace-nowrap">
-            <span className="tnum font-mono text-[18px] font-semibold text-teal">
-              {cashTarget !== null ? `${cashTarget.toFixed(1)}%` : "—"}
-            </span>
-            <span className="tnum font-mono text-[11px] text-secondary">
-              {advDecl !== null ? `Tăng/Giảm: ${advDecl.toFixed(2)}x` : "Đệm an toàn NAV"}
-            </span>
-          </dd>
-        </div>
-      </dl>
 
       {/* Main Visual Row: Left 8 Cols Smooth Spline Chart + Right 4 Cols 0->97.7% Rotating HMM Donut */}
       <div className="grid grid-cols-1 divide-y divide-line lg:grid-cols-12 lg:divide-y-0 lg:divide-x">
@@ -1918,11 +1864,9 @@ function HeroDecisionDossier({
 
 function EquityResearchSection({
   entry,
-  rlEntry,
   ticker,
 }: {
   entry?: RecordData
-  rlEntry?: RecordData
   ticker: string
 }) {
   const metrics = object(entry?.factor_raw_metrics)
@@ -1935,62 +1879,13 @@ function EquityResearchSection({
   const roe = numeric(metrics.roe)
   const de = numeric(metrics.de)
 
-  // Merge Agent 10 Bayes IC weights directly into the F1-F6 rows so F1-F6 NEVER repeats at the bottom of the page
-  const icScores = object(rlEntry?.ic_rolling_scores)
-  const findIc = (prefix: string) => {
-    const match = Object.entries(icScores).find(([k]) => k.toLowerCase().startsWith(prefix.toLowerCase()))
-    return match ? numeric(match[1]) : null
-  }
-
   const factors = [
-    {
-      key: "f1_value",
-      short: "F1 · Giá trị",
-      label: "F1 · Giá trị",
-      score: numeric(metrics.f1_value),
-      ic: findIc("f1"),
-      note: "Định giá P/E, P/B",
-    },
-    {
-      key: "f2_quality",
-      short: "F2 · Chất lượng",
-      label: "F2 · Chất lượng",
-      score: numeric(metrics.f2_quality),
-      ic: findIc("f2"),
-      note: "Hiệu quả ROE & BCTC",
-    },
-    {
-      key: "f3_momentum",
-      short: "F3 · Động lượng",
-      label: "F3 · Động lượng",
-      score: numeric(metrics.f3_momentum),
-      ic: findIc("f3"),
-      note: "Sức mạnh giá RS",
-    },
-    {
-      key: "f4_earnings",
-      short: "F4 · Lợi nhuận",
-      label: "F4 · Lợi nhuận",
-      score: numeric(metrics.f4_earnings),
-      ic: findIc("f4"),
-      note: "Tăng trưởng EPS",
-    },
-    {
-      key: "f5_flow",
-      short: "F5 · Dòng tiền",
-      label: "F5 · Dòng tiền",
-      score: numeric(metrics.f5_flow),
-      ic: findIc("f5"),
-      note: "Hấp thụ tổ chức",
-    },
-    {
-      key: "f6_technical",
-      short: "F6 · Kỹ thuật",
-      label: "F6 · Kỹ thuật",
-      score: numeric(metrics.f6_technical),
-      ic: findIc("f6"),
-      note: "Xu hướng MA20/MA50",
-    },
+    { key: "f1_value", short: "F1 · Giá trị", score: numeric(metrics.f1_value) },
+    { key: "f2_quality", short: "F2 · Chất lượng", score: numeric(metrics.f2_quality) },
+    { key: "f3_momentum", short: "F3 · Động lượng", score: numeric(metrics.f3_momentum) },
+    { key: "f4_earnings", short: "F4 · Lợi nhuận", score: numeric(metrics.f4_earnings) },
+    { key: "f5_flow", short: "F5 · Dòng tiền", score: numeric(metrics.f5_flow) },
+    { key: "f6_technical", short: "F6 · Kỹ thuật", score: numeric(metrics.f6_technical) },
   ]
 
   // SVG 6-Axis Radar Geometry
@@ -2031,8 +1926,8 @@ function EquityResearchSection({
     <Panel flush className="min-w-0 overflow-hidden">
       <div className="border-b border-line px-5 pt-4 pb-1">
         <PanelHead
-          title={`Hồ sơ Định lượng 6 Nhân tố & Trọng số Dự báo IC · ${ticker}`}
-          sub="Kết hợp điểm số nhân tố (thang 0–100) và hệ số dự báo thực nghiệm Bayes IC trong cùng một bảng duy nhất"
+          title={`Hồ sơ Định lượng 6 Nhân tố · ${ticker}`}
+          sub="Điểm tổng hợp CSS, biểu đồ Radar 6 nhân tố và bộ chỉ số định giá cơ bản"
           action={
             <div className="flex items-center gap-2">
               {conviction && <Pill tone={conviction === "A" ? "gain" : "mineral"}>Hạng {conviction}</Pill>}
@@ -2045,9 +1940,9 @@ function EquityResearchSection({
       </div>
 
       {css !== null ? (
-        <div className="grid divide-y divide-line lg:grid-cols-12 lg:divide-y-0 lg:divide-x">
-          {/* Left 5 Cols: Radar + Fundamental Valuation Quartet */}
-          <div className="flex flex-col justify-between p-5 lg:col-span-5">
+        <div className="flex flex-col justify-between p-5">
+          {/* Radar + Fundamental Valuation Quartet */}
+          <div>
             <div className="flex items-center gap-3.5 border-b border-line pb-4">
               <div className="relative h-16 w-16 shrink-0">
                 <svg viewBox="0 0 68 68" className="h-16 w-16 -rotate-90">
@@ -2158,67 +2053,6 @@ function EquityResearchSection({
                 <dd className="tnum mt-0.5 font-mono text-[13px] font-semibold text-ink">{de !== null ? de.toFixed(2) : "—"}</dd>
               </div>
             </dl>
-          </div>
-
-          {/* Right 7 Cols: Unified F1-F6 Factor Score + Bayes IC Weight Rows */}
-          <div className="divide-y divide-line lg:col-span-7">
-            <div className="flex items-center justify-between bg-paper/45 px-5 py-2.5 text-[11px] font-medium text-secondary">
-              <span>Nhân tố định lượng (F1–F6)</span>
-              <div className="flex items-center gap-4">
-                <span>Hệ số dự báo (Bayes IC)</span>
-                <span>Điểm số / 100</span>
-              </div>
-            </div>
-
-            {factors.map((f, idx) => {
-              const s = f.score
-              const pct = s !== null ? Math.min(100, Math.max(0, s)) : null
-              const delta = s !== null ? s - 50 : null
-              return (
-                <div key={f.key} className="px-5 py-3 transition-colors hover:bg-paper/35">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0 truncate">
-                      <span className="text-[13px] font-semibold text-ink">{f.label}</span>
-                      <span className="ml-2 text-xs text-secondary">· {f.note}</span>
-                    </div>
-                    <div className="tnum flex shrink-0 items-center gap-2.5 font-mono whitespace-nowrap">
-                      {f.ic !== null && (
-                        <span
-                          className="rounded border border-line bg-paper px-1.5 py-0.5 text-[11px] font-medium text-teal"
-                          title="Hệ số năng lực dự báo thực nghiệm (Information Coefficient)"
-                        >
-                          IC {f.ic > 0 ? `+${f.ic.toFixed(3)}` : f.ic.toFixed(3)}
-                        </span>
-                      )}
-                      {delta !== null && (
-                        <span
-                          className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
-                            delta >= 0 ? "bg-gain/10 text-gain" : "bg-warning/10 text-warning"
-                          }`}
-                        >
-                          {delta >= 0 ? `+${delta.toFixed(1)}` : delta.toFixed(1)} vs TB
-                        </span>
-                      )}
-                      <span className="w-10 text-right text-[14px] font-bold text-ink">
-                        {s !== null ? s.toFixed(1) : "—"}
-                      </span>
-                    </div>
-                  </div>
-
-                  {pct !== null && (
-                    <div className="relative mt-2 h-1.5 w-full overflow-hidden rounded-full bg-soft">
-                      <div className="absolute top-0 bottom-0 left-1/2 z-10 w-px border-l border-dashed border-ink/40" />
-                      <div
-                        className={`bar-grow-x h-full rounded-full ${
-                          pct >= 65 ? "bg-gain" : pct >= 50 ? "bg-teal" : pct >= 35 ? "bg-warning" : "bg-loss"
-                        }`}
-                        style={{ width: `${pct}%`, animationDelay: `${120 + idx * 70}ms` }}
-                      />
-                    </div>
-                  )}
-                </div>
-              )
-            })}
           </div>
         </div>
       ) : (
@@ -3107,8 +2941,6 @@ function WarRoom({ requestedSymbol }: { requestedSymbol: string }) {
   const udEntry = latestEntry("universe_discovery")
   const eqEntry = matchingEntries("equity_research")[0]?.entry
   const posMonEntry = matchingEntries("position_monitoring")[0]?.entry
-  const allRlLogs = resource.data?.rlEntries || []
-  const rlEntry = latestEntry("reinforcement_learning") || newest(allRlLogs)[0]
   const govEntries = entriesFor("system_governance")
   const govEntry =
     govEntries.find(item => {
@@ -3295,8 +3127,8 @@ function WarRoom({ requestedSymbol }: { requestedSymbol: string }) {
                     />
                   </div>
 
-                  {/* Unified 6-Factor Score + Bayes IC Weight Section (Appears ONLY ONCE) */}
-                  <EquityResearchSection entry={eqEntry} rlEntry={rlEntry} ticker={active} />
+                  {/* 6-Factor Quantitative Radar Section */}
+                  <EquityResearchSection entry={eqEntry} ticker={active} />
 
                   {/* Concise Bull vs. Bear Comparison */}
                   <AdversarialDebateSection thesis={thesis} counter={counter} />

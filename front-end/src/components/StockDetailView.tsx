@@ -6,7 +6,7 @@ import { TradingViewChart } from "@/lib/tv-chart"
 import { Button, Pill, fmt, fmtPct } from "@/components/ui"
 import { marketApi, stockApi, workspaceApi } from "@/lib/api"
 import { useResource } from "@/lib/api/use-resource"
-import { Link, useRouter } from "@/lib/router"
+import { Link, openStockModal, useRouter } from "@/lib/router"
 import { formatSectorName } from "@/lib/sector-weights"
 import { useRealtimeStock } from "@/lib/use-realtime"
 import type { SuperStockItem, SuperStocksPayload } from "@/components/SuperStocksTable"
@@ -277,19 +277,23 @@ export function StockDetailContent({
   }
 
   const resource = useResource(
-    () =>
-      Promise.all([
-        stockApi.quote(symbol).catch(() => null),
-        stockApi.profile(symbol).catch(() => null),
-        marketApi.superStocks(symbol).catch(() => null),
-        stockApi.ohlcv(symbol, { limit: 65, interval: "1D" }).catch(() => null),
-        stockApi.news(symbol).catch(() => null),
+    async () => {
+      const targetSym = symbol
+      const payload = await Promise.all([
+        stockApi.quote(targetSym).catch(() => null),
+        stockApi.profile(targetSym).catch(() => null),
+        marketApi.superStocks(targetSym).catch(() => null),
+        stockApi.ohlcv(targetSym, { limit: 5000, interval: "1D" }).catch(() => null),
+        stockApi.news(targetSym).catch(() => null),
         marketApi.snapshot().catch(() => null),
-      ]),
+      ])
+      return { symbol: targetSym, payload }
+    },
     [symbol]
   )
 
-  const [quoteRes, profileRes, vsaRes, ohlcvRes, newsRes, snapshotRes] = (resource.data || []) as [
+  const matchedPayload = resource.data?.symbol === symbol ? resource.data.payload : undefined
+  const [quoteRes, profileRes, vsaRes, ohlcvRes, newsRes, snapshotRes] = (matchedPayload || []) as [
     ApiStockQuote | null,
     ApiStockProfile | null,
     SuperStocksPayload | null,
@@ -1023,6 +1027,7 @@ export function StockDetailContent({
                   onClose?.()
                   navigate(`/trade?symbol=${symbol}&price=${Math.round(picked)}`)
                 },
+                onSymbolChange: (newSym) => openStockModal(newSym),
               }}
             />
           </div>

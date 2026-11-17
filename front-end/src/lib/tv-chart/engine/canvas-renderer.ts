@@ -226,7 +226,10 @@ export function computeChartMetrics(
   // Visible bar slice
   const visibleCount = Math.max(5, viewport.endIndex - viewport.startIndex + 1)
   const barStep = plotWidth / visibleCount
-  const barWidth = Math.max(1.5, Math.min(22, barStep * 0.72))
+  const barWidth =
+    barStep < 2.2
+      ? Math.max(0.6, barStep * 0.78)
+      : Math.max(1.5, Math.min(22, barStep * 0.72))
 
   const iStart = Math.max(0, Math.floor(viewport.startIndex))
   const iEnd = Math.min(displayCandles.length - 1, Math.ceil(viewport.endIndex))
@@ -483,7 +486,16 @@ export function renderChartFrame(params: RenderFrameParams): RenderFrameMetrics 
     }
 
     ctx.fillStyle = textMuted
-    ctx.fillText(displayCandles[i].label, x, plotBottom + TIME_AXIS_HEIGHT / 2)
+    const candle = displayCandles[i]
+    const timeLabel =
+      iEnd - iStart > 180 && candle.timestamp > 0
+        ? new Intl.DateTimeFormat("vi-VN", {
+            timeZone: "Asia/Ho_Chi_Minh",
+            month: "2-digit",
+            year: "numeric",
+          }).format(new Date(candle.timestamp))
+        : candle.label
+    ctx.fillText(timeLabel, x, plotBottom + TIME_AXIS_HEIGHT / 2)
   }
   ctx.restore()
 

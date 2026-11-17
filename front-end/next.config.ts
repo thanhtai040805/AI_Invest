@@ -11,9 +11,10 @@ const nextConfig: NextConfig = {
       { source: "/auto-pilot", destination: "/ml-fund", permanent: true },
       { source: "/compare", destination: "/portfolio", permanent: true },
       { source: "/correlation", destination: "/portfolio", permanent: true },
-      { source: "/alpha-zoo/:path*", destination: "/backtest", permanent: true },
+      { source: "/alpha-zoo/:path*", destination: "/agent", permanent: true },
       { source: "/runs/:path*", destination: "/agent", permanent: true },
-      { source: "/dashboard/market-focus", destination: "/dashboard", permanent: true },
+      { source: "/dashboard", destination: "/agent", permanent: false },
+      { source: "/dashboard/:path*", destination: "/agent", permanent: false },
     ];
   },
 };

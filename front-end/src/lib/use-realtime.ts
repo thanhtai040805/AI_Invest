@@ -51,24 +51,42 @@ export interface RealtimeTrade {
 }
 
 export function useRealtimeStock(symbol: string, initialStock?: Stock) {
+  const activeSym = symbol.trim().toUpperCase()
   const [stock, setStock] = useState<Stock | undefined>(initialStock)
   const [orderbook, setOrderbook] = useState<RealtimeStockOrderBook | null>(null)
-  const [trades, setTrades] = useState<RealtimeTrade[]>([])
-  const [isLive, setIsLive] = useState(false)
-  const [lastTickAt, setLastTickAt] = useState<Date | null>(null)
-  const [flash, setFlash] = useState<"gain" | "loss" | null>(null)
+  const [tradesState, setTradesState] = useState<{ symbol: string; items: RealtimeTrade[] }>({
+    symbol: "",
+    items: [],
+  })
+  const [liveState, setLiveState] = useState<{
+    symbol: string
+    isLive: boolean
+    lastTickAt: Date | null
+  }>({
+    symbol: "",
+    isLive: false,
+    lastTickAt: null,
+  })
+  const [flashState, setFlashState] = useState<{ symbol: string; dir: "gain" | "loss" | null }>({
+    symbol: "",
+    dir: null,
+  })
   const flashTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const hasRealtimePriceRef = useRef(false)
   const lastRealtimeMessageAt = useRef(0)
 
   useEffect(() => {
     hasRealtimePriceRef.current = false
-  }, [symbol])
+    lastRealtimeMessageAt.current = 0
+  }, [activeSym])
 
   useEffect(() => {
     if (initialStock) {
       setStock((prev) => {
-        if (!prev) return initialStock
+        const initSym = initialStock.symbol.trim().toUpperCase()
+        if (!prev || prev.symbol.trim().toUpperCase() !== initSym) {
+          return initialStock
+        }
         const price = hasRealtimePriceRef.current ? (prev.price ?? initialStock.price) : initialStock.price
         const changePct = hasRealtimePriceRef.current ? prev.changePct : initialStock.changePct
         const volume = hasRealtimePriceRef.current ? (prev.volume ?? initialStock.volume) : initialStock.volume
@@ -97,6 +115,7 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
       })
     }
   }, [
+    initialStock,
     initialStock?.symbol,
     initialStock?.price,
     initialStock?.changePct,
@@ -108,38 +127,42 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
   ])
 
   useEffect(() => {
-    if (!symbol) return
+    if (!activeSym) return
 
-    const sym = symbol.toUpperCase()
+    const sym = activeSym
     const socket = getSocket()
 
     function onConnect() {
-      setIsLive(false)
+      setLiveState({ symbol: sym, isLive: false, lastTickAt: null })
       lastRealtimeMessageAt.current = 0
     }
 
     function onDisconnect() {
-      setIsLive(false)
+      setLiveState((prev) => ({
+        symbol: sym,
+        isLive: false,
+        lastTickAt: prev.symbol === sym ? prev.lastTickAt : null,
+      }))
     }
 
     function onPrice(data: PriceTick) {
       if (!data) return
       if (!data.isSnapshot) {
         hasRealtimePriceRef.current = true
-        setIsLive(true)
-        lastRealtimeMessageAt.current = Date.now()
-        setLastTickAt(new Date())
+        const now = new Date()
+        lastRealtimeMessageAt.current = now.getTime()
+        setLiveState({ symbol: sym, isLive: true, lastTickAt: now })
       }
 
       setStock((prev) => {
-        if (!prev) return prev
+        if (!prev || prev.symbol.trim().toUpperCase() !== sym) return prev
         const newPrice = Number(data.price ?? data.close ?? prev.price)
         const oldPrice = Number(prev.price)
 
         if (oldPrice && newPrice !== oldPrice) {
           if (flashTimeoutRef.current) clearTimeout(flashTimeoutRef.current)
-          setFlash(newPrice > oldPrice ? "gain" : "loss")
-          flashTimeoutRef.current = setTimeout(() => setFlash(null), 1000)
+          setFlashState({ symbol: sym, dir: newPrice > oldPrice ? "gain" : "loss" })
+          flashTimeoutRef.current = setTimeout(() => setFlashState({ symbol: sym, dir: null }), 1000)
         }
 
         const rawRef = data.ref !== undefined ? data.ref : data.prevClose
@@ -174,8 +197,12 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
       if (data.source !== "dnse-ws" || !Number.isFinite(receivedAt) || !Array.isArray(data.bids) || !Array.isArray(data.asks)) return
       const stale = data.stale === true || !receivedAt || age < -5_000 || age >= 15_000
       if (!data.isSnapshot && !stale) {
-        setIsLive(true)
         lastRealtimeMessageAt.current = Date.now()
+        setLiveState((prev) => ({
+          symbol: sym,
+          isLive: true,
+          lastTickAt: prev.symbol === sym ? prev.lastTickAt : new Date(),
+        }))
       }
       setOrderbook({
         symbol: sym,
@@ -189,18 +216,25 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
     function onTrade(data: TradeTick) {
       if (!data) return
       if (!data.isSnapshot) {
-        setIsLive(true)
         lastRealtimeMessageAt.current = Date.now()
+        setLiveState((prev) => ({
+          symbol: sym,
+          isLive: true,
+          lastTickAt: prev.symbol === sym ? prev.lastTickAt : new Date(),
+        }))
       }
-      setTrades((prev) => [
-        {
-          time: String(data.time || new Date().toLocaleTimeString("vi-VN")),
-          price: Number(data.price ?? 0),
-          volume: Number(data.matchVolume ?? data.volume ?? 0),
-          side: data.side,
-        },
-        ...prev.slice(0, 19),
-      ])
+      setTradesState((prev) => ({
+        symbol: sym,
+        items: [
+          {
+            time: String(data.time || new Date().toLocaleTimeString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })),
+            price: Number(data.price ?? 0),
+            volume: Number(data.matchVolume ?? data.volume ?? 0),
+            side: data.side,
+          },
+          ...(prev.symbol === sym ? prev.items.slice(0, 19) : []),
+        ],
+      }))
     }
 
     const releaseStock = retainStock(sym)
@@ -214,7 +248,13 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
     socket.on(`stock:orderbook:${sym}`, onOrderBook)
     socket.on(`stock:trades:${sym}`, onTrade)
     const freshnessTimer = window.setInterval(() => {
-      if (lastRealtimeMessageAt.current && Date.now() - lastRealtimeMessageAt.current > 30_000) setIsLive(false)
+      if (lastRealtimeMessageAt.current && Date.now() - lastRealtimeMessageAt.current > 30_000) {
+        setLiveState((prev) => ({
+          symbol: sym,
+          isLive: false,
+          lastTickAt: prev.symbol === sym ? prev.lastTickAt : null,
+        }))
+      }
       setOrderbook((current) => {
         if (!current) return current
         const age = Date.now() - current.receivedAt
@@ -233,9 +273,27 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
       socket.off(`stock:trades:${sym}`, onTrade)
       if (flashTimeoutRef.current) clearTimeout(flashTimeoutRef.current)
     }
-  }, [symbol])
+  }, [activeSym])
 
-  return { stock, orderbook: orderbook?.symbol === symbol.trim().toUpperCase() ? orderbook : null, trades, isLive, lastTickAt, flash }
+  const matchedStock =
+    stock?.symbol?.trim().toUpperCase() === activeSym
+      ? stock
+      : initialStock?.symbol?.trim().toUpperCase() === activeSym
+        ? initialStock
+        : undefined
+  const matchedOrderbook = orderbook?.symbol === activeSym ? orderbook : null
+  const matchedTrades = tradesState.symbol === activeSym ? tradesState.items : []
+  const matchedIsLive = liveState.symbol === activeSym ? liveState.isLive : false
+  const matchedLastTickAt = liveState.symbol === activeSym ? liveState.lastTickAt : null
+
+  return {
+    stock: matchedStock,
+    orderbook: matchedOrderbook,
+    trades: matchedTrades,
+    isLive: matchedIsLive,
+    lastTickAt: matchedLastTickAt,
+    flash: flashState.symbol === activeSym ? flashState.dir : null,
+  }
 }
 
 export function useRealtimeMarket(initialIndices?: {

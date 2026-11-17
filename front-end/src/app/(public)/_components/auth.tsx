@@ -1781,9 +1781,6 @@ export function GoogleAuthButton({
                 <span className="text-[10px]" aria-hidden="true">▾</span>
               </div>
               <div className="flex items-center gap-4">
-                <Link to="/help" className="hover:text-ink">
-                  Trợ giúp
-                </Link>
                 <Link to="/privacy" className="hover:text-ink">
                   Quyền riêng tư
                 </Link>
@@ -2261,19 +2258,21 @@ export function extractAuthError(
 }
 
 export function getSafeRedirectTarget(rawNext: string | null | undefined): string {
-  if (!rawNext || typeof rawNext !== "string") return "/dashboard"
+  if (!rawNext || typeof rawNext !== "string") return "/agent"
   const trimmed = rawNext.trim()
   if (!trimmed.startsWith("/") || trimmed.startsWith("//") || trimmed.includes("\\")) {
-    return "/dashboard"
+    return "/agent"
   }
   const lower = trimmed.toLowerCase()
+  const removedRoutes = ["/dashboard", "/markets", "/watchlist", "/backtest", "/settings", "/help"]
   if (
     lower.startsWith("/login") ||
     lower.startsWith("/signup") ||
     lower.startsWith("/register") ||
-    lower.startsWith("/auth")
+    lower.startsWith("/auth") ||
+    removedRoutes.some((p) => lower === p || lower.startsWith(`${p}/`) || lower.startsWith(`${p}?`))
   ) {
-    return "/dashboard"
+    return "/agent"
   }
   return trimmed
 }

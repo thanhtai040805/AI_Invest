@@ -160,7 +160,7 @@ router.get('/:symbol/profile', (req, res, next) => {
   );
 });
 
-async function dbStockOHLCV(symbol: string, limit = 300) {
+async function dbStockOHLCV(symbol: string, limit = 1500) {
   const isIndex = isIndexSymbol(symbol);
   if (isIndex) {
     const candidates = indexTickerCandidates(symbol);
@@ -225,8 +225,8 @@ router.get('/:symbol/ohlcv', (req, res, next) => {
   const end = req.query.end as string | undefined;
   const requestedLimit = typeof req.query.limit === 'string' ? Number(req.query.limit) : NaN;
   const limit = Number.isSafeInteger(requestedLimit) && requestedLimit > 0
-    ? Math.min(requestedLimit, 1000)
-    : 300;
+    ? Math.min(requestedLimit, 5000)
+    : 1500;
   const cacheKey = `stock:v2:${symbol}:ohlcv:${interval}:${start ?? ''}:${end ?? ''}:${limit}`;
 
   return handle(req, res, next, () =>

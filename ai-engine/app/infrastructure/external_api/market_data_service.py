@@ -41,44 +41,55 @@ def quote_with_freshness(quote: Dict) -> Dict:
     return {**quote, "stale": quote.get("stale", False) or stale}
 
 
+def _fetch_ohlcv_rows(cur: Any, symbol: str, start: Optional[str], end: Optional[str], limit: Optional[int]) -> List[Dict]:
+    where = "symbol = %s"
+    params: list = [symbol]
+    if start:
+        where += " AND time >= %s::timestamptz"
+        params.append(start)
+    if end:
+        where += " AND time <= %s::timestamptz"
+        params.append(end)
+    query = f"SELECT time, open, high, low, close, volume FROM ohlcv WHERE {where} ORDER BY time DESC"
+    if limit is not None:
+        query += " LIMIT %s"
+        params.append(limit)
+    cur.execute(query, params)
+    rows = []
+    for r in cur.fetchall():
+        ts = r[0]
+        ts_str = ts.strftime("%Y-%m-%dT%H:%M:%S%z") if isinstance(ts, datetime) else str(ts)[:10]
+        rows.append({
+            "time": ts_str,
+            "open": float(r[1]),
+            "high": float(r[2]),
+            "low": float(r[3]),
+            "close": float(r[4]),
+            "volume": int(r[5]),
+        })
+    rows.reverse()
+    return rows
+
+
 def _query_pg_ohlcv(symbol: str, start: Optional[str] = None, end: Optional[str] = None, limit: Optional[int] = None) -> List[Dict]:
-    """Query daily OHLCV from PostgreSQL."""
+    """Query daily OHLCV from PostgreSQL via connection pool with direct fallback."""
+    try:
+        from app.infrastructure.database.pg_pool import get_cursor
+        with get_cursor() as cur:
+            return _fetch_ohlcv_rows(cur, symbol, start, end, limit)
+    except Exception:
+        pass
     try:
         import psycopg2
         conn = psycopg2.connect(_PG_URL)
-        cur = conn.cursor()
-        where = "symbol = %s"
-        params: list = [symbol]
-        if start:
-            where += " AND time >= %s::timestamptz"
-            params.append(start)
-        if end:
-            where += " AND time <= %s::timestamptz"
-            params.append(end)
-        query = f"SELECT time, open, high, low, close, volume FROM ohlcv WHERE {where} ORDER BY time DESC"
-        if limit is not None:
-            query += " LIMIT %s"
-            params.append(limit)
-        cur.execute(query, params)
-        rows = []
-        for r in cur.fetchall():
-            ts = r[0]
-            if isinstance(ts, datetime):
-                ts_str = ts.strftime("%Y-%m-%dT%H:%M:%S%z")
-            else:
-                ts_str = str(ts)[:10]
-            rows.append({
-                "time": ts_str,
-                "open": float(r[1]),
-                "high": float(r[2]),
-                "low": float(r[3]),
-                "close": float(r[4]),
-                "volume": int(r[5]),
-            })
-        rows.reverse()
-        cur.close()
-        conn.close()
-        return rows
+        try:
+            cur = conn.cursor()
+            try:
+                return _fetch_ohlcv_rows(cur, symbol, start, end, limit)
+            finally:
+                cur.close()
+        finally:
+            conn.close()
     except Exception:
         return []
 
@@ -331,7 +342,7 @@ class MarketDataService:
         
         RESOLUTION_MAP = {
             "1m": "1", "3m": "3", "5m": "5", "15m": "15", "30m": "30",
-            "1H": "1H", "1h": "1H",
+            "1H": "1H", "1h": "1H", "4H": "1H", "4h": "1H",
             "1D": "1D", "1d": "1D", "1W": "1W", "1w": "1W",
             "1": "1", "3": "3", "5": "5", "15": "15", "30": "30",
         }
