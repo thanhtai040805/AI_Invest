@@ -20,6 +20,8 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
+from app.core.time_utils import today_vn
+
 logger = logging.getLogger("ai_engine.services.document_selector")
 
 
@@ -405,8 +407,7 @@ class ActiveDocumentSelector:
                 row_q = cur.fetchone()
             # A published date is not enough: some sources publish a future
             # quarter label early. Keep only a real quarter at or before today.
-            from datetime import date
-            today = date.today()
+            today = today_vn()
             if row_q:
                 parsed_year, parsed_quarter = _row_period(row_q, "LATEST_QUARTER")
                 current_quarter = (today.month + 2) // 3
@@ -435,7 +436,7 @@ class ActiveDocumentSelector:
                 """, (ticker, annual_date, annual_id))
                 candidates = []
                 fallback_candidates = []
-                today = date.today()
+                today = today_vn()
                 current_quarter = (today.month + 2) // 3
                 for candidate in cur.fetchall():
                     title = _ascii_title(str(candidate.get("title") or ""))

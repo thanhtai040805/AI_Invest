@@ -73,6 +73,7 @@ export interface EnrichedOrderView {
   lockedShares: number;
   status: string;
   createdAt: Date | string;
+  executedAt: Date | string | null;
   fills: FillSlice[];
   stockName: string;
   sector: string | null;
@@ -185,9 +186,32 @@ async function writeOrderDecisionContext(
   );
 }
 
+async function fetchExecutionTimesByUser(
+  executor: { $queryRawUnsafe: typeof prisma.$queryRawUnsafe },
+  userId: string,
+): Promise<Map<string, Date | string>> {
+  const map = new Map<string, Date | string>();
+  if (!isRealPrismaClient()) return map;
+  try {
+    const rows = await executor.$queryRawUnsafe<Array<{ id: string; executed_at: Date | string | null }>>(
+      'SELECT e.order_id::text AS id, MAX(e.executed_at) AS executed_at FROM order_executions e JOIN "orders" o ON o.id = e.order_id::text WHERE o.user_id = $1 GROUP BY e.order_id',
+      userId,
+    );
+    for (const row of rows) {
+      if (row.id && row.executed_at != null) {
+        map.set(String(row.id), row.executed_at);
+      }
+    }
+  } catch {
+    // Graceful fallback if table unavailable in mock DB
+  }
+  return map;
+}
+
 function enrichOrderRecord(
   ord: Record<string, any>,
   explicitCtx?: OrderDecisionContext,
+  explicitExecutedAt?: Date | string | null,
 ): EnrichedOrderView {
   const ctx = explicitCtx ?? readOrderContext(ord.decisionContext ?? ord.decision_context);
   const status = String(ord.status ?? 'FILLED');
@@ -216,6 +240,11 @@ function enrichOrderRecord(
   const lockedCash = OPEN_ORDER_STATUSES.has(status) ? Number(ctx.lockedCash ?? 0) : 0;
   const lockedShares = OPEN_ORDER_STATUSES.has(status) ? Number(ctx.lockedShares ?? 0) : 0;
 
+  const fills = Array.isArray(ctx.fills) ? ctx.fills : [];
+  const executedAt =
+    explicitExecutedAt ??
+    (fills.length > 0 ? fills[fills.length - 1].matchedAt ?? null : null);
+
   return {
     id: String(ord.id ?? ''),
     userId: String(ord.userId ?? ord.user_id ?? ''),
@@ -232,23 +261,33 @@ function enrichOrderRecord(
     lockedShares,
     status,
     createdAt: ord.createdAt ?? ord.created_at ?? new Date(),
-    fills: Array.isArray(ctx.fills) ? ctx.fills : [],
+    executedAt,
+    fills,
     stockName: String(ord.stock?.name ?? ord.stockName ?? ord.symbol ?? ''),
     sector: ord.stock?.sector ?? ord.sector ?? null,
     exchange: String(ord.stock?.exchange ?? ctx.exchange ?? ord.exchange ?? 'HOSE'),
   };
 }
 
-function computeT2CutoffDate(now = new Date()): Date {
-  const cursor = new Date(now.getTime());
+export function computeT2CutoffDate(now = new Date()): Date {
+  const VN_OFFSET_MS = 7 * 3_600_000;
+  const vnNow = new Date(now.getTime() + VN_OFFSET_MS);
+  const vnDow = vnNow.getUTCDay();
+  const vnMinutes = vnNow.getUTCHours() * 60 + vnNow.getUTCMinutes();
+  const isSettledToday = vnDow !== 0 && vnDow !== 6 && vnMinutes >= 11 * 60 + 30;
+
+  const cursor = new Date(Date.UTC(vnNow.getUTCFullYear(), vnNow.getUTCMonth(), vnNow.getUTCDate()));
   let businessDaysBack = 0;
   while (businessDaysBack < 2) {
     cursor.setUTCDate(cursor.getUTCDate() - 1);
     const dow = cursor.getUTCDay();
     if (dow !== 0 && dow !== 6) businessDaysBack++;
   }
-  cursor.setUTCHours(5, 0, 0, 0);
-  return cursor;
+  if (isSettledToday) {
+    // T-2 shares settle at 11:30 ICT today; buys strictly after T-2 remain unsettled.
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return new Date(cursor.getTime() - VN_OFFSET_MS);
 }
 
 export async function ensureRestingOrdersHydrated(): Promise<void> {
@@ -495,11 +534,14 @@ export async function getSnapshot(userId: string) {
     if (!user) throw new PortfolioError('Portfolio account not found');
     const [positions, receipts, history, orders, ctxMap] = await Promise.all([
       tx.position.findMany({ where: { userId, quantity: { gt: 0 } }, include: { stock: true } }),
-      tx.$queryRawUnsafe<ExecutionReceipt[]>(`SELECT o.symbol, o.side, e.shares,
-        e.gross_value, e.brokerage_fee, e.transfer_tax, e.cash_delta
+      tx.$queryRawUnsafe<Array<ExecutionReceipt & { order_id?: string; executed_at?: Date | string | null }>>(
+        `SELECT o.id AS order_id, o.symbol, o.side, e.shares,
+        e.gross_value, e.brokerage_fee, e.transfer_tax, e.cash_delta, e.executed_at
         FROM orders o LEFT JOIN order_executions e ON e.order_id::text=o.id
         WHERE o.user_id=$1 AND (e.order_id IS NOT NULL OR o.status IN ('FILLED','FILLED_REPLAY','EXECUTED','PARTIALLY_EXECUTED'))
-        ORDER BY e.executed_at NULLS LAST, o.created_at, o.id`, userId),
+        ORDER BY e.executed_at NULLS LAST, o.created_at, o.id`,
+        userId,
+      ),
       tx.$queryRawUnsafe<NavPoint[]>(`SELECT to_char(date,'YYYY-MM-DD') AS date, total_nav::float AS value
         FROM portfolio_nav_history WHERE account_id=$1 AND date <= $2::date ORDER BY date`, userId, today),
       tx.order.findMany({
@@ -513,8 +555,14 @@ export async function getSnapshot(userId: string) {
     return { cash: Number(user.cashBalance), positions, receipts, history, orders, ctxMap };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
 
+  const execTimeByOrderId = new Map<string, Date | string>();
+  for (const r of state.receipts) {
+    if (r.order_id && r.executed_at != null) {
+      execTimeByOrderId.set(String(r.order_id), r.executed_at);
+    }
+  }
   const enrichedOrders: EnrichedOrderView[] = state.orders.map((ord: Record<string, any>) =>
-    enrichOrderRecord(ord, state.ctxMap.get(String(ord.id))),
+    enrichOrderRecord(ord, state.ctxMap.get(String(ord.id)), execTimeByOrderId.get(String(ord.id))),
   );
   let lockedCash = 0;
   const lockedSellBySymbol = new Map<string, number>();
@@ -537,8 +585,8 @@ export async function getSnapshot(userId: string) {
         lockedSellBySymbol.set(sym, (lockedSellBySymbol.get(sym) ?? 0) + lockQty);
       }
     }
-    if (ord.side === 'BUY' && ord.filledQuantity > 0 && ord.createdAt) {
-      const created = new Date(ord.createdAt);
+    if (ord.side === 'BUY' && ord.filledQuantity > 0 && (ord.executedAt || ord.createdAt)) {
+      const created = new Date(ord.executedAt ?? ord.createdAt);
       if (!Number.isNaN(created.getTime()) && created >= t2Cutoff) {
         unsettledBuyBySymbol.set(sym, (unsettledBuyBySymbol.get(sym) ?? 0) + ord.filledQuantity);
       }
@@ -1107,7 +1155,7 @@ export async function getPerformance(userId: string) { return (await getSnapshot
 
 export async function getOrders(userId: string) {
   await ensureRestingOrdersHydrated();
-  const [rows, ctxMap] = await Promise.all([
+  const [rows, ctxMap, execMap] = await Promise.all([
     prisma.order.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
@@ -1115,8 +1163,11 @@ export async function getOrders(userId: string) {
       include: { stock: { select: { name: true, sector: true, exchange: true } } },
     }),
     fetchDecisionContextsByUser(prisma, userId),
+    fetchExecutionTimesByUser(prisma, userId),
   ]);
-  return rows.map((r: Record<string, any>) => enrichOrderRecord(r, ctxMap.get(String(r.id))));
+  return rows.map((r: Record<string, any>) =>
+    enrichOrderRecord(r, ctxMap.get(String(r.id)), execMap.get(String(r.id))),
+  );
 }
 
 export async function getRiskMetrics(userId: string) { return (await getSnapshot(userId)).risks; }

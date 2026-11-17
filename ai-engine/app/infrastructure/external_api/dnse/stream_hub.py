@@ -16,7 +16,7 @@ import json
 import math
 import threading
 import time
-from datetime import datetime, time as dt_time
+from datetime import datetime, time as dt_time, timezone
 from typing import Any, Dict, List, Optional, Set
 
 from app.infrastructure.external_api.dnse.websocket.client import TradingClient
@@ -651,7 +651,7 @@ class DnseStreamHub:
             "volume": int(getattr(data, "volume", 0) or 0),
             "resolution": getattr(data, "resolution", "1"),
             "timestamp": getattr(data, "time", None),
-            "lastUpdate": datetime.now().isoformat(),
+            "lastUpdate": datetime.now(timezone.utc).isoformat(),
         }
 
     def _map_market_index(self, data: Any) -> Dict[str, Any]:
@@ -673,7 +673,7 @@ class DnseStreamHub:
             "tradingValueRaw": optional_number(getattr(data, "grossTradeAmount", None)),
             "lastUpdate": getattr(data, "transactTime", None)
             or getattr(data, "time", None)
-            or datetime.now().isoformat(),
+            or datetime.now(timezone.utc).isoformat(),
             "receivedAt": getattr(data, "receivedAt", None),
         }
 
@@ -696,7 +696,7 @@ class DnseStreamHub:
             "netValue": buy_val - sell_val,
             "roomLimit": room_limit,
             "roomRemaining": room_remaining,
-            "lastUpdate": getattr(data, "transactTime", None) or datetime.now().isoformat(),
+            "lastUpdate": getattr(data, "transactTime", None) or datetime.now(timezone.utc).isoformat(),
         }
 
     def _map_sec_def(self, data: Any) -> Dict[str, Any]:
@@ -722,7 +722,7 @@ class DnseStreamHub:
             "expectedPrice": to_vnd_price(getattr(data, "expected_price", 0)),
             "matchedVolume": int(getattr(data, "matched_volume", 0) or 0),
             "receivedAt": getattr(data, "receivedAt", None),
-            "lastUpdate": datetime.now().isoformat(),
+            "lastUpdate": datetime.now(timezone.utc).isoformat(),
         }
         validated = validate_payload(ValidatedExpectedPrice, payload)
         if validated is None:
@@ -900,7 +900,7 @@ class DnseStreamHub:
             "orderId": getattr(data, "order_id", "") or "",
             "matchType": getattr(data, "match_type", "") or "",
             "receivedAt": getattr(data, "receivedAt", None),
-            "lastUpdate": datetime.now().isoformat(),
+            "lastUpdate": datetime.now(timezone.utc).isoformat(),
         }
         validated = validate_payload(ValidatedTradeExtra, payload)
         if validated is None:
@@ -953,7 +953,7 @@ class DnseStreamHub:
             if self._estimated_vn30:
                 indices.append(self._estimated_vn30)
         if indices:
-            payload = {"indices": indices, "lastUpdate": datetime.now().isoformat()}
+            payload = {"indices": indices, "lastUpdate": datetime.now(timezone.utc).isoformat()}
             set_cache("market:indices", payload, 15)
             publish_json("indices", payload)
 
@@ -990,7 +990,7 @@ class DnseStreamHub:
             "unknown": total - len(changes),
             "total": total,
             "coverage": len(changes) / total if total else 0,
-            "lastUpdate": datetime.now().isoformat(),
+            "lastUpdate": datetime.now(timezone.utc).isoformat(),
         }
         set_cache("market:breadth", payload, 5)
         publish_json("breadth", payload)
@@ -1012,7 +1012,7 @@ class DnseStreamHub:
         if not stocks:
             return
         sectors = build_sector_heatmap(stocks, include_live_count=True)
-        payload = {"sectors": sectors, "lastUpdate": datetime.now().isoformat()}
+        payload = {"sectors": sectors, "lastUpdate": datetime.now(timezone.utc).isoformat()}
         set_cache("market:heatmap", payload, 10)
         publish_json("heatmap", payload)
 
@@ -1076,7 +1076,7 @@ class DnseStreamHub:
                         clients.append(client)
                         applied_by_connection.append({})
                         def on_error(error, connection=index + 1):
-                            detail = {"connection": connection, "error": str(error), "at": datetime.now().isoformat()}
+                            detail = {"connection": connection, "error": str(error), "at": datetime.now(timezone.utc).isoformat()}
                             with self._lock:
                                 self._subscription_errors.append(detail)
                                 self._subscription_errors = self._subscription_errors[-20:]

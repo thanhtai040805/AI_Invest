@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from app.adapters.postgres_adapter import PostgresAdapter
+from app.core.time_utils import now_utc_naive, today_vn
 
 logger = logging.getLogger(__name__)
 
@@ -503,7 +504,7 @@ class MarketDataRepository:
             pass
 
         return {
-            "date": date.today().isoformat(),
+            "date": today_vn().isoformat(),
             "regime_label": "BULL_MARKET",
             "breadth_ma50": 0.65,
             "breadth_ma200": 0.60,
@@ -524,8 +525,8 @@ class MarketDataRepository:
                 market_volume_sma20_ratio = EXCLUDED.market_volume_sma20_ratio,
                 net_foreign_flow_bil = EXCLUDED.net_foreign_flow_bil
         """
-        now = datetime.now()
-        target_date = regime_data.get("date", date.today())
+        now = now_utc_naive()
+        target_date = regime_data.get("date", today_vn())
         try:
             self.storage.execute(
                 query,

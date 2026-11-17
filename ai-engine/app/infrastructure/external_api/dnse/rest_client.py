@@ -67,24 +67,23 @@ class DnseRestClient:
         Supports resolutions: 1, 5, 15, 30, 1H, 1D.
         Falls back to DNSE REST API (not WebSocket/Redis).
         """
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timedelta
+        from app.core.time_utils import VN_TZ, parse_vn_bound
         from app.infrastructure.external_api.dnse.intraday_tool import get_intraday_tool
 
         tool = get_intraday_tool()
-        TZ_VN = timezone(timedelta(hours=7))
-
-        now = datetime.now(TZ_VN)
+        now = datetime.now(VN_TZ)
         from_dt: Optional[datetime] = None
         to_dt: Optional[datetime] = None
 
         if start:
             try:
-                from_dt = datetime.fromisoformat(start.replace("Z", "+00:00")).astimezone(TZ_VN)
+                from_dt = parse_vn_bound(start, is_end=False)
             except ValueError:
                 from_dt = None
         if end:
             try:
-                to_dt = datetime.fromisoformat(end.replace("Z", "+00:00")).astimezone(TZ_VN)
+                to_dt = parse_vn_bound(end, is_end=True)
             except ValueError:
                 to_dt = None
 

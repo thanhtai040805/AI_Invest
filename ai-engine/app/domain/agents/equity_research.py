@@ -17,6 +17,7 @@ from typing import Any, Dict, Optional
 import pandas as pd
 
 from app.core.base_agent import BaseAgent
+from app.core.time_utils import coerce_vn_date, today_vn
 from app.domain.rules.scoring import CSSScoringEngine
 from app.domain.services.factor_service import FactorService
 from app.domain.repositories.intelligence_repository import IntelligenceRepository
@@ -75,16 +76,11 @@ class EquityResearchAgent(BaseAgent):
         regime_str = event_data.get("current_regime", "BULL_TRENDING")
         policy_weights = event_data.get("policy_weights")
 
-        target_date_raw = event_data.get("target_date") or event_data.get("date") or date.today()
-        if isinstance(target_date_raw, str):
-            try:
-                target_d = date.fromisoformat(target_date_raw)
-            except Exception:
-                target_d = date.today()
-        elif isinstance(target_date_raw, datetime):
-            target_d = target_date_raw.date()
-        else:
-            target_d = target_date_raw
+        target_date_raw = event_data.get("target_date") or event_data.get("date") or today_vn()
+        try:
+            target_d = coerce_vn_date(target_date_raw, default=today_vn())
+        except Exception:
+            target_d = today_vn()
         market_data_date = event_data.get("market_data_date") or target_d
         if isinstance(market_data_date, str):
             market_data_date = date.fromisoformat(market_data_date[:10])

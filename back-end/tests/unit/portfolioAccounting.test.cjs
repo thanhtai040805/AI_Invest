@@ -92,3 +92,34 @@ test('risk metrics use aligned daily NAV; alpha/beta do not invent benchmark obs
   assert.equal(portfolioRisk([{ date: '2026-09-21', value: 100 }, { date: '2026-09-25', value: 90 }], []).observations, 0);
   assert.equal(portfolioRisk([{ date: '2026-09-21', value: 100 }, { date: '2026-09-25', value: 90 }], []).maxDrawdown, 10);
 });
+
+test('computeT2CutoffDate uses Asia/Ho_Chi_Minh trading day and 11:30 ICT settlement boundary', () => {
+  const dbPath = require.resolve('../../dist/config/database');
+  if (!require.cache[dbPath]) {
+    require.cache[dbPath] = {
+      id: dbPath,
+      filename: dbPath,
+      loaded: true,
+      exports: { __esModule: true, default: {} },
+    };
+  }
+  const { computeT2CutoffDate } = require('../../dist/services/portfolio.service');
+
+  // Tuesday 10:00 ICT (before 11:30 ICT): Friday 10:00 ICT buy stays unsettled/locked
+  const tueMorningCutoff = computeT2CutoffDate(new Date('2026-11-17T03:00:00.000Z'));
+  assert.equal(tueMorningCutoff.toISOString(), '2026-11-12T17:00:00.000Z');
+  const fridayFill = new Date('2026-11-13T03:00:00.000Z');
+  assert.equal(fridayFill >= tueMorningCutoff, true);
+
+  // Tuesday 13:00 ICT (after 11:30 ICT): Friday buy settles, Monday buy remains locked
+  const tueAfternoonCutoff = computeT2CutoffDate(new Date('2026-11-17T06:00:00.000Z'));
+  assert.equal(tueAfternoonCutoff.toISOString(), '2026-11-13T17:00:00.000Z');
+  assert.equal(fridayFill >= tueAfternoonCutoff, false);
+  const mondayFill = new Date('2026-11-16T02:30:00.000Z');
+  assert.equal(mondayFill >= tueAfternoonCutoff, true);
+
+  // Wednesday 01:00 ICT (18:00 UTC prev day): host/UTC midnight crossing resolves to Wednesday ICT
+  const wedEarlyCutoff = computeT2CutoffDate(new Date('2026-11-17T18:00:00.000Z'));
+  assert.equal(wedEarlyCutoff.toISOString(), '2026-11-15T17:00:00.000Z');
+});
+

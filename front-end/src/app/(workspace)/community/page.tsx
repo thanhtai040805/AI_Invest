@@ -135,7 +135,7 @@ export default function Community() {
         role: r.authorId?.includes("ai") ? "AI" : "Thành viên",
         verified: false,
         ai: Boolean(r.authorId?.includes("ai")),
-        time: r.createdAt ? new Date(r.createdAt).toLocaleString("vi-VN", { dateStyle: "short", timeStyle: "short" }) : "Chưa có thời gian",
+        time: r.createdAt ? new Date(r.createdAt).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh", dateStyle: "short", timeStyle: "short" }) : "Chưa có thời gian",
         body: String(r.content || ""),
         cashtags: r.taggedSymbols ? (Array.isArray(r.taggedSymbols) ? r.taggedSymbols : String(r.taggedSymbols).split(",")).map((s: string) => s.trim()).filter(Boolean) : [],
         likes: Number(r.likesCount || r._count?.reactions || 0),

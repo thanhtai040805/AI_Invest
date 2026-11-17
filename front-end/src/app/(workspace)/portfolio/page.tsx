@@ -44,6 +44,7 @@ interface NormalizedOrder {
   totalValue: number
   status: string
   createdAt: string
+  executedAt?: string | null
 }
 
 interface SectorAttributionItem {
@@ -228,6 +229,17 @@ const fmtVietnamDateTime = (iso: string): string => {
   return `${datePart} · ${timePart}`
 }
 
+function resolveOrderStatusPill(status: string): { label: string; tone: string } {
+  const s = String(status || "").toUpperCase()
+  if (s === "FILLED" || s === "EXECUTED") return { label: "Đã khớp", tone: "gain" }
+  if (s === "FILLED_REPLAY") return { label: "Đã khớp lịch sử", tone: "teal" }
+  if (s === "PARTIALLY_FILLED" || s === "PARTIALLY_EXECUTED") return { label: "Khớp một phần", tone: "gold" }
+  if (s === "PENDING" || s === "PENDING_SHADOW" || s === "PENDING_REPLAY") return { label: "Chờ khớp", tone: "warning" }
+  if (s === "EXPIRED" || s === "EXPIRED_REPLAY") return { label: "Hết hiệu lực", tone: "neutral" }
+  if (s === "CANCELLED" || s === "REJECTED") return { label: "Đã hủy", tone: "loss" }
+  return { label: status || "—", tone: "neutral" }
+}
+
 function resolveSectorCode(symbol: string, rawSector?: unknown): string {
   const cleaned = String(rawSector ?? "").trim().toUpperCase()
   if (cleaned && cleaned !== "HOSE" && cleaned !== "HNX" && cleaned !== "UPCOM") {
@@ -335,7 +347,7 @@ function normalizeOrdersAndRoundTrips(rawOrders: Record<string, unknown>[]): {
     const filledQty =
       raw.filledQuantity != null
         ? Number(raw.filledQuantity)
-        : status === "FILLED"
+        : status === "FILLED" || status === "EXECUTED" || status === "FILLED_REPLAY"
           ? quantity
           : 0
     const rawPrice = Number(
@@ -348,6 +360,8 @@ function normalizeOrdersAndRoundTrips(rawOrders: Record<string, unknown>[]): {
     const sectorLabel = formatSectorName(sectorCode)
     const exchange = String(raw.exchange || "HOSE").toUpperCase()
     const createdAt = String(raw.createdAt ?? raw.date ?? "")
+    const executedAt = raw.executedAt ? String(raw.executedAt) : null
+    const effectiveDate = executedAt || createdAt
     const norm: NormalizedOrder = {
       id: String(raw.id ?? `${symbol}-${i}`),
       symbol,
@@ -361,6 +375,7 @@ function normalizeOrdersAndRoundTrips(rawOrders: Record<string, unknown>[]): {
       totalValue: (filledQty > 0 ? filledQty : quantity) * price,
       status,
       createdAt,
+      executedAt,
     }
     normalizedOrders.push(norm)
 
@@ -375,15 +390,15 @@ function normalizeOrdersAndRoundTrips(rawOrders: Record<string, unknown>[]): {
         sellVal: 0,
         sellQty: 0,
         tradesCount: 0,
-        firstDate: createdAt,
-        lastDate: createdAt,
+        firstDate: effectiveDate,
+        lastDate: effectiveDate,
         orders: [],
       }
     }
     const bucket = bySym[symbol]
     bucket.tradesCount += 1
-    if (!bucket.firstDate || (createdAt && createdAt < bucket.firstDate)) bucket.firstDate = createdAt
-    if (!bucket.lastDate || (createdAt && createdAt > bucket.lastDate)) bucket.lastDate = createdAt
+    if (!bucket.firstDate || (effectiveDate && effectiveDate < bucket.firstDate)) bucket.firstDate = effectiveDate
+    if (!bucket.lastDate || (effectiveDate && effectiveDate > bucket.lastDate)) bucket.lastDate = effectiveDate
     bucket.orders.push(norm)
 
     if (side === "BUY") {
@@ -1908,7 +1923,7 @@ function StockTradeAuditDrawer({
                         {fmtVnd(ord.totalValue)}
                       </td>
                       <td className="tnum px-3 py-2 text-right font-mono text-[11px] text-secondary">
-                        {fmtVietnamDateTime(ord.createdAt)}
+                        {fmtVietnamDateTime(ord.executedAt || ord.createdAt)}
                       </td>
                     </tr>
                   ))}
@@ -2571,8 +2586,6 @@ export default function Portfolio() {
   const {
     normalizedOrders,
     closedTrades,
-    buyCount,
-    sellCount,
     totalGrossWinVnd,
     totalCutLossVnd,
   } = useMemo(() => normalizeOrdersAndRoundTrips(rawOrders), [rawOrders])
@@ -2783,8 +2796,8 @@ export default function Portfolio() {
       String(o.quantity),
       String(o.price),
       String(o.totalValue),
-      o.status,
-      fmtVietnamDateTime(o.createdAt),
+      resolveOrderStatusPill(o.status).label,
+      fmtVietnamDateTime(o.executedAt || o.createdAt),
     ])
     const csvContent =
       "\uFEFF" +
@@ -3401,7 +3414,7 @@ export default function Portfolio() {
                       orderSideFilter === "BUY" ? "bg-surface font-semibold text-mineral shadow-2xs" : "text-muted"
                     }`}
                   >
-                    Mua ({buyCount})
+                    Mua ({normalizedOrders.filter(o => o.side === "BUY").length})
                   </button>
                   <button
                     type="button"
@@ -3410,7 +3423,7 @@ export default function Portfolio() {
                       orderSideFilter === "SELL" ? "bg-surface font-semibold text-gain shadow-2xs" : "text-muted"
                     }`}
                   >
-                    Bán ({sellCount})
+                    Bán ({normalizedOrders.filter(o => o.side === "SELL").length})
                   </button>
                 </div>
 
@@ -3655,12 +3668,13 @@ export default function Portfolio() {
                           <th className="px-3 py-2.5 text-right">Giá khớp</th>
                           <th className="px-3 py-2.5 text-right">Tổng giá trị lệnh</th>
                           <th className="px-3 py-2.5 text-left">Trạng thái</th>
-                          <th className="py-2.5 pr-5 text-right">Thời gian khớp (Giờ VN)</th>
+                          <th className="py-2.5 pr-5 text-right">Thời gian (Giờ VN)</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-line/70">
                         {filteredOrders.slice(0, orderLimit).map(ord => {
                           const relatedRoundTrip = closedTrades.find(c => c.sym === ord.symbol)
+                          const statusPill = resolveOrderStatusPill(ord.status)
                           return (
                             <tr
                               key={ord.id}
@@ -3698,10 +3712,10 @@ export default function Portfolio() {
                                 {fmtVnd(ord.totalValue)}
                               </td>
                               <td className="px-3 py-2.5">
-                                <Pill tone="gain">Đã khớp</Pill>
+                                <Pill tone={statusPill.tone}>{statusPill.label}</Pill>
                               </td>
                               <td className="tnum py-2.5 pr-5 text-right font-mono text-xs text-secondary">
-                                {fmtVietnamDateTime(ord.createdAt)}
+                                {fmtVietnamDateTime(ord.executedAt || ord.createdAt)}
                               </td>
                             </tr>
                           )

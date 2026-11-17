@@ -3,8 +3,11 @@ html_parser.py — HTML extraction utilities for news crawlers.
 """
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime
 from urllib.parse import urljoin
+from zoneinfo import ZoneInfo
+
+VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 from selectolax.parser import HTMLParser
 
@@ -126,7 +129,7 @@ def extract_article_data(html: str, base_url="") -> dict:
                 published_date = datetime.strptime(
                     f"{m.group(1)} {m.group(2)}" if m.group(2) else m.group(1),
                     fmt
-                ).replace(tzinfo=timezone.utc)
+                ).replace(tzinfo=VN_TZ)
                 break
             except ValueError:
                 continue

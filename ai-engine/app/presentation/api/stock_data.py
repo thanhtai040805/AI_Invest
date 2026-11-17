@@ -7,6 +7,7 @@ from fastapi.encoders import jsonable_encoder
 from typing import Any, Dict, Optional
 
 from app.core.common import clean_nan
+from app.core.time_utils import parse_vn_bound
 from app.infrastructure.external_api.market_data_service import market_data_svc
 
 router = APIRouter()
@@ -71,15 +72,13 @@ async def get_intraday_ohlcv(
         try:
             from_ts = int(start)
         except ValueError:
-            from datetime import datetime
-            from_ts = int(datetime.fromisoformat(start.replace("Z", "+00:00")).timestamp())
+            from_ts = int(parse_vn_bound(start, is_end=False).timestamp())
 
     if end:
         try:
             to_ts = int(end)
         except ValueError:
-            from datetime import datetime
-            to_ts = int(datetime.fromisoformat(end.replace("Z", "+00:00")).timestamp())
+            to_ts = int(parse_vn_bound(end, is_end=True).timestamp())
 
     data = tool.fetch(symbol.upper(), resolution=resolution, from_ts=from_ts, to_ts=to_ts)
     return {"symbol": symbol.upper(), "resolution": resolution, "data": data, "source": "dnse-rest"}

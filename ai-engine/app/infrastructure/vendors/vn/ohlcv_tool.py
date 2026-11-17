@@ -6,6 +6,8 @@ import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 
+from app.core.time_utils import now_vn
+
 logger = logging.getLogger(__name__)
 
 
@@ -44,9 +46,9 @@ class OHLCVTool:
         try:
             # Default to last 30 days if no dates provided
             if not end_date:
-                end_date = datetime.now().strftime("%Y-%m-%d")
+                end_date = now_vn().strftime("%Y-%m-%d")
             if not start_date:
-                start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+                start_date = (now_vn() - timedelta(days=30)).strftime("%Y-%m-%d")
             
             # Call DNSE service with timeframe
             data = await self.market_service.get_ohlcv(
@@ -121,8 +123,8 @@ class OHLCVTool:
             Dict containing price range statistics
         """
         try:
-            end_date = datetime.now().strftime("%Y-%m-%d")
-            start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+            end_date = now_vn().strftime("%Y-%m-%d")
+            start_date = (now_vn() - timedelta(days=days)).strftime("%Y-%m-%d")
             
             data = await self.get_ohlcv(symbol, start_date, end_date)
             

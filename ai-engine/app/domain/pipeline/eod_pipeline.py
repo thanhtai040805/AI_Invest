@@ -20,6 +20,7 @@ from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 from app.core.registry import AgentRegistry
+from app.core.time_utils import today_vn
 import app.domain.agents  # Nạp toàn bộ 12 Agents vào registry
 from app.adapters.postgres_adapter import PostgresAdapter
 
@@ -40,7 +41,7 @@ class EODPipelineRunner:
         force: bool = False,
     ) -> Dict[str, Any]:
         """Thực thi chuỗi 5 pha EOD khép kín cho ngày target_date (mặc định hôm nay)."""
-        run_date = target_date or date.today().isoformat()
+        run_date = target_date or today_vn().isoformat()
         logger.info(f"================================================================")
         logger.info(f"[EOD Pipeline] BẮT ĐẦU QUY TRÌNH CUỐI PHIÊN CHO NGÀY: {run_date}")
         logger.info(f"================================================================")

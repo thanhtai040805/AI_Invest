@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
+from app.core.time_utils import today_vn
 from app.infrastructure.database.pg_pool import get_conn
 from app.application.ports.storage import StoragePort
 from app.adapters.postgres_adapter import PostgresAdapter
@@ -29,7 +30,7 @@ class FactorService:
         """Tính toán động 6 nhóm nhân tố (F1-F6) cho một mã cổ phiếu cụ thể."""
         sym = str(ticker).upper().strip()
         if target_date is None:
-            target_date = date.today()
+            target_date = today_vn()
 
         with get_conn() as conn:
             with conn.cursor() as cur:

@@ -12,6 +12,7 @@ from datetime import date, datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
+from app.core.time_utils import today_vn
 from app.infrastructure.database.pg_pool import get_conn
 
 logger = logging.getLogger(__name__)
@@ -55,7 +56,7 @@ class UniverseManager:
     ) -> Dict[str, Any]:
         """Phân loại danh sách cổ phiếu vào các nhóm Universe (Group A/B/C/Sandbox/Excluded)."""
         if target_date is None:
-            target_date = date.today()
+            target_date = today_vn()
 
         vn30_set = set(self._get_vn30_list())
         results = []
@@ -246,7 +247,7 @@ class UniverseManager:
             cur.execute(
                 """
                 UPDATE stocks
-                SET universe_group = %s, group_updated_at = NOW()
+                SET universe_group = %s, group_updated_at = (NOW() AT TIME ZONE 'UTC')
                 WHERE symbol = %s
                 """,
                 (ugroup, sym),

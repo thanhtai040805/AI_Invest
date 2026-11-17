@@ -21,6 +21,7 @@ from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 from app.core.base_agent import BaseAgent
+from app.core.time_utils import coerce_vn_date, now_vn, today_vn
 from app.domain.rules.universe_manager import UniverseManager, UniverseGroup, TradingStatus
 from app.domain.rules.beneish import BeneishMScoreEngine
 from app.domain.repositories.universe_repository import UniverseRepository
@@ -32,12 +33,8 @@ logger = logging.getLogger(__name__)
 
 
 def _coerce_date(value: Any) -> date:
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    if isinstance(value, str):
-        return date.fromisoformat(value[:10])
+    if isinstance(value, (date, datetime)) or (isinstance(value, str) and value.strip()):
+        return coerce_vn_date(value)
     raise ValueError("target_date must be a date, datetime, or ISO date string")
 
 
@@ -72,7 +69,7 @@ class UniverseDiscoveryAgent(BaseAgent):
             - halted_tickers: List[str] (mã bị tạm ngừng giao dịch realtime) từ Agent-01
             - beneish_overrides: Optional[Dict[str, float]] (ghi đè mô phỏng nếu có)
         """
-        target_date = _coerce_date(event_data.get("target_date") or date.today())
+        target_date = _coerce_date(event_data.get("target_date") or today_vn())
         market_data_date = event_data.get("market_data_date") or target_date
         if isinstance(market_data_date, str):
             market_data_date = date.fromisoformat(market_data_date[:10])
@@ -84,8 +81,8 @@ class UniverseDiscoveryAgent(BaseAgent):
         halted_tickers: set[str] = {str(t).upper().strip() for t in halted_tickers_raw if t}
         beneish_overrides: Dict[str, float] = event_data.get("beneish_overrides", {})
         # Cầu nối Real-time DNSE: Quét trạng thái giao dịch trực tiếp nếu đang trong giờ giao dịch hoặc có yêu cầu realtime
-        session = self.session_manager.get_session(datetime.now())
-        is_today = (target_date == date.today())
+        session = self.session_manager.get_session(now_vn())
+        is_today = (target_date == today_vn())
         if is_today and (self.session_manager.is_order_matching_active(session) or event_data.get("is_realtime")):
             try:
                 snap = await self.market_data_service.get_snapshot(exchange="HOSE")
@@ -455,7 +452,7 @@ class UniverseDiscoveryAgent(BaseAgent):
                                 beneish_status = EXCLUDED.beneish_status,
                                 updated_at = NOW();
                             UPDATE stocks
-                            SET universe_group = %s, group_updated_at = NOW()
+                            SET universe_group = %s, group_updated_at = (NOW() AT TIME ZONE 'UTC')
                             WHERE symbol = %s;
                             """,
                             (

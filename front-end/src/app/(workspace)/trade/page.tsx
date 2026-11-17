@@ -247,8 +247,18 @@ function formatDateTimeVi(iso?: string): { date: string; time: string } {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return { date: iso.slice(0, 10), time: "" }
   return {
-    date: d.toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric" }),
-    time: d.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" }),
+    date: d.toLocaleDateString("vi-VN", {
+      timeZone: "Asia/Ho_Chi_Minh",
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    }),
+    time: d.toLocaleTimeString("vi-VN", {
+      timeZone: "Asia/Ho_Chi_Minh",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }),
   }
 }
 

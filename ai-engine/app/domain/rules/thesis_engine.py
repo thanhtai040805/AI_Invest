@@ -16,6 +16,8 @@ from datetime import date, datetime, timezone
 from uuid import uuid4
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.core.time_utils import today_vn
+
 logger = logging.getLogger(__name__)
 
 
@@ -26,7 +28,7 @@ class ThesisEngine:
 
     def generate_thesis_id(self, ticker: str, target_date: Optional[date] = None, seq_num: Optional[int] = None) -> str:
         """Use a unique revision by default; retain explicit sequence IDs for callers."""
-        t_date = target_date or date.today()
+        t_date = target_date or today_vn()
         year = t_date.year
         quarter = (t_date.month - 1) // 3 + 1
         clean_ticker = str(ticker).upper().strip()

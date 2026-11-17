@@ -13,6 +13,8 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from app.core.time_utils import today_vn
+
 logger = logging.getLogger(__name__)
 
 
@@ -209,7 +211,7 @@ def run_all_checks(
     if market_data is None: market_data = []
     if financials is None: financials = []
     if corp_actions is None: corp_actions = []
-    if target_date is None: target_date = date.today()
+    if target_date is None: target_date = today_vn()
     
     report = DataQualityReport()
     report.add_check(check_ohlcv_completeness(tickers, market_data, target_date))

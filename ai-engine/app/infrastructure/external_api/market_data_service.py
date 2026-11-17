@@ -8,7 +8,7 @@ Data sources: PostgreSQL (historical daily) → Redis (recent 1-min) → in-memo
 import asyncio
 import math
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
@@ -193,7 +193,7 @@ class MarketDataService:
             "unknown": total - len(changes),
             "total": total,
             "coverage": len(changes) / total if total else 0,
-            "lastUpdate": datetime.now().isoformat(),
+            "lastUpdate": datetime.now(timezone.utc).isoformat(),
             "source": snap.get("source", "computed"),
         }
 
@@ -671,7 +671,7 @@ class MarketDataService:
 
         return {
             "totalValueBillion": None,
-            "lastUpdate": datetime.now().isoformat(),
+            "lastUpdate": datetime.now(timezone.utc).isoformat(),
             "source": "unavailable",
         }
 

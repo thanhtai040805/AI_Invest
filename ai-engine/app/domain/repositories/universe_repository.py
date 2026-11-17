@@ -13,6 +13,7 @@ from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 from app.adapters.postgres_adapter import PostgresAdapter
+from app.core.time_utils import now_utc_naive, today_vn
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +112,7 @@ class UniverseRepository:
     ) -> bool:
         """Cập nhật phân loại Universe và trạng thái tuân thủ Hard Law đồng bộ cho cả stocks và universe_securities."""
         symbol = symbol.upper().strip()
-        now = datetime.now()
+        now = now_utc_naive()
         query = """
             UPDATE stocks
             SET universe_group = COALESCE(%s, universe_group),
@@ -172,7 +173,7 @@ class UniverseRepository:
                     SET universe_group = %s,
                         trading_status = %s,
                         beneish_status = %s,
-                        group_updated_at = NOW()
+                        group_updated_at = (NOW() AT TIME ZONE 'UTC')
                     WHERE symbol = %s
                 """, (universe_group, trading_status, beneish_status, ticker))
             except Exception:
@@ -214,7 +215,7 @@ class UniverseRepository:
                 vars_dict = args[3]
 
         if q_date is None:
-            q_date = date.today()
+            q_date = today_vn()
 
         if status is None:
             status = "FAIL" if (m_score is not None and m_score > -1.78) else "PASS"

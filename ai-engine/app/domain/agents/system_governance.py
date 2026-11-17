@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional
 
 from app.core.base_agent import BaseAgent
 from app.core.registry import AgentRegistry
+from app.core.time_utils import now_utc
 from app.eval.audit_trail import AuditTrailEngine
 from app.domain.rules.failsafe import FailsafeStatus, failsafe_engine
 from app.domain.rules.hard_laws import ProposedOrder, PortfolioState
@@ -130,7 +131,7 @@ class SystemGovernanceAgent(BaseAgent):
                     cur.execute("""
                         INSERT INTO audit_reports (
                             report_id, audit_date, integrity_status, violations_count, summary, created_at
-                        ) VALUES (%s, CURRENT_DATE, %s, %s, %s, CURRENT_TIMESTAMP)
+                        ) VALUES (%s, (NOW() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date, %s, %s, %s, CURRENT_TIMESTAMP)
                         ON CONFLICT (report_id) DO NOTHING;
                     """, (
                         report["report_id"],
@@ -210,7 +211,7 @@ class SystemGovernanceAgent(BaseAgent):
             report_id = str(uuid.uuid4())
             violation_report = {
                 "report_id": report_id,
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": now_utc().isoformat(),
                 "ticker": ticker,
                 "issuing_agent": issuing_agent,
                 "violated_rule": "FAILSAFE_EMERGENCY_LOCK",
@@ -322,7 +323,7 @@ class SystemGovernanceAgent(BaseAgent):
             report_id = str(uuid.uuid4())
             violation_report = {
                 "report_id": report_id,
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": now_utc().isoformat(),
                 "ticker": ticker,
                 "issuing_agent": issuing_agent,
                 "violated_rule": comp_res.violated_rule,

@@ -20,6 +20,7 @@ from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 from app.core.base_agent import BaseAgent
+from app.core.time_utils import coerce_vn_date, now_utc, now_vn
 from app.domain.rules.hard_laws import HardLawEngine, ProposedOrder, PortfolioState, HardLawCheck
 from app.domain.rules.risk.tape_anomaly_detector import (
     TapeAnomalyDetector,
@@ -539,7 +540,7 @@ class PortfolioRiskAgent(BaseAgent):
                     action = "PASS"
                     reasons_list.append("Thỏa mãn 100% tiêu chuẩn an toàn vốn thể chế.")
 
-        decision_id = f"RSK-{datetime.now().strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}"
+        decision_id = f"RSK-{now_vn().strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}"
         min_cash_target = max(
             dd_eval.min_cash_target_pct,
             breadth_eval.recommended_min_cash_pct,
@@ -551,7 +552,7 @@ class PortfolioRiskAgent(BaseAgent):
         risk_output = {
             "risk_status": action,
             "decision_id": decision_id,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": now_utc().isoformat(),
             "ticker": order_ticker,
             "hard_laws": hard_law_status_map,
             "tape_anomaly": tape_anomaly_map,
@@ -624,20 +625,20 @@ class PortfolioRiskAgent(BaseAgent):
         }
 
         # Tự động lưu risk snapshot vào CSDL risk_snapshots
-        try:
-            from datetime import date as dt_date
-            from app.domain.repositories.intelligence_repository import IntelligenceRepository
-            intel_repo = IntelligenceRepository()
-            intel_repo.save_risk_snapshot({
-                "date": dt_date.today(),
-                "es_97_5": risk_output["es_97_5_pct"],
-                "garch_cash_target": min_cash_target,
-                "drawdown_tier": dd_eval.tier.value,
-                "max_drawdown_from_peak": dd_eval.current_drawdown_pct,
-                "cdc_active": cdc_eval.is_cdc_active,
-            })
-        except Exception as e_snap:
-            logger.warning(f"Không thể lưu risk_snapshot vào DB: {e_snap}")
+        if not event_data.get("is_replay"):
+            try:
+                from app.domain.repositories.intelligence_repository import IntelligenceRepository
+                intel_repo = IntelligenceRepository()
+                intel_repo.save_risk_snapshot({
+                    "date": coerce_vn_date(event_data.get("target_date")),
+                    "es_97_5": risk_output["es_97_5_pct"],
+                    "garch_cash_target": min_cash_target,
+                    "drawdown_tier": dd_eval.tier.value,
+                    "max_drawdown_from_peak": dd_eval.current_drawdown_pct,
+                    "cdc_active": cdc_eval.is_cdc_active,
+                })
+            except Exception as e_snap:
+                logger.warning(f"Không thể lưu risk_snapshot vào DB: {e_snap}")
 
         # Bắn sự kiện lên RabbitMQ Event Bus
         try:

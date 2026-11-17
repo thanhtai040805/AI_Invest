@@ -18,6 +18,7 @@ from datetime import date
 from typing import Any, Dict, List, Optional
 
 from app.core.base_agent import BaseAgent
+from app.core.time_utils import today_vn
 from app.domain.repositories.financial_repository import FinancialRepository
 from app.domain.rules.thesis_engine import ThesisEngine
 from app.domain.rules.catalyst_validator import CatalystValidator
@@ -92,7 +93,7 @@ class InvestmentThesisAgent(BaseAgent):
             val_inputs = {k: float(v) for k, v in val_inputs.items() if v is not None and float(v or 0) > 0}
         if not val_inputs:
             try:
-                val_inputs = FinancialRepository().get_peer_valuation_inputs(ticker, target_date or date.today())
+                val_inputs = FinancialRepository().get_peer_valuation_inputs(ticker, target_date or today_vn())
             except Exception as exc:
                 logger.warning("Không thể định giá point-in-time cho %s: %s", ticker, exc)
                 val_inputs = {}
