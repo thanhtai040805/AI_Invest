@@ -53,7 +53,7 @@ export function SectorStrengthChart({
   timeframe?: string
   onTimeframeChange?: (tf: string) => void
 }) {
-  const { heatmap: liveHeatmap, indices: liveIndices } = useRealtimeMarket()
+  const { heatmap: liveHeatmap, indices: liveIndices } = useRealtimeMarket(undefined, { snapshot: false })
   const [internalTimeframe, setInternalTimeframe] = useState<string>("1 Tháng")
   const timeframe = controlledTimeframe ?? internalTimeframe
   const setTimeframe = onTimeframeChange ?? setInternalTimeframe

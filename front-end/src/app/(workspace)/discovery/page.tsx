@@ -469,7 +469,7 @@ export default function Discovery() {
           ) : (
             <>
               <div
-                className={`max-h-[calc(100vh-250px)] overflow-auto transition-opacity duration-[150ms] ${
+                className={`max-h-[calc(100vh-220px)] overflow-auto bg-surface overscroll-contain transition-opacity duration-[150ms] ${
                   loading ? "opacity-60" : "opacity-100"
                 }`}
               >

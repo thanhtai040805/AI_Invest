@@ -75,7 +75,7 @@ function PortfolioRiskFrame() {
 
 function MarketPulse() {
   const [indexSeed, setIndexSeed] = useState<{ vnIndexVal: string; vnIndexPct: number | null } | undefined>()
-  const { indices: liveIndices, isLive, snapshot: liveSnapshot, breadth: liveBreadth, liquidity: liveLiquidity } = useRealtimeMarket(indexSeed)
+  const { indices: liveIndices, isLive, snapshot: liveSnapshot, breadth: liveBreadth, liquidity: liveLiquidity } = useRealtimeMarket(indexSeed, { heatmap: false })
   const [indexDate, setIndexDate] = useState<string>("")
   const [historySeries, setHistorySeries] = useState<number[]>([])
   const [liquidity, setLiquidity] = useState<string>("—")
@@ -363,7 +363,7 @@ function Pipeline() {
   return (
     <div className="grid grid-cols-1 overflow-hidden rounded-[12px] border border-line-strong bg-surface lg:grid-cols-[1fr_320px]">
       <p className="border-b border-line bg-paper px-5 py-2.5 text-[11px] text-secondary lg:col-span-2">Luồng và kết quả bên dưới là nội dung minh họa, không phải trạng thái của một lượt chạy hiện tại.</p>
-      <div className="max-h-[520px] divide-y divide-line overflow-y-auto">
+      <div className="max-h-[520px] divide-y divide-line overflow-y-auto bg-surface overscroll-contain">
         {pipeline.map((p, i) => {
           return (
             <button

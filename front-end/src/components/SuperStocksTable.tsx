@@ -393,7 +393,7 @@ export function SuperStocksTable({
   liveStocks?: ApiMarketStock[]
   controlledStrategy?: "sieu_pham" | "trading"
 }) {
-  const { snapshot: wsSnapshot, isLive: wsLive } = useRealtimeMarket()
+  const { snapshot: wsSnapshot, isLive: wsLive } = useRealtimeMarket(undefined, { tape: false, heatmap: false })
   const [strategyTab, setStrategyTab] = useState<string>(STRATEGY_TABS[0])
   const strategy = controlledStrategy ?? (strategyTab === STRATEGY_TABS[1] ? "trading" : "sieu_pham")
   const [quickFilter, setQuickFilter] = useState<string>("all")
@@ -607,7 +607,7 @@ export function SuperStocksTable({
           </div>
 
           {/* Khóa cứng chiều cao tối đa + grid cố định 6 cột để dù 100 mã cũng không bao giờ biến dạng layout */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 divide-x divide-y divide-line max-h-[264px] overflow-y-auto">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 divide-x divide-y divide-line max-h-[264px] overflow-y-auto bg-surface overscroll-contain">
             {displayedSurges.map((item) => (
               <Link
                 key={item.code}
@@ -770,9 +770,9 @@ export function SuperStocksTable({
             Không có cổ phiếu nào khớp với tiêu chí lọc hiện tại.
           </div>
         ) : strategy === "sieu_pham" ? (
-          <div className="max-h-[calc(100vh-250px)] overflow-auto">
+          <div className="overflow-x-auto xl:overflow-visible bg-surface">
             <table className="w-full min-w-[940px] text-[12px] border-separate border-spacing-0">
-              <thead className="sticky top-0 z-10 bg-soft">
+              <thead className="xl:sticky xl:top-12 z-10 bg-soft">
                 <tr className="text-[10px] uppercase tracking-wider text-secondary">
                   <th className="px-5 py-2.5 text-left font-semibold border-b border-line">Mã / Ngành</th>
                   <th className="px-3 py-2.5 text-left font-semibold w-[17%] border-b border-line">Mua chủ động (BVC)</th>
@@ -898,9 +898,9 @@ export function SuperStocksTable({
             </table>
           </div>
         ) : (
-          <div className="max-h-[calc(100vh-250px)] overflow-auto">
+          <div className="overflow-x-auto xl:overflow-visible bg-surface">
             <table className="w-full min-w-[880px] text-[12px] border-separate border-spacing-0">
-              <thead className="sticky top-0 z-10 bg-soft">
+              <thead className="xl:sticky xl:top-12 z-10 bg-soft">
                 <tr className="text-[10px] uppercase tracking-wider text-secondary">
                   <th className="px-5 py-2.5 text-left font-semibold border-b border-line">Mã / Ngành</th>
                   <th className="px-3 py-2.5 text-left font-semibold w-[20%] border-b border-line">Mua chủ động (BVC)</th>

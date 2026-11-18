@@ -1728,7 +1728,7 @@ export function StockDetailContent({
 
       {/* 5. NỘI DUNG TAB 4: "BCTC & TIN TỨC" */}
       {mainTab === "FILINGS" && (
-        <div className="p-5 bg-surface min-h-[465px] max-h-[500px] overflow-y-auto">
+        <div className="p-5 bg-surface overscroll-contain min-h-[465px] max-h-[500px] overflow-y-auto">
           {newsList.length === 0 ? (
             <div className="py-16 text-center text-[13px] text-muted">
               Chưa có báo cáo tài chính hoặc công bố thông tin mới cho mã {symbol}.
@@ -1817,7 +1817,7 @@ export function StockDetailModal({
       role="dialog"
       aria-modal="true"
       aria-label={`Chi tiết cổ phiếu ${props.symbol}`}
-      className="backdrop-enter fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-[#121a17]/60 backdrop-blur-[2px] overflow-y-auto"
+      className="backdrop-enter fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-[#121a17]/60 backdrop-blur-[2px] overflow-y-auto overscroll-contain"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) {
           onClose()

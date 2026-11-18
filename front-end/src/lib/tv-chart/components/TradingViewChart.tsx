@@ -1074,21 +1074,26 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
     const canvas = canvasRef.current
     if (!canvas) return
 
-    const onNativeWheel = (e: WheelEvent) => {
-      e.preventDefault()
-      e.stopPropagation()
+    let rafId: number | null = null
+    let pendingDx = 0
+    let pendingDy = 0
+    let lastX = 0
+    let lastShift = false
+
+    const flushWheel = () => {
+      rafId = null
+      const dx = pendingDx
+      const dy = pendingDy
+      pendingDx = 0
+      pendingDy = 0
 
       const { totalBars, rightOffsetBars, metrics: curMetrics } = wheelContextRef.current
       if (totalBars < 5) return
 
-      const rect = canvas.getBoundingClientRect()
-      const x = e.clientX - rect.left
-      const rawDeltaY = e.deltaMode === 1 ? e.deltaY * 32 : e.deltaY
-      const rawDeltaX = e.deltaMode === 1 ? e.deltaX * 32 : e.deltaX
-
       // Horizontal Trackpad Swipe or Shift + Wheel -> Smooth Horizontal Pan
-      if (e.shiftKey || Math.abs(rawDeltaX) > Math.abs(rawDeltaY) * 1.15) {
-        const panPx = Math.abs(rawDeltaX) > Math.abs(rawDeltaY) ? rawDeltaX : rawDeltaY
+      if (lastShift || Math.abs(dx) > Math.abs(dy) * 1.15) {
+        const panPx = Math.abs(dx) > Math.abs(dy) ? dx : dy
+        if (Math.abs(panPx) < 0.25) return
         setViewport((prev) => {
           const span = Math.max(8, prev.endIndex - prev.startIndex)
           const deltaBars = (panPx / Math.max(1, curMetrics.plotWidth)) * span
@@ -1103,8 +1108,8 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
         return
       }
 
-      if (Math.abs(rawDeltaY) < 0.5) return
-      const clampedDelta = Math.max(-160, Math.min(160, rawDeltaY))
+      if (Math.abs(dy) < 0.5) return
+      const clampedDelta = Math.max(-240, Math.min(240, dy))
       const zoomFactor = Math.exp(clampedDelta * 0.0022)
 
       setViewport((prev) => {
@@ -1117,13 +1122,13 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
         const lastBarX = curMetrics.coordConverter.barIndexToX(totalBars - 1)
         let rawStart: number
         let rawEnd: number
-        if (x >= lastBarX - 10) {
+        if (lastX >= lastBarX - 10) {
           rawEnd = prev.endIndex
           rawStart = rawEnd - newSpan
         } else {
           const cursorRatio = Math.max(
             0,
-            Math.min(1, (x - curMetrics.plotLeft) / Math.max(1, curMetrics.plotWidth))
+            Math.min(1, (lastX - curMetrics.plotLeft) / Math.max(1, curMetrics.plotWidth))
           )
           const anchorBar = prev.startIndex + cursorRatio * span
           rawStart = anchorBar - cursorRatio * newSpan
@@ -1135,8 +1140,28 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
       })
     }
 
+    const onNativeWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+
+      const { totalBars } = wheelContextRef.current
+      if (totalBars < 5) return
+
+      lastX = e.offsetX
+      lastShift = e.shiftKey
+      pendingDy += e.deltaMode === 1 ? e.deltaY * 32 : e.deltaY
+      pendingDx += e.deltaMode === 1 ? e.deltaX * 32 : e.deltaX
+
+      if (rafId === null) {
+        rafId = window.requestAnimationFrame(flushWheel)
+      }
+    }
+
     canvas.addEventListener("wheel", onNativeWheel, { passive: false })
-    return () => canvas.removeEventListener("wheel", onNativeWheel)
+    return () => {
+      canvas.removeEventListener("wheel", onNativeWheel)
+      if (rafId !== null) window.cancelAnimationFrame(rafId)
+    }
   }, [])
 
   // Zoom / Pan Button Helpers

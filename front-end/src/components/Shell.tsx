@@ -231,7 +231,10 @@ function TopBar({ onSearch }: { onSearch: () => void }) {
     }
   }, [market.data])
 
-  const { indices, isLive, breadth, liquidity, indexFlash } = useRealtimeMarket(initialIndices)
+  const { indices, isLive, breadth, liquidity, indexFlash } = useRealtimeMarket(initialIndices, {
+    snapshot: false,
+    heatmap: false,
+  })
   const sessionPhase = getHoseSessionPhase(new Date(nowMs))
 
   const allNavItems = useMemo(() => nav.flatMap((g) => g.items), [])
@@ -268,7 +271,7 @@ function TopBar({ onSearch }: { onSearch: () => void }) {
   const totalBillion = numberValue(liquidity?.totalValueBillion)
 
   return (
-    <header className="h-12 bg-surface border-b border-line flex items-center gap-2 px-3.5 md:px-5 shrink-0">
+    <header className="sticky top-0 z-30 h-12 bg-surface border-b border-line flex items-center gap-2 px-3.5 md:px-5 shrink-0">
       <select
         aria-label="Điều hướng"
         value={activeRoute}
@@ -423,7 +426,7 @@ function Sidebar() {
   return (
     <aside
       aria-label="Thanh điều hướng không gian làm việc"
-      className={`hidden md:flex shrink-0 bg-surface border-r border-line flex-col h-full transition-[width] duration-[160ms] ease-[var(--ease-out-expo)] ${
+      className={`hidden md:flex md:sticky md:top-0 md:h-dvh shrink-0 bg-surface border-r border-line flex-col transition-[width] duration-[160ms] ease-[var(--ease-out-expo)] ${
         collapsed ? "w-14" : "w-[220px]"
       }`}
     >
@@ -455,7 +458,7 @@ function Sidebar() {
       {/* Navigation Items with Stationary Icon Coordinates */}
       <nav
         onScroll={hideTip}
-        className="flex-1 overflow-y-auto overflow-x-hidden py-3 space-y-1"
+        className="flex-1 overflow-y-auto overflow-x-hidden bg-surface overscroll-contain py-3 space-y-1"
       >
         {nav.map((section, groupIdx) => (
           <div key={section.group}>
@@ -735,7 +738,7 @@ function CommandPalette({ onClose }: { onClose: () => void }) {
             ESC
           </kbd>
         </div>
-        <div className="max-h-[52vh] overflow-y-auto py-2">
+        <div className="max-h-[52vh] overflow-y-auto bg-surface overscroll-contain py-2">
           {grouped.map((grp) => (
             <div key={grp.type} className="px-2 mb-1">
               <div className="text-[10px] font-semibold tracking-[0.12em] uppercase text-muted px-2 py-1.5">
@@ -830,14 +833,24 @@ export function Shell({ children }: { children: ReactNode }) {
     setModalState((prev) => (prev.symbol ? { symbol: null, symbols: [] } : prev))
   }, [path])
 
+  const overlayOpen = cmd || Boolean(modalState.symbol)
+  useEffect(() => {
+    if (!overlayOpen) return
+    const prev = document.body.style.overflow
+    document.body.style.overflow = "hidden"
+    return () => {
+      document.body.style.overflow = prev
+    }
+  }, [overlayOpen])
+
   const activeIdx = modalState.symbol ? modalState.symbols.indexOf(modalState.symbol) : -1
 
   return (
-    <div className="flex h-full bg-paper">
+    <div className="flex min-h-dvh bg-paper">
       <Sidebar />
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 bg-paper">
         <TopBar onSearch={() => setCmd(true)} />
-        <main className="flex-1 overflow-y-auto">{children}</main>
+        <main className="flex-1 min-w-0 bg-paper">{children}</main>
       </div>
       {cmd && <CommandPalette onClose={() => setCmd(false)} />}
       {modalState.symbol && (

@@ -271,7 +271,7 @@ export default function ResearchPage() {
                 Math.abs(expectedCTS - Number(verdict.cts_score)) > 0.1
 
               return (
-                <Panel key={t.history_id || t.thesis_id}>
+                <Panel key={t.history_id || t.thesis_id} className="cv-card">
                   <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-line/70">
                     <div className="flex items-center gap-2">
                       <Link to={`/stock/${t.ticker}`}>

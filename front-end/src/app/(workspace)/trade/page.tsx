@@ -706,7 +706,7 @@ export default function TradePage() {
   const [selectedOrderReceipt, setSelectedOrderReceipt] = useState<TradeOrderRecord | null>(null)
 
   // Live market-wide snapshot via WebSocket
-  const { snapshot: liveMarketSnapshot } = useRealtimeMarket()
+  const { snapshot: liveMarketSnapshot } = useRealtimeMarket(undefined, { tape: false, heatmap: false })
 
   useEffect(() => {
     let active = true
@@ -2123,7 +2123,7 @@ export default function TradePage() {
           }
         />
 
-        <div className="max-h-[380px] overflow-auto border-t border-[var(--color-line)]">
+        <div className="max-h-[380px] overflow-auto bg-[var(--color-surface)] overscroll-contain border-t border-[var(--color-line)]">
           <table className="w-full text-left text-[12.5px]">
             <thead className="sticky top-0 z-10 bg-[var(--color-surface)]">
               <tr className="border-b border-[var(--color-line)] text-[10.5px] font-mono uppercase tracking-[0.08em] text-[var(--color-muted)] whitespace-nowrap">

@@ -1784,7 +1784,7 @@ function StockTradeAuditDrawer({
         className="flex h-full w-full max-w-lg flex-col justify-between border-l border-line bg-surface p-6 shadow-2xl drawer-enter"
         onClick={e => e.stopPropagation()}
       >
-        <div className="overflow-y-auto pr-1">
+        <div className="overflow-y-auto bg-surface overscroll-contain pr-1">
           <div className="flex items-start justify-between gap-3 border-b border-line pb-4">
             <div>
               <div className="flex items-center gap-2">
@@ -3366,7 +3366,7 @@ export default function Portfolio() {
 
           {/* TAB 1: Open Positions */}
           {ledgerTab === "positions" && (
-            <div className="max-h-[460px] overflow-auto">
+            <div className="max-h-[460px] overflow-auto bg-surface overscroll-contain">
               {filteredPositions.length > 0 ? (
                 <table className="w-full min-w-[860px] text-[13px]">
                   <thead className="sticky top-0 z-10 bg-surface">
@@ -3491,7 +3491,7 @@ export default function Portfolio() {
 
           {/* TAB 2: Closed Stock Round-Trip Attribution Table */}
           {ledgerTab === "roundtrips" && (
-            <div className="max-h-[460px] overflow-auto">
+            <div className="max-h-[460px] overflow-auto bg-surface overscroll-contain">
               {filteredClosedTrades.length > 0 ? (
                 <table className="w-full min-w-[860px] text-[13px]">
                   <thead className="sticky top-0 z-10 bg-surface">
@@ -3584,7 +3584,7 @@ export default function Portfolio() {
             <div>
               {filteredOrders.length > 0 ? (
                 <>
-                  <div className="max-h-[460px] overflow-auto">
+                  <div className="max-h-[460px] overflow-auto bg-surface overscroll-contain">
                     <table className="w-full min-w-[820px] text-[13px]">
                       <thead className="sticky top-0 z-10 bg-surface">
                         <tr className="border-b border-line bg-canvas/50 text-[10.5px] font-semibold tracking-wider text-muted uppercase">

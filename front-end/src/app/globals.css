@@ -1,4 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&display=swap');
 @import 'tailwindcss';
 
 @theme {
@@ -55,16 +54,15 @@
 }
 
 html,
-body,
-#root {
-  height: 100%;
+body {
+  min-height: 100%;
 }
 
 body {
   font-family: var(--font-sans);
   background: var(--color-paper);
   color: var(--color-ink);
-  font-feature-settings: 'cv01', 'cv02', 'ss01';
+  overflow-x: clip;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -96,14 +94,10 @@ body {
 
 ::-webkit-scrollbar-thumb,
 *::-webkit-scrollbar-thumb {
-  background-color: rgba(24, 32, 29, 0.22);
+  background-color: rgba(24, 32, 29, 0.26);
   border-radius: 9999px;
   border: 2px solid transparent;
   background-clip: padding-box;
-}
-
-*:hover::-webkit-scrollbar-thumb {
-  background-color: rgba(24, 32, 29, 0.34);
 }
 
 ::-webkit-scrollbar-thumb:hover,
@@ -170,6 +164,7 @@ body {
 }
 
 .pulse-subtle {
+  will-change: opacity;
   animation: pulse-subtle 2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
@@ -313,6 +308,16 @@ body {
     opacity: 0;
     transform: translateY(-4px) scale(0.98);
   }
+}
+
+.cv-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
+}
+
+.cv-log {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 56px;
 }
 
 .no-scrollbar {

@@ -2787,7 +2787,7 @@ function AgentLogRow({ agent, entry, index }: { agent: string; entry: RecordData
         : "neutral"
 
   return (
-    <details onToggle={event => setOpened(event.currentTarget.open)} className="group px-5 py-3 open:bg-paper/50">
+    <details onToggle={event => setOpened(event.currentTarget.open)} className="cv-log group px-5 py-3 open:bg-paper/50">
       <summary className="cursor-pointer list-none rounded focus-visible:outline-2 focus-visible:outline-mineral">
         <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
           <span className="text-xs font-semibold text-ink">{agents[agent] || agent}</span>
@@ -3023,7 +3023,7 @@ function WarRoom({ requestedSymbol }: { requestedSymbol: string }) {
           {/* 3. Main Stock Decision Workspace (Sticky Left Rail + Right Dossier) */}
           <div className="grid items-start gap-6 lg:grid-cols-[256px_minmax(0,1fr)]">
             {/* Left Stock Selector Rail */}
-            <Panel className="p-3.5 lg:sticky lg:top-4">
+            <Panel className="p-3.5 lg:sticky lg:top-16">
               <div className="mb-2.5 flex items-center justify-between border-b border-line pb-2.5">
                 <h2 className="text-[13px] font-semibold text-ink">Danh sách thẩm định</h2>
                 <Pill tone="neutral">{symbols.length} mã</Pill>
@@ -3039,7 +3039,7 @@ function WarRoom({ requestedSymbol }: { requestedSymbol: string }) {
 
               <nav
                 aria-label="Chọn mã phân tích"
-                className="flex gap-2 overflow-auto lg:max-h-[calc(100vh-140px)] lg:block lg:space-y-1.5"
+                className="flex gap-2 overflow-auto bg-surface overscroll-contain lg:max-h-[calc(100vh-160px)] lg:block lg:space-y-1.5"
               >
                 {visibleSymbols.map(item => {
                   const t = theses.find(row => row.ticker === item)
