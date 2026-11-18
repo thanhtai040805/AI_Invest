@@ -477,7 +477,7 @@ export function CustomSelect({
         <div
           role="listbox"
           aria-label={ariaLabel}
-          className={`popover-enter absolute top-full mt-1 z-30 min-w-full w-max max-w-[260px] max-h-[280px] overflow-y-auto rounded-[8px] border border-line-strong bg-surface py-1 shadow-[0_10px_28px_rgba(24,32,29,0.12)] ${
+          className={`popover-enter absolute top-full mt-1 z-20 min-w-full w-max max-w-[260px] max-h-[280px] overflow-y-auto rounded-[8px] border border-line-strong bg-surface py-1 shadow-[0_10px_28px_rgba(24,32,29,0.12)] ${
             align === "right" ? "right-0 origin-top-right" : "left-0 origin-top-left"
           }`}
         >

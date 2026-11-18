@@ -1328,16 +1328,16 @@ export function StockDetailContent({
                     <table className="w-full border-separate border-spacing-0 font-mono text-[11px] tnum">
                       <thead>
                         <tr className="bg-soft/40 font-sans text-[10px] font-medium text-muted">
-                          <th className="sticky top-0 bg-soft py-1.5 pl-2.5 pr-1 text-left border-b border-line">
+                          <th className="sticky top-0 z-10 bg-soft py-1.5 pl-2.5 pr-1 text-left border-b border-line">
                             Ngày
                           </th>
-                          <th className="sticky top-0 bg-soft py-1.5 px-1 text-right border-b border-line">
+                          <th className="sticky top-0 z-10 bg-soft py-1.5 px-1 text-right border-b border-line">
                             Giá
                           </th>
-                          <th className="sticky top-0 bg-soft py-1.5 px-1 text-right border-b border-line">
+                          <th className="sticky top-0 z-10 bg-soft py-1.5 px-1 text-right border-b border-line">
                             +/- (%)
                           </th>
-                          <th className="sticky top-0 bg-soft py-1.5 pr-2.5 pl-1 text-right border-b border-line">
+                          <th className="sticky top-0 z-10 bg-soft py-1.5 pr-2.5 pl-1 text-right border-b border-line">
                             KL
                           </th>
                         </tr>
@@ -1438,34 +1438,34 @@ export function StockDetailContent({
             <table className="w-full border-separate border-spacing-0 text-[12px]">
               <thead>
                 <tr className="bg-soft text-[10.5px] font-semibold uppercase tracking-wider text-muted">
-                  <th className="sticky top-0 bg-soft border-b border-line py-2.5 pl-5 pr-3 text-left">
+                  <th className="sticky top-0 z-10 bg-soft border-b border-line py-2.5 pl-5 pr-3 text-left">
                     Ngày GD
                   </th>
-                  <th className="sticky top-0 bg-soft border-b border-line py-2.5 px-3 text-right">
+                  <th className="sticky top-0 z-10 bg-soft border-b border-line py-2.5 px-3 text-right">
                     Đóng cửa
                   </th>
-                  <th className="sticky top-0 bg-soft border-b border-line py-2.5 px-3 text-right">
+                  <th className="sticky top-0 z-10 bg-soft border-b border-line py-2.5 px-3 text-right">
                     Thay đổi (+/- & %)
                   </th>
-                  <th className="sticky top-0 bg-soft border-b border-line py-2.5 px-3 text-right">
+                  <th className="sticky top-0 z-10 bg-soft border-b border-line py-2.5 px-3 text-right">
                     KL khớp lệnh (CP)
                   </th>
-                  <th className="sticky top-0 bg-soft border-b border-line py-2.5 px-3 text-right">
+                  <th className="sticky top-0 z-10 bg-soft border-b border-line py-2.5 px-3 text-right">
                     GTGD ước tính (Tỷ ₫)
                   </th>
-                  <th className="sticky top-0 bg-soft border-b border-line py-2.5 px-3 text-right">
+                  <th className="sticky top-0 z-10 bg-soft border-b border-line py-2.5 px-3 text-right">
                     So với MA10
                   </th>
-                  <th className="sticky top-0 bg-soft border-b border-line py-2.5 px-3 text-right">
+                  <th className="sticky top-0 z-10 bg-soft border-b border-line py-2.5 px-3 text-right">
                     Mở cửa
                   </th>
-                  <th className="sticky top-0 bg-soft border-b border-line py-2.5 px-3 text-right">
+                  <th className="sticky top-0 z-10 bg-soft border-b border-line py-2.5 px-3 text-right">
                     Cao nhất
                   </th>
-                  <th className="sticky top-0 bg-soft border-b border-line py-2.5 px-3 text-right">
+                  <th className="sticky top-0 z-10 bg-soft border-b border-line py-2.5 px-3 text-right">
                     Thấp nhất
                   </th>
-                  <th className="sticky top-0 bg-soft border-b border-line py-2.5 pr-5 pl-3 text-right">
+                  <th className="sticky top-0 z-10 bg-soft border-b border-line py-2.5 pr-5 pl-3 text-right">
                     Trung bình
                   </th>
                 </tr>
