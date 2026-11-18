@@ -265,26 +265,6 @@ function describeDonutArc(cx: number, cy: number, r: number, startAngle: number,
   return `M ${start.x.toFixed(2)} ${start.y.toFixed(2)} A ${r} ${r} 0 ${largeArcFlag} 0 ${end.x.toFixed(2)} ${end.y.toFixed(2)}`
 }
 
-function useAnimatedProgress(triggerKey: string, durationMs = 900) {
-  const [state, setState] = useState<{ key: string; val: number }>({ key: triggerKey, val: 0 })
-  useEffect(() => {
-    let rafId = 0
-    const start = performance.now()
-    const tick = (now: number) => {
-      const elapsed = Math.max(0, now - start)
-      const t = Math.min(1, elapsed / durationMs)
-      const eased = 1 - Math.pow(1 - t, 4)
-      setState({ key: triggerKey, val: eased })
-      if (t < 1) {
-        rafId = requestAnimationFrame(tick)
-      }
-    }
-    rafId = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(rafId)
-  }, [triggerKey, durationMs])
-  return state.key === triggerKey ? state.val : 0
-}
-
 function smoothSplinePath(pts: { x: number; y: number }[]): string {
   if (pts.length === 0) return ""
   if (pts.length === 1) return `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`
@@ -561,11 +541,6 @@ function PersonalWealthStage({
     return series
   }, [slicedCurve, baseCapital, benchmarkPoints])
 
-  const progress = useAnimatedProgress(
-    `wealth-stage-${chartMode}-${windowSize}-${enrichedSeries.length}`,
-    850,
-  )
-
   const W = 740
   const H = 225
   const padL = 62
@@ -602,19 +577,17 @@ function PersonalWealthStage({
 
   const navCoords = enrichedSeries.map((pt, idx) => {
     const x = padL + (idx / Math.max(enrichedSeries.length - 1, 1)) * plotW
-    const targetY =
+    const y =
       chartMode === "nav"
         ? padT + mainH - ((pt.nav - minVal) / valRange) * mainH
         : padT + mainH - ((scalePct(pt.windowPortRetPct) - scaledMinPct) / scaledPctRange) * mainH
-    const y = baselineY + (targetY - baselineY) * progress
     return { x, y }
   })
 
   const vniCoords = enrichedSeries.map((pt, idx) => {
     const x = padL + (idx / Math.max(enrichedSeries.length - 1, 1)) * plotW
-    const targetY =
+    const y =
       padT + mainH - ((scalePct(pt.vniRetPct) - scaledMinPct) / scaledPctRange) * mainH
-    const y = baselineY + (targetY - baselineY) * progress
     return { x, y }
   })
 
@@ -631,7 +604,7 @@ function PersonalWealthStage({
     const clampedDd = Math.max(-15, Math.min(0, pt.ddPct))
     const maxDdScale = Math.min(-0.5, ...enrichedSeries.map(s => s.ddPct))
     const normalized = maxDdScale < 0 ? Math.min(1, Math.abs(clampedDd) / Math.abs(maxDdScale)) : 0
-    const y = ddTop + normalized * (ddH - 6) * progress
+    const y = ddTop + normalized * (ddH - 6)
     return { x, y }
   })
 
@@ -1201,7 +1174,6 @@ function RadialSectorStudio({
   favoriteSectors: string[]
 }) {
   const [hoveredSector, setHoveredSector] = useState<string | null>(null)
-  const progress = useAnimatedProgress(`radial-sector-${sectors.length}`, 850)
 
   const activeSector =
     sectors.find(s => s.sectorCode === (hoveredSector ?? selectedSector)) ?? sectors[0] ?? null
@@ -1214,7 +1186,7 @@ function RadialSectorStudio({
       const s = sectors[i]
       const sweep = Math.max(8, (s.weightPct / 100) * (360 - sectors.length * gapDeg))
       const start = cursor
-      const end = cursor + sweep * progress
+      const end = cursor + sweep
       cursor += sweep + gapDeg
       list.push({
         ...s,
@@ -1223,7 +1195,7 @@ function RadialSectorStudio({
       })
     }
     return list
-  }, [sectors, progress])
+  }, [sectors])
 
   return (
     <Panel className="flex flex-col justify-between p-5 lg:col-span-6">
@@ -1412,7 +1384,6 @@ function TradingStyleBubbleMatrix({
   onOpenCharter: () => void
 }) {
   const [hoveredSym, setHoveredSym] = useState<string | null>(null)
-  const progress = useAnimatedProgress(`bubble-matrix-${closedTrades.length}`, 900)
 
   const W = 560
   const H = 198
@@ -1505,10 +1476,10 @@ function TradingStyleBubbleMatrix({
     return raw.map(n => ({
       trade: n.trade,
       x: n.x,
-      y: zeroY + (n.targetY - zeroY) * progress,
-      r: n.r * progress,
+      y: n.targetY,
+      r: n.r,
     }))
-  }, [closedTrades, maxDays, minRet, retSpan, plotW, plotH, zeroY, maxCap, progress, W, padL, padR, padT])
+  }, [closedTrades, maxDays, minRet, retSpan, plotW, plotH, maxCap, W, padL, padR, padT])
 
   const activeTrade =
     closedTrades.find(t => t.sym === hoveredSym) ?? closedTrades[0] ?? null
@@ -1803,17 +1774,17 @@ function StockTradeAuditDrawer({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex justify-end bg-ink/35 backdrop-blur-[1px] transition-opacity"
+      className="fixed inset-0 z-50 flex justify-end bg-ink/35 backdrop-blur-[1px] backdrop-enter"
       onClick={onClose}
     >
       <div
         role="dialog"
         aria-modal="true"
         aria-label={`Kiểm toán giao dịch cổ phiếu ${trade.sym}`}
-        className="flex h-full w-full max-w-lg flex-col justify-between border-l border-line bg-surface p-6 shadow-2xl"
+        className="flex h-full w-full max-w-lg flex-col justify-between border-l border-line bg-surface p-6 shadow-2xl drawer-enter"
         onClick={e => e.stopPropagation()}
       >
-        <div className="overflow-y-auto pr-1">
+        <div className="overflow-y-auto bg-surface overscroll-contain pr-1">
           <div className="flex items-start justify-between gap-3 border-b border-line pb-4">
             <div>
               <div className="flex items-center gap-2">
@@ -2005,14 +1976,14 @@ function PersonalCharterModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4 backdrop-blur-[1px]"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4 backdrop-blur-[1px] backdrop-enter"
       onClick={onClose}
     >
       <div
         role="dialog"
         aria-modal="true"
         aria-label="Thiết lập Phong cách và Luật Giao dịch Cá nhân"
-        className="w-full max-w-lg overflow-hidden rounded-xl border border-line bg-surface shadow-2xl"
+        className="w-full max-w-lg overflow-hidden rounded-xl border border-line bg-surface shadow-2xl modal-enter"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-start justify-between border-b border-line bg-canvas/60 px-5 py-4">
@@ -2237,6 +2208,7 @@ function PersonalOrderModal({
   const cleanSym = symbol.trim().toUpperCase()
   const heldPosition = positions.find(p => p.symbol.toUpperCase() === cleanSym)
   const heldQty = heldPosition?.quantity ?? 0
+  const sellableQty = heldPosition?.sellableQuantity ?? heldQty
 
   const parsedQty = Math.max(0, Math.floor(Number(quantity) || 0))
   const parsedPrice = Math.max(0, Math.round(Number(priceStr) || 0))
@@ -2251,8 +2223,8 @@ function PersonalOrderModal({
 
   const applyBuyingPowerPct = (pct: number) => {
     if (side === "SELL") {
-      const targetSell = Math.max(100, Math.floor(((heldQty * pct) / 100) / 100) * 100)
-      setQuantity(String(Math.min(heldQty, targetSell)))
+      const targetSell = Math.max(100, Math.floor(((sellableQty * pct) / 100) / 100) * 100)
+      setQuantity(String(sellableQty >= 100 ? Math.min(sellableQty, targetSell) : 0))
       return
     }
     if (parsedPrice <= 0) return
@@ -2302,14 +2274,14 @@ function PersonalOrderModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4 backdrop-blur-[1px]"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4 backdrop-blur-[1px] backdrop-enter"
       onClick={onClose}
     >
       <div
         role="dialog"
         aria-modal="true"
         aria-label="Phiếu đặt lệnh giao dịch cá nhân"
-        className="w-full max-w-lg overflow-hidden rounded-xl border border-line bg-surface shadow-2xl"
+        className="w-full max-w-lg overflow-hidden rounded-xl border border-line bg-surface shadow-2xl modal-enter"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-start justify-between border-b border-line bg-canvas/60 px-5 py-4">
@@ -2443,7 +2415,7 @@ function PersonalOrderModal({
               <div className="flex items-center justify-between text-[11px]">
                 <label className="font-medium text-secondary">Khối lượng (Lô 100 cp)</label>
                 <span className="font-mono text-[10px] text-muted">
-                  {side === "BUY" ? `Tối đa: ${fmt(maxBuyLots)} cp` : `Đang có: ${fmt(heldQty)} cp`}
+                  {side === "BUY" ? `Tối đa: ${fmt(maxBuyLots)} cp` : `Khả dụng bán: ${fmt(sellableQty)} cp`}
                 </span>
               </div>
               <input
@@ -2727,7 +2699,7 @@ export default function Portfolio() {
     !summary
   ) {
     return (
-      <Page title="Danh mục đầu tư">
+      <Page title="Danh mục Cá nhân">
         <DataState
           loading={snapshotResource.loading}
           error={snapshotResource.error}
@@ -2813,22 +2785,24 @@ export default function Portfolio() {
 
   return (
     <Page
-      title="Danh mục Đầu tư Cá nhân"
-      sub={`Tài sản ròng thời gian thực, cơ cấu nắm giữ (${snapshot.positions.length} vị thế mở), quang phổ ngành và sổ cái ${normalizedOrders.length} lệnh khớp`}
+      title="Danh mục Cá nhân"
+      meta={`${snapshot.positions.length} vị thế mở · ${normalizedOrders.length} lệnh khớp`}
+      fetching={snapshotResource.fetching}
       actions={
         <div className="flex shrink-0 items-center gap-2 whitespace-nowrap">
-          <Button variant="ghost" onClick={() => setCharterModalOpen(true)}>
+          <Button size="sm" variant="ghost" onClick={() => setCharterModalOpen(true)}>
             Luật Cá nhân
           </Button>
           {normalizedOrders.length > 0 && (
-            <Button variant="ghost" onClick={exportLedgerCsv}>
-              Xuất Sao kê (.CSV)
+            <Button size="sm" variant="ghost" onClick={exportLedgerCsv}>
+              Xuất CSV
             </Button>
           )}
-          <Button variant="ghost" onClick={() => void snapshotResource.reload()}>
+          <Button size="sm" variant="ghost" onClick={() => void snapshotResource.reload()}>
             Làm mới
           </Button>
           <Button
+            size="sm"
             variant="primary"
             onClick={() =>
               setOrderModalState({
@@ -2838,7 +2812,7 @@ export default function Portfolio() {
               })
             }
           >
-            Đặt lệnh giao dịch
+            Đặt lệnh
           </Button>
         </div>
       }
@@ -3100,61 +3074,13 @@ export default function Portfolio() {
               </div>
 
               {snapshot.positions.length > 0 ? (
-                <div className="mt-3.5 overflow-hidden rounded-lg border border-line">
-                  <table className="w-full text-[12px]">
-                    <thead>
-                      <tr className="border-b border-line bg-canvas/70 text-[10px] font-semibold text-muted uppercase whitespace-nowrap">
-                        <th className="px-3 py-2 text-left">Mã CP</th>
-                        <th className="px-2 py-2 text-right">Khối lượng</th>
-                        <th className="px-2 py-2 text-right">Giá vốn → Thị giá</th>
-                        <th className="px-2 py-2 text-right">Tỷ trọng</th>
-                        <th className="px-2 py-2 text-right">Lãi / Lỗ</th>
-                        <th className="px-3 py-2 text-right">Lệnh</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-line/60">
-                      {snapshot.positions.slice(0, 5).map(pos => {
-                        const entry =
-                          pos.costBasis !== null && pos.quantity > 0 ? pos.costBasis / pos.quantity : pos.avgPrice
-                        const isPosWin = (pos.pnl ?? 0) >= 0
-                        return (
-                          <tr key={pos.symbol} className="hover:bg-soft/35 whitespace-nowrap">
-                            <td className="px-3 py-2 font-mono font-bold text-ink">{pos.symbol}</td>
-                            <td className="tnum px-2 py-2 text-right font-mono text-ink">{fmt(pos.quantity)} cp</td>
-                            <td className="tnum px-2 py-2 text-right font-mono text-secondary">
-                              {fmt(entry)} → <strong className="text-ink">{fmt(pos.currentPrice)}</strong>
-                            </td>
-                            <td className="tnum px-2 py-2 text-right font-mono text-ink">
-                              {pos.weight !== null ? `${pos.weight.toFixed(1)}%` : "—"}
-                            </td>
-                            <td
-                              className={`tnum px-2 py-2 text-right font-mono font-semibold ${
-                                isPosWin ? "text-gain" : "text-loss"
-                              }`}
-                            >
-                              {signedPct(pos.pnlPercent)}
-                            </td>
-                            <td className="px-3 py-2 text-right">
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setOrderModalState({
-                                    open: true,
-                                    symbol: pos.symbol,
-                                    side: "SELL",
-                                    price: pos.currentPrice ?? entry,
-                                  })
-                                }
-                                className="rounded border border-line bg-canvas px-2 py-0.5 text-[11px] font-medium text-ink hover:bg-soft"
-                              >
-                                Giao dịch
-                              </button>
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
+                <div className="mt-3.5 flex items-center justify-between gap-2 rounded-lg border border-line bg-canvas/50 px-3.5 py-2.5 text-xs">
+                  <span className="font-medium text-ink">
+                    Đang nắm giữ <strong className="tnum font-mono">{snapshot.positions.length}</strong> vị thế mở
+                  </span>
+                  <span className="text-[11px] text-secondary">
+                    Quản lý chi tiết &amp; đặt lệnh tại Sổ cái bên dưới ↓
+                  </span>
                 </div>
               ) : (
                 <div className="mt-3.5 rounded-lg border border-dashed border-line bg-canvas/40 p-4">
@@ -3440,10 +3366,10 @@ export default function Portfolio() {
 
           {/* TAB 1: Open Positions */}
           {ledgerTab === "positions" && (
-            <div className="overflow-x-auto">
+            <div className="max-h-[460px] overflow-auto bg-surface overscroll-contain">
               {filteredPositions.length > 0 ? (
                 <table className="w-full min-w-[860px] text-[13px]">
-                  <thead>
+                  <thead className="sticky top-0 z-10 bg-surface">
                     <tr className="border-b border-line bg-canvas/50 text-[10.5px] font-semibold tracking-wider text-muted uppercase">
                       <th className="py-2.5 pl-5 text-left">Mã CP &amp; Ngành</th>
                       <th className="px-3 py-2.5 text-right">Khối lượng</th>
@@ -3565,10 +3491,10 @@ export default function Portfolio() {
 
           {/* TAB 2: Closed Stock Round-Trip Attribution Table */}
           {ledgerTab === "roundtrips" && (
-            <div className="overflow-x-auto">
+            <div className="max-h-[460px] overflow-auto bg-surface overscroll-contain">
               {filteredClosedTrades.length > 0 ? (
                 <table className="w-full min-w-[860px] text-[13px]">
-                  <thead>
+                  <thead className="sticky top-0 z-10 bg-surface">
                     <tr className="border-b border-line bg-canvas/50 text-[10.5px] font-semibold tracking-wider text-muted uppercase">
                       <th className="py-2.5 pl-5 text-left">Mã CP &amp; Ngành</th>
                       <th className="px-3 py-2.5 text-right">Chu kỳ giữ</th>
@@ -3658,9 +3584,9 @@ export default function Portfolio() {
             <div>
               {filteredOrders.length > 0 ? (
                 <>
-                  <div className="overflow-x-auto">
+                  <div className="max-h-[460px] overflow-auto bg-surface overscroll-contain">
                     <table className="w-full min-w-[820px] text-[13px]">
-                      <thead>
+                      <thead className="sticky top-0 z-10 bg-surface">
                         <tr className="border-b border-line bg-canvas/50 text-[10.5px] font-semibold tracking-wider text-muted uppercase">
                           <th className="py-2.5 pl-5 text-left">Mã CP &amp; Ngành</th>
                           <th className="px-3 py-2.5 text-left">Chiều</th>

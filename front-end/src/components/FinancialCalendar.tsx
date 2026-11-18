@@ -31,7 +31,7 @@ export function FinancialCalendar({ value, onChange, dates = [], label = "Chọn
   return <div className="inline-flex">
     <button type="button" popoverTarget={id} aria-label={label} onClick={() => {
       setMonth((value || dataDates[0] || today).slice(0, 7)); setDraft(value ? displayDate(value) : ""); setError("")
-    }} className="inline-flex h-9 items-center gap-2 rounded-[7px] border border-line-strong bg-surface px-3 text-[12px] text-ink focus-visible:outline-2 focus-visible:outline-mineral">
+    }} className="inline-flex h-8 items-center gap-2 rounded-[7px] border border-line-strong bg-surface px-3 text-[12px] text-ink focus-visible:outline-2 focus-visible:outline-mineral">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/></svg>
       <span className="font-mono tnum">{value ? displayDate(value) : allowAll ? "Tất cả ngày" : "Chọn ngày"}</span><span className="text-muted">▾</span>
     </button>

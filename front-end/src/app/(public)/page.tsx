@@ -75,7 +75,7 @@ function PortfolioRiskFrame() {
 
 function MarketPulse() {
   const [indexSeed, setIndexSeed] = useState<{ vnIndexVal: string; vnIndexPct: number | null } | undefined>()
-  const { indices: liveIndices, isLive, snapshot: liveSnapshot, breadth: liveBreadth, liquidity: liveLiquidity } = useRealtimeMarket(indexSeed)
+  const { indices: liveIndices, isLive, snapshot: liveSnapshot, breadth: liveBreadth, liquidity: liveLiquidity } = useRealtimeMarket(indexSeed, { heatmap: false })
   const [indexDate, setIndexDate] = useState<string>("")
   const [historySeries, setHistorySeries] = useState<number[]>([])
   const [liquidity, setLiquidity] = useState<string>("—")
@@ -249,77 +249,107 @@ function MarketPulse() {
   )
 }
 
-function AskDemo() {
-  const [query, setQuery] = useState(
-    "Tại sao khối ngoại mua ròng mạnh HPG hôm nay?",
-  )
-  const [asked, setAsked] = useState(true)
-  const answers: Record<string, string> = {
-    "Tại sao khối ngoại mua ròng mạnh HPG hôm nay?":
-      "Khối ngoại mua ròng 182 tỷ VNĐ tại HPG khi khối lượng giao dịch đạt 2.1× trung bình 20 phiên. Động lực được hỗ trợ bởi sự hồi phục biên lợi nhuận Q2, song vẫn cần theo dõi rủi ro từ thị trường xuất khẩu.",
-    "So sánh xung lực giữa MBB và TCB":
-      "MBB dẫn trước TCB về dòng tiền (+143 tỷ so với +88 tỷ) và điểm phần trăm xung lực (74 so với 66). Cả hai đều hưởng lợi từ độ rộng ngành ngân hàng; MBB có tín hiệu xác nhận trong phiên rõ ràng hơn.",
-    "Nhóm ngành Bất động sản có biến động gì?":
-      "Độ rộng ngành Bất động sản suy yếu khi VHM giảm 2.05% và dòng tiền ngoại đảo chiều bán ròng. Đây là sự phân kỳ với thị trường chung, chưa phải đảo chiều toàn ngành.",
+function CommitteePreview() {
+  const [tab, setTab] = useState<"thesis" | "vsa" | "risk">("thesis")
+  const views: Record<
+    "thesis" | "vsa" | "risk",
+    {
+      label: string
+      eyebrow: string
+      title: string
+      body: string
+      stats: [string, string, "gain" | "warning" | "mineral"][]
+    }
+  > = {
+    thesis: {
+      label: "Luận điểm & Phản biện CTS",
+      eyebrow: "Quy trình 12 chuyên gia · Phản biện độc lập",
+      title: "Mỗi khuyến nghị đều đi qua vòng phản biện trước khi cấp quyền mua",
+      body: "Agent 04 tổng hợp động lượng và cơ bản từ F1–F6, sau đó Agent 05 kiểm định điểm mù (Beneish M-Score, định giá, rủi ro ngành) để chốt trạng thái PROCEED, CONDITIONAL hoặc BLOCK.",
+      stats: [
+        ["Trạng thái", "CONDITIONAL", "warning"],
+        ["Điểm CSS", "74 / 100", "gain"],
+        ["Biên an toàn", "2 lớp kiểm định", "mineral"],
+      ],
+    },
+    vsa: {
+      label: "Vi cấu trúc VSA & Dòng tiền",
+      eyebrow: "Quét 411 mã HOSE · Cập nhật theo phiên",
+      title: "Tách bạch cung cầu thực tế ngay trong phiên khớp lệnh",
+      body: "Bộ lọc HOSE nhận diện các phiên rũ cung, test cung và bùng nổ khối lượng so với trung bình 10–20 phiên, kết hợp tỷ trọng mua/bán chủ động BVC.",
+      stats: [
+        ["Tín hiệu", "Test cung (10P)", "gain"],
+        ["Thanh khoản", "≥ 15 tỷ/phiên", "mineral"],
+        ["Áp lực bán", "Cạn cung", "gain"],
+      ],
+    },
+    risk: {
+      label: "Cổng Rủi ro T+2.5 & ADTV20",
+      eyebrow: "Kỷ luật thực thi sàn HOSE",
+      title: "Chặn lệnh vượt sức chứa thanh khoản và kẹt T+2.5 ngay trước khi gửi",
+      body: "Mọi vị thế đều được kiểm toán theo trần 15% ADTV20 mỗi phiên, giới hạn 15% tỷ trọng cổ phiếu, 35% tỷ trọng ngành và kịch bản rủi ro 2 phiên sàn liên tiếp (-13,51%).",
+      stats: [
+        ["Trần lệnh", "≤ 15% ADTV20", "mineral"],
+        ["Chu kỳ về", "T+2.5 HOSE", "warning"],
+        ["Lệch dừng lỗ", "Kiểm soát 2% NAV", "gain"],
+      ],
+    },
   }
+  const cur = views[tab]
   return (
     <div className="rounded-[12px] border border-line-strong bg-surface shadow-sm">
-      <div className="border-b border-line px-5 py-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-5 py-3.5">
         <div className="flex items-center gap-2">
           <span className="grid h-6 w-6 place-items-center rounded-[6px] bg-ink font-serif text-[13px] text-paper">
             A
           </span>
           <span className="text-[13px] font-semibold text-ink">
-            Hỏi đáp AIInvest
+            Hồ sơ Ủy ban 12 Chuyên gia
           </span>
-          <Pill tone="neutral">Minh họa · không phải phân tích trực tiếp</Pill>
         </div>
+        <Pill tone="neutral">Minh họa quy trình</Pill>
       </div>
       <div className="p-5">
-        <div className="rounded-[8px] border border-line bg-paper p-3 text-[13px] text-ink">
-          {query}
-        </div>
-        {asked && (
-          <div className="mt-4 border-l-2 border-teal pl-4">
-            <div className="text-[10px] font-semibold uppercase tracking-[.14em] text-teal">
-              Câu trả lời minh họa
-            </div>
-            <p className="mt-2 text-[13px] leading-relaxed text-secondary">
-              {answers[query]}
-            </p>
-            <div className="mt-4 grid grid-cols-3 gap-2">
-              {[
-                ["Dòng tiền", "+182B", "gain"],
-                ["Khối lượng", "2.1×", "mineral"],
-                ["Rủi ro", "Xuất khẩu thép", "warning"],
-              ].map(([l, v, t]) => (
-                <div key={l} className="rounded-[6px] bg-soft px-2.5 py-2">
-                  <div className="text-[9px] uppercase tracking-wide text-muted">
-                    {l}
-                  </div>
-                  <div
-                    className={`mt-0.5 text-[11px] font-medium ${t === "gain" ? "text-gain" : t === "warning" ? "text-warning" : "text-ink"}`}
-                  >
-                    {v}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-        <div className="mt-5 flex flex-wrap gap-2">
-          {Object.keys(answers).map((item) => (
+        <div className="flex flex-wrap gap-1.5">
+          {(["thesis", "vsa", "risk"] as const).map((k) => (
             <button
-              key={item}
-              onClick={() => {
-                setQuery(item)
-                setAsked(true)
-              }}
-              className="rounded-full border border-line px-3 py-1.5 text-left text-[11px] text-secondary transition-colors hover:border-mineral hover:text-ink"
+              key={k}
+              type="button"
+              onClick={() => setTab(k)}
+              className={`rounded-full border px-3 py-1.5 text-[11.5px] font-medium transition-colors ${
+                tab === k
+                  ? "border-ink bg-ink text-paper"
+                  : "border-line bg-paper text-secondary hover:border-mineral hover:text-ink"
+              }`}
             >
-              {item}
+              {views[k].label}
             </button>
           ))}
+        </div>
+        <div className="mt-4 border-l-2 border-teal pl-4">
+          <div className="text-[10px] font-semibold uppercase tracking-[.14em] text-teal">
+            {cur.eyebrow}
+          </div>
+          <div className="mt-1.5 text-[14px] font-semibold text-ink">
+            {cur.title}
+          </div>
+          <p className="mt-2 text-[13px] leading-relaxed text-secondary">
+            {cur.body}
+          </p>
+          <div className="mt-4 grid grid-cols-3 gap-2">
+            {cur.stats.map(([l, v, t]) => (
+              <div key={l} className="rounded-[6px] bg-soft px-2.5 py-2">
+                <div className="text-[9px] uppercase tracking-wide text-muted">
+                  {l}
+                </div>
+                <div
+                  className={`mt-0.5 text-[11px] font-medium ${t === "gain" ? "text-gain" : t === "warning" ? "text-warning" : "text-ink"}`}
+                >
+                  {v}
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     </div>
@@ -333,7 +363,7 @@ function Pipeline() {
   return (
     <div className="grid grid-cols-1 overflow-hidden rounded-[12px] border border-line-strong bg-surface lg:grid-cols-[1fr_320px]">
       <p className="border-b border-line bg-paper px-5 py-2.5 text-[11px] text-secondary lg:col-span-2">Luồng và kết quả bên dưới là nội dung minh họa, không phải trạng thái của một lượt chạy hiện tại.</p>
-      <div className="max-h-[520px] divide-y divide-line overflow-y-auto">
+      <div className="max-h-[520px] divide-y divide-line overflow-y-auto bg-surface overscroll-contain">
         {pipeline.map((p, i) => {
           return (
             <button
@@ -656,19 +686,19 @@ export default function Landing() {
           <div className="grid grid-cols-1 gap-14 lg:grid-cols-[.75fr_1.25fr]">
             <div className="lg:pt-10">
               <div className="text-[11px] font-semibold uppercase tracking-[.16em] text-muted">
-                01 — Vấn đáp thị trường
+                01 — Thẩm định &amp; Phản biện Định lượng
               </div>
               <h2 className="mt-4 font-serif text-[38px] leading-[1.06] tracking-tight text-ink">
-                Từ một câu hỏi đến góc nhìn đầu tư chuẩn mực.
+                Từ dữ liệu thị trường đến phán quyết có kiểm chứng.
               </h2>
               <p className="mt-5 text-[15px] leading-relaxed text-secondary">
-                Đặt câu hỏi theo ngôn ngữ của nhà đầu tư. AIInvest liên kết câu trả lời với biến động giá, ngành nghề, báo cáo tài chính, dòng tiền và rủi ro — không phải một điểm số hộp đen.
+                AIInvest liên kết trực tiếp giá, thanh khoản phiên, cấu trúc ngành, chỉ số đa nhân tố và luật rủi ro sàn HOSE — không phải một điểm số hộp đen.
               </p>
               <div className="mt-7 border-l border-gold pl-4 text-[13px] leading-relaxed text-secondary">
-                “Điều quan trọng không phải câu trả lời nhanh hơn, mà là câu trả lời bạn có thể kiểm chứng được.”
+                “Điều quan trọng không phải kết luận nhanh hơn, mà là phán quyết bạn có thể truy vết bằng số liệu thật.”
               </div>
             </div>
-            <AskDemo />
+            <CommitteePreview />
           </div>
         </section>
         <section className="border-y border-line bg-surface">
@@ -676,7 +706,7 @@ export default function Landing() {
             <Pipeline />
             <div className="flex flex-col justify-center">
               <div className="text-[11px] font-semibold uppercase tracking-[.16em] text-muted">
-                02 — Nghiên cứu đa tác tử
+                02 — Hội đồng 12 Chuyên gia AI
               </div>
               <h2 className="mt-4 font-serif text-[38px] leading-[1.06] tracking-tight text-ink">
                 Thị trường → Ngành nghề → Cổ phiếu. Không bỏ sót bất kỳ mắt xích nào.

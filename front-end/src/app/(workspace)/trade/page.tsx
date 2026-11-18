@@ -1,7 +1,8 @@
 "use client"
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import React, { useCallback, useEffect, useMemo, useState } from "react"
 import { marketApi, portfolioApi, stockApi } from "@/lib/api"
+import { Page } from "@/components/Shell"
 import { getSocket, retainOhlc } from "@/lib/socket"
 import { useRealtimeMarket, useRealtimeStock } from "@/lib/use-realtime"
 import { usePortfolio, type PortfolioPosition, type PortfolioSnapshot } from "@/lib/use-portfolio"
@@ -160,11 +161,6 @@ function getTickStep(price: number): number {
   if (price < 10_000) return 10
   if (price < 50_000) return 50
   return 100
-}
-
-function roundToTick(price: number): number {
-  const step = getTickStep(price)
-  return Math.max(step, Math.round(price / step) * step)
 }
 
 function resolveCoherentBands(ref: number, price: number, rawCeiling: number, rawFloor: number) {
@@ -419,9 +415,9 @@ function BidAskOrderbook({
             <span
               className={`h-1.5 w-1.5 rounded-full ${
                 isRealtimeBook || isLiveStream
-                  ? "bg-[var(--color-gain)] animate-pulse"
+                  ? "bg-[var(--color-gain)] pulse-subtle"
                   : socketConnected
-                    ? "bg-[var(--color-mineral)] animate-pulse"
+                    ? "bg-[var(--color-mineral)]"
                     : "bg-[var(--color-ref)]"
               }`}
             />
@@ -482,8 +478,8 @@ function BidAskOrderbook({
                   >
                     {/* Thanh độ sâu thanh khoản neo từ trục Spread trung tâm tỏa sang trái */}
                     <span
-                      className="pointer-events-none absolute inset-y-0.5 right-0 bg-[var(--color-gain)]/14 transition-[width] duration-300"
-                      style={{ width: `${depthPct}%` }}
+                      className="pointer-events-none absolute inset-y-0.5 inset-x-0 bg-[var(--color-gain)]/14 origin-right transition-transform duration-[140ms] ease-[var(--ease-out-expo)]"
+                      style={{ transform: `scaleX(${depthPct / 100})` }}
                     />
                     <span
                       className={`relative text-[11px] ${
@@ -555,8 +551,8 @@ function BidAskOrderbook({
                   >
                     {/* Thanh độ sâu thanh khoản neo từ trục Spread trung tâm tỏa sang phải */}
                     <span
-                      className="pointer-events-none absolute inset-y-0.5 left-0 bg-[var(--color-loss)]/14 transition-[width] duration-300"
-                      style={{ width: `${depthPct}%` }}
+                      className="pointer-events-none absolute inset-y-0.5 inset-x-0 bg-[var(--color-loss)]/14 origin-left transition-transform duration-[140ms] ease-[var(--ease-out-expo)]"
+                      style={{ transform: `scaleX(${depthPct / 100})` }}
                     />
                     <span className={`relative ${rank === 1 ? "font-bold" : "font-semibold"} ${tone}`}>
                       {fmtPrice(level.price)}
@@ -591,14 +587,10 @@ function BidAskOrderbook({
               <span className="font-medium text-[var(--color-gain)]">
                 Tổng mua: <strong>{formatBookVolume(totalBidVol)}</strong> ({bidPct}%)
               </span>
-              <div className="hidden sm:flex h-1.5 flex-1 max-w-[200px] overflow-hidden rounded-full bg-[var(--color-line)]">
+              <div className="hidden sm:block h-1.5 flex-1 max-w-[200px] overflow-hidden rounded-full bg-[var(--color-loss)]">
                 <div
-                  className="bg-[var(--color-gain)] transition-[width] duration-300"
-                  style={{ width: `${bidPct}%` }}
-                />
-                <div
-                  className="bg-[var(--color-loss)] transition-[width] duration-300"
-                  style={{ width: `${askPct}%` }}
+                  className="h-full w-full bg-[var(--color-gain)] origin-left transition-transform duration-[160ms] ease-[var(--ease-out-expo)]"
+                  style={{ transform: `scaleX(${bidPct / 100})` }}
                 />
               </div>
               <span className="font-medium text-[var(--color-loss)]">
@@ -650,10 +642,9 @@ export default function TradePage() {
     }
     return "HPG"
   })
-  const [searchQuery, setSearchQuery] = useState("")
-  const [searchOpen, setSearchOpen] = useState(false)
   const [seedUniverse, setSeedUniverse] = useState<ApiMarketStock[]>([])
-  const searchBoxRef = useRef<HTMLDivElement | null>(null)
+  const [stockLoadError, setStockLoadError] = useState<string | null>(null)
+  const [seedRetry, setSeedRetry] = useState(0)
 
   const [initialStock, setInitialStock] = useState<Stock | undefined>(undefined)
   const [candleBundle, setCandleBundle] = useState<{ symbol: string; items: RawCandle[] }>({
@@ -715,7 +706,7 @@ export default function TradePage() {
   const [selectedOrderReceipt, setSelectedOrderReceipt] = useState<TradeOrderRecord | null>(null)
 
   // Live market-wide snapshot via WebSocket
-  const { snapshot: liveMarketSnapshot } = useRealtimeMarket()
+  const { snapshot: liveMarketSnapshot } = useRealtimeMarket(undefined, { tape: false, heatmap: false })
 
   useEffect(() => {
     let active = true
@@ -741,15 +732,6 @@ export default function TradePage() {
     return seedUniverse
   }, [liveMarketSnapshot?.stocks, seedUniverse])
 
-  useEffect(() => {
-    function handleOutside(e: MouseEvent) {
-      if (searchBoxRef.current && !searchBoxRef.current.contains(e.target as Node)) {
-        setSearchOpen(false)
-      }
-    }
-    document.addEventListener("mousedown", handleOutside)
-    return () => document.removeEventListener("mousedown", handleOutside)
-  }, [])
 
   const selectSymbol = (nextSym: string, nextSide?: "BUY" | "SELL", prefillQty?: number) => {
     const clean = nextSym.trim().toUpperCase()
@@ -761,8 +743,7 @@ export default function TradePage() {
     setShowDraftOrderOnChart(false)
     setOrderNotice(null)
     setLiveForeignBillion(null)
-    setSearchOpen(false)
-    setSearchQuery("")
+    setStockLoadError(null)
     if (nextSide) setSide(nextSide)
     if (prefillQty && prefillQty >= 100) {
       setQtyInput(String(Math.floor(prefillQty / 100) * 100))
@@ -832,6 +813,11 @@ export default function TradePage() {
           ? ((ohlcv as { data: RawCandle[] }).data ?? [])
           : []
       setCandleBundle({ symbol: targetSym, items: candleList as RawCandle[] })
+      if (!quote && candleList.length === 0) {
+        setStockLoadError(`Không tải được dữ liệu thị trường cho ${targetSym}.`)
+      } else {
+        setStockLoadError(null)
+      }
 
       const rec = (ob ?? {}) as Record<string, unknown>
       const lastUpdate = rec.lastUpdate ? String(rec.lastUpdate) : null
@@ -853,7 +839,7 @@ export default function TradePage() {
     return () => {
       active = false
     }
-  }, [symbol])
+  }, [symbol, seedRetry])
 
   // Subscribe to live 1D OHLC candles, foreign flow & automatic reconnect sync
   useEffect(() => {
@@ -972,6 +958,7 @@ export default function TradePage() {
     isLive,
     lastTickAt,
     flash,
+    tickSeq,
   } = useRealtimeStock(symbol, initialStock)
 
   const snapshotMatch = useMemo(
@@ -1200,17 +1187,6 @@ export default function TradePage() {
     return merged.slice(0, 6)
   }, [positions, symbol])
 
-  const searchResults = useMemo(() => {
-    const q = searchQuery.trim().toUpperCase()
-    if (!q) return marketUniverse.slice(0, 8)
-    return marketUniverse
-      .filter(
-        (item) =>
-          String(item.symbol ?? "").toUpperCase().includes(q) ||
-          String(item.name ?? "").toUpperCase().includes(q)
-      )
-      .slice(0, 8)
-  }, [marketUniverse, searchQuery])
 
   const quantity = Number(qtyInput || 0)
   const validLotQty = Number.isInteger(quantity) && quantity >= 100 && quantity % 100 === 0
@@ -1448,121 +1424,72 @@ export default function TradePage() {
   const mainPriceTone = hosePriceTone(stock.price, stock.ref, stock.ceiling, stock.floor)
 
   return (
-    <div className="max-w-[1360px] mx-auto px-6 lg:px-8 py-6 space-y-4">
-      {/* ====================================================================
-       * 1. THANH TIÊU ĐỀ, TRẠNG THÁI LIVE STREAM & CHỌN NHANH MÃ CỔ PHIẾU
-       * ==================================================================== */}
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex flex-wrap items-center gap-3">
-          <h1 className="font-display text-[26px] font-semibold tracking-tight text-[var(--color-ink)] leading-none">
-            Giao dịch & Khớp lệnh
-          </h1>
-          <Pill tone={isLive ? "gain" : socketConnected ? "teal" : "neutral"}>
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${
-                isLive
-                  ? "bg-[var(--color-gain)] animate-pulse"
-                  : socketConnected
-                    ? "bg-[var(--color-mineral)] animate-pulse"
-                    : "bg-[var(--color-muted)]"
-              }`}
-            />
-            {isLive
-              ? `Trực tiếp HOSE${lastTickTime ? ` · ${lastTickTime}` : ""}`
-              : socketConnected
-                ? "Tự động cập nhật · Ngoài phiên khớp lệnh"
-                : "Đang kết nối luồng trực tiếp…"}
-          </Pill>
+    <Page
+      variant="compact"
+      title="Khớp lệnh"
+      meta={
+        <Pill tone={isLive ? "gain" : socketConnected ? "teal" : "neutral"}>
+          <span
+            className={`h-1.5 w-1.5 rounded-full ${
+              isLive
+                ? "bg-[var(--color-gain)] animate-pulse"
+                : socketConnected
+                  ? "bg-[var(--color-mineral)] animate-pulse"
+                  : "bg-[var(--color-muted)]"
+            }`}
+          />
+          {isLive
+            ? `Trực tiếp HOSE${lastTickTime ? ` · ${lastTickTime}` : ""}`
+            : socketConnected
+              ? "Tự động cập nhật · Ngoài phiên khớp lệnh"
+              : "Đang kết nối luồng trực tiếp…"}
+        </Pill>
+      }
+      actions={
+        <div className="flex items-center gap-1.5">
+          {quickSymbols.map((sym) => {
+            const isCurrent = sym === symbol
+            const isHeld = positions.some((p) => p.symbol.toUpperCase() === sym)
+            return (
+              <button
+                key={sym}
+                type="button"
+                onClick={() => selectSymbol(sym)}
+                className={`inline-flex h-8 items-center gap-1.5 rounded-[var(--radius-sm)] border px-2.5 font-mono text-[12px] font-medium transition-colors whitespace-nowrap active:scale-[0.98] ${
+                  isCurrent
+                    ? "border-[var(--color-ink)] bg-[var(--color-ink)] text-[var(--color-paper)]"
+                    : "border-[var(--color-line)] bg-[var(--color-surface)] text-[var(--color-ink-2)] hover:border-[var(--color-ink)]"
+                }`}
+              >
+                {isHeld && (
+                  <span
+                    className={`h-1.5 w-1.5 rounded-full ${
+                      isCurrent ? "bg-[var(--color-paper)]" : "bg-[var(--color-gain)]"
+                    }`}
+                  />
+                )}
+                {sym}
+              </button>
+            )
+          })}
         </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Quick Symbol Chips */}
-          <div className="flex items-center gap-1.5">
-            {quickSymbols.map((sym) => {
-              const isCurrent = sym === symbol
-              const isHeld = positions.some((p) => p.symbol.toUpperCase() === sym)
-              return (
-                <button
-                  key={sym}
-                  type="button"
-                  onClick={() => selectSymbol(sym)}
-                  className={`inline-flex h-8 items-center gap-1.5 rounded-[var(--radius-sm)] border px-2.5 font-mono text-[12px] font-medium transition-colors whitespace-nowrap ${
-                    isCurrent
-                      ? "border-[var(--color-ink)] bg-[var(--color-ink)] text-[var(--color-paper)]"
-                      : "border-[var(--color-line)] bg-[var(--color-surface)] text-[var(--color-ink-2)] hover:border-[var(--color-ink)]"
-                  }`}
-                >
-                  {isHeld && (
-                    <span
-                      className={`h-1.5 w-1.5 rounded-full ${
-                        isCurrent ? "bg-[var(--color-paper)]" : "bg-[var(--color-gain)]"
-                      }`}
-                    />
-                  )}
-                  {sym}
-                </button>
-              )
-            })}
-          </div>
-
-          {/* Search Input (Live Market Universe) */}
-          <div ref={searchBoxRef} className="relative">
-            <div className="flex h-8 items-center rounded-[var(--radius-sm)] border border-[var(--color-line-strong)] bg-[var(--color-surface)] px-2.5 focus-within:border-[var(--color-ink)]">
-              <input
-                type="text"
-                value={searchQuery}
-                onFocus={() => setSearchOpen(true)}
-                onChange={(e) => {
-                  setSearchQuery(e.target.value)
-                  setSearchOpen(true)
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && searchResults.length > 0) {
-                    selectSymbol(String(searchResults[0].symbol ?? "HPG"))
-                  }
-                }}
-                placeholder="Tìm mã hoặc tên công ty..."
-                className="w-[180px] bg-transparent text-[12px] text-[var(--color-ink)] placeholder:text-[var(--color-muted)] focus:outline-none"
-              />
-            </div>
-
-            {searchOpen && (
-              <div className="absolute right-0 z-40 mt-1.5 w-[310px] rounded-[var(--radius-md)] border border-[var(--color-line-strong)] bg-[var(--color-surface)] p-1.5 shadow-xl">
-                <div className="max-h-[250px] overflow-y-auto divide-y divide-[var(--color-line)]/50">
-                  {searchResults.map((item) => {
-                    const sym = String(item.symbol ?? "").toUpperCase()
-                    const pr = toVndPrice(item.price)
-                    const chg = Number(item.change_pct ?? 0)
-                    return (
-                      <button
-                        key={sym}
-                        type="button"
-                        onClick={() => selectSymbol(sym)}
-                        className="flex w-full items-center justify-between gap-2 rounded-[var(--radius-sm)] px-2.5 py-2 text-left hover:bg-[var(--color-surface-2)] transition-colors"
-                      >
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-1.5">
-                            <span className="font-mono text-[12.5px] font-bold text-[var(--color-ink)]">
-                              {sym}
-                            </span>
-                            <span className="truncate text-[11.5px] text-[var(--color-muted)]">
-                              {String(item.name ?? sym)}
-                            </span>
-                          </div>
-                        </div>
-                        <div className="shrink-0 text-right font-mono text-[11.5px] tabular-nums">
-                          <div className="font-semibold text-[var(--color-ink)]">{fmtPrice(pr)}</div>
-                          <div className={`text-[10.5px] ${toneText(chg)}`}>{fmtPercent(chg)}</div>
-                        </div>
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
+      }
+    >
+      {stockLoadError && (
+        <div
+          role="alert"
+          className="flex items-center justify-between gap-3 rounded-[var(--radius-sm)] border border-[var(--color-loss)]/30 bg-[var(--color-loss-soft)] px-3.5 py-2 text-[12.5px] text-[var(--color-loss)]"
+        >
+          <span>{stockLoadError}</span>
+          <button
+            type="button"
+            onClick={() => setSeedRetry((c) => c + 1)}
+            className="font-semibold underline"
+          >
+            Thử lại
+          </button>
         </div>
-      </div>
+      )}
 
       {/* ====================================================================
        * 2. THANH THÔNG TIN MÃ CỔ PHIẾU TRỰC TIẾP (CÂN ĐỐI TOÀN CHIỀU NGANG)
@@ -1591,12 +1518,9 @@ export default function TradePage() {
             </div>
 
             <div
-              className={`rounded-[var(--radius-sm)] px-2.5 py-1 font-mono tabular-nums text-right sm:text-left whitespace-nowrap transition-colors duration-300 ${
-                flash === "gain"
-                  ? "bg-[var(--color-gain-soft)]"
-                  : flash === "loss"
-                    ? "bg-[var(--color-loss-soft)]"
-                    : ""
+              key={tickSeq}
+              className={`rounded-[var(--radius-sm)] px-2.5 py-1 font-mono tabular-nums text-right sm:text-left whitespace-nowrap ${
+                flash === "gain" ? "tick-up" : flash === "loss" ? "tick-down" : ""
               }`}
             >
               <div className={`text-[23px] font-bold leading-none ${mainPriceTone}`}>
@@ -1691,7 +1615,7 @@ export default function TradePage() {
           <TradingViewChart
             symbol={symbol}
             seedCandles={candles}
-            height={580}
+            height={445}
             trading={{
               symbol,
               stockName: stock.name,
@@ -1766,7 +1690,7 @@ export default function TradePage() {
                   setSide("BUY")
                   setOrderNotice(null)
                 }}
-                className={`rounded-[5px] py-1.5 text-[13px] font-semibold transition-colors whitespace-nowrap ${
+                className={`rounded-[5px] py-1.5 text-[13px] font-semibold transition-colors whitespace-nowrap active:scale-[0.98] ${
                   side === "BUY"
                     ? "bg-[var(--color-gain)] text-[var(--color-paper)]"
                     : "text-[var(--color-muted)] hover:text-[var(--color-ink)]"
@@ -1780,7 +1704,7 @@ export default function TradePage() {
                   setSide("SELL")
                   setOrderNotice(null)
                 }}
-                className={`rounded-[5px] py-1.5 text-[13px] font-semibold transition-colors whitespace-nowrap ${
+                className={`rounded-[5px] py-1.5 text-[13px] font-semibold transition-colors whitespace-nowrap active:scale-[0.98] ${
                   side === "SELL"
                     ? "bg-[var(--color-loss)] text-[var(--color-paper)]"
                     : "text-[var(--color-muted)] hover:text-[var(--color-ink)]"
@@ -1804,7 +1728,7 @@ export default function TradePage() {
                   key={item.id}
                   type="button"
                   onClick={() => setOrderType(item.id)}
-                  className={`rounded-[var(--radius-sm)] border py-1.5 px-1 text-center transition-colors whitespace-nowrap ${
+                  className={`rounded-[var(--radius-sm)] border py-1.5 px-1 text-center transition-colors whitespace-nowrap active:scale-[0.98] ${
                     orderType === item.id
                       ? "border-[var(--color-ink)] bg-[var(--color-ink)] text-[var(--color-paper)]"
                       : "border-[var(--color-line)] bg-[var(--color-surface-2)] text-[var(--color-muted)] hover:text-[var(--color-ink)]"
@@ -2139,7 +2063,7 @@ export default function TradePage() {
               type="button"
               onClick={handleSubmitOrder}
               disabled={!canSubmit}
-              className={`h-10 w-full rounded-[var(--radius-sm)] text-[13px] font-semibold text-[var(--color-paper)] transition-opacity whitespace-nowrap ${
+              className={`h-10 w-full rounded-[var(--radius-sm)] text-[13px] font-semibold text-[var(--color-paper)] transition-opacity whitespace-nowrap active:scale-[0.98] ${
                 side === "BUY" ? "bg-[var(--color-gain)]" : "bg-[var(--color-loss)]"
               } disabled:opacity-40 disabled:cursor-not-allowed`}
             >
@@ -2199,9 +2123,9 @@ export default function TradePage() {
           }
         />
 
-        <div className="overflow-x-auto border-t border-[var(--color-line)] pt-1">
+        <div className="max-h-[380px] overflow-auto bg-[var(--color-surface)] overscroll-contain border-t border-[var(--color-line)]">
           <table className="w-full text-left text-[12.5px]">
-            <thead>
+            <thead className="sticky top-0 z-10 bg-[var(--color-surface)]">
               <tr className="border-b border-[var(--color-line)] text-[10.5px] font-mono uppercase tracking-[0.08em] text-[var(--color-muted)] whitespace-nowrap">
                 <th className="py-2.5 pr-3">Thời gian</th>
                 <th className="py-2.5 px-3">Mã CP</th>
@@ -2391,11 +2315,11 @@ export default function TradePage() {
        * ==================================================================== */}
       {amendingOrder && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-enter"
           onClick={() => setAmendingOrder(null)}
         >
           <div
-            className="w-full max-w-[400px] rounded-[var(--radius-md)] border border-[var(--color-line-strong)] bg-[var(--color-paper)] p-5 shadow-2xl space-y-4"
+            className="w-full max-w-[400px] rounded-[var(--radius-md)] border border-[var(--color-line-strong)] bg-[var(--color-paper)] p-5 shadow-2xl space-y-4 modal-enter"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-start justify-between border-b border-[var(--color-line)] pb-3">
@@ -2484,11 +2408,11 @@ export default function TradePage() {
        * ==================================================================== */}
       {selectedOrderReceipt && (
         <div
-          className="fixed inset-0 z-50 flex justify-end bg-black/35 backdrop-blur-[2px]"
+          className="fixed inset-0 z-50 flex justify-end bg-black/35 backdrop-blur-[2px] backdrop-enter"
           onClick={() => setSelectedOrderReceipt(null)}
         >
           <div
-            className="flex h-full w-full max-w-[420px] flex-col justify-between border-l border-[var(--color-line-strong)] bg-[var(--color-paper)] p-6 shadow-2xl overflow-y-auto"
+            className="flex h-full w-full max-w-[420px] flex-col justify-between border-l border-[var(--color-line-strong)] bg-[var(--color-paper)] p-6 shadow-2xl overflow-y-auto drawer-enter"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="space-y-5">
@@ -2695,6 +2619,6 @@ export default function TradePage() {
           </div>
         </div>
       )}
-    </div>
+    </Page>
   )
 }

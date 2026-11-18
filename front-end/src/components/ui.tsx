@@ -7,13 +7,18 @@ export const fmtPct = (n: number) => `${n >= 0 ? "+" : ""}${n.toLocaleString("vi
 
 // ── Button ─────────────────────────────────────────────────────
 type BtnVariant = "primary" | "secondary" | "ghost" | "quiet"
+type BtnSize = "sm" | "md"
 export function Button({
-  children, onClick, variant = "secondary", className = "", type = "button", disabled,
+  children, onClick, variant = "secondary", size = "md", className = "", type = "button", disabled,
 }: {
-  children: ReactNode; onClick?: () => void; variant?: BtnVariant; className?: string
+  children: ReactNode; onClick?: () => void; variant?: BtnVariant; size?: BtnSize; className?: string
   type?: "button" | "submit"; disabled?: boolean
 }) {
-  const base = "inline-flex items-center justify-center gap-1.5 rounded-[7px] text-[13px] font-medium px-3.5 h-9 transition-colors disabled:opacity-45 disabled:pointer-events-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-mineral"
+  const sizes: Record<BtnSize, string> = {
+    sm: "h-8 px-3 text-[12.5px]",
+    md: "h-9 px-3.5 text-[13px]",
+  }
+  const base = `inline-flex items-center justify-center gap-1.5 rounded-[7px] font-medium transition-[background-color,border-color,color,transform,opacity] duration-[120ms] ease-out active:scale-[0.98] disabled:opacity-45 disabled:pointer-events-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-mineral ${sizes[size]}`
   const styles: Record<BtnVariant, string> = {
     primary: "bg-ink text-paper hover:bg-[#0d1310]",
     secondary: "bg-surface text-ink border border-line-strong hover:border-ink/40 hover:bg-soft",
@@ -227,11 +232,15 @@ export function MarketLineChart({ series, height = 220, xLabels }: { series: { l
 // ── Bars ───────────────────────────────────────────────────────
 export function FactorBar({ label, value, tone = "mineral" }: { label: string; value: number; tone?: string }) {
   const color = tone === "teal" ? "bg-teal" : tone === "gold" ? "bg-gold" : "bg-mineral"
+  const ratio = Math.max(0, Math.min(1, value / 100))
   return (
     <div className="flex items-center gap-3">
       <span className="text-[12px] text-secondary w-24 shrink-0">{label}</span>
       <div className="flex-1 h-1.5 bg-soft rounded-full overflow-hidden">
-        <div className={`h-full ${color} rounded-full`} style={{ width: `${value}%` }} />
+        <div
+          className={`h-full w-full ${color} rounded-full origin-left transition-transform duration-[220ms] ease-[var(--ease-out-expo)]`}
+          style={{ transform: `scaleX(${ratio})` }}
+        />
       </div>
       <span className="tnum font-mono text-[12px] text-ink w-8 text-right">{value}</span>
     </div>
@@ -295,20 +304,95 @@ export function EmptyState({ title, body, action }: { title: string; body: strin
 
 // ── Tabs ───────────────────────────────────────────────────────
 export function Tabs({ tabs, active, onChange }: { tabs: string[]; active: string; onChange: (t: string) => void }) {
+  const listRef = useRef<HTMLDivElement>(null)
+  const indicatorRef = useRef<HTMLSpanElement>(null)
+
+  useEffect(() => {
+    const list = listRef.current
+    const bar = indicatorRef.current
+    if (!list || !bar) return
+    const sync = () => {
+      const selected = list.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
+      if (!selected) {
+        bar.style.opacity = "0"
+        return
+      }
+      const left = selected.offsetLeft + 8
+      const width = Math.max(12, selected.offsetWidth - 16)
+      bar.style.width = `${width}px`
+      bar.style.transform = `translate3d(${left}px, 0, 0)`
+      bar.style.opacity = "1"
+    }
+    sync()
+    if (typeof ResizeObserver === "undefined") return
+    const ro = new ResizeObserver(sync)
+    ro.observe(list)
+    return () => ro.disconnect()
+  }, [active, tabs])
+
   return (
-    <div className="flex items-center gap-0.5 border-b border-line -mx-0.5" role="tablist">
+    <div ref={listRef} className="relative flex items-center gap-0.5 border-b border-line -mx-0.5" role="tablist">
       {tabs.map((t) => (
         <button
           key={t}
+          type="button"
           role="tab"
           aria-selected={active === t}
           onClick={() => onChange(t)}
-          className={`relative px-3 h-9 text-[13px] font-medium transition-colors ${active === t ? "text-ink" : "text-muted hover:text-secondary"}`}
+          className={`relative px-3 h-9 text-[13px] font-medium transition-colors duration-[120ms] whitespace-nowrap ${
+            active === t ? "text-ink" : "text-muted hover:text-secondary"
+          }`}
         >
           {t}
-          {active === t && <span className="absolute left-2 right-2 -bottom-px h-[2px] bg-ink rounded-full" />}
         </button>
       ))}
+      <span
+        ref={indicatorRef}
+        aria-hidden="true"
+        className="pointer-events-none absolute left-0 -bottom-px h-[2px] rounded-full bg-ink opacity-0 transition-[transform,width,opacity] duration-[160ms] ease-[var(--ease-out-expo)]"
+      />
+    </div>
+  )
+}
+
+export function SegmentedTabs<T extends string>({
+  options,
+  value,
+  onChange,
+  className = "",
+  ariaLabel = "Chế độ hiển thị",
+}: {
+  options: readonly { value: NoInfer<T>; label: ReactNode }[]
+  value: T
+  onChange: (value: T) => void
+  className?: string
+  ariaLabel?: string
+}) {
+  return (
+    <div
+      role="tablist"
+      aria-label={ariaLabel}
+      className={`inline-flex h-8 items-center rounded-[7px] border border-line bg-soft/85 p-0.5 ${className}`}
+    >
+      {options.map((opt) => {
+        const active = opt.value === value
+        return (
+          <button
+            key={opt.value}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => onChange(opt.value)}
+            className={`inline-flex h-[26px] items-center gap-1 rounded-[5px] px-2.5 text-[12px] font-medium whitespace-nowrap transition-[background-color,color,box-shadow,transform] duration-[140ms] ease-out active:scale-[0.98] ${
+              active
+                ? "bg-surface text-ink shadow-[0_1px_2px_rgba(24,32,29,0.08)]"
+                : "text-secondary hover:text-ink"
+            }`}
+          >
+            {opt.label}
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -393,8 +477,8 @@ export function CustomSelect({
         <div
           role="listbox"
           aria-label={ariaLabel}
-          className={`absolute top-full mt-1 z-30 min-w-full w-max max-w-[260px] max-h-[280px] overflow-y-auto rounded-[8px] border border-line-strong bg-surface py-1 shadow-[0_10px_28px_rgba(24,32,29,0.12)] ${
-            align === "right" ? "right-0" : "left-0"
+          className={`popover-enter absolute top-full mt-1 z-30 min-w-full w-max max-w-[260px] max-h-[280px] overflow-y-auto rounded-[8px] border border-line-strong bg-surface py-1 shadow-[0_10px_28px_rgba(24,32,29,0.12)] ${
+            align === "right" ? "right-0 origin-top-right" : "left-0 origin-top-left"
           }`}
         >
           {groups.map((grp) => {

@@ -86,7 +86,7 @@ function VsaHeaderTip({
       </span>
       <div
         role="tooltip"
-        className="pointer-events-none invisible opacity-0 group-hover/htip:visible group-hover/htip:opacity-100 transition-opacity duration-150 absolute top-full left-1/2 -translate-x-1/2 mt-1.5 z-30 w-[260px] rounded-[8px] border border-line-strong bg-surface p-3 text-left normal-case tracking-normal shadow-[0_10px_28px_rgba(24,32,29,0.14)]"
+        className="pointer-events-none invisible opacity-0 translate-y-1 scale-[0.985] [transition:opacity_120ms_ease-out_0ms,transform_120ms_var(--ease-out-expo)_0ms,visibility_0s_linear_120ms] group-hover/htip:visible group-hover/htip:opacity-100 group-hover/htip:translate-y-0 group-hover/htip:scale-100 group-hover/htip:[transition:opacity_140ms_ease-out_80ms,transform_140ms_var(--ease-out-expo)_80ms,visibility_0s_linear_0ms] absolute top-full left-1/2 -translate-x-1/2 mt-1.5 z-30 w-[260px] rounded-[8px] border border-line-strong bg-surface p-3 text-left normal-case tracking-normal shadow-[0_10px_28px_rgba(24,32,29,0.14)]"
       >
         <div className="text-[11.5px] font-semibold text-ink">{title}</div>
         <div className="mt-1 inline-block rounded-[4px] bg-soft px-1.5 py-0.5 font-mono text-[10px] font-medium text-mineral">
@@ -180,7 +180,7 @@ function VsaMetricCell({
       {kind && (
         <div
           role="tooltip"
-          className={`pointer-events-none invisible opacity-0 group-hover/cell:visible group-hover/cell:opacity-100 transition-opacity duration-150 absolute left-1/2 -translate-x-1/2 z-30 w-[245px] rounded-[8px] border border-line-strong bg-surface p-2.5 text-left normal-case tracking-normal shadow-[0_10px_28px_rgba(24,32,29,0.14)] ${
+          className={`pointer-events-none invisible opacity-0 translate-y-1 scale-[0.985] [transition:opacity_120ms_ease-out_0ms,transform_120ms_var(--ease-out-expo)_0ms,visibility_0s_linear_120ms] group-hover/cell:visible group-hover/cell:opacity-100 group-hover/cell:translate-y-0 group-hover/cell:scale-100 group-hover/cell:[transition:opacity_140ms_ease-out_80ms,transform_140ms_var(--ease-out-expo)_80ms,visibility_0s_linear_0ms] absolute left-1/2 -translate-x-1/2 z-30 w-[245px] rounded-[8px] border border-line-strong bg-surface p-2.5 text-left normal-case tracking-normal shadow-[0_10px_28px_rgba(24,32,29,0.14)] ${
             placeBelow ? "top-full mt-1.5" : "bottom-full mb-1.5"
           }`}
         >
@@ -384,16 +384,18 @@ export function SuperStocksTable({
   initialSector = "",
   showVolumeSurge = false,
   liveStocks,
+  controlledStrategy,
 }: {
   data?: SuperStocksPayload | null
   loading?: boolean
   initialSector?: string
   showVolumeSurge?: boolean
   liveStocks?: ApiMarketStock[]
+  controlledStrategy?: "sieu_pham" | "trading"
 }) {
-  const { snapshot: wsSnapshot, isLive: wsLive } = useRealtimeMarket()
+  const { snapshot: wsSnapshot, isLive: wsLive } = useRealtimeMarket(undefined, { tape: false, heatmap: false })
   const [strategyTab, setStrategyTab] = useState<string>(STRATEGY_TABS[0])
-  const strategy = strategyTab === STRATEGY_TABS[1] ? "trading" : "sieu_pham"
+  const strategy = controlledStrategy ?? (strategyTab === STRATEGY_TABS[1] ? "trading" : "sieu_pham")
   const [quickFilter, setQuickFilter] = useState<string>("all")
   const [sectorFilter, setSectorFilter] = useState<string>(initialSector)
   const [searchQuery, setSearchQuery] = useState<string>("")
@@ -589,7 +591,7 @@ export function SuperStocksTable({
                 }`}
               >
                 {quickFilter === "tao_lap"
-                  ? "Đang lọc 54 mã dưới bảng ✓"
+                  ? `Đang lọc ${allVolumeSurges.length} mã dưới bảng ✓`
                   : `Đưa cả ${allVolumeSurges.length} mã xuống bảng chi tiết ↓`}
               </button>
               {allVolumeSurges.length > 12 && (
@@ -605,7 +607,7 @@ export function SuperStocksTable({
           </div>
 
           {/* Khóa cứng chiều cao tối đa + grid cố định 6 cột để dù 100 mã cũng không bao giờ biến dạng layout */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 divide-x divide-y divide-line max-h-[264px] overflow-y-auto">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 divide-x divide-y divide-line max-h-[264px] overflow-y-auto bg-surface overscroll-contain">
             {displayedSurges.map((item) => (
               <Link
                 key={item.code}
@@ -640,17 +642,19 @@ export function SuperStocksTable({
       )}
 
       <Panel flush>
-        {/* Header: Editorial Tabs + Inline Signal Summary + Custom Dropdown Filters */}
-        <div className="px-5 pt-4 pb-3 border-b border-line space-y-3">
+        {/* Header: Editorial Tabs (hidden when parent controls strategy) + Inline Signal Summary + Custom Dropdown Filters */}
+        <div className="px-5 pt-3.5 pb-3 border-b border-line space-y-2.5">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <Tabs
-              tabs={STRATEGY_TABS}
-              active={strategyTab}
-              onChange={(t) => {
-                setStrategyTab(t)
-                setPage(1)
-              }}
-            />
+            {!controlledStrategy && (
+              <Tabs
+                tabs={STRATEGY_TABS}
+                active={strategyTab}
+                onChange={(t) => {
+                  setStrategyTab(t)
+                  setPage(1)
+                }}
+              />
+            )}
 
             {/* Inline Editorial Signal Counters */}
             <div className="flex flex-wrap items-center gap-1.5 text-[11.5px]">
@@ -742,14 +746,14 @@ export function SuperStocksTable({
               )}
             </div>
 
-            <div className="flex items-center gap-2 font-mono text-[11.5px] text-muted tnum">
+            <div className="flex items-center gap-2 font-mono text-[11.5px] text-secondary tnum">
               <span
                 className={`h-1.5 w-1.5 rounded-full ${
-                  isRealtimeActive ? "bg-gain animate-pulse" : "bg-muted"
+                  isRealtimeActive ? "bg-gain pulse-subtle" : "bg-muted"
                 }`}
               />
               <span>
-                {isRealtimeActive ? "Trực tiếp DNSE" : `EOD ${data?.asOf ? String(data.asOf).slice(0, 10) : ""}`}
+                {isRealtimeActive ? "Trực tiếp HOSE" : `EOD ${data?.asOf ? String(data.asOf).slice(0, 10) : ""}`}
                 {" · "}Hiển thị {pagedItems.length}/{filteredItems.length} mã
               </span>
             </div>
@@ -759,20 +763,20 @@ export function SuperStocksTable({
         {/* Table Body */}
         {loading && allItems.length === 0 ? (
           <div className="py-16 text-center text-[13px] text-muted">
-            Đang tải dữ liệu định lượng VSA & Dòng tiền…
+            Đang tải dữ liệu định lượng VSA &amp; Dòng tiền…
           </div>
         ) : filteredItems.length === 0 ? (
           <div className="py-16 text-center text-[13px] text-muted">
             Không có cổ phiếu nào khớp với tiêu chí lọc hiện tại.
           </div>
         ) : strategy === "sieu_pham" ? (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[940px] text-[12px]">
-              <thead>
-                <tr className="border-b border-line bg-soft/40 text-[10px] uppercase tracking-wider text-muted">
-                  <th className="px-5 py-2.5 text-left font-medium">Mã / Ngành</th>
-                  <th className="px-3 py-2.5 text-left font-medium w-[17%]">Mua chủ động (BVC)</th>
-                  <th className="px-3 py-2.5 text-center font-medium">
+          <div className="overflow-x-auto xl:overflow-visible bg-surface">
+            <table className="w-full min-w-[940px] text-[12px] border-separate border-spacing-0">
+              <thead className="xl:sticky xl:top-12 z-10 bg-soft">
+                <tr className="text-[10px] uppercase tracking-wider text-secondary">
+                  <th className="px-5 py-2.5 text-left font-semibold border-b border-line">Mã / Ngành</th>
+                  <th className="px-3 py-2.5 text-left font-semibold w-[17%] border-b border-line">Mua chủ động (BVC)</th>
+                  <th className="px-3 py-2.5 text-center font-semibold border-b border-line">
                     <VsaHeaderTip
                       label="Rũ nến (% Rút)"
                       title="Rũ nến · Wyckoff Spring / Shakeout (10 phiên)"
@@ -780,7 +784,7 @@ export function SuperStocksTable({
                       detail="Đo tỷ lệ bóng nến dưới so với toàn bộ biên độ cây nến. Đạt chuẩn khi giá quét thủng đáy hỗ trợ 5–10 phiên (biên độ ≥ 2.0%) nhưng rút chân ≥ 50% và đóng cửa ở phần trên (≥ 60%)."
                     />
                   </th>
-                  <th className="px-3 py-2.5 text-center font-medium">
+                  <th className="px-3 py-2.5 text-center font-semibold border-b border-line">
                     <VsaHeaderTip
                       label="Test cung (% MA10)"
                       title="Test cung · No Supply Bar (10 phiên)"
@@ -788,7 +792,7 @@ export function SuperStocksTable({
                       detail="Đo mức độ cạn kiệt nguồn cung trong nền 10 phiên. Đạt chuẩn khi biên độ nến hẹp (≤ 1.85%), rút chân đỡ giá ≥ 40%, đóng cửa ≥ 50% và Volume cạn kiệt ≤ 68% MA10. % càng thấp càng cạn cung."
                     />
                   </th>
-                  <th className="px-3 py-2.5 text-center font-medium">
+                  <th className="px-3 py-2.5 text-center font-semibold border-b border-line">
                     <VsaHeaderTip
                       label="Dòng tiền (Vol · MFI)"
                       title="Dòng tiền lớn · Pocket Pivot (10 phiên)"
@@ -796,10 +800,10 @@ export function SuperStocksTable({
                       detail="Xác nhận phiên Pocket Pivot trong nền 10 phiên: nến tăng (≥ 0.8%, đóng cửa ≥ 60% biên độ) với khối lượng bùng nổ ≥ 1.45 lần MA10."
                     />
                   </th>
-                  <th className="px-3 py-2.5 text-right font-medium">Tiền áp đảo (20P)</th>
-                  <th className="px-3 py-2.5 text-right font-medium">KL mua tối đa</th>
-                  <th className="px-3 py-2.5 text-center font-medium">Trạng thái / Giá</th>
-                  <th className="px-5 py-2.5 text-right font-medium">KL khớp dự kiến</th>
+                  <th className="px-3 py-2.5 text-right font-semibold border-b border-line">Tiền áp đảo (20P)</th>
+                  <th className="px-3 py-2.5 text-right font-semibold border-b border-line">KL mua tối đa</th>
+                  <th className="px-3 py-2.5 text-center font-semibold border-b border-line">Trạng thái / Giá</th>
+                  <th className="px-5 py-2.5 text-right font-semibold border-b border-line">KL khớp dự kiến</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
@@ -894,22 +898,22 @@ export function SuperStocksTable({
             </table>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[880px] text-[12px]">
-              <thead>
-                <tr className="border-b border-line bg-soft/40 text-[10px] uppercase tracking-wider text-muted">
-                  <th className="px-5 py-2.5 text-left font-medium">Mã / Ngành</th>
-                  <th className="px-3 py-2.5 text-left font-medium w-[20%]">Mua chủ động (BVC)</th>
-                  <th className="px-3 py-2.5 text-center font-medium">RSI (14) / MFI (14)</th>
-                  <th className="px-3 py-2.5 text-center font-medium">Tần suất nổ Vol</th>
-                  <th className="px-3 py-2.5 text-right font-medium">Biên độ 20P</th>
-                  <th className="px-3 py-2.5 text-right font-medium">KL mua tối đa</th>
-                  <th className="px-3 py-2.5 text-center font-medium">Trạng thái / Giá</th>
-                  <th className="px-5 py-2.5 text-right font-medium">KL khớp dự kiến</th>
+          <div className="overflow-x-auto xl:overflow-visible bg-surface">
+            <table className="w-full min-w-[880px] text-[12px] border-separate border-spacing-0">
+              <thead className="xl:sticky xl:top-12 z-10 bg-soft">
+                <tr className="text-[10px] uppercase tracking-wider text-secondary">
+                  <th className="px-5 py-2.5 text-left font-semibold border-b border-line">Mã / Ngành</th>
+                  <th className="px-3 py-2.5 text-left font-semibold w-[20%] border-b border-line">Mua chủ động (BVC)</th>
+                  <th className="px-3 py-2.5 text-center font-semibold border-b border-line">RSI (14) / MFI (14)</th>
+                  <th className="px-3 py-2.5 text-center font-semibold border-b border-line">Tần suất nổ Vol</th>
+                  <th className="px-3 py-2.5 text-right font-semibold border-b border-line">Biên độ 20P</th>
+                  <th className="px-3 py-2.5 text-right font-semibold border-b border-line">KL mua tối đa</th>
+                  <th className="px-3 py-2.5 text-center font-semibold border-b border-line">Trạng thái / Giá</th>
+                  <th className="px-5 py-2.5 text-right font-semibold border-b border-line">KL khớp dự kiến</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
-                {pagedItems.map((row, rowIdx) => (
+                {pagedItems.map((row) => (
                   <tr key={row.code} className="hover:bg-soft/45 transition-colors">
                     <td className="px-5 py-2.5">
                       <Link

@@ -67,9 +67,10 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
     isLive: false,
     lastTickAt: null,
   })
-  const [flashState, setFlashState] = useState<{ symbol: string; dir: "gain" | "loss" | null }>({
+  const [flashState, setFlashState] = useState<{ symbol: string; dir: "gain" | "loss" | null; seq: number }>({
     symbol: "",
     dir: null,
+    seq: 0,
   })
   const flashTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const hasRealtimePriceRef = useRef(false)
@@ -161,8 +162,15 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
 
         if (oldPrice && newPrice !== oldPrice) {
           if (flashTimeoutRef.current) clearTimeout(flashTimeoutRef.current)
-          setFlashState({ symbol: sym, dir: newPrice > oldPrice ? "gain" : "loss" })
-          flashTimeoutRef.current = setTimeout(() => setFlashState({ symbol: sym, dir: null }), 1000)
+          setFlashState((prevFlash) => ({
+            symbol: sym,
+            dir: newPrice > oldPrice ? "gain" : "loss",
+            seq: prevFlash.seq + 1,
+          }))
+          flashTimeoutRef.current = setTimeout(
+            () => setFlashState((cur) => (cur.symbol === sym ? { ...cur, dir: null } : cur)),
+            520,
+          )
         }
 
         const rawRef = data.ref !== undefined ? data.ref : data.prevClose
@@ -293,18 +301,29 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
     isLive: matchedIsLive,
     lastTickAt: matchedLastTickAt,
     flash: flashState.symbol === activeSym ? flashState.dir : null,
+    tickSeq: flashState.symbol === activeSym ? flashState.seq : 0,
   }
 }
 
-export function useRealtimeMarket(initialIndices?: {
-  vnIndexVal: string
-  vnIndexPct: number | null
-  vnIndexChange?: number | null
-  vn30Val?: string
-  vn30Pct?: number | null
-  vn100Val?: string
-  vn100Pct?: number | null
-}) {
+export function useRealtimeMarket(
+  initialIndices?: {
+    vnIndexVal: string
+    vnIndexPct: number | null
+    vnIndexChange?: number | null
+    vn30Val?: string
+    vn30Pct?: number | null
+    vn100Val?: string
+    vn100Pct?: number | null
+  },
+  options?: {
+    tape?: boolean
+    snapshot?: boolean
+    heatmap?: boolean
+  },
+) {
+  const wantTape = options?.tape !== false
+  const wantSnapshot = options?.snapshot !== false
+  const wantHeatmap = options?.heatmap !== false
   const [indices, setIndices] = useState(initialIndices)
   const [isLive, setIsLive] = useState(false)
   const [heatmapLive, setHeatmapLive] = useState(false)
@@ -313,24 +332,35 @@ export function useRealtimeMarket(initialIndices?: {
   const [liquidity, setLiquidity] = useState<MarketLiquidityTick | null>(null)
   const lastIndicesAt = useRef(0)
   const lastHeatmapAt = useRef(0)
+  const prevVnIndexRef = useRef<number | null>(null)
+  const indexFlashTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const snapshotFrameRef = useRef<number | null>(null)
+  const pendingSnapshotRef = useRef<MarketSnapshotTick | null>(null)
+  const heatmapFrameRef = useRef<number | null>(null)
+  const pendingHeatmapRef = useRef<MarketHeatmapTick | null>(null)
+  const [indexFlash, setIndexFlash] = useState<{ dir: "gain" | "loss" | null; seq: number }>({
+    dir: null,
+    seq: 0,
+  })
   const [breadth, setBreadth] = useState<MarketBreadthTick | null>(null)
 
   useEffect(() => {
-    if (initialIndices) {
-      setIndices((prev) => {
-        if (lastIndicesAt.current > 0) return prev
-        if (
-          prev?.vnIndexVal === initialIndices.vnIndexVal &&
-          prev?.vnIndexPct === initialIndices.vnIndexPct &&
-          prev?.vn100Val === initialIndices.vn100Val &&
-          prev?.vn100Pct === initialIndices.vn100Pct
-        ) {
-          return prev
-        }
-        return initialIndices
-      })
-    }
+    if (!wantTape || !initialIndices) return
+    setIndices((prev) => {
+      if (lastIndicesAt.current > 0) return prev
+      if (
+        prev?.vnIndexVal === initialIndices.vnIndexVal &&
+        prev?.vnIndexPct === initialIndices.vnIndexPct &&
+        prev?.vn100Val === initialIndices.vn100Val &&
+        prev?.vn100Pct === initialIndices.vn100Pct
+      ) {
+        return prev
+      }
+      return initialIndices
+    })
   }, [
+    wantTape,
+    initialIndices,
     initialIndices?.vnIndexVal,
     initialIndices?.vnIndexPct,
     initialIndices?.vn100Val,
@@ -338,6 +368,7 @@ export function useRealtimeMarket(initialIndices?: {
   ])
 
   useEffect(() => {
+    if (!wantTape && !wantSnapshot && !wantHeatmap) return
     const socket = getSocket()
 
     function onConnect() {
@@ -374,6 +405,23 @@ export function useRealtimeMarket(initialIndices?: {
         const fresh = receivedAt > 0 && Date.now() - receivedAt < 15_000
         setIsLive(fresh)
         if (fresh) lastIndicesAt.current = receivedAt
+
+        const rawNum = Number(vnIndexItem.value)
+        if (Number.isFinite(rawNum) && rawNum > 0) {
+          const prevVal = prevVnIndexRef.current
+          if (prevVal !== null && prevVal !== rawNum) {
+            if (indexFlashTimeoutRef.current) clearTimeout(indexFlashTimeoutRef.current)
+            setIndexFlash((cur) => ({
+              dir: rawNum > prevVal ? "gain" : "loss",
+              seq: cur.seq + 1,
+            }))
+            indexFlashTimeoutRef.current = setTimeout(
+              () => setIndexFlash((cur) => ({ ...cur, dir: null })),
+              520,
+            )
+          }
+          prevVnIndexRef.current = rawNum
+        }
       }
 
       const rawVniDiff = vnIndexItem?.change
@@ -399,14 +447,31 @@ export function useRealtimeMarket(initialIndices?: {
 
     function onSnapshot(data: MarketSnapshotTick) {
       if (!Array.isArray(data?.stocks)) return
-      setSnapshot(data)
+      pendingSnapshotRef.current = data
+      if (snapshotFrameRef.current !== null) return
+      snapshotFrameRef.current = window.requestAnimationFrame(() => {
+        snapshotFrameRef.current = null
+        const nextSnapshot = pendingSnapshotRef.current
+        pendingSnapshotRef.current = null
+        if (nextSnapshot) setSnapshot(nextSnapshot)
+      })
     }
 
     function onHeatmap(data: MarketHeatmapTick) {
       if (!Array.isArray(data?.sectors)) return
-      setHeatmap(data)
-      if (!data.isSnapshot) setHeatmapLive(true)
-      if (!data.isSnapshot) lastHeatmapAt.current = Date.now()
+      pendingHeatmapRef.current = data
+      if (heatmapFrameRef.current !== null) return
+      heatmapFrameRef.current = window.requestAnimationFrame(() => {
+        heatmapFrameRef.current = null
+        const nextHeatmap = pendingHeatmapRef.current
+        pendingHeatmapRef.current = null
+        if (!nextHeatmap) return
+        setHeatmap(nextHeatmap)
+        if (!nextHeatmap.isSnapshot) {
+          setHeatmapLive(true)
+          lastHeatmapAt.current = Date.now()
+        }
+      })
     }
 
     function onBreadth(data: MarketBreadthTick) {
@@ -423,19 +488,28 @@ export function useRealtimeMarket(initialIndices?: {
       setLiquidity(value == null || Number.isFinite(Number(value)) ? data : { ...data, totalValueBillion: null })
     }
 
-    const freshnessTimer = window.setInterval(() => {
-      if (lastIndicesAt.current && Date.now() - lastIndicesAt.current > 15_000) setIsLive(false)
-      if (lastHeatmapAt.current && Date.now() - lastHeatmapAt.current > 15_000) setHeatmapLive(false)
-    }, 1_000)
+    const freshnessTimer =
+      wantTape || wantHeatmap
+        ? window.setInterval(() => {
+            if (wantTape && lastIndicesAt.current && Date.now() - lastIndicesAt.current > 15_000) {
+              setIsLive((prev) => (prev ? false : prev))
+            }
+            if (wantHeatmap && lastHeatmapAt.current && Date.now() - lastHeatmapAt.current > 15_000) {
+              setHeatmapLive((prev) => (prev ? false : prev))
+            }
+          }, 1_000)
+        : null
 
     const releaseMarket = retainMarket()
     socket.on("connect", onConnect)
     socket.on("disconnect", onDisconnect)
-    socket.on("market:indices", onIndices)
-    socket.on("market:snapshot", onSnapshot)
-    socket.on("market:heatmap", onHeatmap)
-    socket.on("market:breadth", onBreadth)
-    socket.on("market:liquidity", onLiquidity)
+    if (wantTape) {
+      socket.on("market:indices", onIndices)
+      socket.on("market:breadth", onBreadth)
+      socket.on("market:liquidity", onLiquidity)
+    }
+    if (wantSnapshot) socket.on("market:snapshot", onSnapshot)
+    if (wantHeatmap) socket.on("market:heatmap", onHeatmap)
     if (socket.connected) {
       onConnect()
     } else {
@@ -446,16 +520,25 @@ export function useRealtimeMarket(initialIndices?: {
       releaseMarket()
       socket.off("connect", onConnect)
       socket.off("disconnect", onDisconnect)
-      socket.off("market:indices", onIndices)
-      socket.off("market:snapshot", onSnapshot)
-      socket.off("market:heatmap", onHeatmap)
-      socket.off("market:breadth", onBreadth)
-      socket.off("market:liquidity", onLiquidity)
-      window.clearInterval(freshnessTimer)
+      if (wantTape) {
+        socket.off("market:indices", onIndices)
+        socket.off("market:breadth", onBreadth)
+        socket.off("market:liquidity", onLiquidity)
+      }
+      if (wantSnapshot) socket.off("market:snapshot", onSnapshot)
+      if (wantHeatmap) socket.off("market:heatmap", onHeatmap)
+      if (freshnessTimer !== null) window.clearInterval(freshnessTimer)
+      if (indexFlashTimeoutRef.current) clearTimeout(indexFlashTimeoutRef.current)
+      if (snapshotFrameRef.current !== null) window.cancelAnimationFrame(snapshotFrameRef.current)
+      snapshotFrameRef.current = null
+      pendingSnapshotRef.current = null
+      if (heatmapFrameRef.current !== null) window.cancelAnimationFrame(heatmapFrameRef.current)
+      heatmapFrameRef.current = null
+      pendingHeatmapRef.current = null
     }
-  }, [])
+  }, [wantTape, wantSnapshot, wantHeatmap])
 
-  return { indices, isLive, snapshot, heatmap, heatmapLive, breadth, liquidity }
+  return { indices, isLive, snapshot, heatmap, heatmapLive, breadth, liquidity, indexFlash }
 }
 
 export function useRealtimeMarketOrderBooks(

@@ -132,10 +132,6 @@ export const workspaceApi = {
   overview: () => clientCached("workspace:overview", 30_000, () => apiClient.get("/workspace/overview").then(r => r.data)),
   agent: (date?: string) => apiClient.get("/workspace/agent", { params: { date } }).then(r => r.data),
   research: () => clientCached("workspace:research", 30_000, () => apiClient.get("/workspace/research").then(r => r.data)),
-  watchlists: () => apiClient.get("/workspace/watchlists").then(r => r.data),
-  createWatchlist: (body: { name: string; symbols: string[] }) => apiClient.post("/workspace/watchlists", body).then(r => r.data),
-  updateWatchlist: (id: string, body: { name?: string; symbols?: string[] }) => apiClient.patch(`/workspace/watchlists/${id}`, body).then(r => r.data),
-  deleteWatchlist: (id: string) => apiClient.delete(`/workspace/watchlists/${id}`),
 }
 export const screenerApi = { filter: (filters: Record<string, unknown> = {}) => apiClient.post("/screener/filter", filters, { timeout: 120_000 }).then(r => r.data), presets: () => apiClient.get("/screener/presets/builtin").then(r => r.data), myPresets: () => apiClient.get("/screener/presets").then(r => r.data), savePreset: (name: string, filters: Record<string, unknown>) => apiClient.post("/screener/presets", { name, filters }).then(r => r.data) }
 export const aiApi = { backtest: (body: Record<string, unknown>) => apiClient.post("/ai/backtest", body, { timeout: 120_000 }).then(r => r.data), backtestHistory: () => apiClient.get("/ai/backtest/history").then(r => r.data), backtestResults: (id: string) => apiClient.get(`/ai/backtest/${encodeURIComponent(id)}/results`).then(r => r.data), backtestStatus: (id: string) => apiClient.get(`/ai/backtest/${encodeURIComponent(id)}/status`).then(r => r.data), pipelineStatus: () => apiClient.get("/ai/pipeline/status").then(r => r.data) }

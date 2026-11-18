@@ -1,4 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&display=swap');
 @import 'tailwindcss';
 
 @theme {
@@ -14,10 +13,13 @@
   --color-line-strong: #c4ccc7;
 
   --color-ink: #18201d;
+  --color-ink-2: #52605a;
   --color-secondary: #52605a;
   --color-muted: #7a8580;
   --color-disabled: #a7aeaa;
 
+  --color-canvas: #f5f6f3;
+  --font-display: var(--font-sans);
   --color-mineral: #466779;
   --color-teal: #3f6259;
   --color-gold: #b08a43;
@@ -31,6 +33,7 @@
   --color-loss-soft: rgba(181, 82, 80, 0.1);
   --color-surface-2: #eef1ef;
   --radius-sm: 6px;
+  --radius-md: 8px;
   --color-warning: #a97a31;
   --color-critical: #a94343;
   --color-neutral: #6b7470;
@@ -38,17 +41,28 @@
   --color-ink-surface: #10161400;
 }
 
+:root {
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out-snappy: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-micro: 120ms;
+  --dur-popover: 130ms;
+  --dur-cmd: 140ms;
+  --dur-chrome: 160ms;
+  --dur-drawer: 180ms;
+  --dur-gauge: 280ms;
+  --dur-tick: 520ms;
+}
+
 html,
-body,
-#root {
-  height: 100%;
+body {
+  min-height: 100%;
 }
 
 body {
   font-family: var(--font-sans);
   background: var(--color-paper);
   color: var(--color-ink);
-  font-feature-settings: 'cv01', 'cv02', 'ss01';
+  overflow-x: clip;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -57,119 +71,76 @@ body {
   font-feature-settings: 'tnum';
 }
 
-/* Scrollbars: hidden until scroll */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
-}
-
-*:hover {
-  scrollbar-color: var(--color-line-strong) transparent;
-}
-
+/* Custom institutional scrollbars (Chromium/Safari via ::-webkit-scrollbar; Firefox via @supports fallback so Chrome 121+ does not disable ::-webkit-scrollbar) */
+::-webkit-scrollbar,
 *::-webkit-scrollbar {
-  width: 9px;
-  height: 9px;
+  width: 8px;
+  height: 8px;
 }
 
-*::-webkit-scrollbar-thumb {
+::-webkit-scrollbar-button,
+*::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+::-webkit-scrollbar-track,
+*::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner,
+*::-webkit-scrollbar-corner {
   background: transparent;
-  border-radius: 9px;
-  border: 3px solid transparent;
-  background-clip: content-box;
 }
 
-*:hover::-webkit-scrollbar-thumb {
-  background: var(--color-line-strong);
-  background-clip: content-box;
+::-webkit-scrollbar-thumb,
+*::-webkit-scrollbar-thumb {
+  background-color: rgba(24, 32, 29, 0.26);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 
-@keyframes flash-up {
-  0% {
-    background-color: color-mix(in srgb, var(--color-gain) 22%, transparent);
+::-webkit-scrollbar-thumb:hover,
+*::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(63, 98, 89, 0.72);
+  border: 1.5px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:active,
+*::-webkit-scrollbar-thumb:active {
+  background-color: #3f6259;
+  border: 1.5px solid transparent;
+  background-clip: padding-box;
+}
+
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(24, 32, 29, 0.28) transparent;
   }
-
-  100% {
-    background-color: transparent;
-  }
-}
-
-@keyframes flash-down {
-  0% {
-    background-color: color-mix(in srgb, var(--color-loss) 22%, transparent);
-  }
-
-  100% {
-    background-color: transparent;
-  }
-}
-
-.flash-up {
-  animation: flash-up 0.9s ease-out;
-}
-
-.flash-down {
-  animation: flash-down 0.9s ease-out;
 }
 
 @keyframes dossier-enter {
-  0% {
+  from {
     opacity: 0;
-    transform: translate3d(0, 8px, 0);
+    transform: translate3d(0, 4px, 0);
   }
-
-  100% {
+  to {
     opacity: 1;
     transform: none;
   }
 }
 
 .dossier-enter {
-  animation: dossier-enter 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
-@keyframes chart-reveal-x {
-  0% {
-    clip-path: inset(0 100% 0 0);
-    opacity: 0.45;
-  }
-
-  100% {
-    clip-path: inset(0 0% 0 0);
-    opacity: 1;
-  }
-}
-
-.chart-reveal-x {
-  animation: chart-reveal-x 950ms cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
-@keyframes chart-line-draw {
-  0% {
-    stroke-dashoffset: 100;
-  }
-
-  100% {
-    stroke-dashoffset: 0;
-  }
-}
-
-.chart-line-draw {
-  stroke-dasharray: 100;
-  animation: chart-line-draw 1050ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: dossier-enter 150ms var(--ease-out-expo) both;
 }
 
 @keyframes chart-dot-pop {
   0% {
     opacity: 0;
-    transform: scale(0.3);
+    transform: scale(0.7);
   }
-
-  70% {
-    opacity: 1;
-    transform: scale(1.18);
-  }
-
   100% {
     opacity: 1;
     transform: scale(1);
@@ -179,91 +150,184 @@ body {
 .chart-dot-pop {
   transform-box: fill-box;
   transform-origin: center;
-  animation: chart-dot-pop 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
-@keyframes heat-cell-pop {
-  0% {
-    opacity: 0;
-    transform: translateY(5px) scale(0.88);
-  }
-
-  100% {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-
-.heat-cell-pop {
-  animation: heat-cell-pop 460ms cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
-@keyframes donut-sweep {
-  0% {
-    opacity: 0.25;
-    transform: rotate(-110deg) scale(0.92);
-  }
-
-  100% {
-    opacity: 1;
-    transform: rotate(-90deg) scale(1);
-  }
-}
-
-.donut-sweep {
-  animation: donut-sweep 820ms cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
-@keyframes funnel-tier-enter {
-  0% {
-    opacity: 0;
-    transform: translateY(-8px) scaleX(0.94);
-  }
-
-  100% {
-    opacity: 1;
-    transform: translateY(0) scaleX(1);
-  }
-}
-
-.funnel-tier-enter {
-  transform-box: fill-box;
-  transform-origin: center top;
-  animation: funnel-tier-enter 560ms cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
-@keyframes bar-grow-x {
-  0% {
-    transform: scaleX(0);
-    opacity: 0.4;
-  }
-
-  100% {
-    transform: scaleX(1);
-    opacity: 1;
-  }
-}
-
-.bar-grow-x {
-  transform-origin: left center;
-  animation: bar-grow-x 760ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: chart-dot-pop 220ms var(--ease-out-expo) both;
 }
 
 @keyframes pulse-subtle {
   0%,
   100% {
     opacity: 1;
-    transform: scale(1);
   }
-
   50% {
-    opacity: 0.55;
-    transform: scale(0.92);
+    opacity: 0.45;
   }
 }
 
 .pulse-subtle {
-  animation: pulse-subtle 2.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  will-change: opacity;
+  animation: pulse-subtle 2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes modal-backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.backdrop-enter {
+  animation: modal-backdrop-in 130ms ease-out both;
+}
+
+@keyframes modal-panel-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.modal-enter {
+  animation: modal-panel-in var(--dur-chrome) var(--ease-out-expo) both;
+}
+
+@keyframes cmd-panel-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, -6px, 0) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.cmd-enter {
+  animation: cmd-panel-in var(--dur-cmd) var(--ease-out-expo) both;
+}
+
+@keyframes drawer-in-right {
+  from {
+    opacity: 0;
+    transform: translate3d(20px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.drawer-enter {
+  animation: drawer-in-right var(--dur-drawer) var(--ease-out-expo) both;
+}
+
+@keyframes popover-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, -4px, 0) scale(0.975);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.popover-enter {
+  animation: popover-in var(--dur-popover) var(--ease-out-expo) both;
+}
+
+@keyframes tick-up {
+  0% {
+    background-color: color-mix(in srgb, var(--color-gain) 24%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+@keyframes tick-down {
+  0% {
+    background-color: color-mix(in srgb, var(--color-loss) 24%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.tick-up {
+  animation: tick-up var(--dur-tick) var(--ease-out-snappy);
+}
+
+.tick-down {
+  animation: tick-down var(--dur-tick) var(--ease-out-snappy);
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.skeleton-shimmer {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.55) 50%,
+    transparent 100%
+  );
+  animation: skeleton-shimmer 1.35s ease-in-out infinite;
+}
+
+[popover] {
+  opacity: 0;
+  transform: translateY(-4px) scale(0.98);
+  transition:
+    opacity var(--dur-popover) ease-out,
+    transform var(--dur-popover) var(--ease-out-expo),
+    display var(--dur-popover) allow-discrete,
+    overlay var(--dur-popover) allow-discrete;
+}
+
+[popover]:popover-open {
+  opacity: 1;
+  transform: none;
+}
+
+@starting-style {
+  [popover]:popover-open {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+}
+
+.cv-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
+}
+
+.cv-log {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 56px;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .double-bezel {
@@ -284,75 +348,7 @@ body {
     0 18px 40px -16px rgba(24, 32, 29, 0.1);
 }
 
-@keyframes float-soft {
-
-  0%,
-  100% {
-    transform: translateY(0) translateZ(0);
-  }
-
-  50% {
-    transform: translateY(-10px) translateZ(0);
-  }
-}
-
-.float-soft {
-  animation: float-soft 6s ease-in-out infinite;
-}
-
-.float-slow {
-  animation: float-soft 8.5s ease-in-out infinite;
-}
-
-@keyframes marquee {
-  from {
-    transform: translateX(0);
-  }
-
-  to {
-    transform: translateX(-50%);
-  }
-}
-
-.marquee {
-  animation: marquee 38s linear infinite;
-}
-
-@keyframes mesh-drift {
-
-  0%,
-  100% {
-    transform: translate3d(0, 0, 0) scale(1);
-  }
-
-  50% {
-    transform: translate3d(3%, -3%, 0) scale(1.08);
-  }
-}
-
-.mesh-drift {
-  animation: mesh-drift 18s ease-in-out infinite;
-}
-
-.tilt-3d {
-  transform-style: preserve-3d;
-  transition: transform 0.15s ease-out;
-}
-
-.depth-1 {
-  transform: translateZ(40px);
-}
-
-.depth-2 {
-  transform: translateZ(75px);
-}
-
-.depth-3 {
-  transform: translateZ(110px);
-}
-
 @media (prefers-reduced-motion: reduce) {
-
   *,
   *::before,
   *::after {
