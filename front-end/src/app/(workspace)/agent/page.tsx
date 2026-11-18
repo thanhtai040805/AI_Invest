@@ -1558,9 +1558,6 @@ function HeroDecisionDossier({
     ? targetDetails.target_range.map(numeric).filter((v): v is number => v !== null)
     : []
 
-  const resolutionPayload = object(matchedResolution?.verdict_payload)
-  const cioNarrative = cleanText(String(resolutionPayload.executive_rationale || matchedResolution?.debate_summary || ""))
-  const weightCap = numeric(resolutionPayload.weight_cap)
   void eqEntry
 
   const orderValue =
@@ -1569,13 +1566,6 @@ function HeroDecisionDossier({
     .map(row => ({ row, record: executionRecord(row) }))
     .filter(({ record }, index, rows) => !record.id || rows.findIndex(item => item.record.id === record.id) === index)
     .slice(0, 10)
-
-  const constraintTags = [
-    constraints.max_position_size_multiplier != null && `Quy mô ×${constraints.max_position_size_multiplier}`,
-    stopOverride !== null && `Cắt lỗ -${number(stopOverride * 100, "%")}`,
-    Array.isArray(constraints.tranche_allocation) && `Giải ngân ${constraints.tranche_allocation.length} đợt`,
-    weightCap !== null && `Trần ${number(weightCap * (weightCap <= 1 ? 100 : 1), "% NAV")}`,
-  ].filter(Boolean)
 
   // Price Corridor Spectrum coordinates
   const entryVal = report?.entry ?? null
@@ -1787,51 +1777,32 @@ function HeroDecisionDossier({
         </div>
       )}
 
-      {/* Concise CIO Executive Resolution & Order Condition */}
-      <div className="grid divide-y divide-line lg:grid-cols-12 lg:divide-y-0 lg:divide-x">
-        <div className="p-5 lg:col-span-8">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-xs font-semibold text-ink">Nghị quyết Trọng tài CIO</span>
-            {constraintTags.length > 0 && (
-              <div className="flex flex-wrap gap-1.5">
-                {constraintTags.map(tag => (
-                  <Pill key={String(tag)} tone="warning">
-                    {tag}
-                  </Pill>
-                ))}
-              </div>
-            )}
-          </div>
-          <p className="mt-2.5 border-l-2 border-teal pl-3.5 text-[13.5px] leading-relaxed text-ink">
-            {cioNarrative ||
-              investmentText(matchedResolution?.debate_summary) ||
-              "Chưa có bản ghi phán quyết CIO gắn với luận điểm này."}
-          </p>
-        </div>
-
-        <div className="bg-paper/40 p-5 lg:col-span-4">
-          <div className="flex items-center justify-between gap-2">
+      {/* Order Execution Condition & Active Position Strip */}
+      <div className="flex flex-col gap-3 bg-paper/40 px-5 py-3.5 lg:flex-row lg:items-center lg:justify-between">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs font-semibold text-ink">Trạng thái giải ngân</span>
             <Pill tone={orderDecision.shares && orderDecision.shares > 0 ? "gain" : "warning"}>
               {orderDecision.shares && orderDecision.shares > 0 ? "Đã kích hoạt" : "Chờ chế độ vĩ mô"}
             </Pill>
           </div>
-          <p className="mt-2.5 text-xs leading-relaxed text-secondary">
+          <p className="mt-1.5 text-xs leading-relaxed text-secondary">
             {orderDecision.rationale || "Danh mục hoạt động trong hạn mức an toàn."}
             {orderDecision.shares === 0
               ? ` Hạn mức Kelly (${kellyWeight ?? 0}% NAV) đã tính sẵn nhưng tạm giữ 0 cp chờ dòng tiền thị trường xác nhận.`
               : ""}
           </p>
-          <div className="mt-3 flex items-center justify-between border-t border-line/70 pt-2.5 text-xs">
-            <span className="text-secondary">Vị thế đang nắm giữ:</span>
-            <span className="tnum font-mono font-semibold text-ink">
-              {position
-                ? `${number(position.quantity, " cp")} (${signedNumber(position.pnlPercent, "%")})`
-                : portfolioAvailable
-                  ? "0 cp"
-                  : "Đang đối soát"}
-            </span>
-          </div>
+        </div>
+
+        <div className="flex shrink-0 items-center justify-between gap-3 border-t border-line/70 pt-2.5 text-xs lg:border-t-0 lg:border-l lg:pt-0 lg:pl-5">
+          <span className="whitespace-nowrap text-secondary">Vị thế đang nắm giữ:</span>
+          <span className="tnum whitespace-nowrap font-mono font-semibold text-ink">
+            {position
+              ? `${number(position.quantity, " cp")} (${signedNumber(position.pnlPercent, "%")})`
+              : portfolioAvailable
+                ? "0 cp"
+                : "Đang đối soát"}
+          </span>
         </div>
       </div>
 
