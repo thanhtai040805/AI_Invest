@@ -68,8 +68,6 @@ export {
   PROFILE_STUDIES,
   AUTO_CHART_PATTERNS,
   CANDLESTICK_PATTERNS,
-  OPTIONS_STUDIES,
-  FUNDAMENTAL_STUDIES,
   COMMUNITY_AND_VIP_STUDIES,
 } from "./indicators/catalog-data"
 
@@ -128,7 +126,6 @@ export type {
   TvIndicatorCategory,
   TvDialogSidebarSection,
   TvTechnicalSubTab,
-  TvFundamentalSubTab,
   TvTierBadge,
   TvIndicatorId,
   TvIndicatorParamDef,

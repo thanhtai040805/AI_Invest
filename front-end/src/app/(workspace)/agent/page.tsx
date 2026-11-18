@@ -270,20 +270,11 @@ function computeClosedStockAttributions(orders?: Record<string, unknown>[]): {
 } {
   if (!orders || orders.length === 0) {
     return {
-      winners: [
-        { sym: "PVP", matchedQty: 3200, avgBuy: 19203, avgSell: 20989, retPct: 9.3, pnlVnd: 5714002, trades: 21 },
-        { sym: "PVT", matchedQty: 1200, avgBuy: 22525, avgSell: 24138, retPct: 7.16, pnlVnd: 1935000, trades: 12 },
-        { sym: "VPB", matchedQty: 1700, avgBuy: 22294, avgSell: 22956, retPct: 2.97, pnlVnd: 1125000, trades: 8 },
-        { sym: "MSB", matchedQty: 900, avgBuy: 12900, avgSell: 13572, retPct: 5.21, pnlVnd: 605000, trades: 6 },
-        { sym: "NVL", matchedQty: 900, avgBuy: 12150, avgSell: 12550, retPct: 3.29, pnlVnd: 360000, trades: 6 },
-      ],
-      losers: [
-        { sym: "HAH", matchedQty: 100, avgBuy: 51800, avgSell: 48150, retPct: -7.05, pnlVnd: -365000, trades: 2 },
-        { sym: "NAB", matchedQty: 900, avgBuy: 12300, avgSell: 12106, retPct: -1.58, pnlVnd: -175000, trades: 12 },
-      ],
-      totalBuyOrders: 43,
-      totalSellOrders: 57,
-      totalCutLossVnd: -970500,
+      winners: [],
+      losers: [],
+      totalBuyOrders: 0,
+      totalSellOrders: 0,
+      totalCutLossVnd: 0,
     }
   }
 
@@ -351,6 +342,7 @@ function formatShortVnd(val: number, signed = false): string {
 function AccountSummaryStrip({
   portfolio,
   summary,
+  accountError,
 }: {
   portfolio?: PortfolioSnapshot | null
   summary?: PortfolioSnapshot["summary"]
@@ -358,21 +350,28 @@ function AccountSummaryStrip({
 }) {
   const [hoveredCurveIdx, setHoveredCurveIdx] = useState<number | null>(null)
 
-  const rawSummary = (summary || portfolio?.summary || {}) as Record<string, unknown>
-  const hasLiveSummary = numeric(summary?.nav) !== null
-  const openingCash = hasLiveSummary
-    ? numeric(summary?.openingCash) ?? numeric(summary?.nav) ?? 1_000_000_000
-    : 1_000_000_000
-  const nav = hasLiveSummary ? numeric(summary?.nav)! : 1_009_825_317
-  const cash = hasLiveSummary ? numeric(summary?.cash) ?? nav : 1_009_825_317
-  const realized = hasLiveSummary ? numeric(summary?.realizedPnl) ?? 0 : 9_825_317
-  const unrealized = hasLiveSummary ? numeric(summary?.unrealizedPnl) ?? 0 : 0
-  const totalPnl = hasLiveSummary ? numeric(summary?.totalPnl) ?? nav - openingCash : realized + unrealized
-  const feesPaid = hasLiveSummary ? numeric(rawSummary.fees) ?? 0 : 2_135_683
+  const effectiveSummary = summary ?? portfolio?.summary
+  const rawSummary = (effectiveSummary || {}) as Record<string, unknown>
+  const navVal = numeric(effectiveSummary?.nav)
+  if (navVal === null) {
+    return (
+      <section aria-label="Tổng quan tài khoản quỹ và bóc tách lợi nhuận">
+        <Panel className="p-4 text-xs text-secondary">
+          {accountError ? "Không tải được dữ liệu tài khoản quỹ." : "Đang đồng bộ dữ liệu tài khoản quỹ..."}
+        </Panel>
+      </section>
+    )
+  }
+
+  const openingCash = numeric(effectiveSummary?.openingCash) ?? navVal
+  const nav = navVal
+  const cash = numeric(effectiveSummary?.cash) ?? nav
+  const realized = numeric(effectiveSummary?.realizedPnl) ?? 0
+  const totalPnl = numeric(effectiveSummary?.totalPnl) ?? nav - openingCash
+  const feesPaid = numeric(rawSummary.fees) ?? 0
   const grossTradingProfit = realized + feesPaid
-  const retPct = hasLiveSummary
-    ? numeric(summary?.totalReturnPct) ?? (openingCash > 0 ? (totalPnl / openingCash) * 100 : 0)
-    : 0.98
+  const retPct =
+    numeric(effectiveSummary?.totalReturnPct) ?? (openingCash > 0 ? (totalPnl / openingCash) * 100 : 0)
   const cashRatio = nav > 0 ? Math.min(100, Math.max(0, (cash / nav) * 100)) : 100
   const openPositionsCount = portfolio?.positions?.length ?? 0
 
@@ -381,14 +380,11 @@ function AccountSummaryStrip({
     rawCurve.length >= 2
       ? rawCurve
       : [
-          { date: "2026-08-12", value: 1_000_000_000 },
-          { date: "2026-09-15", value: 1_004_200_000 },
-          { date: "2026-10-15", value: 1_011_450_000 },
-          { date: "2026-11-06", value: nav },
+          { date: portfolio?.performance?.asOf || vietnamDate(), value: openingCash },
+          { date: vietnamDate(), value: nav },
         ]
 
-  const animProgress = useAnimatedProgress(`nav-strip-${curveSeries.length}-${Math.round(nav)}`, 1000)
-  const isHoverReady = animProgress >= 0.999
+  const isHoverReady = true
 
   const activeIdx =
     hoveredCurveIdx !== null && curveSeries[hoveredCurveIdx] ? hoveredCurveIdx : curveSeries.length - 1
@@ -420,22 +416,18 @@ function AccountSummaryStrip({
   const baseline1B_Y = toY(openingCash)
   const stepX = chartSpanX / Math.max(1, curveSeries.length - 1)
 
-  const animatedPts = curveSeries.map((pt, i) => {
-    const x = chartLeft + i * stepX
-    const targetY = toY(pt.value)
-    const waveDelay = (i / Math.max(1, curveSeries.length - 1)) * 0.2
-    const localP = Math.min(1, Math.max(0, (animProgress - waveDelay) / (1 - waveDelay)))
-    const y = baseline1B_Y - (baseline1B_Y - targetY) * localP
-    return { x, y }
-  })
+  const animatedPts = curveSeries.map((pt, i) => ({
+    x: chartLeft + i * stepX,
+    y: toY(pt.value),
+  }))
 
   const splineLineD = smoothSplinePath(animatedPts)
   const splineAreaD = smoothAreaPath(animatedPts, chartBottom)
   const activeCoord = animatedPts[activeIdx] || { x: chartRight, y: toY(nav) }
 
-  const sharpe = numeric(portfolio?.risks?.sharpe) ?? 2.75
-  const alpha = numeric(portfolio?.risks?.alpha) ?? 4.59
-  const maxDD = numeric(portfolio?.risks?.maxDrawdown) ?? 0.22
+  const sharpe = numeric(portfolio?.risks?.sharpe)
+  const alpha = numeric(portfolio?.risks?.alpha)
+  const maxDD = numeric(portfolio?.risks?.maxDrawdown)
 
   const { winners, losers, totalSellOrders, totalCutLossVnd } = computeClosedStockAttributions(portfolio?.orders)
   const topThreeWinners = winners.slice(0, 3)
@@ -446,9 +438,6 @@ function AccountSummaryStrip({
     const parts = String(iso || "").slice(0, 10).split("-")
     return parts.length === 3 ? `${parts[2]}/${parts[1]}` : iso
   }
-
-  const animatedNav = Math.round(openingCash + (nav - openingCash) * animProgress)
-  const animatedNetPnl = Math.round(totalPnl * animProgress)
 
   return (
     <section aria-label="Tổng quan tài khoản quỹ và bóc tách lợi nhuận">
@@ -468,18 +457,30 @@ function AccountSummaryStrip({
 
               <div className="mt-1.5 flex items-baseline gap-2.5">
                 <span className="tnum font-mono text-[24px] font-bold tracking-tight text-ink">
-                  {number(animatedNav, " ₫")}
+                  {number(nav, " ₫")}
                 </span>
-                <span className="tnum rounded border border-gain/30 bg-gain/10 px-2 py-0.5 font-mono text-[12px] font-semibold text-gain">
+                <span
+                  className={`tnum rounded border px-2 py-0.5 font-mono text-[12px] font-semibold ${
+                    retPct >= 0
+                      ? "border-gain/30 bg-gain/10 text-gain"
+                      : "border-loss/30 bg-loss/10 text-loss"
+                  }`}
+                >
                   {signedNumber(retPct, "%")}
                 </span>
               </div>
 
               {/* Net Profit Highlight Row */}
-              <div className="mt-3 flex items-center justify-between rounded-lg border border-gain/30 bg-gain/[0.06] px-3 py-2">
+              <div
+                className={`mt-3 flex items-center justify-between rounded-lg border px-3 py-2 ${
+                  totalPnl >= 0
+                    ? "border-gain/30 bg-gain/[0.06]"
+                    : "border-loss/30 bg-loss/[0.06]"
+                }`}
+              >
                 <span className="text-[12px] font-semibold text-ink">Lãi ròng bỏ túi</span>
-                <span className="tnum font-mono text-[16px] font-bold text-gain">
-                  {signedNumber(animatedNetPnl, " ₫")}
+                <span className={`tnum font-mono text-[16px] font-bold ${totalPnl >= 0 ? "text-gain" : "text-loss"}`}>
+                  {signedNumber(totalPnl, " ₫")}
                 </span>
               </div>
             </div>
@@ -494,7 +495,11 @@ function AccountSummaryStrip({
               </div>
               <div className="rounded-md border border-line/70 bg-canvas/50 px-2.5 py-1.5">
                 <div className="text-[10.5px] text-muted">Lãi gộp</div>
-                <div className="tnum mt-0.5 font-mono text-[12px] font-semibold text-gain">
+                <div
+                  className={`tnum mt-0.5 font-mono text-[12px] font-semibold ${
+                    grossTradingProfit >= 0 ? "text-gain" : "text-loss"
+                  }`}
+                >
                   {formatShortVnd(grossTradingProfit, true)}
                 </div>
               </div>
@@ -560,10 +565,10 @@ function AccountSummaryStrip({
                   y={chartTop + 16}
                   className="fill-muted font-sans text-[9px]"
                 >
-                  Chu kỳ {curveSeries.length} phiên · Mốc vốn gốc 1,00 tỷ ₫
+                  Chu kỳ {curveSeries.length} phiên · Mốc vốn gốc {formatShortVnd(openingCash)}
                 </text>
 
-                {/* 1.00B Initial Capital Baseline */}
+                {/* Initial Capital Baseline */}
                 <line
                   x1={chartLeft}
                   y1={baseline1B_Y}
@@ -579,7 +584,7 @@ function AccountSummaryStrip({
                   textAnchor="end"
                   className="fill-warning font-mono text-[8.5px] font-semibold"
                 >
-                  1,00tỷ
+                  {(openingCash / 1_000_000_000).toFixed(2).replace(".", ",")}tỷ
                 </text>
 
                 {/* Spline Area & Line */}
@@ -649,7 +654,7 @@ function AccountSummaryStrip({
                   const x = chartLeft + idx * stepX - colW / 2
                   return (
                     <rect
-                      key={pt.date}
+                      key={`${pt.date}-${idx}`}
                       x={Math.max(chartLeft, x)}
                       y={chartTop}
                       width={colW + 1}
@@ -668,11 +673,20 @@ function AccountSummaryStrip({
                 Đỉnh lãi: <strong className="font-mono font-semibold text-gain">{formatShortVnd(peakProfitVnd, true)}</strong>
               </span>
               <span className="whitespace-nowrap">
-                Sụt giảm: <strong className="font-mono font-semibold text-ink">-{Math.abs(maxDD).toFixed(2)}%</strong>
+                Sụt giảm:{" "}
+                <strong className="font-mono font-semibold text-ink">
+                  {maxDD !== null ? `-${Math.abs(maxDD).toFixed(2)}%` : "—"}
+                </strong>
               </span>
               <span className="whitespace-nowrap">
-                Sharpe <strong className="font-mono font-semibold text-ink">{sharpe.toFixed(2)}</strong> · Alpha{" "}
-                <strong className="font-mono font-semibold text-gain">+{alpha.toFixed(2)}%</strong>
+                Sharpe{" "}
+                <strong className="font-mono font-semibold text-ink">
+                  {sharpe !== null ? sharpe.toFixed(2) : "—"}
+                </strong>{" "}
+                · Alpha{" "}
+                <strong className="font-mono font-semibold text-gain">
+                  {alpha !== null ? `${alpha >= 0 ? "+" : ""}${alpha.toFixed(2)}%` : "—"}
+                </strong>
               </span>
             </div>
           </div>
@@ -687,40 +701,50 @@ function AccountSummaryStrip({
             </div>
 
             <div className="mt-2.5 space-y-1.5">
-              {topThreeWinners.map(item => (
-                <div
-                  key={item.sym}
-                  className="flex items-center justify-between rounded-md border border-line/60 bg-canvas/45 px-2.5 py-1.5 text-[12px]"
-                >
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-mono font-bold text-ink">{item.sym}</span>
-                    <span className="tnum rounded bg-gain/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-gain">
-                      +{item.retPct.toFixed(1)}%
-                    </span>
-                  </div>
-                  <span className="tnum font-mono font-semibold text-gain">
-                    {formatShortVnd(item.pnlVnd, true)}
-                  </span>
-                </div>
-              ))}
+              {winners.length === 0 && losers.length === 0 ? (
+                <p className="rounded-md border border-dashed border-line px-3 py-4 text-center text-xs text-muted">
+                  Chưa có lệnh tất toán trong kỳ
+                </p>
+              ) : (
+                <>
+                  {topThreeWinners.map(item => (
+                    <div
+                      key={item.sym}
+                      className="flex items-center justify-between rounded-md border border-line/60 bg-canvas/45 px-2.5 py-1.5 text-[12px]"
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-mono font-bold text-ink">{item.sym}</span>
+                        <span className="tnum rounded bg-gain/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-gain">
+                          +{item.retPct.toFixed(1)}%
+                        </span>
+                      </div>
+                      <span className="tnum font-mono font-semibold text-gain">
+                        {formatShortVnd(item.pnlVnd, true)}
+                      </span>
+                    </div>
+                  ))}
 
-              {otherWinners.length > 0 && (
-                <div className="flex items-center justify-between gap-2 rounded-md border border-line/60 bg-canvas/45 px-2.5 py-1.5 text-[11.5px]">
-                  <span className="text-secondary whitespace-nowrap">
-                    +{otherWinners.length} mã khác ({otherWinners.slice(0, 2).map(x => x.sym).join(", ")})
-                  </span>
-                  <span className="tnum font-mono font-semibold text-gain whitespace-nowrap">
-                    {formatShortVnd(otherWinnersPnl, true)}
-                  </span>
-                </div>
+                  {otherWinners.length > 0 && (
+                    <div className="flex items-center justify-between gap-2 rounded-md border border-line/60 bg-canvas/45 px-2.5 py-1.5 text-[11.5px]">
+                      <span className="text-secondary whitespace-nowrap">
+                        +{otherWinners.length} mã khác ({otherWinners.slice(0, 2).map(x => x.sym).join(", ")})
+                      </span>
+                      <span className="tnum font-mono font-semibold text-gain whitespace-nowrap">
+                        {formatShortVnd(otherWinnersPnl, true)}
+                      </span>
+                    </div>
+                  )}
+
+                  {losers.length > 0 && (
+                    <div className="flex items-center justify-between gap-2 rounded-md border border-line/60 bg-surface px-2.5 py-1.5 text-[11.5px]">
+                      <span className="text-secondary whitespace-nowrap">Cắt lỗ ngắn ({losers.length} mã)</span>
+                      <span className="tnum font-mono font-medium text-loss whitespace-nowrap">
+                        {formatShortVnd(totalCutLossVnd, true)}
+                      </span>
+                    </div>
+                  )}
+                </>
               )}
-
-              <div className="flex items-center justify-between gap-2 rounded-md border border-line/60 bg-surface px-2.5 py-1.5 text-[11.5px]">
-                <span className="text-secondary whitespace-nowrap">Cắt lỗ ngắn ({losers.length} mã)</span>
-                <span className="tnum font-mono font-medium text-loss whitespace-nowrap">
-                  {formatShortVnd(totalCutLossVnd, true)}
-                </span>
-              </div>
             </div>
           </div>
         </div>
@@ -803,26 +827,6 @@ interface MacroSessionPoint {
   pBull: number
 }
 
-function useAnimatedProgress(triggerKey: string, durationMs = 1100) {
-  const [state, setState] = useState<{ key: string; val: number }>({ key: triggerKey, val: 0 })
-  useEffect(() => {
-    let rafId = 0
-    const start = performance.now()
-    const tick = (now: number) => {
-      const elapsed = Math.max(0, now - start)
-      const t = Math.min(1, elapsed / durationMs)
-      const eased = 1 - Math.pow(1 - t, 4)
-      setState({ key: triggerKey, val: eased })
-      if (t < 1) {
-        rafId = requestAnimationFrame(tick)
-      }
-    }
-    rafId = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(rafId)
-  }, [triggerKey, durationMs])
-  return state.key === triggerKey ? state.val : 0
-}
-
 function smoothSplinePath(pts: { x: number; y: number }[]): string {
   if (pts.length === 0) return ""
   if (pts.length === 1) return `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`
@@ -847,10 +851,8 @@ function smoothAreaPath(pts: { x: number; y: number }[], baselineY: number): str
 
 function MacroCycleSplineChart({
   trendSeries,
-  selectedDate,
 }: {
   trendSeries: MacroSessionPoint[]
-  selectedDate?: string
 }) {
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null)
   const plotSeries =
@@ -859,7 +861,6 @@ function MacroCycleSplineChart({
       : trendSeries.length === 1
         ? [trendSeries[0], trendSeries[0]]
         : []
-  const progress = useAnimatedProgress(`spline-${selectedDate || "latest"}-${plotSeries.length}`, 1050)
 
   if (plotSeries.length < 2) {
     return <div className="min-h-[210px] bg-surface p-4 lg:col-span-8" />
@@ -873,21 +874,17 @@ function MacroCycleSplineChart({
   const chartSpanX = 590
   const stepX = chartSpanX / Math.max(1, plotSeries.length - 1)
   const toTargetY = (val: number) => baselineY - (Math.min(80, Math.max(0, val)) / 80) * 102
-  const toAnimY = (val: number) => {
-    const targetY = toTargetY(val)
-    return baselineY - (baselineY - targetY) * progress
-  }
 
-  const b20Coords = plotSeries.map((pt, i) => ({ x: chartLeft + i * stepX, y: toAnimY(pt.breadth20) }))
-  const b50Coords = plotSeries.map((pt, i) => ({ x: chartLeft + i * stepX, y: toAnimY(pt.breadth50) }))
-  const vixCoords = plotSeries.map((pt, i) => ({ x: chartLeft + i * stepX, y: toAnimY(pt.vix) }))
-  const cashCoords = plotSeries.map((pt, i) => ({ x: chartLeft + i * stepX, y: toAnimY(pt.cash) }))
+  const b20Coords = plotSeries.map((pt, i) => ({ x: chartLeft + i * stepX, y: toTargetY(pt.breadth20) }))
+  const b50Coords = plotSeries.map((pt, i) => ({ x: chartLeft + i * stepX, y: toTargetY(pt.breadth50) }))
+  const vixCoords = plotSeries.map((pt, i) => ({ x: chartLeft + i * stepX, y: toTargetY(pt.vix) }))
+  const cashCoords = plotSeries.map((pt, i) => ({ x: chartLeft + i * stepX, y: toTargetY(pt.cash) }))
 
   const activeX = chartLeft + activeIdx * stepX
   const activeY20 = b20Coords[activeIdx]?.y ?? baselineY
   const activeYVix = vixCoords[activeIdx]?.y ?? baselineY
   const lastCoord = b20Coords[b20Coords.length - 1]
-  const isHoverTransitionActive = progress >= 0.999
+  const isHoverTransitionActive = true
 
   return (
     <div className="flex flex-col justify-between bg-surface p-4 lg:col-span-8">
@@ -1058,7 +1055,7 @@ function MacroCycleSplineChart({
             cy={lastCoord.y}
             r="7.5"
             fill="var(--color-gain)"
-            fillOpacity={0.16 * progress}
+            fillOpacity={0.16}
             className="pulse-subtle pointer-events-none"
           />
         )}
@@ -1117,7 +1114,7 @@ function MarketAndUniversePanel({
   const pBull = (numeric(hmmProbs.BULL_MARKET ?? hmmProbs.BULL) ?? 0) * 100
 
   const udCounts = object(udEntry?.filtered_counts)
-  const totalScanned = numeric(udCounts.initial_universe) ?? numeric(udCounts.total_scanned) ?? 417
+  const totalScanned = numeric(udCounts.initial_universe) ?? numeric(udCounts.total_scanned)
   const exclusions = Array.isArray(udCounts.exclusion_log)
     ? (udCounts.exclusion_log as RecordData[])
     : Array.isArray(udEntry?.exclusion_log)
@@ -1193,31 +1190,31 @@ function MarketAndUniversePanel({
       return {
         fullDate: d,
         shortDate: displayDate(d).slice(0, 5),
-        breadth20: numeric(out.breadth_above_ma20_pct) ?? 39.1,
-        breadth50: numeric(out.breadth_above_ma50_pct) ?? 32.0,
-        vix: numeric(out.vix_vn_analog) ?? 18.75,
-        cash: numeric(out.garch_cash_target_pct) ?? 17.5,
-        ad: numeric(out.adv_decl_ratio) ?? 0.57,
+        breadth20: numeric(out.breadth_above_ma20_pct) ?? 0,
+        breadth50: numeric(out.breadth_above_ma50_pct) ?? 0,
+        vix: numeric(out.vix_vn_analog) ?? 0,
+        cash: numeric(out.garch_cash_target_pct) ?? 0,
+        ad: numeric(out.adv_decl_ratio) ?? 0,
         pBear: (numeric(probs.BEAR_MARKET ?? probs.BEAR) ?? 0) * 100,
-        pRange: (numeric(probs.RANGE_BOUND ?? probs.SIDEWAYS) ?? 0.97) * 100,
+        pRange: (numeric(probs.RANGE_BOUND ?? probs.SIDEWAYS) ?? 0) * 100,
         pBull: (numeric(probs.BULL_MARKET ?? probs.BULL) ?? 0) * 100,
       }
     })
 
-  // True 0% -> Target% Sweep Animation for Concentric HMM Donut
-  const donutProgress = useAnimatedProgress(`hmm-donut-${selectedDate || "latest"}-${pRange.toFixed(1)}`, 1150)
   const donutR = 46
   const donutC = 2 * Math.PI * donutR
   const innerR = 33
   const innerC = 2 * Math.PI * innerR
 
-  const animRangeLen = ((pRange * donutProgress) / 100) * donutC
-  const animBearLen = ((pBear * donutProgress) / 100) * donutC
-  const animBullLen = ((pBull * donutProgress) / 100) * donutC
-  const cashClamped = Math.min(100, Math.max(0, cashTarget ?? 17.5))
-  const animCashLen = ((cashClamped * donutProgress) / 100) * innerC
+  const rangeLen = (pRange / 100) * donutC
+  const bearLen = (pBear / 100) * donutC
+  const bullLen = (pBull / 100) * donutC
+  const cashClamped = Math.min(100, Math.max(0, cashTarget ?? 0))
+  const cashLen = (cashClamped / 100) * innerC
   const dominantPct = Math.max(pRange, pBear, pBull)
-  const animDominantPct = dominantPct * donutProgress
+  const donutTransition = {
+    transition: "stroke-dasharray 280ms var(--ease-out-expo), stroke-dashoffset 280ms var(--ease-out-expo)",
+  }
 
   return (
     <Panel flush className="min-w-0 overflow-hidden">
@@ -1236,11 +1233,11 @@ function MarketAndUniversePanel({
         />
       </div>
 
-      {/* Main Visual Row: Left 8 Cols Smooth Spline Chart + Right 4 Cols 0->97.7% Rotating HMM Donut */}
+      {/* Main Visual Row: Left 8 Cols Smooth Spline Chart + Right 4 Cols Concentric HMM Donut */}
       <div className="grid grid-cols-1 divide-y divide-line lg:grid-cols-12 lg:divide-y-0 lg:divide-x">
-        <MacroCycleSplineChart trendSeries={trendSeries} selectedDate={selectedDate} />
+        <MacroCycleSplineChart trendSeries={trendSeries} />
 
-        {/* Right 4 Cols: Concentric HMM Probability Gauge sweeping from 0% -> target% */}
+        {/* Right 4 Cols: Concentric HMM Probability Gauge */}
         <div className="flex flex-col justify-between bg-surface p-4 lg:col-span-4">
           <div className="flex items-center justify-between text-xs">
             <span className="font-semibold text-ink">Vòng Xác suất Chế độ Thị trường</span>
@@ -1260,8 +1257,9 @@ function MarketAndUniversePanel({
                     stroke="var(--color-warning)"
                     strokeWidth="9.5"
                     strokeLinecap="round"
-                    strokeDasharray={`${animRangeLen} ${donutC}`}
+                    strokeDasharray={`${rangeLen} ${donutC}`}
                     strokeDashoffset={0}
+                    style={donutTransition}
                   />
                 )}
                 {pBear > 0 && (
@@ -1272,8 +1270,9 @@ function MarketAndUniversePanel({
                     fill="none"
                     stroke="var(--color-loss)"
                     strokeWidth="9.5"
-                    strokeDasharray={`${animBearLen} ${donutC}`}
-                    strokeDashoffset={-animRangeLen}
+                    strokeDasharray={`${bearLen} ${donutC}`}
+                    strokeDashoffset={-rangeLen}
+                    style={donutTransition}
                   />
                 )}
                 {pBull > 0 && (
@@ -1284,8 +1283,9 @@ function MarketAndUniversePanel({
                     fill="none"
                     stroke="var(--color-gain)"
                     strokeWidth="9.5"
-                    strokeDasharray={`${animBullLen} ${donutC}`}
-                    strokeDashoffset={-(animRangeLen + animBearLen)}
+                    strokeDasharray={`${bullLen} ${donutC}`}
+                    strokeDashoffset={-(rangeLen + bearLen)}
+                    style={donutTransition}
                   />
                 )}
 
@@ -1298,12 +1298,13 @@ function MarketAndUniversePanel({
                   stroke="var(--color-teal)"
                   strokeWidth="4.5"
                   strokeLinecap="round"
-                  strokeDasharray={`${animCashLen} ${innerC}`}
+                  strokeDasharray={`${cashLen} ${innerC}`}
+                  style={donutTransition}
                 />
               </svg>
               <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
                 <span className="tnum font-mono text-[16px] font-bold text-ink">
-                  {animDominantPct.toFixed(1)}%
+                  {dominantPct.toFixed(1)}%
                 </span>
                 <span className="text-[9px] font-semibold tracking-wide text-warning">
                   {currentRegime.short}
@@ -1316,26 +1317,26 @@ function MarketAndUniversePanel({
                 <dt className="inline-flex items-center gap-1.5 text-secondary">
                   <span className="h-2.5 w-2.5 rounded-xs bg-warning" /> Đi ngang
                 </dt>
-                <dd className="tnum font-mono font-semibold text-ink">{(pRange * donutProgress).toFixed(1)}%</dd>
+                <dd className="tnum font-mono font-semibold text-ink">{pRange.toFixed(1)}%</dd>
               </div>
               <div className="flex items-center justify-between gap-3 whitespace-nowrap">
                 <dt className="inline-flex items-center gap-1.5 text-secondary">
                   <span className="h-2.5 w-2.5 rounded-xs bg-loss" /> Suy thoái
                 </dt>
-                <dd className="tnum font-mono font-semibold text-ink">{(pBear * donutProgress).toFixed(1)}%</dd>
+                <dd className="tnum font-mono font-semibold text-ink">{pBear.toFixed(1)}%</dd>
               </div>
               <div className="flex items-center justify-between gap-3 whitespace-nowrap">
                 <dt className="inline-flex items-center gap-1.5 text-secondary">
                   <span className="h-2.5 w-2.5 rounded-xs bg-gain" /> Tăng trưởng
                 </dt>
-                <dd className="tnum font-mono font-semibold text-ink">{(pBull * donutProgress).toFixed(1)}%</dd>
+                <dd className="tnum font-mono font-semibold text-ink">{pBull.toFixed(1)}%</dd>
               </div>
               <div className="flex items-center justify-between gap-3 border-t border-line pt-1.5 whitespace-nowrap">
                 <dt className="inline-flex items-center gap-1.5 text-teal">
                   <span className="h-2.5 w-2.5 rounded-full bg-teal" /> Đệm tiền mặt
                 </dt>
                 <dd className="tnum font-mono font-semibold text-teal">
-                  {cashTarget !== null ? `${(cashTarget * donutProgress).toFixed(1)}%` : "—"}
+                  {cashTarget !== null ? `${cashTarget.toFixed(1)}%` : "—"}
                 </dd>
               </div>
             </dl>
@@ -1347,12 +1348,12 @@ function MarketAndUniversePanel({
         </div>
       </div>
 
-      {/* Compact Single-Line Agent 02 Summary Strip + On-Demand Drawer for 318 Excluded Stocks */}
+      {/* Compact Single-Line Agent 02 Summary Strip + On-Demand Drawer for Excluded Stocks */}
       <div className="border-t border-line bg-paper/45 px-5 py-2.5">
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
           <div className="flex flex-wrap items-center gap-2">
             <Pill tone="mineral">
-              Sàng lọc Lớp 0 · Chọn {symbolsCount}/{totalScanned} mã
+              Sàng lọc Lớp 0 · {totalScanned !== null ? `Chọn ${symbolsCount}/${totalScanned} mã` : `Chọn ${symbolsCount} mã`}
             </Pill>
             <span className="text-secondary">
               Đã lọc <strong className="font-semibold text-ink">{symbolsCount} cổ phiếu</strong> đạt chuẩn BCTC minh bạch &amp; thanh khoản{" "}
@@ -1914,11 +1915,10 @@ function EquityResearchSection({
     })
     .join(" ")
 
-  const cssProgress = useAnimatedProgress(`css-gauge-${ticker}-${css ?? 0}`, 1050)
   const gaugeRadius = 28
   const gaugeCircumference = 2 * Math.PI * gaugeRadius
   const cssClamped = css !== null ? Math.min(100, Math.max(0, css)) : 0
-  const gaugeOffset = gaugeCircumference * (1 - (cssClamped * cssProgress) / 100)
+  const gaugeOffset = gaugeCircumference * (1 - cssClamped / 100)
 
   return (
     <Panel flush className="min-w-0 overflow-hidden">
@@ -1955,11 +1955,12 @@ function EquityResearchSection({
                     strokeLinecap="round"
                     strokeDasharray={gaugeCircumference}
                     strokeDashoffset={gaugeOffset}
+                    style={{ transition: "stroke-dashoffset 280ms var(--ease-out-expo)" }}
                   />
                 </svg>
                 <div className="absolute inset-0 flex flex-col items-center justify-center">
                   <span className="tnum font-mono text-[15px] font-bold text-ink">
-                    {(css * cssProgress).toFixed(1)}
+                    {css.toFixed(1)}
                   </span>
                   <span className="text-[9px] font-medium text-muted">CSS</span>
                 </div>
@@ -2001,7 +2002,6 @@ function EquityResearchSection({
                   stroke="var(--color-gain)"
                   strokeWidth="2"
                   strokeLinejoin="round"
-                  className="radar-bloom"
                 />
                 {factors.map((f, idx) => {
                   const norm = Math.min(100, Math.max(8, f.score ?? 50)) / 100
@@ -2320,7 +2320,7 @@ function SystemIntegrityShieldPanel({
   summary?: PortfolioSnapshot["summary"]
   ticker: string
 }) {
-  const navVnd = numeric(summary?.nav) ?? 1_009_825_317
+  const navVnd = numeric(summary?.nav) ?? numeric(summary?.openingCash) ?? 1_000_000_000
   const report = thesis ? thesisDetails(thesis) : undefined
   const kellyTrace = object(plan?.kelly_math_steps)
 
@@ -2332,44 +2332,51 @@ function SystemIntegrityShieldPanel({
   const stopOverride = numeric(constraints.stop_loss_pct_override)
   const storedStop = numeric(object(report?.body.exit_conditions).hard_stop_loss_price)
 
-  const entryVnd = report?.entry && report.entry > 0 ? report.entry : 22_100
+  const entryVnd = report?.entry && report.entry > 0 ? report.entry : 0
   const stopVnd =
-    stopOverride !== null && stopOverride > 0 && stopOverride < 1
-      ? Math.round(entryVnd * (1 - stopOverride))
-      : storedStop !== null && storedStop > 0
-        ? storedStop
-        : Math.round(entryVnd * 0.95)
-  const ceilingVnd = numeric(constraints.entry_ceiling_price) ?? Math.round(entryVnd * 1.02)
-  const targetVnd = report?.target && report.target > 0 ? report.target : Math.round(entryVnd * 1.2226)
+    entryVnd > 0
+      ? stopOverride !== null && stopOverride > 0 && stopOverride < 1
+        ? Math.round(entryVnd * (1 - stopOverride))
+        : storedStop !== null && storedStop > 0
+          ? storedStop
+          : Math.round(entryVnd * 0.95)
+      : 0
+  const ceilingVnd =
+    numeric(constraints.entry_ceiling_price) ?? (entryVnd > 0 ? Math.round(entryVnd * 1.02) : 0)
+  const targetVnd =
+    report?.target && report.target > 0
+      ? report.target
+      : entryVnd > 0
+        ? Math.round(entryVnd * 1.2226)
+        : 0
 
   const allocatedVnd = Math.round(navVnd * (kellyWeightPct / 100))
   const simulatedShares = entryVnd > 0 ? Math.max(100, Math.floor(allocatedVnd / entryVnd)) : 0
-  const stopLossPctOnPos = entryVnd > 0 ? Math.abs(((stopVnd - entryVnd) / entryVnd) * 100) : 5.0
-  const upsidePctOnPos = entryVnd > 0 ? Math.max(0, ((targetVnd - entryVnd) / entryVnd) * 100) : 22.26
+  const stopLossPctOnPos = entryVnd > 0 && stopVnd > 0 ? Math.abs(((stopVnd - entryVnd) / entryVnd) * 100) : 0
+  const upsidePctOnPos = entryVnd > 0 && targetVnd > 0 ? Math.max(0, ((targetVnd - entryVnd) / entryVnd) * 100) : 0
 
   const maxLossVnd = Math.round(allocatedVnd * (stopLossPctOnPos / 100))
-  const maxLossNavPct = (maxLossVnd / navVnd) * 100
+  const maxLossNavPct = navVnd > 0 ? (maxLossVnd / navVnd) * 100 : 0
   const hardCapLossNavPct = 2.0
-  const safetyMultiple = maxLossNavPct > 0 ? Math.max(1, Math.round(hardCapLossNavPct / maxLossNavPct)) : 36
+  const safetyMultiple = maxLossNavPct > 0 ? Math.max(1, Math.round(hardCapLossNavPct / maxLossNavPct)) : 0
 
   const expectedGainVnd = Math.round(allocatedVnd * (upsidePctOnPos / 100))
-  const expectedGainNavPct = (expectedGainVnd / navVnd) * 100
-  const rewardRiskRatio = maxLossVnd > 0 ? expectedGainVnd / maxLossVnd : numeric(kellyTrace.payoff_ratio) ?? 4.45
+  const expectedGainNavPct = navVnd > 0 ? (expectedGainVnd / navVnd) * 100 : 0
+  const rewardRiskRatio = maxLossVnd > 0 ? expectedGainVnd / maxLossVnd : numeric(kellyTrace.payoff_ratio) ?? 0
 
   const bqScore = numeric(object(report?.body.business_quality).score) ?? 95
   const msOutputs = object(msEntry?.outputs)
   const breadthMa20Pct =
     numeric(msOutputs.breadth_above_ma20_pct) ??
-    (numeric(object(msEntry?.macro_raw_metrics).pct_above_ma20) ?? 0.391) * 100
+    (numeric(object(msEntry?.macro_raw_metrics).pct_above_ma20) ?? 0) * 100
 
   const pnl = numeric(position?.current_pnl_pct)
   const hasPosition = !!position || !!posMonEntry
 
   // Semi-Circle Risk/Reward Dial Geometry (0x -> 6.0x scale)
-  const dialProgress = useAnimatedProgress(`rr-dial-${ticker}-${rewardRiskRatio.toFixed(2)}`, 1150)
   const maxDialRR = 6.0
   const clampedRR = Math.min(maxDialRR, Math.max(0, rewardRiskRatio))
-  const rrRatioNorm = (clampedRR / maxDialRR) * dialProgress
+  const rrRatioNorm = clampedRR / maxDialRR
   const needleAngleDeg = -90 + rrRatioNorm * 180
   const semiRadius = 64
   const semiArcLen = Math.PI * semiRadius
@@ -2386,9 +2393,12 @@ function SystemIntegrityShieldPanel({
     {
       step: "02",
       title: "Vùng Giá Mua Hợp Lý",
-      status: entryVnd <= ceilingVnd ? "Trong vùng mua" : "Vượt giá trần",
-      passed: entryVnd <= ceilingVnd,
-      detail: `Giá tham chiếu (${number(entryVnd, " ₫")}) thấp hơn trần mua tối đa (${number(ceilingVnd, " ₫")}); ngưỡng cắt lỗ chỉ -${stopLossPctOnPos.toFixed(1)}%.`,
+      status: entryVnd > 0 && ceilingVnd > 0 ? (entryVnd <= ceilingVnd ? "Trong vùng mua" : "Vượt giá trần") : "Chờ định giá",
+      passed: entryVnd > 0 && ceilingVnd > 0 && entryVnd <= ceilingVnd,
+      detail:
+        entryVnd > 0
+          ? `Giá tham chiếu (${number(entryVnd, " ₫")}) ${entryVnd <= ceilingVnd ? "thấp hơn" : "cao hơn"} trần mua tối đa (${number(ceilingVnd, " ₫")}); ngưỡng cắt lỗ chỉ -${stopLossPctOnPos.toFixed(1)}%.`
+          : "Đang chờ Agent cập nhật vùng giá mua và điểm cắt lỗ từ luận điểm chính.",
     },
     {
       step: "03",
@@ -2420,9 +2430,9 @@ function SystemIntegrityShieldPanel({
         />
       </div>
 
-      {/* 3-Column Investor-Friendly Visual Layout — ZERO Horizontal Progress Bars */}
+      {/* 3-Column Investor-Friendly Visual Layout */}
       <div className="grid divide-y divide-line lg:grid-cols-12 lg:divide-y-0 lg:divide-x">
-        {/* Column 1 (4 Cols): Animated Semi-Circle Risk/Reward Needle Gauge */}
+        {/* Column 1 (4 Cols): Semi-Circle Risk/Reward Needle Gauge */}
         <div className="flex flex-col justify-between bg-surface p-5 lg:col-span-4">
           <div className="flex items-center justify-between gap-2 whitespace-nowrap">
             <span className="text-xs font-semibold text-ink">1. Đồng Hồ Tỷ Lệ Lãi / Rủi Ro</span>
@@ -2455,7 +2465,7 @@ function SystemIntegrityShieldPanel({
                 6.0x
               </text>
 
-              {/* Animated Sweep Arc from 0 -> actual Reward/Risk */}
+              {/* Sweep Arc from 0 -> actual Reward/Risk */}
               <path
                 d="M 26 88 A 64 64 0 0 1 154 88"
                 fill="none"
@@ -2463,12 +2473,14 @@ function SystemIntegrityShieldPanel({
                 strokeWidth="12"
                 strokeLinecap="round"
                 strokeDasharray={`${activeSemiArc} ${semiArcLen}`}
+                style={{ transition: "stroke-dasharray 280ms var(--ease-out-expo)" }}
               />
 
               {/* Rotating Gauge Needle */}
               <g
                 style={{
                   transform: `translate(90px, 88px) rotate(${needleAngleDeg}deg)`,
+                  transition: "transform 280ms var(--ease-out-expo)",
                 }}
               >
                 <line x1="0" y1="0" x2="0" y2="-52" stroke="var(--color-ink)" strokeWidth="2.4" strokeLinecap="round" />
@@ -2479,7 +2491,7 @@ function SystemIntegrityShieldPanel({
 
             <div className="mt-1 text-center">
               <div className="tnum font-mono text-[22px] font-bold text-gain">
-                {(rewardRiskRatio * dialProgress).toFixed(2)} : 1
+                {rewardRiskRatio.toFixed(2)} : 1
               </div>
               <p className="mt-0.5 whitespace-nowrap text-xs text-secondary">
                 Bỏ <strong className="font-semibold text-loss">1 đồng rủi ro</strong> để kỳ vọng thu{" "}
@@ -2495,7 +2507,7 @@ function SystemIntegrityShieldPanel({
           </div>
         </div>
 
-        {/* Column 2 (4 Cols): Real-Money VND Payoff Comparison (2 Stacked Full-Width Horizontal Cards) */}
+        {/* Column 2 (4 Cols): Real-Money VND Payoff Comparison */}
         <div className="flex flex-col justify-between bg-paper/25 p-5 lg:col-span-4">
           <div>
             <div className="flex items-center justify-between gap-2 whitespace-nowrap">
@@ -2507,10 +2519,10 @@ function SystemIntegrityShieldPanel({
             <p className="mt-1 whitespace-nowrap text-[11.5px] text-secondary">
               Vốn dự kiến <strong className="font-mono text-ink">{allocatedVnd.toLocaleString("vi-VN")} ₫</strong> (
               <strong className="font-mono text-ink">{simulatedShares.toLocaleString("vi-VN")} cp</strong> ×{" "}
-              <strong className="font-mono text-ink">{number(entryVnd, " ₫")}</strong>):
+              <strong className="font-mono text-ink">{entryVnd > 0 ? number(entryVnd, " ₫") : "—"}</strong>):
             </p>
 
-            {/* 2 Stacked Horizontal Scenario Cards for Generous Text Breathing Room */}
+            {/* 2 Stacked Horizontal Scenario Cards */}
             <div className="mt-3 space-y-2.5">
               {/* Stop-Loss Scenario Card */}
               <div className="rounded-lg border border-loss/25 bg-surface p-3">
@@ -2521,7 +2533,7 @@ function SystemIntegrityShieldPanel({
                       -{stopLossPctOnPos.toFixed(1)}%
                     </span>
                     <span className="tnum font-mono text-[11px] text-secondary">
-                      ({number(stopVnd, " ₫")})
+                      ({stopVnd > 0 ? number(stopVnd, " ₫") : "—"})
                     </span>
                   </div>
                   <span className="tnum font-mono text-[15px] font-bold text-loss">
@@ -2531,8 +2543,11 @@ function SystemIntegrityShieldPanel({
 
                 <div className="my-2 h-2 w-full overflow-hidden rounded-full bg-soft">
                   <div
-                    className="h-full rounded-full bg-loss"
-                    style={{ width: `${Math.max(12, (1 / Math.max(1, rewardRiskRatio)) * 100 * dialProgress)}%` }}
+                    className="h-full w-full origin-left rounded-full bg-loss"
+                    style={{
+                      transform: `scaleX(${Math.max(0.12, Math.min(1, 1 / Math.max(1, rewardRiskRatio)))})`,
+                      transition: "transform 260ms var(--ease-out-expo)",
+                    }}
                   />
                 </div>
 
@@ -2553,7 +2568,7 @@ function SystemIntegrityShieldPanel({
                       +{upsidePctOnPos.toFixed(1)}%
                     </span>
                     <span className="tnum font-mono text-[11px] text-secondary">
-                      ({number(targetVnd, " ₫")})
+                      ({targetVnd > 0 ? number(targetVnd, " ₫") : "—"})
                     </span>
                   </div>
                   <span className="tnum font-mono text-[15px] font-bold text-gain">
@@ -2563,8 +2578,11 @@ function SystemIntegrityShieldPanel({
 
                 <div className="my-2 h-2 w-full overflow-hidden rounded-full bg-soft">
                   <div
-                    className="h-full rounded-full bg-gain"
-                    style={{ width: `${Math.round(100 * dialProgress)}%` }}
+                    className="h-full w-full origin-left rounded-full bg-gain"
+                    style={{
+                      transform: `scaleX(${rewardRiskRatio > 0 ? 1 : 0})`,
+                      transition: "transform 260ms var(--ease-out-expo)",
+                    }}
                   />
                 </div>
 
@@ -2580,7 +2598,13 @@ function SystemIntegrityShieldPanel({
 
           <div className="mt-2.5 rounded-lg border border-line/80 bg-surface px-3 py-2 text-[11.5px] leading-relaxed text-secondary">
             <strong className="font-semibold text-ink">Bảo toàn vốn tuyệt đối:</strong> Kể cả trong kịch bản xấu nhất khi{" "}
-            {ticker} chạm cắt lỗ, hơn <strong className="font-mono text-ink">99,94%</strong> tổng tài sản của quỹ vẫn nguyên vẹn.
+            {ticker} chạm cắt lỗ, hơn{" "}
+            <strong className="font-mono text-ink">
+              {Number.isFinite(maxLossNavPct) && maxLossNavPct > 0
+                ? `${(100 - maxLossNavPct).toFixed(2).replace(".", ",")}%`
+                : "—"}
+            </strong>{" "}
+            tổng tài sản của quỹ vẫn nguyên vẹn.
           </div>
         </div>
 
@@ -2823,7 +2847,7 @@ function AgentLogRow({ agent, entry, index }: { agent: string; entry: RecordData
 
 export default function WarRoomPage() {
   return (
-    <Suspense fallback={<div className="mx-auto max-w-[1360px] px-6 py-6 lg:px-8"><AgentSkeleton /></div>}>
+    <Suspense fallback={<Page title="Phán quyết AI Committee"><AgentSkeleton /></Page>}>
       <WarRoomRoute />
     </Suspense>
   )
@@ -2888,7 +2912,6 @@ function WarRoom({ requestedSymbol }: { requestedSymbol: string }) {
         : data.dates?.includes(todayDate) || !data.dates?.length
           ? todayDate
           : data.dates[0]
-  const userPickedDate = selectedDate !== null
 
   const theses = ready ? newest(data?.theses || []).filter(row => !date || recordDate(row) === date) : []
   const resolutions = ready ? data?.resolutions || [] : []
@@ -2967,12 +2990,9 @@ function WarRoom({ requestedSymbol }: { requestedSymbol: string }) {
 
   return (
     <Page
-      title="Phân tích & Phán quyết Đa tác tử"
-      sub={
-        date && !userPickedDate
-          ? `Phiên phân tích ${displayDate(date)} · Quy trình thẩm định vĩ mô, đa nhân tố, phản biện độc lập và kiểm toán rủi ro`
-          : "Quy trình thẩm định vĩ mô, chấm điểm đa nhân tố, phản biện độc lập và kiểm toán rủi ro"
-      }
+      title="Phán quyết AI Committee"
+      meta={date ? `Phiên ${displayDate(date)} · ${symbols.length} mã thẩm định` : `${symbols.length} mã thẩm định`}
+      fetching={resource.fetching || accountResource.fetching}
       actions={
         <div className="flex flex-wrap items-center gap-2">
           <FinancialCalendar
@@ -2988,11 +3008,12 @@ function WarRoom({ requestedSymbol }: { requestedSymbol: string }) {
           <a
             href="#agent-logs"
             onClick={() => document.getElementById("agent-logs")?.setAttribute("open", "")}
-            className="inline-flex h-9 items-center rounded-md border border-line bg-surface px-3 text-[13px] font-medium text-ink transition-colors hover:bg-soft"
+            className="inline-flex h-8 items-center rounded-md border border-line bg-surface px-3 text-xs font-medium text-ink transition-colors hover:bg-soft"
           >
             Nhật ký ({logs.length}) ↓
           </a>
           <Button
+            size="sm"
             variant="ghost"
             onClick={() => {
               void resource.reload()
@@ -3031,7 +3052,7 @@ function WarRoom({ requestedSymbol }: { requestedSymbol: string }) {
           {/* 3. Main Stock Decision Workspace (Sticky Left Rail + Right Dossier) */}
           <div className="grid items-start gap-6 lg:grid-cols-[256px_minmax(0,1fr)]">
             {/* Left Stock Selector Rail */}
-            <Panel className="p-3.5 lg:sticky lg:top-16">
+            <Panel className="p-3.5 lg:sticky lg:top-4">
               <div className="mb-2.5 flex items-center justify-between border-b border-line pb-2.5">
                 <h2 className="text-[13px] font-semibold text-ink">Danh sách thẩm định</h2>
                 <Pill tone="neutral">{symbols.length} mã</Pill>
@@ -3047,7 +3068,7 @@ function WarRoom({ requestedSymbol }: { requestedSymbol: string }) {
 
               <nav
                 aria-label="Chọn mã phân tích"
-                className="flex gap-2 overflow-auto lg:max-h-[calc(100vh-210px)] lg:block lg:space-y-1.5"
+                className="flex gap-2 overflow-auto lg:max-h-[calc(100vh-140px)] lg:block lg:space-y-1.5"
               >
                 {visibleSymbols.map(item => {
                   const t = theses.find(row => row.ticker === item)

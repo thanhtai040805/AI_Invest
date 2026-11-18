@@ -67,9 +67,10 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
     isLive: false,
     lastTickAt: null,
   })
-  const [flashState, setFlashState] = useState<{ symbol: string; dir: "gain" | "loss" | null }>({
+  const [flashState, setFlashState] = useState<{ symbol: string; dir: "gain" | "loss" | null; seq: number }>({
     symbol: "",
     dir: null,
+    seq: 0,
   })
   const flashTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const hasRealtimePriceRef = useRef(false)
@@ -161,8 +162,15 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
 
         if (oldPrice && newPrice !== oldPrice) {
           if (flashTimeoutRef.current) clearTimeout(flashTimeoutRef.current)
-          setFlashState({ symbol: sym, dir: newPrice > oldPrice ? "gain" : "loss" })
-          flashTimeoutRef.current = setTimeout(() => setFlashState({ symbol: sym, dir: null }), 1000)
+          setFlashState((prevFlash) => ({
+            symbol: sym,
+            dir: newPrice > oldPrice ? "gain" : "loss",
+            seq: prevFlash.seq + 1,
+          }))
+          flashTimeoutRef.current = setTimeout(
+            () => setFlashState((cur) => (cur.symbol === sym ? { ...cur, dir: null } : cur)),
+            520,
+          )
         }
 
         const rawRef = data.ref !== undefined ? data.ref : data.prevClose
@@ -293,6 +301,7 @@ export function useRealtimeStock(symbol: string, initialStock?: Stock) {
     isLive: matchedIsLive,
     lastTickAt: matchedLastTickAt,
     flash: flashState.symbol === activeSym ? flashState.dir : null,
+    tickSeq: flashState.symbol === activeSym ? flashState.seq : 0,
   }
 }
 
@@ -313,6 +322,12 @@ export function useRealtimeMarket(initialIndices?: {
   const [liquidity, setLiquidity] = useState<MarketLiquidityTick | null>(null)
   const lastIndicesAt = useRef(0)
   const lastHeatmapAt = useRef(0)
+  const prevVnIndexRef = useRef<number | null>(null)
+  const indexFlashTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const [indexFlash, setIndexFlash] = useState<{ dir: "gain" | "loss" | null; seq: number }>({
+    dir: null,
+    seq: 0,
+  })
   const [breadth, setBreadth] = useState<MarketBreadthTick | null>(null)
 
   useEffect(() => {
@@ -374,6 +389,23 @@ export function useRealtimeMarket(initialIndices?: {
         const fresh = receivedAt > 0 && Date.now() - receivedAt < 15_000
         setIsLive(fresh)
         if (fresh) lastIndicesAt.current = receivedAt
+
+        const rawNum = Number(vnIndexItem.value)
+        if (Number.isFinite(rawNum) && rawNum > 0) {
+          const prevVal = prevVnIndexRef.current
+          if (prevVal !== null && prevVal !== rawNum) {
+            if (indexFlashTimeoutRef.current) clearTimeout(indexFlashTimeoutRef.current)
+            setIndexFlash((cur) => ({
+              dir: rawNum > prevVal ? "gain" : "loss",
+              seq: cur.seq + 1,
+            }))
+            indexFlashTimeoutRef.current = setTimeout(
+              () => setIndexFlash((cur) => ({ ...cur, dir: null })),
+              520,
+            )
+          }
+          prevVnIndexRef.current = rawNum
+        }
       }
 
       const rawVniDiff = vnIndexItem?.change
@@ -452,10 +484,11 @@ export function useRealtimeMarket(initialIndices?: {
       socket.off("market:breadth", onBreadth)
       socket.off("market:liquidity", onLiquidity)
       window.clearInterval(freshnessTimer)
+      if (indexFlashTimeoutRef.current) clearTimeout(indexFlashTimeoutRef.current)
     }
   }, [])
 
-  return { indices, isLive, snapshot, heatmap, heatmapLive, breadth, liquidity }
+  return { indices, isLive, snapshot, heatmap, heatmapLive, breadth, liquidity, indexFlash }
 }
 
 export function useRealtimeMarketOrderBooks(

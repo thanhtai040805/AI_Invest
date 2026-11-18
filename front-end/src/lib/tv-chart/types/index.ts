@@ -81,8 +81,6 @@ export type TvIndicatorCategory =
   | "profile"
   | "pattern"
   | "candlestick"
-  | "options"
-  | "fundamental"
   | "community"
   | "custom"
 
@@ -90,7 +88,6 @@ export type TvDialogSidebarSection =
   | "my_scripts"
   | "purchased"
   | "technicals"
-  | "fundamentals"
   | "editors_picks"
   | "top"
   | "trending"
@@ -101,20 +98,12 @@ export type TvTechnicalSubTab =
   | "strategies"
   | "profiles"
   | "patterns"
-  | "options"
-
-export type TvFundamentalSubTab =
-  | "all"
-  | "valuation"
-  | "income"
-  | "balance"
-  | "cashflow"
 
 export type TvTierBadge = "FREE" | "BETA" | "PRO" | "PREMIUM" | "ULTIMATE"
 
 /**
- * Supports all 270+ built-in TradingView studies, strategies, profiles, patterns,
- * fundamentals, community scripts, store packages, and custom user scripts (`CUSTOM_*`).
+ * Supports built-in TradingView technical studies, strategies, profiles, patterns,
+ * community scripts, store packages, and custom user scripts (`CUSTOM_*`).
  */
 export type TvIndicatorId = string
 
@@ -141,8 +130,6 @@ export interface TvIndicatorMetadata {
   section?: TvDialogSidebarSection
   /** Horizontal sub-tab inside Technicals */
   subTab?: TvTechnicalSubTab
-  /** Horizontal sub-tab inside Fundamentals */
-  fundamentalGroup?: TvFundamentalSubTab
   /** Original TradingView pine-facade / @tv-* script identifier extracted via REA */
   tvScriptId?: string
   /** Tier or BETA badge (100% unlocked in AIInvest) */

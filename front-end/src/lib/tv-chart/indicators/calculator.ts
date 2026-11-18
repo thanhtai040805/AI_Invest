@@ -18,8 +18,6 @@ import {
   computeCandlestickPatternStudy,
   computeChartPatternStudy,
   computeCommunityVipStudy,
-  computeFundamentalStudy,
-  computeOptionsStudy,
   computeProfileStudy,
   computeStrategyStudy,
 } from "./advanced-engines"
@@ -531,12 +529,6 @@ export function computeIndicator(
   }
   if (meta.category === "strategy") {
     return computeStrategyStudy(candles, instance, meta)
-  }
-  if (meta.category === "options") {
-    return computeOptionsStudy(candles, instance, meta)
-  }
-  if (meta.category === "fundamental") {
-    return computeFundamentalStudy(candles, instance, meta, ctx?.symbol || "HPG")
   }
   if (meta.category === "community") {
     return computeCommunityVipStudy(candles, instance, meta)

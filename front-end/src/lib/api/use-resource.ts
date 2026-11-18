@@ -2,7 +2,10 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import type { ApiProblem } from "./client"
 export function useResource<T>(loader: () => Promise<T>, deps: readonly unknown[] = []) {
-  const [data, setData] = useState<T | null>(null); const [error, setError] = useState<ApiProblem | null>(null); const [loading, setLoading] = useState(true)
+  const [data, setData] = useState<T | null>(null)
+  const [error, setError] = useState<ApiProblem | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [fetching, setFetching] = useState(false)
   const requestId = useRef(0)
   const loaderRef = useRef(loader)
   const hasDataRef = useRef(false)
@@ -10,6 +13,7 @@ export function useResource<T>(loader: () => Promise<T>, deps: readonly unknown[
   const reload = useCallback(async () => {
     const id = ++requestId.current
     if (!hasDataRef.current) setLoading(true)
+    setFetching(true)
     setError(null)
     try {
       const result = await loaderRef.current()
@@ -20,12 +24,15 @@ export function useResource<T>(loader: () => Promise<T>, deps: readonly unknown[
     } catch (value) {
       if (id === requestId.current) setError(value as ApiProblem)
     } finally {
-      if (id === requestId.current) setLoading(false)
+      if (id === requestId.current) {
+        setLoading(false)
+        setFetching(false)
+      }
     }
   }, [])
   useEffect(() => { loaderRef.current = loader }, [loader])
   // Resource loading is the external synchronization performed by this hook.
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { const requests = requestId; void reload(); return () => { requests.current++ } }, [reload, dependencyKey])
-  return { data, error, loading, reload }
+  return { data, error, loading, fetching, reload }
 }

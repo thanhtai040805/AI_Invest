@@ -8,16 +8,14 @@ import {
   resolveSeriesPriceScale,
   scaleCandlePrice,
 } from "@/lib/tv-chart"
-import { Button, Pill, fmt, fmtPct } from "@/components/ui"
-import { marketApi, stockApi, workspaceApi } from "@/lib/api"
+import { Button, Pill, Tabs, fmt, fmtPct } from "@/components/ui"
+import { marketApi, stockApi } from "@/lib/api"
 import { useResource } from "@/lib/api/use-resource"
 import { Link, openStockModal, useRouter } from "@/lib/router"
 import { formatSectorName } from "@/lib/sector-weights"
 import { useRealtimeStock } from "@/lib/use-realtime"
 import type { SuperStockItem, SuperStocksPayload } from "@/components/SuperStocksTable"
 import type { ApiMarketSnapshot } from "@/types"
-
-const LOCAL_WATCHLIST_KEY = "aiinvest_markets_watchlist_v1"
 
 const VN30_SET = new Set([
   "ACB",
@@ -209,8 +207,6 @@ export interface StockDetailSeed {
 export interface StockDetailContentProps {
   symbol: string
   seed?: StockDetailSeed
-  starred?: boolean
-  onToggleStar?: (symbol: string) => void
   onClose?: () => void
   onSelectPrev?: () => void
   onSelectNext?: () => void
@@ -222,8 +218,6 @@ export interface StockDetailContentProps {
 export function StockDetailContent({
   symbol: rawSymbol,
   seed,
-  starred: externalStarred,
-  onToggleStar: externalOnToggleStar,
   onClose,
   onSelectPrev,
   onSelectNext,
@@ -235,56 +229,12 @@ export function StockDetailContent({
   const [mainTab, setMainTab] = useState<MainPopupTab>("TRADING")
   const [tapeMode, setTapeMode] = useState<TradeTapeMode>("PRICE_STEP")
 
-  // Local fallback watchlist state if not controlled by parent
-  const [localStars, setLocalStars] = useState<string[]>(() => {
-    if (typeof window === "undefined") return []
-    try {
-      const saved = window.localStorage.getItem(LOCAL_WATCHLIST_KEY)
-      const parsed = saved ? (JSON.parse(saved) as unknown) : []
-      return Array.isArray(parsed) ? parsed.map((s) => String(s).toUpperCase()) : []
-    } catch {
-      return []
-    }
-  })
-
   const { navigate } = useRouter()
-  const isStarred =
-    externalStarred !== undefined ? externalStarred : localStars.includes(symbol)
-
-  const handleToggleWatchlist = async () => {
-    if (externalOnToggleStar) {
-      externalOnToggleStar(symbol)
-      return
-    }
-    const exists = localStars.includes(symbol)
-    const next = exists ? localStars.filter((s) => s !== symbol) : [symbol, ...localStars]
-    setLocalStars(next)
-    try {
-      window.localStorage.setItem(LOCAL_WATCHLIST_KEY, JSON.stringify(next))
-    } catch {
-      // ignore
-    }
-    try {
-      const lists = (await workspaceApi.watchlists()) as Array<{
-        id: string
-        name: string
-        symbols: string[]
-      }>
-      const first = Array.isArray(lists) ? lists[0] : undefined
-      if (first) {
-        await workspaceApi.updateWatchlist(first.id, { symbols: next })
-      } else {
-        await workspaceApi.createWatchlist({ name: "Theo dõi chính", symbols: next })
-      }
-    } catch {
-      // ignore offline
-    }
-  }
 
   const resource = useResource(
     async () => {
       const targetSym = symbol
-      const payload = await Promise.all([
+      const [quoteRes, profileRes, vsaRes, ohlcvRes, newsRes, snapshotRes] = await Promise.all([
         stockApi.quote(targetSym).catch(() => null),
         stockApi.profile(targetSym).catch(() => null),
         marketApi.superStocks(targetSym).catch(() => null),
@@ -292,10 +242,18 @@ export function StockDetailContent({
         stockApi.news(targetSym).catch(() => null),
         marketApi.snapshot().catch(() => null),
       ])
-      return { symbol: targetSym, payload }
+      if (!quoteRes && !ohlcvRes && !snapshotRes) {
+        throw new Error(`Không tải được dữ liệu thị trường cho mã ${targetSym}.`)
+      }
+      return {
+        symbol: targetSym,
+        payload: [quoteRes, profileRes, vsaRes, ohlcvRes, newsRes, snapshotRes],
+      }
     },
     [symbol]
   )
+
+  const isSymbolSwitching = resource.fetching && resource.data?.symbol !== symbol
 
   const matchedPayload = resource.data?.symbol === symbol ? resource.data.payload : undefined
   const [quoteRes, profileRes, vsaRes, ohlcvRes, newsRes, snapshotRes] = (matchedPayload || []) as [
@@ -448,7 +406,7 @@ export function StockDetailContent({
     }
   }, [quoteRes, profileRes, vsaItem, snapshotStock, seed, candles, symbol])
 
-  const { stock: realtimeStock, orderbook, isLive } = useRealtimeStock(symbol, initialStock)
+  const { stock: realtimeStock, orderbook, isLive, tickSeq, flash } = useRealtimeStock(symbol, initialStock)
   const s = realtimeStock || initialStock
 
   const price = toVndPrice(s.price) || initialStock.price
@@ -643,7 +601,7 @@ export function StockDetailContent({
     snapshotStock,
   ])
 
-  // Build 3-level Order Book + Cumulative Depth for Market Depth Chart (chuẩn SSI iBoard & DNSE)
+  // Build 3-level Order Book + Cumulative Depth for Market Depth Chart (strictly exchange-sourced, zero fake levels)
   const bookLadder = useMemo(() => {
     const rawBids = (orderbook?.bids ?? [])
       .map((b) => ({ price: toVndPrice(b.price), volume: Math.round(Number(b.volume ?? 0)) }))
@@ -656,29 +614,9 @@ export function StockDetailContent({
       .slice(0, 3)
 
     const hasLiveBook = rawBids.length > 0 || rawAsks.length > 0
-    let bids = rawBids
-    let asks = rawAsks
-    let isLiveBook = !orderbook?.stale
-    let isSynthetic = false
-
-    if (!hasLiveBook) {
-      isLiveBook = false
-      isSynthetic = true
-      const step = getTickStep(price || 20_000)
-      const baseVol = Math.max(
-        10_000,
-        Math.round(((analytics.rawVol || 500_000) * 0.012) / 100) * 100
-      )
-      const buyForce = vsaItem?.avg_buyforce ?? 50
-      bids = [0, 1, 2].map((i) => ({
-        price: Math.max(floor || step, price - i * step),
-        volume: Math.round((baseVol * (1 + i * 0.22) * (buyForce / 50)) / 100) * 100,
-      }))
-      asks = [0, 1, 2].map((i) => ({
-        price: Math.min(ceiling || price + 3 * step, price + (i + 1) * step),
-        volume: Math.round((baseVol * (0.95 + i * 0.18) * ((100 - buyForce) / 50)) / 100) * 100,
-      }))
-    }
+    const bids = hasLiveBook ? rawBids : []
+    const asks = hasLiveBook ? rawAsks : []
+    const isLiveBook = hasLiveBook && !orderbook?.stale
 
     const totalBid = bids.reduce((acc, b) => acc + b.volume, 0)
     const totalAsk = asks.reduce((acc, a) => acc + a.volume, 0)
@@ -696,7 +634,7 @@ export function StockDetailContent({
 
     return {
       isLiveBook,
-      isSynthetic,
+      hasLiveBook,
       bids,
       asks,
       totalBid,
@@ -715,7 +653,7 @@ export function StockDetailContent({
       ],
       maxCumDepth,
     }
-  }, [orderbook, price, floor, ceiling, analytics.rawVol, vsaItem?.avg_buyforce])
+  }, [orderbook])
 
   const isVn30 = VN30_SET.has(symbol)
   const asOfLabel = quoteRes?.asOf ? formatDateShortVi(quoteRes.asOf) : null
@@ -724,51 +662,132 @@ export function StockDetailContent({
   const lowTone = resolveHoseTone(analytics.lowPrice, ref, ceiling, floor)
   const highTone = resolveHoseTone(analytics.highPrice, ref, ceiling, floor)
 
+  const tabPairs: [MainPopupTab, string][] = [
+    ["TRADING", "Giao dịch"],
+    ["STATISTICS", "Thống kê (25P)"],
+    ["VSA_QUANT", "VSA & Kỹ thuật"],
+    ["FILINGS", `BCTC & Tin tức (${newsList.length})`],
+  ]
+  const activeTabLabel = tabPairs.find(([k]) => k === mainTab)?.[1] ?? tabPairs[0][1]
+
   return (
-    <div className="bg-surface text-ink rounded-[12px] border border-line overflow-hidden shadow-[0_24px_70px_rgba(18,26,23,0.22)]">
-      {/* 1. HEADER CHUẨN SSI iBOARD & DNSE: TẦNG ĐỊNH DANH + TẦNG THÔNG SỐ PHIÊN + THANH TAB CHÍNH */}
+    <div
+      className={`bg-surface text-ink rounded-[12px] border border-line overflow-hidden shadow-[0_24px_70px_rgba(18,26,23,0.22)] transition-opacity duration-[150ms] ${
+        isSymbolSwitching ? "opacity-75" : "opacity-100"
+      }`}
+    >
+      {/* 1. COMPACT 2-ROW HEADER CHUẨN TERMINAL HOSE */}
       <div className="bg-surface border-b border-line">
-        {/* Tầng 1A: Mã CK · Sàn · Tên Công ty · Ngành (Trái) & Điều hướng Mã / Theo dõi / Đặt lệnh / Đóng (Phải) */}
-        <div className="px-5 pt-3 pb-2 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-2 min-w-0">
+        {/* Band 1: Định danh + Thị giá + Thông số phiên chính + Thao tác */}
+        <div className="px-4 py-2.5 bg-paper/45 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 min-w-0">
             <span
-              className={`font-mono text-[22px] font-bold tracking-tight leading-none ${TONE_TEXT_CLASS[tone]}`}
+              className={`font-mono text-[20px] font-bold tracking-tight leading-none ${TONE_TEXT_CLASS[tone]}`}
             >
               {symbol}
             </span>
-            <span className="font-mono text-[11.5px] font-semibold text-secondary">
-              (HOSE)
-            </span>
-            <span className="text-[13.5px] font-semibold text-ink truncate max-w-[340px]">
+            <span className="font-mono text-[11px] font-semibold text-secondary">(HOSE)</span>
+            <span className="text-[13px] font-semibold text-ink truncate max-w-[210px]">
               {s.name && s.name.toUpperCase() !== symbol ? s.name : `Cổ phiếu ${symbol}`}
             </span>
             {isVn30 && (
-              <span className="rounded bg-ink text-surface px-1.5 py-0.5 font-mono text-[10px] font-semibold">
+              <span className="rounded bg-ink text-surface px-1.5 py-0.5 font-mono text-[9.5px] font-semibold">
                 VN30
               </span>
             )}
-            <span className="rounded bg-soft px-2 py-0.5 text-[11px] font-medium text-secondary border border-line/70">
+            <span className="hidden sm:inline rounded bg-soft px-2 py-0.5 text-[11px] font-medium text-secondary border border-line/70">
               {s.sector}
             </span>
             <Pill tone={isLive ? "gain" : "neutral"}>
               <span
                 className={`h-1.5 w-1.5 rounded-full ${
-                  isLive ? "bg-gain animate-pulse" : "bg-muted"
+                  isLive ? "bg-gain pulse-subtle" : "bg-muted"
                 }`}
               />
-              {isLive ? "Trực tiếp DNSE" : asOfLabel ? `Chốt ${asOfLabel}` : "Snapshot"}
+              {isLive ? "Trực tiếp" : asOfLabel ? `Chốt ${asOfLabel}` : "Snapshot"}
             </Pill>
+
+            <span className="h-5 w-px bg-line mx-0.5 hidden sm:inline-block" aria-hidden="true" />
+
+            <div className="flex items-baseline gap-2">
+              <span
+                key={`p-${tickSeq}`}
+                className={`font-mono text-[22px] font-bold tracking-tight leading-none tnum rounded px-0.5 -mx-0.5 ${
+                  TONE_TEXT_CLASS[tone]
+                } ${flash === "gain" ? "tick-up" : flash === "loss" ? "tick-down" : ""}`}
+              >
+                {price > 0 ? fmt(price) : "—"}
+              </span>
+              <span className={`font-mono text-[11.5px] font-semibold tnum ${TONE_TEXT_CLASS[tone]}`}>
+                {price > 0 && priceDiff != null && priceDiff !== 0
+                  ? `${priceDiff > 0 ? "+" : ""}${fmt(priceDiff)}`
+                  : "—"}{" "}
+                ({price > 0 ? (changePct === 0 ? "0,00%" : fmtPct(changePct)) : "—"})
+              </span>
+            </div>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="hidden xl:flex items-center gap-3.5 font-mono text-[11px] tnum">
+            <span>
+              <span className="font-sans text-muted mr-1">TC</span>
+              <strong className="text-ref">{ref ? fmt(ref) : "—"}</strong>
+            </span>
+            <span>
+              <span className="font-sans text-muted mr-1">Trần</span>
+              <strong className="text-ceiling">{ceiling > 0 ? fmt(ceiling) : "—"}</strong>
+            </span>
+            <span>
+              <span className="font-sans text-muted mr-1">Sàn</span>
+              <strong className="text-floor">{floor > 0 ? fmt(floor) : "—"}</strong>
+            </span>
+            <span>
+              <span className="font-sans text-muted mr-1">Biên độ</span>
+              <strong className={TONE_TEXT_CLASS[lowTone]}>
+                {analytics.lowPrice > 0 ? fmt(analytics.lowPrice) : "—"}
+              </strong>
+              <span className="text-muted mx-0.5">–</span>
+              <strong className={TONE_TEXT_CLASS[highTone]}>
+                {analytics.highPrice > 0 ? fmt(analytics.highPrice) : "—"}
+              </strong>
+            </span>
+            <span>
+              <span className="font-sans text-muted mr-1">KL</span>
+              <strong className="text-ink">{formatShareVol(analytics.rawVol)}</strong>
+            </span>
+            <span>
+              <span className="font-sans text-muted mr-1">GTGD</span>
+              <strong className="text-ink">
+                {analytics.valueBillion > 0
+                  ? `${analytics.valueBillion.toFixed(1).replace(".", ",")} tỷ`
+                  : "—"}
+              </strong>
+            </span>
+            <span>
+              <span className="font-sans text-muted mr-1">ĐTNN</span>
+              <strong
+                className={
+                  analytics.foreignBillion > 0
+                    ? "text-gain"
+                    : analytics.foreignBillion < 0
+                      ? "text-loss"
+                      : "text-ink"
+                }
+              >
+                {analytics.foreignBillion > 0 ? "+" : ""}
+                {analytics.foreignBillion.toFixed(2).replace(".", ",")} tỷ
+              </strong>
+            </span>
+          </div>
+
+          <div className="flex items-center gap-1.5 shrink-0">
             {(onSelectPrev || onSelectNext) && (
-              <div className="inline-flex items-center rounded-[6px] border border-line bg-soft/60 p-0.5">
+              <div className="inline-flex items-center rounded-[6px] border border-line bg-surface p-0.5">
                 <button
                   type="button"
                   disabled={!prevSymbol}
                   onClick={onSelectPrev}
                   title={prevSymbol ? `Mã trước: ${prevSymbol} (Phím ←)` : "Đầu danh sách"}
-                  className="h-7 px-2 rounded-[4px] font-mono text-[11.5px] text-secondary hover:bg-surface hover:text-ink disabled:opacity-35 transition-colors"
+                  className="h-7 px-2 rounded-[4px] font-mono text-[11px] text-secondary hover:bg-soft hover:text-ink disabled:opacity-35 transition-colors"
                 >
                   ‹ {prevSymbol || "Trước"}
                 </button>
@@ -777,26 +796,15 @@ export function StockDetailContent({
                   disabled={!nextSymbol}
                   onClick={onSelectNext}
                   title={nextSymbol ? `Mã tiếp: ${nextSymbol} (Phím →)` : "Cuối danh sách"}
-                  className="h-7 px-2 rounded-[4px] font-mono text-[11.5px] text-secondary hover:bg-surface hover:text-ink disabled:opacity-35 transition-colors"
+                  className="h-7 px-2 rounded-[4px] font-mono text-[11px] text-secondary hover:bg-soft hover:text-ink disabled:opacity-35 transition-colors"
                 >
                   {nextSymbol || "Tiếp"} ›
                 </button>
               </div>
             )}
 
-            <Button
-              variant="secondary"
-              className="!h-8 !px-3 !text-[12px]"
-              onClick={() => void handleToggleWatchlist()}
-            >
-              <span className={isStarred ? "text-gold mr-1" : "text-muted mr-1"}>
-                {isStarred ? "★" : "☆"}
-              </span>
-              {isStarred ? "Đang theo dõi" : "Theo dõi"}
-            </Button>
-
             <Link to={`/trade?symbol=${symbol}`} onClick={onClose}>
-              <Button variant="primary" className="!h-8 !px-3.5 !text-[12px]">
+              <Button variant="primary" size="sm">
                 Đặt lệnh {symbol} →
               </Button>
             </Link>
@@ -807,7 +815,7 @@ export function StockDetailContent({
                 onClick={onClose}
                 aria-label="Đóng cửa sổ chi tiết cổ phiếu (Esc)"
                 title="Đóng (Esc)"
-                className="inline-flex h-8 w-8 items-center justify-center rounded-[6px] border border-line bg-soft/60 text-[14px] text-secondary hover:bg-ink hover:text-surface transition-colors"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-[6px] border border-line bg-surface text-[14px] text-secondary hover:bg-ink hover:text-surface transition-colors"
               >
                 ✕
               </button>
@@ -815,159 +823,31 @@ export function StockDetailContent({
           </div>
         </div>
 
-        {/* Tầng 1B: Dải Thị giá & Thông số Phiên ngang chuẩn SSI iBoard */}
-        <div className="px-5 py-2.5 bg-soft/35 border-y border-line/80 flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
-          {/* Cụm giá lớn + chênh lệch */}
-          <div className="flex items-center gap-3">
-            <span
-              className={`font-mono text-[28px] font-bold tracking-tight leading-none tnum ${TONE_TEXT_CLASS[tone]}`}
-            >
-              {price > 0 ? fmt(price) : "—"}
+        {/* Band 2: Thanh Tab Trượt & Tín hiệu Kỹ thuật Tóm tắt */}
+        <div className="px-4 flex items-center justify-between gap-4 border-t border-line/80 bg-surface">
+          <div className="overflow-x-auto no-scrollbar">
+            <Tabs
+              tabs={tabPairs.map(([, label]) => label)}
+              active={activeTabLabel}
+              onChange={(label) => {
+                const match = tabPairs.find(([, l]) => l === label)
+                if (match) setMainTab(match[0])
+              }}
+            />
+          </div>
+
+          <div className="hidden md:flex items-center gap-3.5 font-mono text-[11px] text-secondary tnum shrink-0">
+            <span>
+              Mở/TB:{" "}
+              <strong className={TONE_TEXT_CLASS[openTone]}>
+                {analytics.openPrice > 0 ? fmt(analytics.openPrice) : "—"}
+              </strong>
+              /
+              <strong className={TONE_TEXT_CLASS[vwapTone]}>
+                {analytics.vwapEst > 0 ? fmt(analytics.vwapEst) : "—"}
+              </strong>
             </span>
-            <div
-              className={`font-mono text-[11.5px] font-semibold leading-tight tnum ${TONE_TEXT_CLASS[tone]}`}
-            >
-              <div>
-                {priceDiff != null && priceDiff !== 0
-                  ? `${priceDiff > 0 ? "+" : ""}${fmt(priceDiff)}`
-                  : "0"}
-              </div>
-              <div>{changePct === 0 ? "0,00%" : fmtPct(changePct)}</div>
-            </div>
-          </div>
-
-          {/* Dải chỉ số phiên ngang chuẩn SSI iBoard */}
-          <div className="flex flex-wrap items-center gap-x-6 gap-y-1.5 font-mono text-[12px] tnum">
-            <div>
-              <div className="font-sans text-[10px] font-semibold uppercase tracking-wider text-muted">
-                Mở cửa / Trung bình
-              </div>
-              <div className="mt-0.5 font-semibold">
-                <span className={TONE_TEXT_CLASS[openTone]}>
-                  {analytics.openPrice > 0 ? fmt(analytics.openPrice) : "—"}
-                </span>
-                <span className="text-muted mx-1">/</span>
-                <span className={TONE_TEXT_CLASS[vwapTone]}>
-                  {analytics.vwapEst > 0 ? fmt(analytics.vwapEst) : "—"}
-                </span>
-              </div>
-            </div>
-
-            <div>
-              <div className="font-sans text-[10px] font-semibold uppercase tracking-wider text-muted">
-                Thấp / Cao phiên
-              </div>
-              <div className="mt-0.5 font-semibold">
-                <span className={TONE_TEXT_CLASS[lowTone]}>
-                  {analytics.lowPrice > 0 ? fmt(analytics.lowPrice) : "—"}
-                </span>
-                <span className="text-muted mx-1">/</span>
-                <span className={TONE_TEXT_CLASS[highTone]}>
-                  {analytics.highPrice > 0 ? fmt(analytics.highPrice) : "—"}
-                </span>
-              </div>
-            </div>
-
-            <div>
-              <div className="font-sans text-[10px] font-semibold uppercase tracking-wider text-muted">
-                Trần
-              </div>
-              <div className="mt-0.5 font-semibold text-ceiling">
-                {ceiling > 0 ? fmt(ceiling) : "—"}
-              </div>
-            </div>
-
-            <div>
-              <div className="font-sans text-[10px] font-semibold uppercase tracking-wider text-muted">
-                Sàn
-              </div>
-              <div className="mt-0.5 font-semibold text-floor">
-                {floor > 0 ? fmt(floor) : "—"}
-              </div>
-            </div>
-
-            <div>
-              <div className="font-sans text-[10px] font-semibold uppercase tracking-wider text-muted">
-                Tham chiếu
-              </div>
-              <div className="mt-0.5 font-semibold text-ref">
-                {ref ? fmt(ref) : "—"}
-              </div>
-            </div>
-
-            <div>
-              <div className="font-sans text-[10px] font-semibold uppercase tracking-wider text-muted">
-                Tổng KL khớp
-              </div>
-              <div className="mt-0.5 font-semibold text-ink">
-                {analytics.rawVol > 0 ? fmt(Math.round(analytics.rawVol)) : "—"}
-              </div>
-            </div>
-
-            <div>
-              <div className="font-sans text-[10px] font-semibold uppercase tracking-wider text-muted">
-                GTGD
-              </div>
-              <div className="mt-0.5 font-semibold text-ink">
-                {analytics.valueBillion > 0
-                  ? `${analytics.valueBillion.toFixed(1).replace(".", ",")} tỷ`
-                  : "—"}
-              </div>
-            </div>
-
-            <div>
-              <div className="font-sans text-[10px] font-semibold uppercase tracking-wider text-muted">
-                ĐTNN Ròng
-              </div>
-              <div
-                className={`mt-0.5 font-semibold ${
-                  analytics.foreignBillion > 0
-                    ? "text-gain"
-                    : analytics.foreignBillion < 0
-                      ? "text-loss"
-                      : "text-ink"
-                }`}
-              >
-                {analytics.foreignBillion > 0 ? "+" : ""}
-                {analytics.foreignBillion.toFixed(2).replace(".", ",")} tỷ
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Tầng 1C: Thanh Tab Ngang Toàn Popup chuẩn SSI iBoard */}
-        <div className="px-5 flex items-center justify-between gap-4 bg-surface" role="tablist">
-          <div className="flex items-center gap-6 overflow-x-auto">
-            {(
-              [
-                ["TRADING", "Giao dịch"],
-                ["STATISTICS", "Thống kê lịch sử (25P)"],
-                ["VSA_QUANT", "Phân tích VSA & Kỹ thuật"],
-                ["FILINGS", `BCTC & Tin tức (${newsList.length})`],
-              ] as [MainPopupTab, string][]
-            ).map(([key, label]) => {
-              const active = mainTab === key
-              return (
-                <button
-                  key={key}
-                  type="button"
-                  role="tab"
-                  aria-selected={active}
-                  onClick={() => setMainTab(key)}
-                  className={`relative py-2.5 text-[13px] font-semibold whitespace-nowrap transition-colors ${
-                    active ? "text-ink" : "text-muted hover:text-ink"
-                  }`}
-                >
-                  {label}
-                  {active && (
-                    <span className="absolute inset-x-0 bottom-0 h-[2.5px] rounded-full bg-ink" />
-                  )}
-                </button>
-              )
-            })}
-          </div>
-
-          <div className="hidden md:flex items-center gap-4 font-mono text-[11px] text-secondary tnum shrink-0">
+            <span>·</span>
             <span>
               MA20:{" "}
               <strong
@@ -987,7 +867,7 @@ export function StockDetailContent({
             </span>
             <span>·</span>
             <span>
-              Điểm VSA:{" "}
+              VSA:{" "}
               <strong className={(vsaItem?.vsa_score ?? 0) >= 60 ? "text-gain" : "text-ink"}>
                 {vsaItem?.vsa_score != null ? vsaItem.vsa_score.toFixed(1).replace(".", ",") : "—"}
               </strong>
@@ -997,10 +877,26 @@ export function StockDetailContent({
         </div>
       </div>
 
+      {resource.error && (
+        <div
+          role="alert"
+          className="px-4 py-2 bg-loss/8 border-b border-loss/20 flex items-center justify-between gap-2 text-[12px] text-loss"
+        >
+          <span>{resource.error.message || `Không tải được dữ liệu mới cho ${symbol}.`}</span>
+          <button
+            type="button"
+            onClick={() => void resource.reload()}
+            className="font-medium underline hover:no-underline"
+          >
+            Thử lại
+          </button>
+        </div>
+      )}
+
       {/* 2. NỘI DUNG TAB 1: "GIAO DỊCH" — BỐ CỤC 3 CỘT CHUẨN SSI iBOARD & DNSE */}
       {mainTab === "TRADING" && (
         <div className="grid grid-cols-1 lg:grid-cols-12 divide-y lg:divide-y-0 lg:divide-x divide-line bg-surface">
-          {/* CỘT 1 (7/12): BIỂU ĐỒ KỸ THUẬT TRADINGVIEW PRO CHIẾM TRỌN CHIỀU CAO */}
+          {/* CỘT 1 (7/12): BIỂU ĐỒ KỸ THUẬT TRADINGVIEW PRO */}
           <div className="lg:col-span-7 p-2 bg-surface flex flex-col justify-between">
             <TradingViewChart
               symbol={symbol}
@@ -1013,7 +909,7 @@ export function StockDetailContent({
                 volume: c.volume,
               }))}
               precision={0}
-              height={isModal ? 505 : 545}
+              height={isModal ? 455 : 515}
               trading={{
                 symbol,
                 stockName: s.name,
@@ -1048,8 +944,8 @@ export function StockDetailContent({
                   <span className="text-[12px] font-semibold text-ink">
                     Độ sâu thị trường
                   </span>
-                  <span className="font-mono text-[10px] text-muted">
-                    {bookLadder.isLiveBook ? "Trực tiếp" : "Bước giá chuẩn"}
+                  <span className="font-mono text-[10px] text-secondary">
+                    {bookLadder.isLiveBook ? "Trực tiếp HOSE" : "Chờ sổ lệnh trực tiếp"}
                   </span>
                 </div>
 
@@ -1087,8 +983,8 @@ export function StockDetailContent({
                           <div className="relative px-2.5 flex items-center justify-between overflow-hidden">
                             {bidW > 0 && (
                               <div
-                                className="absolute inset-y-0.5 right-0 bg-gain/15 transition-all"
-                                style={{ width: `${bidW}%` }}
+                                className="absolute inset-y-0.5 inset-x-0 bg-gain/15 origin-right transition-transform duration-[140ms] ease-[var(--ease-out-expo)]"
+                                style={{ transform: `scaleX(${bidW / 100})` }}
                               />
                             )}
                             <span className="relative z-10 text-ink">
@@ -1104,8 +1000,8 @@ export function StockDetailContent({
                           <div className="relative px-2.5 flex items-center justify-between overflow-hidden">
                             {askW > 0 && (
                               <div
-                                className="absolute inset-y-0.5 left-0 bg-loss/15 transition-all"
-                                style={{ width: `${askW}%` }}
+                                className="absolute inset-y-0.5 inset-x-0 bg-loss/15 origin-left transition-transform duration-[140ms] ease-[var(--ease-out-expo)]"
+                                style={{ transform: `scaleX(${askW / 100})` }}
                               />
                             )}
                             <span
@@ -1124,102 +1020,109 @@ export function StockDetailContent({
 
                   {/* Thanh tổng Dư mua / Dư bán ngay dưới 3 bước giá */}
                   <div className="px-2.5 py-2 border-t border-line bg-soft/15">
-                    <div className="h-1.5 w-full rounded-full bg-soft overflow-hidden flex">
+                    <div className="h-1.5 w-full rounded-full bg-loss/70 overflow-hidden">
                       <div
-                        className="h-full bg-gain transition-all"
-                        style={{ width: `${bookLadder.buyRatio}%` }}
+                        className="h-full w-full bg-gain origin-left transition-transform duration-[160ms] ease-[var(--ease-out-expo)]"
+                        style={{
+                          transform: `scaleX(${bookLadder.hasLiveBook ? bookLadder.buyRatio / 100 : 0.5})`,
+                        }}
                       />
-                      <div className="h-full bg-loss flex-1" />
                     </div>
                     <div className="mt-1.5 flex items-center justify-between font-mono text-[11px] tnum">
                       <span className="text-secondary">
                         Dư mua:{" "}
                         <strong className="text-ink font-semibold">
-                          {formatShareVol(bookLadder.totalBid)}
+                          {bookLadder.hasLiveBook ? formatShareVol(bookLadder.totalBid) : "—"}
                         </strong>
                       </span>
                       <span className="text-secondary">
                         Dư bán:{" "}
                         <strong className="text-ink font-semibold">
-                          {formatShareVol(bookLadder.totalAsk)}
+                          {bookLadder.hasLiveBook ? formatShareVol(bookLadder.totalAsk) : "—"}
                         </strong>
                       </span>
                     </div>
                   </div>
                 </div>
 
-                {/* Biểu đồ Độ sâu thị trường (Staircase Step-Chart chuẩn SSI iBoard) */}
+                {/* Biểu đồ Độ sâu thị trường (Staircase Step-Chart — chỉ hiển thị khi có live book) */}
                 <div className="px-2.5 py-2.5 border-t border-line">
                   <div className="text-[11px] font-semibold text-secondary text-center mb-2">
                     Biểu đồ độ sâu thị trường
                   </div>
 
-                  <div className="relative h-[108px] pt-3 pb-1 px-1 rounded-[6px] bg-soft/30 border border-line/60 flex flex-col justify-end">
-                    <span className="absolute top-1 left-1.5 font-mono text-[9.5px] text-muted tnum">
-                      {formatShareVol(bookLadder.maxCumDepth)}
-                    </span>
-                    <span className="absolute top-1 right-1.5 font-mono text-[9.5px] text-muted tnum">
-                      Cầu {bookLadder.buyRatio}% · Cung {100 - bookLadder.buyRatio}%
-                    </span>
+                  {bookLadder.hasLiveBook ? (
+                    <div className="relative h-[108px] pt-3 pb-1 px-1 rounded-[6px] bg-soft/30 border border-line/60 flex flex-col justify-end">
+                      <span className="absolute top-1 left-1.5 font-mono text-[9.5px] text-muted tnum">
+                        {formatShareVol(bookLadder.maxCumDepth)}
+                      </span>
+                      <span className="absolute top-1 right-1.5 font-mono text-[9.5px] text-muted tnum">
+                        Cầu {bookLadder.buyRatio}% · Cung {100 - bookLadder.buyRatio}%
+                      </span>
 
-                    <div className="grid grid-cols-6 items-end h-[68px] gap-0.5 px-1">
-                      {bookLadder.cumBids.map((b, i) => {
-                        const hPct = Math.max(
-                          14,
-                          Math.round((b.cumVol / bookLadder.maxCumDepth) * 100)
-                        )
-                        return (
-                          <div
-                            key={`cb-${i}`}
-                            className="h-full flex flex-col justify-end"
-                            title={`Giá đặt mua ${fmt(b.price)}: Lũy kế ${fmt(b.cumVol)} CP`}
-                          >
+                      <div className="grid grid-cols-6 items-end h-[68px] gap-0.5 px-1">
+                        {bookLadder.cumBids.map((b, i) => {
+                          const hPct = Math.max(
+                            14,
+                            Math.round((b.cumVol / bookLadder.maxCumDepth) * 100)
+                          )
+                          return (
                             <div
-                              className="w-full bg-gain/75 border-t-2 border-gain rounded-t-[2px] transition-all"
-                              style={{ height: `${hPct}%` }}
-                            />
-                          </div>
-                        )
-                      })}
-                      {bookLadder.cumAsks.map((a, i) => {
-                        const hPct = Math.max(
-                          14,
-                          Math.round((a.cumVol / bookLadder.maxCumDepth) * 100)
-                        )
-                        return (
-                          <div
-                            key={`ca-${i}`}
-                            className="h-full flex flex-col justify-end"
-                            title={`Giá đặt bán ${fmt(a.price)}: Lũy kế ${fmt(a.cumVol)} CP`}
-                          >
+                              key={`cb-${i}`}
+                              className="h-full flex flex-col justify-end"
+                              title={`Giá đặt mua ${fmt(b.price)}: Lũy kế ${fmt(b.cumVol)} CP`}
+                            >
+                              <div
+                                className="w-full bg-gain/75 border-t-2 border-gain rounded-t-[2px] transition-[height] duration-[140ms]"
+                                style={{ height: `${hPct}%` }}
+                              />
+                            </div>
+                          )
+                        })}
+                        {bookLadder.cumAsks.map((a, i) => {
+                          const hPct = Math.max(
+                            14,
+                            Math.round((a.cumVol / bookLadder.maxCumDepth) * 100)
+                          )
+                          return (
                             <div
-                              className="w-full bg-loss/75 border-t-2 border-loss rounded-t-[2px] transition-all"
-                              style={{ height: `${hPct}%` }}
-                            />
-                          </div>
-                        )
-                      })}
-                    </div>
+                              key={`ca-${i}`}
+                              className="h-full flex flex-col justify-end"
+                              title={`Giá đặt bán ${fmt(a.price)}: Lũy kế ${fmt(a.cumVol)} CP`}
+                            >
+                              <div
+                                className="w-full bg-loss/75 border-t-2 border-loss rounded-t-[2px] transition-[height] duration-[140ms]"
+                                style={{ height: `${hPct}%` }}
+                              />
+                            </div>
+                          )
+                        })}
+                      </div>
 
-                    <div className="mt-1 grid grid-cols-6 gap-0.5 text-center font-mono text-[9px] text-secondary tnum">
-                      {bookLadder.cumBids.map((b, i) => (
-                        <span key={`cbl-${i}`} className="truncate">
-                          {b.price > 0 ? (b.price / 1000).toFixed(2) : "—"}
-                        </span>
-                      ))}
-                      {bookLadder.cumAsks.map((a, i) => (
-                        <span key={`cal-${i}`} className="truncate">
-                          {a.price > 0 ? (a.price / 1000).toFixed(2) : "—"}
-                        </span>
-                      ))}
+                      <div className="mt-1 grid grid-cols-6 gap-0.5 text-center font-mono text-[9px] text-secondary tnum">
+                        {bookLadder.cumBids.map((b, i) => (
+                          <span key={`cbl-${i}`} className="truncate">
+                            {b.price > 0 ? (b.price / 1000).toFixed(2) : "—"}
+                          </span>
+                        ))}
+                        {bookLadder.cumAsks.map((a, i) => (
+                          <span key={`cal-${i}`} className="truncate">
+                            {a.price > 0 ? (a.price / 1000).toFixed(2) : "—"}
+                          </span>
+                        ))}
+                      </div>
                     </div>
-                  </div>
+                  ) : (
+                    <div className="h-[108px] rounded-[6px] bg-soft/30 border border-dashed border-line flex items-center justify-center px-3 text-center text-[11.5px] text-secondary">
+                      Chờ dữ liệu sổ lệnh trực tiếp từ phiên khớp lệnh HOSE
+                    </div>
+                  )}
                 </div>
               </div>
 
-              {/* Lưới Thống kê Phiên & Khối ngoại Đa cột Gọn Chuẩn DNSE */}
+              {/* Thông số Khối ngoại & Thanh khoản 10P (hiển thị biên độ trên màn hình < xl) */}
               <div className="px-2.5 py-2.5 border-t border-line bg-soft/20 font-mono text-[11px] tnum space-y-2">
-                <div className="grid grid-cols-3 gap-1.5 pb-2 border-b border-line/70">
+                <div className="grid grid-cols-3 gap-1.5 pb-2 border-b border-line/70 xl:hidden">
                   <div>
                     <span className="font-sans text-[10.5px] text-secondary">Sàn: </span>
                     <strong className="text-floor font-semibold">
@@ -1259,26 +1162,22 @@ export function StockDetailContent({
 
                 <div className="grid grid-cols-2 gap-x-2.5 gap-y-1.5 text-[11px] whitespace-nowrap">
                   <div className="flex items-center justify-between gap-1">
-                    <span className="font-sans text-secondary">KL khớp</span>
-                    <strong className="text-ink font-semibold">
-                      {formatShareVol(analytics.rawVol)}
-                    </strong>
-                  </div>
-                  <div className="flex items-center justify-between gap-1">
-                    <span className="font-sans text-secondary">GT khớp</span>
-                    <strong className="text-ink font-semibold">
-                      {analytics.valueBillion > 0
-                        ? `${analytics.valueBillion.toFixed(1).replace(".", ",")} tỷ`
-                        : "—"}
-                    </strong>
-                  </div>
-
-                  <div className="flex items-center justify-between gap-1">
                     <span className="font-sans text-secondary">KL TB 10P</span>
                     <span className="text-ink font-medium">
                       {formatShareVol(analytics.volMa10)}
                     </span>
                   </div>
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="font-sans text-secondary">KL NN</span>
+                    <span className="text-ink">
+                      {analytics.foreignSharesEst !== 0
+                        ? `${analytics.foreignSharesEst > 0 ? "+" : ""}${formatShareVol(
+                            Math.abs(analytics.foreignSharesEst)
+                          )}`
+                        : "0"}
+                    </span>
+                  </div>
+
                   <div className="flex items-center justify-between gap-1">
                     <span className="font-sans text-secondary">NN ròng</span>
                     <strong
@@ -1293,17 +1192,6 @@ export function StockDetailContent({
                       {analytics.foreignBillion > 0 ? "+" : ""}
                       {analytics.foreignBillion.toFixed(2).replace(".", ",")} tỷ
                     </strong>
-                  </div>
-
-                  <div className="flex items-center justify-between gap-1">
-                    <span className="font-sans text-secondary">KL NN</span>
-                    <span className="text-ink">
-                      {analytics.foreignSharesEst !== 0
-                        ? `${analytics.foreignSharesEst > 0 ? "+" : ""}${formatShareVol(
-                            Math.abs(analytics.foreignSharesEst)
-                          )}`
-                        : "0"}
-                    </span>
                   </div>
                   <div className="flex items-center justify-between gap-1">
                     <span className="font-sans text-secondary">Tỷ trọng NN</span>
@@ -1364,12 +1252,11 @@ export function StockDetailContent({
                       {100 - analytics.buyRatioPct}%)
                     </span>
                   </div>
-                  <div className="mt-1 h-1.5 w-full rounded-full bg-soft overflow-hidden flex">
+                  <div className="mt-1 h-1.5 w-full rounded-full bg-loss overflow-hidden">
                     <div
-                      className="h-full bg-gain transition-all"
-                      style={{ width: `${analytics.buyRatioPct}%` }}
+                      className="h-full w-full bg-gain origin-left transition-transform duration-[160ms] ease-[var(--ease-out-expo)]"
+                      style={{ transform: `scaleX(${analytics.buyRatioPct / 100})` }}
                     />
-                    <div className="h-full bg-loss flex-1" />
                   </div>
                 </div>
 
@@ -1378,8 +1265,8 @@ export function StockDetailContent({
                   <div>
                     <div className="grid grid-cols-12 px-2.5 py-1.5 border-b border-line bg-soft/20 text-[10px] font-medium text-muted">
                       <span className="col-span-3 text-left">Mức giá</span>
-                      <span className="col-span-4 text-right pr-2">KL khớp</span>
-                      <span className="col-span-5 text-right">Tỷ trọng Mua/Bán</span>
+                      <span className="col-span-4 text-right pr-2">KL (ước tính)</span>
+                      <span className="col-span-5 text-right">Phân bổ ước tính</span>
                     </div>
 
                     <div className="divide-y divide-line/50">
@@ -1930,14 +1817,14 @@ export function StockDetailModal({
       role="dialog"
       aria-modal="true"
       aria-label={`Chi tiết cổ phiếu ${props.symbol}`}
-      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-[#121a17]/60 backdrop-blur-[2px] overflow-y-auto"
+      className="backdrop-enter fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-[#121a17]/60 backdrop-blur-[2px] overflow-y-auto"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) {
           onClose()
         }
       }}
     >
-      <div className="w-full max-w-[1360px] my-auto animate-in fade-in zoom-in-95 duration-150">
+      <div className="modal-enter w-full max-w-[1360px] my-auto">
         <StockDetailContent
           {...props}
           onClose={onClose}

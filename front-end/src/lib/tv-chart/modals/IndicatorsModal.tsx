@@ -6,7 +6,6 @@ import { getIndicatorMetadata, registerCustomScripts, TV_INDICATOR_LIST } from "
 import type {
   TvCustomScriptDef,
   TvDialogSidebarSection,
-  TvFundamentalSubTab,
   TvIndicatorId,
   TvIndicatorInstance,
   TvIndicatorMetadata,
@@ -63,16 +62,6 @@ const SidebarIcon: React.FC<{ section: TvDialogSidebarSection }> = ({ section })
           />
         </svg>
       )
-    case "fundamentals":
-      return (
-        <svg width={22} height={22} viewBox="0 0 28 28" className="shrink-0">
-          <path
-            fill="currentColor"
-            fillRule="evenodd"
-            d="M17.5 7H17v6h-3v-3H9v6H5v6h17V7h-4.5Zm.5 14h3V8h-3v13Zm-1 0v-7h-3v7h3Zm-4-7.5V21h-3V11h3v2.5ZM9 21v-4H6v4h3Z"
-          />
-        </svg>
-      )
     case "editors_picks":
       return (
         <svg width={22} height={22} viewBox="0 0 28 28" className="shrink-0">
@@ -125,7 +114,6 @@ const SIDEBAR_GROUPS: {
     title: "TÍCH HỢP SẴN",
     items: [
       { id: "technicals", label: "Chỉ số Kỹ thuật" },
-      { id: "fundamentals", label: "Cơ bản" },
     ],
   },
   {
@@ -144,15 +132,6 @@ const TECHNICAL_SUBTABS: { id: TvTechnicalSubTab; label: string }[] = [
   { id: "strategies", label: "Chiến lược" },
   { id: "profiles", label: "Hồ sơ" },
   { id: "patterns", label: "Mô hình" },
-  { id: "options", label: "Options" },
-]
-
-const FUNDAMENTAL_SUBTABS: { id: TvFundamentalSubTab; label: string }[] = [
-  { id: "all", label: "Tất cả" },
-  { id: "valuation", label: "Định giá" },
-  { id: "income", label: "Kết quả kinh doanh" },
-  { id: "balance", label: "Bảng cân đối" },
-  { id: "cashflow", label: "Dòng tiền & Cổ tức" },
 ]
 
 const PRESET_PINE_FORMULAS: { name: string; formula: string; overlay: boolean; color: string }[] = [
@@ -233,7 +212,6 @@ export const IndicatorsModal: React.FC<IndicatorsModalProps> = ({
   const [sidebarSection, setSidebarSection] = useState<TvDialogSidebarSection>("technicals")
   const [techSubTab, setTechSubTab] = useState<TvTechnicalSubTab>("indicators")
   const [patternFilter, setPatternFilter] = useState<"all" | "chart" | "candlestick">("all")
-  const [fundSubTab, setFundSubTab] = useState<TvFundamentalSubTab>("all")
   const [myScriptsTab, setMyScriptsTab] = useState<"custom" | "favorites" | "active">("custom")
   const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({})
 
@@ -286,7 +264,6 @@ export const IndicatorsModal: React.FC<IndicatorsModalProps> = ({
     if (meta.section) {
       setSidebarSection(meta.section)
       if (meta.section === "technicals" && meta.subTab) setTechSubTab(meta.subTab)
-      if (meta.section === "fundamentals") setFundSubTab(meta.fundamentalGroup || "all")
       if (meta.section === "my_scripts") setMyScriptsTab("active")
     }
   }, [isOpen, initialEditingInstanceId, activeIndicators])
@@ -370,19 +347,12 @@ export const IndicatorsModal: React.FC<IndicatorsModalProps> = ({
       return [...list].sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }))
     }
 
-    if (sidebarSection === "fundamentals") {
-      const list = baseList.filter((m) => m.section === "fundamentals")
-      if (fundSubTab === "all") return list
-      return list.filter((m) => m.fundamentalGroup === fundSubTab)
-    }
-
     return baseList.filter((m) => m.section === sidebarSection)
   }, [
     search,
     sidebarSection,
     techSubTab,
     patternFilter,
-    fundSubTab,
     myScriptsTab,
     effFavs,
     activeIndicators,
@@ -589,23 +559,6 @@ export const IndicatorsModal: React.FC<IndicatorsModalProps> = ({
                     ))}
                   </div>
                 )}
-              </div>
-            )}
-
-            {!search.trim() && sidebarSection === "fundamentals" && (
-              <div className="px-6 pt-3.5 pb-2 flex items-center gap-2 flex-wrap shrink-0">
-                {FUNDAMENTAL_SUBTABS.map((tab) => (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    onClick={() => setFundSubTab(tab.id)}
-                    className={`h-8 px-3.5 rounded-full text-[13px] transition-colors ${
-                      fundSubTab === tab.id ? activePillClass : inactivePillClass
-                    }`}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
               </div>
             )}
 

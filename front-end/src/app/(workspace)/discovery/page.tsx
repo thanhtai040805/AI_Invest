@@ -1,9 +1,9 @@
 "use client"
 
-import { useEffect, useState, type FormEvent } from "react"
+import { useState, type FormEvent } from "react"
 import { Page } from "@/components/Shell"
 import { Link } from "@/lib/router"
-import { Button, CustomSelect, EmptyState, Panel, PanelHead, PercentChange, Tabs, fmt, type SelectOption } from "@/components/ui"
+import { Button, CustomSelect, EmptyState, Panel, PanelHead, PercentChange, SegmentedTabs, fmt, type SelectOption } from "@/components/ui"
 import { marketApi, screenerApi } from "@/lib/api"
 import { SuperStocksTable, type SuperStocksPayload } from "@/components/SuperStocksTable"
 import { useResource } from "@/lib/api/use-resource"
@@ -137,27 +137,27 @@ function hasCriteria(filters: Record<string, unknown>): boolean {
   return Object.keys(filters).some((key) => key !== "sort" && key !== "sortDir")
 }
 
-const DISCOVERY_TABS = [
-  "Danh mục Siêu phẩm (VSA & Dòng tiền)",
-  "Bộ lọc Đa tiêu chí (P/E, ROE, RSI)",
-]
+type DiscoveryMode = "sieu_pham" | "trading" | "screener"
 
 export default function Discovery() {
-  const [activeTab, setActiveTab] = useState<string>(DISCOVERY_TABS[0])
-  const [initialSector, setInitialSector] = useState<string>("")
+  const [mode, setMode] = useState<DiscoveryMode>(() => {
+    if (typeof window !== "undefined") {
+      const tab = new URLSearchParams(window.location.search).get("tab")
+      if (tab === "screener") return "screener"
+      if (tab === "trading") return "trading"
+    }
+    return "sieu_pham"
+  })
+  const [initialSector] = useState<string>(() => {
+    if (typeof window !== "undefined") {
+      return new URLSearchParams(window.location.search).get("sector") || ""
+    }
+    return ""
+  })
   const [draft, setDraft] = useState<FilterDraft>(EMPTY_DRAFT)
 
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      const params = new URLSearchParams(window.location.search)
-      const sec = params.get("sector")
-      if (sec) setInitialSector(sec)
-      if (params.get("tab") === "screener") setActiveTab(DISCOVERY_TABS[1])
-    }
-  }, [])
-
   const superStocksResource = useResource<SuperStocksPayload | null>(
-    async () => (await marketApi.superStocks().catch(() => null)) as SuperStocksPayload | null,
+    async () => (await marketApi.superStocks()) as SuperStocksPayload | null,
     [],
   )
   const [results, setResults] = useState<ScreenerResults | null>(null)
@@ -180,7 +180,6 @@ export default function Discovery() {
   const runScreener = async (filters: Record<string, unknown>) => {
     setLoading(true)
     setMessage("")
-    setResults(null)
     setActiveFilters(filters)
     try {
       const response = await screenerApi.filter({
@@ -275,19 +274,40 @@ export default function Discovery() {
 
   return (
     <Page
-      title="Khám phá Alpha"
-      sub="Danh mục Siêu phẩm VSA (Rũ nến · Test cung · Dòng tiền · Tiền áp đảo) & Bộ sàng lọc đa tiêu chí HOSE"
-    >
-      <div className="mb-4">
-        <Tabs tabs={DISCOVERY_TABS} active={activeTab} onChange={setActiveTab} />
-      </div>
-
-      {activeTab === DISCOVERY_TABS[0] ? (
-        <SuperStocksTable
-          data={superStocksResource.data}
-          loading={superStocksResource.loading}
-          initialSector={initialSector}
+      title="Bộ lọc Cổ phiếu HOSE"
+      meta="Tín hiệu dòng tiền VSA & Sàng lọc đa tiêu chí"
+      fetching={mode === "screener" ? loading : superStocksResource.fetching}
+      actions={
+        <SegmentedTabs<DiscoveryMode>
+          ariaLabel="Chế độ bộ lọc"
+          value={mode}
+          onChange={setMode}
+          options={[
+            { value: "sieu_pham", label: "Siêu phẩm VSA" },
+            { value: "trading", label: "Trading" },
+            { value: "screener", label: "Đa tiêu chí" },
+          ]}
         />
+      }
+    >
+      {mode !== "screener" ? (
+        superStocksResource.error && !superStocksResource.data ? (
+          <Panel className="text-center py-10 space-y-3">
+            <div className="text-[13px] text-loss">
+              {superStocksResource.error.message || "Không tải được dữ liệu bộ lọc VSA."}
+            </div>
+            <Button size="sm" onClick={() => void superStocksResource.reload()}>
+              Thử lại
+            </Button>
+          </Panel>
+        ) : (
+          <SuperStocksTable
+            data={superStocksResource.data}
+            loading={superStocksResource.loading}
+            initialSector={initialSector}
+            controlledStrategy={mode}
+          />
+        )
       ) : (
       <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-4 items-start">
         <div className="space-y-4">
@@ -440,7 +460,7 @@ export default function Discovery() {
             </p>
           )}
 
-          {loading ? (
+          {loading && !results ? (
             <div className="px-5 py-12 text-center text-[13px] text-muted" role="status">Đang tải dữ liệu sàng lọc…</div>
           ) : !results ? (
             <EmptyState title="Chưa có kết quả" body="Chọn tiêu chí rồi áp dụng để nhận danh sách từ bộ sàng lọc." />
@@ -448,18 +468,22 @@ export default function Discovery() {
             <EmptyState title="Không tìm thấy mã phù hợp" body="Thử nới lỏng một hoặc nhiều ngưỡng lọc." />
           ) : (
             <>
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[780px] text-[12px]">
-                  <thead>
-                    <tr className="border-y border-line text-[10px] uppercase tracking-wide text-muted">
-                      <th className="px-5 py-2.5 text-left font-medium">Mã / doanh nghiệp</th>
-                      <th className="px-3 py-2.5 text-right font-medium">Giá</th>
-                      <th className="px-3 py-2.5 text-right font-medium">Biến động</th>
-                      <th className="px-3 py-2.5 text-right font-medium">P/E</th>
-                      <th className="px-3 py-2.5 text-right font-medium">P/B</th>
-                      <th className="px-3 py-2.5 text-right font-medium">ROE</th>
-                      <th className="px-3 py-2.5 text-right font-medium">RSI</th>
-                      <th className="px-5 py-2.5 text-right font-medium">Khối lượng</th>
+              <div
+                className={`max-h-[calc(100vh-250px)] overflow-auto transition-opacity duration-[150ms] ${
+                  loading ? "opacity-60" : "opacity-100"
+                }`}
+              >
+                <table className="w-full min-w-[780px] text-[12px] border-separate border-spacing-0">
+                  <thead className="sticky top-0 z-10 bg-soft">
+                    <tr className="border-y border-line text-[10px] uppercase tracking-wide text-secondary">
+                      <th className="px-5 py-2.5 text-left font-semibold border-y border-line">Mã / doanh nghiệp</th>
+                      <th className="px-3 py-2.5 text-right font-semibold border-y border-line">Giá</th>
+                      <th className="px-3 py-2.5 text-right font-semibold border-y border-line">Biến động</th>
+                      <th className="px-3 py-2.5 text-right font-semibold border-y border-line">P/E</th>
+                      <th className="px-3 py-2.5 text-right font-semibold border-y border-line">P/B</th>
+                      <th className="px-3 py-2.5 text-right font-semibold border-y border-line">ROE</th>
+                      <th className="px-3 py-2.5 text-right font-semibold border-y border-line">RSI</th>
+                      <th className="px-5 py-2.5 text-right font-semibold border-y border-line">Khối lượng</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-line">

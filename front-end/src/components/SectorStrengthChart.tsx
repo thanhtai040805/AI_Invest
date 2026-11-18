@@ -42,9 +42,22 @@ function formatDateVi(isoDate: string): string {
   return `${parts[2]}/${parts[1]}/${parts[0]}`
 }
 
-export function SectorStrengthChart({ data, loading }: { data?: SectorStrengthPayload | null; loading?: boolean }) {
+export function SectorStrengthChart({
+  data,
+  loading,
+  timeframe: controlledTimeframe,
+  onTimeframeChange,
+}: {
+  data?: SectorStrengthPayload | null
+  loading?: boolean
+  timeframe?: string
+  onTimeframeChange?: (tf: string) => void
+}) {
   const { heatmap: liveHeatmap, indices: liveIndices } = useRealtimeMarket()
-  const [timeframe, setTimeframe] = useState<string>("1 Tháng")
+  const [internalTimeframe, setInternalTimeframe] = useState<string>("1 Tháng")
+  const timeframe = controlledTimeframe ?? internalTimeframe
+  const setTimeframe = onTimeframeChange ?? setInternalTimeframe
+  const isControlledTimeframe = controlledTimeframe !== undefined
   const [selectedSectors, setSelectedSectors] = useState<string[]>([])
   const [initialized, setInitialized] = useState(false)
   const [hoveredSector, setHoveredSector] = useState<string | null>(null)
@@ -270,17 +283,9 @@ export function SectorStrengthChart({ data, loading }: { data?: SectorStrengthPa
 
   return (
     <Panel>
-      {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-4 pb-3 border-b border-line">
-        <div className="flex flex-wrap items-center gap-4">
-          <div>
-            <h3 className="text-[15px] font-semibold text-ink tracking-tight">
-              Sức mạnh tương đối nhóm ngành (RS vs VN-Index)
-            </h3>
-            <p className="text-[12px] text-muted mt-0.5">
-              Hiệu suất lũy kế của từng ngành trừ đi hiệu suất VN-Index từ đầu kỳ · Dữ liệu thực từ PostgreSQL ({computed.dates[computed.dates.length - 1] ? `đến ${formatDateVi(computed.dates[computed.dates.length - 1])}` : "HOSE"})
-            </p>
-          </div>
+      {/* Compact Filter Strip */}
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-3 pb-2.5 border-b border-line">
+        <div className="flex flex-wrap items-center gap-3">
           <div className="inline-flex rounded-[6px] border border-line overflow-hidden text-[12px] font-medium">
             <button
               type="button"
@@ -301,31 +306,39 @@ export function SectorStrengthChart({ data, loading }: { data?: SectorStrengthPa
               Bỏ chọn
             </button>
           </div>
+          <span className="text-[12px] text-secondary">
+            Đang hiển thị <strong className="font-mono text-ink">{selectedSectors.length}</strong>/{rawSectors.length || 17} ngành
+            {computed.dates[computed.dates.length - 1]
+              ? ` · Cập nhật ${formatDateVi(computed.dates[computed.dates.length - 1])}`
+              : ""}
+          </span>
         </div>
 
-        {/* Timeframe Segmented Selector */}
-        <div className="inline-flex rounded-[6px] border border-line overflow-hidden text-[12px] font-medium">
-          {Object.keys(TIMEFRAMES).map((tf, idx) => {
-            const active = timeframe === tf
-            return (
-              <button
-                key={tf}
-                type="button"
-                onClick={() => setTimeframe(tf)}
-                className={`h-7 px-3 transition-colors ${idx > 0 ? "border-l border-line" : ""} ${
-                  active ? "bg-ink text-paper" : "bg-surface text-secondary hover:bg-soft"
-                }`}
-              >
-                {tf}
-              </button>
-            )
-          })}
-        </div>
+        {/* Timeframe Segmented Selector (fallback when rendered standalone) */}
+        {!isControlledTimeframe && (
+          <div className="inline-flex rounded-[6px] border border-line overflow-hidden text-[12px] font-medium">
+            {Object.keys(TIMEFRAMES).map((tf, idx) => {
+              const active = timeframe === tf
+              return (
+                <button
+                  key={tf}
+                  type="button"
+                  onClick={() => setTimeframe(tf)}
+                  className={`h-7 px-3 transition-colors ${idx > 0 ? "border-l border-line" : ""} ${
+                    active ? "bg-ink text-paper" : "bg-surface text-secondary hover:bg-soft"
+                  }`}
+                >
+                  {tf}
+                </button>
+              )
+            })}
+          </div>
+        )}
       </div>
 
       {/* Main Content: Left Ranked List + Right Multi-Line SVG Chart */}
       {loading && computed.series.length === 0 ? (
-        <div className="h-[520px] flex items-center justify-center text-[13px] text-muted">
+        <div className="h-[440px] flex items-center justify-center text-[13px] text-muted">
           Đang tải dữ liệu sức mạnh ngành…
         </div>
       ) : computed.series.length === 0 ? (
@@ -390,7 +403,7 @@ export function SectorStrengthChart({ data, loading }: { data?: SectorStrengthPa
             ref={chartContainerRef}
             onPointerMove={handlePointerMove}
             onPointerLeave={handlePointerLeave}
-            className="relative min-w-0 h-[420px] lg:h-[520px] select-none overflow-hidden rounded-[8px] bg-surface"
+            className="relative min-w-0 h-[380px] lg:h-[440px] select-none overflow-hidden rounded-[8px] bg-surface"
           >
             <svg
               viewBox={`0 0 ${SVG_W} ${SVG_H}`}
@@ -518,8 +531,8 @@ export function SectorStrengthChart({ data, loading }: { data?: SectorStrengthPa
             {/* Floating Hover Card: Sector RS & Top Strongest Stocks */}
             {activeSectorObj && (
               <div
-                style={{ transform: `translate(${popupPos.x}px, ${popupPos.y}px)` }}
-                className="pointer-events-none absolute top-0 left-0 z-20 min-w-[215px] rounded-[8px] border border-line-strong bg-surface/95 backdrop-blur px-3.5 py-2.5 shadow-[0_10px_28px_rgba(24,32,29,0.14)] text-[12px]"
+                style={{ transform: `translate3d(${popupPos.x}px, ${popupPos.y}px, 0)` }}
+                className="popover-enter pointer-events-none absolute top-0 left-0 z-20 min-w-[215px] rounded-[8px] border border-line-strong bg-surface/95 backdrop-blur px-3.5 py-2.5 shadow-[0_10px_28px_rgba(24,32,29,0.14)] text-[12px] transition-transform duration-[110ms] ease-out"
               >
                 <div className="flex items-center justify-between gap-3 pb-1.5 border-b border-line">
                   <div className="flex items-center gap-2 font-semibold text-ink">

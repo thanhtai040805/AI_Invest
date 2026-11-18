@@ -6,11 +6,9 @@
 
 import type {
   TvDialogSidebarSection,
-  TvFundamentalSubTab,
   TvIndicatorCategory,
   TvIndicatorMetadata,
   TvIndicatorParamDef,
-  TvTechnicalSubTab,
   TvTierBadge,
 } from "../types"
 
@@ -160,60 +158,6 @@ function makeCandlePattern(
     overlay: true,
     defaultColor: color,
     params: [{ key: "trendLen", label: "Chu kỳ lọc xu hướng EMA", defaultValue: 14, min: 2, max: 100 }],
-  }
-}
-
-function makeOptionStudy(
-  id: string,
-  name: string,
-  shortName: string,
-  viName: string,
-  description: string,
-  overlay: boolean,
-  defaultColor: string,
-  badge: TvTierBadge = "ULTIMATE",
-  params: TvIndicatorParamDef[] = P_LEN(20)
-): TvIndicatorMetadata {
-  return {
-    id,
-    name,
-    shortName,
-    viName,
-    description,
-    category: "options",
-    section: "technicals",
-    subTab: "options",
-    tvScriptId: `@tv-optionstudies:${id}`,
-    badge,
-    overlay,
-    defaultColor,
-    params,
-  }
-}
-
-function makeFundamental(
-  id: string,
-  name: string,
-  shortName: string,
-  viName: string,
-  description: string,
-  fundamentalGroup: TvFundamentalSubTab,
-  defaultColor: string
-): TvIndicatorMetadata {
-  return {
-    id,
-    name,
-    shortName,
-    viName,
-    description,
-    category: "fundamental",
-    section: "fundamentals",
-    fundamentalGroup,
-    tvScriptId: `STD;Fund_${id}`,
-    badge: "PRO",
-    overlay: false,
-    defaultColor,
-    params: [{ key: "smooth", label: "Chu kỳ làm mượt (Quý/Phiên)", defaultValue: 4, min: 1, max: 30 }],
   }
 }
 
@@ -644,58 +588,7 @@ export const CANDLESTICK_PATTERNS: TvIndicatorMetadata[] = [
 ]
 
 /* ----------------------------------------------------------------------------
- * 5. OPTIONS & VOLATILITY STUDIES (8 Ultimate Studies — 100% Unlocked)
- * ---------------------------------------------------------------------------- */
-export const OPTIONS_STUDIES: TvIndicatorMetadata[] = [
-  makeOptionStudy("OPT_EXP_MOVE", "Options Expected Move Cone (1σ / 2σ)", "Exp Move", "Nón biên độ kỳ vọng Quyền chọn (±1σ / ±2σ)", "Phóng chiếu hình nón xác suất biến động giá kỳ vọng 68% (±1σ) và 95% (±2σ) phía trước nến hiện tại.", true, "#2962FF", "ULTIMATE", [
-    { key: "hvLen", label: "Chu kỳ Volatility", defaultValue: 20, min: 5, max: 100 },
-    { key: "horizon", label: "Số phiên phóng chiếu", defaultValue: 14, min: 5, max: 40 },
-  ]),
-  makeOptionStudy("OPT_VOL_PROFILE", "Options Gamma & Volume Profile (GEX)", "Opt GEX", "Hồ sơ Thanh khoản & Gamma Exposure (GEX)", "Ước tính mật độ Gamma Exposure dương/âm tại các mốc giá thực hiện (Strike Levels) quanh thị giá.", true, "#8E24AA", "ULTIMATE", P_LEN(30, "Số bậc Strike")),
-  makeOptionStudy("OPT_HV_IV", "Historical vs Implied Volatility", "HV vs IV", "So sánh Độ biến động Thực tế (HV) & Hàm ý (IV)", "Theo dõi chênh lệch Volatility Risk Premium giữa IV ước tính và HV lịch sử.", false, "#2962FF", "ULTIMATE", P_LEN(20)),
-  makeOptionStudy("OPT_IV_RANK", "IV Rank & IV Percentile (IVR / IVP)", "IV Rank", "Thứ hạng Bách phân vị Biến động (IV Rank 0–100)", "Đánh giá biến động hiện tại đang đắt (> 80) hay rẻ (< 20) so với dải 52 tuần.", false, "#7E57C2", "PREMIUM", P_LEN(60, "Chu kỳ tham chiếu")),
-  makeOptionStudy("OPT_SKEW", "Options Volatility Skew & Tail Risk", "Vol Skew", "Độ lệch đuôi phân phối Volatility Skew", "Đo độ bất đối xứng giữa biến động chiều giảm (Put Skew) và chiều tăng (Call Skew).", false, "#F4511E", "ULTIMATE", P_LEN(20)),
-  makeOptionStudy("OPT_PCR", "Synthetic Put/Call Volume Ratio", "Put/Call", "Tỷ lệ áp lực Phòng vệ Put / Đầu cơ Call (PCR)", "Tỷ số áp lực phòng vệ giảm giá so với mua đầu cơ giá lên (PCR > 1.2 = Quá sợ hãi/Đáy gần).", false, "#00897B", "PRO", P_LEN(14)),
-  makeOptionStudy("OPT_GARMAN_KLASS", "Garman-Klass Institutional Volatility", "GK Vol", "Độ biến động định chế Garman-Klass (OHLC)", "Công thức ước lượng biến động hiệu quả gấp 7.4 lần độ lệch chuẩn Close-to-Close truyền thống.", false, "#00ACC1", "PREMIUM", P_LEN(20)),
-  makeOptionStudy("OPT_MAX_PAIN", "Max Pain & Strike Pinning Levels", "Max Pain", "Ngưỡng Giá Cân bằng Thanh khoản (Max Pain Magnet)", "Xác định mức giá trọng tâm hút thanh khoản mạnh nhất trong chu kỳ đáo hạn.", true, "#F59E0B", "ULTIMATE", P_LEN(22, "Chu kỳ đáo hạn")),
-]
-
-/* ----------------------------------------------------------------------------
- * 6. FUNDAMENTAL FINANCIAL METRICS (24 Corporate Financial Series — Cơ bản)
- * ---------------------------------------------------------------------------- */
-export const FUNDAMENTAL_STUDIES: TvIndicatorMetadata[] = [
-  // Valuation
-  makeFundamental("FUND_PE", "Price to earnings ratio (P/E)", "P/E", "Hệ số Giá / Thu nhập (P/E Ratio)", "Định giá cổ phiếu theo bội số lợi nhuận sau thuế 4 quý gần nhất (TTM).", "valuation", "#2962FF"),
-  makeFundamental("FUND_PB", "Price to book ratio (P/B)", "P/B", "Hệ số Giá / Giá trị sổ sách (P/B Ratio)", "So sánh thị giá với giá trị tài sản ròng trên mỗi cổ phần.", "valuation", "#00897B"),
-  makeFundamental("FUND_PEG", "PEG ratio", "PEG", "Hệ số P/E trên Tăng trưởng EPS (PEG Ratio)", "Đánh giá định giá P/E có hợp lý so với tốc độ tăng trưởng lợi nhuận hay không (< 1 là hấp dẫn).", "valuation", "#7E57C2"),
-  makeFundamental("FUND_PS", "Price to sales ratio (P/S)", "P/S", "Hệ số Vốn hóa / Doanh thu thuần (P/S)", "Đo lường mức định giá trên mỗi đồng doanh thu tạo ra.", "valuation", "#00ACC1"),
-  makeFundamental("FUND_EV_EBITDA", "Enterprise value to EBITDA", "EV/EBITDA", "Hệ số Giá trị doanh nghiệp / EBITDA", "Chỉ số định giá chuẩn M&A loại bỏ khác biệt cấu trúc nợ vay và khấu hao.", "valuation", "#3949AB"),
-  makeFundamental("FUND_MCAP", "Market capitalization", "Mkt Cap", "Vốn hóa thị trường (Tỷ VNĐ)", "Tổng giá trị thị trường của lượng cổ phiếu đang lưu hành theo biến động giá.", "valuation", "#1E88E5"),
-  // Income Statement
-  makeFundamental("FUND_EPS", "EPS diluted (TTM)", "EPS", "Thu nhập trên mỗi cổ phần (EPS TTM - VNĐ)", "Lợi nhuận ròng phân bổ trên mỗi cổ phiếu phổ thông trong 12 tháng trượt.", "income", "#089981"),
-  makeFundamental("FUND_EPS_GROWTH", "EPS diluted growth YoY %", "EPS Gr %", "Tăng trưởng EPS cùng kỳ (% YoY)", "Tốc độ tăng trưởng lợi nhuận trên mỗi cổ phiếu so với cùng kỳ năm trước.", "income", "#43A047"),
-  makeFundamental("FUND_REVENUE", "Total revenue", "Revenue", "Tổng Doanh thu thuần (Tỷ VNĐ)", "Quy mô doanh thu bán hàng và cung cấp dịch vụ qua các kỳ báo cáo.", "income", "#2962FF"),
-  makeFundamental("FUND_REV_GROWTH", "Revenue growth YoY %", "Rev Gr %", "Tăng trưởng Doanh thu (% YoY)", "Tốc độ mở rộng doanh thu cốt lõi qua từng quý.", "income", "#00BFA5"),
-  makeFundamental("FUND_GROSS_MARGIN", "Gross margin %", "Gross Mgn", "Biên lợi nhuận gộp (%)", "Phản ánh lợi thế cạnh tranh giá bán và kiểm soát giá vốn hàng bán.", "income", "#FB8C00"),
-  makeFundamental("FUND_OP_MARGIN", "Operating margin %", "Op Margin", "Biên lợi nhuận hoạt động EBIT (%)", "Hiệu quả sinh lời từ hoạt động kinh doanh cốt lõi sau chi phí bán hàng & quản lý.", "income", "#F4511E"),
-  makeFundamental("FUND_NET_MARGIN", "Net margin %", "Net Mgn", "Biên lợi nhuận ròng sau thuế (%)", "Tỷ lệ lợi nhuận giữ lại cuối cùng trên mỗi 100 đồng doanh thu.", "income", "#8E24AA"),
-  // Profitability & Balance Sheet
-  makeFundamental("FUND_ROE", "Return on equity % (ROE)", "ROE %", "Tỷ suất sinh lời trên Vốn chủ sở hữu (ROE %)", "Thước đo vàng đánh giá hiệu quả sử dụng vốn của cổ đông (> 15% là chất lượng cao).", "balance", "#089981"),
-  makeFundamental("FUND_ROA", "Return on assets % (ROA)", "ROA %", "Tỷ suất sinh lời trên Tổng tài sản (ROA %)", "Hiệu suất tạo lợi nhuận trên toàn bộ quy mô tài sản doanh nghiệp.", "balance", "#00897B"),
-  makeFundamental("FUND_ROIC", "Return on invested capital % (ROIC)", "ROIC %", "Tỷ suất sinh lời trên Vốn đầu tư (ROIC %)", "Đo lường hiệu quả phân bổ vốn thực tế của ban lãnh đạo.", "balance", "#2962FF"),
-  makeFundamental("FUND_TOTAL_ASSETS", "Total assets", "Assets", "Tổng Tài sản (Tỷ VNĐ)", "Quy mô tổng tài sản trên bảng cân đối kế toán.", "balance", "#5C6BC0"),
-  makeFundamental("FUND_TOTAL_DEBT", "Total debt", "Debt", "Tổng Nợ vay tài chính (Tỷ VNĐ)", "Tổng nợ vay ngắn hạn và dài hạn chịu lãi của doanh nghiệp.", "balance", "#E53935"),
-  makeFundamental("FUND_DEBT_EQUITY", "Debt to equity ratio (D/E)", "D/E", "Tỷ lệ Nợ vay / Vốn chủ sở hữu (D/E)", "Đo đòn bẩy tài chính và mức độ an toàn bảng cân đối.", "balance", "#D81B60"),
-  makeFundamental("FUND_CURRENT_RATIO", "Current ratio", "Curr Ratio", "Hệ số Thanh toán hiện hành (Current Ratio)", "Khả năng đáp ứng nghĩa vụ nợ ngắn hạn bằng tài sản lưu động.", "balance", "#00ACC1"),
-  makeFundamental("FUND_BVPS", "Book value per share (BVPS)", "BVPS", "Giá trị sổ sách mỗi cổ phiếu (BVPS - VNĐ)", "Giá trị tài sản thuần trên 1 cổ phần.", "balance", "#43A047"),
-  // Cash Flow & Dividends
-  makeFundamental("FUND_FCF", "Free cash flow (FCF)", "FCF", "Dòng tiền tự do (Free Cash Flow - Tỷ VNĐ)", "Tiền mặt thực dương còn lại sau khi trừ chi phí đầu tư tài sản cố định CAPEX.", "cashflow", "#089981"),
-  makeFundamental("FUND_OCF", "Operating cash flow (OCF)", "OCF", "Lưu chuyển tiền thuần từ HĐKD (OCF)", "Dòng tiền thực thu từ hoạt động kinh doanh chính.", "cashflow", "#2962FF"),
-  makeFundamental("FUND_DIV_YIELD", "Dividend yield %", "Div Yield", "Tỷ suất Cổ tức tiền mặt (% / năm)", "Tỷ lệ cổ tức tiền mặt nhận được hàng năm so với thị giá cổ phiếu.", "cashflow", "#F59E0B"),
-]
-
-/* ----------------------------------------------------------------------------
- * 7. COMMUNITY, EDITOR'S PICKS, TOP, TRENDING, STORE & PURCHASED VIP (38 Scripts)
+ * 5. COMMUNITY, EDITOR'S PICKS, TOP, TRENDING, STORE & PURCHASED VIP (38 Scripts)
  * ---------------------------------------------------------------------------- */
 export const COMMUNITY_AND_VIP_STUDIES: TvIndicatorMetadata[] = [
   // Biên tập viên chọn (Editors' Picks — extracted directly from REA editors-picks.json)
@@ -844,7 +737,5 @@ export const ALL_CATALOG_INDICATORS: TvIndicatorMetadata[] = [
   ...PROFILE_STUDIES,
   ...AUTO_CHART_PATTERNS,
   ...CANDLESTICK_PATTERNS,
-  ...OPTIONS_STUDIES,
-  ...FUNDAMENTAL_STUDIES,
   ...COMMUNITY_AND_VIP_STUDIES,
 ]

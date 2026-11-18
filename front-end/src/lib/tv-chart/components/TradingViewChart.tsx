@@ -341,7 +341,15 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
         const raw = window.localStorage.getItem(STORAGE_INDICATORS_KEY)
         if (raw) {
           const parsed = JSON.parse(raw)
-          if (Array.isArray(parsed) && parsed.length > 0) return parsed
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            const valid = parsed.filter(
+              (item) =>
+                item &&
+                typeof item.id === "string" &&
+                (Boolean(TV_INDICATOR_REGISTRY[item.id]) || item.id.startsWith("CUSTOM_"))
+            )
+            if (valid.length > 0) return valid
+          }
         }
       } catch {
         // ignore
@@ -2320,6 +2328,16 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
               </button>
             </div>
           )}
+
+          {/* Honest Sub-Daily Fallback Disclosure (when backend has daily OHLCV only) */}
+          {!loadingData &&
+            candles.length >= 2 &&
+            !["1D", "1W", "1M", "3M", "6M", "12M"].includes(timeframe) &&
+            candles[candles.length - 1].timestamp - candles[candles.length - 2].timestamp >= 12 * 3600 * 1000 && (
+              <div className="pointer-events-none absolute top-2 right-20 z-20 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10.5px] font-medium text-amber-700 dark:text-amber-300">
+                Chưa có nến {timeframe} từ sàn · Đang hiển thị nến 1D thực tế
+              </div>
+            )}
 
           {/* Active Drawing Tool Hint Banner */}
           {!isZoomMode && !activeTool.startsWith("cursor_") && (
