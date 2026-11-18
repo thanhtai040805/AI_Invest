@@ -1933,7 +1933,7 @@ export const TradingViewChart: React.FC<TradingViewChartProps> = ({
         isDark
           ? "bg-[#131722] border-[#2A2E39] text-[#D1D4DC]"
           : "bg-white border-[#E0E3EB] text-[#131722]"
-      } ${isFullscreen ? "fixed inset-0 z-[120] rounded-none" : ""} ${className}`}
+      } ${isFullscreen ? "fixed inset-0 z-[120] rounded-none" : "isolate"} ${className}`}
     >
       {/* 1. Top Header Toolbar (or Sleek Compact Bar when embedded in Market Pulse) */}
       {isEmbeddedCompact ? (

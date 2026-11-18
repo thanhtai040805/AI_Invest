@@ -1698,7 +1698,13 @@ function HeroDecisionDossier({
           <p className="mt-1 truncate whitespace-nowrap text-[11px] text-secondary">
             {orderDecision.shares && orderDecision.shares > 0
               ? `Giá trị: ${number(orderValue, " ₫")}`
-              : `Kelly ${kellyWeight !== null ? `${kellyWeight}%` : "0%"} · Tạm giữ tiền`}
+              : plan?.action === "HOLD"
+                ? position && position.quantity > 0
+                  ? `Giữ ${number(position.quantity, " cp")}`
+                  : (numeric(plan?.target_shares) ?? 0) > 0
+                    ? `Mục tiêu giữ ${number(plan?.target_shares, " cp")}`
+                    : "Giữ nguyên vị thế"
+                : `Kelly ${kellyWeight !== null ? `${kellyWeight}%` : "0%"} · Tạm giữ tiền`}
           </p>
         </div>
       </dl>
@@ -1782,14 +1788,28 @@ function HeroDecisionDossier({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs font-semibold text-ink">Trạng thái giải ngân</span>
-            <Pill tone={orderDecision.shares && orderDecision.shares > 0 ? "gain" : "warning"}>
-              {orderDecision.shares && orderDecision.shares > 0 ? "Đã kích hoạt" : "Chờ chế độ vĩ mô"}
+            <Pill
+              tone={
+                orderDecision.shares && orderDecision.shares > 0
+                  ? "gain"
+                  : plan?.action === "HOLD" &&
+                      ((position?.quantity ?? 0) > 0 || (numeric(plan?.target_shares) ?? 0) > 0)
+                    ? "mineral"
+                    : "warning"
+              }
+            >
+              {orderDecision.shares && orderDecision.shares > 0
+                ? "Đã kích hoạt"
+                : plan?.action === "HOLD" &&
+                    ((position?.quantity ?? 0) > 0 || (numeric(plan?.target_shares) ?? 0) > 0)
+                  ? "Đang giữ vị thế"
+                  : "Chờ chế độ vĩ mô"}
             </Pill>
           </div>
           <p className="mt-1.5 text-xs leading-relaxed text-secondary">
             {orderDecision.rationale || "Danh mục hoạt động trong hạn mức an toàn."}
-            {orderDecision.shares === 0
-              ? ` Hạn mức Kelly (${kellyWeight ?? 0}% NAV) đã tính sẵn nhưng tạm giữ 0 cp chờ dòng tiền thị trường xác nhận.`
+            {orderDecision.shares === 0 && plan?.action !== "HOLD" && (kellyWeight ?? 0) > 0
+              ? ` Hạn mức Kelly (${kellyWeight}% NAV) đã tính sẵn nhưng tạm giữ 0 cp chờ dòng tiền thị trường xác nhận.`
               : ""}
           </p>
         </div>
@@ -2158,7 +2178,7 @@ function ResearchThesisSection({
     .filter(Boolean)
 
   return (
-    <Panel>
+    <Panel className="min-w-0">
       <PanelHead
         title="Luận điểm đầu tư & Phản biện (Nghiên cứu)"
         sub="Dữ liệu gốc từ Agent 04 (lập luận điểm) và Agent 05 (phản biện độc lập), đồng bộ trực tiếp với phân hệ Nghiên cứu."
@@ -2272,9 +2292,13 @@ function ResearchThesisSection({
 function SystemIntegrityShieldPanel({
   posMonEntry,
   position,
+  valuedPosition,
   thesis,
   counter,
   plan,
+  allocEntry,
+  riskLogs = [],
+  eqEntry,
   msEntry,
   summary,
   ticker,
@@ -2282,10 +2306,13 @@ function SystemIntegrityShieldPanel({
   govEntry?: RecordData
   posMonEntry?: RecordData
   position?: RecordData
+  valuedPosition?: PortfolioPosition
   thesis?: RecordData
   counter?: RecordData
   resolution?: RecordData
   plan?: RecordData
+  allocEntry?: RecordData
+  riskLogs?: RecordData[]
   eqEntry?: RecordData
   msEntry?: RecordData
   summary?: PortfolioSnapshot["summary"]
@@ -2293,11 +2320,8 @@ function SystemIntegrityShieldPanel({
 }) {
   const navVnd = numeric(summary?.nav) ?? numeric(summary?.openingCash) ?? 1_000_000_000
   const report = thesis ? thesisDetails(thesis) : undefined
-  const kellyTrace = object(plan?.kelly_math_steps)
-
-  const kellyWeightPct =
-    numeric(plan?.allocated_weight_pct) ??
-    (numeric(kellyTrace.portfolio_target) !== null ? numeric(kellyTrace.portfolio_target)! * 100 : 1.09)
+  const kellyTrace = object(allocEntry?.kelly_math_steps ?? plan?.kelly_math_steps)
+  const orderDecision = approvedOrder(plan, riskLogs)
 
   const constraints = object(counter?.execution_constraints)
   const stopOverride = numeric(constraints.stop_loss_pct_override)
@@ -2321,28 +2345,87 @@ function SystemIntegrityShieldPanel({
         ? Math.round(entryVnd * 1.2226)
         : 0
 
-  const allocatedVnd = Math.round(navVnd * (kellyWeightPct / 100))
-  const simulatedShares = entryVnd > 0 ? Math.max(100, Math.floor(allocatedVnd / entryVnd)) : 0
-  const stopLossPctOnPos = entryVnd > 0 && stopVnd > 0 ? Math.abs(((stopVnd - entryVnd) / entryVnd) * 100) : 0
-  const upsidePctOnPos = entryVnd > 0 && targetVnd > 0 ? Math.max(0, ((targetVnd - entryVnd) / entryVnd) * 100) : 0
+  const priceRiskPerShare = entryVnd > 0 && stopVnd > 0 && entryVnd > stopVnd ? entryVnd - stopVnd : 0
+  const priceRewardPerShare = entryVnd > 0 && targetVnd > entryVnd ? targetVnd - entryVnd : 0
+  const stopLossPctOnPos = priceRiskPerShare > 0 ? (priceRiskPerShare / entryVnd) * 100 : 0
+  const upsidePctOnPos = priceRewardPerShare > 0 ? (priceRewardPerShare / entryVnd) * 100 : 0
+  const setupRewardRiskRatio =
+    priceRiskPerShare > 0
+      ? priceRewardPerShare / priceRiskPerShare
+      : (numeric(kellyTrace.payoff_ratio) ?? 0)
 
-  const maxLossVnd = Math.round(allocatedVnd * (stopLossPctOnPos / 100))
+  const referencePriceVnd =
+    entryVnd > 0 ? entryVnd : (valuedPosition?.currentPrice ?? valuedPosition?.avgPrice ?? 0)
+  const heldQty =
+    valuedPosition && valuedPosition.quantity > 0 ? valuedPosition.quantity : 0
+  const approvedQty =
+    orderDecision.shares !== null && orderDecision.shares > 0 ? orderDecision.shares : 0
+  const targetQty = numeric(plan?.target_shares)
+  const targetShares = targetQty !== null && targetQty > 0 ? targetQty : 0
+
+  const weightCandidates = [
+    orderDecision.weight,
+    numeric(plan?.allocated_weight_pct),
+    numeric(allocEntry?.allocated_weight_pct),
+    numeric(kellyTrace.executable_target) !== null ? numeric(kellyTrace.executable_target)! * 100 : null,
+    numeric(kellyTrace.portfolio_target) !== null ? numeric(kellyTrace.portfolio_target)! * 100 : null,
+  ].filter((w): w is number => w !== null && w > 0)
+  const fallbackWeightPct = weightCandidates[0] ?? 0
+
+  const lotSimulatedShares =
+    fallbackWeightPct > 0 && referencePriceVnd > 0
+      ? Math.floor((navVnd * (fallbackWeightPct / 100)) / referencePriceVnd / 100) * 100
+      : 0
+
+  const plannedShares =
+    approvedQty > 0
+      ? approvedQty
+      : heldQty > 0
+        ? heldQty
+        : targetShares > 0
+          ? targetShares
+          : lotSimulatedShares
+
+  const allocatedVnd =
+    plannedShares > 0 && referencePriceVnd > 0 ? Math.round(plannedShares * referencePriceVnd) : 0
+  const kellyWeightPct =
+    navVnd > 0 && allocatedVnd > 0 ? (allocatedVnd / navVnd) * 100 : fallbackWeightPct
+  const isHeldPositionSizing =
+    approvedQty === 0 && (heldQty > 0 || (plan?.action === "HOLD" && targetShares > 0))
+
+  const maxLossVnd =
+    allocatedVnd > 0 && stopLossPctOnPos > 0
+      ? priceRiskPerShare > 0 && plannedShares > 0
+        ? Math.round(plannedShares * priceRiskPerShare)
+        : Math.round(allocatedVnd * (stopLossPctOnPos / 100))
+      : 0
   const maxLossNavPct = navVnd > 0 ? (maxLossVnd / navVnd) * 100 : 0
   const hardCapLossNavPct = 2.0
-  const safetyMultiple = maxLossNavPct > 0 ? Math.max(1, Math.round(hardCapLossNavPct / maxLossNavPct)) : 0
+  const safetyMultiple =
+    maxLossNavPct > 0 ? Math.max(1, Math.round(hardCapLossNavPct / maxLossNavPct)) : null
 
-  const expectedGainVnd = Math.round(allocatedVnd * (upsidePctOnPos / 100))
+  const expectedGainVnd =
+    allocatedVnd > 0 && upsidePctOnPos > 0
+      ? priceRewardPerShare > 0 && plannedShares > 0
+        ? Math.round(plannedShares * priceRewardPerShare)
+        : Math.round(allocatedVnd * (upsidePctOnPos / 100))
+      : 0
   const expectedGainNavPct = navVnd > 0 ? (expectedGainVnd / navVnd) * 100 : 0
-  const rewardRiskRatio = maxLossVnd > 0 ? expectedGainVnd / maxLossVnd : numeric(kellyTrace.payoff_ratio) ?? 0
+  const rewardRiskRatio = maxLossVnd > 0 ? expectedGainVnd / maxLossVnd : setupRewardRiskRatio
 
-  const bqScore = numeric(object(report?.body.business_quality).score) ?? 95
+  const eqMetrics = object(eqEntry?.factor_raw_metrics)
+  const bqScore =
+    numeric(object(report?.body.business_quality).score) ??
+    numeric(eqMetrics.f2_quality) ??
+    0
   const msOutputs = object(msEntry?.outputs)
   const breadthMa20Pct =
     numeric(msOutputs.breadth_above_ma20_pct) ??
     (numeric(object(msEntry?.macro_raw_metrics).pct_above_ma20) ?? 0) * 100
 
-  const pnl = numeric(position?.current_pnl_pct)
-  const hasPosition = !!position || !!posMonEntry
+  const pnl = valuedPosition?.pnlPercent ?? numeric(position?.current_pnl_pct) ?? numeric(posMonEntry?.pnl_pct)
+  const heldPositionShares = heldQty > 0 ? heldQty : plan?.action === "HOLD" ? targetShares : 0
+  const hasPosition = heldPositionShares > 0 || !!position || !!posMonEntry
 
   // Semi-Circle Risk/Reward Dial Geometry (0x -> 6.0x scale)
   const maxDialRR = 6.0
@@ -2353,13 +2436,24 @@ function SystemIntegrityShieldPanel({
   const semiArcLen = Math.PI * semiRadius
   const activeSemiArc = semiArcLen * rrRatioNorm
 
+  const rrPill =
+    rewardRiskRatio >= 2.5
+      ? { label: "Tối ưu (≥ 2,5x)", tone: "gain" as const }
+      : rewardRiskRatio >= 1.5
+        ? { label: "Đạt chuẩn (≥ 1,5x)", tone: "mineral" as const }
+        : rewardRiskRatio > 0
+          ? { label: "Thận trọng (< 1,5x)", tone: "warning" as const }
+          : { label: "Chờ định giá", tone: "neutral" as const }
+
   const investorChecklist = [
     {
       step: "01",
       title: "Tài chính & Thanh khoản",
       status: "Đạt chuẩn",
       passed: true,
-      detail: `BCTC minh bạch (${bqScore}/100 điểm), thanh khoản khớp lệnh > 15 tỷ/phiên giúp mua bán dễ dàng.`,
+      detail: `Đạt sàng lọc BCTC minh bạch Lớp 0 & thanh khoản ≥ 15 tỷ/phiên${
+        bqScore > 0 ? ` (chất lượng cơ bản F2: ${bqScore}/100)` : ""
+      }.`,
     },
     {
       step: "02",
@@ -2368,7 +2462,7 @@ function SystemIntegrityShieldPanel({
       passed: entryVnd > 0 && ceilingVnd > 0 && entryVnd <= ceilingVnd,
       detail:
         entryVnd > 0
-          ? `Giá tham chiếu (${number(entryVnd, " ₫")}) ${entryVnd <= ceilingVnd ? "thấp hơn" : "cao hơn"} trần mua tối đa (${number(ceilingVnd, " ₫")}); ngưỡng cắt lỗ chỉ -${stopLossPctOnPos.toFixed(1)}%.`
+          ? `Giá tham chiếu (${number(entryVnd, " ₫")}) ${entryVnd <= ceilingVnd ? "thấp hơn" : "cao hơn"} trần mua tối đa (${number(ceilingVnd, " ₫")}); ngưỡng cắt lỗ -${stopLossPctOnPos.toFixed(1)}%.`
           : "Đang chờ Agent cập nhật vùng giá mua và điểm cắt lỗ từ luận điểm chính.",
     },
     {
@@ -2379,7 +2473,9 @@ function SystemIntegrityShieldPanel({
       detail:
         breadthMa20Pct >= 50
           ? "Trên 50% cổ phiếu toàn sàn vượt đường trung bình 20 phiên, đủ điều kiện giải ngân tiền mặt."
-          : `Chỉ mở mua khi ≥ 50% mã toàn sàn vượt MA20 (hiện đạt ${breadthMa20Pct.toFixed(1)}%). Tạm giữ tiền mặt (0 cp) để bảo vệ vốn.`,
+          : hasPosition && heldPositionShares > 0
+            ? `Độ rộng toàn sàn hiện đạt ${breadthMa20Pct.toFixed(1)}% (< ngưỡng mở mua mới 50%). Tiếp tục giữ vị thế ${heldPositionShares.toLocaleString("vi-VN")} cp hiện có và không mua đuổi.`
+            : `Chỉ mở mua mới khi ≥ 50% mã toàn sàn vượt MA20 (hiện đạt ${breadthMa20Pct.toFixed(1)}%). Tạm giữ tiền mặt (0 cp) để bảo vệ vốn.`,
     },
   ]
 
@@ -2391,10 +2487,14 @@ function SystemIntegrityShieldPanel({
           sub={`Tóm tắt bài toán đầu tư thực tế trên danh mục ${number(navVnd, " ₫")}: bỏ 1 đồng rủi ro để đổi ${rewardRiskRatio.toFixed(2)} đồng lợi nhuận kỳ vọng`}
           action={
             <div className="flex flex-wrap items-center gap-2">
-              <Pill tone={hasPosition ? "gain" : "warning"}>
-                {hasPosition && pnl !== null
-                  ? `Đang nắm giữ (${signedNumber(pnl, "%")})`
-                  : `Khuyến nghị hiện tại: Tạm giữ tiền mặt (Chờ dòng tiền thị trường ≥ 50%)`}
+              <Pill tone={hasPosition || approvedQty > 0 ? "gain" : "warning"}>
+                {hasPosition
+                  ? pnl !== null
+                    ? `Đang nắm giữ (${signedNumber(pnl, "%")})`
+                    : `Đang nắm giữ ${heldPositionShares > 0 ? `${heldPositionShares.toLocaleString("vi-VN")} cp` : ""}`.trim()
+                  : approvedQty > 0
+                    ? `Đã duyệt giải ngân (${approvedQty.toLocaleString("vi-VN")} cp)`
+                    : "Khuyến nghị hiện tại: Tạm giữ tiền mặt (Chờ dòng tiền thị trường ≥ 50%)"}
               </Pill>
             </div>
           }
@@ -2404,10 +2504,10 @@ function SystemIntegrityShieldPanel({
       {/* 3-Column Investor-Friendly Visual Layout */}
       <div className="grid divide-y divide-line lg:grid-cols-12 lg:divide-y-0 lg:divide-x">
         {/* Column 1 (4 Cols): Semi-Circle Risk/Reward Needle Gauge */}
-        <div className="flex flex-col justify-between bg-surface p-5 lg:col-span-4">
-          <div className="flex items-center justify-between gap-2 whitespace-nowrap">
+        <div className="flex min-w-0 flex-col justify-between bg-surface p-5 lg:col-span-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="text-xs font-semibold text-ink">1. Đồng Hồ Tỷ Lệ Lãi / Rủi Ro</span>
-            <Pill tone="gain">Tối ưu (≥ 2,5x)</Pill>
+            <Pill tone={rrPill.tone}>{rrPill.label}</Pill>
           </div>
 
           <div className="my-2 flex flex-col items-center">
@@ -2440,7 +2540,7 @@ function SystemIntegrityShieldPanel({
               <path
                 d="M 26 88 A 64 64 0 0 1 154 88"
                 fill="none"
-                stroke="var(--color-gain)"
+                stroke={rewardRiskRatio >= 1.5 ? "var(--color-gain)" : rewardRiskRatio > 0 ? "var(--color-warning)" : "var(--color-muted)"}
                 strokeWidth="12"
                 strokeLinecap="round"
                 strokeDasharray={`${activeSemiArc} ${semiArcLen}`}
@@ -2461,10 +2561,20 @@ function SystemIntegrityShieldPanel({
             </svg>
 
             <div className="mt-1 text-center">
-              <div className="tnum font-mono text-[22px] font-bold text-gain">
+              <div
+                className={`tnum font-mono text-[22px] font-bold ${
+                  rewardRiskRatio >= 2.5
+                    ? "text-gain"
+                    : rewardRiskRatio >= 1.5
+                      ? "text-mineral"
+                      : rewardRiskRatio > 0
+                        ? "text-warning"
+                        : "text-muted"
+                }`}
+              >
                 {rewardRiskRatio.toFixed(2)} : 1
               </div>
-              <p className="mt-0.5 whitespace-nowrap text-xs text-secondary">
+              <p className="mt-0.5 text-xs text-secondary">
                 Bỏ <strong className="font-semibold text-loss">1 đồng rủi ro</strong> để kỳ vọng thu{" "}
                 <strong className="font-semibold text-gain">{rewardRiskRatio.toFixed(2)} đồng lãi</strong>
               </p>
@@ -2479,26 +2589,36 @@ function SystemIntegrityShieldPanel({
         </div>
 
         {/* Column 2 (4 Cols): Real-Money VND Payoff Comparison */}
-        <div className="flex flex-col justify-between bg-paper/25 p-5 lg:col-span-4">
+        <div className="flex min-w-0 flex-col justify-between bg-paper/25 p-5 lg:col-span-4">
           <div>
-            <div className="flex items-center justify-between gap-2 whitespace-nowrap">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="text-xs font-semibold text-ink">2. Bài Toán Lãi / Lỗ Bằng Tiền Thật</span>
               <span className="tnum font-mono text-[11px] font-semibold text-teal">
-                Vốn cấp: {kellyWeightPct.toFixed(2)}% NAV
+                {isHeldPositionSizing ? "Tỷ trọng vị thế" : "Vốn cấp"}: {kellyWeightPct.toFixed(2)}% NAV
               </span>
             </div>
-            <p className="mt-1 whitespace-nowrap text-[11.5px] text-secondary">
-              Vốn dự kiến <strong className="font-mono text-ink">{allocatedVnd.toLocaleString("vi-VN")} ₫</strong> (
-              <strong className="font-mono text-ink">{simulatedShares.toLocaleString("vi-VN")} cp</strong> ×{" "}
-              <strong className="font-mono text-ink">{entryVnd > 0 ? number(entryVnd, " ₫") : "—"}</strong>):
+            <p className="mt-1 text-[11.5px] leading-snug text-secondary">
+              {plannedShares > 0 && allocatedVnd > 0 ? (
+                <>
+                  {isHeldPositionSizing ? "Quy mô vị thế " : "Vốn dự kiến "}
+                  <strong className="tnum font-mono text-ink">{allocatedVnd.toLocaleString("vi-VN")} ₫</strong> (
+                  <strong className="tnum font-mono text-ink">{plannedShares.toLocaleString("vi-VN")} cp</strong> ×{" "}
+                  <strong className="tnum font-mono text-ink">
+                    {referencePriceVnd > 0 ? number(referencePriceVnd, " ₫") : "—"}
+                  </strong>
+                  ):
+                </>
+              ) : (
+                "Chưa phát sinh khối lượng cổ phiếu phân bổ trong phiên này."
+              )}
             </p>
 
             {/* 2 Stacked Horizontal Scenario Cards */}
             <div className="mt-3 space-y-2.5">
               {/* Stop-Loss Scenario Card */}
               <div className="rounded-lg border border-loss/25 bg-surface p-3">
-                <div className="flex items-center justify-between gap-2 whitespace-nowrap">
-                  <div className="flex items-center gap-1.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-1.5">
                     <span className="text-xs font-semibold text-loss">Cắt lỗ</span>
                     <span className="tnum rounded bg-loss/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-loss">
                       -{stopLossPctOnPos.toFixed(1)}%
@@ -2508,7 +2628,7 @@ function SystemIntegrityShieldPanel({
                     </span>
                   </div>
                   <span className="tnum font-mono text-[15px] font-bold text-loss">
-                    -{maxLossVnd.toLocaleString("vi-VN")} ₫
+                    {maxLossVnd > 0 ? `-${maxLossVnd.toLocaleString("vi-VN")} ₫` : "0 ₫"}
                   </span>
                 </div>
 
@@ -2516,24 +2636,32 @@ function SystemIntegrityShieldPanel({
                   <div
                     className="h-full w-full origin-left rounded-full bg-loss"
                     style={{
-                      transform: `scaleX(${Math.max(0.12, Math.min(1, 1 / Math.max(1, rewardRiskRatio)))})`,
+                      transform: `scaleX(${
+                        maxLossVnd > 0 ? Math.max(0.12, Math.min(1, 1 / Math.max(1, rewardRiskRatio))) : 0
+                      })`,
                       transition: "transform 260ms var(--ease-out-expo)",
                     }}
                   />
                 </div>
 
-                <div className="flex items-center justify-between gap-2 whitespace-nowrap text-[11px] text-secondary">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-secondary">
                   <span className="tnum font-mono">Mất {maxLossNavPct.toFixed(3)}% NAV</span>
                   <span>
-                    An toàn gấp <strong className="font-semibold text-gain">{safetyMultiple} lần</strong> trần lỗ 2%
+                    {safetyMultiple !== null ? (
+                      <>
+                        An toàn gấp <strong className="font-semibold text-gain">{safetyMultiple} lần</strong> trần lỗ 2%
+                      </>
+                    ) : (
+                      "Chưa phát sinh rủi ro vốn (0% NAV)"
+                    )}
                   </span>
                 </div>
               </div>
 
               {/* Target Profit Scenario Card */}
               <div className="rounded-lg border border-gain/30 bg-surface p-3">
-                <div className="flex items-center justify-between gap-2 whitespace-nowrap">
-                  <div className="flex items-center gap-1.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-1.5">
                     <span className="text-xs font-semibold text-gain">Mục tiêu</span>
                     <span className="tnum rounded bg-gain/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-gain">
                       +{upsidePctOnPos.toFixed(1)}%
@@ -2543,7 +2671,7 @@ function SystemIntegrityShieldPanel({
                     </span>
                   </div>
                   <span className="tnum font-mono text-[15px] font-bold text-gain">
-                    +{expectedGainVnd.toLocaleString("vi-VN")} ₫
+                    {expectedGainVnd > 0 ? `+${expectedGainVnd.toLocaleString("vi-VN")} ₫` : "0 ₫"}
                   </span>
                 </div>
 
@@ -2551,13 +2679,13 @@ function SystemIntegrityShieldPanel({
                   <div
                     className="h-full w-full origin-left rounded-full bg-gain"
                     style={{
-                      transform: `scaleX(${rewardRiskRatio > 0 ? 1 : 0})`,
+                      transform: `scaleX(${expectedGainVnd > 0 ? 1 : 0})`,
                       transition: "transform 260ms var(--ease-out-expo)",
                     }}
                   />
                 </div>
 
-                <div className="flex items-center justify-between gap-2 whitespace-nowrap text-[11px] text-secondary">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-secondary">
                   <span className="tnum font-mono">Lãi +{expectedGainNavPct.toFixed(3)}% NAV</span>
                   <span>
                     Lợi nhuận gấp <strong className="font-semibold text-gain">{rewardRiskRatio.toFixed(2)} lần</strong> rủi ro
@@ -2568,20 +2696,26 @@ function SystemIntegrityShieldPanel({
           </div>
 
           <div className="mt-2.5 rounded-lg border border-line/80 bg-surface px-3 py-2 text-[11.5px] leading-relaxed text-secondary">
-            <strong className="font-semibold text-ink">Bảo toàn vốn tuyệt đối:</strong> Kể cả trong kịch bản xấu nhất khi{" "}
-            {ticker} chạm cắt lỗ, hơn{" "}
-            <strong className="font-mono text-ink">
-              {Number.isFinite(maxLossNavPct) && maxLossNavPct > 0
-                ? `${(100 - maxLossNavPct).toFixed(2).replace(".", ",")}%`
-                : "—"}
-            </strong>{" "}
-            tổng tài sản của quỹ vẫn nguyên vẹn.
+            <strong className="font-semibold text-ink">Bảo toàn vốn tuyệt đối:</strong>{" "}
+            {Number.isFinite(maxLossNavPct) && maxLossNavPct > 0 ? (
+              <>
+                Kể cả trong kịch bản xấu nhất khi {ticker} chạm cắt lỗ, hơn{" "}
+                <strong className="font-mono text-ink">
+                  {(100 - maxLossNavPct).toFixed(2).replace(".", ",")}%
+                </strong>{" "}
+                tổng tài sản của quỹ vẫn nguyên vẹn.
+              </>
+            ) : (
+              <>
+                Chưa phát sinh quy mô giải ngân cho {ticker}, <strong className="font-mono text-ink">100%</strong> tổng tài sản của quỹ được bảo toàn.
+              </>
+            )}
           </div>
         </div>
 
         {/* Column 3 (4 Cols): 3 Plain-Language Investor Unlock Conditions (Zero Inline Icons) */}
-        <div className="flex flex-col justify-between bg-surface p-5 lg:col-span-4">
-          <div className="flex items-center justify-between gap-2 whitespace-nowrap">
+        <div className="flex min-w-0 flex-col justify-between bg-surface p-5 lg:col-span-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="text-xs font-semibold text-ink">3. Ba Điều Kiện Mở Khóa Lệnh Mua</span>
             <span className="tnum font-mono text-[11px] text-secondary">
               Đạt {investorChecklist.filter(c => c.passed).length}/3 điều kiện
@@ -2596,7 +2730,7 @@ function SystemIntegrityShieldPanel({
                   item.passed ? "border-line bg-paper/35" : "border-warning/35 bg-warning/[0.04]"
                 }`}
               >
-                <div className="flex items-center justify-between gap-2 whitespace-nowrap">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex min-w-0 items-baseline gap-1.5">
                     <span
                       className={`tnum font-mono text-xs font-semibold ${
@@ -2933,6 +3067,7 @@ function WarRoom({ requestedSymbol }: { requestedSymbol: string }) {
   const msEntry = latestEntry("market_surveillance")
   const udEntry = latestEntry("universe_discovery")
   const eqEntry = matchingEntries("equity_research")[0]?.entry
+  const allocEntry = matchingEntries("portfolio_allocation")[0]?.entry
   const posMonEntry = matchingEntries("position_monitoring")[0]?.entry
   const govEntries = entriesFor("system_governance")
   const govEntry =
@@ -3137,10 +3272,13 @@ function WarRoom({ requestedSymbol }: { requestedSymbol: string }) {
             govEntry={govEntry}
             posMonEntry={posMonEntry}
             position={position}
+            valuedPosition={valuedPosition}
             thesis={thesis}
             counter={counter}
             resolution={resolution}
             plan={planForReview}
+            allocEntry={allocEntry}
+            riskLogs={entriesFor("portfolio_risk").map(log => log.entry)}
             eqEntry={eqEntry}
             msEntry={msEntry}
             summary={summary}

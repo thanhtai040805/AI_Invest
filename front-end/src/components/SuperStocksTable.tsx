@@ -86,7 +86,7 @@ function VsaHeaderTip({
       </span>
       <div
         role="tooltip"
-        className="pointer-events-none invisible opacity-0 translate-y-1 scale-[0.985] [transition:opacity_120ms_ease-out_0ms,transform_120ms_var(--ease-out-expo)_0ms,visibility_0s_linear_120ms] group-hover/htip:visible group-hover/htip:opacity-100 group-hover/htip:translate-y-0 group-hover/htip:scale-100 group-hover/htip:[transition:opacity_140ms_ease-out_80ms,transform_140ms_var(--ease-out-expo)_80ms,visibility_0s_linear_0ms] absolute top-full left-1/2 -translate-x-1/2 mt-1.5 z-30 w-[260px] rounded-[8px] border border-line-strong bg-surface p-3 text-left normal-case tracking-normal shadow-[0_10px_28px_rgba(24,32,29,0.14)]"
+        className="pointer-events-none invisible opacity-0 translate-y-1 scale-[0.985] [transition:opacity_120ms_ease-out_0ms,transform_120ms_var(--ease-out-expo)_0ms,visibility_0s_linear_120ms] group-hover/htip:visible group-hover/htip:opacity-100 group-hover/htip:translate-y-0 group-hover/htip:scale-100 group-hover/htip:[transition:opacity_140ms_ease-out_80ms,transform_140ms_var(--ease-out-expo)_80ms,visibility_0s_linear_0ms] absolute top-full left-1/2 -translate-x-1/2 mt-1.5 z-20 w-[260px] rounded-[8px] border border-line-strong bg-surface p-3 text-left normal-case tracking-normal shadow-[0_10px_28px_rgba(24,32,29,0.14)]"
       >
         <div className="text-[11.5px] font-semibold text-ink">{title}</div>
         <div className="mt-1 inline-block rounded-[4px] bg-soft px-1.5 py-0.5 font-mono text-[10px] font-medium text-mineral">
@@ -180,7 +180,7 @@ function VsaMetricCell({
       {kind && (
         <div
           role="tooltip"
-          className={`pointer-events-none invisible opacity-0 translate-y-1 scale-[0.985] [transition:opacity_120ms_ease-out_0ms,transform_120ms_var(--ease-out-expo)_0ms,visibility_0s_linear_120ms] group-hover/cell:visible group-hover/cell:opacity-100 group-hover/cell:translate-y-0 group-hover/cell:scale-100 group-hover/cell:[transition:opacity_140ms_ease-out_80ms,transform_140ms_var(--ease-out-expo)_80ms,visibility_0s_linear_0ms] absolute left-1/2 -translate-x-1/2 z-30 w-[245px] rounded-[8px] border border-line-strong bg-surface p-2.5 text-left normal-case tracking-normal shadow-[0_10px_28px_rgba(24,32,29,0.14)] ${
+          className={`pointer-events-none invisible opacity-0 translate-y-1 scale-[0.985] [transition:opacity_120ms_ease-out_0ms,transform_120ms_var(--ease-out-expo)_0ms,visibility_0s_linear_120ms] group-hover/cell:visible group-hover/cell:opacity-100 group-hover/cell:translate-y-0 group-hover/cell:scale-100 group-hover/cell:[transition:opacity_140ms_ease-out_80ms,transform_140ms_var(--ease-out-expo)_80ms,visibility_0s_linear_0ms] absolute left-1/2 -translate-x-1/2 z-20 w-[245px] rounded-[8px] border border-line-strong bg-surface p-2.5 text-left normal-case tracking-normal shadow-[0_10px_28px_rgba(24,32,29,0.14)] ${
             placeBelow ? "top-full mt-1.5" : "bottom-full mb-1.5"
           }`}
         >

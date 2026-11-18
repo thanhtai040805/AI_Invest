@@ -8,6 +8,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react"
+import { createPortal } from "react-dom"
 import {
   BookOpenText,
   BriefcaseBusiness,
@@ -271,7 +272,7 @@ function TopBar({ onSearch }: { onSearch: () => void }) {
   const totalBillion = numberValue(liquidity?.totalValueBillion)
 
   return (
-    <header className="sticky top-0 z-30 h-12 bg-surface border-b border-line flex items-center gap-2 px-3.5 md:px-5 shrink-0">
+    <header className="sticky top-0 z-40 h-12 bg-surface border-b border-line flex items-center gap-2 px-3.5 md:px-5 shrink-0">
       <select
         aria-label="Điều hướng"
         value={activeRoute}
@@ -385,7 +386,7 @@ function TopBar({ onSearch }: { onSearch: () => void }) {
 
 type nodeOrStr = ReactNode
 
-function Sidebar() {
+function Sidebar({ suppressTips = false }: { suppressTips?: boolean }) {
   const { path } = useRouter()
   const isApple = useIsApplePlatform()
   const collapsed = useSyncExternalStore(subscribeSidebar, getSidebarCollapsedSnapshot, () => true)
@@ -402,7 +403,7 @@ function Sidebar() {
   }
 
   const showTip = (label: string, el: HTMLElement) => {
-    if (!collapsed) return
+    if (!collapsed || suppressTips) return
     clearTipTimer()
     const rect = el.getBoundingClientRect()
     tipTimerRef.current = window.setTimeout(() => {
@@ -420,13 +421,26 @@ function Sidebar() {
   }
 
   useEffect(() => {
+    if (!hoveredTip) return
+    const dismiss = () => setHoveredTip(null)
+    window.addEventListener("scroll", dismiss, { passive: true })
+    window.addEventListener("blur", dismiss)
+    return () => {
+      window.removeEventListener("scroll", dismiss)
+      window.removeEventListener("blur", dismiss)
+    }
+  }, [hoveredTip])
+
+  useEffect(() => {
     return () => clearTipTimer()
   }, [])
+
+  const activeTip = collapsed && !suppressTips ? hoveredTip : null
 
   return (
     <aside
       aria-label="Thanh điều hướng không gian làm việc"
-      className={`hidden md:flex md:sticky md:top-0 md:h-dvh shrink-0 bg-surface border-r border-line flex-col transition-[width] duration-[160ms] ease-[var(--ease-out-expo)] ${
+      className={`hidden md:flex md:sticky md:top-0 md:z-40 md:h-dvh shrink-0 bg-surface border-r border-line flex-col transition-[width] duration-[160ms] ease-[var(--ease-out-expo)] ${
         collapsed ? "w-14" : "w-[220px]"
       }`}
     >
@@ -562,15 +576,18 @@ function Sidebar() {
         </button>
       </div>
 
-      {collapsed && hoveredTip && (
-        <div
-          role="tooltip"
-          style={{ top: hoveredTip.top, left: hoveredTip.left }}
-          className="popover-enter origin-left fixed z-[90] -translate-y-1/2 pointer-events-none rounded-[7px] bg-ink px-2.5 py-1.5 text-[12px] font-medium text-paper shadow-lg shadow-ink/15 whitespace-nowrap"
-        >
-          {hoveredTip.label}
-        </div>
-      )}
+      {typeof document !== "undefined" &&
+        activeTip &&
+        createPortal(
+          <div
+            role="tooltip"
+            style={{ top: activeTip.top, left: activeTip.left }}
+            className="popover-enter origin-left fixed z-[90] -translate-y-1/2 pointer-events-none rounded-[7px] bg-ink px-2.5 py-1.5 text-[12px] font-medium text-paper shadow-lg shadow-ink/15 whitespace-nowrap"
+          >
+            {activeTip.label}
+          </div>,
+          document.body,
+        )}
     </aside>
   )
 }
@@ -847,7 +864,7 @@ export function Shell({ children }: { children: ReactNode }) {
 
   return (
     <div className="flex min-h-dvh bg-paper">
-      <Sidebar />
+      <Sidebar suppressTips={overlayOpen} />
       <div className="flex-1 flex flex-col min-w-0 bg-paper">
         <TopBar onSearch={() => setCmd(true)} />
         <main className="flex-1 min-w-0 bg-paper">{children}</main>
