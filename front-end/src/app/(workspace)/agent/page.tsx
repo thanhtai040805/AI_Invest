@@ -863,7 +863,16 @@ function MacroCycleSplineChart({
         : []
 
   if (plotSeries.length < 2) {
-    return <div className="min-h-[210px] bg-surface p-4 lg:col-span-8" />
+    return (
+      <div className="flex min-h-[210px] items-center justify-center bg-surface p-6 text-center lg:col-span-8">
+        <div className="max-w-sm space-y-1">
+          <div className="text-xs font-semibold text-ink">Chưa có dữ liệu giám sát vĩ mô cho phiên này</div>
+          <p className="text-[11.5px] text-secondary">
+            Chọn một ngày có dấu chấm trên lịch hoặc chọn &ldquo;Có dữ liệu mới nhất&rdquo; để xem diễn biến dòng tiền.
+          </p>
+        </div>
+      </div>
+    )
   }
 
   const activeIdx = hoveredIdx !== null && plotSeries[hoveredIdx] ? hoveredIdx : plotSeries.length - 1
@@ -1353,11 +1362,22 @@ function MarketAndUniversePanel({
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
           <div className="flex flex-wrap items-center gap-2">
             <Pill tone="mineral">
-              Sàng lọc Lớp 0 · {totalScanned !== null ? `Chọn ${symbolsCount}/${totalScanned} mã` : `Chọn ${symbolsCount} mã`}
+              Sàng lọc Lớp 0 ·{" "}
+              {udEntry
+                ? totalScanned !== null
+                  ? `Chọn ${symbolsCount}/${totalScanned} mã`
+                  : `Chọn ${symbolsCount} mã`
+                : "Chưa có dữ liệu"}
             </Pill>
             <span className="text-secondary">
-              Đã lọc <strong className="font-semibold text-ink">{symbolsCount} cổ phiếu</strong> đạt chuẩn BCTC minh bạch &amp; thanh khoản{" "}
-              <span className="tnum font-mono font-medium text-ink">≥ 15 tỷ/phiên</span> (loại {exclusions.length} mã không đạt).
+              {udEntry ? (
+                <>
+                  Đã lọc <strong className="font-semibold text-ink">{symbolsCount} cổ phiếu</strong> đạt chuẩn BCTC minh bạch &amp; thanh khoản{" "}
+                  <span className="tnum font-mono font-medium text-ink">≥ 15 tỷ/phiên</span> (loại {exclusions.length} mã không đạt).
+                </>
+              ) : (
+                "Chưa ghi nhận lượt sàng lọc cổ phiếu Lớp 0 trong phiên này."
+              )}
             </span>
           </div>
 
@@ -1514,6 +1534,7 @@ function HeroDecisionDossier({
   eqEntry,
   position,
   portfolioAvailable,
+  isCurrentSession = true,
 }: {
   ticker: string
   thesis?: RecordData
@@ -1525,6 +1546,7 @@ function HeroDecisionDossier({
   eqEntry?: RecordData
   position?: PortfolioPosition
   portfolioAvailable: boolean
+  isCurrentSession?: boolean
 }) {
   const matchedCounter = thesis?.thesis_id && counter?.thesis_id === thesis.thesis_id ? counter : undefined
   const matchedResolution = thesis?.thesis_id && resolution?.thesis_id === thesis.thesis_id ? resolution : undefined
@@ -1815,13 +1837,19 @@ function HeroDecisionDossier({
         </div>
 
         <div className="flex shrink-0 items-center justify-between gap-3 border-t border-line/70 pt-2.5 text-xs lg:border-t-0 lg:border-l lg:pt-0 lg:pl-5">
-          <span className="whitespace-nowrap text-secondary">Vị thế đang nắm giữ:</span>
+          <span className="whitespace-nowrap text-secondary">
+            {isCurrentSession ? "Vị thế đang nắm giữ:" : "Vị thế theo phiên:"}
+          </span>
           <span className="tnum whitespace-nowrap font-mono font-semibold text-ink">
             {position
               ? `${number(position.quantity, " cp")} (${signedNumber(position.pnlPercent, "%")})`
-              : portfolioAvailable
-                ? "0 cp"
-                : "Đang đối soát"}
+              : !isCurrentSession
+                ? (numeric(plan?.target_shares) ?? 0) > 0
+                  ? `Mục tiêu ${number(plan?.target_shares, " cp")}`
+                  : "— (phiên lịch sử)"
+                : portfolioAvailable
+                  ? "0 cp"
+                  : "Đang đối soát"}
           </span>
         </div>
       </div>
@@ -3021,32 +3049,35 @@ function WarRoom({ requestedSymbol }: { requestedSymbol: string }) {
   const theses = ready ? newest(data?.theses || []).filter(row => !date || recordDate(row) === date) : []
   const resolutions = ready ? data?.resolutions || [] : []
   const plans = ready ? newest(data?.decisions || []) : []
+  const datedPlans = date ? plans.filter(row => recordDate(row) === date) : plans
   const logs = ready
     ? (data?.logs || [])
         .flatMap(group => (group.entries || []).map(entry => ({ agent: group.agent, entry })))
         .sort((a, b) => (Date.parse(timestamp(b.entry)) || 0) - (Date.parse(timestamp(a.entry)) || 0))
     : []
 
+  // Chỉ lấy mã thực sự có luận điểm hoặc quyết định phân bổ trong phiên đang chọn (không trộn vị thế live sang phiên cũ/trống).
   const symbols = [
     ...new Set(
       [
         requestedSymbol,
-        ...[...theses, ...plans, ...(portfolio?.positions.map(p => ({ ticker: p.symbol })) ?? [])].map(row =>
-          String(row.ticker || "")
-        ),
+        ...[...theses, ...datedPlans].map(row => String(row.ticker || "")),
       ].filter(Boolean)
     ),
   ]
   const visibleSymbols = symbols.filter(item => item.toLowerCase().includes(search.toLowerCase()))
   const active = visibleSymbols.includes(symbol) ? symbol : visibleSymbols[0] || ""
 
+  const latestDataDate = data?.dates?.[0] || todayDate
+  const isCurrentSession = !date || date === todayDate || date === latestDataDate
+
   const thesis = theses.find(row => row.ticker === active)
   const resolution = thesis ? related(resolutions, thesis) : undefined
   const counter = thesis ? related(data?.counterTheses || [], thesis) : undefined
-  const selectedPlans = newest(plans.filter(row => row.ticker === active && (!date || recordDate(row) === date)))
+  const selectedPlans = newest(datedPlans.filter(row => row.ticker === active))
   const planForReview = selectedPlans[0]
-  const health = ready ? data?.positionHealth?.find(row => row.ticker === active) : undefined
-  const valuedPosition = portfolio?.positions.find(row => row.symbol === active)
+  const health = ready && isCurrentSession ? data?.positionHealth?.find(row => row.ticker === active) : undefined
+  const valuedPosition = isCurrentSession ? portfolio?.positions.find(row => row.symbol === active) : undefined
   const position: RecordData | undefined = valuedPosition
     ? { ...health, ticker: active, current_pnl_pct: valuedPosition.pnlPercent, price_as_of: valuedPosition.priceAsOf }
     : undefined
@@ -3104,6 +3135,7 @@ function WarRoom({ requestedSymbol }: { requestedSymbol: string }) {
           <FinancialCalendar
             label="Ngày phân tích"
             allowAll={!!requestedSymbol}
+            availableOnly
             value={date}
             dates={data?.dates || []}
             onChange={value => {
@@ -3250,6 +3282,7 @@ function WarRoom({ requestedSymbol }: { requestedSymbol: string }) {
                       eqEntry={eqEntry}
                       position={valuedPosition}
                       portfolioAvailable={!!portfolio}
+                      isCurrentSession={isCurrentSession}
                     />
                   </div>
 
@@ -3261,29 +3294,33 @@ function WarRoom({ requestedSymbol }: { requestedSymbol: string }) {
                 </div>
               ) : (
                 <Panel className="p-8 text-sm text-secondary">
-                  Chọn một mã cổ phiếu ở cột bên trái để xem hồ sơ phán quyết, chấm điểm 6 nhân tố và bàn tranh biện.
+                  {symbols.length === 0
+                    ? `Phiên ${date ? displayDate(date) : "này"} chưa ghi nhận mã cổ phiếu nào được đưa vào thẩm định từ AI Committee.`
+                    : "Chọn một mã cổ phiếu ở cột bên trái để xem hồ sơ phán quyết, chấm điểm 6 nhân tố và bàn tranh biện."}
                 </Panel>
               )}
             </section>
           </div>
 
           {/* 4. Live Capital Stress-Test & 5-Guardrail Verification */}
-          <SystemIntegrityShieldPanel
-            govEntry={govEntry}
-            posMonEntry={posMonEntry}
-            position={position}
-            valuedPosition={valuedPosition}
-            thesis={thesis}
-            counter={counter}
-            resolution={resolution}
-            plan={planForReview}
-            allocEntry={allocEntry}
-            riskLogs={entriesFor("portfolio_risk").map(log => log.entry)}
-            eqEntry={eqEntry}
-            msEntry={msEntry}
-            summary={summary}
-            ticker={active || "Danh mục"}
-          />
+          {active && (
+            <SystemIntegrityShieldPanel
+              govEntry={govEntry}
+              posMonEntry={posMonEntry}
+              position={position}
+              valuedPosition={valuedPosition}
+              thesis={thesis}
+              counter={counter}
+              resolution={resolution}
+              plan={planForReview}
+              allocEntry={allocEntry}
+              riskLogs={entriesFor("portfolio_risk").map(log => log.entry)}
+              eqEntry={eqEntry}
+              msEntry={msEntry}
+              summary={summary}
+              ticker={active}
+            />
+          )}
 
           {/* 5. Collapsible Technical Audit Logs */}
           <details id="agent-logs" className="overflow-hidden rounded-xl border border-line bg-surface">
