@@ -103,8 +103,15 @@ class TapeAnomalyDetector:
             )
 
         # 2. Kiểm tra Bearish Upthrust / Bull Trap:
-        # Râu nến trên chiếm > 50% chiều dài nến kèm Volume bùng nổ >= 1.8x MA20 -> Kéo xả trong phiên
-        if candle_range > 0 and (upper_wick / candle_range >= 0.50) and vol_ratio >= 1.8:
+        # Yêu cầu biên độ nến ngày đủ lớn (>= 2.5%), đóng cửa yếu (35% đáy), râu trên >= 50% và Vol >= 1.8x MA20
+        # Tránh chặn nhầm chỉ vì 1 râu nến nhỏ hẹp trong nền tích lũy.
+        if (
+            candle_range > 0
+            and candle_range_pct >= 0.025
+            and metrics["close_location_pct"] <= 35.0
+            and (upper_wick / candle_range >= 0.50)
+            and vol_ratio >= 1.8
+        ):
             reason = (
                 f"Phát hiện BẪY TĂNG GIÁ (Bearish Upthrust): Râu nến trên dài chiếm {upper_wick/candle_range*100:.1f}% "
                 f"kèm Volume đột biến {vol_ratio:.1f}x MA20. Áp lực bán dội ngược cực mạnh từ phe nội bộ."

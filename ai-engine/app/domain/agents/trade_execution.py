@@ -289,6 +289,7 @@ class TradeExecutionAgent(BaseAgent):
                     "confirming_signals_count": decision.get("confirming_signals_count", 3),
                     "beneish_passed": decision.get("beneish_passed", True),
                     "available_shares": decision.get("available_shares"),
+                    **({"risk_limits": decision["risk_limits"]} if isinstance(decision.get("risk_limits"), dict) else {}),
                     **({"broker_heartbeat": event_data["broker_heartbeat"]} if event_data.get("broker_heartbeat") else {}),
                 })
                 if gov_res.get("status") == "SUCCESS":
@@ -444,7 +445,12 @@ class TradeExecutionAgent(BaseAgent):
                         ticker=ticker,
                         shares=shares,
                         limit_price=max_price,
-                        user_id=decision.get("user_id") or event_data.get("user_id"),
+                        user_id=(
+                decision.get("user_id")
+                or decision.get("account_id")
+                or event_data.get("user_id")
+                or event_data.get("account_id")
+            ),
                         decision_context=decision_context,
                     )
                     return {"data": {
@@ -491,7 +497,12 @@ class TradeExecutionAgent(BaseAgent):
             target_price=decision_price,
             slippage_bps=slippage_bps,
             execution_mode=plan.execution_mode,
-            user_id=decision.get("user_id") or event_data.get("user_id"),
+            user_id=(
+                decision.get("user_id")
+                or decision.get("account_id")
+                or event_data.get("user_id")
+                or event_data.get("account_id")
+            ),
             pending_order_id=pending_order_id,
             status=status_str,
             decision_context=decision_context,

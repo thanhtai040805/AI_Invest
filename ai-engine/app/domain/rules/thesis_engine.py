@@ -202,15 +202,21 @@ class ThesisEngine:
         css_score: float,
         quality_score: float,
         regime_label: str,
+        playbook: Optional[str] = None,
+        leadership_metrics: Optional[Dict[str, Any]] = None,
+        session_context: str = "Normal",
     ) -> Tuple[bool, Dict[str, str], int]:
         """
         Thẩm định thực chất 3 Tín hiệu Độc lập (Hard Law Điều 3):
-        - Signal 1: Nhân tố cơ bản / Lợi nhuận (F4 Earnings >= 60 hoặc CSS >= 65 hoặc F1 Value >= 65)
-        - Signal 2: Business Quality & Flow (Quality Score >= 60 hoặc F5 Flow >= 60 hoặc F3 Momentum >= 60)
-        - Signal 3: Bối cảnh Vĩ mô / Chế độ thị trường HMM (Không phải BEAR/CRISIS hoặc có Idiosyncratic Veto)
-        
+        - Signal 1: Nhân tố cơ bản / Lợi nhuận (F4 Earnings >= 60 hoặc CSS >= 60 hoặc F1 Value >= 60)
+        - Signal 2: Dòng tiền / Động lượng / Hấp thụ VSA (F5 >= 60, F3 >= 60, hoặc VSA Swing >= 60 khi TACTICAL_SWING)
+        - Signal 3: Bối cảnh Vĩ mô / Chế độ thị trường HMM / Ngoại lệ Đánh sóng & Bắt đáy Khoa học
+
         Trả về: (passed_all, signals_dict, passed_count)
         """
+        pb = str(playbook or "").upper().strip()
+        lead = leadership_metrics or {}
+
         # Signal 1: Factor / Earnings / Value / CSS (Chuẩn Conviction >= B tức CSS >= 60.0)
         f4 = factors.get("f4_earnings", 50.0)
         f1 = factors.get("f1_value", 50.0)
@@ -221,32 +227,67 @@ class ThesisEngine:
             else f"FAIL (F4 score={f4:.1f}/100 < 60 và CSS={css_score:.1f} < 60)"
         )
 
-        # Signal 2: Business Quality / Flow
+        # Signal 2: Flow / Momentum / VSA Absorption (cho phép VSA hấp thụ trong TACTICAL_SWING)
         f5 = factors.get("f5_flow", 50.0)
         f3 = factors.get("f3_momentum", 50.0)
-        s2_passed = (f5 >= 60.0) or (f3 >= 60.0)
-        s2_text = (
-            f"PASS (F5 Flow={f5:.1f}, F3 Momentum={f3:.1f})"
-            if s2_passed
-            else f"FAIL (F5 Flow={f5:.1f}, F3 Momentum={f3:.1f} đều dưới 60)"
-        )
+        vsa_score = float(lead.get("vsa_swing_score", 0.0)) if lead else 0.0
+        s2_vsa_pass = (pb == "TACTICAL_SWING" and vsa_score >= 60.0 and not bool(lead.get("has_bearish_upthrust", False)))
+        s2_passed = (f5 >= 60.0) or (f3 >= 60.0) or s2_vsa_pass
+        if s2_passed:
+            if s2_vsa_pass and f5 < 60.0 and f3 < 60.0:
+                s2_text = f"PASS (VSA Swing Absorption={vsa_score:.1f}/100, F5={f5:.1f}, F3={f3:.1f})"
+            else:
+                s2_text = f"PASS (F5 Flow={f5:.1f}, F3 Momentum={f3:.1f})"
+        else:
+            s2_text = f"FAIL (F5 Flow={f5:.1f}, F3 Momentum={f3:.1f} đều dưới 60)"
 
-        # Signal 3: Macro / HMM Regime / Idiosyncratic Veto
+        # Signal 3: Macro / HMM Regime / Tactical Rebound & Idiosyncratic Veto
         clean_regime = regime_label.upper().strip()
-        is_stress_regime = ("BEAR" in clean_regime) or ("CRISIS" in clean_regime) or ("CONTRACTION" in clean_regime)
+        ctx_upper = str(session_context or "Normal").upper().strip()
+        is_crisis_regime = (
+            "CRISIS" in clean_regime
+            or "CONTRACTION" in clean_regime
+            or ctx_upper in {"CRISIS", "STRESS_SEVERE"}
+        )
+        is_bear_regime = "BEAR" in clean_regime
+        is_stress_regime = is_crisis_regime or is_bear_regime
+
         has_veto = (
             self.evaluate_idiosyncratic_veto(quality_score, f3)
             if is_stress_regime else False
         )
 
-        s3_passed = (not is_stress_regime) or has_veto
+        tactical_s3_reason = ""
+        if is_bear_regime and not is_crisis_regime and pb == "TACTICAL_SWING":
+            rs_20d = float(lead.get("rs_20d", 0.0))
+            has_vsa_absorption = (
+                bool(lead.get("has_spring", False))
+                or bool(lead.get("has_no_supply", False))
+                or bool(lead.get("has_pocket_pivot", False))
+                or bool(lead.get("has_absorption", False))
+                or float(lead.get("absorption_vol_ratio", 0.0)) >= 1.50
+                or vsa_score >= 65.0
+            )
+            no_upthrust = not bool(lead.get("has_bearish_upthrust", False))
+            if quality_score >= 70.0 and rs_20d > 0.05 and f5 >= 60.0 and no_upthrust:
+                tactical_s3_reason = (
+                    f"TACTICAL_RS_LEADER: Quality={quality_score:.1f}, RS20d={rs_20d*100:+.1f}%, F5={f5:.1f}"
+                )
+            elif quality_score >= 60.0 and f1 >= 60.0 and has_vsa_absorption and no_upthrust:
+                tactical_s3_reason = (
+                    f"TACTICAL_REBOUND_ABSORPTION: Quality={quality_score:.1f}, F1={f1:.1f}, VSA={vsa_score:.1f}"
+                )
+
+        s3_passed = (not is_stress_regime) or has_veto or bool(tactical_s3_reason)
         if s3_passed:
-            if has_veto and is_stress_regime:
+            if tactical_s3_reason:
+                s3_text = f"PASS ({tactical_s3_reason})"
+            elif has_veto and is_stress_regime:
                 s3_text = f"PASS (IDIOSYNCRATIC_VETO: Business Quality={quality_score:.1f}, F3 Momentum={f3:.1f} overrides Regime={clean_regime})"
             else:
                 s3_text = f"PASS (Regime={clean_regime})"
         else:
-            s3_text = f"FAIL (Regime={clean_regime} bất lợi, không có đặc quyền Veto)"
+            s3_text = f"FAIL (Regime={clean_regime} bất lợi, không có đặc quyền Veto/Bắt đáy)"
 
         signals = {
             "signal_1_factor": s1_text,
@@ -293,11 +334,18 @@ class ThesisEngine:
         }
         quality_score = float(research_report.get("business_quality_score", research_report.get("f2_quality", 50.0)))
 
+        playbook = market_context.get("playbook") or research_report.get("playbook")
+        leadership_metrics = research_report.get("leadership_metrics") or market_context.get("leadership_metrics")
+        session_context = str(market_context.get("session_context", "Normal"))
+
         passed_all_signals, independent_signals, passed_signal_count = self.evaluate_independent_signals(
             factors=factors,
             css_score=css_score,
             quality_score=quality_score,
             regime_label=regime_label,
+            playbook=playbook,
+            leadership_metrics=leadership_metrics,
+            session_context=session_context,
         )
 
         if not passed_all_signals:

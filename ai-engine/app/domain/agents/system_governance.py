@@ -316,6 +316,7 @@ class SystemGovernanceAgent(BaseAgent):
             confirming_signals_count=signals_count,
             beneish_passed=beneish_ok,
             available_shares=available_sh,
+            risk_limits=event_data.get("risk_limits"),
         )
 
         # 4. Phân xử Kết quả (Decision Gate Resolution)

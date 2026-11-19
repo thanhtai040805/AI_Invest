@@ -136,6 +136,7 @@ class DecisionOutputEngine:
             "target_shares": shares_for_order if shares_for_order > 0 else rebalance_res.target_shares,
             "allocated_amount_vnd": order_value,
             "allocated_weight_pct": round(abs(rebalance_res.incremental_weight) * 100.0, 2),
+            "target_weight_pct": round(abs(rebalance_res.executable_target), 4),
             "target_price": price,
             "price": price,
             "sector": construction_res.sector,

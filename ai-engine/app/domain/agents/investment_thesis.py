@@ -97,7 +97,16 @@ class InvestmentThesisAgent(BaseAgent):
             except Exception as exc:
                 logger.warning("Không thể định giá point-in-time cho %s: %s", ticker, exc)
                 val_inputs = {}
-        timeline_months = int(event_data.get("timeline_months", 3))
+        playbook = str(
+            event_data.get("playbook")
+            or market_context.get("playbook")
+            or research_report.get("playbook")
+            or ""
+        ).upper().strip()
+        if playbook:
+            market_context["playbook"] = playbook
+        default_timeline = 1 if playbook == "TACTICAL_SWING" else 3
+        timeline_months = int(event_data.get("timeline_months", default_timeline))
         seq_num = int(event_data["seq_num"]) if event_data.get("seq_num") is not None else None
         custom_catalyst_desc = event_data.get("custom_catalyst_desc")
 

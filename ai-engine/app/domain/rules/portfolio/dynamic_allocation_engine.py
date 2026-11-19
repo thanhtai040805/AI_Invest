@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -47,82 +47,109 @@ class DynamicAllocationEngine:
         existing_positions: List[Dict[str, Any]],
         cio_cash_target_override: float = 0.0,
         drawdown_tier: str = "GREEN",
+        policy: Optional[Any] = None,
     ) -> DynamicAllocationResult:
         reasons = []
         regime_upper = str(regime_str).upper()
         tier_upper = str(drawdown_tier).upper().strip()
 
         # 1. Xác định Đệm Tiền Mặt Tối Thiểu (Min Cash Target) & Số Lượng Vị Thế N
-        if "BEAR" in regime_upper:
-            base_min_cash = 0.60
-            min_n = 4
-            max_n = 6
+        min_entry_weight = 0.0
+        if policy is not None:
+            base_min_cash = float(getattr(policy, "min_cash_target", 0.10))
+            min_n = int(getattr(policy, "min_positions", 1))
+            max_n = int(getattr(policy, "max_positions", 5))
+            min_entry_weight = float(getattr(policy, "min_entry_weight", 0.0))
+        elif "BEAR" in regime_upper:
+            base_min_cash = 0.80
+            min_n = 1
+            max_n = 3
+            min_entry_weight = 0.06
         elif "CHOPPY" in regime_upper or "RANGE_BOUND" in regime_upper:
-            base_min_cash = 0.30
-            min_n = 8
-            max_n = 12
+            base_min_cash = 0.80
+            min_n = 1
+            max_n = 3
+            min_entry_weight = 0.06
         else:
-            base_min_cash = 0.10
-            min_n = 12
-            max_n = 18
+            base_min_cash = 0.00 if total_nav <= 1_000_000_000.0 else 0.10
+            min_n = 3 if total_nav <= 1_000_000_000.0 else 7
+            max_n = 5 if total_nav <= 1_000_000_000.0 else 12
+            min_entry_weight = 0.10 if total_nav <= 1_000_000_000.0 else 0.05
 
         # 1.1 Ràng buộc tối thượng: Drawdown Recovery Protocol (Tầng YELLOW/ORANGE/RED)
         if tier_upper == "RED":
             base_min_cash = max(base_min_cash, 0.75)
-            min_n, max_n = 2, 4
+            min_n, max_n = 0, min(max_n, 2)
             reasons.append("Kích hoạt Drawdown Protocol Tầng RED: Đóng băng mở mới, nâng đệm tiền mặt tối thiểu >= 75% NAV.")
         elif tier_upper == "ORANGE":
             base_min_cash = max(base_min_cash, 0.50)
-            min_n, max_n = 4, 8
+            min_n, max_n = min(min_n, 2), min(max_n, 4)
             reasons.append("Kích hoạt Drawdown Protocol Tầng ORANGE: Nâng đệm tiền mặt tối thiểu >= 50% NAV.")
         elif tier_upper == "YELLOW":
             base_min_cash = max(base_min_cash, 0.25)
-            min_n, max_n = 6, 10
+            min_n, max_n = min(min_n, 3), min(max_n, 5)
             reasons.append("Kích hoạt Drawdown Protocol Tầng YELLOW: Nâng đệm tiền mặt tối thiểu >= 25% NAV.")
 
         # Cho phép CIO override nếu có chỉ thị vĩ mô đặc biệt (trừ khi đang ở RED Drawdown)
         if cio_cash_target_override > 0 and tier_upper != "RED":
-            min_cash = max(base_min_cash, cio_cash_target_override / 100.0 if cio_cash_target_override > 1.0 else cio_cash_target_override)
-            reasons.append(f"Áp dụng Cash Target từ CIO/Chế độ thị trường: {min_cash*100:.1f}%.")
+            override_frac = cio_cash_target_override / 100.0 if cio_cash_target_override > 1.0 else cio_cash_target_override
+            min_cash = max(base_min_cash, override_frac)
+            if min_cash > base_min_cash:
+                reasons.append(f"Áp dụng Cash Target từ CIO/Chế độ thị trường: {min_cash*100:.1f}%.")
         else:
             min_cash = base_min_cash
 
-        max_equity = 1.0 - min_cash
+        max_equity = max(0.0, 1.0 - min_cash)
 
-        # 2. Tính tổng tỷ trọng cổ phiếu hiện tại (trừ mã hiện tại nếu có)
+        # 2. Tính tổng tỷ trọng & đếm số vị thế cổ phiếu hiện tại (trừ mã hiện tại nếu có)
+        other_active_positions = [
+            p for p in existing_positions
+            if (p.get("ticker") or p.get("symbol") or "").upper() != ticker.upper()
+            and (int(p.get("shares", p.get("quantity", 0)) or 0) > 0 or float(p.get("market_value", 0.0) or 0.0) > 0)
+        ]
         existing_other_stocks_val = sum(
-            float(p.get("market_value", 0.0))
-            for p in existing_positions
-            if p.get("ticker", p.get("symbol", "")) != ticker
+            float(p.get("market_value", 0.0) or (int(p.get("shares", p.get("quantity", 0)) or 0) * float(p.get("current_price", p.get("average_price", 0.0)) or 0.0)))
+            for p in other_active_positions
         )
         existing_equity_pct = (existing_other_stocks_val / total_nav) if total_nav > 0 else 0.0
 
         # Sức chứa phân bổ cổ phiếu còn lại
         remaining_equity_budget = max(0.0, max_equity - existing_equity_pct)
 
-        # 3. Ràng buộc theo tiền mặt thực tế trong tài khoản
+        # 3. Ràng buộc theo tiền mặt thực tế trong tài khoản (chừa 0.15% phí mua khi min_cash=0)
         available_cash_pct = (cash_balance / total_nav) if total_nav > 0 else 0.0
-        # Số tiền mặt có thể giải ngân mà vẫn đảm bảo đệm tiền mặt min_cash
-        usable_cash_pct = max(0.0, available_cash_pct - min_cash)
+        effective_cash_reserve = max(min_cash, 0.0015) if min_cash == 0.0 else min_cash
+        usable_cash_pct = max(0.0, available_cash_pct - effective_cash_reserve)
 
-        adjusted_target = portfolio_target
-        if adjusted_target > remaining_equity_budget:
-            reasons.append(
-                f"Giới hạn tổng đòn bẩy cổ phiếu (Max {max_equity*100:.0f}% NAV): Giảm target từ {adjusted_target*100:.1f}% xuống {remaining_equity_budget*100:.1f}%."
-            )
-            adjusted_target = remaining_equity_budget
-
-        # Kiểm tra tiền mặt khả dụng (chỉ áp dụng khi gia tăng tỷ trọng)
-        existing_this_stock = next((p for p in existing_positions if (p.get("ticker") or p.get("symbol")) == ticker), None)
+        existing_this_stock = next(
+            (p for p in existing_positions if (p.get("ticker") or p.get("symbol") or "").upper() == ticker.upper()),
+            None,
+        )
         current_weight = (
             float(existing_this_stock.get("market_value", 0.0)) / total_nav
             if existing_this_stock and total_nav > 0
             else 0.0
         )
-        # Trong tầng RED Drawdown: Cấm mở mới vị thế (chỉ cho phép nắm giữ hoặc giảm tỷ trọng)
+
+        adjusted_target = portfolio_target
+
+        # 3.1 Thực thi cứng giới hạn số lượng cổ phiếu trong danh mục (max_positions)
+        if current_weight == 0.0 and len(other_active_positions) >= max_n:
+            reasons.append(
+                f"Đã chạm trần số cổ phiếu trong danh mục ({len(other_active_positions)}/{max_n} mã): Không mở thêm vị thế mới {ticker}."
+            )
+            adjusted_target = 0.0
+
+        # 3.2 Trong tầng RED Drawdown: Cấm mở mới vị thế
         if tier_upper == "RED" and current_weight == 0.0:
             reasons.append("Tầng RED Drawdown cấm mở mới vị thế: Ép target về 0.0% NAV.")
             adjusted_target = 0.0
+
+        if adjusted_target > remaining_equity_budget:
+            reasons.append(
+                f"Giới hạn tổng tỷ trọng cổ phiếu (Max {max_equity*100:.0f}% NAV): Giảm target từ {adjusted_target*100:.1f}% xuống {remaining_equity_budget*100:.1f}%."
+            )
+            adjusted_target = remaining_equity_budget
 
         incremental_target = max(0.0, adjusted_target - current_weight)
 
@@ -131,6 +158,13 @@ class DynamicAllocationEngine:
                 f"Thiếu tiền mặt để duy trì đệm an toàn ({min_cash*100:.0f}%): Cắt giảm tỷ trọng tăng thêm từ {incremental_target*100:.1f}% xuống {usable_cash_pct*100:.1f}%."
             )
             adjusted_target = current_weight + usable_cash_pct
+
+        # 3.3 Luật "Đủ sàn tác động hoặc 0%" (All-or-None Floor) cho lệnh mở mới — chống vét tiền lẻ 1-3%
+        if current_weight == 0.0 and min_entry_weight > 0.0 and 0.0 < adjusted_target < min_entry_weight - 1e-4:
+            reasons.append(
+                f"Tỷ trọng giải ngân mới ({adjusted_target*100:.2f}% NAV) dưới ngưỡng sàn tác động tối thiểu ({min_entry_weight*100:.1f}% NAV): Hủy giải ngân về 0% thay vì mua nhỏ giọt."
+            )
+            adjusted_target = 0.0
 
         adjusted_target = round(max(0.0, adjusted_target), 4)
         net_change_vnd = (adjusted_target - current_weight) * total_nav

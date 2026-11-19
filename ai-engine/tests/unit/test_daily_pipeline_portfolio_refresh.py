@@ -89,6 +89,13 @@ def test_shadow_execution_refreshes_portfolio_before_next_candidate(monkeypatch,
 
     monkeypatch.setattr(AgentRegistry, "dispatch", classmethod(fake_dispatch))
     monkeypatch.setattr(market_data_svc, "get_order_book", fake_order_book)
+    from app.domain.pipeline import daily_pipeline_orchestrator as orchestrator_mod
+    import pandas as pd
+    monkeypatch.setattr(
+        orchestrator_mod.FactorService,
+        "compute_universe_leadership_metrics",
+        lambda self, tickers, as_of_date=None: ({}, pd.DataFrame()),
+    )
     runner = DailyInvestmentPipeline(
         multi_agent_mode=ExecutionMode.SHADOW_RUNNER.value,
     )

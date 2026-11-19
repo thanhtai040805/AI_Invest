@@ -50,8 +50,8 @@ def test_priority_hard_stop_overrides_time_stop():
     )
 
     assert order is not None
-    # BẮT BUỘC là HARD_STOP chứ không được là TIME_STOP!
-    assert order.rule_level == "HARD_STOP"
+    # BẮT BUỘC là CONFIRMED_CAPITAL_STOP (Phương án A) chứ không được là TIME_STOP!
+    assert order.rule_level == "CONFIRMED_CAPITAL_STOP"
     assert order.suggested_action == "SELL_ALL"
     assert order.urgency == "EMERGENCY"
     assert order.quantity == 10_000
@@ -83,61 +83,129 @@ def test_t25_locked_shares_prevents_invalid_sell():
 
 
 def test_hose_lot_100_rounding():
-    """Kiểm tra làm tròn lô chẵn 100 của HOSE khi bán 50% vị thế lẻ."""
+    """Kiểm tra làm tròn lô chẵn 100 của HOSE khi phân phối xác nhận ở vùng kháng cự & phần dư >= 4% NAV."""
     engine = StopLossEngine()
     # 1.550 cổ phiếu -> bán 50% = 775 -> phải làm tròn xuống 700
     rounded = engine.round_hose_lot(775)
     assert rounded == 700
 
-    # Test với nến Bearish Rejection (Fast Exit)
+    # Test với Confirmed Distribution (hội tụ đủ 3 trụ cột bức tranh lớn trên vị thế 10.65% NAV -> dư > 4% NAV)
     nav = 1_000_000_000.0
     order = engine.check_position(
         ticker="SSI",
-        quantity=1550,
-        entry_price=30_000.0,
-        current_price=30_000.0,
+        quantity=3550,
+        entry_price=25_000.0,
+        current_price=30_000.0,  # 106.5M = 10.65% NAV; bán 50% = 1700 cp, còn 1850 cp = 5.55% NAV >= 4%
         nav=nav,
-        available_shares=1550,
+        available_shares=3550,
         market_data={
-            "current_candle": {
-                "open": 30_000,
-                "close": 30_200,
-                "high": 31_500,  # Râu trên = 1.300 / 1.500 = 86.6% > 50%
-                "low": 30_000,
-                "volume": 3_000_000,
+            "is_near_close": True,
+            "technical_structure": {
+                "close": 30_000.0,
+                "ma10": 28_500.0,
+                "ma20": 26_500.0,
+                "ma50": 24_000.0,
+                "ma200": 22_000.0,
+                "ma20_volume": 1_000_000.0,
+                "swing_low_20d": 25_000.0,
+                "swing_low_60d": 23_000.0,
+                "resistance_20d": 30_500.0,
+                "resistance_60d": 30_500.0,
+                "distance_to_resistance_pct": 1.6,
+                "extension_vs_ma20_pct": 13.2,
+                "price_structure": "DISTRIBUTION_TOP",
+                "up_down_vol_ratio_10d": 0.80,
+                "cmf_20d": -0.08,
+                "stock_dist_days_10d": 2,
+                "money_flow_state": "DISTRIBUTING",
             },
-            "ma20_volume": 1_000_000,  # Vol gấp 3 lần MA20
+            "session_candle": {
+                "open": 31_200,
+                "close": 30_000,  # Đóng cửa đỏ ở đáy nến, biên độ 5.7%
+                "high": 31_500,
+                "low": 29_800,
+                "volume": 2_000_000,
+            },
+            "daily_ma20_volume": 1_000_000,
         },
     )
     assert order is not None
-    assert order.rule_level == "FAST_EXIT"
+    assert order.rule_level == "CONFIRMED_DISTRIBUTION"
     assert order.suggested_action == "REDUCE_50_PCT"
-    assert order.quantity == 700  # Đã làm tròn lô chẵn 100!
+    assert order.quantity == 1700  # Đã làm tròn lô chẵn 100!
 
 
 def test_trailing_stop_lock_profit():
-    """Kiểm tra Trailing Stop khóa lợi nhuận khi cổ phiếu tụt đỉnh >= 35%."""
+    """Kiểm tra Dynamic Trend Support (thay thế Trailing Stop cơ học 35%):
+    - Cổ phiếu lãi +10.8% chỉnh nhẹ về trên MA20 -> KHÔNG bán vô căn cứ.
+    - Chỉ bán khi đóng cửa cuối phiên thủng Hỗ trợ động MA20/Higher-Low kèm xác nhận Vol/dòng tiền.
+    """
     engine = StopLossEngine()
     nav = 1_000_000_000.0
     entry_price = 20_000.0
-    peak_price = 26_000.0  # Lãi đỉnh +30% (lãi 6.000đ/cp)
-    current_price = 23_500.0  # Tụt về 23.500đ (đã mất 2.500 / 6.000 = 41.7% lãi đỉnh)
+    peak_price = 26_000.0  # Lãi đỉnh +30%
 
-    order = engine.check_position(
+    struct = {
+        "close": 24_500.0,
+        "ma10": 24_600.0,
+        "ma20": 23_800.0,
+        "ma50": 21_000.0,
+        "ma200": 19_000.0,
+        "ma20_volume": 1_000_000.0,
+        "swing_low_20d": 20_000.0,
+        "swing_low_60d": 19_000.0,
+        "recent_higher_low": 23_500.0,
+        "resistance_20d": 26_000.0,
+        "resistance_60d": 26_000.0,
+        "distance_to_resistance_pct": 6.1,
+        "extension_vs_ma20_pct": 2.9,
+        "price_structure": "BREAKOUT_UPTREND",
+        "up_down_vol_ratio_10d": 1.35,
+        "cmf_20d": 0.12,
+        "stock_dist_days_10d": 0,
+        "money_flow_state": "ACCUMULATING",
+    }
+
+    # Case 1: Tụt đỉnh nhưng VẪN giữ trên hỗ trợ động MA10/MA20 (24,500 > 24,354) -> KHÔNG BÁN!
+    hold_order = engine.check_position(
         ticker="HPG",
         quantity=5000,
         entry_price=entry_price,
-        current_price=current_price,
+        current_price=24_500.0,
         nav=nav,
         available_shares=5000,
-        market_data={"peak_price": peak_price},
+        market_data={"peak_price": peak_price, "technical_structure": struct, "is_near_close": True},
+    )
+    assert hold_order is None
+
+    # Case 2: Đóng cửa thủng hỗ trợ động MA10/MA20 (23,500 < 24,354) kèm Vol xả 1.5x MA20 -> BÁN KHÓA LÃI!
+    exit_order = engine.check_position(
+        ticker="HPG",
+        quantity=5000,
+        entry_price=entry_price,
+        current_price=23_500.0,
+        nav=nav,
+        available_shares=5000,
+        market_data={
+            "peak_price": peak_price,
+            "technical_structure": struct,
+            "is_near_close": True,
+            "session_candle": {
+                "open": 24_600,
+                "high": 24_700,
+                "low": 23_400,
+                "close": 23_500,
+                "volume": 1_500_000,
+            },
+            "daily_ma20_volume": 1_000_000,
+        },
     )
 
-    assert order is not None
-    assert order.rule_level == "TRAILING_STOP"
-    assert order.suggested_action == "LOCK_PROFIT"
-    assert order.urgency == "HIGH"
-    assert order.quantity == 5000
+    assert exit_order is not None
+    assert exit_order.rule_level == "STRUCTURAL_BREAKDOWN"
+    assert exit_order.suggested_action == "SELL_ALL"
+    assert exit_order.urgency == "HIGH"
+    assert exit_order.quantity == 5000
 
 
 def test_floor_lock_unfilled_reset():
@@ -317,9 +385,9 @@ def test_agent09_auto_fetch_realtime_price():
         # Giá hiện tại phải được tự động cập nhật là 24.000đ từ MarketDataRepository
         assert pos["current_price"] == 24_000.0
         assert pos["unrealized_pnl_vnd"] == -60_000_000.0
-        # Hard Stop phải kích hoạt vì lỗ -6% NAV > 2% NAV
+        # Confirmed Capital Stop (Phương án A) phải kích hoạt vì lỗ -6% NAV / -20% CP
         assert data["stop_loss_triggered"] is True
-        assert data["stop_loss_orders"][0]["rule_level"] == "HARD_STOP"
+        assert data["stop_loss_orders"][0]["rule_level"] == "CONFIRMED_CAPITAL_STOP"
 
     asyncio.run(_test())
 

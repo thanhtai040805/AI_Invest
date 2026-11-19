@@ -376,17 +376,23 @@ class StrategyCIOAgent(BaseAgent):
         else:
             final_res = "PROCEED_WITH_PENALTY"
             # Äiá»u tiáº¿t tá»· trá»ng linh hoáº¡t theo thang Ä‘iá»ƒm CTS
+            policy_max_cap = conflict_data.get("max_single_stock_cap")
+            policy_min_floor = float(conflict_data.get("min_entry_weight", 0.0) or 0.0)
+            standard_cap = float(policy_max_cap) if policy_max_cap is not None else 0.15
             if cts_score >= 50.0 or "CONDITIONAL" in counter_verdict or "WARNING" in counter_verdict:
-                weight_cap = 0.08
+                if policy_max_cap is not None:
+                    weight_cap = round(max(policy_min_floor, standard_cap * 0.70), 4)
+                else:
+                    weight_cap = 0.08
                 penalty_factor = 0.50
                 rationale = (
                     f"CIO phán quyết [TẦNG 3 - NORMAL RISK]: Chấp thuận giải ngân thận trọng cho mã {ticker}. "
                     f"Ghi nhận các cảnh báo thị trường/định giá từ Counter-Thesis (CTS={cts_score:.1f}). "
                     f"Áp trần tỷ trọng an toàn {weight_cap*100:.1f}% NAV và áp dụng hệ số phạt Kelly lambda={penalty_factor:.2f}."
                 )
-                conditions = ["APPLY_RISK_PENALTY_0_5", "MAX_POSITION_WEIGHT_CAP_8PCT", "TIGHT_TRAILING_STOP_LOSS"]
+                conditions = ["APPLY_RISK_PENALTY_0_5", f"MAX_POSITION_WEIGHT_CAP_{int(round(weight_cap*100))}PCT", "TIGHT_TRAILING_STOP_LOSS"]
             else:
-                weight_cap = 0.15
+                weight_cap = round(standard_cap, 4)
                 penalty_factor = 1.0
                 rationale = (
                     f"CIO phán quyết [TẦNG 3 - NORMAL RISK]: Phê duyệt toàn diện luận điểm đầu tư cho {ticker}. "

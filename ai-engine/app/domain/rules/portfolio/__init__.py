@@ -1,5 +1,13 @@
-"""Portfolio Management Rules & 8 Engines Subsystem (IOS v5.1)."""
+"""Portfolio Management Rules & 8 Engines Subsystem (IOS v5.2)."""
 
+from app.domain.rules.portfolio.allocation_policy import (
+    AUMTier,
+    InvestmentPlaybook,
+    PortfolioPolicy,
+    resolve_aum_tier,
+    resolve_playbook,
+    resolve_portfolio_policy,
+)
 from app.domain.rules.portfolio.eligibility_engine import EligibilityEngine, EligibilityResult
 from app.domain.rules.portfolio.probability_engine import ProbabilityEngine, ProbabilityMetrics
 from app.domain.rules.portfolio.kelly_engine import KellySizingEngine, KellySizingResult
@@ -10,6 +18,12 @@ from app.domain.rules.portfolio.rebalancing_engine import RebalancingEngine, Reb
 from app.domain.rules.portfolio.decision_output_engine import DecisionOutputEngine
 
 __all__ = [
+    "AUMTier",
+    "InvestmentPlaybook",
+    "PortfolioPolicy",
+    "resolve_aum_tier",
+    "resolve_playbook",
+    "resolve_portfolio_policy",
     "EligibilityEngine",
     "EligibilityResult",
     "ProbabilityEngine",

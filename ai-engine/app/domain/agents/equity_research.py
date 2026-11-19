@@ -124,7 +124,10 @@ class EquityResearchAgent(BaseAgent):
                 f4_earnings = float(db_factors.get("f4_earnings", 50.0))
                 f5_flow = float(db_factors.get("f5_flow", 50.0))
                 f6_technical = float(db_factors.get("f6_technical", 50.0))
-                raw_factor_metrics = db_factors.get("factor_details", {})
+                raw_factor_metrics = dict(db_factors.get("factor_details", {}) or {})
+                if db_factors.get("low_vol_score") is not None:
+                    raw_factor_metrics["low_vol_score"] = float(db_factors["low_vol_score"])
+                f6_is_vol_fallback = bool(db_factors.get("f6_is_vol_fallback", False))
                 factor_source = "POSTGRES_FACTOR_SCORES"
             else:
                 # Tính toán ĐỘNG thực tế từ financial_ratios và market_data_daily
@@ -137,7 +140,32 @@ class EquityResearchAgent(BaseAgent):
                 f5_flow = float(computed.get("f5_flow", 50.0))
                 f6_technical = float(computed.get("f6_technical", 50.0))
                 raw_factor_metrics = computed.get("raw_metrics", {})
+                f6_is_vol_fallback = False
                 factor_source = "FACTOR_SERVICE_DYNAMIC"
+
+        # Hydrate genuine technical/RS/sector/VSA leadership metrics if provided by Stage-1 batch or on demand
+        leadership_metrics = event_data.get("leadership_metrics")
+        if leadership_metrics is None and not factor_overrides:
+            try:
+                batch_lead, _ = self.factor_service.compute_universe_leadership_metrics(
+                    [ticker], as_of_date=market_data_date
+                )
+                leadership_metrics = batch_lead.get(ticker)
+            except Exception:
+                leadership_metrics = None
+
+        if isinstance(leadership_metrics, dict) and leadership_metrics:
+            if locals().get("f6_is_vol_fallback", False) and leadership_metrics.get("trend_template_score") is not None:
+                f6_technical = float(leadership_metrics["trend_template_score"])
+            raw_factor_metrics.update({
+                "rs_20d": leadership_metrics.get("rs_20d"),
+                "rs_60d": leadership_metrics.get("rs_60d"),
+                "rs_score": leadership_metrics.get("rs_score"),
+                "sector_rs_20d": leadership_metrics.get("sector_rs_20d"),
+                "sector_leadership_score": leadership_metrics.get("sector_leadership_score"),
+                "trend_template_score": leadership_metrics.get("trend_template_score"),
+                "vsa_swing_score": leadership_metrics.get("vsa_swing_score"),
+            })
 
         # Lấy giá thị trường hiện tại (current_price) phục vụ định giá Agent-04 (Ưu tiên DNSE Realtime)
         current_price = float(event_data.get("current_price", 0.0))
@@ -218,12 +246,14 @@ class EquityResearchAgent(BaseAgent):
         if not audit_opinion:
             audit_opinion = "UNQUALIFIED"
 
-        # Tạo DataFrame đầu vào cho CSSScoringEngine
+        # Tạo DataFrame đầu vào cho CSSScoringEngine (truyền đúng f2_quality_percentile để gatekeeper hoạt động)
+        f2_pct = float(event_data.get("f2_quality_percentile", f2_quality))
         df_factors = pd.DataFrame([{
             "ticker": ticker,
             "sector": sector,
             "f1_value": f1_value,
             "f2_quality": f2_quality,
+            "f2_quality_percentile": f2_pct,
             "f3_momentum": f3_momentum,
             "f4_earnings": f4_earnings,
             "f5_flow": f5_flow,
@@ -231,17 +261,50 @@ class EquityResearchAgent(BaseAgent):
             "audit_opinion": audit_opinion,
         }])
 
+        # Clamp RL weights within +/-20% of the regime baseline when playbook mode is active
+        playbook_param = event_data.get("playbook")
+        effective_weights = policy_weights
+        if policy_weights and playbook_param:
+            reg_upper = str(regime_str).upper()
+            if "BULL" in reg_upper:
+                base_w = self.scoring_engine.regime_weights[MarketRegime.BULL_TRENDING]
+            elif "BEAR" in reg_upper:
+                base_w = self.scoring_engine.regime_weights[MarketRegime.BEAR_TRENDING]
+            else:
+                base_w = self.scoring_engine.regime_weights[MarketRegime.SIDEWAYS]
+            effective_weights = self.scoring_engine.clamp_rl_weights(base_w, policy_weights, max_relative_deviation=0.20)
+
         df_scored = self.scoring_engine.calculate_css(
             factor_scores=df_factors,
             regime=regime_str,
-            custom_weights=policy_weights,
+            custom_weights=effective_weights,
         )
 
         base_css = float(df_scored["base_css"].iloc[0])
         css = float(df_scored["css"].iloc[0])
         conviction = str(df_scored["conviction"].iloc[0])
 
-        applied_weights = policy_weights or self.scoring_engine.regime_weights.get(regime_str, {})
+        # Compute Playbook-specific score (MARKET_LEADER vs TACTICAL_SWING)
+        from app.domain.rules.portfolio.allocation_policy import resolve_playbook
+        resolved_playbook = str(playbook_param or resolve_playbook(regime_str).value).upper().strip()
+        universe_group = str(event_data.get("universe_group", "B")).upper().strip()
+        playbook_eval = self.scoring_engine.calculate_playbook_score(
+            factors={
+                "f1_value": f1_value,
+                "f2_quality": f2_quality,
+                "f3_momentum": f3_momentum,
+                "f4_earnings": f4_earnings,
+                "f5_flow": f5_flow,
+                "f6_technical": f6_technical,
+            },
+            leadership=leadership_metrics if isinstance(leadership_metrics, dict) else None,
+            playbook=resolved_playbook,
+            universe_group=universe_group,
+        )
+        playbook_score = float(playbook_eval["playbook_score"])
+        playbook_disqualifiers = list(playbook_eval.get("disqualifiers") or [])
+
+        applied_weights = effective_weights or self.scoring_engine.regime_weights.get(regime_str, {})
         eligibility_reasons = []
         if conviction not in ["A+", "A", "B"]:
             eligibility_reasons.append("CONVICTION_BELOW_B")
@@ -249,13 +312,17 @@ class EquityResearchAgent(BaseAgent):
             eligibility_reasons.append("CSS_BELOW_60")
         if current_price <= 0:
             eligibility_reasons.append("CURRENT_PRICE_MISSING_OR_NONPOSITIVE")
+        if playbook_param and playbook_disqualifiers:
+            eligibility_reasons.extend(playbook_disqualifiers)
         eligible_for_thesis = not eligibility_reasons
 
+        pb_components = playbook_eval.get("components") or {}
         research_report = {
             "ticker": ticker,
             "sector": sector,
             "f1_value": round(f1_value, 2),
             "f2_quality": round(f2_quality, 2),
+            "f2_quality_percentile": round(f2_pct, 2),
             "business_quality_score": round(f2_quality, 2),
             "business_quality_status": "FINANCIAL_QUALITY",
             "f3_momentum": round(f3_momentum, 2),
@@ -265,6 +332,15 @@ class EquityResearchAgent(BaseAgent):
             "base_css": round(base_css, 2),
             "css": round(css, 2),
             "conviction": conviction,
+            "playbook": resolved_playbook,
+            "playbook_score": round(playbook_score, 2),
+            "playbook_disqualifiers": playbook_disqualifiers,
+            "rs_20d": pb_components.get("rs_20d", 0.0),
+            "rs_score": pb_components.get("rs_score", 50.0),
+            "sector_leadership_score": pb_components.get("sector_leadership_score", 50.0),
+            "trend_template_score": pb_components.get("trend_template_score", round(f6_technical, 2)),
+            "vsa_swing_score": pb_components.get("vsa_swing_score", round(f6_technical, 2)),
+            "leadership_metrics": leadership_metrics if isinstance(leadership_metrics, dict) else {},
             "current_price": current_price,
             "audit_opinion": audit_opinion,
             "data_quality_flag": data_quality_flag,
@@ -277,19 +353,20 @@ class EquityResearchAgent(BaseAgent):
         # 4. Ghi nhận dữ liệu vào Bảng Nghiệp vụ & Bảng Log Audit
         # =========================================================================
         try:
-            self.intel_repo.save_factor_score(
-                symbol=ticker,
-                f1_value=f1_value,
-                f2_quality=f2_quality,
-                f3_momentum=f3_momentum,
-                f4_earnings=f4_earnings,
-                f5_flow=f5_flow,
-                f6_technical=f6_technical,
-                css=css,
-                conviction=conviction,
-                score_date=target_d,
-                factor_details_extra=raw_factor_metrics,
-            )
+            if not event_data.get("is_replay"):
+                self.intel_repo.save_factor_score(
+                    symbol=ticker,
+                    f1_value=f1_value,
+                    f2_quality=f2_quality,
+                    f3_momentum=f3_momentum,
+                    f4_earnings=f4_earnings,
+                    f5_flow=f5_flow,
+                    f6_technical=f6_technical,
+                    css=css,
+                    conviction=conviction,
+                    score_date=target_d,
+                    factor_details_extra=raw_factor_metrics,
+                )
             self.intel_repo.log_equity_research(
                 ticker=ticker,
                 factor_raw_metrics={
@@ -302,11 +379,14 @@ class EquityResearchAgent(BaseAgent):
                     "f6_technical": round(f6_technical, 2),
                     "css": round(css, 2),
                     "conviction": conviction,
+                    "playbook": resolved_playbook,
+                    "playbook_score": round(playbook_score, 2),
                     "research_gate": {
                         "eligible_for_thesis": eligible_for_thesis,
                         "reason_codes": eligibility_reasons,
                         "conviction": conviction,
                         "css": round(css, 2),
+                        "playbook_score": round(playbook_score, 2),
                         "current_price": current_price,
                     },
                 },

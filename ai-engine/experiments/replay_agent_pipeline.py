@@ -32,6 +32,10 @@ from app.domain.pipeline.daily_pipeline_orchestrator import DailyInvestmentPipel
 from app.domain.repositories.market_data_repository import MarketDataRepository
 from app.domain.repositories.portfolio_repository import PortfolioRepository
 from app.domain.rules.execution.shadow_fill import shadow_fill
+from app.domain.rules.technical_structure import (
+    TechnicalStructureAnalyzer,
+    TechnicalStructureSnapshot,
+)
 from app.infrastructure.database.pg_pool import get_conn
 from app.infrastructure.external_api.dnse.intraday_tool import get_intraday_tool
 
@@ -568,9 +572,44 @@ def holding_days_since(opened_at: object, current_time: datetime) -> int:
     return max(0, (current_time.date() - opened_date).days)
 
 
-async def monitor_intraday_bar(
-    day: date,
+def update_session_candle(
     bar: dict,
+    session_candles: dict[str, dict],
+    peak_prices: dict[str, float],
+) -> None:
+    """Accumulate 1-minute DNSE bars into a full-session daily candle (09:15 -> near close)."""
+    symbol = str(bar["symbol"]).upper()
+    o = price_to_vnd(float(bar.get("open") or 0.0))
+    h = price_to_vnd(float(bar.get("high") or 0.0))
+    l = price_to_vnd(float(bar.get("low") or 0.0))
+    c = price_to_vnd(float(bar.get("close") or 0.0))
+    v = float(bar.get("volume") or 0.0)
+    if c <= 0 or h <= 0 or l <= 0:
+        return
+    if o <= 0:
+        o = c
+    existing = session_candles.get(symbol)
+    if existing is None:
+        session_candles[symbol] = {
+            "open": o,
+            "high": h,
+            "low": l,
+            "close": c,
+            "volume": v,
+        }
+    else:
+        existing["high"] = max(existing["high"], h)
+        existing["low"] = min(existing["low"], l)
+        existing["close"] = c
+        existing["volume"] = float(existing["volume"]) + v
+    peak_prices[symbol] = max(peak_prices.get(symbol, 0.0), h)
+
+
+async def evaluate_near_close_exits(
+    day: date,
+    eval_time: datetime,
+    bars: dict,
+    session_candles: dict[str, dict],
     repository: PortfolioRepository,
     account_id: str,
     mark_as_of: date,
@@ -580,104 +619,139 @@ async def monitor_intraday_bar(
     active_symbols: set[str],
     quote_cache: dict[tuple[date, str], list[dict]],
     market_repository: MarketDataRepository,
-    swing_low_cache: dict[tuple[str, date], float | None],
+    structure_cache: dict[tuple[str, date], TechnicalStructureSnapshot | None],
+    expected_timeline_days: int = 30,
 ) -> None:
-    symbol = str(bar["symbol"]).upper()
-    if symbol not in active_symbols:
-        return
-    if any(order["symbol"] == symbol and order["side"] == "SELL" for order in pending_orders):
-        return
-    price = price_to_vnd(bar["low"])
-    if price <= 0:
-        return
-    event_time = bar["time"]
+    """Evaluate all open positions ONCE at near-close (>= 14:15 ICT) using Big-Picture structure
+    and the accumulated full-session daily candle (Phương án A)."""
     positions = repository.get_open_positions(
-        user_id=account_id, as_of=mark_as_of, as_of_time=event_time
+        user_id=account_id, as_of=mark_as_of, as_of_time=eval_time
     )
-    position = next((pos for pos in positions if pos["ticker"].upper() == symbol), None)
-    if not position:
+    if not positions:
         return
 
-    swing_key = (symbol, mark_as_of)
-    if swing_key not in swing_low_cache:
-        history = market_repository.get_ohlcv(symbol, end_date=mark_as_of, limit=20)
-        lows = [price_to_vnd(float(item["low"])) for item in history if float(item.get("low") or 0) > 0]
-        swing_low_cache[swing_key] = min(lows) if lows else None
+    nav = float(repository.get_account_state(user_id=account_id, as_of=mark_as_of).get("total_nav", 0.0))
 
-    peak_prices[symbol] = max(peak_prices.get(symbol, float(position["average_price"])), price_to_vnd(bar["high"]))
-    result = await AgentRegistry.dispatch("position_monitoring", {
-        "positions": [{
-            **position,
-            "entry_price": float(position["average_price"]),
-            "current_price": price,
-            "peak_price": peak_prices[symbol],
-            "swing_low": swing_low_cache[swing_key],
-            "holding_days": holding_days_since(position.get("opened_at"), event_time),
-        }],
-        "market_ticks": {
-            symbol: {
-                "price": price,
-                "current_candle": {
-                    key: price_to_vnd(float(bar[key])) if key != "volume" else float(bar[key] or 0)
-                    for key in ("open", "high", "low", "close", "volume")
-                },
-                "ma20_volume": bar["ma20_volume"],
-            }
-        },
-        "nav": repository.get_account_state(user_id=account_id, as_of=mark_as_of).get("total_nav", 0),
-        "current_time": event_time.isoformat(),
-        "target_date": day.isoformat(),
-        "market_data_date": mark_as_of.isoformat(),
-        "replay_account_id": account_id,
-        "is_replay": True,
-        "auto_dispatch": False,
-    })
-    data = result.get("result", {}).get("data", {})
-    stop_orders = data.get("stop_loss_orders", [])
-    for stop_order in stop_orders:
-        quantity = int(stop_order.get("quantity", 0))
-        if quantity <= 0:
+    for position in positions:
+        symbol = str(position["ticker"]).upper()
+        if any(order["symbol"] == symbol and order["side"] == "SELL" for order in pending_orders):
             continue
-        order = {
-            "symbol": symbol,
-            "side": "SELL",
-            "quantity": quantity,
-            "entry_type": "STOP",
-            "limit_price": price * 0.985,
-            "not_before": event_time,
-            "reason": stop_order.get("reason"),
-            "decision_context": stop_order.get("decision_context") or {
-                "source_agent": "position_monitoring",
-                "stop_event_id": stop_order.get("stop_order_id"),
-                "account_id": account_id,
-                "rule_level": stop_order.get("rule_level"),
-                "reason": stop_order.get("reason"),
-                "suggested_action": stop_order.get("suggested_action"),
+
+        sc = session_candles.get(symbol)
+        if sc and sc.get("close", 0.0) > 0:
+            price = float(sc["close"])
+            session_candle = dict(sc)
+        else:
+            ref_p = float(bars.get(symbol, {}).get("price", 0.0))
+            if ref_p <= 0:
+                continue
+            price = ref_p
+            session_candle = {
+                "open": ref_p,
+                "high": ref_p,
+                "low": ref_p,
+                "close": ref_p,
+                "volume": 0.0,
+            }
+
+        peak_prices[symbol] = max(
+            peak_prices.get(symbol, 0.0),
+            float(position.get("peak_price") or 0.0),
+            float(position["average_price"]),
+            float(session_candle["high"]),
+        )
+
+        struct_key = (symbol, mark_as_of)
+        if struct_key not in structure_cache:
+            history = market_repository.get_ohlcv(symbol, end_date=mark_as_of, limit=120)
+            structure_cache[struct_key] = (
+                TechnicalStructureAnalyzer.analyze_ohlcv_bars(history)
+                if history and len(history) >= 10
+                else None
+            )
+        structure = structure_cache[struct_key]
+        swing_low = structure.swing_low_20d if structure else None
+        daily_ma20_vol = structure.ma20_volume if structure else 0.0
+
+        result = await AgentRegistry.dispatch("position_monitoring", {
+            "positions": [{
+                **position,
                 "entry_price": float(position["average_price"]),
                 "current_price": price,
                 "peak_price": peak_prices[symbol],
-                "current_pnl_pct": stop_order.get("current_pnl_pct"),
-                "current_pnl_nav_pct": stop_order.get("current_pnl_nav_pct"),
-                "holding_days": holding_days_since(position.get("opened_at"), event_time),
+                "swing_low": swing_low,
+                "holding_days": holding_days_since(position.get("opened_at"), eval_time),
+                "expected_timeline_days": expected_timeline_days,
+                "technical_structure": structure,
+                "min_remaining_weight": 0.04,
+            }],
+            "market_ticks": {
+                symbol: {
+                    "price": price,
+                    "current_candle": session_candle,
+                    "session_candle": session_candle,
+                    "ma20_volume": daily_ma20_vol,
+                    "daily_ma20_volume": daily_ma20_vol,
+                    "technical_structure": structure,
+                }
             },
-        }
-        unfilled = fill_pending(day, {symbol: {"price": price, "source": "DNSE"}}, [order],
-                               repository, account_id, mark_as_of, fills_log,
-                               until=event_time, symbols={symbol}, quote_cache=quote_cache)
-        pending_orders.extend(unfilled)
-        if not unfilled:
-            remaining_positions = repository.get_open_positions(
-                user_id=account_id, as_of=mark_as_of, as_of_time=event_time
+            "nav": nav,
+            "current_time": eval_time.isoformat(),
+            "is_near_close": True,
+            "target_date": day.isoformat(),
+            "market_data_date": mark_as_of.isoformat(),
+            "replay_account_id": account_id,
+            "is_replay": True,
+            "auto_dispatch": False,
+        })
+        data = result.get("result", {}).get("data", {})
+        stop_orders = data.get("stop_loss_orders", [])
+        for stop_order in stop_orders:
+            quantity = int(stop_order.get("quantity", 0))
+            if quantity <= 0:
+                continue
+            order = {
+                "symbol": symbol,
+                "side": "SELL",
+                "quantity": quantity,
+                "entry_type": "STOP",
+                "limit_price": price * 0.985,
+                "not_before": eval_time,
+                "reason": stop_order.get("reason"),
+                "decision_context": stop_order.get("decision_context") or {
+                    "source_agent": "position_monitoring",
+                    "stop_event_id": stop_order.get("stop_order_id"),
+                    "account_id": account_id,
+                    "rule_level": stop_order.get("rule_level"),
+                    "reason": stop_order.get("reason"),
+                    "suggested_action": stop_order.get("suggested_action"),
+                    "entry_price": float(position["average_price"]),
+                    "current_price": price,
+                    "peak_price": peak_prices[symbol],
+                    "current_pnl_pct": stop_order.get("current_pnl_pct"),
+                    "current_pnl_nav_pct": stop_order.get("current_pnl_nav_pct"),
+                    "holding_days": holding_days_since(position.get("opened_at"), eval_time),
+                },
+            }
+            unfilled = fill_pending(
+                day, {symbol: {"price": price, "source": "DNSE"}}, [order],
+                repository, account_id, mark_as_of, fills_log,
+                until=eval_time, symbols={symbol}, quote_cache=quote_cache,
             )
-            if not any(pos["ticker"].upper() == symbol for pos in remaining_positions):
-                active_symbols.discard(symbol)
+            pending_orders.extend(unfilled)
+            if not unfilled:
+                remaining_positions = repository.get_open_positions(
+                    user_id=account_id, as_of=mark_as_of, as_of_time=eval_time
+                )
+                if not any(pos["ticker"].upper() == symbol for pos in remaining_positions):
+                    active_symbols.discard(symbol)
 
 
 async def run(args: argparse.Namespace) -> None:
     account_id = args.account_id or os.getenv("MULTI_AGENT_ACCOUNT_ID", "940b0c70-2010-42f3-b947-797e6419b794")
     repo = PortfolioRepository()
     market_repository = MarketDataRepository(repo.storage)
-    swing_low_cache: dict[tuple[str, date], float | None] = {}
+    structure_cache: dict[tuple[str, date], TechnicalStructureSnapshot | None] = {}
 
     end_date = date.fromisoformat(args.end)
     now_vn = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
@@ -746,14 +820,19 @@ async def run(args: argparse.Namespace) -> None:
             f"expected {len(days)} trading days with one raw candle per symbol"
         )
 
-    if args.reset:
-        logger.info(f"Đang reset tài khoản Paper Trading {account_id} về {args.capital:,.0f} VND...")
+    if args.reset or getattr(args, "reset_account_only", False):
+        clean_all = bool(args.reset) and not bool(getattr(args, "reset_account_only", False))
+        logger.info(
+            f"Đang reset tài khoản Paper Trading {account_id} về {args.capital:,.0f} VND "
+            f"(clean_agents_and_logs={clean_all})..."
+        )
         res = repo.reset_paper_trading_account(
             user_id=account_id,
             initial_capital=args.capital,
-            clean_agents_and_logs=True,
+            clean_agents_and_logs=clean_all,
         )
-        print(f"[RESET THÀNH CÔNG] Tài khoản {res['user_id']} đã được khôi phục về {res['cash_balance']:,.0f} VND sạch sẽ.")
+        mode_tag = "RESET FULL" if clean_all else "RESET ACCOUNT-ONLY (SAFE)"
+        print(f"[{mode_tag}] Tài khoản {res['user_id']} đã được khôi phục về {res['cash_balance']:,.0f} VND sạch sẽ.")
 
     audit = ReplayAudit()
     quote_tool = get_intraday_tool()
@@ -791,7 +870,13 @@ async def run(args: argparse.Namespace) -> None:
     pending_orders: list[dict] = []
     returns_series: list[float] = []
     fills_history: list[dict] = []
-    previous_nav = args.capital
+    session_reports: list[dict] = []
+    init_state = repo.get_account_state(user_id=account_id, as_of=previous_market_date(days[0]))
+    previous_nav = float(init_state.get("total_nav") or args.capital)
+    peak_nav_seen = max(previous_nav, float(init_state.get("peak_nav") or previous_nav))
+    max_drawdown_pct = 0.0
+    peak_equity_pct = 0.0
+    max_concurrent_positions = 0
 
     print(f"\n================================================================================")
     print(f"BẮT ĐẦU HISTORICAL PAPER TRADING: {len(days)} phiên ({days[0]} -> {days[-1]})")
@@ -801,6 +886,7 @@ async def run(args: argparse.Namespace) -> None:
 
     for day in days:
         current_day = day.isoformat()
+        day_fills_start_idx = len(fills_history)
         mark_as_of = previous_market_date(day)
         bars = bars_for_day(day)
         bar_cache: dict[tuple[date, str], list[dict]] = {}
@@ -812,7 +898,14 @@ async def run(args: argparse.Namespace) -> None:
             as_of_time=datetime.combine(day, day_time(9, 15), ZoneInfo("Asia/Ho_Chi_Minh")),
         )
         active_symbols = {position["ticker"].upper() for position in start_positions}
-        peak_prices = {position["ticker"].upper(): float(position["average_price"]) for position in start_positions}
+        peak_prices = {
+            position["ticker"].upper(): max(
+                float(position.get("peak_price") or 0.0),
+                float(position["average_price"]),
+            )
+            for position in start_positions
+        }
+        session_candles: dict[str, dict] = {}
         morning_bar_events = intraday_bars_for_day(day, active_symbols, bar_cache)
         tracked = active_symbols | {order["symbol"] for order in pending_orders}
         quote_events = quote_events_for_day(day, tracked, quote_cache)
@@ -822,15 +915,11 @@ async def run(args: argparse.Namespace) -> None:
             (timestamp, 1, "quote", symbol) for timestamp, symbol in quote_events if timestamp <= signal_time
         ]
 
-        # Replay pending fills and position scans against the event timestamps actually returned by DNSE.
-        event_key = lambda event: (event[0], event[1], event[2], event[3]["symbol"] if event[2] == "bar" else event[3])
+        # Replay pending fills and accumulate full-session candles (zero premature intraday sells before 14:15).
+        event_key = lambda event: (event[0], event[1], event[2], event[3]["symbol"] if event[2] == "bar" else (event[3] or ""))
         for timestamp, _priority, kind, payload in sorted(morning_events, key=event_key):
             if kind == "bar":
-                await monitor_intraday_bar(
-                    day, payload, repo, account_id, mark_as_of, pending_orders,
-                    fills_history, peak_prices, active_symbols, quote_cache,
-                    market_repository, swing_low_cache,
-                )
+                update_session_candle(payload, session_candles, peak_prices)
                 continue
             symbol = payload
             previous_fill_count = len(fills_history)
@@ -864,6 +953,21 @@ async def run(args: argparse.Namespace) -> None:
             replay_account_id=account_id,
         )
         phases = result.get("trace", {}).get("phases", {})
+        p1 = phases.get("phase_1_market_surveillance", {})
+        p75 = phases.get("phase_7_5_tournament_ranking", {})
+        p89 = phases.get("phase_8_9_allocation_risk", [])
+        shortlist_top = [
+            f"{x['ticker']}({x.get('playbook_score', 0):.1f})"
+            for x in (p75.get("stage1_shortlist") or [])[:5]
+        ]
+        print(
+            f"[{day}] Regime={result.get('regime')} ({result.get('session_context')}) | "
+            f"Playbook={result.get('playbook')} | "
+            f"ma20={p1.get('breadth_ma20_pct')}% | ma50={p1.get('breadth_ma50_pct')}% | "
+            f"Stage1={p75.get('stage1_passed_count', 0)} | "
+            f"Slots={p75.get('available_slots_start', 0)} | Top5={shortlist_top}",
+            flush=True,
+        )
         for phase_key, label in (
             ("phase_4_equity_research_gate", "Research gate"),
             ("phase_5_investment_thesis_gate", "Thesis gate"),
@@ -873,9 +977,18 @@ async def run(args: argparse.Namespace) -> None:
                 print(
                     f"[{day}] {label}: evaluated={summary.get('evaluated_count', 0)} "
                     f"statuses={summary.get('status_counts', {})} "
-                    f"reason_counts (may overlap)={summary.get('reason_counts', {})}"
+                    f"reason_counts (may overlap)={summary.get('reason_counts', {})}",
+                    flush=True,
                 )
+        leaderboard = p75.get("finalist_leaderboard") or []
+        if leaderboard:
+            lb_str = ", ".join(
+                f"#{row.get('rank')}:{row.get('ticker')}({row.get('final_rank_score', 0):.1f}/CTS={row.get('cts_score', 0):.0f}/{'SEL' if row.get('selected') else row.get('selection_reason')})"
+                for row in leaderboard[:6]
+            )
+            print(f"[{day}] Finalists: {lb_str}", flush=True)
         day_orders = result.get("multi_agent_instructions", [])
+        queued_summary = []
         for order in day_orders:
             approved_shares = int(order.get("approved_shares", 0))
             symbol = str(order.get("ticker", "")).upper()
@@ -887,6 +1000,19 @@ async def run(args: argparse.Namespace) -> None:
                     not_before=signal_time, reason=order.get("rationale"),
                     decision_context=order.get("decision_context"),
                 )
+                queued_summary.append({
+                    "ticker": symbol,
+                    "shares": approved_shares,
+                    "ref_price": ref_price,
+                    "target_weight_pct": order.get("target_weight_pct"),
+                    "approved_weight_pct": order.get("approved_weight_pct"),
+                    "rationale": order.get("rationale"),
+                })
+                print(
+                    f"[{day}]   -> QUEUE BUY {symbol} {approved_shares:,} @ <= {ref_price:,.0f} "
+                    f"({order.get('approved_weight_pct', 0):.2f}% NAV) | {order.get('rationale', '')}",
+                    flush=True,
+                )
 
         tracked = active_symbols | {order["symbol"] for order in pending_orders}
         tracked |= {str(order.get("ticker", "")).upper() for order in day_orders if int(order.get("approved_shares", 0)) > 0}
@@ -897,19 +1023,25 @@ async def run(args: argparse.Namespace) -> None:
         ] + [
             (timestamp, 1, "quote", symbol) for timestamp, symbol in quote_events if timestamp > signal_time
         ]
+        near_close_time = datetime.combine(day, day_time(14, 15), ZoneInfo("Asia/Ho_Chi_Minh"))
         auction_close_time = datetime.combine(day, day_time(14, 45), ZoneInfo("Asia/Ho_Chi_Minh"))
+        afternoon_events.append((near_close_time, -1, "near_close", None))
         afternoon_events.append((auction_close_time, -1, "auction", None))
+        day_timeline_days = int((result.get("policy") or {}).get("timeline_months", 1)) * 30
         for timestamp, _priority, kind, payload in sorted(afternoon_events, key=event_key):
+            if kind == "near_close":
+                await evaluate_near_close_exits(
+                    day, near_close_time, bars, session_candles, repo, account_id, mark_as_of,
+                    pending_orders, fills_history, peak_prices, active_symbols, quote_cache,
+                    market_repository, structure_cache, expected_timeline_days=day_timeline_days,
+                )
+                continue
             if kind == "auction":
                 fill_closing_auction(day, pending_orders, repo, account_id, mark_as_of, fills_history, quote_cache)
                 pending_orders.clear()
                 continue
             if kind == "bar":
-                await monitor_intraday_bar(
-                    day, payload, repo, account_id, mark_as_of, pending_orders,
-                    fills_history, peak_prices, active_symbols, quote_cache,
-                    market_repository, swing_low_cache,
-                )
+                update_session_candle(payload, session_candles, peak_prices)
                 continue
             symbol = payload
             previous_fill_count = len(fills_history)
@@ -932,18 +1064,93 @@ async def run(args: argparse.Namespace) -> None:
         )
         ret = (float(closing_mark["total_nav"]) / previous_nav - 1) if previous_nav > 0 else 0.0
         returns_series.append(ret)
-        previous_nav = float(closing_mark["total_nav"])
+        close_nav = float(closing_mark["total_nav"])
+        close_cash = float(closing_mark["cash_balance"])
+        close_equity_val = max(0.0, close_nav - close_cash)
+        close_equity_pct = (close_equity_val / close_nav * 100.0) if close_nav > 0 else 0.0
+        peak_nav_seen = max(peak_nav_seen, close_nav)
+        dd_now = ((peak_nav_seen - close_nav) / peak_nav_seen * 100.0) if peak_nav_seen > 0 else 0.0
+        max_drawdown_pct = max(max_drawdown_pct, dd_now)
+        peak_equity_pct = max(peak_equity_pct, close_equity_pct)
+        max_concurrent_positions = max(max_concurrent_positions, len(closing_positions))
+
+        day_fills = fills_history[day_fills_start_idx:]
+        for fl in day_fills:
+            val = float(fl["price"]) * int(fl["quantity"])
+            wt = (val / previous_nav * 100.0) if previous_nav > 0 else 0.0
+            fl["value_vnd"] = round(val, 2)
+            fl["weight_pct_nav"] = round(wt, 2)
+            t_short = str(fl["time"])[11:19]
+            print(
+                f"[{current_day}]   ** FILL {fl['side']:4s} {t_short} {fl['symbol']:4s} "
+                f"{int(fl['quantity']):>7,} @ {float(fl['price']):>9,.0f} "
+                f"({wt:5.2f}% NAV | {fl['source']}) | {fl.get('reason') or ''}",
+                flush=True,
+            )
+
+        pos_summaries = []
+        pos_labels = []
+        for pos in closing_positions:
+            sh = int(pos.get("shares", 0))
+            avg_p = float(pos.get("average_price", 0.0))
+            cur_p = float(pos.get("current_price", avg_p))
+            mv = sh * cur_p
+            wt = (mv / close_nav * 100.0) if close_nav > 0 else 0.0
+            pnl_pct = ((cur_p - avg_p) / avg_p * 100.0) if avg_p > 0 else 0.0
+            pos_summaries.append({
+                "ticker": pos["ticker"],
+                "shares": sh,
+                "available_shares": int(pos.get("available_shares", sh)),
+                "locked_t25_shares": int(pos.get("locked_t25_shares", 0)),
+                "average_price": avg_p,
+                "current_price": cur_p,
+                "market_value": round(mv, 2),
+                "weight_pct": round(wt, 2),
+                "unrealized_pnl_pct": round(pnl_pct, 2),
+            })
+            pos_labels.append(f"{pos['ticker']}:{wt:.1f}%({pnl_pct:+.1f}%)")
+
+        session_reports.append({
+            "date": current_day,
+            "regime": result.get("regime"),
+            "session_context": result.get("session_context"),
+            "playbook": result.get("playbook"),
+            "policy": result.get("policy"),
+            "distribution_days": p1.get("distribution_days"),
+            "breadth_ma20_pct": p1.get("breadth_ma20_pct"),
+            "breadth_ma50_pct": p1.get("breadth_ma50_pct"),
+            "stage1_passed_count": p75.get("stage1_passed_count", 0),
+            "stage1_shortlist": p75.get("stage1_shortlist", []),
+            "finalist_leaderboard": leaderboard,
+            "allocation_risk_decisions": p89,
+            "orders_queued": queued_summary,
+            "day_fills": day_fills,
+            "close_nav": round(close_nav, 2),
+            "close_cash": round(close_cash, 2),
+            "close_equity_pct": round(close_equity_pct, 2),
+            "daily_return_pct": round(ret * 100.0, 4),
+            "open_positions": pos_summaries,
+            "agent_status": result.get("status", "UNKNOWN"),
+        })
+
+        previous_nav = close_nav
         print(
             f"[{current_day}] close NAV: {previous_nav:>14,.0f} VND | "
-            f"Cash: {closing_mark['cash_balance']:>14,.0f} VND | "
-            f"Positions: {len(closing_positions):>2} | "
-            f"Orders: {len(pending_orders):>2} pending | "
+            f"Cash: {close_cash:>14,.0f} VND ({100.0 - close_equity_pct:5.1f}%) | "
+            f"Eq: {close_equity_pct:5.1f}% | "
+            f"Pos({len(closing_positions)}): {pos_labels} | "
             f"Agents: {result.get('status', 'UNKNOWN')}",
             flush=True,
         )
 
+        stop_ticker = str(getattr(args, "stop_when_closed", "") or "").upper().strip()
+        if stop_ticker and not any(str(p.get("ticker", "")).upper() == stop_ticker for p in closing_positions):
+            print(f"[{current_day}] >>> STOP_WHEN_CLOSED: Vị thế {stop_ticker} đã đóng 100%, dừng replay tại phiên {current_day}.", flush=True)
+            break
+
+    end_day_actual = date.fromisoformat(session_reports[-1]["date"]) if session_reports else days[-1]
     print(f"\n================================================================================")
-    end_state = repo.get_account_state(user_id=account_id, as_of=days[-1])
+    end_state = repo.get_account_state(user_id=account_id, as_of=end_day_actual)
     agent_calls = {}
     agent_errors = 0
     for event in audit.events:
@@ -953,17 +1160,55 @@ async def run(args: argparse.Namespace) -> None:
             agent_errors += 1
     fees = sum(float(fill["cost"]) for fill in fills_history)
     total_return_pct = (float(end_state["total_nav"]) / args.capital - 1) * 100 if args.capital else 0.0
+    quote_reqs = quote_tool.quote_api_requests - initial_quote_api_stats[0]
+    quote_pages = quote_tool.quote_api_pages - initial_quote_api_stats[1]
+    quote_rl = quote_tool.quote_api_rate_limits - initial_quote_api_stats[2]
     print(f"HOÀN TẤT HISTORICAL PAPER TRADING: {len(days)} phiên.")
-    print(f"Final NAV: {float(end_state['total_nav']):,.0f} VND | Return: {total_return_pct:+.2f}% | Cash: {float(end_state['cash_balance']):,.0f} VND")
-    print(f"Fills: {len(fills_history)} | Estimated two-way fees/tax: {fees:,.0f} VND | Pending: {len(pending_orders)}")
+    print(f"Final NAV: {float(end_state['total_nav']):,.0f} VND | Return: {total_return_pct:+.2f}% | MaxDD: -{max_drawdown_pct:.2f}% | Cash: {float(end_state['cash_balance']):,.0f} VND")
+    print(f"Peak Equity: {peak_equity_pct:.2f}% NAV | Max Concurrent Positions: {max_concurrent_positions}")
+    print(f"Fills: {len(fills_history)} (BUY={sum(1 for f in fills_history if f['side']=='BUY')}, SELL={sum(1 for f in fills_history if f['side']=='SELL')}) | Estimated two-way fees/tax: {fees:,.0f} VND | Pending: {len(pending_orders)}")
     print(f"Agent calls: {agent_calls} | Agent errors: {agent_errors}")
     print(
         "DNSE quote API: "
-        f"requests={quote_tool.quote_api_requests - initial_quote_api_stats[0]} | "
-        f"pages={quote_tool.quote_api_pages - initial_quote_api_stats[1]} | "
-        f"rate_limits={quote_tool.quote_api_rate_limits - initial_quote_api_stats[2]}"
+        f"requests={quote_reqs} | "
+        f"pages={quote_pages} | "
+        f"rate_limits={quote_rl}"
     )
-    print(f"Để reset tài khoản về ban đầu, hãy chạy lệnh với cờ: --reset")
+    if getattr(args, "report_json", None):
+        report_path = Path(args.report_json)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_payload = {
+            "config": {
+                "start_date": days[0].isoformat(),
+                "end_date": days[-1].isoformat(),
+                "trading_days": len(days),
+                "capital": args.capital,
+                "account_id": account_id,
+                "max_candidates": args.max_candidates,
+            },
+            "summary": {
+                "final_nav": round(float(end_state["total_nav"]), 2),
+                "final_cash": round(float(end_state["cash_balance"]), 2),
+                "total_return_pct": round(total_return_pct, 4),
+                "max_drawdown_pct": round(max_drawdown_pct, 4),
+                "peak_equity_pct": round(peak_equity_pct, 2),
+                "max_concurrent_positions": max_concurrent_positions,
+                "total_fills": len(fills_history),
+                "buy_fills": sum(1 for f in fills_history if f["side"] == "BUY"),
+                "sell_fills": sum(1 for f in fills_history if f["side"] == "SELL"),
+                "total_fees_vnd": round(fees, 2),
+                "dnse_quote_api_requests": quote_reqs,
+                "dnse_quote_api_pages": quote_pages,
+                "dnse_quote_api_rate_limits": quote_rl,
+                "agent_calls": agent_calls,
+                "agent_errors": agent_errors,
+            },
+            "sessions": session_reports,
+            "fills": fills_history,
+        }
+        report_path.write_text(dumps(report_payload), encoding="utf-8")
+        print(f"Report JSON saved to: {report_path}")
+    print(f"Để reset tài khoản về ban đầu, hãy chạy lệnh với cờ: --reset-account-only hoặc --reset")
     print(f"================================================================================\n")
 
 
@@ -975,7 +1220,10 @@ def main() -> None:
     parser.add_argument("--max-candidates", type=int, default=3)
     parser.add_argument("--capital", type=float, default=1_000_000_000)
     parser.add_argument("--account-id", default=os.getenv("MULTI_AGENT_ACCOUNT_ID", "940b0c70-2010-42f3-b947-797e6419b794"))
-    parser.add_argument("--reset", action="store_true", help="Reset tài khoản và dọn dẹp CSDL về ban đầu")
+    parser.add_argument("--reset", action="store_true", help="Reset tài khoản và dọn dẹp toàn bộ bảng log CSDL về ban đầu")
+    parser.add_argument("--reset-account-only", action="store_true", help="Chỉ reset tài khoản chỉ định (giữ nguyên tài khoản live & log hệ thống)")
+    parser.add_argument("--report-json", default=None, help="Đường dẫn lưu báo cáo chi tiết từng phiên và từng lệnh dạng JSON")
+    parser.add_argument("--stop-when-closed", default=None, help="Tự động dừng replay ngay cuối phiên mà mã chỉ định đã bán hết 100%")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.WARNING)

@@ -59,7 +59,11 @@ class IntelligenceRepository:
                 f3 = float(r[4]) if r[4] is not None else float(details.get("f3_momentum", 50.0))
                 f4 = float(r[5]) if r[5] is not None else float(details.get("f4_earnings", 50.0))
                 f5 = float(r[6]) if r[6] is not None else float(details.get("f5_flow", 50.0))
-                f6 = float(r[7]) if r[7] is not None else float(details.get("f6_technical", 50.0))
+                low_vol_score = float(r[7]) if r[7] is not None else float(details.get("low_vol_score", 50.0))
+                # Read genuine technical score from factor_details before falling back to volatility_score.
+                f6_raw = details.get("f6_technical")
+                f6 = float(f6_raw) if f6_raw is not None else low_vol_score
+                f6_is_vol_fallback = f6_raw is None
                 css = float(r[8]) if r[8] is not None else 50.0
                 return {
                     "ticker": str(r[0]),
@@ -71,6 +75,8 @@ class IntelligenceRepository:
                     "f4_earnings": f4,
                     "f5_flow": f5,
                     "f6_technical": f6,
+                    "low_vol_score": low_vol_score,
+                    "f6_is_vol_fallback": f6_is_vol_fallback,
                     "css": css,
                     "composite_score": css,
                     "conviction": str(details.get("conviction", "B")),
