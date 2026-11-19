@@ -30,6 +30,13 @@ from dotenv import load_dotenv
 from app.core.registry import AgentRegistry
 import app.domain.agents  # Nạp và tự động đăng ký đủ 12 Agents vào Registry
 from app.domain.repositories.portfolio_repository import PortfolioRepository
+from app.domain.rules.optimizer import PortfolioOptimizer
+from app.domain.rules.portfolio.allocation_policy import (
+    InvestmentPlaybook,
+    PortfolioPolicy,
+    resolve_portfolio_policy,
+)
+from app.domain.services.factor_service import FactorService
 from app.infrastructure.database.pg_pool import get_conn
 
 load_dotenv()
@@ -228,33 +235,47 @@ class DailyInvestmentPipeline:
         halted_tickers = surv_data.get("halted_tickers", [])
         distribution_days = surv_data.get("distribution_days")
         breadth_ma20_pct = surv_data.get("breadth_above_ma20_pct")
+        breadth_ma50_pct = surv_data.get("breadth_above_ma50_pct")
+        csad_score = surv_data.get("csad_score")
+        adv_decl_ratio = surv_data.get("adv_decl_ratio")
 
-        # Chuẩn hóa trạng thái Bear / Phòng thủ
-        is_bear_or_crisis = (
-            "BEAR" in regime or
-            regime == "BEAR_MARKET" or
-            session_context in ["Crisis", "Stress_Severe"]
+        # Xác định Policy động theo Regime + Context + Bậc quy mô NAV (AUM-Tiered Playbook)
+        policy: PortfolioPolicy = resolve_portfolio_policy(
+            regime_str=regime,
+            total_nav=current_nav,
+            session_context=session_context,
         )
+        playbook = policy.playbook
+        is_crisis_lockdown = playbook == InvestmentPlaybook.CRISIS_LOCKDOWN
+        cash_ratio = policy.min_cash_target
 
-        cash_ratio = 1.0 if is_bear_or_crisis else 0.15
-        logger.info(f"[Pha 1] Hoàn tất: Regime = '{regime}' | Context = '{session_context}' | Target Cash = {cash_ratio:.1%}")
+        logger.info(
+            f"[Pha 1] Hoàn tất: Regime = '{regime}' | Context = '{session_context}' | "
+            f"Playbook = '{playbook.value}' | AUM = '{policy.aum_tier.value}' | "
+            f"Max Equity = {policy.max_equity_exposure:.0%} | Target Cash = {cash_ratio:.0%} | "
+            f"Max Positions = {policy.max_positions}"
+        )
 
         pipeline_trace["phases"]["phase_1_market_surveillance"] = {
             "status": "COMPLETED",
             "regime": regime,
             "session_context": session_context,
+            "playbook": playbook.value,
+            "aum_tier": policy.aum_tier.value,
+            "policy": policy.to_dict(),
             "halted_count": len(halted_tickers),
             "distribution_days": distribution_days,
+            "breadth_ma20_pct": breadth_ma20_pct,
+            "breadth_ma50_pct": breadth_ma50_pct,
             "target_cash_ratio": cash_ratio,
         }
 
-        # ── HARD LAW GATING: Nếu thị trường sập (BEAR / CRISIS), kích hoạt BEAR_DEFENSE 100% TIỀN MẶT ──
-        if is_bear_or_crisis:
+        # ── HARD LAW GATING: Chỉ khóa 100% tiền mặt ngay ở Pha 1 khi rơi vào CRISIS / STRESS_SEVERE ──
+        if is_crisis_lockdown:
             logger.warning(
-                f"[Daily Investment Pipeline] KÍCH HOẠT BEAR_DEFENSE: Thị trường rơi vào {regime} ({session_context}). "
-                f"Tuân thủ Hiến pháp: Khóa 100% tiền mặt, đóng băng giải ngân mới để bảo toàn vốn."
+                f"[Daily Investment Pipeline] KÍCH HOẠT CRISIS_LOCKDOWN (BEAR_DEFENSE): Thị trường rơi vào {regime} ({session_context}). "
+                f"Khóa 100% tiền mặt, đóng băng giải ngân mới để bảo toàn vốn."
             )
-            # Quét kiểm tra cắt lỗ và bảo vệ các vị thế mở hiện tại (nếu có)
             emergency_instructions = []
             if not replay_at:
                 try:
@@ -262,9 +283,8 @@ class DailyInvestmentPipeline:
                         portfolio_state, is_bear_defense=True
                     )
                 except Exception as e_pos:
-                    logger.error(f"[DailyPipeline] Lỗi quét bảo vệ vị thế khi Bear Market: {e_pos}")
+                    logger.error(f"[DailyPipeline] Lỗi quét bảo vệ vị thế khi Crisis: {e_pos}")
 
-            # Ghi nhận sự kiện phòng vệ vốn vào System Governance
             if not replay_at:
                 await AgentRegistry.dispatch("system_governance", {
                     "execution_mode": self.multi_agent_mode.value,
@@ -272,7 +292,7 @@ class DailyInvestmentPipeline:
                         {
                             "agent_id": "market_surveillance",
                             "event_type": "BEAR_DEFENSE_TRIGGERED",
-                            "details": {"regime": regime, "cash_ratio": 1.0, "reason": "PRESERVE_100PCT_CAPITAL", "emergency_actions": len(emergency_instructions)},
+                            "details": {"regime": regime, "session_context": session_context, "cash_ratio": 1.0, "reason": "PRESERVE_100PCT_CAPITAL", "emergency_actions": len(emergency_instructions)},
                         }
                     ],
                 })
@@ -281,6 +301,7 @@ class DailyInvestmentPipeline:
                 "date": run_date_str,
                 "regime": regime,
                 "session_context": session_context,
+                "playbook": playbook.value,
                 "cash_ratio": 1.0,
                 "status": "BEAR_DEFENSE_100PCT_CASH",
                 "multi_agent_mode": self.multi_agent_mode.value,
@@ -350,39 +371,83 @@ class DailyInvestmentPipeline:
                 "trace": pipeline_trace,
             }
 
-        # Lấy danh sách mã ứng viên ưu tiên (sắp xếp theo Group A trước, thanh khoản ADTV20)
+        # Lấy danh sách mã ứng viên nền (giữ thứ tự ổn định cho Vòng 1 Research; xếp hạng thực sự diễn ra sau Vòng 1)
         sorted_candidates = sorted(
             discovery_list,
             key=lambda x: (x.get("universe_group") == "A", x.get("adtv20", 0.0)),
             reverse=True,
         )
         candidate_metadata = {str(c["ticker"]).upper(): c for c in sorted_candidates}
-        # Research every eligible symbol; max_candidates below still caps approved orders.
-        research_candidates = sorted_candidates
-        selected_tickers = [c["ticker"] for c in research_candidates]
+        selected_tickers = [c["ticker"] for c in sorted_candidates]
 
         # =========================================================================
-        # CHUỖI PHA 4 -> PHA 11: NGHIÊN CỨU, PHẢN BIỆN, CIO, SIZING, RISK & THỰC THI
+        # ĐẤU TRƯỜNG 2 VÒNG (TWO-STAGE TOURNAMENT) & XẾP HẠNG CHÉO THEO PLAYBOOK
         # =========================================================================
         qualified_orders_multi_agent: List[Dict[str, Any]] = []
-        qualified_orders_standalone: List[Dict[str, Any]] = []
         monitored_positions_created: List[Dict[str, Any]] = []
         research_gate_decisions: List[Dict[str, Any]] = []
         thesis_gate_decisions: List[Dict[str, Any]] = []
+        allocation_risk_decisions: List[Dict[str, Any]] = []
         portfolio_refresh_failed = False
 
+        # Làm bản sao an toàn của danh mục hiện hữu để theo dõi đặt chỗ vốn/slot trong phiên
+        working_positions: List[Dict[str, Any]] = [dict(p) for p in (replay_positions or [])]
+        working_cash: float = float(replay_cash)
+        working_portfolio_state: Dict[str, Any] = {
+            **portfolio_state,
+            "positions": working_positions,
+            "sector_exposure": dict(portfolio_state.get("sector_exposure") or {}),
+            "cash_vnd": working_cash,
+        }
+        # Đồng bộ sector_exposure nếu replay_portfolio truyền dict rỗng nhưng có positions
+        if not working_portfolio_state["sector_exposure"] and working_positions:
+            for pos in working_positions:
+                sec = str(pos.get("sector") or "").strip()
+                if sec:
+                    mv = float(pos.get("market_value", 0.0)) or (
+                        int(pos.get("shares", pos.get("quantity", 0)) or 0)
+                        * float(pos.get("current_price", pos.get("average_price", 0.0)) or 0.0)
+                    )
+                    working_portfolio_state["sector_exposure"][sec] = (
+                        working_portfolio_state["sector_exposure"].get(sec, 0.0) + mv
+                    )
+
+        peak_nav = float(working_portfolio_state.get("peak_nav", current_nav) or current_nav)
+        dd_pct = max(0.0, (peak_nav - current_nav) / peak_nav * 100.0) if peak_nav > 0 else 0.0
+        current_drawdown_tier = (
+            "RED" if dd_pct >= 15.0 else ("ORANGE" if dd_pct >= 10.0 else ("YELLOW" if dd_pct >= 5.0 else ("ALERT" if dd_pct >= 3.0 else "GREEN")))
+        )
+
+        # ── VÒNG 1: BATCH LEADERSHIP METRICS & QUÉT AGENT-03 TOÀN BỘ UNIVERSE (KHÔNG BREAK SỚM) ──
+        leadership_by_ticker: Dict[str, Dict[str, Any]] = {}
+        corr_matrix = None
+        try:
+            factor_svc = FactorService()
+            held_for_corr = [
+                str(p.get("ticker") or p.get("symbol") or "").upper()
+                for p in working_positions
+                if int(p.get("shares", p.get("quantity", 0)) or 0) > 0
+            ]
+            leadership_by_ticker, corr_matrix = factor_svc.compute_universe_leadership_metrics(
+                tickers=list(set(selected_tickers) | set(held_for_corr)),
+                as_of_date=market_data_date,
+            )
+        except Exception as e_lead:
+            logger.warning(f"[Vòng 1] Không thể tính batch leadership metrics: {e_lead}")
+
+        stage1_passed: List[Dict[str, Any]] = []
+        stage1_reports: List[Dict[str, Any]] = []
+
         for ticker in selected_tickers:
-            if len(qualified_orders_multi_agent) >= max_candidates:
-                break
-
-            logger.info(f"\n--- [AGENT CHAIN] Xử lý chuyên sâu mã cổ phiếu: {ticker} ---")
-
-            # ── PHA 4: AGENT-03 (EQUITY RESEARCH) ──
-            logger.info(f"[Pha 4 - {ticker}] Kích hoạt Agent-03: Phân tích 6 nhóm Factor & Business Quality...")
+            meta = candidate_metadata.get(str(ticker).upper(), {})
+            lead_metrics = leadership_by_ticker.get(str(ticker).upper())
             res_res = await AgentRegistry.dispatch("equity_research", {
                 "ticker": ticker,
                 "current_regime": regime,
                 "policy_weights": policy_weights,
+                "playbook": playbook.value,
+                "universe_group": meta.get("universe_group", "B"),
+                **({"leadership_metrics": lead_metrics} if lead_metrics else {}),
                 **replay_context,
             })
             if res_res.get("status") != "SUCCESS":
@@ -391,122 +456,272 @@ class DailyInvestmentPipeline:
                     "status": "RESEARCH_FAILED",
                     "reason_codes": ["EQUITY_RESEARCH_FAILED"],
                 })
-                logger.warning(f"[Pha 4 - {ticker}] Equity Research thất bại. Bỏ qua.")
                 continue
 
             research_report = res_res["result"]["data"]
             conviction = research_report.get("conviction", "C")
             current_price = float(research_report.get("current_price", 0.0))
             sector = research_report.get("sector", "General")
-            portfolio_sector = candidate_metadata.get(ticker, {}).get("portfolio_sector") or sector
-
-            logger.info(f"[Pha 4 - {ticker}] Conviction = '{conviction}' | CSS = {research_report.get('css', 0):.1f} | Price = {current_price:,.0f}")
+            portfolio_sector = meta.get("portfolio_sector") or sector
+            playbook_score = float(research_report.get("playbook_score", research_report.get("css", 0.0)))
 
             reason_codes = research_report.get("eligibility_reasons")
             if not isinstance(reason_codes, list):
                 reason_codes = ["RESEARCH_GATE_DECISION_MISSING"]
             if not research_report.get("eligible_for_thesis") and not reason_codes:
                 reason_codes = ["RESEARCH_GATE_FAILED_WITHOUT_REASON"]
+
+            # Lọc thanh khoản theo bậc NAV (trừ khi user truyền candidate_tickers cụ thể)
+            adtv20_vnd = float(meta.get("adtv20_vnd", meta.get("adtv20", 0.0)) or 0.0)
+            if candidate_tickers is None and adtv20_vnd > 0 and adtv20_vnd < policy.min_adtv20_vnd:
+                reason_codes = list(reason_codes) + [f"ADTV20_BELOW_AUM_TIER_FLOOR({policy.aum_tier.value})"]
+
+            passed_stage1 = bool(research_report.get("eligible_for_thesis")) and not reason_codes
             research_gate_decisions.append({
                 "ticker": ticker,
-                "status": "PASS" if research_report.get("eligible_for_thesis") and not reason_codes else "EXCLUDED",
+                "status": "PASS" if passed_stage1 else "EXCLUDED",
                 "reason_codes": reason_codes,
                 "conviction": conviction,
                 "css": research_report.get("css"),
+                "playbook_score": playbook_score,
+                "rs_20d": research_report.get("rs_20d"),
+                "vsa_swing_score": research_report.get("vsa_swing_score"),
                 "current_price": current_price,
             })
-            if not research_report.get("eligible_for_thesis") or reason_codes:
-                logger.info(
-                    f"[Pha 4 - {ticker}] Research gate=EXCLUDED | reason_codes={reason_codes} | "
-                    f"Conviction={conviction} | CSS={research_report.get('css', 0):.1f} | Price={current_price:,.0f}"
-                )
-                continue
-
-            logger.info(f"[Pha 4 - {ticker}] Research gate=PASS")
-
-            # ── PHA 5: AGENT-04 (INVESTMENT THESIS) ──
-            logger.info(f"[Pha 5 - {ticker}] Kích hoạt Agent-04: Xây dựng Luận đề & Xác thực Điều 3 (3 Tín hiệu)...")
-            res_thesis = await AgentRegistry.dispatch("investment_thesis", {
-                "research_report": research_report,
-                "market_context": {"current_regime": regime, "session_context": session_context},
-                **replay_context,
-            })
-            thesis_result_data = res_thesis.get("result", {}).get("data", {}) if res_thesis.get("status") == "SUCCESS" else {}
-            thesis_status = thesis_result_data.get("status", "AGENT_FAILED")
-            thesis_reason_codes = thesis_result_data.get("reason_codes") or (
-                ["INVESTMENT_THESIS_FAILED"] if thesis_status == "AGENT_FAILED" else []
-            )
-            thesis_gate_decisions.append({
-                "ticker": ticker,
-                "status": thesis_status,
-                "reason_codes": thesis_reason_codes,
-                "reason": thesis_result_data.get("reason"),
-            })
-            if res_thesis.get("status") != "SUCCESS" or thesis_status in ["REJECTED", "WAIT_OR_SKIP", "DEFERRED"]:
-                logger.info(
-                    f"[Pha 5 - {ticker}] Thesis={thesis_status} | reason_codes={thesis_reason_codes} | "
-                    f"reason={thesis_result_data.get('reason', 'agent dispatch failed')}"
-                )
-                continue
-
-            thesis_data = thesis_result_data
-            logger.info(f"[Pha 5 - {ticker}] Luận đề hợp lệ (Thesis ID: {thesis_data.get('thesis_id')}).")
-
-            # ── PHA 6: AGENT-05 (COUNTER THESIS - DEVIL'S ADVOCATE) ──
-            logger.info(f"[Pha 6 - {ticker}] Kích hoạt Agent-05: Phản biện Đa chiều (Devil's Advocate) & Tính CTS Score...")
-            res_counter = await AgentRegistry.dispatch("counter_thesis", {
-                "investment_thesis": thesis_data,
-                "market_data": {"current_regime": regime},
-                "stock_data": {"current_price": current_price},
-                **replay_context,
-            })
-            counter_data = res_counter.get("result", {}).get("data", {}) if res_counter.get("status") == "SUCCESS" else {}
-            counter_verdict = counter_data.get("verdict")
-            if res_counter.get("status") != "SUCCESS" or counter_verdict not in {"PROCEED", "CONDITIONAL", "BLOCK"}:
-                logger.warning(f"[Pha 6 - {ticker}] Counter Thesis response missing or invalid; rejecting candidate.")
-                continue
-            cts_score = float(counter_data.get("cts_score", 0.0))
-            logger.info(f"[Pha 6 - {ticker}] Phán quyết Counter-Thesis: '{counter_verdict}' | CTS Score = {cts_score:.1f}")
-
-            # ── PHA 7: AGENT-12 (STRATEGY CIO ARBITRATION) ──
-            logger.info(f"[Pha 7 - {ticker}] Kích hoạt Agent-12: Trọng tài Chiến lược Phân định Tranh chấp...")
-            res_cio = await AgentRegistry.dispatch("strategy_cio", {
-                "conflict": {
-                    "thesis_id": thesis_data.get("thesis_id"),
+            stage1_reports.append(research_report)
+            if passed_stage1:
+                stage1_passed.append({
                     "ticker": ticker,
-                    "thesis_view": f"BULLISH_{conviction}",
-                    "counter_view": counter_verdict,
-                    "cts_score": cts_score,
-                    "block_reasons": counter_data.get("block_reasons", []),
-                },
-                **replay_context,
-            })
-            cio_data = res_cio.get("result", {}).get("data", {}) if res_cio.get("status") == "SUCCESS" else {}
-            final_resolution = cio_data.get("final_resolution")
-            weight_cap = float(cio_data.get("weight_cap", 0.0))
+                    "research_report": research_report,
+                    "conviction": conviction,
+                    "current_price": current_price,
+                    "sector": sector,
+                    "portfolio_sector": portfolio_sector,
+                    "playbook_score": playbook_score,
+                    "css": float(research_report.get("css", 0.0)),
+                    "rs_score": float(research_report.get("rs_score", 50.0)),
+                    "sector_leadership_score": float(research_report.get("sector_leadership_score", 50.0)),
+                    "leadership_metrics": lead_metrics or research_report.get("leadership_metrics") or {},
+                })
 
-            logger.info(f"[Pha 7 - {ticker}] Phán quyết CIO: '{final_resolution}' | Trần Tỷ trọng: {weight_cap:.1%}")
+        # Xếp hạng Vòng 1 giảm dần theo Playbook Score -> CSS -> RS Score (không theo thứ tự ADTV20!)
+        stage1_passed.sort(
+            key=lambda x: (x["playbook_score"], x["css"], x["rs_score"]),
+            reverse=True,
+        )
 
-            # Nếu CIO tuyên bố BLOCK (do vi phạm Hiến pháp hoặc Tail Risk), dừng ngay
-            if res_cio.get("status") != "SUCCESS" or final_resolution not in {"PROCEED_WITH_PENALTY", "APPROVE_CONDITIONAL"} or weight_cap <= 0.0:
-                logger.warning(f"[Pha 7 - {ticker}] CIO phủ quyết giải ngân đối với {ticker}: {cio_data.get('rationale')}")
-                continue
-
-            pilot_position = bool(
-                replay_at
-                and conviction == "B"
-                and float(research_report.get("business_quality_score", 0.0)) >= 90.0
-                and regime == "RANGE_BOUND"
-                and breadth_ma20_pct is not None
-                and float(breadth_ma20_pct) >= 40.0
-                and counter_verdict == "PROCEED"
-                and not any(p.get("ticker") == ticker for p in replay_positions)
+        # Kiểm tra sức chứa slot & ngân sách danh mục trước khi gọi LLM Vòng 2
+        held_tickers_now = {
+            str(p.get("ticker") or p.get("symbol") or "").upper()
+            for p in working_positions
+            if int(p.get("shares", p.get("quantity", 0)) or 0) > 0
+        }
+        current_equity_val = sum(
+            float(p.get("market_value", 0.0)) or (
+                int(p.get("shares", p.get("quantity", 0)) or 0)
+                * float(p.get("current_price", p.get("average_price", 0.0)) or 0.0)
             )
-            if pilot_position:
-                weight_cap = min(weight_cap, 0.05)
+            for p in working_positions
+            if int(p.get("shares", p.get("quantity", 0)) or 0) > 0
+        )
+        current_equity_pct = (current_equity_val / current_nav) if current_nav > 0 else 0.0
+        remaining_equity_budget = max(0.0, policy.max_equity_exposure - current_equity_pct)
+        available_slots_start = max(0, policy.max_positions - len(held_tickers_now))
+        budget_allows_new_entry = (
+            available_slots_start > 0
+            and remaining_equity_budget >= policy.min_entry_weight - 1e-4
+            and current_drawdown_tier != "RED"
+        )
 
-            # ── PHA 8: AGENT-06 (PORTFOLIO ALLOCATION & KELLY SIZING) ──
-            logger.info(f"[Pha 8 - {ticker}] Kích hoạt Agent-06: Phân bổ Vốn Kelly & Áp trần Điều 4...")
+        # Lọc các mã chưa nắm giữ và cắt Shortlist Top-M (mã mạnh nhất sàn) cho Vòng 2
+        shortlist_limit = min(policy.shortlist_size, max(6, available_slots_start * 4)) if available_slots_start > 0 else 0
+        shortlist = [
+            item for item in stage1_passed
+            if str(item["ticker"]).upper() not in held_tickers_now
+        ][:shortlist_limit]
+
+        logger.info(
+            f"[Vòng 1 Tournament] Quét {len(selected_tickers)} mã | Đạt Research={len(stage1_passed)} | "
+            f"Shortlist Top-{len(shortlist)}: {[f'{x['ticker']}({x['playbook_score']:.1f})' for x in shortlist[:6]]} | "
+            f"Slots trống={available_slots_start}/{policy.max_positions} | Ngân sách còn={remaining_equity_budget:.1%}"
+        )
+
+        # ── VÒNG 2: THẨM ĐỊNH SÂU PHA 5 → PHA 7 (THESIS → COUNTER-THESIS → CIO) TRÊN SHORTLIST ──
+        finalists: List[Dict[str, Any]] = []
+        if budget_allows_new_entry and shortlist:
+            for item in shortlist:
+                ticker = item["ticker"]
+                research_report = item["research_report"]
+                conviction = item["conviction"]
+                current_price = item["current_price"]
+                portfolio_sector = item["portfolio_sector"]
+                lead_metrics = item["leadership_metrics"]
+
+                logger.info(
+                    f"\n--- [VÒNG 2 DEEP REVIEW] {ticker} | Playbook={playbook.value} ({item['playbook_score']:.1f}) | "
+                    f"CSS={item['css']:.1f} ({conviction}) | RS20d={research_report.get('rs_20d', 0)*100:+.1f}% ---"
+                )
+
+                # ── PHA 5: AGENT-04 (INVESTMENT THESIS) ──
+                res_thesis = await AgentRegistry.dispatch("investment_thesis", {
+                    "research_report": research_report,
+                    "playbook": playbook.value,
+                    "timeline_months": policy.timeline_months,
+                    "market_context": {
+                        "current_regime": regime,
+                        "session_context": session_context,
+                        "playbook": playbook.value,
+                        "leadership_metrics": lead_metrics,
+                    },
+                    **replay_context,
+                })
+                thesis_result_data = res_thesis.get("result", {}).get("data", {}) if res_thesis.get("status") == "SUCCESS" else {}
+                thesis_status = thesis_result_data.get("status", "AGENT_FAILED")
+                thesis_reason_codes = thesis_result_data.get("reason_codes") or (
+                    ["INVESTMENT_THESIS_FAILED"] if thesis_status == "AGENT_FAILED" else []
+                )
+                thesis_gate_decisions.append({
+                    "ticker": ticker,
+                    "status": thesis_status,
+                    "reason_codes": thesis_reason_codes,
+                    "reason": thesis_result_data.get("reason"),
+                    "playbook_score": item["playbook_score"],
+                })
+                if res_thesis.get("status") != "SUCCESS" or thesis_status in ["REJECTED", "WAIT_OR_SKIP", "DEFERRED"]:
+                    logger.info(
+                        f"[Pha 5 - {ticker}] Thesis={thesis_status} | reason_codes={thesis_reason_codes} | "
+                        f"reason={thesis_result_data.get('reason', 'agent dispatch failed')}"
+                    )
+                    continue
+
+                thesis_data = thesis_result_data
+                logger.info(f"[Pha 5 - {ticker}] Luận đề hợp lệ (Thesis ID: {thesis_data.get('thesis_id')}).")
+
+                # ── PHA 6: AGENT-05 (COUNTER THESIS - BƠM ĐẦY ĐỦ DỮ LIỆU TỪ AGENT-01 CHO CAPITULATION) ──
+                res_counter = await AgentRegistry.dispatch("counter_thesis", {
+                    "investment_thesis": thesis_data,
+                    "market_data": {
+                        "current_regime": regime,
+                        "session_context": session_context,
+                        "csad_score": float(csad_score or 0.0),
+                        "breadth_above_ma20_pct": float(breadth_ma20_pct) if breadth_ma20_pct is not None else 50.0,
+                        "breadth_above_ma50_pct": float(breadth_ma50_pct) if breadth_ma50_pct is not None else 50.0,
+                        "adv_decl_ratio": float(adv_decl_ratio or 1.0),
+                        "foreign_net_flow": float(surv_data.get("foreign_net_flow", 0.0) or 0.0),
+                    },
+                    "stock_data": {
+                        "current_price": current_price,
+                        "floor_absorbed": bool(lead_metrics.get("has_spring") or lead_metrics.get("has_absorption")),
+                    },
+                    **replay_context,
+                })
+                counter_data = res_counter.get("result", {}).get("data", {}) if res_counter.get("status") == "SUCCESS" else {}
+                counter_verdict = counter_data.get("verdict")
+                if res_counter.get("status") != "SUCCESS" or counter_verdict not in {"PROCEED", "CONDITIONAL", "BLOCK"}:
+                    logger.warning(f"[Pha 6 - {ticker}] Counter Thesis response missing or invalid; rejecting candidate.")
+                    continue
+                cts_score = float(counter_data.get("cts_score", 0.0))
+                logger.info(f"[Pha 6 - {ticker}] Phán quyết Counter-Thesis: '{counter_verdict}' | CTS Score = {cts_score:.1f}")
+
+                # ── PHA 7: AGENT-12 (STRATEGY CIO ARBITRATION THEO POLICY CAP) ──
+                res_cio = await AgentRegistry.dispatch("strategy_cio", {
+                    "conflict": {
+                        "thesis_id": thesis_data.get("thesis_id"),
+                        "ticker": ticker,
+                        "thesis_view": f"BULLISH_{conviction}",
+                        "counter_view": counter_verdict,
+                        "cts_score": cts_score,
+                        "block_reasons": counter_data.get("block_reasons", []),
+                        "max_single_stock_cap": policy.single_stock_cap_for_conviction(conviction),
+                        "min_entry_weight": policy.min_entry_weight,
+                    },
+                    **replay_context,
+                })
+                cio_data = res_cio.get("result", {}).get("data", {}) if res_cio.get("status") == "SUCCESS" else {}
+                final_resolution = cio_data.get("final_resolution")
+                weight_cap = float(cio_data.get("weight_cap", 0.0))
+
+                logger.info(f"[Pha 7 - {ticker}] Phán quyết CIO: '{final_resolution}' | Trần Tỷ trọng: {weight_cap:.1%}")
+                if res_cio.get("status") != "SUCCESS" or final_resolution not in {"PROCEED_WITH_PENALTY", "APPROVE_CONDITIONAL"} or weight_cap <= 0.0:
+                    logger.warning(f"[Pha 7 - {ticker}] CIO phủ quyết giải ngân đối với {ticker}: {cio_data.get('rationale')}")
+                    continue
+
+                thesis_body = thesis_data.get("thesis_body") or {}
+                price_target = thesis_body.get("price_target") or {}
+                finalists.append({
+                    **item,
+                    "sector": portfolio_sector,
+                    "thesis_data": thesis_data,
+                    "counter_data": counter_data,
+                    "counter_verdict": counter_verdict,
+                    "cts_score": cts_score,
+                    "cio_data": cio_data,
+                    "final_resolution": final_resolution,
+                    "weight_cap": weight_cap,
+                    "base_case_target_price": float(price_target.get("base_case") or 0.0),
+                })
+
+        # ── VÒNG 2B: XẾP HẠNG CHUNG KẾT CHÉO TẤT CẢ FINALISTS TRƯỚC KHI CẤP NAV ──
+        optimizer = PortfolioOptimizer(min_positions=policy.min_positions, max_positions=policy.max_positions)
+        selected_finalists, finalist_leaderboard = optimizer.rank_and_select_finalists(
+            finalists=finalists,
+            existing_positions=working_positions,
+            total_nav=current_nav,
+            max_positions=policy.max_positions,
+            max_sector_weight=policy.max_sector_weight,
+            min_slot_weight=policy.min_entry_weight,
+            corr_matrix=corr_matrix,
+            correlation_limit=0.65,
+        )
+
+        pipeline_trace["phases"]["phase_7_5_tournament_ranking"] = {
+            "playbook": playbook.value,
+            "aum_tier": policy.aum_tier.value,
+            "available_slots_start": available_slots_start,
+            "remaining_equity_budget_start": round(remaining_equity_budget, 4),
+            "budget_allows_new_entry": budget_allows_new_entry,
+            "stage1_passed_count": len(stage1_passed),
+            "stage1_shortlist": [
+                {
+                    "ticker": x["ticker"],
+                    "conviction": x["conviction"],
+                    "css": x["css"],
+                    "playbook_score": x["playbook_score"],
+                    "rs_20d": x["research_report"].get("rs_20d"),
+                    "vsa_swing_score": x["research_report"].get("vsa_swing_score"),
+                    "sector_leadership_score": x["sector_leadership_score"],
+                }
+                for x in shortlist
+            ],
+            "finalist_leaderboard": finalist_leaderboard,
+        }
+
+        # ── PHA 8 → PHA 11: PHÂN BỔ VỐN, THẨM ĐỊNH RỦI RO & THỰC THI TỪ HẠNG #1 TRỞ XUỐNG ──
+        effective_max_orders = min(max_candidates, max(1, policy.max_positions))
+        for winner in selected_finalists:
+            if len(qualified_orders_multi_agent) >= effective_max_orders:
+                break
+
+            ticker = winner["ticker"]
+            research_report = winner["research_report"]
+            thesis_data = winner["thesis_data"]
+            counter_data = winner["counter_data"]
+            counter_verdict = winner["counter_verdict"]
+            cts_score = winner["cts_score"]
+            cio_data = winner["cio_data"]
+            final_resolution = winner["final_resolution"]
+            weight_cap = winner["weight_cap"]
+            conviction = winner["conviction"]
+            current_price = winner["current_price"]
+            portfolio_sector = winner["portfolio_sector"]
+            final_rank_score = float(winner.get("final_rank_score", winner["playbook_score"]))
+            rank_position = int(winner.get("rank", 1))
+
+            # ── PHA 8: AGENT-06 (PORTFOLIO ALLOCATION THEO BIÊN ĐỘ LINH HOẠT & BẬC NAV) ──
+            logger.info(
+                f"[Pha 8 - #{rank_position} {ticker}] Phân bổ vốn (FinalScore={final_rank_score:.1f}, "
+                f"Playbook={playbook.value}, Cap={weight_cap:.1%})..."
+            )
             res_alloc = await AgentRegistry.dispatch("portfolio_allocation", {
                 "candidate": {
                     "ticker": ticker,
@@ -521,11 +736,16 @@ class DailyInvestmentPipeline:
                 "investment_thesis": thesis_data,
                 "counter_thesis": counter_data,
                 "total_nav": current_nav,
-                "cash_balance": replay_cash,
-                "positions": replay_positions,
+                "cash_balance": working_cash,
+                "positions": working_positions,
                 "kelly_matrix": kelly_matrix,
                 "weight_cap": weight_cap,
                 "regime": regime,
+                "session_context": session_context,
+                "policy": policy,
+                "final_rank_score": final_rank_score,
+                "corr_matrix": corr_matrix,
+                "drawdown_tier": current_drawdown_tier,
                 "defer_order_event": True,
                 **replay_context,
             })
@@ -535,38 +755,58 @@ class DailyInvestmentPipeline:
 
             alloc_data = res_alloc["result"]["data"]
             target_shares = int(alloc_data.get("target_shares", 0))
+            alloc_weight_pct = float(alloc_data.get("allocated_weight_pct", 0.0))
             if alloc_data.get("action") == "HOLD" or target_shares <= 0:
-                logger.info(f"[Pha 8 - {ticker}] {alloc_data.get('action')}: không phát sinh lệnh mới.")
+                logger.info(f"[Pha 8 - {ticker}] {alloc_data.get('action')}: {alloc_data.get('rationale')}")
+                allocation_risk_decisions.append({
+                    "rank": rank_position,
+                    "ticker": ticker,
+                    "stage": "ALLOCATION_HOLD",
+                    "action": alloc_data.get("action"),
+                    "weight_pct": alloc_weight_pct,
+                    "rationale": alloc_data.get("rationale"),
+                })
                 continue
 
             proposed_order = alloc_data.get("proposed_order") or alloc_data
-            logger.info(f"[Pha 8 - {ticker}] Đề xuất Lệnh: Mua {target_shares:,} cổ phiếu ({alloc_data.get('target_weight_pct', 0):.1%} NAV).")
+            logger.info(f"[Pha 8 - {ticker}] Đề xuất Lệnh: Mua {target_shares:,} cổ phiếu ({alloc_weight_pct:.2f}% NAV).")
 
             # ── PHA 9: AGENT-07 (PORTFOLIO RISK SUPREME GATEKEEPER) ──
-            logger.info(f"[Pha 9 - {ticker}] Kích hoạt Agent-07: Thẩm định Rủi ro Tối cao (Điều 1 Hard Stop, T+2.5, VSA)...")
+            logger.info(f"[Pha 9 - {ticker}] Kích hoạt Agent-07: Thẩm định Rủi ro Tối cao...")
             res_risk = await AgentRegistry.dispatch("portfolio_risk", {
                 "user_id": multi_agent_account_id,
                 "proposed_order": proposed_order,
                 "cdc_status": cdc_triggered,
+                "policy": policy,
+                "min_entry_weight": policy.min_entry_weight,
                 "market_context": {
                     "distribution_days": distribution_days,
                     "breadth_ma20_pct": breadth_ma20_pct,
                     "regime": regime,
                 },
-                "portfolio": portfolio_state,
+                "portfolio": working_portfolio_state,
                 **replay_context,
             })
             risk_data = res_risk.get("result", {}).get("data", {}) if res_risk.get("status") == "SUCCESS" else {}
             risk_status = risk_data.get("risk_status", "REJECT")
             risk_decision = risk_data.get("decision", {})
             approved_shares = int(risk_decision.get("approved_shares", 0))
+            approved_weight_pct = float(risk_decision.get("approved_weight_pct", 0.0))
             thesis_body = thesis_data.get("thesis_body") or {}
             price_target = thesis_body.get("price_target") or {}
             decision_context = {
                 "source_agent": "daily_pipeline_orchestrator",
+                "playbook": playbook.value,
+                "aum_tier": policy.aum_tier.value,
+                "tournament_rank": rank_position,
+                "final_rank_score": final_rank_score,
                 "research": {
                     "conviction": conviction,
                     "css": research_report.get("css"),
+                    "playbook_score": winner["playbook_score"],
+                    "rs_20d": research_report.get("rs_20d"),
+                    "vsa_swing_score": research_report.get("vsa_swing_score"),
+                    "sector_leadership_score": winner["sector_leadership_score"],
                     "current_price": current_price,
                     "cts_score": cts_score,
                     "thesis_id": thesis_data.get("thesis_id"),
@@ -595,6 +835,7 @@ class DailyInvestmentPipeline:
                 "allocation": {
                     "requested_shares": target_shares,
                     "target_weight_pct": alloc_data.get("target_weight_pct"),
+                    "allocated_weight_pct": alloc_weight_pct,
                     "rationale": alloc_data.get("rationale"),
                 },
                 "risk": {
@@ -602,6 +843,7 @@ class DailyInvestmentPipeline:
                     "status": risk_status,
                     "requested_shares": risk_decision.get("original_shares", target_shares),
                     "approved_shares": approved_shares,
+                    "approved_weight_pct": approved_weight_pct,
                     "rationale": risk_decision.get("rationale"),
                     "sizing_trace": risk_decision.get("sizing_trace"),
                     "hard_laws": risk_data.get("hard_laws"),
@@ -609,7 +851,10 @@ class DailyInvestmentPipeline:
                 },
             }
 
-            logger.info(f"[Pha 9 - {ticker}] Phán quyết Risk: '{risk_status}' | Số lượng duyệt: {approved_shares:,} cổ phiếu.")
+            logger.info(
+                f"[Pha 9 - {ticker}] Phán quyết Risk: '{risk_status}' | "
+                f"Duyệt: {approved_shares:,} CP ({approved_weight_pct:.2f}% NAV) | {risk_decision.get('rationale', '')}"
+            )
 
             reconcile_fn = getattr(self.portfolio_repo, "reconcile_decision_after_risk", None)
             if callable(reconcile_fn):
@@ -621,6 +866,16 @@ class DailyInvestmentPipeline:
                     approved_weight_pct=risk_decision.get("approved_weight_pct"),
                     risk_rationale=str(risk_decision.get("rationale") or ""),
                 )
+
+            allocation_risk_decisions.append({
+                "rank": rank_position,
+                "ticker": ticker,
+                "stage": f"RISK_{risk_status}",
+                "requested_shares": target_shares,
+                "approved_shares": approved_shares,
+                "approved_weight_pct": approved_weight_pct,
+                "rationale": risk_decision.get("rationale"),
+            })
 
             if approved_shares <= 0 or risk_status not in ["PASS", "REDUCE"]:
                 logger.warning(f"[Pha 9 - {ticker}] Lệnh bị Risk Agent chặn/từ chối.")
@@ -635,6 +890,7 @@ class DailyInvestmentPipeline:
             execution_instruction["target_price"] = current_price
             execution_instruction["sector"] = proposed_order.get("sector", portfolio_sector)
             execution_instruction["decision_context"] = decision_context
+            execution_instruction["risk_limits"] = policy.to_risk_limits(conviction=conviction)
 
             if replay_at:
                 exec_data = {
@@ -656,38 +912,83 @@ class DailyInvestmentPipeline:
             else:
                 exec_data = {"status": "DISABLED", "shares": 0}
 
+            # Cập nhật ngân sách/slot NGAY TRONG PHIÊN (cho cả EXECUTED, PENDING_SHADOW và Replay Pending)
             if exec_data.get("status") == "EXECUTED" and not replay_at:
                 try:
                     portfolio_state = self._load_current_portfolio_state(multi_agent_account_id, None)
                     current_nav = float(portfolio_state["total_nav"])
-                    replay_positions = portfolio_state["positions"]
-                    replay_cash = float(portfolio_state["cash_vnd"])
+                    working_positions = [dict(p) for p in portfolio_state["positions"]]
+                    working_cash = float(portfolio_state["cash_vnd"])
+                    working_portfolio_state = {
+                        **portfolio_state,
+                        "positions": working_positions,
+                        "sector_exposure": dict(portfolio_state.get("sector_exposure") or {}),
+                        "cash_vnd": working_cash,
+                    }
                 except Exception:
                     logger.exception("[Pha 10 - %s] Could not refresh portfolio after execution; stopping further multi-agent orders.", ticker)
                     portfolio_refresh_failed = True
+            elif exec_data.get("status") in {
+                "PENDING_SHADOW",
+                "APPROVED_PAPER_TRADING_PENDING_RUNNER_FILL",
+                "DISABLED",
+            }:
+                reserved_val = float(approved_shares) * float(current_price)
+                reserved_fee = max(reserved_val * 0.001, 10_000.0)
+                working_cash = max(0.0, working_cash - reserved_val - reserved_fee)
+                working_positions.append({
+                    "ticker": ticker,
+                    "symbol": ticker,
+                    "shares": approved_shares,
+                    "quantity": approved_shares,
+                    "current_price": current_price,
+                    "average_price": current_price,
+                    "market_value": reserved_val,
+                    "sector": portfolio_sector,
+                    "locked_t25_shares": approved_shares,
+                    "available_shares": 0,
+                    "in_flight_pending": True,
+                })
+                working_portfolio_state["cash_vnd"] = working_cash
+                working_portfolio_state["positions"] = working_positions
+                working_portfolio_state["sector_exposure"][portfolio_sector] = (
+                    working_portfolio_state["sector_exposure"].get(portfolio_sector, 0.0) + reserved_val
+                )
+                working_portfolio_state["locked_t25_value"] = (
+                    float(working_portfolio_state.get("locked_t25_value", 0.0)) + reserved_val
+                )
 
             # Đóng gói Lệnh Multi-Agent Book
             css_score_val = float(research_report.get("css", 75.0))
             z_score_val = round((css_score_val - 50.0) / 10.0, 2)
+            approved_weight_frac = round((approved_shares * current_price) / current_nav, 4) if current_nav > 0 else 0.0
 
             order_record_ma = {
                 "ticker": ticker,
-                "tier": "TIER_A_PLUS" if conviction == "A+" else "TIER_A",
+                "tier": "TIER_A_PLUS" if conviction == "A+" else f"TIER_{conviction}",
                 "conviction": conviction,
+                "playbook": playbook.value,
+                "tournament_rank": rank_position,
+                "final_rank_score": final_rank_score,
                 "z_score": z_score_val,
                 "pred_score": css_score_val,
                 "shares": int(exec_data.get("shares", 0)),
                 "approved_shares": approved_shares,
                 "price": float(exec_data.get("executed_price", 0.0)),
-                "target_weight_pct": alloc_data.get("target_weight_pct", 0.12),
-                "hard_stop_pct": 0.07,  # -7% cơ sở sàn HOSE
-                "breakeven_trigger_pct": 0.025, # +2.5% kích hoạt kéo hòa vốn
+                "target_weight_pct": approved_weight_frac,
+                "approved_weight_pct": approved_weight_pct,
+                "hard_stop_pct": 0.07,
+                "breakeven_trigger_pct": 0.025,
                 "take_profit_pct": 0.15,
                 "execution_mode": exec_data.get("execution_mode", self.multi_agent_mode.value),
                 "execution_status": exec_data.get("status", "UNKNOWN"),
-                "entry_type": "PILOT" if pilot_position else "STANDARD",
+                "entry_type": playbook.value,
                 "action": "SHADOW_PAPER_TRADE_ONLY",
-                "rationale": f"[12-AGENT] CSS={research_report.get('css', 0):.1f} | CTS={cts_score:.1f} | CIO={final_resolution}",
+                "rationale": (
+                    f"[{playbook.value} #{rank_position}] Final={final_rank_score:.1f} | "
+                    f"PB={winner['playbook_score']:.1f} | CSS={css_score_val:.1f} | "
+                    f"CTS={cts_score:.1f} | Weight={approved_weight_pct:.2f}% NAV | CIO={final_resolution}"
+                ),
                 "decision_context": decision_context,
             }
             qualified_orders_multi_agent.append(order_record_ma)
@@ -712,7 +1013,7 @@ class DailyInvestmentPipeline:
             actions_to_audit.append({
                 "agent_id": "portfolio_allocation",
                 "event_type": "PROPOSED_ALLOCATION",
-                "details": {"ticker": ticker, "shares": target_shares, "weight": alloc_data.get("target_weight_pct")},
+                "details": {"ticker": ticker, "shares": target_shares, "weight": approved_weight_frac},
             })
             actions_to_audit.append({
                 "agent_id": "portfolio_risk",
@@ -726,6 +1027,8 @@ class DailyInvestmentPipeline:
             })
             if portfolio_refresh_failed:
                 break
+
+        pipeline_trace["phases"]["phase_8_9_allocation_risk"] = allocation_risk_decisions
 
         research_status_counts = Counter(item["status"] for item in research_gate_decisions)
         research_reason_counts = Counter(
@@ -795,6 +1098,8 @@ class DailyInvestmentPipeline:
             "status": "FAILED" if portfolio_refresh_failed else "SUCCESS",
             "regime": regime,
             "session_context": session_context,
+            "playbook": playbook.value,
+            "policy": policy.to_dict(),
             "cash_ratio": cash_ratio,
             "multi_agent_mode": self.multi_agent_mode.value,
             "multi_agent_instructions": qualified_orders_multi_agent,

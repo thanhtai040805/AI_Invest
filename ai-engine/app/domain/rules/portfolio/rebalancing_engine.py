@@ -42,8 +42,9 @@ class RebalanceDecision:
 
 
 class RebalancingEngine:
-    def __init__(self, deadband_threshold_pct: float = 0.02):
+    def __init__(self, deadband_threshold_pct: float = 0.02, min_entry_weight_pct: float = 0.0):
         self.deadband_threshold_pct = deadband_threshold_pct
+        self.min_entry_weight_pct = min_entry_weight_pct
 
     def evaluate_rebalance(
         self,
@@ -60,6 +61,7 @@ class RebalancingEngine:
         price: float,
         total_nav: float,
         active_campaign: Optional[Dict[str, Any]] = None,
+        min_entry_weight_pct: Optional[float] = None,
     ) -> RebalanceDecision:
         ticker_clean = str(ticker).upper().strip()
         reasons: List[str] = []
@@ -68,11 +70,44 @@ class RebalancingEngine:
         abs_drift = abs(drift)
         drift_shares = incremental_shares
 
-        # 1. Kiểm tra Bộ lọc Deadband (>= 2.0% NAV)
-        # Ngoại lệ: Nếu current_weight == 0 và muốn mua mới, hoặc target == 0 và muốn bán hết, không áp deadband
+        # 0. Kiểm tra Sàn Tác Động Tối Thiểu khi Mở mới (chống giải ngân vụn 1-3% NAV)
+        effective_min_entry = (
+            float(min_entry_weight_pct)
+            if min_entry_weight_pct is not None
+            else self.min_entry_weight_pct
+        )
         is_new_entry = (current_weight == 0.0 and executable_target > 0.0)
         is_full_exit = (current_weight > 0.0 and portfolio_target == 0.0)
 
+        if is_new_entry and effective_min_entry > 0.0:
+            one_lot_weight = (100.0 * price / total_nav) if (total_nav > 0 and price > 0) else 0.0
+            lot_adjusted_floor = max(effective_min_entry * 0.80, effective_min_entry - one_lot_weight - 1e-4)
+            if portfolio_target < effective_min_entry - 1e-4 or executable_target < lot_adjusted_floor:
+                reasons.append(
+                    f"Lệnh mở mới {ticker_clean} ({executable_target*100:.2f}% NAV, mục tiêu {portfolio_target*100:.2f}%) "
+                    f"thấp hơn ngưỡng sàn tác động tối thiểu ({effective_min_entry*100:.1f}% NAV): Giữ tiền mặt (0%), không tạo chiến dịch vụn."
+                )
+                return RebalanceDecision(
+                    action="HOLD",
+                    sub_action="HOLD_BELOW_MIN_ENTRY_FLOOR",
+                    ticker=ticker_clean,
+                    current_weight=0.0,
+                    current_shares=0,
+                    available_shares=0,
+                    locked_t25_shares=0,
+                    target_weight=0.0,
+                    executable_target=0.0,
+                    incremental_weight=0.0,
+                    incremental_shares=0,
+                    target_shares=0,
+                    deadband_passed=False,
+                    rebalance_drift_pct=0.0,
+                    campaign_info=None,
+                    rebalance_reasons=reasons,
+                )
+
+        # 1. Kiểm tra Bộ lọc Deadband (>= 2.0% NAV)
+        # Ngoại lệ: Nếu current_weight == 0 và muốn mua mới (đã đạt sàn tối thiểu), hoặc target == 0 và muốn bán hết, không áp deadband
         if not is_new_entry and not is_full_exit and abs_drift < self.deadband_threshold_pct:
             reasons.append(
                 f"Độ lệch tỷ trọng ({abs_drift*100:.2f}%) nằm trong vùng Deadband an toàn (< {self.deadband_threshold_pct*100:.1f}% NAV). Giữ nguyên vị thế để chống cạm bẫy bào mòn phí và thuế."

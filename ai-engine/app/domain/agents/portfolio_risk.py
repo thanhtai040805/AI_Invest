@@ -77,12 +77,13 @@ class PortfolioRiskAgent(BaseAgent):
         user_id = event_data.get("user_id")
         portfolio_input = event_data.get("portfolio")
 
-        # 0.1 Nạp hạn mức rủi ro thể chế từ bảng risk_limits CSDL
+        # 0.1 Nạp hạn mức rủi ro thể chế từ bảng risk_limits CSDL và/hoặc PortfolioPolicy theo Regime/AUM
         risk_limits: Dict[str, float] = {
             "limit_type": "HOSE_EQUITY",
             "max_single_stock_pct": 15.0,
             "max_sector_pct": 35.0,
             "hard_stop_loss_pct": 2.0,
+            "max_locked_t25_pct": 35.0,
         }
         try:
             from app.domain.repositories.intelligence_repository import IntelligenceRepository
@@ -92,6 +93,17 @@ class PortfolioRiskAgent(BaseAgent):
                 risk_limits.update(db_limits)
         except Exception as e_lim:
             logger.debug(f"[PortfolioRiskAgent] Lỗi khi nạp risk_limits từ DB ({e_lim}), sử dụng mặc định IOS v5.1")
+
+        policy_obj = event_data.get("policy")
+        policy_limits_override = event_data.get("risk_limits_override")
+        if policy_obj is not None and hasattr(policy_obj, "to_risk_limits"):
+            proposed_conviction = (
+                (event_data.get("proposed_order") or event_data.get("candidate") or {}).get("conviction")
+                or "A"
+            )
+            risk_limits.update(policy_obj.to_risk_limits(conviction=str(proposed_conviction)))
+        if isinstance(policy_limits_override, dict):
+            risk_limits.update(policy_limits_override)
 
         # 0.2 Hydrate Portfolio: Triệt tiêu bẫy Phantom Portfolio (Portfolio Blindness)
         nav: float = 1000000000.0
@@ -379,6 +391,7 @@ class PortfolioRiskAgent(BaseAgent):
                 proposed_order_value=proposed_val,
                 price=order_price,
                 stop_loss_price=stop_loss_p,
+                risk_limits=risk_limits,
             )
             if not t25_check.passed:
                 hard_law_status_map["t25_capacity"] = "BLOCK" if t25_check.max_safe_shares == 0 else "WARNING"
@@ -450,8 +463,28 @@ class PortfolioRiskAgent(BaseAgent):
             # =========================================================================
             if breadth_inputs_missing:
                 reasons_list.append(f"INSUFFICIENT_DATA: missing as-of market inputs: {', '.join(missing_breadth_inputs)}.")
-            breadth_scale = 0.50 if breadth_eval.action_recommended == "REDUCE_SIZE" else 1.0
+            if breadth_eval.action_recommended == "BLOCK_BUY":
+                reasons_list.append(f"MARKET BREADTH BLOCK: {breadth_eval.reason}")
+            if dd_eval.tier == DrawdownTier.RED:
+                reasons_list.append(f"DRAWDOWN RED BLOCK: {dd_eval.action_description}")
+            if cdc_eval.tier == CDCTier.RED:
+                reasons_list.append(f"CDC RED BLOCK: Capital Degradation Control chặn mua mới (IC decay {cdc_eval.ic_decay_pct:.1f}%).")
+            default_breadth_scale = (
+                float(getattr(policy_obj, "breadth_deteriorating_scale", 0.50))
+                if policy_obj is not None
+                else 0.50
+            )
+            breadth_scale = default_breadth_scale if breadth_eval.action_recommended == "REDUCE_SIZE" else 1.0
             tape_scale = 0.70 if tape_anomaly_map["severity"] == TapeAnomalySeverity.WARNING else 1.0
+            min_entry_weight = float(
+                event_data.get("min_entry_weight")
+                if event_data.get("min_entry_weight") is not None
+                else (getattr(policy_obj, "min_entry_weight", 0.0) if policy_obj is not None else 0.0)
+            )
+            is_new_buy_order = (
+                str(proposed_order_raw.get("side", "BUY")).upper() == "BUY"
+                and order_ticker not in positions
+            )
             sizing_trace = {
                 "requested_shares": original_shares,
                 "scaling_factors": {
@@ -478,6 +511,7 @@ class PortfolioRiskAgent(BaseAgent):
                 },
                 "t25_max_safe_shares": t25_check.max_safe_shares,
                 "t25_reason": t25_check.reason,
+                "min_entry_weight": min_entry_weight,
                 "lot_size": 100,
             }
             # Điều kiện BLOCK Tuyệt đối:
@@ -507,7 +541,7 @@ class PortfolioRiskAgent(BaseAgent):
                     cdc_eval.sizing_scale_factor,
                 ]
                 if breadth_eval.action_recommended == "REDUCE_SIZE":
-                    scale_factors.append(0.50)
+                    scale_factors.append(breadth_scale)
                 if tape_anomaly_map["severity"] == TapeAnomalySeverity.WARNING:
                     scale_factors.append(0.70)
 
@@ -519,18 +553,32 @@ class PortfolioRiskAgent(BaseAgent):
 
                 # Làm tròn lô 100 cổ phiếu sàn HOSE
                 approved_shares = (calculated_shares // 100) * 100 if calculated_shares >= 100 else 0
+                approved_weight_frac = ((approved_shares * order_price) / nav) if (nav > 0 and order_price > 0) else 0.0
+                one_lot_weight = ((100.0 * order_price) / nav) if (nav > 0 and order_price > 0) else 0.0
+                lot_adjusted_floor = max(min_entry_weight * 0.80, min_entry_weight - one_lot_weight - 1e-4)
+
                 sizing_trace.update({
                     "applied": True,
                     "combined_scale_factor": combined_scale,
                     "shares_after_scaling": int(original_shares * combined_scale),
                     "shares_after_t25_cap": calculated_shares,
                     "approved_shares": approved_shares,
+                    "approved_weight": round(approved_weight_frac, 4),
                     "block_reasons": [],
                 })
 
                 if approved_shares <= 0:
                     action = "BLOCK"
                     reasons_list.append("Sau khi áp dụng hệ số co giãn rủi ro, số lượng cổ phiếu khả dụng < 100 cổ.")
+                    sizing_trace["block_reasons"] = list(reasons_list)
+                elif is_new_buy_order and min_entry_weight > 0.0 and approved_weight_frac < lot_adjusted_floor:
+                    action = "BLOCK"
+                    approved_shares = 0
+                    sizing_trace["approved_shares"] = 0
+                    reasons_list.append(
+                        f"Sau cắt giảm rủi ro, tỷ trọng mở mới ({approved_weight_frac*100:.2f}% NAV) rơi dưới ngưỡng sàn tối thiểu "
+                        f"({min_entry_weight*100:.1f}% NAV): Hủy lệnh về 0% thay vì giải ngân vụn."
+                    )
                     sizing_trace["block_reasons"] = list(reasons_list)
                 elif approved_shares < original_shares:
                     action = "REDUCE"
@@ -541,11 +589,20 @@ class PortfolioRiskAgent(BaseAgent):
                     reasons_list.append("Thỏa mãn 100% tiêu chuẩn an toàn vốn thể chế.")
 
         decision_id = f"RSK-{now_vn().strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}"
-        min_cash_target = max(
-            dd_eval.min_cash_target_pct,
-            breadth_eval.recommended_min_cash_pct,
-            cdc_eval.recommended_min_cash_pct,
-        )
+        if (
+            policy_obj is not None
+            and getattr(policy_obj, "allow_zero_cash_when_healthy", False)
+            and dd_eval.tier == DrawdownTier.GREEN
+            and breadth_eval.health_tier == BreadthHealthTier.HEALTHY
+            and cdc_eval.tier == CDCTier.NORMAL
+        ):
+            min_cash_target = 0.0
+        else:
+            min_cash_target = max(
+                dd_eval.min_cash_target_pct,
+                breadth_eval.recommended_min_cash_pct,
+                cdc_eval.recommended_min_cash_pct,
+            )
 
         final_rationale = " | ".join(reasons_list) if reasons_list else "Danh mục hoạt động trong hạn mức an toàn."
 

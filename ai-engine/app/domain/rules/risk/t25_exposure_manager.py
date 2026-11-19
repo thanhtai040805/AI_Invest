@@ -46,21 +46,33 @@ class T25ExposureManager:
         proposed_order_value: float,
         price: float,
         stop_loss_price: Optional[float] = None,
+        risk_limits: Optional[Dict[str, float]] = None,
     ) -> T25CapacityCheck:
         """
         Kiểm tra sức chứa hàng kẹt T+2.5 và tính toán quy mô an toàn phòng ngừa 2 phiên sàn.
-        - nav: Tổng giá trị tài sản ròng
-        - locked_t25_value: Tổng giá trị các cổ phiếu đã mua nhưng chưa về tài khoản (T+0, T+1, sáng T+2)
-        - proposed_order_value: Giá trị lệnh mua đề xuất (Price * Quantity)
-        - price: Giá mua dự kiến
-        - stop_loss_price: Giá cắt lỗ đề xuất
         """
+        effective_max_locked = (
+            float(risk_limits["max_locked_t25_pct"])
+            if risk_limits and risk_limits.get("max_locked_t25_pct") is not None
+            else self.max_locked_t25_pct
+        )
+        effective_hard_stop = (
+            float(risk_limits["hard_stop_loss_pct"]) / 100.0
+            if risk_limits and risk_limits.get("hard_stop_loss_pct") is not None
+            else self.hard_stop_loss_nav_pct
+        )
+        effective_single_stock = (
+            float(risk_limits["max_single_stock_pct"]) / 100.0
+            if risk_limits and risk_limits.get("max_single_stock_pct") is not None
+            else 0.15
+        )
+
         if nav <= 0 or price <= 0:
             return T25CapacityCheck(
                 passed=False,
                 current_locked_t25_pct=0.0,
                 projected_locked_t25_pct=0.0,
-                max_allowed_locked_pct=self.max_locked_t25_pct,
+                max_allowed_locked_pct=effective_max_locked,
                 max_safe_shares=0,
                 max_safe_vnd=0.0,
                 reason="NAV hoặc Giá cổ phiếu không hợp lệ.",
@@ -69,35 +81,33 @@ class T25ExposureManager:
         cur_locked_pct = (locked_t25_value / nav) * 100.0
         proj_locked_pct = ((locked_t25_value + proposed_order_value) / nav) * 100.0
 
-        # 1. Kiểm tra trần tổng hàng kẹt T+2.5 (Không để vượt quá 35% NAV)
-        if proj_locked_pct > self.max_locked_t25_pct:
+        # 1. Kiểm tra trần tổng hàng kẹt T+2.5
+        if proj_locked_pct > effective_max_locked:
             reason = (
                 f"Vi phạm Trần Hàng Kẹt T+2.5: Tỷ lệ hàng chưa về dự kiến ({proj_locked_pct:.1f}% NAV) "
-                f"vượt trần an toàn ({self.max_locked_t25_pct:.1f}% NAV). Chặn mở mới để bảo tồn thanh khoản."
+                f"vượt trần an toàn ({effective_max_locked:.1f}% NAV). Chặn mở mới để bảo tồn thanh khoản."
             )
             logger.warning(f"[T25ExposureManager] {reason}")
             return T25CapacityCheck(
                 passed=False,
                 current_locked_t25_pct=round(cur_locked_pct, 2),
                 projected_locked_t25_pct=round(proj_locked_pct, 2),
-                max_allowed_locked_pct=self.max_locked_t25_pct,
+                max_allowed_locked_pct=effective_max_locked,
                 max_safe_shares=0,
                 max_safe_vnd=0.0,
                 reason=reason,
             )
 
         # 2. Tính toán quy mô vị thế an toàn gánh chịu rủi ro 2 phiên sàn T+2.5
-        # Loss per share = max(Price - StopLoss, 2 phiên sàn = 13.51% * Price)
         if stop_loss_price and stop_loss_price < price:
             stop_loss_pct = (price - stop_loss_price) / price
         else:
-            stop_loss_pct = 0.07  # Mặc định 7% nếu không truyền
+            stop_loss_pct = 0.07
 
         effective_downside_pct = max(stop_loss_pct, self.two_session_floor_loss_pct)
 
-        # Max allowed VND so that (Max_VND * effective_downside_pct) <= 2% NAV
-        max_safe_vnd = (self.hard_stop_loss_nav_pct * nav) / effective_downside_pct
-        max_safe_vnd = min(max_safe_vnd, nav * 0.15)  # Không vượt quá 15% Single Stock Limit
+        max_safe_vnd = (effective_hard_stop * nav) / effective_downside_pct
+        max_safe_vnd = min(max_safe_vnd, nav * effective_single_stock)
 
         # Làm tròn theo lô 100 cổ phiếu sàn HOSE
         max_safe_shares = int(max_safe_vnd / price) // 100 * 100
@@ -112,7 +122,7 @@ class T25ExposureManager:
                 passed=False,
                 current_locked_t25_pct=round(cur_locked_pct, 2),
                 projected_locked_t25_pct=round(proj_locked_pct, 2),
-                max_allowed_locked_pct=self.max_locked_t25_pct,
+                max_allowed_locked_pct=effective_max_locked,
                 max_safe_shares=max_safe_shares,
                 max_safe_vnd=round(max_safe_vnd, 2),
                 reason=reason,
@@ -122,7 +132,7 @@ class T25ExposureManager:
             passed=True,
             current_locked_t25_pct=round(cur_locked_pct, 2),
             projected_locked_t25_pct=round(proj_locked_pct, 2),
-            max_allowed_locked_pct=self.max_locked_t25_pct,
+            max_allowed_locked_pct=effective_max_locked,
             max_safe_shares=max_safe_shares,
             max_safe_vnd=round(max_safe_vnd, 2),
             reason="Thỏa mãn trần tỷ trọng kẹt hàng T+2.5 và khoảng đệm rủi ro 2 phiên sàn.",

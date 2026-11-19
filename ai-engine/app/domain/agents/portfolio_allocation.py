@@ -22,6 +22,10 @@ from typing import Any, Dict, List, Optional
 
 from app.core.base_agent import BaseAgent
 from app.domain.repositories.portfolio_repository import PortfolioRepository
+from app.domain.rules.portfolio.allocation_policy import (
+    PortfolioPolicy,
+    resolve_portfolio_policy,
+)
 from app.domain.rules.portfolio.eligibility_engine import EligibilityEngine
 from app.domain.rules.portfolio.probability_engine import ProbabilityEngine
 from app.domain.rules.portfolio.kelly_engine import KellySizingEngine
@@ -83,7 +87,10 @@ class PortfolioAllocationAgent(BaseAgent):
         conviction = str(conviction_raw).upper().strip() if conviction_raw else ""
         sector = str(candidate.get("sector") or event_data.get("sector", "General")).strip()
         regime_str = str(event_data.get("regime") or candidate.get("regime", "BULL_MARKET")).upper().strip()
-        weight_cap = float(event_data.get("weight_cap", candidate.get("weight_cap", 0.15)))
+        session_context = str(event_data.get("session_context", "Normal")).strip()
+        is_replay = bool(event_data.get("is_replay", False))
+        replay_account_id = event_data.get("replay_account_id")
+        explicit_weight_cap = event_data.get("weight_cap", candidate.get("weight_cap"))
 
         # =========================================================================
         # 0. NẠP DỮ LIỆU THẬT & KIỂM TRA TOÀN VẸN (NO MOCK DATA ENFORCEMENT)
@@ -106,32 +113,59 @@ class PortfolioAllocationAgent(BaseAgent):
             raise ValueError(error_msg)
 
         # B. Nạp Số dư Tài khoản & NAV thực tế từ PortfolioRepository
-        account_state = self.repository.get_account_state()
+        if is_replay and event_data.get("total_nav") is not None:
+            account_state = {
+                "total_nav": float(event_data["total_nav"]),
+                "cash_balance": float(event_data.get("cash_balance", event_data["total_nav"])),
+                "drawdown_tier": str(event_data.get("drawdown_tier", "GREEN")),
+            }
+        else:
+            account_state = self.repository.get_account_state(user_id=replay_account_id)
         nav = float(event_data.get("total_nav") or account_state.get("total_nav", 0.0))
         if nav <= 0:
             error_msg = f"[PortfolioAllocationAgent] Tổng NAV tài khoản không hợp lệ ({nav} VND). Từ chối phân bổ vốn."
             logger.error(error_msg)
             raise ValueError(error_msg)
 
-        cash_balance = float(event_data.get("cash_balance") or account_state.get("cash_balance", nav))
+        cash_balance = float(
+            event_data["cash_balance"]
+            if "cash_balance" in event_data and event_data["cash_balance"] is not None
+            else account_state.get("cash_balance", nav)
+        )
+
+        # Resolve unified AUM-tiered & Regime-aware PortfolioPolicy
+        policy_input = event_data.get("policy")
+        policy: PortfolioPolicy = (
+            policy_input
+            if isinstance(policy_input, PortfolioPolicy)
+            else resolve_portfolio_policy(regime_str, total_nav=nav, session_context=session_context)
+        )
+        weight_cap = (
+            float(explicit_weight_cap)
+            if explicit_weight_cap is not None
+            else policy.single_stock_cap_for_conviction(conviction or "A")
+        )
 
         # C. Nạp toàn bộ Vị thế Hiện Hữu (Khắc phục Portfolio Blindness)
         existing_positions = (
             event_data["positions"] if "positions" in event_data and event_data["positions"] is not None
             else (
                 event_data["existing_positions"] if "existing_positions" in event_data and event_data["existing_positions"] is not None
-                else self.repository.get_open_positions()
+                else self.repository.get_open_positions(user_id=replay_account_id)
             )
         )
-        pos_current = next((p for p in existing_positions if p["ticker"] == ticker), None)
-        current_shares = int(pos_current.get("shares", 0)) if pos_current else 0
+        pos_current = next(
+            (p for p in existing_positions if str(p.get("ticker", p.get("symbol", ""))).upper() == ticker),
+            None,
+        )
+        current_shares = int(pos_current.get("shares", pos_current.get("quantity", 0))) if pos_current else 0
         available_shares = int(pos_current.get("available_shares", current_shares)) if pos_current else 0
         locked_t25_shares = int(pos_current.get("locked_t25_shares", 0)) if pos_current else 0
         current_weight = round((current_shares * price) / nav, 4) if nav > 0 else 0.0
 
         # D. Nạp ADTV20 thực tế
         adtv20 = float(candidate.get("adtv20_shares") or candidate.get("adtv20") or event_data.get("adtv20_shares", 0.0))
-        if adtv20 <= 0:
+        if adtv20 <= 0 and not is_replay:
             try:
                 from app.domain.repositories.market_data_repository import MarketDataRepository
                 m_repo = MarketDataRepository()
@@ -256,19 +290,30 @@ class PortfolioAllocationAgent(BaseAgent):
         )
 
         # =========================================================================
-        # 3. ENGINE 3: POSITION SIZING ENGINE (QUARTER KELLY)
+        # 3. ENGINE 3: POSITION SIZING ENGINE (PLAYBOOK ELASTIC CORRIDOR KELLY)
         # =========================================================================
+        signal_strength = (
+            event_data.get("final_rank_score")
+            or (research_data.get("playbook_score") if isinstance(research_data, dict) else None)
+            or (research_data.get("css") if isinstance(research_data, dict) else None)
+        )
         kelly_res = self.kelly_engine.calculate_sizing(
             prob_win=prob_res.prob_win,
             payoff_ratio=prob_res.payoff_ratio,
             regime_str=regime_str,
             total_nav=nav,
+            policy=policy,
+            conviction=conviction,
+            signal_strength=float(signal_strength) if signal_strength is not None else None,
         )
 
         # =========================================================================
         # 4. ENGINE 4: PORTFOLIO CONSTRUCTION ENGINE
         # =========================================================================
         corr_matrix = event_data.get("corr_matrix")
+        policy_single_cap = policy.single_stock_cap_for_conviction(conviction)
+        if explicit_weight_cap is None:
+            weight_cap = policy_single_cap
         construction_res = self.construction_engine.construct(
             ticker=ticker,
             preliminary_target=kelly_res.preliminary_target,
@@ -277,6 +322,8 @@ class PortfolioAllocationAgent(BaseAgent):
             existing_positions=existing_positions,
             macro_weight_cap=weight_cap,
             corr_matrix=corr_matrix,
+            sector_limit_override=policy.max_sector_weight,
+            max_single_stock_override=policy_single_cap,
         )
 
         # =========================================================================
@@ -285,8 +332,8 @@ class PortfolioAllocationAgent(BaseAgent):
         cio_cash_override = float(event_data.get("cash_target_override", 0.0))
         drawdown_tier = str(event_data.get("drawdown_tier") or account_state.get("drawdown_tier", "GREEN"))
 
-        # Tự động nạp khuyến nghị tiền mặt tối thiểu và Drawdown Tier từ Agent-06 (bảng risk_snapshots)
-        if cio_cash_override <= 0 or "drawdown_tier" not in event_data:
+        # Chỉ nạp risk_snapshots hiện hành khi chạy LIVE (tránh rò rỉ dữ liệu tương lai khi replay)
+        if not is_replay and (cio_cash_override <= 0 or "drawdown_tier" not in event_data):
             try:
                 from app.domain.repositories.intelligence_repository import IntelligenceRepository
                 intel_repo = IntelligenceRepository()
@@ -295,7 +342,10 @@ class PortfolioAllocationAgent(BaseAgent):
                     if "drawdown_tier" not in event_data and risk_snap.get("drawdown_tier"):
                         drawdown_tier = str(risk_snap.get("drawdown_tier"))
                     if cio_cash_override <= 0 and risk_snap.get("garch_cash_target"):
-                        cio_cash_override = float(risk_snap.get("garch_cash_target"))
+                        snap_cash = float(risk_snap.get("garch_cash_target"))
+                        # Do not force legacy 10% cash floor when healthy Bull policy allows 0% cash
+                        if not (policy.allow_zero_cash_when_healthy and snap_cash <= 10.0 and drawdown_tier == "GREEN"):
+                            cio_cash_override = snap_cash
             except Exception as e_snap:
                 logger.debug(f"[PortfolioAllocationAgent] Không thể nạp risk_snapshots từ DB: {e_snap}")
 
@@ -308,6 +358,7 @@ class PortfolioAllocationAgent(BaseAgent):
             existing_positions=existing_positions,
             cio_cash_target_override=cio_cash_override,
             drawdown_tier=drawdown_tier,
+            policy=policy,
         )
 
         # =========================================================================
@@ -323,9 +374,9 @@ class PortfolioAllocationAgent(BaseAgent):
         )
 
         # =========================================================================
-        # 7. ENGINE 7: REBALANCING ENGINE (DEADBAND >= 2% & T+2.5 SPLIT)
+        # 7. ENGINE 7: REBALANCING ENGINE (MIN ENTRY FLOOR, DEADBAND & T+2.5 SPLIT)
         # =========================================================================
-        active_campaign = self.repository.get_active_campaign(ticker)
+        active_campaign = None if is_replay else self.repository.get_active_campaign(ticker)
         rebalance_res = self.rebalance_engine.evaluate_rebalance(
             ticker=ticker,
             current_weight=current_weight,
@@ -340,10 +391,11 @@ class PortfolioAllocationAgent(BaseAgent):
             price=price,
             total_nav=nav,
             active_campaign=active_campaign,
+            min_entry_weight_pct=policy.min_entry_weight,
         )
 
-        # Cập nhật chiến dịch đa phiên vào CSDL
-        if rebalance_res.campaign_info:
+        # Cập nhật chiến dịch đa phiên vào CSDL (chỉ khi không phải replay)
+        if rebalance_res.campaign_info and not is_replay:
             self.repository.upsert_campaign(rebalance_res.campaign_info)
 
         # =========================================================================

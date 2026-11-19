@@ -111,6 +111,7 @@ class GovernanceComplianceEngine:
         confirming_signals_count: int = 3,
         beneish_passed: bool = True,
         available_shares: Optional[int] = None,
+        risk_limits: Optional[Dict[str, float]] = None,
     ) -> ComplianceResult:
         """
         Thẩm tra toàn diện một lệnh trước khi thực thi (Pre-Trade Full Compliance Check).
@@ -152,8 +153,10 @@ class GovernanceComplianceEngine:
                     details={"ticker": ticker_clean, "confirming_signals_count": confirming_signals_count},
                 )
 
-        # 4. Hard Laws 1, 2, 4 (Tồn tại T+2.5, Thanh khoản ADTV20, Tập trung vị thế 15% / 35%)
-        hl_check: HardLawCheck = self.hard_law_engine.check_order(order, portfolio, adtv20_continuous)
+        # 4. Hard Laws 1, 2, 4 (Tồn tại T+2.5, Thanh khoản ADTV20, Tập trung vị thế động theo Policy/Hiến pháp)
+        hl_check: HardLawCheck = self.hard_law_engine.check_order(
+            order, portfolio, adtv20_continuous, risk_limits=risk_limits
+        )
         if not hl_check.passed:
             return ComplianceResult(
                 is_compliant=False,

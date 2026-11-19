@@ -56,12 +56,24 @@ class PortfolioConstructionEngine:
         existing_positions: List[Dict[str, Any]],
         macro_weight_cap: float = 0.15,
         corr_matrix: Optional[pd.DataFrame] = None,
+        sector_limit_override: Optional[float] = None,
+        max_single_stock_override: Optional[float] = None,
     ) -> ConstructionResult:
         reasons = []
         target = preliminary_target
+        effective_single_limit = (
+            float(max_single_stock_override)
+            if max_single_stock_override is not None
+            else self.max_single_stock_pct
+        )
+        effective_sector_limit = (
+            float(sector_limit_override)
+            if sector_limit_override is not None
+            else self.sector_limit_pct
+        )
 
         # 1. Áp trần vĩ mô từ Strategy CIO (Macro Cap)
-        effective_cap = min(self.max_single_stock_pct, macro_weight_cap)
+        effective_cap = min(effective_single_limit, macro_weight_cap)
         if target > effective_cap:
             reasons.append(f"Ép trần phân bổ vĩ mô CIO: Giảm từ {target*100:.1f}% xuống {effective_cap*100:.1f}%.")
             target = effective_cap
@@ -76,7 +88,7 @@ class PortfolioConstructionEngine:
         current_sector_pct = (current_sector_value / total_nav) if total_nav > 0 else 0.0
 
         # Trừ đi vị thế hiện tại của chính mã này nếu đã có trong ngành để tránh tính trùng
-        existing_pos_stock = next((p for p in existing_positions if p["ticker"] == ticker), None)
+        existing_pos_stock = next((p for p in existing_positions if p.get("ticker", p.get("symbol")) == ticker), None)
         current_stock_weight = (
             float(existing_pos_stock.get("market_value", 0.0)) / total_nav
             if existing_pos_stock and total_nav > 0
@@ -84,11 +96,11 @@ class PortfolioConstructionEngine:
         )
         sector_excluding_this_stock = max(0.0, current_sector_pct - current_stock_weight)
 
-        # Kiểm tra trần ngành 35%
-        max_allowed_for_sector = max(0.0, self.sector_limit_pct - sector_excluding_this_stock)
+        # Kiểm tra trần ngành động theo Policy
+        max_allowed_for_sector = max(0.0, effective_sector_limit - sector_excluding_this_stock)
         if target > max_allowed_for_sector:
             reasons.append(
-                f"Chạm trần ngành {sector_clean} (35% NAV): Giảm từ {target*100:.1f}% xuống {max_allowed_for_sector*100:.1f}%."
+                f"Chạm trần ngành {sector_clean} ({effective_sector_limit*100:.0f}% NAV): Giảm từ {target*100:.1f}% xuống {max_allowed_for_sector*100:.1f}%."
             )
             target = max_allowed_for_sector
 
@@ -98,8 +110,8 @@ class PortfolioConstructionEngine:
         if corr_matrix is not None and not corr_matrix.empty and ticker in corr_matrix.columns:
             corrs = []
             for p in existing_positions:
-                existing_ticker = p["ticker"]
-                if existing_ticker != ticker and existing_ticker in corr_matrix.index:
+                existing_ticker = p.get("ticker", p.get("symbol"))
+                if existing_ticker and existing_ticker != ticker and existing_ticker in corr_matrix.index:
                     c_val = float(corr_matrix.loc[existing_ticker, ticker])
                     corrs.append(c_val)
                     if c_val > self.correlation_limit:
@@ -128,7 +140,7 @@ class PortfolioConstructionEngine:
             sector=sector_clean,
             sector_exposure_before=round(current_sector_pct, 4),
             sector_exposure_after=sector_after,
-            sector_limit=self.sector_limit_pct,
+            sector_limit=effective_sector_limit,
             macro_weight_cap=effective_cap,
             avg_correlation=round(avg_corr, 2),
             stress_correlation_status=stress_status,

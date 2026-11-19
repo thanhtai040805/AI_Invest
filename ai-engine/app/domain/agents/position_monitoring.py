@@ -22,12 +22,16 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import date, datetime, time as dt_time
 from typing import Any, Dict, List, Optional
 
 from app.core.base_agent import BaseAgent
 from app.core.time_utils import UTC_TZ, VN_TZ, now_vn
 from app.domain.rules.stop_loss import StopLossEngine, StopLossOrder
+from app.domain.rules.technical_structure import (
+    TechnicalStructureAnalyzer,
+    TechnicalStructureSnapshot,
+)
 from app.domain.repositories.portfolio_repository import PortfolioRepository
 
 logger = logging.getLogger(__name__)
@@ -55,6 +59,7 @@ class PositionMonitoringAgent(BaseAgent):
         self.repository = repository or PortfolioRepository()
         self._market_data_repo = market_data_repo
         self.auto_dispatch = auto_dispatch
+        self._structure_cache: Dict[tuple[str, str], Optional[TechnicalStructureSnapshot]] = {}
 
     @property
     def market_data_repo(self):
@@ -140,12 +145,14 @@ class PositionMonitoringAgent(BaseAgent):
             - current_time: str (ISO datetime để kiểm tra mốc 14:00)
             - auto_dispatch: bool (Tự động chuyển tiếp lệnh khẩn cấp sang Agent-08)
         """
-        account_state = self.repository.get_account_state()
+        replay_account_id = event_data.get("replay_account_id")
+        is_replay = bool(event_data.get("is_replay", False))
+        account_state = self.repository.get_account_state(user_id=replay_account_id) if replay_account_id else self.repository.get_account_state()
         nav = float(event_data.get("nav", account_state.get("total_nav", 1000000000.0)))
         failsafe_active = bool(event_data.get("failsafe_active", False) or event_data.get("failsafe", False))
         auto_dispatch = bool(event_data.get("auto_dispatch", self.auto_dispatch))
 
-        # Kiểm tra mốc thời gian đánh giá Invalidation (SLA trước 14:00)
+        # Kiểm tra mốc thời gian đánh giá Invalidation (SLA 14:00) & Cửa sổ xác nhận cuối phiên (>= 14:15)
         eval_time_str = event_data.get("current_time")
         if eval_time_str:
             try:
@@ -160,6 +167,23 @@ class PositionMonitoringAgent(BaseAgent):
         else:
             eval_dt = now_vn()
         is_past_14h = eval_dt.hour >= 14
+        if "is_near_close" in event_data:
+            is_near_close = bool(event_data["is_near_close"])
+        elif eval_time_str:
+            is_near_close = eval_dt.time() >= dt_time(14, 15)
+        else:
+            # Direct/test invocation without explicit timestamp defaults to near-close evaluation
+            is_near_close = True
+
+        market_data_date_raw = event_data.get("market_data_date") or event_data.get("target_date")
+        market_data_date_obj: Optional[date] = None
+        if isinstance(market_data_date_raw, date) and not isinstance(market_data_date_raw, datetime):
+            market_data_date_obj = market_data_date_raw
+        elif isinstance(market_data_date_raw, str) and len(market_data_date_raw) >= 10:
+            try:
+                market_data_date_obj = date.fromisoformat(market_data_date_raw[:10])
+            except ValueError:
+                market_data_date_obj = None
 
         positions_raw = event_data.get("positions", [])
         if not positions_raw and "position" in event_data:
@@ -301,7 +325,41 @@ class PositionMonitoringAgent(BaseAgent):
                         ticker, peak_user_id, e_peak,
                     )
 
-            # 3. Kiểm tra Hệ thống phòng thủ đa tầng qua StopLossEngine
+            # 3. Nạp Bức Tranh Lớn đa phiên (TechnicalStructureSnapshot) & kiểm tra StopLossEngine (Phương án A)
+            tech_structure = (
+                pos.get("technical_structure")
+                or (tick_info.get("technical_structure") if isinstance(tick_info, dict) else None)
+            )
+            if tech_structure is None and is_near_close and self.market_data_repo:
+                cache_key = (ticker, str(market_data_date_obj or eval_dt.date()))
+                if cache_key in self._structure_cache:
+                    tech_structure = self._structure_cache[cache_key]
+                else:
+                    try:
+                        hist_bars = self.market_data_repo.get_ohlcv(
+                            ticker, end_date=market_data_date_obj, limit=120
+                        )
+                        if hist_bars and len(hist_bars) >= 10:
+                            tech_structure = TechnicalStructureAnalyzer.analyze_ohlcv_bars(hist_bars)
+                        self._structure_cache[cache_key] = tech_structure
+                    except Exception as e_ts:
+                        logger.debug("Could not hydrate technical structure for %s: %s", ticker, e_ts)
+                        self._structure_cache[cache_key] = None
+
+            session_candle = (
+                (tick_info.get("session_candle") if isinstance(tick_info, dict) else None)
+                or current_candle
+            )
+            daily_ma20_vol = float(
+                (tick_info.get("daily_ma20_volume") if isinstance(tick_info, dict) else 0.0)
+                or (tech_structure.ma20_volume if isinstance(tech_structure, TechnicalStructureSnapshot) else 0.0)
+                or ma20_vol
+            )
+            min_remaining_weight = float(
+                pos.get("min_remaining_weight")
+                or event_data.get("min_remaining_weight", 0.04)
+            )
+
             market_data = {
                 "available_shares": available_shares,
                 "peak_price": peak_price,
@@ -311,7 +369,12 @@ class PositionMonitoringAgent(BaseAgent):
                 "is_floor_locked": is_floor_locked,
                 "last_order_unfilled": last_order_unfilled,
                 "current_candle": current_candle,
+                "session_candle": session_candle,
                 "ma20_volume": ma20_vol,
+                "daily_ma20_volume": daily_ma20_vol,
+                "technical_structure": tech_structure,
+                "is_near_close": is_near_close,
+                "min_remaining_weight": min_remaining_weight,
             }
 
             stop_order: Optional[StopLossOrder] = self.stop_loss_engine.check_position(
@@ -334,10 +397,12 @@ class PositionMonitoringAgent(BaseAgent):
                     health_status = "CRITICAL_T25_LOCKED"
                 elif stop_order.suggested_action == "FLOOR_LOCK_RESET":
                     health_status = "FLOOR_LOCK_UNFILLED"
-                elif stop_order.rule_level == "HARD_STOP":
+                elif stop_order.rule_level in ("HARD_STOP", "CONFIRMED_CAPITAL_STOP"):
                     health_status = "CRITICAL_STOP_LOSS"
-                elif stop_order.rule_level == "TRAILING_STOP":
-                    health_status = "TRAILING_STOP_TRIGGERED"
+                elif stop_order.rule_level == "STRUCTURAL_BREAKDOWN":
+                    health_status = "STRUCTURAL_BREAKDOWN"
+                elif stop_order.rule_level == "CONFIRMED_DISTRIBUTION":
+                    health_status = "CONFIRMED_DISTRIBUTION"
                 else:
                     health_status = "STOP_LOSS_WARNING"
 
@@ -383,8 +448,13 @@ class PositionMonitoringAgent(BaseAgent):
                             "locked_t25_shares": locked_t25_shares,
                             "holding_days": holding_days,
                             "swing_low_price": swing_low,
-                            "current_candle": current_candle,
-                            "ma20_volume": ma20_vol,
+                            "session_candle": session_candle,
+                            "daily_ma20_volume": daily_ma20_vol,
+                            "technical_structure": (
+                                tech_structure.to_dict()
+                                if isinstance(tech_structure, TechnicalStructureSnapshot)
+                                else tech_structure
+                            ),
                         },
                         "bypass_portfolio_agent": True,
                         "target_execution": "EXECUTION_AGENT_DIRECT_ROUTE",
@@ -531,12 +601,13 @@ class PositionMonitoringAgent(BaseAgent):
                         logger.error(f"[PositionMonitoringAgent] Lỗi khi dispatch lệnh sang Agent-08: {e_dispatch}")
                         order["dispatch_status"] = f"DISPATCH_ERROR: {e_dispatch}"
 
-        # 7. GHI NHẬN PERSISTENCE VÀO CSDL (TABLES NGHIỆP VỤ)
-        self._persist_health_ticks(monitored_positions)
+        # 7. GHI NHẬN PERSISTENCE VÀO CSDL (TABLES NGHIỆP VỤ — KHÔNG GHI ĐÈ LIVE HEALTH TICKS KHI REPLAY)
+        if not is_replay:
+            self._persist_health_ticks(monitored_positions)
         if stop_loss_orders:
             self._persist_stop_loss_events(
                 stop_loss_orders,
-                triggered_at=eval_dt if event_data.get("is_replay") else None,
+                triggered_at=eval_dt if is_replay else None,
             )
 
         # Cung cấp các trường top-level để BaseAgent ghi đúng vào log_position_monitoring
