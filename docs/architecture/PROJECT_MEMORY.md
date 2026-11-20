@@ -1,5 +1,5 @@
 # AIInvest Project Memory & Architecture Harness
-> **Version**: 2.0.0 (Living Architecture Memory)
+> **Version**: 2.1.0 (Living Architecture Memory)
 > **Last Updated**: 2026-11-20
 > **Purpose**: Source of truth for all AI agents and developers working on AIInvest. Eliminates hallucinations, establishes system boundaries, and documents core data pipelines.
 
@@ -10,28 +10,31 @@
 AIInvest is an autonomous quantitative investment and stock-research organization engineered specifically for the HOSE (Ho Chi Minh Stock Exchange) market:
 
 ```
-[Market OHLCV / Core Financial Statements / Corporate Disclosures]
+[Market OHLCV / Core Financial Statements / Corporate Disclosures / R2 PDFs]
                    │
       ┌────────────┴───────────────────────────────┐
       ▼                                            ▼
-┌──────────────────────┐              ┌─────────────────────────────┐
-│      ai-engine       │              │     SAG (Research Profile)  │
-│   Quant Organization │              │   Knowledge Routing RAG v1  │
-│ 12 Autonomous Agents │              │ zleap-sag 0.12 · PG+Qdrant  │
-│ Dual-Book T+2.5 HOSE │              │ Stock Research / MOAT Only  │
-└──────────┬───────────┘              └─────────────────────────────┘
-           │                            (Isolated; GIL retired)
-           ▼
-┌──────────────────────┐
-│      back-end        │ ──▶ Express + Prisma ORM + PostgreSQL 16 + Redis
-│   Core API Gateway   │     User auth, portfolios, LIVE OMS, order state
-└──────────┬───────────┘
-           │
-           ▼
-┌──────────────────────┐
-│      front-end       │ ──▶ Next.js 16 App Router, Tailwind CSS,
-│   Interactive UI     │     AI War Room, Research, TradingView Chart
-└──────────────────────┘
+┌──────────────────────┐              ┌────────────────────────────────────┐
+│      ai-engine       │              │     SAG v2 (Research Profile)      │
+│   Quant Organization │              │  Knowledge Routing RAG + 3-Layer KG│
+│ 12 Autonomous Agents │              │  zleap-sag 0.12 · PG16 + Qdrant    │
+│ Dual-Book T+2.5 HOSE │              │  Phase 1 Stock Research / Chat     │
+└──────────┬───────────┘              └─────────────────┬──────────────────┘
+           │  (Rule 06: 12 Agents & GIL CLOSED)         │  60s SSE (BFF Headers)
+           │  ai-engine <-> SAG = 0 connections         │  + SAG_CORE_DATABASE_URL (RO)
+           ▼                                            ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│                                 back-end                                 │
+│  Express 4 + Prisma ORM + Core PostgreSQL 16 + Redis + LIVE OMS          │
+│  /api/v1/ai/research-chat/* (60s SSE Gateway + sag_chat_eval_feedback)   │
+└────────────────────────────────────┬─────────────────────────────────────┘
+                                     │
+                                     ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│                                front-end                                 │
+│  Next.js 16 App Router, Tailwind CSS v4, TradingView Chart               │
+│  AI War Room (/agent), /research, /trade, /research-chat (Phase 1 Gate)  │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -56,26 +59,28 @@ AIInvest is an autonomous quantitative investment and stock-research organizatio
 - **`app/backtest/` & `app/eval/`**:
   - **Core responsibility**: Walk-forward backtesting, Sharpe/Sortino/Drawdown evaluations, audit trail hash chaining (`audit_trail.py`).
 
-### `SAG/` (Stock Research Knowledge Routing RAG Engine — Isolated Research Profile)
-- **Core responsibility**: Headless FastAPI v1 Knowledge Routing RAG engine (`zleap-sag==0.12.0`, PostgreSQL 16 + Qdrant) scoped strictly to **Stock Research & Competitive Advantage (MOAT)** — analyzing company strengths, structural weaknesses, and economic moat with grounded citations. All legacy **GIL (Graph Intelligence Layer)** and `/api/v2/financial` pipelines have been completely removed.
+### `SAG/` (SAG v2 Stock Research & Enterprise Analysis AI Chat — Isolated `research` Profile)
+- **Core responsibility**: Headless FastAPI Knowledge Routing RAG v2 engine (`zleap-sag==0.12.0`, `sag-postgres` PostgreSQL 16 + `sag-qdrant` v1.14.1, plus read-only Core DB bridge `SAG_CORE_DATABASE_URL`) scoped strictly to **Phase 1 Stock Research / MOAT & Enterprise Analysis AI Chat** (`SAG/apps/api/sag_api/research/*`, `/api/v1/research-chat/*`). All legacy **GIL (Graph Intelligence Layer)** and `/api/v2/financial` pipelines remain permanently retired (`0%` GIL).
+- **Provider Configuration**: DeepInfra OpenAI-compatible API (`https://api.deepinfra.com/v1/openai`) with `deepseek-ai/DeepSeek-V4-Flash-0731` for grounded chat synthesis and `Qwen/Qwen3-Embedding-0.6B` (`1024d`) for embeddings, plus MinerU Official (`language="vi"`, fail-closed).
 
 ### `back-end/` (Node.js / TypeScript)
-- **Core responsibility**: Express backend service, Prisma ORM, user accounts, authorization, portfolio tracking, LIVE OMS (`ArenaOrderBook`), Socket.IO relay.
+- **Core responsibility**: Express 4 API Gateway, Prisma ORM (Core PostgreSQL 16), JWT auth, portfolio tracking, LIVE OMS (`ArenaOrderBook`), Socket.IO relay, and the dedicated **60s timeout SSE proxy** (`sagResearchChat.service.ts` under `/api/v1/ai/research-chat/*`) with Exit Gate G1–G5 evaluation persistence (`sag_chat_eval_feedback`).
 
 ### `front-end/` (React / TypeScript)
-- **Core responsibility**: Next.js 16 App Router, UI components, TradingView chart visualizations, streaming agent reasoning, research workspace.
+- **Core responsibility**: Next.js 16 App Router, UI components, `@/lib/tv-chart` TradingView-grade charts, War Room (`/agent`), and the **2-Column Enterprise Analysis AI Chat Workspace (`/research-chat`)** featuring streaming synthesis, clickable audit badges, and a 5-tab Evidence & Audit Inspector.
 
 ---
 
 ## 3. Key Relationships & Call Paths
 
-### Isolated SAG Knowledge Routing RAG Pipeline (`profiles: ["research"]`):
-1. **Input Selection (Stock Research / MOAT Spec)**: 3 core inputs (5-year consolidated financial metrics from Core DB, 4 substantive sections of the latest Annual Report, 7 key sections of the audited consolidated financial statement notes + independent auditor's report) + 2 conditional inputs (AGM resolutions when CAPEX/targets are missing or extraordinary; latest quarterly notes on mid-year anomalies), excluding parent-only separate statements for holdings, governance reports, broker reports, and news.
-2. **Multi-Lane Parsing & Canonical Extraction**: Smart Hybrid MinerU Official v4 / isolated local worker parses files into `CanonicalBlock` units with page/section anchors, 4-tier SHA-256 + MinHash deduplication, and `DocumentVersion` lineage.
-3. **Search Path (`SEARCH_READY`)**: `SearchUnit` creation + shared embedding cache + Qdrant dense/sparse hybrid indexing (`SAG_DOCUMENT_EVENT_EXTRACTION_ENABLED=false`, **0 LLM calls during ingest**).
-4. **Knowledge Foundation (`KNOWLEDGE_READY`)**: Deterministic `E0/E1` extraction -> `KnowledgeUnit` -> `DenseGraph` (`KnowledgeUnitEdge`) -> Constrained Hierarchical Leiden `Knowledge Routing Tree` -> Blue-Green dual-slot (`A/B`) snapshot publish (E2 LLM enrichment removed per `SAG/docs/adr-remove-e2-llm-enrichment.md`).
-5. **Adaptive Online Retrieval**: Tree beam routing + ACL-scoped global escape budget -> branch-local hybrid search -> RRF + dedup + MMR + bounded HippoRAG 2 multi-hop expansion -> grounded citations with `token_usage.py` accounting.
-6. **Runtime Separation**: Production `DailyInvestmentPipeline` and 12 Decision Agents remain completely decoupled from SAG while Rule 06 (`06-sag-analysis-hold.md`) is active; future MOAT integration will attach through a dedicated, fail-closed research contract.
+### SAG v2 Phase 1 Stock Research & Enterprise Analysis AI Chat Pipeline (`profiles: ["research"]`):
+1. **HOSE Input Selection & Triage (`0 LLM`, `sag_api/research/input_{selector,inspector,builder}.py`)**: Enforces the 3 Core + 2 Conditional + 4 Excluded input contract, BCTN/BCTC deduplication, Zip-Slip-safe `.zip` extraction, `effective_published_at` PIT resolution, multi-source 404 fallback, `NOTICE_ONLY` (`< 15p`) & `BAD_FONT` (`vn_readability_score < 0.72`) gates, 4-Branch Router (`A/B/C/D`), fail-closed MinerU (`language="vi"`, zero silent `MarkItDown` fallback), and `11+2` Logical Sub-Documents (`S01..S13`) with `<!-- PAGE N -->` anchors.
+2. **Dual-Representation Financial Table Engine (`0 LLM`, `sag_api/research/table_engine.py`)**: Hybrid `pdfplumber` lattice/stream + HTML `rowspan/colspan` 2D unmerge + cross-page `(Tiếp theo)` stitcher + unit/currency binding + VN/US statistical locale normalization + Arithmetic Sanity Gate (`<= 0.5%`, `TABLE_UNVERIFIED` fail-closed). Persists 2D matrices to `sag_extracted_tables` (PostgreSQL migration `0013`) and generates `Row-Linearized Search Cards` for Qdrant.
+3. **Core Knowledge Routing RAG (`P1..P5`, `A1..A7`, `0 LLM` at Ingest)**: Bi-temporal `DocumentVersion.valid_from = source_published_at` (`P5`), Vietnamese dot-thousands BM25 (`P4`), Qdrant `search_units_{ticker}` payload indexes (`valid_from_ts`, `fiscal_year`, `fiscal_quarter`, `doc_type`, `sub_doc_slot`, `sector_group`, `table_id`), VN Accounting Artifact Bridge (`TM-{num}`, `B0x-DN/HN`, `TT334`, ~120 lowercase VN terms, `A3`), DenseGraph `temporal` floor `0.50` + `T-1 -> T` bonus `1.0` + VN Note `citation=0.85` (`A4`), and Constrained Hierarchical Leiden Tree (`target_cluster_size=6`, `max_cluster_size=20`, `leiden_resolution=0.08`, `A2`) with Blue-Green `SLOT_A/B` swap.
+4. **Zero-Hardcode 3-Layer Knowledge Graph (`sag_api/research/kg_{entity_linker,macro_coupling,true_peer,store}.py`)**: Persisted in `kg_nodes`, `kg_edges`, and `macro_sensitivity_snapshots` with strict PIT `effective_from <= as_of_date < valid_to`. Combines Engine 1 (`Document Entity-Linker` + bottom-up sector roll-up), Engine 2 (`Macro & Cross-Sector Coupling` with full `QE` grid, Newey-West HAC, full-lag BH-FDR, non-overlapping tercile sign stability, and `CONFIRMED_BOTH`/`CONFLICT_FLAG` reconciliation), and Engine 3 (`True-Peer Leiden Clustering` over `0.45 BizVec + 0.30 MacroBeta + 0.25 FinStruct` with Mutual k-NN `k=6`).
+5. **Online Research Chat Orchestration & Verification (`sag_api/research/{chat_orchestrator,calculator,discrepancy_detector,quote_verifier}.py`)**: 7-stage SSE pipeline (`routing -> retrieval -> graph_hop -> table_hydration -> calculator -> synthesis -> verification -> done`) supporting single-ticker or True-Peer multi-ticker (`<= 6` tickers via `project_id="all"` + `allowed_project_ids`) and strict `as_of_date` PIT filtering across Qdrant, Leiden Tree, HippoRAG 2 (`A1`), tables, and KG edges. Runs Table-Safe Jaccard MMR (`A5`), `QueryAnalysis (vi)` (`A6`), deterministic Quant-vs-Narrative Discrepancy Detector (`0 LLM`), Sandboxed AST Python Financial Calculator (`CalculatorTrace`, zero `eval()` / zero mental math), DeepInfra `DeepSeek-V4-Flash-0731` streaming synthesis, `KnowledgeQualityService` (`365/180/90d` half-life + 3-layer abstention -> `declared_blindspots[]`, `A7`), and fail-closed `quote_hash` SHA-256 Post-Verifier.
+6. **Express 4 Gateway & Next.js Verification UI (Rule 06 Narrowed Scope)**: `back-end/src/services/sagResearchChat.service.ts` (`60s` SSE proxy bypassing `800ms` `aiEngineService`) exposes `/api/v1/ai/research-chat/*` with Continuum BFF headers and persists `chat_messages.metadata` + `sag_chat_eval_feedback` (Exit Gate G1–G5). `front-end` `/research-chat` provides the 2-column workspace + 5-tab Inspector.
+7. **Permanent Rule 06 Runtime Boundary (Phase 2 & GIL Still Closed)**: `ai-engine` (`DailyInvestmentPipeline`, Agent 04 `EquityResearchAgent`, Agent 05 `CounterThesisAgent`, and all 12 Decision Agents) remains 100% decoupled from SAG (`SAG_CLOSED` enforced by `ai-engine/tests/test_sag_runtime_separation.py`). Phase 2 MOAT dossier wiring into Agent 04/05 and `/research` (Chặng 4) stays locked until the owner passes Exit Gate G1–G5 (`>= 40` sessions on the 8 pilot tickers).
 
 ---
 
@@ -532,6 +537,25 @@ AIInvest is an autonomous quantitative investment and stock-research organizatio
 - **Clean Knowledge Routing RAG Architecture Adopted in `SAG/` (`zleap-sag==0.12.0`, PostgreSQL 16 + Qdrant)**:
   - Replaced `SAG/apps/api/` with the benchmark-verified Knowledge Routing RAG backend (`CanonicalBlock` extraction, 4-tier SHA-256/MinHash deduplication & temporal versioning, `SearchUnit` + Qdrant hybrid index, shared embedding cache, deterministic `FOUNDATION` `E0/E1` + `DenseGraph` + Constrained Hierarchical Leiden Routing Tree with Blue-Green dual-slot `A/B` publish, Adaptive Retrieval + bounded HippoRAG 2 multi-hop expansion, Smart Hybrid MinerU/local isolated parsing, R2 streaming object ingest, and provider-accurate `token_usage.py` accounting — with E2 LLM enrichment disabled / `0` ingest LLM calls per `SAG/docs/adr-remove-e2-llm-enrichment.md`).
   - Updated `docker-compose.yml` (`profiles: ["research"]`), `.env.example`, `SAG/compose.yaml`, `SAG/.env.example`, and `ai-engine/app/config/settings.py` (`sag_api_base` -> `/api/v1`) to run PostgreSQL 16 + Qdrant (`sag-qdrant`) while keeping `ai-engine` completely decoupled until MOAT Stock Research integration is explicitly released.
+
+## 2026-11-20 — Chặng 2 Phase 1: SAG v2 Core & Enterprise Analysis AI Chat (Rule 06 Narrowed)
+
+- **Rule 06 Narrowed (Phase 1 Released; GIL & 12-Agent Wiring Permanently Closed/Deferred)**:
+  - `.agents/rules/06-sag-analysis-hold.md` explicitly released **Phase 1 Stock Research / MOAT & Enterprise Analysis AI Chat** (`SAG` v2 + `back-end` Express 4 SSE gateway + `front-end` `/research-chat` UI), while keeping **GIL (`0%`)** and **`ai-engine` 12-Agent MOAT integration (`SAG_CLOSED`)** locked until Phase 2 (Chặng 4) after passing Exit Gate G1–G5 (`ai-engine/tests/test_sag_runtime_separation.py` 6/6 passing).
+- **SAG Core Adaptations & Schema (`P1..P5`, `A1..A7`, Migration `0013`)**:
+  - Added idempotent migration `SAG/apps/api/migrations/0013_stock_research_tables_and_kg.sql` and ORM models `SAG/apps/api/sag_api/db/models/stock_research.py` (`sag_extracted_tables`, `kg_nodes`, `kg_edges`, `macro_sensitivity_snapshots`).
+  - Implemented `P1..P5` (fail-closed scan parsing without silent `MarkItDown`, MinerU `language="vi"`, `<!-- PAGE N -->` anchors, Vietnamese dot-thousands BM25 `16.012.813` preserving `15.29%`, bi-temporal `DocumentVersion.valid_from = source_published_at`, Qdrant `PAYLOAD_INDEX_FIELDS` + `valid_from_ts <= as_of_ts`, configurable `top_k`) and `A1..A7` (PIT-filtered HippoRAG 2 hops, Leiden `target=6 / max=20 / res=0.08`, VN Accounting Artifact Bridge `TM-{num}` / `B0x-DN/HN` / `TT334` / ~120 VN terms, DenseGraph `temporal` floor `0.50` + `T-1 -> T` bonus `1.0` + Note `citation=0.85`, Table-Safe Jaccard MMR, `QueryAnalysis (vi)` `recency_intent`, `KnowledgeQualityService` per-unit `365/180/90d` half-life + 3-layer abstention -> `declared_blindspots[]`).
+  - Updated `litellm_policy.py` & `token_usage.py` for DeepInfra `deepseek-ai/DeepSeek-V4-Flash-0731` and `Qwen/Qwen3-Embedding-0.6B` (`1024d`).
+- **HOSE Input Layer, Dual-Rep Table Engine, Calculator & Discrepancy Detector (`sag_api/research/`)**:
+  - Productionized `input_selector.py`, `input_inspector.py`, `input_builder.py` (3 Core + 2 Conditional + 4 Excluded, BCTN/BCTC dedup, Zip-Slip guard, `effective_published_at` PIT resolution, multi-source 404 fallback, `NOTICE_ONLY < 15p`, `BAD_FONT < 0.72`, 4-branch A/B/C/D router, `S01..S13` logical sub-documents).
+  - Productionized `table_engine.py` (`pdfplumber` lattice/stream + HTML `rowspan/colspan` unmerge + `(Tiếp theo)` cross-page stitcher + statistical VN/US locale & unit binding + Arithmetic Sanity Gate `<= 0.5%` / `TABLE_UNVERIFIED` + `sag_extracted_tables` + `Row-Linearized Search Cards` + Full-Table Hydration), `calculator.py` (AST-sandboxed whitelist Python Financial Calculator emitting `CalculatorTrace`, zero `eval()`), and `discrepancy_detector.py` (deterministic `0 LLM` narrative-vs-audited PR checks).
+- **Zero-Hardcode 3-Layer KG & Research Chat API (`sag_api/research/kg_*.py`, `chat_orchestrator.py`, `quote_verifier.py`, `api/v1/research_chat.py`)**:
+  - Productionized Engine 1 (`kg_entity_linker.py`), Engine 2 (`kg_macro_coupling.py` in pure NumPy/Pandas with full `QE` grids, Newey-West HAC, full-lag BH-FDR, non-overlapping tercile sign stability, `CONFIRMED_BOTH`/`CONFLICT_FLAG`), Engine 3 (`kg_true_peer.py` with `Qwen/Qwen3-Embedding-0.6B` + `MacroBeta` + `FinStruct` Mutual k-NN Leiden clustering), and `kg_store.py` (`effective_from <= as_of_date < valid_to` PIT queries).
+  - Exposed BFF-authenticated `/api/v1/research-chat/{stream,kg/{ticker},tables/{table_id},ingest-pilot}` (`require_research_bff_principal`), 7-stage SSE orchestrator, multi-ticker True-Peer expansion (`<= 6` tickers), and fail-closed `quote_hash` Post-Verifier.
+- **Express 4 60s SSE Gateway & Next.js 2-Column Workspace (`back-end/`, `front-end/`)**:
+  - Added `sagResearchChat.service.ts` (`60,000ms` timeout, Continuum BFF headers, strictly bypassing `800ms` `aiEngineService`), authenticated `/api/v1/ai/research-chat/*` endpoints, `aiLimiter` GET exemption, and `sag_chat_eval_feedback` Prisma migration (`20261120140000_sag_chat_eval_feedback`) tracking Exit Gate G1–G5.
+  - Built `/research-chat` (`front-end/src/app/(workspace)/research-chat/page.tsx`, `src/components/research-chat/*`, `Shell.tsx` `"Chat Phân tích AI"`) with Top Control Bar (ticker/multi-ticker, KG toggle, PIT `as_of_date`, session selector), Left Streaming Chat + clickable audit badges + Discrepancy/Blindspot panels, and Right 5-tab Evidence & Audit Inspector.
+
 
 
 

@@ -1,8 +1,8 @@
 # Thuật Toán & Mô Hình Định Lượng Tài Chính (Algorithms & Financial Models)
 
-> **Tài liệu chuẩn kỹ thuật**: AIInvest Quantitative & Forensic Architecture Specification  
-> **Phiên bản**: 2.0 (Production Grounded)  
-> **Phạm vi**: Định nghĩa toán học, cơ chế hoạt động mã nguồn, điều kiện biên, đầu vào/đầu ra cho các kỹ sư hệ thống và chuyên gia định lượng (Quant).
+> **Tài liệu chuẩn kỹ thuật**: AIInvest Quantitative & SAG v2 Stock Research Architecture Specification  
+> **Phiên bản**: 2.1 (Chặng 2 Phase 1 Synchronized)  
+> **Phạm vi**: Định nghĩa toán học, cơ chế hoạt động mã nguồn, điều kiện biên, đầu vào/đầu ra cho cả lõi định lượng `ai-engine` (12 Agents) và lõi nghiên cứu cổ phiếu `SAG v2` (Pha 1 Research Chat; chưa nối vào 12 Agents theo Rule 06).
 
 ---
 
@@ -14,7 +14,11 @@
 5. [Quy Mô Vị Thế Tối Ưu Half/Quarter-Kelly Theo Market Regime](#5-quy-mô-vị-thế-tối-ưu-halfquarter-kelly-theo-market-regime)
 6. [Hạn Mức Thanh Khoản Sức Chứa (ADTV20 & Hard Law Điều 2, 4)](#6-hạn-mức-thanh-khoản-sức-chứa-adtv20--hard-law-điều-2-4)
 7. [Cơ Chế Tranh Luận Biện Chứng 12 Quant Agents & Chuỗi Băm Bất Biến](#7-cơ-chế-tranh-luận-biện-chứng-12-quant-agents--chuỗi-băm-bất-biến)
-8. [Xác Thực Bằng Chứng Mù & Dấu Vân Tay Dòng (quote_hash SHA-256)](#8-xác-thực-bằng-chứng-mù--dấu-vân-tay-dòng-quote_hash-sha-256)
+8. [Xác Thực Bằng Chứng Mù, `quote_hash` Post-Verifier & 3-Layer Abstention (`A7`)](#8-xác-thực-bằng-chứng-mù-quote_hash-post-verifier--3-layer-abstention-a7)
+9. [SAG v2 Core Adaptations (`P1..P5`, `A1..A6`) & HOSE Input Layer (`S01..S13`)](#9-sag-v2-core-adaptations-p1p5-a1a6--hose-input-layer-s01s13)
+10. [Dual-Representation Financial Table Engine, Sandboxed Calculator & Discrepancy Detector](#10-dual-representation-financial-table-engine-sandboxed-calculator--discrepancy-detector)
+11. [Đồ Thị Tri Thức 3 Tầng Zero-Hardcode & Cổng Kiểm Nghiệm Pha 1 (`G1..G5`)](#11-đồ-thị-tri-thức-3-tầng-zero-hardcode--cổng-kiểm-nghiệm-pha-1-g1g5)
+12. [Tóm Tắt Ma Trận Đầu Vào / Đầu Ra & Điều Kiện Kỹ Thuật](#12-tóm-tắt-ma-trận-đầu-vào--đầu-ra--điều-kiện-kỹ-thuật)
 
 ---
 
@@ -233,35 +237,120 @@ Cột `decision_hash` được lưu tuần tự vào bảng PostgreSQL `cio_reso
 
 ---
 
-## 8. Xác Thực Bằng Chứng Mù & Neo Provenance (`CanonicalBlock` / SHA-256)
+## 8. Xác Thực Bằng Chứng Mù, `quote_hash` Post-Verifier & 3-Layer Abstention (`A7`)
 
-*File nguồn*: [`SAG/apps/api/sag_api/services/canonical_service.py`](file:///d:/AIInvest/SAG/apps/api/sag_api/services/canonical_service.py)
+*File nguồn*: [`SAG/apps/api/sag_api/parsing/canonical.py`](file:///d:/AIInvest/SAG/apps/api/sag_api/parsing/canonical.py), [`sag_api/services/knowledge_quality_service.py`](file:///d:/AIInvest/SAG/apps/api/sag_api/services/knowledge_quality_service.py), [`sag_api/services/retrieval_service.py`](file:///d:/AIInvest/SAG/apps/api/sag_api/services/retrieval_service.py), [`sag_api/research/quote_verifier.py`](file:///d:/AIInvest/SAG/apps/api/sag_api/research/quote_verifier.py)
 
 ### 8.1. Mục đích
-Loại bỏ hoàn toàn hiện tượng AI ảo giác (Hallucination) trong nghiên cứu cổ phiếu / MOAT. Mọi trích dẫn từ Báo cáo Thường niên và Thuyết minh BCTC kiểm toán đều phải neo ngược được tới khối văn bản gốc có số trang và mã băm SHA-256.
+Triệt tiêu ảo giác (Hallucination) và rò rỉ thông tin tương lai (Look-ahead Bias) trong **SAG v2 Research Chat (Pha 1)**. Mọi trích dẫn từ Báo cáo Thường niên, Thuyết minh BCTC kiểm toán và NQ ĐHĐCĐ đều phải neo ngược được tới `canonical_blocks` theo đúng số trang PDF gốc (`<!-- PAGE N -->`) và mã băm SHA-256 chuẩn hóa.
 
-### 8.2. Thuật toán tạo dấu vân tay & chống trùng lặp
-Khi Smart Hybrid MinerU / local worker phân tích tài liệu PDF:
-1. Chuẩn hóa văn bản của từng khối cấu trúc `CanonicalBlock` (heading, đoạn văn, bảng biểu):
-   $$S = \text{Normalize}(\text{Block Text})$$
-2. Gắn neo nguồn (`document_id`, `document_version_id`, `page_number`, `section_path`) và tính mã băm SHA-256 + MinHash 4 tầng chống trùng lặp:
-   $$\text{content\_hash} = \text{SHA256}(S)$$
+### 8.2. Chuẩn hóa dấu vân tay & Post-Synthesis Verification (`quote_verifier.py`)
+1. **Chuẩn hóa Unicode NFC & khoảng trắng**:
+   $$\text{normalize\_ws}(s) = \text{collapse\_spaces}(\text{NFC}(s)).\text{strip}()$$
+2. **Dấu vân tay SHA-256**:
+   $$\text{quote\_hash} = \text{SHA256}(\text{normalize\_ws}(\text{quote}))$$
+3. **Cổng kiểm định hậu tổng hợp (Fail-Closed)**: Với mọi citation trong phản hồi LLM:
+   - Kiểm tra $\text{SHA256}(\text{normalize\_ws}(\text{quote})) == \text{quote\_hash}$;
+   - Kiểm tra `normalize_ws(quote)` là chuỗi con chính xác (`exact substring`) trong `CanonicalBlock.normalized_text` của đúng `document_version_id`, thỏa `page_from <= page <= page_to` và `sub_doc_slot`;
+   - Kiểm tra Point-in-Time: `published_date <= as_of_date`.
+   - Bất kỳ trích dẫn nào trượt sẽ bị gán `verified = False`, loại khỏi `verified_citations`, gắn tag cảnh báo `[C# UNVERIFIED_CLAIM]` trong câu trả lời và đẩy blindspot `UNVERIFIED_CITATION` / `OUT_OF_PIT_WINDOW` vào `declared_blindspots[]`.
 
-### 8.3. Quy tắc kiểm tra tính toàn vẹn (Grounded Citation Gate)
-Khi SAG Knowledge Routing RAG trả về bằng chứng cho nghiên cứu cổ phiếu / MOAT (profile `research`):
-- Mọi kết quả từ `SearchUnit` và `KnowledgeUnit` đều mang theo provenance (`source_id`, `document_id`, `document_version_id`, `page`, `content_hash`).
-- Nếu không có bằng chứng gốc đủ tin cậy, hệ thống thực thi cơ chế **Abstention** (từ chối bịa đặt thay vì suy diễn).
+### 8.3. Chấm điểm chất lượng tri thức (`A7`) & 3-Layer Abstention
+- **Phân rã độ tươi theo hộc (`half_life_days`)**: Thay thế hằng số `90.0` ngày cố định bằng chu kỳ bán rã riêng theo loại tài liệu (`365` ngày cho `S01..S11` năm, `180` ngày cho `S12` AGM, `90` ngày cho `S13` quý đột biến):
+  $$\text{freshness}(u) = 2^{-\frac{\Delta t_{\text{days}}(u)}{\text{half\_life}(u)}}$$
+- **Chất lượng 5 thành phần (`KnowledgeQualityService`)**: Đọc trực tiếp batch metrics (không bị chặn bởi `eligible=False` khi `query_demand=None`), kết hợp `0.30 coverage + 0.15 source_diversity + 0.15 freshness + 0.25 contradiction + 0.15 uncertainty`, cộng tín hiệu từ `DiscrepancyDetector`.
+- **3-Layer Abstention -> `declared_blindspots[]`**:
+  1. *Layer 1 (Evidence Pack Sufficiency)*: Kiểm tra độ phủ anchor & ngưỡng điểm trước khi gọi LLM (`NO_DOC_COVERAGE`).
+  2. *Layer 2 (System Prompt Guard)*: Ép LLM trả `INSUFFICIENT_EVIDENCE` cho từng khía cạnh thiếu dữ liệu.
+  3. *Layer 3 (Post-Generation Guard)*: `_is_abstention_response` phát hiện cả cụm từ từ chối tiếng Anh và tiếng Việt (`"không đủ bằng chứng"`, `"không đủ dữ liệu"`, `"không đủ cơ sở"`, `"không đủ căn cứ"`) khi thiếu citation `[n]`, phân loại `status = "no_answer"` hoặc đẩy phần thiếu vào `declared_blindspots[]` (`PARTIAL_MISSING_DATA`).
 
 ---
 
-## 9. Tóm Tắt Ma Trận Đầu Vào / Đầu Ra & Điều Kiện Kỹ Thuật
+## 9. SAG v2 Core Adaptations (`P1..P5`, `A1..A6`) & HOSE Input Layer (`S01..S13`)
+
+*File nguồn*: [`SAG/apps/api/sag_api/research/input_{selector,inspector,builder}.py`](file:///d:/AIInvest/SAG/apps/api/sag_api/research/input_selector.py), [`sag_api/services/{document_service,search_index_service,knowledge_service,routing_tree_service,query_analysis,query_routing_service,search_unit_retrieval_service,retrieval_service}.py`](file:///d:/AIInvest/SAG/apps/api/sag_api/services/search_index_service.py), [`sag_api/parsing/{service,mineru_official,canonical}.py`](file:///d:/AIInvest/SAG/apps/api/sag_api/parsing/service.py)
+
+### 9.1. HOSE Input Selection, Triage & 11+2 Logical Sub-Documents (`0` LLM)
+- **Bộ chọn 3 Cốt lõi + 2 Bổ trợ + 4 Loại bỏ**: Lấy Core DB 5 năm (`0đ`), `annual_report` (4 phần `S01..S04`), `CONSOLIDATED` audited BCTC notes (7 phần `S05..S11`, fallback `SEPARATE` chỉ cho mã đơn lẻ không công ty con), khử trùng nếu BCTN đã nhúng trọn BCTC & kiểm toán; kích hoạt có điều kiện `agm_resolution` (`S12`) và `LATEST_QUARTER` (`S13` khi đột biến giữa năm); loại bỏ `SEPARATE` holding, `governance_report`, `analyst_report`, `news`.
+- **Cổng kiểm định đầu vào (`InputInspector`)**:
+  - Giải nén `.zip` an toàn (chặn Zip-Slip path traversal & giới hạn byte giải nén), multi-source 404 fallback, chuẩn hóa `effective_published_at` (`announcement_date -> signing_date -> filing_date -> published_date`, fail-closed `MissingPublishedDateError`).
+  - Chặn `NOTICE_ONLY` (`pages < 15`) và `BAD_FONT` (`vn_readability_score < 0.72` với `text_len > 200`); phát hiện sidebar lặp & trang đôi; định tuyến **4 Nhánh (A/B/C/D)** (Digital `0đ` vs 2-pass TOC-First MinerU `language="vi"`).
+  - **Fail-closed (`P1..P3`)**: Cấm fallback im lặng sang `MarkItDown` trên PDF scan khi MinerU lỗi; chèn neo trang gốc `<!-- PAGE N -->` trước mỗi trang để bảo toàn `page_from`, `page_to`.
+
+### 9.2. Core RAG Adaptations (`P4`, `P5`, `A1..A6`)
+- **`P4` — VN-Dot BM25 Normalization (`search_index_service.py` & `search_unit_store.py`)**: Chuẩn hóa dấu chấm hàng nghìn tiếng Việt (`16.012.813 -> 16012813`) trước khi tách token BM25 (`k_1=1.5, b=0.75, avg_doc_len=256.0`), đồng thời bảo toàn số thập phân (`15.29%`) và mã phân cấp (`1.2.3`) bằng lookbehind/lookahead:
+  $$\text{re.sub}\big(\texttt{r"(?<!\textbackslash d\textbackslash.)(?<=\textbackslash d)\textbackslash.(?=\textbackslash d\{3\}(?:\textbackslash.\textbackslash d\{3\})*(?!\textbackslash d))"},\; \texttt{""},\; \text{nfc\_text.lower}()\big)$$
+- **`P5` — Bi-Temporal PIT & Qdrant Payload Indexes**: Đặt `DocumentVersion.valid_from = source_published_at` (thay vì `now_utc`); lập chỉ mục `PAYLOAD_INDEX_FIELDS` (`valid_from_ts`, `fiscal_year`, `fiscal_quarter`, `doc_type`, `sub_doc_slot`, `sector_group`, `table_id`), lọc cứng `valid_from_ts <= as_of_ts`, mở rộng `research_search_top_k = 10` (`8..12`).
+- **`A1` — PIT-Safe HippoRAG 2 Cross-Slot Multi-Hop**: Trong `_expand_multi_hop_sections`, mọi bước nhảy giữa `S01..S13` (Lineage, DenseGraph, Bridge Entity, Bounded 2-Hop Artifact Code) bắt buộc qua bộ lọc `target_ku.valid_from_ts <= as_of_ts`.
+- **`A2` — Leiden Routing Tree Tuning**: `min_cluster_size=2`, `target_cluster_size=6`, `max_cluster_size=20`, `leiden_resolution=0.08`, kèm PIT node mask trên cây Blue-Green (`SLOT_A/B`).
+- **`A3` — VN Accounting Artifact Bridge (`0` LLM)**: Chuẩn hóa `Thuyết minh/TM/Note/Mục {num}` -> `TM-{num}`, nhận diện `B0x-DN/HN`, `TT334`, `TT200`, gỡ chặn `"note"` khi đi kèm số, và nạp từ điển ~120 thuật ngữ tài chính Việt viết thường.
+- **`A4` — DenseGraph `temporal` & `citation` Calibration**: Giữ trọng số 6 tín hiệu ($\alpha = \{0.40, 0.20, 0.15, 0.10, 0.10, 0.05\}$, ngưỡng giữ cạnh $w \ge 0.55$, `max_degree=32`, `max_same_doc_degree=16`), đặt sàn `temporal >= 0.50`, thưởng `1.0` cho liên kết `S03 (T-1) <-> S01/S03 (T)` & `S13 (T) <-> S03/S12 (T)`, và `citation = 0.85` khi hai hộc khác nhau chia sẻ mã `TM-{num}` / `B0x-DN/HN`.
+- **`A5` — Table-Safe Jaccard MMR**: Khóa shingle theo `(fiscal_year, fiscal_quarter, sub_doc_slot, table_id)` và chỉ cho phép gộp ở `duplicate_threshold = 0.98` khi ma trận số chuẩn hóa đồng nhất, bảo vệ bảng so sánh đa kỳ.
+- **`A6` — `QueryAnalysis (vi)`**: Giữ `"mới nhất"`, `"gần đây"` thành `recency_intent = True`; bắt kỳ báo cáo Việt (`9T/2026`, `Quý 3/2026`, `FY2025`) và mã `Thuyết minh 12`, `B09-DN/HN`.
+
+---
+
+## 10. Dual-Representation Financial Table Engine, Sandboxed Calculator & Discrepancy Detector
+
+*File nguồn*: [`SAG/apps/api/sag_api/research/table_engine.py`](file:///d:/AIInvest/SAG/apps/api/sag_api/research/table_engine.py), [`calculator.py`](file:///d:/AIInvest/SAG/apps/api/sag_api/research/calculator.py), [`discrepancy_detector.py`](file:///d:/AIInvest/SAG/apps/api/sag_api/research/discrepancy_detector.py)
+
+### 10.1. Đường ống Bảng Biểu Diễn Kép (`0` LLM)
+1. **Hybrid Matrix Extraction & Unmerge**: Nhánh Digital dùng `pdfplumber` `lattice` với tự động phục hồi tọa độ (`stream` / bounding-box reconstructor) chống rơi cột phải; nhánh Scan giải nén DOM HTML `<table>` với `rowspan`/`colspan` thành lưới 2D và `col_path` phân cấp.
+2. **Cross-Page Stitching**: Hợp nhất hai bảng liên tiếp $T_{k-1}, T_k$ khi `page_start(T_k) == page_end(T_{k-1}) + 1`, phần xen giữa là nhãn `"(Tiếp theo)"` / header lặp lại, và chữ ký cột tương thích.
+3. **Unit/Currency Binding & Locale Detection**: Quét ngược tiêu đề/góc trên phải để khóa `(currency, unit_multiplier)` (`tỷ` $10^9$, `triệu` $10^6$, `nghìn` $10^3$, `VND` $1$, tách biệt `USD`); suy luận quy ước dấu chấm/phẩy cấp toàn bảng (`detect_table_locale`) và xử lý số âm ngoặc kế toán `(56.500) -> -56500.0`.
+4. **Arithmetic & Hierarchical Sanity Gate (`<= 0.5%`, Fail-Closed)**:
+   $$\varepsilon = \frac{\left|\sum_{r \in \text{sub-rows}} v_{r,c} - v_{\text{total},c}\right|}{\max(|v_{\text{total},c}|,\, 1)} \le 0.005$$
+   Kiểm tra cả tổng dọc và các hằng đẳng thức P&L phân cấp; nếu trượt sau nhánh OCR -> gán `verification_status = "TABLE_UNVERIFIED"` (cấm nội suy tính toán).
+5. **Dual Representation & Full-Table Hydration**: Lưu ma trận 2D chuẩn hóa vào PostgreSQL (`sag_extracted_tables` với `table_hash` SHA-256 & PIT `valid_from`) và phát sinh `Row-Linearized Search Cards` vào Qdrant (`table_id` payload). Khi retrieval online khớp card, hệ thống hydrate toàn bộ bảng 2D gốc vào ngữ cảnh.
+
+### 10.2. Sandboxed Python Financial Calculator (`Zero Mental Math`)
+- Phân tích biểu thức bằng `ast.parse(..., mode="eval")` chỉ trên tập node và hàm whitelist an toàn (`abs`, `min`, `max`, `round`, `sum`, `safe_div`, `cagr`, `yoy`, `pct_change`, `margin`, `roe`, `roa`, `ev_ebitda`, `bps_diff`, `debt_to_equity`, `casa_ratio`, `npl_ratio`) — **tuyệt đối không dùng `eval()`/`exec()`**.
+- **Fail-closed guards**: Ném `UnsafeFormulaError` nếu AST ngoài whitelist; ném `UnverifiedTableInputError` nếu đầu vào đến từ bảng `TABLE_UNVERIFIED`; ném `CurrencyMismatchError` nếu trộn tiền tệ (`VND` vs `USD`); tự động đồng bộ `unit_multiplier` khác nhau; xuất `CalculatorTrace` (`calc_id`, `formula`, `inputs` có provenance, `result`, `formatted`).
+
+### 10.3. Deterministic Quant-vs-Narrative Discrepancy Detector (`0` LLM)
+- Đối chất tất định giữa narrative claims (`S01..S03`, thư PR) với `sag_extracted_tables` trạng thái `VERIFIED` (`S06..S10`) và `FinancialTrendSnapshot` (Core DB 5Y), bỏ qua hoàn toàn bảng `TABLE_UNVERIFIED`, xuất `DiscrepancyAlert` có `severity` (`HIGH | MEDIUM`), `delta_pct` và `citations`.
+
+---
+
+## 11. Đồ Thị Tri Thức 3 Tầng Zero-Hardcode & Cổng Kiểm Nghiệm Pha 1 (`G1..G5`)
+
+*File nguồn*: [`SAG/apps/api/sag_api/research/kg_{entity_linker,macro_coupling,true_peer,store}.py`](file:///d:/AIInvest/SAG/apps/api/sag_api/research/kg_macro_coupling.py), [`back-end/src/services/sagResearchChat.service.ts`](file:///d:/AIInvest/back-end/src/services/sagResearchChat.service.ts)
+
+### 11.1. Ba Động Cơ Xây Đồ Thị Tự Động (0 Hardcoded Maps)
+1. **Engine 1 — `Document Entity-Linker` (`kg_entity_linker.py`)**: Xây `DynamicIssuerRegistry` trực tiếp từ Core DB `stocks` + `instrument_master` (khử trùng tên ngắn/slogan ngân hàng); trích xuất cạnh vi mô có provenance (`OWNS_SUBSIDIARY`, `ASSOCIATE_OF`, `SUPPLIER_OF`, `CUSTOMER_OF`, `CREDITOR_OF`, `COMPETES_WITH`) với `published_date <= as_of_date`, và tổng hợp bottom-up thành cạnh liên ngành theo $\sqrt{|S_u| \cdot |S_v|}$.
+2. **Engine 2 — `Quantitative Macro & Cross-Sector Coupling` (`kg_macro_coupling.py`, thuần `numpy`/`pandas`/`math`)**:
+   - **Fundamental Channel**: Resample về lưới lịch quý đầy đủ `QE` trước khi `.diff(1)` / `.shift(lag)` ($\ell \in \{0, 1, 2\}$) để không méo độ trễ khi thiếu quý.
+   - **Market Excess Channel**: Hồi quy OLS trên excess return tuần/tháng với hiệp phương sai **Newey-West Bartlett HAC** (`maxlags=4` tuần) và tính chính xác two-sided Student-$t$ $p$-value qua hàm beta bất toàn chuẩn hóa $I_x(a, b)$ (`regularized_incomplete_beta`).
+   - **Chống tương quan giả**: Hiệu chỉnh đa kiểm định **Benjamini-Hochberg FDR** trên toàn bộ không gian `(metric × indicator × lag)` + kiểm định **Non-Overlapping Tercile Sign Stability** (trả `0.0` fail-closed nếu $w \ge n$, kèm half-sample regime-flip guard).
+   - **Audited Cross-Check**: Đối chiếu định lượng với thuyết minh `S10`/`S04` -> phân hạng `CONFIRMED_BOTH`, `QUANT_DOC_NEUTRAL`, `CONFLICT_FLAG`, `QUANT_ONLY`, `DOC_ONLY`.
+3. **Engine 3 — `True-Peer & Thematic Leiden Clustering` (`kg_true_peer.py`)**:
+   - Loại bỏ tiền tố/hậu tố pháp lý tiếng Việt (`strip_corporate_boilerplate`), nhúng bằng `Qwen/Qwen3-Embedding-0.6B` (`1024d`, khử dị hướng bằng corpus mean-centering; fallback TF-IDF nội bộ thuần NumPy khi offline), ghép với `MacroBeta` và ma trận chuẩn hóa Z-score cấu trúc tài chính `FinStruct`:
+     $$\operatorname{Sim}_{\text{peer}}(i, j) = \tilde{w}_{\text{biz}} \cos(\mathbf{e}^{\text{biz}}_i, \mathbf{e}^{\text{biz}}_j) + \tilde{w}_{\text{macro}} \cos(\boldsymbol{\beta}_i, \boldsymbol{\beta}_j) + \tilde{w}_{\text{fin}} \exp\!\left(-\frac{\|\mathbf{f}_i - \mathbf{f}_j\|_2}{\sqrt{d_f}}\right)$$
+     *(trọng số gốc `0.45 / 0.30 / 0.25`, tái chuẩn hóa động theo tập đặc trưng khả dụng).*
+   - Dựng đồ thị **Mutual k-NN** (`k=6`, `sim_threshold=0.45`, `strong_threshold=0.60`, `min_biz_sim=0.25`, `weight_power=2.5`) và chạy `leidenalg.RBConfigurationVertexPartition` (`resolution=2.5`).
+4. **Lưu trữ & Truy vấn PIT (`kg_store.py`)**: Mọi truy vấn trên `kg_nodes`, `kg_edges`, `macro_sensitivity_snapshots` khóa cứng `effective_from <= as_of_date < valid_to` và fail-closed nếu thiếu `effective_from`.
+
+### 11.2. Cổng Kiểm Nghiệm Định Lượng Pha 1 -> Pha 2 (`GET /api/v1/ai/research-chat/eval-summary`)
+Theo Rule 06 thu hẹp, Pha 2 (nối Read-Only vào Agent 04/05 và `/research`) **chỉ được mở** khi vượt qua `>= 40` phiên trên 8 mã Pilot đạt đồng thời 5 chỉ số cổng đo từ `chat_messages.metadata` và `sag_chat_eval_feedback`:
+- **G1 (`g1CitationVerifiedRate >= 0.98`)**: Tỷ lệ trích dẫn vượt qua `quote_hash` Post-Verifier.
+- **G2 (`g2TableCalcVerifiedRate >= 0.98`)**: Tỷ lệ câu trả lời có bảng `VERIFIED` & `CalculatorTrace` khớp PDF gốc (`0` sai đơn vị tỷ/triệu).
+- **G3 (`g3AbstentionComplianceRate == 1.00`)**: Tỷ lệ tuân thủ từ chối/khai báo `declared_blindspots[]` khi thiếu chứng cứ.
+- **G4 (`g4PitZeroLeakCount == 0`)**: Số vụ rò rỉ `published_date > as_of_date` hoặc `effective_from > as_of_date` (bắt buộc `0%`).
+- **G5 (`g5HumanPassRate >= 0.90`)**: Tỷ lệ phán quyết `PASS` từ chủ dự án trên UI `/research-chat`.
+
+---
+
+## 12. Tóm Tắt Ma Trận Đầu Vào / Đầu Ra & Điều Kiện Kỹ Thuật
 
 | Thành phần thuật toán | Đầu vào chính | Đầu ra chính | Điều kiện tiên quyết & Giới hạn |
 |---|---|---|---|
-| **Beneish M-Score** | Doanh thu, Phải thu, Giá vốn, Khấu hao, Chi phí QLDN, Lợi nhuận, CFO, Tổng tài sản qua 2 kỳ liên tiếp | Điểm $M$, Phân loại: MANIPULATOR / CLEAN, Layer-0 Veto flag | Miễn trừ nhóm tài chính; $M > -1.78$ loại ngay lập tức. |
-| **Sloan Accruals** | Lợi nhuận sau thuế, CFO từ bảng LCTT, Tổng tài sản | Tỷ lệ dồn tích chuẩn hóa $\text{Accrual Ratio}$, Điểm chất lượng lợi nhuận | $\text{Total Assets} > 0$; CFO âm kéo dài bị phạt tỷ trọng. |
-| **HOSE T+2.5 Downside** | Giá đặt mua, Stop-loss danh nghĩa, NAV quỹ | Rủi ro tổn thất tuyệt đối (VND), Phán quyết Đạt/Không đạt | Tối thiểu chịu 2 phiên sàn liên tiếp ($13.51\%$); tổn thất $\le 2\%$ NAV. |
-| **Quarter-Kelly Sizer** | Xác suất thắng $W$, Tỷ lệ Win/Loss $R$, Trạng thái HMM thị trường | Khối lượng cổ phiếu đặt mua tối ưu (VND) | $W > 0, R > 0$; Tỷ trọng tối đa $15\%$ NAV của một mã. |
-| **Liquidity Gate** | Khối lượng lệnh, Khối lượng vị thế hiện tại, $\text{ADTV}_{20}$ | Chấp thuận lệnh / Yêu cầu chia nhỏ lệnh | Lệnh $\le 15\%$ $\text{ADTV}_{20}$; Vị thế $\le 25\%$ $\text{ADTV}_{20}$. |
-| **Dialectic Debate** | Luận điểm Bull từ Thesis Agent, Báo cáo rủi ro Bear từ Counter-Thesis | Phán quyết CIO cuối cùng, Tỷ trọng phân bổ, Chuỗi băm lưu trữ | Ghi đè bất biến vào PostgreSQL; liên kết chéo Audit Trail. |
-| **quote_hash Verifier** | Dòng văn bản số liệu trích xuất, Số trang, Tọa độ bảng | Boolean (Hợp lệ / Ảo giác) | Trùng khớp 100% SHA-256 từ cơ sở dữ liệu MinerU OCR. |
+| **Beneish M-Score** (`ai-engine`) | Doanh thu, Phải thu, Giá vốn, Khấu hao, Chi phí QLDN, Lợi nhuận, CFO, Tổng tài sản qua 2 kỳ liên tiếp | Điểm $M$, Phân loại: MANIPULATOR / CLEAN, Layer-0 Veto flag | Miễn trừ nhóm tài chính; $M > -1.78$ loại ngay lập tức. |
+| **Sloan Accruals** (`ai-engine`) | Lợi nhuận sau thuế, CFO từ bảng LCTT, Tổng tài sản | Tỷ lệ dồn tích chuẩn hóa $\text{Accrual Ratio}$, Điểm chất lượng lợi nhuận | $\text{Total Assets} > 0$; CFO âm kéo dài bị phạt tỷ trọng. |
+| **HOSE T+2.5 Downside** (`ai-engine`) | Giá đặt mua, Stop-loss danh nghĩa, NAV quỹ | Rủi ro tổn thất tuyệt đối (VND), Phán quyết Đạt/Không đạt | Tối thiểu chịu 2 phiên sàn liên tiếp ($13.51\%$); tổn thất $\le 2\%$ NAV. |
+| **Quarter-Kelly Sizer** (`ai-engine`) | Xác suất thắng $W$, Tỷ lệ Win/Loss $R$, Trạng thái HMM thị trường | Khối lượng cổ phiếu đặt mua tối ưu (VND) | $W > 0, R > 0$; Tỷ trọng tối đa $15\%$ NAV của một mã. |
+| **Liquidity Gate** (`ai-engine`) | Khối lượng lệnh, Khối lượng vị thế hiện tại, $\text{ADTV}_{20}$ | Chấp thuận lệnh / Yêu cầu chia nhỏ lệnh | Lệnh $\le 15\%$ $\text{ADTV}_{20}$; Vị thế $\le 25\%$ $\text{ADTV}_{20}$. |
+| **Dialectic Debate** (`ai-engine`) | Luận điểm Bull từ Thesis Agent, Báo cáo rủi ro Bear từ Counter-Thesis | Phán quyết CIO cuối cùng, Tỷ trọng phân bổ, Chuỗi băm lưu trữ | Ghi đè bất biến vào PostgreSQL; liên kết chéo Audit Trail (`SAG_CLOSED`). |
+| **HOSE Input & Dual-Rep Table Engine** (`SAG v2`) | R2 PDFs + Core DB 5Y (`S01..S13`), HTML/lattice tables | `sag_extracted_tables` (2D), `Row-Linearized Search Cards`, `CanonicalBlock` | `NOTICE_ONLY < 15p`, `BAD_FONT < 0.72`, `sanity <= 0.5%` (`TABLE_UNVERIFIED` fail-closed). |
+| **Sandboxed Calculator & Discrepancy** (`SAG v2`) | Bảng `VERIFIED`, Core DB 5Y, Narrative `S01..S03`, Biểu thức tài chính | `CalculatorTrace`, `DiscrepancyAlert` (`0 LLM`) | Cấm `eval()`, cấm trộn tiền tệ, cấm dùng bảng `TABLE_UNVERIFIED`. |
+| **Zero-Hardcode 3-Layer KG** (`SAG v2`) | `stocks`, `macro_indicators`, `financial_*`, `S01..S10` | `kg_nodes`, `kg_edges`, `macro_sensitivity_snapshots` (`CONFIRMED_BOTH`) | Pure NumPy/Pandas HAC + BH-FDR + Tercile stability; Mutual k-NN Leiden; PIT `effective_from <= as_of_date < valid_to`. |
+| **`quote_hash` Post-Verifier & `A7`** (`SAG v2`) | Draft LLM synthesis, `canonical_blocks`, `document_versions` | `verified_citations[]`, `declared_blindspots[]`, `UNVERIFIED_CLAIM` | Khớp `SHA-256(normalize_ws(quote))`, exact substring, page/slot & PIT `<= as_of_date`. |
