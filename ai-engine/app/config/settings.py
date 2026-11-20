@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+
 from dotenv import load_dotenv
 
 # Xác định đường dẫn file .env chính xác (đi lên 2 cấp từ app/config/settings.py để ra thư mục gốc)
@@ -74,7 +75,7 @@ def get_settings() -> Settings:
         sag_analysis_hold=os.getenv("SAG_ANALYSIS_HOLD", "true").lower() in ("1", "true", "yes"),
         portfolio_automation_enabled=os.getenv("PORTFOLIO_AUTOMATION_ENABLED", "false").lower() in ("1", "true", "yes"),
         multi_agent_account_id=os.getenv("MULTI_AGENT_ACCOUNT_ID", ""),
-        
+
         llm_routing_mode=os.getenv("LLM_ROUTING_MODE", "auto"),
         llm_fallback_hardcoded=os.getenv("LLM_FALLBACK_HARDCODED", "true").lower() in ("1", "true", "yes"),
 
@@ -87,9 +88,9 @@ def get_settings() -> Settings:
 
 # Các hàm helper để tạo client từ cấu hình tập trung ở trên
 def get_dnse_client():
-    from dnse import DnseClient  
+    from dnse import DnseClient
     settings = get_settings()  #  Lấy instance settings ra trước
-    return DnseClient(          
+    return DnseClient(
         api_key=settings.dnse_api_key,       #  Sửa thành settings.dnse_api_key
         api_secret=settings.dnse_api_secret, #  Sửa thành settings.dnse_api_secret
         base_url=settings.dnse_base_url,     #  Sửa thành settings.dnse_base_url

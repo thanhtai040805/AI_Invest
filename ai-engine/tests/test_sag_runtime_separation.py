@@ -4,8 +4,7 @@ import pandas as pd
 import pytest
 
 from app.domain.rules.counter_thesis import CounterThesisEngine
-from app.domain.rules.scoring import CSSScoringEngine, ConvictionLevel
-
+from app.domain.rules.scoring import ConvictionLevel, CSSScoringEngine
 
 ROOT = Path(__file__).parents[1]
 

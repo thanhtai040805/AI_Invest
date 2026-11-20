@@ -18,10 +18,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from datetime import datetime, timezone
-import json
 import os
 import sys
+from datetime import UTC, datetime
 
 # Đảm bảo đường dẫn import cho ai-engine
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -31,8 +30,8 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
+import app.domain.agents  # noqa: F401  # Tự động đăng ký 12 agents vào AgentRegistry
 from app.core.registry import AgentRegistry
-import app.domain.agents  # Tự động đăng ký 12 agents vào AgentRegistry
 from app.domain.repositories.intelligence_repository import IntelligenceRepository
 from app.domain.repositories.market_data_repository import MarketDataRepository
 from app.infrastructure.database.pg_pool import get_conn
@@ -40,10 +39,10 @@ from app.infrastructure.database.pg_pool import get_conn
 
 async def run_agent04_standalone(ticker: str, timeline_months: int = 3, force_conviction_a: bool = False):
     ticker = ticker.upper().strip()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     print("=" * 80)
-    print(f" [AGENT 04: INVESTMENT THESIS AGENT] -- STANDALONE PRODUCTION RUN")
+    print(" [AGENT 04: INVESTMENT THESIS AGENT] -- STANDALONE PRODUCTION RUN")
     print(f" Ticker: {ticker} | Timeline: {timeline_months}M | Timestamp: {now.strftime('%Y-%m-%d %H:%M:%S UTC')}")
     print("=" * 80)
 
@@ -93,7 +92,7 @@ async def run_agent04_standalone(ticker: str, timeline_months: int = 3, force_co
     print(f"   * Điểm Hào kinh tế (Moat Score): {moat_score:.1f}")
 
     if force_conviction_a or factor_score_data is None:
-        print(f"   * Thiết lập điểm định lượng đạt chuẩn Conviction A (CSS=80.0, F4=85.0, Moat=80.0)...")
+        print("   * Thiết lập điểm định lượng đạt chuẩn Conviction A (CSS=80.0, F4=85.0, Moat=80.0)...")
         css, conviction = 80.0, "A"
         f1, f2, f3, f4, f5, f6 = 75.0, 78.0, 72.0, 85.0, 70.0, 68.0
         moat_score = 80.0
@@ -165,11 +164,11 @@ async def run_agent04_standalone(ticker: str, timeline_months: int = 3, force_co
     price_target = body.get("price_target", {})
     exit_conds = body.get("exit_conditions", {})
 
-    print(f"\n   [CỐT LÕI 3 CÂU HỎI IOS v5.1]:")
+    print("\n   [CỐT LÕI 3 CÂU HỎI IOS v5.1]:")
     print(f"     - Tại sao bây giờ?     : {body.get('why_now')}")
     print(f"     - Tại sao mã này?      : {body.get('why_this_stock')}")
 
-    print(f"\n   [NGÒI NỔ & MỤC TIÊU GIÁ]:")
+    print("\n   [NGÒI NỔ & MỤC TIÊU GIÁ]:")
     print(f"     - Loại ngòi nổ         : {catalyst.get('primary_type')}")
     print(f"     - Chi tiết ngòi nổ     : {catalyst.get('description')}")
     print(f"     - Thời hạn nắm giữ     : {body.get('timeline')}")
@@ -193,14 +192,13 @@ async def run_agent04_standalone(ticker: str, timeline_months: int = 3, force_co
     else:
         print(f"   [LỖI] Không tìm thấy bản ghi {thesis_id} trong investment_theses!")
 
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT thesis_id, ticker, pre_mortem_scenarios FROM log_investment_thesis WHERE thesis_id = %s", (thesis_id,))
-            row = cur.fetchone()
-            if row:
-                print(f"   [OK] Bảng log_investment_thesis: Audit trace được lưu thành công (id={row[0]}, scenarios={len(row[2])})")
-            else:
-                print(f"   [LỖI] Không tìm thấy audit log trong log_investment_thesis!")
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT thesis_id, ticker, pre_mortem_scenarios FROM log_investment_thesis WHERE thesis_id = %s", (thesis_id,))
+        row = cur.fetchone()
+        if row:
+            print(f"   [OK] Bảng log_investment_thesis: Audit trace được lưu thành công (id={row[0]}, scenarios={len(row[2])})")
+        else:
+            print("   [LỖI] Không tìm thấy audit log trong log_investment_thesis!")
 
     print("\n" + "=" * 80)
     print(" AGENT-04 THỰC THI HOÀN TẤT THÀNH CÔNG VÀ ĐẠT CHUẨN PRODUCTION.")

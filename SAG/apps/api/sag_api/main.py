@@ -45,7 +45,8 @@ def _validate_production_secret_key(environment: str, secret_key: str) -> None:
         or secret_key in _INSECURE_SECRETS
     ):
         raise RuntimeError(
-            "生产环境禁止使用空密钥、过短密钥或默认 SAG_SECRET_KEY。请设置强随机值（≥32 字节），例如：openssl rand -hex 32"
+            "生产环境禁止使用空密钥、过短密钥或默认 SAG_SECRET_KEY。"
+            "请设置强随机值（≥32 字节），例如：openssl rand -hex 32"
         )
 
 
@@ -88,6 +89,7 @@ async def lifespan(app: FastAPI):
             if settings.knowledge_worker_enabled:
                 await knowledge_worker.start()
             import asyncio
+
             from sag_api.services.universe_knowledge_service import warm_active_tree_manifest_cache
 
             warm_task = asyncio.create_task(

@@ -136,12 +136,14 @@ def test_env_example_templates_validate_cleanly(monkeypatch) -> None:
 
 async def test_standalone_bff_scoped_auth_login_upload_and_sources(tmp_path, monkeypatch) -> None:
     import httpx
+    from sqlalchemy import select
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     from sag_api.core import config as config_mod
     from sag_api.core import db as db_mod
     from sag_api.core import deps as deps_mod
     from sag_api.db.base import Base
+    from sag_api.db.models import Document, Source, SourceProjectMapping
     from sag_api.main import create_app
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -163,6 +165,7 @@ async def test_standalone_bff_scoped_auth_login_upload_and_sources(tmp_path, mon
     bff_token = "aiinvest-sag-bff-standalone-test-token-32bytes"
     monkeypatch.setattr(config_mod.settings, "auth_mode", "continuum")
     monkeypatch.setattr(config_mod.settings, "bff_service_token", bff_token)
+    monkeypatch.setattr(config_mod.settings, "data_dir", str(tmp_path / "data"))
     monkeypatch.setattr(config_mod.settings, "upload_dir", str(tmp_path / "uploads"))
 
     app = create_app()
@@ -215,6 +218,29 @@ async def test_standalone_bff_scoped_auth_login_upload_and_sources(tmp_path, mon
             after_sources = await client.get("/api/v1/sources", headers=bearer)
             assert after_sources.status_code == 200, after_sources.text
             assert after_sources.json() == []
+
+            async with factory() as verify_session:
+                sources = (await verify_session.execute(select(Source))).scalars().all()
+                assert len(sources) == 1
+                provisioned_source = sources[0]
+                assert provisioned_source.config.get("is_project_source") is True
+                assert provisioned_source.config.get("project_id") == "FPT"
+                assert provisioned_source.config.get("tenant_id") == "aiinvest"
+
+                mappings = (await verify_session.execute(select(SourceProjectMapping))).scalars().all()
+                assert len(mappings) == 1
+                mapping = mappings[0]
+                assert mapping.source_id == provisioned_source.id
+                assert mapping.organization_id == "aiinvest"
+                assert mapping.project_id == "FPT"
+                assert mapping.state == "CONFIRMED"
+                assert mapping.confirmed_at is not None
+
+                uploaded_doc = (
+                    await verify_session.execute(select(Document).where(Document.id == body["document_id"]))
+                ).scalar_one()
+                assert uploaded_doc.source_id == provisioned_source.id
+                assert uploaded_doc.project_id == "FPT"
 
             status_resp = await client.get(
                 f"/api/v1/projects/FPT/documents/{body['document_id']}/versions/{body['version_no']}/status",

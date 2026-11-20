@@ -1,0 +1,3 @@
+# Declare ai-engine/ as the Python source root so `ruff check` classifies `app.*`
+# as first-party consistently whether invoked from the repo root or `ai-engine/`.
+src = ["."]
