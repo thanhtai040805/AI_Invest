@@ -16,6 +16,7 @@ import {
   Compass,
   Cpu,
   Layers,
+  MessageSquareText,
   PanelLeftClose,
   PanelLeftOpen,
   Search,
@@ -46,6 +47,7 @@ const nav: NavGroup[] = [
     items: [
       { label: "AI War Room", route: "/agent", icon: Cpu },
       { label: "Hồ sơ Luận điểm", route: "/research", icon: BookOpenText },
+      { label: "Chat Phân tích AI", route: "/research-chat", icon: MessageSquareText },
       { label: "Bộ lọc HOSE", route: "/discovery", icon: Compass },
       { label: "Dòng tiền Ngành", route: "/sectors", icon: Layers },
     ],
