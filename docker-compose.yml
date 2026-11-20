@@ -63,15 +63,15 @@ services:
     profiles: ["research"]
     image: postgres:16
     ports:
-      - "127.0.0.1:55432:5432"
+      - "127.0.0.1:${SAG_PG_PORT:-55432}:5432"
     environment:
-      POSTGRES_DB: sag
-      POSTGRES_USER: sag
-      POSTGRES_PASSWORD: ${SAG_DB_PASSWORD:-sag_local_only}
+      POSTGRES_DB: ${SAG_DB_NAME:-aiinvest_sag}
+      POSTGRES_USER: ${SAG_DB_USER:-aiinvest_sag}
+      POSTGRES_PASSWORD: ${SAG_DB_PASSWORD:-aiinvest_sag_local_only}
     volumes:
-      - sag_pgdata:/var/lib/postgresql/data
+      - aiinvest_sag_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U sag -d sag"]
+      test: ["CMD-SHELL", "pg_isready -U ${SAG_DB_USER:-aiinvest_sag} -d ${SAG_DB_NAME:-aiinvest_sag}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -85,12 +85,14 @@ services:
   sag-qdrant:
     profiles: ["research"]
     image: qdrant/qdrant:v1.14.1
+    mem_limit: 1g
     ports:
-      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:${SAG_QDRANT_PORT:-16333}:6333"
     environment:
       QDRANT__SERVICE__API_KEY: ${SAG_QDRANT_API_KEY:-${SAG_SAG_QDRANT_API_KEY:-}}
+      QDRANT__STORAGE__ON_DISK_PAYLOAD: "true"
     volumes:
-      - sag_qdrantdata:/qdrant/storage
+      - aiinvest_sag_qdrantdata:/qdrant/storage
     logging:
       driver: "json-file"
       options:
@@ -113,19 +115,23 @@ services:
       - SAG_AUTH_MODE=${SAG_AUTH_MODE:-continuum}
       - SAG_BFF_SERVICE_TOKEN=${SAG_BFF_SERVICE_TOKEN:-}
       - SAG_ALLOW_REGISTRATION=${SAG_ALLOW_REGISTRATION:-false}
-      - SAG_DATABASE_URL=postgresql+asyncpg://sag:${SAG_DB_PASSWORD:-sag_local_only}@sag-postgres:5432/sag
+      - SAG_DATABASE_URL=postgresql+asyncpg://${SAG_DB_USER:-aiinvest_sag}:${SAG_DB_PASSWORD:-aiinvest_sag_local_only}@sag-postgres:5432/${SAG_DB_NAME:-aiinvest_sag}
       - SAG_CORE_DATABASE_URL=${SAG_CORE_DATABASE_URL:-postgresql://postgres:${DB_PASSWORD:?Set DB_PASSWORD in .env}@postgres:5432/aiinvest}
       - SAG_DATA_DIR=/data/engine
       - SAG_UPLOAD_DIR=/data/uploads
       - SAG_SAG_RELATIONAL_PROVIDER=postgres
       - SAG_SAG_VECTOR_PROVIDER=qdrant
+      - SAG_SAG_LANGUAGE=${SAG_SAG_LANGUAGE:-vi}
       - SAG_SAG_PG_HOST=sag-postgres
       - SAG_SAG_PG_PORT=5432
-      - SAG_SAG_PG_USER=sag
-      - SAG_SAG_PG_PASSWORD=${SAG_DB_PASSWORD:-sag_local_only}
-      - SAG_SAG_PG_DATABASE=sag
+      - SAG_SAG_PG_USER=${SAG_DB_USER:-aiinvest_sag}
+      - SAG_SAG_PG_PASSWORD=${SAG_DB_PASSWORD:-aiinvest_sag_local_only}
+      - SAG_SAG_PG_DATABASE=${SAG_DB_NAME:-aiinvest_sag}
       - SAG_SAG_QDRANT_URL=${SAG_SAG_QDRANT_URL:-http://sag-qdrant:6333}
       - SAG_SAG_QDRANT_API_KEY=${SAG_SAG_QDRANT_API_KEY:-}
+      - SAG_SAG_QDRANT_SHARED_COLLECTION=${SAG_SAG_QDRANT_SHARED_COLLECTION:-aiinvest_search_units}
+      - SAG_SAG_QDRANT_ON_DISK=${SAG_SAG_QDRANT_ON_DISK:-true}
+      - SAG_SAG_QDRANT_SCALAR_QUANTIZATION=${SAG_SAG_QDRANT_SCALAR_QUANTIZATION:-true}
       - SAG_LLM_PROVIDER=${SAG_LLM_PROVIDER:-openai}
       - SAG_LLM_BASE_URL=${SAG_LLM_BASE_URL:-https://api.deepinfra.com/v1/openai}
       - SAG_LLM_MODEL=${SAG_LLM_MODEL:-deepseek-ai/DeepSeek-V4-Flash-0731}
@@ -150,7 +156,7 @@ services:
       - SAG_KNOWLEDGE_WORKER_ENABLED=${SAG_KNOWLEDGE_WORKER_ENABLED:-true}
       - SAG_SESSION_CONTEXT_MODE=${SAG_SESSION_CONTEXT_MODE:-off}
     volumes:
-      - sag_data:/data
+      - aiinvest_sag_data:/data
     depends_on:
       sag-postgres:
         condition: service_healthy
@@ -338,6 +344,6 @@ services:
 volumes:
   pgdata:
   redisdata:
-  sag_pgdata:
-  sag_qdrantdata:
-  sag_data:
+  aiinvest_sag_pgdata:
+  aiinvest_sag_qdrantdata:
+  aiinvest_sag_data:

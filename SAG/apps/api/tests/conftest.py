@@ -30,3 +30,4 @@ def _isolate_sag_local_storage_dirs(tmp_path, monkeypatch):
     monkeypatch.setattr(config_mod.settings, "_active_data_dir", None)
     monkeypatch.setattr(config_mod.settings, "data_dir", str(tmp_path / "engine"))
     monkeypatch.setattr(config_mod.settings, "upload_dir", str(tmp_path / "uploads"))
+    monkeypatch.setattr(config_mod.settings, "sag_qdrant_shared_collection", None)

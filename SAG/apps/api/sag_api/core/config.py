@@ -188,6 +188,11 @@ class Settings(BaseSettings):
     sag_pg_database: str = "sag"
     sag_qdrant_url: str = "http://localhost:6333"
     sag_qdrant_api_key: str | None = None
+    # When set (e.g. "aiinvest_search_units"), all tickers share one multi-tenant Qdrant
+    # collection partitioned by `project_id` (`is_tenant=true`) with on-disk storage & int8 quantization.
+    sag_qdrant_shared_collection: str | None = None
+    sag_qdrant_on_disk: bool = True
+    sag_qdrant_scalar_quantization: bool = True
 
     # ── LLM（答案生成 + 抽取）─────────────────────────────────────────
     # 协议、路由规则和技术默认值统一由 model_providers 注册表维护。
@@ -420,6 +425,14 @@ class Settings(BaseSettings):
     def _normalize_legacy_search_strategy(cls, value: object) -> object:
         # 兼容升级前的环境变量；公开 API 已不再接受 atomic。
         return normalize_search_strategy(value) if isinstance(value, str) else value
+
+    @field_validator("sag_qdrant_shared_collection", mode="before")
+    @classmethod
+    def _normalize_sag_qdrant_shared_collection(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
 
     @field_validator("sag_language", mode="before")
     @classmethod

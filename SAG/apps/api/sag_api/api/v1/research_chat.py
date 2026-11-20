@@ -25,7 +25,7 @@ from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 from sag_api.core.config import settings
 from sag_api.core.db import get_session
 from sag_api.core.error_taxonomy import ErrorCode
-from sag_api.core.errors import ApiError, ForbiddenError, NotFoundError
+from sag_api.core.errors import ApiError, ForbiddenError, NotFoundError, ServiceUnavailableError, ValidationError
 from sag_api.core.logging import get_logger
 from sag_api.core.principal_assertion import (
     VerifiedPrincipal,
@@ -39,6 +39,9 @@ from sag_api.research.chat_orchestrator import (
 )
 from sag_api.research.kg_store import KGStoreProtocol, SQLAlchemyKGStore
 from sag_api.schemas.research_chat import (
+    BatchIngestRequest,
+    BatchIngestResponse,
+    BatchIngestTickerReportSchema,
     HydratedTableResponse,
     KGSubgraphResponse,
     PilotIngestItemResult,
@@ -278,3 +281,72 @@ async def ingest_pilot_sources(
         raise NotFoundError("No valid pilot source files found (fail-closed)")
 
     return PilotIngestResponse(as_of_date=cutoff.isoformat(), results=results)
+
+
+@router.post("/ingest-batch", response_model=BatchIngestResponse)
+async def ingest_research_batch(
+    body: BatchIngestRequest,
+    principal: VerifiedPrincipal = Depends(require_research_bff_principal),
+) -> BatchIngestResponse:
+    """Run tier-aware HOSE Stock Research batch ingest (`pilot_8 | a5_36 | a4_81 | a3_buffer_139 | custom`)."""
+    from sag_api.research.batch_ingest import (
+        AsyncPGCoreDBBatchReader,
+        resolve_default_core_database_url,
+        run_research_batch_ingest,
+    )
+
+    if body.tier == "custom" and not body.tickers:
+        raise ValidationError("tier='custom' requires a non-empty tickers list")
+
+    for raw_t in body.tickers:
+        _authorize_ticker(principal, raw_t)
+
+    core_reader = None
+    core_url = resolve_default_core_database_url()
+    if core_url:
+        core_reader = AsyncPGCoreDBBatchReader(core_url)
+    elif body.tier in ("a5_36", "a4_81", "a3_buffer_139"):
+        raise ServiceUnavailableError(
+            "SAG_CORE_DATABASE_URL is not configured for Core DB tier resolution"
+        )
+
+    summary = await run_research_batch_ingest(
+        tier=body.tier,
+        as_of_date=body.as_of_date,
+        custom_tickers=body.tickers,
+        years_back=body.years_back,
+        dry_run=body.dry_run,
+        enable_llm_toc=body.enable_llm_toc,
+        refresh_kg=body.refresh_kg,
+        source_paths=body.source_paths,
+        core_reader=core_reader,
+    )
+
+    for resolved_sym in summary.resolved_tickers:
+        _authorize_ticker(principal, resolved_sym)
+
+    return BatchIngestResponse(
+        tier=summary.tier,
+        as_of_date=summary.as_of_date,
+        dry_run=summary.dry_run,
+        resolved_tickers=summary.resolved_tickers,
+        total_sub_docs_uploaded=summary.total_sub_docs_uploaded,
+        total_ocr_pages=summary.total_ocr_pages,
+        reports=[
+            BatchIngestTickerReportSchema(
+                ticker=r.ticker,
+                status=r.status,
+                selected_documents=r.selected_documents,
+                rejected_documents=r.rejected_documents,
+                branches=r.branches,
+                localization_methods=r.localization_methods,
+                sub_doc_slots=r.sub_doc_slots,
+                missing_core_slots=r.missing_core_slots,
+                ocr_pages_used=r.ocr_pages_used,
+                uploaded_sub_docs=r.uploaded_sub_docs,
+                errors=r.errors,
+            )
+            for r in summary.reports
+        ],
+        kg_refresh=summary.kg_refresh,
+    )

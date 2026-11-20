@@ -7,15 +7,16 @@ Guarantees disaster recovery, migration readiness, and idempotent re-indexing.
 from __future__ import annotations
 
 from typing import Any
+
 import httpx
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.core.logging import get_logger
 from sag_api.db.models.document import Document
 from sag_api.db.models.routing_rag import DocumentVersion, IngestionRun, SearchUnit
 from sag_api.services.search_index_service import (
-    ensure_qdrant_collection_and_indexes,
+    resolve_search_unit_collection_name,
     run_search_indexing_stage,
 )
 
@@ -71,7 +72,7 @@ async def rebuild_search_index_for_project(
     source of truth. Fails closed if any version has a conflicting IngestionRun project_id
     or lacks a confirmed security_partition_id.
     """
-    collection_name = f"search_units_{project_id}"
+    collection_name = resolve_search_unit_collection_name(project_id)
 
     # Strictly scope query to DocumentVersions belonging to requested project_id via Document
     stmt = (
@@ -97,7 +98,8 @@ async def rebuild_search_index_for_project(
         ).scalar_one_or_none()
         if conflicting_run:
             log.error(
-                "Rebuild cross-project conflict: DocumentVersion %s belongs to project %s but has IngestionRun with project %s",
+                "Rebuild cross-project conflict: DocumentVersion %s belongs to %s "
+                "but has IngestionRun with project %s",
                 ver.id,
                 project_id,
                 conflicting_run,
@@ -106,7 +108,8 @@ async def rebuild_search_index_for_project(
             session.add(ver)
             await session.commit()
             raise ValueError(
-                f"DocumentVersion {ver.id} has conflicting IngestionRun project_id {conflicting_run} vs expected {project_id}; rebuild failed closed"
+                f"DocumentVersion {ver.id} has conflicting IngestionRun project_id "
+                f"{conflicting_run} vs expected {project_id}; rebuild failed closed"
             )
 
         # Determine security partition strictly; fail closed if unmapped

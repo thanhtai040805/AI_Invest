@@ -5,14 +5,16 @@ name: aiinvest-sag
 services:
   db:
     image: postgres:16
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${SAG_PG_PORT:-55432}:5432"
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-sag}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sag}
-      POSTGRES_DB: ${POSTGRES_DB:-sag}
+      POSTGRES_USER: ${POSTGRES_USER:-aiinvest_sag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aiinvest_sag}
+      POSTGRES_DB: ${POSTGRES_DB:-aiinvest_sag}
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - aiinvest_sag_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sag} -d ${POSTGRES_DB:-sag}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aiinvest_sag} -d ${POSTGRES_DB:-aiinvest_sag}"]
       interval: 5s
       timeout: 5s
       retries: 12
@@ -20,13 +22,15 @@ services:
 
   qdrant:
     image: qdrant/qdrant:v1.14.1
+    mem_limit: 1g
     # Local fallback only. Set SAG_SAG_QDRANT_URL / SAG_SAG_QDRANT_API_KEY to use Qdrant Cloud.
     environment:
       QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-${SAG_SAG_QDRANT_API_KEY:-}}
+      QDRANT__STORAGE__ON_DISK_PAYLOAD: "true"
     volumes:
-      - qdrantdata:/qdrant/storage
+      - aiinvest_sag_qdrantdata:/qdrant/storage
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${QDRANT_PORT:-6333}:6333"
+      - "${BIND_ADDRESS:-127.0.0.1}:${QDRANT_PORT:-16333}:6333"
     restart: unless-stopped
 
   api:
@@ -50,19 +54,22 @@ services:
       SAG_DECISION_MODEL: ${SAG_DECISION_MODEL:-Kev-4b}
       SAG_SILICONFLOW_BASE_URL: ${SAG_SILICONFLOW_BASE_URL:-https://api.siliconflow.com/v1}
       SAG_SILICONFLOW_API_KEY: ${SAG_SILICONFLOW_API_KEY:-}
-      SAG_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-sag}:${POSTGRES_PASSWORD:-sag}@db:5432/${POSTGRES_DB:-sag}
+      SAG_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-aiinvest_sag}:${POSTGRES_PASSWORD:-aiinvest_sag}@db:5432/${POSTGRES_DB:-aiinvest_sag}
       SAG_DATA_DIR: /data/engine
       SAG_UPLOAD_DIR: /data/uploads
       SAG_SAG_VECTOR_PROVIDER: qdrant
       SAG_SAG_RELATIONAL_PROVIDER: postgres
       SAG_SAG_QDRANT_URL: ${SAG_SAG_QDRANT_URL:-http://qdrant:6333}
       SAG_SAG_QDRANT_API_KEY: ${SAG_SAG_QDRANT_API_KEY:-}
+      SAG_SAG_QDRANT_SHARED_COLLECTION: ${SAG_SAG_QDRANT_SHARED_COLLECTION:-aiinvest_search_units}
+      SAG_SAG_QDRANT_ON_DISK: ${SAG_SAG_QDRANT_ON_DISK:-true}
+      SAG_SAG_QDRANT_SCALAR_QUANTIZATION: ${SAG_SAG_QDRANT_SCALAR_QUANTIZATION:-true}
       SAG_SAG_PG_HOST: db
       SAG_SAG_PG_PORT: "5432"
-      SAG_SAG_PG_USER: ${POSTGRES_USER:-sag}
-      SAG_SAG_PG_PASSWORD: ${POSTGRES_PASSWORD:-sag}
-      SAG_SAG_PG_DATABASE: ${POSTGRES_DB:-sag}
-      SAG_SAG_LANGUAGE: ${SAG_SAG_LANGUAGE:-en}
+      SAG_SAG_PG_USER: ${POSTGRES_USER:-aiinvest_sag}
+      SAG_SAG_PG_PASSWORD: ${POSTGRES_PASSWORD:-aiinvest_sag}
+      SAG_SAG_PG_DATABASE: ${POSTGRES_DB:-aiinvest_sag}
+      SAG_SAG_LANGUAGE: ${SAG_SAG_LANGUAGE:-vi}
       SAG_LLM_PROVIDER: ${SAG_LLM_PROVIDER:-openai}
       SAG_LLM_BASE_URL: ${SAG_LLM_BASE_URL:-https://api.deepinfra.com/v1/openai}
       SAG_LLM_API_KEY: ${SAG_LLM_API_KEY:-${DEEPINFRA_API_KEY:-}}
@@ -107,9 +114,9 @@ services:
       SAG_ENGINE_CACHE_SIZE: ${SAG_ENGINE_CACHE_SIZE:-16}
       SAG_ENGINE_WARMUP_COUNT: ${SAG_ENGINE_WARMUP_COUNT:-4}
     volumes:
-      - sagdata:/data
+      - aiinvest_sag_data:/data
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${API_PORT:-8000}:8000"
+      - "${BIND_ADDRESS:-127.0.0.1}:${API_PORT:-18000}:8000"
     healthcheck:
       test:
         - CMD-SHELL
@@ -123,6 +130,6 @@ services:
     restart: unless-stopped
 
 volumes:
-  pgdata:
-  qdrantdata:
-  sagdata:
+  aiinvest_sag_pgdata:
+  aiinvest_sag_qdrantdata:
+  aiinvest_sag_data:

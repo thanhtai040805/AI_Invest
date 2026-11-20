@@ -58,6 +58,7 @@ from sag_api.services.query_routing_service import (
     scope_fingerprint,
 )
 from sag_api.services.query_strategy_planner import QueryStrategyPlan, plan_query, promote_multi_hop
+from sag_api.services.search_index_service import resolve_search_unit_collection_name
 
 log = get_logger("search_units")
 _routed_query_demand_tasks: set[asyncio.Task[None]] = set()
@@ -235,7 +236,7 @@ def _schedule_routed_query_demand(
 def _verified_manifest(metrics: Any, *, project_id: str) -> bool:
     if not isinstance(metrics, dict) or metrics.get("manifest_verified") is not True:
         return False
-    expected_collection = f"search_units_{project_id}"
+    expected_collection = resolve_search_unit_collection_name(project_id)
     if metrics.get("collection_name") != expected_collection:
         return False
     count_names = (
@@ -588,7 +589,7 @@ async def _query_group(
     sub_sparse_queries: tuple[dict[str, list[int] | list[float]], ...] = (),
     as_of_ts: int | None = None,
 ) -> tuple[_SearchGroup, list[SearchUnitHit], list[SearchUnitHit]]:
-    collection = f"search_units_{group.project_id}"
+    collection = resolve_search_unit_collection_name(group.project_id)
     use_tree_route = bool(
         route
         and route.routed
@@ -687,7 +688,7 @@ async def _query_routed_group_batch(
     as_of_ts: int | None = None,
 ) -> tuple[list[SearchUnitHit], list[SearchUnitHit], list[SearchUnitHit], list[SearchUnitHit]]:
     """Execute branch_local + global_escape hybrid queries in 1 Qdrant batch round-trip."""
-    collection = f"search_units_{group.project_id}"
+    collection = resolve_search_unit_collection_name(group.project_id)
     local_filter = build_search_filter(
         project_id=group.project_id,
         tenant_id=group.tenant_id,
@@ -2446,7 +2447,7 @@ async def _retrieve_search_unit_sections(
                 # its vector accelerator. Do not report that outage as no evidence.
                 for group in groups:
                     available = await store.count(
-                        f"search_units_{group.project_id}",
+                        resolve_search_unit_collection_name(group.project_id),
                         search_filter=build_search_filter(
                             project_id=group.project_id,
                             tenant_id=group.tenant_id,
@@ -2759,15 +2760,19 @@ async def _retrieve_search_unit_sections(
             continue
         from sag_api.services.search_index_service import generate_search_unit_point_id
 
-        if hit.point_id != generate_search_unit_point_id(f"search_units_{project_id}", unit.id):
+        if hit.point_id != generate_search_unit_point_id(resolve_search_unit_collection_name(project_id), unit.id):
             continue
         section_key = (project_id, source_id, tenant_id, partition_id, unit_id)
         scope_key = (project_id, source_id, tenant_id, partition_id)
         for variant_origin, variant in hit_variants.get(hit_key, []):
             variant_payload = variant.payload
             variant_content = variant_payload.get("content")
+            expected_point_id = generate_search_unit_point_id(
+                resolve_search_unit_collection_name(project_id),
+                unit.id,
+            )
             if (
-                variant.point_id == generate_search_unit_point_id(f"search_units_{project_id}", unit.id)
+                variant.point_id == expected_point_id
                 and variant_payload.get("search_unit_id") == unit.id
                 and variant_payload.get("document_version_id") == unit.document_version_id
                 and variant_payload.get("project_id") == locator["project_id"]
@@ -3117,11 +3122,11 @@ async def _retrieve_search_unit_sections(
                         sec_template = hydrated_items[0][0]
                         ver = current_versions[vid]
                         expected_point_id = generate_search_unit_point_id(
-                            f"search_units_{ver.project_id}",
+                            resolve_search_unit_collection_name(ver.project_id),
                             str(sec_template.search_unit_id or sec_template.chunk_id or ""),
                         )
                         point = await verify_store.get_point(
-                            f"search_units_{ver.project_id}",
+                            resolve_search_unit_collection_name(ver.project_id),
                             expected_point_id,
                         )
                         if point is None:
@@ -3334,7 +3339,7 @@ async def _get_search_unit_citation_checked(
     ):
         raise NotFoundError("原文分块不存在")
 
-    collection = f"search_units_{project_id}"
+    collection = resolve_search_unit_collection_name(project_id)
     try:
         client = await engine_manager.get_search_unit_qdrant_client()
         point = await SearchUnitQdrantStore(client).get_point(

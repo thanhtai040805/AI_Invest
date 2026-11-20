@@ -34,7 +34,10 @@ from sag_api.db.models.routing_rag import (
 )
 from sag_api.services.routing_tree_service import RoutingSnapshot as CandidateSnapshot
 from sag_api.services.routing_tree_service import _walk
-from sag_api.services.search_index_service import generate_search_unit_point_id
+from sag_api.services.search_index_service import (
+    generate_search_unit_point_id,
+    resolve_search_unit_collection_name,
+)
 
 log = logging.getLogger(__name__)
 
@@ -427,7 +430,7 @@ def build_inactive_slot_payloads(
     if target_slot not in {"SLOT_A", "SLOT_B"}:
         raise ValueError("Invalid routing slot")
     slot = "a" if target_slot == "SLOT_A" else "b"
-    collection_name = f"search_units_{candidate.project_id}"
+    collection_name = resolve_search_unit_collection_name(candidate.project_id)
     leaf_by_knowledge = {
         knowledge_unit_id: node_id
         for node_id, members in candidate.leaf_memberships
@@ -543,7 +546,7 @@ async def _clear_inactive_slot_qdrant_payloads(
 ) -> None:
     """Remove prior tree ownership from the leased-free target slot before reuse."""
     slot = "a" if target_slot == "SLOT_A" else "b"
-    collection_name = f"search_units_{candidate.project_id}"
+    collection_name = resolve_search_unit_collection_name(candidate.project_id)
     path = f"/collections/{quote(collection_name, safe='')}/points/payload/delete?wait=true"
     try:
         response = await qdrant_client.post(
@@ -641,7 +644,7 @@ async def _verify_qdrant_point_payloads(
     qdrant_client: httpx.AsyncClient,
 ) -> None:
     slot = "a" if target_slot == "SLOT_A" else "b"
-    collection = f"search_units_{candidate.project_id}"
+    collection = resolve_search_unit_collection_name(candidate.project_id)
     leaf_by_knowledge = {
         unit_id: node_id
         for node_id, members in candidate.leaf_memberships
@@ -729,7 +732,7 @@ async def _verify_qdrant_slot(
         {"key": "project_id", "match": {"value": candidate.project_id}},
         {"key": "tenant_id", "match": {"value": candidate.tenant_id}},
     ]
-    collection = f"search_units_{candidate.project_id}"
+    collection = resolve_search_unit_collection_name(candidate.project_id)
     count_tasks = [
         _count_qdrant_points(qdrant_client, collection, common),
         *(
@@ -1244,7 +1247,7 @@ async def publish_tree_candidate(
             )
             await update_inactive_slot_qdrant_payloads(
                 qdrant_client,
-                f"search_units_{candidate.project_id}",
+                resolve_search_unit_collection_name(candidate.project_id),
                 batches,
             )
             await asyncio.gather(

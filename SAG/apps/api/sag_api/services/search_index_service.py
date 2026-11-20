@@ -86,6 +86,14 @@ def put_cached_text_embedding(
 
 
 
+def resolve_search_unit_collection_name(project_id: str) -> str:
+    """Resolve Qdrant collection name: shared multi-tenant collection if configured, else per-project."""
+    shared = (getattr(settings, "sag_qdrant_shared_collection", None) or "").strip()
+    if shared:
+        return shared
+    return f"search_units_{project_id}"
+
+
 def generate_search_unit_id(document_version_id: str, ordinal: int) -> str:
     """Generate deterministic UUIDv5 for SearchUnit based on document_version_id and ordinal."""
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"sag:unit:{document_version_id}:{ordinal}"))
@@ -335,23 +343,45 @@ async def ensure_qdrant_collection_and_indexes(
             log.debug("Collection check skipped or non-fatal: %s", sanitize_error_message(check_exc))
 
         # 1. Create collection with dense and sparse vectors when not already verified
+        shared_col = (getattr(settings, "sag_qdrant_shared_collection", None) or "").strip()
+        is_shared_collection = bool(shared_col and collection_name == shared_col)
+        on_disk = bool(getattr(settings, "sag_qdrant_on_disk", True))
+        use_quantization = bool(getattr(settings, "sag_qdrant_scalar_quantization", True))
+
         if not collection_ready:
             try:
-                col_res = await qdrant_client.put(
-                    f"/collections/{collection_name}",
-                    json={
-                        "vectors": {
-                            "content_vector": {
-                                "size": vector_dim,
-                                "distance": "Cosine",
-                            }
-                        },
-                        "sparse_vectors": {
-                            "bm25_sparse": {
-                                "modifier": "idf"
-                            }
+                dense_cfg: dict[str, Any] = {
+                    "size": vector_dim,
+                    "distance": "Cosine",
+                    "on_disk": on_disk,
+                }
+                create_body: dict[str, Any] = {
+                    "vectors": {"content_vector": dense_cfg},
+                    "sparse_vectors": {
+                        "bm25_sparse": {
+                            "modifier": "idf",
                         }
                     },
+                    "on_disk_payload": on_disk,
+                }
+                if is_shared_collection:
+                    # Qdrant multi-tenancy best practice: build per-tenant HNSW sub-graphs via `is_tenant=true`.
+                    create_body["hnsw_config"] = {
+                        "m": 0,
+                        "payload_m": 16,
+                        "on_disk": on_disk,
+                    }
+                if use_quantization:
+                    create_body["quantization_config"] = {
+                        "scalar": {
+                            "type": "int8",
+                            "always_ram": True,
+                        }
+                    }
+
+                col_res = await qdrant_client.put(
+                    f"/collections/{collection_name}",
+                    json=create_body,
                 )
                 if col_res.status_code >= 400 and col_res.status_code != 409:
                     err_text = col_res.text.lower()
@@ -374,11 +404,16 @@ async def ensure_qdrant_collection_and_indexes(
         ]
         if missing_index_fields:
             async def _create_payload_index(field_name: str, field_schema: str) -> None:
+                schema_spec: str | dict[str, Any] = (
+                    {"type": "keyword", "is_tenant": True}
+                    if is_shared_collection and field_name == "project_id"
+                    else field_schema
+                )
                 idx_res = await qdrant_client.put(
                     f"/collections/{collection_name}/index?wait=true",
                     json={
                         "field_name": field_name,
-                        "field_schema": field_schema,
+                        "field_schema": schema_spec,
                     },
                 )
                 if idx_res.status_code >= 400 and idx_res.status_code != 409:
@@ -932,7 +967,7 @@ async def index_search_units_to_qdrant(
     )
     from sag_api.parsing.canonical import estimate_unicode_tokens
 
-    collection_name = f"search_units_{project_id}"
+    collection_name = resolve_search_unit_collection_name(project_id)
     if not units:
         return 0
 
@@ -1137,7 +1172,7 @@ async def delete_document_points_from_qdrant(
     """Delete all Qdrant points belonging to the given document version IDs."""
     if not document_version_ids:
         return 0
-    collection_name = f"search_units_{project_id}"
+    collection_name = resolve_search_unit_collection_name(project_id)
     del_res = await qdrant_client.post(
         f"/collections/{collection_name}/points/delete?wait=true",
         json={
@@ -1146,7 +1181,11 @@ async def delete_document_points_from_qdrant(
                     {
                         "key": "document_version_id",
                         "match": {"any": [str(v_id) for v_id in document_version_ids]},
-                    }
+                    },
+                    {
+                        "key": "project_id",
+                        "match": {"value": project_id},
+                    },
                 ]
             }
         },
@@ -1166,7 +1205,7 @@ async def reconcile_orphan_search_units(
     project_id: str,
 ) -> dict[str, int]:
     """Identify and delete orphan Qdrant points that no longer exist in PostgreSQL."""
-    collection_name = f"search_units_{project_id}"
+    collection_name = resolve_search_unit_collection_name(project_id)
     all_points: list[dict[str, Any]] = []
     next_offset = None
     while True:
@@ -1174,6 +1213,11 @@ async def reconcile_orphan_search_units(
             "limit": 500,
             "with_payload": ["search_unit_id", "document_version_id"],
             "with_vector": False,
+            "filter": {
+                "must": [
+                    {"key": "project_id", "match": {"value": project_id}},
+                ]
+            },
         }
         if next_offset is not None:
             payload["offset"] = next_offset
@@ -1228,7 +1272,7 @@ async def run_search_indexing_stage(
 ) -> list[SearchUnit]:
     """Execute Phase 2C chunking, PostgreSQL persistence, and Qdrant indexing with audit."""
     start_time = datetime.now(UTC)
-    collection_name = f"search_units_{project_id}"
+    collection_name = resolve_search_unit_collection_name(project_id)
 
     # Resolve authoritative tenant_id and doc from Document or IngestionRun
     from sag_api.db.models.document import Document

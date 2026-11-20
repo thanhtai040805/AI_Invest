@@ -165,3 +165,39 @@ class PilotIngestItemResult(BaseModel):
 class PilotIngestResponse(BaseModel):
     as_of_date: str
     results: list[PilotIngestItemResult] = Field(default_factory=list)
+
+
+class BatchIngestRequest(BaseModel):
+    tier: Literal["pilot_8", "a5_36", "a4_81", "a3_buffer_139", "custom"] = "pilot_8"
+    tickers: list[str] = Field(default_factory=list, max_length=256)
+    as_of_date: date | None = None
+    years_back: int = Field(default=3, ge=1, le=6)
+    dry_run: bool = True
+    enable_llm_toc: bool = False
+    refresh_kg: bool = False
+    source_paths: dict[str, str] = Field(default_factory=dict)
+
+
+class BatchIngestTickerReportSchema(BaseModel):
+    ticker: str
+    status: Literal["INGESTED", "DRY_RUN_READY", "NO_DOCUMENTS", "FAILED"]
+    selected_documents: int = 0
+    rejected_documents: int = 0
+    branches: list[str] = Field(default_factory=list)
+    localization_methods: list[str] = Field(default_factory=list)
+    sub_doc_slots: list[str] = Field(default_factory=list)
+    missing_core_slots: list[str] = Field(default_factory=list)
+    ocr_pages_used: int = 0
+    uploaded_sub_docs: int = 0
+    errors: list[str] = Field(default_factory=list)
+
+
+class BatchIngestResponse(BaseModel):
+    tier: str
+    as_of_date: str
+    dry_run: bool
+    resolved_tickers: list[str] = Field(default_factory=list)
+    total_sub_docs_uploaded: int = 0
+    total_ocr_pages: int = 0
+    reports: list[BatchIngestTickerReportSchema] = Field(default_factory=list)
+    kg_refresh: dict[str, Any] | None = None
