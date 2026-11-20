@@ -88,7 +88,7 @@ services:
     ports:
       - "127.0.0.1:6333:6333"
     environment:
-      QDRANT__SERVICE__API_KEY: ${SAG_QDRANT_API_KEY:-}
+      QDRANT__SERVICE__API_KEY: ${SAG_QDRANT_API_KEY:-${SAG_SAG_QDRANT_API_KEY:-}}
     volumes:
       - sag_qdrantdata:/qdrant/storage
     logging:
@@ -107,10 +107,11 @@ services:
     expose:
       - "8000"
     environment:
-      - SAG_ENVIRONMENT=${SAG_ENVIRONMENT:-prod}
+      - SAG_ENVIRONMENT=${SAG_ENVIRONMENT:-dev}
       - SAG_DEBUG=${SAG_DEBUG:-false}
-      - SAG_SECRET_KEY=${SAG_SECRET_KEY:-}
-      - SAG_AUTH_MODE=${SAG_AUTH_MODE:-local}
+      - SAG_SECRET_KEY=${SAG_SECRET_KEY:-dev-insecure-secret-change-me-in-production-0123456789}
+      - SAG_AUTH_MODE=${SAG_AUTH_MODE:-continuum}
+      - SAG_BFF_SERVICE_TOKEN=${SAG_BFF_SERVICE_TOKEN:-}
       - SAG_ALLOW_REGISTRATION=${SAG_ALLOW_REGISTRATION:-false}
       - SAG_DATABASE_URL=postgresql+asyncpg://sag:${SAG_DB_PASSWORD:-sag_local_only}@sag-postgres:5432/sag
       - SAG_DATA_DIR=/data/engine
@@ -136,14 +137,24 @@ services:
       - SAG_DOCUMENT_PARSER=${SAG_DOCUMENT_PARSER:-auto}
       - SAG_MINERU_PROVIDER=official
       - SAG_MINERU_BASE_URL=${SAG_MINERU_BASE_URL:-https://mineru.net}
+      - SAG_MINERU_OFFICIAL_MODEL=${SAG_MINERU_OFFICIAL_MODEL:-vlm}
+      - SAG_MINERU_PARSE_METHOD=${SAG_MINERU_PARSE_METHOD:-auto}
       - SAG_MINERU_OFFICIAL_API_TOKEN=${SAG_MINERU_OFFICIAL_API_TOKEN:-}
+      - SAG_OBJECT_INGEST_ALLOWED_HOSTS=${SAG_OBJECT_INGEST_ALLOWED_HOSTS:-.r2.cloudflarestorage.com}
+      - SAG_OBJECT_INGEST_ALLOW_PRIVATE_HOSTS_IN_DEV=${SAG_OBJECT_INGEST_ALLOW_PRIVATE_HOSTS_IN_DEV:-false}
+      - SAG_LOCAL_PARSE_WORKERS=${SAG_LOCAL_PARSE_WORKERS:-2}
       - SAG_DOCUMENT_EVENT_EXTRACTION_ENABLED=${SAG_DOCUMENT_EVENT_EXTRACTION_ENABLED:-false}
+      - SAG_DOCUMENT_CHUNK_MAX_TOKENS=${SAG_DOCUMENT_CHUNK_MAX_TOKENS:-1000}
+      - SAG_DOCUMENT_CHUNK_MODE=${SAG_DOCUMENT_CHUNK_MODE:-standard}
       - SAG_KNOWLEDGE_WORKER_ENABLED=${SAG_KNOWLEDGE_WORKER_ENABLED:-true}
+      - SAG_SESSION_CONTEXT_MODE=${SAG_SESSION_CONTEXT_MODE:-off}
     volumes:
       - sag_data:/data
     depends_on:
       sag-postgres:
         condition: service_healthy
+      sag-qdrant:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8000/api/v1/system/health || exit 1"]
       interval: 15s

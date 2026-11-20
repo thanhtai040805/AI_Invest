@@ -36,12 +36,20 @@ SAG/
 
 ```bash
 cd SAG
+cp .env.example .env
 docker compose up -d db qdrant
 
 cd apps/api
 uv sync --extra dev --extra postgres
 uvicorn sag_api.main:app --reload --host 0.0.0.0 --port 8000
 ```
+
+### Standalone Project-Scoped Auth (No External JWKS Required)
+
+Evidence, source, document, and search routes fail closed by default. For standalone AIInvest Stock Research / MOAT usage, keep `SAG_AUTH_MODE=continuum` and configure a `>= 32`-character `SAG_BFF_SERVICE_TOKEN`:
+
+1. **Ingest documents per ticker/project** (`POST /api/v1/projects/{ticker}/documents/upload` or `/ingest-object`) using `X-SAG-BFF-Service-Token` + scoped headers (`X-Continuum-User-Id`, `X-Continuum-Organization-Id`, `X-Continuum-Project-Id`, `X-Continuum-Security-Partition`, `Idempotency-Key`). This automatically provisions the ticker-scoped `Source`.
+2. **Query/read sources & search** by minting a short-lived scoped session JWT via `POST /api/v1/auth/continuum-login` (with `X-SAG-BFF-Service-Token`) and passing `Authorization: Bearer <token>` to `GET /api/v1/sources`, `POST /api/v1/search`, `/api/v1/knowledge/*`, and `/api/v1/universe/*`.
 
 Run tests:
 

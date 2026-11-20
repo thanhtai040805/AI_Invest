@@ -88,7 +88,7 @@ Hệ thống được thiết kế theo mô hình **Event-Driven Microservices k
 - **Tổ chức Clean Architecture**:
   - **Domain Core (`app/domain/`)**: Thực thể kinh doanh thuần túy, quy tắc giao dịch T+2.5, biên độ giá trần/sàn ±7% của sàn HOSE. Không phụ thuộc bất kỳ ORM hay framework nào.
   - **Application Layer (`app/application/`)**: Điều phối use case, pipeline phân tích BCTC, kịch bản tranh luận giữa 12 agents định lượng.
-  - **Infrastructure Layer (`app/infrastructure/`)**: Triển khai repository cụ thể (SQLAlchemy), Redis driver. SAG connector/pipeline code is quarantined for research and is not imported by the runtime Agent graph.
+  - **Infrastructure Layer (`app/infrastructure/`)**: Triển khai repository cụ thể (SQLAlchemy), Redis driver. Legacy GIL/SAG v2 connectors and pipelines have been completely removed and are not imported by the runtime Agent graph.
   - **Presentation Layer (`app/presentation/`)**: Router FastAPI đóng gói RESTful endpoints, DTO schema validation.
 - **12 Autonomous Quant Agents**:
   1. *Macro Agent*: Phân tích lãi suất, lạm phát, tỷ giá USD/VND.
@@ -148,28 +148,29 @@ Hệ thống được thiết kế theo mô hình **Event-Driven Microservices k
 ┌─────────────────────────────────────────────────────────┐
 │ ZONE 3: COMPUTATIONAL INTEL CORE                        │
 │   • ai-engine Quant Org (:8000)                         │
-│   • SAG v2 Forensics Core (:8001)                       │
-│   • MinerU OCR Workers                                  │
+│   • SAG Knowledge Routing RAG (:8000, research profile) │
+│   • Smart Hybrid MinerU / Local Parse Workers           │
 └────────────────────────────┬────────────────────────────┘
                              │
                              ▼ (Isolated DB Subnet 10.0.3.0/24 - No Public IP)
 ┌─────────────────────────────────────────────────────────┐
 │ ZONE 4: ENTERPRISE DATA STORAGE                         │
 │   • PostgreSQL 16 Core (:5432)                          │
-│   • PostgreSQL/pgvector SAG (internal :5432)            │
+│   • PostgreSQL 16 SAG (research profile, internal :5432)│
+│   • Qdrant Vector Engine (research profile, :6333)      │
 │   • Redis Cache (:6379)                                 │
-│   • MinIO S3 Object Storage (:9000)                     │
+│   • Cloudflare R2 Object Storage                        │
 └─────────────────────────────────────────────────────────┘
 ```
 
 ### Chính sách an toàn thông tin:
 1. **Zero External Access to Database**: CSDL PostgreSQL và Redis không gán Public IP, chỉ lắng nghe kết nối từ mạng nội bộ Docker/VPC.
 2. **Strict Identity Propagation**: Mọi request qua API Gateway đều được xác thực JWT, giải mã `userId`, và truyền tải dưới dạng header tin cậy nội bộ (`x-user-id`).
-3. **Evidence Immutability**: Các bản băm `quote_hash` sau khi ghi vào PostgreSQL được bảo vệ bằng quyền ghi Append-Only đối với các bảng bằng chứng.
-4. **Service Authentication**: Route quản trị của Backend dùng `INTERNAL_SERVICE_TOKEN`; route quản trị AI Engine dùng `AI_ENGINE_ADMIN_TOKEN`; Backend truyền token này qua `X-Admin-Token`. SAG production yêu cầu `SAG_SERVICE_TOKEN` và `SAG_SECRET_KEY` mạnh, không chấp nhận giá trị mặc định.
+3. **Evidence Immutability**: Các bản băm `quote_hash` / `content_hash` của `CanonicalBlock` và trích dẫn nguồn sau khi ghi vào PostgreSQL được kiểm chứng toàn vẹn và gắn neo vị trí/trang.
+4. **Service Authentication**: Route quản trị của Backend dùng `INTERNAL_SERVICE_TOKEN`; route quản trị AI Engine dùng `AI_ENGINE_ADMIN_TOKEN`; Backend truyền token này qua `X-Admin-Token`. SAG production yêu cầu `SAG_BFF_SERVICE_TOKEN` (>=32 ký tự) hoặc RS256 JWKS Principal Assertion và `SAG_SECRET_KEY` mạnh (>=32 byte), từ chối khởi động khi dùng khóa rỗng, ngắn hoặc mặc định.
 5. **Atomic Portfolio Ledger**: Tiền, vị thế và lệnh được cập nhật trong transaction có khóa tài khoản. DB áp đặt một vị thế cho mỗi `(user_id, symbol)`, reaction chỉ được trỏ tới đúng một post hoặc comment, và `paper_trades` luôn có `account_id`.
 6. **Reverse Proxy DMZ Isolation**: Toàn bộ client truy cập qua Nginx Reverse Proxy (cổng 80/443). Nginx thực hiện định tuyến `/` -> frontend, `/api/` -> backend, `/socket.io/` -> WebSocket, bật Gzip nén, và giấu toàn bộ port microservices và database phía sau mạng nội bộ `aiinvest_default`.
-7. **Automated Database Lifecycle & Healthcheck Gating**: Job `migrate` chạy `prisma migrate deploy` trước AI Engine và Backend. Backend chỉ phục vụ request sau khi AI Engine healthy. SAG và migration Alembic chỉ chạy trong profile `research`. Docker Compose dùng `condition: service_healthy` và log rotation (`max-size: 50m`, `max-file: 5`).
+7. **Automated Database Lifecycle & Healthcheck Gating**: Job `migrate` chạy `prisma migrate deploy` trước AI Engine và Backend. Backend chỉ phục vụ request sau khi AI Engine healthy. SAG (`sag-postgres`, `sag-qdrant`, `sag-api` với SQL migrations `0001..0012` và `init_db()`) chỉ chạy trong profile `research`. Docker Compose dùng `condition: service_healthy` và log rotation (`max-size: 50m`, `max-file: 5`).
 
 ---
 

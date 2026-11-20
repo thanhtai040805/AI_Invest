@@ -911,11 +911,11 @@
                 <line x1="0" y1="20" x2="8" y2="15" stroke="#0284c7" stroke-width="1.8" />
               </g></a>
               <text x="968" y="98" fill="#0c4a6e" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="700"
-                text-anchor="middle">Milvus / PGVector (1024-d)</text>
+                text-anchor="middle">Qdrant Hybrid (1024-d)</text>
               <text x="968" y="113" fill="#0284c7" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
-                text-anchor="middle">HNSW Cosine sim(v_Q, v_i)</text>
+                text-anchor="middle">Dense + Sparse SearchUnit</text>
               <text x="968" y="128" fill="#475569" font-size="7.5" font-family="'Geist Mono', monospace"
-                text-anchor="middle">embedding_chunks (Optional)</text>
+                text-anchor="middle">Shared Embedding Cache</text>
             </g>
           </g>
 
@@ -1149,17 +1149,17 @@
 
             <!-- Node 6C: Fresh Soft Rose Forensics -->
             <g class="interactive-node" data-node-id="node-forensic-guard">
-              <title>GIL guard: validated same-period flow graph; only circular flow blocks, abnormal flow goes to review.</title>
-              <a href="#inspect-node-forensic-guard" class="node-anchor" aria-label="Khảo sát chi tiết Branch 3: Deterministic Forensics"><rect x="236" y="698" width="232" height="76" rx="6" fill="#ffe4e6" stroke="#fb7185" stroke-width="1.8" />
+              <title>Layer-0 accounting quality gate: Beneish M8/M5 manipulation cutoff and Sloan accruals check from Core DB.</title>
+              <a href="#inspect-node-forensic-guard" class="node-anchor" aria-label="Khảo sát chi tiết Branch 3: Accounting Quality Gate"><rect x="236" y="698" width="232" height="76" rx="6" fill="#ffe4e6" stroke="#fb7185" stroke-width="1.8" />
               <path d="M236 704 A6 6 0 0 1 242 698 H462 A6 6 0 0 1 468 704 V720 H236 Z" fill="#fecdd3" />
               <text x="352" y="714" fill="#9f1239" font-size="10" font-weight="700" font-family="'Geist', sans-serif"
-                text-anchor="middle">Branch 3: Deterministic Forensics</text>
+                text-anchor="middle">Branch 3: Accounting Quality Gate</text>
               <text x="352" y="738" fill="#881337" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="700"
-                text-anchor="middle">GIL: Flow Signal Only | Coverage is audit metadata</text>
+                text-anchor="middle">Core DB Quantitative Gate (No GIL)</text>
               <text x="352" y="754" fill="#e11d48" font-size="8" font-family="'Geist Mono', monospace" font-weight="700"
                 text-anchor="middle">Beneish M8 &gt; -1.78 · Sloan Accruals &lt; -0.10</text>
               <text x="352" y="766" fill="#475569" font-size="7" font-family="'Geist Mono', monospace"
-                text-anchor="middle">Missing data = coverage only · Circular flow = BLOCK · Other flow = REVIEW</text>
+                text-anchor="middle">Layer-0 Beneish Veto · Audit UNQUALIFIED · ADTV20</text>
             </g></a>
           </g>
 
@@ -1238,7 +1238,7 @@
           <line x1="750" y1="869" x2="780" y2="869" stroke="#e11d48" stroke-width="2.5" stroke-dasharray="6,4" />
           <circle cx="765" cy="869" r="3" fill="#e11d48" />
           <text x="786" y="873" fill="#334155" font-size="8" font-family="'Geist Mono', monospace"
-            font-weight="600">Forensic Hard Veto (GIL / M8 / Sloan)</text>
+            font-weight="600">Layer-0 Accounting Gate (Beneish M8 / Sloan)</text>
 
           <!-- Legend Item 4: Focal Convergence -->
           <rect x="990" y="864" width="10" height="10" rx="2" fill="#ea580c" />
@@ -1352,7 +1352,7 @@ For line in H_tree: quote_hash = SHA-256(normalize(line))</code></pre>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Liên kết Mã nguồn gốc</label>
-            <div class="drawer-code-link">📄 <code>ai-engine/app/application/bctc_to_sag_pipeline.py:parse_ast()</code></div>
+            <div class="drawer-code-link">📄 <code>SAG/apps/api/sag_api/services/canonical_service.py</code></div>
           </div>
         </div>
       </aside>
@@ -1379,7 +1379,7 @@ For line in H_tree: quote_hash = SHA-256(normalize(line))</code></pre>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Liên kết Mã nguồn gốc</label>
-            <div class="drawer-code-link">📄 <code>ai-engine/app/application/bctc_to_sag_pipeline.py:create_chunks()</code></div>
+            <div class="drawer-code-link">📄 <code>SAG/apps/api/sag_api/services/canonical_service.py</code></div>
           </div>
         </div>
       </aside>
@@ -1399,7 +1399,7 @@ Distance: D_cosine(u, v) = 1 - (u · v) / (||u|| ||v||)</code></pre>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên trong Code</label>
-            <div class="drawer-text">Chỉ mục HNSW: M=16, efConstruction=200; lưu trữ trong PostgreSQL PGVector / Milvus với 1024 chiều. Chỉ mục hóa theo từng mã cổ phiếu và niên độ tài chính.</div>
+            <div class="drawer-text">Chỉ mục HNSW: M=16, efConstruction=200; lưu trữ trong Qdrant (v1.14.1) Dense + Sparse hybrid index 1024 chiều. Chỉ mục hóa theo từng mã cổ phiếu và niên độ tài chính.</div>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Hình thái Dữ liệu (I/O Morphology)</label>
@@ -1407,7 +1407,7 @@ Distance: D_cosine(u, v) = 1 - (u · v) / (||u|| ||v||)</code></pre>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Liên kết Mã nguồn gốc</label>
-            <div class="drawer-code-link">📄 <code>ai-engine/app/infrastructure/milvus_repository.py</code></div>
+            <div class="drawer-code-link">📄 <code>SAG/apps/api/sag_api/sag/qdrant_store.py</code></div>
           </div>
         </div>
       </aside>
@@ -1628,7 +1628,7 @@ Dispatched to: Half-Kelly Engine f* = 0.5 * ((b*p - q) / b)</code></pre>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Liên kết Mã nguồn gốc</label>
-            <div class="drawer-code-link">📄 <code>ai-engine/app/application/bctc_to_sag_pipeline.py:assemble_context()</code></div>
+            <div class="drawer-code-link">📄 <code>SAG/apps/api/sag_api/services/search_unit_retrieval_service.py</code></div>
           </div>
         </div>
       </aside>

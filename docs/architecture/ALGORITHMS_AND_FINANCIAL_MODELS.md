@@ -27,8 +27,8 @@ AIInvest không sử dụng các mô hình "hộp đen" (black-box) thiếu ki�
                                                               │
 ┌─────────────────────────────────────────────────────────────┘
 ▼
-[Lớp 0: Hard Forensic Gate]
-  ├── Beneish M-Score (M8 / M5 Adaptive) ──▶ M > -1.78 ? VETO GIL
+[Lớp 0: Hard Accounting Gate]
+  ├── Beneish M-Score (M8 / M5 Adaptive) ──▶ M > -1.78 ? LAYER-0 HARD VETO
   └── Sloan Accruals Anomaly Ratio       ──▶ Accrual < -0.10 ? Flag Quality Penalty
         │ (Passed)
         ▼
@@ -84,7 +84,7 @@ $$M_5 = -6.065 + 0.823 \cdot \text{DSRI} + 0.906 \cdot \text{GMI} + 0.593 \cdot 
 
 ### 2.4. Điều kiện biên & Ngưỡng kích hoạt
 - **Ngưỡng loại bỏ (Hard Law FAIL Gate)**:
-  $$\text{Nếu } M > -1.78 \implies \text{Kết luận: BCTC có dấu hiệu thao túng (Manipulator), kích hoạt GIL VETO, cấm tuyệt đối giải ngân.}$$
+  $$\text{Nếu } M > -1.78 \implies \text{Kết luận: BCTC có dấu hiệu thao túng (Manipulator), kích hoạt LAYER-0 HARD VETO, cấm tuyệt đối giải ngân.}$$
   $$\text{Nếu } M \le -1.78 \implies \text{Kết luận: BCTC lành mạnh (Non-manipulator), thông qua vòng kiểm soát Lớp 0.}$$
 - **Miễn trừ ngành đặc thù**:
   - Nhóm Ngân hàng, Bảo hiểm, Chứng khoán, Bất động sản (`EXCLUDED_SECTORS`) được miễn trừ Beneish cổ điển do cấu trúc bảng cân đối kế toán mang đặc thù đòn bẩy huy động và ghi nhận doanh thu theo tiến độ bàn giao dự án.
@@ -233,27 +233,24 @@ Cột `decision_hash` được lưu tuần tự vào bảng PostgreSQL `cio_reso
 
 ---
 
-## 8. Xác Thực Bằng Chứng Mù & Dấu Vân Tay Dòng (quote_hash SHA-256)
+## 8. Xác Thực Bằng Chứng Mù & Neo Provenance (`CanonicalBlock` / SHA-256)
 
-*File nguồn*: [`ai-engine/app/infrastructure/external/sag_connector.py`](file:///d:/AIInvest/ai-engine/app/infrastructure/external/sag_connector.py)
+*File nguồn*: [`SAG/apps/api/sag_api/services/canonical_service.py`](file:///d:/AIInvest/SAG/apps/api/sag_api/services/canonical_service.py)
 
 ### 8.1. Mục đích
-Loại bỏ hoàn toàn hiện tượng AI ảo giác (Hallucination) trong trích xuất BCTC. Các Agent không được phép tự "sáng tạo" ra số liệu tài chính để đưa vào mô hình định giá.
+Loại bỏ hoàn toàn hiện tượng AI ảo giác (Hallucination) trong nghiên cứu cổ phiếu / MOAT. Mọi trích dẫn từ Báo cáo Thường niên và Thuyết minh BCTC kiểm toán đều phải neo ngược được tới khối văn bản gốc có số trang và mã băm SHA-256.
 
-### 8.2. Thuật toán tạo dấu vân tay dòng
-Khi MinerU OCR phân tích một tệp BCTC PDF:
-1. Chuẩn hóa chuỗi văn bản của dòng dữ liệu (loại bỏ ký tự xuống dòng, khoảng trắng thừa, viết thường):
-   $$S = \text{Normalize}(\text{Line Text})$$
-2. Kết hợp với số trang và tọa độ ô bảng trong tài liệu gốc:
-   $$\text{Seed} = S + \text{"\_P"} + \text{PageNumber} + \text{"\_C"} + \text{CellCoord}$$
-3. Tính toán mã băm SHA-256:
-   $$\text{quote\_hash} = \text{SHA256}(\text{Seed})$$
+### 8.2. Thuật toán tạo dấu vân tay & chống trùng lặp
+Khi Smart Hybrid MinerU / local worker phân tích tài liệu PDF:
+1. Chuẩn hóa văn bản của từng khối cấu trúc `CanonicalBlock` (heading, đoạn văn, bảng biểu):
+   $$S = \text{Normalize}(\text{Block Text})$$
+2. Gắn neo nguồn (`document_id`, `document_version_id`, `page_number`, `section_path`) và tính mã băm SHA-256 + MinHash 4 tầng chống trùng lặp:
+   $$\text{content\_hash} = \text{SHA256}(S)$$
 
-### 8.3. Quy tắc kiểm tra tính toàn vẹn (Integrity Gate)
-Khi một Quant Agent (ví dụ: `FundamentalAgent` hoặc `ValuationAgent`) trích xuất chỉ số Lợi nhuận gộp hay Nợ vay:
-- Yêu cầu gửi kèm `quote_hash`.
-- `SAGConnector` đối chiếu `quote_hash` với cơ sở dữ liệu `sag_evidence_lines`.
-- **Nếu băm không khớp**: Từ chối thông tin, hạ điểm tín nhiệm của luận điểm về 0 và gắn cờ cảnh báo rủi ro dữ liệu sai lệch.
+### 8.3. Quy tắc kiểm tra tính toàn vẹn (Grounded Citation Gate)
+Khi SAG Knowledge Routing RAG trả về bằng chứng cho nghiên cứu cổ phiếu / MOAT (profile `research`):
+- Mọi kết quả từ `SearchUnit` và `KnowledgeUnit` đều mang theo provenance (`source_id`, `document_id`, `document_version_id`, `page`, `content_hash`).
+- Nếu không có bằng chứng gốc đủ tin cậy, hệ thống thực thi cơ chế **Abstention** (từ chối bịa đặt thay vì suy diễn).
 
 ---
 
@@ -261,7 +258,7 @@ Khi một Quant Agent (ví dụ: `FundamentalAgent` hoặc `ValuationAgent`) tr�
 
 | Thành phần thuật toán | Đầu vào chính | Đầu ra chính | Điều kiện tiên quyết & Giới hạn |
 |---|---|---|---|
-| **Beneish M-Score** | Doanh thu, Phải thu, Giá vốn, Khấu hao, Chi phí QLDN, Lợi nhuận, CFO, Tổng tài sản qua 2 kỳ liên tiếp | Điểm $M$, Phân loại: MANIPULATOR / CLEAN, GIL Veto flag | Miễn trừ nhóm tài chính; $M > -1.78$ loại ngay lập tức. |
+| **Beneish M-Score** | Doanh thu, Phải thu, Giá vốn, Khấu hao, Chi phí QLDN, Lợi nhuận, CFO, Tổng tài sản qua 2 kỳ liên tiếp | Điểm $M$, Phân loại: MANIPULATOR / CLEAN, Layer-0 Veto flag | Miễn trừ nhóm tài chính; $M > -1.78$ loại ngay lập tức. |
 | **Sloan Accruals** | Lợi nhuận sau thuế, CFO từ bảng LCTT, Tổng tài sản | Tỷ lệ dồn tích chuẩn hóa $\text{Accrual Ratio}$, Điểm chất lượng lợi nhuận | $\text{Total Assets} > 0$; CFO âm kéo dài bị phạt tỷ trọng. |
 | **HOSE T+2.5 Downside** | Giá đặt mua, Stop-loss danh nghĩa, NAV quỹ | Rủi ro tổn thất tuyệt đối (VND), Phán quyết Đạt/Không đạt | Tối thiểu chịu 2 phiên sàn liên tiếp ($13.51\%$); tổn thất $\le 2\%$ NAV. |
 | **Quarter-Kelly Sizer** | Xác suất thắng $W$, Tỷ lệ Win/Loss $R$, Trạng thái HMM thị trường | Khối lượng cổ phiếu đặt mua tối ưu (VND) | $W > 0, R > 0$; Tỷ trọng tối đa $15\%$ NAV của một mã. |

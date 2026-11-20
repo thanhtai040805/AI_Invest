@@ -2,7 +2,7 @@
 
 Kiểm thử vận hành độc lập Agent 04 trên dữ liệu thực tế và CSDL PostgreSQL:
 1. Xác thực kết nối CSDL và đọc dữ liệu giá OHLCV thực tế từ MarketDataRepository.
-2. Kiểm tra bộ lọc Hard Filter (GIL CATASTROPHIC) và ngưỡng CSS >= 60 (Conviction >= B).
+2. Kiểm tra ngưỡng CSS >= 60 (Conviction >= B) và điều kiện đầu vào độc lập.
 3. Thẩm định thực chất 3 Tín hiệu Độc lập (Hard Law Điều 3).
 4. Phân loại Ngòi nổ (Catalyst Selection) và Định giá thích ứng đa mô hình.
 5. Kiểm tra rò rỉ tin tức PEAI & cảnh báo False Breakout.
@@ -115,7 +115,6 @@ async def run_agent04_standalone(ticker: str, timeline_months: int = 3, force_co
 
     market_context = {
         "current_regime": "BULL_TRENDING",
-        "gil_status": "PASS",
         "current_price": current_price,
     }
 

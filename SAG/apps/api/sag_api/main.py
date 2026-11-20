@@ -29,16 +29,30 @@ _INSECURE_SECRETS = {
     "dev-insecure-secret-change-me-in-production-0123456789",
     "please-change-this-in-production-0123456789",
     "dev-secret-change-me",
+    "dev-secret-change-me-at-least-32-bytes",
 }
+_MIN_PROD_SECRET_BYTES = 32
+
+
+def _validate_production_secret_key(environment: str, secret_key: str) -> None:
+    """Fail closed in production if SAG_SECRET_KEY is empty, padded, short, or known-default."""
+    if environment != "prod":
+        return
+    if (
+        not secret_key
+        or secret_key != secret_key.strip()
+        or len(secret_key.encode("utf-8")) < _MIN_PROD_SECRET_BYTES
+        or secret_key in _INSECURE_SECRETS
+    ):
+        raise RuntimeError(
+            "生产环境禁止使用空密钥、过短密钥或默认 SAG_SECRET_KEY。请设置强随机值（≥32 字节），例如：openssl rand -hex 32"
+        )
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging("DEBUG" if settings.debug else "INFO")
-    if settings.environment == "prod" and settings.secret_key in _INSECURE_SECRETS:
-        raise RuntimeError(
-            "生产环境禁止使用默认 SAG_SECRET_KEY。请设置强随机值（≥32 字节），例如：openssl rand -hex 32"
-        )
+    _validate_production_secret_key(settings.environment, settings.secret_key)
     os.makedirs(settings.data_dir, exist_ok=True)
     os.makedirs(settings.upload_dir, exist_ok=True)
 

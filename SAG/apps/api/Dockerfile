@@ -16,9 +16,10 @@ RUN pip install --upgrade pip hatchling \
  && python -c 'import re, tomllib; p=tomllib.load(open("pyproject.toml", "rb")); locked={pkg["name"]:pkg["version"] for pkg in tomllib.load(open("uv.lock", "rb"))["package"]}; deps=list(p["project"]["dependencies"])+p["project"]["optional-dependencies"]["postgres"]; deps=[name+"=="+locked[name] if (name:=re.match(r"[A-Za-z0-9_.-]+", dep).group()) in {"litellm", "mcp"} else dep for dep in deps]; print("\n".join(deps))' > /tmp/requirements.txt \
  && pip install -r /tmp/requirements.txt
 
-# 再安装本项目本身（无依赖解析，保持快速重建）。
+# Install the project itself without re-resolving dependencies.
 COPY sag_api ./sag_api
 COPY sag_agent ./sag_agent
+COPY migrations ./migrations
 RUN pip install --no-deps --no-build-isolation .
 
 EXPOSE 8000

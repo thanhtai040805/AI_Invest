@@ -16,7 +16,7 @@ Dựa trên quá trình điều tra gốc mã nguồn (Root Research) toàn di�
 | **Pillar 3: Trung hòa Ngành, Trực giao & IC** | [`sector_neutralizer.py`](file:///d:/AIInvest/ai-engine/app/domain/services/quant/sector_neutralizer.py), [`factor_orthogonalization.py`](file:///d:/AIInvest/ai-engine/app/domain/services/quant/factor_orthogonalization.py), [`vn_ic_tester.py`](file:///d:/AIInvest/ai-engine/app/domain/services/quant/vn_ic_tester.py) | Nhận diện phân phối (nhị phân, rời rạc, liên tục); Winsorize $[q_{0.01}, q_{0.99}]$; Z-Score phòng thủ $N \ge 3$; Trực giao hóa Gram-Schmidt $\mathbf{u}_k = \mathbf{v}_k - \sum \text{proj}$; Lọc GTGD $\ge 5$ tỷ VND/ngày; Rank IC & T-stat. |
 | **Pillar 4: Giám định Thao túng Beneish M-Score** | [`beneish.py`](file:///d:/AIInvest/ai-engine/app/domain/rules/beneish.py) | Động cơ kép thích ứng: $M_8$ đầy đủ vs $M_5$ phi dòng tiền; Ngưỡng loại $M > -1.78$; Miễn trừ Ngân hàng, BĐS, Chứng khoán, Bảo hiểm; Chuẩn hóa key theo VAS Thông tư 200/BTC. |
 | **Pillar 5: Hard Laws, Cắt lỗ Đa tầng & Kelly** | [`hard_laws.py`](file:///d:/AIInvest/ai-engine/app/domain/rules/hard_laws.py), [`stop_loss.py`](file:///d:/AIInvest/ai-engine/app/domain/rules/stop_loss.py), [`kelly_sizer.py`](file:///d:/AIInvest/ai-engine/app/domain/rules/kelly_sizer.py) | Điều 1 (Rủi ro 2% NAV, trần sàn T+2.5 $13.51\%$); Điều 2 (Lệnh $\le 15\%$, Vị thế $\le 25\%$ ADTV20); Điều 4 (Cổ phiếu $\le 15\%$, Ngành $\le 35\%$ NAV); Thang 6 bậc cắt lỗ T0-T5; Quarter Kelly $f^*$ scaling theo Regime. |
-| **Pillar 6: BCTC AST Parsing & Dual-Store Ingestion** | [`bctc_to_sag_pipeline.py`](file:///d:/AIInvest/ai-engine/app/domain/pipeline/bctc_to_sag_pipeline.py), [`document_selector.py`](file:///d:/AIInvest/ai-engine/app/domain/services/document_selector.py) | Tuyển chọn Bộ 3 Tài liệu Vàng; MinerU OCR giải mã cấu trúc bảng AST; Content hash $\text{SHA-256}(\text{line})$; Chiếu vector 1024-d & Siêu đồ thị $M:N$; Nén hàng đợi ngữ cảnh $32 \to 24 \to 8$. |
+| **Pillar 6: SAG Knowledge Routing RAG (Stock Research / MOAT)** | [`canonical_service.py`](file:///d:/AIInvest/SAG/apps/api/sag_api/services/canonical_service.py), [`routing_tree_service.py`](file:///d:/AIInvest/SAG/apps/api/sag_api/services/routing_tree_service.py), [`qdrant_store.py`](file:///d:/AIInvest/SAG/apps/api/sag_api/sag/qdrant_store.py) | Smart Hybrid MinerU / local worker; `CanonicalBlock` + 4-tier SHA-256/MinHash dedup; Qdrant 1024-d hybrid `SearchUnit`; deterministic `E0/E1` `DenseGraph` + Constrained Hierarchical Leiden Routing Tree (`0` ingest LLM calls); Adaptive Retrieval + HippoRAG 2 expansion. |
 | **Pillar 7: Bản Thiết Kế Vĩ Mô Hợp Nhất** | Full Pipeline | Kiến trúc tổng thể định lượng khép kín từ nạp thô đa phương thức -> Luyện tạo đặc trưng & Lan truyền đồ thị -> Trực giao hóa -> Thể chế Hard Laws & Beneish -> Định cỡ Kelly & Thực thi sàn HOSE. |
 
 ---
@@ -167,15 +167,15 @@ Toàn bộ hệ sinh thái `ai-engine` và `SAG` vận hành dựa trên **hơn 
     - **T4 (VSA Bearish Rejection)**: $\frac{H_t - \max(O_t, C_t)}{H_t - L_t} > 0.50 \;\land\; V_t > 1.5 \cdot \text{MA}_{20}(V) \implies \text{THOÁT NHANH PHIÊN BỊ TỪ CHỐI}$
     - **T5 (Chi Phí Cơ Hội)**: $\text{DaysHeld} > 0.5 \cdot \text{ExpectedTimeline} \;\land\; \text{Return} < 0.02 \implies \text{THOÁT TÁI PHÂN BỔ}$
 
-### Miền F: Đồ Thị Doanh Nghiệp Thời Gian & Giám Định Pháp Y Rút Ruột GIL (`gil_service.py`, `sag_connector.py`)
-58. **Bất Biến Phạm Vi Kế Toán (Accounting Scope Boundary Invariance)**:
-    $$\text{Scope}(x) = \text{Scope}(y) \iff \text{Giao dịch nội bộ hợp lệ}, \quad \text{Scope}(x) \ne \text{Scope}(y) \implies \text{Nghi vấn rút ruột chuyển giá}$$
-59. **Tỷ Lệ Cho Vay Bên Liên Quan Trên Vốn Chủ Sở Hữu**:
-    $$\text{RPL\_Ratio} = \frac{\sum \text{Loans to Related Parties}}{\text{Total Equity}}$$
-60. **Đột Biến Phải Thu Khác Trên Tổng Tài Sản**:
-    $$\Delta \text{OtherRec} = \frac{\text{Other Receivables}_t}{\text{Total Assets}_t} - \frac{\text{Other Receivables}_{t-1}}{\text{Total Assets}_{t-1}}$$
-61. **Phát Hiện Chu Trình Rút Vốn Khép Kín Động (Motif M1 Cycle Detection via Tarjan SCC)**:
-    $$\exists \text{ Directed Cycle } C = (v_1, v_2, \dots, v_k, v_1) \subset G_{\text{flow}} \text{ với chu kỳ } \Delta \tau \le 90 \text{ ngày}$$
+### Miền F: SAG Knowledge Routing RAG & Nghiên Cứu Cổ Phiếu / MOAT (`canonical_service.py`, `routing_tree_service.py`, `search_unit_retrieval_service.py`)
+58. **Chống Trùng Lặp & Neo Toàn Vẹn 4 Tầng (4-Tier Canonical Deduplication)**:
+    $$\text{content\_hash} = \text{SHA-256}(\text{Normalize}(\text{CanonicalBlock})), \quad J_{\text{MinHash}}(A, B) \ge \tau_{\text{dup}}$$
+59. **Phân Cụm Cây Định Tuyến Tri Thức (Constrained Hierarchical Leiden Tree — 0 LLM Calls)**:
+    $$Q_{\text{Leiden}} = \frac{1}{2m} \sum_{i,j} \left(A_{ij} - \gamma \frac{k_i k_j}{2m}\right)\delta(c_i, c_j)$$
+60. **Hợp Nhất Truy Hồi Lai & Đa Dạng Hóa (RRF + MMR Adaptive Retrieval)**:
+    $$\text{RRF}(u) = \sum_{r \in \{\text{dense}, \text{sparse}\}} \frac{1}{k + \text{rank}_r(u)}, \quad \text{MMR}(u) = \lambda \cdot \text{Sim}(q, u) - (1-\lambda)\max_{v \in S}\text{Sim}(u, v)$$
+61. **Tỷ Lệ Từ Chối Trung Thực & Tiết Kiệm Token (Zero-Hallucination Abstention & Token Ledger)**:
+    $$\text{Abstention} = 100\% \text{ khi thiếu bằng chứng neo gốc}, \quad \text{Ingest LLM Calls} = 0$$
 
 ---
 
@@ -510,46 +510,32 @@ Hãy tạo một sơ đồ kỹ thuật tương tác đạt chuẩn bài báo kh
 
 ---
 
-### Pillar 6: Multimodal BCTC AST Parsing, Content Hashing & Dual-Store Ingestion (`bctc_to_sag_pipeline.py`, `document_selector.py`)
+### Pillar 6: SAG Knowledge Routing RAG — Canonical Ingestion & Adaptive Retrieval (`canonical_service.py`, `routing_tree_service.py`)
 
 ```markdown
-Hãy tạo một sơ đồ kỹ thuật tương tác đạt chuẩn bài báo khoa học quốc tế (NeurIPS/SIGMOD standard) dưới dạng file HTML độc lập chứa inline SVG, CSS hiện đại và JavaScript điều khiển, mô tả chính xác luồng nạp và xử lý tài liệu tài chính đa phương thức BCTC to SAG Pipeline:
+Hãy tạo một sơ đồ kỹ thuật tương tác đạt chuẩn bài báo khoa học quốc tế (NeurIPS/SIGMOD standard) dưới dạng file HTML độc lập chứa inline SVG, CSS hiện đại và JavaScript điều khiển, mô tả chính xác luồng nạp và truy hồi của SAG Knowledge Routing RAG cho nghiên cứu cổ phiếu / MOAT:
 
 ### 1. TỔNG QUAN HỆ THỐNG & ĐỐI TƯỢNG BÓC TÁCH TỪ GỐC
-- **Hệ thống / Module**: Multimodal Financial Document Parsing, Line-Level Content Hashing & Dual-Store RAG Ingestion Pipeline
-- **Mục tiêu kỹ thuật**: Chuyển hóa các tệp PDF BCTC và Báo cáo quản trị tiếng Việt phức tạp thành tri thức cấu trúc và không gian vector định lượng, bảo toàn trọn vẹn số liệu kiểm toán, chống hallucination bằng cơ chế băm dòng SHA-256.
+- **Hệ thống / Module**: SAG Knowledge Routing RAG (`zleap-sag==0.12.0`, PostgreSQL 16 + Qdrant) — Stock Research & MOAT Evidence Engine (isolated `research` profile)
+- **Mục tiêu kỹ thuật**: Chuyển hóa các tệp PDF Báo cáo Thường niên (4 phần thực chất), Thuyết minh BCTC Hợp nhất kiểm toán (7 mục) và tài liệu bổ trợ có điều kiện (NQ ĐHĐCĐ, Thuyết minh Quý khi có đột biến) thành tri thức có neo trang/SHA-256 và cây định tuyến Leiden không tốn LLM lúc ingest (`0` ingest LLM calls).
 - **Đường dẫn mã nguồn gốc đã khảo sát**:
-  - `ai-engine/app/domain/pipeline/bctc_to_sag_pipeline.py`
-  - `ai-engine/app/domain/services/document_selector.py`
-  - `ai-engine/app/domain/services/r2_storage.py`
-  - `ai-engine/app/adapters/sag_connector.py`
+  - `SAG/apps/api/sag_api/parsing/service.py`
+  - `SAG/apps/api/sag_api/services/canonical_service.py`
+  - `SAG/apps/api/sag_api/services/knowledge_service.py`
+  - `SAG/apps/api/sag_api/services/routing_tree_service.py`
+  - `SAG/apps/api/sag_api/services/search_unit_retrieval_service.py`
+  - `SAG/apps/api/sag_api/sag/qdrant_store.py`
 
 ### 2. BỐ CỤC PHÂN RÃ HAI PHA (SPATIOTEMPORAL DUAL-PHASE LAYOUT)
-- **Nửa trên: PHA 1 - OFFLINE BATCH INGESTION, OCR & DUAL PERSISTENCE**
-  * Tuyển chọn Bộ 3 Tài liệu Vàng (Golden Document Trinity Selection):
-    - Annual Audited Backbone (Kiểm toán cả năm)
-    - Latest Quarter (BCTC quý gần nhất)
-    - Governance Report (Báo cáo Quản trị bán niên / năm)
-  * Bộ giải mã tài liệu sâu MinerU OCR Engine:
-    - Trích xuất bảng biểu đa tầng phức tạp (Complex Multi-level Financial Tables).
-    - Phân tích cú pháp Cây cú pháp trừu tượng Markdown AST (Tree Structure Parsing).
-  * Băm dòng chống bịa đặt (Content Hashing):
-    \text{quote\_hash} = \text{SHA-256}(\text{line\_text})
-  * Phân đoạn ngữ nghĩa & Chiếu Không gian Kép:
-    - Chiếu Dense Vector Embedding (1024 chiều) mô tả ngữ nghĩa chú thuyết.
-    - Chiếu Siêu đồ thị Bipartite Hypergraph M:N (Doanh nghiệp - Chỉ tiêu - Kỳ báo cáo - Giá trị VND).
-  * Lưu trữ Kép Bất biến (Dual Store Persistence):
-    - PostgreSQL Relational Store: Bảng cân đối, kết quả kinh doanh, lưu chuyển tiền tệ chuẩn VAS.
-    - Vector & Graph Engine: Milvus/pgvector và Đồ thị quan hệ pháp nhân GIL.
-- **Nửa dưới: PHA 2 - ONLINE REAL-TIME QUERY INFERENCE & REASONING PATH**
-  * Nhận tín hiệu / Câu hỏi truy vấn từ Quản lý danh mục.
-  * Phân nhánh song song Fork-Join:
-    - Nhánh Vector Tìm kiếm Tương đồng Cosine: S_{\text{vector}} = \frac{\mathbf{q}\cdot\mathbf{d}}{\|\mathbf{q}\|\|\mathbf{d}\|}
-    - Nhánh Lexical Tra cứu Số liệu Thực nghiệm: Khớp chính xác mã chỉ tiêu VAS.
-    - Nhánh Forensic Integrity Gate: Kiểm tra dấu vết băm quote_hash.
-  * Bộ tích lũy Hàng đợi Nén (Dynamic Queue Accumulator):
-    Nén từ 32 đoạn trích ban đầu \to 24 ứng viên lọc biên \to 8 bằng chứng vàng tối thượng (Top-8 Evidence Pack).
-  * Đóng gói Context đẩy vào Multi-Agent CIO Reasoning Engine.
+- **Nửa trên: PHA 1 - OFFLINE CANONICAL INGESTION & KNOWLEDGE FOUNDATION (0 LLM CALLS)**
+  * Đầu vào Nghiên cứu Cổ phiếu / MOAT (3 Cốt lõi + 2 Bổ trợ có điều kiện, loại bỏ BCTC riêng holding, báo cáo quản trị, báo cáo CTCK và tin tức).
+  * Smart Hybrid MinerU Official v4 / Isolated Local Worker -> `CanonicalBlock` (heading/table/page anchors) + 4-tier SHA-256/MinHash deduplication + `DocumentVersion`.
+  * Search Path (`SEARCH_READY`): `SearchUnit` -> shared embedding cache -> Qdrant Dense (1024-d) + Sparse hybrid index.
+  * Knowledge Foundation (`KNOWLEDGE_READY`): Deterministic `E0/E1` -> `KnowledgeUnit` -> `DenseGraph` -> Constrained Hierarchical Leiden `Knowledge Routing Tree` -> Blue-Green dual-slot (`A/B`) snapshot publish.
+- **Nửa dưới: PHA 2 - ONLINE ADAPTIVE RETRIEVAL & GROUNDED CITATIONS**
+  * Tree beam routing + ACL-scoped global escape budget -> branch-local hybrid search trên Qdrant.
+  * Hợp nhất RRF + Dedup + MMR + mở rộng đa bước HippoRAG 2 giới hạn + theo dõi chi phí token chuẩn xác (`token_usage.py`).
+  * Trả về bằng chứng có neo nguồn (provenance) hoặc Abstention trung thực khi thiếu dữ liệu.
 
 ### 3. CÁC THAM SỐ BIÊN & CÔNG THỨC TOÁN ĐỊNH LƯỢNG (GROUND TRUTH TỪ CODE)
 - Đồng thời nạp OCR: `SAG_OCR_ACTIVE_JOBS = 20`, Upload: `20`, Extraction: `3`.
@@ -629,7 +615,7 @@ Hãy tạo một sơ đồ kỹ thuật tương tác đạt chuẩn bài báo kh
 ### 2. BỐ CỤC PHÂN RÃ BỐN TẦNG THỂ CHẾ (SPATIOTEMPORAL 4-LAYER SOVEREIGN LAYOUT)
 - **Tầng 1 (Đỉnh - Phía Trên): GIÁM SÁT VĨ MÔ & KHÁM PHÁ UNIVERSE LỚP 0**
   * Agent-01 (Market Surveillance): Quan sát 6 phiên HOSE, Sticky HMM 3-State Regime, GJR-GARCH(1,1), CSAD Herding bầy đàn, đo méo mó VN30 "Xanh vỏ đỏ lòng" (A/D < 0.4) và sóng sàn bán tháo (<= -6.9%).
-  * Agent-02 (Universe Discovery): Sàng lọc 406 mã HOSE, Hard Filters (normal trading, unqualified audit, ADTV20 >= 15 tỷ VND), Cổng Lớp 0 Beneish M-Score <= -1.78, Đồ thị GIL loại trừ rút ruột vốn.
+  * Agent-02 (Universe Discovery): Sàng lọc 406 mã HOSE, Hard Filters (normal trading, unqualified audit, ADTV20 >= 15 tỷ VND), Cổng Lớp 0 Beneish M-Score <= -1.78.
 - **Tầng 2 (Trung Tâm - Phía Giữa): NGHIÊN CỨU ĐA NHÂN TỐ, TRANH BIỆN ĐỐI NGHỊCH & TRỌNG TÀI CIO**
   * Agent-03 (Equity Research): Chấm điểm 6 nhóm Factor F1-F6 (Value, Quality, Momentum, Earnings, Flow, Technical), Composite Stock Score (CSS), phân định Conviction Tiers {A+, A, B}.
   * Agent-04 (Investment Thesis): Thiết lập Luận điểm đầu tư, tuân thủ Hiến pháp Điều 3 (3 Tín hiệu Độc lập), định giá đa mô hình P_target, 3 kịch bản Pre-Mortem và điều kiện hủy bỏ Invalidation.

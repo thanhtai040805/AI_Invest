@@ -29,7 +29,6 @@ class Settings:
 
     evomap_api_key: str
     sag_api_base: str
-    sag_service_token: str
     sag_analysis_hold: bool
     portfolio_automation_enabled: bool
     multi_agent_account_id: str
@@ -72,7 +71,6 @@ def get_settings() -> Settings:
         llm_base_url=os.getenv("LLM_BASE_URL") or "https://api.deepinfra.com/v1/openai",
         multi_agent_llm_provider=os.getenv("MULTI_AGENT_LLM_PROVIDER", "existing").strip().lower(),
         sag_api_base=os.getenv("SAG_API_BASE", "http://localhost:8000/api/v1"),
-        sag_service_token=os.getenv("SAG_SERVICE_TOKEN", ""),
         sag_analysis_hold=os.getenv("SAG_ANALYSIS_HOLD", "true").lower() in ("1", "true", "yes"),
         portfolio_automation_enabled=os.getenv("PORTFOLIO_AUTOMATION_ENABLED", "false").lower() in ("1", "true", "yes"),
         multi_agent_account_id=os.getenv("MULTI_AGENT_ACCOUNT_ID", ""),

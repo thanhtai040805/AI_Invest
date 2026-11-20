@@ -387,12 +387,22 @@ class Settings(BaseSettings):
             return stripped
         return value
 
-    @field_validator("mineru_official_api_token", mode="before")
+    @field_validator("mineru_official_api_token", "sag_qdrant_api_key", mode="before")
     @classmethod
-    def _blank_mineru_token_as_none(cls, value: object) -> object:
+    def _blank_optional_secret_as_none(cls, value: object) -> object:
         if isinstance(value, str):
             stripped = value.strip()
             return stripped or None
+        return value
+
+    @field_validator("sag_qdrant_url", mode="before")
+    @classmethod
+    def _blank_qdrant_url_as_default(cls, value: object) -> object:
+        if value is None:
+            return "http://localhost:6333"
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped or "http://localhost:6333"
         return value
 
     @field_validator("embedding_dimensions", mode="before")

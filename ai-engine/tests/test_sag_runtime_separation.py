@@ -117,6 +117,7 @@ def test_legacy_gil_modules_and_routes_are_removed():
     )
     for path in removed_sag_paths:
         assert not path.exists(), f"Legacy GIL SAG file still exists: {path}"
+    assert not (ROOT.parent / "SAG" / "apps" / "api" / "packaging" / "sag-api.spec").exists()
 
     required_clean_sag_paths = (
         ROOT.parent / "SAG" / "compose.yaml",
@@ -132,11 +133,18 @@ def test_legacy_gil_modules_and_routes_are_removed():
 
 def test_compose_research_profile_uses_clean_sag_postgres_and_qdrant():
     compose = (ROOT.parent / "docker-compose.yml").read_text(encoding="utf-8")
+    settings_src = (ROOT / "app" / "config" / "settings.py").read_text(encoding="utf-8")
     assert "sag-postgres:" in compose
     assert "sag-qdrant:" in compose
     assert "sag-api:" in compose
     assert "SAG_SAG_VECTOR_PROVIDER=qdrant" in compose
     assert "SAG_DOCUMENT_EVENT_EXTRACTION_ENABLED=" in compose
+    assert "SAG_AUTH_MODE=${SAG_AUTH_MODE:-continuum}" in compose
+    assert "SAG_BFF_SERVICE_TOKEN=" in compose
+    assert "SAG_ENVIRONMENT=${SAG_ENVIRONMENT:-dev}" in compose
+    assert "QDRANT__SERVICE__API_KEY: ${SAG_QDRANT_API_KEY:-${SAG_SAG_QDRANT_API_KEY:-}}" in compose
     assert "SAG_MARKET_DATABASE_URL" not in compose
     assert "SAG_SERVICE_TOKEN" not in compose
+    assert "SAG_SERVICE_TOKEN" not in settings_src
+    assert "sag_service_token" not in settings_src
 

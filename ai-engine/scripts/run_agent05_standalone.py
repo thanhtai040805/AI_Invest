@@ -3,7 +3,7 @@
 Kiểm thử vận hành độc lập Agent 05 trên dữ liệu thực tế và CSDL PostgreSQL:
 1. Tự động tìm kiếm hoặc nạp Investment Thesis mới nhất từ CSDL (`investment_theses`).
 2. Nạp dữ liệu thị trường thực tế (Giá realtime/EOD, Volume, MA20, P/E, P/B, HMM Regime).
-3. Thẩm định đồ thị sở hữu chéo GIL từ SAG FastMCP (kèm cơ chế bảo vệ khi mạng lỗi).
+3. Kiểm định các yếu tố rủi ro định lượng độc lập (Beneish, phải thu, thanh khoản, vĩ mô, độ mới dữ liệu).
 4. Tính toán định lượng 3-Tier Counter-Thesis Score (CTS):
    - Base CTS: Rủi ro kinh doanh (45%) + Rủi ro thị trường (35%) + Rủi ro mô hình (20%)
    - ML Interaction Multiplier: Quét các cặp rủi ro cộng hưởng phi tuyến
