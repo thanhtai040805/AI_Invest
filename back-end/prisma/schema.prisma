@@ -24,9 +24,10 @@ model User {
   positions     Position[]
   posts         Post[]
   reactions     Reaction[]
-  refreshTokens RefreshToken[]
-  presets       ScreenerPreset[]
-  watchlists    Watchlist[]
+  refreshTokens        RefreshToken[]
+  sagChatEvalFeedbacks SagChatEvalFeedback[]
+  presets              ScreenerPreset[]
+  watchlists           Watchlist[]
 
   @@map("users")
 }
@@ -104,16 +105,37 @@ model ChatSession {
 }
 
 model ChatMessage {
-  id        String      @id @default(uuid())
-  sessionId String      @map("session_id")
-  role      String
-  content   String
-  type      String      @default("text")
-  metadata  Json?
-  createdAt DateTime    @default(now()) @map("created_at")
-  session   ChatSession @relation(fields: [sessionId], references: [id])
+  id            String                @id @default(uuid())
+  sessionId     String                @map("session_id")
+  role          String
+  content       String
+  type          String                @default("text")
+  metadata      Json?
+  createdAt     DateTime              @default(now()) @map("created_at")
+  session       ChatSession           @relation(fields: [sessionId], references: [id])
+  evalFeedbacks SagChatEvalFeedback[]
 
   @@map("chat_messages")
+}
+
+model SagChatEvalFeedback {
+  id                String      @id @default(uuid())
+  messageId         String      @map("message_id")
+  userId            String      @map("user_id")
+  verdict           String      @db.VarChar(16)
+  citationOk        Boolean     @default(true) @map("citation_ok")
+  tableCalcOk       Boolean     @default(true) @map("table_calc_ok")
+  graphContextOk    Boolean     @default(true) @map("graph_context_ok")
+  hallucinationFlag Boolean     @default(false) @map("hallucination_flag")
+  notes             String?
+  createdAt         DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  message           ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user              User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId], map: "uq_sag_chat_eval_feedback_message_user")
+  @@index([messageId], map: "idx_sag_chat_eval_feedback_message_id")
+  @@index([userId, createdAt(sort: Desc)], map: "idx_sag_chat_eval_feedback_user_created")
+  @@map("sag_chat_eval_feedback")
 }
 
 model Alert {

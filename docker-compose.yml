@@ -114,6 +114,7 @@ services:
       - SAG_BFF_SERVICE_TOKEN=${SAG_BFF_SERVICE_TOKEN:-}
       - SAG_ALLOW_REGISTRATION=${SAG_ALLOW_REGISTRATION:-false}
       - SAG_DATABASE_URL=postgresql+asyncpg://sag:${SAG_DB_PASSWORD:-sag_local_only}@sag-postgres:5432/sag
+      - SAG_CORE_DATABASE_URL=${SAG_CORE_DATABASE_URL:-postgresql://postgres:${DB_PASSWORD:?Set DB_PASSWORD in .env}@postgres:5432/aiinvest}
       - SAG_DATA_DIR=/data/engine
       - SAG_UPLOAD_DIR=/data/uploads
       - SAG_SAG_RELATIONAL_PROVIDER=postgres
@@ -247,6 +248,8 @@ services:
       - AI_ENGINE_URL=http://ai-engine:8000
       - AI_ENGINE_ADMIN_TOKEN=${AI_ENGINE_ADMIN_TOKEN:?Set AI_ENGINE_ADMIN_TOKEN in .env}
       - INTERNAL_SERVICE_TOKEN=${INTERNAL_SERVICE_TOKEN:?Set INTERNAL_SERVICE_TOKEN in .env}
+      - SAG_API_URL=${SAG_API_URL:-http://sag-api:8000}
+      - SAG_BFF_SERVICE_TOKEN=${SAG_BFF_SERVICE_TOKEN:-}
       - DNSE_ENABLED=${DNSE_ENABLED:-false}
       - DNSE_REDIS_CHANNEL_PREFIX=${DNSE_REDIS_CHANNEL_PREFIX:-dnse:event}
       - JWT_ACCESS_SECRET=${JWT_ACCESS_SECRET:?Set JWT_ACCESS_SECRET in .env}

@@ -21,6 +21,10 @@ export const aiLimiter = rateLimit({
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) =>
+    req.method === 'GET' &&
+    (req.path.startsWith('/research-chat/') ||
+      req.originalUrl.startsWith('/api/v1/ai/research-chat/')),
   message: { error: 'AI rate limit exceeded. Please wait before sending more requests.' },
 });
 
