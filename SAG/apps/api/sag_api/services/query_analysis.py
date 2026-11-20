@@ -42,8 +42,6 @@ _QUERY_NOISE = (
     "tra cứu",
     "cho hỏi",
     "về",
-    "mới nhất",
-    "gần đây",
     "tin tức",
     "nội dung",
     "là gì",
@@ -106,6 +104,17 @@ _IDENTIFIER_RE = re.compile(
     r"\b(?:ERR[_-][A-Z0-9_-]+|HTTP[_ -]?\d{3}|[A-Z][A-Z0-9_]*[0-9_][A-Z0-9_]*|"
     r"[A-Z]{2,}(?:-[A-Z0-9]+)+|[A-Za-z]+[_-]\d+[A-Za-z0-9._-]*|v\d+(?:\.\d+)+)\b"
 )
+_VN_IDENTIFIER_RE = re.compile(
+    r"(?<!\w)(?:(?:Thuyết\s*minh|TM|Mục|Note|Notes)\s*(?:số\s*)?\d+(?:\.\d+)*[a-z]?|"
+    r"B0[1-9][a-z]?-DN(?:/HN)?|"
+    r"TT\s*(?:334|200|133|210|99)(?:/\d{4}/TT-BTC)?)(?!\w)",
+    re.IGNORECASE | re.UNICODE,
+)
+_RECENCY_INTENT_RE = re.compile(
+    r"(?<!\w)(?:mới\s+nhất|gần\s+đây|gần\s+nhất|hiện\s+nay|hiện\s+tại|kỳ\s+gần\s+nhất|"
+    r"latest|most\s+recent|recent)(?!\w)",
+    re.IGNORECASE | re.UNICODE,
+)
 _PATH_RE = re.compile(
     r"(?:(?<![\w$/])/[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]+|[A-Za-z]:\\[^\s]+|\b[\w-]+(?:\.[\w-]+){1,})"
 )
@@ -150,8 +159,12 @@ _TEMPORAL_CUES = (
     "historical",
 )
 _STRUCTURAL_TEMPORAL_RE = re.compile(
-    r"(?:\b(?:19|20)\d{2}\b|\b\d{4}-\d{2}(?:-\d{2})?\b|\b(?:fy|q)[1-4]?\d{2,4}\b|\bq[1-4]\b|\bv\d+(?:\.\d+)+\b|\d{4}年|\d{1,2}月\d{1,2}日)",
-    re.IGNORECASE,
+    r"(?:\b(?:19|20)\d{2}\b|\b\d{4}-\d{2}(?:-\d{2})?\b|\b(?:fy|q)[1-4]?\d{2,4}\b|\bq[1-4]\b|"
+    r"(?<!\w)(?:3T|6T|9T|12T|Q[1-4]|Quý\s*[1-4])\s*[/\-]\s*20\d{2}(?!\w)|"
+    r"(?<!\w)FY\s*20\d{2}(?!\w)|"
+    r"(?<!\w)năm\s*(?:tài\s+chính\s*)?(?:19|20)\d{2}(?!\w)|"
+    r"\bv\d+(?:\.\d+)+\b|\d{4}年|\d{1,2}月\d{1,2}日)",
+    re.IGNORECASE | re.UNICODE,
 )
 _RELATION_CUES = (
     "mối liên hệ",
@@ -214,6 +227,7 @@ class QueryFeatures:
     global_cues: tuple[str, ...] = ()
     clauses: tuple[str, ...] = ()
     multi_hop: bool = False
+    recency_intent: bool = False
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -225,6 +239,7 @@ class QueryFeatures:
             "global_cues": list(self.global_cues),
             "clauses": list(self.clauses),
             "multi_hop": self.multi_hop,
+            "recency_intent": self.recency_intent,
         }
 
 
@@ -318,7 +333,11 @@ def extract_query_features(query: str) -> QueryFeatures:
         if match.group(index)
     )
     identifier_terms = _unique_values(
-        [*(match.group(0) for match in _IDENTIFIER_RE.finditer(text)), *_extract_bridged_date_tokens(text)]
+        [
+            *(match.group(0) for match in _IDENTIFIER_RE.finditer(text)),
+            *(match.group(0) for match in _VN_IDENTIFIER_RE.finditer(text)),
+            *_extract_bridged_date_tokens(text),
+        ]
     )
     path_terms = _unique_values(
         cleaned_path
@@ -362,7 +381,10 @@ def extract_query_features(query: str) -> QueryFeatures:
     multi_hop = (
         len(relation_cues) >= 2
         or (len(clauses) >= 2 and (bool(relation_cues) or bool(temporal_cues) or len(salient_terms) >= 1))
-        or (bool(temporal_cues or relation_cues) and bool(re.search(r"\b(?:what|which)\b[^?]*,\s+[^,?]+,\s+and\s+", text, re.IGNORECASE)))
+        or (
+            bool(temporal_cues or relation_cues)
+            and bool(re.search(r"\b(?:what|which)\b[^?]*,\s+[^,?]+,\s+and\s+", text, re.IGNORECASE))
+        )
         or any(
             cue in lowered
             for cue in (
@@ -379,6 +401,7 @@ def extract_query_features(query: str) -> QueryFeatures:
             )
         )
     )
+    recency_intent = bool(_RECENCY_INTENT_RE.search(text))
     return QueryFeatures(
         exact_terms=exact_terms,
         identifier_terms=identifier_terms,
@@ -388,6 +411,7 @@ def extract_query_features(query: str) -> QueryFeatures:
         global_cues=global_cues,
         clauses=clauses if len(clauses) >= 2 else (),
         multi_hop=multi_hop,
+        recency_intent=recency_intent,
     )
 
 

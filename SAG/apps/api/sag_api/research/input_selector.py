@@ -1,0 +1,741 @@
+"""HOSE Stock Research Document Selector & PIT Trap Guard (0 LLM).
+
+Productionizes Stage 1 `block1_input_and_table_engine.py` & `sag_phase1_research_note.md` §3.2:
+- 3 Core categories (`BCTC`, `BCTN`, `NQ_DHDCD`) + 2 Conditional (`CAO_BACH`, `GIAI_TRINH` / `LATEST_QUARTER`)
+  + 4 Excluded (`TIN_TUC`, `GIAO_DICH_NOI_BO`, `CBTT_DINH_KY_NGAN`, `BAO_CAO_PHAN_TICH_BEN_NGOAI`, plus
+  `governance_report` and holding-company `SEPARATE` BCTC when `CONSOLIDATED` exists).
+- BCTN/BCTC deduplication when `BCTN` cleanly embeds audited FS & notes.
+- `published_date` trap parser (announcement -> signing -> filing -> published priority; fail-closed if missing;
+  catches stale fiscal-year stamps like VCI 2016 stamped 2026 and pre-period-end timestamps).
+- Strict Point-in-Time (`effective_published_at <= as_of_date`) enforcement.
+- Multi-source 404 fallback & safe `.zip` extraction delegation.
+"""
+
+from __future__ import annotations
+
+import re
+import unicodedata
+import zipfile
+from dataclasses import dataclass, field
+from datetime import date, datetime
+from typing import Literal, Protocol
+
+import httpx
+
+from sag_api.research.input_inspector import (
+    InspectionResult,
+    ZipExtractionError,
+    inspect_pdf_bytes,
+    safe_extract_pdf_from_zip,
+)
+
+SelectionTier = Literal["CORE", "CONDITIONAL", "EXCLUDED"]
+StatementScope = Literal["CONSOLIDATED", "SEPARATE", "UNKNOWN"]
+
+CORE_DOC_TYPES = frozenset(
+    {
+        "BCTC",
+        "BCTN",
+        "NQ_DHDCD",
+        "FINANCIAL_STATEMENT",
+        "ANNUAL_REPORT",
+        "AGM_RESOLUTION",
+    }
+)
+CONDITIONAL_DOC_TYPES = frozenset(
+    {
+        "CAO_BACH",
+        "GIAI_TRINH",
+        "GIẢI_TRÌNH",
+        "LATEST_QUARTER",
+        "LATEST_QUARTER_NOTES",
+        "PROSPECTUS",
+        "EXPLANATION",
+    }
+)
+EXCLUDED_DOC_TYPES = frozenset(
+    {
+        "TIN_TUC",
+        "GIAO_DICH_NOI_BO",
+        "CBTT_DINH_KY_NGAN",
+        "BAO_CAO_PHAN_TICH_BEN_NGOAI",
+        "NEWS",
+        "INSIDER_TRADING",
+        "PERIODIC_SHORT_CBTT",
+        "ANALYST_REPORT",
+        "GOVERNANCE_REPORT",
+        "BAO_CAO_QUAN_TRI",
+    }
+)
+
+
+class MissingPublishedDateError(ValueError):
+    """Fail-closed error when a document lacks any valid PIT publication/signing/filing date."""
+
+
+def _strip_accents_upper(value: str) -> str:
+    nfkd = unicodedata.normalize("NFKD", value or "")
+    no_marks = "".join(ch for ch in nfkd if not unicodedata.combining(ch))
+    no_marks = no_marks.replace("đ", "d").replace("Đ", "D")
+    return re.sub(r"[\s\-]+", "_", no_marks.strip().upper())
+
+
+def normalize_doc_type(raw_doc_type: str, title: str = "") -> str:
+    """Normalize Core DB or Vietnamese document type labels into canonical codes."""
+    norm = _strip_accents_upper(raw_doc_type)
+    alias_map = {
+        "ANNUAL_REPORT": "BCTN",
+        "BAO_CAO_THUONG_NIEN": "BCTN",
+        "BCTN": "BCTN",
+        "FINANCIAL_STATEMENT": "BCTC",
+        "BAO_CAO_TAI_CHINH": "BCTC",
+        "BCTC": "BCTC",
+        "AGM_RESOLUTION": "NQ_DHDCD",
+        "NGHI_QUYET_DHDCD": "NQ_DHDCD",
+        "NQ_DHDCD": "NQ_DHDCD",
+        "PROSPECTUS": "CAO_BACH",
+        "BAN_CAO_BACH": "CAO_BACH",
+        "CAO_BACH": "CAO_BACH",
+        "EXPLANATION": "GIAI_TRINH",
+        "GIAI_TRINH": "GIAI_TRINH",
+        "LATEST_QUARTER": "LATEST_QUARTER",
+        "LATEST_QUARTER_NOTES": "LATEST_QUARTER",
+        "NEWS": "TIN_TUC",
+        "TIN_TUC": "TIN_TUC",
+        "INSIDER_TRADING": "GIAO_DICH_NOI_BO",
+        "GIAO_DICH_NOI_BO": "GIAO_DICH_NOI_BO",
+        "PERIODIC_SHORT_CBTT": "CBTT_DINH_KY_NGAN",
+        "CBTT_DINH_KY_NGAN": "CBTT_DINH_KY_NGAN",
+        "ANALYST_REPORT": "BAO_CAO_PHAN_TICH_BEN_NGOAI",
+        "BAO_CAO_PHAN_TICH_BEN_NGOAI": "BAO_CAO_PHAN_TICH_BEN_NGOAI",
+        "GOVERNANCE_REPORT": "GOVERNANCE_REPORT",
+        "BAO_CAO_QUAN_TRI": "GOVERNANCE_REPORT",
+    }
+    if norm in alias_map:
+        return alias_map[norm]
+
+    title_norm = _strip_accents_upper(title)
+    if "BAO_CAO_THUONG_NIEN" in title_norm or "ANNUAL_REPORT" in title_norm:
+        return "BCTN"
+    if "CAO_BACH" in title_norm or "PROSPECTUS" in title_norm:
+        return "CAO_BACH"
+    if "GIAI_TRINH" in title_norm:
+        return "GIAI_TRINH"
+    if "NGHI_QUYET" in title_norm and ("DHDCD" in title_norm or "DAI_HOI" in title_norm):
+        return "NQ_DHDCD"
+    if "BAO_CAO_TAI_CHINH" in title_norm or "BCTC" in title_norm or "KIEM_TOAN" in title_norm:
+        return "BCTC"
+    if "QUAN_TRI" in title_norm:
+        return "GOVERNANCE_REPORT"
+    if "GIAO_DICH" in title_norm and ("NOI_BO" in title_norm or "CO_DONG_LON" in title_norm):
+        return "GIAO_DICH_NOI_BO"
+    return norm or "UNKNOWN"
+
+
+def classify_document_category(
+    doc_type: str,
+    *,
+    title: str = "",
+    statement_scope: StatementScope | str | None = None,
+    has_consolidated: bool = True,
+) -> tuple[SelectionTier, str]:
+    """Classify a document into CORE, CONDITIONAL, or EXCLUDED with explicit reason."""
+    canonical = normalize_doc_type(doc_type, title=title)
+    scope = str(statement_scope or "UNKNOWN").upper()
+    title_low = (title or "").lower()
+
+    if canonical in EXCLUDED_DOC_TYPES:
+        return "EXCLUDED", f"EXCLUDED_DOC_TYPE:{canonical}"
+
+    if canonical == "BCTC":
+        if scope == "UNKNOWN":
+            if any(k in title_low for k in ("hợp nhất", "hop nhat", "consolidated")):
+                scope = "CONSOLIDATED"
+            elif any(k in title_low for k in ("công ty mẹ", "cong ty me", "riêng", "separate")):
+                scope = "SEPARATE"
+        if scope == "SEPARATE" and has_consolidated:
+            return "EXCLUDED", "EXCLUDED_SEPARATE_PARENT_WITH_CONSOLIDATED"
+        return "CORE", "CORE_BCTC"
+
+    if canonical in ("BCTN", "NQ_DHDCD"):
+        return "CORE", f"CORE_{canonical}"
+
+    if canonical in ("CAO_BACH", "GIAI_TRINH", "LATEST_QUARTER"):
+        return "CONDITIONAL", f"CONDITIONAL_{canonical}"
+
+    return "EXCLUDED", f"UNRECOGNIZED_DOC_TYPE:{canonical}"
+
+
+def parse_fiscal_year_from_meta(title: str, url: str = "") -> int | None:
+    """Extract fiscal year from title/URL to catch published_date traps (e.g. VCI 2016 stamped 2026)."""
+    for src in (title or "", url or ""):
+        m = re.search(
+            r"(?:năm|nam|bctn|bctc|fy|/)[\s_\-]*(20\d{2})\b",
+            src,
+            re.IGNORECASE,
+        )
+        if m:
+            yr = int(m.group(1))
+            if 2005 <= yr <= 2035:
+                return yr
+        m2 = re.search(r"\b(20(?:0[5-9]|1\d|2\d|3[0-5]))\b", src)
+        if m2:
+            return int(m2.group(1))
+    return None
+
+
+def parse_fiscal_quarter_from_meta(title: str, url: str = "") -> int:
+    """Extract fiscal quarter (0 for full year, 1..4 for Q1..Q4)."""
+    for src in (title or "", url or ""):
+        m_q = re.search(r"(?:quý|quy|q)\s*([1-4])\b", src, re.IGNORECASE)
+        if m_q:
+            return int(m_q.group(1))
+        m_t = re.search(r"\b(3|6|9|12)\s*t\s*[/\-]?\s*20\d{2}\b", src, re.IGNORECASE)
+        if m_t:
+            return int(m_t.group(1)) // 3
+        if re.search(r"bán\s*niên|ban\s*nien|6\s*tháng|6\s*thang", src, re.IGNORECASE):
+            return 2
+    return 0
+
+
+def _coerce_date(val: date | datetime | str | None) -> date | None:
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return val.date()
+    if isinstance(val, date):
+        return val
+    s = str(val).strip()
+    if not s:
+        return None
+    # ISO YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS
+    m_iso = re.match(r"^(\d{4})-(\d{2})-(\d{2})", s)
+    if m_iso:
+        try:
+            return date(int(m_iso.group(1)), int(m_iso.group(2)), int(m_iso.group(3)))
+        except ValueError:
+            return None
+    # Vietnamese DD/MM/YYYY or DD-MM-YYYY
+    m_vn = re.match(r"^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$", s)
+    if m_vn:
+        try:
+            return date(int(m_vn.group(3)), int(m_vn.group(2)), int(m_vn.group(1)))
+        except ValueError:
+            return None
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class PitDateResolution:
+    effective_published_at: date
+    date_source: Literal["announcement_date", "signing_date", "filing_date", "published_date"]
+    parsed_fiscal_year: int | None
+    parsed_fiscal_quarter: int
+    trap_flags: list[str] = field(default_factory=list)
+    is_trapped: bool = False
+
+
+def resolve_effective_published_at(
+    *,
+    published_date: date | datetime | str | None = None,
+    announcement_date: date | datetime | str | None = None,
+    signing_date: date | datetime | str | None = None,
+    filing_date: date | datetime | str | None = None,
+    title: str = "",
+    url: str = "",
+    period_end: date | datetime | str | None = None,
+) -> PitDateResolution:
+    """Resolve PIT publication date using strict priority and catch metadata traps.
+
+    Priority: announcement_date -> signing_date -> filing_date -> published_date.
+    Fails closed (raises MissingPublishedDateError) if no valid date is present.
+    """
+    candidates: list[
+        tuple[
+            Literal["announcement_date", "signing_date", "filing_date", "published_date"],
+            date | None,
+        ]
+    ] = [
+        ("announcement_date", _coerce_date(announcement_date)),
+        ("signing_date", _coerce_date(signing_date)),
+        ("filing_date", _coerce_date(filing_date)),
+        ("published_date", _coerce_date(published_date)),
+    ]
+    chosen_source: Literal["announcement_date", "signing_date", "filing_date", "published_date"] | None = None
+    chosen_date: date | None = None
+    for src_name, dt_val in candidates:
+        if dt_val is not None:
+            chosen_source = src_name
+            chosen_date = dt_val
+            break
+
+    if chosen_date is None or chosen_source is None:
+        raise MissingPublishedDateError(
+            f"Missing required PIT published/signing/filing date for title={title!r}"
+        )
+
+    parsed_fy = parse_fiscal_year_from_meta(title, url)
+    parsed_fq = parse_fiscal_quarter_from_meta(title, url)
+    p_end = _coerce_date(period_end)
+
+    traps: list[str] = []
+    if parsed_fy is not None and (chosen_date.year - parsed_fy) >= 2:
+        traps.append(
+            f"PUBLISHED_DATE_TRAP: date={chosen_date.isoformat()} vs parsed_fy={parsed_fy}"
+        )
+    if p_end is not None and chosen_date < p_end:
+        traps.append(
+            f"PUBLISHED_BEFORE_PERIOD_END: date={chosen_date.isoformat()} < period_end={p_end.isoformat()}"
+        )
+
+    return PitDateResolution(
+        effective_published_at=chosen_date,
+        date_source=chosen_source,
+        parsed_fiscal_year=parsed_fy,
+        parsed_fiscal_quarter=parsed_fq,
+        trap_flags=traps,
+        is_trapped=bool(traps),
+    )
+
+
+@dataclass(slots=True)
+class ResearchCandidateDocument:
+    doc_id: str
+    ticker: str
+    doc_type: str
+    title: str
+    urls: list[str] = field(default_factory=list)
+    source: str = "core_db"
+    statement_scope: StatementScope = "UNKNOWN"
+    published_date: date | datetime | str | None = None
+    announcement_date: date | datetime | str | None = None
+    signing_date: date | datetime | str | None = None
+    filing_date: date | datetime | str | None = None
+    period_end: date | datetime | str | None = None
+    is_extraordinary_agm: bool = False
+    trigger_reason: str | None = None
+    raw_bytes: bytes | None = None
+
+
+@dataclass(slots=True)
+class FinancialAnomalyContext:
+    """Signals from Core DB 5Y financials that activate Conditional documents."""
+
+    bctn_has_plan: bool = True
+    yoy_revenue_change_pct: float | None = None
+    yoy_gpm_bps_change: float | None = None
+    other_income_to_pbt_ratio: float | None = None
+    has_recent_capital_event: bool = False
+    has_regulatory_explanation_request: bool = False
+
+    def quarter_notes_triggered(self) -> bool:
+        if self.yoy_revenue_change_pct is not None and abs(self.yoy_revenue_change_pct) >= 25.0:
+            return True
+        if self.yoy_gpm_bps_change is not None and abs(self.yoy_gpm_bps_change) >= 300.0:
+            return True
+        if self.other_income_to_pbt_ratio is not None and self.other_income_to_pbt_ratio >= 0.20:
+            return True
+        return False
+
+
+@dataclass(slots=True)
+class SelectedDocument:
+    candidate: ResearchCandidateDocument
+    canonical_doc_type: str
+    tier: SelectionTier
+    selection_reason: str
+    pit_resolution: PitDateResolution
+    inspection: InspectionResult | None = None
+    pdf_bytes: bytes | None = None
+    resolved_url: str = ""
+    deduplicated_by: str | None = None
+
+
+@dataclass(slots=True)
+class RejectedDocument:
+    doc_id: str
+    ticker: str
+    title: str
+    raw_doc_type: str
+    reason: str
+    trap_flags: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class DocumentSelectionResult:
+    ticker: str
+    as_of_date: date
+    selected: list[SelectedDocument] = field(default_factory=list)
+    rejected: list[RejectedDocument] = field(default_factory=list)
+    traps_caught: list[str] = field(default_factory=list)
+    bctn_deduplicated_bctc: bool = False
+
+
+class CoreDocumentStoreProtocol(Protocol):
+    """Protocol abstracting Core PostgreSQL access for offline unit testing."""
+
+    async def list_candidate_documents(
+        self,
+        ticker: str,
+        *,
+        as_of_date: date,
+    ) -> list[ResearchCandidateDocument]: ...
+
+    async def has_consolidated_statements(
+        self,
+        ticker: str,
+        *,
+        as_of_date: date,
+    ) -> bool: ...
+
+
+class BytesFetcherProtocol(Protocol):
+    """Protocol abstracting HTTP/R2 binary downloads for offline testing."""
+
+    async def fetch_bytes(self, url: str) -> tuple[int, bytes]: ...
+
+
+class HttpxBytesFetcher:
+    """Default async HTTP fetcher using httpx with redirect support."""
+
+    def __init__(self, timeout_seconds: float = 60.0) -> None:
+        self._timeout = timeout_seconds
+
+    async def fetch_bytes(self, url: str) -> tuple[int, bytes]:
+        async with httpx.AsyncClient(
+            timeout=self._timeout,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0"},
+        ) as client:
+            resp = await client.get(url)
+            return resp.status_code, resp.content
+
+
+@dataclass(slots=True)
+class DocumentFetchResult:
+    ok: bool
+    content: bytes = b""
+    resolved_url: str = ""
+    tried_urls: list[str] = field(default_factory=list)
+    attempt_errors: list[str] = field(default_factory=list)
+    error: str | None = None
+
+
+async def fetch_document_with_fallback(
+    urls: list[str],
+    *,
+    fetcher: BytesFetcherProtocol | None = None,
+) -> DocumentFetchResult:
+    """Try candidate URLs sequentially, failing over automatically on 404/network/zip errors."""
+    if not urls:
+        return DocumentFetchResult(ok=False, error="NO_CANDIDATE_URLS")
+
+    active_fetcher = fetcher or HttpxBytesFetcher()
+    tried_urls: list[str] = []
+    attempt_errors: list[str] = []
+
+    for url in urls:
+        u = (url or "").strip()
+        if not u:
+            continue
+        tried_urls.append(u)
+        try:
+            status_code, payload = await active_fetcher.fetch_bytes(u)
+            if status_code >= 400:
+                attempt_errors.append(f"{u}: HTTP {status_code}")
+                continue
+            if not payload:
+                attempt_errors.append(f"{u}: EMPTY_BODY")
+                continue
+            return DocumentFetchResult(
+                ok=True,
+                content=payload,
+                resolved_url=u,
+                tried_urls=tried_urls,
+                attempt_errors=attempt_errors,
+            )
+        except (httpx.HTTPError, OSError, ValueError, RuntimeError, zipfile.BadZipFile) as exc:
+            attempt_errors.append(f"{u}: {type(exc).__name__}: {exc}")
+
+    return DocumentFetchResult(
+        ok=False,
+        tried_urls=tried_urls,
+        attempt_errors=attempt_errors,
+        error="ALL_CANDIDATE_URLS_FAILED",
+    )
+
+
+def _unpack_pdf_if_zip(data: bytes) -> bytes:
+    if data.startswith(b"%PDF"):
+        return data
+    try:
+        pdf_bytes, _, _ = safe_extract_pdf_from_zip(data)
+        return pdf_bytes
+    except ZipExtractionError:
+        return data
+
+
+def _is_conditional_activated(
+    canonical_type: str,
+    candidate: ResearchCandidateDocument,
+    pit_res: PitDateResolution,
+    anomaly_ctx: FinancialAnomalyContext,
+    bctn_published_date: date | None,
+) -> tuple[bool, str]:
+    if canonical_type == "CAO_BACH":
+        if anomaly_ctx.has_recent_capital_event or candidate.trigger_reason:
+            return True, candidate.trigger_reason or "CAPITAL_EVENT_OR_ISSUANCE"
+        return False, "CONDITIONAL_CAO_BACH_NOT_TRIGGERED"
+
+    if canonical_type in ("GIAI_TRINH", "LATEST_QUARTER"):
+        if (
+            anomaly_ctx.quarter_notes_triggered()
+            or anomaly_ctx.has_regulatory_explanation_request
+            or candidate.trigger_reason
+        ):
+            return True, candidate.trigger_reason or "MID_YEAR_ANOMALY_OR_EXPLANATION"
+        return False, f"CONDITIONAL_{canonical_type}_NOT_TRIGGERED"
+
+    if canonical_type == "NQ_DHDCD":
+        if not anomaly_ctx.bctn_has_plan:
+            return True, "BCTN_MISSING_PLAN"
+        if candidate.is_extraordinary_agm:
+            return True, "EXTRAORDINARY_AGM"
+        if bctn_published_date and pit_res.effective_published_at > bctn_published_date:
+            return True, "POST_BCTN_AGM_RESOLUTION"
+        return True, "CORE_AGM_12M"
+
+    return True, f"CORE_{canonical_type}"
+
+
+async def select_research_documents(
+    ticker: str,
+    candidates: list[ResearchCandidateDocument],
+    *,
+    as_of_date: date,
+    has_consolidated: bool | None = None,
+    anomaly_context: FinancialAnomalyContext | None = None,
+    fetcher: BytesFetcherProtocol | None = None,
+    inspect_payloads: bool = True,
+    min_fiscal_year: int | None = None,
+) -> DocumentSelectionResult:
+    """Select, PIT-filter, inspect, and deduplicate HOSE research documents for a ticker."""
+    ctx = anomaly_context or FinancialAnomalyContext()
+    if has_consolidated is None:
+        has_consolidated = any(
+            normalize_doc_type(c.doc_type, c.title) == "BCTC" and c.statement_scope == "CONSOLIDATED"
+            for c in candidates
+        )
+
+    result = DocumentSelectionResult(ticker=ticker.upper(), as_of_date=as_of_date)
+    preliminary: list[tuple[ResearchCandidateDocument, str, SelectionTier, str, PitDateResolution]] = []
+
+    for cand in candidates:
+        canonical = normalize_doc_type(cand.doc_type, cand.title)
+        tier, reason = classify_document_category(
+            canonical,
+            title=cand.title,
+            statement_scope=cand.statement_scope,
+            has_consolidated=has_consolidated,
+        )
+        if tier == "EXCLUDED":
+            result.rejected.append(
+                RejectedDocument(
+                    doc_id=cand.doc_id,
+                    ticker=cand.ticker,
+                    title=cand.title,
+                    raw_doc_type=cand.doc_type,
+                    reason=reason,
+                )
+            )
+            continue
+
+        try:
+            url0 = cand.urls[0] if cand.urls else ""
+            pit_res = resolve_effective_published_at(
+                published_date=cand.published_date,
+                announcement_date=cand.announcement_date,
+                signing_date=cand.signing_date,
+                filing_date=cand.filing_date,
+                title=cand.title,
+                url=url0,
+                period_end=cand.period_end,
+            )
+        except MissingPublishedDateError as exc:
+            result.rejected.append(
+                RejectedDocument(
+                    doc_id=cand.doc_id,
+                    ticker=cand.ticker,
+                    title=cand.title,
+                    raw_doc_type=cand.doc_type,
+                    reason=f"MISSING_PIT_DATE:{exc}",
+                )
+            )
+            continue
+
+        if pit_res.is_trapped:
+            result.traps_caught.extend(pit_res.trap_flags)
+            result.rejected.append(
+                RejectedDocument(
+                    doc_id=cand.doc_id,
+                    ticker=cand.ticker,
+                    title=cand.title,
+                    raw_doc_type=cand.doc_type,
+                    reason="PUBLISHED_DATE_TRAP",
+                    trap_flags=pit_res.trap_flags,
+                )
+            )
+            continue
+
+        if pit_res.effective_published_at > as_of_date:
+            result.rejected.append(
+                RejectedDocument(
+                    doc_id=cand.doc_id,
+                    ticker=cand.ticker,
+                    title=cand.title,
+                    raw_doc_type=cand.doc_type,
+                    reason=(
+                        f"FUTURE_PIT_EXCLUDED:{pit_res.effective_published_at.isoformat()}"
+                        f">{as_of_date.isoformat()}"
+                    ),
+                )
+            )
+            continue
+
+        if min_fiscal_year is not None and pit_res.parsed_fiscal_year is not None:
+            if pit_res.parsed_fiscal_year < min_fiscal_year:
+                result.rejected.append(
+                    RejectedDocument(
+                        doc_id=cand.doc_id,
+                        ticker=cand.ticker,
+                        title=cand.title,
+                        raw_doc_type=cand.doc_type,
+                        reason=f"STALE_FISCAL_YEAR:{pit_res.parsed_fiscal_year}<{min_fiscal_year}",
+                    )
+                )
+                continue
+
+        preliminary.append((cand, canonical, tier, reason, pit_res))
+
+    # Sort newest effective_published_at first
+    preliminary.sort(key=lambda item: item[4].effective_published_at, reverse=True)
+
+    # First pass: locate & inspect BCTN to check embedded notes, plan presence, and NOTICE_ONLY
+    bctn_embedded_notes_years: dict[int | None, str] = {}
+    bctn_pub_date: date | None = None
+    prelim_inspected: list[
+        tuple[
+            ResearchCandidateDocument,
+            str,
+            SelectionTier,
+            str,
+            PitDateResolution,
+            bytes | None,
+            str,
+            InspectionResult | None,
+        ]
+    ] = []
+
+    for cand, canonical, tier, reason, pit_res in preliminary:
+        raw_payload = cand.raw_bytes
+        resolved_url = cand.urls[0] if cand.urls else ""
+        if raw_payload is None and cand.urls and inspect_payloads:
+            fetched = await fetch_document_with_fallback(cand.urls, fetcher=fetcher)
+            if not fetched.ok:
+                result.rejected.append(
+                    RejectedDocument(
+                        doc_id=cand.doc_id,
+                        ticker=cand.ticker,
+                        title=cand.title,
+                        raw_doc_type=cand.doc_type,
+                        reason=f"{fetched.error}:{';'.join(fetched.attempt_errors)}",
+                    )
+                )
+                continue
+            raw_payload = fetched.content
+            resolved_url = fetched.resolved_url
+
+        insp: InspectionResult | None = None
+        pdf_bytes: bytes | None = None
+        if raw_payload is not None and inspect_payloads:
+            insp = inspect_pdf_bytes(raw_payload, source_url=resolved_url)
+            if insp.error:
+                result.rejected.append(
+                    RejectedDocument(
+                        doc_id=cand.doc_id,
+                        ticker=cand.ticker,
+                        title=cand.title,
+                        raw_doc_type=cand.doc_type,
+                        reason=f"INSPECTION_ERROR:{insp.error}",
+                    )
+                )
+                continue
+            pdf_bytes = _unpack_pdf_if_zip(raw_payload)
+            if canonical == "BCTN":
+                if insp.doc_class == "NOTICE_ONLY":
+                    ctx.bctn_has_plan = False
+                elif not insp.has_plan:
+                    ctx.bctn_has_plan = False
+                if (
+                    insp.has_embedded_notes
+                    and insp.doc_class in ("DIGITAL", "HYBRID")
+                    and insp.routed_branch == "A"
+                ):
+                    bctn_embedded_notes_years[pit_res.parsed_fiscal_year] = cand.doc_id
+                if bctn_pub_date is None:
+                    bctn_pub_date = pit_res.effective_published_at
+        elif canonical == "BCTN" and bctn_pub_date is None:
+            bctn_pub_date = pit_res.effective_published_at
+
+        prelim_inspected.append(
+            (cand, canonical, tier, reason, pit_res, pdf_bytes, resolved_url, insp)
+        )
+
+    # Second pass: apply conditional activation & BCTN/BCTC deduplication
+    for cand, canonical, tier, reason, pit_res, pdf_bytes, resolved_url, insp in prelim_inspected:
+        if canonical == "BCTC" and pit_res.parsed_fiscal_quarter == 0:
+            dedup_owner = bctn_embedded_notes_years.get(pit_res.parsed_fiscal_year)
+            if dedup_owner is not None:
+                result.bctn_deduplicated_bctc = True
+                result.rejected.append(
+                    RejectedDocument(
+                        doc_id=cand.doc_id,
+                        ticker=cand.ticker,
+                        title=cand.title,
+                        raw_doc_type=cand.doc_type,
+                        reason=f"DEDUPLICATED_BY_BCTN:{dedup_owner}",
+                    )
+                )
+                continue
+
+        if tier == "CONDITIONAL" or canonical == "NQ_DHDCD":
+            active, cond_reason = _is_conditional_activated(
+                canonical, cand, pit_res, ctx, bctn_pub_date
+            )
+            if not active:
+                result.rejected.append(
+                    RejectedDocument(
+                        doc_id=cand.doc_id,
+                        ticker=cand.ticker,
+                        title=cand.title,
+                        raw_doc_type=cand.doc_type,
+                        reason=cond_reason,
+                    )
+                )
+                continue
+            reason = cond_reason
+
+        result.selected.append(
+            SelectedDocument(
+                candidate=cand,
+                canonical_doc_type=canonical,
+                tier=tier,
+                selection_reason=reason,
+                pit_resolution=pit_res,
+                inspection=insp,
+                pdf_bytes=pdf_bytes,
+                resolved_url=resolved_url,
+            )
+        )
+
+    return result

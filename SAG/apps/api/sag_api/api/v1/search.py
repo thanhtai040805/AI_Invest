@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
-from sag_api.core.config import FIXED_SEARCH_TOP_K, settings
+from sag_api.core.config import settings
 from sag_api.core.db import get_session
 from sag_api.core.deps import (
     get_current_user,
@@ -333,13 +333,18 @@ async def _prepare_global_search(
     # engine or model. SessionLocal uses expire_on_commit=False.
     await session.commit()
     resolved_project_id = _resolve_search_project_id(principal, sources)
+    effective_top_k = (
+        body.top_k
+        if body.top_k is not None
+        else (settings.research_search_top_k if body.as_of_ts is not None else None)
+    )
     with token_usage_scope(project_id=resolved_project_id, tenant_id=principal.tenant_id):
         route_plan = await _build_query_route(
             body.query,
             body.source_ids,
             body.strategy,
             body.retrieval_mode,
-            requested_top_k=body.top_k,
+            requested_top_k=effective_top_k,
             trace_strategy_plan=True,
         )
         if not route_plan.need_retrieval:
@@ -377,7 +382,8 @@ async def _prepare_global_search(
             sources,
             body.query,
             principal=principal,
-            top_k=body.top_k,
+            top_k=effective_top_k,
+            as_of_ts=body.as_of_ts,
             query_strategy_plan=route_plan.strategy_plan,
         )
     permitted_config_ids = set(refs)
@@ -520,6 +526,11 @@ async def search(
 
         raise NotFoundError("信源不存在")
     project_id = _resolve_search_project_id(principal, [source])
+    effective_top_k = (
+        body.top_k
+        if body.top_k is not None
+        else (settings.research_search_top_k if body.as_of_ts is not None else None)
+    )
     with token_usage_scope(
         component="search_request",
         project_id=project_id,
@@ -530,7 +541,7 @@ async def search(
             body.query,
             [source_id],
             body.strategy,
-            requested_top_k=body.top_k,
+            requested_top_k=effective_top_k,
         )
         if route_plan.need_retrieval:
             if partitioned:
@@ -541,7 +552,8 @@ async def search(
                     [source],
                     body.query,
                     principal=principal,
-                    top_k=body.top_k,
+                    top_k=effective_top_k,
+                    as_of_ts=body.as_of_ts,
                     query_strategy_plan=route_plan.strategy_plan,
                 )
                 event_scores = {}
@@ -552,7 +564,7 @@ async def search(
                         [source],
                         body.query,
                         strategy=route_plan.strategy,
-                        top_k=body.top_k,
+                        top_k=effective_top_k,
                     ),
                     recall_event_scores(
                         engine_manager,
@@ -602,7 +614,8 @@ async def search(
         return SearchResponse(
             query=body.query,
             sections=[
-                SectionOut(**{**s.model_dump(), "source_id": source.id}, source_name=source.name) for s in outcome.sections
+                SectionOut(**{**s.model_dump(), "source_id": source.id}, source_name=source.name)
+                for s in outcome.sections
             ],
             **graph_fields,
             source_hits=_source_hits(graph_fields["events"]),

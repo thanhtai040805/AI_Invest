@@ -52,6 +52,12 @@ from sag_api.db.models.session_context import (
 from sag_api.db.models.setting import Setting
 from sag_api.db.models.source import Source
 from sag_api.db.models.source_project_mapping import SourceProjectMapping
+from sag_api.db.models.stock_research import (
+    KgEdge,
+    KgNode,
+    MacroSensitivitySnapshot,
+    SagExtractedTable,
+)
 from sag_api.db.models.universe import (
     ExplorationSession,
     ExplorationStep,
@@ -73,6 +79,8 @@ __all__ = [
     "ExplorationStep",
     "IngestionRun",
     "Job",
+    "KgEdge",
+    "KgNode",
     "KnowledgeGraphEdge",
     "KnowledgeEvidence",
     "KnowledgeGap",
@@ -85,6 +93,7 @@ __all__ = [
     "KnowledgeTreeNode",
     "KnowledgeUnit",
     "KnowledgeUnitEdge",
+    "MacroSensitivitySnapshot",
     "Message",
     "OctxAsset",
     "OctxDocumentBinding",
@@ -96,6 +105,7 @@ __all__ = [
     "ProjectMindMapSnapshot",
     "ProjectSearchState",
     "ResearchTask",
+    "SagExtractedTable",
     "SearchUnit",
     "SessionDecisionLedger",
     "SessionGraphEdge",

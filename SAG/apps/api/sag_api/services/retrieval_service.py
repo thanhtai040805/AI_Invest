@@ -9,10 +9,10 @@ import threading
 import time
 import unicodedata
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from sag_api.core.config import FIXED_SEARCH_TOP_K, settings
+from sag_api.core.config import settings
 from sag_api.core.logging import get_logger
 from sag_api.sag import RetrievedSection, SearchOutcome
 from sag_api.services.evidence_service import (
@@ -29,6 +29,7 @@ from sag_api.services.query_analysis import (
     extract_salient_query_terms,
     normalize_lexical_text,
 )
+from sag_api.services.search_index_service import COMMON_STOPWORDS
 
 log = get_logger("retrieval")
 
@@ -200,8 +201,6 @@ def _section_key(section: RetrievedSection) -> tuple[str, str]:
     fingerprint = normalize_lexical_text(f"{section.heading}\n{section.content}")[:240]
     return source, fingerprint
 
-
-from sag_api.services.search_index_service import COMMON_STOPWORDS
 
 _LEXICAL_STOPWORDS = COMMON_STOPWORDS
 _CONTINUOUS_SCRIPT_TERM_RE = re.compile(
@@ -883,8 +882,98 @@ def rerank_sections(
     )
 
 
+_TABLE_ID_HINT_RE = re.compile(
+    r"(?:\btable[_\s-]*id[:=]\s*|(?<!\w))(B0[1-9]-DN(?:/HN)?|TM-?\d+[a-zA-Z0-9.-]*)\b",
+    re.IGNORECASE,
+)
+_SUB_DOC_SLOT_HINT_RE = re.compile(r"\b(S\d{2}[A-Z]?)\b")
+_FISCAL_PERIOD_HINT_RE = re.compile(
+    r"\b(FY\s*\d{4}|[1-4]Q\d{4}|Q[1-4]\s*[/\-]?\s*\d{4}|Quý\s*[1-4]\s*[/\-]\s*\d{4}|9T\s*[/\-]\s*\d{4}|6T\s*[/\-]\s*\d{4}|(?:19|20)\d{2})\b",
+    re.IGNORECASE,
+)
+_VN_THOUSANDS_INLINE_RE = re.compile(r"(?<!\d)(\d{1,3}(?:\.\d{3})+)(?![\d.])")
+_NUMERIC_TOKEN_RE = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
+
+
+def _extract_table_scope_signature(
+    section: RetrievedSection,
+) -> tuple[str, str, tuple[str, ...], bool, tuple[str, ...]]:
+    table_id = str(getattr(section, "table_id", None) or "").strip().lower()
+    sub_doc_slot = str(getattr(section, "sub_doc_slot", None) or "").strip().upper()
+    fiscal_year = getattr(section, "fiscal_year", None)
+    fiscal_quarter = getattr(section, "fiscal_quarter", None)
+
+    header_blob = " | ".join(
+        part
+        for part in (
+            section.document_name,
+            section.section_path,
+            section.heading,
+            section.anchor,
+        )
+        if part
+    )
+    if not table_id:
+        match = _TABLE_ID_HINT_RE.search(header_blob) or _TABLE_ID_HINT_RE.search(section.content[:240])
+        if match:
+            table_id = match.group(1).strip().lower()
+    if not sub_doc_slot:
+        slot_match = _SUB_DOC_SLOT_HINT_RE.search(header_blob)
+        if slot_match:
+            sub_doc_slot = slot_match.group(1).upper()
+
+    periods: list[str] = []
+    if fiscal_year is not None:
+        periods.append(f"fy{int(fiscal_year)}")
+        if fiscal_quarter is not None:
+            periods.append(f"q{int(fiscal_quarter)}")
+    else:
+        for raw_period in _FISCAL_PERIOD_HINT_RE.findall(f"{header_blob} | {section.content[:200]}"):
+            norm_period = re.sub(r"\s+", "", raw_period.lower()).replace("quý", "q")
+            if norm_period not in periods:
+                periods.append(norm_period)
+
+    normalized_numbers_text = _VN_THOUSANDS_INLINE_RE.sub(
+        lambda m: m.group(1).replace(".", ""),
+        section.content,
+    )
+    numeric_tokens = tuple(_NUMERIC_TOKEN_RE.findall(normalized_numbers_text))
+    is_tabular = bool(
+        table_id
+        or "|" in section.content
+        or "\t" in section.content
+        or len(numeric_tokens) >= 3
+    )
+    return table_id, sub_doc_slot, tuple(sorted(periods)), is_tabular, numeric_tokens
+
+
+def _has_distinct_table_identity(
+    left: RetrievedSection,
+    right: RetrievedSection,
+) -> bool:
+    l_table, l_slot, l_periods, l_tabular, l_nums = _extract_table_scope_signature(left)
+    r_table, r_slot, r_periods, r_tabular, r_nums = _extract_table_scope_signature(right)
+    if l_table and r_table and l_table != r_table:
+        return True
+    if l_slot and r_slot and l_slot != r_slot:
+        return True
+    if l_periods and r_periods and l_periods != r_periods:
+        return True
+    if l_tabular and r_tabular and (l_nums or r_nums) and l_nums != r_nums:
+        return True
+    return False
+
+
 def _content_shingles(section: RetrievedSection) -> frozenset[str]:
-    normalized = normalize_lexical_text(f"{section.heading}\n{section.content}")
+    table_id, sub_doc_slot, periods, _, _ = _extract_table_scope_signature(section)
+    scope_prefix = " ".join(
+        token for token in (table_id, sub_doc_slot.lower(), *periods) if token
+    )
+    normalized = normalize_lexical_text(
+        f"{scope_prefix}\n{section.heading}\n{section.content}"
+        if scope_prefix
+        else f"{section.heading}\n{section.content}"
+    )
     if len(normalized) > 4096:
         # Keep the similarity signature bounded while sampling the whole evidence;
         # prefix-only truncation can collapse sections with different conclusions.
@@ -999,7 +1088,11 @@ def select_diverse_sections(
         for index, previous in enumerate(unique_shingles):
             if index % 32 == 0:
                 check_cancelled()
-            if coverage == unique_coverage[index] and _jaccard(shingles, previous) >= duplicate_threshold:
+            if (
+                coverage == unique_coverage[index]
+                and _jaccard(shingles, previous) >= duplicate_threshold
+                and not _has_distinct_table_identity(section, unique[index])
+            ):
                 duplicate_index = index
                 break
         if duplicate_index is None:
@@ -1028,7 +1121,12 @@ def select_diverse_sections(
             (
                 index
                 for index, coverage in enumerate(unique_coverage)
-                if anchor in coverage and index not in selected_indices and (len(unique) <= limit or float(unique[index].score or 0.0) >= min(0.55, 0.75 * float(unique[0].score or 0.0)))
+                if anchor in coverage
+                and index not in selected_indices
+                and (
+                    len(unique) <= limit
+                    or float(unique[index].score or 0.0) >= min(0.55, 0.75 * float(unique[0].score or 0.0))
+                )
             ),
             None,
         )
@@ -1145,7 +1243,10 @@ def select_diverse_sections(
         for offset, chosen in enumerate(selected_indices[compared[index]:]):
             if offset % 32 == 0:
                 check_cancelled()
-            redundancy[index] = max(redundancy[index], _jaccard(unique_shingles[index], unique_shingles[chosen]))
+            pair_similarity = _jaccard(unique_shingles[index], unique_shingles[chosen])
+            if _has_distinct_table_identity(unique[index], unique[chosen]):
+                pair_similarity = min(pair_similarity, 0.25)
+            redundancy[index] = max(redundancy[index], pair_similarity)
         compared[index] = len(selected_indices)
         return redundancy[index]
 
@@ -1560,6 +1661,10 @@ _UNGROUNDED_REFUSAL_CUES = (
     "insufficient evidence",
     "không có thông tin",
     "không đề cập",
+    "không đủ bằng chứng",
+    "không đủ dữ liệu",
+    "không đủ cơ sở",
+    "không đủ căn cứ",
 )
 
 
@@ -1618,6 +1723,102 @@ def _build_search_citations(
     return build_citations(sections, refs)
 
 
+_PARTIAL_BLINDSPOT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "PARTIAL_MISSING_DATA",
+        re.compile(
+            r"(?:chưa\s+có\s+(?:dữ\s+liệu|thông\s+tin)|không\s+có\s+(?:dữ\s+liệu|thông\s+tin)|"
+            r"thiếu\s+(?:dữ\s+liệu|thông\s+tin|số\s+liệu)|không\s+đủ\s+(?:dữ\s+liệu|cơ\s+sở|thông\s+tin)|"
+            r"chưa\s+được\s+công\s+bố|no\s+data\s+available|missing\s+(?:data|information|disclosure)|"
+            r"not\s+(?:disclosed|provided|available)\s+in|insufficient\s+evidence)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "UNVERIFIED_CLAIM_GAP",
+        re.compile(
+            r"(?:không\s+thể\s+xác\s+minh|chưa\s+thể\s+kiểm\s+chứng|cannot\s+(?:verify|confirm)|"
+            r"unverified\s+(?:figure|number|claim))",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
+
+def normalize_declared_blindspots(
+    items: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None,
+) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in items or ():
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("code") or "").strip().upper()
+        reason = str(item.get("reason") or "").strip()
+        scope = str(item.get("scope") or "retrieval").strip().lower()
+        if not code or not reason:
+            continue
+        key = (code, reason, scope)
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append({"code": code, "reason": reason, "scope": scope})
+    return normalized
+
+
+def _extract_partial_blindspots(answer_text: str) -> list[dict[str, str]]:
+    found: list[dict[str, str]] = []
+    for sentence in re.split(r"(?<=[.!?\n])\s+", answer_text.strip()):
+        cleaned = sentence.strip()
+        if not cleaned:
+            continue
+        for code, pattern in _PARTIAL_BLINDSPOT_PATTERNS:
+            if pattern.search(cleaned):
+                found.append({"code": code, "reason": cleaned[:240], "scope": "answer"})
+                break
+    return found
+
+
+def build_declared_blindspots(
+    *,
+    pack_status: str | None = None,
+    no_answer_reason: str | None = None,
+    missing_citations: bool = False,
+    llm_abstained: bool = False,
+    answer_text: str = "",
+    blindspot_hints: list[dict[str, Any]] | None = None,
+) -> list[dict[str, str]]:
+    collected: list[dict[str, Any]] = list(blindspot_hints or [])
+    if pack_status and pack_status != "sufficient":
+        reason_code = str(no_answer_reason or "insufficient_evidence").strip().upper()
+        collected.append(
+            {
+                "code": reason_code,
+                "reason": f"Layer 1 evidence gate abstained ({no_answer_reason or 'insufficient_evidence'}).",
+                "scope": "retrieval",
+            }
+        )
+    if missing_citations:
+        collected.append(
+            {
+                "code": "UNTRACEABLE_CITATION",
+                "reason": "Layer 1 provenance gate found sections without traceable source_id citations.",
+                "scope": "provenance",
+            }
+        )
+    if llm_abstained:
+        collected.append(
+            {
+                "code": "LLM_ABSTENTION_INSUFFICIENT_EVIDENCE",
+                "reason": "Layer 2 synthesis abstained because available evidence does not support the query.",
+                "scope": "synthesis",
+            }
+        )
+    if answer_text:
+        collected.extend(_extract_partial_blindspots(answer_text))
+    return normalize_declared_blindspots(collected)
+
+
 @dataclass(frozen=True, slots=True)
 class SearchAnswerUpdate:
     kind: Literal["delta", "completed"]
@@ -1625,6 +1826,7 @@ class SearchAnswerUpdate:
     status: Literal["answered", "no_answer"] = "answered"
     no_answer_reason: str | None = None
     citations: list[dict[str, Any]] | None = None
+    declared_blindspots: list[dict[str, str]] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1633,6 +1835,7 @@ class SearchAnswer:
     citations: list[dict[str, Any]]
     status: Literal["answered", "no_answer", "skipped"]
     no_answer_reason: str | None = None
+    declared_blindspots: list[dict[str, str]] = field(default_factory=list)
 
 
 async def synthesize_search_answer(
@@ -1641,20 +1844,32 @@ async def synthesize_search_answer(
     *,
     llm: Any | None,
     sources: list[SearchSource] | None = None,
+    blindspot_hints: list[dict[str, Any]] | None = None,
 ) -> SearchAnswer:
     """Answer the actual question from selected evidence; never summarize the raw candidate pool."""
 
     verified_sections = await resolve_traceable_evidence(sections, sources or []) if sources is not None else sections
     pack = build_evidence_pack(query, verified_sections)
     if pack.status != "sufficient":
-        return SearchAnswer(no_answer_text(), [], "no_answer", pack.no_answer_reason)
+        blindspots = build_declared_blindspots(
+            pack_status=pack.status,
+            no_answer_reason=pack.no_answer_reason,
+            blindspot_hints=blindspot_hints,
+        )
+        return SearchAnswer(no_answer_text(), [], "no_answer", pack.no_answer_reason, blindspots)
 
     citations = _build_search_citations(pack.sections, sources or [])
     if len(citations) != len(pack.sections) or any(not citation.get("source_id") for citation in citations):
-        return SearchAnswer(no_answer_text(), [], "no_answer", "weak_evidence")
+        blindspots = build_declared_blindspots(
+            missing_citations=True,
+            blindspot_hints=blindspot_hints,
+        )
+        return SearchAnswer(no_answer_text(), [], "no_answer", "weak_evidence", blindspots)
     fallback = fallback_search_answer(query, pack.sections)
     if llm is None or not getattr(llm, "configured", False):
-        return SearchAnswer(fallback, _citations_used_by_answer(fallback, citations), "answered")
+        used_citations = _citations_used_by_answer(fallback, citations)
+        blindspots = build_declared_blindspots(answer_text=fallback, blindspot_hints=blindspot_hints)
+        return SearchAnswer(fallback, used_citations, "answered", declared_blindspots=blindspots)
 
     from sag_api.core.token_usage import token_usage_scope
 
@@ -1663,12 +1878,29 @@ async def synthesize_search_answer(
             answer = await llm.complete(pack.messages)
     except Exception as error:  # noqa: BLE001
         log.warning("搜索答案生成失败，回退证据摘要：%s", error)
-        return SearchAnswer(fallback, _citations_used_by_answer(fallback, citations), "answered")
+        blindspots = build_declared_blindspots(answer_text=fallback, blindspot_hints=blindspot_hints)
+        return SearchAnswer(
+            fallback,
+            _citations_used_by_answer(fallback, citations),
+            "answered",
+            declared_blindspots=blindspots,
+        )
     if _is_abstention_response(answer):
-        return SearchAnswer(no_answer_text(), [], "no_answer", "insufficient_evidence")
+        blindspots = build_declared_blindspots(
+            llm_abstained=True,
+            answer_text=answer,
+            blindspot_hints=blindspot_hints,
+        )
+        return SearchAnswer(no_answer_text(), [], "no_answer", "insufficient_evidence", blindspots)
     validated = _validated_answer(answer, len(pack.sections))
     canonical = validated or fallback
-    return SearchAnswer(canonical, _citations_used_by_answer(canonical, citations), "answered")
+    blindspots = build_declared_blindspots(answer_text=canonical, blindspot_hints=blindspot_hints)
+    return SearchAnswer(
+        canonical,
+        _citations_used_by_answer(canonical, citations),
+        "answered",
+        declared_blindspots=blindspots,
+    )
 
 
 async def stream_synthesize_search_answer(
@@ -1677,36 +1909,54 @@ async def stream_synthesize_search_answer(
     *,
     llm: Any | None,
     sources: list[SearchSource] | None = None,
+    blindspot_hints: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[SearchAnswerUpdate]:
     """Buffer provider output; only publish a canonical, provenance-backed answer."""
 
     verified_sections = await resolve_traceable_evidence(sections, sources or []) if sources is not None else sections
     pack = build_evidence_pack(query, verified_sections)
     if pack.status != "sufficient":
+        blindspots = build_declared_blindspots(
+            pack_status=pack.status,
+            no_answer_reason=pack.no_answer_reason,
+            blindspot_hints=blindspot_hints,
+        )
         yield SearchAnswerUpdate(
             kind="completed",
             text=no_answer_text(),
             status="no_answer",
             no_answer_reason=pack.no_answer_reason,
             citations=[],
+            declared_blindspots=blindspots,
         )
         return
 
     citations = _build_search_citations(pack.sections, sources or [])
     if len(citations) != len(pack.sections) or any(not citation.get("source_id") for citation in citations):
+        blindspots = build_declared_blindspots(
+            missing_citations=True,
+            blindspot_hints=blindspot_hints,
+        )
         yield SearchAnswerUpdate(
             kind="completed",
             text=no_answer_text(),
             status="no_answer",
             no_answer_reason="weak_evidence",
             citations=[],
+            declared_blindspots=blindspots,
         )
         return
     fallback = fallback_search_answer(query, pack.sections)
     if llm is None or not getattr(llm, "configured", False):
         used_citations = _citations_used_by_answer(fallback, citations)
+        blindspots = build_declared_blindspots(answer_text=fallback, blindspot_hints=blindspot_hints)
         yield SearchAnswerUpdate(kind="delta", text=fallback)
-        yield SearchAnswerUpdate(kind="completed", text=fallback, citations=used_citations)
+        yield SearchAnswerUpdate(
+            kind="completed",
+            text=fallback,
+            citations=used_citations,
+            declared_blindspots=blindspots,
+        )
         return
 
     from sag_api.core.token_usage import token_usage_scope
@@ -1722,27 +1972,41 @@ async def stream_synthesize_search_answer(
     except Exception as error:  # noqa: BLE001
         log.warning("搜索答案流生成失败，回退证据摘要：%s", error)
         fallback_citations = _citations_used_by_answer(fallback, citations)
+        blindspots = build_declared_blindspots(answer_text=fallback, blindspot_hints=blindspot_hints)
         yield SearchAnswerUpdate(
             kind="completed",
             text=fallback,
             citations=fallback_citations,
+            declared_blindspots=blindspots,
         )
         return
 
     raw_answer = "".join(parts)
     if _is_abstention_response(raw_answer):
+        blindspots = build_declared_blindspots(
+            llm_abstained=True,
+            answer_text=raw_answer,
+            blindspot_hints=blindspot_hints,
+        )
         yield SearchAnswerUpdate(
             kind="completed",
             text=no_answer_text(),
             status="no_answer",
             no_answer_reason="insufficient_evidence",
             citations=[],
+            declared_blindspots=blindspots,
         )
         return
     validated = _validated_answer(raw_answer, len(pack.sections))
     answer = validated or fallback
     used_citations = _citations_used_by_answer(answer, citations)
+    blindspots = build_declared_blindspots(answer_text=answer, blindspot_hints=blindspot_hints)
     # Provider deltas remain private until citation syntax is checked against
     # this exact pack. Only the canonical text is sent as a single delta.
     yield SearchAnswerUpdate(kind="delta", text=answer)
-    yield SearchAnswerUpdate(kind="completed", text=answer, citations=used_citations)
+    yield SearchAnswerUpdate(
+        kind="completed",
+        text=answer,
+        citations=used_citations,
+        declared_blindspots=blindspots,
+    )

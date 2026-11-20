@@ -13,20 +13,26 @@ Follows Ponytail minimalism:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import math
+import re
+import unicodedata
 import uuid
+from collections import Counter
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
+from weakref import WeakKeyDictionary
 
 import httpx
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.core.config import settings
-from sag_api.core.logging import get_logger
-from sag_api.core.errors import ApiError, is_retryable_error
 from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
+from sag_api.core.errors import ApiError, is_retryable_error
+from sag_api.core.logging import get_logger
 from sag_api.core.sanitizer import sanitize_error_message
 from sag_api.db.models.routing_rag import (
     CanonicalBlock,
@@ -108,6 +114,19 @@ COMMON_STOPWORDS: frozenset[str] = frozenset(
 )
 
 
+_VN_DOT_THOUSANDS_RE = re.compile(r"(?<![\d.])(\d{1,3}(?:\.\d{3})+)(?!\.\d|\d)")
+_US_COMMA_THOUSANDS_RE = re.compile(r"(?<=\d),(?=\d{3}(?!\d))")
+
+
+def normalize_numeric_separators(text: str) -> str:
+    """Normalize VN dot-thousands (16.012.813 -> 16012813) and US comma-thousands (1,577 -> 1577)
+    while preserving decimals (15.29% -> 15.29%) and multi-segment codes (12.34.567).
+    """
+    nfc = unicodedata.normalize("NFC", text or "")
+    cleaned = _VN_DOT_THOUSANDS_RE.sub(lambda m: m.group(1).replace(".", ""), nfc)
+    return _US_COMMA_THOUSANDS_RE.sub("", cleaned)
+
+
 def compute_sparse_bm25_vector(
     text: str,
     *,
@@ -117,21 +136,18 @@ def compute_sparse_bm25_vector(
     corpus_doc_freqs: dict[str, int] | None = None,
     total_corpus_docs: int = 1000,
 ) -> dict[str, list]:
-    """Compute BM25 saturated term-frequency sparse vector (relying on Qdrant native IDF when corpus_doc_freqs is None)."""
-    import math
-    import re
-    import unicodedata
-    from collections import Counter
+    """Compute BM25 saturated term-frequency sparse vector.
 
+    Relies on Qdrant native IDF when corpus_doc_freqs is None.
+    """
     continuous_script_re = re.compile(
         r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
         r"\u0e00-\u0e7f\u0e80-\u0eff\u1780-\u17ff\u1000-\u109f]+"
     )
 
     # Normalize Unicode to NFC first so decomposed Vietnamese marks never split tokens,
-    # then normalize thousand-separated numbers (1,577 -> 1577) and ampersand initialisms (R&D -> rd)
-    nfc_text = unicodedata.normalize("NFC", text or "")
-    cleaned_text = re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", nfc_text.lower())
+    # then normalize VN dot-thousands / US comma-thousands and ampersand initialisms (R&D -> rd)
+    cleaned_text = normalize_numeric_separators(text).lower()
     cleaned_text = re.sub(r"\b([a-z]{1,2})\s*&\s*([a-z]{1,2})\b", r"\1\2", cleaned_text)
     raw_word_tokens = re.findall(r"\w+", cleaned_text)
     if not raw_word_tokens:
@@ -218,9 +234,6 @@ def compute_sparse_bm25_vector(
     }
 
 
-import asyncio
-from weakref import WeakKeyDictionary
-
 PAYLOAD_INDEX_FIELDS = [
     ("tenant_id", "keyword"),
     ("project_id", "keyword"),
@@ -230,6 +243,12 @@ PAYLOAD_INDEX_FIELDS = [
     ("document_id", "keyword"),
     ("valid_from_ts", "integer"),
     ("valid_to_ts", "integer"),
+    ("fiscal_year", "integer"),
+    ("fiscal_quarter", "integer"),
+    ("doc_type", "keyword"),
+    ("sub_doc_slot", "keyword"),
+    ("sector_group", "keyword"),
+    ("table_id", "keyword"),
     ("primary_node_a", "keyword"),
     ("tree_version_a", "keyword"),
     ("primary_node_b", "keyword"),
@@ -338,7 +357,8 @@ async def ensure_qdrant_collection_and_indexes(
                     err_text = col_res.text.lower()
                     if "already exists" not in err_text:
                         raise RuntimeError(
-                            f"Failed to create Qdrant collection {collection_name}: HTTP {col_res.status_code} - {col_res.text}"
+                            f"Failed to create Qdrant collection {collection_name}: "
+                            f"HTTP {col_res.status_code} - {col_res.text}"
                         )
                 collection_verified = True
             except Exception as exc:
@@ -725,10 +745,19 @@ def build_qdrant_payload(
     block_from_id: str | None = None,
     block_to_id: str | None = None,
     source_anchor: str | None = None,
+    fiscal_year: int | None = None,
+    fiscal_quarter: int | None = None,
+    doc_type: str | None = None,
+    sub_doc_slot: str | None = None,
+    sector_group: str | None = None,
+    table_id: str | None = None,
 ) -> dict[str, Any]:
     """Build Qdrant point payload including pre-provisioned tree routing fields and retrieval locators."""
     valid_from_ts = int(version.valid_from.timestamp()) if version.valid_from else None
     valid_to_ts = int(version.valid_to.timestamp()) if version.valid_to else None
+    version_meta = getattr(version, "metadata_json", None) or {}
+    if not isinstance(version_meta, dict):
+        version_meta = {}
 
     return {
         "_sag_id": unit.id,
@@ -749,6 +778,16 @@ def build_qdrant_payload(
         "valid_to_ts": valid_to_ts,
         "valid_from_iso": version.valid_from.isoformat() if version.valid_from else None,
         "valid_to_iso": version.valid_to.isoformat() if version.valid_to else None,
+        "fiscal_year": fiscal_year if fiscal_year is not None else version_meta.get("fiscal_year"),
+        "fiscal_quarter": fiscal_quarter if fiscal_quarter is not None else version_meta.get("fiscal_quarter"),
+        "doc_type": doc_type if doc_type is not None else version_meta.get("doc_type"),
+        "sub_doc_slot": sub_doc_slot if sub_doc_slot is not None else version_meta.get("sub_doc_slot"),
+        "sector_group": sector_group if sector_group is not None else version_meta.get("sector_group"),
+        "table_id": (
+            table_id
+            if table_id is not None
+            else getattr(unit, "table_id", None) or version_meta.get("table_id")
+        ),
         "token_count": unit.token_count,
         "section_path": unit.section_path,
         "page_from": unit.page_from,
@@ -1035,7 +1074,7 @@ async def index_search_units_to_qdrant(
         knowledge_block_preload_estimated_tokens=_preload_est_tokens,
     )
     try:
-        setattr(version, "_last_search_index_token_usage", combined_ledger.to_summary())
+        version._last_search_index_token_usage = combined_ledger.to_summary()
     except Exception:
         pass
     vector_dim = len(vectors[0]) if vectors and len(vectors[0]) > 0 else 1536
@@ -1232,7 +1271,7 @@ async def run_search_indexing_stage(
             )
             if pre_embed_summary is not None:
                 try:
-                    setattr(document_version, "_last_search_index_token_usage", pre_embed_summary)
+                    document_version._last_search_index_token_usage = pre_embed_summary
                 except Exception:
                     pass
         except Exception as exc:
@@ -1282,7 +1321,11 @@ async def run_search_indexing_stage(
                     f"/collections/{collection_name}/index?wait=true",
                     json={"field_name": "document_version_id", "field_schema": "keyword"},
                 )
-                if index_res.status_code >= 400 and index_res.status_code != 409 and "already exists" not in index_res.text.lower():
+                if (
+                    index_res.status_code >= 400
+                    and index_res.status_code != 409
+                    and "already exists" not in index_res.text.lower()
+                ):
                     index_res.raise_for_status()
                 del_res = await qdrant_client.post(delete_url, json=delete_body)
             if del_res.status_code >= 400 and del_res.status_code != 404:
@@ -1530,8 +1573,12 @@ async def run_search_indexing_stage(
             f"(units={len(units)}, pg={pg_count}, qdrant={qdrant_count}, "
             f"qdrant_checksum={qdrant_checksum})"
         )
-        raise ApiError(err_msg, layer=ErrorLayer.STORE, stage=ErrorStage.PERSIST,
-                       retryable=is_retryable_error(indexing_exception) if indexing_exception else False) from indexing_exception
+        raise ApiError(
+            err_msg,
+            layer=ErrorLayer.STORE,
+            stage=ErrorStage.PERSIST,
+            retryable=is_retryable_error(indexing_exception) if indexing_exception else False,
+        ) from indexing_exception
 
     if not units:
         raise RuntimeError("EMPTY_INDEX: Document has no text content to index")

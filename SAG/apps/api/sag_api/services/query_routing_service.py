@@ -89,6 +89,8 @@ class NodeProfile(BaseModel):
     tree_version: str
     scope_fingerprint: str
     signal_scores: dict[str, float] = Field(default_factory=dict)
+    temporal_from_ts: int | None = None
+    temporal_to_ts: int | None = None
 
 
 class GroupRoutingSnapshot(BaseModel):
@@ -207,6 +209,7 @@ async def capture_routing_decisions(
     principal: object | None = None,
     timeout_seconds: float | None = None,
     query_vector_tasks_by_scope: Mapping[str, Any] | None = None,
+    as_of_ts: int | None = None,
 ) -> dict[tuple[str, str, str, str], RouteDecision]:
     """Capture all per-Project profiles in one provider call for request consistency."""
     import inspect
@@ -277,8 +280,16 @@ async def capture_routing_decisions(
                         str(scope["tenant_id"]),
                         str(scope["partition_id"]),
                     )
+                    recency_intent = bool(planner_trace.get("recency_intent"))
+                    if not recency_intent and isinstance(planner_trace.get("query_analysis"), Mapping):
+                        qa_feats = planner_trace["query_analysis"].get("features")  # type: ignore[index]
+                        if isinstance(qa_feats, Mapping):
+                            recency_intent = bool(qa_feats.get("recency_intent"))
                     cache_key = None
                     if settings.search_route_decision_cache_enabled and acl_fingerprint and acl_epoch:
+                        cache_filters: dict[str, object] = {"authorized_scopes": scopes}
+                        if as_of_ts is not None:
+                            cache_filters["as_of_ts"] = int(as_of_ts)
                         cache_key = build_route_decision_cache_key(
                             profile,
                             query=query,
@@ -286,7 +297,7 @@ async def capture_routing_decisions(
                             acl_fingerprint=acl_fingerprint,
                             acl_epoch=acl_epoch,
                             model_version=ROUTE_DECISION_MODEL_VERSION,
-                            filters={"authorized_scopes": scopes},
+                            filters=cache_filters,
                         )
                     cached_decision = (
                         route_decision_cache.get(cache_key, enabled=settings.search_route_decision_cache_enabled)
@@ -296,7 +307,11 @@ async def capture_routing_decisions(
                     if isinstance(cached_decision, RouteDecision):
                         decision = cached_decision.model_copy(update={"snapshot_id": profile.snapshot_id})
                     else:
-                        decision = route_snapshot(profile)
+                        decision = route_snapshot(
+                            profile,
+                            as_of_ts=as_of_ts,
+                            recency_intent=recency_intent,
+                        )
                         if cache_key and decision.routed and decision.fallback_reason is None:
                             route_decision_cache.put(
                                 cache_key,
@@ -396,6 +411,8 @@ def route_snapshot(
     snapshot: GroupRoutingSnapshot,
     *,
     policy: RoutingPolicy | None = None,
+    as_of_ts: int | None = None,
+    recency_intent: bool = False,
 ) -> RouteDecision:
     """Route only across profiles matching the exact authorized scope."""
     policy = policy or RoutingPolicy()
@@ -420,6 +437,12 @@ def route_snapshot(
             if profile.node_id in accessible:
                 return _invalid_decision(snapshot, "duplicate_node_id")
             if not _profile_matches_snapshot(profile, snapshot):
+                continue
+            if (
+                as_of_ts is not None
+                and profile.temporal_from_ts is not None
+                and profile.temporal_from_ts > int(as_of_ts)
+            ):
                 continue
             _profile_score(profile)
             if profile.accessible_unit_count > 0:
@@ -490,7 +513,14 @@ def route_snapshot(
         for _depth in range(32):
             if not frontier:
                 break
-            ranked = sorted(frontier, key=lambda profile: (-_profile_score(profile), profile.node_id))
+            ranked = sorted(
+                frontier,
+                key=lambda profile: (
+                    -_profile_score(profile),
+                    -(profile.temporal_to_ts or profile.temporal_from_ts or 0) if recency_intent else 0,
+                    profile.node_id,
+                ),
+            )
             last_entropy, last_margin = entropy_and_margin(ranked)
             uncertain = len(ranked) > 1 and (
                 (last_entropy >= policy.broad_entropy_threshold and last_margin < policy.broad_margin_threshold)

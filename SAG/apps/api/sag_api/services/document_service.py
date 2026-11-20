@@ -7,6 +7,7 @@ import os
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import case, func, select, tuple_, update
 from sqlalchemy.exc import IntegrityError
@@ -1097,6 +1098,86 @@ async def get_or_create_project_source(
     return source
 
 
+def _normalize_utc_datetime(dt: datetime | None, fallback: datetime) -> datetime:
+    if dt is None:
+        return fallback
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
+def _build_version_metadata(
+    base_metadata: dict[str, Any],
+    *,
+    fiscal_year: int | None = None,
+    fiscal_quarter: int | None = None,
+    doc_type: str | None = None,
+    sub_doc_slot: str | None = None,
+    sector_group: str | None = None,
+    table_id: str | None = None,
+) -> dict[str, Any]:
+    meta = dict(base_metadata)
+    optional = {
+        "fiscal_year": fiscal_year,
+        "fiscal_quarter": fiscal_quarter,
+        "doc_type": doc_type.strip() if isinstance(doc_type, str) and doc_type.strip() else None,
+        "sub_doc_slot": sub_doc_slot.strip() if isinstance(sub_doc_slot, str) and sub_doc_slot.strip() else None,
+        "sector_group": sector_group.strip() if isinstance(sector_group, str) and sector_group.strip() else None,
+        "table_id": table_id.strip() if isinstance(table_id, str) and table_id.strip() else None,
+    }
+    for key, val in optional.items():
+        if val is not None:
+            meta[key] = val
+    return meta
+
+
+async def _resolve_pit_version_window(
+    session: AsyncSession,
+    document_id: str,
+    effective_valid_from: datetime,
+) -> tuple[datetime, str | None]:
+    """Place a new DocumentVersion in chronological PIT order without corrupting newer versions."""
+    existing_versions = (
+        await session.scalars(
+            select(DocumentVersion)
+            .where(
+                DocumentVersion.document_id == document_id,
+                DocumentVersion.status != "REVOKED",
+            )
+            .order_by(DocumentVersion.valid_from.asc(), DocumentVersion.version_no.asc())
+            .with_for_update()
+        )
+    ).all()
+    if not existing_versions:
+        return datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC), None
+
+    predecessors = [
+        ver for ver in existing_versions
+        if _normalize_utc_datetime(ver.valid_from, effective_valid_from) <= effective_valid_from
+    ]
+    successors = [
+        ver for ver in existing_versions
+        if _normalize_utc_datetime(ver.valid_from, effective_valid_from) > effective_valid_from
+    ]
+    pred = predecessors[-1] if predecessors else None
+    succ = successors[0] if successors else None
+
+    if pred is not None:
+        pred_from = _normalize_utc_datetime(pred.valid_from, effective_valid_from)
+        pred_to = _normalize_utc_datetime(pred.valid_to, effective_valid_from)
+        if pred_to > effective_valid_from:
+            pred.valid_to = max(pred_from, effective_valid_from)
+
+    if succ is not None:
+        return _normalize_utc_datetime(succ.valid_from, effective_valid_from), (
+            pred.id if pred is not None else None
+        )
+
+    return datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC), (
+        pred.id if pred is not None else None
+    )
+
+
 async def handle_document_upload(
     session: AsyncSession,
     *,
@@ -1111,6 +1192,12 @@ async def handle_document_upload(
     content_hash: str | None = None,
     logical_source_id: str | None = None,
     source_published_at: datetime | None = None,
+    fiscal_year: int | None = None,
+    fiscal_quarter: int | None = None,
+    doc_type: str | None = None,
+    sub_doc_slot: str | None = None,
+    sector_group: str | None = None,
+    table_id: str | None = None,
     research_task_id: str | None = None,
     job_queue: JobQueue | None = None,
     source_id: str | None = None,
@@ -1218,6 +1305,8 @@ async def handle_document_upload(
                 doc = (await session.execute(doc_stmt)).scalar_one_or_none()
 
                 now_utc = datetime.now(UTC)
+                effective_published_at = _normalize_utc_datetime(source_published_at, now_utc)
+                new_valid_to = datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC)
                 is_new_doc = False
                 if not doc:
                     is_new_doc = True
@@ -1312,10 +1401,10 @@ async def handle_document_upload(
                         )
                         break
                     elif latest_ver:
-                        # Đóng khoảng hiệu lực của phiên bản cũ tại thời điểm phiên bản mới bắt đầu (Comment #13)
-                        latest_ver.valid_to = now_utc
+                        new_valid_to, supersedes_id = await _resolve_pit_version_window(
+                            session, doc.id, effective_published_at
+                        )
                         version_no = latest_ver.version_no + 1
-                        supersedes_id = latest_ver.id
                     else:
                         version_no = 1
                         supersedes_id = None
@@ -1344,12 +1433,20 @@ async def handle_document_upload(
                         file_hash=payload_hash,
                         supersedes_id=supersedes_id,
                         source_published_at=source_published_at,
-                        valid_from=now_utc,
-                        valid_to=datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC),
+                        valid_from=effective_published_at,
+                        valid_to=new_valid_to,
                         status="RECEIVED",
                         search_status="PENDING",
                         knowledge_status="NOT_STARTED",
-                        metadata_json={"security_partition_id": security_partition_id},
+                        metadata_json=_build_version_metadata(
+                            {"security_partition_id": security_partition_id},
+                            fiscal_year=fiscal_year,
+                            fiscal_quarter=fiscal_quarter,
+                            doc_type=doc_type,
+                            sub_doc_slot=sub_doc_slot,
+                            sector_group=sector_group,
+                            table_id=table_id,
+                        ),
                     )
                     session.add(doc_version)
                     await session.flush()
@@ -1532,6 +1629,12 @@ async def handle_document_object_ingest(
     content_type: str = "application/octet-stream",
     logical_source_id: str | None = None,
     source_published_at: datetime | None = None,
+    fiscal_year: int | None = None,
+    fiscal_quarter: int | None = None,
+    doc_type: str | None = None,
+    sub_doc_slot: str | None = None,
+    sector_group: str | None = None,
+    table_id: str | None = None,
     job_queue: JobQueue | None = None,
     source_id: str | None = None,
 ) -> DocumentUploadResponse:
@@ -1649,6 +1752,8 @@ async def handle_document_object_ingest(
                 doc = (await session.execute(doc_stmt)).scalar_one_or_none()
 
                 now_utc = datetime.now(UTC)
+                effective_published_at = _normalize_utc_datetime(source_published_at, now_utc)
+                new_valid_to = datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC)
                 is_new_doc = False
                 if not doc:
                     is_new_doc = True
@@ -1740,9 +1845,10 @@ async def handle_document_object_ingest(
                         )
                         break
                     elif latest_ver:
-                        latest_ver.valid_to = now_utc
+                        new_valid_to, supersedes_id = await _resolve_pit_version_window(
+                            session, doc.id, effective_published_at
+                        )
                         version_no = latest_ver.version_no + 1
-                        supersedes_id = latest_ver.id
                     else:
                         version_no = 1
                         supersedes_id = None
@@ -1769,15 +1875,23 @@ async def handle_document_object_ingest(
                         file_hash=payload_hash,
                         supersedes_id=supersedes_id,
                         source_published_at=source_published_at,
-                        valid_from=now_utc,
-                        valid_to=datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC),
+                        valid_from=effective_published_at,
+                        valid_to=new_valid_to,
                         status="RECEIVED",
                         search_status="PENDING",
                         knowledge_status="NOT_STARTED",
-                        metadata_json={
-                            "security_partition_id": security_partition_id,
-                            "remote_object_sourced": True,
-                        },
+                        metadata_json=_build_version_metadata(
+                            {
+                                "security_partition_id": security_partition_id,
+                                "remote_object_sourced": True,
+                            },
+                            fiscal_year=fiscal_year,
+                            fiscal_quarter=fiscal_quarter,
+                            doc_type=doc_type,
+                            sub_doc_slot=sub_doc_slot,
+                            sector_group=sector_group,
+                            table_id=table_id,
+                        ),
                     )
                     session.add(doc_version)
                     await session.flush()

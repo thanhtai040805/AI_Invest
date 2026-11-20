@@ -55,6 +55,16 @@ DEFAULT_MODEL_PRICING_PER_1M_USD: dict[str, dict[str, float]] = {
         "llm_cached_input_per_1m": 0.29,
         "llm_output_per_1m": 0.29,
     },
+    "deepseek-ai/deepseek-v4-flash-0731": {
+        "llm_input_per_1m": 0.10,
+        "llm_cached_input_per_1m": 0.025,
+        "llm_output_per_1m": 0.30,
+    },
+    "deepseek-ai/deepseek-v4-flash": {
+        "llm_input_per_1m": 0.10,
+        "llm_cached_input_per_1m": 0.025,
+        "llm_output_per_1m": 0.30,
+    },
     "deepseek-ai/deepseek-v3.2": {
         "llm_input_per_1m": 0.27,
         "llm_cached_input_per_1m": 0.07,

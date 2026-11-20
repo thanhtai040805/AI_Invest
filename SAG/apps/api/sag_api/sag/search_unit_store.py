@@ -13,7 +13,10 @@ from urllib.parse import quote
 
 import httpx
 
-from sag_api.services.search_index_service import COMMON_STOPWORDS
+from sag_api.services.search_index_service import (
+    COMMON_STOPWORDS,
+    normalize_numeric_separators,
+)
 
 
 class SearchIndexUnavailable(RuntimeError):
@@ -76,9 +79,7 @@ def build_sparse_query_vector(query: str) -> dict[str, list[int] | list[float]]:
     Uses sub-linear query TF and alphanumeric/entity boosting so repeated framing words
     never drown out discriminative entity, numeric, or domain anchors.
     """
-    import unicodedata
-
-    normalized_q = re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", unicodedata.normalize("NFC", query or ""))
+    normalized_q = normalize_numeric_separators(query or "")
     normalized_q = re.sub(
         r"\b([a-z]{1,2})\s*&\s*([a-z]{1,2})\b",
         r"\1\2",
@@ -143,11 +144,14 @@ def build_search_filter(
     tenant_id: str,
     partition_id: str,
     document_version_ids: list[str],
+    as_of_ts: int | None = None,
+    sub_doc_slots: list[str] | None = None,
+    doc_types: list[str] | None = None,
     tree_version: str | None = None,
     routing_slot: str | None = None,
     membership_node_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Build exact ACL filters plus an optional version-pinned tree membership."""
+    """Build exact ACL filters plus optional PIT (valid_from_ts <= as_of_ts) and version-pinned tree membership."""
     versions = sorted(set(document_version_ids))
     if not project_id.strip() or not tenant_id.strip() or not partition_id.strip() or not versions:
         raise ValueError("A complete authorized SearchUnit scope is required")
@@ -159,6 +163,16 @@ def build_search_filter(
             {"key": "document_version_id", "match": {"any": versions}},
         ]
     }
+    if as_of_ts is not None:
+        filter_body["must"].append({"key": "valid_from_ts", "range": {"lte": int(as_of_ts)}})
+    if sub_doc_slots:
+        slots = sorted({s.strip() for s in sub_doc_slots if isinstance(s, str) and s.strip()})
+        if slots:
+            filter_body["must"].append({"key": "sub_doc_slot", "match": {"any": slots}})
+    if doc_types:
+        dtypes = sorted({d.strip() for d in doc_types if isinstance(d, str) and d.strip()})
+        if dtypes:
+            filter_body["must"].append({"key": "doc_type", "match": {"any": dtypes}})
     has_tree_scope = tree_version is not None or routing_slot is not None or membership_node_ids is not None
     if has_tree_scope:
         nodes = sorted({node.strip() for node in membership_node_ids or [] if node.strip()})

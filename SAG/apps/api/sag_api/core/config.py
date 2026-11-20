@@ -94,6 +94,7 @@ class Settings(BaseSettings):
 
     # ── sag 元数据库 ───────────────────────────────────────────────────
     database_url: str = "postgresql+asyncpg://sag:sag@localhost:5432/sag"
+    core_database_url: str | None = None
 
     # ── 存储 ────────────────────────────────────────────────────────────
     data_dir: str = "./.data/engine"  # OCTX、上传文件和运行时状态
@@ -177,7 +178,7 @@ class Settings(BaseSettings):
     # ── zleap-sag 后端选择 ─────────────────────────────────────────────
     sag_vector_provider: Literal["es", "pgvector", "qdrant", "oceanbase"] = "qdrant"
     sag_relational_provider: Literal["sqlite", "postgres", "mysql", "oceanbase"] = "postgres"
-    sag_language: Literal["en", "zh"] = "en"
+    sag_language: Literal["en", "zh", "vi"] = "en"
 
     # PostgreSQL 元数据连接字段
     sag_pg_host: str = "localhost"
@@ -256,6 +257,7 @@ class Settings(BaseSettings):
     # vector store 不支持 lexical(pgvector/qdrant/oceanbase) 时由 engine_manager 自动降级为 vector。
     search_strategy: SearchStrategy = "multi_es_fast"
     search_top_k: int = Field(default=8, ge=1)  # Initial adaptive search breadth, not a final result cap.
+    research_search_top_k: int = Field(default=10, ge=1, le=32)
     # Optional scope budget rejects oversized scopes instead of silently truncating sources.
     search_source_candidate_limit: int = Field(default=0, ge=0)  # 0 = all authorized sources.
     search_source_concurrency: int = Field(default=4, ge=1, le=32)
@@ -387,7 +389,7 @@ class Settings(BaseSettings):
             return stripped
         return value
 
-    @field_validator("mineru_official_api_token", "sag_qdrant_api_key", mode="before")
+    @field_validator("mineru_official_api_token", "sag_qdrant_api_key", "core_database_url", mode="before")
     @classmethod
     def _blank_optional_secret_as_none(cls, value: object) -> object:
         if isinstance(value, str):
@@ -422,7 +424,12 @@ class Settings(BaseSettings):
     @field_validator("sag_language", mode="before")
     @classmethod
     def _normalize_sag_language(cls, value: object) -> str:
-        return "en"
+        if value is None:
+            return "en"
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            return normalized or "en"
+        return str(value)
 
     @field_validator("timezone")
     @classmethod

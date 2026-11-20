@@ -62,6 +62,7 @@ class OfficialMinerUClient:
         self._api_token = str(settings.mineru_official_api_token).strip()
         self._official_model = settings.mineru_official_model
         self._parse_method = settings.mineru_parse_method
+        self._language = str(getattr(settings, "sag_language", "en") or "en").strip().lower() or "en"
         self._request_timeout = max(1.0, float(settings.mineru_request_timeout))
         self._poll_interval = max(0.05, float(settings.mineru_poll_interval))
         self._poll_timeout = max(self._poll_interval, float(settings.mineru_poll_timeout))
@@ -69,7 +70,8 @@ class OfficialMinerUClient:
 
     @property
     def signature(self) -> str:
-        return f"mineru-official-{self._official_model}-{self._parse_method}"
+        base = f"mineru-official-{self._official_model}-{self._parse_method}"
+        return base if self._language == "en" else f"{base}-{self._language}"
 
     @property
     def _headers(self) -> dict[str, str]:
@@ -191,6 +193,7 @@ class OfficialMinerUClient:
         payload: dict[str, Any] = {
             "url": remote_url,
             "model_version": self._official_model,
+            "language": self._language,
         }
         if self._parse_method == "txt":
             payload["is_ocr"] = False
@@ -254,6 +257,7 @@ class OfficialMinerUClient:
             json={
                 "files": [file_config],
                 "model_version": self._official_model,
+                "language": self._language,
             },
         )
         data = _official_data(response, "申请上传地址")

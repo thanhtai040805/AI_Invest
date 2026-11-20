@@ -147,6 +147,7 @@ class _ReadyVersion:
     ingestion_run_id: str = ""
     index_stage_run_id: str = ""
     search_manifest_checksum: str = ""
+    valid_from_ts: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,6 +278,7 @@ async def _load_current_ready_versions(
     principal: VerifiedPrincipal,
     *,
     version_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    as_of_ts: int | None = None,
 ) -> dict[str, _ReadyVersion]:
     try:
         return await _load_current_ready_versions_checked(
@@ -284,6 +286,7 @@ async def _load_current_ready_versions(
             sources,
             principal,
             version_ids=version_ids,
+            as_of_ts=as_of_ts,
         )
     except SQLAlchemyError as error:
         log.warning("canonical scope lookup unavailable error_type=%s", type(error).__name__)
@@ -297,9 +300,14 @@ async def grep_search_unit_blocks(
     *,
     principal: VerifiedPrincipal,
     limit: int,
+    as_of_ts: int | None = None,
 ) -> list[CanonicalBlock]:
     """Find literal text in every currently searchable, ACL-scoped canonical block."""
-    versions = await _load_current_ready_versions(session, sources, principal)
+    versions = (
+        await _load_current_ready_versions(session, sources, principal, as_of_ts=as_of_ts)
+        if as_of_ts is not None
+        else await _load_current_ready_versions(session, sources, principal)
+    )
     if not versions:
         return []
 
@@ -326,6 +334,7 @@ async def _load_current_ready_versions_checked(
     principal: VerifiedPrincipal,
     *,
     version_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    as_of_ts: int | None = None,
 ) -> dict[str, _ReadyVersion]:
     """Recheck mappings and collect only versions from each version's latest verified attempt."""
     if not sources or not principal.tenant_id or not principal.allowed_partition_ids:
@@ -337,7 +346,11 @@ async def _load_current_ready_versions_checked(
     source_ids = sorted(source_by_id)
     partition_ids = sorted(principal.allowed_partition_ids)
     partition_expression = DocumentVersion.metadata_json["security_partition_id"].as_string()
-    current_time = datetime.now(UTC)
+    current_time = (
+        datetime.fromtimestamp(int(as_of_ts), tz=UTC)
+        if as_of_ts is not None
+        else datetime.now(UTC)
+    )
     hidden_document_ids = await _hidden_reprocess_document_ids(session, source_ids)
 
     unit_exists_clause = (
@@ -358,6 +371,7 @@ async def _load_current_ready_versions_checked(
                 Document.tenant_id,
                 partition_expression.label("security_partition_id"),
                 SourceProjectMapping.mapping_version,
+                DocumentVersion.valid_from,
             )
             .join(Document, Document.id == DocumentVersion.document_id)
             .join(SourceProjectMapping, SourceProjectMapping.source_id == Document.source_id)
@@ -454,6 +468,10 @@ async def _load_current_ready_versions_checked(
             or not _verified_manifest(stage.metrics_json, project_id=str(row.project_id))
         ):
             continue
+        raw_vf = getattr(row, "valid_from", None)
+        if raw_vf is not None and raw_vf.tzinfo is None:
+            raw_vf = raw_vf.replace(tzinfo=UTC)
+        vf_ts = int(raw_vf.timestamp()) if raw_vf is not None else None
         versions[version_id] = _ReadyVersion(
             document_version_id=version_id,
             source_id=str(row.source_id),
@@ -464,6 +482,7 @@ async def _load_current_ready_versions_checked(
             ingestion_run_id=str(run.run_id),
             index_stage_run_id=str(stage.id),
             search_manifest_checksum=str(stage.metrics_json["manifest_checksum"]),
+            valid_from_ts=vf_ts,
             source=source,
         )
     return versions
@@ -567,6 +586,7 @@ async def _query_group(
     query_vector: list[float],
     route: RouteDecision | None = None,
     sub_sparse_queries: tuple[dict[str, list[int] | list[float]], ...] = (),
+    as_of_ts: int | None = None,
 ) -> tuple[_SearchGroup, list[SearchUnitHit], list[SearchUnitHit]]:
     collection = f"search_units_{group.project_id}"
     use_tree_route = bool(
@@ -580,6 +600,7 @@ async def _query_group(
         tenant_id=group.tenant_id,
         partition_id=group.partition_id,
         document_version_ids=list(group.versions),
+        as_of_ts=as_of_ts,
         tree_version=route.tree_version if use_tree_route and route else None,
         routing_slot=route.routing_slot if use_tree_route and route else None,
         membership_node_ids=list(route.membership_node_ids) if use_tree_route and route else None,
@@ -663,6 +684,7 @@ async def _query_routed_group_batch(
     route: RouteDecision,
     escape_limit: int | None = None,
     sub_sparse_queries: tuple[dict[str, list[int] | list[float]], ...] = (),
+    as_of_ts: int | None = None,
 ) -> tuple[list[SearchUnitHit], list[SearchUnitHit], list[SearchUnitHit], list[SearchUnitHit]]:
     """Execute branch_local + global_escape hybrid queries in 1 Qdrant batch round-trip."""
     collection = f"search_units_{group.project_id}"
@@ -671,6 +693,7 @@ async def _query_routed_group_batch(
         tenant_id=group.tenant_id,
         partition_id=group.partition_id,
         document_version_ids=list(group.versions),
+        as_of_ts=as_of_ts,
         tree_version=route.tree_version,
         routing_slot=route.routing_slot,
         membership_node_ids=list(route.membership_node_ids),
@@ -680,6 +703,7 @@ async def _query_routed_group_batch(
         tenant_id=group.tenant_id,
         partition_id=group.partition_id,
         document_version_ids=list(group.versions),
+        as_of_ts=as_of_ts,
     )
     vector = [float(value) for value in query_vector]
     if not vector or any(not math.isfinite(value) for value in vector):
@@ -690,7 +714,12 @@ async def _query_routed_group_batch(
         {"vector_name": "content_vector", "query": vector, "search_filter": local_filter, "limit": limit},
         {"vector_name": "bm25_sparse", "query": sparse_query, "search_filter": local_filter, "limit": limit},
         {"vector_name": "content_vector", "query": vector, "search_filter": escape_filter, "limit": eff_escape_limit},
-        {"vector_name": "bm25_sparse", "query": sparse_query, "search_filter": escape_filter, "limit": eff_escape_limit},
+        {
+            "vector_name": "bm25_sparse",
+            "query": sparse_query,
+            "search_filter": escape_filter,
+            "limit": eff_escape_limit,
+        },
     ]
     local_sub_cnt = 0
     if sub_sparse_queries:
@@ -698,12 +727,22 @@ async def _query_routed_group_batch(
         sub_esc_lim = max(8, eff_escape_limit // 2)
         for sub_sparse in sub_sparse_queries:
             searches.append(
-                {"vector_name": "bm25_sparse", "query": sub_sparse, "search_filter": local_filter, "limit": sub_local_lim}
+                {
+                    "vector_name": "bm25_sparse",
+                    "query": sub_sparse,
+                    "search_filter": local_filter,
+                    "limit": sub_local_lim,
+                }
             )
             local_sub_cnt += 1
         for sub_sparse in sub_sparse_queries:
             searches.append(
-                {"vector_name": "bm25_sparse", "query": sub_sparse, "search_filter": escape_filter, "limit": sub_esc_lim}
+                {
+                    "vector_name": "bm25_sparse",
+                    "query": sub_sparse,
+                    "search_filter": escape_filter,
+                    "limit": sub_esc_lim,
+                }
             )
     batch = await store.search_batch(collection, searches=searches)
     if not sub_sparse_queries:
@@ -953,6 +992,18 @@ _ARTIFACT_CODE_RE = re.compile(
     r"\b([a-z]{2,8})[\s_#-]+(\d{2,6}[a-z0-9]*)\b",
     re.IGNORECASE,
 )
+_VN_NOTE_REF_RE = re.compile(
+    r"(?<!\w)(?:Thuyết\s*minh|TM|Note|Notes|Mục)\s*(?:số)?\s*[:#-]?\s*(\d+(?:\.\d+)*[a-z]?)(?!\w)",
+    re.IGNORECASE | re.UNICODE,
+)
+_VN_FORM_CODE_RE = re.compile(
+    r"(?<!\w)(B0[1-9][a-z]?-DN(?:/HN)?|TT\s*(?:334|200|133|210|99))(?!\w)",
+    re.IGNORECASE | re.UNICODE,
+)
+_VN_CANONICAL_CODE_NORM_RE = re.compile(
+    r"^(?:tm-\d+(?:\.\d+)*[a-z]?|b0[1-9][a-z]?-dn(?:/hn)?|tt(?:334|200|133|210|99))$",
+    re.IGNORECASE,
+)
 _NON_ARTIFACT_PREFIXES = frozenset(
     {
         "in", "on", "at", "to", "by", "of", "or", "as", "is", "be", "do", "no",
@@ -960,7 +1011,7 @@ _NON_ARTIFACT_PREFIXES = frozenset(
         "the", "and", "for", "from", "with", "into", "over", "after", "under", "between",
         "year", "years", "month", "months", "week", "weeks", "day", "days", "hour", "hours",
         "page", "pages", "step", "steps", "tier", "tiers", "part", "parts", "item", "items",
-        "line", "lines", "table", "tables", "figure", "figures", "note", "notes", "top", "max", "min",
+        "line", "lines", "table", "tables", "figure", "figures", "top", "max", "min",
         "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
         "ngay", "thang", "nam", "tuan", "gio", "phut", "giay", "trang", "buoc", "lan", "phan", "muc",
     }
@@ -971,17 +1022,41 @@ _INTERNAL_URI_SLUG_RE = re.compile(
 )
 
 
+def _is_artifact_code_norm(ent_norm: str) -> bool:
+    return bool(
+        _ARTIFACT_CODE_RE.fullmatch(ent_norm)
+        or _VN_CANONICAL_CODE_NORM_RE.fullmatch(ent_norm)
+    )
+
+
 def _extract_artifact_codes(text: str) -> set[str]:
     if not text:
         return set()
     codes: set[str] = set()
+    for match in _VN_NOTE_REF_RE.finditer(text):
+        codes.add(f"tm-{match.group(1).lower()}")
+    for match in _VN_FORM_CODE_RE.finditer(text):
+        codes.add(re.sub(r"\s+", "", match.group(1).lower()))
     for match in _ARTIFACT_CODE_RE.finditer(text):
         prefix = match.group(1).lower()
-        if prefix in _NON_ARTIFACT_PREFIXES:
+        if prefix in _NON_ARTIFACT_PREFIXES or prefix in {"tm", "note", "notes"}:
             continue
         num = match.group(2).lower()
         codes.add(f"{prefix} {num}")
     return codes
+
+
+def _extract_vn_financial_bridge_terms(text: str) -> set[str]:
+    if not text:
+        return set()
+    from sag_api.services.knowledge_service import VN_FINANCIAL_ALIASES
+
+    lowered = text.lower()
+    matched: set[str] = set()
+    for phrase, canonical in VN_FINANCIAL_ALIASES:
+        if phrase in lowered:
+            matched.add(canonical.lower())
+    return matched
 
 
 def _extract_uri_slugs(text: str) -> set[str]:
@@ -1003,6 +1078,7 @@ class _CompactKU:
     sec_path_norm: str
     entities_raw: tuple[str, ...]
     entities_norm: frozenset[str]
+    valid_from_ts: int | None = None
 
 
 @dataclass(slots=True)
@@ -1111,6 +1187,7 @@ async def _get_or_build_scope_knowledge_index(
                 KnowledgeUnit.provenance_json["section_path"],
                 KnowledgeUnit.features_json["entities"],
                 KnowledgeUnit.text,
+                KnowledgeUnit.valid_from,
             ).where(
                 KnowledgeUnit.document_version_id.in_(version_ids),
                 KnowledgeUnit.is_current.is_(True),
@@ -1123,7 +1200,9 @@ async def _get_or_build_scope_knowledge_index(
     ku_by_id: dict[str, _CompactKU] = {}
     ent_exact_versions: dict[str, set[str]] = defaultdict(set)
 
-    for ku_id, ver_id, ordinal, tenant_id, project_id, partition_id, sec_path_val, ents_val, ku_text in ku_rows:
+    for ku_row in ku_rows:
+        ku_id, ver_id, ordinal, tenant_id, project_id, partition_id, sec_path_val, ents_val, ku_text = ku_row[:9]
+        ku_valid_from = ku_row[9] if len(ku_row) > 9 else None
         ver_id_str = str(ver_id)
         ver = current_versions.get(ver_id_str)
         if (
@@ -1149,7 +1228,9 @@ async def _get_or_build_scope_knowledge_index(
             if isinstance(ents_val, dict)
             else (ents_val if isinstance(ents_val, (list, tuple)) else [])
         )
-        artifact_codes = _extract_artifact_codes(f"{sec_path_str}\n{ku_text or ''}")
+        full_ku_text = f"{sec_path_str}\n{ku_text or ''}"
+        artifact_codes = _extract_artifact_codes(full_ku_text)
+        vn_bridge_terms = _extract_vn_financial_bridge_terms(full_ku_text)
         uri_slugs = _extract_uri_slugs(ku_text or "")
         for raw_e in ents_iter:
             artifact_codes.update(_extract_artifact_codes(str(raw_e)))
@@ -1159,6 +1240,7 @@ async def _get_or_build_scope_knowledge_index(
                 [
                     *(str(e).strip() for e in ents_iter if str(e).strip()),
                     *sorted(artifact_codes),
+                    *sorted(vn_bridge_terms),
                     *sorted(uri_slugs),
                 ]
             )
@@ -1167,9 +1249,15 @@ async def _get_or_build_scope_knowledge_index(
             {
                 *(re.sub(r"[\s_-]+", " ", e.lower()) for e in raw_ents),
                 *artifact_codes,
+                *vn_bridge_terms,
                 *uri_slugs,
             }
         )
+        if ku_valid_from is not None:
+            dt_vf = ku_valid_from if ku_valid_from.tzinfo else ku_valid_from.replace(tzinfo=UTC)
+            ku_vf_ts: int | None = int(dt_vf.timestamp())
+        else:
+            ku_vf_ts = ver.valid_from_ts
         compact = _CompactKU(
             id=str(ku_id),
             document_version_id=ver_id_str,
@@ -1177,6 +1265,7 @@ async def _get_or_build_scope_knowledge_index(
             sec_path_norm=sec_path_norm,
             entities_raw=raw_ents,
             entities_norm=norm_ents,
+            valid_from_ts=ku_vf_ts,
         )
         ku_by_version[ver_id_str].append(compact)
         ku_by_id[compact.id] = compact
@@ -1585,8 +1674,9 @@ async def _expand_multi_hop_sections(
     query: str = "",
     allow_contradiction_lineage: bool = True,
     preloaded_k_index: _ScopeKnowledgeIndex | None = None,
+    as_of_ts: int | None = None,
 ) -> list[RetrievedSection]:
-    """HippoRAG 2 associative passage expansion over ACL-scoped KnowledgeUnitEdge + Artifact Bridges + Stage 2B Lineage."""
+    """HippoRAG 2 associative passage expansion over ACL KnowledgeUnitEdge, Artifact Bridges, and Lineage."""
     if not seed_sections or not current_versions:
         return []
     if lineage_only and preloaded_k_index is not None and not preloaded_k_index.lineage_by_version_ordinal:
@@ -1628,6 +1718,21 @@ async def _expand_multi_hop_sections(
                     current_versions,
                     allowed_partitions,
                 )
+        def _version_within_pit(v_id: str) -> bool:
+            if as_of_ts is None:
+                return True
+            ver = current_versions.get(v_id)
+            if ver is None:
+                return False
+            return ver.valid_from_ts is None or ver.valid_from_ts <= int(as_of_ts)
+
+        def _ku_within_pit(ku: _CompactKU) -> bool:
+            if as_of_ts is None:
+                return True
+            if not _version_within_pit(ku.document_version_id):
+                return False
+            return ku.valid_from_ts is None or ku.valid_from_ts <= int(as_of_ts)
+
         valid_neighbors: dict[str, list[tuple[int, float]]] = defaultdict(list)
 
         # 1. Stage 2B / KnowledgeGraphEdge Lineage Expansion (CONTRADICTS & SUPERSEDES)
@@ -1639,7 +1744,7 @@ async def _expand_multi_hop_sections(
                     ):
                         if lineage_only and rel_kind not in allowed_lineage_kinds:
                             continue
-                        if tgt_ver not in current_versions:
+                        if tgt_ver not in current_versions or not _version_within_pit(tgt_ver):
                             continue
                         if tgt_ver == v_id and not (t_hi < s_ord or t_lo > e_ord):
                             continue
@@ -1653,6 +1758,8 @@ async def _expand_multi_hop_sections(
             max_seed_score = max((item[3] for item in seed_ranges), default=0.5)
             for idx_r, (v_id, s_ord, e_ord, s_score) in enumerate(seed_ranges):
                 for ku in k_index.ku_by_version.get(v_id, ()):
+                    if not _ku_within_pit(ku):
+                        continue
                     if s_ord <= ku.ordinal <= e_ord:
                         seed_ku_scores[ku.id] = max(seed_ku_scores.get(ku.id, 0.0), s_score)
                         if idx_r < 2 or s_score >= 0.85 * max_seed_score:
@@ -1663,7 +1770,7 @@ async def _expand_multi_hop_sections(
                                     continue
                                 if re.fullmatch(r"\d+(?:\.\d+)?%?(?:\s*[a-z]{1,6})?", ent_clean):
                                     continue
-                                # Single non-digit words already in the user query are direct lexical terms, not Hop-1->Hop-2 bridges
+                                # Single non-digit words in user query are lexical terms, not Hop-1->Hop-2 bridges
                                 if (
                                     not is_cont
                                     and " " not in ent_clean
@@ -1686,7 +1793,7 @@ async def _expand_multi_hop_sections(
                         # Harvest explicit cross-reference codes and URI slugs from sibling sections of the #1 seed doc
                         doc_ref_score = s_score * 0.88
                         for ent_norm in ku.entities_norm:
-                            if _ARTIFACT_CODE_RE.fullmatch(ent_norm) or (
+                            if _is_artifact_code_norm(ent_norm) or (
                                 ent_norm.count(" ") >= 2 and len(ent_norm) >= 12
                             ):
                                 top_seed_entities[ent_norm] = max(
@@ -1705,7 +1812,11 @@ async def _expand_multi_hop_sections(
                 )[:limit]
                 for s_score, tgt_id, w in seed_edges:
                     tgt_ku = k_index.ku_by_id.get(tgt_id)
-                    if tgt_ku is None or tgt_ku.document_version_id in seed_version_ids:
+                    if (
+                        tgt_ku is None
+                        or tgt_ku.document_version_id in seed_version_ids
+                        or not _ku_within_pit(tgt_ku)
+                    ):
                         continue
                     neighbor_scores[tgt_id] = max(neighbor_scores.get(tgt_id, 0.0), s_score * w)
 
@@ -1721,9 +1832,11 @@ async def _expand_multi_hop_sections(
                         if b_ent not in cont_entities and len(b_ent) >= 5
                     }
                     for v_id, ku_list in k_index.ku_by_version.items():
-                        if v_id in seed_version_ids:
+                        if v_id in seed_version_ids or not _version_within_pit(v_id):
                             continue
                         for ku in ku_list:
+                            if not _ku_within_pit(ku):
+                                continue
                             for b_ent in top_seed_entities:
                                 is_cont = b_ent in cont_entities
                                 if (
@@ -1758,17 +1871,17 @@ async def _expand_multi_hop_sections(
                             v_id
                             for b_ent in specific_seed_entities
                             for v_id in ent_doc_versions.get(b_ent, ())
-                            if v_id not in seed_version_ids
+                            if v_id not in seed_version_ids and _version_within_pit(v_id)
                         }
                         for v_id in candidate_ver_ids:
                             for ku in k_index.ku_by_version.get(v_id, ()):
-                                if ku.id in seed_ku_scores:
+                                if ku.id in seed_ku_scores or not _ku_within_pit(ku):
                                     continue
                                 matched_scores: list[float] = []
                                 path_matched = False
                                 for b_ent, b_score in specific_seed_entities.items():
                                     is_cont = b_ent in cont_entities
-                                    is_code = _ARTIFACT_CODE_RE.fullmatch(b_ent) is not None
+                                    is_code = _is_artifact_code_norm(b_ent)
                                     ent_hit = (
                                         (is_cont or " " in b_ent or any(c.isdigit() for c in b_ent) or len(b_ent) >= 6)
                                         and b_ent in ku.entities_norm
@@ -1808,18 +1921,24 @@ async def _expand_multi_hop_sections(
                         if n_score < 0.65 * max_seed_score:
                             continue
                         ku = k_index.ku_by_id.get(ku_id)
-                        if ku is None:
+                        if ku is None or not _ku_within_pit(ku):
                             continue
                         for ent_norm in ku.entities_norm:
-                            if _ARTIFACT_CODE_RE.fullmatch(ent_norm) and ent_norm not in top_seed_entities:
+                            if _is_artifact_code_norm(ent_norm) and ent_norm not in top_seed_entities:
                                 hop2_artifact_entities[ent_norm] = max(
                                     hop2_artifact_entities.get(ent_norm, 0.0), n_score
                                 )
                     for art_code, h1_score in hop2_artifact_entities.items():
-                        target_vers = k_index.ent_exact_versions.get(art_code, set()) - seed_version_ids
+                        target_vers = {
+                            v_id
+                            for v_id in (k_index.ent_exact_versions.get(art_code, set()) - seed_version_ids)
+                            if _version_within_pit(v_id)
+                        }
                         if 1 <= len(target_vers) <= 3:
                             for v_id in target_vers:
                                 for ku in k_index.ku_by_version.get(v_id, ()):
+                                    if not _ku_within_pit(ku):
+                                        continue
                                     if art_code in ku.entities_norm or art_code in ku.sec_path_norm:
                                         neighbor_scores[ku.id] = max(
                                             neighbor_scores.get(ku.id, 0.0),
@@ -1828,7 +1947,7 @@ async def _expand_multi_hop_sections(
 
                 for ku_id, n_score in neighbor_scores.items():
                     ku = k_index.ku_by_id.get(ku_id)
-                    if ku is None or ku.document_version_id in seed_version_ids:
+                    if ku is None or ku.document_version_id in seed_version_ids or not _ku_within_pit(ku):
                         continue
                     valid_neighbors[ku.document_version_id].append((ku.ordinal, n_score))
 
@@ -1913,6 +2032,7 @@ async def retrieve_search_unit_sections(
     principal: VerifiedPrincipal | None,
     top_k: int | None = None,
     query_strategy_plan: QueryStrategyPlan | None = None,
+    as_of_ts: int | None = None,
 ) -> SearchOutcome:
     """Return verified sections according to the 7-axis RetrievalPlan, with a bounded candidate pool."""
     import unicodedata
@@ -1951,6 +2071,7 @@ async def retrieve_search_unit_sections(
         outcome = await _retrieve_search_unit_sections(
             engine_manager, sources, query, principal=principal, top_k=effective_top_k,
             query_strategy_plan=plan, candidate_limit=candidate_limit, deadline=deadline,
+            as_of_ts=as_of_ts,
         )
         waves += 1
         for key, value in outcome.stats.get("stage_latencies_ms", {}).items():
@@ -2006,6 +2127,7 @@ async def _retrieve_search_unit_sections(
     query_strategy_plan: QueryStrategyPlan | None = None,
     candidate_limit: int,
     deadline: float,
+    as_of_ts: int | None = None,
 ) -> SearchOutcome:
     """Query only currently authorized versions with a verified Phase 2C manifest."""
     import unicodedata
@@ -2050,10 +2172,24 @@ async def _retrieve_search_unit_sections(
     try:
         async with asyncio.timeout_at(deadline):
             async with SessionLocal() as session:
-                ready_versions = await _load_current_ready_versions(session, sources, principal)
+                if as_of_ts is not None:
+                    try:
+                        ready_versions = await _load_current_ready_versions(
+                            session, sources, principal, as_of_ts=as_of_ts
+                        )
+                    except TypeError:
+                        ready_versions = await _load_current_ready_versions(session, sources, principal)
+                else:
+                    ready_versions = await _load_current_ready_versions(session, sources, principal)
     except TimeoutError as error:
         log.warning("canonical search authorization exceeded query budget")
         raise ServiceUnavailableError("Canonical search exceeded the query budget") from error
+    if as_of_ts is not None:
+        ready_versions = {
+            vid: ver
+            for vid, ver in ready_versions.items()
+            if ver.valid_from_ts is None or ver.valid_from_ts <= int(as_of_ts)
+        }
     t_auth_ms = round((time.perf_counter() - t_auth_start) * 1000, 2)
     groups = _groups(ready_versions)
     if not groups:
@@ -2118,20 +2254,47 @@ async def _retrieve_search_unit_sections(
                 tuple(
                     sq_vec
                     for sq in raw_subqueries[:3]
-                    if sq.strip() and sq.strip() != query.strip() and (sq_vec := build_sparse_query_vector(sq))["indices"]
+                    if (
+                        sq.strip()
+                        and sq.strip() != query.strip()
+                        and (sq_vec := build_sparse_query_vector(sq))["indices"]
+                    )
                 )
                 if len(raw_subqueries) >= 2
                 else ()
             )
-            decisions = await capture_routing_decisions(
-                engine_manager,
-                groups,
-                query=query,
-                planner_trace=strategy_plan.as_trace(),
-                principal=principal,
-                timeout_seconds=snapshot_budget,
-                query_vector_tasks_by_scope=scope_vector_tasks,
-            )
+            if as_of_ts is not None:
+                try:
+                    decisions = await capture_routing_decisions(
+                        engine_manager,
+                        groups,
+                        query=query,
+                        planner_trace=strategy_plan.as_trace(),
+                        principal=principal,
+                        timeout_seconds=snapshot_budget,
+                        query_vector_tasks_by_scope=scope_vector_tasks,
+                        as_of_ts=as_of_ts,
+                    )
+                except TypeError:
+                    decisions = await capture_routing_decisions(
+                        engine_manager,
+                        groups,
+                        query=query,
+                        planner_trace=strategy_plan.as_trace(),
+                        principal=principal,
+                        timeout_seconds=snapshot_budget,
+                        query_vector_tasks_by_scope=scope_vector_tasks,
+                    )
+            else:
+                decisions = await capture_routing_decisions(
+                    engine_manager,
+                    groups,
+                    query=query,
+                    planner_trace=strategy_plan.as_trace(),
+                    principal=principal,
+                    timeout_seconds=snapshot_budget,
+                    query_vector_tasks_by_scope=scope_vector_tasks,
+                )
             t_route_ms = round((time.perf_counter() - t_route_start) * 1000, 2)
 
             async def bounded(group: _SearchGroup):
@@ -2161,6 +2324,7 @@ async def _retrieve_search_unit_sections(
                             store=store,
                             query_vector=vector,
                             sub_sparse_queries=sub_sparse_queries,
+                            as_of_ts=as_of_ts,
                         )
                         return [(group, route, "global_only", result[1], result[2])], None, None
 
@@ -2196,6 +2360,7 @@ async def _retrieve_search_unit_sections(
                                     route=route,
                                     escape_limit=eff_escape_limit,
                                     sub_sparse_queries=sub_sparse_queries,
+                                    as_of_ts=as_of_ts,
                                 )
                             return (
                                 [
@@ -2217,6 +2382,7 @@ async def _retrieve_search_unit_sections(
                                     store=store,
                                     query_vector=vector,
                                     sub_sparse_queries=sub_sparse_queries,
+                                    as_of_ts=as_of_ts,
                                 )
                             return [(group, route, "global_escape", esc_res[1], esc_res[2])], local_failure, None
 
@@ -2229,6 +2395,7 @@ async def _retrieve_search_unit_sections(
                                 store=store,
                                 query_vector=vector,
                                 route=route,
+                                as_of_ts=as_of_ts,
                             )
 
                     async def query_escape():
@@ -2239,6 +2406,7 @@ async def _retrieve_search_unit_sections(
                                 limit=candidate_limit,
                                 store=store,
                                 query_vector=vector,
+                                as_of_ts=as_of_ts,
                             )
 
                     escape_task = asyncio.create_task(query_escape())
@@ -2284,6 +2452,7 @@ async def _retrieve_search_unit_sections(
                             tenant_id=group.tenant_id,
                             partition_id=group.partition_id,
                             document_version_ids=list(group.versions),
+                            as_of_ts=as_of_ts,
                         ),
                     )
                     if available == 0:
@@ -2362,6 +2531,10 @@ async def _retrieve_search_unit_sections(
                     or hit.payload.get("document_version_id") not in group.versions
                 ):
                     continue
+                if as_of_ts is not None:
+                    payload_vf = hit.payload.get("valid_from_ts")
+                    if payload_vf is not None and int(payload_vf) > int(as_of_ts):
+                        continue
                 key = (group.project_id, group.source.id, group.tenant_id, group.partition_id, unit_id)
                 normalized_score = max(0.0, hit.score) / max_score if max_score > 0.0 else 0.0
                 hit_key = (channel, *key)
@@ -2440,12 +2613,29 @@ async def _retrieve_search_unit_sections(
         async with asyncio.timeout_at(deadline):
             async with SessionLocal() as session:
                 try:
-                    verified_candidate_versions = await _load_current_ready_versions(
-                        session,
-                        sources,
-                        principal,
-                        version_ids=candidate_version_ids,
-                    )
+                    if as_of_ts is not None:
+                        try:
+                            verified_candidate_versions = await _load_current_ready_versions(
+                                session,
+                                sources,
+                                principal,
+                                version_ids=candidate_version_ids,
+                                as_of_ts=as_of_ts,
+                            )
+                        except TypeError:
+                            verified_candidate_versions = await _load_current_ready_versions(
+                                session,
+                                sources,
+                                principal,
+                                version_ids=candidate_version_ids,
+                            )
+                    else:
+                        verified_candidate_versions = await _load_current_ready_versions(
+                            session,
+                            sources,
+                            principal,
+                            version_ids=candidate_version_ids,
+                        )
                     current_versions = {
                         vid: ver
                         for vid, ver in ready_versions.items()
@@ -2453,6 +2643,12 @@ async def _retrieve_search_unit_sections(
                     } | verified_candidate_versions
                 except TypeError:
                     current_versions = await _load_current_ready_versions(session, sources, principal)
+                if as_of_ts is not None:
+                    current_versions = {
+                        vid: ver
+                        for vid, ver in current_versions.items()
+                        if ver.valid_from_ts is None or ver.valid_from_ts <= int(as_of_ts)
+                    }
                 start_block = aliased(CanonicalBlock)
                 end_block = aliased(CanonicalBlock)
                 rows = (
@@ -2791,6 +2987,7 @@ async def _retrieve_search_unit_sections(
                 query=query,
                 allow_contradiction_lineage=has_required_anchors,
                 preloaded_k_index=(scope_k_index_holder[0] if scope_k_index_holder else None),
+                as_of_ts=as_of_ts,
             )
             t_graph_expansion_ms = round((time.perf_counter() - t_graph_start) * 1000, 2)
             graph_expanded_candidates = len(expanded_sections)
@@ -2955,9 +3152,19 @@ async def _retrieve_search_unit_sections(
         try:
             async with asyncio.timeout_at(deadline):
                 async with SessionLocal() as session:
-                    refreshed = await _load_current_ready_versions(
-                        session, sources, principal, version_ids=selected_version_ids,
-                    )
+                    if as_of_ts is not None:
+                        try:
+                            refreshed = await _load_current_ready_versions(
+                                session, sources, principal, version_ids=selected_version_ids, as_of_ts=as_of_ts
+                            )
+                        except TypeError:
+                            refreshed = await _load_current_ready_versions(
+                                session, sources, principal, version_ids=selected_version_ids
+                            )
+                    else:
+                        refreshed = await _load_current_ready_versions(
+                            session, sources, principal, version_ids=selected_version_ids,
+                        )
             _verify_selection_scope(selected_version_ids, current_versions, refreshed)
         except (TimeoutError, SQLAlchemyError) as error:
             raise ServiceUnavailableError("Search scope could not be revalidated") from error

@@ -14,7 +14,7 @@ import math
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from types import MappingProxyType
 
 import orjson
@@ -56,8 +56,8 @@ class RoutingBenchmarkCase:
 class TreeBuildConfig:
     version: str = "routing-tree-v1"
     min_cluster_size: int = 2
-    target_cluster_size: int = 8
-    max_cluster_size: int = 32
+    target_cluster_size: int = 6
+    max_cluster_size: int = 20
     max_children: int = 8
     max_depth: int = 5
     min_cohesion: float = 0.0
@@ -66,7 +66,7 @@ class TreeBuildConfig:
     min_routing_recall_at_k: float = 0.0
     profile_sparse_terms: int = 64
     min_partition_units: int = 2
-    leiden_resolution: float = 0.05
+    leiden_resolution: float = 0.08
 
     def __post_init__(self) -> None:
         integer_limits = (
@@ -332,6 +332,62 @@ def _edge_metrics(
     return internal / total, 1.0 - internal / total
 
 
+def research_tree_build_config(**overrides: object) -> TreeBuildConfig:
+    """Return the calibrated Leiden tree profile for 3-5 year corporate filings."""
+    defaults: dict[str, object] = {
+        "min_cluster_size": 2,
+        "target_cluster_size": 6,
+        "max_cluster_size": 20,
+        "max_children": 8,
+        "max_depth": 5,
+        "leiden_resolution": 0.08,
+    }
+    defaults.update(overrides)
+    return TreeBuildConfig(**defaults)  # type: ignore[arg-type]
+
+
+def _unit_valid_from_ts(unit: KnowledgeUnitInput) -> int | None:
+    if unit.valid_from is None:
+        return None
+    dt = unit.valid_from if unit.valid_from.tzinfo else unit.valid_from.replace(tzinfo=UTC)
+    return int(dt.timestamp())
+
+
+def filter_nodes_pit(
+    roots: Iterable[RoutingNode],
+    as_of_ts: int | None,
+) -> tuple[RoutingNode, ...]:
+    """Filter a RoutingNode hierarchy to nodes with temporal_from <= as_of_ts."""
+    if as_of_ts is None:
+        return tuple(roots)
+    cutoff = int(as_of_ts)
+
+    def _keep_node(node: RoutingNode) -> RoutingNode | None:
+        t_from = node.profile.temporal_from
+        if t_from is not None:
+            dt = t_from if t_from.tzinfo else t_from.replace(tzinfo=UTC)
+            if int(dt.timestamp()) > cutoff:
+                return None
+        kept_children = tuple(
+            kept for child in node.children if (kept := _keep_node(child)) is not None
+        )
+        if kept_children == node.children:
+            return node
+        return RoutingNode(
+            node_id=node.node_id,
+            parent_id=node.parent_id,
+            depth=node.depth,
+            tenant_id=node.tenant_id,
+            project_id=node.project_id,
+            security_partition_id=node.security_partition_id,
+            unit_ids=node.unit_ids,
+            profile=node.profile,
+            children=kept_children,
+        )
+
+    return tuple(kept for root in roots if (kept := _keep_node(root)) is not None)
+
+
 def build_routing_snapshot(
     units: Iterable[KnowledgeUnitInput],
     edges: Iterable[KnowledgeEdgeInput] = (),
@@ -340,8 +396,20 @@ def build_routing_snapshot(
     benchmark: Iterable[RoutingBenchmarkCase] = (),
     extra_manifest: Mapping[str, object] | None = None,
     precomputed: RoutingSnapshot | None = None,
+    as_of_ts: int | None = None,
 ) -> RoutingSnapshot:
     rows = list(units)
+    if as_of_ts is not None:
+        cutoff = int(as_of_ts)
+        rows = [
+            unit for unit in rows
+            if (ts := _unit_valid_from_ts(unit)) is None or ts <= cutoff
+        ]
+        kept_ids = {unit.unit_id for unit in rows}
+        edges = [
+            edge for edge in edges
+            if edge.source_unit_id in kept_ids and edge.target_unit_id in kept_ids
+        ]
     if not rows:
         raise ValueError("routing tree requires at least one Knowledge Unit")
     if any(

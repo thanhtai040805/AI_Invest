@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from datetime import UTC, datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -31,6 +33,9 @@ class UnitSignal(BaseModel):
     published_at: datetime | None = None
     observed_at: datetime | None = None
     ingested_at: datetime | None = None
+    doc_type: str | None = None
+    sub_doc_slot: str | None = None
+    half_life_days: float | None = Field(default=None, gt=0.0)
     evidence: tuple[EvidenceSignal, ...] = ()
 
     @property
@@ -68,6 +73,7 @@ class QualityTopicInput(BaseModel):
     demand_window_days: int = Field(gt=0)
     query_demand_current: int | None = Field(default=None, ge=0)
     query_demand_previous: int | None = Field(default=None, ge=0)
+    extra_contradiction_rate: float | None = Field(default=None, ge=0.0, le=1.0)
     units: tuple[UnitSignal, ...] = Field(min_length=1)
     contradictions: tuple[ContradictionSignal, ...] = ()
 
@@ -181,6 +187,36 @@ def _normalized_entropy(counts: list[int]) -> float:
     return min(1.0, max(0.0, entropy / math.log(len(nonzero))))
 
 
+_ANNUAL_SLOTS = frozenset({f"S{i:02d}" for i in range(1, 12)})
+_HALF_YEAR_SLOTS = frozenset({"S12"})
+_QUARTERLY_SLOTS = frozenset({"S13"})
+
+
+def resolve_unit_half_life_days(
+    unit: UnitSignal,
+    default_half_life_days: float,
+) -> float:
+    if unit.half_life_days is not None:
+        return float(unit.half_life_days)
+    slot = (unit.sub_doc_slot or "").strip().upper()
+    if slot in _ANNUAL_SLOTS or slot.startswith(
+        ("S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10", "S11")
+    ):
+        return 365.0
+    if slot in _HALF_YEAR_SLOTS or slot.startswith("S12"):
+        return 180.0
+    if slot in _QUARTERLY_SLOTS or slot.startswith("S13"):
+        return 90.0
+    doc_type = (unit.doc_type or "").strip().lower()
+    if doc_type in {"annual", "annual_report", "bctn", "bctc_nam", "audited_fs", "audited_annual"}:
+        return 365.0
+    if doc_type in {"agm", "dhdcd", "resolution", "board_resolution", "semi_annual"}:
+        return 180.0
+    if doc_type in {"quarter", "quarterly", "bctc_quy", "macro", "news", "announcement"}:
+        return 90.0
+    return float(default_half_life_days)
+
+
 def _freshness(
     units: tuple[UnitSignal, ...],
     *,
@@ -196,11 +232,12 @@ def _freshness(
         if timestamp is None:
             missing_timestamp = True
             continue
+        unit_half_life = resolve_unit_half_life_days(unit, half_life_days)
         age_days = (as_of_utc - timestamp).total_seconds() / 86400
         if age_days < 0:
             had_future_timestamp = True
             age_days = 0.0
-        values.append(math.exp(-math.log(2) * age_days / half_life_days))
+        values.append(math.exp(-math.log(2) * age_days / unit_half_life))
     if not values or missing_timestamp:
         return None, had_future_timestamp
     return sum(values) / len(values), had_future_timestamp
@@ -260,10 +297,15 @@ def score_topic(
         tuple(sorted((relation.source_unit_id, relation.target_unit_id)))
         for relation in topic.contradictions
     }
-    contradiction_rate = (
+    computed_contradiction_rate = (
         min(1.0, len(relation_pairs) / possible_pairs)
         if possible_pairs
         else 0.0
+    )
+    contradiction_rate = (
+        max(computed_contradiction_rate, float(topic.extra_contradiction_rate))
+        if topic.extra_contradiction_rate is not None
+        else computed_contradiction_rate
     )
     uncertainty_proxy = (
         sum(1.0 - evidence.confidence for evidence in anchored_evidence) / len(anchored_evidence)
@@ -384,3 +426,32 @@ def score_topic(
         supporting_evidence_ids=supporting_evidence_ids,
         reason_codes=tuple(reason_codes),
     )
+
+
+def score_topics_batch(
+    topics: Sequence[QualityTopicInput],
+    config: KnowledgeQualityConfig = KnowledgeQualityConfig(),
+) -> tuple[KnowledgeQualityResult, ...]:
+    """Deterministically score multiple topics while preserving per-topic metrics regardless of eligibility."""
+    return tuple(score_topic(topic, config=config) for topic in topics)
+
+
+def extract_batch_quality_metrics(
+    topics: Sequence[QualityTopicInput],
+    config: KnowledgeQualityConfig = KnowledgeQualityConfig(),
+) -> list[dict[str, Any]]:
+    """Return batch quality metrics unobstructed even when query demand is absent (eligible=False)."""
+    results = score_topics_batch(topics, config=config)
+    return [
+        {
+            "node_id": item.node_id,
+            "tree_version": item.tree_version,
+            "eligible": item.eligible,
+            "priority": item.priority,
+            "severity": item.severity,
+            "importance": item.importance,
+            "reason_codes": list(item.reason_codes),
+            "metrics": item.metrics.model_dump(mode="json"),
+        }
+        for item in results
+    ]

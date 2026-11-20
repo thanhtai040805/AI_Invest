@@ -38,6 +38,29 @@ _MINERU_DIRECT_EXTENSIONS = frozenset(
     {".pdf", ".doc", ".ppt", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
 )
 _MINERU_HYBRID_OOXML_EXTENSIONS = frozenset({".docx", ".pptx"})
+_MARKITDOWN_FALLBACK_EXTENSIONS = frozenset(
+    {
+        ".docx",
+        ".pptx",
+        ".xlsx",
+        ".xls",
+        ".csv",
+        ".tsv",
+        ".txt",
+        ".md",
+        ".markdown",
+        ".rtf",
+        ".odt",
+        ".ods",
+        ".odp",
+        ".html",
+        ".htm",
+    }
+)
+
+
+def _allows_markitdown_fallback(path: str) -> bool:
+    return os.path.splitext(path)[1].lower() in _MARKITDOWN_FALLBACK_EXTENSIONS
 _OOXML_VISUAL_PREFIXES = (
     "word/media/",
     "word/charts/",
@@ -298,11 +321,14 @@ async def _prepare_and_cache(
         await track_state(parser_state)
 
     if provider == "mineru":
+        allow_fallback = _allows_markitdown_fallback(path)
         fallback_signature = _signature("markitdown", settings)
         fallback_cache_path = f"{path}.parsed.{fallback_signature}.md"
         fallback_marker_path = _fallback_marker_path(path, signature, settings)
-        fallback = _compatible_fallback(
-            parser_state, fallback_signature, fallback_cache_path
+        fallback = (
+            _compatible_fallback(parser_state, fallback_signature, fallback_cache_path)
+            if allow_fallback
+            else None
         )
         if fallback and parser_state.get("status") == "fallback_done" and _is_cached(
             fallback_cache_path
@@ -348,6 +374,16 @@ async def _prepare_and_cache(
                     remote_source_url=remote_source_url,
                 )
         except ApiError as mineru_error:
+            if not allow_fallback:
+                await track_state(
+                    {
+                        **current_state,
+                        "status": "failed",
+                        "error_code": mineru_error.code,
+                        "error": _exception_message(mineru_error),
+                    }
+                )
+                raise
             return await _prepare_markitdown_fallback(
                 path,
                 current_state,
@@ -490,7 +526,7 @@ def _cached_fallback_document(
     signature: str,
     settings: Settings,
 ) -> PreparedDocument | None:
-    if provider != "mineru":
+    if provider != "mineru" or not _allows_markitdown_fallback(path):
         return None
     cache_path = f"{path}.parsed.{_signature('markitdown', settings)}.md"
     marker_path = _fallback_marker_path(path, signature, settings)

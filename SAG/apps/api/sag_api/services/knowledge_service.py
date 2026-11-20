@@ -28,7 +28,6 @@ from sag_api.db.models import (
     IngestionRun,
     KnowledgeEvidence,
     KnowledgeGraphBuild,
-    KnowledgeJob,
     KnowledgeQueueControl,
     KnowledgeUnit,
     KnowledgeUnitEdge,
@@ -52,6 +51,201 @@ class KnowledgeConfig(BaseModel):
     edge_min_score: float = Field(default=0.55, ge=0, le=1)
     # Project-local dictionary: alias -> canonical label. No global entity linking.
     aliases: tuple[tuple[str, str], ...] = ()
+
+
+VN_FINANCIAL_ALIASES: tuple[tuple[str, str], ...] = (
+    # 1. Revenue, Margin & Income Statement (VN -> Canonical)
+    ("doanh thu thuần", "NET_REVENUE"),
+    ("doanh thu bán hàng và cung cấp dịch vụ", "GROSS_REVENUE"),
+    ("giá vốn hàng bán", "COGS"),
+    ("lợi nhuận gộp", "GROSS_PROFIT"),
+    ("biên lợi nhuận gộp", "GPM"),
+    ("biên gộp", "GPM"),
+    ("biên lãi gộp", "GPM"),
+    ("lợi nhuận thuần từ hoạt động kinh doanh", "OPERATING_PROFIT"),
+    ("biên lợi nhuận hoạt động", "OPM"),
+    ("biên ebit", "EBIT_MARGIN"),
+    ("lợi nhuận trước thuế", "PBT"),
+    ("lợi nhuận sau thuế", "PAT"),
+    ("lợi nhuận sau thuế của cổ đông công ty mẹ", "NPATMI"),
+    ("biên lợi nhuận ròng", "NPM"),
+    ("biên lợi nhuận thuần", "NPM"),
+    ("thu nhập khác", "OTHER_INCOME"),
+    ("lãi từ công ty liên kết", "ASSOCIATE_INCOME"),
+    ("lãi công ty liên doanh liên kết", "ASSOCIATE_INCOME"),
+    ("doanh thu hoạt động tài chính", "FIN_INCOME"),
+    ("chi phí tài chính", "FIN_COST"),
+    ("chi phí lãi vay", "INTEREST_EXPENSE"),
+    ("chi phí bán hàng", "SELLING_EXPENSE"),
+    ("chi phí quản lý doanh nghiệp", "GNA_EXPENSE"),
+    ("lãi cơ bản trên cổ phiếu", "EPS"),
+    ("tỷ suất sinh lời trên vốn chủ sở hữu", "ROE"),
+    ("tỷ suất sinh lời trên tổng tài sản", "ROA"),
+    ("vốn chủ sở hữu", "EQUITY"),
+    ("tổng tài sản", "TOTAL_ASSETS"),
+    ("nợ phải trả", "TOTAL_LIABILITIES"),
+    # 2. Banking (TCTD) Metrics
+    ("tỷ lệ casa", "CASA"),
+    ("tiền gửi không kỳ hạn", "CASA"),
+    ("chi phí vốn", "COF"),
+    ("biên lãi thuần", "NIM"),
+    ("thu nhập lãi thuần", "NII"),
+    ("thu nhập ngoài lãi", "NOII"),
+    ("tỷ lệ nợ xấu", "NPL"),
+    ("nợ nhóm 2", "GROUP_2_LOAN"),
+    ("nợ nhóm 3", "NPL"),
+    ("nợ nhóm 4", "NPL"),
+    ("nợ nhóm 5", "NPL"),
+    ("nợ có khả năng mất vốn", "GROUP_5_LOAN"),
+    ("tỷ lệ bao phủ nợ xấu", "LLR"),
+    ("dự phòng rủi ro tín dụng", "CREDIT_PROVISION"),
+    ("lãi dự thu", "ACCRUED_INTEREST"),
+    ("lãi và phí phải thu", "ACCRUED_INTEREST"),
+    ("tỷ lệ an toàn vốn", "CAR"),
+    ("tỷ lệ chi phí trên thu nhập", "CIR"),
+    ("tỷ lệ chi phí hoạt động", "CIR"),
+    ("tăng trưởng tín dụng", "CREDIT_GROWTH"),
+    ("dư nợ cho vay khách hàng", "LOAN_BOOK"),
+    ("dư nợ bất động sản", "REAL_ESTATE_LOAN"),
+    ("trái phiếu doanh nghiệp", "CORP_BOND"),
+    # 3. Securities (TT334) Metrics
+    ("thị phần môi giới", "BROKERAGE_SHARE"),
+    ("cho vay ký quỹ", "MARGIN_LENDING"),
+    ("dư nợ margin", "MARGIN_DEBT"),
+    ("tài sản tài chính fvtpl", "FVTPL"),
+    ("ghi nhận thông qua lãi/lỗ", "FVTPL"),
+    ("tài sản tài chính sẵn sàng để bán", "AFS"),
+    ("khoản đầu tư nắm giữ đến ngày đáo hạn", "HTM"),
+    ("danh mục tự doanh", "PROP_TRADING"),
+    ("nghiệp vụ ngân hàng đầu tư", "IB_REVENUE"),
+    ("tư vấn bảo lãnh phát hành", "IB_REVENUE"),
+    ("chênh lệch đánh giá lại tài sản tài chính", "FVTPL_REVALUATION"),
+    ("chi phí môi giới", "BROKERAGE_COST"),
+    # 4. Assets, CAPEX, Depreciation, Working Capital & Debt
+    ("tài sản cố định", "FIXED_ASSETS"),
+    ("tài sản cố định hữu hình", "TANGIBLE_FA"),
+    ("chi phí xây dựng cơ bản dở dang", "CIP"),
+    ("chi phí xdcb dở dang", "CIP"),
+    ("xây dựng cơ bản dở dang", "CIP"),
+    ("thời gian khấu hao", "DEPRECIATION_LIFE"),
+    ("thay đổi thời gian khấu hao", "DEPRECIATION_CHANGE"),
+    ("khấu hao lũy kế", "ACCUMULATED_DEPR"),
+    ("tài sản thế chấp", "COLLATERAL"),
+    ("tài sản cầm cố thế chấp", "COLLATERAL"),
+    ("thuê hoạt động", "OPERATING_LEASE"),
+    ("cam kết thuê hoạt động", "OPERATING_LEASE_COMMIT"),
+    ("nợ vay ngắn hạn", "SHORT_TERM_DEBT"),
+    ("nợ vay dài hạn", "LONG_TERM_DEBT"),
+    ("tổng nợ vay", "TOTAL_DEBT"),
+    ("đáo hạn nợ", "DEBT_MATURITY"),
+    ("vốn hóa lãi vay", "CAPITALIZED_INTEREST"),
+    ("hàng tồn kho", "INVENTORY"),
+    ("phải thu khách hàng", "ACCOUNTS_RECEIVABLE"),
+    ("dự phòng phải thu khó đòi", "BAD_DEBT_PROVISION"),
+    ("xóa nợ khó đòi", "DEBT_WRITEOFF"),
+    ("thanh lý tài sản", "ASSET_DISPOSAL"),
+    ("người mua trả tiền trước", "CUSTOMER_PREPAYMENT"),
+    ("doanh thu chưa thực hiện", "UNEARNED_REVENUE"),
+    ("dòng tiền từ hoạt động kinh doanh", "CFO"),
+    ("lưu chuyển tiền thuần từ hoạt động kinh doanh", "CFO"),
+    ("dòng tiền tự do", "FCF"),
+    ("chi phí đầu tư tài sản cố định", "CAPEX"),
+    ("ngân sách đầu tư", "CAPEX"),
+    # 5. Capital Actions, Governance & Audit
+    ("tăng vốn điều lệ", "CHARTER_CAPITAL_HIKE"),
+    ("cổ tức tiền mặt", "CASH_DIVIDEND"),
+    ("cổ tức bằng cổ phiếu", "STOCK_DIVIDEND"),
+    ("phát hành riêng lẻ", "PRIVATE_PLACEMENT"),
+    ("cổ phiếu ưu đãi người lao động", "ESOP"),
+    ("trái phiếu chuyển đổi", "CONVERTIBLE_BOND"),
+    ("cổ phiếu quỹ", "TREASURY_STOCK"),
+    ("thay đổi chính sách kế toán", "ACCOUNTING_POLICY_CHANGE"),
+    ("sự kiện phát sinh sau ngày kết thúc kỳ kế toán", "SUBSEQUENT_EVENT"),
+    ("sự kiện sau khóa sổ", "SUBSEQUENT_EVENT"),
+    ("vấn đề cần nhấn mạnh", "EMPHASIS_OF_MATTER"),
+    ("ý kiến kiểm toán ngoại trừ", "QUALIFIED_OPINION"),
+    ("ý kiến chấp nhận toàn phần", "UNQUALIFIED_OPINION"),
+    ("báo cáo kiểm toán độc lập", "INDEPENDENT_AUDIT"),
+    ("báo cáo bộ phận", "SEGMENT_NOTE"),
+    ("giao dịch với các bên liên quan", "RELATED_PARTY"),
+    ("hủy hợp nhất", "DECONSOLIDATION"),
+    ("chuyển giao vốn nhà nước", "STATE_CAPITAL_TRANSFER"),
+    # 6. Macro Sensitivity, Value Chain & MOAT Concepts
+    ("độ nhạy tỷ giá", "FX_SENSITIVITY"),
+    ("rủi ro tỷ giá", "FX_RISK"),
+    ("chênh lệch tỷ giá", "FX_DIFF"),
+    ("độ nhạy lãi suất", "IR_SENSITIVITY"),
+    ("rủi ro lãi suất", "IR_RISK"),
+    ("giá dầu brent", "BRENT_OIL"),
+    ("hợp đồng thuê định hạn", "TIME_CHARTER"),
+    ("hợp đồng thuê chuyến", "VOYAGE_CHARTER"),
+    ("hợp đồng bao tiêu", "OFFTAKE_AGREEMENT"),
+    ("công suất thiết kế", "DESIGN_CAPACITY"),
+    ("hiệu suất vận hành", "UTILIZATION_RATE"),
+    ("quỹ đất sạch", "CLEAN_LANDBANK"),
+    ("kế hoạch kinh doanh", "BUSINESS_PLAN"),
+    ("thực hiện so với kế hoạch", "PLAN_VS_ACTUAL"),
+    ("chi phí chuyển đổi", "SWITCHING_COST"),
+    ("lợi thế quy mô", "SCALE_ECONOMY"),
+    ("lợi thế chi phí", "COST_ADVANTAGE"),
+    ("rủi ro tập trung khách hàng", "CUSTOMER_CONCENTRATION"),
+    ("mảng thương mại", "TRADING_SEGMENT"),
+    ("mảng kinh doanh cốt lõi", "CORE_SEGMENT"),
+)
+
+
+def build_financial_knowledge_config(**overrides: object) -> KnowledgeConfig:
+    """Return a KnowledgeConfig pre-loaded with VN financial/MOAT lowercase term aliases."""
+    merged_aliases = (*VN_FINANCIAL_ALIASES, *tuple(overrides.pop("aliases", ())))  # type: ignore[arg-type]
+    return KnowledgeConfig(aliases=merged_aliases, **overrides)  # type: ignore[arg-type]
+
+
+_VN_NOTE_CITATION_RE = re.compile(
+    r"(?<!\w)(?:Thuyết\s*minh|TM|Note|Notes|Mục)\s*(?:số)?\s*[:#-]?\s*(\d+(?:\.\d+)*[a-z]?)(?!\w)",
+    re.IGNORECASE | re.UNICODE,
+)
+_VN_FORM_CITATION_RE = re.compile(
+    r"(?<!\w)(B0[1-9][a-z]?-DN(?:/HN)?|TT\s*(?:334|200|133|210|99))(?!\w)",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _extract_vn_accounting_citations(text: str) -> set[str]:
+    if not text:
+        return set()
+    refs: set[str] = set()
+    for m in _VN_NOTE_CITATION_RE.finditer(text):
+        refs.add(f"tm-{m.group(1).lower()}")
+    for m in _VN_FORM_CITATION_RE.finditer(text):
+        refs.add(re.sub(r"\s+", "", m.group(1).lower()))
+    return refs
+
+
+def _unit_slot_and_year(unit: KnowledgeUnit) -> tuple[str, int]:
+    prov = unit.provenance_json or {}
+    slot = str(prov.get("sub_doc_slot") or "").strip().upper()
+    fy_raw = prov.get("fiscal_year")
+    try:
+        fy = int(fy_raw) if fy_raw is not None else unit.valid_from.year
+    except (TypeError, ValueError):
+        fy = unit.valid_from.year
+    return slot, fy
+
+
+def _is_plan_actual_or_quarter_pair(a: KnowledgeUnit, b: KnowledgeUnit) -> bool:
+    slot_a, year_a = _unit_slot_and_year(a)
+    slot_b, year_b = _unit_slot_and_year(b)
+    if not slot_a or not slot_b:
+        return False
+
+    def _pair_matches(s1: str, y1: int, s2: str, y2: int) -> bool:
+        if s1.startswith("S03") and (s2.startswith("S01") or s2.startswith("S03")) and y2 == y1 + 1:
+            return True
+        if s1.startswith("S13") and (s2.startswith("S03") or s2.startswith("S12")) and y1 == y2:
+            return True
+        return False
+
+    return _pair_matches(slot_a, year_a, slot_b, year_b) or _pair_matches(slot_b, year_b, slot_a, year_a)
 
 
 SIGNAL_WEIGHTS = {"semantic": 0.4, "lexical": 0.2, "entity": 0.15, "structure": 0.1, "temporal": 0.1, "citation": 0.05}
@@ -202,7 +396,15 @@ def _extract_universal_anchors(text: str, section_path: str) -> list[tuple[str, 
     seen_spans: set[tuple[int, int]] = set()
     protected: list[tuple[int, int]] = []
 
-    def _emit(tier: str, ver: str, start: int, end: int, conf: float, *, protect_span: tuple[int, int] | None = None) -> None:
+    def _emit(
+        tier: str,
+        ver: str,
+        start: int,
+        end: int,
+        conf: float,
+        *,
+        protect_span: tuple[int, int] | None = None,
+    ) -> None:
         if start < 0 or end <= start or end > len(text):
             return
         span = (start, end)
@@ -338,7 +540,8 @@ def _extract_universal_anchors(text: str, section_path: str) -> list[tuple[str, 
                     _emit("E0", "e0-unicode-v2", span_start, span_end, 0.92)
             else:
                 _emit("E0", "e0-unicode-v2", span_start, span_end, 0.95)
-                # Sentence-initial determiner/preposition strip without wordlists ("The Knowledge Governance Team" -> "Knowledge Governance Team")
+                # Sentence-initial determiner/preposition strip without wordlists
+                # ("The Knowledge Governance Team" -> "Knowledge Governance Team")
                 if sent_start and not _is_all_caps_code(tok) and _is_upper_word(tokens[chain[1]][2]):
                     sub_chain = chain[1:]
                     if len(sub_chain) >= 2 or _is_all_caps_code(tokens[sub_chain[0]][2]):
@@ -349,7 +552,9 @@ def _extract_universal_anchors(text: str, section_path: str) -> list[tuple[str, 
                     tail_indices = chain[last_lower_pos + 1 :]
                     if tail_indices:
                         t_start, t_end = tokens[tail_indices[0]][0], tokens[tail_indices[-1]][1]
-                        if (t_start, t_end) != (span_start, span_end) and (len(tail_indices) >= 2 or (t_end - t_start) >= 3):
+                        if (t_start, t_end) != (span_start, span_end) and (
+                            len(tail_indices) >= 2 or (t_end - t_start) >= 3
+                        ):
                             _emit("E0", "e0-unicode-v2", t_start, t_end, 0.92)
 
             i = last_idx + 1
@@ -556,6 +761,10 @@ async def version_input(session: AsyncSession, version_id: str, config: Knowledg
         "ingested_at": version.ingested_at.isoformat() if version.ingested_at else None,
         "supersedes_id": version.supersedes_id,
     }
+    ver_meta = version.metadata_json or {}
+    for meta_key in ("sub_doc_slot", "fiscal_year", "fiscal_quarter", "doc_type"):
+        if meta_key in ver_meta and ver_meta[meta_key] is not None:
+            provenance[meta_key] = ver_meta[meta_key]
     digest = checksum(
         {
             "config": config.model_dump(mode="json"),
@@ -643,7 +852,12 @@ async def batch_version_inputs(session: AsyncSession, version_ids: Sequence[str]
     for vid in unique_vids:
         version = versions_by_id.get(vid)
         document = docs_by_id.get(version.document_id) if version else None
-        if not version or not document or not document.is_active or version.search_status not in {"READY", "SEARCH_READY"}:
+        if (
+            not version
+            or not document
+            or not document.is_active
+            or version.search_status not in {"READY", "SEARCH_READY"}
+        ):
             raise ValueError("Knowledge producer requires an active SEARCH_READY version")
         partition = (version.metadata_json or {}).get("security_partition_id")
         if not all(
@@ -682,6 +896,10 @@ async def batch_version_inputs(session: AsyncSession, version_ids: Sequence[str]
             "ingested_at": version.ingested_at.isoformat() if version.ingested_at else None,
             "supersedes_id": version.supersedes_id,
         }
+        ver_meta = version.metadata_json or {}
+        for meta_key in ("sub_doc_slot", "fiscal_year", "fiscal_quarter", "doc_type"):
+            if meta_key in ver_meta and ver_meta[meta_key] is not None:
+                provenance[meta_key] = ver_meta[meta_key]
         digest = checksum(
             {
                 "config": config.model_dump(mode="json"),
@@ -1089,13 +1307,31 @@ def graph_payload(units: list[KnowledgeUnit], config: KnowledgeConfig = Knowledg
                 else 0.0
             )
             citations_a, citations_b = set(af["citations"]), set(bf["citations"])
+            vn_cites_a = _extract_vn_accounting_citations(a.text)
+            vn_cites_b = _extract_vn_accounting_citations(b.text)
+            if _is_plan_actual_or_quarter_pair(a, b) or (
+                a.valid_from < b.valid_to and b.valid_from < a.valid_to
+            ):
+                temporal_score = 1.0
+            else:
+                temporal_score = 0.50
+
+            if vn_cites_a & vn_cites_b:
+                citation_score: float | None = 0.85
+            elif citations_a & citations_b:
+                citation_score = 0.70
+            elif citations_a or citations_b or vn_cites_a or vn_cites_b:
+                citation_score = 0.0
+            else:
+                citation_score = None
+
             signals = {
                 "semantic": _prepared_cosine(prepared_dense[left], prepared_dense[right]),
                 "lexical": max(0.0, min(1.0, (value - q05) / (q95 - q05))) if q95 > q05 else float(value > 0),
                 "entity": entity,
                 "structure": structure,
-                "temporal": float(a.valid_from < b.valid_to and b.valid_from < a.valid_to),
-                "citation": (0.7 if citations_a & citations_b else 0.0) if citations_a or citations_b else None,
+                "temporal": temporal_score,
+                "citation": citation_score,
             }
             score = fuse_signals(signals)
             if score > 0 and score >= config.edge_min_score:

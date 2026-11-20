@@ -136,7 +136,11 @@ def _is_openai_route(model: str, settings: Settings) -> bool:
 
 def _is_deepseek_v4(model: str) -> bool:
     model_id = model.rsplit("/", 1)[-1].casefold()
-    return model_id in _DEEPSEEK_V4_MODELS
+    return (
+        model_id in _DEEPSEEK_V4_MODELS
+        or model_id.startswith("deepseek-v4-flash")
+        or model_id.startswith("deepseek-v4-pro")
+    )
 
 
 def _with_allowed_openai_param(request: dict[str, Any], name: str) -> None:

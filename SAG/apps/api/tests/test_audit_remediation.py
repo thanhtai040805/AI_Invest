@@ -34,7 +34,6 @@ from sag_api.services.knowledge_service import (
     graph_payload,
 )
 
-
 METRIC_PARTITION_UNIVERSE_BLOCKS = [
     (
         "Northwind Labs Knowledge Governance Playbook",
@@ -203,7 +202,8 @@ def test_task3_detect_document_language():
     assert detect_document_language(en_text, configured="zh") == "en"
     assert detect_document_language(vi_text, configured="zh") == "en"
     assert detect_document_language(en_text, configured="en") == "en"
-    assert Settings(sag_language="zh").sag_language == "en"
+    assert Settings(sag_language="zh").sag_language == "zh"
+    assert Settings(sag_language="vi").sag_language == "vi"
 
 
 @pytest_asyncio.fixture
@@ -438,6 +438,7 @@ async def test_task5_paused_and_failed_documents_excluded_from_retrieval_scope(r
 async def test_search_unit_qdrant_store_batch_query_single_roundtrip() -> None:
     """Verify Qdrant points/query/batch executes multiple channels in 1 HTTP round-trip."""
     import httpx
+
     from sag_api.sag.search_unit_store import SearchUnitQdrantStore
 
     requests_seen: list[tuple[str, str, dict]] = []
@@ -562,6 +563,7 @@ def test_incremental_processor_disables_event_entity_edge_vectors_by_default() -
 def test_bilingual_vietnamese_english_stopwords_and_diacritics() -> None:
     """Verify Vietnamese + English stopwords and Unicode diacritics in lexical/sparse/query analysis."""
     from pathlib import Path
+
     import sag_api.sag as sag_pkg
     from sag_api.sag.search_unit_store import _SPARSE_QUERY_STOPWORDS, build_sparse_query_vector
     from sag_api.services.query_analysis import analyze_query
@@ -736,7 +738,8 @@ def test_first_principles_stage1_to_stage5_architectural_upgrades() -> None:
 
     # 1. Stage 1: Document title contextual injection & table header preservation
     blocks = extract_canonical_blocks(
-        "## Consolidated Balance Sheets\n\n| Item | 2018 | 2017 |\n|---|---|---|\n| Total PP&E, net | $8,738 | $8,866 |",
+        "## Consolidated Balance Sheets\n\n"
+        "| Item | 2018 | 2017 |\n|---|---|---|\n| Total PP&E, net | $8,738 | $8,866 |",
         version_id="ver-1",
         document_title="3M 2018 10K Note6 PPE",
     )
@@ -987,7 +990,7 @@ def test_cognitive_upgrades_clause_decomposition_artifact_bridge_and_entropy_adm
 
 
 def test_system_bottleneck_bug_fixes_e0_routing_and_multihop_diversity() -> None:
-    """Verify fixes for slash-entity pollution, Vietnamese E0/E1, Tree Routing margins, and 5-doc Multi-Hop diversity."""
+    """Verify fixes for slash-entity pollution, Vietnamese E0/E1, Tree Routing, and 5-doc Multi-Hop diversity."""
     from sag_api.sag import RetrievedSection
     from sag_api.services.query_routing_service import (
         GroupRoutingSnapshot,
@@ -1015,7 +1018,10 @@ def test_system_bottleneck_bug_fixes_e0_routing_and_multihop_diversity() -> None
 
     vn_block = _make_block(
         "Quy chế",
-        "Ngày 19-10-2026, theo 15/2026/NĐ-CP và Điều 5, Dự án A kiểm tra 120 câu trong 30 ngày vì phải từ chối nếu lỗi.",
+        (
+            "Ngày 19-10-2026, theo 15/2026/NĐ-CP và Điều 5, Dự án A kiểm tra "
+            "120 câu trong 30 ngày vì phải từ chối nếu lỗi."
+        ),
         1,
     )
     _, vn_features = extract_e0_e1(vn_block)
@@ -1376,13 +1382,15 @@ async def test_four_pillar_retrieval_and_semantic_routing_upgrade() -> None:
         compute_sparse_bm25_vector("configuration")["indices"]
     )
 
-    # Spatial Vietnamese prepositions ("từ ... đến ...") must NOT trigger false temporal cue, whereas structural dates do
+    # Spatial Vietnamese prepositions ("từ ... đến ...") must NOT trigger false temporal cue
     assert bool(extract_query_features("Khoảng cách từ Hà Nội đến Đà Nẵng là bao nhiêu?").temporal_cues) is False
     assert bool(extract_query_features("Chính sách năm 2026 quy định gì?").temporal_cues) is True
     assert bool(extract_query_features("2026年4月の監査基準は何ですか？").temporal_cues) is True
 
     # Multi-question interrogative decomposition & continuous-script CJK/Japanese/Thai entity detection
-    clauses = decompose_query_clauses("What is the audit log retention period? What port does the metrics exporter use?")
+    clauses = decompose_query_clauses(
+        "What is the audit log retention period? What port does the metrics exporter use?"
+    )
     assert len(clauses) == 2
     assert _is_cjk_or_continuous_entity("証拠台帳") is True
     assert _is_cjk_or_continuous_entity("個人情報") is True

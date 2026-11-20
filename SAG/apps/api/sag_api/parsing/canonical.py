@@ -327,6 +327,7 @@ _PAGE_MARKER_RE = re.compile(
     r"^(?:<!--\s*(?:PAGE|page)\s+(\d+)\s*-->|<!--\s*(?:PAGE_BREAK|page\s*break)\s*-->|[\x0c\f]|---\s*(?:page\s*break|PAGE\s*BREAK)\s*---)$",
     re.IGNORECASE,
 )
+_INLINE_PAGE_MARKER_RE = re.compile(r"(<!--\s*(?:PAGE|page)\s+\d+\s*-->)")
 
 
 def extract_canonical_blocks(
@@ -345,8 +346,9 @@ def extract_canonical_blocks(
     if not content or not content.strip():
         return []
 
-    # Tiền xử lý form feed (\x0c, \f) trước splitlines vì str.splitlines() tự động tách và nuốt ký tự này
+    # Tiền xử lý form feed (\x0c, \f) và tách page markers nội dòng trước splitlines
     normalized_content = content.replace("\x0c", "\n<!-- PAGE_BREAK -->\n").replace("\f", "\n<!-- PAGE_BREAK -->\n")
+    normalized_content = _INLINE_PAGE_MARKER_RE.sub(r"\n\1\n", normalized_content)
     lines = normalized_content.splitlines()
     blocks: list[ExtractedBlock] = []
     current_section_stack: list[tuple[int, str]] = []  # [(level, heading_text)]
@@ -361,7 +363,15 @@ def extract_canonical_blocks(
                 title = fm_meta.get("title")
                 status = fm_meta.get("status")
                 if doc_id or title:
-                    parts = [p for p in (title, f"[{doc_id}]" if doc_id else None, f"(Status: {status})" if status else None) if p]
+                    parts = [
+                        p
+                        for p in (
+                            title,
+                            f"[{doc_id}]" if doc_id else None,
+                            f"(Status: {status})" if status else None,
+                        )
+                        if p
+                    ]
                     current_section_stack = [(0, " ".join(parts))]
                     root_raw_title = title
                 break

@@ -15,7 +15,15 @@ class SearchRequest(BaseModel):
     top_k: int | None = Field(
         default=None,
         ge=1,
-        description="Optional explicit result limit; defaults to 7-axis RetrievalPlan cardinality (5 for standard passage Q&A, up to 50 for document listing).",
+        description=(
+            "Optional explicit result limit; defaults to 7-axis RetrievalPlan cardinality "
+            "(5 for standard passage Q&A, configurable via research_search_top_k for PIT research)."
+        ),
+    )
+    as_of_ts: int | None = Field(
+        default=None,
+        ge=0,
+        description="Optional Point-in-Time Unix timestamp enforcing valid_from_ts <= as_of_ts.",
     )
 
 
@@ -27,7 +35,15 @@ class GlobalSearchRequest(BaseModel):
     top_k: int | None = Field(
         default=None,
         ge=1,
-        description="Optional explicit result limit; defaults to 7-axis RetrievalPlan cardinality (5 for standard passage Q&A, up to 50 for document listing).",
+        description=(
+            "Optional explicit result limit; defaults to 7-axis RetrievalPlan cardinality "
+            "(5 for standard passage Q&A, configurable via research_search_top_k for PIT research)."
+        ),
+    )
+    as_of_ts: int | None = Field(
+        default=None,
+        ge=0,
+        description="Optional Point-in-Time Unix timestamp enforcing valid_from_ts <= as_of_ts.",
     )
     strategy: SearchStrategy | None = None
     retrieval_mode: (
@@ -138,7 +154,7 @@ class EvalCompareRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
     strategies: list[SearchStrategy] = Field(min_length=2, max_length=4)
     source_ids: list[str] | None = Field(default=None, max_length=256)
-    top_k: int | None = Field(default=None, ge=1, description="SAG retrieval currently uses fixed Top-5.")
+    top_k: int | None = Field(default=None, ge=1, description="Optional explicit result limit.")
     judge: bool = True  # 前端可临时关掉;是否真的调 LLM 还看后台 settings 开关
 
 

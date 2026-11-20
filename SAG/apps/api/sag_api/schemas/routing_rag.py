@@ -19,6 +19,12 @@ class DocumentObjectIngestRequest(BaseModel):
     expected_size_bytes: int = Field(..., ge=1)
     logical_source_id: str | None = Field(default=None, max_length=512)
     source_published_at: datetime | None = None
+    fiscal_year: int | None = Field(default=None, ge=1990, le=2100)
+    fiscal_quarter: int | None = Field(default=None, ge=0, le=4)
+    doc_type: str | None = Field(default=None, max_length=64)
+    sub_doc_slot: str | None = Field(default=None, max_length=64)
+    sector_group: str | None = Field(default=None, max_length=64)
+    table_id: str | None = Field(default=None, max_length=64)
 
 
 class DocumentUploadResponse(BaseModel):

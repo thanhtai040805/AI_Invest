@@ -627,6 +627,12 @@ async def upload_document_version(
     file: UploadFile = File(...),
     source_published_at: datetime | None = Form(None),
     logical_source_id: str | None = Form(None),
+    fiscal_year: int | None = Form(None),
+    fiscal_quarter: int | None = Form(None),
+    doc_type: str | None = Form(None),
+    sub_doc_slot: str | None = Form(None),
+    sector_group: str | None = Form(None),
+    table_id: str | None = Form(None),
     idempotency_key: str = Header(..., alias="Idempotency-Key"),
     x_continuum_user_id: str | None = Header(None, alias="X-Continuum-User-Id"),
     x_continuum_security_partition: str | None = Header(None, alias="X-Continuum-Security-Partition"),
@@ -685,6 +691,12 @@ async def upload_document_version(
         content_type=file.content_type or "application/octet-stream",
         logical_source_id=logical_source_id,
         source_published_at=source_published_at,
+        fiscal_year=fiscal_year,
+        fiscal_quarter=fiscal_quarter,
+        doc_type=doc_type,
+        sub_doc_slot=sub_doc_slot,
+        sector_group=sector_group,
+        table_id=table_id,
         job_queue=job_queue,
     )
 
@@ -754,6 +766,12 @@ async def ingest_document_object_version(
         content_type=payload.content_type or "application/octet-stream",
         logical_source_id=payload.logical_source_id,
         source_published_at=payload.source_published_at,
+        fiscal_year=payload.fiscal_year,
+        fiscal_quarter=payload.fiscal_quarter,
+        doc_type=payload.doc_type,
+        sub_doc_slot=payload.sub_doc_slot,
+        sector_group=payload.sector_group,
+        table_id=payload.table_id,
         job_queue=job_queue,
     )
 
