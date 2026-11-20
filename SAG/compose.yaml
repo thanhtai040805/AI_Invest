@@ -1,0 +1,113 @@
+name: aiinvest-sag
+
+# Standalone Knowledge Routing RAG stack for AIInvest Stock Research / MOAT.
+# Uses PostgreSQL 16 (source of truth) + Qdrant (vector accelerator).
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sag}
+      POSTGRES_DB: ${POSTGRES_DB:-sag}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sag} -d ${POSTGRES_DB:-sag}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:v1.14.1
+    # Local fallback only. Set SAG_SAG_QDRANT_URL / SAG_SAG_QDRANT_API_KEY to use Qdrant Cloud.
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}
+    volumes:
+      - qdrantdata:/qdrant/storage
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${QDRANT_PORT:-6333}:6333"
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SAG_ENVIRONMENT: ${SAG_ENVIRONMENT:-dev}
+      SAG_DEBUG: "false"
+      SAG_SECRET_KEY: ${SAG_SECRET_KEY:-dev-insecure-secret-change-me-in-production-0123456789}
+      SAG_CORS_ORIGINS: ${SAG_CORS_ORIGINS:-http://localhost:3000}
+      SAG_AUTH_MODE: ${SAG_AUTH_MODE:-local}
+      SAG_ALLOW_REGISTRATION: ${SAG_ALLOW_REGISTRATION:-false}
+      SAG_DECISION_PROVIDER: ${SAG_DECISION_PROVIDER:-disabled}
+      SAG_DECISION_MODEL: ${SAG_DECISION_MODEL:-Kev-4b}
+      SAG_SILICONFLOW_BASE_URL: ${SAG_SILICONFLOW_BASE_URL:-https://api.siliconflow.com/v1}
+      SAG_SILICONFLOW_API_KEY: ${SAG_SILICONFLOW_API_KEY:-}
+      SAG_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-sag}:${POSTGRES_PASSWORD:-sag}@db:5432/${POSTGRES_DB:-sag}
+      SAG_DATA_DIR: /data/engine
+      SAG_UPLOAD_DIR: /data/uploads
+      SAG_SAG_VECTOR_PROVIDER: qdrant
+      SAG_SAG_RELATIONAL_PROVIDER: postgres
+      SAG_SAG_QDRANT_URL: ${SAG_SAG_QDRANT_URL:-http://qdrant:6333}
+      SAG_SAG_QDRANT_API_KEY: ${SAG_SAG_QDRANT_API_KEY:-}
+      SAG_SAG_PG_HOST: db
+      SAG_SAG_PG_PORT: "5432"
+      SAG_SAG_PG_USER: ${POSTGRES_USER:-sag}
+      SAG_SAG_PG_PASSWORD: ${POSTGRES_PASSWORD:-sag}
+      SAG_SAG_PG_DATABASE: ${POSTGRES_DB:-sag}
+      SAG_SAG_LANGUAGE: ${SAG_SAG_LANGUAGE:-en}
+      SAG_LLM_PROVIDER: ${SAG_LLM_PROVIDER:-openai}
+      SAG_LLM_BASE_URL: ${SAG_LLM_BASE_URL:-https://api.siliconflow.com/v1}
+      SAG_LLM_API_KEY: ${SAG_LLM_API_KEY:-}
+      SAG_LLM_MODEL: ${SAG_LLM_MODEL:-Qwen/Qwen3-8B}
+      SAG_LLM_MAX_TOKENS: ${SAG_LLM_MAX_TOKENS:-20000}
+      SAG_LLM_TIMEOUT_MS: ${SAG_LLM_TIMEOUT_MS:-60000}
+      SAG_LLM_MAX_RETRIES: ${SAG_LLM_MAX_RETRIES:-2}
+      SAG_LLM_STRUCTURED_OUTPUT_MODE: ${SAG_LLM_STRUCTURED_OUTPUT_MODE:-auto}
+      SAG_LOCK_LLM_CONFIG: ${SAG_LOCK_LLM_CONFIG:-false}
+      SAG_EMBEDDING_MODEL: ${SAG_EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
+      SAG_EMBEDDING_BASE_URL: ${SAG_EMBEDDING_BASE_URL:-https://api.siliconflow.com/v1}
+      SAG_EMBEDDING_API_KEY: ${SAG_EMBEDDING_API_KEY:-}
+      SAG_EMBEDDING_DIMENSIONS: ${SAG_EMBEDDING_DIMENSIONS:-1024}
+      SAG_EMBEDDING_CONCURRENCY: ${SAG_EMBEDDING_CONCURRENCY:-6}
+      SAG_EMBEDDING_TIMEOUT: ${SAG_EMBEDDING_TIMEOUT:-60}
+      SAG_DOCUMENT_PARSER: ${SAG_DOCUMENT_PARSER:-auto}
+      SAG_MINERU_PROVIDER: official
+      SAG_MINERU_BASE_URL: ${SAG_MINERU_BASE_URL:-https://mineru.net}
+      SAG_MINERU_OFFICIAL_API_TOKEN: ${SAG_MINERU_OFFICIAL_API_TOKEN:-}
+      SAG_MINERU_OFFICIAL_MODEL: ${SAG_MINERU_OFFICIAL_MODEL:-vlm}
+      SAG_MINERU_PARSE_METHOD: ${SAG_MINERU_PARSE_METHOD:-auto}
+      SAG_DOCUMENT_EVENT_EXTRACTION_ENABLED: ${SAG_DOCUMENT_EVENT_EXTRACTION_ENABLED:-false}
+      SAG_DOCUMENT_CHUNK_MAX_TOKENS: ${SAG_DOCUMENT_CHUNK_MAX_TOKENS:-1000}
+      SAG_DOCUMENT_CHUNK_MODE: ${SAG_DOCUMENT_CHUNK_MODE:-standard}
+      SAG_JOB_MAX_ATTEMPTS: ${SAG_JOB_MAX_ATTEMPTS:-3}
+      SAG_KNOWLEDGE_WORKER_ENABLED: ${SAG_KNOWLEDGE_WORKER_ENABLED:-true}
+      SAG_KNOWLEDGE_CONCURRENCY: ${SAG_KNOWLEDGE_CONCURRENCY:-4}
+      SAG_KNOWLEDGE_QUEUE_CAPACITY: ${SAG_KNOWLEDGE_QUEUE_CAPACITY:-256}
+      SAG_KNOWLEDGE_GRAPH_TIMEOUT_SECONDS: ${SAG_KNOWLEDGE_GRAPH_TIMEOUT_SECONDS:-300}
+      SAG_ENGINE_CACHE_SIZE: ${SAG_ENGINE_CACHE_SIZE:-16}
+      SAG_ENGINE_WARMUP_COUNT: ${SAG_ENGINE_WARMUP_COUNT:-4}
+    volumes:
+      - sagdata:/data
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${API_PORT:-8000}:8000"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import urllib.request,sys;
+          sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/v1/system/health').status==200 else 1)"
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  qdrantdata:
+  sagdata:

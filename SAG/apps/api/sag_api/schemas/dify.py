@@ -1,4 +1,4 @@
-"""Giao thức truy vấn kho tri thức ngoài của Dify."""
+"""Dify 外部知识库检索协议。"""
 
 from __future__ import annotations
 
@@ -8,8 +8,17 @@ from pydantic import BaseModel, Field
 
 
 class DifyRetrievalSetting(BaseModel):
-    top_k: int = Field(default=4, ge=1, le=50)
-    score_threshold: float = Field(default=0.0, ge=0.0, le=1.0)
+    top_k: int | None = Field(default=None, ge=1)
+    score_threshold: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Minimum normalized RRF rank score returned by SAG; this threshold "
+            "does not represent a cosine-similarity or probability cutoff. A top-ranked "
+            "candidate found by only one of two active retrievers can score 0.5."
+        ),
+    )
 
 
 class DifyRetrievalRequest(BaseModel):
@@ -24,7 +33,13 @@ class DifyRetrievalRequest(BaseModel):
 class DifyRetrievalRecord(BaseModel):
     content: str
     title: str
-    score: float
+    score: float = Field(
+        description=(
+            "Normalized reciprocal-rank fusion (RRF) score in [0, 1], "
+            "not cosine similarity or a relevance probability. When both retrievers "
+            "are active, a top-ranked candidate found by only one can score 0.5."
+        )
+    )
     metadata: dict[str, Any]
 
 

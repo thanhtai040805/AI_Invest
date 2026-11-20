@@ -7,7 +7,7 @@ from sag_api.db.base import Base, IDMixin, TimestampMixin
 
 
 class Setting(IDMixin, TimestampMixin, Base):
-    """Cấu hình kiểu key-value (dự trữ: cài đặt cấp global / workspace có thể ghi đè lúc chạy)."""
+    """键值配置（预留：运行期可覆盖的全局 / 工作空间级设置）。"""
 
     __tablename__ = "settings"
     __table_args__ = (UniqueConstraint("scope", "key", name="uq_setting_scope_key"),)
@@ -15,3 +15,5 @@ class Setting(IDMixin, TimestampMixin, Base):
     scope: Mapped[str] = mapped_column(String(64), default="global", index=True)
     key: Mapped[str] = mapped_column(String(128), index=True)
     value: Mapped[dict] = mapped_column("value_json", JSON, default=dict)
+
+

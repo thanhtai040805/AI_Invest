@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, computed_field, field_validator
 
-from sag_api.enums import DocumentRole, DocumentStatus
+from sag_api.enums import DocumentStatus
 
 
 class MessageItem(BaseModel):
@@ -16,27 +16,13 @@ class MessageItem(BaseModel):
 
 
 class IngestRequest(BaseModel):
-    """Ghi thống nhất: văn bản hoặc một loạt tin nhắn, chọn một trong hai."""
+    """统一写入：文本或一批消息，二选一。"""
 
+    project_id: str | None = None
+    logical_source_id: str | None = None
     text: str | None = None
     title: str | None = None
     messages: list[MessageItem] | None = Field(default=None)
-    doc_role: DocumentRole | None = None
-    is_active: bool = True
-    fiscal_year: int | None = None
-    fiscal_quarter: int | None = None
-
-    @field_validator("doc_role", mode="before")
-    @classmethod
-    def normalize_doc_role(cls, value: object) -> object:
-        if value is None or isinstance(value, DocumentRole):
-            return value
-        if isinstance(value, str):
-            normalized = value.strip().upper()
-            if not normalized:
-                return None
-            return normalized
-        return value
 
 
 class DocumentOut(BaseModel):
@@ -52,26 +38,29 @@ class DocumentOut(BaseModel):
     event_count: int
     progress: int
     token_usage: int
+    token_usage_breakdown: dict | None = None
     error: str | None
     error_layer: str | None = None
     error_stage: str | None = None
-    doc_role: str | None = None
-    is_active: bool = True
-    fiscal_year: int | None = None
-    fiscal_quarter: int | None = None
-    content_sha256: str | None = None
-    processing_version: int = 1
-    structure_status: str = "PENDING"
-    extraction_status: str = "PENDING"
-    embedding_status: str = "PENDING"
-    fact_count: int = 0
-    coverage: dict | None = None
+    parser_provider: str | None = None
+    mineru_provider: str | None = None
+    mineru_model: str | None = None
+    parser_status: str | None = None
+    fallback_from: str | None = None
+    fallback_reason: str | None = None
+    octx_installation_id: str | None = Field(default=None, exclude=True)
     created_at: datetime
     updated_at: datetime
 
+    @computed_field
+    @property
+    def original_file_available(self) -> bool:
+        """OCTX packages can carry parsed concepts without original attachment bytes."""
+        return self.octx_installation_id is None
+
     @field_validator("error", mode="before")
     @classmethod
-    def redact_storage_error(cls, value: object) -> object:
+    def redact_storage_error(cls, value: object, info: ValidationInfo) -> object:
         """Keep SQL and local storage details in server logs, not in the UI."""
         if not isinstance(value, str):
             return value
@@ -85,6 +74,8 @@ class DocumentOut(BaseModel):
         )
         if not any(marker in normalized for marker in sql_markers):
             return value
+        if info.data.get("status") == DocumentStatus.DELETE_FAILED:
+            return "文档删除失败，请重试；若仍失败，请查看服务日志。"
         if "foreign key constraint failed" in normalized:
-            return "Khởi tạo nguồn thông tin chưa hoàn tất, tài liệu chưa được lưu vào kho, vui lòng thử lại."
-        return "Không lưu được tài liệu vào kho, vui lòng thử lại; nếu vẫn thất bại, hãy xem log dịch vụ."
+            return "信息源初始化未完成，文档尚未入库，请重试。"
+        return "文档入库失败，请重试；若仍失败，请查看服务日志。"

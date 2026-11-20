@@ -61,7 +61,7 @@ services:
 
   sag-postgres:
     profiles: ["research"]
-    image: pgvector/pgvector:pg16
+    image: postgres:16
     ports:
       - "127.0.0.1:55432:5432"
     environment:
@@ -82,43 +82,67 @@ services:
         max-file: "5"
     restart: unless-stopped
 
-  # ── Tầng 4: Financial Forensics & Evidence Core (SAG) ──────────
+  sag-qdrant:
+    profiles: ["research"]
+    image: qdrant/qdrant:v1.14.1
+    ports:
+      - "127.0.0.1:6333:6333"
+    environment:
+      QDRANT__SERVICE__API_KEY: ${SAG_QDRANT_API_KEY:-}
+    volumes:
+      - sag_qdrantdata:/qdrant/storage
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+    restart: unless-stopped
+
+  # ── Tầng 4: Stock Research Knowledge Routing RAG Core (SAG) ────
   sag-api:
     profiles: ["research"]
     build:
       context: ./SAG/apps/api
       dockerfile: Dockerfile
-      args:
-        SAG_API_EXTRAS: postgres
     expose:
       - "8000"
     environment:
       - SAG_ENVIRONMENT=${SAG_ENVIRONMENT:-prod}
       - SAG_DEBUG=${SAG_DEBUG:-false}
       - SAG_SECRET_KEY=${SAG_SECRET_KEY:-}
-      - SAG_SERVICE_TOKEN=${SAG_SERVICE_TOKEN:-}
-      - SAG_ADMIN_TOKEN=${SAG_ADMIN_TOKEN:-}
+      - SAG_AUTH_MODE=${SAG_AUTH_MODE:-local}
+      - SAG_ALLOW_REGISTRATION=${SAG_ALLOW_REGISTRATION:-false}
       - SAG_DATABASE_URL=postgresql+asyncpg://sag:${SAG_DB_PASSWORD:-sag_local_only}@sag-postgres:5432/sag
-      - SAG_MARKET_DATABASE_URL=postgresql+asyncpg://postgres:${DB_PASSWORD:-aiinvest123}@postgres:5432/aiinvest
+      - SAG_DATA_DIR=/data/engine
+      - SAG_UPLOAD_DIR=/data/uploads
+      - SAG_SAG_RELATIONAL_PROVIDER=postgres
+      - SAG_SAG_VECTOR_PROVIDER=qdrant
       - SAG_SAG_PG_HOST=sag-postgres
+      - SAG_SAG_PG_PORT=5432
       - SAG_SAG_PG_USER=sag
       - SAG_SAG_PG_PASSWORD=${SAG_DB_PASSWORD:-sag_local_only}
       - SAG_SAG_PG_DATABASE=sag
-      - SAG_LLM_MODEL=${SAG_LLM_MODEL:-openai/gpt-4.1-mini}
+      - SAG_SAG_QDRANT_URL=${SAG_SAG_QDRANT_URL:-http://sag-qdrant:6333}
+      - SAG_SAG_QDRANT_API_KEY=${SAG_SAG_QDRANT_API_KEY:-}
+      - SAG_LLM_PROVIDER=${SAG_LLM_PROVIDER:-openai}
+      - SAG_LLM_BASE_URL=${SAG_LLM_BASE_URL:-https://api.siliconflow.com/v1}
+      - SAG_LLM_MODEL=${SAG_LLM_MODEL:-Qwen/Qwen3-8B}
       - SAG_LLM_API_KEY=${SAG_LLM_API_KEY:-}
+      - SAG_EMBEDDING_BASE_URL=${SAG_EMBEDDING_BASE_URL:-https://api.siliconflow.com/v1}
+      - SAG_EMBEDDING_MODEL=${SAG_EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
       - SAG_EMBEDDING_API_KEY=${SAG_EMBEDDING_API_KEY:-}
-      - R2_ACCOUNT_ID=${R2_ACCOUNT_ID:-}
-      - R2_ENDPOINT_URL=${R2_ENDPOINT_URL:-}
-      - R2_BUCKET_NAME=${R2_BUCKET_NAME:-aiinvest-bctc-prod}
-      - R2_TOKEN=${R2_TOKEN:-}
-      - R2_ACCESS_KEY_ID=${R2_ACCESS_KEY_ID:-}
-      - R2_SECRET_ACCESS_KEY=${R2_SECRET_ACCESS_KEY:-}
-      - MINERU_KEY_CONCURRENCY=${MINERU_KEY_CONCURRENCY:-5}
-      - MINERU_SUBMIT_RPM=${MINERU_SUBMIT_RPM:-240}
+      - SAG_EMBEDDING_DIMENSIONS=${SAG_EMBEDDING_DIMENSIONS:-1024}
+      - SAG_DECISION_PROVIDER=${SAG_DECISION_PROVIDER:-disabled}
+      - SAG_DOCUMENT_PARSER=${SAG_DOCUMENT_PARSER:-auto}
+      - SAG_MINERU_PROVIDER=official
+      - SAG_MINERU_BASE_URL=${SAG_MINERU_BASE_URL:-https://mineru.net}
+      - SAG_MINERU_OFFICIAL_API_TOKEN=${SAG_MINERU_OFFICIAL_API_TOKEN:-}
+      - SAG_DOCUMENT_EVENT_EXTRACTION_ENABLED=${SAG_DOCUMENT_EVENT_EXTRACTION_ENABLED:-false}
+      - SAG_KNOWLEDGE_WORKER_ENABLED=${SAG_KNOWLEDGE_WORKER_ENABLED:-true}
+    volumes:
+      - sag_data:/data
     depends_on:
       sag-postgres:
-        condition: service_healthy
-      postgres:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8000/api/v1/system/health || exit 1"]
@@ -301,3 +325,5 @@ volumes:
   pgdata:
   redisdata:
   sag_pgdata:
+  sag_qdrantdata:
+  sag_data:

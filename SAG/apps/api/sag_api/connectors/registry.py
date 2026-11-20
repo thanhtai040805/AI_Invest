@@ -1,4 +1,4 @@
-"""Bảng đăng ký connector — tra cứu connector theo kind; connector mới đăng ký tại đây."""
+"""连接器注册表 —— 通过 kind 查找连接器；新增连接器在此登记。"""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ class ConnectorRegistry:
         key = ConnectorKind(kind) if not isinstance(kind, ConnectorKind) else kind
         connector = self._by_kind.get(key)
         if connector is None:
-            raise NotFoundError(f"Không tìm thấy connector: {key}")
+            raise NotFoundError(f"未知连接器：{key}")
         return connector
 
     def all(self) -> list[Connector]:
@@ -30,4 +30,4 @@ class ConnectorRegistry:
 registry = ConnectorRegistry()
 registry.register(FileUploadConnector())
 registry.register(WebConnector())
-# Tương lai: registry.register(NotionConnector()); registry.register(S3Connector()); ...
+# 未来：registry.register(NotionConnector()); registry.register(S3Connector()); ...

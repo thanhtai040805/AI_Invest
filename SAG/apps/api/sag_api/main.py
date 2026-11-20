@@ -1,29 +1,30 @@
-"""Lối vào ứng dụng sag-api v2 financial evidence service."""
+"""sag-api 应用入口。"""
 
 from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from sag_api import __version__
-from sag_api.api.v1 import api_router as v1_api_router
-from sag_api.api.v2 import api_router
+from sag_api.api.v1 import api_router
 from sag_api.branding import PRODUCT_NAME
 from sag_api.core.config import settings
-from sag_api.core.db import dispose_db, init_db
-from sag_api.core.db import SessionLocal
+from sag_api.core.db import SessionLocal, dispose_db, init_db
 from sag_api.core.error_taxonomy import ErrorCode, ErrorLayer, ErrorStage
 from sag_api.core.errors import ApiError
 from sag_api.core.logging import RequestContextMiddleware, configure_logging, get_logger
+from sag_api.core.principal_assertion import principal_assertion_lifespan
+from sag_api.runtime import KnowledgeRuntime
 
 log = get_logger("app")
 
 
-# Khóa mặc định đã biết là không an toàn (môi trường production từ chối khởi động)
+# 已知不安全的默认密钥（生产环境拒绝启动）
 _INSECURE_SECRETS = {
     "dev-insecure-secret-change-me-in-production-0123456789",
     "please-change-this-in-production-0123456789",
@@ -36,57 +37,78 @@ async def lifespan(app: FastAPI):
     configure_logging("DEBUG" if settings.debug else "INFO")
     if settings.environment == "prod" and settings.secret_key in _INSECURE_SECRETS:
         raise RuntimeError(
-            "Môi trường production cấm dùng SAG_SECRET_KEY mặc định. Hãy đặt giá trị ngẫu nhiên mạnh (≥32 byte), ví dụ: openssl rand -hex 32"
+            "生产环境禁止使用默认 SAG_SECRET_KEY。请设置强随机值（≥32 字节），例如：openssl rand -hex 32"
         )
     os.makedirs(settings.data_dir, exist_ok=True)
     os.makedirs(settings.upload_dir, exist_ok=True)
 
     await init_db()
 
-    # The legacy v1 Universe endpoints are still used by the existing
-    # KnowledgeUniverse renderer. Keep one shared engine manager in app state
-    # so timeline/expand/node requests and background jobs use the same SAG
-    # runtime instead of failing with a missing-state 500.
-    from sag_api.sag import EngineManager
+    # 把 DB 里保存的模型配置覆盖到 settings 单例（在构建 LLM/引擎之前）
+    from sag_api.services.settings_service import apply_startup_overrides
 
-    engine_manager = EngineManager(settings)
-    app.state.engine_manager = engine_manager
+    await apply_startup_overrides(SessionLocal)
 
-    # OCR jobs do not require the optional zleap engine. Keep the queue alive
-    # in the API process so URL/R2 OCR submissions are executable in dev and
-    # production without a second API-side scheduler process.
-    from sag_api.jobs.inproc import InProcessAsyncQueue
-
-    queue = InProcessAsyncQueue(SessionLocal, engine_manager=engine_manager, concurrency=settings.job_concurrency)
-    app.state.job_queue = queue
-    await queue.start()
-
-    from sag_agent import AgentRuntime
-    agent_runtime = AgentRuntime()
-    await agent_runtime.start()
-    app.state.agent_runtime = agent_runtime
-
-    log.info(
-        "sag-api v2 financial evidence service đã khởi động · env=%s · agent_llm_configured=%s · extraction_llm_configured=%s · embedding=%s",
-        settings.environment,
-        settings.llm_configured,
-        bool(settings.effective_extraction_llm_api_key),
-        settings.embedding_model,
-    )
     try:
-        yield
+        from sag_api.services.dsh_integration_service import write_connection_file
+
+        async with SessionLocal() as session:
+            await write_connection_file(session)
+    except OSError as error:
+        log.warning("DSH 本机连接文件刷新失败：%s", error)
+
+    runtime = KnowledgeRuntime(settings, SessionLocal, active_path=Path(settings.data_dir))
+    from sag_api.jobs.knowledge import KnowledgeWorker
+
+    knowledge_worker = KnowledgeWorker(SessionLocal, settings)
+
+    try:
+        async with principal_assertion_lifespan():
+            await runtime.start(app)
+            knowledge_worker.job_queue = app.state.job_queue
+            if getattr(app.state, "engine_manager", None) is not None and knowledge_worker.embed is None:
+                try:
+                    knowledge_worker.embed = await app.state.engine_manager.get_sag_embedding()
+                except Exception as error:  # noqa: BLE001
+                    log.warning("Failed to initialize knowledge worker embedder: %s", error)
+            if settings.knowledge_worker_enabled:
+                await knowledge_worker.start()
+            import asyncio
+            from sag_api.services.universe_knowledge_service import warm_active_tree_manifest_cache
+
+            warm_task = asyncio.create_task(
+                warm_active_tree_manifest_cache(SessionLocal),
+                name="sag-warm-universe-manifest",
+            )
+            try:
+                yield
+            finally:
+                if not warm_task.done():
+                    warm_task.cancel()
+                    try:
+                        await warm_task
+                    except BaseException:  # noqa: BLE001
+                        pass
     finally:
-        await agent_runtime.stop()
-        await queue.stop()
-        await engine_manager.aclose_all()
-        await dispose_db()
+        failures: list[BaseException] = []
+        for cleanup in (
+            knowledge_worker.stop,
+            runtime.stop,
+            dispose_db,
+        ):
+            try:
+                await cleanup()
+            except BaseException as error:
+                failures.append(error)
+        if failures:
+            raise BaseExceptionGroup("application shutdown failed", failures)
 
 
 def create_app() -> FastAPI:
     app = FastAPI(
         title=f"{PRODUCT_NAME} API",
         version=__version__,
-        summary="Financial evidence engine for Business Quality/GIL",
+        summary="Open-source Knowledge Platform · From Sources to Knowledge Q&A",
         lifespan=lifespan,
     )
 
@@ -97,7 +119,7 @@ def create_app() -> FastAPI:
         "allow_headers": ["*"],
         "expose_headers": ["X-Request-Id"],
     }
-    # Môi trường dev cho phép frontend mạng LAN (như http://192.168.x.x:3000), tránh CORS chặn khi truy cập bằng IP máy này
+    # 开发环境放行局域网前端（如 http://192.168.x.x:3000），避免本机 IP 访问时 CORS 拦截
     if settings.environment == "dev":
         cors_kwargs["allow_origin_regex"] = (
             r"https?://("
@@ -109,7 +131,7 @@ def create_app() -> FastAPI:
             r")(:\d+)?"
         )
     app.add_middleware(CORSMiddleware, **cors_kwargs)
-    # Theo dõi yêu cầu (thêm sau CORS → chạy lớp ngoài nhất, phân phối request_id trước tiên)
+    # 请求追踪（放在 CORS 之后添加 → 更外层执行，最先分配 request_id）
     app.add_middleware(RequestContextMiddleware)
 
     @app.exception_handler(ApiError)
@@ -122,11 +144,11 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def _handle_unexpected(request: Request, exc: Exception) -> JSONResponse:
-        log.exception("Ngoại lệ chưa xử lý: %s", exc)
+        log.exception("未处理异常：%s", exc)
         request_id = getattr(request.state, "request_id", None)
         error: dict[str, object] = {
             "code": ErrorCode.INTERNAL_ERROR,
-            "message": "Lỗi nội bộ máy chủ",
+            "message": "服务器内部错误",
             "layer": ErrorLayer.API.value,
             "stage": ErrorStage.UNKNOWN.value,
             "retryable": False,
@@ -135,34 +157,20 @@ def create_app() -> FastAPI:
             error["request_id"] = request_id
         return JSONResponse(status_code=500, content={"error": error})
 
-    # The web application still consumes the established v1 auth/knowledge
-    # contract, while the financial evidence endpoints live under v2.
-    # Mount both versions so the frontend does not receive false 404s during
-    # the v2 migration.
-    app.include_router(v1_api_router)
     app.include_router(api_router)
+
+    # 信源即 MCP：挂载 Streamable-HTTP 端点（失败不阻断应用启动）
+    try:
+        from sag_api.mcp.mount import attach_source_mcp
+
+        app.state.source_mcp = attach_source_mcp(app)
+    except Exception as e:  # noqa: BLE001
+        app.state.source_mcp = None
+        log.warning("MCP 端点挂载失败：%s", e)
 
     @app.get("/", tags=["system"])
     async def root() -> dict:
-        return {"name": PRODUCT_NAME, "version": __version__, "api": "/api/v2", "docs": "/docs"}
-
-    @app.get("/health/live", tags=["system"])
-    async def health_live() -> dict:
-        return {"status": "ok"}
-
-    @app.get("/health/ready", tags=["system"])
-    async def health_ready() -> dict:
-        return {
-            "status": "ok",
-            "database": "configured",
-            "embedding_model": settings.embedding_model,
-            "llm_configured": settings.llm_configured,
-            "extraction_llm_configured": bool(settings.effective_extraction_llm_api_key),
-        }
-
-    @app.get("/metrics", tags=["system"])
-    async def metrics() -> dict:
-        return {"service": "sag-v2", "metrics": {}}
+        return {"name": PRODUCT_NAME, "version": __version__, "docs": "/docs"}
 
     return app
 

@@ -1,4 +1,4 @@
-"""Tầng tương thích kho tri thức ngoài của Dify."""
+"""Dify 外部知识库兼容层。"""
 
 from __future__ import annotations
 
@@ -12,9 +12,11 @@ from sag_api.core.db import get_session
 from sag_api.core.deps import get_engine_manager
 from sag_api.core.errors import (
     ForbiddenError,
+    NotFoundError,
     ServiceUnavailableError,
     ValidationError,
 )
+from sag_api.core.principal_assertion import VerifiedPrincipal, require_principal_assertion
 from sag_api.sag import EngineManager
 from sag_api.schemas.dify import (
     DifyRetrievalRecord,
@@ -22,7 +24,7 @@ from sag_api.schemas.dify import (
     DifyRetrievalResponse,
 )
 from sag_api.services.retrieval_service import retrieve_relevant_sections
-from sag_api.services.source_service import get_source
+from sag_api.services.source_service import get_authorized_source, versioned_source_ids
 
 router = APIRouter(prefix="/dify", tags=["dify"])
 
@@ -51,6 +53,7 @@ def _section_title(source_name: str, heading: str) -> str:
 async def retrieval(
     body: DifyRetrievalRequest,
     _authorized: None = Depends(_require_dify_api_key),
+    principal: VerifiedPrincipal = Depends(require_principal_assertion),
     session: AsyncSession = Depends(get_session),
     engine_manager: EngineManager = Depends(get_engine_manager),
 ) -> DifyRetrievalResponse:
@@ -69,15 +72,30 @@ async def retrieval(
             "metadata_condition is not supported by the SAG Dify integration"
         )
 
-    source = await get_source(session, knowledge_id)
+    source = await get_authorized_source(session, principal=principal, source_id=knowledge_id)
+    if source is None:
+        raise NotFoundError("信源不存在")
     strategy = settings.dify_search_strategy
-    outcome = await retrieve_relevant_sections(
-        engine_manager,
-        [source],
-        query,
-        strategy=strategy,
-        top_k=body.retrieval_setting.top_k,
-    )
+    if source.id in await versioned_source_ids(session, [source.id]):
+        from sag_api.services.query_strategy_planner import plan_query
+        from sag_api.services.search_unit_retrieval_service import retrieve_search_unit_sections
+
+        outcome = await retrieve_search_unit_sections(
+            engine_manager,
+            [source],
+            query,
+            principal=principal,
+            top_k=body.retrieval_setting.top_k,
+            query_strategy_plan=plan_query(query),
+        )
+    else:
+        outcome = await retrieve_relevant_sections(
+            engine_manager,
+            [source],
+            query,
+            strategy=strategy,
+            top_k=body.retrieval_setting.top_k,
+        )
     effective_strategy = str(
         outcome.stats.get("effective_strategy")
         or outcome.stats.get("strategy")
@@ -90,14 +108,12 @@ async def retrieval(
             title=_section_title(source.name, section.heading),
             score=section.score,
             metadata={
-                "document_id": (
-                    f"{source.id}:{section.chunk_id}"
-                    if section.chunk_id
-                    else source.id
+                "document_id": section.document_id or (
+                    f"{source.id}:{section.chunk_id}" if section.chunk_id else source.id
                 ),
                 "source_id": source.id,
                 "source_name": source.name,
-                "chunk_id": section.chunk_id or "",
+                "chunk_id": getattr(section, "search_unit_id", None) or section.chunk_id or "",
                 "heading": section.heading,
                 "retrieval_strategy": effective_strategy,
                 "fallback_used": fallback_used,
@@ -106,4 +122,4 @@ async def retrieval(
         for section in outcome.sections
         if section.score >= body.retrieval_setting.score_threshold
     ]
-    return DifyRetrievalResponse(records=records)
+    return DifyRetrievalResponse(records=records[:body.retrieval_setting.top_k])

@@ -12,6 +12,9 @@ project_root = Path(SPECPATH).parent
 datas = []
 binaries = []
 hiddenimports = [
+    "aiosqlite",
+    "sqlalchemy.dialects.sqlite",
+    "sqlalchemy.dialects.sqlite.aiosqlite",
     "tiktoken_ext.openai_public",
 ]
 
@@ -20,10 +23,13 @@ def is_runtime_submodule(name):
 
 
 for package in (
+    "jieba",
     "magika",
     "markitdown",
     "tiktoken",
     "tokenizers",
+    "octx",
+    "zleap",
 ):
     package_datas, package_binaries, package_imports = collect_all(
         package,
@@ -49,14 +55,30 @@ for package in (
     hiddenimports += collect_submodules(package)
 hiddenimports += ["litellm.integrations.custom_logger"]
 
+# The application uses MCP clients and FastMCP servers, but not mcp.cli. The CLI
+# has optional Typer dependencies and should not become part of the app runtime.
+datas += collect_data_files("mcp")
 for package in (
+    "mcp.client",
+    "mcp.server",
+    "mcp.shared",
+    "mcp.os",
+):
+    hiddenimports += collect_submodules(package)
+
+for package in (
+    "jieba-py",
     "sag-api",
+    "zleap-sag",
     "litellm",
     "markitdown",
+    "mcp",
+    "octx",
 ):
     datas += copy_metadata(package, recursive=True)
 
 hiddenimports += collect_submodules("sag_api")
+hiddenimports += collect_submodules("sag_agent")
 
 a = Analysis(
     [str(project_root / "sag_api" / "desktop.py")],

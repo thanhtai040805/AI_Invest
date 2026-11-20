@@ -11,7 +11,6 @@ import asyncio
 import inspect
 import json
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
 from typing import Any
 
 from sag_agent import CancellationToken, ModelChunk, ModelRequest, Usage
@@ -24,19 +23,17 @@ from sag_api.core.errors import (
     ServiceUnavailableError,
     UpstreamError,
 )
-from sag_api.core.litellm_policy import apply_litellm_completion_policy
+from sag_api.core.litellm_policy import (
+    _with_json_object,
+    apply_litellm_completion_policy,
+    should_downgrade_json_schema,
+)
 from sag_api.core.logging import get_logger
+from sag_api.core.token_usage import extract_chat_usage, record_llm_usage
 
 log = get_logger("generation")
 
 Message = dict[str, Any]
-
-
-@dataclass(frozen=True)
-class CompletionResult:
-    content: str
-    finish_reason: str | None = None
-    usage: Usage | None = None
 
 
 async def _litellm_completion(**kwargs: Any) -> Any:
@@ -53,16 +50,16 @@ def _attr(value: Any, name: str, default: Any = None) -> Any:
 
 
 def _classify_llm_error(e: Exception, *, stage: ErrorStage) -> ApiError:
-    """Tách lỗi LiteLLM thô thành lỗi domain có layer/stage.
+    """把 LiteLLM 的裸异常拆分为带 layer/stage 的领域异常。
 
-    Trước đây mọi lỗi nhà cung cấp đều gộp thành một ``UpstreamError``，dev không phân biệt
-    được「timeout/giới hạn (có thể retry)」và「sai chứng thực/yêu cầu bất hợp lệ (phải sửa cấu hình)」。
-    Tại đây phân loại thô theo tên loại ngoại lệ và status_code của LiteLLM，tất cả gom về lớp LLM.
+    历史上所有厂商错误都塌缩成一个 ``UpstreamError``，研发无法区分
+    「超时/限流（可重试）」与「鉴权/请求非法（改配置才行）」。这里按
+    LiteLLM 的异常类型名与 status_code 做粗分类，全部归到 LLM 层。
     """
     name = type(e).__name__
     status = getattr(e, "status_code", None)
     detail = f"{name}: {e}"
-    # Timeout / giới hạn / dịch vụ tạm không khả dụng —— có thể retry an toàn
+    # 超时 / 限流 / 服务暂不可用 —— 可安全重试
     _retryable_names = {
         "Timeout",
         "APITimeoutError",
@@ -72,29 +69,29 @@ def _classify_llm_error(e: Exception, *, stage: ErrorStage) -> ApiError:
     }
     if name in _retryable_names or status in {408, 429, 503}:
         return ServiceUnavailableError(
-            f"Lời gọi mô hình tạm thất bại（{name}），vui lòng thử lại sau：{e}",
+            f"模型调用暂时失败（{name}），请稍后重试：{e}",
             code=ErrorCode.LLM_UNAVAILABLE,
             layer=ErrorLayer.LLM,
             stage=stage,
         )
-    # Chứng thực thất bại —— vấn đề API key / quyền，cần sửa cấu hình
+    # 鉴权失败 —— API key / 权限问题，需改配置
     if name in {"AuthenticationError", "PermissionDeniedError"} or status in {401, 403}:
         return ConfigurationError(
-            f"Mô hình xác thực thất bại（{name}），vui lòng kiểm tra cấu hình API Key：{e}",
+            f"模型鉴权失败（{name}），请检查 API Key 配置：{e}",
             code=ErrorCode.LLM_AUTH_ERROR,
             layer=ErrorLayer.LLM,
             stage=ErrorStage.CONFIG,
         )
-    # Yêu cầu bất hợp lệ / vượt giới hạn ngữ cảnh —— vấn đề của bản thân yêu cầu
+    # 请求非法 / 上下文超限 —— 请求本身的问题
     if name in {"BadRequestError", "ContextWindowExceededError", "UnprocessableEntityError"} or status in {400, 422}:
         return UpstreamError(
-            f"Mô hình từ chối yêu cầu（{name}）：{e}",
+            f"模型拒绝请求（{name}）：{e}",
             code=ErrorCode.LLM_BAD_REQUEST,
             layer=ErrorLayer.LLM,
             stage=stage,
         )
-    # Các trường hợp còn lại đều gộp vào lỗi sinh chung
-    return UpstreamError(f"Sinh câu trả lời thất bại：{detail}", layer=ErrorLayer.LLM, stage=stage)
+    # 其它一律归为通用生成失败
+    return UpstreamError(f"生成失败：{detail}", layer=ErrorLayer.LLM, stage=stage)
 
 
 class LLMClient:
@@ -103,15 +100,11 @@ class LLMClient:
 
     @property
     def configured(self) -> bool:
-        return bool(self._settings.effective_agent_llm_api_key or self._settings.llm_api_key)
-
-    @property
-    def extraction_configured(self) -> bool:
-        return bool(self._settings.effective_extraction_llm_api_key)
+        return self._settings.llm_configured
 
     def _ensure_configured(self) -> None:
         if not self.configured:
-            raise ConfigurationError("Chưa cấu hình LLM（SAG_LLM_PROVIDER / SAG_LLM_API_KEY / SAG_LLM_MODEL）")
+            raise ConfigurationError("尚未配置 LLM（SAG_LLM_PROVIDER / SAG_LLM_API_KEY / SAG_LLM_MODEL）")
 
     async def _create_completion(
         self,
@@ -120,18 +113,16 @@ class LLMClient:
         stream: bool = False,
         tools: list[dict] | None = None,
         tool_choice: str | dict | None = None,
-        extraction: bool = False,
         response_format: dict[str, Any] | None = None,
-        max_tokens: int | None = None,
     ) -> Any:
         request: dict[str, Any] = {
-            "model": self._settings.routed_extraction_llm_model if extraction else self._settings.routed_agent_llm_model,
-            "api_key": self._settings.effective_extraction_llm_api_key if extraction else self._settings.effective_agent_llm_api_key,
+            "model": self._settings.routed_llm_model,
+            "api_key": self._settings.llm_api_key,
             "timeout": self._settings.llm_timeout_ms / 1000,
             "num_retries": self._settings.llm_max_retries,
             "messages": messages,
             "temperature": self._settings.effective_llm_temperature,
-            "max_tokens": max_tokens if max_tokens is not None else self._settings.llm_max_tokens,
+            "max_tokens": self._settings.llm_max_tokens,
             "stream": stream,
         }
         if tools:
@@ -140,25 +131,39 @@ class LLMClient:
                 request["tool_choice"] = tool_choice
         if response_format is not None:
             request["response_format"] = response_format
-        api_base = self._settings.effective_extraction_llm_base_url if extraction else self._settings.effective_agent_llm_base_url
-        if api_base:
-            request["api_base"] = api_base
-        request = apply_litellm_completion_policy(self._settings, request)
-        return await _litellm_completion(**request)
-
-    @staticmethod
-    def _usage_from_response(resp: Any) -> Usage | None:
-        raw_usage = _attr(resp, "usage")
-        if raw_usage is None:
-            return None
-        prompt_details = _attr(raw_usage, "prompt_tokens_details")
-        completion_details = _attr(raw_usage, "completion_tokens_details")
-        return Usage(
-            input_tokens=int(_attr(raw_usage, "prompt_tokens", 0) or 0),
-            output_tokens=int(_attr(raw_usage, "completion_tokens", 0) or 0),
-            cached_tokens=int(_attr(prompt_details, "cached_tokens", 0) or 0),
-            reasoning_tokens=int(_attr(completion_details, "reasoning_tokens", 0) or 0),
-        )
+        if self._settings.llm_base_url:
+            request["api_base"] = self._settings.llm_base_url
+        normalized = apply_litellm_completion_policy(self._settings, request)
+        try:
+            return await _litellm_completion(**normalized)
+        except Exception as err:
+            if stream and "stream_options" in normalized and "stream_options" in str(err).casefold():
+                fallback_request = dict(request)
+                fallback_request["stream_options"] = None
+                return await _litellm_completion(
+                    **apply_litellm_completion_policy(self._settings, fallback_request)
+                )
+            if not stream and should_downgrade_json_schema(err, normalized, self._settings):
+                json_obj_req = _with_json_object(normalized)
+                try:
+                    return await _litellm_completion(**json_obj_req)
+                except Exception as inner_err:
+                    status = getattr(inner_err, "status_code", None)
+                    if status in {400, 422} and "response_format" in str(inner_err).casefold():
+                        plain_req = dict(json_obj_req)
+                        plain_req.pop("response_format", None)
+                        return await _litellm_completion(**plain_req)
+                    raise
+            if (
+                not stream
+                and "response_format" in normalized
+                and getattr(err, "status_code", None) in {400, 422}
+                and "response_format" in str(err).casefold()
+            ):
+                plain_req = dict(normalized)
+                plain_req.pop("response_format", None)
+                return await _litellm_completion(**plain_req)
+            raise
 
     @staticmethod
     async def _close_stream(stream: Any) -> None:
@@ -181,12 +186,16 @@ class LLMClient:
         """
 
         self._ensure_configured()
+        serialized_messages = [message.to_model_dict() for message in request.messages]
         tool_parts: dict[int, dict[str, str]] = {}
         finish_reason: str | None = None
+        latest_raw_usage: Any = None
+        collected_parts: list[str] = []
+        usage_recorded = False
         stream = None
         try:
             stream = await self._create_completion(
-                [message.to_model_dict() for message in request.messages],
+                serialized_messages,
                 tools=list(request.tools) or None,
                 tool_choice=request.tool_choice if request.tools else None,
                 stream=True,
@@ -195,6 +204,7 @@ class LLMClient:
                 cancellation.raise_if_cancelled()
                 raw_usage = _attr(chunk, "usage")
                 if raw_usage is not None:
+                    latest_raw_usage = raw_usage
                     prompt_details = _attr(raw_usage, "prompt_tokens_details")
                     completion_details = _attr(raw_usage, "completion_tokens_details")
                     yield ModelChunk(
@@ -213,6 +223,7 @@ class LLMClient:
                 delta = _attr(choice, "delta", {})
                 token = _attr(delta, "content")
                 if token:
+                    collected_parts.append(token)
                     yield ModelChunk(text_delta=token)
                 for fallback_index, tool_delta in enumerate(_attr(delta, "tool_calls") or []):
                     index = _attr(tool_delta, "index")
@@ -231,6 +242,17 @@ class LLMClient:
                             part["arguments"] += (
                                 arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False)
                             )
+
+            if latest_raw_usage is not None or collected_parts or tool_parts:
+                tool_completion_text = "".join(collected_parts) + "".join(
+                    p.get("name", "") + p.get("arguments", "") for p in tool_parts.values()
+                )
+                record_llm_usage(
+                    model=self._settings.llm_model,
+                    usage=extract_chat_usage(latest_raw_usage, serialized_messages, tool_completion_text),
+                    component="agent_turn",
+                )
+                usage_recorded = True
 
             calls: list[RuntimeToolCall] = []
             for index in sorted(tool_parts):
@@ -260,129 +282,95 @@ class LLMClient:
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001
-            log.warning("Lời gọi stream lượt LLM thất bại：%s", e)
+            log.warning("LLM 轮次流式调用失败：%s", e)
             raise _classify_llm_error(e, stage=ErrorStage.GENERATE) from e
         finally:
+            if not usage_recorded and (latest_raw_usage is not None or collected_parts or tool_parts):
+                tool_completion_text = "".join(collected_parts) + "".join(
+                    p.get("name", "") + p.get("arguments", "") for p in tool_parts.values()
+                )
+                record_llm_usage(
+                    model=self._settings.llm_model,
+                    usage=extract_chat_usage(latest_raw_usage, serialized_messages, tool_completion_text),
+                    component="agent_turn",
+                )
+                usage_recorded = True
             if stream is not None:
                 try:
                     await self._close_stream(stream)
                 except Exception as e:  # noqa: BLE001
-                    log.debug("Đóng stream lượt LLM thất bại：%s", e)
+                    log.debug("LLM 轮次流关闭失败：%s", e)
 
-    async def complete(self, messages: list[Message]) -> str:
+    async def complete(
+        self,
+        messages: list[Message],
+        *,
+        response_format: dict[str, Any] | None = None,
+    ) -> str:
         self._ensure_configured()
         try:
-            resp = await self._create_completion(messages)
+            resp = await self._create_completion(messages, response_format=response_format)
             choices = _attr(resp, "choices", []) or []
             if not choices:
                 raise UpstreamError(
-                    "Mô hình không trả về câu trả lời ứng viên",
+                    "模型未返回候选答案",
                     code=ErrorCode.LLM_EMPTY_RESPONSE,
                     layer=ErrorLayer.LLM,
                     stage=ErrorStage.GENERATE,
                 )
-            return _attr(_attr(choices[0], "message", {}), "content", "") or ""
+            content = _attr(_attr(choices[0], "message", {}), "content", "") or ""
+            record_llm_usage(
+                model=self._settings.llm_model,
+                usage=extract_chat_usage(_attr(resp, "usage"), messages, content),
+            )
+            return content
         except ApiError:
             raise
         except Exception as e:  # noqa: BLE001
             raise _classify_llm_error(e, stage=ErrorStage.GENERATE) from e
-
-    async def complete_json(self, messages: list[Message], *, max_tokens: int | None = None) -> str:
-        """Complete on the agent/retrieval route with a JSON response format."""
-        self._ensure_configured()
-        try:
-            resp = await self._create_completion(
-                messages,
-                response_format={"type": "json_object"},
-                max_tokens=max_tokens,
-            )
-            choices = _attr(resp, "choices", []) or []
-            if not choices:
-                raise UpstreamError(
-                    "Mô hình không trả về câu trả lời JSON",
-                    code=ErrorCode.LLM_EMPTY_RESPONSE,
-                    layer=ErrorLayer.LLM,
-                    stage=ErrorStage.GENERATE,
-                )
-            return _attr(_attr(choices[0], "message", {}), "content", "") or ""
-        except ApiError:
-            raise
-        except Exception as e:  # noqa: BLE001
-            raise _classify_llm_error(e, stage=ErrorStage.GENERATE) from e
-
-    async def complete_extraction_json(self, messages: list[Message], *, max_tokens: int | None = None) -> CompletionResult:
-        if not self.extraction_configured:
-            raise ConfigurationError("Chưa cấu hình LLM extraction（SAG_EXTRACTION_LLM_* hoặc SAG_LLM_*）")
-        try:
-            response_format: dict[str, Any] = {"type": "json_object"}
-            for message in reversed(messages):
-                content = message.get("content") if isinstance(message, dict) else None
-                if not isinstance(content, str):
-                    continue
-                try:
-                    prompt_payload = json.loads(content)
-                except json.JSONDecodeError:
-                    continue
-                schema = prompt_payload.get("json_schema") if isinstance(prompt_payload, dict) else None
-                if isinstance(schema, dict):
-                    response_format = {
-                        "type": "json_schema",
-                        "json_schema": {
-                            "name": "financial_extraction_manifest",
-                            "strict": True,
-                            "schema": schema,
-                        },
-                    }
-                break
-            resp = await self._create_completion(
-                messages,
-                extraction=True,
-                response_format=response_format,
-                max_tokens=max_tokens,
-            )
-            choices = _attr(resp, "choices", []) or []
-            if not choices:
-                raise UpstreamError(
-                    "Mô hình extraction không trả về ứng viên",
-                    code=ErrorCode.LLM_EMPTY_RESPONSE,
-                    layer=ErrorLayer.LLM,
-                    stage=ErrorStage.EXTRACT,
-                )
-            choice = choices[0]
-            content = _attr(_attr(choice, "message", {}), "content", "") or ""
-            return CompletionResult(
-                content=content,
-                finish_reason=_attr(choice, "finish_reason"),
-                usage=self._usage_from_response(resp),
-            )
-        except ApiError:
-            raise
-        except Exception as e:  # noqa: BLE001
-            raise _classify_llm_error(e, stage=ErrorStage.EXTRACT) from e
 
     async def stream_complete(self, messages: list[Message]) -> AsyncIterator[str]:
         """Stream plain text completion deltas without the Agent/tool protocol."""
 
         self._ensure_configured()
         stream = None
+        latest_raw_usage: Any = None
+        collected_parts: list[str] = []
+        usage_recorded = False
         try:
             stream = await self._create_completion(messages, stream=True)
             async for chunk in stream:
+                raw_usage = _attr(chunk, "usage")
+                if raw_usage is not None:
+                    latest_raw_usage = raw_usage
                 choices = _attr(chunk, "choices", []) or []
                 if not choices:
                     continue
                 token = _attr(_attr(choices[0], "delta", {}), "content")
                 if token:
+                    collected_parts.append(token)
                     yield token
+            if latest_raw_usage is not None or collected_parts:
+                record_llm_usage(
+                    model=self._settings.llm_model,
+                    usage=extract_chat_usage(latest_raw_usage, messages, "".join(collected_parts)),
+                )
+                usage_recorded = True
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001
             raise _classify_llm_error(e, stage=ErrorStage.GENERATE) from e
         finally:
+            if not usage_recorded and (latest_raw_usage is not None or collected_parts):
+                record_llm_usage(
+                    model=self._settings.llm_model,
+                    usage=extract_chat_usage(latest_raw_usage, messages, "".join(collected_parts)),
+                )
+                usage_recorded = True
             # Closing explicitly makes browser aborts release the upstream HTTP
             # connection immediately, even when the stream is only partly read.
             if stream is not None:
                 try:
                     await self._close_stream(stream)
                 except Exception as e:  # noqa: BLE001
-                    log.debug("Đóng stream LLM thất bại：%s", e)
+                    log.debug("LLM 流关闭失败：%s", e)

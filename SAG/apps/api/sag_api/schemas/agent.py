@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from sag_api.enums import BindingTargetType, MessageRole
+from sag_api.enums import BindingTargetType, MessageRole, MessageStatus
 
 
 class AgentCreate(BaseModel):
@@ -35,7 +35,7 @@ class AgentOut(BaseModel):
 class BindingCreate(BaseModel):
     target_type: BindingTargetType = BindingTargetType.SOURCE
     target_id: str = ""
-    config: dict[str, Any] = Field(default_factory=dict)  # MCP: url hoặc command/args/env
+    config: dict[str, Any] = Field(default_factory=dict)  # MCP: url 或 command/args/env
 
 
 class BindingOut(BaseModel):
@@ -48,12 +48,18 @@ class BindingOut(BaseModel):
 
 
 class ThreadCreate(BaseModel):
-    title: str = "Cuộc trò chuyện mới"
+    title: str = "New chat"
 
 
 class ThreadUpdate(BaseModel):
     title: str | None = Field(default=None, max_length=200)
     archived: bool | None = None
+
+
+class ThreadBranchIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = Field(default=None, max_length=200)
 
 
 class ThreadOut(BaseModel):
@@ -63,6 +69,10 @@ class ThreadOut(BaseModel):
     agent_id: str
     title: str
     archived: bool = False
+    is_branched: bool = False
+    parent_thread_id: str | None = None
+    parent_thread_title: str | None = None
+    branch_point_message_id: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -72,12 +82,19 @@ class MessageOut(BaseModel):
 
     id: str
     thread_id: str
+    reply_to_message_id: str | None = None
+    regenerated_from_message_id: str | None = None
+    is_inherited: bool = False
     role: MessageRole
     content: str
     citations: list[dict[str, Any]]
     attachments: list[dict[str, Any]] = Field(default_factory=list)
     steps: list[dict[str, Any]] = Field(default_factory=list)
     prompt_preview: str = ""
+    # 助手气泡的终态：ok / failed / cancelled。用户消息始终 ok。
+    status: MessageStatus = MessageStatus.OK
+    # 失败/取消时的结构化错误 {code, message, retryable, details}；ok 时为 None。
+    error: dict[str, Any] | None = None
     created_at: datetime
 
 
@@ -89,20 +106,20 @@ class MessagePageOut(BaseModel):
 
 class AskRequest(BaseModel):
     query: str = Field(default="", max_length=4000)
-    # Danh sách id ảnh đính kèm (≤4, tải lên qua POST /attachments)
+    # 图片附件 id 列表（≤4，经 POST /attachments 上传）
     attachments: list[str] = Field(default_factory=list, max_length=4)
-    # Giới hạn phạm vi @kho tri thức: chỉ truy vấn trong các nguồn này (trống = mặc định tất cả)
-    source_ids: list[str] = Field(default_factory=list, max_length=8)
-    # Khả năng trực tuyến do người dùng cấp quyền theo từng lượt; mặc định tắt, khi bật mới lộ các công cụ ngoài/MCP được cấu hình cho Agent.
+    # @知识库范围限定：缺省使用 Principal 允许的 Sources；显式 [] 不检索任何 Source。
+    source_ids: list[str] | None = Field(default=None, max_length=8)
+    # 联网能力由用户逐轮授权；默认关闭，开启后才暴露 Agent 配置的外部/MCP 工具。
     web_enabled: bool = False
-    # Trường tương thích với client cũ: knowledge_only=false tương đương web_enabled=true.
-    # Khi cả hai trường cũ và mới cùng xuất hiện, lấy web_enabled rõ nghĩa hơn làm chuẩn.
+    # 旧客户端兼容字段：knowledge_only=false 等价于 web_enabled=true。
+    # 新旧字段同时出现时，以语义更明确的 web_enabled 为准。
     knowledge_only: bool | None = None
 
     @model_validator(mode="after")
     def require_text_or_attachment(self):
         if not self.query.strip() and not self.attachments:
-            raise ValueError("Câu hỏi hoặc ảnh phải cung cấp ít nhất một")
+            raise ValueError("Provide at least a question or an image attachment")
         return self
 
     @property
@@ -117,4 +134,4 @@ class AskRequest(BaseModel):
 
 
 class ToolRejection(BaseModel):
-    reason: str = Field(default="Người dùng từ chối thực thi", max_length=500)
+    reason: str = Field(default="User rejected tool execution", max_length=500)

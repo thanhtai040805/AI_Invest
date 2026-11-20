@@ -1,6 +1,6 @@
 # AIInvest: Tài Liệu Kiến Trúc Hệ Thống Công Nghệ Thông Tin
 > **Phiên bản**: 2.0.0 (Enterprise IT Architecture Specification)  
-> **Áp dụng cho**: Monorepo AIInvest (Frontend, Backend, AI Engine, SAG Forensic Engine, Storage Tier)  
+> **Áp dụng cho**: Monorepo AIInvest (Frontend, Backend, AI Engine, SAG Stock Research Engine, Storage Tier)  
 > **Tài liệu toán học & thuật toán**: [ALGORITHMS_AND_FINANCIAL_MODELS.md](file:///d:/AIInvest/docs/architecture/ALGORITHMS_AND_FINANCIAL_MODELS.md)  
 > **Sơ đồ đính kèm**: [docs/diagrams/paper-grade-algorithmic-data-flow.html](file:///d:/AIInvest/docs/diagrams/paper-grade-algorithmic-data-flow.html)
 
@@ -26,16 +26,16 @@ Hệ thống được thiết kế theo mô hình **Event-Driven Microservices k
                     │ REST / gRPC                           │ Event Bus
                     ▼                                       ▼
 ┌───────────────────────────────────────┐   ┌────────────────────────────────────┐
-│   TẦNG 3: QUANT ORG CORE ENGINE       │   │  TẦNG 4: ĐIỀU TRA GIAN LẬN (SAG)   │
-│ 12 Quant Agents · Clean Architecture  │   │ SAG v2 Research Core (internal)    │
-│ Dual-Book Risk (HOSE T+2.5) (:8000)   │RPC│ MinerU Financial OCR Parser        │
+│   TẦNG 3: QUANT ORG CORE ENGINE       │   │  TẦNG 4: STOCK RESEARCH RAG (SAG)  │
+│ 12 Quant Agents · Clean Architecture  │   │ Knowledge Routing RAG (v1, isolated)│
+│ Dual-Book Risk (HOSE T+2.5) (:8000)   │   │ Smart Hybrid MinerU + Leiden Tree  │
 └───────────────────┬───────────────────┘   └─────────────────┬──────────────────┘
                     │                                         │
-                    │ SQL Pool (Port 5432)                    │ S3 API (Port 9000)
+                    │ SQL Pool (Port 5432)                    │ PG + Qdrant
                     ▼                                         ▼
 ┌────────────────────────────────────────────────────────────────────────────────┐
 │                     TẦNG 5: LƯU TRỮ DOANH NGHIỆP (PERSISTENCE)                 │
-│ PostgreSQL 16 (Core) · PostgreSQL/pgvector (SAG) · MinIO/S3 (BCTC PDFs & Files) │
+│  PostgreSQL 16 (Core) · PostgreSQL 16 + Qdrant (SAG) · Cloudflare R2 / Redis   │
 └────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -105,14 +105,14 @@ Hệ thống được thiết kế theo mô hình **Event-Driven Microservices k
   12. *Execution Arbiter Agent*: Tổng hợp tranh luận và đưa ra quyết định đặt lệnh.
 - **Port**: `8000`.
 
-### Tầng 4: Financial Forensics & OCR Engine (`SAG/` & `MinerU`)
-- **Công nghệ lõi**: MinerU PDF Parser, SAG v2 Python Evidence Engine.
-- **Nguyên lý Zero-Hallucination**:
-  - **MinerU**: Trích xuất bảng biểu phức tạp và văn bản báo cáo tài chính dạng PDF quét thành Markdown với neo dòng chính xác (line-anchored).
-  - **SAG v2 (Statement Analysis & Governance)**: 
-    - **quote_hash**: Băm SHA-256 từng dòng thông tin tài chính để lưu dấu vết chứng cứ không thể giả mạo.
-    - **GIL (Governance / Integrity / Liability Risk)**: Thuật toán nhận diện dấu hiệu gian lận báo cáo tài chính (doanh thu ảo, phải thu đột biến, tồn kho ảo).
-    - **MOAT Score**: Tính toán điểm số lợi thế cạnh tranh bền vững của doanh nghiệp.
+### Tầng 4: Stock Research Knowledge Routing RAG Engine (`SAG/`)
+- **Công nghệ lõi**: FastAPI + `zleap-sag==0.12.0` + PostgreSQL 16 (source of truth) + Qdrant (vector accelerator) + Smart Hybrid MinerU / isolated local parser.
+- **Phạm vi duy nhất**: Nghiên cứu cổ phiếu chuyên sâu (điểm mạnh, điểm yếu cấu trúc và lợi thế cạnh tranh / **MOAT**). Toàn bộ phân hệ **GIL (Graph Intelligence Layer)** và API `/api/v2/financial` cũ đã được loại bỏ hoàn toàn.
+- **Kiến trúc Knowledge Routing RAG (0 LLM calls lúc Ingest)**:
+  - **Canonical Extraction & Dedup/Versioning**: Phân rã tài liệu thành `CanonicalBlock` có neo vị trí/trang, chống trùng 4 tầng (SHA-256 + MinHash) và quản lý `DocumentVersion` theo thời gian.
+  - **Search Path (`SEARCH_READY`)**: Xây dựng `SearchUnit` và chỉ mục lai Dense + Sparse trên Qdrant với bộ nhớ đệm embedding dùng chung (`SAG_DOCUMENT_EVENT_EXTRACTION_ENABLED=false`).
+  - **Knowledge Foundation (`KNOWLEDGE_READY`)**: Trích xuất tất định `E0/E1` (loại bỏ hoàn toàn pha E2 LLM enrichment theo ADR benchmark), dựng `DenseGraph` (`KnowledgeUnitEdge`), phân cụm **Constrained Hierarchical Leiden** tạo `Knowledge Routing Tree`, và xuất bản không gián đoạn qua giao thức **Blue-Green dual-slot (`A/B`)**.
+  - **Adaptive Retrieval & Grounded Citations**: Định tuyến chùm trên cây tri thức kết hợp ngân sách global escape, truy hồi lai cục bộ + RRF + MMR + mở rộng đa bước HippoRAG 2 giới hạn, kèm theo dõi token chuẩn xác (`token_usage.py`).
 - **Port**: `8000` inside the `research` Compose profile only; no public SAG port.
 
 ### Tầng 5: Enterprise Persistence & Storage Tier
@@ -120,10 +120,10 @@ Hệ thống được thiết kế theo mô hình **Event-Driven Microservices k
 - **Portfolio account identity**: `portfolio_account.account_id` stores up to 64 characters so it can use the same UUID identifier as `users.id`.
 - **Alpha research storage**: `alpha_signals` is retired because the current application has no readers or writers.
 - **Trading decisions**: Orders are produced through the Agent workflow and risk approval; the detached daily BUY/HOLD/SELL feed and its UI/API are retired.
-- **PostgreSQL 16 + pgvector (SAG)**: CSDL tách biệt cho tài liệu, chứng cứ, đồ thị và vector pháp y. SAG chỉ đọc dữ liệu thị trường Core qua kết nối riêng.
-- **MinIO / AWS S3**: Lưu trữ các file PDF gốc BCTC, tài liệu công bố thông tin và báo cáo xuất ra.
+- **PostgreSQL 16 + Qdrant (SAG)**: CSDL tách biệt (`sag-postgres` + `sag-qdrant` hoặc Qdrant Cloud) cho `CanonicalBlock`, `DocumentVersion`, `KnowledgeUnit`, `Knowledge Routing Tree` và chỉ mục vector lai trong profile `research`.
+- **Cloudflare R2 / Object Storage**: Lưu trữ các file PDF gốc BCTC/BCTN, tài liệu công bố thông tin và báo cáo xuất ra.
 - **Redis 7**: Cache dữ liệu bảng giá, ticker OHLCV và kênh truyền Pub/Sub giữa các microservices.
-- **Ports**: PostgreSQL (`5432`), Redis (`6379`), MinIO (`9000`/`9001`).
+- **Ports**: PostgreSQL (`5432`), Qdrant (`6333` research-only), Redis (`6379`).
 
 ---
 
@@ -177,11 +177,11 @@ Hệ thống được thiết kế theo mô hình **Event-Driven Microservices k
 
 Quy trình khép kín từ khi phát hiện BCTC mới đến khi sinh lệnh mua/bán:
 
-1. **Ingestion**: Người dùng upload hoặc crawler định kỳ kéo BCTC định dạng PDF từ cổng thông tin HOSE/UBCK về MinIO.
-2. **OCR Parsing**: MinerU đọc PDF, chuyển đổi toàn bộ bảng cân đối kế toán, kết quả kinh doanh, lưu chuyển tiền tệ và thuyết minh thành Markdown có định vị số dòng.
-3. **Research-only Evidence Extraction**: `bctc_to_sag_pipeline.py` and `sag_connector.py` remain available only for isolated SAG research; production ETL does not dispatch them.
-4. **Research-only Fraud & Moat Scoring**: GIL/MOAT outputs are not current inputs to production Agents while SAG is frozen.
-5. **Independent Multi-Agent Consensus**: The production orchestrator runs on Core financial, market, audit, Beneish, liquidity and thesis evidence without a SAG payload or universal forensic gate.
+1. **Ingestion**: Tài liệu công bố nghiên cứu cổ phiếu (BCTN, Thuyết minh BCTC hợp nhất kiểm toán, NQ ĐHĐCĐ khi chạm điều kiện) được chuẩn bị theo đặc tả MOAT và nạp vào SAG ở profile `research`.
+2. **Canonical Extraction & Indexing**: Smart Hybrid MinerU / local worker chuẩn hóa thành `CanonicalBlock`, dedup SHA-256/MinHash, tạo `SearchUnit` trên Qdrant và `KnowledgeUnit` + `DenseGraph` + cây Leiden (`FOUNDATION`, 0 LLM calls).
+3. **Isolated Research Service**: Legacy GIL/BCTC v2 connector and pipeline modules (`bctc_to_sag_pipeline.py`, `sag_connector.py`, `document_selector.py`, `forensic_assessment.py`) have been removed; production ETL does not dispatch to SAG.
+4. **Research-only MOAT Grounding**: MOAT evidence outputs are not yet wired into production Decision Agents while Rule 06 remains active.
+5. **Independent Multi-Agent Consensus**: The production orchestrator runs on Core financial, market, audit, Beneish, liquidity and thesis evidence without a SAG payload or any GIL gate.
 6. **Dual-Book Portfolio Allocation**: Nếu vượt qua vòng thẩm định pháp y, Risk Parity Agent phân bổ tỷ trọng dựa trên quy tắc HOSE (T+2.5, biên độ trần/sàn ±7%).
 7. **Order Dispatch**: Khi chưa có broker gateway, mọi cấu hình `LIVE` bị từ chối. Shadow BUY lưu thành `PENDING_SHADOW` trong bảng `orders`, dùng giá duyệt làm giới hạn trong ngày. Một worker tuần tự quét mọi mã chờ trong phiên liên tục: nghỉ 1 giây sau lượt quét khi có lệnh chờ, 5 giây khi rảnh. Khi đủ thanh khoản ở mức giá cho phép, chính order đó được cập nhật cùng cash, position và execution trong một transaction PostgreSQL. Lệnh chưa khớp hết hạn cuối phiên. Không có lệnh nào gửi lên DNSE.
 
@@ -195,11 +195,13 @@ Toàn bộ các sơ đồ tương tác tự chứa (standalone SVG/HTML) đượ
 - **[paper-grade-algorithmic-data-flow.html](file:///d:/AIInvest/docs/diagrams/paper-grade-algorithmic-data-flow.html)**: Sơ đồ phương pháp luận báo cáo khoa học Paper-Grade: Bóc tách hình thái dữ liệu 2 pha (Offline Ingestion AST, băm `quote_hash` SHA-256, chiếu siêu đồ thị $M:N$, không gian vector 1024 chiều vs Online Parallel Fork-Join Retrieval, bộ tích lũy Queue Accumulator $32 \to 24 \to 8$, điều khiển tương tác Step Motion có phím tắt, Dynamic Flow Opacity và bảng khảo sát chi tiết Inspector Drawer khi nhấp vào từng node).
 
 Chi tiết hướng dẫn mở, tương tác và xem sơ đồ được mô tả tại [docs/diagrams/README.md](file:///d:/AIInvest/docs/diagrams/README.md).
-### SAG boundary hiện hành (2026-09-22)
+### SAG boundary hiện hành (2026-11-20)
 
-SAG là service nghiên cứu độc lập, không phải Agent quyết định thứ 13 và không nằm trong runtime dependency graph của `ai-engine`. Compose chỉ khởi động SAG bằng profile tường minh `research`; ETL không dispatch BCTC vào SAG; `DailyInvestmentPipeline` không gọi connector/adapter và các Decision Agent không nhận `ForensicAssessment`, GIL flag hay dữ liệu SAG cũ. Mã connector, pipeline và contract cũ được giữ trong vùng nghiên cứu để không mất lịch sử và phục vụ nghiên cứu riêng.
+SAG đã được loại bỏ hoàn toàn toàn bộ phần **GIL (Graph Intelligence Layer)** và pipeline BCTC v2 cũ (`sag_connector.py`, `sag_evidence_agent.py`, `forensic_assessment.py`, `bctc_to_sag_pipeline.py`, `document_selector.py`, `gil_service.py`, `api/v2/financial.py`, `gil-decision-tree-gating.html`) và thay thế bằng kiến trúc **Knowledge Routing RAG** sạch (`zleap-sag==0.12.0`, PostgreSQL 16 + Qdrant, 0 LLM calls lúc ingest).
 
-Khi cần đưa SAG/MOAT trở lại, chỉ tạo một contract tích hợp mới sau khi nghiên cứu hoàn tất, kèm caller/contract, migration, rollback, observability và fail-closed tests. Không nối trực tiếp SAG vào từng Agent và không dùng lại legacy `gil_flag` như dữ liệu hiện hành; `SAG_HOLD` chỉ là sentinel tương thích cho cột legacy `NOT NULL`, không phải kết quả phân tích.
+SAG vẫn là service nghiên cứu độc lập, không phải Agent quyết định thứ 13 và không nằm trong runtime dependency graph của `ai-engine`. Compose chỉ khởi động SAG (`sag-postgres`, `sag-qdrant`, `sag-api`) bằng profile tường minh `research`; `DailyInvestmentPipeline` và 12 Decision Agents không gọi SAG trong lúc Rule 06 còn hiệu lực.
+
+Khi triển khai tích hợp **Stock Research / MOAT** (theo đặc tả đầu vào 3 cốt lõi + 2 bổ trợ + 4 loại bỏ), chỉ tạo một contract tích hợp mới riêng cho MOAT kèm caller/contract, migration, rollback, observability và fail-closed tests. Các cột legacy `gil_flag` trong Core DB chỉ giữ thụ động cho tương thích schema `NOT NULL` cho tới khi có migration gỡ bỏ riêng.
 
 - Bộ lọc ngày Agent và dấu dữ liệu trên lịch dùng `analysis_date` của nhật ký luận điểm (replay), hoặc ngày Việt Nam của nhật ký khớp chính xác `thesis_id`. `generated_at` lấy thời gian nhật ký để tránh timestamp lệch của state legacy; chỉ fallback timestamp state khi không có nhật ký. Frontend dùng cùng trường ngày API, không lọc lại bằng `created_at` lệch. Không sửa dữ liệu legacy hay suy đoán ngày replay thiếu metadata.
 

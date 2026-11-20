@@ -1,7 +1,7 @@
-"""Trừu tượng hàng đợi tác vụ.
+"""任务队列抽象。
 
-MVP dùng hàng đợi asyncio trong tiến trình (`InProcessAsyncQueue`); giao diện giữ gọn,
-tương lai có thể triển khai backend phân tán như Celery / RQ / Arq mà không ảnh hưởng phía gọi.
+MVP 用进程内 asyncio 队列（`InProcessAsyncQueue`）；接口保持精简，
+未来可实现 Celery / RQ / Arq 等分布式后端而不影响调用方。
 """
 
 from __future__ import annotations
@@ -12,10 +12,36 @@ from abc import ABC, abstractmethod
 class JobQueue(ABC):
     @abstractmethod
     async def enqueue(self, job_id: str) -> None:
-        """Đưa một Job đã lưu vào hàng đợi chờ thực thi."""
+        """把一个已持久化的 Job 投入队列等待执行。"""
 
-    async def start(self) -> None:  # noqa: B027 - Hook vòng đời tùy chọn
-        """Khởi động worker nền (nếu có)."""
+    async def enqueue_durably(self, job_id: str) -> None:
+        """派发已提交任务；支持后台重排的队列可覆盖此默认实现。"""
+        await self.enqueue(job_id)
+
+    @abstractmethod
+    def begin_source_maintenance(self, source_id: str, job_id: str) -> None:
+        """登记某个信源存在需要优先处理的维护任务。"""
+
+    @abstractmethod
+    def source_maintenance_requested(self, source_id: str) -> bool:
+        """当前信源是否需要文档处理任务在安全检查点让行。"""
+
+    @abstractmethod
+    async def finish_source_maintenance(self, source_id: str, job_id: str) -> None:
+        """结束维护任务；最后一个维护任务结束后唤醒临时让行的任务。"""
+
+    def request_source_stop(self, source_id: str) -> None:  # noqa: B027 - 可选钩子
+        """请求某信源在途处理任务在安全检查点尽快让路（用于同步删除）。"""
+
+    def clear_source_stop(self, source_id: str) -> None:  # noqa: B027
+        """清除信源停止请求。"""
+
+    def source_stop_requested(self, source_id: str) -> bool:
+        """当前信源是否被请求停止在途处理任务。"""
+        return False
+
+    async def start(self) -> None:  # noqa: B027 - 可选生命周期钩子
+        """启动后台 worker（如有）。"""
 
     async def stop(self) -> None:  # noqa: B027
-        """Dừng worker một cách nhẹ nhàng."""
+        """优雅停止 worker。"""

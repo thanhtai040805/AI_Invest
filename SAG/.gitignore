@@ -17,22 +17,6 @@ venv/
 data/
 uploads/
 
-# Node / Next
-node_modules/
-.next/
-.next-dev/
-out/
-.turbo/
-npm-debug.log*
-*.tsbuildinfo
-
-# Desktop packaging
-apps/desktop/build/
-apps/desktop/dist/
-apps/desktop/release/
-apps/api/build/pyinstaller/
-apps/api/dist/desktop/
-
 # Env & secrets
 .env
 .env.local
@@ -43,8 +27,3 @@ apps/api/dist/desktop/
 .idea/
 .vscode/
 *.log
-.public-sync-reports/
-/output/
-
-# skill installer output (npx skills add)
-.agents/

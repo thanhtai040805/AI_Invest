@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi.responses import JSONResponse
+from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
 from sag_agent import AgentRuntime, EventType, RunHandle
+from sag_api.core.conversation_ownership import get_conversation_owner
 from sag_api.core.db import SessionLocal, get_session
 from sag_api.core.deps import (
     get_agent_runtime,
@@ -17,8 +20,13 @@ from sag_api.core.deps import (
     get_tool_registry,
 )
 from sag_api.core.error_taxonomy import ErrorCode
-from sag_api.core.errors import ConfigurationError, ConflictError, NotFoundError
+from sag_api.core.errors import BadRequestError, ConfigurationError, ConflictError, NotFoundError
 from sag_api.core.logging import get_logger
+from sag_api.core.principal_assertion import (
+    VerifiedPrincipal,
+    require_bff_service_token,
+    require_project_read_principal,
+)
 from sag_api.db.models import User
 from sag_api.generation import LLMClient
 from sag_api.sag import EngineManager
@@ -31,14 +39,24 @@ from sag_api.schemas.agent import (
     BindingOut,
     MessageOut,
     MessagePageOut,
+    ThreadBranchIn,
     ThreadCreate,
     ThreadOut,
     ThreadUpdate,
     ToolRejection,
 )
+from sag_api.schemas.answer_actions import (
+    EmptyBodyIn,
+    FeedbackOut,
+    FeedbackUpsertIn,
+    OwnFeedbackOut,
+    RegenerateIn,
+    ShareOut,
+)
 from sag_api.schemas.common import Ok
 from sag_api.services import agent_domain as svc
 from sag_api.services import agent_service
+from sag_api.services import answer_actions_service as actions_svc
 from sag_api.tools import ToolRegistry
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -49,6 +67,35 @@ def _sse(event: str, payload: dict) -> dict:
     return {"event": event, "data": json.dumps(payload, ensure_ascii=False)}
 
 
+_NO_STORE_HEADERS = {"Cache-Control": "no-store"}
+
+
+async def require_answer_mutation_principal(request: Request) -> VerifiedPrincipal:
+    """Require live-authorized BFF transport while retaining the private session owner."""
+    await require_bff_service_token(request)
+    return await require_project_read_principal(request)
+
+
+async def _parse_strict_body(request: Request, model_cls, *, allow_empty: bool = False):
+    raw_bytes = await request.body()
+    if not raw_bytes or not raw_bytes.strip():
+        if not allow_empty:
+            raise BadRequestError("Request JSON body is required")
+        raw_obj: object = {}
+    else:
+        try:
+            raw_obj = json.loads(raw_bytes)
+        except ValueError as exc:
+            raise BadRequestError("Malformed JSON request body") from exc
+    if not isinstance(raw_obj, dict):
+        raise BadRequestError("Request body must be a JSON object")
+    try:
+        return model_cls.model_validate(raw_obj)
+    except PydanticValidationError as exc:
+        first_msg = exc.errors()[0].get("msg", "Invalid request body") if exc.errors() else "Invalid request body"
+        raise BadRequestError(str(first_msg)) from exc
+
+
 async def _owned_run(
     session: AsyncSession,
     runtime: AgentRuntime,
@@ -56,9 +103,10 @@ async def _owned_run(
     agent_id: str,
     thread_id: str,
     run_id: str,
+    owner_key: str,
 ) -> RunHandle:
-    agent = await svc.get_agent(session, agent_id)
-    await svc.get_thread(session, agent.id, thread_id)
+    agent = await svc.get_agent(session, agent_id, owner_key=owner_key)
+    await svc.get_thread(session, agent.id, thread_id, owner_key=owner_key)
     handle = runtime.get_run(run_id)
     metadata = handle.context.metadata if handle is not None else {}
     if (
@@ -66,25 +114,27 @@ async def _owned_run(
         or metadata.get("agent_id") != agent.id
         or metadata.get("thread_id") != thread_id
     ):
-        raise NotFoundError("Run không tồn tại hoặc đã kết thúc")
+        raise NotFoundError("运行不存在或已结束")
     return handle
 
 
 # ── CRUD ────────────────────────────────────────────────────────────
 @router.get("", response_model=list[AgentOut])
 async def list_(
-    _user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)
+    owner_key: str = Depends(get_conversation_owner), session: AsyncSession = Depends(get_session)
 ):
-    return [AgentOut.model_validate(a) for a in await svc.list_agents(session)]
+    return [AgentOut.model_validate(a) for a in await svc.list_agents(session, owner_key=owner_key)]
 
 
 @router.post("", response_model=AgentOut, status_code=201)
 async def create(
     body: AgentCreate,
-    _user: User = Depends(get_current_user),
+    owner_key: str = Depends(get_conversation_owner),
     session: AsyncSession = Depends(get_session),
 ):
-    agent = await svc.create_agent(session, name=body.name, avatar=body.avatar, persona=body.persona)
+    agent = await svc.create_agent(
+        session, owner_key=owner_key, name=body.name, avatar=body.avatar, persona=body.persona
+    )
     return AgentOut.model_validate(agent)
 
 
@@ -93,28 +143,28 @@ async def get_default(
     _user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Agent mặc định (get-or-create): lối vào hội thoại chính của client, kho kiến thức = tất cả nguồn."""
+    """默认 agent（get-or-create）：客户端主对话入口，知识库=全部信源。"""
     return AgentOut.model_validate(await svc.get_default_agent(session))
 
 
 @router.get("/{agent_id}", response_model=AgentOut)
 async def get_(
     agent_id: str,
-    _user: User = Depends(get_current_user),
+    owner_key: str = Depends(get_conversation_owner),
     session: AsyncSession = Depends(get_session),
 ):
-    return AgentOut.model_validate(await svc.get_agent(session, agent_id))
+    return AgentOut.model_validate(await svc.get_agent(session, agent_id, owner_key=owner_key))
 
 
 @router.patch("/{agent_id}", response_model=AgentOut)
 async def update_(
     agent_id: str,
     body: AgentUpdate,
-    _user: User = Depends(get_current_user),
+    owner_key: str = Depends(get_conversation_owner),
     session: AsyncSession = Depends(get_session),
 ):
     agent = await svc.update_agent(
-        session, agent_id, name=body.name, avatar=body.avatar, persona=body.persona
+        session, agent_id, owner_key=owner_key, name=body.name, avatar=body.avatar, persona=body.persona
     )
     return AgentOut.model_validate(agent)
 
@@ -122,21 +172,21 @@ async def update_(
 @router.delete("/{agent_id}", response_model=Ok)
 async def delete_(
     agent_id: str,
-    _user: User = Depends(get_current_user),
+    owner_key: str = Depends(get_conversation_owner),
     session: AsyncSession = Depends(get_session),
 ):
-    await svc.delete_agent(session, agent_id)
-    return Ok(detail="Agent đã xóa")
+    await svc.delete_agent(session, agent_id, owner_key=owner_key)
+    return Ok(detail="Agent 已删除")
 
 
-# ── Ràng buộc (nguồn / MCP) ────────────────────────────────────────────────
+# ── 绑定（信源 / MCP）────────────────────────────────────────────────
 @router.get("/{agent_id}/bindings", response_model=list[BindingOut])
 async def list_bindings(
     agent_id: str,
-    _user: User = Depends(get_current_user),
+    owner_key: str = Depends(get_conversation_owner),
     session: AsyncSession = Depends(get_session),
 ):
-    agent = await svc.get_agent(session, agent_id)
+    agent = await svc.get_agent(session, agent_id, owner_key=owner_key)
     return [BindingOut.model_validate(b) for b in await svc.list_bindings(session, agent)]
 
 
@@ -144,10 +194,10 @@ async def list_bindings(
 async def add_binding(
     agent_id: str,
     body: BindingCreate,
-    _user: User = Depends(get_current_user),
+    owner_key: str = Depends(get_conversation_owner),
     session: AsyncSession = Depends(get_session),
 ):
-    agent = await svc.get_agent(session, agent_id)
+    agent = await svc.get_agent(session, agent_id, owner_key=owner_key, write=True)
     b = await svc.add_binding(
         session, agent, target_type=body.target_type, target_id=body.target_id, config=body.config
     )
@@ -158,15 +208,15 @@ async def add_binding(
 async def remove_binding(
     agent_id: str,
     binding_id: str,
-    _user: User = Depends(get_current_user),
+    owner_key: str = Depends(get_conversation_owner),
     session: AsyncSession = Depends(get_session),
 ):
-    agent = await svc.get_agent(session, agent_id)
+    agent = await svc.get_agent(session, agent_id, owner_key=owner_key, write=True)
     await svc.remove_binding(session, agent, binding_id)
-    return Ok(detail="Đã gỡ ràng buộc")
+    return Ok(detail="已解绑")
 
 
-# ── Phiên hội thoại ─────────────────────────────────────────────────────────
+# ── 会话 ────────────────────────────────────────────────────────────
 @router.get("/{agent_id}/threads", response_model=list[ThreadOut])
 async def list_threads(
     agent_id: str,
@@ -177,32 +227,31 @@ async def list_threads(
         le=svc.THREAD_PAGE_MAX,
     ),
     offset: int = Query(default=0, ge=0),
-    _user: User = Depends(get_current_user),
+    owner_key: str = Depends(get_conversation_owner),
     session: AsyncSession = Depends(get_session),
 ):
-    agent = await svc.get_agent(session, agent_id)
-    return [
-        ThreadOut.model_validate(t)
-        for t in await svc.list_threads(
-            session,
-            agent.id,
-            archived=archived,
-            limit=limit,
-            offset=offset,
-        )
-    ]
+    agent = await svc.get_agent(session, agent_id, owner_key=owner_key)
+    threads = await svc.list_threads(
+        session,
+        agent.id,
+        owner_key=owner_key,
+        archived=archived,
+        limit=limit,
+        offset=offset,
+    )
+    return await svc.serialize_threads_out(session, threads)
 
 
 @router.post("/{agent_id}/threads", response_model=ThreadOut, status_code=201)
 async def create_thread(
     agent_id: str,
     body: ThreadCreate,
-    _user: User = Depends(get_current_user),
+    owner_key: str = Depends(get_conversation_owner),
     session: AsyncSession = Depends(get_session),
 ):
-    agent = await svc.get_agent(session, agent_id)
-    thread = await svc.create_thread(session, agent, body.title)
-    return ThreadOut.model_validate(thread)
+    agent = await svc.get_agent(session, agent_id, owner_key=owner_key)
+    thread = await svc.create_thread(session, agent, body.title, owner_key=owner_key)
+    return await svc.serialize_thread_out(session, thread)
 
 
 @router.patch("/{agent_id}/threads/{thread_id}", response_model=ThreadOut)
@@ -210,14 +259,14 @@ async def update_thread(
     agent_id: str,
     thread_id: str,
     body: ThreadUpdate,
-    _user: User = Depends(get_current_user),
+    owner_key: str = Depends(get_conversation_owner),
     session: AsyncSession = Depends(get_session),
 ):
-    agent = await svc.get_agent(session, agent_id)
+    agent = await svc.get_agent(session, agent_id, owner_key=owner_key)
     t = await svc.update_thread(
-        session, agent.id, thread_id, title=body.title, archived=body.archived
+        session, agent.id, thread_id, owner_key=owner_key, title=body.title, archived=body.archived
     )
-    return ThreadOut.model_validate(t)
+    return await svc.serialize_thread_out(session, t)
 
 
 @router.get("/{agent_id}/threads/{thread_id}/messages", response_model=MessagePageOut)
@@ -226,14 +275,25 @@ async def messages(
     thread_id: str,
     limit: int = Query(default=svc.MESSAGE_PAGE_DEFAULT, ge=1, le=svc.MESSAGE_PAGE_MAX),
     cursor: str | None = Query(default=None, max_length=svc.MESSAGE_CURSOR_MAX_LENGTH),
-    _user: User = Depends(get_current_user),
+    owner_key: str = Depends(get_conversation_owner),
+    principal: VerifiedPrincipal = Depends(require_project_read_principal),
     session: AsyncSession = Depends(get_session),
 ):
-    agent = await svc.get_agent(session, agent_id)
-    thread = await svc.get_thread(session, agent.id, thread_id)
+    agent = await svc.get_agent(session, agent_id, owner_key=owner_key)
+    thread = await svc.get_thread(session, agent.id, thread_id, owner_key=owner_key)
     page = await svc.list_messages_page(session, thread.id, limit=limit, cursor=cursor)
+    visible_messages = await svc.filter_messages_for_scope(
+        session,
+        page.items,
+        principal=principal,
+    )
+    items_out: list[MessageOut] = []
+    for message in visible_messages:
+        dto = MessageOut.model_validate(message)
+        dto.is_inherited = message.thread_id != thread.id
+        items_out.append(dto)
     return MessagePageOut(
-        items=[MessageOut.model_validate(message) for message in page.items],
+        items=items_out,
         next_cursor=page.next_cursor,
         has_more=page.has_more,
     )
@@ -243,12 +303,12 @@ async def messages(
 async def delete_thread(
     agent_id: str,
     thread_id: str,
-    _user: User = Depends(get_current_user),
+    owner_key: str = Depends(get_conversation_owner),
     session: AsyncSession = Depends(get_session),
 ):
-    agent = await svc.get_agent(session, agent_id)
-    await svc.delete_thread(session, agent.id, thread_id)
-    return Ok(detail="Phiên hội thoại đã xóa")
+    agent = await svc.get_agent(session, agent_id, owner_key=owner_key)
+    await svc.delete_thread(session, agent.id, thread_id, owner_key=owner_key)
+    return Ok(detail="会话已删除")
 
 
 @router.delete("/{agent_id}/threads/{thread_id}/messages/{message_id}", response_model=Ok)
@@ -256,12 +316,12 @@ async def delete_message(
     agent_id: str,
     thread_id: str,
     message_id: str,
-    _user: User = Depends(get_current_user),
+    owner_key: str = Depends(get_conversation_owner),
     session: AsyncSession = Depends(get_session),
 ):
-    agent = await svc.get_agent(session, agent_id)
-    await svc.delete_message(session, agent.id, thread_id, message_id)
-    return Ok(detail="Đã xóa")
+    agent = await svc.get_agent(session, agent_id, owner_key=owner_key)
+    await svc.delete_message(session, agent.id, thread_id, message_id, owner_key=owner_key)
+    return Ok(detail="已删除")
 
 
 @router.post("/{agent_id}/threads/{thread_id}/runs/{run_id}/cancel", response_model=Ok)
@@ -269,7 +329,7 @@ async def cancel_run(
     agent_id: str,
     thread_id: str,
     run_id: str,
-    _user: User = Depends(get_current_user),
+    owner_key: str = Depends(get_conversation_owner),
     session: AsyncSession = Depends(get_session),
     agent_runtime: AgentRuntime = Depends(get_agent_runtime),
 ):
@@ -279,9 +339,10 @@ async def cancel_run(
         agent_id=agent_id,
         thread_id=thread_id,
         run_id=run_id,
+        owner_key=owner_key,
     )
     handle.cancel()
-    return Ok(detail="Đã dừng")
+    return Ok(detail="已停止")
 
 
 @router.post(
@@ -293,7 +354,7 @@ async def approve_tool_call(
     thread_id: str,
     run_id: str,
     tool_call_id: str,
-    _user: User = Depends(get_current_user),
+    owner_key: str = Depends(get_conversation_owner),
     session: AsyncSession = Depends(get_session),
     agent_runtime: AgentRuntime = Depends(get_agent_runtime),
 ):
@@ -303,10 +364,11 @@ async def approve_tool_call(
         agent_id=agent_id,
         thread_id=thread_id,
         run_id=run_id,
+        owner_key=owner_key,
     )
     if not handle.approve(tool_call_id):
-        raise ConflictError("Lời gọi tool hiện không chờ phê duyệt")
-    return Ok(detail="Đã cho phép thực thi")
+        raise ConflictError("工具调用当前不等待审批")
+    return Ok(detail="已允许执行")
 
 
 @router.post(
@@ -319,7 +381,7 @@ async def reject_tool_call(
     run_id: str,
     tool_call_id: str,
     body: ToolRejection,
-    _user: User = Depends(get_current_user),
+    owner_key: str = Depends(get_conversation_owner),
     session: AsyncSession = Depends(get_session),
     agent_runtime: AgentRuntime = Depends(get_agent_runtime),
 ):
@@ -329,10 +391,11 @@ async def reject_tool_call(
         agent_id=agent_id,
         thread_id=thread_id,
         run_id=run_id,
+        owner_key=owner_key,
     )
     if not handle.reject(tool_call_id, body.reason):
-        raise ConflictError("Lời gọi tool hiện không chờ phê duyệt")
-    return Ok(detail="Đã từ chối thực thi")
+        raise ConflictError("工具调用当前不等待审批")
+    return Ok(detail="已拒绝执行")
 
 
 @router.post("/{agent_id}/threads/{thread_id}/ask")
@@ -340,26 +403,36 @@ async def ask(
     agent_id: str,
     thread_id: str,
     body: AskRequest,
-    _user: User = Depends(get_current_user),
+    owner_key: str = Depends(get_conversation_owner),
+    current_user: User = Depends(get_current_user),
+    principal: VerifiedPrincipal = Depends(require_project_read_principal),
     session: AsyncSession = Depends(get_session),
     engine_manager: EngineManager = Depends(get_engine_manager),
     llm: LLMClient = Depends(get_llm),
     tool_registry: ToolRegistry = Depends(get_tool_registry),
     agent_runtime: AgentRuntime = Depends(get_agent_runtime),
 ) -> EventSourceResponse:
-    agent = await svc.get_agent(session, agent_id)
-    thread = await svc.get_thread(session, agent.id, thread_id)
+    agent = await svc.get_agent(session, agent_id, owner_key=owner_key)
+    thread = await svc.get_thread(session, agent.id, thread_id, owner_key=owner_key)
     if not llm.configured:
-        raise ConfigurationError("Chưa cấu hình LLM, không thể tạo câu trả lời")
-    plan = await svc.prepare_ask(
-        session,
-        agent=agent,
-        thread=thread,
-        query=body.query,
-        attachments=body.attachments,
-        source_ids=body.source_ids,
-        llm=llm,
-    )
+        raise ConfigurationError("尚未配置 LLM，无法生成回答")
+    actions_svc.claim_thread_generation(thread.id, agent_runtime)
+    try:
+        plan = await svc.prepare_ask(
+            session,
+            agent=agent,
+            thread=thread,
+            query=body.query,
+            attachments=body.attachments,
+            source_ids=body.source_ids,
+            principal=principal,
+            owner_key=owner_key,
+            llm=llm,
+            user_name=current_user.name,
+        )
+    except BaseException:
+        actions_svc.release_thread_generation(thread.id)
+        raise
     web_enabled = body.effective_web_enabled
 
     async def event_gen():
@@ -375,11 +448,12 @@ async def ask(
                 tool_registry=tool_registry,
                 runtime=agent_runtime,
                 knowledge_only=not web_enabled,
+                principal=principal,
             ):
                 last = event
                 yield _sse(event.type, event.data)
         except Exception as e:  # noqa: BLE001
-            log.exception("Luồng ask kết thúc bất thường: %s", e)
+            log.exception("ask 流异常终止：%s", e)
             run_id = last.data.get("run_id", "") if last is not None else ""
             sequence = int(last.data.get("sequence", 0)) + 1 if last is not None else 0
             data = {
@@ -392,7 +466,7 @@ async def ask(
                 "payload": {
                     "error": {
                         "code": ErrorCode.STREAM_ERROR,
-                        "message": f"Sinh bị gián đoạn: {getattr(e, 'message', None) or e}",
+                        "message": f"生成中断：{getattr(e, 'message', None) or e}",
                         "retryable": True,
                         "details": {},
                     }
@@ -402,8 +476,238 @@ async def ask(
                 EventType.RUN_FAILED.value,
                 data,
             )
+        finally:
+            actions_svc.release_thread_generation(thread.id)
 
     return EventSourceResponse(
         event_gen(),
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+
+# ── Answer Actions (Feedback, Share, Regenerate) ────────────────────
+@router.get(
+    "/{agent_id}/threads/{thread_id}/messages/{message_id}/feedback",
+    response_model=OwnFeedbackOut,
+)
+async def get_message_feedback(
+    agent_id: str,
+    thread_id: str,
+    message_id: str,
+    owner_key: str = Depends(get_conversation_owner),
+    principal: VerifiedPrincipal = Depends(require_project_read_principal),
+    session: AsyncSession = Depends(get_session),
+) -> JSONResponse:
+    result = await actions_svc.get_own_feedback(
+        session,
+        agent_id=agent_id,
+        thread_id=thread_id,
+        message_id=message_id,
+        owner_key=owner_key,
+        principal=principal,
+    )
+    return JSONResponse(
+        status_code=200,
+        content=result.model_dump(mode="json"),
+        headers=_NO_STORE_HEADERS,
+    )
+
+
+@router.put(
+    "/{agent_id}/threads/{thread_id}/messages/{message_id}/feedback",
+    response_model=FeedbackOut,
+)
+async def put_message_feedback(
+    agent_id: str,
+    thread_id: str,
+    message_id: str,
+    request: Request,
+    owner_key: str = Depends(get_conversation_owner),
+    principal: VerifiedPrincipal = Depends(require_answer_mutation_principal),
+    session: AsyncSession = Depends(get_session),
+) -> JSONResponse:
+    payload: FeedbackUpsertIn = await _parse_strict_body(request, FeedbackUpsertIn)
+    result = await actions_svc.upsert_own_feedback(
+        session,
+        agent_id=agent_id,
+        thread_id=thread_id,
+        message_id=message_id,
+        owner_key=owner_key,
+        principal=principal,
+        payload=payload,
+    )
+    return JSONResponse(
+        status_code=200,
+        content=result.model_dump(mode="json"),
+        headers=_NO_STORE_HEADERS,
+    )
+
+
+@router.delete(
+    "/{agent_id}/threads/{thread_id}/messages/{message_id}/feedback",
+    status_code=204,
+)
+async def delete_message_feedback(
+    agent_id: str,
+    thread_id: str,
+    message_id: str,
+    owner_key: str = Depends(get_conversation_owner),
+    principal: VerifiedPrincipal = Depends(require_answer_mutation_principal),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    await actions_svc.delete_own_feedback(
+        session,
+        agent_id=agent_id,
+        thread_id=thread_id,
+        message_id=message_id,
+        owner_key=owner_key,
+        principal=principal,
+    )
+    return Response(status_code=204, headers=_NO_STORE_HEADERS)
+
+
+@router.post(
+    "/{agent_id}/threads/{thread_id}/messages/{message_id}/shares",
+    response_model=ShareOut,
+)
+async def create_message_share(
+    agent_id: str,
+    thread_id: str,
+    message_id: str,
+    request: Request,
+    owner_key: str = Depends(get_conversation_owner),
+    principal: VerifiedPrincipal = Depends(require_answer_mutation_principal),
+    session: AsyncSession = Depends(get_session),
+) -> JSONResponse:
+    await _parse_strict_body(request, EmptyBodyIn, allow_empty=True)
+    share_out, created = await actions_svc.create_or_get_share(
+        session,
+        agent_id=agent_id,
+        thread_id=thread_id,
+        message_id=message_id,
+        owner_key=owner_key,
+        principal=principal,
+    )
+    return JSONResponse(
+        status_code=201 if created else 200,
+        content=share_out.model_dump(mode="json"),
+        headers=_NO_STORE_HEADERS,
+    )
+
+
+@router.post(
+    "/{agent_id}/threads/{thread_id}/messages/{message_id}/branch",
+    response_model=ThreadOut,
+    status_code=201,
+)
+async def branch_message_thread(
+    agent_id: str,
+    thread_id: str,
+    message_id: str,
+    request: Request,
+    owner_key: str = Depends(get_conversation_owner),
+    principal: VerifiedPrincipal = Depends(require_answer_mutation_principal),
+    session: AsyncSession = Depends(get_session),
+) -> JSONResponse:
+    body: ThreadBranchIn = await _parse_strict_body(request, ThreadBranchIn, allow_empty=True)
+    branched = await actions_svc.branch_thread_from_message(
+        session,
+        agent_id=agent_id,
+        thread_id=thread_id,
+        message_id=message_id,
+        owner_key=owner_key,
+        principal=principal,
+        title=body.title,
+    )
+    return JSONResponse(
+        status_code=201,
+        content=branched.model_dump(mode="json"),
+        headers=_NO_STORE_HEADERS,
+    )
+
+
+@router.post("/{agent_id}/threads/{thread_id}/messages/{message_id}/regenerate")
+async def regenerate_message(
+    agent_id: str,
+    thread_id: str,
+    message_id: str,
+    request: Request,
+    owner_key: str = Depends(get_conversation_owner),
+    current_user: User = Depends(get_current_user),
+    principal: VerifiedPrincipal = Depends(require_answer_mutation_principal),
+    session: AsyncSession = Depends(get_session),
+    engine_manager: EngineManager = Depends(get_engine_manager),
+    llm: LLMClient = Depends(get_llm),
+    tool_registry: ToolRegistry = Depends(get_tool_registry),
+    agent_runtime: AgentRuntime = Depends(get_agent_runtime),
+) -> EventSourceResponse:
+    body: RegenerateIn = await _parse_strict_body(request, RegenerateIn, allow_empty=True)
+    agent = await svc.get_agent(session, agent_id, owner_key=owner_key)
+    thread = await svc.get_thread(session, agent.id, thread_id, owner_key=owner_key)
+    if not llm.configured:
+        raise ConfigurationError("尚未配置 LLM，无法生成回答")
+
+    actions_svc.claim_thread_generation(thread.id, agent_runtime)
+    try:
+        plan = await actions_svc.prepare_regenerate(
+            session,
+            agent=agent,
+            thread=thread,
+            target_message_id=message_id,
+            principal=principal,
+            owner_key=owner_key,
+            llm=llm,
+            user_name=current_user.name,
+        )
+    except BaseException:
+        actions_svc.release_thread_generation(thread.id)
+        raise
+
+    web_enabled = body.effective_web_enabled
+
+    async def event_gen():
+        last = None
+        try:
+            async for event in agent_service.generate_stream(
+                SessionLocal,
+                plan=plan,
+                agent=agent,
+                thread_id=thread.id,
+                engine_manager=engine_manager,
+                llm=llm,
+                tool_registry=tool_registry,
+                runtime=agent_runtime,
+                knowledge_only=not web_enabled,
+                principal=principal,
+            ):
+                last = event
+                yield _sse(event.type, event.data)
+        except Exception as e:  # noqa: BLE001
+            log.exception("regenerate 流异常终止：%s", e)
+            run_id = last.data.get("run_id", "") if last is not None else ""
+            sequence = int(last.data.get("sequence", 0)) + 1 if last is not None else 0
+            data = {
+                "version": 1,
+                "type": EventType.RUN_FAILED.value,
+                "run_id": run_id,
+                "sequence": sequence,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "turn": 0,
+                "payload": {
+                    "error": {
+                        "code": ErrorCode.STREAM_ERROR,
+                        "message": f"生成中断：{getattr(e, 'message', None) or e}",
+                        "retryable": True,
+                        "details": {},
+                    }
+                },
+            }
+            yield _sse(EventType.RUN_FAILED.value, data)
+        finally:
+            actions_svc.release_thread_generation(thread.id)
+
+    return EventSourceResponse(
+        event_gen(),
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
     )

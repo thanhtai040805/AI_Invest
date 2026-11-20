@@ -1,7 +1,7 @@
-"""Lớp adapter zleap-sag —— nơi duy nhất trong toàn dự án import `zleap-sag`.
+"""zleap-sag 适配层 —— 全项目唯一 import `zleap-sag` 的地方。
 
-Chỉ phơi ra DTO riêng của sag và `EngineManager`, nhờ đó tách chi tiết triển khai engine khỏi logic miền,
-khi thay / nâng cấp engine trong tương lai thì mọi thay đổi hội tụ trong thư mục này.
+对外只暴露 sag 自己的 DTO 与 `EngineManager`，从而把引擎实现细节与领域逻辑解耦，
+未来替换 / 升级引擎时改动收敛在此目录。
 """
 
 from sag_api.sag.dto import (
@@ -14,12 +14,7 @@ from sag_api.sag.dto import (
     SearchOutcome,
     SourceGraphInfo,
 )
-def __getattr__(name: str):
-    if name == "EngineManager":
-        from sag_api.sag.engine_manager import EngineManager
-
-        return EngineManager
-    raise AttributeError(name)
+from sag_api.sag.engine_manager import EngineManager
 
 __all__ = [
     "ChunkInfo",

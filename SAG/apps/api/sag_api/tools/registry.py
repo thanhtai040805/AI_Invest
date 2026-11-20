@@ -1,4 +1,4 @@
-"""Registry công cụ —— tra cứu công cụ theo name；thêm công cụ mới đăng ký tại đây（phản chiếu connectors/registry）."""
+"""工具注册表 —— 按 name 查找工具；新增工具在此登记（镜像 connectors/registry）。"""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ class ToolRegistry:
     def get(self, name: str) -> Tool:
         tool = self._by_name.get(name)
         if tool is None:
-            raise NotFoundError(f"Không biết công cụ：{name}")
+            raise NotFoundError(f"未知工具：{name}")
         return tool
 
     def has(self, name: str) -> bool:
@@ -33,11 +33,11 @@ class ToolRegistry:
         return list(self._by_name.values())
 
     def schemas(self, names: list[str]) -> list[dict]:
-        """Cho danh sách tên công cụ → danh sách OpenAI function schema（để truyền tools=）. """
+        """给定工具名列表 → OpenAI function schema 列表（供 tools= 传参）。"""
         return [self._by_name[n].meta.to_openai_schema() for n in names if n in self._by_name]
 
     def overlay(self, tools: list[Tool]) -> ToolRegistry:
-        """Tạo lớp chồng：công cụ tích hợp + công cụ MCP của yêu cầu này（không sửa singleton toàn cục）."""
+        """派生一个叠加层：内置工具 + 本请求的 MCP 工具（不改动全局单例）。"""
         child = ToolRegistry()
         child._by_name = {**self._by_name, **{t.meta.name: t for t in tools}}
         return child
@@ -49,4 +49,4 @@ registry.register(GetEntityTool())
 registry.register(GetTimeTool())
 registry.register(WebSearchTool())
 registry.register(OpenWebPageTool())
-# Công cụ MCP từ xa được tiêm động theo ràng buộc của Agent khi chạy.
+# MCP 远端工具在运行时按 Agent 绑定动态注入。

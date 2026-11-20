@@ -1,4 +1,4 @@
-"""DTO kết quả engine phía sag —— tách rời khỏi cấu trúc trả về của zleap-sag."""
+"""sag 侧的引擎结果 DTO —— 与 zleap-sag 的返回结构解耦。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 
 class RetrievedSection(BaseModel):
-    """Một đoạn được truy xuất (dùng cho ngữ cảnh hỏi đáp và trích dẫn)."""
+    """一个检索到的段落（用于问答上下文与引用）。"""
 
     chunk_id: str | None = None
     heading: str = ""
@@ -18,22 +18,52 @@ class RetrievedSection(BaseModel):
     rank: int = 0
     source_id: str | None = None
     source_config_id: str | None = None
+    search_unit_id: str | None = None
+    block_from_id: str | None = None
+    block_to_id: str | None = None
+    section_path: str | None = None
+    content_hash: str | None = None
+    canonical_evidence_verified: bool = False
+    # Filled only by the API's exact, ACL-scoped SearchUnit lineage resolver.
+    # Legacy engine hits do not carry these fields and remain non-citable.
+    project_id: str | None = None
+    document_id: str | None = None
+    public_document_id: str | None = None
+    document_version_id: str | None = None
+    document_name: str | None = None
+    version_no: int | None = None
+    page_from: int | None = None
+    page_to: int | None = None
+    anchor: str | None = None
 
     @classmethod
-    def from_section(cls, s: dict[str, Any]) -> RetrievedSection:
+    def from_section(cls, s: Any) -> RetrievedSection:
+        if not isinstance(s, dict):
+            model_dump = getattr(s, "model_dump", None)
+            if not callable(model_dump):
+                raise TypeError(f"unsupported search section: {type(s).__name__}")
+            s = model_dump()
+        metadata = s.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
         return cls(
-            chunk_id=s.get("chunk_id"),
-            heading=(s.get("heading") or "").strip(),
+            chunk_id=s.get("chunk_id") or s.get("id"),
+            heading=(s.get("heading") or s.get("title") or metadata.get("heading") or "").strip(),
             content=(s.get("content") or "").strip(),
             score=float(s.get("score") or 0.0),
-            rank=int(s.get("rank") or 0),
+            rank=int(s.get("rank") or metadata.get("rank") or 0),
             source_id=s.get("source_id"),
-            source_config_id=s.get("source_config_id"),
+            source_config_id=s.get("source_config_id") or s.get("data_source_id"),
+            search_unit_id=s.get("search_unit_id"),
+            block_from_id=s.get("block_from_id"),
+            block_to_id=s.get("block_to_id"),
+            section_path=s.get("section_path"),
+            content_hash=s.get("content_hash"),
+            canonical_evidence_verified=bool(s.get("canonical_evidence_verified")),
         )
 
 
 class SearchOutcome(BaseModel):
-    """Kết quả tìm kiếm được gộp lại."""
+    """检索结果聚合。"""
 
     query: str
     sections: list[RetrievedSection]
@@ -41,7 +71,11 @@ class SearchOutcome(BaseModel):
 
     @classmethod
     def from_result(cls, result: Any) -> SearchOutcome:
-        raw_sections = getattr(result, "sections", None) or []
+        raw_sections = (
+            getattr(result, "sections", None)
+            or getattr(result, "chunks", None)
+            or []
+        )
         query = getattr(result, "query", "") or ""
         if not isinstance(query, str):
             query = str(query)
@@ -53,7 +87,7 @@ class SearchOutcome(BaseModel):
 
 
 class ChunkInfo(BaseModel):
-    """Nội dung gốc của một chunk (dùng truy nguồn trích dẫn)."""
+    """一个分块的原文（引用溯源用）。"""
 
     chunk_id: str
     heading: str = ""
@@ -62,17 +96,17 @@ class ChunkInfo(BaseModel):
 
 
 class EntityInfo(BaseModel):
-    """Một thực thể gộp từ đồ thị sự kiện–thực thể (dùng cho phân tích / sách→nhân vật)."""
+    """从事件—实体图谱聚合出的一个实体（用于洞察 / 书→人物）。"""
 
     id: str
     name: str
     type: str
     description: str = ""
-    heat: int = 0  # Số sự kiện liên quan (chỉ số thay thế của tần suất × mức trung tâm)
+    heat: int = 0  # 关联事件数（频次 × 中心度的代理指标）
 
 
 class GraphEventInfo(BaseModel):
-    """Nút sự kiện trong đồ thị nguồn thông tin."""
+    """信息源图谱中的事件节点。"""
 
     id: str
     source_id: str
@@ -89,7 +123,7 @@ class GraphEventInfo(BaseModel):
 
 
 class GraphAssociationInfo(BaseModel):
-    """Quan hệ được trích xuất thực giữa sự kiện và thực thể."""
+    """事件与实体之间的真实抽取关系。"""
 
     event_id: str
     entity_id: str
@@ -98,7 +132,7 @@ class GraphAssociationInfo(BaseModel):
 
 
 class SourceGraphInfo(BaseModel):
-    """Lát cắt đồ thị phía engine; ánh xạ tài liệu Web do lớp API bổ sung."""
+    """引擎侧图谱切片；Web 文档映射由 API 层补齐。"""
 
     events: list[GraphEventInfo] = []
     entities: list[EntityInfo] = []
@@ -174,7 +208,7 @@ class UniverseTimelineInfo(BaseModel):
 
 
 class ProcessOutcome(BaseModel):
-    """Kết quả xử lý tài liệu (ingest + extract)."""
+    """文档处理（ingest + extract）结果。"""
 
     source_id: str | None = None
     chunk_count: int = 0
@@ -200,8 +234,14 @@ class ProcessOutcome(BaseModel):
         )
 
 
+class EventEntityQuality(BaseModel):
+    rejected_attempts: int = 0
+    eventless_after_contract: list[str] = Field(default_factory=list)
+    reason_counts: dict[str, int] = Field(default_factory=dict)
+
+
 class ProcessCheckpoint(BaseModel):
-    """Điểm dừng xử lý tài liệu có thể lưu vào Job.payload."""
+    """可持久化到 Job.payload 的文档处理断点。"""
 
     source_id: str | None = None
     chunk_ids: list[str] = []
@@ -210,6 +250,13 @@ class ProcessCheckpoint(BaseModel):
     event_ids: list[str] = []
     eventless_chunk_ids: list[str] = []
     token_usage: int = 0
+    # 管线定位信息：chunk_version 为恢复必需；普通 ingest 的 generation_id 可为空。
+    generation_id: str | None = None
+    chunk_version: str | None = None
+    source_version: str | None = None
+    event_entity_quality: EventEntityQuality = Field(
+        default_factory=EventEntityQuality
+    )
 
     @classmethod
     def from_payload(cls, payload: dict | None) -> ProcessCheckpoint:
@@ -221,37 +268,3 @@ class ProcessCheckpoint(BaseModel):
             **(payload or {}),
             "process_checkpoint": self.model_dump(),
         }
-
-
-def estimate_llm_cost(token_usage: int, model_name: str = "") -> dict[str, Any]:
-    """Tính toán chi phí ước tính dựa trên số lượng token và đơn giá cụ thể của từng mô hình."""
-    model_lower = (model_name or "").lower()
-
-    if "qwen2.5" in model_lower or "qwen/qwen2.5-7b" in model_lower:
-        # Qwen 2.5 7B Instruct: $0.05 / 1M tokens (Input & Output)
-        price_per_1m = 0.05
-    elif "deepseek-v4" in model_lower or "deepseek" in model_lower:
-        # DeepSeek-V4-Flash-0731: Input Miss $0.14, Cached $0.028, Output $0.28 -> Trung bình cached blend ~$0.08 / 1M tokens
-        price_per_1m = 0.08
-    elif "embedding" in model_lower:
-        # Qwen3-Embedding-4B / 8B: $0.02 / 1M tokens
-        price_per_1m = 0.02
-    elif "r1" in model_lower:
-        price_per_1m = 0.55
-    elif "gpt-4" in model_lower:
-        price_per_1m = 2.50
-    else:
-        price_per_1m = 0.05  # Mặc định theo Qwen 2.5 7B
-
-    cost_usd = (token_usage / 1_000_000.0) * price_per_1m
-    cost_vnd = cost_usd * 25_400.0
-
-    return {
-        "tokens": token_usage,
-        "cost_usd": round(cost_usd, 6),
-        "cost_vnd": round(cost_vnd, 2),
-        "formatted_usd": f"${cost_usd:.4f}",
-        "formatted_vnd": f"{cost_vnd:,.0f} VNĐ",
-    }
-
-

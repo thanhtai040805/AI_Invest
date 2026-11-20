@@ -1,4 +1,4 @@
-"""Lớp cơ sở khai báo (declarative) và Mixin dùng chung."""
+"""声明式基类与通用 Mixin。"""
 
 from __future__ import annotations
 

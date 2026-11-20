@@ -1,3 +1,3 @@
-"""sag-api — Backend nền tảng kho tri thức mã nguồn mở."""
+"""sag-api — 开源知识库平台后端。"""
 
-__version__ = "1.5.2"
+__version__ = "1.8.7"

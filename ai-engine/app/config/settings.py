@@ -71,7 +71,7 @@ def get_settings() -> Settings:
         deepinfra_api_key=os.getenv("DEEPINFRA_API_KEY", ""),
         llm_base_url=os.getenv("LLM_BASE_URL") or "https://api.deepinfra.com/v1/openai",
         multi_agent_llm_provider=os.getenv("MULTI_AGENT_LLM_PROVIDER", "existing").strip().lower(),
-        sag_api_base=os.getenv("SAG_API_BASE", "http://localhost:8000/api/v2"),
+        sag_api_base=os.getenv("SAG_API_BASE", "http://localhost:8000/api/v1"),
         sag_service_token=os.getenv("SAG_SERVICE_TOKEN", ""),
         sag_analysis_hold=os.getenv("SAG_ANALYSIS_HOLD", "true").lower() in ("1", "true", "yes"),
         portfolio_automation_enabled=os.getenv("PORTFOLIO_AUTOMATION_ENABLED", "false").lower() in ("1", "true", "yes"),

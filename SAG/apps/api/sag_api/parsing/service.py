@@ -1,15 +1,20 @@
-"""Định tuyến phân tích tài liệu, cache và chuyển đổi cục bộ MarkItDown."""
+"""Điều phối phân tích tài liệu đa làn (Smart Hybrid MinerU + Isolated Subprocess Local Worker)."""
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import os
+import posixpath
 import tempfile
 import weakref
-from collections.abc import Awaitable, Callable
+import zipfile
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Literal
+from xml.etree import ElementTree
 
 from sag_api.core.config import Settings
 from sag_api.core.errors import (
@@ -18,13 +23,46 @@ from sag_api.core.errors import (
     UpstreamError,
     ValidationError,
 )
-from sag_api.parsing.markdown_noise_cleaner import clean_markdown
-from sag_api.parsing.mineru import MinerUClient
+from sag_api.parsing.local_worker import convert_local_isolated
+from sag_api.parsing.mineru import MinerUClient, PauseCallback
 from sag_api.parsing.text import TextDecodingError, is_plain_text_path, read_text_file
 
 ParseStateCallback = Callable[[dict[str, Any]], Awaitable[None]]
 _PARSE_LOCKS: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
-_CLEANER_VERSION = 1
+_LOOP_SEMAPHORES: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, dict[tuple[str, int], asyncio.Semaphore]
+] = weakref.WeakKeyDictionary()
+
+_DOCX_EXTENSION = ".docx"
+_MINERU_DIRECT_EXTENSIONS = frozenset(
+    {".pdf", ".doc", ".ppt", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+)
+_MINERU_HYBRID_OOXML_EXTENSIONS = frozenset({".docx", ".pptx"})
+_OOXML_VISUAL_PREFIXES = (
+    "word/media/",
+    "word/charts/",
+    "word/diagrams/",
+    "word/embeddings/",
+    "ppt/media/",
+    "ppt/charts/",
+    "ppt/diagrams/",
+    "ppt/embeddings/",
+)
+
+_IMAGE_RELATIONSHIP_TYPE = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
+)
+_PACKAGE_RELATIONSHIP_NAMESPACE = "http://schemas.openxmlformats.org/package/2006/relationships"
+_RELATIONSHIP_TAG = f"{{{_PACKAGE_RELATIONSHIP_NAMESPACE}}}Relationship"
+_WORD_RELATIONSHIPS_PREFIX = "word/_rels/"
+_WORDPROCESSING_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_DRAWING_TAG = f"{{{_WORDPROCESSING_NAMESPACE}}}drawing"
+_PICT_TAG = f"{{{_WORDPROCESSING_NAMESPACE}}}pict"
+_OFFICE_DOCUMENT_RELATIONSHIP_NAMESPACE = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+)
+_RELATIONSHIP_EMBED_ATTRIBUTE = f"{{{_OFFICE_DOCUMENT_RELATIONSHIP_NAMESPACE}}}embed"
+_RELATIONSHIP_ID_ATTRIBUTE = f"{{{_OFFICE_DOCUMENT_RELATIONSHIP_NAMESPACE}}}id"
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,45 +74,144 @@ class PreparedDocument:
     fallback_error: str | None = None
 
 
+def ooxml_has_visual_content(path: str) -> bool:
+    """Inspect only the OOXML ZIP Central Directory (< 2ms, < 64 KB RAM, zero decompression)
+    to detect embedded images, charts, SmartArt diagrams, or embedded objects.
+    """
+    try:
+        with zipfile.ZipFile(path, "r") as archive:
+            for info in archive.infolist():
+                if info.is_dir() or info.file_size <= 0:
+                    continue
+                lower_name = info.filename.lower()
+                if lower_name.startswith(_OOXML_VISUAL_PREFIXES):
+                    return True
+    except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile):
+        return False
+    return False
+
+
+def should_route_to_mineru(path: str, settings: Settings) -> bool:
+    """Option A — Smart Hybrid MinerU Routing:
+    - Direct to MinerU when configured: .pdf, .doc, .ppt, and standalone images.
+    - Hybrid OOXML (.docx, .pptx): route to MinerU if embedded visual media/charts/diagrams
+      exist (or when SAG_DOCUMENT_PARSER=mineru explicitly); otherwise parse locally (< 150ms).
+    - Tabular/plain-text (.xlsx, .xls, .csv, .txt, .md, .json, ...): parse locally.
+    """
+    if settings.effective_document_parser != "mineru":
+        return False
+    suffix = os.path.splitext(path)[1].lower()
+    if suffix in _MINERU_DIRECT_EXTENSIONS:
+        return True
+    if suffix in _MINERU_HYBRID_OOXML_EXTENSIONS:
+        if settings.document_parser == "mineru":
+            return True
+        return ooxml_has_visual_content(path)
+    return False
+
+
+def _lane_semaphore(key: str, limit: int) -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    per_loop = _LOOP_SEMAPHORES.get(loop)
+    if per_loop is None:
+        per_loop = {}
+        _LOOP_SEMAPHORES[loop] = per_loop
+    safe_limit = max(1, int(limit))
+    bucket = (key, safe_limit)
+    sem = per_loop.get(bucket)
+    if sem is None:
+        sem = asyncio.Semaphore(safe_limit)
+        per_loop[bucket] = sem
+    return sem
+
+
+@asynccontextmanager
+async def _acquire_lane(
+    lane_key: str,
+    lane_limit: int,
+    *,
+    project_id: str | None = None,
+    project_limit: int | None = None,
+) -> AsyncIterator[None]:
+    lane_sem = _lane_semaphore(lane_key, lane_limit)
+    if project_id and project_limit and project_limit > 0:
+        proj_sem = _lane_semaphore(f"proj:{lane_key}:{project_id}", project_limit)
+        async with proj_sem, lane_sem:
+            yield
+    else:
+        async with lane_sem:
+            yield
+
+
+def has_cached_prepared_document(path: str, settings: Settings) -> bool:
+    """Return True when either a raw Markdown file or a valid current-signature parsed sidecar exists on disk."""
+    if not path:
+        return False
+    suffix = os.path.splitext(path)[1].lower()
+    if suffix in {".md", ".markdown"}:
+        return os.path.isfile(path)
+    for candidate_provider in ("mineru", "markitdown"):
+        sig = _signature(candidate_provider, settings)
+        if _is_cached(f"{path}.parsed.{sig}.md"):
+            return True
+    return False
+
+
 async def prepare_document(
     path: str,
     settings: Settings,
     *,
     state: dict[str, Any] | None = None,
     on_state: ParseStateCallback | None = None,
+    should_pause: PauseCallback | None = None,
+    remote_source_url: str | None = None,
+    project_id: str | None = None,
 ) -> PreparedDocument:
-    """Trả về đường dẫn Markdown đã làm sạch, giữ nguyên file upload gốc."""
-    prepared = await _prepare_raw_document(path, settings, state=state, on_state=on_state)
-    return await asyncio.to_thread(_ensure_cleaned, prepared)
-
-
-async def _prepare_raw_document(
-    path: str,
-    settings: Settings,
-    *,
-    state: dict[str, Any] | None = None,
-    on_state: ParseStateCallback | None = None,
-) -> PreparedDocument:
+    """Trả về đường dẫn Markdown có thể chuyển trực tiếp cho canonical/zleap-sag."""
     suffix = os.path.splitext(path)[1].lower()
     if suffix in {".md", ".markdown"}:
         return PreparedDocument(path=path, provider="original")
 
-    use_mineru = suffix == ".pdf" and settings.effective_document_parser == "mineru"
+    # Fast sidecar cache recovery even when raw binary snapshot was garbage-collected
+    if not os.path.isfile(path):
+        for candidate_provider in ("mineru", "markitdown"):
+            sig = _signature(candidate_provider, settings)
+            candidate_cache = f"{path}.parsed.{sig}.md"
+            if _is_cached(candidate_cache):
+                await _emit_cached_state(
+                    state, candidate_provider, sig, candidate_cache, settings, on_state
+                )
+                return PreparedDocument(
+                    path=candidate_cache, provider=candidate_provider, cached=True
+                )
+
+    use_mineru = await asyncio.to_thread(should_route_to_mineru, path, settings)
     provider: Literal["markitdown", "mineru"] = "mineru" if use_mineru else "markitdown"
     signature = _signature(provider, settings)
     cache_path = f"{path}.parsed.{signature}.md"
     if _is_cached(cache_path):
+        await _emit_cached_state(
+            state, provider, signature, cache_path, settings, on_state
+        )
         return PreparedDocument(path=cache_path, provider=provider, cached=True)
     cached_fallback = _cached_fallback_document(path, provider, signature, settings)
     if cached_fallback:
+        await _emit_cached_fallback_state(
+            state, signature, cached_fallback, settings, on_state
+        )
         return cached_fallback
 
-    # Cùng một tài liệu trong cùng tiến trình chỉ chuyển đổi một lần, tránh "xử lý lại" song song tạo trùng task trả phí.
     async with _lock_for(cache_path):
         if _is_cached(cache_path):
+            await _emit_cached_state(
+                state, provider, signature, cache_path, settings, on_state
+            )
             return PreparedDocument(path=cache_path, provider=provider, cached=True)
         cached_fallback = _cached_fallback_document(path, provider, signature, settings)
         if cached_fallback:
+            await _emit_cached_fallback_state(
+                state, signature, cached_fallback, settings, on_state
+            )
             return cached_fallback
         return await _prepare_and_cache(
             path,
@@ -84,6 +221,54 @@ async def _prepare_raw_document(
             settings,
             state=state,
             on_state=on_state,
+            should_pause=should_pause,
+            remote_source_url=remote_source_url,
+            project_id=project_id,
+        )
+
+
+async def _emit_cached_fallback_state(
+    state: dict[str, Any] | None,
+    signature: str,
+    prepared: PreparedDocument,
+    settings: Settings,
+    on_state: ParseStateCallback | None,
+) -> None:
+    if not on_state:
+        return
+    fallback = state.get("fallback") if isinstance(state, dict) else None
+    fallback_state = dict(fallback) if isinstance(fallback, dict) else {}
+    await on_state(
+        {
+            **_compatible_state(state, "mineru", signature, settings),
+            "status": "fallback_done",
+            "fallback": {
+                **fallback_state,
+                "provider": "markitdown",
+                "status": "done",
+                "cached": True,
+                "mineru_error": fallback_state.get("mineru_error")
+                or prepared.fallback_error,
+            },
+        }
+    )
+
+
+async def _emit_cached_state(
+    state: dict[str, Any] | None,
+    provider: Literal["markitdown", "mineru"],
+    signature: str,
+    cache_path: str,
+    settings: Settings,
+    on_state: ParseStateCallback | None,
+) -> None:
+    if on_state:
+        await on_state(
+            {
+                **_compatible_state(state, provider, signature, settings),
+                "status": "done",
+                "cache_path": cache_path,
+            }
         )
 
 
@@ -96,6 +281,9 @@ async def _prepare_and_cache(
     *,
     state: dict[str, Any] | None,
     on_state: ParseStateCallback | None,
+    should_pause: PauseCallback | None = None,
+    remote_source_url: str | None = None,
+    project_id: str | None = None,
 ) -> PreparedDocument:
     parser_state = _compatible_state(state, provider, signature, settings)
     current_state = dict(parser_state)
@@ -137,16 +325,28 @@ async def _prepare_and_cache(
                 fallback_cache_path,
                 fallback_signature,
                 fallback_marker_path,
+                settings=settings,
+                project_id=project_id,
                 mineru_message=_state_string(fallback, "mineru_error")
-                or "Phân tích MinerU thất bại",
+                or "Phân tích bằng MinerU thất bại",
                 mineru_error_code=_state_string(fallback, "mineru_error_code")
                 or UpstreamError.code,
                 on_state=track_state,
             )
         try:
-            markdown = await MinerUClient(settings).parse(
-                path, state=parser_state, on_state=track_state
-            )
+            async with _acquire_lane(
+                "mineru_io",
+                settings.mineru_io_concurrency,
+                project_id=project_id,
+                project_limit=settings.per_project_heavy_parse_limit,
+            ):
+                markdown = await MinerUClient(settings).parse(
+                    path,
+                    state=parser_state,
+                    on_state=track_state,
+                    should_pause=should_pause,
+                    remote_source_url=remote_source_url,
+                )
         except ApiError as mineru_error:
             return await _prepare_markitdown_fallback(
                 path,
@@ -154,16 +354,20 @@ async def _prepare_and_cache(
                 fallback_cache_path,
                 fallback_signature,
                 fallback_marker_path,
+                settings=settings,
+                project_id=project_id,
                 mineru_message=_exception_message(mineru_error),
                 mineru_error_code=mineru_error.code,
                 on_state=track_state,
             )
     else:
-        markdown = (
-            await asyncio.to_thread(_convert_plain_text, path)
-            if is_plain_text_path(path)
-            else await _convert_with_markitdown(path)
-        )
+        if is_plain_text_path(path):
+            async with _acquire_lane("fast_text", settings.fast_parse_concurrency):
+                markdown = await asyncio.to_thread(_convert_plain_text, path)
+        else:
+            markdown = await _convert_with_local_worker(
+                path, settings=settings, project_id=project_id
+            )
 
     await asyncio.to_thread(_write_markdown, cache_path, markdown)
     if on_state:
@@ -186,6 +390,8 @@ async def _prepare_markitdown_fallback(
     signature: str,
     marker_path: str,
     *,
+    settings: Settings,
+    project_id: str | None = None,
     mineru_message: str,
     mineru_error_code: str,
     on_state: ParseStateCallback,
@@ -194,7 +400,6 @@ async def _prepare_markitdown_fallback(
         "provider": "markitdown",
         "signature": signature,
         "status": "running",
-        # Chỉ dùng để chẩn đoán; khi khôi phục luôn suy lại từ đường dẫn file gốc và kiểm tra đường dẫn cache.
         "cache_path": cache_path,
         "mineru_error": mineru_message,
         "mineru_error_code": mineru_error_code,
@@ -211,10 +416,12 @@ async def _prepare_markitdown_fallback(
         async with _lock_for(cache_path):
             fallback_cached = _is_cached(cache_path)
             if not fallback_cached:
-                markdown = await _convert_with_markitdown(path)
+                markdown = await _convert_with_local_worker(
+                    path, settings=settings, project_id=project_id
+                )
                 await asyncio.to_thread(_write_markdown, cache_path, markdown)
             await asyncio.to_thread(_write_fallback_marker, marker_path)
-    except Exception as fallback_error:  # noqa: BLE001 - Lỗi chuyển đổi/ghi đĩa cục bộ gộp với nguyên nhân upstream
+    except Exception as fallback_error:  # noqa: BLE001
         fallback_message = _exception_message(fallback_error)
         await on_state(
             {
@@ -228,8 +435,8 @@ async def _prepare_markitdown_fallback(
             }
         )
         message = (
-            f"Phân tích MinerU thất bại: {mineru_message}; "
-            f"MarkItDown fallback thất bại: {fallback_message}"
+            f"Phân tích bằng MinerU thất bại: {mineru_message}; "
+            f"phương án dự phòng cục bộ cũng thất bại: {fallback_message}"
         )
         if mineru_error_code == ServiceUnavailableError.code:
             raise ServiceUnavailableError(message) from fallback_error
@@ -294,7 +501,7 @@ def _cached_fallback_document(
         provider="markitdown",
         cached=True,
         fallback_from="mineru",
-        fallback_error="MinerU từng phân tích thất bại, đã tái dùng cache fallback MarkItDown",
+        fallback_error="MinerU từng phân tích thất bại; đã dùng lại bộ nhớ đệm dự phòng của MarkItDown",
     )
 
 
@@ -340,52 +547,22 @@ def _lock_for(path: str) -> asyncio.Lock:
 
 
 def parsed_sidecar_paths(path: str) -> list[str]:
-    """Liệt kê các cache phân tích cạnh file gốc, để xóa cùng khi xóa tài liệu."""
+    """Liệt kê bộ nhớ đệm phân tích cạnh tệp gốc để xóa cùng tài liệu."""
     directory = os.path.dirname(path) or "."
-    basename = os.path.basename(path)
-    prefixes = (basename + ".parsed.", basename + ".clean.")
+    prefix = os.path.basename(path) + ".parsed."
     try:
         names = os.listdir(directory)
     except OSError:
         return []
-    return [
-        os.path.join(directory, name)
-        for name in names
-        if name.startswith(prefixes)
-    ]
-
-
-def _ensure_cleaned(prepared: PreparedDocument) -> PreparedDocument:
-    """Tạo (nếu chưa có) bản Markdown đã làm sạch và trả về đường dẫn bản sạch."""
-    if not _is_cached(prepared.path):
-        return prepared
-    cleaned_path = f"{prepared.path}.clean.{_CLEANER_VERSION}.md"
-    if _is_cached(cleaned_path):
-        return _with_cleaned_path(prepared, cleaned_path)
-    try:
-        markdown = read_text_file(prepared.path).text
-    except (TextDecodingError, OSError):
-        return prepared
-    cleaned, _stats = clean_markdown(markdown)
-    if not cleaned.strip():
-        return prepared
-    _write_markdown(cleaned_path, cleaned)
-    return _with_cleaned_path(prepared, cleaned_path)
-
-
-def _with_cleaned_path(prepared: PreparedDocument, cleaned_path: str) -> PreparedDocument:
-    return PreparedDocument(
-        path=cleaned_path,
-        provider=prepared.provider,
-        cached=prepared.cached,
-        fallback_from=prepared.fallback_from,
-        fallback_error=prepared.fallback_error,
-    )
+    return [os.path.join(directory, name) for name in names if name.startswith(prefix)]
 
 
 def _signature(provider: str, settings: Settings) -> str:
     if provider == "mineru":
-        return f"mineru-{settings.mineru_version}-{settings.mineru_parse_method}"
+        return (
+            f"mineru-official-{settings.mineru_official_model}-"
+            f"{settings.mineru_parse_method}"
+        )
     return "markitdown"
 
 
@@ -395,7 +572,7 @@ def _compatible_state(
     signature: str,
     settings: Settings,
 ) -> dict[str, Any]:
-    expected = {
+    expected: dict[str, Any] = {
         "provider": provider,
         "signature": signature,
         "base_url": settings.mineru_base_url if provider == "mineru" else None,
@@ -404,38 +581,50 @@ def _compatible_state(
         else "",
     }
     current = dict(state or {})
+    if provider == "mineru":
+        expected["mineru_service"] = "official"
+        expected["mineru_model"] = settings.mineru_official_model
     if any(current.get(key) != value for key, value in expected.items()):
         return expected
     return current
 
 
 def _mineru_key_fingerprint(settings: Settings) -> str:
-    if not settings.mineru_api_key:
+    token = settings.mineru_official_api_token
+    if not token:
         return ""
-    return hashlib.sha256(settings.mineru_api_key.encode()).hexdigest()[:12]
+    return hashlib.sha256(token.encode()).hexdigest()[:12]
+
+
+async def _convert_with_local_worker(
+    path: str,
+    *,
+    settings: Settings,
+    project_id: str | None = None,
+) -> str:
+    async with _acquire_lane(
+        "local_cpu",
+        settings.local_parse_workers,
+        project_id=project_id,
+        project_limit=min(settings.per_project_heavy_parse_limit, settings.local_parse_workers),
+    ):
+        return await convert_local_isolated(path, settings)
 
 
 async def _convert_with_markitdown(path: str) -> str:
-    try:
-        markdown = await asyncio.to_thread(_markitdown_sync, path)
-    except (ImportError, ModuleNotFoundError) as exc:
-        raise UpstreamError("MarkItDown chưa được cài, không thể phân tích file này") from exc
-    except Exception as exc:  # noqa: BLE001 - Ánh xạ thống nhất lỗi converter bên thứ ba
-        raise ValidationError(f"MarkItDown phân tích thất bại: {exc}") from exc
-    markdown = markdown.strip()
-    if not _is_meaningful_markdown(markdown):
-        raise ValidationError("MarkItDown không phân tích được văn bản hợp lệ từ file")
-    return markdown + "\n"
+    from sag_api.core.config import settings as default_settings
+
+    return await convert_local_isolated(path, default_settings)
 
 
 def _convert_plain_text(path: str) -> str:
     try:
         decoded = read_text_file(path)
     except TextDecodingError as exc:
-        raise ValidationError(f"Nhận diện mã hóa văn bản thất bại: {exc}") from exc
+        raise ValidationError(f"Không nhận diện được mã hóa văn bản: {exc}") from exc
     text = decoded.text.strip()
     if not _is_meaningful_markdown(text):
-        raise ValidationError("Trong file văn bản không có nội dung hợp lệ để phân tích")
+        raise ValidationError("Tệp văn bản không có nội dung hợp lệ để phân tích")
     return text + "\n"
 
 
@@ -451,16 +640,138 @@ def _is_meaningful_markdown(markdown: str) -> bool:
     }
 
 
-def _markitdown_sync(path: str) -> str:
-    from markitdown import MarkItDown
+def _without_dangling_docx_image_relationships(content: bytes) -> bytes:
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as source:
+            entries = source.infolist()
+            names = frozenset(entry.filename for entry in entries)
+            replacements: dict[str, bytes] = {}
+            for entry in entries:
+                if not _is_word_relationships_entry(entry.filename):
+                    continue
+                relationships = source.read(entry)
+                sanitized, removed_relationship_ids = _without_dangling_image_relationships(
+                    relationships=relationships,
+                    relationships_entry=entry.filename,
+                    names=names,
+                )
+                if sanitized != relationships:
+                    replacements[entry.filename] = sanitized
+                if not removed_relationship_ids:
+                    continue
+                source_part = _source_part_for_relationships(entry.filename)
+                if source_part not in names:
+                    continue
+                source_content = source.read(source_part)
+                sanitized_source = _without_image_relationship_references(
+                    content=source_content,
+                    relationship_ids=removed_relationship_ids,
+                )
+                if sanitized_source != source_content:
+                    replacements[source_part] = sanitized_source
+            if not replacements:
+                return content
+            output = io.BytesIO()
+            with zipfile.ZipFile(output, "w") as destination:
+                destination.comment = source.comment
+                for entry in entries:
+                    destination.writestr(
+                        entry,
+                        replacements.get(entry.filename, source.read(entry)),
+                    )
+            return output.getvalue()
+    except (ElementTree.ParseError, zipfile.BadZipFile, zipfile.LargeZipFile):
+        return content
 
-    result = MarkItDown().convert(path)
-    markdown = getattr(result, "markdown", None)
-    if markdown is None:  # Tương thích 0.0.x / 0.1.x đầu trả về object
-        markdown = getattr(result, "text_content", None)
-    if not isinstance(markdown, str):
-        raise TypeError("MarkItDown trả về định dạng kết quả không xác định")
-    return markdown
+
+def _is_word_relationships_entry(name: str) -> bool:
+    return name.startswith(_WORD_RELATIONSHIPS_PREFIX) and name.endswith(".rels")
+
+
+def _without_dangling_image_relationships(
+    *,
+    relationships: bytes,
+    relationships_entry: str,
+    names: frozenset[str],
+) -> tuple[bytes, frozenset[str]]:
+    root = ElementTree.fromstring(relationships)
+    removed_relationship_ids: set[str] = set()
+    for relationship in root.findall(_RELATIONSHIP_TAG):
+        if relationship.get("Type") != _IMAGE_RELATIONSHIP_TYPE:
+            continue
+        if relationship.get("TargetMode") == "External":
+            continue
+        target = relationship.get("Target")
+        if target is None or not _relationship_target_is_missing(
+            relationships_entry=relationships_entry,
+            target=target,
+            names=names,
+        ):
+            continue
+        relationship_id = relationship.get("Id")
+        if relationship_id is None:
+            continue
+        root.remove(relationship)
+        removed_relationship_ids.add(relationship_id)
+    if not removed_relationship_ids:
+        return relationships, frozenset()
+    return (
+        ElementTree.tostring(root, encoding="utf-8", xml_declaration=True),
+        frozenset(removed_relationship_ids),
+    )
+
+
+def _source_part_for_relationships(relationships_entry: str) -> str:
+    return relationships_entry.replace("/_rels/", "/", 1)[: -len(".rels")]
+
+
+def _without_image_relationship_references(
+    *,
+    content: bytes,
+    relationship_ids: frozenset[str],
+) -> bytes:
+    root = ElementTree.fromstring(content)
+    parents = {child: parent for parent in root.iter() for child in parent}
+    containers: set[ElementTree.Element[str]] = set()
+    for element in root.iter():
+        relationship_id = element.get(_RELATIONSHIP_EMBED_ATTRIBUTE) or element.get(
+            _RELATIONSHIP_ID_ATTRIBUTE
+        )
+        if relationship_id not in relationship_ids:
+            continue
+        container = _image_container(element, parents)
+        if container is not None:
+            containers.add(container)
+    if not containers:
+        return content
+    for container in containers:
+        parent = parents.get(container)
+        if parent is not None:
+            parent.remove(container)
+    return ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
+def _image_container(
+    element: ElementTree.Element[str],
+    parents: dict[ElementTree.Element[str], ElementTree.Element[str]],
+) -> ElementTree.Element[str] | None:
+    current: ElementTree.Element[str] | None = element
+    while current is not None:
+        if current.tag in {_DRAWING_TAG, _PICT_TAG}:
+            return current
+        current = parents.get(current)
+    return None
+
+
+def _relationship_target_is_missing(
+    *,
+    relationships_entry: str,
+    target: str,
+    names: frozenset[str],
+) -> bool:
+    source_part = _source_part_for_relationships(relationships_entry)
+    target_path = posixpath.normpath(posixpath.join(posixpath.dirname(source_part), target))
+    return target_path not in names
 
 
 def _write_markdown(path: str, markdown: str) -> None:
@@ -469,21 +780,30 @@ def _write_markdown(path: str, markdown: str) -> None:
         prefix=".parsed-", suffix=".md", dir=os.path.dirname(path) or "."
     )
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as target:
-            target.write(markdown)
-        try:
-            os.replace(temp_path, path)
-        except PermissionError:
-            if os.path.exists(path) and os.path.getsize(path) > 0:
-                try:
-                    os.remove(temp_path)
-                except OSError:
-                    pass
-                return
-            raise
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as target:
+            target.write(markdown.replace("\r\n", "\n").replace("\r", "\n"))
+        os.replace(temp_path, path)
     except Exception:
         try:
             os.remove(temp_path)
         except OSError:
             pass
         raise
+
+
+def extract_canonical_blocks_from_markdown(
+    markdown_text: str,
+    *,
+    version_id: str,
+    page_from: int = 1,
+    page_to: int = 1,
+):
+    """Bridge parser markdown output directly to structured canonical blocks (Jira Task 3)."""
+    from sag_api.parsing.canonical import extract_canonical_blocks
+
+    return extract_canonical_blocks(
+        markdown_text,
+        version_id=version_id,
+        page_from=page_from,
+        page_to=page_to,
+    )
