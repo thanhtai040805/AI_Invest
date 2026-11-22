@@ -726,6 +726,61 @@ def build_matrix_from_html_table(
     }
 
 
+def _is_metadata_code_column(
+    header: str,
+    rows: list[list[dict[str, Any]]],
+    col_idx: int,
+    *,
+    total_row_idx: int | None = None,
+) -> bool:
+    """Detect `Mã số` (100/110/270) or `Thuyết minh` (3.1/5.1) metadata columns that must NOT be summed."""
+    h_low = (header or "").strip().lower()
+    if any(k in h_low for k in ("mã số", "ma so", "thuyết minh", "thuyet minh", "ghi chú", "note", "code")):
+        return True
+    non_empty_texts = [
+        (r[col_idx].get("raw_text") or "").strip()
+        for r in rows
+        if col_idx < len(r) and (r[col_idx].get("raw_text") or "").strip() not in ("", "-", "–", "—")
+    ]
+    if not non_empty_texts:
+        return True
+    # Detect accounting codes (1..999 without thousands separators) or note refs (3.1, V.1, (10-02))
+    code_like = 0
+    for txt in non_empty_texts:
+        if re.fullmatch(
+            r"(?:\d{1,3}(?:\.\d{1,2})?|\d{1,2}[a-z]?|[IVX]{1,4}(?:\.\d{1,2})?|\(\d{1,2}\s*[+\-–]\s*\d{1,2}\))",
+            txt,
+            re.IGNORECASE,
+        ):
+            code_like += 1
+    if code_like / max(1, len(non_empty_texts)) >= 0.70:
+        return True
+    # Also detect sparse left-middle note column where total row is blank and < 40% of rows have numbers
+    if total_row_idx is not None and total_row_idx < len(rows) and col_idx < len(rows[total_row_idx]):
+        tot_empty = rows[total_row_idx][col_idx].get("numeric_value") is None
+        if tot_empty and (len(non_empty_texts) / max(1, len(rows))) < 0.45:
+            return True
+    return False
+
+
+def _amount_column_indices(
+    headers: list[str],
+    rows: list[list[dict[str, Any]]],
+    *,
+    total_row_idx: int | None = None,
+) -> list[int]:
+    """Return column indices representing monetary/numeric amount columns (excluding Mã số & Thuyết minh)."""
+    n_cols = len(headers)
+    if n_cols <= 2:
+        return list(range(1, n_cols))
+    amt_cols = [
+        c
+        for c in range(1, n_cols)
+        if not _is_metadata_code_column(headers[c], rows, c, total_row_idx=total_row_idx)
+    ]
+    return amt_cols if amt_cols else list(range(1, n_cols))
+
+
 def run_arithmetic_sanity_gate(
     headers: list[str],
     rows: list[list[dict[str, Any]]],
@@ -733,7 +788,7 @@ def run_arithmetic_sanity_gate(
     sum_row_indices: list[int] | None = None,
     tolerance: float = 0.005,
 ) -> dict[str, Any]:
-    """Step 4 Arithmetic & Structural Sanity Gate (<= 0.5% tolerance; right-col guard)."""
+    """Step 4 Arithmetic & Structural Sanity Gate (<= 0.5% tolerance; skips Mã số/Thuyết minh cols)."""
     if not rows or len(headers) < 2:
         return {
             "verification_status": "TABLE_UNVERIFIED",
@@ -752,13 +807,14 @@ def run_arithmetic_sanity_gate(
 
     if total_row_idx is None:
         for idx in range(len(rows) - 1, -1, -1):
-            lbl = (rows[idx][0]["raw_text"] or "").lower()
+            lbl = re.sub(r"^\s*\d{2,3}\s+", "", (rows[idx][0]["raw_text"] or "").lower())
             if any(
                 k in lbl
                 for k in (
                     "tổng cộng",
                     "cộng",
                     "tổng tài sản",
+                    "tổng nguồn vốn",
                     "tổng nợ",
                     "tổng doanh thu",
                     "total",
@@ -780,9 +836,10 @@ def run_arithmetic_sanity_gate(
     if sum_row_indices is None:
         sum_row_indices = list(range(total_row_idx))
 
+    amt_cols = _amount_column_indices(headers, rows, total_row_idx=total_row_idx)
     col_checks: list[dict[str, Any]] = []
     max_err = 0.0
-    for c in range(1, n_cols):
+    for c in amt_cols:
         tot_val = rows[total_row_idx][c]["numeric_value"] if c < len(rows[total_row_idx]) else None
         if tot_val is None:
             col_checks.append(
@@ -823,7 +880,6 @@ def run_arithmetic_sanity_gate(
         status = "TABLE_UNVERIFIED"
 
     # Hierarchical fallback for multi-level Vietnamese financial statements (Balance Sheet / P&L / Notes)
-    # where flat sum double-counts intermediate subtotals (e.g. Assets = Current + Non-Current; Assets == Equity+Liab).
     if status != "VERIFIED" and right_col_coverage > 0.0 and len(rows) >= 4:
         hier_gate = _try_auto_hierarchical_reconciliation(headers, rows, tolerance=tolerance)
         if hier_gate is not None:
@@ -839,22 +895,34 @@ def run_arithmetic_sanity_gate(
     }
 
 
+def _clean_acct_label(raw: str) -> str:
+    return re.sub(r"^\s*\d{2,3}(?:\.\d)?\s+", "", (raw or "").strip().lower())
+
+
 def _try_auto_hierarchical_reconciliation(
     headers: list[str],
     rows: list[list[dict[str, Any]]],
     *,
     tolerance: float = 0.005,
 ) -> dict[str, Any] | None:
-    """Auto-detect standard Vietnamese Balance Sheet / subtotal accounting identities without hardcoding row indices."""
+    """Auto-detect standard Vietnamese Balance Sheet, P&L & subtotal identities (ignoring Mã số/Thuyết minh cols)."""
     n_cols = len(headers)
     if n_cols < 2 or len(rows) < 4:
         return None
 
-    # 1. Balance Sheet fundamental identity: TỔNG CỘNG TÀI SẢN == TỔNG CỘNG NGUỒN VỐN
+    # 1. Balance Sheet identity: TỔNG (CỘNG) TÀI SẢN == TỔNG (CỘNG) NGUỒN VỐN / NỢ & VCSH
     assets_idx: int | None = None
     liab_eq_idx: int | None = None
+    cur_assets_idx: int | None = None
+    noncur_assets_idx: int | None = None
+    gross_rev_idx: int | None = None
+    deduct_idx: int | None = None
+    net_rev_idx: int | None = None
+    cogs_idx: int | None = None
+    gross_profit_idx: int | None = None
+
     for idx, r in enumerate(rows):
-        lbl = (r[0].get("raw_text") or "").lower()
+        lbl = _clean_acct_label(r[0].get("raw_text") or "")
         if ("tổng cộng tài sản" in lbl or lbl.startswith("tổng tài sản")) and assets_idx is None:
             assets_idx = idx
         elif (
@@ -863,6 +931,21 @@ def _try_auto_hierarchical_reconciliation(
             or lbl.startswith("tổng nguồn vốn")
         ):
             liab_eq_idx = idx
+        elif re.search(r"^(?:a\.\s*)?tài\s+sản\s+ngắn\s+hạn$", lbl) and cur_assets_idx is None:
+            cur_assets_idx = idx
+        elif re.search(r"^(?:b\.\s*)?tài\s+sản\s+dài\s+hạn$", lbl) and noncur_assets_idx is None:
+            noncur_assets_idx = idx
+        elif lbl.startswith("doanh thu bán hàng") and gross_rev_idx is None:
+            gross_rev_idx = idx
+        elif "giảm trừ doanh thu" in lbl and deduct_idx is None:
+            deduct_idx = idx
+        elif lbl.startswith("doanh thu thuần") and net_rev_idx is None:
+            net_rev_idx = idx
+        elif lbl.startswith("giá vốn hàng bán") and cogs_idx is None:
+            cogs_idx = idx
+        elif lbl.startswith("lợi nhuận gộp") and gross_profit_idx is None:
+            gross_profit_idx = idx
+
     if assets_idx is not None and liab_eq_idx is not None and assets_idx != liab_eq_idx:
         return run_hierarchical_identities_sanity_gate(
             headers,
@@ -871,21 +954,66 @@ def _try_auto_hierarchical_reconciliation(
             tolerance=tolerance,
         )
 
-    # 2. Local subtotal-block checks (e.g. multiple sub-sections each ending in "Cộng" / "Tổng cộng")
+    if assets_idx is not None and cur_assets_idx is not None and noncur_assets_idx is not None:
+        return run_hierarchical_identities_sanity_gate(
+            headers,
+            rows,
+            [("Total_Assets_eq_Current_Plus_NonCurrent", assets_idx, [cur_assets_idx, noncur_assets_idx])],
+            tolerance=tolerance,
+        )
+
+    # 2. P&L identities (e.g. Gross Profit = Net Revenue - COGS; Net Revenue = Gross Rev - Deductions)
+    pnl_identities: list[tuple[str, int, list[int]]] = []
+    if net_rev_idx is not None and cogs_idx is not None and gross_profit_idx is not None:
+        # Handle both positive-coded COGS (NetRev - COGS = GP) and negative-coded COGS (NetRev + (-COGS) = GP)
+        amt_cols = _amount_column_indices(headers, rows, total_row_idx=gross_profit_idx)
+        if amt_cols:
+            c0 = amt_cols[0]
+            nr_v = rows[net_rev_idx][c0].get("numeric_value")
+            cg_v = rows[cogs_idx][c0].get("numeric_value")
+            gp_v = rows[gross_profit_idx][c0].get("numeric_value")
+            if nr_v is not None and cg_v is not None and gp_v is not None:
+                if cg_v <= 0:
+                    pnl_identities.append(
+                        ("Gross_Profit_eq_NetRev_Plus_NegCOGS", gross_profit_idx, [net_rev_idx, cogs_idx])
+                    )
+                else:
+                    # Net Revenue == Gross Profit + COGS
+                    pnl_identities.append(
+                        ("NetRev_eq_GrossProfit_Plus_COGS", net_rev_idx, [gross_profit_idx, cogs_idx])
+                    )
+    if gross_rev_idx is not None and deduct_idx is not None and net_rev_idx is not None:
+        amt_cols = _amount_column_indices(headers, rows, total_row_idx=net_rev_idx)
+        if amt_cols:
+            c0 = amt_cols[0]
+            dv = rows[deduct_idx][c0].get("numeric_value")
+            if dv is not None:
+                if dv <= 0:
+                    pnl_identities.append(
+                        ("NetRev_eq_GrossRev_Plus_NegDeduct", net_rev_idx, [gross_rev_idx, deduct_idx])
+                    )
+                else:
+                    pnl_identities.append(
+                        ("GrossRev_eq_NetRev_Plus_Deduct", gross_rev_idx, [net_rev_idx, deduct_idx])
+                    )
+    if pnl_identities:
+        gate_pnl = run_hierarchical_identities_sanity_gate(headers, rows, pnl_identities, tolerance=tolerance)
+        if gate_pnl["verification_status"] in ("VERIFIED", "PARTIAL"):
+            return gate_pnl
+
+    # 3. Local subtotal-block checks (e.g. multiple sub-sections each ending in "Cộng" / "Tổng cộng")
     total_indices = [
         idx
         for idx, r in enumerate(rows)
         if any(
-            k in (r[0].get("raw_text") or "").lower()
-            for k in ("tổng cộng", "cộng", "tổng tài sản", "tổng nợ", "tổng doanh thu", "total")
+            k in _clean_acct_label(r[0].get("raw_text") or "")
+            for k in ("tổng cộng", "cộng", "tổng tài sản", "tổng nguồn vốn", "tổng nợ", "tổng doanh thu", "total")
         )
     ]
     if len(total_indices) >= 2:
-        # Check whether the final grand total equals the sum of preceding subtotal rows OR local blocks sum cleanly
         identities: list[tuple[str, int, list[int]]] = []
         grand_idx = total_indices[-1]
         prev_totals = total_indices[:-1]
-        # Candidate A: grand total == sum of intermediate subtotals
         gate_a = run_hierarchical_identities_sanity_gate(
             headers,
             rows,
@@ -894,7 +1022,6 @@ def _try_auto_hierarchical_reconciliation(
         )
         if gate_a["verification_status"] == "VERIFIED":
             return gate_a
-        # Candidate B: each subtotal equals sum of rows since previous subtotal
         prev_cut = 0
         for sub_idx in total_indices:
             comp = list(range(prev_cut, sub_idx))
@@ -945,9 +1072,13 @@ def run_hierarchical_identities_sanity_gate(
             )
             max_err = 1.0
             continue
-        for c in range(1, n_cols):
-            tgt = rows[target_idx][c]["numeric_value"]
-            comps = [rows[ci][c]["numeric_value"] for ci in component_indices]
+        amt_cols = _amount_column_indices(headers, rows, total_row_idx=target_idx)
+        for c in amt_cols:
+            tgt = rows[target_idx][c]["numeric_value"] if c < len(rows[target_idx]) else None
+            comps = [
+                rows[ci][c]["numeric_value"] if c < len(rows[ci]) else None
+                for ci in component_indices
+            ]
             if tgt is None or any(v is None for v in comps):
                 checks.append(
                     {

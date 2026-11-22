@@ -132,6 +132,22 @@ def normalize_doc_type(raw_doc_type: str, title: str = "") -> str:
     return norm or "UNKNOWN"
 
 
+def infer_statement_scope(
+    statement_scope: StatementScope | str | None,
+    title: str = "",
+) -> StatementScope:
+    """Resolve `CONSOLIDATED` vs `SEPARATE` from explicit metadata or Vietnamese filing title."""
+    scope = str(statement_scope or "UNKNOWN").strip().upper()
+    if scope in ("CONSOLIDATED", "SEPARATE"):
+        return scope  # type: ignore[return-value]
+    title_low = (title or "").lower()
+    if any(k in title_low for k in ("hợp nhất", "hop nhat", "consolidated")):
+        return "CONSOLIDATED"
+    if any(k in title_low for k in ("công ty mẹ", "cong ty me", "bctc riêng", "riêng lẻ", "riêng", "separate")):
+        return "SEPARATE"
+    return "UNKNOWN"
+
+
 def classify_document_category(
     doc_type: str,
     *,
@@ -141,26 +157,22 @@ def classify_document_category(
 ) -> tuple[SelectionTier, str]:
     """Classify a document into CORE, CONDITIONAL, or EXCLUDED with explicit reason."""
     canonical = normalize_doc_type(doc_type, title=title)
-    scope = str(statement_scope or "UNKNOWN").upper()
-    title_low = (title or "").lower()
+    scope = infer_statement_scope(statement_scope, title=title)
 
     if canonical in EXCLUDED_DOC_TYPES:
         return "EXCLUDED", f"EXCLUDED_DOC_TYPE:{canonical}"
 
-    if canonical == "BCTC":
-        if scope == "UNKNOWN":
-            if any(k in title_low for k in ("hợp nhất", "hop nhat", "consolidated")):
-                scope = "CONSOLIDATED"
-            elif any(k in title_low for k in ("công ty mẹ", "cong ty me", "riêng", "separate")):
-                scope = "SEPARATE"
+    if canonical in ("BCTC", "LATEST_QUARTER"):
         if scope == "SEPARATE" and has_consolidated:
             return "EXCLUDED", "EXCLUDED_SEPARATE_PARENT_WITH_CONSOLIDATED"
-        return "CORE", "CORE_BCTC"
+        if canonical == "BCTC":
+            return "CORE", "CORE_BCTC"
+        return "CONDITIONAL", "CONDITIONAL_LATEST_QUARTER"
 
     if canonical in ("BCTN", "NQ_DHDCD"):
         return "CORE", f"CORE_{canonical}"
 
-    if canonical in ("CAO_BACH", "GIAI_TRINH", "LATEST_QUARTER"):
+    if canonical in ("CAO_BACH", "GIAI_TRINH"):
         return "CONDITIONAL", f"CONDITIONAL_{canonical}"
 
     return "EXCLUDED", f"UNRECOGNIZED_DOC_TYPE:{canonical}"
@@ -518,12 +530,15 @@ async def select_research_documents(
     fetcher: BytesFetcherProtocol | None = None,
     inspect_payloads: bool = True,
     min_fiscal_year: int | None = None,
+    max_years_per_annual_type: int = 2,
+    max_latest_quarters: int = 1,
 ) -> DocumentSelectionResult:
-    """Select, PIT-filter, inspect, and deduplicate HOSE research documents for a ticker."""
+    """Select, PIT-filter, deduplicate multi-source mirrors, inspect, and prioritize HOSE research filings."""
     ctx = anomaly_context or FinancialAnomalyContext()
     if has_consolidated is None:
         has_consolidated = any(
-            normalize_doc_type(c.doc_type, c.title) == "BCTC" and c.statement_scope == "CONSOLIDATED"
+            normalize_doc_type(c.doc_type, c.title) in ("BCTC", "LATEST_QUARTER")
+            and infer_statement_scope(c.statement_scope, c.title) == "CONSOLIDATED"
             for c in candidates
         )
 
@@ -532,6 +547,10 @@ async def select_research_documents(
 
     for cand in candidates:
         canonical = normalize_doc_type(cand.doc_type, cand.title)
+        url0 = cand.urls[0] if cand.urls else ""
+        # Reclassify quarterly / semi-annual financial statements from CORE `BCTC` -> CONDITIONAL `LATEST_QUARTER`
+        if canonical == "BCTC" and parse_fiscal_quarter_from_meta(cand.title, url0) > 0:
+            canonical = "LATEST_QUARTER"
         tier, reason = classify_document_category(
             canonical,
             title=cand.title,
@@ -551,7 +570,6 @@ async def select_research_documents(
             continue
 
         try:
-            url0 = cand.urls[0] if cand.urls else ""
             pit_res = resolve_effective_published_at(
                 published_date=cand.published_date,
                 announcement_date=cand.announcement_date,
@@ -617,8 +635,73 @@ async def select_research_documents(
 
         preliminary.append((cand, canonical, tier, reason, pit_res))
 
-    # Sort newest effective_published_at first
-    preliminary.sort(key=lambda item: item[4].effective_published_at, reverse=True)
+    # Sort newest effective_published_at first (preferring adjusted/restated filings on same date)
+    preliminary.sort(
+        key=lambda item: (
+            item[4].effective_published_at,
+            1 if "điều chỉnh" in (item[0].title or "").lower() else 0,
+            1 if "soát xét" in (item[0].title or "").lower() else 0,
+        ),
+        reverse=True,
+    )
+
+    # Deduplicate multi-source mirrors (e.g. Vietstock + CafeF for same ticker/type/year/quarter)
+    # merging their URLs into one candidate so multi-source 404 fallback works automatically.
+    dedup_prelim: list[tuple[ResearchCandidateDocument, str, SelectionTier, str, PitDateResolution]] = []
+    period_owner_idx: dict[tuple[str, int | None, int], int] = {}
+    for item in preliminary:
+        cand, canonical, tier, reason, pit_res = item
+        if pit_res.parsed_fiscal_year is not None and canonical in (
+            "BCTN",
+            "BCTC",
+            "NQ_DHDCD",
+            "LATEST_QUARTER",
+        ):
+            pkey = (canonical, pit_res.parsed_fiscal_year, pit_res.parsed_fiscal_quarter)
+            if pkey in period_owner_idx:
+                owner_cand = dedup_prelim[period_owner_idx[pkey]][0]
+                for extra_u in cand.urls:
+                    if extra_u and extra_u not in owner_cand.urls:
+                        owner_cand.urls.append(extra_u)
+                result.rejected.append(
+                    RejectedDocument(
+                        doc_id=cand.doc_id,
+                        ticker=cand.ticker,
+                        title=cand.title,
+                        raw_doc_type=cand.doc_type,
+                        reason=f"MERGED_DUPLICATE_PERIOD:{owner_cand.doc_id}",
+                    )
+                )
+                continue
+            period_owner_idx[pkey] = len(dedup_prelim)
+        dedup_prelim.append(item)
+
+    # Apply per-category recency caps so old quarters never crowd out core annual BCTN / BCTC / AGM
+    type_counts: dict[str, int] = {}
+    capped_prelim: list[tuple[ResearchCandidateDocument, str, SelectionTier, str, PitDateResolution]] = []
+    for item in dedup_prelim:
+        cand, canonical, tier, reason, pit_res = item
+        cap = (
+            max_latest_quarters
+            if canonical == "LATEST_QUARTER"
+            else (max_years_per_annual_type if canonical in ("BCTN", "BCTC", "NQ_DHDCD") else 2)
+        )
+        cur_n = type_counts.get(canonical, 0)
+        if cur_n >= cap:
+            result.rejected.append(
+                RejectedDocument(
+                    doc_id=cand.doc_id,
+                    ticker=cand.ticker,
+                    title=cand.title,
+                    raw_doc_type=cand.doc_type,
+                    reason=f"SUPERSEDED_BY_NEWER_{canonical}",
+                )
+            )
+            continue
+        type_counts[canonical] = cur_n + 1
+        capped_prelim.append(item)
+
+    preliminary = capped_prelim
 
     # First pass: locate & inspect BCTN to check embedded notes, plan presence, and NOTICE_ONLY
     bctn_embedded_notes_years: dict[int | None, str] = {}
@@ -738,4 +821,20 @@ async def select_research_documents(
             )
         )
 
+    _priority_order = {
+        "BCTN": 0,
+        "BCTC": 1,
+        "NQ_DHDCD": 2,
+        "LATEST_QUARTER": 3,
+        "GIAI_TRINH": 4,
+        "CAO_BACH": 5,
+    }
+    result.selected.sort(
+        key=lambda s: (
+            _priority_order.get(s.canonical_doc_type, 9),
+            -(s.pit_resolution.parsed_fiscal_year or 0),
+            -s.pit_resolution.parsed_fiscal_quarter,
+            -s.pit_resolution.effective_published_at.toordinal(),
+        )
+    )
     return result

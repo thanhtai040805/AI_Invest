@@ -659,3 +659,95 @@ async def test_mineru_page_mapping_and_html_table_wiring_in_batch_ingest(tmp_pat
     assert stored[0]["verification_status"] == "VERIFIED"
     assert stored[0]["unit_raw"] == "tỷ đồng"
     assert callable(extract_tables_from_document)
+
+
+async def test_selector_merges_mirrors_excludes_title_separate_and_skips_code_cols_in_sanity_gate() -> None:
+    from sag_api.research.input_selector import select_research_documents
+    from sag_api.research.table_engine import run_arithmetic_sanity_gate
+
+    # 1. Selector infers SEPARATE from title, reclassifies Q3, merges mirrors, puts BCTN/BCTC first
+    cands = [
+        ResearchCandidateDocument(
+            doc_id="q3_parent",
+            ticker="FPT",
+            doc_type="financial_statement",
+            title="BCTC Công ty mẹ quý 3 năm 2026",
+            urls=["https://vietstock.vn/q3_parent.pdf"],
+            published_date=date(2026, 10, 29),
+        ),
+        ResearchCandidateDocument(
+            doc_id="q3_cons_vs",
+            ticker="FPT",
+            doc_type="financial_statement",
+            title="BCTC Hợp nhất quý 3 năm 2026",
+            urls=["https://vietstock.vn/q3_cons.pdf"],
+            published_date=date(2026, 10, 29),
+        ),
+        ResearchCandidateDocument(
+            doc_id="bctn_2025_vs",
+            ticker="FPT",
+            doc_type="annual_report",
+            title="Báo cáo thường niên năm 2025",
+            urls=["https://vietstock.vn/bctn_2025.pdf"],
+            published_date=date(2026, 4, 9),
+        ),
+        ResearchCandidateDocument(
+            doc_id="bctn_2025_cf",
+            ticker="FPT",
+            doc_type="annual_report",
+            title="Báo cáo thường niên năm 2025",
+            urls=["https://cafef.vn/bctn_2025.pdf"],
+            published_date=date(2026, 4, 8),
+        ),
+        ResearchCandidateDocument(
+            doc_id="bctc_2025_cons",
+            ticker="FPT",
+            doc_type="financial_statement",
+            title="Báo cáo tài chính hợp nhất năm 2025 (đã kiểm toán)",
+            urls=["https://vietstock.vn/bctc_2025.pdf"],
+            published_date=date(2026, 3, 20),
+        ),
+    ]
+    sel = await select_research_documents(
+        "FPT",
+        cands,
+        as_of_date=date(2026, 11, 22),
+        anomaly_context=FinancialAnomalyContext(),
+        inspect_payloads=False,
+    )
+    assert [s.canonical_doc_type for s in sel.selected] == ["BCTN", "BCTC"]
+    assert len(sel.selected[0].candidate.urls) == 2
+    assert any(r.doc_id == "q3_parent" and "SEPARATE" in r.reason for r in sel.rejected)
+    assert any(r.doc_id == "bctn_2025_cf" and "MERGED_DUPLICATE" in r.reason for r in sel.rejected)
+
+    # 2. Sanity gate must ignore `Thuyết minh` / `Mã số` col and verify Balance Sheet 270 == 440
+    headers = ["Chỉ tiêu", "Col_1", "Col_2", "Col_3"]
+    rows = [
+        [
+            {"raw_text": "100 TÀI SẢN NGẮN HẠN", "numeric_value": None},
+            {"raw_text": "", "numeric_value": None},
+            {"raw_text": "58.137.438.254.908", "numeric_value": 58137438254908.0},
+            {"raw_text": "45.535.942.846.453", "numeric_value": 45535942846453.0},
+        ],
+        [
+            {"raw_text": "111 Tiền", "numeric_value": None},
+            {"raw_text": "3.1", "numeric_value": 3.1},
+            {"raw_text": "8.084.751.080.186", "numeric_value": 8084751080186.0},
+            {"raw_text": "6.725.619.929.289", "numeric_value": 6725619929289.0},
+        ],
+        [
+            {"raw_text": "270 TỔNG TÀI SẢN", "numeric_value": None},
+            {"raw_text": "", "numeric_value": None},
+            {"raw_text": "88.141.991.634.625", "numeric_value": 88141991634625.0},
+            {"raw_text": "71.999.995.678.620", "numeric_value": 71999995678620.0},
+        ],
+        [
+            {"raw_text": "440 TỔNG NGUỒN VỐN", "numeric_value": None},
+            {"raw_text": "", "numeric_value": None},
+            {"raw_text": "88.141.991.634.625", "numeric_value": 88141991634625.0},
+            {"raw_text": "71.999.995.678.620", "numeric_value": 71999995678620.0},
+        ],
+    ]
+    gate = run_arithmetic_sanity_gate(headers, rows)
+    assert gate["verification_status"] == "VERIFIED"
+    assert gate["sanity_error_ratio"] == 0.0

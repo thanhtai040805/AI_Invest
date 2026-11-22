@@ -563,15 +563,15 @@ def detect_embedded_bctc_start_page(
     for cand in strong_pages:
         window_hits = sum(1 for p in range(cand, min(total_pages, cand + 12) + 1) if p in strong_set)
         if window_hits >= 4:
-            # Step back 1–2 pages if immediately preceded by a management/FS divider page
+            # Step back 1–2 pages ONLY if top heading zone is an explicit FS/management divider
             start_p = cand
             for back in (1, 2):
                 prev_p = cand - back
-                prev_txt = page_texts.get(prev_p, "")
+                prev_head = _extract_heading_zone(page_texts.get(prev_p, ""), max_lines=6, max_chars=360)
                 if prev_p >= min_start and re.search(
-                    r"(?:báo\s+cáo\s+của\s+ban\s+(?:tổng\s+)?giám\s+đốc|báo\s+cáo\s+tài\s+chính\s+hợp\s+nhất|"
-                    r"báo\s+cáo\s+kiểm\s+toán\s+độc\s+lập)",
-                    prev_txt,
+                    r"(?:báo\s+cáo\s+của\s+ban\s+(?:tổng\s+)?giám\s+đốc|báo\s+cáo\s+kiểm\s+toán\s+độc\s+lập|"
+                    r"báo\s+cáo\s+tài\s+chính\s+hợp\s+nhất)",
+                    prev_head,
                     re.IGNORECASE,
                 ):
                     start_p = prev_p
@@ -695,11 +695,13 @@ def normalize_financial_markdown_headings(
                 out_lines.append(f"## {stripped}")
                 headings.append(stripped)
                 continue
-            # Promote standalone ALL-CAPS or bold accounting note titles (e.g. PVT InDesign notes)
+            # Promote standalone ALL-CAPS accounting note titles (e.g. PVT InDesign notes without numbers),
+            # avoiding bold Balance Sheet line-item rows or full prose sentences.
             if (
-                (is_all_caps or is_bold)
+                is_all_caps
+                and len(stripped) <= 90
                 and _ACCOUNTING_NOTE_KEYWORDS_RE.search(stripped)
-                and not stripped.endswith((".", ",", ";"))
+                and not stripped.endswith((".", ",", ";", ":"))
             ):
                 out_lines.append(f"## {stripped}")
                 headings.append(stripped)
