@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -33,11 +33,19 @@ from sag_api.research.input_builder import (
     calibrate_printed_to_pdf_mapping,
     classify_page_boilerplate,
     classify_text_to_slot,
+    detect_repeating_running_lines,
+    normalize_financial_markdown_headings,
     parse_llm_toc_json,
+    strip_running_lines,
 )
 from sag_api.research.input_selector import (
     FinancialAnomalyContext,
     ResearchCandidateDocument,
+)
+from sag_api.research.ocr_adapter import map_mineru_markdown_to_original_pages
+from sag_api.research.table_engine import (
+    InMemoryTableRepository,
+    extract_tables_from_document,
 )
 from sag_api.services.search_index_service import (
     delete_document_points_from_qdrant,
@@ -223,19 +231,19 @@ def test_heading_aware_boilerplate_shield_and_sticky_slot_continuation() -> None
     )
     assert classify_page_boilerplate(pr_with_table, doc_type="BCTN") is None
 
-    # CAPEX heading mentioning "công ty con" in body must stay in S03 (not hijacked to S09!)
+    # CAPEX heading mentioning "công ty con" in body stays in BCTN_CORE
     capex_page = (
         "KẾ HOẠCH KINH DOANH VÀ NGÂN SÁCH CAPEX NĂM 2026\n"
         "Tổng ngân sách đầu tư mở rộng đội tàu đạt 3.500 tỷ đồng.\n"
         "Một phần vốn sẽ phân bổ qua các công ty con vận tải biển.\n"
     )
-    assert classify_text_to_slot(capex_page, doc_type="BCTN") == "S03_PLAN_CAPEX"
+    assert classify_text_to_slot(capex_page, doc_type="BCTN") == "BCTN_CORE"
 
-    # Headingless continuation page inherits previous_slot ("S07_REV_COGS_DETAIL")
+    # Headingless continuation page inside BCTC_AUDITED stays in BCTC_AUDITED (0%-drop)
     continuation_page = "Mảng thương mại xăng dầu đạt 5.156 tỷ đồng với biên lợi nhuận gộp 0.43%."
     assert (
-        classify_text_to_slot(continuation_page, doc_type="BCTN", previous_slot="S07_REV_COGS_DETAIL")
-        == "S07_REV_COGS_DETAIL"
+        classify_text_to_slot(continuation_page, doc_type="BCTN", previous_slot="BCTC_AUDITED")
+        == "BCTC_AUDITED"
     )
 
 
@@ -254,23 +262,17 @@ async def test_3layer_localization_llm_toc_router_with_offset_and_headingless_co
                 json.dumps(
                     {
                         "sections": [
-                            {"slot": "EXCLUDE", "title": "Thư Chủ tịch", "printed_start": 1, "printed_end": 2},
+                            {"slot": "BCTN_PR", "title": "Thư Chủ tịch", "printed_start": 1, "printed_end": 2},
                             {
-                                "slot": "S01_MDNA_SEGMENT",
+                                "slot": "BCTN_CORE",
                                 "title": "Hành trình vươn biển lớn",
                                 "printed_start": 3,
                                 "printed_end": 4,
                             },
                             {
-                                "slot": "S07_REV_COGS_DETAIL",
-                                "title": "Thuyết minh 28 - Doanh thu",
+                                "slot": "BCTC_AUDITED",
+                                "title": "Báo cáo tài chính kiểm toán & Thuyết minh",
                                 "printed_start": 5,
-                                "printed_end": 7,
-                            },
-                            {
-                                "slot": "S05_AUDIT_OPINION",
-                                "title": "Kiểm toán độc lập",
-                                "printed_start": 8,
                                 "printed_end": 8,
                             },
                         ]
@@ -290,17 +292,16 @@ async def test_3layer_localization_llm_toc_router_with_offset_and_headingless_co
         ("BÁO CÁO THƯỜNG NIÊN PVT 2025 BÌA TRƯỚC", None, None),
         (toc_page_text, None, None),
         ("THÔNG TIN CHUNG DOANH NGHIỆP NIÊM YẾT TRÊN SÀN HOSE", None, None),
-        # Printed 1-2 (PDF 4-5): EXCLUDE PR letter
+        # Printed 1-2 (PDF 4-5): BCTN_PR letter separated from core
         ("Thư Chủ tịch gửi quý cổ đông thân mến cảm ơn đồng hành suốt năm qua.", None, "1"),
         ("Thông điệp Ban lãnh đạo về tầm nhìn phát triển bền vững dài hạn.", None, "2"),
-        # Printed 3-4 (PDF 6-7): Creative Vietnamese heading (no regex keyword!) -> S01 via LLM TOC Router
+        # Printed 3-4 (PDF 6-7): Creative Vietnamese heading -> BCTN_CORE via 1-call router
         ("HÀNH TRÌNH VƯƠN BIỂN LỚN\nĐội tàu quốc tế mở rộng sang tuyến châu Âu và châu Mỹ.", None, "3"),
         ("Tiếp theo phần mở rộng thị trường vận tải lỏng quốc tế năm 2025.", None, "4"),
-        # Printed 5-7 (PDF 8-10): S07 including headingless continuation pages 9 & 10!
+        # Printed 5-8 (PDF 8-11): BCTC_AUDITED preserving ALL notes + continuation pages (0%-drop)
         ("THUYẾT MINH 28 - CHI TIẾT DOANH THU THUẦN\nDoanh thu vận tải 10.856 tỷ.", None, "5"),
         ("Bảng nối tiếp (không lặp tiêu đề): Kinh doanh thương mại 5.156 tỷ, biên gộp 0.43%.", None, "6"),
         ("Bảng nối tiếp trang 3: Dịch vụ kho nổi FSO biên gộp 37.76%.", None, "7"),
-        # Printed 8 (PDF 11): S05 Audit
         ("BÁO CÁO KIỂM TOÁN ĐỘC LẬP DELOITTE\nÝ kiến chấp nhận toàn phần.", None, "8"),
     ] + [(f"Phụ lục thông tin tham khảo bổ sung trang {i} của báo cáo.", None, str(i)) for i in range(9, 14)]
 
@@ -318,15 +319,16 @@ async def test_3layer_localization_llm_toc_router_with_offset_and_headingless_co
     assert res.page_calibration.offset == pytest.approx(3.0, abs=0.5)
 
     slots = {b.sub_doc_slot: b for b in res.sub_documents}
-    assert "S01_MDNA_SEGMENT" in slots
-    assert 6 in slots["S01_MDNA_SEGMENT"].page_numbers
-    assert 7 in slots["S01_MDNA_SEGMENT"].page_numbers
-    assert "S07_REV_COGS_DETAIL" in slots
-    # Continuation pages 9 and 10 MUST remain inside S07 (never fall back to S01!)
-    assert [8, 9, 10] == slots["S07_REV_COGS_DETAIL"].page_numbers
-    # PR pages 4 & 5 excluded via TOC_EXCLUDE
+    assert "BCTN_CORE" in slots
+    assert 6 in slots["BCTN_CORE"].page_numbers
+    assert 7 in slots["BCTN_CORE"].page_numbers
+    assert "BCTC_AUDITED" in slots
+    assert [8, 9, 10, 11] == slots["BCTC_AUDITED"].page_numbers
+    assert res.coverage_audit.bctc_notes_coverage_pct == 100.0
+    assert "BCTN_PR" in slots
+    assert [4, 5] == slots["BCTN_PR"].page_numbers
     assert 4 in res.excluded_pages and 5 in res.excluded_pages
-    assert "S05_AUDIT_OPINION" not in res.missing_core_slots
+    assert "BCTC_AUDITED" not in res.missing_core_slots
 
 
 async def test_3layer_localization_pdf_bookmarks_layer1a() -> None:
@@ -337,8 +339,8 @@ async def test_3layer_localization_pdf_bookmarks_layer1a() -> None:
     bookmarks = [
         [1, "Thư Chủ tịch", 1],
         [1, "Đánh giá kết quả kinh doanh theo mảng", 3],
-        [1, "Báo cáo kiểm toán độc lập", 7],
-        [1, "Chi tiết doanh thu và giá vốn", 9],
+        [1, "Báo cáo ESG và Phát triển bền vững", 7],
+        [1, "Báo cáo tài chính hợp nhất đã kiểm toán", 10],
     ]
     pdf_bytes = _make_pdf_with_footers(pages, bookmarks=bookmarks)
     res = await build_research_sub_documents(
@@ -349,9 +351,11 @@ async def test_3layer_localization_pdf_bookmarks_layer1a() -> None:
     )
     assert res.localization_method == "PDF_BOOKMARKS"
     slots = {b.sub_doc_slot: b for b in res.sub_documents}
-    assert slots["S01_MDNA_SEGMENT"].page_numbers == [3, 4, 5, 6]
-    assert slots["S05_AUDIT_OPINION"].page_numbers == [7, 8]
-    assert slots["S07_REV_COGS_DETAIL"].page_numbers == list(range(9, 17))
+    assert slots["BCTN_PR"].page_numbers == [1, 2]
+    assert slots["BCTN_CORE"].page_numbers == [3, 4, 5, 6]
+    assert all(p in res.excluded_pages for p in (7, 8, 9))
+    assert slots["BCTC_AUDITED"].page_numbers == list(range(10, 17))
+    assert res.coverage_audit.bctc_notes_coverage_pct == 100.0
 
 
 # ── 4. Tier-Aware Batch Ingest Pipeline & `/ingest-batch` Endpoint ───────────
@@ -418,7 +422,7 @@ async def test_tier_aware_batch_ingest_a3_buffer_139_and_dry_run(tmp_path) -> No
     assert kg_called == []
     pvt_rep = next(r for r in dry.reports if r.ticker == "PVT")
     assert pvt_rep.status == "DRY_RUN_READY"
-    assert "S01_MDNA_SEGMENT" in pvt_rep.sub_doc_slots
+    assert "BCTN_CORE" in pvt_rep.sub_doc_slots
 
     # Live mode uploads sub-docs and refreshes 3-layer KG
     live = await run_research_batch_ingest(
@@ -431,8 +435,8 @@ async def test_tier_aware_batch_ingest_a3_buffer_139_and_dry_run(tmp_path) -> No
         subdoc_uploader=_uploader,
         kg_refresher=_kg_refresher,
     )
-    assert live.total_sub_docs_uploaded >= 2
-    assert any(u.startswith("PVT:S01") for u in uploaded)
+    assert live.total_sub_docs_uploaded >= 1
+    assert any(u.startswith("PVT:BCTN_CORE") for u in uploaded)
     assert kg_called == [["PVT"]]
     assert live.kg_refresh == {"refreshed": 1}
 
@@ -499,3 +503,159 @@ async def test_ingest_batch_api_endpoint_custom_and_fail_closed(tmp_path, monkey
             assert len(PILOT_8_TICKERS) == 8
     finally:
         await engine.dispose()
+
+
+# ── 5. 0%-Drop BCTC Notes, Running Header Strip, MinerU Mapping & Table Wiring ─
+
+
+async def test_bctc_zero_drop_running_headers_headings_and_high_ocr_cap() -> None:
+    # 1. Running header stripper catches repeating B09-DN/HN headers automatically while keeping unique note headings
+    raw_pages = {
+        p: (
+            "THUYẾT MINH BÁO CÁO TÀI CHÍNH HỢP NHẤT (Tiếp theo)\n"
+            "MẪU SỐ B 09-DN/HN\n"
+            f"Trang {p}\n"
+            + (
+                "DỰ PHÒNG PHẢI THU NGẮN HẠN KHÓ ĐÒI\n"
+                "GIAO DỊCH VỚI CÁC BÊN LIÊN QUAN\n"
+                "BỘ PHẬN THEO LĨNH VỰC KINH DOANH\n"
+                if p == 3
+                else f"THUYẾT MINH SỐ {p + 10}. KHOẢN MỤC CHI TIẾT KỲ {p}\n"
+            )
+            + f"Doanh thu bán hàng trang {p}: 16.012.813.858.007 VND\n"
+            + "Chi tiết đối chiếu số liệu theo quy định kế toán hiện hành.\n"
+            + "Bảng phân tích biến động tăng giảm trong kỳ kế toán.\n"
+        )
+        for p in range(1, 9)
+    }
+    running = detect_repeating_running_lines(raw_pages)
+    cleaned, removed = strip_running_lines(raw_pages[3], running)
+    assert removed >= 2
+    assert "MẪU SỐ B 09-DN/HN" not in cleaned
+    norm_md, headings = normalize_financial_markdown_headings(cleaned, is_bctc=True)
+    assert "## DỰ PHÒNG PHẢI THU NGẮN HẠN KHÓ ĐÒI" in norm_md
+    assert "## GIAO DỊCH VỚI CÁC BÊN LIÊN QUAN" in norm_md
+    assert "## BỘ PHẬN THEO LĨNH VỰC KINH DOANH" in norm_md
+    assert len(headings) >= 3
+
+    # 2. Scanned 40-page BCTC MUST NOT be truncated at 25 pages (0%-drop OCR cap = 120)
+    doc = fitz.open()
+    for _ in range(40):
+        doc.new_page(width=595.0, height=842.0)
+    scan_bctc = doc.tobytes()
+    doc.close()
+
+    seen_ocr_pages: list[int] = []
+
+    class _FullBctcOcr:
+        async def ocr_pdf_pages(self, pdf_bytes: bytes, page_numbers: list[int], *, language: str = "vi"):
+            seen_ocr_pages.extend(page_numbers)
+            return {
+                p: (
+                    "BÁO CÁO TÀI CHÍNH HỢP NHẤT\n"
+                    f"Thuyết minh {p}. Giao dịch với các bên liên quan và hàng tồn kho trang {p}."
+                )
+                for p in page_numbers
+            }
+
+    built = await build_research_sub_documents(
+        ticker="FPT",
+        pdf_bytes=scan_bctc,
+        doc_type="BCTC",
+        published_date=date(2026, 3, 30),
+        ocr_adapter=_FullBctcOcr(),
+    )
+    assert len(seen_ocr_pages) == 40
+    assert built.coverage_audit.bctc_total_pages == 40
+    assert built.coverage_audit.bctc_kept_pages == 40
+    assert built.coverage_audit.bctc_notes_coverage_pct == 100.0
+    assert len(built.sub_documents) == 1
+    assert built.sub_documents[0].sub_doc_slot == "BCTC_AUDITED"
+    assert len(built.sub_documents[0].page_numbers) == 40
+
+
+async def test_mineru_page_mapping_and_html_table_wiring_in_batch_ingest(tmp_path) -> None:
+    mapped = map_mineru_markdown_to_original_pages(
+        "<!-- PAGE 1 -->\n## 25. Doanh thu\n<table><tr><th>Chỉ tiêu</th><th>2025</th></tr>"
+        "<tr><td>Vận tải</td><td>10.000</td></tr><tr><td>Thương mại</td><td>5.000</td></tr>"
+        "<tr><td>Tổng cộng</td><td>15.000</td></tr></table>\n"
+        "<!-- PAGE 2 -->\n## 26. Giá vốn\nChi tiết giá vốn hàng bán.",
+        [41, 42],
+    )
+    assert set(mapped.keys()) == {41, 42}
+    assert "10.000" in mapped[41]
+    assert "Giá vốn" in mapped[42]
+
+    # Test end-to-end HTML table extraction & persistence through run_research_batch_ingest
+    doc = fitz.open()
+    for _ in range(16):
+        doc.new_page(width=595.0, height=842.0)
+    scan_pdf = doc.tobytes()
+    doc.close()
+    scan_path = tmp_path / "fpt_bctc_scan.pdf"
+    scan_path.write_bytes(scan_pdf)
+
+    html_table = (
+        "## 25. Chi tiết doanh thu thuần\nĐơn vị: tỷ đồng\n"
+        "<table>"
+        "<tr><th>Chỉ tiêu</th><th>2025</th><th>2024</th></tr>"
+        "<tr><td>Công nghệ</td><td>40.000</td><td>35.000</td></tr>"
+        "<tr><td>Viễn thông</td><td>20.000</td><td>18.000</td></tr>"
+        "<tr><td>Tổng cộng</td><td>60.000</td><td>53.000</td></tr>"
+        "</table>"
+    )
+
+    class _HtmlOcr:
+        async def ocr_pdf_pages(self, pdf_bytes: bytes, page_numbers: list[int], *, language: str = "vi"):
+            return {
+                p: (
+                    html_table
+                    if p == 10
+                    else f"Thuyết minh báo cáo tài chính hợp nhất B09-DN trang {p} chi tiết số liệu."
+                )
+                for p in page_numbers
+            }
+
+    class _Reader:
+        async def resolve_tickers_for_tier(self, tier, *, as_of_date, adtv_threshold_vnd=5e9):
+            return ["FPT"]
+
+        async def fetch_candidates_for_ticker(self, ticker, *, as_of_date, years_back=3):
+            return (
+                [
+                    ResearchCandidateDocument(
+                        doc_id="bctc:fpt2025",
+                        ticker="FPT",
+                        doc_type="BCTC",
+                        title="BCTC hợp nhất kiểm toán năm 2025",
+                        urls=[str(scan_path)],
+                        published_date=date(2026, 3, 30),
+                    )
+                ],
+                FinancialAnomalyContext(),
+            )
+
+    repo = InMemoryTableRepository()
+    summary = await run_research_batch_ingest(
+        tier="custom",
+        custom_tickers=["FPT"],
+        as_of_date=date(2026, 11, 20),
+        dry_run=False,
+        extract_tables=True,
+        source_paths={"FPT": str(scan_path)},
+        core_reader=_Reader(),
+        ocr_adapter=_HtmlOcr(),
+        table_repo=repo,
+    )
+    rep = summary.reports[0]
+    assert rep.status == "INGESTED"
+    assert rep.bctc_notes_coverage_pct == 100.0
+    assert rep.tables_extracted >= 1
+    assert rep.tables_verified >= 1
+    stored = await repo.list_hydrated_tables(
+        "FPT", as_of_ts=datetime(2026, 11, 20, tzinfo=UTC)
+    )
+    assert len(stored) >= 1
+    assert stored[0]["verification_status"] == "VERIFIED"
+    assert stored[0]["unit_raw"] == "tỷ đồng"
+    assert callable(extract_tables_from_document)

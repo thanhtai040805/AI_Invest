@@ -15,6 +15,7 @@ Productionizes Stage 1 `block1_input_and_table_engine.py` & `PROJECT.md` Contrac
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import re
 import unicodedata
@@ -30,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sag_api.research.input_inspector import (
     normalize_ctg_font_quirks,
     normalize_ws,
+    split_virtual_pages,
 )
 
 VerificationStatus = Literal["VERIFIED", "PARTIAL", "TABLE_UNVERIFIED"]
@@ -155,8 +157,10 @@ def detect_unit_and_currency(context_text: str) -> tuple[str, float, str]:
     if re.search(r"(?:nghìn|ngàn)\s*(?:đồng|vnd|vnđ)", low):
         return ("VND", 1e3, "nghìn đồng")
     if re.search(
-        r"(?:đơn\s*vị(?:\s*tính)?\s*[:\-]?\s*(?:đồng|vnd|vnđ)|\(đơn\s*vị\s*:\s*(?:đồng|vnd|vnđ)\))",
+        r"(?:(?:đơn\s*vị(?:\s*tính)?|đvt)\s*[:\-]?\s*(?:đồng|vnd|vnđ)|"
+        r"\(đơn\s*vị\s*:\s*(?:đồng|vnd|vnđ)\)|^\s*(?:vnd|vnđ)\s*$|\bvnd\s+vnd\b)",
         low,
+        flags=re.MULTILINE,
     ):
         return ("VND", 1.0, "VND")
     return ("VND", 1.0, "unspecified")
@@ -818,12 +822,90 @@ def run_arithmetic_sanity_gate(
     else:
         status = "TABLE_UNVERIFIED"
 
+    # Hierarchical fallback for multi-level Vietnamese financial statements (Balance Sheet / P&L / Notes)
+    # where flat sum double-counts intermediate subtotals (e.g. Assets = Current + Non-Current; Assets == Equity+Liab).
+    if status != "VERIFIED" and right_col_coverage > 0.0 and len(rows) >= 4:
+        hier_gate = _try_auto_hierarchical_reconciliation(headers, rows, tolerance=tolerance)
+        if hier_gate is not None:
+            hier_rank = {"TABLE_UNVERIFIED": 0, "PARTIAL": 1, "VERIFIED": 2}
+            if hier_rank[hier_gate["verification_status"]] > hier_rank[status]:
+                return hier_gate
+
     return {
         "verification_status": status,
         "sanity_error_ratio": round(max_err, 6),
         "right_col_coverage": round(right_col_coverage, 3),
         "column_checks": col_checks,
     }
+
+
+def _try_auto_hierarchical_reconciliation(
+    headers: list[str],
+    rows: list[list[dict[str, Any]]],
+    *,
+    tolerance: float = 0.005,
+) -> dict[str, Any] | None:
+    """Auto-detect standard Vietnamese Balance Sheet / subtotal accounting identities without hardcoding row indices."""
+    n_cols = len(headers)
+    if n_cols < 2 or len(rows) < 4:
+        return None
+
+    # 1. Balance Sheet fundamental identity: TỔNG CỘNG TÀI SẢN == TỔNG CỘNG NGUỒN VỐN
+    assets_idx: int | None = None
+    liab_eq_idx: int | None = None
+    for idx, r in enumerate(rows):
+        lbl = (r[0].get("raw_text") or "").lower()
+        if ("tổng cộng tài sản" in lbl or lbl.startswith("tổng tài sản")) and assets_idx is None:
+            assets_idx = idx
+        elif (
+            "tổng cộng nguồn vốn" in lbl
+            or "tổng nợ phải trả và vốn chủ" in lbl
+            or lbl.startswith("tổng nguồn vốn")
+        ):
+            liab_eq_idx = idx
+    if assets_idx is not None and liab_eq_idx is not None and assets_idx != liab_eq_idx:
+        return run_hierarchical_identities_sanity_gate(
+            headers,
+            rows,
+            [("Total_Assets_eq_Liabilities_Plus_Equity", assets_idx, [liab_eq_idx])],
+            tolerance=tolerance,
+        )
+
+    # 2. Local subtotal-block checks (e.g. multiple sub-sections each ending in "Cộng" / "Tổng cộng")
+    total_indices = [
+        idx
+        for idx, r in enumerate(rows)
+        if any(
+            k in (r[0].get("raw_text") or "").lower()
+            for k in ("tổng cộng", "cộng", "tổng tài sản", "tổng nợ", "tổng doanh thu", "total")
+        )
+    ]
+    if len(total_indices) >= 2:
+        # Check whether the final grand total equals the sum of preceding subtotal rows OR local blocks sum cleanly
+        identities: list[tuple[str, int, list[int]]] = []
+        grand_idx = total_indices[-1]
+        prev_totals = total_indices[:-1]
+        # Candidate A: grand total == sum of intermediate subtotals
+        gate_a = run_hierarchical_identities_sanity_gate(
+            headers,
+            rows,
+            [("Grand_Total_eq_Sum_Subtotals", grand_idx, prev_totals)],
+            tolerance=tolerance,
+        )
+        if gate_a["verification_status"] == "VERIFIED":
+            return gate_a
+        # Candidate B: each subtotal equals sum of rows since previous subtotal
+        prev_cut = 0
+        for sub_idx in total_indices:
+            comp = list(range(prev_cut, sub_idx))
+            if len(comp) >= 2:
+                identities.append((f"Block_{prev_cut}_{sub_idx}", sub_idx, comp))
+            prev_cut = sub_idx + 1
+        if identities:
+            return run_hierarchical_identities_sanity_gate(
+                headers, rows, identities, tolerance=tolerance
+            )
+    return None
 
 
 def run_hierarchical_identities_sanity_gate(
@@ -948,9 +1030,14 @@ def stitch_cross_page_tables(tables: list[dict[str, Any]]) -> list[dict[str, Any
         consecutive = tbl["virtual_seq"] == prev["virtual_seq"] + 1
         same_slot = tbl["sub_doc_slot"] == prev["sub_doc_slot"]
         col_diff = abs(len(tbl["headers"]) - len(prev["headers"])) <= 1
-        h_prev = {h.lower() for h in prev["headers"]}
-        h_cur = {h.lower() for h in tbl["headers"]}
-        sig_jaccard = len(h_prev & h_cur) / max(1, len(h_prev | h_cur))
+        h_prev = {h.lower() for h in prev["headers"] if not re.match(r"^col_\d+$", h.strip(), re.IGNORECASE)}
+        h_cur = {h.lower() for h in tbl["headers"] if not re.match(r"^col_\d+$", h.strip(), re.IGNORECASE)}
+        # Do not stitch unrelated Note tables purely because both fell back to generic Col_1/Col_2 headers
+        sig_jaccard = (
+            len(h_prev & h_cur) / max(1, len(h_prev | h_cur))
+            if (len(h_prev) >= 2 and len(h_cur) >= 2)
+            else 0.0
+        )
         ctx_low = (tbl.get("context_header") or "").lower()
         is_cont = ("tiếp theo" in ctx_low) or ("continued" in ctx_low)
 
@@ -1414,3 +1501,253 @@ class SqlTableRepository:
             params = {"project_id": project_id.upper(), "as_of_ts": cutoff}
         res = await self._session.execute(stmt, params)
         return [to_hydrated_table(dict(r)) for r in res.mappings().all()]
+
+
+_PAGE_MARKER_SPLIT_RE = re.compile(r"<!--\s*PAGE\s+(\d+)\s*-->", re.IGNORECASE)
+_HTML_TABLE_BLOCK_RE = re.compile(r"<table\b[^>]*>.*?</table>", re.IGNORECASE | re.DOTALL)
+_TABLE_NUMERIC_CUE_RE = re.compile(r"(?<!\d)(?:\d{1,3}(?:[.,]\d{3}){2,})(?!\d)")
+
+
+_DATE_OR_UNIT_LINE_RE = re.compile(
+    r"^(?:[\(\[]?\s*(?:đơn\s+vị(?:\s+tính)?|unit)\s*[:\-]?.*|"
+    r"(?:ngày|tại\s+ngày|cho\s+năm\s+tài\s+chính)\s+.*|"
+    r"\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}|"
+    r"\(?-?[\d.,\s%]+\)?)$",
+    re.IGNORECASE,
+)
+
+
+def _infer_table_title(
+    context_text: str,
+    *,
+    fallback: str,
+    prefer_top: bool = False,
+) -> str:
+    """Pick the cleanest heading/title line for a financial table, never picking raw numbers or units."""
+    raw_lines = [
+        ln.strip()
+        for ln in (context_text or "").splitlines()
+        if ln.strip() and not ln.strip().startswith("<")
+    ]
+    # 1. Prioritize normalized Markdown headings (`#` / `##`) first
+    md_headings = [
+        normalize_ws(ln.lstrip("#").strip())
+        for ln in raw_lines
+        if ln.startswith("#")
+    ]
+    candidates_md = md_headings if prefer_top else list(reversed(md_headings))
+    for h in candidates_md:
+        if 5 <= len(h) <= 130 and not _DATE_OR_UNIT_LINE_RE.match(h):
+            return h[:140]
+
+    # 2. Fallback to clean descriptive lines (top-down for page-level digital tables, bottom-up for HTML context)
+    scan_lines = raw_lines[:18] if prefer_top else list(reversed(raw_lines[-10:]))
+    for raw_ln in scan_lines:
+        ln = normalize_ws(raw_ln.lstrip("#").strip())
+        low = ln.lower()
+        if len(ln) < 5 or len(ln) > 130:
+            continue
+        if _DATE_OR_UNIT_LINE_RE.match(ln):
+            continue
+        if any(
+            skip in low
+            for skip in (
+                "đơn vị tính",
+                "đơn vị:",
+                "mẫu số",
+                "ban hành theo",
+                "bộ tài chính",
+                "các thuyết minh",
+                "số cuối năm",
+                "số đầu năm",
+                "tài sản ngắn hạn",
+            )
+        ):
+            continue
+        if len(_TABLE_NUMERIC_CUE_RE.findall(ln)) >= 1:
+            continue
+        alpha_n = sum(1 for c in ln if c.isalpha())
+        if alpha_n < 4:
+            continue
+        return ln[:140]
+    return fallback[:140]
+
+
+def _split_markdown_by_page_marker(markdown_content: str) -> dict[int, str]:
+    """Parse `<!-- PAGE N -->` sections from bundle markdown into `{page_no: body}`."""
+    if not markdown_content:
+        return {}
+    matches = list(_PAGE_MARKER_SPLIT_RE.finditer(markdown_content))
+    if not matches:
+        return {}
+    out: dict[int, str] = {}
+    for idx, m in enumerate(matches):
+        pno = int(m.group(1))
+        start = m.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(markdown_content)
+        body = markdown_content[start:end].strip()
+        if body:
+            out[pno] = body
+    return out
+
+
+def extract_tables_from_document(
+    *,
+    pdf_bytes: bytes | None,
+    project_id: str,
+    document_version_id: str,
+    sub_doc_slot: str,
+    fiscal_year: int,
+    fiscal_quarter: int = 0,
+    page_numbers: list[int],
+    markdown_content: str,
+    valid_from: datetime,
+    left_sidebar_x: float = 0.0,
+    max_pages: int = 80,
+) -> list[ExtractedTableRecord]:
+    """End-to-end table extractor wiring Dual-Representation Engine into HOSE batch ingest.
+
+    1. Extracts MinerU HTML `<table>` blocks present in OCR'd Markdown (`build_matrix_from_html_table`).
+    2. For remaining numeric digital pages, extracts 2D matrices via `pdfplumber` +
+       `extract_table_with_lattice_fallback` (A3 virtual-page aware) and stitches cross-page
+       `(Tiếp theo)` tables via `stitch_cross_page_tables`.
+    """
+    records: list[ExtractedTableRecord] = []
+    page_md_map = _split_markdown_by_page_marker(markdown_content)
+    html_handled_pages: set[int] = set()
+
+    # Path 1: MinerU HTML `<table>` blocks inside Markdown
+    for pno in sorted(page_numbers):
+        body = page_md_map.get(pno, "")
+        if not body or "<table" not in body.lower():
+            continue
+        html_matches = list(_HTML_TABLE_BLOCK_RE.finditer(body))
+        if not html_matches:
+            continue
+        html_handled_pages.add(pno)
+        for tbl_idx, tm in enumerate(html_matches):
+            ctx_before = body[max(0, tm.start() - 600) : tm.start()]
+            extracted = build_matrix_from_html_table(tm.group(0), context_text=ctx_before)
+            rows = extracted.get("rows") or []
+            num_cells = sum(
+                1
+                for r in rows
+                for c in r[1:]
+                if c.get("numeric_value") is not None
+            )
+            if len(rows) < 2 or num_cells < 4:
+                continue
+            title = _infer_table_title(
+                ctx_before,
+                fallback=f"{sub_doc_slot} Table P{pno}#{tbl_idx + 1}",
+            )
+            records.append(
+                ExtractedTableRecord.from_extraction(
+                    project_id=project_id,
+                    document_version_id=document_version_id,
+                    sub_doc_slot=sub_doc_slot,
+                    fiscal_year=fiscal_year,
+                    fiscal_quarter=fiscal_quarter,
+                    table_title=title,
+                    section_path=f"{sub_doc_slot} / P{pno}",
+                    page_from=pno,
+                    page_to=pno,
+                    extracted=extracted,
+                    valid_from=valid_from,
+                )
+            )
+
+    # Path 2: Digital PDF extraction via pdfplumber + A3 virtual-page splitting + cross-page stitcher
+    digital_candidates = [
+        pno
+        for pno in sorted(page_numbers)
+        if pno not in html_handled_pages
+        and len(_TABLE_NUMERIC_CUE_RE.findall(page_md_map.get(pno, ""))) >= 4
+    ][:max_pages]
+
+    if pdf_bytes and digital_candidates:
+        try:
+            import pdfplumber
+        except ImportError:
+            pdfplumber = None  # type: ignore[assignment]
+
+        if pdfplumber is not None:
+            raw_page_tables: list[dict[str, Any]] = []
+            virtual_seq = 0
+            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+                total_p = len(pdf.pages)
+                for pno in digital_candidates:
+                    if not (1 <= pno <= total_p):
+                        continue
+                    pg = pdf.pages[pno - 1]
+                    w, h = float(pg.width), float(pg.height)
+                    eff_sidebar = (
+                        left_sidebar_x if (w > h * 1.25 and 0.0 < left_sidebar_x < w * 0.30) else 0.0
+                    )
+                    vpages = split_virtual_pages(pg, left_sidebar_x=eff_sidebar)
+                    for vp in vpages:
+                        virtual_seq += 1
+                        try:
+                            cropped = pg.crop(vp.bbox)
+                            extracted = extract_table_with_lattice_fallback(cropped)
+                        except Exception:  # noqa: BLE001
+                            continue
+                        rows = extracted.get("rows") or []
+                        num_cells = sum(
+                            1
+                            for r in rows
+                            for c in r[1:]
+                            if c.get("numeric_value") is not None
+                        )
+                        if len(rows) < 2 or num_cells < 4:
+                            continue
+                        extracted["virtual_seq"] = virtual_seq
+                        extracted["sub_doc_slot"] = sub_doc_slot
+                        extracted["page_from"] = pno
+                        extracted["page_to"] = pno
+                        extracted["side"] = vp.side
+                        raw_page_tables.append(extracted)
+
+            doc_currency, doc_unit_mult, doc_unit_raw = detect_unit_and_currency(
+                markdown_content[:8000]
+            )
+            stitched = stitch_cross_page_tables(raw_page_tables)
+            for idx, tbl in enumerate(stitched):
+                p_from = int(tbl.get("page_from") or digital_candidates[0])
+                p_to = int(tbl.get("page_to") or p_from)
+                # Re-run sanity gate if table was stitched across pages
+                if tbl.get("stitched_from_pages"):
+                    tbl["sanity_gate"] = run_arithmetic_sanity_gate(tbl["headers"], tbl["rows"])
+                ctx_text = page_md_map.get(p_from, "") or tbl.get("context_header", "")
+                if str(tbl.get("unit_raw") or "unspecified") == "unspecified":
+                    p_cur, p_mult, p_raw = detect_unit_and_currency(ctx_text)
+                    if p_raw != "unspecified":
+                        tbl["currency"], tbl["unit_multiplier"], tbl["unit_raw"] = p_cur, p_mult, p_raw
+                    elif doc_unit_raw != "unspecified":
+                        tbl["currency"], tbl["unit_multiplier"], tbl["unit_raw"] = (
+                            doc_currency,
+                            doc_unit_mult,
+                            doc_unit_raw,
+                        )
+                title = _infer_table_title(
+                    ctx_text,
+                    fallback=f"{sub_doc_slot} Table P{p_from}#{idx + 1}",
+                    prefer_top=True,
+                )
+                records.append(
+                    ExtractedTableRecord.from_extraction(
+                        project_id=project_id,
+                        document_version_id=document_version_id,
+                        sub_doc_slot=sub_doc_slot,
+                        fiscal_year=fiscal_year,
+                        fiscal_quarter=fiscal_quarter,
+                        table_title=title,
+                        section_path=f"{sub_doc_slot} / P{p_from}" + (f"-P{p_to}" if p_to != p_from else ""),
+                        page_from=p_from,
+                        page_to=p_to,
+                        extracted=tbl,
+                        valid_from=valid_from,
+                    )
+                )
+
+    return records

@@ -379,7 +379,13 @@ def test_ctg_font_quirk_repair():
 
 @pytest.mark.asyncio
 async def test_input_builder_slots_page_anchors_and_fail_closed_ocr():
-    assert len(ALL_SUB_DOC_SLOTS) == 13
+    assert ALL_SUB_DOC_SLOTS == (
+        "BCTN_CORE",
+        "BCTN_PR",
+        "BCTC_AUDITED",
+        "AGM_TARGETS",
+        "QUARTER_NOTES",
+    )
 
     # Create a 16-page scan PDF (empty text layer) -> Branch C
     scan_pdf = _make_pdf_bytes([""] * 16)
@@ -430,12 +436,12 @@ async def test_input_builder_slots_page_anchors_and_fail_closed_ocr():
     assert all(lang == "vi" for _, lang in ocr.calls)
     assert len(ocr.calls) == 2
     slots_built = {sd.sub_doc_slot: sd for sd in built.sub_documents}
-    assert "S01_MDNA_SEGMENT" in slots_built
-    assert "S03_PLAN_CAPEX" in slots_built
-    assert "<!-- PAGE 8 -->" in slots_built["S01_MDNA_SEGMENT"].markdown_content
-    assert "<!-- PAGE 12 -->" in slots_built["S03_PLAN_CAPEX"].markdown_content
-    assert slots_built["S01_MDNA_SEGMENT"].published_date == date(2026, 4, 15)
-    assert slots_built["S01_MDNA_SEGMENT"].valid_from == datetime(2026, 4, 15, tzinfo=UTC)
+    assert "BCTN_CORE" in slots_built
+    assert "BCTN_PR" in slots_built
+    assert "<!-- PAGE 8 -->" in slots_built["BCTN_CORE"].markdown_content
+    assert "<!-- PAGE 12 -->" in slots_built["BCTN_CORE"].markdown_content
+    assert slots_built["BCTN_CORE"].published_date == date(2026, 4, 15)
+    assert slots_built["BCTN_CORE"].valid_from == datetime(2026, 4, 15, tzinfo=UTC)
     assert "<!-- PAGE 3 -->" in built.pr_narrative_markdown
     assert built.excluded_pages[3] == "PR_LETTER"
 

@@ -189,6 +189,11 @@ class BatchIngestTickerReportSchema(BaseModel):
     missing_core_slots: list[str] = Field(default_factory=list)
     ocr_pages_used: int = 0
     uploaded_sub_docs: int = 0
+    tables_extracted: int = 0
+    tables_verified: int = 0
+    tables_unverified: int = 0
+    bctc_notes_coverage_pct: float = 100.0
+    noise_reduction_pct: float = 0.0
     errors: list[str] = Field(default_factory=list)
 
 

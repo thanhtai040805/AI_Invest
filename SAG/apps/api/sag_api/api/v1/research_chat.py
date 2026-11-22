@@ -344,6 +344,11 @@ async def ingest_research_batch(
                 missing_core_slots=r.missing_core_slots,
                 ocr_pages_used=r.ocr_pages_used,
                 uploaded_sub_docs=r.uploaded_sub_docs,
+                tables_extracted=r.tables_extracted,
+                tables_verified=r.tables_verified,
+                tables_unverified=r.tables_unverified,
+                bctc_notes_coverage_pct=r.bctc_notes_coverage_pct,
+                noise_reduction_pct=r.noise_reduction_pct,
                 errors=r.errors,
             )
             for r in summary.reports

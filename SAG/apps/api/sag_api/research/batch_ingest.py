@@ -17,6 +17,7 @@ from typing import Any, Literal, Protocol
 
 import asyncpg
 
+from sag_api.core.config import settings
 from sag_api.core.logging import get_logger
 from sag_api.research.input_builder import (
     DeepInfraTocRouter,
@@ -34,6 +35,11 @@ from sag_api.research.input_selector import (
     SelectedDocument,
     fetch_document_with_fallback,
     select_research_documents,
+)
+from sag_api.research.ocr_adapter import MinerUOcrAdapter
+from sag_api.research.table_engine import (
+    TableRepositoryProtocol,
+    extract_tables_from_document,
 )
 
 log = get_logger("research.batch_ingest")
@@ -89,6 +95,11 @@ class TickerIngestReport:
     missing_core_slots: list[str] = field(default_factory=list)
     ocr_pages_used: int = 0
     uploaded_sub_docs: int = 0
+    tables_extracted: int = 0
+    tables_verified: int = 0
+    tables_unverified: int = 0
+    bctc_notes_coverage_pct: float = 100.0
+    noise_reduction_pct: float = 0.0
     errors: list[str] = field(default_factory=list)
 
 
@@ -264,6 +275,9 @@ class AsyncPGCoreDBBatchReader:
                 FROM bctc_pipeline_records
                 WHERE UPPER(ticker) = $1
                   AND fiscal_year >= $2
+                  AND r2_pdf_url IS NOT NULL
+                  AND TRIM(r2_pdf_url) <> ''
+                  AND UPPER(COALESCE(report_scope, '')) <> 'GOVERNANCE'
                   AND (
                       (announcement_date IS NOT NULL AND announcement_date <= $3)
                       OR (announcement_date IS NULL AND created_at::date <= $3)
@@ -380,19 +394,22 @@ async def run_research_batch_ingest(
     dry_run: bool = False,
     enable_llm_toc: bool = False,
     refresh_kg: bool = False,
+    extract_tables: bool = True,
+    auto_mineru_ocr: bool = False,
     source_paths: dict[str, str] | None = None,
     core_reader: CoreDBBatchReaderProtocol | None = None,
     fetcher: BytesFetcherProtocol | None = None,
     ocr_adapter: OcrAdapterProtocol | None = None,
     toc_router: TocRouterProtocol | None = None,
     subdoc_uploader: SubDocumentUploader | None = None,
+    table_repo: TableRepositoryProtocol | None = None,
     kg_refresher: KGRefreshHook | None = None,
     max_docs_per_ticker: int = 6,
 ) -> BatchIngestSummary:
     """Execute end-to-end tier-aware HOSE Stock Research batch ingest.
 
     Supports:
-    - `pilot_8`: 8 calibration tickers covering all 4 branches A/B/C/D & 4 sector shapes.
+    - `pilot_8`: 8 calibration tickers covering all 4 branches A/B/C/D & 8 HOSE sectors.
     - `a5_36`: all tickers from Core DB `log_counter_thesis` (PIT <= as_of_date).
     - `a4_81`: all tickers from Core DB `investment_theses` (PIT <= as_of_date).
     - `a3_buffer_139`: Core DB `log_equity_research` union `market_data_daily` ADTV >= 5B VND.
@@ -416,6 +433,10 @@ async def run_research_batch_ingest(
     effective_toc_router: TocRouterProtocol | None = toc_router
     if effective_toc_router is None and enable_llm_toc:
         effective_toc_router = DeepInfraTocRouter()
+
+    effective_ocr: OcrAdapterProtocol | None = ocr_adapter
+    if effective_ocr is None and auto_mineru_ocr and settings.mineru_configured:
+        effective_ocr = MinerUOcrAdapter(settings)
 
     ingested_tickers: list[str] = []
 
@@ -462,6 +483,8 @@ async def run_research_batch_ingest(
 
             seen_slots: set[str] = set()
             seen_missing: set[str] = set()
+            bctc_cov_samples: list[float] = []
+            noise_red_samples: list[float] = []
 
             for sel in selection.selected[:max_docs_per_ticker]:
                 try:
@@ -477,7 +500,7 @@ async def run_research_batch_ingest(
                         source_url=resolved_url,
                         fiscal_year=sel.pit_resolution.parsed_fiscal_year,
                         fiscal_quarter=sel.pit_resolution.parsed_fiscal_quarter,
-                        ocr_adapter=ocr_adapter,
+                        ocr_adapter=effective_ocr,
                         toc_router=effective_toc_router,
                     )
                 except Exception as doc_exc:  # noqa: BLE001
@@ -491,14 +514,50 @@ async def run_research_batch_ingest(
                 report.ocr_pages_used += build_res.ocr_pages_used
                 seen_missing.update(build_res.missing_core_slots)
 
+                audit = build_res.coverage_audit
+                if audit.bctc_total_pages > 0:
+                    bctc_cov_samples.append(audit.bctc_notes_coverage_pct)
+                if build_res.doc_type == "BCTN" and (audit.bctn_core_pages + audit.dropped_pages) > 0:
+                    noise_red_samples.append(audit.noise_reduction_pct)
+
                 for bundle in build_res.sub_documents:
                     seen_slots.add(bundle.sub_doc_slot)
+                    doc_ver_id = bundle.content_hash[:24]
                     if not dry_run and subdoc_uploader is not None:
-                        await subdoc_uploader(bundle)
+                        upload_resp = await subdoc_uploader(bundle)
+                        if isinstance(upload_resp, dict) and upload_resp.get("document_version_id"):
+                            doc_ver_id = str(upload_resp["document_version_id"])
                         report.uploaded_sub_docs += 1
+
+                    # Dual-Representation Financial Table Engine wired directly into batch ingest
+                    if extract_tables and bundle.sub_doc_slot in ("BCTC_AUDITED", "QUARTER_NOTES"):
+                        extracted_tables = extract_tables_from_document(
+                            pdf_bytes=pdf_bytes,
+                            project_id=bundle.project_id,
+                            document_version_id=doc_ver_id,
+                            sub_doc_slot=bundle.sub_doc_slot,
+                            fiscal_year=bundle.fiscal_year,
+                            fiscal_quarter=bundle.fiscal_quarter,
+                            page_numbers=bundle.page_numbers,
+                            markdown_content=bundle.markdown_content,
+                            valid_from=bundle.valid_from,
+                            left_sidebar_x=build_res.inspection.auto_sidebar_x,
+                        )
+                        report.tables_extracted += len(extracted_tables)
+                        for tbl_rec in extracted_tables:
+                            if tbl_rec.verification_status == "VERIFIED":
+                                report.tables_verified += 1
+                            elif tbl_rec.verification_status == "TABLE_UNVERIFIED":
+                                report.tables_unverified += 1
+                            if not dry_run and table_repo is not None:
+                                await table_repo.upsert_table(tbl_rec)
 
             report.sub_doc_slots = sorted(seen_slots)
             report.missing_core_slots = sorted(seen_missing - seen_slots)
+            if bctc_cov_samples:
+                report.bctc_notes_coverage_pct = round(min(bctc_cov_samples), 2)
+            if noise_red_samples:
+                report.noise_reduction_pct = round(sum(noise_red_samples) / len(noise_red_samples), 1)
             if report.sub_doc_slots:
                 report.status = "DRY_RUN_READY" if dry_run else "INGESTED"
                 ingested_tickers.append(sym)

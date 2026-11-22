@@ -79,7 +79,9 @@ async def _main(argv: list[str] | None = None) -> int:
     parser.add_argument("--as-of-date", default=None, help="ISO date YYYY-MM-DD (default: today)")
     parser.add_argument("--years-back", type=int, default=3)
     parser.add_argument("--dry-run", action="store_true", help="Inspect & localize without uploading to SAG")
-    parser.add_argument("--enable-llm-toc", action="store_true", help="Use DeepInfra DeepSeek-V4-Flash TOC Router")
+    parser.add_argument("--enable-llm-toc", action="store_true", help="Use DeepInfra 1-call BCTN 3-Way Triage")
+    parser.add_argument("--auto-mineru-ocr", action="store_true", help="Enable MinerU Official API v4 for scan PDFs")
+    parser.add_argument("--no-tables", action="store_true", help="Skip pdfplumber/HTML table extraction")
     parser.add_argument("--sag-api-url", default=os.environ.get("SAG_API_URL", "http://127.0.0.1:18000"))
     args = parser.parse_args(argv)
 
@@ -105,6 +107,8 @@ async def _main(argv: list[str] | None = None) -> int:
         years_back=args.years_back,
         dry_run=args.dry_run,
         enable_llm_toc=args.enable_llm_toc,
+        auto_mineru_ocr=args.auto_mineru_ocr,
+        extract_tables=not args.no_tables,
         core_reader=core_reader,
         subdoc_uploader=uploader,
     )
@@ -129,6 +133,11 @@ async def _main(argv: list[str] | None = None) -> int:
                         "missing_core_slots": r.missing_core_slots,
                         "ocr_pages_used": r.ocr_pages_used,
                         "uploaded_sub_docs": r.uploaded_sub_docs,
+                        "tables_extracted": r.tables_extracted,
+                        "tables_verified": r.tables_verified,
+                        "tables_unverified": r.tables_unverified,
+                        "bctc_notes_coverage_pct": r.bctc_notes_coverage_pct,
+                        "noise_reduction_pct": r.noise_reduction_pct,
                         "errors": r.errors,
                     }
                     for r in summary.reports
