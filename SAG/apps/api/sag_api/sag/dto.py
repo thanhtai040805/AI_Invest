@@ -35,6 +35,10 @@ class RetrievedSection(BaseModel):
     page_from: int | None = None
     page_to: int | None = None
     anchor: str | None = None
+    table_id: str | None = None
+    sub_doc_slot: str | None = None
+    fiscal_year: int | None = None
+    fiscal_quarter: int | None = None
 
     @classmethod
     def from_section(cls, s: Any) -> RetrievedSection:
@@ -59,6 +63,12 @@ class RetrievedSection(BaseModel):
             section_path=s.get("section_path"),
             content_hash=s.get("content_hash"),
             canonical_evidence_verified=bool(s.get("canonical_evidence_verified")),
+            table_id=s.get("table_id") or metadata.get("table_id"),
+            sub_doc_slot=s.get("sub_doc_slot") or metadata.get("sub_doc_slot"),
+            fiscal_year=s.get("fiscal_year") if s.get("fiscal_year") is not None else metadata.get("fiscal_year"),
+            fiscal_quarter=(
+                s.get("fiscal_quarter") if s.get("fiscal_quarter") is not None else metadata.get("fiscal_quarter")
+            ),
         )
 
 

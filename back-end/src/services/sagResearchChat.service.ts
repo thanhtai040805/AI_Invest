@@ -18,9 +18,12 @@ export class SagGatewayError extends Error {
   }
 }
 
+export type ResearchChatMode = 'GENERAL' | 'MOAT';
+
 export interface CreateSessionInput {
-  ticker: string;
+  ticker?: string | null;
   title?: string;
+  mode?: ResearchChatMode;
   asOfDate?: string;
   enableKg?: boolean;
 }
@@ -28,8 +31,9 @@ export interface CreateSessionInput {
 export interface StreamResearchChatInput {
   sessionId?: string;
   query: string;
-  ticker: string;
+  ticker?: string | null;
   compareTickers?: string[];
+  mode?: ResearchChatMode;
   asOfDate?: string;
   enableKg?: boolean;
 }
@@ -82,8 +86,11 @@ export interface ResearchChatGraphHop {
 
 export interface ResearchChatMetadata {
   mode?: string;
+  chat_mode?: ResearchChatMode;
   primary_ticker?: string;
   expanded_tickers?: string[];
+  resolved_query?: string | null;
+  sub_queries?: string[];
   as_of_date?: string | null;
   enable_kg?: boolean;
   citations?: ResearchChatCitation[];
@@ -102,34 +109,45 @@ export interface SagResearchChatServiceDeps {
   fetchImpl?: typeof fetch;
   sagApiUrl?: string;
   sagBffServiceToken?: string;
+  sagResearchOrgId?: string;
   nodeEnv?: string;
   timeoutMs?: number;
 }
 
-function normalizeTicker(ticker: string): string {
-  return ticker.trim().toUpperCase();
+function normalizeTicker(ticker?: string | null): string {
+  return (ticker ?? '').trim().toUpperCase();
+}
+
+function normalizeOptionalTicker(ticker?: string | null): string | null {
+  const clean = normalizeTicker(ticker);
+  return clean || null;
 }
 
 function extractSessionContextFromMessages(
   title: string | null | undefined,
   messages: Array<{ metadata?: unknown }>,
-): { ticker: string | null; asOfDate: string | null; enableKg: boolean } {
+): { ticker: string | null; mode: ResearchChatMode; asOfDate: string | null; enableKg: boolean } {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const meta = messages[i]?.metadata;
     if (meta && typeof meta === 'object' && !Array.isArray(meta)) {
       const m = meta as Record<string, unknown>;
-      if (typeof m.primary_ticker === 'string' && m.primary_ticker) {
+      const rawTicker = typeof m.primary_ticker === 'string' && m.primary_ticker.trim() ? m.primary_ticker.trim().toUpperCase() : null;
+      const rawMode: ResearchChatMode = m.chat_mode === 'MOAT' ? 'MOAT' : 'GENERAL';
+      if (rawTicker || m.as_of_date || typeof m.enable_kg === 'boolean' || m.chat_mode) {
         return {
-          ticker: m.primary_ticker.toUpperCase(),
+          ticker: rawTicker,
+          mode: rawMode,
           asOfDate: typeof m.as_of_date === 'string' ? m.as_of_date : null,
           enableKg: typeof m.enable_kg === 'boolean' ? m.enable_kg : true,
         };
       }
     }
   }
-  const match = title?.trim().match(/^([A-Za-z0-9.-]{1,16})\b/);
+  const bracketMatch = title?.trim().match(/^\[([A-Z0-9.-]{2,10})\]/);
+  const legacyMatch = title?.trim().match(/^([A-Z]{2,5})\s+(?:Research|·|:)/);
   return {
-    ticker: match ? match[1].toUpperCase() : null,
+    ticker: bracketMatch ? bracketMatch[1].toUpperCase() : legacyMatch ? legacyMatch[1].toUpperCase() : null,
+    mode: 'GENERAL',
     asOfDate: null,
     enableKg: true,
   };
@@ -174,6 +192,7 @@ export class SagResearchChatService {
   private readonly fetchImpl: typeof fetch;
   private readonly sagApiUrl: string;
   private readonly sagBffServiceToken: string;
+  private readonly sagResearchOrgId: string;
   private readonly nodeEnv: string;
   private readonly timeoutMs: number;
 
@@ -182,6 +201,7 @@ export class SagResearchChatService {
     this.fetchImpl = deps.fetchImpl ?? fetch;
     this.sagApiUrl = (deps.sagApiUrl ?? config.sagApiUrl).replace(/\/+$/, '');
     this.sagBffServiceToken = deps.sagBffServiceToken ?? config.sagBffServiceToken;
+    this.sagResearchOrgId = (deps.sagResearchOrgId ?? config.sagResearchOrgId).trim() || 'aiinvest-default';
     this.nodeEnv = deps.nodeEnv ?? config.nodeEnv;
     this.timeoutMs = deps.timeoutMs ?? SAG_RESEARCH_TIMEOUT_MS;
   }
@@ -201,37 +221,30 @@ export class SagResearchChatService {
 
   buildBffHeaders(
     userId: string,
-    primaryTicker: string,
+    primaryTicker?: string | null,
     compareTickers: string[] = [],
   ): Record<string, string> {
     const token = this.assertServiceToken();
-    const normalizedPrimary = normalizeTicker(primaryTicker);
-    const deduped = Array.from(
-      new Set([
-        normalizedPrimary,
-        ...compareTickers.map(normalizeTicker).filter(Boolean),
-      ]),
-    ).slice(0, 1 + MAX_COMPARE_TICKERS);
-
-    const isMultiTicker = deduped.length > 1;
-    const headers: Record<string, string> = {
+    // Phase 0 Contract: grant org-scoped read-only access (no single-ticker lock),
+    // strictly isolated by X-Continuum-Organization-Id (tenant_id == organization_id).
+    // Explicit ticker hints are passed in the request body for routing priority while
+    // allowing free-form multi-ticker follow-ups and automatic True-Peer KG expansion.
+    void primaryTicker;
+    void compareTickers;
+    return {
       'X-SAG-BFF-Service-Token': token,
       'X-Continuum-User-Id': userId,
-      'X-Continuum-Organization-Id': 'aiinvest-default',
-      'X-Continuum-Project-Id': isMultiTicker ? 'all' : normalizedPrimary,
-      'X-Continuum-Security-Partition': isMultiTicker ? 'all' : normalizedPrimary,
+      'X-Continuum-Organization-Id': this.sagResearchOrgId,
+      'X-Continuum-Project-Id': 'all',
+      'X-Continuum-Security-Partition': 'all',
+      'X-Continuum-Allowed-Project-Ids': '*',
     };
-
-    if (isMultiTicker) {
-      headers['X-Continuum-Allowed-Project-Ids'] = deduped.join(',');
-    }
-
-    return headers;
   }
 
-  async createSession(userId: string, input: CreateSessionInput) {
-    const ticker = normalizeTicker(input.ticker);
-    const title = input.title?.trim() || `${ticker} Research`;
+  async createSession(userId: string, input: CreateSessionInput = {}) {
+    const ticker = normalizeOptionalTicker(input.ticker);
+    const mode: ResearchChatMode = input.mode === 'MOAT' ? 'MOAT' : 'GENERAL';
+    const title = input.title?.trim() || (ticker ? `${ticker} Research` : 'Cuộc trò chuyện nghiên cứu mới');
     const session = await this.prisma.chatSession.create({
       data: {
         userId,
@@ -243,6 +256,7 @@ export class SagResearchChatService {
       id: session.id,
       title: session.title,
       ticker,
+      mode,
       asOfDate: input.asOfDate ?? null,
       enableKg: input.enableKg ?? true,
       createdAt: session.createdAt,
@@ -272,6 +286,7 @@ export class SagResearchChatService {
         id: session.id,
         title: session.title,
         ticker: ctx.ticker,
+        mode: ctx.mode,
         asOfDate: ctx.asOfDate,
         enableKg: ctx.enableKg,
         messageCount: session._count.messages,
@@ -309,6 +324,7 @@ export class SagResearchChatService {
         id: session.id,
         title: session.title,
         ticker: ctx.ticker,
+        mode: ctx.mode,
         asOfDate: ctx.asOfDate,
         enableKg: ctx.enableKg,
         createdAt: session.createdAt,
@@ -332,7 +348,8 @@ export class SagResearchChatService {
     res: Response,
   ): Promise<void> {
     // Fail-closed before opening SSE stream if service token is missing
-    const ticker = normalizeTicker(input.ticker);
+    const ticker = normalizeOptionalTicker(input.ticker);
+    const chatMode: ResearchChatMode = input.mode === 'MOAT' ? 'MOAT' : 'GENERAL';
     const compareTickers = (input.compareTickers ?? [])
       .map(normalizeTicker)
       .filter((t) => t && t !== ticker)
@@ -349,10 +366,13 @@ export class SagResearchChatService {
         throw new SagGatewayError(404, 'SESSION_NOT_FOUND', 'Research chat session not found');
       }
     } else {
+      const autoTitle = ticker
+        ? `${ticker}: ${input.query.slice(0, 48)}`
+        : input.query.slice(0, 60) || 'Cuộc trò chuyện nghiên cứu';
       const created = await this.prisma.chatSession.create({
         data: {
           userId,
-          title: `${ticker} Research`,
+          title: autoTitle,
         },
       });
       sessionId = created.id;
@@ -371,8 +391,9 @@ export class SagResearchChatService {
 
     const userMetadata: ResearchChatMetadata = {
       mode: 'RESEARCH_CHAT_V2',
-      primary_ticker: ticker,
-      expanded_tickers: [ticker, ...compareTickers],
+      chat_mode: chatMode,
+      primary_ticker: ticker ?? '',
+      expanded_tickers: ticker ? [ticker, ...compareTickers] : compareTickers,
       as_of_date: input.asOfDate ?? null,
       enable_kg: enableKg,
     };
@@ -410,14 +431,17 @@ export class SagResearchChatService {
     res.on('close', onResponseClose);
 
     try {
-      const upstreamPayload = {
+      const upstreamPayload: Record<string, unknown> = {
         query: input.query,
-        ticker,
+        mode: chatMode,
         compare_tickers: compareTickers.length > 0 ? compareTickers : undefined,
         as_of_date: input.asOfDate || undefined,
         enable_kg: enableKg,
         history,
       };
+      if (ticker) {
+        upstreamPayload.ticker = ticker;
+      }
 
       const upstreamRes = await this.fetchImpl(`${this.sagApiUrl}/api/v1/research-chat/stream`, {
         method: 'POST',
@@ -472,7 +496,8 @@ export class SagResearchChatService {
           const metadataToStore: ResearchChatMetadata = {
             ...rawMetadata,
             mode: rawMetadata.mode || 'RESEARCH_CHAT_V2',
-            primary_ticker: rawMetadata.primary_ticker || ticker,
+            chat_mode: rawMetadata.chat_mode || chatMode,
+            primary_ticker: rawMetadata.primary_ticker || ticker || '',
             as_of_date: rawMetadata.as_of_date ?? input.asOfDate ?? null,
             enable_kg: typeof rawMetadata.enable_kg === 'boolean' ? rawMetadata.enable_kg : enableKg,
           };
@@ -780,7 +805,7 @@ export class SagResearchChatService {
   }
 
   async getHydratedTable(userId: string, tableId: string, ticker?: string) {
-    const scopeTicker = ticker ? normalizeTicker(ticker) : 'DEFAULT';
+    const scopeTicker = normalizeOptionalTicker(ticker);
     const headers = this.buildBffHeaders(userId, scopeTicker);
     return this.fetchSagJson(`/api/v1/research-chat/tables/${encodeURIComponent(tableId)}`, headers);
   }

@@ -431,7 +431,7 @@ class KnowledgeWorker:
                         non_heading_blocks = [
                             (b.id, contextualize_block_text(b.section_path, b.normalized_text))
                             for b in blocks
-                            if b.block_type != "heading" and b.normalized_text.strip()
+                            if b.block_type not in ("heading", "table_card") and b.normalized_text.strip()
                         ]
                     if non_heading_blocks:
                         with token_usage_scope(

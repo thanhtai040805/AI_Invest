@@ -458,12 +458,16 @@ def extract_numeric_table_from_region(
     context_lines: list[str] = []
     pending_prefix_lines: list[tuple[str, float, float]] = []
     seen_first_data_row = False
+    first_data_row_top: float | None = None
     stopped_at_footer = False
+    col_word_x0s: list[list[float]] = [[] for _ in range(n_num_cols)]
+    col_word_x1s: list[list[float]] = [[] for _ in range(n_num_cols)]
 
     for ln in lines:
         line_top = round(float(ln[0]["top"]), 1)
         line_text = normalize_ctg_font_quirks(" ".join(w["text"] for w in ln))
         num_slots: list[str | None] = [None] * n_num_cols
+        num_word_cols: list[tuple[int, float, float]] = []
         label_word_objs: list[dict[str, Any]] = []
 
         for w in ln:
@@ -479,6 +483,7 @@ def extract_numeric_table_from_region(
                     num_slots[best_c] = (
                         txt if num_slots[best_c] is None else f"{num_slots[best_c]} {txt}"
                     )
+                    num_word_cols.append((best_c, float(w["x0"]), float(w["x1"])))
                     continue
             label_word_objs.append(w)
 
@@ -512,7 +517,12 @@ def extract_numeric_table_from_region(
         )
 
         if is_data_row:
-            seen_first_data_row = True
+            if not seen_first_data_row:
+                seen_first_data_row = True
+                first_data_row_top = line_top
+            for c_i, wx0, wx1 in num_word_cols:
+                col_word_x0s[c_i].append(wx0)
+                col_word_x1s[c_i].append(wx1)
             trailing_note: str | None = None
             if label_word_spans:
                 last_txt, last_x0, _ = label_word_spans[-1]
@@ -606,9 +616,81 @@ def extract_numeric_table_from_region(
     locale = detect_table_locale(all_raw_nums)
     currency, unit_mult, unit_raw = detect_unit_and_currency("\n".join(context_lines))
 
+    # Reconstruct real column headers from words in the header band immediately above `first_data_row_top`
+    inferred_col_headers: list[str] | None = None
+    if (
+        not (expected_col_headers and len(expected_col_headers) == n_num_cols)
+        and n_num_cols > 0
+        and first_data_row_top is not None
+    ):
+        hdr_skip_re = re.compile(
+            r"(?:mẫu\s+số|ban\s+hành\s+theo|thông\s+tư\s+(?:số\s*)?\d+|quyết\s+định\s+số|"
+            r"ngày\s+\d+\s+tháng\s+\d+\s+năm\s+\d+|của\s+bộ\s+tài\s+chính|"
+            r"bảng\s+cân\s+đối|báo\s+cáo\s+(?:kết\s+quả|lưu\s+chuyển|tình\s+hình)|"
+            r"công\s+ty\s+cổ\s+phần|tổng\s+công\s+ty|ngân\s+hàng\s+tmcp|đơn\s+vị\s*(?:tính)?\s*:|trang\s+\d+|"
+            r"thuyết\s+minh\s+báo\s+cáo|báo\s+cáo\s+thường\s+niên)",
+            re.IGNORECASE,
+        )
+        col_spans: list[tuple[float, float]] = []
+        for c_i in range(n_num_cols):
+            cx = float(col_x_centers[c_i])
+            if col_word_x0s[c_i] and col_word_x1s[c_i]:
+                c_x0 = min(col_word_x0s[c_i])
+                c_x1 = max(col_word_x1s[c_i])
+            else:
+                c_x0, c_x1 = cx - 45.0, cx
+            col_spans.append((c_x0, c_x1))
+
+        col_hdr_tokens: list[list[tuple[float, float, str]]] = [[] for _ in range(n_num_cols)]
+        hdr_top_min = max(0.0, first_data_row_top - 75.0)
+        for ln in lines:
+            l_top = float(ln[0]["top"])
+            if not (hdr_top_min <= l_top < first_data_row_top - 1.0):
+                continue
+            ln_txt = normalize_ctg_font_quirks(" ".join(w["text"] for w in ln)).strip()
+            if not ln_txt or hdr_skip_re.search(ln_txt):
+                continue
+            for w in ln:
+                w_txt = normalize_ctg_font_quirks(w["text"].strip())
+                if not w_txt or w_txt in ("|", "—", "–", "-"):
+                    continue
+                wx0, wx1 = float(w["x0"]), float(w["x1"])
+                if wx1 < col_left_bound - 8.0:
+                    continue
+                wx_mid = (wx0 + wx1) / 2.0
+                # Prefer column whose [x0, x1] interval contains wx_mid, else nearest column center
+                best_c = -1
+                best_dist = 1e9
+                for c_i, (c_x0, c_x1) in enumerate(col_spans):
+                    c_mid = (c_x0 + c_x1) / 2.0
+                    c_half = max(32.0, (c_x1 - c_x0) * 0.65 + 16.0)
+                    if c_x0 - 16.0 <= wx_mid <= c_x1 + 14.0:
+                        d = abs(wx_mid - c_mid) * 0.5
+                    else:
+                        d = abs(wx_mid - c_mid)
+                    if d < best_dist and (c_x0 - 24.0 <= wx_mid <= c_x1 + 20.0 or d <= c_half):
+                        best_dist = d
+                        best_c = c_i
+                if best_c >= 0:
+                    col_hdr_tokens[best_c].append((l_top, wx0, w_txt))
+
+        rebuilt_headers: list[str] = []
+        for c_i in range(n_num_cols):
+            toks = sorted(col_hdr_tokens[c_i], key=lambda item: (round(item[0] / 5.0), item[1]))
+            joined_h = normalize_ws(" ".join(t[2] for t in toks))
+            # Strip pure noise or overly long accidental prose headers
+            if joined_h and 2 <= len(joined_h) <= 64 and any(ch.isalnum() for ch in joined_h):
+                rebuilt_headers.append(joined_h)
+            else:
+                rebuilt_headers.append(f"Col_{c_i + 1}")
+        if any(not re.fullmatch(r"Col_\d+", h) for h in rebuilt_headers):
+            inferred_col_headers = rebuilt_headers
+
     headers = ["Chỉ tiêu"] + (
-        expected_col_headers
+        list(expected_col_headers)
         if expected_col_headers and len(expected_col_headers) == n_num_cols
+        else inferred_col_headers
+        if inferred_col_headers is not None
         else [f"Col_{i + 1}" for i in range(n_num_cols)]
     )
     matrix_rows: list[list[dict[str, Any]]] = []
@@ -630,57 +712,80 @@ def extract_numeric_table_from_region(
     }
 
 
-def extract_table_with_lattice_fallback(
+def _parse_lattice_grid(
+    raw_grid: list[list[Any]],
+    *,
+    page_text: str,
+    expected_col_headers: list[str] | None = None,
+) -> dict[str, Any] | None:
+    """Convert a single pdfplumber lattice grid into normalized matrix + sanity gate."""
+    cleaned_grid = [
+        [normalize_ctg_font_quirks(normalize_ws(str(cell or ""))) for cell in row]
+        for row in raw_grid
+        if row and any(str(c or "").strip() for c in row)
+    ]
+    if len(cleaned_grid) < 2 or len(cleaned_grid[0]) < 2:
+        return None
+    raw_nums = [cell for r in cleaned_grid[1:] for cell in r[1:] if cell]
+    locale = detect_table_locale(raw_nums)
+    currency, unit_mult, unit_raw = detect_unit_and_currency(page_text)
+    headers = [h if h else f"Col_{i}" for i, h in enumerate(cleaned_grid[0])]
+    if expected_col_headers and len(headers) == len(expected_col_headers) + 1:
+        headers = ["Chỉ tiêu"] + list(expected_col_headers)
+    rows = [
+        [{"raw_text": r[0] or "Tổng cộng", "numeric_value": None}]
+        + [
+            {
+                "raw_text": cell,
+                "numeric_value": parse_vn_number(cell, locale=locale),
+            }
+            for cell in r[1:]
+        ]
+        for r in cleaned_grid[1:]
+    ]
+    num_cells = sum(1 for r in rows for c in r[1:] if c.get("numeric_value") is not None)
+    if num_cells < 4:
+        return None
+    gate = run_arithmetic_sanity_gate(headers, rows)
+    return {
+        "headers": headers,
+        "rows": rows,
+        "locale": locale,
+        "currency": currency,
+        "unit_multiplier": unit_mult,
+        "unit_raw": unit_raw,
+        "context_header": normalize_ws(page_text[:300]),
+        "extraction_method": "lattice",
+        "sanity_gate": gate,
+        "needs_mineru_fallback": gate["verification_status"] == "TABLE_UNVERIFIED",
+    }
+
+
+def extract_tables_with_lattice_fallback(
     sub_page: Any,
     *,
     y_min: float | None = None,
     y_max: float | None = None,
     expected_col_headers: list[str] | None = None,
-) -> dict[str, Any]:
-    """Try pdfplumber lattice extraction first; self-heal via coordinate reconstructor if sanity gate fails."""
+) -> list[dict[str, Any]]:
+    """Extract ALL valid lattice tables (`lat_tables[0..N]`) on a page; fall back to coordinate reconstructor."""
     page_text = ""
     if hasattr(sub_page, "extract_text"):
-        page_text = sub_page.extract_text() or ""
+        page_text = normalize_ctg_font_quirks(sub_page.extract_text() or "")
     lat_tables = sub_page.extract_tables() if hasattr(sub_page, "extract_tables") else []
 
-    if lat_tables and len(lat_tables[0]) >= 2:
-        raw_grid = lat_tables[0]
-        raw_nums = [
-            str(cell or "")
-            for r in raw_grid[1:]
-            for cell in r[1:]
-            if cell
-        ]
-        locale = detect_table_locale(raw_nums)
-        currency, unit_mult, unit_raw = detect_unit_and_currency(page_text)
-        headers = [normalize_ws(str(h or f"Col_{i}")) for i, h in enumerate(raw_grid[0])]
-        if expected_col_headers and len(headers) == len(expected_col_headers) + 1:
-            headers = ["Chỉ tiêu"] + list(expected_col_headers)
-        rows = [
-            [{"raw_text": normalize_ws(str(r[0] or "Tổng cộng")), "numeric_value": None}]
-            + [
-                {
-                    "raw_text": normalize_ws(str(cell or "")),
-                    "numeric_value": parse_vn_number(cell, locale=locale),
-                }
-                for cell in r[1:]
-            ]
-            for r in raw_grid[1:]
-        ]
-        gate = run_arithmetic_sanity_gate(headers, rows)
-        if gate["verification_status"] == "VERIFIED":
-            return {
-                "headers": headers,
-                "rows": rows,
-                "locale": locale,
-                "currency": currency,
-                "unit_multiplier": unit_mult,
-                "unit_raw": unit_raw,
-                "context_header": normalize_ws(page_text[:300]),
-                "extraction_method": "lattice",
-                "sanity_gate": gate,
-                "needs_mineru_fallback": False,
-            }
+    verified_lattice: list[dict[str, Any]] = []
+    if lat_tables:
+        for raw_grid in lat_tables:
+            parsed = _parse_lattice_grid(
+                raw_grid,
+                page_text=page_text,
+                expected_col_headers=expected_col_headers,
+            )
+            if parsed is not None and parsed["sanity_gate"]["verification_status"] == "VERIFIED":
+                verified_lattice.append(parsed)
+    if verified_lattice:
+        return verified_lattice
 
     reconstructed = extract_numeric_table_from_region(
         sub_page,
@@ -692,7 +797,24 @@ def extract_table_with_lattice_fallback(
     reconstructed["extraction_method"] = "coordinate_reconstructor"
     reconstructed["sanity_gate"] = gate_rec
     reconstructed["needs_mineru_fallback"] = gate_rec["verification_status"] == "TABLE_UNVERIFIED"
-    return reconstructed
+    return [reconstructed]
+
+
+def extract_table_with_lattice_fallback(
+    sub_page: Any,
+    *,
+    y_min: float | None = None,
+    y_max: float | None = None,
+    expected_col_headers: list[str] | None = None,
+) -> dict[str, Any]:
+    """Try pdfplumber lattice extraction first; self-heal via coordinate reconstructor if sanity gate fails."""
+    tables = extract_tables_with_lattice_fallback(
+        sub_page,
+        y_min=y_min,
+        y_max=y_max,
+        expected_col_headers=expected_col_headers,
+    )
+    return tables[0]
 
 
 def build_matrix_from_html_table(
@@ -896,7 +1018,12 @@ def run_arithmetic_sanity_gate(
 
 
 def _clean_acct_label(raw: str) -> str:
-    return re.sub(r"^\s*\d{2,3}(?:\.\d)?\s+", "", (raw or "").strip().lower())
+    cleaned = re.sub(
+        r"^\s*(?:[a-d]\.|[ivx]+\.|\d{1,3}(?:\.\d)?\.?)\s+",
+        "",
+        (raw or "").strip().lower(),
+    )
+    return re.sub(r"\s+", " ", cleaned).strip()
 
 
 def _try_auto_hierarchical_reconciliation(
@@ -905,24 +1032,31 @@ def _try_auto_hierarchical_reconciliation(
     *,
     tolerance: float = 0.005,
 ) -> dict[str, Any] | None:
-    """Auto-detect standard Vietnamese Balance Sheet, P&L & subtotal identities (ignoring Mã số/Thuyết minh cols)."""
+    """Auto-detect standard Vietnamese Balance Sheet, P&L, Cash Flow & subtotal identities."""
     n_cols = len(headers)
     if n_cols < 2 or len(rows) < 4:
         return None
 
-    # 1. Balance Sheet identity: TỔNG (CỘNG) TÀI SẢN == TỔNG (CỘNG) NGUỒN VỐN / NỢ & VCSH
+    # 1. Balance Sheet / P&L / Cash Flow row anchors
     assets_idx: int | None = None
     liab_eq_idx: int | None = None
     cur_assets_idx: int | None = None
     noncur_assets_idx: int | None = None
+    liab_idx: int | None = None
+    equity_idx: int | None = None
     gross_rev_idx: int | None = None
     deduct_idx: int | None = None
     net_rev_idx: int | None = None
     cogs_idx: int | None = None
     gross_profit_idx: int | None = None
+    net_cf_idx: int | None = None
+    open_cash_idx: int | None = None
+    fx_cash_idx: int | None = None
+    close_cash_idx: int | None = None
 
     for idx, r in enumerate(rows):
         lbl = _clean_acct_label(r[0].get("raw_text") or "")
+        lbl_compact = re.sub(r"\s+", "", lbl)
         if ("tổng cộng tài sản" in lbl or lbl.startswith("tổng tài sản")) and assets_idx is None:
             assets_idx = idx
         elif (
@@ -931,10 +1065,24 @@ def _try_auto_hierarchical_reconciliation(
             or lbl.startswith("tổng nguồn vốn")
         ):
             liab_eq_idx = idx
-        elif re.search(r"^(?:a\.\s*)?tài\s+sản\s+ngắn\s+hạn$", lbl) and cur_assets_idx is None:
+        elif (
+            ("tàisảnngắnhạn" in lbl_compact or lbl.startswith("tài sản ngắn hạn"))
+            and "tổng" not in lbl
+            and len(lbl) <= 45
+            and cur_assets_idx is None
+        ):
             cur_assets_idx = idx
-        elif re.search(r"^(?:b\.\s*)?tài\s+sản\s+dài\s+hạn$", lbl) and noncur_assets_idx is None:
+        elif (
+            ("tàisảndàihạn" in lbl_compact or lbl.startswith("tài sản dài hạn"))
+            and "tổng" not in lbl
+            and len(lbl) <= 45
+            and noncur_assets_idx is None
+        ):
             noncur_assets_idx = idx
+        elif lbl.startswith("nợ phải trả") and len(lbl) <= 35 and liab_idx is None:
+            liab_idx = idx
+        elif lbl.startswith("vốn chủ sở hữu") and len(lbl) <= 40 and equity_idx is None:
+            equity_idx = idx
         elif lbl.startswith("doanh thu bán hàng") and gross_rev_idx is None:
             gross_rev_idx = idx
         elif "giảm trừ doanh thu" in lbl and deduct_idx is None:
@@ -945,6 +1093,20 @@ def _try_auto_hierarchical_reconciliation(
             cogs_idx = idx
         elif lbl.startswith("lợi nhuận gộp") and gross_profit_idx is None:
             gross_profit_idx = idx
+        elif "lưu chuyển tiền thuần trong" in lbl and net_cf_idx is None:
+            net_cf_idx = idx
+        elif (
+            re.search(r"tiền\s+và\s+(?:các\s+khoản\s+)?tương\s+đương\s+tiền\s+đầu\s+(?:năm|kỳ)", lbl)
+            and open_cash_idx is None
+        ):
+            open_cash_idx = idx
+        elif "ảnh hưởng của thay đổi tỷ giá" in lbl and fx_cash_idx is None:
+            fx_cash_idx = idx
+        elif (
+            re.search(r"tiền\s+và\s+(?:các\s+khoản\s+)?tương\s+đương\s+tiền\s+cuối\s+(?:năm|kỳ)", lbl)
+            and close_cash_idx is None
+        ):
+            close_cash_idx = idx
 
     if assets_idx is not None and liab_eq_idx is not None and assets_idx != liab_eq_idx:
         return run_hierarchical_identities_sanity_gate(
@@ -961,6 +1123,27 @@ def _try_auto_hierarchical_reconciliation(
             [("Total_Assets_eq_Current_Plus_NonCurrent", assets_idx, [cur_assets_idx, noncur_assets_idx])],
             tolerance=tolerance,
         )
+
+    if liab_eq_idx is not None and liab_idx is not None and equity_idx is not None:
+        gate_le = run_hierarchical_identities_sanity_gate(
+            headers,
+            rows,
+            [("Total_Liab_Equity_eq_Liab_Plus_Equity", liab_eq_idx, [liab_idx, equity_idx])],
+            tolerance=tolerance,
+        )
+        if gate_le["verification_status"] in ("VERIFIED", "PARTIAL"):
+            return gate_le
+
+    if close_cash_idx is not None and net_cf_idx is not None and open_cash_idx is not None:
+        cf_comps = [net_cf_idx, open_cash_idx] + ([fx_cash_idx] if fx_cash_idx is not None else [])
+        gate_cf = run_hierarchical_identities_sanity_gate(
+            headers,
+            rows,
+            [("Ending_Cash_eq_NetCF_Plus_OpenCash", close_cash_idx, cf_comps)],
+            tolerance=tolerance,
+        )
+        if gate_cf["verification_status"] in ("VERIFIED", "PARTIAL"):
+            return gate_cf
 
     # 2. P&L identities (e.g. Gross Profit = Net Revenue - COGS; Net Revenue = Gross Rev - Deductions)
     pnl_identities: list[tuple[str, int, list[int]]] = []
@@ -1151,18 +1334,108 @@ def _align_row_width(row: list[dict[str, Any]], target_cols: int) -> list[dict[s
     return list(row[:target_cols])
 
 
+def _detect_statement_family(tbl: dict[str, Any]) -> str:
+    """Identify statement family (`BS`/`IS`/`CF`/`NOTES`) to block cross-statement over-stitching."""
+    blob = f"{tbl.get('section_path') or ''} {tbl.get('context_header') or ''}".lower()
+    if "thuyết minh báo cáo tài chính" in blob or "thuyết minh bctc" in blob:
+        return "NOTES"
+    if "lưu chuyển tiền tệ" in blob or "cash flow" in blob:
+        return "CF"
+    if "kết quả hoạt động" in blob or "income statement" in blob:
+        return "IS"
+    if "cân đối kế toán" in blob or "tình hình tài chính" in blob or "balance sheet" in blob:
+        return "BS"
+    rows = tbl.get("rows") or []
+    first_lbls = " ".join(
+        _clean_acct_label(r[0].get("raw_text") or "")
+        for r in rows[:3]
+        if isinstance(r, list) and r and isinstance(r[0], dict)
+    )
+    if "lưu chuyển tiền" in first_lbls:
+        return "CF"
+    if "doanh thu bán hàng" in first_lbls or "doanh thu thuần" in first_lbls:
+        return "IS"
+    if any(k in first_lbls for k in ("tài sản ngắn hạn", "nợ phải trả", "vốn chủ sở hữu")):
+        return "BS"
+    return ""
+
+
+def _ends_with_terminal_statement_row(rows: list[list[dict[str, Any]]]) -> bool:
+    """True when a table's tail closes a full financial statement (NOT mid-BS `TỔNG CỘNG TÀI SẢN`)."""
+    tail_lbls = " ".join(
+        _clean_acct_label(r[0].get("raw_text") or "")
+        for r in rows[-3:]
+        if isinstance(r, list) and r and isinstance(r[0], dict)
+    )
+    return bool(
+        re.search(
+            r"(?:tổng\s+cộng\s+nguồn\s+vốn|tổng\s+nguồn\s+vốn|tổng\s+nợ\s+phải\s+trả\s+và\s+vốn\s+chủ|"
+            r"lãi\s+(?:cơ\s+bản|suy\s+giảm)\s+trên\s+cổ\s+phiếu|"
+            r"tiền\s+và\s+(?:các\s+khoản\s+)?tương\s+đương\s+tiền\s+cuối\s+(?:năm|kỳ))",
+            tail_lbls,
+        )
+    )
+
+
+def _starts_new_statement_body(rows: list[list[dict[str, Any]]]) -> bool:
+    """True when a table's opening rows begin a brand-new financial statement."""
+    head_lbls = " ".join(
+        _clean_acct_label(r[0].get("raw_text") or "")
+        for r in rows[:2]
+        if isinstance(r, list) and r and isinstance(r[0], dict)
+    )
+    return bool(
+        re.search(
+            r"(?:doanh\s+thu\s+bán\s+hàng|lưu\s+chuyển\s+tiền\s+từ\s+hoạt\s+động\s+kinh\s+doanh|"
+            r"tài\s+sản\s+ngắn\s+hạn)",
+            head_lbls,
+        )
+    )
+
+
+def _is_balance_sheet_continuation(prev: dict[str, Any], tbl: dict[str, Any]) -> bool:
+    """True when `prev` is Balance Sheet Assets/Liabilities and `tbl` continues with Liabilities/Equity."""
+    if _detect_statement_family(prev) != "BS":
+        return False
+    prev_tail = " ".join(
+        _clean_acct_label(r[0].get("raw_text") or "")
+        for r in (prev.get("rows") or [])[-3:]
+        if isinstance(r, list) and r and isinstance(r[0], dict)
+    )
+    cur_head = " ".join(
+        _clean_acct_label(r[0].get("raw_text") or "")
+        for r in (tbl.get("rows") or [])[:2]
+        if isinstance(r, list) and r and isinstance(r[0], dict)
+    )
+    cur_compact = re.sub(r"\s+", "", cur_head)
+    return (
+        not _ends_with_terminal_statement_row(prev.get("rows") or [])
+        and (
+            bool(re.search(r"(?:nợ\s+phải\s+trả|vốn\s+chủ\s+sở\s+hữu|tài\s+sản\s+dài\s+hạn)", cur_head))
+            or any(k in cur_compact for k in ("tàisảndàihạn", "nợphảitrả", "vốnchủsởhữu"))
+        )
+        and ("tổng cộng nguồn vốn" not in prev_tail)
+    )
+
+
 def stitch_cross_page_tables(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Step 2 Cross-Page Table Stitcher: merges consecutive tables, strips repeated header/carryover rows."""
+    """Step 2 Cross-Page Table Stitcher: merges consecutive tables while blocking cross-statement over-stitching."""
     if not tables:
         return []
     stitched: list[dict[str, Any]] = [dict(tables[0])]
     for tbl in tables[1:]:
         prev = stitched[-1]
-        consecutive = tbl["virtual_seq"] == prev["virtual_seq"] + 1
+        seq_delta = int(tbl["virtual_seq"]) - int(prev["virtual_seq"])
         same_slot = tbl["sub_doc_slot"] == prev["sub_doc_slot"]
+        is_bs_cont = _is_balance_sheet_continuation(prev, tbl)
+        consecutive = (seq_delta == 1) or (seq_delta == 0 and is_bs_cont)
         col_diff = abs(len(tbl["headers"]) - len(prev["headers"])) <= 1
-        h_prev = {h.lower() for h in prev["headers"] if not re.match(r"^col_\d+$", h.strip(), re.IGNORECASE)}
-        h_cur = {h.lower() for h in tbl["headers"] if not re.match(r"^col_\d+$", h.strip(), re.IGNORECASE)}
+        h_prev = {
+            h.lower() for h in prev["headers"] if not re.match(r"^col_\d+$", h.strip(), re.IGNORECASE)
+        }
+        h_cur = {
+            h.lower() for h in tbl["headers"] if not re.match(r"^col_\d+$", h.strip(), re.IGNORECASE)
+        }
         # Do not stitch unrelated Note tables purely because both fell back to generic Col_1/Col_2 headers
         sig_jaccard = (
             len(h_prev & h_cur) / max(1, len(h_prev | h_cur))
@@ -1172,7 +1445,26 @@ def stitch_cross_page_tables(tables: list[dict[str, Any]]) -> list[dict[str, Any
         ctx_low = (tbl.get("context_header") or "").lower()
         is_cont = ("tiếp theo" in ctx_low) or ("continued" in ctx_low)
 
-        if consecutive and same_slot and col_diff and (is_cont or sig_jaccard >= 0.80):
+        # Statement-boundary guard: NEVER over-stitch B02 (KQKD) with B03 (LCTT) or past terminal rows!
+        prev_fam = _detect_statement_family(prev)
+        cur_fam = _detect_statement_family(tbl)
+        cross_statement = bool(prev_fam and cur_fam and prev_fam != cur_fam)
+        prev_closed = _ends_with_terminal_statement_row(prev.get("rows") or [])
+        cur_opens_new = len(prev.get("rows") or []) >= 4 and _starts_new_statement_body(tbl.get("rows") or [])
+        # When column counts differ without explicit "(tiếp theo)", avoid shifting mismatched statements
+        safe_cols = (len(tbl["headers"]) == len(prev["headers"])) or is_cont or is_bs_cont
+
+        can_stitch = (
+            consecutive
+            and same_slot
+            and col_diff
+            and safe_cols
+            and not cross_statement
+            and not prev_closed
+            and not cur_opens_new
+            and (is_cont or sig_jaccard >= 0.80 or (is_bs_cont and sig_jaccard >= 0.50))
+        )
+        if can_stitch:
             target_cols = len(prev["headers"])
             cont_rows = [
                 _align_row_width(r, target_cols)
@@ -1194,6 +1486,219 @@ def compute_table_hash(rows: list[list[dict[str, Any]]]) -> str:
     return hashlib.sha256(
         json.dumps(rows, ensure_ascii=False, sort_keys=True).encode("utf-8")
     ).hexdigest()
+
+
+def _cell_raw_and_num(row: Any, col_idx: int) -> tuple[str, float | None]:
+    """Read `(raw_text, numeric_value)` uniformly from raw matrix rows or hydrated dict rows."""
+    if isinstance(row, dict) and "values" in row:
+        if col_idx == 0:
+            return str(row.get("label") or ""), None
+        vals = row.get("values") or []
+        v_idx = col_idx - 1
+        if 0 <= v_idx < len(vals):
+            v = vals[v_idx]
+            if v is None:
+                return "", None
+            return str(v), float(v) if isinstance(v, (int, float)) else None
+        return "", None
+    if isinstance(row, list) and 0 <= col_idx < len(row):
+        cell = row[col_idx]
+        if isinstance(cell, dict):
+            return str(cell.get("raw_text") or ""), cell.get("numeric_value")
+        return str(cell or ""), None
+    return "", None
+
+
+_COL_CODE_HDR_RE = re.compile(r"(?:^|\b)(?:mã\s*số|ma\s*so|code|stt)(?:\b|$)", re.IGNORECASE)
+_COL_NOTE_HDR_RE = re.compile(
+    r"(?:thuyết\s*minh|thuyet\s*minh|ghi\s*chú|ghi\s*chu|\bnote(?:s)?\b|\btm\b)",
+    re.IGNORECASE,
+)
+_COL_RATIO_HDR_RE = re.compile(
+    r"(?:%|tỷ\s*lệ|tỉ\s*lệ|tỷ\s*trọng|tỉ\s*trọng|tăng\s*trưởng|thay\s*đổi|biến\s*động|"
+    r"biên|margin|ratio|change|yoy|qoq|cagr|roe|roa|nim|cir|car|npl|ldr|casa)",
+    re.IGNORECASE,
+)
+_COL_COUNT_HDR_RE = re.compile(
+    r"(?:số\s*lượng|khối\s*lượng|nhân\s*sự|cổ\s*phiếu|cổ\s*đông|số\s*tàu|cửa\s*hàng|"
+    r"chi\s*nhánh|volume|count|quantity|shares)",
+    re.IGNORECASE,
+)
+_COL_PERIOD_HDR_RE = re.compile(
+    r"(?:20\d\d|19\d\d|q[1-4]\b|quý\s*[1-4ivx]|năm\s*(?:nay|trước|\d{4})|kỳ\s*(?:này|trước)|"
+    r"cuối\s*(?:năm|kỳ)|đầu\s*(?:năm|kỳ)|31[./\-]12|30[./\-]06|30[./\-]09|31[./\-]03|01[./\-]01|"
+    r"kế\s*hoạch|thực\s*hiện|lũy\s*kế|fy\d{2}|ytd|6t\b|9t\b|12t\b|tổng\s*cộng|total)",
+    re.IGNORECASE,
+)
+_COL_COMPONENT_HDR_RE = re.compile(
+    r"(?:giá\s*gốc|dự\s*phòng|nguyên\s*giá|hao\s*mòn|khấu\s*hao|giá\s*trị\s*(?:hợp\s*lý|ghi\s*sổ|còn\s*lại|thuần)|"
+    r"tăng\s*trong\s*(?:năm|kỳ)|giảm\s*trong\s*(?:năm|kỳ)|phát\s*sinh|trong\s*hạn|quá\s*hạn|"
+    r"tài\s*sản\s*đảm\s*bảo|nhóm\s*[1-5]|cost|provision|allowance|depreciation|carrying|fair\s*value)",
+    re.IGNORECASE,
+)
+
+
+def classify_table_columns(
+    headers: list[str] | list[list[str]],
+    rows: list[Any],
+) -> tuple[list[str], list[int]]:
+    """Classify each column into semantic role & return `(column_roles, amount_col_indices)`.
+
+    - `column_roles` has length `len(flat_headers)` with roles in:
+      `label`, `code`, `note_ref`, `period_amount`, `component_amount`, `ratio_pct`, `count`, `other`.
+    - `amount_col_indices` are 0-based indices into `HydratedTable.rows[i]["values"]`
+      (i.e. `col_idx - 1` for monetary columns excluding `code`, `note_ref`, `ratio_pct`, `count`).
+    """
+    flat_headers: list[str]
+    if headers and isinstance(headers[0], list):
+        flat_headers = [str(h or "") for h in headers[0]]
+    else:
+        flat_headers = [str(h or "") for h in headers]
+    if not flat_headers:
+        return [], []
+
+    roles: list[str] = ["label"]
+    amount_indices: list[int] = []
+    n_rows = len(rows)
+
+    for c_idx in range(1, len(flat_headers)):
+        hdr = flat_headers[c_idx].strip()
+        non_empty_raw: list[str] = []
+        numeric_vals: list[float] = []
+        for r in rows:
+            raw_t, num_v = _cell_raw_and_num(r, c_idx)
+            s = raw_t.strip()
+            if s and s not in ("-", "–", "—"):
+                non_empty_raw.append(s)
+            if num_v is not None:
+                numeric_vals.append(float(num_v))
+
+        role: str
+        if _COL_CODE_HDR_RE.search(hdr):
+            role = "code"
+        elif _COL_NOTE_HDR_RE.search(hdr):
+            role = "note_ref"
+        elif _COL_RATIO_HDR_RE.search(hdr) or (
+            non_empty_raw and (sum(1 for s in non_empty_raw if s.endswith("%")) / len(non_empty_raw)) >= 0.5
+        ):
+            role = "ratio_pct"
+        elif _COL_COUNT_HDR_RE.search(hdr):
+            role = "count"
+        else:
+            # Value-based detection for unlabeled/misaligned Mã số & Thuyết minh columns
+            is_code_vals = False
+            is_note_vals = False
+            if non_empty_raw:
+                acct_codes = sum(
+                    1
+                    for s in non_empty_raw
+                    if re.fullmatch(r"\d{2,3}", s) or re.fullmatch(r"\(\d{1,2}\s*[+\-–]\s*\d{1,2}\)", s)
+                )
+                note_refs = sum(
+                    1
+                    for s in non_empty_raw
+                    if re.fullmatch(
+                        r"(?:\d{1,2}\.\d{1,2}[a-z]?|\d{1,2}[a-z]|[IVX]{1,4}(?:\.\d{1,2})?)",
+                        s,
+                        re.IGNORECASE,
+                    )
+                )
+                max_abs = max((abs(v) for v in numeric_vals), default=0.0)
+                if (acct_codes / len(non_empty_raw)) >= 0.70 and max_abs < 1000.0 and len(flat_headers) >= 3:
+                    is_code_vals = True
+                elif (note_refs / len(non_empty_raw)) >= 0.65 and len(flat_headers) >= 3 or (
+                    len(flat_headers) >= 4
+                    and c_idx <= 2
+                    and n_rows >= 4
+                    and (len(non_empty_raw) / max(1, n_rows)) < 0.40
+                    and max_abs < 100.0
+                    and not _COL_PERIOD_HDR_RE.search(hdr)
+                ):
+                    is_note_vals = True
+
+            if is_code_vals:
+                role = "code"
+            elif is_note_vals:
+                role = "note_ref"
+            elif _COL_COMPONENT_HDR_RE.search(hdr):
+                role = "component_amount"
+            elif _COL_PERIOD_HDR_RE.search(hdr):
+                role = "period_amount"
+            elif numeric_vals:
+                role = "other"
+            else:
+                role = "other"
+
+        roles.append(role)
+        if role in ("period_amount", "component_amount", "other") and (numeric_vals or role == "period_amount"):
+            amount_indices.append(c_idx - 1)
+
+    # Fallback: if no monetary column detected on a simple 2-col table, keep non-code/non-note numeric cols
+    if not amount_indices and len(flat_headers) >= 2:
+        amount_indices = [
+            c_idx - 1
+            for c_idx in range(1, len(flat_headers))
+            if roles[c_idx] not in ("code", "note_ref")
+        ]
+    return roles, amount_indices
+
+
+def build_grouped_table_search_cards(
+    table_rec: dict[str, Any],
+    *,
+    rows_per_card: int = 6,
+) -> list[dict[str, Any]]:
+    """Representation B (Q3=A): Grouped Row-Linearized Search Cards (e.g. 6 rows/card) for indexing."""
+    headers = table_rec["headers"]
+    flat_headers = headers[0] if headers and isinstance(headers[0], list) else headers
+    fq = int(table_rec.get("fiscal_quarter", 0) or 0)
+    period_lbl = f"FY{table_rec['fiscal_year']}" if fq == 0 else f"Q{fq}/{table_rec['fiscal_year']}"
+    page_from = int(table_rec.get("page_from") or 1)
+    page_to = int(table_rec.get("page_to") or page_from)
+    page_str = f"{page_from}-{page_to}" if page_to != page_from else str(page_from)
+    header_line = (
+        f"[Bảng: {table_rec['table_title']} | Mã: {table_rec['project_id']} | "
+        f"Kỳ: {period_lbl} | Trang: {page_str} | Đơn vị: {table_rec['unit_raw']}]"
+    )
+
+    row_lines: list[tuple[int, str]] = []
+    for r_idx, row in enumerate(table_rec.get("rows") or []):
+        label = str(row[0].get("raw_text") or "").strip() if isinstance(row, list) and row else ""
+        pairs: list[str] = []
+        for c_idx in range(1, len(flat_headers)):
+            if not isinstance(row, list) or c_idx >= len(row):
+                break
+            rv = str(row[c_idx].get("raw_text") or "").strip()
+            if rv:
+                pairs.append(f"{flat_headers[c_idx]}: {rv}")
+        if not pairs:
+            continue
+        row_lines.append((r_idx, f"Chỉ tiêu: {label} | " + " | ".join(pairs)))
+
+    if not row_lines:
+        return []
+
+    chunk_size = max(1, int(rows_per_card))
+    cards: list[dict[str, Any]] = []
+    for card_idx, start in enumerate(range(0, len(row_lines), chunk_size)):
+        group = row_lines[start : start + chunk_size]
+        card_text = header_line + "\n" + "\n".join(line for _, line in group)
+        cards.append(
+            {
+                "table_id": str(table_rec["table_id"]),
+                "card_idx": card_idx,
+                "row_from": group[0][0],
+                "row_to": group[-1][0],
+                "page_from": page_from,
+                "page_to": page_to,
+                "section_path": str(table_rec.get("section_path") or ""),
+                "sub_doc_slot": str(table_rec.get("sub_doc_slot") or ""),
+                "fiscal_year": int(table_rec.get("fiscal_year") or 0),
+                "fiscal_quarter": fq,
+                "card_text": card_text,
+            }
+        )
+    return cards
 
 
 def build_row_linearized_cards(table_rec: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1253,6 +1758,11 @@ def to_hydrated_table(table_rec: dict[str, Any]) -> dict[str, Any]:
             vals = [cell.get("numeric_value") for cell in row[1:]]
             hydrated_rows.append({"label": label, "values": vals})
 
+    col_roles = table_rec.get("column_roles")
+    amt_indices = table_rec.get("amount_col_indices")
+    if col_roles is None or amt_indices is None:
+        col_roles, amt_indices = classify_table_columns(headers_2d, raw_rows)
+
     return {
         "table_id": str(table_rec["table_id"]),
         "title": str(table_rec.get("title") or table_rec.get("table_title") or ""),
@@ -1266,6 +1776,8 @@ def to_hydrated_table(table_rec: dict[str, Any]) -> dict[str, Any]:
         "sanity_error_ratio": float(table_rec.get("sanity_error_ratio") or 0.0),
         "headers": headers_2d,
         "rows": hydrated_rows,
+        "column_roles": list(col_roles),
+        "amount_col_indices": list(amt_indices),
         "footnotes_text": str(table_rec.get("footnotes_text") or ""),
         "table_hash": str(table_rec.get("table_hash") or ""),
     }
@@ -1368,6 +1880,8 @@ class ExtractedTableRecord:
         valid_from: datetime,
         footnotes_text: str = "",
         table_id: str | None = None,
+        virtual_side: str = "FULL",
+        table_idx: int = 0,
     ) -> ExtractedTableRecord:
         gate = extracted.get("sanity_gate")
         if gate is None:
@@ -1376,7 +1890,8 @@ class ExtractedTableRecord:
         tid = table_id or str(
             uuid.uuid5(
                 uuid.NAMESPACE_DNS,
-                f"{project_id.upper()}:{fiscal_year}:Q{fiscal_quarter}:{sub_doc_slot}:{table_title}:{page_from}",
+                f"{project_id.upper()}:{document_version_id}:{fiscal_year}:Q{fiscal_quarter}:"
+                f"{sub_doc_slot}:{table_title}:{page_from}:{virtual_side}:{table_idx}",
             )
         )
         return cls(
@@ -1431,6 +1946,9 @@ class ExtractedTableRecord:
 
     def to_search_cards(self) -> list[dict[str, Any]]:
         return build_row_linearized_cards(self.to_dict())
+
+    def to_grouped_search_cards(self, *, rows_per_card: int = 6) -> list[dict[str, Any]]:
+        return build_grouped_table_search_cards(self.to_dict(), rows_per_card=rows_per_card)
 
 
 class TableRepositoryProtocol(Protocol):
@@ -1521,6 +2039,17 @@ class SqlTableRepository:
                 :sanity_error_ratio, :verification_status, :table_hash, :valid_from
             )
             ON CONFLICT (table_id) DO UPDATE SET
+                document_version_id = EXCLUDED.document_version_id,
+                sub_doc_slot = EXCLUDED.sub_doc_slot,
+                fiscal_year = EXCLUDED.fiscal_year,
+                fiscal_quarter = EXCLUDED.fiscal_quarter,
+                table_title = EXCLUDED.table_title,
+                section_path = EXCLUDED.section_path,
+                page_from = EXCLUDED.page_from,
+                page_to = EXCLUDED.page_to,
+                currency = EXCLUDED.currency,
+                unit_raw = EXCLUDED.unit_raw,
+                unit_multiplier = EXCLUDED.unit_multiplier,
                 headers_json = EXCLUDED.headers_json,
                 rows_json = EXCLUDED.rows_json,
                 footnotes_text = EXCLUDED.footnotes_text,
@@ -1722,6 +2251,34 @@ def _split_markdown_by_page_marker(markdown_content: str) -> dict[int, str]:
     return out
 
 
+def _build_page_section_paths(markdown_content: str, sub_doc_slot: str) -> dict[int, str]:
+    """Track active Markdown heading hierarchy (`#`/`##`/`###`) across `<!-- PAGE N -->` markers."""
+    page_md_map = _split_markdown_by_page_marker(markdown_content)
+    stack: list[tuple[int, str]] = []
+    out: dict[int, str] = {}
+    for pno in sorted(page_md_map):
+        body = page_md_map[pno]
+        for raw_ln in body.splitlines():
+            s = raw_ln.strip()
+            m = re.match(r"^(#{1,3})\s+(.+)$", s)
+            if not m:
+                continue
+            lvl = len(m.group(1))
+            title = normalize_ws(m.group(2))
+            if not title:
+                continue
+            while stack and stack[-1][0] >= lvl:
+                stack.pop()
+            stack.append((lvl, title))
+        if stack:
+            parts = [sub_doc_slot] + [t for _, t in stack]
+            path = " > ".join(parts)
+            out[pno] = path[:512]
+        else:
+            out[pno] = f"{sub_doc_slot} / P{pno}"
+    return out
+
+
 def extract_tables_from_document(
     *,
     pdf_bytes: bytes | None,
@@ -1734,20 +2291,26 @@ def extract_tables_from_document(
     markdown_content: str,
     valid_from: datetime,
     left_sidebar_x: float = 0.0,
-    max_pages: int = 80,
+    max_pages: int = 250,
 ) -> list[ExtractedTableRecord]:
     """End-to-end table extractor wiring Dual-Representation Engine into HOSE batch ingest.
 
-    1. Extracts MinerU HTML `<table>` blocks present in OCR'd Markdown (`build_matrix_from_html_table`).
-    2. For remaining numeric digital pages, extracts 2D matrices via `pdfplumber` +
-       `extract_table_with_lattice_fallback` (A3 virtual-page aware) and stitches cross-page
+    1. Extracts MinerU HTML `<table>` blocks present in OCR'd Markdown (`build_matrix_from_html_table`)
+       and stitches cross-page HTML continuations via `stitch_cross_page_tables`.
+    2. For remaining numeric digital pages, extracts ALL valid 2D matrices via `pdfplumber` +
+       `extract_tables_with_lattice_fallback` (A3 virtual-page aware) and stitches cross-page
        `(Tiếp theo)` tables via `stitch_cross_page_tables`.
     """
     records: list[ExtractedTableRecord] = []
     page_md_map = _split_markdown_by_page_marker(markdown_content)
+    page_sec_paths = _build_page_section_paths(markdown_content, sub_doc_slot)
+    doc_currency, doc_unit_mult, doc_unit_raw = detect_unit_and_currency(
+        markdown_content[:8000]
+    )
     html_handled_pages: set[int] = set()
 
-    # Path 1: MinerU HTML `<table>` blocks inside Markdown
+    # Path 1: MinerU HTML `<table>` blocks inside Markdown + cross-page HTML stitching
+    raw_html_tables: list[dict[str, Any]] = []
     for pno in sorted(page_numbers):
         body = page_md_map.get(pno, "")
         if not body or "<table" not in body.lower():
@@ -1768,9 +2331,50 @@ def extract_tables_from_document(
             )
             if len(rows) < 2 or num_cells < 4:
                 continue
+            extracted["virtual_seq"] = pno
+            extracted["sub_doc_slot"] = sub_doc_slot
+            extracted["page_from"] = pno
+            extracted["page_to"] = pno
+            extracted["side"] = "HTML"
+            extracted["ctx_before"] = ctx_before
+            extracted["section_path"] = page_sec_paths.get(pno, "")
+            extracted["raw_table_idx"] = tbl_idx
+            raw_html_tables.append(extracted)
+
+    if raw_html_tables:
+        stitched_html = stitch_cross_page_tables(raw_html_tables)
+        last_unit: tuple[str, float, str] | None = None
+        for idx, tbl in enumerate(stitched_html):
+            p_from = int(tbl.get("page_from") or 1)
+            p_to = int(tbl.get("page_to") or p_from)
+            if tbl.get("stitched_from_pages"):
+                tbl["sanity_gate"] = run_arithmetic_sanity_gate(tbl["headers"], tbl["rows"])
+            ctx_before = str(tbl.get("ctx_before") or page_md_map.get(p_from, ""))
+            if str(tbl.get("unit_raw") or "unspecified") == "unspecified":
+                p_cur, p_mult, p_raw = detect_unit_and_currency(page_md_map.get(p_from, ""))
+                if p_raw != "unspecified":
+                    tbl["currency"], tbl["unit_multiplier"], tbl["unit_raw"] = p_cur, p_mult, p_raw
+                elif last_unit is not None:
+                    tbl["currency"], tbl["unit_multiplier"], tbl["unit_raw"] = last_unit
+                elif doc_unit_raw != "unspecified":
+                    tbl["currency"], tbl["unit_multiplier"], tbl["unit_raw"] = (
+                        doc_currency,
+                        doc_unit_mult,
+                        doc_unit_raw,
+                    )
+            if str(tbl.get("unit_raw") or "unspecified") != "unspecified":
+                last_unit = (
+                    str(tbl.get("currency") or "VND"),
+                    float(tbl.get("unit_multiplier") or 1.0),
+                    str(tbl.get("unit_raw")),
+                )
             title = _infer_table_title(
                 ctx_before,
-                fallback=f"{sub_doc_slot} Table P{pno}#{tbl_idx + 1}",
+                fallback=f"{sub_doc_slot} Table P{p_from}#{idx + 1}",
+            )
+            sec_path = page_sec_paths.get(
+                p_from,
+                f"{sub_doc_slot} / P{p_from}" + (f"-P{p_to}" if p_to != p_from else ""),
             )
             records.append(
                 ExtractedTableRecord.from_extraction(
@@ -1780,11 +2384,13 @@ def extract_tables_from_document(
                     fiscal_year=fiscal_year,
                     fiscal_quarter=fiscal_quarter,
                     table_title=title,
-                    section_path=f"{sub_doc_slot} / P{pno}",
-                    page_from=pno,
-                    page_to=pno,
-                    extracted=extracted,
+                    section_path=sec_path,
+                    page_from=p_from,
+                    page_to=p_to,
+                    extracted=tbl,
                     valid_from=valid_from,
+                    virtual_side="HTML",
+                    table_idx=idx,
                 )
             )
 
@@ -1820,29 +2426,30 @@ def extract_tables_from_document(
                         virtual_seq += 1
                         try:
                             cropped = pg.crop(vp.bbox)
-                            extracted = extract_table_with_lattice_fallback(cropped)
+                            extracted_list = extract_tables_with_lattice_fallback(cropped)
                         except Exception:  # noqa: BLE001
                             continue
-                        rows = extracted.get("rows") or []
-                        num_cells = sum(
-                            1
-                            for r in rows
-                            for c in r[1:]
-                            if c.get("numeric_value") is not None
-                        )
-                        if len(rows) < 2 or num_cells < 4:
-                            continue
-                        extracted["virtual_seq"] = virtual_seq
-                        extracted["sub_doc_slot"] = sub_doc_slot
-                        extracted["page_from"] = pno
-                        extracted["page_to"] = pno
-                        extracted["side"] = vp.side
-                        raw_page_tables.append(extracted)
+                        for sub_idx, extracted in enumerate(extracted_list):
+                            rows = extracted.get("rows") or []
+                            num_cells = sum(
+                                1
+                                for r in rows
+                                for c in r[1:]
+                                if c.get("numeric_value") is not None
+                            )
+                            if len(rows) < 2 or num_cells < 4:
+                                continue
+                            extracted["virtual_seq"] = virtual_seq
+                            extracted["sub_doc_slot"] = sub_doc_slot
+                            extracted["page_from"] = pno
+                            extracted["page_to"] = pno
+                            extracted["side"] = vp.side
+                            extracted["section_path"] = page_sec_paths.get(pno, "")
+                            extracted["raw_table_idx"] = sub_idx
+                            raw_page_tables.append(extracted)
 
-            doc_currency, doc_unit_mult, doc_unit_raw = detect_unit_and_currency(
-                markdown_content[:8000]
-            )
             stitched = stitch_cross_page_tables(raw_page_tables)
+            last_unit_dig: tuple[str, float, str] | None = None
             for idx, tbl in enumerate(stitched):
                 p_from = int(tbl.get("page_from") or digital_candidates[0])
                 p_to = int(tbl.get("page_to") or p_from)
@@ -1854,16 +2461,28 @@ def extract_tables_from_document(
                     p_cur, p_mult, p_raw = detect_unit_and_currency(ctx_text)
                     if p_raw != "unspecified":
                         tbl["currency"], tbl["unit_multiplier"], tbl["unit_raw"] = p_cur, p_mult, p_raw
+                    elif last_unit_dig is not None:
+                        tbl["currency"], tbl["unit_multiplier"], tbl["unit_raw"] = last_unit_dig
                     elif doc_unit_raw != "unspecified":
                         tbl["currency"], tbl["unit_multiplier"], tbl["unit_raw"] = (
                             doc_currency,
                             doc_unit_mult,
                             doc_unit_raw,
                         )
+                if str(tbl.get("unit_raw") or "unspecified") != "unspecified":
+                    last_unit_dig = (
+                        str(tbl.get("currency") or "VND"),
+                        float(tbl.get("unit_multiplier") or 1.0),
+                        str(tbl.get("unit_raw")),
+                    )
                 title = _infer_table_title(
                     ctx_text,
                     fallback=f"{sub_doc_slot} Table P{p_from}#{idx + 1}",
                     prefer_top=True,
+                )
+                sec_path = page_sec_paths.get(
+                    p_from,
+                    f"{sub_doc_slot} / P{p_from}" + (f"-P{p_to}" if p_to != p_from else ""),
                 )
                 records.append(
                     ExtractedTableRecord.from_extraction(
@@ -1873,11 +2492,13 @@ def extract_tables_from_document(
                         fiscal_year=fiscal_year,
                         fiscal_quarter=fiscal_quarter,
                         table_title=title,
-                        section_path=f"{sub_doc_slot} / P{p_from}" + (f"-P{p_to}" if p_to != p_from else ""),
+                        section_path=sec_path,
                         page_from=p_from,
                         page_to=p_to,
                         extracted=tbl,
                         valid_from=valid_from,
+                        virtual_side=str(tbl.get("side") or "FULL"),
+                        table_idx=idx,
                     )
                 )
 

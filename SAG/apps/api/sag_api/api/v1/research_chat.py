@@ -207,8 +207,18 @@ async def get_hydrated_table(
     principal: VerifiedPrincipal = Depends(require_research_bff_principal),
     table_store: TableStoreProtocol = Depends(get_table_store),
 ) -> HydratedTableResponse:
-    """Return a single full hydrated 2D table from `sag_extracted_tables` with PIT & ACL check."""
-    tbl = await table_store.get_table_by_id(table_id, as_of_date=as_of_date)
+    """Return a single full hydrated 2D table from `sag_extracted_tables` with PIT, tenant & ACL check."""
+    import inspect
+
+    sig = inspect.signature(table_store.get_table_by_id)
+    if "tenant_id" in sig.parameters and principal.tenant_id:
+        tbl = await table_store.get_table_by_id(
+            table_id,
+            as_of_date=as_of_date,
+            tenant_id=principal.tenant_id,
+        )
+    else:
+        tbl = await table_store.get_table_by_id(table_id, as_of_date=as_of_date)
     if tbl is None:
         raise NotFoundError(f"Hydrated table '{table_id}' not found")
     _authorize_ticker(principal, str(tbl.get("project_id") or ""))
@@ -286,20 +296,23 @@ async def ingest_pilot_sources(
 @router.post("/ingest-batch", response_model=BatchIngestResponse)
 async def ingest_research_batch(
     body: BatchIngestRequest,
+    request: Request,
     principal: VerifiedPrincipal = Depends(require_research_bff_principal),
+    session: AsyncSession = Depends(get_session),
 ) -> BatchIngestResponse:
     """Run tier-aware HOSE Stock Research batch ingest (`pilot_8 | a5_36 | a4_81 | a3_buffer_139 | custom`)."""
     from sag_api.research.batch_ingest import (
+        PILOT_8_TICKERS,
         AsyncPGCoreDBBatchReader,
         resolve_default_core_database_url,
         run_research_batch_ingest,
     )
+    from sag_api.research.input_builder import SubDocumentBundle
+    from sag_api.research.table_engine import SqlTableRepository
+    from sag_api.services.document_service import handle_document_upload
 
     if body.tier == "custom" and not body.tickers:
         raise ValidationError("tier='custom' requires a non-empty tickers list")
-
-    for raw_t in body.tickers:
-        _authorize_ticker(principal, raw_t)
 
     core_reader = None
     core_url = resolve_default_core_database_url()
@@ -310,23 +323,103 @@ async def ingest_research_batch(
             "SAG_CORE_DATABASE_URL is not configured for Core DB tier resolution"
         )
 
+    # Auth-Before-Action (N8b): resolve & authorize ALL target tickers BEFORE any ingest runs
+    cutoff = body.as_of_date or date.today()
+    if body.tier == "custom":
+        pre_resolved = sorted({t.strip().upper() for t in body.tickers if t and t.strip()})
+    elif body.tier == "pilot_8":
+        pre_resolved = list(PILOT_8_TICKERS)
+    else:
+        assert core_reader is not None
+        pre_resolved = await core_reader.resolve_tickers_for_tier(body.tier, as_of_date=cutoff)
+
+    for sym in pre_resolved:
+        _authorize_ticker(principal, sym)
+
+    subdoc_uploader = None
+    table_repo = None
+    if not body.dry_run:
+        job_queue = getattr(request.app.state, "job_queue", None)
+
+        async def _internal_upload(bundle: SubDocumentBundle) -> dict[str, Any]:
+            idem_key = (
+                f"{bundle.project_id}-{bundle.fiscal_year}Q{bundle.fiscal_quarter}-"
+                f"{bundle.sub_doc_slot}-{bundle.content_hash[:12]}"
+            )
+            logical_source_id = (
+                f"hose:{bundle.project_id}:{bundle.fiscal_year}Q{bundle.fiscal_quarter}:{bundle.sub_doc_slot}"
+            )
+            filename = (
+                f"{bundle.project_id}_{bundle.fiscal_year}Q{bundle.fiscal_quarter}_{bundle.sub_doc_slot}.md"
+            )
+            res = await handle_document_upload(
+                session,
+                tenant_id=principal.tenant_id or principal.organization_id,
+                project_id=bundle.project_id,
+                owner_id=principal.subject,
+                security_partition_id=bundle.project_id,
+                client_token=idem_key,
+                file_bytes=bundle.markdown_content.encode("utf-8"),
+                original_filename=filename,
+                content_type="text/markdown",
+                logical_source_id=logical_source_id,
+                source_published_at=bundle.valid_from,
+                fiscal_year=bundle.fiscal_year,
+                fiscal_quarter=bundle.fiscal_quarter,
+                doc_type=bundle.doc_type,
+                sub_doc_slot=bundle.sub_doc_slot,
+                job_queue=job_queue,
+            )
+            return res.model_dump()
+
+        subdoc_uploader = _internal_upload
+        table_repo = SqlTableRepository(session)
+        engine_manager = getattr(request.app.state, "engine_manager", None)
+
+        async def _index_table_cards(
+            bundle: SubDocumentBundle,
+            doc_ver_id: str,
+            extracted_tables: list[Any],
+        ) -> int:
+            from sag_api.services.search_index_service import index_table_search_cards_for_version
+
+            q_client = getattr(engine_manager, "qdrant_client", None) if engine_manager else None
+            embedder = getattr(engine_manager, "embedder", None) if engine_manager else None
+            return await index_table_search_cards_for_version(
+                session,
+                document_version_id=doc_ver_id,
+                project_id=bundle.project_id,
+                table_records=extracted_tables,
+                security_partition_id=bundle.project_id,
+                tenant_id=principal.tenant_id or principal.organization_id,
+                qdrant_client=q_client,
+                embedder=embedder,
+            )
+
+        table_card_indexer = _index_table_cards
+    else:
+        table_card_indexer = None
+
     summary = await run_research_batch_ingest(
-        tier=body.tier,
-        as_of_date=body.as_of_date,
-        custom_tickers=body.tickers,
+        tier="custom" if body.tier != "pilot_8" else "pilot_8",
+        as_of_date=cutoff,
+        custom_tickers=pre_resolved,
         years_back=body.years_back,
         dry_run=body.dry_run,
         enable_llm_toc=body.enable_llm_toc,
         refresh_kg=body.refresh_kg,
+        auto_mineru_ocr=(not body.dry_run and settings.mineru_configured),
         source_paths=body.source_paths,
         core_reader=core_reader,
+        subdoc_uploader=subdoc_uploader,
+        table_repo=table_repo,
+        table_card_indexer=table_card_indexer,
     )
-
-    for resolved_sym in summary.resolved_tickers:
-        _authorize_ticker(principal, resolved_sym)
+    if not body.dry_run and table_repo is not None:
+        await session.commit()
 
     return BatchIngestResponse(
-        tier=summary.tier,
+        tier=body.tier,
         as_of_date=summary.as_of_date,
         dry_run=summary.dry_run,
         resolved_tickers=summary.resolved_tickers,

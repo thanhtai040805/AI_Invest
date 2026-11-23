@@ -22,23 +22,7 @@ from typing import Any
 
 import pandas as pd
 
-_VN_VOWELS_ALL = (
-    "aàáảãạăằắẳẵặâầấẩẫậ"
-    "eèéẻẽẹêềếểễệ"
-    "iìíỉĩị"
-    "oòóỏõọôồốổỗộơờớởỡợ"
-    "uùúủũụưừứửữự"
-    "yỳýỷỹỵ"
-    "AÀÁẢÃẠĂẰẮẲẴẶÂẦẤẨẪẬ"
-    "EÈÉẺẼẸÊỀẾỂỄỆ"
-    "IÌÍỈĨỊ"
-    "OÒÓỎÕỌÔỒỐỔỖỘƠỜỚỞỠỢ"
-    "UÙÚỦŨỤƯỪỨỬỮỰ"
-    "YỲÝỶỸỴ"
-)
-_CTG_CORRUPT_D_RE = re.compile(
-    rf"(?:(?<=^)|(?<=[\s(\[\-–/]))[‚È¢½€](?=[{_VN_VOWELS_ALL}])"
-)
+from sag_api.research.input_inspector import normalize_ctg_font_quirks
 
 _CORP_PREFIX_NON_BANK_RE = re.compile(
     r"^(?:tổng\s+công\s+ty\s+cổ\s+phần|tổng\s+ctcp|tổng\s+công\s+ty|công\s+ty\s+cổ\s+phần|"
@@ -155,10 +139,8 @@ class DocumentPageInput:
 
 
 def repair_pdf_font_quirks(text: str) -> str:
-    """Repair common Vietnamese PDF encoding artifacts (e.g., corrupted đ glyphs)."""
-    s = unicodedata.normalize("NFC", text or "")
-    s = re.sub(r"\(cid:\d+\)", "đ", s)
-    return _CTG_CORRUPT_D_RE.sub("đ", s)
+    """Repair common Vietnamese PDF encoding artifacts (delegating to canonical `normalize_ctg_font_quirks`)."""
+    return normalize_ctg_font_quirks(text)
 
 
 def normalize_ws(text: str) -> str:

@@ -280,10 +280,21 @@ def _unique_values(values: Iterable[str], *, limit: int = 8) -> tuple[str, ...]:
 _CLAUSE_SPLIT_RE = re.compile(
     r"(?:,\s+and\s+(?=(?:what|which|who|where|why|how|when|is|are|was|were|did|does|do|should|can)\b)"
     r"|\s+and\s+(?=(?:what|which|who|where|why|how\s+(?:do|does|did|should|can|could|to|will|would|is|are|was|were))\b)"
-    r"|,\s*và\s+(?=(?:ai|cái\s+gì|gì|ở\s+đâu|đâu|khi\s+nào|như\s+thế\s+nào|bao\s+nhiêu|nào|có\s+phải|là)\b)"
+    r"|,\s*và\s+(?=(?:ai|cái\s+gì|gì|ở\s+đâu|đâu|khi\s+nào|như\s+thế\s+nào|bao\s+nhiêu|nào|có\s+phải|là|"
+    r"tại\s+sao|vì\s+sao|tác\s+động|ảnh\s+hưởng|biến\s+động|so\s+sánh|kế\s+hoạch|rủi\s+ro|triển\s+vọng|"
+    r"cơ\s+cấu|dòng\s+tiền|biên\s+lợi\s+nhuận|doanh\s+thu|lợi\s+nhuận|nợ\s+vay|cổ\s+tức)\b)"
+    r"|\s+(?:đồng\s+thời|ngoài\s+ra|bên\s+cạnh\s+đó|kết\s+hợp\s+với|cũng\s+như)\s+"
+    r"|,\s*(?:từ\s+đó|qua\s+đó|dẫn\s+đến|tác\s+động\s+(?:đến|tới)|ảnh\s+hưởng\s+(?:đến|tới))\s+"
+    r"|\s+và\s+(?=(?:như\s+thế\s+nào|tác\s+động\s+(?:đến|tới)|ảnh\s+hưởng\s+(?:đến|tới)|"
+    r"so\s+(?:với|sánh)|thuyết\s+minh\s+(?:số\s*)?\d+|có\s+(?:khớp|trùng|chênh\s+lệch|thay\s+đổi))\b)"
     r"|[?？]\s+(?=\S)"
     r"|[;；]\s*)",
-    re.IGNORECASE,
+    re.IGNORECASE | re.UNICODE,
+)
+_VN_COMPARATIVE_BRIDGE_RE = re.compile(
+    r"\b(?:so\s+sánh|so\s+với|đối\s+chiếu(?:\s+với)?|tác\s+động\s+(?:đến|tới)|ảnh\s+hưởng\s+(?:đến|tới)|"
+    r"đồng\s+thời|ngoài\s+ra|kết\s+hợp\s+với|cũng\s+như|chênh\s+lệch\s+(?:giữa|so\s+với))\b",
+    re.IGNORECASE | re.UNICODE,
 )
 _SALIENT_PROPER_TERM_RE = re.compile(
     r"\b(?:[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]*|[A-Z]{2,}[0-9]*|[A-Za-z]+\d+[A-Za-z0-9]*)\b"
@@ -297,9 +308,14 @@ def decompose_query_clauses(query: str) -> tuple[str, ...]:
         return ()
     parts = [part.strip(" ,;?？；") for part in _CLAUSE_SPLIT_RE.split(text) if part and part.strip(" ,;?？；")]
     if len(parts) <= 1:
-        return (text,)
+        # Handle "X so với Y" / "đối chiếu X với Y" compound analytical Vietnamese queries
+        comp_split = re.split(r"\s+(?:so\s+với|đối\s+chiếu\s+với)\s+", text, maxsplit=1, flags=re.IGNORECASE)
+        if len(comp_split) == 2 and len(comp_split[0].strip()) >= 10 and len(comp_split[1].strip()) >= 10:
+            parts = [p.strip(" ,;?？；") for p in comp_split]
+        else:
+            return (text,)
     valid = [p for p in parts if len(p) >= 8 or (_ANY_CONTINUOUS_SCRIPT_RE.search(p) and len(p) >= 4)]
-    return tuple(valid) if len(valid) >= 2 else (text,)
+    return tuple(valid[:4]) if len(valid) >= 2 else (text,)
 
 
 def extract_salient_query_terms(query: str) -> frozenset[str]:
@@ -385,6 +401,7 @@ def extract_query_features(query: str) -> QueryFeatures:
             bool(temporal_cues or relation_cues)
             and bool(re.search(r"\b(?:what|which)\b[^?]*,\s+[^,?]+,\s+and\s+", text, re.IGNORECASE))
         )
+        or bool(_VN_COMPARATIVE_BRIDGE_RE.search(text))
         or any(
             cue in lowered
             for cue in (

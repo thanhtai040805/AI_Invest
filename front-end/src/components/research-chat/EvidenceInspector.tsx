@@ -1,6 +1,6 @@
 "use client"
 
-import { Activity, Calculator, FileText, Network, ShieldCheck } from "lucide-react"
+import { Activity, Calculator, FileText, Network, ShieldCheck, X } from "lucide-react"
 import { Panel } from "@/components/ui"
 import type { EvalSummaryResponse, ResearchChatMetadata } from "@/lib/api/researchChat"
 import { InspectorEvalTab } from "./InspectorEvalTab"
@@ -18,6 +18,8 @@ interface EvidenceInspectorProps {
   focus: InspectorFocus | null
   evalSummary: EvalSummaryResponse | null
   onRefreshSummary: () => Promise<void> | void
+  onClose?: () => void
+  className?: string
 }
 
 export function EvidenceInspector({
@@ -28,6 +30,8 @@ export function EvidenceInspector({
   focus,
   evalSummary,
   onRefreshSummary,
+  onClose,
+  className,
 }: EvidenceInspectorProps) {
   const citations = Array.isArray(metadata?.citations) ? metadata.citations : []
   const tables = Array.isArray(metadata?.hydrated_tables) ? metadata.hydrated_tables : []
@@ -54,17 +58,32 @@ export function EvidenceInspector({
   ]
 
   return (
-    <Panel flush className="flex flex-col min-h-[680px] xl:h-[calc(100dvh-215px)] overflow-hidden">
+    <Panel
+      flush
+      className={`flex flex-col h-full overflow-hidden ${className ?? "min-h-[680px] xl:h-[calc(100dvh-160px)]"}`}
+    >
       {/* Header + 5 Tabs */}
       <div className="border-b border-line bg-surface px-4 pt-3 shrink-0">
         <div className="flex items-center justify-between gap-2 mb-2.5">
-          <h2 className="text-[14px] font-semibold text-ink">
-            Evidence & Audit Inspector
-          </h2>
-          {metadata?.primary_ticker && (
-            <span className="font-mono text-[11px] text-muted">
-              {metadata.primary_ticker} · {metadata.as_of_date || "PIT"}
-            </span>
+          <div className="flex items-center gap-2 min-w-0">
+            <h2 className="text-[14px] font-semibold text-ink truncate">
+              Evidence & Audit Inspector
+            </h2>
+            {metadata?.primary_ticker && (
+              <span className="font-mono text-[11px] text-muted shrink-0">
+                {metadata.primary_ticker} · {metadata.as_of_date || "PIT"}
+              </span>
+            )}
+          </div>
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Đóng ngăn bằng chứng"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-[6px] border border-line bg-paper text-secondary hover:text-ink hover:bg-soft transition-colors shrink-0"
+            >
+              <X className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
           )}
         </div>
 

@@ -28,6 +28,7 @@ from sag_api.research.input_builder import (
     TocRouterProtocol,
     build_research_sub_documents,
 )
+from sag_api.research.input_inspector import unwrap_pdf_payload
 from sag_api.research.input_selector import (
     BytesFetcherProtocol,
     FinancialAnomalyContext,
@@ -38,6 +39,7 @@ from sag_api.research.input_selector import (
 )
 from sag_api.research.ocr_adapter import MinerUOcrAdapter
 from sag_api.research.table_engine import (
+    ExtractedTableRecord,
     TableRepositoryProtocol,
     extract_tables_from_document,
 )
@@ -80,6 +82,7 @@ class CoreDBBatchReaderProtocol(Protocol):
 
 
 SubDocumentUploader = Callable[[SubDocumentBundle], Awaitable[dict[str, Any]]]
+TableCardIndexer = Callable[[SubDocumentBundle, str, list[ExtractedTableRecord]], Awaitable[int]]
 KGRefreshHook = Callable[[list[str], date], Awaitable[dict[str, Any]]]
 
 
@@ -403,6 +406,7 @@ async def run_research_batch_ingest(
     toc_router: TocRouterProtocol | None = None,
     subdoc_uploader: SubDocumentUploader | None = None,
     table_repo: TableRepositoryProtocol | None = None,
+    table_card_indexer: TableCardIndexer | None = None,
     kg_refresher: KGRefreshHook | None = None,
     max_docs_per_ticker: int = 6,
 ) -> BatchIngestSummary:
@@ -520,19 +524,42 @@ async def run_research_batch_ingest(
                 if build_res.doc_type == "BCTN" and (audit.bctn_core_pages + audit.dropped_pages) > 0:
                     noise_red_samples.append(audit.noise_reduction_pct)
 
+                unwrapped_pdf_bytes = pdf_bytes
+                try:
+                    unwrapped_pdf_bytes, _, _, _ = unwrap_pdf_payload(pdf_bytes)
+                except Exception:  # noqa: BLE001
+                    unwrapped_pdf_bytes = pdf_bytes
+
                 for bundle in build_res.sub_documents:
                     seen_slots.add(bundle.sub_doc_slot)
                     doc_ver_id = bundle.content_hash[:24]
                     if not dry_run and subdoc_uploader is not None:
                         upload_resp = await subdoc_uploader(bundle)
-                        if isinstance(upload_resp, dict) and upload_resp.get("document_version_id"):
-                            doc_ver_id = str(upload_resp["document_version_id"])
+                        resolved_ver = (
+                            upload_resp.get("version_id") or upload_resp.get("document_version_id")
+                            if isinstance(upload_resp, dict)
+                            else None
+                        )
+                        if not resolved_ver:
+                            if table_repo is not None or table_card_indexer is not None:
+                                raise InputBuildError(
+                                    f"Sub-document upload for {bundle.project_id}/{bundle.sub_doc_slot} "
+                                    "did not return version_id (fail-closed to prevent FK violation)."
+                                )
+                            doc_ver_id = f"live:{bundle.content_hash[:16]}"
+                        else:
+                            doc_ver_id = str(resolved_ver)
                         report.uploaded_sub_docs += 1
 
                     # Dual-Representation Financial Table Engine wired directly into batch ingest
-                    if extract_tables and bundle.sub_doc_slot in ("BCTC_AUDITED", "QUARTER_NOTES"):
+                    if extract_tables and bundle.sub_doc_slot in (
+                        "BCTC_AUDITED",
+                        "QUARTER_NOTES",
+                        "BCTN_CORE",
+                        "AGM_TARGETS",
+                    ):
                         extracted_tables = extract_tables_from_document(
-                            pdf_bytes=pdf_bytes,
+                            pdf_bytes=unwrapped_pdf_bytes,
                             project_id=bundle.project_id,
                             document_version_id=doc_ver_id,
                             sub_doc_slot=bundle.sub_doc_slot,
@@ -551,6 +578,8 @@ async def run_research_batch_ingest(
                                 report.tables_unverified += 1
                             if not dry_run and table_repo is not None:
                                 await table_repo.upsert_table(tbl_rec)
+                        if not dry_run and table_card_indexer is not None and extracted_tables:
+                            await table_card_indexer(bundle, doc_ver_id, extracted_tables)
 
             report.sub_doc_slots = sorted(seen_slots)
             report.missing_core_slots = sorted(seen_missing - seen_slots)

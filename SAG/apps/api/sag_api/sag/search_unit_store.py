@@ -164,7 +164,16 @@ def build_search_filter(
         ]
     }
     if as_of_ts is not None:
-        filter_body["must"].append({"key": "valid_from_ts", "range": {"lte": int(as_of_ts)}})
+        ts_int = int(as_of_ts)
+        filter_body["must"].append({"key": "valid_from_ts", "range": {"lte": ts_int}})
+        filter_body["must"].append(
+            {
+                "should": [
+                    {"is_empty": {"key": "valid_to_ts"}},
+                    {"key": "valid_to_ts", "range": {"gt": ts_int}},
+                ]
+            }
+        )
     if sub_doc_slots:
         slots = sorted({s.strip() for s in sub_doc_slots if isinstance(s, str) and s.strip()})
         if slots:

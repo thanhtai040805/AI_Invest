@@ -26,7 +26,7 @@ from typing import Any
 from weakref import WeakKeyDictionary
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.core.config import settings
@@ -632,14 +632,21 @@ def build_search_units_from_blocks(
         if len(lines) > 1:
             table_header_lines: list[str] = []
             body_start = 0
-            if block.block_type == "table" or (
-                lines[0].strip().startswith("|") and lines[0].strip().endswith("|")
-            ):
+            is_pipe_table = lines[0].strip().startswith("|") and lines[0].strip().endswith("|")
+            if is_pipe_table:
                 table_header_lines = [lines[0]]
                 body_start = 1
                 if len(lines) > 1 and set(lines[1].strip()) <= {"|", "-", ":", " "}:
                     table_header_lines.append(lines[1])
                     body_start = 2
+            elif block.block_type == "table":
+                # Repeat up to 2 leading non-numeric header/unit lines for digital numeric tables
+                for h_idx in range(min(2, len(lines) - 1)):
+                    cand = lines[h_idx].strip()
+                    if not cand or len(re.findall(r"\d{1,3}(?:[.,]\d{3})+", cand)) >= 2:
+                        break
+                    table_header_lines.append(lines[h_idx])
+                    body_start = h_idx + 1
             header_tokens = sum(estimate_unicode_tokens(hl) for hl in table_header_lines)
             effective_budget = max(64, max_tokens_per_unit - header_tokens)
             sub_chunks: list[str] = []
@@ -754,6 +761,14 @@ def build_search_units_from_blocks(
                 _emit_oversized_block(block)
             else:
                 lead_headings.append(block)
+            continue
+
+        if block.block_type == "table_card":
+            _flush_section()
+            if block_tokens > max_tokens_per_unit:
+                _emit_oversized_block(block)
+            else:
+                _emit_group([block])
             continue
 
         if block_tokens > max_tokens_per_unit:
@@ -1082,7 +1097,7 @@ async def index_search_units_to_qdrant(
                 extra_block_texts: list[str] = []
                 seen_texts = set(contextual_texts)
                 for blk in blocks_by_id.values():
-                    if blk.block_type == "heading" or not (blk.normalized_text or "").strip():
+                    if blk.block_type in ("heading", "table_card") or not (blk.normalized_text or "").strip():
                         continue
                     bt = contextualize_block_text(blk.section_path, blk.normalized_text)
                     if bt and bt not in seen_texts and get_cached_text_embedding(bt) is None:
@@ -1126,6 +1141,15 @@ async def index_search_units_to_qdrant(
         s_anchor = raw_anchor.strip() if raw_anchor and raw_anchor.strip() else f"block-{unit.block_from_id[:8]}"
         if b_start and (not b_start.source_anchor or not b_start.source_anchor.strip()):
             b_start.source_anchor = s_anchor
+        unit_table_id: str | None = None
+        if b_start is not None:
+            sig = getattr(b_start, "dedup_signature_json", None)
+            if isinstance(sig, dict) and sig.get("table_id"):
+                unit_table_id = str(sig["table_id"])
+            elif s_anchor.startswith("table_card:"):
+                anchor_parts = s_anchor.split(":")
+                if len(anchor_parts) >= 2 and anchor_parts[1]:
+                    unit_table_id = anchor_parts[1]
         payload = build_qdrant_payload(
             unit,
             version=version,
@@ -1138,6 +1162,7 @@ async def index_search_units_to_qdrant(
             block_from_id=unit.block_from_id,
             block_to_id=unit.block_to_id,
             source_anchor=s_anchor,
+            table_id=unit_table_id,
         )
         sparse_vec = compute_sparse_bm25_vector(
             ctx_text,
@@ -1194,6 +1219,48 @@ async def delete_document_points_from_qdrant(
         raise RuntimeError(
             f"Failed to delete Qdrant points for versions {document_version_ids}: "
             f"HTTP {del_res.status_code} - {del_res.text}"
+        )
+    return len(document_version_ids)
+
+
+async def set_document_points_valid_to_in_qdrant(
+    qdrant_client: httpx.AsyncClient,
+    *,
+    project_id: str,
+    document_version_ids: Sequence[str],
+    valid_to_ts: int,
+    valid_to_iso: str | None = None,
+) -> int:
+    """Close `valid_to_ts` on superseded Qdrant points without deleting historical PIT vectors."""
+    if not document_version_ids:
+        return 0
+    collection_name = resolve_search_unit_collection_name(project_id)
+    payload_patch: dict[str, Any] = {"valid_to_ts": int(valid_to_ts)}
+    if valid_to_iso is not None:
+        payload_patch["valid_to"] = valid_to_iso
+        payload_patch["valid_to_iso"] = valid_to_iso
+    res = await qdrant_client.post(
+        f"/collections/{collection_name}/points/payload?wait=true",
+        json={
+            "payload": payload_patch,
+            "filter": {
+                "must": [
+                    {
+                        "key": "document_version_id",
+                        "match": {"any": [str(v_id) for v_id in document_version_ids]},
+                    },
+                    {
+                        "key": "project_id",
+                        "match": {"value": project_id},
+                    },
+                ]
+            },
+        },
+    )
+    if res.status_code >= 400 and res.status_code != 404:
+        raise RuntimeError(
+            f"Failed to set valid_to_ts on Qdrant points for versions {document_version_ids}: "
+            f"HTTP {res.status_code} - {res.text}"
         )
     return len(document_version_ids)
 
@@ -1541,14 +1608,19 @@ async def run_search_indexing_stage(
             and superseded_version_id
         ):
             try:
-                await delete_document_points_from_qdrant(
+                cutoff_dt = document_version.valid_from or datetime.now(UTC)
+                if cutoff_dt.tzinfo is None:
+                    cutoff_dt = cutoff_dt.replace(tzinfo=UTC)
+                await set_document_points_valid_to_in_qdrant(
                     qdrant_client,
                     project_id=project_id,
                     document_version_ids=[str(superseded_version_id)],
+                    valid_to_ts=int(cutoff_dt.timestamp()),
+                    valid_to_iso=cutoff_dt.isoformat(),
                 )
             except Exception as exc:
                 log.warning(
-                    "Failed to prune superseded version %s from Qdrant: %s",
+                    "Failed to update valid_to_ts on superseded version %s in Qdrant: %s",
                     superseded_version_id,
                     exc,
                 )
@@ -1628,3 +1700,156 @@ async def run_search_indexing_stage(
         raise RuntimeError("EMPTY_INDEX: Document has no text content to index")
 
     return units
+
+
+async def index_table_search_cards_for_version(
+    session: AsyncSession,
+    *,
+    document_version_id: str,
+    project_id: str,
+    table_records: Sequence[Any],
+    security_partition_id: str | None = None,
+    tenant_id: str | None = None,
+    qdrant_client: httpx.AsyncClient | None = None,
+    embedder: Any | None = None,
+    rows_per_card: int = 6,
+) -> int:
+    """Persist grouped `table_card` CanonicalBlocks for extracted tables and re-sync SearchUnits + Qdrant.
+
+    Implements Q3=A:
+    - Generates grouped Row-Linearized Table Search Cards (`build_grouped_table_search_cards`).
+    - Persists them as `CanonicalBlock(block_type="table_card")` with `table_id` in both
+      `source_anchor` (`table_card:{table_id}:{card_idx}`) and `dedup_signature_json`.
+    - Skips `KnowledgeUnit` creation (handled in `knowledge_service.py` & `jobs/knowledge.py`).
+    - When `qdrant_client` and `embedder` are supplied, re-runs `run_search_indexing_stage` so
+      PostgreSQL `SearchUnit`s, Qdrant vectors/payloads (`table_id`), and manifest checksum remain consistent.
+    """
+    from sag_api.research.table_engine import build_grouped_table_search_cards
+
+    if not table_records:
+        return 0
+
+    version = await session.get(DocumentVersion, document_version_id)
+    if version is None:
+        return 0
+
+    existing_blocks = (
+        await session.execute(
+            select(CanonicalBlock)
+            .where(CanonicalBlock.document_version_id == document_version_id)
+            .order_by(CanonicalBlock.ordinal)
+        )
+    ).scalars().all()
+
+    max_non_card_ordinal = -1
+    old_card_ids: list[str] = []
+    for blk in existing_blocks:
+        if blk.block_type == "table_card":
+            old_card_ids.append(blk.id)
+        else:
+            max_non_card_ordinal = max(max_non_card_ordinal, int(blk.ordinal))
+    if old_card_ids:
+        # Delete dependent SearchUnits first because SearchUnit FKs to CanonicalBlock do not cascade
+        await session.execute(
+            delete(SearchUnit).where(
+                SearchUnit.document_version_id == document_version_id,
+                or_(
+                    SearchUnit.block_from_id.in_(old_card_ids),
+                    SearchUnit.block_to_id.in_(old_card_ids),
+                ),
+            )
+        )
+        await session.execute(
+            delete(CanonicalBlock).where(CanonicalBlock.id.in_(old_card_ids))
+        )
+        await session.flush()
+
+    cards_added = 0
+    next_ordinal = (max_non_card_ordinal + 1) if max_non_card_ordinal >= 0 else 100_000
+    for rec in table_records:
+        rec_dict = rec.to_dict() if hasattr(rec, "to_dict") else dict(rec)
+        grouped_cards = build_grouped_table_search_cards(rec_dict, rows_per_card=rows_per_card)
+        for card in grouped_cards:
+            card_text = str(card.get("card_text") or "").strip()
+            if not card_text:
+                continue
+            tid = str(card["table_id"])
+            cidx = int(card.get("card_idx") or 0)
+            c_hash = hashlib.sha256(card_text.encode("utf-8")).hexdigest()
+            blk_id = str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"table_card:{document_version_id}:{tid}:{cidx}",
+                )
+            )
+            sec_path = str(card.get("section_path") or rec_dict.get("sub_doc_slot") or "table_card")[:512]
+            session.add(
+                CanonicalBlock(
+                    id=blk_id,
+                    document_version_id=document_version_id,
+                    ordinal=next_ordinal,
+                    block_type="table_card",
+                    section_path=sec_path,
+                    page_from=int(card.get("page_from") or 1),
+                    page_to=int(card.get("page_to") or card.get("page_from") or 1),
+                    source_anchor=f"table_card:{tid}:{cidx}",
+                    normalized_text=card_text,
+                    content_hash=c_hash,
+                    dedup_signature_json={
+                        "table_id": tid,
+                        "card_idx": cidx,
+                        "sub_doc_slot": str(card.get("sub_doc_slot") or ""),
+                    },
+                )
+            )
+            next_ordinal += 1
+            cards_added += 1
+
+    await session.flush()
+
+    if cards_added > 0 and max_non_card_ordinal >= 0:
+        if qdrant_client is not None and embedder is not None:
+            sec_part = security_partition_id or project_id
+            await run_search_indexing_stage(
+                session,
+                project_id=project_id,
+                document_version=version,
+                security_partition_id=sec_part,
+                tenant_id=tenant_id,
+                qdrant_client=qdrant_client,
+                embedder=embedder,
+            )
+        else:
+            # Prose blocks already exist (e.g. CLI ran after server indexed prose); enqueue REPROCESS
+            # so background worker rebuilds SearchUnits + Qdrant + manifest including table_card blocks.
+            from sag_api.db.models import Document, Job
+            from sag_api.enums import JobStatus, JobType
+
+            pending = (
+                await session.execute(
+                    select(Job.id)
+                    .where(
+                        Job.document_id == version.document_id,
+                        Job.type.in_([JobType.PROCESS_DOCUMENT, JobType.REPROCESS_DOCUMENT]),
+                        Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
+                    )
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if pending is None:
+                doc = await session.get(Document, version.document_id)
+                session.add(
+                    Job(
+                        type=JobType.REPROCESS_DOCUMENT,
+                        status=JobStatus.QUEUED,
+                        source_id=doc.source_id if doc is not None else None,
+                        document_id=version.document_id,
+                        payload={
+                            "document_id": version.document_id,
+                            "document_version_id": document_version_id,
+                            "reason": "table_cards_sync",
+                        },
+                    )
+                )
+                await session.flush()
+    return cards_added

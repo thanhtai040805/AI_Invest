@@ -3,6 +3,7 @@ import {
   createSseParser,
   type ParsedSseFrame,
   type ResearchChatMetadata,
+  type ResearchChatMode,
   type SseStageName,
 } from "./researchChatHelpers"
 
@@ -12,10 +13,13 @@ export interface ResearchSessionSummary {
   id: string
   title: string | null
   ticker?: string | null
+  mode?: ResearchChatMode
   asOfDate?: string | null
   enableKg?: boolean | null
   createdAt: string
   updatedAt?: string
+  lastMessageAt?: string | null
+  lastMessagePreview?: string | null
   messageCount?: number
 }
 
@@ -62,8 +66,9 @@ export interface EvalSummaryResponse {
 export interface StreamResearchChatPayload {
   sessionId: string
   query: string
-  ticker: string
+  ticker?: string
   compareTickers?: string[]
+  mode?: ResearchChatMode
   asOfDate?: string
   enableKg?: boolean
 }
@@ -242,8 +247,9 @@ export async function streamResearchChat(
 
 export const researchChatApi = {
   createSession: (body: {
-    ticker: string
+    ticker?: string
     title?: string
+    mode?: ResearchChatMode
     asOfDate?: string
     enableKg?: boolean
   }): Promise<ResearchSessionSummary> =>

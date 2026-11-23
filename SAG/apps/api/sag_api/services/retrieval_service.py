@@ -886,7 +886,9 @@ _TABLE_ID_HINT_RE = re.compile(
     r"(?:\btable[_\s-]*id[:=]\s*|(?<!\w))(B0[1-9]-DN(?:/HN)?|TM-?\d+[a-zA-Z0-9.-]*)\b",
     re.IGNORECASE,
 )
-_SUB_DOC_SLOT_HINT_RE = re.compile(r"\b(S\d{2}[A-Z]?)\b")
+_SUB_DOC_SLOT_HINT_RE = re.compile(
+    r"\b(BCTN_CORE|BCTN_PR|BCTC_AUDITED|AGM_TARGETS|QUARTER_NOTES|S\d{2}[A-Z]?)\b"
+)
 _FISCAL_PERIOD_HINT_RE = re.compile(
     r"\b(FY\s*\d{4}|[1-4]Q\d{4}|Q[1-4]\s*[/\-]?\s*\d{4}|Quý\s*[1-4]\s*[/\-]\s*\d{4}|9T\s*[/\-]\s*\d{4}|6T\s*[/\-]\s*\d{4}|(?:19|20)\d{2})\b",
     re.IGNORECASE,
@@ -1048,9 +1050,7 @@ def select_diverse_sections(
         )
         matched: set[str] = set()
         for term in required:
-            if term in text:
-                matched.add(term)
-            elif (m_num := re.search(r"\d{4,}", term)) and m_num.group(0) in text:
+            if term in text or (m_num := re.search(r"\d{4,}", term)) and m_num.group(0) in text:
                 matched.add(term)
         return frozenset(matched)
 

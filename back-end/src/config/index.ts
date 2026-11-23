@@ -36,6 +36,7 @@ export const config = {
   aiEngineAdminToken: requireEnvProduction('AI_ENGINE_ADMIN_TOKEN'),
   sagApiUrl: process.env.SAG_API_URL || 'http://localhost:8000',
   sagBffServiceToken: process.env.SAG_BFF_SERVICE_TOKEN || '',
+  sagResearchOrgId: process.env.SAG_RESEARCH_ORG_ID || 'aiinvest-default',
   dnse: {
     enabled: process.env.DNSE_ENABLED === 'true',
     redisChannelPrefix: process.env.DNSE_REDIS_CHANNEL_PREFIX ?? 'dnse:event',

@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -58,8 +58,26 @@ async def persist_canonical_blocks(
         delete(SearchUnit).where(SearchUnit.document_version_id == document_version_id)
     )
     await session.execute(
-        delete(CanonicalBlock).where(CanonicalBlock.document_version_id == document_version_id)
+        delete(CanonicalBlock).where(
+            CanonicalBlock.document_version_id == document_version_id,
+            CanonicalBlock.block_type != "table_card",
+        )
     )
+    existing_table_cards = (
+        await session.execute(
+            select(CanonicalBlock)
+            .where(
+                CanonicalBlock.document_version_id == document_version_id,
+                CanonicalBlock.block_type == "table_card",
+            )
+            .order_by(CanonicalBlock.ordinal)
+        )
+    ).scalars().all()
+    # Temporarily park existing table cards at high ordinals to avoid uq_canonical_blocks_ordinal collisions
+    for idx_tc, tc in enumerate(existing_table_cards):
+        tc.ordinal = 1_000_000 + idx_tc
+    if existing_table_cards:
+        await session.flush()
 
     # 2. Tạo các thực thể CanonicalBlock với stable UUIDv5
     db_blocks: list[CanonicalBlock] = []
@@ -80,6 +98,14 @@ async def persist_canonical_blocks(
         session.add(db_block)
         db_blocks.append(db_block)
 
+    if existing_table_cards:
+        await session.flush()
+        next_ord = max((int(b.ordinal) for b in db_blocks), default=-1) + 1
+        for tc in existing_table_cards:
+            tc.ordinal = next_ord
+            next_ord += 1
+            db_blocks.append(tc)
+
     duration_ms = (time.monotonic() - start_time) * 1000.0
 
     # 3. Ghi nhận StageRun nếu có run_id
@@ -93,7 +119,10 @@ async def persist_canonical_blocks(
                 duration_ms=duration_ms,
                 metrics_json={
                     "block_count": len(db_blocks),
-                    "types": {t: sum(1 for x in db_blocks if x.block_type == t) for t in set(x.block_type for x in db_blocks)},
+                    "types": {
+                        t: sum(1 for x in db_blocks if x.block_type == t)
+                        for t in {x.block_type for x in db_blocks}
+                    },
                 },
             )
         )

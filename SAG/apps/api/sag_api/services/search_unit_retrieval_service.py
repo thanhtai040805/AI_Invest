@@ -345,6 +345,8 @@ async def _load_current_ready_versions_checked(
 
     source_by_id = {source.id: source for source in sources}
     source_ids = sorted(source_by_id)
+    wildcard_projects = "*" in principal.allowed_project_ids
+    wildcard_partitions = "*" in principal.allowed_partition_ids
     partition_ids = sorted(principal.allowed_partition_ids)
     partition_expression = DocumentVersion.metadata_json["security_partition_id"].as_string()
     current_time = (
@@ -358,7 +360,7 @@ async def _load_current_ready_versions_checked(
         select(SearchUnit.id)
         .where(
             SearchUnit.document_version_id == DocumentVersion.id,
-            SearchUnit.security_partition_id.in_(partition_ids),
+            True if wildcard_partitions else SearchUnit.security_partition_id.in_(partition_ids),
             SearchUnit.security_partition_id == partition_expression,
         )
         .exists()
@@ -379,7 +381,7 @@ async def _load_current_ready_versions_checked(
             .where(
                 DocumentVersion.id.in_(sorted(version_ids)) if version_ids is not None else True,
                 Document.source_id.in_(source_ids),
-                Document.project_id.in_(principal.allowed_project_ids),
+                True if wildcard_projects else Document.project_id.in_(principal.allowed_project_ids),
                 Document.project_id == SourceProjectMapping.project_id,
                 Document.tenant_id == principal.tenant_id,
                 SourceProjectMapping.organization_id == principal.organization_id,
@@ -399,7 +401,7 @@ async def _load_current_ready_versions_checked(
                 DocumentVersion.valid_from <= current_time,
                 DocumentVersion.search_ready_at.is_not(None),
                 DocumentVersion.valid_to > current_time,
-                partition_expression.in_(partition_ids),
+                True if wildcard_partitions else partition_expression.in_(partition_ids),
                 unit_exists_clause,
             )
         )
@@ -587,6 +589,7 @@ async def _query_group(
     query_vector: list[float],
     route: RouteDecision | None = None,
     sub_sparse_queries: tuple[dict[str, list[int] | list[float]], ...] = (),
+    sub_dense_queries: tuple[list[float], ...] = (),
     as_of_ts: int | None = None,
 ) -> tuple[_SearchGroup, list[SearchUnitHit], list[SearchUnitHit]]:
     collection = resolve_search_unit_collection_name(group.project_id)
@@ -627,6 +630,19 @@ async def _query_group(
                     "limit": limit,
                 },
             ]
+            dense_sub_cnt = 0
+            for sub_dense in sub_dense_queries:
+                sub_vec = [float(v) for v in sub_dense]
+                if sub_vec and all(math.isfinite(v) for v in sub_vec):
+                    searches.append(
+                        {
+                            "vector_name": "content_vector",
+                            "query": sub_vec,
+                            "search_filter": search_filter,
+                            "limit": sub_limit,
+                        }
+                    )
+                    dense_sub_cnt += 1
             for sub_sparse in sub_sparse_queries:
                 searches.append(
                     {
@@ -637,8 +653,18 @@ async def _query_group(
                     }
                 )
             batch_res = await store.search_batch(collection, searches=searches)
-            semantic = batch_res[0]
-            lexical = _interleave_hit_lists([batch_res[1], *batch_res[2:]], limit=limit)
+            dense_sub_hits = batch_res[2 : 2 + dense_sub_cnt]
+            sparse_sub_hits = batch_res[2 + dense_sub_cnt :]
+            semantic = (
+                _interleave_hit_lists([batch_res[0], *dense_sub_hits], limit=limit)
+                if dense_sub_hits
+                else batch_res[0]
+            )
+            lexical = (
+                _interleave_hit_lists([batch_res[1], *sparse_sub_hits], limit=limit)
+                if sparse_sub_hits
+                else batch_res[1]
+            )
         else:
             semantic_task = asyncio.create_task(
                 store.search(
@@ -685,6 +711,7 @@ async def _query_routed_group_batch(
     route: RouteDecision,
     escape_limit: int | None = None,
     sub_sparse_queries: tuple[dict[str, list[int] | list[float]], ...] = (),
+    sub_dense_queries: tuple[list[float], ...] = (),
     as_of_ts: int | None = None,
 ) -> tuple[list[SearchUnitHit], list[SearchUnitHit], list[SearchUnitHit], list[SearchUnitHit]]:
     """Execute branch_local + global_escape hybrid queries in 1 Qdrant batch round-trip."""
@@ -722,39 +749,73 @@ async def _query_routed_group_batch(
             "limit": eff_escape_limit,
         },
     ]
-    local_sub_cnt = 0
-    if sub_sparse_queries:
-        sub_local_lim = max(8, limit // 2)
-        sub_esc_lim = max(8, eff_escape_limit // 2)
-        for sub_sparse in sub_sparse_queries:
-            searches.append(
-                {
-                    "vector_name": "bm25_sparse",
-                    "query": sub_sparse,
-                    "search_filter": local_filter,
-                    "limit": sub_local_lim,
-                }
-            )
-            local_sub_cnt += 1
-        for sub_sparse in sub_sparse_queries:
-            searches.append(
-                {
-                    "vector_name": "bm25_sparse",
-                    "query": sub_sparse,
-                    "search_filter": escape_filter,
-                    "limit": sub_esc_lim,
-                }
-            )
+    valid_sub_dense = [
+        [float(v) for v in dv]
+        for dv in sub_dense_queries
+        if dv and all(math.isfinite(float(v)) for v in dv)
+    ]
+    local_dense_cnt = 0
+    esc_dense_cnt = 0
+    local_sparse_cnt = 0
+    esc_sparse_cnt = 0
+    sub_local_lim = max(8, limit // 2)
+    sub_esc_lim = max(8, eff_escape_limit // 2)
+    for sub_vec in valid_sub_dense:
+        searches.append(
+            {
+                "vector_name": "content_vector",
+                "query": sub_vec,
+                "search_filter": local_filter,
+                "limit": sub_local_lim,
+            }
+        )
+        local_dense_cnt += 1
+    for sub_vec in valid_sub_dense:
+        searches.append(
+            {
+                "vector_name": "content_vector",
+                "query": sub_vec,
+                "search_filter": escape_filter,
+                "limit": sub_esc_lim,
+            }
+        )
+        esc_dense_cnt += 1
+    for sub_sparse in sub_sparse_queries:
+        searches.append(
+            {
+                "vector_name": "bm25_sparse",
+                "query": sub_sparse,
+                "search_filter": local_filter,
+                "limit": sub_local_lim,
+            }
+        )
+        local_sparse_cnt += 1
+    for sub_sparse in sub_sparse_queries:
+        searches.append(
+            {
+                "vector_name": "bm25_sparse",
+                "query": sub_sparse,
+                "search_filter": escape_filter,
+                "limit": sub_esc_lim,
+            }
+        )
+        esc_sparse_cnt += 1
     batch = await store.search_batch(collection, searches=searches)
-    if not sub_sparse_queries:
+    if not valid_sub_dense and not sub_sparse_queries:
         return batch[0], batch[1], batch[2], batch[3]
-    local_sub_hits = batch[4 : 4 + local_sub_cnt]
-    esc_sub_hits = batch[4 + local_sub_cnt :]
+    offset = 4
+    local_dense_hits = batch[offset : offset + local_dense_cnt]
+    offset += local_dense_cnt
+    esc_dense_hits = batch[offset : offset + esc_dense_cnt]
+    offset += esc_dense_cnt
+    local_sparse_hits = batch[offset : offset + local_sparse_cnt]
+    offset += local_sparse_cnt
+    esc_sparse_hits = batch[offset : offset + esc_sparse_cnt]
     return (
-        batch[0],
-        _interleave_hit_lists([batch[1], *local_sub_hits], limit=limit),
-        batch[2],
-        _interleave_hit_lists([batch[3], *esc_sub_hits], limit=eff_escape_limit),
+        _interleave_hit_lists([batch[0], *local_dense_hits], limit=limit) if local_dense_hits else batch[0],
+        _interleave_hit_lists([batch[1], *local_sparse_hits], limit=limit) if local_sparse_hits else batch[1],
+        _interleave_hit_lists([batch[2], *esc_dense_hits], limit=eff_escape_limit) if esc_dense_hits else batch[2],
+        _interleave_hit_lists([batch[3], *esc_sparse_hits], limit=eff_escape_limit) if esc_sparse_hits else batch[3],
     )
 
 
@@ -1841,10 +1902,18 @@ async def _expand_multi_hop_sections(
                             for b_ent in top_seed_entities:
                                 is_cont = b_ent in cont_entities
                                 if (
-                                    is_cont or " " in b_ent or any(c.isdigit() for c in b_ent) or len(b_ent) >= 6
-                                ) and b_ent in ku.entities_norm:
-                                    ent_doc_versions[b_ent].add(v_id)
-                                elif is_cont and len(b_ent) >= 2 and b_ent in ku.sec_path_norm:
+                                    (
+                                        is_cont
+                                        or " " in b_ent
+                                        or any(c.isdigit() for c in b_ent)
+                                        or len(b_ent) >= 6
+                                    )
+                                    and b_ent in ku.entities_norm
+                                ) or (
+                                    is_cont
+                                    and len(b_ent) >= 2
+                                    and b_ent in ku.sec_path_norm
+                                ):
                                     ent_doc_versions[b_ent].add(v_id)
                                 else:
                                     pat = path_patterns.get(b_ent)
@@ -1896,9 +1965,7 @@ async def _expand_multi_hop_sections(
                                             and b_ent in ku.sec_path_norm
                                             and bool(pat.search(ku.sec_path_norm))
                                         )
-                                    if is_code and (ent_hit or path_hit):
-                                        path_matched = True
-                                    elif (
+                                    if is_code and (ent_hit or path_hit) or (
                                         path_hit
                                         and (is_cont or " " in b_ent or any(c.isdigit() for c in b_ent))
                                         and (not query_folded or b_ent not in query_folded)
@@ -2222,6 +2289,7 @@ async def _retrieve_search_unit_sections(
     local_failures: dict[tuple[str, str, str, str], str] = {}
     escape_failures: dict[tuple[str, str, str, str], str] = {}
     vector_tasks: dict[str, asyncio.Task[list[float]]] = {}
+    sub_vector_tasks: dict[tuple[str, str], asyncio.Task[list[float]]] = {}
     try:
         async with asyncio.timeout_at(deadline):
             client = await engine_manager.get_search_unit_qdrant_client()
@@ -2251,19 +2319,30 @@ async def _retrieve_search_unit_sections(
                     config_key
                 ]
             raw_subqueries = strategy_plan.retrieval_plan.decomposition.subqueries
-            sub_sparse_queries: tuple[dict[str, list[int] | list[float]], ...] = (
+            distinct_subquery_texts: tuple[str, ...] = (
                 tuple(
-                    sq_vec
+                    sq.strip()
                     for sq in raw_subqueries[:3]
-                    if (
-                        sq.strip()
-                        and sq.strip() != query.strip()
-                        and (sq_vec := build_sparse_query_vector(sq))["indices"]
-                    )
+                    if sq.strip() and sq.strip() != query.strip()
                 )
                 if len(raw_subqueries) >= 2
                 else ()
             )
+            sub_sparse_queries: tuple[dict[str, list[int] | list[float]], ...] = tuple(
+                sq_vec
+                for sq in distinct_subquery_texts
+                if (sq_vec := build_sparse_query_vector(sq))["indices"]
+            )
+            sub_vector_tasks: dict[tuple[str, str], asyncio.Task[list[float]]] = {}
+            if distinct_subquery_texts:
+                for group in groups:
+                    config_key = group.source.sag_source_config_id or group.source.id
+                    for sq_txt in distinct_subquery_texts:
+                        sk = (config_key, sq_txt)
+                        if sk not in sub_vector_tasks:
+                            sub_vector_tasks[sk] = asyncio.create_task(
+                                _query_vector(engine_manager, group, sq_txt)
+                            )
             if as_of_ts is not None:
                 try:
                     decisions = await capture_routing_decisions(
@@ -2298,6 +2377,24 @@ async def _retrieve_search_unit_sections(
                 )
             t_route_ms = round((time.perf_counter() - t_route_start) * 1000, 2)
 
+            async def _resolve_sub_dense(config_key: str) -> tuple[list[float], ...]:
+                if not distinct_subquery_texts:
+                    return ()
+                out_vecs: list[list[float]] = []
+                for sq_txt in distinct_subquery_texts:
+                    task = sub_vector_tasks.get((config_key, sq_txt))
+                    if task is None:
+                        continue
+                    try:
+                        vec = await task
+                        if vec:
+                            out_vecs.append(vec)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:  # noqa: BLE001
+                        continue
+                return tuple(out_vecs)
+
             async def bounded(group: _SearchGroup):
                 async with semaphore:
                     route = decisions.get(group.scope_key)
@@ -2317,6 +2414,7 @@ async def _retrieve_search_unit_sections(
                         )
                     config_key = group.source.sag_source_config_id or group.source.id
                     vector = await vector_tasks[config_key]
+                    sub_dense_queries = await _resolve_sub_dense(config_key)
                     if route is None or not route.routed:
                         result = await _query_group(
                             group,
@@ -2325,6 +2423,7 @@ async def _retrieve_search_unit_sections(
                             store=store,
                             query_vector=vector,
                             sub_sparse_queries=sub_sparse_queries,
+                            sub_dense_queries=sub_dense_queries,
                             as_of_ts=as_of_ts,
                         )
                         return [(group, route, "global_only", result[1], result[2])], None, None
@@ -2361,6 +2460,7 @@ async def _retrieve_search_unit_sections(
                                     route=route,
                                     escape_limit=eff_escape_limit,
                                     sub_sparse_queries=sub_sparse_queries,
+                                    sub_dense_queries=sub_dense_queries,
                                     as_of_ts=as_of_ts,
                                 )
                             return (
@@ -2383,6 +2483,7 @@ async def _retrieve_search_unit_sections(
                                     store=store,
                                     query_vector=vector,
                                     sub_sparse_queries=sub_sparse_queries,
+                                    sub_dense_queries=sub_dense_queries,
                                     as_of_ts=as_of_ts,
                                 )
                             return [(group, route, "global_escape", esc_res[1], esc_res[2])], local_failure, None
@@ -2489,6 +2590,11 @@ async def _retrieve_search_unit_sections(
                 v_task.cancel()
         if vector_tasks:
             await asyncio.gather(*vector_tasks.values(), return_exceptions=True)
+        for sv_task in sub_vector_tasks.values():
+            if not sv_task.done():
+                sv_task.cancel()
+        if sub_vector_tasks:
+            await asyncio.gather(*sub_vector_tasks.values(), return_exceptions=True)
         request_snapshot_ids = {
             route.request_snapshot_id
             for route in decisions.values()
@@ -2535,6 +2641,9 @@ async def _retrieve_search_unit_sections(
                 if as_of_ts is not None:
                     payload_vf = hit.payload.get("valid_from_ts")
                     if payload_vf is not None and int(payload_vf) > int(as_of_ts):
+                        continue
+                    payload_vt = hit.payload.get("valid_to_ts")
+                    if payload_vt is not None and int(payload_vt) <= int(as_of_ts):
                         continue
                 key = (group.project_id, group.source.id, group.tenant_id, group.partition_id, unit_id)
                 normalized_score = max(0.0, hit.score) / max_score if max_score > 0.0 else 0.0
@@ -2786,6 +2895,15 @@ async def _retrieve_search_unit_sections(
         section = sections_by_key.get(section_key)
         if section is None:
             scope_source = group.source
+            raw_fy = payload.get("fiscal_year")
+            raw_fq = payload.get("fiscal_quarter")
+            raw_tid = payload.get("table_id")
+            if not raw_tid:
+                anc = str(locator.get("anchor") or payload.get("source_anchor") or "")
+                if anc.startswith("table_card:"):
+                    parts = anc.split(":")
+                    if len(parts) >= 2 and parts[1]:
+                        raw_tid = parts[1]
             section = RetrievedSection(
                 chunk_id=unit.id,
                 search_unit_id=unit.id,
@@ -2800,6 +2918,10 @@ async def _retrieve_search_unit_sections(
                 source_config_id=scope_source.sag_source_config_id,
                 content_hash=unit.content_hash,
                 canonical_evidence_verified=True,
+                table_id=str(raw_tid) if raw_tid else None,
+                sub_doc_slot=str(payload.get("sub_doc_slot")) if payload.get("sub_doc_slot") else None,
+                fiscal_year=int(raw_fy) if raw_fy is not None else None,
+                fiscal_quarter=int(raw_fq) if raw_fq is not None else None,
                 **{
                     name: value
                     for name, value in locator.items()
@@ -3256,6 +3378,8 @@ async def _get_search_unit_citation_checked(
     start_block = aliased(CanonicalBlock)
     end_block = aliased(CanonicalBlock)
     partition_expression = DocumentVersion.metadata_json["security_partition_id"].as_string()
+    wildcard_projects = "*" in principal.allowed_project_ids
+    wildcard_partitions = "*" in principal.allowed_partition_ids
     row = (
         await session.execute(
             select(
@@ -3278,7 +3402,7 @@ async def _get_search_unit_citation_checked(
             .where(
                 SearchUnit.id == search_unit_id,
                 Document.source_id == source.id,
-                Document.project_id.in_(principal.allowed_project_ids),
+                True if wildcard_projects else Document.project_id.in_(principal.allowed_project_ids),
                 Document.tenant_id == principal.tenant_id,
                 SourceProjectMapping.project_id == Document.project_id,
                 SourceProjectMapping.organization_id == principal.organization_id,
@@ -3287,7 +3411,7 @@ async def _get_search_unit_citation_checked(
                 Document.status.notin_([DocumentStatus.DELETING, DocumentStatus.DELETE_FAILED]),
                 DocumentVersion.search_status.in_(("READY", "SEARCH_READY")),
                 DocumentVersion.search_ready_at.is_not(None),
-                SearchUnit.security_partition_id.in_(principal.allowed_partition_ids),
+                True if wildcard_partitions else SearchUnit.security_partition_id.in_(principal.allowed_partition_ids),
                 SearchUnit.security_partition_id == partition_expression,
                 start_block.document_version_id == SearchUnit.document_version_id,
                 end_block.document_version_id == SearchUnit.document_version_id,

@@ -15,7 +15,7 @@ from sag_api.db.models import Document, Job
 from sag_api.db.models.routing_rag import CanonicalBlock, DocumentVersion, SearchUnit
 from sag_api.enums import JobStatus, JobType
 from sag_api.services.knowledge_candidate_service import build_project_routing_snapshot
-from sag_api.services.routing_tree_service import TreeBuildConfig
+from sag_api.services.routing_tree_service import research_tree_build_config
 from sag_api.services.tree_publish_service import (
     SearchUnitAssignment,
     TreePublishResult,
@@ -248,13 +248,13 @@ async def rebuild_project_universe_tree(
         tenant_id=tenant_id,
         project_id=project_id,
         queries=[],
-        config=TreeBuildConfig(min_cluster_size=1, min_partition_units=1),
+        config=research_tree_build_config(min_cluster_size=1, min_partition_units=1),
         allow_empty=True,
     )
     if built is None:
         from sag_api.db.models import ProjectSearchState, TreeManifest
-        from sag_api.services.knowledge_service import knowledge_lock
         from sag_api.services.knowledge_candidate_service import current_units
+        from sag_api.services.knowledge_service import knowledge_lock
 
         await knowledge_lock(session, "project-input:" + tenant_id + ":" + project_id)
         if await current_units(session, tenant_id, project_id, allow_empty=True):

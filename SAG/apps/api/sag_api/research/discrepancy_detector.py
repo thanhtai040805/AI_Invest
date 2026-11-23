@@ -12,7 +12,11 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from sag_api.research.input_inspector import normalize_ws
-from sag_api.research.table_engine import detect_unit_and_currency, parse_vn_number
+from sag_api.research.table_engine import (
+    classify_table_columns,
+    detect_unit_and_currency,
+    parse_vn_number,
+)
 
 Severity = Literal["HIGH", "MEDIUM"]
 
@@ -137,9 +141,34 @@ _CLAIM_NUM_RE = re.compile(
 )
 
 
+_RETAINED_EARNINGS_EXCLUDE_RE = re.compile(
+    r"(?:chưa\s+phân\s+phối|lũy\s+kế|đã\s+thực\s+hiện|chưa\s+thực\s+hiện|"
+    r"retained\s+earnings|accumulated|undistributed)",
+    re.IGNORECASE,
+)
+_PRIMARY_STMT_PRIORITY_RE = re.compile(
+    r"(?:kết\s+quả\s+hoạt\s+động|bảng\s+cân\s+đối\s+kế\s+toán|tình\s+hình\s+tài\s+chính|"
+    r"lưu\s+chuyển\s+tiền\s+tệ|\bb0[1-3]\b|kqkd|cđkt|lctt|income\s+statement|balance\s+sheet|cash\s+flow)",
+    re.IGNORECASE,
+)
+_SUB_NOTE_PATH_RE = re.compile(
+    r"(?:thuyết\s+minh\s+(?:các\s+)?báo\s+cáo\s+tài\s+chính|thuyết\s+minh\s+bctc|"
+    r"notes\s+to\s+the\s+financial\s+statements)",
+    re.IGNORECASE,
+)
+_BALANCE_SHEET_TBL_RE = re.compile(
+    r"(?:bảng\s+cân\s+đối\s+kế\s+toán|tình\s+hình\s+tài\s+chính|\bb01\b|balance\s+sheet)",
+    re.IGNORECASE,
+)
+_FLOW_ONLY_METRICS = frozenset({"net_revenue", "npat", "pbt", "gross_margin"})
+_PRIMARY_ONLY_METRICS = frozenset({"net_revenue", "npat", "pbt", "total_assets"})
+
+
 def _canonical_metric_for_label(label: str) -> tuple[str, str, bool] | None:
     low = normalize_ws(label).lower()
     for m_key, (display_name, aliases, is_pct) in _METRIC_ALIASES.items():
+        if m_key == "npat" and _RETAINED_EARNINGS_EXCLUDE_RE.search(low):
+            continue
         if any(alias in low for alias in aliases):
             return m_key, display_name, is_pct
     return None
@@ -242,31 +271,94 @@ def extract_narrative_claims(
     return claims
 
 
+def _resolve_baseline_col_index(
+    tbl: dict[str, Any],
+    *,
+    requested_col_index: int = 0,
+) -> int | None:
+    """Resolve the 0-based index into `row['values']` representing the primary amount column.
+
+    Skips `code` (`Mã số`) and `note_ref` (`Thuyết minh`) columns automatically when
+    `requested_col_index == 0` (the default). Returns `None` if no monetary column exists.
+    """
+    if requested_col_index > 0:
+        return requested_col_index
+    col_roles = tbl.get("column_roles")
+    amt_indices = tbl.get("amount_col_indices")
+    if not col_roles or amt_indices is None:
+        headers = tbl.get("headers") or tbl.get("headers_json") or []
+        rows = tbl.get("rows") or tbl.get("rows_json") or []
+        col_roles, amt_indices = classify_table_columns(headers, rows)
+    if col_roles and amt_indices:
+        # Prefer first `period_amount` column if present
+        for idx in amt_indices:
+            if (idx + 1) < len(col_roles) and col_roles[idx + 1] == "period_amount":
+                return int(idx)
+        return int(amt_indices[0])
+    if col_roles and not amt_indices:
+        return None
+    return 0
+
+
 def extract_audited_baselines_from_tables(
     hydrated_tables: list[dict[str, Any]],
     *,
     target_col_index: int = 0,
 ) -> dict[str, AuditedBaseline]:
-    """Extract audited numeric baselines ONLY from `VERIFIED` tables (ignoring `TABLE_UNVERIFIED`)."""
+    """Extract audited numeric baselines ONLY from `VERIFIED` tables (ignoring `TABLE_UNVERIFIED`).
+
+    Prioritizes primary financial statements (CĐKT/KQKD/LCTT) before sub-note tables,
+    blocks Note sub-tables from masquerading as consolidated revenue/NPAT/assets, blocks
+    Balance Sheet tables from supplying P&L flow metrics, and skips `Mã số`/`Thuyết minh`.
+    """
     baselines: dict[str, AuditedBaseline] = {}
-    for tbl in hydrated_tables:
+    exact_net_rev_locked = False
+
+    def _is_sub_note_table(tbl: dict[str, Any]) -> bool:
+        sec_path = str(tbl.get("section_path") or "")
+        title = str(tbl.get("title") or tbl.get("table_title") or "")
+        blob = f"{sec_path} {title}"
+        return bool(_SUB_NOTE_PATH_RE.search(blob))
+
+    def _is_balance_sheet_table(tbl: dict[str, Any]) -> bool:
+        sec_path = str(tbl.get("section_path") or "")
+        title = str(tbl.get("title") or tbl.get("table_title") or "")
+        return bool(_BALANCE_SHEET_TBL_RE.search(f"{sec_path} {title}"))
+
+    def _table_sort_key(tbl: dict[str, Any]) -> tuple[int, int]:
+        title_blob = f"{tbl.get('title') or tbl.get('table_title') or ''} {tbl.get('section_path') or ''}"
+        slot_u = str(tbl.get("sub_doc_slot") or "").upper()
+        is_note = _is_sub_note_table(tbl)
+        is_primary = 0 if (not is_note and _PRIMARY_STMT_PRIORITY_RE.search(title_blob)) else 1
+        is_audited = 0 if slot_u in ("BCTC_AUDITED", "S06", "S07", "S08") else 1
+        return (is_audited, is_primary)
+
+    ordered_tables = sorted(hydrated_tables, key=_table_sort_key)
+    for tbl in ordered_tables:
         if tbl.get("verification_status") != "VERIFIED":
             continue
-        slot = str(tbl.get("sub_doc_slot") or "S06")[:3]
+        is_sub_note = _is_sub_note_table(tbl)
+        is_bs = _is_balance_sheet_table(tbl)
+        raw_slot = str(tbl.get("sub_doc_slot") or "BCTC_AUDITED").strip()
+        # Preserve legacy S01..S13 short codes while NEVER truncating Natural 4-Class names
+        slot = raw_slot[:3] if re.match(r"^S\d{2}(?:_|$)", raw_slot) else raw_slot
         page_from = int(tbl.get("page_from") or 1)
         cit = f"{slot}·P{page_from}"
         unit_mult = float(tbl.get("unit_multiplier") or 1.0)
         unit_raw = str(tbl.get("unit_raw") or "")
         rows = tbl.get("rows") or []
+        eff_col_idx = _resolve_baseline_col_index(tbl, requested_col_index=target_col_index)
+        if eff_col_idx is None:
+            continue
 
         for row in rows:
             if isinstance(row, dict):
                 label = str(row.get("label") or "")
                 vals = row.get("values") or []
-                val = vals[target_col_index] if target_col_index < len(vals) else None
-            elif isinstance(row, list) and len(row) > 1 + target_col_index:
+                val = vals[eff_col_idx] if eff_col_idx < len(vals) else None
+            elif isinstance(row, list) and len(row) > 1 + eff_col_idx:
                 label = str(row[0].get("raw_text") or "")
-                val = row[1 + target_col_index].get("numeric_value")
+                val = row[1 + eff_col_idx].get("numeric_value")
             else:
                 continue
 
@@ -276,7 +368,20 @@ def extract_audited_baselines_from_tables(
             if matched is None:
                 continue
             m_key, m_label, is_pct = matched
-            if m_key not in baselines:
+            if is_sub_note and m_key in _PRIMARY_ONLY_METRICS:
+                continue
+            if is_bs and m_key in _FLOW_ONLY_METRICS:
+                continue
+            is_exact_net_rev = m_key == "net_revenue" and "doanh thu thuần" in label.lower()
+            can_upgrade_net_rev = (
+                is_exact_net_rev
+                and not exact_net_rev_locked
+                and m_key in baselines
+                and baselines[m_key].citation == cit
+            )
+            if m_key not in baselines or can_upgrade_net_rev:
+                if is_exact_net_rev:
+                    exact_net_rev_locked = True
                 formatted = (
                     f"{val:.2f}%"
                     if is_pct

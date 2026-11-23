@@ -23,6 +23,7 @@ from sag_api.db.models.routing_rag import (
     TreeRoutingProfile,
     TreeSnapshotLease,
 )
+from sag_api.sag.search_unit_store import _expand_continuous_script_tokens
 from sag_api.services.query_routing_service import (
     GroupRoutingSnapshot,
     scope_fingerprint,
@@ -33,7 +34,6 @@ from sag_api.services.query_routing_service import (
 from sag_api.services.query_routing_service import (
     RoutingSnapshot as QueryRoutingSnapshot,
 )
-from sag_api.sag.search_unit_store import _expand_continuous_script_tokens
 from sag_api.services.search_index_service import COMMON_STOPWORDS
 from sag_api.services.tree_publish_service import (
     _checksum_manifest,
@@ -49,10 +49,13 @@ _AGGREGATED_SCOPE_NODE_CACHE: OrderedDict[
 ] = OrderedDict()
 _AGGREGATED_SCOPE_NODE_CACHE_MAX = 128
 
-# Keyed by (project_id, tree_version, checksum) -> {(partition_id, node_id): (unit_vec | None, (year_from, year_to) | None)}
+# Keyed by (project_id, tree_version, checksum) -> {(partition_id, node_id): (unit_vec, year_range, ts_range)}
 _MANIFEST_NODE_FEATURES_CACHE: OrderedDict[
     tuple[str, str, str],
-    dict[tuple[str, str], tuple[tuple[float, ...] | None, tuple[int, int] | None]],
+    dict[
+        tuple[str, str],
+        tuple[tuple[float, ...] | None, tuple[int, int] | None, tuple[int | None, int | None] | None],
+    ],
 ] = OrderedDict()
 _MANIFEST_NODE_FEATURES_CACHE_MAX = 64
 
@@ -87,12 +90,36 @@ def _parse_iso_year(value: object) -> int | None:
     return None
 
 
+def _parse_iso_ts(value: object) -> int | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        iv = int(value)
+        return iv if iv > 0 else None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return int(dt.timestamp())
+    except ValueError:
+        return None
+
+
 def _extract_manifest_node_features(
     manifest_json: object,
-) -> dict[tuple[str, str], tuple[tuple[float, ...] | None, tuple[int, int] | None]]:
+) -> dict[
+    tuple[str, str],
+    tuple[tuple[float, ...] | None, tuple[int, int] | None, tuple[int | None, int | None] | None],
+]:
     if not isinstance(manifest_json, Mapping):
         return {}
-    features: dict[tuple[str, str], tuple[tuple[float, ...] | None, tuple[int, int] | None]] = {}
+    features: dict[
+        tuple[str, str],
+        tuple[tuple[float, ...] | None, tuple[int, int] | None, tuple[int | None, int | None] | None],
+    ] = {}
     routing_profiles = manifest_json.get("routing_profiles")
     if isinstance(routing_profiles, list):
         for item in routing_profiles:
@@ -103,7 +130,11 @@ def _extract_manifest_node_features(
             if not isinstance(partition_id, str) or not isinstance(node_id, str):
                 continue
             raw_medoid = item.get("dense_medoid")
-            norm_medoid = _normalize_unit_vector(raw_medoid) if isinstance(raw_medoid, Sequence) and not isinstance(raw_medoid, (str, bytes)) else None
+            norm_medoid = (
+                _normalize_unit_vector(raw_medoid)
+                if isinstance(raw_medoid, Sequence) and not isinstance(raw_medoid, (str, bytes))
+                else None
+            )
             y_from = _parse_iso_year(item.get("temporal_from"))
             y_to = _parse_iso_year(item.get("temporal_to"))
             y_range = (
@@ -115,7 +146,10 @@ def _extract_manifest_node_features(
                 if y_to is not None
                 else None
             )
-            features[(partition_id, node_id)] = (norm_medoid, y_range)
+            ts_from = _parse_iso_ts(item.get("temporal_from_ts") or item.get("temporal_from"))
+            ts_to = _parse_iso_ts(item.get("temporal_to_ts") or item.get("temporal_to"))
+            ts_range = (ts_from, ts_to) if (ts_from is not None or ts_to is not None) else None
+            features[(partition_id, node_id)] = (norm_medoid, y_range, ts_range)
         if features:
             return features
 
@@ -132,7 +166,11 @@ def _extract_manifest_node_features(
             prof = node.get("profile")
             if isinstance(partition_id, str) and isinstance(node_id, str) and isinstance(prof, Mapping):
                 raw_medoid = prof.get("dense_medoid")
-                norm_medoid = _normalize_unit_vector(raw_medoid) if isinstance(raw_medoid, Sequence) and not isinstance(raw_medoid, (str, bytes)) else None
+                norm_medoid = (
+                    _normalize_unit_vector(raw_medoid)
+                    if isinstance(raw_medoid, Sequence) and not isinstance(raw_medoid, (str, bytes))
+                    else None
+                )
                 y_from = _parse_iso_year(prof.get("temporal_from"))
                 y_to = _parse_iso_year(prof.get("temporal_to"))
                 y_range = (
@@ -144,7 +182,10 @@ def _extract_manifest_node_features(
                     if y_to is not None
                     else None
                 )
-                features[(partition_id, node_id)] = (norm_medoid, y_range)
+                ts_from = _parse_iso_ts(prof.get("temporal_from_ts") or prof.get("temporal_from"))
+                ts_to = _parse_iso_ts(prof.get("temporal_to_ts") or prof.get("temporal_to"))
+                ts_range = (ts_from, ts_to) if (ts_from is not None or ts_to is not None) else None
+                features[(partition_id, node_id)] = (norm_medoid, y_range, ts_range)
             children = node.get("children")
             if isinstance(children, list):
                 stack.extend(children)
@@ -383,12 +424,21 @@ def _build_query_node_profiles(
 
     raw_scores_by_node: dict[str, dict[str, float]] = {}
     raw_cos_by_node: dict[str, float] = {}
+    temporal_ts_by_node: dict[str, tuple[int | None, int | None]] = {}
     for node_id, _parent_id, _is_leaf, _unit_count, sparse_list, entities_list in cached_nodes:
-        norm_medoid, temporal_range = (
-            manifest_features.get((partition_id, node_id), (None, None))
+        raw_feat = (
+            manifest_features.get((partition_id, node_id))
             if manifest_features is not None
-            else (None, None)
+            else None
         )
+        if raw_feat is None:
+            norm_medoid, temporal_range, ts_range = None, None, None
+        elif len(raw_feat) >= 3:
+            norm_medoid, temporal_range, ts_range = raw_feat[0], raw_feat[1], raw_feat[2]
+        else:
+            norm_medoid, temporal_range, ts_range = raw_feat[0], raw_feat[1], None
+        if ts_range is not None:
+            temporal_ts_by_node[node_id] = ts_range
         raw_scores_by_node[node_id] = _query_signal_scores(
             query,
             {
@@ -442,6 +492,7 @@ def _build_query_node_profiles(
             final_scores["entity"] = node_raw.get("entity", 0.0)
         if has_temporal_match:
             final_scores["temporal"] = node_raw.get("temporal", 0.5)
+        t_from_ts, t_to_ts = temporal_ts_by_node.get(node_id, (None, None))
         profiles.append(
             QueryNodeProfile(
                 node_id=node_id,
@@ -456,6 +507,8 @@ def _build_query_node_profiles(
                 tree_version=tree_version,
                 scope_fingerprint=fingerprint,
                 signal_scores=final_scores,
+                temporal_from_ts=t_from_ts,
+                temporal_to_ts=t_to_ts,
             )
         )
     return tuple(profiles)
@@ -554,182 +607,252 @@ async def acquire_tree_query_snapshot(
     ] = {}
     captured_at: datetime | None = None
 
-    async with session_factory() as session:
-        async with session.begin():
-            rows = (
-                await session.execute(
-                    select(ProjectSearchState, TreeManifest, func.now())
-                    .options(
-                        load_only(
-                            TreeManifest.tree_version,
-                            TreeManifest.project_id,
-                            TreeManifest.config_version,
-                            TreeManifest.status,
-                            TreeManifest.checksum,
-                        )
+    async with session_factory() as session, session.begin():
+        rows = (
+            await session.execute(
+                select(ProjectSearchState, TreeManifest, func.now())
+                .options(
+                    load_only(
+                        TreeManifest.tree_version,
+                        TreeManifest.project_id,
+                        TreeManifest.config_version,
+                        TreeManifest.status,
+                        TreeManifest.checksum,
                     )
-                    .join(
-                        TreeManifest,
-                        (TreeManifest.tree_version == ProjectSearchState.active_tree_version)
-                        & (TreeManifest.project_id == ProjectSearchState.project_id),
-                    )
-                    .where(
-                        ProjectSearchState.project_id.in_(projects),
-                        ProjectSearchState.active_tree_version.is_not(None),
-                    )
-                    .order_by(ProjectSearchState.project_id)
-                    .with_for_update(read=True, of=ProjectSearchState)
                 )
-            ).all()
-            by_project = {state.project_id: (state, manifest_record) for state, manifest_record, _ in rows}
-            if set(by_project) != set(projects):
+                .join(
+                    TreeManifest,
+                    (TreeManifest.tree_version == ProjectSearchState.active_tree_version)
+                    & (TreeManifest.project_id == ProjectSearchState.project_id),
+                )
+                .where(
+                    ProjectSearchState.project_id.in_(projects),
+                    ProjectSearchState.active_tree_version.is_not(None),
+                )
+                .order_by(ProjectSearchState.project_id)
+                .with_for_update(read=True, of=ProjectSearchState)
+            )
+        ).all()
+        by_project = {state.project_id: (state, manifest_record) for state, manifest_record, _ in rows}
+        if set(by_project) != set(projects):
+            return None
+        raw_now = rows[0][2]
+        captured_at = (
+            raw_now.replace(tzinfo=UTC)
+            if isinstance(raw_now, datetime) and raw_now.tzinfo is None
+            else raw_now.astimezone(UTC)
+            if isinstance(raw_now, datetime)
+            else await _database_now(session)
+        )
+
+        scoped_requests: list[dict[str, Any]] = []
+        leases: dict[str, tuple[str, str, int]] = {}
+        missing_manifest_keys: list[tuple[str, str]] = []
+        for scope in scopes:
+            project_id = str(scope["project_id"])
+            state, record = by_project[project_id]
+            if (
+                not state.active_tree_version
+                or state.active_routing_slot not in {"SLOT_A", "SLOT_B"}
+                or record.status != "ACTIVE"
+                or record.project_id != project_id
+                or record.tree_version != state.active_tree_version
+                or not isinstance(record.checksum, str)
+                or len(record.checksum) != 64
+                or any(character not in "0123456789abcdef" for character in record.checksum)
+                or state.active_tree_version != f"tree-{record.checksum[:24]}"
+                or isinstance(state.active_search_epoch, bool)
+                or state.active_search_epoch < 1
+            ):
                 return None
-            raw_now = rows[0][2]
-            captured_at = (
-                raw_now.replace(tzinfo=UTC)
-                if isinstance(raw_now, datetime) and raw_now.tzinfo is None
-                else raw_now.astimezone(UTC)
-                if isinstance(raw_now, datetime)
-                else await _database_now(session)
+            active_slot_version = (
+                state.slot_a_tree_version if state.active_routing_slot == "SLOT_A" else state.slot_b_tree_version
+            )
+            if active_slot_version != state.active_tree_version:
+                return None
+
+            manifest_cache_key = (project_id, state.active_tree_version, record.checksum)
+            if manifest_cache_key in _MANIFEST_NODE_FEATURES_CACHE:
+                _MANIFEST_NODE_FEATURES_CACHE.move_to_end(manifest_cache_key)
+                manifest_features_by_project[project_id] = _MANIFEST_NODE_FEATURES_CACHE[manifest_cache_key]
+            elif (project_id, state.active_tree_version) not in missing_manifest_keys:
+                missing_manifest_keys.append((project_id, state.active_tree_version))
+
+            tenant_id = str(scope.get("tenant_id") or "")
+            partition_id = str(scope.get("partition_id") or "")
+            raw_source_ids = scope.get("source_ids")
+            raw_version_ids = scope.get("document_version_ids")
+            if (
+                not tenant_id
+                or not partition_id
+                or not isinstance(raw_source_ids, (list, tuple))
+                or not raw_source_ids
+                or any(not isinstance(value, str) or not value.strip() for value in raw_source_ids)
+                or not isinstance(raw_version_ids, (list, tuple))
+                or not raw_version_ids
+                or any(not isinstance(value, str) or not value.strip() for value in raw_version_ids)
+            ):
+                return None
+            fingerprint = scope_fingerprint(scope)
+            source_ids = tuple(sorted(set(raw_source_ids)))
+            version_ids = tuple(sorted(set(raw_version_ids)))
+            scoped_requests.append(
+                {
+                    "project_id": project_id,
+                    "tree_version": state.active_tree_version,
+                    "tree_config_version": record.config_version,
+                    "routing_slot": state.active_routing_slot,
+                    "search_epoch": state.active_search_epoch,
+                    "manifest_status": record.status,
+                    "manifest_checksum": record.checksum,
+                    "source_ids": source_ids,
+                    "document_version_ids": version_ids,
+                    "tenant_id": tenant_id,
+                    "partition_id": partition_id,
+                    "scope_fingerprint": fingerprint,
+                }
+            )
+            leases[project_id] = (
+                state.active_routing_slot,
+                state.active_tree_version,
+                state.active_search_epoch,
             )
 
-            scoped_requests: list[dict[str, Any]] = []
-            leases: dict[str, tuple[str, str, int]] = {}
-            missing_manifest_keys: list[tuple[str, str]] = []
-            for scope in scopes:
-                project_id = str(scope["project_id"])
-                state, record = by_project[project_id]
-                if (
-                    not state.active_tree_version
-                    or state.active_routing_slot not in {"SLOT_A", "SLOT_B"}
-                    or record.status != "ACTIVE"
-                    or record.project_id != project_id
-                    or record.tree_version != state.active_tree_version
-                    or not isinstance(record.checksum, str)
-                    or len(record.checksum) != 64
-                    or any(character not in "0123456789abcdef" for character in record.checksum)
-                    or state.active_tree_version != f"tree-{record.checksum[:24]}"
-                    or isinstance(state.active_search_epoch, bool)
-                    or state.active_search_epoch < 1
-                ):
-                    return None
-                active_slot_version = (
-                    state.slot_a_tree_version if state.active_routing_slot == "SLOT_A" else state.slot_b_tree_version
-                )
-                if active_slot_version != state.active_tree_version:
-                    return None
-
-                manifest_cache_key = (project_id, state.active_tree_version, record.checksum)
-                if manifest_cache_key in _MANIFEST_NODE_FEATURES_CACHE:
-                    _MANIFEST_NODE_FEATURES_CACHE.move_to_end(manifest_cache_key)
-                    manifest_features_by_project[project_id] = _MANIFEST_NODE_FEATURES_CACHE[manifest_cache_key]
-                elif (project_id, state.active_tree_version) not in missing_manifest_keys:
-                    missing_manifest_keys.append((project_id, state.active_tree_version))
-
-                tenant_id = str(scope.get("tenant_id") or "")
-                partition_id = str(scope.get("partition_id") or "")
-                raw_source_ids = scope.get("source_ids")
-                raw_version_ids = scope.get("document_version_ids")
-                if (
-                    not tenant_id
-                    or not partition_id
-                    or not isinstance(raw_source_ids, (list, tuple))
-                    or not raw_source_ids
-                    or any(not isinstance(value, str) or not value.strip() for value in raw_source_ids)
-                    or not isinstance(raw_version_ids, (list, tuple))
-                    or not raw_version_ids
-                    or any(not isinstance(value, str) or not value.strip() for value in raw_version_ids)
-                ):
-                    return None
-                fingerprint = scope_fingerprint(scope)
-                source_ids = tuple(sorted(set(raw_source_ids)))
-                version_ids = tuple(sorted(set(raw_version_ids)))
-                scoped_requests.append(
-                    {
-                        "project_id": project_id,
-                        "tree_version": state.active_tree_version,
-                        "tree_config_version": record.config_version,
-                        "routing_slot": state.active_routing_slot,
-                        "search_epoch": state.active_search_epoch,
-                        "manifest_status": record.status,
-                        "manifest_checksum": record.checksum,
-                        "source_ids": source_ids,
-                        "document_version_ids": version_ids,
-                        "tenant_id": tenant_id,
-                        "partition_id": partition_id,
-                        "scope_fingerprint": fingerprint,
-                    }
-                )
-                leases[project_id] = (
-                    state.active_routing_slot,
-                    state.active_tree_version,
-                    state.active_search_epoch,
-                )
-
-            if missing_manifest_keys:
-                manifest_rows = (
-                    await session.execute(
-                        select(
-                            TreeManifest.project_id,
-                            TreeManifest.tree_version,
-                            TreeManifest.checksum,
-                            TreeManifest.manifest_json,
-                        ).where(
-                            tuple_(TreeManifest.project_id, TreeManifest.tree_version).in_(
-                                missing_manifest_keys
-                            )
+        if missing_manifest_keys:
+            manifest_rows = (
+                await session.execute(
+                    select(
+                        TreeManifest.project_id,
+                        TreeManifest.tree_version,
+                        TreeManifest.checksum,
+                        TreeManifest.manifest_json,
+                    ).where(
+                        tuple_(TreeManifest.project_id, TreeManifest.tree_version).in_(
+                            missing_manifest_keys
                         )
                     )
-                ).all()
-                for m_proj, m_ver, m_checksum, m_json in manifest_rows:
-                    if isinstance(m_json, Mapping) and _checksum_manifest(m_json) == m_checksum:
-                        extracted = _extract_manifest_node_features(m_json)
-                    else:
-                        extracted = {}
-                    m_key = (m_proj, m_ver, m_checksum)
-                    _MANIFEST_NODE_FEATURES_CACHE[m_key] = extracted
-                    _MANIFEST_NODE_FEATURES_CACHE.move_to_end(m_key)
-                    while len(_MANIFEST_NODE_FEATURES_CACHE) > _MANIFEST_NODE_FEATURES_CACHE_MAX:
-                        _MANIFEST_NODE_FEATURES_CACHE.popitem(last=False)
-                    manifest_features_by_project[m_proj] = extracted
-
-            header_by_scope: dict[tuple[str, str, str, str, str], list[tuple[str, str, str, int]]] = defaultdict(list)
-            total_profile_count = 0
-            for project_id in projects:
-                project_requests = [
-                    request for request in scoped_requests if request["project_id"] == project_id
-                ]
-                state = by_project[project_id][0]
-                scope_triples = sorted(
-                    {
-                        (source_id, version_id, request["partition_id"])
-                        for request in project_requests
-                        for source_id in request["source_ids"]
-                        for version_id in request["document_version_ids"]
-                    }
                 )
-                if not scope_triples or len(scope_triples) > settings.search_tree_profile_limit:
-                    return None
-                remaining_profile_count = settings.search_tree_profile_limit - total_profile_count
-                if remaining_profile_count < 0:
-                    return None
+            ).all()
+            for m_proj, m_ver, m_checksum, m_json in manifest_rows:
+                if isinstance(m_json, Mapping) and _checksum_manifest(m_json) == m_checksum:
+                    extracted = _extract_manifest_node_features(m_json)
+                else:
+                    extracted = {}
+                m_key = (m_proj, m_ver, m_checksum)
+                _MANIFEST_NODE_FEATURES_CACHE[m_key] = extracted
+                _MANIFEST_NODE_FEATURES_CACHE.move_to_end(m_key)
+                while len(_MANIFEST_NODE_FEATURES_CACHE) > _MANIFEST_NODE_FEATURES_CACHE_MAX:
+                    _MANIFEST_NODE_FEATURES_CACHE.popitem(last=False)
+                manifest_features_by_project[m_proj] = extracted
+
+        header_by_scope: dict[tuple[str, str, str, str, str], list[tuple[str, str, str, int]]] = defaultdict(list)
+        total_profile_count = 0
+        for project_id in projects:
+            project_requests = [
+                request for request in scoped_requests if request["project_id"] == project_id
+            ]
+            state = by_project[project_id][0]
+            scope_triples = sorted(
+                {
+                    (source_id, version_id, request["partition_id"])
+                    for request in project_requests
+                    for source_id in request["source_ids"]
+                    for version_id in request["document_version_ids"]
+                }
+            )
+            if not scope_triples or len(scope_triples) > settings.search_tree_profile_limit:
+                return None
+            remaining_profile_count = settings.search_tree_profile_limit - total_profile_count
+            if remaining_profile_count < 0:
+                return None
+            scope_filter = tuple_(
+                TreeRoutingProfile.source_id,
+                TreeRoutingProfile.document_version_id,
+                TreeRoutingProfile.partition_id,
+            ).in_(scope_triples)
+            header_rows = (
+                await session.execute(
+                    select(
+                        TreeRoutingProfile.project_id,
+                        TreeRoutingProfile.tree_version,
+                        TreeRoutingProfile.source_id,
+                        TreeRoutingProfile.document_version_id,
+                        TreeRoutingProfile.partition_id,
+                        TreeRoutingProfile.node_id,
+                        TreeRoutingProfile.profile_checksum,
+                        TreeRoutingProfile.accessible_unit_count,
+                    )
+                    .where(
+                        TreeRoutingProfile.project_id == project_id,
+                        TreeRoutingProfile.tree_version == state.active_tree_version,
+                        scope_filter,
+                    )
+                    .order_by(
+                        TreeRoutingProfile.source_id,
+                        TreeRoutingProfile.document_version_id,
+                        TreeRoutingProfile.partition_id,
+                        TreeRoutingProfile.node_id,
+                    )
+                    .limit(remaining_profile_count + 1)
+                )
+            ).all()
+            if len(header_rows) > remaining_profile_count:
+                return None
+            total_profile_count += len(header_rows)
+            for h_proj, h_ver, h_src, h_doc_ver, h_part, h_node, h_csum, h_cnt in header_rows:
+                header_by_scope[(h_proj, h_ver, h_src, h_doc_ver, h_part)].append(
+                    (h_node, h_doc_ver, h_csum, h_cnt)
+                )
+
+        uncached_requests: list[dict[str, Any]] = []
+        uncached_triples_by_project: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
+        for request in scoped_requests:
+            project_id = request["project_id"]
+            tree_version = request["tree_version"]
+            source_ids = request["source_ids"]
+            partition_id = request["partition_id"]
+            matching_headers = [
+                hdr
+                for source_id in source_ids
+                for version_id in request["document_version_ids"]
+                for hdr in header_by_scope.get(
+                    (project_id, tree_version, source_id, version_id, partition_id),
+                    [],
+                )
+            ]
+            if len(matching_headers) > settings.search_tree_profile_limit:
+                return None
+            cache_sig = (
+                project_id,
+                request["tenant_id"],
+                tree_version,
+                request["scope_fingerprint"],
+                tuple(matching_headers),
+            )
+            cached_nodes = _AGGREGATED_SCOPE_NODE_CACHE.get(cache_sig)
+            if cached_nodes is not None:
+                _AGGREGATED_SCOPE_NODE_CACHE.move_to_end(cache_sig)
+                prepared_groups.append({**request, "cached_nodes": cached_nodes})
+            else:
+                uncached_requests.append(request)
+                for source_id in source_ids:
+                    for version_id in request["document_version_ids"]:
+                        uncached_triples_by_project[project_id].add(
+                            (source_id, version_id, partition_id)
+                        )
+
+        if uncached_requests:
+            profiles_by_scope: dict[tuple[str, str, str, str, str], list[TreeRoutingProfile]] = defaultdict(list)
+            for project_id, triples_set in uncached_triples_by_project.items():
+                state = by_project[project_id][0]
                 scope_filter = tuple_(
                     TreeRoutingProfile.source_id,
                     TreeRoutingProfile.document_version_id,
                     TreeRoutingProfile.partition_id,
-                ).in_(scope_triples)
-                header_rows = (
-                    await session.execute(
-                        select(
-                            TreeRoutingProfile.project_id,
-                            TreeRoutingProfile.tree_version,
-                            TreeRoutingProfile.source_id,
-                            TreeRoutingProfile.document_version_id,
-                            TreeRoutingProfile.partition_id,
-                            TreeRoutingProfile.node_id,
-                            TreeRoutingProfile.profile_checksum,
-                            TreeRoutingProfile.accessible_unit_count,
-                        )
+                ).in_(sorted(triples_set))
+                profile_rows = (
+                    await session.scalars(
+                        select(TreeRoutingProfile)
                         .where(
                             TreeRoutingProfile.project_id == project_id,
                             TreeRoutingProfile.tree_version == state.active_tree_version,
@@ -741,141 +864,70 @@ async def acquire_tree_query_snapshot(
                             TreeRoutingProfile.partition_id,
                             TreeRoutingProfile.node_id,
                         )
-                        .limit(remaining_profile_count + 1)
                     )
                 ).all()
-                if len(header_rows) > remaining_profile_count:
-                    return None
-                total_profile_count += len(header_rows)
-                for h_proj, h_ver, h_src, h_doc_ver, h_part, h_node, h_csum, h_cnt in header_rows:
-                    header_by_scope[(h_proj, h_ver, h_src, h_doc_ver, h_part)].append(
-                        (h_node, h_doc_ver, h_csum, h_cnt)
-                    )
+                for profile in profile_rows:
+                    profiles_by_scope[
+                        (
+                            profile.project_id,
+                            profile.tree_version,
+                            profile.source_id,
+                            profile.document_version_id,
+                            profile.partition_id,
+                        )
+                    ].append(profile)
 
-            uncached_requests: list[dict[str, Any]] = []
-            uncached_triples_by_project: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
-            for request in scoped_requests:
+            for request in uncached_requests:
                 project_id = request["project_id"]
                 tree_version = request["tree_version"]
                 source_ids = request["source_ids"]
                 partition_id = request["partition_id"]
-                matching_headers = [
-                    hdr
+                matching_profiles = [
+                    profile
                     for source_id in source_ids
                     for version_id in request["document_version_ids"]
-                    for hdr in header_by_scope.get(
-                        (project_id, tree_version, source_id, version_id, partition_id),
+                    for profile in profiles_by_scope.get(
+                        (
+                            project_id,
+                            tree_version,
+                            source_id,
+                            version_id,
+                            partition_id,
+                        ),
                         [],
                     )
                 ]
-                if len(matching_headers) > settings.search_tree_profile_limit:
+                if len(matching_profiles) > settings.search_tree_profile_limit:
                     return None
-                cache_sig = (
-                    project_id,
-                    request["tenant_id"],
-                    tree_version,
-                    request["scope_fingerprint"],
-                    tuple(matching_headers),
+                cached_nodes = _validate_and_cache_scope_nodes(
+                    matching_profiles,
+                    project_id=project_id,
+                    tenant_id=request["tenant_id"],
+                    tree_version=tree_version,
+                    source_ids=source_ids,
+                    partition_id=partition_id,
+                    document_version_ids=request["document_version_ids"],
+                    fingerprint=request["scope_fingerprint"],
                 )
-                cached_nodes = _AGGREGATED_SCOPE_NODE_CACHE.get(cache_sig)
-                if cached_nodes is not None:
-                    _AGGREGATED_SCOPE_NODE_CACHE.move_to_end(cache_sig)
-                    prepared_groups.append({**request, "cached_nodes": cached_nodes})
-                else:
-                    uncached_requests.append(request)
-                    for source_id in source_ids:
-                        for version_id in request["document_version_ids"]:
-                            uncached_triples_by_project[project_id].add(
-                                (source_id, version_id, partition_id)
-                            )
+                if cached_nodes is None:
+                    return None
+                prepared_groups.append({**request, "cached_nodes": cached_nodes})
 
-            if uncached_requests:
-                profiles_by_scope: dict[tuple[str, str, str, str, str], list[TreeRoutingProfile]] = defaultdict(list)
-                for project_id, triples_set in uncached_triples_by_project.items():
-                    state = by_project[project_id][0]
-                    scope_filter = tuple_(
-                        TreeRoutingProfile.source_id,
-                        TreeRoutingProfile.document_version_id,
-                        TreeRoutingProfile.partition_id,
-                    ).in_(sorted(triples_set))
-                    profile_rows = (
-                        await session.scalars(
-                            select(TreeRoutingProfile)
-                            .where(
-                                TreeRoutingProfile.project_id == project_id,
-                                TreeRoutingProfile.tree_version == state.active_tree_version,
-                                scope_filter,
-                            )
-                            .order_by(
-                                TreeRoutingProfile.source_id,
-                                TreeRoutingProfile.document_version_id,
-                                TreeRoutingProfile.partition_id,
-                                TreeRoutingProfile.node_id,
-                            )
-                        )
-                    ).all()
-                    for profile in profile_rows:
-                        profiles_by_scope[
-                            (
-                                profile.project_id,
-                                profile.tree_version,
-                                profile.source_id,
-                                profile.document_version_id,
-                                profile.partition_id,
-                            )
-                        ].append(profile)
-
-                for request in uncached_requests:
-                    project_id = request["project_id"]
-                    tree_version = request["tree_version"]
-                    source_ids = request["source_ids"]
-                    partition_id = request["partition_id"]
-                    matching_profiles = [
-                        profile
-                        for source_id in source_ids
-                        for version_id in request["document_version_ids"]
-                        for profile in profiles_by_scope.get(
-                            (
-                                project_id,
-                                tree_version,
-                                source_id,
-                                version_id,
-                                partition_id,
-                            ),
-                            [],
-                        )
-                    ]
-                    if len(matching_profiles) > settings.search_tree_profile_limit:
-                        return None
-                    cached_nodes = _validate_and_cache_scope_nodes(
-                        matching_profiles,
-                        project_id=project_id,
-                        tenant_id=request["tenant_id"],
-                        tree_version=tree_version,
-                        source_ids=source_ids,
-                        partition_id=partition_id,
-                        document_version_ids=request["document_version_ids"],
-                        fingerprint=request["scope_fingerprint"],
-                    )
-                    if cached_nodes is None:
-                        return None
-                    prepared_groups.append({**request, "cached_nodes": cached_nodes})
-
-            database_now = captured_at
-            expires_at = database_now + timedelta(
-                seconds=max(30.0, float(settings.search_source_timeout) + 15.0)
+        database_now = captured_at
+        expires_at = database_now + timedelta(
+            seconds=max(30.0, float(settings.search_source_timeout) + 15.0)
+        )
+        for project_id, (slot, tree_version, epoch) in leases.items():
+            session.add(
+                TreeSnapshotLease(
+                    request_snapshot_id=request_snapshot_id,
+                    project_id=project_id,
+                    routing_slot=slot,
+                    tree_version=tree_version,
+                    search_epoch=epoch,
+                    expires_at=expires_at,
+                )
             )
-            for project_id, (slot, tree_version, epoch) in leases.items():
-                session.add(
-                    TreeSnapshotLease(
-                        request_snapshot_id=request_snapshot_id,
-                        project_id=project_id,
-                        routing_slot=slot,
-                        tree_version=tree_version,
-                        search_epoch=epoch,
-                        expires_at=expires_at,
-                    )
-                )
 
     # Compute dense/sparse/entity/temporal scores outside the DB transaction so locks are never held during I/O
     try:
@@ -966,10 +1018,9 @@ async def acquire_tree_query_snapshot(
 async def release_tree_query_snapshot(request_snapshot_id: str, *, session_factory=SessionLocal) -> None:
     if not request_snapshot_id:
         return
-    async with session_factory() as session:
-        async with session.begin():
-            await session.execute(
-                delete(TreeSnapshotLease).where(
-                    TreeSnapshotLease.request_snapshot_id == request_snapshot_id
-                )
+    async with session_factory() as session, session.begin():
+        await session.execute(
+            delete(TreeSnapshotLease).where(
+                TreeSnapshotLease.request_snapshot_id == request_snapshot_id
             )
+        )

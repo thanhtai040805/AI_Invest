@@ -29,6 +29,8 @@ export interface HydratedTableRow {
   cells?: Array<string | number | null>
 }
 
+export type ResearchChatMode = "GENERAL" | "MOAT"
+
 export interface HydratedTable {
   table_id: string
   title: string
@@ -43,6 +45,8 @@ export interface HydratedTable {
   sanity_error_ratio?: number | null
   headers: string[][] | string[]
   rows: Array<HydratedTableRow | Array<string | number | null>>
+  column_roles?: string[]
+  amount_col_indices?: number[]
   footnotes_text?: string | null
 }
 
@@ -112,8 +116,11 @@ export interface ResearchTelemetry {
 
 export interface ResearchChatMetadata {
   mode?: string
+  chat_mode?: ResearchChatMode
   primary_ticker?: string
   expanded_tickers?: string[]
+  resolved_query?: string
+  sub_queries?: string[]
   as_of_date?: string
   enable_kg?: boolean
   citations?: ResearchCitation[]

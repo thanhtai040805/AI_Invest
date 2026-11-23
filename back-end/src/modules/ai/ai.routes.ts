@@ -15,18 +15,22 @@ const router = Router();
 const tickerRegex = /^[A-Za-z0-9.-]{1,16}$/;
 const tableIdRegex = /^[A-Za-z0-9_-]{1,64}$/;
 
+const chatModeSchema = z.enum(['GENERAL', 'MOAT']);
+
 const createResearchSessionSchema = z
   .object({
-    ticker: z.string().trim().regex(tickerRegex),
+    ticker: z.string().trim().regex(tickerRegex).optional().nullable(),
     title: z.string().trim().min(1).max(200).optional(),
+    mode: chatModeSchema.optional(),
     asOfDate: z.string().date().optional(),
     as_of_date: z.string().date().optional(),
     enableKg: z.boolean().optional(),
     enable_kg: z.boolean().optional(),
   })
   .transform((val) => ({
-    ticker: val.ticker,
+    ticker: val.ticker ?? undefined,
     title: val.title,
+    mode: val.mode,
     asOfDate: val.asOfDate ?? val.as_of_date,
     enableKg: val.enableKg ?? val.enable_kg,
   }));
@@ -36,9 +40,10 @@ const streamResearchChatSchema = z
     sessionId: z.string().uuid().optional(),
     session_id: z.string().uuid().optional(),
     query: z.string().trim().min(1).max(4000),
-    ticker: z.string().trim().regex(tickerRegex),
+    ticker: z.string().trim().regex(tickerRegex).optional().nullable(),
     compareTickers: z.array(z.string().trim().regex(tickerRegex)).max(5).optional(),
     compare_tickers: z.array(z.string().trim().regex(tickerRegex)).max(5).optional(),
+    mode: chatModeSchema.optional(),
     asOfDate: z.string().date().optional(),
     as_of_date: z.string().date().optional(),
     enableKg: z.boolean().optional(),
@@ -47,8 +52,9 @@ const streamResearchChatSchema = z
   .transform((val) => ({
     sessionId: val.sessionId ?? val.session_id,
     query: val.query,
-    ticker: val.ticker,
+    ticker: val.ticker ?? undefined,
     compareTickers: val.compareTickers ?? val.compare_tickers,
+    mode: val.mode,
     asOfDate: val.asOfDate ?? val.as_of_date,
     enableKg: val.enableKg ?? val.enable_kg,
   }));

@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ChatHistoryMessage(BaseModel):
@@ -18,11 +18,20 @@ class ChatHistoryMessage(BaseModel):
 
 class ResearchChatStreamRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
-    ticker: str = Field(min_length=1, max_length=32)
+    ticker: str | None = Field(default=None, max_length=32)
     compare_tickers: list[str] = Field(default_factory=list, max_length=16)
+    mode: Literal["GENERAL", "MOAT"] = "GENERAL"
     as_of_date: date | None = None
     enable_kg: bool = True
     history: list[ChatHistoryMessage] = Field(default_factory=list, max_length=40)
+
+    @field_validator("ticker", mode="before")
+    @classmethod
+    def _normalize_optional_ticker(cls, v: Any) -> str | None:
+        if v is None:
+            return None
+        s = str(v).strip().upper()
+        return s or None
 
 
 class CitationItem(BaseModel):
@@ -50,6 +59,8 @@ class HydratedTableItem(BaseModel):
     sanity_error_ratio: float | None = None
     headers: list[Any] = Field(default_factory=list)
     rows: list[Any] = Field(default_factory=list)
+    column_roles: list[str] = Field(default_factory=list)
+    amount_col_indices: list[int] = Field(default_factory=list)
     footnotes_text: str | None = None
 
 
@@ -103,8 +114,11 @@ class ResearchTelemetry(BaseModel):
 
 class ResearchChatMetadata(BaseModel):
     mode: Literal["RESEARCH_CHAT_V2"] = "RESEARCH_CHAT_V2"
-    primary_ticker: str
+    chat_mode: Literal["GENERAL", "MOAT"] = "GENERAL"
+    primary_ticker: str = ""
     expanded_tickers: list[str] = Field(default_factory=list)
+    resolved_query: str | None = None
+    sub_queries: list[str] = Field(default_factory=list)
     as_of_date: str
     enable_kg: bool = True
     citations: list[CitationItem] = Field(default_factory=list)
@@ -141,6 +155,8 @@ class HydratedTableResponse(BaseModel):
     unit_multiplier: float = 1.0
     headers: list[Any] = Field(default_factory=list)
     rows: list[Any] = Field(default_factory=list)
+    column_roles: list[str] = Field(default_factory=list)
+    amount_col_indices: list[int] = Field(default_factory=list)
     footnotes_text: str | None = None
     sanity_error_ratio: float | None = None
     verification_status: str

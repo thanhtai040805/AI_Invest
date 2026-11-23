@@ -1,12 +1,15 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { MessageSquarePlus, MessagesSquare } from "lucide-react"
+import { Button, Panel } from "@/components/ui"
 import {
   researchChatApi,
   streamResearchChat,
   type EvalSummaryResponse,
   type ResearchChatMessage,
   type ResearchChatMetadata,
+  type ResearchChatMode,
   type ResearchSessionSummary,
 } from "@/lib/api/researchChat"
 import { vietnamDate } from "@/lib/financial-date"
@@ -32,10 +35,16 @@ function createInitialStages(): StageProgressItem[] {
 
 export function ResearchChatWorkspace() {
   const todayDate = useMemo(() => vietnamDate() || "2026-11-20", [])
-  const [primaryTicker, setPrimaryTicker] = useState("VCB")
+  // Free-form ChatGPT-style defaults: no mandatory primary ticker lock, GENERAL mode default
+  const [chatMode, setChatMode] = useState<ResearchChatMode>("GENERAL")
+  const [primaryTicker, setPrimaryTicker] = useState("")
   const [compareTickers, setCompareTickers] = useState<string[]>([])
   const [enableKg, setEnableKg] = useState(true)
   const [asOfDate, setAsOfDate] = useState(todayDate)
+
+  // ChatGPT-style layout drawers
+  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [drawerOpen, setDrawerOpen] = useState(false)
 
   const [sessions, setSessions] = useState<ResearchSessionSummary[]>([])
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
@@ -68,7 +77,21 @@ export function ResearchChatWorkspace() {
       const detail = await researchChatApi.getSession(sessionId)
       const list = Array.isArray(detail.messages) ? detail.messages : []
       setActiveSessionId(detail.session?.id ?? sessionId)
-      if (detail.session?.ticker) setPrimaryTicker(detail.session.ticker)
+      const resolvedMode: ResearchChatMode =
+        detail.session?.mode === "MOAT"
+          ? "MOAT"
+          : [...list].reverse().find((m) => m.role === "assistant")?.metadata?.chat_mode === "MOAT"
+            ? "MOAT"
+            : "GENERAL"
+      setChatMode(resolvedMode)
+      // Keep GENERAL sessions unlocked (no stale single-ticker lock when pivoting companies);
+      // history carry-over in backend handles follow-ups automatically.
+      setPrimaryTicker(
+        resolvedMode === "MOAT" && detail.session?.ticker
+          ? detail.session.ticker.toUpperCase()
+          : "",
+      )
+      setCompareTickers([])
       if (detail.session?.asOfDate) setAsOfDate(detail.session.asOfDate)
       if (typeof detail.session?.enableKg === "boolean") setEnableKg(detail.session.enableKg)
       setMessages(list)
@@ -98,45 +121,27 @@ export function ResearchChatWorkspace() {
   useEffect(() => {
     let cancelled = false
     async function init() {
-      const [sessionRes] = await Promise.all([refreshSessions(), refreshEvalSummary()])
+      await Promise.all([refreshSessions(), refreshEvalSummary()])
       if (cancelled) return
-      if (sessionRes.length > 0) {
-        await loadSessionDetail(sessionRes[0].id)
-      }
     }
     void init()
     return () => {
       cancelled = true
       abortRef.current?.abort()
     }
-  }, [loadSessionDetail, refreshEvalSummary, refreshSessions])
+  }, [refreshEvalSummary, refreshSessions])
 
-  const handleCreateNewSession = useCallback(async () => {
+  const handleStartNewConversation = useCallback(() => {
     if (streaming || creatingSession) return
-    setCreatingSession(true)
+    setActiveSessionId(null)
+    setMessages([])
+    setSelectedAssistantMessageId(null)
+    setPrimaryTicker("")
+    setCompareTickers([])
+    setStages(createInitialStages())
     setStreamError(null)
-    try {
-      const created = await researchChatApi.createSession({
-        ticker: primaryTicker,
-        title: `${primaryTicker} · ${asOfDate}`,
-        asOfDate,
-        enableKg,
-      })
-      setActiveSessionId(created.id)
-      setMessages([])
-      setSelectedAssistantMessageId(null)
-      setStages(createInitialStages())
-      await refreshSessions()
-    } catch (err) {
-      const msg =
-        err && typeof err === "object" && "message" in err
-          ? String((err as { message: unknown }).message)
-          : "Không thể tạo phiên nghiên cứu mới."
-      setStreamError(msg)
-    } finally {
-      setCreatingSession(false)
-    }
-  }, [asOfDate, creatingSession, enableKg, primaryTicker, refreshSessions, streaming])
+    setDrawerOpen(false)
+  }, [creatingSession, streaming])
 
   const handleSendPrompt = useCallback(
     async (query: string) => {
@@ -148,12 +153,16 @@ export function ResearchChatWorkspace() {
       setStreamingText("")
       setStages(createInitialStages())
 
+      const effectiveTicker = primaryTicker.trim().toUpperCase() || undefined
       let sessionId = activeSessionId
       if (!sessionId) {
+        setCreatingSession(true)
         try {
+          const titlePrefix = effectiveTicker ? `${effectiveTicker}: ` : ""
           const created = await researchChatApi.createSession({
-            ticker: primaryTicker,
-            title: `${primaryTicker}: ${clean.slice(0, 48)}`,
+            ticker: effectiveTicker,
+            title: `${titlePrefix}${clean.slice(0, 56)}`,
+            mode: chatMode,
             asOfDate,
             enableKg,
           })
@@ -167,7 +176,10 @@ export function ResearchChatWorkspace() {
               : "Không thể khởi tạo phiên nghiên cứu."
           setStreamError(msg)
           setStreaming(false)
+          setCreatingSession(false)
           return
+        } finally {
+          setCreatingSession(false)
         }
       }
 
@@ -190,8 +202,9 @@ export function ResearchChatWorkspace() {
           {
             sessionId,
             query: clean,
-            ticker: primaryTicker,
+            ticker: effectiveTicker,
             compareTickers: compareTickers.length > 0 ? compareTickers : undefined,
+            mode: chatMode,
             asOfDate,
             enableKg,
           },
@@ -282,6 +295,7 @@ export function ResearchChatWorkspace() {
     [
       activeSessionId,
       asOfDate,
+      chatMode,
       compareTickers,
       enableKg,
       primaryTicker,
@@ -304,9 +318,15 @@ export function ResearchChatWorkspace() {
         setActiveTab(nextFocus.tab)
         setInspectorFocus(nextFocus)
       }
+      setDrawerOpen(true)
     },
     [],
   )
+
+  const handleSelectAssistantMessage = useCallback((messageId: string) => {
+    setSelectedAssistantMessageId(messageId)
+    setDrawerOpen(true)
+  }, [])
 
   const selectedAssistantMessage = useMemo(() => {
     const assistants = messages.filter((m) => m.role === "assistant")
@@ -321,34 +341,120 @@ export function ResearchChatWorkspace() {
   const activeMetadata: ResearchChatMetadata | null =
     selectedAssistantMessage?.metadata ?? null
 
+  const evidenceCount = useMemo(() => {
+    if (!activeMetadata) return 0
+    return (
+      (Array.isArray(activeMetadata.citations) ? activeMetadata.citations.length : 0) +
+      (Array.isArray(activeMetadata.hydrated_tables) ? activeMetadata.hydrated_tables.length : 0) +
+      (Array.isArray(activeMetadata.calculator_traces) ? activeMetadata.calculator_traces.length : 0) +
+      (Array.isArray(activeMetadata.graph_hops) ? activeMetadata.graph_hops.length : 0)
+    )
+  }, [activeMetadata])
+
   return (
-    <div className="space-y-3.5">
+    <Panel
+      flush
+      className="relative flex flex-col h-[calc(100dvh-132px)] min-h-[640px] overflow-hidden"
+    >
       <TopControlBar
+        chatMode={chatMode}
         primaryTicker={primaryTicker}
-        onPrimaryTickerChange={setPrimaryTicker}
         compareTickers={compareTickers}
-        onCompareTickersChange={setCompareTickers}
-        enableKg={enableKg}
-        onEnableKgChange={setEnableKg}
         asOfDate={asOfDate}
-        todayDate={todayDate}
-        onAsOfDateChange={setAsOfDate}
-        sessions={sessions}
-        activeSessionId={activeSessionId}
-        onSelectSession={(id) => void loadSessionDetail(id)}
-        onCreateNewSession={() => void handleCreateNewSession()}
-        creatingSession={creatingSession}
+        sidebarOpen={sidebarOpen}
+        onToggleSidebar={() => setSidebarOpen((v) => !v)}
+        drawerOpen={drawerOpen}
+        onToggleDrawer={() => setDrawerOpen((v) => !v)}
+        evidenceCount={evidenceCount}
         evalSummary={evalSummary}
-        onOpenGateTab={() => setActiveTab("eval")}
-        disabled={streaming}
+        onOpenGateTab={() => {
+          setActiveTab("eval")
+          setDrawerOpen(true)
+        }}
       />
 
-      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] gap-3.5 items-start">
+      <div className="relative flex flex-1 min-h-0 overflow-hidden">
+        {/* Left Collapsible Conversation Sidebar */}
+        {sidebarOpen && (
+          <aside
+            aria-label="Lịch sử hội thoại nghiên cứu"
+            className="w-[248px] shrink-0 border-r border-line bg-surface flex flex-col overflow-hidden"
+          >
+            <div className="p-2.5 border-b border-line shrink-0">
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={handleStartNewConversation}
+                disabled={streaming || creatingSession}
+                className="w-full justify-center !h-9 text-[12.5px]"
+              >
+                <MessageSquarePlus className="h-4 w-4 shrink-0" aria-hidden="true" />
+                <span>Cuộc trò chuyện mới</span>
+              </Button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-2 space-y-1">
+              {sessions.length === 0 ? (
+                <div className="px-3 py-6 text-center text-[12px] text-muted space-y-1.5">
+                  <MessagesSquare className="h-5 w-5 mx-auto opacity-50" aria-hidden="true" />
+                  <p>Chưa có cuộc trò chuyện lưu trữ.</p>
+                </div>
+              ) : (
+                sessions.map((s) => {
+                  const isActive = s.id === activeSessionId
+                  const dateLabel = s.lastMessageAt || s.updatedAt || s.createdAt
+                  return (
+                    <button
+                      key={s.id}
+                      type="button"
+                      disabled={streaming}
+                      onClick={() => void loadSessionDetail(s.id)}
+                      className={`w-full text-left rounded-[8px] px-2.5 py-2 transition-colors border ${
+                        isActive
+                          ? "border-mineral/40 bg-mineral/10 text-ink"
+                          : "border-transparent hover:bg-soft/75 text-secondary hover:text-ink"
+                      } disabled:opacity-50`}
+                    >
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        {s.ticker && (
+                          <span className="shrink-0 rounded bg-paper border border-line px-1 py-0.2 font-mono text-[9.5px] font-semibold text-ink">
+                            {s.ticker}
+                          </span>
+                        )}
+                        <span className="text-[12.5px] font-medium truncate">
+                          {s.title || `Phiên ${s.id.slice(0, 8)}`}
+                        </span>
+                      </div>
+                      <div className="mt-1 flex items-center justify-between text-[10.5px] text-muted font-mono">
+                        <span>{dateLabel ? dateLabel.slice(0, 10) : ""}</span>
+                        {typeof s.messageCount === "number" && (
+                          <span>{s.messageCount} tin</span>
+                        )}
+                      </div>
+                    </button>
+                  )
+                })
+              )}
+            </div>
+          </aside>
+        )}
+
+        {/* Wide Central Chat Stream */}
         <ChatColumn
+          chatMode={chatMode}
+          onChatModeChange={setChatMode}
           primaryTicker={primaryTicker}
+          onPrimaryTickerChange={setPrimaryTicker}
+          compareTickers={compareTickers}
+          onCompareTickersChange={setCompareTickers}
+          enableKg={enableKg}
+          onEnableKgChange={setEnableKg}
+          asOfDate={asOfDate}
+          todayDate={todayDate}
+          onAsOfDateChange={setAsOfDate}
           messages={messages}
           selectedAssistantMessageId={selectedAssistantMessage?.id ?? null}
-          onSelectAssistantMessage={(id) => setSelectedAssistantMessageId(id)}
+          onSelectAssistantMessage={handleSelectAssistantMessage}
           streaming={streaming}
           streamingText={streamingText}
           stages={stages}
@@ -358,16 +464,33 @@ export function ResearchChatWorkspace() {
           onBadgeClick={handleBadgeClick}
         />
 
-        <EvidenceInspector
-          activeTab={activeTab}
-          onTabChange={setActiveTab}
-          metadata={activeMetadata}
-          messageId={selectedAssistantMessage?.id ?? null}
-          focus={inspectorFocus}
-          evalSummary={evalSummary}
-          onRefreshSummary={refreshEvalSummary}
-        />
+        {/* Collapsible Right Slide-Over Evidence Drawer */}
+        {drawerOpen && (
+          <>
+            <div
+              onClick={() => setDrawerOpen(false)}
+              aria-hidden="true"
+              className="fixed inset-0 z-30 bg-ink/20 backdrop-blur-[1px] xl:hidden"
+            />
+            <aside
+              aria-label="Ngăn bằng chứng và kiểm toán"
+              className="fixed right-0 top-0 bottom-0 z-40 w-[min(92vw,480px)] shadow-xl xl:static xl:z-auto xl:w-[440px] 2xl:w-[500px] xl:shadow-none shrink-0 border-l border-line bg-surface h-full overflow-hidden"
+            >
+              <EvidenceInspector
+                activeTab={activeTab}
+                onTabChange={setActiveTab}
+                metadata={activeMetadata}
+                messageId={selectedAssistantMessage?.id ?? null}
+                focus={inspectorFocus}
+                evalSummary={evalSummary}
+                onRefreshSummary={refreshEvalSummary}
+                onClose={() => setDrawerOpen(false)}
+                className="h-full border-0 rounded-none"
+              />
+            </aside>
+          </>
+        )}
       </div>
-    </div>
+    </Panel>
   )
 }

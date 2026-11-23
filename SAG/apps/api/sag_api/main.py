@@ -74,8 +74,13 @@ async def lifespan(app: FastAPI):
 
     runtime = KnowledgeRuntime(settings, SessionLocal, active_path=Path(settings.data_dir))
     from sag_api.jobs.knowledge import KnowledgeWorker
+    from sag_api.services.knowledge_service import build_financial_knowledge_config
 
-    knowledge_worker = KnowledgeWorker(SessionLocal, settings)
+    knowledge_worker = KnowledgeWorker(
+        SessionLocal,
+        settings,
+        config=build_financial_knowledge_config(),
+    )
 
     try:
         async with principal_assertion_lifespan():

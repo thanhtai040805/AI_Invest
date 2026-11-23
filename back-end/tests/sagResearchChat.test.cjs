@@ -202,7 +202,7 @@ function parseEmittedSseEvents(rawText) {
     .filter(Boolean);
 }
 
-test('SAG research timeout is 60s (bypasses 800ms aiEngineService) and BFF headers handle single vs multi-ticker', () => {
+test('SAG research timeout is 60s (bypasses 800ms aiEngineService) and BFF headers enforce org-scoped read-only access without single-ticker lock', () => {
   assert.equal(SAG_RESEARCH_TIMEOUT_MS, 60_000);
 
   const service = new SagResearchChatService({
@@ -215,14 +215,23 @@ test('SAG research timeout is 60s (bypasses 800ms aiEngineService) and BFF heade
   assert.equal(single['X-SAG-BFF-Service-Token'], 'test-bff-token');
   assert.equal(single['X-Continuum-User-Id'], 'user-1');
   assert.equal(single['X-Continuum-Organization-Id'], 'aiinvest-default');
-  assert.equal(single['X-Continuum-Project-Id'], 'PVT');
-  assert.equal(single['X-Continuum-Security-Partition'], 'PVT');
-  assert.equal(single['X-Continuum-Allowed-Project-Ids'], undefined);
+  assert.equal(single['X-Continuum-Project-Id'], 'all');
+  assert.equal(single['X-Continuum-Security-Partition'], 'all');
+  assert.equal(single['X-Continuum-Allowed-Project-Ids'], '*');
 
-  const multi = service.buildBffHeaders('user-1', 'pvt', ['pvp', 'vto', 'PVT']);
-  assert.equal(multi['X-Continuum-Project-Id'], 'all');
-  assert.equal(multi['X-Continuum-Security-Partition'], 'all');
-  assert.equal(multi['X-Continuum-Allowed-Project-Ids'], 'PVT,PVP,VTO');
+  const freeForm = service.buildBffHeaders('user-1');
+  assert.equal(freeForm['X-Continuum-Organization-Id'], 'aiinvest-default');
+  assert.equal(freeForm['X-Continuum-Project-Id'], 'all');
+  assert.equal(freeForm['X-Continuum-Security-Partition'], 'all');
+  assert.equal(freeForm['X-Continuum-Allowed-Project-Ids'], '*');
+
+  const customOrg = new SagResearchChatService({
+    prismaClient: mockPrisma,
+    sagApiUrl: 'http://sag-api:8000',
+    sagBffServiceToken: 'test-bff-token',
+    sagResearchOrgId: 'custom-org-id',
+  });
+  assert.equal(customOrg.buildBffHeaders('user-1')['X-Continuum-Organization-Id'], 'custom-org-id');
 });
 
 test('fail-closed when SAG_BFF_SERVICE_TOKEN is missing', async () => {
@@ -327,7 +336,11 @@ test('streamResearchChat proxies chunked SSE, forwards BFF headers, and persists
   assert.equal(capturedRequest.url, 'http://sag-api:8000/api/v1/research-chat/stream');
   assert.equal(capturedRequest.init.headers['X-SAG-BFF-Service-Token'], 'secret-token');
   assert.equal(capturedRequest.init.headers['X-Continuum-Project-Id'], 'all');
-  assert.equal(capturedRequest.init.headers['X-Continuum-Allowed-Project-Ids'], 'PVT,PVP');
+  assert.equal(capturedRequest.init.headers['X-Continuum-Allowed-Project-Ids'], '*');
+  const parsedBody = JSON.parse(capturedRequest.init.body);
+  assert.equal(parsedBody.mode, 'GENERAL');
+  assert.equal(parsedBody.ticker, 'PVT');
+  assert.deepEqual(parsedBody.compare_tickers, ['PVP']);
 
   assert.equal(res.headers['content-type'], 'text/event-stream; charset=utf-8');
   assert.equal(res.headers['cache-control'], 'no-cache, no-transform');
@@ -641,4 +654,45 @@ test('streamResearchChat fails closed on truncated stream without done and KG/ta
     () => badJsonSvc.getHydratedTable('user-1', 'tbl-1', 'hpg'),
     (err) => err instanceof SagGatewayError && err.statusCode === 502 && err.code === 'INVALID_SAG_PAYLOAD',
   );
+});
+
+test('createSession and streamResearchChat support free-form chat without primary ticker and forward MOAT mode', async () => {
+  resetMocks();
+  let capturedBody = null;
+  const service = new SagResearchChatService({
+    prismaClient: mockPrisma,
+    fetchImpl: async (_url, init) => {
+      capturedBody = JSON.parse(init.body);
+      return new Response(
+        makeSseStream([
+          `event: done\ndata: ${JSON.stringify({
+            answer: 'FPT va MWG deu co du lieu PIT [C1].',
+            metadata: { mode: 'RESEARCH_CHAT_V2', chat_mode: 'MOAT', expanded_tickers: ['FPT', 'MWG'] },
+          })}\n\n`,
+        ]),
+        { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+      );
+    },
+    sagApiUrl: 'http://sag-api:8000',
+    sagBffServiceToken: 'secret-token',
+  });
+
+  const session = await service.createSession('user-1', { title: 'So sanh FPT va MWG' });
+  assert.equal(session.ticker, null);
+
+  const res = createMockSseResponse();
+  await service.streamResearchChat(
+    'user-1',
+    {
+      sessionId: session.id,
+      query: 'So sanh bien gop @FPT va @MWG',
+      mode: 'MOAT',
+    },
+    res,
+  );
+  assert.equal(capturedBody.ticker ?? null, null);
+  assert.equal(capturedBody.mode, 'MOAT');
+  const events = parseEmittedSseEvents(res.chunks.join(''));
+  assert.equal(events.at(-1).event, 'done');
+  assert.equal(events.at(-1).data.metadata.chat_mode, 'MOAT');
 });

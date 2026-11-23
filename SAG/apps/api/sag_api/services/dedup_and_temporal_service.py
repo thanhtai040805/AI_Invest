@@ -93,14 +93,16 @@ _MINHASH_TOKEN_RE = re.compile(
 def tokenize_for_minhash(text: str) -> list[str]:
     """Tokenize text into universal lexical units for 5-shingle MinHash.
 
-    Continuous scripts without whitespace word boundaries (CJK, Kana, Thai,
-    Lao, Khmer, Myanmar) emit individual characters so k=5 forms overlapping
-    5-character shingles; spaced scripts emit alphanumeric word tokens so k=5
-    forms overlapping 5-word shingles.
+    Applies `normalize_numeric_separators` so Vietnamese dot-thousands (`16.012.813`)
+    stay intact as numeric tokens rather than shattering into generic digits, while
+    continuous scripts (CJK/Kana/Thai/etc.) emit characters for overlapping k=5 shingles.
     """
     if not text:
         return []
-    return _MINHASH_TOKEN_RE.findall(text.casefold())
+    from sag_api.services.search_index_service import normalize_numeric_separators
+
+    normalized = normalize_numeric_separators(text)
+    return _MINHASH_TOKEN_RE.findall(normalized.casefold())
 
 
 _MINHASH_CACHE: OrderedDict[str, list[int]] = OrderedDict()
@@ -139,9 +141,14 @@ async def _block_signatures(blocks, *, persist_ids):
             _MINHASH_CACHE.popitem(last=False)
         for block in blocks:
             if block.id in persist_ids:
-                block.dedup_signature_json = {"algorithm": _MINHASH_ALGORITHM, "content_hash": keys[block.id],
-                                              "signature": found[keys[block.id]],
-                                              "checksum": _signature_checksum(found[keys[block.id]])}
+                existing_meta = block.dedup_signature_json if isinstance(block.dedup_signature_json, dict) else {}
+                block.dedup_signature_json = {
+                    **existing_meta,
+                    "algorithm": _MINHASH_ALGORITHM,
+                    "content_hash": keys[block.id],
+                    "signature": found[keys[block.id]],
+                    "checksum": _signature_checksum(found[keys[block.id]]),
+                }
         return {b.id: found[keys[b.id]] for b in blocks}
 
 
@@ -899,6 +906,27 @@ def _dedup_candidates(curr_blocks, prior_blocks, signatures, block_embeddings, c
                 is_semantic_match = cosine_sim >= 0.90
 
                 if is_lexical_match or is_semantic_match:
+                    # F11b: Guard financial tables (`table` / `table_card`) so tables with
+                    # differing periods, slots, or numeric values are NEVER near-duplicate merged.
+                    if b.block_type in ("table", "table_card") or pb.block_type in ("table", "table_card"):
+                        from sag_api.research.table_engine import table_safe_jaccard_should_merge
+
+                        b_meta = b.dedup_signature_json if isinstance(b.dedup_signature_json, dict) else {}
+                        pb_meta = pb.dedup_signature_json if isinstance(pb.dedup_signature_json, dict) else {}
+                        sec_a = {
+                            "text": b.normalized_text,
+                            "table_id": b_meta.get("table_id") or b.source_anchor or b.id,
+                            "sub_doc_slot": b_meta.get("sub_doc_slot") or (b.section_path or "").split(" > ")[0],
+                            "fiscal_year": getattr(b, "fiscal_year", 0),
+                        }
+                        sec_b = {
+                            "text": pb.normalized_text,
+                            "table_id": pb_meta.get("table_id") or pb.source_anchor or pb.id,
+                            "sub_doc_slot": pb_meta.get("sub_doc_slot") or (pb.section_path or "").split(" > ")[0],
+                            "fiscal_year": getattr(pb, "fiscal_year", 0),
+                        }
+                        if not table_safe_jaccard_should_merge(sec_a, sec_b, threshold=threshold):
+                            continue
                     pb_doc_id = getattr(pb, "document_id", None)
                     same_doc = (b_doc_id == pb_doc_id) if (b_doc_id and pb_doc_id) else None
                     is_contra, is_supp, is_super = detect_semantic_signals(

@@ -238,10 +238,25 @@ def _is_plan_actual_or_quarter_pair(a: KnowledgeUnit, b: KnowledgeUnit) -> bool:
     if not slot_a or not slot_b:
         return False
 
+    def _is_plan_slot(s: str) -> bool:
+        return s in {"AGM_TARGETS", "BCTN_CORE", "BCTN_PR"} or s.startswith("S03")
+
+    def _is_actual_slot(s: str) -> bool:
+        return s in {"BCTC_AUDITED", "BCTN_CORE"} or s.startswith(("S01", "S03", "S09", "S10", "S11", "S12"))
+
+    def _is_quarter_slot(s: str) -> bool:
+        return s == "QUARTER_NOTES" or s.startswith("S13")
+
     def _pair_matches(s1: str, y1: int, s2: str, y2: int) -> bool:
-        if s1.startswith("S03") and (s2.startswith("S01") or s2.startswith("S03")) and y2 == y1 + 1:
+        # Plan / guidance in year y1 vs Actual in year y1 or y1 + 1
+        if _is_plan_slot(s1) and _is_actual_slot(s2) and (y2 == y1 + 1 or (s1 == "AGM_TARGETS" and y2 == y1)):
             return True
-        if s1.startswith("S13") and (s2.startswith("S03") or s2.startswith("S12")) and y1 == y2:
+        # Quarterly update vs Annual audited / targets in the same fiscal year
+        if (
+            _is_quarter_slot(s1)
+            and (s2 in {"BCTC_AUDITED", "AGM_TARGETS", "BCTN_CORE"} or s2.startswith(("S03", "S12")))
+            and y1 == y2
+        ):
             return True
         return False
 
@@ -1030,7 +1045,7 @@ async def rebuild_knowledge_version(
     updated_unit_ids: list[str] = []
     new_evidence_rows: list[KnowledgeEvidence] = []
     for block in blocks:
-        if block.block_type == "heading" or not block.normalized_text.strip():
+        if block.block_type in ("heading", "table_card") or not block.normalized_text.strip():
             continue
         unit_id = stable_id(
             base["tenant_id"], base["project_id"], base["security_partition_id"], version_id, block.id, "passage-v1"

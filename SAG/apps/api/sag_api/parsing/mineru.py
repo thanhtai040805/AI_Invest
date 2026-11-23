@@ -416,20 +416,28 @@ def _inject_page_markers_from_content_list(
     safe_break_line: list[bool] = []
     in_fence = False
     prev_is_table = False
+    html_table_depth = 0
+    html_table_open_re = re.compile(r"<table\b", re.IGNORECASE)
+    html_table_close_re = re.compile(r"</table\s*>", re.IGNORECASE)
 
     for line in md_lines:
         stripped = line.strip()
         if stripped.startswith("```"):
-            safe_break_line.append(not in_fence)
+            safe_break_line.append((not in_fence) and html_table_depth == 0)
             in_fence = not in_fence
             prev_is_table = False
             norm_md_lines.append("")
             continue
         is_table_row = stripped.startswith("|") and stripped.endswith("|")
-        # Allow inserting a page marker right before the FIRST row of a table, never mid-table
-        is_safe = (not in_fence) and (not (is_table_row and prev_is_table))
+        # Allow inserting a page marker right before the FIRST row of a Markdown/HTML table, never mid-table
+        is_safe = (not in_fence) and (html_table_depth == 0) and (not (is_table_row and prev_is_table))
         safe_break_line.append(is_safe)
         prev_is_table = is_table_row
+        if not in_fence:
+            opens = len(html_table_open_re.findall(line))
+            closes = len(html_table_close_re.findall(line))
+            if opens or closes:
+                html_table_depth = max(0, html_table_depth + opens - closes)
         norm_md_lines.append(_normalize_anchor_line(line) if stripped else "")
 
     insert_before: dict[int, list[int]] = {0: [first_page]}

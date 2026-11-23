@@ -40,13 +40,7 @@ COMMON_VN_WORDS = (
     "năm",
 )
 
-_VN_VOWELS_ALL = (
-    "aàáảãạăằắẳẵặâầấẩẫậ"
-    "eèéẻẽẹêềếểễệ"
-    "iìíỉĩị"
-    "oòóỏõọôồốổỗộơờớởỡợ"
-    "uùúủũụưừứửữự"
-    "yỳýỷỹỵ"
+_VN_VOWELS_UPPER = (
     "AÀÁẢÃẠĂẰẮẲẴẶÂẦẤẨẪẬ"
     "EÈÉẺẼẸÊỀẾỂỄỆ"
     "IÌÍỈĨỊ"
@@ -54,7 +48,53 @@ _VN_VOWELS_ALL = (
     "UÙÚỦŨỤƯỪỨỬỮỰ"
     "YỲÝỶỸỴ"
 )
-_CTG_CORRUPT_D_RE = re.compile(rf"(?:(?<=^)|(?<=[\s(\[\-–/]))[‚È¢½€](?=[{_VN_VOWELS_ALL}])")
+_VN_VOWELS_LOWER = (
+    "aàáảãạăằắẳẵặâầấẩẫậ"
+    "eèéẻẽẹêềếểễệ"
+    "iìíỉĩị"
+    "oòóỏõọôồốổỗộơờớởỡợ"
+    "uùúủũụưừứửữự"
+    "yỳýỷỹỵ"
+)
+_VN_VOWELS_ALL = _VN_VOWELS_LOWER + _VN_VOWELS_UPPER
+_CTRL_D_GLYPH = r"[\x01-\x08\x0b-\x1f\x7f-\x9f]"
+_CTG_CORRUPT_D_RE = re.compile(
+    rf"(?:(?<=^)|(?<=[\s(\[\-–/]))[‚È¢½€](?=[{_VN_VOWELS_ALL}])"
+)
+_CTG_SYN_UPPER_D_RE = re.compile(
+    rf"(?<![A-Za-z0-9]){_CTRL_D_GLYPH}(?=[{_VN_VOWELS_UPPER}])"
+)
+_CTG_SYN_LOWER_D_RE = re.compile(
+    rf"(?<![A-Za-z0-9]){_CTRL_D_GLYPH}(?=[{_VN_VOWELS_LOWER}])"
+)
+_TAB_DONG_RE = re.compile(
+    r"(?:(?<=^)|(?<=[\s(\[\-–/]))[\t\xa0\xad](?=(?:ồng|ược|ộ|ịnh|ầu|ến|ể|ối|ộng|ơn|ảm|ầy|ạo|ức|ộc|ổi|ặc|ạt|ứng|ều|ịa|ủ|ã|à|ang)\b)"
+)
+
+_WATERMARK_OR_SIG_LINE_RE = re.compile(
+    r"(?:\boid\.\d|\bdn:\s*c=|\bcn=|\bserialnumber=|digitally\s+signed|signed\s+by|"
+    r"ký\s+bởi:|ngày\s+ký:|tổ\s+chức\s+xác\s+thực:|văn\s+bản\s+này\s+được\s+xác\s+thực|"
+    r"số\s+định\s+danh:|date:\s*20\d{2}\.\d{2}\.\d{2})",
+    re.IGNORECASE,
+)
+_SHORT_DOC_EXEMPT_TYPES = frozenset(
+    {
+        "NQ_DHDCD",
+        "AGM_RESOLUTION",
+        "GIAI_TRINH",
+        "GIẢI_TRÌNH",
+        "EXPLANATION",
+        "LATEST_QUARTER",
+    }
+)
+_FINANCIAL_SHIELD_INSPECT_RE = re.compile(
+    r"(?:bảng\s+cân\s+đối\s+kế\s+toán|báo\s+cáo\s+tình\s+hình\s+tài\s+chính|"
+    r"báo\s+cáo\s+kết\s+quả\s+hoạt\s+động|báo\s+cáo\s+lưu\s+chuyển\s+tiền\s+tệ|"
+    r"\bmẫu\s+số\s+b\s*0[1-9]\b|\bb\s*0[1-9][a-z]?\s*-\s*(?:dn|ctck)\b|\bb\s*0[1-5]\s*/\s*tctd\b|"
+    r"thuyết\s+minh\s+báo\s+cáo\s+tài\s+chính|báo\s+cáo\s+kiểm\s+toán\s+độc\s+lập)",
+    re.IGNORECASE,
+)
+_ZIP_PART_RE = re.compile(r"^(?P<stem>.+?)[_\-. ]+(?:p|part)(?P<part>\d{1,2})\.pdf$", re.IGNORECASE)
 
 DEFAULT_MAX_ZIP_BYTES = 150 * 1024 * 1024  # 150 MB uncompressed cap
 DEFAULT_MAX_ZIP_ENTRIES = 64
@@ -143,9 +183,13 @@ def normalize_ws(text: str) -> str:
 
 
 def normalize_ctg_font_quirks(text: str) -> str:
-    """Repair known PDF glyph substitution quirks observed in HOSE filings (e.g. 'Èồng'/'‚ủ'/'¢ược'/'½oái' -> 'đ')."""
-    s = unicodedata.normalize("NFC", text or "")
+    """Repair PDF glyph substitution quirks in HOSE filings (e.g. ctrl-bytes/'È'/'‚'/'¢'/'½' -> 'đ'/'Đ')."""
+    s = unicodedata.normalize("NFC", text or "").replace("\r\n", "\n")
     s = re.sub(r"\(cid:\d+\)", "đ", s)
+    s = _CTG_SYN_UPPER_D_RE.sub("Đ", s)
+    s = _CTG_SYN_LOWER_D_RE.sub("đ", s)
+    s = _TAB_DONG_RE.sub("đ", s)
+    s = s.replace("\x16", "")
     s = re.sub(r"(?i)triệu\s+[è‚€¢½]ồng", "Triệu đồng", s)
     s = re.sub(r"(?i)tỷ\s+[è‚€¢½]ồng", "Tỷ đồng", s)
     s = _CTG_CORRUPT_D_RE.sub("đ", s)
@@ -207,13 +251,35 @@ def _validate_zip_member_name(filename: str) -> None:
         raise ZipExtractionError(f"Zip-Slip normalized traversal detected: {filename}")
 
 
+def _read_zip_member_bounded(
+    zf: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+    *,
+    remaining_bytes: int,
+) -> bytes:
+    buf = io.BytesIO()
+    with zf.open(info, "r") as member_stream:
+        read_total = 0
+        while True:
+            chunk = member_stream.read(65536)
+            if not chunk:
+                break
+            read_total += len(chunk)
+            if read_total > remaining_bytes:
+                raise ZipExtractionError(
+                    f"Actual uncompressed bytes of {info.filename} exceed limit {remaining_bytes}"
+                )
+            buf.write(chunk)
+    return buf.getvalue()
+
+
 def safe_extract_pdf_from_zip(
     data: bytes,
     *,
     max_uncompressed_bytes: int = DEFAULT_MAX_ZIP_BYTES,
     max_entries: int = DEFAULT_MAX_ZIP_ENTRIES,
 ) -> tuple[bytes, str, list[str]]:
-    """Safely extract the primary research PDF from a ZIP archive with Zip-Slip & size guards."""
+    """Safely extract the primary research PDF (or merged `_p1 + _p2` parts) from a ZIP archive."""
     if not zipfile.is_zipfile(io.BytesIO(data)):
         raise ZipExtractionError("Payload is not a valid ZIP archive")
 
@@ -278,30 +344,78 @@ def safe_extract_pdf_from_zip(
             scored.sort(key=lambda item: (item[0], item[1], item[2]))
             chosen_info = scored[0][3]
 
-            # Stream-read with hard byte cap to defeat spoofed ZipInfo.file_size headers
-            buf = io.BytesIO()
-            with zf.open(chosen_info, "r") as member_stream:
-                read_total = 0
-                while True:
-                    chunk = member_stream.read(65536)
-                    if not chunk:
-                        break
-                    read_total += len(chunk)
-                    if read_total > max_uncompressed_bytes:
-                        raise ZipExtractionError(
-                            f"Actual uncompressed bytes of {chosen_info.filename} exceed limit {max_uncompressed_bytes}"
-                        )
-                    buf.write(chunk)
-            return buf.getvalue(), chosen_info.filename, zip_entries
+            # Detect sequential multi-part filings (e.g. `*_p1.pdf`, `*_p2.pdf`) sharing the chosen stem
+            part_match = _ZIP_PART_RE.match(chosen_info.filename.replace("\\", "/").rsplit("/", 1)[-1])
+            sibling_parts: list[tuple[int, zipfile.ZipInfo]] = []
+            if part_match:
+                target_stem = part_match.group("stem").lower()
+                for info, _sz in pdf_candidates:
+                    base_name = info.filename.replace("\\", "/").rsplit("/", 1)[-1]
+                    m_sib = _ZIP_PART_RE.match(base_name)
+                    if m_sib and m_sib.group("stem").lower() == target_stem:
+                        sibling_parts.append((int(m_sib.group("part")), info))
+                sibling_parts.sort(key=lambda item: (item[0], item[1].filename))
+
+            if len(sibling_parts) >= 2:
+                remaining = max_uncompressed_bytes
+                part_blobs: list[bytes] = []
+                part_names: list[str] = []
+                for _pidx, pinfo in sibling_parts:
+                    blob = _read_zip_member_bounded(zf, pinfo, remaining_bytes=remaining)
+                    remaining -= len(blob)
+                    part_blobs.append(blob)
+                    part_names.append(pinfo.filename)
+                merged_doc = fitz.open()
+                try:
+                    for blob in part_blobs:
+                        with fitz.open(stream=blob, filetype="pdf") as part_doc:
+                            if len(part_doc) > 0:
+                                merged_doc.insert_pdf(part_doc)
+                    if len(merged_doc) > 0:
+                        merged_bytes = merged_doc.tobytes()
+                        if len(merged_bytes) <= max_uncompressed_bytes:
+                            return merged_bytes, "+".join(part_names), zip_entries
+                except Exception:  # noqa: BLE001
+                    pass
+                finally:
+                    merged_doc.close()
+                # Fall back to the first part if merge exceeds size or fails
+                return part_blobs[0], part_names[0], zip_entries
+
+            # Single chosen PDF: stream-read with hard byte cap to defeat spoofed ZipInfo.file_size headers
+            raw_pdf = _read_zip_member_bounded(zf, chosen_info, remaining_bytes=max_uncompressed_bytes)
+            return raw_pdf, chosen_info.filename, zip_entries
     except zipfile.BadZipFile as exc:
         raise ZipExtractionError(f"Corrupt ZIP archive: {exc}") from exc
+
+
+def unwrap_pdf_payload(
+    data: bytes,
+    *,
+    max_uncompressed_bytes: int = DEFAULT_MAX_ZIP_BYTES,
+    max_entries: int = DEFAULT_MAX_ZIP_ENTRIES,
+) -> tuple[bytes, bool, str | None, list[str]]:
+    """Unwrap a raw `.pdf` or `.zip`-disguised-as-`.pdf` payload into valid PDF bytes.
+
+    Returns `(pdf_bytes, is_zip, chosen_entry, zip_entries)`.
+    Raises `ZipExtractionError` on malicious/empty ZIPs.
+    """
+    if zipfile.is_zipfile(io.BytesIO(data)):
+        pdf_bytes, chosen_entry, zip_entries = safe_extract_pdf_from_zip(
+            data,
+            max_uncompressed_bytes=max_uncompressed_bytes,
+            max_entries=max_entries,
+        )
+        return pdf_bytes, True, chosen_entry, zip_entries
+    return data, False, None, []
 
 
 def detect_repeating_left_sidebar_x(pdf_source: bytes | pathlib.Path | str) -> float:
     """Zero-hardcode multi-page repeating-band sidebar detector using PyMuPDF.
 
     Returns x-cutoff right after persistent navigation sidebar on widescreen single-pages (e.g. FPT),
-    and 0.0 on standard pages or 2-page A3 spreads with central gutter (e.g. PVT, CTG).
+    and 0.0 on standard pages, 2-page A3 spreads with central gutter, or widescreen layouts where
+    the left margin carries non-repeating body text (e.g. HPG).
     """
     doc = (
         fitz.open(stream=pdf_source, filetype="pdf")
@@ -320,29 +434,65 @@ def detect_repeating_left_sidebar_x(pdf_source: bytes | pathlib.Path | str) -> f
         gutter_hits = 0
         word_page_counts: Counter[tuple[str, int]] = Counter()
         word_max_x1: dict[tuple[str, int], float] = {}
+        word_y_rels: dict[tuple[str, int], list[float]] = {}
+        page_words_cache: list[tuple[float, float, list[Any]]] = []
+
         for idx in sample_indices:
             pg = doc[idx]
             w_p, h_p = float(pg.rect.width), float(pg.rect.height)
             words = pg.get_text("words")
+            page_words_cache.append((w_p, h_p, words))
             mid = w_p / 2.0
             crossing = sum(1 for w in words if w[0] < mid - 4 and w[2] > mid + 4)
             if crossing <= 2 and len(words) > 20:
                 gutter_hits += 1
             seen_on_pg: set[tuple[str, int]] = set()
+            y_lo, y_hi = h_p * 0.12, h_p * 0.88
             for x0, y0, x1, _y1, txt, *_ in words:
-                if x1 < w_p * 0.25 and 20.0 < y0 < h_p - 35.0:
+                if x1 < w_p * 0.25 and y_lo < y0 < y_hi:
                     key = (str(txt).strip().lower(), round(float(x0) / 10.0))
                     if key not in seen_on_pg:
                         seen_on_pg.add(key)
                         word_page_counts[key] += 1
                         word_max_x1[key] = max(word_max_x1.get(key, 0.0), float(x1))
+                        word_y_rels.setdefault(key, []).append(float(y0) / max(1.0, h_p))
+
         if gutter_hits >= len(sample_indices) * 0.6:
             return 0.0
+
         min_rep = max(3, int(len(sample_indices) * 0.25))
-        rep_x1s = [word_max_x1[k] for k, cnt in word_page_counts.items() if cnt >= min_rep]
-        if len(rep_x1s) < 3:
+        strong_min_rep = max(3, int(len(sample_indices) * 0.45))
+        rep_keys = {k for k, cnt in word_page_counts.items() if cnt >= min_rep}
+        strong_keys = {k for k, cnt in word_page_counts.items() if cnt >= strong_min_rep}
+        if len(rep_keys) < 3 or len(strong_keys) < 3:
             return 0.0
-        return round(max(rep_x1s) + 8.0, 1)
+
+        # Require strongly repeating sidebar items to span >= 3 distinct vertical bands (>= 0.04*h apart)
+        strong_y_means = sorted(sum(word_y_rels[k]) / len(word_y_rels[k]) for k in strong_keys)
+        distinct_bands = [strong_y_means[0]]
+        for y_val in strong_y_means[1:]:
+            if y_val - distinct_bands[-1] >= 0.04:
+                distinct_bands.append(y_val)
+        if len(distinct_bands) < 3:
+            return 0.0
+
+        candidate_x = round(max(word_max_x1[k] for k in rep_keys) + 8.0, 1)
+
+        # Body-text guard: reject if left strip carries substantial non-repeating body words
+        total_left_words = 0
+        nonrep_left_words = 0
+        for _w_p, h_p, words in page_words_cache:
+            y_lo, y_hi = h_p * 0.12, h_p * 0.88
+            for x0, y0, _x1, _y1, txt, *_ in words:
+                if float(x0) < candidate_x and y_lo < float(y0) < y_hi:
+                    total_left_words += 1
+                    key = (str(txt).strip().lower(), round(float(x0) / 10.0))
+                    if key not in rep_keys:
+                        nonrep_left_words += 1
+        if total_left_words > 0 and (nonrep_left_words / total_left_words) >= 0.30:
+            return 0.0
+
+        return candidate_x
     finally:
         doc.close()
 
@@ -363,26 +513,76 @@ def split_virtual_pages(page: Any, left_sidebar_x: float = 0.0) -> list[VirtualP
     return [VirtualPage(page_num, "FULL", (left_sidebar_x, 0.0, w, h), left_sidebar_x)]
 
 
-def inspect_pdf_bytes(data: bytes, source_url: str = "") -> InspectionResult:
-    """Full InputInspector: unpacks .zip safely, checks NOTICE_ONLY (<15p), BAD_FONT, notes, spread layout."""
-    is_zip = False
-    zip_entries: list[str] = []
-    chosen_entry: str | None = None
-
-    if zipfile.is_zipfile(io.BytesIO(data)):
-        is_zip = True
+def _compute_page_image_coverage(page: fitz.Page) -> float:
+    """Estimate fraction of page area covered by embedded raster images (scan detector signal)."""
+    rect = page.rect
+    page_area = float(rect.width) * float(rect.height)
+    if page_area <= 0.0:
+        return 0.0
+    try:
+        images = page.get_images(full=True)
+    except Exception:  # noqa: BLE001
+        return 0.0
+    if not images:
+        return 0.0
+    covered = 0.0
+    seen_xrefs: set[int] = set()
+    for img in images:
+        xref = int(img[0])
+        if xref in seen_xrefs:
+            continue
+        seen_xrefs.add(xref)
         try:
-            data, chosen_entry, zip_entries = safe_extract_pdf_from_zip(data)
-        except ZipExtractionError as exc:
-            err_code = "ZIP_NO_PDF" if "no PDF" in str(exc) else f"ZIP_ERROR:{exc}"
-            return InspectionResult(
-                is_zip=True,
-                zip_entries=zip_entries,
-                routed_branch="D",
-                doc_class="ERROR",
-                source_url=source_url,
-                error=err_code,
-            )
+            rects = page.get_image_rects(xref)
+        except Exception:  # noqa: BLE001
+            continue
+        for ir in rects:
+            inter = ir & rect
+            if not inter.is_empty:
+                covered += float(inter.width) * float(inter.height)
+    return min(1.0, covered / page_area)
+
+
+def _strip_watermark_and_repeating_lines(
+    raw_text: str,
+    repeating_watermark_keys: set[str],
+) -> str:
+    """Strip e-office watermarks, digital signature stamps, and >50%-page repeating boilerplate."""
+    kept: list[str] = []
+    for raw_ln in (raw_text or "").splitlines():
+        s = raw_ln.strip()
+        if not s:
+            continue
+        if _WATERMARK_OR_SIG_LINE_RE.search(s):
+            continue
+        norm_k = re.sub(r"\b\d{1,4}\b", "#", re.sub(r"\s+", " ", s).lower())
+        if norm_k in repeating_watermark_keys:
+            continue
+        if re.fullmatch(r"[\d\s./\-:]+", s) and len(s) <= 12:
+            continue
+        kept.append(s)
+    return "\n".join(kept).strip()
+
+
+def inspect_pdf_bytes(
+    data: bytes,
+    source_url: str = "",
+    *,
+    doc_type: str | None = None,
+) -> InspectionResult:
+    """Full InputInspector: unpacks .zip safely, detects watermarks/scans, BAD_FONT, NOTICE_ONLY, spread."""
+    try:
+        data, is_zip, chosen_entry, zip_entries = unwrap_pdf_payload(data)
+    except ZipExtractionError as exc:
+        err_code = "ZIP_NO_PDF" if "no PDF" in str(exc) else f"ZIP_ERROR:{exc}"
+        return InspectionResult(
+            is_zip=True,
+            zip_entries=[],
+            routed_branch="D",
+            doc_class="ERROR",
+            source_url=source_url,
+            error=err_code,
+        )
 
     if not data.startswith(b"%PDF"):
         return InspectionResult(
@@ -398,10 +598,57 @@ def inspect_pdf_bytes(data: bytes, source_url: str = "") -> InspectionResult:
     doc = fitz.open(stream=data, filetype="pdf")
     try:
         n_pages = len(doc)
+        if n_pages == 0:
+            return InspectionResult(
+                is_zip=is_zip,
+                zip_entries=zip_entries,
+                chosen_entry=chosen_entry,
+                routed_branch="D",
+                doc_class="ERROR",
+                source_url=source_url,
+                error="EMPTY_PDF(0 pages)",
+            )
+
+        # Pre-pass: gather raw text and detect lines repeating on > 50% of pages (e.g. e-office watermarks)
+        raw_page_texts: list[str] = []
+        page_img_cov: list[float] = []
+        page_is_spread: list[bool] = []
+        line_doc_freq: Counter[str] = Counter()
+
+        for page in doc:
+            is_spread = float(page.rect.width) > float(page.rect.height) * 1.25
+            page_is_spread.append(is_spread)
+            t = (page.get_text("text") or "").strip()
+            raw_page_texts.append(t)
+            page_img_cov.append(_compute_page_image_coverage(page))
+            if n_pages >= 5 and t:
+                seen_keys: set[str] = set()
+                for raw_ln in t.splitlines():
+                    s = raw_ln.strip()
+                    if 4 <= len(s) <= 180:
+                        k = re.sub(r"\b\d{1,4}\b", "#", re.sub(r"\s+", " ", s).lower())
+                        if k not in seen_keys:
+                            seen_keys.add(k)
+                            line_doc_freq[k] += 1
+
+        # Only strip lines repeating on > 50% of pages when short/watermark-like (avoid synthetic test prose)
+        repeating_watermark_keys: set[str] = set()
+        if n_pages >= 5:
+            wm_thresh = max(4, int(n_pages * 0.50) + 1)
+            for k, cnt in line_doc_freq.items():
+                if cnt >= wm_thresh and (
+                    _WATERMARK_OR_SIG_LINE_RE.search(k)
+                    or "http://" in k
+                    or "https://" in k
+                    or "eoffice" in k
+                    or "smartca" in k
+                ):
+                    repeating_watermark_keys.add(k)
+
         dig_clean = 0
         bad_font_pages = 0
         scan_pages = 0
-        spread_pages = 0
+        spread_pages = sum(1 for sp in page_is_spread if sp)
         scores: list[float] = []
         all_text_low: list[str] = []
         embedded_urls: list[str] = []
@@ -410,35 +657,36 @@ def inspect_pdf_bytes(data: bytes, source_url: str = "") -> InspectionResult:
         scan_page_numbers: list[int] = []
         digital_clean_page_numbers: list[int] = []
 
-        for page_idx, page in enumerate(doc):
+        for page_idx, raw_t in enumerate(raw_page_texts):
             page_no = page_idx + 1
-            is_spread = float(page.rect.width) > float(page.rect.height) * 1.25
-            if is_spread:
-                spread_pages += 1
-            t = (page.get_text("text") or "").strip()
-            if len(t) < 80:
+            is_spread = page_is_spread[page_idx]
+            img_cov = page_img_cov[page_idx]
+            eff_t = _strip_watermark_and_repeating_lines(raw_t, repeating_watermark_keys)
+            eff_chars = len(eff_t)
+
+            if eff_chars < 80 or (img_cov >= 0.55 and eff_chars < 250):
                 scan_pages += 1
                 scan_page_numbers.append(page_no)
                 page_triage.append(
                     PageTriageInfo(
                         page_no=page_no,
                         triage_class="SCAN",
-                        char_count=len(t),
+                        char_count=eff_chars,
                         vn_readability_score=0.0,
                         is_spread=is_spread,
                     )
                 )
             else:
-                sc, _ = compute_vn_readability_score(t)
+                sc, _ = compute_vn_readability_score(eff_t)
                 scores.append(sc)
-                if len(t) > 200 and sc < BAD_FONT_THRESHOLD:
+                if eff_chars > 200 and sc < BAD_FONT_THRESHOLD:
                     bad_font_pages += 1
                     bad_font_page_numbers.append(page_no)
                     page_triage.append(
                         PageTriageInfo(
                             page_no=page_no,
                             triage_class="BAD_FONT",
-                            char_count=len(t),
+                            char_count=eff_chars,
                             vn_readability_score=sc,
                             is_spread=is_spread,
                         )
@@ -446,18 +694,18 @@ def inspect_pdf_bytes(data: bytes, source_url: str = "") -> InspectionResult:
                 else:
                     dig_clean += 1
                     digital_clean_page_numbers.append(page_no)
-                    all_text_low.append(t.lower())
+                    all_text_low.append(eff_t.lower())
                     page_triage.append(
                         PageTriageInfo(
                             page_no=page_no,
                             triage_class="DIGITAL_CLEAN",
-                            char_count=len(t),
+                            char_count=eff_chars,
                             vn_readability_score=sc,
                             is_spread=is_spread,
                         )
                     )
             if n_pages <= NOTICE_ONLY_MAX_PAGES:
-                embedded_urls.extend(re.findall(r"https?://[^\s<>\"'\)\]]+", t))
+                embedded_urls.extend(re.findall(r"https?://[^\s<>\"'\)\]]+", raw_t))
     finally:
         doc.close()
 
@@ -487,8 +735,15 @@ def inspect_pdf_bytes(data: bytes, source_url: str = "") -> InspectionResult:
             joined,
         )
     )
+    has_fin_shield = bool(_FINANCIAL_SHIELD_INSPECT_RE.search(joined))
+    norm_doc_type = (doc_type or "").strip().upper()
+    is_short_doc_exempt = norm_doc_type in _SHORT_DOC_EXEMPT_TYPES
 
-    if n_pages <= NOTICE_ONLY_MAX_PAGES:
+    if (
+        n_pages <= NOTICE_ONLY_MAX_PAGES
+        and not is_short_doc_exempt
+        and not has_fin_shield
+    ):
         doc_class: DocClass = "NOTICE_ONLY"
         branch: BranchCode = "D"
         est_ocr_pages = 14
@@ -548,6 +803,11 @@ def inspect_pdf_bytes(data: bytes, source_url: str = "") -> InspectionResult:
     )
 
 
-def inspect_pdf_bytes_detailed(data: bytes, source_url: str = "") -> dict[str, Any]:
+def inspect_pdf_bytes_detailed(
+    data: bytes,
+    source_url: str = "",
+    *,
+    doc_type: str | None = None,
+) -> dict[str, Any]:
     """Dictionary-returning convenience wrapper compatible with Stage 1 prototype."""
-    return inspect_pdf_bytes(data, source_url=source_url).to_dict()
+    return inspect_pdf_bytes(data, source_url=source_url, doc_type=doc_type).to_dict()

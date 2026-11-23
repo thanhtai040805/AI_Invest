@@ -13,7 +13,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-BlockType = Literal["heading", "paragraph", "table", "code", "list", "caption"]
+BlockType = Literal["heading", "paragraph", "table", "table_card", "code", "list", "caption"]
 
 # Regex phát hiện boilerplate phổ biến: tiêu đề / chân trang đánh số trang
 _BOILERPLATE_PATTERNS = [
@@ -22,9 +22,15 @@ _BOILERPLATE_PATTERNS = [
     re.compile(r"^\d+\s*/\s*\d+$"),
 ]
 
-# Regex nhận diện khối bảng Markdown: ít nhất 1 dòng chứa dấu gạch đứng |
+# Regex nhận diện khối bảng Markdown / HTML / số liệu kế toán digital
 _TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
 _TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$")
+_HTML_TABLE_OPEN_RE = re.compile(r"<table\b", re.IGNORECASE)
+_HTML_TABLE_CLOSE_RE = re.compile(r"</table\s*>", re.IGNORECASE)
+_DIGITAL_ACCT_NUM_RE = re.compile(r"(?<!\d)\(?-?(?:\d{1,3}(?:[.,]\d{3})+|\d+[.,]\d+%?)\)?(?!\d)")
+_DIGITAL_CELL_NUM_LINE_RE = re.compile(
+    r"^\s*(?:\(?-?(?:\d{1,3}(?:[.,]\d{3})+|\d+(?:[.,]\d+)?%?)\)?|[-–—])\s*$"
+)
 
 # Regex nhận diện tiêu đề Markdown
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
@@ -330,6 +336,86 @@ _PAGE_MARKER_RE = re.compile(
 _INLINE_PAGE_MARKER_RE = re.compile(r"(<!--\s*(?:PAGE|page)\s+\d+\s*-->)")
 
 
+def _clamp_section_path(path: str, max_len: int = 512) -> str:
+    """Clamp section_path to <= max_len (DB String(512) limit) preserving root + last 2 levels."""
+    cleaned = (path or "").strip() or "Root"
+    if len(cleaned) <= max_len:
+        return cleaned
+    parts = [p.strip() for p in cleaned.split(" > ") if p.strip()]
+    if len(parts) <= 1:
+        return cleaned[:max_len]
+    if len(parts) >= 3:
+        candidate = f"{parts[0]} > ... > {parts[-2]} > {parts[-1]}"
+        if len(candidate) <= max_len:
+            return candidate
+    if len(parts) >= 2:
+        root_budget = min(len(parts[0]), max(40, max_len // 3))
+        tail_sep = " > ... > " if len(parts) > 2 else " > "
+        tail_budget = max_len - root_budget - len(tail_sep)
+        if len(parts) >= 3 and tail_budget >= 80:
+            p_prev = parts[-2][: max(20, (tail_budget - 3) // 2)]
+            p_last = parts[-1][: max(20, tail_budget - len(p_prev) - 3)]
+            res = f"{parts[0][:root_budget]}{tail_sep}{p_prev} > {p_last}"
+            return res[:max_len]
+        res = f"{parts[0][:root_budget]}{tail_sep}{parts[-1][:max(1, tail_budget)]}"
+        return res[:max_len]
+    return cleaned[:max_len]
+
+
+def _html_table_to_markdown(raw_html: str) -> str:
+    """Convert MinerU HTML `<table>...</table>` into clean Markdown pipe table via stdlib HTMLParser."""
+    try:
+        from sag_api.research.table_engine import unmerge_html_table
+
+        headers, body = unmerge_html_table(raw_html)
+    except Exception:  # noqa: BLE001
+        headers, body = [], []
+
+    if not headers and not body:
+        return normalize_text(raw_html, preserve_code=True)
+
+    def _esc(cell: str) -> str:
+        return re.sub(r"\s+", " ", str(cell or "")).strip().replace("|", "\\|")
+
+    n_cols = max(len(headers), max((len(r) for r in body), default=0))
+    if n_cols == 0:
+        return normalize_text(raw_html, preserve_code=True)
+    hdr_row = [_esc(headers[i] if i < len(headers) else f"Col_{i + 1}") for i in range(n_cols)]
+    lines = [
+        "| " + " | ".join(hdr_row) + " |",
+        "| " + " | ".join("---" for _ in range(n_cols)) + " |",
+    ]
+    for row in body:
+        padded = [_esc(row[i] if i < len(row) else "") for i in range(n_cols)]
+        if any(padded):
+            lines.append("| " + " | ".join(padded) + " |")
+    return "\n".join(lines)
+
+
+def _looks_like_digital_numeric_table(para_lines: list[str]) -> bool:
+    """Detect PyMuPDF digital accounting tables (coalesced multi-line numeric rows without pipe delimiters)."""
+    non_empty = [ln.strip() for ln in para_lines if ln.strip()]
+    if len(non_empty) < 3:
+        return False
+    acct_nums = 0
+    numeric_lines = 0
+    short_lines = 0
+    for ln in non_empty:
+        hits = _DIGITAL_ACCT_NUM_RE.findall(ln)
+        if hits:
+            acct_nums += len(hits)
+            numeric_lines += 1
+        elif _DIGITAL_CELL_NUM_LINE_RE.match(ln):
+            numeric_lines += 1
+        if len(ln) <= 95:
+            short_lines += 1
+    if acct_nums < 4:
+        return False
+    num_line_ratio = numeric_lines / len(non_empty)
+    short_ratio = short_lines / len(non_empty)
+    return num_line_ratio >= 0.35 and short_ratio >= 0.70
+
+
 def extract_canonical_blocks(
     content: str,
     *,
@@ -340,7 +426,8 @@ def extract_canonical_blocks(
 ) -> list[ExtractedBlock]:
     """Phân tích văn bản (Markdown hoặc plain text) thành danh sách các CanonicalBlock có cấu trúc.
     
-    Thuần deterministic, không gọi LLM, bảo toàn bảng biểu, khối mã lệnh và định danh.
+    Thuần deterministic, không gọi LLM, bảo toàn bảng biểu (Markdown pipe, MinerU HTML `<table>`,
+    bảng số kế toán digital), khối mã lệnh và định danh.
     Nhận diện page markers (ví dụ: <!-- PAGE N -->, form feed \f) để bảo toàn trang nguồn.
     """
     if not content or not content.strip():
@@ -353,12 +440,14 @@ def extract_canonical_blocks(
     blocks: list[ExtractedBlock] = []
     current_section_stack: list[tuple[int, str]] = []  # [(level, heading_text)]
     root_raw_title: str | None = None
+    start_line_idx = 0
     first_non_empty = next((i for i, ln in enumerate(lines[:5]) if ln.strip()), None)
     if first_non_empty is not None and lines[first_non_empty].strip() == "---":
         fm_meta: dict[str, str] = {}
         for f_idx in range(first_non_empty + 1, min(len(lines), first_non_empty + 30)):
             s_ln = lines[f_idx].strip()
             if s_ln == "---":
+                start_line_idx = f_idx + 1
                 doc_id = fm_meta.get("document_id")
                 title = fm_meta.get("title")
                 status = fm_meta.get("status")
@@ -393,19 +482,15 @@ def extract_canonical_blocks(
                 break
             parts = [p for p in (root_raw_title, f"[{doc_id}]", f"(Status: {status})" if status else None) if p]
             current_section_stack = [(0, " ".join(parts))]
-    has_h1 = any(
-        (m := _HEADING_RE.match(ln.strip())) and len(m.group(1)) == 1
-        for ln in lines
-    )
-    if not current_section_stack and not has_h1 and document_title and document_title.strip():
+    if not current_section_stack and document_title and document_title.strip():
         clean_doc_title = normalize_text(document_title.strip())
         if clean_doc_title:
-            current_section_stack = [(1, clean_doc_title)]
+            current_section_stack = [(0, clean_doc_title)]
             root_raw_title = clean_doc_title
     ordinal = 0
     current_page = page_from
 
-    idx = 0
+    idx = start_line_idx
     total_lines = len(lines)
 
     while idx < total_lines:
@@ -443,7 +528,7 @@ def extract_canonical_blocks(
             raw_code = "\n".join(code_lines)
             normalized_code = normalize_text(raw_code, preserve_code=True)
             chash = compute_content_hash(normalized_code)
-            section_path = " > ".join(h for _, h in current_section_stack) or "Root"
+            section_path = _clamp_section_path(" > ".join(h for _, h in current_section_stack) or "Root")
 
             blocks.append(
                 ExtractedBlock(
@@ -472,7 +557,7 @@ def extract_canonical_blocks(
             if not (root_raw_title and level == 1 and heading_title.lower() == root_raw_title.lower()):
                 current_section_stack.append((level, heading_title))
 
-            section_path = " > ".join(h for _, h in current_section_stack)
+            section_path = _clamp_section_path(" > ".join(h for _, h in current_section_stack) or "Root")
             chash = compute_content_hash(heading_title)
 
             blocks.append(
@@ -492,7 +577,47 @@ def extract_canonical_blocks(
             idx += 1
             continue
 
-        # 3. Khối Bảng biểu (Markdown Table)
+        # 3a. Khối Bảng HTML (MinerU `<table>...</table>` single-line & multi-line; bypasses C99)
+        if _HTML_TABLE_OPEN_RE.search(stripped) and stripped.lstrip().lower().startswith("<table"):
+            html_lines = [line]
+            depth = len(_HTML_TABLE_OPEN_RE.findall(line)) - len(_HTML_TABLE_CLOSE_RE.findall(line))
+            table_start_page = current_page
+            idx += 1
+            while idx < total_lines and depth > 0:
+                curr = lines[idx]
+                curr_s = curr.strip()
+                pm = _PAGE_MARKER_RE.match(curr_s)
+                if pm:
+                    explicit_page = pm.group(1)
+                    current_page = int(explicit_page) if explicit_page else (current_page + 1)
+                    idx += 1
+                    continue
+                html_lines.append(curr)
+                depth += len(_HTML_TABLE_OPEN_RE.findall(curr)) - len(_HTML_TABLE_CLOSE_RE.findall(curr))
+                idx += 1
+
+            raw_html = "\n".join(html_lines)
+            normalized_table = normalize_text(_html_table_to_markdown(raw_html), preserve_code=True)
+            chash = compute_content_hash(normalized_table)
+            section_path = _clamp_section_path(" > ".join(h for _, h in current_section_stack) or "Root")
+
+            blocks.append(
+                ExtractedBlock(
+                    ordinal=ordinal,
+                    block_type="table",
+                    normalized_text=normalized_table,
+                    content_hash=chash,
+                    page_from=table_start_page,
+                    page_to=current_page,
+                    section_path=section_path,
+                    source_anchor=f"tbl-{ordinal}",
+                    metadata={"source_format": "html_table"},
+                )
+            )
+            ordinal += 1
+            continue
+
+        # 3b. Khối Bảng biểu (Markdown Table)
         if _TABLE_ROW_RE.match(line):
             table_lines = [line]
             idx += 1
@@ -503,7 +628,7 @@ def extract_canonical_blocks(
             raw_table = "\n".join(table_lines)
             normalized_table = normalize_text(raw_table, preserve_code=True)
             chash = compute_content_hash(normalized_table)
-            section_path = " > ".join(h for _, h in current_section_stack) or "Root"
+            section_path = _clamp_section_path(" > ".join(h for _, h in current_section_stack) or "Root")
 
             blocks.append(
                 ExtractedBlock(
@@ -538,7 +663,7 @@ def extract_canonical_blocks(
             raw_list = "\n".join(list_lines)
             normalized_list = normalize_text(raw_list, preserve_code=True)
             chash = compute_content_hash(normalized_list)
-            section_path = " > ".join(h for _, h in current_section_stack) or "Root"
+            section_path = _clamp_section_path(" > ".join(h for _, h in current_section_stack) or "Root")
 
             blocks.append(
                 ExtractedBlock(
@@ -555,7 +680,7 @@ def extract_canonical_blocks(
             ordinal += 1
             continue
 
-        # 5. Khối Đoạn văn bản thông thường (Paragraph)
+        # 5. Khối Đoạn văn bản thông thường (Paragraph) hoặc Bảng số kế toán Digital (PyMuPDF)
         para_lines = [line]
         idx += 1
         while idx < total_lines:
@@ -564,7 +689,7 @@ def extract_canonical_blocks(
             if not curr_stripped:
                 # Coalesce PDF/OCR-extracted table cells split by whitespace-only lines
                 last_stripped = para_lines[-1].strip()
-                if len(para_lines) < 45 and len(last_stripped) <= 56:
+                if len(para_lines) < 160 and len(last_stripped) <= 64:
                     peek_idx = idx + 1
                     while peek_idx < min(total_lines, idx + 8) and not lines[peek_idx].strip():
                         peek_idx += 1
@@ -572,9 +697,10 @@ def extract_canonical_blocks(
                         peek_line = lines[peek_idx]
                         peek_stripped = peek_line.strip()
                         if (
-                            len(peek_stripped) <= 56
+                            len(peek_stripped) <= 64
                             and not _PAGE_MARKER_RE.match(peek_stripped)
                             and not peek_stripped.startswith("```")
+                            and not peek_stripped.lower().startswith("<table")
                             and not _HEADING_RE.match(peek_stripped)
                             and not _TABLE_ROW_RE.match(peek_line)
                             and not _LIST_ITEM_RE.match(peek_stripped)
@@ -588,10 +714,11 @@ def extract_canonical_blocks(
                             idx = peek_idx + 1
                             continue
                 break
-            # Dừng paragraph khi gặp page break, heading, code block, hoặc table
+            # Dừng paragraph khi gặp page break, heading, code block, HTML table, hoặc Markdown table
             if (
                 _PAGE_MARKER_RE.match(curr_stripped)
                 or curr_stripped.startswith("```")
+                or curr_stripped.lower().startswith("<table")
                 or _HEADING_RE.match(curr_stripped)
                 or _TABLE_ROW_RE.match(curr)
                 or _LIST_ITEM_RE.match(curr_stripped)
@@ -601,8 +728,29 @@ def extract_canonical_blocks(
             idx += 1
 
         raw_para = "\n".join(para_lines)
+        section_path = _clamp_section_path(" > ".join(h for _, h in current_section_stack) or "Root")
+
+        if _looks_like_digital_numeric_table(para_lines):
+            normalized_tbl = normalize_text(raw_para, preserve_code=True)
+            if normalized_tbl:
+                chash = compute_content_hash(normalized_tbl)
+                blocks.append(
+                    ExtractedBlock(
+                        ordinal=ordinal,
+                        block_type="table",
+                        normalized_text=normalized_tbl,
+                        content_hash=chash,
+                        page_from=current_page,
+                        page_to=current_page,
+                        section_path=section_path,
+                        source_anchor=f"tbl-{ordinal}",
+                        metadata={"source_format": "digital_numeric_table"},
+                    )
+                )
+                ordinal += 1
+            continue
+
         normalized_para = normalize_text(raw_para)
-        section_path = " > ".join(h for _, h in current_section_stack) or "Root"
         para_segments = (
             segment_prose_by_information_cohesion(normalized_para, max_block_tokens=360)
             if estimate_unicode_tokens(normalized_para) > 360
