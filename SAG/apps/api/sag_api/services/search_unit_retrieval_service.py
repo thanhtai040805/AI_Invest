@@ -1141,6 +1141,7 @@ class _CompactKU:
     entities_raw: tuple[str, ...]
     entities_norm: frozenset[str]
     valid_from_ts: int | None = None
+    linked_table_ids: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -1197,10 +1198,16 @@ async def _get_or_build_scope_knowledge_index(
         .where(TreeManifest.project_id.in_(projects), TreeManifest.status == "ACTIVE"))).all()
     pinned = {project: build for project, build in active_rows if build}
     active_graphs = set(pinned.values())
+    unpinned_projects = sorted(projects - set(pinned))
+    graph_filter = (
+        KnowledgeGraphBuild.id.in_(active_graphs)
+        | KnowledgeGraphBuild.input_fingerprint.is_(None)
+    )
+    if unpinned_projects:
+        graph_filter = graph_filter | KnowledgeGraphBuild.project_id.in_(unpinned_projects)
     graph_rows = (await session.execute(select(
         KnowledgeGraphBuild.id, KnowledgeGraphBuild.project_id, KnowledgeGraphBuild.manifest_json["units"],
-    ).where(KnowledgeGraphBuild.project_id.in_(projects),
-            (KnowledgeGraphBuild.id.in_(active_graphs)) | KnowledgeGraphBuild.input_fingerprint.is_(None)))).all()
+    ).where(KnowledgeGraphBuild.project_id.in_(projects), graph_filter))).all()
     graph_ids = []
     for project in projects:
         wanted = {uid: value for uid, value, scope_project in checksum_rows if scope_project == project}
@@ -1250,6 +1257,7 @@ async def _get_or_build_scope_knowledge_index(
                 KnowledgeUnit.features_json["entities"],
                 KnowledgeUnit.text,
                 KnowledgeUnit.valid_from,
+                KnowledgeUnit.provenance_json["linked_table_ids"],
             ).where(
                 KnowledgeUnit.document_version_id.in_(version_ids),
                 KnowledgeUnit.is_current.is_(True),
@@ -1265,6 +1273,12 @@ async def _get_or_build_scope_knowledge_index(
     for ku_row in ku_rows:
         ku_id, ver_id, ordinal, tenant_id, project_id, partition_id, sec_path_val, ents_val, ku_text = ku_row[:9]
         ku_valid_from = ku_row[9] if len(ku_row) > 9 else None
+        raw_linked_tids = ku_row[10] if len(ku_row) > 10 else None
+        linked_tids = (
+            tuple(str(t).strip() for t in raw_linked_tids if isinstance(t, str) and t.strip())
+            if isinstance(raw_linked_tids, list)
+            else ()
+        )
         ver_id_str = str(ver_id)
         ver = current_versions.get(ver_id_str)
         if (
@@ -1328,6 +1342,7 @@ async def _get_or_build_scope_knowledge_index(
             entities_raw=raw_ents,
             entities_norm=norm_ents,
             valid_from_ts=ku_vf_ts,
+            linked_table_ids=linked_tids,
         )
         ku_by_version[ver_id_str].append(compact)
         ku_by_id[compact.id] = compact
@@ -1745,6 +1760,7 @@ async def _expand_multi_hop_sections(
         return []
     pool_scores = existing_pool_scores or {}
     seed_ranges: list[tuple[str, int, int, float]] = []
+    seed_table_hints: list[tuple[str, str, str, float]] = []
     ordered_seeds = sorted(seed_sections, key=lambda s: -float(s.score or 0.0))
     top_anchor_score = max((float(s.score or 0.5) for s in ordered_seeds[:1]), default=0.5)
     for idx_s, section in enumerate(ordered_seeds[:limit]):
@@ -1759,6 +1775,15 @@ async def _expand_multi_hop_sections(
         if not unit_id or not version_id or ordinals is None or version_id not in current_versions:
             continue
         seed_ranges.append((version_id, ordinals[0], ordinals[1], s_val))
+        sec_tid = str(getattr(section, "table_id", None) or "")
+        sec_anchor = str(getattr(section, "anchor", None) or "")
+        if not sec_tid and sec_anchor.startswith("table_card:"):
+            parts = sec_anchor.split(":")
+            if len(parts) >= 2 and parts[1]:
+                sec_tid = parts[1]
+        if sec_tid or sec_anchor.startswith("table_card:"):
+            sec_h_norm = re.sub(r"[\s_-]+", " ", str(section.heading or "").lower()).strip()
+            seed_table_hints.append((version_id, sec_tid, sec_h_norm, s_val))
     if not seed_ranges:
         return []
 
@@ -1796,6 +1821,7 @@ async def _expand_multi_hop_sections(
             return ku.valid_from_ts is None or ku.valid_from_ts <= int(as_of_ts)
 
         valid_neighbors: dict[str, list[tuple[int, float]]] = defaultdict(list)
+        valid_table_links: dict[str, list[tuple[str, tuple[str, ...], float]]] = defaultdict(list)
 
         # 1. Stage 2B / KnowledgeGraphEdge Lineage Expansion (CONTRADICTS & SUPERSEDES)
         if k_index.lineage_by_version_ordinal:
@@ -1861,6 +1887,23 @@ async def _expand_multi_hop_sections(
                                 top_seed_entities[ent_norm] = max(
                                     top_seed_entities.get(ent_norm, 0.0), doc_ref_score
                                 )
+            # Layer 2 bi-directional bridge: allow table_card seeds to activate co-located prose KnowledgeUnits
+            for t_vid, t_tid, t_sec_norm, t_score in seed_table_hints:
+                for ku in k_index.ku_by_version.get(t_vid, ()):
+                    if not _ku_within_pit(ku):
+                        continue
+                    tid_match = bool(t_tid and t_tid in ku.linked_table_ids)
+                    sec_match = bool(t_sec_norm and ku.sec_path_norm and ku.sec_path_norm == t_sec_norm)
+                    if tid_match or sec_match:
+                        seed_ku_scores[ku.id] = max(seed_ku_scores.get(ku.id, 0.0), t_score * 0.94)
+                        for ent_norm in ku.entities_norm:
+                            if _is_artifact_code_norm(ent_norm) or (
+                                ent_norm.count(" ") >= 1 and len(ent_norm) >= 6
+                            ):
+                                top_seed_entities[ent_norm] = max(
+                                    top_seed_entities.get(ent_norm, 0.0), t_score * 0.90
+                                )
+
             if seed_ku_scores:
                 neighbor_scores: dict[str, float] = {}
                 seed_edges = sorted(
@@ -2018,11 +2061,24 @@ async def _expand_multi_hop_sections(
                     if ku is None or ku.document_version_id in seed_version_ids or not _ku_within_pit(ku):
                         continue
                     valid_neighbors[ku.document_version_id].append((ku.ordinal, n_score))
+                    if ku.sec_path_norm or ku.linked_table_ids:
+                        valid_table_links[ku.document_version_id].append(
+                            (ku.sec_path_norm, ku.linked_table_ids, n_score * 0.92)
+                        )
+                # Also surface co-located table_cards for top seed KnowledgeUnits (Note -> table_card hop)
+                for s_ku_id, s_score in seed_ku_scores.items():
+                    s_ku = k_index.ku_by_id.get(s_ku_id)
+                    if s_ku is None or not _ku_within_pit(s_ku):
+                        continue
+                    if s_ku.linked_table_ids:
+                        valid_table_links[s_ku.document_version_id].append(
+                            (s_ku.sec_path_norm, s_ku.linked_table_ids, s_score * 0.90)
+                        )
 
-        if not valid_neighbors:
+        if not valid_neighbors and not valid_table_links:
             return []
 
-        neighbor_version_ids = sorted(valid_neighbors)
+        neighbor_version_ids = sorted(set(valid_neighbors) | set(valid_table_links))
         if any(v not in k_index.hydrated_su_by_version for v in neighbor_version_ids):
             async with SessionLocal() as session:
                 await _ensure_versions_hydrated(
@@ -2037,6 +2093,7 @@ async def _expand_multi_hop_sections(
         expanded: list[RetrievedSection] = []
         for v_id_str in neighbor_version_ids:
             ord_scores = valid_neighbors.get(v_id_str, ())
+            tbl_links = valid_table_links.get(v_id_str, ())
             ver_candidates: list[RetrievedSection] = []
             for sec_template, s_ord, e_ord in k_index.hydrated_su_by_version.get(v_id_str, ()):
                 if sec_template.search_unit_id in existing_unit_ids:
@@ -2045,6 +2102,22 @@ async def _expand_multi_hop_sections(
                     (score for ku_ord, score in ord_scores if s_ord <= ku_ord <= e_ord),
                     default=0.0,
                 )
+                if best_score <= 0.0 and tbl_links:
+                    sec_tid = str(getattr(sec_template, "table_id", None) or "")
+                    sec_anc = str(getattr(sec_template, "anchor", None) or "")
+                    if not sec_tid and sec_anc.startswith("table_card:"):
+                        anc_parts = sec_anc.split(":")
+                        if len(anc_parts) >= 2 and anc_parts[1]:
+                            sec_tid = anc_parts[1]
+                    if sec_tid or sec_anc.startswith("table_card:"):
+                        sec_h_norm = re.sub(
+                            r"[\s_-]+", " ", str(sec_template.heading or "").lower()
+                        ).strip()
+                        for link_sec, link_tids, link_score in tbl_links:
+                            if (sec_tid and sec_tid in link_tids) or (
+                                sec_h_norm and link_sec and sec_h_norm == link_sec
+                            ):
+                                best_score = max(best_score, link_score)
                 if best_score <= 0.0:
                     continue
                 ver_candidates.append(
@@ -2101,6 +2174,7 @@ async def retrieve_search_unit_sections(
     top_k: int | None = None,
     query_strategy_plan: QueryStrategyPlan | None = None,
     as_of_ts: int | None = None,
+    bypass_tree_routing: bool = False,
 ) -> SearchOutcome:
     """Return verified sections according to the 7-axis RetrievalPlan, with a bounded candidate pool."""
     import unicodedata
@@ -2140,6 +2214,7 @@ async def retrieve_search_unit_sections(
             engine_manager, sources, query, principal=principal, top_k=effective_top_k,
             query_strategy_plan=plan, candidate_limit=candidate_limit, deadline=deadline,
             as_of_ts=as_of_ts,
+            bypass_tree_routing=bypass_tree_routing,
         )
         waves += 1
         for key, value in outcome.stats.get("stage_latencies_ms", {}).items():
@@ -2196,6 +2271,7 @@ async def _retrieve_search_unit_sections(
     candidate_limit: int,
     deadline: float,
     as_of_ts: int | None = None,
+    bypass_tree_routing: bool = False,
 ) -> SearchOutcome:
     """Query only currently authorized versions with a verified Phase 2C manifest."""
     import unicodedata
@@ -2343,7 +2419,12 @@ async def _retrieve_search_unit_sections(
                             sub_vector_tasks[sk] = asyncio.create_task(
                                 _query_vector(engine_manager, group, sq_txt)
                             )
-            if as_of_ts is not None:
+            if bypass_tree_routing:
+                # Option A+ Direct Shared-Chamber Hybrid Search: bypass broken per-ticker Leiden
+                # branch_local gating so 100% of prose & table_card SearchUnits are searched directly
+                # via Qdrant Hybrid (dense + bm25_sparse) with strict structural/PIT filters.
+                decisions = {}
+            elif as_of_ts is not None:
                 try:
                     decisions = await capture_routing_decisions(
                         engine_manager,
@@ -2375,7 +2456,7 @@ async def _retrieve_search_unit_sections(
                     timeout_seconds=snapshot_budget,
                     query_vector_tasks_by_scope=scope_vector_tasks,
                 )
-            t_route_ms = round((time.perf_counter() - t_route_start) * 1000, 2)
+            t_route_ms = round((time.perf_counter() - t_route_start) * 1000, 2) if not bypass_tree_routing else 0.0
 
             async def _resolve_sub_dense(config_key: str) -> tuple[list[float], ...]:
                 if not distinct_subquery_texts:

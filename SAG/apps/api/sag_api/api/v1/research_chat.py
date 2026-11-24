@@ -37,12 +37,17 @@ from sag_api.research.chat_orchestrator import (
     SQLAlchemyTableStore,
     TableStoreProtocol,
 )
-from sag_api.research.kg_store import KGStoreProtocol, SQLAlchemyKGStore
+from sag_api.research.kg_store import (
+    KGStoreProtocol,
+    SQLAlchemyKGStore,
+    refresh_research_knowledge_graph,
+)
 from sag_api.schemas.research_chat import (
     BatchIngestRequest,
     BatchIngestResponse,
     BatchIngestTickerReportSchema,
     HydratedTableResponse,
+    IngestedTickersResponse,
     KGSubgraphResponse,
     PilotIngestItemResult,
     PilotIngestRequest,
@@ -183,6 +188,39 @@ async def stream_research_chat(
     return EventSourceResponse(
         event_gen(),
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get("/tickers", response_model=IngestedTickersResponse)
+async def list_ingested_research_tickers(
+    principal: VerifiedPrincipal = Depends(require_research_bff_principal),
+    session: AsyncSession = Depends(get_session),
+) -> IngestedTickersResponse:
+    """Return the live org-scoped list of tickers currently ingested in SAG (0% hardcoded)."""
+    from sqlalchemy import select
+
+    from sag_api.db.models import Document
+    from sag_api.research.batch_ingest import PILOT_8_TICKERS
+
+    filters = [Document.is_active.is_(True), Document.project_id.is_not(None)]
+    if principal.tenant_id:
+        filters.append(Document.tenant_id == principal.tenant_id)
+    rows = (await session.execute(select(Document.project_id).where(*filters).distinct())).all()
+    discovered = sorted(
+        {
+            str(pid).strip().upper()
+            for (pid,) in rows
+            if pid
+            and (
+                "*" in principal.allowed_project_ids
+                or str(pid).strip().upper() in principal.allowed_project_ids
+            )
+        }
+    )
+    return IngestedTickersResponse(
+        organization_id=principal.organization_id,
+        tickers=discovered,
+        pilot_fallback=list(PILOT_8_TICKERS),
     )
 
 
@@ -383,8 +421,21 @@ async def ingest_research_batch(
         ) -> int:
             from sag_api.services.search_index_service import index_table_search_cards_for_version
 
-            q_client = getattr(engine_manager, "qdrant_client", None) if engine_manager else None
-            embedder = getattr(engine_manager, "embedder", None) if engine_manager else None
+            q_client = None
+            embedder = None
+            if engine_manager is not None:
+                get_q = getattr(engine_manager, "get_search_unit_qdrant_client", None)
+                if callable(get_q):
+                    try:
+                        q_client = await get_q()
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("Could not acquire Qdrant client for table cards (%s)", type(exc).__name__)
+                get_emb = getattr(engine_manager, "get_sag_embedding", None)
+                if callable(get_emb):
+                    try:
+                        embedder = await get_emb()
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("Could not acquire embedder for table cards (%s)", type(exc).__name__)
             return await index_table_search_cards_for_version(
                 session,
                 document_version_id=doc_ver_id,
@@ -396,9 +447,20 @@ async def ingest_research_batch(
                 embedder=embedder,
             )
 
+        async def _refresh_kg(ingested: list[str], cutoff_date: date) -> dict[str, Any]:
+            return await refresh_research_knowledge_graph(
+                session,
+                tickers=ingested,
+                as_of_date=cutoff_date,
+                core_database_url=core_url or None,
+                tenant_id=principal.tenant_id or principal.organization_id,
+            )
+
         table_card_indexer = _index_table_cards
+        kg_refresher = _refresh_kg
     else:
         table_card_indexer = None
+        kg_refresher = None
 
     summary = await run_research_batch_ingest(
         tier="custom" if body.tier != "pilot_8" else "pilot_8",
@@ -414,6 +476,7 @@ async def ingest_research_batch(
         subdoc_uploader=subdoc_uploader,
         table_repo=table_repo,
         table_card_indexer=table_card_indexer,
+        kg_refresher=kg_refresher,
     )
     if not body.dry_run and table_repo is not None:
         await session.commit()

@@ -241,6 +241,15 @@ router.get('/research-chat/eval-summary', authMiddleware, async (req: AuthReques
   }
 });
 
+router.get('/research-chat/tickers', authMiddleware, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const data = await sagResearchChatService.getIngestedTickers(req.userId!);
+    res.json(data);
+  } catch (err) {
+    handleGatewayError(err, res, next);
+  }
+});
+
 router.get('/research-chat/kg/:ticker', authMiddleware, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const ticker = z.string().trim().regex(tickerRegex).parse(req.params.ticker);

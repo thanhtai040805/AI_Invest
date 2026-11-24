@@ -120,8 +120,22 @@ async def _main(argv: list[str] | None = None) -> int:
     parser.add_argument("--years-back", type=int, default=3)
     parser.add_argument("--dry-run", action="store_true", help="Inspect & localize without uploading to SAG")
     parser.add_argument("--enable-llm-toc", action="store_true", help="Use DeepInfra 1-call BCTN 3-Way Triage")
-    parser.add_argument("--auto-mineru-ocr", action="store_true", help="Enable MinerU Official API v4 for scan PDFs")
+    parser.add_argument(
+        "--auto-mineru-ocr",
+        action="store_true",
+        help="Explicitly enable MinerU Official API v4 (now auto-enabled whenever token is configured)",
+    )
+    parser.add_argument(
+        "--no-mineru-ocr",
+        action="store_true",
+        help="Disable MinerU Official API v4 even when SAG_MINERU_OFFICIAL_API_TOKEN is set",
+    )
     parser.add_argument("--no-tables", action="store_true", help="Skip pdfplumber/HTML table extraction")
+    parser.add_argument(
+        "--no-refresh-kg",
+        action="store_true",
+        help="Skip 3-Layer Knowledge Graph refresh after ingest (enabled by default on live runs)",
+    )
     parser.add_argument("--sag-api-url", default=os.environ.get("SAG_API_URL", "http://127.0.0.1:18000"))
     parser.add_argument(
         "--org-id",
@@ -129,6 +143,15 @@ async def _main(argv: list[str] | None = None) -> int:
         help="Tenant/Organization ID (env SAG_RESEARCH_ORG_ID)",
     )
     args = parser.parse_args(argv)
+
+    from sag_api.core.config import settings as sag_settings
+
+    # Ensure CLI runs always target the shared multi-tenant Qdrant collection (Option A+)
+    if not sag_settings.sag_qdrant_shared_collection:
+        shared_col = (
+            os.environ.get("SAG_SAG_QDRANT_SHARED_COLLECTION") or "aiinvest_search_units"
+        ).strip() or "aiinvest_search_units"
+        sag_settings.sag_qdrant_shared_collection = shared_col
 
     as_of = date.fromisoformat(args.as_of_date) if args.as_of_date else date.today()
     core_url = resolve_default_core_database_url()
@@ -139,6 +162,7 @@ async def _main(argv: list[str] | None = None) -> int:
     core_reader = AsyncPGCoreDBBatchReader(core_url)
     uploader = None
     table_repo = None
+    kg_refresher = None
     if not args.dry_run:
         bff_token = (os.environ.get("SAG_BFF_SERVICE_TOKEN") or "").strip()
         if not bff_token:
@@ -174,9 +198,30 @@ async def _main(argv: list[str] | None = None) -> int:
                     return cnt
 
             table_card_indexer = _cli_table_card_indexer
+
+        if not args.no_refresh_kg:
+            from sag_api.core.db import SessionLocal
+            from sag_api.research.kg_store import refresh_research_knowledge_graph
+
+            async def _cli_kg_refresher(ingested: list[str], cutoff_date: date) -> dict[str, Any]:
+                async with SessionLocal() as sess:
+                    res = await refresh_research_knowledge_graph(
+                        sess,
+                        tickers=ingested,
+                        as_of_date=cutoff_date,
+                        core_database_url=core_url,
+                        tenant_id=args.org_id,
+                    )
+                    await sess.commit()
+                    return res
+
+            kg_refresher = _cli_kg_refresher
     else:
         table_card_indexer = None
 
+    effective_auto_ocr = (not args.no_mineru_ocr) and (
+        bool(args.auto_mineru_ocr) or bool(sag_settings.mineru_configured)
+    )
     summary = await run_research_batch_ingest(
         tier=args.tier,  # type: ignore[arg-type]
         as_of_date=as_of,
@@ -184,12 +229,14 @@ async def _main(argv: list[str] | None = None) -> int:
         years_back=args.years_back,
         dry_run=args.dry_run,
         enable_llm_toc=args.enable_llm_toc,
-        auto_mineru_ocr=args.auto_mineru_ocr,
+        refresh_kg=not args.no_refresh_kg,
+        auto_mineru_ocr=effective_auto_ocr,
         extract_tables=not args.no_tables,
         core_reader=core_reader,
         subdoc_uploader=uploader,
         table_repo=table_repo,
         table_card_indexer=table_card_indexer,
+        kg_refresher=kg_refresher,
     )
     print(
         json.dumps(

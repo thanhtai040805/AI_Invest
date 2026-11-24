@@ -20,6 +20,7 @@ import json
 import re
 import unicodedata
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from html.parser import HTMLParser
@@ -139,10 +140,92 @@ def parse_vn_number(raw: str | None, locale: str = "VN") -> float | None:
     return -val if is_neg else val
 
 
+_EXPLICIT_UNIT_LINE_RE = re.compile(
+    r"(?:đơn\s*vị(?:\s*tính)?|đvt|unit)\s*[:\-]?\s*([^\n|]{1,48})"
+    r"|\(\s*((?:tỷ|tỉ|triệu|nghìn|ngàn|million|thousand|billion)?\s*(?:đồng|vnd|vnđ|usd))\s*\)",
+    re.IGNORECASE,
+)
+_NON_MONETARY_TABLE_CUE_RE = re.compile(
+    r"(?:số\s+lượng\s+cổ\s+phiếu|số\s+cổ\s+phần|cổ\s+phiếu\s+đang\s+lưu\s+hành|"
+    r"tỷ\s+lệ\s+sở\s+hữu|tỷ\s+lệ\s+biểu\s+quyết|cơ\s+cấu\s+cổ\s+đông|"
+    r"số\s+lượng\s+nhân\s+sự|nhân\s+viên|lao\s+động|cổ\s+phần\s*\()",
+    re.IGNORECASE,
+)
+
+
+def _match_unit_from_fragment(low: str) -> tuple[str, float, str] | None:
+    if re.search(r"triệu\s*usd|million\s*usd", low):
+        return ("USD", 1e6, "triệu USD")
+    if re.search(r"nghìn\s*usd|thousand\s*usd", low):
+        return ("USD", 1e3, "nghìn USD")
+    if re.search(r"(?:^|[:\-(\s])usd\b", low):
+        return ("USD", 1.0, "USD")
+    if re.search(r"(?:tỷ|tỉ)\s*(?:đồng|vnd|vnđ)", low):
+        return ("VND", 1e9, "tỷ đồng")
+    if re.search(r"triệu\s*(?:đồng|vnd|vnđ)", low):
+        return ("VND", 1e6, "triệu đồng")
+    if re.search(r"(?:nghìn|ngàn)\s*(?:đồng|vnd|vnđ)", low):
+        return ("VND", 1e3, "nghìn đồng")
+    if re.search(r"(?:đồng|vnd|vnđ)", low):
+        return ("VND", 1.0, "VND")
+    return None
+
+
+def detect_explicit_unit_declaration(context_text: str) -> tuple[str, float, str]:
+    """Detect ONLY explicit formal unit declarations (`Đơn vị tính: ...`, `ĐVT: ...`, `(tỷ đồng)`).
+
+    Never matches narrative prose mentions such as '1.300 triệu USD doanh thu CNTT nước ngoài'.
+    """
+    cleaned = normalize_ctg_font_quirks(context_text)
+    for m in _EXPLICIT_UNIT_LINE_RE.finditer(cleaned):
+        frag = (m.group(1) or m.group(2) or "").lower().strip()
+        if not frag:
+            continue
+        parsed = _match_unit_from_fragment(frag)
+        if parsed is not None:
+            return parsed
+    return ("VND", 1.0, "unspecified")
+
+
+def _table_is_non_monetary(tbl: Mapping[str, Any]) -> bool:
+    """Detect share-count / ownership-% / headcount tables so monetary units never bleed onto them."""
+    parts: list[str] = []
+    for h in tbl.get("headers") or ():
+        if isinstance(h, list):
+            parts.extend(str(c or "") for c in h)
+        else:
+            parts.append(str(h or ""))
+    for row in (tbl.get("rows") or ())[:6]:
+        if isinstance(row, list) and row:
+            first = row[0]
+            parts.append(str(first.get("raw_text") if isinstance(first, Mapping) else first))
+        elif isinstance(row, Mapping):
+            parts.append(str(row.get("label") or ""))
+    blob = " ".join(parts)
+    if not blob.strip():
+        return False
+    # If the table itself explicitly declares a currency unit in its headers, it IS monetary
+    if detect_explicit_unit_declaration(blob)[2] != "unspecified":
+        return False
+    return bool(_NON_MONETARY_TABLE_CUE_RE.search(blob))
+
+
+_NARRATIVE_AMOUNT_UNIT_RE = re.compile(
+    r"\d[\d.,]*[ \t]*(?:tỷ|tỉ|triệu|nghìn|ngàn|million|thousand|billion)[ \t]+(?:đồng|vnd|vnđ|usd)\b",
+    re.IGNORECASE,
+)
+
+
 def detect_unit_and_currency(context_text: str) -> tuple[str, float, str]:
     """Scan lines above table / top-right header for (currency, unit_multiplier, unit_raw)."""
+    explicit = detect_explicit_unit_declaration(context_text)
+    if explicit[2] != "unspecified":
+        return explicit
+
     cleaned = normalize_ctg_font_quirks(context_text)
-    low = cleaned.lower()
+    # Strip numeric narrative amounts (e.g. '1.300 triệu USD', '500 tỷ đồng') so prose figures
+    # never masquerade as a table unit declaration.
+    low = _NARRATIVE_AMOUNT_UNIT_RE.sub(" ", cleaned.lower())
     if re.search(r"triệu\s*usd|million\s*usd", low):
         return ("USD", 1e6, "triệu USD")
     if re.search(r"nghìn\s*usd|thousand\s*usd", low):
@@ -2304,8 +2387,12 @@ def extract_tables_from_document(
     records: list[ExtractedTableRecord] = []
     page_md_map = _split_markdown_by_page_marker(markdown_content)
     page_sec_paths = _build_page_section_paths(markdown_content, sub_doc_slot)
-    doc_currency, doc_unit_mult, doc_unit_raw = detect_unit_and_currency(
-        markdown_content[:8000]
+    # Only allow formal explicit unit headers (never narrative prose like '1.300 triệu USD'
+    # in BCTN intro) as doc-level fallback, and only on dedicated financial-statement slots.
+    doc_currency, doc_unit_mult, doc_unit_raw = (
+        detect_explicit_unit_declaration(markdown_content[:8000])
+        if sub_doc_slot in ("BCTC_AUDITED", "QUARTER_NOTES")
+        else ("VND", 1.0, "unspecified")
     )
     html_handled_pages: set[int] = set()
 
@@ -2344,17 +2431,23 @@ def extract_tables_from_document(
     if raw_html_tables:
         stitched_html = stitch_cross_page_tables(raw_html_tables)
         last_unit: tuple[str, float, str] | None = None
+        last_unit_page: int | None = None
         for idx, tbl in enumerate(stitched_html):
             p_from = int(tbl.get("page_from") or 1)
             p_to = int(tbl.get("page_to") or p_from)
             if tbl.get("stitched_from_pages"):
                 tbl["sanity_gate"] = run_arithmetic_sanity_gate(tbl["headers"], tbl["rows"])
             ctx_before = str(tbl.get("ctx_before") or page_md_map.get(p_from, ""))
-            if str(tbl.get("unit_raw") or "unspecified") == "unspecified":
-                p_cur, p_mult, p_raw = detect_unit_and_currency(page_md_map.get(p_from, ""))
+            is_non_monetary = _table_is_non_monetary(tbl)
+            if is_non_monetary:
+                tbl["currency"], tbl["unit_multiplier"], tbl["unit_raw"] = ("VND", 1.0, "unspecified")
+            elif str(tbl.get("unit_raw") or "unspecified") == "unspecified":
+                p_cur, p_mult, p_raw = detect_explicit_unit_declaration(page_md_map.get(p_from, ""))
+                if p_raw == "unspecified":
+                    p_cur, p_mult, p_raw = detect_unit_and_currency(ctx_before[-400:])
                 if p_raw != "unspecified":
                     tbl["currency"], tbl["unit_multiplier"], tbl["unit_raw"] = p_cur, p_mult, p_raw
-                elif last_unit is not None:
+                elif last_unit is not None and last_unit_page is not None and abs(p_from - last_unit_page) <= 2:
                     tbl["currency"], tbl["unit_multiplier"], tbl["unit_raw"] = last_unit
                 elif doc_unit_raw != "unspecified":
                     tbl["currency"], tbl["unit_multiplier"], tbl["unit_raw"] = (
@@ -2362,12 +2455,13 @@ def extract_tables_from_document(
                         doc_unit_mult,
                         doc_unit_raw,
                     )
-            if str(tbl.get("unit_raw") or "unspecified") != "unspecified":
+            if not is_non_monetary and str(tbl.get("unit_raw") or "unspecified") != "unspecified":
                 last_unit = (
                     str(tbl.get("currency") or "VND"),
                     float(tbl.get("unit_multiplier") or 1.0),
                     str(tbl.get("unit_raw")),
                 )
+                last_unit_page = p_to
             title = _infer_table_title(
                 ctx_before,
                 fallback=f"{sub_doc_slot} Table P{p_from}#{idx + 1}",
@@ -2450,6 +2544,7 @@ def extract_tables_from_document(
 
             stitched = stitch_cross_page_tables(raw_page_tables)
             last_unit_dig: tuple[str, float, str] | None = None
+            last_unit_dig_page: int | None = None
             for idx, tbl in enumerate(stitched):
                 p_from = int(tbl.get("page_from") or digital_candidates[0])
                 p_to = int(tbl.get("page_to") or p_from)
@@ -2457,11 +2552,20 @@ def extract_tables_from_document(
                 if tbl.get("stitched_from_pages"):
                     tbl["sanity_gate"] = run_arithmetic_sanity_gate(tbl["headers"], tbl["rows"])
                 ctx_text = page_md_map.get(p_from, "") or tbl.get("context_header", "")
-                if str(tbl.get("unit_raw") or "unspecified") == "unspecified":
-                    p_cur, p_mult, p_raw = detect_unit_and_currency(ctx_text)
+                is_non_monetary_dig = _table_is_non_monetary(tbl)
+                if is_non_monetary_dig:
+                    tbl["currency"], tbl["unit_multiplier"], tbl["unit_raw"] = ("VND", 1.0, "unspecified")
+                elif str(tbl.get("unit_raw") or "unspecified") == "unspecified":
+                    p_cur, p_mult, p_raw = detect_explicit_unit_declaration(ctx_text)
+                    if p_raw == "unspecified":
+                        p_cur, p_mult, p_raw = detect_unit_and_currency(str(tbl.get("context_header") or "")[:500])
                     if p_raw != "unspecified":
                         tbl["currency"], tbl["unit_multiplier"], tbl["unit_raw"] = p_cur, p_mult, p_raw
-                    elif last_unit_dig is not None:
+                    elif (
+                        last_unit_dig is not None
+                        and last_unit_dig_page is not None
+                        and abs(p_from - last_unit_dig_page) <= 2
+                    ):
                         tbl["currency"], tbl["unit_multiplier"], tbl["unit_raw"] = last_unit_dig
                     elif doc_unit_raw != "unspecified":
                         tbl["currency"], tbl["unit_multiplier"], tbl["unit_raw"] = (
@@ -2469,12 +2573,13 @@ def extract_tables_from_document(
                             doc_unit_mult,
                             doc_unit_raw,
                         )
-                if str(tbl.get("unit_raw") or "unspecified") != "unspecified":
+                if not is_non_monetary_dig and str(tbl.get("unit_raw") or "unspecified") != "unspecified":
                     last_unit_dig = (
                         str(tbl.get("currency") or "VND"),
                         float(tbl.get("unit_multiplier") or 1.0),
                         str(tbl.get("unit_raw")),
                     )
+                    last_unit_dig_page = p_to
                 title = _infer_table_title(
                     ctx_text,
                     fallback=f"{sub_doc_slot} Table P{p_from}#{idx + 1}",

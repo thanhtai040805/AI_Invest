@@ -3,7 +3,7 @@ import { Response } from 'express';
 import { config } from '../config';
 import prisma from '../config/database';
 
-export const SAG_RESEARCH_TIMEOUT_MS = 60_000;
+export const SAG_RESEARCH_TIMEOUT_MS = 150_000;
 const MAX_COMPARE_TICKERS = 5;
 
 export class SagGatewayError extends Error {
@@ -51,6 +51,7 @@ export interface SubmitFeedbackInput {
 export interface ResearchChatCitation {
   citation_id?: string;
   n?: number;
+  ticker?: string;
   doc_id?: string;
   document_version_id?: string;
   sub_doc_slot?: string;
@@ -59,11 +60,14 @@ export interface ResearchChatCitation {
   quote?: string;
   quote_hash?: string;
   verified?: boolean;
+  evidence_origin?: 'PRIMARY' | 'CROSS_REF';
+  rejection_reason?: string | null;
   [key: string]: unknown;
 }
 
 export interface ResearchChatHydratedTable {
   table_id?: string;
+  project_id?: string | null;
   title?: string;
   verification_status?: string;
   [key: string]: unknown;
@@ -84,6 +88,12 @@ export interface ResearchChatGraphHop {
   [key: string]: unknown;
 }
 
+export interface ResearchChatBlindspot {
+  code?: string;
+  reason?: string;
+  scope?: string;
+}
+
 export interface ResearchChatMetadata {
   mode?: string;
   chat_mode?: ResearchChatMode;
@@ -94,11 +104,12 @@ export interface ResearchChatMetadata {
   as_of_date?: string | null;
   enable_kg?: boolean;
   citations?: ResearchChatCitation[];
+  rejected_citations?: ResearchChatCitation[];
   hydrated_tables?: ResearchChatHydratedTable[];
   calculator_traces?: ResearchChatCalculatorTrace[];
   graph_hops?: ResearchChatGraphHop[];
   discrepancy_alerts?: unknown[];
-  declared_blindspots?: unknown[];
+  declared_blindspots?: Array<ResearchChatBlindspot | string>;
   pit_leak_count?: number;
   telemetry?: Record<string, unknown>;
   [key: string]: unknown;
@@ -677,10 +688,15 @@ export class SagResearchChatService {
     let totalTablesAndCalcs = 0;
     let verifiedTablesAndCalcs = 0;
     let pitLeakCount = 0;
+    const autoHallucinatedMessageIds = new Set<string>();
 
     for (const msg of researchMessages) {
       const meta = (msg.metadata ?? {}) as ResearchChatMetadata;
       const asOfDate = typeof meta.as_of_date === 'string' ? meta.as_of_date : null;
+      const tel =
+        meta.telemetry && typeof meta.telemetry === 'object' && !Array.isArray(meta.telemetry)
+          ? (meta.telemetry as Record<string, unknown>)
+          : {};
 
       if (typeof meta.pit_leak_count === 'number' && meta.pit_leak_count > 0) {
         pitLeakCount += meta.pit_leak_count;
@@ -700,6 +716,33 @@ export class SagResearchChatService {
             pitLeakCount += 1;
           }
         }
+      }
+
+      // True Gate G1: include Stage 7 rejected/hallucinated citations in denominator so G1 is NEVER inflated to 100%
+      const rejectedArrLen = Array.isArray(meta.rejected_citations) ? meta.rejected_citations.length : 0;
+      const telRejectedCount =
+        typeof tel.rejected_citations_count === 'number' && Number.isFinite(tel.rejected_citations_count)
+          ? Math.max(0, Math.floor(tel.rejected_citations_count))
+          : 0;
+      const telHallucinatedCidCount =
+        typeof tel.hallucinated_citation_ids_count === 'number' &&
+        Number.isFinite(tel.hallucinated_citation_ids_count)
+          ? Math.max(0, Math.floor(tel.hallucinated_citation_ids_count))
+          : 0;
+      const extraRejectedCount = Math.max(rejectedArrLen, telRejectedCount, telHallucinatedCidCount);
+      totalCitations += extraRejectedCount;
+
+      // Automated hallucination signals for true Gate G3 accounting
+      const blindspots = Array.isArray(meta.declared_blindspots) ? meta.declared_blindspots : [];
+      const hasHallucinationBlindspot = blindspots.some((b) => {
+        if (!b || typeof b !== 'object') return false;
+        const code = String((b as ResearchChatBlindspot).code ?? '').toUpperCase();
+        return code === 'HALLUCINATED_CITATION_ID' || code === 'UNSUPPORTED_NUMERIC_CLAIM';
+      });
+      const telUnsupportedNumeric =
+        typeof tel.unsupported_numeric_claims_count === 'number' && tel.unsupported_numeric_claims_count > 0;
+      if (hasHallucinationBlindspot || telUnsupportedNumeric || telHallucinatedCidCount > 0) {
+        autoHallucinatedMessageIds.add(msg.id);
       }
 
       if (Array.isArray(meta.hydrated_tables)) {
@@ -739,6 +782,7 @@ export class SagResearchChatService {
     }
 
     const feedbackCount = feedbacks.length;
+    const autoHallucinationCount = autoHallucinatedMessageIds.size;
     const g1CitationVerifiedRate =
       totalCitations > 0
         ? verifiedCitations / totalCitations
@@ -753,12 +797,16 @@ export class SagResearchChatService {
           ? feedbacks.filter((f) => f.tableCalcOk).length / feedbackCount
           : 0;
 
-    const g3AbstentionComplianceRate =
+    // True Gate G3: combine human hallucinationFlag with automated Stage 7 hallucination signals.
+    // Never default G3 to fake 1.0 when feedbackCount === 0 (return null if unmeasured and clean).
+    const g3AbstentionComplianceRate: number | null =
       feedbackCount > 0
-        ? feedbacks.filter((f) => !f.hallucinationFlag).length / feedbackCount
-        : researchMessages.length > 0
-          ? 1
-          : 0;
+        ? feedbacks.filter(
+            (f) => !f.hallucinationFlag && !autoHallucinatedMessageIds.has(f.messageId),
+          ).length / feedbackCount
+        : autoHallucinationCount > 0 && researchMessages.length > 0
+          ? (researchMessages.length - autoHallucinationCount) / researchMessages.length
+          : null;
 
     const g5HumanPassRate =
       feedbackCount > 0
@@ -770,7 +818,9 @@ export class SagResearchChatService {
       feedbackCount >= 40 &&
       g1CitationVerifiedRate >= 0.98 &&
       g2TableCalcVerifiedRate >= 0.98 &&
+      g3AbstentionComplianceRate !== null &&
       g3AbstentionComplianceRate >= 1.0 &&
+      autoHallucinationCount === 0 &&
       pitLeakCount === 0 &&
       g5HumanPassRate >= 0.9;
 
@@ -778,10 +828,12 @@ export class SagResearchChatService {
       totalSessions,
       totalAssistantMessages: researchMessages.length,
       feedbackCount,
+      autoHallucinationCount,
       gates: {
         g1CitationVerifiedRate: Number(g1CitationVerifiedRate.toFixed(4)),
         g2TableCalcVerifiedRate: Number(g2TableCalcVerifiedRate.toFixed(4)),
-        g3AbstentionComplianceRate: Number(g3AbstentionComplianceRate.toFixed(4)),
+        g3AbstentionComplianceRate:
+          g3AbstentionComplianceRate === null ? null : Number(g3AbstentionComplianceRate.toFixed(4)),
         g4PitZeroLeakCount: pitLeakCount,
         g5HumanPassRate: Number(g5HumanPassRate.toFixed(4)),
       },
@@ -795,6 +847,11 @@ export class SagResearchChatService {
       },
       readyForPhase2,
     };
+  }
+
+  async getIngestedTickers(userId: string) {
+    const headers = this.buildBffHeaders(userId, null);
+    return this.fetchSagJson('/api/v1/research-chat/tickers', headers);
   }
 
   async getKgSubgraph(userId: string, ticker: string, asOfDate?: string) {

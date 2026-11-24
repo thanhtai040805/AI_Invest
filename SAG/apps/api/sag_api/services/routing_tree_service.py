@@ -33,6 +33,9 @@ class KnowledgeUnitInput:
     entities: tuple[str, ...] = ()
     valid_from: datetime | None = None
     valid_to: datetime | None = None
+    document_id: str = ""
+    ordinal: int = 0
+    section_path: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,12 +232,63 @@ def _profile(
     )
 
 
+def _merge_communities_to_max_children(
+    groups: list[tuple[str, ...]],
+    edge_weights: dict[tuple[str, str], float],
+    *,
+    max_children: int,
+    max_group_size: int,
+) -> list[tuple[str, ...]]:
+    """Agglomeratively merge Leiden communities down to `<= max_children` by inter-community edge weight."""
+    merged = list(groups)
+    while len(merged) > max_children:
+        group_for_unit = {uid: idx for idx, grp in enumerate(merged) for uid in grp}
+        pair_weights: dict[tuple[int, int], float] = defaultdict(float)
+        for (src_id, tgt_id), w in edge_weights.items():
+            g_src = group_for_unit.get(src_id)
+            g_tgt = group_for_unit.get(tgt_id)
+            if g_src is not None and g_tgt is not None and g_src != g_tgt:
+                key = (g_src, g_tgt) if g_src < g_tgt else (g_tgt, g_src)
+                pair_weights[key] += w
+
+        # Prefer merging pairs within max_group_size that share the strongest inter-community edges;
+        # break ties by smallest combined size so branches remain balanced.
+        best_pair: tuple[int, int] | None = None
+        best_key: tuple[int, float, int, int, int] | None = None
+        # Only inspect connected pairs plus the smallest two groups (keeps O(K + E) fast)
+        candidate_pairs: set[tuple[int, int]] = set(pair_weights.keys())
+        by_size = sorted(range(len(merged)), key=lambda i: (len(merged[i]), merged[i][0]))
+        if len(by_size) >= 2:
+            for a_idx in range(min(4, len(by_size))):
+                for b_idx in range(a_idx + 1, min(6, len(by_size))):
+                    i, j = by_size[a_idx], by_size[b_idx]
+                    candidate_pairs.add((i, j) if i < j else (j, i))
+
+        for i, j in candidate_pairs:
+            combined_size = len(merged[i]) + len(merged[j])
+            fits = 1 if combined_size <= max_group_size else 0
+            score = (fits, pair_weights.get((i, j), 0.0), -combined_size, -i, -j)
+            if best_key is None or score > best_key:
+                best_key = score
+                best_pair = (i, j)
+
+        if best_pair is None:
+            break
+        lo, hi = best_pair
+        merged[lo] = tuple(sorted(merged[lo] + merged[hi]))
+        merged.pop(hi)
+    return merged
+
+
 def _partition(
     unit_ids: tuple[str, ...],
     edge_weights: dict[tuple[str, str], float],
     config: TreeBuildConfig,
+    *,
+    depth: int = 0,
+    ordered_unit_ids: tuple[str, ...] | None = None,
 ) -> list[tuple[str, ...]]:
-    """Constrained Leiden partition with capacity and balanced fallback."""
+    """Constrained hierarchical Leiden partition preserving community structure and document order."""
     if len(unit_ids) <= config.target_cluster_size:
         return [unit_ids]
     try:
@@ -242,6 +296,21 @@ def _partition(
         import leidenalg
     except ImportError as exc:
         raise RuntimeError("Phase 6 requires the igraph and leidenalg dependencies") from exc
+
+    doc_order_list = list(ordered_unit_ids) if ordered_unit_ids is not None else sorted(unit_ids)
+    order_rank = {uid: pos for pos, uid in enumerate(doc_order_list)}
+
+    # Only pre-leaf splits need child sizes <= max_cluster_size; upper tree levels use
+    # adaptive branch capacity so Leiden never shatters N > 160 KUs into > max_children shards.
+    is_pre_leaf = depth >= max(0, config.max_depth - 1)
+    effective_max_size = (
+        config.max_cluster_size
+        if is_pre_leaf
+        else max(
+            config.max_cluster_size,
+            math.ceil(len(unit_ids) / max(2, min(config.max_children, 4))),
+        )
+    )
 
     indices = {unit_id: index for index, unit_id in enumerate(unit_ids)}
     graph_pairs = sorted(edge_weights.items())
@@ -254,34 +323,39 @@ def _partition(
         leidenalg.CPMVertexPartition,
         weights=weights,
         n_iterations=-1,
-        max_comm_size=config.max_cluster_size,
+        max_comm_size=effective_max_size,
         seed=int.from_bytes(seed_bytes, "big") & 0x7FFF_FFFF,
         resolution_parameter=config.leiden_resolution,
     )
     groups = [{unit_ids[index] for index in community} for community in partition]
-    # Guard giant/unconnected components with deterministic balanced chunks.
+    # Guard oversized components deterministically using document/ordinal order (NEVER random UUIDv5 hash).
     balanced: list[tuple[str, ...]] = []
-    for group in sorted(groups, key=lambda items: min(items)):
-        members = sorted(group)
-        if len(members) > config.max_cluster_size:
-            count = math.ceil(len(members) / config.max_cluster_size)
-            balanced.extend(tuple(part) for part in _balanced_chunks(members, count))
+    for group in sorted(groups, key=lambda items: min(order_rank.get(u, 0) for u in items)):
+        members = sorted(group, key=lambda u: (order_rank.get(u, 0), u))
+        if len(members) > effective_max_size:
+            count = math.ceil(len(members) / effective_max_size)
+            balanced.extend(tuple(sorted(part)) for part in _balanced_chunks(members, count))
         else:
-            balanced.append(tuple(members))
+            balanced.append(tuple(sorted(members)))
 
     if len(balanced) > config.max_children:
-        count = min(config.max_children, math.ceil(len(unit_ids) / config.target_cluster_size))
-        balanced = [tuple(part) for part in _balanced_chunks(sorted(unit_ids), count)]
+        # Graph-aware agglomerative merge preserves Leiden communities instead of discarding them.
+        balanced = _merge_communities_to_max_children(
+            balanced,
+            edge_weights,
+            max_children=config.max_children,
+            max_group_size=effective_max_size,
+        )
     elif len(balanced) <= 1 and len(unit_ids) > config.target_cluster_size:
         count = min(config.max_children, math.ceil(len(unit_ids) / config.target_cluster_size))
-        balanced = [tuple(part) for part in _balanced_chunks(sorted(unit_ids), count)]
+        balanced = [tuple(sorted(part)) for part in _balanced_chunks(doc_order_list, count)]
 
-    # Avoid repeated singleton merges when Leiden yields many isolates. The
-    # fallback stays linear and produces groups near target size.
+    # Avoid repeated singleton merges when Leiden yields many disconnected isolates;
+    # fallback slices strictly in deterministic document/ordinal order (never UUIDv5 hash order).
     small_group_count = sum(len(group) < config.min_cluster_size for group in balanced)
     if small_group_count > max(1, math.ceil(len(unit_ids) / config.target_cluster_size)):
         count = min(config.max_children, math.ceil(len(unit_ids) / config.target_cluster_size))
-        balanced = [tuple(part) for part in _balanced_chunks(sorted(unit_ids), count)]
+        balanced = [tuple(sorted(part)) for part in _balanced_chunks(doc_order_list, count)]
 
     # Repair undersized groups using actual graph connectivity.
     while len(balanced) > 1:
@@ -303,11 +377,14 @@ def _partition(
         options = [
             (math.fsum(weights_by_group[index]), index)
             for index, group in enumerate(balanced)
-            if index != small_index and len(group) + len(small) <= config.max_cluster_size
+            if index != small_index and len(group) + len(small) <= effective_max_size
         ]
         if not options:
-            count = math.ceil(len(unit_ids) / config.max_cluster_size)
-            return [tuple(part) for part in _balanced_chunks(sorted(unit_ids), count)]
+            count = min(config.max_children, max(2, math.ceil(len(unit_ids) / effective_max_size)))
+            return sorted(
+                [tuple(sorted(part)) for part in _balanced_chunks(doc_order_list, count)],
+                key=lambda grp: grp[0],
+            )
         _, target_index = max(options, key=lambda pair: (pair[0], -pair[1]))
         balanced[target_index] = tuple(sorted(balanced[target_index] + small))
         balanced.pop(small_index)
@@ -546,7 +623,24 @@ def build_routing_snapshot(
                     for target_id, weight in edge_adjacency.get(source_id, ())
                     if source_id < target_id and target_id in member_set
                 }
-                clusters = _partition(member_ids, scoped_edges, config)
+                ordered_members = tuple(
+                    sorted(
+                        member_ids,
+                        key=lambda uid: (
+                            unit_map[uid].document_id,
+                            unit_map[uid].ordinal,
+                            unit_map[uid].section_path,
+                            uid,
+                        ),
+                    )
+                )
+                clusters = _partition(
+                    member_ids,
+                    scoped_edges,
+                    config,
+                    depth=depth,
+                    ordered_unit_ids=ordered_members,
+                )
                 if len(clusters) > config.max_children:
                     raise RuntimeError("partitioner exceeded max_children after balanced fallback")
                 if len(clusters) > 1:

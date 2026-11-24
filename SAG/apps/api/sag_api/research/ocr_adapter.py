@@ -15,7 +15,10 @@ import tempfile
 from sag_api.core.config import Settings
 from sag_api.core.config import settings as global_settings
 from sag_api.core.errors import ConfigurationError
-from sag_api.parsing.mineru_official import OfficialMinerUClient
+from sag_api.parsing.mineru_official import (
+    OfficialMinerUClient,
+    normalize_mineru_language,
+)
 
 _PAGE_MARKER_RE = re.compile(r"<!--\s*PAGE\s+(\d+)\s*-->", re.IGNORECASE)
 
@@ -63,6 +66,7 @@ class MinerUOcrAdapter:
         settings: Settings | None = None,
         *,
         parse_method: str = "ocr",
+        official_model: str | None = None,
     ) -> None:
         base_settings = settings or global_settings
         if not base_settings.mineru_configured:
@@ -71,13 +75,14 @@ class MinerUOcrAdapter:
             )
         self._base_settings = base_settings
         self._parse_method = parse_method
+        self._official_model = official_model or base_settings.mineru_official_model
 
     async def ocr_pdf_pages(
         self,
         pdf_bytes: bytes,
         page_numbers: list[int],
         *,
-        language: str = "vi",
+        language: str = "latin",
     ) -> dict[int, str]:
         if not page_numbers or not pdf_bytes:
             return {}
@@ -85,11 +90,12 @@ class MinerUOcrAdapter:
         scoped_settings = self._base_settings.model_copy(
             update={
                 "mineru_parse_method": self._parse_method,
+                "mineru_official_model": self._official_model,
             }
         )
-        client = OfficialMinerUClient(scoped_settings)
-        # Override language explicitly for Vietnamese HOSE filings without mutating global settings
-        client._language = (language or "vi").strip().lower() or "vi"  # noqa: SLF001
+        # Map `vi` -> `latin` (MinerU Official v4 canonical pack for Vietnamese extended Latin script)
+        resolved_lang = normalize_mineru_language(language, default="latin")
+        client = OfficialMinerUClient(scoped_settings, language=resolved_lang)
 
         with tempfile.TemporaryDirectory(prefix="sag_mineru_hose_") as tmp_dir:
             slice_name = f"hose_slice_p{page_numbers[0]}_p{page_numbers[-1]}.pdf"

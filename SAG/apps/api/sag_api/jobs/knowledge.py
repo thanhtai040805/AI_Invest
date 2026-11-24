@@ -271,12 +271,15 @@ class KnowledgeWorker:
         session_factory,
         settings,
         *,
-        config: KnowledgeConfig = KnowledgeConfig(),
+        config: KnowledgeConfig | None = None,
         policy: QueuePolicy | None = None,
         embed=None,
         job_queue=None,
     ):
-        self.sessions, self.settings, self.config = session_factory, settings, config
+        from sag_api.services.knowledge_service import build_financial_knowledge_config
+
+        resolved_config = config if config is not None else build_financial_knowledge_config()
+        self.sessions, self.settings, self.config = session_factory, settings, resolved_config
         self.policy = policy or QueuePolicy(
             concurrency=settings.knowledge_concurrency,
             capacity=settings.knowledge_queue_capacity,
@@ -301,7 +304,7 @@ class KnowledgeWorker:
         )
 
     async def discover(self):
-        if self.job_queue is not None:
+        if self.job_queue is not None and getattr(self.settings, "knowledge_tree_rebuild_enabled", True):
             await self._request_completed_trees()
         async with self.sessions() as session:
             versions = (
@@ -468,7 +471,9 @@ class KnowledgeWorker:
                     current.status, current.lease_token, current.lease_until = "SUCCEEDED", None, None
                     await session.flush()
                     await sync_document_token_usage(session, current.document_version_id)
-                    if self.job_queue is None:
+                    if self.job_queue is None or not getattr(
+                        self.settings, "knowledge_tree_rebuild_enabled", True
+                    ):
                         await session.commit()
                     else:
                         self.scheduling_tree_jobs.add(job_id)

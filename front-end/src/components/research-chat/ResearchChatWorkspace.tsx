@@ -19,6 +19,7 @@ import type { AuditBadgeToken } from "./markdownParser"
 import { TopControlBar } from "./TopControlBar"
 import {
   badgeToInspectorFocus,
+  PILOT_TICKERS,
   SSE_STAGE_ORDER,
   type InspectorFocus,
   type InspectorTabId,
@@ -60,8 +61,23 @@ export function ResearchChatWorkspace() {
   const [activeTab, setActiveTab] = useState<InspectorTabId>("quotes")
   const [inspectorFocus, setInspectorFocus] = useState<InspectorFocus | null>(null)
   const [evalSummary, setEvalSummary] = useState<EvalSummaryResponse | null>(null)
+  const [availableTickers, setAvailableTickers] = useState<string[]>([...PILOT_TICKERS])
 
   const abortRef = useRef<AbortController | null>(null)
+
+  const refreshIngestedTickers = useCallback(async () => {
+    try {
+      const res = await researchChatApi.listIngestedTickers()
+      const live = Array.isArray(res?.tickers) && res.tickers.length > 0
+        ? res.tickers
+        : Array.isArray(res?.pilot_fallback) && res.pilot_fallback.length > 0
+          ? res.pilot_fallback
+          : [...PILOT_TICKERS]
+      setAvailableTickers(live)
+    } catch {
+      // Keep PILOT_TICKERS fallback if ticker endpoint is temporarily unreachable
+    }
+  }, [])
 
   const refreshEvalSummary = useCallback(async () => {
     try {
@@ -121,7 +137,7 @@ export function ResearchChatWorkspace() {
   useEffect(() => {
     let cancelled = false
     async function init() {
-      await Promise.all([refreshSessions(), refreshEvalSummary()])
+      await Promise.all([refreshSessions(), refreshEvalSummary(), refreshIngestedTickers()])
       if (cancelled) return
     }
     void init()
@@ -129,7 +145,7 @@ export function ResearchChatWorkspace() {
       cancelled = true
       abortRef.current?.abort()
     }
-  }, [refreshEvalSummary, refreshSessions])
+  }, [refreshEvalSummary, refreshIngestedTickers, refreshSessions])
 
   const handleStartNewConversation = useCallback(() => {
     if (streaming || creatingSession) return
@@ -273,8 +289,18 @@ export function ResearchChatWorkspace() {
               id: fallbackId,
               sessionId: sessionId ?? undefined,
               role: "assistant",
-              content: accumulatedText,
-              metadata: {},
+              content:
+                `> **[Chưa hoàn tất kiểm chứng]** Kết nối SSE bị ngắt trước Pha 7 (quote_hash & numeric audit). Nội dung bên dưới chưa qua xác thực và chưa được lưu trữ.\n\n${accumulatedText}`,
+              metadata: {
+                declared_blindspots: [
+                  {
+                    code: "STREAM_INTERRUPTED_UNVERIFIED",
+                    reason:
+                      "Luồng SSE kết thúc trước khi nhận sự kiện hoàn tất (done) từ Pha 7; các trích dẫn và số liệu chưa được kiểm chứng.",
+                    scope: "stream",
+                  },
+                ],
+              },
               createdAt: new Date().toISOString(),
             },
           ])
@@ -447,6 +473,7 @@ export function ResearchChatWorkspace() {
           onPrimaryTickerChange={setPrimaryTicker}
           compareTickers={compareTickers}
           onCompareTickersChange={setCompareTickers}
+          availableTickers={availableTickers}
           enableKg={enableKg}
           onEnableKgChange={setEnableKg}
           asOfDate={asOfDate}

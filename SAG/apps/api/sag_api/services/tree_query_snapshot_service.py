@@ -584,6 +584,36 @@ async def _resolve_scope_query_vector(
     return None
 
 
+def _manifest_max_valid_from_ts(manifest_json: object) -> int | None:
+    """Extract the latest unit `valid_from` timestamp embedded in a TreeManifest (for PIT medoid checks)."""
+    if not isinstance(manifest_json, Mapping):
+        return None
+    max_ts: int | None = None
+    units = manifest_json.get("units")
+    if isinstance(units, list):
+        for unit in units:
+            if not isinstance(unit, Mapping):
+                continue
+            ts = _parse_iso_ts(unit.get("valid_from"))
+            if ts is not None and (max_ts is None or ts > max_ts):
+                max_ts = ts
+    if max_ts is not None:
+        return max_ts
+    profiles = manifest_json.get("routing_profiles")
+    if isinstance(profiles, list):
+        for item in profiles:
+            if not isinstance(item, Mapping):
+                continue
+            ts = _parse_iso_ts(item.get("temporal_from_ts") or item.get("temporal_from"))
+            if ts is not None and (max_ts is None or ts > max_ts):
+                max_ts = ts
+    return max_ts
+
+
+# Keyed by (project_id, tree_version, checksum) -> latest valid_from_ts across all units in the manifest
+_MANIFEST_MAX_VALID_FROM_CACHE: OrderedDict[tuple[str, str, str], int | None] = OrderedDict()
+
+
 async def acquire_tree_query_snapshot(
     *,
     query: str,
@@ -591,6 +621,7 @@ async def acquire_tree_query_snapshot(
     session_factory=SessionLocal,
     query_vector_tasks_by_scope: Mapping[str, Any] | None = None,
     timeout_seconds: float | None = None,
+    as_of_ts: int | None = None,
 ) -> QueryRoutingSnapshot | None:
     """Capture project pointers and scope-indexed profiles with durable slot leases."""
     if not scopes or len(scopes) > 256:
@@ -605,6 +636,7 @@ async def acquire_tree_query_snapshot(
     manifest_features_by_project: dict[
         str, dict[tuple[str, str], tuple[tuple[float, ...] | None, tuple[int, int] | None]]
     ] = {}
+    manifest_max_vf_by_project: dict[str, int | None] = {}
     captured_at: datetime | None = None
 
     async with session_factory() as session, session.begin():
@@ -672,9 +704,14 @@ async def acquire_tree_query_snapshot(
                 return None
 
             manifest_cache_key = (project_id, state.active_tree_version, record.checksum)
-            if manifest_cache_key in _MANIFEST_NODE_FEATURES_CACHE:
+            if (
+                manifest_cache_key in _MANIFEST_NODE_FEATURES_CACHE
+                and manifest_cache_key in _MANIFEST_MAX_VALID_FROM_CACHE
+            ):
                 _MANIFEST_NODE_FEATURES_CACHE.move_to_end(manifest_cache_key)
+                _MANIFEST_MAX_VALID_FROM_CACHE.move_to_end(manifest_cache_key)
                 manifest_features_by_project[project_id] = _MANIFEST_NODE_FEATURES_CACHE[manifest_cache_key]
+                manifest_max_vf_by_project[project_id] = _MANIFEST_MAX_VALID_FROM_CACHE[manifest_cache_key]
             elif (project_id, state.active_tree_version) not in missing_manifest_keys:
                 missing_manifest_keys.append((project_id, state.active_tree_version))
 
@@ -736,14 +773,21 @@ async def acquire_tree_query_snapshot(
             for m_proj, m_ver, m_checksum, m_json in manifest_rows:
                 if isinstance(m_json, Mapping) and _checksum_manifest(m_json) == m_checksum:
                     extracted = _extract_manifest_node_features(m_json)
+                    max_vf_ts = _manifest_max_valid_from_ts(m_json)
                 else:
                     extracted = {}
+                    max_vf_ts = None
                 m_key = (m_proj, m_ver, m_checksum)
                 _MANIFEST_NODE_FEATURES_CACHE[m_key] = extracted
                 _MANIFEST_NODE_FEATURES_CACHE.move_to_end(m_key)
+                _MANIFEST_MAX_VALID_FROM_CACHE[m_key] = max_vf_ts
+                _MANIFEST_MAX_VALID_FROM_CACHE.move_to_end(m_key)
                 while len(_MANIFEST_NODE_FEATURES_CACHE) > _MANIFEST_NODE_FEATURES_CACHE_MAX:
                     _MANIFEST_NODE_FEATURES_CACHE.popitem(last=False)
+                while len(_MANIFEST_MAX_VALID_FROM_CACHE) > _MANIFEST_NODE_FEATURES_CACHE_MAX:
+                    _MANIFEST_MAX_VALID_FROM_CACHE.popitem(last=False)
                 manifest_features_by_project[m_proj] = extracted
+                manifest_max_vf_by_project[m_proj] = max_vf_ts
 
         header_by_scope: dict[tuple[str, str, str, str, str], list[tuple[str, str, str, int]]] = defaultdict(list)
         total_profile_count = 0
@@ -820,6 +864,14 @@ async def acquire_tree_query_snapshot(
                     [],
                 )
             ]
+            # On historical PIT / SUPERSEDED replay (`as_of_ts` set), bypass stale `active_tree_version`
+            # cleanly if any authorized historical `document_version_id` is absent from active tree profiles.
+            if as_of_ts is not None:
+                covered_versions = {hdr[1] for hdr in matching_headers}
+                if not matching_headers or any(
+                    vid not in covered_versions for vid in request["document_version_ids"]
+                ):
+                    return None
             if len(matching_headers) > settings.search_tree_profile_limit:
                 return None
             cache_sig = (
@@ -966,6 +1018,14 @@ async def acquire_tree_query_snapshot(
         for item in prepared_groups:
             fp = item["scope_fingerprint"]
             project_id = item["project_id"]
+            # Prevent future dense_medoid contamination on historical PIT replay:
+            # if the manifest aggregates units published after `as_of_ts`, disable dense medoid scoring.
+            max_vf_ts = manifest_max_vf_by_project.get(project_id)
+            allow_dense_medoid = (
+                as_of_ts is None
+                or max_vf_ts is None
+                or int(max_vf_ts) <= int(as_of_ts)
+            )
             query_profiles = _build_query_node_profiles(
                 item["cached_nodes"],
                 project_id=project_id,
@@ -977,7 +1037,7 @@ async def acquire_tree_query_snapshot(
                 fingerprint=fp,
                 query=query,
                 manifest_features=manifest_features_by_project.get(project_id),
-                query_unit_vector=unit_vectors_by_scope.get(fp),
+                query_unit_vector=unit_vectors_by_scope.get(fp) if allow_dense_medoid else None,
                 query_terms=query_terms,
                 folded_query=folded_query,
                 query_years=query_years,

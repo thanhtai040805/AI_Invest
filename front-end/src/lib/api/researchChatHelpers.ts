@@ -21,6 +21,8 @@ export interface ResearchCitation {
   quote: string
   quote_hash?: string
   verified: boolean
+  evidence_origin?: "PRIMARY" | "CROSS_REF"
+  rejection_reason?: string | null
 }
 
 export interface HydratedTableRow {
@@ -106,8 +108,16 @@ export interface DeclaredBlindspot {
 
 export interface ResearchTelemetry {
   routing_slot?: string
+  retrieval_mode?: string
+  primary_section_count?: number
+  cross_ref_section_count?: number
   leiden_nodes_visited?: number
   hipporag_hops?: number
+  rejected_citations_count?: number
+  unsupported_numeric_claims_count?: number
+  hallucinated_citation_ids_count?: number
+  llm_model?: string | null
+  embedding_model?: string | null
   input_tokens?: number
   output_tokens?: number
   cost_usd?: number
@@ -124,6 +134,7 @@ export interface ResearchChatMetadata {
   as_of_date?: string
   enable_kg?: boolean
   citations?: ResearchCitation[]
+  rejected_citations?: ResearchCitation[]
   hydrated_tables?: HydratedTable[]
   calculator_traces?: CalculatorTrace[]
   graph_hops?: GraphHop[]

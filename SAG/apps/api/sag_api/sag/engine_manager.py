@@ -316,6 +316,7 @@ class EngineManager:
         planner: dict[str, object],
         query_vector_tasks_by_scope: Any = None,
         timeout_seconds: float | None = None,
+        as_of_ts: int | None = None,
     ) -> Any:
         """Capture durable tree/search/ACL pins for one complete request."""
         del planner  # The immutable tree snapshot is independent of strategy planning.
@@ -326,6 +327,7 @@ class EngineManager:
             scopes=scopes,
             query_vector_tasks_by_scope=query_vector_tasks_by_scope,
             timeout_seconds=timeout_seconds,
+            as_of_ts=as_of_ts,
         )
 
     async def release_routing_snapshot(self, snapshot_id: str) -> None:
@@ -939,7 +941,8 @@ class EngineManager:
             except Exception as slot_exc:
                 if is_project_source and "sag_schema_meta" in str(slot_exc):
                     log.warning(
-                        "Skipping legacy DataEngine maintenance fence for project source %s because sag_schema_meta is uninitialized",
+                        "Skipping legacy DataEngine maintenance fence for project source %s "
+                        "(sag_schema_meta uninitialized)",
                         source_config_id,
                     )
                     return

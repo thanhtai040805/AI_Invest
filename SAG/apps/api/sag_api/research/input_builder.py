@@ -1826,16 +1826,14 @@ async def build_research_sub_documents(
 
             if ocr_needed:
                 bad_font_set = set(inspection.bad_font_page_numbers)
-                if bad_font_set:
-                    must_ocr = [p for p in ocr_needed if p in bad_font_set]
-                elif canonical_doc_type == "BCTC":
-                    must_ocr = list(ocr_needed)
+                must_ocr_set: set[int] = {p for p in ocr_needed if p in bad_font_set}
+                if canonical_doc_type in ("BCTC", "NQ_DHDCD", "LATEST_QUARTER", "GIAI_TRINH"):
+                    must_ocr_set.update(ocr_needed)
                 elif trailing_scanned_bctc_pages:
-                    must_ocr = list(trailing_scanned_bctc_pages)
+                    must_ocr_set.update(trailing_scanned_bctc_pages)
                 elif inspection.routed_branch in ("B", "D"):
-                    must_ocr = list(ocr_needed)
-                else:
-                    must_ocr = []
+                    must_ocr_set.update(ocr_needed)
+                must_ocr = [p for p in ocr_needed if p in must_ocr_set]
 
                 if canonical_doc_type == "BCTC" or bool(trailing_scanned_bctc_pages):
                     ocr_cap = max_bctc_ocr_pages

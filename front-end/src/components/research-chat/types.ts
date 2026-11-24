@@ -36,19 +36,14 @@ export const SSE_STAGE_ORDER: ReadonlyArray<{ stage: SseStageName; label: string
 ]
 
 export const PILOT_TICKERS = [
-  "VCB",
   "CTG",
-  "HPG",
-  "FPT",
-  "MWG",
   "DCM",
+  "FPT",
+  "HPG",
+  "MWG",
+  "NT2",
   "PVT",
   "VCI",
-  "NT2",
-  "GAS",
-  "SSI",
-  "VHM",
-  "DGC",
 ] as const
 
 export const MOAT_QUICK_PROMPTS: ReadonlyArray<{

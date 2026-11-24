@@ -848,6 +848,7 @@ async def project_document_readiness_batch_endpoint(
 async def revoke_project_document_endpoint(
     project_id: str,
     payload: DocumentRevokeRequest,
+    request: Request,
     principal: VerifiedPrincipal = Depends(require_project_bff_principal),
     session: AsyncSession = Depends(get_session),
     job_queue: JobQueue | None = Depends(get_job_queue),
@@ -856,6 +857,17 @@ async def revoke_project_document_endpoint(
         raise ForbiddenError(
             f"Principal '{principal.subject}' is not authorized to access project '{project_id}'"
         )
+    qdrant_client = None
+    engine_manager = getattr(request.app.state, "engine_manager", None)
+    if engine_manager is not None:
+        get_qdrant = getattr(engine_manager, "get_search_unit_qdrant_client", None)
+        if callable(get_qdrant):
+            try:
+                qdrant_client = await get_qdrant()
+            except Exception:  # noqa: BLE001 - allow PG revoke even when Qdrant client is unconfigured
+                qdrant_client = None
+        if qdrant_client is None:
+            qdrant_client = getattr(engine_manager, "qdrant_client", None)
     revoke_result = await revoke_project_document(
         session,
         tenant_id=principal.tenant_id,
@@ -863,6 +875,7 @@ async def revoke_project_document_endpoint(
         logical_source_id=payload.logical_source_id,
         document_id=payload.document_id,
         reason=payload.reason,
+        qdrant_client=qdrant_client,
     )
     if (
         (payload.reason or "").strip().upper() == "DOCUMENT_DELETED"

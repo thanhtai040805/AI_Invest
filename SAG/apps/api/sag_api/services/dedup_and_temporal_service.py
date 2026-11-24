@@ -697,6 +697,9 @@ async def resolve_temporal_supersedes(
     )
     res = await session.execute(stmt)
     all_prev = list(res.scalars().all())
+    initial_windows: dict[str, tuple[datetime | None, datetime | None]] = {
+        str(v.id): (v.valid_from, v.valid_to) for v in [*all_prev, current_version]
+    }
 
     now_utc = datetime.now(UTC)
     cur_start = current_version.source_published_at or current_version.observed_at or now_utc
@@ -820,18 +823,46 @@ async def resolve_temporal_supersedes(
             current_version.valid_to = v_from
 
     # Enrichment freezes validity/lineage; changed predecessors/successors need a new knowledge input.
+    modified_versions: list[dict[str, Any]] = []
     for version in [*all_prev, current_version]:
-        if any(
+        prev_vf, prev_vt = initial_windows.get(str(version.id), (None, None))
+        has_window_change = (version.valid_from != prev_vf) or (version.valid_to != prev_vt)
+        has_attr_change = any(
             inspect(version).attrs[field].history.has_changes()
             for field in ("valid_from", "valid_to", "supersedes_id")
-        ):
+        )
+        if has_attr_change or has_window_change:
             version.knowledge_status = "NOT_STARTED"
+        if has_window_change or any(
+            inspect(version).attrs[field].history.has_changes()
+            for field in ("valid_from", "valid_to")
+        ):
+            vf_norm = (
+                version.valid_from.replace(tzinfo=UTC)
+                if version.valid_from and version.valid_from.tzinfo is None
+                else version.valid_from
+            )
+            vt_norm = (
+                version.valid_to.replace(tzinfo=UTC)
+                if version.valid_to and version.valid_to.tzinfo is None
+                else version.valid_to
+            )
+            modified_versions.append(
+                {
+                    "version_id": str(version.id),
+                    "valid_from_ts": int(vf_norm.timestamp()) if vf_norm is not None else None,
+                    "valid_from_iso": vf_norm.isoformat() if vf_norm is not None else None,
+                    "valid_to_ts": int(vt_norm.timestamp()) if vt_norm is not None else None,
+                    "valid_to_iso": vt_norm.isoformat() if vt_norm is not None else None,
+                }
+            )
 
     return {
         "action": action,
         "active_version_id": active_id,
         "current_version_id": current_version.id,
         "supersedes_id": current_version.supersedes_id,
+        "modified_versions": modified_versions,
     }
 
 

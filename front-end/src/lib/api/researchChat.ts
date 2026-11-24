@@ -54,6 +54,7 @@ export interface EvalSummaryResponse {
   totalSessions: number
   totalAssistantMessages: number
   feedbackCount: number
+  autoHallucinationCount?: number
   gates: {
     g1CitationVerifiedRate: number | null
     g2TableCalcVerifiedRate: number | null
@@ -61,6 +62,12 @@ export interface EvalSummaryResponse {
     g4PitZeroLeakCount: number
     g5HumanPassRate: number | null
   }
+}
+
+export interface IngestedTickersResponse {
+  organization_id: string
+  tickers: string[]
+  pilot_fallback: string[]
 }
 
 export interface StreamResearchChatPayload {
@@ -270,4 +277,7 @@ export const researchChatApi = {
 
   getEvalSummary: (): Promise<EvalSummaryResponse> =>
     apiClient.get("/ai/research-chat/eval-summary").then((r) => r.data),
+
+  listIngestedTickers: (): Promise<IngestedTickersResponse> =>
+    apiClient.get("/ai/research-chat/tickers").then((r) => r.data),
 }

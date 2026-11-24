@@ -179,10 +179,22 @@ def classify_document_category(
 
 
 def parse_fiscal_year_from_meta(title: str, url: str = "") -> int | None:
-    """Extract fiscal year from title/URL to catch published_date traps (e.g. VCI 2016 stamped 2026)."""
-    for src in (title or "", url or ""):
+    """Extract fiscal year from title/URL (including `_`-delimited filenames like `bctc_2025_hn.pdf`)."""
+    # Check title first, then URL filename (basename) before full URL path so upload path years
+    # like `https://cdn/2026/03/bctc_2025_hn.pdf` never override the document's actual fiscal year.
+    url_str = url or ""
+    url_basename = url_str.rsplit("/", 1)[-1].split("?", 1)[0] if "/" in url_str else ""
+    candidates_src = [title or ""]
+    if url_basename:
+        candidates_src.append(url_basename)
+    if url_str:
+        candidates_src.append(url_str)
+
+    for src in candidates_src:
+        if not src:
+            continue
         m = re.search(
-            r"(?:năm|nam|bctn|bctc|fy|/)[\s_\-]*(20\d{2})\b",
+            r"(?:năm|nam|bctn|bctc|agm|dhdcd|đhđcđ|fy|q[1-4])[\s_\-]*(20(?:0[5-9]|1\d|2\d|3[0-5]))(?![0-9])",
             src,
             re.IGNORECASE,
         )
@@ -190,22 +202,41 @@ def parse_fiscal_year_from_meta(title: str, url: str = "") -> int | None:
             yr = int(m.group(1))
             if 2005 <= yr <= 2035:
                 return yr
-        m2 = re.search(r"\b(20(?:0[5-9]|1\d|2\d|3[0-5]))\b", src)
+        # Prefer standalone fiscal year tokens not glued to ISO YYYY-MM-DD dates if possible
+        m_non_date = re.search(
+            r"(?<![0-9])(20(?:0[5-9]|1\d|2\d|3[0-5]))(?!(?:-[01]\d-[0-3]\d|[0-9]))",
+            src,
+        )
+        if m_non_date:
+            return int(m_non_date.group(1))
+        m2 = re.search(r"(?<![0-9])(20(?:0[5-9]|1\d|2\d|3[0-5]))(?![0-9])", src)
         if m2:
             return int(m2.group(1))
     return None
 
 
 def parse_fiscal_quarter_from_meta(title: str, url: str = "") -> int:
-    """Extract fiscal quarter (0 for full year, 1..4 for Q1..Q4)."""
+    """Extract fiscal quarter (0 for full year, 1..4 for Q1..Q4), supporting `_`-delimited filenames."""
     for src in (title or "", url or ""):
-        m_q = re.search(r"(?:quý|quy|q)\s*([1-4])\b", src, re.IGNORECASE)
+        m_q = re.search(
+            r"(?<![A-Za-z0-9])(?:quý|quy|q)[\s_\-]*([1-4])(?:(?![A-Za-z0-9])|(?=20\d{2}(?![0-9])))",
+            src,
+            re.IGNORECASE,
+        )
         if m_q:
             return int(m_q.group(1))
-        m_t = re.search(r"\b(3|6|9|12)\s*t\s*[/\-]?\s*20\d{2}\b", src, re.IGNORECASE)
+        m_t = re.search(
+            r"(?<![A-Za-z0-9])(3|6|9|12)[\s_\-]*t[\s_\-/]*20\d{2}(?![0-9])",
+            src,
+            re.IGNORECASE,
+        )
         if m_t:
             return int(m_t.group(1)) // 3
-        if re.search(r"bán\s*niên|ban\s*nien|6\s*tháng|6\s*thang", src, re.IGNORECASE):
+        if re.search(
+            r"bán[\s_\-]*niên|ban[\s_\-]*nien|6[\s_\-]*tháng|6[\s_\-]*thang|(?<![A-Za-z0-9])h1(?![A-Za-z0-9])",
+            src,
+            re.IGNORECASE,
+        ):
             return 2
     return 0
 
@@ -493,20 +524,33 @@ def _is_conditional_activated(
     pit_res: PitDateResolution,
     anomaly_ctx: FinancialAnomalyContext,
     bctn_published_date: date | None,
+    *,
+    require_quarter_anomaly: bool = True,
 ) -> tuple[bool, str]:
     if canonical_type == "CAO_BACH":
         if anomaly_ctx.has_recent_capital_event or candidate.trigger_reason:
             return True, candidate.trigger_reason or "CAPITAL_EVENT_OR_ISSUANCE"
         return False, "CONDITIONAL_CAO_BACH_NOT_TRIGGERED"
 
-    if canonical_type in ("GIAI_TRINH", "LATEST_QUARTER"):
+    if canonical_type == "LATEST_QUARTER":
+        if not require_quarter_anomaly:
+            return True, candidate.trigger_reason or "RECENT_QUARTER_GENERAL_QA"
         if (
             anomaly_ctx.quarter_notes_triggered()
             or anomaly_ctx.has_regulatory_explanation_request
             or candidate.trigger_reason
         ):
             return True, candidate.trigger_reason or "MID_YEAR_ANOMALY_OR_EXPLANATION"
-        return False, f"CONDITIONAL_{canonical_type}_NOT_TRIGGERED"
+        return False, "CONDITIONAL_LATEST_QUARTER_NOT_TRIGGERED"
+
+    if canonical_type == "GIAI_TRINH":
+        if (
+            anomaly_ctx.quarter_notes_triggered()
+            or anomaly_ctx.has_regulatory_explanation_request
+            or candidate.trigger_reason
+        ):
+            return True, candidate.trigger_reason or "MID_YEAR_ANOMALY_OR_EXPLANATION"
+        return False, "CONDITIONAL_GIAI_TRINH_NOT_TRIGGERED"
 
     if canonical_type == "NQ_DHDCD":
         if not anomaly_ctx.bctn_has_plan:
@@ -531,9 +575,19 @@ async def select_research_documents(
     inspect_payloads: bool = True,
     min_fiscal_year: int | None = None,
     max_years_per_annual_type: int = 2,
-    max_latest_quarters: int = 1,
+    max_latest_quarters: int | None = None,
+    require_quarter_anomaly: bool = True,
 ) -> DocumentSelectionResult:
-    """Select, PIT-filter, deduplicate multi-source mirrors, inspect, and prioritize HOSE research filings."""
+    """Select, PIT-filter, deduplicate multi-source mirrors, inspect, and prioritize HOSE research filings.
+
+    For General Multi-Hop Q&A, set `require_quarter_anomaly=False` (defaulting `max_latest_quarters` to 4,
+    configurable up to 8 recent quarters) so normal non-anomalous quarterly filings are ingested.
+    """
+    eff_max_quarters = (
+        max(1, min(int(max_latest_quarters), 8))
+        if max_latest_quarters is not None
+        else (1 if require_quarter_anomaly else 4)
+    )
     ctx = anomaly_context or FinancialAnomalyContext()
     if has_consolidated is None:
         has_consolidated = any(
@@ -682,7 +736,7 @@ async def select_research_documents(
     for item in dedup_prelim:
         cand, canonical, tier, reason, pit_res = item
         cap = (
-            max_latest_quarters
+            eff_max_quarters
             if canonical == "LATEST_QUARTER"
             else (max_years_per_annual_type if canonical in ("BCTN", "BCTC", "NQ_DHDCD") else 2)
         )
@@ -741,7 +795,7 @@ async def select_research_documents(
         insp: InspectionResult | None = None
         pdf_bytes: bytes | None = None
         if raw_payload is not None and inspect_payloads:
-            insp = inspect_pdf_bytes(raw_payload, source_url=resolved_url)
+            insp = inspect_pdf_bytes(raw_payload, source_url=resolved_url, doc_type=canonical)
             if insp.error:
                 result.rejected.append(
                     RejectedDocument(
@@ -793,7 +847,12 @@ async def select_research_documents(
 
         if tier == "CONDITIONAL" or canonical == "NQ_DHDCD":
             active, cond_reason = _is_conditional_activated(
-                canonical, cand, pit_res, ctx, bctn_pub_date
+                canonical,
+                cand,
+                pit_res,
+                ctx,
+                bctn_pub_date,
+                require_quarter_anomaly=require_quarter_anomaly,
             )
             if not active:
                 result.rejected.append(

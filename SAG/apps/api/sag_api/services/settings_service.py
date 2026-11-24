@@ -202,7 +202,8 @@ def _normalize_overrides(overrides: dict) -> dict:
         normalized.pop("search_strategy", None)
         log.warning("Ignored invalid persisted search strategy: %s", strategy)
     if "sag_language" in normalized:
-        normalized["sag_language"] = "en"
+        raw_lang = str(normalized.get("sag_language") or "").strip().lower()
+        normalized["sag_language"] = raw_lang if raw_lang in {"en", "zh", "vi"} else "vi"
     return normalized
 
 

@@ -2,7 +2,7 @@
 
 Connects Core PostgreSQL (read-only) -> ResearchDocumentSelector -> InputInspector ->
 3-Layer ResearchInputBuilder (PDF Bookmarks / DeepInfra LLM TOC Router / Offset Calibration)
--> Dual-Representation Table Engine -> SAG Sub-Document Ingestion (`S01..S13`, PIT valid_from)
+-> Dual-Representation Table Engine -> SAG Sub-Document Ingestion (Natural 4-Doc Classes, PIT valid_from)
 -> Zero-Hardcode 3-Layer KG Refresh.
 """
 
@@ -335,11 +335,7 @@ class AsyncPGCoreDBBatchReader:
                 latest, prev = ratio_rows[0], ratio_rows[1]
                 yoy_rev = latest["yoy_revenue_growth"]
                 gpm_cur, gpm_prev = latest["gross_margin"], prev["gross_margin"]
-                gpm_delta_bps = (
-                    (float(gpm_cur) - float(gpm_prev)) * 100.0
-                    if gpm_cur is not None and gpm_prev is not None
-                    else None
-                )
+                gpm_delta_bps = compute_gross_margin_delta_bps(gpm_cur, gpm_prev)
                 anomaly = FinancialAnomalyContext(
                     yoy_revenue_change_pct=float(yoy_rev) if yoy_rev is not None else None,
                     yoy_gpm_bps_change=gpm_delta_bps,
@@ -348,6 +344,18 @@ class AsyncPGCoreDBBatchReader:
             await conn.close()
 
         return candidates, anomaly
+
+
+def compute_gross_margin_delta_bps(
+    gpm_cur: float | int | None,
+    gpm_prev: float | int | None,
+) -> float | None:
+    """Compute YoY/QoQ gross-margin delta in bps, auto-handling decimal (0.25) vs percent (25.0) storage."""
+    if gpm_cur is None or gpm_prev is None:
+        return None
+    cur_f, prev_f = float(gpm_cur), float(gpm_prev)
+    scale = 10_000.0 if (abs(cur_f) <= 1.0 and abs(prev_f) <= 1.0) else 100.0
+    return round((cur_f - prev_f) * scale, 2)
 
 
 def resolve_default_core_database_url() -> str:
@@ -408,7 +416,9 @@ async def run_research_batch_ingest(
     table_repo: TableRepositoryProtocol | None = None,
     table_card_indexer: TableCardIndexer | None = None,
     kg_refresher: KGRefreshHook | None = None,
-    max_docs_per_ticker: int = 6,
+    max_docs_per_ticker: int = 10,
+    include_recent_quarters: bool = True,
+    max_latest_quarters: int = 4,
 ) -> BatchIngestSummary:
     """Execute end-to-end tier-aware HOSE Stock Research batch ingest.
 
@@ -470,13 +480,19 @@ async def run_research_batch_ingest(
                 candidates = []
                 anomaly = FinancialAnomalyContext()
 
+            has_local_or_inmemory_payload = any(c.raw_bytes is not None for c in candidates) or (
+                fetcher is not None
+            )
+            eff_max_quarters = max(1, min(int(max_latest_quarters), 8))
             selection = await select_research_documents(
                 sym,
                 candidates,
                 as_of_date=cutoff,
                 anomaly_context=anomaly,
                 fetcher=fetcher,
-                inspect_payloads=False,
+                inspect_payloads=has_local_or_inmemory_payload,
+                max_latest_quarters=eff_max_quarters,
+                require_quarter_anomaly=not include_recent_quarters,
             )
             report.selected_documents = len(selection.selected)
             report.rejected_documents = len(selection.rejected)

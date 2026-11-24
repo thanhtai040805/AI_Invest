@@ -228,7 +228,7 @@ async def capture_routing_decisions(
             "scopes": scopes,
             "planner": planner_trace,
         }
-        if query_vector_tasks_by_scope is not None or timeout_seconds is not None:
+        if query_vector_tasks_by_scope is not None or timeout_seconds is not None or as_of_ts is not None:
             try:
                 sig = inspect.signature(provider)
                 has_varkw = any(
@@ -242,6 +242,8 @@ async def capture_routing_decisions(
                     "timeout_seconds" in sig.parameters or has_varkw
                 ):
                     provider_kwargs["timeout_seconds"] = timeout_seconds
+                if as_of_ts is not None and ("as_of_ts" in sig.parameters or has_varkw):
+                    provider_kwargs["as_of_ts"] = as_of_ts
             except (TypeError, ValueError):
                 pass
         try:
@@ -517,7 +519,13 @@ def route_snapshot(
                 frontier,
                 key=lambda profile: (
                     -_profile_score(profile),
-                    -(profile.temporal_to_ts or profile.temporal_from_ts or 0) if recency_intent else 0,
+                    -(
+                        profile.temporal_from_ts
+                        if profile.temporal_from_ts is not None
+                        else (profile.temporal_to_ts or 0)
+                    )
+                    if recency_intent
+                    else 0,
                     profile.node_id,
                 ),
             )

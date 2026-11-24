@@ -15,6 +15,7 @@ from sag_api.db.models import Document, Job
 from sag_api.db.models.routing_rag import CanonicalBlock, DocumentVersion, SearchUnit
 from sag_api.enums import JobStatus, JobType
 from sag_api.services.knowledge_candidate_service import build_project_routing_snapshot
+from sag_api.services.knowledge_service import build_financial_knowledge_config
 from sag_api.services.routing_tree_service import research_tree_build_config
 from sag_api.services.tree_publish_service import (
     SearchUnitAssignment,
@@ -156,6 +157,7 @@ async def _search_unit_assignments(
     ).all()
     ordinal_by_block = {(version_id, block_id): ordinal for version_id, block_id, ordinal in block_rows}
     units_by_version: dict[str, list[tuple[int, str, str]]] = {}
+    units_by_ver_section: dict[tuple[str, str], list[tuple[str, str]]] = {}
     for unit in units:
         evidence_ids = unit.provenance_json.get("evidence_block_ids", [])
         if len(evidence_ids) != 1:
@@ -166,6 +168,11 @@ async def _search_unit_assignments(
         units_by_version.setdefault(unit.document_version_id, []).append(
             (ordinal, unit.id, unit.security_partition_id)
         )
+        sec_key = str(unit.provenance_json.get("section_path") or "").strip().lower()
+        if sec_key:
+            units_by_ver_section.setdefault((unit.document_version_id, sec_key), []).append(
+                (unit.id, unit.security_partition_id)
+            )
     for version_units in units_by_version.values():
         version_units.sort()
     ordinals_by_version = {
@@ -214,6 +221,21 @@ async def _search_unit_assignments(
         last = bisect_right(ordinals, last_ordinal)
         knowledge_unit_ids = tuple(sorted({item[1] for item in version_units[first:last]}))
         if not knowledge_unit_ids:
+            # Attach `table_card` SearchUnits to co-located prose KnowledgeUnits in the same section_path
+            sec_key = str(unit.section_path or "").strip().lower()
+            sec_matches = [
+                ku_id
+                for ku_id, part_id in units_by_ver_section.get((unit.document_version_id, sec_key), ())
+                if part_id == unit.security_partition_id
+            ]
+            if sec_matches:
+                knowledge_unit_ids = tuple(sorted(set(sec_matches[:3])))
+            elif version_units:
+                # Fallback to nearest ordinal KnowledgeUnit in the same security partition
+                same_part = [item[1] for item in version_units if item[2] == unit.security_partition_id]
+                if same_part:
+                    knowledge_unit_ids = (same_part[0],)
+        if not knowledge_unit_ids:
             continue
         if any(
             partition_id != unit.security_partition_id
@@ -248,7 +270,8 @@ async def rebuild_project_universe_tree(
         tenant_id=tenant_id,
         project_id=project_id,
         queries=[],
-        config=research_tree_build_config(min_cluster_size=1, min_partition_units=1),
+        config=research_tree_build_config(min_cluster_size=2, min_partition_units=1),
+        graph_config=build_financial_knowledge_config(),
         allow_empty=True,
     )
     if built is None:

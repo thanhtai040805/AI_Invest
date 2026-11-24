@@ -438,8 +438,15 @@ def test_phase4_quote_verifier_c99_and_calculator_discrepancy_hygiene() -> None:
         hydrated_tables=[vas_table, prov_table],
         graph_hops=[],
     )
-    assert len(traces) == 1
+    assert len(traces) >= 1
     assert traces[0].formatted == "+20.00%"  # 12000 vs 10000 (skips Mã số/TM/Giá gốc-Dự phòng)
+    assert all(
+        inp.get("table_id") != "t-prov"
+        for tr in traces
+        for inp in tr.inputs.values()
+        if isinstance(inp, dict)
+    )
+    assert any(tr.formula == "margin(net_income, revenue)" and tr.formatted == "20.00%" for tr in traces)
 
     # N4c + F8b: Discrepancy skips LNST chưa phân phối, Balance Sheet flow rows, and sub-note tables
     note_rev_table = {

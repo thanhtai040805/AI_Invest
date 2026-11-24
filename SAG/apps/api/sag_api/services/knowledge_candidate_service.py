@@ -20,6 +20,7 @@ from sag_api.db.models import (
 from sag_api.services.knowledge_service import (
     KnowledgeConfig,
     batch_version_inputs,
+    build_financial_knowledge_config,
     checksum,
     knowledge_lock,
     persist_graph,
@@ -61,6 +62,7 @@ class CorpusQuery(BaseModel):
 
 def routing_unit(unit: KnowledgeUnit) -> KnowledgeUnitInput:
     features = unit.features_json
+    prov = unit.provenance_json if isinstance(unit.provenance_json, dict) else {}
     return KnowledgeUnitInput(
         unit.id,
         unit.tenant_id,
@@ -71,6 +73,9 @@ def routing_unit(unit: KnowledgeUnit) -> KnowledgeUnitInput:
         tuple(features["entities"]),
         unit.valid_from,
         unit.valid_to,
+        str(prov.get("document_id") or ""),
+        int(unit.ordinal or 0),
+        str(prov.get("section_path") or ""),
     )
 
 
@@ -295,15 +300,16 @@ async def _build_project_routing_snapshot(
     project_id: str,
     queries: list[CorpusQuery],
     config: TreeBuildConfig,
-    graph_config: KnowledgeConfig = KnowledgeConfig(),
+    graph_config: KnowledgeConfig | None = None,
     routing_policy: RoutingPolicy = RoutingPolicy(),
     allow_empty: bool = False,
 ) -> tuple[RoutingSnapshot, list[KnowledgeUnit], KnowledgeGraphBuild, list[dict]] | None:
+    eff_graph_config = graph_config if graph_config is not None else build_financial_knowledge_config()
     units = await current_units(session, tenant_id, project_id, allow_empty=allow_empty)
     if not units:
         return None
     captured = [(u.id, u.checksum) for u in units]
-    graph = await persist_graph(session, units, graph_config, preverified=True)
+    graph = await persist_graph(session, units, eff_graph_config, preverified=True)
     inputs = [routing_unit(unit) for unit in units]
     edges = [
         KnowledgeEdgeInput(edge["source"], edge["target"], edge["weight"])
@@ -351,9 +357,10 @@ async def build_knowledge_candidate(
     project_id: str,
     queries: list[CorpusQuery],
     config: TreeBuildConfig,
-    graph_config: KnowledgeConfig = KnowledgeConfig(),
+    graph_config: KnowledgeConfig | None = None,
     routing_policy: RoutingPolicy = RoutingPolicy(),
 ) -> TreeManifest:
+    eff_graph_config = graph_config if graph_config is not None else build_financial_knowledge_config()
     await knowledge_lock(session, "build:" + checksum([tenant_id, project_id]))
     built = await build_project_routing_snapshot(
         session,
@@ -361,7 +368,7 @@ async def build_knowledge_candidate(
         project_id=project_id,
         queries=queries,
         config=config,
-        graph_config=graph_config,
+        graph_config=eff_graph_config,
         routing_policy=routing_policy,
     )
     if built is None:

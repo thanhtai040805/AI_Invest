@@ -280,7 +280,8 @@ async def test_p1_fail_closed_pdf_mineru_vi_and_canonical_page_markers(
     assert states and states[-1]["status"] == "failed"
 
     client = OfficialMinerUClient(parse_settings)
-    assert client.signature.endswith("-vi")
+    # Vietnamese (`vi`) maps to MinerU's canonical `latin` script pack
+    assert client.signature.endswith("-latin")
     captured_payloads: list[dict] = []
 
     class FakeResp:
@@ -313,7 +314,8 @@ async def test_p1_fail_closed_pdf_mineru_vi_and_canonical_page_markers(
     monkeypatch.setattr("sag_api.parsing.mineru_official.httpx.AsyncClient", FakeAsyncClient)
     task_id = await client._create_url_task("https://example.com/bctc.pdf")
     assert task_id == "task-123"
-    assert captured_payloads[0]["language"] == "vi"
+    assert captured_payloads[0]["language"] == "latin"
+    assert captured_payloads[0]["enable_table"] is True
 
     md = "## B02-DN\n<!-- PAGE 4 --> Doanh thu thuần: 16.012.813\n\n<!-- PAGE 5 --> Lợi nhuận sau thuế: 2.100.000"
     blocks = extract_canonical_blocks(md, version_id="ver-1")

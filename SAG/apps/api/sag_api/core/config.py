@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     # Comma-separated SAG user IDs permitted to change deployment-wide model settings.
     model_config_operator_ids: str = ""
     # 业务展示时区；数据库与 API 时间戳始终使用 UTC。
-    timezone: str = "Asia/Shanghai"
+    timezone: str = "Asia/Ho_Chi_Minh"
     # NoDecode 让逗号分隔值先进入下方 validator，避免 settings 源强制按 JSON 解码。
     cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["http://localhost:3002"])
     # 关闭后仅允许首个用户注册（部署引导），其余返回 403
@@ -93,7 +93,7 @@ class Settings(BaseSettings):
     dify_search_strategy: SearchStrategy = "vector"
 
     # ── sag 元数据库 ───────────────────────────────────────────────────
-    database_url: str = "postgresql+asyncpg://sag:sag@localhost:5432/sag"
+    database_url: str = "postgresql+asyncpg://aiinvest_sag:aiinvest_sag@localhost:55432/aiinvest_sag"
     core_database_url: str | None = None
 
     # ── 存储 ────────────────────────────────────────────────────────────
@@ -102,6 +102,9 @@ class Settings(BaseSettings):
     max_upload_mb: int = 25  # 单文件上传上限
     job_concurrency: int = 4  # 后台处理并发
     knowledge_worker_enabled: bool = True
+    # Option A+ routes research queries via the shared Qdrant chamber directly;
+    # deployments set SAG_KNOWLEDGE_TREE_REBUILD_ENABLED=false to skip wasted Leiden rebuilds.
+    knowledge_tree_rebuild_enabled: bool = True
     knowledge_graph_timeout_seconds: int = Field(default=300, ge=1)
     knowledge_foundation_timeout_seconds: float | None = Field(default=None, gt=0)
     knowledge_concurrency: int = Field(default=4, ge=1, le=16)
@@ -178,14 +181,14 @@ class Settings(BaseSettings):
     # ── zleap-sag 后端选择 ─────────────────────────────────────────────
     sag_vector_provider: Literal["es", "pgvector", "qdrant", "oceanbase"] = "qdrant"
     sag_relational_provider: Literal["sqlite", "postgres", "mysql", "oceanbase"] = "postgres"
-    sag_language: Literal["en", "zh", "vi"] = "en"
+    sag_language: Literal["en", "zh", "vi"] = "vi"
 
     # PostgreSQL 元数据连接字段
     sag_pg_host: str = "localhost"
-    sag_pg_port: int = 5432
-    sag_pg_user: str = "sag"
-    sag_pg_password: str = "sag"
-    sag_pg_database: str = "sag"
+    sag_pg_port: int = 55432
+    sag_pg_user: str = "aiinvest_sag"
+    sag_pg_password: str = "aiinvest_sag"
+    sag_pg_database: str = "aiinvest_sag"
     sag_qdrant_url: str = "http://localhost:6333"
     sag_qdrant_api_key: str | None = None
     # When set (e.g. "aiinvest_search_units"), all tickers share one multi-tenant Qdrant
@@ -216,10 +219,10 @@ class Settings(BaseSettings):
     llm_extra_body: dict | None = None
 
     # ── Embedding（OpenAI-compatible；仅 OpenAI provider 可复用生成配置）───────
-    embedding_model: str = "bge-large-en-v1.5"
-    embedding_base_url: str | None = "https://api.302ai.cn/v1"
+    embedding_model: str = "Qwen/Qwen3-Embedding-0.6B"
+    embedding_base_url: str | None = "https://api.deepinfra.com/v1/openai"
     embedding_api_key: str | None = None
-    embedding_dimensions: int | None = None
+    embedding_dimensions: int | None = 1024
     # Per-engine embedding HTTP concurrency. llama.cpp --parallel 1 cannot
     # absorb the zleap default of 8; queued batches hit the client timeout
     # and the indexer rolls the whole document back.
@@ -234,7 +237,7 @@ class Settings(BaseSettings):
     mineru_base_url: str | None = "https://mineru.net"
     mineru_official_api_token: str | None = None
 
-    mineru_official_model: Literal["pipeline", "vlm"] = "vlm"
+    mineru_official_model: Literal["pipeline", "vlm"] = "pipeline"
     mineru_parse_method: Literal["auto", "txt", "ocr"] = "auto"
     mineru_request_timeout: float = 60.0
     mineru_poll_interval: float = 2.0
@@ -323,7 +326,7 @@ class Settings(BaseSettings):
     session_context_qdrant_sync_enabled: bool = True
     session_context_max_messages: int = Field(default=5000, ge=50, le=50000)
     session_context_full_audit_max_batches: int = Field(default=6, ge=1, le=20)
-    decision_provider: Literal["siliconflow", "disabled"] = "siliconflow"
+    decision_provider: Literal["siliconflow", "disabled"] = "disabled"
     decision_model: str = Field(default="Kev-4b", min_length=1, max_length=200)
     siliconflow_base_url: str = "https://api.siliconflow.com/v1"
     siliconflow_api_key: str | None = None
@@ -353,8 +356,10 @@ class Settings(BaseSettings):
         data = dict(value)
         provider = data.get("decision_provider")
         normalized_provider = provider.strip().lower() if isinstance(provider, str) else provider
-        if normalized_provider is None or normalized_provider == "" or normalized_provider in ("laya", "openrouter"):
+        if normalized_provider in ("laya", "openrouter"):
             data["decision_provider"] = "siliconflow"
+        elif normalized_provider is None or normalized_provider == "":
+            data["decision_provider"] = "disabled"
         if normalized_provider in ("laya", "openrouter") or data.get("decision_model") == "typesafe/jev-1.14":
             data["decision_model"] = "Kev-4b"
         return data
@@ -438,10 +443,10 @@ class Settings(BaseSettings):
     @classmethod
     def _normalize_sag_language(cls, value: object) -> str:
         if value is None:
-            return "en"
+            return "vi"
         if isinstance(value, str):
             normalized = value.strip().lower()
-            return normalized or "en"
+            return normalized or "vi"
         return str(value)
 
     @field_validator("timezone")

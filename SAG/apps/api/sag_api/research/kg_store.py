@@ -9,7 +9,6 @@ with both:
 
 from __future__ import annotations
 
-import json
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -17,10 +16,42 @@ from datetime import date, timedelta
 from typing import Any, Protocol
 
 import pandas as pd
-from sqlalchemy import or_, select, text
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 _MAX_VALID_TO = date(9999, 12, 31)
+_VERSION_SUFFIX = "@v:"
+_VERSION_DATE_LEN = 10
+
+
+def _canonical_node_id(node_id: str) -> str:
+    return node_id.split(_VERSION_SUFFIX, 1)[0]
+
+
+def _canonical_id_from_row(node_id: str, meta: Mapping[str, Any] | None) -> str:
+    if isinstance(meta, Mapping):
+        stored = meta.get("_canonical_node_id")
+        if isinstance(stored, str) and stored.strip():
+            return stored.strip()
+    return _canonical_node_id(node_id)
+
+
+def _versioned_node_prefix(node_id: str) -> str:
+    canonical = _canonical_node_id(node_id)
+    max_prefix = max(1, 128 - len(_VERSION_SUFFIX) - _VERSION_DATE_LEN)
+    return f"{canonical[:max_prefix]}{_VERSION_SUFFIX}"
+
+
+def _versioned_node_id(node_id: str, eff: date) -> str:
+    return f"{_versioned_node_prefix(node_id)}{eff.isoformat()}"
+
+
+def _escape_like(val: str) -> str:
+    return val.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _clean_node_metadata(meta: Mapping[str, Any] | None) -> dict[str, Any]:
+    return {k: v for k, v in dict(meta or {}).items() if k != "_canonical_node_id"}
 
 
 def _coerce_date(val: Any, default: date | None = None) -> date:
@@ -172,12 +203,69 @@ class InMemoryKGStore:
     async def upsert_nodes(self, rows: Sequence[Mapping[str, Any]]) -> int:
         count = 0
         for row in rows:
-            nid = str(row["node_id"])
-            rec = dict(row)
-            rec.setdefault("effective_from", date.today().isoformat())
-            rec.setdefault("valid_to", _MAX_VALID_TO.isoformat())
-            rec.setdefault("metadata_json", {})
-            self.nodes[nid] = rec
+            nid = _canonical_node_id(str(row["node_id"]))
+            new_eff = _coerce_date(row.get("effective_from"), default=date.today())
+            new_vto = _coerce_date(row.get("valid_to"), default=_MAX_VALID_TO)
+            new_meta = _clean_node_metadata(row.get("metadata_json"))
+            new_rec = {
+                "node_id": nid,
+                "node_type": str(row.get("node_type") or "COMPANY"),
+                "label": str(row.get("label") or nid),
+                "ticker": row.get("ticker"),
+                "metadata_json": new_meta,
+                "effective_from": new_eff.isoformat(),
+                "valid_to": new_vto.isoformat(),
+            }
+            existing = self.nodes.get(nid)
+            if existing is None:
+                self.nodes[nid] = new_rec
+            else:
+                ex_eff = _coerce_date(existing.get("effective_from"))
+                changed = (
+                    existing.get("label") != new_rec["label"]
+                    or existing.get("node_type") != new_rec["node_type"]
+                    or existing.get("ticker") != new_rec["ticker"]
+                    or _clean_node_metadata(existing.get("metadata_json")) != new_meta
+                )
+                if new_eff > ex_eff:
+                    if changed:
+                        hist_id = _versioned_node_id(nid, ex_eff)
+                        hist = dict(existing)
+                        hist["node_id"] = hist_id
+                        hist["valid_to"] = new_eff.isoformat()
+                        hist["metadata_json"] = {
+                            **_clean_node_metadata(existing.get("metadata_json")),
+                            "_canonical_node_id": nid,
+                        }
+                        self.nodes[hist_id] = hist
+                        self.nodes[nid] = new_rec
+                    else:
+                        # Unchanged metadata: keep earliest effective_from so historical PIT never breaks
+                        ex_vto = _coerce_date(existing.get("valid_to"), default=_MAX_VALID_TO)
+                        existing["valid_to"] = max(ex_vto, new_vto).isoformat()
+                elif new_eff == ex_eff:
+                    self.nodes[nid] = new_rec
+                else:
+                    # Out-of-order historical backfill: maintain disjoint bi-temporal chain
+                    # across ALL sibling revisions without mutating current canonical row.
+                    hist_id = _versioned_node_id(nid, new_eff)
+                    bounded_vto = min(new_vto, ex_eff)
+                    for sib_id, sib in list(self.nodes.items()):
+                        if sib_id == hist_id:
+                            continue
+                        if _canonical_id_from_row(sib_id, sib.get("metadata_json")) != nid:
+                            continue
+                        sib_eff = _coerce_date(sib.get("effective_from"))
+                        sib_vto = _coerce_date(sib.get("valid_to"), default=_MAX_VALID_TO)
+                        if sib_eff < new_eff < sib_vto:
+                            sib["valid_to"] = new_eff.isoformat()
+                        elif sib_eff > new_eff and sib_eff < bounded_vto:
+                            bounded_vto = sib_eff
+                    hist = dict(new_rec)
+                    hist["node_id"] = hist_id
+                    hist["valid_to"] = bounded_vto.isoformat()
+                    hist["metadata_json"] = {**new_meta, "_canonical_node_id": nid}
+                    self.nodes[hist_id] = hist
             count += 1
         return count
 
@@ -187,16 +275,54 @@ class InMemoryKGStore:
             src = str(row.get("src_node_id") or row.get("source_node_id") or "")
             dst = str(row.get("dst_node_id") or row.get("target_node_id") or "")
             rel = str(row.get("relation_type") or "")
-            eid = str(row.get("edge_id") or uuid.uuid5(uuid.NAMESPACE_DNS, f"{src}:{dst}:{rel}"))
+            layer = str(row.get("layer") or "VALUE_CHAIN")
+            new_eff = _coerce_date(row.get("effective_from"), default=date.today())
+            new_vto = _coerce_date(row.get("valid_to"), default=_MAX_VALID_TO)
+
+            same_key_edges = [
+                e
+                for e in self.edges.values()
+                if e.get("src_node_id") == src
+                and e.get("dst_node_id") == dst
+                and e.get("relation_type") == rel
+                and e.get("layer") == layer
+            ]
+            exact_same_eff = next(
+                (e for e in same_key_edges if _coerce_date(e.get("effective_from")) == new_eff),
+                None,
+            )
+            if exact_same_eff is not None:
+                eid = str(exact_same_eff["edge_id"])
+            else:
+                for ex in same_key_edges:
+                    ex_eff = _coerce_date(ex.get("effective_from"))
+                    ex_vto = _coerce_date(ex.get("valid_to"), default=_MAX_VALID_TO)
+                    if ex_eff < new_eff < ex_vto:
+                        ex["valid_to"] = new_eff.isoformat()
+                    elif ex_eff > new_eff and ex_eff < new_vto:
+                        new_vto = ex_eff
+                raw_eid = str(row.get("edge_id") or "").strip()
+                if raw_eid and (
+                    raw_eid not in self.edges
+                    or _coerce_date(self.edges[raw_eid].get("effective_from")) == new_eff
+                ):
+                    eid = raw_eid
+                else:
+                    eid = str(
+                        uuid.uuid5(
+                            uuid.NAMESPACE_DNS,
+                            f"{src}:{dst}:{rel}:{layer}:{new_eff.isoformat()}",
+                        )
+                    )
             rec = dict(row)
             rec["edge_id"] = eid
             rec["src_node_id"] = src
             rec["dst_node_id"] = dst
-            rec.setdefault("layer", "VALUE_CHAIN")
+            rec["layer"] = layer
             rec.setdefault("verification_tier", "DOC_ONLY")
             rec.setdefault("evidence_json", {})
-            rec.setdefault("effective_from", date.today().isoformat())
-            rec.setdefault("valid_to", _MAX_VALID_TO.isoformat())
+            rec["effective_from"] = new_eff.isoformat()
+            rec["valid_to"] = new_vto.isoformat()
             self.edges[eid] = rec
             count += 1
         return count
@@ -207,20 +333,60 @@ class InMemoryKGStore:
             target_id = str(row.get("target_id") or row.get("entity_node_id") or "")
             target_level = str(row.get("target_level") or row.get("entity_level") or "COMPANY")
             macro_factor = str(row.get("macro_factor") or row.get("indicator_name") or "")
-            eff = str(row.get("effective_from") or row.get("as_of_date") or date.today().isoformat())[:10]
-            sid = str(
-                row.get("snapshot_id")
-                or uuid.uuid5(
-                    uuid.NAMESPACE_DNS,
-                    f"{target_id}:{macro_factor}:{row.get('channel', '')}:{row.get('target_metric', '')}:{eff}",
-                )
+            new_eff = _coerce_date(row.get("effective_from") or row.get("as_of_date"), default=date.today())
+            new_vto = _coerce_date(row.get("valid_to"), default=_MAX_VALID_TO)
+            meta = dict(row.get("metadata_json") or {})
+            if row.get("audited_note_ref"):
+                meta.setdefault("audited_note_ref", row["audited_note_ref"])
+            if row.get("channel"):
+                meta.setdefault("channel", row["channel"])
+            if row.get("target_metric"):
+                meta.setdefault("target_metric", row["target_metric"])
+            ch = str(meta.get("channel") or "")
+            metric = str(meta.get("target_metric") or "")
+
+            same_key_snaps = [
+                s
+                for s in self.macro_snapshots.values()
+                if s.get("target_id") == target_id
+                and s.get("target_level") == target_level
+                and s.get("macro_factor") == macro_factor
+                and str((s.get("metadata_json") or {}).get("channel") or "") == ch
+                and str((s.get("metadata_json") or {}).get("target_metric") or "") == metric
+            ]
+            exact_same_eff = next(
+                (s for s in same_key_snaps if _coerce_date(s.get("effective_from")) == new_eff),
+                None,
             )
+            if exact_same_eff is not None:
+                sid = str(exact_same_eff["snapshot_id"])
+            else:
+                for ex in same_key_snaps:
+                    ex_eff = _coerce_date(ex.get("effective_from"))
+                    ex_vto = _coerce_date(ex.get("valid_to"), default=_MAX_VALID_TO)
+                    if ex_eff < new_eff < ex_vto:
+                        ex["valid_to"] = new_eff.isoformat()
+                    elif ex_eff > new_eff and ex_eff < new_vto:
+                        new_vto = ex_eff
+                raw_sid = str(row.get("snapshot_id") or "").strip()
+                if raw_sid and (
+                    raw_sid not in self.macro_snapshots
+                    or _coerce_date(self.macro_snapshots[raw_sid].get("effective_from")) == new_eff
+                ):
+                    sid = raw_sid
+                else:
+                    sid = str(
+                        uuid.uuid5(
+                            uuid.NAMESPACE_DNS,
+                            f"{target_id}:{target_level}:{macro_factor}:{ch}:{metric}:{new_eff.isoformat()}",
+                        )
+                    )
             rec = {
                 "snapshot_id": sid,
                 "target_id": target_id,
                 "target_level": target_level,
                 "macro_factor": macro_factor,
-                "as_of_date": str(row.get("as_of_date") or eff)[:10],
+                "as_of_date": str(row.get("as_of_date") or new_eff.isoformat())[:10],
                 "best_lag_q": int(row.get("best_lag_q", row.get("lag_periods", 0)) or 0),
                 "beta": float(row.get("beta", row.get("beta_value", 0.0)) or 0.0),
                 "hac_t_stat": row.get("hac_t_stat", row.get("t_stat_hac")),
@@ -229,17 +395,11 @@ class InMemoryKGStore:
                 "tercile_stable": bool(row.get("tercile_stable", False)),
                 "doc_stance": row.get("doc_stance"),
                 "verification_tier": str(row.get("verification_tier") or "QUANT_ONLY"),
-                "effective_from": eff,
-                "valid_to": str(row.get("valid_to") or _MAX_VALID_TO.isoformat())[:10],
+                "effective_from": new_eff.isoformat(),
+                "valid_to": new_vto.isoformat(),
                 "sample_n": row.get("sample_n", row.get("n_obs")),
-                "metadata_json": dict(row.get("metadata_json") or {}),
+                "metadata_json": meta,
             }
-            if row.get("audited_note_ref"):
-                rec["metadata_json"].setdefault("audited_note_ref", row["audited_note_ref"])
-            if row.get("channel"):
-                rec["metadata_json"].setdefault("channel", row["channel"])
-            if row.get("target_metric"):
-                rec["metadata_json"].setdefault("target_metric", row["target_metric"])
             self.macro_snapshots[sid] = rec
             count += 1
         return count
@@ -251,6 +411,24 @@ class InMemoryKGStore:
         eff = _coerce_date(rec.get("effective_from"))
         vto = _coerce_date(rec.get("valid_to"), default=_MAX_VALID_TO)
         return eff <= as_of_date < vto
+
+    def _resolve_node_pit(self, canonical_id: str, as_of_date: date) -> dict[str, Any] | None:
+        best: dict[str, Any] | None = None
+        best_eff: date | None = None
+        for rec in self.nodes.values():
+            if _canonical_id_from_row(str(rec.get("node_id") or ""), rec.get("metadata_json")) != canonical_id:
+                continue
+            if not self._is_pit_valid(rec, as_of_date):
+                continue
+            eff = _coerce_date(rec.get("effective_from"))
+            if best_eff is None or eff >= best_eff:
+                best = {
+                    **rec,
+                    "node_id": canonical_id,
+                    "metadata_json": _clean_node_metadata(rec.get("metadata_json")),
+                }
+                best_eff = eff
+        return best
 
     async def get_true_peers(
         self,
@@ -278,8 +456,11 @@ class InMemoryKGStore:
             peer_ticker = other.split(":", 1)[1] if ":" in other else other
             if peer_ticker == sym:
                 continue
-            other_node = self.nodes.get(other)
-            if other_node is not None and not self._is_pit_valid(other_node, as_of_date):
+            has_any_node = any(
+                _canonical_node_id(str(k)) == other for k in self.nodes
+            )
+            other_node = self._resolve_node_pit(other, as_of_date)
+            if has_any_node and other_node is None:
                 continue
             peers.append(
                 {
@@ -313,9 +494,9 @@ class InMemoryKGStore:
                 touched_node_ids.add(edge["dst_node_id"])
 
         # Include sector-level edges for the company's sector if known
-        company_node = self.nodes.get(node_id)
+        company_node = self._resolve_node_pit(node_id, as_of_date)
         sector_name = ""
-        if company_node and self._is_pit_valid(company_node, as_of_date):
+        if company_node:
             sector_name = str(company_node.get("metadata_json", {}).get("sector") or "")
         sector_node_id = f"SECTOR:{sector_name}" if sector_name else ""
         if sector_node_id:
@@ -329,9 +510,9 @@ class InMemoryKGStore:
                         touched_node_ids.add(edge["dst_node_id"])
 
         valid_nodes = [
-            dict(self.nodes[nid])
+            resolved
             for nid in sorted(touched_node_ids)
-            if nid in self.nodes and self._is_pit_valid(self.nodes[nid], as_of_date)
+            if (resolved := self._resolve_node_pit(nid, as_of_date)) is not None
         ]
 
         valid_snaps = [
@@ -356,82 +537,204 @@ class InMemoryKGStore:
 
 
 class SQLAlchemyKGStore:
-    """Async PostgreSQL/SQLite repository for `kg_nodes`, `kg_edges`, `macro_sensitivity_snapshots`."""
+    """Async PostgreSQL/SQLite bi-temporal repository for `kg_nodes`, `kg_edges`, `macro_sensitivity_snapshots`.
+
+    Never overwrites historical `effective_from`/`valid_to` in place: closes prior rows'
+    `valid_to = new_effective_from` and appends new PIT-versioned records so historical
+    Point-in-Time replay remains 100% faithful.
+    """
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    def _is_postgres(self) -> bool:
-        bind = self._session.get_bind()
-        return bind is not None and bind.dialect.name == "postgresql"
-
     async def upsert_nodes(self, rows: Sequence[Mapping[str, Any]]) -> int:
         if not rows:
             return 0
-        if not self._is_postgres():
-            from sag_api.db.models.stock_research import KgNode
+        from sag_api.db.models.stock_research import KgNode
 
-            for row in rows:
-                await self._session.merge(
+        for row in rows:
+            nid = _canonical_node_id(str(row["node_id"]))
+            new_type = str(row["node_type"])
+            new_label = str(row["label"])
+            new_ticker = row.get("ticker")
+            new_meta = _clean_node_metadata(row.get("metadata_json"))
+            new_eff = _coerce_date(row.get("effective_from"), default=date.today())
+            new_vto = _coerce_date(row.get("valid_to"), default=_MAX_VALID_TO)
+
+            existing = await self._session.get(KgNode, nid)
+            if existing is None:
+                self._session.add(
                     KgNode(
-                        node_id=str(row["node_id"]),
-                        node_type=str(row["node_type"]),
-                        label=str(row["label"]),
-                        ticker=row.get("ticker"),
-                        metadata_json=dict(row.get("metadata_json") or {}),
-                        effective_from=_coerce_date(row.get("effective_from"), default=date.today()),
-                        valid_to=_coerce_date(row.get("valid_to"), default=_MAX_VALID_TO),
+                        node_id=nid,
+                        node_type=new_type,
+                        label=new_label,
+                        ticker=new_ticker,
+                        metadata_json=new_meta,
+                        effective_from=new_eff,
+                        valid_to=new_vto,
                     )
                 )
+            else:
+                changed = (
+                    existing.node_type != new_type
+                    or existing.label != new_label
+                    or existing.ticker != new_ticker
+                    or _clean_node_metadata(existing.metadata_json) != new_meta
+                )
+                if new_eff > existing.effective_from:
+                    if changed:
+                        hist_id = _versioned_node_id(nid, existing.effective_from)
+                        hist_existing = await self._session.get(KgNode, hist_id)
+                        hist_meta = {
+                            **_clean_node_metadata(existing.metadata_json),
+                            "_canonical_node_id": nid,
+                        }
+                        if hist_existing is None:
+                            self._session.add(
+                                KgNode(
+                                    node_id=hist_id,
+                                    node_type=existing.node_type,
+                                    label=existing.label,
+                                    ticker=existing.ticker,
+                                    metadata_json=hist_meta,
+                                    effective_from=existing.effective_from,
+                                    valid_to=new_eff,
+                                )
+                            )
+                        else:
+                            hist_existing.valid_to = min(hist_existing.valid_to, new_eff)
+                        existing.node_type = new_type
+                        existing.label = new_label
+                        existing.ticker = new_ticker
+                        existing.metadata_json = new_meta
+                        existing.effective_from = new_eff
+                        existing.valid_to = new_vto
+                    else:
+                        # Preserve earliest effective_from so historical queries remain valid
+                        existing.valid_to = max(existing.valid_to, new_vto)
+                elif new_eff == existing.effective_from:
+                    existing.node_type = new_type
+                    existing.label = new_label
+                    existing.ticker = new_ticker
+                    existing.metadata_json = new_meta
+                    existing.valid_to = new_vto
+                else:
+                    # Out-of-order historical backfill: maintain disjoint bi-temporal chain
+                    # across ALL sibling revisions without mutating current canonical row.
+                    hist_id = _versioned_node_id(nid, new_eff)
+                    bounded_vto = min(new_vto, existing.effective_from)
+                    prefix_like = f"{_escape_like(_versioned_node_prefix(nid))}%"
+                    sibling_rows = list(
+                        (
+                            await self._session.scalars(
+                                select(KgNode).where(
+                                    or_(
+                                        KgNode.node_id == nid,
+                                        KgNode.node_id.like(prefix_like, escape="\\"),
+                                    )
+                                )
+                            )
+                        ).all()
+                    )
+                    for sib in sibling_rows:
+                        if sib.node_id == hist_id:
+                            continue
+                        if _canonical_id_from_row(sib.node_id, sib.metadata_json) != nid:
+                            continue
+                        if sib.effective_from < new_eff < sib.valid_to:
+                            sib.valid_to = new_eff
+                        elif sib.effective_from > new_eff and sib.effective_from < bounded_vto:
+                            bounded_vto = sib.effective_from
+                    hist_meta = {**new_meta, "_canonical_node_id": nid}
+                    hist_existing = await self._session.get(KgNode, hist_id)
+                    if hist_existing is None:
+                        self._session.add(
+                            KgNode(
+                                node_id=hist_id,
+                                node_type=new_type,
+                                label=new_label,
+                                ticker=new_ticker,
+                                metadata_json=hist_meta,
+                                effective_from=new_eff,
+                                valid_to=bounded_vto,
+                            )
+                        )
+                    else:
+                        hist_existing.node_type = new_type
+                        hist_existing.label = new_label
+                        hist_existing.ticker = new_ticker
+                        hist_existing.metadata_json = hist_meta
+                        hist_existing.valid_to = bounded_vto
             await self._session.flush()
-            return len(rows)
-
-        stmt = text(
-            """
-            INSERT INTO kg_nodes (node_id, node_type, label, ticker, metadata_json, effective_from, valid_to)
-            VALUES (:node_id, :node_type, :label, :ticker, CAST(:metadata_json AS jsonb), :effective_from, :valid_to)
-            ON CONFLICT (node_id) DO UPDATE SET
-                node_type = EXCLUDED.node_type,
-                label = EXCLUDED.label,
-                ticker = EXCLUDED.ticker,
-                metadata_json = EXCLUDED.metadata_json,
-                effective_from = EXCLUDED.effective_from,
-                valid_to = EXCLUDED.valid_to
-            """
-        )
-        for row in rows:
-            await self._session.execute(
-                stmt,
-                {
-                    "node_id": str(row["node_id"]),
-                    "node_type": str(row["node_type"]),
-                    "label": str(row["label"]),
-                    "ticker": row.get("ticker"),
-                    "metadata_json": json.dumps(row.get("metadata_json") or {}, ensure_ascii=False),
-                    "effective_from": _coerce_date(row.get("effective_from"), default=date.today()),
-                    "valid_to": _coerce_date(row.get("valid_to"), default=_MAX_VALID_TO),
-                },
-            )
         return len(rows)
 
     async def upsert_edges(self, rows: Sequence[Mapping[str, Any]]) -> int:
         if not rows:
             return 0
-        if not self._is_postgres():
-            from sag_api.db.models.stock_research import KgEdge
+        from sag_api.db.models.stock_research import KgEdge
 
-            for row in rows:
-                src = str(row.get("src_node_id") or row.get("source_node_id"))
-                dst = str(row.get("dst_node_id") or row.get("target_node_id"))
-                rel = str(row["relation_type"])
-                eid = str(row.get("edge_id") or uuid.uuid5(uuid.NAMESPACE_DNS, f"{src}:{dst}:{rel}"))
-                await self._session.merge(
+        for row in rows:
+            src = _canonical_node_id(str(row.get("src_node_id") or row.get("source_node_id")))
+            dst = _canonical_node_id(str(row.get("dst_node_id") or row.get("target_node_id")))
+            rel = str(row["relation_type"])
+            layer = str(row.get("layer") or "VALUE_CHAIN")
+            new_eff = _coerce_date(row.get("effective_from"), default=date.today())
+            new_vto = _coerce_date(row.get("valid_to"), default=_MAX_VALID_TO)
+
+            prior_edges = list(
+                (
+                    await self._session.scalars(
+                        select(KgEdge).where(
+                            KgEdge.src_node_id == src,
+                            KgEdge.dst_node_id == dst,
+                            KgEdge.relation_type == rel,
+                            KgEdge.layer == layer,
+                        )
+                    )
+                ).all()
+            )
+            exact = next((e for e in prior_edges if e.effective_from == new_eff), None)
+            if exact is not None:
+                exact.direction = row.get("direction")
+                exact.weight = row.get("weight")
+                exact.beta = row.get("beta")
+                exact.p_value = row.get("p_value")
+                exact.fdr_q_value = row.get("fdr_q_value")
+                exact.tercile_stable = row.get("tercile_stable")
+                exact.verification_tier = str(row.get("verification_tier") or "DOC_ONLY")
+                exact.evidence_json = dict(row.get("evidence_json") or {})
+                exact.valid_to = new_vto
+            else:
+                for ex in prior_edges:
+                    if ex.effective_from < new_eff < ex.valid_to:
+                        ex.valid_to = new_eff
+                    elif ex.effective_from > new_eff and ex.effective_from < new_vto:
+                        new_vto = ex.effective_from
+                raw_eid = str(row.get("edge_id") or "").strip()
+                existing_by_id = await self._session.get(KgEdge, raw_eid) if raw_eid else None
+                if raw_eid and existing_by_id is None:
+                    eid = raw_eid
+                else:
+                    eid = str(
+                        uuid.uuid5(
+                            uuid.NAMESPACE_DNS,
+                            f"{src}:{dst}:{rel}:{layer}:{new_eff.isoformat()}",
+                        )
+                    )
+                    if await self._session.get(KgEdge, eid) is not None:
+                        eid = str(
+                            uuid.uuid5(
+                                uuid.NAMESPACE_DNS,
+                                f"{src}:{dst}:{rel}:{layer}:{new_eff.isoformat()}:{new_vto.isoformat()}",
+                            )
+                        )
+                self._session.add(
                     KgEdge(
                         edge_id=eid,
                         src_node_id=src,
                         dst_node_id=dst,
                         relation_type=rel,
-                        layer=str(row.get("layer") or "VALUE_CHAIN"),
+                        layer=layer,
                         direction=row.get("direction"),
                         weight=row.get("weight"),
                         beta=row.get("beta"),
@@ -440,87 +743,90 @@ class SQLAlchemyKGStore:
                         tercile_stable=row.get("tercile_stable"),
                         verification_tier=str(row.get("verification_tier") or "DOC_ONLY"),
                         evidence_json=dict(row.get("evidence_json") or {}),
-                        effective_from=_coerce_date(row.get("effective_from"), default=date.today()),
-                        valid_to=_coerce_date(row.get("valid_to"), default=_MAX_VALID_TO),
+                        effective_from=new_eff,
+                        valid_to=new_vto,
                     )
                 )
             await self._session.flush()
-            return len(rows)
-
-        stmt = text(
-            """
-            INSERT INTO kg_edges (
-                edge_id, src_node_id, dst_node_id, relation_type, layer, direction,
-                weight, beta, p_value, fdr_q_value, tercile_stable, verification_tier,
-                evidence_json, effective_from, valid_to
-            )
-            VALUES (
-                :edge_id, :src_node_id, :dst_node_id, :relation_type, :layer, :direction,
-                :weight, :beta, :p_value, :fdr_q_value, :tercile_stable, :verification_tier,
-                CAST(:evidence_json AS jsonb), :effective_from, :valid_to
-            )
-            ON CONFLICT (edge_id) DO UPDATE SET
-                weight = EXCLUDED.weight,
-                beta = EXCLUDED.beta,
-                p_value = EXCLUDED.p_value,
-                fdr_q_value = EXCLUDED.fdr_q_value,
-                tercile_stable = EXCLUDED.tercile_stable,
-                verification_tier = EXCLUDED.verification_tier,
-                evidence_json = EXCLUDED.evidence_json,
-                effective_from = EXCLUDED.effective_from,
-                valid_to = EXCLUDED.valid_to
-            """
-        )
-        for row in rows:
-            src = str(row.get("src_node_id") or row.get("source_node_id"))
-            dst = str(row.get("dst_node_id") or row.get("target_node_id"))
-            rel = str(row["relation_type"])
-            eid = str(row.get("edge_id") or uuid.uuid5(uuid.NAMESPACE_DNS, f"{src}:{dst}:{rel}"))
-            await self._session.execute(
-                stmt,
-                {
-                    "edge_id": eid,
-                    "src_node_id": src,
-                    "dst_node_id": dst,
-                    "relation_type": rel,
-                    "layer": str(row.get("layer") or "VALUE_CHAIN"),
-                    "direction": row.get("direction"),
-                    "weight": row.get("weight"),
-                    "beta": row.get("beta"),
-                    "p_value": row.get("p_value"),
-                    "fdr_q_value": row.get("fdr_q_value"),
-                    "tercile_stable": row.get("tercile_stable"),
-                    "verification_tier": str(row.get("verification_tier") or "DOC_ONLY"),
-                    "evidence_json": json.dumps(row.get("evidence_json") or {}, ensure_ascii=False),
-                    "effective_from": _coerce_date(row.get("effective_from"), default=date.today()),
-                    "valid_to": _coerce_date(row.get("valid_to"), default=_MAX_VALID_TO),
-                },
-            )
         return len(rows)
 
     async def upsert_macro_snapshots(self, rows: Sequence[Mapping[str, Any]]) -> int:
         if not rows:
             return 0
-        if not self._is_postgres():
-            from sag_api.db.models.stock_research import MacroSensitivitySnapshot
+        from sag_api.db.models.stock_research import MacroSensitivitySnapshot
 
-            for row in rows:
-                target_id = str(row.get("target_id") or row.get("entity_node_id"))
-                macro_factor = str(row.get("macro_factor") or row.get("indicator_name"))
-                eff_d = _coerce_date(row.get("effective_from") or row.get("as_of_date"), default=date.today())
-                as_of_d = _coerce_date(row.get("as_of_date"), default=eff_d)
-                sid = str(
-                    row.get("snapshot_id")
-                    or uuid.uuid5(uuid.NAMESPACE_DNS, f"{target_id}:{macro_factor}:{eff_d}")
+        for row in rows:
+            target_id = str(row.get("target_id") or row.get("entity_node_id"))
+            target_level = str(row.get("target_level") or row.get("entity_level") or "COMPANY")
+            macro_factor = str(row.get("macro_factor") or row.get("indicator_name"))
+            eff_d = _coerce_date(row.get("effective_from") or row.get("as_of_date"), default=date.today())
+            as_of_d = _coerce_date(row.get("as_of_date"), default=eff_d)
+            new_vto = _coerce_date(row.get("valid_to"), default=_MAX_VALID_TO)
+            meta = dict(row.get("metadata_json") or {})
+            if row.get("audited_note_ref"):
+                meta.setdefault("audited_note_ref", row["audited_note_ref"])
+            if row.get("channel"):
+                meta.setdefault("channel", row["channel"])
+            if row.get("target_metric"):
+                meta.setdefault("target_metric", row["target_metric"])
+            ch = str(meta.get("channel") or "")
+            metric = str(meta.get("target_metric") or "")
+
+            prior_snaps = list(
+                (
+                    await self._session.scalars(
+                        select(MacroSensitivitySnapshot).where(
+                            MacroSensitivitySnapshot.target_id == target_id,
+                            MacroSensitivitySnapshot.target_level == target_level,
+                            MacroSensitivitySnapshot.macro_factor == macro_factor,
+                        )
+                    )
+                ).all()
+            )
+            matching_snaps = [
+                s
+                for s in prior_snaps
+                if str((s.metadata_json or {}).get("channel") or "") == ch
+                and str((s.metadata_json or {}).get("target_metric") or "") == metric
+            ]
+            exact = next((s for s in matching_snaps if s.effective_from == eff_d), None)
+            if exact is not None:
+                exact.as_of_date = as_of_d
+                exact.best_lag_q = int(row.get("best_lag_q", row.get("lag_periods", 0)) or 0)
+                exact.beta = float(row.get("beta", row.get("beta_value", 0.0)) or 0.0)
+                exact.hac_t_stat = row.get("hac_t_stat", row.get("t_stat_hac"))
+                exact.p_value = row.get("p_value")
+                exact.fdr_q_value = row.get("fdr_q_value", row.get("fdr_q"))
+                exact.tercile_stable = bool(row.get("tercile_stable", False))
+                exact.doc_stance = row.get("doc_stance")
+                exact.verification_tier = str(row.get("verification_tier") or "QUANT_ONLY")
+                exact.valid_to = new_vto
+                exact.sample_n = row.get("sample_n", row.get("n_obs"))
+                exact.metadata_json = meta
+            else:
+                for ex in matching_snaps:
+                    if ex.effective_from < eff_d < ex.valid_to:
+                        ex.valid_to = eff_d
+                    elif ex.effective_from > eff_d and ex.effective_from < new_vto:
+                        new_vto = ex.effective_from
+                raw_sid = str(row.get("snapshot_id") or "").strip()
+                existing_by_id = (
+                    await self._session.get(MacroSensitivitySnapshot, raw_sid) if raw_sid else None
                 )
-                meta = dict(row.get("metadata_json") or {})
-                if row.get("audited_note_ref"):
-                    meta.setdefault("audited_note_ref", row["audited_note_ref"])
-                await self._session.merge(
+                if raw_sid and existing_by_id is None:
+                    sid = raw_sid
+                else:
+                    sid = str(
+                        uuid.uuid5(
+                            uuid.NAMESPACE_DNS,
+                            f"{target_id}:{target_level}:{macro_factor}:{ch}:{metric}:{eff_d.isoformat()}",
+                        )
+                    )
+                self._session.add(
                     MacroSensitivitySnapshot(
                         snapshot_id=sid,
                         target_id=target_id,
-                        target_level=str(row.get("target_level") or row.get("entity_level") or "COMPANY"),
+                        target_level=target_level,
                         macro_factor=macro_factor,
                         as_of_date=as_of_d,
                         best_lag_q=int(row.get("best_lag_q", row.get("lag_periods", 0)) or 0),
@@ -532,75 +838,74 @@ class SQLAlchemyKGStore:
                         doc_stance=row.get("doc_stance"),
                         verification_tier=str(row.get("verification_tier") or "QUANT_ONLY"),
                         effective_from=eff_d,
-                        valid_to=_coerce_date(row.get("valid_to"), default=_MAX_VALID_TO),
+                        valid_to=new_vto,
                         sample_n=row.get("sample_n", row.get("n_obs")),
                         metadata_json=meta,
                     )
                 )
             await self._session.flush()
-            return len(rows)
-
-        stmt = text(
-            """
-            INSERT INTO macro_sensitivity_snapshots (
-                snapshot_id, target_id, target_level, macro_factor, as_of_date,
-                best_lag_q, beta, hac_t_stat, p_value, fdr_q_value, tercile_stable,
-                doc_stance, verification_tier, effective_from, valid_to, sample_n, metadata_json
-            )
-            VALUES (
-                :snapshot_id, :target_id, :target_level, :macro_factor, :as_of_date,
-                :best_lag_q, :beta, :hac_t_stat, :p_value, :fdr_q_value, :tercile_stable,
-                :doc_stance, :verification_tier, :effective_from, :valid_to, :sample_n,
-                CAST(:metadata_json AS jsonb)
-            )
-            ON CONFLICT (snapshot_id) DO UPDATE SET
-                beta = EXCLUDED.beta,
-                hac_t_stat = EXCLUDED.hac_t_stat,
-                p_value = EXCLUDED.p_value,
-                fdr_q_value = EXCLUDED.fdr_q_value,
-                tercile_stable = EXCLUDED.tercile_stable,
-                doc_stance = EXCLUDED.doc_stance,
-                verification_tier = EXCLUDED.verification_tier,
-                effective_from = EXCLUDED.effective_from,
-                valid_to = EXCLUDED.valid_to,
-                metadata_json = EXCLUDED.metadata_json
-            """
-        )
-        for row in rows:
-            target_id = str(row.get("target_id") or row.get("entity_node_id"))
-            macro_factor = str(row.get("macro_factor") or row.get("indicator_name"))
-            eff_d = _coerce_date(row.get("effective_from") or row.get("as_of_date"), default=date.today())
-            as_of_d = _coerce_date(row.get("as_of_date"), default=eff_d)
-            sid = str(
-                row.get("snapshot_id")
-                or uuid.uuid5(uuid.NAMESPACE_DNS, f"{target_id}:{macro_factor}:{eff_d}")
-            )
-            meta = dict(row.get("metadata_json") or {})
-            if row.get("audited_note_ref"):
-                meta.setdefault("audited_note_ref", row["audited_note_ref"])
-            await self._session.execute(
-                stmt,
-                {
-                    "snapshot_id": sid,
-                    "target_id": target_id,
-                    "target_level": str(row.get("target_level") or row.get("entity_level") or "COMPANY"),
-                    "macro_factor": macro_factor,
-                    "as_of_date": as_of_d,
-                    "best_lag_q": int(row.get("best_lag_q", row.get("lag_periods", 0)) or 0),
-                    "beta": float(row.get("beta", row.get("beta_value", 0.0)) or 0.0),
-                    "hac_t_stat": row.get("hac_t_stat", row.get("t_stat_hac")),
-                    "p_value": row.get("p_value"),
-                    "fdr_q_value": row.get("fdr_q_value", row.get("fdr_q")),
-                    "tercile_stable": bool(row.get("tercile_stable", False)),
-                    "doc_stance": row.get("doc_stance"),
-                    "verification_tier": str(row.get("verification_tier") or "QUANT_ONLY"),
-                    "effective_from": eff_d,
-                    "valid_to": _coerce_date(row.get("valid_to"), default=_MAX_VALID_TO),
-                    "sample_n": row.get("sample_n", row.get("n_obs")),
-                    "metadata_json": json.dumps(meta, ensure_ascii=False),
-                },
-            )
         return len(rows)
+
+    async def _load_pit_nodes_map(
+        self,
+        canonical_ids: Sequence[str],
+        as_of_date: date,
+    ) -> dict[str, Any]:
+        from sag_api.db.models.stock_research import KgNode
+
+        clean_ids = sorted({_canonical_node_id(cid) for cid in canonical_ids if cid})
+        if not clean_ids:
+            return {}
+        wanted = set(clean_ids)
+        id_clauses = [KgNode.node_id.in_(clean_ids)] + [
+            KgNode.node_id.like(f"{_escape_like(_versioned_node_prefix(cid))}%", escape="\\")
+            for cid in clean_ids
+        ]
+        rows = list(
+            (
+                await self._session.scalars(
+                    select(KgNode)
+                    .where(
+                        or_(*id_clauses),
+                        KgNode.effective_from <= as_of_date,
+                        KgNode.valid_to > as_of_date,
+                    )
+                    .order_by(KgNode.effective_from.asc())
+                )
+            ).all()
+        )
+        out: dict[str, Any] = {}
+        for n in rows:
+            cid = _canonical_id_from_row(n.node_id, n.metadata_json)
+            if cid in wanted:
+                out[cid] = n
+        return out
+
+    async def _load_existing_canonical_node_ids(
+        self,
+        canonical_ids: Sequence[str],
+    ) -> set[str]:
+        from sag_api.db.models.stock_research import KgNode
+
+        clean_ids = sorted({_canonical_node_id(cid) for cid in canonical_ids if cid})
+        if not clean_ids:
+            return set()
+        wanted = set(clean_ids)
+        id_clauses = [KgNode.node_id.in_(clean_ids)] + [
+            KgNode.node_id.like(f"{_escape_like(_versioned_node_prefix(cid))}%", escape="\\")
+            for cid in clean_ids
+        ]
+        rows = (
+            await self._session.execute(
+                select(KgNode.node_id, KgNode.metadata_json).where(or_(*id_clauses))
+            )
+        ).all()
+        found: set[str] = set()
+        for raw_nid, meta_j in rows:
+            cid = _canonical_id_from_row(str(raw_nid), meta_j)
+            if cid in wanted:
+                found.add(cid)
+        return found
 
     async def get_true_peers(
         self,
@@ -609,7 +914,7 @@ class SQLAlchemyKGStore:
         *,
         limit: int = 5,
     ) -> list[dict[str, Any]]:
-        from sag_api.db.models.stock_research import KgEdge, KgNode
+        from sag_api.db.models.stock_research import KgEdge
 
         sym = ticker.strip().upper()
         node_id = f"TICKER:{sym}"
@@ -630,20 +935,17 @@ class SQLAlchemyKGStore:
                 for e in edge_rows
             }
         )
-        nodes_by_id: dict[str, KgNode] = {}
-        if other_ids:
-            n_stmt = select(KgNode).where(
-                KgNode.node_id.in_(other_ids),
-                KgNode.effective_from <= as_of_date,
-                KgNode.valid_to > as_of_date,
-            )
-            for n in (await self._session.scalars(n_stmt)).all():
-                nodes_by_id[n.node_id] = n
+        nodes_by_id = await self._load_pit_nodes_map(other_ids, as_of_date) if other_ids else {}
+        existing_other_ids = (
+            await self._load_existing_canonical_node_ids(other_ids) if other_ids else set()
+        )
 
         peers: list[dict[str, Any]] = []
         for e in edge_rows:
             other = e.dst_node_id if e.src_node_id == node_id else e.src_node_id
             other_node = nodes_by_id.get(other)
+            if other in existing_other_ids and other_node is None:
+                continue
             peer_ticker = (
                 other_node.ticker
                 if (other_node and other_node.ticker)
@@ -669,20 +971,12 @@ class SQLAlchemyKGStore:
         ticker: str,
         as_of_date: date,
     ) -> dict[str, Any]:
-        from sag_api.db.models.stock_research import KgEdge, KgNode, MacroSensitivitySnapshot
+        from sag_api.db.models.stock_research import KgEdge, MacroSensitivitySnapshot
 
         sym = ticker.strip().upper()
         node_id = f"TICKER:{sym}"
 
-        node_row = (
-            await self._session.scalars(
-                select(KgNode).where(
-                    KgNode.node_id == node_id,
-                    KgNode.effective_from <= as_of_date,
-                    KgNode.valid_to > as_of_date,
-                )
-            )
-        ).first()
+        node_row = (await self._load_pit_nodes_map([node_id], as_of_date)).get(node_id)
 
         sector_name = ""
         if node_row and isinstance(node_row.metadata_json, Mapping):
@@ -732,28 +1026,18 @@ class SQLAlchemyKGStore:
 
         nodes: list[dict[str, Any]] = []
         if touched_ids:
-            n_rows = list(
-                (
-                    await self._session.scalars(
-                        select(KgNode).where(
-                            KgNode.node_id.in_(sorted(touched_ids)),
-                            KgNode.effective_from <= as_of_date,
-                            KgNode.valid_to > as_of_date,
-                        )
-                    )
-                ).all()
-            )
+            n_map = await self._load_pit_nodes_map(sorted(touched_ids), as_of_date)
             nodes = [
                 {
-                    "node_id": n.node_id,
+                    "node_id": cid,
                     "node_type": n.node_type,
                     "label": n.label,
                     "ticker": n.ticker,
-                    "metadata_json": n.metadata_json or {},
+                    "metadata_json": _clean_node_metadata(n.metadata_json),
                     "effective_from": str(n.effective_from),
                     "valid_to": str(n.valid_to),
                 }
-                for n in n_rows
+                for cid, n in sorted(n_map.items())
             ]
 
         snap_rows = list(
@@ -941,4 +1225,227 @@ def load_core_db_snapshot(core_database_url: str, as_of_date: date) -> dict[str,
         "ratios": ratios_df,
         "market": mkt_df,
         "statements": stmt_rows,
+    }
+
+
+async def _load_document_pages_for_kg(
+    session: AsyncSession,
+    *,
+    tickers: Sequence[str],
+    as_of_date: date,
+    tenant_id: str | None = None,
+) -> list[Any]:
+    """Load PIT-eligible canonical blocks grouped by `(version, page)` into `DocumentPageInput` rows."""
+    from collections import defaultdict
+    from datetime import UTC, datetime
+
+    from sag_api.db.models import CanonicalBlock, Document, DocumentVersion
+    from sag_api.research.kg_entity_linker import DocumentPageInput
+
+    norm_tickers = sorted({t.strip().upper() for t in tickers if t and t.strip()})
+    if not norm_tickers:
+        return []
+    as_of_dt = datetime(as_of_date.year, as_of_date.month, as_of_date.day, 23, 59, 59, tzinfo=UTC)
+    filters = [
+        Document.project_id.in_(norm_tickers),
+        Document.is_active.is_(True),
+        DocumentVersion.valid_from <= as_of_dt,
+        DocumentVersion.valid_to > as_of_dt,
+        CanonicalBlock.block_type != "table_card",
+    ]
+    if tenant_id:
+        filters.append(Document.tenant_id == tenant_id)
+    stmt = (
+        select(
+            Document.project_id,
+            Document.filename,
+            DocumentVersion.id,
+            DocumentVersion.source_published_at,
+            DocumentVersion.valid_from,
+            DocumentVersion.metadata_json,
+            CanonicalBlock.page_from,
+            CanonicalBlock.normalized_text,
+        )
+        .join(DocumentVersion, DocumentVersion.document_id == Document.id)
+        .join(CanonicalBlock, CanonicalBlock.document_version_id == DocumentVersion.id)
+        .where(*filters)
+        .order_by(DocumentVersion.id.asc(), CanonicalBlock.page_from.asc(), CanonicalBlock.ordinal.asc())
+    )
+    rows = (await session.execute(stmt)).all()
+    grouped: dict[tuple[str, str, str, str, date, int], list[str]] = defaultdict(list)
+    for pid, fname, vid, src_pub, vf, meta, pno, txt in rows:
+        dt_val = src_pub or vf
+        pub_d = dt_val.date() if isinstance(dt_val, datetime) else _coerce_date(dt_val, default=as_of_date)
+        if pub_d > as_of_date:
+            continue
+        slot = str((meta or {}).get("sub_doc_slot") or "BCTN_CORE") if isinstance(meta, Mapping) else "BCTN_CORE"
+        key = (str(pid).upper(), str(fname or vid), str(vid), slot, pub_d, int(pno or 1))
+        if txt and str(txt).strip():
+            grouped[key].append(str(txt).strip())
+
+    return [
+        DocumentPageInput(
+            ticker=tk,
+            document_name=fname,
+            document_version_id=vid,
+            sub_doc_slot=slot,
+            published_date=pub_d,
+            page_no=pno,
+            text="\n".join(parts),
+        )
+        for (tk, fname, vid, slot, pub_d, pno), parts in grouped.items()
+    ]
+
+
+async def refresh_research_knowledge_graph(
+    session: AsyncSession,
+    *,
+    tickers: Sequence[str],
+    as_of_date: date,
+    core_database_url: str | None = None,
+    core_snapshot: Mapping[str, Any] | None = None,
+    tenant_id: str | None = None,
+) -> dict[str, Any]:
+    """Production 3-Layer KG refresher wiring Entity Linker, Macro HAC/FDR, and True-Peer into `SQLAlchemyKGStore`."""
+    import asyncio
+
+    from sag_api.research.kg_entity_linker import extract_document_micro_edges_from_pages
+    from sag_api.research.kg_macro_coupling import (
+        reconcile_macro_with_audited_docs,
+        run_cross_sector_coupling,
+        run_fundamental_macro_channel,
+        run_market_excess_macro_channel,
+    )
+    from sag_api.research.kg_true_peer import (
+        build_financial_structure_matrix,
+        build_true_peer_clusters,
+        compute_biz_vectors,
+        compute_multimodal_similarity,
+    )
+
+    norm_tickers = sorted({t.strip().upper() for t in tickers if t and t.strip()})
+    snapshot: dict[str, Any]
+    if core_snapshot is not None:
+        snapshot = dict(core_snapshot)
+    elif core_database_url:
+        snapshot = await asyncio.to_thread(load_core_db_snapshot, core_database_url, as_of_date)
+    else:
+        snapshot = {
+            "as_of_date": as_of_date,
+            "stocks": pd.DataFrame(
+                [{"symbol": tk, "name": tk, "sector": "HOSE", "industry": ""} for tk in norm_tickers]
+            ),
+            "macro": pd.DataFrame(),
+            "ratios": pd.DataFrame(),
+            "market": pd.DataFrame(),
+            "statements": [],
+        }
+
+    stocks_df: pd.DataFrame = snapshot.get("stocks") if isinstance(snapshot.get("stocks"), pd.DataFrame) else (
+        pd.DataFrame(columns=["symbol", "name", "sector", "industry"])
+    )
+    macro_df: pd.DataFrame = snapshot.get("macro") if isinstance(snapshot.get("macro"), pd.DataFrame) else (
+        pd.DataFrame()
+    )
+    ratios_df: pd.DataFrame = snapshot.get("ratios") if isinstance(snapshot.get("ratios"), pd.DataFrame) else (
+        pd.DataFrame()
+    )
+    mkt_df: pd.DataFrame = snapshot.get("market") if isinstance(snapshot.get("market"), pd.DataFrame) else (
+        pd.DataFrame()
+    )
+    stmt_rows = list(snapshot.get("statements") or ())
+
+    # Ensure every newly ingested ticker is present in `stocks_df` even without Core DB metadata
+    existing_syms = (
+        {str(s).strip().upper() for s in stocks_df["symbol"].dropna().tolist()}
+        if not stocks_df.empty and "symbol" in stocks_df.columns
+        else set()
+    )
+    missing_rows = [
+        {"symbol": tk, "name": tk, "sector": "HOSE", "industry": ""}
+        for tk in norm_tickers
+        if tk not in existing_syms
+    ]
+    if missing_rows:
+        stocks_df = pd.concat([stocks_df, pd.DataFrame(missing_rows)], ignore_index=True)
+
+    macro_indicators: list[str] = (
+        sorted({str(v) for v in macro_df["indicator_name"].dropna().unique().tolist()})
+        if not macro_df.empty and "indicator_name" in macro_df.columns
+        else []
+    )
+    pages = await _load_document_pages_for_kg(
+        session,
+        tickers=norm_tickers,
+        as_of_date=as_of_date,
+        tenant_id=tenant_id,
+    )
+
+    def _compute_all_layers() -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], int]:
+        nodes = build_kg_nodes_from_universe(stocks_df, macro_indicators, as_of_date)
+        edges: list[dict[str, Any]] = []
+        macro_snaps: list[dict[str, Any]] = []
+        peer_clusters = 0
+
+        micro_edges, sector_edges, doc_disclosures = extract_document_micro_edges_from_pages(
+            stocks_df,
+            pages,
+            as_of_date,
+            available_macro_indicators=macro_indicators or None,
+        )
+        edges.extend(micro_edges)
+        edges.extend(sector_edges)
+
+        macro_beta_matrix: dict[str, dict[str, float]] = {}
+        macro_cols: list[str] = []
+        quant_snaps: list[dict[str, Any]] = []
+        if not macro_df.empty and not ratios_df.empty:
+            fund_snaps, _ = run_fundamental_macro_channel(stocks_df, macro_df, ratios_df, as_of_date)
+            quant_snaps.extend(fund_snaps)
+        if not macro_df.empty and not mkt_df.empty:
+            mkt_snaps, macro_beta_matrix, macro_cols = run_market_excess_macro_channel(
+                stocks_df, macro_df, mkt_df, as_of_date
+            )
+            quant_snaps.extend(mkt_snaps)
+        if quant_snaps or doc_disclosures:
+            macro_snaps = reconcile_macro_with_audited_docs(quant_snaps, doc_disclosures, as_of_date)
+        if not ratios_df.empty or not mkt_df.empty:
+            cross_sec_edges = run_cross_sector_coupling(stocks_df, ratios_df, mkt_df, as_of_date)
+            edges.extend(cross_sec_edges)
+
+        if len(stocks_df) >= 2:
+            biz_vecs, _ = compute_biz_vectors(stocks_df, use_local_fallback=True)
+            fin_z, has_fin_map, _ = build_financial_structure_matrix(
+                stocks_df, ratios_df, stmt_rows, as_of_date
+            )
+            symbols = [str(s) for s in stocks_df["symbol"].tolist()]
+            sim_peer, sim_biz, sim_macro, sim_fin, _ = compute_multimodal_similarity(
+                symbols,
+                biz_vecs,
+                fin_z,
+                macro_beta_matrix,
+                macro_cols,
+                has_fin_map=has_fin_map,
+            )
+            peer_res = build_true_peer_clusters(
+                stocks_df, sim_peer, sim_biz, sim_macro, sim_fin, as_of_date
+            )
+            edges.extend(peer_res.get("kg_edges") or ())
+            peer_clusters = int(peer_res.get("num_clusters", 0) or 0)
+
+        return nodes, edges, macro_snaps, peer_clusters
+
+    nodes, edges, macro_snaps, peer_clusters = await asyncio.to_thread(_compute_all_layers)
+    store = SQLAlchemyKGStore(session)
+    nodes_upserted = await store.upsert_nodes(nodes)
+    edges_upserted = await store.upsert_edges(edges)
+    snaps_upserted = await store.upsert_macro_snapshots(macro_snaps)
+    return {
+        "as_of_date": as_of_date.isoformat(),
+        "tickers_refreshed": norm_tickers,
+        "pages_scanned": len(pages),
+        "nodes_upserted": nodes_upserted,
+        "edges_upserted": edges_upserted,
+        "macro_snapshots_upserted": snaps_upserted,
+        "true_peer_clusters": peer_clusters,
     }

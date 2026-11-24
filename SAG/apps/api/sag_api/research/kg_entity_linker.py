@@ -124,6 +124,150 @@ DEFAULT_MACRO_DISCLOSURE_PATTERNS: dict[str, re.Pattern[str]] = {
 
 _MAX_VALID_TO = date(9999, 12, 31)
 
+# Standard finance, currency, macro, and technical acronyms that are NEVER standalone stock tickers
+NON_TICKER_ACRONYMS: frozenset[str] = frozenset(
+    {
+        "ROE", "ROA", "ROI", "NIM", "CIR", "CAR", "NPL", "LDR", "EPS", "VND", "USD", "EUR",
+        "JPY", "CNY", "GBP", "AUD", "KRW", "SGD", "GDP", "CPI", "PMI", "FDI", "ODA", "PPP",
+        "FED", "SBV", "IMF", "WTO", "FTA", "ESG", "GRI", "GHG", "ISO", "FSC", "GMP", "AGM",
+        "CEO", "CFO", "COO", "CTO", "CIO", "BKS", "NAV", "IRR", "NPV", "DCF", "IPO", "KPI",
+        "OKR", "VAS", "API", "SQL", "PDF", "OCR", "PIT", "BFF", "SSE", "LLM", "RAG", "RRF",
+        "YOY", "QOQ", "YTD", "TTM", "AFS", "HTM", "BCT", "CTY", "TND", "VAT",
+        "BPS", "DWT", "TEU", "MWP", "KWH", "MWH", "TON", "VNĐ", "HĐQ", "DTT", "VĐL",
+        "NPT", "SME", "OEM", "ODM", "GPU", "CPU", "BPO", "ERP", "ICT", "KCN", "BDS", "BĐS",
+        "LPG", "LNG", "HRC", "BOF", "EAF", "PPA", "EVN", "BOT", "EPC", "FOB", "CIF", "WTI",
+        "LNST", "LNTT", "TNDN", "GTGT", "HĐQT", "NHNN", "CTCP", "TNHH", "TSCĐ", "TSNH",
+        "TSDH", "VCSH", "KHDN", "KHCN", "OPEC", "SAAS", "FMCG", "BCTC", "BCTN", "HOSE",
+        "HNX", "VN30", "MOAT", "CAGR", "CASA", "WACC", "ESOP", "CAPEX", "OPEX", "IFRS",
+        "TT200", "EBITDA", "EBIT", "FVTPL", "P&L", "THE", "AND", "FOR", "NOT", "BUT", "ALL",
+        "ANY", "NEW", "OLD", "TOP", "MAX", "MIN", "AVG", "SUM", "PCT", "NET", "TAX", "REV",
+        "PAT", "PBT", "NWC", "FCF", "OCF", "D&A", "SGA", "COGS", "GPM", "NPM", "OPM", "ROIC",
+        "ROCE", "PEG", "PER", "PBR", "PSR", "DYR", "CĐKT", "KQKD", "LCTT", "EVFTA",
+        "DNSE", "VSD", "VSDC", "UBCK", "SSC", "BTC", "CPN", "ĐHĐCĐ", "BĐH", "TCTD", "CTCK",
+        "MTV", "LLC", "LTD", "INC", "CORP", "PLC", "JSC", "GMBH", "CON",
+    }
+)
+# Keep real Vietnam stock tickers out of NON_TICKER_ACRONYMS (e.g. VNM, VCS, TCT, TNC, EVS)
+NON_TICKER_ACRONYMS = NON_TICKER_ACRONYMS - frozenset({"VNM", "VCS", "TCT", "TNC", "EVS"})
+
+_EXPLICIT_PAREN_TICKER_RE = re.compile(
+    r"(?i:công\s+ty|ctcp|tổng\s+công\s+ty|ngân\s+hàng|chứng\s+khoán|tập\s+đoàn|"
+    r"nhà\s+máy|mã(?:\s+chứng\s+khoán|\s+cổ\s+phiếu|\s+ck)?|cổ\s+phiếu|đối\s+tác|"
+    r"khách\s+hàng|nhà\s+cung\s+cấp|công\s+ty\s+con|liên\s+kết)"
+    r"[^\n.;,()]{0,75}\(\s*(?:(?i:HOSE|HNX|UPCOM)\s*:\s*)?([A-Z]{3})\s*\)"
+)
+_EXCHANGE_PREFIX_TICKER_RE = re.compile(
+    r"(?i:HOSE|HNX|UPCOM|mã\s+(?:cổ\s+phiếu|chứng\s+khoán|ck)|cổ\s+phiếu|ticker)\s*[:\-]?\s*([A-Z]{3})(?![A-Za-z0-9_])"
+)
+_CORP_DIRECT_TICKER_RE = re.compile(
+    r"(?i:CTCP|Tổng\s+CTCP|Công\s+ty(?:\s+Cổ\s+phần|\s+TNHH)?|Ngân\s+hàng|Chứng\s+khoán|Tập\s+đoàn)"
+    r"\s+([A-Z]{3})(?![A-Za-z0-9_])"
+)
+_UPPER_3LETTER_RE = re.compile(r"(?<![A-Za-z0-9_])([A-Z]{3})(?![A-Za-z0-9_])")
+
+
+def compile_issuer_registry_from_rows(
+    rows: Sequence[Mapping[str, Any]],
+) -> list[tuple[dict[str, Any], list[re.Pattern[str]], re.Pattern[str], re.Pattern[str], set[str]]]:
+    """Compile dynamic issuer matcher tuples from arbitrary `(symbol, name, sector)` rows (0% hardcoded)."""
+    if not rows:
+        return []
+    df = pd.DataFrame(
+        [
+            {
+                "symbol": str(r.get("symbol") or r.get("ticker") or "").strip().upper(),
+                "name": str(r.get("name") or r.get("label") or "").strip(),
+                "sector": str(r.get("sector") or "UNKNOWN"),
+            }
+            for r in rows
+            if (r.get("symbol") or r.get("ticker"))
+        ]
+    )
+    if df.empty:
+        return []
+    registry = build_dynamic_issuer_registry(df)
+    return _compile_issuers(registry) if registry else []
+
+
+def extract_mentioned_tickers(
+    text: str,
+    *,
+    own_ticker: str = "",
+    known_tickers: Iterable[str] | None = None,
+    compiled_issuers: Sequence[
+        tuple[dict[str, Any], list[re.Pattern[str]], re.Pattern[str], re.Pattern[str], set[str]]
+    ]
+    | None = None,
+    max_tickers: int = 24,
+) -> list[str]:
+    """Deterministically extract external HOSE-style tickers mentioned in a text chunk (0 LLM, 0% hardcoded).
+
+    Combines:
+    1. Dynamic issuer registry aliases & corporate parenthetical patterns (`compiled_issuers`).
+    2. Explicit corporate/exchange ticker mentions (e.g. `Ngân hàng TMCP Ngoại thương (VCB)`, `HOSE: HPG`).
+    3. Exact uppercase matches against dynamically discovered `known_tickers` (excluding self & non-ticker acronyms).
+    """
+    cleaned = normalize_ws(repair_pdf_font_quirks(text or ""))
+    if not cleaned:
+        return []
+    own = (own_ticker or "").strip().upper()
+    known = {str(t).strip().upper() for t in (known_tickers or ()) if str(t).strip()}
+    found: set[str] = set()
+
+    def _maybe_add(sym: str, *, from_registry_alias: bool = False, explicit_exchange: bool = False) -> None:
+        s = (sym or "").strip().upper()
+        if not s or len(s) != 3 or not s.isalpha() or not s.isascii():
+            return
+        if own and s == own:
+            return
+        if not from_registry_alias and not explicit_exchange and s in NON_TICKER_ACRONYMS:
+            return
+        found.add(s)
+
+    # 1. Dynamic issuer registry (company full names, aliases, parenthetical & direct cues)
+    if compiled_issuers:
+        cleaned_low = cleaned.lower()
+        for entry, alias_pats, paren_pat, direct_pat, name_words in compiled_issuers:
+            sym = str(entry.get("symbol") or "").strip().upper()
+            if not sym or sym == own:
+                continue
+            if not (
+                (entry["aliases"] and any(al in cleaned_low for al in entry["aliases"]))
+                or (sym in cleaned)
+            ):
+                continue
+            matched = False
+            for pat in alias_pats:
+                if pat.search(cleaned):
+                    matched = True
+                    break
+            if not matched and direct_pat.search(cleaned):
+                matched = True
+            if not matched:
+                mm = paren_pat.search(cleaned)
+                if mm:
+                    pre_words = _distinctive_words(mm.group(0))
+                    if not name_words or (pre_words & name_words):
+                        matched = True
+            if matched:
+                _maybe_add(sym, from_registry_alias=True)
+
+    # 2. Explicit corporate / exchange-qualified 3-letter ticker patterns (works even before target is ingested!)
+    for m in _EXPLICIT_PAREN_TICKER_RE.finditer(cleaned):
+        _maybe_add(m.group(1))
+    for m in _EXCHANGE_PREFIX_TICKER_RE.finditer(cleaned):
+        _maybe_add(m.group(1), explicit_exchange=True)
+    for m in _CORP_DIRECT_TICKER_RE.finditer(cleaned):
+        _maybe_add(m.group(1))
+
+    # 3. Dynamically discovered known tickers present as uppercase standalone tokens
+    if known:
+        for tok in _UPPER_3LETTER_RE.findall(cleaned):
+            if tok in known and tok not in NON_TICKER_ACRONYMS:
+                _maybe_add(tok)
+
+    return sorted(found)[: max(1, int(max_tickers))]
+
 
 @dataclass(frozen=True, slots=True)
 class DocumentPageInput:

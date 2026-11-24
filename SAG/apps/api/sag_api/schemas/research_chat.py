@@ -36,18 +36,22 @@ class ResearchChatStreamRequest(BaseModel):
 
 class CitationItem(BaseModel):
     citation_id: str
+    ticker: str | None = None
     doc_id: str
     document_version_id: str
     sub_doc_slot: str
-    page: int = Field(ge=1)
+    page: int = Field(default=0, ge=0)
     published_date: str
     quote: str
     quote_hash: str
     verified: bool
+    evidence_origin: Literal["PRIMARY", "CROSS_REF"] = "PRIMARY"
+    rejection_reason: str | None = None
 
 
 class HydratedTableItem(BaseModel):
     table_id: str
+    project_id: str | None = None
     title: str
     sub_doc_slot: str
     page_from: int = Field(ge=0)
@@ -104,8 +108,16 @@ class DeclaredBlindspotItem(BaseModel):
 
 class ResearchTelemetry(BaseModel):
     routing_slot: str | None = None
+    retrieval_mode: str = "SHARED_CHAMBER_HYBRID"
+    primary_section_count: int = 0
+    cross_ref_section_count: int = 0
     leiden_nodes_visited: int = 0
     hipporag_hops: int = 0
+    rejected_citations_count: int = 0
+    unsupported_numeric_claims_count: int = 0
+    hallucinated_citation_ids_count: int = 0
+    llm_model: str | None = None
+    embedding_model: str | None = None
     input_tokens: int = 0
     output_tokens: int = 0
     cost_usd: float = 0.0
@@ -122,12 +134,19 @@ class ResearchChatMetadata(BaseModel):
     as_of_date: str
     enable_kg: bool = True
     citations: list[CitationItem] = Field(default_factory=list)
+    rejected_citations: list[CitationItem] = Field(default_factory=list)
     hydrated_tables: list[HydratedTableItem] = Field(default_factory=list)
     calculator_traces: list[CalculatorTraceItem] = Field(default_factory=list)
     graph_hops: list[GraphHopItem] = Field(default_factory=list)
     discrepancy_alerts: list[DiscrepancyAlertItem] = Field(default_factory=list)
     declared_blindspots: list[DeclaredBlindspotItem] = Field(default_factory=list)
     telemetry: ResearchTelemetry = Field(default_factory=ResearchTelemetry)
+
+
+class IngestedTickersResponse(BaseModel):
+    organization_id: str
+    tickers: list[str] = Field(default_factory=list)
+    pilot_fallback: list[str] = Field(default_factory=list)
 
 
 class KGSubgraphResponse(BaseModel):
@@ -190,7 +209,7 @@ class BatchIngestRequest(BaseModel):
     years_back: int = Field(default=3, ge=1, le=6)
     dry_run: bool = True
     enable_llm_toc: bool = False
-    refresh_kg: bool = False
+    refresh_kg: bool = True
     source_paths: dict[str, str] = Field(default_factory=dict)
 
 

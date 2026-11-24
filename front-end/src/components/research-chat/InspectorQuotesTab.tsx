@@ -81,6 +81,19 @@ export function InspectorQuotesTab({
                   <FileText className="h-3 w-3 text-mineral" aria-hidden="true" />
                   {cit.citation_id || `C${cit.n ?? idx + 1}`}
                 </span>
+                {cit.evidence_origin === "CROSS_REF" ? (
+                  <Pill tone="warning">
+                    <span className="font-mono">
+                      CROSS-REF{cit.ticker ? ` · ${cit.ticker}` : ""}
+                    </span>
+                  </Pill>
+                ) : (
+                  <Pill tone="teal">
+                    <span className="font-mono">
+                      PRIMARY{cit.ticker ? ` · ${cit.ticker}` : ""}
+                    </span>
+                  </Pill>
+                )}
                 {cit.sub_doc_slot && (
                   <Pill tone="mineral">
                     <span className="font-mono">{cit.sub_doc_slot}</span>

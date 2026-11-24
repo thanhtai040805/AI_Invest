@@ -86,12 +86,13 @@ def put_cached_text_embedding(
 
 
 
-def resolve_search_unit_collection_name(project_id: str) -> str:
+def resolve_search_unit_collection_name(project_id: str = "") -> str:
     """Resolve Qdrant collection name: shared multi-tenant collection if configured, else per-project."""
     shared = (getattr(settings, "sag_qdrant_shared_collection", None) or "").strip()
     if shared:
         return shared
-    return f"search_units_{project_id}"
+    clean_pid = (project_id or "").strip()
+    return f"search_units_{clean_pid}" if clean_pid else "aiinvest_search_units"
 
 
 def generate_search_unit_id(document_version_id: str, ordinal: int) -> str:
@@ -257,6 +258,7 @@ PAYLOAD_INDEX_FIELDS = [
     ("sub_doc_slot", "keyword"),
     ("sector_group", "keyword"),
     ("table_id", "keyword"),
+    ("mentioned_tickers", "keyword"),
     ("primary_node_a", "keyword"),
     ("tree_version_a", "keyword"),
     ("primary_node_b", "keyword"),
@@ -801,13 +803,31 @@ def build_qdrant_payload(
     sub_doc_slot: str | None = None,
     sector_group: str | None = None,
     table_id: str | None = None,
+    mentioned_tickers: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    """Build Qdrant point payload including pre-provisioned tree routing fields and retrieval locators."""
+    """Build Qdrant point payload including 2-level structural metadata, PIT bounds, and `mentioned_tickers`."""
     valid_from_ts = int(version.valid_from.timestamp()) if version.valid_from else None
     valid_to_ts = int(version.valid_to.timestamp()) if version.valid_to else None
     version_meta = getattr(version, "metadata_json", None) or {}
     if not isinstance(version_meta, dict):
         version_meta = {}
+    body_text = content or getattr(unit, "_text_content", "")
+    if mentioned_tickers is None:
+        from sag_api.research.kg_entity_linker import extract_mentioned_tickers
+
+        resolved_mentioned = extract_mentioned_tickers(
+            f"{unit.section_path or ''}\n{body_text}",
+            own_ticker=project_id,
+        )
+    else:
+        own_u = (project_id or "").strip().upper()
+        resolved_mentioned = sorted(
+            {
+                str(t).strip().upper()
+                for t in mentioned_tickers
+                if isinstance(t, str) and t.strip() and str(t).strip().upper() != own_u
+            }
+        )
 
     return {
         "_sag_id": unit.id,
@@ -838,12 +858,13 @@ def build_qdrant_payload(
             if table_id is not None
             else getattr(unit, "table_id", None) or version_meta.get("table_id")
         ),
+        "mentioned_tickers": resolved_mentioned,
         "token_count": unit.token_count,
         "section_path": unit.section_path,
         "page_from": unit.page_from,
         "page_to": unit.page_to,
         "content_hash": unit.content_hash,
-        "content": content or getattr(unit, "_text_content", ""),
+        "content": body_text,
         # Pre-provisioned fields for Tree Routing (Phases 6/8)
         "primary_node_a": None,
         "secondary_node_ids_a": [],
@@ -972,6 +993,8 @@ async def index_search_units_to_qdrant(
     document_id: str | None = None,
     block_vectors: dict[str, list[float]] | None = None,
     precomputed_ledger_summary: dict[str, Any] | None = None,
+    known_tickers: set[str] | None = None,
+    compiled_issuers: Sequence[Any] | None = None,
 ) -> int:
     """Upsert search units with real dense + sparse BM25 embeddings into per-project collection."""
     from sag_api.core.token_usage import (
@@ -1150,6 +1173,14 @@ async def index_search_units_to_qdrant(
                 anchor_parts = s_anchor.split(":")
                 if len(anchor_parts) >= 2 and anchor_parts[1]:
                     unit_table_id = anchor_parts[1]
+        from sag_api.research.kg_entity_linker import extract_mentioned_tickers
+
+        unit_mentioned = extract_mentioned_tickers(
+            ctx_text,
+            own_ticker=project_id,
+            known_tickers=known_tickers,
+            compiled_issuers=compiled_issuers,
+        )
         payload = build_qdrant_payload(
             unit,
             version=version,
@@ -1163,6 +1194,7 @@ async def index_search_units_to_qdrant(
             block_to_id=unit.block_to_id,
             source_anchor=s_anchor,
             table_id=unit_table_id,
+            mentioned_tickers=unit_mentioned,
         )
         sparse_vec = compute_sparse_bm25_vector(
             ctx_text,
@@ -1228,17 +1260,28 @@ async def set_document_points_valid_to_in_qdrant(
     *,
     project_id: str,
     document_version_ids: Sequence[str],
-    valid_to_ts: int,
+    valid_to_ts: int | None = None,
     valid_to_iso: str | None = None,
+    valid_from_ts: int | None = None,
+    valid_from_iso: str | None = None,
 ) -> int:
-    """Close `valid_to_ts` on superseded Qdrant points without deleting historical PIT vectors."""
+    """Patch `valid_to_ts` (and optionally `valid_from_ts`) on Qdrant points without deleting PIT vectors."""
     if not document_version_ids:
         return 0
     collection_name = resolve_search_unit_collection_name(project_id)
-    payload_patch: dict[str, Any] = {"valid_to_ts": int(valid_to_ts)}
+    payload_patch: dict[str, Any] = {}
+    if valid_to_ts is not None:
+        payload_patch["valid_to_ts"] = int(valid_to_ts)
     if valid_to_iso is not None:
         payload_patch["valid_to"] = valid_to_iso
         payload_patch["valid_to_iso"] = valid_to_iso
+    if valid_from_ts is not None:
+        payload_patch["valid_from_ts"] = int(valid_from_ts)
+    if valid_from_iso is not None:
+        payload_patch["valid_from"] = valid_from_iso
+        payload_patch["valid_from_iso"] = valid_from_iso
+    if not payload_patch:
+        return 0
     res = await qdrant_client.post(
         f"/collections/{collection_name}/points/payload?wait=true",
         json={
@@ -1456,8 +1499,59 @@ async def run_search_indexing_stage(
         session.add(u)
     await session.flush()
 
-    # 5. Index to Qdrant if client provided
+    # 5. Index to Qdrant if client provided (with dynamic zero-hardcode ticker/issuer registry for mentioned_tickers)
     blocks_by_id = {b.id: b for b in blocks}
+    known_tickers_dyn: set[str] = set()
+    compiled_issuers_dyn: list[Any] = []
+    if qdrant_client is not None and units and indexing_error is None:
+        try:
+            proj_rows = (
+                await session.execute(
+                    select(Document.project_id)
+                    .where(Document.tenant_id == tenant_id, Document.is_active.is_(True))
+                    .distinct()
+                )
+            ).all()
+            for (pid,) in proj_rows:
+                if pid:
+                    known_tickers_dyn.add(str(pid).strip().upper())
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from datetime import date as _date
+
+            from sag_api.db.models.stock_research import KgNode
+            from sag_api.research.kg_entity_linker import compile_issuer_registry_from_rows
+
+            kg_rows = (
+                await session.execute(
+                    select(KgNode.ticker, KgNode.label, KgNode.metadata_json)
+                    .where(
+                        KgNode.node_type == "COMPANY",
+                        KgNode.ticker.is_not(None),
+                        ~KgNode.node_id.contains("@v:"),
+                        KgNode.valid_to > _date.today(),
+                    )
+                    .limit(2000)
+                )
+            ).all()
+            issuer_by_sym: dict[str, dict[str, Any]] = {}
+            for tk, lbl, meta_j in kg_rows:
+                if tk:
+                    sym_u = str(tk).strip().upper()
+                    known_tickers_dyn.add(sym_u)
+                    if sym_u not in issuer_by_sym:
+                        sec = (
+                            str((meta_j or {}).get("sector") or "UNKNOWN")
+                            if isinstance(meta_j, dict)
+                            else "UNKNOWN"
+                        )
+                        issuer_by_sym[sym_u] = {"symbol": sym_u, "name": str(lbl or ""), "sector": sec}
+            if issuer_by_sym:
+                compiled_issuers_dyn = compile_issuer_registry_from_rows(list(issuer_by_sym.values()))
+        except Exception:  # noqa: BLE001
+            pass
+
     indexed_count = 0
     if qdrant_client is not None and units and indexing_error is None:
         try:
@@ -1473,6 +1567,8 @@ async def run_search_indexing_stage(
                 document_id=document_version.document_id,
                 block_vectors=block_vectors,
                 precomputed_ledger_summary=pre_embed_summary,
+                known_tickers=known_tickers_dyn or None,
+                compiled_issuers=compiled_issuers_dyn or None,
             )
         except Exception as exc:
             indexing_error = str(exc)
@@ -1600,30 +1696,56 @@ async def run_search_indexing_stage(
             current_version=document_version,
             document_id=document_version.document_id,
         )
-        superseded_version_id = temporal_info.get("supersedes_id") if isinstance(temporal_info, dict) else None
-        if (
-            qdrant_client is not None
-            and isinstance(temporal_info, dict)
-            and temporal_info.get("action") == "SUPERSEDED"
-            and superseded_version_id
-        ):
-            try:
-                cutoff_dt = document_version.valid_from or datetime.now(UTC)
-                if cutoff_dt.tzinfo is None:
-                    cutoff_dt = cutoff_dt.replace(tzinfo=UTC)
-                await set_document_points_valid_to_in_qdrant(
-                    qdrant_client,
-                    project_id=project_id,
-                    document_version_ids=[str(superseded_version_id)],
-                    valid_to_ts=int(cutoff_dt.timestamp()),
-                    valid_to_iso=cutoff_dt.isoformat(),
-                )
-            except Exception as exc:
-                log.warning(
-                    "Failed to update valid_to_ts on superseded version %s in Qdrant: %s",
-                    superseded_version_id,
-                    exc,
-                )
+        if qdrant_client is not None and isinstance(temporal_info, dict):
+            modified_list = temporal_info.get("modified_versions")
+            patched_ids: set[str] = set()
+            if isinstance(modified_list, list):
+                for mod in modified_list:
+                    if not isinstance(mod, dict) or not mod.get("version_id"):
+                        continue
+                    vid = str(mod["version_id"])
+                    if mod.get("valid_to_ts") is None and mod.get("valid_from_ts") is None:
+                        continue
+                    try:
+                        await set_document_points_valid_to_in_qdrant(
+                            qdrant_client,
+                            project_id=project_id,
+                            document_version_ids=[vid],
+                            valid_to_ts=mod.get("valid_to_ts"),
+                            valid_to_iso=mod.get("valid_to_iso"),
+                            valid_from_ts=mod.get("valid_from_ts"),
+                            valid_from_iso=mod.get("valid_from_iso"),
+                        )
+                        patched_ids.add(vid)
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning(
+                            "Failed to patch temporal window on version %s in Qdrant: %s",
+                            vid,
+                            exc,
+                        )
+            superseded_version_id = temporal_info.get("supersedes_id")
+            if (
+                temporal_info.get("action") == "SUPERSEDED"
+                and superseded_version_id
+                and str(superseded_version_id) not in patched_ids
+            ):
+                try:
+                    cutoff_dt = document_version.valid_from or datetime.now(UTC)
+                    if cutoff_dt.tzinfo is None:
+                        cutoff_dt = cutoff_dt.replace(tzinfo=UTC)
+                    await set_document_points_valid_to_in_qdrant(
+                        qdrant_client,
+                        project_id=project_id,
+                        document_version_ids=[str(superseded_version_id)],
+                        valid_to_ts=int(cutoff_dt.timestamp()),
+                        valid_to_iso=cutoff_dt.isoformat(),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "Failed to update valid_to_ts on superseded version %s in Qdrant: %s",
+                        superseded_version_id,
+                        exc,
+                    )
         document_version.search_status = "SEARCH_READY"
         document_version.search_ready_at = datetime.now(UTC)
     else:
@@ -1799,6 +1921,7 @@ async def index_table_search_cards_for_version(
                         "table_id": tid,
                         "card_idx": cidx,
                         "sub_doc_slot": str(card.get("sub_doc_slot") or ""),
+                        "verification_status": str(rec_dict.get("verification_status") or "VERIFIED"),
                     },
                 )
             )

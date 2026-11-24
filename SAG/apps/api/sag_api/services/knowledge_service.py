@@ -1041,15 +1041,61 @@ async def rebuild_knowledge_version(
         ).all()
     }
     existing_checksums = await unit_checksums(session, list(existing.values())) if existing else {}
+    # Dual-Rep cleanup: when verified `table_card` blocks exist on this version, skip raw
+    # `CanonicalBlock(block_type="table")` blocks from KnowledgeUnit creation and link
+    # table_card IDs onto co-located prose KnowledgeUnits via section_path / page range.
+    table_cards_by_section: dict[str, list[str]] = defaultdict(list)
+    table_cards_by_page: dict[int, list[str]] = defaultdict(list)
+    has_verified_table_cards = False
+    for blk in blocks:
+        if blk.block_type != "table_card" or not (blk.normalized_text or "").strip():
+            continue
+        sig = blk.dedup_signature_json if isinstance(blk.dedup_signature_json, dict) else {}
+        ver_status = str(sig.get("verification_status") or "VERIFIED").upper()
+        tid = str(sig.get("table_id") or "")
+        if not tid and blk.source_anchor and blk.source_anchor.startswith("table_card:"):
+            parts = blk.source_anchor.split(":")
+            if len(parts) >= 2 and parts[1]:
+                tid = parts[1]
+        if ver_status != "TABLE_UNVERIFIED":
+            has_verified_table_cards = True
+        if tid:
+            sp_key = (blk.section_path or "").strip().lower()
+            if sp_key and tid not in table_cards_by_section[sp_key]:
+                table_cards_by_section[sp_key].append(tid)
+            p_lo = int(blk.page_from or 0)
+            p_hi = max(p_lo, int(blk.page_to or p_lo))
+            if p_lo > 0:
+                for pno in range(p_lo, min(p_hi, p_lo + 20) + 1):
+                    if tid not in table_cards_by_page[pno]:
+                        table_cards_by_page[pno].append(tid)
+
+    has_non_table_prose = any(
+        b.block_type not in ("heading", "table_card", "table") and (b.normalized_text or "").strip()
+        for b in blocks
+    )
+    skip_raw_tables = has_verified_table_cards and has_non_table_prose
+
     units = []
     updated_unit_ids: list[str] = []
     new_evidence_rows: list[KnowledgeEvidence] = []
     for block in blocks:
         if block.block_type in ("heading", "table_card") or not block.normalized_text.strip():
             continue
+        if skip_raw_tables and block.block_type == "table":
+            continue
         unit_id = stable_id(
             base["tenant_id"], base["project_id"], base["security_partition_id"], version_id, block.id, "passage-v1"
         )
+        linked_tids: list[str] = []
+        if table_cards_by_section or table_cards_by_page:
+            sp_key = (block.section_path or "").strip().lower()
+            if sp_key and sp_key in table_cards_by_section:
+                linked_tids.extend(table_cards_by_section[sp_key])
+            else:
+                p_lo = int(block.page_from or 0)
+                if p_lo > 0 and p_lo in table_cards_by_page:
+                    linked_tids.extend(table_cards_by_page[p_lo])
         provenance = {
             **base,
             "evidence_block_ids": [block.id],
@@ -1059,6 +1105,8 @@ async def rebuild_knowledge_version(
             "section_path": block.section_path,
             "block_type": block.block_type,
         }
+        if linked_tids:
+            provenance["linked_table_ids"] = sorted(set(linked_tids))[:12]
         input_hash = checksum({"version_input": digest, "block_id": block.id})
         unit = existing.get(unit_id)
         if dense_by_block_id is not None:
@@ -1239,6 +1287,9 @@ def graph_payload(units: list[KnowledgeUnit], config: KnowledgeConfig = Knowledg
                 ("document", provenance["document_id"]),
                 ("temporal", unit.valid_from.date().isoformat()),
             ]
+            for linked_tid in provenance.get("linked_table_ids") or ():
+                if isinstance(linked_tid, str) and linked_tid:
+                    keys.append(("table", linked_tid))
             dense = features.get("dense", [])
             if dense:
                 # ponytail: fixed LSH buckets; replace with partition-filtered ANN when dense recall needs it.

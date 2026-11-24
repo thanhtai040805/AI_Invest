@@ -39,6 +39,44 @@ COMMON_VN_WORDS = (
     "kiểm toán",
     "năm",
 )
+COMMON_EN_WORDS = frozenset(
+    {
+        "the",
+        "and",
+        "for",
+        "with",
+        "from",
+        "that",
+        "this",
+        "company",
+        "corporation",
+        "report",
+        "annual",
+        "resolution",
+        "general",
+        "meeting",
+        "shareholders",
+        "shareholder",
+        "board",
+        "directors",
+        "financial",
+        "statement",
+        "statements",
+        "article",
+        "approved",
+        "million",
+        "billion",
+        "total",
+        "revenue",
+        "profit",
+        "vietnam",
+        "audit",
+        "capital",
+        "charter",
+    }
+)
+_EN_WORD_TOKEN_RE = re.compile(r"\b[a-z]{3,}\b")
+_RESIDUAL_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 _VN_VOWELS_UPPER = (
     "AÀÁẢÃẠĂẰẮẲẴẶÂẦẤẨẪẬ"
@@ -189,7 +227,7 @@ def normalize_ctg_font_quirks(text: str) -> str:
     s = _CTG_SYN_UPPER_D_RE.sub("Đ", s)
     s = _CTG_SYN_LOWER_D_RE.sub("đ", s)
     s = _TAB_DONG_RE.sub("đ", s)
-    s = s.replace("\x16", "")
+    s = _RESIDUAL_CTRL_RE.sub("", s)
     s = re.sub(r"(?i)triệu\s+[è‚€¢½]ồng", "Triệu đồng", s)
     s = re.sub(r"(?i)tỷ\s+[è‚€¢½]ồng", "Tỷ đồng", s)
     s = _CTG_CORRUPT_D_RE.sub("đ", s)
@@ -197,7 +235,7 @@ def normalize_ctg_font_quirks(text: str) -> str:
 
 
 def compute_vn_readability_score(text: str) -> tuple[float, dict[str, Any]]:
-    """Compute per-page Vietnamese text readability score (catches BAD_FONT digital fakes)."""
+    """Compute per-page Vietnamese/bilingual text readability score (catches BAD_FONT digital fakes)."""
     raw = text or ""
     if not raw.strip():
         return 0.0, {"len": 0, "reason": "EMPTY"}
@@ -214,6 +252,15 @@ def compute_vn_readability_score(text: str) -> tuple[float, dict[str, Any]]:
     vn_ratio = vn_chars / max(1, len(alpha_chars))
     low = nfc.lower()
     word_hits = sum(1 for w in COMMON_VN_WORDS if w in low)
+    en_tokens = _EN_WORD_TOKEN_RE.findall(low)
+    en_word_hits = sum(1 for tok in en_tokens if tok in COMMON_EN_WORDS)
+    en_ratio = en_word_hits / max(1, len(en_tokens))
+    is_clean_english = (
+        bad_ctrl == 0
+        and cid_hits == 0
+        and len(en_tokens) >= 8
+        and (en_word_hits >= 4 or (en_word_hits >= 2 and en_ratio >= 0.08))
+    )
     corruption_rate = (bad_ctrl + cid_hits * 4) / max(1, total_chars)
     score = 1.0 - min(1.0, corruption_rate * 8.0)
     if len(alpha_chars) >= 80:
@@ -223,7 +270,7 @@ def compute_vn_readability_score(text: str) -> tuple[float, dict[str, Any]]:
             )
             if latin_ext_weird / max(1, len(alpha_chars)) > 0.05:
                 score = min(score, 0.35)
-            elif word_hits == 0:
+            elif word_hits == 0 and not is_clean_english:
                 score = min(score, 0.65)
         elif vn_ratio >= 0.06 and word_hits >= 2:
             score = max(score, 0.85 - min(0.4, corruption_rate * 8.0))
@@ -231,6 +278,8 @@ def compute_vn_readability_score(text: str) -> tuple[float, dict[str, Any]]:
         "len": total_chars,
         "vn_ratio": round(vn_ratio, 3),
         "word_hits": word_hits,
+        "en_word_hits": en_word_hits,
+        "is_clean_english": is_clean_english,
         "cid_hits": cid_hits,
         "bad_ctrl": bad_ctrl,
     }

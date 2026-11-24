@@ -21,7 +21,7 @@ import time
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,6 +39,7 @@ from sag_api.research.quote_verifier import (
     load_canonical_blocks_for_versions,
     normalize_ws,
     verify_citations,
+    verify_numeric_claims_against_evidence,
 )
 from sag_api.schemas.research_chat import (
     CalculatorTraceItem,
@@ -59,6 +60,13 @@ MAX_TICKERS_PER_REQUEST = 6
 _PEER_INTENT_RE = re.compile(
     r"\b(?:đối thủ|cạnh tranh|so sánh|peer|peers|cùng ngành|cụm|chuỗi giá trị|nhà cung cấp|khách hàng|vs\.?)\b",
     re.IGNORECASE,
+)
+_CROSS_REF_INTENT_RE = re.compile(
+    r"\b(?:đối thủ|cạnh tranh|so sánh|peer|peers|cùng ngành|cụm|chuỗi giá trị|"
+    r"nhà cung cấp|khách hàng|đối tác|liên kết|liên doanh|công ty con|bên liên quan|"
+    r"hợp tác|phân phối|đại lý|nhắc đến|đề cập|chéo|hệ sinh thái|"
+    r"partner|supplier|customer|subsidiary|related[- ]party|value[- ]chain|mention|cross[- ]ref|vs\.?)\b",
+    re.IGNORECASE | re.UNICODE,
 )
 _CALC_INTENT_RE = re.compile(
     r"(?:biên|tỷ trọng|cagr|tăng trưởng|tác động|độ nhạy|giả định|nếu|%|bps|chênh lệch|vượt kế hoạch|trung vị)",
@@ -134,6 +142,8 @@ class RetrievedResearchSection:
     block_to_id: str | None = None
     fiscal_year: int | None = None
     fiscal_quarter: int | None = None
+    evidence_origin: Literal["PRIMARY", "CROSS_REF"] = "PRIMARY"
+    cross_ref_target: str | None = None
 
 
 @dataclass
@@ -177,13 +187,13 @@ class TableStoreProtocol(Protocol):
 
 
 class SQLAlchemyTableStore:
-    """Reads `sag_extracted_tables` strictly enforcing `valid_from <= as_of_ts`."""
+    """Reads `sag_extracted_tables` strictly enforcing active `[valid_from, valid_to)` PIT."""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
     @staticmethod
-    def _row_to_dict(row_obj: Any) -> dict[str, Any]:
+    def _row_to_dict(row_obj: Any, *, valid_to: datetime | None = None) -> dict[str, Any]:
         from sag_api.research.table_engine import to_hydrated_table
 
         raw = {
@@ -223,6 +233,8 @@ class SQLAlchemyTableStore:
                 "valid_from": raw["valid_from"],
             }
         )
+        if valid_to is not None:
+            hydrated["valid_to"] = valid_to.isoformat()
         return hydrated
 
     async def get_tables(
@@ -242,18 +254,27 @@ class SQLAlchemyTableStore:
         if not clean_ids and not clean_tickers:
             return []
 
+        pit_filters: list[Any] = [
+            SagExtractedTable.valid_from <= as_of_dt,
+            DocumentVersion.valid_from <= as_of_dt,
+            DocumentVersion.valid_to > as_of_dt,
+            DocumentVersion.status != "REVOKED",
+            Document.is_active.is_(True),
+        ]
+        if tenant_id:
+            pit_filters.append(Document.tenant_id == tenant_id)
+
+        base_stmt = (
+            select(SagExtractedTable, DocumentVersion.valid_to)
+            .join(DocumentVersion, DocumentVersion.id == SagExtractedTable.document_version_id)
+            .join(Document, Document.id == DocumentVersion.document_id)
+        )
+
         if clean_ids:
-            stmt = select(SagExtractedTable).where(
-                SagExtractedTable.table_id.in_(clean_ids),
-                SagExtractedTable.valid_from <= as_of_dt,
+            stmt = (
+                base_stmt.where(SagExtractedTable.table_id.in_(clean_ids), *pit_filters)
+                .order_by(SagExtractedTable.fiscal_year.desc(), SagExtractedTable.page_from.asc())
             )
-            if tenant_id:
-                stmt = (
-                    stmt.join(DocumentVersion, DocumentVersion.id == SagExtractedTable.document_version_id)
-                    .join(Document, Document.id == DocumentVersion.document_id)
-                    .where(Document.tenant_id == tenant_id)
-                )
-            stmt = stmt.order_by(SagExtractedTable.fiscal_year.desc(), SagExtractedTable.page_from.asc())
         else:
             from sqlalchemy import case
 
@@ -261,33 +282,27 @@ class SQLAlchemyTableStore:
             # prioritizing VERIFIED first while keeping TABLE_UNVERIFIED blindspots transparent.
             verified_first = case((SagExtractedTable.verification_status == "VERIFIED", 0), else_=1)
             fetch_cap = max(4, len(clean_tickers) * 2)
-            stmt = select(SagExtractedTable).where(
-                SagExtractedTable.project_id.in_(clean_tickers),
-                SagExtractedTable.valid_from <= as_of_dt,
-            )
-            if tenant_id:
-                stmt = (
-                    stmt.join(DocumentVersion, DocumentVersion.id == SagExtractedTable.document_version_id)
-                    .join(Document, Document.id == DocumentVersion.document_id)
-                    .where(Document.tenant_id == tenant_id)
+            stmt = (
+                base_stmt.where(SagExtractedTable.project_id.in_(clean_tickers), *pit_filters)
+                .order_by(
+                    verified_first.asc(),
+                    SagExtractedTable.fiscal_year.desc(),
+                    SagExtractedTable.page_from.asc(),
                 )
-            stmt = stmt.order_by(
-                verified_first.asc(),
-                SagExtractedTable.fiscal_year.desc(),
-                SagExtractedTable.page_from.asc(),
-            ).limit(fetch_cap)
+                .limit(fetch_cap)
+            )
 
         try:
-            rows = list((await self._session.scalars(stmt)).all())
+            paired_rows = list((await self._session.execute(stmt)).all())
         except Exception as err:  # noqa: BLE001
             log.warning("sag_extracted_tables lookup skipped: %s", type(err).__name__)
             return []
-        if not clean_ids and len(clean_tickers) >= 2 and len(rows) > 4:
+        if not clean_ids and len(clean_tickers) >= 2 and len(paired_rows) > 4:
             # Round-robin balance fallback tables across requested tickers so 1 ticker cannot monopolize
-            by_tk: dict[str, list[Any]] = {tk: [] for tk in clean_tickers}
-            for r in rows:
-                by_tk.setdefault(str(r.project_id).upper(), []).append(r)
-            balanced_rows: list[Any] = []
+            by_tk: dict[str, list[tuple[Any, datetime | None]]] = {tk: [] for tk in clean_tickers}
+            for tbl_row, ver_vt in paired_rows:
+                by_tk.setdefault(str(tbl_row.project_id).upper(), []).append((tbl_row, ver_vt))
+            balanced_rows: list[tuple[Any, datetime | None]] = []
             max_cap = min(6, max(4, len(clean_tickers)))
             for depth in range(max_cap):
                 for tk in clean_tickers:
@@ -298,8 +313,8 @@ class SQLAlchemyTableStore:
                             break
                 if len(balanced_rows) >= max_cap:
                     break
-            rows = balanced_rows
-        return [self._row_to_dict(r) for r in rows]
+            paired_rows = balanced_rows
+        return [self._row_to_dict(tbl_row, valid_to=ver_vt) for tbl_row, ver_vt in paired_rows]
 
     async def get_table_by_id(
         self,
@@ -313,23 +328,29 @@ class SQLAlchemyTableStore:
 
         cutoff = as_of_date or date.today()
         as_of_dt = datetime(cutoff.year, cutoff.month, cutoff.day, 23, 59, 59, tzinfo=UTC)
-        stmt = select(SagExtractedTable).where(
+        pit_filters: list[Any] = [
             SagExtractedTable.table_id == table_id,
             SagExtractedTable.valid_from <= as_of_dt,
-        )
+            DocumentVersion.valid_from <= as_of_dt,
+            DocumentVersion.valid_to > as_of_dt,
+            DocumentVersion.status != "REVOKED",
+            Document.is_active.is_(True),
+        ]
         if tenant_id:
-            stmt = (
-                stmt.join(DocumentVersion, DocumentVersion.id == SagExtractedTable.document_version_id)
-                .join(Document, Document.id == DocumentVersion.document_id)
-                .where(Document.tenant_id == tenant_id)
-            )
-        stmt = stmt.limit(1)
+            pit_filters.append(Document.tenant_id == tenant_id)
+        stmt = (
+            select(SagExtractedTable, DocumentVersion.valid_to)
+            .join(DocumentVersion, DocumentVersion.id == SagExtractedTable.document_version_id)
+            .join(Document, Document.id == DocumentVersion.document_id)
+            .where(*pit_filters)
+            .limit(1)
+        )
         try:
-            row = (await self._session.scalars(stmt)).first()
+            pair = (await self._session.execute(stmt)).first()
         except Exception as err:  # noqa: BLE001
             log.warning("get_table_by_id failed: %s", type(err).__name__)
             return None
-        return self._row_to_dict(row) if row is not None else None
+        return self._row_to_dict(pair[0], valid_to=pair[1]) if pair is not None else None
 
 
 class SAGRetrieverAdapter:
@@ -443,14 +464,25 @@ class SAGRetrieverAdapter:
         combined_sections: list[Any] = []
         merged_stats: dict[str, Any] = {}
         if versioned_sources and effective_principal is not None:
-            v_outcome = await retrieve_search_unit_sections(
-                self._engine_manager,
-                versioned_sources,
-                query,
-                principal=effective_principal,
-                top_k=top_k,
-                as_of_ts=as_of_ts,
-            )
+            try:
+                v_outcome = await retrieve_search_unit_sections(
+                    self._engine_manager,
+                    versioned_sources,
+                    query,
+                    principal=effective_principal,
+                    top_k=top_k,
+                    as_of_ts=as_of_ts,
+                    bypass_tree_routing=True,
+                )
+            except TypeError:
+                v_outcome = await retrieve_search_unit_sections(
+                    self._engine_manager,
+                    versioned_sources,
+                    query,
+                    principal=effective_principal,
+                    top_k=top_k,
+                    as_of_ts=as_of_ts,
+                )
             combined_sections.extend(v_outcome.sections)
             merged_stats.update(v_outcome.stats or {})
         elif versioned_sources:
@@ -467,6 +499,7 @@ class SAGRetrieverAdapter:
             if not merged_stats:
                 merged_stats.update(l_outcome.stats or {})
 
+        as_of_dt = datetime(as_of_date.year, as_of_date.month, as_of_date.day, 23, 59, 59, tzinfo=UTC)
         ver_ids = sorted({s.document_version_id for s in combined_sections if s.document_version_id})
         ver_meta: dict[str, tuple[date, str, int | None, int | None]] = {}
         if ver_ids:
@@ -477,7 +510,15 @@ class SAGRetrieverAdapter:
                         DocumentVersion.source_published_at,
                         DocumentVersion.valid_from,
                         DocumentVersion.metadata_json,
-                    ).where(DocumentVersion.id.in_(ver_ids))
+                    )
+                    .join(Document, Document.id == DocumentVersion.document_id)
+                    .where(
+                        DocumentVersion.id.in_(ver_ids),
+                        Document.is_active.is_(True),
+                        DocumentVersion.status != "REVOKED",
+                        DocumentVersion.valid_from <= as_of_dt,
+                        DocumentVersion.valid_to > as_of_dt,
+                    )
                 )
             ).all()
             for vid, src_pub, valid_from, meta in ver_rows:
@@ -541,12 +582,14 @@ class SAGRetrieverAdapter:
                         if getattr(sec, "fiscal_quarter", None) is not None
                         else ver_fq
                     ),
+                    evidence_origin="PRIMARY",
                 )
             )
 
         blocks = await load_canonical_blocks_for_versions(
             self._session,
             [s.document_version_id for s in sections],
+            as_of_date=as_of_date,
         )
         leiden_nodes, hipporag_hops = self._extract_routing_telemetry(merged_stats)
         return RetrievalResult(
@@ -555,6 +598,506 @@ class SAGRetrieverAdapter:
             routing_slot=sections[0].sub_doc_slot if sections else None,
             leiden_nodes_visited=leiden_nodes,
             hipporag_hops=hipporag_hops,
+        )
+
+    async def _try_embed_shared_query(
+        self,
+        query: str,
+        *,
+        tenant_id: str,
+        source_ids: Sequence[str],
+    ) -> list[float] | None:
+        """Best-effort query embedding using an active Source config on `engine_manager`."""
+        if self._engine_manager is None or not hasattr(self._engine_manager, "get_sag_embedding"):
+            return None
+        from sag_api.db.models import Source
+        from sag_api.enums import SourceStatus
+        from sag_api.services.search_index_service import (
+            get_cached_text_embedding,
+            put_cached_text_embedding,
+        )
+
+        model_name = (getattr(settings, "embedding_model", "") or "").lower()
+        if "qwen3-embedding" in model_name and not query.startswith("Instruct:"):
+            embed_query = (
+                "Instruct: Given a web search query, retrieve relevant passages that answer the query\n"
+                f"Query: {query}"
+            )
+        else:
+            embed_query = query
+
+        cached = get_cached_text_embedding(embed_query)
+        if cached is not None:
+            return cached
+
+        clean_sids = [sid for sid in source_ids if sid]
+        if not clean_sids:
+            return None
+        try:
+            src = (
+                await self._session.scalars(
+                    select(Source)
+                    .where(Source.id.in_(clean_sids[:5]), Source.status == SourceStatus.ACTIVE)
+                    .limit(1)
+                )
+            ).first()
+            if src is None:
+                return None
+            embedding = await self._engine_manager.get_sag_embedding(src.sag_source_config_id, src)
+            vec = [float(v) for v in await embedding.generate(embed_query)]
+            if vec and all(math.isfinite(v) for v in vec):
+                put_cached_text_embedding(embed_query, vec)
+                return vec
+        except Exception:  # noqa: BLE001
+            return None
+        return None
+
+    async def retrieve_cross_ref(
+        self,
+        *,
+        query: str,
+        target_tickers: Sequence[str],
+        exclude_tickers: Sequence[str],
+        as_of_date: date,
+        top_k: int = 6,
+        principal: VerifiedPrincipal | None = None,
+        kg_partner_tickers: Sequence[str] = (),
+    ) -> RetrievalResult:
+        """Layer 3 CROSS-REF channel: pull verbatim SearchUnits from OTHER tickers mentioning target(s)
+        or linked via PIT KG edges (`mentioned_tickers CONTAINS target AND project_id != target`),
+        strictly tenant-scoped and PIT-filtered."""
+        norm_targets = list(dict.fromkeys(t.strip().upper() for t in target_tickers if t and t.strip()))
+        norm_partners = list(
+            dict.fromkeys(
+                t.strip().upper()
+                for t in kg_partner_tickers
+                if t and t.strip() and t.strip().upper() not in set(exclude_tickers)
+            )
+        )
+        if not norm_targets and not norm_partners:
+            return RetrievalResult()
+
+        from sag_api.db.models import CanonicalBlock, Document, DocumentVersion, SearchUnit
+        from sag_api.db.models.stock_research import KgNode
+        from sag_api.research.kg_entity_linker import (
+            compile_issuer_registry_from_rows,
+            extract_mentioned_tickers,
+        )
+        from sag_api.sag.search_unit_store import (
+            SearchUnitQdrantStore,
+            build_cross_ref_search_filter,
+            build_sparse_query_vector,
+            build_universe_search_filter,
+        )
+        from sag_api.services.query_analysis import analyze_query
+        from sag_api.services.search_index_service import resolve_search_unit_collection_name
+
+        as_of_dt = datetime(as_of_date.year, as_of_date.month, as_of_date.day, 23, 59, 59, tzinfo=UTC)
+        as_of_ts = int(as_of_dt.timestamp())
+        tenant_id = (principal.tenant_id if principal is not None else "") or ""
+        allowed_projects = principal.allowed_project_ids if principal is not None else frozenset({"*"})
+        exclude_set = {t.strip().upper() for t in exclude_tickers if t and t.strip()}
+
+        # Resolve all active PIT-valid document versions inside this tenant & principal ACL
+        ver_filters: list[Any] = [
+            Document.is_active.is_(True),
+            Document.project_id.is_not(None),
+            DocumentVersion.status != "REVOKED",
+            DocumentVersion.valid_from <= as_of_dt,
+            DocumentVersion.valid_to > as_of_dt,
+        ]
+        if tenant_id:
+            ver_filters.append(Document.tenant_id == tenant_id)
+        if "*" not in allowed_projects:
+            ver_filters.append(Document.project_id.in_(sorted(allowed_projects)))
+
+        ver_rows = (
+            await self._session.execute(
+                select(
+                    DocumentVersion.id,
+                    DocumentVersion.document_id,
+                    Document.project_id,
+                    Document.source_id,
+                    DocumentVersion.source_published_at,
+                    DocumentVersion.valid_from,
+                    DocumentVersion.metadata_json,
+                )
+                .join(Document, Document.id == DocumentVersion.document_id)
+                .where(*ver_filters)
+            )
+        ).all()
+        if not ver_rows:
+            return RetrievalResult()
+
+        ver_info: dict[str, dict[str, Any]] = {}
+        ver_ids_by_ticker: dict[str, list[str]] = {}
+        all_source_ids: list[str] = []
+        for vid, doc_id, pid, sid, src_pub, v_from, meta in ver_rows:
+            tk = str(pid or "").strip().upper()
+            if not tk:
+                continue
+            dt = src_pub or v_from
+            pub_d = dt.date() if isinstance(dt, datetime) else date.fromisoformat(str(dt)[:10])
+            if pub_d > as_of_date:
+                continue
+            slot = str(meta.get("sub_doc_slot") or "BCTN_CORE") if isinstance(meta, Mapping) else "BCTN_CORE"
+            fy = meta.get("fiscal_year") if isinstance(meta, Mapping) else None
+            fq = meta.get("fiscal_quarter") if isinstance(meta, Mapping) else None
+            ver_info[str(vid)] = {
+                "doc_id": str(doc_id or ""),
+                "ticker": tk,
+                "pub_date": pub_d,
+                "slot": slot,
+                "fy": int(fy) if fy is not None else None,
+                "fq": int(fq) if fq is not None else None,
+            }
+            ver_ids_by_ticker.setdefault(tk, []).append(str(vid))
+            if sid:
+                all_source_ids.append(str(sid))
+
+        if not ver_info:
+            return RetrievalResult()
+
+        # ── Primary Path: Shared-Chamber Qdrant Hybrid CROSS-REF Search ─────
+        qdrant_sections: list[RetrievedResearchSection] = []
+        used_qdrant = False
+        if (
+            self._engine_manager is not None
+            and tenant_id
+            and hasattr(self._engine_manager, "get_search_unit_qdrant_client")
+        ):
+            try:
+                client = await self._engine_manager.get_search_unit_qdrant_client()
+                store = SearchUnitQdrantStore(client)
+                collection = resolve_search_unit_collection_name()
+                sparse_vec = build_sparse_query_vector(query)
+                dense_vec = await self._try_embed_shared_query(
+                    query, tenant_id=tenant_id, source_ids=all_source_ids
+                )
+                search_specs: list[dict[str, Any]] = []
+                spec_meta: list[tuple[str, str]] = []  # (target_label, channel_kind)
+                per_spec_limit = max(6, min(18, top_k * 2))
+
+                for tgt in norm_targets[:MAX_TICKERS_PER_REQUEST]:
+                    other_vers = [
+                        vid for tk, vids in ver_ids_by_ticker.items() if tk != tgt for vid in vids
+                    ]
+                    if not other_vers:
+                        continue
+                    try:
+                        xref_filter = build_cross_ref_search_filter(
+                            tenant_id=tenant_id,
+                            mentioned_tickers=[tgt],
+                            exclude_project_ids=[tgt],
+                            allowed_project_ids=allowed_projects,
+                            allowed_document_version_ids=other_vers,
+                            as_of_ts=as_of_ts,
+                        )
+                    except ValueError:
+                        continue
+                    if dense_vec is not None:
+                        search_specs.append(
+                            {
+                                "vector_name": "content_vector",
+                                "query": dense_vec,
+                                "search_filter": xref_filter,
+                                "limit": per_spec_limit,
+                            }
+                        )
+                        spec_meta.append((tgt, "mentioned"))
+                    if sparse_vec.get("indices"):
+                        search_specs.append(
+                            {
+                                "vector_name": "bm25_sparse",
+                                "query": sparse_vec,
+                                "search_filter": xref_filter,
+                                "limit": per_spec_limit,
+                            }
+                        )
+                        spec_meta.append((tgt, "mentioned"))
+
+                partner_vers = [
+                    vid
+                    for tk in norm_partners[:MAX_TICKERS_PER_REQUEST]
+                    if tk not in exclude_set
+                    for vid in ver_ids_by_ticker.get(tk, ())
+                ]
+                partner_projects = [tk for tk in norm_partners[:MAX_TICKERS_PER_REQUEST] if tk not in exclude_set]
+                if partner_vers and partner_projects:
+                    try:
+                        p_filter = build_universe_search_filter(
+                            tenant_id=tenant_id,
+                            allowed_project_ids=partner_projects,
+                            allowed_document_version_ids=partner_vers,
+                            as_of_ts=as_of_ts,
+                        )
+                        if dense_vec is not None:
+                            search_specs.append(
+                                {
+                                    "vector_name": "content_vector",
+                                    "query": dense_vec,
+                                    "search_filter": p_filter,
+                                    "limit": max(4, top_k),
+                                }
+                            )
+                            spec_meta.append((norm_targets[0] if norm_targets else "KG_PARTNER", "kg_partner"))
+                        if sparse_vec.get("indices"):
+                            search_specs.append(
+                                {
+                                    "vector_name": "bm25_sparse",
+                                    "query": sparse_vec,
+                                    "search_filter": p_filter,
+                                    "limit": max(4, top_k),
+                                }
+                            )
+                            spec_meta.append((norm_targets[0] if norm_targets else "KG_PARTNER", "kg_partner"))
+                    except ValueError:
+                        pass
+
+                if search_specs:
+                    batch_hits = await store.search_batch(collection, searches=search_specs)
+                    used_qdrant = True
+                    fused_scores: dict[str, float] = {}
+                    hit_payloads: dict[str, dict[str, Any]] = {}
+                    hit_targets: dict[str, list[str]] = {}
+                    for (tgt_lbl, kind), hits in zip(spec_meta, batch_hits, strict=True):
+                        weight = 1.15 if kind == "mentioned" else 0.90
+                        for rank, hit in enumerate(hits, 1):
+                            pid_val = str(hit.payload.get("project_id") or "").strip().upper()
+                            vid_val = str(hit.payload.get("document_version_id") or "")
+                            if not vid_val or vid_val not in ver_info:
+                                continue
+                            if kind == "mentioned" and pid_val == tgt_lbl:
+                                continue
+                            if kind == "kg_partner" and pid_val in exclude_set:
+                                continue
+                            fused_scores[hit.point_id] = fused_scores.get(hit.point_id, 0.0) + (
+                                weight / (60.0 + rank)
+                            )
+                            hit_payloads[hit.point_id] = hit.payload
+                            tlist = hit_targets.setdefault(hit.point_id, [])
+                            if kind == "mentioned":
+                                if tgt_lbl not in tlist:
+                                    tlist.append(tgt_lbl)
+                            elif not tlist:
+                                tlist.append(tgt_lbl)
+
+                    top_pids = sorted(fused_scores, key=lambda k: fused_scores[k], reverse=True)[:top_k]
+                    if top_pids:
+                        su_ids = [
+                            str(
+                                hit_payloads[p].get("search_unit_id")
+                                or hit_payloads[p].get("_sag_id")
+                                or p
+                            )
+                            for p in top_pids
+                        ]
+                        su_rows = {
+                            str(r.id): r
+                            for r in (
+                                await self._session.scalars(
+                                    select(SearchUnit).where(SearchUnit.id.in_(su_ids))
+                                )
+                            ).all()
+                        }
+                        hit_ver_ids = sorted(
+                            {str(hit_payloads[p].get("document_version_id") or "") for p in top_pids}
+                        )
+                        blocks_map = await load_canonical_blocks_for_versions(
+                            self._session,
+                            hit_ver_ids,
+                            as_of_date=as_of_date,
+                        )
+                        for pid_key in top_pids:
+                            pl = hit_payloads[pid_key]
+                            vid_val = str(pl.get("document_version_id") or "")
+                            info = ver_info.get(vid_val)
+                            if info is None:
+                                continue
+                            su_lookup_id = str(
+                                pl.get("search_unit_id") or pl.get("_sag_id") or pid_key
+                            )
+                            su = su_rows.get(su_lookup_id)
+                            p_from = int((su.page_from if su else pl.get("page_from")) or 1)
+                            p_to = int((su.page_to if su else pl.get("page_to")) or p_from)
+                            b_from = str(su.block_from_id) if (su and su.block_from_id) else None
+                            b_to = str(su.block_to_id) if (su and su.block_to_id) else None
+                            # Prefer verbatim CanonicalBlock text in span for 100% quote_hash verification
+                            content_txt = ""
+                            ver_blks = blocks_map.get(vid_val, ())
+                            if ver_blks and b_from:
+                                in_span = False
+                                span_txts: list[str] = []
+                                for blk in ver_blks:
+                                    if blk.block_id == b_from:
+                                        in_span = True
+                                    if in_span:
+                                        span_txts.append(blk.normalized_text)
+                                    if in_span and (not b_to or blk.block_id == b_to):
+                                        break
+                                content_txt = "\n\n".join(t for t in span_txts if t.strip())
+                            if not content_txt and ver_blks:
+                                page_txts = [
+                                    blk.normalized_text
+                                    for blk in ver_blks
+                                    if not (blk.page_to < p_from or blk.page_from > p_to)
+                                ]
+                                content_txt = "\n\n".join(t for t in page_txts[:3] if t.strip())
+                            if not content_txt:
+                                content_txt = str(
+                                    pl.get("text")
+                                    or pl.get("content")
+                                    or (su.section_path if su else "")
+                                )
+                            if not content_txt.strip():
+                                continue
+                            sec_slot = str(pl.get("sub_doc_slot") or info["slot"])
+                            qdrant_sections.append(
+                                RetrievedResearchSection(
+                                    ticker=info["ticker"],
+                                    doc_id=info["doc_id"],
+                                    document_version_id=vid_val,
+                                    sub_doc_slot=sec_slot,
+                                    page_from=max(1, p_from),
+                                    page_to=max(1, p_to),
+                                    published_date=info["pub_date"],
+                                    content=content_txt,
+                                    heading=str((su.section_path if su else pl.get("section_path")) or ""),
+                                    table_id=None,
+                                    routing_slot=sec_slot,
+                                    score=round(float(fused_scores[pid_key]) * 20.0, 4),
+                                    block_from_id=b_from,
+                                    block_to_id=b_to,
+                                    fiscal_year=pl.get("fiscal_year") or info["fy"],
+                                    fiscal_quarter=(
+                                        pl.get("fiscal_quarter")
+                                        if pl.get("fiscal_quarter") is not None
+                                        else info["fq"]
+                                    ),
+                                    evidence_origin="CROSS_REF",
+                                    cross_ref_target=(
+                                        ",".join(hit_targets.get(pid_key, ())) or None
+                                    ),
+                                )
+                            )
+                        return RetrievalResult(
+                            sections=qdrant_sections,
+                            canonical_blocks=blocks_map,
+                            routing_slot=qdrant_sections[0].sub_doc_slot if qdrant_sections else None,
+                        )
+            except Exception as err:  # noqa: BLE001
+                log.debug("cross-ref qdrant search skipped (%s); using PIT DB fallback", type(err).__name__)
+
+        if used_qdrant:
+            return RetrievalResult()
+
+        # ── Fallback Path: PIT-Filtered PG CanonicalBlock CROSS-REF Scan ─────
+        # Used when Qdrant/engine_manager is absent (e.g. SQLite unit tests).
+        candidate_ver_ids = sorted(ver_info.keys())
+        if not candidate_ver_ids:
+            return RetrievalResult()
+
+        issuer_registry = ()
+        try:
+            kg_rows = (
+                await self._session.execute(
+                    select(KgNode.ticker, KgNode.label)
+                    .where(
+                        KgNode.ticker.is_not(None),
+                        KgNode.effective_from <= as_of_date,
+                        KgNode.valid_to > as_of_date,
+                    )
+                    .limit(1000)
+                )
+            ).all()
+            issuer_registry = compile_issuer_registry_from_rows(
+                [{"ticker": str(tk), "label": str(lbl)} for tk, lbl in kg_rows if tk and lbl]
+            )
+        except Exception:  # noqa: BLE001
+            issuer_registry = ()
+
+        q_terms = {t.lower() for t in analyze_query(query).scoring_terms if len(t) >= 2}
+        target_set = set(norm_targets)
+        partner_set = set(norm_partners)
+        blk_rows = (
+            await self._session.execute(
+                select(
+                    CanonicalBlock.id,
+                    CanonicalBlock.document_version_id,
+                    CanonicalBlock.page_from,
+                    CanonicalBlock.page_to,
+                    CanonicalBlock.section_path,
+                    CanonicalBlock.normalized_text,
+                )
+                .where(CanonicalBlock.document_version_id.in_(candidate_ver_ids))
+                .order_by(CanonicalBlock.document_version_id.asc(), CanonicalBlock.ordinal.asc())
+                .limit(1200)
+            )
+        ).all()
+
+        scored_fallback: list[tuple[float, RetrievedResearchSection]] = []
+        for blk_id, vid, p_from, p_to, sec_path, norm_txt in blk_rows:
+            vid_s = str(vid)
+            info = ver_info.get(vid_s)
+            if info is None:
+                continue
+            txt = str(norm_txt or "").strip()
+            if len(txt) < 15:
+                continue
+            owner_tk = info["ticker"]
+            mentioned = extract_mentioned_tickers(
+                f"{sec_path or ''} {txt}",
+                own_ticker=owner_tk,
+                known_tickers=target_set,
+                compiled_issuers=issuer_registry,
+            )
+            matched_targets = [m for m in mentioned if m in target_set and m != owner_tk]
+            is_partner = owner_tk in partner_set and owner_tk not in exclude_set
+            low_blob = f"{sec_path or ''} {txt}".lower()
+            term_hits = sum(1 for t in q_terms if t in low_blob)
+            if not matched_targets and not (is_partner and term_hits > 0):
+                continue
+            sc = (2.0 if matched_targets else 0.8) + 0.35 * term_hits
+            xref_tgt = matched_targets[0] if matched_targets else (norm_targets[0] if norm_targets else owner_tk)
+            scored_fallback.append(
+                (
+                    sc,
+                    RetrievedResearchSection(
+                        ticker=owner_tk,
+                        doc_id=info["doc_id"],
+                        document_version_id=vid_s,
+                        sub_doc_slot=info["slot"],
+                        page_from=max(1, int(p_from or 1)),
+                        page_to=max(1, int(p_to or p_from or 1)),
+                        published_date=info["pub_date"],
+                        content=txt,
+                        heading=str(sec_path or ""),
+                        table_id=None,
+                        routing_slot=info["slot"],
+                        score=round(sc, 4),
+                        block_from_id=str(blk_id),
+                        block_to_id=str(blk_id),
+                        fiscal_year=info["fy"],
+                        fiscal_quarter=info["fq"],
+                        evidence_origin="CROSS_REF",
+                        cross_ref_target=xref_tgt,
+                    ),
+                )
+            )
+
+        if not scored_fallback:
+            return RetrievalResult()
+        scored_fallback.sort(key=lambda item: (-item[0], item[1].ticker, item[1].page_from))
+        top_sections = [sec for _, sec in scored_fallback[:top_k]]
+        blocks_map = await load_canonical_blocks_for_versions(
+            self._session,
+            [s.document_version_id for s in top_sections],
+            as_of_date=as_of_date,
+        )
+        return RetrievalResult(
+            sections=top_sections,
+            canonical_blocks=blocks_map,
+            routing_slot=top_sections[0].sub_doc_slot if top_sections else None,
         )
 
 
@@ -574,6 +1117,38 @@ def _extract_numeric_from_row_cell(cell: Any) -> float | None:
     return None
 
 
+_YEAR_HDR_RE = re.compile(r"\b((?:19|20)\d{2})\b")
+_PLAN_HDR_RE = re.compile(r"(?:kế\s*hoạch|mục\s*tiêu|chỉ\s*tiêu|plan|target|budget)", re.IGNORECASE | re.UNICODE)
+_ACTUAL_HDR_RE = re.compile(r"(?:thực\s*hiện|thực\s*tế|actual|achieved|kết\s*quả)", re.IGNORECASE | re.UNICODE)
+
+
+def _extract_table_row_label_and_nums(row: Any) -> tuple[str, list[float | None]] | None:
+    if isinstance(row, Mapping):
+        label = str(row.get("label") or "").strip()
+        vals = row.get("values") or []
+        return label, [_extract_numeric_from_row_cell(v) for v in vals]
+    if isinstance(row, list) and len(row) >= 2:
+        label = str(row[0].get("raw_text") if isinstance(row[0], Mapping) else row[0]).strip()
+        return label, [_extract_numeric_from_row_cell(c) for c in row[1:]]
+    return None
+
+
+def _find_best_table_row(
+    parsed_rows: Sequence[tuple[str, list[float | None]]],
+    *,
+    include_terms: Sequence[str],
+    exclude_terms: Sequence[str] = (),
+    col_idx: int,
+) -> tuple[str, float] | None:
+    for term in include_terms:
+        for label, nums in parsed_rows:
+            low = label.lower()
+            if term in low and not any(ex in low for ex in exclude_terms):
+                if col_idx < len(nums) and nums[col_idx] is not None:
+                    return label, float(nums[col_idx])
+    return None
+
+
 def _run_deterministic_calculator(
     *,
     query: str,
@@ -584,14 +1159,16 @@ def _run_deterministic_calculator(
 
     N4c hard invariants:
     - NEVER calculate from `TABLE_UNVERIFIED` or `PARTIAL` tables (strictly `VERIFIED` only).
-    - NEVER compute YoY across `code` (`Mã số`), `note_ref` (`Thuyết minh`), `component_amount`
-      (`Giá gốc` vs `Dự phòng`), `ratio_pct`, or `count` columns — ONLY across 2 distinct
+    - NEVER compute YoY/CAGR across `code` (`Mã số`), `note_ref` (`Thuyết minh`), `component_amount`
+      (`Giá gốc` vs `Dự phòng`), `ratio_pct`, or `count` columns — ONLY across distinct
       `period_amount` columns!
-    - Rank candidate rows by query keyword overlap instead of blindly taking `rows[0]`.
+    - Covers multi-row YoY, margins (GPM/NPM), leverage & liquidity ratios (D/E, Current Ratio),
+      multi-period CAGR (>= 3 year columns), plan-vs-actual achievement, and macro shock sensitivity.
     """
     from sag_api.research.table_engine import classify_table_columns
 
     traces: list[CalculatorTraceItem] = []
+    max_traces = 16
 
     calc_engine: Any | None = None
     try:
@@ -620,6 +1197,7 @@ def _run_deterministic_calculator(
                     "tổng cộng tài sản",
                     "tổng tài sản",
                     "vốn chủ sở hữu",
+                    "nợ phải trả",
                     "dòng tiền thuần",
                 )
             )
@@ -627,8 +1205,64 @@ def _run_deterministic_calculator(
         )
         return (overlap, is_key_line)
 
-    calc_seq = len(traces) + 1
+    calc_seq = 1
+
+    def _emit_calc(
+        *,
+        formula: str,
+        inputs: dict[str, dict[str, Any]],
+        description: str,
+        format_style: str,
+        fallback_val: float | None = None,
+        fallback_fmt: str = "",
+        decimals: int = 2,
+    ) -> None:
+        nonlocal calc_seq
+        if len(traces) >= max_traces:
+            return
+        if calc_engine is not None:
+            try:
+                tr = calc_engine.evaluate(
+                    formula=formula,
+                    inputs=inputs,
+                    description=description,
+                    calc_id=f"CALC-{calc_seq}",
+                    format_style=format_style,
+                    decimals=decimals,
+                )
+                traces.append(CalculatorTraceItem(**tr.to_dict()))
+                calc_seq += 1
+                return
+            except Exception:  # noqa: BLE001
+                if fallback_val is None:
+                    return
+        if fallback_val is not None:
+            traces.append(
+                CalculatorTraceItem(
+                    calc_id=f"CALC-{calc_seq}",
+                    formula=formula,
+                    description=description,
+                    inputs=inputs,
+                    result=round(fallback_val, 6),
+                    formatted=fallback_fmt,
+                )
+            )
+            calc_seq += 1
+
+    def _make_tbl_input(tbl: HydratedTableItem, val: float, row_label: str, hdr: str) -> dict[str, Any]:
+        return {
+            "value": val,
+            "table_id": tbl.table_id,
+            "row": row_label,
+            "col": hdr,
+            "currency": tbl.currency,
+            "unit_multiplier": tbl.unit_multiplier,
+            "verification_status": tbl.verification_status,
+        }
+
     for tbl in hydrated_tables:
+        if len(traces) >= max_traces:
+            break
         if tbl.verification_status != "VERIFIED":
             continue
         col_headers = (
@@ -636,102 +1270,271 @@ def _run_deterministic_calculator(
             if (tbl.headers and isinstance(tbl.headers[0], list))
             else tbl.headers
         )
-        if len(col_headers) < 3 or not tbl.rows:
+        if len(col_headers) < 2 or not tbl.rows:
             continue
 
         col_roles = list(tbl.column_roles) if tbl.column_roles else []
         if len(col_roles) != len(col_headers):
             col_roles, _ = classify_table_columns(col_headers, tbl.rows)
 
-        # Pick strictly 2 distinct `period_amount` value-column indices (0-based into row['values'])
+        parsed_rows: list[tuple[str, list[float | None]]] = []
+        for row in tbl.rows[:80]:
+            parsed = _extract_table_row_label_and_nums(row)
+            if parsed is not None:
+                parsed_rows.append(parsed)
+        if not parsed_rows:
+            continue
+
+        # Distinct `period_amount` value-column indices (0-based into row['values']),
+        # excluding Plan/Target columns so Plan-vs-Actual tables emit achievement ratios, not bogus YoY!
         period_val_indices = [
             c - 1
             for c in range(1, min(len(col_headers), len(col_roles)))
-            if col_roles[c] == "period_amount"
+            if col_roles[c] == "period_amount" and not _PLAN_HDR_RE.search(str(col_headers[c]).strip())
         ]
-        if len(period_val_indices) < 2:
-            continue
-        idx_curr, idx_prev = period_val_indices[0], period_val_indices[1]
-        if str(col_headers[idx_curr + 1]).strip().lower() == str(col_headers[idx_prev + 1]).strip().lower():
-            continue
 
-        # Score & rank rows by query relevance rather than blindly grabbing rows[0]
-        ranked_rows: list[tuple[tuple[int, int], int, str, list[float | None]]] = []
-        for r_idx, row in enumerate(tbl.rows[:25]):
-            if isinstance(row, Mapping):
-                label = str(row.get("label") or "")
-                vals = row.get("values") or []
-                nums = [_extract_numeric_from_row_cell(v) for v in vals]
-            elif isinstance(row, list) and len(row) >= 3:
-                label = str(row[0].get("raw_text") if isinstance(row[0], Mapping) else row[0])
-                nums = [_extract_numeric_from_row_cell(c) for c in row[1:]]
-            else:
-                continue
-            if (
-                max(idx_curr, idx_prev) < len(nums)
-                and nums[idx_curr] is not None
-                and nums[idx_prev] is not None
-                and abs(nums[idx_prev]) > 1e-9
-            ):
-                ranked_rows.append((_row_priority_score(label), -r_idx, label, nums))
+        # 1. Multi-row YoY across top 3 relevant / key rows (strictly 2 distinct period_amount cols)
+        if len(period_val_indices) >= 2:
+            idx_curr, idx_prev = period_val_indices[0], period_val_indices[1]
+            hdr_curr = str(col_headers[idx_curr + 1]).strip()
+            hdr_prev = str(col_headers[idx_prev + 1]).strip()
+            if hdr_curr.lower() != hdr_prev.lower():
+                ranked_rows: list[tuple[tuple[int, int], int, str, list[float | None]]] = []
+                for r_idx, (label, nums) in enumerate(parsed_rows):
+                    if (
+                        max(idx_curr, idx_prev) < len(nums)
+                        and nums[idx_curr] is not None
+                        and nums[idx_prev] is not None
+                        and abs(nums[idx_prev]) > 1e-9
+                    ):
+                        ranked_rows.append((_row_priority_score(label), -r_idx, label, nums))
+                ranked_rows.sort(key=lambda item: (item[0], item[1]), reverse=True)
+                seen_labels: set[str] = set()
+                yoy_emitted = 0
+                for _, _, label, nums in ranked_rows:
+                    if yoy_emitted >= 3 or len(traces) >= max_traces:
+                        break
+                    norm_lbl = label.lower()
+                    if norm_lbl in seen_labels:
+                        continue
+                    seen_labels.add(norm_lbl)
+                    curr, prev = nums[idx_curr], nums[idx_prev]
+                    assert curr is not None and prev is not None
+                    yoy_val = (curr - prev) / abs(prev)
+                    _emit_calc(
+                        formula="yoy(current, prior)",
+                        inputs={
+                            "current": _make_tbl_input(tbl, curr, label, hdr_curr),
+                            "prior": _make_tbl_input(tbl, prev, label, hdr_prev),
+                        },
+                        description=f"Biến động {hdr_curr} vs {hdr_prev} — {label} ({tbl.title})",
+                        format_style="signed_percent",
+                        fallback_val=yoy_val,
+                        fallback_fmt=f"{yoy_val * 100:+.2f}%",
+                    )
+                    yoy_emitted += 1
 
-        if not ranked_rows:
-            continue
-        ranked_rows.sort(key=lambda item: (item[0], item[1]), reverse=True)
-        _, _, label, nums = ranked_rows[0]
-        curr, prev = nums[idx_curr], nums[idx_prev]
-        assert curr is not None and prev is not None
-        hdr_curr = str(col_headers[idx_curr + 1]).strip()
-        hdr_prev = str(col_headers[idx_prev + 1]).strip()
-        desc = f"Biến động {hdr_curr} vs {hdr_prev} — {label} ({tbl.title})"
-        if calc_engine is not None:
-            try:
-                tr = calc_engine.evaluate(
-                    formula="yoy(current, prior)",
-                    inputs={
-                        "current": {
-                            "value": curr,
-                            "table_id": tbl.table_id,
-                            "row": label,
-                            "column": hdr_curr,
-                            "currency": tbl.currency,
-                            "unit_multiplier": tbl.unit_multiplier,
-                            "verification_status": tbl.verification_status,
-                        },
-                        "prior": {
-                            "value": prev,
-                            "table_id": tbl.table_id,
-                            "row": label,
-                            "column": hdr_prev,
-                            "currency": tbl.currency,
-                            "unit_multiplier": tbl.unit_multiplier,
-                            "verification_status": tbl.verification_status,
-                        },
-                    },
-                    description=desc,
-                    calc_id=f"CALC-{calc_seq}",
-                    format_style="signed_percent",
-                )
-                traces.append(CalculatorTraceItem(**tr.to_dict()))
-                calc_seq += 1
-                continue
-            except Exception:  # noqa: BLE001
-                pass
-        yoy = (curr - prev) / abs(prev)
-        traces.append(
-            CalculatorTraceItem(
-                calc_id=f"CALC-{calc_seq}",
-                formula=f"({curr} - {prev}) / abs({prev})",
-                description=desc,
-                inputs={
-                    "current": {"value": curr, "table_id": tbl.table_id, "row": label, "column": hdr_curr},
-                    "prior": {"value": prev, "table_id": tbl.table_id, "row": label, "column": hdr_prev},
-                },
-                result=round(yoy, 6),
-                formatted=f"{yoy * 100:+.2f}%",
+        # 2. Multi-period CAGR when >= 3 period_amount columns carry distinct calendar years
+        if len(period_val_indices) >= 3 and len(traces) < max_traces:
+            dated_cols: list[tuple[int, int, str]] = []
+            for v_idx in period_val_indices:
+                hdr_s = str(col_headers[v_idx + 1]).strip()
+                ym = _YEAR_HDR_RE.search(hdr_s)
+                if ym:
+                    dated_cols.append((int(ym.group(1)), v_idx, hdr_s))
+            if len(dated_cols) >= 3:
+                dated_cols.sort(key=lambda item: item[0])
+                yr_start, idx_start, hdr_start = dated_cols[0]
+                yr_end, idx_end, hdr_end = dated_cols[-1]
+                span_years = yr_end - yr_start
+                if span_years >= 2:
+                    cagr_candidates: list[tuple[tuple[int, int], int, str, float, float]] = []
+                    for r_idx, (label, nums) in enumerate(parsed_rows):
+                        if (
+                            max(idx_start, idx_end) < len(nums)
+                            and nums[idx_start] is not None
+                            and nums[idx_end] is not None
+                            and nums[idx_start] > 0
+                            and nums[idx_end] > 0
+                        ):
+                            cagr_candidates.append(
+                                (_row_priority_score(label), -r_idx, label, nums[idx_end], nums[idx_start])
+                            )
+                    if cagr_candidates:
+                        cagr_candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+                        _, _, label, end_v, start_v = cagr_candidates[0]
+                        cagr_val = (end_v / start_v) ** (1.0 / span_years) - 1.0
+                        _emit_calc(
+                            formula="cagr(end_val, start_val, years)",
+                            inputs={
+                                "end_val": _make_tbl_input(tbl, end_v, label, hdr_end),
+                                "start_val": _make_tbl_input(tbl, start_v, label, hdr_start),
+                                "years": {"value": float(span_years)},
+                            },
+                            description=f"CAGR {yr_start}-{yr_end} ({span_years} năm) — {label} ({tbl.title})",
+                            format_style="signed_percent",
+                            fallback_val=cagr_val,
+                            fallback_fmt=f"{cagr_val * 100:+.2f}%",
+                        )
+
+        # 3. Deterministic Financial Ratios (GPM, NPM, Debt/Equity, Current Ratio) on latest period column
+        latest_idx = period_val_indices[0] if period_val_indices else None
+        if latest_idx is not None and len(traces) < max_traces:
+            hdr_latest = str(col_headers[latest_idx + 1]).strip()
+            rev_row = _find_best_table_row(
+                parsed_rows,
+                include_terms=("doanh thu thuần", "net revenue", "tổng doanh thu hoạt động"),
+                exclude_terms=("giảm trừ", "tài chính", "khác"),
+                col_idx=latest_idx,
             )
-        )
-        calc_seq += 1
+            if rev_row is not None and abs(rev_row[1]) > 1e-9:
+                rev_lbl, rev_val = rev_row
+                gp_row = _find_best_table_row(
+                    parsed_rows,
+                    include_terms=("lợi nhuận gộp", "gross profit"),
+                    col_idx=latest_idx,
+                )
+                if gp_row is not None:
+                    gp_lbl, gp_val = gp_row
+                    gpm_val = gp_val / rev_val
+                    _emit_calc(
+                        formula="margin(gross_profit, revenue)",
+                        inputs={
+                            "gross_profit": _make_tbl_input(tbl, gp_val, gp_lbl, hdr_latest),
+                            "revenue": _make_tbl_input(tbl, rev_val, rev_lbl, hdr_latest),
+                        },
+                        description=f"Biên lợi nhuận gộp (GPM) kỳ {hdr_latest} ({tbl.title})",
+                        format_style="percent",
+                        fallback_val=gpm_val,
+                        fallback_fmt=f"{gpm_val * 100:.2f}%",
+                    )
+                np_row = _find_best_table_row(
+                    parsed_rows,
+                    include_terms=(
+                        "lợi nhuận sau thuế thu nhập doanh nghiệp",
+                        "lợi nhuận sau thuế của cổ đông công ty mẹ",
+                        "lợi nhuận sau thuế",
+                        "net profit",
+                        "profit after tax",
+                    ),
+                    exclude_terms=("chưa phân phối", "lũy kế", "cơ bản trên cổ phiếu", "không kiểm soát"),
+                    col_idx=latest_idx,
+                )
+                if np_row is not None:
+                    np_lbl, np_val = np_row
+                    npm_val = np_val / rev_val
+                    _emit_calc(
+                        formula="margin(net_income, revenue)",
+                        inputs={
+                            "net_income": _make_tbl_input(tbl, np_val, np_lbl, hdr_latest),
+                            "revenue": _make_tbl_input(tbl, rev_val, rev_lbl, hdr_latest),
+                        },
+                        description=f"Biên lợi nhuận ròng (NPM) kỳ {hdr_latest} ({tbl.title})",
+                        format_style="percent",
+                        fallback_val=npm_val,
+                        fallback_fmt=f"{npm_val * 100:.2f}%",
+                    )
+
+            eq_row = _find_best_table_row(
+                parsed_rows,
+                include_terms=("vốn chủ sở hữu", "total equity", "owners' equity"),
+                exclude_terms=("vốn góp", "chưa phân phối", "thặng dư", "quỹ", "lợi ích cổ đông"),
+                col_idx=latest_idx,
+            )
+            liab_row = _find_best_table_row(
+                parsed_rows,
+                include_terms=("tổng nợ phải trả", "nợ phải trả", "total liabilities"),
+                exclude_terms=(
+                    "nợ ngắn hạn",
+                    "nợ dài hạn",
+                    "phải trả người bán",
+                    "người mua trả tiền",
+                    "khác",
+                    "vốn chủ sở hữu",
+                ),
+                col_idx=latest_idx,
+            )
+            if eq_row is not None and liab_row is not None and abs(eq_row[1]) > 1e-9:
+                liab_lbl, liab_val = liab_row
+                eq_lbl, eq_val = eq_row
+                de_val = liab_val / eq_val
+                _emit_calc(
+                    formula="debt_to_equity(total_debt, equity)",
+                    inputs={
+                        "total_debt": _make_tbl_input(tbl, liab_val, liab_lbl, hdr_latest),
+                        "equity": _make_tbl_input(tbl, eq_val, eq_lbl, hdr_latest),
+                    },
+                    description=f"Tỷ lệ Nợ phải trả / Vốn chủ sở hữu (D/E) kỳ {hdr_latest} ({tbl.title})",
+                    format_style="ratio",
+                    fallback_val=de_val,
+                    fallback_fmt=f"{de_val:.2f}x",
+                )
+
+            ca_row = _find_best_table_row(
+                parsed_rows,
+                include_terms=("tài sản ngắn hạn", "current assets"),
+                exclude_terms=("khác", "đầu tư", "phải thu", "tồn kho"),
+                col_idx=latest_idx,
+            )
+            cl_row = _find_best_table_row(
+                parsed_rows,
+                include_terms=("nợ ngắn hạn", "current liabilities"),
+                exclude_terms=("khác", "phải trả", "vay và nợ", "dự phòng"),
+                col_idx=latest_idx,
+            )
+            if ca_row is not None and cl_row is not None and abs(cl_row[1]) > 1e-9:
+                ca_lbl, ca_val = ca_row
+                cl_lbl, cl_val = cl_row
+                cr_val = ca_val / cl_val
+                _emit_calc(
+                    formula="safe_div(current_assets, current_liabilities)",
+                    inputs={
+                        "current_assets": _make_tbl_input(tbl, ca_val, ca_lbl, hdr_latest),
+                        "current_liabilities": _make_tbl_input(tbl, cl_val, cl_lbl, hdr_latest),
+                    },
+                    description=f"Hệ số thanh toán hiện hành (Current Ratio) kỳ {hdr_latest} ({tbl.title})",
+                    format_style="ratio",
+                    fallback_val=cr_val,
+                    fallback_fmt=f"{cr_val:.2f}x",
+                )
+
+        # 4. Plan vs Actual achievement ratio (AGM / BCTN target tables)
+        if len(traces) < max_traces:
+            plan_idx: int | None = None
+            actual_idx: int | None = None
+            for c_idx in range(1, min(len(col_headers), len(col_roles))):
+                if col_roles[c_idx] in ("code", "note_ref", "ratio_pct", "count"):
+                    continue
+                h_str = str(col_headers[c_idx]).strip()
+                if plan_idx is None and _PLAN_HDR_RE.search(h_str):
+                    plan_idx = c_idx - 1
+                elif actual_idx is None and _ACTUAL_HDR_RE.search(h_str):
+                    actual_idx = c_idx - 1
+            if plan_idx is not None and actual_idx is not None and plan_idx != actual_idx:
+                hdr_plan = str(col_headers[plan_idx + 1]).strip()
+                hdr_act = str(col_headers[actual_idx + 1]).strip()
+                for label, nums in parsed_rows[:20]:
+                    if (
+                        max(plan_idx, actual_idx) < len(nums)
+                        and nums[plan_idx] is not None
+                        and nums[actual_idx] is not None
+                        and abs(nums[plan_idx]) > 1e-9
+                    ):
+                        act_v = float(nums[actual_idx])
+                        pln_v = float(nums[plan_idx])
+                        ach_v = act_v / pln_v
+                        _emit_calc(
+                            formula="margin(actual, plan)",
+                            inputs={
+                                "actual": _make_tbl_input(tbl, act_v, label, hdr_act),
+                                "plan": _make_tbl_input(tbl, pln_v, label, hdr_plan),
+                            },
+                            description=f"Tỷ lệ hoàn thành kế hoạch ({hdr_act} / {hdr_plan}) — {label} ({tbl.title})",
+                            format_style="percent",
+                            fallback_val=ach_v,
+                            fallback_fmt=f"{ach_v * 100:.2f}%",
+                        )
+                        break
 
     # Macro shock sensitivity trace when query asks about macro % move & CONFIRMED_BOTH hop exists
     shock_match = re.search(r"([+-]?\d+(?:[.,]\d+)?)\s*%", query)
@@ -895,6 +1698,7 @@ def _parse_citations_from_answer(
             continue
         cit_entry: dict[str, Any] = {
             "citation_id": cid,
+            "ticker": sec.ticker,
             "doc_id": sec.doc_id,
             "document_version_id": sec.document_version_id,
             "sub_doc_slot": sec.sub_doc_slot,
@@ -904,6 +1708,7 @@ def _parse_citations_from_answer(
             "quote": snippet,
             "quote_hash": compute_quote_hash(snippet),
             "verified": False,
+            "evidence_origin": sec.evidence_origin,
         }
         if sec.table_id:
             cit_entry["table_id"] = sec.table_id
@@ -1186,12 +1991,20 @@ def evaluate_evidence_sufficiency(
 ) -> tuple[list[DeclaredBlindspotItem], bool]:
     """4e: Relevance floor / evidence sufficiency gate before synthesis.
 
-    Checks per-ticker coverage, per-subquery coverage, and low-relevance floor.
+    Checks per-ticker coverage, per-subquery coverage, and low-relevance floor
+    (even when fallback tables or KG hops were hydrated for an ingested ticker).
     Returns `(extra_blindspots, should_abstain_low_relevance)`.
     """
     extra_bs: list[DeclaredBlindspotItem] = []
     present_tickers = {s.ticker.upper() for s in sections if s.ticker}
+    for s in sections:
+        if s.evidence_origin == "CROSS_REF" and s.cross_ref_target:
+            for tgt_part in s.cross_ref_target.split(","):
+                if tgt_part.strip():
+                    present_tickers.add(tgt_part.strip().upper())
     for t in hydrated_tables:
+        if t.project_id:
+            present_tickers.add(t.project_id.strip().upper())
         if t.title:
             for tk in explicit_tickers:
                 if tk.upper() in t.title.upper():
@@ -1238,23 +2051,51 @@ def evaluate_evidence_sufficiency(
                     )
                 )
 
-    # Low-relevance floor check when sections exist but scores are tiny and lexical overlap is zero
-    if sections and not hydrated_tables and not graph_hops:
+    # Low-relevance floor check: do NOT disable abstention merely because fallback tables/KG hops exist.
+    # Require meaningful topical keyword overlap across retrieved sections, table row labels, or KG labels.
+    if sections:
         scores = [float(s.score) for s in sections]
         max_score = max(scores, default=0.0)
         if 0.0 < max_score < 0.08:
             from sag_api.services.query_analysis import analyze_query
 
-            q_terms = [t.lower() for t in analyze_query(resolved_query).scoring_terms if len(t) >= 3]
-            combined = " ".join(f"{s.heading} {s.content[:500]}" for s in sections[:5]).lower()
-            overlap = sum(1 for t in q_terms if t in combined)
-            if q_terms and overlap == 0:
+            vn_stopwords = {
+                "không", "của", "cho", "với", "trong", "này", "các", "được", "hay", "hoặc",
+                "như", "nào", "bao", "nhiêu", "sao", "nhất", "phải", "đang", "còn", "theo",
+                "tại", "khi", "nếu", "thì", "một", "những", "trên", "dưới", "giữa", "về",
+                "the", "and", "for", "with", "does", "have", "what", "from", "into",
+            }
+            ticker_set_low = {tk.strip().lower() for tk in explicit_tickers if tk}
+            q_terms = [
+                t.lower()
+                for t in analyze_query(resolved_query).scoring_terms
+                if len(t) >= 3 and t.lower() not in ticker_set_low and t.lower() not in vn_stopwords
+            ]
+            evidence_blobs: list[str] = [
+                f"{s.heading} {s.content[:500]}" for s in sections[:8]
+            ]
+            for tbl in hydrated_tables[:6]:
+                evidence_blobs.append(tbl.title)
+                for row in tbl.rows[:40]:
+                    if isinstance(row, Mapping):
+                        evidence_blobs.append(str(row.get("label") or ""))
+                    elif isinstance(row, list) and row:
+                        first = row[0]
+                        evidence_blobs.append(str(first.get("raw_text") if isinstance(first, Mapping) else first))
+            for hop in graph_hops[:15]:
+                evidence_blobs.append(f"{hop.src_label} {hop.relation_type} {hop.dst_label}")
+            combined = " ".join(evidence_blobs).lower()
+            overlap = sum(
+                1 for t in q_terms if re.search(rf"(?<!\w){re.escape(t)}(?!\w)", combined, re.UNICODE)
+            )
+            min_required = 1 if len(q_terms) <= 2 else max(2, int(len(q_terms) * 0.25))
+            if q_terms and overlap < min_required:
                 extra_bs.append(
                     DeclaredBlindspotItem(
                         code="LOW_RELEVANCE_EVIDENCE",
                         reason=(
                             f"Độ phù hợp tối đa ({max_score:.3f}) dưới ngưỡng tin cậy "
-                            "và không khớp từ khóa chính của câu hỏi."
+                            "và không khớp từ khóa chính của câu hỏi trên văn bản, bảng số hay đồ thị tri thức."
                         ),
                         scope="retrieval",
                     )
@@ -1262,6 +2103,55 @@ def evaluate_evidence_sufficiency(
                 return extra_bs, True
 
     return extra_bs, False
+
+
+_KEY_TABLE_ROW_RE = re.compile(
+    r"(?:tổng|cộng|doanh thu|lợi nhuận|tài sản|nợ phải trả|vốn chủ sở hữu|dòng tiền|lưu chuyển|"
+    r"tiền và tương đương|hàng tồn kho|phải thu|vay và nợ|total|revenue|profit|equity|assets|liabilities)",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _select_table_rows_for_prompt(
+    tbl: HydratedTableItem,
+    *,
+    query: str,
+    max_rows: int = 60,
+    max_chars: int = 12000,
+) -> dict[str, Any]:
+    """Serialize table rows cleanly for synthesis without truncating full Balance Sheets at row 15."""
+    all_rows = list(tbl.rows or [])
+    total_rows = len(all_rows)
+    if total_rows <= max_rows:
+        candidate_indices = list(range(total_rows))
+    else:
+        q_terms = {
+            tok.lower()
+            for tok in re.findall(r"[^\W\d_]{2,}", query or "", flags=re.UNICODE)
+        }
+        chosen: set[int] = set(range(min(15, total_rows)))
+        chosen.update(range(max(0, total_rows - 5), total_rows))
+        for idx, row in enumerate(all_rows):
+            parsed = _extract_table_row_label_and_nums(row)
+            label = parsed[0].lower() if parsed else ""
+            if (q_terms and any(t in label for t in q_terms)) or _KEY_TABLE_ROW_RE.search(label):
+                chosen.add(idx)
+        candidate_indices = sorted(chosen)[:max_rows]
+
+    selected_rows: list[Any] = []
+    used_chars = len(json.dumps(tbl.headers, ensure_ascii=False))
+    for idx in candidate_indices:
+        row_obj = all_rows[idx]
+        row_len = len(json.dumps(row_obj, ensure_ascii=False)) + 2
+        if selected_rows and used_chars + row_len > max_chars:
+            break
+        selected_rows.append(row_obj)
+        used_chars += row_len
+
+    payload: dict[str, Any] = {"headers": tbl.headers, "rows": selected_rows}
+    if len(selected_rows) < total_rows:
+        payload["omitted_rows_count"] = total_rows - len(selected_rows)
+    return payload
 
 
 def _build_synthesis_messages(
@@ -1281,7 +2171,15 @@ def _build_synthesis_messages(
 ) -> list[dict[str, str]]:
     ev_lines = [
         (
-            f"[C{idx}] ({sec.ticker} | {sec.sub_doc_slot} | P{sec.page_from} | "
+            f"[C{idx}] "
+            + (
+                f"[CROSS-REF via {sec.ticker} -> {sec.cross_ref_target}]"
+                if sec.evidence_origin == "CROSS_REF" and sec.cross_ref_target
+                else f"[CROSS-REF via {sec.ticker}]"
+                if sec.evidence_origin == "CROSS_REF"
+                else "[PRIMARY]"
+            )
+            + f" ({sec.ticker} | {sec.sub_doc_slot} | P{sec.page_from} | "
             f"pub={sec.published_date})\n{sec.content.strip()}"
         )
         for idx, sec in enumerate(sections, 1)
@@ -1290,7 +2188,7 @@ def _build_synthesis_messages(
         (
             f"[TBL:{t.table_id}] {t.title} ({t.sub_doc_slot} P{t.page_from}-{t.page_to} | "
             f"{t.currency} {t.unit_raw} | status={t.verification_status})\n"
-            + json.dumps({"headers": t.headers, "rows": t.rows[:15]}, ensure_ascii=False)
+            + json.dumps(_select_table_rows_for_prompt(t, query=query), ensure_ascii=False)
         )
         for t in hydrated_tables
     ]
@@ -1330,6 +2228,8 @@ def _build_synthesis_messages(
         "Answer in the exact language of the user query (Vietnamese or English). "
         "Every factual claim MUST cite its exact evidence badge like [C1], [C2] "
         "(ONLY use badges present in VERIFIED DOCUMENT EXCERPTS). "
+        "Explicitly distinguish [PRIMARY] authoritative filings from [CROSS-REF] mentions extracted "
+        "from partner/peer filings; NEVER treat [CROSS-REF] figures as primary audited baselines. "
         "NEVER perform mental arithmetic; report ONLY exact computed numbers from [CALC-*] traces and verified tables. "
         "If evidence is missing for part of the question or listed in DECLARED BLINDSPOTS, "
         "explicitly state INSUFFICIENT_EVIDENCE for that scope instead of guessing."
@@ -1369,7 +2269,8 @@ def _deterministic_grounded_fallback_answer(
     parts: list[str] = [f"Phân tích Point-in-Time ({as_of_date.isoformat()}) cho **{subject_label}**:"]
     for idx, sec in enumerate(sections[:4], 1):
         snippet = normalize_ws(sec.content)[:220]
-        parts.append(f"- [{sec.ticker}·{sec.sub_doc_slot}·P{sec.page_from}] {snippet} [C{idx}]")
+        origin_tag = f"CROSS-REF via {sec.ticker}" if sec.evidence_origin == "CROSS_REF" else sec.ticker
+        parts.append(f"- [{origin_tag}·{sec.sub_doc_slot}·P{sec.page_from}] {snippet} [C{idx}]")
     if hydrated_tables:
         for t in hydrated_tables[:2]:
             parts.append(
@@ -1401,6 +2302,7 @@ class ResearchChatOrchestrator:
         engine_manager: Any | None = None,
     ) -> None:
         self._session = session
+        self._engine_manager = engine_manager
         if kg_store is not None:
             self._kg_store: KGStoreProtocol | None = kg_store
         elif session is not None:
@@ -1515,7 +2417,7 @@ class ResearchChatOrchestrator:
 
         return available, alias_to_ticker
 
-    async def _route_universe_tickers_thematically(
+    async def _route_universe_tickers_with_stats(
         self,
         *,
         query: str,
@@ -1523,64 +2425,139 @@ class ResearchChatOrchestrator:
         principal: VerifiedPrincipal,
         as_of_date: date,
         limit: int = MAX_TICKERS_PER_REQUEST,
-    ) -> list[str]:
-        """4b: Dynamic thematic Universe routing via Leiden TreeRoutingProfile + PIT KG (0% hardcoded)."""
+    ) -> tuple[list[str], int]:
+        """Layer 3 Open Universe Mode: direct shared-chamber Qdrant Hybrid Search across all
+        tenant-scoped PIT-valid SearchUnits (0 `TreeRoutingProfile` scan), grouping top-3
+        normalized scores per ticker, with strict PIT-filtered PG/KG fallback when Qdrant is absent.
+
+        Returns `(selected_tickers[:limit], total_matched_tickers)` so callers can emit
+        `TRUNCATED_UNIVERSE_SCOPE` whenever `total_matched_tickers > limit`.
+        """
         if not available_tickers:
-            return []
-        if len(available_tickers) <= limit or self._session is None:
-            return sorted(available_tickers)[:limit]
+            return [], 0
+        sorted_avail = sorted(available_tickers)
+        if len(sorted_avail) <= limit and self._engine_manager is None:
+            return sorted_avail[:limit], len(sorted_avail)
+        if self._session is None:
+            return sorted_avail[:limit], len(sorted_avail)
 
+        from sag_api.db.models import CanonicalBlock, Document, DocumentVersion
+        from sag_api.sag.search_unit_store import (
+            SearchUnitQdrantStore,
+            build_sparse_query_vector,
+            build_universe_search_filter,
+        )
         from sag_api.services.query_analysis import analyze_query
+        from sag_api.services.search_index_service import resolve_search_unit_collection_name
 
+        as_of_dt = datetime(as_of_date.year, as_of_date.month, as_of_date.day, 23, 59, 59, tzinfo=UTC)
+        as_of_ts = int(as_of_dt.timestamp())
+        tenant_id = (principal.tenant_id or "").strip()
+
+        # Resolve active PIT-valid DocumentVersions for all candidate tickers
+        ver_filters: list[Any] = [
+            Document.project_id.in_(sorted_avail),
+            Document.is_active.is_(True),
+            DocumentVersion.status != "REVOKED",
+            DocumentVersion.valid_from <= as_of_dt,
+            DocumentVersion.valid_to > as_of_dt,
+        ]
+        if tenant_id:
+            ver_filters.append(Document.tenant_id == tenant_id)
+        active_ver_rows = (
+            await self._session.execute(
+                select(DocumentVersion.id, Document.project_id, Document.source_id)
+                .join(Document, Document.id == DocumentVersion.document_id)
+                .where(*ver_filters)
+            )
+        ).all()
+        valid_ver_ids = [str(r[0]) for r in active_ver_rows if r[0]]
+        ver_ticker_map = {str(r[0]): str(r[1]).upper() for r in active_ver_rows if r[0] and r[1]}
+        source_ids = sorted({str(r[2]) for r in active_ver_rows if r[2]})
+
+        # ── 1. Primary Path: Shared-Chamber Qdrant Hybrid Search (0 Leiden TreeRoutingProfile) ─
+        if (
+            self._engine_manager is not None
+            and tenant_id
+            and valid_ver_ids
+            and hasattr(self._engine_manager, "get_search_unit_qdrant_client")
+        ):
+            try:
+                client = await self._engine_manager.get_search_unit_qdrant_client()
+                store = SearchUnitQdrantStore(client)
+                collection = resolve_search_unit_collection_name()
+                u_filter = build_universe_search_filter(
+                    tenant_id=tenant_id,
+                    allowed_project_ids=sorted_avail,
+                    allowed_document_version_ids=valid_ver_ids,
+                    as_of_ts=as_of_ts,
+                )
+                search_limit = min(120, max(36, limit * 12))
+                sparse_vec = build_sparse_query_vector(query)
+                dense_vec: list[float] | None = None
+                if isinstance(self._retriever, SAGRetrieverAdapter):
+                    dense_vec = await self._retriever._try_embed_shared_query(
+                        query, tenant_id=tenant_id, source_ids=source_ids
+                    )
+                specs: list[dict[str, Any]] = []
+                if dense_vec is not None:
+                    specs.append(
+                        {
+                            "vector_name": "content_vector",
+                            "query": dense_vec,
+                            "search_filter": u_filter,
+                            "limit": search_limit,
+                        }
+                    )
+                if sparse_vec.get("indices"):
+                    specs.append(
+                        {
+                            "vector_name": "bm25_sparse",
+                            "query": sparse_vec,
+                            "search_filter": u_filter,
+                            "limit": search_limit,
+                        }
+                    )
+                if specs:
+                    batch_hits = await store.search_batch(collection, searches=specs)
+                    point_rrf: dict[str, float] = {}
+                    point_ticker: dict[str, str] = {}
+                    for hits in batch_hits:
+                        for rank, hit in enumerate(hits, 1):
+                            vid = str(hit.payload.get("document_version_id") or "")
+                            if vid and valid_ver_ids and vid not in ver_ticker_map:
+                                continue
+                            tk = str(hit.payload.get("project_id") or ver_ticker_map.get(vid, "")).strip().upper()
+                            if tk not in available_tickers:
+                                continue
+                            point_rrf[hit.point_id] = point_rrf.get(hit.point_id, 0.0) + (1.0 / (60.0 + rank))
+                            point_ticker[hit.point_id] = tk
+                    if point_rrf:
+                        # Top-3 normalized mean per ticker prevents multi-version tickers from dominating
+                        per_ticker_hits: dict[str, list[float]] = {}
+                        for pid_k, sc in point_rrf.items():
+                            per_ticker_hits.setdefault(point_ticker[pid_k], []).append(sc)
+                        q_scores: dict[str, float] = {}
+                        for tk, vals in per_ticker_hits.items():
+                            top3 = sorted(vals, reverse=True)[:3]
+                            q_scores[tk] = sum(top3) / float(len(top3))
+                        matched_count = len(q_scores)
+                        ranked_q = sorted(sorted_avail, key=lambda tk: (-q_scores.get(tk, 0.0), tk))
+                        return ranked_q[:limit], matched_count
+            except Exception as err:  # noqa: BLE001
+                log.debug(
+                    "open-universe qdrant hybrid fallback (%s); using PIT PG/KG ranking",
+                    type(err).__name__,
+                )
+
+        # ── 2. Clean PIT-Filtered PG/KG Fallback (when Qdrant is absent in tests) ─
         q_terms = {t.lower() for t in analyze_query(query).scoring_terms if len(t) >= 2}
         if not q_terms:
-            return sorted(available_tickers)[:limit]
+            return sorted_avail[:limit], len(sorted_avail)
 
-        scores: dict[str, float] = {tk: 0.0 for tk in available_tickers}
-        sorted_avail = sorted(available_tickers)
+        scores: dict[str, float] = {tk: 0.0 for tk in sorted_avail}
 
-        # 1. Leiden TreeRoutingProfile thematic match (sparse_json + entities_json)
-        try:
-            from sag_api.db.models.routing_rag import TreeRoutingProfile
-
-            trp_filters: list[Any] = [TreeRoutingProfile.project_id.in_(sorted_avail)]
-            if principal.tenant_id:
-                trp_filters.append(TreeRoutingProfile.tenant_id == principal.tenant_id)
-            trp_rows = (
-                await self._session.execute(
-                    select(
-                        TreeRoutingProfile.project_id,
-                        TreeRoutingProfile.sparse_json,
-                        TreeRoutingProfile.entities_json,
-                    )
-                    .where(*trp_filters)
-                    .limit(2000)
-                )
-            ).all()
-            for pid, sparse_j, ent_j in trp_rows:
-                sym = str(pid or "").upper()
-                if sym not in scores:
-                    continue
-                blob_parts: list[str] = []
-                if isinstance(sparse_j, list):
-                    for item in sparse_j[:60]:
-                        if isinstance(item, str):
-                            blob_parts.append(item)
-                        elif isinstance(item, Mapping):
-                            blob_parts.append(str(item.get("term") or item.get("token") or ""))
-                        elif isinstance(item, (list, tuple)) and item:
-                            blob_parts.append(str(item[0]))
-                if isinstance(ent_j, list):
-                    blob_parts.extend(str(e) for e in ent_j[:40])
-                blob = " ".join(blob_parts).lower()
-                if blob:
-                    hits = sum(1 for t in q_terms if t in blob)
-                    if hits:
-                        scores[sym] += float(hits) * 1.5
-        except Exception:  # noqa: BLE001
-            pass
-
-        # 2. PIT 3-Layer KG thematic match (`KgNode.label` & `KgEdge` evidence/relations)
+        # 2a. PIT 3-Layer KG thematic match (`KgNode.label` & `KgEdge` evidence/relations)
         try:
             from sag_api.db.models.stock_research import KgEdge, KgNode
 
@@ -1591,6 +2568,7 @@ class ResearchChatOrchestrator:
                         KgNode.effective_from <= as_of_date,
                         KgNode.valid_to > as_of_date,
                     )
+                    .order_by(KgNode.node_id.asc())
                     .limit(3000)
                 )
             ).all()
@@ -1615,6 +2593,7 @@ class ResearchChatOrchestrator:
                             KgEdge.effective_from <= as_of_date,
                             KgEdge.valid_to > as_of_date,
                         )
+                        .order_by(KgEdge.edge_id.asc())
                         .limit(3000)
                     )
                 ).all()
@@ -1627,39 +2606,121 @@ class ResearchChatOrchestrator:
         except Exception:  # noqa: BLE001
             pass
 
-        # 3. CanonicalBlock section_path fallback when tree & KG have no thematic scores yet
-        if max(scores.values(), default=0.0) <= 0.0:
+        # 2b. Strict PIT-filtered CanonicalBlock lexical match (top-3 normalized per ticker)
+        if valid_ver_ids:
             try:
-                from sag_api.db.models import CanonicalBlock, Document, DocumentVersion
-
-                blk_filters: list[Any] = [
-                    Document.project_id.in_(sorted_avail),
-                    Document.is_active.is_(True),
-                ]
-                if principal.tenant_id:
-                    blk_filters.append(Document.tenant_id == principal.tenant_id)
                 blk_rows = (
                     await self._session.execute(
-                        select(Document.project_id, CanonicalBlock.section_path, CanonicalBlock.normalized_text)
-                        .join(DocumentVersion, DocumentVersion.document_id == Document.id)
-                        .join(CanonicalBlock, CanonicalBlock.document_version_id == DocumentVersion.id)
-                        .where(*blk_filters)
-                        .limit(500)
+                        select(
+                            CanonicalBlock.document_version_id,
+                            CanonicalBlock.section_path,
+                            CanonicalBlock.normalized_text,
+                        )
+                        .where(CanonicalBlock.document_version_id.in_(valid_ver_ids))
+                        .order_by(CanonicalBlock.document_version_id.asc(), CanonicalBlock.ordinal.asc())
+                        .limit(1500)
                     )
                 ).all()
-                for pid, sp, txt in blk_rows:
-                    sym = str(pid or "").upper()
+                per_tk_blk_scores: dict[str, list[float]] = {}
+                for vid, sp, txt in blk_rows:
+                    sym = ver_ticker_map.get(str(vid), "")
                     if sym not in scores:
                         continue
-                    blob = f"{sp or ''} {str(txt or '')[:240]}".lower()
+                    blob = f"{sp or ''} {str(txt or '')[:320]}".lower()
                     hits = sum(1 for t in q_terms if t in blob)
                     if hits:
-                        scores[sym] += float(hits)
+                        per_tk_blk_scores.setdefault(sym, []).append(float(hits))
+                for sym, vals in per_tk_blk_scores.items():
+                    top3 = sorted(vals, reverse=True)[:3]
+                    scores[sym] += sum(top3) / float(len(top3))
             except Exception:  # noqa: BLE001
                 pass
 
+        matched_count = sum(1 for sc in scores.values() if sc > 0.0)
+        if matched_count == 0:
+            matched_count = len(sorted_avail)
         ranked = sorted(sorted_avail, key=lambda tk: (-scores.get(tk, 0.0), tk))
-        return ranked[:limit]
+        return ranked[:limit], matched_count
+
+    async def _route_universe_tickers_thematically(
+        self,
+        *,
+        query: str,
+        available_tickers: set[str],
+        principal: VerifiedPrincipal,
+        as_of_date: date,
+        limit: int = MAX_TICKERS_PER_REQUEST,
+    ) -> list[str]:
+        """Open Universe Mode wrapper returning top-`limit` tickers (preserving unit-test contract)."""
+        selected, _ = await self._route_universe_tickers_with_stats(
+            query=query,
+            available_tickers=available_tickers,
+            principal=principal,
+            as_of_date=as_of_date,
+            limit=limit,
+        )
+        return selected
+
+    async def _discover_kg_partner_tickers(
+        self,
+        *,
+        tickers: Sequence[str],
+        as_of_date: date,
+        principal: VerifiedPrincipal,
+        limit: int = MAX_TICKERS_PER_REQUEST,
+    ) -> list[str]:
+        """Discover PIT-valid KG VALUE_CHAIN / TRUE_PEER partner tickers for CROSS-REF retrieval."""
+        if self._kg_store is None or not tickers:
+            return []
+        seed_set = {t.strip().upper() for t in tickers if t and t.strip()}
+        allowed = principal.allowed_project_ids
+        partners: list[str] = []
+        for tk in list(seed_set)[:MAX_TICKERS_PER_REQUEST]:
+            try:
+                subgraph = await self._kg_store.get_subgraph_for_ticker(tk, as_of_date)
+            except Exception:  # noqa: BLE001
+                continue
+            for node in subgraph.get("nodes", ()):
+                ntk = str(node.get("ticker") or "").strip().upper()
+                if not ntk or ntk in seed_set or ntk in partners:
+                    continue
+                if "*" not in allowed and ntk not in allowed:
+                    continue
+                partners.append(ntk)
+                if len(partners) >= limit:
+                    return partners
+        return partners
+
+    async def _invoke_cross_ref_retriever(
+        self,
+        *,
+        query: str,
+        target_tickers: Sequence[str],
+        exclude_tickers: Sequence[str],
+        as_of_date: date,
+        top_k: int,
+        principal: VerifiedPrincipal,
+        kg_partner_tickers: Sequence[str] = (),
+    ) -> RetrievalResult:
+        if self._retriever is None:
+            return RetrievalResult()
+        fn = getattr(self._retriever, "retrieve_cross_ref", None)
+        if not callable(fn):
+            return RetrievalResult()
+        xref_kwargs: dict[str, Any] = {
+            "query": query,
+            "target_tickers": list(target_tickers),
+            "exclude_tickers": list(exclude_tickers),
+            "as_of_date": as_of_date,
+            "top_k": top_k,
+        }
+        sig = inspect.signature(fn)
+        has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+        if "principal" in sig.parameters or has_var_kw:
+            xref_kwargs["principal"] = principal
+        if "kg_partner_tickers" in sig.parameters or has_var_kw:
+            xref_kwargs["kg_partner_tickers"] = list(kg_partner_tickers)
+        return await fn(**xref_kwargs)
 
     async def _invoke_retriever(
         self,
@@ -1776,19 +2837,35 @@ class ResearchChatOrchestrator:
             tk for tk in explicit_tickers if (not available_tickers or tk in available_tickers)
         ]
 
-        # If no ticker specified in current turn: carry history on follow-up, else Universe/Thematic routing
+        # If no ticker specified in current turn: carry history on follow-up, else Open Universe search
+        universe_matched_count = 0
         if not expanded_tickers and not uncovered_requested:
             if is_followup_turn and history_tickers:
                 expanded_tickers = history_tickers[:MAX_TICKERS_PER_REQUEST]
             elif available_tickers:
-                # 4b: Dynamic Universe / Thematic routing via Leiden Tree + KG (capped at MAX_TICKERS_PER_REQUEST)
-                expanded_tickers = await self._route_universe_tickers_thematically(
+                # Layer 3 Open Universe Mode: direct shared-chamber Qdrant Hybrid + PIT PG/KG fallback
+                (
+                    expanded_tickers,
+                    universe_matched_count,
+                ) = await self._route_universe_tickers_with_stats(
                     query=resolved_query,
                     available_tickers=available_tickers,
                     principal=principal,
                     as_of_date=as_of_date,
                     limit=MAX_TICKERS_PER_REQUEST,
                 )
+                if universe_matched_count > MAX_TICKERS_PER_REQUEST:
+                    blindspots.append(
+                        DeclaredBlindspotItem(
+                            code="TRUNCATED_UNIVERSE_SCOPE",
+                            reason=(
+                                f"Có {universe_matched_count} mã cổ phiếu khớp truy vấn trên toàn kho; "
+                                f"giới hạn truy xuất tối đa {MAX_TICKERS_PER_REQUEST} mã hàng đầu "
+                                f"({', '.join(expanded_tickers)})."
+                            ),
+                            scope="universe",
+                        )
+                    )
 
         primary = expanded_tickers[0] if expanded_tickers else (request.ticker or "").strip().upper()
 
@@ -1816,19 +2893,6 @@ class ResearchChatOrchestrator:
                 if len(expanded_tickers) >= MAX_TICKERS_PER_REQUEST:
                     break
 
-        if uncovered_requested:
-            avail_list = ", ".join(sorted(available_tickers)[:20]) if available_tickers else "(none)"
-            blindspots.append(
-                DeclaredBlindspotItem(
-                    code="NO_DOC_COVERAGE",
-                    reason=(
-                        f"Các mã {', '.join(uncovered_requested)} chưa có tài liệu trong kho dữ liệu "
-                        f"(các mã đã nạp hiện có: {avail_list})."
-                    ),
-                    scope=",".join(uncovered_requested),
-                )
-            )
-
         yield (
             "stage",
             {
@@ -1840,11 +2904,12 @@ class ResearchChatOrchestrator:
                     "chat_mode": chat_mode,
                     "resolved_query": resolved_query,
                     "sub_queries": sub_queries,
+                    "universe_matched_count": universe_matched_count,
                 },
             },
         )
 
-        # ── Stage 2: Retrieval (Adaptive Budget + Soft Prior + 1-Round Bridge Hop-2) ──
+        # ── Stage 2: Dual-Channel Retrieval (PRIMARY + CROSS-REF + Bridge Hop-2) ──
         yield (
             "stage",
             {"stage": "retrieval", "status": "running", "detail": {"tickers": expanded_tickers}},
@@ -1864,12 +2929,12 @@ class ResearchChatOrchestrator:
             principal=principal,
         )
 
-        # Defense-in-depth PIT filtering on Hop-1 sections
-        pit_sections: list[RetrievedResearchSection] = []
+        # Defense-in-depth PIT filtering on PRIMARY Hop-1 sections
+        primary_sections: list[RetrievedResearchSection] = []
         pit_filtered_count = 0
         for sec in retrieval.sections:
             if sec.published_date <= as_of_date:
-                pit_sections.append(sec)
+                primary_sections.append(sec)
             else:
                 pit_filtered_count += 1
 
@@ -1879,11 +2944,11 @@ class ResearchChatOrchestrator:
         hipporag_hops = retrieval.hipporag_hops
 
         # 4c: Bounded 1-round conditional bridge Hop-2 for missing explicit note cross-references
-        bridge_queries = extract_missing_bridge_queries(pit_sections, query=resolved_query, max_bridges=2)
+        bridge_queries = extract_missing_bridge_queries(primary_sections, query=resolved_query, max_bridges=2)
         if bridge_queries and self._retriever is not None and expanded_tickers:
             seen_sec_keys = {
                 (s.document_version_id, s.page_from, normalize_ws(s.content)[:80])
-                for s in pit_sections
+                for s in primary_sections
             }
             hop2_added = 0
             for bq in bridge_queries:
@@ -1906,19 +2971,153 @@ class ResearchChatOrchestrator:
                     sk = (sec.document_version_id, sec.page_from, normalize_ws(sec.content)[:80])
                     if sk not in seen_sec_keys:
                         seen_sec_keys.add(sk)
-                        pit_sections.append(sec)
+                        primary_sections.append(sec)
                         hop2_added += 1
             if hop2_added > 0:
                 hipporag_hops = max(hipporag_hops, 2)
 
-        # 4a + 4d: Apply soft slot ranking prior (never hard-excluding BCTN_PR in GENERAL) & balanced diversity
-        pit_sections = apply_slot_ranking_prior(pit_sections, query=resolved_query, mode=chat_mode)
-        pit_sections = balance_sections_by_ticker_and_subquery(
-            pit_sections,
+        # 4a + 4d: Apply soft slot ranking prior & balanced diversity strictly on PRIMARY channel
+        primary_sections = apply_slot_ranking_prior(primary_sections, query=resolved_query, mode=chat_mode)
+        primary_sections = balance_sections_by_ticker_and_subquery(
+            primary_sections,
             tickers=expanded_tickers,
             sub_queries=sub_queries,
             limit=adaptive_top_k,
         )
+
+        # Layer 3 CROSS-REF Channel: pull verbatim mentions from other tickers + PIT KG partners
+        kg_partner_tickers: list[str] = []
+        kg_seed_tickers = list(dict.fromkeys([*expanded_tickers, *uncovered_requested]))
+        if request.enable_kg and self._kg_store is not None and kg_seed_tickers:
+            kg_partner_tickers = await self._discover_kg_partner_tickers(
+                tickers=kg_seed_tickers,
+                as_of_date=as_of_date,
+                principal=principal,
+                limit=MAX_TICKERS_PER_REQUEST,
+            )
+
+        fallback_explicit = explicit_tickers if not primary_sections else ()
+        cross_ref_targets = list(
+            dict.fromkeys([*uncovered_requested, *expanded_tickers, *fallback_explicit])
+        )
+        should_run_cross_ref = bool(cross_ref_targets) and (
+            bool(uncovered_requested)
+            or not primary_sections
+            or bool(_CROSS_REF_INTENT_RE.search(resolved_query))
+            or len(expanded_tickers) >= 2
+            or len(sub_queries) >= 2
+            or bool(kg_partner_tickers)
+        )
+        cross_ref_sections: list[RetrievedResearchSection] = []
+        if should_run_cross_ref and self._retriever is not None:
+            xref_budget = min(6, max(3, adaptive_top_k // 3))
+            try:
+                xref_res = await self._invoke_cross_ref_retriever(
+                    query=resolved_query,
+                    target_tickers=cross_ref_targets,
+                    exclude_tickers=expanded_tickers,
+                    as_of_date=as_of_date,
+                    top_k=xref_budget,
+                    principal=principal,
+                    kg_partner_tickers=kg_partner_tickers,
+                )
+            except Exception:  # noqa: BLE001
+                xref_res = RetrievalResult()
+            for ver_id, blks in xref_res.canonical_blocks.items():
+                all_blocks_by_version.setdefault(ver_id, list(blks))
+            primary_keys = {
+                (s.document_version_id, s.page_from, normalize_ws(s.content)[:80])
+                for s in primary_sections
+            }
+            for sec in xref_res.sections:
+                if sec.published_date > as_of_date:
+                    pit_filtered_count += 1
+                    continue
+                sk = (sec.document_version_id, sec.page_from, normalize_ws(sec.content)[:80])
+                if sk in primary_keys:
+                    continue
+                primary_keys.add(sk)
+                if sec.evidence_origin != "CROSS_REF":
+                    sec = RetrievedResearchSection(
+                        ticker=sec.ticker,
+                        doc_id=sec.doc_id,
+                        document_version_id=sec.document_version_id,
+                        sub_doc_slot=sec.sub_doc_slot,
+                        page_from=sec.page_from,
+                        page_to=sec.page_to,
+                        published_date=sec.published_date,
+                        content=sec.content,
+                        heading=sec.heading,
+                        table_id=None,
+                        routing_slot=sec.routing_slot,
+                        leiden_nodes_visited=sec.leiden_nodes_visited,
+                        hipporag_hops=sec.hipporag_hops,
+                        score=sec.score,
+                        block_from_id=sec.block_from_id,
+                        block_to_id=sec.block_to_id,
+                        fiscal_year=sec.fiscal_year,
+                        fiscal_quarter=sec.fiscal_quarter,
+                        evidence_origin="CROSS_REF",
+                        cross_ref_target=sec.cross_ref_target or (cross_ref_targets[0] if cross_ref_targets else None),
+                    )
+                cross_ref_sections.append(sec)
+            if cross_ref_sections:
+                cross_ref_sections = apply_slot_ranking_prior(
+                    cross_ref_sections, query=resolved_query, mode=chat_mode
+                )[:xref_budget]
+
+        # Classify tickers with 0 direct filings: NO_DIRECT_FILING (if CROSS-REF found) vs NO_DOC_COVERAGE
+        no_direct_candidates = list(uncovered_requested)
+        if not no_direct_candidates and not primary_sections and cross_ref_sections and explicit_tickers:
+            no_direct_candidates = list(explicit_tickers)
+
+        no_coverage_tickers: list[str] = []
+        for tk in no_direct_candidates:
+            tk_u = tk.upper()
+            tk_xref_sources = sorted(
+                {
+                    s.ticker
+                    for s in cross_ref_sections
+                    if s.ticker.upper() != tk_u
+                    and (
+                        tk_u
+                        in {
+                            part.strip().upper()
+                            for part in (s.cross_ref_target or "").split(",")
+                            if part.strip()
+                        }
+                        or re.search(rf"(?<![A-Za-z0-9_]){re.escape(tk_u)}(?![A-Za-z0-9_])", s.content, re.IGNORECASE)
+                    )
+                }
+            )
+            if tk_xref_sources:
+                blindspots.append(
+                    DeclaredBlindspotItem(
+                        code="NO_DIRECT_FILING",
+                        reason=(
+                            f"Mã {tk_u} chưa có báo cáo trực tiếp trong kho dữ liệu; chỉ tìm thấy "
+                            f"trích dẫn gián tiếp [CROSS-REF] từ tài liệu của {', '.join(tk_xref_sources)}."
+                        ),
+                        scope=tk_u,
+                    )
+                )
+            elif tk in uncovered_requested:
+                no_coverage_tickers.append(tk_u)
+
+        if no_coverage_tickers:
+            avail_list = ", ".join(sorted(available_tickers)[:20]) if available_tickers else "(none)"
+            blindspots.append(
+                DeclaredBlindspotItem(
+                    code="NO_DOC_COVERAGE",
+                    reason=(
+                        f"Các mã {', '.join(no_coverage_tickers)} chưa có tài liệu trong kho dữ liệu "
+                        f"(các mã đã nạp hiện có: {avail_list})."
+                    ),
+                    scope=",".join(no_coverage_tickers),
+                )
+            )
+
+        pit_sections: list[RetrievedResearchSection] = [*primary_sections, *cross_ref_sections]
 
         if pit_filtered_count > 0:
             blindspots.append(
@@ -1938,6 +3137,8 @@ class ResearchChatOrchestrator:
                 "status": "done",
                 "detail": {
                     "section_count": len(pit_sections),
+                    "primary_section_count": len(primary_sections),
+                    "cross_ref_section_count": len(cross_ref_sections),
                     "pit_filtered": pit_filtered_count,
                     "adaptive_top_k": adaptive_top_k,
                     "bridge_queries": bridge_queries,
@@ -2018,9 +3219,11 @@ class ResearchChatOrchestrator:
                     )
         yield ("stage", {"stage": "graph_hop", "status": "done", "detail": {"hop_count": len(graph_hops)}})
 
-        # ── Stage 4: Table Hydration & Discrepancy Detection ─────────────────
+        # ── Stage 4: PRIMARY-Only Table Hydration & Discrepancy Detection ────
+        # Hard invariant: CROSS-REF mentions NEVER contaminate audited primary tables,
+        # Python Calculator inputs, or DiscrepancyDetector baselines.
         yield ("stage", {"stage": "table_hydration", "status": "running", "detail": {}})
-        ref_table_ids = list(dict.fromkeys(s.table_id for s in pit_sections if s.table_id))
+        ref_table_ids = list(dict.fromkeys(s.table_id for s in primary_sections if s.table_id))
         raw_tables: list[dict[str, Any]] = []
         if self._table_store is not None and (ref_table_ids or expanded_tickers):
             tbl_kwargs: dict[str, Any] = {
@@ -2037,6 +3240,7 @@ class ResearchChatOrchestrator:
         for t in raw_tables:
             item = HydratedTableItem(
                 table_id=str(t["table_id"]),
+                project_id=str(t.get("project_id") or "") or None,
                 title=str(t.get("title") or ""),
                 sub_doc_slot=str(t.get("sub_doc_slot") or ""),
                 page_from=int(t.get("page_from") or 0),
@@ -2066,7 +3270,7 @@ class ResearchChatOrchestrator:
                 )
 
         discrepancy_alerts = _run_discrepancy_check(
-            sections=pit_sections,
+            sections=primary_sections,
             hydrated_tables=hydrated_tables,
         )
         yield (
@@ -2183,6 +3387,16 @@ class ResearchChatOrchestrator:
                     )
                 draft_answer = "".join(parts)
             else:
+                blindspots.append(
+                    DeclaredBlindspotItem(
+                        code="LLM_UNCONFIGURED_FALLBACK",
+                        reason=(
+                            "LLM provider chưa được cấu hình hoặc đang tắt; câu trả lời sử dụng "
+                            "tóm tắt trích lục xác thực trực tiếp (deterministic grounded fallback)."
+                        ),
+                        scope="synthesis",
+                    )
+                )
                 draft_answer = _deterministic_grounded_fallback_answer(
                     primary_ticker=primary,
                     as_of_date=as_of_date,
@@ -2195,14 +3409,22 @@ class ResearchChatOrchestrator:
 
         yield ("stage", {"stage": "synthesis", "status": "done", "detail": {}})
 
-        # ── Stage 7: Post-Synthesis `quote_hash` Verification ────────────────
+        # ── Stage 7: Post-Synthesis `quote_hash` & Numeric Verification ──────
         yield ("stage", {"stage": "verification", "status": "running", "detail": {}})
         blocks_by_version = dict(all_blocks_by_version)
-        if not blocks_by_version and self._session is not None and pit_sections:
-            blocks_by_version = await load_canonical_blocks_for_versions(
-                self._session,
-                [s.document_version_id for s in pit_sections],
-            )
+        if self._session is not None and pit_sections:
+            missing_ver_ids = [
+                s.document_version_id
+                for s in pit_sections
+                if s.document_version_id and s.document_version_id not in blocks_by_version
+            ]
+            if missing_ver_ids:
+                loaded_missing = await load_canonical_blocks_for_versions(
+                    self._session,
+                    missing_ver_ids,
+                    as_of_date=as_of_date,
+                )
+                blocks_by_version.update(loaded_missing)
         candidate_citations = _parse_citations_from_answer(
             draft_answer,
             pit_sections,
@@ -2222,7 +3444,51 @@ class ResearchChatOrchestrator:
             blindspots.append(DeclaredBlindspotItem(**bs))
 
         final_citations = [CitationItem(**c) for c in ver_res.verified_citations]
+        rejected_citations = [
+            CitationItem(
+                citation_id=str(c.get("citation_id") or ""),
+                ticker=c.get("ticker"),
+                doc_id=str(c.get("doc_id") or ""),
+                document_version_id=str(c.get("document_version_id") or ""),
+                sub_doc_slot=str(c.get("sub_doc_slot") or ""),
+                page=max(0, int(c.get("page") or 0)),
+                published_date=str(c.get("published_date") or ""),
+                quote=str(c.get("quote") or ""),
+                quote_hash=str(c.get("quote_hash") or ""),
+                verified=False,
+                evidence_origin=(
+                    "CROSS_REF" if c.get("evidence_origin") == "CROSS_REF" else "PRIMARY"
+                ),
+                rejection_reason=str(c.get("rejection_reason") or "") or None,
+            )
+            for c in ver_res.rejected_citations
+        ]
         final_answer = ver_res.sanitized_answer or draft_answer
+
+        # Claim-to-Evidence Numeric Cross-Check (catches invented figures even next to valid [C#])
+        unsupported_num_count = 0
+        if has_any_evidence:
+            sections_by_cid = {f"C{i}": sec for i, sec in enumerate(pit_sections, 1)}
+            num_ver = verify_numeric_claims_against_evidence(
+                final_answer,
+                sections_by_cid=sections_by_cid,
+                hydrated_tables=hydrated_tables,
+                calculator_traces=calculator_traces,
+                graph_hops=graph_hops,
+            )
+            unsupported_num_count = len(num_ver.unsupported_claims)
+            for bs in num_ver.blindspots:
+                blindspots.append(DeclaredBlindspotItem(**bs))
+
+        hallucinated_cid_count = sum(
+            1 for b in ver_res.blindspots if b.get("code") == "HALLUCINATED_CITATION_ID"
+        )
+        llm_used = bool(has_any_evidence and self._llm is not None and getattr(self._llm, "configured", True))
+        active_llm_model = (
+            settings.llm_model
+            if llm_used
+            else ("deterministic_fallback" if has_any_evidence else "abstained")
+        )
 
         yield (
             "stage",
@@ -2232,6 +3498,7 @@ class ResearchChatOrchestrator:
                 "detail": {
                     "verified_citations": len(ver_res.verified_citations),
                     "rejected_citations": len(ver_res.rejected_citations),
+                    "unsupported_numeric_claims": unsupported_num_count,
                     "verified_rate": ver_res.verified_rate,
                 },
             },
@@ -2248,6 +3515,7 @@ class ResearchChatOrchestrator:
             as_of_date=as_of_date.isoformat(),
             enable_kg=request.enable_kg,
             citations=final_citations,
+            rejected_citations=rejected_citations,
             hydrated_tables=hydrated_tables,
             calculator_traces=calculator_traces,
             graph_hops=graph_hops,
@@ -2255,8 +3523,16 @@ class ResearchChatOrchestrator:
             declared_blindspots=blindspots,
             telemetry=ResearchTelemetry(
                 routing_slot=retrieval.routing_slot or (pit_sections[0].sub_doc_slot if pit_sections else None),
+                retrieval_mode="SHARED_CHAMBER_HYBRID",
+                primary_section_count=len(primary_sections),
+                cross_ref_section_count=len(cross_ref_sections),
                 leiden_nodes_visited=retrieval.leiden_nodes_visited,
                 hipporag_hops=hipporag_hops,
+                rejected_citations_count=len(rejected_citations),
+                unsupported_numeric_claims_count=unsupported_num_count,
+                hallucinated_citation_ids_count=hallucinated_cid_count,
+                llm_model=active_llm_model,
+                embedding_model=settings.embedding_model,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cost_usd=cost_usd,

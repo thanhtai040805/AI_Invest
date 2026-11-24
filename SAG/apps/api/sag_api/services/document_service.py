@@ -2478,6 +2478,7 @@ async def revoke_project_document(
     logical_source_id: str | None = None,
     document_id: str | None = None,
     reason: str | None = None,
+    qdrant_client: Any | None = None,
 ) -> DocumentRevokeResponse:
     """Revoke a project document from retrieval and knowledge indexing."""
     logical_id = (logical_source_id or "").strip()
@@ -2559,6 +2560,7 @@ async def revoke_project_document(
     }:
         doc.status = DocumentStatus.PAUSED
 
+    revoked_version_ids: list[str] = []
     for ver in versions:
         ver.status = "REVOKED"
         ver.search_status = "REVOKED"
@@ -2567,6 +2569,7 @@ async def revoke_project_document(
         ver.knowledge_ready_at = None
         if ver.valid_to is None or ver.valid_to > now_utc:
             ver.valid_to = now_utc
+        revoked_version_ids.append(str(ver.id))
         meta = dict(ver.metadata_json or {})
         meta["revoked_at"] = now_utc.isoformat()
         if reason:
@@ -2580,6 +2583,24 @@ async def revoke_project_document(
         await touch_source_revision(session, doc.source_id)
 
     await session.commit()
+    if qdrant_client is not None and revoked_version_ids:
+        try:
+            from sag_api.services.search_index_service import set_document_points_valid_to_in_qdrant
+
+            await set_document_points_valid_to_in_qdrant(
+                qdrant_client,
+                project_id=project_id,
+                document_version_ids=revoked_version_ids,
+                valid_to_ts=int(now_utc.timestamp()),
+                valid_to_iso=now_utc.isoformat(),
+            )
+        except Exception as exc:  # noqa: BLE001 - PG revoke is committed; log Qdrant sync failure cleanly
+            log.warning(
+                "Failed to patch valid_to_ts in Qdrant for revoked document %s (versions=%s): %s",
+                doc.id,
+                revoked_version_ids,
+                exc,
+            )
     from sag_api.api.v1.universe import clear_universe_caches
 
     clear_universe_caches(project_id)

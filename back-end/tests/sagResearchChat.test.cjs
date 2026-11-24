@@ -202,8 +202,8 @@ function parseEmittedSseEvents(rawText) {
     .filter(Boolean);
 }
 
-test('SAG research timeout is 60s (bypasses 800ms aiEngineService) and BFF headers enforce org-scoped read-only access without single-ticker lock', () => {
-  assert.equal(SAG_RESEARCH_TIMEOUT_MS, 60_000);
+test('SAG research timeout is 150s (bypasses 800ms aiEngineService) and BFF headers enforce org-scoped read-only access without single-ticker lock', () => {
+  assert.equal(SAG_RESEARCH_TIMEOUT_MS, 150_000);
 
   const service = new SagResearchChatService({
     prismaClient: mockPrisma,
@@ -695,4 +695,105 @@ test('createSession and streamResearchChat support free-form chat without primar
   const events = parseEmittedSseEvents(res.chunks.join(''));
   assert.equal(events.at(-1).event, 'done');
   assert.equal(events.at(-1).data.metadata.chat_mode, 'MOAT');
+});
+
+test('eval-summary computes TRUE Gate G1 (including rejected_citations) and TRUE Gate G3 (no fake 100% at 0 feedback)', async () => {
+  resetMocks();
+  const service = new SagResearchChatService({
+    prismaClient: mockPrisma,
+    sagBffServiceToken: 'secret-token',
+  });
+
+  const session = await service.createSession('user-1', { ticker: 'FPT', asOfDate: '2026-06-30' });
+  // Case 1: Clean message with 0 human feedback => G3 MUST be null (unmeasured), NEVER fake 1.0!
+  await mockPrisma.chatMessage.create({
+    data: {
+      sessionId: session.id,
+      role: 'assistant',
+      content: 'Doanh thu FPT tang 19.4% [C1].',
+      type: 'research_chat_v2',
+      metadata: {
+        mode: 'RESEARCH_CHAT_V2',
+        primary_ticker: 'FPT',
+        as_of_date: '2026-06-30',
+        citations: [{ citation_id: 'C1', verified: true, published_date: '2026-04-10' }],
+        rejected_citations: [],
+        declared_blindspots: [],
+        telemetry: { rejected_citations_count: 0, unsupported_numeric_claims_count: 0 },
+      },
+    },
+  });
+  const cleanSummary = await service.getEvalSummary('user-1');
+  assert.equal(cleanSummary.gates.g1CitationVerifiedRate, 1);
+  assert.equal(cleanSummary.gates.g3AbstentionComplianceRate, null);
+  assert.equal(cleanSummary.autoHallucinationCount, 0);
+  assert.equal(cleanSummary.readyForPhase2, false);
+
+  // Case 2: Message with 1 verified citation + 1 rejected citation + UNSUPPORTED_NUMERIC_CLAIM
+  // => G1 MUST drop to 2/3 (0.6667) instead of fake 100%, and G3 MUST drop to 0.5!
+  await mockPrisma.chatMessage.create({
+    data: {
+      sessionId: session.id,
+      role: 'assistant',
+      content: 'Doanh thu dat 99,999 ty [C1] [C99 UNVERIFIED_CLAIM].',
+      type: 'research_chat_v2',
+      metadata: {
+        mode: 'RESEARCH_CHAT_V2',
+        primary_ticker: 'FPT',
+        as_of_date: '2026-06-30',
+        citations: [{ citation_id: 'C1', verified: true, published_date: '2026-04-10' }],
+        rejected_citations: [
+          { citation_id: 'C99', verified: false, rejection_reason: 'Hallucinated citation ID' },
+        ],
+        declared_blindspots: [
+          { code: 'HALLUCINATED_CITATION_ID', reason: 'C99 not found', scope: 'C99' },
+          { code: 'UNSUPPORTED_NUMERIC_CLAIM', reason: '99,999 ty unsupported', scope: 'numeric_audit' },
+        ],
+        telemetry: {
+          rejected_citations_count: 1,
+          hallucinated_citation_ids_count: 1,
+          unsupported_numeric_claims_count: 1,
+        },
+      },
+    },
+  });
+
+  const penalizedSummary = await service.getEvalSummary('user-1');
+  assert.equal(penalizedSummary.gates.g1CitationVerifiedRate, 0.6667);
+  assert.equal(penalizedSummary.gates.g3AbstentionComplianceRate, 0.5);
+  assert.equal(penalizedSummary.autoHallucinationCount, 1);
+  assert.equal(penalizedSummary.readyForPhase2, false);
+});
+
+test('GET /research-chat/tickers route exists and proxies org-scoped ingested tickers', async () => {
+  const tickersRoute = aiRouter.stack.find(
+    (l) => l.route?.path === '/research-chat/tickers' && l.route.methods.get,
+  )?.route;
+  assert.ok(tickersRoute);
+
+  let capturedUrl = null;
+  let capturedHeaders = null;
+  const service = new SagResearchChatService({
+    prismaClient: mockPrisma,
+    sagApiUrl: 'http://sag-api:8000',
+    sagBffServiceToken: 'secret-token',
+    fetchImpl: async (url, init) => {
+      capturedUrl = url;
+      capturedHeaders = init.headers;
+      return new Response(
+        JSON.stringify({
+          organization_id: 'aiinvest-default',
+          tickers: ['CTG', 'DCM', 'FPT', 'HPG', 'MWG', 'NT2', 'PVT', 'VCI'],
+          pilot_fallback: ['CTG', 'DCM', 'FPT', 'HPG', 'MWG', 'NT2', 'PVT', 'VCI'],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    },
+  });
+
+  const res = await service.getIngestedTickers('user-1');
+  assert.equal(capturedUrl, 'http://sag-api:8000/api/v1/research-chat/tickers');
+  assert.equal(capturedHeaders['X-SAG-BFF-Service-Token'], 'secret-token');
+  assert.equal(capturedHeaders['X-Continuum-Organization-Id'], 'aiinvest-default');
+  assert.deepEqual(res.tickers, ['CTG', 'DCM', 'FPT', 'HPG', 'MWG', 'NT2', 'PVT', 'VCI']);
 });

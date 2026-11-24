@@ -43,6 +43,7 @@ interface ChatColumnProps {
   onPrimaryTickerChange: (ticker: string) => void
   compareTickers: string[]
   onCompareTickersChange: (tickers: string[]) => void
+  availableTickers?: readonly string[]
   enableKg: boolean
   onEnableKgChange: (enabled: boolean) => void
   asOfDate: string
@@ -225,6 +226,7 @@ export function ChatColumn({
   onPrimaryTickerChange,
   compareTickers,
   onCompareTickersChange,
+  availableTickers,
   enableKg,
   onEnableKgChange,
   asOfDate,
@@ -584,7 +586,7 @@ export function ChatColumn({
                 </button>
               </div>
               <div className="flex flex-wrap items-center gap-1.5">
-                {PILOT_TICKERS.map((sym) => {
+                {(availableTickers && availableTickers.length > 0 ? availableTickers : PILOT_TICKERS).map((sym) => {
                   const isAttached = taggedTickers.includes(sym)
                   return (
                     <button

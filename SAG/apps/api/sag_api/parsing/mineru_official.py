@@ -44,6 +44,57 @@ _QUEUE_STATES = {"waiting-file", "pending", "queued"}
 _RUNNING_STATES = {"running", "processing", "converting"}
 _PENDING_STATES = _QUEUE_STATES | _RUNNING_STATES
 
+MINERU_VALID_LANGUAGES: frozenset[str] = frozenset(
+    {
+        "ch",
+        "en",
+        "korean",
+        "japan",
+        "chinese_cht",
+        "ta",
+        "te",
+        "ka",
+        "latin",
+        "arabic",
+        "cyrillic",
+        "devanagari",
+        "th",
+        "el",
+        "east_slavic",
+    }
+)
+
+_MINERU_LANGUAGE_ALIASES: dict[str, str] = {
+    # MinerU official OCR packs group Vietnamese under the extended Latin script pack (`latin`).
+    "vi": "latin",
+    "vie": "latin",
+    "vn": "latin",
+    "vietnamese": "latin",
+    "zh": "ch",
+    "zh-cn": "ch",
+    "zh_cn": "ch",
+    "cn": "ch",
+    "zh-tw": "chinese_cht",
+    "zh_tw": "chinese_cht",
+    "zh-hk": "chinese_cht",
+    "ja": "japan",
+    "jp": "japan",
+    "ko": "korean",
+    "kr": "korean",
+}
+
+
+def normalize_mineru_language(raw: str | None, *, default: str = "latin") -> str:
+    """Map application language codes (`vi`, `zh`, ...) to canonical MinerU Official API v4 packs."""
+    cleaned = (raw or "").strip().lower()
+    if not cleaned:
+        return default
+    if cleaned in _MINERU_LANGUAGE_ALIASES:
+        return _MINERU_LANGUAGE_ALIASES[cleaned]
+    if cleaned in MINERU_VALID_LANGUAGES:
+        return cleaned
+    return default
+
 
 def _official_pending_status(raw_state: str) -> str:
     return "queued" if raw_state in _QUEUE_STATES else "running"
@@ -52,7 +103,7 @@ def _official_pending_status(raw_state: str) -> str:
 class OfficialMinerUClient:
     """Exclusive MinerU Official API v4 client authenticated via `SAG_MINERU_OFFICIAL_API_TOKEN`."""
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, *, language: str | None = None):
         if not settings.mineru_configured:
             raise ConfigurationError(
                 "MinerU Official API 尚未配置 Base URL 与 SAG_MINERU_OFFICIAL_API_TOKEN"
@@ -62,7 +113,8 @@ class OfficialMinerUClient:
         self._api_token = str(settings.mineru_official_api_token).strip()
         self._official_model = settings.mineru_official_model
         self._parse_method = settings.mineru_parse_method
-        self._language = str(getattr(settings, "sag_language", "en") or "en").strip().lower() or "en"
+        raw_lang = language if language is not None else getattr(settings, "sag_language", "vi")
+        self._language = normalize_mineru_language(str(raw_lang or ""), default="latin")
         self._request_timeout = max(1.0, float(settings.mineru_request_timeout))
         self._poll_interval = max(0.05, float(settings.mineru_poll_interval))
         self._poll_timeout = max(self._poll_interval, float(settings.mineru_poll_timeout))
@@ -194,6 +246,7 @@ class OfficialMinerUClient:
             "url": remote_url,
             "model_version": self._official_model,
             "language": self._language,
+            "enable_table": True,
         }
         if self._parse_method == "txt":
             payload["is_ocr"] = False
@@ -258,6 +311,7 @@ class OfficialMinerUClient:
                 "files": [file_config],
                 "model_version": self._official_model,
                 "language": self._language,
+                "enable_table": True,
             },
         )
         data = _official_data(response, "申请上传地址")

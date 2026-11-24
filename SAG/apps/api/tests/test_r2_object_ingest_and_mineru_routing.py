@@ -60,6 +60,7 @@ def _make_settings(**overrides) -> Settings:
         "mineru_base_url": "https://mineru.net",
         "mineru_official_api_token": "official-mineru-v4-test-token",
         "mineru_official_model": "vlm",
+        "sag_language": "en",
         "mineru_poll_interval": 0.05,
         "mineru_poll_timeout": 5.0,
     }

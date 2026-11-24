@@ -147,6 +147,8 @@ def build_search_filter(
     as_of_ts: int | None = None,
     sub_doc_slots: list[str] | None = None,
     doc_types: list[str] | None = None,
+    fiscal_years: list[int] | None = None,
+    fiscal_quarters: list[int] | None = None,
     tree_version: str | None = None,
     routing_slot: str | None = None,
     membership_node_ids: list[str] | None = None,
@@ -182,6 +184,14 @@ def build_search_filter(
         dtypes = sorted({d.strip() for d in doc_types if isinstance(d, str) and d.strip()})
         if dtypes:
             filter_body["must"].append({"key": "doc_type", "match": {"any": dtypes}})
+    if fiscal_years:
+        fys = sorted({int(y) for y in fiscal_years if y is not None})
+        if fys:
+            filter_body["must"].append({"key": "fiscal_year", "match": {"any": fys}})
+    if fiscal_quarters:
+        fqs = sorted({int(q) for q in fiscal_quarters if q is not None})
+        if fqs:
+            filter_body["must"].append({"key": "fiscal_quarter", "match": {"any": fqs}})
     has_tree_scope = tree_version is not None or routing_slot is not None or membership_node_ids is not None
     if has_tree_scope:
         nodes = sorted({node.strip() for node in membership_node_ids or [] if node.strip()})
@@ -194,6 +204,117 @@ def build_search_filter(
             {"key": f"secondary_node_ids_{slot}", "match": {"any": nodes}},
         ]
     return filter_body
+
+
+def _norm_project_id(raw: str) -> str:
+    s = raw.strip()
+    if len(s) == 3 and s.isascii() and s.isalpha():
+        return s.upper()
+    return s
+
+
+def build_cross_ref_search_filter(
+    *,
+    tenant_id: str,
+    mentioned_tickers: list[str],
+    exclude_project_ids: list[str],
+    allowed_project_ids: list[str] | set[str] | frozenset[str] | None = None,
+    allowed_document_version_ids: list[str] | None = None,
+    as_of_ts: int | None = None,
+) -> dict[str, Any]:
+    """Build tenant-scoped, PIT-filtered CROSS-REF filter.
+
+    Enforces `mentioned_tickers CONTAINS target` and `project_id != target`.
+    """
+    clean_tenant = (tenant_id or "").strip()
+    targets = sorted({t.strip().upper() for t in mentioned_tickers if isinstance(t, str) and t.strip()})
+    excludes = sorted({_norm_project_id(p) for p in exclude_project_ids if isinstance(p, str) and p.strip()})
+    exclude_lookup = {e.lower() for e in excludes}
+    if not clean_tenant or not targets:
+        raise ValueError("A valid tenant_id and at least one mentioned_ticker are required")
+
+    must_clauses: list[dict[str, Any]] = [
+        {"key": "tenant_id", "match": {"value": clean_tenant}},
+        {"key": "mentioned_tickers", "match": {"any": targets}},
+    ]
+    if allowed_project_ids is not None and "*" not in allowed_project_ids:
+        allowed_clean = sorted(
+            {
+                _norm_project_id(p)
+                for p in allowed_project_ids
+                if isinstance(p, str) and p.strip() and _norm_project_id(p).lower() not in exclude_lookup
+            }
+        )
+        if not allowed_clean:
+            raise ValueError("No authorized projects remain for cross-ref search after exclusions")
+        must_clauses.append({"key": "project_id", "match": {"any": allowed_clean}})
+    if allowed_document_version_ids is not None:
+        vers = sorted({v.strip() for v in allowed_document_version_ids if isinstance(v, str) and v.strip()})
+        if not vers:
+            raise ValueError("No active document versions available for cross-ref search")
+        must_clauses.append({"key": "document_version_id", "match": {"any": vers}})
+    if as_of_ts is not None:
+        ts_int = int(as_of_ts)
+        must_clauses.append({"key": "valid_from_ts", "range": {"lte": ts_int}})
+        must_clauses.append(
+            {
+                "should": [
+                    {"is_empty": {"key": "valid_to_ts"}},
+                    {"key": "valid_to_ts", "range": {"gt": ts_int}},
+                ]
+            }
+        )
+
+    filter_body: dict[str, Any] = {"must": must_clauses}
+    if excludes:
+        filter_body["must_not"] = [{"key": "project_id", "match": {"any": excludes}}]
+    return filter_body
+
+
+def build_universe_search_filter(
+    *,
+    tenant_id: str,
+    allowed_project_ids: list[str] | set[str] | frozenset[str] | None = None,
+    allowed_document_version_ids: list[str] | None = None,
+    as_of_ts: int | None = None,
+    sub_doc_slots: list[str] | None = None,
+) -> dict[str, Any]:
+    """Build strictly tenant-scoped, PIT-filtered Open Universe filter across the shared Qdrant chamber."""
+    clean_tenant = (tenant_id or "").strip()
+    if not clean_tenant:
+        raise ValueError("A valid tenant_id is required for universe search")
+
+    must_clauses: list[dict[str, Any]] = [
+        {"key": "tenant_id", "match": {"value": clean_tenant}},
+    ]
+    if allowed_project_ids is not None and "*" not in allowed_project_ids:
+        allowed_clean = sorted(
+            {_norm_project_id(p) for p in allowed_project_ids if isinstance(p, str) and p.strip()}
+        )
+        if not allowed_clean:
+            raise ValueError("No authorized projects available for universe search")
+        must_clauses.append({"key": "project_id", "match": {"any": allowed_clean}})
+    if allowed_document_version_ids is not None:
+        vers = sorted({v.strip() for v in allowed_document_version_ids if isinstance(v, str) and v.strip()})
+        if not vers:
+            raise ValueError("No active document versions available for universe search")
+        must_clauses.append({"key": "document_version_id", "match": {"any": vers}})
+    if as_of_ts is not None:
+        ts_int = int(as_of_ts)
+        must_clauses.append({"key": "valid_from_ts", "range": {"lte": ts_int}})
+        must_clauses.append(
+            {
+                "should": [
+                    {"is_empty": {"key": "valid_to_ts"}},
+                    {"key": "valid_to_ts", "range": {"gt": ts_int}},
+                ]
+            }
+        )
+    if sub_doc_slots:
+        slots = sorted({s.strip() for s in sub_doc_slots if isinstance(s, str) and s.strip()})
+        if slots:
+            must_clauses.append({"key": "sub_doc_slot", "match": {"any": slots}})
+    return {"must": must_clauses}
 
 
 class SearchUnitQdrantStore:
