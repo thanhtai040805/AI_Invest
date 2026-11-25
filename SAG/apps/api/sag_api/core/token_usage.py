@@ -18,6 +18,7 @@ import asyncio
 import contextvars
 import json
 import os
+import random
 import threading
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -29,7 +30,9 @@ from typing import Any
 # Operators can override or extend entries via SAG_TOKEN_PRICING_JSON.
 DEFAULT_MODEL_PRICING_PER_1M_USD: dict[str, dict[str, float]] = {
     "qwen/qwen3-embedding-0.6b": {"embedding_input_per_1m": 0.01},
+    "qwen/qwen3-embedding-0.6b-batch": {"embedding_input_per_1m": 0.005},
     "qwen/qwen3-embedding-4b": {"embedding_input_per_1m": 0.02},
+    "qwen/qwen3-embedding-4b-batch": {"embedding_input_per_1m": 0.01},
     "qwen/qwen3-embedding-8b": {"embedding_input_per_1m": 0.04},
     "baai/bge-m3": {"embedding_input_per_1m": 0.01},
     "baai/bge-large-en-v1.5": {"embedding_input_per_1m": 0.01},
@@ -57,19 +60,34 @@ DEFAULT_MODEL_PRICING_PER_1M_USD: dict[str, dict[str, float]] = {
         "llm_output_per_1m": 0.29,
     },
     "deepseek-ai/deepseek-v4-flash-0731": {
-        "llm_input_per_1m": 0.10,
-        "llm_cached_input_per_1m": 0.025,
-        "llm_output_per_1m": 0.30,
+        "llm_input_per_1m": 0.06,
+        "llm_cached_input_per_1m": 0.015,
+        "llm_output_per_1m": 0.18,
     },
     "deepseek-ai/deepseek-v4-flash": {
-        "llm_input_per_1m": 0.10,
-        "llm_cached_input_per_1m": 0.025,
-        "llm_output_per_1m": 0.30,
+        "llm_input_per_1m": 0.072,
+        "llm_cached_input_per_1m": 0.0144,
+        "llm_output_per_1m": 0.144,
+    },
+    "zai-org/glm-4.7-flash": {
+        "llm_input_per_1m": 0.048,
+        "llm_cached_input_per_1m": 0.00816,
+        "llm_output_per_1m": 0.32,
+    },
+    "nvidia/nvidia-nemotron-3.5-lightning": {
+        "llm_input_per_1m": 0.06,
+        "llm_cached_input_per_1m": 0.03,
+        "llm_output_per_1m": 0.16,
+    },
+    "inclusionai/ling-3.0-flash-fin": {
+        "llm_input_per_1m": 0.06,
+        "llm_cached_input_per_1m": 0.012,
+        "llm_output_per_1m": 0.18,
     },
     "deepseek-ai/deepseek-v3.2": {
-        "llm_input_per_1m": 0.27,
-        "llm_cached_input_per_1m": 0.07,
-        "llm_output_per_1m": 0.42,
+        "llm_input_per_1m": 0.26,
+        "llm_cached_input_per_1m": 0.13,
+        "llm_output_per_1m": 0.38,
     },
     "deepseek-ai/deepseek-v3": {
         "llm_input_per_1m": 0.27,
@@ -599,12 +617,45 @@ def wrap_embedding_client_with_cache_and_metering(emb: Any, *, default_model: st
     emb._sag_orig_generate = orig_generate
     emb._sag_orig_batch_generate = orig_batch_generate
 
+    def _is_retryable_embedding_error(err: Exception) -> bool:
+        name = type(err).__name__
+        status = getattr(err, "status_code", None)
+        if status is None:
+            resp = getattr(err, "response", None)
+            status = getattr(resp, "status_code", None)
+        msg = str(err).casefold()
+        return (
+            status in {408, 429, 500, 502, 503, 504}
+            or name in {
+                "RateLimitError",
+                "ServiceUnavailableError",
+                "APIConnectionError",
+                "APITimeoutError",
+                "ReadTimeout",
+                "ConnectTimeout",
+            }
+            or "model busy" in msg
+            or "rate limit" in msg
+            or "429" in msg
+        )
+
+    async def _call_with_jitter_backoff(fn, *args):
+        max_retries = 3
+        for attempt in range(max_retries + 1):
+            try:
+                return await fn(*args)
+            except Exception as err:
+                if attempt >= max_retries or not _is_retryable_embedding_error(err):
+                    raise
+                cap = min(6.0, 0.5 * (2 ** attempt))
+                await asyncio.sleep(random.uniform(cap * 0.4, cap))
+
     async def _cached_generate(text: str) -> list[float]:
         cached = get_cached_text_embedding(text)
         if cached is not None:
             record_embedding_cache_hit(model=emb_model, count=1)
             return cached
-        vec = await orig_generate(text)
+        vec = await _call_with_jitter_backoff(orig_generate, text)
         if raw_client is None:
             record_embedding_usage(
                 model=emb_model,
@@ -633,7 +684,7 @@ def wrap_embedding_client_with_cache_and_metering(emb: Any, *, default_model: st
             unique_missing = list(missing_by_text.keys())
             max_batch = 64
             if len(unique_missing) <= max_batch:
-                fetched = await orig_batch_generate(unique_missing)
+                fetched = await _call_with_jitter_backoff(orig_batch_generate, unique_missing)
             else:
                 chunks = [
                     unique_missing[i : i + max_batch]
@@ -643,7 +694,7 @@ def wrap_embedding_client_with_cache_and_metering(emb: Any, *, default_model: st
 
                 async def _run_chunk(batch_texts: list[str]) -> list[list[float]]:
                     async with sem:
-                        return await orig_batch_generate(batch_texts)
+                        return await _call_with_jitter_backoff(orig_batch_generate, batch_texts)
 
                 chunk_results = await asyncio.gather(*(_run_chunk(c) for c in chunks))
                 fetched = [vec for part in chunk_results for vec in part]

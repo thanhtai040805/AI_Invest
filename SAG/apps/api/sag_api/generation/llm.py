@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import random
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -95,15 +96,38 @@ def _classify_llm_error(e: Exception, *, stage: ErrorStage) -> ApiError:
 
 
 _DEEPINFRA_BUSY_FALLBACK_CHAIN: dict[str, tuple[str, ...]] = {
+    "deepseek-ai/deepseek-v4-flash": (
+        "zai-org/GLM-4.7-Flash",
+        "nvidia/NVIDIA-Nemotron-3.5-Lightning",
+        "inclusionAI/Ling-3.0-flash-Fin",
+    ),
     "deepseek-ai/deepseek-v4-flash-0731": (
-        "deepseek-ai/DeepSeek-V3.2",
-        "Qwen/Qwen3-235B-A22B-Instruct-2507",
+        "deepseek-ai/DeepSeek-V4-Flash",
+        "zai-org/GLM-4.7-Flash",
+        "nvidia/NVIDIA-Nemotron-3.5-Lightning",
+        "inclusionAI/Ling-3.0-flash-Fin",
     ),
     "deepseek-ai/deepseek-v4-pro-0731": (
-        "deepseek-ai/DeepSeek-V3.2",
-        "Qwen/Qwen3-235B-A22B-Instruct-2507",
+        "deepseek-ai/DeepSeek-V4-Flash",
+        "zai-org/GLM-4.7-Flash",
+        "nvidia/NVIDIA-Nemotron-3.5-Lightning",
+    ),
+    "zai-org/glm-4.7-flash": (
+        "deepseek-ai/DeepSeek-V4-Flash",
+        "nvidia/NVIDIA-Nemotron-3.5-Lightning",
+        "inclusionAI/Ling-3.0-flash-Fin",
     ),
 }
+
+_BUSY_BACKOFF_BASE_SECONDS = 0.4
+_BUSY_BACKOFF_MAX_SECONDS = 3.0
+_BUSY_PRIMARY_JITTER_RETRIES = 2
+
+
+def _busy_backoff_delay(attempt: int) -> float:
+    """Full-jitter exponential backoff per DeepInfra shared-capacity guidance."""
+    cap = min(_BUSY_BACKOFF_MAX_SECONDS, _BUSY_BACKOFF_BASE_SECONDS * (2 ** max(0, attempt)))
+    return random.uniform(cap * 0.4, cap)
 
 
 def _fallback_models_for_busy_error(model: str, base_url: str | None) -> tuple[str, ...]:
@@ -206,6 +230,74 @@ class LLMClient:
                 return await _litellm_completion(**plain_req)
             raise
 
+    async def _create_completion_with_failover(
+        self,
+        messages: list[Message],
+        *,
+        stream: bool = False,
+        tools: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
+        response_format: dict[str, Any] | None = None,
+        model_override: str | None = None,
+    ) -> tuple[Any, str]:
+        """Execute completion with jittered backoff on transient 429/503, then low-cost DeepInfra failover."""
+        primary_label = (model_override or self._settings.llm_model).strip()
+        last_err: Exception | None = None
+
+        for attempt in range(_BUSY_PRIMARY_JITTER_RETRIES + 1):
+            try:
+                res = await self._create_completion(
+                    messages,
+                    stream=stream,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    response_format=response_format,
+                    model_override=model_override,
+                )
+                return res, primary_label
+            except Exception as err:  # noqa: BLE001
+                last_err = err
+                if not _is_busy_rate_limit_error(err):
+                    raise
+                if attempt < _BUSY_PRIMARY_JITTER_RETRIES:
+                    delay = _busy_backoff_delay(attempt)
+                    log.warning(
+                        "Primary LLM %s busy (%s); backoff+jitter retry %d/%d in %.2fs",
+                        primary_label,
+                        type(err).__name__,
+                        attempt + 1,
+                        _BUSY_PRIMARY_JITTER_RETRIES,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+
+        assert last_err is not None
+        route_key = model_override or self._settings.routed_llm_model
+        fallbacks = _fallback_models_for_busy_error(route_key, self._settings.llm_base_url)
+        for fb_model in fallbacks:
+            log.warning(
+                "Primary LLM %s still busy (%s); failing over to %s",
+                primary_label,
+                type(last_err).__name__,
+                fb_model,
+            )
+            try:
+                res = await self._create_completion(
+                    messages,
+                    stream=stream,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    response_format=response_format,
+                    model_override=fb_model,
+                )
+                return res, fb_model
+            except Exception as fb_err:  # noqa: BLE001
+                last_err = fb_err
+                if _is_busy_rate_limit_error(fb_err):
+                    await asyncio.sleep(_busy_backoff_delay(0))
+                continue
+        raise last_err
+
     @staticmethod
     async def _close_stream(stream: Any) -> None:
         close = getattr(stream, "close", None) or getattr(stream, "aclose", None)
@@ -235,44 +327,17 @@ class LLMClient:
         usage_recorded = False
         pending_tool_notified = False
         stream = None
+        active_model = self._settings.llm_model
         try:
-            stream = await self._create_completion(
+            stream, active_model = await self._create_completion_with_failover(
                 serialized_messages,
                 tools=list(request.tools) or None,
                 tool_choice=request.tool_choice if request.tools else None,
                 stream=True,
             )
         except Exception as first_err:  # noqa: BLE001
-            if _is_busy_rate_limit_error(first_err):
-                fallbacks = _fallback_models_for_busy_error(
-                    self._settings.routed_llm_model,
-                    self._settings.llm_base_url,
-                )
-                recovered = False
-                for fb_model in fallbacks:
-                    log.warning(
-                        "Primary LLM busy (%s); failing over streaming turn to %s",
-                        type(first_err).__name__,
-                        fb_model,
-                    )
-                    try:
-                        stream = await self._create_completion(
-                            serialized_messages,
-                            tools=list(request.tools) or None,
-                            tool_choice=request.tool_choice if request.tools else None,
-                            stream=True,
-                            model_override=fb_model,
-                        )
-                        recovered = True
-                        break
-                    except Exception:  # noqa: BLE001
-                        continue
-                if not recovered:
-                    log.warning("LLM 轮次流式调用失败：%s", first_err)
-                    raise _classify_llm_error(first_err, stage=ErrorStage.GENERATE) from first_err
-            else:
-                log.warning("LLM 轮次流式调用失败：%s", first_err)
-                raise _classify_llm_error(first_err, stage=ErrorStage.GENERATE) from first_err
+            log.warning("LLM 轮次流式调用失败：%s", first_err)
+            raise _classify_llm_error(first_err, stage=ErrorStage.GENERATE) from first_err
         try:
             async for chunk in stream:
                 cancellation.raise_if_cancelled()
@@ -339,7 +404,7 @@ class LLMClient:
                     p.get("name", "") + p.get("arguments", "") for p in tool_parts.values()
                 )
                 record_llm_usage(
-                    model=self._settings.llm_model,
+                    model=active_model,
                     usage=extract_chat_usage(latest_raw_usage, serialized_messages, tool_completion_text),
                     component="agent_turn",
                 )
@@ -381,7 +446,7 @@ class LLMClient:
                     p.get("name", "") + p.get("arguments", "") for p in tool_parts.values()
                 )
                 record_llm_usage(
-                    model=self._settings.llm_model,
+                    model=active_model,
                     usage=extract_chat_usage(latest_raw_usage, serialized_messages, tool_completion_text),
                     component="agent_turn",
                 )
@@ -401,7 +466,7 @@ class LLMClient:
     ) -> str:
         self._ensure_configured()
         try:
-            resp = await self._create_completion(
+            resp, active_model = await self._create_completion_with_failover(
                 messages,
                 response_format=response_format,
                 model_override=model_override,
@@ -416,7 +481,7 @@ class LLMClient:
                 )
             content = _attr(_attr(choices[0], "message", {}), "content", "") or ""
             record_llm_usage(
-                model=(model_override or self._settings.llm_model),
+                model=active_model,
                 usage=extract_chat_usage(_attr(resp, "usage"), messages, content),
             )
             return content
@@ -430,11 +495,12 @@ class LLMClient:
 
         self._ensure_configured()
         stream = None
+        active_model = self._settings.llm_model
         latest_raw_usage: Any = None
         collected_parts: list[str] = []
         usage_recorded = False
         try:
-            stream = await self._create_completion(messages, stream=True)
+            stream, active_model = await self._create_completion_with_failover(messages, stream=True)
             async for chunk in stream:
                 raw_usage = _attr(chunk, "usage")
                 if raw_usage is not None:
@@ -448,7 +514,7 @@ class LLMClient:
                     yield token
             if latest_raw_usage is not None or collected_parts:
                 record_llm_usage(
-                    model=self._settings.llm_model,
+                    model=active_model,
                     usage=extract_chat_usage(latest_raw_usage, messages, "".join(collected_parts)),
                 )
                 usage_recorded = True
@@ -459,7 +525,7 @@ class LLMClient:
         finally:
             if not usage_recorded and (latest_raw_usage is not None or collected_parts):
                 record_llm_usage(
-                    model=self._settings.llm_model,
+                    model=active_model,
                     usage=extract_chat_usage(latest_raw_usage, messages, "".join(collected_parts)),
                 )
                 usage_recorded = True

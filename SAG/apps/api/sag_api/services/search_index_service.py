@@ -16,12 +16,17 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import math
+import os
 import re
+import sqlite3
+import threading
 import unicodedata
 import uuid
+from array import array
 from collections import Counter
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from weakref import WeakKeyDictionary
 
@@ -43,9 +48,74 @@ from sag_api.db.models.routing_rag import (
 
 log = get_logger("sag.search_index")
 
-# Bounded LRU cache mapping sha256([model_signature + NUL +] text) -> dense vector
+# Bounded L1 RAM cache + persistent L2 SQLite WAL cache mapping sha256(model_sig + NUL + text) -> dense vector
 _SHARED_TEXT_EMBEDDING_CACHE: dict[str, list[float]] = {}
-_SHARED_TEXT_EMBEDDING_CACHE_MAX = 16384
+_SHARED_TEXT_EMBEDDING_CACHE_MAX = 32768
+_DISK_EMBEDDING_CACHE_LOCK = threading.Lock()
+_DISK_EMBEDDING_CACHE_CONN: sqlite3.Connection | None = None
+_DISK_EMBEDDING_CACHE_PATH: str | None = None
+
+
+def _canonical_embedding_family(model: str) -> str:
+    clean = (model or "").strip().casefold()
+    if clean.endswith("-batch"):
+        clean = clean[: -len("-batch")]
+    return clean
+
+
+def _active_embedding_cache_signature(model_signature: str = "") -> str:
+    sig = model_signature.strip()
+    if sig:
+        return _canonical_embedding_family(sig)
+    model = _canonical_embedding_family(getattr(settings, "embedding_model", "") or "")
+    dims = int(getattr(settings, "embedding_dimensions", 1024) or 1024)
+    return f"{model}:{dims}" if model else ""
+
+
+def _resolve_disk_cache_path(explicit_path: str | Path | None = None) -> Path | None:
+    if explicit_path is not None:
+        return Path(explicit_path)
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return None
+    if os.environ.get("SAG_EMBEDDING_DISK_CACHE_ENABLED", "true").strip().lower() in {"0", "false", "no", "off"}:
+        return None
+    data_dir = (getattr(settings, "data_dir", None) or "./.data/engine").strip()
+    return Path(data_dir) / "embedding_cache.sqlite3"
+
+
+def _get_disk_cache_conn(explicit_path: str | Path | None = None) -> sqlite3.Connection | None:
+    global _DISK_EMBEDDING_CACHE_CONN, _DISK_EMBEDDING_CACHE_PATH
+    path = _resolve_disk_cache_path(explicit_path)
+    if path is None:
+        return None
+    path_str = str(path.resolve())
+    with _DISK_EMBEDDING_CACHE_LOCK:
+        if _DISK_EMBEDDING_CACHE_CONN is not None and _DISK_EMBEDDING_CACHE_PATH == path_str:
+            return _DISK_EMBEDDING_CACHE_CONN
+        if _DISK_EMBEDDING_CACHE_CONN is not None:
+            try:
+                _DISK_EMBEDDING_CACHE_CONN.close()
+            except Exception:
+                pass
+            _DISK_EMBEDDING_CACHE_CONN = None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(path_str, timeout=15.0, check_same_thread=False)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS text_embedding_cache ("
+                "cache_key TEXT PRIMARY KEY, "
+                "dim INTEGER NOT NULL, "
+                "vec BLOB NOT NULL)"
+            )
+            conn.commit()
+            _DISK_EMBEDDING_CACHE_CONN = conn
+            _DISK_EMBEDDING_CACHE_PATH = path_str
+            return conn
+        except Exception as exc:
+            log.debug("Persistent embedding disk cache unavailable (%s)", type(exc).__name__)
+            return None
 
 
 def contextualize_block_text(section_path: str | None, text: str) -> str:
@@ -58,15 +128,45 @@ def contextualize_block_text(section_path: str | None, text: str) -> str:
 
 
 def _embedding_cache_key(text: str, model_signature: str = "") -> str:
-    sig = model_signature.strip()
+    sig = _active_embedding_cache_signature(model_signature)
     payload = f"{sig}\x00{text}" if sig else text
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def get_cached_text_embedding(text: str, *, model_signature: str = "") -> list[float] | None:
+def get_cached_text_embedding(
+    text: str,
+    *,
+    model_signature: str = "",
+    disk_cache_path: str | Path | None = None,
+) -> list[float] | None:
     key = _embedding_cache_key(text, model_signature)
     vec = _SHARED_TEXT_EMBEDDING_CACHE.get(key)
-    return list(vec) if vec is not None else None
+    if vec is not None:
+        return list(vec)
+    conn = _get_disk_cache_conn(disk_cache_path)
+    if conn is None:
+        return None
+    try:
+        with _DISK_EMBEDDING_CACHE_LOCK:
+            row = conn.execute(
+                "SELECT dim, vec FROM text_embedding_cache WHERE cache_key = ?",
+                (key,),
+            ).fetchone()
+        if not row:
+            return None
+        dim, blob = int(row[0]), row[1]
+        arr = array("f")
+        arr.frombytes(blob)
+        if len(arr) != dim or dim <= 0:
+            return None
+        loaded = [float(x) for x in arr]
+        if len(_SHARED_TEXT_EMBEDDING_CACHE) >= _SHARED_TEXT_EMBEDDING_CACHE_MAX:
+            oldest_key = next(iter(_SHARED_TEXT_EMBEDDING_CACHE))
+            _SHARED_TEXT_EMBEDDING_CACHE.pop(oldest_key, None)
+        _SHARED_TEXT_EMBEDDING_CACHE[key] = loaded
+        return list(loaded)
+    except Exception:
+        return None
 
 
 def put_cached_text_embedding(
@@ -74,15 +174,61 @@ def put_cached_text_embedding(
     vector: Sequence[float],
     *,
     model_signature: str = "",
+    disk_cache_path: str | Path | None = None,
 ) -> None:
+    if not vector:
+        return
     key = _embedding_cache_key(text, model_signature)
+    vec_f = [float(x) for x in vector]
     if (
         len(_SHARED_TEXT_EMBEDDING_CACHE) >= _SHARED_TEXT_EMBEDDING_CACHE_MAX
         and key not in _SHARED_TEXT_EMBEDDING_CACHE
     ):
         oldest_key = next(iter(_SHARED_TEXT_EMBEDDING_CACHE))
         _SHARED_TEXT_EMBEDDING_CACHE.pop(oldest_key, None)
-    _SHARED_TEXT_EMBEDDING_CACHE[key] = [float(x) for x in vector]
+    _SHARED_TEXT_EMBEDDING_CACHE[key] = vec_f
+    conn = _get_disk_cache_conn(disk_cache_path)
+    if conn is None:
+        return
+    try:
+        blob = array("f", vec_f).tobytes()
+        with _DISK_EMBEDDING_CACHE_LOCK:
+            conn.execute(
+                "INSERT OR REPLACE INTO text_embedding_cache (cache_key, dim, vec) VALUES (?, ?, ?)",
+                (key, len(vec_f), blob),
+            )
+            conn.commit()
+    except Exception:
+        pass
+
+
+def _filter_covered_raw_table_blocks(blocks: Sequence[CanonicalBlock]) -> list[CanonicalBlock]:
+    """Skip raw `table` blocks ONLY when a verified `table_card` overlaps the same page(s).
+
+    Preserves 100% of uncovered raw tables (zero information loss) while eliminating duplicate
+    raw+table_card indexing and embedding on pages already represented by grouped `table_card`s.
+    """
+    card_ranges: list[tuple[int, int]] = []
+    for blk in blocks:
+        if blk.block_type == "table_card" and (blk.normalized_text or "").strip():
+            pf = int(blk.page_from or 0)
+            pt = int(blk.page_to or pf)
+            if pf > 0:
+                card_ranges.append((min(pf, pt), max(pf, pt)))
+    if not card_ranges:
+        return list(blocks)
+
+    filtered: list[CanonicalBlock] = []
+    for blk in blocks:
+        if blk.block_type == "table":
+            pf = int(blk.page_from or 0)
+            pt = int(blk.page_to or pf)
+            if pf > 0:
+                lo, hi = min(pf, pt), max(pf, pt)
+                if any(cf <= hi and ct >= lo for cf, ct in card_ranges):
+                    continue
+        filtered.append(blk)
+    return filtered
 
 
 
@@ -940,9 +1086,11 @@ async def precompute_canonical_block_embeddings(
     tenant_id: str,
     document_id: str | None = None,
     document_version_id: str | None = None,
+    max_tokens_per_unit: int = 512,
 ) -> tuple[dict[str, list[float]], dict[str, Any]]:
-    """Pre-embed non-heading CanonicalBlocks once (with section_path context) so SearchUnit DP
-    segmentation and KnowledgeWorker both reuse exact dense vectors at zero duplicate AI cost.
+    """Pre-embed DP-eligible CanonicalBlocks once (with full section_path context) so SearchUnit DP
+    segmentation and KnowledgeWorker reuse dense vectors without double-embedding table_cards or
+    oversized blocks that will be split into sub-chunks.
     """
     from sag_api.core.token_usage import (
         TokenLedger,
@@ -950,8 +1098,15 @@ async def precompute_canonical_block_embeddings(
         record_embedding_cache_hit,
         token_usage_scope,
     )
+    from sag_api.parsing.canonical import estimate_unicode_tokens
 
-    non_heading = [b for b in blocks if b.block_type != "heading" and (b.normalized_text or "").strip()]
+    non_heading = [
+        b
+        for b in blocks
+        if b.block_type not in ("heading", "table_card")
+        and (b.normalized_text or "").strip()
+        and estimate_unicode_tokens(b.normalized_text) <= max_tokens_per_unit
+    ]
     if not non_heading or embedder is None:
         return {}, TokenLedger().to_summary()
 
@@ -1424,7 +1579,8 @@ async def run_search_indexing_stage(
     if not tenant_id:
         tenant_id = "tenant_default"
 
-    # 1. Fetch canonical blocks
+    # 1. Fetch canonical blocks and skip ONLY raw `table` blocks already covered on the same
+    # page(s) by verified `table_card` blocks (preserving 100% of uncovered raw tables).
     blocks = (
         await session.execute(
             select(CanonicalBlock)
@@ -1432,17 +1588,18 @@ async def run_search_indexing_stage(
             .order_by(CanonicalBlock.ordinal)
         )
     ).scalars().all()
+    index_blocks = _filter_covered_raw_table_blocks(blocks)
 
-    # 1b. Pre-embed CanonicalBlocks once (when embedder is provided) so SearchUnit DP segmentation
-    # and KnowledgeWorker share 100% of block vectors with zero duplicate AI calls.
+    # 1b. Pre-embed DP-eligible CanonicalBlocks once (when embedder is provided) so SearchUnit DP
+    # segmentation and KnowledgeWorker share block vectors with zero duplicate AI calls.
     block_vectors: dict[str, list[float]] | None = None
     pre_embed_summary: dict[str, Any] | None = None
     indexing_error: str | None = None
     indexing_exception: Exception | None = None
-    if qdrant_client is not None and embedder is not None and blocks:
+    if qdrant_client is not None and embedder is not None and index_blocks:
         try:
             block_vectors, pre_embed_summary = await precompute_canonical_block_embeddings(
-                blocks,
+                index_blocks,
                 embedder=embedder,
                 project_id=project_id,
                 tenant_id=tenant_id,
@@ -1461,7 +1618,7 @@ async def run_search_indexing_stage(
 
     # 2. Build search units with deterministic IDs (using semantic vector DP when block_vectors exist)
     units = build_search_units_from_blocks(
-        blocks,
+        index_blocks,
         document_version_id=document_version.id,
         security_partition_id=security_partition_id,
         block_vectors=block_vectors,

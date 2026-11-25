@@ -17,6 +17,16 @@ from sag_api.core.config import Settings
 
 _COMPLETION_CALL_TYPES = {"completion", "acompletion"}
 _DEEPSEEK_V4_MODELS = {"deepseek-v4-flash", "deepseek-v4-pro"}
+_DEEPINFRA_FLEX_MODELS = {
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-0731",
+    "glm-4.7-flash",
+}
+_DISABLE_THINKING_CHAT_TEMPLATE_PREFIXES = (
+    "glm-4.7-flash",
+    "glm-5.3-flash",
+    "ling-3.0-flash",
+)
 
 
 @dataclass(frozen=True)
@@ -143,6 +153,20 @@ def _is_deepseek_v4(model: str) -> bool:
     )
 
 
+def _is_deepinfra_base_url(base_url: str) -> bool:
+    return "deepinfra" in base_url.casefold()
+
+
+def _supports_deepinfra_flex(model: str) -> bool:
+    model_id = model.rsplit("/", 1)[-1].casefold()
+    return model_id in _DEEPINFRA_FLEX_MODELS
+
+
+def _needs_chat_template_disable_thinking(model: str) -> bool:
+    model_id = model.rsplit("/", 1)[-1].casefold()
+    return any(model_id.startswith(prefix) for prefix in _DISABLE_THINKING_CHAT_TEMPLATE_PREFIXES)
+
+
 def _with_allowed_openai_param(request: dict[str, Any], name: str) -> None:
     configured = request.get("allowed_openai_params")
     if configured is None:
@@ -173,21 +197,33 @@ def apply_litellm_completion_policy(
         normalized["extra_body"] = dict(settings.llm_extra_body)
 
     model = str(normalized.get("model") or settings.routed_llm_model)
+    base_url = str(
+        normalized.get("api_base")
+        or normalized.get("base_url")
+        or settings.llm_base_url
+        or ""
+    ).casefold()
     if _is_deepseek_v4(model):
         extra_body = dict(normalized.get("extra_body") or {})
         extra_body["thinking"] = {"type": "disabled"}
         normalized["extra_body"] = extra_body
 
     thinking = _thinking_override(normalized.get("extra_body"))
+    if thinking is None and _needs_chat_template_disable_thinking(model):
+        extra_body = dict(normalized.get("extra_body") or {})
+        template_kwargs = dict(extra_body.get("chat_template_kwargs") or {})
+        template_kwargs.setdefault("enable_thinking", False)
+        extra_body["chat_template_kwargs"] = template_kwargs
+        normalized["extra_body"] = extra_body
+
+    if _is_deepinfra_base_url(base_url) and _supports_deepinfra_flex(model):
+        extra_body = dict(normalized.get("extra_body") or {})
+        extra_body.setdefault("service_tier", "flex")
+        normalized["extra_body"] = extra_body
+
     if thinking is False or (thinking is None and "qwen" in model.casefold()):
         if "reasoning_effort" not in normalized:
             normalized["reasoning_effort"] = "none"
-        base_url = str(
-            normalized.get("api_base")
-            or normalized.get("base_url")
-            or settings.llm_base_url
-            or ""
-        ).casefold()
         if "qwen" in model.casefold() and "siliconflow" in base_url:
             extra_body = dict(normalized.get("extra_body") or {})
             extra_body.setdefault("enable_thinking", False)

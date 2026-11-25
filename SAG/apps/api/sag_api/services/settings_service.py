@@ -127,8 +127,15 @@ async def _load_row(session: AsyncSession, key: str = _KEY) -> Setting | None:
     return await session.scalar(select(Setting).where(Setting.scope == _SCOPE, Setting.key == key))
 
 
+def _canonical_embedding_family(model: str) -> str:
+    clean = str(model or "").strip().casefold()
+    if clean.endswith("-batch"):
+        clean = clean[: -len("-batch")]
+    return clean
+
+
 def _embedding_identity(settings: Settings, patch: dict) -> tuple[str, int]:
-    model = str(patch.get("embedding_model", settings.embedding_model))
+    model = _canonical_embedding_family(str(patch.get("embedding_model", settings.embedding_model)))
     dimensions = patch.get("embedding_dimensions", settings.embedding_dimensions)
     return model, int(dimensions or 1024)
 
