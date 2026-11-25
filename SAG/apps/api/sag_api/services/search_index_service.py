@@ -2048,11 +2048,59 @@ async def index_table_search_cards_for_version(
 
     max_non_card_ordinal = -1
     old_card_ids: list[str] = []
+    existing_card_fingerprints: set[tuple[str, str]] = set()
     for blk in existing_blocks:
         if blk.block_type == "table_card":
             old_card_ids.append(blk.id)
+            existing_card_fingerprints.add((str(blk.id), str(blk.content_hash or "")))
         else:
             max_non_card_ordinal = max(max_non_card_ordinal, int(blk.ordinal))
+
+    new_cards_spec: list[dict[str, Any]] = []
+    for rec in table_records:
+        rec_dict = rec.to_dict() if hasattr(rec, "to_dict") else dict(rec)
+        grouped_cards = build_grouped_table_search_cards(rec_dict, rows_per_card=rows_per_card)
+        for card in grouped_cards:
+            card_text = str(card.get("card_text") or "").strip()
+            if not card_text:
+                continue
+            tid = str(card["table_id"])
+            cidx = int(card.get("card_idx") or 0)
+            c_hash = hashlib.sha256(card_text.encode("utf-8")).hexdigest()
+            blk_id = str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"table_card:{document_version_id}:{tid}:{cidx}",
+                )
+            )
+            sec_path = str(card.get("section_path") or rec_dict.get("sub_doc_slot") or "table_card")[:512]
+            new_cards_spec.append(
+                {
+                    "id": blk_id,
+                    "section_path": sec_path,
+                    "page_from": int(card.get("page_from") or 1),
+                    "page_to": int(card.get("page_to") or card.get("page_from") or 1),
+                    "source_anchor": f"table_card:{tid}:{cidx}",
+                    "normalized_text": card_text,
+                    "content_hash": c_hash,
+                    "dedup_signature_json": {
+                        "table_id": tid,
+                        "card_idx": cidx,
+                        "sub_doc_slot": str(card.get("sub_doc_slot") or ""),
+                        "verification_status": str(rec_dict.get("verification_status") or "VERIFIED"),
+                    },
+                }
+            )
+
+    new_card_fingerprints = {(spec["id"], spec["content_hash"]) for spec in new_cards_spec}
+    if (
+        new_card_fingerprints
+        and existing_card_fingerprints == new_card_fingerprints
+        and getattr(version, "search_status", None) == "SEARCH_READY"
+    ):
+        # Strictly idempotent: identical table_cards already indexed and SEARCH_READY -> skip reprocess
+        return 0
+
     if old_card_ids:
         # Delete dependent SearchUnits first because SearchUnit FKs to CanonicalBlock do not cascade
         await session.execute(
@@ -2071,45 +2119,24 @@ async def index_table_search_cards_for_version(
 
     cards_added = 0
     next_ordinal = (max_non_card_ordinal + 1) if max_non_card_ordinal >= 0 else 100_000
-    for rec in table_records:
-        rec_dict = rec.to_dict() if hasattr(rec, "to_dict") else dict(rec)
-        grouped_cards = build_grouped_table_search_cards(rec_dict, rows_per_card=rows_per_card)
-        for card in grouped_cards:
-            card_text = str(card.get("card_text") or "").strip()
-            if not card_text:
-                continue
-            tid = str(card["table_id"])
-            cidx = int(card.get("card_idx") or 0)
-            c_hash = hashlib.sha256(card_text.encode("utf-8")).hexdigest()
-            blk_id = str(
-                uuid.uuid5(
-                    uuid.NAMESPACE_URL,
-                    f"table_card:{document_version_id}:{tid}:{cidx}",
-                )
+    for spec in new_cards_spec:
+        session.add(
+            CanonicalBlock(
+                id=spec["id"],
+                document_version_id=document_version_id,
+                ordinal=next_ordinal,
+                block_type="table_card",
+                section_path=spec["section_path"],
+                page_from=spec["page_from"],
+                page_to=spec["page_to"],
+                source_anchor=spec["source_anchor"],
+                normalized_text=spec["normalized_text"],
+                content_hash=spec["content_hash"],
+                dedup_signature_json=spec["dedup_signature_json"],
             )
-            sec_path = str(card.get("section_path") or rec_dict.get("sub_doc_slot") or "table_card")[:512]
-            session.add(
-                CanonicalBlock(
-                    id=blk_id,
-                    document_version_id=document_version_id,
-                    ordinal=next_ordinal,
-                    block_type="table_card",
-                    section_path=sec_path,
-                    page_from=int(card.get("page_from") or 1),
-                    page_to=int(card.get("page_to") or card.get("page_from") or 1),
-                    source_anchor=f"table_card:{tid}:{cidx}",
-                    normalized_text=card_text,
-                    content_hash=c_hash,
-                    dedup_signature_json={
-                        "table_id": tid,
-                        "card_idx": cidx,
-                        "sub_doc_slot": str(card.get("sub_doc_slot") or ""),
-                        "verification_status": str(rec_dict.get("verification_status") or "VERIFIED"),
-                    },
-                )
-            )
-            next_ordinal += 1
-            cards_added += 1
+        )
+        next_ordinal += 1
+        cards_added += 1
 
     await session.flush()
 

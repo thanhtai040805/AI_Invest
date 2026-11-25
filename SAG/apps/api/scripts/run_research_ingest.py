@@ -108,6 +108,29 @@ def _build_sag_http_uploader(
     return _upload
 
 
+async def _fetch_indexed_tickers(org_id: str) -> set[str]:
+    """Return tickers that already have at least one active SEARCH_READY document version."""
+    from sqlalchemy import select
+
+    from sag_api.core.db import SessionLocal
+    from sag_api.db.models import Document, DocumentVersion
+
+    async with SessionLocal() as sess:
+        rows = (
+            await sess.execute(
+                select(Document.project_id)
+                .join(DocumentVersion, DocumentVersion.document_id == Document.id)
+                .where(
+                    Document.tenant_id == org_id,
+                    Document.is_active.is_(True),
+                    DocumentVersion.search_status == "SEARCH_READY",
+                )
+                .distinct()
+            )
+        ).scalars().all()
+    return {str(sym).strip().upper() for sym in rows if sym}
+
+
 async def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="AIInvest SAG v2 Tier-Aware HOSE Batch Ingest")
     parser.add_argument(
@@ -151,6 +174,11 @@ async def _main(argv: list[str] | None = None) -> int:
         "--no-refresh-kg",
         action="store_true",
         help="Skip 3-Layer Knowledge Graph refresh after ingest (enabled by default on live runs)",
+    )
+    parser.add_argument(
+        "--skip-indexed",
+        action="store_true",
+        help="Skip tickers that already have SEARCH_READY active documents in SAG DB (incremental expansion)",
     )
     parser.add_argument("--sag-api-url", default=os.environ.get("SAG_API_URL", "http://127.0.0.1:18000"))
     parser.add_argument(
@@ -236,13 +264,53 @@ async def _main(argv: list[str] | None = None) -> int:
     else:
         table_card_indexer = None
 
+    effective_tier = args.tier
+    effective_tickers = list(args.tickers or [])
+    skipped_indexed: list[str] = []
+    if args.skip_indexed:
+        already_indexed = await _fetch_indexed_tickers(args.org_id)
+        if effective_tier == "custom":
+            candidate_tickers = [t.strip().upper() for t in effective_tickers if t.strip()]
+        else:
+            candidate_tickers = await core_reader.resolve_tickers_for_tier(
+                effective_tier,  # type: ignore[arg-type]
+                as_of_date=as_of,
+            )
+        skipped_indexed = sorted(t for t in candidate_tickers if t in already_indexed)
+        remaining = [t for t in candidate_tickers if t not in already_indexed]
+        print(
+            f"[--skip-indexed] tier={effective_tier} total={len(candidate_tickers)} "
+            f"skipped_ready={len(skipped_indexed)} remaining={len(remaining)}",
+            file=sys.stderr,
+        )
+        if not remaining:
+            print(
+                json.dumps(
+                    {
+                        "tier": effective_tier,
+                        "as_of_date": as_of.isoformat(),
+                        "skipped_indexed": skipped_indexed,
+                        "resolved_count": 0,
+                        "resolved_tickers": [],
+                        "total_sub_docs_uploaded": 0,
+                        "total_ocr_pages": 0,
+                        "reports": [],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+        effective_tier = "custom"
+        effective_tickers = remaining
+
     effective_auto_ocr = (not args.no_mineru_ocr) and (
         bool(args.auto_mineru_ocr) or bool(sag_settings.mineru_configured)
     )
     summary = await run_research_batch_ingest(
-        tier=args.tier,  # type: ignore[arg-type]
+        tier=effective_tier,  # type: ignore[arg-type]
         as_of_date=as_of,
-        custom_tickers=args.tickers,
+        custom_tickers=effective_tickers,
         years_back=args.years_back,
         dry_run=args.dry_run,
         r2_only=args.r2_only,

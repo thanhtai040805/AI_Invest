@@ -144,6 +144,11 @@ def _normalize_pg_dsn(url: str) -> str:
     return dsn
 
 
+def _is_valid_vn_stock_ticker(sym: str) -> bool:
+    """Vietnamese listed equities use 3-char ASCII alphanumeric tickers (filters test sentinels like HYDRATE)."""
+    return len(sym) == 3 and sym.isascii() and sym.isalnum()
+
+
 class AsyncPGCoreDBBatchReader:
     """Strictly read-only Core PostgreSQL reader (`default_transaction_read_only = on`)."""
 
@@ -187,7 +192,7 @@ class AsyncPGCoreDBBatchReader:
                     """,
                     as_of_date,
                 )
-                return [str(r["sym"]) for r in rows if r["sym"]]
+                return [str(r["sym"]) for r in rows if r["sym"] and _is_valid_vn_stock_ticker(str(r["sym"]))]
 
             if tier == "a4_81":
                 rows = await conn.fetch(
@@ -199,7 +204,7 @@ class AsyncPGCoreDBBatchReader:
                     """,
                     as_of_date,
                 )
-                return [str(r["sym"]) for r in rows if r["sym"]]
+                return [str(r["sym"]) for r in rows if r["sym"] and _is_valid_vn_stock_ticker(str(r["sym"]))]
 
             if tier == "a3_buffer_139":
                 rows = await conn.fetch(
@@ -228,7 +233,7 @@ class AsyncPGCoreDBBatchReader:
                     as_of_date,
                     float(adtv_threshold_vnd),
                 )
-                return [str(r["sym"]) for r in rows if r["sym"]]
+                return [str(r["sym"]) for r in rows if r["sym"] and _is_valid_vn_stock_ticker(str(r["sym"]))]
         finally:
             await conn.close()
 

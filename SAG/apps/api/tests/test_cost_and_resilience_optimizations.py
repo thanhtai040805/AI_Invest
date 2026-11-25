@@ -290,3 +290,139 @@ def test_persistent_sqlite_embedding_cache_survives_ram_eviction_and_shares_batc
         disk_cache_path=db_path,
     )
     assert other is None
+
+
+@pytest.mark.asyncio
+async def test_index_table_search_cards_is_idempotent_when_search_ready() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from sag_api.db.base import Base
+    from sag_api.db.models import Document, DocumentVersion, Job, Source
+    from sag_api.enums import DocumentStatus, JobType
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    table_rec = {
+        "table_id": "tbl-hpg-1",
+        "table_title": "Kết quả kinh doanh hợp nhất",
+        "project_id": "HPG",
+        "sub_doc_slot": "BCTC_AUDITED",
+        "fiscal_year": 2025,
+        "fiscal_quarter": 0,
+        "page_from": 5,
+        "page_to": 5,
+        "section_path": "BCTC > KQKD",
+        "unit_raw": "tỷ VND",
+        "verification_status": "VERIFIED",
+        "headers": [["Chỉ tiêu", "FY2025", "FY2024"]],
+        "rows": [
+            [{"raw_text": "Doanh thu thuần"}, {"raw_text": "140.000"}, {"raw_text": "118.000"}],
+            [{"raw_text": "LNST"}, {"raw_text": "12.600"}, {"raw_text": "9.300"}],
+        ],
+    }
+
+    now = datetime.now(UTC)
+    try:
+        async with factory() as sess:
+            sess.add(Source(id="src-hpg", name="HPG", sag_source_config_id="sc-hpg"))
+            sess.add(
+                Document(
+                    id="doc-hpg",
+                    tenant_id="aiinvest-default",
+                    project_id="HPG",
+                    source_id="src-hpg",
+                    filename="HPG_2025_BCTC.md",
+                    logical_source_id="HPG:2025Q0:BCTC:BCTC_AUDITED",
+                    storage_path="unused",
+                    size_bytes=1024,
+                    status=DocumentStatus.READY,
+                    is_active=True,
+                )
+            )
+            sess.add(
+                DocumentVersion(
+                    id="ver-hpg",
+                    document_id="doc-hpg",
+                    version_no=1,
+                    file_hash="fh-1",
+                    search_status="SEARCH_READY",
+                    knowledge_status="DATA_READY",
+                    valid_from=now - timedelta(days=1),
+                    valid_to=now + timedelta(days=365),
+                )
+            )
+            sess.add(
+                CanonicalBlock(
+                    id="blk-prose-1",
+                    document_version_id="ver-hpg",
+                    ordinal=0,
+                    block_type="paragraph",
+                    page_from=1,
+                    page_to=1,
+                    section_path="BCTC",
+                    normalized_text="Prose intro",
+                    content_hash="h-prose",
+                )
+            )
+            await sess.commit()
+
+            # Pass 1: initial table_card insert -> adds 1 card & enqueues 1 REPROCESS_DOCUMENT
+            added1 = await search_index_service.index_table_search_cards_for_version(
+                sess,
+                document_version_id="ver-hpg",
+                project_id="HPG",
+                table_records=[table_rec],
+                security_partition_id="HPG",
+                tenant_id="aiinvest-default",
+            )
+            await sess.commit()
+            assert added1 == 1
+            jobs_after_1 = (await sess.execute(select(Job))).scalars().all()
+            assert len(jobs_after_1) == 1
+            assert jobs_after_1[0].type == JobType.REPROCESS_DOCUMENT
+
+            # Clear job (simulating completed reprocess -> SEARCH_READY)
+            for j in jobs_after_1:
+                await sess.delete(j)
+            await sess.commit()
+
+            # Pass 2: identical table_rec on SEARCH_READY doc -> strict NO-OP (0 added, 0 jobs!)
+            added2 = await search_index_service.index_table_search_cards_for_version(
+                sess,
+                document_version_id="ver-hpg",
+                project_id="HPG",
+                table_records=[table_rec],
+                security_partition_id="HPG",
+                tenant_id="aiinvest-default",
+            )
+            await sess.commit()
+            assert added2 == 0
+            jobs_after_2 = (await sess.execute(select(Job))).scalars().all()
+            assert jobs_after_2 == []
+
+            # Pass 3: changed figure in table_rec -> updates card & enqueues REPROCESS_DOCUMENT
+            updated_rec = dict(table_rec)
+            updated_rec["rows"] = [
+                [{"raw_text": "Doanh thu thuần"}, {"raw_text": "141.500"}, {"raw_text": "118.000"}],
+            ]
+            added3 = await search_index_service.index_table_search_cards_for_version(
+                sess,
+                document_version_id="ver-hpg",
+                project_id="HPG",
+                table_records=[updated_rec],
+                security_partition_id="HPG",
+                tenant_id="aiinvest-default",
+            )
+            await sess.commit()
+            assert added3 == 1
+            jobs_after_3 = (await sess.execute(select(Job))).scalars().all()
+            assert len(jobs_after_3) == 1
+    finally:
+        await engine.dispose()
+
