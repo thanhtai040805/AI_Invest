@@ -1763,8 +1763,8 @@ async def build_research_sub_documents(
     ocr_adapter: OcrAdapterProtocol | None = None,
     toc_router: TocRouterProtocol | None = None,
     toc_scan_limit: int = 5,
-    max_targeted_ocr_pages: int = 95,
-    max_bctc_ocr_pages: int = 120,
+    max_targeted_ocr_pages: int = 200,
+    max_bctc_ocr_pages: int = 320,
     keep_all_bctc_notes: bool = True,
     skip_trailing_scanned_bctc: bool = False,
 ) -> ResearchInputBuildResult:
@@ -1860,13 +1860,13 @@ async def build_research_sub_documents(
                 "GIAI_TRINH",
                 "TY_LE_AT_TC",
             ):
-                # 0%-drop OCR for scanned BCTC / AGM / Quarter filings with 2-page Canary English Gate
-                if canonical_doc_type == "BCTC":
+                # 0%-drop OCR for scanned BCTC / AGM / Quarter filings (auto-sliced at 120p in MinerUOcrAdapter)
+                if canonical_doc_type in ("BCTC", "LATEST_QUARTER", "GIAI_TRINH", "TY_LE_AT_TC"):
                     ocr_cap = max_bctc_ocr_pages
                 elif canonical_doc_type in ("NQ_DHDCD", "TAI_LIEU_DHDCD"):
-                    ocr_cap = max(max_targeted_ocr_pages, 160)
+                    ocr_cap = max(max_targeted_ocr_pages, 300)
                 else:
-                    ocr_cap = max(max_targeted_ocr_pages, 120)
+                    ocr_cap = max(max_targeted_ocr_pages, 200)
                 if n_pages > ocr_cap:
                     ocr_truncated_count = n_pages - ocr_cap
                     log.warning(
@@ -2092,14 +2092,15 @@ async def build_research_sub_documents(
                     must_ocr_set.update(ocr_needed)
                 must_ocr = [p for p in ocr_needed if p in must_ocr_set]
 
-                if canonical_doc_type == "BCTC" or bool(trailing_scanned_bctc_pages):
+                if (
+                    canonical_doc_type in ("BCTC", "LATEST_QUARTER", "GIAI_TRINH", "TY_LE_AT_TC")
+                    or bool(trailing_scanned_bctc_pages)
+                ):
                     ocr_cap = max_bctc_ocr_pages
                 elif canonical_doc_type in ("NQ_DHDCD", "TAI_LIEU_DHDCD"):
-                    ocr_cap = max(max_targeted_ocr_pages, 160)
-                elif canonical_doc_type in ("LATEST_QUARTER", "GIAI_TRINH", "TY_LE_AT_TC"):
-                    ocr_cap = max(max_targeted_ocr_pages, 120)
+                    ocr_cap = max(max_targeted_ocr_pages, 300)
                 else:
-                    ocr_cap = max(max_targeted_ocr_pages, 95)
+                    ocr_cap = max(max_targeted_ocr_pages, 200)
 
                 # Pass-1 TOC-First for large BAD_FONT / Hybrid BCTNs (prevents VCI 214p -> 2 cover pages!)
                 if (

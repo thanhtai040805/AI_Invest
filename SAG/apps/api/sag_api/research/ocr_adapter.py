@@ -127,8 +127,9 @@ class MinerUOcrAdapter:
         slice_limit = max(1, self._chunk_pages)
         pool_tokens = getattr(self._base_settings, "effective_mineru_official_api_tokens", ())
 
-        # Parallel multi-slice dispatch across the Round-Robin MinerU token pool for large scanned filings
-        if len(pool_tokens) >= 2 and len(page_numbers) > slice_limit:
+        # Always slice large PDFs (> slice_limit, default 120p for VLM) so multi-hundred-page
+        # filings never hit MinerU's per-job page limit and stitch cleanly back to original pages.
+        if len(page_numbers) > slice_limit:
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
             try:
                 if doc.page_count == len(page_numbers):
@@ -147,9 +148,10 @@ class MinerUOcrAdapter:
                 doc.close()
 
             if len(chunks) > 1:
-                max_parallel = max(
+                configured_parallel = max(
                     1, int(getattr(self._base_settings, "effective_mineru_io_concurrency", 16))
                 )
+                max_parallel = configured_parallel if len(pool_tokens) >= 2 else min(4, configured_parallel)
                 sem = asyncio.Semaphore(max_parallel)
 
                 async def _run_chunk(c_bytes: bytes, c_pages: list[int]) -> dict[int, str]:

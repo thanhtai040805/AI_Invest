@@ -426,3 +426,70 @@ async def test_index_table_search_cards_is_idempotent_when_search_ready() -> Non
     finally:
         await engine.dispose()
 
+
+@pytest.mark.asyncio
+async def test_long_scanned_filings_zero_truncation_and_single_token_batch_stitching() -> None:
+    from datetime import date
+
+    import fitz
+
+    from sag_api.research.input_builder import build_research_sub_documents
+    from sag_api.research.ocr_adapter import MinerUOcrAdapter
+
+    # 1. Verify 174-page LATEST_QUARTER & 188-page NQ_DHDCD are NOT truncated by old 120/160 caps
+    for doc_type, n_pages in (("LATEST_QUARTER", 174), ("NQ_DHDCD", 188)):
+        doc = fitz.open()
+        for _ in range(n_pages):
+            doc.new_page(width=595.0, height=842.0)
+        pdf_bytes = doc.tobytes()
+        doc.close()
+
+        class _MockOcr:
+            def __init__(self) -> None:
+                self.seen_pages: list[int] = []
+
+            async def ocr_pdf_pages(self, raw: bytes, page_numbers: list[int], *, language: str = "vi"):
+                self.seen_pages.extend(page_numbers)
+                return {
+                    p: f"Báo cáo tài chính hợp nhất Việt Nam trang {p}: doanh thu {p * 100} tỷ đồng."
+                    for p in page_numbers
+                }
+
+        mock_ocr = _MockOcr()
+        res = await build_research_sub_documents(
+            ticker="TCB",
+            pdf_bytes=pdf_bytes,
+            doc_type=doc_type,
+            published_date=date(2026, 10, 30),
+            title="Báo cáo tài chính quý 3 năm 2026 hợp nhất",
+            ocr_adapter=mock_ocr,
+        )
+        assert sorted(mock_ocr.seen_pages) == list(range(1, n_pages + 1))
+        assert res.coverage_audit.ocr_truncated_page_count == 0
+
+    # 2. Verify MinerUOcrAdapter splits > chunk_pages and stitches exact original pages even with 1 token
+    cfg = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        mineru_base_url="https://mineru.net",
+        mineru_official_api_token="single-tok-only",
+    )
+    adapter = MinerUOcrAdapter(cfg, chunk_pages=4)
+    doc = fitz.open()
+    for _ in range(10):
+        doc.new_page()
+    pdf_10p = doc.tobytes()
+    doc.close()
+
+    slices_seen: list[list[int]] = []
+
+    async def fake_single_slice(slice_bytes: bytes, slice_pages: list[int], *, resolved_lang: str):
+        slices_seen.append(list(slice_pages))
+        return {p: f"Trang {p}" for p in slice_pages}
+
+    with patch.object(adapter, "_ocr_single_slice", side_effect=fake_single_slice):
+        stitched = await adapter.ocr_pdf_pages(pdf_10p, list(range(1, 11)), language="vi")
+
+    assert slices_seen == [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10]]
+    assert stitched == {p: f"Trang {p}" for p in range(1, 11)}
+
+
