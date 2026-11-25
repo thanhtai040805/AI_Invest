@@ -20,6 +20,8 @@ import httpx
 
 from sag_api.research.batch_ingest import (
     AsyncPGCoreDBBatchReader,
+    build_research_logical_source_id,
+    build_research_upload_filename,
     resolve_default_core_database_url,
     run_research_batch_ingest,
 )
@@ -73,11 +75,9 @@ def _build_sag_http_uploader(
     async def _upload(bundle: SubDocumentBundle) -> dict:
         idem_key = (
             f"{bundle.project_id}-{bundle.fiscal_year}Q{bundle.fiscal_quarter}-"
-            f"{bundle.sub_doc_slot}-{bundle.content_hash[:12]}"
+            f"{bundle.doc_type}-{bundle.sub_doc_slot}-{bundle.content_hash[:12]}"
         )
-        logical_source_id = (
-            f"hose:{bundle.project_id}:{bundle.fiscal_year}Q{bundle.fiscal_quarter}:{bundle.sub_doc_slot}"
-        )
+        logical_source_id = build_research_logical_source_id(bundle)
         headers = {
             "X-SAG-BFF-Service-Token": bff_token,
             "X-Continuum-User-Id": user_id,
@@ -86,7 +86,7 @@ def _build_sag_http_uploader(
             "X-Continuum-Security-Partition": bundle.project_id,
             "Idempotency-Key": idem_key,
         }
-        filename = f"{bundle.project_id}_{bundle.fiscal_year}Q{bundle.fiscal_quarter}_{bundle.sub_doc_slot}.md"
+        filename = build_research_upload_filename(bundle)
         data = {
             "logical_source_id": logical_source_id,
             "source_published_at": bundle.valid_from.isoformat(),

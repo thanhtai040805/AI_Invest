@@ -265,7 +265,25 @@ async def screen_financial_universe_tool(
         )
     return ToolResult(
         content="\n".join(lines),
-        details={"matched_count": total_matched, "returned_count": len(rows), "criteria": desc},
+        details={
+            "matched_count": total_matched,
+            "returned_count": len(rows),
+            "criteria": desc,
+            "duration_ms": elapsed_ms,
+            "screening_preview": [
+                {
+                    "ticker": str(r.get("ticker") or ""),
+                    "sector": str(r.get("sector") or ""),
+                    "fiscal_year": r.get("fiscal_year"),
+                    "pe": r.get("pe"),
+                    "pb": r.get("pb"),
+                    "roe": r.get("roe"),
+                    "gross_margin": r.get("gross_margin"),
+                    "net_margin": r.get("net_margin"),
+                }
+                for r in rows[:6]
+            ],
+        },
     )
 
 
@@ -326,7 +344,7 @@ async def screen_financial_universe_tool(
     },
     risk=ToolRisk.READ_ONLY,
     execution_mode=ToolExecutionMode.PARALLEL,
-    timeout_seconds=20.0,
+    timeout_seconds=25.0,
 )
 async def search_corporate_filings_tool(
     arguments: Mapping[str, Any],
@@ -373,7 +391,7 @@ async def search_corporate_filings_tool(
     years_filter = {int(y) for y in (arguments.get("fiscal_years") or ()) if isinstance(y, int)}
     include_cross_ref = bool(arguments.get("include_cross_ref", False))
     top_k = max(3, min(12, int(arguments.get("top_k") or 6)))
-    recall_k = min(48, max(24, top_k * 5))
+    recall_k = min(28, max(16, top_k * 3))
 
     primary_query = " | ".join(combined_queries[:2]) if len(combined_queries) > 1 else combined_queries[0]
     raw_sections: list[Any] = []
@@ -398,10 +416,14 @@ async def search_corporate_filings_tool(
                 "top_k": recall_k,
             }
             ret_sig = inspect.signature(retriever.retrieve)
-            if "principal" in ret_sig.parameters or any(
+            has_ret_var_kw = any(
                 p.kind == inspect.Parameter.VAR_KEYWORD for p in ret_sig.parameters.values()
-            ):
+            )
+            if "principal" in ret_sig.parameters or has_ret_var_kw:
                 ret_kwargs["principal"] = ctx.principal
+            if "load_canonical_blocks" in ret_sig.parameters or has_ret_var_kw:
+                # Stage 7 lazy-loads canonical_blocks ONCE for only final cited versions
+                ret_kwargs["load_canonical_blocks"] = False
             res = await retriever.retrieve(**ret_kwargs)
             raw_sections.extend(res.sections)
             for vid, blks in (getattr(res, "canonical_blocks", None) or {}).items():
@@ -411,14 +433,20 @@ async def search_corporate_filings_tool(
             if include_cross_ref and hasattr(retriever, "retrieve_cross_ref"):
                 xref_fn = retriever.retrieve_cross_ref
                 if callable(xref_fn):
-                    xref_res = await xref_fn(
-                        query=dense_qs[0] if dense_qs else bm25_qs[0],
-                        target_tickers=target_tickers,
-                        exclude_tickers=target_tickers,
-                        as_of_date=ctx.as_of_date,
-                        top_k=max(3, top_k // 2),
-                        principal=ctx.principal,
-                    )
+                    xref_kwargs: dict[str, Any] = {
+                        "query": dense_qs[0] if dense_qs else bm25_qs[0],
+                        "target_tickers": target_tickers,
+                        "exclude_tickers": target_tickers,
+                        "as_of_date": ctx.as_of_date,
+                        "top_k": max(3, top_k // 2),
+                        "principal": ctx.principal,
+                    }
+                    xref_sig = inspect.signature(xref_fn)
+                    if "load_canonical_blocks" in xref_sig.parameters or any(
+                        p.kind == inspect.Parameter.VAR_KEYWORD for p in xref_sig.parameters.values()
+                    ):
+                        xref_kwargs["load_canonical_blocks"] = False
+                    xref_res = await xref_fn(**xref_kwargs)
                     raw_sections.extend(xref_res.sections)
                     for vid, blks in (getattr(xref_res, "canonical_blocks", None) or {}).items():
                         collected_blocks.setdefault(str(vid), list(blks))
@@ -483,6 +511,7 @@ async def search_corporate_filings_tool(
         f"domain_cov={rerank_out.domain_term_coverage:.2f} | "
         f"reranker={rerank_out.reranker_model or 'hybrid_rrf'} | {len(assigned)} đoạn:"
     ]
+    selected_documents: list[dict[str, Any]] = []
     for cid, sec in assigned:
         tid = getattr(sec, "table_id", None)
         if tid and tid not in table_hints:
@@ -496,6 +525,19 @@ async def search_corporate_filings_tool(
         body = str(getattr(sec, "content", "") or "").strip()[:1100]
         tbl_tag = f" | table_id={tid}" if tid else ""
         lines.append(f"[{cid}] ({tk} | {origin} | {slot} | trang {page} | pub={pub}{tbl_tag}) {heading}\n{body}")
+        selected_documents.append(
+            {
+                "citation_id": cid,
+                "ticker": tk,
+                "sub_doc_slot": slot,
+                "page": int(page or 1),
+                "fiscal_year": getattr(sec, "fiscal_year", None),
+                "heading": heading[:120],
+                "score": round(float(getattr(sec, "score", 0.0) or 0.0), 3),
+                "evidence_origin": origin,
+                "table_id": str(tid) if tid else None,
+            }
+        )
 
     if table_hints:
         lines.append(
@@ -510,8 +552,16 @@ async def search_corporate_filings_tool(
         content="\n\n".join(lines),
         details={
             "crag_grade": rerank_out.crag_grade,
+            "crag_reason": rerank_out.crag_reason,
+            "reranker_model": rerank_out.reranker_model,
+            "reranker_used": rerank_out.reranker_used,
+            "recall_count": len(raw_sections),
             "returned_count": len(assigned),
+            "duration_ms": elapsed_ms,
+            "tickers": target_tickers,
+            "queries": combined_queries,
             "table_hints": table_hints,
+            "selected_documents": selected_documents,
         },
     )
 
@@ -628,7 +678,24 @@ async def hydrate_financial_tables_tool(
     blocks = [_format_table_as_compact_tsv(tbl) for tbl in registered]
     return ToolResult(
         content="\n\n".join(blocks),
-        details={"returned_count": len(registered), "table_ids": [t["table_id"] for t in registered]},
+        details={
+            "returned_count": len(registered),
+            "duration_ms": elapsed_ms,
+            "table_ids": [t["table_id"] for t in registered],
+            "hydrated_tables": [
+                {
+                    "table_id": str(t.get("table_id") or ""),
+                    "ticker": str(t.get("project_id") or ""),
+                    "title": str(t.get("title") or "Bảng tài chính")[:100],
+                    "sub_doc_slot": str(t.get("sub_doc_slot") or ""),
+                    "page": int(t.get("page_from") or 0),
+                    "verification_status": str(t.get("verification_status") or "TABLE_UNVERIFIED"),
+                    "rows_count": len(t.get("rows") or ()),
+                    "unit_raw": str(t.get("unit_raw") or ""),
+                }
+                for t in registered
+            ],
+        },
     )
 
 
@@ -781,8 +848,28 @@ async def query_knowledge_graph_tool(
     )
 
     if not lines:
-        return ToolResult(content="Không có cạnh Đồ thị Tri thức PIT hợp lệ cho truy vấn này.")
-    return ToolResult(content="\n".join(lines[:30]), details={"returned_hops": len(added)})
+        return ToolResult(
+            content="Không có cạnh Đồ thị Tri thức PIT hợp lệ cho truy vấn này.",
+            details={"returned_hops": 0, "duration_ms": elapsed_ms, "kg_hops": []},
+        )
+    return ToolResult(
+        content="\n".join(lines[:30]),
+        details={
+            "returned_hops": len(added),
+            "duration_ms": elapsed_ms,
+            "kg_hops": [
+                {
+                    "layer": str(h.get("layer") or "VALUE_CHAIN"),
+                    "src_label": str(h.get("src_label") or ""),
+                    "relation_type": str(h.get("relation_type") or ""),
+                    "dst_label": str(h.get("dst_label") or ""),
+                    "beta": h.get("beta"),
+                    "verification_tier": str(h.get("verification_tier") or "DOC_ONLY"),
+                }
+                for h in added[:8]
+            ],
+        },
+    )
 
 
 # ── Tool 5: Deterministic AST Financial Calculator (Zero Mental Math) ────────

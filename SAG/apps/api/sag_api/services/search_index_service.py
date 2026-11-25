@@ -902,7 +902,15 @@ async def compute_unit_embeddings(embedder: Any, texts: Sequence[str]) -> list[l
 
     import inspect
     if hasattr(embedder, "batch_generate"):
-        vectors = await embedder.batch_generate(list(texts))
+        text_list = list(texts)
+        max_batch = 64
+        if len(text_list) <= max_batch:
+            vectors = await embedder.batch_generate(text_list)
+        else:
+            vectors = []
+            for start_idx in range(0, len(text_list), max_batch):
+                batch_vecs = await embedder.batch_generate(text_list[start_idx : start_idx + max_batch])
+                vectors.extend(batch_vecs)
     elif hasattr(embedder, "generate"):
         vectors = [await embedder.generate(t) for t in texts]
     elif callable(embedder):

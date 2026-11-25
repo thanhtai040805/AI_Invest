@@ -22,13 +22,16 @@ import {
 import { Button, Pill } from "@/components/ui"
 import {
   normalizeDeclaredBlindspots,
+  resolveActivityLogFromMetadata,
   type DiscrepancyAlert,
+  type ResearchActivityItem,
   type ResearchChatMessage,
   type ResearchChatMode,
   type SseStageName,
 } from "@/lib/api/researchChat"
 import type { AuditBadgeToken } from "./markdownParser"
 import { MarkdownCitationView } from "./MarkdownCitationView"
+import { ResearchActivityTimeline } from "./ResearchActivityTimeline"
 import {
   GENERAL_STARTER_PROMPTS,
   MOAT_QUICK_PROMPTS,
@@ -54,6 +57,8 @@ interface ChatColumnProps {
   onSelectAssistantMessage: (messageId: string) => void
   streaming: boolean
   streamingText: string
+  liveActivity?: ResearchActivityItem[]
+  streamStartedAt?: number | null
   stages: StageProgressItem[]
   streamError: string | null
   onSendPrompt: (query: string) => void
@@ -284,6 +289,8 @@ export function ChatColumn({
   onSelectAssistantMessage,
   streaming,
   streamingText,
+  liveActivity = [],
+  streamStartedAt = null,
   stages,
   streamError,
   onSendPrompt,
@@ -300,7 +307,7 @@ export function ChatColumn({
 
   useEffect(() => {
     scrollEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" })
-  }, [messages.length, streamingText])
+  }, [messages.length, streamingText, liveActivity.length])
 
   const taggedTickers = [
     ...(primaryTicker ? [primaryTicker] : []),
@@ -499,6 +506,7 @@ export function ChatColumn({
               (meta.portfolio_snapshot_used ? 1 : 0)
             const msgMode = meta.chat_mode === "MOAT" ? "MOAT" : "General"
             const isShortCircuit = meta.eval_eligible === false
+            const activityItems = resolveActivityLogFromMetadata(meta)
 
             return (
               <div
@@ -558,6 +566,72 @@ export function ChatColumn({
                   onInspect={() => onSelectAssistantMessage(msg.id)}
                 />
 
+                {activityItems.length > 0 && (
+                  <ResearchActivityTimeline
+                    items={activityItems}
+                    isStreaming={false}
+                    latencyMs={meta.telemetry?.latency_ms ?? null}
+                    agentTurns={meta.telemetry?.agent_turns ?? null}
+                    defaultExpanded={false}
+                    onInspectCitation={(doc) => {
+                      const numMatch = /^C(\d+)$/i.exec(doc.citation_id)
+                      onBadgeClick(
+                        {
+                          type: "badge",
+                          kind: "citation",
+                          raw: `[${doc.citation_id}]`,
+                          label: `[${doc.citation_id}]`,
+                          refId: doc.citation_id,
+                          index: numMatch ? Number(numMatch[1]) : undefined,
+                          slot: doc.sub_doc_slot,
+                          page: doc.page,
+                        },
+                        msg.id,
+                      )
+                    }}
+                    onInspectTable={(tableId) => {
+                      const tblIdx = Array.isArray(meta.hydrated_tables)
+                        ? meta.hydrated_tables.findIndex((t) => t.table_id === tableId)
+                        : -1
+                      onBadgeClick(
+                        {
+                          type: "badge",
+                          kind: "table",
+                          raw: `[TBL:${tableId}]`,
+                          label: `[TBL]`,
+                          refId: tableId,
+                          index: tblIdx >= 0 ? tblIdx + 1 : 1,
+                        },
+                        msg.id,
+                      )
+                    }}
+                    onInspectCalc={(calcId) => {
+                      onBadgeClick(
+                        {
+                          type: "badge",
+                          kind: "calculator",
+                          raw: `[${calcId}]`,
+                          label: `[${calcId}]`,
+                          refId: calcId,
+                        },
+                        msg.id,
+                      )
+                    }}
+                    onInspectGraph={() => {
+                      onBadgeClick(
+                        {
+                          type: "badge",
+                          kind: "kg",
+                          raw: "[KG]",
+                          label: "[KG]",
+                          index: 1,
+                        },
+                        msg.id,
+                      )
+                    }}
+                  />
+                )}
+
                 <MarkdownCitationView
                   content={msg.content}
                   linkedSessions={meta.linked_sessions}
@@ -579,19 +653,25 @@ export function ChatColumn({
                   <span>
                     {activeStage
                       ? `Đang chạy pha: ${activeStage}…`
-                      : "Đang nhận dữ liệu tổng hợp có kiểm chứng…"}
+                      : "Đang suy luận & truy xuất dữ liệu kiểm chứng…"}
                   </span>
                 </div>
                 <Pill tone="mineral">SSE Live</Pill>
               </div>
+              <ResearchActivityTimeline
+                items={liveActivity}
+                isStreaming={true}
+                startedAtMs={streamStartedAt}
+                defaultExpanded={true}
+              />
               {streamingText ? (
                 <MarkdownCitationView content={streamingText} onBadgeClick={(b) => onBadgeClick(b)} />
-              ) : (
+              ) : liveActivity.length === 0 ? (
                 <div className="space-y-2 py-1">
                   <div className="h-3 w-3/4 rounded bg-soft animate-pulse" />
                   <div className="h-3 w-1/2 rounded bg-soft animate-pulse" />
                 </div>
-              )}
+              ) : null}
             </div>
           )}
 

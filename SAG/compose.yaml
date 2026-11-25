@@ -25,8 +25,9 @@ services:
     mem_limit: 1g
     # Local fallback only. Set SAG_SAG_QDRANT_URL / SAG_SAG_QDRANT_API_KEY to use Qdrant Cloud.
     environment:
-      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-${SAG_SAG_QDRANT_API_KEY:-}}
-      QDRANT__STORAGE__ON_DISK_PAYLOAD: "true"
+      - QDRANT__STORAGE__ON_DISK_PAYLOAD=true
+      # Pass through only when explicitly defined; an empty QDRANT__SERVICE__API_KEY="" enables 401 auth in Qdrant v1.14+
+      - QDRANT__SERVICE__API_KEY
     volumes:
       - aiinvest_sag_qdrantdata:/qdrant/storage
     ports:

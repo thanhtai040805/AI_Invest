@@ -5,6 +5,7 @@ import {
   createSseParser,
   normalizeCalculatorInputs,
   normalizeDeclaredBlindspots,
+  resolveActivityLogFromMetadata,
 } from '../src/lib/api/researchChatHelpers.ts';
 
 import {
@@ -240,4 +241,42 @@ test('tokenizeInline preserves badges immediately followed by parenthetical text
   const presets = classifyAuditBadge('PORT:PRESETS');
   assert.deepEqual({ kind: wl.kind, refId: wl.refId }, { kind: 'portfolio', refId: 'WATCHLIST' });
   assert.deepEqual({ kind: presets.kind, refId: presets.refId }, { kind: 'portfolio', refId: 'PRESETS' });
+});
+
+test('createSseParser parses thought, tool_call, and tool_result frames and resolveActivityLogFromMetadata falls back cleanly', () => {
+  const parser = createSseParser();
+  const payload = [
+    'event: thought\ndata: {"id":"t-1","type":"thought","kind":"plan","title":"Bước 1","text":"Đang lập kế hoạch"}\n\n',
+    'event: tool_call\ndata: {"call_id":"c-1","type":"tool_call","tool":"search_corporate_filings","status":"running","tickers":["FPT"]}\n\n',
+    'event: tool_result\ndata: {"call_id":"c-1","type":"tool_call","tool":"search_corporate_filings","status":"done","crag_grade":"CORRECT","selected_documents":[{"citation_id":"C1","ticker":"FPT","sub_doc_slot":"BCTC_AUDITED","page":8}]}\n\n',
+  ].join('');
+  const frames = parser.push(payload);
+  assert.deepEqual(
+    frames.map((f) => f.event),
+    ['thought', 'tool_call', 'tool_result'],
+  );
+  const tr = JSON.parse(frames[2].data);
+  assert.equal(tr.crag_grade, 'CORRECT');
+  assert.equal(tr.selected_documents[0].citation_id, 'C1');
+
+  // Persisted activity_log takes precedence
+  const fromLog = resolveActivityLogFromMetadata({
+    activity_log: [{ id: 'a1', type: 'thought', title: 'Suy luận', text: 'OK' }],
+    tool_traces: [{ tool: 'search_corporate_filings', returned_count: 4 }],
+  });
+  assert.equal(fromLog.length, 1);
+  assert.equal(fromLog[0].id, 'a1');
+
+  // Legacy message without activity_log degrades gracefully to tool_traces + citations
+  const fallback = resolveActivityLogFromMetadata({
+    route_intent: 'fact_lookup',
+    as_of_date: '2026-11-25',
+    tool_traces: [{ tool: 'search_corporate_filings', recall_count: 20, returned_count: 6, crag_grade: 'CORRECT' }],
+    citations: [{ citation_id: 'C1', sub_doc_slot: 'BCTC_AUDITED', page: 5, quote: 'q', verified: true }],
+  });
+  assert.equal(fallback.length, 3);
+  assert.equal(fallback[0].type, 'routing');
+  assert.equal(fallback[1].type, 'tool_call');
+  assert.equal(fallback[1].crag_grade, 'CORRECT');
+  assert.equal(fallback[2].type, 'verification');
 });

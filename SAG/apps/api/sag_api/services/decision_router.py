@@ -791,8 +791,22 @@ def _research_route_from_answers(
             domain_class = "stock_research_data"
         else:
             reason_codes.append("STOCK_RESEARCH_DATA")
+        has_active_tickers = bool(
+            session_state
+            and (
+                session_state.get("active_tickers")
+                or session_state.get("active_episode_tickers")
+            )
+        )
+        if task_action == "clarify_request" and (
+            ambiguity_guard == "clear" or has_active_tickers or len(query.strip()) >= 40
+        ):
+            task_action = "deep_moat_thesis" if is_moat else "fact_lookup"
+            if ambiguity_guard == "underspecified_ask_clarify" and has_active_tickers:
+                ambiguity_guard = "clear"
+            reason_codes.append("NORMALIZED_CLARIFY_TO_RESEARCH")
         if budget_tier == "zero_tool":
-            budget_tier = "light_1_2_steps"
+            budget_tier = "standard_2_3_steps"
         if is_moat and budget_tier in {"light_1_2_steps", "standard_2_3_steps"}:
             budget_tier = "deep_4_6_steps"
 

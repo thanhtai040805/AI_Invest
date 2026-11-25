@@ -1129,6 +1129,11 @@ def _normalize_core_ratio_rows(
         liab_to_eq = _finite_float(row.get("debt_equity"))
         stmt_de = _finite_float(s_ref.get("debt_to_equity")) if s_ref else None
 
+        raw_pe = _finite_float(row.get("pe"))
+        # Guard against upstream yearly ETL writing fiscal year (e.g. 2025.0) into `pe`
+        if raw_pe is not None and fq == 0 and 1990 <= r_date.year <= 2100 and raw_pe == float(r_date.year):
+            raw_pe = None
+
         item: dict[str, Any] = {
             "ticker": sym,
             "fiscal_year": r_date.year,
@@ -1142,7 +1147,7 @@ def _normalize_core_ratio_rows(
             "revenue_yoy": revenue_yoy,
             "net_income_yoy": net_income_yoy,
             "fcf_yield": fcf_yield,
-            "pe": _finite_float(row.get("pe")),
+            "pe": raw_pe,
             "pb": _finite_float(row.get("pb")),
             "ev_ebitda": _finite_float(row.get("ev_ebitda")),
             "debt_to_equity": stmt_de,

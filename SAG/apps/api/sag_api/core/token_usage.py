@@ -14,6 +14,7 @@ upstream gateway omits ``usage``) across all SAG stages:
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import json
 import os
@@ -630,7 +631,22 @@ def wrap_embedding_client_with_cache_and_metering(emb: Any, *, default_model: st
             record_embedding_cache_hit(model=emb_model, count=cache_hits)
         if missing_by_text:
             unique_missing = list(missing_by_text.keys())
-            fetched = await orig_batch_generate(unique_missing)
+            max_batch = 64
+            if len(unique_missing) <= max_batch:
+                fetched = await orig_batch_generate(unique_missing)
+            else:
+                chunks = [
+                    unique_missing[i : i + max_batch]
+                    for i in range(0, len(unique_missing), max_batch)
+                ]
+                sem = asyncio.Semaphore(4)
+
+                async def _run_chunk(batch_texts: list[str]) -> list[list[float]]:
+                    async with sem:
+                        return await orig_batch_generate(batch_texts)
+
+                chunk_results = await asyncio.gather(*(_run_chunk(c) for c in chunks))
+                fetched = [vec for part in chunk_results for vec in part]
             if raw_client is None:
                 record_embedding_usage(
                     model=emb_model,

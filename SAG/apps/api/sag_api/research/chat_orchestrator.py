@@ -429,6 +429,7 @@ class SAGRetrieverAdapter:
         as_of_date: date,
         top_k: int,
         principal: VerifiedPrincipal | None = None,
+        load_canonical_blocks: bool = True,
     ) -> RetrievalResult:
         if self._engine_manager is None or not tickers:
             return RetrievalResult()
@@ -626,11 +627,13 @@ class SAGRetrieverAdapter:
                 )
             )
 
-        blocks = await load_canonical_blocks_for_versions(
-            self._session,
-            [s.document_version_id for s in sections],
-            as_of_date=as_of_date,
-        )
+        blocks: dict[str, list[CanonicalBlockRecord]] = {}
+        if load_canonical_blocks and sections:
+            blocks = await load_canonical_blocks_for_versions(
+                self._session,
+                [s.document_version_id for s in sections],
+                as_of_date=as_of_date,
+            )
         leiden_nodes, hipporag_hops = self._extract_routing_telemetry(merged_stats)
         return RetrievalResult(
             sections=sections,
@@ -702,6 +705,7 @@ class SAGRetrieverAdapter:
         top_k: int = 6,
         principal: VerifiedPrincipal | None = None,
         kg_partner_tickers: Sequence[str] = (),
+        load_canonical_blocks: bool = True,
     ) -> RetrievalResult:
         """Layer 3 CROSS-REF channel: pull verbatim SearchUnits from OTHER tickers mentioning target(s)
         or linked via PIT KG edges (`mentioned_tickers CONTAINS target AND project_id != target`),
@@ -943,11 +947,13 @@ class SAGRetrieverAdapter:
                         hit_ver_ids = sorted(
                             {str(hit_payloads[p].get("document_version_id") or "") for p in top_pids}
                         )
-                        blocks_map = await load_canonical_blocks_for_versions(
-                            self._session,
-                            hit_ver_ids,
-                            as_of_date=as_of_date,
-                        )
+                        blocks_map: dict[str, list[CanonicalBlockRecord]] = {}
+                        if load_canonical_blocks and hit_ver_ids:
+                            blocks_map = await load_canonical_blocks_for_versions(
+                                self._session,
+                                hit_ver_ids,
+                                as_of_date=as_of_date,
+                            )
                         for pid_key in top_pids:
                             pl = hit_payloads[pid_key]
                             vid_val = str(pl.get("document_version_id") or "")
@@ -3383,6 +3389,7 @@ class ResearchChatOrchestrator:
             if smart_read.mode_applied == "on" and smart_read.linked_sessions:
                 await evidence.register_linked_sessions(smart_read.linked_sessions)
 
+        use_isolated_stores = self._session_factory is not None
         ctx = ResearchToolContext(
             as_of_date=as_of_date,
             principal=principal,
@@ -3394,9 +3401,21 @@ class ResearchChatOrchestrator:
             catalog_profiles=catalog_profiles,
             engine_manager=self._engine_manager,
             core_reader=self._core_reader,
-            kg_store_override=self._kg_store,
-            table_store_override=self._table_store,
-            retriever_override=self._retriever,
+            # When session_factory is configured, never share request-scoped SQLAlchemy stores across
+            # parallel asyncio.gather tools (prevents SQLAlchemy SAWarning/InvalidRequestError 20/isce).
+            kg_store_override=(
+                None if (use_isolated_stores and isinstance(self._kg_store, SQLAlchemyKGStore)) else self._kg_store
+            ),
+            table_store_override=(
+                None
+                if (use_isolated_stores and isinstance(self._table_store, SQLAlchemyTableStore))
+                else self._table_store
+            ),
+            retriever_override=(
+                None
+                if (use_isolated_stores and isinstance(self._retriever, SAGRetrieverAdapter))
+                else self._retriever
+            ),
             reranker=self._reranker,
             enable_kg=request.enable_kg,
             memory_mode=request.memory_mode,
@@ -3408,6 +3427,25 @@ class ResearchChatOrchestrator:
             include_recent_pairs=include_recent_pairs,
         )
 
+        activity_log: list[dict[str, Any]] = [
+            {
+                "id": "routing-1",
+                "type": "routing",
+                "turn": 0,
+                "title": "Định tuyến Tier-0 (Kev-4b)",
+                "text": (
+                    f"Ý định: {route_decision.get('task_action') or 'fact_lookup'} · "
+                    f"Ngân sách: {route_decision.get('reasoning_budget_tier') or 'standard_2_3_steps'} · "
+                    f"Mã: {', '.join(explicit_tickers) if explicit_tickers else 'Tự nhận diện'} · "
+                    f"PIT: {as_of_date.isoformat()}"
+                ),
+                "route_intent": route_decision.get("task_action"),
+                "budget_tier": route_decision.get("reasoning_budget_tier"),
+                "tickers": list(explicit_tickers),
+                "status": "done",
+                "timestamp_ms": int((time.perf_counter() - started) * 1000),
+            }
+        ]
         yield (
             "stage",
             {
@@ -3423,6 +3461,7 @@ class ResearchChatOrchestrator:
                 },
             },
         )
+        yield ("thought", activity_log[0])
 
         event_queue: asyncio.Queue[tuple[str, dict[str, Any]] | None] = asyncio.Queue()
 
@@ -3434,6 +3473,15 @@ class ResearchChatOrchestrator:
         async def _on_delta(text_chunk: str) -> None:
             await event_queue.put(("delta", {"text": text_chunk}))
 
+        async def _on_thought(thought_evt: dict[str, Any]) -> None:
+            await event_queue.put(("thought", thought_evt))
+
+        async def _on_tool_call(call_evt: dict[str, Any]) -> None:
+            await event_queue.put(("tool_call", call_evt))
+
+        async def _on_tool_result(result_evt: dict[str, Any]) -> None:
+            await event_queue.put(("tool_result", result_evt))
+
         async def _run_agent() -> Any:
             try:
                 return await run_research_agent_turn(
@@ -3444,6 +3492,9 @@ class ResearchChatOrchestrator:
                     explicit_tickers=explicit_tickers,
                     on_stage=_on_stage,
                     on_delta=_on_delta,
+                    on_thought=_on_thought,
+                    on_tool_call=_on_tool_call,
+                    on_tool_result=_on_tool_result,
                 )
             finally:
                 await event_queue.put(None)
@@ -3455,6 +3506,7 @@ class ResearchChatOrchestrator:
                 break
             yield item
         outcome = await agent_task
+        activity_log.extend(outcome.activity_log)
 
         for raw_bs in outcome.extra_blindspots:
             blindspots.append(DeclaredBlindspotItem(**raw_bs))
@@ -3679,6 +3731,25 @@ class ResearchChatOrchestrator:
         hallucinated_mem_count = sum(
             1 for b in ver_res.blindspots if b.get("code") == "HALLUCINATED_MEMORY_ID"
         )
+        verification_activity = {
+            "id": "verification-stage7",
+            "type": "verification",
+            "turn": outcome.agent_turns + 1,
+            "title": "Kiểm chứng Quote Hash & Số học (Stage 7)",
+            "text": (
+                f"{len(ver_res.verified_citations)} trích dẫn khớp gốc · "
+                f"{len(ver_res.rejected_citations)} loại bỏ · "
+                f"{unsupported_num_count} số liệu chưa khớp · "
+                f"tỷ lệ xác thực {round(ver_res.verified_rate * 100)}%"
+            ),
+            "verified_citations": len(ver_res.verified_citations),
+            "rejected_citations": len(ver_res.rejected_citations),
+            "unsupported_numeric_claims": unsupported_num_count,
+            "status": "done",
+            "timestamp_ms": int((time.perf_counter() - started) * 1000),
+        }
+        activity_log.append(verification_activity)
+        yield ("thought", verification_activity)
         yield (
             "stage",
             {
@@ -3727,6 +3798,7 @@ class ResearchChatOrchestrator:
             hydrated_tables=hydrated_tables,
             screening_results=screening_results,
             tool_traces=tool_traces,
+            activity_log=activity_log,
             calculator_traces=calculator_traces,
             graph_hops=graph_hops,
             discrepancy_alerts=discrepancy_alerts,
@@ -3846,19 +3918,24 @@ class ResearchChatOrchestrator:
                 except Exception:  # noqa: BLE001
                     has_user_mems = False
 
+        explicit_tickers = self.validate_and_resolve_tickers(
+            primary_ticker=request.ticker,
+            compare_tickers=request.compare_tickers,
+            principal=principal,
+        )
+
         router_state = session_ledger.to_router_state()
         router_state["has_user_memories"] = has_user_mems
+        if explicit_tickers:
+            merged_active = list(
+                dict.fromkeys([*explicit_tickers, *(router_state.get("active_tickers") or ())])
+            )
+            router_state["active_tickers"] = merged_active
 
         route_decision = await aroute_research_query(
             request.query,
             chat_mode=chat_mode,
             session_state=router_state,
-        )
-
-        explicit_tickers = self.validate_and_resolve_tickers(
-            primary_ticker=request.ticker,
-            compare_tickers=request.compare_tickers,
-            principal=principal,
         )
 
         # Adaptive Zero-Mem Topic-Continuity Gate

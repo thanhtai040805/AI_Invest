@@ -227,6 +227,94 @@ export interface ToolTraceItem {
   [key: string]: unknown
 }
 
+export interface SelectedDocumentPreview {
+  citation_id: string
+  ticker: string
+  sub_doc_slot: string
+  page: number
+  fiscal_year?: number | null
+  heading?: string
+  score?: number
+  evidence_origin?: "PRIMARY" | "CROSS_REF" | string
+  table_id?: string | null
+}
+
+export interface HydratedTablePreview {
+  table_id: string
+  ticker?: string
+  title: string
+  sub_doc_slot?: string
+  page?: number
+  verification_status: string
+  rows_count?: number
+  unit_raw?: string
+}
+
+export interface KgHopPreview {
+  layer: string
+  src_label: string
+  relation_type: string
+  dst_label: string
+  beta?: number | null
+  verification_tier?: string
+}
+
+export interface CalcResultPreview {
+  calc_id: string
+  formula: string
+  description?: string
+  formatted: string
+}
+
+export interface ScreeningPreviewRow {
+  ticker: string
+  sector?: string
+  fiscal_year?: number | null
+  pe?: number | null
+  pb?: number | null
+  roe?: number | null
+  gross_margin?: number | null
+  net_margin?: number | null
+}
+
+export interface ResearchActivityItem {
+  id: string
+  call_id?: string
+  type: "routing" | "thought" | "tool_call" | "verification" | string
+  turn?: number
+  kind?: "plan" | "reasoning" | "verification" | string
+  title?: string
+  text?: string
+  append?: boolean
+  tool?: string
+  label?: string
+  stage?: SseStageName | string
+  status?: "running" | "done" | "error"
+  route_intent?: string | null
+  budget_tier?: string | null
+  tickers?: string[]
+  queries?: string[]
+  sub_doc_slots?: string[]
+  args_preview?: string
+  duration_ms?: number
+  summary?: string
+  crag_grade?: string | null
+  reranker_model?: string | null
+  recall_count?: number | null
+  returned_count?: number | null
+  selected_documents?: SelectedDocumentPreview[]
+  hydrated_tables?: HydratedTablePreview[]
+  kg_hops?: KgHopPreview[]
+  calc_result?: CalcResultPreview | null
+  screening_preview?: ScreeningPreviewRow[]
+  error?: string | null
+  verified_citations?: number
+  rejected_citations?: number
+  unsupported_numeric_claims?: number
+  timestamp_ms?: number
+  completed_at_ms?: number
+}
+
 export interface ResearchTelemetry {
   routing_slot?: string
   route_intent?: string | null
@@ -277,6 +365,7 @@ export interface ResearchChatMetadata {
   hydrated_tables?: HydratedTable[]
   screening_results?: ScreeningResultRow[]
   tool_traces?: ToolTraceItem[]
+  activity_log?: ResearchActivityItem[]
   calculator_traces?: CalculatorTrace[]
   graph_hops?: GraphHop[]
   discrepancy_alerts?: DiscrepancyAlert[]
@@ -389,4 +478,66 @@ export function normalizeCalculatorInputs(
     }))
   }
   return []
+}
+
+/**
+ * Reconstruct a structured activity timeline from persisted metadata.
+ * Prefers `metadata.activity_log` emitted by SAG v2; gracefully degrades to `tool_traces` + `citations`
+ * for historical messages saved before live activity logging was added.
+ */
+export function resolveActivityLogFromMetadata(
+  meta?: ResearchChatMetadata | null,
+): ResearchActivityItem[] {
+  if (!meta) return []
+  if (Array.isArray(meta.activity_log) && meta.activity_log.length > 0) {
+    return meta.activity_log
+  }
+  const items: ResearchActivityItem[] = []
+  const tel = meta.telemetry ?? {}
+  if (meta.route_intent || tel.route_intent) {
+    items.push({
+      id: "fallback-routing",
+      type: "routing",
+      turn: 0,
+      title: "Định tuyến Tier-0",
+      text: `Ý định: ${meta.route_intent || tel.route_intent} · Ngân sách: ${tel.route_budget_tier || "standard"} · PIT: ${meta.as_of_date || "—"}`,
+      status: "done",
+    })
+  }
+  const traces = Array.isArray(meta.tool_traces) ? meta.tool_traces : []
+  traces.forEach((tr, idx) => {
+    items.push({
+      id: `fallback-tool-${idx}`,
+      call_id: `fallback-tool-${idx}`,
+      type: "tool_call",
+      tool: tr.tool,
+      label: tr.tool,
+      status: "done",
+      tickers: Array.isArray(tr.tickers) ? tr.tickers : [],
+      queries: Array.isArray(tr.queries) ? tr.queries : [],
+      crag_grade: tr.crag_grade ?? null,
+      recall_count: tr.recall_count ?? null,
+      returned_count: tr.returned_count ?? null,
+      duration_ms: tr.duration_ms,
+      summary:
+        tr.tool === "search_corporate_filings"
+          ? `Chọn lọc ${tr.returned_count ?? 0}/${tr.recall_count ?? tr.returned_count ?? 0} đoạn${tr.crag_grade ? ` · CRAG ${tr.crag_grade}` : ""}`
+          : `${tr.returned_count ?? tr.matched_count ?? 0} kết quả`,
+    })
+  })
+  const cits = Array.isArray(meta.citations) ? meta.citations : []
+  if (cits.length > 0) {
+    const verified = cits.filter((c) => c.verified).length
+    items.push({
+      id: "fallback-verification",
+      type: "verification",
+      title: "Kiểm chứng Quote Hash & Số học (Stage 7)",
+      text: `${verified}/${cits.length} trích dẫn khớp gốc · ${tel.unsupported_numeric_claims_count ?? 0} số liệu chưa khớp`,
+      verified_citations: verified,
+      rejected_citations: Array.isArray(meta.rejected_citations) ? meta.rejected_citations.length : 0,
+      unsupported_numeric_claims: tel.unsupported_numeric_claims_count ?? 0,
+      status: "done",
+    })
+  }
+  return items
 }

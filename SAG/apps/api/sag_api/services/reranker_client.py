@@ -222,7 +222,8 @@ class CrossEncoderRerankerClient:
                 "return_documents": False,
             }
 
-        timeout = httpx.Timeout(self._timeout, connect=min(1.0, self._timeout))
+        timeout_s = max(self._timeout, 6.0)
+        timeout = httpx.Timeout(timeout_s, connect=min(2.5, timeout_s))
         try:
             if self._http_client is not None:
                 resp = await self._http_client.post(url, headers=headers, json=body, timeout=timeout)
@@ -300,12 +301,38 @@ async def rerank_and_grade_sections(
 
     client = reranker or CrossEncoderRerankerClient()
     threshold = float(min_rerank_score if min_rerank_score is not None else settings.rerank_min_score)
-    bounded_pool = items[:48]
+    max_rerank_pool = 24
+    norm_targets = [str(t).strip().upper() for t in target_tickers if str(t).strip()]
+    if len(norm_targets) >= 2 and len(items) > max_rerank_pool:
+        # Interleave across target tickers before capping to 24 so multi-ticker comparisons stay balanced
+        by_tk: dict[str, list[Any]] = {tk: [] for tk in norm_targets}
+        others: list[Any] = []
+        for sec in items:
+            stk = _section_ticker(sec)
+            if stk in by_tk:
+                by_tk[stk].append(sec)
+            else:
+                others.append(sec)
+        balanced: list[Any] = []
+        per_tk_budget = max(4, max_rerank_pool // len(norm_targets))
+        for tk in norm_targets:
+            balanced.extend(by_tk[tk][:per_tk_budget])
+        if len(balanced) < max_rerank_pool:
+            seen_ids = {id(s) for s in balanced}
+            for sec in [*items, *others]:
+                if id(sec) not in seen_ids:
+                    balanced.append(sec)
+                    seen_ids.add(id(sec))
+                    if len(balanced) >= max_rerank_pool:
+                        break
+        bounded_pool = balanced[:max_rerank_pool]
+    else:
+        bounded_pool = items[:max_rerank_pool]
 
     scores: list[float] | None = None
     reranker_used = False
     if client.is_enabled():
-        docs = [_section_text_for_rerank(sec) for sec in bounded_pool]
+        docs = [_section_text_for_rerank(sec, max_chars=1100) for sec in bounded_pool]
         scores = await client.score_documents(query, docs)
         reranker_used = scores is not None and len(scores) == len(bounded_pool)
 

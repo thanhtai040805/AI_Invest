@@ -94,6 +94,39 @@ def _classify_llm_error(e: Exception, *, stage: ErrorStage) -> ApiError:
     return UpstreamError(f"生成失败：{detail}", layer=ErrorLayer.LLM, stage=stage)
 
 
+_DEEPINFRA_BUSY_FALLBACK_CHAIN: dict[str, tuple[str, ...]] = {
+    "deepseek-ai/deepseek-v4-flash-0731": (
+        "deepseek-ai/DeepSeek-V3.2",
+        "Qwen/Qwen3-235B-A22B-Instruct-2507",
+    ),
+    "deepseek-ai/deepseek-v4-pro-0731": (
+        "deepseek-ai/DeepSeek-V3.2",
+        "Qwen/Qwen3-235B-A22B-Instruct-2507",
+    ),
+}
+
+
+def _fallback_models_for_busy_error(model: str, base_url: str | None) -> tuple[str, ...]:
+    if not base_url or "deepinfra" not in base_url.casefold():
+        return ()
+    clean = model.strip()
+    if clean.startswith("openai/"):
+        clean = clean[len("openai/") :]
+    return _DEEPINFRA_BUSY_FALLBACK_CHAIN.get(clean.casefold(), ())
+
+
+def _is_busy_rate_limit_error(err: Exception) -> bool:
+    name = type(err).__name__
+    status = getattr(err, "status_code", None)
+    msg = str(err).casefold()
+    return (
+        name in {"RateLimitError", "ServiceUnavailableError", "APIConnectionError"}
+        or status in {429, 503}
+        or "model busy" in msg
+        or "rate limit" in msg
+    )
+
+
 class LLMClient:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -209,6 +242,38 @@ class LLMClient:
                 tool_choice=request.tool_choice if request.tools else None,
                 stream=True,
             )
+        except Exception as first_err:  # noqa: BLE001
+            if _is_busy_rate_limit_error(first_err):
+                fallbacks = _fallback_models_for_busy_error(
+                    self._settings.routed_llm_model,
+                    self._settings.llm_base_url,
+                )
+                recovered = False
+                for fb_model in fallbacks:
+                    log.warning(
+                        "Primary LLM busy (%s); failing over streaming turn to %s",
+                        type(first_err).__name__,
+                        fb_model,
+                    )
+                    try:
+                        stream = await self._create_completion(
+                            serialized_messages,
+                            tools=list(request.tools) or None,
+                            tool_choice=request.tool_choice if request.tools else None,
+                            stream=True,
+                            model_override=fb_model,
+                        )
+                        recovered = True
+                        break
+                    except Exception:  # noqa: BLE001
+                        continue
+                if not recovered:
+                    log.warning("LLM 轮次流式调用失败：%s", first_err)
+                    raise _classify_llm_error(first_err, stage=ErrorStage.GENERATE) from first_err
+            else:
+                log.warning("LLM 轮次流式调用失败：%s", first_err)
+                raise _classify_llm_error(first_err, stage=ErrorStage.GENERATE) from first_err
+        try:
             async for chunk in stream:
                 cancellation.raise_if_cancelled()
                 raw_usage = _attr(chunk, "usage")
@@ -240,6 +305,9 @@ class LLMClient:
                 choice = choices[0]
                 finish_reason = _attr(choice, "finish_reason") or finish_reason
                 delta = _attr(choice, "delta", {})
+                reasoning_tok = _attr(delta, "reasoning_content") or _attr(delta, "reasoning")
+                if reasoning_tok:
+                    yield ModelChunk(reasoning_delta=str(reasoning_tok))
                 token = _attr(delta, "content")
                 if token:
                     collected_parts.append(token)

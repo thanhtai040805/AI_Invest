@@ -978,18 +978,22 @@ def _dedup_candidates(curr_blocks, prior_blocks, signatures, block_embeddings, c
                     if b.block_type in ("table", "table_card") or pb.block_type in ("table", "table_card"):
                         from sag_api.research.table_engine import table_safe_jaccard_should_merge
 
-                        b_meta = b.dedup_signature_json if isinstance(b.dedup_signature_json, dict) else {}
-                        pb_meta = pb.dedup_signature_json if isinstance(pb.dedup_signature_json, dict) else {}
+                        raw_b_meta = getattr(b, "dedup_signature_json", None)
+                        raw_pb_meta = getattr(pb, "dedup_signature_json", None)
+                        b_meta = raw_b_meta if isinstance(raw_b_meta, dict) else {}
+                        pb_meta = raw_pb_meta if isinstance(raw_pb_meta, dict) else {}
+                        b_sec_path = getattr(b, "section_path", None) or ""
+                        pb_sec_path = getattr(pb, "section_path", None) or ""
                         sec_a = {
                             "text": b.normalized_text,
-                            "table_id": b_meta.get("table_id") or b.source_anchor or b.id,
-                            "sub_doc_slot": b_meta.get("sub_doc_slot") or (b.section_path or "").split(" > ")[0],
+                            "table_id": b_meta.get("table_id") or getattr(b, "source_anchor", None) or b.id,
+                            "sub_doc_slot": b_meta.get("sub_doc_slot") or b_sec_path.split(" > ")[0],
                             "fiscal_year": getattr(b, "fiscal_year", 0),
                         }
                         sec_b = {
                             "text": pb.normalized_text,
-                            "table_id": pb_meta.get("table_id") or pb.source_anchor or pb.id,
-                            "sub_doc_slot": pb_meta.get("sub_doc_slot") or (pb.section_path or "").split(" > ")[0],
+                            "table_id": pb_meta.get("table_id") or getattr(pb, "source_anchor", None) or pb.id,
+                            "sub_doc_slot": pb_meta.get("sub_doc_slot") or pb_sec_path.split(" > ")[0],
                             "fiscal_year": getattr(pb, "fiscal_year", 0),
                         }
                         if not table_safe_jaccard_should_merge(sec_a, sec_b, threshold=threshold):
@@ -1167,7 +1171,16 @@ async def run_dedup_and_temporal_stage(
                 log.warning("Could not compute block embeddings for Tier 4 dedup: %s", emb_err)
 
         from sag_api.services.cpu_worker import run_cpu
-        fields = ("id", "normalized_text", "content_hash", "block_type", "document_version_id")
+        fields = (
+            "id",
+            "normalized_text",
+            "content_hash",
+            "block_type",
+            "document_version_id",
+            "dedup_signature_json",
+            "source_anchor",
+            "section_path",
+        )
         exact_block_matches, near_dup_candidates = await run_cpu("dedup_candidates", {
             "current": [
                 {**{key: getattr(b, key) for key in fields}, "document_id": document_id}

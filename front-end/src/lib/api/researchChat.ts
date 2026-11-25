@@ -5,6 +5,7 @@ import {
   type MemoryMode,
   type ParsedSseFrame,
   type RelatedSessionsResponse,
+  type ResearchActivityItem,
   type ResearchChatMetadata,
   type ResearchChatMode,
   type SseStageName,
@@ -159,6 +160,9 @@ async function refreshAccessToken(): Promise<string | null> {
 
 export interface StreamResearchChatCallbacks {
   onStage?: (stage: SseStageEvent) => void
+  onThought?: (item: ResearchActivityItem) => void
+  onToolCall?: (item: ResearchActivityItem) => void
+  onToolResult?: (item: ResearchActivityItem) => void
   onDelta?: (text: string) => void
   onDone?: (done: SseDoneEvent) => void
   onError?: (err: SseErrorEvent) => void
@@ -231,6 +235,37 @@ export async function streamResearchChat(
           parsed.detail && typeof parsed.detail === "object"
             ? (parsed.detail as Record<string, unknown>)
             : undefined,
+      })
+      return
+    }
+
+    if (frame.event === "thought" && parsed) {
+      callbacks.onThought?.({
+        ...(parsed as unknown as ResearchActivityItem),
+        id: String(parsed.id ?? `thought-${Date.now()}`),
+        type: String(parsed.type ?? "thought"),
+      })
+      return
+    }
+
+    if (frame.event === "tool_call" && parsed) {
+      callbacks.onToolCall?.({
+        ...(parsed as unknown as ResearchActivityItem),
+        id: String(parsed.id ?? parsed.call_id ?? `tool-${Date.now()}`),
+        call_id: String(parsed.call_id ?? parsed.id ?? ""),
+        type: "tool_call",
+        status: "running",
+      })
+      return
+    }
+
+    if (frame.event === "tool_result" && parsed) {
+      callbacks.onToolResult?.({
+        ...(parsed as unknown as ResearchActivityItem),
+        id: String(parsed.id ?? parsed.call_id ?? `tool-res-${Date.now()}`),
+        call_id: String(parsed.call_id ?? parsed.id ?? ""),
+        type: "tool_call",
+        status: parsed.status === "error" ? "error" : "done",
       })
       return
     }

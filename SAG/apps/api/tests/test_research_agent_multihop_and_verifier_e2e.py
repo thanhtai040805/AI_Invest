@@ -502,6 +502,19 @@ async def test_unified_agent_parallel_tools_isolated_sessions_and_short_circuit_
     assert "tôi sẽ gọi công cụ" not in deltas_text
     assert "[C99 UNVERIFIED_CLAIM]" in deltas_text
 
+    # 2b. Live thinking, tool_call, and tool_result SSE events fired and persisted into activity_log
+    thought_events = [p for ev, p in events if ev == "thought"]
+    tool_call_events = [p for ev, p in events if ev == "tool_call"]
+    tool_result_events = [p for ev, p in events if ev == "tool_result"]
+    assert len(thought_events) >= 2
+    assert len(tool_call_events) == 3
+    assert len(tool_result_events) == 3
+    search_res = next(p for p in tool_result_events if p.get("tool") == "search_corporate_filings")
+    assert search_res["status"] == "done"
+    assert len(search_res.get("selected_documents") or []) >= 1
+    assert search_res["selected_documents"][0]["citation_id"] == "C1"
+    assert len(meta.get("activity_log") or []) >= 5
+
     # 3. Stage 7 verified [C1], caught hallucinated [C99], and prepended inline warning banner
     assert answer.startswith("> ⚠️ **Cảnh báo kiểm chứng tự động (Stage 7):**")
     assert len(meta["citations"]) == 1
@@ -537,3 +550,80 @@ async def test_unified_agent_parallel_tools_isolated_sessions_and_short_circuit_
     assert sc_meta["route_intent"] == "chitchat_casual"
     assert sc_meta["telemetry"]["retrieval_mode"] == "ZERO_DATA_SHORT_CIRCUIT"
     assert len(sc_ans) > 0
+
+
+def test_sentence_stream_gate_extracts_think_and_strips_meta_preamble() -> None:
+    gate = SentenceStreamGate(valid_cid_ceiling=lambda: 3, lookahead_chars=20)
+    gate.reset_for_turn(tools_enabled=False)
+    out = gate.push_delta("<think>Kiểm tra doanh thu FPT và kế hoạch ĐHĐCĐ.</think>\n")
+    thoughts = gate.drain_extracted_thoughts()
+    assert out == []
+    assert len(thoughts) == 1
+    assert "Kiểm tra doanh thu FPT" in thoughts[0]
+
+    out2 = gate.push_delta("Tôi đã có đủ dữ liệu. Hãy tổng hợp:\nDoanh thu thuần FPT đạt 70.113 tỷ [C1]. ")
+    out3 = gate.flush_turn_end(has_tool_calls=False)
+    prose = "".join([*out2, *out3])
+    assert "Tôi đã có đủ dữ liệu" not in prose
+    assert "<think>" not in prose and "</think>" not in prose
+    assert "70.113 tỷ [C1]" in prose
+
+
+def test_decision_router_normalizes_clarify_request_when_tickers_or_clear() -> None:
+    from sag_api.services.decision_router import _research_route_from_answers
+
+    raw_answers = {
+        "domain_class": {"choice": "stock_research_data", "confidence": 0.45},
+        "task_action": {"choice": "clarify_request", "confidence": 0.41},
+        "evidence_source_hint": {"choice": "filings_and_tables", "confidence": 0.70},
+        "reasoning_budget_tier": {"choice": "standard_2_3_steps", "confidence": 0.65},
+        "temporal_scope": {"choice": "specific_period", "confidence": 0.80},
+        "ambiguity_and_guard": {"choice": "underspecified_ask_clarify", "confidence": 0.40},
+        "output_style": {"choice": "executive_memo", "confidence": 0.60},
+        "memory_recall_need": {"choice": "none", "confidence": 0.90},
+    }
+    routed = _research_route_from_answers(
+        "Phân tích tổng tài sản và nợ xấu của CTG năm 2025",
+        raw_answers,
+        chat_mode="GENERAL",
+        model="Kev-4b",
+        latency_ms=120.0,
+        session_state={"active_tickers": ["CTG"]},
+    )
+    assert routed["task_action"] == "fact_lookup"
+    assert routed["ambiguity_and_guard"] == "clear"
+    assert routed["max_agent_turns"] >= 3
+
+
+def test_select_diverse_sections_fast_on_large_chunks_with_near_dedup() -> None:
+    import time
+
+    base_a = "Doanh thu thuần hợp nhất và biên lợi nhuận gộp mảng công nghệ thông tin toàn cầu " * 45
+    base_b = "Dư nợ cho vay khách hàng và tỷ lệ bao phủ nợ xấu ngân hàng thương mại " * 45
+    candidates = [
+        RetrievedSection(
+            rank=i,
+            source_id="FPT" if i % 2 == 0 else "CTG",
+            source_name="FPT" if i % 2 == 0 else "CTG",
+            document_id=f"doc_{i % 6}",
+            document_name=f"BCTC {i % 6}",
+            heading=f"Muc {i}",
+            content=(base_a if i % 2 == 0 else base_b) + f" chi tiet {i * 31}",
+            score=0.95 - i * 0.004,
+        )
+        for i in range(120)
+    ]
+    # Add an exact near-duplicate of item 0
+    candidates.append(candidates[0].model_copy(update={"rank": 120, "chunk_id": "dup_0", "score": 0.80}))
+    t0 = time.perf_counter()
+    selected, stats = select_diverse_sections(
+        "So sánh doanh thu FPT và dư nợ CTG",
+        candidates,
+        limit=12,
+        per_document_limit=4,
+        min_per_project_quota=4,
+    )
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    assert len(selected) == 12
+    assert stats["deduplicated_count"] >= 1
+    assert elapsed_ms < 800, f"select_diverse_sections too slow: {elapsed_ms:.1f}ms"

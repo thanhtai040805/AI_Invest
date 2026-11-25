@@ -287,8 +287,8 @@ class EngineManager:
                 headers = {"api-key": api_key} if api_key else {}
                 try:
                     per_request_timeout = httpx.Timeout(
-                        min(timeout, 8.0),
-                        connect=min(timeout, 4.0),
+                        min(timeout, 25.0),
+                        connect=min(timeout, 8.0),
                     )
                     pool_limits = httpx.Limits(
                         max_connections=20,

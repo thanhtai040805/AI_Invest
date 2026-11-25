@@ -9,6 +9,7 @@ import {
   streamResearchChat,
   type EvalSummaryResponse,
   type MemoryMode,
+  type ResearchActivityItem,
   type ResearchChatMessage,
   type ResearchChatMetadata,
   type ResearchChatMode,
@@ -60,6 +61,8 @@ export function ResearchChatWorkspace() {
 
   const [streaming, setStreaming] = useState(false)
   const [streamingText, setStreamingText] = useState("")
+  const [liveActivity, setLiveActivity] = useState<ResearchActivityItem[]>([])
+  const [streamStartedAt, setStreamStartedAt] = useState<number | null>(null)
   const [stages, setStages] = useState<StageProgressItem[]>(createInitialStages)
   const [streamError, setStreamError] = useState<string | null>(null)
 
@@ -180,6 +183,8 @@ export function ResearchChatWorkspace() {
       setStreamError(null)
       setStreaming(true)
       setStreamingText("")
+      setLiveActivity([])
+      setStreamStartedAt(Date.now())
       setStages(createInitialStages())
 
       const effectiveTicker = primaryTicker.trim().toUpperCase() || undefined
@@ -224,6 +229,7 @@ export function ResearchChatWorkspace() {
       const controller = new AbortController()
       abortRef.current = controller
       let accumulatedText = ""
+      let accumulatedActivity: ResearchActivityItem[] = []
       let finished = false
 
       try {
@@ -253,6 +259,60 @@ export function ResearchChatWorkspace() {
                 })
               })
             },
+            onThought: (evt) => {
+              setLiveActivity((prev) => {
+                let next: ResearchActivityItem[]
+                if (evt.append && evt.id) {
+                  const idx = prev.findIndex((item) => item.id === evt.id)
+                  if (idx !== -1) {
+                    next = prev.map((item, i) =>
+                      i === idx
+                        ? {
+                            ...item,
+                            text: `${item.text ?? ""}${evt.text ?? ""}`,
+                            timestamp_ms: evt.timestamp_ms ?? item.timestamp_ms,
+                          }
+                        : item,
+                    )
+                  } else {
+                    next = [...prev, { ...evt, append: false }]
+                  }
+                } else {
+                  const idx = prev.findIndex((item) => item.id === evt.id)
+                  if (idx !== -1) {
+                    next = prev.map((item, i) => (i === idx ? { ...item, ...evt } : item))
+                  } else {
+                    next = [...prev, evt]
+                  }
+                }
+                accumulatedActivity = next
+                return next
+              })
+            },
+            onToolCall: (evt) => {
+              setLiveActivity((prev) => {
+                const matchKey = evt.call_id || evt.id
+                const idx = prev.findIndex((item) => (item.call_id || item.id) === matchKey)
+                const next =
+                  idx !== -1
+                    ? prev.map((item, i) => (i === idx ? { ...item, ...evt } : item))
+                    : [...prev, evt]
+                accumulatedActivity = next
+                return next
+              })
+            },
+            onToolResult: (evt) => {
+              setLiveActivity((prev) => {
+                const matchKey = evt.call_id || evt.id
+                const idx = prev.findIndex((item) => (item.call_id || item.id) === matchKey)
+                const next =
+                  idx !== -1
+                    ? prev.map((item, i) => (i === idx ? { ...item, ...evt } : item))
+                    : [...prev, evt]
+                accumulatedActivity = next
+                return next
+              })
+            },
             onDelta: (text) => {
               accumulatedText += text
               setStreamingText(accumulatedText)
@@ -261,12 +321,19 @@ export function ResearchChatWorkspace() {
               finished = true
               const assistantId = done.messageId || `local-assistant-${Date.now()}`
               const finalContent = done.answer || accumulatedText
+              const doneMeta: ResearchChatMetadata = {
+                ...(done.metadata ?? {}),
+                activity_log:
+                  Array.isArray(done.metadata?.activity_log) && done.metadata.activity_log.length > 0
+                    ? done.metadata.activity_log
+                    : accumulatedActivity,
+              }
               const assistantMsg: ResearchChatMessage = {
                 id: assistantId,
                 sessionId: sessionId ?? undefined,
                 role: "assistant",
                 content: finalContent,
-                metadata: done.metadata,
+                metadata: doneMeta,
                 createdAt: new Date().toISOString(),
               }
               setMessages((prev) => [...prev, assistantMsg])
@@ -331,6 +398,8 @@ export function ResearchChatWorkspace() {
         abortRef.current = null
         setStreaming(false)
         setStreamingText("")
+        setLiveActivity([])
+        setStreamStartedAt(null)
       }
     },
     [
@@ -608,6 +677,8 @@ export function ResearchChatWorkspace() {
           onSelectAssistantMessage={handleSelectAssistantMessage}
           streaming={streaming}
           streamingText={streamingText}
+          liveActivity={liveActivity}
+          streamStartedAt={streamStartedAt}
           stages={stages}
           streamError={streamError}
           onSendPrompt={(q) => void handleSendPrompt(q)}

@@ -179,6 +179,7 @@ export interface ResearchChatMetadata {
   hydrated_tables?: ResearchChatHydratedTable[];
   screening_results?: Array<Record<string, unknown>>;
   tool_traces?: Array<Record<string, unknown>>;
+  activity_log?: Array<Record<string, unknown>>;
   calculator_traces?: ResearchChatCalculatorTrace[];
   graph_hops?: ResearchChatGraphHop[];
   discrepancy_alerts?: unknown[];

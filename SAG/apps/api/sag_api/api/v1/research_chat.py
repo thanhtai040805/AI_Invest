@@ -362,6 +362,8 @@ async def ingest_research_batch(
     from sag_api.research.batch_ingest import (
         PILOT_8_TICKERS,
         AsyncPGCoreDBBatchReader,
+        build_research_logical_source_id,
+        build_research_upload_filename,
         resolve_default_core_database_url,
         run_research_batch_ingest,
     )
@@ -403,14 +405,10 @@ async def ingest_research_batch(
         async def _internal_upload(bundle: SubDocumentBundle) -> dict[str, Any]:
             idem_key = (
                 f"{bundle.project_id}-{bundle.fiscal_year}Q{bundle.fiscal_quarter}-"
-                f"{bundle.sub_doc_slot}-{bundle.content_hash[:12]}"
+                f"{bundle.doc_type}-{bundle.sub_doc_slot}-{bundle.content_hash[:12]}"
             )
-            logical_source_id = (
-                f"hose:{bundle.project_id}:{bundle.fiscal_year}Q{bundle.fiscal_quarter}:{bundle.sub_doc_slot}"
-            )
-            filename = (
-                f"{bundle.project_id}_{bundle.fiscal_year}Q{bundle.fiscal_quarter}_{bundle.sub_doc_slot}.md"
-            )
+            logical_source_id = build_research_logical_source_id(bundle)
+            filename = build_research_upload_filename(bundle)
             res = await handle_document_upload(
                 session,
                 tenant_id=principal.tenant_id or principal.organization_id,

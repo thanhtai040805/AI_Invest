@@ -1954,6 +1954,11 @@ async def _expand_multi_hop_sections(
 
                 # HippoRAG 2 Bridge Entity Activation using pre-indexed scope knowledge units
                 if top_seed_entities:
+                    # Bound entity bridge fan-out to top 16 highest-scoring entities for fast multi-ticker latency
+                    if len(top_seed_entities) > 16:
+                        top_seed_entities = dict(
+                            sorted(top_seed_entities.items(), key=lambda kv: -kv[1])[:16]
+                        )
                     ent_doc_versions: dict[str, set[str]] = defaultdict(set)
                     cont_entities = {
                         b_ent for b_ent in top_seed_entities if _is_cjk_or_continuous_entity(b_ent)
@@ -1963,49 +1968,40 @@ async def _expand_multi_hop_sections(
                         for b_ent in top_seed_entities
                         if b_ent not in cont_entities and len(b_ent) >= 5
                     }
-                    for v_id, ku_list in k_index.ku_by_version.items():
-                        if not _version_within_pit(v_id):
-                            continue
-                        if v_id in seed_version_ids and not allow_intra_version_bridge:
-                            continue
-                        for ku in ku_list:
-                            if not _ku_within_pit(ku):
-                                continue
-                            if (
-                                allow_intra_version_bridge
-                                and v_id in seed_version_ids
-                                and (
-                                    ku.id in seed_ku_scores
-                                    or (
-                                        ku.sec_path_norm
-                                        and ku.sec_path_norm in seed_sec_paths_by_version.get(v_id, set())
-                                    )
-                                )
-                            ):
-                                continue
-                            for b_ent in top_seed_entities:
-                                is_cont = b_ent in cont_entities
-                                if (
-                                    (
-                                        is_cont
-                                        or " " in b_ent
-                                        or any(c.isdigit() for c in b_ent)
-                                        or len(b_ent) >= 6
-                                    )
-                                    and b_ent in ku.entities_norm
-                                ) or (
-                                    is_cont
-                                    and len(b_ent) >= 2
-                                    and b_ent in ku.sec_path_norm
+                    # Use precomputed inverted index for exact entity hits first (O(1) per entity)
+                    for b_ent in top_seed_entities:
+                        exact_vers = k_index.ent_exact_versions.get(b_ent)
+                        if exact_vers:
+                            for v_id in exact_vers:
+                                if _version_within_pit(v_id) and (
+                                    allow_intra_version_bridge or v_id not in seed_version_ids
                                 ):
                                     ent_doc_versions[b_ent].add(v_id)
-                                else:
-                                    pat = path_patterns.get(b_ent)
-                                    if (
-                                        pat is not None
-                                        and b_ent in ku.sec_path_norm
-                                        and pat.search(ku.sec_path_norm)
-                                    ):
+                    # Only scan KUs for section_path substring/regex matches (skipping KUs with empty sec_path_norm)
+                    if path_patterns or cont_entities:
+                        for v_id, ku_list in k_index.ku_by_version.items():
+                            if not _version_within_pit(v_id):
+                                continue
+                            if v_id in seed_version_ids and not allow_intra_version_bridge:
+                                continue
+                            seen_sec_paths: set[str] = set()
+                            seed_sec_set = seed_sec_paths_by_version.get(v_id, set())
+                            for ku in ku_list:
+                                sp = ku.sec_path_norm
+                                if not sp or sp in seen_sec_paths or not _ku_within_pit(ku):
+                                    continue
+                                if (
+                                    allow_intra_version_bridge
+                                    and v_id in seed_version_ids
+                                    and (ku.id in seed_ku_scores or sp in seed_sec_set)
+                                ):
+                                    continue
+                                seen_sec_paths.add(sp)
+                                for b_ent in cont_entities:
+                                    if len(b_ent) >= 2 and b_ent in sp:
+                                        ent_doc_versions[b_ent].add(v_id)
+                                for b_ent, pat in path_patterns.items():
+                                    if b_ent in sp and pat.search(sp):
                                         ent_doc_versions[b_ent].add(v_id)
 
                     max_bridge_df = max(3, min(10, math.ceil(0.08 * max(1, len(current_versions)))))

@@ -949,12 +949,12 @@ def _extract_table_scope_signature(
     return table_id, sub_doc_slot, tuple(sorted(periods)), is_tabular, numeric_tokens
 
 
-def _has_distinct_table_identity(
-    left: RetrievedSection,
-    right: RetrievedSection,
+def _signatures_have_distinct_table_identity(
+    left_sig: tuple[str, str, tuple[str, ...], bool, tuple[str, ...]],
+    right_sig: tuple[str, str, tuple[str, ...], bool, tuple[str, ...]],
 ) -> bool:
-    l_table, l_slot, l_periods, l_tabular, l_nums = _extract_table_scope_signature(left)
-    r_table, r_slot, r_periods, r_tabular, r_nums = _extract_table_scope_signature(right)
+    l_table, l_slot, l_periods, l_tabular, l_nums = left_sig
+    r_table, r_slot, r_periods, r_tabular, r_nums = right_sig
     if l_table and r_table and l_table != r_table:
         return True
     if l_slot and r_slot and l_slot != r_slot:
@@ -966,8 +966,24 @@ def _has_distinct_table_identity(
     return False
 
 
-def _content_shingles(section: RetrievedSection) -> frozenset[str]:
-    table_id, sub_doc_slot, periods, _, _ = _extract_table_scope_signature(section)
+def _has_distinct_table_identity(
+    left: RetrievedSection,
+    right: RetrievedSection,
+) -> bool:
+    return _signatures_have_distinct_table_identity(
+        _extract_table_scope_signature(left),
+        _extract_table_scope_signature(right),
+    )
+
+
+def _content_shingles(
+    section: RetrievedSection,
+    *,
+    scope_sig: tuple[str, str, tuple[str, ...], bool, tuple[str, ...]] | None = None,
+) -> frozenset[str]:
+    table_id, sub_doc_slot, periods, _, _ = (
+        scope_sig if scope_sig is not None else _extract_table_scope_signature(section)
+    )
     scope_prefix = " ".join(
         token for token in (table_id, sub_doc_slot.lower(), *periods) if token
     )
@@ -989,16 +1005,25 @@ def _content_shingles(section: RetrievedSection) -> frozenset[str]:
     if len(normalized) < 3:
         return frozenset({normalized}) if normalized else frozenset()
     shingle_len = 6 if len(normalized) >= 6 else 3
+    total_positions = len(normalized) - shingle_len + 1
+    # Stride over long chunks so each signature stays <= ~320 shingles (cuts O(N^2) dedup/MMR CPU by >25x)
+    step = 1 if total_positions <= 384 else max(2, total_positions // 320)
     return frozenset(
         normalized[index : index + shingle_len]
-        for index in range(len(normalized) - shingle_len + 1)
+        for index in range(0, total_positions, step)
     )
 
 
 def _jaccard(left: frozenset[str], right: frozenset[str]) -> float:
     if not left or not right:
         return 0.0
-    return len(left & right) / len(left | right)
+    if len(left) > len(right):
+        left, right = right, left
+    inter = len(left & right)
+    if inter == 0:
+        return 0.0
+    union = len(left) + len(right) - inter
+    return inter / union if union > 0 else 0.0
 
 
 def select_diverse_sections(
@@ -1077,22 +1102,33 @@ def select_diverse_sections(
     unique: list[RetrievedSection] = []
     unique_shingles: list[frozenset[str]] = []
     unique_coverage: list[frozenset[str]] = []
+    unique_sigs: list[tuple[str, str, tuple[str, ...], bool, tuple[str, ...]]] = []
     def check_cancelled() -> None:
         if _cancelled is not None and _cancelled.is_set():
             raise InterruptedError("Diversity selection cancelled")
 
     for section in ordered:
         check_cancelled()
-        shingles = _content_shingles(section)
+        sig = _extract_table_scope_signature(section)
+        shingles = _content_shingles(section, scope_sig=sig)
+        s_len = len(shingles)
         coverage = anchor_coverage(section)
         duplicate_index = None
         for index, previous in enumerate(unique_shingles):
             if index % 32 == 0:
                 check_cancelled()
+            if coverage != unique_coverage[index]:
+                continue
+            p_len = len(previous)
+            if s_len and p_len:
+                min_len = s_len if s_len < p_len else p_len
+                max_len = p_len if s_len < p_len else s_len
+                # Exact Jaccard upper-bound pruning: |A∩B|/|A∪B| <= min(|A|,|B|)/max(|A|,|B|)
+                if min_len < duplicate_threshold * max_len:
+                    continue
             if (
-                coverage == unique_coverage[index]
-                and _jaccard(shingles, previous) >= duplicate_threshold
-                and not _has_distinct_table_identity(section, unique[index])
+                _jaccard(shingles, previous) >= duplicate_threshold
+                and not _signatures_have_distinct_table_identity(sig, unique_sigs[index])
             ):
                 duplicate_index = index
                 break
@@ -1100,9 +1136,11 @@ def select_diverse_sections(
             unique.append(section)
             unique_shingles.append(shingles)
             unique_coverage.append(coverage)
+            unique_sigs.append(sig)
         elif representative_key(section) > representative_key(unique[duplicate_index]):
             unique[duplicate_index] = section
             unique_shingles[duplicate_index] = shingles
+            unique_sigs[duplicate_index] = sig
 
     def doc_key(section: RetrievedSection) -> str:
         return str(
@@ -1264,7 +1302,7 @@ def select_diverse_sections(
             if offset % 32 == 0:
                 check_cancelled()
             pair_similarity = _jaccard(unique_shingles[index], unique_shingles[chosen])
-            if _has_distinct_table_identity(unique[index], unique[chosen]):
+            if _signatures_have_distinct_table_identity(unique_sigs[index], unique_sigs[chosen]):
                 pair_similarity = min(pair_similarity, 0.25)
             redundancy[index] = max(redundancy[index], pair_similarity)
         compared[index] = len(selected_indices)

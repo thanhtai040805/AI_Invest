@@ -222,6 +222,7 @@ class ResearchChatMetadata(BaseModel):
     hydrated_tables: list[HydratedTableItem] = Field(default_factory=list)
     screening_results: list[dict[str, Any]] = Field(default_factory=list)
     tool_traces: list[dict[str, Any]] = Field(default_factory=list)
+    activity_log: list[dict[str, Any]] = Field(default_factory=list)
     calculator_traces: list[CalculatorTraceItem] = Field(default_factory=list)
     graph_hops: list[GraphHopItem] = Field(default_factory=list)
     discrepancy_alerts: list[DiscrepancyAlertItem] = Field(default_factory=list)

@@ -444,6 +444,39 @@ def resolve_default_core_database_url() -> str:
     return (os.environ.get("SAG_CORE_DATABASE_URL") or settings.core_database_url or "").strip()
 
 
+def _bundle_valid_date_str(bundle: SubDocumentBundle) -> str:
+    """Return filesystem-safe `YYYY-MM-DD` date token for `bundle.valid_from` (`date` or `datetime`)."""
+    vf = bundle.valid_from
+    return vf.date().isoformat() if isinstance(vf, datetime) else vf.isoformat()[:10]
+
+
+def build_research_logical_source_id(bundle: SubDocumentBundle) -> str:
+    """Build a collision-free logical_source_id for HOSE research sub-documents.
+
+    Includes `doc_type` so distinct filings sharing a slot/period (`BCTC` vs `BCTN`,
+    `LATEST_QUARTER` vs `GIAI_TRINH` vs `TY_LE_AT_TC`) never supersede each other,
+    and appends `valid_from` (`YYYY-MM-DD`) for AGMs so an Extraordinary AGM never overwrites an Annual AGM.
+    """
+    base = (
+        f"hose:{bundle.project_id}:{bundle.fiscal_year}Q{bundle.fiscal_quarter}:"
+        f"{bundle.doc_type}:{bundle.sub_doc_slot}"
+    )
+    if bundle.doc_type in ("NQ_DHDCD", "TAI_LIEU_DHDCD"):
+        return f"{base}:{_bundle_valid_date_str(bundle)}"
+    return base
+
+
+def build_research_upload_filename(bundle: SubDocumentBundle) -> str:
+    """Build a descriptive, Windows/POSIX-safe upload filename matching `build_research_logical_source_id`."""
+    base = (
+        f"{bundle.project_id}_{bundle.fiscal_year}Q{bundle.fiscal_quarter}_"
+        f"{bundle.doc_type}_{bundle.sub_doc_slot}"
+    )
+    if bundle.doc_type in ("NQ_DHDCD", "TAI_LIEU_DHDCD"):
+        return f"{base}_{_bundle_valid_date_str(bundle)}.md"
+    return f"{base}.md"
+
+
 async def _load_pdf_bytes_for_selected(
     selected: SelectedDocument,
     *,

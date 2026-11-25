@@ -690,3 +690,133 @@ async def test_golden_standard_4_to_5_doc_selection_contract():
         require_quarter_anomaly=False,
     )
     assert "tl_2026" in [s.candidate.doc_id for s in sel_fallback.selected]
+
+
+def test_dedup_candidates_handles_simplenamespace_table_blocks():
+    """Regression guard: CPU worker SimpleNamespace blocks must never raise AttributeError on table blocks."""
+    from types import SimpleNamespace
+
+    from sag_api.services.dedup_and_temporal_service import (
+        _dedup_candidates,
+        compute_minhash_signature,
+        tokenize_for_minhash,
+    )
+
+    txt = "| Chỉ tiêu | 2025 | 2024 |\n| --- | --- | --- |\n| Tổng tài sản | 100.000 | 90.000 |"
+    b_curr = SimpleNamespace(
+        id="b1",
+        normalized_text=txt,
+        content_hash="h1",
+        block_type="table",
+        document_version_id="v2",
+        document_id="d2",
+    )
+    b_prior = SimpleNamespace(
+        id="b0",
+        normalized_text=txt.replace("100.000", "100.001"),
+        content_hash="h0",
+        block_type="table",
+        document_version_id="v1",
+        document_id="d1",
+    )
+    sigs = {
+        "b1": compute_minhash_signature(tokenize_for_minhash(b_curr.normalized_text)),
+        "b0": compute_minhash_signature(tokenize_for_minhash(b_prior.normalized_text)),
+    }
+    exact_cnt, cands = _dedup_candidates([b_curr], [b_prior], sigs, {}, "v2")
+    assert exact_cnt == 0
+    assert isinstance(cands, list)
+
+
+@pytest.mark.asyncio
+async def test_embedding_batch_generate_chunks_large_batches():
+    """Regression guard: >64 unique texts must be sub-batched so DeepInfra never returns 400 invalid_request."""
+    from sag_api.core.token_usage import wrap_embedding_client_with_cache_and_metering
+
+    observed_batch_sizes: list[int] = []
+
+    class _FakeEmbedder:
+        model = "Qwen/Qwen3-Embedding-0.6B"
+
+        async def generate(self, text: str) -> list[float]:
+            return [float(len(text))]
+
+        async def batch_generate(self, texts: list[str]) -> list[list[float]]:
+            observed_batch_sizes.append(len(texts))
+            assert len(texts) <= 64
+            return [[float(idx), float(len(t))] for idx, t in enumerate(texts)]
+
+    emb = _FakeEmbedder()
+    wrap_embedding_client_with_cache_and_metering(emb, default_model="Qwen/Qwen3-Embedding-0.6B")
+    inputs = [f"unique-block-chunk-payload-{i}" for i in range(150)]
+    vecs = await emb.batch_generate(inputs)
+    assert len(vecs) == 150
+    assert observed_batch_sizes == [64, 64, 22]
+
+
+def test_research_logical_source_id_avoids_doc_type_and_agm_collisions():
+    """Regression guard: distinct doc_types & annual vs extraordinary AGMs never overwrite each other."""
+    from sag_api.research.batch_ingest import (
+        build_research_logical_source_id,
+        build_research_upload_filename,
+    )
+    from sag_api.research.input_builder import SubDocumentBundle
+
+    def _mk(doc_type: str, slot: str, fq: int, pub: date) -> SubDocumentBundle:
+        return SubDocumentBundle(
+            project_id="HPG",
+            doc_type=doc_type,
+            sub_doc_slot=slot,
+            fiscal_year=2026,
+            fiscal_quarter=fq,
+            valid_from=pub,
+            half_life_days=365,
+            published_date=pub,
+            routed_branch="C",
+            markdown_content="# test",
+            content_hash="abcdef1234567890",
+            page_numbers=[1],
+        )
+
+    ls_q2 = build_research_logical_source_id(_mk("LATEST_QUARTER", "QUARTER_NOTES", 2, date(2026, 8, 15)))
+    ls_gt = build_research_logical_source_id(_mk("GIAI_TRINH", "QUARTER_NOTES", 2, date(2026, 8, 16)))
+    ls_attc = build_research_logical_source_id(_mk("TY_LE_AT_TC", "QUARTER_NOTES", 2, date(2026, 8, 17)))
+    assert len({ls_q2, ls_gt, ls_attc}) == 3
+
+    from datetime import UTC, datetime
+
+    agm_ann_dt = datetime(2026, 4, 20, 0, 0, tzinfo=UTC)
+    agm_ext_dt = datetime(2026, 9, 15, 0, 0, tzinfo=UTC)
+    ls_agm_ann = build_research_logical_source_id(_mk("NQ_DHDCD", "AGM_TARGETS", 0, agm_ann_dt))
+    ls_agm_ext = build_research_logical_source_id(_mk("NQ_DHDCD", "AGM_TARGETS", 0, agm_ext_dt))
+    assert ls_agm_ann != ls_agm_ext
+    fn_ann = build_research_upload_filename(_mk("NQ_DHDCD", "AGM_TARGETS", 0, agm_ann_dt))
+    fn_ext = build_research_upload_filename(_mk("NQ_DHDCD", "AGM_TARGETS", 0, agm_ext_dt))
+    assert fn_ann != fn_ext
+    assert ":" not in fn_ann and ":" not in fn_ext
+    assert fn_ann.endswith("_2026-04-20.md")
+
+    ls_bctc = build_research_logical_source_id(_mk("BCTC", "BCTC_AUDITED", 0, date(2026, 3, 25)))
+    ls_bctn_fs = build_research_logical_source_id(_mk("BCTN", "BCTC_AUDITED", 0, date(2026, 4, 10)))
+    assert ls_bctc != ls_bctn_fs
+
+
+def test_sentence_stream_gate_strips_deepseek_think_tags():
+    """Regression guard: explicit `<think>...</think>` and orphan leading `...</think>` never leak to SSE."""
+    from sag_api.research.agent_runner import SentenceStreamGate, strip_reasoning_tags
+
+    assert strip_reasoning_tags("<think>suy nghĩ nội bộ</think>Kết quả FPT [C1].") == "Kết quả FPT [C1]."
+    assert strip_reasoning_tags("Hãy kiểm tra lại.</think>**Doanh thu FPT** đạt 70.112 tỷ [C1].") == (
+        "**Doanh thu FPT** đạt 70.112 tỷ [C1]."
+    )
+
+    gate = SentenceStreamGate(valid_cid_ceiling=lambda: 2, lookahead_chars=10)
+    gate.reset_for_turn(tools_enabled=False)
+    out = []
+    out.extend(gate.push_delta("suy nghĩ ẩn"))
+    out.extend(gate.push_delta(" trước khi trả lời.</think>Doanh thu FPT đạt 70.112 tỷ [C1]. "))
+    out.extend(gate.flush_turn_end(has_tool_calls=False))
+    joined = "".join(out)
+    assert "</think>" not in joined
+    assert "suy nghĩ ẩn" not in joined
+    assert "Doanh thu FPT đạt 70.112 tỷ [C1]." in joined
