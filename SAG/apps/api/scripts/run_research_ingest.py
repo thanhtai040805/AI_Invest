@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import sys
 from datetime import date
@@ -132,6 +133,13 @@ async def _fetch_indexed_tickers(org_id: str) -> set[str]:
 
 
 async def _main(argv: list[str] | None = None) -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        stream=sys.stderr,
+    )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     parser = argparse.ArgumentParser(description="AIInvest SAG v2 Tier-Aware HOSE Batch Ingest")
     parser.add_argument(
         "--tier",
@@ -317,7 +325,7 @@ async def _main(argv: list[str] | None = None) -> int:
         enable_llm_toc=args.enable_llm_toc,
         refresh_kg=(not args.no_refresh_kg) and (not args.r2_only),
         auto_mineru_ocr=effective_auto_ocr,
-        extract_tables=not args.no_tables,
+        extract_tables=(not args.no_tables) and (not args.r2_only),
         max_docs_per_ticker=args.max_docs_per_ticker,
         doc_concurrency=args.doc_concurrency,
         core_reader=core_reader,

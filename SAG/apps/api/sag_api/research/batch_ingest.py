@@ -746,13 +746,16 @@ async def run_research_batch_ingest(
                         doc_out["uploaded"] += 1
 
                     # Dual-Representation Financial Table Engine wired directly into batch ingest
-                    if extract_tables and bundle.sub_doc_slot in (
+                    # Skip table extraction in `--r2-only` mode (tables are persisted in Phase B index)
+                    # and offload synchronous pdfplumber work off the asyncio event loop.
+                    if extract_tables and not r2_only and bundle.sub_doc_slot in (
                         "BCTC_AUDITED",
                         "QUARTER_NOTES",
                         "BCTN_CORE",
                         "AGM_TARGETS",
                     ):
-                        extracted_tables = extract_tables_from_document(
+                        extracted_tables = await asyncio.to_thread(
+                            extract_tables_from_document,
                             pdf_bytes=unwrapped_pdf_bytes,
                             project_id=bundle.project_id,
                             document_version_id=doc_ver_id,
