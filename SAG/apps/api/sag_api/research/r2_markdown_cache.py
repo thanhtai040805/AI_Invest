@@ -18,6 +18,7 @@ Implements Tier-4 of `sag_vn_source_and_bilingual_cleaning_spec.md`:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -139,49 +140,94 @@ class SagR2MarkdownCache:
         api_token: str | None = None,
         bucket_name: str | None = None,
         local_cache_dir: str | pathlib.Path | None = None,
+        settings_obj: Any | None = None,
         cleaner_version: str = CLEANER_VERSION,
         http_client: httpx.AsyncClient | None = None,
         timeout_seconds: float = 30.0,
     ) -> None:
+        if settings_obj is None:
+            from sag_api.core.config import settings as default_settings
+
+            cfg: Any = default_settings
+        else:
+            cfg = settings_obj
+
         self.account_id = (
             account_id
             if account_id is not None
-            else (os.getenv("R2_ACCOUNT_ID") or "").strip()
+            else (
+                os.getenv("SAG_R2_ACCOUNT_ID")
+                or os.getenv("R2_ACCOUNT_ID")
+                or cfg.r2_account_id
+                or ""
+            ).strip()
         )
         self.endpoint_url = (
             endpoint_url
             if endpoint_url is not None
             else (
-                os.getenv("R2_ENDPOINT_URL")
+                os.getenv("SAG_R2_ENDPOINT_URL")
+                or os.getenv("R2_ENDPOINT_URL")
+                or cfg.r2_endpoint_url
                 or (f"https://{self.account_id}.r2.cloudflarestorage.com" if self.account_id else "")
             ).strip()
         ).rstrip("/")
         self.access_key_id = (
             access_key_id
             if access_key_id is not None
-            else os.getenv("R2_ACCESS_KEY_ID", "").strip()
+            else (
+                os.getenv("SAG_R2_ACCESS_KEY_ID")
+                or os.getenv("R2_ACCESS_KEY_ID")
+                or cfg.r2_access_key_id
+                or ""
+            ).strip()
         )
         self.secret_access_key = (
             secret_access_key
             if secret_access_key is not None
-            else os.getenv("R2_SECRET_ACCESS_KEY", "").strip()
+            else (
+                os.getenv("SAG_R2_SECRET_ACCESS_KEY")
+                or os.getenv("R2_SECRET_ACCESS_KEY")
+                or cfg.r2_secret_access_key
+                or ""
+            ).strip()
         )
         self.api_token = (
             api_token
             if api_token is not None
-            else (os.getenv("R2_TOKEN") or os.getenv("CLOUDFLARE_API_TOKEN") or "").strip()
+            else (
+                os.getenv("SAG_R2_TOKEN")
+                or os.getenv("R2_TOKEN")
+                or os.getenv("CLOUDFLARE_API_TOKEN")
+                or cfg.r2_token
+                or ""
+            ).strip()
         )
         self.bucket_name = (
             bucket_name
             if bucket_name is not None
-            else (os.getenv("R2_BUCKET_NAME") or "aiinvest-bctc-prod").strip()
+            else (
+                os.getenv("SAG_R2_BUCKET_NAME")
+                or os.getenv("R2_BUCKET_NAME")
+                or cfg.r2_bucket_name
+                or "aiinvest-bctc-prod"
+            ).strip()
         )
-        env_local = (os.getenv("SAG_R2_MD_LOCAL_CACHE_DIR") or "").strip()
+        env_local = (
+            os.getenv("SAG_R2_MD_LOCAL_CACHE_DIR")
+            or os.getenv("R2_MD_LOCAL_CACHE_DIR")
+            or cfg.r2_md_local_cache_dir
+            or ""
+        ).strip()
         resolved_local = local_cache_dir if local_cache_dir is not None else (env_local or None)
         self.local_cache_dir = pathlib.Path(resolved_local) if resolved_local else None
         self.cleaner_version = cleaner_version
         self._http_client = http_client
         self._timeout = timeout_seconds
+
+    @classmethod
+    def from_settings(cls, settings_obj: Any, **kwargs: Any) -> SagR2MarkdownCache:
+        return cls(settings_obj=settings_obj, **kwargs)
 
     @property
     def remote_mode(self) -> str:
@@ -263,16 +309,29 @@ class SagR2MarkdownCache:
             )
             headers = {"Authorization": f"Bearer {self.api_token}"}
 
-        if self._http_client is not None:
-            resp = await self._http_client.get(url, headers=headers)
-        else:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                resp = await client.get(url, headers=headers)
-        if resp.status_code == 404:
-            return None
-        if resp.status_code != 200:
-            raise RuntimeError(f"R2 GET failed ({resp.status_code}) for {key}")
-        return resp.content
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                if self._http_client is not None:
+                    resp = await self._http_client.get(url, headers=headers)
+                else:
+                    async with httpx.AsyncClient(timeout=self._timeout) as client:
+                        resp = await client.get(url, headers=headers)
+                if resp.status_code == 404:
+                    return None
+                if resp.status_code == 200:
+                    return resp.content
+                if resp.status_code in (429, 500, 502, 503, 504) and attempt < 2:
+                    await asyncio.sleep(0.5 * (2**attempt))
+                    continue
+                raise RuntimeError(f"R2 GET failed ({resp.status_code}) for {key}")
+            except (httpx.TimeoutException, httpx.RequestError) as exc:
+                last_exc = exc
+                if attempt < 2:
+                    await asyncio.sleep(0.5 * (2**attempt))
+                    continue
+                raise RuntimeError(f"R2 GET failed ({type(exc).__name__}) for {key}") from exc
+        raise RuntimeError(f"R2 GET failed for {key}: {last_exc}")
 
     async def _remote_put(self, key: str, data: bytes, *, content_type: str) -> None:
         if self.remote_mode == "s3":
@@ -295,13 +354,27 @@ class SagR2MarkdownCache:
                 "Content-Type": content_type,
             }
 
-        if self._http_client is not None:
-            resp = await self._http_client.put(url, headers=headers, content=data)
-        else:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                resp = await client.put(url, headers=headers, content=data)
-        if resp.status_code not in (200, 201, 204):
-            raise RuntimeError(f"R2 PUT failed ({resp.status_code}) for {key}")
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                if self._http_client is not None:
+                    resp = await self._http_client.put(url, headers=headers, content=data)
+                else:
+                    async with httpx.AsyncClient(timeout=self._timeout) as client:
+                        resp = await client.put(url, headers=headers, content=data)
+                if resp.status_code in (200, 201, 204):
+                    return
+                if resp.status_code in (429, 500, 502, 503, 504) and attempt < 2:
+                    await asyncio.sleep(0.5 * (2**attempt))
+                    continue
+                raise RuntimeError(f"R2 PUT failed ({resp.status_code}) for {key}")
+            except (httpx.TimeoutException, httpx.RequestError) as exc:
+                last_exc = exc
+                if attempt < 2:
+                    await asyncio.sleep(0.5 * (2**attempt))
+                    continue
+                raise RuntimeError(f"R2 PUT failed ({type(exc).__name__}) for {key}") from exc
+        raise RuntimeError(f"R2 PUT failed for {key}: {last_exc}")
 
     async def save_cleaned_build_result(
         self,

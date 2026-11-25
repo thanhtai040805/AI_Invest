@@ -360,11 +360,19 @@ async def _prepare_and_cache(
                 on_state=track_state,
             )
         try:
+            pool_tokens = getattr(settings, "effective_mineru_official_api_tokens", ())
+            n_mineru_tokens = max(1, len(pool_tokens)) if pool_tokens else 1
+            eff_mineru_io = getattr(
+                settings, "effective_mineru_io_concurrency", settings.mineru_io_concurrency
+            )
+            eff_project_limit = min(
+                eff_mineru_io, settings.per_project_heavy_parse_limit * n_mineru_tokens
+            )
             async with _acquire_lane(
                 "mineru_io",
-                settings.mineru_io_concurrency,
+                eff_mineru_io,
                 project_id=project_id,
-                project_limit=settings.per_project_heavy_parse_limit,
+                project_limit=eff_project_limit,
             ):
                 markdown = await MinerUClient(settings).parse(
                     path,
@@ -626,10 +634,14 @@ def _compatible_state(
 
 
 def _mineru_key_fingerprint(settings: Settings) -> str:
-    token = settings.mineru_official_api_token
-    if not token:
+    tokens = getattr(settings, "effective_mineru_official_api_tokens", None)
+    if tokens:
+        joined = "|".join(str(t) for t in tokens if t)
+    else:
+        joined = str(settings.mineru_official_api_token or "")
+    if not joined:
         return ""
-    return hashlib.sha256(token.encode()).hexdigest()[:12]
+    return hashlib.sha256(joined.encode()).hexdigest()[:12]
 
 
 async def _convert_with_local_worker(

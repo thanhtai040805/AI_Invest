@@ -19,7 +19,7 @@ from typing import Annotated, Literal
 from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, PrivateAttr, field_validator, model_validator
+from pydantic import AliasChoices, Field, PrivateAttr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from sag_api.core.model_providers import ModelProviderId, get_model_provider
@@ -236,15 +236,50 @@ class Settings(BaseSettings):
     mineru_provider: Literal["official"] = "official"
     mineru_base_url: str | None = "https://mineru.net"
     mineru_official_api_token: str | None = None
+    mineru_official_api_token_0: str | None = None
+    mineru_official_api_token_1: str | None = None
+    mineru_official_api_token_2: str | None = None
+    mineru_official_api_token_3: str | None = None
+    mineru_official_api_tokens: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    mineru_per_token_concurrency: int = Field(default=8, ge=1, le=64)
+    mineru_ocr_chunk_pages: int = Field(default=20, ge=2, le=200)
 
-    mineru_official_model: Literal["pipeline", "vlm"] = "pipeline"
+    mineru_official_model: Literal["pipeline", "vlm"] = "vlm"
     mineru_parse_method: Literal["auto", "txt", "ocr"] = "auto"
     mineru_request_timeout: float = 60.0
-    mineru_poll_interval: float = 2.0
-    mineru_poll_timeout: float = 300.0
+    mineru_poll_interval: float = 3.0
+    mineru_poll_timeout: float = 900.0
     mineru_result_max_mb: int = 100
 
-    # ── R2 Object Ingest & Multi-Lane Parsing ──────────────────────────
+    # ── R2 Object Ingest, Cleaned Markdown Cache & Multi-Lane Parsing ──
+    r2_account_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("SAG_R2_ACCOUNT_ID", "R2_ACCOUNT_ID"),
+    )
+    r2_endpoint_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("SAG_R2_ENDPOINT_URL", "R2_ENDPOINT_URL"),
+    )
+    r2_bucket_name: str = Field(
+        default="aiinvest-bctc-prod",
+        validation_alias=AliasChoices("SAG_R2_BUCKET_NAME", "R2_BUCKET_NAME"),
+    )
+    r2_token: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("SAG_R2_TOKEN", "R2_TOKEN", "CLOUDFLARE_API_TOKEN"),
+    )
+    r2_access_key_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("SAG_R2_ACCESS_KEY_ID", "R2_ACCESS_KEY_ID"),
+    )
+    r2_secret_access_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("SAG_R2_SECRET_ACCESS_KEY", "R2_SECRET_ACCESS_KEY"),
+    )
+    r2_md_local_cache_dir: str | None = Field(
+        default="./.data/r2-md-cache",
+        validation_alias=AliasChoices("SAG_R2_MD_LOCAL_CACHE_DIR", "R2_MD_LOCAL_CACHE_DIR"),
+    )
     object_ingest_allowed_hosts: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [".r2.cloudflarestorage.com"]
     )
@@ -321,6 +356,7 @@ class Settings(BaseSettings):
     history_load_limit: int = Field(default=200, ge=1, le=1000)
     decision_provider: Literal["siliconflow", "disabled"] = "disabled"
     decision_model: str = Field(default="Kev-4b", min_length=1, max_length=200)
+    decision_timeout_seconds: float = Field(default=4.5, ge=0.5, le=15.0)
     siliconflow_base_url: str = "https://api.siliconflow.com/v1"
     siliconflow_api_key: str | None = None
 
@@ -372,9 +408,31 @@ class Settings(BaseSettings):
             data["decision_provider"] = "disabled"
         if normalized_provider in ("laya", "openrouter") or data.get("decision_model") == "typesafe/jev-1.14":
             data["decision_model"] = "Kev-4b"
+
+        # Support arbitrary indexed MinerU tokens (`mineru_official_api_token_4`, `_5`, ...) beyond `_0.._3`
+        extra_indexed: list[tuple[int, str]] = []
+        for raw_k, raw_v in data.items():
+            if not isinstance(raw_k, str) or not isinstance(raw_v, str):
+                continue
+            lower_k = raw_k.lower()
+            prefix = "mineru_official_api_token_"
+            if lower_k.startswith(prefix):
+                suffix = lower_k[len(prefix) :]
+                if suffix.isdigit() and int(suffix) >= 4 and raw_v.strip():
+                    extra_indexed.append((int(suffix), raw_v.strip()))
+        if extra_indexed:
+            extra_indexed.sort(key=lambda item: item[0])
+            existing_list = data.get("mineru_official_api_tokens")
+            merged: list[str] = []
+            if isinstance(existing_list, list):
+                merged.extend(str(x).strip() for x in existing_list if str(x).strip())
+            elif isinstance(existing_list, str) and existing_list.strip():
+                merged.extend(p.strip() for p in existing_list.split(",") if p.strip())
+            merged.extend(tok for _, tok in extra_indexed)
+            data["mineru_official_api_tokens"] = merged
         return data
 
-    @field_validator("cors_origins", "object_ingest_allowed_hosts", mode="before")
+    @field_validator("cors_origins", "object_ingest_allowed_hosts", "mineru_official_api_tokens", mode="before")
     @classmethod
     def _split_origins(cls, v: object) -> object:
         """允许用逗号分隔的字符串配置 CORS 源。"""
@@ -409,12 +467,40 @@ class Settings(BaseSettings):
             return stripped
         return value
 
-    @field_validator("mineru_official_api_token", "sag_qdrant_api_key", "core_database_url", mode="before")
+    @field_validator(
+        "mineru_official_api_token",
+        "mineru_official_api_token_0",
+        "mineru_official_api_token_1",
+        "mineru_official_api_token_2",
+        "mineru_official_api_token_3",
+        "sag_qdrant_api_key",
+        "core_database_url",
+        "siliconflow_api_key",
+        "rerank_base_url",
+        "rerank_api_key",
+        "r2_account_id",
+        "r2_endpoint_url",
+        "r2_token",
+        "r2_access_key_id",
+        "r2_secret_access_key",
+        "r2_md_local_cache_dir",
+        mode="before",
+    )
     @classmethod
     def _blank_optional_secret_as_none(cls, value: object) -> object:
         if isinstance(value, str):
             stripped = value.strip()
             return stripped or None
+        return value
+
+    @field_validator("r2_bucket_name", mode="before")
+    @classmethod
+    def _blank_r2_bucket_name_as_default(cls, value: object) -> object:
+        if value is None:
+            return "aiinvest-bctc-prod"
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped or "aiinvest-bctc-prod"
         return value
 
     @field_validator("sag_qdrant_url", mode="before")
@@ -590,9 +676,67 @@ class Settings(BaseSettings):
         return self.embedding_base_url or (self.llm_base_url if provider.can_reuse_embedding_credentials else None)
 
     @property
+    def effective_mineru_official_api_tokens(self) -> tuple[str, ...]:
+        """Ordered, deduplicated MinerU Official API v4 token pool (`_0`, `_1`, ..., list, single)."""
+        ordered: list[str] = []
+        seen: set[str] = set()
+
+        def _push(raw: str | None) -> None:
+            if not raw:
+                return
+            for part in str(raw).split(","):
+                tok = part.strip()
+                if tok and tok not in seen:
+                    seen.add(tok)
+                    ordered.append(tok)
+
+        for indexed in (
+            self.mineru_official_api_token_0,
+            self.mineru_official_api_token_1,
+            self.mineru_official_api_token_2,
+            self.mineru_official_api_token_3,
+        ):
+            _push(indexed)
+        for item in self.mineru_official_api_tokens:
+            _push(item)
+        _push(self.mineru_official_api_token)
+        return tuple(ordered)
+
+    @property
+    def effective_mineru_io_concurrency(self) -> int:
+        token_count = max(1, len(self.effective_mineru_official_api_tokens))
+        return min(128, max(self.mineru_io_concurrency, token_count * self.mineru_per_token_concurrency))
+
+    @property
+    def effective_per_project_mineru_limit(self) -> int:
+        token_count = max(1, len(self.effective_mineru_official_api_tokens))
+        return min(64, self.per_project_heavy_parse_limit * token_count)
+
+    @property
     def mineru_configured(self) -> bool:
         """MinerU 是否具备可调用的端点与密钥。"""
-        return bool(self.mineru_base_url and self.mineru_official_api_token)
+        return bool(self.mineru_base_url and self.effective_mineru_official_api_tokens)
+
+    @property
+    def r2_remote_configured(self) -> bool:
+        """Cloudflare R2 清洗后 Markdown 缓存是否具备远程 S3 或 REST 凭据。"""
+        has_s3 = bool(
+            (self.r2_endpoint_url or self.r2_account_id)
+            and self.r2_access_key_id
+            and self.r2_secret_access_key
+        )
+        has_token = bool(self.r2_account_id and self.r2_token)
+        return has_s3 or has_token
+
+    @property
+    def effective_rerank_api_key(self) -> str | None:
+        if self.rerank_api_key:
+            return self.rerank_api_key
+        if self.rerank_provider == "siliconflow":
+            return self.siliconflow_api_key
+        if self.rerank_provider == "deepinfra":
+            return self.llm_api_key or self.embedding_api_key
+        return None
 
     @property
     def effective_document_parser(self) -> Literal["markitdown", "mineru"]:

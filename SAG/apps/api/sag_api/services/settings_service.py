@@ -307,7 +307,8 @@ async def apply_startup_overrides(session_factory: async_sessionmaker) -> None:
 
 def effective_model_config() -> dict:
     """当前生效的模型配置（读 settings 单例；密钥脱敏为 *_set 布尔）。"""
-    token_set = bool(_settings.mineru_official_api_token)
+    tokens = _settings.effective_mineru_official_api_tokens
+    token_set = bool(tokens)
     return {
         "llm_provider": _settings.llm_provider,
         "llm_base_url": _settings.llm_base_url,
@@ -331,6 +332,7 @@ def effective_model_config() -> dict:
         "mineru_base_url": _settings.mineru_base_url,
         "mineru_official_model": _settings.mineru_official_model,
         "mineru_official_api_token_set": token_set,
+        "mineru_official_api_token_count": len(tokens),
         "mineru_api_key_set": token_set,
         "document_extract_concurrency": _settings.document_extract_concurrency,
         "document_chunk_max_tokens": _settings.document_chunk_max_tokens,

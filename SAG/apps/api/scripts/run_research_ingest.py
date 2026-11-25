@@ -118,7 +118,23 @@ async def _main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tickers", nargs="*", default=[])
     parser.add_argument("--as-of-date", default=None, help="ISO date YYYY-MM-DD (default: today)")
     parser.add_argument("--years-back", type=int, default=3)
-    parser.add_argument("--dry-run", action="store_true", help="Inspect & localize without uploading to SAG")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Inspect & localize without writing R2 or uploading to SAG",
+    )
+    parser.add_argument(
+        "--r2-only",
+        action="store_true",
+        help="Prepare, OCR, bilingual-clean, verify tables, and save .md bundles directly to R2",
+    )
+    parser.add_argument("--max-docs-per-ticker", type=int, default=8)
+    parser.add_argument(
+        "--doc-concurrency",
+        type=int,
+        default=12,
+        help="Max documents processed concurrently across the MinerU token pool (default: 12)",
+    )
     parser.add_argument("--enable-llm-toc", action="store_true", help="Use DeepInfra 1-call BCTN 3-Way Triage")
     parser.add_argument(
         "--auto-mineru-ocr",
@@ -163,10 +179,11 @@ async def _main(argv: list[str] | None = None) -> int:
     uploader = None
     table_repo = None
     kg_refresher = None
-    if not args.dry_run:
-        bff_token = (os.environ.get("SAG_BFF_SERVICE_TOKEN") or "").strip()
+    table_card_indexer = None
+    if not args.dry_run and not args.r2_only:
+        bff_token = (os.environ.get("SAG_BFF_SERVICE_TOKEN") or sag_settings.bff_service_token or "").strip()
         if not bff_token:
-            print("ERROR: SAG_BFF_SERVICE_TOKEN is required when --dry-run is not set.", file=sys.stderr)
+            print("ERROR: SAG_BFF_SERVICE_TOKEN is required when --dry-run/--r2-only is not set.", file=sys.stderr)
             return 2
         uploader = _build_sag_http_uploader(
             sag_api_base=args.sag_api_url,
@@ -228,10 +245,13 @@ async def _main(argv: list[str] | None = None) -> int:
         custom_tickers=args.tickers,
         years_back=args.years_back,
         dry_run=args.dry_run,
+        r2_only=args.r2_only,
         enable_llm_toc=args.enable_llm_toc,
-        refresh_kg=not args.no_refresh_kg,
+        refresh_kg=(not args.no_refresh_kg) and (not args.r2_only),
         auto_mineru_ocr=effective_auto_ocr,
         extract_tables=not args.no_tables,
+        max_docs_per_ticker=args.max_docs_per_ticker,
+        doc_concurrency=args.doc_concurrency,
         core_reader=core_reader,
         subdoc_uploader=uploader,
         table_repo=table_repo,
@@ -244,6 +264,7 @@ async def _main(argv: list[str] | None = None) -> int:
                 "tier": summary.tier,
                 "as_of_date": summary.as_of_date,
                 "dry_run": summary.dry_run,
+                "r2_only": args.r2_only,
                 "resolved_count": len(summary.resolved_tickers),
                 "resolved_tickers": summary.resolved_tickers,
                 "total_sub_docs_uploaded": summary.total_sub_docs_uploaded,
@@ -253,6 +274,8 @@ async def _main(argv: list[str] | None = None) -> int:
                         "ticker": r.ticker,
                         "status": r.status,
                         "selected_documents": r.selected_documents,
+                        "rejected_documents": r.rejected_documents,
+                        "r2_cache_hits": r.r2_cache_hits,
                         "branches": r.branches,
                         "localization_methods": r.localization_methods,
                         "sub_doc_slots": r.sub_doc_slots,

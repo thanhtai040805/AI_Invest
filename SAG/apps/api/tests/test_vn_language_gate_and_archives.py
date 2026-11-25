@@ -92,8 +92,8 @@ async def test_full_english_digital_pdf_rejected_even_under_3_pages():
                 doc_id="en_hidden",
                 ticker="FPT",
                 doc_type="BCTC",
-                title="BCTC Q4 2025",  # Disguised VN title but 100% English PDF body!
-                published_date="2026-01-25",
+                title="BCTC Q1 2026",  # Disguised VN title (post-audited FY2025) but 100% English PDF body!
+                published_date="2026-04-25",
                 raw_bytes=en_pdf_16,
             ),
             ResearchCandidateDocument(

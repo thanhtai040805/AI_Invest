@@ -117,7 +117,7 @@ def test_contract_config_and_env_parity_across_repo() -> None:
     default_cfg = Settings(_env_file=None)  # type: ignore[call-arg]
     assert default_cfg.timezone == "Asia/Ho_Chi_Minh"
     assert default_cfg.sag_language == "vi"
-    assert default_cfg.mineru_official_model == "pipeline"
+    assert default_cfg.mineru_official_model == "vlm"
     assert default_cfg.sag_pg_database == "aiinvest_sag"
     assert default_cfg.sag_pg_port == 55432
     assert default_cfg.embedding_model == "Qwen/Qwen3-Embedding-0.6B"
@@ -134,7 +134,7 @@ def test_contract_config_and_env_parity_across_repo() -> None:
         assert env_path.exists(), f"Missing template: {env_path}"
         env_map, duplicates = _parse_env_file(env_path)
         assert not duplicates, f"Duplicate keys in {env_path.name}: {duplicates}"
-        assert env_map.get("SAG_MINERU_OFFICIAL_MODEL") == "pipeline", f"Drift in {env_path}"
+        assert env_map.get("SAG_MINERU_OFFICIAL_MODEL") == "vlm", f"Drift in {env_path}"
         assert env_map.get("SAG_KNOWLEDGE_TREE_REBUILD_ENABLED") == "false", f"Drift in {env_path}"
         if "SAG_TIMEZONE" in env_map:
             assert env_map["SAG_TIMEZONE"] == "Asia/Ho_Chi_Minh", f"Drift in {env_path}"
@@ -145,7 +145,7 @@ def test_contract_config_and_env_parity_across_repo() -> None:
 
     for compose_path in (REPO_ROOT / "docker-compose.yml", REPO_ROOT / "SAG" / "compose.yaml"):
         text = compose_path.read_text(encoding="utf-8")
-        assert "SAG_MINERU_OFFICIAL_MODEL" in text and "pipeline" in text
+        assert "SAG_MINERU_OFFICIAL_MODEL" in text and "vlm" in text
         assert "SAG_KNOWLEDGE_TREE_REBUILD_ENABLED" in text and "false" in text
         assert "Asia/Ho_Chi_Minh" in text
 
@@ -219,9 +219,9 @@ async def test_contract_mineru_wire_payload_uses_canonical_latin_and_pipeline() 
     )
     adapter = MinerUOcrAdapter(cfg)
     client = OfficialMinerUClient(cfg, language="vi")
-    assert adapter._official_model == "pipeline"
+    assert adapter._official_model == "vlm"
     assert client._language == "latin"
-    assert client._official_model == "pipeline"
+    assert client._official_model == "vlm"
 
     with (
         patch("sag_api.parsing.mineru_official._validate_api_url", new=AsyncMock()),
@@ -237,13 +237,13 @@ async def test_contract_mineru_wire_payload_uses_canonical_latin_and_pipeline() 
 
     url_task_payload = captured_payloads[0][1]
     assert url_task_payload["language"] == "latin"
-    assert url_task_payload["model_version"] == "pipeline"
+    assert url_task_payload["model_version"] == "vlm"
     assert url_task_payload["enable_table"] is True
     assert url_task_payload["language"] != "vi"
 
     batch_payload = captured_payloads[1][1]
     assert batch_payload["language"] == "latin"
-    assert batch_payload["model_version"] == "pipeline"
+    assert batch_payload["model_version"] == "vlm"
     assert batch_payload["enable_table"] is True
 
 

@@ -440,10 +440,10 @@ def _safe_calc(fn: Any, *args: float) -> float | None:
 
 
 def resolve_core_database_url() -> str:
-    """Resolve `SAG_CORE_DATABASE_URL` from settings/env (never logs credentials)."""
+    """Resolve `SAG_CORE_DATABASE_URL` from env/settings (never logs credentials)."""
     from sag_api.core.config import settings
 
-    return (settings.core_database_url or os.environ.get("SAG_CORE_DATABASE_URL") or "").strip()
+    return (os.environ.get("SAG_CORE_DATABASE_URL") or settings.core_database_url or "").strip()
 
 
 def _normalize_pg_dsn(url: str) -> str:

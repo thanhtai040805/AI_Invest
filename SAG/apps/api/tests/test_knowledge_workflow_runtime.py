@@ -55,7 +55,7 @@ async def test_foundation_only_builds_its_version_and_durably_requests_project(
     queue = SimpleNamespace(enqueue=AsyncMock())
     worker = KnowledgeWorker(
         ingestion_db,
-        Settings(),
+        Settings(_env_file=None),
         embed=SimpleNamespace(batch_generate=AsyncMock(return_value=[[1.0, 0.0]])),
         job_queue=queue,
     )
@@ -743,7 +743,7 @@ async def test_request_completed_trees_skips_in_flight_scheduling_jobs(ingestion
     queue = SimpleNamespace(enqueue=AsyncMock())
     worker = KnowledgeWorker(
         ingestion_db,
-        Settings(),
+        Settings(_env_file=None),
         embed=SimpleNamespace(batch_generate=AsyncMock(return_value=[[1.0, 0.0]])),
         job_queue=queue,
     )

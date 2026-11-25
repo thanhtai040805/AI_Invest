@@ -12,10 +12,14 @@ Supports two execution modes against Official MinerU v4:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
+import threading
 import time
+from collections import defaultdict
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import urlparse
 
@@ -100,8 +104,120 @@ def _official_pending_status(raw_state: str) -> str:
     return "queued" if raw_state in _QUEUE_STATES else "running"
 
 
+_POOL_LOCK = threading.Lock()
+_RR_COUNTER: int = 0
+_IN_FLIGHT_BY_FP: dict[str, int] = defaultdict(int)
+_COOLDOWN_UNTIL_BY_FP: dict[str, float] = {}
+_TOKEN_SEMAPHORES: dict[tuple[int, str, int], asyncio.Semaphore] = {}
+
+
+def _token_fp(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+
+
+def reset_mineru_token_pool_state() -> None:
+    """Reset process-wide Round-Robin cursor, in-flight counters, and cooldowns (for tests)."""
+    global _RR_COUNTER
+    with _POOL_LOCK:
+        _RR_COUNTER = 0
+        _IN_FLIGHT_BY_FP.clear()
+        _COOLDOWN_UNTIL_BY_FP.clear()
+        _TOKEN_SEMAPHORES.clear()
+
+
+def get_mineru_token_pool_snapshot(tokens: tuple[str, ...]) -> list[dict[str, Any]]:
+    """Return redacted per-token load and health snapshot (never exposes raw tokens)."""
+    now = time.monotonic()
+    with _POOL_LOCK:
+        out: list[dict[str, Any]] = []
+        for idx, tok in enumerate(tokens):
+            fp = _token_fp(tok)
+            cd_until = _COOLDOWN_UNTIL_BY_FP.get(fp, 0.0)
+            out.append(
+                {
+                    "slot": idx,
+                    "token_fp": fp,
+                    "in_flight": _IN_FLIGHT_BY_FP.get(fp, 0),
+                    "healthy": now >= cd_until,
+                    "cooldown_remaining_s": round(max(0.0, cd_until - now), 2),
+                }
+            )
+        return out
+
+
+def _select_ordered_tokens(tokens: tuple[str, ...]) -> list[str]:
+    """Select candidate tokens using Atomic Round-Robin + Least-In-Flight load balancing."""
+    global _RR_COUNTER
+    if len(tokens) <= 1:
+        return list(tokens)
+    now = time.monotonic()
+    with _POOL_LOCK:
+        start = _RR_COUNTER % len(tokens)
+        _RR_COUNTER += 1
+        rotated = [tokens[(start + i) % len(tokens)] for i in range(len(tokens))]
+        healthy: list[str] = []
+        cooled: list[str] = []
+        for tok in rotated:
+            fp = _token_fp(tok)
+            if now >= _COOLDOWN_UNTIL_BY_FP.get(fp, 0.0):
+                healthy.append(tok)
+            else:
+                cooled.append(tok)
+        # Python Timsort is stable: equal in-flight counts preserve strict Round-Robin order!
+        healthy.sort(key=lambda tok: _IN_FLIGHT_BY_FP.get(_token_fp(tok), 0))
+        return healthy + cooled
+
+
+def _mark_token_cooldown(token: str, seconds: float, reason: str) -> None:
+    if seconds <= 0:
+        return
+    fp = _token_fp(token)
+    with _POOL_LOCK:
+        _COOLDOWN_UNTIL_BY_FP[fp] = max(_COOLDOWN_UNTIL_BY_FP.get(fp, 0.0), time.monotonic() + seconds)
+    log.warning("MinerU token fp=%s entered %.0fs failover cooldown (%s)", fp, seconds, reason)
+
+
+def _failover_cooldown_seconds(exc: Exception) -> float:
+    """Return >0 cooldown seconds if `exc` warrants immediate failover to the next MinerU token."""
+    if isinstance(exc, ConfigurationError):
+        # HTTP 401/403 (e.g. A0211 user token expired or revoked key)
+        return 300.0
+    if isinstance(exc, ServiceUnavailableError):
+        # HTTP 429 rate-limit, 5xx, or transient upstream timeout
+        return 30.0
+    if isinstance(exc, UpstreamError):
+        msg = str(exc).lower()
+        if any(
+            kw in msg
+            for kw in ("a0211", "token", "quota", "limit", "exceed", "frequency", "鉴权", "过期", "上限")
+        ):
+            return 120.0
+    return 0.0
+
+
+@asynccontextmanager
+async def _acquire_token_slot(token: str, per_token_limit: int) -> AsyncIterator[None]:
+    fp = _token_fp(token)
+    loop_id = id(asyncio.get_running_loop())
+    limit = max(1, int(per_token_limit))
+    key = (loop_id, fp, limit)
+    with _POOL_LOCK:
+        sem = _TOKEN_SEMAPHORES.get(key)
+        if sem is None:
+            sem = asyncio.Semaphore(limit)
+            _TOKEN_SEMAPHORES[key] = sem
+    async with sem:
+        with _POOL_LOCK:
+            _IN_FLIGHT_BY_FP[fp] += 1
+        try:
+            yield
+        finally:
+            with _POOL_LOCK:
+                _IN_FLIGHT_BY_FP[fp] = max(0, _IN_FLIGHT_BY_FP[fp] - 1)
+
+
 class OfficialMinerUClient:
-    """Exclusive MinerU Official API v4 client authenticated via `SAG_MINERU_OFFICIAL_API_TOKEN`."""
+    """Exclusive MinerU Official API v4 client with Multi-Token Round-Robin & Auto-Failover."""
 
     def __init__(self, settings: Settings, *, language: str | None = None):
         if not settings.mineru_configured:
@@ -110,7 +226,21 @@ class OfficialMinerUClient:
             )
         self._base_url = str(settings.mineru_base_url).rstrip("/")
         self._api_root = _official_api_root(self._base_url)
-        self._api_token = str(settings.mineru_official_api_token).strip()
+        raw_pool = getattr(settings, "effective_mineru_official_api_tokens", None)
+        if raw_pool:
+            tokens = tuple(str(t).strip() for t in raw_pool if str(t).strip())
+        else:
+            single = str(getattr(settings, "mineru_official_api_token", "") or "").strip()
+            tokens = (single,) if single else ()
+        if not tokens:
+            raise ConfigurationError(
+                "MinerU Official API 尚未配置 Base URL 与 SAG_MINERU_OFFICIAL_API_TOKEN"
+            )
+        self._tokens: tuple[str, ...] = tokens
+        self._api_token = self._tokens[0]
+        self._per_token_concurrency = max(
+            1, int(getattr(settings, "mineru_per_token_concurrency", 8))
+        )
         self._official_model = settings.mineru_official_model
         self._parse_method = settings.mineru_parse_method
         raw_lang = language if language is not None else getattr(settings, "sag_language", "vi")
@@ -119,6 +249,18 @@ class OfficialMinerUClient:
         self._poll_interval = max(0.05, float(settings.mineru_poll_interval))
         self._poll_timeout = max(self._poll_interval, float(settings.mineru_poll_timeout))
         self._result_limit = max(1, int(settings.mineru_result_max_mb)) * 1024 * 1024
+
+    @property
+    def tokens(self) -> tuple[str, ...]:
+        return self._tokens
+
+    def _pin_token_by_fp(self, token_fp: object) -> None:
+        if not isinstance(token_fp, str) or not token_fp:
+            return
+        for tok in self._tokens:
+            if _token_fp(tok) == token_fp:
+                self._api_token = tok
+                return
 
     @property
     def signature(self) -> str:
@@ -151,6 +293,8 @@ class OfficialMinerUClient:
         existing_batch_id = current.get("batch_id")
         has_task_id = isinstance(existing_task_id, str) and bool(existing_task_id.strip())
         has_batch_id = isinstance(existing_batch_id, str) and bool(existing_batch_id.strip())
+        if has_task_id or has_batch_id:
+            self._pin_token_by_fp(current.get("token_fp"))
 
         # Mode 1: Zero-upload direct URL task via POST /api/v4/extract/task
         if has_task_id or (
@@ -165,6 +309,7 @@ class OfficialMinerUClient:
                     current.update(
                         {
                             "task_id": task_id,
+                            "token_fp": _token_fp(self._api_token),
                             "filename": filename,
                             "upload_source": "remote_presigned",
                             "status": "queued",
@@ -175,13 +320,14 @@ class OfficialMinerUClient:
                 else:
                     task_id = str(existing_task_id).strip()
 
-                result_url = await self._poll_task(
-                    task_id,
-                    state=current,
-                    on_state=on_state,
-                    should_pause=should_pause,
-                )
-                markdown = await self._download_markdown(result_url)
+                async with _acquire_token_slot(self._api_token, self._per_token_concurrency):
+                    result_url = await self._poll_task(
+                        task_id,
+                        state=current,
+                        on_state=on_state,
+                        should_pause=should_pause,
+                    )
+                    markdown = await self._download_markdown(result_url)
                 if on_state:
                     await on_state({**current, "status": "done"})
                 return markdown
@@ -210,6 +356,7 @@ class OfficialMinerUClient:
                     "mineru_service": "official",
                     "mineru_model": self._official_model,
                     "batch_id": batch_id,
+                    "token_fp": _token_fp(self._api_token),
                     "filename": filename,
                     "upload_url": upload_url,
                     "upload_completed": False,
@@ -219,24 +366,25 @@ class OfficialMinerUClient:
             if on_state:
                 await on_state(dict(current))
 
-        if not upload_completed:
-            if not isinstance(upload_url, str) or not upload_url:
-                raise UpstreamError("MinerU 官方任务缺少待续传的签名上传地址")
-            await self._upload_file(path, upload_url)
-            current["upload_completed"] = True
-            current.pop("upload_url", None)
-            current["status"] = "queued"
-            if on_state:
-                await on_state(dict(current))
+        async with _acquire_token_slot(self._api_token, self._per_token_concurrency):
+            if not upload_completed:
+                if not isinstance(upload_url, str) or not upload_url:
+                    raise UpstreamError("MinerU 官方任务缺少待续传的签名上传地址")
+                await self._upload_file(path, upload_url)
+                current["upload_completed"] = True
+                current.pop("upload_url", None)
+                current["status"] = "queued"
+                if on_state:
+                    await on_state(dict(current))
 
-        result_url = await self._poll_batch(
-            batch_id,
-            filename,
-            state=current,
-            on_state=on_state,
-            should_pause=should_pause,
-        )
-        markdown = await self._download_markdown(result_url)
+            result_url = await self._poll_batch(
+                batch_id,
+                filename,
+                state=current,
+                on_state=on_state,
+                should_pause=should_pause,
+            )
+            markdown = await self._download_markdown(result_url)
         if on_state:
             await on_state({**current, "status": "done"})
         return markdown
@@ -253,12 +401,25 @@ class OfficialMinerUClient:
         elif self._parse_method == "ocr":
             payload["is_ocr"] = True
 
-        response = await self._official_request("POST", "extract/task", json=payload)
-        data = _official_data(response, "创建 URL 解析任务")
-        task_id = data.get("task_id")
-        if not isinstance(task_id, str) or not task_id.strip():
-            raise UpstreamError("MinerU 官方 URL 解析响应中没有 task_id")
-        return task_id.strip()
+        candidates = _select_ordered_tokens(self._tokens)
+        for idx, cand in enumerate(candidates):
+            try:
+                response = await self._official_request(
+                    "POST", "extract/task", token_override=cand, json=payload
+                )
+                data = _official_data(response, "创建 URL 解析任务")
+                task_id = data.get("task_id")
+                if not isinstance(task_id, str) or not task_id.strip():
+                    raise UpstreamError("MinerU 官方 URL 解析响应中没有 task_id")
+                self._api_token = cand
+                return task_id.strip()
+            except Exception as exc:
+                cooldown = _failover_cooldown_seconds(exc)
+                if cooldown > 0 and idx + 1 < len(candidates):
+                    _mark_token_cooldown(cand, cooldown, type(exc).__name__)
+                    continue
+                raise
+        raise ConfigurationError("MinerU Official API 无可用 Token")
 
     async def _poll_task(
         self,
@@ -304,29 +465,42 @@ class OfficialMinerUClient:
             file_config["is_ocr"] = False
         elif self._parse_method == "ocr":
             file_config["is_ocr"] = True
-        response = await self._official_request(
-            "POST",
-            "file-urls/batch",
-            json={
-                "files": [file_config],
-                "model_version": self._official_model,
-                "language": self._language,
-                "enable_table": True,
-            },
-        )
-        data = _official_data(response, "申请上传地址")
-        batch_id = data.get("batch_id")
-        upload_urls = data.get("file_urls")
-        if not isinstance(batch_id, str) or not batch_id.strip():
-            raise UpstreamError("MinerU 官方响应中没有 batch_id")
-        if (
-            not isinstance(upload_urls, list)
-            or len(upload_urls) != 1
-            or not isinstance(upload_urls[0], str)
-            or not upload_urls[0]
-        ):
-            raise UpstreamError("MinerU 官方响应中没有唯一的签名上传地址")
-        return batch_id.strip(), upload_urls[0]
+        body = {
+            "files": [file_config],
+            "model_version": self._official_model,
+            "language": self._language,
+            "enable_table": True,
+        }
+        candidates = _select_ordered_tokens(self._tokens)
+        for idx, cand in enumerate(candidates):
+            try:
+                response = await self._official_request(
+                    "POST",
+                    "file-urls/batch",
+                    token_override=cand,
+                    json=body,
+                )
+                data = _official_data(response, "申请上传地址")
+                batch_id = data.get("batch_id")
+                upload_urls = data.get("file_urls")
+                if not isinstance(batch_id, str) or not batch_id.strip():
+                    raise UpstreamError("MinerU 官方响应中没有 batch_id")
+                if (
+                    not isinstance(upload_urls, list)
+                    or len(upload_urls) != 1
+                    or not isinstance(upload_urls[0], str)
+                    or not upload_urls[0]
+                ):
+                    raise UpstreamError("MinerU 官方响应中没有唯一的签名上传地址")
+                self._api_token = cand
+                return batch_id.strip(), upload_urls[0]
+            except Exception as exc:
+                cooldown = _failover_cooldown_seconds(exc)
+                if cooldown > 0 and idx + 1 < len(candidates):
+                    _mark_token_cooldown(cand, cooldown, type(exc).__name__)
+                    continue
+                raise
+        raise ConfigurationError("MinerU Official API 无可用 Token")
 
     async def _upload_file(self, path: str, upload_url: str) -> None:
         try:
@@ -360,6 +534,7 @@ class OfficialMinerUClient:
         state: dict[str, Any] | None = None,
         on_state: StateCallback | None = None,
         should_pause: PauseCallback | None = None,
+        api_token: str | None = None,
     ) -> str:
         deadline = time.monotonic() + self._poll_timeout
         base_state = dict(state or {})
@@ -368,7 +543,7 @@ class OfficialMinerUClient:
             if should_pause is not None and await should_pause():
                 raise ParsePaused()
             response = await self._official_request(
-                "GET", f"extract-results/batch/{batch_id}"
+                "GET", f"extract-results/batch/{batch_id}", token_override=api_token
             )
             data = _official_data(response, "查询解析任务")
             results = data.get("extract_result")
@@ -422,19 +597,29 @@ class OfficialMinerUClient:
         )
 
     async def _official_request(
-        self, method: str, path: str, **kwargs: Any
+        self,
+        method: str,
+        path: str,
+        *,
+        token_override: str | None = None,
+        **kwargs: Any,
     ) -> httpx.Response:
         url = f"{self._api_root}/{path.lstrip('/')}"
         await _validate_api_url(url)
+        headers = (
+            {"Authorization": f"Bearer {token_override}"}
+            if token_override
+            else self._headers
+        )
         try:
             async with httpx.AsyncClient(timeout=self._request_timeout) as client:
                 if method == "POST":
                     response = await client.post(
-                        url, headers=self._headers, **kwargs
+                        url, headers=headers, **kwargs
                     )
                 else:
                     response = await client.request(
-                        method, url, headers=self._headers, **kwargs
+                        method, url, headers=headers, **kwargs
                     )
         except httpx.TimeoutException as exc:
             raise ServiceUnavailableError("MinerU 官方请求超时") from exc

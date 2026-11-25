@@ -315,8 +315,30 @@ def is_english_translation_label(text: str, *, vi_neighbor: str = "") -> bool:
     )
 
 
+_TIGHT_SLASH_BILINGUAL_LABEL_RE = re.compile(
+    r"(?<!https:)(?<!http:)(?<![0-9/])\s*/\s*"
+    r"((?:Name\s+of\s+(?:listed\s+)?organization|Stock\s+code(?:\s*/\s*Broker\s+code)?|"
+    r"Broker\s+code|Securities\s+symbol|Ticker\s+symbol|Head\s+office\s+address|Address|"
+    r"Tel\.?|Telephone|Fax|Contents?\s+of\s+disclosure|Attached\s+documents?|To(?=\s*:)|"
+    r"Organization\s+representative|Legal\s+representative|No\.)\b\s*:?)",
+    re.IGNORECASE,
+)
+_INLINE_ENGLISH_CAPS_TAIL_RE = re.compile(
+    r"\s+((?:THE\s+SOCIALIST\s+REPUBLIC\s+OF\s+VIETNAM(?:\s+Independence\s*[-–]\s*Freedom\s*[-–]\s*Happiness)?|"
+    r"PERIODIC\s+INFORMATION\s+DISCLOSURE|EXTRAORDINARY\s+INFORMATION\s+DISCLOSURE|"
+    r"INFORMATION\s+DISCLOSURE|CONSOLIDATED\s+FINANCIAL\s+STATEMENTS?|"
+    r"SEPARATE\s+FINANCIAL\s+STATEMENTS?|ANNUAL\s+REPORT(?:\s+20\d{2})?)\b.*)$",
+    re.IGNORECASE,
+)
+_INLINE_WEBSITE_DISCLOSURE_EN_RE = re.compile(
+    r"\s+(?:This\s+information\s+was\s+published\s+on\s+the\s+company'?s?\s+website\b.*|"
+    r"We\s+hereby\s+certify\s+that\s+the\s+information\s+provided\b.*)$",
+    re.IGNORECASE,
+)
+
+
 def strip_inline_bilingual_fragments(line: str) -> tuple[str, int]:
-    """Strip inline ` / English` or `(English translation)` suffixes from a Vietnamese line or heading."""
+    """Strip inline `/ English`, `(English translation)`, or same-line EN CBTT tails from a Vietnamese line."""
     if not line or not has_vietnamese_cues(line):
         return line, 0
 
@@ -329,9 +351,32 @@ def strip_inline_bilingual_fragments(line: str) -> tuple[str, int]:
 
     removed = 0
 
-    # 1. Slash-delimited inline translation (`Doanh thu thuần / Net revenue:` or `ĐVT: Tỷ đồng / Unit: Billion VND`)
-    if " / " in body:
-        parts = [p.strip() for p in body.split(" / ")]
+    # 0. Same-line English CBTT heading/motto/website disclosure tails (MinerU often merges these onto 1 line)
+    m_caps = _INLINE_ENGLISH_CAPS_TAIL_RE.search(body)
+    if m_caps and has_vietnamese_cues(body[: m_caps.start()]):
+        body = body[: m_caps.start()].rstrip(" /-:;")
+        removed += 1
+
+    m_web = _INLINE_WEBSITE_DISCLOSURE_EN_RE.search(body)
+    if m_web and has_vietnamese_cues(body[: m_web.start()]):
+        body = body[: m_web.start()].rstrip(" /")
+        removed += 1
+
+    # 0b. Tight slash field labels (`Tên tổ chức/Name of organization:`, `Địa chỉ/Address:`, `Kính gửi/To:`)
+    def _strip_tight_label(m: re.Match[str]) -> str:
+        nonlocal removed
+        removed += 1
+        return ":" if m.group(1).rstrip().endswith(":") else ""
+
+    if "/" in body and "http" not in body.lower():
+        new_body = _TIGHT_SLASH_BILINGUAL_LABEL_RE.sub(_strip_tight_label, body)
+        new_body = re.sub(r":\s*:", ":", new_body)
+        body = new_body
+
+    # 1. Slash-delimited inline translation (`Doanh thu thuần / Net revenue:` or `...đã kiểm toán/ Audited...`)
+    if "/" in body and "http://" not in body.lower() and "https://" not in body.lower():
+        # Split on ` / `, `/ `, or ` /` (but never inside dates `31/12`, doc codes `71/FPT`, or `đồng/cp`)
+        parts = [p.strip() for p in re.split(r"(?:\s+/\s+|/\s+(?=[A-Z])|\s+/(?=[A-Z]))", body)]
         if len(parts) >= 2 and has_vietnamese_cues(parts[0]):
             kept = [parts[0]]
             for extra in parts[1:]:
@@ -347,7 +392,7 @@ def strip_inline_bilingual_fragments(line: str) -> tuple[str, int]:
                         kept[-1] = f"{kept[-1]}:"
                 else:
                     kept.append(extra)
-            if removed > 0:
+            if len(kept) < len(parts):
                 body = " / ".join(kept)
 
     # 2. Trailing parenthetical English translation: `Tài sản ngắn hạn (Current assets)`

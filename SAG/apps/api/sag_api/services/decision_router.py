@@ -839,7 +839,7 @@ async def aroute_research_query(
     chat_mode: str = "GENERAL",
     session_state: Mapping[str, Any] | None = None,
     http_client: httpx.AsyncClient | None = None,
-    timeout_seconds: float = 2.0,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Async non-blocking 7-axis SiliconFlow `Kev-4b` Decision Gate for `/research-chat`.
 
@@ -957,7 +957,12 @@ async def aroute_research_query(
         "state": state,
         "questions": _RESEARCH_DECISION_QUESTIONS,
     }
-    timeout = httpx.Timeout(timeout_seconds, connect=min(1.0, timeout_seconds))
+    eff_timeout = float(
+        timeout_seconds
+        if timeout_seconds is not None
+        else getattr(settings, "decision_timeout_seconds", 4.5)
+    )
+    timeout = httpx.Timeout(eff_timeout, connect=min(2.5, eff_timeout))
 
     try:
         if http_client is not None:

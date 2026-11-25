@@ -93,6 +93,62 @@ COMMON_EN_WORDS = frozenset(
 )
 _EN_WORD_TOKEN_RE = re.compile(r"\b[a-z]{3,}\b")
 _RESIDUAL_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+# Detects broken embedded OCR text layers (e.g. `r4P`, `H4nh`, `kho6n`, `c6o`, `ki6m`, `nh6t`, `l$p`, `cONG`, `DQc`)
+_EMBEDDED_OCR_DIGIT_NOISE_RE = re.compile(
+    r"\b(?:"
+    r"[a-z]{1,4}\d[a-z]{1,4}|"
+    r"[A-Z][a-z]{0,2}\d[a-z]{1,4}|"
+    r"\d[a-z]{2,4}|"
+    r"[a-zA-Z]{1,3}\$[a-zA-Z]{1,3}"
+    r")\b"
+)
+_EMBEDDED_OCR_MIXED_CASE_RE = re.compile(
+    r"\b(?:[a-z]{1,2}[A-Z]{2,}|[A-Z]{2,}[a-z][A-Z]{1,}|[A-Z][a-z]+[A-Z][a-z]*)\b"
+)
+_EMBEDDED_OCR_VN_GARBAGE_RE = re.compile(
+    r"\b(?:hqp|duqc|ki6m|ngdy|thdng|ndm|chring|kho6n|chitc|c6o|nh6t|phtic|t6i|dqc|c0ng|ooan|pxah)\b",
+    re.IGNORECASE,
+)
+_VALID_MIXED_CASE_ALLOWLIST = frozenset(
+    {
+        "vnindex",
+        "vn30",
+        "vietinbank",
+        "vietcombank",
+        "techcombank",
+        "mbbank",
+        "vpbank",
+        "hdbank",
+        "tpbank",
+        "sacombank",
+        "eximbank",
+        "seabank",
+        "vib",
+        "pvtrans",
+        "vietcap",
+        "hoaphat",
+        "mobifone",
+        "vinaphone",
+        "viettel",
+        "deloitte",
+        "pwc",
+        "kpmg",
+        "youtube",
+        "linkedin",
+        "facebook",
+        "iphone",
+        "ipad",
+        "macos",
+        "eoffice",
+        "smartca",
+        "ebanking",
+        "ipay",
+        "fptshop",
+        "longchau",
+        "dienmayxanh",
+        "bachhoaxanh",
+    }
+)
 
 _VN_VOWELS_UPPER = (
     "AÀÁẢÃẠĂẰẮẲẴẶÂẦẤẨẪẬ"
@@ -286,7 +342,22 @@ def compute_vn_readability_score(text: str) -> tuple[float, dict[str, Any]]:
     )
     corruption_rate = (bad_ctrl + cid_hits * 4) / max(1, total_chars)
     score = 1.0 - min(1.0, corruption_rate * 8.0)
-    if len(alpha_chars) >= 80:
+
+    # Detect broken embedded OCR layers (e.g. HPG `cONG rY cO PHAN r4P DoAN`, `DQc l$p`, `hqp nh6t`, `duqc ki6m`)
+    # even when bilingual English headers are present on the same page.
+    digit_noise_hits = len(_EMBEDDED_OCR_DIGIT_NOISE_RE.findall(nfc))
+    vn_garbage_hits = len(_EMBEDDED_OCR_VN_GARBAGE_RE.findall(nfc))
+    mixed_case_hits = sum(
+        1
+        for tok in _EMBEDDED_OCR_MIXED_CASE_RE.findall(nfc)
+        if tok.lower() not in _VALID_MIXED_CASE_ALLOWLIST
+        and not re.fullmatch(r"[A-Z]{2,5}s", tok)
+    )
+    ocr_junk_score = digit_noise_hits * 2 + vn_garbage_hits * 3 + max(0, mixed_case_hits - 2)
+    word_count_approx = max(1, len(nfc.split()))
+    if ocr_junk_score >= 6 or (word_count_approx >= 25 and (ocr_junk_score / word_count_approx) >= 0.08):
+        score = min(score, 0.35)
+    elif len(alpha_chars) >= 80:
         if vn_ratio < 0.03 and word_hits < 2:
             latin_ext_weird = sum(
                 1 for c in nfc if 0xC0 <= ord(c) <= 0xFF and c.lower() not in VN_DIACRITICS
@@ -305,6 +376,7 @@ def compute_vn_readability_score(text: str) -> tuple[float, dict[str, Any]]:
         "is_clean_english": is_clean_english,
         "cid_hits": cid_hits,
         "bad_ctrl": bad_ctrl,
+        "ocr_junk_score": ocr_junk_score,
     }
 
 
@@ -750,7 +822,7 @@ def inspect_pdf_bytes(
             else:
                 sc, _ = compute_vn_readability_score(eff_t)
                 scores.append(sc)
-                if eff_chars > 200 and sc < BAD_FONT_THRESHOLD:
+                if (eff_chars > 200 and sc < BAD_FONT_THRESHOLD) or (eff_chars >= 80 and sc <= 0.45):
                     bad_font_pages += 1
                     bad_font_page_numbers.append(page_no)
                     page_triage.append(

@@ -1537,8 +1537,12 @@ def _extract_digital_page_text(
     if w > h * 1.25 and effective_sidebar == 0.0:
         words = page.get_text("words")
         mid = w / 2.0
-        crossing = sum(1 for wd in words if wd[0] < mid - 4 and wd[2] > mid + 4)
-        if crossing <= 2 and len(words) > 10:
+        # Require a true central gutter (zero words straddling `mid +- 6pt`, and text on both halves)
+        # so single-column widescreen slides (e.g. MWG BCTN p.74) are never sliced mid-word.
+        crossing = sum(1 for wd in words if wd[0] < mid + 6.0 and wd[2] > mid - 6.0)
+        left_cnt = sum(1 for wd in words if wd[2] <= mid - 6.0)
+        right_cnt = sum(1 for wd in words if wd[0] >= mid + 6.0)
+        if crossing == 0 and left_cnt >= 5 and right_cnt >= 5:
             left_txt = page.get_text("text", clip=fitz.Rect(0.0, 0.0, mid, h)) or ""
             right_txt = page.get_text("text", clip=fitz.Rect(mid, 0.0, w, h)) or ""
             return normalize_ctg_font_quirks(f"{left_txt.strip()}\n\n{right_txt.strip()}".strip())
@@ -1546,6 +1550,131 @@ def _extract_digital_page_text(
         txt = page.get_text("text", clip=fitz.Rect(effective_sidebar, 0.0, w, h)) or ""
         return normalize_ctg_font_quirks(txt.strip())
     return normalize_ctg_font_quirks((page.get_text("text") or "").strip())
+
+
+_DIGITAL_TABLE_NUM_CUE_RE = re.compile(r"\b\d{1,3}(?:[.,]\d{3})+\b")
+
+
+def _render_extracted_table_as_html(extracted: dict[str, Any]) -> str:
+    """Serialize a `table_engine` 2D table dict into clean HTML `<table>` for R2 Markdown persistence."""
+    import html as html_lib
+
+    headers = [str(h or "").strip() for h in (extracted.get("headers") or [])]
+    rows = extracted.get("rows") or []
+    if not headers or not rows:
+        return ""
+    parts = ["<table><thead><tr>"]
+    for h in headers:
+        parts.append(f"<th>{html_lib.escape(h)}</th>")
+    parts.append("</tr></thead><tbody>")
+    for r in rows:
+        parts.append("<tr>")
+        for cell in r:
+            if isinstance(cell, dict):
+                val = cell.get("raw_text") if "raw_text" in cell else cell.get("raw", "")
+            else:
+                val = str(cell or "")
+            parts.append(f"<td>{html_lib.escape(str(val or '').strip())}</td>")
+        parts.append("</tr>")
+    parts.append("</tbody></table>")
+    return "".join(parts)
+
+
+def _enrich_digital_pages_with_html_tables(
+    pdf_bytes: bytes,
+    page_texts: dict[int, str],
+    *,
+    digital_pages: list[int],
+    left_sidebar_x: float,
+    two_col_crops: dict[int, tuple[float, float]] | None = None,
+) -> int:
+    """Reconstruct structured HTML `<table>` blocks on numeric digital pages via `pdfplumber` + `table_engine`.
+
+    Fixes PyMuPDF vertical column dumps on Digital BCTN embedded financial statements (e.g. FPT/CTG/PVT)
+    so the cleaned `.md` files stored on R2 carry machine-readable 2D tables directly.
+    """
+    if not pdf_bytes or not digital_pages:
+        return 0
+    candidate_pages = [
+        pno
+        for pno in digital_pages
+        if pno in page_texts
+        and "<table" not in page_texts[pno].lower()
+        and len(_DIGITAL_TABLE_NUM_CUE_RE.findall(page_texts[pno])) >= 6
+    ]
+    if not candidate_pages:
+        return 0
+    try:
+        import io as _io
+
+        import pdfplumber
+
+        from sag_api.research.input_inspector import split_virtual_pages
+        from sag_api.research.table_engine import extract_tables_with_lattice_fallback
+    except Exception:  # noqa: BLE001
+        return 0
+
+    injected_count = 0
+    try:
+        with pdfplumber.open(_io.BytesIO(pdf_bytes)) as pdf:
+            total_p = len(pdf.pages)
+            for pno in candidate_pages:
+                if not (1 <= pno <= total_p):
+                    continue
+                pg = pdf.pages[pno - 1]
+                w, h = float(pg.width), float(pg.height)
+                eff_sidebar = (
+                    left_sidebar_x if (w > h * 1.25 and 0.0 < left_sidebar_x < w * 0.30) else 0.0
+                )
+                vpages = split_virtual_pages(
+                    pg,
+                    left_sidebar_x=eff_sidebar,
+                    two_col_crop=(two_col_crops or {}).get(pno),
+                )
+                page_html_tables: list[str] = []
+                for vp in vpages:
+                    try:
+                        cropped = pg.crop(vp.bbox)
+                        extracted_list = extract_tables_with_lattice_fallback(cropped)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    for extracted in extracted_list:
+                        rows = extracted.get("rows") or []
+                        num_cells = sum(
+                            1
+                            for r in rows
+                            for c in r[1:]
+                            if isinstance(c, dict) and c.get("numeric_value") is not None
+                        )
+                        if len(rows) < 2 or num_cells < 4:
+                            continue
+                        tbl_html = _render_extracted_table_as_html(extracted)
+                        if tbl_html:
+                            page_html_tables.append(tbl_html)
+                if page_html_tables:
+                    # Keep concise heading/context lines from digital text and append clean HTML tables
+                    # so vertical-dumped raw table cells don't duplicate or confuse downstream RAG.
+                    raw_lines = [ln.strip() for ln in page_texts[pno].splitlines() if ln.strip()]
+                    table_token_bag: set[str] = set()
+                    for th in page_html_tables:
+                        for num_tok in _DIGITAL_TABLE_NUM_CUE_RE.findall(th):
+                            table_token_bag.add(num_tok)
+                    kept_context: list[str] = []
+                    for ln in raw_lines:
+                        if ln in table_token_bag or re.fullmatch(r"[\d.,()%\-\s]+", ln):
+                            continue
+                        kept_context.append(ln)
+                    header_block = "\n".join(kept_context[:18]).strip()
+                    tables_joined = "\n\n".join(page_html_tables)
+                    page_texts[pno] = (
+                        f"{header_block}\n\n{tables_joined}".strip()
+                        if header_block
+                        else tables_joined
+                    )
+                    injected_count += len(page_html_tables)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Digital HTML table enrichment skipped due to pdfplumber error: %s", exc)
+    return injected_count
 
 
 def _slice_pdf_pages(pdf_bytes: bytes, page_numbers: list[int]) -> bytes:
@@ -1634,9 +1763,10 @@ async def build_research_sub_documents(
     ocr_adapter: OcrAdapterProtocol | None = None,
     toc_router: TocRouterProtocol | None = None,
     toc_scan_limit: int = 5,
-    max_targeted_ocr_pages: int = 35,
+    max_targeted_ocr_pages: int = 95,
     max_bctc_ocr_pages: int = 120,
     keep_all_bctc_notes: bool = True,
+    skip_trailing_scanned_bctc: bool = False,
 ) -> ResearchInputBuildResult:
     """Build 4 Natural Document Classes (`BCTN_CORE`, `BCTN_PR`, `BCTC_AUDITED`, `AGM_TARGETS`/`QUARTER_NOTES`)
     with 0%-drop BCTC guarantee, running header removal, native Markdown heading normalization,
@@ -1734,9 +1864,9 @@ async def build_research_sub_documents(
                 if canonical_doc_type == "BCTC":
                     ocr_cap = max_bctc_ocr_pages
                 elif canonical_doc_type in ("NQ_DHDCD", "TAI_LIEU_DHDCD"):
-                    ocr_cap = max(max_targeted_ocr_pages, 100)
+                    ocr_cap = max(max_targeted_ocr_pages, 160)
                 else:
-                    ocr_cap = max(max_targeted_ocr_pages, 60)
+                    ocr_cap = max(max_targeted_ocr_pages, 120)
                 if n_pages > ocr_cap:
                     ocr_truncated_count = n_pages - ocr_cap
                     log.warning(
@@ -1748,7 +1878,17 @@ async def build_research_sub_documents(
                         n_pages,
                     )
                 all_targets = list(range(1, min(n_pages, ocr_cap) + 1))
-                if len(all_targets) >= 4:
+                # Only run a separate 2-page English Canary OCR round-trip when title/URL is
+                # ambiguous (no Vietnamese diacritics & no `/VN/` path). Unambiguously Vietnamese
+                # filings save a full MinerU VLM GPU queue cycle (post-OCR language gate still runs!).
+                _has_unambiguous_vn_meta = bool(
+                    (source_url or "").startswith(("http://", "https://"))
+                    and (
+                        "/vn/" in (source_url or "").lower()
+                        or re.search(r"[ăâđêôơưà-ỹĂÂĐÊÔƠƯÀ-Ỹ]", title or "")
+                    )
+                )
+                if len(all_targets) >= 4 and not _has_unambiguous_vn_meta:
                     canary_pages = all_targets[1:3] if len(all_targets) >= 3 else all_targets[:2]
                     try:
                         canary_ocr = await ocr_adapter.ocr_pdf_pages(
@@ -1789,7 +1929,8 @@ async def build_research_sub_documents(
                 localization_method = f"FULL_{canonical_doc_type}_OCR"
             else:
                 # 2-Pass TOC-First OCR for 100% scanned BCTNs (avoids OCRing 150 pages of ESG/photos)
-                toc_pages = list(range(1, min(n_pages, toc_scan_limit) + 1))
+                eff_toc_limit = max(toc_scan_limit, 8) if n_pages >= 60 else toc_scan_limit
+                toc_pages = list(range(1, min(n_pages, eff_toc_limit) + 1))
                 try:
                     toc_ocr = await ocr_adapter.ocr_pdf_pages(
                         _slice_pdf_pages(unwrapped_bytes, toc_pages),
@@ -1903,11 +2044,35 @@ async def build_research_sub_documents(
                 else:
                     ocr_needed.append(pno)
 
+            # Reconstruct structured HTML `<table>` blocks on numeric digital pages (fixes PyMuPDF vertical dumps)
+            digital_extracted_pages = [p for p in range(1, n_pages + 1) if p in page_texts]
+            if digital_extracted_pages and canonical_doc_type in (
+                "BCTN",
+                "BCTC",
+                "LATEST_QUARTER",
+                "NQ_DHDCD",
+                "TAI_LIEU_DHDCD",
+            ):
+                _enrich_digital_pages_with_html_tables(
+                    unwrapped_bytes,
+                    page_texts,
+                    digital_pages=digital_extracted_pages,
+                    left_sidebar_x=inspection.auto_sidebar_x,
+                    two_col_crops=inspection.bilingual_two_col_crops,
+                )
+
             trailing_scanned_bctc_pages = [
                 p
                 for p in _detect_trailing_scan_block(inspection.scan_page_numbers, n_pages)
                 if p not in pre_english_drop_set
             ]
+
+            if skip_trailing_scanned_bctc and trailing_scanned_bctc_pages:
+                trailing_drop_set = set(trailing_scanned_bctc_pages)
+                ocr_needed = [p for p in ocr_needed if p not in trailing_drop_set]
+                for pno in trailing_scanned_bctc_pages:
+                    build_res.excluded_pages[pno] = "DEFERRED_TO_STANDALONE_BCTC"
+                trailing_scanned_bctc_pages = []
 
             if ocr_needed:
                 bad_font_set = set(inspection.bad_font_page_numbers)
@@ -1930,11 +2095,76 @@ async def build_research_sub_documents(
                 if canonical_doc_type == "BCTC" or bool(trailing_scanned_bctc_pages):
                     ocr_cap = max_bctc_ocr_pages
                 elif canonical_doc_type in ("NQ_DHDCD", "TAI_LIEU_DHDCD"):
-                    ocr_cap = max(max_targeted_ocr_pages, 100)
+                    ocr_cap = max(max_targeted_ocr_pages, 160)
                 elif canonical_doc_type in ("LATEST_QUARTER", "GIAI_TRINH", "TY_LE_AT_TC"):
-                    ocr_cap = max(max_targeted_ocr_pages, 60)
+                    ocr_cap = max(max_targeted_ocr_pages, 120)
                 else:
-                    ocr_cap = max_targeted_ocr_pages
+                    ocr_cap = max(max_targeted_ocr_pages, 95)
+
+                # Pass-1 TOC-First for large BAD_FONT / Hybrid BCTNs (prevents VCI 214p -> 2 cover pages!)
+                if (
+                    canonical_doc_type in ("BCTN", "CAO_BACH")
+                    and len(must_ocr) > 40
+                    and ocr_adapter is not None
+                ):
+                    toc_window = max(toc_scan_limit, 8)
+                    pass1_toc_pages = [p for p in must_ocr if p <= toc_window]
+                    if pass1_toc_pages:
+                        try:
+                            p1_ocr = await ocr_adapter.ocr_pdf_pages(
+                                _slice_pdf_pages(unwrapped_bytes, pass1_toc_pages),
+                                pass1_toc_pages,
+                                language="vi",
+                            )
+                        except Exception as exc:
+                            raise InputBuildError(
+                                f"Pass-1 BAD_FONT TOC OCR failed for {ticker}: {exc}"
+                            ) from exc
+                        ocr_pages_used += len(pass1_toc_pages)
+                        page_texts.update(p1_ocr)
+                        if calibration.mode == "IDENTITY":
+                            calibration = _calibrate_branch_c_from_ocr(
+                                p1_ocr,
+                                inspection=inspection,
+                                n_pages=n_pages,
+                            )
+                        toc_joined_bf = "\n".join(
+                            page_texts.get(p, "") for p in range(1, min(n_pages, toc_window) + 1)
+                        )
+                        if toc_router is not None and toc_joined_bf.strip():
+                            section_spans = await toc_router.route_toc(
+                                ticker=ticker.upper(),
+                                doc_type=canonical_doc_type,
+                                toc_or_outline_text=toc_joined_bf,
+                                total_pdf_pages=n_pages,
+                            )
+                            if section_spans:
+                                localization_method = "LLM_TOC_ROUTER"
+                        if not section_spans:
+                            section_spans = parse_toc_section_spans(
+                                toc_joined_bf, max_pages=n_pages, doc_type=canonical_doc_type
+                            )
+                            if section_spans:
+                                localization_method = "DETERMINISTIC_TOC"
+                        if section_spans:
+                            sp_map = _map_spans_to_pdf_pages(
+                                section_spans, calibration=calibration, max_pages=n_pages
+                            )
+                            localized_targets = [
+                                p
+                                for p in must_ocr
+                                if p not in page_texts
+                                and (p in sp_map and sp_map[p].slot != "EXCLUDE")
+                            ]
+                            if localized_targets:
+                                must_ocr = localized_targets
+                                if any(sp.slot == "BCTC_AUDITED" for sp in section_spans):
+                                    ocr_cap = max(ocr_cap, max_bctc_ocr_pages)
+                            else:
+                                must_ocr = [p for p in must_ocr if p not in page_texts]
+                        else:
+                            must_ocr = [p for p in must_ocr if p not in page_texts]
+
                 if len(must_ocr) > ocr_cap:
                     ocr_truncated_count += len(must_ocr) - ocr_cap
                     log.warning(
@@ -1963,8 +2193,8 @@ async def build_research_sub_documents(
                         ocr_pages_used += len(must_ocr)
                         page_texts.update(ocr_res)
 
-            # Layer 1A -> 1B -> 1C localization (BCTN / CAO_BACH only — BCTC/AGM/Quarter never need TOC routing!)
-            if canonical_doc_type in ("BCTN", "CAO_BACH"):
+            # Layer 1A -> 1B -> 1C localization (BCTN / CAO_BACH only — skip if BAD_FONT TOC-First already routed!)
+            if canonical_doc_type in ("BCTN", "CAO_BACH") and not section_spans:
                 bm_spans = extract_pdf_outline_spans(doc, doc_type=canonical_doc_type)
                 if bm_spans:
                     section_spans = bm_spans

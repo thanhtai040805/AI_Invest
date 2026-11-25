@@ -8,6 +8,7 @@ Connects Core PostgreSQL (read-only) -> ResearchDocumentSelector -> InputInspect
 
 from __future__ import annotations
 
+import asyncio
 import os
 import pathlib
 from collections.abc import Awaitable, Callable, Sequence
@@ -35,6 +36,8 @@ from sag_api.research.input_selector import (
     ResearchCandidateDocument,
     SelectedDocument,
     fetch_document_with_fallback,
+    parse_fiscal_quarter_from_meta,
+    parse_fiscal_year_from_meta,
     select_research_documents,
 )
 from sag_api.research.ocr_adapter import MinerUOcrAdapter
@@ -43,6 +46,12 @@ from sag_api.research.table_engine import (
     ExtractedTableRecord,
     TableRepositoryProtocol,
     extract_tables_from_document,
+)
+from sag_api.research.vn_filing_sources import (
+    CafeFFallbackClient,
+    VietcapIQPublicDateClient,
+    VietstockDocumentClient,
+    attach_cafef_fallback_urls,
 )
 
 log = get_logger("research.batch_ingest")
@@ -90,7 +99,7 @@ KGRefreshHook = Callable[[list[str], date], Awaitable[dict[str, Any]]]
 @dataclass(slots=True)
 class TickerIngestReport:
     ticker: str
-    status: Literal["INGESTED", "DRY_RUN_READY", "NO_DOCUMENTS", "FAILED"]
+    status: Literal["INGESTED", "R2_PREPARED", "DRY_RUN_READY", "NO_DOCUMENTS", "FAILED"]
     selected_documents: int = 0
     rejected_documents: int = 0
     branches: list[str] = field(default_factory=list)
@@ -138,10 +147,16 @@ def _normalize_pg_dsn(url: str) -> str:
 class AsyncPGCoreDBBatchReader:
     """Strictly read-only Core PostgreSQL reader (`default_transaction_read_only = on`)."""
 
-    def __init__(self, core_database_url: str) -> None:
+    def __init__(
+        self,
+        core_database_url: str,
+        *,
+        include_live_vn_sources: bool = True,
+    ) -> None:
         self._dsn = _normalize_pg_dsn(core_database_url)
         if not self._dsn:
             raise ValueError("SAG_CORE_DATABASE_URL is required for Core DB tier batch ingest")
+        self._include_live_vn_sources = include_live_vn_sources
 
     async def _connect(self) -> asyncpg.Connection:
         conn = await asyncpg.connect(self._dsn)
@@ -249,18 +264,41 @@ class AsyncPGCoreDBBatchReader:
                 sym,
                 as_of_date,
             )
+            is_brokerage = False
+            stock_row = await conn.fetchrow(
+                "SELECT sector, industry FROM stocks WHERE UPPER(symbol) = $1 LIMIT 1",
+                sym,
+            )
+            if stock_row:
+                sec_ind = f"{stock_row['sector'] or ''} {stock_row['industry'] or ''}".lower()
+                is_brokerage = any(
+                    kw in sec_ind for kw in ("chứng khoán", "chung khoan", "securities", "broker")
+                )
+
+            seen_primary_urls: set[str] = set()
             for row in kd_rows:
                 urls: list[str] = []
-                if row["url"]:
-                    urls.append(str(row["url"]))
+                # Direct PDF/archive links in `article_pdf_urls` MUST come BEFORE HTML landing page `url`
                 extra_urls = row["article_pdf_urls"] or []
                 for u in extra_urls:
-                    if u and str(u) not in urls:
-                        urls.append(str(u))
+                    us = str(u or "").strip()
+                    if us and us not in urls:
+                        urls.append(us)
+                row_url = str(row["url"] or "").strip()
+                if row_url and row_url not in urls:
+                    # Skip Vietstock HTML viewer URL when we already have direct static PDF/archive links
+                    is_html_viewer = ".htm" in row_url.lower() and not row_url.lower().endswith(
+                        (".pdf", ".zip", ".rar")
+                    )
+                    if not (urls and is_html_viewer):
+                        urls.append(row_url)
+                if not urls:
+                    continue
                 pub = row["published_date"]
                 pub_date = pub.date() if isinstance(pub, datetime) else pub
                 if pub_date is not None and pub_date.year < min_year - 1:
                     continue
+                seen_primary_urls.add(urls[0])
                 candidates.append(
                     ResearchCandidateDocument(
                         doc_id=f"kd:{row['id']}",
@@ -345,6 +383,48 @@ class AsyncPGCoreDBBatchReader:
         finally:
             await conn.close()
 
+        if self._include_live_vn_sources:
+            pub_dates: dict[tuple[int, int], date] = {}
+            try:
+                pub_dates = await VietcapIQPublicDateClient().fetch_public_dates(sym)
+            except Exception as vc_exc:  # noqa: BLE001
+                log.warning("Vietcap IQ publicDate fetch failed for %s: %s", sym, vc_exc)
+
+            # Enrich Core DB BCTC candidates with official Vietcap IQ `publicDate` (defeats Vietstock LastUpdate trap)
+            if pub_dates:
+                for cand in candidates:
+                    if cand.announcement_date is not None:
+                        continue
+                    if cand.doc_type in ("financial_statement", "BCTC", "LATEST_QUARTER"):
+                        u0 = cand.urls[0] if cand.urls else ""
+                        fy = parse_fiscal_year_from_meta(cand.title, u0)
+                        fq = parse_fiscal_quarter_from_meta(cand.title, u0)
+                        if fy is not None and (fy, fq) in pub_dates:
+                            cand.announcement_date = pub_dates[(fy, fq)]
+
+            try:
+                vs_cands, _skipped_en = await VietstockDocumentClient().collect_candidates(
+                    sym,
+                    as_of_date=as_of_date,
+                    years_back=years_back,
+                    is_brokerage=is_brokerage,
+                    vietcap_public_dates=pub_dates,
+                )
+                for vc in vs_cands:
+                    u0 = vc.urls[0] if vc.urls else ""
+                    if u0 and u0 not in seen_primary_urls:
+                        seen_primary_urls.add(u0)
+                        candidates.append(vc)
+            except Exception as vs_exc:  # noqa: BLE001
+                log.warning("Live Vietstock fetch failed for %s: %s", sym, vs_exc)
+
+            try:
+                cafef_urls = await CafeFFallbackClient().fetch_backup_urls(sym)
+                if cafef_urls:
+                    attach_cafef_fallback_urls(candidates, cafef_urls)
+            except Exception as cf_exc:  # noqa: BLE001
+                log.warning("CafeF fallback URL fetch failed for %s: %s", sym, cf_exc)
+
         return candidates, anomaly
 
 
@@ -361,7 +441,7 @@ def compute_gross_margin_delta_bps(
 
 
 def resolve_default_core_database_url() -> str:
-    return (os.environ.get("SAG_CORE_DATABASE_URL") or "").strip()
+    return (os.environ.get("SAG_CORE_DATABASE_URL") or settings.core_database_url or "").strip()
 
 
 async def _load_pdf_bytes_for_selected(
@@ -390,6 +470,7 @@ async def _load_pdf_bytes_for_selected(
     fetched = await fetch_document_with_fallback(
         urls,
         fetcher=fetcher,
+        canonical_doc_type=selected.canonical_doc_type,
     )
     if not fetched.ok or not fetched.content:
         raise InputBuildError(
@@ -405,6 +486,7 @@ async def run_research_batch_ingest(
     custom_tickers: Sequence[str] | None = None,
     years_back: int = 3,
     dry_run: bool = False,
+    r2_only: bool = False,
     enable_llm_toc: bool = False,
     refresh_kg: bool = False,
     extract_tables: bool = True,
@@ -419,9 +501,10 @@ async def run_research_batch_ingest(
     table_card_indexer: TableCardIndexer | None = None,
     kg_refresher: KGRefreshHook | None = None,
     r2_cache: SagR2MarkdownCache | None = None,
-    max_docs_per_ticker: int = 10,
+    max_docs_per_ticker: int = 8,
     include_recent_quarters: bool = True,
-    max_latest_quarters: int = 4,
+    max_latest_quarters: int = 2,
+    doc_concurrency: int = 12,
 ) -> BatchIngestSummary:
     """Execute end-to-end tier-aware HOSE Stock Research batch ingest.
 
@@ -458,170 +541,153 @@ async def run_research_batch_ingest(
     active_r2_cache = r2_cache if r2_cache is not None else SagR2MarkdownCache()
 
     ingested_tickers: list[str] = []
+    eff_doc_conc = max(1, int(doc_concurrency))
+    doc_sem = asyncio.Semaphore(eff_doc_conc)
+    select_sem = asyncio.Semaphore(min(4, eff_doc_conc))
 
-    for sym in tickers:
-        report = TickerIngestReport(ticker=sym, status="NO_DOCUMENTS")
-        try:
-            if core_reader is not None:
-                candidates, anomaly = await core_reader.fetch_candidates_for_ticker(
-                    sym, as_of_date=cutoff, years_back=years_back
+    async def _process_single_doc(
+        sym: str,
+        sel: SelectedDocument,
+        *,
+        skip_trailing_scanned_bctc: bool = False,
+    ) -> dict[str, Any]:
+        async with doc_sem:
+            doc_out: dict[str, Any] = {
+                "r2_hit": 0,
+                "rejected_extra": 0,
+                "error": None,
+                "branch": None,
+                "loc_method": None,
+                "ocr_pages": 0,
+                "missing_slots": set(),
+                "bctc_cov": None,
+                "noise_red": None,
+                "slots": set(),
+                "uploaded": 0,
+                "tables_extracted": 0,
+                "tables_verified": 0,
+                "tables_unverified": 0,
+                "bctc_embedded_full_digital": False,
+            }
+            pdf_bytes: bytes = b""
+            try:
+                pdf_bytes, resolved_url = await _load_pdf_bytes_for_selected(
+                    sel, source_paths=overrides, fetcher=fetcher
                 )
-            elif sym in overrides:
-                # Offline local-file fallback when no Core DB reader is attached
-                p = pathlib.Path(overrides[sym])
-                candidates = [
-                    ResearchCandidateDocument(
-                        doc_id=f"local:{sym}:{p.name}",
-                        ticker=sym,
-                        doc_type="BCTN",
-                        title=p.stem,
-                        urls=[str(p)],
-                        published_date=cutoff,
-                        raw_bytes=p.read_bytes() if p.is_file() else None,
-                    )
-                ]
-                anomaly = FinancialAnomalyContext()
-            else:
-                candidates = []
-                anomaly = FinancialAnomalyContext()
-
-            has_local_or_inmemory_payload = any(c.raw_bytes is not None for c in candidates) or (
-                fetcher is not None
-            )
-            eff_max_quarters = max(1, min(int(max_latest_quarters), 8))
-            selection = await select_research_documents(
-                sym,
-                candidates,
-                as_of_date=cutoff,
-                anomaly_context=anomaly,
-                fetcher=fetcher,
-                inspect_payloads=has_local_or_inmemory_payload,
-                max_latest_quarters=eff_max_quarters,
-                require_quarter_anomaly=not include_recent_quarters,
-            )
-            report.selected_documents = len(selection.selected)
-            report.rejected_documents = len(selection.rejected)
-
-            if not selection.selected:
-                summary.reports.append(report)
-                continue
-
-            seen_slots: set[str] = set()
-            seen_missing: set[str] = set()
-            bctc_cov_samples: list[float] = []
-            noise_red_samples: list[float] = []
-
-            for sel in selection.selected[:max_docs_per_ticker]:
-                pdf_bytes: bytes = b""
-                try:
-                    pdf_bytes, resolved_url = await _load_pdf_bytes_for_selected(
-                        sel, source_paths=overrides, fetcher=fetcher
-                    )
-                    cached_build: ResearchInputBuildResult | None = None
-                    if active_r2_cache.is_configured:
-                        try:
-                            cached_build = await active_r2_cache.load_cached_build_result(
-                                ticker=sym,
-                                pdf_bytes=pdf_bytes,
-                                doc_type=sel.canonical_doc_type,
-                                published_date=sel.pit_resolution.effective_published_at,
-                                fiscal_year=sel.pit_resolution.parsed_fiscal_year,
-                                fiscal_quarter=sel.pit_resolution.parsed_fiscal_quarter,
-                            )
-                        except InputBuildError:
-                            raise
-                        except Exception as cache_read_exc:  # noqa: BLE001
-                            log.warning(
-                                "R2 markdown cache read failed for %s (%s): %s",
-                                sym,
-                                sel.candidate.doc_id,
-                                cache_read_exc,
-                            )
-
-                    if cached_build is not None:
-                        build_res = cached_build
-                        report.r2_cache_hits += 1
-                    else:
-                        build_res = await build_research_sub_documents(
+                cached_build: ResearchInputBuildResult | None = None
+                if active_r2_cache.is_configured:
+                    try:
+                        cached_build = await active_r2_cache.load_cached_build_result(
                             ticker=sym,
                             pdf_bytes=pdf_bytes,
                             doc_type=sel.canonical_doc_type,
                             published_date=sel.pit_resolution.effective_published_at,
-                            title=sel.candidate.title,
-                            source_url=resolved_url,
                             fiscal_year=sel.pit_resolution.parsed_fiscal_year,
                             fiscal_quarter=sel.pit_resolution.parsed_fiscal_quarter,
-                            ocr_adapter=effective_ocr,
-                            toc_router=effective_toc_router,
                         )
-                        if active_r2_cache.is_configured and build_res.sub_documents:
-                            try:
-                                await active_r2_cache.save_cleaned_build_result(
-                                    pdf_bytes=pdf_bytes,
-                                    build_result=build_res,
-                                    fiscal_year=sel.pit_resolution.parsed_fiscal_year,
-                                    fiscal_quarter=sel.pit_resolution.parsed_fiscal_quarter,
-                                )
-                            except Exception as cache_write_exc:  # noqa: BLE001
-                                log.warning(
-                                    "R2 markdown cache write failed for %s (%s): %s",
-                                    sym,
-                                    sel.candidate.doc_id,
-                                    cache_write_exc,
-                                )
-                except InputBuildError as build_exc:
-                    err_s = str(build_exc)
-                    if (
-                        "EXCLUDED_FULL_ENGLISH" in err_s
-                        or "EXCLUDED_CACHED_ENGLISH_DOC" in err_s
-                    ):
-                        report.rejected_documents += 1
-                        if (
-                            active_r2_cache.is_configured
-                            and pdf_bytes
-                            and "EXCLUDED_CACHED_ENGLISH_DOC" not in err_s
-                        ):
-                            try:
-                                await active_r2_cache.save_english_tombstone(
-                                    ticker=sym,
-                                    pdf_bytes=pdf_bytes,
-                                    doc_type=sel.canonical_doc_type,
-                                    fiscal_year=sel.pit_resolution.parsed_fiscal_year,
-                                    fiscal_quarter=sel.pit_resolution.parsed_fiscal_quarter,
-                                    reason=err_s,
-                                )
-                            except Exception as tomb_exc:  # noqa: BLE001
-                                log.warning("R2 tombstone write failed for %s: %s", sym, tomb_exc)
-                        continue
-                    report.errors.append(f"{sel.candidate.doc_id}: {build_exc}")
-                    continue
-                except Exception as doc_exc:  # noqa: BLE001
-                    report.errors.append(f"{sel.candidate.doc_id}: {doc_exc}")
-                    continue
+                    except InputBuildError:
+                        raise
+                    except Exception as cache_read_exc:  # noqa: BLE001
+                        log.warning(
+                            "R2 markdown cache read failed for %s (%s): %s",
+                            sym,
+                            sel.candidate.doc_id,
+                            cache_read_exc,
+                        )
 
-                if build_res.routed_branch not in report.branches:
-                    report.branches.append(build_res.routed_branch)
-                if build_res.localization_method not in report.localization_methods:
-                    report.localization_methods.append(build_res.localization_method)
-                report.ocr_pages_used += build_res.ocr_pages_used
-                seen_missing.update(build_res.missing_core_slots)
-
-                audit = build_res.coverage_audit
-                if audit.bctc_total_pages > 0:
-                    bctc_cov_samples.append(audit.bctc_notes_coverage_pct)
-                if build_res.doc_type == "BCTN" and (audit.bctn_core_pages + audit.dropped_pages) > 0:
-                    noise_red_samples.append(audit.noise_reduction_pct)
-
-                unwrapped_pdf_bytes = pdf_bytes
-                try:
-                    unwrapped_pdf_bytes, _, _, _ = unwrap_pdf_payload(
-                        pdf_bytes, doc_type=sel.canonical_doc_type
+                if cached_build is not None:
+                    build_res = cached_build
+                    doc_out["r2_hit"] = 1
+                else:
+                    build_res = await build_research_sub_documents(
+                        ticker=sym,
+                        pdf_bytes=pdf_bytes,
+                        doc_type=sel.canonical_doc_type,
+                        published_date=sel.pit_resolution.effective_published_at,
+                        title=sel.candidate.title,
+                        source_url=resolved_url,
+                        fiscal_year=sel.pit_resolution.parsed_fiscal_year,
+                        fiscal_quarter=sel.pit_resolution.parsed_fiscal_quarter,
+                        ocr_adapter=effective_ocr,
+                        toc_router=effective_toc_router,
+                        skip_trailing_scanned_bctc=skip_trailing_scanned_bctc,
                     )
-                except Exception:  # noqa: BLE001
-                    unwrapped_pdf_bytes = pdf_bytes
+                    if not dry_run and active_r2_cache.is_configured and build_res.sub_documents:
+                        try:
+                            await active_r2_cache.save_cleaned_build_result(
+                                pdf_bytes=pdf_bytes,
+                                build_result=build_res,
+                                fiscal_year=sel.pit_resolution.parsed_fiscal_year,
+                                fiscal_quarter=sel.pit_resolution.parsed_fiscal_quarter,
+                            )
+                        except Exception as cache_write_exc:  # noqa: BLE001
+                            log.warning(
+                                "R2 markdown cache write failed for %s (%s): %s",
+                                sym,
+                                sel.candidate.doc_id,
+                                cache_write_exc,
+                            )
+            except InputBuildError as build_exc:
+                err_s = str(build_exc)
+                if (
+                    "EXCLUDED_FULL_ENGLISH" in err_s
+                    or "EXCLUDED_CACHED_ENGLISH_DOC" in err_s
+                ):
+                    doc_out["rejected_extra"] = 1
+                    if (
+                        not dry_run
+                        and active_r2_cache.is_configured
+                        and pdf_bytes
+                        and "EXCLUDED_CACHED_ENGLISH_DOC" not in err_s
+                    ):
+                        try:
+                            await active_r2_cache.save_english_tombstone(
+                                ticker=sym,
+                                pdf_bytes=pdf_bytes,
+                                doc_type=sel.canonical_doc_type,
+                                fiscal_year=sel.pit_resolution.parsed_fiscal_year,
+                                fiscal_quarter=sel.pit_resolution.parsed_fiscal_quarter,
+                                reason=err_s,
+                            )
+                        except Exception as tomb_exc:  # noqa: BLE001
+                            log.warning("R2 tombstone write failed for %s: %s", sym, tomb_exc)
+                    return doc_out
+                doc_out["error"] = f"{sel.candidate.doc_id}: {build_exc}"
+                return doc_out
+            except Exception as doc_exc:  # noqa: BLE001
+                doc_out["error"] = f"{sel.candidate.doc_id}: {doc_exc}"
+                return doc_out
 
+            doc_out["branch"] = build_res.routed_branch
+            doc_out["loc_method"] = build_res.localization_method
+            doc_out["ocr_pages"] = build_res.ocr_pages_used
+            doc_out["missing_slots"] = set(build_res.missing_core_slots)
+            if sel.canonical_doc_type == "BCTN" and build_res.routed_branch == "A":
+                min_full_pages = 40 if build_res.inspection.pages >= 60 else 10
+                embedded_bctc_pages = sum(
+                    len(b.page_numbers)
+                    for b in build_res.sub_documents
+                    if b.sub_doc_slot == "BCTC_AUDITED"
+                )
+                doc_out["bctc_embedded_full_digital"] = embedded_bctc_pages >= min_full_pages
+
+            audit = build_res.coverage_audit
+            if audit.bctc_total_pages > 0:
+                doc_out["bctc_cov"] = audit.bctc_notes_coverage_pct
+            if build_res.doc_type == "BCTN" and (audit.bctn_core_pages + audit.dropped_pages) > 0:
+                doc_out["noise_red"] = audit.noise_reduction_pct
+
+            unwrapped_pdf_bytes = pdf_bytes
+            try:
+                unwrapped_pdf_bytes, _, _, _ = unwrap_pdf_payload(
+                    pdf_bytes, doc_type=sel.canonical_doc_type
+                )
+            except Exception:  # noqa: BLE001
+                unwrapped_pdf_bytes = pdf_bytes
+
+            try:
                 for bundle in build_res.sub_documents:
-                    seen_slots.add(bundle.sub_doc_slot)
+                    doc_out["slots"].add(bundle.sub_doc_slot)
                     doc_ver_id = bundle.content_hash[:24]
                     if not dry_run and subdoc_uploader is not None:
                         upload_resp = await subdoc_uploader(bundle)
@@ -639,7 +705,7 @@ async def run_research_batch_ingest(
                             doc_ver_id = f"live:{bundle.content_hash[:16]}"
                         else:
                             doc_ver_id = str(resolved_ver)
-                        report.uploaded_sub_docs += 1
+                        doc_out["uploaded"] += 1
 
                     # Dual-Representation Financial Table Engine wired directly into batch ingest
                     if extract_tables and bundle.sub_doc_slot in (
@@ -661,16 +727,168 @@ async def run_research_batch_ingest(
                             left_sidebar_x=build_res.inspection.auto_sidebar_x,
                             two_col_crops=build_res.inspection.bilingual_two_col_crops,
                         )
-                        report.tables_extracted += len(extracted_tables)
+                        doc_out["tables_extracted"] += len(extracted_tables)
                         for tbl_rec in extracted_tables:
                             if tbl_rec.verification_status == "VERIFIED":
-                                report.tables_verified += 1
+                                doc_out["tables_verified"] += 1
                             elif tbl_rec.verification_status == "TABLE_UNVERIFIED":
-                                report.tables_unverified += 1
+                                doc_out["tables_unverified"] += 1
                             if not dry_run and table_repo is not None:
                                 await table_repo.upsert_table(tbl_rec)
                         if not dry_run and table_card_indexer is not None and extracted_tables:
                             await table_card_indexer(bundle, doc_ver_id, extracted_tables)
+            except Exception as upload_exc:  # noqa: BLE001
+                doc_out["slots"].clear()
+                doc_out["error"] = str(upload_exc)
+                return doc_out
+            log.info(
+                "Doc ready ticker=%s type=%s fy=%s q=%s branch=%s ocr_pages=%d r2_hit=%d tables=%d/%d",
+                sym,
+                sel.canonical_doc_type,
+                sel.pit_resolution.parsed_fiscal_year,
+                sel.pit_resolution.parsed_fiscal_quarter,
+                doc_out["branch"],
+                doc_out["ocr_pages"],
+                doc_out["r2_hit"],
+                doc_out["tables_verified"],
+                doc_out["tables_extracted"],
+            )
+            return doc_out
+
+    async def _process_ticker(sym: str) -> TickerIngestReport:
+        report = TickerIngestReport(ticker=sym, status="NO_DOCUMENTS")
+        try:
+            async with select_sem:
+                if core_reader is not None:
+                    candidates, anomaly = await core_reader.fetch_candidates_for_ticker(
+                        sym, as_of_date=cutoff, years_back=years_back
+                    )
+                elif sym in overrides:
+                    p = pathlib.Path(overrides[sym])
+                    candidates = [
+                        ResearchCandidateDocument(
+                            doc_id=f"local:{sym}:{p.name}",
+                            ticker=sym,
+                            doc_type="BCTN",
+                            title=p.stem,
+                            urls=[str(p)],
+                            published_date=cutoff,
+                            raw_bytes=p.read_bytes() if p.is_file() else None,
+                        )
+                    ]
+                    anomaly = FinancialAnomalyContext()
+                else:
+                    candidates = []
+                    anomaly = FinancialAnomalyContext()
+
+                has_local_or_inmemory_payload = any(c.raw_bytes is not None for c in candidates) or (
+                    fetcher is not None
+                )
+                eff_max_quarters = max(1, min(int(max_latest_quarters), 8))
+                selection = await select_research_documents(
+                    sym,
+                    candidates,
+                    as_of_date=cutoff,
+                    anomaly_context=anomaly,
+                    fetcher=fetcher,
+                    inspect_payloads=has_local_or_inmemory_payload,
+                    max_latest_quarters=eff_max_quarters,
+                    require_quarter_anomaly=not include_recent_quarters,
+                )
+            report.selected_documents = len(selection.selected)
+            report.rejected_documents = len(selection.rejected)
+
+            if not selection.selected:
+                return report
+
+            selected_slice = selection.selected[:max_docs_per_ticker]
+            bctc_years = {
+                sel.pit_resolution.parsed_fiscal_year
+                for sel in selected_slice
+                if sel.canonical_doc_type == "BCTC"
+                and sel.pit_resolution.parsed_fiscal_year is not None
+            }
+            bctn_tasks_by_fy: dict[int, asyncio.Task[dict[str, Any]]] = {}
+            other_tasks: list[asyncio.Task[dict[str, Any]]] = []
+            deferred_bctcs: list[SelectedDocument] = []
+
+            for sel in selected_slice:
+                fy_s = sel.pit_resolution.parsed_fiscal_year
+                if sel.canonical_doc_type == "BCTN" and fy_s is not None:
+                    bctn_tasks_by_fy[fy_s] = asyncio.create_task(
+                        _process_single_doc(
+                            sym,
+                            sel,
+                            skip_trailing_scanned_bctc=(fy_s in bctc_years),
+                        )
+                    )
+                elif sel.canonical_doc_type == "BCTC" and fy_s is not None:
+                    deferred_bctcs.append(sel)
+                else:
+                    other_tasks.append(asyncio.create_task(_process_single_doc(sym, sel)))
+
+            async def _run_bctc_after_bctn(sel: SelectedDocument) -> dict[str, Any]:
+                fy_s = sel.pit_resolution.parsed_fiscal_year
+                bctn_task = bctn_tasks_by_fy.get(fy_s) if fy_s is not None else None
+                if bctn_task is not None:
+                    bctn_res = await bctn_task
+                    if bctn_res.get("bctc_embedded_full_digital"):
+                        log.info(
+                            "Skipped standalone BCTC for %s FY%s: Digital Branch-A BCTN already embeds full notes",
+                            sym,
+                            fy_s,
+                        )
+                        return {
+                            "r2_hit": 0,
+                            "rejected_extra": 1,
+                            "error": None,
+                            "branch": None,
+                            "loc_method": None,
+                            "ocr_pages": 0,
+                            "missing_slots": set(),
+                            "bctc_cov": None,
+                            "noise_red": None,
+                            "slots": set(),
+                            "uploaded": 0,
+                            "tables_extracted": 0,
+                            "tables_verified": 0,
+                            "tables_unverified": 0,
+                            "bctc_embedded_full_digital": False,
+                        }
+                return await _process_single_doc(sym, sel)
+
+            for sel in deferred_bctcs:
+                other_tasks.append(asyncio.create_task(_run_bctc_after_bctn(sel)))
+
+            all_tasks = list(bctn_tasks_by_fy.values()) + other_tasks
+            doc_results = list(await asyncio.gather(*all_tasks)) if all_tasks else []
+
+            seen_slots: set[str] = set()
+            seen_missing: set[str] = set()
+            bctc_cov_samples: list[float] = []
+            noise_red_samples: list[float] = []
+
+            for res in doc_results:
+                report.r2_cache_hits += res["r2_hit"]
+                report.rejected_documents += res["rejected_extra"]
+                report.ocr_pages_used += res["ocr_pages"]
+                if res["branch"] and res["branch"] not in report.branches:
+                    report.branches.append(res["branch"])
+                if res["loc_method"] and res["loc_method"] not in report.localization_methods:
+                    report.localization_methods.append(res["loc_method"])
+                if res["error"]:
+                    report.errors.append(res["error"])
+                    continue
+                seen_missing.update(res["missing_slots"])
+                if res["bctc_cov"] is not None:
+                    bctc_cov_samples.append(res["bctc_cov"])
+                if res["noise_red"] is not None:
+                    noise_red_samples.append(res["noise_red"])
+                seen_slots.update(res["slots"])
+                report.uploaded_sub_docs += res["uploaded"]
+                report.tables_extracted += res["tables_extracted"]
+                report.tables_verified += res["tables_verified"]
+                report.tables_unverified += res["tables_unverified"]
 
             report.sub_doc_slots = sorted(seen_slots)
             report.missing_core_slots = sorted(seen_missing - seen_slots)
@@ -679,17 +897,45 @@ async def run_research_batch_ingest(
             if noise_red_samples:
                 report.noise_reduction_pct = round(sum(noise_red_samples) / len(noise_red_samples), 1)
             if report.sub_doc_slots:
-                report.status = "DRY_RUN_READY" if dry_run else "INGESTED"
-                ingested_tickers.append(sym)
+                if dry_run:
+                    report.status = "DRY_RUN_READY"
+                elif r2_only:
+                    report.status = "R2_PREPARED"
+                else:
+                    report.status = "INGESTED"
             elif report.errors:
                 report.status = "FAILED"
         except Exception as exc:  # noqa: BLE001
             report.status = "FAILED"
             report.errors.append(str(exc))
 
-        summary.reports.append(report)
+        log.info(
+            "Batch ingest ticker=%s status=%s selected=%d rejected=%d slots=%s ocr_pages=%d "
+            "r2_hits=%d tables=%d/%d errors=%d",
+            sym,
+            report.status,
+            report.selected_documents,
+            report.rejected_documents,
+            report.sub_doc_slots,
+            report.ocr_pages_used,
+            report.r2_cache_hits,
+            report.tables_verified,
+            report.tables_extracted,
+            len(report.errors),
+        )
+        return report
 
-    if refresh_kg and not dry_run and kg_refresher is not None and ingested_tickers:
+    if eff_doc_conc > 1 and len(tickers) > 1:
+        ticker_reports = await asyncio.gather(*(_process_ticker(sym) for sym in tickers))
+    else:
+        ticker_reports = [await _process_ticker(sym) for sym in tickers]
+
+    for rep in ticker_reports:
+        summary.reports.append(rep)
+        if rep.status in ("DRY_RUN_READY", "R2_PREPARED", "INGESTED"):
+            ingested_tickers.append(rep.ticker)
+
+    if refresh_kg and not dry_run and not r2_only and kg_refresher is not None and ingested_tickers:
         summary.kg_refresh = await kg_refresher(ingested_tickers, cutoff)
 
     return summary

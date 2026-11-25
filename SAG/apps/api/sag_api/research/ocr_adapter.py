@@ -8,9 +8,12 @@ HTML `<table>` blocks for `table_engine.py`.
 
 from __future__ import annotations
 
+import asyncio
 import pathlib
 import re
 import tempfile
+
+import fitz
 
 from sag_api.core.config import Settings
 from sag_api.core.config import settings as global_settings
@@ -67,6 +70,7 @@ class MinerUOcrAdapter:
         *,
         parse_method: str = "ocr",
         official_model: str | None = None,
+        chunk_pages: int | None = None,
     ) -> None:
         base_settings = settings or global_settings
         if not base_settings.mineru_configured:
@@ -76,6 +80,37 @@ class MinerUOcrAdapter:
         self._base_settings = base_settings
         self._parse_method = parse_method
         self._official_model = official_model or base_settings.mineru_official_model
+        if chunk_pages is not None:
+            self._chunk_pages = int(chunk_pages)
+        elif self._official_model == "vlm":
+            # VLM GPU queue latency (~5-9 min) is per-job; avoid chopping normal 40-100p filings
+            # into tiny 20p sub-jobs that multiply queue overhead. Parallelize at document level instead.
+            self._chunk_pages = max(120, int(getattr(base_settings, "mineru_ocr_chunk_pages", 20)))
+        else:
+            self._chunk_pages = int(getattr(base_settings, "mineru_ocr_chunk_pages", 20))
+
+    async def _ocr_single_slice(
+        self,
+        slice_bytes: bytes,
+        slice_pages: list[int],
+        *,
+        resolved_lang: str,
+    ) -> dict[int, str]:
+        scoped_settings = self._base_settings.model_copy(
+            update={
+                "mineru_parse_method": self._parse_method,
+                "mineru_official_model": self._official_model,
+            }
+        )
+        client = OfficialMinerUClient(scoped_settings, language=resolved_lang)
+        with tempfile.TemporaryDirectory(
+            prefix="sag_mineru_hose_", ignore_cleanup_errors=True
+        ) as tmp_dir:
+            slice_name = f"hose_slice_p{slice_pages[0]}_p{slice_pages[-1]}.pdf"
+            tmp_pdf = pathlib.Path(tmp_dir) / slice_name
+            tmp_pdf.write_bytes(slice_bytes)
+            markdown = await client.parse(str(tmp_pdf))
+        return map_mineru_markdown_to_original_pages(markdown, slice_pages)
 
     async def ocr_pdf_pages(
         self,
@@ -87,20 +122,50 @@ class MinerUOcrAdapter:
         if not page_numbers or not pdf_bytes:
             return {}
 
-        scoped_settings = self._base_settings.model_copy(
-            update={
-                "mineru_parse_method": self._parse_method,
-                "mineru_official_model": self._official_model,
-            }
-        )
         # Map `vi` -> `latin` (MinerU Official v4 canonical pack for Vietnamese extended Latin script)
         resolved_lang = normalize_mineru_language(language, default="latin")
-        client = OfficialMinerUClient(scoped_settings, language=resolved_lang)
+        slice_limit = max(1, self._chunk_pages)
+        pool_tokens = getattr(self._base_settings, "effective_mineru_official_api_tokens", ())
 
-        with tempfile.TemporaryDirectory(prefix="sag_mineru_hose_") as tmp_dir:
-            slice_name = f"hose_slice_p{page_numbers[0]}_p{page_numbers[-1]}.pdf"
-            tmp_pdf = pathlib.Path(tmp_dir) / slice_name
-            tmp_pdf.write_bytes(pdf_bytes)
-            markdown = await client.parse(str(tmp_pdf))
+        # Parallel multi-slice dispatch across the Round-Robin MinerU token pool for large scanned filings
+        if len(pool_tokens) >= 2 and len(page_numbers) > slice_limit:
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            try:
+                if doc.page_count == len(page_numbers):
+                    chunks: list[tuple[bytes, list[int]]] = []
+                    for start in range(0, len(page_numbers), slice_limit):
+                        end = min(start + slice_limit, len(page_numbers))
+                        sub_doc = fitz.open()
+                        try:
+                            sub_doc.insert_pdf(doc, from_page=start, to_page=end - 1)
+                            chunks.append((sub_doc.tobytes(), page_numbers[start:end]))
+                        finally:
+                            sub_doc.close()
+                else:
+                    chunks = []
+            finally:
+                doc.close()
 
-        return map_mineru_markdown_to_original_pages(markdown, page_numbers)
+            if len(chunks) > 1:
+                max_parallel = max(
+                    1, int(getattr(self._base_settings, "effective_mineru_io_concurrency", 16))
+                )
+                sem = asyncio.Semaphore(max_parallel)
+
+                async def _run_chunk(c_bytes: bytes, c_pages: list[int]) -> dict[int, str]:
+                    async with sem:
+                        return await self._ocr_single_slice(
+                            c_bytes, c_pages, resolved_lang=resolved_lang
+                        )
+
+                results = await asyncio.gather(
+                    *(_run_chunk(c_bytes, c_pages) for c_bytes, c_pages in chunks)
+                )
+                merged: dict[int, str] = {}
+                for part in results:
+                    merged.update(part)
+                return merged
+
+        return await self._ocr_single_slice(
+            pdf_bytes, page_numbers, resolved_lang=resolved_lang
+        )

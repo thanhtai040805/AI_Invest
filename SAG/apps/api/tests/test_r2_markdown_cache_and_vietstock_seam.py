@@ -444,3 +444,249 @@ async def test_asgi_ingest_batch_endpoint_strips_bilingual_pages_end_to_end(
         assert "BCTN_CORE" in body["reports"][0]["sub_doc_slots"]
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_pilot8_quality_remediation_regressions(tmp_path: Path):
+    """Covers real-world pilot_8 defects:
+    1. Broken embedded OCR text (HPG Q2 `cONG rY cO PHAN r4P DoAN`, `DQc l$p`) caught as BAD_FONT despite EN headers.
+    2. Short 4-page CafeF errata notice for BCTC automatically falls through to full Vietstock mirror PDF.
+    3. Tight `/` bilingual labels & same-line ALL-CAPS English CBTT tails stripped cleanly
+       without hurting `Tổng cộng / Total`.
+    4. Transient R2 HTTP 500 on PUT retries and succeeds automatically.
+    """
+    from sag_api.research.input_inspector import compute_vn_readability_score
+    from sag_api.research.input_selector import fetch_document_with_fallback
+    from sag_api.research.vn_bilingual_cleaner import clean_bilingual_markdown
+
+    # 1. Broken embedded OCR text masked by English CBTT headers MUST fail readability (< 0.50)
+    hpg_garbled_p1 = (
+        "cONG rY cO PHAN r4P DoAN HOA PHAT GROUP\n"
+        "DQc l$p - Tg do - H4nh phtic\n"
+        "Hung YAn, ngdy 28 thdng 08 ndm 2026\n"
+        "PERIODIC INFORMATION DISCLOSURE\n"
+        "To: Hochiminh Stock Exchange\n"
+        "Md chring kho6n: HPG. 86o c6o tai chinh hqp nh6t d5 duqc ki6m toan 6 thang.\n"
+    )
+    sc, meta = compute_vn_readability_score(hpg_garbled_p1)
+    assert sc <= 0.45, f"Expected BAD_FONT score <= 0.45, got {sc} ({meta})"
+
+    # 2. 4-page errata mirror falls back automatically to full 20-page BCTC mirror
+    short_errata = _make_utf8_pdf(
+        ["<h1>CÔNG BỐ THÔNG TIN BẤT THƯỜNG</h1><p>V/v Đính chính thuyết minh số 10 BCTC năm 2024.</p>"]
+        * 4
+    )
+    full_bctc = _make_utf8_pdf(
+        ["<h1>BÁO CÁO TÀI CHÍNH HỢP NHẤT NĂM 2024 ĐÃ KIỂM TOÁN</h1><p>Tài sản ngắn hạn: 100.000</p>"]
+        * 20
+    )
+
+    class _MirrorFetcher:
+        async def fetch_bytes(self, url: str) -> tuple[int, bytes]:
+            if "cafef" in url:
+                return 200, short_errata
+            return 200, full_bctc
+
+    fetched = await fetch_document_with_fallback(
+        [
+            "https://cafefnew.mediacdn.vn/CTG_2024_errata.pdf",
+            "https://static2.vietstock.vn/CTG_2024_full.pdf",
+        ],
+        fetcher=_MirrorFetcher(),
+        canonical_doc_type="BCTC",
+    )
+    assert fetched.ok
+    assert fetched.resolved_url == "https://static2.vietstock.vn/CTG_2024_full.pdf"
+
+    # 3. Tight `/` CBTT labels & same-line ALL-CAPS English heading stripped cleanly
+    raw_cbtt = (
+        "# CÔNG BỐ THÔNG TIN ĐỊNH KỲ PERIODIC INFORMATION DISCLOSURE\n"
+        "1. Tên tổ chức/Name of organization: Công ty Cổ phần FPT/ FPT Corporation\n"
+        "- Địa chỉ/Address: Số 10 Phạm Văn Bạch, Hà Nội\n"
+        "3. Thông tin đã công bố tại https://fpt.com This information was published on the company's website.\n"
+        "<table><tr><td>Tổng cộng / Total</td><td>1.000</td></tr></table>\n"
+    )
+    cleaned_md, _ = clean_bilingual_markdown(raw_cbtt)
+    assert "PERIODIC INFORMATION DISCLOSURE" not in cleaned_md
+    assert "Name of organization" not in cleaned_md
+    assert "Address" not in cleaned_md
+    assert "This information was published" not in cleaned_md
+    assert "Công ty Cổ phần FPT" in cleaned_md
+    assert "Tổng cộng</td>" in cleaned_md
+    assert "Tổng cộngtal" not in cleaned_md
+
+    # 4. Digital table HTML renderer preserves `raw_text` cell values from `table_engine`
+    from sag_api.research.input_builder import _render_extracted_table_as_html
+
+    rendered_tbl = _render_extracted_table_as_html(
+        {
+            "headers": ["Chỉ tiêu", "2025", "2024"],
+            "rows": [
+                [
+                    {"raw_text": "Tiền mặt", "numeric_value": None},
+                    {"raw_text": "1.250.000", "numeric_value": 1250000.0},
+                    {"raw_text": "980.000", "numeric_value": 980000.0},
+                ]
+            ],
+        }
+    )
+    assert "<td>Tiền mặt</td><td>1.250.000</td><td>980.000</td>" in rendered_tbl
+
+    # 5. Transient R2 500 retry succeeds on 2nd attempt
+    put_attempts = 0
+
+    def _flaky_r2(req: httpx.Request) -> httpx.Response:
+        nonlocal put_attempts
+        if req.method == "PUT":
+            put_attempts += 1
+            if put_attempts == 1:
+                return httpx.Response(500, text="Internal Server Error")
+            return httpx.Response(200, text="")
+        return httpx.Response(404)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_flaky_r2)) as r2_http:
+        cache = SagR2MarkdownCache(
+            account_id="acc123",
+            endpoint_url="https://acc123.r2.cloudflarestorage.com",
+            access_key_id="ak",
+            secret_access_key="sk",
+            bucket_name="aiinvest-bctc-prod",
+            local_cache_dir=str(tmp_path / "r2_retry"),
+            http_client=r2_http,
+        )
+        await cache.put_text_object("sag-clean-md/vn-clean-v3/DCM/test.md", "# BCTC DCM")
+    assert put_attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_golden_standard_4_to_5_doc_selection_contract():
+    """Verify Golden Standard (4-5 docs/ticker) eliminates 2024 noise, AGM drafts, Q4 & Q1 redundancies."""
+    from sag_api.research.input_selector import (
+        FinancialAnomalyContext,
+        ResearchCandidateDocument,
+        select_research_documents,
+    )
+
+    candidates = [
+        # Annual BCTN: 2025 (keep) vs 2024 (drop)
+        ResearchCandidateDocument(
+            doc_id="bctn_2025",
+            ticker="FPT",
+            doc_type="annual_report",
+            title="Báo cáo thường niên năm 2025",
+            urls=["https://example.invalid/fpt_bctn_2025.pdf"],
+            published_date=date(2026, 4, 5),
+        ),
+        ResearchCandidateDocument(
+            doc_id="bctn_2024",
+            ticker="FPT",
+            doc_type="annual_report",
+            title="Báo cáo thường niên năm 2024",
+            urls=["https://example.invalid/fpt_bctn_2024.pdf"],
+            published_date=date(2025, 4, 5),
+        ),
+        # Annual Audited BCTC: 2025 (keep) vs 2024 (drop)
+        ResearchCandidateDocument(
+            doc_id="bctc_2025",
+            ticker="FPT",
+            doc_type="financial_statement",
+            title="Báo cáo tài chính hợp nhất năm 2025 (đã kiểm toán)",
+            statement_scope="CONSOLIDATED",
+            urls=["https://example.invalid/fpt_bctc_2025.pdf"],
+            published_date=date(2026, 3, 20),
+        ),
+        ResearchCandidateDocument(
+            doc_id="bctc_2024",
+            ticker="FPT",
+            doc_type="financial_statement",
+            title="Báo cáo tài chính hợp nhất năm 2024 (đã kiểm toán)",
+            statement_scope="CONSOLIDATED",
+            urls=["https://example.invalid/fpt_bctc_2024.pdf"],
+            published_date=date(2025, 3, 20),
+        ),
+        # AGM: NQ 2026 (keep), TAI_LIEU 2026 (drop because NQ exists), NQ 2025 (drop)
+        ResearchCandidateDocument(
+            doc_id="nq_2026",
+            ticker="FPT",
+            doc_type="agm_resolution",
+            title="Nghị quyết ĐHĐCĐ thường niên năm 2026",
+            urls=["https://example.invalid/fpt_nq_2026.pdf"],
+            published_date=date(2026, 4, 15),
+        ),
+        ResearchCandidateDocument(
+            doc_id="tl_2026",
+            ticker="FPT",
+            doc_type="TAI_LIEU_DHDCD",
+            title="Tài liệu ĐHĐCĐ thường niên năm 2026",
+            urls=["https://example.invalid/fpt_tl_2026.pdf"],
+            published_date=date(2026, 3, 25),
+        ),
+        ResearchCandidateDocument(
+            doc_id="nq_2025",
+            ticker="FPT",
+            doc_type="agm_resolution",
+            title="Nghị quyết ĐHĐCĐ thường niên năm 2025",
+            urls=["https://example.invalid/fpt_nq_2025.pdf"],
+            published_date=date(2025, 4, 15),
+        ),
+        # Quarters: Q4/2025 (drop - superseded by audited FY2025), Q1/2026 (drop - superseded by Q2 6T),
+        # Q2/2026 Reviewed (keep), Q3/2026 Latest (keep)
+        ResearchCandidateDocument(
+            doc_id="q4_2025",
+            ticker="FPT",
+            doc_type="financial_statement",
+            title="BCTC hợp nhất quý 4 năm 2025",
+            statement_scope="CONSOLIDATED",
+            urls=["https://example.invalid/fpt_q4_2025.pdf"],
+            published_date=date(2026, 1, 28),
+        ),
+        ResearchCandidateDocument(
+            doc_id="q1_2026",
+            ticker="FPT",
+            doc_type="financial_statement",
+            title="BCTC hợp nhất quý 1 năm 2026",
+            statement_scope="CONSOLIDATED",
+            urls=["https://example.invalid/fpt_q1_2026.pdf"],
+            published_date=date(2026, 4, 28),
+        ),
+        ResearchCandidateDocument(
+            doc_id="q2_2026",
+            ticker="FPT",
+            doc_type="financial_statement",
+            title="BCTC hợp nhất soát xét 6 tháng đầu năm 2026",
+            statement_scope="CONSOLIDATED",
+            urls=["https://example.invalid/fpt_q2_2026.pdf"],
+            published_date=date(2026, 8, 15),
+        ),
+        ResearchCandidateDocument(
+            doc_id="q3_2026",
+            ticker="FPT",
+            doc_type="financial_statement",
+            title="BCTC hợp nhất quý 3 năm 2026",
+            statement_scope="CONSOLIDATED",
+            urls=["https://example.invalid/fpt_q3_2026.pdf"],
+            published_date=date(2026, 10, 28),
+        ),
+    ]
+
+    sel = await select_research_documents(
+        "FPT",
+        candidates,
+        as_of_date=date(2026, 11, 25),
+        anomaly_context=FinancialAnomalyContext(),
+        inspect_payloads=False,
+        require_quarter_anomaly=False,
+    )
+    selected_ids = [s.candidate.doc_id for s in sel.selected]
+    assert selected_ids == ["bctn_2025", "bctc_2025", "nq_2026", "q3_2026", "q2_2026"]
+
+    # Fallback: when NQ_DHDCD is absent, TAI_LIEU_DHDCD IS kept cleanly!
+    sel_fallback = await select_research_documents(
+        "FPT",
+        [c for c in candidates if c.doc_id not in ("nq_2026", "nq_2025")],
+        as_of_date=date(2026, 11, 25),
+        anomaly_context=FinancialAnomalyContext(),
+        inspect_payloads=False,
+        require_quarter_anomaly=False,
+    )
+    assert "tl_2026" in [s.candidate.doc_id for s in sel_fallback.selected]

@@ -186,6 +186,8 @@ class CrossEncoderRerankerClient:
             if clean.endswith("/rerank") or "/inference/" in clean:
                 return clean
             if self._provider == "deepinfra":
+                if clean.endswith("/openai"):
+                    clean = clean[: -len("/openai")].rstrip("/")
                 return f"{clean}/inference/{self._model}"
             return f"{clean}/rerank"
         if self._provider == "siliconflow":

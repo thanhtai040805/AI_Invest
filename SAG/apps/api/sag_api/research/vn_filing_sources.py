@@ -221,7 +221,12 @@ class VietcapIQPublicDateClient:
 class VietstockDocumentClient:
     """Fetches structured Vietnamese corporate filings from `finance.vietstock.vn/data/getdocument`."""
 
+    BASE_URL = "https://finance.vietstock.vn"
     ENDPOINT = "https://finance.vietstock.vn/data/getdocument"
+    _TOKEN_RE = re.compile(
+        r"name=[\"']?__RequestVerificationToken[\"']?[^>]+value=[\"']?([^\"' >]+)",
+        re.IGNORECASE,
+    )
 
     def __init__(
         self,
@@ -231,6 +236,35 @@ class VietstockDocumentClient:
     ) -> None:
         self._client = http_client
         self._timeout = timeout_seconds
+        self._session_client: httpx.AsyncClient | None = None
+        self._csrf_token: str | None = None
+
+    async def _ensure_live_session(self, ticker: str) -> tuple[httpx.AsyncClient, str | None]:
+        if self._session_client is None:
+            self._session_client = httpx.AsyncClient(
+                timeout=self._timeout,
+                follow_redirects=True,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+        if not self._csrf_token:
+            try:
+                page_resp = await self._session_client.get(
+                    f"{self.BASE_URL}/{ticker}/tai-tai-lieu.htm?doctype=1",
+                    headers={"Referer": f"{self.BASE_URL}/"},
+                )
+                if page_resp.status_code == 200:
+                    m = self._TOKEN_RE.search(page_resp.text or "")
+                    if m:
+                        self._csrf_token = m.group(1)
+            except httpx.HTTPError:
+                self._csrf_token = None
+        return self._session_client, self._csrf_token
+
+    async def aclose(self) -> None:
+        if self._session_client is not None:
+            await self._session_client.aclose()
+            self._session_client = None
+            self._csrf_token = None
 
     async def fetch_doctype_page(
         self,
@@ -244,16 +278,44 @@ class VietstockDocumentClient:
         sym = ticker.strip().upper()
         headers = {
             "Accept": "application/json, text/javascript, */*; q=0.01",
-            "Referer": f"https://finance.vietstock.vn/{sym}/tai-tai-lieu.htm",
+            "Referer": f"{self.BASE_URL}/{sym}/tai-tai-lieu.htm",
             "X-Requested-With": "XMLHttpRequest",
             "User-Agent": "Mozilla/5.0",
         }
-        params = {"code": sym, "page": page, "doctype": doctype}
         if self._client is not None:
+            params = {"code": sym, "page": page, "doctype": doctype}
             resp = await self._client.get(self.ENDPOINT, params=params, headers=headers)
         else:
-            async with httpx.AsyncClient(timeout=self._timeout, follow_redirects=True) as client:
-                resp = await client.get(self.ENDPOINT, params=params, headers=headers)
+            client, csrf = await self._ensure_live_session(sym)
+            form_data: dict[str, Any] = {
+                "code": sym,
+                "page": page,
+                "type": doctype,
+            }
+            if csrf:
+                form_data["__RequestVerificationToken"] = csrf
+            resp = await client.post(
+                self.ENDPOINT,
+                data=form_data,
+                headers={
+                    **headers,
+                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                },
+            )
+            if resp.status_code in (400, 403, 500) and self._csrf_token:
+                # Refresh expired anti-forgery token once
+                self._csrf_token = None
+                client, csrf = await self._ensure_live_session(sym)
+                if csrf:
+                    form_data["__RequestVerificationToken"] = csrf
+                resp = await client.post(
+                    self.ENDPOINT,
+                    data=form_data,
+                    headers={
+                        **headers,
+                        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                    },
+                )
         if resp.status_code != 200:
             return []
         try:
@@ -283,51 +345,54 @@ class VietstockDocumentClient:
         skipped_english: list[str] = []
         seen_urls: set[str] = set()
 
-        for dt_code in doctypes:
-            canonical_type = VIETSTOCK_DOCTYPE_MAP[dt_code]
-            for pg in range(1, max_pages_per_doctype + 1):
-                rows = await self.fetch_doctype_page(sym, doctype=dt_code, page=pg)
-                if not rows:
-                    break
-                for row in rows:
-                    if not isinstance(row, dict):
-                        continue
-                    url = str(row.get("Url") or row.get("FileUrl") or row.get("url") or "").strip()
-                    title = str(row.get("Title") or row.get("Note") or row.get("FileName") or "").strip()
-                    if not url or url in seen_urls:
-                        continue
-                    is_en, en_reason = is_standalone_english_metadata(title, url=url)
-                    if is_en:
-                        skipped_english.append(f"{row.get('DocumentID', '')}:{en_reason}")
-                        continue
+        try:
+            for dt_code in doctypes:
+                canonical_type = VIETSTOCK_DOCTYPE_MAP[dt_code]
+                for pg in range(1, max_pages_per_doctype + 1):
+                    rows = await self.fetch_doctype_page(sym, doctype=dt_code, page=pg)
+                    if not rows:
+                        break
+                    for row in rows:
+                        if not isinstance(row, dict):
+                            continue
+                        url = str(row.get("Url") or row.get("FileUrl") or row.get("url") or "").strip()
+                        title = str(row.get("Title") or row.get("Note") or row.get("FileName") or "").strip()
+                        if not url or url in seen_urls:
+                            continue
+                        is_en, en_reason = is_standalone_english_metadata(title, url=url)
+                        if is_en:
+                            skipped_english.append(f"{row.get('DocumentID', '')}:{en_reason}")
+                            continue
 
-                    fy = parse_fiscal_year_from_meta(title, url)
-                    fq = parse_fiscal_quarter_from_meta(title, url)
-                    if fy is not None and fy < min_year:
-                        continue
+                        fy = parse_fiscal_year_from_meta(title, url)
+                        fq = parse_fiscal_quarter_from_meta(title, url)
+                        if fy is not None and fy < min_year:
+                            continue
 
-                    last_upd = parse_vietstock_timestamp(
-                        row.get("UpdateTime") or row.get("LastUpdate") or row.get("PublishDate")
-                    )
-                    ann_dt: date | None = None
-                    if canonical_type == "BCTC" and fy is not None:
-                        ann_dt = pub_map.get((fy, fq))
-
-                    seen_urls.add(url)
-                    doc_id = f"vietstock:{sym}:{dt_code}:{row.get('DocumentID') or len(candidates) + 1}"
-                    candidates.append(
-                        ResearchCandidateDocument(
-                            doc_id=doc_id,
-                            ticker=sym,
-                            doc_type=canonical_type,
-                            title=title or f"{sym} {canonical_type} {fy or ''}".strip(),
-                            urls=[url],
-                            source="vietstock",
-                            statement_scope=infer_statement_scope(None, title=title),
-                            announcement_date=ann_dt,
-                            published_date=ann_dt or last_upd,
+                        last_upd = parse_vietstock_timestamp(
+                            row.get("UpdateTime") or row.get("LastUpdate") or row.get("PublishDate")
                         )
-                    )
+                        ann_dt: date | None = None
+                        if canonical_type == "BCTC" and fy is not None:
+                            ann_dt = pub_map.get((fy, fq))
+
+                        seen_urls.add(url)
+                        doc_id = f"vietstock:{sym}:{dt_code}:{row.get('DocumentID') or len(candidates) + 1}"
+                        candidates.append(
+                            ResearchCandidateDocument(
+                                doc_id=doc_id,
+                                ticker=sym,
+                                doc_type=canonical_type,
+                                title=title or f"{sym} {canonical_type} {fy or ''}".strip(),
+                                urls=[url],
+                                source="vietstock",
+                                statement_scope=infer_statement_scope(None, title=title),
+                                announcement_date=ann_dt,
+                                published_date=ann_dt or last_upd,
+                            )
+                        )
+        finally:
+            await self.aclose()
 
         return candidates, skipped_english
 

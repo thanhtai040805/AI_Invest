@@ -190,6 +190,8 @@ def classify_document_category(
         return "CORE", f"CORE_{canonical}"
 
     if canonical in ("CAO_BACH", "GIAI_TRINH", "TY_LE_AT_TC"):
+        if canonical == "GIAI_TRINH" and scope == "SEPARATE" and has_consolidated:
+            return "EXCLUDED", "EXCLUDED_SEPARATE_PARENT_EXPLANATION"
         return "CONDITIONAL", f"CONDITIONAL_{canonical}"
 
     return "EXCLUDED", f"UNRECOGNIZED_DOC_TYPE:{canonical}"
@@ -481,18 +483,53 @@ class DocumentFetchResult:
     error: str | None = None
 
 
+_ERRATA_NOTICE_TITLE_RE = re.compile(
+    r"(?:đính\s+chính|dinh\s+chinh|bổ\s+sung\s+thuyết\s+minh|thay\s+thế\s+một\s+phần|"
+    r"công\s+bố\s+thông\s+tin\s+bất\s+thường|cbtt\s+đính\s+chính)",
+    re.IGNORECASE,
+)
+
+
+def _quick_pdf_substantive_check(payload: bytes, *, canonical_doc_type: str) -> tuple[bool, int]:
+    """Return `(is_substantive, page_count)` for BCTC/BCTN payloads to reject short 4-page errata mirrors."""
+    if canonical_doc_type not in ("BCTC", "BCTN"):
+        return True, 0
+    try:
+        pdf_bytes = _unpack_pdf_if_zip(payload, doc_type=canonical_doc_type)
+        if not pdf_bytes.startswith(b"%PDF"):
+            return True, 0
+        import fitz
+
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        try:
+            n_pages = len(doc)
+            if n_pages >= 15:
+                return True, n_pages
+            first_txt = (doc[0].get_text("text") or "")[:1200] if n_pages > 0 else ""
+            # Under 15 pages for an annual BCTC/BCTN is almost always a cover/errata notice when backups exist
+            if _ERRATA_NOTICE_TITLE_RE.search(first_txt) or n_pages <= 12:
+                return False, n_pages
+            return True, n_pages
+        finally:
+            doc.close()
+    except Exception:  # noqa: BLE001
+        return True, 0
+
+
 async def fetch_document_with_fallback(
     urls: list[str],
     *,
     fetcher: BytesFetcherProtocol | None = None,
+    canonical_doc_type: str = "",
 ) -> DocumentFetchResult:
-    """Try candidate URLs sequentially, failing over automatically on 404/network/zip errors."""
+    """Try candidate URLs sequentially, failing over on 404/network/zip errors AND short BCTC/BCTN errata notices."""
     if not urls:
         return DocumentFetchResult(ok=False, error="NO_CANDIDATE_URLS")
 
     active_fetcher = fetcher or HttpxBytesFetcher()
     tried_urls: list[str] = []
     attempt_errors: list[str] = []
+    best_short_fallback: tuple[int, bytes, str] | None = None
 
     for url in urls:
         u = (url or "").strip()
@@ -507,6 +544,14 @@ async def fetch_document_with_fallback(
             if not payload:
                 attempt_errors.append(f"{u}: EMPTY_BODY")
                 continue
+            is_sub, n_pages = _quick_pdf_substantive_check(
+                payload, canonical_doc_type=canonical_doc_type
+            )
+            if not is_sub:
+                attempt_errors.append(f"{u}: SHORT_OR_ERRATA_NOTICE({n_pages}p)")
+                if best_short_fallback is None or n_pages > best_short_fallback[0]:
+                    best_short_fallback = (n_pages, payload, u)
+                continue
             return DocumentFetchResult(
                 ok=True,
                 content=payload,
@@ -516,6 +561,16 @@ async def fetch_document_with_fallback(
             )
         except (httpx.HTTPError, OSError, ValueError, RuntimeError, zipfile.BadZipFile) as exc:
             attempt_errors.append(f"{u}: {type(exc).__name__}: {exc}")
+
+    if best_short_fallback is not None:
+        _, fb_payload, fb_url = best_short_fallback
+        return DocumentFetchResult(
+            ok=True,
+            content=fb_payload,
+            resolved_url=fb_url,
+            tried_urls=tried_urls,
+            attempt_errors=attempt_errors,
+        )
 
     return DocumentFetchResult(
         ok=False,
@@ -565,6 +620,8 @@ def _is_conditional_activated(
         return False, "CONDITIONAL_LATEST_QUARTER_NOT_TRIGGERED"
 
     if canonical_type == "GIAI_TRINH":
+        if not require_quarter_anomaly:
+            return True, candidate.trigger_reason or "RECENT_EARNINGS_EXPLANATION"
         if (
             anomaly_ctx.quarter_notes_triggered()
             or anomaly_ctx.has_regulatory_explanation_request
@@ -598,19 +655,22 @@ async def select_research_documents(
     fetcher: BytesFetcherProtocol | None = None,
     inspect_payloads: bool = True,
     min_fiscal_year: int | None = None,
-    max_years_per_annual_type: int = 2,
+    max_years_per_annual_type: int = 1,
     max_latest_quarters: int | None = None,
     require_quarter_anomaly: bool = True,
 ) -> DocumentSelectionResult:
     """Select, PIT-filter, deduplicate multi-source mirrors, inspect, and prioritize HOSE research filings.
 
-    For General Multi-Hop Q&A, set `require_quarter_anomaly=False` (defaulting `max_latest_quarters` to 4,
-    configurable up to 8 recent quarters) so normal non-anomalous quarterly filings are ingested.
+    Golden Standard (`4-5` files/ticker):
+    - 1 latest annual `BCTN` + 1 latest annual `BCTC` (deduplicated when Digital BCTN embeds full notes)
+    - 1 latest `NQ_DHDCD` (`TAI_LIEU_DHDCD` used ONLY as fallback when `NQ_DHDCD` is absent for that year)
+    - Up to 2 post-audited interim quarters (`Q2` Semi-Annual Reviewed + latest quarter `Q3`, dropping
+      audited-superseded `Q4` and H1-superseded `Q1` automatically when `max_latest_quarters <= 2`).
     """
     eff_max_quarters = (
         max(1, min(int(max_latest_quarters), 8))
         if max_latest_quarters is not None
-        else (1 if require_quarter_anomaly else 4)
+        else (1 if require_quarter_anomaly else 2)
     )
     ctx = anomaly_context or FinancialAnomalyContext()
     if has_consolidated is None:
@@ -725,9 +785,18 @@ async def select_research_documents(
 
         preliminary.append((cand, canonical, tier, reason, pit_res))
 
-    # Sort newest effective_published_at first (preferring adjusted/restated filings on same date)
+    # Sort newest effective_published_at first, deprioritizing errata/notes-only notices below full statements
     preliminary.sort(
         key=lambda item: (
+            0
+            if (
+                item[1] in ("BCTC", "BCTN")
+                and (
+                    _ERRATA_NOTICE_TITLE_RE.search(item[0].title or "")
+                    or re.search(r"^(?:thuyết\s+minh|tmbctc)\b", (item[0].title or "").strip(), re.IGNORECASE)
+                )
+            )
+            else 1,
             item[4].effective_published_at,
             1 if "điều chỉnh" in (item[0].title or "").lower() else 0,
             1 if "soát xét" in (item[0].title or "").lower() else 0,
@@ -747,7 +816,18 @@ async def select_research_documents(
             "NQ_DHDCD",
             "LATEST_QUARTER",
         ):
-            pkey = (canonical, pit_res.parsed_fiscal_year, pit_res.parsed_fiscal_quarter)
+            agm_sub = ""
+            if canonical == "NQ_DHDCD":
+                t_low = (cand.title or "").lower()
+                is_extra = bool(cand.is_extraordinary_agm) or any(
+                    k in t_low for k in ("bất thường", "bat thuong", "lấy ý kiến", "lay y kien", "bằng văn bản")
+                )
+                agm_sub = "EXTRA" if is_extra else "ANNUAL"
+            pkey = (
+                f"{canonical}:{agm_sub}" if agm_sub else canonical,
+                pit_res.parsed_fiscal_year,
+                pit_res.parsed_fiscal_quarter,
+            )
             if pkey in period_owner_idx:
                 owner_cand = dedup_prelim[period_owner_idx[pkey]][0]
                 for extra_u in cand.urls:
@@ -766,16 +846,135 @@ async def select_research_documents(
             period_owner_idx[pkey] = len(dedup_prelim)
         dedup_prelim.append(item)
 
-    # Apply per-category recency caps so old quarters never crowd out core annual BCTN / BCTC / AGM
-    type_counts: dict[str, int] = {}
-    capped_prelim: list[tuple[ResearchCandidateDocument, str, SelectionTier, str, PitDateResolution]] = []
+    # Golden Standard filtering before recency caps:
+    # 1. `TAI_LIEU_DHDCD` (AGM draft proposals) is FALLBACK-ONLY when `NQ_DHDCD` is missing for that year.
+    # 2. When `eff_max_quarters <= 2`: drop unaudited quarters from years already covered by annual BCTC/BCTN
+    #    (e.g. drop Q4/2025 once FY2025 audited exists), and drop Q1 when Q2 Semi-Annual Reviewed exists.
+    nq_agm_years: set[int] = {
+        pit_res.parsed_fiscal_year
+        for _c, canonical, _t, _r, pit_res in dedup_prelim
+        if canonical == "NQ_DHDCD" and pit_res.parsed_fiscal_year is not None
+    }
+    latest_annual_fy_vals = [
+        pit_res.parsed_fiscal_year
+        for _c, canonical, _t, _r, pit_res in dedup_prelim
+        if canonical in ("BCTC", "BCTN") and pit_res.parsed_fiscal_year is not None
+    ]
+    latest_annual_fy = max(latest_annual_fy_vals) if latest_annual_fy_vals else None
+    post_annual_quarters_by_fy: dict[int, set[int]] = {}
+    for _c, canonical, _t, _r, pit_res in dedup_prelim:
+        if canonical == "LATEST_QUARTER" and pit_res.parsed_fiscal_year is not None:
+            post_annual_quarters_by_fy.setdefault(pit_res.parsed_fiscal_year, set()).add(
+                pit_res.parsed_fiscal_quarter
+            )
+
+    filtered_prelim: list[
+        tuple[ResearchCandidateDocument, str, SelectionTier, str, PitDateResolution]
+    ] = []
     for item in dedup_prelim:
         cand, canonical, tier, reason, pit_res = item
-        cap = (
-            eff_max_quarters
-            if canonical == "LATEST_QUARTER"
-            else (max_years_per_annual_type if canonical in ("BCTN", "BCTC", "NQ_DHDCD") else 2)
-        )
+        if canonical == "TAI_LIEU_DHDCD":
+            if nq_agm_years and (
+                pit_res.parsed_fiscal_year is None
+                or pit_res.parsed_fiscal_year in nq_agm_years
+                or pit_res.parsed_fiscal_year < max(nq_agm_years)
+            ):
+                result.rejected.append(
+                    RejectedDocument(
+                        doc_id=cand.doc_id,
+                        ticker=cand.ticker,
+                        title=cand.title,
+                        raw_doc_type=cand.doc_type,
+                        reason="SUPERSEDED_BY_NQ_DHDCD",
+                    )
+                )
+                continue
+        if canonical == "LATEST_QUARTER" and eff_max_quarters <= 2 and pit_res.parsed_fiscal_year is not None:
+            if latest_annual_fy is not None and pit_res.parsed_fiscal_year <= latest_annual_fy:
+                result.rejected.append(
+                    RejectedDocument(
+                        doc_id=cand.doc_id,
+                        ticker=cand.ticker,
+                        title=cand.title,
+                        raw_doc_type=cand.doc_type,
+                        reason=f"SUPERSEDED_BY_AUDITED_ANNUAL_FY{latest_annual_fy}",
+                    )
+                )
+                continue
+            if (
+                pit_res.parsed_fiscal_quarter == 1
+                and 2 in post_annual_quarters_by_fy.get(pit_res.parsed_fiscal_year, set())
+            ):
+                result.rejected.append(
+                    RejectedDocument(
+                        doc_id=cand.doc_id,
+                        ticker=cand.ticker,
+                        title=cand.title,
+                        raw_doc_type=cand.doc_type,
+                        reason=f"SUPERSEDED_BY_SEMI_ANNUAL_REVIEWED_Q2_{pit_res.parsed_fiscal_year}",
+                    )
+                )
+                continue
+        if canonical == "GIAI_TRINH" and (as_of_date - pit_res.effective_published_at).days > 450:
+            result.rejected.append(
+                RejectedDocument(
+                    doc_id=cand.doc_id,
+                    ticker=cand.ticker,
+                    title=cand.title,
+                    raw_doc_type=cand.doc_type,
+                    reason="STALE_EXPLANATION_OVER_15M",
+                )
+            )
+            continue
+        filtered_prelim.append(item)
+
+    # Apply per-category recency caps so old periods never crowd out core annual BCTN / BCTC / AGM
+    type_counts: dict[str, int] = {}
+    agm_annual_kept = 0
+    agm_extra_kept = 0
+    capped_prelim: list[tuple[ResearchCandidateDocument, str, SelectionTier, str, PitDateResolution]] = []
+    for item in filtered_prelim:
+        cand, canonical, tier, reason, pit_res = item
+        if canonical == "NQ_DHDCD":
+            t_low = (cand.title or "").lower()
+            is_extra_agm = bool(cand.is_extraordinary_agm) or any(
+                k in t_low for k in ("bất thường", "bat thuong", "lấy ý kiến", "lay y kien", "bằng văn bản")
+            )
+            if is_extra_agm:
+                if agm_extra_kept >= 1 or (as_of_date - pit_res.effective_published_at).days > 450:
+                    result.rejected.append(
+                        RejectedDocument(
+                            doc_id=cand.doc_id,
+                            ticker=cand.ticker,
+                            title=cand.title,
+                            raw_doc_type=cand.doc_type,
+                            reason="SUPERSEDED_BY_NEWER_EXTRAORDINARY_AGM",
+                        )
+                    )
+                    continue
+                agm_extra_kept += 1
+            else:
+                if agm_annual_kept >= max_years_per_annual_type:
+                    result.rejected.append(
+                        RejectedDocument(
+                            doc_id=cand.doc_id,
+                            ticker=cand.ticker,
+                            title=cand.title,
+                            raw_doc_type=cand.doc_type,
+                            reason="SUPERSEDED_BY_NEWER_NQ_DHDCD",
+                        )
+                    )
+                    continue
+                agm_annual_kept += 1
+            capped_prelim.append(item)
+            continue
+        if canonical == "LATEST_QUARTER":
+            cap = eff_max_quarters
+        elif canonical in ("BCTN", "BCTC"):
+            cap = max_years_per_annual_type
+        else:
+            # TAI_LIEU_DHDCD (fallback only), GIAI_TRINH, TY_LE_AT_TC, CAO_BACH -> 1 latest each
+            cap = 1
         cur_n = type_counts.get(canonical, 0)
         if cur_n >= cap:
             result.rejected.append(
@@ -813,7 +1012,11 @@ async def select_research_documents(
         raw_payload = cand.raw_bytes
         resolved_url = cand.urls[0] if cand.urls else ""
         if raw_payload is None and cand.urls and inspect_payloads:
-            fetched = await fetch_document_with_fallback(cand.urls, fetcher=fetcher)
+            fetched = await fetch_document_with_fallback(
+                cand.urls,
+                fetcher=fetcher,
+                canonical_doc_type=canonical,
+            )
             if not fetched.ok:
                 result.rejected.append(
                     RejectedDocument(
