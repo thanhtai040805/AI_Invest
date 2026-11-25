@@ -131,7 +131,12 @@ _COLUMN_UPGRADES: dict[str, dict[str, str]] = {
     "universe_dirty_sources": {"revision": "INTEGER NOT NULL DEFAULT 1"},
     "tree_manifests": {"manifest_json": "JSON NOT NULL DEFAULT '{}'"},
     "tree_routing_profiles": {"document_version_id": "VARCHAR(128) NOT NULL DEFAULT ''"},
-    "knowledge_jobs": {"result_json": "JSON", "usage_json": "JSON", "extractor_version": "VARCHAR(128)", "tree_requested_at": "TIMESTAMP WITH TIME ZONE"},
+    "knowledge_jobs": {
+        "result_json": "JSON",
+        "usage_json": "JSON",
+        "extractor_version": "VARCHAR(128)",
+        "tree_requested_at": "TIMESTAMP WITH TIME ZONE",
+    },
     "knowledge_graph_builds": {"input_fingerprint": "VARCHAR(64)"},
     "canonical_blocks": {"dedup_signature_json": "JSON"},
     "research_tasks": {"execution_json": "JSON NOT NULL DEFAULT '{}'"},
@@ -145,7 +150,10 @@ _COLUMN_UPGRADES: dict[str, dict[str, str]] = {
 # idempotent for local/embedded upgrades; production deployments can express
 # the same DDL in their migration runner.
 _INDEX_UPGRADES = (
-    "CREATE UNIQUE INDEX IF NOT EXISTS ix_knowledge_graph_input ON knowledge_graph_builds (tenant_id, project_id, input_fingerprint)",
+    (
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_knowledge_graph_input "
+        "ON knowledge_graph_builds (tenant_id, project_id, input_fingerprint)"
+    ),
     "CREATE INDEX IF NOT EXISTS ix_messages_thread_created_id ON messages (thread_id, created_at, id)",
     "CREATE INDEX IF NOT EXISTS ix_messages_reply_to_message_id ON messages (reply_to_message_id)",
     "CREATE INDEX IF NOT EXISTS ix_messages_regenerated_from_message_id ON messages (regenerated_from_message_id)",
@@ -172,6 +180,35 @@ _INDEX_UPGRADES = (
     (
         "CREATE INDEX IF NOT EXISTS idx_tree_routing_profiles_version_scope "
         "ON tree_routing_profiles (project_id, tree_version, source_id, document_version_id, partition_id)"
+    ),
+    (
+        "CREATE INDEX IF NOT EXISTS idx_user_memory_episodes_scope_pit "
+        "ON user_memory_episodes (tenant_id, user_id, status, is_backtest_sandbox, source_as_of_date)"
+    ),
+    (
+        "CREATE INDEX IF NOT EXISTS idx_user_memory_items_active_pit "
+        "ON user_memory_items "
+        "(tenant_id, user_id, is_backtest_sandbox, pit_sensitivity, valid_to, tx_to, source_as_of_date)"
+    ),
+    (
+        "CREATE INDEX IF NOT EXISTS idx_user_memory_items_slot "
+        "ON user_memory_items (tenant_id, user_id, canonical_slot_key, valid_to, tx_to)"
+    ),
+    (
+        "CREATE INDEX IF NOT EXISTS idx_user_memory_items_outbox "
+        "ON user_memory_items (qdrant_sync_status, updated_at)"
+    ),
+    (
+        "CREATE INDEX IF NOT EXISTS idx_user_memory_edges_conflict "
+        "ON user_memory_edges (tenant_id, user_id, src_entity_id, dst_entity_id, conflict_group, valid_to, tx_to)"
+    ),
+    (
+        "CREATE INDEX IF NOT EXISTS idx_user_memory_jobs_poll "
+        "ON user_memory_jobs (status, available_at, created_at)"
+    ),
+    (
+        "CREATE INDEX IF NOT EXISTS idx_user_memory_audit_scope_created "
+        "ON user_memory_audit_log (tenant_id, user_id, created_at)"
     ),
 )
 

@@ -459,16 +459,27 @@ async def test_user_journey_asgi_http_tickers_and_sse_stream_with_real_bff_heade
                 _make_doc("doc-other-org", project_id="SECRET", tenant_id="other-tenant"),
             ]
         )
-        session.add(
-            DocumentVersion(
-                id="ver-fpt-http",
-                document_id="doc-fpt-http",
-                version_no=1,
-                file_hash="h-fpt-http",
-                valid_from=pub_dt,
-                source_published_at=pub_dt,
-                metadata_json={"sub_doc_slot": "BCTC_AUDITED", "fiscal_year": 2025},
-            )
+        session.add_all(
+            [
+                DocumentVersion(
+                    id="ver-fpt-http",
+                    document_id="doc-fpt-http",
+                    version_no=1,
+                    file_hash="h-fpt-http",
+                    valid_from=pub_dt,
+                    source_published_at=pub_dt,
+                    metadata_json={"sub_doc_slot": "BCTC_AUDITED", "fiscal_year": 2025},
+                ),
+                DocumentVersion(
+                    id="ver-mwg-http",
+                    document_id="doc-mwg-http",
+                    version_no=1,
+                    file_hash="h-mwg-http",
+                    valid_from=pub_dt,
+                    source_published_at=pub_dt,
+                    metadata_json={"sub_doc_slot": "BCTC_AUDITED", "fiscal_year": 2025},
+                ),
+            ]
         )
         session.add(
             CanonicalBlock(

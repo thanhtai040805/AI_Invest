@@ -74,6 +74,7 @@ async def lifespan(app: FastAPI):
 
     runtime = KnowledgeRuntime(settings, SessionLocal, active_path=Path(settings.data_dir))
     from sag_api.jobs.knowledge import KnowledgeWorker
+    from sag_api.research.user_memory_worker import UserMemoryWorker
     from sag_api.services.knowledge_service import build_financial_knowledge_config
 
     knowledge_worker = KnowledgeWorker(
@@ -81,11 +82,20 @@ async def lifespan(app: FastAPI):
         settings,
         config=build_financial_knowledge_config(),
     )
+    user_memory_worker = UserMemoryWorker(
+        SessionLocal,
+        settings,
+    )
+
+    from sag_api.research.financial_metrics_store import close_core_metrics_pools
 
     try:
         async with principal_assertion_lifespan():
             await runtime.start(app)
             knowledge_worker.job_queue = app.state.job_queue
+            user_memory_worker.llm = getattr(app.state, "llm", None)
+            user_memory_worker.engine_manager = getattr(app.state, "engine_manager", None)
+            app.state.user_memory_worker = user_memory_worker
             if getattr(app.state, "engine_manager", None) is not None and knowledge_worker.embed is None:
                 try:
                     knowledge_worker.embed = await app.state.engine_manager.get_sag_embedding()
@@ -93,6 +103,8 @@ async def lifespan(app: FastAPI):
                     log.warning("Failed to initialize knowledge worker embedder: %s", error)
             if settings.knowledge_worker_enabled:
                 await knowledge_worker.start()
+            if settings.user_memory_worker_enabled and settings.user_memory_mode != "off":
+                await user_memory_worker.start()
             import asyncio
 
             from sag_api.services.universe_knowledge_service import warm_active_tree_manifest_cache
@@ -113,7 +125,9 @@ async def lifespan(app: FastAPI):
     finally:
         failures: list[BaseException] = []
         for cleanup in (
+            user_memory_worker.stop,
             knowledge_worker.stop,
+            close_core_metrics_pools,
             runtime.stop,
             dispose_db,
         ):

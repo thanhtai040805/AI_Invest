@@ -1,4 +1,4 @@
-"""Comprehensive behavioral, bi-temporal ECCE, security/ACL, pagination, and GC tests for 'Branch in new chat'."""
+"""Comprehensive behavioral, security/ACL, pagination, and GC tests for 'Branch in new chat'."""
 
 from __future__ import annotations
 
@@ -41,8 +41,6 @@ from sag_api.db.models import (
     Document,
     DocumentVersion,
     Message,
-    SessionDecisionLedger,
-    SessionUnit,
     Source,
     SourceProjectMapping,
     Thread,
@@ -51,7 +49,6 @@ from sag_api.db.models import (
 from sag_api.enums import DocumentStatus
 from sag_api.services.agent_domain import _encode_message_cursor
 from sag_api.services.document_service import revoke_project_document
-from sag_api.services.session_context.substrate import SESSION_INDEX_CACHE
 from sag_api.tools import Tool, ToolContext, ToolMeta, ToolRegistry, ToolResult
 
 
@@ -197,12 +194,8 @@ async def _ask_turn(
 
 @pytest.fixture
 async def branch_env(monkeypatch: pytest.MonkeyPatch):
-    SESSION_INDEX_CACHE.clear()
     monkeypatch.setattr(settings, "auth_mode", "continuum")
     monkeypatch.setattr(settings, "bff_service_token", "test-bff-secret")
-    monkeypatch.setattr(settings, "session_context_mode", "on")
-    monkeypatch.setattr(settings, "session_context_persistence_enabled", True)
-    monkeypatch.setattr(settings, "session_context_embedding_mode", "deterministic")
     monkeypatch.setattr(settings, "decision_provider", "disabled")
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -323,7 +316,6 @@ async def branch_env(monkeypatch: pytest.MonkeyPatch):
         )
 
     await runtime.stop()
-    SESSION_INDEX_CACHE.clear()
     await engine.dispose()
 
 
@@ -440,151 +432,6 @@ async def test_branch_creates_zero_duplicate_messages_and_isolates_future_turns(
     assert len(b_after) == 6
     assert [item["is_inherited"] for item in b_after] == [True, True, True, True, False, False]
     assert "Thread A secret post-fork question E" not in {item["content"] for item in b_after}
-
-
-async def test_bitemporal_ecce_as_of_isolation_when_parent_or_child_supersedes_decisions(branch_env):
-    client: httpx.AsyncClient = branch_env.client
-    headers = _continuum_headers(user_id=branch_env.u_owner)
-
-    thread_a = (
-        await client.post("/api/v1/agents/agent_default/threads", headers=headers, json={"title": "DB Decision"})
-    ).json()
-
-    # Turn 1 on Thread A confirms PostgreSQL 16
-    branch_env.llm.queue("Chốt dùng PostgreSQL 16 làm database chính [1]")
-    msg_a1_id = await _ask_turn(
-        client,
-        agent_id="agent_default",
-        thread_id=thread_a["id"],
-        query="Chốt dùng PostgreSQL 16 làm database chính.",
-        headers=headers,
-    )
-
-    # Branch B created at msg_a1_id
-    thread_b = (
-        await client.post(
-            f"/api/v1/agents/agent_default/threads/{thread_a['id']}/messages/{msg_a1_id}/branch",
-            headers=headers,
-            json={},
-        )
-    ).json()
-
-    # AFTER branching, Thread A supersedes PostgreSQL 16 -> CockroachDB!
-    branch_env.llm.queue(
-        "Đã chốt thay PostgreSQL 16 bằng CockroachDB làm database chính [1]",
-        "CockroachDB đang là database chính trên Thread A [1]",
-    )
-    _ = await _ask_turn(
-        client,
-        agent_id="agent_default",
-        thread_id=thread_a["id"],
-        query="Chốt quyết định cuối cùng: thay PostgreSQL 16 bằng CockroachDB làm database chính.",
-        headers=headers,
-    )
-    # Trigger one follow-up ask on Thread A so Turn 2's SUPERSEDED decision is flushed to PostgreSQL
-    _ = await _ask_turn(
-        client,
-        agent_id="agent_default",
-        thread_id=thread_a["id"],
-        query="Hiện tại dịch vụ đang chốt dùng database nào?",
-        headers=headers,
-    )
-
-    # Confirm Thread A's persisted DB row actually marked an earlier turn/decision SUPERSEDED
-    async with branch_env.session_factory() as s:
-        a_decs = list(
-            (
-                await s.scalars(
-                    select(SessionDecisionLedger).where(
-                        SessionDecisionLedger.thread_id == thread_a["id"]
-                    )
-                )
-            ).all()
-        )
-        assert any(d.epistemic_status == "SUPERSEDED" for d in a_decs)
-
-    # Cold-start eviction: force Branch B to hydrate from PostgreSQL!
-    SESSION_INDEX_CACHE.clear()
-    branch_env.llm.calls.clear()
-    branch_env.llm.queue("Ở Branch B, PostgreSQL 16 vẫn là database chính [1]")
-    _ = await _ask_turn(
-        client,
-        agent_id="agent_default",
-        thread_id=thread_b["id"],
-        query="Hiện tại dịch vụ đang chốt dùng database nào?",
-        headers=headers,
-    )
-
-    b_prompt = "\n".join(str(m.get("content") or "") for m in branch_env.llm.calls[0])
-    assert "PostgreSQL 16" in b_prompt
-    assert "CockroachDB" not in b_prompt
-
-    # Now Branch B supersedes PostgreSQL 16 -> MySQL on its own timeline (also flushes Branch B's first own turn!),
-    # then cold-restarts!
-    branch_env.llm.queue("Đã chốt thay PostgreSQL 16 bằng MySQL trong nhánh này [1]")
-    _ = await _ask_turn(
-        client,
-        agent_id="agent_default",
-        thread_id=thread_b["id"],
-        query="Chốt quyết định cuối cùng: thay PostgreSQL 16 bằng MySQL làm database chính.",
-        headers=headers,
-    )
-    SESSION_INDEX_CACHE.clear()
-    branch_env.llm.calls.clear()
-    branch_env.llm.queue("MySQL là database chính của Branch B [1]")
-    _ = await _ask_turn(
-        client,
-        agent_id="agent_default",
-        thread_id=thread_b["id"],
-        query="Sau khi đổi, database chính hiện tại là gì?",
-        headers=headers,
-    )
-    b_restart_prompt = "\n".join(str(m.get("content") or "") for m in branch_env.llm.calls[0])
-    assert "MySQL" in b_restart_prompt
-    assert "CockroachDB" not in b_restart_prompt
-
-    # Verify Branch B persisted ONLY its own turns (ordinal >= 2), recorded `inherited_turn:<tid>`,
-    # and never mutated Thread A's rows
-    async with branch_env.session_factory() as s:
-        b_units = list(
-            (
-                await s.scalars(
-                    select(SessionUnit)
-                    .where(SessionUnit.thread_id == thread_b["id"], SessionUnit.unit_kind == "TURN")
-                    .order_by(SessionUnit.ordinal.asc())
-                )
-            ).all()
-        )
-        assert len(b_units) >= 2
-        assert all(u.ordinal >= 2 for u in b_units)
-        b_decs = list(
-            (
-                await s.scalars(
-                    select(SessionDecisionLedger).where(
-                        SessionDecisionLedger.thread_id == thread_b["id"]
-                    )
-                )
-            ).all()
-        )
-        assert any(
-            any(str(x).startswith("inherited_turn:") for x in (d.supersedes_ids_json or []))
-            for d in b_decs
-        )
-
-    # Second cold restart after MySQL was persisted to Branch B's own SessionDecisionLedger (`inherited_turn:<tid>`)
-    SESSION_INDEX_CACHE.clear()
-    branch_env.llm.calls.clear()
-    branch_env.llm.queue("MySQL vẫn đang active sau lần cold restart thứ hai [1]")
-    _ = await _ask_turn(
-        client,
-        agent_id="agent_default",
-        thread_id=thread_b["id"],
-        query="Database chính hiện tại sau lần khởi động lại thứ hai là gì?",
-        headers=headers,
-    )
-    b_second_cold_prompt = "\n".join(str(m.get("content") or "") for m in branch_env.llm.calls[0])
-    assert "MySQL" in b_second_cold_prompt
-    assert "CockroachDB" not in b_second_cold_prompt
 
 
 async def test_nested_branching_direct_origin_pointer_and_regenerated_version_cutoff(branch_env):
@@ -957,7 +804,7 @@ async def test_live_acl_revocation_and_inherited_answer_actions(branch_env):
     m_b1 = await _ask_turn(
         client, agent_id="agent_default", thread_id=t_b["id"], query="Follow up on spec", headers=headers
     )
-    # Share on m_b1 (which has ECCE session_citations pointing to inherited m_a1!) also succeeds!
+    # Share on m_b1 also succeeds!
     r_share_b1 = await client.post(
         f"/api/v1/agents/agent_default/threads/{t_b['id']}/messages/{m_b1}/shares",
         headers=headers,
@@ -984,7 +831,7 @@ async def test_live_acl_revocation_and_inherited_answer_actions(branch_env):
     assert r_wrong_proj.status_code == 404
 
     # 5. Live document revocation immediately masks inherited answer in Branch B, blocks re-branching,
-    #    and excludes revoked content from Branch B's ECCE LLM prompt!
+    #    and excludes revoked content from Branch B's LLM prompt!
     async with branch_env.session_factory() as s:
         await revoke_project_document(
             s,
@@ -1007,7 +854,7 @@ async def test_live_acl_revocation_and_inherited_answer_actions(branch_env):
     )
     assert r_rebranch_revoked.status_code == 404
 
-    # Unconfirming SourceProjectMapping hides m_a1 in Branch B messages AND strips it from ECCE prompt!
+    # Unconfirming SourceProjectMapping hides m_a1 in Branch B messages AND strips it from LLM prompt!
     async with branch_env.session_factory() as s:
         spm = await s.get(SourceProjectMapping, "spm_1")
         assert spm is not None
@@ -1036,17 +883,12 @@ async def test_live_acl_revocation_and_inherited_answer_actions(branch_env):
 
 
 
-async def test_inherited_scope_resolution_and_prior_regeneration_dedup(branch_env):
-    """Post-PR review regressions:
-    1) `resolve_persistence_scope` resolves single-project scope for a multi-project principal on a
-       newly branched thread (`0` own messages) via inherited ancestor citations / persisted units.
-    2) Superseded regenerated drafts in an ancestor segment are deduplicated in both ECCE memory
-       (`load_ancestor_segments_visible_records`) and legacy `_history()`.
+async def test_inherited_prior_regeneration_dedup(branch_env):
+    """Post-PR review regression: superseded regenerated drafts in an ancestor segment
+    are deduplicated in `_history()`.
     """
     from sag_api.core.principal_assertion import VerifiedPrincipal
     from sag_api.services.agent_domain import _history
-    from sag_api.services.session_context.persistence import resolve_persistence_scope
-    from sag_api.services.session_context.runtime import load_ancestor_segments_visible_records
 
     client: httpx.AsyncClient = branch_env.client
     headers = _continuum_headers(user_id=branch_env.u_owner)
@@ -1099,26 +941,6 @@ async def test_inherited_scope_resolution_and_prior_regeneration_dedup(branch_en
     )
 
     async with branch_env.session_factory() as s:
-        # 1) Multi-project principal inherits unambiguous `proj_alpha` persistence scope on empty Branch B
-        scope = await resolve_persistence_scope(
-            s,
-            thread_id=t_b["id"],
-            principal=multi_proj_principal,
-            owner_key=f"continuum:org_alpha:proj_alpha:{branch_env.u_owner}",
-        )
-        assert scope is not None
-        assert scope.project_id == "proj_alpha"
-
-        # 2) Ancestor visible records & legacy `_history` keep ONLY v2_MARKER and drop v1_MARKER
-        anc_segs, _, _ = await load_ancestor_segments_visible_records(
-            s,
-            thread_id=t_b["id"],
-            principal=multi_proj_principal,
-        )
-        anc_texts = "\n".join(rec["content"] for _, recs in anc_segs for rec in recs)
-        assert "Active draft v2_MARKER" in anc_texts
-        assert "Superseded draft v1_MARKER" not in anc_texts
-
         legacy_hist = await _history(
             s,
             t_b["id"],

@@ -1,10 +1,16 @@
 import { API_BASE, apiClient, tokenStore } from "./client"
 import {
   createSseParser,
+  type DeleteResearchSessionResponse,
+  type MemoryMode,
   type ParsedSseFrame,
+  type RelatedSessionsResponse,
   type ResearchChatMetadata,
   type ResearchChatMode,
   type SseStageName,
+  type UserMemoryClearResponse,
+  type UserMemoryItem,
+  type UserMemoryListResponse,
 } from "./researchChatHelpers"
 
 export * from "./researchChatHelpers"
@@ -12,6 +18,7 @@ export * from "./researchChatHelpers"
 export interface ResearchSessionSummary {
   id: string
   title: string | null
+  parentSessionId?: string | null
   ticker?: string | null
   mode?: ResearchChatMode
   asOfDate?: string | null
@@ -64,20 +71,51 @@ export interface EvalSummaryResponse {
   }
 }
 
+export interface IssuerProfileItem {
+  ticker: string
+  company_name: string
+  sector?: string | null
+  industry?: string | null
+  exchange?: string
+  market_cap?: number | null
+  aliases?: string[]
+  latest_fiscal_year?: number | null
+  has_sag_docs?: boolean
+}
+
 export interface IngestedTickersResponse {
   organization_id: string
   tickers: string[]
   pilot_fallback: string[]
+  sectors?: string[]
+  profiles?: IssuerProfileItem[]
+  catalog_source?: "CORE_DB_READONLY" | "SAG_LOCAL_FALLBACK"
 }
 
 export interface StreamResearchChatPayload {
-  sessionId: string
+  sessionId?: string
+  parentSessionId?: string
   query: string
   ticker?: string
   compareTickers?: string[]
   mode?: ResearchChatMode
   asOfDate?: string
   enableKg?: boolean
+  memoryMode?: MemoryMode
+}
+
+export interface ListUserMemoriesParams {
+  memoryType?: string
+  ticker?: string
+  status?: "active" | "stale" | "superseded" | "all"
+  limit?: number
+  offset?: number
+}
+
+export interface PatchUserMemoryPayload {
+  content_text?: string
+  pinned_by_user?: boolean
+  reason?: string
 }
 
 export interface SseStageEvent {
@@ -252,6 +290,62 @@ export async function streamResearchChat(
   }
 }
 
+export function listUserMemories(
+  params?: ListUserMemoriesParams,
+): Promise<UserMemoryListResponse> {
+  return apiClient
+    .get("/ai/research-chat/memories", {
+      params: params
+        ? {
+            ...(params.memoryType ? { memory_type: params.memoryType } : {}),
+            ...(params.ticker ? { ticker: params.ticker } : {}),
+            ...(params.status ? { status: params.status } : {}),
+            ...(params.limit !== undefined ? { limit: params.limit } : {}),
+            ...(params.offset !== undefined ? { offset: params.offset } : {}),
+          }
+        : undefined,
+    })
+    .then((r) => r.data)
+}
+
+export function patchUserMemory(
+  memoryId: string,
+  body: PatchUserMemoryPayload,
+): Promise<UserMemoryItem> {
+  return apiClient
+    .patch(`/ai/research-chat/memories/${encodeURIComponent(memoryId)}`, body)
+    .then((r) => r.data)
+}
+
+export function deleteUserMemory(memoryId: string): Promise<UserMemoryItem> {
+  return apiClient
+    .delete(`/ai/research-chat/memories/${encodeURIComponent(memoryId)}`)
+    .then((r) => r.data)
+}
+
+export function clearAllUserMemories(): Promise<UserMemoryClearResponse> {
+  return apiClient.post("/ai/research-chat/memories/clear").then((r) => r.data)
+}
+
+export function getRelatedSessions(
+  sessionId: string,
+  limit?: number,
+): Promise<RelatedSessionsResponse> {
+  return apiClient
+    .get(`/ai/research-chat/sessions/${encodeURIComponent(sessionId)}/related`, {
+      params: limit !== undefined ? { limit } : undefined,
+    })
+    .then((r) => r.data)
+}
+
+export function deleteResearchSession(
+  sessionId: string,
+): Promise<DeleteResearchSessionResponse> {
+  return apiClient
+    .delete(`/ai/research-chat/sessions/${encodeURIComponent(sessionId)}`)
+    .then((r) => r.data)
+}
+
 export const researchChatApi = {
   createSession: (body: {
     ticker?: string
@@ -259,6 +353,7 @@ export const researchChatApi = {
     mode?: ResearchChatMode
     asOfDate?: string
     enableKg?: boolean
+    parentSessionId?: string
   }): Promise<ResearchSessionSummary> =>
     apiClient.post("/ai/research-chat/sessions", body).then((r) => r.data),
 
@@ -272,12 +367,28 @@ export const researchChatApi = {
   getSession: (id: string): Promise<ResearchSessionDetailResponse> =>
     apiClient.get(`/ai/research-chat/sessions/${encodeURIComponent(id)}`).then((r) => r.data),
 
+  deleteResearchSession,
+
+  getRelatedSessions,
+
+  listUserMemories,
+
+  patchUserMemory,
+
+  deleteUserMemory,
+
+  clearAllUserMemories,
+
   submitFeedback: (body: ResearchFeedbackPayload): Promise<{ feedback: unknown }> =>
     apiClient.post("/ai/research-chat/feedback", body).then((r) => r.data),
 
   getEvalSummary: (): Promise<EvalSummaryResponse> =>
     apiClient.get("/ai/research-chat/eval-summary").then((r) => r.data),
 
-  listIngestedTickers: (): Promise<IngestedTickersResponse> =>
-    apiClient.get("/ai/research-chat/tickers").then((r) => r.data),
+  listIngestedTickers: (asOfDate?: string): Promise<IngestedTickersResponse> =>
+    apiClient
+      .get("/ai/research-chat/tickers", {
+        params: asOfDate ? { as_of_date: asOfDate } : undefined,
+      })
+      .then((r) => r.data),
 }

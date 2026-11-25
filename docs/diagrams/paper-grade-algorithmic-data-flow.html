@@ -1498,11 +1498,11 @@ BFF Proxy: SagResearchChatService (timeout=60000ms, org_id=SAG_RESEARCH_ORG_ID |
         <div class="drawer-body">
           <div class="drawer-section">
             <label class="drawer-label">Thuật toán Truy hồi 1 Buồng Kiến Thức Chung Có Phân Lớp</label>
-            <pre class="drawer-code"><code>PRIMARY: project_id IN target_tickers (bypass_tree_routing=True, 100% prose + table_card)
-CROSS-REF: mentioned_tickers CONTAINS target AND project_id != target + PIT KG partners
-  Tagged evidence_origin="PRIMARY"|"CROSS_REF" (emits NO_DIRECT_FILING if 0 direct filings)
-Open Universe: Direct shared-chamber Hybrid Search (top-3 normalized, &lt;=6 tickers,
-  emits TRUNCATED_UNIVERSE_SCOPE if &gt;6 match; 0 TreeRoutingProfile scan)</code></pre>
+            <pre class="drawer-code"><code>Tier-0 Gate: Async 7-Axis SiliconFlow Kev-4b (fail-open &lt; 0.78, 0 regex) + FinancialZeroMemLedger (PIT Quarantine)
+Unified Agent (sag_agent): 6 Parallel Read-Only Tools (isolated AsyncSession per call) + SentenceStreamGate
+PRIMARY: project_id IN target_tickers (bypass_tree_routing=True, allow_intra_version_bridge=True, VN BM25+bigrams)
+Rerank &amp; CRAG: CrossEncoderRerankerClient (SiliconFlow/DeepInfra) + table_card floor + CORRECT/AMBIGUOUS/INCORRECT
+CROSS-REF: mentioned_tickers CONTAINS target AND project_id != target + PIT KG partners</code></pre>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên</label>
@@ -1626,8 +1626,10 @@ Synthesis: deepseek-ai/DeepSeek-V4-Flash-0731 (DeepInfra) + 3-Layer Abstention</
             <label class="drawer-label">Thuật toán Kiểm chứng &amp; Tiêu chí G1–G5</label>
             <pre class="drawer-code"><code>Verify(c): sha256(normalize_ws(quote)) == c.quote_hash
   AND normalize_ws(quote) in canonical_blocks[c.doc_ver_id] (page &amp; slot match)
-  AND c.published_date &lt;= as_of_date  (else [UNVERIFIED_CLAIM])
-Exit Gate: G1&gt;=98% · G2&gt;=98% · G3=100% · G4=0% PIT leak · G5&gt;=90% PASS (&gt;=40 runs)</code></pre>
+  AND claim_aligned(answer_sentence, section[c]) (else CITATION_CONTENT_MISMATCH)
+  AND partitioned_numeric_audit(owner_ticker, unit_class in {PERCENT,MULTIPLE,MONETARY,RAW})
+  AND c.published_date &lt;= as_of_date  (else [UNVERIFIED_CLAIM] + Inline Warning Banner)
+Exit Gate: G1&gt;=98% · G2&gt;=98% · G3=100% (excl. short-circuits) · G4=0% PIT leak (incl. SCR) · G5&gt;=90% PASS</code></pre>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Ngưỡng tham số &amp; Ranh giới Rule 06</label>

@@ -10,7 +10,7 @@ with both:
 from __future__ import annotations
 
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any, Protocol
@@ -534,6 +534,71 @@ class InMemoryKGStore:
             "macro_snapshots": valid_snaps,
             "true_peers": true_peers,
         }
+
+    async def get_tickers_by_macro_factor(
+        self,
+        macro_factor: str,
+        as_of_date: date,
+        *,
+        allowed_tickers: Iterable[str] | None = None,
+        direction_filter: int | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """PIT & ACL-scoped lookup of tickers sensitive to `macro_factor` (supports DOC_ONLY `stated_sign`)."""
+        needle = macro_factor.strip().lower()
+        if not needle:
+            return []
+        allowed_set = (
+            {t.strip().upper() for t in allowed_tickers if t and t.strip()}
+            if allowed_tickers is not None
+            else None
+        )
+        tier_rank = {"CONFIRMED_BOTH": 0, "CONFLICT_FLAG": 1, "QUANT_DOC_NEUTRAL": 2, "QUANT_ONLY": 3, "DOC_ONLY": 4}
+        out: list[dict[str, Any]] = []
+        for s in self.macro_snapshots.values():
+            if not self._is_pit_valid(s, as_of_date):
+                continue
+            if _coerce_date(s.get("as_of_date"), default=as_of_date) > as_of_date:
+                continue
+            mf = str(s.get("macro_factor") or "").strip().lower()
+            if needle not in mf and mf not in needle:
+                continue
+            tid = str(s.get("target_id") or "")
+            if not tid.startswith("TICKER:"):
+                continue
+            sym = tid.split(":", 1)[1].strip().upper()
+            if allowed_set is not None and "*" not in allowed_set and sym not in allowed_set:
+                continue
+            meta = s.get("metadata_json") if isinstance(s.get("metadata_json"), Mapping) else {}
+            note_ref = meta.get("audited_note_ref") if isinstance(meta.get("audited_note_ref"), Mapping) else {}
+            beta = float(s.get("beta") or 0.0)
+            stated_sign = int(note_ref.get("stated_sign") or 0) if note_ref else 0
+            eff_sign = (1 if beta > 0 else -1) if abs(beta) > 1e-12 else stated_sign
+            if direction_filter is not None and direction_filter != 0 and eff_sign != direction_filter:
+                continue
+            out.append(
+                {
+                    "ticker": sym,
+                    "macro_factor": str(s.get("macro_factor") or ""),
+                    "beta": beta,
+                    "direction_sign": eff_sign,
+                    "p_value": s.get("p_value"),
+                    "fdr_q_value": s.get("fdr_q_value"),
+                    "verification_tier": str(s.get("verification_tier") or "QUANT_ONLY"),
+                    "doc_stance": s.get("doc_stance"),
+                    "effective_from": str(s.get("effective_from") or ""),
+                    "metadata_json": dict(meta),
+                }
+            )
+        out.sort(
+            key=lambda x: (
+                tier_rank.get(x["verification_tier"], 9),
+                float(x["p_value"]) if x.get("p_value") is not None else 999.0,
+                -abs(float(x.get("beta") or 0.0)),
+                x["ticker"],
+            )
+        )
+        return out[: max(1, limit)]
 
 
 class SQLAlchemyKGStore:
@@ -1088,6 +1153,78 @@ class SQLAlchemyKGStore:
             "true_peers": true_peers,
         }
 
+    async def get_tickers_by_macro_factor(
+        self,
+        macro_factor: str,
+        as_of_date: date,
+        *,
+        allowed_tickers: Iterable[str] | None = None,
+        direction_filter: int | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """PIT & ACL-scoped lookup of tickers sensitive to `macro_factor` (supports DOC_ONLY `stated_sign`)."""
+        from sag_api.db.models.stock_research import MacroSensitivitySnapshot
+
+        needle = macro_factor.strip().lower()
+        if not needle:
+            return []
+        allowed_set = (
+            {t.strip().upper() for t in allowed_tickers if t and t.strip()}
+            if allowed_tickers is not None
+            else None
+        )
+        stmt = (
+            select(MacroSensitivitySnapshot)
+            .where(
+                MacroSensitivitySnapshot.target_id.like("TICKER:%"),
+                MacroSensitivitySnapshot.effective_from <= as_of_date,
+                MacroSensitivitySnapshot.valid_to > as_of_date,
+                MacroSensitivitySnapshot.as_of_date <= as_of_date,
+            )
+            .order_by(MacroSensitivitySnapshot.p_value.asc().nulls_last())
+            .limit(400)
+        )
+        rows = list((await self._session.scalars(stmt)).all())
+        tier_rank = {"CONFIRMED_BOTH": 0, "CONFLICT_FLAG": 1, "QUANT_DOC_NEUTRAL": 2, "QUANT_ONLY": 3, "DOC_ONLY": 4}
+        out: list[dict[str, Any]] = []
+        for s in rows:
+            mf = str(s.macro_factor or "").strip().lower()
+            if needle not in mf and mf not in needle:
+                continue
+            sym = str(s.target_id or "").split(":", 1)[1].strip().upper()
+            if allowed_set is not None and "*" not in allowed_set and sym not in allowed_set:
+                continue
+            meta = s.metadata_json if isinstance(s.metadata_json, Mapping) else {}
+            note_ref = meta.get("audited_note_ref") if isinstance(meta.get("audited_note_ref"), Mapping) else {}
+            beta = float(s.beta or 0.0)
+            stated_sign = int(note_ref.get("stated_sign") or 0) if note_ref else 0
+            eff_sign = (1 if beta > 0 else -1) if abs(beta) > 1e-12 else stated_sign
+            if direction_filter is not None and direction_filter != 0 and eff_sign != direction_filter:
+                continue
+            out.append(
+                {
+                    "ticker": sym,
+                    "macro_factor": str(s.macro_factor or ""),
+                    "beta": beta,
+                    "direction_sign": eff_sign,
+                    "p_value": s.p_value,
+                    "fdr_q_value": s.fdr_q_value,
+                    "verification_tier": str(s.verification_tier or "QUANT_ONLY"),
+                    "doc_stance": s.doc_stance,
+                    "effective_from": str(s.effective_from),
+                    "metadata_json": dict(meta),
+                }
+            )
+        out.sort(
+            key=lambda x: (
+                tier_rank.get(x["verification_tier"], 9),
+                float(x["p_value"]) if x.get("p_value") is not None else 999.0,
+                -abs(float(x.get("beta") or 0.0)),
+                x["ticker"],
+            )
+        )
+        return out[: max(1, limit)]
+
 
 def load_core_db_snapshot(core_database_url: str, as_of_date: date) -> dict[str, Any]:
     """Read-only Point-in-Time loader from AIInvest Core PostgreSQL (`<= as_of_date`).
@@ -1251,6 +1388,7 @@ async def _load_document_pages_for_kg(
         Document.is_active.is_(True),
         DocumentVersion.valid_from <= as_of_dt,
         DocumentVersion.valid_to > as_of_dt,
+        DocumentVersion.status != "REVOKED",
         CanonicalBlock.block_type != "table_card",
     ]
     if tenant_id:
@@ -1409,6 +1547,7 @@ async def refresh_research_knowledge_graph(
             quant_snaps.extend(mkt_snaps)
         if quant_snaps or doc_disclosures:
             macro_snaps = reconcile_macro_with_audited_docs(quant_snaps, doc_disclosures, as_of_date)
+            edges.extend(snapshots_to_kg_edges(macro_snaps, as_of_date))
         if not ratios_df.empty or not mkt_df.empty:
             cross_sec_edges = run_cross_sector_coupling(stocks_df, ratios_df, mkt_df, as_of_date)
             edges.extend(cross_sec_edges)

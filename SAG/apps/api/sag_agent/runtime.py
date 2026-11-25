@@ -558,17 +558,30 @@ class AgentRuntime:
         content: list[str] = []
         calls: dict[str, ToolCall] = {}
         ctx.usage = ctx.usage.plus(Usage(requests=1))
+        pending_tool_call_seen = False
         async for chunk in agent.model.stream_turn(request, ctx.cancellation):
             ctx.cancellation.raise_if_cancelled()
             if chunk.usage is not None:
                 ctx.usage = ctx.usage.plus(chunk.usage)
+            if chunk.has_pending_tool_call and not pending_tool_call_seen:
+                pending_tool_call_seen = True
+                await self._emit(
+                    handle,
+                    EventType.MESSAGE_DELTA,
+                    turn=turn,
+                    payload={"role": "assistant", "delta": "", "has_pending_tool_call": True},
+                )
             if chunk.text_delta:
                 content.append(chunk.text_delta)
                 await self._emit(
                     handle,
                     EventType.MESSAGE_DELTA,
                     turn=turn,
-                    payload={"role": "assistant", "delta": chunk.text_delta},
+                    payload={
+                        "role": "assistant",
+                        "delta": chunk.text_delta,
+                        "has_pending_tool_call": pending_tool_call_seen,
+                    },
                 )
             for call in chunk.tool_calls:
                 call_id = call.id or f"call-{turn}-{len(calls) + 1}"

@@ -857,12 +857,48 @@ async def resolve_temporal_supersedes(
                 }
             )
 
+    # 0-LLM Staleness Hook: mark dependent user memories/episodes stale when a version is superseded/restated
+    superseded_ids: list[str] = []
+    for mod in modified_versions:
+        vid = str(mod.get("version_id") or "")
+        vt_ts = mod.get("valid_to_ts")
+        if vid and vid != str(current_version.id) and vt_ts is not None and int(vt_ts) < 253402300799:
+            superseded_ids.append(vid)
+    if action == "SUPERSEDED" and current_version.supersedes_id:
+        sid = str(current_version.supersedes_id)
+        if sid not in superseded_ids:
+            superseded_ids.append(sid)
+
+    staleness_propagated: dict[str, int] = {"stale_memories": 0, "stale_episodes": 0}
+    if superseded_ids:
+        from sag_api.research.user_memory_pipeline import propagate_document_version_staleness
+
+        cur_meta = current_version.metadata_json if isinstance(current_version.metadata_json, dict) else {}
+        is_restated = bool(
+            cur_meta.get("is_restated")
+            or cur_meta.get("restated")
+            or any(
+                kw in str(cur_meta.get("change_reason") or cur_meta.get("doc_type") or "").lower()
+                for kw in ("restate", "đính chính", "điều chỉnh", "sửa đổi")
+            )
+        )
+        staleness_propagated = await propagate_document_version_staleness(
+            session,
+            superseded_ids,
+            reason_status="STALE_RESTATED" if is_restated else "STALE_NEW_FILING",
+            reason_detail=(
+                f"Phiên bản tài liệu mới ({current_version.id}) thay thế "
+                f"{', '.join(superseded_ids[:3])}."
+            ),
+        )
+
     return {
         "action": action,
         "active_version_id": active_id,
         "current_version_id": current_version.id,
         "supersedes_id": current_version.supersedes_id,
         "modified_versions": modified_versions,
+        "staleness_propagated": staleness_propagated,
     }
 
 

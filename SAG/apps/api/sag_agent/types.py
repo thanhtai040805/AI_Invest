@@ -229,6 +229,7 @@ class ModelChunk:
     tool_calls: tuple[ToolCall, ...] = ()
     finish_reason: str | None = None
     usage: Usage | None = None
+    has_pending_tool_call: bool = False
 
 
 @runtime_checkable

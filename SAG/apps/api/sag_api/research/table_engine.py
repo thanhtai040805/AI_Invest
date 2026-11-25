@@ -34,6 +34,13 @@ from sag_api.research.input_inspector import (
     normalize_ws,
     split_virtual_pages,
 )
+from sag_api.research.vn_bilingual_cleaner import (
+    clean_bilingual_2d_grid,
+    clean_bilingual_table_cell,
+    deduplicate_english_mirror_tables,
+    has_vietnamese_cues,
+    is_english_translation_label,
+)
 
 VerificationStatus = Literal["VERIFIED", "PARTIAL", "TABLE_UNVERIFIED"]
 
@@ -286,11 +293,11 @@ def unmerge_html_table(html_str: str) -> tuple[list[str], list[list[str]]]:
                 self._cs = _safe_span(ad.get("colspan"))
                 self._is_th = (t == "th") or self._in_thead
             elif t == "br" and self._in_cell:
-                self._cell_buf.append(" ")
+                self._cell_buf.append("\n")
 
         def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
             if tag.lower() == "br" and self._in_cell:
-                self._cell_buf.append(" ")
+                self._cell_buf.append("\n")
 
         def handle_data(self, data: str) -> None:
             if self._in_cell:
@@ -301,8 +308,10 @@ def unmerge_html_table(html_str: str) -> tuple[list[str], list[list[str]]]:
             if t == "thead":
                 self._in_thead = False
             elif t in ("td", "th") and self._in_cell and self._cur_row is not None:
+                raw_cell = normalize_ctg_font_quirks("".join(self._cell_buf))
+                cleaned_cell, _ = clean_bilingual_table_cell(raw_cell)
                 self._cur_row.append(
-                    (normalize_ws("".join(self._cell_buf)), self._rs, self._cs, self._is_th)
+                    (normalize_ws(cleaned_cell), self._rs, self._cs, self._is_th)
                 )
                 self._in_cell = False
             elif t == "tr" and self._cur_row is not None:
@@ -385,6 +394,7 @@ def unmerge_html_table(html_str: str) -> tuple[list[str], list[list[str]]]:
         headers.append(" :: ".join(parts) if parts else f"col_{c}")
 
     body = [r for r in norm_grid[n_hdr:] if any(cell.strip() for cell in r)]
+    headers, body, _ = clean_bilingual_2d_grid(headers, body)
     return headers, body
 
 
@@ -652,6 +662,14 @@ def extract_numeric_table_from_region(
                 ):
                     if pending_prefix_lines and (line_top - pending_prefix_lines[-1][1]) > 15.0:
                         pending_prefix_lines.clear()
+                    if (
+                        pending_prefix_lines
+                        and has_vietnamese_cues(pending_prefix_lines[-1][0])
+                        and is_english_translation_label(
+                            label_str, vi_neighbor=pending_prefix_lines[-1][0]
+                        )
+                    ):
+                        continue
                     pending_prefix_lines.append((label_str, line_top, label_x0))
                 else:
                     pending_prefix_lines.clear()
@@ -664,6 +682,22 @@ def extract_numeric_table_from_region(
                     continue
                 if is_hdr_date or is_introducer_or_footnote or is_section_header:
                     pending_prefix_lines.clear()
+                    continue
+                # Drop English subtitle translation rows right under a Vietnamese data/prefix row
+                # so they NEVER get glued onto `prev_row["label"]` or `pending_prefix_lines`!
+                if (
+                    parsed_rows
+                    and has_vietnamese_cues(parsed_rows[-1]["label"])
+                    and is_english_translation_label(label_str, vi_neighbor=parsed_rows[-1]["label"])
+                ):
+                    continue
+                if (
+                    pending_prefix_lines
+                    and has_vietnamese_cues(pending_prefix_lines[-1][0])
+                    and is_english_translation_label(
+                        label_str, vi_neighbor=pending_prefix_lines[-1][0]
+                    )
+                ):
                     continue
                 dy_prev = line_top - parsed_rows[-1]["last_label_top"]
                 has_code_col_gap = (
@@ -776,9 +810,11 @@ def extract_numeric_table_from_region(
         if inferred_col_headers is not None
         else [f"Col_{i + 1}" for i in range(n_num_cols)]
     )
+    headers = [clean_bilingual_table_cell(h)[0] or h for h in headers]
     matrix_rows: list[list[dict[str, Any]]] = []
     for r in parsed_rows:
-        cells: list[dict[str, Any]] = [{"raw_text": r["label"], "numeric_value": None}]
+        clean_lbl = clean_bilingual_table_cell(r["label"])[0] or r["label"]
+        cells: list[dict[str, Any]] = [{"raw_text": clean_lbl, "numeric_value": None}]
         for rv in r["raw_values"]:
             cells.append({"raw_text": rv or "", "numeric_value": parse_vn_number(rv, locale=locale)})
         matrix_rows.append(cells)
@@ -801,14 +837,23 @@ def _parse_lattice_grid(
     page_text: str,
     expected_col_headers: list[str] | None = None,
 ) -> dict[str, Any] | None:
-    """Convert a single pdfplumber lattice grid into normalized matrix + sanity gate."""
-    cleaned_grid = [
-        [normalize_ctg_font_quirks(normalize_ws(str(cell or ""))) for cell in row]
+    """Convert a single pdfplumber lattice grid into normalized matrix + bilingual clean + sanity gate."""
+    raw_multiline_grid = [
+        [normalize_ctg_font_quirks(str(cell or "")).strip() for cell in row]
         for row in raw_grid
         if row and any(str(c or "").strip() for c in row)
     ]
-    if len(cleaned_grid) < 2 or len(cleaned_grid[0]) < 2:
+    if len(raw_multiline_grid) < 2 or len(raw_multiline_grid[0]) < 2:
         return None
+    max_cols = max(len(r) for r in raw_multiline_grid)
+    padded_grid = [r + [""] * (max_cols - len(r)) for r in raw_multiline_grid]
+    clean_hdrs, clean_body, _ = clean_bilingual_2d_grid(padded_grid[0], padded_grid[1:])
+    if not clean_body or len(clean_hdrs) < 2:
+        return None
+    cleaned_grid = [
+        [normalize_ws(c) for c in clean_hdrs],
+        *[[normalize_ws(c) for c in r] for r in clean_body],
+    ]
     raw_nums = [cell for r in cleaned_grid[1:] for cell in r[1:] if cell]
     locale = detect_table_locale(raw_nums)
     currency, unit_mult, unit_raw = detect_unit_and_currency(page_text)
@@ -1668,10 +1713,13 @@ def classify_table_columns(
         elif _COL_COUNT_HDR_RE.search(hdr):
             role = "count"
         else:
-            # Value-based detection for unlabeled/misaligned Mã số & Thuyết minh columns
+            # Value-based detection for unlabeled/misaligned Mã số & Thuyết minh columns.
+            # NEVER reclassify an explicit period/year or component header (e.g. "2024") as code/note_ref.
+            is_period_hdr = bool(_COL_PERIOD_HDR_RE.search(hdr))
+            is_component_hdr = bool(_COL_COMPONENT_HDR_RE.search(hdr))
             is_code_vals = False
             is_note_vals = False
-            if non_empty_raw:
+            if non_empty_raw and not is_period_hdr and not is_component_hdr:
                 acct_codes = sum(
                     1
                     for s in non_empty_raw
@@ -1687,15 +1735,23 @@ def classify_table_columns(
                     )
                 )
                 max_abs = max((abs(v) for v in numeric_vals), default=0.0)
-                if (acct_codes / len(non_empty_raw)) >= 0.70 and max_abs < 1000.0 and len(flat_headers) >= 3:
+                if (
+                    c_idx <= 2
+                    and (acct_codes / len(non_empty_raw)) >= 0.70
+                    and max_abs < 1000.0
+                    and len(flat_headers) >= 3
+                ):
                     is_code_vals = True
-                elif (note_refs / len(non_empty_raw)) >= 0.65 and len(flat_headers) >= 3 or (
+                elif (
+                    c_idx <= 2
+                    and (note_refs / len(non_empty_raw)) >= 0.65
+                    and len(flat_headers) >= 3
+                ) or (
                     len(flat_headers) >= 4
                     and c_idx <= 2
                     and n_rows >= 4
                     and (len(non_empty_raw) / max(1, n_rows)) < 0.40
                     and max_abs < 100.0
-                    and not _COL_PERIOD_HDR_RE.search(hdr)
                 ):
                     is_note_vals = True
 
@@ -1703,9 +1759,9 @@ def classify_table_columns(
                 role = "code"
             elif is_note_vals:
                 role = "note_ref"
-            elif _COL_COMPONENT_HDR_RE.search(hdr):
+            elif is_component_hdr:
                 role = "component_amount"
-            elif _COL_PERIOD_HDR_RE.search(hdr):
+            elif is_period_hdr:
                 role = "period_amount"
             elif numeric_vals:
                 role = "other"
@@ -1832,19 +1888,30 @@ def to_hydrated_table(table_rec: dict[str, Any]) -> dict[str, Any]:
     )
 
     raw_rows = table_rec.get("rows") or table_rec.get("rows_json") or []
+    col_roles = table_rec.get("column_roles")
+    amt_indices = table_rec.get("amount_col_indices")
+    if col_roles is None or amt_indices is None:
+        col_roles, amt_indices = classify_table_columns(headers_2d, raw_rows)
+
     hydrated_rows: list[dict[str, Any]] = []
     for row in raw_rows:
         if isinstance(row, dict) and "label" in row and "values" in row:
             hydrated_rows.append({"label": row["label"], "values": list(row["values"])})
         elif isinstance(row, list) and row:
             label = str(row[0].get("raw_text") or "")
-            vals = [cell.get("numeric_value") for cell in row[1:]]
+            vals: list[Any] = []
+            for col_offset, cell in enumerate(row[1:], start=1):
+                role = col_roles[col_offset] if col_offset < len(col_roles) else "other"
+                if role in {"note_ref", "code"}:
+                    raw_txt = (
+                        str(cell.get("raw_text") or "").strip()
+                        if isinstance(cell, dict)
+                        else str(cell or "").strip()
+                    )
+                    vals.append(raw_txt or None)
+                else:
+                    vals.append(cell.get("numeric_value") if isinstance(cell, dict) else cell)
             hydrated_rows.append({"label": label, "values": vals})
-
-    col_roles = table_rec.get("column_roles")
-    amt_indices = table_rec.get("amount_col_indices")
-    if col_roles is None or amt_indices is None:
-        col_roles, amt_indices = classify_table_columns(headers_2d, raw_rows)
 
     return {
         "table_id": str(table_rec["table_id"]),
@@ -2374,6 +2441,7 @@ def extract_tables_from_document(
     markdown_content: str,
     valid_from: datetime,
     left_sidebar_x: float = 0.0,
+    two_col_crops: dict[int, tuple[float, float]] | None = None,
     max_pages: int = 250,
 ) -> list[ExtractedTableRecord]:
     """End-to-end table extractor wiring Dual-Representation Engine into HOSE batch ingest.
@@ -2430,6 +2498,7 @@ def extract_tables_from_document(
 
     if raw_html_tables:
         stitched_html = stitch_cross_page_tables(raw_html_tables)
+        stitched_html, _ = deduplicate_english_mirror_tables(stitched_html)
         last_unit: tuple[str, float, str] | None = None
         last_unit_page: int | None = None
         for idx, tbl in enumerate(stitched_html):
@@ -2515,7 +2584,11 @@ def extract_tables_from_document(
                     eff_sidebar = (
                         left_sidebar_x if (w > h * 1.25 and 0.0 < left_sidebar_x < w * 0.30) else 0.0
                     )
-                    vpages = split_virtual_pages(pg, left_sidebar_x=eff_sidebar)
+                    vpages = split_virtual_pages(
+                        pg,
+                        left_sidebar_x=eff_sidebar,
+                        two_col_crop=(two_col_crops or {}).get(pno),
+                    )
                     for vp in vpages:
                         virtual_seq += 1
                         try:
@@ -2543,6 +2616,7 @@ def extract_tables_from_document(
                             raw_page_tables.append(extracted)
 
             stitched = stitch_cross_page_tables(raw_page_tables)
+            stitched, _ = deduplicate_english_mirror_tables(stitched)
             last_unit_dig: tuple[str, float, str] | None = None
             last_unit_dig_page: int | None = None
             for idx, tbl in enumerate(stitched):
@@ -2607,4 +2681,6 @@ def extract_tables_from_document(
                     )
                 )
 
+    if len(records) >= 2:
+        records, _ = deduplicate_english_mirror_tables(records)
     return records

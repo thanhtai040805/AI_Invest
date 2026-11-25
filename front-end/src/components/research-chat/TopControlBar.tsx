@@ -1,6 +1,8 @@
 "use client"
 
 import {
+  Brain,
+  EyeOff,
   PanelLeft,
   PanelLeftClose,
   PanelRight,
@@ -9,10 +11,13 @@ import {
   Sparkles,
 } from "lucide-react"
 import { Pill } from "@/components/ui"
-import type { EvalSummaryResponse, ResearchChatMode } from "@/lib/api/researchChat"
+import type { EvalSummaryResponse, MemoryMode, ResearchChatMode } from "@/lib/api/researchChat"
 
 interface TopControlBarProps {
   chatMode: ResearchChatMode
+  memoryMode: MemoryMode
+  onMemoryModeChange: (mode: MemoryMode) => void
+  memoryModeDisabled?: boolean
   primaryTicker: string
   compareTickers: string[]
   asOfDate: string
@@ -25,8 +30,33 @@ interface TopControlBarProps {
   onOpenGateTab: () => void
 }
 
+const MEMORY_MODE_OPTIONS: ReadonlyArray<{
+  value: MemoryMode
+  label: string
+  title: string
+}> = [
+  {
+    value: "auto",
+    label: "Tự động",
+    title: "Đọc ký ức dài hạn + tự động ghi nhớ sở thích & luận điểm sau lượt trả lời",
+  },
+  {
+    value: "read_only",
+    label: "Chỉ đọc",
+    title: "Đọc ký ức dài hạn & danh mục nhưng không ghi ký ức mới từ phiên này",
+  },
+  {
+    value: "incognito",
+    label: "Ẩn danh",
+    title: "Phiên ẩn danh: không đọc ký ức, không gửi danh mục Core DB, không lưu ký ức",
+  },
+]
+
 export function TopControlBar({
   chatMode,
+  memoryMode,
+  onMemoryModeChange,
+  memoryModeDisabled,
   primaryTicker,
   compareTickers,
   asOfDate,
@@ -80,6 +110,12 @@ export function TopControlBar({
           <Pill tone={chatMode === "MOAT" ? "mineral" : "teal"}>
             {chatMode === "MOAT" ? "MOAT" : "General"}
           </Pill>
+          {memoryMode === "incognito" && (
+            <Pill tone="warning">
+              <EyeOff className="h-3 w-3 shrink-0" aria-hidden="true" />
+              <span>Ẩn danh</span>
+            </Pill>
+          )}
           {taggedTickers.length > 0 ? (
             <span className="font-mono text-[11px] text-secondary truncate">
               {taggedTickers.map((t) => `@${t}`).join(" · ")}
@@ -95,7 +131,47 @@ export function TopControlBar({
         </div>
       </div>
 
-      <div className="flex items-center gap-2 shrink-0">
+      <div className="flex flex-wrap items-center gap-2 shrink-0">
+        {/* Compact Memory Mode Selector */}
+        <div
+          role="group"
+          aria-label="Chế độ ký ức dài hạn"
+          className="inline-flex items-center rounded-[7px] border border-line bg-paper p-0.5"
+        >
+          <span
+            className="hidden sm:inline-flex items-center pl-1.5 pr-1 text-muted"
+            title="Chế độ ký ức"
+          >
+            {memoryMode === "incognito" ? (
+              <EyeOff className="h-3.5 w-3.5 text-warning" aria-hidden="true" />
+            ) : (
+              <Brain className="h-3.5 w-3.5 text-ceiling" aria-hidden="true" />
+            )}
+          </span>
+          {MEMORY_MODE_OPTIONS.map((opt) => {
+            const active = memoryMode === opt.value
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                disabled={memoryModeDisabled}
+                title={opt.title}
+                aria-pressed={active}
+                onClick={() => onMemoryModeChange(opt.value)}
+                className={`rounded-[5px] px-2 h-6.5 text-[11px] font-medium transition-colors cursor-pointer disabled:opacity-50 ${
+                  active
+                    ? opt.value === "incognito"
+                      ? "bg-warning text-paper"
+                      : "bg-ink text-paper"
+                    : "text-secondary hover:text-ink"
+                }`}
+              >
+                {opt.label}
+              </button>
+            )
+          })}
+        </div>
+
         <button
           type="button"
           onClick={onOpenGateTab}
@@ -131,7 +207,7 @@ export function TopControlBar({
           )}
           <span>Bằng chứng</span>
           {evidenceCount > 0 && (
-            <span className="rounded-full bg-ink text-paper px-1.5 py-0.2 font-mono text-[10px] tnum">
+            <span className="rounded-full bg-ink text-paper px-1.5 py-[1px] font-mono text-[10px] tnum">
               {evidenceCount}
             </span>
           )}

@@ -14,6 +14,8 @@ import {
   tokenizeInline,
 } from '../src/components/research-chat/markdownParser.ts';
 
+import { badgeToInspectorFocus } from '../src/components/research-chat/types.ts';
+
 test('createSseParser parses chunked SSE events across CRLF boundaries and flushes tail', () => {
   const parser = createSseParser();
 
@@ -129,4 +131,113 @@ test('normalizeDeclaredBlindspots and normalizeCalculatorInputs support object a
   ]);
   assert.equal(inputsFromArr.length, 1);
   assert.equal(inputsFromArr[0].name, 'rev_2025');
+});
+
+test('classifyAuditBadge and tokenizeInline parse [MEM:M#], [PORT:<SYM>], [SESS:S#] and UNVERIFIED_CLAIM variants without breaking existing badges', () => {
+  const memOk = classifyAuditBadge('MEM:M1');
+  assert.deepEqual(
+    { kind: memOk.kind, refId: memOk.refId, index: memOk.index, verified: memOk.verified, label: memOk.label },
+    { kind: 'memory', refId: 'M1', index: 1, verified: true, label: 'MEM:M1' },
+  );
+
+  const memBad = classifyAuditBadge('MEM:M99 UNVERIFIED_CLAIM');
+  assert.deepEqual(
+    { kind: memBad.kind, refId: memBad.refId, verified: memBad.verified, label: memBad.label },
+    { kind: 'memory', refId: 'M99', verified: false, label: 'MEM:M99 UNVERIFIED' },
+  );
+
+  const portOk = classifyAuditBadge('PORT:FPT');
+  assert.deepEqual(
+    { kind: portOk.kind, refId: portOk.refId, verified: portOk.verified, label: portOk.label },
+    { kind: 'portfolio', refId: 'FPT', verified: true, label: 'PORT:FPT' },
+  );
+
+  const portBad = classifyAuditBadge('PORT:XYZ UNVERIFIED_CLAIM');
+  assert.deepEqual(
+    { kind: portBad.kind, refId: portBad.refId, verified: portBad.verified, label: portBad.label },
+    { kind: 'portfolio', refId: 'XYZ', verified: false, label: 'PORT:XYZ UNVERIFIED' },
+  );
+
+  const sessOk = classifyAuditBadge('SESS:S2');
+  assert.deepEqual(
+    { kind: sessOk.kind, refId: sessOk.refId, index: sessOk.index, verified: sessOk.verified, label: sessOk.label },
+    { kind: 'session', refId: 'S2', index: 2, verified: true, label: 'SESS:S2' },
+  );
+
+  const sessBad = classifyAuditBadge('SESS:S99 UNVERIFIED_CLAIM');
+  assert.deepEqual(
+    { kind: sessBad.kind, refId: sessBad.refId, verified: sessBad.verified, label: sessBad.label },
+    { kind: 'session', refId: 'S99', verified: false, label: 'SESS:S99 UNVERIFIED' },
+  );
+
+  // Coexistence with all existing badges in one sentence
+  const tokens = tokenizeInline(
+    'Theo [MEM:M1] và danh mục [PORT:FPT], đối chiếu phiên [SESS:S1] cùng [C1] [TBL:tbl_1] [CALC-1] [SCR:FPT] [KG:TRUE_PEER] [DISC-1].',
+  );
+  const badges = tokens.filter((t) => t.type === 'badge');
+  assert.deepEqual(
+    badges.map((b) => [b.kind, b.refId ?? b.tier ?? b.label]),
+    [
+      ['memory', 'M1'],
+      ['portfolio', 'FPT'],
+      ['session', 'S1'],
+      ['citation', 'C1'],
+      ['table', 'tbl_1'],
+      ['calculator', 'CALC-1'],
+      ['table', 'SCR:FPT'],
+      ['kg', 'TRUE_PEER'],
+      ['unverified', 'DISC-1'],
+    ],
+  );
+
+  // Inspector focus routing for memory, portfolio, and session badges
+  assert.deepEqual(badgeToInspectorFocus(memOk, 100), {
+    tab: 'memory',
+    memoryBadgeId: 'M1',
+    nonce: 100,
+  });
+  assert.deepEqual(badgeToInspectorFocus(portOk, 101), {
+    tab: 'memory',
+    portfolioSymbol: 'FPT',
+    nonce: 101,
+  });
+  assert.deepEqual(badgeToInspectorFocus(sessOk, 102), {
+    tab: 'memory',
+    sessionBadgeId: 'S2',
+    nonce: 102,
+  });
+});
+
+test('tokenizeInline preserves badges immediately followed by parenthetical text while still stripping unsafe links', () => {
+  const tokens = tokenizeInline(
+    'Theo [MEM:M1](đã ghim) và [PORT:FPT](1.000 CP), đối chiếu [SESS:S1](phiên 10/05) [C1](tr. 168), xem [tài liệu](https://aiinvest.vn/doc) và [bad](javascript:alert(1)).',
+  );
+  const badges = tokens.filter((t) => t.type === 'badge');
+  assert.deepEqual(
+    badges.map((b) => [b.kind, b.refId]),
+    [
+      ['memory', 'M1'],
+      ['portfolio', 'FPT'],
+      ['session', 'S1'],
+      ['citation', 'C1'],
+    ],
+  );
+  const fullText = tokens
+    .filter((t) => t.type === 'text')
+    .map((t) => t.text)
+    .join('');
+  assert.match(fullText, /\(đã ghim\)/);
+  assert.match(fullText, /\(1\.000 CP\)/);
+  assert.match(fullText, /\(phiên 10\/05\)/);
+  assert.match(fullText, /\(tr\. 168\)/);
+  assert.doesNotMatch(fullText, /javascript:/);
+
+  const links = tokens.filter((t) => t.type === 'link');
+  assert.equal(links.length, 1);
+  assert.equal(links[0].href, 'https://aiinvest.vn/doc');
+
+  const wl = classifyAuditBadge('PORT:WATCHLIST');
+  const presets = classifyAuditBadge('PORT:PRESETS');
+  assert.deepEqual({ kind: wl.kind, refId: wl.refId }, { kind: 'portfolio', refId: 'WATCHLIST' });
+  assert.deepEqual({ kind: presets.kind, refId: presets.refId }, { kind: 'portfolio', refId: 'PRESETS' });
 });

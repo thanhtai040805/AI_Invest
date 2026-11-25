@@ -129,7 +129,6 @@ async def test_continuum_login_all_projects_and_multi_project_actions_and_mind_m
 ) -> None:
     monkeypatch.setattr(settings, "auth_mode", "continuum")
     monkeypatch.setattr(settings, "bff_service_token", "test-bff-secret")
-    monkeypatch.setattr(settings, "session_context_mode", "off")
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
 

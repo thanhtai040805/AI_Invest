@@ -22,8 +22,24 @@ from typing import Any, Literal
 
 import fitz
 
+from sag_api.research.vn_language_gate import (
+    ArchiveExtractionError,
+    _read_rar_pdf_members_bounded,
+    assess_pdf_language,
+    is_rar_bytes,
+    select_and_merge_archive_pdfs,
+)
+
 BranchCode = Literal["A", "B", "C", "D"]
-DocClass = Literal["NOTICE_ONLY", "BAD_FONT", "DIGITAL", "HYBRID", "SCAN", "ERROR"]
+DocClass = Literal[
+    "NOTICE_ONLY",
+    "BAD_FONT",
+    "DIGITAL",
+    "HYBRID",
+    "SCAN",
+    "EXCLUDED_ENGLISH",
+    "ERROR",
+]
 PageTriageClass = Literal["DIGITAL_CLEAN", "BAD_FONT", "SCAN"]
 
 VN_DIACRITICS = frozenset("ăâđêôơưàáảãạằắẳẵặầấẩẫậèéẻẽẹềếểễệìíỉĩịòóỏõọồốổỗộờớởỡợùúủũụừứửữựỳýỷỹỵ")
@@ -118,7 +134,9 @@ _WATERMARK_OR_SIG_LINE_RE = re.compile(
 _SHORT_DOC_EXEMPT_TYPES = frozenset(
     {
         "NQ_DHDCD",
+        "TAI_LIEU_DHDCD",
         "AGM_RESOLUTION",
+        "AGM_MATERIALS",
         "GIAI_TRINH",
         "GIẢI_TRÌNH",
         "EXPLANATION",
@@ -187,6 +205,9 @@ class InspectionResult:
     bad_font_page_numbers: list[int] = field(default_factory=list)
     scan_page_numbers: list[int] = field(default_factory=list)
     digital_clean_page_numbers: list[int] = field(default_factory=list)
+    doc_language: str = "VIETNAMESE"
+    english_page_numbers: list[int] = field(default_factory=list)
+    bilingual_two_col_crops: dict[int, tuple[float, float]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -201,6 +222,7 @@ class InspectionResult:
             "scan_pages": self.scan_pages,
             "median_vn_readability": self.median_vn_readability,
             "doc_class": self.doc_class,
+            "doc_language": self.doc_language,
             "has_embedded_notes": self.has_embedded_notes,
             "has_segment_or_bank_notes": self.has_segment_or_bank_notes,
             "has_plan": self.has_plan,
@@ -213,6 +235,7 @@ class InspectionResult:
             "bad_font_page_numbers": list(self.bad_font_page_numbers),
             "scan_page_numbers": list(self.scan_page_numbers),
             "digital_clean_page_numbers": list(self.digital_clean_page_numbers),
+            "english_page_numbers": list(self.english_page_numbers),
         }
 
 
@@ -327,8 +350,9 @@ def safe_extract_pdf_from_zip(
     *,
     max_uncompressed_bytes: int = DEFAULT_MAX_ZIP_BYTES,
     max_entries: int = DEFAULT_MAX_ZIP_ENTRIES,
+    doc_type: str | None = None,
 ) -> tuple[bytes, str, list[str]]:
-    """Safely extract the primary research PDF (or merged `_p1 + _p2` parts) from a ZIP archive."""
+    """Safely extract Vietnamese research PDF(s) from a ZIP archive, rejecting full-English members."""
     if not zipfile.is_zipfile(io.BytesIO(data)):
         raise ZipExtractionError("Payload is not a valid ZIP archive")
 
@@ -362,80 +386,56 @@ def safe_extract_pdf_from_zip(
             if not pdf_candidates:
                 raise ZipExtractionError("ZIP archive contains no PDF files")
 
-            scored: list[tuple[int, int, str, zipfile.ZipInfo]] = []
-            for info, fsize in pdf_candidates:
-                fl = info.filename.lower()
-                is_ballot_or_charter = any(
-                    k in fl
-                    for k in (
-                        "kiem_phieu",
-                        "kiểm phiếu",
-                        "dieu_le",
-                        "điều lệ",
-                        "bieu_quyet",
-                        "biểu quyết",
-                    )
-                )
-                is_priority_doc = any(
-                    k in fl
-                    for k in (
-                        "nghi_quyet",
-                        "nghị quyết",
-                        "bctn",
-                        "bctc",
-                        "annual",
-                        "hop_nhat",
-                        "hợp nhất",
-                    )
-                )
-                penalty = 2 if is_ballot_or_charter else (0 if is_priority_doc else 1)
-                scored.append((penalty, -fsize, info.filename, info))
-            scored.sort(key=lambda item: (item[0], item[1], item[2]))
-            chosen_info = scored[0][3]
+            remaining = max_uncompressed_bytes
+            members: list[tuple[str, bytes]] = []
+            for info, _sz in pdf_candidates:
+                blob = _read_zip_member_bounded(zf, info, remaining_bytes=remaining)
+                remaining -= len(blob)
+                members.append((info.filename, blob))
 
-            # Detect sequential multi-part filings (e.g. `*_p1.pdf`, `*_p2.pdf`) sharing the chosen stem
-            part_match = _ZIP_PART_RE.match(chosen_info.filename.replace("\\", "/").rsplit("/", 1)[-1])
-            sibling_parts: list[tuple[int, zipfile.ZipInfo]] = []
-            if part_match:
-                target_stem = part_match.group("stem").lower()
-                for info, _sz in pdf_candidates:
-                    base_name = info.filename.replace("\\", "/").rsplit("/", 1)[-1]
-                    m_sib = _ZIP_PART_RE.match(base_name)
-                    if m_sib and m_sib.group("stem").lower() == target_stem:
-                        sibling_parts.append((int(m_sib.group("part")), info))
-                sibling_parts.sort(key=lambda item: (item[0], item[1].filename))
-
-            if len(sibling_parts) >= 2:
-                remaining = max_uncompressed_bytes
-                part_blobs: list[bytes] = []
-                part_names: list[str] = []
-                for _pidx, pinfo in sibling_parts:
-                    blob = _read_zip_member_bounded(zf, pinfo, remaining_bytes=remaining)
-                    remaining -= len(blob)
-                    part_blobs.append(blob)
-                    part_names.append(pinfo.filename)
-                merged_doc = fitz.open()
-                try:
-                    for blob in part_blobs:
-                        with fitz.open(stream=blob, filetype="pdf") as part_doc:
-                            if len(part_doc) > 0:
-                                merged_doc.insert_pdf(part_doc)
-                    if len(merged_doc) > 0:
-                        merged_bytes = merged_doc.tobytes()
-                        if len(merged_bytes) <= max_uncompressed_bytes:
-                            return merged_bytes, "+".join(part_names), zip_entries
-                except Exception:  # noqa: BLE001
-                    pass
-                finally:
-                    merged_doc.close()
-                # Fall back to the first part if merge exceeds size or fails
-                return part_blobs[0], part_names[0], zip_entries
-
-            # Single chosen PDF: stream-read with hard byte cap to defeat spoofed ZipInfo.file_size headers
-            raw_pdf = _read_zip_member_bounded(zf, chosen_info, remaining_bytes=max_uncompressed_bytes)
-            return raw_pdf, chosen_info.filename, zip_entries
+            return select_and_merge_archive_pdfs(
+                members,
+                zip_entries,
+                doc_type=doc_type,
+                max_uncompressed_bytes=max_uncompressed_bytes,
+            )
+    except ArchiveExtractionError as exc:
+        raise ZipExtractionError(str(exc)) from exc
     except zipfile.BadZipFile as exc:
         raise ZipExtractionError(f"Corrupt ZIP archive: {exc}") from exc
+
+
+def safe_extract_pdf_from_archive(
+    data: bytes,
+    *,
+    max_uncompressed_bytes: int = DEFAULT_MAX_ZIP_BYTES,
+    max_entries: int = DEFAULT_MAX_ZIP_ENTRIES,
+    doc_type: str | None = None,
+) -> tuple[bytes, str, list[str]]:
+    """Safely extract Vietnamese research PDF(s) from either a `.zip` or `.rar` archive."""
+    if zipfile.is_zipfile(io.BytesIO(data)):
+        return safe_extract_pdf_from_zip(
+            data,
+            max_uncompressed_bytes=max_uncompressed_bytes,
+            max_entries=max_entries,
+            doc_type=doc_type,
+        )
+    if is_rar_bytes(data):
+        try:
+            members, entries_desc = _read_rar_pdf_members_bounded(
+                data,
+                max_uncompressed_bytes=max_uncompressed_bytes,
+                max_entries=max_entries,
+            )
+            return select_and_merge_archive_pdfs(
+                members,
+                entries_desc,
+                doc_type=doc_type,
+                max_uncompressed_bytes=max_uncompressed_bytes,
+            )
+        except ArchiveExtractionError as exc:
+            raise ZipExtractionError(str(exc)) from exc
+    raise ZipExtractionError("Payload is neither a valid ZIP nor RAR archive")
 
 
 def unwrap_pdf_payload(
@@ -443,19 +443,21 @@ def unwrap_pdf_payload(
     *,
     max_uncompressed_bytes: int = DEFAULT_MAX_ZIP_BYTES,
     max_entries: int = DEFAULT_MAX_ZIP_ENTRIES,
+    doc_type: str | None = None,
 ) -> tuple[bytes, bool, str | None, list[str]]:
-    """Unwrap a raw `.pdf` or `.zip`-disguised-as-`.pdf` payload into valid PDF bytes.
+    """Unwrap a raw `.pdf`, `.zip`, or `.rar` payload into valid Vietnamese PDF bytes.
 
-    Returns `(pdf_bytes, is_zip, chosen_entry, zip_entries)`.
-    Raises `ZipExtractionError` on malicious/empty ZIPs.
+    Returns `(pdf_bytes, is_archive, chosen_entry, archive_entries)`.
+    Raises `ZipExtractionError` on malicious/empty/full-English archives.
     """
-    if zipfile.is_zipfile(io.BytesIO(data)):
-        pdf_bytes, chosen_entry, zip_entries = safe_extract_pdf_from_zip(
+    if zipfile.is_zipfile(io.BytesIO(data)) or is_rar_bytes(data):
+        pdf_bytes, chosen_entry, archive_entries = safe_extract_pdf_from_archive(
             data,
             max_uncompressed_bytes=max_uncompressed_bytes,
             max_entries=max_entries,
+            doc_type=doc_type,
         )
-        return pdf_bytes, True, chosen_entry, zip_entries
+        return pdf_bytes, True, chosen_entry, archive_entries
     return data, False, None, []
 
 
@@ -546,10 +548,18 @@ def detect_repeating_left_sidebar_x(pdf_source: bytes | pathlib.Path | str) -> f
         doc.close()
 
 
-def split_virtual_pages(page: Any, left_sidebar_x: float = 0.0) -> list[VirtualPage]:
-    """Detect A3 2-page spread (width > 1.25 * height with central gutter) vs single page."""
+def split_virtual_pages(
+    page: Any,
+    left_sidebar_x: float = 0.0,
+    two_col_crop: tuple[float, float] | None = None,
+) -> list[VirtualPage]:
+    """Detect A3 2-page Vietnamese spread vs 2-column VI/EN bilingual crop vs single page."""
     w, h = float(page.width), float(page.height)
     page_num = int(getattr(page, "page_number", 1))
+    if two_col_crop is not None:
+        keep_x0 = max(0.0, min(w, float(two_col_crop[0])))
+        keep_x1 = max(keep_x0 + 10.0, min(w, float(two_col_crop[1])))
+        return [VirtualPage(page_num, "FULL", (keep_x0, 0.0, keep_x1, h), keep_x0)]
     if w > h * 1.25 and left_sidebar_x == 0.0:
         words = page.extract_words()
         mid = w / 2.0
@@ -619,11 +629,23 @@ def inspect_pdf_bytes(
     *,
     doc_type: str | None = None,
 ) -> InspectionResult:
-    """Full InputInspector: unpacks .zip safely, detects watermarks/scans, BAD_FONT, NOTICE_ONLY, spread."""
+    """Full InputInspector: unpacks .zip/.rar safely, rejects Full-English docs, detects BAD_FONT/SCAN/spread."""
     try:
-        data, is_zip, chosen_entry, zip_entries = unwrap_pdf_payload(data)
+        data, is_zip, chosen_entry, zip_entries = unwrap_pdf_payload(data, doc_type=doc_type)
     except ZipExtractionError as exc:
-        err_code = "ZIP_NO_PDF" if "no PDF" in str(exc) else f"ZIP_ERROR:{exc}"
+        msg = str(exc)
+        if "EXCLUDED_FULL_ENGLISH_DOCUMENT" in msg:
+            return InspectionResult(
+                is_zip=True,
+                zip_entries=[],
+                routed_branch="D",
+                doc_class="EXCLUDED_ENGLISH",
+                doc_language="FULL_ENGLISH",
+                est_ocr_pages=0,
+                source_url=source_url,
+                error="EXCLUDED_FULL_ENGLISH_DOCUMENT",
+            )
+        err_code = "ZIP_NO_PDF" if "no PDF" in msg else f"ZIP_ERROR:{exc}"
         return InspectionResult(
             is_zip=True,
             zip_entries=[],
@@ -786,7 +808,8 @@ def inspect_pdf_bytes(
     )
     has_fin_shield = bool(_FINANCIAL_SHIELD_INSPECT_RE.search(joined))
     norm_doc_type = (doc_type or "").strip().upper()
-    is_short_doc_exempt = norm_doc_type in _SHORT_DOC_EXEMPT_TYPES
+    is_scanned_bctc = norm_doc_type == "BCTC" and scan_pages >= max(4, int(n_pages * 0.80))
+    is_short_doc_exempt = (norm_doc_type in _SHORT_DOC_EXEMPT_TYPES) or is_scanned_bctc
 
     if (
         n_pages <= NOTICE_ONLY_MAX_PAGES
@@ -825,6 +848,37 @@ def inspect_pdf_bytes(
         else 0.0
     )
 
+    lang_assessment = assess_pdf_language(data, left_sidebar_x=auto_sidebar_x)
+    # Only reject pre-OCR as FULL_ENGLISH when there are zero unread scan / BAD_FONT pages
+    # (in hybrid HOSE filings, companies often bundle a scanned red-stamp Vietnamese original
+    # alongside a digital English translation — those scan/BAD_FONT pages must be checked post-OCR!).
+    if lang_assessment.verdict == "FULL_ENGLISH" and scan_pages == 0 and bad_font_pages == 0:
+        return InspectionResult(
+            pages=n_pages,
+            mb=round(len(data) / 1048576, 2),
+            is_zip=is_zip,
+            zip_entries=zip_entries,
+            chosen_entry=chosen_entry,
+            spread_pages=spread_pages,
+            digital_clean_pages=dig_clean,
+            bad_font_pages=bad_font_pages,
+            scan_pages=scan_pages,
+            median_vn_readability=round(sorted(scores)[len(scores) // 2], 3) if scores else 0.0,
+            doc_class="EXCLUDED_ENGLISH",
+            doc_language="FULL_ENGLISH",
+            routed_branch="D",
+            est_ocr_pages=0,
+            auto_sidebar_x=auto_sidebar_x,
+            source_url=source_url,
+            error="EXCLUDED_FULL_ENGLISH_DOCUMENT",
+            page_triage=page_triage,
+            bad_font_page_numbers=bad_font_page_numbers,
+            scan_page_numbers=scan_page_numbers,
+            digital_clean_page_numbers=digital_clean_page_numbers,
+            english_page_numbers=list(lang_assessment.english_pages_to_drop),
+            bilingual_two_col_crops=dict(lang_assessment.two_col_crops),
+        )
+
     return InspectionResult(
         pages=n_pages,
         mb=round(len(data) / 1048576, 2),
@@ -837,6 +891,7 @@ def inspect_pdf_bytes(
         scan_pages=scan_pages,
         median_vn_readability=round(sorted(scores)[len(scores) // 2], 3) if scores else 0.0,
         doc_class=doc_class,
+        doc_language=lang_assessment.verdict,
         has_embedded_notes=has_embedded_notes,
         has_segment_or_bank_notes=has_segment,
         has_plan=has_plan,
@@ -849,6 +904,8 @@ def inspect_pdf_bytes(
         bad_font_page_numbers=bad_font_page_numbers,
         scan_page_numbers=scan_page_numbers,
         digital_clean_page_numbers=digital_clean_page_numbers,
+        english_page_numbers=list(lang_assessment.english_pages_to_drop),
+        bilingual_two_col_crops=dict(lang_assessment.two_col_crops),
     )
 
 

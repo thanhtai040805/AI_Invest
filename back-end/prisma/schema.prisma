@@ -94,12 +94,13 @@ model Order {
 }
 
 model ChatSession {
-  id        String        @id @default(uuid())
-  userId    String        @map("user_id")
-  title     String?
-  createdAt DateTime      @default(now()) @map("created_at")
-  messages  ChatMessage[]
-  user      User          @relation(fields: [userId], references: [id])
+  id              String        @id @default(uuid())
+  userId          String        @map("user_id")
+  title           String?
+  parentSessionId String?       @map("parent_session_id")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  messages        ChatMessage[]
+  user            User          @relation(fields: [userId], references: [id])
 
   @@map("chat_sessions")
 }
@@ -136,6 +137,22 @@ model SagChatEvalFeedback {
   @@index([messageId], map: "idx_sag_chat_eval_feedback_message_id")
   @@index([userId, createdAt(sort: Desc)], map: "idx_sag_chat_eval_feedback_user_created")
   @@map("sag_chat_eval_feedback")
+}
+
+model SagMemoryCascadeOutbox {
+  id        String   @id @default(uuid())
+  sessionId String   @map("session_id")
+  userId    String   @map("user_id")
+  reason    String   @default("USER_DELETED_SESSION")
+  status    String   @default("PENDING")
+  attempts  Int      @default(0)
+  lastError String?  @map("last_error")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([status, createdAt], map: "idx_sag_memory_cascade_outbox_status_created")
+  @@index([userId, sessionId], map: "idx_sag_memory_cascade_outbox_user_session")
+  @@map("sag_memory_cascade_outbox")
 }
 
 model Alert {

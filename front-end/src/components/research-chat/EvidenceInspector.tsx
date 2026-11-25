@@ -1,10 +1,11 @@
 "use client"
 
-import { Activity, Calculator, FileText, Network, ShieldCheck, X } from "lucide-react"
+import { Activity, Brain, Calculator, FileText, Network, ShieldCheck, X } from "lucide-react"
 import { Panel } from "@/components/ui"
 import type { EvalSummaryResponse, ResearchChatMetadata } from "@/lib/api/researchChat"
 import { InspectorEvalTab } from "./InspectorEvalTab"
 import { InspectorGraphTab } from "./InspectorGraphTab"
+import { InspectorMemoryTab } from "./InspectorMemoryTab"
 import { InspectorQuotesTab } from "./InspectorQuotesTab"
 import { InspectorTablesCalcTab } from "./InspectorTablesCalcTab"
 import { InspectorTraceTab } from "./InspectorTraceTab"
@@ -15,6 +16,9 @@ interface EvidenceInspectorProps {
   onTabChange: (tab: InspectorTabId) => void
   metadata: ResearchChatMetadata | null
   messageId: string | null
+  activeSessionId: string | null
+  memoryRefreshNonce?: number
+  onSelectLinkedSession: (sessionId: string) => void
   focus: InspectorFocus | null
   evalSummary: EvalSummaryResponse | null
   onRefreshSummary: () => Promise<void> | void
@@ -27,6 +31,9 @@ export function EvidenceInspector({
   onTabChange,
   metadata,
   messageId,
+  activeSessionId,
+  memoryRefreshNonce = 0,
+  onSelectLinkedSession,
   focus,
   evalSummary,
   onRefreshSummary,
@@ -35,9 +42,14 @@ export function EvidenceInspector({
 }: EvidenceInspectorProps) {
   const citations = Array.isArray(metadata?.citations) ? metadata.citations : []
   const tables = Array.isArray(metadata?.hydrated_tables) ? metadata.hydrated_tables : []
+  const screeningResults = Array.isArray(metadata?.screening_results) ? metadata.screening_results : []
   const calculators = Array.isArray(metadata?.calculator_traces) ? metadata.calculator_traces : []
   const graphHops = Array.isArray(metadata?.graph_hops) ? metadata.graph_hops : []
   const expandedTickers = Array.isArray(metadata?.expanded_tickers) ? metadata.expanded_tickers : []
+  const recalledMemories = Array.isArray(metadata?.recalled_memories) ? metadata.recalled_memories : []
+  const linkedSessions = Array.isArray(metadata?.linked_sessions) ? metadata.linked_sessions : []
+  const activeMemoryCount =
+    recalledMemories.length + linkedSessions.length + (metadata?.portfolio_snapshot_used ? 1 : 0)
 
   const tabs: Array<{
     id: InspectorTabId
@@ -49,10 +61,16 @@ export function EvidenceInspector({
     {
       id: "tables",
       label: "Bảng & Calc",
-      count: tables.length + calculators.length,
+      count: tables.length + calculators.length + (screeningResults.length > 0 ? 1 : 0),
       icon: Calculator,
     },
     { id: "graph", label: "Đồ thị 3 Tầng", count: graphHops.length, icon: Network },
+    {
+      id: "memory",
+      label: "Ký ức",
+      count: activeMemoryCount > 0 ? activeMemoryCount : undefined,
+      icon: Brain,
+    },
     { id: "trace", label: "Trace & Token", icon: Activity },
     { id: "eval", label: "Đánh giá G1–G5", icon: ShieldCheck },
   ]
@@ -62,7 +80,7 @@ export function EvidenceInspector({
       flush
       className={`flex flex-col h-full overflow-hidden ${className ?? "min-h-[680px] xl:h-[calc(100dvh-160px)]"}`}
     >
-      {/* Header + 5 Tabs */}
+      {/* Header + 6 Tabs */}
       <div className="border-b border-line bg-surface px-4 pt-3 shrink-0">
         <div className="flex items-center justify-between gap-2 mb-2.5">
           <div className="flex items-center gap-2 min-w-0">
@@ -108,7 +126,7 @@ export function EvidenceInspector({
                 <span>{tab.label}</span>
                 {tab.count !== undefined && (
                   <span
-                    className={`rounded-full px-1.5 py-0.2 font-mono text-[10px] tnum ${
+                    className={`rounded-full px-1.5 py-[1px] font-mono text-[10px] tnum ${
                       active ? "bg-ink text-paper" : "bg-soft text-secondary"
                     }`}
                   >
@@ -130,6 +148,7 @@ export function EvidenceInspector({
           <InspectorTablesCalcTab
             tables={tables}
             calculators={calculators}
+            screeningResults={screeningResults}
             focus={focus}
           />
         )}
@@ -138,6 +157,16 @@ export function EvidenceInspector({
             graphHops={graphHops}
             expandedTickers={expandedTickers}
             focus={focus}
+          />
+        )}
+        {activeTab === "memory" && (
+          <InspectorMemoryTab
+            metadata={metadata}
+            activeSessionId={activeSessionId}
+            messageId={messageId}
+            refreshNonce={memoryRefreshNonce}
+            focus={focus}
+            onSelectLinkedSession={onSelectLinkedSession}
           />
         )}
         {activeTab === "trace" && (

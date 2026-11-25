@@ -26,8 +26,10 @@ from sag_api.research.input_inspector import (
     InspectionResult,
     ZipExtractionError,
     inspect_pdf_bytes,
+    safe_extract_pdf_from_archive,
     safe_extract_pdf_from_zip,
 )
+from sag_api.research.vn_language_gate import is_standalone_english_metadata
 
 SelectionTier = Literal["CORE", "CONDITIONAL", "EXCLUDED"]
 StatementScope = Literal["CONSOLIDATED", "SEPARATE", "UNKNOWN"]
@@ -37,9 +39,11 @@ CORE_DOC_TYPES = frozenset(
         "BCTC",
         "BCTN",
         "NQ_DHDCD",
+        "TAI_LIEU_DHDCD",
         "FINANCIAL_STATEMENT",
         "ANNUAL_REPORT",
         "AGM_RESOLUTION",
+        "AGM_MATERIALS",
     }
 )
 CONDITIONAL_DOC_TYPES = frozenset(
@@ -49,6 +53,8 @@ CONDITIONAL_DOC_TYPES = frozenset(
         "GIẢI_TRÌNH",
         "LATEST_QUARTER",
         "LATEST_QUARTER_NOTES",
+        "TY_LE_AT_TC",
+        "CAPITAL_ADEQUACY",
         "PROSPECTUS",
         "EXPLANATION",
     }
@@ -93,6 +99,9 @@ def normalize_doc_type(raw_doc_type: str, title: str = "") -> str:
         "AGM_RESOLUTION": "NQ_DHDCD",
         "NGHI_QUYET_DHDCD": "NQ_DHDCD",
         "NQ_DHDCD": "NQ_DHDCD",
+        "AGM_MATERIALS": "TAI_LIEU_DHDCD",
+        "TAI_LIEU_DHDCD": "TAI_LIEU_DHDCD",
+        "TO_TRINH_DHDCD": "TAI_LIEU_DHDCD",
         "PROSPECTUS": "CAO_BACH",
         "BAN_CAO_BACH": "CAO_BACH",
         "CAO_BACH": "CAO_BACH",
@@ -100,6 +109,8 @@ def normalize_doc_type(raw_doc_type: str, title: str = "") -> str:
         "GIAI_TRINH": "GIAI_TRINH",
         "LATEST_QUARTER": "LATEST_QUARTER",
         "LATEST_QUARTER_NOTES": "LATEST_QUARTER",
+        "TY_LE_AT_TC": "TY_LE_AT_TC",
+        "CAPITAL_ADEQUACY": "TY_LE_AT_TC",
         "NEWS": "TIN_TUC",
         "TIN_TUC": "TIN_TUC",
         "INSIDER_TRADING": "GIAO_DICH_NOI_BO",
@@ -123,6 +134,12 @@ def normalize_doc_type(raw_doc_type: str, title: str = "") -> str:
         return "GIAI_TRINH"
     if "NGHI_QUYET" in title_norm and ("DHDCD" in title_norm or "DAI_HOI" in title_norm):
         return "NQ_DHDCD"
+    if ("TAI_LIEU" in title_norm or "TO_TRINH" in title_norm) and (
+        "DHDCD" in title_norm or "DAI_HOI" in title_norm
+    ):
+        return "TAI_LIEU_DHDCD"
+    if "AN_TOAN_TAI_CHINH" in title_norm or "VON_KHA_DUNG" in title_norm:
+        return "TY_LE_AT_TC"
     if "BAO_CAO_TAI_CHINH" in title_norm or "BCTC" in title_norm or "KIEM_TOAN" in title_norm:
         return "BCTC"
     if "QUAN_TRI" in title_norm:
@@ -169,10 +186,10 @@ def classify_document_category(
             return "CORE", "CORE_BCTC"
         return "CONDITIONAL", "CONDITIONAL_LATEST_QUARTER"
 
-    if canonical in ("BCTN", "NQ_DHDCD"):
+    if canonical in ("BCTN", "NQ_DHDCD", "TAI_LIEU_DHDCD"):
         return "CORE", f"CORE_{canonical}"
 
-    if canonical in ("CAO_BACH", "GIAI_TRINH"):
+    if canonical in ("CAO_BACH", "GIAI_TRINH", "TY_LE_AT_TC"):
         return "CONDITIONAL", f"CONDITIONAL_{canonical}"
 
     return "EXCLUDED", f"UNRECOGNIZED_DOC_TYPE:{canonical}"
@@ -508,14 +525,18 @@ async def fetch_document_with_fallback(
     )
 
 
-def _unpack_pdf_if_zip(data: bytes) -> bytes:
+def _unpack_pdf_if_zip(data: bytes, *, doc_type: str | None = None) -> bytes:
     if data.startswith(b"%PDF"):
         return data
     try:
-        pdf_bytes, _, _ = safe_extract_pdf_from_zip(data)
+        pdf_bytes, _, _ = safe_extract_pdf_from_archive(data, doc_type=doc_type)
         return pdf_bytes
     except ZipExtractionError:
-        return data
+        try:
+            pdf_bytes, _, _ = safe_extract_pdf_from_zip(data, doc_type=doc_type)
+            return pdf_bytes
+        except ZipExtractionError:
+            return data
 
 
 def _is_conditional_activated(
@@ -552,14 +573,17 @@ def _is_conditional_activated(
             return True, candidate.trigger_reason or "MID_YEAR_ANOMALY_OR_EXPLANATION"
         return False, "CONDITIONAL_GIAI_TRINH_NOT_TRIGGERED"
 
-    if canonical_type == "NQ_DHDCD":
+    if canonical_type in ("NQ_DHDCD", "TAI_LIEU_DHDCD"):
         if not anomaly_ctx.bctn_has_plan:
             return True, "BCTN_MISSING_PLAN"
         if candidate.is_extraordinary_agm:
             return True, "EXTRAORDINARY_AGM"
         if bctn_published_date and pit_res.effective_published_at > bctn_published_date:
             return True, "POST_BCTN_AGM_RESOLUTION"
-        return True, "CORE_AGM_12M"
+        return True, f"CORE_{canonical_type}_12M"
+
+    if canonical_type == "TY_LE_AT_TC":
+        return True, candidate.trigger_reason or "BROKERAGE_CAPITAL_ADEQUACY"
 
     return True, f"CORE_{canonical_type}"
 
@@ -600,8 +624,20 @@ async def select_research_documents(
     preliminary: list[tuple[ResearchCandidateDocument, str, SelectionTier, str, PitDateResolution]] = []
 
     for cand in candidates:
-        canonical = normalize_doc_type(cand.doc_type, cand.title)
         url0 = cand.urls[0] if cand.urls else ""
+        is_en_meta, en_reason = is_standalone_english_metadata(cand.title, url=url0)
+        if is_en_meta:
+            result.rejected.append(
+                RejectedDocument(
+                    doc_id=cand.doc_id,
+                    ticker=cand.ticker,
+                    title=cand.title,
+                    raw_doc_type=cand.doc_type,
+                    reason=en_reason,
+                )
+            )
+            continue
+        canonical = normalize_doc_type(cand.doc_type, cand.title)
         # Reclassify quarterly / semi-annual financial statements from CORE `BCTC` -> CONDITIONAL `LATEST_QUARTER`
         if canonical == "BCTC" and parse_fiscal_quarter_from_meta(cand.title, url0) > 0:
             canonical = "LATEST_QUARTER"
@@ -796,6 +832,17 @@ async def select_research_documents(
         pdf_bytes: bytes | None = None
         if raw_payload is not None and inspect_payloads:
             insp = inspect_pdf_bytes(raw_payload, source_url=resolved_url, doc_type=canonical)
+            if insp.doc_class == "EXCLUDED_ENGLISH" or insp.error == "EXCLUDED_FULL_ENGLISH_DOCUMENT":
+                result.rejected.append(
+                    RejectedDocument(
+                        doc_id=cand.doc_id,
+                        ticker=cand.ticker,
+                        title=cand.title,
+                        raw_doc_type=cand.doc_type,
+                        reason="EXCLUDED_FULL_ENGLISH_DOCUMENT",
+                    )
+                )
+                continue
             if insp.error:
                 result.rejected.append(
                     RejectedDocument(
@@ -807,7 +854,7 @@ async def select_research_documents(
                     )
                 )
                 continue
-            pdf_bytes = _unpack_pdf_if_zip(raw_payload)
+            pdf_bytes = _unpack_pdf_if_zip(raw_payload, doc_type=canonical)
             if canonical == "BCTN":
                 if insp.doc_class == "NOTICE_ONLY":
                     ctx.bctn_has_plan = False
@@ -845,7 +892,7 @@ async def select_research_documents(
                 )
                 continue
 
-        if tier == "CONDITIONAL" or canonical == "NQ_DHDCD":
+        if tier == "CONDITIONAL" or canonical in ("NQ_DHDCD", "TAI_LIEU_DHDCD"):
             active, cond_reason = _is_conditional_activated(
                 canonical,
                 cand,
@@ -884,8 +931,10 @@ async def select_research_documents(
         "BCTN": 0,
         "BCTC": 1,
         "NQ_DHDCD": 2,
+        "TAI_LIEU_DHDCD": 2,
         "LATEST_QUARTER": 3,
         "GIAI_TRINH": 4,
+        "TY_LE_AT_TC": 4,
         "CAO_BACH": 5,
     }
     result.selected.sort(

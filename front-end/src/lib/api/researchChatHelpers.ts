@@ -32,6 +32,96 @@ export interface HydratedTableRow {
 }
 
 export type ResearchChatMode = "GENERAL" | "MOAT"
+export type MemoryMode = "auto" | "read_only" | "incognito"
+
+export interface RecalledMemoryItem {
+  badge_id: string
+  memory_id: string
+  memory_type: string
+  pit_sensitivity?: string
+  content_text: string
+  tickers?: string[]
+  source_authority?: string
+  source_as_of_date?: string | null
+  staleness_status: "FRESH" | "STALE_NEW_FILING" | "STALE_RESTATED" | string
+  staleness_reason?: string | null
+  pinned_by_user?: boolean
+  score?: number
+  origin_session_id?: string | null
+}
+
+export interface LinkedSessionItem {
+  badge_id: string
+  episode_id: string
+  session_id: string
+  session_title?: string | null
+  episode_summary: string
+  tickers?: string[]
+  macro_factors?: string[]
+  sectors?: string[]
+  relation_type?: string
+  link_score?: number
+  source_as_of_date?: string | null
+  staleness_status: "FRESH" | "STALE_NEW_FILING" | "STALE_RESTATED" | string
+  staleness_reason?: string | null
+}
+
+export interface UserMemoryItem {
+  memory_id: string
+  scope: string
+  memory_type: string
+  pit_sensitivity: string
+  canonical_slot_key?: string | null
+  content_text: string
+  structured_payload?: Record<string, unknown>
+  tickers: string[]
+  bound_doc_version_ids?: string[]
+  confidence: number
+  source_authority: string
+  origin_episode_id?: string | null
+  origin_session_id?: string | null
+  source_as_of_date: string
+  is_backtest_sandbox: boolean
+  valid_from: string
+  valid_to: string
+  tx_from: string
+  tx_to: string
+  supersedes_memory_id?: string | null
+  staleness_status: "FRESH" | "STALE_NEW_FILING" | "STALE_RESTATED" | string
+  staleness_reason?: string | null
+  reinforcement_count: number
+  pinned_by_user: boolean
+  qdrant_sync_status?: string
+  sync_version?: number
+  created_at: string
+  updated_at: string
+}
+
+export interface UserMemoryListResponse {
+  total: number
+  items: UserMemoryItem[]
+}
+
+export interface RelatedSessionsResponse {
+  session_id: string
+  episode_id?: string | null
+  staleness_status: string
+  staleness_reason?: string | null
+  related_sessions: LinkedSessionItem[]
+}
+
+export interface UserMemoryClearResponse {
+  retracted_memories: number
+  deleted_episodes: number
+  closed_edges: number
+}
+
+export interface DeleteResearchSessionResponse {
+  deleted: boolean
+  sessionId: string
+  outboxId?: string
+  cascadeStatus?: "SENT" | "PENDING" | string
+}
 
 export interface HydratedTable {
   table_id: string
@@ -106,9 +196,51 @@ export interface DeclaredBlindspot {
   scope?: string
 }
 
+export interface ScreeningResultRow {
+  ticker: string
+  company_name?: string | null
+  sector?: string | null
+  fiscal_year?: number | null
+  pe?: number | null
+  pb?: number | null
+  roe?: number | null
+  roa?: number | null
+  gross_margin?: number | null
+  net_margin?: number | null
+  debt_to_equity?: number | null
+  liabilities_to_equity?: number | null
+  revenue_yoy?: number | null
+  source_kind?: string | null
+  valid_from?: string | null
+  [key: string]: unknown
+}
+
+export interface ToolTraceItem {
+  tool: string
+  duration_ms?: number
+  matched_count?: number
+  returned_count?: number
+  recall_count?: number
+  crag_grade?: string | null
+  tickers?: string[]
+  queries?: string[]
+  [key: string]: unknown
+}
+
 export interface ResearchTelemetry {
   routing_slot?: string
+  route_intent?: string | null
+  route_domain_class?: string | null
+  route_budget_tier?: string | null
+  route_confidence?: number | null
+  eval_eligible?: boolean
+  quarantined_future_turns?: number
   retrieval_mode?: string
+  reranker_provider?: string | null
+  reranker_model?: string | null
+  crag_grade?: string | null
+  agent_turns?: number
+  tool_calls_count?: number
   primary_section_count?: number
   cross_ref_section_count?: number
   leiden_nodes_visited?: number
@@ -116,9 +248,14 @@ export interface ResearchTelemetry {
   rejected_citations_count?: number
   unsupported_numeric_claims_count?: number
   hallucinated_citation_ids_count?: number
+  hallucinated_memory_ids_count?: number
+  user_memory_mode?: string
+  memory_recall_need?: string
+  recalled_memory_count?: number
   llm_model?: string | null
   embedding_model?: string | null
   input_tokens?: number
+  cached_tokens?: number
   output_tokens?: number
   cost_usd?: number
   latency_ms?: number
@@ -127,6 +264,8 @@ export interface ResearchTelemetry {
 export interface ResearchChatMetadata {
   mode?: string
   chat_mode?: ResearchChatMode
+  route_intent?: string | null
+  eval_eligible?: boolean
   primary_ticker?: string
   expanded_tickers?: string[]
   resolved_query?: string
@@ -136,10 +275,15 @@ export interface ResearchChatMetadata {
   citations?: ResearchCitation[]
   rejected_citations?: ResearchCitation[]
   hydrated_tables?: HydratedTable[]
+  screening_results?: ScreeningResultRow[]
+  tool_traces?: ToolTraceItem[]
   calculator_traces?: CalculatorTrace[]
   graph_hops?: GraphHop[]
   discrepancy_alerts?: DiscrepancyAlert[]
   declared_blindspots?: Array<DeclaredBlindspot | string>
+  recalled_memories?: RecalledMemoryItem[]
+  linked_sessions?: LinkedSessionItem[]
+  portfolio_snapshot_used?: boolean
   telemetry?: ResearchTelemetry
 }
 

@@ -14,8 +14,18 @@ const router = Router();
 
 const tickerRegex = /^[A-Za-z0-9.-]{1,16}$/;
 const tableIdRegex = /^[A-Za-z0-9_-]{1,64}$/;
+const memoryIdRegex = /^[A-Za-z0-9_-]{1,128}$/;
 
 const chatModeSchema = z.enum(['GENERAL', 'MOAT']);
+const memoryModeSchema = z.enum(['auto', 'read_only', 'incognito']);
+const memoryTypeSchema = z.enum([
+  'STYLE_PREF_SAFE',
+  'USER_INVESTING_CRITERIA',
+  'USER_EXTERNAL_HOLDING',
+  'INVESTMENT_THESIS',
+  'SESSION_EPISODE_DIGEST',
+]);
+const memoryStatusSchema = z.enum(['active', 'stale', 'superseded', 'all']);
 
 const createResearchSessionSchema = z
   .object({
@@ -26,6 +36,8 @@ const createResearchSessionSchema = z
     as_of_date: z.string().date().optional(),
     enableKg: z.boolean().optional(),
     enable_kg: z.boolean().optional(),
+    parentSessionId: z.string().uuid().optional(),
+    parent_session_id: z.string().uuid().optional(),
   })
   .transform((val) => ({
     ticker: val.ticker ?? undefined,
@@ -33,12 +45,15 @@ const createResearchSessionSchema = z
     mode: val.mode,
     asOfDate: val.asOfDate ?? val.as_of_date,
     enableKg: val.enableKg ?? val.enable_kg,
+    parentSessionId: val.parentSessionId ?? val.parent_session_id,
   }));
 
 const streamResearchChatSchema = z
   .object({
     sessionId: z.string().uuid().optional(),
     session_id: z.string().uuid().optional(),
+    parentSessionId: z.string().uuid().optional(),
+    parent_session_id: z.string().uuid().optional(),
     query: z.string().trim().min(1).max(4000),
     ticker: z.string().trim().regex(tickerRegex).optional().nullable(),
     compareTickers: z.array(z.string().trim().regex(tickerRegex)).max(5).optional(),
@@ -48,16 +63,63 @@ const streamResearchChatSchema = z
     as_of_date: z.string().date().optional(),
     enableKg: z.boolean().optional(),
     enable_kg: z.boolean().optional(),
+    memoryMode: memoryModeSchema.optional(),
+    memory_mode: memoryModeSchema.optional(),
   })
   .transform((val) => ({
     sessionId: val.sessionId ?? val.session_id,
+    parentSessionId: val.parentSessionId ?? val.parent_session_id,
     query: val.query,
     ticker: val.ticker ?? undefined,
     compareTickers: val.compareTickers ?? val.compare_tickers,
     mode: val.mode,
     asOfDate: val.asOfDate ?? val.as_of_date,
     enableKg: val.enableKg ?? val.enable_kg,
+    memoryMode: val.memoryMode ?? val.memory_mode,
   }));
+
+const listUserMemoriesQuerySchema = z
+  .object({
+    memoryType: memoryTypeSchema.optional(),
+    memory_type: memoryTypeSchema.optional(),
+    ticker: z.string().trim().regex(tickerRegex).optional(),
+    status: memoryStatusSchema.optional(),
+    limit: z.coerce.number().int().min(1).max(200).optional(),
+    offset: z.coerce.number().int().min(0).optional(),
+  })
+  .transform((val) => ({
+    memoryType: val.memoryType ?? val.memory_type,
+    ticker: val.ticker,
+    status: val.status,
+    limit: val.limit,
+    offset: val.offset,
+  }));
+
+const patchUserMemorySchema = z
+  .object({
+    contentText: z.string().trim().min(1).max(2000).optional(),
+    content_text: z.string().trim().min(1).max(2000).optional(),
+    pinnedByUser: z.boolean().optional(),
+    pinned_by_user: z.boolean().optional(),
+    reason: z.string().trim().min(1).max(256).optional(),
+  })
+  .refine(
+    (val) =>
+      (val.contentText ?? val.content_text) !== undefined ||
+      (val.pinnedByUser ?? val.pinned_by_user) !== undefined,
+    {
+      message: 'At least one of content_text or pinned_by_user must be provided',
+    },
+  )
+  .transform((val) => ({
+    content_text: val.contentText ?? val.content_text,
+    pinned_by_user: val.pinnedByUser ?? val.pinned_by_user,
+    reason: val.reason,
+  }));
+
+const relatedSessionsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(20).optional(),
+});
 
 const researchFeedbackSchema = z
   .object({
@@ -209,6 +271,67 @@ router.get('/research-chat/sessions/:id', authMiddleware, async (req: AuthReques
   }
 });
 
+router.delete('/research-chat/sessions/:id', authMiddleware, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const sessionId = z.string().uuid().parse(req.params.id);
+    const result = await sagResearchChatService.deleteResearchSession(req.userId!, sessionId);
+    res.json(result);
+  } catch (err) {
+    handleGatewayError(err, res, next);
+  }
+});
+
+router.get('/research-chat/sessions/:id/related', authMiddleware, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const sessionId = z.string().uuid().parse(req.params.id);
+    const query = relatedSessionsQuerySchema.parse(req.query ?? {});
+    const data = await sagResearchChatService.getRelatedSessions(req.userId!, sessionId, query.limit);
+    res.json(data);
+  } catch (err) {
+    handleGatewayError(err, res, next);
+  }
+});
+
+router.get('/research-chat/memories', authMiddleware, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const query = listUserMemoriesQuerySchema.parse(req.query ?? {});
+    const data = await sagResearchChatService.listUserMemories(req.userId!, query);
+    res.json(data);
+  } catch (err) {
+    handleGatewayError(err, res, next);
+  }
+});
+
+router.post('/research-chat/memories/clear', authMiddleware, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const data = await sagResearchChatService.clearAllUserMemories(req.userId!);
+    res.json(data);
+  } catch (err) {
+    handleGatewayError(err, res, next);
+  }
+});
+
+router.patch('/research-chat/memories/:memoryId', authMiddleware, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const memoryId = z.string().trim().regex(memoryIdRegex).parse(req.params.memoryId);
+    const body = patchUserMemorySchema.parse(req.body);
+    const data = await sagResearchChatService.patchUserMemory(req.userId!, memoryId, body);
+    res.json(data);
+  } catch (err) {
+    handleGatewayError(err, res, next);
+  }
+});
+
+router.delete('/research-chat/memories/:memoryId', authMiddleware, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const memoryId = z.string().trim().regex(memoryIdRegex).parse(req.params.memoryId);
+    const data = await sagResearchChatService.deleteUserMemory(req.userId!, memoryId);
+    res.json(data);
+  } catch (err) {
+    handleGatewayError(err, res, next);
+  }
+});
+
 router.post('/research-chat/stream', authMiddleware, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const body = streamResearchChatSchema.parse(req.body);
@@ -243,7 +366,9 @@ router.get('/research-chat/eval-summary', authMiddleware, async (req: AuthReques
 
 router.get('/research-chat/tickers', authMiddleware, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const data = await sagResearchChatService.getIngestedTickers(req.userId!);
+    const rawAsOfDate = req.query.asOfDate ?? req.query.as_of_date;
+    const asOfDate = rawAsOfDate !== undefined ? z.string().date().parse(rawAsOfDate) : undefined;
+    const data = await sagResearchChatService.getIngestedTickers(req.userId!, asOfDate);
     res.json(data);
   } catch (err) {
     handleGatewayError(err, res, next);
@@ -267,7 +392,9 @@ router.get('/research-chat/tables/:tableId', authMiddleware, async (req: AuthReq
     const tableId = z.string().trim().regex(tableIdRegex).parse(req.params.tableId);
     const rawTicker = req.query.ticker;
     const ticker = rawTicker !== undefined ? z.string().trim().regex(tickerRegex).parse(rawTicker) : undefined;
-    const data = await sagResearchChatService.getHydratedTable(req.userId!, tableId, ticker);
+    const rawAsOfDate = req.query.asOfDate ?? req.query.as_of_date;
+    const asOfDate = rawAsOfDate !== undefined ? z.string().date().parse(rawAsOfDate) : undefined;
+    const data = await sagResearchChatService.getHydratedTable(req.userId!, tableId, ticker, asOfDate);
     res.json(data);
   } catch (err) {
     handleGatewayError(err, res, next);

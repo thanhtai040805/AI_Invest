@@ -43,12 +43,6 @@ from sag_api.db.models.routing_rag import (
     TreeRoutingProfile,
     TreeSnapshotLease,
 )
-from sag_api.db.models.session_context import (
-    SessionDecisionLedger,
-    SessionGraphEdge,
-    SessionUnit,
-    SessionUnitMessage,
-)
 from sag_api.db.models.setting import Setting
 from sag_api.db.models.source import Source
 from sag_api.db.models.source_project_mapping import SourceProjectMapping
@@ -66,6 +60,14 @@ from sag_api.db.models.universe import (
     UniversePartition,
 )
 from sag_api.db.models.user import User
+from sag_api.db.models.user_memory import (
+    UserMemoryAuditLog,
+    UserMemoryEdge,
+    UserMemoryEntity,
+    UserMemoryEpisode,
+    UserMemoryItem,
+    UserMemoryJob,
+)
 
 __all__ = [
     "Agent",
@@ -107,10 +109,6 @@ __all__ = [
     "ResearchTask",
     "SagExtractedTable",
     "SearchUnit",
-    "SessionDecisionLedger",
-    "SessionGraphEdge",
-    "SessionUnit",
-    "SessionUnitMessage",
     "Setting",
     "Source",
     "SourceProjectMapping",
@@ -124,6 +122,12 @@ __all__ = [
     "UniverseOverview",
     "UniversePartition",
     "User",
+    "UserMemoryAuditLog",
+    "UserMemoryEdge",
+    "UserMemoryEntity",
+    "UserMemoryEpisode",
+    "UserMemoryItem",
+    "UserMemoryJob",
 ]
 
 

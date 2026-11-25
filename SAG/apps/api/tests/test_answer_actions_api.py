@@ -174,7 +174,6 @@ def _bff_headers(
 async def action_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(settings, "auth_mode", "continuum")
     monkeypatch.setattr(settings, "bff_service_token", "test-bff-secret")
-    monkeypatch.setattr(settings, "session_context_mode", "off")
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
 
@@ -1320,7 +1319,7 @@ async def test_session_share_fails_closed_on_invalid_reference_graph(action_env,
         )]
         root_step = _session_memory_step(["denied_ref"], source_ids=["src_proj_1"])
     elif broken == "hidden":
-        from sag_api.services.session_context import HIDDEN_SCOPE_PLACEHOLDER
+        from sag_api.services.agent_domain import HIDDEN_SCOPE_PLACEHOLDER
 
         nodes = [Message(
             id="hidden_ref", thread_id=tid, role=MessageRole.ASSISTANT,

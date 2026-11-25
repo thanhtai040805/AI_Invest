@@ -114,9 +114,17 @@ class LLMClient:
         tools: list[dict] | None = None,
         tool_choice: str | dict | None = None,
         response_format: dict[str, Any] | None = None,
+        model_override: str | None = None,
     ) -> Any:
+        effective_model = self._settings.routed_llm_model
+        if model_override and model_override.strip():
+            raw_override = model_override.strip()
+            if self._settings.routed_llm_model.startswith("openai/") and not raw_override.startswith("openai/"):
+                effective_model = f"openai/{raw_override}"
+            else:
+                effective_model = raw_override
         request: dict[str, Any] = {
-            "model": self._settings.routed_llm_model,
+            "model": effective_model,
             "api_key": self._settings.llm_api_key,
             "timeout": self._settings.llm_timeout_ms / 1000,
             "num_retries": self._settings.llm_max_retries,
@@ -192,6 +200,7 @@ class LLMClient:
         latest_raw_usage: Any = None
         collected_parts: list[str] = []
         usage_recorded = False
+        pending_tool_notified = False
         stream = None
         try:
             stream = await self._create_completion(
@@ -207,12 +216,22 @@ class LLMClient:
                     latest_raw_usage = raw_usage
                     prompt_details = _attr(raw_usage, "prompt_tokens_details")
                     completion_details = _attr(raw_usage, "completion_tokens_details")
+                    cached_tok = int(
+                        _attr(prompt_details, "cached_tokens", 0)
+                        or _attr(raw_usage, "prompt_cache_hit_tokens", 0)
+                        or _attr(raw_usage, "cached_tokens", 0)
+                        or 0
+                    )
                     yield ModelChunk(
                         usage=Usage(
                             input_tokens=int(_attr(raw_usage, "prompt_tokens", 0) or 0),
                             output_tokens=int(_attr(raw_usage, "completion_tokens", 0) or 0),
-                            cached_tokens=int(_attr(prompt_details, "cached_tokens", 0) or 0),
-                            reasoning_tokens=int(_attr(completion_details, "reasoning_tokens", 0) or 0),
+                            cached_tokens=cached_tok,
+                            reasoning_tokens=int(
+                                _attr(completion_details, "reasoning_tokens", 0)
+                                or _attr(raw_usage, "reasoning_tokens", 0)
+                                or 0
+                            ),
                         )
                     )
                 choices = _attr(chunk, "choices", []) or []
@@ -225,7 +244,11 @@ class LLMClient:
                 if token:
                     collected_parts.append(token)
                     yield ModelChunk(text_delta=token)
-                for fallback_index, tool_delta in enumerate(_attr(delta, "tool_calls") or []):
+                raw_tool_deltas = _attr(delta, "tool_calls") or []
+                if raw_tool_deltas and not pending_tool_notified:
+                    pending_tool_notified = True
+                    yield ModelChunk(has_pending_tool_call=True)
+                for fallback_index, tool_delta in enumerate(raw_tool_deltas):
                     index = _attr(tool_delta, "index")
                     index = fallback_index if index is None else int(index)
                     part = tool_parts.setdefault(index, {"id": "", "name": "", "arguments": ""})
@@ -306,10 +329,15 @@ class LLMClient:
         messages: list[Message],
         *,
         response_format: dict[str, Any] | None = None,
+        model_override: str | None = None,
     ) -> str:
         self._ensure_configured()
         try:
-            resp = await self._create_completion(messages, response_format=response_format)
+            resp = await self._create_completion(
+                messages,
+                response_format=response_format,
+                model_override=model_override,
+            )
             choices = _attr(resp, "choices", []) or []
             if not choices:
                 raise UpstreamError(
@@ -320,7 +348,7 @@ class LLMClient:
                 )
             content = _attr(_attr(choices[0], "message", {}), "content", "") or ""
             record_llm_usage(
-                model=self._settings.llm_model,
+                model=(model_override or self._settings.llm_model),
                 usage=extract_chat_usage(_attr(resp, "usage"), messages, content),
             )
             return content

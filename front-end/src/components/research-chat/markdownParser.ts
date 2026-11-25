@@ -3,6 +3,9 @@ export type AuditBadgeKind =
   | "table"
   | "calculator"
   | "kg"
+  | "memory"
+  | "portfolio"
+  | "session"
   | "unverified"
 
 export interface AuditBadgeToken {
@@ -55,6 +58,105 @@ export function classifyAuditBadge(innerRaw: string): AuditBadgeToken | null {
     }
   }
 
+  // [C1 UNVERIFIED_CLAIM], [C99 UNVERIFIED_CLAIM]
+  const unverifiedCidMatch = inner.match(/^(C\d+)\s+UNVERIFIED_CLAIM$/i)
+  if (unverifiedCidMatch) {
+    return {
+      type: "badge",
+      raw: `[${innerRaw}]`,
+      label: `${unverifiedCidMatch[1].toUpperCase()} UNVERIFIED`,
+      kind: "unverified",
+      refId: unverifiedCidMatch[1].toUpperCase(),
+      verified: false,
+    }
+  }
+
+  // [MEM:M1], [MEM:M1 UNVERIFIED_CLAIM]
+  const memMatch = inner.match(/^MEM\s*:\s*(M\d+)(?:\s+(UNVERIFIED_CLAIM))?$/i)
+  if (memMatch) {
+    const id = memMatch[1].toUpperCase()
+    const isUnverified = Boolean(memMatch[2])
+    return {
+      type: "badge",
+      raw: `[${innerRaw}]`,
+      label: isUnverified ? `MEM:${id} UNVERIFIED` : `MEM:${id}`,
+      kind: "memory",
+      refId: id,
+      index: Number.parseInt(id.slice(1), 10),
+      verified: !isUnverified,
+    }
+  }
+
+  // [PORT:FPT], [PORT:WATCHLIST], [PORT:FPT UNVERIFIED_CLAIM]
+  const portMatch = inner.match(/^PORT\s*:\s*([A-Z0-9._-]{1,16})(?:\s+(UNVERIFIED_CLAIM))?$/i)
+  if (portMatch) {
+    const sym = portMatch[1].toUpperCase()
+    const isUnverified = Boolean(portMatch[2])
+    return {
+      type: "badge",
+      raw: `[${innerRaw}]`,
+      label: isUnverified ? `PORT:${sym} UNVERIFIED` : `PORT:${sym}`,
+      kind: "portfolio",
+      refId: sym,
+      verified: !isUnverified,
+    }
+  }
+
+  // [SESS:S1], [SESS:S1 UNVERIFIED_CLAIM]
+  const sessMatch = inner.match(/^SESS\s*:\s*(S\d+)(?:\s+(UNVERIFIED_CLAIM))?$/i)
+  if (sessMatch) {
+    const sid = sessMatch[1].toUpperCase()
+    const isUnverified = Boolean(sessMatch[2])
+    return {
+      type: "badge",
+      raw: `[${innerRaw}]`,
+      label: isUnverified ? `SESS:${sid} UNVERIFIED` : `SESS:${sid}`,
+      kind: "session",
+      refId: sid,
+      index: Number.parseInt(sid.slice(1), 10),
+      verified: !isUnverified,
+    }
+  }
+
+  // [DISC-1], [DISC-2] discrepancy alert marker
+  const discMatch = inner.match(/^DISC[-_#]?(\d+)$/i)
+  if (discMatch) {
+    return {
+      type: "badge",
+      raw: `[${innerRaw}]`,
+      label: `DISC-${discMatch[1]}`,
+      kind: "unverified",
+      refId: `DISC-${discMatch[1]}`,
+      verified: false,
+    }
+  }
+
+  // [TBL:table_id] hydrated 2D table reference
+  const tblRefMatch = inner.match(/^TBL\s*:\s*([A-Za-z0-9_.:-]+)$/i)
+  if (tblRefMatch) {
+    const tid = tblRefMatch[1]
+    return {
+      type: "badge",
+      raw: `[${innerRaw}]`,
+      label: `TBL:${tid.length > 14 ? `${tid.slice(0, 12)}…` : tid}`,
+      kind: "table",
+      refId: tid,
+    }
+  }
+
+  // [SCR:FPT] quantitative universe screening badge
+  const scrMatch = inner.match(/^SCR\s*:\s*([A-Z0-9]{2,8})$/i)
+  if (scrMatch) {
+    const sym = scrMatch[1].toUpperCase()
+    return {
+      type: "badge",
+      raw: `[${innerRaw}]`,
+      label: `SCR:${sym}`,
+      kind: "table",
+      refId: `SCR:${sym}`,
+    }
+  }
+
   // [S07·P168 ✓] or [S07_REV_COGS_DETAIL·P168 ✓] or [S07·P168] or [S07 P168 ✗]
   const slotPageMatch = inner.match(
     /^(S\d{2}(?:_[A-Z0-9_]+)?)\s*[·:\-\s]+\s*P?(\d+)(?:\s*([✓✗✔✕]|UNVERIFIED))?$/i,
@@ -103,10 +205,11 @@ export function classifyAuditBadge(innerRaw: string): AuditBadgeToken | null {
     }
   }
 
-  // [KG: CONFIRMED_BOTH], [KG: TRUE_PEER], [KG #1]
-  const kgMatch = inner.match(/^KG\s*(?::\s*([A-Z0-9_]+)|#(\d+))$/i)
+  // [KG: CONFIRMED_BOTH], [KG: TRUE_PEER], [KG:MACRO|CONFIRMED_BOTH], [KG #1]
+  const kgMatch = inner.match(/^KG\s*(?::\s*([A-Z0-9_|]+)|#(\d+))$/i)
   if (kgMatch) {
-    const tier = kgMatch[1]?.toUpperCase()
+    const rawTier = kgMatch[1]?.toUpperCase()
+    const tier = rawTier?.includes("|") ? rawTier.split("|").pop() : rawTier
     const index = kgMatch[2] ? Number.parseInt(kgMatch[2], 10) : undefined
     return {
       type: "badge",
@@ -197,11 +300,20 @@ export function tokenizeInline(input: string): InlineToken[] {
       }
     }
 
-    // Bracketed expression: either [label](url) link OR audit badge [...]
+    // Bracketed expression: audit badge [...] takes precedence over [label](url) links so
+    // badge + parenthetical prose like "[MEM:M1](đã ghim)" or "[PORT:FPT](1.000 CP)" is never stripped.
     if (input[i] === "[") {
       const closeBracket = input.indexOf("]", i + 1)
       if (closeBracket !== -1) {
         const inner = input.slice(i + 1, closeBracket)
+        const badge = classifyAuditBadge(inner)
+        if (badge) {
+          flushText()
+          tokens.push(badge)
+          i = closeBracket + 1
+          continue
+        }
+
         if (input[closeBracket + 1] === "(") {
           const closeParen = input.indexOf(")", closeBracket + 2)
           if (closeParen !== -1) {
@@ -216,14 +328,6 @@ export function tokenizeInline(input: string): InlineToken[] {
             i = closeParen + 1
             continue
           }
-        }
-
-        const badge = classifyAuditBadge(inner)
-        if (badge) {
-          flushText()
-          tokens.push(badge)
-          i = closeBracket + 1
-          continue
         }
       }
     }

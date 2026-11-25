@@ -319,17 +319,27 @@ class Settings(BaseSettings):
     history_keep_recent: int = 8  # 历史压缩时原文保留的最近消息数
     # 只装载最近有界窗口；更旧对话应进入滚动摘要，不做全表回放。
     history_load_limit: int = Field(default=200, ge=1, le=1000)
-    session_context_mode: Literal["off", "shadow", "on"] = "off"
-    session_context_scope: Literal["thread", "project_owner"] = "thread"
-    session_context_embedding_mode: Literal["zero_cost_local", "configured_http"] = "zero_cost_local"
-    session_context_persistence_enabled: bool = True
-    session_context_qdrant_sync_enabled: bool = True
-    session_context_max_messages: int = Field(default=5000, ge=50, le=50000)
-    session_context_full_audit_max_batches: int = Field(default=6, ge=1, le=20)
     decision_provider: Literal["siliconflow", "disabled"] = "disabled"
     decision_model: str = Field(default="Kev-4b", min_length=1, max_length=200)
     siliconflow_base_url: str = "https://api.siliconflow.com/v1"
     siliconflow_api_key: str | None = None
+
+    # ── Cross-Encoder Reranker (Optional Online Reranking for Research Chat) ──
+    rerank_provider: Literal["siliconflow", "deepinfra", "disabled"] = "disabled"
+    rerank_model: str = Field(default="Qwen/Qwen3-Reranker-0.6B", min_length=1, max_length=200)
+    rerank_base_url: str | None = None
+    rerank_api_key: str | None = None
+    rerank_timeout_seconds: float = Field(default=2.5, ge=0.5, le=15.0)
+    rerank_min_score: float = Field(default=0.15, ge=0.0, le=1.0)
+
+    # ── SAG-Native User Memory & Linked Sessions (Tri-Temporal Mem0-g) ────────
+    user_memory_mode: Literal["off", "shadow", "on"] = "shadow"
+    user_memory_qdrant_collection: str = "aiinvest_user_memories"
+    user_memory_extractor_model: str | None = None
+    user_memory_worker_enabled: bool = True
+    user_memory_debounce_seconds: float = Field(default=8.0, ge=0.0, le=120.0)
+    user_memory_max_items_per_user: int = Field(default=2000, ge=10, le=50000)
+    user_memory_max_episodes_per_user: int = Field(default=500, ge=10, le=20000)
 
     @field_validator("siliconflow_base_url")
     @classmethod

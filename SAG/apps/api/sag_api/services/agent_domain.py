@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sag_api.branding import DEFAULT_AGENT_AVATAR, DEFAULT_AGENT_NAME
 from sag_api.core.config import settings
 from sag_api.core.error_taxonomy import ErrorCode
-from sag_api.core.errors import ConflictError, ForbiddenError, NotFoundError, ValidationError
+from sag_api.core.errors import ConflictError, NotFoundError, ValidationError
 from sag_api.core.logging import get_logger
 from sag_api.core.principal_assertion import VerifiedPrincipal
 from sag_api.db.models import Agent, AgentBinding, Message, Source, Thread, User
@@ -28,17 +28,11 @@ from sag_api.enums import BindingTargetType, MessageRole, MessageStatus
 from sag_api.generation import build_agent_messages, build_prompt_preview
 from sag_api.generation.prompt import estimate_tokens
 from sag_api.schemas.agent import ThreadOut
-from sag_api.services.session_context import (
-    collect_thread_persistence_projects,
-    invalidate_session_thread_cache,
-    log_session_audit_trace,
-    prepare_session_context_for_ask,
-    purge_thread_qdrant_points_for_projects,
-    purge_thread_session_rows,
-)
 from sag_api.services.source_service import get_authorized_source_ids, search_source_candidates
 
 _log = get_logger("sag.agent_domain")
+
+HIDDEN_SCOPE_PLACEHOLDER = "[Answer hidden because its evidence is unavailable in the current source scope.]"
 
 _DEFAULT_TITLES = {"New chat", "Cuộc trò chuyện mới"}
 _KNOWLEDGE_TOOL_NAMES = frozenset({"search_context", "get_entity"})
@@ -186,7 +180,7 @@ async def load_segment_messages_chronological(
     max_messages: int | None = None,
 ) -> list[Message]:
     """Load chronological messages inside a single `LineageSegment` via keyset batches."""
-    cap = max_messages if max_messages is not None else settings.session_context_max_messages
+    cap = max_messages if max_messages is not None else settings.history_load_limit
     if cap <= 0:
         return []
     collected: list[Message] = []
@@ -504,7 +498,6 @@ async def delete_agent(session: AsyncSession, agent_id: str, *, owner_key: str) 
     agent_threads = list(
         (await session.scalars(select(Thread).where(Thread.agent_id == agent.id))).all()
     )
-    qdrant_cleanup_targets: list[tuple[str, list[str]]] = []
     if agent_threads:
         by_id = {t.id: t for t in agent_threads}
         remaining = set(by_id.keys())
@@ -516,21 +509,11 @@ async def delete_agent(session: AsyncSession, agent_id: str, *, owner_key: str) 
             }
             leaves = sorted(remaining - referenced_parents) or sorted(remaining)
             for leaf_id in leaves:
-                persisted_projects = await collect_thread_persistence_projects(
-                    session, thread_id=leaf_id
-                )
-                qdrant_cleanup_targets.append((leaf_id, persisted_projects))
-                await purge_thread_session_rows(session, thread_id=leaf_id)
                 await session.delete(by_id[leaf_id])
-                invalidate_session_thread_cache(leaf_id)
                 remaining.discard(leaf_id)
             await session.flush()
     await session.delete(agent)
     await session.commit()
-    for gc_tid, gc_projects in qdrant_cleanup_targets:
-        await purge_thread_qdrant_points_for_projects(
-            session, thread_id=gc_tid, project_ids=gc_projects
-        )
 
 
 # ── 绑定（信源 / MCP server）────────────────────────────────────────
@@ -763,22 +746,16 @@ async def delete_thread(session: AsyncSession, agent_id: str, thread_id: str, *,
     )
     if has_child:
         thread.deleted_by_owner_at = datetime.now(UTC)
-        invalidate_session_thread_cache(thread.id)
         await session.commit()
         return
 
-    qdrant_cleanup_targets: list[tuple[str, list[str]]] = []
     cur: Thread | None = thread
     visited_gc: set[str] = set()
     while cur is not None and cur.id not in visited_gc:
         visited_gc.add(cur.id)
         parent_id = cur.parent_thread_id
-        persisted_projects = await collect_thread_persistence_projects(session, thread_id=cur.id)
-        qdrant_cleanup_targets.append((cur.id, persisted_projects))
-        await purge_thread_session_rows(session, thread_id=cur.id)
         await session.delete(cur)
         await session.flush()
-        invalidate_session_thread_cache(cur.id)
 
         if not parent_id:
             break
@@ -796,10 +773,6 @@ async def delete_thread(session: AsyncSession, agent_id: str, thread_id: str, *,
         cur = parent
 
     await session.commit()
-    for gc_tid, gc_projects in qdrant_cleanup_targets:
-        await purge_thread_qdrant_points_for_projects(
-            session, thread_id=gc_tid, project_ids=gc_projects
-        )
 
 
 async def list_messages_page(
@@ -945,8 +918,7 @@ async def filter_messages_for_scope(
             created_at=getattr(message, "created_at", None),
             role=MessageRole.ASSISTANT,
             content=(
-                message.content if can_read else
-                "[Answer hidden because its evidence is unavailable in the current source scope.]"
+                message.content if can_read else HIDDEN_SCOPE_PLACEHOLDER
             ),
             citations=message.citations if can_read else [],
             attachments=(getattr(message, "attachments", None) or []) if can_read else [],
@@ -1090,77 +1062,6 @@ class AskPlan:
     session_citations: list[dict[str, Any]] = field(default_factory=list)
 
 
-async def _resolve_session_history(
-    session: AsyncSession,
-    *,
-    legacy_history: list[dict[str, str]],
-    thread_id: str,
-    exclude_id: str,
-    query: str,
-    principal: VerifiedPrincipal,
-    owner_key: str,
-    source_ids: list[str] | None,
-    llm: Any,
-    budget_tokens: int,
-) -> tuple[list[dict[str, str]], dict[str, Any] | None, dict[str, Any] | None, list[dict[str, Any]]]:
-    mode = settings.session_context_mode
-    if mode == "off":
-        compressed = await compress_history(legacy_history, llm=llm, budget_tokens=budget_tokens)
-        return compressed, None, None, []
-
-    if mode == "shadow":
-        compressed = await compress_history(legacy_history, llm=llm, budget_tokens=budget_tokens)
-        try:
-            pack = await prepare_session_context_for_ask(
-                session,
-                thread_id=thread_id,
-                exclude_message_id=exclude_id,
-                query=query,
-                principal=principal,
-                owner_key=owner_key,
-                requested_source_ids=source_ids,
-                budget_tokens=budget_tokens,
-            )
-            pack.audit_trace.mode = "shadow"
-            log_session_audit_trace(thread_id, pack.audit_trace)
-            return compressed, pack.audit_trace.to_dict(), dict(pack.audit_trace.route_decision), []
-        except Exception as exc:  # noqa: BLE001 - shadow telemetry must never fail user ask
-            _log.warning("ECCE shadow session context failed (%s)", type(exc).__name__)
-            return compressed, None, None, []
-
-    try:
-        pack = await prepare_session_context_for_ask(
-            session,
-            thread_id=thread_id,
-            exclude_message_id=exclude_id,
-            query=query,
-            principal=principal,
-            owner_key=owner_key,
-            requested_source_ids=source_ids,
-            budget_tokens=budget_tokens,
-        )
-        log_session_audit_trace(thread_id, pack.audit_trace)
-        return (
-            pack.history_messages,
-            pack.audit_trace.to_dict(),
-            dict(pack.audit_trace.route_decision),
-            list(pack.session_citations),
-        )
-    except ForbiddenError:
-        raise
-    except Exception as exc:  # noqa: BLE001 - graceful fallback to bounded legacy window on unexpected error
-        _log.warning("ECCE session context fallback to legacy history (%s)", type(exc).__name__)
-        fallback_hist = legacy_history or await _history(
-            session,
-            thread_id,
-            exclude_id=exclude_id,
-            principal=principal,
-            requested_source_ids=source_ids,
-        )
-        compressed = await compress_history(fallback_hist, llm=llm, budget_tokens=budget_tokens)
-        return compressed, None, None, []
-
-
 async def resolve_user_display_name(
     session: AsyncSession,
     *,
@@ -1257,7 +1158,7 @@ async def prepare_ask(
     await session.commit()
     await session.refresh(user_msg)
 
-    history = [] if settings.session_context_mode == "on" else await _history(
+    history = await _history(
         session,
         thread.id,
         exclude_id=user_msg.id,
@@ -1265,15 +1166,8 @@ async def prepare_ask(
         requested_source_ids=source_ids,
     )
     # 历史预算 = 上下文窗口的 40%（其余留给工具轮/回答）
-    history, audit_trace, route_decision, session_citations = await _resolve_session_history(
-        session,
-        legacy_history=history,
-        thread_id=thread.id,
-        exclude_id=user_msg.id,
-        query=query,
-        principal=principal,
-        owner_key=owner_key,
-        source_ids=source_ids,
+    history = await compress_history(
+        history,
         llm=llm,
         budget_tokens=int(settings.llm_context_window * 0.4),
     )
@@ -1291,9 +1185,6 @@ async def prepare_ask(
         user_name=effective_user_name,
     )
     plan.user_message_id = user_msg.id
-    plan.session_audit_trace = audit_trace
-    plan.route_decision = route_decision
-    plan.session_citations = session_citations
     return plan
 
 
@@ -1332,14 +1223,8 @@ async def delete_message(
                     "Cannot delete a message that belongs to a branched conversation's inherited history"
                 )
 
-    persisted_projects = await collect_thread_persistence_projects(session, thread_id=thread.id)
-    await purge_thread_session_rows(session, thread_id=thread.id)
     await session.delete(message)
-    invalidate_session_thread_cache(thread.id)
     await session.commit()
-    await purge_thread_qdrant_points_for_projects(
-        session, thread_id=thread.id, project_ids=persisted_projects
-    )
 
 
 async def persist_answer(

@@ -193,7 +193,6 @@ async def test_continuum_login_utf8_display_name_and_ask_regenerate_user_name_pr
 ) -> None:
     monkeypatch.setattr(settings, "auth_mode", "continuum")
     monkeypatch.setattr(settings, "bff_service_token", "test-bff-secret")
-    monkeypatch.setattr(settings, "session_context_mode", "off")
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
 

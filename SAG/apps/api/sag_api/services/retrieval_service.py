@@ -1009,6 +1009,7 @@ def select_diverse_sections(
     diversity_weight: float | None = None,
     near_duplicate_similarity: float | None = None,
     per_document_limit: int | None = None,
+    min_per_project_quota: int = 0,
     _cancelled: threading.Event | None = None,
 ) -> tuple[list[RetrievedSection], dict[str, Any]]:
     """Collapse near-identical text and apply deterministic MMR without dropping query anchors."""
@@ -1114,6 +1115,25 @@ def select_diverse_sections(
 
     selected_indices: list[int] = []
     selected_anchors: set[str] = set()
+
+    # Deterministic multi-ticker / multi-project floor quota (prevents ticker #3..6 starvation)
+    if min_per_project_quota > 0 and unique:
+        by_proj: dict[str, list[int]] = {}
+        for idx, sec in enumerate(unique):
+            pkey = str(getattr(sec, "project_id", None) or sec.source_id or doc_key(sec) or "")
+            by_proj.setdefault(pkey, []).append(idx)
+        if len(by_proj) >= 2:
+            per_proj_floor = max(1, min(int(min_per_project_quota), max(1, limit // len(by_proj))))
+            for round_idx in range(per_proj_floor):
+                for _pkey, idx_list in by_proj.items():
+                    if len(selected_indices) >= limit:
+                        break
+                    if round_idx < len(idx_list):
+                        cand_idx = idx_list[round_idx]
+                        if cand_idx not in selected_indices:
+                            selected_indices.append(cand_idx)
+                            selected_anchors.update(unique_coverage[cand_idx])
+
     for anchor in required:
         if anchor in selected_anchors or len(selected_indices) >= limit:
             continue

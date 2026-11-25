@@ -113,12 +113,14 @@ COMMON_STOPWORDS: frozenset[str] = frozenset(
         "be", "been", "being", "have", "has", "had", "do", "does", "did", "can", "could",
         "this", "that", "these", "those", "it", "its", "as",
         "what", "when", "where", "who", "whom", "whose", "which", "why", "how",
-        # Vietnamese function words, prepositions, conjunctions & question particles
+        # Vietnamese function words, prepositions, conjunctions & question particles.
+        # NOTE: Keep accounting/negation terms ("phải", "không", "chưa") OUT of stopwords so
+        # VAS terms ("phải thu", "phải trả", "không kiểm soát", "chưa phân phối") are preserved.
         "là", "và", "của", "cho", "với", "trong", "được", "có", "đã", "đang", "sẽ",
         "các", "những", "một", "này", "đó", "tại", "về", "từ", "theo", "khi", "như",
         "bởi", "vì", "nếu", "thì", "mà", "để", "đến", "tới", "ra", "vào", "lên", "xuống",
         "cũng", "vẫn", "đều", "chỉ", "rất", "quá", "lắm", "rồi", "hay", "hoặc", "nhưng",
-        "gì", "nào", "ai", "đâu", "sao", "thế", "bao", "nhiêu", "không", "chưa", "phải",
+        "gì", "nào", "ai", "đâu", "sao", "thế", "bao", "nhiêu",
     }
 )
 
@@ -196,8 +198,18 @@ def compute_sparse_bm25_vector(
                 if len(sub) >= 2:
                     expanded_tokens.append(sub)
 
+    # Backward-compatible stopword-invariant Vietnamese/financial bigrams
+    # (e.g. "phải_thu", "phải_trả", "biên_gộp", matching across optional "của"/"về")
+    informative_tokens = [t for t in tokens if t not in COMMON_STOPWORDS]
+    bigram_tokens: list[str] = []
+    for i in range(len(informative_tokens) - 1):
+        t1, t2 = informative_tokens[i], informative_tokens[i + 1]
+        if len(t1) >= 2 and len(t2) >= 2 and not (t1.isdigit() and t2.isdigit()):
+            bigram_tokens.append(f"{t1}_{t2}")
+
     doc_len = len(tokens)
     counts = Counter(expanded_tokens)
+    bigram_counts = Counter(bigram_tokens)
     sparse_map: dict[int, float] = {}
 
     for word, tf in counts.items():
@@ -235,6 +247,12 @@ def compute_sparse_bm25_vector(
             if stem and len(stem) >= 4:
                 stem_idx = int(hashlib.md5(stem.encode("utf-8")).hexdigest()[:8], 16) % 1000000
                 sparse_map[stem_idx] = max(sparse_map.get(stem_idx, 0.0), round(bm25_weight * 0.55, 4))
+
+    for bg, bg_tf in bigram_counts.items():
+        len_norm = 1.0 - b + b * (doc_len / avg_doc_len)
+        tf_weight = (bg_tf * (k1 + 1.0)) / (bg_tf + k1 * len_norm)
+        bg_idx = int(hashlib.md5(bg.encode("utf-8")).hexdigest()[:8], 16) % 1000000
+        sparse_map[bg_idx] = max(sparse_map.get(bg_idx, 0.0), round(tf_weight * 0.85, 4))
 
     sorted_indices = sorted(sparse_map.keys())
     return {

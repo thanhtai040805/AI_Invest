@@ -38,6 +38,7 @@ from sag_api.research.input_selector import (
     select_research_documents,
 )
 from sag_api.research.ocr_adapter import MinerUOcrAdapter
+from sag_api.research.r2_markdown_cache import SagR2MarkdownCache
 from sag_api.research.table_engine import (
     ExtractedTableRecord,
     TableRepositoryProtocol,
@@ -97,6 +98,7 @@ class TickerIngestReport:
     sub_doc_slots: list[str] = field(default_factory=list)
     missing_core_slots: list[str] = field(default_factory=list)
     ocr_pages_used: int = 0
+    r2_cache_hits: int = 0
     uploaded_sub_docs: int = 0
     tables_extracted: int = 0
     tables_verified: int = 0
@@ -416,6 +418,7 @@ async def run_research_batch_ingest(
     table_repo: TableRepositoryProtocol | None = None,
     table_card_indexer: TableCardIndexer | None = None,
     kg_refresher: KGRefreshHook | None = None,
+    r2_cache: SagR2MarkdownCache | None = None,
     max_docs_per_ticker: int = 10,
     include_recent_quarters: bool = True,
     max_latest_quarters: int = 4,
@@ -451,6 +454,8 @@ async def run_research_batch_ingest(
     effective_ocr: OcrAdapterProtocol | None = ocr_adapter
     if effective_ocr is None and auto_mineru_ocr and settings.mineru_configured:
         effective_ocr = MinerUOcrAdapter(settings)
+
+    active_r2_cache = r2_cache if r2_cache is not None else SagR2MarkdownCache()
 
     ingested_tickers: list[str] = []
 
@@ -507,22 +512,89 @@ async def run_research_batch_ingest(
             noise_red_samples: list[float] = []
 
             for sel in selection.selected[:max_docs_per_ticker]:
+                pdf_bytes: bytes = b""
                 try:
                     pdf_bytes, resolved_url = await _load_pdf_bytes_for_selected(
                         sel, source_paths=overrides, fetcher=fetcher
                     )
-                    build_res: ResearchInputBuildResult = await build_research_sub_documents(
-                        ticker=sym,
-                        pdf_bytes=pdf_bytes,
-                        doc_type=sel.canonical_doc_type,
-                        published_date=sel.pit_resolution.effective_published_at,
-                        title=sel.candidate.title,
-                        source_url=resolved_url,
-                        fiscal_year=sel.pit_resolution.parsed_fiscal_year,
-                        fiscal_quarter=sel.pit_resolution.parsed_fiscal_quarter,
-                        ocr_adapter=effective_ocr,
-                        toc_router=effective_toc_router,
-                    )
+                    cached_build: ResearchInputBuildResult | None = None
+                    if active_r2_cache.is_configured:
+                        try:
+                            cached_build = await active_r2_cache.load_cached_build_result(
+                                ticker=sym,
+                                pdf_bytes=pdf_bytes,
+                                doc_type=sel.canonical_doc_type,
+                                published_date=sel.pit_resolution.effective_published_at,
+                                fiscal_year=sel.pit_resolution.parsed_fiscal_year,
+                                fiscal_quarter=sel.pit_resolution.parsed_fiscal_quarter,
+                            )
+                        except InputBuildError:
+                            raise
+                        except Exception as cache_read_exc:  # noqa: BLE001
+                            log.warning(
+                                "R2 markdown cache read failed for %s (%s): %s",
+                                sym,
+                                sel.candidate.doc_id,
+                                cache_read_exc,
+                            )
+
+                    if cached_build is not None:
+                        build_res = cached_build
+                        report.r2_cache_hits += 1
+                    else:
+                        build_res = await build_research_sub_documents(
+                            ticker=sym,
+                            pdf_bytes=pdf_bytes,
+                            doc_type=sel.canonical_doc_type,
+                            published_date=sel.pit_resolution.effective_published_at,
+                            title=sel.candidate.title,
+                            source_url=resolved_url,
+                            fiscal_year=sel.pit_resolution.parsed_fiscal_year,
+                            fiscal_quarter=sel.pit_resolution.parsed_fiscal_quarter,
+                            ocr_adapter=effective_ocr,
+                            toc_router=effective_toc_router,
+                        )
+                        if active_r2_cache.is_configured and build_res.sub_documents:
+                            try:
+                                await active_r2_cache.save_cleaned_build_result(
+                                    pdf_bytes=pdf_bytes,
+                                    build_result=build_res,
+                                    fiscal_year=sel.pit_resolution.parsed_fiscal_year,
+                                    fiscal_quarter=sel.pit_resolution.parsed_fiscal_quarter,
+                                )
+                            except Exception as cache_write_exc:  # noqa: BLE001
+                                log.warning(
+                                    "R2 markdown cache write failed for %s (%s): %s",
+                                    sym,
+                                    sel.candidate.doc_id,
+                                    cache_write_exc,
+                                )
+                except InputBuildError as build_exc:
+                    err_s = str(build_exc)
+                    if (
+                        "EXCLUDED_FULL_ENGLISH" in err_s
+                        or "EXCLUDED_CACHED_ENGLISH_DOC" in err_s
+                    ):
+                        report.rejected_documents += 1
+                        if (
+                            active_r2_cache.is_configured
+                            and pdf_bytes
+                            and "EXCLUDED_CACHED_ENGLISH_DOC" not in err_s
+                        ):
+                            try:
+                                await active_r2_cache.save_english_tombstone(
+                                    ticker=sym,
+                                    pdf_bytes=pdf_bytes,
+                                    doc_type=sel.canonical_doc_type,
+                                    fiscal_year=sel.pit_resolution.parsed_fiscal_year,
+                                    fiscal_quarter=sel.pit_resolution.parsed_fiscal_quarter,
+                                    reason=err_s,
+                                )
+                            except Exception as tomb_exc:  # noqa: BLE001
+                                log.warning("R2 tombstone write failed for %s: %s", sym, tomb_exc)
+                        continue
+                    report.errors.append(f"{sel.candidate.doc_id}: {build_exc}")
+                    continue
                 except Exception as doc_exc:  # noqa: BLE001
                     report.errors.append(f"{sel.candidate.doc_id}: {doc_exc}")
                     continue
@@ -542,7 +614,9 @@ async def run_research_batch_ingest(
 
                 unwrapped_pdf_bytes = pdf_bytes
                 try:
-                    unwrapped_pdf_bytes, _, _, _ = unwrap_pdf_payload(pdf_bytes)
+                    unwrapped_pdf_bytes, _, _, _ = unwrap_pdf_payload(
+                        pdf_bytes, doc_type=sel.canonical_doc_type
+                    )
                 except Exception:  # noqa: BLE001
                     unwrapped_pdf_bytes = pdf_bytes
 
@@ -585,6 +659,7 @@ async def run_research_batch_ingest(
                             markdown_content=bundle.markdown_content,
                             valid_from=bundle.valid_from,
                             left_sidebar_x=build_res.inspection.auto_sidebar_x,
+                            two_col_crops=build_res.inspection.bilingual_two_col_crops,
                         )
                         report.tables_extracted += len(extracted_tables)
                         for tbl_rec in extracted_tables:

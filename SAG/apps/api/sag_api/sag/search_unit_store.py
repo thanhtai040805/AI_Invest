@@ -134,6 +134,14 @@ def build_sparse_query_vector(query: str) -> dict[str, list[int] | list[float]]:
             if stem and len(stem) >= 4:
                 stem_id = int(hashlib.md5(stem.encode("utf-8")).hexdigest()[:8], 16) % 1_000_000
                 sparse[stem_id] = max(sparse.get(stem_id, 0.0), round(float(weight) * 0.6, 4))
+
+    # Stopword-invariant Vietnamese/financial query bigrams matching `compute_sparse_bm25_vector`
+    for i in range(len(active_tokens) - 1):
+        t1, t2 = active_tokens[i], active_tokens[i + 1]
+        if len(t1) >= 2 and len(t2) >= 2 and not (t1.isdigit() and t2.isdigit()):
+            bg = f"{t1}_{t2}"
+            bg_id = int(hashlib.md5(bg.encode("utf-8")).hexdigest()[:8], 16) % 1_000_000
+            sparse[bg_id] = max(sparse.get(bg_id, 0.0), 0.85)
     indices = sorted(sparse)
     return {"indices": indices, "values": [sparse[index] for index in indices]}
 

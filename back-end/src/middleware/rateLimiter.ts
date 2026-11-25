@@ -21,10 +21,25 @@ export const aiLimiter = rateLimit({
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
-  skip: (req) =>
-    req.method === 'GET' &&
-    (req.path.startsWith('/research-chat/') ||
-      req.originalUrl.startsWith('/api/v1/ai/research-chat/')),
+  skip: (req) => {
+    const isResearchChat =
+      req.path.startsWith('/research-chat/') ||
+      req.originalUrl.startsWith('/api/v1/ai/research-chat/');
+    if (!isResearchChat) return false;
+    if (req.method === 'GET') return true;
+    // Lightweight non-LLM user CRUD (already governed by 120/min apiLimiter) must not consume LLM stream quota
+    const isMemoryCrud =
+      req.path.startsWith('/research-chat/memories') ||
+      req.originalUrl.startsWith('/api/v1/ai/research-chat/memories');
+    if (isMemoryCrud && (req.method === 'PATCH' || req.method === 'DELETE' || req.method === 'POST')) {
+      return true;
+    }
+    const isSessionDelete =
+      req.method === 'DELETE' &&
+      (req.path.startsWith('/research-chat/sessions/') ||
+        req.originalUrl.startsWith('/api/v1/ai/research-chat/sessions/'));
+    return isSessionDelete;
+  },
   message: { error: 'AI rate limit exceeded. Please wait before sending more requests.' },
 });
 

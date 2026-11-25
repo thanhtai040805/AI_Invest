@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import binascii
 import hashlib
 import hmac
@@ -48,6 +47,7 @@ from sag_api.schemas.answer_actions import (
     ShareOut,
 )
 from sag_api.services.agent_domain import (
+    HIDDEN_SCOPE_PLACEHOLDER,
     MAX_LINEAGE_DEPTH,
     AskPlan,
     _message_source_ids,
@@ -68,11 +68,6 @@ from sag_api.services.agent_domain import (
 )
 from sag_api.services.agent_domain import (
     deduplicate_prior_regenerations as _deduplicate_prior_regenerations,
-)
-from sag_api.services.session_context import (
-    HIDDEN_SCOPE_PLACEHOLDER,
-    IncrementalSessionIndex,
-    build_ecce_context_pack,
 )
 from sag_api.services.source_service import get_authorized_source_ids, versioned_source_ids
 
@@ -1098,8 +1093,6 @@ async def prepare_regenerate(
     user_name: str | None = None,
 ) -> AskPlan:
     from sag_api.api.v1.attachments import attachment_path
-    from sag_api.services.decision_router import route_query
-    from sag_api.services.session_context.runtime import _extract_visible_records
 
     thread = await get_thread(session, agent.id, thread.id, owner_key=owner_key)
     segments = await resolve_thread_lineage_segments(session, thread)
@@ -1169,40 +1162,8 @@ async def prepare_regenerate(
     )
 
     budget_tokens = int(settings.llm_context_window * 0.4)
-    audit_trace: dict[str, Any] | None = None
-    route_decision: dict[str, Any] | None = None
-    session_citations: list[dict[str, Any]] = []
-
-    if settings.session_context_mode == "on" and scoped_prior:
-        prior_records, _ = _extract_visible_records(scoped_prior)
-        ephemeral_index = IncrementalSessionIndex(thread.id)
-        await ephemeral_index.append_messages(prior_records)
-        allowed_turns = set(ephemeral_index.turns_by_id.keys())
-        decision = await asyncio.to_thread(
-            route_query,
-            query_text,
-            {
-                "has_thread_history": bool(allowed_turns),
-                "turn_count": len(allowed_turns),
-                "active_decisions_count": len(ephemeral_index.active_decisions),
-            },
-        )
-        pack = await build_ecce_context_pack(
-            ephemeral_index,
-            query=query_text,
-            budget_tokens=budget_tokens,
-            route_decision=decision,
-            allowed_turn_ids=allowed_turns,
-            keep_recent_default=settings.history_keep_recent,
-            legacy_load_limit=settings.history_load_limit,
-        )
-        history = pack.history_messages
-        audit_trace = pack.audit_trace.to_dict()
-        route_decision = dict(pack.audit_trace.route_decision)
-        session_citations = list(pack.session_citations)
-    else:
-        raw_history = [{"role": m.role.value, "content": m.content} for m in scoped_prior]
-        history = await compress_history(raw_history, llm=llm, budget_tokens=budget_tokens)
+    raw_history = [{"role": m.role.value, "content": m.content} for m in scoped_prior]
+    history = await compress_history(raw_history, llm=llm, budget_tokens=budget_tokens)
 
     effective_user_name = await resolve_user_display_name(
         session,
@@ -1219,9 +1180,6 @@ async def prepare_regenerate(
     )
     plan.user_message_id = question.id
     plan.regenerated_from_message_id = target.id
-    plan.session_audit_trace = audit_trace
-    plan.route_decision = route_decision
-    plan.session_citations = session_citations
     return plan
 
 

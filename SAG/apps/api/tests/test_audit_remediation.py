@@ -576,8 +576,11 @@ def test_bilingual_vietnamese_english_stopwords_and_diacritics() -> None:
     # Single source of truth for bilingual stopwords
     assert _SPARSE_QUERY_STOPWORDS is COMMON_STOPWORDS
     assert _LEXICAL_STOPWORDS is COMMON_STOPWORDS
-    for vi_stop in ("là", "của", "những", "được", "trong", "với", "tại", "không"):
+    for vi_stop in ("là", "của", "những", "được", "trong", "với", "tại", "như"):
         assert vi_stop in COMMON_STOPWORDS
+    # VAS accounting negation/receivable tokens must remain searchable in BM25
+    for vas_kept in ("phải", "không", "chưa"):
+        assert vas_kept not in COMMON_STOPWORDS
     for en_stop in ("the", "what", "where", "which", "about"):
         assert en_stop in COMMON_STOPWORDS
 
@@ -609,7 +612,8 @@ def test_bilingual_vietnamese_english_stopwords_and_diacritics() -> None:
     with_stops_vec = build_sparse_query_vector("kiểm duyệt của hệ thống là gì")
     clean_vec = build_sparse_query_vector("kiểm duyệt hệ thống")
     assert with_stops_vec == clean_vec
-    assert len(clean_vec["indices"]) == 4
+    # 4 informative unigrams + 3 adjacent Vietnamese bigrams (weight 0.85)
+    assert len(clean_vec["indices"]) == 7
 
 
 def test_qwen3_enable_thinking_false_enforced_in_litellm_policy() -> None:

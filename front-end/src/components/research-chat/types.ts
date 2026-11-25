@@ -1,7 +1,7 @@
 import type { AuditBadgeToken } from "./markdownParser"
 import type { SseStageName, SseStageStatus } from "@/lib/api/researchChat"
 
-export type InspectorTabId = "quotes" | "tables" | "graph" | "trace" | "eval"
+export type InspectorTabId = "quotes" | "tables" | "graph" | "memory" | "trace" | "eval"
 
 export interface InspectorFocus {
   tab: InspectorTabId
@@ -15,6 +15,9 @@ export interface InspectorFocus {
   calcId?: string
   kgTier?: string
   kgIndex?: number
+  memoryBadgeId?: string
+  sessionBadgeId?: string
+  portfolioSymbol?: string
   nonce: number
 }
 
@@ -171,6 +174,27 @@ export function badgeToInspectorFocus(badge: AuditBadgeToken, nonce: number): In
       tab: "graph",
       kgTier: badge.tier,
       kgIndex: badge.index,
+      nonce,
+    }
+  }
+  if (badge.kind === "memory") {
+    return {
+      tab: "memory",
+      memoryBadgeId: badge.refId,
+      nonce,
+    }
+  }
+  if (badge.kind === "portfolio") {
+    return {
+      tab: "memory",
+      portfolioSymbol: badge.refId,
+      nonce,
+    }
+  }
+  if (badge.kind === "session") {
+    return {
+      tab: "memory",
+      sessionBadgeId: badge.refId,
       nonce,
     }
   }

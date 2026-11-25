@@ -1,12 +1,13 @@
 "use client"
 
 import { useEffect, useRef } from "react"
-import { AlertOctagon, Calculator, CheckCircle2, Table2 } from "lucide-react"
+import { AlertOctagon, BarChart3, Calculator, CheckCircle2, Table2 } from "lucide-react"
 import { Pill } from "@/components/ui"
 import {
   normalizeCalculatorInputs,
   type CalculatorTrace,
   type HydratedTable,
+  type ScreeningResultRow,
 } from "@/lib/api/researchChat"
 import type { InspectorFocus } from "./types"
 
@@ -54,13 +55,25 @@ function calcMatchesFocus(calc: CalculatorTrace, idx: number, focus: InspectorFo
   return false
 }
 
+function formatRatioPct(val: unknown): string {
+  if (typeof val !== "number" || !Number.isFinite(val)) return "—"
+  return `${(val * 100).toFixed(2)}%`
+}
+
+function formatRatioMult(val: unknown): string {
+  if (typeof val !== "number" || !Number.isFinite(val)) return "—"
+  return `${val.toFixed(2)}x`
+}
+
 export function InspectorTablesCalcTab({
   tables,
   calculators,
+  screeningResults = [],
   focus,
 }: {
   tables: HydratedTable[]
   calculators: CalculatorTrace[]
+  screeningResults?: ScreeningResultRow[]
   focus: InspectorFocus | null
 }) {
   const tableRefs = useRef<Record<string, HTMLDivElement | null>>({})
@@ -81,16 +94,77 @@ export function InspectorTablesCalcTab({
     }
   }, [focus, tables, calculators])
 
-  if (tables.length === 0 && calculators.length === 0) {
+  if (tables.length === 0 && calculators.length === 0 && screeningResults.length === 0) {
     return (
       <div className="py-12 text-center text-[13px] text-muted">
-        Chưa có bảng 2D hydrated hoặc phép tính Python Calculator nào trong câu trả lời này.
+        Chưa có bảng 2D hydrated, bảng sàng lọc định lượng hoặc phép tính Python Calculator nào trong câu trả lời này.
       </div>
     )
   }
 
   return (
     <div className="space-y-5">
+      {/* Section 0: PIT Quantitative Screening Leaderboard */}
+      {screeningResults.length > 0 && (
+        <div className="space-y-2.5">
+          <div className="flex items-center gap-1.5 text-[11.5px] font-semibold uppercase tracking-[0.08em] text-muted">
+            <BarChart3 className="h-3.5 w-3.5 text-teal" aria-hidden="true" />
+            <span>Bảng Sàng lọc Định lượng PIT ({screeningResults.length} mã)</span>
+          </div>
+          <div className="rounded-[9px] border border-line bg-surface overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-[12px]">
+                <thead>
+                  <tr className="border-b border-line bg-paper">
+                    <th className="px-2.5 py-2 text-left font-semibold text-ink whitespace-nowrap">Mã</th>
+                    <th className="px-2.5 py-2 text-left font-semibold text-ink whitespace-nowrap">FY</th>
+                    <th className="px-2.5 py-2 text-right font-semibold text-ink whitespace-nowrap">P/E</th>
+                    <th className="px-2.5 py-2 text-right font-semibold text-ink whitespace-nowrap">P/B</th>
+                    <th className="px-2.5 py-2 text-right font-semibold text-ink whitespace-nowrap">ROE</th>
+                    <th className="px-2.5 py-2 text-right font-semibold text-ink whitespace-nowrap">Biên gộp</th>
+                    <th className="px-2.5 py-2 text-right font-semibold text-ink whitespace-nowrap">Nợ vay/VCSH</th>
+                    <th className="px-2.5 py-2 text-right font-semibold text-ink whitespace-nowrap">Tổng nợ/VCSH</th>
+                    <th className="px-2.5 py-2 text-left font-semibold text-ink whitespace-nowrap">Nguồn</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-line">
+                  {screeningResults.map((row, idx) => (
+                    <tr key={`${row.ticker}-${idx}`} className="hover:bg-soft/35">
+                      <td className="px-2.5 py-1.5 font-mono font-semibold text-ink whitespace-nowrap">
+                        {row.ticker}
+                      </td>
+                      <td className="px-2.5 py-1.5 font-mono text-secondary whitespace-nowrap">
+                        {row.fiscal_year ? `FY${row.fiscal_year}` : "—"}
+                      </td>
+                      <td className="px-2.5 py-1.5 text-right font-mono tnum text-secondary">
+                        {formatRatioMult(row.pe)}
+                      </td>
+                      <td className="px-2.5 py-1.5 text-right font-mono tnum text-secondary">
+                        {formatRatioMult(row.pb)}
+                      </td>
+                      <td className="px-2.5 py-1.5 text-right font-mono tnum text-ink font-medium">
+                        {formatRatioPct(row.roe)}
+                      </td>
+                      <td className="px-2.5 py-1.5 text-right font-mono tnum text-secondary">
+                        {formatRatioPct(row.gross_margin)}
+                      </td>
+                      <td className="px-2.5 py-1.5 text-right font-mono tnum text-secondary">
+                        {formatRatioMult(row.debt_to_equity)}
+                      </td>
+                      <td className="px-2.5 py-1.5 text-right font-mono tnum text-secondary">
+                        {formatRatioMult(row.liabilities_to_equity)}
+                      </td>
+                      <td className="px-2.5 py-1.5 font-mono text-[10.5px] text-muted whitespace-nowrap">
+                        {row.source_kind || "CORE_DB_PIT"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
       {/* Section 1: Python Financial Calculator Traces */}
       {calculators.length > 0 && (
         <div className="space-y-2.5">

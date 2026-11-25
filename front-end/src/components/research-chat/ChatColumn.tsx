@@ -59,10 +59,57 @@ interface ChatColumnProps {
   onSendPrompt: (query: string) => void
   onStopStream: () => void
   onBadgeClick: (badge: AuditBadgeToken, messageId?: string) => void
+  onSelectLinkedSession?: (sessionId: string) => void
 }
 
 function cleanTicker(raw: string): string {
   return raw.trim().toUpperCase().replace(/[^A-Z0-9]/g, "")
+}
+
+function VerificationWarningBanner({
+  blindspots,
+  onInspect,
+}: {
+  blindspots: ReturnType<typeof normalizeDeclaredBlindspots>
+  onInspect: () => void
+}) {
+  const critical = blindspots.filter(
+    (b) =>
+      b.code === "UNSUPPORTED_NUMERIC_CLAIM" ||
+      b.code === "CITATION_CONTENT_MISMATCH" ||
+      b.code === "HALLUCINATED_CITATION_ID" ||
+      b.code === "HALLUCINATED_MEMORY_ID",
+  )
+  if (critical.length === 0) return null
+
+  return (
+    <div
+      role="alert"
+      className="mb-3 rounded-[8px] border border-loss/40 bg-loss/8 px-3 py-2.5 flex flex-wrap items-center justify-between gap-2 text-[12px]"
+    >
+      <div className="flex items-start gap-2 min-w-0 flex-1">
+        <AlertTriangle className="h-4 w-4 text-loss shrink-0 mt-0.5" aria-hidden="true" />
+        <div className="min-w-0">
+          <div className="font-semibold text-loss">
+            Cảnh báo Kiểm chứng Stage 7 ({critical.length} mục cần đối chiếu)
+          </div>
+          <div className="text-secondary text-[11.5px] leading-snug mt-0.5">
+            {critical
+              .slice(0, 2)
+              .map((c) => `${c.code}: ${c.reason}`)
+              .join(" · ")}
+          </div>
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onInspect}
+        className="shrink-0 rounded-[6px] border border-loss/35 bg-surface px-2.5 py-1 text-[11px] font-medium text-loss hover:bg-loss/10 transition-colors"
+      >
+        Mở Inspector
+      </button>
+    </div>
+  )
 }
 
 function DiscrepancyAlertsBox({ alerts }: { alerts: DiscrepancyAlert[] }) {
@@ -242,6 +289,7 @@ export function ChatColumn({
   onSendPrompt,
   onStopStream,
   onBadgeClick,
+  onSelectLinkedSession,
 }: ChatColumnProps) {
   const [draft, setDraft] = useState("")
   const [tickerPickerOpen, setTickerPickerOpen] = useState(false)
@@ -443,9 +491,14 @@ export function ChatColumn({
             const msgEvidenceCount =
               (Array.isArray(meta.citations) ? meta.citations.length : 0) +
               (Array.isArray(meta.hydrated_tables) ? meta.hydrated_tables.length : 0) +
+              (Array.isArray(meta.screening_results) ? meta.screening_results.length : 0) +
               (Array.isArray(meta.calculator_traces) ? meta.calculator_traces.length : 0) +
-              (Array.isArray(meta.graph_hops) ? meta.graph_hops.length : 0)
+              (Array.isArray(meta.graph_hops) ? meta.graph_hops.length : 0) +
+              (Array.isArray(meta.recalled_memories) ? meta.recalled_memories.length : 0) +
+              (Array.isArray(meta.linked_sessions) ? meta.linked_sessions.length : 0) +
+              (meta.portfolio_snapshot_used ? 1 : 0)
             const msgMode = meta.chat_mode === "MOAT" ? "MOAT" : "General"
+            const isShortCircuit = meta.eval_eligible === false
 
             return (
               <div
@@ -461,6 +514,9 @@ export function ChatColumn({
                     <Pill tone={msgMode === "MOAT" ? "mineral" : "teal"}>
                       {msgMode === "MOAT" ? "MOAT Broker" : "SAG v2"}
                     </Pill>
+                    {isShortCircuit && meta.route_intent && (
+                      <Pill tone="neutral">{meta.route_intent}</Pill>
+                    )}
                     {Array.isArray(meta.expanded_tickers) && meta.expanded_tickers.length > 0 ? (
                       meta.expanded_tickers.map((tk) => (
                         <span
@@ -497,9 +553,16 @@ export function ChatColumn({
                   </button>
                 </div>
 
+                <VerificationWarningBanner
+                  blindspots={blindspots}
+                  onInspect={() => onSelectAssistantMessage(msg.id)}
+                />
+
                 <MarkdownCitationView
                   content={msg.content}
+                  linkedSessions={meta.linked_sessions}
                   onBadgeClick={(badge) => onBadgeClick(badge, msg.id)}
+                  onSelectLinkedSession={onSelectLinkedSession}
                 />
 
                 <DiscrepancyAlertsBox alerts={alerts} />

@@ -72,6 +72,7 @@ async def _select_diverse_sections(
     limit,
     deadline,
     per_document_limit: int | None = None,
+    min_per_project_quota: int = 0,
 ):
     """Keep evidence scoring off the API loop and stop it when its request ends."""
     from sag_api.services.retrieval_service import select_diverse_sections
@@ -88,6 +89,7 @@ async def _select_diverse_sections(
                 candidates,
                 limit=limit,
                 per_document_limit=per_document_limit,
+                min_per_project_quota=min_per_project_quota,
                 _cancelled=cancelled,
             ))
             try:
@@ -1752,11 +1754,18 @@ async def _expand_multi_hop_sections(
     allow_contradiction_lineage: bool = True,
     preloaded_k_index: _ScopeKnowledgeIndex | None = None,
     as_of_ts: int | None = None,
+    allow_intra_version_bridge: bool = False,
 ) -> list[RetrievedSection]:
     """HippoRAG 2 associative passage expansion over ACL KnowledgeUnitEdge, Artifact Bridges, and Lineage."""
     if not seed_sections or not current_versions:
         return []
-    if lineage_only and preloaded_k_index is not None and not preloaded_k_index.lineage_by_version_ordinal:
+    # Lock 1 unlock: allow intra-filing Main Table <-> Footnote bridge even on single-clause queries
+    if (
+        lineage_only
+        and not allow_intra_version_bridge
+        and preloaded_k_index is not None
+        and not preloaded_k_index.lineage_by_version_ordinal
+    ):
         return []
     pool_scores = existing_pool_scores or {}
     seed_ranges: list[tuple[str, int, int, float]] = []
@@ -1840,8 +1849,9 @@ async def _expand_multi_hop_sections(
                         for t_ord in range(t_lo, t_hi + 1):
                             valid_neighbors[tgt_ver].append((t_ord, lin_score))
 
-        if not lineage_only:
+        if not lineage_only or allow_intra_version_bridge:
             seed_ku_scores: dict[str, float] = {}
+            seed_sec_paths_by_version: dict[str, set[str]] = defaultdict(set)
             top_seed_entities: dict[str, float] = {}
             max_seed_score = max((item[3] for item in seed_ranges), default=0.5)
             for idx_r, (v_id, s_ord, e_ord, s_score) in enumerate(seed_ranges):
@@ -1850,6 +1860,8 @@ async def _expand_multi_hop_sections(
                         continue
                     if s_ord <= ku.ordinal <= e_ord:
                         seed_ku_scores[ku.id] = max(seed_ku_scores.get(ku.id, 0.0), s_score)
+                        if ku.sec_path_norm:
+                            seed_sec_paths_by_version[v_id].add(ku.sec_path_norm)
                         if idx_r < 2 or s_score >= 0.85 * max_seed_score:
                             for ent in ku.entities_raw:
                                 ent_clean = re.sub(r"[\s_-]+", " ", ent.lower()).strip()
@@ -1888,7 +1900,10 @@ async def _expand_multi_hop_sections(
                                     top_seed_entities.get(ent_norm, 0.0), doc_ref_score
                                 )
             # Layer 2 bi-directional bridge: allow table_card seeds to activate co-located prose KnowledgeUnits
+            intra_table_neighbors: dict[str, float] = {}
             for t_vid, t_tid, t_sec_norm, t_score in seed_table_hints:
+                if t_sec_norm:
+                    seed_sec_paths_by_version[t_vid].add(t_sec_norm)
                 for ku in k_index.ku_by_version.get(t_vid, ()):
                     if not _ku_within_pit(ku):
                         continue
@@ -1896,6 +1911,11 @@ async def _expand_multi_hop_sections(
                     sec_match = bool(t_sec_norm and ku.sec_path_norm and ku.sec_path_norm == t_sec_norm)
                     if tid_match or sec_match:
                         seed_ku_scores[ku.id] = max(seed_ku_scores.get(ku.id, 0.0), t_score * 0.94)
+                        if allow_intra_version_bridge and tid_match:
+                            # Lock 2 unlock: surface linked footnote prose KnowledgeUnits directly as neighbors
+                            intra_table_neighbors[ku.id] = max(
+                                intra_table_neighbors.get(ku.id, 0.0), t_score * 0.94
+                            )
                         for ent_norm in ku.entities_norm:
                             if _is_artifact_code_norm(ent_norm) or (
                                 ent_norm.count(" ") >= 1 and len(ent_norm) >= 6
@@ -1904,8 +1924,8 @@ async def _expand_multi_hop_sections(
                                     top_seed_entities.get(ent_norm, 0.0), t_score * 0.90
                                 )
 
-            if seed_ku_scores:
-                neighbor_scores: dict[str, float] = {}
+            if seed_ku_scores or intra_table_neighbors:
+                neighbor_scores: dict[str, float] = dict(intra_table_neighbors)
                 seed_edges = sorted(
                     (
                         (s_score, tgt_id, w)
@@ -1917,12 +1937,19 @@ async def _expand_multi_hop_sections(
                 )[:limit]
                 for s_score, tgt_id, w in seed_edges:
                     tgt_ku = k_index.ku_by_id.get(tgt_id)
-                    if (
-                        tgt_ku is None
-                        or tgt_ku.document_version_id in seed_version_ids
-                        or not _ku_within_pit(tgt_ku)
-                    ):
+                    if tgt_ku is None or not _ku_within_pit(tgt_ku):
                         continue
+                    in_same_ver = tgt_ku.document_version_id in seed_version_ids
+                    if in_same_ver:
+                        if not allow_intra_version_bridge:
+                            continue
+                        same_sec = bool(
+                            tgt_ku.sec_path_norm
+                            and tgt_ku.sec_path_norm
+                            in seed_sec_paths_by_version.get(tgt_ku.document_version_id, set())
+                        )
+                        if same_sec:
+                            continue
                     neighbor_scores[tgt_id] = max(neighbor_scores.get(tgt_id, 0.0), s_score * w)
 
                 # HippoRAG 2 Bridge Entity Activation using pre-indexed scope knowledge units
@@ -1937,10 +1964,24 @@ async def _expand_multi_hop_sections(
                         if b_ent not in cont_entities and len(b_ent) >= 5
                     }
                     for v_id, ku_list in k_index.ku_by_version.items():
-                        if v_id in seed_version_ids or not _version_within_pit(v_id):
+                        if not _version_within_pit(v_id):
+                            continue
+                        if v_id in seed_version_ids and not allow_intra_version_bridge:
                             continue
                         for ku in ku_list:
                             if not _ku_within_pit(ku):
+                                continue
+                            if (
+                                allow_intra_version_bridge
+                                and v_id in seed_version_ids
+                                and (
+                                    ku.id in seed_ku_scores
+                                    or (
+                                        ku.sec_path_norm
+                                        and ku.sec_path_norm in seed_sec_paths_by_version.get(v_id, set())
+                                    )
+                                )
+                            ):
                                 continue
                             for b_ent in top_seed_entities:
                                 is_cont = b_ent in cont_entities
@@ -1984,11 +2025,19 @@ async def _expand_multi_hop_sections(
                             v_id
                             for b_ent in specific_seed_entities
                             for v_id in ent_doc_versions.get(b_ent, ())
-                            if v_id not in seed_version_ids and _version_within_pit(v_id)
+                            if _version_within_pit(v_id)
+                            and (allow_intra_version_bridge or v_id not in seed_version_ids)
                         }
                         for v_id in candidate_ver_ids:
                             for ku in k_index.ku_by_version.get(v_id, ()):
                                 if ku.id in seed_ku_scores or not _ku_within_pit(ku):
+                                    continue
+                                if (
+                                    allow_intra_version_bridge
+                                    and v_id in seed_version_ids
+                                    and ku.sec_path_norm
+                                    and ku.sec_path_norm in seed_sec_paths_by_version.get(v_id, set())
+                                ):
                                     continue
                                 matched_scores: list[float] = []
                                 path_matched = False
@@ -2058,7 +2107,9 @@ async def _expand_multi_hop_sections(
 
                 for ku_id, n_score in neighbor_scores.items():
                     ku = k_index.ku_by_id.get(ku_id)
-                    if ku is None or ku.document_version_id in seed_version_ids or not _ku_within_pit(ku):
+                    if ku is None or not _ku_within_pit(ku):
+                        continue
+                    if ku.document_version_id in seed_version_ids and not allow_intra_version_bridge:
                         continue
                     valid_neighbors[ku.document_version_id].append((ku.ordinal, n_score))
                     if ku.sec_path_norm or ku.linked_table_ids:
@@ -2175,6 +2226,9 @@ async def retrieve_search_unit_sections(
     query_strategy_plan: QueryStrategyPlan | None = None,
     as_of_ts: int | None = None,
     bypass_tree_routing: bool = False,
+    allow_intra_version_bridge: bool = False,
+    disable_per_document_cap: bool = False,
+    min_per_project_quota: int = 0,
 ) -> SearchOutcome:
     """Return verified sections according to the 7-axis RetrievalPlan, with a bounded candidate pool."""
     import unicodedata
@@ -2215,6 +2269,9 @@ async def retrieve_search_unit_sections(
             query_strategy_plan=plan, candidate_limit=candidate_limit, deadline=deadline,
             as_of_ts=as_of_ts,
             bypass_tree_routing=bypass_tree_routing,
+            allow_intra_version_bridge=allow_intra_version_bridge,
+            disable_per_document_cap=disable_per_document_cap,
+            min_per_project_quota=min_per_project_quota,
         )
         waves += 1
         for key, value in outcome.stats.get("stage_latencies_ms", {}).items():
@@ -2272,6 +2329,9 @@ async def _retrieve_search_unit_sections(
     deadline: float,
     as_of_ts: int | None = None,
     bypass_tree_routing: bool = False,
+    allow_intra_version_bridge: bool = False,
+    disable_per_document_cap: bool = False,
+    min_per_project_quota: int = 0,
 ) -> SearchOutcome:
     """Query only currently authorized versions with a verified Phase 2C manifest."""
     import unicodedata
@@ -2282,7 +2342,7 @@ async def _retrieve_search_unit_sections(
     requested_limit = min(top_k, settings.search_unit_candidate_limit) if top_k is not None else candidate_limit
     selection_limit = requested_limit if top_k is not None else None
     strategy_plan = query_strategy_plan or plan_query(query, requested_top_k=top_k)
-    per_doc_limit = strategy_plan.retrieval_plan.per_document_limit
+    per_doc_limit = None if disable_per_document_cap else strategy_plan.retrieval_plan.per_document_limit
     retrieval_stats = {
         "requested_top_k": requested_limit,
         "candidate_top_k": candidate_limit,
@@ -3109,7 +3169,13 @@ async def _retrieve_search_unit_sections(
                 limit=requested_limit,
                 index_holder=scope_k_index_holder,
             )
-            if not is_multi_hop_query and requested_limit > 1 and fused.sections and per_doc_limit != 1
+            if (
+                not allow_intra_version_bridge
+                and not is_multi_hop_query
+                and requested_limit > 1
+                and fused.sections
+                and per_doc_limit != 1
+            )
             else []
         )
         initial_pool = fused.sections + sibling_sections
@@ -3120,6 +3186,7 @@ async def _retrieve_search_unit_sections(
                 limit=selection_limit,
                 deadline=selection_deadline,
                 per_document_limit=per_doc_limit,
+                min_per_project_quota=min_per_project_quota,
             )
         except TimeoutError:
             selection_fallback_reason = "diversity_budget_exhausted"
@@ -3191,11 +3258,12 @@ async def _retrieve_search_unit_sections(
                 sources=sources,
                 existing_pool_scores=existing_pool_scores,
                 limit=min(settings.search_unit_candidate_limit, max(8, requested_limit * 2)),
-                lineage_only=not is_multi_hop_mode,
+                lineage_only=(not is_multi_hop_mode and not allow_intra_version_bridge),
                 query=query,
                 allow_contradiction_lineage=has_required_anchors,
                 preloaded_k_index=(scope_k_index_holder[0] if scope_k_index_holder else None),
                 as_of_ts=as_of_ts,
+                allow_intra_version_bridge=allow_intra_version_bridge,
             )
             t_graph_expansion_ms = round((time.perf_counter() - t_graph_start) * 1000, 2)
             graph_expanded_candidates = len(expanded_sections)
@@ -3244,6 +3312,7 @@ async def _retrieve_search_unit_sections(
                         limit=selection_limit,
                         deadline=selection_deadline,
                         per_document_limit=per_doc_limit,
+                        min_per_project_quota=min_per_project_quota,
                     )
                 except TimeoutError:
                     diversity_stats = {**diversity_stats, "reason": "diversity_budget_exhausted"}

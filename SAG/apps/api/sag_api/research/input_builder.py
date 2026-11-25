@@ -57,6 +57,11 @@ from sag_api.research.input_selector import (
     parse_fiscal_quarter_from_meta,
     parse_fiscal_year_from_meta,
 )
+from sag_api.research.vn_bilingual_cleaner import clean_bilingual_markdown
+from sag_api.research.vn_language_gate import (
+    classify_text_language,
+    resolve_english_pages_to_drop,
+)
 
 log = get_logger("research.input_builder")
 
@@ -1196,7 +1201,14 @@ def extract_pdf_outline_spans(
     if len(raw_toc) < 3 or n_pages == 0:
         return []
     canonical = normalize_doc_type(doc_type)
-    if canonical in ("BCTC", "NQ_DHDCD", "LATEST_QUARTER", "GIAI_TRINH"):
+    if canonical in (
+        "BCTC",
+        "NQ_DHDCD",
+        "TAI_LIEU_DHDCD",
+        "LATEST_QUARTER",
+        "GIAI_TRINH",
+        "TY_LE_AT_TC",
+    ):
         return []
 
     entries: list[tuple[int, str, int]] = []
@@ -1506,10 +1518,20 @@ def _map_spans_to_pdf_pages(
     return page_map
 
 
-def _extract_digital_page_text(page: fitz.Page, *, left_sidebar_x: float) -> str:
-    """Extract clean reading-order text from a digital PDF page, handling sidebars and A3 spreads."""
+def _extract_digital_page_text(
+    page: fitz.Page,
+    *,
+    left_sidebar_x: float,
+    two_col_crop: tuple[float, float] | None = None,
+) -> str:
+    """Extract clean reading-order text from a digital PDF page, handling 2-col VI/EN crops, sidebars & spreads."""
     rect = page.rect
     w, h = float(rect.width), float(rect.height)
+    if two_col_crop is not None:
+        keep_x0 = max(0.0, min(w, float(two_col_crop[0])))
+        keep_x1 = max(keep_x0 + 10.0, min(w, float(two_col_crop[1])))
+        txt = page.get_text("text", clip=fitz.Rect(keep_x0, 0.0, keep_x1, h)) or ""
+        return normalize_ctg_font_quirks(txt.strip())
     # Apply sidebar cutoff ONLY on matching widescreen pages (never chop a portrait page in hybrid PDFs!)
     effective_sidebar = left_sidebar_x if (w > h * 1.25 and 0.0 < left_sidebar_x < w * 0.30) else 0.0
     if w > h * 1.25 and effective_sidebar == 0.0:
@@ -1637,11 +1659,21 @@ async def build_research_sub_documents(
     )
 
     try:
-        unwrapped_bytes, _is_zip, _chosen_entry, _zip_entries = unwrap_pdf_payload(pdf_bytes)
+        unwrapped_bytes, _is_zip, _chosen_entry, _zip_entries = unwrap_pdf_payload(
+            pdf_bytes, doc_type=canonical_doc_type
+        )
     except ZipExtractionError as exc:
-        raise InputBuildError(f"ZIP extraction failed for {ticker}: {exc}") from exc
+        if "EXCLUDED_FULL_ENGLISH_DOCUMENT" in str(exc):
+            raise InputBuildError(
+                f"EXCLUDED_FULL_ENGLISH_DOCUMENT for {ticker} ({canonical_doc_type}): {exc}"
+            ) from exc
+        raise InputBuildError(f"Archive extraction failed for {ticker}: {exc}") from exc
 
     inspection = inspect_pdf_bytes(pdf_bytes, source_url=source_url, doc_type=canonical_doc_type)
+    if inspection.doc_class == "EXCLUDED_ENGLISH" or inspection.error == "EXCLUDED_FULL_ENGLISH_DOCUMENT":
+        raise InputBuildError(
+            f"EXCLUDED_FULL_ENGLISH_DOCUMENT for {ticker} ({canonical_doc_type})"
+        )
     if inspection.error:
         raise InputBuildError(f"PDF inspection failed for {ticker}: {inspection.error}")
 
@@ -1690,11 +1722,18 @@ async def build_research_sub_documents(
                     "silent MarkItDown fallback is forbidden."
                 )
 
-            if canonical_doc_type in ("BCTC", "NQ_DHDCD", "LATEST_QUARTER", "GIAI_TRINH"):
-                # 0%-drop OCR for scanned BCTC / AGM / Quarter filings
+            if canonical_doc_type in (
+                "BCTC",
+                "NQ_DHDCD",
+                "TAI_LIEU_DHDCD",
+                "LATEST_QUARTER",
+                "GIAI_TRINH",
+                "TY_LE_AT_TC",
+            ):
+                # 0%-drop OCR for scanned BCTC / AGM / Quarter filings with 2-page Canary English Gate
                 if canonical_doc_type == "BCTC":
                     ocr_cap = max_bctc_ocr_pages
-                elif canonical_doc_type == "NQ_DHDCD":
+                elif canonical_doc_type in ("NQ_DHDCD", "TAI_LIEU_DHDCD"):
                     ocr_cap = max(max_targeted_ocr_pages, 100)
                 else:
                     ocr_cap = max(max_targeted_ocr_pages, 60)
@@ -1709,16 +1748,44 @@ async def build_research_sub_documents(
                         n_pages,
                     )
                 all_targets = list(range(1, min(n_pages, ocr_cap) + 1))
-                try:
-                    full_ocr = await ocr_adapter.ocr_pdf_pages(
-                        _slice_pdf_pages(unwrapped_bytes, all_targets),
-                        all_targets,
-                        language="vi",
-                    )
-                except Exception as exc:
-                    raise InputBuildError(f"Full {canonical_doc_type} OCR failed for {ticker}: {exc}") from exc
-                ocr_pages_used += len(all_targets)
-                page_texts.update(full_ocr)
+                if len(all_targets) >= 4:
+                    canary_pages = all_targets[1:3] if len(all_targets) >= 3 else all_targets[:2]
+                    try:
+                        canary_ocr = await ocr_adapter.ocr_pdf_pages(
+                            _slice_pdf_pages(unwrapped_bytes, canary_pages),
+                            canary_pages,
+                            language="vi",
+                        )
+                    except Exception as exc:
+                        raise InputBuildError(
+                            f"Canary {canonical_doc_type} OCR failed for {ticker}: {exc}"
+                        ) from exc
+                    ocr_pages_used += len(canary_pages)
+                    page_texts.update(canary_ocr)
+                    canary_classes = {
+                        p: classify_text_language(canary_ocr.get(p, "")).lang_class
+                        for p in canary_pages
+                    }
+                    canary_verdict, _ = resolve_english_pages_to_drop(canary_classes, canary_ocr)
+                    if canary_verdict == "FULL_ENGLISH":
+                        raise InputBuildError(
+                            f"EXCLUDED_FULL_ENGLISH_SCAN for {ticker} ({canonical_doc_type}) "
+                            f"detected via {len(canary_pages)}-page canary"
+                        )
+                remaining_full = [p for p in all_targets if p not in page_texts]
+                if remaining_full:
+                    try:
+                        full_ocr = await ocr_adapter.ocr_pdf_pages(
+                            _slice_pdf_pages(unwrapped_bytes, remaining_full),
+                            remaining_full,
+                            language="vi",
+                        )
+                    except Exception as exc:
+                        raise InputBuildError(
+                            f"Full {canonical_doc_type} OCR failed for {ticker}: {exc}"
+                        ) from exc
+                    ocr_pages_used += len(remaining_full)
+                    page_texts.update(full_ocr)
                 localization_method = f"FULL_{canonical_doc_type}_OCR"
             else:
                 # 2-Pass TOC-First OCR for 100% scanned BCTNs (avoids OCRing 150 pages of ESG/photos)
@@ -1733,6 +1800,15 @@ async def build_research_sub_documents(
                     raise InputBuildError(f"Pass-1 TOC OCR failed for {ticker}: {exc}") from exc
                 ocr_pages_used += len(toc_pages)
                 page_texts.update(toc_ocr)
+                toc_classes = {
+                    p: classify_text_language(toc_ocr.get(p, "")).lang_class for p in toc_pages
+                }
+                toc_verdict, _ = resolve_english_pages_to_drop(toc_classes, toc_ocr)
+                if toc_verdict == "FULL_ENGLISH":
+                    raise InputBuildError(
+                        f"EXCLUDED_FULL_ENGLISH_SCAN for {ticker} ({canonical_doc_type}) "
+                        f"detected via Pass-1 TOC canary"
+                    )
 
                 # Calibrate printed->PDF offset from Pass-1 OCR + A3 spread ratio when digital calibration was IDENTITY
                 if calibration.mode == "IDENTITY":
@@ -1803,14 +1879,21 @@ async def build_research_sub_documents(
                     ocr_pages_used += len(remaining_targets)
                     page_texts.update(pass2_ocr)
         else:
-            # Digital / Hybrid / BadFont: extract clean digital pages at 0đ, route BAD_FONT / scanned BCTC to OCR
+            # Digital / Hybrid / BadFont: skip pre-detected English pages at 0đ, crop 2-col VI/EN pages,
+            # extract clean digital pages at 0đ, and route Vietnamese BAD_FONT / scanned BCTC to OCR.
+            pre_english_drop_set = set(inspection.english_page_numbers)
             ocr_needed: list[int] = []
             for pno in range(1, n_pages + 1):
+                if pno in pre_english_drop_set:
+                    build_res.excluded_pages[pno] = "ENGLISH_TRANSLATION_PAGE"
+                    continue
                 t_info = triage_by_page.get(pno)
                 if t_info and t_info.triage_class == "DIGITAL_CLEAN":
                     pg = doc[pno - 1]
                     page_texts[pno] = _extract_digital_page_text(
-                        pg, left_sidebar_x=inspection.auto_sidebar_x
+                        pg,
+                        left_sidebar_x=inspection.auto_sidebar_x,
+                        two_col_crop=inspection.bilingual_two_col_crops.get(pno),
                     )
                     large_h, bold_h = extract_page_heading_styles(
                         pg, left_sidebar_x=inspection.auto_sidebar_x
@@ -1820,14 +1903,23 @@ async def build_research_sub_documents(
                 else:
                     ocr_needed.append(pno)
 
-            trailing_scanned_bctc_pages = _detect_trailing_scan_block(
-                inspection.scan_page_numbers, n_pages
-            )
+            trailing_scanned_bctc_pages = [
+                p
+                for p in _detect_trailing_scan_block(inspection.scan_page_numbers, n_pages)
+                if p not in pre_english_drop_set
+            ]
 
             if ocr_needed:
                 bad_font_set = set(inspection.bad_font_page_numbers)
                 must_ocr_set: set[int] = {p for p in ocr_needed if p in bad_font_set}
-                if canonical_doc_type in ("BCTC", "NQ_DHDCD", "LATEST_QUARTER", "GIAI_TRINH"):
+                if canonical_doc_type in (
+                    "BCTC",
+                    "NQ_DHDCD",
+                    "TAI_LIEU_DHDCD",
+                    "LATEST_QUARTER",
+                    "GIAI_TRINH",
+                    "TY_LE_AT_TC",
+                ):
                     must_ocr_set.update(ocr_needed)
                 elif trailing_scanned_bctc_pages:
                     must_ocr_set.update(trailing_scanned_bctc_pages)
@@ -1837,9 +1929,9 @@ async def build_research_sub_documents(
 
                 if canonical_doc_type == "BCTC" or bool(trailing_scanned_bctc_pages):
                     ocr_cap = max_bctc_ocr_pages
-                elif canonical_doc_type == "NQ_DHDCD":
+                elif canonical_doc_type in ("NQ_DHDCD", "TAI_LIEU_DHDCD"):
                     ocr_cap = max(max_targeted_ocr_pages, 100)
-                elif canonical_doc_type in ("LATEST_QUARTER", "GIAI_TRINH"):
+                elif canonical_doc_type in ("LATEST_QUARTER", "GIAI_TRINH", "TY_LE_AT_TC"):
                     ocr_cap = max(max_targeted_ocr_pages, 60)
                 else:
                     ocr_cap = max_targeted_ocr_pages
@@ -1902,6 +1994,20 @@ async def build_research_sub_documents(
     finally:
         n_pages_total = len(doc)
         doc.close()
+
+    # Post-OCR per-page language check: catches scanned English translation pages (tail, alternating, or full-EN)
+    if page_texts:
+        post_page_classes = {
+            pno: classify_text_language(txt).lang_class for pno, txt in sorted(page_texts.items())
+        }
+        post_verdict, post_en_drop = resolve_english_pages_to_drop(post_page_classes, page_texts)
+        if post_verdict == "FULL_ENGLISH":
+            raise InputBuildError(
+                f"EXCLUDED_FULL_ENGLISH_SCAN for {ticker} ({canonical_doc_type})"
+            )
+        for pno in post_en_drop:
+            page_texts.pop(pno, None)
+            build_res.excluded_pages[pno] = "ENGLISH_TRANSLATION_PAGE"
 
     # Auto-strip repeating running headers/nav-tabs/footers across all extracted pages (zero-hardcode)
     # Preserving the FIRST occurrence of each major FS H1 (prevents stripping first THUYẾT MINH BCTC)
@@ -2004,18 +2110,25 @@ async def build_research_sub_documents(
             continue
 
         # ── Fast Path 2: AGM / Quarterly / Explanation filings ──
-        if canonical_doc_type in ("NQ_DHDCD", "LATEST_QUARTER", "GIAI_TRINH"):
+        if canonical_doc_type in (
+            "NQ_DHDCD",
+            "TAI_LIEU_DHDCD",
+            "LATEST_QUARTER",
+            "GIAI_TRINH",
+            "TY_LE_AT_TC",
+        ):
             bp_reason = classify_page_boilerplate(txt, doc_type=canonical_doc_type)
             if bp_reason is not None:
                 build_res.excluded_pages[pno] = bp_reason
                 continue
-            target_slot = "AGM_TARGETS" if canonical_doc_type == "NQ_DHDCD" else "QUARTER_NOTES"
+            is_agm_doc = canonical_doc_type in ("NQ_DHDCD", "TAI_LIEU_DHDCD")
+            target_slot = "AGM_TARGETS" if is_agm_doc else "QUARTER_NOTES"
             norm_txt, page_h = normalize_financial_markdown_headings(
                 txt,
                 bold_lines=page_bold_headings.get(pno),
                 large_title_lines=page_large_titles.get(pno),
-                is_bctc=(canonical_doc_type != "NQ_DHDCD"),
-                state=bctc_heading_state if canonical_doc_type != "NQ_DHDCD" else bctn_heading_state,
+                is_bctc=not is_agm_doc,
+                state=bctc_heading_state if not is_agm_doc else bctn_heading_state,
                 line_doc_freq=line_doc_freq,
             )
             all_normalized_headings.extend(page_h)
@@ -2131,7 +2244,10 @@ async def build_research_sub_documents(
                 ordered_chunks.append((pno, body))
         page_nums = [p for p, _ in ordered_chunks]
         md_parts = [f"<!-- PAGE {p} -->\n{body}" for p, body in ordered_chunks]
-        md_content = "\n\n".join(md_parts)
+        raw_md_content = "\n\n".join(md_parts)
+        md_content, _clean_stats = clean_bilingual_markdown(raw_md_content)
+        if not md_content.strip():
+            continue
         build_res.sub_documents.append(
             SubDocumentBundle(
                 project_id=ticker.upper(),
@@ -2196,7 +2312,10 @@ async def build_research_sub_documents(
             seen_h.add(hk)
             dedup_headings.append(h)
 
-    build_res.pr_narrative_markdown = "\n\n".join(pr_chunks)
+    raw_pr_md = "\n\n".join(pr_chunks)
+    build_res.pr_narrative_markdown = (
+        clean_bilingual_markdown(raw_pr_md)[0] if raw_pr_md else ""
+    )
     build_res.ocr_pages_used = ocr_pages_used
     build_res.localization_method = localization_method
     build_res.page_calibration = calibration
