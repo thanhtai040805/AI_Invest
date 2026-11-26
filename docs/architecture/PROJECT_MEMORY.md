@@ -707,6 +707,18 @@ AIInvest is an autonomous quantitative investment and stock-research organizatio
   - Raised long-filing OCR page caps & enabled universal 120-page / 150 MB batch-stitching (`input_builder.py`, `ocr_adapter.py`): `BCTC`/`LATEST_QUARTER`/`GIAI_TRINH`/`TY_LE_AT_TC` cap raised `120 -> 320` pages, `NQ_DHDCD`/`TAI_LIEU_DHDCD` cap raised `160 -> 300` pages, `BCTN` cap `95 -> 200` pages, and `MinerUOcrAdapter.ocr_pdf_pages` now slices and stitches any `>120`-page OR `>150 MB` high-DPI PDF (avoiding MinerU's 200 MB file cap on scans like `BID`) back to exact original page numbers regardless of token-pool size.
   - Eliminated `--r2-only` event-loop `pdfplumber` freeze (`batch_ingest.py`, `scripts/run_research_ingest.py`): skipped unused `extract_tables_from_document` during `r2_only=True` runs, offloaded Phase B `extract_tables_from_document` via `asyncio.to_thread`, and enabled structured `INFO` progress logging in `run_research_ingest.py`.
 
+## 2026-11-26 — Phase A Full-Universe Resilience Hardening & R2 Progress (`65/120` Tickers Landed)
+
+- **PDF Inspection & Slicing Resilience Fixes (`input_inspector.py`, `input_builder.py`, `ocr_adapter.py`, `table_engine.py`)**:
+  - Replaced $O(N^2)$ `page.get_images()` + `page.get_image_rects(xref)` (which triggers per-image `Pixmap` decompression + `fz_md5_pixmap2` inside PyMuPDF) with display-list `page.get_image_info(hashes=False, xrefs=False)` and lazy evaluation only on borderline `80 <= eff_chars < 250` pages — cutting `BSI` inspection time from `>20 min` CPU freeze/crash down to `0.06s`.
+  - Replaced `_slice_pdf_pages` / `MinerUOcrAdapter` per-page `insert_pdf` loops (which duplicated shared XObjects `264x`, exploding a `13.69 MB` `BSI` filing into `3.76 GB` and segfaulting MuPDF `0xC0000005`) with an identity fast-path plus `Document.select()` + `tobytes(garbage=3, deflate=True)` (`13.67 MB` in `0.08s`), while keeping PyMuPDF strictly single-threaded on the main thread and offloading pure-Python `pdfplumber` table enrichment via `asyncio.to_thread`.
+  - Added self-healing adaptive slice halving (`_ocr_slice_with_adaptive_split`, default `max_slice_bytes = 60 MB`) in `ocr_adapter.py`: when MinerU Official returns `解析结果超过允许大小` (parsed result ZIP exceeds limit, observed on high-DPI `BID` `kd:517315`), the adapter recursively halves, OCRs, and stitches exact original pages (`BID` verified `0` errors).
+  - Hardened `table_engine.py` & `input_inspector.py`: skipped $O(E^2)$ `pdfplumber` lattice on `>4,000`-edge vector-art infographic pages (falling directly to coordinate reconstructor), clamped `split_virtual_pages` bboxes to parent `page.bbox`, guarded `is_num_tok` with `t.isascii() and t.isdigit()` for Unicode circled digits (`❶`), and raised `DEFAULT_MAX_ZIP_BYTES` from `150 MB -> 300 MB` for large HOSE `.rar`/`.zip` BCTN archives (e.g. `CII` `193 MB`).
+- **Live Phase A (`vn-clean-v3`) R2 Status & External Quota Boundary**:
+  - `65/120` target universe tickers landed cleanly on Cloudflare R2 (`384` manifests incl. `3` valid `EXCLUDED_ENGLISH` tombstones, `0` empty/corrupt manifests, `0` truncated pages, `64/65` with `BCTC_AUDITED`, `~5,200+` fresh VLM OCR pages completed today across `pilot_8`, `a5_36`, `ACB..DXG`).
+  - Paused cleanly at `12:45 GMT+7` after empirical verification that both configured MinerU Official API tokens exhausted their daily `2,000`-page/key high-priority quota (all post-12:12 batches across `key#1` and `key#2` demoted to `state=pending` for `>32–85 min`); exact resume list (`55` untouched `DXS..VTP` + `12` partial retry tickers) saved in session scratch for immediate resumption after daily reset (`23:00 GMT+7` / `00:00 CST`) or additional API tokens.
+
+
 
 
 

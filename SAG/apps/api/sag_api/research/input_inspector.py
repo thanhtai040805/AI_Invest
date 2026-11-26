@@ -208,7 +208,7 @@ _FINANCIAL_SHIELD_INSPECT_RE = re.compile(
 )
 _ZIP_PART_RE = re.compile(r"^(?P<stem>.+?)[_\-. ]+(?:p|part)(?P<part>\d{1,2})\.pdf$", re.IGNORECASE)
 
-DEFAULT_MAX_ZIP_BYTES = 150 * 1024 * 1024  # 150 MB uncompressed cap
+DEFAULT_MAX_ZIP_BYTES = 300 * 1024 * 1024  # 300 MB uncompressed cap (covers thick HOSE BCTN .zip/.rar archives)
 DEFAULT_MAX_ZIP_ENTRIES = 64
 BAD_FONT_THRESHOLD = 0.72
 NOTICE_ONLY_MAX_PAGES = 14

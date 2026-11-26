@@ -511,7 +511,7 @@ def extract_numeric_table_from_region(
         t = txt.strip()
         if t in {"-", "–", "—"}:
             return True
-        if len(t) <= 4 and t.isdigit() and int(t) in range(1990, 2035):
+        if len(t) <= 4 and t.isascii() and t.isdigit() and int(t) in range(1990, 2035):
             return False
         return (
             bool(_NUM_TOKEN_RE.match(t))

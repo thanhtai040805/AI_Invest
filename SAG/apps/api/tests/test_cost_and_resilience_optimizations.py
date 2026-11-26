@@ -652,6 +652,32 @@ async def test_mineru_adapter_adaptively_halves_slice_on_result_size_limit() -> 
     assert stitched == {p: f"OK_p{p}" for p in range(1, 9)}
 
 
+def test_numeric_table_reconstructor_handles_unicode_circled_digits() -> None:
+    from sag_api.research.table_engine import extract_numeric_table_from_region
+
+    class _CircledDigitPage:
+        width = 600.0
+        height = 800.0
+        bbox = (0.0, 0.0, 600.0, 800.0)
+
+        def extract_words(self, **_kwargs):
+            return [
+                {"text": "❶", "x0": 40.0, "x1": 50.0, "top": 100.0, "bottom": 110.0},
+                {"text": "Doanh", "x0": 60.0, "x1": 100.0, "top": 100.0, "bottom": 110.0},
+                {"text": "thu", "x0": 105.0, "x1": 125.0, "top": 100.0, "bottom": 110.0},
+                {"text": "120.000", "x0": 350.0, "x1": 410.0, "top": 100.0, "bottom": 110.0},
+                {"text": "100.000", "x0": 450.0, "x1": 510.0, "top": 100.0, "bottom": 110.0},
+                {"text": "Tổng", "x0": 60.0, "x1": 95.0, "top": 120.0, "bottom": 130.0},
+                {"text": "cộng", "x0": 100.0, "x1": 130.0, "top": 120.0, "bottom": 130.0},
+                {"text": "120.000", "x0": 350.0, "x1": 410.0, "top": 120.0, "bottom": 130.0},
+                {"text": "100.000", "x0": 450.0, "x1": 510.0, "top": 120.0, "bottom": 130.0},
+            ]
+
+    tbl = extract_numeric_table_from_region(_CircledDigitPage())
+    assert len(tbl["rows"]) == 2
+
+
+
 
 
 
