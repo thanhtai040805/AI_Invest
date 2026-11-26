@@ -77,6 +77,20 @@
   },
   {
    "symbol": "ACB",
+   "period_end": "2024-03-31",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 19256.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 6.83,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 1.48,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 4170.0
+   }
+  },
+  {
+   "symbol": "ACB",
    "period_end": "2024-06-30",
    "statement_type": "BS",
    "frequency": "quarterly",
@@ -144,6 +158,20 @@
   },
   {
    "symbol": "ACB",
+   "period_end": "2024-06-30",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 16745.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 5.68,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 1.42,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 4186.0
+   }
+  },
+  {
+   "symbol": "ACB",
    "period_end": "2024-09-30",
    "statement_type": "BS",
    "frequency": "quarterly",
@@ -207,6 +235,20 @@
     "iii_lãi_lỗ_thuần_từ_hoạt_động_kinh_doanh_ngoại_hối_và_vàng": 166635000000.0,
     "xv_lợi_nhuận_sau_thuế_của_cổ_đông_của_ngân_hàng_mẹ_xiii_xiv": 3870395000000.0,
     "ix_lợi_nhuận_thuần_từ_hoạt_động_kinh_doanh_trước_chi_phí_dự_phòng_rủi_ro_tín_dụng_i_ii_iii_iv_v_vi_vii_viii": 5202287000000.0
+   }
+  },
+  {
+   "symbol": "ACB",
+   "period_end": "2024-09-30",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 17654.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 6.45,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 1.46,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 3992.0
    }
   },
   {
@@ -344,6 +386,34 @@
   },
   {
    "symbol": "ACB",
+   "period_end": "2024-12-31",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 18685.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 6.49,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 1.38,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 3975.0
+   }
+  },
+  {
+   "symbol": "ACB",
+   "period_end": "2024-12-31",
+   "statement_type": "ratios",
+   "frequency": "yearly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 18685.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 6.49,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 1.38,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 3975.0
+   }
+  },
+  {
+   "symbol": "ACB",
    "period_end": "2025-03-31",
    "statement_type": "BS",
    "frequency": "quarterly",
@@ -407,6 +477,20 @@
     "iii_lãi_lỗ_thuần_từ_hoạt_động_kinh_doanh_ngoại_hối_và_vàng": 475590000000.0,
     "xv_lợi_nhuận_sau_thuế_của_cổ_đông_của_ngân_hàng_mẹ_xiii_xiv": 3678266000000.0,
     "ix_lợi_nhuận_thuần_từ_hoạt_động_kinh_doanh_trước_chi_phí_dự_phòng_rủi_ro_tín_dụng_i_ii_iii_iv_v_vi_vii_viii": 5222736000000.0
+   }
+  },
+  {
+   "symbol": "ACB",
+   "period_end": "2025-03-31",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 19494.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 6.85,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 1.33,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 3798.0
    }
   },
   {
@@ -478,6 +562,20 @@
   },
   {
    "symbol": "ACB",
+   "period_end": "2025-06-30",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 16978.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 5.63,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 1.25,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 3782.0
+   }
+  },
+  {
+   "symbol": "ACB",
    "period_end": "2025-09-30",
    "statement_type": "BS",
    "frequency": "quarterly",
@@ -541,6 +639,20 @@
     "iii_lãi_lỗ_thuần_từ_hoạt_động_kinh_doanh_ngoại_hối_và_vàng": 449150000000.0,
     "xv_lợi_nhuận_sau_thuế_của_cổ_đông_của_ngân_hàng_mẹ_xiii_xiv": 4280589000000.0,
     "ix_lợi_nhuận_thuần_từ_hoạt_động_kinh_doanh_trước_chi_phí_dự_phòng_rủi_ro_tín_dụng_i_ii_iii_iv_v_vi_vii_viii": 5670732000000.0
+   }
+  },
+  {
+   "symbol": "ACB",
+   "period_end": "2025-09-30",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 17797.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 6.84,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 1.43,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 3730.0
    }
   },
   {
@@ -678,6 +790,34 @@
   },
   {
    "symbol": "ACB",
+   "period_end": "2025-12-31",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 18401.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 7.43,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 1.3,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 3230.0
+   }
+  },
+  {
+   "symbol": "ACB",
+   "period_end": "2025-12-31",
+   "statement_type": "ratios",
+   "frequency": "yearly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 18401.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 7.43,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 1.3,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 3230.0
+   }
+  },
+  {
+   "symbol": "ACB",
    "period_end": "2026-03-31",
    "statement_type": "BS",
    "frequency": "quarterly",
@@ -745,6 +885,20 @@
   },
   {
    "symbol": "ACB",
+   "period_end": "2026-03-31",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 19225.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 7.23,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 1.22,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 3258.0
+   }
+  },
+  {
+   "symbol": "ACB",
    "period_end": "2026-06-30",
    "statement_type": "BS",
    "frequency": "quarterly",
@@ -804,6 +958,20 @@
     "iii_lãi_lỗ_thuần_từ_hoạt_động_kinh_doanh_ngoại_hối_và_vàng": 293011000000.0,
     "xv_lợi_nhuận_sau_thuế_của_cổ_đông_của_ngân_hàng_mẹ_xiii_xiv": 4292478000000.0,
     "ix_lợi_nhuận_thuần_từ_hoạt_động_kinh_doanh_trước_chi_phí_dự_phòng_rủi_ro_tín_dụng_i_ii_iii_iv_v_vi_vii_viii": 6427073000000.0
+   }
+  },
+  {
+   "symbol": "ACB",
+   "period_end": "2026-06-30",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 17110.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 7.42,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 1.32,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 3051.0
    }
   },
   {
@@ -875,6 +1043,30 @@
    }
   },
   {
+   "symbol": "ACB",
+   "period_end": "2026-09-30",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-11-06",
+   "data": {
+    "rt_prt_roa": 0.015225,
+    "rt_prt_roe": 0.162344,
+    "rt_bank_cir": -0.311667,
+    "rt_bank_cof": -0.048587,
+    "rt_bank_ldr": 1.283937,
+    "rt_bank_nim": 0.029215,
+    "rt_bank_npl": 0.011878,
+    "rt_value_pb": 1.171899,
+    "rt_value_pe": 7.572684,
+    "rt_bank_casa": 0.199365,
+    "rt_value_ev_ebitda": 0.0,
+    "rt_value_market_cap": 121892861097000.0,
+    "rt_bank_npl_coverage": -0.909424,
+    "rt_value_outstanding_shares": 5804421957.0
+   }
+  },
+  {
    "symbol": "BVH",
    "period_end": "2024-03-31",
    "statement_type": "BS",
@@ -882,6 +1074,7 @@
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 2236514649552.0,
     "iv_hàng_tồn_kho": 116049479077.0,
     "i_nợ_ngắn_hạn": 38507301239103.0,
     "1_vay_và_nợ_ngắn_hạn": 4092163608271.0,
@@ -891,9 +1084,11 @@
     "b_vốn_chủ_sở_hữu_400_410_430": 22875923294398.0,
     "i_các_khoản_phải_thu_dài_hạn": 83842495252.0,
     "tổng_cộng_tài_sản_270_100_200": 234271578179470.0,
+    "2_các_khoản_tương_đương_tiền": 5291000000007.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 99077973070151.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 12103123934093.0,
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 8001470918155.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 7527514649559.0,
     "a_tài_sản_ngắn_hạn_100_110_120_130_140_150_190": 122492416687523.0
    }
   },
@@ -941,12 +1136,28 @@
   },
   {
    "symbol": "BVH",
+   "period_end": "2024-03-31",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 30817.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 17.79,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 4.28,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 2403.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 36.72
+   }
+  },
+  {
+   "symbol": "BVH",
    "period_end": "2024-06-30",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 1381832038616.0,
     "iv_hàng_tồn_kho": 93784040005.0,
     "i_nợ_ngắn_hạn": 34250339449696.0,
     "1_vay_và_nợ_ngắn_hạn": 3613269653833.0,
@@ -956,9 +1167,11 @@
     "b_vốn_chủ_sở_hữu_400_410_430": 23232457088883.0,
     "i_các_khoản_phải_thu_dài_hạn": 84507987252.0,
     "tổng_cộng_tài_sản_270_100_200": 234843807594311.0,
+    "2_các_khoản_tương_đương_tiền": 4935186414600.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 94195862031772.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 12288668874525.0,
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 8046977986347.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 6317018453216.0,
     "a_tài_sản_ngắn_hạn_100_110_120_130_140_150_190": 116496092177355.0
    }
   },
@@ -1006,12 +1219,28 @@
   },
   {
    "symbol": "BVH",
+   "period_end": "2024-06-30",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 31297.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 18.92,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 4.6,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 2431.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 49.29
+   }
+  },
+  {
+   "symbol": "BVH",
    "period_end": "2024-09-30",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 1279005463163.0,
     "iv_hàng_tồn_kho": 91812648790.0,
     "i_nợ_ngắn_hạn": 31915298374214.0,
     "1_vay_và_nợ_ngắn_hạn": 1883731996195.0,
@@ -1021,9 +1250,11 @@
     "b_vốn_chủ_sở_hữu_400_410_430": 23752814310919.0,
     "i_các_khoản_phải_thu_dài_hạn": 83849597252.0,
     "tổng_cộng_tài_sản_270_100_200": 238219105571404.0,
+    "2_các_khoản_tương_đương_tiền": 1213000000000.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 93251213285305.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 10893393829879.0,
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 7398400325430.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 2492005463163.0,
     "a_tài_sản_ngắn_hạn_100_110_120_130_140_150_190": 111208083908090.0
    }
   },
@@ -1071,12 +1302,28 @@
   },
   {
    "symbol": "BVH",
+   "period_end": "2024-09-30",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 31998.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 16.67,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 4.29,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 2570.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 39.33
+   }
+  },
+  {
+   "symbol": "BVH",
    "period_end": "2024-12-31",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 1270577126381.0,
     "iv_hàng_tồn_kho": 100390396111.0,
     "i_nợ_ngắn_hạn": 40840447004198.0,
     "1_vay_và_nợ_ngắn_hạn": 2910226356811.0,
@@ -1086,9 +1333,11 @@
     "b_vốn_chủ_sở_hữu_400_410_430": 23506572713003.0,
     "i_các_khoản_phải_thu_dài_hạn": 66916382934.0,
     "tổng_cộng_tài_sản_270_100_200": 251217777466436.0,
+    "2_các_khoản_tương_đương_tiền": 190000000000.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 103898742891896.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 11505210713516.0,
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 7873066310246.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 1460577126381.0,
     "a_tài_sản_ngắn_hạn_100_110_120_130_140_150_190": 121164969626422.0
    }
   },
@@ -1100,6 +1349,7 @@
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 1274088127113.0,
     "iv_hàng_tồn_kho": 100479759917.0,
     "i_nợ_ngắn_hạn": 40840468409215.0,
     "1_vay_và_nợ_ngắn_hạn": 2910226356811.0,
@@ -1109,9 +1359,11 @@
     "b_vốn_chủ_sở_hữu_400_410_430": 23565887059923.0,
     "i_các_khoản_phải_thu_dài_hạn": 66916382934.0,
     "tổng_cộng_tài_sản_270_100_200": 251286326838124.0,
+    "2_các_khoản_tương_đương_tiền": 190000000000.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 103898039030526.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 11535416562019.0,
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 7892192217650.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 1464088127113.0,
     "a_tài_sản_ngắn_hạn_100_110_120_130_140_150_190": 121226741291519.0
    }
   },
@@ -1201,12 +1453,43 @@
   },
   {
    "symbol": "BVH",
+   "period_end": "2024-12-31",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 31666.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 18.05,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 5.07,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 2809.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 0.0
+   }
+  },
+  {
+   "symbol": "BVH",
+   "period_end": "2024-12-31",
+   "statement_type": "ratios",
+   "frequency": "yearly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 31746.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 17.83,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 1.6,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 2843.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 0.0
+   }
+  },
+  {
+   "symbol": "BVH",
    "period_end": "2025-03-31",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 790275634815.0,
     "iv_hàng_tồn_kho": 91128256186.0,
     "i_nợ_ngắn_hạn": 40628869933607.0,
     "1_vay_và_nợ_ngắn_hạn": 3235875617979.0,
@@ -1216,9 +1499,11 @@
     "b_vốn_chủ_sở_hữu_400_410_430": 24272717744815.0,
     "i_các_khoản_phải_thu_dài_hạn": 71241441885.0,
     "tổng_cộng_tài_sản_270_100_200": 255817480254186.0,
+    "2_các_khoản_tương_đương_tiền": 147000000000.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 114195348419111.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 11789496942455.0,
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 8010576719475.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 937275634815.0,
     "a_tài_sản_ngắn_hạn_100_110_120_130_140_150_190": 131017297525221.0
    }
   },
@@ -1266,12 +1551,28 @@
   },
   {
    "symbol": "BVH",
+   "period_end": "2025-03-31",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 32671.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 18.22,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 5.33,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 2925.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 0.0
+   }
+  },
+  {
+   "symbol": "BVH",
    "period_end": "2025-06-30",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 1462148632913.0,
     "iv_hàng_tồn_kho": 82547492517.0,
     "i_nợ_ngắn_hạn": 44856941974062.0,
     "1_vay_và_nợ_ngắn_hạn": 3493685053133.0,
@@ -1281,9 +1582,11 @@
     "b_vốn_chủ_sở_hữu_400_410_430": 24802424789554.0,
     "i_các_khoản_phải_thu_dài_hạn": 72308528061.0,
     "tổng_cộng_tài_sản_270_100_200": 264123906337967.0,
+    "2_các_khoản_tương_đương_tiền": 535000000000.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 116614966466355.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 13817781867459.0,
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 10079502452567.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 1997148632913.0,
     "a_tài_sản_ngắn_hạn_100_110_120_130_140_150_190": 136446959409632.0
    }
   },
@@ -1331,12 +1634,28 @@
   },
   {
    "symbol": "BVH",
+   "period_end": "2025-06-30",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 33412.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 16.28,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 5.31,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 3262.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 39.37
+   }
+  },
+  {
+   "symbol": "BVH",
    "period_end": "2025-09-30",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 1135915473566.0,
     "iv_hàng_tồn_kho": 85668120701.0,
     "i_nợ_ngắn_hạn": 49498254221488.0,
     "1_vay_và_nợ_ngắn_hạn": 4320774314069.0,
@@ -1346,9 +1665,11 @@
     "b_vốn_chủ_sở_hữu_400_410_430": 25557825433774.0,
     "i_các_khoản_phải_thu_dài_hạn": 73881301610.0,
     "tổng_cộng_tài_sản_270_100_200": 272801452710890.0,
+    "2_các_khoản_tương_đương_tiền": 4165738000000.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 115599086079007.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 13954005000442.0,
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 8584205519138.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 5301653473566.0,
     "a_tài_sản_ngắn_hạn_100_110_120_130_140_150_190": 138892818720126.0
    }
   },
@@ -1396,12 +1717,28 @@
   },
   {
    "symbol": "BVH",
+   "period_end": "2025-09-30",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 34430.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 15.46,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 5.53,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 3578.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 34.76
+   }
+  },
+  {
+   "symbol": "BVH",
    "period_end": "2025-12-31",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 1302367254522.0,
     "iv_hàng_tồn_kho": 68126137013.0,
     "i_nợ_ngắn_hạn": 64837532920115.0,
     "1_vay_và_nợ_ngắn_hạn": null,
@@ -1411,9 +1748,11 @@
     "b_vốn_chủ_sở_hữu_400_410_430": 25610051198380.0,
     "i_các_khoản_phải_thu_dài_hạn": 75345866505.0,
     "tổng_cộng_tài_sản_270_100_200": 291911212251853.0,
+    "2_các_khoản_tương_đương_tiền": 2892250695172.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 127381983414002.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 14365534080380.0,
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 9650576726332.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 4194617949694.0,
     "a_tài_sản_ngắn_hạn_100_110_120_130_140_150_190": 150465591457211.0
    }
   },
@@ -1425,6 +1764,7 @@
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 1302431953192.0,
     "iv_hàng_tồn_kho": 68010867539.0,
     "i_nợ_ngắn_hạn": 64332654684300.0,
     "1_vay_và_nợ_ngắn_hạn": 4072040955884.0,
@@ -1434,9 +1774,11 @@
     "b_vốn_chủ_sở_hữu_400_410_430": 25480341454325.0,
     "i_các_khoản_phải_thu_dài_hạn": 75345866505.0,
     "tổng_cộng_tài_sản_270_100_200": 291805652090226.0,
+    "2_các_khoản_tương_đương_tiền": 2892250695172.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 127381983413999.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 14292369235960.0,
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 9601934425230.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 4194682648364.0,
     "a_tài_sản_ngắn_hạn_100_110_120_130_140_150_190": 150363051574128.0
    }
   },
@@ -1526,12 +1868,43 @@
   },
   {
    "symbol": "BVH",
+   "period_end": "2025-12-31",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 34500.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 14.16,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 5.68,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 4012.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 0.0
+   }
+  },
+  {
+   "symbol": "BVH",
+   "period_end": "2025-12-31",
+   "statement_type": "ratios",
+   "frequency": "yearly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 34325.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 14.86,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 1.65,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 3821.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 11.37
+   }
+  },
+  {
+   "symbol": "BVH",
    "period_end": "2026-03-31",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 1289540861892.0,
     "iv_hàng_tồn_kho": 84114822132.0,
     "i_nợ_ngắn_hạn": 75433062623851.0,
     "1_vay_và_nợ_ngắn_hạn": 4052894827595.0,
@@ -1541,9 +1914,11 @@
     "b_vốn_chủ_sở_hữu_400_410_430": 26295969143662.0,
     "i_các_khoản_phải_thu_dài_hạn": 81958425127.0,
     "tổng_cộng_tài_sản_270_100_200": 307487711605229.0,
+    "2_các_khoản_tương_đương_tiền": 1319247110873.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 138675062617123.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 7477047099487.0,
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 2408464553625.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 2608787972765.0,
     "a_tài_sản_ngắn_hạn_100_110_120_130_140_150_190": 153490283847049.0
    }
   },
@@ -1591,12 +1966,28 @@
   },
   {
    "symbol": "BVH",
+   "period_end": "2026-03-31",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 35424.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 19.72,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 8.25,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 4184.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 59.88
+   }
+  },
+  {
+   "symbol": "BVH",
    "period_end": "2026-06-30",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 856441137539.0,
     "iv_hàng_tồn_kho": 117528820750.0,
     "i_nợ_ngắn_hạn": 80339458098516.0,
     "1_vay_và_nợ_ngắn_hạn": 3599959728468.0,
@@ -1606,9 +1997,11 @@
     "b_vốn_chủ_sở_hữu_400_410_430": 27324386689121.0,
     "i_các_khoản_phải_thu_dài_hạn": 77355689516.0,
     "tổng_cộng_tài_sản_270_100_200": 315683216961827.0,
+    "2_các_khoản_tương_đương_tiền": 2996727304610.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 124243039827612.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 7733355597106.0,
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 2984708359625.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 3853168442149.0,
     "a_tài_sản_ngắn_hạn_100_110_120_130_140_150_190": 140416883673666.0
    }
   },
@@ -1650,16 +2043,33 @@
   },
   {
    "symbol": "BVH",
+   "period_end": "2026-06-30",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 36809.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 13.86,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 6.46,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 4662.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 32.69
+   }
+  },
+  {
+   "symbol": "BVH",
    "period_end": "2026-09-30",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-11-06",
    "data": {
+    "bs_cash": 1118853565720.0,
     "bs_equity": 27313151938828.0,
     "bs_inventories": 119858010771.0,
     "bs_total_assets": 305991238026465.0,
     "bs_charter_capital": 7423227640000.0,
+    "bs_cash_equivalents": 2844135614970.0,
     "bs_minority_interest": 1065924034386.0,
     "bs_short_term_assets": 127385683343380.0,
     "bs_total_liabilities": 278678086087637.0,
@@ -1730,6 +2140,7 @@
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 1661537697277.0,
     "iv_hàng_tồn_kho": 9511111544269.0,
     "c_nợ_phải_trả": null,
     "i_nợ_ngắn_hạn": 2485164254441.0,
@@ -1738,6 +2149,7 @@
     "a_tài_sản_ngắn_hạn": 11535215072835.0,
     "1_vốn_góp_của_chủ_sở_hữu": 3347291800000.0,
     "i_các_khoản_phải_thu_dài_hạn": 104808131565.0,
+    "2_các_khoản_tương_đương_tiền": null,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 100170000000.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 178219136989.0,
     "2_chi_phí_xây_dựng_cơ_bản_dở_dang": 29007887250.0,
@@ -1745,7 +2157,8 @@
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 93419502629.0,
     "13_lợi_ích_cổ_đông_không_kiểm_soát": null,
     "11_vay_và_nợ_thuê_tài_chính_ngắn_hạn": null,
-    "2_người_mua_trả_tiền_trước_ngắn_hạn": 367133143830.0
+    "2_người_mua_trả_tiền_trước_ngắn_hạn": 367133143830.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 1661537697277.0
    }
   },
   {
@@ -1793,12 +2206,28 @@
   },
   {
    "symbol": "PNJ",
+   "period_end": "2024-03-31",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 31308.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 16.61,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 3.16,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 5953.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 0.0
+   }
+  },
+  {
+   "symbol": "PNJ",
    "period_end": "2024-06-30",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 1544061575711.0,
     "iv_hàng_tồn_kho": 9713005981593.0,
     "c_nợ_phải_trả": null,
     "i_nợ_ngắn_hạn": 2239304721862.0,
@@ -1807,6 +2236,7 @@
     "a_tài_sản_ngắn_hạn": 11534098923868.0,
     "1_vốn_góp_của_chủ_sở_hữu": 3347291800000.0,
     "i_các_khoản_phải_thu_dài_hạn": 109252196104.0,
+    "2_các_khoản_tương_đương_tiền": null,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 170000000.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 195854790073.0,
     "2_chi_phí_xây_dựng_cơ_bản_dở_dang": 29007887250.0,
@@ -1814,7 +2244,8 @@
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 87316082483.0,
     "13_lợi_ích_cổ_đông_không_kiểm_soát": null,
     "11_vay_và_nợ_thuê_tài_chính_ngắn_hạn": null,
-    "2_người_mua_trả_tiền_trước_ngắn_hạn": 194693693028.0
+    "2_người_mua_trả_tiền_trước_ngắn_hạn": 194693693028.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 1544061575711.0
    }
   },
   {
@@ -1862,12 +2293,28 @@
   },
   {
    "symbol": "PNJ",
+   "period_end": "2024-06-30",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 32028.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 15.4,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 2.98,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 6199.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 0.0
+   }
+  },
+  {
+   "symbol": "PNJ",
    "period_end": "2024-09-30",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 996669666014.0,
     "iv_hàng_tồn_kho": 10801601688892.0,
     "c_nợ_phải_trả": null,
     "i_nợ_ngắn_hạn": 4428672526724.0,
@@ -1876,6 +2323,7 @@
     "a_tài_sản_ngắn_hạn": 13535308084055.0,
     "1_vốn_góp_của_chủ_sở_hữu": 3380747760000.0,
     "i_các_khoản_phải_thu_dài_hạn": 113559945788.0,
+    "2_các_khoản_tương_đương_tiền": 400000000000.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 950170000000.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 278283783093.0,
     "2_chi_phí_xây_dựng_cơ_bản_dở_dang": 37050822693.0,
@@ -1883,7 +2331,8 @@
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 124556827222.0,
     "13_lợi_ích_cổ_đông_không_kiểm_soát": null,
     "11_vay_và_nợ_thuê_tài_chính_ngắn_hạn": null,
-    "2_người_mua_trả_tiền_trước_ngắn_hạn": 170384977642.0
+    "2_người_mua_trả_tiền_trước_ngắn_hạn": 170384977642.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 1396669666014.0
    }
   },
   {
@@ -1931,12 +2380,28 @@
   },
   {
    "symbol": "PNJ",
+   "period_end": "2024-09-30",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 31146.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 16.32,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 3.17,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 6055.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 0.0
+   }
+  },
+  {
+   "symbol": "PNJ",
    "period_end": "2024-12-31",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 1022713940654.0,
     "iv_hàng_tồn_kho": 13013454598565.0,
     "c_nợ_phải_trả": null,
     "i_nợ_ngắn_hạn": 5939816075966.0,
@@ -1945,6 +2410,7 @@
     "a_tài_sản_ngắn_hạn": 15690882937410.0,
     "1_vốn_góp_của_chủ_sở_hữu": 3380747760000.0,
     "i_các_khoản_phải_thu_dài_hạn": 115599492454.0,
+    "2_các_khoản_tương_đương_tiền": 100000000000.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 1020170000000.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 401134922152.0,
     "2_chi_phí_xây_dựng_cơ_bản_dở_dang": 64702641159.0,
@@ -1952,7 +2418,8 @@
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 70851635761.0,
     "13_lợi_ích_cổ_đông_không_kiểm_soát": null,
     "11_vay_và_nợ_thuê_tài_chính_ngắn_hạn": null,
-    "2_người_mua_trả_tiền_trước_ngắn_hạn": 188182044409.0
+    "2_người_mua_trả_tiền_trước_ngắn_hạn": 188182044409.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 1122713940654.0
    }
   },
   {
@@ -1963,6 +2430,7 @@
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 1022712392130.0,
     "iv_hàng_tồn_kho": 13015170477311.0,
     "c_nợ_phải_trả": null,
     "i_nợ_ngắn_hạn": 5941881733413.0,
@@ -1971,6 +2439,7 @@
     "a_tài_sản_ngắn_hạn": 15692597267632.0,
     "1_vốn_góp_của_chủ_sở_hữu": 3380747760000.0,
     "i_các_khoản_phải_thu_dài_hạn": 115599492454.0,
+    "2_các_khoản_tương_đương_tiền": 100000000000.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 1020170000000.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 401134922152.0,
     "2_chi_phí_xây_dựng_cơ_bản_dở_dang": 64702641159.0,
@@ -1978,7 +2447,8 @@
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 70851635761.0,
     "13_lợi_ích_cổ_đông_không_kiểm_soát": null,
     "11_vay_và_nợ_thuê_tài_chính_ngắn_hạn": null,
-    "2_người_mua_trả_tiền_trước_ngắn_hạn": 188182044409.0
+    "2_người_mua_trả_tiền_trước_ngắn_hạn": 188182044409.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 1122712392130.0
    }
   },
   {
@@ -2069,12 +2539,43 @@
   },
   {
    "symbol": "PNJ",
+   "period_end": "2024-12-31",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 33314.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 15.52,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 2.94,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 6308.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 0.0
+   }
+  },
+  {
+   "symbol": "PNJ",
+   "period_end": "2024-12-31",
+   "statement_type": "ratios",
+   "frequency": "yearly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 33309.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 15.54,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 2.94,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 6302.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 0.0
+   }
+  },
+  {
+   "symbol": "PNJ",
    "period_end": "2025-03-31",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 256848695849.0,
     "iv_hàng_tồn_kho": 13647265729372.0,
     "c_nợ_phải_trả": 5689025894402.0,
     "i_nợ_ngắn_hạn": 5678483480652.0,
@@ -2083,6 +2584,7 @@
     "a_tài_sản_ngắn_hạn": 15949659613642.0,
     "1_vốn_góp_của_chủ_sở_hữu": 3380747760000.0,
     "i_các_khoản_phải_thu_dài_hạn": 118129206365.0,
+    "2_các_khoản_tương_đương_tiền": null,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 1620725651855.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 304632445702.0,
     "2_chi_phí_xây_dựng_cơ_bản_dở_dang": 30407760404.0,
@@ -2090,7 +2592,8 @@
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 104257111442.0,
     "13_lợi_ích_cổ_đông_không_kiểm_soát": null,
     "11_vay_và_nợ_thuê_tài_chính_ngắn_hạn": 3488032587304.0,
-    "2_người_mua_trả_tiền_trước_ngắn_hạn": 143136652593.0
+    "2_người_mua_trả_tiền_trước_ngắn_hạn": 143136652593.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 256848695849.0
    }
   },
   {
@@ -2138,12 +2641,28 @@
   },
   {
    "symbol": "PNJ",
+   "period_end": "2025-03-31",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 34715.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 13.63,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 2.4,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 6111.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 0.0
+   }
+  },
+  {
+   "symbol": "PNJ",
    "period_end": "2025-06-30",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 339404312952.0,
     "iv_hàng_tồn_kho": 13713358719712.0,
     "c_nợ_phải_trả": 5178488529466.0,
     "i_nợ_ngắn_hạn": 5167926115716.0,
@@ -2152,6 +2671,7 @@
     "a_tài_sản_ngắn_hạn": 15712669063040.0,
     "1_vốn_góp_của_chủ_sở_hữu": 3380747760000.0,
     "i_các_khoản_phải_thu_dài_hạn": 117815539075.0,
+    "2_các_khoản_tương_đương_tiền": 105921673893.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 1270170000000.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 160455583892.0,
     "2_chi_phí_xây_dựng_cơ_bản_dở_dang": 55934948964.0,
@@ -2159,7 +2679,8 @@
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 55983103364.0,
     "13_lợi_ích_cổ_đông_không_kiểm_soát": null,
     "11_vay_và_nợ_thuê_tài_chính_ngắn_hạn": 3096292371490.0,
-    "2_người_mua_trả_tiền_trước_ngắn_hạn": 133331530693.0
+    "2_người_mua_trả_tiền_trước_ngắn_hạn": 133331530693.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 445325986845.0
    }
   },
   {
@@ -2207,12 +2728,28 @@
   },
   {
    "symbol": "PNJ",
+   "period_end": "2025-06-30",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 35436.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 13.55,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 2.35,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 6134.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 0.0
+   }
+  },
+  {
+   "symbol": "PNJ",
    "period_end": "2025-09-30",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 542695579192.0,
     "iv_hàng_tồn_kho": 12448786823997.0,
     "c_nợ_phải_trả": 5058685745602.0,
     "i_nợ_ngắn_hạn": 5046824044102.0,
@@ -2221,6 +2758,7 @@
     "a_tài_sản_ngắn_hạn": 15664103070660.0,
     "1_vốn_góp_của_chủ_sở_hữu": 3380747760000.0,
     "i_các_khoản_phải_thu_dài_hạn": 118147518870.0,
+    "2_các_khoản_tương_đương_tiền": 42000000000.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 2246459134416.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 259873714991.0,
     "2_chi_phí_xây_dựng_cơ_bản_dở_dang": 30739297364.0,
@@ -2228,7 +2766,8 @@
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 106384593691.0,
     "13_lợi_ích_cổ_đông_không_kiểm_soát": null,
     "11_vay_và_nợ_thuê_tài_chính_ngắn_hạn": 2332603024492.0,
-    "2_người_mua_trả_tiền_trước_ngắn_hạn": 127598662992.0
+    "2_người_mua_trả_tiền_trước_ngắn_hạn": 127598662992.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 584695579192.0
    }
   },
   {
@@ -2276,12 +2815,28 @@
   },
   {
    "symbol": "PNJ",
+   "period_end": "2025-09-30",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 35489.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 11.96,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 2.34,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 6947.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 0.0
+   }
+  },
+  {
+   "symbol": "PNJ",
    "period_end": "2025-12-31",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 438425257031.0,
     "iv_hàng_tồn_kho": 15835506447900.0,
     "c_nợ_phải_trả": 6892720947176.0,
     "i_nợ_ngắn_hạn": 6878322933176.0,
@@ -2290,6 +2845,7 @@
     "a_tài_sản_ngắn_hạn": 18617297232257.0,
     "1_vốn_góp_của_chủ_sở_hữu": 3413186660000.0,
     "i_các_khoản_phải_thu_dài_hạn": 121168536356.0,
+    "2_các_khoản_tương_đương_tiền": 83600000000.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 2007488137408.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 156742123121.0,
     "2_chi_phí_xây_dựng_cơ_bản_dở_dang": 95005180214.0,
@@ -2297,7 +2853,8 @@
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 48760415990.0,
     "13_lợi_ích_cổ_đông_không_kiểm_soát": null,
     "11_vay_và_nợ_thuê_tài_chính_ngắn_hạn": 4223385635653.0,
-    "2_người_mua_trả_tiền_trước_ngắn_hạn": 182492529057.0
+    "2_người_mua_trả_tiền_trước_ngắn_hạn": 182492529057.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 522025257031.0
    }
   },
   {
@@ -2308,6 +2865,7 @@
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 438425257031.0,
     "iv_hàng_tồn_kho": 15835334529837.0,
     "c_nợ_phải_trả": 6888716787629.0,
     "i_nợ_ngắn_hạn": 6874318773629.0,
@@ -2316,6 +2874,7 @@
     "a_tài_sản_ngắn_hạn": 18614031193890.0,
     "1_vốn_góp_của_chủ_sở_hữu": 3413186660000.0,
     "i_các_khoản_phải_thu_dài_hạn": 121168536356.0,
+    "2_các_khoản_tương_đương_tiền": 83600000000.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 2007488137408.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 153980309545.0,
     "2_chi_phí_xây_dựng_cơ_bản_dở_dang": 94707660034.0,
@@ -2323,7 +2882,8 @@
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 48760415990.0,
     "13_lợi_ích_cổ_đông_không_kiểm_soát": null,
     "11_vay_và_nợ_thuê_tài_chính_ngắn_hạn": 4223385635653.0,
-    "2_người_mua_trả_tiền_trước_ngắn_hạn": 182492529057.0
+    "2_người_mua_trả_tiền_trước_ngắn_hạn": 182492529057.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 522025257031.0
    }
   },
   {
@@ -2414,12 +2974,43 @@
   },
   {
    "symbol": "PNJ",
+   "period_end": "2025-12-31",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 38915.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 11.59,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 2.49,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 8369.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 0.0
+   }
+  },
+  {
+   "symbol": "PNJ",
+   "period_end": "2025-12-31",
+   "statement_type": "ratios",
+   "frequency": "yearly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 38912.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 11.61,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 2.49,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 8353.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 0.0
+   }
+  },
+  {
+   "symbol": "PNJ",
    "period_end": "2026-03-31",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 494094441452.0,
     "iv_hàng_tồn_kho": 13419012225443.0,
     "c_nợ_phải_trả": 5291615882033.0,
     "i_nợ_ngắn_hạn": 5277290943535.0,
@@ -2428,6 +3019,7 @@
     "a_tài_sản_ngắn_hạn": 18163447994797.0,
     "1_vốn_góp_của_chủ_sở_hữu": 3413186660000.0,
     "i_các_khoản_phải_thu_dài_hạn": 120511022383.0,
+    "2_các_khoản_tương_đương_tiền": 429448815073.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 3586408376030.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 147751795669.0,
     "2_chi_phí_xây_dựng_cơ_bản_dở_dang": 32356660034.0,
@@ -2435,7 +3027,8 @@
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 70317151861.0,
     "13_lợi_ích_cổ_đông_không_kiểm_soát": null,
     "11_vay_và_nợ_thuê_tài_chính_ngắn_hạn": 2893621845273.0,
-    "2_người_mua_trả_tiền_trước_ngắn_hạn": 142718937533.0
+    "2_người_mua_trả_tiền_trước_ngắn_hạn": 142718937533.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 923543256525.0
    }
   },
   {
@@ -2483,12 +3076,28 @@
   },
   {
    "symbol": "PNJ",
+   "period_end": "2026-03-31",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 42214.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 10.12,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 2.56,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 10677.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 0.0
+   }
+  },
+  {
+   "symbol": "PNJ",
    "period_end": "2026-06-30",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 599130683660.0,
     "iv_hàng_tồn_kho": 15149356222640.0,
     "c_nợ_phải_trả": 7105049566093.0,
     "i_nợ_ngắn_hạn": 7092904454093.0,
@@ -2497,6 +3106,7 @@
     "a_tài_sản_ngắn_hạn": 19430865390489.0,
     "1_vốn_góp_của_chủ_sở_hữu": 5118915180000.0,
     "i_các_khoản_phải_thu_dài_hạn": 124008434823.0,
+    "2_các_khoản_tương_đương_tiền": 9526613007.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 3393327960485.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 193267364623.0,
     "2_chi_phí_xây_dựng_cơ_bản_dở_dang": 31096002100.0,
@@ -2504,7 +3114,8 @@
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 46832069007.0,
     "13_lợi_ích_cổ_đông_không_kiểm_soát": 17356220182.0,
     "11_vay_và_nợ_thuê_tài_chính_ngắn_hạn": 3989128051250.0,
-    "2_người_mua_trả_tiền_trước_ngắn_hạn": 141459806387.0
+    "2_người_mua_trả_tiền_trước_ngắn_hạn": 141459806387.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 608657296667.0
    }
   },
   {
@@ -2548,16 +3159,33 @@
   },
   {
    "symbol": "PNJ",
+   "period_end": "2026-06-30",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 27188.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 7.78,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 2.32,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 8098.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 0.0
+   }
+  },
+  {
+   "symbol": "PNJ",
    "period_end": "2026-09-30",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-11-06",
    "data": {
+    "bs_cash": 988291602350.0,
     "bs_equity": 13198670418017.0,
     "bs_inventories": 16626187900889.0,
     "bs_total_assets": 20125889256496.0,
     "bs_charter_capital": 5118915180000.0,
+    "bs_cash_equivalents": 253922481450.0,
     "bs_minority_interest": 16360708077.0,
     "bs_short_term_assets": 18167504452995.0,
     "bs_total_liabilities": 6927218838479.0,
@@ -2625,6 +3253,7 @@
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 8904195703336.0,
     "iv_hàng_tồn_kho": 58756231214496.0,
     "c_nợ_phải_trả": null,
     "i_nợ_ngắn_hạn": 214974936544478.0,
@@ -2633,6 +3262,7 @@
     "a_tài_sản_ngắn_hạn": 255295710734302.0,
     "1_vốn_góp_của_chủ_sở_hữu": 43543674880000.0,
     "i_các_khoản_phải_thu_dài_hạn": 33582331806599.0,
+    "2_các_khoản_tương_đương_tiền": 620422958579.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 3629316123819.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 152936618587261.0,
     "2_chi_phí_xây_dựng_cơ_bản_dở_dang": 67385931670009.0,
@@ -2640,7 +3270,8 @@
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 19155651930719.0,
     "13_lợi_ích_cổ_đông_không_kiểm_soát": 13970369829895.0,
     "11_vay_và_nợ_thuê_tài_chính_ngắn_hạn": null,
-    "2_người_mua_trả_tiền_trước_ngắn_hạn": 43551036125417.0
+    "2_người_mua_trả_tiền_trước_ngắn_hạn": 43551036125417.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 9524618661915.0
    }
   },
   {
@@ -2688,12 +3319,28 @@
   },
   {
    "symbol": "VHM",
+   "period_end": "2024-03-31",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 45062.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 8.43,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 0.95,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 5081.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 87.81
+   }
+  },
+  {
+   "symbol": "VHM",
    "period_end": "2024-06-30",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 16636376487432.0,
     "iv_hàng_tồn_kho": 56310972284736.0,
     "c_nợ_phải_trả": null,
     "i_nợ_ngắn_hạn": 224582895630097.0,
@@ -2702,6 +3349,7 @@
     "a_tài_sản_ngắn_hạn": 249057927727219.0,
     "1_vốn_góp_của_chủ_sở_hữu": 43543674880000.0,
     "i_các_khoản_phải_thu_dài_hạn": 58434719006744.0,
+    "2_các_khoản_tương_đương_tiền": 543823705790.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 3674057832187.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 137014155216640.0,
     "2_chi_phí_xây_dựng_cơ_bản_dở_dang": 84143650171627.0,
@@ -2709,7 +3357,8 @@
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 20318913574559.0,
     "13_lợi_ích_cổ_đông_không_kiểm_soát": 14283083805957.0,
     "11_vay_và_nợ_thuê_tài_chính_ngắn_hạn": null,
-    "2_người_mua_trả_tiền_trước_ngắn_hạn": 41714773527515.0
+    "2_người_mua_trả_tiền_trước_ngắn_hạn": 41714773527515.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 17180200193222.0
    }
   },
   {
@@ -2757,12 +3406,28 @@
   },
   {
    "symbol": "VHM",
+   "period_end": "2024-06-30",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 47489.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 7.05,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 0.79,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 5341.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 16.06
+   }
+  },
+  {
+   "symbol": "VHM",
    "period_end": "2024-09-30",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 20324623000000.0,
     "iv_hàng_tồn_kho": 57981046000000.0,
     "c_nợ_phải_trả": null,
     "i_nợ_ngắn_hạn": 246563570000000.0,
@@ -2771,6 +3436,7 @@
     "a_tài_sản_ngắn_hạn": 302730495000000.0,
     "1_vốn_góp_của_chủ_sở_hữu": 43543675000000.0,
     "i_các_khoản_phải_thu_dài_hạn": 49668379000000.0,
+    "2_các_khoản_tương_đương_tiền": 296860000000.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 3802114000000.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 187108837000000.0,
     "2_chi_phí_xây_dựng_cơ_bản_dở_dang": 80363229000000.0,
@@ -2778,7 +3444,8 @@
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 20959738000000.0,
     "13_lợi_ích_cổ_đông_không_kiểm_soát": 15834620000000.0,
     "11_vay_và_nợ_thuê_tài_chính_ngắn_hạn": null,
-    "2_người_mua_trả_tiền_trước_ngắn_hạn": 49421223000000.0
+    "2_người_mua_trả_tiền_trước_ngắn_hạn": 49421223000000.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 20621483000000.0
    }
   },
   {
@@ -2826,12 +3493,28 @@
   },
   {
    "symbol": "VHM",
+   "period_end": "2024-09-30",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 49597.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 9.12,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 0.86,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 4691.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 18.46
+   }
+  },
+  {
+   "symbol": "VHM",
    "period_end": "2024-12-31",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 21851228000000.0,
     "iv_hàng_tồn_kho": 48723136000000.0,
     "c_nợ_phải_trả": null,
     "i_nợ_ngắn_hạn": 290350308000000.0,
@@ -2840,6 +3523,7 @@
     "a_tài_sản_ngắn_hạn": 287465943000000.0,
     "1_vốn_góp_của_chủ_sở_hữu": 41074120000000.0,
     "i_các_khoản_phải_thu_dài_hạn": 100341453000000.0,
+    "2_các_khoản_tương_đương_tiền": 7139407000000.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 3270313000000.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 171858073000000.0,
     "2_chi_phí_xây_dựng_cơ_bản_dở_dang": 83690530000000.0,
@@ -2847,7 +3531,8 @@
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 19318165000000.0,
     "13_lợi_ích_cổ_đông_không_kiểm_soát": 18362220000000.0,
     "11_vay_và_nợ_thuê_tài_chính_ngắn_hạn": null,
-    "2_người_mua_trả_tiền_trước_ngắn_hạn": 46382906000000.0
+    "2_người_mua_trả_tiền_trước_ngắn_hạn": 46382906000000.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 28990635000000.0
    }
   },
   {
@@ -2858,6 +3543,7 @@
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 21633816000000.0,
     "iv_hàng_tồn_kho": 54696048000000.0,
     "c_nợ_phải_trả": null,
     "i_nợ_ngắn_hạn": 278532295000000.0,
@@ -2866,6 +3552,7 @@
     "a_tài_sản_ngắn_hạn": 285478928000000.0,
     "1_vốn_góp_của_chủ_sở_hữu": 41074120000000.0,
     "i_các_khoản_phải_thu_dài_hạn": 107670320000000.0,
+    "2_các_khoản_tương_đương_tiền": 7146307000000.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 5391872000000.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 168405984000000.0,
     "2_chi_phí_xây_dựng_cơ_bản_dở_dang": 81990475000000.0,
@@ -2873,7 +3560,8 @@
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 19307872000000.0,
     "13_lợi_ích_cổ_đông_không_kiểm_soát": 18108334000000.0,
     "11_vay_và_nợ_thuê_tài_chính_ngắn_hạn": null,
-    "2_người_mua_trả_tiền_trước_ngắn_hạn": 40286424000000.0
+    "2_người_mua_trả_tiền_trước_ngắn_hạn": 40286424000000.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 28780123000000.0
    }
   },
   {
@@ -2964,12 +3652,43 @@
   },
   {
    "symbol": "VHM",
+   "period_end": "2024-12-31",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 53670.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 5.57,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 0.75,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 7176.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 12.22
+   }
+  },
+  {
+   "symbol": "VHM",
+   "period_end": "2024-12-31",
+   "statement_type": "ratios",
+   "frequency": "yearly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 53743.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 5.45,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 0.74,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 7345.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 4.68
+   }
+  },
+  {
+   "symbol": "VHM",
    "period_end": "2025-03-31",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 20760496000000.0,
     "iv_hàng_tồn_kho": 55672832000000.0,
     "c_nợ_phải_trả": 338107549000000.0,
     "i_nợ_ngắn_hạn": 237524644000000.0,
@@ -2978,6 +3697,7 @@
     "a_tài_sản_ngắn_hạn": 259860077000000.0,
     "1_vốn_góp_của_chủ_sở_hữu": 41074120000000.0,
     "i_các_khoản_phải_thu_dài_hạn": 123489415000000.0,
+    "2_các_khoản_tương_đương_tiền": 732210000000.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 3346766000000.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 149281209000000.0,
     "2_chi_phí_xây_dựng_cơ_bản_dở_dang": 83199793000000.0,
@@ -2985,7 +3705,8 @@
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 17420482000000.0,
     "13_lợi_ích_cổ_đông_không_kiểm_soát": 18071414000000.0,
     "11_vay_và_nợ_thuê_tài_chính_ngắn_hạn": 33423836000000.0,
-    "2_người_mua_trả_tiền_trước_ngắn_hạn": 43294133000000.0
+    "2_người_mua_trả_tiền_trước_ngắn_hạn": 43294133000000.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 21492706000000.0
    }
   },
   {
@@ -3033,12 +3754,28 @@
   },
   {
    "symbol": "VHM",
+   "period_end": "2025-03-31",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 54389.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 6.67,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 0.94,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 7696.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 37.05
+   }
+  },
+  {
+   "symbol": "VHM",
    "period_end": "2025-06-30",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 33372988000000.0,
     "iv_hàng_tồn_kho": 80135508000000.0,
     "c_nợ_phải_trả": 427430457000000.0,
     "i_nợ_ngắn_hạn": 276535364000000.0,
@@ -3047,6 +3784,7 @@
     "a_tài_sản_ngắn_hạn": 379834893000000.0,
     "1_vốn_góp_của_chủ_sở_hữu": 41074120000000.0,
     "i_các_khoản_phải_thu_dài_hạn": 80542559000000.0,
+    "2_các_khoản_tương_đương_tiền": 15299136000000.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 3437044000000.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 210690192000000.0,
     "2_chi_phí_xây_dựng_cơ_bản_dở_dang": 81776296000000.0,
@@ -3054,7 +3792,8 @@
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 20225607000000.0,
     "13_lợi_ích_cổ_đông_không_kiểm_soát": 17948303000000.0,
     "11_vay_và_nợ_thuê_tài_chính_ngắn_hạn": 46258036000000.0,
-    "2_người_mua_trả_tiền_trước_ngắn_hạn": 47982539000000.0
+    "2_người_mua_trả_tiền_trước_ngắn_hạn": 47982539000000.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 48672124000000.0
    }
   },
   {
@@ -3102,12 +3841,28 @@
   },
   {
    "symbol": "VHM",
+   "period_end": "2025-06-30",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 56145.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 10.9,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 1.37,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 7039.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 29.87
+   }
+  },
+  {
+   "symbol": "VHM",
    "period_end": "2025-09-30",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 33709134000000.0,
     "iv_hàng_tồn_kho": 125608165000000.0,
     "c_nợ_phải_trả": 533334874000000.0,
     "i_nợ_ngắn_hạn": 329506259000000.0,
@@ -3116,6 +3871,7 @@
     "a_tài_sản_ngắn_hạn": 436436596000000.0,
     "1_vốn_góp_của_chủ_sở_hữu": 41074120000000.0,
     "i_các_khoản_phải_thu_dài_hạn": 72204430000000.0,
+    "2_các_khoản_tương_đương_tiền": 15058480000000.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 2116747000000.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 218408164000000.0,
     "2_chi_phí_xây_dựng_cơ_bản_dở_dang": 84999021000000.0,
@@ -3123,7 +3879,8 @@
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 22082436000000.0,
     "13_lợi_ích_cổ_đông_không_kiểm_soát": 17630561000000.0,
     "11_vay_và_nợ_thuê_tài_chính_ngắn_hạn": 48372781000000.0,
-    "2_người_mua_trả_tiền_trước_ngắn_hạn": 100841103000000.0
+    "2_người_mua_trả_tiền_trước_ngắn_hạn": 100841103000000.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 48767614000000.0
    }
   },
   {
@@ -3171,12 +3928,28 @@
   },
   {
    "symbol": "VHM",
+   "period_end": "2025-09-30",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 57197.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 16.46,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 1.8,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 6259.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 65.01
+   }
+  },
+  {
+   "symbol": "VHM",
    "period_end": "2025-12-31",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 18728524000000.0,
     "iv_hàng_tồn_kho": 134792654000000.0,
     "c_nợ_phải_trả": 538469649000000.0,
     "i_nợ_ngắn_hạn": 345174167000000.0,
@@ -3185,6 +3958,7 @@
     "a_tài_sản_ngắn_hạn": 500834700000000.0,
     "1_vốn_góp_của_chủ_sở_hữu": 41074120000000.0,
     "i_các_khoản_phải_thu_dài_hạn": 68617803000000.0,
+    "2_các_khoản_tương_đương_tiền": 31219986000000.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 2259178000000.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 215216410000000.0,
     "2_chi_phí_xây_dựng_cơ_bản_dở_dang": 93391831000000.0,
@@ -3192,7 +3966,8 @@
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 23839083000000.0,
     "13_lợi_ích_cổ_đông_không_kiểm_soát": 11701801000000.0,
     "11_vay_và_nợ_thuê_tài_chính_ngắn_hạn": 43376867000000.0,
-    "2_người_mua_trả_tiền_trước_ngắn_hạn": 89157012000000.0
+    "2_người_mua_trả_tiền_trước_ngắn_hạn": 89157012000000.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 49948510000000.0
    }
   },
   {
@@ -3203,6 +3978,7 @@
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 18741905000000.0,
     "iv_hàng_tồn_kho": 131414569000000.0,
     "c_nợ_phải_trả": 538640560000000.0,
     "i_nợ_ngắn_hạn": 343090159000000.0,
@@ -3211,6 +3987,7 @@
     "a_tài_sản_ngắn_hạn": 496890087000000.0,
     "1_vốn_góp_của_chủ_sở_hữu": 41074120000000.0,
     "i_các_khoản_phải_thu_dài_hạn": 71613853000000.0,
+    "2_các_khoản_tương_đương_tiền": 31219986000000.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 2259178000000.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 219949950000000.0,
     "2_chi_phí_xây_dựng_cơ_bản_dở_dang": 95922435000000.0,
@@ -3218,7 +3995,8 @@
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 23488063000000.0,
     "13_lợi_ích_cổ_đông_không_kiểm_soát": 11137640000000.0,
     "11_vay_và_nợ_thuê_tài_chính_ngắn_hạn": 43376868000000.0,
-    "2_người_mua_trả_tiền_trước_ngắn_hạn": 87602669000000.0
+    "2_người_mua_trả_tiền_trước_ngắn_hạn": 87602669000000.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 49961891000000.0
    }
   },
   {
@@ -3309,12 +4087,43 @@
   },
   {
    "symbol": "VHM",
+   "period_end": "2025-12-31",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 60356.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 12.38,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 2.05,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 10019.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 16.79
+   }
+  },
+  {
+   "symbol": "VHM",
+   "period_end": "2025-12-31",
+   "statement_type": "ratios",
+   "frequency": "yearly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 60675.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 12.16,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 2.04,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 10200.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 9.3
+   }
+  },
+  {
+   "symbol": "VHM",
    "period_end": "2026-03-31",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 30171364000000.0,
     "iv_hàng_tồn_kho": 138885119000000.0,
     "c_nợ_phải_trả": 597132268000000.0,
     "i_nợ_ngắn_hạn": 388427617000000.0,
@@ -3323,6 +4132,7 @@
     "a_tài_sản_ngắn_hạn": 517760338000000.0,
     "1_vốn_góp_của_chủ_sở_hữu": 41074120000000.0,
     "i_các_khoản_phải_thu_dài_hạn": 43127452000000.0,
+    "2_các_khoản_tương_đương_tiền": 5666172000000.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 10288183000000.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 225589117000000.0,
     "2_chi_phí_xây_dựng_cơ_bản_dở_dang": 97043207000000.0,
@@ -3330,7 +4140,8 @@
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 27680047000000.0,
     "13_lợi_ích_cổ_đông_không_kiểm_soát": 10582880000000.0,
     "11_vay_và_nợ_thuê_tài_chính_ngắn_hạn": 55456879000000.0,
-    "2_người_mua_trả_tiền_trước_ngắn_hạn": 105202920000000.0
+    "2_người_mua_trả_tiền_trước_ngắn_hạn": 105202920000000.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 35837536000000.0
    }
   },
   {
@@ -3378,12 +4189,28 @@
   },
   {
    "symbol": "VHM",
+   "period_end": "2026-03-31",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 66427.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 6.61,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 1.55,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 15585.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 16.51
+   }
+  },
+  {
+   "symbol": "VHM",
    "period_end": "2026-06-30",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_tiền": 45520684000000.0,
     "iv_hàng_tồn_kho": 206728370000000.0,
     "c_nợ_phải_trả": 836731048000000.0,
     "i_nợ_ngắn_hạn": 579131000000000.0,
@@ -3392,6 +4219,7 @@
     "a_tài_sản_ngắn_hạn": 679446023000000.0,
     "1_vốn_góp_của_chủ_sở_hữu": 41074120000000.0,
     "i_các_khoản_phải_thu_dài_hạn": 41954780000000.0,
+    "2_các_khoản_tương_đương_tiền": 7658299000000.0,
     "ii_đầu_tư_tài_chính_ngắn_hạn": 5795397000000.0,
     "iii_các_khoản_phải_thu_ngắn_hạn": 280691785000000.0,
     "2_chi_phí_xây_dựng_cơ_bản_dở_dang": 105390268000000.0,
@@ -3399,7 +4227,8 @@
     "1_phải_thu_ngắn_hạn_của_khách_hàng": 30427024000000.0,
     "13_lợi_ích_cổ_đông_không_kiểm_soát": 14248319000000.0,
     "11_vay_và_nợ_thuê_tài_chính_ngắn_hạn": 63086214000000.0,
-    "2_người_mua_trả_tiền_trước_ngắn_hạn": 145880293000000.0
+    "2_người_mua_trả_tiền_trước_ngắn_hạn": 145880293000000.0,
+    "i_tiền_và_các_khoản_tương_đương_tiền": 53178983000000.0
    }
   },
   {
@@ -3443,16 +4272,33 @@
   },
   {
    "symbol": "VHM",
+   "period_end": "2026-06-30",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 66710.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 7.89,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 2.28,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 19245.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 20.81
+   }
+  },
+  {
+   "symbol": "VHM",
    "period_end": "2026-09-30",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-11-06",
    "data": {
+    "bs_cash": 33211627000000.0,
     "bs_equity": 307792413000000.0,
     "bs_inventories": 247302770000000.0,
     "bs_total_assets": 1339198759000000.0,
     "bs_charter_capital": 82148240000000.0,
+    "bs_cash_equivalents": 6318757000000.0,
     "bs_minority_interest": 21044426000000.0,
     "bs_short_term_assets": 930807696000000.0,
     "bs_total_liabilities": 1031406346000000.0,
@@ -3513,6 +4359,30 @@
    }
   },
   {
+   "symbol": "VHM",
+   "period_end": "2026-09-30",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-11-06",
+   "data": {
+    "rt_prt_roa": 0.096083,
+    "rt_prt_roe": 0.376499,
+    "rt_bank_cir": 0.0,
+    "rt_bank_cof": 0.0,
+    "rt_bank_ldr": 0.0,
+    "rt_bank_nim": 0.0,
+    "rt_bank_npl": 0.0,
+    "rt_value_pb": 1.804839,
+    "rt_value_pe": 5.233141,
+    "rt_bank_casa": null,
+    "rt_value_ev_ebitda": 5.053869,
+    "rt_value_market_cap": 517533912504000.0,
+    "rt_bank_npl_coverage": 0.0,
+    "rt_value_outstanding_shares": 8214824008.0
+   }
+  },
+  {
    "symbol": "VND",
    "period_end": "2024-03-31",
    "statement_type": "BS",
@@ -3520,6 +4390,7 @@
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_1_tiền": 3278512641582.0,
     "i_nợ_ngắn_hạn": 24096947200724.0,
     "4_các_khoản_cho_vay": 9957642639641.0,
     "a_tài_sản_ngắn_hạn": 40135664625482.0,
@@ -3529,6 +4400,7 @@
     "1_1_vốn_góp_của_chủ_sở_hữu": 12178440090000.0,
     "7_các_khoản_phải_thu_ngắn_hạn": 1319451693109.0,
     "1_vay_và_nợ_thuê_tài_chính_ngắn_hạn": 18654134360600.0,
+    "1_tiền_và_các_khoản_tương_đương_tiền": 3364512641582.0,
     "5_các_tài_sản_tài_chính_sẵn_sàn_để_bán_afs": null,
     "3_các_khoản_đầu_tư_nắm_giữ_đến_ngày_đáo_hạn_htm": 7799907000000.0,
     "2_các_tài_sản_tài_chính_ghi_nhận_thông_qua_lãi_lỗ_fvtpl": 16445086274431.0
@@ -3578,12 +4450,28 @@
   },
   {
    "symbol": "VND",
+   "period_end": "2024-03-31",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 14062.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 11.15,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 1.63,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 2057.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 0.0
+   }
+  },
+  {
+   "symbol": "VND",
    "period_end": "2024-06-30",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_1_tiền": 2657213890594.0,
     "i_nợ_ngắn_hạn": 27778841369492.0,
     "4_các_khoản_cho_vay": 11246051353866.0,
     "a_tài_sản_ngắn_hạn": 43844899656526.0,
@@ -3593,6 +4481,7 @@
     "1_1_vốn_góp_của_chủ_sở_hữu": 12178440090000.0,
     "7_các_khoản_phải_thu_ngắn_hạn": 1469742662578.0,
     "1_vay_và_nợ_thuê_tài_chính_ngắn_hạn": 21944949718199.0,
+    "1_tiền_và_các_khoản_tương_đương_tiền": 3107213890594.0,
     "5_các_tài_sản_tài_chính_sẵn_sàn_để_bán_afs": null,
     "3_các_khoản_đầu_tư_nắm_giữ_đến_ngày_đáo_hạn_htm": 5461650000000.0,
     "2_các_tài_sản_tài_chính_ghi_nhận_thông_qua_lãi_lỗ_fvtpl": 21114024070511.0
@@ -3642,12 +4531,28 @@
   },
   {
    "symbol": "VND",
+   "period_end": "2024-06-30",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 14192.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 8.07,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 1.13,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 1988.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 0.0
+   }
+  },
+  {
+   "symbol": "VND",
    "period_end": "2024-09-30",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_1_tiền": 456558071924.0,
     "i_nợ_ngắn_hạn": 23747643454159.0,
     "4_các_khoản_cho_vay": 10858668451826.0,
     "a_tài_sản_ngắn_hạn": 41992338194836.0,
@@ -3657,6 +4562,7 @@
     "1_1_vốn_góp_của_chủ_sở_hữu": 15222999080000.0,
     "7_các_khoản_phải_thu_ngắn_hạn": 1193723040052.0,
     "1_vay_và_nợ_thuê_tài_chính_ngắn_hạn": 21350489586215.0,
+    "1_tiền_và_các_khoản_tương_đương_tiền": 456558071924.0,
     "5_các_tài_sản_tài_chính_sẵn_sàn_để_bán_afs": null,
     "3_các_khoản_đầu_tư_nắm_giữ_đến_ngày_đáo_hạn_htm": 4779985000000.0,
     "2_các_tài_sản_tài_chính_ghi_nhận_thông_qua_lãi_lỗ_fvtpl": 24436918382352.0
@@ -3706,12 +4612,28 @@
   },
   {
    "symbol": "VND",
+   "period_end": "2024-09-30",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 12786.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 8.55,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 1.19,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 1783.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 0.0
+   }
+  },
+  {
+   "symbol": "VND",
    "period_end": "2024-12-31",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_1_tiền": 734466660472.0,
     "i_nợ_ngắn_hạn": 24502482888459.0,
     "4_các_khoản_cho_vay": 10343627985292.0,
     "a_tài_sản_ngắn_hạn": 43105620017289.0,
@@ -3721,6 +4643,7 @@
     "1_1_vốn_góp_của_chủ_sở_hữu": 15222999080000.0,
     "7_các_khoản_phải_thu_ngắn_hạn": 1728245383775.0,
     "1_vay_và_nợ_thuê_tài_chính_ngắn_hạn": 22436244635316.0,
+    "1_tiền_và_các_khoản_tương_đương_tiền": 881175660472.0,
     "5_các_tài_sản_tài_chính_sẵn_sàn_để_bán_afs": null,
     "3_các_khoản_đầu_tư_nắm_giữ_đến_ngày_đáo_hạn_htm": 5560973000000.0,
     "2_các_tài_sản_tài_chính_ghi_nhận_thông_qua_lãi_lỗ_fvtpl": 24519200006786.0
@@ -3734,6 +4657,7 @@
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_1_tiền": 734466660472.0,
     "i_nợ_ngắn_hạn": 24502482888459.0,
     "4_các_khoản_cho_vay": 10343627985292.0,
     "a_tài_sản_ngắn_hạn": 43105620017289.0,
@@ -3743,6 +4667,7 @@
     "1_1_vốn_góp_của_chủ_sở_hữu": 15222999080000.0,
     "7_các_khoản_phải_thu_ngắn_hạn": 1728245383775.0,
     "1_vay_và_nợ_thuê_tài_chính_ngắn_hạn": 22436244635316.0,
+    "1_tiền_và_các_khoản_tương_đương_tiền": 881175660472.0,
     "5_các_tài_sản_tài_chính_sẵn_sàn_để_bán_afs": null,
     "3_các_khoản_đầu_tư_nắm_giữ_đến_ngày_đáo_hạn_htm": 5560973000000.0,
     "2_các_tài_sản_tài_chính_ghi_nhận_thông_qua_lãi_lỗ_fvtpl": 24519200006786.0
@@ -3834,12 +4759,43 @@
   },
   {
    "symbol": "VND",
+   "period_end": "2024-12-31",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 12951.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 9.99,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 0.97,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 1261.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 0.0
+   }
+  },
+  {
+   "symbol": "VND",
+   "period_end": "2024-12-31",
+   "statement_type": "ratios",
+   "frequency": "yearly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 12951.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 9.99,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 0.97,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 1261.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 14.47
+   }
+  },
+  {
+   "symbol": "VND",
    "period_end": "2025-03-31",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_1_tiền": 887764429704.0,
     "i_nợ_ngắn_hạn": 29922264671844.0,
     "4_các_khoản_cho_vay": 11119786670224.0,
     "a_tài_sản_ngắn_hạn": 47015095331810.0,
@@ -3849,6 +4805,7 @@
     "1_1_vốn_góp_của_chủ_sở_hữu": 15222999080000.0,
     "7_các_khoản_phải_thu_ngắn_hạn": 1432389626930.0,
     "1_vay_và_nợ_thuê_tài_chính_ngắn_hạn": 28138635975528.0,
+    "1_tiền_và_các_khoản_tương_đương_tiền": 977372429704.0,
     "5_các_tài_sản_tài_chính_sẵn_sàn_để_bán_afs": null,
     "3_các_khoản_đầu_tư_nắm_giữ_đến_ngày_đáo_hạn_htm": 7189686000000.0,
     "2_các_tài_sản_tài_chính_ghi_nhận_thông_qua_lãi_lỗ_fvtpl": 26157031729284.0
@@ -3898,12 +4855,28 @@
   },
   {
    "symbol": "VND",
+   "period_end": "2025-03-31",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 13202.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 14.79,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 1.16,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 1035.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 0.0
+   }
+  },
+  {
+   "symbol": "VND",
    "period_end": "2025-06-30",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_1_tiền": 1586935267818.0,
     "i_nợ_ngắn_hạn": 28202858332050.0,
     "4_các_khoản_cho_vay": 10643745217587.0,
     "a_tài_sản_ngắn_hạn": 45229666459310.0,
@@ -3913,6 +4886,7 @@
     "1_1_vốn_góp_của_chủ_sở_hữu": 15222999080000.0,
     "7_các_khoản_phải_thu_ngắn_hạn": 3520616602743.0,
     "1_vay_và_nợ_thuê_tài_chính_ngắn_hạn": 26139219978482.0,
+    "1_tiền_và_các_khoản_tương_đương_tiền": 1586935267818.0,
     "5_các_tài_sản_tài_chính_sẵn_sàn_để_bán_afs": null,
     "3_các_khoản_đầu_tư_nắm_giữ_đến_ngày_đáo_hạn_htm": 8902009000000.0,
     "2_các_tài_sản_tài_chính_ghi_nhận_thông_qua_lãi_lỗ_fvtpl": 20711200817684.0
@@ -3962,12 +4936,28 @@
   },
   {
    "symbol": "VND",
+   "period_end": "2025-06-30",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 12896.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 17.22,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 1.33,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 999.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 0.0
+   }
+  },
+  {
+   "symbol": "VND",
    "period_end": "2025-09-30",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_1_tiền": 601963489488.0,
     "i_nợ_ngắn_hạn": 35379519968752.0,
     "4_các_khoản_cho_vay": 14843502963446.0,
     "a_tài_sản_ngắn_hạn": 54455802853788.0,
@@ -3977,6 +4967,7 @@
     "1_1_vốn_góp_của_chủ_sở_hữu": 15222999080000.0,
     "7_các_khoản_phải_thu_ngắn_hạn": 4140721424064.0,
     "1_vay_và_nợ_thuê_tài_chính_ngắn_hạn": 31799901375397.0,
+    "1_tiền_và_các_khoản_tương_đương_tiền": 601963489488.0,
     "5_các_tài_sản_tài_chính_sẵn_sàn_để_bán_afs": null,
     "3_các_khoản_đầu_tư_nắm_giữ_đến_ngày_đáo_hạn_htm": 10485182000000.0,
     "2_các_tài_sản_tài_chính_ghi_nhận_thông_qua_lãi_lỗ_fvtpl": 24624829163761.0
@@ -4026,12 +5017,28 @@
   },
   {
    "symbol": "VND",
+   "period_end": "2025-09-30",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 13506.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 17.69,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 1.66,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 1269.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 0.0
+   }
+  },
+  {
+   "symbol": "VND",
    "period_end": "2025-12-31",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_1_tiền": 1622127447102.0,
     "i_nợ_ngắn_hạn": 28656048679759.0,
     "4_các_khoản_cho_vay": 14319104587203.0,
     "a_tài_sản_ngắn_hạn": 50579456377684.0,
@@ -4041,6 +5048,7 @@
     "1_1_vốn_góp_của_chủ_sở_hữu": 15222999080000.0,
     "7_các_khoản_phải_thu_ngắn_hạn": 3586038260870.0,
     "1_vay_và_nợ_thuê_tài_chính_ngắn_hạn": 26462875618896.0,
+    "1_tiền_và_các_khoản_tương_đương_tiền": 1622127447102.0,
     "5_các_tài_sản_tài_chính_sẵn_sàn_để_bán_afs": null,
     "3_các_khoản_đầu_tư_nắm_giữ_đến_ngày_đáo_hạn_htm": 8558266000000.0,
     "2_các_tài_sản_tài_chính_ghi_nhận_thông_qua_lãi_lỗ_fvtpl": 22537478294142.0
@@ -4054,6 +5062,7 @@
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_1_tiền": 1622127447102.0,
     "i_nợ_ngắn_hạn": 28656048679759.0,
     "4_các_khoản_cho_vay": 14319104587203.0,
     "a_tài_sản_ngắn_hạn": 50579456377684.0,
@@ -4063,6 +5072,7 @@
     "1_1_vốn_góp_của_chủ_sở_hữu": 15222999080000.0,
     "7_các_khoản_phải_thu_ngắn_hạn": 3586038260870.0,
     "1_vay_và_nợ_thuê_tài_chính_ngắn_hạn": 26462875618896.0,
+    "1_tiền_và_các_khoản_tương_đương_tiền": 1622127447102.0,
     "5_các_tài_sản_tài_chính_sẵn_sàn_để_bán_afs": null,
     "3_các_khoản_đầu_tư_nắm_giữ_đến_ngày_đáo_hạn_htm": 8558266000000.0,
     "2_các_tài_sản_tài_chính_ghi_nhận_thông_qua_lãi_lỗ_fvtpl": 22537478294142.0
@@ -4154,12 +5164,43 @@
   },
   {
    "symbol": "VND",
+   "period_end": "2025-12-31",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 13731.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 14.64,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 1.42,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 1328.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 0.0
+   }
+  },
+  {
+   "symbol": "VND",
+   "period_end": "2025-12-31",
+   "statement_type": "ratios",
+   "frequency": "yearly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 13731.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 14.64,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 1.42,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 1328.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 14.76
+   }
+  },
+  {
+   "symbol": "VND",
    "period_end": "2026-03-31",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_1_tiền": 1426063961516.0,
     "i_nợ_ngắn_hạn": 24436419032857.0,
     "4_các_khoản_cho_vay": 12683253228011.0,
     "a_tài_sản_ngắn_hạn": 45929895618564.0,
@@ -4169,6 +5210,7 @@
     "1_1_vốn_góp_của_chủ_sở_hữu": 15222999080000.0,
     "7_các_khoản_phải_thu_ngắn_hạn": 3929826630567.0,
     "1_vay_và_nợ_thuê_tài_chính_ngắn_hạn": 22189009359822.0,
+    "1_tiền_và_các_khoản_tương_đương_tiền": 1426063961516.0,
     "5_các_tài_sản_tài_chính_sẵn_sàn_để_bán_afs": null,
     "3_các_khoản_đầu_tư_nắm_giữ_đến_ngày_đáo_hạn_htm": 9017586000000.0,
     "2_các_tài_sản_tài_chính_ghi_nhận_thông_qua_lãi_lỗ_fvtpl": 18652300880604.0
@@ -4218,12 +5260,28 @@
   },
   {
    "symbol": "VND",
+   "period_end": "2026-03-31",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 14089.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 11.01,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 1.12,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 1435.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 0.0
+   }
+  },
+  {
+   "symbol": "VND",
    "period_end": "2026-06-30",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-10-16",
    "data": {
+    "1_1_tiền": 1325718781005.0,
     "i_nợ_ngắn_hạn": 26334369107039.0,
     "4_các_khoản_cho_vay": 12859038945827.0,
     "a_tài_sản_ngắn_hạn": 48415965711977.0,
@@ -4233,6 +5291,7 @@
     "1_1_vốn_góp_của_chủ_sở_hữu": 15222999080000.0,
     "7_các_khoản_phải_thu_ngắn_hạn": 1847863577149.0,
     "1_vay_và_nợ_thuê_tài_chính_ngắn_hạn": 23645363986412.0,
+    "1_tiền_và_các_khoản_tương_đương_tiền": 1325718781005.0,
     "5_các_tài_sản_tài_chính_sẵn_sàn_để_bán_afs": null,
     "3_các_khoản_đầu_tư_nắm_giữ_đến_ngày_đáo_hạn_htm": 9814216000000.0,
     "2_các_tài_sản_tài_chính_ghi_nhận_thông_qua_lãi_lỗ_fvtpl": 22308561728805.0
@@ -4282,18 +5341,35 @@
   },
   {
    "symbol": "VND",
+   "period_end": "2026-06-30",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-10-16",
+   "data": {
+    "giá_trị_sổ_sách_của_cổ_phiếu_bvps": 14079.0,
+    "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e": 9.98,
+    "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b": 1.26,
+    "thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps": 1773.0,
+    "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda": 0.0
+   }
+  },
+  {
+   "symbol": "VND",
    "period_end": "2026-09-30",
    "statement_type": "BS",
    "frequency": "quarterly",
    "source": "alphastock",
    "published_date": "2026-11-06",
    "data": {
+    "bs_cash": 986059471960.0,
     "bs_loans": 12231887895793.0,
     "bs_equity": 21761582798518.0,
     "bs_inventories": 0.0,
     "bs_total_assets": 45635930816558.0,
     "bs_charter_capital": 15222999080000.0,
     "bs_long_term_bonds": 1998100213542.0,
+    "bs_cash_equivalents": 208589728688.0,
     "bs_short_term_bonds": 0.0,
     "bs_minority_interest": 0.0,
     "bs_short_term_assets": 44584372590647.0,
@@ -4355,6 +5431,30 @@
     "is_gains_from_available_for_sale_financial_assets_afs": 0.0,
     "is_profit_after_tax_for_shareholders_of_parent_company": 329458120320.0,
     "is_gains_from_financial_assets_at_fair_value_through_profit_or_loss_fvtpl": 1137066719789.0
+   }
+  },
+  {
+   "symbol": "VND",
+   "period_end": "2026-09-30",
+   "statement_type": "ratios",
+   "frequency": "quarterly",
+   "source": "alphastock",
+   "published_date": "2026-11-06",
+   "data": {
+    "rt_prt_roa": 0.043042,
+    "rt_prt_roe": 0.098163,
+    "rt_bank_cir": 0.0,
+    "rt_bank_cof": 0.0,
+    "rt_bank_ldr": 0.0,
+    "rt_bank_nim": 0.0,
+    "rt_bank_npl": 0.0,
+    "rt_value_pb": 0.951368,
+    "rt_value_pe": 9.861795,
+    "rt_bank_casa": null,
+    "rt_value_ev_ebitda": 9.825884,
+    "rt_value_market_cap": 20703278748800.0,
+    "rt_bank_npl_coverage": 0.0,
+    "rt_value_outstanding_shares": 1522299908.0
    }
   }
  ]

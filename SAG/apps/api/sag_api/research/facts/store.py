@@ -33,6 +33,7 @@ from sag_api.research.facts.catalog import (
 )
 
 SOURCE_PRIORITY: dict[str, int] = {"alphastock": 0, "vnstock_vci": 1}
+STATEMENT_TYPES: tuple[str, ...] = ("IS", "BS", "CF", "RATIOS")
 IDENTITY_TOLERANCE = 0.005
 FY_QSUM_TOLERANCE = 0.02
 
@@ -40,6 +41,7 @@ FLAG_DERIVED = "DERIVED"
 FLAG_IDENTITY_FAIL = "IDENTITY_FAIL"
 FLAG_FY_QSUM_MISMATCH = "FY_QSUM_MISMATCH"
 FLAG_NON_CALENDAR_FY = "NON_CALENDAR_FY"
+FLAG_QUARTERLY_CF_UNRELIABLE = "QUARTERLY_CF_UNRELIABLE"  # vendor quarterly CF: sparse and often YTD
 
 
 class LookupStatus(StrEnum):
@@ -169,6 +171,7 @@ class StatementReader(Protocol):
         tickers: Sequence[str] | None = None,
         lookback_years: int = 5,
         prefer_annual: bool = True,
+        statement_types: Sequence[str] = ("BS", "IS", "CF"),
     ) -> list[dict[str, Any]]: ...
 
 
@@ -235,7 +238,7 @@ def _select_rows(rows: Iterable[Mapping[str, Any]]) -> tuple[list[Mapping[str, A
         st = str(row.get("statement_type") or "").strip().upper()
         freq = str(row.get("frequency") or "").strip().lower()
         pe = _coerce_date(row.get("period_end"))
-        if not sym or st not in {"IS", "BS", "CF"} or freq not in {"yearly", "quarterly"} or pe is None:
+        if not sym or st not in STATEMENT_TYPES or freq not in {"yearly", "quarterly"} or pe is None:
             ignored["malformed"] += 1
             continue
         key = (sym, pe, st, freq)
@@ -307,7 +310,7 @@ def _derive_missing(facts: dict[_FactKey, FinancialFact], templates: Mapping[str
                 fiscal_quarter=_base.fiscal_quarter,
                 period_end=_base.period_end,
                 value=value,
-                unit=_unit_for(spec.kind),
+                unit=spec.unit or _unit_for(spec.kind),
                 source=_base.source,
                 source_key=None,
                 effective_published_date=_base.effective_published_date,
@@ -317,6 +320,12 @@ def _derive_missing(facts: dict[_FactKey, FinancialFact], templates: Mapping[str
 
         if val("total_liabilities") is None and val("total_assets") is not None and val("equity") is not None:
             put("total_liabilities", val("total_assets") - val("equity"), "total_assets - equity")  # type: ignore[operator]
+        if val("cash_and_equivalents") is None and val("cash_only") is not None and tmpl is not Template.BANK:
+            put(
+                "cash_and_equivalents",
+                val("cash_only") + (val("cash_equivalents_only") or 0.0),  # type: ignore[operator]
+                "cash_only + cash_equivalents_only",
+            )
         if val("income_tax") is None and val("pbt") is not None and val("npat") is not None:
             put("income_tax", val("pbt") - val("npat"), "pbt - npat")  # type: ignore[operator]
         if tmpl is Template.CORPORATE:
@@ -392,7 +401,7 @@ def _run_identity_checks(
 
 def _reconcile_fy_with_quarters(facts: dict[_FactKey, FinancialFact]) -> None:
     for (tk, item, ptype, fy, _fq), fy_fact in list(facts.items()):
-        if ptype != "FY" or fy_fact.kind != ItemKind.FLOW.value:
+        if ptype != "FY" or fy_fact.kind != ItemKind.FLOW.value or fy_fact.statement == "CF":
             continue
         qs = [facts.get((tk, item, "Q", fy, q)) for q in (1, 2, 3, 4)]
         if any(q is None for q in qs):
@@ -406,7 +415,8 @@ def _reconcile_fy_with_quarters(facts: dict[_FactKey, FinancialFact]) -> None:
 def _build_ttm(facts: dict[_FactKey, FinancialFact]) -> None:
     quarterly: dict[tuple[str, str], dict[tuple[int, int], FinancialFact]] = defaultdict(dict)
     for (tk, item, ptype, fy, fq), f in facts.items():
-        if ptype == "Q" and f.kind == ItemKind.FLOW.value:
+        # Vendor quarterly cash flows are sparse and often year-to-date cumulative: never sum them.
+        if ptype == "Q" and f.kind == ItemKind.FLOW.value and f.statement != "CF":
             quarterly[(tk, item)][(fy, fq)] = f
     for (tk, item), by_q in quarterly.items():
         for fy, fq in by_q:
@@ -468,6 +478,8 @@ def build_fact_set(
         tmpl = templates_by_ticker.get(sym, Template.CORPORATE)
         templates[sym] = tmpl
         ptype, fy, fq, pflags = _period_of(pe, freq)
+        if ptype == "Q" and st == "CF":
+            pflags = (*pflags, FLAG_QUARTERLY_CF_UNRELIABLE)
         data = _parse_data(row.get("data"))
         src = str(row.get("source") or "unknown").strip().lower()
         for spec in items_for_template(tmpl):
@@ -488,7 +500,7 @@ def build_fact_set(
                 fiscal_quarter=fq,
                 period_end=pe,
                 value=value,
-                unit=_unit_for(spec.kind),
+                unit=spec.unit or _unit_for(spec.kind),
                 source=src,
                 source_key=key,
                 effective_published_date=pub,
@@ -530,5 +542,6 @@ async def load_fact_set(
         tickers=norm,
         lookback_years=lookback_years,
         prefer_annual=False,
+        statement_types=STATEMENT_TYPES,
     )
     return build_fact_set(rows, templates_by_ticker=templates, as_of_date=as_of_date)

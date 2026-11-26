@@ -32,6 +32,7 @@ class ItemKind(StrEnum):
     FLOW = "FLOW"  # period amounts (IS/CF): summable across quarters
     STOCK = "STOCK"  # point-in-time balances (BS)
     PER_SHARE = "PER_SHARE"  # VND per share, never summed or scaled
+    VENDOR_RATIO = "VENDOR_RATIO"  # vendor-computed ratio/valuation snapshot (opaque definition)
 
 
 class SignPolicy(StrEnum):
@@ -48,7 +49,7 @@ class SignPolicy(StrEnum):
     OUTFLOW = "OUTFLOW"  # CF payment or BS contra-asset provision: negate in both schemas
 
 
-ENGLISH_KEY_PREFIXES: tuple[str, ...] = ("is_", "bs_", "cf_")
+ENGLISH_KEY_PREFIXES: tuple[str, ...] = ("is_", "bs_", "cf_", "rt_")
 
 
 def canonical_sign(policy: SignPolicy, key: str) -> float:
@@ -74,13 +75,14 @@ def resolve_template(industry: str | None) -> Template:
 @dataclass(frozen=True, slots=True)
 class CanonicalItem:
     item_id: str
-    statement: str  # IS | BS | CF
+    statement: str  # IS | BS | CF | RATIOS
     kind: ItemKind
     label_vi: str
     keys: Mapping[Template, tuple[str, ...]]
     sign: SignPolicy = SignPolicy.AS_REPORTED
     zero_is_missing: bool = False
     templates: frozenset[Template] = field(default_factory=frozenset)
+    unit: str | None = None
 
 
 _ALL = (Template.CORPORATE, Template.BANK, Template.SECURITIES, Template.INSURANCE)
@@ -100,6 +102,7 @@ def _item(
     sign: SignPolicy = SignPolicy.AS_REPORTED,
     zero_is_missing: bool = False,
     only: tuple[Template, ...] | None = None,
+    unit: str | None = None,
 ) -> CanonicalItem:
     specific = {
         Template.CORPORATE: corporate,
@@ -123,10 +126,12 @@ def _item(
         sign=sign,
         zero_is_missing=zero_is_missing,
         templates=frozenset(keys),
+        unit=unit,
     )
 
 
 _F, _S, _P = ItemKind.FLOW, ItemKind.STOCK, ItemKind.PER_SHARE
+_VR = ItemKind.VENDOR_RATIO
 _EXP = SignPolicy.EXPENSE_IS
 _OUT = SignPolicy.OUTFLOW
 
@@ -344,6 +349,27 @@ CATALOG: tuple[CanonicalItem, ...] = (
         "inventory", "BS", _S, "Hàng tồn kho",
         corporate=("bs_inventories", "iv_hàng_tồn_kho"),
         only=(Template.CORPORATE,),
+    ),
+    _item(
+        "cash_and_equivalents", "BS", _S, "Tiền và các khoản tương đương tiền (CĐKT)",
+        corporate=("i_tiền_và_các_khoản_tương_đương_tiền",),
+        securities=("1_tiền_và_các_khoản_tương_đương_tiền",),
+        insurance=("i_tiền_và_các_khoản_tương_đương_tiền",),
+        only=(Template.CORPORATE, Template.SECURITIES, Template.INSURANCE),
+    ),
+    _item(
+        "cash_only", "BS", _S, "Tiền",
+        corporate=("bs_cash", "1_tiền"),
+        securities=("bs_cash", "1_1_tiền"),
+        insurance=("bs_cash", "1_tiền"),
+        only=(Template.CORPORATE, Template.SECURITIES, Template.INSURANCE),
+    ),
+    _item(
+        "cash_equivalents_only", "BS", _S, "Các khoản tương đương tiền",
+        corporate=("bs_cash_equivalents", "2_các_khoản_tương_đương_tiền"),
+        securities=("bs_cash_equivalents",),
+        insurance=("bs_cash_equivalents",),
+        only=(Template.CORPORATE, Template.SECURITIES, Template.INSURANCE),
     ),
     _item(
         "st_receivables", "BS", _S, "Các khoản phải thu ngắn hạn",
@@ -650,6 +676,120 @@ CATALOG: tuple[CanonicalItem, ...] = (
         "technical_reserves", "BS", _S, "Dự phòng nghiệp vụ",
         insurance=("bs_insurance_reserves", "13_dự_phòng_nghiệp_vụ"),
         only=(Template.INSURANCE,),
+    ),
+    # ── Vendor ratio snapshots (alphastock `ratios`; definitions are vendor-opaque) ──
+    _item(
+        "vr_pe", "RATIOS", _VR, "P/E (nhà cung cấp dữ liệu)",
+        common=("rt_value_pe", "chỉ_số_giá_thị_trường_trên_thu_nhập_p_e"),
+        zero_is_missing=True,
+        unit="X",
+    ),
+    _item(
+        "vr_pb", "RATIOS", _VR, "P/B (nhà cung cấp dữ liệu)",
+        common=("rt_value_pb", "chỉ_số_giá_thị_trường_trên_giá_trị_sổ_sách_p_b"),
+        zero_is_missing=True,
+        unit="X",
+    ),
+    _item(
+        "vr_ev_ebitda", "RATIOS", _VR, "EV/EBITDA (nhà cung cấp dữ liệu)",
+        common=(
+            "rt_value_ev_ebitda",
+            "giá_trị_doanh_nghiệp_trên_lợi_nhuận_trước_thuế_khấu_hao_và_lãi_vay_ev_ebitda",
+        ),
+        only=(Template.CORPORATE, Template.SECURITIES, Template.INSURANCE),
+        corporate=(),
+        securities=(),
+        insurance=(),
+        zero_is_missing=True,
+        unit="X",
+    ),
+    _item(
+        "vr_market_cap", "RATIOS", _VR, "Vốn hóa thị trường tại ngày kết thúc kỳ",
+        common=("rt_value_market_cap",),
+        zero_is_missing=True,
+        unit="VND",
+    ),
+    _item(
+        "vr_shares_outstanding", "RATIOS", _VR, "Số cổ phiếu lưu hành",
+        common=("rt_value_outstanding_shares",),
+        zero_is_missing=True,
+        unit="SHARES",
+    ),
+    _item(
+        "vr_eps_ttm", "RATIOS", _VR, "EPS 4 quý gần nhất (nhà cung cấp dữ liệu)",
+        common=("thu_nhập_trên_mỗi_cổ_phần_của_4_quý_gần_nhất_eps",),
+        zero_is_missing=True,
+        unit="VND_PER_SHARE",
+    ),
+    _item(
+        "vr_bvps", "RATIOS", _VR, "Giá trị sổ sách mỗi cổ phiếu",
+        common=("giá_trị_sổ_sách_của_cổ_phiếu_bvps",),
+        zero_is_missing=True,
+        unit="VND_PER_SHARE",
+    ),
+    _item(
+        "vr_roe", "RATIOS", _VR, "ROE (nhà cung cấp dữ liệu)",
+        common=("rt_prt_roe",),
+        zero_is_missing=True,
+        unit="RATIO",
+    ),
+    _item(
+        "vr_roa", "RATIOS", _VR, "ROA (nhà cung cấp dữ liệu)",
+        common=("rt_prt_roa",),
+        zero_is_missing=True,
+        unit="RATIO",
+    ),
+    _item(
+        "vr_npl_ratio", "RATIOS", _VR, "Tỷ lệ nợ xấu (nhóm 3-5)",
+        bank=("rt_bank_npl",),
+        only=(Template.BANK,),
+        zero_is_missing=True,
+        unit="RATIO",
+    ),
+    _item(
+        "vr_npl_coverage", "RATIOS", _VR, "Tỷ lệ bao phủ nợ xấu",
+        bank=("rt_bank_npl_coverage",),
+        only=(Template.BANK,),
+        sign=_EXP,
+        zero_is_missing=True,
+        unit="RATIO",
+    ),
+    _item(
+        "vr_casa_ratio", "RATIOS", _VR, "Tỷ lệ CASA",
+        bank=("rt_bank_casa",),
+        only=(Template.BANK,),
+        zero_is_missing=True,
+        unit="RATIO",
+    ),
+    _item(
+        "vr_nim", "RATIOS", _VR, "NIM (nhà cung cấp dữ liệu)",
+        bank=("rt_bank_nim",),
+        only=(Template.BANK,),
+        zero_is_missing=True,
+        unit="RATIO",
+    ),
+    _item(
+        "vr_cost_of_funds", "RATIOS", _VR, "Chi phí vốn (COF)",
+        bank=("rt_bank_cof",),
+        only=(Template.BANK,),
+        sign=_EXP,
+        zero_is_missing=True,
+        unit="RATIO",
+    ),
+    _item(
+        "vr_ldr", "RATIOS", _VR, "Tỷ lệ cho vay/huy động (nhà cung cấp dữ liệu)",
+        bank=("rt_bank_ldr",),
+        only=(Template.BANK,),
+        zero_is_missing=True,
+        unit="RATIO",
+    ),
+    _item(
+        "vr_cir", "RATIOS", _VR, "CIR (nhà cung cấp dữ liệu)",
+        bank=("rt_bank_cir",),
+        only=(Template.BANK,),
+        sign=_EXP,
+        zero_is_missing=True,
+        unit="RATIO",
     ),
 )
 

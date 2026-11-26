@@ -215,10 +215,12 @@ class _FakeConn:
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         self._calls.append(sql)
         if "FROM financial_statements" in sql:
-            as_of, _min_date, tickers = params
+            as_of, _min_date, tickers, statement_types = params
             out = []
             for r in self._sample["rows"]:
                 if tickers and r["symbol"] not in tickers:
+                    continue
+                if r["statement_type"].upper() not in statement_types:
                     continue
                 pe = date.fromisoformat(r["period_end"])
                 eff = effective_publication_date(pe, r["published_date"], r["frequency"])

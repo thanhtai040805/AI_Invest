@@ -505,6 +505,7 @@ class CoreMetricsReaderProtocol(Protocol):
         tickers: Sequence[str] | None = None,
         lookback_years: int = 5,
         prefer_annual: bool = True,
+        statement_types: Sequence[str] = ("BS", "IS", "CF"),
     ) -> list[dict[str, Any]]:
         ...
 
@@ -663,8 +664,10 @@ class AsyncPGCoreMetricsReader:
         tickers: Sequence[str] | None = None,
         lookback_years: int = 5,
         prefer_annual: bool = True,
+        statement_types: Sequence[str] = ("BS", "IS", "CF"),
     ) -> list[dict[str, Any]]:
         norm_tks = _norm_ticker_param(tickers)
+        norm_sts = sorted({str(s).strip().upper() for s in statement_types if str(s).strip()})
         min_date = as_of_date - timedelta(days=365 * max(1, lookback_years) + 30)
         freq_clause = (
             "LOWER(TRIM(frequency)) = 'yearly'"
@@ -691,7 +694,7 @@ class AsyncPGCoreMetricsReader:
                    END AS effective_published_date
             FROM financial_statements
             WHERE {freq_clause}
-              AND UPPER(TRIM(statement_type)) IN ('BS', 'IS', 'CF')
+              AND UPPER(TRIM(statement_type)) = ANY($4::text[])
               AND period_end <= $1
               AND period_end >= $2
               AND (
@@ -709,7 +712,7 @@ class AsyncPGCoreMetricsReader:
             ORDER BY symbol ASC, period_end DESC
         """
         async with pool.acquire() as conn:
-            rows = await conn.fetch(sql, as_of_date, min_date, norm_tks)
+            rows = await conn.fetch(sql, as_of_date, min_date, norm_tks, norm_sts)
         return [dict(r) for r in rows]
 
     async def fetch_pit_market_caps(
