@@ -58,7 +58,7 @@ CLAIM_BUDGET_BY_TIER: dict[str, int] = {
     "deep": 6,
 }
 MAX_PREMISES = 2
-MAX_EVIDENCE_PER_CLAIM = 5
+MAX_EVIDENCE_PER_CLAIM = 8
 MAX_DOC_SPECS_PER_CLAIM = 2
 
 # Composite metrics computable deterministically in `locate_candidates` on top of FactSet + market_cap
@@ -681,6 +681,8 @@ def validate_research_brief(
         ] if isinstance(cand_raw.get("sectors"), Sequence) and not isinstance(cand_raw.get("sectors"), str) else []
         raw_tmpl = str(cand_raw.get("template") or "").strip().upper() or None
         if raw_tmpl not in {"CORPORATE", "BANK", "SECURITIES", "INSURANCE"}:
+            if raw_tmpl:
+                _drop(f"Bỏ mẫu BCTC không hợp lệ `{raw_tmpl}` trong `candidate_search` (lọc trên mọi mẫu BCTC).")
             raw_tmpl = None
         if anchor_ticker and anchor_ticker in profile_by_tk and not raw_tmpl:
             raw_tmpl = resolve_template(str(profile_by_tk[anchor_ticker].get("industry") or "")).value
@@ -859,7 +861,18 @@ def validate_research_brief(
                 "hoặc đang quan tâm nhóm ngành cụ thể nào?"
             )
     elif not claims and not premises:
-        errors.append("Đề bài không có `claims` hay `premises_to_check` nào để kiểm chứng.")
+        if cand_spec is not None and cand_spec.criteria:
+            # A pure screening brief is answerable: rank candidates instead of burning an LLM retry
+            claims = [
+                ClaimSpec(
+                    id="K1",
+                    statement="Xếp hạng các ứng viên thỏa tiêu chí lọc định lượng",
+                    evidence=["screen"],
+                )
+            ]
+            warnings.append("Đề bài chỉ có `candidate_search` -> tự thêm ý K1 `screen` để xếp hạng ứng viên.")
+        else:
+            errors.append("Đề bài không có `claims` hay `premises_to_check` nào để kiểm chứng.")
 
     if errors:
         return BriefValidationOutcome(

@@ -504,3 +504,437 @@ async def test_execute_brief_claims_refutes_false_premise_and_extracts_doc_verdi
     assert mini_model.calls == 1
     assert exec_res.claim_cards[1].status == "CONFIRMED"
     assert "[C1]" in exec_res.claim_cards[1].badges
+
+
+async def test_locate_candidates_excludes_financials_from_net_cash_and_labels_tolerance_and_periods() -> None:
+    @asynccontextmanager
+    async def _sf() -> AsyncIterator[dict[str, int]]:
+        yield {"sid": 1}
+
+    class _InsurerAndCorpReader(_BankAndCorpCoreReader):
+        async def fetch_issuer_profiles(self, tickers=None):
+            base = list(await super().fetch_issuer_profiles(tickers=None))
+            base.append(
+                {
+                    "ticker": "BMI",
+                    "company_name": "Bảo Minh",
+                    "sector": "Tài chính",
+                    "industry": "Bảo hiểm",
+                    "market_cap": 3_000e9,
+                }
+            )
+            if tickers:
+                want = {t.upper() for t in tickers}
+                return [p for p in base if p["ticker"] in want]
+            return base
+
+        async def fetch_pit_market_caps(self, as_of_date, *, tickers=None):
+            base = dict(await super().fetch_pit_market_caps(as_of_date, tickers=tickers))
+            base["BMI"] = 3_000e9
+            return base
+
+        async def fetch_pit_financial_statements(
+            self,
+            as_of_date,
+            *,
+            tickers=None,
+            lookback_years=6,
+            prefer_annual=False,
+            statement_types=("IS", "BS", "CF", "RATIOS"),
+        ):
+            rows = list(
+                await super().fetch_pit_financial_statements(
+                    as_of_date,
+                    tickers=tickers,
+                    lookback_years=lookback_years,
+                    prefer_annual=prefer_annual,
+                    statement_types=statement_types,
+                )
+            )
+            # Insurer BMI holds huge short-term deposits backing technical reserves -> must be excluded!
+            rows.append(
+                {
+                    "symbol": "BMI",
+                    "period_end": date(2026, 9, 30),
+                    "statement_type": "BS",
+                    "frequency": "quarterly",
+                    "source": "alphastock",
+                    "published_date": date(2026, 10, 25),
+                    "data": {
+                        "bs_total_assets": 8_600e9,
+                        "bs_equity": 2_900e9,
+                        "i_tiền_và_các_khoản_tương_đương_tiền": 500e9,
+                        "bs_short_term_investments": 5_000e9,
+                    },
+                }
+            )
+            return rows
+
+    reader = _InsurerAndCorpReader()
+    profiles = tuple(await reader.fetch_issuer_profiles())
+
+    brief_cash = validate_research_brief(
+        {
+            "user_concern": "Tìm cổ phiếu rẻ so với tiền mặt",
+            "answer_shape": "candidate_ranking",
+            "entities": {
+                "tickers": [],
+                "anchor_ticker": None,
+                "candidate_search": {
+                    "sectors": [],
+                    "criteria": [{"metric": "net_cash_to_market_cap", "op": ">=", "value": 0.25, "ref": "literal"}],
+                    "sort_by": "net_cash_to_market_cap",
+                    "sort_dir": "desc",
+                    "limit": 5,
+                },
+            },
+            "claims": [],
+        },
+        as_of_date=AS_OF,
+        catalog_profiles=profiles,
+    ).brief
+    assert brief_cash is not None
+
+    ctx = ResearchToolContext(
+        as_of_date=AS_OF,
+        principal=_principal(),
+        chat_mode="GENERAL",
+        session_factory=_sf,
+        session_ledger=FinancialZeroMemLedger(request_as_of_date=AS_OF),
+        evidence=ResearchEvidenceLedger(),
+        available_tickers=frozenset({"ACB", "MBB"}),
+        catalog_profiles=profiles,
+        core_reader=reader,
+    )
+    loc = await locate_candidates(brief_cash, ctx)
+    assert loc.analysis_tickers == ["CASHCO"]
+    assert all(r["ticker"] != "BMI" for r in loc.candidate_rows)
+    assert any("[Q3/2026" in line for line in loc.summary_lines)
+
+    # Also verify anchor tolerance label is shown transparently when tolerance > 0
+    brief_acb = validate_research_brief(
+        {
+            "user_concern": "Ngân hàng an toàn như ACB",
+            "answer_shape": "candidate_ranking",
+            "entities": {
+                "tickers": ["ACB"],
+                "anchor_ticker": "ACB",
+                "candidate_search": {
+                    "sectors": ["Ngân hàng"],
+                    "template": "BANK",
+                    "criteria": [{"metric": "vr_npl_ratio", "op": "<=", "ref": "anchor", "tolerance": 0.005}],
+                    "sort_by": "npat_growth_yoy",
+                    "sort_dir": "desc",
+                    "limit": 3,
+                },
+            },
+            "claims": [{"id": "K1", "statement": "Xếp hạng", "evidence": ["screen"]}],
+        },
+        as_of_date=AS_OF,
+        catalog_profiles=profiles,
+    ).brief
+    assert brief_acb is not None
+    loc_acb = await locate_candidates(brief_acb, ctx)
+    assert any("± dung sai 0.50%" in line for line in loc_acb.summary_lines)
+
+
+async def test_quant_filters_unreliable_quarterly_cfo_and_surfaces_st_investments_liquidity() -> None:
+    @asynccontextmanager
+    async def _sf() -> AsyncIterator[dict[str, int]]:
+        yield {"sid": 1}
+
+    class _RetailTrapReader:
+        async def fetch_issuer_profiles(self, tickers=None):
+            del tickers
+            return [
+                {
+                    "ticker": "FRT",
+                    "company_name": "FPT Retail",
+                    "sector": "Bán lẻ",
+                    "industry": "Bán lẻ",
+                    "market_cap": 20_000e9,
+                }
+            ]
+
+        async def fetch_pit_market_caps(self, as_of_date, *, tickers=None):
+            del as_of_date, tickers
+            return {"FRT": 20_000e9}
+
+        async def fetch_pit_financial_statements(
+            self,
+            as_of_date,
+            *,
+            tickers=None,
+            lookback_years=6,
+            prefer_annual=False,
+            statement_types=("IS", "BS", "CF", "RATIOS"),
+        ):
+            del as_of_date, tickers, lookback_years, prefer_annual, statement_types
+            return [
+                {
+                    "symbol": "FRT",
+                    "period_end": date(2026, 9, 30),
+                    "statement_type": "BS",
+                    "frequency": "quarterly",
+                    "source": "alphastock",
+                    "published_date": date(2026, 10, 25),
+                    "data": {
+                        "bs_total_assets": 30_500e9,
+                        "bs_equity": 6_500e9,
+                        "i_tiền_và_các_khoản_tương_đương_tiền": 510e9,
+                        "bs_short_term_investments": 11_274e9,
+                        "bs_short_term_borrowings": 14_228e9,
+                    },
+                },
+                # Sparse Q1 + Q3 CF (missing Q2) -> load_fact_set flags quarterly CF as unreliable!
+                {
+                    "symbol": "FRT",
+                    "period_end": date(2026, 3, 31),
+                    "statement_type": "CF",
+                    "frequency": "quarterly",
+                    "source": "alphastock",
+                    "published_date": date(2026, 4, 25),
+                    "data": {"cf_net_cash_flows_from_operating_activities": 37_220e9},
+                },
+                {
+                    "symbol": "FRT",
+                    "period_end": date(2026, 9, 30),
+                    "statement_type": "CF",
+                    "frequency": "quarterly",
+                    "source": "alphastock",
+                    "published_date": date(2026, 10, 25),
+                    "data": {"cf_net_cash_flows_from_operating_activities": 92_494e9},
+                },
+                {
+                    "symbol": "FRT",
+                    "period_end": date(2025, 12, 31),
+                    "statement_type": "CF",
+                    "frequency": "yearly",
+                    "source": "alphastock",
+                    "published_date": date(2026, 3, 25),
+                    "data": {"cf_net_cash_flows_from_operating_activities": 2_747e9},
+                },
+            ]
+
+    reader = _RetailTrapReader()
+    profiles = tuple(await reader.fetch_issuer_profiles())
+    brief = validate_research_brief(
+        {
+            "user_concern": "Kiểm tra thanh khoản và dòng tiền FRT",
+            "answer_shape": "health_check",
+            "entities": {"tickers": ["FRT"]},
+            "claims": [
+                {
+                    "id": "K1",
+                    "statement": "Thanh khoản vay ngắn hạn và dòng tiền HĐKD của FRT",
+                    "evidence": ["fact:st_borrowings", "fact:cash_and_equivalents", "fact:cfo"],
+                    "period": "Q3/2026",
+                }
+            ],
+        },
+        as_of_date=AS_OF,
+        catalog_profiles=profiles,
+    ).brief
+    assert brief is not None
+
+    ctx = ResearchToolContext(
+        as_of_date=AS_OF,
+        principal=_principal(),
+        chat_mode="GENERAL",
+        session_factory=_sf,
+        session_ledger=FinancialZeroMemLedger(request_as_of_date=AS_OF),
+        evidence=ResearchEvidenceLedger(),
+        available_tickers=frozenset({"FRT"}),
+        catalog_profiles=profiles,
+        core_reader=reader,
+    )
+    class _UnusedModel:
+        async def stream_turn(
+            self, request: ModelRequest, cancellation: CancellationToken
+        ) -> AsyncIterator[ModelChunk]:
+            del request, cancellation
+            raise AssertionError("Quant-only claim must not invoke LLM Mini-Reader")
+            yield  # pragma: no cover
+
+    loc = await locate_candidates(brief, ctx)
+    exec_res = await execute_brief_claims(brief=brief, located=loc, ctx=ctx, model=_UnusedModel())
+    text = "\n".join(exec_res.claim_cards[0].summary_lines)
+    # Unreliable quarterly CF (92,494 tỷ) must be filtered out; FY2025 must remain with explicit warning
+    assert "92,494" not in text
+    assert "FY2025=" in text
+    assert "chỉ dùng số năm FY" in text
+    # Hidden term deposits (11,274 tỷ st_investments) MUST be surfaced deterministically alongside cash
+    assert "đầu tư tài chính ngắn hạn" in text
+    assert "11,274" in text
+    assert any(
+        t.get("formula") == "(cash_and_equivalents + st_investments) / st_borrowings"
+        for t in ctx.evidence.calculator_traces
+    )
+
+
+async def test_premise_direction_falls_back_to_proxy_kpi_and_marks_unprovable_premise_no_data() -> None:
+    @asynccontextmanager
+    async def _sf() -> AsyncIterator[dict[str, int]]:
+        yield {"sid": 1}
+
+    class _SinglePointNimReader:
+        def __init__(self, include_multi_quarter_proxy: bool) -> None:
+            self.include_multi_quarter_proxy = include_multi_quarter_proxy
+
+        async def fetch_issuer_profiles(self, tickers=None):
+            del tickers
+            return [
+                {
+                    "ticker": "ACB",
+                    "company_name": "ACB",
+                    "sector": "Tài chính",
+                    "industry": "Ngân hàng",
+                    "market_cap": 115_000e9,
+                }
+            ]
+
+        async def fetch_pit_market_caps(self, as_of_date, *, tickers=None):
+            del as_of_date, tickers
+            return {"ACB": 115_000e9}
+
+        async def fetch_pit_financial_statements(
+            self,
+            as_of_date,
+            *,
+            tickers=None,
+            lookback_years=6,
+            prefer_annual=False,
+            statement_types=("IS", "BS", "CF", "RATIOS"),
+        ):
+            del as_of_date, tickers, lookback_years, prefer_annual, statement_types
+            # Vendor vr_nim has ONLY ONE quarter (exactly like real Core PG!)
+            rows: list[dict[str, Any]] = [
+                {
+                    "symbol": "ACB",
+                    "period_end": date(2026, 9, 30),
+                    "statement_type": "RATIOS",
+                    "frequency": "quarterly",
+                    "source": "alphastock",
+                    "published_date": date(2026, 10, 25),
+                    "data": {"rt_bank_nim": 0.0292},
+                },
+                {
+                    "symbol": "ACB",
+                    "period_end": date(2026, 9, 30),
+                    "statement_type": "IS",
+                    "frequency": "quarterly",
+                    "source": "alphastock",
+                    "published_date": date(2026, 10, 25),
+                    "data": {"is_net_interest_income": 8_195e9},
+                },
+                {
+                    "symbol": "ACB",
+                    "period_end": date(2026, 9, 30),
+                    "statement_type": "BS",
+                    "frequency": "quarterly",
+                    "source": "alphastock",
+                    "published_date": date(2026, 10, 25),
+                    "data": {"bs_total_assets": 1_030_000e9},
+                },
+            ]
+            if self.include_multi_quarter_proxy:
+                rows.extend(
+                    [
+                        {
+                            "symbol": "ACB",
+                            "period_end": date(2026, 6, 30),
+                            "statement_type": "IS",
+                            "frequency": "quarterly",
+                            "source": "alphastock",
+                            "published_date": date(2026, 7, 25),
+                            "data": {"is_net_interest_income": 7_700e9},
+                        },
+                        {
+                            "symbol": "ACB",
+                            "period_end": date(2026, 6, 30),
+                            "statement_type": "BS",
+                            "frequency": "quarterly",
+                            "source": "alphastock",
+                            "published_date": date(2026, 7, 25),
+                            "data": {"bs_total_assets": 1_000_000e9},
+                        },
+                        {
+                            "symbol": "ACB",
+                            "period_end": date(2026, 3, 31),
+                            "statement_type": "BS",
+                            "frequency": "quarterly",
+                            "source": "alphastock",
+                            "published_date": date(2026, 4, 25),
+                            "data": {"bs_total_assets": 980_000e9},
+                        },
+                    ]
+                )
+            return rows
+
+    brief_raw = {
+        "user_concern": "Tại sao NIM ACB sập trong Q3?",
+        "answer_shape": "premise_audit_and_explanation",
+        "entities": {"tickers": ["ACB"]},
+        "premises_to_check": [
+            {
+                "id": "P1",
+                "statement": "NIM của ACB trong Q3/2026 giảm mạnh so với kỳ trước",
+                "evidence": ["fact:vr_nim"],
+                "period": "Q3/2026",
+            }
+        ],
+        "claims": [],
+    }
+
+    # Case A: 1-point vr_nim falls back to computed nii_to_avg_assets (rising Q2->Q3) -> REFUTED + grounded trace!
+    reader_a = _SinglePointNimReader(include_multi_quarter_proxy=True)
+    profiles_a = tuple(await reader_a.fetch_issuer_profiles())
+    brief_a = validate_research_brief(brief_raw, as_of_date=AS_OF, catalog_profiles=profiles_a).brief
+    assert brief_a is not None
+    ctx_a = ResearchToolContext(
+        as_of_date=AS_OF,
+        principal=_principal(),
+        chat_mode="GENERAL",
+        session_factory=_sf,
+        session_ledger=FinancialZeroMemLedger(request_as_of_date=AS_OF),
+        evidence=ResearchEvidenceLedger(),
+        available_tickers=frozenset({"ACB"}),
+        catalog_profiles=profiles_a,
+        core_reader=reader_a,
+    )
+    class _UnusedModel:
+        async def stream_turn(
+            self, request: ModelRequest, cancellation: CancellationToken
+        ) -> AsyncIterator[ModelChunk]:
+            del request, cancellation
+            raise AssertionError("Quant-only premise must not invoke LLM Mini-Reader")
+            yield  # pragma: no cover
+
+    res_a = await execute_brief_claims(
+        brief=brief_a, located=await locate_candidates(brief_a, ctx_a), ctx=ctx_a, model=_UnusedModel()
+    )
+    assert res_a.premise_cards[0].status == "REFUTED"
+    assert "BÁC BỎ TIỀN ĐỀ" in res_a.premise_cards[0].summary_lines[0]
+    assert any(t.get("source") == "PREMISE_DIRECTION_CHECK" for t in ctx_a.evidence.calculator_traces)
+
+    # Case B: only 1 quarter total -> cannot compare -> MUST be NO_DATA (never falsely CONFIRMED!)
+    reader_b = _SinglePointNimReader(include_multi_quarter_proxy=False)
+    profiles_b = tuple(await reader_b.fetch_issuer_profiles())
+    brief_b = validate_research_brief(brief_raw, as_of_date=AS_OF, catalog_profiles=profiles_b).brief
+    assert brief_b is not None
+    ctx_b = ResearchToolContext(
+        as_of_date=AS_OF,
+        principal=_principal(),
+        chat_mode="GENERAL",
+        session_factory=_sf,
+        session_ledger=FinancialZeroMemLedger(request_as_of_date=AS_OF),
+        evidence=ResearchEvidenceLedger(),
+        available_tickers=frozenset({"ACB"}),
+        catalog_profiles=profiles_b,
+        core_reader=reader_b,
+    )
+    res_b = await execute_brief_claims(
+        brief=brief_b, located=await locate_candidates(brief_b, ctx_b), ctx=ctx_b, model=_UnusedModel()
+    )
+    assert res_b.premise_cards[0].status == "NO_DATA"
+    assert "CHƯA KIỂM CHỨNG ĐƯỢC TIỀN ĐỀ" in res_b.premise_cards[0].summary_lines[0]

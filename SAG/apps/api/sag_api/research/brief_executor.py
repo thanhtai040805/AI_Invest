@@ -48,6 +48,7 @@ from sag_api.research.brief import (
 )
 from sag_api.research.facts import FactSet, LookupStatus, Template
 from sag_api.research.facts.catalog import CATALOG_BY_ID, items_for_template, resolve_template
+from sag_api.research.facts.store import FLAG_QUARTERLY_CF_UNRELIABLE
 from sag_api.research.financial_metrics_store import screen_universe_metrics
 from sag_api.research.tools.analyst_tools import _agm_tables, _fact_set, _register_kpi, fmt_value
 from sag_api.research.tools.context import ResearchToolContext
@@ -224,48 +225,58 @@ def _latest_stock_val(fs: FactSet, ticker: str, item: str) -> tuple[float | None
     return None, "-"
 
 
+_CASH_COMPOSITE_METRICS = frozenset(
+    {"cash_to_market_cap", "net_cash_to_market_cap", "net_cash", "total_debt", "net_debt"}
+)
+
+
 def eval_candidate_metric(
     fs: FactSet,
     ticker: str,
     metric_id: str,
     market_caps: Mapping[str, float],
-) -> tuple[float | None, str]:
+) -> tuple[float | None, str, str]:
     """Deterministically evaluate a `FactSet`, `KPI`, or composite valuation/cash metric (0 tokens).
 
-    Returns `(numeric_value_or_None, unit_code)`.
+    Returns `(numeric_value_or_None, unit_code, period_label)` so every number is shown with its period.
     """
     tk = ticker.strip().upper()
     if tk not in fs.templates:
-        return None, ""
+        return None, "", "-"
 
     mcap = market_caps.get(tk)
+    mcap_lbl = "PIT"
     if mcap is None:
-        vr_mc, _ = _latest_stock_val(fs, tk, "vr_market_cap")
-        mcap = vr_mc
+        mcap, mcap_lbl = _latest_stock_val(fs, tk, "vr_market_cap")
 
     if metric_id == "market_cap":
-        return mcap, "VND"
+        return mcap, "VND", mcap_lbl
 
     if metric_id in {"pe", "pb", "ev_ebitda"}:
-        vr_val, _ = _latest_stock_val(fs, tk, f"vr_{metric_id}")
+        vr_val, vr_lbl = _latest_stock_val(fs, tk, f"vr_{metric_id}")
         if vr_val is not None and vr_val > 0:
-            return vr_val, "X"
+            return vr_val, "X", vr_lbl
         if metric_id == "pe" and mcap and mcap > 0:
             p = latest_analysis_period(fs, tk)
             if p is not None:
                 np_res = fs.get(tk, "npat", p.period_type, p.fiscal_year, p.fiscal_quarter)
                 if np_res.status is LookupStatus.OK and np_res.fact and np_res.fact.value > 0:
-                    return mcap / np_res.fact.value, "X"
+                    return mcap / np_res.fact.value, "X", p.label
         if metric_id == "pb" and mcap and mcap > 0:
-            eq, _ = _latest_stock_val(fs, tk, "equity")
+            eq, eq_lbl = _latest_stock_val(fs, tk, "equity")
             if eq and eq > 0:
-                return mcap / eq, "X"
-        return None, "X"
+                return mcap / eq, "X", eq_lbl
+        return None, "X", "-"
 
-    if metric_id in {"cash_to_market_cap", "net_cash_to_market_cap", "net_cash", "total_debt", "net_debt"}:
-        cash, _ = _latest_stock_val(fs, tk, "cash_and_equivalents")
+    if metric_id in _CASH_COMPOSITE_METRICS:
+        unit = "VND" if metric_id in {"net_cash", "net_debt", "total_debt"} else "RATIO"
+        # Bank/insurer/securities cash & investments back deposits/technical reserves/client money:
+        # "net cash vs market cap" is economically meaningless for them, so never rank them on it.
+        if fs.templates[tk] is not Template.CORPORATE:
+            return None, unit, "N/A (doanh nghiệp tài chính)"
+        cash, c_lbl = _latest_stock_val(fs, tk, "cash_and_equivalents")
         if cash is None:
-            c1, _ = _latest_stock_val(fs, tk, "cash_only")
+            c1, c_lbl = _latest_stock_val(fs, tk, "cash_only")
             c2, _ = _latest_stock_val(fs, tk, "cash_equivalents_only")
             if c1 is not None or c2 is not None:
                 cash = (c1 or 0.0) + (c2 or 0.0)
@@ -275,34 +286,35 @@ def eval_candidate_metric(
         liquid = (cash or 0.0) + (st_inv or 0.0) if (cash is not None or st_inv is not None) else None
         tot_debt = (st_d or 0.0) + (lt_d or 0.0) if (st_d is not None or lt_d is not None) else 0.0
         if metric_id == "total_debt":
-            return (tot_debt if (st_d is not None or lt_d is not None) else None), "VND"
+            return (tot_debt if (st_d is not None or lt_d is not None) else None), unit, c_lbl
         if liquid is None:
-            return None, ("VND" if metric_id in {"net_cash", "net_debt"} else "RATIO")
+            return None, unit, "-"
         net_cash = liquid - tot_debt
         if metric_id == "net_cash":
-            return net_cash, "VND"
+            return net_cash, unit, c_lbl
         if metric_id == "net_debt":
-            return -net_cash, "VND"
+            return -net_cash, unit, c_lbl
         if not mcap or mcap <= 0:
-            return None, "RATIO"
+            return None, unit, "-"
+        lbl = f"{c_lbl}; vốn hóa {mcap_lbl}"
         if metric_id == "cash_to_market_cap":
-            return liquid / mcap, "RATIO"
-        return net_cash / mcap, "RATIO"
+            return liquid / mcap, unit, lbl
+        return net_cash / mcap, unit, lbl
 
     if metric_id == "fcf_yield":
         p = latest_analysis_period(fs, tk)
         if p is not None and mcap and mcap > 0:
             fcf_kv = compute_kpi(fs, tk, "fcf", p)
             if fcf_kv.status is KpiStatus.OK and fcf_kv.value is not None:
-                return fcf_kv.value / mcap, "RATIO"
-        return None, "RATIO"
+                return fcf_kv.value / mcap, "RATIO", fcf_kv.period
+        return None, "RATIO", "-"
 
     if metric_id == "liabilities_to_equity":
-        liab, _ = _latest_stock_val(fs, tk, "total_liabilities")
+        liab, l_lbl = _latest_stock_val(fs, tk, "total_liabilities")
         eq, _ = _latest_stock_val(fs, tk, "equity")
         if liab is not None and eq and eq > 0:
-            return liab / eq, "X"
-        return None, "X"
+            return liab / eq, "X", l_lbl
+        return None, "X", "-"
 
     alias_kpi = {
         "revenue_yoy": "top_line_growth_yoy",
@@ -313,32 +325,32 @@ def eval_candidate_metric(
     if alias_kpi in KPI_BY_ID:
         p = latest_analysis_period(fs, tk)
         if p is None:
-            return None, KPI_BY_ID[alias_kpi].unit
-        # Prefer latest single-quarter YoY if TTM prior year is missing
+            return None, KPI_BY_ID[alias_kpi].unit, "-"
+        # Prefer TTM; fall back to latest single quarter (label makes the difference explicit)
         kv = compute_kpi(fs, tk, alias_kpi, p)
         if kv.status is KpiStatus.OK and kv.value is not None:
-            return kv.value, kv.unit
+            return kv.value, kv.unit, kv.period
         lq = fs.latest_period(tk, "Q")
         if lq is not None:
             kv_q = compute_kpi(fs, tk, alias_kpi, PeriodRef("Q", lq[0], lq[1]))
             if kv_q.status is KpiStatus.OK and kv_q.value is not None:
-                return kv_q.value, kv_q.unit
-        return None, KPI_BY_ID[alias_kpi].unit
+                return kv_q.value, kv_q.unit, kv_q.period
+        return None, KPI_BY_ID[alias_kpi].unit, "-"
 
     if metric_id in CATALOG_BY_ID:
         spec = CATALOG_BY_ID[metric_id]
         unit = spec.unit or ("VND" if spec.kind in ("FLOW", "STOCK") else "NUMBER")
         if spec.kind in ("STOCK", "VENDOR_RATIO"):
-            val, _ = _latest_stock_val(fs, tk, metric_id)
-            return val, unit
+            val, v_lbl = _latest_stock_val(fs, tk, metric_id)
+            return val, unit, v_lbl
         p = latest_analysis_period(fs, tk)
         if p is not None:
             res = fs.get(tk, metric_id, p.period_type, p.fiscal_year, p.fiscal_quarter)
             if res.status is LookupStatus.OK and res.fact is not None:
-                return res.fact.value, unit
-        return None, unit
+                return res.fact.value, unit, p.label
+        return None, unit, "-"
 
-    return None, ""
+    return None, "", "-"
 
 
 def _check_criterion(
@@ -472,11 +484,19 @@ async def locate_candidates(
 
     anchor_vals: dict[str, float | None] = {}
     anchor_units: dict[str, str] = {}
+    anchor_periods: dict[str, str] = {}
     summary_lines: list[str] = []
     eligible_n = len(eligible_profiles)
-    cap_note = (
-        f", giới hạn {MAX_CANDIDATE_BATCH} mã ưu tiên vốn hóa lớn/đã index" if eligible_n > MAX_CANDIDATE_BATCH else ""
-    )
+    if eligible_n > MAX_CANDIDATE_BATCH:
+        has_mcap = sum(1 for p in eligible_profiles if p.get("market_cap"))
+        order_basis = (
+            "ưu tiên mã đã index rồi vốn hóa lớn"
+            if has_mcap >= eligible_n // 2
+            else f"ưu tiên mã đã index rồi THỨ TỰ CHỮ CÁI vì {eligible_n - has_mcap}/{eligible_n} hồ sơ thiếu vốn hóa"
+        )
+        cap_note = f", giới hạn {MAX_CANDIDATE_BATCH} mã ({order_basis}) — các mã ngoài giới hạn CHƯA được xét"
+    else:
+        cap_note = ""
     summary_lines.append(
         f"Phạm vi định vị: đã đánh giá {len(batch_tickers)}/{eligible_n} mã đủ điều kiện ngành & quyền truy cập "
         f"(nguồn {profile_source}{cap_note})."
@@ -485,12 +505,13 @@ async def locate_candidates(
         anc_inputs: dict[str, Any] = {}
         anc_parts: list[str] = []
         for mk in metric_keys:
-            val, unit = eval_candidate_metric(fs, anchor, mk, mcaps)
+            val, unit, plbl = eval_candidate_metric(fs, anchor, mk, mcaps)
             anchor_vals[mk] = val
             anchor_units[mk] = unit
+            anchor_periods[mk] = plbl
             if val is not None:
                 anc_inputs[mk] = {"value": val, "unit": unit or "NUMBER"}
-                anc_parts.append(f"{mk}={fmt_value(val, unit)}")
+                anc_parts.append(f"{mk}={fmt_value(val, unit)} ({plbl})")
         saved_anc = await ctx.evidence.register_calculator_trace(
             {
                 "formula": "anchor_benchmark",
@@ -514,24 +535,27 @@ async def locate_candidates(
             continue
         vals: dict[str, float | None] = {}
         units: dict[str, str] = {}
+        periods: dict[str, str] = {}
         for mk in metric_keys:
-            v, u = eval_candidate_metric(fs, tk, mk, mcaps)
+            v, u, plbl = eval_candidate_metric(fs, tk, mk, mcaps)
             vals[mk] = v
             units[mk] = u
+            periods[mk] = plbl
         passed = 0
         crit_notes: list[str] = []
         for cr in cand_spec.criteria:
             ok = _check_criterion(vals.get(cr.metric), cr, anchor_vals.get(cr.metric))
             if ok:
                 passed += 1
-            ref_txt = (
-                f"anchor({fmt_value(anchor_vals.get(cr.metric), units.get(cr.metric, ''))})"
-                if cr.ref == "anchor"
-                else fmt_value(cr.value, units.get(cr.metric, ""))
-            )
+            u_cr = units.get(cr.metric, "")
+            if cr.ref == "anchor":
+                tol_txt = f" ± dung sai {fmt_value(cr.tolerance, u_cr)}" if cr.tolerance else ""
+                ref_txt = f"{anchor} {fmt_value(anchor_vals.get(cr.metric), u_cr)}{tol_txt}"
+            else:
+                ref_txt = fmt_value(cr.value, u_cr)
             mark = "ĐẠT" if ok else "CHƯA ĐẠT"
             crit_notes.append(
-                f"{cr.metric}={fmt_value(vals.get(cr.metric), units.get(cr.metric, ''))} "
+                f"{cr.metric}={fmt_value(vals.get(cr.metric), u_cr)} [{periods.get(cr.metric, '-')}] "
                 f"({cr.op} {ref_txt}: {mark})"
             )
         if cand_spec.criteria and passed == 0:
@@ -731,12 +755,20 @@ async def _run_quant_specs_for_claim(
                     if item_id not in applicable:
                         continue
                     spec = CATALOG_BY_ID[item_id]
+                    cf_note = ""
                     if spec.kind in ("STOCK", "VENDOR_RATIO"):
                         q_series = fs.series(tk, item_id, "Q")[-3:]
                         fy_series = fs.series(tk, item_id, "FY")[-2:]
                         chosen = q_series if q_series else fy_series
                     else:
-                        q_series = fs.series(tk, item_id, "Q")[-3:]
+                        raw_q = fs.series(tk, item_id, "Q")[-3:]
+                        # Vendor quarterly cash flows are sparse/YTD-cumulative: never show them as single quarters
+                        q_series = [f for f in raw_q if FLAG_QUARTERLY_CF_UNRELIABLE not in f.flags]
+                        if len(q_series) < len(raw_q):
+                            cf_note = (
+                                " (Lưu ý: số quý của dòng tiền từ nhà cung cấp thưa/lũy kế nên đã loại; "
+                                "chỉ dùng số năm FY)"
+                            )
                         fy_series = fs.series(tk, item_id, "FY")[-2:]
                         ttm_series = fs.series(tk, item_id, "TTM")[-1:]
                         chosen = [*q_series, *fy_series[-1:], *ttm_series]
@@ -751,7 +783,7 @@ async def _run_quant_specs_for_claim(
                             " (Lưu ý kế toán: chỉ tiêu này ĐÃ là TỔNG vay & nợ thuê tài chính ngắn hạn trên CĐKT, "
                             "đã bao gồm nợ dài hạn đến hạn trả — KHÔNG cộng thêm các khoản mục con từ thuyết minh)"
                         )
-                    item_summaries.append(f"{spec.label_vi}: {pts}{note_guard}")
+                    item_summaries.append(f"{spec.label_vi}: {pts}{note_guard}{cf_note}")
 
                 # Accounting-safe deterministic composites so LLM never mentally adds/subtracts/divides
                 lq = fs.latest_period(tk, "Q")
@@ -810,6 +842,49 @@ async def _run_quant_specs_for_claim(
                                 f"[{saved_td['calc_id']}] Tổng nợ vay chịu lãi {tk} Q{fq_q}/{fy_q} "
                                 f"(vay ngắn hạn {fmt_value(st_r.fact.value, 'VND')} + vay dài hạn "
                                 f"{fmt_value(lt_v, 'VND')}): {fmt_value(tot_d, 'VND')}"
+                            )
+                    # Liquidity context for short-term debt: cash alone hides term deposits (st_investments)
+                    if "st_borrowings" in fact_items and "st_investments" in applicable:
+                        c_r = fs.get(tk, "cash_and_equivalents", "Q", fy_q, fq_q)
+                        i_r = fs.get(tk, "st_investments", "Q", fy_q, fq_q)
+                        sd_r = fs.get(tk, "st_borrowings", "Q", fy_q, fq_q)
+                        if (
+                            c_r.status is LookupStatus.OK
+                            and c_r.fact is not None
+                            and sd_r.status is LookupStatus.OK
+                            and sd_r.fact is not None
+                        ):
+                            inv_v = i_r.fact.value if (i_r.status is LookupStatus.OK and i_r.fact) else 0.0
+                            liquid_v = c_r.fact.value + inv_v
+                            cover = liquid_v / sd_r.fact.value if sd_r.fact.value > 0 else None
+                            saved_lq = await ctx.evidence.register_calculator_trace(
+                                {
+                                    "formula": "(cash_and_equivalents + st_investments) / st_borrowings",
+                                    "description": (
+                                        f"Tiền + đầu tư tài chính ngắn hạn so với vay ngắn hạn {tk} Q{fq_q}/{fy_q}"
+                                    ),
+                                    "inputs": {
+                                        f"cash_and_equivalents@Q{fq_q}/{fy_q}": {
+                                            "value": c_r.fact.value,
+                                            "unit": "VND",
+                                        },
+                                        f"st_investments@Q{fq_q}/{fy_q}": {"value": inv_v, "unit": "VND"},
+                                        "liquid_assets": {"value": liquid_v, "unit": "VND"},
+                                        f"st_borrowings@Q{fq_q}/{fy_q}": {"value": sd_r.fact.value, "unit": "VND"},
+                                    },
+                                    "result": cover,
+                                    "formatted": fmt_value(cover, "X") if cover is not None else "",
+                                    "ticker": tk,
+                                    "format_style": "ratio",
+                                    "source": "DETERMINISTIC_COMPOSITE",
+                                }
+                            )
+                            badges.append(f"[{saved_lq['calc_id']}]")
+                            cover_txt = f" = {fmt_value(cover, 'X')} vay ngắn hạn" if cover is not None else ""
+                            item_summaries.append(
+                                f"[{saved_lq['calc_id']}] Thanh khoản sẵn có {tk} Q{fq_q}/{fy_q}: tiền "
+                                f"{fmt_value(c_r.fact.value, 'VND')} + đầu tư tài chính ngắn hạn "
+                                f"{fmt_value(inv_v, 'VND')} = {fmt_value(liquid_v, 'VND')}{cover_txt}"
                             )
                     # Securities net FVTPL = fvtpl_gains - fvtpl_losses (prevents gain/loss sign flip!)
                     if tmpl is Template.SECURITIES and ("fvtpl_gains" in fact_items or "fvtpl_losses" in fact_items):
@@ -1087,56 +1162,166 @@ def _evaluate_premise_direction(
     claim: ClaimSpec,
     fs: FactSet | None,
     tickers: Sequence[str],
-) -> tuple[VerdictStatus | None, str | None]:
-    """Deterministically verify directional false premises (e.g. 'NIM ACB sập', 'FPT lỗ') on FactSet."""
+) -> tuple[VerdictStatus | None, str | None, dict[str, Any] | None]:
+    """Deterministically verify directional premises (e.g. 'NIM ACB sập', 'lãi tăng gấp đôi') on FactSet.
+
+    Returns `(status, Vietnamese_summary_or_None, calc_trace_payload_or_None)` so every compared figure
+    can be registered in `ctx.evidence` for Stage 7 numeric grounding.
+    """
     if fs is None or not tickers:
-        return None, None
+        return None, None, None
     tk = tickers[0]
     if tk not in fs.templates:
-        return None, None
+        return None, None, None
     stmt = claim.statement.lower()
     neg_claim = bool(_NEGATIVE_PREMISE_RE.search(stmt))
     pos_claim = bool(_POSITIVE_PREMISE_RE.search(stmt))
     if not neg_claim and not pos_claim:
-        return None, None
+        return None, None, None
 
-    # Check first fact or KPI in premise evidence
+    # Vendor ratios often have a single quarter; fall back to the equivalent computed KPI series
+    proxy_kpi = {"vr_nim": "nii_to_avg_assets", "vr_cir": "cir", "vr_ldr": "loan_to_deposit"}
+    ev_to_check = list(claim.evidence)
     for ev in claim.evidence:
         if ev.startswith("fact:"):
             item_id = ev.split(":", 1)[1]
+            proxy = proxy_kpi.get(item_id)
+            if proxy and len(fs.series(tk, item_id, "Q")) < 2 and f"kpi:{proxy}" not in ev_to_check:
+                ev_to_check.append(f"kpi:{proxy}")
+
+    # Check first fact or KPI in premise evidence that has >= 2 comparable periods
+    for ev in ev_to_check:
+        if ev.startswith("fact:"):
+            item_id = ev.split(":", 1)[1]
             q_ser = fs.series(tk, item_id, "Q")
-            if len(q_ser) >= 2:
-                cur, prev = q_ser[-1], q_ser[-2]
-                if "lỗ" in stmt or "âm" in stmt:
-                    if cur.value > 0:
-                        return (
-                            "REFUTED",
-                            f"BÁC BỎ TIỀN ĐỀ: {CATALOG_BY_ID[item_id].label_vi} {tk} kỳ {cur.period_label} "
-                            f"đạt dương {fmt_value(cur.value, cur.unit)} (không lỗ/âm).",
-                        )
-                if neg_claim and prev.value > 0:
-                    rel_chg = (cur.value - prev.value) / abs(prev.value)
-                    abs_chg = cur.value - prev.value
-                    # For percentage ratios like NIM (~0.035), a 'collapse' implies >= 35 bps or >=10% rel drop
-                    is_collapse = (
-                        (abs_chg <= -0.0035 and rel_chg <= -0.10) if cur.unit == "RATIO" else (rel_chg <= -0.15)
+            if len(q_ser) < 2:
+                continue
+            cur, prev = q_ser[-1], q_ser[-2]
+            lbl_vi = CATALOG_BY_ID[item_id].label_vi
+            if "lỗ" in stmt or "âm" in stmt:
+                if cur.value > 0:
+                    payload = {
+                        "formula": f"{item_id}({cur.period_label})",
+                        "description": f"Kiểm chứng tiền đề lỗ/âm cho {lbl_vi} {tk} {cur.period_label}",
+                        "inputs": {f"{item_id}@{cur.period_label}": {"value": cur.value, "unit": cur.unit}},
+                        "result": cur.value,
+                        "formatted": fmt_value(cur.value, cur.unit),
+                        "ticker": tk,
+                        "format_style": "percent" if cur.unit == "RATIO" else "number",
+                        "source": "PREMISE_DIRECTION_CHECK",
+                    }
+                    return (
+                        "REFUTED",
+                        f"BÁC BỎ TIỀN ĐỀ: {lbl_vi} {tk} kỳ {cur.period_label} "
+                        f"đạt dương {fmt_value(cur.value, cur.unit)} (không lỗ/âm).",
+                        payload,
                     )
-                    if not is_collapse:
+            if neg_claim and prev.value > 0:
+                rel_chg = (cur.value - prev.value) / abs(prev.value)
+                abs_chg = cur.value - prev.value
+                # For percentage ratios like NIM (~0.035), a 'collapse' implies >= 35 bps or >=10% rel drop
+                is_collapse = (
+                    (abs_chg <= -0.0035 and rel_chg <= -0.10) if cur.unit == "RATIO" else (rel_chg <= -0.15)
+                )
+                payload = {
+                    "formula": (
+                        f"({item_id}@{cur.period_label} - {item_id}@{prev.period_label}) / abs({prev.period_label})"
+                    ),
+                    "description": (
+                        f"So sánh tiền đề giảm mạnh {lbl_vi} {tk} ({prev.period_label} -> {cur.period_label})"
+                    ),
+                    "inputs": {
+                        f"{item_id}@{cur.period_label}": {"value": cur.value, "unit": cur.unit},
+                        f"{item_id}@{prev.period_label}": {"value": prev.value, "unit": prev.unit},
+                    },
+                    "result": rel_chg,
+                    "formatted": f"{rel_chg * 100:+.1f}%",
+                    "ticker": tk,
+                    "format_style": "percent",
+                    "source": "PREMISE_DIRECTION_CHECK",
+                }
+                if not is_collapse:
+                    return (
+                        "REFUTED",
+                        f"BÁC BỎ TIỀN ĐỀ: {lbl_vi} {tk} kỳ {cur.period_label} ở mức "
+                        f"{fmt_value(cur.value, cur.unit)} so với kỳ liền trước {prev.period_label} là "
+                        f"{fmt_value(prev.value, prev.unit)} (biến động {rel_chg * 100:+.1f}%, "
+                        "KHÔNG sụt giảm mạnh / sập như tiền đề câu hỏi).",
+                        payload,
+                    )
+                return ("CONFIRMED", None, payload)
+            if pos_claim:
+                # Prefer same-quarter prior year for growth claims ("tăng gấp đôi"), else previous quarter
+                yoy_matches = [
+                    f
+                    for f in q_ser[:-1]
+                    if f.fiscal_year == cur.fiscal_year - 1 and f.fiscal_quarter == cur.fiscal_quarter
+                ]
+                base = yoy_matches[-1] if yoy_matches else prev
+                if base.value > 0:
+                    rel_chg = (cur.value - base.value) / abs(base.value)
+                    thresh = 0.80 if ("gấp đôi" in stmt or "bằng lần" in stmt) else 0.30
+                    payload = {
+                        "formula": (
+                            f"({item_id}@{cur.period_label} - {item_id}@{base.period_label}) / abs({base.period_label})"
+                        ),
+                        "description": (
+                            f"Kiểm chứng tiền đề tăng mạnh {lbl_vi} {tk} ({base.period_label} -> {cur.period_label})"
+                        ),
+                        "inputs": {
+                            f"{item_id}@{cur.period_label}": {"value": cur.value, "unit": cur.unit},
+                            f"{item_id}@{base.period_label}": {"value": base.value, "unit": base.unit},
+                        },
+                        "result": rel_chg,
+                        "formatted": f"{rel_chg * 100:+.1f}%",
+                        "ticker": tk,
+                        "format_style": "percent",
+                        "source": "PREMISE_DIRECTION_CHECK",
+                    }
+                    if rel_chg < thresh:
                         return (
                             "REFUTED",
-                            f"BÁC BỎ TIỀN ĐỀ: {CATALOG_BY_ID[item_id].label_vi} {tk} kỳ {cur.period_label} ở mức "
-                            f"{fmt_value(cur.value, cur.unit)} so với kỳ liền trước {prev.period_label} là "
-                            f"{fmt_value(prev.value, prev.unit)} (biến động {rel_chg * 100:+.1f}%, "
-                            "KHÔNG sụt giảm mạnh / sập như tiền đề câu hỏi).",
+                            f"BÁC BỎ TIỀN ĐỀ: {lbl_vi} {tk} kỳ {cur.period_label} đạt "
+                            f"{fmt_value(cur.value, cur.unit)} so với {base.period_label} là "
+                            f"{fmt_value(base.value, base.unit)} (biến động {rel_chg * 100:+.1f}%, "
+                            "KHÔNG đạt mức tăng mạnh như tiền đề).",
+                            payload,
                         )
-                    return ("CONFIRMED", None)
+                    return ("CONFIRMED", None, payload)
         if ev.startswith("kpi:"):
             kid = ev.split(":", 1)[1]
             lq = fs.latest_period(tk, "Q")
             if lq is not None and kid in KPI_BY_ID:
-                cur_kv = compute_kpi(fs, tk, kid, PeriodRef("Q", lq[0], lq[1]))
+                cur_ref = PeriodRef("Q", lq[0], lq[1])
+                cur_kv = compute_kpi(fs, tk, kid, cur_ref)
+                if (
+                    pos_claim
+                    and kid.endswith("_growth_yoy")
+                    and cur_kv.status is KpiStatus.OK
+                    and cur_kv.value is not None
+                ):
+                    thresh = 0.80 if ("gấp đôi" in stmt or "bằng lần" in stmt) else 0.30
+                    payload = {
+                        "formula": f"{kid}({cur_ref.label})",
+                        "description": f"Kiểm chứng tiền đề tăng trưởng {cur_kv.label_vi} {tk} {cur_ref.label}",
+                        "inputs": {f"{kid}@{cur_ref.label}": {"value": cur_kv.value, "unit": cur_kv.unit}},
+                        "result": cur_kv.value,
+                        "formatted": fmt_value(cur_kv.value, cur_kv.unit),
+                        "ticker": tk,
+                        "format_style": "percent",
+                        "source": "PREMISE_DIRECTION_CHECK",
+                    }
+                    if cur_kv.value < thresh:
+                        return (
+                            "REFUTED",
+                            f"BÁC BỎ TIỀN ĐỀ: {cur_kv.label_vi} {tk} {cur_ref.label} đạt "
+                            f"{fmt_value(cur_kv.value, cur_kv.unit)} (không đạt mức tăng như tiền đề).",
+                            payload,
+                        )
+                    return ("CONFIRMED", None, payload)
                 prev_q = (lq[0] - 1, 4) if lq[1] == 1 else (lq[0], lq[1] - 1)
-                prev_kv = compute_kpi(fs, tk, kid, PeriodRef("Q", prev_q[0], prev_q[1]))
+                prev_ref = PeriodRef("Q", prev_q[0], prev_q[1])
+                prev_kv = compute_kpi(fs, tk, kid, prev_ref)
                 if (
                     cur_kv.status is KpiStatus.OK
                     and prev_kv.status is KpiStatus.OK
@@ -1146,14 +1331,31 @@ def _evaluate_premise_direction(
                     and prev_kv.value > 0
                 ):
                     rel_chg = (cur_kv.value - prev_kv.value) / abs(prev_kv.value)
+                    payload = {
+                        "formula": f"({kid}@{cur_ref.label} - {kid}@{prev_ref.label}) / abs({prev_ref.label})",
+                        "description": (
+                            f"So sánh tiền đề giảm mạnh {cur_kv.label_vi} {tk} ({prev_ref.label} -> {cur_ref.label})"
+                        ),
+                        "inputs": {
+                            f"{kid}@{cur_ref.label}": {"value": cur_kv.value, "unit": cur_kv.unit},
+                            f"{kid}@{prev_ref.label}": {"value": prev_kv.value, "unit": prev_kv.unit},
+                        },
+                        "result": rel_chg,
+                        "formatted": f"{rel_chg * 100:+.1f}%",
+                        "ticker": tk,
+                        "format_style": "percent",
+                        "source": "PREMISE_DIRECTION_CHECK",
+                    }
                     if rel_chg > -0.12:
                         return (
                             "REFUTED",
-                            f"BÁC BỎ TIỀN ĐỀ: {cur_kv.label_vi} {tk} Q{lq[1]}/{lq[0]} đạt "
-                            f"{fmt_value(cur_kv.value, cur_kv.unit)} so với kỳ trước "
+                            f"BÁC BỎ TIỀN ĐỀ: {cur_kv.label_vi} {tk} {cur_ref.label} đạt "
+                            f"{fmt_value(cur_kv.value, cur_kv.unit)} so với kỳ trước {prev_ref.label} là "
                             f"{fmt_value(prev_kv.value, prev_kv.unit)} ({rel_chg * 100:+.1f}%, không sập).",
+                            payload,
                         )
-    return None, None
+                    return ("CONFIRMED", None, payload)
+    return None, None, None
 
 
 def _parse_doc_spec(doc_ev: str, default_period: str | None) -> tuple[list[str], list[int], list[int], str]:
@@ -1415,7 +1617,14 @@ async def execute_brief_claims(
 
         prem_status: VerdictStatus | None = None
         if is_premise:
-            prem_status, prem_msg = _evaluate_premise_direction(claim, fs, tickers)
+            prem_status, prem_msg, prem_calc = _evaluate_premise_direction(claim, fs, tickers)
+            if prem_calc is not None:
+                saved_p = await ctx.evidence.register_calculator_trace(prem_calc)
+                p_badge = f"[{saved_p['calc_id']}]"
+                if p_badge not in badges:
+                    badges.append(p_badge)
+                if prem_msg:
+                    prem_msg = f"{p_badge} {prem_msg}"
             if prem_msg:
                 summary_lines.insert(0, prem_msg)
 
@@ -1448,8 +1657,33 @@ async def execute_brief_claims(
             summary_lines.append(located.coverage_note)
 
         # Resolve final deterministic card status
-        if prem_status == "REFUTED":
-            final_status: VerdictStatus = "REFUTED"
+        is_pure_screen_premise = (
+            is_premise
+            and "screen" in claim.evidence
+            and not any(ev.startswith(("fact:", "kpi:", "doc:")) for ev in claim.evidence)
+        )
+        is_directional_premise = is_premise and bool(
+            _NEGATIVE_PREMISE_RE.search(claim.statement) or _POSITIVE_PREMISE_RE.search(claim.statement)
+        )
+        if is_pure_screen_premise and prem_status is None:
+            if any(r.get("all_passed") for r in located.candidate_rows):
+                final_status: VerdictStatus = "CONFIRMED"
+            else:
+                final_status = "REFUTED"
+                summary_lines.insert(
+                    0,
+                    "BÁC BỎ TIỀN ĐỀ: không có ứng viên nào trong phạm vi định vị đạt đủ tiêu chí lọc.",
+                )
+        elif is_directional_premise and prem_status is None and doc_status not in ("CONFIRMED", "REFUTED"):
+            # A directional premise is NEVER "confirmed" just because 1 period exists: it needs a 2-period check
+            final_status = "NO_DATA"
+            summary_lines.insert(
+                0,
+                "CHƯA KIỂM CHỨNG ĐƯỢC TIỀN ĐỀ: không đủ số liệu so sánh 2 kỳ liên tiếp trong phạm vi PIT; "
+                "không được coi tiền đề là đúng.",
+            )
+        elif prem_status == "REFUTED":
+            final_status = "REFUTED"
         elif doc_status == "REFUTED":
             final_status = "REFUTED"
         elif prem_status == "CONFIRMED":

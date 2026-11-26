@@ -286,3 +286,71 @@ async def test_brief_fallback_without_tickers_asks_instead_of_inventing_criteria
     assert first_attempt["validator_ok"] is False
     assert first_attempt["raw_parsed"]["user_concern"] == "rẻ so với tiền mặt"
     assert events[3][1]["source"] == "fallback:clarification"
+
+
+def test_validate_brief_pure_candidate_search_auto_adds_screen_claim_and_declares_invalid_template() -> None:
+    # Mirrors real C4 Attempt 1 from DeepSeek-V4-Flash: valid candidate_search, empty claims, invalid template
+    raw = {
+        "user_concern": "Tìm cổ phiếu có giá trị tiền mặt lớn so với vốn hóa thị trường",
+        "answer_shape": "candidate_ranking",
+        "entities": {
+            "tickers": [],
+            "anchor_ticker": None,
+            "candidate_search": {
+                "sectors": [],
+                "template": "CASH_RICH",
+                "criteria": [
+                    {"metric": "net_cash_to_market_cap", "op": ">=", "value": 0.25, "ref": "literal", "tolerance": 0.0}
+                ],
+                "sort_by": "net_cash_to_market_cap",
+                "sort_dir": "desc",
+                "limit": 10,
+            },
+        },
+        "premises_to_check": [],
+        "claims": [],
+        "ambiguities": [],
+    }
+    out = validate_research_brief(raw, as_of_date=AS_OF, catalog_profiles=PROFILES)
+    assert out.ok is True
+    assert out.brief is not None
+    assert len(out.brief.claims) == 1
+    assert out.brief.claims[0].id == "K1"
+    assert out.brief.claims[0].evidence == ["screen"]
+    assert out.brief.entities.candidate_search is not None
+    assert out.brief.entities.candidate_search.template is None
+    assert any("CASH_RICH" in d for d in out.dropped_specs)
+
+
+def test_validate_brief_preserves_up_to_8_evidence_specs_per_claim() -> None:
+    raw = {
+        "user_concern": "Đánh giá sức khỏe tài chính VHM Q3/2026",
+        "answer_shape": "health_check",
+        "entities": {"tickers": ["VHM"]},
+        "claims": [
+            {
+                "id": "K2",
+                "statement": "Chất lượng lợi nhuận và rủi ro bảng cân đối",
+                "evidence": [
+                    "fact:cfo",
+                    "fact:inventory",
+                    "fact:st_receivables",
+                    "kpi:cfo_to_npat",
+                    "kpi:inventory_growth_yoy",
+                    "kpi:receivables_growth_yoy",
+                    "kpi:st_debt_to_liquid_assets",
+                    "risk",
+                    "fact:equity",  # 9th -> dropped and declared
+                ],
+                "period": "Q3/2026",
+            }
+        ],
+    }
+    out = validate_research_brief(raw, as_of_date=AS_OF, catalog_profiles=PROFILES)
+    assert out.ok is True
+    assert out.brief is not None
+    assert len(out.brief.claims[0].evidence) == 8
+    assert "kpi:receivables_growth_yoy" in out.brief.claims[0].evidence
+    assert "kpi:st_debt_to_liquid_assets" in out.brief.claims[0].evidence
+    assert "risk" in out.brief.claims[0].evidence
+    assert any("fact:equity" in d for d in out.dropped_specs)
