@@ -1,5 +1,5 @@
 # AIInvest Project Memory & Architecture Harness
-> **Version**: 2.1.5 (Living Architecture Memory)
+> **Version**: 2.1.6 (Living Architecture Memory)
 > **Last Updated**: 2026-11-26
 > **Purpose**: Source of truth for all AI agents and developers working on AIInvest. Eliminates hallucinations, establishes system boundaries, and documents core data pipelines.
 
@@ -728,7 +728,9 @@ AIInvest is an autonomous quantitative investment and stock-research organizatio
   - **R3/R4/R7/R8**: Split `overall_timeout_seconds` into `68%` tool-loop budget + `32%` synthesis reserve (preserving `handle.context.usage` on timeout); made `run_financial_calculator_tool` raise `ValueError` (`EventType.TOOL_FAILED`) on AST/empty-input errors; held 100% of `tools_enabled=True` text inside `SentenceStreamGate` until `flush_turn_end`; aligned `_run_discrepancy_check` on `(ticker, fiscal_year, fiscal_quarter)` while excluding `AGM_TARGETS`.
   - **R5/R6**: Exposed `CFO/LNST`, `FCF`, `Net Debt/Equity`, and `Cash+ST Inv` in `screen_financial_universe_tool`; hardened `financial_metrics_store.py` with `alphastock > vnstock_vci` priority, unscaled-VND PDF rejection, gap-fill-only same-FY PDF overlay, 4-quarter TTM ROE/ROA on quarterly mode, and `roe == roa` ETL copy suppression.
 - **Tier-0 Router-to-Playbook Resolver & 0-LLM-Token Pre-Fetch (`sag_api/research/playbooks.py`, `agent_runner.py`)**:
-  - Mapped all 8 `task_action` routes to canonically ordered `4–6`-tool playbooks (with `< 0.70` / `fallback_used` top-2 union safety valve) and parallel `0`-LLM-token pre-fetch (`<PREFETCHED_DETERMINISTIC_EVIDENCE>`) warmed from a single per-turn Core PG `FactSet` cache.
+  - Mapped all 8 `task_action` routes to canonically ordered `4–6`-tool playbooks (with `< 0.70` / `fallback_used` top-2 union safety valve) and parallel `0`-LLM-token pre-fetch (`<PREFETCHED_DETERMINISTIC_EVIDENCE>`) warmed from a single per-turn Core PG `FactSet` cache; hardened `agent_runner.py` to reschedule `loop_timeout` onto the full remaining `overall_timeout_seconds` once tool turns complete and preserve streamed/buffered prose on mid-synthesis timeout.
+- **Brief-Centric Brain Architecture (`SAG_RESEARCH_BRAIN_MODE=brief_centric`, `sag_api/research/{brief,brief_executor,brief_synthesizer}.py`, wired into `chat_orchestrator.py`)**:
+  - Replaced rigid 8-playbook routing & 4-section template lock-in on the default path with a 7-stage Brief-Centric Brain: (1) compact `create_research_brief` LLM call + (2) `0`-token `validate_research_brief` (JSON schema, ACL, PIT period clamping, synonym canonicalization, anchor-candidate invariants, pure-ambiguity 1-question gate) -> (3) `0`-token `locate_candidates` over Core PG `FactSet` + market caps (supporting anchor-relative criteria like `"an toàn như ACB mà tăng trưởng tốt hơn"` and composite `net_cash_to_market_cap`) -> (4) premise-first falsification (`premises_to_check`) + parallel per-claim execution (`0`-token Python quant slices with accounting-safe debt/FVTPL composites + bounded-concurrency `doc:*` Mini-Reader over push-down `search_disclosures`) -> (5) `ClaimVerdictCard`s with code-owned 1-hop anomaly escalation -> (6) compact 1-shot synthesis strictly from verdict cards -> (7) Stage 7 audit + 1-pass surgical line repair (`repair_stage7_flagged_lines`) followed by Stage 7 re-verification.
 
 
 

@@ -727,10 +727,36 @@ async def _run_quant_specs_for_claim(
                         )
                     item_summaries.append(f"{spec.label_vi}: {pts}{note_guard}")
 
-                # Accounting-safe deterministic composites so LLM never mentally adds/subtracts
+                # Accounting-safe deterministic composites so LLM never mentally adds/subtracts/divides
                 lq = fs.latest_period(tk, "Q")
+                common_size_inputs: dict[str, dict[str, Any]] = {}
                 if lq is not None:
                     fy_q, fq_q = lq
+                    ta_r = fs.get(tk, "total_assets", "Q", fy_q, fq_q)
+                    if ta_r.status is LookupStatus.OK and ta_r.fact is not None and ta_r.fact.value > 0:
+                        ta_val = ta_r.fact.value
+                        cs_parts: list[str] = []
+                        for bs_item in (
+                            "st_receivables",
+                            "lt_receivables",
+                            "inventory",
+                            "cash_and_equivalents",
+                            "st_borrowings",
+                            "lt_borrowings",
+                        ):
+                            if bs_item not in fact_items or bs_item not in applicable:
+                                continue
+                            bs_r = fs.get(tk, bs_item, "Q", fy_q, fq_q)
+                            if bs_r.status is LookupStatus.OK and bs_r.fact is not None:
+                                share = bs_r.fact.value / ta_val
+                                common_size_inputs[f"{bs_item}_to_assets@Q{fq_q}/{fy_q}"] = {
+                                    "value": share,
+                                    "unit": "RATIO",
+                                }
+                                bs_lbl = CATALOG_BY_ID[bs_item].label_vi
+                                cs_parts.append(f"{bs_lbl}/Tổng TS={fmt_value(share, 'RATIO')}")
+                        if cs_parts:
+                            item_summaries.append(f"Tỷ trọng trên Tổng tài sản Q{fq_q}/{fy_q}: " + ", ".join(cs_parts))
                     # Total interest-bearing debt = st_borrowings + lt_borrowings
                     if "st_borrowings" in fact_items or "lt_borrowings" in fact_items:
                         st_r = fs.get(tk, "st_borrowings", "Q", fy_q, fq_q)
@@ -789,14 +815,16 @@ async def _run_quant_specs_for_claim(
                             )
 
                 if fact_objs:
+                    trace_inputs: dict[str, Any] = {
+                        f"{f.item}@{f.period_label}": {"value": f.value, "unit": f.unit}
+                        for f in fact_objs
+                    }
+                    trace_inputs.update(common_size_inputs)
                     saved_fs = await ctx.evidence.register_calculator_trace(
                         {
                             "formula": "fact_sheet_slice",
                             "description": f"Số liệu BCTC {tk} cho ý {claim.id} (PIT {ctx.as_of_date.isoformat()})",
-                            "inputs": {
-                                f"{f.item}@{f.period_label}": {"value": f.value, "unit": f.unit}
-                                for f in fact_objs
-                            },
+                            "inputs": trace_inputs,
                             "result": None,
                             "formatted": "",
                             "ticker": tk,

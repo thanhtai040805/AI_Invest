@@ -394,3 +394,65 @@ async def test_brief_brain_pure_ambiguity_asks_single_question_with_zero_extra_c
     assert done_payload["metadata"]["telemetry"]["playbook_id"] == "brief_clarification"
 
     await eng.dispose()
+
+
+async def test_repair_stage7_matches_markdown_table_rows_with_spaced_percent_claims() -> None:
+    from sag_api.research.brief_executor import ClaimVerdictCard
+    from sag_api.research.brief_synthesizer import repair_stage7_flagged_lines
+
+    class _TableRowRepairModel:
+        async def stream_turn(
+            self, request: ModelRequest, cancellation: CancellationToken
+        ) -> AsyncIterator[ModelChunk]:
+            del cancellation
+            user_txt = str(request.messages[1].content)
+            assert '"idx": 2' in user_txt
+            rep = json.dumps(
+                {
+                    "repairs": [
+                        {
+                            "idx": 2,
+                            "fixed_line": (
+                                "| **Phải thu ngắn hạn** | **381,513.4 tỷ đồng** [CALC-3] | "
+                                "Chiếm 28.49% tổng tài sản [CALC-3]. |"
+                            ),
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+            yield ModelChunk(text_delta=rep, usage=Usage(input_tokens=400, output_tokens=60, cached_tokens=300))
+
+    draft = (
+        "| Chỉ tiêu | Giá trị | Đánh giá |\n"
+        "| :--- | :--- | :--- |\n"
+        "| **Phải thu ngắn hạn** | **381,513.4 tỷ đồng** [CALC-3] | Chiếm 28.5% tổng tài sản. |"
+    )
+    repaired, usage, changed = await repair_stage7_flagged_lines(
+        answer_text=draft,
+        unsupported_claims=[
+            {
+                "claim_text": "28.5 %",
+                "unit_class": "PERCENT",
+                "sentence_excerpt": "| Phải thu ngắn hạn | 381,513.4 tỷ đồng | Chiếm 28.5% tổng tài sản. |",
+            }
+        ],
+        uncited_claims=[],
+        rejected_citations=[],
+        verdict_cards=[
+            ClaimVerdictCard(
+                claim_id="K2",
+                is_premise=False,
+                statement="Phải thu ngắn hạn / Tổng tài sản",
+                period="Q3/2026",
+                status="CONFIRMED",
+                summary_lines=["[CALC-3] Phải thu ngắn hạn/Tổng TS=28.49%"],
+            )
+        ],
+        calculator_traces=[],
+        sections_by_cid={},
+        model=_TableRowRepairModel(),
+    )
+    assert changed is True
+    assert "28.49% tổng tài sản [CALC-3]" in repaired
+    assert usage.requests == 1

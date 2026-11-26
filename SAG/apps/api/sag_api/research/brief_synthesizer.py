@@ -265,34 +265,49 @@ async def repair_stage7_flagged_lines(
     lines = answer_text.splitlines()
     flagged_indices: dict[int, list[str]] = {}
 
-    def _match_line_index(excerpt: str) -> int | None:
-        probe = re.sub(r"\s+", " ", excerpt or "").strip()[:80]
-        if not probe:
-            return None
-        for idx, ln in enumerate(lines):
-            norm_ln = re.sub(r"\s+", " ", ln).strip()
-            if probe in norm_ln or (len(norm_ln) >= 20 and norm_ln[:60] in probe):
-                return idx
-        # Fallback: match by claim token inside line
+    _badge_strip_re = re.compile(
+        r"\[(?:C\d+(?:\s+UNVERIFIED_CLAIM)?|TBL:[^\]]+|CALC-\d+|KG:[^\]]+|SCR:[^\]]+|MEM:[^\]]+|PORT:[^\]]+)\]"
+    )
+
+    def _norm_for_match(s: str) -> str:
+        s_clean = _badge_strip_re.sub(" ", s or "")
+        s_clean = re.sub(r"[*_`|#>]+", " ", s_clean)
+        return re.sub(r"\s+", " ", s_clean).strip().lower()
+
+    norm_lines = [_norm_for_match(ln) for ln in lines]
+
+    def _match_line_index(excerpt: str, claim_txt: str = "") -> int | None:
+        probe = _norm_for_match(excerpt)[:70]
+        raw_num = claim_txt.strip().split()[0] if claim_txt.strip() else ""
+        compact_claim = re.sub(r"\s+", "", claim_txt.strip()).lower()
+        if probe:
+            for idx, n_ln in enumerate(norm_lines):
+                if probe in n_ln or (len(n_ln) >= 18 and n_ln[:50] in probe):
+                    return idx
+        # Space-insensitive claim token match (handles Stage 7 '28.5 %' vs table cell '28.5%')
+        if compact_claim:
+            for idx, ln in enumerate(lines):
+                if compact_claim in re.sub(r"\s+", "", ln).lower():
+                    return idx
+        if raw_num:
+            for idx, ln in enumerate(lines):
+                if raw_num in ln:
+                    return idx
         return None
 
     for item in unsupported_claims:
         c_txt = str(item.get("claim_text") or "")
         exc = str(item.get("sentence_excerpt") or "")
-        l_idx = _match_line_index(exc)
-        if l_idx is None and c_txt:
-            l_idx = next((i for i, ln in enumerate(lines) if c_txt in ln), None)
+        l_idx = _match_line_index(exc, c_txt)
         if l_idx is not None:
             flagged_indices.setdefault(l_idx, []).append(
-                f"Số liệu `{c_txt}` không khớp bằng chứng gốc (có thể do tự cộng/trừ nhẩm hoặc sai đơn vị)."
+                f"Số liệu `{c_txt}` không khớp bằng chứng gốc (có thể do tự cộng/trừ/chia nhẩm hoặc sai đơn vị)."
             )
 
     for item in uncited_claims:
         c_txt = str(item.get("claim_text") or "")
         exc = str(item.get("sentence_excerpt") or "")
-        l_idx = _match_line_index(exc)
-        if l_idx is None and c_txt:
-            l_idx = next((i for i, ln in enumerate(lines) if c_txt in ln), None)
+        l_idx = _match_line_index(exc, c_txt)
         if l_idx is not None:
             flagged_indices.setdefault(l_idx, []).append(
                 f"Số liệu `{c_txt}` thiếu thẻ trích dẫn `[CALC-*]` / `[C#]` / `[TBL:*]` / `[SCR:*]`."
