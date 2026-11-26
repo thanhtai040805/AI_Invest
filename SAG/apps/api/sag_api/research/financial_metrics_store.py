@@ -172,6 +172,8 @@ _METRIC_ROW_SPECS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
             "doanh thu thuần",
             "thu nhập lãi thuần",
             "tổng doanh thu hoạt động",
+            "is net revenue",
+            "is net interest income",
             "net revenue",
             "net sales",
         ),
@@ -179,7 +181,7 @@ _METRIC_ROW_SPECS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
     ),
     (
         "gross_profit",
-        ("lợi nhuận gộp về bán hàng và cung cấp dịch vụ", "lợi nhuận gộp", "gross profit"),
+        ("lợi nhuận gộp về bán hàng và cung cấp dịch vụ", "lợi nhuận gộp", "is gross profit", "gross profit"),
         ("biên", "tỷ suất", "%"),
     ),
     (
@@ -187,6 +189,7 @@ _METRIC_ROW_SPECS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
         (
             "lợi nhuận thuần từ hoạt động kinh doanh",
             "lợi nhuận từ hoạt động kinh doanh",
+            "is operating profit",
             "operating profit",
         ),
         ("khác", "trước thay đổi"),
@@ -197,6 +200,7 @@ _METRIC_ROW_SPECS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
             "lợi nhuận sau thuế của cổ đông của công ty mẹ",
             "lợi nhuận sau thuế của cổ đông công ty mẹ",
             "lợi nhuận sau thuế của công ty mẹ",
+            "is profit after tax for shareholders of parent company",
             "profit attributable to owners of the parent",
         ),
         ("cơ bản trên cổ phiếu", "trên cổ phiếu", "không kiểm soát"),
@@ -208,6 +212,8 @@ _METRIC_ROW_SPECS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
             "lợi nhuận sau thuế tndn",
             "tổng lợi nhuận sau thuế",
             "lợi nhuận sau thuế",
+            "is net profit after tax",
+            "is net profit",
             "profit after tax",
             "net profit",
         ),
@@ -215,23 +221,38 @@ _METRIC_ROW_SPECS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
     ),
     (
         "total_assets",
-        ("tổng cộng tài sản", "tổng tài sản", "total assets"),
+        ("tổng cộng tài sản", "tổng tài sản có", "tổng tài sản", "bs total assets", "total assets"),
         ("ngoài bảng", "dài hạn khác", "ngắn hạn khác", "thuê tài chính"),
     ),
     (
         "current_assets",
-        ("a. tài sản ngắn hạn", "tài sản ngắn hạn", "total current assets", "current assets"),
+        (
+            "a. tài sản ngắn hạn",
+            "tài sản ngắn hạn",
+            "bs short term assets",
+            "bs current assets",
+            "total current assets",
+            "current assets",
+        ),
         ("tài sản ngắn hạn khác", "phải thu", "hàng tồn kho", "tiền và", "đầu tư tài chính"),
     ),
     (
         "_cash_only",
-        ("tiền và các khoản tương đương tiền", "tiền và tương đương tiền", "cash and cash equivalents"),
+        (
+            "tiền và các khoản tương đương tiền",
+            "tiền và tương đương tiền",
+            "bs cash and cash equivalents",
+            "bs cash",
+            "cash and cash equivalents",
+        ),
         ("đầu kỳ", "cuối kỳ", "ảnh hưởng của thay đổi", "lưu chuyển"),
     ),
     (
         "_st_investments",
         (
             "đầu tư tài chính ngắn hạn",
+            "bs short term investments",
+            "bs short term financial investments",
             "short-term financial investments",
             "đầu tư nắm giữ đến ngày đáo hạn",
         ),
@@ -239,12 +260,18 @@ _METRIC_ROW_SPECS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
     ),
     (
         "inventory",
-        ("hàng tồn kho", "inventories", "inventory"),
+        ("hàng tồn kho", "bs inventories", "inventories", "inventory"),
         ("dự phòng giảm giá", "dài hạn", "tăng, giảm", "tăng/giảm", "lưu chuyển"),
     ),
     (
         "receivables",
-        ("các khoản phải thu ngắn hạn", "phải thu ngắn hạn", "short-term receivables", "trade receivables"),
+        (
+            "các khoản phải thu ngắn hạn",
+            "phải thu ngắn hạn",
+            "bs short term receivables",
+            "short-term receivables",
+            "trade receivables",
+        ),
         ("dài hạn", "khó đòi", "dự phòng", "công ty con", "bên liên quan", "tăng, giảm"),
     ),
     (
@@ -255,6 +282,7 @@ _METRIC_ROW_SPECS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
             "a. nợ phải trả",
             "c. nợ phải trả",
             "nợ phải trả",
+            "bs total liabilities",
             "total liabilities",
         ),
         (
@@ -271,17 +299,38 @@ _METRIC_ROW_SPECS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
     ),
     (
         "current_liabilities",
-        ("i. nợ ngắn hạn", "nợ ngắn hạn", "total current liabilities", "current liabilities"),
+        (
+            "i. nợ ngắn hạn",
+            "nợ ngắn hạn",
+            "bs short term liabilities",
+            "bs current liabilities",
+            "total current liabilities",
+            "current liabilities",
+        ),
         ("khác", "phải trả", "dự phòng", "tài sản ngắn hạn", "vay và nợ"),
     ),
     (
         "short_term_debt",
-        ("vay và nợ thuê tài chính ngắn hạn", "vay ngắn hạn", "short-term borrowings", "short-term debt"),
+        (
+            "vay và nợ thuê tài chính ngắn hạn",
+            "vay ngắn hạn",
+            "bs short term debt",
+            "bs short term borrowings",
+            "short-term borrowings",
+            "short-term debt",
+        ),
         ("lãi vay", "chi phí lãi vay", "trả nợ gốc"),
     ),
     (
         "long_term_debt",
-        ("vay và nợ thuê tài chính dài hạn", "vay dài hạn", "long-term borrowings", "long-term debt"),
+        (
+            "vay và nợ thuê tài chính dài hạn",
+            "vay dài hạn",
+            "bs long term debt",
+            "bs long term borrowings",
+            "long-term borrowings",
+            "long-term debt",
+        ),
         ("lãi vay", "chi phí lãi vay", "trả nợ gốc"),
     ),
     (
@@ -296,6 +345,9 @@ _METRIC_ROW_SPECS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
             "b. vốn chủ sở hữu",
             "i. vốn chủ sở hữu",
             "vốn chủ sở hữu",
+            "vốn và các quỹ",
+            "bs equity",
+            "bs total equity",
             "total equity",
             "owners' equity",
         ),
@@ -305,7 +357,9 @@ _METRIC_ROW_SPECS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
             "vốn góp",
             "chưa phân phối",
             "thặng dư",
-            "quỹ",
+            "quỹ khen thưởng",
+            "quỹ dự trữ",
+            "quỹ đầu tư",
             "lợi ích cổ đông",
             "trên vốn chủ",
             "bằng vốn chủ",
@@ -316,6 +370,8 @@ _METRIC_ROW_SPECS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
         (
             "lưu chuyển tiền thuần từ hoạt động kinh doanh",
             "tiền thuần thu được từ hoạt động kinh doanh",
+            "cf net cash flows from operating activities",
+            "cf operating cash flow",
             "net cash flows from operating activities",
             "net cash from operating activities",
         ),
@@ -328,6 +384,7 @@ _METRIC_ROW_SPECS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
             "tiền chi mua sắm, xây dựng tscđ",
             "mua sắm tài sản cố định",
             "chi đầu tư tài sản cố định",
+            "cf payments for fixed assets",
             "purchase of property, plant and equipment",
             "purchases of property, plant and equipment",
         ),
@@ -814,11 +871,12 @@ def _enrich_snapshot_ratios(rec: dict[str, Any]) -> None:
     if rec.get("net_margin") is None and ni is not None and rev is not None and abs(rev) > 1e-9:
         rec["net_margin"] = _safe_calc(calc_margin, ni, rev)
 
+    is_annual = int(rec.get("fiscal_quarter") or 0) == 0
     roe_num = ni_parent if ni_parent is not None else ni
-    if rec.get("roe") is None and roe_num is not None and eq is not None and eq > 0:
+    if is_annual and rec.get("roe") is None and roe_num is not None and eq is not None and eq > 0:
         rec["roe"] = _safe_calc(calc_roe, roe_num, eq)
 
-    if rec.get("roa") is None and ni is not None and assets is not None and assets > 0:
+    if is_annual and rec.get("roa") is None and ni is not None and assets is not None and assets > 0:
         rec["roa"] = _safe_calc(calc_roa, ni, assets)
 
     debt = _finite_float(rec.get("total_debt"))
@@ -844,7 +902,7 @@ def _enrich_snapshot_ratios(rec: dict[str, Any]) -> None:
     if rec.get("cash_to_assets") is None and cash_st is not None and assets is not None and assets > 0:
         rec["cash_to_assets"] = _safe_calc(calc_safe_div, cash_st, assets)
 
-    if rec.get("cfo_to_net_income") is None and cfo is not None and ni is not None and abs(ni) > 1e-9:
+    if is_annual and rec.get("cfo_to_net_income") is None and cfo is not None and ni is not None and abs(ni) > 1e-9:
         rec["cfo_to_net_income"] = _safe_calc(calc_safe_div, cfo, ni)
 
 
@@ -859,14 +917,23 @@ def _effective_pit_pub_date(period_date: date, raw_pub: Any, *, default_lag_days
     return period_date + timedelta(days=default_lag_days)
 
 
+_SOURCE_PRIORITY: dict[str, int] = {"alphastock": 0, "vnstock_vci": 1}
+
+
+def _prev_quarter(yr: int, fq: int, steps: int = 1) -> tuple[int, int]:
+    idx = yr * 4 + (fq - 1) - steps
+    return idx // 4, (idx % 4) + 1
+
+
 def _extract_core_statement_metrics(
     stmt_rows: Sequence[Mapping[str, Any]],
     *,
     as_of_date: date,
     include_quarterly: bool = False,
 ) -> dict[tuple[str, int], dict[str, Any]]:
-    """Extract PIT-filtered annual (or latest quarterly) BS/IS/CF monetary & derived ratios."""
+    """Extract PIT-filtered annual (or TTM-enriched quarterly) BS/IS/CF monetary & derived ratios."""
     grouped: dict[tuple[str, int, int], dict[str, list[tuple[str, float]]]] = defaultdict(dict)
+    src_rank_by_slot: dict[tuple[str, int, int, str], int] = {}
     eff_pub_by_key: dict[tuple[str, int, int], date] = {}
 
     for row in stmt_rows:
@@ -878,6 +945,16 @@ def _extract_core_statement_metrics(
             continue
         if freq != "yearly" and not (include_quarterly and freq == "quarterly"):
             continue
+
+        raw_src = row.get("source")
+        if raw_src is not None:
+            src = str(raw_src).strip().lower()
+            if src not in _SOURCE_PRIORITY:
+                # Reject cafef (HDKD_* codes) and untagged rows when vendor source is tracked
+                continue
+            src_rank = _SOURCE_PRIORITY[src]
+        else:
+            src_rank = 0
 
         default_lag = 90 if freq == "yearly" else 45
         pub_d = _effective_pit_pub_date(
@@ -905,6 +982,11 @@ def _extract_core_statement_metrics(
 
         fq = 0 if freq == "yearly" else ((pe.month - 1) // 3 + 1)
         key = (sym, pe.year, fq)
+        slot_key = (*key, st)
+        prev_rank = src_rank_by_slot.get(slot_key)
+        if prev_rank is not None and src_rank > prev_rank:
+            continue
+        src_rank_by_slot[slot_key] = src_rank
         grouped[key][st] = norm_items
         prev_pub = eff_pub_by_key.get(key)
         if prev_pub is None or pub_d > prev_pub:
@@ -951,6 +1033,38 @@ def _extract_core_statement_metrics(
 
         _enrich_snapshot_ratios(rec)
         per_period[(sym, yr, fq)] = rec
+
+    # Compute TTM ROE / ROA / margins across 4 consecutive quarters (never single-quarter ROE!)
+    if include_quarterly:
+        for (sym, yr, fq), rec in per_period.items():
+            if fq == 0:
+                continue
+            trail = [per_period.get((sym, *_prev_quarter(yr, fq, step))) for step in range(4)]
+            if all(q is not None and _finite_float(q.get("net_income")) is not None for q in trail):
+                ni_ttm = sum(float(q["net_income"]) for q in trail if q is not None)
+                ni_par_ttm = (
+                    sum(float(q["net_income_parent"]) for q in trail if q is not None)
+                    if all(q is not None and _finite_float(q.get("net_income_parent")) is not None for q in trail)
+                    else ni_ttm
+                )
+                eq_end = _finite_float(rec.get("equity"))
+                begin_rec = per_period.get((sym, yr - 1, fq))
+                eq_beg = _finite_float(begin_rec.get("equity")) if begin_rec else None
+                eq_avg = ((eq_end + eq_beg) / 2.0) if (eq_end and eq_beg and (eq_end + eq_beg) > 0) else eq_end
+                if eq_avg is not None and eq_avg > 0:
+                    rec["roe"] = _safe_calc(calc_roe, ni_par_ttm, eq_avg)
+                as_end = _finite_float(rec.get("total_assets"))
+                as_beg = _finite_float(begin_rec.get("total_assets")) if begin_rec else None
+                as_avg = ((as_end + as_beg) / 2.0) if (as_end and as_beg and (as_end + as_beg) > 0) else as_end
+                if as_avg is not None and as_avg > 0:
+                    rec["roa"] = _safe_calc(calc_roa, ni_ttm, as_avg)
+                if all(q is not None and _finite_float(q.get("net_revenue")) is not None for q in trail):
+                    rev_ttm = sum(float(q["net_revenue"]) for q in trail if q is not None)
+                    if abs(rev_ttm) > 1e-9:
+                        rec["net_margin"] = _safe_calc(calc_margin, ni_ttm, rev_ttm)
+                        if all(q is not None and _finite_float(q.get("gross_profit")) is not None for q in trail):
+                            gp_ttm = sum(float(q["gross_profit"]) for q in trail if q is not None)
+                            rec["gross_margin"] = _safe_calc(calc_margin, gp_ttm, rev_ttm)
 
     out: dict[tuple[str, int], dict[str, Any]] = {}
     for (sym, yr, fq), rec in sorted(per_period.items()):
@@ -1079,6 +1193,16 @@ def _normalize_core_ratio_rows(
         rev_yoy_raw = _finite_float(row.get("yoy_revenue_growth"))
         ni_yoy_raw = _finite_float(row.get("yoy_earnings_growth"))
         fcf_raw = _finite_float(row.get("fcf_yield"))
+
+        # Guard against upstream bank ETL copying ROA verbatim into ROE (e.g. MBB/TCB roe == roa == 0.0169)
+        if roe_raw is not None and roa_raw is not None and abs(roe_raw) > 1e-6 and abs(roe_raw - roa_raw) <= 1e-9:
+            roe_raw = None
+
+        # Quarterly rows in Core `financial_ratios` store single-quarter unannualized NI/Equity;
+        # when `stmt_metrics` is active, only TTM statement-derived ROE/ROA are valid for `fq != 0`.
+        if fq != 0 and stmt_metrics is not None:
+            roe_raw = None
+            roa_raw = None
 
         row_is_percent = any(
             v is not None and abs(v) > 1.2 for v in (gm_raw, nm_raw, roe_raw)
@@ -1375,6 +1499,9 @@ def extract_metrics_from_verified_tables(
                     continue
                 row_label, raw_val = matched
                 base_val = abs(raw_val) * mult if field_key == "capex" else raw_val * mult
+                if currency.upper() == "VND" and 0.0 < abs(base_val) < 1e6:
+                    # Reject unscaled VND numbers (lost 1e6/1e9 multiplier on listed companies)
+                    continue
                 if field_key.startswith("_"):
                     helper_vals[field_key] = base_val
                 else:
@@ -2186,19 +2313,21 @@ async def screen_universe_metrics(
                     if combined.get("market_cap") is None and core_rec.get("market_cap") is not None:
                         combined["market_cap"] = core_rec["market_cap"]
                 else:
-                    # Same fiscal year & currency: authoritative PDF overrides Core cells, fills gaps
+                    # Same fiscal year & currency: Core PG is authoritative; PDF only fills missing gaps
                     combined = dict(core_rec)
+                    filled_any = False
                     for col in _ALL_SNAPSHOT_METRIC_FIELDS:
                         pv = pdf_rec.get(col)
-                        if pv is not None:
+                        if pv is not None and combined.get(col) is None:
                             combined[col] = pv
-                    combined["fiscal_year"] = pdf_fy
-                    combined["fiscal_quarter"] = int(pdf_rec.get("fiscal_quarter") or 0)
-                    combined["currency"] = pdf_ccy
-                    combined["valid_from"] = pdf_rec.get("valid_from")
-                    combined["source_table_id"] = pdf_rec.get("source_table_id")
-                    combined["document_version_id"] = pdf_rec.get("document_version_id")
-                    combined["page_from"] = pdf_rec.get("page_from")
+                            filled_any = True
+                    if filled_any and combined.get("source_table_id") is None:
+                        combined["source_table_id"] = pdf_rec.get("source_table_id")
+                        combined["document_version_id"] = pdf_rec.get("document_version_id")
+                        combined["page_from"] = pdf_rec.get("page_from")
+                        combined["source_kind"] = "HYBRID_CORE_AND_VERIFIED_PDF"
+                    merged_by_tk[sym] = combined
+                    continue
                 combined["source_kind"] = "HYBRID_CORE_AND_VERIFIED_PDF"
                 merged_by_tk[sym] = combined
 

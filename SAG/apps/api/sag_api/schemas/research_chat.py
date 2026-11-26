@@ -120,6 +120,8 @@ class HydratedTableItem(BaseModel):
     project_id: str | None = None
     title: str
     sub_doc_slot: str
+    fiscal_year: int | None = None
+    fiscal_quarter: int | None = None
     page_from: int = Field(ge=0)
     page_to: int = Field(ge=0)
     currency: str = "VND"

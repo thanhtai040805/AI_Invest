@@ -2103,7 +2103,8 @@ def _run_discrepancy_check(
     narrative_sections = [
         s
         for s in sections
-        if s.content.strip() and s.sub_doc_slot.strip().upper() not in _AUDITED_NON_NARRATIVE_SLOTS
+        if s.content.strip()
+        and s.sub_doc_slot.strip().upper() not in (*_AUDITED_NON_NARRATIVE_SLOTS, "AGM_TARGETS")
     ]
     if not narrative_sections:
         return alerts
@@ -2114,14 +2115,20 @@ def _run_discrepancy_check(
         if not callable(detect_fn):
             return alerts
 
-        sec_by_ticker: dict[str, list[RetrievedResearchSection]] = {}
+        sec_groups: dict[tuple[str, int | None, int | None], list[RetrievedResearchSection]] = {}
+        tickers_seen: set[str] = set()
         for s in narrative_sections:
             tk = (s.ticker or "").strip().upper() or "__UNKNOWN__"
-            sec_by_ticker.setdefault(tk, []).append(s)
+            tickers_seen.add(tk)
+            s_fy = int(s.fiscal_year) if s.fiscal_year is not None else None
+            s_fq = int(s.fiscal_quarter or 0) if s_fy is not None else None
+            sec_groups.setdefault((tk, s_fy, s_fq), []).append(s)
 
         tbl_by_ticker: dict[str, list[dict[str, Any]]] = {}
         unscoped_tables: list[dict[str, Any]] = []
         for t in hydrated_tables:
+            if t.sub_doc_slot.strip().upper() == "AGM_TARGETS":
+                continue
             td = t.model_dump()
             t_tk = (t.project_id or "").strip().upper()
             if t_tk:
@@ -2130,10 +2137,20 @@ def _run_discrepancy_check(
                 unscoped_tables.append(td)
 
         alert_seq = 1
-        for tk, tk_sections in sec_by_ticker.items():
-            tk_tables = list(tbl_by_ticker.get(tk, ()))
-            if not tk_tables and len(sec_by_ticker) == 1:
-                tk_tables = unscoped_tables
+        for (tk, s_fy, s_fq), tk_sections in sec_groups.items():
+            raw_tk_tables = list(tbl_by_ticker.get(tk, ()))
+            if not raw_tk_tables and len(tickers_seen) == 1:
+                raw_tk_tables = unscoped_tables
+            tk_tables = [
+                td
+                for td in raw_tk_tables
+                if s_fy is None
+                or td.get("fiscal_year") is None
+                or (
+                    int(td["fiscal_year"]) == s_fy
+                    and int(td.get("fiscal_quarter") or 0) == int(s_fq or 0)
+                )
+            ]
             if not tk_tables:
                 continue
             narrative_text = "\n".join(
@@ -2149,7 +2166,7 @@ def _run_discrepancy_check(
             )
             for a in raw_alerts or ():
                 metric_lbl = str(a.get("metric") or "")
-                if len(sec_by_ticker) > 1 and tk != "__UNKNOWN__" and tk not in metric_lbl.upper():
+                if len(tickers_seen) > 1 and tk != "__UNKNOWN__" and tk not in metric_lbl.upper():
                     metric_lbl = f"{tk}: {metric_lbl}" if metric_lbl else tk
                 alerts.append(
                     DiscrepancyAlertItem(
@@ -3999,6 +4016,8 @@ class ResearchChatOrchestrator:
                 project_id=str(t.get("project_id") or "") or None,
                 title=str(t.get("title") or ""),
                 sub_doc_slot=str(t.get("sub_doc_slot") or ""),
+                fiscal_year=int(t["fiscal_year"]) if isinstance(t.get("fiscal_year"), int) else None,
+                fiscal_quarter=int(t["fiscal_quarter"]) if isinstance(t.get("fiscal_quarter"), int) else None,
                 page_from=int(t.get("page_from") or 0),
                 page_to=int(t.get("page_to") or 0),
                 currency=str(t.get("currency") or "VND"),

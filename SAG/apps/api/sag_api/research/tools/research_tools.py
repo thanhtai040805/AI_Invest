@@ -231,9 +231,14 @@ async def screen_financial_universe_tool(
             details={"matched_count": 0, "criteria": desc},
         )
 
+    def _fmt_bn(val: Any) -> str:
+        if isinstance(val, (int, float)):
+            return f"{val / 1e9:,.1f}"
+        return "-"
+
     header = (
         "Badge\tTicker\tFY\tNgành\tP/E\tP/B\tROE\tBiên gộp\tBiên ròng\t"
-        "Nợ vay/VCSH\tTổng nợ/VCSH\tDT YoY\tNguồn"
+        "CFO/LNST\tFCF (tỷ)\tNợ vay/VCSH\tNợ ròng/VCSH\tTổng nợ/VCSH\tTiền+ĐSTC (tỷ)\tDT YoY\tNguồn"
     )
     lines = [
         f"Kết quả sàng lọc PIT (as_of_date={ctx.as_of_date.isoformat()}): {desc} (khớp {total_matched} mã).",
@@ -242,21 +247,27 @@ async def screen_financial_universe_tool(
     for r in rows:
         tk = str(r.get("ticker") or "")
         fy = r.get("fiscal_year") or "-"
+        fq = int(r.get("fiscal_quarter") or 0)
+        period_lbl = f"Q{fq}/{fy}" if fq > 0 else f"FY{fy}"
         sec = str(r.get("sector") or "-")
         lines.append(
             "\t".join(
                 [
                     f"[SCR:{tk}]",
                     tk,
-                    f"FY{fy}",
+                    period_lbl,
                     sec,
                     _format_num(r.get("pe"), "x"),
                     _format_num(r.get("pb"), "x"),
                     _format_pct(r.get("roe")),
                     _format_pct(r.get("gross_margin")),
                     _format_pct(r.get("net_margin")),
+                    _format_num(r.get("cfo_to_net_income"), "x"),
+                    _fmt_bn(r.get("fcf")),
                     _format_num(r.get("debt_to_equity"), "x"),
+                    _format_num(r.get("net_debt_to_equity"), "x"),
                     _format_num(r.get("liabilities_to_equity"), "x"),
+                    _fmt_bn(r.get("cash_and_st_investments")),
                     _format_pct(r.get("revenue_yoy")),
                     str(r.get("source_kind") or "CORE_DB_PIT"),
                 ]
@@ -274,11 +285,15 @@ async def screen_financial_universe_tool(
                     "ticker": str(r.get("ticker") or ""),
                     "sector": str(r.get("sector") or ""),
                     "fiscal_year": r.get("fiscal_year"),
+                    "fiscal_quarter": r.get("fiscal_quarter"),
                     "pe": r.get("pe"),
                     "pb": r.get("pb"),
                     "roe": r.get("roe"),
                     "gross_margin": r.get("gross_margin"),
                     "net_margin": r.get("net_margin"),
+                    "cfo_to_net_income": r.get("cfo_to_net_income"),
+                    "fcf": r.get("fcf"),
+                    "net_debt_to_equity": r.get("net_debt_to_equity"),
                 }
                 for r in rows[:6]
             ],
@@ -1154,7 +1169,7 @@ async def run_financial_calculator_tool(
     owner_ticker = str(arguments.get("ticker") or "").strip().upper() or None
 
     if not isinstance(raw_inputs, Mapping) or not raw_inputs:
-        return ToolResult(content="Lỗi máy tính: tham số `inputs` phải là object chứa ít nhất 1 biến số.")
+        raise ValueError("Lỗi máy tính: tham số `inputs` phải là object chứa ít nhất 1 biến số.")
 
     calc = FinancialCalculator()
     try:
@@ -1165,7 +1180,7 @@ async def run_financial_calculator_tool(
             format_style=fmt_style,
         )
     except CalculatorError as exc:
-        return ToolResult(content=f"Máy tính từ chối công thức (fail-closed): {exc}")
+        raise ValueError(f"Máy tính từ chối công thức (fail-closed): {exc}") from exc
 
     trace_dict = trace.to_dict()
     if owner_ticker:

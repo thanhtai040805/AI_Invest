@@ -38,8 +38,9 @@ _INLINE_SESS_BADGE_RE = re.compile(r"\[SESS:(S\d+)\]")
 _SENTENCE_BOUNDARY_RE = re.compile(r"(?:\n|(?<=[.!?])\s+)")
 _THINK_BLOCK_RE = re.compile(r"<think>(.*?)</think>\s*", re.IGNORECASE | re.DOTALL)
 _META_PREAMBLE_LINE_RE = re.compile(
-    r"^(?:tôi đã có (?:đủ|đầy đủ) dữ liệu|dưới đây là phần tổng hợp|hãy tổng hợp câu trả lời|"
-    r"để trả lời câu hỏi này,\s*tôi sẽ|bây giờ tôi sẽ tổng hợp)[^\n]*(?:\n+---\s*\n+|\n+)",
+    r"^(?:tôi đã có (?:đủ|đầy đủ) dữ liệu|tôi cần (?:thêm|tra cứu|kiểm tra)|"
+    r"dưới đây là phần tổng hợp|hãy tổng hợp câu trả lời|"
+    r"để (?:trả lời|phân tích|kiểm tra)[^\n]{0,80},\s*tôi sẽ|bây giờ tôi sẽ tổng hợp)[^\n]*(?:\n+---\s*\n+|\n+)",
     re.IGNORECASE,
 )
 
@@ -401,11 +402,10 @@ class SentenceStreamGate:
         if not self._flushed_any_prose:
             self._buffer = _META_PREAMBLE_LINE_RE.sub("", self._buffer.lstrip())
 
-        # On tool-enabled turns, keep a short lookahead window before flushing so any brief
-        # preamble before a tool call (e.g. "Để kiểm tra FPT, tôi sẽ tra cứu...") is held back.
-        if getattr(self, "_tools_enabled", True) and not self._flushed_any_prose:
-            if len(self._buffer) < self.lookahead_chars:
-                return []
+        # On tool-enabled turns, hold 100% of buffered text until turn completion (`flush_turn_end`)
+        # or `mark_pending_tool_call()`, so even long >220-char planning monologues never leak to SSE.
+        if getattr(self, "_tools_enabled", True):
+            return []
 
         parts = _SENTENCE_BOUNDARY_RE.split(self._buffer)
         if len(parts) <= 1:
@@ -566,11 +566,19 @@ async def _direct_synthesis_fallback(
             )
         digest_parts.append("\n".join(scr_lines))
     if ev.calculator_traces:
-        calc_lines = ["=== KẾT QUẢ TÍNH TOÁN AST ==="]
+        calc_lines = ["=== KẾT QUẢ TÍNH TOÁN TẤT ĐỊNH & BẢNG BCTC CHUẨN HÓA ==="]
         for c in ev.calculator_traces:
-            calc_lines.append(
-                f"[{c.get('calc_id')}] {c.get('description')}: {c.get('formatted')} (`{c.get('formula')}`)"
-            )
+            fmt = str(c.get("formatted") or "")
+            if fmt:
+                calc_lines.append(
+                    f"[{c.get('calc_id')}] {c.get('description')}: {fmt} (`{c.get('formula')}`)"
+                )
+            elif isinstance(c.get("inputs"), Mapping):
+                inp_items = list(c["inputs"].items())[:24]
+                kv_txt = "; ".join(
+                    f"{k}={v.get('value') if isinstance(v, Mapping) else v}" for k, v in inp_items
+                )
+                calc_lines.append(f"[{c.get('calc_id')}] {c.get('description')}: {kv_txt}")
         digest_parts.append("\n".join(calc_lines))
     if ev.graph_hops:
         kg_lines = ["=== ĐỒ THỊ TRI THỨC 3 TẦNG ==="]
@@ -975,8 +983,27 @@ async def run_research_agent_turn(
             tool_execution=ToolExecutionMode.PARALLEL,
         )
     )
+    def _sanitize_calc_badges(text_in: str) -> str:
+        if not text_in:
+            return text_in
+        valid_calcs = {
+            str(c.get("calc_id") or "")
+            for c in ctx.evidence.calculator_traces
+            if c.get("calc_id")
+        }
+        return _INLINE_CALC_BADGE_RE.sub(
+            lambda m: m.group(0) if m.group(1) in valid_calcs else "",
+            text_in,
+        )
+
+    tool_loop_budget = max(0.5, overall_timeout_seconds * 0.68)
+    synthesis_reserve = max(0.4, overall_timeout_seconds - tool_loop_budget)
+    handle = None
+    timed_out_loop = False
+    result = None
+
     try:
-        async with asyncio.timeout(overall_timeout_seconds):
+        async with asyncio.timeout(tool_loop_budget):
             async with runtime:
                 handle = runtime.run(
                     agent,
@@ -987,48 +1014,38 @@ async def run_research_agent_turn(
                     await _handle_event(event)
                 result = await handle.result()
     except TimeoutError:
-        return AgentTurnOutcome(
-            answer_text="",
-            agent_turns=turns_seen,
-            tool_calls_count=tool_calls_seen,
-            streamed_deltas=streamed_any,
-            error_message=f"Agent loop timed out after {overall_timeout_seconds:.0f}s",
-            extra_blindspots=[
-                {
-                    "code": "AGENT_LOOP_TIMEOUT",
-                    "reason": f"Vòng lặp phân tích vượt quá ngân sách thời gian {overall_timeout_seconds:.0f}s.",
-                    "scope": "agent_runner",
-                }
-            ],
-            activity_log=activity_log,
-        )
+        timed_out_loop = True
 
-    cleaned_answer = strip_reasoning_tags((result.output or "").strip())
-    if cleaned_answer:
-        valid_calcs = {
-            str(c.get("calc_id") or "")
-            for c in ctx.evidence.calculator_traces
-            if c.get("calc_id")
-        }
-        cleaned_answer = _INLINE_CALC_BADGE_RE.sub(
-            lambda m: m.group(0) if m.group(1) in valid_calcs else "",
-            cleaned_answer,
-        )
-    in_tok = result.usage.input_tokens
-    out_tok = result.usage.output_tokens
-    cached_tok = result.usage.cached_tokens
+    if result is not None:
+        cleaned_answer = _sanitize_calc_badges(strip_reasoning_tags((result.output or "").strip()))
+        in_tok = result.usage.input_tokens
+        out_tok = result.usage.output_tokens
+        cached_tok = result.usage.cached_tokens
+        req_count = result.usage.requests
+        err_msg = result.error.message if result.error is not None else None
+    else:
+        cleaned_answer = ""
+        partial_usage = handle.context.usage if handle is not None else None
+        in_tok = partial_usage.input_tokens if partial_usage is not None else 0
+        out_tok = partial_usage.output_tokens if partial_usage is not None else 0
+        cached_tok = partial_usage.cached_tokens if partial_usage is not None else 0
+        req_count = partial_usage.requests if partial_usage is not None else turns_seen
+        err_msg = f"Tool loop reached budget ({tool_loop_budget:.1f}s/{overall_timeout_seconds:.1f}s)"
 
-    # Safety net: if the multi-turn loop finished with empty prose despite gathered evidence,
-    # run one clean direct synthesis call so investors receive full broker narrative instead of raw dump.
-    if not cleaned_answer and ctx.evidence.has_any_evidence():
+    extra_blindspots: list[dict[str, str]] = []
+
+    # Safety net: if the multi-turn loop timed out or finished with empty prose despite gathered evidence,
+    # run one clean direct synthesis call inside the reserved synthesis window so investors receive a full
+    # grounded broker report AND token/cost telemetry is never lost.
+    if not cleaned_answer and not streamed_any and ctx.evidence.has_any_evidence():
         try:
             await _emit_thought(
                 turn=turns_seen + 1,
                 kind="plan",
-                title="Tổng hợp bổ sung từ tập bằng chứng đã kiểm chứng",
-                text="Đang tổng hợp báo cáo phân tích đầy đủ từ toàn bộ đoạn BCTC, bảng 2D và phép tính đã thu thập...",
+                title="Tổng hợp từ tập bằng chứng đã kiểm chứng",
+                text="Đang tổng hợp báo cáo phân tích đầy đủ từ toàn bộ bằng chứng và phép tính đã thu thập...",
             )
-            async with asyncio.timeout(35.0):
+            async with asyncio.timeout(synthesis_reserve if timed_out_loop else 35.0):
                 rescued, r_in, r_out, r_cached, r_streamed = await _direct_synthesis_fallback(
                     model=model,
                     instructions=instructions,
@@ -1037,7 +1054,7 @@ async def run_research_agent_turn(
                     on_delta=on_delta,
                 )
             if rescued:
-                cleaned_answer = rescued
+                cleaned_answer = _sanitize_calc_badges(rescued)
                 in_tok += r_in
                 out_tok += r_out
                 cached_tok += r_cached
@@ -1045,14 +1062,29 @@ async def run_research_agent_turn(
         except Exception:  # noqa: BLE001
             pass
 
+    if timed_out_loop:
+        extra_blindspots.append(
+            {
+                "code": "AGENT_TOOL_LOOP_BUDGET_REACHED" if cleaned_answer else "AGENT_LOOP_TIMEOUT",
+                "reason": (
+                    f"Vòng lặp công cụ chạm ngưỡng {tool_loop_budget:.0f}s/"
+                    f"{overall_timeout_seconds:.0f}s; đã chuyển sang tổng hợp trực tiếp từ bằng chứng đã thu thập."
+                    if cleaned_answer
+                    else f"Vòng lặp phân tích vượt quá ngân sách thời gian {overall_timeout_seconds:.0f}s."
+                ),
+                "scope": "agent_runner",
+            }
+        )
+
     return AgentTurnOutcome(
         answer_text=cleaned_answer,
-        agent_turns=max(turns_seen, result.usage.requests),
+        agent_turns=max(turns_seen, req_count),
         tool_calls_count=tool_calls_seen,
         input_tokens=in_tok,
         output_tokens=out_tok,
         cached_tokens=cached_tok,
         streamed_deltas=streamed_any,
-        error_message=result.error.message if result.error is not None else None,
+        error_message=None if cleaned_answer else err_msg,
+        extra_blindspots=extra_blindspots,
         activity_log=activity_log,
     )
