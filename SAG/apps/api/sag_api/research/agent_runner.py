@@ -11,6 +11,7 @@ unverified `[C99]` leakage via `SentenceStreamGate`.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -29,6 +30,8 @@ from sag_agent.types import (
 )
 from sag_api.research.playbooks import execute_playbook_prefetch, resolve_playbook
 from sag_api.research.tools.context import ResearchToolContext
+
+logger = logging.getLogger(__name__)
 
 _INLINE_C_BADGE_RE = re.compile(r"\[C(\d+)\]")
 _INLINE_CALC_BADGE_RE = re.compile(r"\[(CALC-\d+)\]")
@@ -686,6 +689,13 @@ async def run_research_agent_turn(
     )
     run_started = time.perf_counter()
     streamed_any = False
+    emitted_prose_chunks: list[str] = []
+    loop_timeout: asyncio.Timeout | None = None
+    tool_loop_budget = max(0.5, overall_timeout_seconds * 0.68)
+    synthesis_reserve = max(0.4, overall_timeout_seconds - tool_loop_budget)
+    overall_deadline_mono = asyncio.get_running_loop().time() + max(
+        tool_loop_budget + synthesis_reserve, overall_timeout_seconds
+    )
     turns_seen = 0
     tool_calls_seen = 0
     current_turn_tools_enabled = True
@@ -755,6 +765,9 @@ async def run_research_agent_turn(
             tool_cnt = int(event.payload.get("tool_count") or 0)
             current_turn_tools_enabled = turns_seen <= effective_max_turns and tool_cnt > 0
             gate.reset_for_turn(tools_enabled=current_turn_tools_enabled)
+            if not current_turn_tools_enabled and loop_timeout is not None:
+                # Tool-calling phase finished within budget; grant final synthesis the full remaining budget
+                loop_timeout.reschedule(overall_deadline_mono)
             if turns_seen == 1:
                 tk_scope = ", ".join(explicit_tickers) if explicit_tickers else "tự nhận diện từ câu hỏi"
                 await _emit_thought(
@@ -966,8 +979,9 @@ async def run_research_agent_turn(
             if delta_txt:
                 out_chunks = gate.push_delta(delta_txt)
                 await _flush_gate_thoughts(ev_turn)
-                if on_delta is not None:
-                    for chunk_out in out_chunks:
+                for chunk_out in out_chunks:
+                    emitted_prose_chunks.append(chunk_out)
+                    if on_delta is not None:
                         streamed_any = True
                         await on_delta(chunk_out)
 
@@ -975,8 +989,9 @@ async def run_research_agent_turn(
             has_tc = bool(event.payload.get("has_tool_calls"))
             out_chunks = gate.flush_turn_end(has_tool_calls=has_tc)
             await _flush_gate_thoughts(ev_turn)
-            if on_delta is not None:
-                for chunk_out in out_chunks:
+            for chunk_out in out_chunks:
+                emitted_prose_chunks.append(chunk_out)
+                if on_delta is not None:
                     streamed_any = True
                     await on_delta(chunk_out)
 
@@ -1035,14 +1050,14 @@ async def run_research_agent_turn(
             text_in,
         )
 
-    tool_loop_budget = max(0.5, overall_timeout_seconds * 0.68)
-    synthesis_reserve = max(0.4, overall_timeout_seconds - tool_loop_budget)
     handle = None
     timed_out_loop = False
+    timed_out_during_synthesis = False
     result = None
 
     try:
-        async with asyncio.timeout(tool_loop_budget):
+        async with asyncio.timeout(tool_loop_budget) as active_timeout:
+            loop_timeout = active_timeout
             async with runtime:
                 handle = runtime.run(
                     agent,
@@ -1054,6 +1069,7 @@ async def run_research_agent_turn(
                 result = await handle.result()
     except TimeoutError:
         timed_out_loop = True
+        timed_out_during_synthesis = not current_turn_tools_enabled or bool(emitted_prose_chunks)
 
     if result is not None:
         cleaned_answer = _sanitize_calc_badges(strip_reasoning_tags((result.output or "").strip()))
@@ -1063,7 +1079,17 @@ async def run_research_agent_turn(
         req_count = result.usage.requests
         err_msg = result.error.message if result.error is not None else None
     else:
-        cleaned_answer = ""
+        if timed_out_during_synthesis:
+            tail_chunks = gate.flush_turn_end(has_tool_calls=False)
+            await _flush_gate_thoughts(turns_seen or 1)
+            for tail_chunk in tail_chunks:
+                emitted_prose_chunks.append(tail_chunk)
+                if on_delta is not None:
+                    streamed_any = True
+                    await on_delta(tail_chunk)
+        cleaned_answer = _sanitize_calc_badges(
+            strip_reasoning_tags("".join(emitted_prose_chunks).strip())
+        )
         partial_usage = handle.context.usage if handle is not None else None
         in_tok = partial_usage.input_tokens if partial_usage is not None else 0
         out_tok = partial_usage.output_tokens if partial_usage is not None else 0
@@ -1098,22 +1124,41 @@ async def run_research_agent_turn(
                 out_tok += r_out
                 cached_tok += r_cached
                 streamed_any = streamed_any or r_streamed
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Direct synthesis fallback failed after loop timeout: %s", exc)
+            extra_blindspots.append(
+                {
+                    "code": "DIRECT_SYNTHESIS_FALLBACK_FAILED",
+                    "reason": f"Tổng hợp dự phòng không hoàn tất: {type(exc).__name__}.",
+                    "scope": "agent_runner",
+                }
+            )
 
     if timed_out_loop:
-        extra_blindspots.append(
-            {
-                "code": "AGENT_TOOL_LOOP_BUDGET_REACHED" if cleaned_answer else "AGENT_LOOP_TIMEOUT",
-                "reason": (
-                    f"Vòng lặp công cụ chạm ngưỡng {tool_loop_budget:.0f}s/"
-                    f"{overall_timeout_seconds:.0f}s; đã chuyển sang tổng hợp trực tiếp từ bằng chứng đã thu thập."
-                    if cleaned_answer
-                    else f"Vòng lặp phân tích vượt quá ngân sách thời gian {overall_timeout_seconds:.0f}s."
-                ),
-                "scope": "agent_runner",
-            }
-        )
+        if timed_out_during_synthesis and cleaned_answer:
+            extra_blindspots.append(
+                {
+                    "code": "AGENT_SYNTHESIS_TIMEOUT_PARTIAL",
+                    "reason": (
+                        f"Bước tổng hợp chạm ngưỡng thời gian tổng {overall_timeout_seconds:.0f}s; "
+                        "đã giữ nguyên phần nội dung đã xuất và kiểm chứng."
+                    ),
+                    "scope": "agent_runner",
+                }
+            )
+        else:
+            extra_blindspots.append(
+                {
+                    "code": "AGENT_TOOL_LOOP_BUDGET_REACHED" if cleaned_answer else "AGENT_LOOP_TIMEOUT",
+                    "reason": (
+                        f"Vòng lặp công cụ chạm ngưỡng {tool_loop_budget:.0f}s/"
+                        f"{overall_timeout_seconds:.0f}s; đã chuyển sang tổng hợp trực tiếp từ bằng chứng đã thu thập."
+                        if cleaned_answer
+                        else f"Vòng lặp phân tích vượt quá ngân sách thời gian {overall_timeout_seconds:.0f}s."
+                    ),
+                    "scope": "agent_runner",
+                }
+            )
 
     return AgentTurnOutcome(
         answer_text=cleaned_answer,

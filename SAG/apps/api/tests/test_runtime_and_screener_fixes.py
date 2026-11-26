@@ -258,6 +258,198 @@ async def test_r3_r4_timeout_rescues_synthesis_preserves_tokens_and_calc_error_f
     assert outcome.cached_tokens == 350
 
 
+async def test_final_synthesis_turn_uses_reserved_synthesis_budget_without_truncation() -> None:
+    @asynccontextmanager
+    async def _sf() -> AsyncIterator[dict[str, int]]:
+        yield {"sid": 1}
+
+    class _StubRetriever:
+        async def retrieve(self, **_kwargs: Any) -> RetrievalResult:
+            return RetrievalResult(
+                sections=[
+                    RetrievedResearchSection(
+                        ticker="VHM",
+                        doc_id="d-vhm",
+                        document_version_id="v-vhm",
+                        sub_doc_slot="BCTC_AUDITED",
+                        page_from=8,
+                        page_to=8,
+                        published_date=date(2026, 3, 30),
+                        heading="KQKD VHM 2025",
+                        content="Lợi nhuận sau thuế VHM năm 2025 đạt 35.073 tỷ đồng.",
+                        fiscal_year=2025,
+                        fiscal_quarter=0,
+                    )
+                ]
+            )
+
+    class _NearBudgetToolThenNormalSynthesisModel:
+        configured = True
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def stream_turn(
+            self, request: ModelRequest, cancellation: CancellationToken
+        ) -> AsyncIterator[ModelChunk]:
+            del cancellation
+            self.calls += 1
+            if request.tools:
+                # Uses ~0.30s per tool turn (2 turns = 0.60s < 0.816s tool_loop_budget)
+                await asyncio.sleep(0.30)
+                yield ModelChunk(
+                    usage=Usage(input_tokens=300, output_tokens=40, cached_tokens=100),
+                    tool_calls=(
+                        ToolCall(
+                            id="tc-1",
+                            name="search_disclosures",
+                            arguments={
+                                "tickers": ["VHM"],
+                                "sub_doc_slots": ["BCTC_AUDITED"],
+                                "fiscal_year": 2025,
+                                "fiscal_quarter": 0,
+                                "vas_terms": ["lợi nhuận sau thuế"],
+                                "question": "LNST VHM 2025",
+                            },
+                        ),
+                    ),
+                    finish_reason="tool_calls",
+                )
+                return
+            # Forced final synthesis turn (tools == ()): streams sentence 1, then takes 0.35s
+            # Total elapsed ~0.95s (> 0.816s tool_loop_budget, but < 1.20s overall_timeout_seconds!)
+            yield ModelChunk(text_delta="Kết luận điều hành: LNST VHM đạt 35.073 tỷ đồng [C1].\n")
+            await asyncio.sleep(0.35)
+            yield ModelChunk(
+                text_delta="Dòng tiền kinh doanh duy trì tích cực [C1].",
+                usage=Usage(input_tokens=450, output_tokens=90, cached_tokens=200),
+                finish_reason="stop",
+            )
+
+    evidence = ResearchEvidenceLedger()
+    rctx = ResearchToolContext(
+        as_of_date=AS_OF,
+        principal=_principal(),
+        chat_mode="GENERAL",
+        session_factory=_sf,
+        session_ledger=FinancialZeroMemLedger(request_as_of_date=AS_OF),
+        evidence=evidence,
+        available_tickers=frozenset({"VHM"}),
+        retriever_override=_StubRetriever(),
+    )
+    streamed_deltas: list[str] = []
+
+    async def _on_delta(txt: str) -> None:
+        streamed_deltas.append(txt)
+
+    outcome = await run_research_agent_turn(
+        query="LNST VHM 2025 bao nhiêu?",
+        model=_NearBudgetToolThenNormalSynthesisModel(),
+        ctx=rctx,
+        route_decision={"task_action": "fact_lookup", "axis_confidences": {"task_action": 0.92}},
+        explicit_tickers=["VHM"],
+        on_delta=_on_delta,
+        overall_timeout_seconds=1.2,
+    )
+
+    assert outcome.streamed_deltas is True
+    assert "35.073 tỷ đồng [C1]" in outcome.answer_text
+    assert "Dòng tiền kinh doanh duy trì tích cực [C1]." in outcome.answer_text
+    assert outcome.error_message is None
+    assert outcome.extra_blindspots == []
+
+
+async def test_overall_timeout_mid_synthesis_preserves_streamed_and_buffered_prose() -> None:
+    @asynccontextmanager
+    async def _sf() -> AsyncIterator[dict[str, int]]:
+        yield {"sid": 1}
+
+    class _StubRetriever:
+        async def retrieve(self, **_kwargs: Any) -> RetrievalResult:
+            return RetrievalResult(
+                sections=[
+                    RetrievedResearchSection(
+                        ticker="VHM",
+                        doc_id="d-vhm",
+                        document_version_id="v-vhm",
+                        sub_doc_slot="BCTC_AUDITED",
+                        page_from=8,
+                        page_to=8,
+                        published_date=date(2026, 3, 30),
+                        heading="KQKD VHM 2025",
+                        content="Lợi nhuận sau thuế VHM năm 2025 đạt 35.073 tỷ đồng.",
+                        fiscal_year=2025,
+                        fiscal_quarter=0,
+                    )
+                ]
+            )
+
+    class _MidSynthesisStallModel:
+        configured = True
+
+        async def stream_turn(
+            self, request: ModelRequest, cancellation: CancellationToken
+        ) -> AsyncIterator[ModelChunk]:
+            del cancellation
+            if request.tools:
+                yield ModelChunk(
+                    usage=Usage(input_tokens=200, output_tokens=30, cached_tokens=0),
+                    tool_calls=(
+                        ToolCall(
+                            id="tc-1",
+                            name="search_disclosures",
+                            arguments={
+                                "tickers": ["VHM"],
+                                "sub_doc_slots": ["BCTC_AUDITED"],
+                                "fiscal_year": 2025,
+                                "fiscal_quarter": 0,
+                                "vas_terms": ["lợi nhuận sau thuế"],
+                                "question": "LNST VHM 2025",
+                            },
+                        ),
+                    ),
+                    finish_reason="tool_calls",
+                )
+                return
+            # Emits one complete sentence (flushed to SSE) + one un-flushed tail clause, then stalls past 1.0s!
+            yield ModelChunk(text_delta="Báo cáo VHM: LNST đạt 35.073 tỷ đồng [C1].\n")
+            yield ModelChunk(text_delta="Nợ vay ngắn hạn cần theo dõi sát [C1]")
+            await asyncio.sleep(5.0)
+
+    evidence = ResearchEvidenceLedger()
+    rctx = ResearchToolContext(
+        as_of_date=AS_OF,
+        principal=_principal(),
+        chat_mode="GENERAL",
+        session_factory=_sf,
+        session_ledger=FinancialZeroMemLedger(request_as_of_date=AS_OF),
+        evidence=evidence,
+        available_tickers=frozenset({"VHM"}),
+        retriever_override=_StubRetriever(),
+    )
+    streamed_deltas: list[str] = []
+
+    async def _on_delta(txt: str) -> None:
+        streamed_deltas.append(txt)
+
+    outcome = await run_research_agent_turn(
+        query="LNST VHM 2025 bao nhiêu?",
+        model=_MidSynthesisStallModel(),
+        ctx=rctx,
+        route_decision={"task_action": "fact_lookup", "axis_confidences": {"task_action": 0.92}},
+        explicit_tickers=["VHM"],
+        on_delta=_on_delta,
+        overall_timeout_seconds=1.0,
+    )
+
+    assert outcome.streamed_deltas is True
+    # Must NEVER wipe answer_text to "" when deltas were already streamed!
+    assert "Báo cáo VHM: LNST đạt 35.073 tỷ đồng [C1]." in outcome.answer_text
+    assert "Nợ vay ngắn hạn cần theo dõi sát [C1]" in outcome.answer_text
+    assert "".join(streamed_deltas).strip() == outcome.answer_text
+    assert any(b.get("code") == "AGENT_SYNTHESIS_TIMEOUT_PARTIAL" for b in outcome.extra_blindspots)
+
+
 async def test_r5_r6_screener_fixes_cafef_pdf_scale_quarterly_ttm_bank_roe_and_tsv_cols(
     tmp_path: Path,
 ) -> None:
