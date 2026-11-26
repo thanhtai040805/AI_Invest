@@ -8,7 +8,6 @@ can run multiple tools simultaneously with zero SQLAlchemy `AsyncSession` concur
 
 from __future__ import annotations
 
-import inspect
 import json
 import time
 from collections.abc import Mapping
@@ -287,7 +286,406 @@ async def screen_financial_universe_tool(
     )
 
 
-# ── Tool 2: Corporate Filings Search (Always-On Dual-Register Rewriting + CRAG) ─
+# ── Tool 2: Push-Down Disclosure Evidence Search (`search_disclosures` + legacy alias) ─
+
+DISCLOSURE_CHUNK_CHAR_LIMIT = 2000
+
+CANONICAL_DISCLOSURE_SLOTS: frozenset[str] = frozenset(
+    {"BCTC_AUDITED", "QUARTER_NOTES", "BCTN_CORE", "BCTN_PR", "AGM_TARGETS"}
+)
+_SLOT_ALIASES: dict[str, tuple[str, ...]] = {
+    "BCTC_AUDITED": ("BCTC_AUDITED",),
+    "BCTC": ("BCTC_AUDITED",),
+    "AUDITED_FS": ("BCTC_AUDITED",),
+    "QUARTER_NOTES": ("QUARTER_NOTES",),
+    "LATEST_QUARTER": ("QUARTER_NOTES",),
+    "QUARTER": ("QUARTER_NOTES",),
+    "BCTN_CORE": ("BCTN_CORE",),
+    "BCTN_PR": ("BCTN_PR",),
+    "BCTN": ("BCTN_CORE", "BCTN_PR"),
+    "ANNUAL_REPORT": ("BCTN_CORE", "BCTN_PR"),
+    "AGM_TARGETS": ("AGM_TARGETS",),
+    "AGM": ("AGM_TARGETS",),
+    "DHDCD": ("AGM_TARGETS",),
+}
+
+
+def normalize_disclosure_slots(raw_slots: Any) -> list[str]:
+    """Expand disclosure slot/doc_type filters into canonical Qdrant `sub_doc_slot` values (fail-closed)."""
+    if not raw_slots:
+        return []
+    if isinstance(raw_slots, str):
+        items = [raw_slots]
+    elif isinstance(raw_slots, (list, tuple, set, frozenset)):
+        items = list(raw_slots)
+    else:
+        raise ValueError("`sub_doc_slots` phải là mảng chuỗi hợp lệ.")
+    expanded: list[str] = []
+    for raw in items:
+        key = str(raw or "").strip().upper()
+        if not key:
+            continue
+        mapped = _SLOT_ALIASES.get(key)
+        if mapped is None:
+            valid_txt = ", ".join(sorted(CANONICAL_DISCLOSURE_SLOTS))
+            raise ValueError(f"Loại tài liệu `{raw}` không hợp lệ. Chỉ chấp nhận: {valid_txt}.")
+        for s in mapped:
+            if s not in expanded:
+                expanded.append(s)
+    return expanded
+
+
+async def _execute_disclosure_search(
+    *,
+    tool_name: str,
+    ctx: ResearchToolContext,
+    raw_tickers: Any,
+    dense_queries: list[str],
+    vas_terms: list[str],
+    slots_filter: list[str],
+    years_filter: list[int],
+    quarters_filter: list[int],
+    include_cross_ref: bool,
+    top_k: int,
+) -> ToolResult:
+    from sag_api.research.chat_orchestrator import SAGRetrieverAdapter
+
+    started = time.perf_counter()
+    combined_queries = list(dict.fromkeys([*dense_queries, *vas_terms]))
+    if not combined_queries:
+        raise ValueError("Cần ít nhất câu hỏi truy vấn (`question`) hoặc thuật ngữ kế toán (`vas_terms`).")
+
+    target_tickers, unknown_tks = _clamp_tickers(raw_tickers or [], ctx, max_count=6)
+    if unknown_tks:
+        async with ctx.evidence.lock:
+            for u in unknown_tks:
+                if u not in ctx.evidence.unknown_requested_tickers:
+                    ctx.evidence.unknown_requested_tickers.append(u)
+
+    if not target_tickers:
+        if raw_tickers and unknown_tks:
+            return ToolResult(
+                content=(
+                    f"STATUS=NOT_FOUND: Không có tài liệu BCTC PIT hợp lệ cho mã {', '.join(unknown_tks)} "
+                    f"tại as_of_date={ctx.as_of_date.isoformat()}."
+                ),
+                details={
+                    "status": "NOT_FOUND",
+                    "crag_grade": "INCORRECT",
+                    "returned_count": 0,
+                    "unknown_tickers": unknown_tks,
+                },
+            )
+        target_tickers = sorted(ctx.available_tickers)[:6]
+
+    if not target_tickers:
+        return ToolResult(
+            content="STATUS=NOT_FOUND: Không có mã chứng khoán nào khả dụng trong phạm vi tài liệu của tổ chức.",
+            details={"status": "NOT_FOUND", "crag_grade": "INCORRECT", "returned_count": 0},
+        )
+
+    recall_k = min(28, max(12, top_k * 3))
+    raw_sections: list[Any] = []
+    collected_blocks: dict[str, list[Any]] = {}
+    hippo_hops = 0
+    avail_cov: dict[str, list[str]] = {}
+    degraded = False
+
+    async with ctx.session_factory() as isolated_session:
+        if ctx.retriever_override is not None:
+            res = await ctx.retriever_override.retrieve(
+                query=" | ".join(combined_queries),
+                tickers=target_tickers,
+                as_of_date=ctx.as_of_date,
+                top_k=recall_k,
+            )
+            raw_sections.extend(res.sections)
+            for vid, blks in (res.canonical_blocks or {}).items():
+                collected_blocks.setdefault(str(vid), list(blks))
+            hippo_hops += int(res.hipporag_hops or 0)
+            if slots_filter:
+                slot_set = set(slots_filter)
+                raw_sections = [s for s in raw_sections if str(s.sub_doc_slot or "").upper() in slot_set]
+            if years_filter:
+                yr_set = set(years_filter)
+                raw_sections = [s for s in raw_sections if s.fiscal_year in yr_set]
+            if quarters_filter:
+                q_set = set(quarters_filter)
+                raw_sections = [s for s in raw_sections if s.fiscal_quarter in q_set]
+        else:
+            adapter = SAGRetrieverAdapter(isolated_session, engine_manager=ctx.engine_manager)
+            res, disc_stats = await adapter.retrieve_disclosures(
+                dense_queries=dense_queries,
+                vas_terms=vas_terms,
+                tickers=target_tickers,
+                as_of_date=ctx.as_of_date,
+                top_k=recall_k,
+                principal=ctx.principal,
+                sub_doc_slots=slots_filter or None,
+                fiscal_years=years_filter or None,
+                fiscal_quarters=quarters_filter or None,
+                load_canonical_blocks=False,
+            )
+            raw_sections.extend(res.sections)
+            for vid, blks in (res.canonical_blocks or {}).items():
+                collected_blocks.setdefault(str(vid), list(blks))
+            avail_cov = dict(disc_stats.get("available_coverage") or {})
+            degraded = bool(disc_stats.get("degraded"))
+
+            if include_cross_ref:
+                xref_res = await adapter.retrieve_cross_ref(
+                    query=dense_queries[0] if dense_queries else vas_terms[0],
+                    target_tickers=target_tickers,
+                    exclude_tickers=target_tickers,
+                    as_of_date=ctx.as_of_date,
+                    top_k=max(3, top_k // 2),
+                    principal=ctx.principal,
+                    load_canonical_blocks=False,
+                )
+                raw_sections.extend(xref_res.sections)
+                for vid, blks in (xref_res.canonical_blocks or {}).items():
+                    collected_blocks.setdefault(str(vid), list(blks))
+
+    if not raw_sections:
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        await ctx.evidence.record_tool_trace(
+            {
+                "tool": tool_name,
+                "duration_ms": elapsed_ms,
+                "tickers": target_tickers,
+                "queries": combined_queries,
+                "sub_doc_slots": slots_filter,
+                "fiscal_years": years_filter,
+                "fiscal_quarters": quarters_filter,
+                "recall_count": 0,
+                "returned_count": 0,
+                "status": "NOT_FOUND",
+                "degraded": degraded,
+            }
+        )
+        flt_desc_parts: list[str] = []
+        if slots_filter:
+            flt_desc_parts.append(f"sub_doc_slots={slots_filter}")
+        if years_filter:
+            flt_desc_parts.append(f"fiscal_years={years_filter}")
+        if quarters_filter:
+            flt_desc_parts.append(f"fiscal_quarters={quarters_filter}")
+        flt_txt = f" khớp bộ lọc ({', '.join(flt_desc_parts)})" if flt_desc_parts else ""
+        cov_lines = [f"{tk}: {', '.join(vals)}" for tk, vals in avail_cov.items() if vals]
+        cov_txt = f" Các tài liệu đã công bố trong PIT: {'; '.join(cov_lines)}." if cov_lines else ""
+        return ToolResult(
+            content=(
+                f"STATUS=NOT_FOUND: Không tìm thấy đoạn thuyết minh/tài liệu nào cho {', '.join(target_tickers)}"
+                f"{flt_txt} tại PIT {ctx.as_of_date.isoformat()}.{cov_txt}"
+            ),
+            details={
+                "status": "NOT_FOUND",
+                "crag_grade": "INCORRECT",
+                "returned_count": 0,
+                "recall_count": 0,
+                "duration_ms": elapsed_ms,
+                "available_coverage": avail_cov,
+                "degraded": degraded,
+            },
+        )
+
+    rerank_query = dense_queries[0] if dense_queries else " ".join(vas_terms)
+    rerank_out = await rerank_and_grade_sections(
+        rerank_query,
+        raw_sections,
+        top_k=top_k,
+        target_tickers=target_tickers,
+        protect_table_cards=True,
+        min_table_cards=1,
+        reranker=ctx.reranker,
+    )
+
+    assigned = await ctx.evidence.register_sections(
+        rerank_out.sections,
+        canonical_blocks=collected_blocks,
+        crag_grade=rerank_out.crag_grade,
+        reranker_provider=rerank_out.reranker_provider,
+        reranker_model=rerank_out.reranker_model,
+        queries=combined_queries,
+        hipporag_hops=hippo_hops,
+    )
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    await ctx.evidence.record_tool_trace(
+        {
+            "tool": tool_name,
+            "duration_ms": elapsed_ms,
+            "tickers": target_tickers,
+            "queries": combined_queries,
+            "sub_doc_slots": slots_filter,
+            "fiscal_years": years_filter,
+            "fiscal_quarters": quarters_filter,
+            "recall_count": len(raw_sections),
+            "returned_count": len(assigned),
+            "crag_grade": rerank_out.crag_grade,
+            "reranker_used": rerank_out.reranker_used,
+            "domain_term_coverage": rerank_out.domain_term_coverage,
+            "degraded": degraded,
+        }
+    )
+
+    if not assigned:
+        return ToolResult(
+            content=(
+                f"STATUS=NOT_FOUND | CRAG_GRADE=INCORRECT ({rerank_out.crag_reason}). Không tìm thấy đoạn văn bản "
+                f"phù hợp cho {', '.join(target_tickers)}."
+            ),
+            details={"status": "NOT_FOUND", "crag_grade": "INCORRECT", "returned_count": 0},
+        )
+
+    table_hints: list[str] = []
+    deg_tag = " | DEGRADED=PG_FALLBACK" if degraded else ""
+    lines = [
+        f"STATUS=OK | CRAG_GRADE={rerank_out.crag_grade} ({rerank_out.crag_reason}) | "
+        f"domain_cov={rerank_out.domain_term_coverage:.2f} | "
+        f"reranker={rerank_out.reranker_model or 'hybrid_rrf'}{deg_tag} | {len(assigned)} đoạn:"
+    ]
+    selected_documents: list[dict[str, Any]] = []
+    for cid, sec in assigned:
+        tid = getattr(sec, "table_id", None)
+        if tid and str(tid) not in table_hints:
+            table_hints.append(str(tid))
+        origin = str(getattr(sec, "evidence_origin", "PRIMARY") or "PRIMARY")
+        tk = str(getattr(sec, "ticker", "") or "")
+        slot = str(getattr(sec, "sub_doc_slot", "") or "")
+        fy = getattr(sec, "fiscal_year", None)
+        fq = getattr(sec, "fiscal_quarter", None)
+        period_tag = f" | Q{fq}/{fy}" if (fy and fq and fq > 0) else (f" | FY{fy}" if fy else "")
+        page = getattr(sec, "page_from", 1)
+        pub = getattr(sec, "published_date", "")
+        heading = str(getattr(sec, "heading", "") or "").strip()
+        body = str(getattr(sec, "content", "") or "").strip()[:DISCLOSURE_CHUNK_CHAR_LIMIT]
+        tbl_tag = f" | table_id={tid}" if tid else ""
+        lines.append(
+            f"[{cid}] ({tk} | {origin} | {slot}{period_tag} | trang {page} | pub={pub}{tbl_tag}) {heading}\n{body}"
+        )
+        selected_documents.append(
+            {
+                "citation_id": cid,
+                "ticker": tk,
+                "sub_doc_slot": slot,
+                "page": int(page or 1),
+                "fiscal_year": fy,
+                "fiscal_quarter": fq,
+                "heading": heading[:120],
+                "score": round(float(getattr(sec, "score", 0.0) or 0.0), 3),
+                "evidence_origin": origin,
+                "table_id": str(tid) if tid else None,
+            }
+        )
+
+    if table_hints:
+        lines.append(
+            f"\nGợi ý bảng cấu trúc liên quan (có thể gọi `hydrate_financial_tables`): {', '.join(table_hints[:6])}"
+        )
+    return ToolResult(
+        content="\n\n".join(lines),
+        details={
+            "status": "OK",
+            "crag_grade": rerank_out.crag_grade,
+            "crag_reason": rerank_out.crag_reason,
+            "reranker_model": rerank_out.reranker_model,
+            "reranker_used": rerank_out.reranker_used,
+            "recall_count": len(raw_sections),
+            "returned_count": len(assigned),
+            "duration_ms": elapsed_ms,
+            "tickers": target_tickers,
+            "queries": combined_queries,
+            "table_hints": table_hints,
+            "selected_documents": selected_documents,
+            "degraded": degraded,
+        },
+    )
+
+
+@function_tool(
+    name="search_disclosures",
+    label="Tra cứu Thuyết minh BCTC, BCTN & ĐHĐCĐ (bộ lọc đẩy xuống Qdrant)",
+    description=(
+        "Truy vấn đoạn thuyết minh, chính sách kế toán, cơ cấu nợ xấu/danh mục tự doanh/tồn kho dự án, BCTN và "
+        "tài liệu ĐHĐCĐ (khóa sổ PIT). Bộ lọc `sub_doc_slots`, `fiscal_year`, `fiscal_quarter` được đẩy thẳng "
+        "xuống Qdrant (KHÔNG tự ý trả nhầm năm/quý khác; nếu trống trả `STATUS=NOT_FOUND` kèm danh sách kỳ sẵn có). "
+        "Không dùng tool này để lấy số tổng doanh thu/lợi nhuận/ROE — hãy dùng `get_financial_statements` hoặc "
+        "`get_sector_kpis` cho số liệu định lượng."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "tickers": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "1..6 mã cổ phiếu mục tiêu.",
+            },
+            "question": {
+                "type": "string",
+                "description": "Câu hỏi ngữ nghĩa đầy đủ chủ thể + niên độ cần giải thích từ thuyết minh/tài liệu.",
+            },
+            "vas_terms": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+                "maxItems": 5,
+                "description": (
+                    "1-5 cụm thuật ngữ chuẩn VAS TT200/TT49/TT210 hoặc mã thuyết minh "
+                    "(vd: 'nợ nhóm 3', 'dự phòng rủi ro tín dụng', 'vốn khả dụng', 'V.06')."
+                ),
+            },
+            "sub_doc_slots": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": ["BCTC_AUDITED", "QUARTER_NOTES", "BCTN_CORE", "BCTN_PR", "AGM_TARGETS"],
+                },
+                "description": "Tùy chọn khóa cứng loại tài liệu trong Qdrant.",
+            },
+            "fiscal_year": {"type": "integer", "description": "Tùy chọn khóa cứng năm tài chính (vd: 2025, 2026)."},
+            "fiscal_quarter": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4,
+                "description": "Tùy chọn khóa cứng quý tài chính (0 = cả năm, 1..4 = Quý 1..4).",
+            },
+            "include_cross_ref": {
+                "type": "boolean",
+                "default": False,
+                "description": "Bật tìm kiếm chéo từ tài liệu đối tác/đối thủ nhắc tới mã mục tiêu.",
+            },
+            "top_k": {"type": "integer", "minimum": 3, "maximum": 12, "default": 6},
+        },
+        "required": ["question", "vas_terms"],
+        "additionalProperties": False,
+    },
+    risk=ToolRisk.READ_ONLY,
+    execution_mode=ToolExecutionMode.PARALLEL,
+    timeout_seconds=25.0,
+)
+async def search_disclosures_tool(
+    arguments: Mapping[str, Any],
+    tool_ctx: ToolContext,
+) -> ToolResult:
+    ctx = _require_ctx(tool_ctx)
+    question = str(arguments.get("question") or "").strip()
+    vas_terms = [str(t).strip() for t in (arguments.get("vas_terms") or ()) if str(t).strip()][:5]
+    raw_slots = arguments.get("sub_doc_slots") or arguments.get("doc_types")
+    slots = normalize_disclosure_slots(raw_slots)
+    fy = arguments.get("fiscal_year")
+    fq = arguments.get("fiscal_quarter")
+    return await _execute_disclosure_search(
+        tool_name="search_disclosures",
+        ctx=ctx,
+        raw_tickers=arguments.get("tickers"),
+        dense_queries=[question] if question else [],
+        vas_terms=vas_terms,
+        slots_filter=slots,
+        years_filter=[int(fy)] if isinstance(fy, int) else [],
+        quarters_filter=[int(fq)] if isinstance(fq, int) else [],
+        include_cross_ref=bool(arguments.get("include_cross_ref", False)),
+        top_k=max(3, min(12, int(arguments.get("top_k") or 6))),
+    )
 
 
 @function_tool(
@@ -295,10 +693,7 @@ async def screen_financial_universe_tool(
     label="Tra cứu BCTC, Thuyết minh, BCTN & ĐHĐCĐ (Hybrid + Rerank + CRAG)",
     description=(
         "Tìm kiếm đoạn văn bản gốc và thẻ bảng trong BCTC kiểm toán, Thuyết minh, BCTN, Nghị quyết ĐHĐCĐ "
-        "(khóa sổ PIT). LUÔN viết lại câu hỏi sang 2 thanh ghi: `bm25_vas_queries` (thuật ngữ kế toán chuẩn "
-        "VAS TT200/TT49/TT210, ví dụ 'phải thu khách hàng', 'vay và nợ thuê tài chính', 'giá vốn hàng bán') "
-        "và `dense_semantic_queries` (câu hỏi đầy đủ chủ thể + niên độ). Nếu kết quả trả về `crag_grade` là "
-        "`AMBIGUOUS` hoặc `INCORRECT`, hãy tự viết lại thuật ngữ thay thế và gọi lại."
+        "(khóa sổ PIT) với truy vấn 2 thanh ghi `bm25_vas_queries` + `dense_semantic_queries` và bộ lọc đẩy xuống."
     ),
     parameters={
         "type": "object",
@@ -307,8 +702,8 @@ async def screen_financial_universe_tool(
                 "type": "array",
                 "items": {"type": "string"},
                 "minItems": 1,
-                "maxItems": 3,
-                "description": "1-3 cụm từ khóa kế toán chuẩn VAS/TT200/TT49/TT210 hoặc mã thuyết minh (ví dụ 'V.20').",
+                "maxItems": 5,
+                "description": "1-5 cụm từ khóa kế toán chuẩn VAS/TT200/TT49/TT210 hoặc mã thuyết minh (ví dụ 'V.20').",
             },
             "dense_semantic_queries": {
                 "type": "array",
@@ -332,6 +727,11 @@ async def screen_financial_universe_tool(
                 "items": {"type": "integer"},
                 "description": "Tùy chọn lọc năm tài chính cụ thể (ví dụ [2024, 2025]).",
             },
+            "fiscal_quarters": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "Tùy chọn lọc quý tài chính (0 = năm, 1..4 = Q1..Q4).",
+            },
             "include_cross_ref": {
                 "type": "boolean",
                 "default": False,
@@ -350,219 +750,23 @@ async def search_corporate_filings_tool(
     arguments: Mapping[str, Any],
     tool_ctx: ToolContext,
 ) -> ToolResult:
-    from sag_api.research.chat_orchestrator import SAGRetrieverAdapter
-
     ctx = _require_ctx(tool_ctx)
-    started = time.perf_counter()
-
-    bm25_qs = [str(q).strip() for q in (arguments.get("bm25_vas_queries") or ()) if str(q).strip()][:3]
+    bm25_qs = [str(q).strip() for q in (arguments.get("bm25_vas_queries") or ()) if str(q).strip()][:5]
     dense_qs = [str(q).strip() for q in (arguments.get("dense_semantic_queries") or ()) if str(q).strip()][:3]
-    combined_queries = list(dict.fromkeys([*dense_qs, *bm25_qs]))
-    if not combined_queries:
-        return ToolResult(content="Thiếu tham số truy vấn `bm25_vas_queries` hoặc `dense_semantic_queries`.")
-
-    raw_tickers = arguments.get("tickers") or []
-    target_tickers, unknown_tks = _clamp_tickers(raw_tickers, ctx, max_count=6)
-    if unknown_tks:
-        async with ctx.evidence.lock:
-            for u in unknown_tks:
-                if u not in ctx.evidence.unknown_requested_tickers:
-                    ctx.evidence.unknown_requested_tickers.append(u)
-
-    if not target_tickers:
-        if raw_tickers and unknown_tks:
-            return ToolResult(
-                content=(
-                    f"Không tìm thấy dữ liệu BCTC PIT hợp lệ cho mã {', '.join(unknown_tks)} "
-                    f"tại as_of_date={ctx.as_of_date.isoformat()}."
-                ),
-                details={"crag_grade": "INCORRECT", "unknown_tickers": unknown_tks},
-            )
-        # Open-universe bounded fallback to authorized available tickers (capped at 6)
-        target_tickers = sorted(ctx.available_tickers)[:6]
-
-    if not target_tickers:
-        return ToolResult(
-            content="Không có mã chứng khoán nào khả dụng trong phạm vi tài liệu của tổ chức.",
-            details={"crag_grade": "INCORRECT"},
-        )
-
-    slots_filter = {str(s).strip().upper() for s in (arguments.get("sub_doc_slots") or ()) if str(s).strip()}
-    years_filter = {int(y) for y in (arguments.get("fiscal_years") or ()) if isinstance(y, int)}
-    include_cross_ref = bool(arguments.get("include_cross_ref", False))
-    top_k = max(3, min(12, int(arguments.get("top_k") or 6)))
-    recall_k = min(28, max(16, top_k * 3))
-
-    primary_query = " | ".join(combined_queries[:2]) if len(combined_queries) > 1 else combined_queries[0]
-    raw_sections: list[Any] = []
-    collected_blocks: dict[str, list[Any]] = {}
-    hippo_hops = 0
-
-    async with ctx.session_factory() as isolated_session:
-        retriever = (
-            ctx.retriever_override
-            if ctx.retriever_override is not None
-            else (
-                SAGRetrieverAdapter(isolated_session, engine_manager=ctx.engine_manager)
-                if ctx.engine_manager is not None
-                else None
-            )
-        )
-        if retriever is not None:
-            ret_kwargs: dict[str, Any] = {
-                "query": primary_query,
-                "tickers": target_tickers,
-                "as_of_date": ctx.as_of_date,
-                "top_k": recall_k,
-            }
-            ret_sig = inspect.signature(retriever.retrieve)
-            has_ret_var_kw = any(
-                p.kind == inspect.Parameter.VAR_KEYWORD for p in ret_sig.parameters.values()
-            )
-            if "principal" in ret_sig.parameters or has_ret_var_kw:
-                ret_kwargs["principal"] = ctx.principal
-            if "load_canonical_blocks" in ret_sig.parameters or has_ret_var_kw:
-                # Stage 7 lazy-loads canonical_blocks ONCE for only final cited versions
-                ret_kwargs["load_canonical_blocks"] = False
-            res = await retriever.retrieve(**ret_kwargs)
-            raw_sections.extend(res.sections)
-            for vid, blks in (getattr(res, "canonical_blocks", None) or {}).items():
-                collected_blocks.setdefault(str(vid), list(blks))
-            hippo_hops += int(res.hipporag_hops or 0)
-
-            if include_cross_ref and hasattr(retriever, "retrieve_cross_ref"):
-                xref_fn = retriever.retrieve_cross_ref
-                if callable(xref_fn):
-                    xref_kwargs: dict[str, Any] = {
-                        "query": dense_qs[0] if dense_qs else bm25_qs[0],
-                        "target_tickers": target_tickers,
-                        "exclude_tickers": target_tickers,
-                        "as_of_date": ctx.as_of_date,
-                        "top_k": max(3, top_k // 2),
-                        "principal": ctx.principal,
-                    }
-                    xref_sig = inspect.signature(xref_fn)
-                    if "load_canonical_blocks" in xref_sig.parameters or any(
-                        p.kind == inspect.Parameter.VAR_KEYWORD for p in xref_sig.parameters.values()
-                    ):
-                        xref_kwargs["load_canonical_blocks"] = False
-                    xref_res = await xref_fn(**xref_kwargs)
-                    raw_sections.extend(xref_res.sections)
-                    for vid, blks in (getattr(xref_res, "canonical_blocks", None) or {}).items():
-                        collected_blocks.setdefault(str(vid), list(blks))
-
-    if slots_filter:
-        filtered = [s for s in raw_sections if str(getattr(s, "sub_doc_slot", "") or "").upper() in slots_filter]
-        if filtered:
-            raw_sections = filtered
-    if years_filter:
-        filtered_y = [s for s in raw_sections if getattr(s, "fiscal_year", None) in years_filter]
-        if filtered_y:
-            raw_sections = filtered_y
-
-    rerank_query = dense_qs[0] if dense_qs else bm25_qs[0]
-    rerank_out = await rerank_and_grade_sections(
-        rerank_query,
-        raw_sections,
-        top_k=top_k,
-        target_tickers=target_tickers,
-        protect_table_cards=True,
-        min_table_cards=1,
-        reranker=ctx.reranker,
-    )
-
-    assigned = await ctx.evidence.register_sections(
-        rerank_out.sections,
-        canonical_blocks=collected_blocks,
-        crag_grade=rerank_out.crag_grade,
-        reranker_provider=rerank_out.reranker_provider,
-        reranker_model=rerank_out.reranker_model,
-        queries=combined_queries,
-        hipporag_hops=hippo_hops,
-    )
-    elapsed_ms = int((time.perf_counter() - started) * 1000)
-    await ctx.evidence.record_tool_trace(
-        {
-            "tool": "search_corporate_filings",
-            "duration_ms": elapsed_ms,
-            "tickers": target_tickers,
-            "queries": combined_queries,
-            "recall_count": len(raw_sections),
-            "returned_count": len(assigned),
-            "crag_grade": rerank_out.crag_grade,
-            "reranker_used": rerank_out.reranker_used,
-            "domain_term_coverage": rerank_out.domain_term_coverage,
-        }
-    )
-
-    if not assigned:
-        return ToolResult(
-            content=(
-                f"CRAG_GRADE=INCORRECT ({rerank_out.crag_reason}). Không tìm thấy đoạn văn bản BCTC phù hợp cho "
-                f"{', '.join(target_tickers)}. Gợi ý: đổi sang thuật ngữ chuẩn VAS TT200/TT49/TT210 khác "
-                "hoặc kiểm tra `hydrate_financial_tables`."
-            ),
-            details={"crag_grade": "INCORRECT", "returned_count": 0},
-        )
-
-    table_hints: list[str] = []
-    lines = [
-        f"CRAG_GRADE={rerank_out.crag_grade} ({rerank_out.crag_reason}) | "
-        f"domain_cov={rerank_out.domain_term_coverage:.2f} | "
-        f"reranker={rerank_out.reranker_model or 'hybrid_rrf'} | {len(assigned)} đoạn:"
-    ]
-    selected_documents: list[dict[str, Any]] = []
-    for cid, sec in assigned:
-        tid = getattr(sec, "table_id", None)
-        if tid and tid not in table_hints:
-            table_hints.append(str(tid))
-        origin = str(getattr(sec, "evidence_origin", "PRIMARY") or "PRIMARY")
-        tk = str(getattr(sec, "ticker", "") or "")
-        slot = str(getattr(sec, "sub_doc_slot", "") or "")
-        page = getattr(sec, "page_from", 1)
-        pub = getattr(sec, "published_date", "")
-        heading = str(getattr(sec, "heading", "") or "").strip()
-        body = str(getattr(sec, "content", "") or "").strip()[:1100]
-        tbl_tag = f" | table_id={tid}" if tid else ""
-        lines.append(f"[{cid}] ({tk} | {origin} | {slot} | trang {page} | pub={pub}{tbl_tag}) {heading}\n{body}")
-        selected_documents.append(
-            {
-                "citation_id": cid,
-                "ticker": tk,
-                "sub_doc_slot": slot,
-                "page": int(page or 1),
-                "fiscal_year": getattr(sec, "fiscal_year", None),
-                "heading": heading[:120],
-                "score": round(float(getattr(sec, "score", 0.0) or 0.0), 3),
-                "evidence_origin": origin,
-                "table_id": str(tid) if tid else None,
-            }
-        )
-
-    if table_hints:
-        lines.append(
-            f"\nGợi ý bảng cấu trúc liên quan (có thể gọi `hydrate_financial_tables`): {', '.join(table_hints[:6])}"
-        )
-    if rerank_out.crag_grade in {"AMBIGUOUS", "INCORRECT"}:
-        lines.append(
-            "Lưu ý CRAG: Bằng chứng còn yếu/lệch thuật ngữ — nếu cần độ chính xác cao hơn, hãy viết lại "
-            "`bm25_vas_queries` theo chuẩn Thông tư 200/49/210 hoặc tra mã thuyết minh từ bảng rồi gọi lại."
-        )
-    return ToolResult(
-        content="\n\n".join(lines),
-        details={
-            "crag_grade": rerank_out.crag_grade,
-            "crag_reason": rerank_out.crag_reason,
-            "reranker_model": rerank_out.reranker_model,
-            "reranker_used": rerank_out.reranker_used,
-            "recall_count": len(raw_sections),
-            "returned_count": len(assigned),
-            "duration_ms": elapsed_ms,
-            "tickers": target_tickers,
-            "queries": combined_queries,
-            "table_hints": table_hints,
-            "selected_documents": selected_documents,
-        },
+    slots = normalize_disclosure_slots(arguments.get("sub_doc_slots"))
+    years = [int(y) for y in (arguments.get("fiscal_years") or ()) if isinstance(y, int)]
+    quarters = [int(q) for q in (arguments.get("fiscal_quarters") or ()) if isinstance(q, int)]
+    return await _execute_disclosure_search(
+        tool_name="search_corporate_filings",
+        ctx=ctx,
+        raw_tickers=arguments.get("tickers"),
+        dense_queries=dense_qs,
+        vas_terms=bm25_qs,
+        slots_filter=slots,
+        years_filter=years,
+        quarters_filter=quarters,
+        include_cross_ref=bool(arguments.get("include_cross_ref", False)),
+        top_k=max(3, min(12, int(arguments.get("top_k") or 6))),
     )
 
 
@@ -596,6 +800,16 @@ async def search_corporate_filings_tool(
                 "default": "ALL",
             },
             "fiscal_year": {"type": "integer", "description": "Tùy chọn lọc theo năm tài chính."},
+            "fiscal_quarter": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4,
+                "description": "Tùy chọn lọc theo quý tài chính (0 = cả năm, 1..4 = Quý 1..4).",
+            },
+            "sub_doc_slot": {
+                "type": "string",
+                "description": "Tùy chọn lọc slot tài liệu (BCTC_AUDITED, QUARTER_NOTES, AGM_TARGETS, BCTN_CORE).",
+            },
         },
         "additionalProperties": False,
     },
@@ -617,38 +831,43 @@ async def hydrate_financial_tables_tool(
     stmt_kind = str(arguments.get("statement_kind") or "ALL").strip().upper()
     fiscal_year = arguments.get("fiscal_year")
     fy_filter = int(fiscal_year) if isinstance(fiscal_year, int) else None
+    fiscal_quarter = arguments.get("fiscal_quarter")
+    fq_filter = int(fiscal_quarter) if isinstance(fiscal_quarter, int) else None
+    slot_raw = str(arguments.get("sub_doc_slot") or "").strip().upper() or None
 
     if not table_ids and not target_tickers:
         return ToolResult(content="Cần truyền ít nhất `table_ids` hoặc `tickers` để nạp bảng tài chính.")
 
     async with ctx.session_factory() as isolated_session:
         store = ctx.table_store_override or SQLAlchemyTableStore(isolated_session)
-        tbl_kwargs: dict[str, Any] = {
-            "table_ids": table_ids,
-            "tickers": target_tickers,
-            "as_of_date": ctx.as_of_date,
-        }
-        tbl_sig = inspect.signature(store.get_tables)
-        if "tenant_id" in tbl_sig.parameters or any(
-            p.kind == inspect.Parameter.VAR_KEYWORD for p in tbl_sig.parameters.values()
-        ):
-            tbl_kwargs["tenant_id"] = ctx.tenant_id
-        tables = await store.get_tables(**tbl_kwargs)
+        tables = await store.get_tables(
+            table_ids=table_ids,
+            tickers=target_tickers,
+            as_of_date=ctx.as_of_date,
+            tenant_id=ctx.tenant_id,
+            fiscal_year=fy_filter,
+            fiscal_quarter=fq_filter,
+            sub_doc_slot=slot_raw,
+        )
 
     if fy_filter is not None:
-        fy_matched = [
+        tables = [
             t
             for t in tables
-            if str(fy_filter) in str(t.get("title") or "")
-            or any(str(fy_filter) in str(h) for h in (t.get("headers") or ()))
+            if t.get("fiscal_year") in (None, fy_filter)
+            and (
+                t.get("fiscal_year") == fy_filter
+                or str(fy_filter) in str(t.get("title") or "")
+                or any(str(fy_filter) in str(h) for h in (t.get("headers") or ()))
+            )
         ]
-        if fy_matched:
-            tables = fy_matched
+    if fq_filter is not None:
+        tables = [t for t in tables if t.get("fiscal_quarter") == fq_filter]
 
     if stmt_kind != "ALL":
         kind_kw = {
-            "BS": ("cân đối", "tài sản", "nguồn vốn", "balance sheet"),
-            "IS": ("kết quả", "doanh thu", "lợi nhuận", "income statement"),
+            "BS": ("cân đối", "tài sản", "nguồn vốn", "balance sheet", "tình hình tài chính"),
+            "IS": ("kết quả", "doanh thu", "lợi nhuận", "income statement", "thu nhập"),
             "CF": ("lưu chuyển", "tiền tệ", "cash flow"),
             "NOTES": ("thuyết minh", "chi tiết", "notes"),
         }.get(stmt_kind, ())
@@ -668,12 +887,17 @@ async def hydrate_financial_tables_tool(
             "tool": "hydrate_financial_tables",
             "duration_ms": elapsed_ms,
             "tickers": target_tickers,
+            "fiscal_year": fy_filter,
+            "fiscal_quarter": fq_filter,
             "returned_count": len(registered),
         }
     )
 
     if not registered:
-        return ToolResult(content="Không tìm thấy bảng tài chính PIT hợp lệ khớp yêu cầu.")
+        return ToolResult(
+            content="STATUS=NOT_FOUND: Không tìm thấy bảng tài chính PIT hợp lệ khớp bộ lọc yêu cầu.",
+            details={"status": "NOT_FOUND", "returned_count": 0, "duration_ms": elapsed_ms, "table_ids": []},
+        )
 
     blocks = [_format_table_as_compact_tsv(tbl) for tbl in registered]
     return ToolResult(

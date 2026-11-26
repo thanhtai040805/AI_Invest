@@ -108,11 +108,17 @@ _STATIC_RESEARCH_SYSTEM_PREFIX = (
 
 _TOOL_TO_SSE_STAGE: dict[str, tuple[str, str]] = {
     "screen_financial_universe": ("retrieval", "Sàng lọc định lượng danh mục PIT (Core PG + BCTC)"),
+    "search_disclosures": ("retrieval", "Tra cứu Thuyết minh, BCTN & ĐHĐCĐ (bộ lọc đẩy xuống Qdrant)"),
     "search_corporate_filings": ("retrieval", "Tra cứu BCTC, Thuyết minh, BCTN & Nghị quyết ĐHĐCĐ"),
     "hydrate_financial_tables": ("table_hydration", "Nạp ma trận bảng tài chính 2D (giữ mã Thuyết minh)"),
     "query_knowledge_graph": ("graph_hop", "Truy vấn Đồ thị Tri thức 3 tầng (Vĩ mô / Chuỗi giá trị / Đối thủ)"),
     "run_financial_calculator": ("calculator", "Tính toán tài chính chính xác qua AST Sandbox"),
     "recall_session_memory": ("routing", "Truy xuất ngữ cảnh phiên & ký ức PIT-safe"),
+    "get_financial_statements": ("calculator", "Nạp bảng số liệu BCTC chuẩn hóa (Core PG PIT)"),
+    "get_sector_kpis": ("calculator", "Tính bộ chỉ số tài chính theo chuẩn mực ngành"),
+    "scan_financial_risks": ("calculator", "Quét chất lượng lợi nhuận & dấu hiệu rủi ro tài chính"),
+    "compare_peers": ("calculator", "So sánh đồng ngành cùng chuẩn mực & xếp hạng KPI"),
+    "check_plan_vs_actual": ("calculator", "Đối chiếu kế hoạch ĐHĐCĐ với thực hiện lũy kế"),
 }
 
 
@@ -129,14 +135,24 @@ def _summarize_tool_args(tool_name: str, arguments: Mapping[str, Any]) -> tuple[
             tickers = [tk]
 
     queries: list[str] = []
-    if tool_name == "search_corporate_filings":
-        vas_qs = [str(q).strip() for q in (arguments.get("bm25_vas_queries") or ()) if str(q).strip()]
-        dense_qs = [str(q).strip() for q in (arguments.get("dense_semantic_queries") or ()) if str(q).strip()]
+    if tool_name in {"search_disclosures", "search_corporate_filings"}:
+        vas_qs = [
+            str(q).strip()
+            for q in (arguments.get("vas_terms") or arguments.get("bm25_vas_queries") or ())
+            if str(q).strip()
+        ]
+        q_single = str(arguments.get("question") or "").strip()
+        dense_qs = [q_single] if q_single else [
+            str(q).strip() for q in (arguments.get("dense_semantic_queries") or ()) if str(q).strip()
+        ]
         queries = list(dict.fromkeys([*vas_qs, *dense_qs]))[:4]
         slots = [str(s).strip().upper() for s in (arguments.get("sub_doc_slots") or ()) if str(s).strip()]
+        fy = arguments.get("fiscal_year")
+        fq = arguments.get("fiscal_quarter")
+        period_lbl = f" · Q{fq}/{fy}" if (fy and fq) else (f" · FY{fy}" if fy else "")
         tk_txt = ", ".join(tickers) if tickers else "toàn danh mục"
         slot_txt = f" · {', '.join(slots)}" if slots else ""
-        return f"Mã {tk_txt}{slot_txt} ({len(vas_qs)} VAS + {len(dense_qs)} ngữ nghĩa)", tickers, queries
+        return f"Mã {tk_txt}{slot_txt}{period_lbl} ({len(vas_qs)} VAS + {len(dense_qs)} ngữ nghĩa)", tickers, queries
 
     if tool_name == "hydrate_financial_tables":
         tids = [str(t).strip() for t in (arguments.get("table_ids") or ()) if str(t).strip()]
@@ -186,6 +202,19 @@ def _summarize_tool_args(tool_name: str, arguments: Mapping[str, Any]) -> tuple[
         scope = str(arguments.get("scope") or "current_session")
         return f"Phạm vi: {scope}", tickers, []
 
+    if tool_name in {
+        "get_financial_statements",
+        "get_sector_kpis",
+        "scan_financial_risks",
+        "compare_peers",
+        "check_plan_vs_actual",
+    }:
+        tk_txt = ", ".join(tickers) if tickers else "toàn danh mục"
+        fy = arguments.get("fiscal_year")
+        view = arguments.get("view")
+        extra = f" · FY{fy}" if fy else (f" · {view}" if view else "")
+        return f"Mã {tk_txt}{extra}", tickers, []
+
     return tool_name, tickers, queries
 
 
@@ -193,7 +222,18 @@ def _summarize_tool_result(tool_name: str, details: Mapping[str, Any], error_msg
     """Build a crisp Vietnamese one-line outcome summary for a completed/failed tool."""
     if error_msg:
         return f"Lỗi thực thi: {error_msg[:140]}"
-    if tool_name == "search_corporate_filings":
+    if tool_name in {
+        "get_financial_statements",
+        "get_sector_kpis",
+        "scan_financial_risks",
+        "compare_peers",
+        "check_plan_vs_actual",
+    }:
+        cnt = int(details.get("returned_count") or 0)
+        return f"Tính toán tất định {cnt} chỉ tiêu/cờ ([CALC-*] đã khóa sổ PIT)"
+    if tool_name in {"search_disclosures", "search_corporate_filings"}:
+        if str(details.get("status") or "") == "NOT_FOUND" or int(details.get("returned_count") or 0) == 0:
+            return "NOT_FOUND · Không có đoạn thuyết minh khớp bộ lọc PIT"
         ret = int(details.get("returned_count") or 0)
         rec = int(details.get("recall_count") or ret)
         grade = str(details.get("crag_grade") or "").upper()

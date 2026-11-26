@@ -178,6 +178,10 @@ class TableStoreProtocol(Protocol):
         table_ids: Sequence[str],
         tickers: Sequence[str],
         as_of_date: date,
+        tenant_id: str | None = None,
+        fiscal_year: int | None = None,
+        fiscal_quarter: int | None = None,
+        sub_doc_slot: str | None = None,
     ) -> list[dict[str, Any]]:
         ...
 
@@ -248,6 +252,9 @@ class SQLAlchemyTableStore:
         tickers: Sequence[str],
         as_of_date: date,
         tenant_id: str | None = None,
+        fiscal_year: int | None = None,
+        fiscal_quarter: int | None = None,
+        sub_doc_slot: str | None = None,
     ) -> list[dict[str, Any]]:
         from sag_api.db.models import Document, DocumentVersion
         from sag_api.db.models.stock_research import SagExtractedTable
@@ -267,6 +274,12 @@ class SQLAlchemyTableStore:
         ]
         if tenant_id:
             pit_filters.append(Document.tenant_id == tenant_id)
+        if fiscal_year is not None:
+            pit_filters.append(SagExtractedTable.fiscal_year == int(fiscal_year))
+        if fiscal_quarter is not None:
+            pit_filters.append(SagExtractedTable.fiscal_quarter == int(fiscal_quarter))
+        if sub_doc_slot:
+            pit_filters.append(SagExtractedTable.sub_doc_slot == sub_doc_slot.strip().upper())
 
         base_stmt = (
             select(SagExtractedTable, DocumentVersion.valid_to)
@@ -744,6 +757,402 @@ class SAGRetrieverAdapter:
         except Exception:  # noqa: BLE001
             return None
         return None
+
+    async def retrieve_disclosures(
+        self,
+        *,
+        dense_queries: Sequence[str],
+        vas_terms: Sequence[str],
+        tickers: Sequence[str],
+        as_of_date: date,
+        top_k: int = 8,
+        principal: VerifiedPrincipal | None = None,
+        sub_doc_slots: Sequence[str] | None = None,
+        fiscal_years: Sequence[int] | None = None,
+        fiscal_quarters: Sequence[int] | None = None,
+        load_canonical_blocks: bool = False,
+    ) -> tuple[RetrievalResult, dict[str, Any]]:
+        """Direct push-down Qdrant Hybrid (`content_vector` + dual `bm25_sparse` VAS) disclosure search.
+
+        Enforces `sub_doc_slot`, `fiscal_year`, `fiscal_quarter`, `project_id`, `tenant_id`, and PIT
+        `[valid_from_ts, valid_to_ts)` inside Qdrant (and in PG fallback when Qdrant is unavailable),
+        never silently falling back to unfiltered results when a filter matches 0 chunks.
+        """
+        from sag_api.db.models import CanonicalBlock, Document, DocumentVersion, SearchUnit
+        from sag_api.sag.search_unit_store import (
+            SearchUnitQdrantStore,
+            build_sparse_query_vector,
+            build_universe_search_filter,
+        )
+        from sag_api.services.query_analysis import analyze_query
+        from sag_api.services.search_index_service import resolve_search_unit_collection_name
+
+        norm_tickers = list(dict.fromkeys(t.strip().upper() for t in tickers if t and t.strip()))
+        if not norm_tickers:
+            return RetrievalResult(), {"status": "NOT_FOUND", "available_coverage": {}}
+
+        as_of_dt = datetime(as_of_date.year, as_of_date.month, as_of_date.day, 23, 59, 59, tzinfo=UTC)
+        as_of_ts = int(as_of_dt.timestamp())
+        tenant_id = (principal.tenant_id if principal is not None else "") or ""
+        allowed_projects = principal.allowed_project_ids if principal is not None else frozenset({"*"})
+        if "*" not in allowed_projects:
+            norm_tickers = [t for t in norm_tickers if t in allowed_projects]
+            if not norm_tickers:
+                return RetrievalResult(), {"status": "NOT_FOUND", "available_coverage": {}}
+
+        ver_filters: list[Any] = [
+            Document.is_active.is_(True),
+            Document.project_id.in_(norm_tickers),
+            DocumentVersion.status != "REVOKED",
+            DocumentVersion.valid_from <= as_of_dt,
+            DocumentVersion.valid_to > as_of_dt,
+        ]
+        if tenant_id:
+            ver_filters.append(Document.tenant_id == tenant_id)
+
+        ver_rows = (
+            await self._session.execute(
+                select(
+                    DocumentVersion.id,
+                    DocumentVersion.document_id,
+                    Document.project_id,
+                    Document.source_id,
+                    DocumentVersion.source_published_at,
+                    DocumentVersion.valid_from,
+                    DocumentVersion.metadata_json,
+                )
+                .join(Document, Document.id == DocumentVersion.document_id)
+                .where(*ver_filters)
+            )
+        ).all()
+        if not ver_rows:
+            return RetrievalResult(), {"status": "NOT_FOUND", "available_coverage": {}}
+
+        ver_info: dict[str, dict[str, Any]] = {}
+        ver_ids_by_ticker: dict[str, list[str]] = {}
+        coverage_by_ticker: dict[str, set[str]] = {}
+        all_source_ids: list[str] = []
+        for vid, doc_id, pid, sid, src_pub, v_from, meta in ver_rows:
+            tk = str(pid or "").strip().upper()
+            if not tk:
+                continue
+            dt = src_pub or v_from
+            pub_d = dt.date() if isinstance(dt, datetime) else date.fromisoformat(str(dt)[:10])
+            if pub_d > as_of_date:
+                continue
+            slot = str(meta.get("sub_doc_slot") or "BCTN_CORE") if isinstance(meta, Mapping) else "BCTN_CORE"
+            fy_raw = meta.get("fiscal_year") if isinstance(meta, Mapping) else None
+            fq_raw = meta.get("fiscal_quarter") if isinstance(meta, Mapping) else None
+            fy = int(fy_raw) if isinstance(fy_raw, int) else None
+            fq = int(fq_raw) if isinstance(fq_raw, int) else None
+            ver_info[str(vid)] = {
+                "doc_id": str(doc_id or ""),
+                "ticker": tk,
+                "pub_date": pub_d,
+                "slot": slot,
+                "fy": fy,
+                "fq": fq,
+            }
+            ver_ids_by_ticker.setdefault(tk, []).append(str(vid))
+            if fy is not None:
+                p_lbl = f"Q{fq}/{fy}" if fq and fq > 0 else f"FY{fy}"
+                coverage_by_ticker.setdefault(tk, set()).add(f"{slot} {p_lbl}")
+            else:
+                coverage_by_ticker.setdefault(tk, set()).add(slot)
+            if sid and str(sid) not in all_source_ids:
+                all_source_ids.append(str(sid))
+
+        avail_summary = {tk: sorted(vals) for tk, vals in coverage_by_ticker.items()}
+        if not ver_info:
+            return RetrievalResult(), {"status": "NOT_FOUND", "available_coverage": avail_summary}
+
+        slots_list = sorted({s.strip().upper() for s in (sub_doc_slots or ()) if s and s.strip()})
+        fys_list = sorted({int(y) for y in (fiscal_years or ()) if isinstance(y, int)})
+        fqs_list = sorted({int(q) for q in (fiscal_quarters or ()) if isinstance(q, int)})
+        slots_set, fys_set, fqs_set = set(slots_list), set(fys_list), set(fqs_list)
+
+        clean_dense = [q.strip() for q in dense_queries if q and q.strip()][:3]
+        clean_vas = [t.strip() for t in vas_terms if t and t.strip()][:6]
+        dense_text = " | ".join(clean_dense[:2]) if clean_dense else " ".join(clean_vas)
+        vas_text = " ".join(clean_vas)
+        combined_sparse_text = " ".join([*clean_vas, *(clean_dense[:2])])
+
+        used_qdrant = False
+        degraded_reason: str | None = None
+        if self._engine_manager is not None and tenant_id:
+            try:
+                client = await self._engine_manager.get_search_unit_qdrant_client()
+                store = SearchUnitQdrantStore(client)
+                collection = resolve_search_unit_collection_name()
+                dense_vec = await self._try_embed_shared_query(
+                    dense_text, tenant_id=tenant_id, source_ids=all_source_ids
+                )
+                lexical_text = vas_text if vas_text else dense_text
+                vas_sparse = build_sparse_query_vector(lexical_text) if lexical_text else {"indices": [], "values": []}
+
+                active_tks = [tk for tk in norm_tickers[:MAX_TICKERS_PER_REQUEST] if ver_ids_by_ticker.get(tk)]
+                per_spec_limit = max(6, min(20, top_k * 2))
+                search_specs: list[dict[str, Any]] = []
+                spec_meta: list[tuple[str, float]] = []  # (ticker, rrf_weight)
+
+                for tk in active_tks:
+                    tk_filter = build_universe_search_filter(
+                        tenant_id=tenant_id,
+                        allowed_project_ids=[tk],
+                        allowed_document_version_ids=ver_ids_by_ticker[tk],
+                        as_of_ts=as_of_ts,
+                        sub_doc_slots=slots_list or None,
+                        fiscal_years=fys_list or None,
+                        fiscal_quarters=fqs_list or None,
+                    )
+                    if dense_vec is not None:
+                        search_specs.append(
+                            {
+                                "vector_name": "content_vector",
+                                "query": dense_vec,
+                                "search_filter": tk_filter,
+                                "limit": per_spec_limit,
+                            }
+                        )
+                        spec_meta.append((tk, 1.0))
+                    if vas_sparse.get("indices"):
+                        search_specs.append(
+                            {
+                                "vector_name": "bm25_sparse",
+                                "query": vas_sparse,
+                                "search_filter": tk_filter,
+                                "limit": per_spec_limit,
+                            }
+                        )
+                        spec_meta.append((tk, 1.25 if vas_text else 1.0))
+
+                if search_specs:
+                    batch_hits = await store.search_batch(collection, searches=search_specs)
+                    used_qdrant = True
+                    scores_by_tk: dict[str, dict[str, float]] = {tk: {} for tk in active_tks}
+                    hit_payloads: dict[str, dict[str, Any]] = {}
+                    for (tk, weight), hits in zip(spec_meta, batch_hits, strict=True):
+                        bucket = scores_by_tk.setdefault(tk, {})
+                        for rank, hit in enumerate(hits, 1):
+                            pl = hit.payload
+                            vid_val = str(pl.get("document_version_id") or "")
+                            if not vid_val or vid_val not in ver_info:
+                                continue
+                            sec_slot = str(pl.get("sub_doc_slot") or ver_info[vid_val]["slot"]).upper()
+                            sec_fy = pl.get("fiscal_year")
+                            if sec_fy is None:
+                                sec_fy = ver_info[vid_val]["fy"]
+                            sec_fq = pl.get("fiscal_quarter")
+                            if sec_fq is None:
+                                sec_fq = ver_info[vid_val]["fq"]
+                            if slots_set and sec_slot not in slots_set:
+                                continue
+                            if fys_set and sec_fy not in fys_set:
+                                continue
+                            if fqs_set and sec_fq not in fqs_set:
+                                continue
+                            bucket[hit.point_id] = bucket.get(hit.point_id, 0.0) + (weight / (60.0 + rank))
+                            hit_payloads[hit.point_id] = pl
+
+                    selected_pids: list[tuple[str, float]] = []
+                    seen_pids: set[str] = set()
+                    per_tk_quota = max(2, top_k // max(1, len(active_tks))) if len(active_tks) > 1 else top_k
+                    overflow: list[tuple[str, float]] = []
+                    for tk in active_tks:
+                        ranked = sorted(scores_by_tk.get(tk, {}).items(), key=lambda kv: kv[1], reverse=True)
+                        for pid_k, sc in ranked[:per_tk_quota]:
+                            if pid_k not in seen_pids:
+                                seen_pids.add(pid_k)
+                                selected_pids.append((pid_k, sc))
+                        overflow.extend((pid_k, sc) for pid_k, sc in ranked[per_tk_quota:] if pid_k not in seen_pids)
+                    if len(selected_pids) < top_k and overflow:
+                        overflow.sort(key=lambda kv: kv[1], reverse=True)
+                        for pid_k, sc in overflow:
+                            if pid_k not in seen_pids:
+                                seen_pids.add(pid_k)
+                                selected_pids.append((pid_k, sc))
+                                if len(selected_pids) >= top_k:
+                                    break
+                    selected_pids = selected_pids[:top_k]
+
+                    if not selected_pids:
+                        return RetrievalResult(), {
+                            "status": "NOT_FOUND",
+                            "available_coverage": avail_summary,
+                            "degraded": False,
+                        }
+
+                    su_ids = [
+                        str(hit_payloads[p].get("search_unit_id") or hit_payloads[p].get("_sag_id") or p)
+                        for p, _ in selected_pids
+                    ]
+                    su_rows = {
+                        str(r.id): r
+                        for r in (
+                            await self._session.scalars(select(SearchUnit).where(SearchUnit.id.in_(su_ids)))
+                        ).all()
+                    }
+                    hit_ver_ids = sorted(
+                        {str(hit_payloads[p].get("document_version_id") or "") for p, _ in selected_pids}
+                    )
+                    blocks_map: dict[str, list[CanonicalBlockRecord]] = {}
+                    if load_canonical_blocks and hit_ver_ids:
+                        blocks_map = await load_canonical_blocks_for_versions(
+                            self._session, hit_ver_ids, as_of_date=as_of_date
+                        )
+                    qdrant_sections: list[RetrievedResearchSection] = []
+                    for pid_key, fused_sc in selected_pids:
+                        pl = hit_payloads[pid_key]
+                        vid_val = str(pl.get("document_version_id") or "")
+                        info = ver_info.get(vid_val)
+                        if info is None:
+                            continue
+                        su_lookup = str(pl.get("search_unit_id") or pl.get("_sag_id") or pid_key)
+                        su = su_rows.get(su_lookup)
+                        p_from = int((su.page_from if su else pl.get("page_from")) or 1)
+                        p_to = int((su.page_to if su else pl.get("page_to")) or p_from)
+                        b_from = str(su.block_from_id) if (su and su.block_from_id) else (
+                            str(pl["block_from_id"]) if pl.get("block_from_id") else None
+                        )
+                        b_to = str(su.block_to_id) if (su and su.block_to_id) else (
+                            str(pl["block_to_id"]) if pl.get("block_to_id") else None
+                        )
+                        content_txt = str(pl.get("content") or pl.get("text") or "").strip()
+                        if not content_txt and blocks_map.get(vid_val):
+                            page_txts = [
+                                blk.normalized_text
+                                for blk in blocks_map[vid_val]
+                                if not (blk.page_to < p_from or blk.page_from > p_to)
+                            ]
+                            content_txt = "\n\n".join(t for t in page_txts[:3] if t.strip())
+                        if not content_txt:
+                            continue
+                        sec_slot = str(pl.get("sub_doc_slot") or info["slot"])
+                        tid = pl.get("table_id")
+                        if not tid:
+                            anc = str(pl.get("source_anchor") or "")
+                            if anc.startswith("table_card:"):
+                                parts = anc.split(":")
+                                if len(parts) >= 2 and parts[1]:
+                                    tid = parts[1]
+                        qdrant_sections.append(
+                            RetrievedResearchSection(
+                                ticker=info["ticker"],
+                                doc_id=info["doc_id"],
+                                document_version_id=vid_val,
+                                sub_doc_slot=sec_slot,
+                                page_from=max(1, p_from),
+                                page_to=max(1, p_to),
+                                published_date=info["pub_date"],
+                                content=content_txt,
+                                heading=str((su.section_path if su else pl.get("section_path")) or ""),
+                                table_id=str(tid) if tid else None,
+                                routing_slot=sec_slot,
+                                score=round(float(fused_sc) * 20.0, 4),
+                                block_from_id=b_from,
+                                block_to_id=b_to,
+                                fiscal_year=pl.get("fiscal_year") if pl.get("fiscal_year") is not None else info["fy"],
+                                fiscal_quarter=(
+                                    pl.get("fiscal_quarter")
+                                    if pl.get("fiscal_quarter") is not None
+                                    else info["fq"]
+                                ),
+                                evidence_origin="PRIMARY",
+                            )
+                        )
+                    return (
+                        RetrievalResult(
+                            sections=qdrant_sections,
+                            canonical_blocks=blocks_map,
+                            routing_slot=qdrant_sections[0].sub_doc_slot if qdrant_sections else None,
+                        ),
+                        {
+                            "status": "OK" if qdrant_sections else "NOT_FOUND",
+                            "available_coverage": avail_summary,
+                            "degraded": False,
+                        },
+                    )
+            except Exception as err:  # noqa: BLE001
+                degraded_reason = f"QDRANT_UNAVAILABLE:{type(err).__name__}"
+                log.warning("retrieve_disclosures Qdrant failed (%s); degrading to strict PIT PG scan", degraded_reason)
+
+        if used_qdrant:
+            return RetrievalResult(), {"status": "NOT_FOUND", "available_coverage": avail_summary, "degraded": False}
+
+        # Strict PIT-filtered PG CanonicalBlock scan (used only when Qdrant is unconfigured or degraded)
+        matching_ver_ids = [
+            vid
+            for vid, info in ver_info.items()
+            if (not slots_set or info["slot"].upper() in slots_set)
+            and (not fys_set or info["fy"] in fys_set)
+            and (not fqs_set or info["fq"] in fqs_set)
+        ]
+        if not matching_ver_ids:
+            return RetrievalResult(), {
+                "status": "NOT_FOUND",
+                "available_coverage": avail_summary,
+                "degraded": degraded_reason is not None,
+                "degraded_reason": degraded_reason,
+            }
+        q_terms = {t.lower() for t in analyze_query(combined_sparse_text or dense_text).scoring_terms if len(t) >= 2}
+        blk_rows = (
+            await self._session.execute(
+                select(
+                    CanonicalBlock.id,
+                    CanonicalBlock.document_version_id,
+                    CanonicalBlock.page_from,
+                    CanonicalBlock.page_to,
+                    CanonicalBlock.section_path,
+                    CanonicalBlock.normalized_text,
+                )
+                .where(CanonicalBlock.document_version_id.in_(matching_ver_ids))
+                .order_by(CanonicalBlock.document_version_id.asc(), CanonicalBlock.ordinal.asc())
+                .limit(800)
+            )
+        ).all()
+        scored_pg: list[tuple[float, RetrievedResearchSection]] = []
+        for blk_id, vid, p_from, p_to, sec_path, norm_txt in blk_rows:
+            info = ver_info.get(str(vid))
+            txt = str(norm_txt or "").strip()
+            if info is None or len(txt) < 15:
+                continue
+            blob = f"{sec_path or ''} {txt}".lower()
+            hits_cnt = sum(1 for t in q_terms if t in blob)
+            if q_terms and hits_cnt == 0:
+                continue
+            scored_pg.append(
+                (
+                    float(hits_cnt),
+                    RetrievedResearchSection(
+                        ticker=info["ticker"],
+                        doc_id=info["doc_id"],
+                        document_version_id=str(vid),
+                        sub_doc_slot=info["slot"],
+                        page_from=max(1, int(p_from or 1)),
+                        page_to=max(1, int(p_to or p_from or 1)),
+                        published_date=info["pub_date"],
+                        content=txt,
+                        heading=str(sec_path or ""),
+                        score=round(0.2 * hits_cnt, 4),
+                        block_from_id=str(blk_id),
+                        block_to_id=str(blk_id),
+                        fiscal_year=info["fy"],
+                        fiscal_quarter=info["fq"],
+                        evidence_origin="PRIMARY",
+                    ),
+                )
+            )
+        scored_pg.sort(key=lambda item: item[0], reverse=True)
+        pg_secs = [sec for _, sec in scored_pg[:top_k]]
+        return (
+            RetrievalResult(sections=pg_secs),
+            {
+                "status": "OK" if pg_secs else "NOT_FOUND",
+                "available_coverage": avail_summary,
+                "degraded": degraded_reason is not None,
+                "degraded_reason": degraded_reason,
+            },
+        )
 
     async def retrieve_cross_ref(
         self,

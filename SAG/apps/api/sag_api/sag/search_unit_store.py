@@ -286,6 +286,8 @@ def build_universe_search_filter(
     allowed_document_version_ids: list[str] | None = None,
     as_of_ts: int | None = None,
     sub_doc_slots: list[str] | None = None,
+    fiscal_years: list[int] | None = None,
+    fiscal_quarters: list[int] | None = None,
 ) -> dict[str, Any]:
     """Build strictly tenant-scoped, PIT-filtered Open Universe filter across the shared Qdrant chamber."""
     clean_tenant = (tenant_id or "").strip()
@@ -322,6 +324,14 @@ def build_universe_search_filter(
         slots = sorted({s.strip() for s in sub_doc_slots if isinstance(s, str) and s.strip()})
         if slots:
             must_clauses.append({"key": "sub_doc_slot", "match": {"any": slots}})
+    if fiscal_years:
+        fys = sorted({int(y) for y in fiscal_years if y is not None})
+        if fys:
+            must_clauses.append({"key": "fiscal_year", "match": {"any": fys}})
+    if fiscal_quarters:
+        fqs = sorted({int(q) for q in fiscal_quarters if q is not None})
+        if fqs:
+            must_clauses.append({"key": "fiscal_quarter", "match": {"any": fqs}})
     return {"must": must_clauses}
 
 
