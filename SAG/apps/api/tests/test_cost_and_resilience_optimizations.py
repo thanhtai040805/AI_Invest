@@ -592,5 +592,66 @@ def test_lattice_fallback_skips_heavy_vector_art_pages_without_dropping_reconstr
     assert len(tables[0]["rows"]) == 2
 
 
+def test_slice_pdf_pages_identity_fast_path_and_compact_select() -> None:
+    import fitz
+
+    from sag_api.research.input_builder import _slice_pdf_pages
+
+    doc = fitz.open()
+    for i in range(6):
+        pg = doc.new_page()
+        pg.insert_text((72, 72), f"Trang {i + 1}")
+    raw = doc.tobytes()
+    doc.close()
+
+    # Identity selection returns original bytes without duplicating shared PDF objects
+    assert _slice_pdf_pages(raw, [1, 2, 3, 4, 5, 6]) is raw
+
+    # Subset selection produces a compact, valid PDF with exact selected pages
+    sub = _slice_pdf_pages(raw, [2, 4, 6])
+    sub_doc = fitz.open(stream=sub, filetype="pdf")
+    try:
+        assert len(sub_doc) == 3
+        assert "Trang 2" in sub_doc[0].get_text()
+        assert "Trang 4" in sub_doc[1].get_text()
+        assert "Trang 6" in sub_doc[2].get_text()
+    finally:
+        sub_doc.close()
+
+
+@pytest.mark.asyncio
+async def test_mineru_adapter_adaptively_halves_slice_on_result_size_limit() -> None:
+    import fitz
+
+    from sag_api.research.ocr_adapter import MinerUOcrAdapter
+
+    cfg = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        mineru_base_url="https://mineru.net",
+        mineru_official_api_token="single-tok-only",
+    )
+    doc = fitz.open()
+    for _ in range(8):
+        doc.new_page()
+    pdf_8p = doc.tobytes()
+    doc.close()
+
+    adapter = MinerUOcrAdapter(cfg, chunk_pages=120, max_slice_bytes=100 * 1024 * 1024)
+    attempted_sizes: list[int] = []
+
+    async def fake_single_slice(slice_bytes: bytes, slice_pages: list[int], *, resolved_lang: str):
+        attempted_sizes.append(len(slice_pages))
+        if len(slice_pages) > 2:
+            raise RuntimeError("MinerU Official 解析结果超过允许大小")
+        return {p: f"OK_p{p}" for p in slice_pages}
+
+    with patch.object(adapter, "_ocr_single_slice", side_effect=fake_single_slice):
+        stitched = await adapter.ocr_pdf_pages(pdf_8p, list(range(1, 9)), language="vi")
+
+    assert 8 in attempted_sizes and 4 in attempted_sizes and 2 in attempted_sizes
+    assert stitched == {p: f"OK_p{p}" for p in range(1, 9)}
+
+
+
 
 

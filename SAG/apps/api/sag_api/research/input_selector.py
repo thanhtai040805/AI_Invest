@@ -13,7 +13,6 @@ Productionizes Stage 1 `block1_input_and_table_engine.py` & `sag_phase1_research
 
 from __future__ import annotations
 
-import asyncio
 import re
 import unicodedata
 import zipfile
@@ -1035,9 +1034,7 @@ async def select_research_documents(
         insp: InspectionResult | None = None
         pdf_bytes: bytes | None = None
         if raw_payload is not None and inspect_payloads:
-            insp = await asyncio.to_thread(
-                inspect_pdf_bytes, raw_payload, source_url=resolved_url, doc_type=canonical
-            )
+            insp = inspect_pdf_bytes(raw_payload, source_url=resolved_url, doc_type=canonical)
             if insp.doc_class == "EXCLUDED_ENGLISH" or insp.error == "EXCLUDED_FULL_ENGLISH_DOCUMENT":
                 result.rejected.append(
                     RejectedDocument(

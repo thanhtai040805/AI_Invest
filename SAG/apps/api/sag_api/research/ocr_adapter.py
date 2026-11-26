@@ -24,6 +24,31 @@ from sag_api.parsing.mineru_official import (
 )
 
 _PAGE_MARKER_RE = re.compile(r"<!--\s*PAGE\s+(\d+)\s*-->", re.IGNORECASE)
+_MINERU_RESULT_TOO_LARGE_CUES = (
+    "解析结果超过允许大小",
+    "超过允许大小",
+    "exceeds allowed size",
+    "result too large",
+    "file too large",
+    "413",
+)
+
+
+def _is_mineru_size_limit_error(exc: Exception) -> bool:
+    msg = str(exc or "").lower()
+    return any(cue in msg for cue in _MINERU_RESULT_TOO_LARGE_CUES)
+
+
+def _extract_pdf_page_subset(pdf_bytes: bytes, zero_based_indices: list[int]) -> bytes:
+    """Extract a compact sub-PDF via `Document.select()` + `garbage=3, deflate=True` (zero XObject bloat)."""
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        if len(zero_based_indices) == doc.page_count and zero_based_indices == list(range(doc.page_count)):
+            return pdf_bytes
+        doc.select(zero_based_indices)
+        return doc.tobytes(garbage=3, deflate=True)
+    finally:
+        doc.close()
 
 
 def map_mineru_markdown_to_original_pages(
@@ -71,7 +96,7 @@ class MinerUOcrAdapter:
         parse_method: str = "ocr",
         official_model: str | None = None,
         chunk_pages: int | None = None,
-        max_slice_bytes: int = 150 * 1024 * 1024,
+        max_slice_bytes: int = 60 * 1024 * 1024,
     ) -> None:
         base_settings = settings or global_settings
         if not base_settings.mineru_configured:
@@ -114,6 +139,49 @@ class MinerUOcrAdapter:
             markdown = await client.parse(str(tmp_pdf))
         return map_mineru_markdown_to_original_pages(markdown, slice_pages)
 
+    async def _ocr_slice_with_adaptive_split(
+        self,
+        slice_bytes: bytes,
+        slice_pages: list[int],
+        *,
+        resolved_lang: str,
+        sem: asyncio.Semaphore | None = None,
+    ) -> dict[int, str]:
+        """OCR one slice; if MinerU rejects the upload or parsed result ZIP as too large, halve and retry."""
+        try:
+            if sem is not None:
+                async with sem:
+                    return await self._ocr_single_slice(
+                        slice_bytes, slice_pages, resolved_lang=resolved_lang
+                    )
+            return await self._ocr_single_slice(
+                slice_bytes, slice_pages, resolved_lang=resolved_lang
+            )
+        except Exception as exc:
+            if not _is_mineru_size_limit_error(exc) or len(slice_pages) <= 1:
+                raise
+            doc = fitz.open(stream=slice_bytes, filetype="pdf")
+            try:
+                page_count = doc.page_count
+            finally:
+                doc.close()
+            if page_count != len(slice_pages):
+                raise
+            mid = len(slice_pages) // 2
+            left_bytes = _extract_pdf_page_subset(slice_bytes, list(range(0, mid)))
+            right_bytes = _extract_pdf_page_subset(slice_bytes, list(range(mid, len(slice_pages))))
+            left_res, right_res = await asyncio.gather(
+                self._ocr_slice_with_adaptive_split(
+                    left_bytes, slice_pages[:mid], resolved_lang=resolved_lang, sem=sem
+                ),
+                self._ocr_slice_with_adaptive_split(
+                    right_bytes, slice_pages[mid:], resolved_lang=resolved_lang, sem=sem
+                ),
+            )
+            merged = dict(left_res)
+            merged.update(right_res)
+            return merged
+
     async def ocr_pdf_pages(
         self,
         pdf_bytes: bytes,
@@ -127,55 +195,53 @@ class MinerUOcrAdapter:
         # Map `vi` -> `latin` (MinerU Official v4 canonical pack for Vietnamese extended Latin script)
         resolved_lang = normalize_mineru_language(language, default="latin")
         slice_limit = max(1, self._chunk_pages)
-        # MinerU Official API v4 caps single uploads at 200 MB; auto-slice by byte budget (default 150 MB)
-        # even when page count <= 120 (e.g., high-DPI bank scans like BID >200 MB).
+        # MinerU Official API v4 caps single uploads at 200 MB AND caps parsed output ZIP size;
+        # auto-slice high-DPI PDFs (> 60 MB by default) so both upload and result ZIP stay well under limits.
         max_slice_bytes = self._max_slice_bytes
         if len(pdf_bytes) > max_slice_bytes and len(page_numbers) > 1:
             byte_based_pages = max(1, int(len(page_numbers) * (max_slice_bytes / len(pdf_bytes)) * 0.85))
             slice_limit = min(slice_limit, byte_based_pages)
         pool_tokens = getattr(self._base_settings, "effective_mineru_official_api_tokens", ())
+        configured_parallel = max(
+            1, int(getattr(self._base_settings, "effective_mineru_io_concurrency", 16))
+        )
+        max_parallel = configured_parallel if len(pool_tokens) >= 2 else min(4, configured_parallel)
+        sem = asyncio.Semaphore(max_parallel)
 
-        # Always slice large PDFs (> slice_limit pages or >150 MB) so multi-hundred-page / high-DPI
-        # filings never hit MinerU's per-job page or 200 MB limit and stitch back to original pages.
+        # Always slice large PDFs (> slice_limit pages or > max_slice_bytes) via compact `Document.select()`
+        # so multi-hundred-page / high-DPI filings never hit MinerU limits and stitch back to exact original pages.
         if len(page_numbers) > slice_limit:
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
             try:
-                if doc.page_count == len(page_numbers):
-                    chunks: list[tuple[bytes, list[int]]] = []
-                    for start in range(0, len(page_numbers), slice_limit):
-                        end = min(start + slice_limit, len(page_numbers))
-                        sub_doc = fitz.open()
-                        try:
-                            sub_doc.insert_pdf(doc, from_page=start, to_page=end - 1)
-                            chunks.append((sub_doc.tobytes(), page_numbers[start:end]))
-                        finally:
-                            sub_doc.close()
-                else:
-                    chunks = []
+                page_count = doc.page_count
             finally:
                 doc.close()
 
-            if len(chunks) > 1:
-                configured_parallel = max(
-                    1, int(getattr(self._base_settings, "effective_mineru_io_concurrency", 16))
-                )
-                max_parallel = configured_parallel if len(pool_tokens) >= 2 else min(4, configured_parallel)
-                sem = asyncio.Semaphore(max_parallel)
-
-                async def _run_chunk(c_bytes: bytes, c_pages: list[int]) -> dict[int, str]:
-                    async with sem:
-                        return await self._ocr_single_slice(
-                            c_bytes, c_pages, resolved_lang=resolved_lang
+            chunks: list[tuple[bytes, list[int]]] = []
+            if page_count == len(page_numbers):
+                for start in range(0, len(page_numbers), slice_limit):
+                    end = min(start + slice_limit, len(page_numbers))
+                    chunks.append(
+                        (
+                            _extract_pdf_page_subset(pdf_bytes, list(range(start, end))),
+                            page_numbers[start:end],
                         )
+                    )
 
+            if len(chunks) > 1:
                 results = await asyncio.gather(
-                    *(_run_chunk(c_bytes, c_pages) for c_bytes, c_pages in chunks)
+                    *(
+                        self._ocr_slice_with_adaptive_split(
+                            c_bytes, c_pages, resolved_lang=resolved_lang, sem=sem
+                        )
+                        for c_bytes, c_pages in chunks
+                    )
                 )
                 merged: dict[int, str] = {}
                 for part in results:
                     merged.update(part)
                 return merged
 
-        return await self._ocr_single_slice(
-            pdf_bytes, page_numbers, resolved_lang=resolved_lang
+        return await self._ocr_slice_with_adaptive_split(
+            pdf_bytes, page_numbers, resolved_lang=resolved_lang, sem=sem
         )

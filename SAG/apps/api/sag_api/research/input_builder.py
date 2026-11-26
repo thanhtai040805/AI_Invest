@@ -1679,16 +1679,26 @@ def _enrich_digital_pages_with_html_tables(
 
 
 def _slice_pdf_pages(pdf_bytes: bytes, page_numbers: list[int]) -> bytes:
-    """Create an in-memory sub-PDF containing only 1-based `page_numbers`."""
+    """Create a compact in-memory sub-PDF containing only 1-based `page_numbers`.
+
+    Uses an identity fast-path when all pages are selected in order, and `Document.select()` +
+    `tobytes(garbage=3, deflate=True)` for subsets so shared XObjects/fonts are never duplicated
+    N times (which previously caused `insert_pdf` loops to explode 13 MB PDFs into >3.7 GB and
+    segfault MuPDF's 32-bit stream length).
+    """
+    if not pdf_bytes or not page_numbers:
+        return pdf_bytes
     src = fitz.open(stream=pdf_bytes, filetype="pdf")
-    dst = fitz.open()
     try:
-        for pno in page_numbers:
-            if 1 <= pno <= len(src):
-                dst.insert_pdf(src, from_page=pno - 1, to_page=pno - 1)
-        return dst.tobytes()
+        total_pages = len(src)
+        valid_zero_based = [pno - 1 for pno in page_numbers if 1 <= pno <= total_pages]
+        if not valid_zero_based:
+            return pdf_bytes
+        if len(valid_zero_based) == total_pages and valid_zero_based == list(range(total_pages)):
+            return pdf_bytes
+        src.select(valid_zero_based)
+        return src.tobytes(garbage=3, deflate=True)
     finally:
-        dst.close()
         src.close()
 
 
@@ -1800,9 +1810,7 @@ async def build_research_sub_documents(
             ) from exc
         raise InputBuildError(f"Archive extraction failed for {ticker}: {exc}") from exc
 
-    inspection = await asyncio.to_thread(
-        inspect_pdf_bytes, pdf_bytes, source_url=source_url, doc_type=canonical_doc_type
-    )
+    inspection = inspect_pdf_bytes(pdf_bytes, source_url=source_url, doc_type=canonical_doc_type)
     if inspection.doc_class == "EXCLUDED_ENGLISH" or inspection.error == "EXCLUDED_FULL_ENGLISH_DOCUMENT":
         raise InputBuildError(
             f"EXCLUDED_FULL_ENGLISH_DOCUMENT for {ticker} ({canonical_doc_type})"
