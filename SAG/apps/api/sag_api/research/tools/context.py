@@ -53,6 +53,7 @@ class ResearchEvidenceLedger:
     recalled_memories: dict[str, dict[str, Any]] = field(default_factory=dict)
     portfolio_snapshots: dict[str, dict[str, Any]] = field(default_factory=dict)
     linked_sessions: dict[str, dict[str, Any]] = field(default_factory=dict)
+    fact_sets: dict[frozenset[str], Any] = field(default_factory=dict)  # per-turn FactSet cache
 
     def _record_ticker_unlocked(self, ticker: str) -> None:
         sym = str(ticker or "").strip().upper()
