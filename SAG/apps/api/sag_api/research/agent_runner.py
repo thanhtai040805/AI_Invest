@@ -27,8 +27,8 @@ from sag_agent.types import (
     ModelRequest,
     ToolExecutionMode,
 )
+from sag_api.research.playbooks import execute_playbook_prefetch, resolve_playbook
 from sag_api.research.tools.context import ResearchToolContext
-from sag_api.research.tools.research_tools import build_research_tools
 
 _INLINE_C_BADGE_RE = re.compile(r"\[C(\d+)\]")
 _INLINE_CALC_BADGE_RE = re.compile(r"\[(CALC-\d+)\]")
@@ -64,25 +64,26 @@ def strip_reasoning_tags(text: str) -> str:
 _STATIC_RESEARCH_SYSTEM_PREFIX = (
     "Bạn là Chuyên viên Phân tích Nghiên cứu Chứng khoán Tổ chức cấp cao "
     "(Senior Institutional Equity Research Analyst) của AIInvest, chuyên sâu thị trường vốn Việt Nam "
-    "(chuẩn mực VAS Thông tư 200/49/210). Kỷ luật ZERO-HALLUCINATION và Point-in-Time (PIT) tuyệt đối:\n"
+    "(chuẩn mực VAS Thông tư 200/49/210/232). Kỷ luật ZERO-HALLUCINATION và Point-in-Time (PIT) tuyệt đối:\n"
     "1. KỶ LUẬT DỮ LIỆU & TRÍCH DẪN:\n"
     "   - Mọi con số tài chính mới (doanh thu, lợi nhuận, biên, nợ vay, dòng tiền, P/E, P/B, ROE, NIM, NPL, beta) "
-    "BẮT BUỘC xuất phát từ kết quả 6 công cụ bên ngoài trong lượt hiện tại — TUYỆT ĐỐI không tự nhớ hay bịa số.\n"
+    "BẮT BUỘC xuất phát từ `<PREFETCHED_DETERMINISTIC_EVIDENCE>` hoặc kết quả công cụ trong lượt hiện tại — "
+    "TUYỆT ĐỐI không tự nhớ hay bịa số.\n"
     "   - Gắn thẻ nguồn ngay sau từng khẳng định: `[C1]`, `[C2]`... cho đoạn BCTC/Thuyết minh/BCTN/ĐHĐCĐ; "
-    "`[TBL:<table_id>]` cho bảng 2D; `[SCR:<TICKER>]` cho sàng lọc định lượng; `[CALC-1]`... cho phép tính AST; "
-    "`[KG:<LAYER>|<TIER>]` cho đồ thị tri thức. Không bao giờ phát minh mã `[C#]` chưa tồn tại.\n"
-    "   - Không nhẩm toán: mọi phép tính YoY/QoQ, CAGR, tỷ trọng mảng, biên lợi nhuận, CFO/LNST, "
-    "Nợ ròng/VCSH, % hoàn thành kế hoạch ĐHĐCĐ phải gọi `run_financial_calculator`.\n"
-    "2. CHIẾN LƯỢC TRA CỨU ĐA BƯỚC (MULTI-HOP):\n"
-    "   - Luôn dùng truy vấn 2 thanh ghi khi gọi `search_corporate_filings`: `bm25_vas_queries` "
-    "(thuật ngữ chuẩn VAS như 'doanh thu thuần', 'phải thu ngắn hạn', 'vay và nợ thuê tài chính', "
-    "'dự phòng rủi ro tín dụng', 'vốn khả dụng') và `dense_semantic_queries` (câu đầy đủ mã + niên độ).\n"
-    "   - Nếu CRAG trả `AMBIGUOUS`/`INCORRECT` hoặc bảng chính dẫn chiếu mã thuyết minh (V.01, V.20...), "
-    "chủ động gọi tiếp tool để đối chiếu tới gốc thuyết minh và nạp bảng 2D (`hydrate_financial_tables`). "
-    "Khi so sánh từ 2 mã trở lên, luôn gọi đồng thời `screen_financial_universe` (định giá/chỉ số), "
-    "`search_corporate_filings` cho từng mã, và `query_knowledge_graph` để có bối cảnh đối thủ/chuỗi giá trị.\n"
-    "   - Gom tối đa các công cụ độc lập (BCTC, Bảng 2D, Sàng lọc, Đồ thị 3 tầng) gọi **song song trong 1–2 lượt**; "
-    "chỉ gọi thêm lượt sau nếu CRAG trả `AMBIGUOUS`/`INCORRECT`, thiếu thuyết minh hoặc cần tính toán AST.\n"
+    "`[TBL:<table_id>]` cho bảng 2D; `[SCR:<TICKER>]` cho sàng lọc định lượng; `[CALC-1]`... cho số liệu/KPI tất định "
+    "và phép tính AST; `[KG:<LAYER>|<TIER>]` cho đồ thị tri thức. Không bao giờ phát minh mã `[C#]` chưa tồn tại.\n"
+    "   - Không nhẩm toán: ưu tiên tuyệt đối dùng ngay KPI/tăng trưởng/tiến độ kế hoạch đã có mã `[CALC-*]` từ các "
+    "công cụ tất định (`get_financial_statements`, `get_sector_kpis`, `scan_financial_risks`, `compare_peers`, "
+    "`check_plan_vs_actual`); chỉ gọi `run_financial_calculator` cho công thức kịch bản chưa có sẵn.\n"
+    "2. CHIẾN LƯỢC PHÂN TÍCH ĐỊNH HƯỚNG PLAYBOOK (TỐI ĐA 1–2 LƯỢT GỌI TOOL):\n"
+    "   - Nếu khối `<PREFETCHED_DETERMINISTIC_EVIDENCE>` đã cung cấp bảng BCTC, KPI đặc thù ngành, cờ rủi ro và "
+    "tiến độ ĐHĐCĐ, TUYỆT ĐỐI KHÔNG tìm lại số doanh thu/lợi nhuận/ROE tổng quát bằng tìm kiếm văn bản.\n"
+    "   - Dùng `search_disclosures` (khóa cứng `sub_doc_slots`, `fiscal_year`, `fiscal_quarter` + `vas_terms` chuẩn "
+    "VAS như 'nợ nhóm 3', 'dự phòng rủi ro tín dụng', 'vốn khả dụng', 'phải thu ngắn hạn', 'V.06') để lấy thuyết minh "
+    "bóc tách chất lượng tài sản, danh mục dự án/tự doanh, chính sách kế toán và thông điệp ban lãnh đạo.\n"
+    "   - Nếu `search_disclosures` trả `STATUS=NOT_FOUND` kèm danh sách kỳ đã công bố trong PIT, KHÔNG lặp lại truy "
+    "vấn vào kỳ trống đó — chuyển ngay sang kỳ hợp lệ gần nhất trong PIT hoặc khai báo thẳng khoảng trống PIT.\n"
+    "   - Gom toàn bộ các lệnh `search_disclosures` / `hydrate_financial_tables` độc lập chạy **song song 1 lượt**.\n"
     "3. TIÊU CHUẨN CHẤT LƯỢNG PHÂN TÍCH BROKER TỔ CHỨC (CẤM KẾT LUẬN CHUNG CHUNG):\n"
     "   - Mở đầu ngay bằng **Kết luận Điều hành (Broker Takeaway / So What?)** trong 2–3 ý sắc nét: bản chất "
     "tăng trưởng (lõi bền vững vs đột biến tài chính/hoàn nhập), điểm nổi bật về bảng cân đối/dòng tiền, "
@@ -449,6 +450,10 @@ class AgentTurnOutcome:
     error_message: str | None = None
     extra_blindspots: list[dict[str, str]] = field(default_factory=list)
     activity_log: list[dict[str, Any]] = field(default_factory=list)
+    playbook_id: str | None = None
+    playbook_mode: str | None = None
+    prefetched_tools: list[str] = field(default_factory=list)
+    exposed_tools: list[str] = field(default_factory=list)
 
 
 def build_compact_catalog_header(
@@ -477,11 +482,11 @@ def build_dynamic_user_prompt(
     route_decision: Mapping[str, Any],
     ctx: ResearchToolContext,
     explicit_tickers: Sequence[str] = (),
+    playbook_guidance: str = "",
+    prefetched_block: str = "",
 ) -> str:
     """Assemble KV-cache-friendly dynamic 3-tier tail (Tier 0 Pinned + Tier 1 Adaptive Zero-Mem +
-    Tier 2 Gated Memory + Route Hints + User Query).
-
-    System Prompt + 6 tool schemas remain 100% static for maximum KV-cache prefix reuse.
+    Tier 2 Gated Memory + Playbook Guidance + 0-Token Pre-Fetched Evidence + User Query).
     """
     blocks: list[str] = []
     if ctx.tier0_memory_prompt:
@@ -500,11 +505,11 @@ def build_dynamic_user_prompt(
     hint_lines = [
         f"- Ngày khóa sổ PIT (as_of_date): {ctx.as_of_date.isoformat()}",
         f"- Chế độ phân tích: {ctx.chat_mode}",
-        f"- Mục tiêu nghiệp vụ (soft hint): {route_decision.get('task_action', 'fact_lookup')}",
-        f"- Nguồn gợi ý (soft hint, được phép gọi mọi tool cần thiết): "
-        f"{route_decision.get('evidence_source_hint', 'hybrid_all')}",
+        f"- Playbook nghiệp vụ: {route_decision.get('task_action', 'fact_lookup')}",
         f"- Định dạng trình bày mong muốn: {route_decision.get('output_style', 'fact_citation')}",
     ]
+    if playbook_guidance:
+        hint_lines.append(f"- Chỉ dẫn Playbook: {playbook_guidance}")
     if explicit_tickers:
         hint_lines.append(f"- Mã người dùng đã ghim/chọn trên giao diện: {', '.join(explicit_tickers)}")
     if route_decision.get("attach_investment_disclaimer"):
@@ -519,6 +524,8 @@ def build_dynamic_user_prompt(
         )
 
     blocks.append("<EXECUTION_CONTEXT>\n" + "\n".join(hint_lines) + "\n</EXECUTION_CONTEXT>")
+    if prefetched_block:
+        blocks.append(prefetched_block)
     blocks.append(f"Câu hỏi của nhà đầu tư:\n{query}")
     return "\n\n".join(blocks)
 
@@ -631,13 +638,25 @@ async def run_research_agent_turn(
     on_tool_result: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     overall_timeout_seconds: float = 125.0,
 ) -> AgentTurnOutcome:
-    """Execute the unified `sag_agent` multi-hop research loop with live reasoning & tool activity streaming."""
-    tools = build_research_tools()
+    """Execute the unified `sag_agent` multi-hop research loop with Playbook pre-fetch & tool scoping."""
+    playbook = resolve_playbook(
+        route_decision,
+        chat_mode=ctx.chat_mode,
+        explicit_tickers=explicit_tickers,
+    )
+    tools = playbook.exposed_tools
     raw_max_turns = int(route_decision.get("max_agent_turns") or 3)
-    # Keep tool-calling turns crisp (<=3 for GENERAL, <=4 for MOAT) + 1 final synthesis turn so
-    # multi-ticker MOAT reports never burn 6 tool rounds and hit the SSE timeout ceiling.
-    turn_cap = 4 if ctx.chat_mode == "MOAT" else 3
-    effective_max_turns = max(2, min(turn_cap, raw_max_turns))
+    if bool(route_decision.get("fallback_used")):
+        turn_cap = 4 if ctx.chat_mode == "MOAT" else 3
+        effective_max_turns = max(2, min(turn_cap, raw_max_turns))
+    else:
+        effective_max_turns = playbook.max_turns
+
+    prefetched_block, prefetched_tools = await execute_playbook_prefetch(
+        playbook,
+        ctx=ctx,
+        explicit_tickers=explicit_tickers,
+    )
 
     catalog_header = build_compact_catalog_header(
         ctx.catalog_profiles,
@@ -650,6 +669,8 @@ async def run_research_agent_turn(
         route_decision=route_decision,
         ctx=ctx,
         explicit_tickers=explicit_tickers,
+        playbook_guidance=playbook.guidance_vi,
+        prefetched_block=prefetched_block,
     )
 
     gate = SentenceStreamGate(
@@ -959,18 +980,36 @@ async def run_research_agent_turn(
                     streamed_any = True
                     await on_delta(chunk_out)
 
+    if prefetched_tools:
+        await _emit_thought(
+            turn=0,
+            kind="plan",
+            title=f"Playbook `{playbook.playbook_id}` · Tiền nạp tất định (0 LLM token)",
+            text=(
+                f"Đã tiền nạp song song: {', '.join(prefetched_tools)} "
+                f"({len(ctx.evidence.calculator_traces)} chỉ tiêu `[CALC-*]` khóa sổ PIT). "
+                f"Công cụ mở cho mô hình ({len(tools)}): {', '.join(playbook.exposed_tool_names)}."
+            ),
+        )
+
+    init_choice = (
+        "required"
+        if (playbook.require_qualitative_turn or not prefetched_tools)
+        else None
+    )
+
     agent = Agent(
         name="aiinvest_stock_research_agent",
         model=model,
         instructions=instructions,
         tools=tools,
-        # Turn 1 MUST invoke at least one evidence tool so LLM never answers numbers from memory
-        initial_tool_choice="required",
+        # Force Turn 1 tool call when qualitative notes are required or 0 pre-fetch evidence exists
+        initial_tool_choice=init_choice,
         max_turns=effective_max_turns,
         finalize_on_max_turns=True,
         final_instructions=(
             "Đã hoàn tất bước thu thập dữ liệu. Hãy tổng hợp ngay báo cáo phân tích Broker hoàn chỉnh chỉ từ "
-            "các bằng chứng đã thu thập ở trên (KHÔNG gọi thêm công cụ). Trình bày đủ: Kết luận điều hành, "
+            "các bằng chứng đã thu thập và tiền nạp ở trên (KHÔNG gọi thêm công cụ). Trình bày đủ: Kết luận điều hành, "
             "Bảng đối chiếu số liệu, Phân tích động lực & chất lượng lợi nhuận theo đặc thù ngành, Rủi ro/Watchlist; "
             "gắn đủ mã `[C#]`, `[TBL:*]`, `[SCR:*]`, `[CALC-*]`, `[KG:*]` và nêu rõ mọi khoảng trống PIT."
         ),
@@ -1087,4 +1126,8 @@ async def run_research_agent_turn(
         error_message=None if cleaned_answer else err_msg,
         extra_blindspots=extra_blindspots,
         activity_log=activity_log,
+        playbook_id=playbook.playbook_id,
+        playbook_mode=playbook.selection_mode,
+        prefetched_tools=prefetched_tools,
+        exposed_tools=list(playbook.exposed_tool_names),
     )

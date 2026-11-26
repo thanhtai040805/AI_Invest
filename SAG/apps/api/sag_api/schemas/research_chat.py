@@ -180,6 +180,10 @@ class ResearchTelemetry(BaseModel):
     route_domain_class: str | None = None
     route_budget_tier: str | None = None
     route_confidence: float | None = None
+    playbook_id: str | None = None
+    playbook_mode: str | None = None
+    prefetched_tools: list[str] = Field(default_factory=list)
+    exposed_tools: list[str] = Field(default_factory=list)
     eval_eligible: bool = True
     quarantined_future_turns: int = 0
     retrieval_mode: str = "SHARED_CHAMBER_HYBRID"
