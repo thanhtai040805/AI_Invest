@@ -905,16 +905,27 @@ def _collect_typed_calc_kg_and_screen_numbers(
         if fmt:
             _merge_typed_pools(bucket, _extract_typed_numbers_from_text(fmt))
         if isinstance(inputs, Mapping):
-            for inp in inputs.values():
+            for inp_key, inp in inputs.items():
+                key_low = str(inp_key or "").lower()
                 if isinstance(inp, Mapping) and isinstance(inp.get("value"), (int, float)):
                     mult = float(inp.get("unit_multiplier") or 1.0)
                     iv = abs(float(inp["value"]))
-                    bucket["MONETARY"].extend(_expand_numeric_scales(iv, unit_multiplier=mult))
-                    bucket["RAW"].extend(_expand_numeric_scales(iv, unit_multiplier=mult))
+                    u_str = str(inp.get("unit") or "").lower()
+                    if u_str in ("ratio", "percent", "%", "pct") or "%" in key_low:
+                        bucket["PERCENT"].extend([iv, iv * 100.0, iv * 10000.0])
+                    elif u_str in ("x", "multiple"):
+                        bucket["MULTIPLE"].append(iv)
+                    else:
+                        bucket["MONETARY"].extend(_expand_numeric_scales(iv, unit_multiplier=mult))
+                        bucket["RAW"].extend(_expand_numeric_scales(iv, unit_multiplier=mult))
                 elif isinstance(inp, (int, float)) and not isinstance(inp, bool):
                     iv = abs(float(inp))
                     bucket["MONETARY"].extend(_expand_numeric_scales(iv))
                     bucket["RAW"].extend(_expand_numeric_scales(iv))
+                    if iv <= 2.5:
+                        bucket["PERCENT"].extend([iv, iv * 100.0])
+                    if iv <= 100.0:
+                        bucket["MULTIPLE"].append(iv)
 
     for hop in graph_hops or ():
         src_lbl = str(hop.get("src_label") if isinstance(hop, Mapping) else getattr(hop, "src_label", "") or "")

@@ -341,3 +341,17 @@ async def test_l2_plan_vs_actual_respects_pit_of_agm_documents(sample, agm_sessi
     )
     assert res.details["statuses"] == {"PNJ": "NOT_FOUND"}
     assert "NOT_FOUND" in res.content and evidence.calculator_traces == []
+
+
+async def test_stage7_accepts_vendor_snapshot_percent_inputs_without_false_positives(sample) -> None:
+    tctx, evidence, _ = _make(sample)
+    await get_sector_kpis_tool.execute({"tickers": ["ACB"]}, tctx)
+    vtr = next(t for t in evidence.calculator_traces if "nhà cung cấp" in str(t.get("description") or ""))
+    cid = vtr["calc_id"]
+    npl_pct = float(vtr["inputs"]["vr_npl_ratio"]["value"]) * 100.0
+    ver = verify_numeric_claims_against_evidence(
+        f"Tỷ lệ nợ xấu của ACB đạt {npl_pct:.2f}% [{cid}].",
+        sections_by_cid={},
+        calculator_traces=evidence.calculator_traces,
+    )
+    assert ver.unsupported_claims == []
