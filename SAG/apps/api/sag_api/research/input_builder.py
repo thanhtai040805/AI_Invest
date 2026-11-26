@@ -29,6 +29,7 @@ Architecture v2.1 (eliminating artificial 13-slot shredding in favor of SAG v2's
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -1799,7 +1800,9 @@ async def build_research_sub_documents(
             ) from exc
         raise InputBuildError(f"Archive extraction failed for {ticker}: {exc}") from exc
 
-    inspection = inspect_pdf_bytes(pdf_bytes, source_url=source_url, doc_type=canonical_doc_type)
+    inspection = await asyncio.to_thread(
+        inspect_pdf_bytes, pdf_bytes, source_url=source_url, doc_type=canonical_doc_type
+    )
     if inspection.doc_class == "EXCLUDED_ENGLISH" or inspection.error == "EXCLUDED_FULL_ENGLISH_DOCUMENT":
         raise InputBuildError(
             f"EXCLUDED_FULL_ENGLISH_DOCUMENT for {ticker} ({canonical_doc_type})"
@@ -2053,7 +2056,8 @@ async def build_research_sub_documents(
                 "NQ_DHDCD",
                 "TAI_LIEU_DHDCD",
             ):
-                _enrich_digital_pages_with_html_tables(
+                await asyncio.to_thread(
+                    _enrich_digital_pages_with_html_tables,
                     unwrapped_bytes,
                     page_texts,
                     digital_pages=digital_extracted_pages,

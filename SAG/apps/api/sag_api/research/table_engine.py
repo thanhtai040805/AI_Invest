@@ -889,6 +889,9 @@ def _parse_lattice_grid(
     }
 
 
+_MAX_LATTICE_VECTOR_EDGES = 4000
+
+
 def extract_tables_with_lattice_fallback(
     sub_page: Any,
     *,
@@ -900,7 +903,21 @@ def extract_tables_with_lattice_fallback(
     page_text = ""
     if hasattr(sub_page, "extract_text"):
         page_text = normalize_ctg_font_quirks(sub_page.extract_text() or "")
-    lat_tables = sub_page.extract_tables() if hasattr(sub_page, "extract_tables") else []
+    # Guard against Adobe Illustrator vector-art infographic pages (>4,000 vector edges)
+    # where pdfplumber's O(E^2) lattice edge-intersection can burn minutes on non-table charts.
+    try:
+        edge_count = (
+            len(getattr(sub_page, "curves", ()) or ())
+            + len(getattr(sub_page, "lines", ()) or ())
+            + len(getattr(sub_page, "rects", ()) or ())
+        )
+    except Exception:  # noqa: BLE001
+        edge_count = 0
+    lat_tables = (
+        sub_page.extract_tables()
+        if (hasattr(sub_page, "extract_tables") and edge_count <= _MAX_LATTICE_VECTOR_EDGES)
+        else []
+    )
 
     verified_lattice: list[dict[str, Any]] = []
     if lat_tables:

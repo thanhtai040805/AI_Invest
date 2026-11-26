@@ -524,4 +524,73 @@ async def test_mineru_adapter_auto_slices_oversized_byte_payload_under_200mb() -
     assert stitched == {p: f"BID_p{p}" for p in range(1, 11)}
 
 
+def test_page_image_coverage_uses_layout_display_list_without_pixmap_md5() -> None:
+    import fitz
+
+    from sag_api.research.input_inspector import _compute_page_image_coverage, split_virtual_pages
+
+    class _FakePage:
+        rect = fitz.Rect(0.0, 0.0, 600.0, 800.0)
+
+        def get_image_info(self, *, hashes: bool = False, xrefs: bool = False):
+            assert hashes is False and xrefs is False
+            return [
+                {"bbox": (0.0, 0.0, 600.0, 400.0)},  # 50% of page
+                {"bbox": (0.0, 400.0, 300.0, 800.0)},  # +25% of page = 75%
+            ]
+
+        def get_image_rects(self, *_args, **_kwargs):
+            raise AssertionError("Must never call O(N^2) Pixmap+MD5 get_image_rects")
+
+    cov = _compute_page_image_coverage(_FakePage())  # type: ignore[arg-type]
+    assert cov == pytest.approx(0.75, abs=1e-6)
+
+    # Verify split_virtual_pages clamps bbox to non-zero parent page.bbox (prevents pdfplumber crop ValueError)
+    class _OffsetPlumberPage:
+        width = 601.45
+        height = 845.30
+        bbox = (0.0, 0.02, 601.45, 845.32)
+        page_number = 1
+
+    vpages = split_virtual_pages(_OffsetPlumberPage())
+    assert len(vpages) == 1
+    assert vpages[0].bbox == (0.0, 0.02, 601.45, 845.32)
+
+
+def test_lattice_fallback_skips_heavy_vector_art_pages_without_dropping_reconstructor() -> None:
+    from sag_api.research.table_engine import extract_tables_with_lattice_fallback
+
+    class _VectorHeavyPage:
+        width = 600.0
+        height = 800.0
+        bbox = (0.0, 0.0, 600.0, 800.0)
+        curves = [{}] * 4500
+        lines: list[dict] = []
+        rects: list[dict] = []
+
+        def extract_text(self) -> str:
+            return "Chỉ tiêu 2025 2024\nDoanh thu thuần 100.000 90.000\nTổng cộng 100.000 90.000"
+
+        def extract_tables(self):
+            raise AssertionError("Must skip O(E^2) pdfplumber lattice on >4000-edge vector art")
+
+        def extract_words(self, **_kwargs):
+            return [
+                {"text": "Doanh", "x0": 40.0, "x1": 80.0, "top": 100.0, "bottom": 110.0},
+                {"text": "thu", "x0": 85.0, "x1": 105.0, "top": 100.0, "bottom": 110.0},
+                {"text": "100.000", "x0": 350.0, "x1": 410.0, "top": 100.0, "bottom": 110.0},
+                {"text": "90.000", "x0": 450.0, "x1": 510.0, "top": 100.0, "bottom": 110.0},
+                {"text": "Tổng", "x0": 40.0, "x1": 75.0, "top": 120.0, "bottom": 130.0},
+                {"text": "cộng", "x0": 80.0, "x1": 110.0, "top": 120.0, "bottom": 130.0},
+                {"text": "100.000", "x0": 350.0, "x1": 410.0, "top": 120.0, "bottom": 130.0},
+                {"text": "90.000", "x0": 450.0, "x1": 510.0, "top": 120.0, "bottom": 130.0},
+            ]
+
+    tables = extract_tables_with_lattice_fallback(_VectorHeavyPage())
+    assert len(tables) == 1
+    assert tables[0]["extraction_method"] == "coordinate_reconstructor"
+    assert len(tables[0]["rows"]) == 2
+
+
+
 

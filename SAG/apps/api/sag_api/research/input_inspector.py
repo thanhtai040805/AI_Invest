@@ -627,50 +627,63 @@ def split_virtual_pages(
 ) -> list[VirtualPage]:
     """Detect A3 2-page Vietnamese spread vs 2-column VI/EN bilingual crop vs single page."""
     w, h = float(page.width), float(page.height)
+    raw_bbox = getattr(page, "bbox", None)
+    if raw_bbox is not None and len(raw_bbox) == 4:
+        px0, py0, px1, py1 = (
+            float(raw_bbox[0]),
+            float(raw_bbox[1]),
+            float(raw_bbox[2]),
+            float(raw_bbox[3]),
+        )
+    else:
+        px0, py0, px1, py1 = 0.0, 0.0, w, h
     page_num = int(getattr(page, "page_number", 1))
     if two_col_crop is not None:
-        keep_x0 = max(0.0, min(w, float(two_col_crop[0])))
-        keep_x1 = max(keep_x0 + 10.0, min(w, float(two_col_crop[1])))
-        return [VirtualPage(page_num, "FULL", (keep_x0, 0.0, keep_x1, h), keep_x0)]
+        keep_x0 = max(px0, min(px1, float(two_col_crop[0])))
+        keep_x1 = max(keep_x0 + 10.0, min(px1, float(two_col_crop[1])))
+        keep_x1 = min(px1, keep_x1)
+        return [VirtualPage(page_num, "FULL", (keep_x0, py0, keep_x1, py1), keep_x0)]
     if w > h * 1.25 and left_sidebar_x == 0.0:
         words = page.extract_words()
-        mid = w / 2.0
+        mid = px0 + (px1 - px0) / 2.0
         crossing = [wd for wd in words if wd["x0"] < mid - 4 and wd["x1"] > mid + 4]
         if len(crossing) <= 2 and len(words) > 10:
             return [
-                VirtualPage(page_num, "L", (0.0, 0.0, mid, h)),
-                VirtualPage(page_num, "R", (mid, 0.0, w, h)),
+                VirtualPage(page_num, "L", (px0, py0, mid, py1)),
+                VirtualPage(page_num, "R", (mid, py0, px1, py1)),
             ]
-    return [VirtualPage(page_num, "FULL", (left_sidebar_x, 0.0, w, h), left_sidebar_x)]
+    eff_left = max(px0, min(px1, float(left_sidebar_x)))
+    return [VirtualPage(page_num, "FULL", (eff_left, py0, px1, py1), eff_left)]
 
 
 def _compute_page_image_coverage(page: fitz.Page) -> float:
-    """Estimate fraction of page area covered by embedded raster images (scan detector signal)."""
+    """Estimate fraction of page area covered by embedded raster images (scan detector signal).
+
+    Uses `page.get_image_info(hashes=False, xrefs=False)` so MuPDF walks only the layout display list
+    without decompressing every image into a raw Pixmap + MD5 hash (which `page.get_image_rects(xref)`
+    does per image, causing O(N^2) CPU stalls and native MuPDF heap crashes on multi-image BCTNs).
+    """
     rect = page.rect
     page_area = float(rect.width) * float(rect.height)
     if page_area <= 0.0:
         return 0.0
     try:
-        images = page.get_images(full=True)
+        infos = page.get_image_info(hashes=False, xrefs=False)
     except Exception:  # noqa: BLE001
         return 0.0
-    if not images:
+    if not infos:
         return 0.0
     covered = 0.0
-    seen_xrefs: set[int] = set()
-    for img in images:
-        xref = int(img[0])
-        if xref in seen_xrefs:
+    for im in infos:
+        bbox = im.get("bbox")
+        if not bbox or len(bbox) != 4:
             continue
-        seen_xrefs.add(xref)
         try:
-            rects = page.get_image_rects(xref)
+            inter = fitz.Rect(bbox) & rect
         except Exception:  # noqa: BLE001
             continue
-        for ir in rects:
-            inter = ir & rect
-            if not inter.is_empty:
-                covered += float(inter.width) * float(inter.height)
+        if not inter.is_empty:
+            covered += float(inter.width) * float(inter.height)
     return min(1.0, covered / page_area)
 
 
@@ -754,7 +767,6 @@ def inspect_pdf_bytes(
 
         # Pre-pass: gather raw text and detect lines repeating on > 50% of pages (e.g. e-office watermarks)
         raw_page_texts: list[str] = []
-        page_img_cov: list[float] = []
         page_is_spread: list[bool] = []
         line_doc_freq: Counter[str] = Counter()
 
@@ -763,7 +775,6 @@ def inspect_pdf_bytes(
             page_is_spread.append(is_spread)
             t = (page.get_text("text") or "").strip()
             raw_page_texts.append(t)
-            page_img_cov.append(_compute_page_image_coverage(page))
             if n_pages >= 5 and t:
                 seen_keys: set[str] = set()
                 for raw_ln in t.splitlines():
@@ -803,9 +814,14 @@ def inspect_pdf_bytes(
         for page_idx, raw_t in enumerate(raw_page_texts):
             page_no = page_idx + 1
             is_spread = page_is_spread[page_idx]
-            img_cov = page_img_cov[page_idx]
             eff_t = _strip_watermark_and_repeating_lines(raw_t, repeating_watermark_keys)
             eff_chars = len(eff_t)
+            # Only inspect image coverage on borderline pages (80 <= eff_chars < 250) where it decides SCAN vs text
+            img_cov = (
+                _compute_page_image_coverage(doc[page_idx])
+                if 80 <= eff_chars < 250
+                else 0.0
+            )
 
             if eff_chars < 80 or (img_cov >= 0.55 and eff_chars < 250):
                 scan_pages += 1
