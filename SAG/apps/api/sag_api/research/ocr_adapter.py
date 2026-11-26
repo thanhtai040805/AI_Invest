@@ -71,6 +71,7 @@ class MinerUOcrAdapter:
         parse_method: str = "ocr",
         official_model: str | None = None,
         chunk_pages: int | None = None,
+        max_slice_bytes: int = 150 * 1024 * 1024,
     ) -> None:
         base_settings = settings or global_settings
         if not base_settings.mineru_configured:
@@ -80,6 +81,7 @@ class MinerUOcrAdapter:
         self._base_settings = base_settings
         self._parse_method = parse_method
         self._official_model = official_model or base_settings.mineru_official_model
+        self._max_slice_bytes = max(1, int(max_slice_bytes))
         if chunk_pages is not None:
             self._chunk_pages = int(chunk_pages)
         elif self._official_model == "vlm":
@@ -125,10 +127,16 @@ class MinerUOcrAdapter:
         # Map `vi` -> `latin` (MinerU Official v4 canonical pack for Vietnamese extended Latin script)
         resolved_lang = normalize_mineru_language(language, default="latin")
         slice_limit = max(1, self._chunk_pages)
+        # MinerU Official API v4 caps single uploads at 200 MB; auto-slice by byte budget (default 150 MB)
+        # even when page count <= 120 (e.g., high-DPI bank scans like BID >200 MB).
+        max_slice_bytes = self._max_slice_bytes
+        if len(pdf_bytes) > max_slice_bytes and len(page_numbers) > 1:
+            byte_based_pages = max(1, int(len(page_numbers) * (max_slice_bytes / len(pdf_bytes)) * 0.85))
+            slice_limit = min(slice_limit, byte_based_pages)
         pool_tokens = getattr(self._base_settings, "effective_mineru_official_api_tokens", ())
 
-        # Always slice large PDFs (> slice_limit, default 120p for VLM) so multi-hundred-page
-        # filings never hit MinerU's per-job page limit and stitch cleanly back to original pages.
+        # Always slice large PDFs (> slice_limit pages or >150 MB) so multi-hundred-page / high-DPI
+        # filings never hit MinerU's per-job page or 200 MB limit and stitch back to original pages.
         if len(page_numbers) > slice_limit:
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
             try:

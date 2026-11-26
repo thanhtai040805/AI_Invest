@@ -493,3 +493,35 @@ async def test_long_scanned_filings_zero_truncation_and_single_token_batch_stitc
     assert stitched == {p: f"Trang {p}" for p in range(1, 11)}
 
 
+@pytest.mark.asyncio
+async def test_mineru_adapter_auto_slices_oversized_byte_payload_under_200mb() -> None:
+    import fitz
+
+    from sag_api.research.ocr_adapter import MinerUOcrAdapter
+
+    cfg = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        mineru_base_url="https://mineru.net",
+        mineru_official_api_token="single-tok-only",
+    )
+    doc = fitz.open()
+    for _ in range(10):
+        doc.new_page()
+    pdf_10p = doc.tobytes()
+    doc.close()
+
+    adapter = MinerUOcrAdapter(cfg, chunk_pages=120, max_slice_bytes=max(1, len(pdf_10p) // 2))
+    slices_seen: list[list[int]] = []
+
+    async def fake_single_slice(slice_bytes: bytes, slice_pages: list[int], *, resolved_lang: str):
+        slices_seen.append(list(slice_pages))
+        return {p: f"BID_p{p}" for p in slice_pages}
+
+    with patch.object(adapter, "_ocr_single_slice", side_effect=fake_single_slice):
+        stitched = await adapter.ocr_pdf_pages(pdf_10p, list(range(1, 11)), language="vi")
+
+    assert len(slices_seen) >= 2
+    assert stitched == {p: f"BID_p{p}" for p in range(1, 11)}
+
+
+
