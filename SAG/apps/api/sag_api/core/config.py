@@ -301,6 +301,7 @@ class Settings(BaseSettings):
     search_strategy: SearchStrategy = "multi_es_fast"
     search_top_k: int = Field(default=8, ge=1)  # Initial adaptive search breadth, not a final result cap.
     research_search_top_k: int = Field(default=10, ge=1, le=32)
+    research_brain_mode: Literal["brief_centric", "agent_loop"] = "brief_centric"
     # Optional scope budget rejects oversized scopes instead of silently truncating sources.
     search_source_candidate_limit: int = Field(default=0, ge=0)  # 0 = all authorized sources.
     search_source_concurrency: int = Field(default=4, ge=1, le=32)

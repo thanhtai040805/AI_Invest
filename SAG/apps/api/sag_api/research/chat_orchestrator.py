@@ -2965,6 +2965,7 @@ class ResearchChatOrchestrator:
         core_reader: Any | None = None,
         reranker: Any | None = None,
         enable_agent_loop: bool = True,
+        brain_mode: Literal["brief_centric", "agent_loop"] | None = None,
     ) -> None:
         self._session = session
         self._session_factory = session_factory
@@ -2972,6 +2973,7 @@ class ResearchChatOrchestrator:
         self._core_reader = core_reader
         self._reranker = reranker
         self._enable_agent_loop = bool(enable_agent_loop)
+        self._brain_mode = brain_mode
         self._kg_store_override = kg_store
         self._retriever_override = retriever
         self._table_store_override = table_store
@@ -3853,7 +3855,14 @@ class ResearchChatOrchestrator:
     ) -> AsyncIterator[tuple[str, dict[str, Any]]]:
         """Run the unified `sag_agent` 6-tool parallel research loop + honest Stage 7 verification."""
         from sag_api.research.agent_runner import run_research_agent_turn
+        from sag_api.research.brief_synthesizer import (
+            BriefTurnResult,
+            repair_stage7_flagged_lines,
+            run_brief_centric_turn,
+        )
         from sag_api.research.tools.context import ResearchEvidenceLedger, ResearchToolContext
+
+        effective_brain_mode = self._brain_mode or settings.research_brain_mode
 
         session_factory = self._build_tool_session_factory()
         evidence = ResearchEvidenceLedger()
@@ -3960,6 +3969,19 @@ class ResearchChatOrchestrator:
 
         async def _run_agent() -> Any:
             try:
+                if effective_brain_mode == "brief_centric":
+                    return await run_brief_centric_turn(
+                        query=request.query,
+                        model=self._llm,
+                        ctx=ctx,
+                        route_decision=route_decision,
+                        explicit_tickers=explicit_tickers,
+                        on_stage=_on_stage,
+                        on_delta=_on_delta,
+                        on_thought=_on_thought,
+                        on_tool_call=_on_tool_call,
+                        on_tool_result=_on_tool_result,
+                    )
                 return await run_research_agent_turn(
                     query=request.query,
                     model=self._llm,
@@ -3981,7 +4003,15 @@ class ResearchChatOrchestrator:
             if item is None:
                 break
             yield item
-        outcome = await agent_task
+        raw_agent_out = await agent_task
+        if isinstance(raw_agent_out, BriefTurnResult):
+            outcome = raw_agent_out.outcome
+            active_brief = raw_agent_out.brief
+            verdict_cards = raw_agent_out.verdict_cards
+        else:
+            outcome = raw_agent_out
+            active_brief = None
+            verdict_cards = []
         activity_log.extend(outcome.activity_log)
 
         for raw_bs in outcome.extra_blindspots:
@@ -4082,9 +4112,10 @@ class ResearchChatOrchestrator:
             hydrated_tables=hydrated_tables,
         )
 
-        expanded_tickers = list(dict.fromkeys([*explicit_tickers, *evidence.touched_tickers]))[
-            :MAX_TICKERS_PER_REQUEST
-        ]
+        brief_tks = list(active_brief.entities.tickers) if active_brief is not None else []
+        expanded_tickers = list(
+            dict.fromkeys([*explicit_tickers, *brief_tks, *evidence.touched_tickers])
+        )[:MAX_TICKERS_PER_REQUEST]
         primary = expanded_tickers[0] if expanded_tickers else (request.ticker or "").strip().upper()
 
         if evidence.unknown_requested_tickers:
@@ -4144,23 +4175,82 @@ class ResearchChatOrchestrator:
                 pass
 
         sections_by_cid = {f"C{i}": sec for i, sec in enumerate(pit_sections, 1)}
-        candidate_citations = _parse_citations_from_answer(
-            draft_answer,
-            pit_sections,
-            blocks_by_version=blocks_by_version,
+
+        def _run_stage7_audit(text_to_verify: str) -> tuple[Any, Any, str]:
+            cand_cits = _parse_citations_from_answer(
+                text_to_verify,
+                pit_sections,
+                blocks_by_version=blocks_by_version,
+            )
+            v_res = verify_citations(
+                cand_cits,
+                blocks_by_version,
+                as_of_date,
+                answer_text=text_to_verify,
+                hydrated_tables=[t.model_dump() for t in hydrated_tables],
+                valid_citation_ids=set(sections_by_cid.keys()),
+                sections_by_cid=sections_by_cid,
+                valid_memory_ids=set(evidence.recalled_memories.keys()),
+                valid_portfolio_symbols=set(evidence.portfolio_snapshots.keys()),
+                valid_session_ids=set(evidence.linked_sessions.keys()),
+            )
+            sanitized = v_res.sanitized_answer or text_to_verify
+            n_res = None
+            if evidence.has_any_grounded_source():
+                n_res = verify_numeric_claims_against_evidence(
+                    sanitized,
+                    sections_by_cid=sections_by_cid,
+                    hydrated_tables=hydrated_tables,
+                    calculator_traces=calculator_traces,
+                    graph_hops=graph_hops,
+                    screening_results=screening_results,
+                    recalled_memories=evidence.recalled_memories,
+                    portfolio_snapshots=evidence.portfolio_snapshots,
+                )
+            return v_res, n_res, sanitized
+
+        ver_res, num_ver, final_answer = _run_stage7_audit(draft_answer)
+
+        # ── Component (7): Surgical Repair Pass ONLY when Stage 7 flags errors ──
+        has_stage7_flags = bool(
+            ver_res.rejected_citations
+            or (num_ver is not None and (num_ver.unsupported_claims or num_ver.uncited_claims))
         )
-        ver_res = verify_citations(
-            candidate_citations,
-            blocks_by_version,
-            as_of_date,
-            answer_text=draft_answer,
-            hydrated_tables=[t.model_dump() for t in hydrated_tables],
-            valid_citation_ids=set(sections_by_cid.keys()),
-            sections_by_cid=sections_by_cid,
-            valid_memory_ids=set(evidence.recalled_memories.keys()),
-            valid_portfolio_symbols=set(evidence.portfolio_snapshots.keys()),
-            valid_session_ids=set(evidence.linked_sessions.keys()),
-        )
+        if (
+            effective_brain_mode == "brief_centric"
+            and has_stage7_flags
+            and active_brief is not None
+            and not active_brief.needs_clarification
+        ):
+            repaired_txt, rep_usage, was_repaired = await repair_stage7_flagged_lines(
+                answer_text=final_answer,
+                unsupported_claims=num_ver.unsupported_claims if num_ver is not None else (),
+                uncited_claims=num_ver.uncited_claims if num_ver is not None else (),
+                rejected_citations=ver_res.rejected_citations,
+                verdict_cards=verdict_cards,
+                calculator_traces=calculator_traces,
+                sections_by_cid=sections_by_cid,
+                model=self._llm,
+            )
+            outcome.input_tokens += rep_usage.input_tokens
+            outcome.output_tokens += rep_usage.output_tokens
+            outcome.cached_tokens += rep_usage.cached_tokens
+            outcome.agent_turns += rep_usage.requests
+            if was_repaired:
+                repair_evt = {
+                    "id": "verification-stage7-repair",
+                    "type": "thought",
+                    "turn": outcome.agent_turns,
+                    "kind": "verification_repair",
+                    "title": "Hiệu đính câu bị gắn cờ kiểm toán (Stage 7)",
+                    "text": "Đã rà soát và sửa các câu có số liệu/thẻ trích dẫn lệch chuẩn theo Thẻ kết luận gốc.",
+                    "status": "done",
+                    "timestamp_ms": int((time.perf_counter() - started) * 1000),
+                }
+                activity_log.append(repair_evt)
+                yield ("thought", repair_evt)
+                ver_res, num_ver, final_answer = _run_stage7_audit(repaired_txt)
+
         for bs in ver_res.blindspots:
             blindspots.append(DeclaredBlindspotItem(**bs))
 
@@ -4184,20 +4274,9 @@ class ResearchChatOrchestrator:
             )
             for c in ver_res.rejected_citations
         ]
-        final_answer = ver_res.sanitized_answer or draft_answer
 
         unsupported_num_count = 0
-        if evidence.has_any_grounded_source():
-            num_ver = verify_numeric_claims_against_evidence(
-                final_answer,
-                sections_by_cid=sections_by_cid,
-                hydrated_tables=hydrated_tables,
-                calculator_traces=calculator_traces,
-                graph_hops=graph_hops,
-                screening_results=screening_results,
-                recalled_memories=evidence.recalled_memories,
-                portfolio_snapshots=evidence.portfolio_snapshots,
-            )
+        if num_ver is not None:
             unsupported_num_count = len(num_ver.unsupported_claims)
             for bs in num_ver.blindspots:
                 blindspots.append(DeclaredBlindspotItem(**bs))
@@ -4296,7 +4375,9 @@ class ResearchChatOrchestrator:
                 exposed_tools=list(outcome.exposed_tools),
                 eval_eligible=True,
                 quarantined_future_turns=session_ledger.quarantined_future_turns,
-                retrieval_mode="UNIFIED_AGENT_TOOLS",
+                retrieval_mode=(
+                    "BRIEF_CENTRIC_BRAIN" if effective_brain_mode == "brief_centric" else "UNIFIED_AGENT_TOOLS"
+                ),
                 reranker_provider=evidence.reranker_provider,
                 reranker_model=evidence.reranker_model,
                 crag_grade=evidence.latest_crag_grade,

@@ -462,6 +462,7 @@ async def test_unified_agent_parallel_tools_isolated_sessions_and_short_circuit_
             ]
 
     retriever = _StubRetriever()
+    # Explicitly exercise the `agent_loop` runtime mode (`ToolExecutionMode.PARALLEL` contract)
     orch = ResearchChatOrchestrator(
         session=None,
         session_factory=_isolated_session_factory,
@@ -469,6 +470,7 @@ async def test_unified_agent_parallel_tools_isolated_sessions_and_short_circuit_
         table_store=_StubTableStore(),
         llm=_ParallelAgentModelProvider(),
         enable_agent_loop=True,
+        brain_mode="agent_loop",
     )
     principal = VerifiedPrincipal(
         subject="u1",

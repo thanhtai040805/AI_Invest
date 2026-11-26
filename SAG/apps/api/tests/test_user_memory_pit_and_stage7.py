@@ -822,6 +822,7 @@ async def test_r0_eighth_axis_and_orchestrator_shadow_vs_incognito_and_cached_co
         session_factory=sf,
         llm=_StubModelProvider(),
         retriever=_StubRetriever(),
+        brain_mode="agent_loop",
     )
     _ans, meta_shadow, _evs = await collect_stream_result(
         orch.stream_chat(
