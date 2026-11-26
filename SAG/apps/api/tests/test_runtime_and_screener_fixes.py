@@ -185,11 +185,14 @@ async def test_r3_r4_timeout_rescues_synthesis_preserves_tokens_and_calc_error_f
                     tool_calls=(
                         ToolCall(
                             id="tc-search",
-                            name="search_corporate_filings",
+                            name="search_disclosures",
                             arguments={
                                 "tickers": ["VHM"],
-                                "bm25_vas_queries": ["lợi nhuận sau thuế"],
-                                "dense_semantic_queries": ["LNST VHM 2025"],
+                                "sub_doc_slots": ["BCTC_AUDITED"],
+                                "fiscal_year": 2025,
+                                "fiscal_quarter": 0,
+                                "vas_terms": ["lợi nhuận sau thuế"],
+                                "question": "LNST VHM 2025",
                             },
                         ),
                         ToolCall(

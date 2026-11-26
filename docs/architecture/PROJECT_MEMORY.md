@@ -1,6 +1,6 @@
 # AIInvest Project Memory & Architecture Harness
-> **Version**: 2.1.4 (Living Architecture Memory)
-> **Last Updated**: 2026-11-25
+> **Version**: 2.1.5 (Living Architecture Memory)
+> **Last Updated**: 2026-11-26
 > **Purpose**: Source of truth for all AI agents and developers working on AIInvest. Eliminates hallucinations, establishes system boundaries, and documents core data pipelines.
 
 ---
@@ -717,6 +717,18 @@ AIInvest is an autonomous quantitative investment and stock-research organizatio
 - **Live Phase A (`vn-clean-v3`) R2 Status & External Quota Boundary**:
   - `65/120` target universe tickers landed cleanly on Cloudflare R2 (`384` manifests incl. `3` valid `EXCLUDED_ENGLISH` tombstones, `0` empty/corrupt manifests, `0` truncated pages, `64/65` with `BCTC_AUDITED`, `~5,200+` fresh VLM OCR pages completed today across `pilot_8`, `a5_36`, `ACB..DXG`).
   - Paused cleanly at `12:45 GMT+7` after empirical verification that both configured MinerU Official API tokens exhausted their daily `2,000`-page/key high-priority quota (all post-12:12 batches across `key#1` and `key#2` demoted to `state=pending` for `>32–85 min`); exact resume list (`55` untouched `DXS..VTP` + `12` partial retry tickers) saved in session scratch for immediate resumption after daily reset (`23:00 GMT+7` / `00:00 CST`) or additional API tokens.
+
+## 2026-11-26 — Institutional Analyst Capability Tools, Push-Down Disclosure Search & Playbook Pre-Fetch Engine (`R1–R10` Remediation)
+
+- **Layer 1 & Layer 2 — Deterministic Normalized Financial Fact Store & Sector KPI / Risk / AGM Engines (`sag_api/research/facts/{catalog,store}.py`, `sag_api/research/analytics/{kpis,engines,agm_targets}.py`, `sag_api/research/tools/analyst_tools.py`)**:
+  - Built an exact-key normalized `FactSet` compiler over Core PG `financial_statements` (`CORPORATE` TT200, `BANK` TT49, `SECURITIES` TT210/334, `INSURANCE` TT232 across both Vietnamese VAS keys and English `is_/bs_/cf_` keys), enforcing `alphastock > vnstock_vci` source priority (rejecting `cafef`/untagged rows), strict PIT publication lags, 4-quarter `TTM` income/margin aggregation, `QUARTERLY_CF_UNRELIABLE` annual-only cash-flow guards, and `FY_QSUM_MISMATCH` flags.
+  - Implemented ~40 deterministic sector KPIs (`compute_kpi_pack`), `earnings_quality`, `red_flag_scan`, same-template `peer_compare`, and deterministic `AGM_TARGETS` plan-vs-actual extraction (`agm_targets.py`: row/header/title monetary scale alignment, consolidated vs separate guards, `0.25x..4.0x` prior-FY sanity check, `"điều chỉnh"` override, majority consensus, and explicit `CONFLICT`/`NOT_FOUND`), exposed via 5 `[CALC-n]`-provenanced tools (`get_financial_statements`, `get_sector_kpis`, `scan_financial_risks`, `compare_peers`, `check_plan_vs_actual`) verified by Stage 7 `verify_numeric_claims_against_evidence`.
+- **Push-Down Qdrant Disclosure Search, Period Filters & Runtime/Screener Fixes (`search_unit_store.py`, `chat_orchestrator.py`, `research_tools.py`, `agent_runner.py`, `financial_metrics_store.py`)**:
+  - **R1/R2/R9**: Added `SAGRetrieverAdapter.retrieve_disclosures()` + `search_disclosures_tool` (`2,000`-char chunks) executing a single `/points/query/batch` Qdrant call per turn with chunk-level push-down filters (`sub_doc_slot`, `fiscal_year`, `fiscal_quarter`, `valid_from_ts`, `valid_to_ts`), pure-VAS `bm25_sparse` (`1.25x`), balanced multi-ticker RRF quota, and explicit `STATUS=NOT_FOUND` listing available PIT periods/slots instead of silent unfiltered fallback; added SQL push-down `fiscal_year`/`fiscal_quarter`/`sub_doc_slot` to `SQLAlchemyTableStore.get_tables`.
+  - **R3/R4/R7/R8**: Split `overall_timeout_seconds` into `68%` tool-loop budget + `32%` synthesis reserve (preserving `handle.context.usage` on timeout); made `run_financial_calculator_tool` raise `ValueError` (`EventType.TOOL_FAILED`) on AST/empty-input errors; held 100% of `tools_enabled=True` text inside `SentenceStreamGate` until `flush_turn_end`; aligned `_run_discrepancy_check` on `(ticker, fiscal_year, fiscal_quarter)` while excluding `AGM_TARGETS`.
+  - **R5/R6**: Exposed `CFO/LNST`, `FCF`, `Net Debt/Equity`, and `Cash+ST Inv` in `screen_financial_universe_tool`; hardened `financial_metrics_store.py` with `alphastock > vnstock_vci` priority, unscaled-VND PDF rejection, gap-fill-only same-FY PDF overlay, 4-quarter TTM ROE/ROA on quarterly mode, and `roe == roa` ETL copy suppression.
+- **Tier-0 Router-to-Playbook Resolver & 0-LLM-Token Pre-Fetch (`sag_api/research/playbooks.py`, `agent_runner.py`)**:
+  - Mapped all 8 `task_action` routes to canonically ordered `4–6`-tool playbooks (with `< 0.70` / `fallback_used` top-2 union safety valve) and parallel `0`-LLM-token pre-fetch (`<PREFETCHED_DETERMINISTIC_EVIDENCE>`) warmed from a single per-turn Core PG `FactSet` cache.
 
 
 

@@ -1498,10 +1498,10 @@ BFF Proxy: SagResearchChatService (timeout=60000ms, org_id=SAG_RESEARCH_ORG_ID |
         <div class="drawer-body">
           <div class="drawer-section">
             <label class="drawer-label">Thuật toán Truy hồi 1 Buồng Kiến Thức Chung Có Phân Lớp</label>
-            <pre class="drawer-code"><code>Tier-0 Gate: Async 7-Axis SiliconFlow Kev-4b (fail-open &lt; 0.78, 0 regex) + FinancialZeroMemLedger (PIT Quarantine)
-Unified Agent (sag_agent): 6 Parallel Read-Only Tools (isolated AsyncSession per call) + SentenceStreamGate
-PRIMARY: project_id IN target_tickers (bypass_tree_routing=True, allow_intra_version_bridge=True, VN BM25+bigrams)
-Rerank &amp; CRAG: CrossEncoderRerankerClient (SiliconFlow/DeepInfra) + table_card floor + CORRECT/AMBIGUOUS/INCORRECT
+            <pre class="drawer-code"><code>Tier-0 Gate: Async 8-Axis SiliconFlow Kev-4b + Playbook Resolver (4-6 focused tools, &lt;0.70 union)
+0-Token Pre-Fetch: Core PG FactSet + ~40 Sector KPIs + Risk Scan + AGM Plan-vs-Actual ([CALC-*])
+Push-Down Search: search_disclosures -&gt; 1 Qdrant /points/query/batch (sub_doc_slot, year, quarter)
+Rerank &amp; CRAG: CrossEncoderRerankerClient (SiliconFlow/DeepInfra) + table_card floor + CRAG grade
 CROSS-REF: mentioned_tickers CONTAINS target AND project_id != target + PIT KG partners</code></pre>
           </div>
           <div class="drawer-section">
@@ -1562,10 +1562,10 @@ Inter-Ticker KG Hop (effective_from &lt;= as_of_date &lt; valid_to):
         <div class="drawer-body">
           <div class="drawer-section">
             <label class="drawer-label">Thuật toán Tính toán An toàn &amp; Đối chất (`0 LLM`)</label>
-            <pre class="drawer-code"><code>Hydration: Pull full 2D matrix from sag_extracted_tables by table_id
-Calculator: ast.parse(expr, mode="eval") over SAFE_FUNCTIONS (ZERO eval())
-  Blocks TABLE_UNVERIFIED inputs &amp; CurrencyMismatch; aligns unit_multiplier
-Discrepancy: Deterministic PR (BCTN_PR/BCTN_CORE) vs VERIFIED BCTC_AUDITED + Core DB 5Y</code></pre>
+            <pre class="drawer-code"><code>Hydration: SQL push-down (year, quarter, sub_doc_slot) on sag_extracted_tables
+Analyst Tools: 5 Deterministic Engines (FactSet, KPIs, Risk, Peer, AGM) -&gt; [CALC-*]
+Calculator: ast.parse(expr, mode="eval") over SAFE_FUNCTIONS (fail-closed TOOL_FAILED)
+Discrepancy: Period-aligned (ticker, year, quarter) PR vs VERIFIED BCTC (excl. AGM)</code></pre>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên</label>
