@@ -9,15 +9,23 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date
+from dataclasses import replace
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from sag_agent.tools import ToolContext
 from sag_agent.types import CancellationToken, ToolRisk
 from sag_api.core.principal_assertion import VerifiedPrincipal
+from sag_api.db import models as _all_models  # noqa: F401
+from sag_api.db.base import Base
+from sag_api.db.models.document import Document
+from sag_api.db.models.routing_rag import DocumentVersion
+from sag_api.db.models.source import Source
+from sag_api.db.models.stock_research import SagExtractedTable
 from sag_api.research.analytics import compute_kpi, latest_analysis_period
 from sag_api.research.facts import build_fact_set, resolve_template
 from sag_api.research.facts.store import effective_publication_date
@@ -26,6 +34,7 @@ from sag_api.research.quote_verifier import verify_numeric_claims_against_eviden
 from sag_api.research.session_memory import FinancialZeroMemLedger
 from sag_api.research.tools.analyst_tools import (
     build_analyst_tools,
+    check_plan_vs_actual_tool,
     compare_peers_tool,
     get_financial_statements_tool,
     get_sector_kpis_tool,
@@ -158,7 +167,8 @@ def test_l1_registry_exposes_four_read_only_tools() -> None:
     tools = build_analyst_tools()
     assert all(t.spec.risk is ToolRisk.READ_ONLY for t in tools)
     names = [t.spec.name for t in tools]
-    assert names == ["get_financial_statements", "get_sector_kpis", "scan_financial_risks", "compare_peers"]
+    assert names == ["get_financial_statements", "get_sector_kpis", "scan_financial_risks", "compare_peers",
+                     "check_plan_vs_actual"]
 
 
 async def test_l2_sector_kpis_register_typed_calc_traces_matching_engine(sample, fs) -> None:
@@ -251,3 +261,83 @@ async def test_l2_acl_denied_and_unknown_tickers_are_reported(sample) -> None:
     assert "Không được phép truy cập: VND." in res.content
     assert "Không có BCTC trong Core PG tại PIT cho: ZZZ." in res.content
     assert {t["ticker"] for t in evidence.calculator_traces} == {"ACB"}
+
+
+# ── check_plan_vs_actual: real AGM tables in a real SQLAlchemy schema (sqlite) + real Core reader ──
+
+
+@pytest.fixture
+async def agm_session_factory(tmp_path: Path):
+    tables = json.loads((FIXTURE.parent / "agm_targets_sample.json").read_text(encoding="utf-8"))
+    eng = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'agm.db'}")
+    async with eng.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sf = async_sessionmaker(eng, expire_on_commit=False, class_=AsyncSession)
+    async with sf() as s:
+        s.add(Source(id="src-agm", name="HOSE", sag_source_config_id="cfg-agm"))
+        for ver_id in sorted({t["document_version_id"] for t in tables}):
+            t0 = next(t for t in tables if t["document_version_id"] == ver_id)
+            s.add(Document(id=f"doc-{ver_id}"[:36], source_id="src-agm", project_id=t0["project_id"],
+                           tenant_id="aiinvest-default", filename=f"{ver_id}.pdf", storage_path="/x", is_active=True))
+            s.add(DocumentVersion(id=ver_id, document_id=f"doc-{ver_id}"[:36], version_no=1, file_hash=ver_id[:64],
+                                  valid_from=datetime.fromisoformat(t0["ver_valid_from"])))
+        await s.flush()
+        for t in tables:
+            s.add(SagExtractedTable(**{
+                k: t[k] for k in (
+                    "table_id", "project_id", "document_version_id", "sub_doc_slot", "fiscal_year", "fiscal_quarter",
+                    "table_title", "section_path", "page_from", "page_to", "currency", "unit_raw", "unit_multiplier",
+                    "headers_json", "rows_json", "verification_status", "table_hash",
+                )
+            }, valid_from=datetime.fromisoformat(t["valid_from"])))
+        await s.commit()
+    yield sf
+    await eng.dispose()
+
+
+def _with_sessions(tctx: ToolContext, sf: Any, as_of: date = AS_OF) -> ToolContext:
+    return replace(tctx, data=replace(tctx.data, session_factory=sf, as_of_date=as_of))
+
+
+async def test_l2_plan_vs_actual_pnj_uses_agm_targets_and_core_quarters(sample, fs, agm_session_factory) -> None:
+    tctx, evidence, _ = _make(sample)
+    res = await check_plan_vs_actual_tool.execute({"tickers": ["PNJ"]}, _with_sessions(tctx, agm_session_factory))
+    assert res.details["statuses"] == {"PNJ": "OK"}
+    line = next(ln for ln in res.content.splitlines() if ln.startswith("[CALC-") and "trước thuế" in ln)
+    cid = re.search(r"\[(CALC-\d+)\]", line).group(1)
+    ytd = sum(fs.get("PNJ", "pbt", "Q", 2026, q).fact.value for q in (1, 2, 3))
+    tr = _trace(evidence, cid)
+    assert tr["result"] == pytest.approx(ytd / 4_270_967e6)
+    assert tr["format_style"] == "percent" and tr["ticker"] == "PNJ"
+    assert "3Q/2026" in line
+    rev = next(ln for ln in res.content.splitlines() if "Doanh thu thuần" in ln and "[CALC-" in ln)
+    assert "⚠" in rev, "non-exact revenue definition must carry a caveat"
+
+    ok = verify_numeric_claims_against_evidence(
+        f"PNJ đạt {tr['result'] * 100:.1f}% kế hoạch LNTT năm 2026 [{cid}].",
+        sections_by_cid={}, calculator_traces=evidence.calculator_traces,
+    )
+    assert ok.unsupported_claims == []
+
+
+async def test_l2_plan_vs_actual_acb_independent_agm_actual_cross_check(sample, agm_session_factory) -> None:
+    tctx, evidence, _ = _make(sample)
+    res = await check_plan_vs_actual_tool.execute(
+        {"tickers": ["ACB"], "fiscal_year": 2025}, _with_sessions(tctx, agm_session_factory)
+    )
+    line = next(ln for ln in res.content.splitlines() if ln.startswith("[CALC-"))
+    tr = _trace(evidence, re.search(r"\[(CALC-\d+)\]", line).group(1))
+    target = tr["inputs"]["plan_target:pbt@KH2025"]["value"]
+    ytd = tr["inputs"]["ytd_actual:pbt@4Q/2025"]["value"]
+    assert target == pytest.approx(23_000e9), "the 23 bn mis-scaled AGM table must be rejected by the magnitude guard"
+    # ACB's own AGM report states FY2025 PBT actual = 19,539 bn: Core quarters must agree within 0.5%
+    assert ytd == pytest.approx(19_539e9, rel=0.005)
+
+
+async def test_l2_plan_vs_actual_respects_pit_of_agm_documents(sample, agm_session_factory) -> None:
+    tctx, evidence, _ = _make(sample)
+    res = await check_plan_vs_actual_tool.execute(
+        {"tickers": ["PNJ"], "fiscal_year": 2026}, _with_sessions(tctx, agm_session_factory, date(2026, 3, 31))
+    )
+    assert res.details["statuses"] == {"PNJ": "NOT_FOUND"}
+    assert "NOT_FOUND" in res.content and evidence.calculator_traces == []

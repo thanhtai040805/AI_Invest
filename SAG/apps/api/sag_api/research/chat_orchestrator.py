@@ -388,6 +388,56 @@ class SQLAlchemyTableStore:
             return None
         return self._row_to_dict(pair[0], valid_to=pair[1]) if pair is not None else None
 
+    async def get_slot_tables(
+        self,
+        *,
+        ticker: str,
+        sub_doc_slot: str,
+        as_of_date: date,
+        tenant_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """All PIT-valid raw tables of one disclosure slot for one ticker (errors propagate, no fallback)."""
+        from sag_api.db.models import Document, DocumentVersion
+        from sag_api.db.models.stock_research import SagExtractedTable
+
+        as_of_dt = datetime(as_of_date.year, as_of_date.month, as_of_date.day, 23, 59, 59, tzinfo=UTC)
+        filters: list[Any] = [
+            SagExtractedTable.project_id == ticker.strip().upper(),
+            SagExtractedTable.sub_doc_slot == sub_doc_slot,
+            SagExtractedTable.valid_from <= as_of_dt,
+            DocumentVersion.valid_from <= as_of_dt,
+            DocumentVersion.valid_to > as_of_dt,
+            DocumentVersion.status != "REVOKED",
+            Document.is_active.is_(True),
+        ]
+        if tenant_id:
+            filters.append(Document.tenant_id == tenant_id)
+        stmt = (
+            select(SagExtractedTable)
+            .join(DocumentVersion, DocumentVersion.id == SagExtractedTable.document_version_id)
+            .join(Document, Document.id == DocumentVersion.document_id)
+            .where(*filters)
+            .order_by(SagExtractedTable.valid_from.desc(), SagExtractedTable.page_from.asc())
+        )
+        rows = (await self._session.scalars(stmt)).all()
+        return [
+            {
+                "table_id": str(r.table_id),
+                "project_id": str(r.project_id),
+                "document_version_id": str(r.document_version_id),
+                "fiscal_year": r.fiscal_year,
+                "table_title": str(r.table_title or ""),
+                "section_path": str(r.section_path or ""),
+                "page_from": int(r.page_from or 0),
+                "unit_raw": str(r.unit_raw or ""),
+                "unit_multiplier": float(r.unit_multiplier or 1.0),
+                "headers_json": r.headers_json if isinstance(r.headers_json, list) else [],
+                "rows_json": r.rows_json if isinstance(r.rows_json, list) else [],
+                "verification_status": str(r.verification_status),
+            }
+            for r in rows
+        ]
+
 
 class SAGRetrieverAdapter:
     """Production adapter bridging Track 1 canonical & legacy retrieval with strict PIT."""

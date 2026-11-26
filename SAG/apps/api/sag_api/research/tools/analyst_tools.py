@@ -18,13 +18,16 @@ from sag_api.research.analytics import (
     KpiStatus,
     KpiValue,
     PeriodRef,
+    PlanTarget,
     compute_kpi_pack,
     earnings_quality,
     latest_analysis_period,
     peer_compare,
+    plan_vs_actual,
     red_flag_scan,
     vendor_snapshot,
 )
+from sag_api.research.analytics.agm_targets import extract_plan_targets
 from sag_api.research.facts import FactSet, FinancialFact, LookupStatus, Template, load_fact_set
 from sag_api.research.facts.catalog import CATALOG_BY_ID, items_for_template
 from sag_api.research.tools.context import ResearchToolContext
@@ -491,10 +494,143 @@ async def compare_peers_tool(arguments: Mapping[str, Any], tool_ctx: ToolContext
     )
 
 
+# ── Tool E: AGM plan vs actual ───────────────────────────────────────────────
+
+_PLAN_ITEMS = ("revenue_net", "pbt", "npat", "npat_parent")
+_PACE_VI = {"AHEAD": "VƯỢT tiến độ", "ON_TRACK": "ĐÚNG tiến độ", "BEHIND": "CHẬM tiến độ"}
+
+
+async def _agm_tables(ctx: ResearchToolContext, ticker: str) -> list[dict[str, Any]]:
+    from sag_api.research.chat_orchestrator import SQLAlchemyTableStore
+
+    async with ctx.session_factory() as session:
+        store = ctx.table_store_override or SQLAlchemyTableStore(session)
+        return await store.get_slot_tables(
+            ticker=ticker, sub_doc_slot="AGM_TARGETS", as_of_date=ctx.as_of_date, tenant_id=ctx.tenant_id
+        )
+
+
+@function_tool(
+    name="check_plan_vs_actual",
+    label="Đối chiếu kế hoạch ĐHĐCĐ với thực hiện lũy kế (tất định)",
+    description=(
+        "Trích kế hoạch doanh thu/LNTT/LNST năm tài chính từ bảng Nghị quyết/Tài liệu ĐHĐCĐ đã index (PIT) bằng "
+        "quy tắc tất định, rồi so với số thực hiện lũy kế các quý từ BCTC chuẩn hóa: % hoàn thành, % thời gian đã "
+        "trôi qua, tiến độ (vượt/đúng/chậm) và phần còn phải đạt. Không nhận số kế hoạch từ người dùng hay mô hình."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "tickers": {"type": "array", "items": {"type": "string"}, "description": "1..6 mã cổ phiếu."},
+            "fiscal_year": {"type": "integer", "description": "Năm kế hoạch. Bỏ trống = năm của ngày PIT."},
+        },
+        "required": ["tickers"],
+        "additionalProperties": False,
+    },
+    risk=ToolRisk.READ_ONLY,
+    execution_mode=ToolExecutionMode.PARALLEL,
+    timeout_seconds=20.0,
+)
+async def check_plan_vs_actual_tool(arguments: Mapping[str, Any], tool_ctx: ToolContext) -> ToolResult:
+    ctx = _require_ctx(tool_ctx)
+    started = time.perf_counter()
+    tickers, denied = _clamp(arguments.get("tickers"), ctx)
+    if not tickers:
+        raise ValueError("Cần ít nhất 1 mã cổ phiếu hợp lệ (trong quyền truy cập).")
+    fy_arg = arguments.get("fiscal_year")
+    fy = int(fy_arg) if isinstance(fy_arg, int) else ctx.as_of_date.year
+    fs = await _fact_set(ctx, tickers)
+    blocks: list[str] = []
+    statuses: dict[str, str] = {}
+    for tk in tickers:
+        tmpl = fs.templates.get(tk)
+        if tmpl is None:
+            continue
+        applicable = {it.item_id for it in items_for_template(tmpl)}
+        prior = {}
+        for item in _PLAN_ITEMS:
+            res = fs.get(tk, item, "FY", fy - 1)
+            if res.status is LookupStatus.OK and res.fact is not None:
+                prior[item] = res.fact.value
+        ex = extract_plan_targets(await _agm_tables(ctx, tk), fy, prior_actuals=prior)
+        lines = [f"{tk} ({tmpl.value}) — kế hoạch năm {fy} (bảng ĐHĐCĐ, PIT {ctx.as_of_date.isoformat()})"]
+        targets = [
+            PlanTarget(item, cand.value, f"AGM_TARGETS {cand.table_id} tr.{cand.page}")
+            for item, cand in ex.targets.items()
+            if item in applicable
+        ]
+        for item, cands in ex.conflicts.items():
+            vals = "; ".join(f"{fmt_value(c.value, 'VND')} (tr.{c.page})" for c in cands)
+            lbl = CATALOG_BY_ID[item].label_vi
+            lines.append(f"- {lbl}: CONFLICT giữa các bảng ĐHĐCĐ ({vals}) — không tính tiến độ.")
+        if not targets:
+            reasons = sorted({r["reason"] for r in ex.rejected})
+            lines.append(
+                f"NOT_FOUND: không trích xuất được kế hoạch năm {fy} từ bảng ĐHĐCĐ trong phạm vi PIT"
+                + (f" (loại bỏ: {', '.join(reasons)})" if reasons else "")
+                + "."
+            )
+            statuses[tk] = "NOT_FOUND" if not ex.conflicts else "CONFLICT"
+            blocks.append("\n".join(lines))
+            continue
+        out = plan_vs_actual(fs, tk, fy, targets)
+        statuses[tk] = "OK"
+        lines.append(f"Số quý đã công bố liên tục trong năm {fy}: {out['quarters_reported']}")
+        for row in out["rows"]:
+            item = row["item"]
+            cand = ex.targets[item]
+            label = CATALOG_BY_ID[item].label_vi
+            caveat = (
+                "" if cand.exact_definition
+                else f" ⚠ kế hoạch ghi '{cand.raw_text}' theo định nghĩa của DN (có thể là tổng doanh thu), "
+                "so với doanh thu thuần — chỉ mang tính tham chiếu"
+            )
+            adj = " (kế hoạch điều chỉnh)" if cand.adjusted else ""
+            if row["status"] != "OK":
+                lines.append(f"- {label}: KH {fmt_value(row['target'], 'VND')}{adj} — {row['status']} "
+                             f"({row.get('detail', '')})")
+                continue
+            saved = await ctx.evidence.register_calculator_trace(
+                {
+                    "formula": "ytd_actual / plan_target",
+                    "description": f"% hoàn thành kế hoạch {label} {tk} năm {fy} ({row['ytd_period']})",
+                    "inputs": {
+                        f"plan_target:{item}@KH{fy}": {"value": row["target"], "unit": "VND"},
+                        f"ytd_actual:{item}@{row['ytd_period']}": {"value": row["ytd_actual"], "unit": "VND"},
+                        "required_remaining": {"value": row["required_remaining"], "unit": "VND"},
+                    },
+                    "result": row["achievement"],
+                    "formatted": f"{row['achievement'] * 100:.1f}%",
+                    "ticker": tk,
+                    "format_style": "percent",
+                    "source": "DETERMINISTIC_PLAN_ENGINE",
+                    "target_source": row["target_source"],
+                }
+            )
+            lines.append(
+                f"[{saved['calc_id']}] {label}: KH {fmt_value(row['target'], 'VND')}{adj} ({row['target_source']}) | "
+                f"lũy kế {row['ytd_period']} {fmt_value(row['ytd_actual'], 'VND')} | đạt "
+                f"{row['achievement'] * 100:.1f}% KH so với {row['time_elapsed'] * 100:.0f}% thời gian → "
+                f"{_PACE_VI[row['pace']]}; còn phải đạt {fmt_value(row['required_remaining'], 'VND')}{caveat}"
+            )
+        skipped = sorted(set(ex.targets) - applicable)
+        if skipped:
+            lines.append(f"Bỏ qua chỉ tiêu không áp dụng cho chuẩn mực {tmpl.value}: {', '.join(skipped)}.")
+        blocks.append("\n".join(lines))
+    elapsed = await _trace(ctx, "check_plan_vs_actual", started, tickers=tickers, fiscal_year=fy, statuses=statuses)
+    unknown = _unknown_note(fs, tickers, denied)
+    return ToolResult(
+        content="\n\n".join(blocks) + (f"\n\n{unknown}" if unknown else ""),
+        details={"statuses": statuses, "fiscal_year": fy, "duration_ms": elapsed,
+                 "returned_count": sum(1 for s in statuses.values() if s == "OK")},
+    )
+
+
 def build_analyst_tools() -> tuple[Any, ...]:
     return (
         get_financial_statements_tool,
         get_sector_kpis_tool,
         scan_financial_risks_tool,
         compare_peers_tool,
+        check_plan_vs_actual_tool,
     )
