@@ -678,6 +678,7 @@ class AsyncPGCoreMetricsReader:
                    UPPER(TRIM(statement_type)) AS statement_type,
                    LOWER(TRIM(frequency)) AS frequency,
                    data,
+                   LOWER(TRIM(source)) AS source,
                    published_date,
                    CASE
                      WHEN published_date IS NOT NULL
