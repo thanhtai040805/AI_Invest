@@ -144,10 +144,22 @@ def _is_busy_rate_limit_error(err: Exception) -> bool:
     status = getattr(err, "status_code", None)
     msg = str(err).casefold()
     return (
-        name in {"RateLimitError", "ServiceUnavailableError", "APIConnectionError"}
-        or status in {429, 503}
+        name
+        in {
+            "RateLimitError",
+            "ServiceUnavailableError",
+            "APIConnectionError",
+            "Timeout",
+            "APITimeoutError",
+            "ReadTimeout",
+            "ConnectTimeout",
+            "GatewayTimeoutError",
+        }
+        or status in {408, 429, 502, 503, 504}
         or "model busy" in msg
         or "rate limit" in msg
+        or "timed out" in msg
+        or "readtimeout" in msg
     )
 
 
@@ -172,6 +184,8 @@ class LLMClient:
         tool_choice: str | dict | None = None,
         response_format: dict[str, Any] | None = None,
         model_override: str | None = None,
+        failover_managed: bool = False,
+        timeout_cap_seconds: float | None = None,
     ) -> Any:
         effective_model = self._settings.routed_llm_model
         if model_override and model_override.strip():
@@ -180,11 +194,14 @@ class LLMClient:
                 effective_model = f"openai/{raw_override}"
             else:
                 effective_model = raw_override
+        req_timeout = self._settings.llm_timeout_ms / 1000
+        if timeout_cap_seconds is not None:
+            req_timeout = min(req_timeout, timeout_cap_seconds)
         request: dict[str, Any] = {
             "model": effective_model,
             "api_key": self._settings.llm_api_key,
-            "timeout": self._settings.llm_timeout_ms / 1000,
-            "num_retries": self._settings.llm_max_retries,
+            "timeout": req_timeout,
+            "num_retries": 0 if failover_managed else self._settings.llm_max_retries,
             "messages": messages,
             "temperature": self._settings.effective_llm_temperature,
             "max_tokens": self._settings.llm_max_tokens,
@@ -242,6 +259,9 @@ class LLMClient:
     ) -> tuple[Any, str]:
         """Execute completion with jittered backoff on transient 429/503, then low-cost DeepInfra failover."""
         primary_label = (model_override or self._settings.llm_model).strip()
+        route_key = model_override or self._settings.routed_llm_model
+        fallbacks = _fallback_models_for_busy_error(route_key, self._settings.llm_base_url)
+        attempt_cap = 25.0 if fallbacks else None
         last_err: Exception | None = None
 
         for attempt in range(_BUSY_PRIMARY_JITTER_RETRIES + 1):
@@ -253,12 +273,18 @@ class LLMClient:
                     tool_choice=tool_choice,
                     response_format=response_format,
                     model_override=model_override,
+                    failover_managed=True,
+                    timeout_cap_seconds=attempt_cap,
                 )
                 return res, primary_label
             except Exception as err:  # noqa: BLE001
                 last_err = err
                 if not _is_busy_rate_limit_error(err):
                     raise
+                is_timeout = "timeout" in type(err).__name__.casefold() or "timed out" in str(err).casefold()
+                if fallbacks and is_timeout:
+                    # On read/connect timeout when healthy fallback models exist, fail over immediately
+                    break
                 if attempt < _BUSY_PRIMARY_JITTER_RETRIES:
                     delay = _busy_backoff_delay(attempt)
                     log.warning(
@@ -272,8 +298,6 @@ class LLMClient:
                     await asyncio.sleep(delay)
 
         assert last_err is not None
-        route_key = model_override or self._settings.routed_llm_model
-        fallbacks = _fallback_models_for_busy_error(route_key, self._settings.llm_base_url)
         for fb_model in fallbacks:
             log.warning(
                 "Primary LLM %s still busy (%s); failing over to %s",
@@ -289,6 +313,8 @@ class LLMClient:
                     tool_choice=tool_choice,
                     response_format=response_format,
                     model_override=fb_model,
+                    failover_managed=True,
+                    timeout_cap_seconds=attempt_cap,
                 )
                 return res, fb_model
             except Exception as fb_err:  # noqa: BLE001

@@ -502,3 +502,42 @@ async def test_r5_r6_screener_fixes_cafef_pdf_scale_quarterly_ttm_bank_roe_and_t
     assert "Nợ ròng/VCSH" in tool_out.content
 
     await eng.dispose()
+
+
+async def test_llm_client_failover_catches_read_timeout_and_switches_checkpoint(monkeypatch: Any) -> None:
+    import httpx
+
+    import sag_api.generation.llm as llm_mod
+    from sag_api.core.config import Settings
+
+    seen_calls: list[tuple[str, int, float]] = []
+
+    async def _fake_litellm(**kwargs: Any) -> dict[str, Any]:
+        seen_calls.append(
+            (str(kwargs.get("model")), int(kwargs.get("num_retries", -1)), float(kwargs.get("timeout", -1)))
+        )
+        if "0731" in str(kwargs.get("model")):
+            raise httpx.ReadTimeout("checkpoint stalled")
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+    monkeypatch.setattr(llm_mod, "_litellm_completion", _fake_litellm)
+    cfg = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        llm_provider="openai",
+        llm_base_url="https://api.deepinfra.com/v1/openai",
+        llm_api_key="sk-test",
+        llm_model="deepseek-ai/DeepSeek-V4-Flash-0731",
+        llm_timeout_ms=60000,
+        llm_max_retries=2,
+    )
+    client = llm_mod.LLMClient(cfg)
+    res, active = await client._create_completion_with_failover(
+        [{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+    assert active == "deepseek-ai/DeepSeek-V4-Flash"
+    assert res["choices"][0]["message"]["content"] == "ok"
+    # Exactly 1 attempt on stalled -0731 (capped to 25s, num_retries=0), then immediate failover!
+    assert len(seen_calls) == 2
+    assert seen_calls[0] == ("openai/deepseek-ai/DeepSeek-V4-Flash-0731", 0, 25.0)
+    assert seen_calls[1] == ("openai/deepseek-ai/DeepSeek-V4-Flash", 0, 25.0)

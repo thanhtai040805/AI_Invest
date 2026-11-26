@@ -574,7 +574,7 @@ async def _direct_synthesis_fallback(
         digest_parts.append("\n".join(scr_lines))
     if ev.calculator_traces:
         calc_lines = ["=== KẾT QUẢ TÍNH TOÁN TẤT ĐỊNH & BẢNG BCTC CHUẨN HÓA ==="]
-        for c in ev.calculator_traces:
+        for c in ev.calculator_traces[:36]:
             fmt = str(c.get("formatted") or "")
             if fmt:
                 calc_lines.append(

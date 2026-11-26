@@ -84,7 +84,7 @@ services:
       SAG_LLM_PROVIDER: ${SAG_LLM_PROVIDER:-openai}
       SAG_LLM_BASE_URL: ${SAG_LLM_BASE_URL:-https://api.deepinfra.com/v1/openai}
       SAG_LLM_API_KEY: ${SAG_LLM_API_KEY:-${DEEPINFRA_API_KEY:-}}
-      SAG_LLM_MODEL: ${SAG_LLM_MODEL:-deepseek-ai/DeepSeek-V4-Flash-0731}
+      SAG_LLM_MODEL: ${SAG_LLM_MODEL:-deepseek-ai/DeepSeek-V4-Flash}
       SAG_LLM_MAX_TOKENS: ${SAG_LLM_MAX_TOKENS:-20000}
       SAG_LLM_TIMEOUT_MS: ${SAG_LLM_TIMEOUT_MS:-60000}
       SAG_LLM_MAX_RETRIES: ${SAG_LLM_MAX_RETRIES:-2}
