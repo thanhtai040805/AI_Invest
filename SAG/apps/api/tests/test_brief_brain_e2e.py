@@ -274,6 +274,8 @@ async def test_brief_brain_http_sse_surgical_stage7_repair_fixes_double_counted_
     fake_llm = _MentalMathThenSurgicalRepairLLM()
     app.state.llm = fake_llm
     app.state.engine_manager = None
+    trace_events: list[tuple[str, dict[str, Any]]] = []
+    app.state.brain_trace_sink = lambda stage, payload: trace_events.append((stage, payload))
 
     import sag_api.api.v1.research_chat as rc_router
     import sag_api.core.db as core_db
@@ -313,6 +315,36 @@ async def test_brief_brain_http_sse_surgical_stage7_repair_fixes_double_counted_
     assert meta["telemetry"]["unsupported_numeric_claims_count"] == 0
     assert meta["telemetry"]["rejected_citations_count"] == 0
     assert meta["telemetry"]["input_tokens"] == 1100 + 800 + 1400 + 900
+
+    # Full step-by-step brain trace is recorded through the real HTTP entrypoint
+    stages = [s for s, _ in trace_events]
+    for required in (
+        "brief.request",
+        "brief.attempt",
+        "brief.final",
+        "locator",
+        "mini_reader",
+        "claim.card",
+        "synthesis",
+        "stage7.audit",
+        "stage7.repair",
+    ):
+        assert required in stages, required
+    assert stages.index("brief.final") < stages.index("synthesis") < stages.index("stage7.repair")
+    synth_evt = next(p for s, p in trace_events if s == "synthesis")
+    assert "77.072" in synth_evt["raw_model_output"]
+    assert "<VERIFIED_CLAIM_CARDS>" in synth_evt["user_prompt"]
+    audits = [p for s, p in trace_events if s == "stage7.audit"]
+    assert [a["audit_pass"] for a in audits] == [1, 2]
+    assert any("77.072" in u["claim_text"] for u in audits[0]["unsupported_claims"])
+    assert audits[1]["unsupported_claims"] == []
+    repair_evt = next(p for s, p in trace_events if s == "stage7.repair")
+    assert repair_evt["outcome"] == "APPLIED"
+    assert "77.072" in repair_evt["applied"][0]["before"]
+    assert "65.251,3" in repair_evt["applied"][0]["after"]
+    k1_card = next(p for s, p in trace_events if s == "claim.card" and p["claim_id"] == "K1")
+    assert "fact:st_borrowings" in k1_card["evidence_specs"]
+    assert "### [K1]" in k1_card["rendered_for_synthesis"]
 
     await eng.dispose()
 
@@ -392,6 +424,72 @@ async def test_brief_brain_pure_ambiguity_asks_single_question_with_zero_extra_c
     assert llm_double.calls == 1
     assert "tăng trưởng lợi nhuận" in done_payload["answer"]
     assert done_payload["metadata"]["telemetry"]["playbook_id"] == "brief_clarification"
+
+    await eng.dispose()
+
+
+async def test_brief_brain_invalid_brief_twice_surfaces_fallback_banner_instead_of_silent_substitution(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.setattr(settings, "decision_provider", "disabled")
+    monkeypatch.setattr(settings, "bff_service_token", "test-bff-token")
+    monkeypatch.setattr(settings, "research_brain_mode", "brief_centric")
+    monkeypatch.setattr(settings, "user_memory_mode", "off")
+
+    eng = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'brief_fallback.db'}")
+    async with eng.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sf = async_sessionmaker(eng, expire_on_commit=False, class_=AsyncSession)
+
+    class _InvalidBriefLLM:
+        configured = True
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def stream_turn(
+            self, request: ModelRequest, cancellation: CancellationToken
+        ) -> AsyncIterator[ModelChunk]:
+            del request, cancellation
+            self.calls += 1
+            yield ModelChunk(
+                text_delta="Tôi nghĩ nên lọc theo tiền mặt.",
+                usage=Usage(input_tokens=700, output_tokens=20),
+            )
+
+    app = create_app()
+    llm_double = _InvalidBriefLLM()
+    app.state.llm = llm_double
+    app.state.engine_manager = None
+
+    import sag_api.api.v1.research_chat as rc_router
+    import sag_api.core.db as core_db
+
+    async def _override_session() -> AsyncIterator[AsyncSession]:
+        async with sf() as s:
+            yield s
+
+    app.dependency_overrides[rc_router.get_session] = _override_session
+    app.dependency_overrides[rc_router.get_core_metrics_reader] = lambda: _VhmCoreReader()
+    monkeypatch.setattr(core_db, "SessionLocal", sf)
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/research-chat/stream",
+            headers=_bff_headers(),
+            json={"query": "Cổ phiếu nào trên sàn đang rẻ so với tiền mặt?", "as_of_date": "2026-11-26"},
+        )
+        assert resp.status_code == 200
+        frames = _parse_sse_frames(resp.text)
+
+    done_payload = next(data for ev, data in frames if ev == "done")
+    codes = [b["code"] for b in done_payload["metadata"]["declared_blindspots"]]
+    assert llm_double.calls == 2
+    assert "BRIEF_FALLBACK_DEGRADED" in codes
+    # User sees an explicit degraded banner + a clarifying question, never a silently swapped ROE screen
+    assert "phương án dự phòng" in done_payload["answer"]
+    assert "chỉ tiêu cụ thể nào" in done_payload["answer"]
+    assert done_payload["metadata"]["screening_results"] == []
 
     await eng.dispose()
 

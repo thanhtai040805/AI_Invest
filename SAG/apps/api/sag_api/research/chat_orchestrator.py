@@ -19,7 +19,7 @@ import json
 import math
 import re
 import time
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -2742,9 +2742,12 @@ def _prepend_verification_warning_banner(
     mismatch_n = sum(1 for b in blindspots if b.code == "CITATION_CONTENT_MISMATCH")
     hallucinated_n = sum(1 for b in blindspots if b.code == "HALLUCINATED_CITATION_ID")
     hallucinated_mem_n = sum(1 for b in blindspots if b.code == "HALLUCINATED_MEMORY_ID")
-    if not (unsupported_n or mismatch_n or hallucinated_n or hallucinated_mem_n):
+    brief_fallback_n = sum(1 for b in blindspots if b.code == "BRIEF_FALLBACK_DEGRADED")
+    if not (unsupported_n or mismatch_n or hallucinated_n or hallucinated_mem_n or brief_fallback_n):
         return answer
     parts: list[str] = []
+    if brief_fallback_n:
+        parts.append("đề bài phân tích phải dùng phương án dự phòng nên có thể chưa phản ánh đúng câu hỏi")
     if unsupported_n:
         parts.append(f"{unsupported_n} số liệu chưa khớp tuyệt đối với nguồn/mã cổ phiếu")
     if mismatch_n:
@@ -2966,6 +2969,7 @@ class ResearchChatOrchestrator:
         reranker: Any | None = None,
         enable_agent_loop: bool = True,
         brain_mode: Literal["brief_centric", "agent_loop"] | None = None,
+        brain_trace_sink: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self._session = session
         self._session_factory = session_factory
@@ -2974,6 +2978,8 @@ class ResearchChatOrchestrator:
         self._reranker = reranker
         self._enable_agent_loop = bool(enable_agent_loop)
         self._brain_mode = brain_mode
+        # Optional per-turn Brief-Centric Brain trace sink (None in production = zero overhead)
+        self._brain_trace_sink = brain_trace_sink
         self._kg_store_override = kg_store
         self._retriever_override = retriever
         self._table_store_override = table_store
@@ -3855,6 +3861,7 @@ class ResearchChatOrchestrator:
     ) -> AsyncIterator[tuple[str, dict[str, Any]]]:
         """Run the unified `sag_agent` 6-tool parallel research loop + honest Stage 7 verification."""
         from sag_api.research.agent_runner import run_research_agent_turn
+        from sag_api.research.brief import emit_trace
         from sag_api.research.brief_synthesizer import (
             BriefTurnResult,
             repair_stage7_flagged_lines,
@@ -3981,6 +3988,7 @@ class ResearchChatOrchestrator:
                         on_thought=_on_thought,
                         on_tool_call=_on_tool_call,
                         on_tool_result=_on_tool_result,
+                        trace=self._brain_trace_sink,
                     )
                 return await run_research_agent_turn(
                     query=request.query,
@@ -4209,7 +4217,25 @@ class ResearchChatOrchestrator:
                 )
             return v_res, n_res, sanitized
 
+        def _trace_stage7(pass_no: int, text_in: str, v_res: Any, n_res: Any) -> None:
+            if self._brain_trace_sink is None or effective_brain_mode != "brief_centric":
+                return
+            emit_trace(
+                self._brain_trace_sink,
+                "stage7.audit",
+                audit_pass=pass_no,
+                answer_text=text_in,
+                verified_citations=len(v_res.verified_citations),
+                rejected_citations=[
+                    {"citation_id": c.get("citation_id"), "rejection_reason": c.get("rejection_reason")}
+                    for c in v_res.rejected_citations
+                ],
+                unsupported_claims=list(n_res.unsupported_claims) if n_res is not None else [],
+                uncited_claims=list(n_res.uncited_claims) if n_res is not None else [],
+            )
+
         ver_res, num_ver, final_answer = _run_stage7_audit(draft_answer)
+        _trace_stage7(1, draft_answer, ver_res, num_ver)
 
         # ── Component (7): Surgical Repair Pass ONLY when Stage 7 flags errors ──
         has_stage7_flags = bool(
@@ -4231,6 +4257,7 @@ class ResearchChatOrchestrator:
                 calculator_traces=calculator_traces,
                 sections_by_cid=sections_by_cid,
                 model=self._llm,
+                trace=self._brain_trace_sink,
             )
             outcome.input_tokens += rep_usage.input_tokens
             outcome.output_tokens += rep_usage.output_tokens
@@ -4250,6 +4277,7 @@ class ResearchChatOrchestrator:
                 activity_log.append(repair_evt)
                 yield ("thought", repair_evt)
                 ver_res, num_ver, final_answer = _run_stage7_audit(repaired_txt)
+                _trace_stage7(2, repaired_txt, ver_res, num_ver)
 
         for bs in ver_res.blindspots:
             blindspots.append(DeclaredBlindspotItem(**bs))

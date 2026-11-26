@@ -28,7 +28,13 @@ from sag_api.research.agent_runner import (
     SentenceStreamGate,
     strip_reasoning_tags,
 )
-from sag_api.research.brief import ResearchBrief, create_and_validate_brief
+from sag_api.research.brief import (
+    ResearchBrief,
+    TraceSink,
+    create_and_validate_brief,
+    emit_trace,
+    usage_to_dict,
+)
 from sag_api.research.brief_executor import (
     BriefExecutionResult,
     ClaimVerdictCard,
@@ -159,6 +165,7 @@ async def synthesize_from_verdict_cards(
     attach_disclaimer: bool = False,
     on_delta: Callable[[str], Awaitable[None]] | None = None,
     timeout_seconds: float = 45.0,
+    trace: TraceSink | None = None,
 ) -> tuple[str, Usage, bool, bool]:
     """Component (6): Stream final answer strictly from `ResearchBrief` + `ClaimVerdictCard`s."""
     user_prompt = build_synthesis_user_prompt(
@@ -191,6 +198,7 @@ async def synthesize_from_verdict_cards(
         turn=1,
     )
     emitted_chunks: list[str] = []
+    raw_model_parts: list[str] = []
     streamed_any = False
     timed_out = False
     in_tok = out_tok = cached_tok = reas_tok = 0
@@ -204,6 +212,7 @@ async def synthesize_from_verdict_cards(
                     cached_tok = max(cached_tok, chunk.usage.cached_tokens)
                     reas_tok = max(reas_tok, chunk.usage.reasoning_tokens)
                 if chunk.text_delta:
+                    raw_model_parts.append(chunk.text_delta)
                     out_sentences = gate.push_delta(chunk.text_delta)
                     for s_out in out_sentences:
                         emitted_chunks.append(s_out)
@@ -240,6 +249,16 @@ async def synthesize_from_verdict_cards(
         cached_tokens=cached_tok,
         reasoning_tokens=reas_tok,
     )
+    emit_trace(
+        trace,
+        "synthesis",
+        system_prompt_chars=len(SYNTHESIS_STATIC_SYSTEM_PROMPT),
+        user_prompt=user_prompt,
+        raw_model_output="".join(raw_model_parts),
+        gated_answer=cleaned_answer,
+        usage=usage_to_dict(usage),
+        timed_out=timed_out,
+    )
     return cleaned_answer, usage, streamed_any, timed_out
 
 
@@ -254,6 +273,7 @@ async def repair_stage7_flagged_lines(
     sections_by_cid: Mapping[str, Any],
     model: ModelProvider,
     timeout_seconds: float = 20.0,
+    trace: TraceSink | None = None,
 ) -> tuple[str, Usage, bool]:
     """Component (7): 1-pass surgical repair of ONLY the lines flagged by Stage 7.
 
@@ -295,6 +315,8 @@ async def repair_stage7_flagged_lines(
                     return idx
         return None
 
+    unmatched_flags: list[dict[str, str]] = []
+
     for item in unsupported_claims:
         c_txt = str(item.get("claim_text") or "")
         exc = str(item.get("sentence_excerpt") or "")
@@ -303,6 +325,8 @@ async def repair_stage7_flagged_lines(
             flagged_indices.setdefault(l_idx, []).append(
                 f"Số liệu `{c_txt}` không khớp bằng chứng gốc (có thể do tự cộng/trừ/chia nhẩm hoặc sai đơn vị)."
             )
+        else:
+            unmatched_flags.append({"kind": "UNSUPPORTED", "claim_text": c_txt, "sentence_excerpt": exc})
 
     for item in uncited_claims:
         c_txt = str(item.get("claim_text") or "")
@@ -312,6 +336,8 @@ async def repair_stage7_flagged_lines(
             flagged_indices.setdefault(l_idx, []).append(
                 f"Số liệu `{c_txt}` thiếu thẻ trích dẫn `[CALC-*]` / `[C#]` / `[TBL:*]` / `[SCR:*]`."
             )
+        else:
+            unmatched_flags.append({"kind": "UNCITED", "claim_text": c_txt, "sentence_excerpt": exc})
 
     for idx, ln in enumerate(lines):
         if "UNVERIFIED_CLAIM" in ln:
@@ -320,12 +346,20 @@ async def repair_stage7_flagged_lines(
             )
 
     if not flagged_indices:
+        emit_trace(
+            trace,
+            "stage7.repair",
+            outcome="SKIPPED_NO_LINE_MATCHED",
+            unmatched_flags=unmatched_flags,
+            modified=False,
+        )
         return answer_text, Usage(), False
 
     target_items = [
         {"idx": l_idx, "flagged_line": lines[l_idx], "issues": issues}
         for l_idx, issues in sorted(flagged_indices.items())[:6]
     ]
+    dropped_targets = [l_idx for l_idx, _ in sorted(flagged_indices.items())[6:]]
 
     ev_lines: list[str] = []
     if verdict_cards:
@@ -388,6 +422,16 @@ async def repair_stage7_flagged_lines(
             output_tokens=out_tok,
             cached_tokens=cached_tok,
         )
+        emit_trace(
+            trace,
+            "stage7.repair",
+            outcome="LLM_CALL_FAILED",
+            error=f"{type(exc).__name__}: {exc}",
+            targets=target_items,
+            unmatched_flags=unmatched_flags,
+            raw_output="".join(parts),
+            modified=False,
+        )
         return answer_text, partial_u, False
 
     usage = Usage(
@@ -397,13 +441,27 @@ async def repair_stage7_flagged_lines(
         cached_tokens=cached_tok,
         reasoning_tokens=reas_tok,
     )
-    parsed = _parse_json_obj("".join(parts))
+    raw_repair = "".join(parts)
+    parsed = _parse_json_obj(raw_repair)
     if not parsed or not isinstance(parsed.get("repairs"), Sequence):
+        emit_trace(
+            trace,
+            "stage7.repair",
+            outcome="NON_JSON_OUTPUT",
+            targets=target_items,
+            dropped_targets_over_cap=dropped_targets,
+            unmatched_flags=unmatched_flags,
+            user_prompt=repair_user_msg,
+            raw_output=raw_repair,
+            usage=usage_to_dict(usage),
+            modified=False,
+        )
         return answer_text, usage, False
 
     modified = False
     repaired_lines = list(lines)
     valid_idxs = {item["idx"] for item in target_items}
+    applied: list[dict[str, Any]] = []
     for rep in parsed["repairs"]:
         if not isinstance(rep, Mapping):
             continue
@@ -412,9 +470,23 @@ async def repair_stage7_flagged_lines(
         if isinstance(r_idx, int) and r_idx in valid_idxs and isinstance(fixed, str):
             clean_fixed = fixed.strip("\r\n")
             if clean_fixed and clean_fixed != repaired_lines[r_idx]:
+                applied.append({"idx": r_idx, "before": repaired_lines[r_idx], "after": clean_fixed})
                 repaired_lines[r_idx] = clean_fixed
                 modified = True
 
+    emit_trace(
+        trace,
+        "stage7.repair",
+        outcome="APPLIED" if modified else "NO_CHANGE",
+        targets=target_items,
+        dropped_targets_over_cap=dropped_targets,
+        unmatched_flags=unmatched_flags,
+        user_prompt=repair_user_msg,
+        raw_output=raw_repair,
+        applied=applied,
+        usage=usage_to_dict(usage),
+        modified=modified,
+    )
     return "\n".join(repaired_lines), usage, modified
 
 
@@ -431,6 +503,7 @@ async def run_brief_centric_turn(
     on_tool_call: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     on_tool_result: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     overall_timeout_seconds: float = 125.0,
+    trace: TraceSink | None = None,
 ) -> BriefTurnResult:
     """Execute the full Brief-Centric Brain pipeline: (1) Brief -> (2) Validate -> (3) Locate ->
     (4) Parallel Claims -> (5) Verdict Cards -> (6) Synthesis.
@@ -482,6 +555,7 @@ async def run_brief_centric_turn(
         chat_mode=ctx.chat_mode,
         session_context=session_ctx,
         memory_context=mem_ctx,
+        trace=trace,
     )
     total_usage = brief_usage
 
@@ -491,6 +565,28 @@ async def run_brief_centric_turn(
                 "code": "ACL_DENIED_TICKERS",
                 "reason": f"Một số mã nằm ngoài phạm vi truy cập: {', '.join(val_out.denied_tickers)}.",
                 "scope": ",".join(val_out.denied_tickers),
+            }
+        )
+    if val_out.fallback_used:
+        extra_blindspots.append(
+            {
+                "code": "BRIEF_FALLBACK_DEGRADED",
+                "reason": (
+                    f"Không lập được đề bài hợp lệ từ mô hình sau 2 lần; dùng phương án dự phòng "
+                    f"`{val_out.fallback_mode}`. Lỗi kiểm tra: {val_out.fallback_reason or 'không rõ'}"
+                )[:500],
+                "scope": "brief",
+            }
+        )
+    if val_out.dropped_specs:
+        extra_blindspots.append(
+            {
+                "code": "BRIEF_SPEC_DROPPED",
+                "reason": (
+                    "Một số yêu cầu trong đề bài bị loại vì hệ thống chưa kiểm chứng được: "
+                    + "; ".join(val_out.dropped_specs[:4])
+                )[:500],
+                "scope": "brief",
             }
         )
 
@@ -542,6 +638,27 @@ async def run_brief_centric_turn(
         await on_stage("retrieval", "running", "Đang định vị đối tượng & thu thập bằng chứng song song...")
 
     located = await locate_candidates(brief, ctx)
+    emit_trace(
+        trace,
+        "locator",
+        analysis_tickers=list(located.analysis_tickers),
+        anchor_ticker=located.anchor_ticker,
+        anchor_metrics=dict(located.anchor_metrics),
+        summary_lines=list(located.summary_lines),
+        coverage_note=located.coverage_note,
+        candidate_rows=[
+            {
+                "ticker": r.get("ticker"),
+                "all_passed": r.get("all_passed"),
+                "passed_count": r.get("passed_count"),
+                "total_criteria": r.get("total_criteria"),
+                "metrics": r.get("metrics"),
+                "criteria_notes": r.get("criteria_notes"),
+                "has_indexed_filings": r.get("has_indexed_filings"),
+            }
+            for r in located.candidate_rows
+        ],
+    )
     if brief.entities.candidate_search is not None:
         await _record_thought(
             {
@@ -567,6 +684,7 @@ async def run_brief_centric_turn(
                 on_thought=_record_thought,
                 on_tool_call=_record_tool_call,
                 on_tool_result=_record_tool_result,
+                trace=trace,
             )
     except TimeoutError:
         extra_blindspots.append(
@@ -595,6 +713,7 @@ async def run_brief_centric_turn(
         attach_disclaimer=bool(route_decision.get("attach_investment_disclaimer")),
         on_delta=on_delta,
         timeout_seconds=rem_synth,
+        trace=trace,
     )
     total_usage = total_usage.plus(synth_usage)
 

@@ -157,6 +157,8 @@ def get_research_orchestrator(
 
     engine_manager = getattr(request.app.state, "engine_manager", None)
     llm = getattr(request.app.state, "llm", None)
+    # Optional diagnostics hook; never set in production app startup
+    brain_trace_sink = getattr(request.app.state, "brain_trace_sink", None)
     return ResearchChatOrchestrator(
         session=session,
         session_factory=SessionLocal,
@@ -165,6 +167,7 @@ def get_research_orchestrator(
         llm=llm,
         engine_manager=engine_manager,
         core_reader=core_reader,
+        brain_trace_sink=brain_trace_sink,
     )
 
 

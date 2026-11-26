@@ -12,8 +12,9 @@ Implements Components (1) and (2) of the SAG Brief-Centric Brain:
 from __future__ import annotations
 
 import json
+import logging
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Literal
@@ -22,6 +23,30 @@ from sag_agent.types import AgentMessage, CancellationToken, ModelProvider, Mode
 from sag_api.research.analytics.kpis import KPI_BY_ID
 from sag_api.research.facts.catalog import CATALOG_BY_ID, resolve_template
 from sag_api.research.tools.research_tools import CANONICAL_DISCLOSURE_SLOTS, normalize_disclosure_slots
+
+logger = logging.getLogger(__name__)
+
+# Optional per-turn brain trace sink: `sink(stage, payload)`. `None` in production = zero overhead.
+TraceSink = Callable[[str, dict[str, Any]], None]
+
+
+def emit_trace(trace: TraceSink | None, stage: str, **payload: Any) -> None:
+    """Record one brain-trace event; a failing sink is logged and never breaks the user turn."""
+    if trace is None:
+        return
+    try:
+        trace(stage, payload)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Brain trace sink failed at stage %s: %s", stage, exc)
+
+
+def usage_to_dict(usage: Usage) -> dict[str, int]:
+    return {
+        "requests": usage.requests,
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "cached_tokens": usage.cached_tokens,
+    }
 
 BudgetTier = Literal["fast", "standard", "deep"]
 CriterionOp = Literal[">=", "<=", ">", "<", "=="]
@@ -33,6 +58,8 @@ CLAIM_BUDGET_BY_TIER: dict[str, int] = {
     "deep": 6,
 }
 MAX_PREMISES = 2
+MAX_EVIDENCE_PER_CLAIM = 5
+MAX_DOC_SPECS_PER_CLAIM = 2
 
 # Composite metrics computable deterministically in `locate_candidates` on top of FactSet + market_cap
 COMPOSITE_CANDIDATE_METRICS: frozenset[str] = frozenset(
@@ -353,6 +380,11 @@ class BriefValidationOutcome:
     denied_tickers: list[str] = field(default_factory=list)
     unknown_tickers: list[str] = field(default_factory=list)
     pit_adjustments: list[str] = field(default_factory=list)
+    # Parts of the model's brief removed because code cannot verify them (surfaced to the user)
+    dropped_specs: list[str] = field(default_factory=list)
+    fallback_used: bool = False
+    fallback_mode: str | None = None
+    fallback_reason: str | None = None
 
 
 def _extract_json_object(raw_text: str) -> dict[str, Any]:
@@ -571,6 +603,11 @@ def validate_research_brief(
     denied_tickers: list[str] = []
     unknown_tickers: list[str] = []
     pit_adjustments: list[str] = []
+    dropped_specs: list[str] = []
+
+    def _drop(msg: str) -> None:
+        warnings.append(msg)
+        dropped_specs.append(msg)
 
     if isinstance(raw, str):
         try:
@@ -660,7 +697,7 @@ def validate_research_brief(
                 continue
             m_id = canonicalize_metric_id(str(cr.get("metric") or ""))
             if m_id is None:
-                warnings.append(f"Bỏ tiêu chí lọc không xác định `{cr.get('metric')}`.")
+                _drop(f"Bỏ tiêu chí lọc không xác định `{cr.get('metric')}`.")
                 continue
             op_raw = str(cr.get("op") or ">=").strip()
             op: CriterionOp = op_raw if op_raw in (">=", "<=", ">", "<", "==") else ">="  # type: ignore[assignment]
@@ -672,7 +709,7 @@ def validate_research_brief(
             if isinstance(val_raw, int | float) and not isinstance(val_raw, bool):
                 val_num = float(val_raw)
             if ref == "literal" and val_num is None:
-                warnings.append(f"Tiêu chí `{m_id}` thiếu ngưỡng `value` -> bỏ qua.")
+                _drop(f"Tiêu chí `{m_id}` thiếu ngưỡng `value` -> bỏ qua.")
                 continue
             tol_raw = cr.get("tolerance", 0.0)
             tol = float(tol_raw) if isinstance(tol_raw, int | float) and not isinstance(tol_raw, bool) else 0.0
@@ -708,7 +745,7 @@ def validate_research_brief(
         parsed_claims: list[ClaimSpec] = []
         for idx, item in enumerate(raw_items, 1):
             if len(parsed_claims) >= cap:
-                warnings.append(f"Cắt bớt số ý `{prefix}` theo trần ngân sách ({cap}).")
+                _drop(f"Cắt bớt số ý `{prefix}` theo trần ngân sách ({cap}).")
                 break
             if isinstance(item, str):
                 # Tolerate shorthand string premise by attaching default KPI/fact check if possible
@@ -731,14 +768,25 @@ def validate_research_brief(
             elif not isinstance(raw_ev_seq, Sequence):
                 raw_ev_seq = []
             ev_clean: list[str] = []
+            doc_count = 0
             for ev in raw_ev_seq:
                 canon, warn = canonicalize_evidence_spec(ev)
                 if warn:
-                    warnings.append(warn)
-                if canon and canon not in ev_clean:
-                    ev_clean.append(canon)
-                if len(ev_clean) >= 5:
-                    break
+                    _drop(f"Ý `{cid}`: {warn}")
+                if not canon or canon in ev_clean:
+                    continue
+                if len(ev_clean) >= MAX_EVIDENCE_PER_CLAIM:
+                    _drop(f"Ý `{cid}`: bỏ bằng chứng `{canon}` (tối đa {MAX_EVIDENCE_PER_CLAIM} mục mỗi ý).")
+                    continue
+                if canon.startswith("doc:"):
+                    if doc_count >= MAX_DOC_SPECS_PER_CLAIM:
+                        _drop(
+                            f"Ý `{cid}`: bỏ chỉ dẫn tài liệu `{canon}` "
+                            f"(tối đa {MAX_DOC_SPECS_PER_CLAIM} chỉ dẫn tài liệu mỗi ý)."
+                        )
+                        continue
+                    doc_count += 1
+                ev_clean.append(canon)
             if not ev_clean:
                 errors.append(f"Ý `{cid}` ('{stmt[:60]}') không có loại bằng chứng hợp lệ nào.")
                 continue
@@ -821,6 +869,7 @@ def validate_research_brief(
             denied_tickers=denied_tickers,
             unknown_tickers=unknown_tickers,
             pit_adjustments=pit_adjustments,
+            dropped_specs=dropped_specs,
         )
 
     brief = ResearchBrief(
@@ -846,6 +895,7 @@ def validate_research_brief(
         denied_tickers=denied_tickers,
         unknown_tickers=unknown_tickers,
         pit_adjustments=pit_adjustments,
+        dropped_specs=dropped_specs,
     )
 
 
@@ -939,7 +989,12 @@ def build_fallback_brief(
     allowed_project_ids: frozenset[str] | set[str] = frozenset({"*"}),
     chat_mode: str = "GENERAL",
 ) -> ResearchBrief:
-    """Deterministic 0-LLM fallback brief if LLM brief generation fails after 1 retry."""
+    """Deterministic 0-LLM fallback after 2 invalid LLM briefs.
+
+    - With concrete tickers: a generic, explicitly-labeled health-check brief on those tickers.
+    - Without tickers: NEVER invent screening criteria (that silently answers a different question);
+      ask the user one clarifying question instead.
+    """
     profile_map = {
         str(p.get("ticker") or "").strip().upper(): p
         for p in catalog_profiles
@@ -958,25 +1013,15 @@ def build_fallback_brief(
     if not detected:
         return ResearchBrief(
             user_concern=query.strip()[:180],
-            answer_shape="candidate_ranking",
-            entities=BriefEntities(
-                tickers=[],
-                candidate_search=CandidateSearchSpec(
-                    criteria=[CandidateCriterion(metric="roe", op=">=", value=0.12, ref="literal")],
-                    sort_by="roe",
-                    sort_dir="desc",
-                    limit=4,
-                ),
+            answer_shape="clarification_needed",
+            entities=BriefEntities(tickers=[]),
+            needs_clarification=True,
+            clarifying_question=(
+                "Mình chưa chuyển được câu hỏi này thành tiêu chí định lượng kiểm chứng được. "
+                "Bạn muốn lọc theo chỉ tiêu cụ thể nào (ví dụ: tiền mặt ròng/vốn hóa, P/B, ROE, "
+                "tăng trưởng lợi nhuận) và trong nhóm ngành nào?"
             ),
-            claims=[
-                ClaimSpec(
-                    id="K1",
-                    statement="Sàng lọc các doanh nghiệp đầu ngành theo hiệu quả sinh lời và bảng cân đối tại PIT",
-                    evidence=["screen", "kpi:roe", "risk"],
-                )
-            ],
-            assumptions=["Áp dụng tiêu chí hiệu quả sinh lời ROE >= 12% và kiểm tra rủi ro tài chính tại PIT."],
-            budget_tier="standard",
+            budget_tier="fast",
         )
 
     ly, lq = latest_closed_quarter_for_pit(as_of_date)
@@ -1016,6 +1061,7 @@ async def create_and_validate_brief(
     chat_mode: str = "GENERAL",
     session_context: str = "",
     memory_context: str = "",
+    trace: TraceSink | None = None,
 ) -> tuple[ResearchBrief, BriefValidationOutcome, Usage]:
     """Run Step (1) Brief LLM + Step (2) 0-token Validator (with at most 1 repair retry on schema error)."""
     user_prompt = build_brief_user_prompt(
@@ -1028,21 +1074,63 @@ async def create_and_validate_brief(
         session_context=session_context,
         memory_context=memory_context,
     )
+    emit_trace(
+        trace,
+        "brief.request",
+        query=query,
+        user_prompt=user_prompt,
+        system_prompt_chars=len(BRIEF_STATIC_SYSTEM_PROMPT),
+        available_tickers_count=len(available_tickers),
+        catalog_profiles_count=len(catalog_profiles),
+    )
+
+    def _validate(raw_text: str) -> BriefValidationOutcome:
+        return validate_research_brief(
+            raw_text,
+            as_of_date=as_of_date,
+            allowed_project_ids=allowed_project_ids,
+            known_universe_tickers=known_universe_tickers,
+            catalog_profiles=catalog_profiles,
+            chat_mode=chat_mode,
+            explicit_tickers=explicit_tickers,
+        )
+
+    def _trace_attempt(attempt: int, raw_text: str, att_usage: Usage, att_out: BriefValidationOutcome) -> None:
+        if trace is None:
+            return
+        raw_parsed: Any = None
+        parse_error: str | None = None
+        try:
+            raw_parsed = _extract_json_object(raw_text)
+        except Exception as exc:  # noqa: BLE001
+            parse_error = str(exc)
+        emit_trace(
+            trace,
+            "brief.attempt",
+            attempt=attempt,
+            raw_output=raw_text,
+            raw_parsed=raw_parsed,
+            parse_error=parse_error,
+            usage=usage_to_dict(att_usage),
+            validator_ok=att_out.ok,
+            errors=list(att_out.errors),
+            warnings=list(att_out.warnings),
+            dropped_specs=list(att_out.dropped_specs),
+            pit_adjustments=list(att_out.pit_adjustments),
+            denied_tickers=list(att_out.denied_tickers),
+            unknown_tickers=list(att_out.unknown_tickers),
+            validated_brief=att_out.brief.to_dict() if att_out.brief is not None else None,
+        )
+
     base_messages = [
         AgentMessage(role="system", content=BRIEF_STATIC_SYSTEM_PROMPT),
         AgentMessage(role="user", content=user_prompt),
     ]
     raw_out, usage = await _collect_model_text(model, base_messages, turn=1)
-    outcome = validate_research_brief(
-        raw_out,
-        as_of_date=as_of_date,
-        allowed_project_ids=allowed_project_ids,
-        known_universe_tickers=known_universe_tickers,
-        catalog_profiles=catalog_profiles,
-        chat_mode=chat_mode,
-        explicit_tickers=explicit_tickers,
-    )
+    outcome = _validate(raw_out)
+    _trace_attempt(1, raw_out, usage, outcome)
     if outcome.ok and outcome.brief is not None:
+        emit_trace(trace, "brief.final", source="llm_attempt_1", brief=outcome.brief.to_dict())
         return outcome.brief, outcome, usage
 
     # At most 1 compact repair retry per approved spec Section 3.(2)
@@ -1060,16 +1148,10 @@ async def create_and_validate_brief(
     ]
     raw_retry, retry_usage = await _collect_model_text(model, retry_messages, turn=2)
     total_usage = usage.plus(retry_usage)
-    retry_outcome = validate_research_brief(
-        raw_retry,
-        as_of_date=as_of_date,
-        allowed_project_ids=allowed_project_ids,
-        known_universe_tickers=known_universe_tickers,
-        catalog_profiles=catalog_profiles,
-        chat_mode=chat_mode,
-        explicit_tickers=explicit_tickers,
-    )
+    retry_outcome = _validate(raw_retry)
+    _trace_attempt(2, raw_retry, retry_usage, retry_outcome)
     if retry_outcome.ok and retry_outcome.brief is not None:
+        emit_trace(trace, "brief.final", source="llm_attempt_2", brief=retry_outcome.brief.to_dict())
         return retry_outcome.brief, retry_outcome, total_usage
 
     fb = build_fallback_brief(
@@ -1080,6 +1162,23 @@ async def create_and_validate_brief(
         allowed_project_ids=allowed_project_ids,
         chat_mode=chat_mode,
     )
-    retry_outcome.warnings.append("Sử dụng đề bài dự phòng tất định sau 2 lần kiểm tra JSON không đạt.")
+    retry_outcome.fallback_used = True
+    retry_outcome.fallback_mode = "clarification" if fb.needs_clarification else "generic_ticker_health_check"
+    retry_outcome.fallback_reason = "; ".join(retry_outcome.errors or outcome.errors)[:400]
+    retry_outcome.warnings.append(
+        f"Dùng đề bài dự phòng `{retry_outcome.fallback_mode}` sau 2 lần đề bài từ mô hình không đạt kiểm tra."
+    )
     retry_outcome.brief = fb
+    logger.warning(
+        "Brief generation fell back to %s after 2 invalid attempts: %s",
+        retry_outcome.fallback_mode,
+        retry_outcome.fallback_reason,
+    )
+    emit_trace(
+        trace,
+        "brief.final",
+        source=f"fallback:{retry_outcome.fallback_mode}",
+        fallback_reason=retry_outcome.fallback_reason,
+        brief=fb.to_dict(),
+    )
     return fb, retry_outcome, total_usage

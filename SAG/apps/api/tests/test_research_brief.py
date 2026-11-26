@@ -216,3 +216,73 @@ async def test_create_and_validate_brief_retries_once_on_invalid_json_and_tracks
     assert usage.input_tokens == 1750
     assert usage.output_tokens == 240
     assert usage.cached_tokens == 1100
+
+
+def test_validate_brief_caps_doc_specs_per_claim_and_declares_dropped_specs() -> None:
+    raw = {
+        "user_concern": "VHM quý này ổn không",
+        "answer_shape": "health_check",
+        "entities": {"tickers": ["VHM"]},
+        "claims": [
+            {
+                "id": "K4",
+                "statement": "Khoản mục bất thường trong thuyết minh",
+                "evidence": [
+                    "doc:QUARTER_NOTES|giao dịch bên liên quan",
+                    "doc:QUARTER_NOTES|vay ngắn hạn lãi suất",
+                    "doc:QUARTER_NOTES|cam kết bảo lãnh",
+                    "fact:made_up_metric",
+                ],
+            }
+        ],
+    }
+    out = validate_research_brief(raw, as_of_date=AS_OF, catalog_profiles=PROFILES)
+    assert out.ok is True
+    assert out.brief is not None
+    assert [e for e in out.brief.claims[0].evidence if e.startswith("doc:")] == [
+        "doc:QUARTER_NOTES|giao dịch bên liên quan",
+        "doc:QUARTER_NOTES|vay ngắn hạn lãi suất",
+    ]
+    # The 3rd doc spec and the unknown metric are NEVER dropped silently
+    assert any("cam kết bảo lãnh" in d for d in out.dropped_specs)
+    assert any("made_up_metric" in d for d in out.dropped_specs)
+
+
+async def test_brief_fallback_without_tickers_asks_instead_of_inventing_criteria_and_traces_raw_output() -> None:
+    class _AlwaysInvalidBriefModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def stream_turn(
+            self, request: ModelRequest, cancellation: CancellationToken
+        ) -> AsyncIterator[ModelChunk]:
+            del request, cancellation
+            self.calls += 1
+            yield ModelChunk(
+                text_delta='{"user_concern": "rẻ so với tiền mặt", "claims": [{"id": "K1", "statement": "x", '
+                '"evidence": ["screen_by:net_cash>=0.25"]}]}',
+                usage=Usage(input_tokens=900, output_tokens=50, cached_tokens=800),
+            )
+
+    events: list[tuple[str, dict]] = []
+    brief, outcome, usage = await create_and_validate_brief(
+        query="Cổ phiếu nào trên sàn đang rẻ so với tiền mặt?",
+        model=_AlwaysInvalidBriefModel(),
+        as_of_date=AS_OF,
+        catalog_profiles=PROFILES,
+        trace=lambda stage, payload: events.append((stage, payload)),
+    )
+    assert usage.requests == 2
+    assert outcome.fallback_used is True
+    assert outcome.fallback_mode == "clarification"
+    # Must NOT silently substitute a different question (old behavior: ROE >= 12% screen)
+    assert brief.needs_clarification is True
+    assert brief.entities.candidate_search is None
+    assert brief.claims == []
+    stages = [s for s, _ in events]
+    assert stages == ["brief.request", "brief.attempt", "brief.attempt", "brief.final"]
+    first_attempt = events[1][1]
+    assert "screen_by:net_cash>=0.25" in first_attempt["raw_output"]
+    assert first_attempt["validator_ok"] is False
+    assert first_attempt["raw_parsed"]["user_concern"] == "rẻ so với tiền mặt"
+    assert events[3][1]["source"] == "fallback:clarification"

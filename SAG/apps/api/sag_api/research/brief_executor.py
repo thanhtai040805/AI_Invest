@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import time
 import unicodedata
@@ -36,7 +37,15 @@ from sag_api.research.analytics import (
 )
 from sag_api.research.analytics.agm_targets import extract_plan_targets
 from sag_api.research.analytics.kpis import KPI_BY_ID
-from sag_api.research.brief import CandidateCriterion, ClaimSpec, ResearchBrief
+from sag_api.research.brief import (
+    MAX_DOC_SPECS_PER_CLAIM,
+    CandidateCriterion,
+    ClaimSpec,
+    ResearchBrief,
+    TraceSink,
+    emit_trace,
+    usage_to_dict,
+)
 from sag_api.research.facts import FactSet, LookupStatus, Template
 from sag_api.research.facts.catalog import CATALOG_BY_ID, items_for_template, resolve_template
 from sag_api.research.financial_metrics_store import screen_universe_metrics
@@ -48,6 +57,8 @@ from sag_api.research.tools.research_tools import (
     normalize_disclosure_slots,
     query_knowledge_graph_tool,
 )
+
+logger = logging.getLogger(__name__)
 
 VerdictStatus = Literal["CONFIRMED", "REFUTED", "PARTIAL", "NO_DATA"]
 
@@ -395,7 +406,14 @@ async def locate_candidates(
             summary_lines=summary,
         )
 
-    all_profiles = list(ctx.catalog_profiles) or await ctx.core_reader.fetch_issuer_profiles()
+    # Universe = ALL Core PG issuers (not the ~20 filing-indexed org catalog), so "toàn sàn" really means toàn sàn
+    try:
+        all_profiles = list(await ctx.core_reader.fetch_issuer_profiles())
+        profile_source = "CORE_PG_FULL_UNIVERSE"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Core PG issuer universe load failed; falling back to org catalog: %s", exc)
+        all_profiles = list(ctx.catalog_profiles)
+        profile_source = "ORG_CATALOG_FALLBACK_DEGRADED"
     allowed = ctx.principal.allowed_project_ids
     sec_norms = [_norm_ascii(s) for s in cand_spec.sectors if s.strip()]
     want_tmpl = Template(cand_spec.template) if cand_spec.template in set(Template) else None
@@ -455,6 +473,14 @@ async def locate_candidates(
     anchor_vals: dict[str, float | None] = {}
     anchor_units: dict[str, str] = {}
     summary_lines: list[str] = []
+    eligible_n = len(eligible_profiles)
+    cap_note = (
+        f", giới hạn {MAX_CANDIDATE_BATCH} mã ưu tiên vốn hóa lớn/đã index" if eligible_n > MAX_CANDIDATE_BATCH else ""
+    )
+    summary_lines.append(
+        f"Phạm vi định vị: đã đánh giá {len(batch_tickers)}/{eligible_n} mã đủ điều kiện ngành & quyền truy cập "
+        f"(nguồn {profile_source}{cap_note})."
+    )
     if anchor and anchor in fs.templates:
         anc_inputs: dict[str, Any] = {}
         anc_parts: list[str] = []
@@ -1158,27 +1184,28 @@ async def _run_doc_mini_reader(
     reader_sem: asyncio.Semaphore,
     on_tool_call: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     on_tool_result: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    trace: TraceSink | None = None,
 ) -> tuple[VerdictStatus, list[str], list[str], str | None, Usage, int]:
     """Retrieve targeted `[C#]` sections for `claim` and run 1 compact Mini-Reader extraction call."""
+    search_log: list[dict[str, Any]] = []
+
+    def _trace_reader(**payload: Any) -> None:
+        emit_trace(trace, "mini_reader", claim_id=claim.id, statement=claim.statement, searches=search_log, **payload)
+
     doc_tickers = [t for t in tickers if not ctx.available_tickers or t in ctx.available_tickers][:4]
     if not doc_tickers:
-        return (
-            "NO_DATA",
-            [
-                f"Chưa có tài liệu thuyết minh PDF đã index trong Qdrant cho {', '.join(tickers) or 'phạm vi này'} "
-                f"tại PIT {ctx.as_of_date.isoformat()}."
-            ],
-            [],
-            None,
-            Usage(),
-            0,
+        no_cov = (
+            f"Chưa có tài liệu thuyết minh PDF đã index trong Qdrant cho {', '.join(tickers) or 'phạm vi này'} "
+            f"tại PIT {ctx.as_of_date.isoformat()}."
         )
+        _trace_reader(outcome="NO_DOC_COVERAGE", status="NO_DATA", findings=[no_cov])
+        return ("NO_DATA", [no_cov], [], None, Usage(), 0)
 
     gathered_cids: list[str] = []
     snippet_blocks: list[str] = []
     tool_calls = 0
 
-    for idx, dspec in enumerate(doc_specs[:2], 1):
+    for idx, dspec in enumerate(doc_specs[:MAX_DOC_SPECS_PER_CLAIM], 1):
         slots, years, quarters, q_txt = _parse_doc_spec(dspec, claim.period)
         call_id = f"doc-{claim.id}-{idx}"
         if on_tool_call is not None:
@@ -1212,8 +1239,10 @@ async def _run_doc_mini_reader(
             top_k=5,
         )
         tool_calls += 1
+        widened = False
         # If strict quarter/year filter yielded 0 chunks, widen once without year/quarter lock (0 LLM tokens!)
         if res.details.get("returned_count", 0) == 0 and (years or quarters):
+            widened = True
             res = await _execute_disclosure_search(
                 tool_name="search_disclosures",
                 ctx=ctx,
@@ -1253,16 +1282,26 @@ async def _run_doc_mini_reader(
                 cid = str(doc.get("citation_id") or "")
                 if cid and f"[{cid}]" not in gathered_cids:
                     gathered_cids.append(f"[{cid}]")
+        search_log.append(
+            {
+                "doc_spec": dspec,
+                "tickers": doc_tickers,
+                "slots": slots,
+                "fiscal_years": years,
+                "fiscal_quarters": quarters,
+                "query": q_txt,
+                "widened_period_filter": widened,
+                "returned_count": res.details.get("returned_count", 0),
+                "crag_grade": res.details.get("crag_grade"),
+                "selected_documents": list(res.details.get("selected_documents") or ())[:8],
+                "duration_ms": dur_ms,
+            }
+        )
 
     if not snippet_blocks:
-        return (
-            "NO_DATA",
-            [f"Không tìm thấy đoạn thuyết minh phù hợp trong phạm vi PIT {ctx.as_of_date.isoformat()}."],
-            [],
-            None,
-            Usage(),
-            tool_calls,
-        )
+        no_snip = f"Không tìm thấy đoạn thuyết minh phù hợp trong phạm vi PIT {ctx.as_of_date.isoformat()}."
+        _trace_reader(outcome="NO_SNIPPETS", status="NO_DATA", findings=[no_snip])
+        return ("NO_DATA", [no_snip], [], None, Usage(), tool_calls)
 
     quant_hint = "\n".join(quant_context_lines[:3]) if quant_context_lines else "Không có số định lượng đi kèm."
     user_msg = (
@@ -1285,6 +1324,13 @@ async def _run_doc_mini_reader(
     if not parsed:
         # Clean fallback if Mini-Reader returned plain text instead of JSON
         clean_txt = _THINK_RE.sub("", raw_json).strip()
+        _trace_reader(
+            outcome="NON_JSON_OUTPUT",
+            user_prompt=user_msg,
+            raw_output=raw_json,
+            usage=usage_to_dict(usage),
+            status="PARTIAL" if clean_txt else "NO_DATA",
+        )
         if clean_txt:
             return ("PARTIAL", [clean_txt[:500]], gathered_cids, None, usage, tool_calls)
         return ("NO_DATA", ["Không trích xuất được dữ kiện từ đoạn tài liệu."], [], None, usage, tool_calls)
@@ -1302,6 +1348,17 @@ async def _run_doc_mini_reader(
     if not findings and status != "NO_DATA":
         status = "NO_DATA"
         findings = ["Tài liệu truy xuất không chứa chi tiết thuyết minh khớp trực tiếp với câu hỏi."]
+    _trace_reader(
+        outcome="OK",
+        user_prompt=user_msg,
+        raw_output=raw_json,
+        usage=usage_to_dict(usage),
+        model_status=raw_status,
+        status=status,
+        findings=findings[:5],
+        anomaly_followup_query=followup,
+        gathered_citations=gathered_cids,
+    )
     return status, findings[:5], gathered_cids, followup, usage, tool_calls
 
 
@@ -1315,6 +1372,7 @@ async def execute_brief_claims(
     on_thought: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     on_tool_call: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     on_tool_result: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    trace: TraceSink | None = None,
 ) -> BriefExecutionResult:
     """Components (4) & (5): Premise-first + Parallel Per-Claim Execution + Code-Owned 1-Hop Escalation."""
     tickers = located.analysis_tickers
@@ -1375,6 +1433,7 @@ async def execute_brief_claims(
                 reader_sem=reader_sem,
                 on_tool_call=on_tool_call,
                 on_tool_result=on_tool_result,
+                trace=trace,
             )
             doc_status = d_st
             summary_lines.extend(d_lines)
@@ -1473,8 +1532,17 @@ async def execute_brief_claims(
         and c.status != "REFUTED"
         and any(not ctx.available_tickers or t in ctx.available_tickers for t in tickers)
     ][:MAX_ESCALATION_CLAIMS]
+    will_escalate = bool(escalation_candidates) and remaining_s >= 35.0
+    emit_trace(
+        trace,
+        "escalation.decision",
+        requested=[{"claim_id": c.claim_id, "query": c.escalation_query} for c in claim_cards if c.escalation_query],
+        selected=[c.claim_id for c in escalation_candidates],
+        remaining_seconds=round(remaining_s, 1),
+        ran=will_escalate,
+    )
 
-    if escalation_candidates and remaining_s >= 35.0:
+    if will_escalate:
         async def _run_followup(card: ClaimVerdictCard) -> tuple[list[str], list[str], Usage, int]:
             assert card.escalation_query is not None
             probe_claim = ClaimSpec(
@@ -1493,6 +1561,7 @@ async def execute_brief_claims(
                 reader_sem=reader_sem,
                 on_tool_call=on_tool_call,
                 on_tool_result=on_tool_result,
+                trace=trace,
             )
             return f_lines, f_badges, f_usage, f_tools
 
@@ -1509,6 +1578,30 @@ async def execute_brief_claims(
                         card.badges.append(b)
                 if card.status == "NO_DATA":
                     card.status = "PARTIAL"
+
+    # Final full verdict cards = exact synthesis input (never truncated in the trace)
+    spec_by_id = {s.id: s for s in [*brief.premises_to_check, *brief.claims]}
+    claim_ids = {c.id for c in brief.claims}
+    for card in [*premise_cards, *claim_cards]:
+        spec = spec_by_id.get(card.claim_id)
+        deps = list(spec.depends_on) if spec is not None else []
+        emit_trace(
+            trace,
+            "claim.card",
+            claim_id=card.claim_id,
+            is_premise=card.is_premise,
+            statement=card.statement,
+            evidence_specs=list(spec.evidence) if spec is not None else [],
+            depends_on=deps,
+            # Claims run in parallel: only premise dependencies are enforced, claim->claim ones are not
+            unenforced_claim_dependencies=[d for d in deps if d in claim_ids],
+            status=card.status,
+            escalated=card.escalated,
+            escalation_query=card.escalation_query,
+            badges=list(card.badges),
+            summary_lines=list(card.summary_lines),
+            rendered_for_synthesis=card.render_for_synthesis(),
+        )
 
     return BriefExecutionResult(
         located=located,
