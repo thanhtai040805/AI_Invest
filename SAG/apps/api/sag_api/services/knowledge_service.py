@@ -1507,6 +1507,73 @@ async def persist_graph(
     return build
 
 
+async def persist_project_foundation_graph(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    project_id: str,
+    config: KnowledgeConfig | None = None,
+) -> KnowledgeGraphBuild | None:
+    """Build & persist the intra-ticker `KnowledgeGraphBuild` + `KnowledgeUnitEdge` rows directly in FOUNDATION."""
+    if not tenant_id or not project_id:
+        return None
+    await knowledge_lock(session, f"graph:{tenant_id}:{project_id}")
+    eff_config = config if config is not None else build_financial_knowledge_config()
+    units = list(
+        (
+            await session.scalars(
+                select(KnowledgeUnit)
+                .join(DocumentVersion, DocumentVersion.id == KnowledgeUnit.document_version_id)
+                .join(Document, Document.id == DocumentVersion.document_id)
+                .where(
+                    KnowledgeUnit.tenant_id == tenant_id,
+                    KnowledgeUnit.project_id == project_id,
+                    KnowledgeUnit.is_current.is_(True),
+                    Document.is_active.is_(True),
+                    DocumentVersion.knowledge_status == "DATA_READY",
+                    DocumentVersion.search_status.in_(("READY", "SEARCH_READY")),
+                )
+                .order_by(KnowledgeUnit.id)
+            )
+        ).all()
+    )
+    if not units:
+        return None
+    build = await persist_graph(session, units, eff_config)
+    from sag_api.db.models import TreeManifest
+
+    pinned_ids = {
+        str(bid)
+        for (bid,) in (
+            await session.execute(
+                select(TreeManifest.manifest_json["knowledge_graph_build_id"].as_string()).where(
+                    TreeManifest.project_id == project_id,
+                )
+            )
+        ).all()
+        if bid
+    }
+    keep_ids = pinned_ids | {build.id}
+    stale_ids = [
+        str(bid)
+        for (bid,) in (
+            await session.execute(
+                select(KnowledgeGraphBuild.id).where(
+                    KnowledgeGraphBuild.tenant_id == tenant_id,
+                    KnowledgeGraphBuild.project_id == project_id,
+                    KnowledgeGraphBuild.id.not_in(keep_ids),
+                )
+            )
+        ).all()
+        if bid
+    ]
+    if stale_ids:
+        await session.execute(delete(KnowledgeUnitEdge).where(KnowledgeUnitEdge.build_id.in_(stale_ids)))
+        await session.execute(delete(KnowledgeGraphBuild).where(KnowledgeGraphBuild.id.in_(stale_ids)))
+        await session.flush()
+    return build
+
+
 async def verify_graph(session: AsyncSession, build_id: str) -> KnowledgeGraphBuild:
     build = await session.get(KnowledgeGraphBuild, build_id, populate_existing=True)
     if not build or checksum(build.manifest_json) != build.checksum or build.id != "graph-" + build.checksum[:24]:

@@ -359,21 +359,21 @@ def compute_kpi(fs: FactSet, ticker: str, kpi_id: str, period: PeriodRef) -> Kpi
     spec = KPI_BY_ID.get(kpi_id)
     if spec is None:
         return KpiValue(kpi_id, kpi_id, tk, period.label, None, "", "", KpiStatus.NOT_APPLICABLE,
-                        detail=f"unknown KPI '{kpi_id}'")
+                        detail=f"không nhận diện chỉ số '{kpi_id}'")
     tmpl = fs.templates.get(tk)
     if tmpl is None:
         return KpiValue(kpi_id, spec.label_vi, tk, period.label, None, spec.unit, spec.formula,
-                        KpiStatus.INSUFFICIENT_DATA, detail=f"{tk} has no statements")
+                        KpiStatus.INSUFFICIENT_DATA, detail=f"{tk} chưa có báo cáo tài chính trong kỳ PIT")
     if tmpl not in spec.templates:
         return KpiValue(kpi_id, spec.label_vi, tk, period.label, None, spec.unit, spec.formula,
-                        KpiStatus.NOT_APPLICABLE, detail=f"not applicable to {tmpl.value} issuers")
+                        KpiStatus.NOT_APPLICABLE, detail=f"không áp dụng cho mẫu BCTC {tmpl.value}")
     detail = ""
     if spec.annual_only and period.period_type != "FY":
         annual = _annual_period_for(fs, tk, period)
         if annual is None:
             return KpiValue(kpi_id, spec.label_vi, tk, period.label, None, spec.unit, spec.formula,
-                            KpiStatus.INSUFFICIENT_DATA, detail="no audited FY cash flow statement")
-        detail = f"cash-flow KPI evaluated on {annual.label} (vendor quarterly cash flows are sparse/YTD)"
+                            KpiStatus.INSUFFICIENT_DATA, detail="chưa có báo cáo lưu chuyển tiền tệ năm kiểm toán")
+        detail = f"đánh giá trên báo cáo năm {annual.label} do số dòng tiền quý từ nhà cung cấp thưa/lũy kế"
         period = annual
     ctx = _Ctx(fs, tk, period)
     try:
@@ -381,7 +381,7 @@ def compute_kpi(fs: FactSet, ticker: str, kpi_id: str, period: PeriodRef) -> Kpi
     except _Missing as miss:
         return KpiValue(kpi_id, spec.label_vi, tk, period.label, None, spec.unit, spec.formula,
                         KpiStatus.INSUFFICIENT_DATA, tuple(ctx.inputs), tuple(sorted(ctx.flags)),
-                        detail=f"missing {miss.what}")
+                        detail=f"thiếu chỉ tiêu {miss.what}")
     return KpiValue(kpi_id, spec.label_vi, tk, period.label, value, spec.unit, spec.formula, KpiStatus.OK,
                     tuple(ctx.inputs), tuple(sorted(ctx.flags)), detail=detail)
 

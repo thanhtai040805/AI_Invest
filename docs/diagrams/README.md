@@ -26,6 +26,18 @@ flowchart LR
   GW -->|"Socket.IO user:{id}\nportfolio:order_updated"| U
 ```
 
+### 1.2 Luồng Nhận Thức Phân Tích SAG v2 Brief-Centric & 2-Tier Memory (`SAG/apps/api/sag_api/research/`)
+
+```mermaid
+flowchart LR
+  UI["Giao diện /research-chat\nSSE Live Thinking & Evidence Drawer"] -->|"POST /api/v1/ai/research-chat/stream\n120-msg History + Checkpoint"| BFF["Express 4 BFF Gateway\nsagResearchChat.service.ts"]
+  BFF -->|"Tier-0 Kev-4b Gate +\nAlways-On UserMemory Recall"| MEM["2-Tier Session & User Memory\n<=16K Verbatim Prefix + Checkpoint\n+ FinancialZeroMemLedger + Mem0-g"]
+  MEM --> S1["Stage 1: ResearchBrief\nPremises · Claims · Candidate Search\n0-Token Validator"]
+  S1 --> S2["Stage 2-5: Parallel Claim Executor\nCore PG FactSet · KPI · Peer · Divergence Probe\n+ Qdrant Disclosures (Section Stitch + 1-Hop UnitEdge)"]
+  S2 --> S6["Stage 6-7: Grounded Synthesis & Audit\nVerbatim [C#] Quotes · Clause Numeric Gate\n+ 1-Pass Surgical Repair"]
+  S6 --> UI
+```
+
 > [!NOTE]
 > Các sơ đồ phân rã cũ đã được tinh gọn và làm sạch khỏi thư mục nhằm tránh phân mảnh và không đồng nhất tiêu chuẩn thiết kế. Để tái tạo bất kỳ sơ đồ chuyên sâu nào theo chuẩn khoa học mới, sử dụng meta-skill: `scientific-diagram-prompt-crafter` và tham khảo [SCIENTIFIC_ALGORITHMS_PROMPT_CATALOG.md](file:///d:/AIInvest/docs/diagrams/SCIENTIFIC_ALGORITHMS_PROMPT_CATALOG.md).
 

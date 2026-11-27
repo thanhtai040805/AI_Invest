@@ -911,3 +911,198 @@ async def test_pure_greeting_short_circuits_without_thinking_and_clarification_s
     await eng.dispose()
 
 
+async def test_antigravity_multiturn_prefix_reversal_and_always_on_user_memory_http_sse(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """L3 HTTP SSE E2E:
+    1) Even when Tier-0 router falls back with `memory_recall_need='none'`, active `USER_INVESTING_CRITERIA`
+       in SQLite/PG is ALWAYS recalled (`recalled_memory_count >= 1`) in default `user_memory_mode='on'`.
+    2) Multi-turn history (`Turn 1: FPT` -> `Turn 2: 3-part question` -> `Turn 3: criteria answer`) is passed as
+       an intact `AgentMessage` prefix to Stage 1 & Stage 6, locking `FPT` instead of drifting to random stocks.
+    3) When Turn 4 explicitly reverses (`'Thôi bỏ FPT đi, tìm mã khác...'`), Stage 1 sees the intact history
+       and cleanly drops `FPT`.
+    """
+    from sag_api.db.models.user_memory import UserMemoryItem
+
+    monkeypatch.setattr(settings, "bff_service_token", "test-bff-token")
+    monkeypatch.setattr(settings, "research_brain_mode", "brief_centric")
+    monkeypatch.setattr(settings, "user_memory_mode", "on")
+
+    eng = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'brief_multiturn.db'}")
+    async with eng.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sf = async_sessionmaker(eng, expire_on_commit=False, class_=AsyncSession)
+
+    async with sf() as s:
+        s.add(
+            UserMemoryItem(
+                memory_id="mem-crit-1",
+                tenant_id="aiinvest-default",
+                user_id="u-brief-e2e",
+                origin_session_id="sess-prev",
+                memory_type="USER_INVESTING_CRITERIA",
+                pit_sensitivity="ATEMPORAL_PREF",
+                content_text="Nhà đầu tư ưu tiên biến động thấp, kỳ vọng sinh lời 10-15%/năm, tích sản trên 5 năm.",
+                content_hash="h-mem-crit-1",
+                tickers_json=[],
+                source_as_of_date=date(2026, 11, 20),
+                is_backtest_sandbox=False,
+                reinforcement_count=3,
+                pinned_by_user=False,
+                qdrant_sync_status="SYNCED",
+            )
+        )
+        await s.commit()
+
+    seen_stage1_messages: list[tuple[Any, ...]] = []
+
+    class _MultiTurnAwareModel:
+        configured = True
+
+        async def stream_turn(
+            self, request: ModelRequest, cancellation: CancellationToken
+        ) -> AsyncIterator[ModelChunk]:
+            del cancellation
+            sys_txt = request.messages[0].content
+            user_txt = request.messages[-1].content
+            if "Chief Research Brief Architect" in sys_txt:
+                seen_stage1_messages.append(request.messages)
+                prior_txt = "\n".join(m.content for m in request.messages[1:-1])
+                if "bỏ VHM đi" in user_txt:
+                    brief_obj = {
+                        "user_concern": "Đổi sang sàng lọc doanh nghiệp tiền mặt ròng cao, không xét VHM",
+                        "answer_shape": "candidate_ranking",
+                        "entities": {
+                            "tickers": [],
+                            "anchor_ticker": None,
+                            "candidate_search": {
+                                "sectors": [],
+                                "criteria": [{"metric": "roe", "op": ">=", "value": 0.10, "ref": "literal"}],
+                                "sort_by": "roe",
+                                "sort_dir": "desc",
+                                "limit": 3,
+                            },
+                        },
+                        "premises_to_check": [],
+                        "claims": [{"id": "K1", "statement": "Sàng lọc ROE", "evidence": ["screen"]}],
+                        "budget_tier": "fast",
+                    }
+                else:
+                    assert "Phân tích chi tiết mã VHM" in prior_txt
+                    assert "10-15%/năm" in user_txt
+                    brief_obj = {
+                        "user_concern": "Đánh giá VHM theo tiêu chí tích sản >5 năm của nhà đầu tư",
+                        "answer_shape": "verdict_with_reasons",
+                        "entities": {"tickers": ["VHM"], "anchor_ticker": None, "candidate_search": None},
+                        "premises_to_check": [],
+                        "claims": [
+                            {
+                                "id": "K1",
+                                "statement": "Sức khỏe tài chính VHM",
+                                "evidence": ["fact:npat", "fact:equity", "mem"],
+                                "period": "Q3/2026",
+                            }
+                        ],
+                        "budget_tier": "fast",
+                    }
+                yield ModelChunk(
+                    text_delta=json.dumps(brief_obj, ensure_ascii=False),
+                    usage=Usage(input_tokens=300, output_tokens=70, cached_tokens=220),
+                )
+            else:
+                yield ModelChunk(
+                    text_delta="Đánh giá phù hợp với tiêu chí tích sản trên 5 năm [MEM:M1] cho VHM.",
+                    usage=Usage(input_tokens=350, output_tokens=40, cached_tokens=240),
+                )
+
+    app = create_app()
+    app.state.llm = _MultiTurnAwareModel()
+    app.state.engine_manager = None
+
+    import sag_api.api.v1.research_chat as rc_router
+    import sag_api.core.db as core_db
+
+    async def _override_session() -> AsyncIterator[AsyncSession]:
+        async with sf() as s:
+            yield s
+
+    app.dependency_overrides[rc_router.get_session] = _override_session
+    app.dependency_overrides[rc_router.get_core_metrics_reader] = lambda: _VhmCoreReader()
+    monkeypatch.setattr(core_db, "SessionLocal", sf)
+
+    # Simulate low-confidence Kev-4b returning memory_recall_need='none' (the exact live bug!)
+    async def _low_conf_none_mem(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "domain_class": "stock_research_data",
+            "task_action": "fact_lookup",
+            "reasoning_budget_tier": "standard_2_3_steps",
+            "memory_recall_need": "none",
+            "is_short_circuit": False,
+            "eval_eligible": True,
+            "confidence": 0.28,
+            "reason_codes": ["LOW_CONFIDENCE_FAIL_OPEN_TO_RESEARCH"],
+        }
+
+    monkeypatch.setattr("sag_api.services.decision_router.aroute_research_query", _low_conf_none_mem)
+
+    prior_history = [
+        {
+            "role": "user",
+            "content": "Phân tích chi tiết mã VHM",
+            "turn_as_of_date": "2026-11-26",
+            "primary_ticker": "VHM",
+        },
+        {
+            "role": "assistant",
+            "content": "VHM Q3/2026 có LNST đạt 8.980 tỷ đồng.",
+            "turn_as_of_date": "2026-11-26",
+            "primary_ticker": "VHM",
+        },
+        {"role": "user", "content": "Có nên đầu tư dài hạn không?", "turn_as_of_date": "2026-11-26"},
+        {
+            "role": "assistant",
+            "content": "Bạn cho mình biết khẩu vị rủi ro và thời gian nắm giữ nhé?",
+            "turn_as_of_date": "2026-11-26",
+            "primary_ticker": "VHM",
+        },
+    ]
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        # Turn 3: answers the clarifying question without repeating 'VHM' -> locks VHM + recalls [MEM:M1]!
+        r_t3 = await client.post(
+            "/api/v1/research-chat/stream",
+            headers=_bff_headers(),
+            json={
+                "query": "Mình thích ổn định thôi",
+                "mode": "GENERAL",
+                "as_of_date": "2026-11-26",
+                "history": prior_history,
+            },
+        )
+        assert r_t3.status_code == 200
+        done_t3 = next(d for ev, d in _parse_sse_frames(r_t3.text) if ev == "done")
+        assert done_t3["metadata"]["primary_ticker"] == "VHM"
+        assert done_t3["metadata"]["telemetry"]["recalled_memory_count"] >= 1
+        assert done_t3["metadata"]["telemetry"]["hallucinated_memory_ids_count"] == 0
+        assert len(seen_stage1_messages[0]) == 6  # system + 4 intact history messages + current user!
+
+        # Turn 4: explicit user reversal ('Thôi bỏ VHM đi...') -> cleanly pivots away from VHM!
+        r_t4 = await client.post(
+            "/api/v1/research-chat/stream",
+            headers=_bff_headers(),
+            json={
+                "query": "Thôi bỏ VHM đi, lọc giúp mình doanh nghiệp khác ROE tốt",
+                "mode": "GENERAL",
+                "as_of_date": "2026-11-26",
+                "history": prior_history,
+            },
+        )
+        assert r_t4.status_code == 200
+        done_t4 = next(d for ev, d in _parse_sse_frames(r_t4.text) if ev == "done")
+        assert done_t4["metadata"]["research_brief"]["entities"]["tickers"] == []
+
+    await eng.dispose()
+
+
+

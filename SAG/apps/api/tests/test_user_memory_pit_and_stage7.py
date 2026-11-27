@@ -626,17 +626,17 @@ async def test_llm_cached_tokens_both_formats_and_discounted_cost(monkeypatch: p
             usages2.append(chunk.usage)
     assert usages2 and usages2[-1].cached_tokens == 800
 
-    # Verify discounted cost calculation:
-    # DeepSeek-V4-Flash: input=$0.10/1M, cached=$0.025/1M, output=$0.30/1M
+    # Verify discounted cost calculation (DeepInfra Flex 0.6x tier from 92fc4a0):
+    # DeepSeek-V4-Flash-0731: input=$0.06/1M, cached=$0.015/1M, output=$0.18/1M
     # 2000 input (1500 cached + 500 uncached) + 200 output:
-    # (500 * 0.10 + 1500 * 0.025 + 200 * 0.30) / 1e6 = (50 + 37.5 + 60) / 1e6 = 0.0001475
+    # (500 * 0.06 + 1500 * 0.015 + 200 * 0.18) / 1e6 = (30 + 22.5 + 36) / 1e6 = 0.0000885
     cost = _compute_discounted_llm_cost_usd(
         "deepseek-ai/DeepSeek-V4-Flash-0731",
         input_tokens=2000,
         cached_tokens=1500,
         output_tokens=200,
     )
-    assert cost == pytest.approx(0.0001475, rel=1e-6)
+    assert cost == pytest.approx(0.0000885, rel=1e-6)
 
 
 @pytest.mark.asyncio

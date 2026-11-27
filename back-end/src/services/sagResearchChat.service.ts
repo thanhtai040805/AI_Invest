@@ -436,6 +436,27 @@ function projectHistoryEntry(msg: {
   if (typeof meta.eval_eligible === 'boolean') {
     base.eval_eligible = meta.eval_eligible;
   }
+  const rawBrief =
+    meta.research_brief && typeof meta.research_brief === 'object' && !Array.isArray(meta.research_brief)
+      ? (meta.research_brief as Record<string, unknown>)
+      : null;
+  if (rawBrief) {
+    if (typeof rawBrief.user_concern === 'string' && rawBrief.user_concern.trim()) {
+      base.user_concern = rawBrief.user_concern.trim().slice(0, 400);
+    }
+    if (typeof rawBrief.answer_shape === 'string' && rawBrief.answer_shape.trim()) {
+      base.answer_shape = rawBrief.answer_shape.trim().slice(0, 64);
+    }
+    if (typeof rawBrief.needs_clarification === 'boolean') {
+      base.needs_clarification = rawBrief.needs_clarification;
+    }
+    if (typeof rawBrief.clarifying_question === 'string' && rawBrief.clarifying_question.trim()) {
+      base.clarifying_question = rawBrief.clarifying_question.trim().slice(0, 600);
+    }
+  }
+  if (typeof meta.session_rolling_summary === 'string' && meta.session_rolling_summary.trim()) {
+    base.session_rolling_summary = meta.session_rolling_summary.trim().slice(0, 12_000);
+  }
   return base;
 }
 
@@ -894,7 +915,7 @@ export class SagResearchChatService {
     const priorMessages = await this.prisma.chatMessage.findMany({
       where: { sessionId },
       orderBy: { createdAt: 'desc' },
-      take: 60,
+      take: 120,
       select: { id: true, role: true, content: true, metadata: true },
     });
     const history = priorMessages

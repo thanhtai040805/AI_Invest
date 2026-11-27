@@ -1221,10 +1221,10 @@ async def _get_or_build_scope_knowledge_index(
                 continue
             inventory = dict(pairs or [])
             relevant = {uid: value for uid, value in wanted.items() if uid in inventory}
-            if wanted and relevant == wanted and all(inventory[uid] == value for uid, value in wanted.items()):
-                candidates.append((build_id in active_graphs, len(relevant), build_id))
+            if wanted and relevant and all(inventory[uid] == value for uid, value in relevant.items()):
+                candidates.append((build_id in active_graphs, relevant == wanted, len(relevant), build_id))
         if candidates:
-            graph_ids.append(max(candidates)[2])
+            graph_ids.append(max(candidates)[3])
     kg_edge_ids = sorted(
         str(eid)
         for (eid,) in (

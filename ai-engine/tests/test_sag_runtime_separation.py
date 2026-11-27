@@ -133,11 +133,13 @@ def test_legacy_gil_modules_and_routes_are_removed():
 def test_compose_research_profile_uses_clean_sag_postgres_and_qdrant():
     compose = (ROOT.parent / "docker-compose.yml").read_text(encoding="utf-8")
     settings_src = (ROOT / "app" / "config" / "settings.py").read_text(encoding="utf-8")
+    sag_config_src = (ROOT.parent / "SAG" / "apps" / "api" / "sag_api" / "core" / "config.py").read_text(encoding="utf-8")
     assert "sag-postgres:" in compose
     assert "sag-qdrant:" in compose
     assert "sag-api:" in compose
     assert "SAG_SAG_VECTOR_PROVIDER=qdrant" in compose
-    assert "SAG_DOCUMENT_EVENT_EXTRACTION_ENABLED=" in compose
+    assert "SAG_DOCUMENT_EVENT_EXTRACTION_ENABLED" not in compose
+    assert "document_event_extraction_enabled: bool = False" in sag_config_src
     assert "SAG_AUTH_MODE=${SAG_AUTH_MODE:-continuum}" in compose
     assert "SAG_BFF_SERVICE_TOKEN=" in compose
     assert "SAG_ENVIRONMENT=${SAG_ENVIRONMENT:-dev}" in compose

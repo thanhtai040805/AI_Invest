@@ -200,9 +200,16 @@ def test_six_file_docker_and_env_config_parity() -> None:
     required_keys = [
         "SAG_CORE_DATABASE_URL",
         "SAG_DECISION_MODEL",
-        "SAG_RERANK_PROVIDER",
         "SAG_RERANK_MODEL",
     ]
+    banned_switch_keys = {
+        "SAG_KNOWLEDGE_TREE_REBUILD_ENABLED",
+        "SAG_USER_MEMORY_MODE",
+        "SAG_RESEARCH_BRAIN_MODE",
+        "SAG_DOCUMENT_EVENT_EXTRACTION_ENABLED",
+        "SAG_DECISION_PROVIDER",
+        "SAG_RERANK_PROVIDER",
+    }
     env_files = [
         repo_root / ".env.example",
         repo_root / "SAG" / ".env.example",
@@ -219,12 +226,20 @@ def test_six_file_docker_and_env_config_parity() -> None:
         for rk in required_keys:
             assert rk in seen_keys, f"Missing {rk} in {env_path}"
             assert seen_keys[rk] == 1, f"Duplicate {rk} in {env_path}"
+        for bk in banned_switch_keys:
+            assert bk not in seen_keys, f"Banned feature switch {bk} found in {env_path}"
 
     for compose_path in (repo_root / "docker-compose.yml", repo_root / "SAG" / "compose.yaml"):
         ctext = compose_path.read_text(encoding="utf-8")
         for rk in required_keys:
             assert rk in ctext, f"Missing {rk} in {compose_path}"
+        for bk in banned_switch_keys:
+            assert bk not in ctext, f"Banned feature switch {bk} found in {compose_path}"
 
-    # Verify Pydantic Settings declares every corresponding field
+    # Verify Pydantic Settings declares every corresponding field with production-matching defaults
+    bare = Settings(_env_file=None)
+    assert bare.rerank_provider == "deepinfra"
+    assert bare.user_memory_mode == "on"
+    assert bare.sag_qdrant_shared_collection == "aiinvest_search_units"
     for field_name in ("core_database_url", "decision_model", "rerank_provider", "rerank_model"):
         assert field_name in Settings.model_fields

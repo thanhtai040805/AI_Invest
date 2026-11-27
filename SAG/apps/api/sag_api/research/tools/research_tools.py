@@ -303,7 +303,7 @@ async def screen_financial_universe_tool(
 
 # ── Tool 2: Push-Down Disclosure Evidence Search (`search_disclosures` + legacy alias) ─
 
-DISCLOSURE_CHUNK_CHAR_LIMIT = 2000
+DISCLOSURE_CHUNK_CHAR_LIMIT = 2800
 
 CANONICAL_DISCLOSURE_SLOTS: frozenset[str] = frozenset(
     {"BCTC_AUDITED", "QUARTER_NOTES", "BCTN_CORE", "BCTN_PR", "AGM_TARGETS"}
@@ -415,6 +415,7 @@ async def _execute_disclosure_search(
                 top_k=recall_k,
             )
             raw_sections.extend(res.sections)
+            hippo_hops += int(res.hipporag_hops or 0)
             for vid, blks in (res.canonical_blocks or {}).items():
                 collected_blocks.setdefault(str(vid), list(blks))
             hippo_hops += int(res.hipporag_hops or 0)
@@ -442,6 +443,7 @@ async def _execute_disclosure_search(
                 load_canonical_blocks=False,
             )
             raw_sections.extend(res.sections)
+            hippo_hops += int(res.hipporag_hops or 0)
             for vid, blks in (res.canonical_blocks or {}).items():
                 collected_blocks.setdefault(str(vid), list(blks))
             avail_cov = dict(disc_stats.get("available_coverage") or {})

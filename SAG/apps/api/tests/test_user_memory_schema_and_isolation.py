@@ -109,7 +109,6 @@ def test_six_file_config_parity_and_no_duplicate_core_database_url() -> None:
     assert len(core_db_decls) == 1, f"Expected 1 core_database_url field, found {len(core_db_decls)}"
 
     required_env_keys = [
-        "SAG_USER_MEMORY_MODE",
         "SAG_USER_MEMORY_QDRANT_COLLECTION",
         "SAG_USER_MEMORY_EXTRACTOR_MODEL",
         "SAG_USER_MEMORY_WORKER_ENABLED",
@@ -126,11 +125,13 @@ def test_six_file_config_parity_and_no_duplicate_core_database_url() -> None:
             m = re.match(r"^\s*([A-Z][A-Z0-9_]+)\s*=", line)
             if m:
                 counts[m.group(1)] = counts.get(m.group(1), 0) + 1
+        assert "SAG_USER_MEMORY_MODE" not in counts, f"Env switch SAG_USER_MEMORY_MODE must be absent in {env_path}"
         for key in required_env_keys:
             assert counts.get(key) == 1, f"{key} count={counts.get(key)} in {env_path}"
 
     for compose_path in (repo_root / "docker-compose.yml", repo_root / "SAG" / "compose.yaml"):
         ctext = compose_path.read_text(encoding="utf-8")
+        assert "SAG_USER_MEMORY_MODE" not in ctext, f"Env switch SAG_USER_MEMORY_MODE must be absent in {compose_path}"
         for key in required_env_keys:
             assert key in ctext, f"Missing {key} in {compose_path}"
 

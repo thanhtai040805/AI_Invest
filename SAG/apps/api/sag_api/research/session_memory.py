@@ -106,6 +106,11 @@ class SessionTurnRecord:
     eval_eligible: bool
     quarantined: bool
     quarantine_reason: str | None = None
+    user_concern: str | None = None
+    answer_shape: str | None = None
+    needs_clarification: bool = False
+    clarifying_question: str | None = None
+    session_rolling_summary: str | None = None
 
 
 @dataclass
@@ -136,8 +141,16 @@ class FinancialZeroMemLedger:
         if self.valid_turns:
             last = self.valid_turns[-1]
             tks = ",".join(last.tickers) if last.tickers else "none"
-            last_summary = f"Q={last.user_content[:120]} | tickers={tks} | intent={last.route_intent or 'research'}"
+            extra = ""
+            if last.clarifying_question:
+                extra = f" | asked_clarification={last.clarifying_question[:140]}"
+            elif last.user_concern:
+                extra = f" | concern={last.user_concern[:120]}"
+            last_summary = (
+                f"Q={last.user_content[:120]} | tickers={tks} | intent={last.route_intent or 'research'}{extra}"
+            )
         return {
+            "active_tickers": list(self.active_episode_tickers),
             "active_episode_tickers": list(self.active_episode_tickers),
             "all_session_tickers": list(self.all_session_tickers),
             "has_prior_turns": self.has_prior_turns,
@@ -317,6 +330,31 @@ def build_financial_zeromem_ledger(
         )
         raw_eval_eligible = _msg_attr(a_msg, "eval_eligible") if a_msg is not None else None
         eval_eligible = True if raw_eval_eligible is None else bool(raw_eval_eligible)
+        u_concern = (
+            str(_msg_attr(a_msg, "user_concern") or "").strip() or None
+            if (a_msg is not None and not quarantined)
+            else None
+        )
+        a_shape = (
+            str(_msg_attr(a_msg, "answer_shape") or "").strip() or None
+            if (a_msg is not None and not quarantined)
+            else None
+        )
+        needs_clar = (
+            bool(_msg_attr(a_msg, "needs_clarification"))
+            if (a_msg is not None and not quarantined)
+            else False
+        )
+        clar_q = (
+            str(_msg_attr(a_msg, "clarifying_question") or "").strip() or None
+            if (a_msg is not None and not quarantined)
+            else None
+        )
+        rolling_sum = (
+            str(_msg_attr(a_msg, "session_rolling_summary") or "").strip() or None
+            if (a_msg is not None and not quarantined)
+            else None
+        )
 
         record = SessionTurnRecord(
             turn_index=idx,
@@ -331,6 +369,11 @@ def build_financial_zeromem_ledger(
             eval_eligible=eval_eligible,
             quarantined=quarantined,
             quarantine_reason=q_reason,
+            user_concern=u_concern,
+            answer_shape=a_shape,
+            needs_clarification=needs_clar,
+            clarifying_question=clar_q,
+            session_rolling_summary=rolling_sum,
         )
 
         if quarantined:
@@ -538,3 +581,129 @@ def should_include_recent_pairs(
 
 # Alias preserving both naming conventions
 build_financial_zero_mem_ledger = build_financial_zeromem_ledger
+
+
+def _render_turn_checkpoint_entry(turn: SessionTurnRecord) -> str:
+    """Format one older PIT-valid turn into a high-density narrative checkpoint entry (0 loss of intent/nuance)."""
+    tks_part = f" [Mã: {', '.join(turn.tickers)}]" if turn.tickers else ""
+    scr_part = f" [Lọc: {', '.join(turn.screened_tickers[:8])}]" if turn.screened_tickers else ""
+    concern_part = f" | Trọng tâm: {turn.user_concern}" if turn.user_concern else ""
+    u_excerpt = _compact_assistant_excerpt(turn.user_content, max_chars=420)
+    if turn.clarifying_question:
+        a_excerpt = f"Hệ thống hỏi làm rõ: {turn.clarifying_question}"
+    else:
+        a_excerpt = _compact_assistant_excerpt(turn.assistant_content, max_chars=520)
+    return (
+        f"- Lượt {turn.turn_index}{tks_part}{scr_part}{concern_part}:\n"
+        f"  + Nhà đầu tư: {u_excerpt}\n"
+        f"  + Tóm tắt phản hồi: {a_excerpt}"
+    )
+
+
+def build_conversation_prefix_messages(
+    ledger: FinancialZeroMemLedger,
+    *,
+    verbatim_token_budget: int = 16_000,
+    keep_recent_token_budget: int = 10_000,
+) -> tuple[list[Any], str | None, bool]:
+    """Antigravity-style 2-Tier In-Session Conversation Prefix Builder (PIT-Quarantined + KV-Cache Aligned).
+
+    Tier 1 (`total_tokens <= verbatim_token_budget`, ~15–25 full turns):
+      Emits 100% intact chronological `(user, assistant)` `AgentMessage` pairs right after `system`.
+      Maximizes DeepInfra KV Prefix Cache hits ($0.0144/1M tokens) and preserves 100% of unusual side
+      questions, multi-part clarifying questions, subtle constraints, and explicit reversals/pivots.
+
+    Tier 2 (`total_tokens > verbatim_token_budget`, marathon 25–60+ turn sessions):
+      Compacts older turns `[1..K]` into a rich `<CONVERSATION_CHECKPOINT_SUMMARY>` (reusing any cached
+      `session_rolling_summary` from prior assistant metadata and incrementally appending newly aged-out
+      turns), followed by intact verbatim recent turns `[K+1..N]`. Raw verbatim earlier turns remain
+      100% retrievable via `ledger.recall(...)`.
+
+    Returns `(prefix_messages, rolling_summary_or_None, summary_was_refreshed)`.
+    """
+    from sag_agent.types import AgentMessage
+
+    if not ledger.valid_turns:
+        return [], None, False
+
+    complete_turns = [t for t in ledger.valid_turns if t.user_content and t.assistant_content]
+    if not complete_turns:
+        return [], None, False
+
+    turn_tokens = [
+        _estimate_tokens(t.user_content) + _estimate_tokens(t.assistant_content) + 8
+        for t in complete_turns
+    ]
+    total_tokens = sum(turn_tokens)
+
+    if total_tokens <= max(1, verbatim_token_budget):
+        msgs: list[Any] = []
+        for t in complete_turns:
+            msgs.append(AgentMessage(role="user", content=t.user_content))
+            msgs.append(AgentMessage(role="assistant", content=t.assistant_content))
+        return msgs, None, False
+
+    # Exceeds verbatim budget -> split into older_turns [0..split_idx) + recent_turns [split_idx..N)
+    effective_recent_budget = max(1, min(keep_recent_token_budget, verbatim_token_budget - 20))
+    kept_recent: list[SessionTurnRecord] = []
+    used_recent = 0
+    for t, tok in zip(reversed(complete_turns), reversed(turn_tokens), strict=True):
+        if kept_recent and (used_recent + tok) > effective_recent_budget:
+            break
+        kept_recent.append(t)
+        used_recent += tok
+    kept_recent.reverse()
+    if len(kept_recent) == len(complete_turns) and len(complete_turns) >= 2:
+        kept_recent = complete_turns[-max(1, len(complete_turns) - 1) :]
+
+    split_count = len(complete_turns) - len(kept_recent)
+    older_turns = complete_turns[:split_count]
+
+    # Reuse the latest cached rolling summary inside older_turns if available
+    cached_base: str | None = None
+    cached_idx = -1
+    for i in range(len(older_turns) - 1, -1, -1):
+        if older_turns[i].session_rolling_summary:
+            cached_base = older_turns[i].session_rolling_summary
+            cached_idx = i
+            break
+
+    delta_turns = older_turns[cached_idx + 1 :]
+    refreshed = bool(delta_turns) or cached_base is None
+    if cached_base and not delta_turns:
+        rolling_summary = cached_base
+    else:
+        parts: list[str] = []
+        if cached_base:
+            parts.append(cached_base.strip())
+        for t in delta_turns:
+            parts.append(_render_turn_checkpoint_entry(t))
+        rolling_summary = "\n".join(parts)
+        if len(rolling_summary) > 10_000:
+            rolling_summary = "...[tóm tắt các lượt đầu]...\n" + rolling_summary[-9_600:]
+
+    header_lines = [
+        "<CONVERSATION_CHECKPOINT_SUMMARY>",
+        (
+            f"Tóm tắt mạch hội thoại các lượt trước (Lượt 1..{older_turns[-1].turn_index}, "
+            f"khóa sổ PIT <= {ledger.request_as_of_date.isoformat()})."
+        ),
+        "Lưu ý kỷ luật: dùng để giữ trọn ngữ cảnh, ràng buộc cá nhân và ý định xuyên suốt phiên; "
+        "mọi số liệu tài chính mới ở lượt hiện tại vẫn phải lấy từ kết quả kiểm chứng mới.",
+    ]
+    if ledger.all_session_tickers:
+        header_lines.append(f"Các mã đã trao đổi trong phiên: {', '.join(ledger.all_session_tickers)}")
+    header_lines.append(rolling_summary)
+    header_lines.append("</CONVERSATION_CHECKPOINT_SUMMARY>")
+
+    out_msgs: list[Any] = [
+        AgentMessage(role="user", content="\n".join(header_lines)),
+        AgentMessage(
+            role="assistant",
+            content="Đã ghi nhận đầy đủ tóm tắt lịch sử phiên trò chuyện và các ràng buộc trước đó.",
+        ),
+    ]
+    for t in kept_recent:
+        out_msgs.append(AgentMessage(role="user", content=t.user_content))
+        out_msgs.append(AgentMessage(role="assistant", content=t.assistant_content))
+    return out_msgs, rolling_summary, refreshed

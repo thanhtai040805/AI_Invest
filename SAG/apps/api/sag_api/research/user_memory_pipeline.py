@@ -512,7 +512,7 @@ async def enqueue_ingest_turn_job(
             "assistant_clean_for_digest": False,
             "reason": f"memory_mode_{memory_mode}",
         }
-    if getattr(settings, "user_memory_mode", "shadow") == "off":
+    if getattr(settings, "user_memory_mode", "on") == "off":
         return {
             "accepted": False,
             "job_id": None,

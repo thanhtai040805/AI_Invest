@@ -173,6 +173,7 @@ class ClaimVerdictCard:
     status: VerdictStatus
     summary_lines: list[str] = field(default_factory=list)
     badges: list[str] = field(default_factory=list)
+    verbatim_quotes: list[str] = field(default_factory=list)
     escalation_query: str | None = None
     escalated: bool = False
 
@@ -185,6 +186,7 @@ class ClaimVerdictCard:
             "status": self.status,
             "summary_lines": list(self.summary_lines),
             "badges": list(self.badges),
+            "verbatim_quotes": list(self.verbatim_quotes),
             "escalation_query": self.escalation_query,
             "escalated": self.escalated,
         }
@@ -195,6 +197,9 @@ class ClaimVerdictCard:
         esc_lbl = " [Đã đào sâu thuyết minh vòng 2]" if self.escalated else ""
         head = f"### [{self.claim_id}] {role_lbl}{p_lbl} — Trạng thái: {self.status}{esc_lbl}\nĐề bài: {self.statement}"
         body = "\n".join(f"- {ln}" for ln in self.summary_lines) if self.summary_lines else "- Không có dữ liệu PIT."
+        if self.verbatim_quotes:
+            q_block = "\n".join(f"  > {q}" for q in self.verbatim_quotes[:2])
+            return f"{head}\n{body}\n- Trích nguyên văn báo cáo gốc:\n{q_block}"
         return f"{head}\n{body}"
 
 
@@ -677,38 +682,50 @@ async def locate_candidates(
         f"Định vị ứng viên trên {len(batch_tickers)} mã Core PG (khớp tuyệt đối: {len(strict_matches)} mã)",
     )
 
-    # Optional open-universe qualitative disclosure search across the 24 filing-indexed tickers
+    # Optional qualitative disclosure search: restrict to quantitative winners when criteria exist
+    # so unrelated indexed tickers (ACB, BID, BVH...) never pollute an open-universe quantitative screen!
     if cand_spec.qualitative_query and ctx.available_tickers:
-        disc_res = await _execute_disclosure_search(
-            tool_name="search_disclosures",
-            ctx=ctx,
-            raw_tickers=sorted(ctx.available_tickers),
-            dense_queries=[cand_spec.qualitative_query],
-            vas_terms=[cand_spec.qualitative_query],
-            slots_filter=["BCTN_CORE", "AGM_TARGETS", "QUARTER_NOTES"],
-            years_filter=[],
-            quarters_filter=[],
-            include_cross_ref=False,
-            top_k=5,
-        )
-        for doc in disc_res.details.get("selected_documents") or ():
-            dtk = str(doc.get("ticker") or "").upper()
-            if dtk and dtk != anchor and all(r["ticker"] != dtk for r in top_rows) and len(top_rows) < cand_spec.limit:
-                top_rows.append(
-                    {
-                        "ticker": dtk,
-                        "company_name": dtk,
-                        "sector": "",
-                        "template": "CORPORATE",
-                        "passed_count": 1,
-                        "total_criteria": 1,
-                        "all_passed": True,
-                        "metrics": {},
-                        "units": {},
-                        "criteria_notes": [f"Khớp thuyết minh [{doc.get('citation_id')}]"],
-                        "has_indexed_filings": True,
-                    }
-                )
+        if cand_spec.criteria:
+            qual_tickers = [r["ticker"] for r in top_rows if r["ticker"] in ctx.available_tickers]
+        else:
+            qual_tickers = sorted(ctx.available_tickers)
+        if qual_tickers:
+            disc_res = await _execute_disclosure_search(
+                tool_name="search_disclosures",
+                ctx=ctx,
+                raw_tickers=qual_tickers,
+                dense_queries=[cand_spec.qualitative_query],
+                vas_terms=[cand_spec.qualitative_query],
+                slots_filter=["BCTN_CORE", "AGM_TARGETS", "QUARTER_NOTES"],
+                years_filter=[],
+                quarters_filter=[],
+                include_cross_ref=False,
+                top_k=5,
+            )
+            if not cand_spec.criteria:
+                for doc in disc_res.details.get("selected_documents") or ():
+                    dtk = str(doc.get("ticker") or "").upper()
+                    if (
+                        dtk
+                        and dtk != anchor
+                        and all(r["ticker"] != dtk for r in top_rows)
+                        and len(top_rows) < cand_spec.limit
+                    ):
+                        top_rows.append(
+                            {
+                                "ticker": dtk,
+                                "company_name": dtk,
+                                "sector": "",
+                                "template": "CORPORATE",
+                                "passed_count": 1,
+                                "total_criteria": 1,
+                                "all_passed": True,
+                                "metrics": {},
+                                "units": {},
+                                "criteria_notes": [f"Khớp thuyết minh [{doc.get('citation_id')}]"],
+                                "has_indexed_filings": True,
+                            }
+                        )
 
     picked_tickers = [r["ticker"] for r in top_rows]
     analysis_tickers = list(dict.fromkeys(([anchor] if anchor else []) + picked_tickers))[:6]
@@ -821,6 +838,13 @@ async def _run_quant_specs_for_claim(
                 f"Lãi/lỗ={pos.get('unrealized_pnl_pct')}%"
             )
             badges.append(f"[PORT:{sym}]")
+        if ctx.session_ledger.valid_turns:
+            rec_session = ctx.session_ledger.recall(tickers=tickers, limit=2)
+            for rt in rec_session.get("recalled_turns") or ():
+                lines.append(
+                    f"Ngữ cảnh phiên Lượt {rt['turn_index']}: Hỏi '{str(rt['user_query'])[:140]}' -> "
+                    f"{str(rt['assistant_excerpt'])[:260]}"
+                )
 
     if fs is not None and tickers:
         # 1) Facts + accounting-safe composite totals (prevents mental addition/subtraction errors!)
@@ -1092,36 +1116,76 @@ async def _run_quant_specs_for_claim(
                 else:
                     lines.append(f"{tk} · Quét rủi ro tất định: không phát hiện cờ cảnh báo trọng yếu.")
 
-        # 4) Peer comparison
-        if wants_peers and len(tickers) >= 2:
-            pc = peer_compare(fs, tickers, kpi_items or None)
-            if pc.get("status") == "OK":
-                for kid, row in list(pc["kpis"].items())[:6]:
-                    row_parts: list[str] = []
-                    lbl = kid
-                    for tk in pc["tickers"]:
-                        v = row.get(tk)
-                        if not v or v.get("status") != "OK":
-                            continue
-                        lbl = v["label_vi"]
-                        kv_obj = KpiValue(
-                            kpi_id=v["kpi_id"],
-                            label_vi=v["label_vi"],
-                            ticker=tk,
-                            period=v["period"],
-                            value=v["value"],
-                            unit=v["unit"],
-                            formula=v["formula"],
-                            status=KpiStatus.OK,
-                            inputs=tuple(v["inputs"]),
-                            flags=tuple(v["flags"]),
-                        )
-                        cid = await _register_kpi(ctx, kv_obj)
-                        badges.append(f"[{cid}]")
-                        rk = f" (#{v['rank']})" if "rank" in v else ""
-                        row_parts.append(f"{tk}={fmt_value(v['value'], v['unit'])}{rk} [{cid}]")
-                    if row_parts:
-                        lines.append(f"So sánh {lbl}: " + " | ".join(row_parts))
+        # 4) Peer comparison (auto-resolves top same-sector peers when len(tickers) == 1!)
+        if wants_peers and tickers:
+            peer_group = list(tickers)
+            peer_fs = fs
+            if len(peer_group) == 1 and ctx.catalog_profiles:
+                anchor_tk = peer_group[0]
+                prof_by_tk = {
+                    str(p.get("ticker") or "").strip().upper(): p
+                    for p in ctx.catalog_profiles
+                    if str(p.get("ticker") or "").strip()
+                }
+                anc_prof = prof_by_tk.get(anchor_tk) or {}
+                anc_ind = _norm_ascii(str(anc_prof.get("industry") or anc_prof.get("sector") or ""))
+                anc_sec = _norm_ascii(str(anc_prof.get("sector") or ""))
+                allowed_p = ctx.principal.allowed_project_ids
+                same_peers: list[tuple[int, float, str]] = []
+                for cand_tk, p in prof_by_tk.items():
+                    if cand_tk == anchor_tk:
+                        continue
+                    if "*" not in allowed_p and cand_tk not in allowed_p:
+                        continue
+                    p_ind = _norm_ascii(str(p.get("industry") or ""))
+                    p_sec = _norm_ascii(str(p.get("sector") or ""))
+                    tier_match = (
+                        2
+                        if (anc_ind and (p_ind == anc_ind or anc_ind in p_ind or p_ind in anc_ind))
+                        else (1 if (anc_sec and p_sec == anc_sec) else 0)
+                    )
+                    if tier_match > 0:
+                        mcap = float(p.get("market_cap") or 0.0)
+                        same_peers.append((tier_match, mcap, cand_tk))
+                same_peers.sort(key=lambda item: (-item[0], -item[1], item[2]))
+                extra_peers = [tk_p for _, _, tk_p in same_peers[:3]]
+                if extra_peers and ctx.core_reader is not None:
+                    peer_group = [anchor_tk, *extra_peers]
+                    try:
+                        peer_fs = await _fact_set(ctx, peer_group)
+                    except Exception:  # noqa: BLE001
+                        peer_group = list(tickers)
+                        peer_fs = fs
+            if len(peer_group) >= 2 and peer_fs is not None:
+                peer_p_ref = _resolve_period_ref(peer_fs, peer_group[0], claim.period) if claim.period else None
+                pc = peer_compare(peer_fs, peer_group, kpi_items or None, period=peer_p_ref)
+                if pc.get("status") == "OK":
+                    for kid, row in list(pc["kpis"].items())[:6]:
+                        row_parts: list[str] = []
+                        lbl = kid
+                        for tk in pc["tickers"]:
+                            v = row.get(tk)
+                            if not v or v.get("status") != "OK":
+                                continue
+                            lbl = v["label_vi"]
+                            kv_obj = KpiValue(
+                                kpi_id=v["kpi_id"],
+                                label_vi=v["label_vi"],
+                                ticker=tk,
+                                period=v["period"],
+                                value=v["value"],
+                                unit=v["unit"],
+                                formula=v["formula"],
+                                status=KpiStatus.OK,
+                                inputs=tuple(v["inputs"]),
+                                flags=tuple(v["flags"]),
+                            )
+                            cid = await _register_kpi(ctx, kv_obj)
+                            badges.append(f"[{cid}]")
+                            rk = f" (#{v['rank']})" if "rank" in v else ""
+                            row_parts.append(f"{tk}={fmt_value(v['value'], v['unit'])}{rk} [{cid}]")
+                        if row_parts:
+                            lines.append(f"So sánh {lbl}: " + " | ".join(row_parts))
 
         # 5) AGM Plan vs Actual
         if wants_agm:
@@ -1619,7 +1683,7 @@ async def _run_doc_mini_reader(
     on_tool_call: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     on_tool_result: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     trace: TraceSink | None = None,
-) -> tuple[VerdictStatus, list[str], list[str], str | None, Usage, int]:
+) -> tuple[VerdictStatus, list[str], list[str], list[str], str | None, Usage, int]:
     """Retrieve targeted `[C#]` sections for `claim` and run 1 compact Mini-Reader extraction call."""
     search_log: list[dict[str, Any]] = []
 
@@ -1633,11 +1697,12 @@ async def _run_doc_mini_reader(
             f"tại PIT {ctx.as_of_date.isoformat()}."
         )
         _trace_reader(outcome="NO_DOC_COVERAGE", status="NO_DATA", findings=[no_cov])
-        return ("NO_DATA", [no_cov], [], None, Usage(), 0)
+        return ("NO_DATA", [no_cov], [], [], None, Usage(), 0)
 
     gathered_cids: list[str] = []
     snippet_blocks: list[str] = []
     tool_calls = 0
+    enable_xref = len(doc_tickers) <= 2
 
     for idx, dspec in enumerate(doc_specs[:MAX_DOC_SPECS_PER_CLAIM], 1):
         slots, years, quarters, q_txt = _parse_doc_spec(dspec, claim.period)
@@ -1669,7 +1734,7 @@ async def _run_doc_mini_reader(
             slots_filter=slots,
             years_filter=years,
             quarters_filter=quarters,
-            include_cross_ref=False,
+            include_cross_ref=enable_xref,
             top_k=5,
         )
         tool_calls += 1
@@ -1686,7 +1751,7 @@ async def _run_doc_mini_reader(
                 slots_filter=slots,
                 years_filter=[],
                 quarters_filter=[],
-                include_cross_ref=False,
+                include_cross_ref=enable_xref,
                 top_k=5,
             )
             tool_calls += 1
@@ -1735,7 +1800,23 @@ async def _run_doc_mini_reader(
     if not snippet_blocks:
         no_snip = f"Không tìm thấy đoạn thuyết minh phù hợp trong phạm vi PIT {ctx.as_of_date.isoformat()}."
         _trace_reader(outcome="NO_SNIPPETS", status="NO_DATA", findings=[no_snip])
-        return ("NO_DATA", [no_snip], [], None, Usage(), tool_calls)
+        return ("NO_DATA", [no_snip], [], [], None, Usage(), tool_calls)
+
+    def _collect_verbatim_excerpts(prefer_text: str) -> list[str]:
+        cited_nums = [int(m.group(1)) for m in re.finditer(r"\[C(\d+)\]", prefer_text)]
+        fallback_nums = [int(b.strip("[]C")) for b in gathered_cids if b.startswith("[C") and b.strip("[]C").isdigit()]
+        ordered_nums = list(dict.fromkeys([*cited_nums, *fallback_nums]))[:2]
+        excerpts: list[str] = []
+        for c_num in ordered_nums:
+            if 1 <= c_num <= len(ctx.evidence.sections):
+                sec = ctx.evidence.sections[c_num - 1]
+                tk_s = getattr(sec, "ticker", "") or ""
+                slot_s = getattr(sec, "sub_doc_slot", "") or ""
+                pg_s = getattr(sec, "page_from", 1) or 1
+                raw_body = re.sub(r"\s+", " ", str(getattr(sec, "content", "") or "")).strip()
+                if raw_body:
+                    excerpts.append(f"[C{c_num}] ({tk_s} {slot_s} tr.{pg_s}): {raw_body[:700]}")
+        return excerpts
 
     quant_hint = "\n".join(quant_context_lines[:3]) if quant_context_lines else "Không có số định lượng đi kèm."
     user_msg = (
@@ -1766,8 +1847,16 @@ async def _run_doc_mini_reader(
             status="PARTIAL" if clean_txt else "NO_DATA",
         )
         if clean_txt:
-            return ("PARTIAL", [clean_txt[:500]], gathered_cids, None, usage, tool_calls)
-        return ("NO_DATA", ["Không trích xuất được dữ kiện từ đoạn tài liệu."], [], None, usage, tool_calls)
+            return (
+                "PARTIAL",
+                [clean_txt[:500]],
+                gathered_cids,
+                _collect_verbatim_excerpts(clean_txt),
+                None,
+                usage,
+                tool_calls,
+            )
+        return ("NO_DATA", ["Không trích xuất được dữ kiện từ đoạn tài liệu."], [], [], None, usage, tool_calls)
 
     raw_status = str(parsed.get("status") or "PARTIAL").strip().upper()
     status: VerdictStatus = (
@@ -1782,6 +1871,7 @@ async def _run_doc_mini_reader(
     if not findings and status != "NO_DATA":
         status = "NO_DATA"
         findings = ["Tài liệu truy xuất không chứa chi tiết thuyết minh khớp trực tiếp với câu hỏi."]
+    verbatim_quotes = _collect_verbatim_excerpts("\n".join(findings)) if status != "NO_DATA" else []
     _trace_reader(
         outcome="OK",
         user_prompt=user_msg,
@@ -1793,7 +1883,7 @@ async def _run_doc_mini_reader(
         anomaly_followup_query=followup,
         gathered_citations=gathered_cids,
     )
-    return status, findings[:5], gathered_cids, followup, usage, tool_calls
+    return status, findings[:5], gathered_cids, verbatim_quotes, followup, usage, tool_calls
 
 
 async def execute_brief_claims(
@@ -1802,6 +1892,7 @@ async def execute_brief_claims(
     located: LocatedTargets,
     ctx: ResearchToolContext,
     model: ModelProvider,
+    dropped_by_claim_id: Mapping[str, Sequence[str]] | None = None,
     overall_deadline_mono: float | None = None,
     on_stage: Callable[[str, str, str], Awaitable[None]] | None = None,
     on_thought: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
@@ -1817,6 +1908,49 @@ async def execute_brief_claims(
             fs = await _fact_set(ctx, tickers)
         except Exception:  # noqa: BLE001
             fs = None
+
+    # Deterministic 0-Token Accounting / Growth Divergence Auto-Probe:
+    # When an indexed ticker exhibits |rev_yoy| >= 15%, |npat_yoy| >= 15%, or opposite-sign revenue vs NPAT YoY
+    # AND no claim already checks `QUARTER_NOTES` / `BCTC_AUDITED`, auto-attach a variance explanation doc probe!
+    auto_variance_claim_id: str | None = None
+    has_existing_doc_probe = any(
+        ev.startswith("doc:") and ("QUARTER_NOTES" in ev or "BCTC_AUDITED" in ev)
+        for cl in brief.claims
+        for ev in cl.evidence
+    )
+    if not has_existing_doc_probe and fs is not None and brief.claims:
+        indexed_tks = [t for t in tickers if not ctx.available_tickers or t in ctx.available_tickers]
+        needs_variance_probe = False
+        for tk_chk in indexed_tks[:2]:
+            lq_chk = fs.latest_period(tk_chk, "Q")
+            if lq_chk is None:
+                continue
+            p_chk = PeriodRef("Q", lq_chk[0], lq_chk[1])
+            rev_yoy = compute_kpi(fs, tk_chk, "top_line_growth_yoy", p_chk)
+            npat_yoy = compute_kpi(fs, tk_chk, "npat_growth_yoy", p_chk)
+            rv = rev_yoy.value if rev_yoy.status is KpiStatus.OK else None
+            nv = npat_yoy.value if npat_yoy.status is KpiStatus.OK else None
+            if (
+                (rv is not None and abs(rv) >= 0.15)
+                or (nv is not None and abs(nv) >= 0.15)
+                or (rv is not None and nv is not None and (rv * nv) < 0)
+            ):
+                needs_variance_probe = True
+                break
+        if needs_variance_probe:
+            target_cl = next(
+                (
+                    cl
+                    for cl in brief.claims
+                    if any(
+                        k in ev
+                        for ev in cl.evidence
+                        for k in ("revenue", "top_line", "npat", "operating_profit", "pbt")
+                    )
+                ),
+                brief.claims[0],
+            )
+            auto_variance_claim_id = target_cl.id
 
     reader_sem = asyncio.Semaphore(MAX_MINI_READER_CONCURRENCY)
     total_usage = Usage()
@@ -1884,10 +2018,16 @@ async def execute_brief_claims(
                 summary_lines.insert(0, prem_msg)
 
         doc_specs = [ev for ev in claim.evidence if ev.startswith("doc:")]
+        if not is_premise and claim.id == auto_variance_claim_id and not doc_specs:
+            doc_specs = [
+                "doc:QUARTER_NOTES,BCTC_AUDITED|"
+                "giải trình biến động doanh thu lợi nhuận cơ cấu hợp nhất công ty con liên kết bộ phận"
+            ]
         doc_status: VerdictStatus | None = None
+        verbatim_quotes: list[str] = []
         # Skip speculative causal doc searches when a premise this claim depends on was already REFUTED
         if doc_specs and not refuted_deps:
-            d_st, d_lines, d_badges, d_follow, d_usage, d_tools = await _run_doc_mini_reader(
+            d_st, d_lines, d_badges, d_quotes, d_follow, d_usage, d_tools = await _run_doc_mini_reader(
                 claim=claim,
                 doc_specs=doc_specs,
                 tickers=tickers,
@@ -1900,6 +2040,7 @@ async def execute_brief_claims(
                 trace=trace,
             )
             doc_status = d_st
+            verbatim_quotes.extend(d_quotes)
             summary_lines.extend(d_lines)
             for b in d_badges:
                 if b not in badges:
@@ -1910,6 +2051,26 @@ async def execute_brief_claims(
 
         if located.coverage_note and doc_specs:
             summary_lines.append(located.coverage_note)
+
+        claim_dropped = list((dropped_by_claim_id or {}).get(claim.id) or ())
+        if claim_dropped:
+            summary_lines.insert(
+                0,
+                "Lưu ý giới hạn dữ liệu: một phần chỉ tiêu yêu cầu chưa có trực tiếp trong kho PIT ("
+                + "; ".join(claim_dropped[:2])
+                + ").",
+            )
+
+        substantive_quant_lines = [
+            ln
+            for ln in quant_lines
+            if "Quét rủi ro tất định: không phát hiện cờ cảnh báo trọng yếu." not in ln
+            and "chưa có dữ liệu PIT" not in ln
+            and "thiếu dữ liệu (" not in ln
+        ]
+        has_substantive_quant = bool(substantive_quant_lines) or (
+            bool(quant_lines) and not claim_dropped and claim.evidence == ["risk"]
+        )
 
         # Resolve final deterministic card status
         is_pure_screen_premise = (
@@ -1942,13 +2103,17 @@ async def execute_brief_claims(
         elif doc_status == "REFUTED":
             final_status = "REFUTED"
         elif prem_status == "CONFIRMED":
-            final_status = "CONFIRMED"
-        elif quant_lines and (not doc_specs or doc_status in ("CONFIRMED", "PARTIAL")):
-            final_status = "CONFIRMED" if doc_status != "PARTIAL" else "PARTIAL"
-        elif quant_lines and doc_status == "NO_DATA":
+            final_status = "CONFIRMED" if not claim_dropped else "PARTIAL"
+        elif has_substantive_quant and (not doc_specs or doc_status in ("CONFIRMED", "PARTIAL")):
+            final_status = "PARTIAL" if (doc_status == "PARTIAL" or claim_dropped) else "CONFIRMED"
+        elif has_substantive_quant and doc_status == "NO_DATA":
             final_status = "PARTIAL"
         elif doc_status in ("CONFIRMED", "PARTIAL"):
-            final_status = doc_status
+            final_status = "PARTIAL" if claim_dropped else doc_status
+        elif quant_lines and claim_dropped:
+            final_status = "PARTIAL" if any(b.startswith("[") for b in badges) else "NO_DATA"
+        elif quant_lines:
+            final_status = "PARTIAL"
         else:
             final_status = "NO_DATA"
 
@@ -1961,6 +2126,7 @@ async def execute_brief_claims(
             status=final_status,
             summary_lines=summary_lines,
             badges=badges,
+            verbatim_quotes=verbatim_quotes,
             escalation_query=esc_q,
         )
         if on_thought is not None:
@@ -2040,7 +2206,7 @@ async def execute_brief_claims(
                     }
                 )
 
-        async def _run_followup(card: ClaimVerdictCard) -> tuple[list[str], list[str], Usage, int]:
+        async def _run_followup(card: ClaimVerdictCard) -> tuple[list[str], list[str], list[str], Usage, int]:
             assert card.escalation_query is not None
             probe_claim = ClaimSpec(
                 id=f"{card.claim_id}-hop2",
@@ -2048,7 +2214,7 @@ async def execute_brief_claims(
                 evidence=[f"doc:QUARTER_NOTES,BCTC_AUDITED|{card.escalation_query}"],
                 period=card.period,
             )
-            _, f_lines, f_badges, _, f_usage, f_tools = await _run_doc_mini_reader(
+            _, f_lines, f_badges, f_quotes, _, f_usage, f_tools = await _run_doc_mini_reader(
                 claim=probe_claim,
                 doc_specs=probe_claim.evidence,
                 tickers=tickers,
@@ -2060,16 +2226,21 @@ async def execute_brief_claims(
                 on_tool_result=on_tool_result,
                 trace=trace,
             )
-            return f_lines, f_badges, f_usage, f_tools
+            return f_lines, f_badges, f_quotes, f_usage, f_tools
 
         hop2_outcomes = await asyncio.gather(*(_run_followup(c) for c in escalation_candidates))
-        for card, (f_lines, f_badges, f_usage, f_tools) in zip(escalation_candidates, hop2_outcomes, strict=True):
+        for card, (f_lines, f_badges, f_quotes, f_usage, f_tools) in zip(
+            escalation_candidates, hop2_outcomes, strict=True
+        ):
             total_usage = total_usage.plus(f_usage)
             total_tool_calls += f_tools
             if f_lines and f_badges:
                 escalations_run += 1
                 card.escalated = True
                 card.summary_lines.extend(f"[Đào sâu thuyết minh] {ln}" for ln in f_lines[:3])
+                for q_item in f_quotes:
+                    if q_item not in card.verbatim_quotes:
+                        card.verbatim_quotes.append(q_item)
                 for b in f_badges:
                     if b not in card.badges:
                         card.badges.append(b)

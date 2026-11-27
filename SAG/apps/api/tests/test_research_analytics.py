@@ -96,7 +96,7 @@ def test_l2_cash_flow_kpis_use_audited_fy_not_quarterly_cf(fs) -> None:
 def test_l2_not_applicable_and_insufficient_are_explicit(fs) -> None:
     assert compute_kpi(fs, "VHM", "credit_cost", Q3_26_TTM).status is KpiStatus.NOT_APPLICABLE
     old = compute_kpi(fs, "ACB", "roe", PeriodRef("TTM", 2019, 4))
-    assert old.status is KpiStatus.INSUFFICIENT_DATA and old.value is None and "missing" in old.detail
+    assert old.status is KpiStatus.INSUFFICIENT_DATA and old.value is None and "thiếu chỉ tiêu" in old.detail
 
 
 def test_l2_kpi_pack_is_template_specific(fs) -> None:

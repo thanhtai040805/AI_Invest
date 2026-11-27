@@ -203,7 +203,13 @@ BRIEF_STATIC_SYSTEM_PROMPT = (
     "có thực sự giảm mạnh không) TRƯỚC các ý tìm nguyên nhân trong `claims` (và đặt `\"depends_on\": [\"P1\"]` "
     "cho các ý giải thích nguyên nhân).\n"
     "   - Nếu câu hỏi không cài tiền đề, để `\"premises_to_check\": []`.\n"
-    "3. Định vị đối tượng (`entities`):\n"
+    "3. Định vị đối tượng (`entities`) & Liên kết đa lượt hội thoại:\n"
+    "   - Lịch sử các lượt trao đổi trước trong phiên được truyền nguyên văn phía trước câu hỏi hiện tại:\n"
+    "     + Nếu nhà đầu tư đang trả lời câu hỏi làm rõ của hệ thống hoặc hỏi nối tiếp ('Còn định giá thì sao?', "
+    "'Biến động thấp, tích sản >5 năm'), BẮT BUỘC giữ đúng mã cổ phiếu đang phân tích ở lượt trước vào `tickers` "
+    "(TUYỆT ĐỐI KHÔNG tự biến thành lọc cổ phiếu toàn sàn khi người dùng đang hỏi về 1 mã cụ thể!).\n"
+    "     + Ngược lại, nếu người dùng chủ động ĐỔI Ý / RẼ NHÁNH ('Thôi bỏ FPT đi', 'Đổi sang lọc cổ phiếu ngành điện', "
+    "'Quên mã cũ đi, xem giúp HPG'), BẮT BUỘC tôn trọng ý định mới và loại bỏ hoàn toàn mã cũ khỏi `tickers`!\n"
     "   - Câu hỏi về mã cụ thể ('FRT...', 'VHM quý này ổn không?'): điền `\"tickers\": [\"FRT\"]`, "
     "`\"anchor_ticker\": null`, `\"candidate_search\": null`.\n"
     "   - Câu hỏi lấy 1 mã làm chuẩn để tìm mã khác ('Tìm ngân hàng an toàn như ACB mà tăng trưởng tốt hơn', "
@@ -215,14 +221,18 @@ BRIEF_STATIC_SYSTEM_PROMPT = (
     "'Doanh nghiệp thép nào biên gộp cao nhất?'): đặt `\"tickers\": []`, `\"anchor_ticker\": null`, và điền "
     "`\"candidate_search\"` với `criteria` định lượng (ví dụ rẻ so với tiền mặt: `net_cash_to_market_cap >= 0.25` "
     "hoặc `cash_to_market_cap >= 0.30`, `sort_by: \"net_cash_to_market_cap\"`, `sort_dir: \"desc\"`).\n"
-    "4. Xử lý mơ hồ (`ambiguities` & `needs_clarification`):\n"
-    "   - CHỈ đặt `\"needs_clarification\": true` (kèm 1 câu hỏi gọn ở `clarifying_question`) khi câu hỏi KHÔNG có "
-    "mã cổ phiếu, KHÔNG có ngành, KHÔNG có góc nhìn/tiêu chí tài chính nào, và KHÔNG có tiêu chí cá nhân trong bộ nhớ "
-    "(ví dụ: 'Cổ phiếu nào tốt?', 'Mua mã gì bây giờ?').\n"
-    "   - Nếu ĐÃ có mã cụ thể ('VHM quý này ổn không?') hoặc ĐÃ có góc nhìn ('rẻ so với tiền mặt', "
-    "'an toàn như ACB mà tăng trưởng tốt hơn'), TUYỆT ĐỐI đặt `\"needs_clarification\": false` — tự ghi giả định hợp "
-    "lý vào `assumptions` và lập các `claims` kiểm tra toàn diện (lợi nhuận lõi, dòng tiền CFO/LNST, nợ vay ngắn hạn/"
-    "thanh khoản, thuyết minh trọng yếu).\n"
+    "4. Tư duy Chuyên gia Phân tích (KẾT HỢP SỐ LIỆU ĐỊNH LƯỢNG ↔ BẢN CHẤT THUYẾT MINH TÀI LIỆU):\n"
+    "   - Khi phân tích chi tiết, đánh giá sức khỏe, triển vọng hoặc mức độ phù hợp đầu tư của doanh nghiệp đã có "
+    "tài liệu PDF/Qdrant, TUYỆT ĐỐI KHÔNG lập đề bài chỉ toàn phép tính số học khô khan! BẮT BUỘC kết hợp:\n"
+    "     + Số liệu định lượng (`fact:*`, `kpi:*`, `risk`, `peers`, `agm`) VÀ\n"
+    "     + Ít nhất 1–2 ý đọc thuyết minh gốc (`doc:QUARTER_NOTES|giải trình biến động doanh thu lợi nhuận hợp nhất`, "
+    "`doc:BCTC_AUDITED|cấu trúc tập đoàn công ty con liên kết`, `doc:BCTN_CORE|lợi thế cạnh tranh động lực`) "
+    "để bóc tách nguyên nhân thật sự đằng sau con số (ví dụ: thay đổi phạm vi hợp nhất/tách công ty con sang liên kết, "
+    "sự phân hóa giữa mảng cốt lõi và mảng phụ, hay lợi nhuận bất thường một lần).\n"
+    "   - Xử lý mơ hồ (`ambiguities` & `needs_clarification`): CHỈ đặt `\"needs_clarification\": true` khi câu hỏi "
+    "KHÔNG có mã cổ phiếu (cả ở lượt hiện tại lẫn mạch hội thoại đang dở), KHÔNG có ngành, KHÔNG có tiêu chí tài chính "
+    "nào, và KHÔNG có tiêu chí cá nhân trong bộ nhớ (ví dụ: 'Cổ phiếu nào tốt?'). Nếu ĐÃ có mã hoặc tiêu chí cá nhân "
+    "trong bộ nhớ (`USER_INVESTING_CRITERIA`), BẮT BUỘC đặt `\"needs_clarification\": false` và trả lời ngay!\n"
     "5. Từ điển bằng chứng hợp lệ trong `evidence` của mỗi ý (1..4 mục mỗi ý, ưu tiên `fact:*`/`kpi:*`/`risk` "
     "0-token trước, chỉ dùng `doc:*` khi thực sự cần đọc thuyết minh/BCTN/ĐHĐCĐ):\n"
     "   - `fact:<id>`: `revenue_net`, `gross_profit`, `operating_profit`, `pbt`, `npat`, `npat_parent`, `cfo`, "
@@ -392,6 +402,7 @@ class BriefValidationOutcome:
     pit_adjustments: list[str] = field(default_factory=list)
     # Parts of the model's brief removed because code cannot verify them (surfaced to the user)
     dropped_specs: list[str] = field(default_factory=list)
+    dropped_by_claim_id: dict[str, list[str]] = field(default_factory=dict)
     fallback_used: bool = False
     fallback_mode: str | None = None
     fallback_reason: str | None = None
@@ -746,6 +757,7 @@ def validate_research_brief(
             limit=lim,
         )
 
+    dropped_by_claim_id: dict[str, list[str]] = {}
     if anchor_ticker and cand_spec is None:
         errors.append(
             f"Đã đặt `anchor_ticker={anchor_ticker}` nhưng thiếu `candidate_search` để tìm ứng viên đối chiếu."
@@ -785,6 +797,7 @@ def validate_research_brief(
                 canon, warn = canonicalize_evidence_spec(ev)
                 if warn:
                     _drop(f"Ý `{cid}`: {warn}")
+                    dropped_by_claim_id.setdefault(cid, []).append(warn)
                 if not canon or canon in ev_clean:
                     continue
                 if len(ev_clean) >= MAX_EVIDENCE_PER_CLAIM:
@@ -893,6 +906,7 @@ def validate_research_brief(
             unknown_tickers=unknown_tickers,
             pit_adjustments=pit_adjustments,
             dropped_specs=dropped_specs,
+            dropped_by_claim_id=dropped_by_claim_id,
         )
 
     brief = ResearchBrief(
@@ -919,6 +933,7 @@ def validate_research_brief(
         unknown_tickers=unknown_tickers,
         pit_adjustments=pit_adjustments,
         dropped_specs=dropped_specs,
+        dropped_by_claim_id=dropped_by_claim_id,
     )
 
 
@@ -970,10 +985,10 @@ def build_brief_user_prompt(
             + " (Lưu ý: số liệu BCTC định lượng `FactSet`/`KPI` phủ toàn bộ ~400 mã trên sàn trong Core PG)."
         )
     if session_context:
-        lines.append(f"- Ngữ cảnh hội thoại gần nhất:\n{session_context[:900]}")
+        lines.append(f"- Con trỏ trạng thái phiên:\n{session_context[:1800]}")
     if memory_context:
-        lines.append(f"- Bộ nhớ tiêu chí/danh mục cá nhân:\n{memory_context[:700]}")
-    lines.append(f"\nCâu hỏi của nhà đầu tư:\n{query.strip()}")
+        lines.append(f"- Bộ nhớ tiêu chí/danh mục cá nhân:\n{memory_context[:2400]}")
+    lines.append(f"\nCâu hỏi hiện tại của nhà đầu tư:\n{query.strip()}")
     return "\n".join(lines)
 
 
@@ -1098,8 +1113,10 @@ async def create_and_validate_brief(
     chat_mode: str = "GENERAL",
     session_context: str = "",
     memory_context: str = "",
+    history_messages: Sequence[AgentMessage] = (),
     enable_thinking: bool = False,
     on_reasoning_delta: Callable[[str], Awaitable[None]] | None = None,
+    on_reasoning_reset: Callable[[], Awaitable[None]] | None = None,
     trace: TraceSink | None = None,
 ) -> tuple[ResearchBrief, BriefValidationOutcome, Usage]:
     """Run Step (1) Brief LLM + Step (2) 0-token Validator (with at most 1 repair retry on schema error)."""
@@ -1163,6 +1180,7 @@ async def create_and_validate_brief(
 
     base_messages = [
         AgentMessage(role="system", content=BRIEF_STATIC_SYSTEM_PROMPT),
+        *history_messages,
         AgentMessage(role="user", content=user_prompt),
     ]
     raw_out, usage = await _collect_model_text(
@@ -1179,6 +1197,8 @@ async def create_and_validate_brief(
         return outcome.brief, outcome, usage
 
     # At most 1 compact repair retry per approved spec Section 3.(2)
+    if on_reasoning_reset is not None:
+        await on_reasoning_reset()
     retry_messages = [
         *base_messages,
         AgentMessage(role="assistant", content=raw_out[:1600] or "{}"),
@@ -1191,7 +1211,13 @@ async def create_and_validate_brief(
             ),
         ),
     ]
-    raw_retry, retry_usage = await _collect_model_text(model, retry_messages, turn=2)
+    raw_retry, retry_usage = await _collect_model_text(
+        model,
+        retry_messages,
+        turn=2,
+        enable_thinking=enable_thinking,
+        on_reasoning_delta=on_reasoning_delta,
+    )
     total_usage = usage.plus(retry_usage)
     retry_outcome = _validate(raw_retry)
     _trace_attempt(2, raw_retry, retry_usage, retry_outcome)

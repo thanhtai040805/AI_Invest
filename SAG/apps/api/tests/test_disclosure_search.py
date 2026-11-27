@@ -512,3 +512,254 @@ async def test_l2_hydrate_financial_tables_pushes_down_fiscal_quarter_without_si
     )
     assert miss.details.get("returned_count", 0) == 0
     assert evidence2.hydrated_tables == {}
+
+
+@pytest.mark.asyncio
+async def test_retrieve_disclosures_stitches_section_siblings_and_bridges_hipporag_unit_edges(
+    tmp_path: Path,
+) -> None:
+    import hashlib
+
+    from sag_api.core.config import Settings
+    from sag_api.db.models import SourceProjectMapping
+    from sag_api.jobs.knowledge import KnowledgeWorker
+    from sag_api.research.quote_verifier import verify_citations
+
+    eng = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'stitch_hippo.db'}")
+    async with eng.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sf = async_sessionmaker(eng, expire_on_commit=False, class_=AsyncSession)
+
+    pub_dt = datetime(2026, 10, 25, tzinfo=UTC)
+    vf_ts = int(pub_dt.timestamp())
+    vt_ts = int(datetime(2099, 1, 1, tzinfo=UTC).timestamp())
+    p8_a = (
+        "Giải trình biến động KQKD Q3/2026: Doanh thu hợp nhất giảm do Công ty Cổ phần Viễn thông FPT (FTEL) "
+        "không còn là công ty con theo Công văn số 1906/TTg-ĐMDN; nếu so sánh tương đương doanh thu tăng 12,1%."
+    )
+    p8_b = (
+        "Khối Công nghệ tiếp tục giữ vai trò chủ lực với doanh thu tăng trưởng 14,4% và Lãi từ công ty liên doanh, "
+        "liên kết tăng 46% so với cùng kỳ."
+    )
+    p14 = (
+        "Thuyết minh 1 — Cấu trúc Tập đoàn: Thực hiện Công văn số 1906/TTg-ĐMDN, quyền biểu quyết tại "
+        "Công ty Cổ phần Viễn thông FPT (FTEL) chuyển sang hạch toán công ty liên kết từ tháng 7/2025."
+    )
+
+    async with sf() as s:
+        s.add(Source(id="src-fpt-sh", name="HOSE", sag_source_config_id="cfg-fpt-sh", status=SourceStatus.ACTIVE))
+        s.add(
+            SourceProjectMapping(
+                source_id="src-fpt-sh",
+                organization_id="aiinvest-default",
+                project_id="FPT",
+                state="CONFIRMED",
+                confirmed_at=pub_dt,
+                confirmed_by="tester",
+                approval_ref="ref-sh",
+            )
+        )
+        s.add(
+            Document(
+                id="doc-fpt-q3",
+                source_id="src-fpt-sh",
+                project_id="FPT",
+                tenant_id="aiinvest-default",
+                filename="FPT_Q3_2026.pdf",
+                storage_path="/FPT_Q3_2026.pdf",
+                is_active=True,
+            )
+        )
+        s.add(
+            DocumentVersion(
+                id="ver-fpt-q3",
+                document_id="doc-fpt-q3",
+                version_no=1,
+                file_hash="h-fpt-q3",
+                source_published_at=pub_dt,
+                valid_from=pub_dt,
+                search_status="SEARCH_READY",
+                search_ready_at=pub_dt,
+                knowledge_status="NOT_STARTED",
+                metadata_json={
+                    "sub_doc_slot": "QUARTER_NOTES",
+                    "fiscal_year": 2026,
+                    "fiscal_quarter": 3,
+                    "security_partition_id": "FPT",
+                },
+            )
+        )
+        s.add_all(
+            [
+                CanonicalBlock(
+                    id="blk-p8-a",
+                    document_version_id="ver-fpt-q3",
+                    ordinal=1,
+                    block_type="paragraph",
+                    section_path="QUARTER_NOTES > GIẢI TRÌNH KQKD",
+                    page_from=8,
+                    page_to=8,
+                    source_anchor="p8a",
+                    normalized_text=p8_a,
+                    content_hash=hashlib.sha256(p8_a.encode()).hexdigest(),
+                ),
+                CanonicalBlock(
+                    id="blk-p8-b",
+                    document_version_id="ver-fpt-q3",
+                    ordinal=2,
+                    block_type="paragraph",
+                    section_path="QUARTER_NOTES > GIẢI TRÌNH KQKD",
+                    page_from=9,
+                    page_to=9,
+                    source_anchor="p8b",
+                    normalized_text=p8_b,
+                    content_hash=hashlib.sha256(p8_b.encode()).hexdigest(),
+                ),
+                CanonicalBlock(
+                    id="blk-p14",
+                    document_version_id="ver-fpt-q3",
+                    ordinal=3,
+                    block_type="paragraph",
+                    section_path="QUARTER_NOTES > Thuyết minh 1",
+                    page_from=14,
+                    page_to=14,
+                    source_anchor="p14",
+                    normalized_text=p14,
+                    content_hash=hashlib.sha256(p14.encode()).hexdigest(),
+                ),
+                SearchUnit(
+                    id="su-p8-a",
+                    document_version_id="ver-fpt-q3",
+                    block_from_id="blk-p8-a",
+                    block_to_id="blk-p8-a",
+                    security_partition_id="FPT",
+                    content_hash=hashlib.sha256(p8_a.encode()).hexdigest(),
+                    token_count=60,
+                    page_from=8,
+                    page_to=8,
+                    section_path="QUARTER_NOTES > GIẢI TRÌNH KQKD",
+                ),
+                SearchUnit(
+                    id="su-p8-b",
+                    document_version_id="ver-fpt-q3",
+                    block_from_id="blk-p8-b",
+                    block_to_id="blk-p8-b",
+                    security_partition_id="FPT",
+                    content_hash=hashlib.sha256(p8_b.encode()).hexdigest(),
+                    token_count=45,
+                    page_from=9,
+                    page_to=9,
+                    section_path="QUARTER_NOTES > GIẢI TRÌNH KQKD",
+                ),
+                SearchUnit(
+                    id="su-p14",
+                    document_version_id="ver-fpt-q3",
+                    block_from_id="blk-p14",
+                    block_to_id="blk-p14",
+                    security_partition_id="FPT",
+                    content_hash=hashlib.sha256(p14.encode()).hexdigest(),
+                    token_count=55,
+                    page_from=14,
+                    page_to=14,
+                    section_path="QUARTER_NOTES > Thuyết minh 1",
+                ),
+            ]
+        )
+        await s.commit()
+
+    worker = KnowledgeWorker(sf, Settings(_env_file=None))  # type: ignore[call-arg]
+    await worker.discover()
+    assert await worker.run_one() is True
+
+    # Qdrant returns ONLY su-p8-a (Page 8); sibling stitching MUST attach Page 9 (p8_b),
+    # and HippoRAG-2 MUST bridge over KnowledgeUnitEdge / shared entity (FTEL, 1906/TTg-ĐMDN) to Page 14 (p14)!
+    points = [
+        {
+            "id": "pt-p8-a",
+            "score": 0.91,
+            "payload": {
+                "tenant_id": "aiinvest-default",
+                "project_id": "FPT",
+                "document_version_id": "ver-fpt-q3",
+                "search_unit_id": "su-p8-a",
+                "sub_doc_slot": "QUARTER_NOTES",
+                "fiscal_year": 2026,
+                "fiscal_quarter": 3,
+                "valid_from_ts": vf_ts,
+                "valid_to_ts": vt_ts,
+                "page_from": 8,
+                "page_to": 8,
+                "block_from_id": "blk-p8-a",
+                "block_to_id": "blk-p8-a",
+                "section_path": "QUARTER_NOTES > GIẢI TRÌNH KQKD",
+                "content": p8_a,
+            },
+        }
+    ]
+
+    def _qdrant_handler(req: httpx.Request) -> httpx.Response:
+        body = json.loads(req.content.decode("utf-8"))
+        searches = body.get("searches") or []
+        results = []
+        for s_item in searches:
+            flt = s_item.get("filter") or {}
+            hits = [pt for pt in points if _filter_matches_point(flt, pt["payload"])]
+            results.append({"points": hits})
+        return httpx.Response(200, json={"result": results})
+
+    q_client = httpx.AsyncClient(transport=httpx.MockTransport(_qdrant_handler), base_url="http://qdrant.local")
+    em = _FakeEngineManager(q_client)
+    tctx, evidence = _make_tctx(sf, em, available=frozenset({"FPT"}))
+
+    out = await search_disclosures_tool.execute(
+        {
+            "tickers": ["FPT"],
+            "dense_queries": ["giải trình biến động doanh thu lợi nhuận Q3/2026"],
+            "vas_terms": ["giải trình doanh thu FTEL"],
+            "sub_doc_slots": ["QUARTER_NOTES"],
+            "fiscal_years": [2026],
+            "fiscal_quarters": [3],
+            "top_k": 5,
+        },
+        tctx,
+    )
+    await q_client.aclose()
+
+    assert out.details["returned_count"] >= 2
+    assert evidence.hipporag_hops >= 1
+    combined_content = "\n".join(sec.content for sec in evidence.sections)
+    assert "12,1%" in combined_content
+    assert "14,4%" in combined_content  # Stitched sibling su-p8-b!
+    assert "Thuyết minh 1" in combined_content  # HippoRAG-2 bridged su-p14!
+
+    # Stage 7 quote_hash verification MUST pass 100% on both stitched and bridged sections!
+    from sag_api.research.quote_verifier import compute_quote_hash
+
+    cand_cits = [
+        {
+            "citation_id": f"C{idx}",
+            "ticker": sec.ticker,
+            "doc_id": sec.doc_id,
+            "document_version_id": sec.document_version_id,
+            "sub_doc_slot": sec.sub_doc_slot,
+            "page": sec.page_from,
+            "page_to": sec.page_to,
+            "published_date": sec.published_date.isoformat(),
+            "quote": sec.content,
+            "quote_hash": compute_quote_hash(sec.content),
+            "evidence_origin": sec.evidence_origin,
+        }
+        for idx, sec in enumerate(evidence.sections, 1)
+    ]
+    v_res = verify_citations(
+        cand_cits,
+        evidence.canonical_blocks,
+        AS_OF,
+        answer_text="FPT ngừng hợp nhất FTEL [C1] theo Thuyết minh 1 [C2].",
+        valid_citation_ids={f"C{i}" for i in range(1, len(evidence.sections) + 1)},
+        sections_by_cid={f"C{i}": s for i, s in enumerate(evidence.sections, 1)},
+    )
+    assert v_res.verified_rate == 1.0
+    assert len(v_res.rejected_citations) == 0
+    await eng.dispose()
+

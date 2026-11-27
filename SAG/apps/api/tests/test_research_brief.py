@@ -354,3 +354,138 @@ def test_validate_brief_preserves_up_to_8_evidence_specs_per_claim() -> None:
     assert "kpi:st_debt_to_liquid_assets" in out.brief.claims[0].evidence
     assert "risk" in out.brief.claims[0].evidence
     assert any("fact:equity" in d for d in out.dropped_specs)
+
+
+async def test_antigravity_verbatim_prefix_compaction_and_dropped_by_claim_tracking() -> None:
+    import json as _json
+
+    from sag_api.research.session_memory import (
+        build_conversation_prefix_messages,
+        build_financial_zeromem_ledger,
+    )
+
+    history = [
+        {
+            "role": "user",
+            "content": "Phân tích chi tiết mã FPT giúp mình, chú ý câu chuyện hợp nhất công ty con.",
+            "turn_as_of_date": "2026-11-26",
+            "primary_ticker": "FPT",
+        },
+        {
+            "role": "assistant",
+            "content": (
+                "FPT Q3/2026 có doanh thu hợp nhất giảm 20,05% do ngừng hợp nhất FTEL, "
+                "nhưng tương đương tăng 12,1%."
+            ),
+            "turn_as_of_date": "2026-11-26",
+            "primary_ticker": "FPT",
+            "expanded_tickers": ["FPT"],
+            "user_concern": "Phân tích chi tiết FPT và biến động hợp nhất FTEL",
+            "answer_shape": "health_check",
+        },
+        {
+            "role": "user",
+            "content": (
+                "Có nên đầu tư vào FPT không? Mình thích doanh nghiệp trả cổ tức tiền mặt "
+                "đều như đồng hồ Thụy Sĩ."
+            ),
+            "turn_as_of_date": "2026-11-26",
+        },
+        {
+            "role": "assistant",
+            "content": (
+                "Để đánh giá phù hợp nhất cho FPT, bạn cho mình biết: "
+                "(1) khẩu vị biến động, (2) kỳ vọng sinh lời, (3) thời gian nắm giữ?"
+            ),
+            "turn_as_of_date": "2026-11-26",
+            "primary_ticker": "FPT",
+            "needs_clarification": True,
+            "clarifying_question": "Bạn cho mình biết khẩu vị biến động, kỳ vọng sinh lời và thời gian nắm giữ?",
+        },
+        {
+            "role": "user",
+            "content": "Tương lai Q4/2027 ra sao?",
+            "turn_as_of_date": "2027-12-31",
+        },
+        {
+            "role": "assistant",
+            "content": "Số liệu tương lai Q4/2027 tuyệt mật 999999 tỷ đồng.",
+            "turn_as_of_date": "2027-12-31",
+            "primary_ticker": "FPT",
+        },
+    ]
+    ledger = build_financial_zeromem_ledger(history, request_as_of_date=AS_OF)
+    assert ledger.quarantined_future_turns == 1
+
+    # 1) Under 16k budget -> 100% verbatim intact pairs, 0 future PIT leakage, unusual Swiss-watch nuance preserved!
+    prefix_msgs, summary_txt, refreshed = build_conversation_prefix_messages(
+        ledger,
+        verbatim_token_budget=16_000,
+    )
+    assert summary_txt is None and refreshed is False
+    assert [m.role for m in prefix_msgs] == ["user", "assistant", "user", "assistant"]
+    joined_prefix = "\n".join(m.content for m in prefix_msgs)
+    assert "đồng hồ Thụy Sĩ" in joined_prefix
+    assert "999999" not in joined_prefix
+
+    # 2) Over tight budget -> compacts older turns into narrative checkpoint summary while keeping recent turn verbatim
+    compact_msgs, rolling_sum, did_compact = build_conversation_prefix_messages(
+        ledger,
+        verbatim_token_budget=90,
+        keep_recent_token_budget=60,
+    )
+    assert did_compact is True and rolling_sum is not None
+    assert "CONVERSATION_CHECKPOINT_SUMMARY" in compact_msgs[0].content
+    assert "FTEL" in rolling_sum
+    # Raw lossless transcript recall still finds Turn 1 verbatim!
+    recalled = ledger.recall(query_terms=["FTEL"])
+    assert any(r["turn_index"] == 1 and "12,1%" in r["assistant_excerpt"] for r in recalled["recalled_turns"])
+
+    # 3) create_and_validate_brief places [system, *history_messages, current_user] as immutable prefix
+    captured_requests: list[ModelRequest] = []
+
+    class _RecordingBriefModel:
+        async def stream_turn(
+            self, request: ModelRequest, cancellation: CancellationToken
+        ) -> AsyncIterator[ModelChunk]:
+            del cancellation
+            captured_requests.append(request)
+            yield ModelChunk(
+                text_delta=_json.dumps(
+                    {
+                        "user_concern": "Đánh giá FPT theo khẩu vị biến động thấp, kỳ vọng 10-15%/năm, tích sản >5 năm",
+                        "answer_shape": "verdict_with_reasons",
+                        "entities": {"tickers": ["FRT"], "anchor_ticker": None, "candidate_search": None},
+                        "premises_to_check": [],
+                        "claims": [
+                            {
+                                "id": "K1",
+                                "statement": "Độ biến động beta và rủi ro tài chính",
+                                "evidence": ["fact:vr_beta", "risk"],
+                                "period": "Q3/2026",
+                            }
+                        ],
+                        "budget_tier": "standard",
+                    },
+                    ensure_ascii=False,
+                ),
+                usage=Usage(input_tokens=400, output_tokens=80, cached_tokens=320),
+            )
+
+    brief, val_out, usage = await create_and_validate_brief(
+        query="Biến động thấp, kỳ vọng 10-15% 1 năm, tích sản trên 5 năm",
+        model=_RecordingBriefModel(),
+        as_of_date=AS_OF,
+        catalog_profiles=PROFILES,
+        history_messages=prefix_msgs,
+    )
+    assert len(captured_requests) == 1
+    sent_msgs = captured_requests[0].messages
+    assert sent_msgs[0].role == "system"
+    assert [m.role for m in sent_msgs[1:-1]] == ["user", "assistant", "user", "assistant"]
+    assert sent_msgs[-1].role == "user"
+    assert "Biến động thấp" in sent_msgs[-1].content
+    assert usage.cached_tokens == 320
+    assert brief.claims[0].evidence == ["risk"]
+    assert val_out.dropped_by_claim_id.get("K1") and any("vr_beta" in d for d in val_out.dropped_by_claim_id["K1"])
+

@@ -23,6 +23,11 @@ class ChatHistoryMessage(BaseModel):
     cited_tickers: list[str] = Field(default_factory=list, max_length=24)
     route_intent: str | None = Field(default=None, max_length=64)
     eval_eligible: bool | None = None
+    user_concern: str | None = Field(default=None, max_length=500)
+    answer_shape: str | None = Field(default=None, max_length=64)
+    needs_clarification: bool | None = None
+    clarifying_question: str | None = Field(default=None, max_length=800)
+    session_rolling_summary: str | None = Field(default=None, max_length=16000)
 
 
 class PortfolioPositionSnapshot(BaseModel):
@@ -89,7 +94,7 @@ class ResearchChatStreamRequest(BaseModel):
     enable_kg: bool = True
     memory_mode: Literal["auto", "read_only", "incognito"] = "auto"
     user_portfolio_snapshot: UserPortfolioSnapshot | None = None
-    history: list[ChatHistoryMessage] = Field(default_factory=list, max_length=60)
+    history: list[ChatHistoryMessage] = Field(default_factory=list, max_length=120)
 
     @field_validator("ticker", mode="before")
     @classmethod
@@ -240,6 +245,7 @@ class ResearchChatMetadata(BaseModel):
     recalled_memories: list[RecalledMemoryItem] = Field(default_factory=list)
     linked_sessions: list[LinkedSessionItem] = Field(default_factory=list)
     portfolio_snapshot_used: bool = False
+    session_rolling_summary: str | None = None
     telemetry: ResearchTelemetry = Field(default_factory=ResearchTelemetry)
 
 

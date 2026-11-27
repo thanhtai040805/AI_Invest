@@ -50,44 +50,62 @@ _INTERNAL_CLAIM_ID_RE = re.compile(r"(?:\s*\[(?:P|K)\d+\])+")
 _THINK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 _CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 
+_REASONING_JSON_CUTOFF_RE = re.compile(
+    r"(?:```(?:json)?|(?:^|\n)\s*\{\s*\"[a-z_]+\"\s*:)",
+    re.IGNORECASE,
+)
+
 _REASONING_INLINE_SUBS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(r"xuất\s+ra\s+(?:ĐÚNG\s+MỘT\s+)?JSON\s*(?:'Đề\s+bài\s+nghiên\s+cứu')?", re.IGNORECASE),
         "xây dựng khung phân tích",
     ),
     (re.compile(r"tạo\s+(?:một\s+)?JSON\s*(?:mặc\s+định)?", re.IGNORECASE), "chuẩn bị phản hồi"),
-    (re.compile(r"\bJSON\b"), "khung phân tích"),
-    (re.compile(r"`?premises_to_check`?", re.IGNORECASE), "kiểm chứng giả định"),
-    (re.compile(r"`?user_concern`?", re.IGNORECASE), "mối quan tâm cốt lõi"),
-    (re.compile(r"`?answer_shape`?", re.IGNORECASE), "cách tiếp cận trả lời"),
-    (re.compile(r"`?verdict_with_reasons`?", re.IGNORECASE), "đánh giá kèm luận cứ"),
-    (re.compile(r"`?health_check`?", re.IGNORECASE), "kiểm tra sức khỏe tài chính"),
-    (re.compile(r"`?direct_fact`?", re.IGNORECASE), "tra cứu số liệu trực tiếp"),
-    (re.compile(r"`?candidate_ranking`?", re.IGNORECASE), "sàng lọc doanh nghiệp"),
-    (re.compile(r"`?peer_head_to_head`?", re.IGNORECASE), "so sánh cùng ngành"),
-    (re.compile(r"`?premise_audit_and_explanation`?", re.IGNORECASE), "kiểm chứng giả định"),
-    (re.compile(r"`?needs_clarification`?\s*(?::\s*(?:true|false))?", re.IGNORECASE), "trạng thái cần làm rõ"),
-    (re.compile(r"`?clarification_needed`?", re.IGNORECASE), "cần làm rõ yêu cầu"),
-    (re.compile(r"`?clarifying_question`?", re.IGNORECASE), "câu hỏi làm rõ"),
-    (re.compile(r"`?candidate_search`?", re.IGNORECASE), "sàng lọc toàn sàn"),
-    (re.compile(r"`?anchor_ticker`?", re.IGNORECASE), "mã chuẩn đối chiếu"),
-    (re.compile(r"`?budget_tier`?", re.IGNORECASE), "mức độ phân tích"),
-    (re.compile(r"\bBudget\s+tier\s*:\s*\w+", re.IGNORECASE), ""),
-    (re.compile(r"`?(?:fact|kpi):[a-z0-9_]+`?", re.IGNORECASE), "chỉ tiêu tài chính"),
-    (re.compile(r"`?doc:[A-Za-z0-9_,|]+`?", re.IGNORECASE), "thuyết minh báo cáo"),
-    (re.compile(r"\bpremises\b", re.IGNORECASE), "giả định"),
-    (re.compile(r"\bentities\b", re.IGNORECASE), "đối tượng phân tích"),
-    (re.compile(r"\bclaims\b", re.IGNORECASE), "luận điểm"),
-    (re.compile(r"\bevidence\b", re.IGNORECASE), "dữ liệu đối chiếu"),
-    (re.compile(r"\bfact\b", re.IGNORECASE), "số liệu BCTC"),
-    (re.compile(r"\bkpi\b", re.IGNORECASE), "chỉ số tài chính"),
-    (re.compile(r"\bStage\s*7\b", re.IGNORECASE), "kiểm chứng chéo"),
+    (re.compile(r"(?<![^\W_])JSON(?![^\W_])"), "khung phân tích"),
+    (re.compile(r"`?premises_to_check`?(?![^\W_])", re.IGNORECASE), "kiểm chứng giả định"),
+    (re.compile(r"`?user_concern`?(?![^\W_])", re.IGNORECASE), "mối quan tâm cốt lõi"),
+    (re.compile(r"`?answer_shape`?(?![^\W_])", re.IGNORECASE), "cách tiếp cận trả lời"),
+    (re.compile(r"`?verdict_with_reasons`?(?![^\W_])", re.IGNORECASE), "đánh giá kèm luận cứ"),
+    (re.compile(r"`?health_check`?(?![^\W_])", re.IGNORECASE), "kiểm tra sức khỏe tài chính"),
+    (re.compile(r"`?direct_fact`?(?![^\W_])", re.IGNORECASE), "tra cứu số liệu trực tiếp"),
+    (re.compile(r"`?candidate_ranking`?(?![^\W_])", re.IGNORECASE), "sàng lọc doanh nghiệp"),
+    (re.compile(r"`?peer_head_to_head`?(?![^\W_])", re.IGNORECASE), "so sánh cùng ngành"),
+    (re.compile(r"`?premise_audit_and_explanation`?(?![^\W_])", re.IGNORECASE), "kiểm chứng giả định"),
+    (
+        re.compile(r"`?needs_clarification`?\s*(?::\s*(?:true|false))?(?![^\W_])", re.IGNORECASE),
+        "trạng thái cần làm rõ",
+    ),
+    (re.compile(r"`?clarification_needed`?(?![^\W_])", re.IGNORECASE), "cần làm rõ yêu cầu"),
+    (re.compile(r"`?clarifying_question`?(?![^\W_])", re.IGNORECASE), "câu hỏi làm rõ"),
+    (re.compile(r"`?candidate_search`?(?![^\W_])", re.IGNORECASE), "sàng lọc toàn sàn"),
+    (re.compile(r"`?anchor_ticker`?(?![^\W_])", re.IGNORECASE), "mã chuẩn đối chiếu"),
+    (re.compile(r"`?budget_tier`?(?![^\W_])", re.IGNORECASE), "mức độ phân tích"),
+    (re.compile(r"(?<![^\W_])Budget\s+tier\s*:\s*\w+(?![^\W_])", re.IGNORECASE), ""),
+    (re.compile(r"`?(?:fact|kpi):[a-z0-9_]+`?(?![^\W_])", re.IGNORECASE), "chỉ tiêu tài chính"),
+    (
+        re.compile(
+            r"`?doc:(?:QUARTER_NOTES|BCTC_AUDITED|BCTN_CORE|BCTN_PR|AGM_TARGETS)(?:,[A-Z_]+)*(?:\|[^`\n\r]*)?`?",
+            re.IGNORECASE,
+        ),
+        "thuyết minh báo cáo",
+    ),
+    (re.compile(r"`?doc:`?", re.IGNORECASE), "thuyết minh "),
+    (re.compile(r"(?<![^\W_])premises(?![^\W_])", re.IGNORECASE), "giả định"),
+    (re.compile(r"(?<![^\W_])entities(?![^\W_])", re.IGNORECASE), "đối tượng phân tích"),
+    (re.compile(r"(?<![^\W_])claims(?![^\W_])", re.IGNORECASE), "luận điểm"),
+    (re.compile(r"(?<![^\W_])evidence(?![^\W_])", re.IGNORECASE), "dữ liệu đối chiếu"),
+    (re.compile(r"(?<![^\W_])fact(?![^\W_])", re.IGNORECASE), "số liệu BCTC"),
+    (re.compile(r"(?<![^\W_])kpi(?![^\W_])", re.IGNORECASE), "chỉ số tài chính"),
+    (re.compile(r"(?<![^\W_])Stage\s*7(?![^\W_])", re.IGNORECASE), "kiểm chứng chéo"),
 )
 
 
 def humanize_visible_reasoning(text: str) -> str:
     """Deterministically scrub internal schema/JSON identifiers from `<think>` reasoning segments."""
     out = text
+    cut_m = _REASONING_JSON_CUTOFF_RE.search(out)
+    if cut_m is not None:
+        out = out[: cut_m.start()]
     for pat, repl in _REASONING_INLINE_SUBS:
         out = pat.sub(repl, out)
     out = _INTERNAL_CLAIM_ID_RE.sub("", out)
@@ -95,18 +113,32 @@ def humanize_visible_reasoning(text: str) -> str:
 
 
 class _ReasoningWordStreamBuffer:
-    """Buffer streaming reasoning deltas to word boundaries so multi-token identifiers
-    like `premises_to_check` or `verdict_with_reasons` never split across two chunks."""
+    """Buffer streaming reasoning deltas to word boundaries with protocol-level JSON fence/brace cutoff."""
 
     def __init__(self) -> None:
         self._buf = ""
+        self._json_cut = False
+
+    def reset(self) -> None:
+        self._buf = ""
+        self._json_cut = False
 
     def push(self, delta: str) -> str:
-        if not delta:
+        if not delta or self._json_cut:
             return ""
         self._buf += delta
+        cut_m = _REASONING_JSON_CUTOFF_RE.search(self._buf)
+        if cut_m is not None:
+            head = self._buf[: cut_m.start()]
+            self._buf = ""
+            self._json_cut = True
+            return humanize_visible_reasoning(head)
+        # Hold back trailing backtick or '{' in case a JSON fence/object starts across chunks
+        safe_end = len(self._buf)
+        while safe_end > 0 and self._buf[safe_end - 1] in "`{":
+            safe_end -= 1
         last_ws = -1
-        for idx in range(len(self._buf) - 1, -1, -1):
+        for idx in range(safe_end - 1, -1, -1):
             if self._buf[idx].isspace():
                 last_ws = idx
                 break
@@ -117,7 +149,8 @@ class _ReasoningWordStreamBuffer:
         return humanize_visible_reasoning(ready)
 
     def flush(self) -> str:
-        if not self._buf:
+        if not self._buf or self._json_cut:
+            self._buf = ""
             return ""
         rem = self._buf
         self._buf = ""
@@ -158,9 +191,18 @@ SYNTHESIS_STATIC_SYSTEM_PROMPT = (
     "   - Mọi câu có số liệu tài chính BẮT BUỘC gắn kèm mã nguồn gốc có sẵn trong thẻ (`[CALC-*]`, `[C#]`, "
     "`[TBL:*]`, `[SCR:*]`, `[KG:*]`, `[MEM:*]`, `[PORT:*]`). TUYỆT ĐỐI KHÔNG gắn mã ý nội bộ của đề bài "
     "(`[P1]`, `[K1]`..`[K6]`) vào câu trả lời. Không tự bịa mã không tồn tại.\n"
-    "3. TRUNG THỰC VỚI KHOẢNG TRỐNG DỮ LIỆU:\n"
-    "   - Ý nào thẻ ghi chưa có dữ liệu (`NO_DATA`) hoặc thiếu thuyết minh thì nói thẳng là chưa có dữ liệu kiểm chứng "
-    "tính đến ngày khóa sổ hiện tại — tuyệt đối không suy đoán lấp chỗ trống.\n"
+    "3. TƯ DUY ĐỐI CHIẾU SỐ LIỆU ↔ BẢN CHẤT KẾ TOÁN & TIÊU CHÍ NHÀ ĐẦU TƯ:\n"
+    "   - Khi Thẻ kết luận có trích dẫn thuyết minh `[C#]` giải thích sự thay đổi phạm vi hợp nhất "
+    "(ví dụ: tách/ngừng hợp nhất công ty con chuyển sang công ty liên kết), phân hóa giữa các mảng kinh doanh "
+    "hoặc khoản mục bất thường, BẮT BUỘC đặt con số kế toán bề mặt `[CALC-*]` cạnh bản chất so sánh tương đương "
+    "(like-for-like) `[C#]` ngay trong phần mở đầu — tuyệt đối không kết luận hời hợt rằng doanh nghiệp suy yếu "
+    "nếu mảng lõi và số tương đương vẫn tăng trưởng!\n"
+    "   - Khi có tiêu chí cá nhân của nhà đầu tư (`[MEM:M#]` hoặc câu trả lời làm rõ ở lượt trước), "
+    "hãy đối chiếu trực diện từng tiêu chí với bằng chứng thực tế.\n"
+    "4. TRUNG THỰC VỚI KHOẢNG TRỐNG DỮ LIỆU:\n"
+    "   - Ý nào thẻ ghi chưa có dữ liệu (`NO_DATA`) hoặc một phần chỉ tiêu chưa có trong kho PIT (`PARTIAL`, "
+    "ví dụ chưa có hệ số beta biến động giá cổ phiếu), phải nói thẳng chỉ tiêu nào đã kiểm chứng được và chỉ tiêu nào "
+    "chưa có dữ liệu PIT — tuyệt đối không suy diễn từ 'không có cờ cảnh báo BCTC' sang 'biến động giá thấp'.\n"
     "   - Không đưa khuyến nghị mua/bán hoặc giá mục tiêu."
 )
 
@@ -183,6 +225,7 @@ class BriefTurnResult:
     outcome: AgentTurnOutcome
     brief: ResearchBrief | None = None
     verdict_cards: list[ClaimVerdictCard] = field(default_factory=list)
+    rolling_summary: str | None = None
 
 
 def _parse_json_obj(raw: str) -> dict[str, Any] | None:
@@ -253,6 +296,7 @@ async def synthesize_from_verdict_cards(
     exec_result: BriefExecutionResult,
     ctx: ResearchToolContext,
     model: ModelProvider,
+    history_messages: Sequence[AgentMessage] = (),
     pit_adjustments: Sequence[str] = (),
     attach_disclaimer: bool = False,
     enable_thinking: bool = True,
@@ -286,6 +330,7 @@ async def synthesize_from_verdict_cards(
     req = ModelRequest(
         messages=(
             AgentMessage(role="system", content=SYNTHESIS_STATIC_SYSTEM_PROMPT),
+            *history_messages,
             AgentMessage(role="user", content=user_prompt),
         ),
         tools=(),
@@ -599,6 +644,12 @@ async def repair_stage7_flagged_lines(
 
 def upsert_activity_log_item(activity_log: list[dict[str, Any]], item: dict[str, Any]) -> None:
     """Coalesce streaming `append=True` thoughts and update `tool_call`/`verdict_card` items in place."""
+    if item.get("replace_text") and item.get("id"):
+        step_id = item["id"]
+        existing = next((entry for entry in activity_log if entry.get("id") == step_id), None)
+        if existing is not None:
+            existing["text"] = str(item.get("text") or "")
+            return
     if item.get("append") and item.get("id"):
         step_id = item["id"]
         existing = next((entry for entry in activity_log if entry.get("id") == step_id), None)
@@ -693,6 +744,21 @@ async def run_brief_centric_turn(
     async def _on_brief_reasoning(r_delta: str) -> None:
         await _emit_brief_r(brief_r_buf.push(r_delta))
 
+    async def _on_brief_reasoning_reset() -> None:
+        brief_r_buf.reset()
+        await _record_thought(
+            {
+                "id": "brief-reasoning-1",
+                "type": "thought",
+                "turn": 1,
+                "kind": "reasoning",
+                "title": "Xác định trọng tâm phân tích",
+                "text": "",
+                "replace_text": True,
+                "status": "running",
+            }
+        )
+
     async def _emit_synth_r(clean_chunk: str) -> None:
         if not clean_chunk:
             return
@@ -712,9 +778,18 @@ async def run_brief_centric_turn(
     async def _on_synth_reasoning(r_delta: str) -> None:
         await _emit_synth_r(synth_r_buf.push(r_delta))
 
-    session_ctx = ctx.session_ledger.to_prompt_context(
-        include_recent_pairs=ctx.include_recent_pairs,
-        max_recent_pairs=2 if ctx.include_recent_pairs else 0,
+    from sag_api.research.session_memory import build_conversation_prefix_messages
+
+    history_msgs, rolling_summary, _ = build_conversation_prefix_messages(
+        ctx.session_ledger,
+        verbatim_token_budget=16_000,
+        keep_recent_token_budget=10_000,
+    )
+    # Compact state pointer only when quarantined turns or screening leaderboard exist
+    session_ctx = (
+        ctx.session_ledger.to_prompt_context(include_recent_pairs=False, max_recent_pairs=0)
+        if (ctx.session_ledger.quarantined_future_turns > 0 or ctx.session_ledger.last_screening_leaderboard)
+        else ""
     )
     mem_ctx = "\n".join(b for b in (ctx.tier0_memory_prompt, ctx.tier2_memory_prompt) if b)
 
@@ -733,8 +808,10 @@ async def run_brief_centric_turn(
         chat_mode=ctx.chat_mode,
         session_context=session_ctx,
         memory_context=mem_ctx,
+        history_messages=history_msgs,
         enable_thinking=True,
         on_reasoning_delta=_on_brief_reasoning,
+        on_reasoning_reset=_on_brief_reasoning_reset,
         trace=trace,
     )
     total_usage = brief_usage
@@ -813,7 +890,12 @@ async def run_brief_centric_turn(
             playbook_id="brief_clarification",
             playbook_mode="BRIEF_CENTRIC",
         )
-        return BriefTurnResult(outcome=outcome, brief=brief, verdict_cards=[])
+        return BriefTurnResult(
+            outcome=outcome,
+            brief=brief,
+            verdict_cards=[],
+            rolling_summary=rolling_summary,
+        )
 
     # ── Step (3): Candidate Locator (0 LLM tokens) ────────────────────────────
     if on_stage is not None:
@@ -892,6 +974,7 @@ async def run_brief_centric_turn(
                 located=located,
                 ctx=ctx,
                 model=model,
+                dropped_by_claim_id=val_out.dropped_by_claim_id,
                 overall_deadline_mono=overall_deadline_mono,
                 on_stage=on_stage,
                 on_thought=_record_thought,
@@ -924,6 +1007,7 @@ async def run_brief_centric_turn(
         exec_result=exec_res,
         ctx=ctx,
         model=model,
+        history_messages=history_msgs,
         pit_adjustments=val_out.pit_adjustments,
         attach_disclaimer=bool(route_decision.get("attach_investment_disclaimer")),
         enable_thinking=True,
@@ -968,4 +1052,9 @@ async def run_brief_centric_turn(
         prefetched_tools=["locate_candidates"] if brief.entities.candidate_search else [],
         exposed_tools=ev_specs_used,
     )
-    return BriefTurnResult(outcome=outcome, brief=brief, verdict_cards=all_cards)
+    return BriefTurnResult(
+        outcome=outcome,
+        brief=brief,
+        verdict_cards=all_cards,
+        rolling_summary=rolling_summary,
+    )

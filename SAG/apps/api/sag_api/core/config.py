@@ -102,9 +102,6 @@ class Settings(BaseSettings):
     max_upload_mb: int = 25  # 单文件上传上限
     job_concurrency: int = 4  # 后台处理并发
     knowledge_worker_enabled: bool = True
-    # Option A+ routes research queries via the shared Qdrant chamber directly;
-    # deployments set SAG_KNOWLEDGE_TREE_REBUILD_ENABLED=false to skip wasted Leiden rebuilds.
-    knowledge_tree_rebuild_enabled: bool = True
     knowledge_graph_timeout_seconds: int = Field(default=300, ge=1)
     knowledge_foundation_timeout_seconds: float | None = Field(default=None, gt=0)
     knowledge_concurrency: int = Field(default=4, ge=1, le=16)
@@ -191,9 +188,8 @@ class Settings(BaseSettings):
     sag_pg_database: str = "aiinvest_sag"
     sag_qdrant_url: str = "http://localhost:6333"
     sag_qdrant_api_key: str | None = None
-    # When set (e.g. "aiinvest_search_units"), all tickers share one multi-tenant Qdrant
-    # collection partitioned by `project_id` (`is_tenant=true`) with on-disk storage & int8 quantization.
-    sag_qdrant_shared_collection: str | None = None
+    # Shared multi-tenant Qdrant collection partitioned by `project_id` (`is_tenant=true`).
+    sag_qdrant_shared_collection: str | None = "aiinvest_search_units"
     sag_qdrant_on_disk: bool = True
     sag_qdrant_scalar_quantization: bool = True
 
@@ -361,8 +357,8 @@ class Settings(BaseSettings):
     siliconflow_base_url: str = "https://api.siliconflow.com/v1"
     siliconflow_api_key: str | None = None
 
-    # ── Cross-Encoder Reranker (Optional Online Reranking for Research Chat) ──
-    rerank_provider: Literal["siliconflow", "deepinfra", "disabled"] = "disabled"
+    # ── Cross-Encoder Reranker (Online Reranking for Research Chat; safe no-op when API key is unset) ──
+    rerank_provider: Literal["siliconflow", "deepinfra", "disabled"] = "deepinfra"
     rerank_model: str = Field(default="Qwen/Qwen3-Reranker-0.6B", min_length=1, max_length=200)
     rerank_base_url: str | None = None
     rerank_api_key: str | None = None
@@ -370,7 +366,7 @@ class Settings(BaseSettings):
     rerank_min_score: float = Field(default=0.15, ge=0.0, le=1.0)
 
     # ── SAG-Native User Memory & Linked Sessions (Tri-Temporal Mem0-g) ────────
-    user_memory_mode: Literal["off", "shadow", "on"] = "shadow"
+    user_memory_mode: Literal["off", "shadow", "on"] = "on"
     user_memory_qdrant_collection: str = "aiinvest_user_memories"
     user_memory_extractor_model: str | None = None
     user_memory_worker_enabled: bool = True
@@ -403,10 +399,17 @@ class Settings(BaseSettings):
         data = dict(value)
         provider = data.get("decision_provider")
         normalized_provider = provider.strip().lower() if isinstance(provider, str) else provider
+        has_sf_key = any(
+            isinstance(k, str)
+            and k.lower() in ("siliconflow_api_key", "sag_siliconflow_api_key")
+            and isinstance(v, str)
+            and bool(v.strip())
+            for k, v in data.items()
+        )
         if normalized_provider in ("laya", "openrouter"):
             data["decision_provider"] = "siliconflow"
         elif normalized_provider is None or normalized_provider == "":
-            data["decision_provider"] = "disabled"
+            data["decision_provider"] = "siliconflow" if has_sf_key else "disabled"
         if normalized_provider in ("laya", "openrouter") or data.get("decision_model") == "typesafe/jev-1.14":
             data["decision_model"] = "Kev-4b"
 

@@ -146,8 +146,9 @@ def test_env_example_templates_validate_cleanly(monkeypatch) -> None:
         loaded = Settings(_env_file=template)
         assert loaded.secret_key.strip(), f"Empty secret_key in {template}"
         assert loaded.sag_qdrant_url.startswith(("http://", "https://")), f"Invalid Qdrant URL in {template}"
-        assert loaded.document_event_extraction_enabled is False
-        assert loaded.knowledge_tree_rebuild_enabled is False
+        assert not hasattr(loaded, "knowledge_tree_rebuild_enabled")
+        assert loaded.user_memory_mode == "on"
+        assert loaded.sag_qdrant_shared_collection == "aiinvest_search_units"
         assert loaded.auth_mode == "continuum"
         assert loaded.bff_service_token and len(loaded.bff_service_token) >= 32
         assert loaded.rerank_provider == "deepinfra"
@@ -155,6 +156,14 @@ def test_env_example_templates_validate_cleanly(monkeypatch) -> None:
         assert loaded.decision_provider == "disabled"
         assert loaded.decision_model == "Kev-4b"
         assert loaded.r2_bucket_name == "aiinvest-bctc-prod"
+
+    bare = Settings(_env_file=None)
+    assert bare.user_memory_mode == "on"
+    assert bare.sag_qdrant_shared_collection == "aiinvest_search_units"
+    assert bare.rerank_provider == "deepinfra"
+    assert bare.decision_provider == "disabled"
+    auto_sf = Settings(_env_file=None, siliconflow_api_key="sf-live-key")
+    assert auto_sf.decision_provider == "siliconflow"
 
 
 def test_r2_core_db_deepinfra_rerank_and_siliconflow_fail_open_wiring(tmp_path, monkeypatch) -> None:

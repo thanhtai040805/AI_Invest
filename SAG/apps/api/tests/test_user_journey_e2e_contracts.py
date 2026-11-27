@@ -28,8 +28,19 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sag_api.core.config import Settings
 from sag_api.core.principal_assertion import VerifiedPrincipal
 from sag_api.db.base import Base
-from sag_api.db.models import CanonicalBlock, Document, DocumentVersion, KnowledgeJob, Setting
+from sag_api.db.models import (
+    CanonicalBlock,
+    Document,
+    DocumentVersion,
+    KnowledgeGraphBuild,
+    KnowledgeJob,
+    KnowledgeUnitEdge,
+    Setting,
+    Source,
+    SourceProjectMapping,
+)
 from sag_api.db.models.stock_research import SagExtractedTable
+from sag_api.enums import SourceStatus
 from sag_api.parsing.mineru_official import OfficialMinerUClient, normalize_mineru_language
 from sag_api.research.chat_orchestrator import (
     ResearchChatOrchestrator,
@@ -83,11 +94,13 @@ def _make_doc(
     project_id: str,
     tenant_id: str = "aiinvest-default",
     is_active: bool = True,
+    source_id: str | None = None,
 ) -> Document:
     return Document(
         id=doc_id,
         tenant_id=tenant_id,
         project_id=project_id,
+        source_id=source_id,
         filename=f"{project_id.lower()}_{doc_id}.pdf",
         storage_path=f"/tmp/{project_id.lower()}_{doc_id}.pdf",
         is_active=is_active,
@@ -123,10 +136,23 @@ def test_contract_config_and_env_parity_across_repo() -> None:
     assert default_cfg.embedding_model == "Qwen/Qwen3-Embedding-0.6B"
     assert default_cfg.embedding_dimensions == 1024
     assert default_cfg.decision_provider == "disabled"
+    assert default_cfg.rerank_provider == "deepinfra"
+    assert default_cfg.user_memory_mode == "on"
+    assert default_cfg.sag_qdrant_shared_collection == "aiinvest_search_units"
+    assert not hasattr(default_cfg, "knowledge_tree_rebuild_enabled")
     assert "aiinvest_sag" in default_cfg.database_url
 
+    banned_switches = {
+        "SAG_KNOWLEDGE_TREE_REBUILD_ENABLED",
+        "SAG_USER_MEMORY_MODE",
+        "SAG_RESEARCH_BRAIN_MODE",
+        "SAG_DOCUMENT_EVENT_EXTRACTION_ENABLED",
+        "SAG_DECISION_PROVIDER",
+        "SAG_RERANK_PROVIDER",
+    }
     env_paths = [
         REPO_ROOT / ".env.example",
+        REPO_ROOT / ".env.production.example",
         REPO_ROOT / "SAG" / ".env.example",
         REPO_ROOT / "SAG" / "apps" / "api" / ".env.example",
     ]
@@ -135,18 +161,20 @@ def test_contract_config_and_env_parity_across_repo() -> None:
         env_map, duplicates = _parse_env_file(env_path)
         assert not duplicates, f"Duplicate keys in {env_path.name}: {duplicates}"
         assert env_map.get("SAG_MINERU_OFFICIAL_MODEL") == "vlm", f"Drift in {env_path}"
-        assert env_map.get("SAG_KNOWLEDGE_TREE_REBUILD_ENABLED") == "false", f"Drift in {env_path}"
+        for banned in banned_switches:
+            assert banned not in env_map, f"Banned feature switch {banned} in {env_path}"
         if "SAG_TIMEZONE" in env_map:
             assert env_map["SAG_TIMEZONE"] == "Asia/Ho_Chi_Minh", f"Drift in {env_path}"
         if "SAG_DATABASE_URL" in env_map:
             assert "/aiinvest_sag" in env_map["SAG_DATABASE_URL"], f"Stale DB URL in {env_path}"
-        if "SAG_QDRANT_SHARED_COLLECTION" in env_map:
-            assert env_map["SAG_QDRANT_SHARED_COLLECTION"] == "aiinvest_search_units"
+        if "SAG_SAG_QDRANT_SHARED_COLLECTION" in env_map:
+            assert env_map["SAG_SAG_QDRANT_SHARED_COLLECTION"] == "aiinvest_search_units"
 
     for compose_path in (REPO_ROOT / "docker-compose.yml", REPO_ROOT / "SAG" / "compose.yaml"):
         text = compose_path.read_text(encoding="utf-8")
         assert "SAG_MINERU_OFFICIAL_MODEL" in text and "vlm" in text
-        assert "SAG_KNOWLEDGE_TREE_REBUILD_ENABLED" in text and "false" in text
+        for banned in banned_switches:
+            assert banned not in text, f"Banned feature switch {banned} in {compose_path}"
         assert "Asia/Ho_Chi_Minh" in text
 
 
@@ -284,8 +312,16 @@ def test_contract_engine_manager_exposes_real_async_methods_used_by_api() -> Non
 
 @pytest.mark.asyncio
 async def test_contract_knowledge_worker_skips_leiden_rebuild_in_both_run_one_and_discover() -> None:
-    """When `knowledge_tree_rebuild_enabled=False`, NEITHER `run_one()` NOR `discover()` schedules Leiden trees."""
+    """`KnowledgeWorker.discover()` & `run_one()` never schedule Leiden trees AND persist `KnowledgeUnitEdge` rows."""
+    import hashlib
+
+    from sqlalchemy import select
+
     from sag_api.jobs.knowledge import KnowledgeWorker
+    from sag_api.services.search_unit_retrieval_service import (
+        _get_or_build_scope_knowledge_index,
+        _ReadyVersion,
+    )
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
@@ -293,8 +329,35 @@ async def test_contract_knowledge_worker_skips_leiden_rebuild_in_both_run_one_an
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
     now = datetime.now(UTC)
+    p1 = (
+        "Giải trình biến động Q3/2026: Công ty Cổ phần Viễn thông FPT (FTEL) không còn là công ty con "
+        "theo Công văn số 1906/TTg-ĐMDN, doanh thu so sánh tương đương tăng 12,1%."
+    )
+    p2 = (
+        "Thuyết minh 1 — Cấu trúc Tập đoàn: Theo Công văn số 1906/TTg-ĐMDN, tỷ lệ biểu quyết tại "
+        "Công ty Cổ phần Viễn thông FPT (FTEL) chuyển sang công ty liên kết từ tháng 7/2025."
+    )
     async with session_factory() as session:
-        session.add(_make_doc("doc-fpt-kw", project_id="FPT"))
+        session.add(
+            Source(
+                id="src-fpt-kw",
+                name="FPT Source",
+                sag_source_config_id="cfg-fpt-kw",
+                status=SourceStatus.ACTIVE,
+            )
+        )
+        session.add(
+            SourceProjectMapping(
+                source_id="src-fpt-kw",
+                organization_id="aiinvest-default",
+                project_id="FPT",
+                state="CONFIRMED",
+                confirmed_at=now,
+                confirmed_by="tester",
+                approval_ref="ref-kw",
+            )
+        )
+        session.add(_make_doc("doc-fpt-kw", project_id="FPT", source_id="src-fpt-kw"))
         session.add(
             DocumentVersion(
                 id="ver-fpt-kw",
@@ -305,32 +368,87 @@ async def test_contract_knowledge_worker_skips_leiden_rebuild_in_both_run_one_an
                 source_published_at=now,
                 search_status="SEARCH_READY",
                 search_ready_at=now,
-                knowledge_status="DATA_READY",
+                knowledge_status="NOT_STARTED",
+                metadata_json={
+                    "sub_doc_slot": "QUARTER_NOTES",
+                    "fiscal_year": 2026,
+                    "fiscal_quarter": 3,
+                    "security_partition_id": "FPT",
+                },
             )
         )
-        session.add(
-            KnowledgeJob(
-                id="kjob-1",
-                document_version_id="ver-fpt-kw",
-                tenant_id="aiinvest-default",
-                kind="FOUNDATION",
-                input_checksum="chk-1",
-                status="SUCCEEDED",
-                tree_requested_at=None,
-                created_at=now,
-            )
+        session.add_all(
+            [
+                CanonicalBlock(
+                    id="blk-kw-1",
+                    document_version_id="ver-fpt-kw",
+                    ordinal=1,
+                    block_type="paragraph",
+                    section_path="QUARTER_NOTES > GIẢI TRÌNH",
+                    page_from=8,
+                    page_to=8,
+                    source_anchor="p8",
+                    normalized_text=p1,
+                    content_hash=hashlib.sha256(p1.encode()).hexdigest(),
+                ),
+                CanonicalBlock(
+                    id="blk-kw-2",
+                    document_version_id="ver-fpt-kw",
+                    ordinal=2,
+                    block_type="paragraph",
+                    section_path="QUARTER_NOTES > Thuyết minh 1",
+                    page_from=14,
+                    page_to=14,
+                    source_anchor="p14",
+                    normalized_text=p2,
+                    content_hash=hashlib.sha256(p2.encode()).hexdigest(),
+                ),
+            ]
         )
         await session.commit()
 
-    cfg = Settings(_env_file=None, knowledge_tree_rebuild_enabled=False)  # type: ignore[call-arg]
+    cfg = Settings(_env_file=None)  # type: ignore[call-arg]
     fake_queue = object()
     worker = KnowledgeWorker(session_factory, cfg, job_queue=fake_queue)
 
     enqueue_spy = AsyncMock()
     with patch("sag_api.services.universe_tree_service.enqueue_tree_rebuild_for_version", new=enqueue_spy):
         await worker.discover()
+        ran = await worker.run_one()
+        await worker.discover()
 
+    assert ran is True
     assert enqueue_spy.await_count == 0
+
+    async with session_factory() as session:
+        jobs = list((await session.scalars(select(KnowledgeJob))).all())
+        assert len(jobs) == 1 and jobs[0].status == "SUCCEEDED"
+        builds = list((await session.scalars(select(KnowledgeGraphBuild))).all())
+        edges = list((await session.scalars(select(KnowledgeUnitEdge))).all())
+        assert len(builds) == 1 and builds[0].project_id == "FPT"
+        assert len(edges) >= 1
+        src_obj = await session.get(Source, "src-fpt-kw")
+        assert src_obj is not None
+        cur_ver = _ReadyVersion(
+            document_version_id="ver-fpt-kw",
+            source_id="src-fpt-kw",
+            project_id="FPT",
+            tenant_id="aiinvest-default",
+            partition_id="FPT",
+            acl_mapping_version=1,
+            ingestion_run_id="run-kw-1",
+            index_stage_run_id="stg-kw-1",
+            search_manifest_checksum="chk-kw-1",
+            valid_from_ts=int(now.timestamp()),
+            source=src_obj,
+        )
+        scope_idx = await _get_or_build_scope_knowledge_index(
+            session,
+            current_versions={"ver-fpt-kw": cur_ver},
+            allowed_partitions=["FPT"],
+        )
+        assert len(scope_idx.edges_by_ku) >= 2
+
     await engine.dispose()
 
 

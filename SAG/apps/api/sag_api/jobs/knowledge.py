@@ -45,6 +45,7 @@ from sag_api.enums import DocumentStatus
 from sag_api.services.knowledge_service import (
     KnowledgeConfig,
     knowledge_lock,
+    persist_project_foundation_graph,
     rebuild_knowledge_version,
     stable_id,
     version_input,
@@ -264,7 +265,7 @@ async def claim_job(
 
 
 class KnowledgeWorker:
-    """Executes Phase 5A FOUNDATION (`E0/E1` + `DenseGraph`) jobs and requests Leiden tree publication."""
+    """Executes Phase 5A FOUNDATION (`E0/E1` + `DenseGraph` + `KnowledgeUnitEdge`) jobs."""
 
     def __init__(
         self,
@@ -288,7 +289,6 @@ class KnowledgeWorker:
         self.job_queue = job_queue
         self.task = None
         self.running: set[asyncio.Task] = set()
-        self.scheduling_tree_jobs: set[str] = set()
         self.discovery_after = ""
         self._wakeup = asyncio.Event()
         retries = getattr(settings, "embedding_max_retries", 3)
@@ -304,8 +304,6 @@ class KnowledgeWorker:
         )
 
     async def discover(self):
-        if self.job_queue is not None and getattr(self.settings, "knowledge_tree_rebuild_enabled", True):
-            await self._request_completed_trees()
         async with self.sessions() as session:
             versions = (
                 await session.scalars(
@@ -356,39 +354,6 @@ class KnowledgeWorker:
                 except ValueError:
                     version.knowledge_status = "FAILED"
             await session.commit()
-
-    async def _request_completed_trees(self):
-        from sag_api.services.universe_tree_service import enqueue_tree_rebuild_for_version
-
-        async with self.sessions() as session:
-            jobs = list(
-                (
-                    await session.scalars(
-                        select(KnowledgeJob)
-                        .where(
-                            KnowledgeJob.kind == "FOUNDATION",
-                            KnowledgeJob.status == "SUCCEEDED",
-                            KnowledgeJob.tree_requested_at.is_(None),
-                        )
-                        .order_by(KnowledgeJob.created_at)
-                        .limit(32)
-                    )
-                ).all()
-            )
-            for job in jobs:
-                if job.id in self.scheduling_tree_jobs or job.tree_requested_at is not None:
-                    continue
-                await session.refresh(job)
-                if job.id in self.scheduling_tree_jobs or job.tree_requested_at is not None:
-                    continue
-                await enqueue_tree_rebuild_for_version(
-                    session,
-                    self.job_queue,
-                    job.document_version_id,
-                    reason="knowledge_recovery",
-                )
-                job.tree_requested_at = datetime.now(UTC)
-                await session.commit()
 
     async def run_one(self) -> bool:
         from sag_api.core.token_usage import (
@@ -457,7 +422,7 @@ class KnowledgeWorker:
                     _, _, _, actual = await version_input(session, current.document_version_id, self.config)
                     if actual != current.input_checksum:
                         raise ValueError("Stale foundation input")
-                    await rebuild_knowledge_version(
+                    rebuilt_units = await rebuild_knowledge_version(
                         session,
                         current.document_version_id,
                         self.config,
@@ -466,35 +431,19 @@ class KnowledgeWorker:
                             None if getattr(self.settings, "document_event_extraction_enabled", False) else ()
                         ),
                     )
+                    if rebuilt_units:
+                        await persist_project_foundation_graph(
+                            session,
+                            tenant_id=rebuilt_units[0].tenant_id,
+                            project_id=rebuilt_units[0].project_id,
+                            config=self.config,
+                        )
                     attempt_summary = job_ledger.to_summary()
                     current.usage_json = merge_token_summaries(current.usage_json, attempt_summary)
                     current.status, current.lease_token, current.lease_until = "SUCCEEDED", None, None
                     await session.flush()
                     await sync_document_token_usage(session, current.document_version_id)
-                    if self.job_queue is None or not getattr(
-                        self.settings, "knowledge_tree_rebuild_enabled", True
-                    ):
-                        await session.commit()
-                    else:
-                        self.scheduling_tree_jobs.add(job_id)
-                        current.tree_requested_at = datetime.now(UTC)
-                        await session.flush()
-                        try:
-                            from sag_api.services.universe_tree_service import enqueue_tree_rebuild_for_version
-
-                            await enqueue_tree_rebuild_for_version(
-                                session,
-                                self.job_queue,
-                                current.document_version_id,
-                                reason="knowledge_foundation_ready",
-                            )
-                            await session.commit()
-                        except Exception as error:  # noqa: BLE001 - tree scheduling must not retry completed extraction
-                            current.tree_requested_at = None
-                            await session.commit()
-                            log.warning("Universe tree rebuild scheduling delayed (%s)", type(error).__name__)
-                        finally:
-                            self.scheduling_tree_jobs.discard(job_id)
+                    await session.commit()
         except Exception as error:
             # Store only error class; provider bodies/credentials/document text never enter job errors.
             attempt_summary = job_ledger.to_summary()

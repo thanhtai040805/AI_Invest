@@ -1077,14 +1077,24 @@ class SAGRetrieverAdapter:
                         ).all()
                     }
                     hit_ver_ids = sorted(
-                        {str(hit_payloads[p].get("document_version_id") or "") for p, _ in selected_pids}
+                        {
+                            str(hit_payloads[p].get("document_version_id") or "")
+                            for p, _ in selected_pids
+                            if str(hit_payloads[p].get("document_version_id") or "")
+                        }
                     )
                     blocks_map: dict[str, list[CanonicalBlockRecord]] = {}
-                    if load_canonical_blocks and hit_ver_ids:
+                    if hit_ver_ids:
                         blocks_map = await load_canonical_blocks_for_versions(
                             self._session, hit_ver_ids, as_of_date=as_of_date
                         )
+
+                    def _norm_sec_heading(raw_h: str) -> str:
+                        cleaned = re.sub(r"\(\s*tiếp(?:\s+theo)?\s*\)", "", str(raw_h or ""), flags=re.IGNORECASE)
+                        return re.sub(r"\s+", " ", cleaned).strip().lower()
+
                     qdrant_sections: list[RetrievedResearchSection] = []
+                    covered_ver_block_ids: set[tuple[str, str]] = set()
                     for pid_key, fused_sc in selected_pids:
                         pl = hit_payloads[pid_key]
                         vid_val = str(pl.get("document_version_id") or "")
@@ -1101,16 +1111,7 @@ class SAGRetrieverAdapter:
                         b_to = str(su.block_to_id) if (su and su.block_to_id) else (
                             str(pl["block_to_id"]) if pl.get("block_to_id") else None
                         )
-                        content_txt = str(pl.get("content") or pl.get("text") or "").strip()
-                        if not content_txt and blocks_map.get(vid_val):
-                            page_txts = [
-                                blk.normalized_text
-                                for blk in blocks_map[vid_val]
-                                if not (blk.page_to < p_from or blk.page_from > p_to)
-                            ]
-                            content_txt = "\n\n".join(t for t in page_txts[:3] if t.strip())
-                        if not content_txt:
-                            continue
+                        sec_heading = str((su.section_path if su else pl.get("section_path")) or "")
                         sec_slot = str(pl.get("sub_doc_slot") or info["slot"])
                         tid = pl.get("table_id")
                         if not tid:
@@ -1119,6 +1120,112 @@ class SAGRetrieverAdapter:
                                 parts = anc.split(":")
                                 if len(parts) >= 2 and parts[1]:
                                     tid = parts[1]
+
+                        content_txt = str(pl.get("content") or pl.get("text") or "").strip()
+                        ver_blks = blocks_map.get(vid_val) or []
+
+                        # Section-Sibling Stitching (0 LLM tokens): reunite split multi-block/page explanations
+                        # under the same section_path so adjacent paragraphs stay intact!
+                        if not tid and ver_blks:
+                            id_to_idx = {
+                                str(blk.block_id): idx_b
+                                for idx_b, blk in enumerate(ver_blks)
+                                if blk.block_id
+                            }
+                            lo_i = id_to_idx.get(b_from or "")
+                            hi_i = id_to_idx.get(b_to or b_from or "")
+                            if lo_i is None or hi_i is None:
+                                matching_idxs = [
+                                    idx_b
+                                    for idx_b, blk in enumerate(ver_blks)
+                                    if not (blk.page_to < p_from or blk.page_from > p_to)
+                                    and (not content_txt or content_txt[:60] in blk.normalized_text)
+                                ]
+                                if matching_idxs:
+                                    lo_i, hi_i = matching_idxs[0], matching_idxs[-1]
+                            if lo_i is not None and hi_i is not None and lo_i <= hi_i:
+                                if all(
+                                    (vid_val, str(ver_blks[k].block_id or "")) in covered_ver_block_ids
+                                    for k in range(lo_i, hi_i + 1)
+                                    if ver_blks[k].block_id
+                                ):
+                                    continue
+                                raw_blk_sec_rows = (
+                                    await self._session.execute(
+                                        select(
+                                            CanonicalBlock.id,
+                                            CanonicalBlock.block_type,
+                                            CanonicalBlock.section_path,
+                                        ).where(CanonicalBlock.document_version_id == vid_val)
+                                    )
+                                ).all()
+                                blk_meta_by_id = {
+                                    str(bid): (str(btype or ""), _norm_sec_heading(str(spath or "")))
+                                    for bid, btype, spath in raw_blk_sec_rows
+                                }
+                                seed_norm_sec = _norm_sec_heading(sec_heading) or blk_meta_by_id.get(
+                                    str(ver_blks[lo_i].block_id or ""), ("", "")
+                                )[1]
+                                cur_chars = sum(len(ver_blks[k].normalized_text) for k in range(lo_i, hi_i + 1))
+                                max_stitch_chars = 2500
+                                while lo_i > 0:
+                                    cand_blk = ver_blks[lo_i - 1]
+                                    c_type, c_sec = blk_meta_by_id.get(str(cand_blk.block_id or ""), ("", ""))
+                                    if (
+                                        c_type in ("table_card", "table", "heading")
+                                        or not seed_norm_sec
+                                        or c_sec != seed_norm_sec
+                                        or abs(ver_blks[lo_i].page_from - cand_blk.page_to) > 1
+                                        or (cur_chars + len(cand_blk.normalized_text)) > max_stitch_chars
+                                    ):
+                                        break
+                                    lo_i -= 1
+                                    cur_chars += len(cand_blk.normalized_text)
+                                while hi_i + 1 < len(ver_blks):
+                                    cand_blk = ver_blks[hi_i + 1]
+                                    c_type, c_sec = blk_meta_by_id.get(str(cand_blk.block_id or ""), ("", ""))
+                                    if (
+                                        c_type in ("table_card", "table", "heading")
+                                        or not seed_norm_sec
+                                        or c_sec != seed_norm_sec
+                                        or abs(cand_blk.page_from - ver_blks[hi_i].page_to) > 1
+                                        or (cur_chars + len(cand_blk.normalized_text)) > max_stitch_chars
+                                    ):
+                                        break
+                                    hi_i += 1
+                                    cur_chars += len(cand_blk.normalized_text)
+
+                                stitched_parts: list[str] = []
+                                for k in range(lo_i, hi_i + 1):
+                                    b_rec = ver_blks[k]
+                                    b_type_k, _ = blk_meta_by_id.get(str(b_rec.block_id or ""), ("", ""))
+                                    if b_type_k in ("table_card", "heading"):
+                                        continue
+                                    if b_rec.normalized_text.strip():
+                                        stitched_parts.append(b_rec.normalized_text.strip())
+                                    if b_rec.block_id:
+                                        covered_ver_block_ids.add((vid_val, str(b_rec.block_id)))
+                                if stitched_parts:
+                                    content_txt = "\n\n".join(stitched_parts)
+                                    b_from = ver_blks[lo_i].block_id or b_from
+                                    b_to = ver_blks[hi_i].block_id or b_to
+                                    p_from = min(ver_blks[k].page_from for k in range(lo_i, hi_i + 1))
+                                    p_to = max(ver_blks[k].page_to for k in range(lo_i, hi_i + 1))
+
+                        if not content_txt and ver_blks:
+                            page_txts = [
+                                blk.normalized_text
+                                for blk in ver_blks
+                                if not (blk.page_to < p_from or blk.page_from > p_to)
+                            ]
+                            content_txt = "\n\n".join(t for t in page_txts[:3] if t.strip())
+                        if not content_txt:
+                            continue
+                        if b_from:
+                            covered_ver_block_ids.add((vid_val, b_from))
+                        if b_to:
+                            covered_ver_block_ids.add((vid_val, b_to))
+
                         qdrant_sections.append(
                             RetrievedResearchSection(
                                 ticker=info["ticker"],
@@ -1129,7 +1236,7 @@ class SAGRetrieverAdapter:
                                 page_to=max(1, p_to),
                                 published_date=info["pub_date"],
                                 content=content_txt,
-                                heading=str((su.section_path if su else pl.get("section_path")) or ""),
+                                heading=sec_heading,
                                 table_id=str(tid) if tid else None,
                                 routing_slot=sec_slot,
                                 score=round(float(fused_sc) * 20.0, 4),
@@ -1144,11 +1251,181 @@ class SAGRetrieverAdapter:
                                 evidence_origin="PRIMARY",
                             )
                         )
+
+                    # 1-Hop Intra-Ticker HippoRAG-2 Bridge over KnowledgeUnitEdge + Shared Specific Entities
+                    hippo_hops_count = 0
+                    if qdrant_sections:
+                        from sag_api.db.models import KnowledgeUnit, KnowledgeUnitEdge
+
+                        seed_ver_ids = sorted(
+                            {s.document_version_id for s in qdrant_sections[:3] if s.document_version_id}
+                        )
+                        all_pit_ver_ids = sorted(ver_info.keys())
+                        ku_seed_rows = (
+                            await self._session.scalars(
+                                select(KnowledgeUnit).where(
+                                    KnowledgeUnit.document_version_id.in_(seed_ver_ids),
+                                    KnowledgeUnit.is_current.is_(True),
+                                )
+                            )
+                        ).all()
+                        seed_ku_ids: set[str] = set()
+                        seed_specific_ents: set[str] = set()
+                        covered_sec_norms: set[tuple[str, str]] = {
+                            (s.document_version_id, _norm_sec_heading(s.heading)) for s in qdrant_sections
+                        }
+                        for ku in ku_seed_rows:
+                            prov = ku.provenance_json if isinstance(ku.provenance_json, Mapping) else {}
+                            ev_bids = [str(x) for x in (prov.get("evidence_block_ids") or ()) if x]
+                            ku_pfrom = int(prov.get("page_from") or 0)
+                            matched_seed = any(
+                                (ku.document_version_id, bid) in covered_ver_block_ids for bid in ev_bids
+                            ) or any(
+                                s.document_version_id == ku.document_version_id
+                                and s.page_from <= ku_pfrom <= s.page_to
+                                for s in qdrant_sections[:3]
+                            )
+                            if matched_seed:
+                                seed_ku_ids.add(str(ku.id))
+                                feats = ku.features_json if isinstance(ku.features_json, Mapping) else {}
+                                for raw_e in feats.get("entities") or ():
+                                    e_str = str(raw_e or "").strip()
+                                    if len(e_str) >= 3 and (
+                                        any(ch.isdigit() for ch in e_str)
+                                        or (e_str.isupper() and len(e_str) <= 10)
+                                    ):
+                                        seed_specific_ents.add(e_str.lower())
+
+                        neighbor_ku_weights: dict[str, float] = {}
+                        if seed_ku_ids:
+                            edge_rows = (
+                                await self._session.execute(
+                                    select(
+                                        KnowledgeUnitEdge.source_unit_id,
+                                        KnowledgeUnitEdge.target_unit_id,
+                                        KnowledgeUnitEdge.weight,
+                                    )
+                                    .where(
+                                        KnowledgeUnitEdge.source_unit_id.in_(seed_ku_ids)
+                                        | KnowledgeUnitEdge.target_unit_id.in_(seed_ku_ids)
+                                    )
+                                    .order_by(KnowledgeUnitEdge.weight.desc())
+                                    .limit(24)
+                                )
+                            ).all()
+                            for s_uid, t_uid, w_val in edge_rows:
+                                other_id = str(t_uid) if str(s_uid) in seed_ku_ids else str(s_uid)
+                                if other_id not in seed_ku_ids:
+                                    neighbor_ku_weights[other_id] = max(
+                                        neighbor_ku_weights.get(other_id, 0.0), float(w_val or 0.0)
+                                    )
+
+                        bridged_kus: list[tuple[float, Any]] = []
+                        if neighbor_ku_weights:
+                            cand_kus = (
+                                await self._session.scalars(
+                                    select(KnowledgeUnit).where(
+                                        KnowledgeUnit.id.in_(sorted(neighbor_ku_weights)),
+                                        KnowledgeUnit.document_version_id.in_(all_pit_ver_ids),
+                                        KnowledgeUnit.is_current.is_(True),
+                                    )
+                                )
+                            ).all()
+                            for c_ku in cand_kus:
+                                bridged_kus.append((neighbor_ku_weights.get(str(c_ku.id), 0.5), c_ku))
+
+                        # Fallback entity bridge inside same PIT versions when <1 edge neighbor surfaced
+                        if not bridged_kus and seed_specific_ents and seed_ver_ids:
+                            for ku in ku_seed_rows:
+                                if str(ku.id) in seed_ku_ids:
+                                    continue
+                                feats = ku.features_json if isinstance(ku.features_json, Mapping) else {}
+                                ku_ents = {str(e).strip().lower() for e in (feats.get("entities") or ()) if e}
+                                if ku_ents & seed_specific_ents:
+                                    bridged_kus.append((0.68, ku))
+
+                        bridged_kus.sort(key=lambda item: -item[0])
+                        bridge_budget = min(2, max(1, top_k // 2))
+                        added_bridges = 0
+                        new_ver_ids_needed: list[str] = []
+                        selected_bridge_kus: list[tuple[float, Any]] = []
+                        for w_sc, b_ku in bridged_kus:
+                            b_vid = str(b_ku.document_version_id or "")
+                            b_info = ver_info.get(b_vid)
+                            if b_info is None:
+                                continue
+                            prov = b_ku.provenance_json if isinstance(b_ku.provenance_json, Mapping) else {}
+                            b_sec_raw = str(prov.get("section_path") or "")
+                            b_sec_norm = _norm_sec_heading(b_sec_raw)
+                            ev_bids = [str(x) for x in (prov.get("evidence_block_ids") or ()) if x]
+                            if (b_vid, b_sec_norm) in covered_sec_norms:
+                                continue
+                            if any((b_vid, bid) in covered_ver_block_ids for bid in ev_bids):
+                                continue
+                            # Allow intra-filing footnote bridges OR slot-matching cross-filing bridges
+                            if (
+                                b_vid not in seed_ver_ids
+                                and slots_set
+                                and str(b_info["slot"]).upper() not in slots_set
+                            ):
+                                continue
+                            covered_sec_norms.add((b_vid, b_sec_norm))
+                            for bid in ev_bids:
+                                covered_ver_block_ids.add((b_vid, bid))
+                            selected_bridge_kus.append((w_sc, b_ku))
+                            if b_vid not in blocks_map and b_vid not in new_ver_ids_needed:
+                                new_ver_ids_needed.append(b_vid)
+                            added_bridges += 1
+                            if added_bridges >= bridge_budget:
+                                break
+
+                        if new_ver_ids_needed:
+                            extra_blks = await load_canonical_blocks_for_versions(
+                                self._session, new_ver_ids_needed, as_of_date=as_of_date
+                            )
+                            blocks_map.update(extra_blks)
+
+                        top_seed_sc = qdrant_sections[0].score if qdrant_sections else 0.5
+                        for w_sc, b_ku in selected_bridge_kus:
+                            b_vid = str(b_ku.document_version_id)
+                            b_info = ver_info[b_vid]
+                            prov = b_ku.provenance_json if isinstance(b_ku.provenance_json, Mapping) else {}
+                            ev_bids = [str(x) for x in (prov.get("evidence_block_ids") or ()) if x]
+                            b_pfrom = max(1, int(prov.get("page_from") or 1))
+                            b_pto = max(b_pfrom, int(prov.get("page_to") or b_pfrom))
+                            b_txt = str(b_ku.text or "").strip()
+                            if not b_txt:
+                                continue
+                            qdrant_sections.append(
+                                RetrievedResearchSection(
+                                    ticker=b_info["ticker"],
+                                    doc_id=b_info["doc_id"],
+                                    document_version_id=b_vid,
+                                    sub_doc_slot=b_info["slot"],
+                                    page_from=b_pfrom,
+                                    page_to=b_pto,
+                                    published_date=b_info["pub_date"],
+                                    content=b_txt,
+                                    heading=str(prov.get("section_path") or ""),
+                                    table_id=None,
+                                    routing_slot=b_info["slot"],
+                                    hipporag_hops=1,
+                                    score=round(max(0.25, top_seed_sc * 0.85 * w_sc), 4),
+                                    block_from_id=ev_bids[0] if ev_bids else None,
+                                    block_to_id=ev_bids[-1] if ev_bids else None,
+                                    fiscal_year=b_info["fy"],
+                                    fiscal_quarter=b_info["fq"],
+                                    evidence_origin="PRIMARY",
+                                )
+                            )
+                            hippo_hops_count = 1
+
                     return (
                         RetrievalResult(
                             sections=qdrant_sections,
                             canonical_blocks=blocks_map,
                             routing_slot=qdrant_sections[0].sub_doc_slot if qdrant_sections else None,
+                            hipporag_hops=hippo_hops_count,
                         ),
                         {
                             "status": "OK" if qdrant_sections else "NOT_FOUND",
@@ -4105,10 +4382,12 @@ class ResearchChatOrchestrator:
             outcome = raw_agent_out.outcome
             active_brief = raw_agent_out.brief
             verdict_cards = raw_agent_out.verdict_cards
+            outcome_rolling_summary = raw_agent_out.rolling_summary
         else:
             outcome = raw_agent_out
             active_brief = None
             verdict_cards = []
+            outcome_rolling_summary = None
         activity_log.extend(outcome.activity_log)
 
         for raw_bs in outcome.extra_blindspots:
@@ -4509,6 +4788,7 @@ class ResearchChatOrchestrator:
             recalled_memories=recalled_mem_models,
             linked_sessions=linked_sess_models,
             portfolio_snapshot_used=bool(evidence.portfolio_snapshots),
+            session_rolling_summary=outcome_rolling_summary,
             telemetry=ResearchTelemetry(
                 routing_slot=pit_sections[0].sub_doc_slot if pit_sections else None,
                 route_intent=str(route_decision.get("task_action") or "fact_lookup"),
@@ -4705,15 +4985,20 @@ class ResearchChatOrchestrator:
                 if pair.assistant_content:
                     pit_safe_history_dicts.append({"role": "assistant", "content": pair.assistant_content})
 
-        # R1 Smart Read (SQL-First / Hybrid + Backtest Default-Deny)
+        # R1 Smart Read (Always-On Active Investor Criteria + Hybrid Qdrant Recall when User Has Memories)
         q_client_mem = None
         embedder_mem = None
         mem_need = str(route_decision.get("memory_recall_need") or "none")
-        if (
+        is_casual_short_circuit = bool(
             route_decision.get("is_short_circuit")
-            and route_decision.get("short_circuit_kind") == "reformat_or_recall_chat"
-            and not session_ledger.valid_turns
-            and has_user_mems
+            and route_decision.get("short_circuit_kind") == "chitchat_casual"
+        )
+        if (
+            has_user_mems
+            and not is_casual_short_circuit
+            and request.memory_mode != "incognito"
+            and settings.user_memory_mode != "off"
+            and mem_need in ("none", "current_session_only")
         ):
             mem_need = "cross_session_graph"
         if (

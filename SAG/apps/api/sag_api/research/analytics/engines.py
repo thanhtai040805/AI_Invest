@@ -269,6 +269,8 @@ def peer_compare(
     fs: FactSet,
     tickers: Sequence[str],
     kpi_ids: Sequence[str] | None = None,
+    *,
+    period: PeriodRef | None = None,
 ) -> dict[str, Any]:
     tks = [t.strip().upper() for t in tickers if t.strip()]
     known = [t for t in tks if t in fs.templates]
@@ -284,10 +286,15 @@ def peer_compare(
     if not known:
         return {"status": "INSUFFICIENT_DATA", "unknown_tickers": unknown}
     tmpl = templates.pop()
-    periods = [latest_analysis_period(fs, t) for t in known]
-    ttm = [p for p in periods if p is not None and p.period_type == "TTM"]
-    aligned = len(ttm) == len(known)
-    common = min(ttm, key=lambda p: (p.fiscal_year, p.fiscal_quarter)) if aligned else None
+    if period is not None:
+        periods: list[PeriodRef | None] = [period for _ in known]
+        aligned = True
+        common: PeriodRef | None = period
+    else:
+        periods = [latest_analysis_period(fs, t) for t in known]
+        ttm = [p for p in periods if p is not None and p.period_type == "TTM"]
+        aligned = len(ttm) == len(known)
+        common = min(ttm, key=lambda p: (p.fiscal_year, p.fiscal_quarter)) if aligned else None
     ids = list(kpi_ids) if kpi_ids else [s.kpi_id for s in KPI_BY_ID.values() if tmpl in s.templates]
     matrix: dict[str, dict[str, Any]] = {}
     for kid in ids:

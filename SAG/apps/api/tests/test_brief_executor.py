@@ -1206,3 +1206,258 @@ async def test_asyncpg_fetch_pit_market_caps_computes_close_times_shares_and_zer
     assert rows[0]["ticker"] == "ZRO"
     assert rows[0].get("market_cap") is None
 
+
+async def test_single_ticker_peers_honest_partial_status_divergence_autoprobe_and_reasoning_buffer() -> None:
+    import json
+
+    from sag_api.research.analytics import PeriodRef, compute_kpi
+    from sag_api.research.brief_synthesizer import _ReasoningWordStreamBuffer
+    from sag_api.research.facts import load_fact_set
+
+    @asynccontextmanager
+    async def _sf() -> AsyncIterator[dict[str, int]]:
+        yield {"sid": 1}
+
+    class _FptAndPeersReader:
+        async def fetch_issuer_profiles(self, tickers=None):
+            rows = [
+                {
+                    "ticker": "FPT",
+                    "company_name": "FPT Corp",
+                    "sector": "Công nghệ thông tin",
+                    "industry": "Phần mềm & Dịch vụ CNTT",
+                    "market_cap": 190_000e9,
+                },
+                {
+                    "ticker": "CMG",
+                    "company_name": "CMC Corp",
+                    "sector": "Công nghệ thông tin",
+                    "industry": "Phần mềm & Dịch vụ CNTT",
+                    "market_cap": 9_500e9,
+                },
+                {
+                    "ticker": "ELC",
+                    "company_name": "ELCOM",
+                    "sector": "Công nghệ thông tin",
+                    "industry": "Phần mềm & Dịch vụ CNTT",
+                    "market_cap": 2_400e9,
+                },
+            ]
+            if tickers:
+                want = {t.upper() for t in tickers}
+                return [r for r in rows if r["ticker"] in want]
+            return rows
+
+        async def fetch_pit_market_caps(self, as_of_date, *, tickers=None):
+            del as_of_date, tickers
+            return {"FPT": 190_000e9, "CMG": 9_500e9, "ELC": 2_400e9}
+
+        async def fetch_pit_financial_statements(
+            self,
+            as_of_date,
+            *,
+            tickers=None,
+            lookback_years=6,
+            prefer_annual=False,
+            statement_types=("IS", "BS", "CF", "RATIOS"),
+        ):
+            del as_of_date, lookback_years, prefer_annual, statement_types
+            all_rows = [
+                # FPT Q3/2025 -> Q3/2026 (-20.05% headline revenue drop due to FTEL deconsolidation!)
+                {
+                    "symbol": "FPT",
+                    "period_end": date(2025, 9, 30),
+                    "statement_type": "IS",
+                    "frequency": "quarterly",
+                    "source": "alphastock",
+                    "published_date": date(2025, 10, 25),
+                    "data": {"is_net_revenue": 17_204e9, "is_net_profit_after_tax": 2_895e9},
+                },
+                {
+                    "symbol": "FPT",
+                    "period_end": date(2026, 9, 30),
+                    "statement_type": "IS",
+                    "frequency": "quarterly",
+                    "source": "alphastock",
+                    "published_date": date(2026, 10, 25),
+                    "data": {"is_net_revenue": 13_754.2e9, "is_net_profit_after_tax": 2_723.1e9},
+                },
+                {
+                    "symbol": "FPT",
+                    "period_end": date(2026, 9, 30),
+                    "statement_type": "BS",
+                    "frequency": "quarterly",
+                    "source": "alphastock",
+                    "published_date": date(2026, 10, 25),
+                    "data": {"bs_total_assets": 72_000e9, "bs_equity": 36_000e9},
+                },
+                {
+                    "symbol": "FPT",
+                    "period_end": date(2025, 12, 31),
+                    "statement_type": "CF",
+                    "frequency": "yearly",
+                    "source": "alphastock",
+                    "published_date": date(2026, 3, 25),
+                    "data": {"cf_net_cash_flows_from_operating_activities": 10_136e9},
+                },
+                {
+                    "symbol": "FPT",
+                    "period_end": date(2025, 12, 31),
+                    "statement_type": "IS",
+                    "frequency": "yearly",
+                    "source": "alphastock",
+                    "published_date": date(2026, 3, 25),
+                    "data": {"is_net_revenue": 62_849e9, "is_net_profit_after_tax": 11_220e9},
+                },
+                # CMG peer
+                {
+                    "symbol": "CMG",
+                    "period_end": date(2026, 9, 30),
+                    "statement_type": "IS",
+                    "frequency": "quarterly",
+                    "source": "alphastock",
+                    "published_date": date(2026, 10, 25),
+                    "data": {"is_net_revenue": 2_180e9, "is_net_profit_after_tax": 145e9},
+                },
+                {
+                    "symbol": "CMG",
+                    "period_end": date(2026, 9, 30),
+                    "statement_type": "BS",
+                    "frequency": "quarterly",
+                    "source": "alphastock",
+                    "published_date": date(2026, 10, 25),
+                    "data": {"bs_total_assets": 8_200e9, "bs_equity": 3_400e9},
+                },
+            ]
+            if tickers:
+                want = {t.upper() for t in tickers}
+                return [r for r in all_rows if r["symbol"] in want]
+            return all_rows
+
+    reader = _FptAndPeersReader()
+    profiles = tuple(await reader.fetch_issuer_profiles())
+
+    # 1) Vietnamese KPI detail check (zero raw English 'cash-flow KPI evaluated on')
+    fs_check = await load_fact_set(reader, tickers=["FPT"], as_of_date=AS_OF)
+    kv_cfo = compute_kpi(fs_check, "FPT", "cfo_to_npat", PeriodRef("Q", 2026, 3))
+    assert "cash-flow KPI evaluated on" not in kv_cfo.detail
+    assert "FY2025" in kv_cfo.detail
+
+    # 2) _ReasoningWordStreamBuffer word-boundary & protocol JSON cutoff check
+    rbuf = _ReasoningWordStreamBuffer()
+    out_r = rbuf.push("Cần kiểm tra doc:cơ cấu doanh thu và rủi ro. ") + rbuf.push(
+        '```json\n{"user_concern": "FPT", "claims": []}\n```'
+    ) + rbuf.flush()
+    assert "báo cáoơ" not in out_r
+    assert "cơ cấu doanh thu" in out_r
+    assert '"user_concern"' not in out_r and "{" not in out_r
+
+    # 3) Brief with quant-only K1 (-20.05% revenue drop on indexed FPT -> triggers Auto-Probe!)
+    #    and K2 with dropped `fact:vr_beta` + `risk` + single-ticker `peers`!
+    val = validate_research_brief(
+        {
+            "user_concern": "Đánh giá tăng trưởng và so sánh ngành của FPT",
+            "answer_shape": "verdict_with_reasons",
+            "entities": {"tickers": ["FPT"]},
+            "claims": [
+                {
+                    "id": "K1",
+                    "statement": "Tăng trưởng doanh thu và lợi nhuận Q3/2026 của FPT",
+                    "evidence": ["fact:revenue_net", "kpi:top_line_growth_yoy"],
+                    "period": "Q3/2026",
+                },
+                {
+                    "id": "K2",
+                    "statement": "Độ biến động beta của FPT thấp hơn trung bình ngành",
+                    "evidence": ["fact:vr_beta", "risk"],
+                    "period": "Q3/2026",
+                },
+                {
+                    "id": "K3",
+                    "statement": "So sánh biên lợi nhuận ròng của FPT với doanh nghiệp cùng ngành",
+                    "evidence": ["kpi:net_margin", "peers"],
+                    "period": "Q3/2026",
+                },
+            ],
+        },
+        as_of_date=AS_OF,
+        catalog_profiles=profiles,
+    )
+    assert val.brief is not None
+
+    class _StubRetriever:
+        async def retrieve(self, **kwargs):
+            from sag_api.research.chat_orchestrator import RetrievalResult, RetrievedResearchSection
+
+            del kwargs
+            return RetrievalResult(
+                sections=[
+                    RetrievedResearchSection(
+                        ticker="FPT",
+                        doc_id="doc-fpt-q3",
+                        document_version_id="ver-fpt-q3",
+                        sub_doc_slot="QUARTER_NOTES",
+                        page_from=8,
+                        page_to=8,
+                        published_date=date(2026, 10, 25),
+                        content=(
+                            "Giải trình KQKD Q3/2026: FTEL không còn là công ty con hợp nhất; "
+                            "trên cơ sở tương đương doanh thu tăng 12,1% và LNTT tăng 13,2%."
+                        ),
+                        heading="GIẢI TRÌNH",
+                    )
+                ]
+            )
+
+    class _MiniModel:
+        async def stream_turn(
+            self, request: ModelRequest, cancellation: CancellationToken
+        ) -> AsyncIterator[ModelChunk]:
+            del request, cancellation
+            yield ModelChunk(
+                text_delta=json.dumps(
+                    {
+                        "status": "CONFIRMED",
+                        "findings": [
+                            "Doanh thu báo cáo giảm do ngừng hợp nhất FTEL; so sánh tương đương vẫn tăng 12,1% [C1]."
+                        ],
+                        "anomaly_followup_query": None,
+                    },
+                    ensure_ascii=False,
+                ),
+                usage=Usage(input_tokens=150, output_tokens=45),
+            )
+
+    ctx = ResearchToolContext(
+        as_of_date=AS_OF,
+        principal=_principal(),
+        chat_mode="GENERAL",
+        session_factory=_sf,
+        session_ledger=FinancialZeroMemLedger(request_as_of_date=AS_OF),
+        evidence=ResearchEvidenceLedger(),
+        available_tickers=frozenset({"FPT"}),
+        catalog_profiles=profiles,
+        core_reader=reader,
+        retriever_override=_StubRetriever(),
+    )
+    loc = await locate_candidates(val.brief, ctx)
+    exec_res = await execute_brief_claims(
+        brief=val.brief,
+        located=loc,
+        ctx=ctx,
+        model=_MiniModel(),
+        dropped_by_claim_id=val.dropped_by_claim_id,
+    )
+
+    k1, k2, k3 = exec_res.claim_cards
+    # K1 auto-probed QUARTER_NOTES due to -20.05% YoY revenue drop and attached verbatim [C1] excerpt!
+    assert "[C1]" in k1.badges
+    rendered_k1 = k1.render_for_synthesis()
+    assert "FTEL không còn là công ty con hợp nhất" in rendered_k1
+    # K2 had `fact:vr_beta` dropped and ONLY neutral risk line -> MUST NOT be marked CONFIRMED!
+    assert k2.status in ("PARTIAL", "NO_DATA")
+    # K3 single-ticker `peers` auto-resolved same-sector peer CMG!
+    k3_txt = "\n".join(k3.summary_lines)
+    assert "CMG=" in k3_txt
+
+

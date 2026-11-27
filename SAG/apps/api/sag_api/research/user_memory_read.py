@@ -455,7 +455,7 @@ async def smart_read_user_memories(
     limit: int = 8,
 ) -> SmartReadResult:
     """Execute Smart Read (R1 -> R2) with Backtest Default-Deny, Relevance Floor & Normalized RRF."""
-    effective_mode = (user_memory_mode or getattr(settings, "user_memory_mode", "shadow") or "shadow").strip().lower()
+    effective_mode = (user_memory_mode or getattr(settings, "user_memory_mode", "on") or "on").strip().lower()
     is_bt = is_backtest_date(as_of_date, reference_today=reference_today)
 
     # Privacy Incognito: 0 read, 0 write, 0 portfolio snapshot!
@@ -651,6 +651,15 @@ async def smart_read_user_memories(
             for rank, (_sim, mid) in enumerate(lex_scored, start=1):
                 raw_rrf_by_id[mid] = 1.0 / (RRF_K + rank)
                 passing_ids.add(mid)
+
+        # Global standing investor rules (`USER_INVESTING_CRITERIA` & `STYLE_PREF_SAFE`, already PIT/sandbox-filtered)
+        # apply to open stock evaluations/screenings even when the current turn does not repeat those keywords!
+        for row in all_pit_rows:
+            if row.memory_id in pinned_ids:
+                continue
+            if row.memory_type in ("USER_INVESTING_CRITERIA", "STYLE_PREF_SAFE"):
+                passing_ids.add(row.memory_id)
+                raw_rrf_by_id.setdefault(row.memory_id, 1.0 / (RRF_K + 2))
 
         # Include direct 1-2 hop graph memories that passed PIT
         for mid in graph_overlap_map:
