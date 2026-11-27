@@ -280,7 +280,7 @@ export function ResearchActivityTimeline({
               <span className="text-[13px] font-medium text-secondary group-hover:text-ink transition-colors">
                 {completedLabel}
               </span>
-              {summaryBits.length > 0 && (
+              {expanded && summaryBits.length > 0 && (
                 <span className="hidden sm:inline text-[11.5px] text-muted truncate">
                   · {summaryBits.join(" · ")}
                 </span>

@@ -1,8 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Loader2, MessageSquarePlus, MessagesSquare, Trash2 } from "lucide-react"
-import { Button, Panel } from "@/components/ui"
+import { Loader2, PanelLeftClose, SquarePen, Trash2 } from "lucide-react"
 import {
   deduplicateActivityLog,
   deleteResearchSession,
@@ -40,7 +39,6 @@ function createInitialStages(): StageProgressItem[] {
 
 export function ResearchChatWorkspace() {
   const todayDate = useMemo(() => vietnamDate() || "2026-11-20", [])
-  // Free-form ChatGPT-style defaults: no mandatory primary ticker lock, GENERAL mode default
   const [chatMode, setChatMode] = useState<ResearchChatMode>("GENERAL")
   const [memoryMode, setMemoryMode] = useState<MemoryMode>("auto")
   const [primaryTicker, setPrimaryTicker] = useState("")
@@ -48,7 +46,6 @@ export function ResearchChatWorkspace() {
   const [enableKg, setEnableKg] = useState(true)
   const [asOfDate, setAsOfDate] = useState(todayDate)
 
-  // ChatGPT-style layout drawers
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [drawerOpen, setDrawerOpen] = useState(false)
 
@@ -78,11 +75,12 @@ export function ResearchChatWorkspace() {
   const refreshIngestedTickers = useCallback(async () => {
     try {
       const res = await researchChatApi.listIngestedTickers()
-      const live = Array.isArray(res?.tickers) && res.tickers.length > 0
-        ? res.tickers
-        : Array.isArray(res?.pilot_fallback) && res.pilot_fallback.length > 0
-          ? res.pilot_fallback
-          : [...PILOT_TICKERS]
+      const live =
+        Array.isArray(res?.tickers) && res.tickers.length > 0
+          ? res.tickers
+          : Array.isArray(res?.pilot_fallback) && res.pilot_fallback.length > 0
+            ? res.pilot_fallback
+            : [...PILOT_TICKERS]
       setAvailableTickers(live)
     } catch {
       // Keep PILOT_TICKERS fallback if ticker endpoint is temporarily unreachable
@@ -110,8 +108,6 @@ export function ResearchChatWorkspace() {
             ? "MOAT"
             : "GENERAL"
       setChatMode(resolvedMode)
-      // Keep GENERAL sessions unlocked (no stale single-ticker lock when pivoting companies);
-      // history carry-over in backend handles follow-ups automatically.
       setPrimaryTicker(
         resolvedMode === "MOAT" && detail.session?.ticker
           ? detail.session.ticker.toUpperCase()
@@ -129,8 +125,7 @@ export function ResearchChatWorkspace() {
       setStreamError(null)
     } catch (err) {
       const apiErr = err as { code?: unknown; status?: unknown; message?: unknown } | null
-      const isNotFound =
-        apiErr?.status === 404 || apiErr?.code === "SESSION_NOT_FOUND"
+      const isNotFound = apiErr?.status === 404 || apiErr?.code === "SESSION_NOT_FOUND"
       const msg = isNotFound
         ? "Phiên nghiên cứu này không còn tồn tại hoặc đã bị xóa."
         : apiErr && typeof apiErr.message === "string" && apiErr.message.trim()
@@ -346,13 +341,9 @@ export function ResearchChatWorkspace() {
               setMemoryRefreshNonce((n) => n + 1)
             },
             onError: (err) => {
-              setStreamError(
-                err.code ? `[${err.code}] ${err.message}` : err.message,
-              )
+              setStreamError(err.code ? `[${err.code}] ${err.message}` : err.message)
               setStages((prev) =>
-                prev.map((item) =>
-                  item.status === "running" ? { ...item, status: "error" } : item,
-                ),
+                prev.map((item) => (item.status === "running" ? { ...item, status: "error" } : item)),
               )
             },
           },
@@ -374,8 +365,7 @@ export function ResearchChatWorkspace() {
               id: fallbackId,
               sessionId: sessionId ?? undefined,
               role: "assistant",
-              content:
-                `> **[Chưa hoàn tất kiểm chứng]** Kết nối SSE bị ngắt trước Pha 7 (quote_hash & numeric audit). Nội dung bên dưới chưa qua xác thực và chưa được lưu trữ.${partialBody}`,
+              content: `> **[Chưa hoàn tất kiểm chứng]** Kết nối SSE bị ngắt trước Pha 7 (quote_hash & numeric audit). Nội dung bên dưới chưa qua xác thực và chưa được lưu trữ.${partialBody}`,
               metadata: {
                 activity_log: deduplicateActivityLog(accumulatedActivity),
                 declared_blindspots: [
@@ -394,8 +384,7 @@ export function ResearchChatWorkspace() {
         }
       } catch (err) {
         if ((err as { name?: string })?.name !== "AbortError") {
-          const msg =
-            err instanceof Error ? err.message : "Kết nối SSE bị gián đoạn."
+          const msg = err instanceof Error ? err.message : "Kết nối SSE bị gián đoạn."
           setStreamError((prev) => prev || msg)
         }
       } finally {
@@ -469,18 +458,15 @@ export function ResearchChatWorkspace() {
     setStreaming(false)
   }, [])
 
-  const handleBadgeClick = useCallback(
-    (badge: AuditBadgeToken, messageId?: string) => {
-      if (messageId) setSelectedAssistantMessageId(messageId)
-      const nextFocus = badgeToInspectorFocus(badge, Date.now())
-      if (nextFocus) {
-        setActiveTab(nextFocus.tab)
-        setInspectorFocus(nextFocus)
-      }
-      setDrawerOpen(true)
-    },
-    [],
-  )
+  const handleBadgeClick = useCallback((badge: AuditBadgeToken, messageId?: string) => {
+    if (messageId) setSelectedAssistantMessageId(messageId)
+    const nextFocus = badgeToInspectorFocus(badge, Date.now())
+    if (nextFocus) {
+      setActiveTab(nextFocus.tab)
+      setInspectorFocus(nextFocus)
+    }
+    setDrawerOpen(true)
+  }, [])
 
   const handleSelectAssistantMessage = useCallback((messageId: string) => {
     setSelectedAssistantMessageId(messageId)
@@ -497,8 +483,7 @@ export function ResearchChatWorkspace() {
     return assistants[assistants.length - 1]
   }, [messages, selectedAssistantMessageId])
 
-  const activeMetadata: ResearchChatMetadata | null =
-    selectedAssistantMessage?.metadata ?? null
+  const activeMetadata: ResearchChatMetadata | null = selectedAssistantMessage?.metadata ?? null
 
   const evidenceCount = useMemo(() => {
     if (!activeMetadata) return 0
@@ -515,157 +500,141 @@ export function ResearchChatWorkspace() {
   }, [activeMetadata])
 
   return (
-    <Panel
-      flush
-      className="relative flex flex-col h-[calc(100dvh-132px)] min-h-[640px] overflow-hidden"
-    >
-      <TopControlBar
-        chatMode={chatMode}
-        memoryMode={memoryMode}
-        onMemoryModeChange={setMemoryMode}
-        memoryModeDisabled={streaming}
-        primaryTicker={primaryTicker}
-        compareTickers={compareTickers}
-        asOfDate={asOfDate}
-        sidebarOpen={sidebarOpen}
-        onToggleSidebar={() => setSidebarOpen((v) => !v)}
-        drawerOpen={drawerOpen}
-        onToggleDrawer={() => setDrawerOpen((v) => !v)}
-        evidenceCount={evidenceCount}
-        evalSummary={evalSummary}
-        onOpenGateTab={() => {
-          setActiveTab("eval")
-          setDrawerOpen(true)
-        }}
-      />
+    <div className="relative flex h-[calc(100dvh-48px)] w-full bg-surface overflow-hidden">
+      {/* Left Minimalist ChatGPT-Style Conversation Sidebar */}
+      {sidebarOpen && (
+        <aside
+          aria-label="Lịch sử hội thoại nghiên cứu"
+          className="w-[252px] shrink-0 border-r border-line/60 bg-[#f9faf9] flex flex-col overflow-hidden"
+        >
+          <div className="h-13 px-2.5 flex items-center justify-between gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={handleStartNewConversation}
+              disabled={streaming || creatingSession}
+              className="flex-1 inline-flex items-center gap-2.5 rounded-[9px] px-2.5 h-9 text-[13.5px] font-normal text-ink hover:bg-soft/85 transition-colors disabled:opacity-45 cursor-pointer text-left"
+            >
+              <SquarePen className="h-[16px] w-[16px] text-secondary shrink-0" aria-hidden="true" />
+              <span className="truncate">Trò chuyện mới</span>
+            </button>
 
-      <div className="relative flex flex-1 min-h-0 overflow-hidden">
-        {/* Left Collapsible Conversation Sidebar */}
-        {sidebarOpen && (
-          <aside
-            aria-label="Lịch sử hội thoại nghiên cứu"
-            className="w-[248px] shrink-0 border-r border-line bg-surface flex flex-col overflow-hidden"
-          >
-            <div className="p-2.5 border-b border-line shrink-0">
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={handleStartNewConversation}
-                disabled={streaming || creatingSession}
-                className="w-full justify-center !h-9 text-[12.5px]"
-              >
-                <MessageSquarePlus className="h-4 w-4 shrink-0" aria-hidden="true" />
-                <span>Cuộc trò chuyện mới</span>
-              </Button>
-            </div>
+            <button
+              type="button"
+              onClick={() => setSidebarOpen(false)}
+              aria-label="Thu gọn danh sách hội thoại"
+              title="Thu gọn sidebar"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] text-secondary hover:bg-soft/85 hover:text-ink transition-colors shrink-0 cursor-pointer"
+            >
+              <PanelLeftClose className="h-[17px] w-[17px]" aria-hidden="true" />
+            </button>
+          </div>
 
-            <div className="flex-1 overflow-y-auto p-2 space-y-1">
-              {sessions.length === 0 ? (
-                <div className="px-3 py-6 text-center text-[12px] text-muted space-y-1.5">
-                  <MessagesSquare className="h-5 w-5 mx-auto opacity-50" aria-hidden="true" />
-                  <p>Chưa có cuộc trò chuyện lưu trữ.</p>
-                </div>
-              ) : (
-                sessions.map((s) => {
-                  const isActive = s.id === activeSessionId
-                  const isConfirmingDelete = confirmDeleteSessionId === s.id
-                  const isDeleting = deletingSessionId === s.id
-                  const dateLabel = s.lastMessageAt || s.updatedAt || s.createdAt
-                  const sessionTitle = s.title || `Phiên ${s.id.slice(0, 8)}`
-                  return (
-                    <div
-                      key={s.id}
-                      className={`group rounded-[8px] transition-colors border ${
-                        isActive
-                          ? "border-mineral/40 bg-mineral/10 text-ink"
-                          : "border-transparent hover:bg-soft/75 text-secondary hover:text-ink"
-                      }`}
-                    >
-                      <div className="flex items-start gap-1 px-2.5 py-2">
-                        <button
-                          type="button"
-                          disabled={streaming || isDeleting}
-                          onClick={() => {
-                            setConfirmDeleteSessionId(null)
-                            void loadSessionDetail(s.id)
-                          }}
-                          className="flex-1 min-w-0 text-left disabled:opacity-50 cursor-pointer"
-                        >
-                          <div className="flex items-center gap-1.5 min-w-0">
-                            {s.ticker && (
-                              <span className="shrink-0 rounded bg-paper border border-line px-1 py-[1px] font-mono text-[9.5px] font-semibold text-ink">
-                                {s.ticker}
-                              </span>
-                            )}
-                            <span className="text-[12.5px] font-medium truncate">
-                              {sessionTitle}
-                            </span>
-                          </div>
-                          <div className="mt-1 flex items-center justify-between text-[10.5px] text-muted font-mono">
-                            <span>{dateLabel ? dateLabel.slice(0, 10) : ""}</span>
-                            {typeof s.messageCount === "number" && (
-                              <span>{s.messageCount} tin</span>
-                            )}
-                          </div>
-                        </button>
+          <div className="flex-1 overflow-y-auto px-2 pb-4">
+            {sessions.length > 0 && (
+              <div className="px-2.5 pt-3 pb-1.5 text-[11.5px] font-medium text-muted select-none">
+                Gần đây
+              </div>
+            )}
 
-                        <button
-                          type="button"
-                          disabled={streaming || Boolean(deletingSessionId)}
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            setConfirmDeleteSessionId(isConfirmingDelete ? null : s.id)
-                          }}
-                          title="Xóa phiên trò chuyện và ký ức liên quan"
-                          aria-label={`Xóa phiên ${sessionTitle}`}
-                          className={`shrink-0 inline-flex h-6 w-6 items-center justify-center rounded-[5px] text-muted hover:bg-loss/12 hover:text-loss transition-opacity cursor-pointer disabled:opacity-40 ${
-                            isConfirmingDelete
-                              ? "opacity-100 text-loss bg-loss/10"
-                              : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
-                          }`}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                        </button>
-                      </div>
+            <div className="space-y-0.5">
+              {sessions.map((s) => {
+                const isActive = s.id === activeSessionId
+                const isConfirmingDelete = confirmDeleteSessionId === s.id
+                const isDeleting = deletingSessionId === s.id
+                const sessionTitle = s.title || `Phiên ${s.id.slice(0, 8)}`
+                return (
+                  <div
+                    key={s.id}
+                    className={`group rounded-[9px] transition-colors ${
+                      isActive ? "bg-[#e9ecea] text-ink" : "text-ink/85 hover:bg-soft/80"
+                    }`}
+                  >
+                    <div className="flex items-center gap-1 px-2.5 h-9">
+                      <button
+                        type="button"
+                        disabled={streaming || isDeleting}
+                        onClick={() => {
+                          setConfirmDeleteSessionId(null)
+                          void loadSessionDetail(s.id)
+                        }}
+                        className="flex-1 min-w-0 text-left text-[13.5px] truncate disabled:opacity-50 cursor-pointer"
+                      >
+                        {sessionTitle}
+                      </button>
 
-                      {isConfirmingDelete && (
-                        <div className="mx-2 mb-2 rounded-[6px] border border-loss/35 bg-loss/8 px-2 py-1.5 flex items-center justify-between gap-1.5 text-[11px]">
-                          <span className="text-loss font-medium truncate">Xóa phiên?</span>
-                          <div className="flex items-center gap-1 shrink-0">
-                            <button
-                              type="button"
-                              disabled={isDeleting}
-                              onClick={() => setConfirmDeleteSessionId(null)}
-                              className="rounded px-1.5 py-0.5 text-secondary hover:text-ink cursor-pointer"
-                            >
-                              Hủy
-                            </button>
-                            <button
-                              type="button"
-                              disabled={isDeleting}
-                              onClick={() => void handleDeleteSession(s.id)}
-                              className="inline-flex items-center gap-1 rounded bg-loss text-paper px-2 py-0.5 font-medium hover:opacity-90 disabled:opacity-50 cursor-pointer"
-                            >
-                              {isDeleting && (
-                                <Loader2 className="h-2.5 w-2.5 animate-spin" aria-hidden="true" />
-                              )}
-                              <span>Xóa</span>
-                            </button>
-                          </div>
-                        </div>
-                      )}
+                      <button
+                        type="button"
+                        disabled={streaming || Boolean(deletingSessionId)}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setConfirmDeleteSessionId(isConfirmingDelete ? null : s.id)
+                        }}
+                        title="Xóa cuộc trò chuyện"
+                        aria-label={`Xóa phiên ${sessionTitle}`}
+                        className={`shrink-0 inline-flex h-6 w-6 items-center justify-center rounded-[6px] text-muted hover:bg-loss/12 hover:text-loss transition-opacity cursor-pointer disabled:opacity-40 ${
+                          isConfirmingDelete
+                            ? "opacity-100 text-loss bg-loss/10"
+                            : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
+                        }`}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                      </button>
                     </div>
-                  )
-                })
-              )}
-            </div>
-          </aside>
-        )}
 
-        {/* Wide Central Chat Stream */}
-        <ChatColumn
+                    {isConfirmingDelete && (
+                      <div className="mx-2 mb-2 rounded-[7px] border border-loss/30 bg-surface px-2.5 py-1.5 flex items-center justify-between gap-1.5 text-[11.5px]">
+                        <span className="text-loss font-medium truncate">Xóa?</span>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            disabled={isDeleting}
+                            onClick={() => setConfirmDeleteSessionId(null)}
+                            className="rounded px-1.5 py-0.5 text-secondary hover:text-ink cursor-pointer"
+                          >
+                            Hủy
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isDeleting}
+                            onClick={() => void handleDeleteSession(s.id)}
+                            className="inline-flex items-center gap-1 rounded bg-loss text-paper px-2 py-0.5 font-medium hover:opacity-90 disabled:opacity-50 cursor-pointer"
+                          >
+                            {isDeleting && (
+                              <Loader2 className="h-2.5 w-2.5 animate-spin" aria-hidden="true" />
+                            )}
+                            <span>Xóa</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </aside>
+      )}
+
+      {/* Main Pure-White Chat Canvas */}
+      <div className="flex-1 min-w-0 flex flex-col h-full bg-surface overflow-hidden">
+        <TopControlBar
           chatMode={chatMode}
           onChatModeChange={setChatMode}
+          modeDisabled={streaming}
+          memoryMode={memoryMode}
+          sidebarOpen={sidebarOpen}
+          onToggleSidebar={() => setSidebarOpen((v) => !v)}
+          onStartNewConversation={handleStartNewConversation}
+          newConversationDisabled={streaming || creatingSession}
+          drawerOpen={drawerOpen}
+          onToggleDrawer={() => setDrawerOpen((v) => !v)}
+          evidenceCount={evidenceCount}
+        />
+
+        <ChatColumn
+          chatMode={chatMode}
+          memoryMode={memoryMode}
+          onMemoryModeChange={setMemoryMode}
           primaryTicker={primaryTicker}
           onPrimaryTickerChange={setPrimaryTicker}
           compareTickers={compareTickers}
@@ -677,7 +646,6 @@ export function ResearchChatWorkspace() {
           todayDate={todayDate}
           onAsOfDateChange={setAsOfDate}
           messages={messages}
-          selectedAssistantMessageId={selectedAssistantMessage?.id ?? null}
           onSelectAssistantMessage={handleSelectAssistantMessage}
           streaming={streaming}
           streamingText={streamingText}
@@ -690,37 +658,37 @@ export function ResearchChatWorkspace() {
           onBadgeClick={handleBadgeClick}
           onSelectLinkedSession={handleSelectLinkedSession}
         />
-
-        {/* Collapsible Right Slide-Over Evidence Drawer */}
-        {drawerOpen && (
-          <>
-            <div
-              onClick={() => setDrawerOpen(false)}
-              aria-hidden="true"
-              className="fixed inset-0 z-30 bg-ink/20 backdrop-blur-[1px] xl:hidden"
-            />
-            <aside
-              aria-label="Ngăn bằng chứng và kiểm toán"
-              className="fixed right-0 top-0 bottom-0 z-40 w-[min(92vw,480px)] shadow-xl xl:static xl:z-auto xl:w-[440px] 2xl:w-[500px] xl:shadow-none shrink-0 border-l border-line bg-surface h-full overflow-hidden"
-            >
-              <EvidenceInspector
-                activeTab={activeTab}
-                onTabChange={setActiveTab}
-                metadata={activeMetadata}
-                messageId={selectedAssistantMessage?.id ?? null}
-                activeSessionId={activeSessionId}
-                memoryRefreshNonce={memoryRefreshNonce}
-                onSelectLinkedSession={handleSelectLinkedSession}
-                focus={inspectorFocus}
-                evalSummary={evalSummary}
-                onRefreshSummary={refreshEvalSummary}
-                onClose={() => setDrawerOpen(false)}
-                className="h-full border-0 rounded-none"
-              />
-            </aside>
-          </>
-        )}
       </div>
-    </Panel>
+
+      {/* Collapsible Right Slide-Over Evidence Drawer */}
+      {drawerOpen && (
+        <>
+          <div
+            onClick={() => setDrawerOpen(false)}
+            aria-hidden="true"
+            className="fixed inset-0 z-30 bg-ink/15 backdrop-blur-[1px] xl:hidden"
+          />
+          <aside
+            aria-label="Ngăn bằng chứng và kiểm toán"
+            className="fixed right-0 top-0 bottom-0 z-40 w-[min(92vw,480px)] shadow-xl xl:static xl:z-auto xl:w-[440px] 2xl:w-[480px] xl:shadow-none shrink-0 border-l border-line/75 bg-surface h-full overflow-hidden"
+          >
+            <EvidenceInspector
+              activeTab={activeTab}
+              onTabChange={setActiveTab}
+              metadata={activeMetadata}
+              messageId={selectedAssistantMessage?.id ?? null}
+              activeSessionId={activeSessionId}
+              memoryRefreshNonce={memoryRefreshNonce}
+              onSelectLinkedSession={handleSelectLinkedSession}
+              focus={inspectorFocus}
+              evalSummary={evalSummary}
+              onRefreshSummary={refreshEvalSummary}
+              onClose={() => setDrawerOpen(false)}
+              className="h-full border-0 rounded-none"
+            />
+          </aside>
+        </>
+      )}
+    </div>
   )
 }
