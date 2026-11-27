@@ -19,6 +19,7 @@ import time
 import unicodedata
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any, Literal
 
 from sag_agent.tools import ToolContext
@@ -63,7 +64,7 @@ logger = logging.getLogger(__name__)
 
 VerdictStatus = Literal["CONFIRMED", "REFUTED", "PARTIAL", "NO_DATA"]
 
-MAX_CANDIDATE_BATCH = 120
+MAX_CANDIDATE_BATCH = 500
 MAX_MINI_READER_CONCURRENCY = 3
 MAX_ESCALATION_CLAIMS = 2
 
@@ -246,7 +247,8 @@ def eval_candidate_metric(
 
     mcap = market_caps.get(tk)
     mcap_lbl = "PIT"
-    if mcap is None:
+    if mcap is None and (date.today() - fs.as_of_date).days <= 3:
+        # Never use vendor `vr_market_cap` on historical `as_of_date` (alphastock backfills fetch-date market cap)
         mcap, mcap_lbl = _latest_stock_val(fs, tk, "vr_market_cap")
 
     if metric_id == "market_cap":
@@ -449,30 +451,47 @@ async def locate_candidates(
                 continue
         eligible_profiles.append(p)
 
-    # Prioritize anchor + filing-indexed tickers + largest market-cap issuers within batch cap
-    eligible_profiles.sort(
-        key=lambda p: (
-            0 if str(p.get("ticker") or "").upper() == anchor else 1,
-            0 if str(p.get("ticker") or "").upper() in ctx.available_tickers else 1,
-            -float(p.get("market_cap") or 0.0),
-        )
-    )
-    batch_profiles = eligible_profiles[:MAX_CANDIDATE_BATCH]
-    batch_tickers = [str(p["ticker"]).strip().upper() for p in batch_profiles if p.get("ticker")]
-    if anchor and anchor not in batch_tickers:
-        batch_tickers.insert(0, anchor)
-
-    if not batch_tickers:
+    if not eligible_profiles:
         return LocatedTargets(
             analysis_tickers=list(brief.entities.tickers)[:6],
             anchor_ticker=anchor,
             summary_lines=["Không có mã cổ phiếu nào trong phạm vi ngành/quyền truy cập để sàng lọc."],
         )
 
-    fs, mcaps = await asyncio.gather(
-        _fact_set(ctx, batch_tickers),
-        ctx.core_reader.fetch_pit_market_caps(ctx.as_of_date, tickers=batch_tickers),
-    )
+    eligible_n = len(eligible_profiles)
+    all_elig_tickers = [str(p["ticker"]).strip().upper() for p in eligible_profiles if p.get("ticker")]
+
+    if eligible_n > MAX_CANDIDATE_BATCH:
+        # Pre-load PIT market caps across eligible tickers so cap sorting is strictly by market cap, never alphabetical
+        mcaps = await ctx.core_reader.fetch_pit_market_caps(ctx.as_of_date, tickers=all_elig_tickers)
+        eligible_profiles.sort(
+            key=lambda p: (
+                0 if str(p.get("ticker") or "").upper() == anchor else 1,
+                0 if str(p.get("ticker") or "").upper() in ctx.available_tickers else 1,
+                -float(mcaps.get(str(p.get("ticker") or "").upper()) or p.get("market_cap") or 0.0),
+            )
+        )
+        batch_profiles = eligible_profiles[:MAX_CANDIDATE_BATCH]
+        batch_tickers = [str(p["ticker"]).strip().upper() for p in batch_profiles if p.get("ticker")]
+        if anchor and anchor not in batch_tickers:
+            batch_tickers.insert(0, anchor)
+        fs = await _fact_set(ctx, batch_tickers, lookback_years=2 if len(batch_tickers) > 30 else 6)
+    else:
+        eligible_profiles.sort(
+            key=lambda p: (
+                0 if str(p.get("ticker") or "").upper() == anchor else 1,
+                0 if str(p.get("ticker") or "").upper() in ctx.available_tickers else 1,
+                -float(p.get("market_cap") or 0.0),
+            )
+        )
+        batch_profiles = eligible_profiles
+        batch_tickers = list(all_elig_tickers)
+        if anchor and anchor not in batch_tickers:
+            batch_tickers.insert(0, anchor)
+        fs, mcaps = await asyncio.gather(
+            _fact_set(ctx, batch_tickers, lookback_years=2 if len(batch_tickers) > 30 else 6),
+            ctx.core_reader.fetch_pit_market_caps(ctx.as_of_date, tickers=batch_tickers),
+        )
 
     metric_keys = list(
         dict.fromkeys(
@@ -486,11 +505,14 @@ async def locate_candidates(
     anchor_units: dict[str, str] = {}
     anchor_periods: dict[str, str] = {}
     summary_lines: list[str] = []
-    eligible_n = len(eligible_profiles)
     if eligible_n > MAX_CANDIDATE_BATCH:
-        has_mcap = sum(1 for p in eligible_profiles if p.get("market_cap"))
+        has_mcap = sum(
+            1
+            for p in eligible_profiles
+            if (mcaps.get(str(p.get("ticker") or "").upper()) or float(p.get("market_cap") or 0.0)) > 0
+        )
         order_basis = (
-            "ưu tiên mã đã index rồi vốn hóa lớn"
+            "ưu tiên mã đã index rồi vốn hóa PIT lớn"
             if has_mcap >= eligible_n // 2
             else f"ưu tiên mã đã index rồi THỨ TỰ CHỮ CÁI vì {eligible_n - has_mcap}/{eligible_n} hồ sơ thiếu vốn hóa"
         )

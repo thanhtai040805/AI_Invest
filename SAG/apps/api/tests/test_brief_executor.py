@@ -938,3 +938,271 @@ async def test_premise_direction_falls_back_to_proxy_kpi_and_marks_unprovable_pr
     )
     assert res_b.premise_cards[0].status == "NO_DATA"
     assert "CHƯA KIỂM CHỨNG ĐƯỢC TIỀN ĐỀ" in res_b.premise_cards[0].summary_lines[0]
+
+
+async def test_locate_candidates_scans_all_411_tickers_without_120_cutoff_and_blocks_vr_mcap_leak() -> None:
+    """P1.4 Red->Green: 411 HOSE stocks with `stocks.market_cap == 0` must all be evaluated (no 120 alphabetical
+    cap hiding S..Z stocks like ST8/VVS), `vnstock_vci` 'Common shares' charter capital must resolve (DVV),
+    wide batches (>30 tickers) must request `lookback_years=2`, and historical `as_of_date` must NOT leak
+    backfilled `rt_value_market_cap` when `fetch_pit_market_caps` has no price for a delisted/unpriced ticker.
+    """
+
+    @asynccontextmanager
+    async def _sf() -> AsyncIterator[dict[str, int]]:
+        yield {"sid": 1}
+
+    # Build 411 3-letter corporate HOSE profiles: 407 filler tickers + DVV + ST8 + VVS + ZLK
+    filler_tks = (
+        [f"A{idx:02d}" for idx in range(100)]
+        + [f"B{idx:02d}" for idx in range(100)]
+        + [f"C{idx:02d}" for idx in range(100)]
+        + [f"E{idx:02d}" for idx in range(100)]
+        + [f"F{idx:02d}" for idx in range(7)]
+    )
+    special_tks = ["DVV", "ST8", "VVS", "ZLK"]
+    all_tks = sorted(filler_tks + special_tks)
+    assert len(all_tks) == 411
+
+    class _Full411CoreReader:
+        def __init__(self) -> None:
+            self.seen_lookback_years: list[int] = []
+
+        async def fetch_issuer_profiles(self, tickers=None):
+            want = {t.upper() for t in tickers} if tickers else None
+            out = []
+            for tk in all_tks:
+                if want and tk not in want:
+                    continue
+                out.append(
+                    {
+                        "ticker": tk,
+                        "company_name": f"CTCP {tk}",
+                        "sector": "Công nghiệp",
+                        "industry": "Sản xuất",
+                        "exchange": "HOSE",
+                        # Mirrors live Core PG where 406/411 rows have market_cap = 0!
+                        "market_cap": 58_000e9 if tk == "A00" else 0,
+                    }
+                )
+            return out
+
+        async def fetch_pit_market_caps(self, as_of_date, *, tickers=None):
+            del as_of_date
+            want = {t.upper() for t in tickers} if tickers else set(all_tks)
+            mc: dict[str, float] = {}
+            for tk in want:
+                if tk == "ZLK":
+                    # Simulate missing historical price -> must NOT fall back to poisoned vr_market_cap!
+                    continue
+                mc[tk] = 100e9 if tk in {"ST8", "VVS", "DVV"} else 1_000e9
+            return mc
+
+        async def fetch_pit_financial_statements(
+            self,
+            as_of_date,
+            *,
+            tickers=None,
+            lookback_years=6,
+            prefer_annual=False,
+            statement_types=("IS", "BS", "CF", "RATIOS"),
+        ):
+            del as_of_date, prefer_annual, statement_types
+            self.seen_lookback_years.append(int(lookback_years))
+            want = {t.upper() for t in tickers} if tickers else set(all_tks)
+            rows: list[dict[str, Any]] = []
+            for tk in want:
+                if tk == "ST8":
+                    cash_v = 310e9  # net_cash / mcap = 310% (#1 on HOSE, letter 'S' > 120th ticker!)
+                elif tk == "VVS":
+                    cash_v = 210e9  # net_cash / mcap = 210% (#2 on HOSE, letter 'V' > 120th ticker!)
+                elif tk == "DVV":
+                    cash_v = 150e9  # net_cash / mcap = 150%, uses vnstock_vci 'Common shares'
+                elif tk == "ZLK":
+                    cash_v = 500e9
+                else:
+                    cash_v = 50e9  # 5% net_cash / mcap
+                bs_data: dict[str, Any] = {
+                    "i_tiền_và_các_khoản_tương_đương_tiền": cash_v,
+                    "bs_total_assets": max(cash_v * 1.5, 500e9),
+                    "bs_equity": max(cash_v * 1.2, 400e9),
+                }
+                if tk == "DVV":
+                    bs_data["Common shares"] = 100e9
+                else:
+                    bs_data["bs_charter_capital"] = 100e9
+                rows.append(
+                    {
+                        "symbol": tk,
+                        "period_end": date(2026, 3, 31),
+                        "statement_type": "BS",
+                        "frequency": "quarterly",
+                        "source": "vnstock_vci" if tk == "DVV" else "alphastock",
+                        "published_date": date(2026, 4, 25),
+                        "data": bs_data,
+                    }
+                )
+                if tk == "ZLK":
+                    # Backfilled fetch-date market cap on historical ratios row -> Gate G4 leak if used!
+                    rows.append(
+                        {
+                            "symbol": "ZLK",
+                            "period_end": date(2026, 3, 31),
+                            "statement_type": "RATIOS",
+                            "frequency": "quarterly",
+                            "source": "alphastock",
+                            "published_date": date(2026, 4, 25),
+                            "data": {"rt_value_market_cap": 50e9},
+                        }
+                    )
+            return rows
+
+    hist_as_of = date(2026, 6, 30)
+    reader = _Full411CoreReader()
+    profiles = tuple(await reader.fetch_issuer_profiles())
+    brief_raw = {
+        "user_concern": "Cổ phiếu nào trên sàn đang rẻ so với tiền mặt?",
+        "answer_shape": "screened_candidates",
+        "entities": {
+            "tickers": [],
+            "candidate_search": {
+                "sectors": [],
+                "criteria": [{"metric": "net_cash_to_market_cap", "op": ">=", "ref": "literal", "value": 0.25}],
+                "sort_by": "net_cash_to_market_cap",
+                "sort_dir": "desc",
+                "limit": 5,
+            },
+        },
+        "premises_to_check": [],
+        "claims": [],
+    }
+    brief = validate_research_brief(brief_raw, as_of_date=hist_as_of, catalog_profiles=profiles).brief
+    assert brief is not None
+
+    # Verify DVV charter_capital resolves via vnstock_vci 'Common shares'
+    from sag_api.research.facts.store import load_fact_set
+
+    dvv_fs = await load_fact_set(reader, tickers=["DVV"], as_of_date=hist_as_of, lookback_years=2)
+    dvv_cc = dvv_fs.get("DVV", "charter_capital", "Q", 2026, 1)
+    assert dvv_cc.fact is not None and dvv_cc.fact.value == 100e9
+
+    ctx = ResearchToolContext(
+        as_of_date=hist_as_of,
+        principal=_principal(),
+        chat_mode="GENERAL",
+        session_factory=_sf,
+        session_ledger=FinancialZeroMemLedger(request_as_of_date=hist_as_of),
+        evidence=ResearchEvidenceLedger(),
+        available_tickers=frozenset({"A00", "A01"}),
+        catalog_profiles=profiles,
+        core_reader=reader,
+    )
+    located = await locate_candidates(brief, ctx)
+    picked = [r["ticker"] for r in located.candidate_rows]
+    # Must scan all 411/411 tickers, surface ST8 (#1), VVS (#2), DVV (#3), and NEVER include ZLK!
+    assert "411/411" in located.summary_lines[0]
+    assert picked[:3] == ["ST8", "VVS", "DVV"]
+    assert "ZLK" not in picked
+    assert 2 in reader.seen_lookback_years
+
+
+async def test_asyncpg_fetch_pit_market_caps_computes_close_times_shares_and_zero_overwrite_fix() -> None:
+    """P1.4 Red->Green: `AsyncPGCoreMetricsReader.fetch_pit_market_caps` must compute `close_unadj * 1000 * shares`
+    with 365d lookback + `corporate_actions` post-trade_date PIT guard, and `screen_universe_metrics` must not
+    overwrite `market_cap` with `0.0` when `stocks.market_cap == 0` near `date.today()`.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+    from sag_api.db import models as _all_models  # noqa: F401
+    from sag_api.db.base import Base
+    from sag_api.research.financial_metrics_store import AsyncPGCoreMetricsReader, screen_universe_metrics
+
+    captured_sqls: list[tuple[str, tuple[Any, ...]]] = []
+
+    class _FakeConn:
+        async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+            captured_sqls.append((sql, args))
+            return [
+                {"ticker": "CCI", "market_cap": 418_647_706_000.0},
+                {"ticker": "DVV", "market_cap": 150_000_000_000.0},
+            ]
+
+    class _FakePool:
+        @asynccontextmanager
+        async def acquire(self) -> AsyncIterator[_FakeConn]:
+            yield _FakeConn()
+
+        async def close(self) -> None:
+            return None
+
+    async def _pool_factory(*_args: Any, **_kwargs: Any) -> _FakePool:
+        return _FakePool()
+
+    reader = AsyncPGCoreMetricsReader("postgresql://u:p@127.0.0.1:5432/aiinvest", pool_factory=_pool_factory)
+    mcaps = await reader.fetch_pit_market_caps(date(2026, 11, 26), tickers=["CCI", "DVV"])
+    assert mcaps == {"CCI": 418_647_706_000.0, "DVV": 150_000_000_000.0}
+    assert len(captured_sqls) == 1
+    sql_text, sql_args = captured_sqls[0]
+    assert "close_unadj" in sql_text and "1000" in sql_text
+    assert "corporate_actions" in sql_text
+    assert "Common shares" in sql_text
+    # 365-day lookback so illiquid HOSE stocks (411/411) resolve cleanly
+    assert (sql_args[0] - sql_args[1]).days >= 365
+
+    # Also verify screen_universe_metrics never overwrites missing market_cap with 0.0 when stocks.market_cap == 0!
+    class _ZeroStockMcapReader:
+        async def fetch_issuer_profiles(self, tickers=None):
+            del tickers
+            return [
+                {
+                    "ticker": "ZRO",
+                    "company_name": "Zero Stock Mcap Co",
+                    "sector": "Công nghiệp",
+                    "industry": "Sản xuất",
+                    "exchange": "HOSE",
+                    "market_cap": 0,
+                }
+            ]
+
+        async def fetch_pit_market_caps(self, as_of_date, *, tickers=None):
+            del as_of_date, tickers
+            return {}
+
+        async def fetch_pit_financial_ratios(self, as_of_date, *, tickers=None, lookback_years=7):
+            del as_of_date, tickers, lookback_years
+            return [
+                {
+                    "symbol": "ZRO",
+                    "ratio_date": date(2025, 12, 31),
+                    "frequency": "yearly",
+                    "published_date": date(2026, 3, 20),
+                    "roe": 0.15,
+                    "pe": 8.0,
+                    "pb": 1.2,
+                }
+            ]
+
+        async def fetch_pit_financial_statements(
+            self, as_of_date, *, tickers=None, lookback_years=5, prefer_annual=True, statement_types=("BS", "IS", "CF")
+        ):
+            del as_of_date, tickers, lookback_years, prefer_annual, statement_types
+            return []
+
+    eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with eng.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sf = async_sessionmaker(eng, class_=AsyncSession, expire_on_commit=False)
+    async with sf() as s:
+        rows, _, _ = await screen_universe_metrics(
+            s,
+            tenant_id="aiinvest-default",
+            as_of_date=date.today(),
+            allowed_project_ids=frozenset({"*"}),
+            core_reader=_ZeroStockMcapReader(),
+            scope="core_universe",
+            tickers=["ZRO"],
+            prefer_annual=True,
+        )
+    await eng.dispose()
+    assert rows[0]["ticker"] == "ZRO"
+    assert rows[0].get("market_cap") is None
+

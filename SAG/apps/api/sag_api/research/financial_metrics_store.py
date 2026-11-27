@@ -724,12 +724,13 @@ class AsyncPGCoreMetricsReader:
         statement_types: Sequence[str] = ("BS", "IS", "CF"),
     ) -> list[dict[str, Any]]:
         norm_tks = _norm_ticker_param(tickers)
-        norm_sts = sorted({str(s).strip().upper() for s in statement_types if str(s).strip()})
+        raw_sts = {str(s).strip() for s in statement_types if str(s).strip()}
+        expanded_sts = sorted({s.upper() for s in raw_sts} | {s.lower() for s in raw_sts})
         min_date = as_of_date - timedelta(days=365 * max(1, lookback_years) + 30)
         freq_clause = (
-            "LOWER(TRIM(frequency)) = 'yearly'"
+            "frequency = 'yearly'"
             if prefer_annual
-            else "LOWER(TRIM(frequency)) IN ('yearly', 'quarterly')"
+            else "frequency IN ('yearly', 'quarterly')"
         )
         pool = await self._get_pool()
         sql = f"""
@@ -745,13 +746,14 @@ class AsyncPGCoreMetricsReader:
                           AND published_date >= (period_end + INTERVAL '10 days')::date
                           AND published_date <= (period_end + INTERVAL '180 days')::date
                      THEN published_date
-                     WHEN LOWER(TRIM(frequency)) = 'yearly'
+                     WHEN LOWER(TRIM(frequency)) IN ('yearly', 'annual')
                      THEN (period_end + INTERVAL '90 days')::date
                      ELSE (period_end + INTERVAL '45 days')::date
                    END AS effective_published_date
             FROM financial_statements
             WHERE {freq_clause}
-              AND UPPER(TRIM(statement_type)) = ANY($4::text[])
+              AND statement_type = ANY($4::text[])
+              AND LOWER(COALESCE(source, '')) <> 'cafef'
               AND period_end <= $1
               AND period_end >= $2
               AND (
@@ -760,16 +762,16 @@ class AsyncPGCoreMetricsReader:
                        AND published_date >= (period_end + INTERVAL '10 days')::date
                        AND published_date <= (period_end + INTERVAL '180 days')::date
                   THEN published_date
-                  WHEN LOWER(TRIM(frequency)) = 'yearly'
+                  WHEN LOWER(TRIM(frequency)) IN ('yearly', 'annual')
                   THEN (period_end + INTERVAL '90 days')::date
                   ELSE (period_end + INTERVAL '45 days')::date
                 END
               ) <= $1
-              AND ($3::text[] IS NULL OR UPPER(TRIM(symbol)) = ANY($3::text[]))
+              AND ($3::text[] IS NULL OR symbol = ANY($3::text[]))
             ORDER BY symbol ASC, period_end DESC
         """
         async with pool.acquire() as conn:
-            rows = await conn.fetch(sql, as_of_date, min_date, norm_tks, norm_sts)
+            rows = await conn.fetch(sql, as_of_date, min_date, norm_tks, expanded_sts)
         return [dict(r) for r in rows]
 
     async def fetch_pit_market_caps(
@@ -778,24 +780,128 @@ class AsyncPGCoreMetricsReader:
         *,
         tickers: Sequence[str] | None = None,
     ) -> dict[str, float]:
-        """Fetch strictly historical PIT market_cap from `market_data_daily` (<= as_of_date)."""
+        """Compute strictly PIT-safe `market_cap` (in VND) as of `<= as_of_date` across all HOSE tickers.
+
+        Core PG's `market_data_daily.market_cap` is unpopulated (0 positive rows) and `stocks.market_cap`
+        only populates 1/411 tickers. We deterministically derive PIT `market_cap` in VND from:
+        1. Latest `market_data_daily.close_unadj * 1000.0` (`date <= as_of_date`, 365d lookback for illiquid tail),
+           preferring positive `market_data_daily.market_cap` when present.
+        2. PIT-eligible `BS` shares (`bs_off_outstanding_shares` or `charter_capital / 10,000` par VND, including
+           `vnstock_vci` `'Common shares'`).
+        3. Optional treasury/in-transit refinement from `ratios.rt_value_outstanding_shares` STRICTLY guarded by
+           `NOT EXISTS` post-`trade_date` share-count `corporate_actions` (`SPLIT`, `STOCK_DIVIDEND`, `RIGHTS`)
+           so vendor post-split backfills never leak future share counts (`Gate G4 = 0%`).
+        """
         norm_tks = _norm_ticker_param(tickers)
-        min_trade_date = as_of_date - timedelta(days=15)
+        min_trade_date = as_of_date - timedelta(days=366)
+        min_bs_date = as_of_date - timedelta(days=760)
+        num_re = r"^-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$"
         pool = await self._get_pool()
-        sql = """
-            SELECT DISTINCT ON (UPPER(TRIM(ticker)))
-                   UPPER(TRIM(ticker)) AS ticker,
-                   market_cap
-            FROM market_data_daily
-            WHERE date <= $1
-              AND date >= $2
-              AND market_cap IS NOT NULL
-              AND market_cap > 0
-              AND ($3::text[] IS NULL OR UPPER(TRIM(ticker)) = ANY($3::text[]))
-            ORDER BY UPPER(TRIM(ticker)) ASC, date DESC
+        sql = f"""
+            WITH latest_px AS (
+                SELECT DISTINCT ON (ticker)
+                       UPPER(TRIM(ticker)) AS ticker,
+                       date AS trade_date,
+                       close_unadj,
+                       NULLIF(market_cap, 0) AS direct_mcap
+                FROM market_data_daily
+                WHERE date <= $1
+                  AND date >= $2
+                  AND ((close_unadj IS NOT NULL AND close_unadj > 0) OR (market_cap IS NOT NULL AND market_cap > 0))
+                  AND ($3::text[] IS NULL OR ticker = ANY($3::text[]))
+                ORDER BY ticker ASC, date DESC
+            ),
+            latest_bs AS (
+                SELECT DISTINCT ON (symbol)
+                       UPPER(TRIM(symbol)) AS ticker,
+                       period_end,
+                       CASE WHEN (data->>'bs_off_outstanding_shares') ~ '{num_re}'
+                            THEN NULLIF((data->>'bs_off_outstanding_shares')::float8, 0) END AS bs_off_sh,
+                       COALESCE(
+                           CASE WHEN (data->>'bs_charter_capital') ~ '{num_re}'
+                                THEN NULLIF((data->>'bs_charter_capital')::float8, 0) END,
+                           CASE WHEN (data->>'1_vốn_góp_của_chủ_sở_hữu') ~ '{num_re}'
+                                THEN NULLIF((data->>'1_vốn_góp_của_chủ_sở_hữu')::float8, 0) END,
+                           CASE WHEN (data->>'a_vốn_điều_lệ') ~ '{num_re}'
+                                THEN NULLIF((data->>'a_vốn_điều_lệ')::float8, 0) END,
+                           CASE WHEN (data->>'1_1_vốn_góp_của_chủ_sở_hữu') ~ '{num_re}'
+                                THEN NULLIF((data->>'1_1_vốn_góp_của_chủ_sở_hữu')::float8, 0) END,
+                           CASE WHEN (data->>'Common shares') ~ '{num_re}'
+                                THEN NULLIF((data->>'Common shares')::float8, 0) END,
+                           CASE WHEN (data->>'common_shares') ~ '{num_re}'
+                                THEN NULLIF((data->>'common_shares')::float8, 0) END,
+                           CASE WHEN (data->>'Vốn góp') ~ '{num_re}'
+                                THEN NULLIF((data->>'Vốn góp')::float8, 0) END,
+                           CASE WHEN (data->>'vốn góp') ~ '{num_re}'
+                                THEN NULLIF((data->>'vốn góp')::float8, 0) END
+                       ) AS cc_vnd
+                FROM financial_statements
+                WHERE statement_type IN ('BS', 'bs')
+                  AND source IN ('alphastock', 'vnstock_vci')
+                  AND period_end <= $1
+                  AND period_end >= $4
+                  AND ($3::text[] IS NULL OR symbol = ANY($3::text[]))
+                  AND (
+                    CASE
+                      WHEN published_date IS NOT NULL
+                           AND published_date > period_end
+                           AND published_date <= (period_end + INTERVAL '180 days')::date
+                      THEN published_date
+                      WHEN LOWER(TRIM(frequency)) IN ('yearly', 'annual')
+                      THEN (period_end + INTERVAL '90 days')::date
+                      ELSE (period_end + INTERVAL '45 days')::date
+                    END
+                  ) <= $1
+                ORDER BY symbol ASC, period_end DESC, CASE WHEN source = 'alphastock' THEN 0 ELSE 1 END ASC
+            ),
+            latest_rt AS (
+                SELECT DISTINCT ON (symbol)
+                       UPPER(TRIM(symbol)) AS ticker,
+                       CASE WHEN (data->>'rt_value_outstanding_shares') ~ '{num_re}'
+                            THEN NULLIF((data->>'rt_value_outstanding_shares')::float8, 0) END AS rt_sh
+                FROM financial_statements
+                WHERE statement_type IN ('ratios', 'RATIOS')
+                  AND source = 'alphastock'
+                  AND period_end <= $1
+                  AND period_end >= $4
+                  AND ($3::text[] IS NULL OR symbol = ANY($3::text[]))
+                  AND (
+                    CASE
+                      WHEN published_date IS NOT NULL
+                           AND published_date > period_end
+                           AND published_date <= (period_end + INTERVAL '180 days')::date
+                      THEN published_date
+                      WHEN LOWER(TRIM(frequency)) IN ('yearly', 'annual')
+                      THEN (period_end + INTERVAL '90 days')::date
+                      ELSE (period_end + INTERVAL '45 days')::date
+                    END
+                  ) <= $1
+                ORDER BY symbol ASC, period_end DESC
+            )
+            SELECT px.ticker,
+                   COALESCE(
+                       CASE WHEN px.direct_mcap > 0 THEN px.direct_mcap END,
+                       px.close_unadj * 1000.0 * COALESCE(
+                           CASE
+                             WHEN rt.rt_sh > 0 AND NOT EXISTS (
+                               SELECT 1
+                               FROM corporate_actions ca
+                               WHERE ca.symbol = px.ticker
+                                 AND ca.action_date > px.trade_date
+                                 AND ca.action_type IN ('SPLIT', 'STOCK_DIVIDEND', 'RIGHTS')
+                             )
+                             THEN rt.rt_sh
+                           END,
+                           CASE WHEN bs.bs_off_sh > 0 THEN bs.bs_off_sh END,
+                           CASE WHEN bs.cc_vnd > 0 THEN bs.cc_vnd / 10000.0 END
+                       )
+                   ) AS market_cap
+            FROM latest_px px
+            LEFT JOIN latest_bs bs ON bs.ticker = px.ticker
+            LEFT JOIN latest_rt rt ON rt.ticker = px.ticker
         """
         async with pool.acquire() as conn:
-            rows = await conn.fetch(sql, as_of_date, min_trade_date, norm_tks)
+            rows = await conn.fetch(sql, as_of_date, min_trade_date, norm_tks, min_bs_date)
         out: dict[str, float] = {}
         for r in rows:
             sym = str(r.get("ticker") or "").strip().upper()
@@ -2146,7 +2252,10 @@ async def screen_universe_metrics(
                     continue
                 comp_name = str(prow.get("company_name") or sym).strip() or sym
                 pit_mc = _finite_float(pit_market_caps.get(sym))
-                live_mc = _finite_float(prow.get("market_cap")) if allow_live_mcap_fallback else None
+                if pit_mc is not None and pit_mc <= 0:
+                    pit_mc = None
+                raw_live_mc = _finite_float(prow.get("market_cap")) if allow_live_mcap_fallback else None
+                live_mc = raw_live_mc if (raw_live_mc is not None and raw_live_mc > 0) else None
                 core_profiles[sym] = {
                     "ticker": sym,
                     "company_name": comp_name,

@@ -118,6 +118,42 @@ class FactSet:
     facts: dict[_FactKey, FinancialFact] = field(default_factory=dict)
     ignored_rows: dict[str, int] = field(default_factory=dict)
     identity_checks: list[dict[str, Any]] = field(default_factory=list)
+    _indexed_len: int = field(default=-1, init=False, repr=False, compare=False)
+    _series_idx: dict[tuple[str, str, str], list[FinancialFact]] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+    _latest_period_idx: dict[tuple[str, str], tuple[int, int]] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+    _facts_by_tk: dict[str, list[FinancialFact]] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+
+    def __post_init__(self) -> None:
+        self._rebuild_indexes()
+
+    def _rebuild_indexes(self) -> None:
+        series_idx: dict[tuple[str, str, str], list[FinancialFact]] = {}
+        latest_idx: dict[tuple[str, str], tuple[int, int]] = {}
+        by_tk: dict[str, list[FinancialFact]] = {}
+        for (tk, item, ptype, fy, fq), fact in self.facts.items():
+            series_idx.setdefault((tk, item, ptype), []).append(fact)
+            by_tk.setdefault(tk, []).append(fact)
+            lp_key = (tk, ptype)
+            cur = (fy, fq)
+            prev = latest_idx.get(lp_key)
+            if prev is None or cur > prev:
+                latest_idx[lp_key] = cur
+        for lst in series_idx.values():
+            lst.sort(key=lambda f: (f.fiscal_year, f.fiscal_quarter))
+        self._series_idx = series_idx
+        self._latest_period_idx = latest_idx
+        self._facts_by_tk = by_tk
+        self._indexed_len = len(self.facts)
+
+    def _ensure_indexes(self) -> None:
+        if self._indexed_len != len(self.facts):
+            self._rebuild_indexes()
 
     def get(
         self,
@@ -147,18 +183,19 @@ class FactSet:
         return FactLookup(LookupStatus.OK, fact=fact)
 
     def series(self, ticker: str, item: str, period_type: str) -> list[FinancialFact]:
+        self._ensure_indexes()
         tk = ticker.strip().upper()
-        out = [f for (t, i, p, _, _), f in self.facts.items() if t == tk and i == item and p == period_type]
-        return sorted(out, key=lambda f: (f.fiscal_year, f.fiscal_quarter))
+        return list(self._series_idx.get((tk, item, period_type), ()))
 
     def latest_period(self, ticker: str, period_type: str) -> tuple[int, int] | None:
+        self._ensure_indexes()
         tk = ticker.strip().upper()
-        periods = {(fy, fq) for (t, _, p, fy, fq) in self.facts if t == tk and p == period_type}
-        return max(periods) if periods else None
+        return self._latest_period_idx.get((tk, period_type))
 
     def facts_for(self, ticker: str) -> list[FinancialFact]:
+        self._ensure_indexes()
         tk = ticker.strip().upper()
-        return [f for (t, *_), f in self.facts.items() if t == tk]
+        return list(self._facts_by_tk.get(tk, ()))
 
 
 class StatementReader(Protocol):

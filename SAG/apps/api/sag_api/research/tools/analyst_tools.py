@@ -84,15 +84,27 @@ def _clamp(raw: Any, ctx: ResearchToolContext) -> tuple[list[str], list[str]]:
     return ok, denied
 
 
-async def _fact_set(ctx: ResearchToolContext, tickers: Sequence[str]) -> FactSet:
+async def _fact_set(
+    ctx: ResearchToolContext,
+    tickers: Sequence[str],
+    *,
+    lookback_years: int = 6,
+) -> FactSet:
     key = frozenset(tickers)
     async with ctx.evidence.lock:
         for cached_key, fs in ctx.evidence.fact_sets.items():
-            if key <= cached_key:
+            cached_lb = int(getattr(fs, "_loaded_lookback_years", 6))
+            if key <= cached_key and cached_lb >= lookback_years:
                 return fs
     if ctx.core_reader is None:
         raise RuntimeError("Core PG reader is not configured (SAG_CORE_DATABASE_URL)")
-    fs = await load_fact_set(ctx.core_reader, tickers=list(tickers), as_of_date=ctx.as_of_date)
+    fs = await load_fact_set(
+        ctx.core_reader,
+        tickers=list(tickers),
+        as_of_date=ctx.as_of_date,
+        lookback_years=lookback_years,
+    )
+    object.__setattr__(fs, "_loaded_lookback_years", lookback_years)
     async with ctx.evidence.lock:
         ctx.evidence.fact_sets[key] = fs
         for tk in tickers:

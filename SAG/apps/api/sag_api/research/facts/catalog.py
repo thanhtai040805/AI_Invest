@@ -216,7 +216,7 @@ CATALOG: tuple[CanonicalItem, ...] = (
     ),
     _item(
         "charter_capital", "BS", _S, "Vốn điều lệ / vốn góp",
-        common=("bs_charter_capital",),
+        common=("bs_charter_capital", "Common shares", "common_shares", "Vốn góp", "vốn góp", "von_gop"),
         corporate=("1_vốn_góp_của_chủ_sở_hữu",),
         bank=("a_vốn_điều_lệ",),
         securities=("1_1_vốn_góp_của_chủ_sở_hữu",),
