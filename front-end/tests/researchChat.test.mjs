@@ -280,3 +280,78 @@ test('createSseParser parses thought, tool_call, and tool_result frames and reso
   assert.equal(fallback[1].crag_grade, 'CORRECT');
   assert.equal(fallback[2].type, 'verification');
 });
+
+test('resolveActivityLogFromMetadata deduplicates running+done tool pairs and coalesces appended reasoning chunks', () => {
+  const resolved = resolveActivityLogFromMetadata({
+    activity_log: [
+      {
+        id: 'brief-reasoning-1',
+        type: 'thought',
+        kind: 'reasoning',
+        title: 'Phân tích câu hỏi',
+        text: 'Bước 1: kiểm tra nợ ngắn hạn ',
+        append: true,
+        timestamp_ms: 120,
+      },
+      {
+        id: 'brief-reasoning-1',
+        type: 'thought',
+        kind: 'reasoning',
+        title: 'Phân tích câu hỏi',
+        text: 'và tồn kho của FRT.',
+        append: true,
+        timestamp_ms: 240,
+      },
+      {
+        id: 'doc-K1-1',
+        call_id: 'doc-K1-1',
+        type: 'tool_call',
+        tool: 'search_disclosures',
+        label: 'Tra cứu thuyết minh (K1)',
+        status: 'running',
+        tickers: ['FRT'],
+        timestamp_ms: 300,
+      },
+      {
+        id: 'doc-K1-1',
+        call_id: 'doc-K1-1',
+        type: 'tool_call',
+        tool: 'search_disclosures',
+        label: 'Tra cứu thuyết minh (K1)',
+        status: 'done',
+        duration_ms: 185,
+        summary: 'Chọn lọc 4 đoạn cho K1',
+        completed_at_ms: 485,
+      },
+      {
+        id: 'card-K1',
+        type: 'thought',
+        kind: 'verdict_card',
+        verdict_status: 'PARTIAL',
+        title: 'Thẻ kết luận [K1] · PARTIAL',
+        text: 'Sơ bộ',
+      },
+      {
+        id: 'card-K1',
+        type: 'thought',
+        kind: 'verdict_card',
+        verdict_status: 'CONFIRMED',
+        escalated: true,
+        title: 'Thẻ kết luận [K1] · CONFIRMED · Đã đào sâu vòng 2',
+        text: 'Đã xác minh đầy đủ',
+      },
+    ],
+  });
+
+  assert.equal(resolved.length, 3);
+  assert.equal(resolved[0].id, 'brief-reasoning-1');
+  assert.equal(resolved[0].text, 'Bước 1: kiểm tra nợ ngắn hạn và tồn kho của FRT.');
+  assert.equal(resolved[1].id, 'doc-K1-1');
+  assert.equal(resolved[1].status, 'done');
+  assert.deepEqual(resolved[1].tickers, ['FRT']);
+  assert.equal(resolved[1].summary, 'Chọn lọc 4 đoạn cho K1');
+  assert.equal(resolved[2].id, 'card-K1');
+  assert.equal(resolved[2].verdict_status, 'CONFIRMED');
+  assert.equal(resolved[2].escalated, true);
+});
+

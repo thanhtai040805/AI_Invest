@@ -282,7 +282,13 @@ export interface ResearchActivityItem {
   call_id?: string
   type: "routing" | "thought" | "tool_call" | "verification" | string
   turn?: number
-  kind?: "plan" | "reasoning" | "verification" | string
+  kind?: "plan" | "reasoning" | "verdict_card" | "escalation" | "verification_repair" | "verification" | string
+  verdict_status?: "CONFIRMED" | "REFUTED" | "PARTIAL" | "NO_DATA" | string
+  is_premise?: boolean
+  period?: string | null
+  claim_statement?: string
+  badges?: string[]
+  escalated?: boolean
   title?: string
   text?: string
   append?: boolean
@@ -315,12 +321,52 @@ export interface ResearchActivityItem {
   completed_at_ms?: number
 }
 
+export interface ResearchBriefClaimSummary {
+  id: string
+  statement: string
+  evidence?: string[]
+  period?: string | null
+  depends_on?: string[]
+}
+
+export interface ResearchBriefSummary {
+  user_concern?: string
+  answer_shape?: string
+  entities?: {
+    tickers?: string[]
+    anchor_ticker?: string | null
+    candidate_search?: Record<string, unknown> | null
+  }
+  premises_to_check?: ResearchBriefClaimSummary[]
+  claims?: ResearchBriefClaimSummary[]
+  ambiguities?: string[]
+  assumptions?: string[]
+  needs_clarification?: boolean
+  budget_tier?: string
+}
+
+export interface VerdictCardSummary {
+  claim_id: string
+  is_premise?: boolean
+  statement: string
+  period?: string | null
+  status: "CONFIRMED" | "REFUTED" | "PARTIAL" | "NO_DATA" | string
+  summary_lines?: string[]
+  badges?: string[]
+  escalation_query?: string | null
+  escalated?: boolean
+}
+
 export interface ResearchTelemetry {
   routing_slot?: string
   route_intent?: string | null
   route_domain_class?: string | null
   route_budget_tier?: string | null
   route_confidence?: number | null
+  playbook_id?: string | null
+  playbook_mode?: string | null
+  prefetched_tools?: string[]
+  exposed_tools?: string[]
   eval_eligible?: boolean
   quarantined_future_turns?: number
   retrieval_mode?: string
@@ -345,7 +391,9 @@ export interface ResearchTelemetry {
   input_tokens?: number
   cached_tokens?: number
   output_tokens?: number
+  reasoning_tokens?: number
   cost_usd?: number
+  thinking_duration_ms?: number | null
   latency_ms?: number
 }
 
@@ -366,6 +414,8 @@ export interface ResearchChatMetadata {
   screening_results?: ScreeningResultRow[]
   tool_traces?: ToolTraceItem[]
   activity_log?: ResearchActivityItem[]
+  research_brief?: ResearchBriefSummary | null
+  verdict_cards?: VerdictCardSummary[]
   calculator_traces?: CalculatorTrace[]
   graph_hops?: GraphHop[]
   discrepancy_alerts?: DiscrepancyAlert[]
@@ -481,16 +531,71 @@ export function normalizeCalculatorInputs(
 }
 
 /**
+ * Coalesce appended `reasoning` chunks and merge `running` -> `done` tool/card updates in-place
+ * by `call_id || id` so neither live `done` payloads nor reloaded PostgreSQL sessions ever display
+ * duplicate entries or stuck spinners.
+ */
+export function deduplicateActivityLog(
+  rawItems?: ResearchActivityItem[] | null,
+): ResearchActivityItem[] {
+  if (!Array.isArray(rawItems) || rawItems.length === 0) return []
+  const result: ResearchActivityItem[] = []
+  const indexByKey = new Map<string, number>()
+
+  for (const item of rawItems) {
+    if (!item || typeof item !== "object") continue
+    const key = String(item.call_id || item.id || "").trim()
+    if (!key) {
+      result.push({ ...item, append: false })
+      continue
+    }
+
+    const existingIdx = indexByKey.get(key)
+    if (existingIdx !== undefined) {
+      const prev = result[existingIdx]
+      if (item.append) {
+        result[existingIdx] = {
+          ...prev,
+          text: `${prev.text ?? ""}${item.text ?? ""}`,
+          completed_at_ms: item.timestamp_ms ?? item.completed_at_ms ?? prev.completed_at_ms,
+          append: false,
+        }
+      } else {
+        result[existingIdx] = {
+          ...prev,
+          ...item,
+          tickers:
+            Array.isArray(item.tickers) && item.tickers.length > 0 ? item.tickers : prev.tickers,
+          queries:
+            Array.isArray(item.queries) && item.queries.length > 0 ? item.queries : prev.queries,
+          sub_doc_slots:
+            Array.isArray(item.sub_doc_slots) && item.sub_doc_slots.length > 0
+              ? item.sub_doc_slots
+              : prev.sub_doc_slots,
+          args_preview: item.args_preview ?? prev.args_preview,
+          timestamp_ms: prev.timestamp_ms ?? item.timestamp_ms,
+          append: false,
+        }
+      }
+    } else {
+      indexByKey.set(key, result.length)
+      result.push({ ...item, append: false })
+    }
+  }
+  return result
+}
+
+/**
  * Reconstruct a structured activity timeline from persisted metadata.
- * Prefers `metadata.activity_log` emitted by SAG v2; gracefully degrades to `tool_traces` + `citations`
- * for historical messages saved before live activity logging was added.
+ * Prefers `metadata.activity_log` emitted by SAG v2 (deduplicated & coalesced); gracefully degrades to
+ * `tool_traces` + `citations` for historical messages saved before live activity logging was added.
  */
 export function resolveActivityLogFromMetadata(
   meta?: ResearchChatMetadata | null,
 ): ResearchActivityItem[] {
   if (!meta) return []
   if (Array.isArray(meta.activity_log) && meta.activity_log.length > 0) {
-    return meta.activity_log
+    return deduplicateActivityLog(meta.activity_log)
   }
   const items: ResearchActivityItem[] = []
   const tel = meta.telemetry ?? {}

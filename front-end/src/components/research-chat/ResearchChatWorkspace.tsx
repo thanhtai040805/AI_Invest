@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Loader2, MessageSquarePlus, MessagesSquare, Trash2 } from "lucide-react"
 import { Button, Panel } from "@/components/ui"
 import {
+  deduplicateActivityLog,
   deleteResearchSession,
   researchChatApi,
   streamResearchChat,
@@ -323,10 +324,11 @@ export function ResearchChatWorkspace() {
               const finalContent = done.answer || accumulatedText
               const doneMeta: ResearchChatMetadata = {
                 ...(done.metadata ?? {}),
-                activity_log:
+                activity_log: deduplicateActivityLog(
                   Array.isArray(done.metadata?.activity_log) && done.metadata.activity_log.length > 0
                     ? done.metadata.activity_log
                     : accumulatedActivity,
+                ),
               }
               const assistantMsg: ResearchChatMessage = {
                 id: assistantId,
@@ -338,13 +340,7 @@ export function ResearchChatWorkspace() {
               }
               setMessages((prev) => [...prev, assistantMsg])
               setSelectedAssistantMessageId(assistantId)
-              setStages((prev) =>
-                prev.map((item) =>
-                  item.status === "running" || item.status === "idle"
-                    ? { ...item, status: "done" }
-                    : item,
-                ),
-              )
+              setStages(createInitialStages())
               void refreshSessions()
               void refreshEvalSummary()
               setMemoryRefreshNonce((n) => n + 1)
@@ -363,8 +359,15 @@ export function ResearchChatWorkspace() {
           controller.signal,
         )
 
-        if (!finished && accumulatedText.trim() && !controller.signal.aborted) {
+        if (
+          !finished &&
+          (accumulatedText.trim() || accumulatedActivity.length > 0) &&
+          !controller.signal.aborted
+        ) {
           const fallbackId = `local-assistant-${Date.now()}`
+          const partialBody = accumulatedText.trim()
+            ? `\n\n${accumulatedText}`
+            : "\n\n*(Luồng bị ngắt trong khi đang suy luận / gọi công cụ trước khi xuất câu trả lời.)*"
           setMessages((prev) => [
             ...prev,
             {
@@ -372,8 +375,9 @@ export function ResearchChatWorkspace() {
               sessionId: sessionId ?? undefined,
               role: "assistant",
               content:
-                `> **[Chưa hoàn tất kiểm chứng]** Kết nối SSE bị ngắt trước Pha 7 (quote_hash & numeric audit). Nội dung bên dưới chưa qua xác thực và chưa được lưu trữ.\n\n${accumulatedText}`,
+                `> **[Chưa hoàn tất kiểm chứng]** Kết nối SSE bị ngắt trước Pha 7 (quote_hash & numeric audit). Nội dung bên dưới chưa qua xác thực và chưa được lưu trữ.${partialBody}`,
               metadata: {
+                activity_log: deduplicateActivityLog(accumulatedActivity),
                 declared_blindspots: [
                   {
                     code: "STREAM_INTERRUPTED_UNVERIFIED",

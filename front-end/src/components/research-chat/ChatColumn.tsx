@@ -6,13 +6,11 @@ import {
   AtSign,
   Briefcase,
   CalendarClock,
-  CheckCircle2,
   ChevronDown,
   ChevronUp,
   Eye,
   EyeOff,
   Layers3,
-  Loader2,
   MessageSquare,
   Send,
   Sparkles,
@@ -27,7 +25,6 @@ import {
   type ResearchActivityItem,
   type ResearchChatMessage,
   type ResearchChatMode,
-  type SseStageName,
 } from "@/lib/api/researchChat"
 import type { AuditBadgeToken } from "./markdownParser"
 import { MarkdownCitationView } from "./MarkdownCitationView"
@@ -221,56 +218,6 @@ function DeclaredBlindspotsBox({
   )
 }
 
-function StagePillsBar({
-  stages,
-  streaming,
-}: {
-  stages: StageProgressItem[]
-  streaming: boolean
-}) {
-  const hasProgress = streaming || stages.some((s) => s.status !== "idle")
-  if (!hasProgress) return null
-
-  return (
-    <div
-      aria-label="Tiến trình đường ống SAG v2"
-      className="flex flex-wrap items-center gap-1.5 rounded-[8px] border border-line bg-surface/90 px-3 py-1.5"
-    >
-      {stages.map((item, idx) => {
-        const isRunning = item.status === "running"
-        const isDone = item.status === "done"
-        const isError = item.status === "error"
-        return (
-          <div key={item.stage} className="flex items-center gap-1">
-            {idx > 0 && <span className="text-muted text-[10px]">→</span>}
-            <span
-              title={item.detail ? JSON.stringify(item.detail) : item.stage}
-              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10.5px] font-medium transition-colors ${
-                isRunning
-                  ? "border-mineral/45 bg-mineral/12 text-mineral"
-                  : isDone
-                    ? "border-teal/35 bg-teal/10 text-teal"
-                    : isError
-                      ? "border-loss/40 bg-loss/10 text-loss"
-                      : "border-line bg-paper text-muted"
-              }`}
-            >
-              {isRunning ? (
-                <Loader2 className="h-2.5 w-2.5 animate-spin shrink-0" aria-hidden="true" />
-              ) : isDone ? (
-                <CheckCircle2 className="h-2.5 w-2.5 shrink-0" aria-hidden="true" />
-              ) : (
-                <span className="h-1.5 w-1.5 rounded-full bg-current opacity-50" />
-              )}
-              <span>{item.label}</span>
-            </span>
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
 export function ChatColumn({
   chatMode,
   onChatModeChange,
@@ -399,20 +346,14 @@ export function ChatColumn({
     }
   }
 
-  const activeStage: SseStageName | null =
-    stages.find((s) => s.status === "running")?.stage ?? null
+  const runningStageItem = stages.find((s) => s.status === "running") ?? null
+  const activeStageMessage =
+    runningStageItem && typeof runningStageItem.detail?.message === "string"
+      ? runningStageItem.detail.message
+      : runningStageItem?.label ?? null
 
   return (
     <div className="flex-1 min-w-0 flex flex-col h-full bg-paper/45 overflow-hidden">
-      {/* Compact Live Pipeline Strip (shown only while streaming or on active run) */}
-      {(streaming || stages.some((s) => s.status !== "idle")) && (
-        <div className="px-4 pt-2.5 shrink-0">
-          <div className="max-w-4xl mx-auto">
-            <StagePillsBar stages={stages} streaming={streaming} />
-          </div>
-        </div>
-      )}
-
       {/* Scrollable Wide Central Chat Stream */}
       <div className="flex-1 overflow-y-auto px-4 py-5">
         <div className="max-w-4xl mx-auto space-y-4">
@@ -570,7 +511,10 @@ export function ChatColumn({
                   <ResearchActivityTimeline
                     items={activityItems}
                     isStreaming={false}
+                    hasAnswerStarted={true}
+                    thinkingDurationMs={meta.telemetry?.thinking_duration_ms ?? null}
                     latencyMs={meta.telemetry?.latency_ms ?? null}
+                    reasoningTokens={meta.telemetry?.reasoning_tokens ?? null}
                     agentTurns={meta.telemetry?.agent_turns ?? null}
                     defaultExpanded={false}
                     onInspectCitation={(doc) => {
@@ -646,31 +590,32 @@ export function ChatColumn({
           })}
 
           {streaming && (
-            <div className="rounded-[12px] border border-mineral/45 bg-surface p-4 sm:p-5 space-y-2.5">
-              <div className="flex items-center justify-between gap-2 pb-2 border-b border-line">
-                <div className="flex items-center gap-2 text-[12px] font-medium text-mineral">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                  <span>
-                    {activeStage
-                      ? `Đang chạy pha: ${activeStage}…`
-                      : "Đang suy luận & truy xuất dữ liệu kiểm chứng…"}
-                  </span>
+            <div className="rounded-[12px] border border-line bg-surface p-4 sm:p-5 transition-colors">
+              <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 mb-2.5 border-b border-line">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Pill tone={chatMode === "MOAT" ? "mineral" : "teal"}>
+                    {chatMode === "MOAT" ? "MOAT Broker" : "SAG v2"}
+                  </Pill>
+                  {primaryTicker && (
+                    <span className="rounded bg-soft px-1.5 py-0.5 font-mono text-[10.5px] font-semibold text-ink border border-line">
+                      {primaryTicker}
+                    </span>
+                  )}
+                  <span className="font-mono text-[11px] text-muted">PIT {asOfDate}</span>
                 </div>
-                <Pill tone="mineral">SSE Live</Pill>
               </div>
+
               <ResearchActivityTimeline
-                items={liveActivity}
+                items={liveActivity ?? []}
                 isStreaming={true}
+                hasAnswerStarted={Boolean(streamingText.trim())}
+                activeStageLabel={activeStageMessage}
                 startedAtMs={streamStartedAt}
                 defaultExpanded={true}
               />
+
               {streamingText ? (
                 <MarkdownCitationView content={streamingText} onBadgeClick={(b) => onBadgeClick(b)} />
-              ) : liveActivity.length === 0 ? (
-                <div className="space-y-2 py-1">
-                  <div className="h-3 w-3/4 rounded bg-soft animate-pulse" />
-                  <div className="h-3 w-1/2 rounded bg-soft animate-pulse" />
-                </div>
               ) : null}
             </div>
           )}

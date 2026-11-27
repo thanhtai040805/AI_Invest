@@ -1,6 +1,6 @@
 "use client"
 
-import { Brain, Cpu, Gauge, GitCommitHorizontal, Layers, Wrench } from "lucide-react"
+import { Brain, ClipboardList, Cpu, Gauge, GitCommitHorizontal, Layers, Wrench } from "lucide-react"
 import { Pill } from "@/components/ui"
 import type { ResearchChatMetadata } from "@/lib/api/researchChat"
 
@@ -8,6 +8,10 @@ export function InspectorTraceTab({ metadata }: { metadata: ResearchChatMetadata
   const tel = metadata.telemetry ?? {}
   const expanded = Array.isArray(metadata.expanded_tickers) ? metadata.expanded_tickers : []
   const toolTraces = Array.isArray(metadata.tool_traces) ? metadata.tool_traces : []
+  const brief = metadata.research_brief ?? null
+  const verdictCards = Array.isArray(metadata.verdict_cards) ? metadata.verdict_cards : []
+  const thinkingMs = tel.thinking_duration_ms
+  const reasoningTokens = tel.reasoning_tokens ?? 0
   const verifiedCitations = Array.isArray(metadata.citations)
     ? metadata.citations.filter((c) => c.verified).length
     : 0
@@ -64,9 +68,17 @@ export function InspectorTraceTab({ metadata }: { metadata: ResearchChatMetadata
       alert: unsupportedNumeric > 0 || hallucinatedMemoryIds > 0,
     },
     {
-      label: "Độ trễ tổng (Latency)",
-      value: tel.latency_ms != null ? `${tel.latency_ms.toLocaleString("vi-VN")} ms` : "—",
-      sub: "End-to-End Pipeline",
+      label: "Suy luận & Độ trễ tổng",
+      value:
+        thinkingMs != null
+          ? `${(thinkingMs / 1000).toFixed(1)}s suy luận`
+          : tel.latency_ms != null
+            ? `${tel.latency_ms.toLocaleString("vi-VN")} ms`
+            : "—",
+      sub:
+        tel.latency_ms != null
+          ? `Tổng E2E: ${(tel.latency_ms / 1000).toFixed(1)}s (${tel.latency_ms.toLocaleString("vi-VN")} ms)`
+          : "End-to-End Pipeline",
     },
     {
       label: "Tokens (In / Cache / Out)",
@@ -74,7 +86,10 @@ export function InspectorTraceTab({ metadata }: { metadata: ResearchChatMetadata
         tel.input_tokens != null || tel.output_tokens != null
           ? `${(tel.input_tokens ?? 0).toLocaleString("vi-VN")} / ${cachedTokens.toLocaleString("vi-VN")} / ${(tel.output_tokens ?? 0).toLocaleString("vi-VN")}`
           : "—",
-      sub: llmModelLabel,
+      sub:
+        reasoningTokens > 0
+          ? `${reasoningTokens.toLocaleString("vi-VN")} tok suy luận · ${llmModelLabel}`
+          : llmModelLabel,
     },
     {
       label: "Chi phí & PIT",
@@ -192,6 +207,61 @@ export function InspectorTraceTab({ metadata }: { metadata: ResearchChatMetadata
           </div>
         )}
       </div>
+
+      {(brief?.user_concern || verdictCards.length > 0) && (
+        <div className="rounded-[9px] border border-line bg-surface p-3.5 space-y-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 text-[12px] font-semibold text-ink">
+              <ClipboardList className="h-3.5 w-3.5 text-mineral" aria-hidden="true" />
+              <span>Đề bài Trung tâm & Thẻ Kết luận ({verdictCards.length})</span>
+            </div>
+            {brief?.answer_shape && (
+              <Pill tone="mineral">
+                <span className="font-mono">{brief.answer_shape}</span>
+              </Pill>
+            )}
+          </div>
+          {brief?.user_concern && (
+            <div className="rounded bg-paper px-2.5 py-2 border border-line text-[12px] text-ink">
+              <span className="text-muted font-medium">Trọng tâm: </span>
+              <span>{brief.user_concern}</span>
+            </div>
+          )}
+          {verdictCards.length > 0 && (
+            <div className="space-y-1.5">
+              {verdictCards.map((vc) => {
+                const st = String(vc.status || "").toUpperCase()
+                const tone =
+                  st === "CONFIRMED"
+                    ? "teal"
+                    : st === "REFUTED"
+                      ? "loss"
+                      : st === "PARTIAL"
+                        ? "warning"
+                        : "neutral"
+                return (
+                  <div
+                    key={vc.claim_id}
+                    className="rounded-[6px] border border-line bg-paper px-2.5 py-2 space-y-1 text-[11.5px]"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-1.5">
+                      <span className="font-mono font-semibold text-ink">
+                        [{vc.claim_id}] {vc.is_premise ? "Tiền đề" : "Luận điểm"}
+                        {vc.period ? ` · ${vc.period}` : ""}
+                      </span>
+                      <div className="flex items-center gap-1">
+                        {vc.escalated && <Pill tone="mineral">1-Hop</Pill>}
+                        <Pill tone={tone}>{st}</Pill>
+                      </div>
+                    </div>
+                    <div className="text-secondary leading-snug">{vc.statement}</div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {toolTraces.length > 0 && (
         <div className="rounded-[9px] border border-line bg-surface p-3.5 space-y-2">
