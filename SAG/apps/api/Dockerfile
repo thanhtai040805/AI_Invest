@@ -3,11 +3,20 @@ FROM python:3.12-slim
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
 
-RUN apt-get update \
- && apt-get install -y --no-install-recommends build-essential curl libarchive-tools \
- && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+        sed -i -E 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources; \
+    elif [ -f /etc/apt/sources.list ]; then \
+        sed -i 's/main/main non-free/g' /etc/apt/sources.list; \
+    fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends build-essential curl libarchive-tools 7zip; \
+    (apt-get install -y --no-install-recommends 7zip-rar || apt-get install -y --no-install-recommends unrar || true); \
+    rm -rf /var/lib/apt/lists/*
 
 # Install dependency layers separately from application code.
 # Keep the LiteLLM/MCP SDK pair aligned with uv.lock; newer LiteLLM needs MCP v2.
