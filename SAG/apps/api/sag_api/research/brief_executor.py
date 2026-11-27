@@ -787,7 +787,7 @@ async def _run_quant_specs_for_claim(
         if wants_agm:
             spec_preview_parts.append("KH ĐHĐCĐ vs Thực hiện")
         if on_stage is not None:
-            await on_stage("calculator", "running", f"Đang kiểm chứng số liệu định lượng ({claim.id})...")
+            await on_stage("calculator", "running", "Đang đối chiếu số liệu báo cáo tài chính...")
         if on_tool_call is not None:
             await on_tool_call(
                 {
@@ -796,7 +796,7 @@ async def _run_quant_specs_for_claim(
                     "type": "tool_call",
                     "turn": 1,
                     "tool": primary_tool,
-                    "label": f"Kiểm chứng số liệu BCTC & KPI ({claim.id})",
+                    "label": "Đối chiếu số liệu BCTC & chỉ số tài chính",
                     "stage": "calculator",
                     "status": "running",
                     "tickers": list(tickers[:6]),
@@ -1197,20 +1197,20 @@ async def _run_quant_specs_for_claim(
                 "type": "tool_call",
                 "turn": 1,
                 "tool": primary_tool,
-                "label": f"Kiểm chứng số liệu BCTC & KPI ({claim.id})",
+                "label": "Đối chiếu số liệu BCTC & chỉ số tài chính",
                 "stage": "calculator",
                 "status": "done",
                 "duration_ms": q_dur,
                 "returned_count": len(lines),
                 "summary": (
-                    f"Trích xuất {len(lines)} dòng số liệu tất định"
+                    f"Đã trích xuất {len(lines)} chỉ tiêu tài chính"
                     + (f" ({', '.join(calc_badges[:3])})" if calc_badges else "")
                 ),
                 "calc_result": latest_calc_preview,
             }
         )
         if on_stage is not None:
-            await on_stage("calculator", "done", f"Hoàn tất kiểm chứng định lượng ({claim.id})")
+            await on_stage("calculator", "done", "Hoàn tất đối chiếu số liệu tài chính")
 
     # 6) Knowledge Graph 3-layer query (`0` LLM tokens)
     if kg_specs and ctx.enable_kg and tickers:
@@ -1230,7 +1230,7 @@ async def _run_quant_specs_for_claim(
         if macro_hint:
             kg_args["macro_factor"] = macro_hint
         if on_stage is not None:
-            await on_stage("graph_hop", "running", f"Đang truy vấn đồ thị 3 tầng ({claim.id})...")
+            await on_stage("graph_hop", "running", "Đang tra cứu liên kết ngành & vĩ mô...")
         if on_tool_call is not None:
             await on_tool_call(
                 {
@@ -1239,7 +1239,7 @@ async def _run_quant_specs_for_claim(
                     "type": "tool_call",
                     "turn": 1,
                     "tool": "query_knowledge_graph",
-                    "label": f"Đồ thị tri thức 3 tầng ({claim.id})",
+                    "label": "Đối chiếu chuỗi giá trị & yếu tố vĩ mô",
                     "stage": "graph_hop",
                     "status": "running",
                     "tickers": list(tickers[:4]),
@@ -1262,12 +1262,12 @@ async def _run_quant_specs_for_claim(
                         "type": "tool_call",
                         "turn": 1,
                         "tool": "query_knowledge_graph",
-                        "label": f"Đồ thị tri thức 3 tầng ({claim.id})",
+                        "label": "Đối chiếu chuỗi giá trị & yếu tố vĩ mô",
                         "stage": "graph_hop",
                         "status": "done",
                         "duration_ms": int((time.perf_counter() - t_kg) * 1000),
                         "returned_count": len(hops_list),
-                        "summary": f"Truy xuất {len(hops_list)} liên kết đồ thị PIT",
+                        "summary": f"Đối chiếu {len(hops_list)} mối liên hệ ngành & vĩ mô",
                         "kg_hops": hops_list,
                     }
                 )
@@ -1281,15 +1281,15 @@ async def _run_quant_specs_for_claim(
                         "type": "tool_call",
                         "turn": 1,
                         "tool": "query_knowledge_graph",
-                        "label": f"Đồ thị tri thức 3 tầng ({claim.id})",
+                        "label": "Đối chiếu chuỗi giá trị & yếu tố vĩ mô",
                         "stage": "graph_hop",
                         "status": "error",
                         "duration_ms": int((time.perf_counter() - t_kg) * 1000),
-                        "summary": f"Chưa có liên kết đồ thị PIT ({type(exc).__name__})",
+                        "summary": f"Chưa có dữ liệu liên kết ({type(exc).__name__})",
                     }
                 )
         if on_stage is not None:
-            await on_stage("graph_hop", "done", f"Hoàn tất đồ thị ({claim.id})")
+            await on_stage("graph_hop", "done", "Hoàn tất đối chiếu ngành & vĩ mô")
 
     # 7) Hydrated 2D PDF tables (`0` LLM tokens)
     if table_specs and tickers:
@@ -1306,7 +1306,7 @@ async def _run_quant_specs_for_claim(
             _on_progress=_noop_t,
         )
         if on_stage is not None:
-            await on_stage("table_hydration", "running", f"Đang nạp bảng tài chính 2D ({claim.id})...")
+            await on_stage("table_hydration", "running", "Đang trích xuất bảng báo cáo tài chính gốc...")
         if on_tool_call is not None:
             await on_tool_call(
                 {
@@ -1315,7 +1315,7 @@ async def _run_quant_specs_for_claim(
                     "type": "tool_call",
                     "turn": 1,
                     "tool": "hydrate_financial_tables",
-                    "label": f"Nạp bảng tài chính 2D ({claim.id})",
+                    "label": "Trích xuất bảng báo cáo tài chính gốc",
                     "stage": "table_hydration",
                     "status": "running",
                     "tickers": list(tickers[:3]),
@@ -1345,12 +1345,12 @@ async def _run_quant_specs_for_claim(
                         "type": "tool_call",
                         "turn": 1,
                         "tool": "hydrate_financial_tables",
-                        "label": f"Nạp bảng tài chính 2D ({claim.id})",
+                        "label": "Trích xuất bảng báo cáo tài chính gốc",
                         "stage": "table_hydration",
                         "status": "done",
                         "duration_ms": int((time.perf_counter() - t_tbl) * 1000),
                         "returned_count": len(tbl_list),
-                        "summary": f"Đã nạp {len(tbl_list)} bảng 2D kiểm toán",
+                        "summary": f"Đã tải {len(tbl_list)} bảng số liệu kiểm toán",
                         "hydrated_tables": tbl_list,
                     }
                 )
@@ -1363,15 +1363,15 @@ async def _run_quant_specs_for_claim(
                         "type": "tool_call",
                         "turn": 1,
                         "tool": "hydrate_financial_tables",
-                        "label": f"Nạp bảng tài chính 2D ({claim.id})",
+                        "label": "Trích xuất bảng báo cáo tài chính gốc",
                         "stage": "table_hydration",
                         "status": "error",
                         "duration_ms": int((time.perf_counter() - t_tbl) * 1000),
-                        "summary": f"Không nạp được bảng 2D ({type(exc).__name__})",
+                        "summary": f"Không tải được bảng số liệu ({type(exc).__name__})",
                     }
                 )
         if on_stage is not None:
-            await on_stage("table_hydration", "done", f"Hoàn tất nạp bảng 2D ({claim.id})")
+            await on_stage("table_hydration", "done", "Hoàn tất trích xuất bảng BCTC")
 
     return lines, list(dict.fromkeys(badges)), escalation_hint
 
@@ -1650,7 +1650,7 @@ async def _run_doc_mini_reader(
                     "type": "tool_call",
                     "turn": 1,
                     "tool": "search_disclosures",
-                    "label": f"Tra cứu thuyết minh ({claim.id})",
+                    "label": "Tra cứu thuyết minh & tài liệu công bố",
                     "stage": "retrieval",
                     "status": "running",
                     "tickers": doc_tickers,
@@ -1700,11 +1700,11 @@ async def _run_doc_mini_reader(
                     "type": "tool_call",
                     "turn": 1,
                     "tool": "search_disclosures",
-                    "label": f"Tra cứu thuyết minh ({claim.id})",
+                    "label": "Tra cứu thuyết minh & tài liệu công bố",
                     "stage": "retrieval",
                     "status": "done",
                     "duration_ms": dur_ms,
-                    "summary": f"Chọn lọc {res.details.get('returned_count', 0)} đoạn cho {claim.id}",
+                    "summary": f"Trích lọc {res.details.get('returned_count', 0)} đoạn thuyết minh liên quan",
                     "crag_grade": res.details.get("crag_grade"),
                     "returned_count": res.details.get("returned_count", 0),
                     "selected_documents": list(res.details.get("selected_documents") or ())[:8],
@@ -1823,8 +1823,8 @@ async def execute_brief_claims(
     total_tool_calls = 0
 
     def _card_thought_payload(card: ClaimVerdictCard) -> dict[str, Any]:
-        role_title = "Kiểm chứng tiền đề" if card.is_premise else "Thẻ kết luận"
-        esc_suffix = " · Đã đào sâu vòng 2" if card.escalated else ""
+        role_title = "Kiểm chứng giả định" if card.is_premise else "Kết luận kiểm chứng"
+        esc_suffix = " · Đã đối chiếu sâu" if card.escalated else ""
         return {
             "id": f"card-{card.claim_id}",
             "type": "thought",
@@ -1837,7 +1837,7 @@ async def execute_brief_claims(
             "badges": list(card.badges[:12]),
             "escalated": card.escalated,
             "status": "done",
-            "title": f"{role_title} [{card.claim_id}] · {card.status}{esc_suffix}",
+            "title": f"{role_title}{esc_suffix}",
             "text": "\n".join(card.summary_lines[:6])[:1200],
         }
 
@@ -2032,9 +2032,9 @@ async def execute_brief_claims(
                         "turn": 2,
                         "kind": "escalation",
                         "status": "done",
-                        "title": f"Đào sâu bất thường vòng 2 [{c_esc.claim_id}]",
+                        "title": "Đào sâu thuyết minh bổ sung",
                         "text": (
-                            f"Phát hiện chi tiết cần đối chiếu thêm (`{c_esc.escalation_query}`) "
+                            f"Phát hiện chi tiết cần đối chiếu thêm ({c_esc.escalation_query}) "
                             "— tra cứu thuyết minh bổ sung."
                         ),
                     }

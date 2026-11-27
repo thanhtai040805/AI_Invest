@@ -783,5 +783,131 @@ async def test_brief_brain_streams_thinking_deduplicates_activity_and_persists_v
     assert "[K4]" not in sanitized and "[P1]" not in sanitized
     assert "[CALC-6]" in sanitized
 
+    # 6) Broker-clean step labels (zero dev jargon in titles)
+    for item in act_log:
+        title_str = str(item.get("title") or "") + " " + str(item.get("label") or "")
+        assert "Tier-0" not in title_str and "Kev-4b" not in title_str
+        assert "Stage 7" not in title_str and "Quote Hash" not in title_str
+        assert "[K1]" not in title_str and "(K1)" not in title_str
+
     await eng.dispose()
+
+
+async def test_pure_greeting_short_circuits_without_thinking_and_clarification_skips_empty_stage7(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """Greetings like 'Chào bạn' must fast-reply with 0 thinking steps even if Tier-0 router has low confidence,
+    while ticker-bearing greetings ('Chào bạn xem giúp mình FPT nhé') still fail open to full research."""
+    from sag_api.research.brief import BRIEF_STATIC_SYSTEM_PROMPT
+    from sag_api.research.brief_synthesizer import SYNTHESIS_STATIC_SYSTEM_PROMPT
+    from sag_api.research.chat_orchestrator import _pure_pleasantry_reply
+
+    monkeypatch.setattr(settings, "research_brain_mode", "brief_centric")
+    monkeypatch.setattr(settings, "user_memory_mode", "off")
+
+    # Prompts explicitly forbid leaking internal JSON schema keys in visible reasoning
+    assert "TUYỆT ĐỐI CẤM" in BRIEF_STATIC_SYSTEM_PROMPT
+    assert "user_concern" in BRIEF_STATIC_SYSTEM_PROMPT
+    assert "TUYỆT ĐỐI CẤM" in SYNTHESIS_STATIC_SYSTEM_PROMPT
+
+    # Pure pleasantry helper is strict: matches 'Chào bạn' / 'Cảm ơn nhé', rejects any ticker/finance question
+    assert _pure_pleasantry_reply("Chào bạn", explicit_tickers=()) is not None
+    assert _pure_pleasantry_reply("Xin chào!", explicit_tickers=()) is not None
+    assert _pure_pleasantry_reply("Cảm ơn bạn nhé", explicit_tickers=()) is not None
+    assert _pure_pleasantry_reply("Chào bạn xem giúp mình FPT nhé", explicit_tickers=()) is None
+    assert _pure_pleasantry_reply("Cổ phiếu nào tốt?", explicit_tickers=()) is None
+    assert _pure_pleasantry_reply("Chào bạn", explicit_tickers=["VHM"]) is None
+
+    eng = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'brief_greet.db'}")
+    async with eng.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sf = async_sessionmaker(eng, expire_on_commit=False, class_=AsyncSession)
+    app = create_app()
+
+    class _ClarifyBriefModel:
+        configured = True
+
+        async def stream_turn(
+            self, request: ModelRequest, cancellation: CancellationToken
+        ) -> AsyncIterator[ModelChunk]:
+            del request, cancellation
+            yield ModelChunk(
+                text_delta=json.dumps(
+                    {
+                        "user_concern": "Chưa rõ tiêu chí",
+                        "answer_shape": "clarification_needed",
+                        "entities": {"tickers": [], "anchor_ticker": None, "candidate_search": None},
+                        "premises_to_check": [],
+                        "claims": [],
+                        "assumptions": [],
+                        "ambiguities": ["Chưa nêu mã hoặc tiêu chí"],
+                        "needs_clarification": True,
+                        "clarifying_question": "Bạn muốn phân tích mã cổ phiếu hoặc nhóm ngành cụ thể nào?",
+                        "budget_tier": "light",
+                    },
+                    ensure_ascii=False,
+                ),
+                usage=Usage(input_tokens=100, output_tokens=40),
+            )
+
+    app.state.llm = _ClarifyBriefModel()
+    app.state.engine_manager = None
+
+    import sag_api.api.v1.research_chat as rc_router
+    import sag_api.core.db as core_db
+
+    async def _override_session() -> AsyncIterator[AsyncSession]:
+        async with sf() as s:
+            yield s
+
+    app.dependency_overrides[rc_router.get_session] = _override_session
+    app.dependency_overrides[rc_router.get_core_metrics_reader] = lambda: _VhmCoreReader()
+    monkeypatch.setattr(core_db, "SessionLocal", sf)
+
+    # Simulate low-confidence Kev-4b fail-open (the exact bug that made 'Chào bạn' take 10.6s!)
+    async def _low_conf_router(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "domain_class": "stock_research_data",
+            "task_action": "direct_reply",
+            "reasoning_budget_tier": "standard_2_3_steps",
+            "is_short_circuit": False,
+            "short_circuit_kind": None,
+            "eval_eligible": True,
+            "confidence": 0.62,
+            "reason_codes": ["LOW_CONFIDENCE_FAIL_OPEN_TO_RESEARCH"],
+        }
+
+    monkeypatch.setattr("sag_api.services.decision_router.aroute_research_query", _low_conf_router)
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        # Case 1: "Chào bạn" -> instant short-circuit, ZERO thought frames, empty activity_log
+        r_greet = await client.post(
+            "/api/v1/research-chat/stream",
+            headers=_bff_headers(),
+            json={"query": "Chào bạn", "mode": "GENERAL", "as_of_date": "2026-11-26"},
+        )
+        assert r_greet.status_code == 200
+        greet_frames = _parse_sse_frames(r_greet.text)
+        assert not any(ev == "thought" for ev, _ in greet_frames)
+        greet_done = next(d for ev, d in greet_frames if ev == "done")
+        assert greet_done["metadata"]["telemetry"]["retrieval_mode"] == "ZERO_DATA_SHORT_CIRCUIT"
+        assert greet_done["metadata"]["eval_eligible"] is False
+        assert greet_done["metadata"]["activity_log"] == []
+
+        # Case 2: "Cổ phiếu nào tốt?" -> clarification turn omits redundant brief-1 and 0-citation Stage 7
+        r_clarify = await client.post(
+            "/api/v1/research-chat/stream",
+            headers=_bff_headers(),
+            json={"query": "Cổ phiếu nào tốt?", "mode": "GENERAL", "as_of_date": "2026-11-26"},
+        )
+        assert r_clarify.status_code == 200
+        clarify_frames = _parse_sse_frames(r_clarify.text)
+        clarify_done = next(d for ev, d in clarify_frames if ev == "done")
+        clarify_ids = [it.get("id") for it in clarify_done["metadata"]["activity_log"]]
+        assert "brief-1" not in clarify_ids
+        assert "verification-stage7" not in clarify_ids
+
+    await eng.dispose()
+
 

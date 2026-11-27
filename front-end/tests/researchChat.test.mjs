@@ -355,3 +355,71 @@ test('resolveActivityLogFromMetadata deduplicates running+done tool pairs and co
   assert.equal(resolved[2].escalated, true);
 });
 
+test('Broker timeline helpers hide dev routing/empty Stage 7, suppress greeting/clarification accordions, and scrub JSON jargon', async () => {
+  const helpers = await import('../src/lib/api/researchChatHelpers.ts');
+  assert.equal(typeof helpers.filterBrokerActivityItems, 'function');
+  assert.equal(typeof helpers.hasSubstantiveResearchActivity, 'function');
+  assert.equal(typeof helpers.cleanVisibleReasoningText, 'function');
+
+  // 1) Pure greeting / clarification turn (saved in older DB session) -> hidden completely!
+  const legacyGreetingLog = [
+    { id: 'routing-1', type: 'routing', title: 'Định tuyến Tier-0 (Kev-4b)', text: 'Ý định: direct_reply' },
+    {
+      id: 'brief-reasoning-1',
+      type: 'thought',
+      kind: 'reasoning',
+      title: 'Phân tích câu hỏi & thiết kế đề bài',
+      text: "Tôi cần xuất ra JSON 'Đề bài nghiên cứu'.\n- Không thể xác định user_concern, answer_shape.\n- Budget tier: standard.",
+    },
+    { id: 'brief-1', type: 'thought', kind: 'plan', title: 'Đề bài phân tích trung tâm', text: 'Trọng tâm: Chào hỏi\nCần làm rõ tiêu chí.' },
+    {
+      id: 'verification-stage7',
+      type: 'verification',
+      title: 'Kiểm chứng Quote Hash & Số học (Stage 7)',
+      text: '0 trích dẫn khớp gốc · 0 loại bỏ · 0 số liệu chưa khớp · tỷ lệ xác thực 100%',
+      verified_citations: 0,
+      rejected_citations: 0,
+      unsupported_numeric_claims: 0,
+    },
+  ];
+  assert.equal(helpers.hasSubstantiveResearchActivity(legacyGreetingLog), false);
+
+  // 2) Real research turn -> keeps genuine analytical steps, drops routing & 0-data verification, scrubs leaked JSON lines
+  const realTurnLog = [
+    ...legacyGreetingLog.slice(0, 2),
+    {
+      id: 'quant-K1',
+      call_id: 'quant-K1',
+      type: 'tool_call',
+      tool: 'get_financial_statements',
+      label: 'Kiểm chứng số liệu BCTC & KPI (K1)',
+      status: 'done',
+      calc_result: { calc_id: 'CALC-1', formula: 'a/b', formatted: '18,2%' },
+    },
+    {
+      id: 'card-K1',
+      type: 'thought',
+      kind: 'verdict_card',
+      verdict_status: 'CONFIRMED',
+      title: 'Thẻ kết luận [K1] · CONFIRMED',
+      text: 'Nợ vay ngắn hạn VHM trong tầm kiểm soát [CALC-1].',
+    },
+    legacyGreetingLog[3],
+  ];
+  assert.equal(helpers.hasSubstantiveResearchActivity(realTurnLog), true);
+  const filtered = helpers.filterBrokerActivityItems(realTurnLog);
+  assert.equal(filtered.some((i) => i.type === 'routing'), false);
+  // Verification step has 0 citations, though turn has 1 calc -> filterBrokerActivityItems either hides 0-citation legacy text or humanizes
+  assert.equal(filtered.some((i) => String(i.title || '').includes('Kev-4b')), false);
+  assert.equal(filtered.some((i) => String(i.title || '').includes('Stage 7')), false);
+
+  const scrubbed = helpers.cleanVisibleReasoningText(
+    "Tôi cần xuất ra JSON 'Đề bài nghiên cứu'.\n- Cần kiểm tra nợ vay ngắn hạn và dòng tiền từ HĐKD của VHM trong Q3/2026.\n- Không thể xác định user_concern, answer_shape.\n- Budget tier: standard."
+  );
+  assert.equal(scrubbed.includes('JSON'), false);
+  assert.equal(scrubbed.includes('user_concern'), false);
+  assert.equal(scrubbed.includes('Budget tier'), false);
+  assert.equal(scrubbed.includes('nợ vay ngắn hạn'), true);
+});
+
+

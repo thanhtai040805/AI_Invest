@@ -79,6 +79,90 @@ _CALC_INTENT_RE = re.compile(
 _CITED_QUOTE_RE = re.compile(r"\[(C\d+)\]")
 _AT_TICKER_RE = re.compile(r"@([A-Z]{2,5})\b")
 _UPPER_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])([A-Z]{3})(?![A-Za-z0-9_])")
+_PLEASANTRY_STRIP_RE = re.compile(r"[!.?,~:;…\s]+")
+_PURE_GREETING_RE = re.compile(
+    r"^(?:"
+    r"xin\s+chào(?:\s+(?:bạn|anh|chị|em|ad|ai|aiinvest|mọi\s+người))?"
+    r"|chào(?:\s+(?:bạn|anh|chị|em|ad|ai|aiinvest|buổi\s+sáng|buổi\s+chiều|buổi\s+tối|mọi\s+người))?"
+    r"|hi+(?:\s+(?:bạn|anh|chị|em|ad|ai|there))?"
+    r"|hello+(?:\s+(?:bạn|anh|chị|em|ad|ai|there))?"
+    r"|hey+(?:\s+(?:bạn|there))?"
+    r"|alo+(?:\s+(?:bạn|ad))?"
+    r"|good\s+(?:morning|afternoon|evening)"
+    r")$",
+    re.IGNORECASE | re.UNICODE,
+)
+_PURE_THANKS_RE = re.compile(
+    r"^(?:"
+    r"(?:cảm|cám)\s+ơn(?:\s+(?:bạn|anh|chị|em|ad|ai|nhé|nha|nhiều|rất\s+nhiều))*"
+    r"|thanks?(?:\s+(?:bạn|nhé|nha|a\s+lot|so\s+much))*"
+    r"|thank\s+you(?:\s+(?:very\s+much|so\s+much))?"
+    r")$",
+    re.IGNORECASE | re.UNICODE,
+)
+_PURE_FAREWELL_RE = re.compile(
+    r"^(?:"
+    r"tạm\s+biệt(?:\s+(?:bạn|anh|chị|em|nhé|nha))*"
+    r"|bye+(?:\s+bye+)*"
+    r"|hẹn\s+gặp\s+lại(?:\s+(?:bạn|nhé|nha))*"
+    r")$",
+    re.IGNORECASE | re.UNICODE,
+)
+_FINANCE_OR_MARKET_SIGNAL_RE = re.compile(
+    r"\b(?:cổ\s+phiếu|chứng\s+khoán|mã|sàn|hose|hnx|upcom|vnindex|vn30|ngành|nhóm\s+ngành|"
+    r"ngân\s+hàng|bất\s+động\s+sản|thép|bán\s+lẻ|dầu\s+khí|công\s+nghệ|điện|hóa\s+chất|phân\s+bón|"
+    r"bctc|bctn|đhđcđ|thuyết\s+minh|báo\s+cáo|doanh\s+thu|lợi\s+nhuận|lnst|biên\s+gộp|dòng\s+tiền|"
+    r"cfo|capex|nợ|vay|trái\s+phiếu|tồn\s+kho|phải\s+thu|tiền\s+mặt|vốn\s+hóa|cổ\s+tức|định\s+giá|"
+    r"pe|p/e|pb|p/b|roe|roa|nim|casa|npl|ldr|cir|tỷ\s+giá|lãi\s+suất|vĩ\s+mô|danh\s+mục|mua|bán|"
+    r"đầu\s+tư|sàng\s+lọc|so\s+sánh)\b",
+    re.IGNORECASE | re.UNICODE,
+)
+_NON_TICKER_UPPER_GREETINGS = frozenset({"ALO", "BYE", "HEY", "XIN"})
+
+
+def _pure_pleasantry_reply(query: str, *, explicit_tickers: Sequence[str] = ()) -> str | None:
+    """Return a deterministic <10ms Vietnamese greeting/thanks/farewell response ONLY when the query
+    is a standalone pleasantry with zero tickers, numbers, or financial terms."""
+    if explicit_tickers:
+        return None
+    raw = (query or "").strip()
+    if not raw or len(raw) > 56 or any(ch.isdigit() for ch in raw):
+        return None
+    upper_3 = {m.group(1) for m in _UPPER_TOKEN_RE.finditer(raw)} - _NON_TICKER_UPPER_GREETINGS
+    if upper_3 or _AT_TICKER_RE.search(raw):
+        return None
+    cleaned = _PLEASANTRY_STRIP_RE.sub(" ", raw.lower()).strip()
+    if not cleaned or _FINANCE_OR_MARKET_SIGNAL_RE.search(cleaned):
+        return None
+    if _PURE_GREETING_RE.match(cleaned):
+        return (
+            "Chào bạn! Tôi là trợ lý phân tích chứng khoán AIInvest. "
+            "Bạn muốn kiểm tra sức khỏe tài chính một mã cụ thể, đối chiếu thuyết minh báo cáo tài chính "
+            "hay sàng lọc cơ hội theo tiêu chí nào?"
+        )
+    if _PURE_THANKS_RE.match(cleaned):
+        return (
+            "Rất sẵn lòng hỗ trợ bạn! Nếu cần tra cứu thêm mã cổ phiếu, thuyết minh báo cáo tài chính "
+            "hoặc so sánh doanh nghiệp cùng ngành, bạn cứ nhắn tiếp nhé."
+        )
+    if _PURE_FAREWELL_RE.match(cleaned):
+        return (
+            "Chào tạm biệt bạn! Chúc bạn giao dịch và đầu tư hiệu quả. "
+            "Khi cần đối chiếu số liệu hoặc phân tích doanh nghiệp, cứ quay lại nhé."
+        )
+    return None
+
+
+def _has_no_market_or_ticker_signal(query: str, *, explicit_tickers: Sequence[str] = ()) -> bool:
+    if explicit_tickers:
+        return False
+    raw = (query or "").strip()
+    if not raw or any(ch.isdigit() for ch in raw):
+        return False
+    upper_3 = {m.group(1) for m in _UPPER_TOKEN_RE.finditer(raw)} - _NON_TICKER_UPPER_GREETINGS
+    if upper_3 or _AT_TICKER_RE.search(raw):
+        return False
+    return _FINANCE_OR_MARKET_SIGNAL_RE.search(raw) is None
 _FOLLOWUP_ANAPHORA_RE = re.compile(
     r"(?:\b(?:nó|công\s+ty\s+này|doanh\s+nghiệp\s+này|mã\s+này|cổ\s+phiếu\s+này|"
     r"còn\s+(?:năm|quý|mảng|phần|về)|thế\s+còn|vậy\s+còn|chi\s+tiết\s+hơn|cụ\s+thể\s+hơn|"
@@ -3719,6 +3803,8 @@ class ResearchChatOrchestrator:
                 "Đây là câu hỏi kiến thức tài chính/kế toán tổng quát (không yêu cầu tra cứu BCTC riêng lẻ). "
                 "Vui lòng bật cấu hình LLM hoặc chỉ định mã cổ phiếu cụ thể nếu bạn muốn kiểm chứng số liệu thực tế."
             )
+        elif route_decision.get("deterministic_reply"):
+            answer = str(route_decision["deterministic_reply"])
         else:
             llm_txt, input_tokens, output_tokens, cached_tokens = await self._call_short_circuit_llm(
                 [
@@ -3924,12 +4010,10 @@ class ResearchChatOrchestrator:
                 "id": "routing-1",
                 "type": "routing",
                 "turn": 0,
-                "title": "Định tuyến Tier-0 (Kev-4b)",
+                "title": "Tiếp nhận yêu cầu phân tích",
                 "text": (
-                    f"Ý định: {route_decision.get('task_action') or 'fact_lookup'} · "
-                    f"Ngân sách: {route_decision.get('reasoning_budget_tier') or 'standard_2_3_steps'} · "
-                    f"Mã: {', '.join(explicit_tickers) if explicit_tickers else 'Tự nhận diện'} · "
-                    f"PIT: {as_of_date.isoformat()}"
+                    f"Mã trọng tâm: {', '.join(explicit_tickers) if explicit_tickers else 'Tự động nhận diện'} · "
+                    f"Dữ liệu tính đến {as_of_date.isoformat()}"
                 ),
                 "route_intent": route_decision.get("task_action"),
                 "budget_tier": route_decision.get("reasoning_budget_tier"),
@@ -4275,8 +4359,8 @@ class ResearchChatOrchestrator:
                     "type": "thought",
                     "turn": outcome.agent_turns,
                     "kind": "verification_repair",
-                    "title": "Hiệu đính câu bị gắn cờ kiểm toán (Stage 7)",
-                    "text": "Đã rà soát và sửa các câu có số liệu/thẻ trích dẫn lệch chuẩn theo Thẻ kết luận gốc.",
+                    "title": "Rà soát & chuẩn hóa độ chính xác số liệu",
+                    "text": "Đã đối chiếu và hiệu chỉnh câu chữ khớp hoàn toàn với số liệu báo cáo gốc.",
                     "status": "done",
                     "timestamp_ms": int((time.perf_counter() - started) * 1000),
                 }
@@ -4322,25 +4406,42 @@ class ResearchChatOrchestrator:
         hallucinated_mem_count = sum(
             1 for b in ver_res.blindspots if b.get("code") == "HALLUCINATED_MEMORY_ID"
         )
-        verification_activity = {
-            "id": "verification-stage7",
-            "type": "verification",
-            "turn": outcome.agent_turns + 1,
-            "title": "Kiểm chứng Quote Hash & Số học (Stage 7)",
-            "text": (
-                f"{len(ver_res.verified_citations)} trích dẫn khớp gốc · "
-                f"{len(ver_res.rejected_citations)} loại bỏ · "
-                f"{unsupported_num_count} số liệu chưa khớp · "
-                f"tỷ lệ xác thực {round(ver_res.verified_rate * 100)}%"
-            ),
-            "verified_citations": len(ver_res.verified_citations),
-            "rejected_citations": len(ver_res.rejected_citations),
-            "unsupported_numeric_claims": unsupported_num_count,
-            "status": "done",
-            "timestamp_ms": int((time.perf_counter() - started) * 1000),
-        }
-        activity_log.append(verification_activity)
-        yield ("thought", verification_activity)
+        audited_evidence_total = (
+            len(ver_res.verified_citations)
+            + len(ver_res.rejected_citations)
+            + len(calculator_traces)
+            + len(hydrated_tables)
+            + len(screening_results)
+        )
+        is_clarification_turn = active_brief is not None and active_brief.needs_clarification
+        if audited_evidence_total > 0 and not is_clarification_turn:
+            ver_parts: list[str] = []
+            if calculator_traces:
+                ver_parts.append(f"{len(calculator_traces)} phép tính định lượng")
+            if ver_res.verified_citations:
+                ver_parts.append(f"{len(ver_res.verified_citations)} trích dẫn báo cáo gốc")
+            if hydrated_tables:
+                ver_parts.append(f"{len(hydrated_tables)} bảng BCTC")
+            if screening_results:
+                ver_parts.append(f"{len(screening_results)} mã sàng lọc")
+            if ver_res.rejected_citations:
+                ver_parts.append(f"loại bỏ {len(ver_res.rejected_citations)} trích dẫn lệch chuẩn")
+            if unsupported_num_count > 0:
+                ver_parts.append(f"{unsupported_num_count} số liệu cần lưu ý")
+            verification_activity = {
+                "id": "verification-stage7",
+                "type": "verification",
+                "turn": outcome.agent_turns + 1,
+                "title": "Đối chiếu chéo số liệu & nguồn trích dẫn",
+                "text": "Đã kiểm chứng: " + " · ".join(ver_parts),
+                "verified_citations": len(ver_res.verified_citations),
+                "rejected_citations": len(ver_res.rejected_citations),
+                "unsupported_numeric_claims": unsupported_num_count,
+                "status": "done",
+                "timestamp_ms": int((time.perf_counter() - started) * 1000),
+            }
+            activity_log.append(verification_activity)
+            yield ("thought", verification_activity)
         yield (
             "stage",
             {
@@ -4542,11 +4643,52 @@ class ResearchChatOrchestrator:
             )
             router_state["active_tickers"] = merged_active
 
-        route_decision = await aroute_research_query(
-            request.query,
-            chat_mode=chat_mode,
-            session_state=router_state,
-        )
+        pleasantry_reply = _pure_pleasantry_reply(request.query, explicit_tickers=explicit_tickers)
+        if pleasantry_reply is not None:
+            route_decision = {
+                "query": request.query,
+                "domain_class": "chitchat_casual",
+                "task_action": "direct_reply",
+                "evidence_source_hint": "none",
+                "reasoning_budget_tier": "zero_tool",
+                "temporal_scope": "atemporal",
+                "ambiguity_and_guard": "clear",
+                "output_style": "conversational_short",
+                "memory_recall_need": "none",
+                "max_agent_turns": 0,
+                "is_short_circuit": True,
+                "short_circuit_kind": "chitchat_casual",
+                "eval_eligible": False,
+                "attach_investment_disclaimer": False,
+                "need_retrieval": False,
+                "confidence": 1.0,
+                "fallback_used": False,
+                "reason_codes": ["DETERMINISTIC_PURE_PLEASANTRY"],
+                "deterministic_reply": pleasantry_reply,
+            }
+        else:
+            route_decision = await aroute_research_query(
+                request.query,
+                chat_mode=chat_mode,
+                session_state=router_state,
+            )
+            if (
+                not route_decision.get("is_short_circuit")
+                and route_decision.get("task_action") == "direct_reply"
+                and "LOW_CONFIDENCE_FAIL_OPEN_TO_RESEARCH" in (route_decision.get("reason_codes") or ())
+                and not (router_state.get("active_tickers") or ())
+                and _has_no_market_or_ticker_signal(request.query, explicit_tickers=explicit_tickers)
+            ):
+                route_decision = {
+                    **route_decision,
+                    "domain_class": "chitchat_casual",
+                    "reasoning_budget_tier": "zero_tool",
+                    "max_agent_turns": 0,
+                    "is_short_circuit": True,
+                    "short_circuit_kind": "chitchat_casual",
+                    "eval_eligible": False,
+                    "need_retrieval": False,
+                }
 
         # Adaptive Zero-Mem Topic-Continuity Gate
         include_recent_pairs = should_include_recent_pairs(

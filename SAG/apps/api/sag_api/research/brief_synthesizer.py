@@ -50,18 +50,106 @@ _INTERNAL_CLAIM_ID_RE = re.compile(r"(?:\s*\[(?:P|K)\d+\])+")
 _THINK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 _CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 
+_REASONING_INLINE_SUBS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"xuất\s+ra\s+(?:ĐÚNG\s+MỘT\s+)?JSON\s*(?:'Đề\s+bài\s+nghiên\s+cứu')?", re.IGNORECASE),
+        "xây dựng khung phân tích",
+    ),
+    (re.compile(r"tạo\s+(?:một\s+)?JSON\s*(?:mặc\s+định)?", re.IGNORECASE), "chuẩn bị phản hồi"),
+    (re.compile(r"\bJSON\b"), "khung phân tích"),
+    (re.compile(r"`?premises_to_check`?", re.IGNORECASE), "kiểm chứng giả định"),
+    (re.compile(r"`?user_concern`?", re.IGNORECASE), "mối quan tâm cốt lõi"),
+    (re.compile(r"`?answer_shape`?", re.IGNORECASE), "cách tiếp cận trả lời"),
+    (re.compile(r"`?verdict_with_reasons`?", re.IGNORECASE), "đánh giá kèm luận cứ"),
+    (re.compile(r"`?health_check`?", re.IGNORECASE), "kiểm tra sức khỏe tài chính"),
+    (re.compile(r"`?direct_fact`?", re.IGNORECASE), "tra cứu số liệu trực tiếp"),
+    (re.compile(r"`?candidate_ranking`?", re.IGNORECASE), "sàng lọc doanh nghiệp"),
+    (re.compile(r"`?peer_head_to_head`?", re.IGNORECASE), "so sánh cùng ngành"),
+    (re.compile(r"`?premise_audit_and_explanation`?", re.IGNORECASE), "kiểm chứng giả định"),
+    (re.compile(r"`?needs_clarification`?\s*(?::\s*(?:true|false))?", re.IGNORECASE), "trạng thái cần làm rõ"),
+    (re.compile(r"`?clarification_needed`?", re.IGNORECASE), "cần làm rõ yêu cầu"),
+    (re.compile(r"`?clarifying_question`?", re.IGNORECASE), "câu hỏi làm rõ"),
+    (re.compile(r"`?candidate_search`?", re.IGNORECASE), "sàng lọc toàn sàn"),
+    (re.compile(r"`?anchor_ticker`?", re.IGNORECASE), "mã chuẩn đối chiếu"),
+    (re.compile(r"`?budget_tier`?", re.IGNORECASE), "mức độ phân tích"),
+    (re.compile(r"\bBudget\s+tier\s*:\s*\w+", re.IGNORECASE), ""),
+    (re.compile(r"`?(?:fact|kpi):[a-z0-9_]+`?", re.IGNORECASE), "chỉ tiêu tài chính"),
+    (re.compile(r"`?doc:[A-Za-z0-9_,|]+`?", re.IGNORECASE), "thuyết minh báo cáo"),
+    (re.compile(r"\bpremises\b", re.IGNORECASE), "giả định"),
+    (re.compile(r"\bentities\b", re.IGNORECASE), "đối tượng phân tích"),
+    (re.compile(r"\bclaims\b", re.IGNORECASE), "luận điểm"),
+    (re.compile(r"\bevidence\b", re.IGNORECASE), "dữ liệu đối chiếu"),
+    (re.compile(r"\bfact\b", re.IGNORECASE), "số liệu BCTC"),
+    (re.compile(r"\bkpi\b", re.IGNORECASE), "chỉ số tài chính"),
+    (re.compile(r"\bStage\s*7\b", re.IGNORECASE), "kiểm chứng chéo"),
+)
+
+
+def humanize_visible_reasoning(text: str) -> str:
+    """Deterministically scrub internal schema/JSON identifiers from `<think>` reasoning segments."""
+    out = text
+    for pat, repl in _REASONING_INLINE_SUBS:
+        out = pat.sub(repl, out)
+    out = _INTERNAL_CLAIM_ID_RE.sub("", out)
+    return out
+
+
+class _ReasoningWordStreamBuffer:
+    """Buffer streaming reasoning deltas to word boundaries so multi-token identifiers
+    like `premises_to_check` or `verdict_with_reasons` never split across two chunks."""
+
+    def __init__(self) -> None:
+        self._buf = ""
+
+    def push(self, delta: str) -> str:
+        if not delta:
+            return ""
+        self._buf += delta
+        last_ws = -1
+        for idx in range(len(self._buf) - 1, -1, -1):
+            if self._buf[idx].isspace():
+                last_ws = idx
+                break
+        if last_ws == -1:
+            return ""
+        ready = self._buf[: last_ws + 1]
+        self._buf = self._buf[last_ws + 1 :]
+        return humanize_visible_reasoning(ready)
+
+    def flush(self) -> str:
+        if not self._buf:
+            return ""
+        rem = self._buf
+        self._buf = ""
+        return humanize_visible_reasoning(rem)
+
+_ANSWER_SHAPE_VN: dict[str, str] = {
+    "direct_fact": "Tra cứu số liệu trực tiếp",
+    "verdict_with_reasons": "Đánh giá trực diện kèm luận cứ",
+    "health_check": "Kiểm tra tổng thể sức khỏe tài chính",
+    "candidate_ranking": "Sàng lọc và xếp hạng doanh nghiệp",
+    "premise_audit_and_explanation": "Kiểm chứng giả định trước khi giải thích nguyên nhân",
+    "peer_head_to_head": "So sánh đối đầu giữa các doanh nghiệp cùng ngành",
+    "clarification_needed": "Cần làm rõ nhu cầu",
+}
+
 SYNTHESIS_STATIC_SYSTEM_PROMPT = (
     "Bạn là Chuyên gia Phân tích Đầu tư Cấp cao (Senior Institutional Equity Analyst) của AIInvest.\n"
-    "Nhiệm vụ: viết câu trả lời sắc sảo, đi thẳng vào mối quan tâm thật sự của nhà đầu tư (`user_concern`) "
-    "dựa HOÀN TOÀN trên Đề bài và các Thẻ kết luận đã kiểm chứng bên dưới.\n"
-    "QUY TẮC SUY LUẬN NHANH: Suy luận nội bộ ngắn gọn, súc tích theo từng thẻ kết luận (dưới 200 từ), không lặp ý.\n\n"
+    "Nhiệm vụ: viết câu trả lời sắc sảo, đi thẳng vào mối quan tâm cốt lõi của nhà đầu tư "
+    "dựa HOÀN TOÀN trên trọng tâm đề bài và các Thẻ kết luận đã kiểm chứng bên dưới.\n"
+    "QUY TẮC HIỂN THỊ SUY LUẬN (VISIBLE ANALYST THINKING — ĐƯỢC HIỂN THỊ TRỰC TIẾP CHO NHÀ ĐẦU TƯ):\n"
+    "- Phần suy luận (`<think>` / reasoning) hiển thị trực tiếp cho Môi giới & Nhà đầu tư đọc: viết 3–5 ý phân tích "
+    "tài chính mạch lạc bằng tiếng Việt tự nhiên (dưới 140 từ), tập trung đúc kết số liệu và đối chiếu các luận điểm.\n"
+    "- TUYỆT ĐỐI CẤM nhắc tới tên thẻ/mã biến tiếng Anh nội bộ nào (như `BRIEF_METADATA`, `VERIFIED_CLAIM_CARDS`, "
+    "`CONFIRMED`, `REFUTED`, `PARTIAL`, `NO_DATA`, `P1`, `K1`, `Stage 7`, `JSON`, `prompt`, hay bất kỳ cụm tiếng Anh "
+    "nối gạch dưới `snake_case` nào) trong phần suy luận!\n\n"
     "NGUYÊN TẮC BẮT BUỘC:\n"
-    "1. Hình thức linh hoạt theo đề bài (`answer_shape`), KHÔNG ép khung 4 mục cứng nhắc:\n"
+    "1. Hình thức trình bày linh hoạt theo bản chất câu hỏi, KHÔNG ép khung 4 mục cứng nhắc:\n"
     "   - Mở đầu bằng kết luận trực diện trả lời ngay câu hỏi / nỗi lo của người hỏi.\n"
-    "   - Nếu có Thẻ tiền đề (`TIỀN ĐỀ CẦN KIỂM TRA`) mang trạng thái `REFUTED`, PHẢI đính chính thẳng thắn "
+    "   - Nếu có Thẻ tiền đề (`TIỀN ĐỀ CẦN KIỂM TRA`) mang trạng thái bác bỏ (`REFUTED`), PHẢI đính chính thẳng thắn "
     "giả định chưa đúng của người hỏi ngay ở câu mở đầu bằng số liệu thực tế trước khi giải thích diễn biến thật.\n"
-    "   - Nếu là câu hỏi tìm kiếm / so sánh ứng viên (`candidate_ranking` / `peer_head_to_head`), trình bày "
-    "chuẩn đối chiếu (nếu có mã gốc) và bảng so sánh gọn giữa các ứng viên, nêu rõ tiêu chí đạt / chưa đạt.\n"
+    "   - Nếu là câu hỏi sàng lọc hoặc so sánh các doanh nghiệp cùng ngành, trình bày chuẩn đối chiếu "
+    "(nếu có mã gốc) và bảng so sánh gọn giữa các ứng viên, nêu rõ tiêu chí đạt / chưa đạt.\n"
     "   - Trình bày bảng Markdown gọn khi có từ 3 chỉ tiêu hoặc nhiều kỳ/nhiều mã trở lên để dễ đọc.\n"
     "2. KỶ LUẬT SỐ HỌC & TRÍCH DẪN TUYỆT ĐỐI (ZERO MENTAL MATH):\n"
     "   - CHỈ dùng các con số đã xuất hiện nguyên văn trong các Thẻ kết luận bên dưới.\n"
@@ -70,9 +158,9 @@ SYNTHESIS_STATIC_SYSTEM_PROMPT = (
     "   - Mọi câu có số liệu tài chính BẮT BUỘC gắn kèm mã nguồn gốc có sẵn trong thẻ (`[CALC-*]`, `[C#]`, "
     "`[TBL:*]`, `[SCR:*]`, `[KG:*]`, `[MEM:*]`, `[PORT:*]`). TUYỆT ĐỐI KHÔNG gắn mã ý nội bộ của đề bài "
     "(`[P1]`, `[K1]`..`[K6]`) vào câu trả lời. Không tự bịa mã không tồn tại.\n"
-    "3. TRUNG THỰC VỚI KHOẢNG TRỐNG (`NO_DATA`):\n"
-    "   - Ý nào thẻ ghi `NO_DATA` hoặc thiếu thuyết minh PIT thì nói thẳng là chưa có dữ liệu kiểm chứng trong "
-    "phạm vi PIT hiện tại — tuyệt đối không suy đoán lấp chỗ trống.\n"
+    "3. TRUNG THỰC VỚI KHOẢNG TRỐNG DỮ LIỆU:\n"
+    "   - Ý nào thẻ ghi chưa có dữ liệu (`NO_DATA`) hoặc thiếu thuyết minh thì nói thẳng là chưa có dữ liệu kiểm chứng "
+    "tính đến ngày khóa sổ hiện tại — tuyệt đối không suy đoán lấp chỗ trống.\n"
     "   - Không đưa khuyến nghị mua/bán hoặc giá mục tiêu."
 )
 
@@ -130,16 +218,17 @@ def build_synthesis_user_prompt(
     if ctx.tier2_memory_prompt:
         blocks.append(ctx.tier2_memory_prompt)
 
+    shape_vn = _ANSWER_SHAPE_VN.get(brief.answer_shape, "Đánh giá phân tích trọng tâm")
     meta_lines = [
         f"- Câu hỏi gốc của nhà đầu tư: {query.strip()}",
-        f"- Ngày khóa sổ PIT (`as_of_date`): {ctx.as_of_date.isoformat()}",
-        f"- Mối quan tâm cốt lõi (`user_concern`): {brief.user_concern}",
-        f"- Hình dáng câu trả lời (`answer_shape`): {brief.answer_shape}",
+        f"- Dữ liệu tính đến ngày: {ctx.as_of_date.isoformat()}",
+        f"- Mối quan tâm cốt lõi: {brief.user_concern}",
+        f"- Cách tiếp cận trình bày: {shape_vn}",
     ]
     if exec_result.located.analysis_tickers:
         meta_lines.append(f"- Đối tượng phân tích: {', '.join(exec_result.located.analysis_tickers)}")
     if exec_result.located.anchor_ticker:
-        meta_lines.append(f"- Mã chuẩn đối chiếu (`anchor_ticker`): {exec_result.located.anchor_ticker}")
+        meta_lines.append(f"- Mã chuẩn đối chiếu: {exec_result.located.anchor_ticker}")
     if brief.assumptions:
         meta_lines.append("- Giả định phân tích rõ ràng: " + "; ".join(brief.assumptions))
     if pit_adjustments:
@@ -582,8 +671,11 @@ async def run_brief_centric_turn(
         if on_delta is not None:
             await on_delta(text_chunk)
 
-    async def _on_brief_reasoning(r_delta: str) -> None:
-        if not r_delta:
+    brief_r_buf = _ReasoningWordStreamBuffer()
+    synth_r_buf = _ReasoningWordStreamBuffer()
+
+    async def _emit_brief_r(clean_chunk: str) -> None:
+        if not clean_chunk:
             return
         await _record_thought(
             {
@@ -591,15 +683,18 @@ async def run_brief_centric_turn(
                 "type": "thought",
                 "turn": 1,
                 "kind": "reasoning",
-                "title": "Phân tích câu hỏi & thiết kế đề bài",
-                "text": r_delta,
+                "title": "Xác định trọng tâm phân tích",
+                "text": clean_chunk,
                 "append": True,
                 "status": "done",
             }
         )
 
-    async def _on_synth_reasoning(r_delta: str) -> None:
-        if not r_delta:
+    async def _on_brief_reasoning(r_delta: str) -> None:
+        await _emit_brief_r(brief_r_buf.push(r_delta))
+
+    async def _emit_synth_r(clean_chunk: str) -> None:
+        if not clean_chunk:
             return
         await _record_thought(
             {
@@ -607,12 +702,15 @@ async def run_brief_centric_turn(
                 "type": "thought",
                 "turn": 2,
                 "kind": "reasoning",
-                "title": "Tổng hợp luận điểm & đối chiếu chéo bằng chứng",
-                "text": r_delta,
+                "title": "Tổng hợp luận điểm & số liệu",
+                "text": clean_chunk,
                 "append": True,
                 "status": "done",
             }
         )
+
+    async def _on_synth_reasoning(r_delta: str) -> None:
+        await _emit_synth_r(synth_r_buf.push(r_delta))
 
     session_ctx = ctx.session_ledger.to_prompt_context(
         include_recent_pairs=ctx.include_recent_pairs,
@@ -640,6 +738,7 @@ async def run_brief_centric_turn(
         trace=trace,
     )
     total_usage = brief_usage
+    await _emit_brief_r(brief_r_buf.flush())
     if on_stage is not None:
         await on_stage("routing", "done", "Đã khóa đề bài phân tích & ràng buộc PIT")
 
@@ -674,26 +773,23 @@ async def run_brief_centric_turn(
             }
         )
 
-    all_claims_preview = [f"[{p.id}] {p.statement}" for p in brief.premises_to_check] + [
-        f"[{c.id}] {c.statement}" for c in brief.claims
+    all_claims_preview = [p.statement for p in brief.premises_to_check if p.statement] + [
+        c.statement for c in brief.claims if c.statement
     ]
-    await _record_thought(
-        {
-            "id": "brief-1",
-            "type": "thought",
-            "turn": 1,
-            "kind": "plan",
-            "title": "Đề bài phân tích trung tâm",
-            "text": (
-                f"Trọng tâm: {brief.user_concern}\n"
-                + (
-                    "\n".join(f"• {ln}" for ln in all_claims_preview[:6])
-                    if all_claims_preview
-                    else "Cần làm rõ tiêu chí."
-                )
-            ),
-        }
-    )
+    if not brief.needs_clarification and all_claims_preview:
+        await _record_thought(
+            {
+                "id": "brief-1",
+                "type": "thought",
+                "turn": 1,
+                "kind": "plan",
+                "title": "Khung kiểm chứng dữ liệu",
+                "text": (
+                    f"Trọng tâm: {brief.user_concern}\n"
+                    + "\n".join(f"• {ln}" for ln in all_claims_preview[:6])
+                ),
+            }
+        )
 
     # Pure ambiguity -> ask 1 concise clarifying question immediately (0 extra LLM calls!)
     if brief.needs_clarification and brief.clarifying_question:
@@ -765,7 +861,7 @@ async def run_brief_centric_turn(
                 "status": "done",
                 "tickers": list(located.analysis_tickers),
                 "screening_preview": preview_rows,
-                "title": "Định vị ứng viên toàn sàn (0 LLM token)",
+                "title": "Sàng lọc doanh nghiệp toàn sàn",
                 "text": "\n".join(located.summary_lines[:5]) or "Không tìm thấy ứng viên khớp bộ lọc.",
             }
         )
@@ -779,10 +875,10 @@ async def run_brief_centric_turn(
                 "kind": "plan",
                 "status": "done",
                 "tickers": list(located.analysis_tickers),
-                "title": "Khóa phạm vi đối tượng & Point-in-Time",
+                "title": "Xác định doanh nghiệp & kỳ dữ liệu",
                 "text": (
                     f"Mã phân tích: {', '.join(located.analysis_tickers)} · "
-                    f"Khóa sổ PIT: {ctx.as_of_date.isoformat()}{cov_txt}"
+                    f"Dữ liệu tính đến {ctx.as_of_date.isoformat()}{cov_txt}"
                 ),
             }
         )
@@ -837,6 +933,7 @@ async def run_brief_centric_turn(
         trace=trace,
     )
     total_usage = total_usage.plus(synth_usage)
+    await _emit_synth_r(synth_r_buf.flush())
 
     if synth_timed_out and answer_text:
         extra_blindspots.append(

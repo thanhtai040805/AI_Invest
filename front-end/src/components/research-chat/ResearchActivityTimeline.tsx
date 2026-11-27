@@ -27,9 +27,11 @@ import {
   Table2,
   Wrench,
 } from "lucide-react"
-import type {
-  ResearchActivityItem,
-  SelectedDocumentPreview,
+import {
+  filterBrokerActivityItems,
+  hasSubstantiveResearchActivity,
+  type ResearchActivityItem,
+  type SelectedDocumentPreview,
 } from "@/lib/api/researchChat"
 
 interface ResearchActivityTimelineProps {
@@ -96,27 +98,19 @@ function toolIconFor(tool?: string) {
   }
 }
 
-function cragBadgeClass(grade?: string | null): string {
-  const g = String(grade ?? "").toUpperCase()
-  if (g === "CORRECT") return "border-teal/35 bg-teal/10 text-teal"
-  if (g === "AMBIGUOUS") return "border-warning/40 bg-warning/12 text-warning"
-  if (g === "INCORRECT") return "border-loss/40 bg-loss/10 text-loss"
-  return "border-line bg-soft text-secondary"
-}
-
 function verdictStatusBadge(status?: string | null): { label: string; cls: string } {
   const s = String(status ?? "").toUpperCase()
   if (s === "CONFIRMED") {
     return { label: "ĐÃ XÁC MINH", cls: "border-teal/35 bg-teal/10 text-teal" }
   }
   if (s === "REFUTED") {
-    return { label: "BÁC BỎ TIỀN ĐỀ", cls: "border-loss/40 bg-loss/10 text-loss" }
+    return { label: "BÁC BỎ GIẢ ĐỊNH", cls: "border-loss/40 bg-loss/10 text-loss" }
   }
   if (s === "PARTIAL") {
     return { label: "MỘT PHẦN", cls: "border-warning/40 bg-warning/12 text-warning" }
   }
   if (s === "NO_DATA") {
-    return { label: "THIẾU DỮ LIỆU PIT", cls: "border-line bg-soft text-secondary" }
+    return { label: "CHƯA CÓ DỮ LIỆU", cls: "border-line bg-soft text-secondary" }
   }
   return { label: s || "KẾT LUẬN", cls: "border-line bg-soft text-secondary" }
 }
@@ -129,8 +123,6 @@ export function ResearchActivityTimeline({
   startedAtMs = null,
   thinkingDurationMs = null,
   latencyMs = null,
-  reasoningTokens = null,
-  agentTurns = null,
   defaultExpanded = false,
   onInspectCitation,
   onInspectTable,
@@ -142,6 +134,8 @@ export function ResearchActivityTimeline({
   const [liveElapsedMs, setLiveElapsedMs] = useState(0)
 
   const isActivelyThinking = isStreaming && !hasAnswerStarted
+  const visibleItems = useMemo(() => filterBrokerActivityItems(items), [items])
+  const hasSubstantiveWork = useMemo(() => hasSubstantiveResearchActivity(items), [items])
 
   useEffect(() => {
     if (!isActivelyThinking || !startedAtMs) {
@@ -159,62 +153,30 @@ export function ResearchActivityTimeline({
   const expanded = userExpanded ?? autoExpanded
 
   const stats = useMemo(() => {
-    const toolItems = items.filter((i) => i.type === "tool_call")
+    const toolItems = visibleItems.filter((i) => i.type === "tool_call")
     const runningTool = [...toolItems].reverse().find((i) => i.status === "running")
-    const latestItem = items.length > 0 ? items[items.length - 1] : null
-    const docKeys = new Set<string>()
-    let tablesCount = 0
-    let calcsCount = 0
-    let hopsCount = 0
-    let verdictCount = 0
-    let hasReasoningText = false
+    const latestItem = visibleItems.length > 0 ? visibleItems[visibleItems.length - 1] : null
     let maxStepMs = 0
     let lastReasoningId: string | null = null
 
-    for (const item of items) {
+    for (const item of visibleItems) {
       const stepTime = item.completed_at_ms ?? item.timestamp_ms ?? 0
       if (stepTime > maxStepMs) maxStepMs = stepTime
       if (item.kind === "reasoning") {
         lastReasoningId = item.id
-        if (item.text?.trim()) hasReasoningText = true
-      }
-      if (item.kind === "verdict_card") {
-        verdictCount += 1
-      }
-      if (Array.isArray(item.selected_documents)) {
-        for (const d of item.selected_documents) {
-          docKeys.add(`${d.citation_id}-${d.ticker}-${d.sub_doc_slot}-${d.page}`)
-        }
-      }
-      if (Array.isArray(item.hydrated_tables)) {
-        tablesCount += item.hydrated_tables.length
-      }
-      if (item.calc_result?.calc_id) {
-        calcsCount += 1
-      }
-      if (Array.isArray(item.kg_hops)) {
-        hopsCount += item.kg_hops.length
       }
     }
 
     return {
-      stepsTotal: items.length,
-      toolsTotal: toolItems.length,
       runningTool,
       latestItem,
       lastReasoningId,
-      docsSelected: docKeys.size,
-      tablesCount,
-      calcsCount,
-      hopsCount,
-      verdictCount,
-      hasReasoningText,
       maxStepMs,
-      turnsCount: agentTurns ?? 0,
     }
-  }, [items, agentTurns])
+  }, [visibleItems])
 
-  if (items.length === 0 && !isStreaming) return null
+  // Suppress empty `Đã suy luận` box on greetings, casual chitchat, or 0-tool clarification turns
+  if (!isStreaming && (!hasSubstantiveWork || visibleItems.length === 0)) return null
 
   // `liveElapsedMs` freezes automatically as soon as `hasAnswerStarted` flips `isActivelyThinking` false
   const frozenStreamThinkingMs = isStreaming && liveElapsedMs > 0 ? liveElapsedMs : null
@@ -228,17 +190,7 @@ export function ResearchActivityTimeline({
 
   const liveSubtitle = stats.runningTool
     ? stats.runningTool.label || stats.runningTool.tool || ""
-    : stats.latestItem?.title || activeStageLabel || "Khởi tạo đề bài & kiểm tra Point-in-Time"
-
-  const summaryBits: string[] = []
-  if (stats.stepsTotal > 0) summaryBits.push(`${stats.stepsTotal} bước`)
-  if (stats.docsSelected > 0) summaryBits.push(`${stats.docsSelected} tài liệu`)
-  if (stats.tablesCount > 0) summaryBits.push(`${stats.tablesCount} bảng 2D`)
-  if (stats.calcsCount > 0) summaryBits.push(`${stats.calcsCount} phép tính`)
-  if (stats.hopsCount > 0) summaryBits.push(`${stats.hopsCount} KG`)
-  if (reasoningTokens != null && reasoningTokens > 0) {
-    summaryBits.push(`${reasoningTokens.toLocaleString("vi-VN")} tok suy luận`)
-  }
+    : stats.latestItem?.title || activeStageLabel || "Đang phân tích yêu cầu"
 
   const completedLabel = resolvedThinkingMs
     ? `Đã suy luận trong ${formatDuration(resolvedThinkingMs)}`
@@ -276,15 +228,8 @@ export function ResearchActivityTimeline({
               ) : null}
             </span>
           ) : (
-            <span className="inline-flex items-center gap-1.5 min-w-0">
-              <span className="text-[13px] font-medium text-secondary group-hover:text-ink transition-colors">
-                {completedLabel}
-              </span>
-              {expanded && summaryBits.length > 0 && (
-                <span className="hidden sm:inline text-[11.5px] text-muted truncate">
-                  · {summaryBits.join(" · ")}
-                </span>
-              )}
+            <span className="text-[13px] font-medium text-secondary group-hover:text-ink transition-colors">
+              {completedLabel}
             </span>
           )}
 
@@ -295,11 +240,11 @@ export function ResearchActivityTimeline({
           )}
         </button>
 
-        {/* Post-answer Stage 7 audit micro-indicator while finalizing */}
+        {/* Post-answer verification micro-indicator while finalizing */}
         {isStreaming && hasAnswerStarted && (
           <span className="inline-flex items-center gap-1.5 rounded-full border border-mineral/30 bg-mineral/8 px-2.5 py-0.5 text-[11px] font-medium text-mineral">
             <Loader2 className="h-3 w-3 animate-spin shrink-0" aria-hidden="true" />
-            <span>{activeStageLabel || "Đang viết & kiểm chứng Stage 7…"}</span>
+            <span>{activeStageLabel || "Đang đối chiếu số liệu…"}</span>
           </span>
         )}
       </div>
@@ -307,15 +252,15 @@ export function ResearchActivityTimeline({
       {/* ChatGPT-Style Clean Left-Hairline Step & Thinking Stream */}
       {expanded && (
         <div className="mt-1.5 ml-1.5 border-l-2 border-line/85 pl-4 py-1 space-y-3">
-          {items.length === 0 && isStreaming && (
+          {visibleItems.length === 0 && isStreaming && (
             <div className="flex items-center gap-2 py-1 text-[12.5px] text-secondary">
               <Sparkles className="h-3.5 w-3.5 text-mineral animate-pulse shrink-0" aria-hidden="true" />
-              <span>Đang phân tích câu hỏi và khóa sổ dữ liệu Point-in-Time…</span>
+              <span>Đang phân tích câu hỏi và tra cứu dữ liệu…</span>
             </div>
           )}
 
           <ol className="space-y-3">
-            {items.map((item, idx) => {
+            {visibleItems.map((item, idx) => {
               const key = item.call_id || item.id || `act-${idx}`
 
               // 1) Model Native Reasoning Stream (`kind === "reasoning"`) — clean ChatGPT prose style
@@ -407,7 +352,7 @@ export function ResearchActivityTimeline({
                           )}
                           {item.escalated && (
                             <span className="rounded bg-mineral/10 px-1.5 py-[1px] font-mono text-[9.5px] font-semibold text-mineral border border-mineral/30">
-                              1-Hop Escalated
+                              Đã đối chiếu sâu
                             </span>
                           )}
                         </div>
@@ -498,7 +443,7 @@ export function ResearchActivityTimeline({
                           />
                           <span>
                             {item.title ||
-                              (isVer ? "Kiểm chứng Stage 7" : isRouting ? "Định tuyến" : "Bước lập kế hoạch")}
+                              (isVer ? "Đối chiếu số liệu" : isRouting ? "Tiếp nhận" : "Khung kiểm chứng")}
                           </span>
                         </div>
                         {item.timestamp_ms != null && (
@@ -580,15 +525,6 @@ export function ResearchActivityTimeline({
                         {Array.isArray(item.tickers) && item.tickers.length > 0 && (
                           <span className="rounded bg-surface px-1.5 py-[1px] font-mono text-[10px] font-semibold text-ink border border-line">
                             {item.tickers.slice(0, 6).join(", ")}
-                          </span>
-                        )}
-                        {item.crag_grade && (
-                          <span
-                            className={`rounded-full border px-1.5 py-[1px] font-mono text-[9.5px] font-semibold ${cragBadgeClass(
-                              item.crag_grade,
-                            )}`}
-                          >
-                            CRAG {item.crag_grade}
                           </span>
                         )}
                       </div>

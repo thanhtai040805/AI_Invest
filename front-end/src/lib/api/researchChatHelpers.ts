@@ -646,3 +646,137 @@ export function resolveActivityLogFromMetadata(
   }
   return items
 }
+
+const INTERNAL_REASONING_LINE_RE =
+  /^(?:\s*[-•*]?\s*Budget\s*tier\s*:.*|(?:Tôi\s+(?:cần|sẽ)\s+)?(?:xuất\s+ra|tạo(?:\s+một)?)\s+JSON[^.\n]*\.?)$/i
+
+const INLINE_ENUM_REPLACEMENTS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/(?:Tôi\s+(?:cần|sẽ)\s+)?xuất\s+ra\s+JSON[^.\n]*\.?\s*/gi, ""],
+  [/(?:Tôi\s+(?:cần|sẽ)\s+)?tạo\s+(?:một\s+)?JSON[^.\n]*\.?\s*/gi, ""],
+  [/\bverdict_with_reasons\b/gi, "đánh giá kèm luận cứ"],
+  [/\bhealth_check\b/gi, "kiểm tra sức khỏe tài chính"],
+  [/\bdirect_fact\b/gi, "tra cứu trực tiếp"],
+  [/\bcandidate_ranking\b/gi, "sàng lọc ứng viên"],
+  [/\bpeer_head_to_head\b/gi, "so sánh cùng ngành"],
+  [/\bpremise_audit_and_explanation\b/gi, "kiểm chứng giả định"],
+  [/\bpremises_to_check\b/gi, "kiểm chứng giả định"],
+  [/\buser_concern\b/gi, "mối quan tâm cốt lõi"],
+  [/\banswer_shape\b/gi, "cách tiếp cận trả lời"],
+  [/\bneeds_clarification\s*(?::\s*(?:true|false))?/gi, "trạng thái cần làm rõ"],
+  [/\bclarification_needed\b/gi, "làm rõ nhu cầu"],
+  [/\bclarifying_question\b/gi, "câu hỏi làm rõ"],
+  [/\bcandidate_search\b/gi, "sàng lọc toàn sàn"],
+  [/\bbudget_tier\b/gi, "mức độ phân tích"],
+  [/\bpremises\b/gi, "giả định"],
+  [/\bentities\b/gi, "đối tượng phân tích"],
+  [/\bclaims\b/gi, "luận điểm"],
+  [/\bevidence\b/gi, "dữ liệu đối chiếu"],
+  [/\bJSON\b/g, "khung phân tích"],
+]
+
+/**
+ * Strip leaked internal prompt/JSON schema lines from model `<think>` reasoning text
+ * so Brokers only read natural Vietnamese equity-research reasoning.
+ */
+export function cleanVisibleReasoningText(raw?: string | null): string {
+  if (!raw) return ""
+  let normalized = raw
+  for (const [pattern, replacement] of INLINE_ENUM_REPLACEMENTS) {
+    normalized = normalized.replace(pattern, replacement)
+  }
+  const keptLines = normalized
+    .split(/\r?\n/)
+    .filter((line) => !INTERNAL_REASONING_LINE_RE.test(line))
+  return keptLines
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+}
+
+export function humanizeActivityTitle(rawTitle?: string | null): string {
+  if (!rawTitle) return ""
+  let clean = rawTitle
+    .replace(/Kiểm chứng Quote Hash\s*&\s*Số học\s*\(Stage\s*7\)/gi, "Đối chiếu chéo số liệu & nguồn trích dẫn")
+    .replace(/Hiệu đính câu bị gắn cờ kiểm toán\s*\(Stage\s*7\)/gi, "Rà soát & chuẩn hóa độ chính xác số liệu")
+    .replace(/Định vị ứng viên toàn sàn\s*\(0\s*LLM\s*token\)/gi, "Sàng lọc doanh nghiệp toàn sàn")
+    .replace(/Khóa phạm vi đối tượng\s*&\s*Point-in-Time/gi, "Xác định doanh nghiệp & kỳ dữ liệu")
+    .replace(/Phân tích câu hỏi\s*&\s*thiết kế đề bài/gi, "Xác định trọng tâm phân tích")
+    .replace(/\s*\[(?:P|K)\d+(?:-hop2)?\]\s*(?:·\s*(?:CONFIRMED|REFUTED|PARTIAL|NO_DATA))?/gi, "")
+    .replace(/\s*\((?:P|K)\d+(?:-hop2)?\)/gi, "")
+    .replace(/\s*\(0\s*LLM\s*token\)/gi, "")
+    .replace(/\s*\(Stage\s*7\)/gi, "")
+    .trim()
+  if (/^Kiểm chứng Stage\s*7$/i.test(clean)) {
+    clean = "Đối chiếu chéo số liệu & nguồn trích dẫn"
+  }
+  return clean
+}
+
+/**
+ * Returns true only when an activity log contains genuine analytical/evidence work
+ * (tool execution, verdict cards, citations, tables, calculator traces, KG hops, or screening).
+ * Pure greetings or 0-tool clarification turns return false so no empty `Đã suy luận` box is shown.
+ */
+export function hasSubstantiveResearchActivity(items: ResearchActivityItem[]): boolean {
+  if (!Array.isArray(items) || items.length === 0) return false
+  return items.some((item) => {
+    if (item.type === "tool_call") return true
+    if (
+      item.kind === "verdict_card" ||
+      item.kind === "escalation" ||
+      item.kind === "verification_repair"
+    ) {
+      return true
+    }
+    if (Array.isArray(item.screening_preview) && item.screening_preview.length > 0) return true
+    if (Array.isArray(item.selected_documents) && item.selected_documents.length > 0) return true
+    if (Array.isArray(item.hydrated_tables) && item.hydrated_tables.length > 0) return true
+    if (item.calc_result?.calc_id) return true
+    if (Array.isArray(item.kg_hops) && item.kg_hops.length > 0) return true
+    if (
+      item.type === "verification" &&
+      ((item.verified_citations ?? 0) > 0 ||
+        (item.rejected_citations ?? 0) > 0 ||
+        (item.unsupported_numeric_claims ?? 0) > 0)
+    ) {
+      return true
+    }
+    return false
+  })
+}
+
+/**
+ * Filter out developer telemetry (`routing` Kev-4b, 0-citation Stage 7 rows, empty clarification plans)
+ * and humanize titles/reasoning text for Broker presentation.
+ */
+export function filterBrokerActivityItems(items: ResearchActivityItem[]): ResearchActivityItem[] {
+  if (!Array.isArray(items) || items.length === 0) return []
+  const out: ResearchActivityItem[] = []
+  for (const item of items) {
+    if (item.type === "routing") continue
+    if (item.id === "brief-1" && (item.text ?? "").includes("Cần làm rõ tiêu chí")) continue
+    if (
+      item.type === "verification" &&
+      (item.verified_citations ?? 0) === 0 &&
+      (item.rejected_citations ?? 0) === 0 &&
+      (item.unsupported_numeric_claims ?? 0) === 0 &&
+      (item.text ?? "").includes("0 trích dẫn")
+    ) {
+      continue
+    }
+    const nextTitle = item.title ? humanizeActivityTitle(item.title) : item.title
+    const nextLabel = item.label ? humanizeActivityTitle(item.label) : item.label
+    const nextText =
+      item.type === "thought" && item.kind === "reasoning"
+        ? cleanVisibleReasoningText(item.text)
+        : item.text?.replace(/\s*\[(?:P|K)\d+\]\s*/g, " ").trim() ?? item.text
+
+    out.push({
+      ...item,
+      ...(nextTitle !== undefined ? { title: nextTitle } : {}),
+      ...(nextLabel !== undefined ? { label: nextLabel } : {}),
+      ...(nextText !== undefined ? { text: nextText } : {}),
+    })
+  }
+  return out
+}

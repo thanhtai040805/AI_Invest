@@ -29,13 +29,13 @@ export interface StageProgressItem {
 }
 
 export const SSE_STAGE_ORDER: ReadonlyArray<{ stage: SseStageName; label: string }> = [
-  { stage: "routing", label: "Định tuyến" },
-  { stage: "retrieval", label: "Truy xuất PIT" },
-  { stage: "graph_hop", label: "Nhảy đồ thị" },
-  { stage: "table_hydration", label: "Nạp bảng 2D" },
-  { stage: "calculator", label: "Tính Python" },
-  { stage: "synthesis", label: "Tổng hợp" },
-  { stage: "verification", label: "Kiểm chứng hash" },
+  { stage: "routing", label: "Tiếp nhận" },
+  { stage: "retrieval", label: "Tra cứu dữ liệu" },
+  { stage: "graph_hop", label: "Liên kết ngành & vĩ mô" },
+  { stage: "table_hydration", label: "Trích xuất bảng BCTC" },
+  { stage: "calculator", label: "Tính toán chỉ số" },
+  { stage: "synthesis", label: "Tổng hợp phân tích" },
+  { stage: "verification", label: "Đối chiếu số liệu" },
 ]
 
 export const PILOT_TICKERS = [
