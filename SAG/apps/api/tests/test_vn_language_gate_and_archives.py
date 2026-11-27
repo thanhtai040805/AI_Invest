@@ -311,3 +311,145 @@ def test_multi_pdf_zip_drops_english_member_and_merges_agm_proposals():
         _validate_archive_member_name("../outside.pdf")
     with pytest.raises(ZipExtractionError, match="Corrupt RAR archive"):
         safe_extract_pdf_from_archive(b"Rar!\x1a\x07\x01\x00corrupt_payload_bytes")
+
+
+def test_archive_drops_english_twin_without_en_suffix_even_when_larger_and_scanned():
+    """Regression for HDC (BCTN ZIP) & FTS (AGM ZIP): scanned EN twins without `_EN.pdf` suffix."""
+    scan_small = _make_utf8_pdf(["", ""])
+    scan_large = _make_utf8_pdf(["", "", "", "", ""])
+
+    # Case A (HDC class): Vietnamese BCTN scan (smaller) + English Annual Report scan (larger)
+    hdc_buf = io.BytesIO()
+    with zipfile.ZipFile(hdc_buf, "w") as zf:
+        zf.writestr("20260420 - HDC - Bao cao thuong nien nam 2025.pdf", scan_small)
+        zf.writestr("20260420 - HDC - 2025 Annual Report.pdf", scan_large)
+
+    chosen_bytes, chosen_name, _ = safe_extract_pdf_from_zip(hdc_buf.getvalue(), doc_type="BCTN")
+    assert "Bao cao thuong nien" in chosen_name
+    assert "Annual Report" not in chosen_name
+    with fitz.open(stream=chosen_bytes, filetype="pdf") as d:
+        assert len(d) == 2
+
+    # Case B (FTS class): Vietnamese AGM scan + English AGM scan with Vietnamese CA X.509 signature stamp
+    # on page 1 -> MUST ignore the CA signature overlay and drop the English twin!
+    en_scan_with_vn_ca_stamp = _make_utf8_pdf(
+        [
+            "<p>Digitally signed by CÔNG TY CỔ PHẦN CHỨNG KHOÁN FPT<br/>"
+            "DN: C=VN, S=HÀ NỘI, L=Quận Tây Hồ, CN=CÔNG TY CỔ PHẦN CHỨNG KHOÁN FPT, "
+            "OID.0.9.2342.19200300.100.1.1=MST:0102324187</p>",
+            "",
+            "",
+            "",
+            "",
+        ]
+    )
+    fts_buf = io.BytesIO()
+    with zipfile.ZipFile(fts_buf, "w") as zf:
+        zf.writestr("m88_123___fts___nghi_quyet_va_bien_ban_dhdcd_2026.pdf", scan_small)
+        zf.writestr("m88_123___fts___resolution_and_minutes_agm_2026.pdf", en_scan_with_vn_ca_stamp)
+
+    agm_bytes, agm_name, _ = safe_extract_pdf_from_zip(fts_buf.getvalue(), doc_type="NQ_DHDCD")
+    assert "nghi_quyet" in agm_name
+    assert "resolution_and_minutes_agm" not in agm_name
+    with fitz.open(stream=agm_bytes, filetype="pdf") as d:
+        assert len(d) == 2
+
+
+@pytest.mark.asyncio
+async def test_archive_candidate_fallback_avoids_premature_english_tombstone():
+    """If candidate #1 in a multi-PDF neutral-named archive is a full-English scan, try candidate #2."""
+    # Both have neutral filenames and scanned pages; pdf_a is larger so ranked #1, but OCR shows English!
+    pdf_en_scan = _make_utf8_pdf([""] * 18)
+    pdf_vi_scan = _make_utf8_pdf([""] * 16)
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("01_filing_a.pdf", pdf_en_scan)
+        zf.writestr("02_filing_b.pdf", pdf_vi_scan)
+
+    class _FallbackCanaryOcr:
+        def __init__(self) -> None:
+            self.call_idx = 0
+
+        async def ocr_pdf_pages(
+            self, pdf_bytes: bytes, page_numbers: list[int], *, language: str = "vi"
+        ) -> dict[int, str]:
+            self.call_idx += 1
+            if self.call_idx == 1:
+                # Candidate #1 (18p) is full English
+                return {
+                    p: (
+                        "ANNUAL REPORT 2025. Consolidated financial statements and business operations "
+                        "of the Corporation for the year ended 31 December 2025."
+                    )
+                    for p in page_numbers
+                }
+            # Candidate #2 (16p) is Vietnamese!
+            return {
+                p: (
+                    f"Báo cáo thường niên năm 2025 trang {p}. Doanh thu thuần đạt 5.200 tỷ đồng, "
+                    "lợi nhuận sau thuế tăng trưởng 18% theo kế hoạch kinh doanh năm 2026."
+                )
+                for p in page_numbers
+            }
+
+    ocr = _FallbackCanaryOcr()
+    built = await build_research_sub_documents(
+        ticker="HDC",
+        pdf_bytes=buf.getvalue(),
+        doc_type="BCTN",
+        published_date=date(2026, 4, 20),
+        ocr_adapter=ocr,
+    )
+    assert built.inspection.chosen_entry == "02_filing_b.pdf"
+    slots = {s.sub_doc_slot for s in built.sub_documents}
+    assert "BCTN_CORE" in slots
+
+
+def test_rar_encoding_error_taxonomy_and_7z_utf8_listing(monkeypatch):
+    """Distinguish host bsdtar UTF-8 RAR5 limitation from corrupt RAR files, and verify 7z UTF-8 parsing."""
+    from types import SimpleNamespace
+
+    from sag_api.research import vn_language_gate as vlg
+
+    fake_rar = b"Rar!\x1a\x07\x01\x00" + b"0" * 64
+
+    # 1. When 7z/unrar absent and bsdtar reports unreadable filename -> crisp encoding error
+    monkeypatch.setattr(vlg, "_resolve_7z_binary", lambda: None)
+    monkeypatch.setattr(vlg, "_resolve_unrar_binary", lambda: None)
+    monkeypatch.setattr(vlg, "_resolve_bsdtar_binary", lambda: "tar.exe")
+    monkeypatch.setattr(
+        vlg.subprocess,
+        "run",
+        lambda *a, **kw: SimpleNamespace(
+            returncode=1,
+            stdout=b"",
+            stderr=b"tar.exe: Archive entry has empty or unreadable filename ... skipping",
+        ),
+    )
+    with pytest.raises(ArchiveExtractionError, match="RAR_UNPACKER_ENCODING_UNSUPPORTED"):
+        vlg._read_rar_pdf_members_bounded(fake_rar)
+
+    # 2. When 7z is present -> parses UTF-8 Vietnamese RAR5 member cleanly via -slt + bounded stream
+    monkeypatch.setattr(vlg, "_resolve_7z_binary", lambda: "7z.exe")
+    slt_out = (
+        "Path = Báo cáo thường niên 2025_CII_VIE.pdf\n"
+        "Size = 128\n"
+        "Packed Size = 100\n"
+        "Folder = -\n\n"
+    ).encode()
+    monkeypatch.setattr(
+        vlg.subprocess,
+        "run",
+        lambda *a, **kw: SimpleNamespace(returncode=0, stdout=slt_out, stderr=b""),
+    )
+    monkeypatch.setattr(
+        vlg,
+        "_stream_subprocess_bounded",
+        lambda *a, **kw: b"%PDF-1.4\nfake_cii_pdf",
+    )
+    extracted, desc = vlg._read_rar_pdf_members_bounded(fake_rar)
+    assert len(extracted) == 1
+    assert extracted[0][0] == "Báo cáo thường niên 2025_CII_VIE.pdf"
+    assert extracted[0][1].startswith(b"%PDF-1.4")
+    assert "Báo cáo thường niên 2025_CII_VIE.pdf" in desc[0]

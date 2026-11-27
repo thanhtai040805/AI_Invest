@@ -446,6 +446,159 @@ async def test_input_builder_slots_page_anchors_and_fail_closed_ocr():
     assert built.excluded_pages[3] == "PR_LETTER"
 
 
+@pytest.mark.asyncio
+async def test_llm_toc_router_overclaimed_bctc_sanitized_by_deterministic_anchor():
+    """Regression for PNJ & FTS: LLM over-claimed BCTC_AUDITED spans yield to deterministic FS anchor."""
+    from sag_api.research.input_builder import TocSectionSpan
+
+    # Build 60-page digital BCTN: pages 1..44 narrative BCTN_CORE, pages 45..60 embedded audited BCTC
+    core_page = (
+        "Báo cáo thường niên năm 2025. Đánh giá kết quả kinh doanh mảng bán lẻ trang sức, "
+        "doanh thu thuần tăng trưởng 15% và kế hoạch mở rộng hệ thống cửa hàng năm 2026."
+    )
+    fs_page = (
+        "BÁO CÁO TÀI CHÍNH HỢP NHẤT ĐÃ KIỂM TOÁN - Mẫu số B 01-DN. "
+        "Bảng cân đối kế toán hợp nhất. Thuyết minh báo cáo tài chính hợp nhất. "
+        "100 12.500.000 11.200.000 110 3.400.000 2.900.000 120 1.800.000 1.500.000 "
+        "200 15.600.000 14.100.000 300 9.100.000 8.200.000 400 6.500.000 5.900.000."
+    )
+    pdf_bytes = _make_pdf_bytes([core_page] * 44 + [fs_page] * 16, utf8_html=True)
+
+    class _OverclaimingTocRouter:
+        async def route_toc(self, **kwargs):
+            # Buggy LLM output claiming pages 2..60 are all BCTC_AUDITED (exact PNJ bug!)
+            return [
+                TocSectionSpan(
+                    slot="BCTC_AUDITED",
+                    title="Báo cáo tài chính hợp nhất",
+                    printed_start=2,
+                    printed_end=60,
+                    pdf_start=2,
+                    pdf_end=60,
+                    confidence=0.9,
+                    source="LLM_TOC_ROUTER",
+                )
+            ]
+
+    built = await build_research_sub_documents(
+        ticker="PNJ",
+        pdf_bytes=pdf_bytes,
+        doc_type="BCTN",
+        published_date=date(2026, 4, 15),
+        title="Báo cáo thường niên năm 2025",
+        toc_router=_OverclaimingTocRouter(),
+    )
+    slots = {s.sub_doc_slot: s for s in built.sub_documents}
+    assert "BCTN_CORE" in slots
+    assert "BCTC_AUDITED" in slots
+    assert len(slots["BCTN_CORE"].page_numbers) >= 40
+    assert min(slots["BCTC_AUDITED"].page_numbers) >= 44
+    assert "BCTN_CORE" not in built.missing_core_slots
+
+
+@pytest.mark.asyncio
+async def test_pass1_incomplete_toc_spans_rejected_and_falls_back_to_full_coverage_ocr():
+    """Regression for ANV/DCL/DCM/DGC/GAS/LDG/PVD/TPB/VOS/VSC: Pass-1 TOC spanning only p.1..8 must not skip Pass-2."""
+    from sag_api.research.input_builder import TocSectionSpan
+
+    scan_60 = _make_pdf_bytes([""] * 60)
+
+    class _HollowTocRouter:
+        async def route_toc(self, **kwargs):
+            # LLM only saw pages 1..8 (no full TOC) and emitted span 1..8!
+            return [
+                TocSectionSpan(
+                    slot="BCTN_CORE",
+                    title="I. Thông tin chung",
+                    printed_start=1,
+                    printed_end=8,
+                    confidence=0.9,
+                    source="LLM_TOC_ROUTER",
+                )
+            ]
+
+    class _CountingOcr:
+        def __init__(self) -> None:
+            self.calls: list[list[int]] = []
+
+        async def ocr_pdf_pages(
+            self, pdf_bytes: bytes, page_numbers: list[int], *, language: str = "vi"
+        ) -> dict[int, str]:
+            self.calls.append(list(page_numbers))
+            return {
+                p: (
+                    f"Báo cáo thường niên năm 2025 trang {p}. Kết quả hoạt động kinh doanh "
+                    "doanh thu thuần đạt 8.400 tỷ đồng và kế hoạch đầu tư CAPEX năm 2026."
+                )
+                for p in page_numbers
+            }
+
+    ocr = _CountingOcr()
+    built = await build_research_sub_documents(
+        ticker="DCM",
+        pdf_bytes=scan_60,
+        doc_type="BCTN",
+        published_date=date(2026, 4, 15),
+        title="Báo cáo thường niên năm 2025",
+        ocr_adapter=ocr,
+        toc_router=_HollowTocRouter(),
+    )
+    assert len(ocr.calls) == 2
+    assert built.ocr_pages_used == 60
+    assert built.localization_method == "NATIVE_4CLASS_DETERMINISTIC"
+    slots = {s.sub_doc_slot: s for s in built.sub_documents}
+    assert "BCTN_CORE" in slots
+    assert len(slots["BCTN_CORE"].page_numbers) >= 55
+
+
+@pytest.mark.asyncio
+async def test_mostly_scanned_bctn_with_few_bad_font_pages_not_nuked_by_trailing_scan_block():
+    """Regression for POW (0 dig, 2 BAD_FONT, 58 SCAN): must route to Branch C and never defer 58/60 pages."""
+    from sag_api.research.input_builder import _detect_trailing_scan_block
+
+    # Unit check on _detect_trailing_scan_block preconditions:
+    # 1. Mostly scanned (POW profile: 0 digital, 58/60 scan) -> MUST return []!
+    assert _detect_trailing_scan_block(list(range(3, 61)), 60, digital_clean_pages=[]) == []
+    # 2. Genuine digital BCTN (p.1..40 digital) + trailing scanned BCTC (p.41..60, HPG profile) -> detected!
+    assert _detect_trailing_scan_block(
+        list(range(41, 61)), 60, digital_clean_pages=list(range(1, 41))
+    ) == list(range(41, 61))
+
+    # Full end-to-end build check on POW-like PDF with skip_trailing_scanned_bctc=True
+    corrupt = "B\ufffd\ufffdo c\ufffdo (cid:22)(cid:23)(cid:24)(cid:25) " * 18
+    pow_like_pdf = _make_pdf_bytes([corrupt, corrupt] + [""] * 58, utf8_html=True)
+
+    insp = inspect_pdf_bytes(pow_like_pdf, source_url="POW_BCTN_2025.pdf", doc_type="BCTN")
+    assert insp.doc_class == "SCAN"
+    assert insp.routed_branch == "C"
+
+    class _PowFakeOcr:
+        async def ocr_pdf_pages(
+            self, pdf_bytes: bytes, page_numbers: list[int], *, language: str = "vi"
+        ) -> dict[int, str]:
+            return {
+                p: (
+                    f"Báo cáo thường niên Tổng công ty Điện lực năm 2025 trang {p}. "
+                    "Sản lượng điện thương phẩm đạt 16 tỷ kWh, doanh thu thuần 30.000 tỷ đồng."
+                )
+                for p in page_numbers
+            }
+
+    built = await build_research_sub_documents(
+        ticker="POW",
+        pdf_bytes=pow_like_pdf,
+        doc_type="BCTN",
+        published_date=date(2026, 4, 20),
+        title="Báo cáo thường niên năm 2025",
+        ocr_adapter=_PowFakeOcr(),
+        skip_trailing_scanned_bctc=True,
+    )
+    slots = {s.sub_doc_slot: s for s in built.sub_documents}
+    assert "BCTN_CORE" in slots
+    assert len(slots["BCTN_CORE"].page_numbers) >= 55
+    assert "DEFERRED_TO_STANDALONE_BCTC" not in built.excluded_pages.values()
+
+
 # ── Dual-Representation Financial Table Engine Tests ──────────────────────────
 
 

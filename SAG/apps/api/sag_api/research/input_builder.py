@@ -50,7 +50,7 @@ from sag_api.research.input_inspector import (
     ZipExtractionError,
     inspect_pdf_bytes,
     normalize_ctg_font_quirks,
-    unwrap_pdf_payload,
+    unwrap_pdf_candidates,
 )
 from sag_api.research.input_selector import (
     MissingPublishedDateError,
@@ -1504,6 +1504,7 @@ def _map_spans_to_pdf_pages(
 ) -> dict[int, TocSectionSpan]:
     """Expand `TocSectionSpan` list into a 1-based `pdf_page -> TocSectionSpan` lookup table."""
     page_map: dict[int, TocSectionSpan] = {}
+    min_bctc_overlap_pno = max(15, int(max_pages * 0.25))
     for sp in spans:
         if already_pdf_indexed and sp.pdf_start is not None and sp.pdf_end is not None:
             p_start = max(1, min(max_pages, sp.pdf_start))
@@ -1517,12 +1518,132 @@ def _map_spans_to_pdf_pages(
             sp.pdf_end = p_end
         for pno in range(p_start, p_end + 1):
             existing = page_map.get(pno)
-            # Never let EXCLUDE overwrite BCTC_AUDITED or BCTN_CORE on a boundary page
-            if existing is None or (existing.slot == "EXCLUDE" and sp.slot != "EXCLUDE") or (
-                sp.slot == "BCTC_AUDITED" and existing.slot != "BCTC_AUDITED"
+            # Never let EXCLUDE overwrite BCTC_AUDITED or BCTN_CORE on a boundary page,
+            # and never let an early BCTC_AUDITED span overwrite BCTN_CORE in the first 25% of a report.
+            if (
+                existing is None
+                or (existing.slot == "EXCLUDE" and sp.slot != "EXCLUDE")
+                or (
+                    sp.slot == "BCTC_AUDITED"
+                    and existing.slot != "BCTC_AUDITED"
+                    and pno >= min_bctc_overlap_pno
+                )
             ):
                 page_map[pno] = sp
     return page_map
+
+
+def _validate_toc_spans_for_pass2_ocr(
+    section_spans: list[TocSectionSpan],
+    *,
+    span_page_map: dict[int, TocSectionSpan],
+    pass1_pages: list[int],
+    total_pages: int,
+    doc_type: str,
+) -> tuple[bool, str]:
+    """Deterministic post-validator preventing hollow Pass-1-only OCR truncation on large BCTNs.
+
+    When Pass-1 OCR (`pages 1..8`) contains no full Table of Contents, LLM/deterministic TOC routers
+    can emit spans covering only pages `1..8`, causing Pass-2 OCR to run 0 pages and persist an
+    8-page stub as `READY` for a 60–241 page BCTN. This invariant forces fallback to full-coverage OCR.
+    """
+    if not section_spans or not span_page_map:
+        return False, "TOC_EMPTY_SPANS"
+    if doc_type not in ("BCTN", "CAO_BACH") or total_pages < 30:
+        return True, "OK"
+
+    mapped_pages = sorted(span_page_map.keys())
+    max_mapped = mapped_pages[-1]
+    non_excl_pages = [p for p, sp in span_page_map.items() if sp.slot != "EXCLUDE"]
+    if not non_excl_pages:
+        return False, "TOC_ALL_EXCLUDED"
+
+    # Real BCTN Tables of Contents span well past the midpoint of the PDF
+    if max_mapped < int(total_pages * 0.55):
+        return False, f"TOC_MAX_PAGE_TOO_LOW({max_mapped}/{total_pages})"
+
+    pass1_set = set(pass1_pages)
+    uncovered_non_excl = [p for p in non_excl_pages if p not in pass1_set]
+    min_expected_non_excl = max(15, int(total_pages * 0.18))
+    if len(uncovered_non_excl) < 8 and len(non_excl_pages) < min_expected_non_excl:
+        return (
+            False,
+            f"TOC_HOLLOW_PASS2_COVERAGE(uncovered={len(uncovered_non_excl)},kept={len(non_excl_pages)}/{total_pages})",
+        )
+
+    return True, "OK"
+
+
+def _sanitize_bctn_llm_bctc_spans(
+    span_by_pdf_page: dict[int, TocSectionSpan],
+    *,
+    cleaned_page_texts: dict[int, str],
+    embedded_bctc_start: int | None,
+    embedded_bctc_end: int | None,
+    total_pages: int,
+) -> int:
+    """Enforce deterministic FS-anchor authority over LLM/TOC `BCTC_AUDITED` spans inside a `BCTN`.
+
+    Popping over-claimed `BCTC_AUDITED` entries returns those pages to Path 3 deterministic 3-Way
+    Triage (`BCTN_CORE` / `BCTN_PR` / `ESG`) instead of swallowing an entire BCTN into `BCTC_AUDITED`.
+    """
+    if not span_by_pdf_page:
+        return 0
+    removed = 0
+
+    if embedded_bctc_start is not None and embedded_bctc_end is not None:
+        early_bctc_pages = [
+            p
+            for p, sp in span_by_pdf_page.items()
+            if sp.slot == "BCTC_AUDITED" and p < embedded_bctc_start
+        ]
+        # Keep early BCTC pages ONLY if they are overwhelmingly verified FS pages (e.g. a standalone
+        # BCTC PDF misfiled under Vietstock's BCTN category), never on narrative BCTN chapters.
+        if early_bctc_pages:
+            early_strong = sum(
+                1 for p in early_bctc_pages if _is_strong_fs_page(cleaned_page_texts.get(p, ""))
+            )
+            early_is_verified_fs = len(early_bctc_pages) >= 4 and early_strong >= max(
+                4, int(len(early_bctc_pages) * 0.50)
+            )
+            if not early_is_verified_fs:
+                for p in early_bctc_pages:
+                    if p >= embedded_bctc_start - 3 and _is_strong_fs_page(
+                        cleaned_page_texts.get(p, "")
+                    ):
+                        continue
+                    span_by_pdf_page.pop(p, None)
+                    removed += 1
+
+        late_bctc_pages = [
+            p
+            for p, sp in span_by_pdf_page.items()
+            if sp.slot == "BCTC_AUDITED" and p > embedded_bctc_end
+        ]
+        for p in late_bctc_pages:
+            if not _is_strong_fs_page(cleaned_page_texts.get(p, "")):
+                span_by_pdf_page.pop(p, None)
+                removed += 1
+        return removed
+
+    # No deterministic embedded BCTC was detected: verify any large/early LLM BCTC_AUDITED claim
+    bctc_pages = sorted(p for p, sp in span_by_pdf_page.items() if sp.slot == "BCTC_AUDITED")
+    if not bctc_pages:
+        return 0
+    min_bctc_start = max(15, int(total_pages * 0.25))
+    overlaps_early = bctc_pages[0] < min_bctc_start
+    dominates_doc = len(cleaned_page_texts) >= 20 and len(bctc_pages) > int(
+        len(cleaned_page_texts) * 0.75
+    )
+    if overlaps_early or dominates_doc or len(bctc_pages) >= 4:
+        strong_hits = sum(
+            1 for p in bctc_pages if _is_strong_fs_page(cleaned_page_texts.get(p, ""))
+        )
+        if strong_hits < max(2, int(len(bctc_pages) * 0.20)):
+            for p in bctc_pages:
+                span_by_pdf_page.pop(p, None)
+                removed += 1
+    return removed
 
 
 def _extract_digital_page_text(
@@ -1780,8 +1901,22 @@ def _slice_pdf_pages(pdf_bytes: bytes, page_numbers: list[int]) -> bytes:
         src.close()
 
 
-def _detect_trailing_scan_block(scan_pages: list[int], total_pages: int) -> list[int]:
-    """Detect a contiguous trailing scanned BCTC attached to a digital BCTN (e.g. HPG p.90–141)."""
+def _detect_trailing_scan_block(
+    scan_pages: list[int],
+    total_pages: int,
+    *,
+    digital_clean_pages: list[int] | None = None,
+) -> list[int]:
+    """Detect a contiguous trailing scanned BCTC attached to a predominantly-digital BCTN (e.g. HPG p.90–141).
+
+    Strict preconditions prevent mistaking a mostly-scanned/BAD_FONT BCTN (e.g. POW 0-dig/2-bad/97-scan)
+    for a trailing BCTC appendix:
+    - Trailing block must have >= 15 scan pages in a >= 30 page document.
+    - Block must start at or after `max(20, int(total_pages * 0.35))`.
+    - Block must not exceed `65%` of total document pages.
+    - When `digital_clean_pages` is provided, the prefix before `block[0]` must be predominantly
+      digital (`>= 15` digital pages and `>= 50%` of prefix pages).
+    """
     if len(scan_pages) < 15 or total_pages < 30:
         return []
     ordered = sorted(set(scan_pages))
@@ -1794,7 +1929,19 @@ def _detect_trailing_scan_block(scan_pages: list[int], total_pages: int) -> list
         else:
             break
     block.reverse()
-    return block if len(block) >= 15 else []
+    if len(block) < 15:
+        return []
+    min_start = max(20, int(total_pages * 0.35))
+    if block[0] < min_start:
+        return []
+    if len(block) > int(total_pages * 0.65):
+        return []
+    if digital_clean_pages is not None:
+        prefix_len = max(1, block[0] - 1)
+        prefix_dig = sum(1 for p in digital_clean_pages if 1 <= p < block[0])
+        if prefix_dig < 15 or prefix_dig < prefix_len * 0.50:
+            return []
+    return block
 
 
 def _calibrate_branch_c_from_ocr(
@@ -1878,9 +2025,7 @@ async def build_research_sub_documents(
     )
 
     try:
-        unwrapped_bytes, _is_zip, _chosen_entry, _zip_entries = unwrap_pdf_payload(
-            pdf_bytes, doc_type=canonical_doc_type
-        )
+        candidates = unwrap_pdf_candidates(pdf_bytes, doc_type=canonical_doc_type)
     except ZipExtractionError as exc:
         if "EXCLUDED_FULL_ENGLISH_DOCUMENT" in str(exc):
             raise InputBuildError(
@@ -1888,7 +2033,75 @@ async def build_research_sub_documents(
             ) from exc
         raise InputBuildError(f"Archive extraction failed for {ticker}: {exc}") from exc
 
-    inspection = inspect_pdf_bytes(pdf_bytes, source_url=source_url, doc_type=canonical_doc_type)
+    # Archive Candidate Fallback (No Premature Tombstone): if candidate #1 inside a multi-PDF archive
+    # turns out to be full-English (digital or via Pass-1 OCR canary), try remaining candidates first.
+    last_english_exc: InputBuildError | None = None
+    for cand_idx, (cand_bytes, cand_is_zip, cand_entry, cand_entries) in enumerate(candidates[:4]):
+        try:
+            return await _build_unwrapped_research_sub_documents(
+                ticker=ticker,
+                unwrapped_bytes=cand_bytes,
+                is_archive=cand_is_zip,
+                chosen_entry=cand_entry,
+                archive_entries=cand_entries,
+                canonical_doc_type=canonical_doc_type,
+                published_date=published_date,
+                resolved_fy=resolved_fy,
+                resolved_fq=resolved_fq,
+                valid_from_dt=valid_from_dt,
+                title=title,
+                source_url=source_url,
+                ocr_adapter=ocr_adapter,
+                toc_router=toc_router,
+                toc_scan_limit=toc_scan_limit,
+                max_targeted_ocr_pages=max_targeted_ocr_pages,
+                max_bctc_ocr_pages=max_bctc_ocr_pages,
+                keep_all_bctc_notes=keep_all_bctc_notes,
+                skip_trailing_scanned_bctc=skip_trailing_scanned_bctc,
+            )
+        except InputBuildError as exc:
+            if "EXCLUDED_FULL_ENGLISH" in str(exc) and cand_idx + 1 < min(len(candidates), 4):
+                log.warning(
+                    "Archive candidate #%d (%s) for %s (%s) was full-English; falling back to next candidate",
+                    cand_idx + 1,
+                    cand_entry,
+                    ticker,
+                    canonical_doc_type,
+                )
+                last_english_exc = exc
+                continue
+            raise
+    assert last_english_exc is not None
+    raise last_english_exc
+
+
+async def _build_unwrapped_research_sub_documents(
+    *,
+    ticker: str,
+    unwrapped_bytes: bytes,
+    is_archive: bool,
+    chosen_entry: str | None,
+    archive_entries: list[str],
+    canonical_doc_type: str,
+    published_date: date,
+    resolved_fy: int,
+    resolved_fq: int,
+    valid_from_dt: datetime,
+    title: str = "",
+    source_url: str = "",
+    ocr_adapter: OcrAdapterProtocol | None = None,
+    toc_router: TocRouterProtocol | None = None,
+    toc_scan_limit: int = 5,
+    max_targeted_ocr_pages: int = 200,
+    max_bctc_ocr_pages: int = 320,
+    keep_all_bctc_notes: bool = True,
+    skip_trailing_scanned_bctc: bool = False,
+) -> ResearchInputBuildResult:
+    inspection = inspect_pdf_bytes(unwrapped_bytes, source_url=source_url, doc_type=canonical_doc_type)
+    if is_archive:
+        inspection.is_zip = True
+        inspection.chosen_entry = chosen_entry
+        inspection.zip_entries = list(archive_entries)
     if inspection.doc_class == "EXCLUDED_ENGLISH" or inspection.error == "EXCLUDED_FULL_ENGLISH_DOCUMENT":
         raise InputBuildError(
             f"EXCLUDED_FULL_ENGLISH_DOCUMENT for {ticker} ({canonical_doc_type})"
@@ -2069,13 +2282,43 @@ async def build_research_sub_documents(
                     span_page_map = _map_spans_to_pdf_pages(
                         section_spans, calibration=calibration, max_pages=n_pages
                     )
-                    target_pages = sorted(
-                        pno for pno, sp in span_page_map.items() if sp.slot != "EXCLUDE"
+                    toc_ok, toc_reason = _validate_toc_spans_for_pass2_ocr(
+                        section_spans,
+                        span_page_map=span_page_map,
+                        pass1_pages=toc_pages,
+                        total_pages=n_pages,
+                        doc_type=canonical_doc_type,
                     )
+                    if not toc_ok:
+                        log.warning(
+                            "Rejecting incomplete %s TOC spans for %s (%dp, reason=%s); "
+                            "falling back to full-coverage OCR",
+                            localization_method,
+                            ticker,
+                            n_pages,
+                            toc_reason,
+                        )
+                        section_spans = []
+                        localization_method = "NATIVE_4CLASS_DETERMINISTIC"
+                        target_pages = []
+                    else:
+                        target_pages = sorted(
+                            pno for pno, sp in span_page_map.items() if sp.slot != "EXCLUDE"
+                        )
                 else:
                     target_pages = parse_toc_target_pages(
                         toc_joined, max_pages=n_pages, calibration=calibration
                     )
+                    if (
+                        canonical_doc_type in ("BCTN", "CAO_BACH")
+                        and n_pages >= 30
+                        and target_pages
+                        and (
+                            max(target_pages) < int(n_pages * 0.55)
+                            or len([p for p in target_pages if p not in toc_pages]) < 8
+                        )
+                    ):
+                        target_pages = []
 
                 if not target_pages:
                     target_pages = [
@@ -2151,11 +2394,19 @@ async def build_research_sub_documents(
                     two_col_crops=inspection.bilingual_two_col_crops,
                 )
 
-            trailing_scanned_bctc_pages = [
-                p
-                for p in _detect_trailing_scan_block(inspection.scan_page_numbers, n_pages)
-                if p not in pre_english_drop_set
-            ]
+            trailing_scanned_bctc_pages = (
+                [
+                    p
+                    for p in _detect_trailing_scan_block(
+                        inspection.scan_page_numbers,
+                        n_pages,
+                        digital_clean_pages=inspection.digital_clean_page_numbers,
+                    )
+                    if p not in pre_english_drop_set
+                ]
+                if canonical_doc_type == "BCTN"
+                else []
+            )
 
             if skip_trailing_scanned_bctc and trailing_scanned_bctc_pages:
                 trailing_drop_set = set(trailing_scanned_bctc_pages)
@@ -2241,18 +2492,38 @@ async def build_research_sub_documents(
                             sp_map = _map_spans_to_pdf_pages(
                                 section_spans, calibration=calibration, max_pages=n_pages
                             )
-                            localized_targets = [
-                                p
-                                for p in must_ocr
-                                if p not in page_texts
-                                and (p in sp_map and sp_map[p].slot != "EXCLUDE")
-                            ]
-                            if localized_targets:
-                                must_ocr = localized_targets
-                                if any(sp.slot == "BCTC_AUDITED" for sp in section_spans):
-                                    ocr_cap = max(ocr_cap, max_bctc_ocr_pages)
-                            else:
+                            toc_ok, toc_reason = _validate_toc_spans_for_pass2_ocr(
+                                section_spans,
+                                span_page_map=sp_map,
+                                pass1_pages=pass1_toc_pages,
+                                total_pages=n_pages,
+                                doc_type=canonical_doc_type,
+                            )
+                            if not toc_ok:
+                                log.warning(
+                                    "Rejecting incomplete %s BAD_FONT TOC spans for %s (%dp, reason=%s); "
+                                    "falling back to full-coverage OCR",
+                                    localization_method,
+                                    ticker,
+                                    n_pages,
+                                    toc_reason,
+                                )
+                                section_spans = []
+                                localization_method = "NATIVE_4CLASS_DETERMINISTIC"
                                 must_ocr = [p for p in must_ocr if p not in page_texts]
+                            else:
+                                localized_targets = [
+                                    p
+                                    for p in must_ocr
+                                    if p not in page_texts
+                                    and (p in sp_map and sp_map[p].slot != "EXCLUDE")
+                                ]
+                                if localized_targets:
+                                    must_ocr = localized_targets
+                                    if any(sp.slot == "BCTC_AUDITED" for sp in section_spans):
+                                        ocr_cap = max(ocr_cap, max_bctc_ocr_pages)
+                                else:
+                                    must_ocr = [p for p in must_ocr if p not in page_texts]
                         else:
                             must_ocr = [p for p in must_ocr if p not in page_texts]
 
@@ -2361,8 +2632,13 @@ async def build_research_sub_documents(
         if bctc_span is not None:
             embedded_bctc_start, embedded_bctc_end = bctc_span
         elif trailing_scanned_bctc_pages:
-            # Only set if those trailing scanned pages were actually OCR'd into cleaned_page_texts
-            if any(p in cleaned_page_texts for p in trailing_scanned_bctc_pages):
+            # Only fall back to trailing scan span if OCR'd trailing pages actually show FS/audit evidence
+            fs_hits = sum(
+                1
+                for p in trailing_scanned_bctc_pages
+                if p in cleaned_page_texts and _is_strong_fs_page(cleaned_page_texts[p])
+            )
+            if fs_hits >= 2:
                 embedded_bctc_start = trailing_scanned_bctc_pages[0]
                 embedded_bctc_end = trailing_scanned_bctc_pages[-1]
 
@@ -2376,6 +2652,23 @@ async def build_research_sub_documents(
         if section_spans
         else {}
     )
+    if canonical_doc_type == "BCTN" and span_by_pdf_page:
+        sanitized_n = _sanitize_bctn_llm_bctc_spans(
+            span_by_pdf_page,
+            cleaned_page_texts=cleaned_page_texts,
+            embedded_bctc_start=embedded_bctc_start,
+            embedded_bctc_end=embedded_bctc_end,
+            total_pages=n_pages_total,
+        )
+        if sanitized_n > 0:
+            log.warning(
+                "Sanitized %d over-claimed BCTC_AUDITED TOC span pages for %s (%dp, embedded=%s..%s)",
+                sanitized_n,
+                ticker,
+                n_pages_total,
+                embedded_bctc_start,
+                embedded_bctc_end,
+            )
 
     slot_chunks: dict[str, list[tuple[int, str]]] = {}
     pr_chunks: list[str] = []
@@ -2596,10 +2889,13 @@ async def build_research_sub_documents(
         if bctc_bundle is None or not _FINANCIAL_SHIELD_RE.search(bctc_bundle.markdown_content):
             audited_fs_missing_warning = True
             build_res.missing_core_slots.append("BCTC_AUDITED")
-    elif canonical_doc_type == "BCTN" and "BCTC_AUDITED" not in slot_chunks:
-        build_res.missing_core_slots.append("BCTC_AUDITED")
-        if trailing_scanned_bctc_pages and ocr_adapter is None:
-            audited_fs_missing_warning = True
+    elif canonical_doc_type == "BCTN":
+        if "BCTC_AUDITED" not in slot_chunks:
+            build_res.missing_core_slots.append("BCTC_AUDITED")
+            if trailing_scanned_bctc_pages and ocr_adapter is None:
+                audited_fs_missing_warning = True
+        if n_pages_total >= 40 and "BCTN_CORE" not in slot_chunks:
+            build_res.missing_core_slots.append("BCTN_CORE")
 
     # Compute transparent Coverage Audit metrics
     dropped_counter: Counter[str] = Counter()

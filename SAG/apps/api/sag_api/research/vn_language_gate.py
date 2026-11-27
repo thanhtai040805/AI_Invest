@@ -253,7 +253,19 @@ _VN_UNACCENTED_META_CUE_RE = re.compile(
     r"(?:\bbctc\b|\bbctn\b|bao[\s_\-]*cao|nghi[\s_\-]*quyet|to[\s_\-]*trinh|"
     r"tai[\s_\-]*lieu|dhdcd|dai[\s_\-]*hoi|giai[\s_\-]*trinh|hop[\s_\-]*nhat|"
     r"cong[\s_\-]*ty[\s_\-]*me|rieng[\s_\-]*le|kiem[\s_\-]*toan|soat[\s_\-]*xet|"
-    r"ban[\s_\-]*cao[\s_\-]*bach|co[\s_\-]*tuc)",
+    r"ban[\s_\-]*cao[\s_\-]*bach|co[\s_\-]*tuc|bien[\s_\-]*ban|thuong[\s_\-]*nien|"
+    r"thuyet[\s_\-]*minh)",
+    re.IGNORECASE,
+)
+_ARCHIVE_EN_FILING_PHRASE_RE = re.compile(
+    r"(?:\bannual\s+reports?\b|\bfinancial\s+statements?\b|"
+    r"\b(?:consolidated|separate|interim|audited|quarterly)\s+financial\b|"
+    r"\bsustainability\s+reports?\b|\bcorporate\s+governance\s+reports?\b|"
+    r"\b(?:agm|egm)\b|\bgeneral\s+meeting(?:\s+of\s+shareholders)?\b|"
+    r"\b(?:resolution|minutes)\s+(?:of|and)\b|"
+    r"\b(?:resolution|minutes)\b(?=.*\b(?:shareholders?|meeting|20\d{2})\b)|"
+    r"\binformation\s+disclosure\b|\bexplanation\s+(?:of|for|on)\b|"
+    r"\benglish\s+version\b)",
     re.IGNORECASE,
 )
 _EXPLICIT_EN_FILE_SUFFIX_RE = re.compile(
@@ -293,8 +305,10 @@ _ARCHIVE_PART_RE = re.compile(
 _RAR_MAGIC_V4 = b"Rar!\x1a\x07\x00"
 _RAR_MAGIC_V5 = b"Rar!\x1a\x07\x01\x00"
 
-DEFAULT_MAX_ARCHIVE_BYTES = 150 * 1024 * 1024
+DEFAULT_MAX_ARCHIVE_BYTES = 350 * 1024 * 1024
 DEFAULT_MAX_ARCHIVE_ENTRIES = 64
+
+ArchiveMemberLangClass = Literal["BILINGUAL", "EXPLICIT_VI", "EXPLICIT_EN", "NEUTRAL"]
 
 
 class ArchiveExtractionError(ValueError):
@@ -633,6 +647,70 @@ def _validate_archive_member_name(filename: str) -> None:
 
 
 @functools.lru_cache(maxsize=1)
+def _resolve_7z_binary() -> str | None:
+    """Locate full `7z` / `7zz` binary (supporting RAR5 + UTF-8; excludes `7zr` which is .7z-only)."""
+    candidates: list[str] = []
+    for name in ("7z", "7zz"):
+        found = shutil.which(name)
+        if found and found not in candidates:
+            candidates.append(found)
+    local_app = os.environ.get("LOCALAPPDATA", "")
+    for path in (
+        r"C:\Program Files\7-Zip\7z.exe",
+        r"C:\Program Files (x86)\7-Zip\7z.exe",
+        os.path.join(local_app, "Programs", "7-Zip", "7z.exe") if local_app else "",
+    ):
+        if path and os.path.isfile(path) and path not in candidates:
+            candidates.append(path)
+    for binary in candidates:
+        try:
+            proc = subprocess.run(
+                [binary, "i"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            info = f"{proc.stdout} {proc.stderr}".lower()
+            if "rar5" in info or "rar" in info:
+                return binary
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+@functools.lru_cache(maxsize=1)
+def _resolve_unrar_binary() -> str | None:
+    """Locate `unrar` / `UnRAR` binary capable of reading RAR4/RAR5 archives with UTF-8 filenames."""
+    candidates: list[str] = []
+    for name in ("unrar", "UnRAR"):
+        found = shutil.which(name)
+        if found and found not in candidates:
+            candidates.append(found)
+    for path in (
+        r"C:\Program Files\WinRAR\UnRAR.exe",
+        r"C:\Program Files (x86)\WinRAR\UnRAR.exe",
+    ):
+        if os.path.isfile(path) and path not in candidates:
+            candidates.append(path)
+    for binary in candidates:
+        try:
+            proc = subprocess.run(
+                [binary],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            ver = f"{proc.stdout} {proc.stderr}".lower()
+            if "unrar" in ver or "rarlab" in ver:
+                return binary
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+@functools.lru_cache(maxsize=1)
 def _resolve_bsdtar_binary() -> str | None:
     """Locate `bsdtar` (or Windows/libarchive `tar`) capable of reading `.rar` archives safely."""
     candidates: list[str] = []
@@ -661,20 +739,223 @@ def _resolve_bsdtar_binary() -> str | None:
     return None
 
 
+def _stream_subprocess_bounded(
+    cmd: list[str],
+    *,
+    member_name: str,
+    remaining_bytes: int,
+    timeout_seconds: int = 60,
+    backend_label: str = "RAR",
+) -> bytes:
+    """Run a streaming extraction subprocess with strict uncompressed-byte and wall-clock caps."""
+    ext_proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    buf = io.BytesIO()
+    read_n = 0
+    try:
+        assert ext_proc.stdout is not None
+        while True:
+            chunk = ext_proc.stdout.read(65536)
+            if not chunk:
+                break
+            read_n += len(chunk)
+            if read_n > remaining_bytes:
+                ext_proc.kill()
+                raise ArchiveExtractionError(
+                    f"Uncompressed RAR member {member_name} exceeds remaining budget {remaining_bytes}"
+                )
+            buf.write(chunk)
+        ret = ext_proc.wait(timeout=timeout_seconds)
+        if ret != 0:
+            stderr_txt = (
+                ext_proc.stderr.read().decode("utf-8", errors="replace").strip()
+                if ext_proc.stderr
+                else ""
+            )
+            raise ArchiveExtractionError(
+                f"{backend_label} extraction failed for {member_name}: {stderr_txt or ret}"
+            )
+    finally:
+        if ext_proc.poll() is None:
+            ext_proc.kill()
+    return buf.getvalue()
+
+
+def _read_rar_pdf_members_via_7z(
+    seven_z: str,
+    rar_path: str,
+    *,
+    max_uncompressed_bytes: int,
+    max_entries: int,
+) -> tuple[list[tuple[str, bytes]], list[str]]:
+    list_proc = subprocess.run(
+        [seven_z, "l", "-slt", "-sccUTF-8", "-ba", rar_path],
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    if list_proc.returncode != 0:
+        err_msg = list_proc.stderr.decode("utf-8", errors="replace").strip()
+        out_msg = list_proc.stdout.decode("utf-8", errors="replace").strip()
+        raise ArchiveExtractionError(f"Corrupt RAR archive: {err_msg or out_msg or list_proc.returncode}")
+
+    entries: list[dict[str, str]] = []
+    current: dict[str, str] = {}
+    for raw_ln in list_proc.stdout.decode("utf-8", errors="replace").splitlines():
+        ln = raw_ln.strip()
+        if not ln:
+            if current.get("Path"):
+                entries.append(current)
+            current = {}
+            continue
+        if " = " in ln:
+            k, v = ln.split(" = ", 1)
+            current[k.strip()] = v.strip()
+    if current.get("Path"):
+        entries.append(current)
+
+    if not entries:
+        raise ArchiveExtractionError("Corrupt RAR archive: contains no readable entries")
+    if len(entries) > max_entries:
+        raise ArchiveExtractionError(
+            f"RAR entry count {len(entries)} exceeds limit {max_entries}"
+        )
+
+    pdf_entries: list[tuple[str, int]] = []
+    total_declared = 0
+    for ent in entries:
+        name = ent["Path"]
+        _validate_archive_member_name(name)
+        is_folder = ent.get("Folder") == "+" or name.endswith("/") or name.endswith("\\")
+        if is_folder or name.startswith("__MACOSX"):
+            continue
+        try:
+            decl_sz = int(ent.get("Size") or 0)
+        except ValueError:
+            decl_sz = 0
+        if decl_sz < 0 or decl_sz > max_uncompressed_bytes:
+            raise ArchiveExtractionError(
+                f"RAR member {name} size {decl_sz} exceeds limit {max_uncompressed_bytes}"
+            )
+        total_declared += decl_sz
+        if total_declared > max_uncompressed_bytes:
+            raise ArchiveExtractionError(
+                f"Total RAR uncompressed size exceeds limit {max_uncompressed_bytes}"
+            )
+        if name.lower().endswith(".pdf"):
+            pdf_entries.append((name, decl_sz))
+
+    if not pdf_entries:
+        raise ArchiveExtractionError("RAR archive contains no PDF files")
+
+    remaining = max_uncompressed_bytes
+    extracted: list[tuple[str, bytes]] = []
+    entries_desc: list[str] = []
+    for name, _decl_sz in pdf_entries:
+        # Use explicit UTF-8 listfile so special characters (`@`, `*`, Vietnamese diacritics) never break argv
+        listfile = f"{rar_path}.member.lst"
+        with open(listfile, "w", encoding="utf-8", newline="\n") as lfh:
+            lfh.write(name + "\n")
+        try:
+            blob = _stream_subprocess_bounded(
+                [seven_z, "x", "-so", "-y", "-sccUTF-8", "-scsUTF-8", rar_path, f"@{listfile}"],
+                member_name=name,
+                remaining_bytes=remaining,
+                timeout_seconds=60,
+                backend_label="7z RAR",
+            )
+        finally:
+            try:
+                os.remove(listfile)
+            except OSError:
+                pass
+        remaining -= len(blob)
+        extracted.append((name, blob))
+        entries_desc.append(f"{name} ({len(blob) // 1024}KB)")
+
+    return extracted, entries_desc
+
+
+def _read_rar_pdf_members_via_unrar(
+    unrar: str,
+    rar_path: str,
+    *,
+    max_uncompressed_bytes: int,
+    max_entries: int,
+) -> tuple[list[tuple[str, bytes]], list[str]]:
+    list_proc = subprocess.run(
+        [unrar, "lb", "-scu", rar_path],
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    if list_proc.returncode != 0:
+        err_msg = list_proc.stderr.decode("utf-8", errors="replace").strip()
+        raise ArchiveExtractionError(f"Corrupt RAR archive: {err_msg or list_proc.returncode}")
+
+    raw_names = [
+        ln.strip()
+        for ln in list_proc.stdout.decode("utf-8", errors="replace").splitlines()
+        if ln.strip()
+    ]
+    if not raw_names:
+        raise ArchiveExtractionError("Corrupt RAR archive: contains no readable entries")
+    if len(raw_names) > max_entries:
+        raise ArchiveExtractionError(
+            f"RAR entry count {len(raw_names)} exceeds limit {max_entries}"
+        )
+
+    pdf_names: list[str] = []
+    for name in raw_names:
+        _validate_archive_member_name(name)
+        if name.endswith("/") or name.endswith("\\") or name.startswith("__MACOSX"):
+            continue
+        if name.lower().endswith(".pdf"):
+            pdf_names.append(name)
+
+    if not pdf_names:
+        raise ArchiveExtractionError("RAR archive contains no PDF files")
+
+    remaining = max_uncompressed_bytes
+    extracted: list[tuple[str, bytes]] = []
+    entries_desc: list[str] = []
+    for name in pdf_names:
+        blob = _stream_subprocess_bounded(
+            [unrar, "p", "-inul", rar_path, name],
+            member_name=name,
+            remaining_bytes=remaining,
+            timeout_seconds=60,
+            backend_label="unrar RAR",
+        )
+        remaining -= len(blob)
+        extracted.append((name, blob))
+        entries_desc.append(f"{name} ({len(blob) // 1024}KB)")
+
+    return extracted, entries_desc
+
+
 def _read_rar_pdf_members_bounded(
     data: bytes,
     *,
     max_uncompressed_bytes: int = DEFAULT_MAX_ARCHIVE_BYTES,
     max_entries: int = DEFAULT_MAX_ARCHIVE_ENTRIES,
 ) -> tuple[list[tuple[str, bytes]], list[str]]:
-    """Stream-extract `.pdf` members from a `.rar` archive into memory without writing extracted files to disk."""
+    """Stream-extract `.pdf` members from a `.rar` archive into memory without writing extracted files to disk.
+
+    Multi-backend chain (RAR5 + UTF-8 Vietnamese safe): `7z` -> `unrar` -> `bsdtar`.
+    """
     if len(data) > max_uncompressed_bytes:
         raise ArchiveExtractionError(f"RAR payload size {len(data)} exceeds limit {max_uncompressed_bytes}")
 
+    seven_z = _resolve_7z_binary()
+    unrar = _resolve_unrar_binary()
     bsdtar = _resolve_bsdtar_binary()
-    if bsdtar is None:
+    if seven_z is None and unrar is None and bsdtar is None:
         raise ArchiveExtractionError(
-            "RAR archive detected but libarchive `bsdtar` is unavailable on host."
+            "RAR archive detected but no unpacker (`7z`, `unrar`, or `bsdtar`) is available on host."
         )
 
     with tempfile.TemporaryDirectory(prefix="sag_rar_inspect_") as tmp_dir:
@@ -682,6 +963,23 @@ def _read_rar_pdf_members_bounded(
         with open(rar_path, "wb") as fh:
             fh.write(data)
 
+        if seven_z is not None:
+            return _read_rar_pdf_members_via_7z(
+                seven_z,
+                rar_path,
+                max_uncompressed_bytes=max_uncompressed_bytes,
+                max_entries=max_entries,
+            )
+
+        if unrar is not None:
+            return _read_rar_pdf_members_via_unrar(
+                unrar,
+                rar_path,
+                max_uncompressed_bytes=max_uncompressed_bytes,
+                max_entries=max_entries,
+            )
+
+        assert bsdtar is not None
         list_proc = subprocess.run(
             [bsdtar, "-tf", rar_path],
             capture_output=True,
@@ -690,6 +988,11 @@ def _read_rar_pdf_members_bounded(
         )
         if list_proc.returncode != 0:
             err_msg = list_proc.stderr.decode("utf-8", errors="replace").strip()
+            if "empty or unreadable filename" in err_msg.lower():
+                raise ArchiveExtractionError(
+                    "RAR_UNPACKER_ENCODING_UNSUPPORTED: host bsdtar/tar.exe cannot decode "
+                    "non-ASCII RAR5 filenames; install 7-Zip (`7z`) or `unrar`."
+                )
             raise ArchiveExtractionError(f"Corrupt RAR archive: {err_msg or list_proc.returncode}")
 
         raw_names = [
@@ -719,39 +1022,13 @@ def _read_rar_pdf_members_bounded(
         extracted: list[tuple[str, bytes]] = []
         entries_desc: list[str] = []
         for name in pdf_names:
-            ext_proc = subprocess.Popen(
+            blob = _stream_subprocess_bounded(
                 [bsdtar, "-xOf", rar_path, name],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                member_name=name,
+                remaining_bytes=remaining,
+                timeout_seconds=60,
+                backend_label="bsdtar RAR",
             )
-            buf = io.BytesIO()
-            read_n = 0
-            try:
-                assert ext_proc.stdout is not None
-                while True:
-                    chunk = ext_proc.stdout.read(65536)
-                    if not chunk:
-                        break
-                    read_n += len(chunk)
-                    if read_n > remaining:
-                        ext_proc.kill()
-                        raise ArchiveExtractionError(
-                            f"Uncompressed RAR member {name} exceeds remaining budget {remaining}"
-                        )
-                    buf.write(chunk)
-                ret = ext_proc.wait(timeout=30)
-                if ret != 0:
-                    stderr_txt = (
-                        ext_proc.stderr.read().decode("utf-8", errors="replace").strip()
-                        if ext_proc.stderr
-                        else ""
-                    )
-                    raise ArchiveExtractionError(f"RAR extraction failed for {name}: {stderr_txt or ret}")
-            finally:
-                if ext_proc.poll() is None:
-                    ext_proc.kill()
-
-            blob = buf.getvalue()
             remaining -= len(blob)
             extracted.append((name, blob))
             entries_desc.append(f"{name} ({len(blob) // 1024}KB)")
@@ -759,37 +1036,133 @@ def _read_rar_pdf_members_bounded(
         return extracted, entries_desc
 
 
-def _quick_pdf_member_is_full_english(name: str, pdf_bytes: bytes) -> bool:
-    """Fast check (`<= 4` sample pages, 0 OCR) to detect standalone English PDFs inside a multi-PDF archive."""
+def classify_archive_member_filename(filename: str) -> ArchiveMemberLangClass:
+    """Classify an archive member filename into `BILINGUAL`, `EXPLICIT_VI`, `EXPLICIT_EN`, or `NEUTRAL`.
+
+    Works regardless of date/ticker prefixes (e.g. `20260420 - HDC - 2025 Annual Report.pdf`,
+    `m88_...___fts___resolution_and_minutes_agm_2026.pdf`).
+    """
+    base = unicodedata.normalize("NFC", (filename or "").replace("\\", "/").rsplit("/", 1)[-1].strip())
+    if not base:
+        return "NEUTRAL"
+    stem = re.sub(r"\.pdf$", "", base, flags=re.IGNORECASE)
+    stem_spaced = re.sub(r"[_\-./]+", " ", stem).strip()
+
+    if _BILINGUAL_META_CUE_RE.search(base) or _BILINGUAL_META_CUE_RE.search(stem_spaced):
+        return "BILINGUAL"
+
+    has_vn = bool(
+        _VIET_CHAR_RE.search(base)
+        or _EXPLICIT_VN_FILE_SUFFIX_RE.search(base)
+        or _VN_UNACCENTED_META_CUE_RE.search(stem_spaced)
+    )
+    has_en = bool(
+        _EXPLICIT_EN_FILE_SUFFIX_RE.search(base)
+        or _ARCHIVE_EN_FILING_PHRASE_RE.search(stem_spaced)
+    )
+    if has_vn and has_en:
+        return "BILINGUAL"
+    if has_vn:
+        return "EXPLICIT_VI"
+    if has_en:
+        return "EXPLICIT_EN"
+    return "NEUTRAL"
+
+
+_DIGITAL_SIG_BLOCK_START_RE = re.compile(
+    r"(?:digitally\s+signed\s+by|signed\s+by|ký\s+bởi\s*:|người\s+ký\s*:|"
+    r"\bdn:\s*c=|\bcn=|\boid\.\d|\bserialnumber=|tổ\s+chức\s+xác\s+thực\s*:|"
+    r"văn\s+bản\s+này\s+được\s+xác\s+thực)",
+    re.IGNORECASE,
+)
+
+
+def _strip_signature_stamp_for_lang_probe(text: str) -> str:
+    """Strip Vietnamese CA X.509 digital-signature overlays before quick archive language probing.
+
+    HOSE issuers routinely sign scanned English PDFs with a Vietnamese CA certificate
+    (`Digitally signed by CÔNG TY CỔ PHẦN ... DN: C=VN, S=HÀ NỘI ...`), which injects a short
+    Vietnamese text overlay on page 1 of an otherwise 100% scanned English document.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    if not _DIGITAL_SIG_BLOCK_START_RE.search(raw):
+        return raw
+    # When the entire page text is a short digital-signature stamp overlay (< 700 chars), ignore it
+    if len(raw) < 700 and re.search(
+        r"(?:\bdn:\s*c=|\boid\.\d|digitally\s+signed\s+by|ký\s+bởi\s*:)", raw, re.IGNORECASE
+    ):
+        return ""
+    kept: list[str] = []
+    skip_wrapped_sig = False
+    for raw_ln in raw.splitlines():
+        s = raw_ln.strip()
+        if not s:
+            skip_wrapped_sig = False
+            continue
+        if _DIGITAL_SIG_BLOCK_START_RE.search(s) or re.match(
+            r"^(?:reason|location|date|ngày\s+ký|mst)\s*:", s, re.IGNORECASE
+        ):
+            skip_wrapped_sig = True
+            continue
+        if skip_wrapped_sig and len(s) <= 60:
+            # Skip short wrapped lines of a CA subject name / MST inside the signature box
+            continue
+        skip_wrapped_sig = False
+        kept.append(s)
+    return "\n".join(kept).strip()
+
+
+def _classify_archive_pdf_member(name: str, pdf_bytes: bytes) -> tuple[ArchiveMemberLangClass, bool]:
+    """Classify an archive PDF member using text-layer probe first, then filename cues.
+
+    Returns `(lang_class, is_hard_english)` where `is_hard_english` is True when the PDF is
+    unambiguously English on its own (digital EN text layer or explicit `_EN.pdf` suffix),
+    whereas scanned PDFs with English filing phrases (`EXPLICIT_EN`, `is_hard_english=False`)
+    are dropped whenever a Vietnamese/Bilingual sibling exists in the same archive.
+    """
     base = name.replace("\\", "/").rsplit("/", 1)[-1]
-    is_en_meta, _ = is_standalone_english_metadata("", filename=base)
+    fname_cls = classify_archive_member_filename(base)
+    has_en_suffix = bool(
+        _EXPLICIT_EN_FILE_SUFFIX_RE.search(base)
+        and not _VIET_CHAR_RE.search(base)
+        and fname_cls != "BILINGUAL"
+    )
     if not pdf_bytes.startswith(b"%PDF"):
-        return is_en_meta
+        return fname_cls, (fname_cls == "EXPLICIT_EN" and has_en_suffix)
     try:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     except Exception:  # noqa: BLE001
-        return is_en_meta
+        return fname_cls, (fname_cls == "EXPLICIT_EN" and has_en_suffix)
     try:
         total = len(doc)
         if total == 0:
-            return is_en_meta
+            return fname_cls, (fname_cls == "EXPLICIT_EN" and has_en_suffix)
         sample_idxs = sorted({0, min(1, total - 1), total // 2, total - 1})
         vi_hits = 0
         en_hits = 0
         for idx in sample_idxs:
-            txt = (doc[idx].get_text("text") or "").strip()
+            raw_txt = (doc[idx].get_text("text") or "").strip()
+            txt = _strip_signature_stamp_for_lang_probe(raw_txt)
             info = classify_text_language(txt)
             if info.lang_class in ("VI_PAGE", "BILINGUAL_MIXED_PAGE"):
                 vi_hits += 1
             elif info.lang_class == "EN_PAGE":
                 en_hits += 1
         if vi_hits > 0:
-            return False
+            return ("BILINGUAL" if en_hits > 0 else "EXPLICIT_VI"), False
         if en_hits > 0:
-            return True
-        return is_en_meta
+            return "EXPLICIT_EN", True
+        return fname_cls, (fname_cls == "EXPLICIT_EN" and has_en_suffix)
     finally:
         doc.close()
+
+
+def _quick_pdf_member_is_full_english(name: str, pdf_bytes: bytes) -> bool:
+    """Fast check (`<= 4` sample pages, 0 OCR) to detect standalone English PDFs inside a multi-PDF archive."""
+    lang_cls, is_hard_en = _classify_archive_pdf_member(name, pdf_bytes)
+    return is_hard_en or lang_cls == "EXPLICIT_EN"
 
 
 def _merge_pdf_blobs(
@@ -816,24 +1189,41 @@ def _merge_pdf_blobs(
     return None
 
 
-def select_and_merge_archive_pdfs(
+def rank_archive_pdf_candidates(
     members: list[tuple[str, bytes]],
     entries_desc: list[str],
     *,
     doc_type: str | None = None,
     max_uncompressed_bytes: int = DEFAULT_MAX_ARCHIVE_BYTES,
-) -> tuple[bytes, str, list[str]]:
-    """Filter out full-English & procedural ballot PDFs inside an archive, merging multi-part / AGM proposals."""
+) -> list[tuple[bytes, str, list[str]]]:
+    """Filter English & procedural PDFs inside an archive and return ranked candidate payloads.
+
+    Enforces:
+    1. Hard-English drop (digital EN text layer or `_EN.pdf` suffix) always rejected.
+    2. Sibling-aware EN-phrase drop: scanned PDFs with English filing phrases (`2025 Annual Report.pdf`,
+       `resolution_and_minutes_agm_2026.pdf`) are dropped whenever a Vietnamese/Bilingual sibling exists.
+    3. Language-before-Size precedence: `EXPLICIT_VI`/`BILINGUAL` always outranks `NEUTRAL` regardless of size.
+    4. Candidate fallback list: unchosen non-merged alternatives are appended after the primary choice so
+       downstream OCR canary can fall back to the next member before ever writing a full-archive tombstone.
+    """
     if not members:
         raise ArchiveExtractionError("Archive contains no PDF files")
 
-    vn_or_unknown: list[tuple[str, bytes]] = []
-    en_rejected: list[str] = []
+    classified: list[tuple[str, bytes, ArchiveMemberLangClass, bool]] = []
     for name, blob in members:
-        if _quick_pdf_member_is_full_english(name, blob):
+        lang_cls, is_hard_en = _classify_archive_pdf_member(name, blob)
+        classified.append((name, blob, lang_cls, is_hard_en))
+
+    has_vi_sibling = any(cls in ("EXPLICIT_VI", "BILINGUAL") for _, _, cls, _ in classified)
+
+    vn_or_unknown: list[tuple[str, bytes, ArchiveMemberLangClass]] = []
+    en_rejected: list[str] = []
+    for name, blob, lang_cls, is_hard_en in classified:
+        drop_as_en = is_hard_en or (lang_cls == "EXPLICIT_EN" and (has_vi_sibling or len(classified) > 1))
+        if drop_as_en:
             en_rejected.append(name)
         else:
-            vn_or_unknown.append((name, blob))
+            vn_or_unknown.append((name, blob, lang_cls))
 
     if not vn_or_unknown and en_rejected:
         raise ArchiveExtractionError(
@@ -842,70 +1232,98 @@ def select_and_merge_archive_pdfs(
 
     # Filter procedural ballot/proxy/agenda files if substantive PDFs also exist
     substantive = [
-        (n, b) for n, b in vn_or_unknown if not _PROCEDURAL_ARCHIVE_MEMBER_RE.search(n.lower())
+        (n, b, cls)
+        for n, b, cls in vn_or_unknown
+        if not _PROCEDURAL_ARCHIVE_MEMBER_RE.search(n.lower())
     ]
     pool = substantive if substantive else vn_or_unknown
+    pool_has_vi = any(cls in ("EXPLICIT_VI", "BILINGUAL") for _, _, cls in pool)
 
     norm_dt = (doc_type or "").strip().upper()
     is_agm_pkg = norm_dt in ("NQ_DHDCD", "TAI_LIEU_DHDCD", "AGM_RESOLUTION", "AGM_MATERIALS") or any(
-        any(k in n.lower() for k in ("to_trinh", "tờ trình", "to trinh", "nghi_quyet", "nghị quyết", "dhdcd", "đhđcđ"))
-        for n, _ in pool
+        any(
+            k in n.lower()
+            for k in ("to_trinh", "tờ trình", "to trinh", "nghi_quyet", "nghị quyết", "nghi quyet", "dhdcd", "đhđcđ")
+        )
+        for n, _, _ in pool
     )
     has_both_scopes = any(
-        any(k in n.lower() for k in ("hop_nhat", "hợp nhất", "hop nhat", "hn")) for n, _ in pool
+        any(k in n.lower() for k in ("hop_nhat", "hợp nhất", "hop nhat", "hn")) for n, _, _ in pool
     ) and any(
-        any(k in n.lower() for k in ("rieng", "riêng", "cong_ty_me", "công ty mẹ", "ctm")) for n, _ in pool
+        any(k in n.lower() for k in ("rieng", "riêng", "cong_ty_me", "công ty mẹ", "ctm"))
+        for n, _, _ in pool
     )
 
     # Multi-proposal Vietnamese AGM package: merge Resolution + Board Reports + Proposals in deterministic order
     if is_agm_pkg and not has_both_scopes and len(pool) >= 2:
-        def _agm_sort_key(item: tuple[str, bytes]) -> tuple[int, str]:
-            fl = item[0].lower()
-            if "nghi_quyet" in fl or "nghị quyết" in fl or "nghi quyet" in fl:
-                return (0, fl)
-            if "bao_cao" in fl or "báo cáo" in fl or "bao cao" in fl:
-                return (1, fl)
-            if "to_trinh" in fl or "tờ trình" in fl or "to trinh" in fl:
-                return (2, fl)
-            return (3, fl)
+        agm_merge_pool = (
+            [(n, b) for n, b, cls in pool if cls in ("EXPLICIT_VI", "BILINGUAL")]
+            if pool_has_vi
+            else [(n, b) for n, b, _ in pool]
+        )
+        if len(agm_merge_pool) >= 2:
+            def _agm_sort_key(item: tuple[str, bytes]) -> tuple[int, str]:
+                fl = item[0].lower()
+                if "nghi_quyet" in fl or "nghị quyết" in fl or "nghi quyet" in fl:
+                    return (0, fl)
+                if "bao_cao" in fl or "báo cáo" in fl or "bao cao" in fl:
+                    return (1, fl)
+                if "to_trinh" in fl or "tờ trình" in fl or "to trinh" in fl:
+                    return (2, fl)
+                return (3, fl)
 
-        ordered_agm = sorted(pool, key=_agm_sort_key)
-        merged = _merge_pdf_blobs(ordered_agm, max_uncompressed_bytes=max_uncompressed_bytes)
-        if merged is not None:
-            return merged[0], merged[1], entries_desc
+            ordered_agm = sorted(agm_merge_pool, key=_agm_sort_key)
+            merged = _merge_pdf_blobs(ordered_agm, max_uncompressed_bytes=max_uncompressed_bytes)
+            if merged is not None:
+                return [(merged[0], merged[1], entries_desc)]
+        elif len(agm_merge_pool) == 1:
+            primary_name, primary_blob = agm_merge_pool[0]
+            fallbacks = [
+                (b, n, entries_desc) for n, b, _ in pool if n != primary_name
+            ]
+            return [(primary_blob, primary_name, entries_desc), *fallbacks]
 
-    # Score primary filing (preferring Consolidated over Separate, and substantive reports over charters)
-    scored: list[tuple[int, int, str, bytes]] = []
-    for name, blob in pool:
+    # Score primary filing: Language-before-Size, then Consolidated/Primary over Separate/Charter
+    scored: list[tuple[int, int, int, str, bytes]] = []
+    for name, blob, lang_cls in pool:
         fl = name.lower()
-        is_charter = "dieu_le" in fl or "điều lệ" in fl
-        is_separate = any(k in fl for k in ("rieng", "riêng", "cong_ty_me", "công ty mẹ"))
-        is_consolidated = any(k in fl for k in ("hop_nhat", "hợp nhất", "hop nhat"))
+        fl_spaced = re.sub(r"[_\-./]+", " ", fl)
+        lang_penalty = 0 if lang_cls in ("EXPLICIT_VI", "BILINGUAL") else 1
+        is_charter = "dieu le" in fl_spaced or "điều lệ" in fl
+        is_separate = any(k in fl_spaced for k in ("rieng", "riêng", "cong ty me", "công ty mẹ"))
+        is_consolidated = any(k in fl_spaced for k in ("hop nhat", "hợp nhất"))
         is_priority = any(
-            k in fl
+            k in fl_spaced
             for k in (
-                "nghi_quyet",
+                "nghi quyet",
                 "nghị quyết",
                 "bctn",
+                "bao cao thuong nien",
+                "baocaothuongnien",
+                "báo cáo thường niên",
+                "thuong nien",
+                "thường niên",
                 "bctc",
-                "hop_nhat",
+                "bao cao tai chinh",
+                "báo cáo tài chính",
+                "hop nhat",
                 "hợp nhất",
-                "giai_trinh",
+                "giai trinh",
                 "giải trình",
             )
         )
         if is_charter:
-            penalty = 3
+            doc_penalty = 3
         elif is_separate and has_both_scopes:
-            penalty = 2
+            doc_penalty = 2
         elif is_consolidated or is_priority:
-            penalty = 0
+            doc_penalty = 0
         else:
-            penalty = 1
-        scored.append((penalty, -len(blob), name, blob))
+            doc_penalty = 1
+        scored.append((lang_penalty, doc_penalty, -len(blob), name, blob))
 
-    scored.sort(key=lambda item: (item[0], item[1], item[2]))
-    chosen_name, chosen_blob = scored[0][2], scored[0][3]
+    scored.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+    chosen_name = scored[0][3]
 
     # Sequential multi-part (`*_p1.pdf`, `*_p2.pdf`) stem merge
     base_chosen = chosen_name.replace("\\", "/").rsplit("/", 1)[-1]
@@ -913,7 +1331,7 @@ def select_and_merge_archive_pdfs(
     if part_match:
         target_stem = part_match.group("stem").lower()
         sibling_parts: list[tuple[int, str, bytes]] = []
-        for name, blob in pool:
+        for name, blob, _cls in pool:
             bname = name.replace("\\", "/").rsplit("/", 1)[-1]
             m_sib = _ARCHIVE_PART_RE.match(bname)
             if m_sib and m_sib.group("stem").lower() == target_stem:
@@ -925,6 +1343,29 @@ def select_and_merge_archive_pdfs(
                 max_uncompressed_bytes=max_uncompressed_bytes,
             )
             if merged is not None:
-                return merged[0], merged[1], entries_desc
+                merged_part_names = {n for _, n, _ in sibling_parts}
+                rest = [
+                    (blob, name, entries_desc)
+                    for _, _, _, name, blob in scored
+                    if name not in merged_part_names
+                ]
+                return [(merged[0], merged[1], entries_desc), *rest]
 
-    return chosen_blob, chosen_name, entries_desc
+    return [(blob, name, entries_desc) for _, _, _, name, blob in scored]
+
+
+def select_and_merge_archive_pdfs(
+    members: list[tuple[str, bytes]],
+    entries_desc: list[str],
+    *,
+    doc_type: str | None = None,
+    max_uncompressed_bytes: int = DEFAULT_MAX_ARCHIVE_BYTES,
+) -> tuple[bytes, str, list[str]]:
+    """Filter out full-English & procedural ballot PDFs inside an archive, returning the top candidate."""
+    ranked = rank_archive_pdf_candidates(
+        members,
+        entries_desc,
+        doc_type=doc_type,
+        max_uncompressed_bytes=max_uncompressed_bytes,
+    )
+    return ranked[0]

@@ -27,6 +27,7 @@ from sag_api.research.vn_language_gate import (
     _read_rar_pdf_members_bounded,
     assess_pdf_language,
     is_rar_bytes,
+    rank_archive_pdf_candidates,
     select_and_merge_archive_pdfs,
 )
 
@@ -208,7 +209,7 @@ _FINANCIAL_SHIELD_INSPECT_RE = re.compile(
 )
 _ZIP_PART_RE = re.compile(r"^(?P<stem>.+?)[_\-. ]+(?:p|part)(?P<part>\d{1,2})\.pdf$", re.IGNORECASE)
 
-DEFAULT_MAX_ZIP_BYTES = 300 * 1024 * 1024  # 300 MB uncompressed cap (covers thick HOSE BCTN .zip/.rar archives)
+DEFAULT_MAX_ZIP_BYTES = 350 * 1024 * 1024  # 350 MB uncompressed cap (covers thick HOSE BCTN .zip/.rar archives)
 DEFAULT_MAX_ZIP_ENTRIES = 64
 BAD_FONT_THRESHOLD = 0.72
 NOTICE_ONLY_MAX_PAGES = 14
@@ -417,14 +418,12 @@ def _read_zip_member_bounded(
     return buf.getvalue()
 
 
-def safe_extract_pdf_from_zip(
+def _read_zip_pdf_members_bounded(
     data: bytes,
     *,
     max_uncompressed_bytes: int = DEFAULT_MAX_ZIP_BYTES,
     max_entries: int = DEFAULT_MAX_ZIP_ENTRIES,
-    doc_type: str | None = None,
-) -> tuple[bytes, str, list[str]]:
-    """Safely extract Vietnamese research PDF(s) from a ZIP archive, rejecting full-English members."""
+) -> tuple[list[tuple[str, bytes]], list[str]]:
     if not zipfile.is_zipfile(io.BytesIO(data)):
         raise ZipExtractionError("Payload is not a valid ZIP archive")
 
@@ -464,17 +463,66 @@ def safe_extract_pdf_from_zip(
                 blob = _read_zip_member_bounded(zf, info, remaining_bytes=remaining)
                 remaining -= len(blob)
                 members.append((info.filename, blob))
-
-            return select_and_merge_archive_pdfs(
-                members,
-                zip_entries,
-                doc_type=doc_type,
-                max_uncompressed_bytes=max_uncompressed_bytes,
-            )
-    except ArchiveExtractionError as exc:
-        raise ZipExtractionError(str(exc)) from exc
+            return members, zip_entries
     except zipfile.BadZipFile as exc:
         raise ZipExtractionError(f"Corrupt ZIP archive: {exc}") from exc
+
+
+def safe_extract_pdf_from_zip(
+    data: bytes,
+    *,
+    max_uncompressed_bytes: int = DEFAULT_MAX_ZIP_BYTES,
+    max_entries: int = DEFAULT_MAX_ZIP_ENTRIES,
+    doc_type: str | None = None,
+) -> tuple[bytes, str, list[str]]:
+    """Safely extract Vietnamese research PDF(s) from a ZIP archive, rejecting full-English members."""
+    members, zip_entries = _read_zip_pdf_members_bounded(
+        data,
+        max_uncompressed_bytes=max_uncompressed_bytes,
+        max_entries=max_entries,
+    )
+    try:
+        return select_and_merge_archive_pdfs(
+            members,
+            zip_entries,
+            doc_type=doc_type,
+            max_uncompressed_bytes=max_uncompressed_bytes,
+        )
+    except ArchiveExtractionError as exc:
+        raise ZipExtractionError(str(exc)) from exc
+
+
+def safe_extract_pdf_candidates_from_archive(
+    data: bytes,
+    *,
+    max_uncompressed_bytes: int = DEFAULT_MAX_ZIP_BYTES,
+    max_entries: int = DEFAULT_MAX_ZIP_ENTRIES,
+    doc_type: str | None = None,
+) -> list[tuple[bytes, str, list[str]]]:
+    """Safely extract ranked Vietnamese PDF candidates from either a `.zip` or `.rar` archive."""
+    try:
+        if zipfile.is_zipfile(io.BytesIO(data)):
+            members, entries_desc = _read_zip_pdf_members_bounded(
+                data,
+                max_uncompressed_bytes=max_uncompressed_bytes,
+                max_entries=max_entries,
+            )
+        elif is_rar_bytes(data):
+            members, entries_desc = _read_rar_pdf_members_bounded(
+                data,
+                max_uncompressed_bytes=max_uncompressed_bytes,
+                max_entries=max_entries,
+            )
+        else:
+            raise ZipExtractionError("Payload is neither a valid ZIP nor RAR archive")
+        return rank_archive_pdf_candidates(
+            members,
+            entries_desc,
+            doc_type=doc_type,
+            max_uncompressed_bytes=max_uncompressed_bytes,
+        )
+    except ArchiveExtractionError as exc:
+        raise ZipExtractionError(str(exc)) from exc
 
 
 def safe_extract_pdf_from_archive(
@@ -485,29 +533,31 @@ def safe_extract_pdf_from_archive(
     doc_type: str | None = None,
 ) -> tuple[bytes, str, list[str]]:
     """Safely extract Vietnamese research PDF(s) from either a `.zip` or `.rar` archive."""
-    if zipfile.is_zipfile(io.BytesIO(data)):
-        return safe_extract_pdf_from_zip(
+    return safe_extract_pdf_candidates_from_archive(
+        data,
+        max_uncompressed_bytes=max_uncompressed_bytes,
+        max_entries=max_entries,
+        doc_type=doc_type,
+    )[0]
+
+
+def unwrap_pdf_candidates(
+    data: bytes,
+    *,
+    max_uncompressed_bytes: int = DEFAULT_MAX_ZIP_BYTES,
+    max_entries: int = DEFAULT_MAX_ZIP_ENTRIES,
+    doc_type: str | None = None,
+) -> list[tuple[bytes, bool, str | None, list[str]]]:
+    """Unwrap a raw `.pdf`, `.zip`, or `.rar` payload into ranked Vietnamese PDF candidate(s)."""
+    if zipfile.is_zipfile(io.BytesIO(data)) or is_rar_bytes(data):
+        ranked = safe_extract_pdf_candidates_from_archive(
             data,
             max_uncompressed_bytes=max_uncompressed_bytes,
             max_entries=max_entries,
             doc_type=doc_type,
         )
-    if is_rar_bytes(data):
-        try:
-            members, entries_desc = _read_rar_pdf_members_bounded(
-                data,
-                max_uncompressed_bytes=max_uncompressed_bytes,
-                max_entries=max_entries,
-            )
-            return select_and_merge_archive_pdfs(
-                members,
-                entries_desc,
-                doc_type=doc_type,
-                max_uncompressed_bytes=max_uncompressed_bytes,
-            )
-        except ArchiveExtractionError as exc:
-            raise ZipExtractionError(str(exc)) from exc
-    raise ZipExtractionError("Payload is neither a valid ZIP nor RAR archive")
+        return [(blob, True, chosen, entries) for blob, chosen, entries in ranked]
+    return [(data, False, None, [])]
 
 
 def unwrap_pdf_payload(
@@ -522,15 +572,12 @@ def unwrap_pdf_payload(
     Returns `(pdf_bytes, is_archive, chosen_entry, archive_entries)`.
     Raises `ZipExtractionError` on malicious/empty/full-English archives.
     """
-    if zipfile.is_zipfile(io.BytesIO(data)) or is_rar_bytes(data):
-        pdf_bytes, chosen_entry, archive_entries = safe_extract_pdf_from_archive(
-            data,
-            max_uncompressed_bytes=max_uncompressed_bytes,
-            max_entries=max_entries,
-            doc_type=doc_type,
-        )
-        return pdf_bytes, True, chosen_entry, archive_entries
-    return data, False, None, []
+    return unwrap_pdf_candidates(
+        data,
+        max_uncompressed_bytes=max_uncompressed_bytes,
+        max_entries=max_entries,
+        doc_type=doc_type,
+    )[0]
 
 
 def detect_repeating_left_sidebar_x(pdf_source: bytes | pathlib.Path | str) -> float:
@@ -908,7 +955,9 @@ def inspect_pdf_bytes(
         branch: BranchCode = "D"
         est_ocr_pages = 14
     elif bad_font_pages >= max(3, int(n_pages * 0.30)) or (
-        bad_font_pages > 0 and dig_clean == 0 and scan_pages < n_pages
+        bad_font_pages > 0
+        and dig_clean == 0
+        and scan_pages < max(3, int(n_pages * 0.85))
     ):
         doc_class = "BAD_FONT"
         branch = "D"

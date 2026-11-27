@@ -293,6 +293,55 @@ class SagR2MarkdownCache:
         if self.remote_mode != "none":
             await self._remote_put(key, content.encode("utf-8"), content_type=content_type)
 
+    async def delete_object(self, key: str) -> None:
+        """Delete an object from both local mirror cache and remote Cloudflare R2 (404-safe)."""
+        local_p = self._local_path_for_key(key)
+        if local_p is not None and local_p.is_file():
+            try:
+                local_p.unlink()
+            except OSError:
+                pass
+        if self.remote_mode != "none":
+            await self._remote_delete(key)
+
+    async def _remote_delete(self, key: str) -> None:
+        if self.remote_mode == "s3":
+            url = f"{self.endpoint_url}/{self.bucket_name}/{key.lstrip('/')}"
+            headers = build_s3_sigv4_headers(
+                method="DELETE",
+                url=url,
+                access_key_id=self.access_key_id,
+                secret_access_key=self.secret_access_key,
+            )
+        else:
+            url = (
+                f"https://api.cloudflare.com/client/v4/accounts/{self.account_id}"
+                f"/r2/buckets/{self.bucket_name}/objects/{quote(key.lstrip('/'), safe='/')}"
+            )
+            headers = {"Authorization": f"Bearer {self.api_token}"}
+
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                if self._http_client is not None:
+                    resp = await self._http_client.delete(url, headers=headers)
+                else:
+                    async with httpx.AsyncClient(timeout=self._timeout) as client:
+                        resp = await client.delete(url, headers=headers)
+                if resp.status_code in (200, 204, 404):
+                    return
+                if resp.status_code in (429, 500, 502, 503, 504) and attempt < 2:
+                    await asyncio.sleep(0.5 * (2**attempt))
+                    continue
+                raise RuntimeError(f"R2 DELETE failed ({resp.status_code}) for {key}")
+            except (httpx.TimeoutException, httpx.RequestError) as exc:
+                last_exc = exc
+                if attempt < 2:
+                    await asyncio.sleep(0.5 * (2**attempt))
+                    continue
+                raise RuntimeError(f"R2 DELETE failed ({type(exc).__name__}) for {key}") from exc
+        raise RuntimeError(f"R2 DELETE failed for {key}: {last_exc}")
+
     async def _remote_get(self, key: str) -> bytes | None:
         if self.remote_mode == "s3":
             url = f"{self.endpoint_url}/{self.bucket_name}/{key.lstrip('/')}"

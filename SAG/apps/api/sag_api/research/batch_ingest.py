@@ -650,6 +650,16 @@ async def run_research_batch_ingest(
                         toc_router=effective_toc_router,
                         skip_trailing_scanned_bctc=skip_trailing_scanned_bctc,
                     )
+                    if (
+                        not build_res.sub_documents
+                        and build_res.inspection.doc_class != "NOTICE_ONLY"
+                        and build_res.inspection.pages >= 15
+                    ):
+                        raise InputBuildError(
+                            f"EMPTY_SUBDOCUMENTS_AFTER_BUILD for {sym} "
+                            f"({sel.canonical_doc_type}, {build_res.inspection.pages}p, "
+                            f"branch={build_res.routed_branch})"
+                        )
                     if not dry_run and active_r2_cache.is_configured and build_res.sub_documents:
                         try:
                             await active_r2_cache.save_cleaned_build_result(
