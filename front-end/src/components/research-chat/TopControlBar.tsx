@@ -1,13 +1,12 @@
 "use client"
 
 import { EyeOff, FileStack, PanelLeft, PanelRightClose, SquarePen } from "lucide-react"
-import type { MemoryMode, ResearchChatMode } from "@/lib/api/researchChat"
+import type { MemoryMode } from "@/lib/api/researchChat"
 
 interface TopControlBarProps {
-  chatMode: ResearchChatMode
-  onChatModeChange: (mode: ResearchChatMode) => void
-  modeDisabled?: boolean
   memoryMode: MemoryMode
+  onMemoryModeChange: (mode: MemoryMode) => void
+  memoryModeDisabled?: boolean
   sidebarOpen: boolean
   onToggleSidebar: () => void
   onStartNewConversation: () => void
@@ -18,10 +17,9 @@ interface TopControlBarProps {
 }
 
 export function TopControlBar({
-  chatMode,
-  onChatModeChange,
-  modeDisabled,
   memoryMode,
+  onMemoryModeChange,
+  memoryModeDisabled,
   sidebarOpen,
   onToggleSidebar,
   onStartNewConversation,
@@ -30,10 +28,12 @@ export function TopControlBar({
   onToggleDrawer,
   evidenceCount,
 }: TopControlBarProps) {
+  const isIncognito = memoryMode === "incognito"
+
   return (
-    <header className="h-13 px-3.5 sm:px-5 flex items-center justify-between gap-3 bg-surface shrink-0">
+    <header className="h-12 px-3.5 sm:px-5 flex items-center justify-between gap-3 bg-surface shrink-0">
       {/* Left: Only visible when conversation sidebar is collapsed */}
-      <div className="flex items-center gap-1 min-w-[84px]">
+      <div className="flex items-center gap-1">
         {!sidebarOpen && (
           <>
             <button
@@ -41,7 +41,7 @@ export function TopControlBar({
               onClick={onToggleSidebar}
               aria-label="Mở lịch sử trò chuyện"
               title="Mở lịch sử trò chuyện"
-              className="inline-flex h-9 w-9 items-center justify-center rounded-[9px] text-secondary hover:bg-soft hover:text-ink transition-colors cursor-pointer"
+              className="inline-flex h-8.5 w-8.5 items-center justify-center rounded-[9px] text-secondary hover:bg-soft hover:text-ink transition-colors cursor-pointer"
             >
               <PanelLeft className="h-[18px] w-[18px]" aria-hidden="true" />
             </button>
@@ -51,7 +51,7 @@ export function TopControlBar({
               onClick={onStartNewConversation}
               aria-label="Trò chuyện mới"
               title="Trò chuyện mới"
-              className="inline-flex h-9 w-9 items-center justify-center rounded-[9px] text-secondary hover:bg-soft hover:text-ink transition-colors disabled:opacity-40 cursor-pointer"
+              className="inline-flex h-8.5 w-8.5 items-center justify-center rounded-[9px] text-secondary hover:bg-soft hover:text-ink transition-colors disabled:opacity-40 cursor-pointer"
             >
               <SquarePen className="h-[17px] w-[17px]" aria-hidden="true" />
             </button>
@@ -59,60 +59,35 @@ export function TopControlBar({
         )}
       </div>
 
-      {/* Center: Clean ChatGPT-style 2-tab pill ("Trò chuyện" | "Chuyên sâu") */}
-      <div
-        role="tablist"
-        aria-label="Chế độ phân tích"
-        className="inline-flex items-center rounded-full bg-[#f1f3f1] p-1"
-      >
+      {/* Right: Quiet Temporary-Chat toggle (like ChatGPT top-right) + Nguồn drawer toggle */}
+      <div className="flex items-center justify-end gap-1.5">
         <button
           type="button"
-          role="tab"
-          aria-selected={chatMode === "GENERAL"}
-          disabled={modeDisabled}
-          onClick={() => onChatModeChange("GENERAL")}
-          className={`rounded-full px-4 h-7.5 text-[13px] transition-all cursor-pointer disabled:opacity-50 ${
-            chatMode === "GENERAL"
-              ? "bg-surface text-ink font-medium shadow-[0_1px_3px_rgba(24,32,29,0.08)]"
-              : "text-secondary hover:text-ink"
+          disabled={memoryModeDisabled}
+          onClick={() => onMemoryModeChange(isIncognito ? "auto" : "incognito")}
+          aria-pressed={isIncognito}
+          aria-label={isIncognito ? "Tắt trò chuyện tạm thời" : "Bật trò chuyện tạm thời"}
+          title={
+            isIncognito
+              ? "Đang bật trò chuyện tạm thời (không lưu ký ức)"
+              : "Trò chuyện tạm thời (ẩn danh)"
+          }
+          className={`inline-flex items-center gap-1.5 rounded-full px-2.5 h-8 text-[12px] transition-colors cursor-pointer disabled:opacity-40 ${
+            isIncognito
+              ? "bg-ink text-paper font-medium"
+              : "text-muted hover:bg-soft hover:text-ink"
           }`}
         >
-          Trò chuyện
+          <EyeOff className="h-4 w-4 shrink-0" aria-hidden="true" />
+          {isIncognito && <span>Tạm thời</span>}
         </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={chatMode === "MOAT"}
-          disabled={modeDisabled}
-          onClick={() => onChatModeChange("MOAT")}
-          className={`rounded-full px-4 h-7.5 text-[13px] transition-all cursor-pointer disabled:opacity-50 ${
-            chatMode === "MOAT"
-              ? "bg-surface text-ink font-medium shadow-[0_1px_3px_rgba(24,32,29,0.08)]"
-              : "text-secondary hover:text-ink"
-          }`}
-        >
-          Chuyên sâu
-        </button>
-      </div>
-
-      {/* Right: Quiet evidence drawer toggle only when active session has sources (or incognito badge) */}
-      <div className="flex items-center justify-end gap-2 min-w-[84px]">
-        {memoryMode === "incognito" && (
-          <span
-            title="Phiên ẩn danh đang bật"
-            className="inline-flex items-center gap-1 rounded-full bg-soft px-2.5 h-7 text-[11.5px] text-secondary"
-          >
-            <EyeOff className="h-3.5 w-3.5" aria-hidden="true" />
-            <span className="hidden sm:inline">Ẩn danh</span>
-          </span>
-        )}
 
         {(evidenceCount > 0 || drawerOpen) && (
           <button
             type="button"
             onClick={onToggleDrawer}
             aria-expanded={drawerOpen}
-            aria-label={drawerOpen ? "Đóng ngăn bằng chứng" : "Mở ngăn bằng chứng"}
+            aria-label={drawerOpen ? "Đóng nguồn đối chiếu" : "Mở nguồn đối chiếu"}
             className={`inline-flex items-center gap-1.5 rounded-full px-3 h-8 text-[12.5px] font-medium transition-colors cursor-pointer ${
               drawerOpen
                 ? "bg-soft text-ink"
@@ -124,7 +99,7 @@ export function TopControlBar({
             ) : (
               <FileStack className="h-4 w-4 shrink-0" aria-hidden="true" />
             )}
-            <span className="hidden sm:inline">Nguồn</span>
+            <span>Nguồn</span>
             {evidenceCount > 0 && (
               <span className="font-mono text-[11.5px] text-muted tnum">{evidenceCount}</span>
             )}

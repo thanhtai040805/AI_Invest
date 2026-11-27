@@ -316,19 +316,20 @@ async def repair_stage7_flagged_lines(
     def _match_line_index(excerpt: str, claim_txt: str = "") -> int | None:
         probe = _norm_for_match(excerpt)[:70]
         raw_num = claim_txt.strip().split()[0] if claim_txt.strip() else ""
-        compact_claim = re.sub(r"\s+", "", claim_txt.strip()).lower()
+        raw_num_vn = raw_num.replace(".", ",")
+        compact_claim = re.sub(r"\s+", "", claim_txt.strip()).lower().replace(",", ".")
         if probe:
             for idx, n_ln in enumerate(norm_lines):
                 if probe in n_ln or (len(n_ln) >= 18 and n_ln[:50] in probe):
                     return idx
-        # Space-insensitive claim token match (handles Stage 7 '28.5 %' vs table cell '28.5%')
+        # Space- and decimal-locale-insensitive claim match (handles '3.43 %' vs VN table cell '3,43%')
         if compact_claim:
             for idx, ln in enumerate(lines):
-                if compact_claim in re.sub(r"\s+", "", ln).lower():
+                if compact_claim in re.sub(r"\s+", "", ln).lower().replace(",", "."):
                     return idx
         if raw_num:
             for idx, ln in enumerate(lines):
-                if raw_num in ln:
+                if raw_num in ln or (raw_num_vn and raw_num_vn in ln):
                     return idx
         return None
 

@@ -1079,7 +1079,12 @@ async def _run_quant_specs_for_claim(
                         )
                         cid_tag = f"[{saved_fl['calc_id']}] "
                         badges.append(f"[{saved_fl['calc_id']}]")
-                    tk_flags.append(f"{cid_tag}{fl['severity']} {fl['code']}: {fl['message_vi']}")
+                    sev_label = {
+                        "HIGH": "Cảnh báo rủi ro cao",
+                        "MEDIUM": "Cảnh báo rủi ro trung bình",
+                        "LOW": "Lưu ý dữ liệu",
+                    }.get(str(fl.get("severity") or "").upper(), "Lưu ý")
+                    tk_flags.append(f"{cid_tag}{sev_label}: {fl['message_vi']}")
                     if fl["severity"] in ("HIGH", "MEDIUM") and escalation_hint is None:
                         escalation_hint = _flag_to_vas_followup(fl["code"])
                 if tk_flags:
