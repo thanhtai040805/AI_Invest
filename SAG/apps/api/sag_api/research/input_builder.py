@@ -734,7 +734,13 @@ def extract_page_heading_styles(
         if (w > h * 1.25 and 0.0 < left_sidebar_x < w * 0.30)
         else None
     )
-    page_dict = page.get_text("dict", clip=clip) if clip is not None else page.get_text("dict")
+    # Omit TEXT_PRESERVE_IMAGES so 100MB+ graphic BCTNs don't decode unused raster images into RAM
+    dict_flags = fitz.TEXT_PRESERVE_LIGATURES | fitz.TEXT_PRESERVE_WHITESPACE
+    page_dict = (
+        page.get_text("dict", flags=dict_flags, clip=clip)
+        if clip is not None
+        else page.get_text("dict", flags=dict_flags)
+    )
     if not isinstance(page_dict, dict):
         return set(), set()
 
@@ -1554,6 +1560,8 @@ def _extract_digital_page_text(
 
 
 _DIGITAL_TABLE_NUM_CUE_RE = re.compile(r"\b\d{1,3}(?:[.,]\d{3})+\b")
+_MAX_PDFPLUMBER_PAGE_STREAM_BYTES = 350_000
+_MAX_DIGITAL_TABLE_ENRICH_SECONDS = 30.0
 
 
 def _render_extracted_table_as_html(extracted: dict[str, Any]) -> str:
@@ -1605,8 +1613,47 @@ def _enrich_digital_pages_with_html_tables(
     ]
     if not candidate_pages:
         return 0
+    # Pre-filter vector-explosion graphic pages (>1.5 MB PDF content stream, e.g. Adobe Illustrator BCTNs)
+    # where pure-Python pdfminer.six inside pdfplumber spins 8-15s/page (~20+ min/doc) on decorative paths.
+    try:
+        probe_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        try:
+            safe_candidates: list[int] = []
+            skipped_heavy = 0
+            for pno in candidate_pages:
+                if not (1 <= pno <= probe_doc.page_count):
+                    continue
+                pg_fitz = probe_doc[pno - 1]
+                stream_sz = len(pg_fitz.read_contents())
+                if stream_sz <= _MAX_PDFPLUMBER_PAGE_STREAM_BYTES:
+                    for xo in pg_fitz.get_xobjects()[:16]:
+                        try:
+                            stream_sz += len(probe_doc.xref_stream(xo[0]) or b"")
+                        except Exception:  # noqa: BLE001
+                            continue
+                        if stream_sz > _MAX_PDFPLUMBER_PAGE_STREAM_BYTES:
+                            break
+                if stream_sz > _MAX_PDFPLUMBER_PAGE_STREAM_BYTES:
+                    skipped_heavy += 1
+                    continue
+                safe_candidates.append(pno)
+            if skipped_heavy:
+                log.info(
+                    "Skipped pdfplumber enrichment on %d vector-heavy graphic pages (>%dKB stream); "
+                    "retaining clean PyMuPDF digital text.",
+                    skipped_heavy,
+                    _MAX_PDFPLUMBER_PAGE_STREAM_BYTES // 1024,
+                )
+            candidate_pages = safe_candidates
+        finally:
+            probe_doc.close()
+    except Exception:  # noqa: BLE001
+        pass
+    if not candidate_pages:
+        return 0
     try:
         import io as _io
+        import time as _time
 
         import pdfplumber
 
@@ -1616,10 +1663,19 @@ def _enrich_digital_pages_with_html_tables(
         return 0
 
     injected_count = 0
+    enrich_deadline = _time.monotonic() + _MAX_DIGITAL_TABLE_ENRICH_SECONDS
     try:
         with pdfplumber.open(_io.BytesIO(pdf_bytes)) as pdf:
             total_p = len(pdf.pages)
             for pno in candidate_pages:
+                if _time.monotonic() >= enrich_deadline:
+                    log.warning(
+                        "Digital HTML table enrichment hit %.0fs budget after %d tables; "
+                        "keeping digital text for remaining pages.",
+                        _MAX_DIGITAL_TABLE_ENRICH_SECONDS,
+                        injected_count,
+                    )
+                    break
                 if not (1 <= pno <= total_p):
                     continue
                 pg = pdf.pages[pno - 1]
@@ -1678,13 +1734,28 @@ def _enrich_digital_pages_with_html_tables(
     return injected_count
 
 
+_SLICE_SCRUB_CATALOG_KEYS: tuple[str, ...] = (
+    "StructTreeRoot",
+    "Outlines",
+    "Names",
+    "Dests",
+    "Metadata",
+    "PieceInfo",
+    "OCProperties",
+    "AcroForm",
+    "MarkInfo",
+    "PageLabels",
+    "Threads",
+)
+
+
 def _slice_pdf_pages(pdf_bytes: bytes, page_numbers: list[int]) -> bytes:
     """Create a compact in-memory sub-PDF containing only 1-based `page_numbers`.
 
-    Uses an identity fast-path when all pages are selected in order, and `Document.select()` +
-    `tobytes(garbage=3, deflate=True)` for subsets so shared XObjects/fonts are never duplicated
-    N times (which previously caused `insert_pdf` loops to explode 13 MB PDFs into >3.7 GB and
-    segfault MuPDF's 32-bit stream length).
+    Scrubs catalog-level back-references (`/StructTreeRoot`, `/Outlines`, etc.) before
+    `Document.select()` + `tobytes(garbage=2, deflate=True)` so tagged Illustrator BCTNs
+    (e.g. 177 MB SSI BCTN with 72k xrefs) drop unreferenced pages in <0.5s instead of
+    retaining all 177 MB and hanging in O(N^2) `garbage=3` deduplication.
     """
     if not pdf_bytes or not page_numbers:
         return pdf_bytes
@@ -1696,8 +1767,15 @@ def _slice_pdf_pages(pdf_bytes: bytes, page_numbers: list[int]) -> bytes:
             return pdf_bytes
         if len(valid_zero_based) == total_pages and valid_zero_based == list(range(total_pages)):
             return pdf_bytes
+        cat = src.pdf_catalog()
+        if cat:
+            for key in _SLICE_SCRUB_CATALOG_KEYS:
+                try:
+                    src.xref_set_key(cat, key, "null")
+                except Exception:  # noqa: BLE001
+                    pass
         src.select(valid_zero_based)
-        return src.tobytes(garbage=3, deflate=True)
+        return src.tobytes(garbage=2, deflate=True)
     finally:
         src.close()
 

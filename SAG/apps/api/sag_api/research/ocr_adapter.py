@@ -39,14 +39,36 @@ def _is_mineru_size_limit_error(exc: Exception) -> bool:
     return any(cue in msg for cue in _MINERU_RESULT_TOO_LARGE_CUES)
 
 
+_SLICE_SCRUB_CATALOG_KEYS: tuple[str, ...] = (
+    "StructTreeRoot",
+    "Outlines",
+    "Names",
+    "Dests",
+    "Metadata",
+    "PieceInfo",
+    "OCProperties",
+    "AcroForm",
+    "MarkInfo",
+    "PageLabels",
+    "Threads",
+)
+
+
 def _extract_pdf_page_subset(pdf_bytes: bytes, zero_based_indices: list[int]) -> bytes:
-    """Extract a compact sub-PDF via `Document.select()` + `garbage=3, deflate=True` (zero XObject bloat)."""
+    """Extract a compact sub-PDF via catalog scrub + `Document.select()` + `garbage=2, deflate=True`."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
         if len(zero_based_indices) == doc.page_count and zero_based_indices == list(range(doc.page_count)):
             return pdf_bytes
+        cat = doc.pdf_catalog()
+        if cat:
+            for key in _SLICE_SCRUB_CATALOG_KEYS:
+                try:
+                    doc.xref_set_key(cat, key, "null")
+                except Exception:  # noqa: BLE001
+                    pass
         doc.select(zero_based_indices)
-        return doc.tobytes(garbage=3, deflate=True)
+        return doc.tobytes(garbage=2, deflate=True)
     finally:
         doc.close()
 
