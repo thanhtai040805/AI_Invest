@@ -771,5 +771,17 @@ async def test_brief_brain_streams_thinking_deduplicates_activity_and_persists_v
     assert len(done_meta["verdict_cards"]) == 1
     assert done_meta["verdict_cards"][0]["claim_id"] == "K1"
 
+    # 5) SentenceStreamGate strips internal Brief claim IDs (`[P1]`, `[K4]`) while keeping real audit badges
+    from sag_api.research.agent_runner import SentenceStreamGate
+
+    gate = SentenceStreamGate(valid_cid_ceiling=lambda: 2, valid_calc_ids=lambda: {"CALC-6"})
+    gate.reset_for_turn(tools_enabled=False)
+    sanitized = "".join(
+        gate.push_delta("Chưa có dữ liệu PIT [K4]. Dư nợ tăng đều [CALC-6] [P1].\n")
+        + gate.flush_turn_end(has_tool_calls=False)
+    )
+    assert "[K4]" not in sanitized and "[P1]" not in sanitized
+    assert "[CALC-6]" in sanitized
+
     await eng.dispose()
 

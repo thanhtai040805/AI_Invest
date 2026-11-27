@@ -46,13 +46,15 @@ from sag_api.research.tools.context import ResearchToolContext
 logger = logging.getLogger(__name__)
 
 _INLINE_CALC_BADGE_RE = re.compile(r"\[(CALC-\d+)\]")
+_INTERNAL_CLAIM_ID_RE = re.compile(r"(?:\s*\[(?:P|K)\d+\])+")
 _THINK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 _CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 
 SYNTHESIS_STATIC_SYSTEM_PROMPT = (
     "Bạn là Chuyên gia Phân tích Đầu tư Cấp cao (Senior Institutional Equity Analyst) của AIInvest.\n"
     "Nhiệm vụ: viết câu trả lời sắc sảo, đi thẳng vào mối quan tâm thật sự của nhà đầu tư (`user_concern`) "
-    "dựa HOÀN TOÀN trên Đề bài và các Thẻ kết luận đã kiểm chứng bên dưới.\n\n"
+    "dựa HOÀN TOÀN trên Đề bài và các Thẻ kết luận đã kiểm chứng bên dưới.\n"
+    "QUY TẮC SUY LUẬN NHANH: Suy luận nội bộ ngắn gọn, súc tích theo từng thẻ kết luận (dưới 200 từ), không lặp ý.\n\n"
     "NGUYÊN TẮC BẮT BUỘC:\n"
     "1. Hình thức linh hoạt theo đề bài (`answer_shape`), KHÔNG ép khung 4 mục cứng nhắc:\n"
     "   - Mở đầu bằng kết luận trực diện trả lời ngay câu hỏi / nỗi lo của người hỏi.\n"
@@ -66,7 +68,8 @@ SYNTHESIS_STATIC_SYSTEM_PROMPT = (
     "   - TUYỆT ĐỐI KHÔNG tự cộng nhẩm, trừ nhẩm hoặc nhân chia thêm bất kỳ con số mới nào ngoài thẻ "
     "(đặc biệt: KHÔNG cộng các khoản mục con trong thuyết minh nợ vay vào tổng vay ngắn hạn trên CĐKT).\n"
     "   - Mọi câu có số liệu tài chính BẮT BUỘC gắn kèm mã nguồn gốc có sẵn trong thẻ (`[CALC-*]`, `[C#]`, "
-    "`[TBL:*]`, `[SCR:*]`, `[KG:*]`, `[MEM:*]`, `[PORT:*]`). Không tự bịa mã không tồn tại.\n"
+    "`[TBL:*]`, `[SCR:*]`, `[KG:*]`, `[MEM:*]`, `[PORT:*]`). TUYỆT ĐỐI KHÔNG gắn mã ý nội bộ của đề bài "
+    "(`[P1]`, `[K1]`..`[K6]`) vào câu trả lời. Không tự bịa mã không tồn tại.\n"
     "3. TRUNG THỰC VỚI KHOẢNG TRỐNG (`NO_DATA`):\n"
     "   - Ý nào thẻ ghi `NO_DATA` hoặc thiếu thuyết minh PIT thì nói thẳng là chưa có dữ liệu kiểm chứng trong "
     "phạm vi PIT hiện tại — tuyệt đối không suy đoán lấp chỗ trống.\n"
@@ -255,6 +258,7 @@ async def synthesize_from_verdict_cards(
         lambda m: m.group(0) if m.group(1) in valid_calcs else "",
         raw_answer,
     )
+    cleaned_answer = _INTERNAL_CLAIM_ID_RE.sub("", cleaned_answer)
     usage = Usage(
         requests=1,
         input_tokens=in_tok,

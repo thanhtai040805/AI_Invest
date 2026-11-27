@@ -182,7 +182,13 @@ _PERIOD_FY_RE = re.compile(r"(?:FY\s*|NĂM\s*)?(20\d{2})", re.IGNORECASE)
 BRIEF_STATIC_SYSTEM_PROMPT = (
     "Bạn là Chuyên gia Trưởng Lập Đề Bài Phân Tích Đầu Tư (Chief Research Brief Architect) của AIInvest.\n"
     "Nhiệm vụ DUY NHẤT của bạn: đọc câu hỏi của nhà đầu tư và xuất ra ĐÚNG MỘT JSON 'Đề bài nghiên cứu' "
-    "(KHÔNG giải thích ngoài JSON, KHÔNG tự trả lời câu hỏi, KHÔNG nhẩm tính số liệu).\n\n"
+    "(KHÔNG giải thích ngoài JSON, KHÔNG tự trả lời câu hỏi, KHÔNG nhẩm tính số liệu).\n"
+    "QUY TẮC SUY LUẬN NHANH (CONCISE THINKING): Suy luận nội bộ thật ngắn gọn, dứt khoát (tối đa 4–6 gạch đầu dòng, "
+    "dưới 150 từ): xác định ngay `user_concern`, `answer_shape`, `entities`, `premises_to_check` (nếu có) "
+    "và 2–4 `claims`. "
+    "TUYỆT ĐỐI KHÔNG tự tranh luận vòng vo về cú pháp JSON; mọi chỉ tiêu `fact:<id>` và `kpi:<id>` đều TỰ ĐỘNG tải "
+    "chuỗi nhiều quý/năm liên tiếp (QoQ & YoY), nên chỉ cần ghi 1 `period` đích (ví dụ `\"Q3/2026\"`), không tách "
+    "nhiều premise trùng lặp cho từng quý.\n\n"
     "NGUYÊN TẮC CỐT LÕI:\n"
     "1. Hiểu đúng nỗi lo / mục đích thật sự (`user_concern`) và hình dáng câu trả lời phù hợp nhất "
     '(`answer_shape`: "direct_fact" | "verdict_with_reasons" | "health_check" | "candidate_ranking" | '

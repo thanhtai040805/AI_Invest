@@ -590,7 +590,10 @@ export function ChatColumn({
           })}
 
           {streaming && (
-            <div className="rounded-[12px] border border-line bg-surface p-4 sm:p-5 transition-colors">
+            <div
+              key="live-streaming-turn"
+              className="rounded-[12px] border border-line bg-surface p-4 sm:p-5 transition-colors"
+            >
               <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 mb-2.5 border-b border-line">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <Pill tone={chatMode === "MOAT" ? "mineral" : "teal"}>
@@ -611,7 +614,7 @@ export function ChatColumn({
                 hasAnswerStarted={Boolean(streamingText.trim())}
                 activeStageLabel={activeStageMessage}
                 startedAtMs={streamStartedAt}
-                defaultExpanded={true}
+                defaultExpanded={false}
               />
 
               {streamingText ? (

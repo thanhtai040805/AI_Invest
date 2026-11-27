@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   ClipboardCheck,
   Compass,
   FileSearch,
@@ -137,6 +138,7 @@ export function ResearchActivityTimeline({
   onInspectGraph,
 }: ResearchActivityTimelineProps) {
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null)
+  const [expandedReasoningIds, setExpandedReasoningIds] = useState<Record<string, boolean>>({})
   const [liveElapsedMs, setLiveElapsedMs] = useState(0)
 
   const isActivelyThinking = isStreaming && !hasAnswerStarted
@@ -319,6 +321,9 @@ export function ResearchActivityTimeline({
               // 1) Model Native Reasoning Stream (`kind === "reasoning"`) — clean ChatGPT prose style
               if (item.type === "thought" && item.kind === "reasoning") {
                 const showLiveCursor = isActivelyThinking && item.id === stats.lastReasoningId
+                const fullText = item.text ?? ""
+                const isLongCompleted = !isActivelyThinking && fullText.length > 680
+                const isBlockExpanded = Boolean(expandedReasoningIds[key])
                 return (
                   <li key={key} className="relative">
                     <span className="absolute -left-[21px] top-1 h-2 w-2 rounded-full bg-mineral ring-3 ring-surface" />
@@ -333,14 +338,41 @@ export function ResearchActivityTimeline({
                           </span>
                         )}
                       </div>
-                      {item.text && (
-                        <div className="text-[12.5px] leading-[1.68] text-secondary whitespace-pre-wrap">
-                          {item.text}
-                          {showLiveCursor && (
-                            <span
-                              aria-hidden="true"
-                              className="inline-block ml-0.5 h-3.5 w-1.5 translate-y-0.5 bg-mineral/75 animate-pulse"
-                            />
+                      {fullText && (
+                        <div className="space-y-1">
+                          <div
+                            className={`text-[12.5px] leading-[1.68] text-secondary whitespace-pre-wrap ${
+                              isLongCompleted && !isBlockExpanded ? "line-clamp-6" : ""
+                            }`}
+                          >
+                            {fullText}
+                            {showLiveCursor && (
+                              <span
+                                aria-hidden="true"
+                                className="inline-block ml-0.5 h-3.5 w-1.5 translate-y-0.5 bg-mineral/75 animate-pulse"
+                              />
+                            )}
+                          </div>
+                          {isLongCompleted && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setExpandedReasoningIds((prev) => ({
+                                  ...prev,
+                                  [key]: !prev[key],
+                                }))
+                              }
+                              className="inline-flex items-center gap-1 text-[11px] font-medium text-mineral hover:underline cursor-pointer"
+                            >
+                              <span>
+                                {isBlockExpanded ? "Thu gọn suy luận" : "Xem toàn bộ suy luận"}
+                              </span>
+                              {isBlockExpanded ? (
+                                <ChevronUp className="h-3 w-3" aria-hidden="true" />
+                              ) : (
+                                <ChevronDown className="h-3 w-3" aria-hidden="true" />
+                              )}
+                            </button>
                           )}
                         </div>
                       )}

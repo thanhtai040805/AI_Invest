@@ -38,6 +38,7 @@ _INLINE_CALC_BADGE_RE = re.compile(r"\[(CALC-\d+)\]")
 _INLINE_MEM_BADGE_RE = re.compile(r"\[MEM:(M\d+)\]")
 _INLINE_PORT_BADGE_RE = re.compile(r"\[PORT:([A-Z0-9._-]{1,16})\]")
 _INLINE_SESS_BADGE_RE = re.compile(r"\[SESS:(S\d+)\]")
+_INTERNAL_CLAIM_ID_RE = re.compile(r"(?:\s*\[(?:P|K)\d+\])+")
 _SENTENCE_BOUNDARY_RE = re.compile(r"(?:\n|(?<=[.!?])\s+)")
 _THINK_BLOCK_RE = re.compile(r"<think>(.*?)</think>\s*", re.IGNORECASE | re.DOTALL)
 _META_PREAMBLE_LINE_RE = re.compile(
@@ -393,6 +394,7 @@ class SentenceStreamGate:
         out = _INLINE_MEM_BADGE_RE.sub(_check_mem, out)
         out = _INLINE_PORT_BADGE_RE.sub(_check_port, out)
         out = _INLINE_SESS_BADGE_RE.sub(_check_sess, out)
+        out = _INTERNAL_CLAIM_ID_RE.sub("", out)
         return out
 
     def push_delta(self, delta: str) -> list[str]:
