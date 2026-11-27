@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Literal
@@ -972,9 +972,13 @@ async def _collect_model_text(
     messages: Sequence[AgentMessage],
     *,
     turn: int = 1,
+    enable_thinking: bool = False,
+    on_reasoning_delta: Callable[[str], Awaitable[None]] | None = None,
 ) -> tuple[str, Usage]:
-    req = ModelRequest(messages=tuple(messages), tools=(), turn=turn)
+    meta: dict[str, Any] = {"enable_thinking": True} if enable_thinking else {}
+    req = ModelRequest(messages=tuple(messages), tools=(), turn=turn, metadata=meta)
     parts: list[str] = []
+    saw_reasoning_delta = False
     in_tok = out_tok = cached_tok = reas_tok = 0
     async for chunk in model.stream_turn(req, CancellationToken()):
         if chunk.usage is not None:
@@ -982,9 +986,19 @@ async def _collect_model_text(
             out_tok = max(out_tok, chunk.usage.output_tokens)
             cached_tok = max(cached_tok, chunk.usage.cached_tokens)
             reas_tok = max(reas_tok, chunk.usage.reasoning_tokens)
+        if chunk.reasoning_delta:
+            saw_reasoning_delta = True
+            if on_reasoning_delta is not None:
+                await on_reasoning_delta(chunk.reasoning_delta)
         if chunk.text_delta:
             parts.append(chunk.text_delta)
-    return "".join(parts), Usage(
+    full_text = "".join(parts)
+    if not saw_reasoning_delta and on_reasoning_delta is not None and "<think>" in full_text.lower():
+        for tm in _THINK_RE.finditer(full_text):
+            inner = re.sub(r"^<think>\s*|\s*</think>$", "", tm.group(0), flags=re.IGNORECASE).strip()
+            if inner:
+                await on_reasoning_delta(inner)
+    return full_text, Usage(
         requests=1,
         input_tokens=in_tok,
         output_tokens=out_tok,
@@ -1074,6 +1088,8 @@ async def create_and_validate_brief(
     chat_mode: str = "GENERAL",
     session_context: str = "",
     memory_context: str = "",
+    enable_thinking: bool = False,
+    on_reasoning_delta: Callable[[str], Awaitable[None]] | None = None,
     trace: TraceSink | None = None,
 ) -> tuple[ResearchBrief, BriefValidationOutcome, Usage]:
     """Run Step (1) Brief LLM + Step (2) 0-token Validator (with at most 1 repair retry on schema error)."""
@@ -1139,7 +1155,13 @@ async def create_and_validate_brief(
         AgentMessage(role="system", content=BRIEF_STATIC_SYSTEM_PROMPT),
         AgentMessage(role="user", content=user_prompt),
     ]
-    raw_out, usage = await _collect_model_text(model, base_messages, turn=1)
+    raw_out, usage = await _collect_model_text(
+        model,
+        base_messages,
+        turn=1,
+        enable_thinking=enable_thinking,
+        on_reasoning_delta=on_reasoning_delta,
+    )
     outcome = _validate(raw_out)
     _trace_attempt(1, raw_out, usage, outcome)
     if outcome.ok and outcome.brief is not None:

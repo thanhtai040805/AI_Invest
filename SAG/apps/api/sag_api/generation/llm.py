@@ -11,7 +11,7 @@ import asyncio
 import inspect
 import json
 import random
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
 from sag_agent import CancellationToken, ModelChunk, ModelRequest, Usage
@@ -183,6 +183,7 @@ class LLMClient:
         tools: list[dict] | None = None,
         tool_choice: str | dict | None = None,
         response_format: dict[str, Any] | None = None,
+        extra_body: Mapping[str, Any] | None = None,
         model_override: str | None = None,
         failover_managed: bool = False,
         timeout_cap_seconds: float | None = None,
@@ -213,6 +214,10 @@ class LLMClient:
                 request["tool_choice"] = tool_choice
         if response_format is not None:
             request["response_format"] = response_format
+        if extra_body:
+            merged_eb = dict(self._settings.llm_extra_body) if self._settings.llm_extra_body else {}
+            merged_eb.update(extra_body)
+            request["extra_body"] = merged_eb
         if self._settings.llm_base_url:
             request["api_base"] = self._settings.llm_base_url
         normalized = apply_litellm_completion_policy(self._settings, request)
@@ -255,6 +260,7 @@ class LLMClient:
         tools: list[dict] | None = None,
         tool_choice: str | dict | None = None,
         response_format: dict[str, Any] | None = None,
+        extra_body: Mapping[str, Any] | None = None,
         model_override: str | None = None,
     ) -> tuple[Any, str]:
         """Execute completion with jittered backoff on transient 429/503, then low-cost DeepInfra failover."""
@@ -272,6 +278,7 @@ class LLMClient:
                     tools=tools,
                     tool_choice=tool_choice,
                     response_format=response_format,
+                    extra_body=extra_body,
                     model_override=model_override,
                     failover_managed=True,
                     timeout_cap_seconds=attempt_cap,
@@ -312,6 +319,7 @@ class LLMClient:
                     tools=tools,
                     tool_choice=tool_choice,
                     response_format=response_format,
+                    extra_body=extra_body,
                     model_override=fb_model,
                     failover_managed=True,
                     timeout_cap_seconds=attempt_cap,
@@ -354,11 +362,20 @@ class LLMClient:
         pending_tool_notified = False
         stream = None
         active_model = self._settings.llm_model
+        req_extra_body: dict[str, Any] = {}
+        if isinstance(request.metadata.get("extra_body"), Mapping):
+            req_extra_body.update(request.metadata["extra_body"])
+        if request.metadata.get("enable_thinking") is True:
+            req_extra_body["enable_thinking"] = True
+            tmpl_kw = dict(req_extra_body.get("chat_template_kwargs") or {})
+            tmpl_kw["enable_thinking"] = True
+            req_extra_body["chat_template_kwargs"] = tmpl_kw
         try:
             stream, active_model = await self._create_completion_with_failover(
                 serialized_messages,
                 tools=list(request.tools) or None,
                 tool_choice=request.tool_choice if request.tools else None,
+                extra_body=req_extra_body or None,
                 stream=True,
             )
         except Exception as first_err:  # noqa: BLE001

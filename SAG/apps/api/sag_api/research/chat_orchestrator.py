@@ -3956,6 +3956,8 @@ class ResearchChatOrchestrator:
         yield ("thought", activity_log[0])
 
         event_queue: asyncio.Queue[tuple[str, dict[str, Any]] | None] = asyncio.Queue()
+        agent_started_offset_ms = int((time.perf_counter() - started) * 1000)
+        first_orchestrator_delta_ms: int | None = None
 
         async def _on_stage(stage_name: str, status: str, detail_msg: str) -> None:
             await event_queue.put(
@@ -3963,6 +3965,9 @@ class ResearchChatOrchestrator:
             )
 
         async def _on_delta(text_chunk: str) -> None:
+            nonlocal first_orchestrator_delta_ms
+            if first_orchestrator_delta_ms is None and text_chunk.strip():
+                first_orchestrator_delta_ms = int((time.perf_counter() - started) * 1000)
             await event_queue.put(("delta", {"text": text_chunk}))
 
         async def _on_thought(thought_evt: dict[str, Any]) -> None:
@@ -4262,6 +4267,7 @@ class ResearchChatOrchestrator:
             outcome.input_tokens += rep_usage.input_tokens
             outcome.output_tokens += rep_usage.output_tokens
             outcome.cached_tokens += rep_usage.cached_tokens
+            outcome.reasoning_tokens += rep_usage.reasoning_tokens
             outcome.agent_turns += rep_usage.requests
             if was_repaired:
                 repair_evt = {
@@ -4357,6 +4363,15 @@ class ResearchChatOrchestrator:
             output_tokens=outcome.output_tokens,
         )
         latency_ms = int((time.perf_counter() - started) * 1000)
+        thinking_duration_ms = (
+            first_orchestrator_delta_ms
+            if first_orchestrator_delta_ms is not None
+            else (
+                agent_started_offset_ms + outcome.thinking_duration_ms
+                if outcome.thinking_duration_ms is not None
+                else latency_ms
+            )
+        )
         recalled_mem_models = [
             RecalledMemoryItem(**m) for m in evidence.recalled_memories.values()
         ]
@@ -4384,6 +4399,8 @@ class ResearchChatOrchestrator:
             screening_results=screening_results,
             tool_traces=tool_traces,
             activity_log=activity_log,
+            research_brief=active_brief.to_dict() if active_brief is not None else None,
+            verdict_cards=[c.to_dict() for c in verdict_cards],
             calculator_traces=calculator_traces,
             graph_hops=graph_hops,
             discrepancy_alerts=discrepancy_alerts,
@@ -4430,7 +4447,9 @@ class ResearchChatOrchestrator:
                 input_tokens=outcome.input_tokens,
                 cached_tokens=outcome.cached_tokens,
                 output_tokens=outcome.output_tokens,
+                reasoning_tokens=outcome.reasoning_tokens,
                 cost_usd=cost_usd,
+                thinking_duration_ms=thinking_duration_ms,
                 latency_ms=latency_ms,
             ),
         )

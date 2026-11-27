@@ -203,12 +203,19 @@ def apply_litellm_completion_policy(
         or settings.llm_base_url
         or ""
     ).casefold()
+    thinking = _thinking_override(normalized.get("extra_body"))
     if _is_deepseek_v4(model):
         extra_body = dict(normalized.get("extra_body") or {})
-        extra_body["thinking"] = {"type": "disabled"}
+        if thinking is True:
+            extra_body["enable_thinking"] = True
+            template_kwargs = dict(extra_body.get("chat_template_kwargs") or {})
+            template_kwargs["enable_thinking"] = True
+            extra_body["chat_template_kwargs"] = template_kwargs
+            extra_body.pop("thinking", None)
+        else:
+            extra_body["thinking"] = {"type": "disabled"}
         normalized["extra_body"] = extra_body
 
-    thinking = _thinking_override(normalized.get("extra_body"))
     if thinking is None and _needs_chat_template_disable_thinking(model):
         extra_body = dict(normalized.get("extra_body") or {})
         template_kwargs = dict(extra_body.get("chat_template_kwargs") or {})

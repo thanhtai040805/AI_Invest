@@ -208,7 +208,9 @@ class ResearchTelemetry(BaseModel):
     input_tokens: int = 0
     cached_tokens: int = 0
     output_tokens: int = 0
+    reasoning_tokens: int = 0
     cost_usd: float = 0.0
+    thinking_duration_ms: int | None = None
     latency_ms: int = 0
 
 
@@ -229,6 +231,8 @@ class ResearchChatMetadata(BaseModel):
     screening_results: list[dict[str, Any]] = Field(default_factory=list)
     tool_traces: list[dict[str, Any]] = Field(default_factory=list)
     activity_log: list[dict[str, Any]] = Field(default_factory=list)
+    research_brief: dict[str, Any] | None = None
+    verdict_cards: list[dict[str, Any]] = Field(default_factory=list)
     calculator_traces: list[CalculatorTraceItem] = Field(default_factory=list)
     graph_hops: list[GraphHopItem] = Field(default_factory=list)
     discrepancy_alerts: list[DiscrepancyAlertItem] = Field(default_factory=list)

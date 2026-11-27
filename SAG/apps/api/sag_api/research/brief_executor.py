@@ -176,6 +176,19 @@ class ClaimVerdictCard:
     escalation_query: str | None = None
     escalated: bool = False
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "claim_id": self.claim_id,
+            "is_premise": self.is_premise,
+            "statement": self.statement,
+            "period": self.period,
+            "status": self.status,
+            "summary_lines": list(self.summary_lines),
+            "badges": list(self.badges),
+            "escalation_query": self.escalation_query,
+            "escalated": self.escalated,
+        }
+
     def render_for_synthesis(self) -> str:
         role_lbl = "TIỀN ĐỀ CẦN KIỂM TRA" if self.is_premise else "Ý PHÂN TÍCH"
         p_lbl = f" ({self.period})" if self.period else ""
@@ -726,11 +739,15 @@ async def _run_quant_specs_for_claim(
     fs: FactSet | None,
     located: LocatedTargets,
     ctx: ResearchToolContext,
+    on_tool_call: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    on_tool_result: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    on_stage: Callable[[str, str, str], Awaitable[None]] | None = None,
 ) -> tuple[list[str], list[str], str | None]:
     """Execute all 0-token deterministic specs (`fact:*`, `kpi:*`, `risk`, `peers`, `agm`, `kg`, `screen`, `table:*`).
 
     Returns `(summary_lines, badges, anomaly_escalation_query_or_None)`.
     """
+    t_quant_start = time.perf_counter()
     lines: list[str] = []
     badges: list[str] = []
     escalation_hint: str | None = None
@@ -744,6 +761,48 @@ async def _run_quant_specs_for_claim(
     kg_specs = [ev for ev in claim.evidence if ev == "kg" or ev.startswith("kg:")]
     table_specs = [ev for ev in claim.evidence if ev.startswith("table:")]
     wants_mem = "mem" in claim.evidence
+    has_fin_quant = bool(fact_items or kpi_items or wants_risk or wants_peers or wants_agm)
+    quant_call_id = f"quant-{claim.id}"
+    if has_fin_quant:
+        primary_tool = (
+            "check_plan_vs_actual"
+            if wants_agm
+            else "compare_peers"
+            if wants_peers
+            else "scan_financial_risks"
+            if wants_risk and not fact_items and not kpi_items
+            else "get_sector_kpis"
+            if kpi_items and not fact_items
+            else "get_financial_statements"
+        )
+        spec_preview_parts: list[str] = []
+        if fact_items:
+            spec_preview_parts.append(f"BCTC ({', '.join(fact_items[:4])})")
+        if kpi_items:
+            spec_preview_parts.append(f"KPI ({', '.join(kpi_items[:4])})")
+        if wants_risk:
+            spec_preview_parts.append("Quét cờ rủi ro")
+        if wants_peers:
+            spec_preview_parts.append("So sánh cùng ngành")
+        if wants_agm:
+            spec_preview_parts.append("KH ĐHĐCĐ vs Thực hiện")
+        if on_stage is not None:
+            await on_stage("calculator", "running", f"Đang kiểm chứng số liệu định lượng ({claim.id})...")
+        if on_tool_call is not None:
+            await on_tool_call(
+                {
+                    "id": quant_call_id,
+                    "call_id": quant_call_id,
+                    "type": "tool_call",
+                    "turn": 1,
+                    "tool": primary_tool,
+                    "label": f"Kiểm chứng số liệu BCTC & KPI ({claim.id})",
+                    "stage": "calculator",
+                    "status": "running",
+                    "tickers": list(tickers[:6]),
+                    "args_preview": " · ".join(spec_preview_parts),
+                }
+            )
 
     if wants_screen and located.summary_lines:
         lines.extend(located.summary_lines[:6])
@@ -1109,14 +1168,54 @@ async def _run_quant_specs_for_claim(
                         f"tiến độ {row['pace']})."
                     )
 
+    if has_fin_quant and on_tool_result is not None:
+        q_dur = int((time.perf_counter() - t_quant_start) * 1000)
+        calc_badges = [b.strip("[]") for b in badges if b.startswith("[CALC-")]
+        latest_calc_preview: dict[str, Any] | None = None
+        if calc_badges and ctx.evidence.calculator_traces:
+            first_cid = calc_badges[0]
+            matched_tr = next(
+                (t for t in ctx.evidence.calculator_traces if str(t.get("calc_id") or "") == first_cid),
+                None,
+            )
+            if matched_tr and matched_tr.get("formatted"):
+                latest_calc_preview = {
+                    "calc_id": first_cid,
+                    "formula": str(matched_tr.get("formula") or ""),
+                    "description": str(matched_tr.get("description") or ""),
+                    "formatted": str(matched_tr.get("formatted") or ""),
+                }
+        await on_tool_result(
+            {
+                "id": quant_call_id,
+                "call_id": quant_call_id,
+                "type": "tool_call",
+                "turn": 1,
+                "tool": primary_tool,
+                "label": f"Kiểm chứng số liệu BCTC & KPI ({claim.id})",
+                "stage": "calculator",
+                "status": "done",
+                "duration_ms": q_dur,
+                "returned_count": len(lines),
+                "summary": (
+                    f"Trích xuất {len(lines)} dòng số liệu tất định"
+                    + (f" ({', '.join(calc_badges[:3])})" if calc_badges else "")
+                ),
+                "calc_result": latest_calc_preview,
+            }
+        )
+        if on_stage is not None:
+            await on_stage("calculator", "done", f"Hoàn tất kiểm chứng định lượng ({claim.id})")
+
     # 6) Knowledge Graph 3-layer query (`0` LLM tokens)
     if kg_specs and ctx.enable_kg and tickers:
         async def _noop(_p: Any) -> None:
             return None
 
+        kg_call_id = f"kg-{claim.id}"
         tctx = ToolContext(
             run_id="brief-kg",
-            tool_call_id=f"kg-{claim.id}",
+            tool_call_id=kg_call_id,
             data=ctx,
             cancellation=CancellationToken(),
             _on_progress=_noop,
@@ -1125,14 +1224,67 @@ async def _run_quant_specs_for_claim(
         kg_args: dict[str, Any] = {"tickers": list(tickers[:4])}
         if macro_hint:
             kg_args["macro_factor"] = macro_hint
+        if on_stage is not None:
+            await on_stage("graph_hop", "running", f"Đang truy vấn đồ thị 3 tầng ({claim.id})...")
+        if on_tool_call is not None:
+            await on_tool_call(
+                {
+                    "id": kg_call_id,
+                    "call_id": kg_call_id,
+                    "type": "tool_call",
+                    "turn": 1,
+                    "tool": "query_knowledge_graph",
+                    "label": f"Đồ thị tri thức 3 tầng ({claim.id})",
+                    "stage": "graph_hop",
+                    "status": "running",
+                    "tickers": list(tickers[:4]),
+                    "args_preview": f"Mã {', '.join(tickers[:4])}" + (f" · vĩ mô `{macro_hint}`" if macro_hint else ""),
+                }
+            )
+        t_kg = time.perf_counter()
         try:
             kg_res = await query_knowledge_graph_tool.execute(kg_args, tctx)
-            for h in (kg_res.details.get("kg_hops") or ())[:5]:
+            hops_list = list(kg_res.details.get("kg_hops") or ())[:5]
+            for h in hops_list:
                 b_tag = f"[KG:{h.get('layer')}|{h.get('verification_tier')}]"
                 badges.append(b_tag)
                 lines.append(f"{b_tag} {h.get('src_label')} --({h.get('relation_type')})--> {h.get('dst_label')}")
-        except Exception:  # noqa: BLE001
+            if on_tool_result is not None:
+                await on_tool_result(
+                    {
+                        "id": kg_call_id,
+                        "call_id": kg_call_id,
+                        "type": "tool_call",
+                        "turn": 1,
+                        "tool": "query_knowledge_graph",
+                        "label": f"Đồ thị tri thức 3 tầng ({claim.id})",
+                        "stage": "graph_hop",
+                        "status": "done",
+                        "duration_ms": int((time.perf_counter() - t_kg) * 1000),
+                        "returned_count": len(hops_list),
+                        "summary": f"Truy xuất {len(hops_list)} liên kết đồ thị PIT",
+                        "kg_hops": hops_list,
+                    }
+                )
+        except Exception as exc:  # noqa: BLE001
             lines.append("Đồ thị tri thức 3 tầng: chưa có liên kết PIT phù hợp.")
+            if on_tool_result is not None:
+                await on_tool_result(
+                    {
+                        "id": kg_call_id,
+                        "call_id": kg_call_id,
+                        "type": "tool_call",
+                        "turn": 1,
+                        "tool": "query_knowledge_graph",
+                        "label": f"Đồ thị tri thức 3 tầng ({claim.id})",
+                        "stage": "graph_hop",
+                        "status": "error",
+                        "duration_ms": int((time.perf_counter() - t_kg) * 1000),
+                        "summary": f"Chưa có liên kết đồ thị PIT ({type(exc).__name__})",
+                    }
+                )
+        if on_stage is not None:
+            await on_stage("graph_hop", "done", f"Hoàn tất đồ thị ({claim.id})")
 
     # 7) Hydrated 2D PDF tables (`0` LLM tokens)
     if table_specs and tickers:
@@ -1140,19 +1292,39 @@ async def _run_quant_specs_for_claim(
             return None
 
         stmt_kind = table_specs[0].split(":", 1)[1].strip() or "ALL"
+        tbl_call_id = f"tbl-{claim.id}"
         tctx = ToolContext(
             run_id="brief-tbl",
-            tool_call_id=f"tbl-{claim.id}",
+            tool_call_id=tbl_call_id,
             data=ctx,
             cancellation=CancellationToken(),
             _on_progress=_noop_t,
         )
+        if on_stage is not None:
+            await on_stage("table_hydration", "running", f"Đang nạp bảng tài chính 2D ({claim.id})...")
+        if on_tool_call is not None:
+            await on_tool_call(
+                {
+                    "id": tbl_call_id,
+                    "call_id": tbl_call_id,
+                    "type": "tool_call",
+                    "turn": 1,
+                    "tool": "hydrate_financial_tables",
+                    "label": f"Nạp bảng tài chính 2D ({claim.id})",
+                    "stage": "table_hydration",
+                    "status": "running",
+                    "tickers": list(tickers[:3]),
+                    "args_preview": f"Mã {', '.join(tickers[:3])} · loại `{stmt_kind}`",
+                }
+            )
+        t_tbl = time.perf_counter()
         try:
             tbl_res = await hydrate_financial_tables_tool.execute(
                 {"tickers": list(tickers[:3]), "statement_kind": stmt_kind},
                 tctx,
             )
-            for tbl in (tbl_res.details.get("hydrated_tables") or ())[:3]:
+            tbl_list = list(tbl_res.details.get("hydrated_tables") or ())[:3]
+            for tbl in tbl_list:
                 tid = tbl.get("table_id")
                 if tid:
                     badges.append(f"[TBL:{tid}]")
@@ -1160,8 +1332,41 @@ async def _run_quant_specs_for_claim(
                         f"[TBL:{tid}] Bảng 2D {tbl.get('project_id')}: {tbl.get('title')} "
                         f"({tbl.get('verification_status')})"
                     )
-        except Exception:  # noqa: BLE001
-            pass
+            if on_tool_result is not None:
+                await on_tool_result(
+                    {
+                        "id": tbl_call_id,
+                        "call_id": tbl_call_id,
+                        "type": "tool_call",
+                        "turn": 1,
+                        "tool": "hydrate_financial_tables",
+                        "label": f"Nạp bảng tài chính 2D ({claim.id})",
+                        "stage": "table_hydration",
+                        "status": "done",
+                        "duration_ms": int((time.perf_counter() - t_tbl) * 1000),
+                        "returned_count": len(tbl_list),
+                        "summary": f"Đã nạp {len(tbl_list)} bảng 2D kiểm toán",
+                        "hydrated_tables": tbl_list,
+                    }
+                )
+        except Exception as exc:  # noqa: BLE001
+            if on_tool_result is not None:
+                await on_tool_result(
+                    {
+                        "id": tbl_call_id,
+                        "call_id": tbl_call_id,
+                        "type": "tool_call",
+                        "turn": 1,
+                        "tool": "hydrate_financial_tables",
+                        "label": f"Nạp bảng tài chính 2D ({claim.id})",
+                        "stage": "table_hydration",
+                        "status": "error",
+                        "duration_ms": int((time.perf_counter() - t_tbl) * 1000),
+                        "summary": f"Không nạp được bảng 2D ({type(exc).__name__})",
+                    }
+                )
+        if on_stage is not None:
+            await on_stage("table_hydration", "done", f"Hoàn tất nạp bảng 2D ({claim.id})")
 
     return lines, list(dict.fromkeys(badges)), escalation_hint
 
@@ -1593,6 +1798,7 @@ async def execute_brief_claims(
     ctx: ResearchToolContext,
     model: ModelProvider,
     overall_deadline_mono: float | None = None,
+    on_stage: Callable[[str, str, str], Awaitable[None]] | None = None,
     on_thought: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     on_tool_call: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     on_tool_result: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
@@ -1611,6 +1817,25 @@ async def execute_brief_claims(
     total_usage = Usage()
     total_tool_calls = 0
 
+    def _card_thought_payload(card: ClaimVerdictCard) -> dict[str, Any]:
+        role_title = "Kiểm chứng tiền đề" if card.is_premise else "Thẻ kết luận"
+        esc_suffix = " · Đã đào sâu vòng 2" if card.escalated else ""
+        return {
+            "id": f"card-{card.claim_id}",
+            "type": "thought",
+            "turn": 1,
+            "kind": "verdict_card",
+            "verdict_status": card.status,
+            "is_premise": card.is_premise,
+            "period": card.period,
+            "claim_statement": card.statement,
+            "badges": list(card.badges[:12]),
+            "escalated": card.escalated,
+            "status": "done",
+            "title": f"{role_title} [{card.claim_id}] · {card.status}{esc_suffix}",
+            "text": "\n".join(card.summary_lines[:6])[:1200],
+        }
+
     async def _evaluate_one_claim(
         claim: ClaimSpec,
         *,
@@ -1623,6 +1848,9 @@ async def execute_brief_claims(
             fs=fs,
             located=located,
             ctx=ctx,
+            on_tool_call=on_tool_call,
+            on_tool_result=on_tool_result,
+            on_stage=on_stage,
         )
         summary_lines = list(quant_lines)
         c_usage = Usage()
@@ -1731,16 +1959,7 @@ async def execute_brief_claims(
             escalation_query=esc_q,
         )
         if on_thought is not None:
-            await on_thought(
-                {
-                    "id": f"card-{claim.id}",
-                    "type": "thought",
-                    "turn": 1,
-                    "kind": "verdict_card",
-                    "title": f"Thẻ kết luận [{claim.id}] · {final_status}",
-                    "text": "\n".join(summary_lines[:3])[:700],
-                }
-            )
+            await on_thought(_card_thought_payload(card))
         return card, c_usage, c_tools
 
     # 1) Execute `premises_to_check` FIRST
@@ -1799,6 +2018,23 @@ async def execute_brief_claims(
     )
 
     if will_escalate:
+        if on_thought is not None:
+            for c_esc in escalation_candidates:
+                await on_thought(
+                    {
+                        "id": f"escalate-{c_esc.claim_id}",
+                        "type": "thought",
+                        "turn": 2,
+                        "kind": "escalation",
+                        "status": "done",
+                        "title": f"Đào sâu bất thường vòng 2 [{c_esc.claim_id}]",
+                        "text": (
+                            f"Phát hiện chi tiết cần đối chiếu thêm (`{c_esc.escalation_query}`) "
+                            "— tra cứu thuyết minh bổ sung."
+                        ),
+                    }
+                )
+
         async def _run_followup(card: ClaimVerdictCard) -> tuple[list[str], list[str], Usage, int]:
             assert card.escalation_query is not None
             probe_claim = ClaimSpec(
@@ -1834,6 +2070,8 @@ async def execute_brief_claims(
                         card.badges.append(b)
                 if card.status == "NO_DATA":
                     card.status = "PARTIAL"
+                if on_thought is not None:
+                    await on_thought(_card_thought_payload(card))
 
     # Final full verdict cards = exact synthesis input (never truncated in the trace)
     spec_by_id = {s.id: s for s in [*brief.premises_to_check, *brief.claims]}

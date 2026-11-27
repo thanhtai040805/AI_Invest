@@ -163,6 +163,8 @@ async def synthesize_from_verdict_cards(
     model: ModelProvider,
     pit_adjustments: Sequence[str] = (),
     attach_disclaimer: bool = False,
+    enable_thinking: bool = True,
+    on_reasoning_delta: Callable[[str], Awaitable[None]] | None = None,
     on_delta: Callable[[str], Awaitable[None]] | None = None,
     timeout_seconds: float = 45.0,
     trace: TraceSink | None = None,
@@ -196,6 +198,7 @@ async def synthesize_from_verdict_cards(
         ),
         tools=(),
         turn=1,
+        metadata={"enable_thinking": True} if enable_thinking else {},
     )
     emitted_chunks: list[str] = []
     raw_model_parts: list[str] = []
@@ -211,9 +214,15 @@ async def synthesize_from_verdict_cards(
                     out_tok = max(out_tok, chunk.usage.output_tokens)
                     cached_tok = max(cached_tok, chunk.usage.cached_tokens)
                     reas_tok = max(reas_tok, chunk.usage.reasoning_tokens)
+                if chunk.reasoning_delta and on_reasoning_delta is not None:
+                    await on_reasoning_delta(chunk.reasoning_delta)
                 if chunk.text_delta:
                     raw_model_parts.append(chunk.text_delta)
                     out_sentences = gate.push_delta(chunk.text_delta)
+                    if on_reasoning_delta is not None:
+                        for t_extracted in gate.drain_extracted_thoughts():
+                            if t_extracted:
+                                await on_reasoning_delta(t_extracted)
                     for s_out in out_sentences:
                         emitted_chunks.append(s_out)
                         if on_delta is not None:
@@ -224,6 +233,10 @@ async def synthesize_from_verdict_cards(
                 if on_delta is not None:
                     streamed_any = True
                     await on_delta(tail_out)
+            if on_reasoning_delta is not None:
+                for t_extracted in gate.drain_extracted_thoughts():
+                    if t_extracted:
+                        await on_reasoning_delta(t_extracted)
     except TimeoutError:
         timed_out = True
         for tail_out in gate.flush_turn_end(has_tool_calls=False):
@@ -490,6 +503,28 @@ async def repair_stage7_flagged_lines(
     return "\n".join(repaired_lines), usage, modified
 
 
+def upsert_activity_log_item(activity_log: list[dict[str, Any]], item: dict[str, Any]) -> None:
+    """Coalesce streaming `append=True` thoughts and update `tool_call`/`verdict_card` items in place."""
+    if item.get("append") and item.get("id"):
+        step_id = item["id"]
+        existing = next((entry for entry in activity_log if entry.get("id") == step_id), None)
+        if existing is not None:
+            existing["text"] = f"{existing.get('text') or ''}{item.get('text') or ''}"
+            if item.get("timestamp_ms") is not None:
+                existing["completed_at_ms"] = item["timestamp_ms"]
+        else:
+            activity_log.append({**item, "append": False})
+        return
+
+    match_key = item.get("call_id") or item.get("id")
+    if match_key:
+        for idx, existing in enumerate(activity_log):
+            if (existing.get("call_id") or existing.get("id")) == match_key:
+                activity_log[idx] = {**existing, **item, "append": False}
+                return
+    activity_log.append({**item, "append": False})
+
+
 async def run_brief_centric_turn(
     *,
     query: str,
@@ -512,27 +547,67 @@ async def run_brief_centric_turn(
     overall_deadline_mono = asyncio.get_running_loop().time() + max(5.0, overall_timeout_seconds)
     activity_log: list[dict[str, Any]] = []
     extra_blindspots: list[dict[str, str]] = []
+    first_delta_ms: int | None = None
 
     def _elapsed_ms() -> int:
         return int((time.perf_counter() - started) * 1000)
 
     async def _record_thought(evt: dict[str, Any]) -> None:
         item = {**evt, "timestamp_ms": _elapsed_ms()}
-        activity_log.append(item)
+        upsert_activity_log_item(activity_log, item)
         if on_thought is not None:
             await on_thought(item)
 
     async def _record_tool_call(evt: dict[str, Any]) -> None:
         item = {**evt, "timestamp_ms": _elapsed_ms()}
-        activity_log.append(item)
+        upsert_activity_log_item(activity_log, item)
         if on_tool_call is not None:
             await on_tool_call(item)
 
     async def _record_tool_result(evt: dict[str, Any]) -> None:
         item = {**evt, "completed_at_ms": _elapsed_ms()}
-        activity_log.append(item)
+        upsert_activity_log_item(activity_log, item)
         if on_tool_result is not None:
             await on_tool_result(item)
+
+    async def _tracked_on_delta(text_chunk: str) -> None:
+        nonlocal first_delta_ms
+        if first_delta_ms is None and text_chunk.strip():
+            first_delta_ms = _elapsed_ms()
+        if on_delta is not None:
+            await on_delta(text_chunk)
+
+    async def _on_brief_reasoning(r_delta: str) -> None:
+        if not r_delta:
+            return
+        await _record_thought(
+            {
+                "id": "brief-reasoning-1",
+                "type": "thought",
+                "turn": 1,
+                "kind": "reasoning",
+                "title": "Phân tích câu hỏi & thiết kế đề bài",
+                "text": r_delta,
+                "append": True,
+                "status": "done",
+            }
+        )
+
+    async def _on_synth_reasoning(r_delta: str) -> None:
+        if not r_delta:
+            return
+        await _record_thought(
+            {
+                "id": "synthesis-reasoning-1",
+                "type": "thought",
+                "turn": 2,
+                "kind": "reasoning",
+                "title": "Tổng hợp luận điểm & đối chiếu chéo bằng chứng",
+                "text": r_delta,
+                "append": True,
+                "status": "done",
+            }
+        )
 
     session_ctx = ctx.session_ledger.to_prompt_context(
         include_recent_pairs=ctx.include_recent_pairs,
@@ -555,9 +630,13 @@ async def run_brief_centric_turn(
         chat_mode=ctx.chat_mode,
         session_context=session_ctx,
         memory_context=mem_ctx,
+        enable_thinking=True,
+        on_reasoning_delta=_on_brief_reasoning,
         trace=trace,
     )
     total_usage = brief_usage
+    if on_stage is not None:
+        await on_stage("routing", "done", "Đã khóa đề bài phân tích & ràng buộc PIT")
 
     if val_out.denied_tickers:
         extra_blindspots.append(
@@ -617,7 +696,7 @@ async def run_brief_centric_turn(
         streamed = False
         if on_delta is not None:
             streamed = True
-            await on_delta(q_reply)
+            await _tracked_on_delta(q_reply)
         outcome = AgentTurnOutcome(
             answer_text=q_reply,
             agent_turns=total_usage.requests,
@@ -625,6 +704,8 @@ async def run_brief_centric_turn(
             input_tokens=total_usage.input_tokens,
             output_tokens=total_usage.output_tokens,
             cached_tokens=total_usage.cached_tokens,
+            reasoning_tokens=total_usage.reasoning_tokens,
+            thinking_duration_ms=first_delta_ms if first_delta_ms is not None else _elapsed_ms(),
             streamed_deltas=streamed,
             extra_blindspots=extra_blindspots,
             activity_log=activity_log,
@@ -660,14 +741,44 @@ async def run_brief_centric_turn(
         ],
     )
     if brief.entities.candidate_search is not None:
+        preview_rows = [
+            {
+                "ticker": str(r.get("ticker") or ""),
+                "pe": (r.get("metrics") or {}).get("pe"),
+                "pb": (r.get("metrics") or {}).get("pb"),
+                "roe": (r.get("metrics") or {}).get("roe"),
+            }
+            for r in located.candidate_rows[:5]
+            if r.get("ticker")
+        ]
         await _record_thought(
             {
                 "id": "locator-1",
                 "type": "thought",
                 "turn": 1,
                 "kind": "plan",
-                "title": "Định vị đối tượng phân tích (0 LLM token)",
+                "status": "done",
+                "tickers": list(located.analysis_tickers),
+                "screening_preview": preview_rows,
+                "title": "Định vị ứng viên toàn sàn (0 LLM token)",
                 "text": "\n".join(located.summary_lines[:5]) or "Không tìm thấy ứng viên khớp bộ lọc.",
+            }
+        )
+    elif located.analysis_tickers:
+        cov_txt = f"\n• {located.coverage_note}" if located.coverage_note else ""
+        await _record_thought(
+            {
+                "id": "locator-1",
+                "type": "thought",
+                "turn": 1,
+                "kind": "plan",
+                "status": "done",
+                "tickers": list(located.analysis_tickers),
+                "title": "Khóa phạm vi đối tượng & Point-in-Time",
+                "text": (
+                    f"Mã phân tích: {', '.join(located.analysis_tickers)} · "
+                    f"Khóa sổ PIT: {ctx.as_of_date.isoformat()}{cov_txt}"
+                ),
             }
         )
 
@@ -681,6 +792,7 @@ async def run_brief_centric_turn(
                 ctx=ctx,
                 model=model,
                 overall_deadline_mono=overall_deadline_mono,
+                on_stage=on_stage,
                 on_thought=_record_thought,
                 on_tool_call=_record_tool_call,
                 on_tool_result=_record_tool_result,
@@ -697,6 +809,8 @@ async def run_brief_centric_turn(
         exec_res = BriefExecutionResult(located=located)
 
     total_usage = total_usage.plus(exec_res.usage)
+    if on_stage is not None:
+        await on_stage("retrieval", "done", "Đã hoàn tất thu thập bằng chứng & thẻ kết luận")
 
     # ── Step (6): Compact Synthesis from Claim Verdict Cards ──────────────────
     if on_stage is not None:
@@ -711,7 +825,9 @@ async def run_brief_centric_turn(
         model=model,
         pit_adjustments=val_out.pit_adjustments,
         attach_disclaimer=bool(route_decision.get("attach_investment_disclaimer")),
-        on_delta=on_delta,
+        enable_thinking=True,
+        on_reasoning_delta=_on_synth_reasoning,
+        on_delta=_tracked_on_delta,
         timeout_seconds=rem_synth,
         trace=trace,
     )
@@ -739,6 +855,8 @@ async def run_brief_centric_turn(
         input_tokens=total_usage.input_tokens,
         output_tokens=total_usage.output_tokens,
         cached_tokens=total_usage.cached_tokens,
+        reasoning_tokens=total_usage.reasoning_tokens,
+        thinking_duration_ms=first_delta_ms if first_delta_ms is not None else _elapsed_ms(),
         streamed_deltas=streamed_any,
         error_message=None if answer_text else "Synthesis returned empty output",
         extra_blindspots=extra_blindspots,
