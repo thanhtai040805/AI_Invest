@@ -584,7 +584,7 @@ class AsyncPGCoreMetricsReader:
         *,
         pool_factory: Callable[..., Awaitable[Any]] | None = None,
         timeout: float = 5.0,
-        command_timeout: float = 8.0,
+        command_timeout: float = 20.0,
     ) -> None:
         self._dsn = _normalize_pg_dsn(core_database_url)
         if not self._dsn:
@@ -724,6 +724,8 @@ class AsyncPGCoreMetricsReader:
         statement_types: Sequence[str] = ("BS", "IS", "CF"),
     ) -> list[dict[str, Any]]:
         norm_tks = _norm_ticker_param(tickers)
+        want_set = set(norm_tks) if norm_tks is not None else None
+        sql_tks = None if (norm_tks is not None and len(norm_tks) >= 300) else norm_tks
         raw_sts = {str(s).strip() for s in statement_types if str(s).strip()}
         expanded_sts = sorted({s.upper() for s in raw_sts} | {s.lower() for s in raw_sts})
         min_date = as_of_date - timedelta(days=365 * max(1, lookback_years) + 30)
@@ -771,7 +773,9 @@ class AsyncPGCoreMetricsReader:
             ORDER BY symbol ASC, period_end DESC
         """
         async with pool.acquire() as conn:
-            rows = await conn.fetch(sql, as_of_date, min_date, norm_tks, expanded_sts)
+            rows = await conn.fetch(sql, as_of_date, min_date, sql_tks, expanded_sts)
+        if want_set is not None and sql_tks is None:
+            return [dict(r) for r in rows if str(r.get("symbol") or "").strip().upper() in want_set]
         return [dict(r) for r in rows]
 
     async def fetch_pit_market_caps(
@@ -787,18 +791,21 @@ class AsyncPGCoreMetricsReader:
         1. Latest `market_data_daily.close_unadj * 1000.0` (`date <= as_of_date`, 365d lookback for illiquid tail),
            preferring positive `market_data_daily.market_cap` when present.
         2. PIT-eligible `BS` shares (`bs_off_outstanding_shares` or `charter_capital / 10,000` par VND, including
-           `vnstock_vci` `'Common shares'`).
+           `vnstock_vci` `'Common shares'`), materialized via 1-row-per-ticker `DISTINCT ON (symbol)` before
+           decompressing JSONB `data`.
         3. Optional treasury/in-transit refinement from `ratios.rt_value_outstanding_shares` STRICTLY guarded by
            `NOT EXISTS` post-`trade_date` share-count `corporate_actions` (`SPLIT`, `STOCK_DIVIDEND`, `RIGHTS`)
            so vendor post-split backfills never leak future share counts (`Gate G4 = 0%`).
         """
         norm_tks = _norm_ticker_param(tickers)
+        want_set = set(norm_tks) if norm_tks is not None else None
+        sql_tks = None if (norm_tks is not None and len(norm_tks) >= 300) else norm_tks
         min_trade_date = as_of_date - timedelta(days=366)
         min_bs_date = as_of_date - timedelta(days=760)
         num_re = r"^-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$"
         pool = await self._get_pool()
         sql = f"""
-            WITH latest_px AS (
+            WITH latest_px AS MATERIALIZED (
                 SELECT DISTINCT ON (ticker)
                        UPPER(TRIM(ticker)) AS ticker,
                        date AS trade_date,
@@ -811,10 +818,31 @@ class AsyncPGCoreMetricsReader:
                   AND ($3::text[] IS NULL OR ticker = ANY($3::text[]))
                 ORDER BY ticker ASC, date DESC
             ),
-            latest_bs AS (
+            raw_bs AS MATERIALIZED (
                 SELECT DISTINCT ON (symbol)
                        UPPER(TRIM(symbol)) AS ticker,
-                       period_end,
+                       data
+                FROM financial_statements
+                WHERE statement_type IN ('BS', 'bs')
+                  AND source IN ('alphastock', 'vnstock_vci')
+                  AND period_end <= $1
+                  AND period_end >= $4
+                  AND ($3::text[] IS NULL OR symbol = ANY($3::text[]))
+                  AND (
+                    CASE
+                      WHEN published_date IS NOT NULL
+                           AND published_date > period_end
+                           AND published_date <= (period_end + INTERVAL '180 days')::date
+                      THEN published_date
+                      WHEN LOWER(TRIM(frequency)) IN ('yearly', 'annual')
+                      THEN (period_end + INTERVAL '90 days')::date
+                      ELSE (period_end + INTERVAL '45 days')::date
+                    END
+                  ) <= $1
+                ORDER BY symbol ASC, period_end DESC, CASE WHEN source = 'alphastock' THEN 0 ELSE 1 END ASC
+            ),
+            latest_bs AS (
+                SELECT ticker,
                        CASE WHEN (data->>'bs_off_outstanding_shares') ~ '{num_re}'
                             THEN NULLIF((data->>'bs_off_outstanding_shares')::float8, 0) END AS bs_off_sh,
                        COALESCE(
@@ -835,30 +863,12 @@ class AsyncPGCoreMetricsReader:
                            CASE WHEN (data->>'vốn góp') ~ '{num_re}'
                                 THEN NULLIF((data->>'vốn góp')::float8, 0) END
                        ) AS cc_vnd
-                FROM financial_statements
-                WHERE statement_type IN ('BS', 'bs')
-                  AND source IN ('alphastock', 'vnstock_vci')
-                  AND period_end <= $1
-                  AND period_end >= $4
-                  AND ($3::text[] IS NULL OR symbol = ANY($3::text[]))
-                  AND (
-                    CASE
-                      WHEN published_date IS NOT NULL
-                           AND published_date > period_end
-                           AND published_date <= (period_end + INTERVAL '180 days')::date
-                      THEN published_date
-                      WHEN LOWER(TRIM(frequency)) IN ('yearly', 'annual')
-                      THEN (period_end + INTERVAL '90 days')::date
-                      ELSE (period_end + INTERVAL '45 days')::date
-                    END
-                  ) <= $1
-                ORDER BY symbol ASC, period_end DESC, CASE WHEN source = 'alphastock' THEN 0 ELSE 1 END ASC
+                FROM raw_bs
             ),
-            latest_rt AS (
+            raw_rt AS MATERIALIZED (
                 SELECT DISTINCT ON (symbol)
                        UPPER(TRIM(symbol)) AS ticker,
-                       CASE WHEN (data->>'rt_value_outstanding_shares') ~ '{num_re}'
-                            THEN NULLIF((data->>'rt_value_outstanding_shares')::float8, 0) END AS rt_sh
+                       data
                 FROM financial_statements
                 WHERE statement_type IN ('ratios', 'RATIOS')
                   AND source = 'alphastock'
@@ -877,6 +887,12 @@ class AsyncPGCoreMetricsReader:
                     END
                   ) <= $1
                 ORDER BY symbol ASC, period_end DESC
+            ),
+            latest_rt AS (
+                SELECT ticker,
+                       CASE WHEN (data->>'rt_value_outstanding_shares') ~ '{num_re}'
+                            THEN NULLIF((data->>'rt_value_outstanding_shares')::float8, 0) END AS rt_sh
+                FROM raw_rt
             )
             SELECT px.ticker,
                    COALESCE(
@@ -901,10 +917,12 @@ class AsyncPGCoreMetricsReader:
             LEFT JOIN latest_rt rt ON rt.ticker = px.ticker
         """
         async with pool.acquire() as conn:
-            rows = await conn.fetch(sql, as_of_date, min_trade_date, norm_tks, min_bs_date)
+            rows = await conn.fetch(sql, as_of_date, min_trade_date, sql_tks, min_bs_date)
         out: dict[str, float] = {}
         for r in rows:
             sym = str(r.get("ticker") or "").strip().upper()
+            if want_set is not None and sym not in want_set:
+                continue
             mc = _finite_float(r.get("market_cap"))
             if sym and mc is not None and mc > 0:
                 out[sym] = mc
