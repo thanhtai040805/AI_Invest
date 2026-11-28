@@ -1,4 +1,4 @@
-"""Logic miền insight: đọc đồ thị sự kiện—thực thể (phục vụ chế độ xem đồ thị tương lai và công cụ get_entity)."""
+"""洞察领域逻辑：事件—实体图谱读取（供未来图谱视图与 get_entity 工具）。"""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ async def get_source_graph(
     entity_limit: int = 1_000,
     document_ids: list[str] | None = None,
 ) -> SourceGraphOut:
-    """Ghép tài liệu Web với sự kiện/thực thể của engine, trả về đồ thị theo ngân sách hiệu năng mà caller cung cấp."""
+    """拼装 Web 文档与引擎事件/实体，按调用方给出的性能预算返回图谱。"""
     scoped_document_ids = (
         list(dict.fromkeys(document_id.strip() for document_id in document_ids if document_id.strip()))
         if document_ids is not None

@@ -1,0 +1,2965 @@
+"""HOSE ResearchInputBuilder: 4 Natural Document Classes + 0%-Drop BCTC + SAG Native Tree.
+
+Architecture v2.1 (eliminating artificial 13-slot shredding in favor of SAG v2's native tree):
+- 4 Natural Document Classes matching real HOSE filings 1-to-1:
+  1. `BCTN_CORE` (`365d`): Core Annual Report narrative, MD&A, operating scale, plans, risks —
+     cleaned via 3-Way BCTN Triage (`KEEP` / `PR` / `DROP`) with Financial-Table Shield.
+  2. `BCTN_PR` (`365d`): Separated Chairman/CEO PR letter (mirrored in `pr_narrative_markdown`
+     so Discrepancy Detector audits management promises vs audited figures without polluting MOAT).
+  3. `BCTC_AUDITED` (`365d`, **0%-Drop Invariant**): Complete Audited Financial Statements
+     (`Audit Opinion + B01..B03 + 100% Notes B09 / TT49 / TT334`) preserved in original company
+     order with normalized Markdown `#/##` headings so SAG v2 builds the exact native Note tree.
+     Covers BOTH standalone `BCTC` filings AND embedded BCTC sections inside `BCTN` filings.
+  4. `AGM_TARGETS` (`180d`) & `QUARTER_NOTES` (`90d`): `NQ_DHDCD` (excluding pure ballot-counting
+     minutes) and `LATEST_QUARTER` / `GIAI_TRINH` (0%-drop).
+- Zero-Hardcode Layout Hygiene (0 LLM):
+  - `detect_repeating_running_lines`: auto-strips repeating page headers/footers (e.g.
+    `THUYẾT MINH BCTC (Tiếp theo) | MẪU SỐ B 09-DN/HN`) before heading extraction.
+  - `calibrate_printed_to_pdf_mapping`: auto-detects `SINGLE_PAGE` cover offset & `SPREAD_A3`
+    2-page spreads (e.g. CTG, PVT, VCI, MWG).
+  - `detect_embedded_bctc_start_page`: locates embedded audited FS + Notes inside BCTN filings
+    so digital BCTNs (FPT, CTG, PVT, VCI) deliver audited Notes at 0đ OCR.
+  - `normalize_financial_markdown_headings`: promotes PyMuPDF bold/large/numbered/ALL-CAPS
+    Note titles into Markdown `#/##` while preserving `<!-- PAGE N -->` anchors.
+  - Separate OCR budgets: `max_targeted_ocr_pages=35` for BCTN narrative, up to `120` pages
+    for BCTC / embedded scanned BCTC so scanned Notes (46–99p) are never truncated.
+  - `DocumentCoverageAudit`: full transparency report per filing (`bctc_notes_coverage_pct`,
+    `noise_reduction_pct`, `tt200_policy_pages`, `sample_headings`, `dropped_by_reason`).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import re
+from collections import Counter
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime
+from statistics import median
+from typing import Any, Literal, Protocol
+
+import fitz
+import httpx
+
+from sag_api.core.config import settings
+from sag_api.core.logging import get_logger
+from sag_api.research.input_inspector import (
+    BranchCode,
+    InspectionResult,
+    ZipExtractionError,
+    inspect_pdf_bytes,
+    normalize_ctg_font_quirks,
+    unwrap_pdf_candidates,
+)
+from sag_api.research.input_selector import (
+    MissingPublishedDateError,
+    normalize_doc_type,
+    parse_fiscal_quarter_from_meta,
+    parse_fiscal_year_from_meta,
+)
+from sag_api.research.vn_bilingual_cleaner import clean_bilingual_markdown
+from sag_api.research.vn_language_gate import (
+    classify_text_language,
+    resolve_english_pages_to_drop,
+)
+
+log = get_logger("research.input_builder")
+
+SubDocSlot = Literal[
+    "BCTN_CORE",
+    "BCTN_PR",
+    "BCTC_AUDITED",
+    "AGM_TARGETS",
+    "QUARTER_NOTES",
+]
+
+SLOT_HALF_LIFE_DAYS: dict[str, int] = {
+    "BCTN_CORE": 365,
+    "BCTN_PR": 365,
+    "BCTC_AUDITED": 365,
+    "AGM_TARGETS": 180,
+    "QUARTER_NOTES": 90,
+}
+
+ALL_SUB_DOC_SLOTS: tuple[str, ...] = tuple(SLOT_HALF_LIFE_DAYS.keys())
+VALID_SLOT_SET: frozenset[str] = frozenset(ALL_SUB_DOC_SLOTS)
+
+# Backward-compatible mapping from legacy S01..S13 labels to the 4 Natural Document Classes.
+LEGACY_SLOT_TO_NATURAL: dict[str, str] = {
+    "S01_MDNA_SEGMENT": "BCTN_CORE",
+    "S02_OPERATING_SCALE": "BCTN_CORE",
+    "S03_PLAN_CAPEX": "BCTN_CORE",
+    "S04_RISK_SWOT": "BCTN_CORE",
+    "S05_AUDIT_OPINION": "BCTC_AUDITED",
+    "S06_SEGMENT_NOTE": "BCTC_AUDITED",
+    "S07_REV_COGS_DETAIL": "BCTC_AUDITED",
+    "S08_FA_DEPR_CIP": "BCTC_AUDITED",
+    "S09_FIN_INVEST_PROV": "BCTC_AUDITED",
+    "S10_DEBT_LEASE_FX": "BCTC_AUDITED",
+    "S11_CAPITAL_POST_EVT": "BCTC_AUDITED",
+    "S12_AGM_TARGETS": "AGM_TARGETS",
+    "S13_QUARTER_NOTES": "QUARTER_NOTES",
+    "KEEP": "BCTN_CORE",
+    "CORE_KEEP": "BCTN_CORE",
+    "PR": "BCTN_PR",
+    "PR_SEPARATE": "BCTN_PR",
+    "DROP": "EXCLUDE",
+    "DROP_NOISE": "EXCLUDE",
+}
+
+
+def normalize_natural_slot(raw_slot: str) -> str | None:
+    """Normalize either a canonical 4-class slot or legacy S01..S13 / triage token."""
+    token = (raw_slot or "").strip().upper()
+    if token == "EXCLUDE":
+        return "EXCLUDE"
+    if token in VALID_SLOT_SET:
+        return token
+    return LEGACY_SLOT_TO_NATURAL.get(token)
+
+
+class InputBuildError(RuntimeError):
+    """Fail-closed error raised when PDF building, OCR, or PIT validation fails."""
+
+
+class OcrAdapterProtocol(Protocol):
+    """Abstract targeted OCR adapter (e.g. MinerU Official API v4 with language='vi')."""
+
+    async def ocr_pdf_pages(
+        self,
+        pdf_bytes: bytes,
+        page_numbers: list[int],
+        *,
+        language: str = "vi",
+    ) -> dict[int, str]: ...
+
+
+@dataclass(slots=True)
+class TocSectionSpan:
+    """A section range mapped to one of the 4 natural classes (or `EXCLUDE` for BCTN noise)."""
+
+    slot: str
+    title: str
+    printed_start: int
+    printed_end: int
+    pdf_start: int | None = None
+    pdf_end: int | None = None
+    confidence: float = 0.85
+    source: str = "DETERMINISTIC_TOC"
+
+
+@dataclass(slots=True)
+class PageOffsetCalibration:
+    """Mapping model converting printed report page numbers into 1-based PDF page indices."""
+
+    mode: Literal["SINGLE_PAGE", "SPREAD_A3", "IDENTITY"] = "IDENTITY"
+    offset: float = 0.0
+    sample_pairs: int = 0
+    confidence: float = 0.0
+
+    def printed_to_pdf(self, printed_page: int, *, max_pages: int) -> int:
+        if self.mode == "SPREAD_A3":
+            mapped = round((float(printed_page) + self.offset) / 2.0)
+        elif self.mode == "SINGLE_PAGE":
+            mapped = round(float(printed_page) + self.offset)
+        else:
+            mapped = int(printed_page)
+        return max(1, min(max_pages, int(mapped)))
+
+
+class TocRouterProtocol(Protocol):
+    """Optional 1-call semantic BCTN 3-Way Triage Router (`KEEP` / `PR` / `DROP` / `BCTC_AUDITED`)."""
+
+    async def route_toc(
+        self,
+        *,
+        ticker: str,
+        doc_type: str,
+        toc_or_outline_text: str,
+        total_pdf_pages: int,
+    ) -> list[TocSectionSpan]: ...
+
+
+@dataclass(slots=True)
+class DocumentCoverageAudit:
+    """Transparent per-filing coverage audit proving 0%-drop on BCTC Notes & BCTN noise reduction."""
+
+    total_pdf_pages: int = 0
+    digital_clean_pages: int = 0
+    scan_pages: int = 0
+    bad_font_pages: int = 0
+    bctn_core_pages: int = 0
+    bctn_pr_pages: int = 0
+    bctc_audited_pages: int = 0
+    agm_or_quarter_pages: int = 0
+    dropped_pages: int = 0
+    noise_reduction_pct: float = 0.0
+    embedded_bctc_start_page: int | None = None
+    bctc_total_pages: int = 0
+    bctc_kept_pages: int = 0
+    bctc_notes_coverage_pct: float = 100.0
+    tt200_policy_pages: list[int] = field(default_factory=list)
+    running_lines_stripped_count: int = 0
+    normalized_headings_count: int = 0
+    sample_headings: list[str] = field(default_factory=list)
+    dropped_by_reason: dict[str, int] = field(default_factory=dict)
+    audited_fs_missing_warning: bool = False
+    embedded_bctc_end_page: int | None = None
+    ocr_truncated_warning: bool = False
+    ocr_truncated_page_count: int = 0
+
+
+@dataclass(slots=True)
+class SubDocumentBundle:
+    project_id: str
+    sub_doc_slot: str
+    half_life_days: int
+    fiscal_year: int
+    fiscal_quarter: int
+    doc_type: str
+    published_date: date
+    valid_from: datetime
+    routed_branch: BranchCode
+    page_numbers: list[int]
+    markdown_content: str
+    content_hash: str
+    ocr_pages_used: int = 0
+    source_url: str = ""
+    title: str = ""
+
+
+@dataclass(slots=True)
+class ResearchInputBuildResult:
+    ticker: str
+    doc_type: str
+    routed_branch: BranchCode
+    inspection: InspectionResult
+    sub_documents: list[SubDocumentBundle] = field(default_factory=list)
+    excluded_pages: dict[int, str] = field(default_factory=dict)
+    pr_narrative_markdown: str = ""
+    follow_up_urls: list[str] = field(default_factory=list)
+    ocr_pages_used: int = 0
+    localization_method: str = "NATIVE_4CLASS_DETERMINISTIC"
+    page_calibration: PageOffsetCalibration = field(default_factory=PageOffsetCalibration)
+    section_spans: list[TocSectionSpan] = field(default_factory=list)
+    missing_core_slots: list[str] = field(default_factory=list)
+    coverage_audit: DocumentCoverageAudit = field(default_factory=DocumentCoverageAudit)
+
+
+# ── Pattern Bank (Strictly scoped to 3-Way Triage & Native Structure) ────────
+
+_PR_HEADING_RE = re.compile(
+    r"(?:thư\s+(?:của\s+)?(?:chủ\s+tịch|tổng\s+giám\s+đốc|người\s+đứng\s+đầu|gửi\s+(?:quý\s+)?cổ\s+đông)|"
+    r"kính\s+thưa\s+(?:quý\s+)?cổ\s+đông|"
+    r"message\s+from\s+(?:the\s+)?(?:chairman|ceo|board)|"
+    r"thông\s+điệp\s+(?:của\s+)?(?:chủ\s+tịch|ban\s+lãnh\s+đạo|tổng\s+giám\s+đốc|hđqt))",
+    re.IGNORECASE,
+)
+
+_ESG_HEADING_RE = re.compile(
+    r"(?:báo\s+cáo\s+(?:phát\s+triển\s+bền\s+vững|esg|môi\s+trường\s*[–\-]\s*xã\s+hội)|"
+    r"phát\s+triển\s+bền\s+vững(?:\s+và\s+trách\s+nhiệm|\s+năm\s+20\d{2}|$)|"
+    r"trách\s+nhiệm\s+xã\s+hội|hoạt\s+động\s+(?:từ\s+thiện|cộng\s+đồng|an\s+sinh\s+xã\s+hội)|"
+    r"phát\s+thải\s+khí\s+nhà\s+kính|bảo\s+vệ\s+môi\s+trường\s+và\s+cộng\s+đồng|\bbáo\s+cáo\s+esg\b)",
+    re.IGNORECASE,
+)
+
+_BCTN_FILLER_HEADING_RE = re.compile(
+    r"(?:danh\s+mục\s+(?:chữ\s+)?viết\s+tắt|giải\s+thưởng\s+(?:tiêu\s+biểu|và\s+danh\s+hiệu)|"
+    r"thông\s+tin\s+liên\s+hệ\s+báo\s+cáo|phản\s+hồi\s+của\s+độc\s+giả|bảng\s+tham\s+chiếu\s+gri)",
+    re.IGNORECASE,
+)
+
+_AGM_PROCEDURAL_RE = re.compile(
+    r"(?:biên\s+bản\s+kiểm\s+phiếu|thể\s+lệ\s+biểu\s+quyết|danh\s+sách\s+ban\s+kiểm\s+phiếu|"
+    r"chương\s+trình\s+đại\s+hội|giấy\s+ủy\s+quyền\s+tham\s+dự|phiếu\s+biểu\s+quyết)",
+    re.IGNORECASE,
+)
+
+_TT200_POLICY_RE = re.compile(
+    r"(?:tóm\s+tắt\s+các\s+chính\s+sách\s+kế\s+toán\s+chủ\s+yếu|"
+    r"các\s+chính\s+sách\s+kế\s+toán\s+(?:chủ\s+yếu|áp\s+dụng)|"
+    r"chuẩn\s+mực\s+kế\s+toán\s+việt\s+nam|cơ\s+sở\s+lập\s+báo\s+cáo\s+tài\s+chính)",
+    re.IGNORECASE,
+)
+
+_POLICY_CHANGE_RE = re.compile(
+    r"(?:thay\s+đổi\s+chính\s+sách\s+kế\s+toán|áp\s+dụng\s+hồi\s+tố|điều\s+chỉnh\s+hồi\s+tố|sai\s+sót\s+trọng\s+yếu)",
+    re.IGNORECASE,
+)
+
+# Financial statements & Notes signatures across TT200 (Corporates), TT49 (Banks), TT334 (Securities)
+_FINANCIAL_SHIELD_RE = re.compile(
+    r"(?:bảng\s+cân\s+đối\s+kế\s+toán|báo\s+cáo\s+tình\s+hình\s+tài\s+chính|"
+    r"báo\s+cáo\s+kết\s+quả\s+hoạt\s+động|báo\s+cáo\s+lưu\s+chuyển\s+tiền\s+tệ|"
+    r"báo\s+cáo\s+tình\s+hình\s+biến\s+động\s+vốn|"
+    r"\bmẫu\s+số\s+b\s*0[1-9]\b|\bb\s*0[1-9][a-z]?\s*-\s*(?:dn|ctck)\b|\bb\s*0[1-5]\s*/\s*tctd\b|"
+    r"thuyết\s+minh\s+báo\s+cáo\s+tài\s+chính|thuyết\s+minh\s+(?:số\s*)?\d+|"
+    r"báo\s+cáo\s+kiểm\s+toán\s+độc\s+lập|ý\s+kiến\s+của\s+kiểm\s+toán\s+viên)",
+    re.IGNORECASE,
+)
+
+_BCTC_SECTION_CUE_RE = re.compile(
+    r"(?:báo\s+cáo\s+tài\s+chính(?:\s+hợp\s+nhất)?(?:\s+đã\s+(?:được\s+)?kiểm\s+toán)?|"
+    r"báo\s+cáo\s+kiểm\s+toán\s+độc\s+lập|báo\s+cáo\s+của\s+ban\s+(?:tổng\s+)?giám\s+đốc|"
+    r"bảng\s+cân\s+đối\s+kế\s+toán|báo\s+cáo\s+tình\s+hình\s+tài\s+chính|"
+    r"thuyết\s+minh\s+báo\s+cáo\s+tài\s+chính|"
+    r"\bmẫu\s+số\s+b\s*0[1-9]\b|\bb\s*0[1-9][a-z]?\s*-\s*(?:dn|ctck)\b|\bb\s*0[1-5]\s*/\s*tctd\b)",
+    re.IGNORECASE,
+)
+
+_CORE_BCTN_EXIT_RE = re.compile(
+    r"(?:tổng\s+quan|kết\s+quả\s+(?:hoạt\s+động\s+)?kinh\s+doanh|tình\s+hình\s+hoạt\s+động|"
+    r"kế\s+hoạch\s+(?:kinh\s+doanh|năm\s+20\d{2}|đầu\s+tư)|quản\s+trị\s+(?:công\s+ty|rủi\s+ro)|"
+    r"báo\s+cáo\s+của\s+(?:hđqt|hội\s+đồng\s+quản\s+trị|ban\s+tổng\s+giám\s+đốc|ban\s+kiểm\s+soát)|"
+    r"đánh\s+giá\s+kqkd|vị\s+thế\s+và\s+quy\s+mô|tình\s+hình\s+tài\s+chính|"
+    r"chương\s+[ivx\d]+|phần\s+[ivx\d]+)",
+    re.IGNORECASE,
+)
+
+_ACCOUNTING_NUMBER_RE = re.compile(r"(?<!\d)(?:\d{1,3}(?:[.,]\d{3}){2,})(?!\d)")
+_TOC_PAGE_CUE_RE = re.compile(r"(?:mục\s+lục|table\s+of\s+contents|\bcontents\b)", re.IGNORECASE)
+_TOC_LINE_RE = re.compile(r"^(?P<title>.{4,140}?)(?:\.{2,}|\s{2,}|\s+)(?P<page>\d{1,3})\s*$")
+_AUDIT_FIRM_SIG_RE = re.compile(
+    r"(?:deloitte|pwc|pricewaterhousecoopers|ernst\s*&\s*young|\bey\b|kpmg|aasc|a&c|moore|vacpa)",
+    re.IGNORECASE,
+)
+
+# Native Markdown Heading Promotion patterns for SAG v2 Tree Builder
+_MAJOR_FS_PREFIX_RE = re.compile(r"^(?:(?:\d{1,2}|[IVX]{1,4})\s*[.\-–:]\s+)", re.IGNORECASE)
+_MAJOR_FS_HEADING_RE = re.compile(
+    r"^(?:(?:\d{1,2}|[IVX]{1,4})\s*[.\-–:]\s+)?"
+    r"(?:báo\s+cáo\s+kiểm\s+toán\s+độc\s+lập|báo\s+cáo\s+của\s+ban\s+(?:tổng\s+)?giám\s+đốc|"
+    r"bảng\s+cân\s+đối\s+kế\s+toán(?:\s+hợp\s+nhất)?|báo\s+cáo\s+tình\s+hình\s+tài\s+chính(?:\s+hợp\s+nhất)?|"
+    r"báo\s+cáo\s+kết\s+quả\s+hoạt\s+động(?:\s+kinh\s+doanh)?(?:\s+hợp\s+nhất)?|"
+    r"báo\s+cáo\s+lưu\s+chuyển\s+tiền\s+tệ(?:\s+hợp\s+nhất)?|"
+    r"báo\s+cáo\s+tình\s+hình\s+biến\s+động\s+vốn\s+chủ\s+sở\s+hữu|"
+    r"thuyết\s+minh\s+(?:các\s+)?báo\s+cáo\s+tài\s+chính(?:\s+hợp\s+nhất)?)$",
+    re.IGNORECASE,
+)
+_NOTES_MAJOR_HEADING_RE = re.compile(
+    r"^(?:(?:\d{1,2}|[IVX]{1,4})\s*[.\-–:]\s+)?thuyết\s+minh\s+(?:các\s+)?báo\s+cáo\s+tài\s+chính",
+    re.IGNORECASE,
+)
+_BCTN_KPI_OR_METRIC_RE = re.compile(
+    r"(?:%|\b(?:tỷ|tỉ|triệu|nghìn|ngàn)\s*(?:đồng|vnđ|vnd|usd)\b|\b(?:vnd|vnđ|usd|eur)\b|"
+    r"^[+\-]?\d+(?:[.,]\d+)+\b|^(?:top|hơn|trên|gần|đạt)\s+\d)",
+    re.IGNORECASE,
+)
+_BCTN_PERSON_OR_ROLE_RE = re.compile(
+    r"^(?:(?:ông|bà|ts\.?|ths\.?|pgs\.?|gs\.?|mr\.?|mrs\.?|ms\.?|dr\.?)\s+|"
+    r"(?:chủ\s+tịch|phó\s+chủ\s+tịch|tổng\s+giám\s+đốc|phó\s+tổng\s+giám\s+đốc|"
+    r"thành\s+viên\s+hđqt|trưởng\s+ban\s+kiểm\s+soát|kế\s+toán\s+trưởng|giám\s+đốc\s+tài\s+chính)\b)",
+    re.IGNORECASE,
+)
+_VN_FULL_NAME_RE = re.compile(
+    r"^(?:NGUYỄN|TRẦN|LÊ|PHẠM|HOÀNG|HUỲNH|PHAN|VŨ|VÕ|ĐẶNG|BÙI|ĐỖ|HỒ|NGÔ|DƯƠNG|LÝ|"
+    r"ĐINH|MAI|TÔ|TRỊNH|ĐOÀN|TRƯƠNG|LƯƠNG|TẠ|CHÂU|CHU|PHÙNG|VƯƠNG|LÂM|CAO|THÁI|HÀ|LƯU|ĐÀO)"
+    r"(?:\s+[A-ZÀ-Ỹ]{2,}){1,4}$"
+)
+_BCTN_CHAPTER_HEADING_RE = re.compile(
+    r"^(?:chương\s+(?:[ivx]{1,4}|\d{1,2})\b|phần\s+(?:[ivx]{1,4}|\d{1,2})\b|"
+    r"(?:\d{1,2}|[IVX]{1,4})\.\s+[A-ZÀ-Ỹ])",
+    re.IGNORECASE,
+)
+_CHUONG_TRINH_FALSE_RE = re.compile(r"^chương\s+trình\b", re.IGNORECASE)
+_BACK_COVER_CONTACT_RE = re.compile(
+    r"(?:email\s*:|website\s*:|điện\s+thoại\s*:|fax\s*:|trụ\s+sở\s+chính\s*:)",
+    re.IGNORECASE,
+)
+
+_NUMBERED_NOTE_HEADING_RE = re.compile(
+    r"^(?:(?:thuyết\s+minh\s+(?:số\s*)?)?(?:\d{1,2}|[IVX]{1,4})(?:\.\d{1,2})?[.)]\s+\S.{2,110})$",
+    re.IGNORECASE,
+)
+
+_DIGITAL_SIG_JUNK_RE = re.compile(
+    r"(?:\boid\.\d|\bdn:\s*c=|\bcn=|\bserialnumber=|digitally\s+signed|signed\s+by|"
+    r"ký\s+bởi:|ngày\s+ký:)",
+    re.IGNORECASE,
+)
+
+_BOOKMARK_FILENAME_JUNK_RE = re.compile(
+    r"(?:_[a-z0-9]{1,8}$|\.(?:pdf|docx?|indd)$|\bsmall\b|\ball_s\b|^p\d+-\d+|_vie_|_eng_|co\s+dau)",
+    re.IGNORECASE,
+)
+
+_REAL_BOOKMARK_TITLE_RE = re.compile(
+    r"(?:chương|phần|tổng\s+quan|kết\s+quả|kinh\s+doanh|quản\s+trị|kế\s+hoạch|rủi\s+ro|"
+    r"báo\s+cáo|thuyết\s+minh|kiểm\s+toán|thông\s+điệp|thư\s+chủ\s+tịch|phát\s+triển\s+bền\s+vững|\besg\b)",
+    re.IGNORECASE,
+)
+
+_TABLE_HEADER_NON_NOTE_RE = re.compile(
+    r"^(?:chỉ\s+tiêu|mã\s+số|thuyết\s+minh|ghi\s+chú|stt|đơn\s+vị(?:\s+tính)?|vnd|vnđ|usd|"
+    r"số\s+cuối\s+(?:năm|kỳ)|số\s+đầu\s+(?:năm|kỳ)|năm\s+nay|năm\s+trước|kỳ\s+này|kỳ\s+trước|"
+    r"tổng\s+cộng|cộng|tài\s+sản|nguồn\s+vốn|nguyên\s+giá|giá\s+trị\s+còn\s+lại|giá\s+gốc|"
+    r"mẫu\s+số\s+b\s*0\d|ban\s+hành\s+theo\s+thông\s+tư|trang\s+\d+)$",
+    re.IGNORECASE,
+)
+
+_ACCOUNTING_NOTE_KEYWORDS_RE = re.compile(
+    r"(?:tiền\s+và\s+các\s+khoản|đầu\s+tư\s+tài\s+chính|phải\s+thu|dự\s+phòng|hàng\s+tồn\s+kho|"
+    r"tài\s+sản\s+cố\s+định|xây\s+dựng\s+cơ\s+bản|bất\s+động\s+sản\s+đầu\s+tư|lợi\s+thế\s+thương\s+mại|"
+    r"vay\s+và\s+nợ|trái\s+phiếu|thuê\s+(?:tài\s+chính|hoạt\s+động)|vốn\s+chủ\s+sở\s+hữu|cổ\s+tức|"
+    r"doanh\s+thu|giá\s+vốn|chi\s+phí\s+(?:tài\s+chính|bán\s+hàng|quản\s+lý|sản\s+xuất)|"
+    r"thuế\s+thu\s+nhập|lãi\s+cơ\s+bản\s+trên\s+cổ\s+phiếu|báo\s+cáo\s+bộ\s+phận|bộ\s+phận\s+theo|"
+    r"giao\s+dịch\s+với\s+các\s+bên\s+liên\s+quan|bên\s+liên\s+quan|công\s+ty\s+(?:con|liên\s+kết)|"
+    r"cam\s+kết|nợ\s+tiềm\s+tàng|kiện\s+tụng|rủi\s+ro\s+(?:tài\s+chính|tín\s+dụng|tỷ\s+giá|lãi\s+suất|thanh\s+khoản)|"
+    r"sự\s+kiện\s+phát\s+sinh\s+sau|khoản\s+mục\s+ngoài\s+bảng|"
+    r"cho\s+vay\s+khách\s+hàng|chất\s+lượng\s+nợ|tiền\s+gửi\s+của\s+khách\s+hàng|chứng\s+khoán\s+đầu\s+tư|"
+    r"fvtpl|afs|htm\b|cho\s+vay\s+ký\s+quỹ|tài\s+sản\s+tài\s+chính|an\s+toàn\s+vốn|"
+    r"đặc\s+điểm\s+hoạt\s+động|chính\s+sách\s+kế\s+toán)",
+    re.IGNORECASE,
+)
+
+
+def _extract_heading_zone(text: str, *, max_lines: int = 8, max_chars: int = 480) -> str:
+    """Return top heading zone of a page so casual body mentions do not hijack triage."""
+    non_empty = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    if not non_empty:
+        return ""
+    return "\n".join(non_empty[:max_lines])[:max_chars]
+
+
+def _page_has_financial_table_shield(text: str) -> bool:
+    """True when page carries audited statement headers or dense accounting figures (>= 6)."""
+    if _FINANCIAL_SHIELD_RE.search(text or ""):
+        return True
+    return len(_ACCOUNTING_NUMBER_RE.findall(text or "")) >= 6
+
+
+def _normalize_running_line_key(line: str) -> str:
+    """Normalize a line for repeating header/footer detection (collapsing standalone page numbers)."""
+    s = re.sub(r"\s+", " ", (line or "").strip()).lower()
+    s = re.sub(r"\b\d{1,3}\b", "#", s)
+    return s
+
+
+def detect_repeating_running_lines(
+    page_texts: dict[int, str],
+    *,
+    edge_lines: int = 8,
+    min_ratio: float = 0.12,
+    min_pages: int = 4,
+) -> set[str]:
+    """Zero-hardcode detector for repeating top/bottom running headers, nav-tabs & footers across pages.
+
+    Catches patterns like `THUYẾT MINH BÁO CÁO TÀI CHÍNH HỢP NHẤT (Tiếp theo)`,
+    `MẪU SỐ B 09-DN/HN`, `Ban hành theo Thông tư số 202/2014/TT-BTC`, `ĐÁNH GIÁ CỦA / BAN LÃNH ĐẠO`,
+    or `PVTRANS | BCTN 2025` without hardcoding company names or form codes.
+    """
+    n_non_empty = sum(1 for t in page_texts.values() if len((t or "").strip()) >= 30)
+    if n_non_empty < min_pages:
+        return set()
+
+    line_page_freq: Counter[str] = Counter()
+    for txt in page_texts.values():
+        lines = [ln.strip() for ln in (txt or "").splitlines() if ln.strip()]
+        if len(lines) < 3:
+            continue
+        edge_subset = lines[:edge_lines] + lines[-edge_lines:]
+        seen_on_page: set[str] = set()
+        for ln in edge_subset:
+            if len(ln) > 120 or len(ln) < 3:
+                continue
+            if len(_ACCOUNTING_NUMBER_RE.findall(ln)) >= 2:
+                continue
+            key = _normalize_running_line_key(ln)
+            if key and key not in ("#", "# #") and key not in seen_on_page:
+                seen_on_page.add(key)
+                line_page_freq[key] += 1
+
+    threshold = max(min_pages, int(n_non_empty * min_ratio))
+    return {k for k, cnt in line_page_freq.items() if cnt >= threshold}
+
+
+def strip_running_lines(
+    text: str,
+    running_keys: set[str],
+    *,
+    preserve_first_fs_heading_seen: set[str] | None = None,
+) -> tuple[str, int]:
+    """Strip detected repeating header/footer lines while preserving the FIRST major FS heading occurrence."""
+    if not running_keys or not text:
+        return text, 0
+    non_empty_lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if len(non_empty_lines) <= 2:
+        # Never wipe a 1-2 line page body via repeating-edge stripping
+        return text, 0
+    kept: list[str] = []
+    removed = 0
+    for raw_ln in text.splitlines():
+        s = raw_ln.strip()
+        if s and len(s) <= 120 and len(_ACCOUNTING_NUMBER_RE.findall(s)) < 2:
+            key = _normalize_running_line_key(s)
+            if key in running_keys:
+                if (
+                    preserve_first_fs_heading_seen is not None
+                    and _MAJOR_FS_HEADING_RE.match(s)
+                    and "(tiếp" not in s.lower()
+                    and "(continued" not in s.lower()
+                ):
+                    canon_h = _MAJOR_FS_PREFIX_RE.sub("", s).strip().lower()
+                    if canon_h not in preserve_first_fs_heading_seen:
+                        preserve_first_fs_heading_seen.add(canon_h)
+                        kept.append(raw_ln)
+                        continue
+                removed += 1
+                continue
+        kept.append(raw_ln)
+    result = "\n".join(kept).strip()
+    if not result and text.strip():
+        return text, 0
+    return result, removed
+
+
+def classify_page_boilerplate(text: str, *, doc_type: str) -> str | None:
+    """Heading-aware boilerplate triage with strict 0%-drop guard for BCTC & Financial Tables.
+
+    - For `BCTC` / `LATEST_QUARTER` / `GIAI_TRINH`: NEVER drops financial notes or statements
+      (only flags empty/cover `< 30` chars).
+    - For `NQ_DHDCD`: drops only pure procedural ballot-counting pages (`AGM_PROCEDURAL`).
+    - For `BCTN`: separates `PR_LETTER` and drops `ESG_CHARITY` / `FILLER_NON_CORE` ONLY when
+      the top title zone matches AND the page is NOT shielded by financial tables/codes.
+    """
+    raw = (text or "").strip()
+    if len(raw) < 30:
+        return "EMPTY_OR_COVER"
+
+    canonical = normalize_doc_type(doc_type)
+    if canonical in ("BCTC", "LATEST_QUARTER", "GIAI_TRINH"):
+        # 0%-drop invariant on BCTC / Quarter Notes: never drop content pages here.
+        return None
+
+    title_zone = _extract_heading_zone(raw, max_lines=3, max_chars=260)
+    pr_zone = _extract_heading_zone(raw, max_lines=6, max_chars=520)
+    has_fin_shield = _page_has_financial_table_shield(raw)
+
+    if canonical == "NQ_DHDCD":
+        if _AGM_PROCEDURAL_RE.search(title_zone) and not has_fin_shield:
+            return "AGM_PROCEDURAL"
+        return None
+
+    # BCTN / CAO_BACH narrative triage (shielded by financial tables & core business headings)
+    if has_fin_shield:
+        return None
+    if _PR_HEADING_RE.search(pr_zone):
+        return "PR_LETTER"
+    if _ESG_HEADING_RE.search(title_zone):
+        return "ESG_CHARITY"
+    if _BCTN_FILLER_HEADING_RE.search(title_zone):
+        return "FILLER_NON_CORE"
+    return None
+
+
+def classify_text_to_slot(
+    text: str,
+    *,
+    doc_type: str,
+    previous_slot: str | None = None,
+) -> str | None:
+    """Route a page's text cleanly into one of the 4 Natural Document Classes."""
+    canonical = normalize_doc_type(doc_type)
+    if canonical == "NQ_DHDCD":
+        return "AGM_TARGETS"
+    if canonical in ("LATEST_QUARTER", "GIAI_TRINH"):
+        return "QUARTER_NOTES"
+    if canonical == "BCTC":
+        return "BCTC_AUDITED"
+
+    title_zone = _extract_heading_zone(text or "", max_lines=3, max_chars=260)
+    if _BCTC_SECTION_CUE_RE.search(title_zone) and _page_has_financial_table_shield(text or ""):
+        return "BCTC_AUDITED"
+    if _PR_HEADING_RE.search(title_zone) and not _page_has_financial_table_shield(text or ""):
+        return "BCTN_PR"
+    if previous_slot in ("BCTC_AUDITED", "BCTN_CORE"):
+        return previous_slot
+    return "BCTN_CORE"
+
+
+def _is_strong_fs_page(txt: str) -> bool:
+    low = (txt or "").lower()
+    if not low:
+        return False
+    if re.search(
+        r"(?:báo\s+cáo\s+kiểm\s+toán\s+độc\s+lập|ý\s+kiến\s+của\s+kiểm\s+toán\s+viên|"
+        r"mẫu\s+số\s+b\s*0[1-9]|\bb\s*0[1-9][a-z]?\s*-\s*(?:dn|ctck)\b|\bb\s*0[1-5]\s*/\s*tctd\b|"
+        r"thuyết\s+minh\s+(?:các\s+)?báo\s+cáo\s+tài\s+chính|"
+        r"lưu\s+chuyển\s+tiền\s+từ\s+hoạt\s+động\s+(?:kinh\s+doanh|đầu\s+tư|tài\s+chính))",
+        low,
+    ):
+        return True
+    acct_cnt = len(_ACCOUNTING_NUMBER_RE.findall(txt))
+    if (
+        acct_cnt >= 6
+        and re.search(
+            r"(?:bảng\s+cân\s+đối\s+kế\s+toán|báo\s+cáo\s+tình\s+hình\s+tài\s+chính|"
+            r"báo\s+cáo\s+kết\s+quả\s+hoạt\s+động|báo\s+cáo\s+lưu\s+chuyển\s+tiền\s+tệ|"
+            r"\btài\s+sản\b|\bnguồn\s+vốn\b|\bmã\s+số\b|\bchỉ\s+tiêu\b)",
+            low,
+        )
+    ):
+        return True
+    return False
+
+
+def detect_embedded_bctc_span(
+    page_texts: dict[int, str],
+    total_pages: int,
+) -> tuple[int, int] | None:
+    """Locate the inclusive `(start_page, end_page)` span of an embedded Audited Financial Statements
+    section inside a `BCTN` (e.g., FPT p.161-220, CTG p.135-180, MWG p.73-89 stopping cleanly before
+    back-cover p.90 & 68p ESG p.91-158).
+    """
+    if total_pages < 20 or not page_texts:
+        return None
+
+    min_start = max(10, int(total_pages * 0.35))
+    sorted_pages = [p for p in sorted(page_texts) if p >= min_start]
+    if not sorted_pages:
+        return None
+
+    strong_pages = [p for p in sorted_pages if _is_strong_fs_page(page_texts.get(p, ""))]
+    # Embedded full BCTC + Notes has >= 4 strong FS/Notes pages (distinct from 2-page summaries)
+    if len(strong_pages) < 4:
+        return None
+
+    strong_set = set(strong_pages)
+    start_p: int | None = None
+    for cand in strong_pages:
+        window_hits = sum(1 for p in range(cand, min(total_pages, cand + 12) + 1) if p in strong_set)
+        if window_hits >= 4:
+            start_p = cand
+            # Step back over contiguous FS divider / Board of Management report pages (e.g. MWG P73-P77)
+            for back in range(1, 9):
+                prev_p = cand - back
+                if prev_p < min_start:
+                    break
+                prev_txt = page_texts.get(prev_p, "")
+                prev_full_flat = re.sub(r"\s+", " ", prev_txt[:4000])
+                has_fs_intro = bool(
+                    re.search(
+                        r"(?:báo\s+cáo\s+của\s+ban\s+(?:tổng\s+)?giám\s+đốc|báo\s+cáo\s+kiểm\s+toán\s+độc\s+lập|"
+                        r"ban\s+(?:tổng\s+)?giám\s+đốc.*(?:trình\s+bày|chịu\s+trách\s+nhiệm)|"
+                        r"ý\s+kiến\s+của\s+ban\s+(?:tổng\s+)?giám\s+đốc|thông\s+tin\s+chung\b|"
+                        r"kiểm\s+toán\s+viên\b|người\s+đại\s+diện\s+theo\s+pháp\s+luật\b|"
+                        r"báo\s+cáo\s+tài\s+chính\s+hợp\s+nhất)",
+                        prev_full_flat,
+                        re.IGNORECASE,
+                    )
+                )
+                is_fs_divider = bool(
+                    re.search(r"\bbáo\s+cáo\s+tài\s+chính\b", prev_full_flat, re.IGNORECASE)
+                ) and len(prev_txt.strip()) < 650
+                if has_fs_intro or is_fs_divider:
+                    start_p = prev_p
+                else:
+                    break
+            break
+
+    if start_p is None:
+        return None
+
+    # Scan forward from `start_p` to find where the embedded BCTC ends (stopping before ESG / back cover)
+    last_fs_page = start_p
+    non_fs_streak = 0
+    for p in range(start_p, total_pages + 1):
+        txt = (page_texts.get(p) or "").strip()
+        if not txt:
+            non_fs_streak += 1
+            if non_fs_streak >= 3 and p > start_p + 4:
+                break
+            continue
+
+        title_zone = _extract_heading_zone(txt, max_lines=5, max_chars=320)
+        has_fin_shield = _page_has_financial_table_shield(txt)
+        is_esg_start = bool(_ESG_HEADING_RE.search(title_zone)) and not has_fin_shield
+        is_back_cover = (
+            len(txt) < 420
+            and bool(_BACK_COVER_CONTACT_RE.search(txt))
+            and not has_fin_shield
+        )
+        if is_esg_start or is_back_cover:
+            break
+
+        is_fs_continuation = (
+            p in strong_set
+            or has_fin_shield
+            or bool(_ACCOUNTING_NOTE_KEYWORDS_RE.search(txt))
+            or _is_tt200_policy_only_page(txt)
+            or p < cand  # stepped-back management/cover pages right before first strong FS page
+        )
+        if is_fs_continuation:
+            last_fs_page = p
+            non_fs_streak = 0
+        else:
+            non_fs_streak += 1
+            if non_fs_streak >= 3 and p > start_p + 4:
+                break
+
+    return (start_p, last_fs_page)
+
+
+def detect_embedded_bctc_start_page(
+    page_texts: dict[int, str],
+    total_pages: int,
+) -> int | None:
+    """Backward-compatible wrapper returning only the start page of `detect_embedded_bctc_span`."""
+    span = detect_embedded_bctc_span(page_texts, total_pages)
+    return span[0] if span is not None else None
+
+
+def _is_tt200_policy_only_page(text: str) -> bool:
+    """True when a BCTC page contains boilerplate TT200/TT49 policy text without tables or policy changes."""
+    low = (text or "").lower()
+    if not low or _POLICY_CHANGE_RE.search(low):
+        return False
+    if len(_ACCOUNTING_NUMBER_RE.findall(text or "")) >= 6:
+        return False
+    return bool(_TT200_POLICY_RE.search(low))
+
+
+def extract_page_heading_styles(
+    page: fitz.Page,
+    *,
+    left_sidebar_x: float = 0.0,
+) -> tuple[set[str], set[str]]:
+    """Extract `(large_title_lines, bold_heading_lines)` distinguishing true titles from body-size bold."""
+    rect = page.rect
+    w, h = float(rect.width), float(rect.height)
+    clip = (
+        fitz.Rect(left_sidebar_x, 0.0, w, h)
+        if (w > h * 1.25 and 0.0 < left_sidebar_x < w * 0.30)
+        else None
+    )
+    # Omit TEXT_PRESERVE_IMAGES so 100MB+ graphic BCTNs don't decode unused raster images into RAM
+    dict_flags = fitz.TEXT_PRESERVE_LIGATURES | fitz.TEXT_PRESERVE_WHITESPACE
+    page_dict = (
+        page.get_text("dict", flags=dict_flags, clip=clip)
+        if clip is not None
+        else page.get_text("dict", flags=dict_flags)
+    )
+    if not isinstance(page_dict, dict):
+        return set(), set()
+
+    sizes: Counter[int] = Counter()
+    line_candidates: list[tuple[float, bool, str]] = []
+    for blk in page_dict.get("blocks", []):
+        if blk.get("type") != 0:
+            continue
+        for line in blk.get("lines", []):
+            spans = line.get("spans", [])
+            if not spans:
+                continue
+            max_sz = max(float(sp.get("size", 0.0)) for sp in spans)
+            is_bold = any(
+                (int(sp.get("flags", 0)) & 16) != 0 or "bold" in str(sp.get("font", "")).lower()
+                for sp in spans
+            )
+            txt = " ".join(str(sp.get("text", "")).strip() for sp in spans).strip()
+            txt = normalize_ctg_font_quirks(txt)
+            if len(txt) < 4:
+                continue
+            sizes[round(max_sz)] += 1
+            if len(txt) <= 130:
+                line_candidates.append((max_sz, is_bold, txt))
+
+    if not sizes:
+        return set(), set()
+    body_sz = float(sizes.most_common(1)[0][0])
+    large_set: set[str] = set()
+    bold_set: set[str] = set()
+    for sz, is_bold, txt in line_candidates:
+        norm_txt = re.sub(r"\s+", " ", txt).strip().lower()
+        if sz >= max(body_sz * 1.45, body_sz + 3.5):
+            large_set.add(norm_txt)
+        if is_bold and sz >= body_sz * 1.05:
+            bold_set.add(norm_txt)
+        elif is_bold and sz >= body_sz:
+            # Keep exact body-size bold ONLY for numbered BCTC notes (filtered downstream)
+            if _NUMBERED_NOTE_HEADING_RE.match(txt) or _MAJOR_FS_HEADING_RE.match(txt):
+                bold_set.add(norm_txt)
+    return large_set, bold_set
+
+
+def extract_page_bold_headings(page: fitz.Page, *, left_sidebar_x: float = 0.0) -> set[str]:
+    """Backward-compatible helper returning union of large titles and bold headings."""
+    large_set, bold_set = extract_page_heading_styles(page, left_sidebar_x=left_sidebar_x)
+    return large_set | bold_set
+
+
+_VN_FRAGMENT_ENDINGS = frozenset(
+    {
+        "và",
+        "của",
+        "cho",
+        "với",
+        "trong",
+        "tại",
+        "từ",
+        "đến",
+        "tạo",
+        "trở",
+        "để",
+        "là",
+        "sẽ",
+        "đã",
+        "có",
+        "những",
+        "các",
+        "một",
+        "không",
+        "nhưng",
+        "khi",
+        "nơi",
+        "về",
+        "theo",
+        "bằng",
+        "trên",
+        "dưới",
+        "ra",
+        "vào",
+        "thúc",
+        "đẩy",
+        "ứng",
+        "dụng",
+        "phát",
+        "triển",
+        "thành",
+        "lập",
+        "khởi",
+        "xướng",
+        "khai",
+        "tầm",
+        "trị",
+        "giá",
+        "bởi",
+        "cũng",
+        "như",
+        "mà",
+        "nếu",
+        "thì",
+    }
+)
+
+
+def _is_false_bctn_heading(stripped: str, *, norm_key: str, line_doc_freq: Counter[str] | None) -> bool:
+    """Filter pull-quotes, wrapped fragments, KPI callouts, person names, and repeated nav labels on BCTN_CORE."""
+    if not stripped:
+        return True
+    first_ch = stripped[0]
+    if first_ch.islower() or first_ch in ('"', "'", "“", "”", "‘", "’", "-", "•", "–", "—", "(", "["):
+        return True
+    if any(q in stripped for q in ("“", "”", '"')):
+        return True
+    if _CHUONG_TRINH_FALSE_RE.match(stripped):
+        return True
+    if _BCTN_KPI_OR_METRIC_RE.search(stripped):
+        return True
+    if _BCTN_PERSON_OR_ROLE_RE.match(stripped) or _VN_FULL_NAME_RE.match(stripped):
+        return True
+    if stripped.endswith((".", ",", ";", ":", "?", "!", "–", "-", "/", "&")):
+        return True
+    if line_doc_freq is not None and line_doc_freq.get(norm_key, 0) > 2:
+        return True
+    words = stripped.split()
+    if words and words[-1].lower().strip(".,;:()") in _VN_FRAGMENT_ENDINGS:
+        return True
+    # Reject lines dominated by digits / dates / ratios
+    digits = sum(1 for c in stripped if c.isdigit())
+    alphas = sum(1 for c in stripped if c.isalpha())
+    if alphas < 6 or digits > alphas * 0.45:
+        return True
+    return False
+
+
+def normalize_financial_markdown_headings(
+    text: str,
+    *,
+    bold_lines: set[str] | None = None,
+    large_title_lines: set[str] | None = None,
+    is_bctc: bool = True,
+    state: dict[str, Any] | None = None,
+    line_doc_freq: Counter[str] | None = None,
+) -> tuple[str, list[str]]:
+    """Promote real document/note headings into Markdown `#` / `##` for SAG v2's native Hierarchy Tree.
+
+    Stateful document-level pass (when `state` dict is shared across pages of a sub-document):
+    - Recognizes numbered/Roman prefixed & 2-line wrapped major FS headings.
+    - Deduplicates repeated major FS H1s across pages (`FPT`/`VCI` 54-66 -> <= 8).
+    - Enforces `in_notes_phase` lock: once BCTC Notes begin, auto-inserts `# THUYẾT MINH BÁO CÁO TÀI CHÍNH`
+      if the Notes H1 was stripped, guaranteeing 0 Notes fall under `BÁO CÁO LƯU CHUYỂN TIỀN TỆ`.
+    - Restricts `BCTN_CORE` heading promotion to real chapter/section headings (eliminating KPI/person noise).
+    """
+    if not text:
+        return "", []
+    bold_lookup = bold_lines or set()
+    large_lookup = large_title_lines or set()
+    has_style_info = bool(bold_lines is not None or large_title_lines is not None)
+    st = state if state is not None else {}
+    seen_h1s: set[str] = st.setdefault("seen_h1s", set())
+
+    raw_lines = text.splitlines()
+    out_lines: list[str] = []
+    headings: list[str] = []
+    idx = 0
+    total = len(raw_lines)
+    is_toc_page = (not is_bctc) and (
+        bool(_TOC_PAGE_CUE_RE.search(text[:350]))
+        or sum(1 for ln in raw_lines if _TOC_LINE_RE.match(ln.strip())) >= 6
+        or sum(
+            1
+            for ln in raw_lines
+            if re.match(r"^(?:chương|phần)\s+(?:[ivx]{1,4}|\d{1,2})\b", ln.strip(), re.IGNORECASE)
+        )
+        >= 4
+    )
+    page_bctn_h2_count = 0
+    seen_page_bctn_h2: set[str] = set()
+
+    def _canonical_h1_key(h: str) -> str:
+        c = _MAJOR_FS_PREFIX_RE.sub("", h).strip().lower()
+        c = re.sub(r"\s*\((?:tiếp\s+theo|continued)\)\s*$", "", c, flags=re.IGNORECASE)
+        return re.sub(r"\s+", " ", c).strip()
+
+    def _emit_major_h1(title_text: str) -> None:
+        canon = _canonical_h1_key(title_text)
+        is_notes_h1 = bool(_NOTES_MAJOR_HEADING_RE.match(title_text))
+        if is_notes_h1:
+            st["in_notes_phase"] = True
+            st["notes_h1_emitted"] = True
+        if st.get("in_notes_phase") and not is_notes_h1 and canon in seen_h1s:
+            # Never regress from Notes back into a repeated B01..B03 running title
+            out_lines.append(title_text)
+            return
+        if canon == st.get("last_h1") or canon in seen_h1s:
+            # Deduplicate repeated H1 across consecutive or later pages
+            out_lines.append(title_text)
+            return
+        seen_h1s.add(canon)
+        st["last_h1"] = canon
+        if "lưu chuyển tiền tệ" in canon:
+            st["seen_lctt"] = True
+        out_lines.append(f"# {title_text}")
+        headings.append(title_text)
+
+    def _ensure_notes_phase_before_note() -> None:
+        if not st.get("notes_h1_emitted") and (st.get("seen_lctt") or st.get("last_h1")):
+            last_h1 = str(st.get("last_h1") or "")
+            if "thuyết minh" not in last_h1:
+                st["in_notes_phase"] = True
+                st["notes_h1_emitted"] = True
+                notes_hdr = "THUYẾT MINH BÁO CÁO TÀI CHÍNH"
+                canon = _canonical_h1_key(notes_hdr)
+                seen_h1s.add(canon)
+                st["last_h1"] = canon
+                out_lines.append(f"# {notes_hdr}")
+                headings.append(notes_hdr)
+
+    while idx < total:
+        raw_ln = raw_lines[idx]
+        stripped = raw_ln.strip()
+        if not stripped:
+            out_lines.append("")
+            idx += 1
+            continue
+
+        # Preserve existing Markdown headings (e.g. from MinerU OCR), requiring space after '#'
+        if re.match(r"^#{1,6}\s+\S", stripped):
+            clean_h = stripped.lstrip("#").strip()
+            if clean_h and len(clean_h) <= 140:
+                if is_bctc and stripped.startswith("# ") and _MAJOR_FS_HEADING_RE.match(clean_h):
+                    _emit_major_h1(clean_h)
+                    idx += 1
+                    continue
+                headings.append(clean_h)
+            out_lines.append(raw_ln)
+            idx += 1
+            continue
+
+        # Never promote HTML tables, page anchors, or numeric table rows
+        if stripped.startswith("<") or stripped.startswith("|") or len(stripped) > 130 or len(stripped) < 4:
+            out_lines.append(raw_ln)
+            idx += 1
+            continue
+        if len(_ACCOUNTING_NUMBER_RE.findall(stripped)) >= 2:
+            out_lines.append(raw_ln)
+            idx += 1
+            continue
+        if _DIGITAL_SIG_JUNK_RE.search(stripped):
+            out_lines.append(raw_ln)
+            idx += 1
+            continue
+        if _TABLE_HEADER_NON_NOTE_RE.match(stripped):
+            out_lines.append(raw_ln)
+            idx += 1
+            continue
+
+        norm_key = re.sub(r"\s+", " ", stripped).strip().lower()
+        is_bold = norm_key in bold_lookup
+        is_large = norm_key in large_lookup
+        alpha_chars = [c for c in stripped if c.isalpha()]
+        is_all_caps = len(alpha_chars) >= 6 and all(c.isupper() for c in alpha_chars)
+
+        if is_bctc:
+            # 1. Single-line Major FS Heading (supports prefixes like "7 - " or "IV. ")
+            if _MAJOR_FS_HEADING_RE.match(stripped):
+                _emit_major_h1(stripped)
+                idx += 1
+                continue
+
+            # 2. 2-line wrapped Major FS Heading (e.g. "THUYẾT MINH BÁO CÁO" + "TÀI CHÍNH HỢP NHẤT")
+            if idx + 1 < total and len(stripped) <= 60:
+                nxt = raw_lines[idx + 1].strip()
+                if nxt and len(nxt) <= 60 and not nxt.startswith(("#", "<", "|")):
+                    combined = re.sub(r"\s+", " ", f"{stripped} {nxt}").strip()
+                    if _MAJOR_FS_HEADING_RE.match(combined):
+                        _emit_major_h1(combined)
+                        idx += 2
+                        continue
+
+            # 3. Promote numbered BCTC notes (e.g. "25. Doanh thu...", "V.1 Tiền...", "12. Hàng tồn kho")
+            if _NUMBERED_NOTE_HEADING_RE.match(stripped) and (
+                is_bold or is_large or is_all_caps or _ACCOUNTING_NOTE_KEYWORDS_RE.search(stripped)
+            ):
+                if st.get("seen_lctt") and (
+                    _ACCOUNTING_NOTE_KEYWORDS_RE.search(stripped)
+                    or re.match(r"^(?:1|2|I|II)[.)]\s+", stripped)
+                ):
+                    _ensure_notes_phase_before_note()
+                out_lines.append(f"## {stripped}")
+                headings.append(stripped)
+                idx += 1
+                continue
+
+            # 4. Promote standalone ALL-CAPS accounting note titles (e.g. PVT InDesign notes without numbers)
+            if (
+                is_all_caps
+                and len(stripped) <= 90
+                and _ACCOUNTING_NOTE_KEYWORDS_RE.search(stripped)
+                and not stripped.endswith((".", ",", ";", ":"))
+            ):
+                if st.get("seen_lctt"):
+                    _ensure_notes_phase_before_note()
+                out_lines.append(f"## {stripped}")
+                headings.append(stripped)
+                idx += 1
+                continue
+        else:
+            # BCTN_CORE / AGM chapter & section headings (strict hygiene: < 12% heading ratio)
+            prev_was_h2 = bool(out_lines) and out_lines[-1].startswith("## ")
+            if (
+                not is_toc_page
+                and not prev_was_h2
+                and norm_key not in seen_page_bctn_h2
+                and not _is_false_bctn_heading(
+                    stripped, norm_key=norm_key, line_doc_freq=line_doc_freq
+                )
+            ):
+                alpha_words = [w for w in re.findall(r"[^\W\d_]+", stripped, re.UNICODE) if len(w) >= 2]
+                is_explicit_chapter = bool(_BCTN_CHAPTER_HEADING_RE.match(stripped)) and len(stripped) <= 95
+                is_named_part = bool(
+                    re.match(r"^(?:chương|phần)\s+(?:[ivx]{1,4}|\d{1,2})\b", stripped, re.IGNORECASE)
+                )
+                has_callout_punct = any(ch in stripped for ch in ("~", ":"))
+                is_true_large_title = (
+                    is_large
+                    and not has_callout_punct
+                    and 16 <= len(stripped) <= 68
+                    and 3 <= len(alpha_words) <= 9
+                )
+                is_strong_all_caps = (
+                    is_all_caps
+                    and not has_callout_punct
+                    and 16 <= len(stripped) <= 75
+                    and 3 <= len(alpha_words) <= 9
+                    and (is_large or is_bold or not has_style_info)
+                )
+                allow_explicit = (is_named_part or is_explicit_chapter) and (page_bctn_h2_count < 2)
+                allow_visual = (is_true_large_title or is_strong_all_caps) and (page_bctn_h2_count < 1)
+                if allow_explicit or allow_visual:
+                    out_lines.append(f"## {stripped}")
+                    headings.append(stripped)
+                    seen_page_bctn_h2.add(norm_key)
+                    page_bctn_h2_count += 1
+                    idx += 1
+                    continue
+
+        out_lines.append(raw_ln)
+        idx += 1
+
+    return "\n".join(out_lines), headings
+
+
+# ── Layer 2: Printed-to-PDF Page Offset & Spread A3 Calibration ──────────────
+
+
+def _extract_edge_page_numbers(page: fitz.Page) -> list[tuple[float, int]]:
+    """Extract candidate printed page numbers located in top/bottom 14% margins with their x-center."""
+    rect = page.rect
+    w, h = float(rect.width), float(rect.height)
+    if w <= 0 or h <= 0:
+        return []
+    words = page.get_text("words")
+    out: list[tuple[float, int]] = []
+    for wd in words:
+        x0, y0, x1, y1, token = float(wd[0]), float(wd[1]), float(wd[2]), float(wd[3]), str(wd[4]).strip()
+        if not (y1 <= h * 0.14 or y0 >= h * 0.86):
+            continue
+        cleaned = token.strip("|-–—[]()")
+        if re.fullmatch(r"\d{1,3}", cleaned):
+            val = int(cleaned)
+            if 1 <= val <= 999:
+                out.append(((x0 + x1) / (2.0 * w), val))
+    return out
+
+
+def calibrate_printed_to_pdf_mapping(doc: fitz.Document) -> PageOffsetCalibration:
+    """Calibrate printed-page -> 1-based PDF-page mapping, auto-detecting A3 2-page spreads."""
+    n_pages = len(doc)
+    if n_pages < 3:
+        return PageOffsetCalibration(mode="IDENTITY", offset=0.0, sample_pairs=0, confidence=0.0)
+
+    sample_count = min(18, max(6, n_pages - 2))
+    step = max(1, (n_pages - 2) // sample_count)
+    sample_indices = list(range(2, n_pages, step))[:sample_count]
+
+    spread_offsets: list[float] = []
+    single_offsets: list[float] = []
+
+    for pdf_no in sample_indices:
+        page = doc[pdf_no - 1]
+        rect = page.rect
+        is_wide = float(rect.width) > float(rect.height) * 1.25
+        cands = _extract_edge_page_numbers(page)
+        if not cands:
+            continue
+
+        if is_wide:
+            left_nums = [v for x_rel, v in cands if x_rel < 0.45]
+            right_nums = [v for x_rel, v in cands if x_rel > 0.55]
+            matched_spread = False
+            for lv in left_nums:
+                for rv in right_nums:
+                    if rv == lv + 1 and abs(2 * pdf_no - rv) <= max(20, n_pages):
+                        spread_offsets.append(float(2 * pdf_no - rv))
+                        matched_spread = True
+                        break
+                if matched_spread:
+                    break
+            if matched_spread:
+                continue
+
+        best = min(cands, key=lambda item: abs(item[1] - pdf_no))
+        if abs(best[1] - pdf_no) <= max(30, n_pages // 2):
+            single_offsets.append(float(pdf_no - best[1]))
+
+    if len(spread_offsets) >= 3 and len(spread_offsets) >= len(single_offsets):
+        med_off = float(median(spread_offsets))
+        inliers = sum(1 for v in spread_offsets if abs(v - med_off) <= 1.5)
+        conf = inliers / max(1, len(spread_offsets))
+        if conf >= 0.60:
+            return PageOffsetCalibration(
+                mode="SPREAD_A3",
+                offset=med_off,
+                sample_pairs=len(spread_offsets),
+                confidence=round(conf, 3),
+            )
+
+    if len(single_offsets) >= 3:
+        med_off = float(median(single_offsets))
+        inliers = sum(1 for v in single_offsets if abs(v - med_off) <= 1.5)
+        conf = inliers / max(1, len(single_offsets))
+        if conf >= 0.60:
+            return PageOffsetCalibration(
+                mode="SINGLE_PAGE",
+                offset=med_off,
+                sample_pairs=len(single_offsets),
+                confidence=round(conf, 3),
+            )
+
+    return PageOffsetCalibration(mode="IDENTITY", offset=0.0, sample_pairs=0, confidence=0.0)
+
+
+# ── Layer 1A/1B/1C: Bookmarks, TOC/Page-Digest, Optional 1-Call 3-Way BCTN Router ──
+
+
+def _classify_toc_title_to_natural(title: str) -> str:
+    """Map a TOC/bookmark title cleanly into `BCTN_PR`, `EXCLUDE`, `BCTC_AUDITED`, or `BCTN_CORE`."""
+    if _PR_HEADING_RE.search(title):
+        return "BCTN_PR"
+    if _ESG_HEADING_RE.search(title) or _BCTN_FILLER_HEADING_RE.search(title):
+        return "EXCLUDE"
+    if _BCTC_SECTION_CUE_RE.search(title):
+        return "BCTC_AUDITED"
+    return "BCTN_CORE"
+
+
+def extract_pdf_outline_spans(
+    doc: fitz.Document,
+    *,
+    doc_type: str,
+) -> list[TocSectionSpan]:
+    """Layer 1A (0đ): Parse native PDF bookmarks (`doc.get_toc()`) into natural-class spans."""
+    raw_toc = doc.get_toc(simple=True) or []
+    n_pages = len(doc)
+    if len(raw_toc) < 3 or n_pages == 0:
+        return []
+    canonical = normalize_doc_type(doc_type)
+    if canonical in (
+        "BCTC",
+        "NQ_DHDCD",
+        "TAI_LIEU_DHDCD",
+        "LATEST_QUARTER",
+        "GIAI_TRINH",
+        "TY_LE_AT_TC",
+    ):
+        return []
+
+    entries: list[tuple[int, str, int]] = []
+    for item in raw_toc:
+        if len(item) < 3:
+            continue
+        lvl, title, pno = int(item[0]), str(item[1]).strip(), int(item[2])
+        if title and 1 <= pno <= n_pages and lvl <= 3:
+            entries.append((lvl, title, pno))
+    if len(entries) < 3:
+        return []
+
+    # Reject Adobe Acrobat merged-filename artifacts (e.g. `VIE_all_S`, `P1 20 4c - BCTN25 small small`, `p2-7_S`)
+    junk_hits = sum(1 for _, t, _ in entries if _BOOKMARK_FILENAME_JUNK_RE.search(t))
+    real_hits = sum(1 for _, t, _ in entries if _REAL_BOOKMARK_TITLE_RE.search(t))
+    if junk_hits >= len(entries) * 0.4 or real_hits == 0:
+        return []
+
+    spans: list[TocSectionSpan] = []
+    for idx, (_lvl, title, start_p) in enumerate(entries):
+        end_p = n_pages
+        for nxt_idx in range(idx + 1, len(entries)):
+            if entries[nxt_idx][2] > start_p:
+                end_p = max(start_p, entries[nxt_idx][2] - 1)
+                break
+        slot = _classify_toc_title_to_natural(title)
+        spans.append(
+            TocSectionSpan(
+                slot=slot,
+                title=title,
+                printed_start=start_p,
+                printed_end=end_p,
+                pdf_start=start_p,
+                pdf_end=end_p,
+                confidence=0.92,
+                source="PDF_BOOKMARKS",
+            )
+        )
+    return spans
+
+
+def extract_toc_or_heading_digest(
+    doc: fitz.Document,
+    page_texts: dict[int, str],
+    *,
+    max_toc_scan_pages: int = 12,
+    max_chars: int = 5000,
+) -> tuple[str, bool]:
+    """Return `(digest_text, is_explicit_toc)` for optional 1-call BCTN 3-Way Triage Router.
+
+    Prefers explicit TOC pages found in the first 12 pages; falls back to a compact 1-line-per-page
+    title digest (so even BCTNs with image-only TOCs like FPT p.2 are triaged cleanly).
+    """
+    n_pages = len(doc)
+    toc_pages_found: list[str] = []
+    for pno in range(1, min(n_pages, max_toc_scan_pages) + 1):
+        txt = page_texts.get(pno) or ""
+        if not txt and pno <= n_pages:
+            txt = (doc[pno - 1].get_text("text") or "").strip()
+        if not txt:
+            continue
+        toc_line_hits = sum(1 for ln in txt.splitlines() if _TOC_LINE_RE.match(ln.strip()))
+        if _TOC_PAGE_CUE_RE.search(txt) or toc_line_hits >= 5:
+            toc_pages_found.append(f"[PDF_PAGE {pno}]\n{txt}")
+            if len(toc_pages_found) >= 4:
+                break
+
+    if toc_pages_found:
+        return "\n\n".join(toc_pages_found)[:max_chars], True
+
+    # Compact 1-line-per-page digest using cleaned digital text (~120 chars/page)
+    outline_lines: list[str] = []
+    for pno in sorted(page_texts):
+        txt = (page_texts.get(pno) or "").strip()
+        if len(txt) < 30:
+            continue
+        head = " | ".join(ln.strip() for ln in txt.splitlines() if ln.strip())[:115]
+        outline_lines.append(f"P{pno}: {head}")
+    return "\n".join(outline_lines)[:max_chars], False
+
+
+def parse_toc_section_spans(
+    toc_text: str,
+    *,
+    max_pages: int,
+    doc_type: str = "BCTN",
+) -> list[TocSectionSpan]:
+    """Layer 1C: Deterministic TOC parser producing natural-class `[printed_start..printed_end]` spans."""
+    entries: list[tuple[str, int]] = []
+    for raw_line in (toc_text or "").splitlines():
+        line = raw_line.strip()
+        m = _TOC_LINE_RE.match(line)
+        if not m:
+            continue
+        title = m.group("title").strip(" .-–—:\t")
+        pno = int(m.group("page"))
+        if len(title) >= 4 and 1 <= pno <= max(max_pages * 2, 400):
+            entries.append((title, pno))
+
+    if not entries:
+        return []
+
+    spans: list[TocSectionSpan] = []
+    for idx, (title, start_p) in enumerate(entries):
+        end_p = start_p + 2
+        for nxt_idx in range(idx + 1, len(entries)):
+            if entries[nxt_idx][1] > start_p:
+                end_p = max(start_p, entries[nxt_idx][1] - 1)
+                break
+        slot = _classify_toc_title_to_natural(title)
+        spans.append(
+            TocSectionSpan(
+                slot=slot,
+                title=title,
+                printed_start=start_p,
+                printed_end=end_p,
+                confidence=0.78,
+                source="DETERMINISTIC_TOC",
+            )
+        )
+    return spans
+
+
+def parse_toc_target_pages(
+    toc_text: str,
+    *,
+    max_pages: int,
+    calibration: PageOffsetCalibration | None = None,
+) -> list[int]:
+    """Parse target 1-based PDF page numbers from TOC text for 2-Pass TOC-First OCR on scanned BCTNs."""
+    spans = parse_toc_section_spans(toc_text, max_pages=max_pages)
+    cal = calibration or PageOffsetCalibration()
+    targets: set[int] = set()
+    for sp in spans:
+        if sp.slot == "EXCLUDE":
+            continue
+        p_start = cal.printed_to_pdf(sp.printed_start, max_pages=max_pages)
+        p_end = cal.printed_to_pdf(sp.printed_end, max_pages=max_pages)
+        if p_end < p_start:
+            p_end = p_start
+        max_slice = 60 if sp.slot == "BCTC_AUDITED" else 16
+        p_end = min(max_pages, p_end, p_start + max_slice)
+        targets.update(range(p_start, p_end + 1))
+
+    if targets:
+        return sorted(targets)
+
+    relevant_line_re = re.compile(
+        r"(?:kết\s+quả|kinh\s+doanh|kế\s+hoạch|rủi\s+ro|bộ\s+phận|doanh\s+thu|giá\s+vốn|"
+        r"kiểm\s+toán|thuyết\s+minh|tài\s+sản|vay\s+nợ|công\s+ty\s+con|vốn\s+chủ|cổ\s+tức|"
+        r"nghị\s+quyết|chỉ\s+tiêu|capex|báo\s+cáo\s+tài\s+chính)",
+        re.IGNORECASE,
+    )
+    for line in (toc_text or "").splitlines():
+        if not relevant_line_re.search(line):
+            continue
+        m_page = re.search(r"(?:\.{2,}|\s+)(\d{1,3})\s*$", line.strip())
+        if m_page:
+            pno = cal.printed_to_pdf(int(m_page.group(1)), max_pages=max_pages)
+            targets.update(range(pno, min(max_pages, pno + 2) + 1))
+    return sorted(targets)
+
+
+class DeepInfraTocRouter:
+    """Layer 1B (Optional): 1-call cheap 3-Way BCTN Triage Router (`DeepSeek-V4-Flash`).
+
+    ONLY used on BCTN filings when `--enable-llm-toc` is enabled. Never called on BCTC/AGM/Quarter.
+    Maps BCTN TOC or 1-line-per-page digest into just 4 natural classes (`BCTN_CORE`, `BCTN_PR`,
+    `BCTC_AUDITED`, `EXCLUDE`) in 1 single call (~0.0002 USD/BCTN). Fails softly to deterministic.
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        model: str | None = None,
+        timeout_seconds: float = 25.0,
+    ) -> None:
+        self._base_url = (base_url or settings.llm_base_url or "https://api.deepinfra.com/v1/openai").rstrip("/")
+        self._api_key = api_key if api_key is not None else (settings.llm_api_key or "")
+        self._model = model or settings.llm_model or "deepseek-ai/DeepSeek-V4-Flash-0731"
+        self._timeout = timeout_seconds
+
+    async def route_toc(
+        self,
+        *,
+        ticker: str,
+        doc_type: str,
+        toc_or_outline_text: str,
+        total_pdf_pages: int,
+    ) -> list[TocSectionSpan]:
+        if not self._api_key or not toc_or_outline_text.strip():
+            return []
+
+        system_prompt = (
+            "Bạn là bộ lọc 3 trạng thái cho Báo cáo Thường niên (BCTN) doanh nghiệp HOSE.\n"
+            "Phân loại các chương/khoảng trang sang đúng 1 trong 4 nhãn sau:\n"
+            "- BCTN_CORE: KQKD, phân tích mảng/sản phẩm, quy mô vận hành, kế hoạch & CAPEX, quản trị rủi ro.\n"
+            "- BCTN_PR: Thư Chủ tịch / Thông điệp Ban lãnh đạo / TGĐ (lời hứa PR, tách riêng để đối chiếu).\n"
+            "- BCTC_AUDITED: Phần Báo cáo tài chính đã kiểm toán & Thuyết minh BCTC đính kèm cuối BCTN.\n"
+            "- EXCLUDE: Báo cáo ESG / Phát triển bền vững / Từ thiện / An sinh xã hội, Giải thưởng, Ảnh bìa.\n"
+            "Nguyên tắc an toàn: Nghi ngờ thì giữ `BCTN_CORE`, tuyệt đối KHÔNG `EXCLUDE` phần số liệu tài chính.\n"
+            'Chỉ trả về JSON: {"sections":[{"slot":"BCTN_CORE","title":"...","printed_start":10,"printed_end":35}]}'
+        )
+        user_prompt = (
+            f"Mã cổ phiếu: {ticker} | Loại tài liệu: {doc_type} | Tổng trang PDF: {total_pdf_pages}\n\n"
+            f"Mục lục / Dàn ý:\n{toc_or_outline_text}"
+        )
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                resp = await client.post(
+                    f"{self._base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self._api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": self._model,
+                        "temperature": 0.0,
+                        "max_tokens": 1500,
+                        "response_format": {"type": "json_object"},
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                    },
+                )
+            if resp.status_code != 200:
+                log.warning(
+                    "LLM BCTN triage HTTP %s for %s; falling back to deterministic",
+                    resp.status_code,
+                    ticker,
+                )
+                return []
+            content = resp.json()["choices"][0]["message"]["content"]
+            return parse_llm_toc_json(content)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("LLM BCTN triage failed for %s (%s); falling back", ticker, type(exc).__name__)
+            return []
+
+
+def parse_llm_toc_json(raw_json: str) -> list[TocSectionSpan]:
+    """Parse and validate JSON returned by the 1-call BCTN triage router (accepts legacy aliases too)."""
+    text = (raw_json or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE | re.DOTALL).strip()
+    try:
+        payload: Any = json.loads(text)
+    except ValueError:
+        return []
+    items = payload.get("sections", []) if isinstance(payload, dict) else (payload if isinstance(payload, list) else [])
+    spans: list[TocSectionSpan] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        slot = normalize_natural_slot(str(item.get("slot") or ""))
+        if slot is None:
+            continue
+        try:
+            p_start = int(item.get("printed_start"))
+            p_end = int(item.get("printed_end", p_start))
+        except (TypeError, ValueError):
+            continue
+        if p_start < 1 or p_end < p_start:
+            continue
+        spans.append(
+            TocSectionSpan(
+                slot=slot,
+                title=str(item.get("title") or slot).strip()[:160],
+                printed_start=p_start,
+                printed_end=p_end,
+                confidence=0.90,
+                source="LLM_TOC_ROUTER",
+            )
+        )
+    return spans
+
+
+def _map_spans_to_pdf_pages(
+    spans: list[TocSectionSpan],
+    *,
+    calibration: PageOffsetCalibration,
+    max_pages: int,
+    already_pdf_indexed: bool = False,
+) -> dict[int, TocSectionSpan]:
+    """Expand `TocSectionSpan` list into a 1-based `pdf_page -> TocSectionSpan` lookup table."""
+    page_map: dict[int, TocSectionSpan] = {}
+    min_bctc_overlap_pno = max(15, int(max_pages * 0.25))
+    for sp in spans:
+        if already_pdf_indexed and sp.pdf_start is not None and sp.pdf_end is not None:
+            p_start = max(1, min(max_pages, sp.pdf_start))
+            p_end = max(p_start, min(max_pages, sp.pdf_end))
+        else:
+            p_start = calibration.printed_to_pdf(sp.printed_start, max_pages=max_pages)
+            p_end = calibration.printed_to_pdf(sp.printed_end, max_pages=max_pages)
+            if p_end < p_start:
+                p_end = p_start
+            sp.pdf_start = p_start
+            sp.pdf_end = p_end
+        for pno in range(p_start, p_end + 1):
+            existing = page_map.get(pno)
+            # Never let EXCLUDE overwrite BCTC_AUDITED or BCTN_CORE on a boundary page,
+            # and never let an early BCTC_AUDITED span overwrite BCTN_CORE in the first 25% of a report.
+            if (
+                existing is None
+                or (existing.slot == "EXCLUDE" and sp.slot != "EXCLUDE")
+                or (
+                    sp.slot == "BCTC_AUDITED"
+                    and existing.slot != "BCTC_AUDITED"
+                    and pno >= min_bctc_overlap_pno
+                )
+            ):
+                page_map[pno] = sp
+    return page_map
+
+
+def _validate_toc_spans_for_pass2_ocr(
+    section_spans: list[TocSectionSpan],
+    *,
+    span_page_map: dict[int, TocSectionSpan],
+    pass1_pages: list[int],
+    total_pages: int,
+    doc_type: str,
+) -> tuple[bool, str]:
+    """Deterministic post-validator preventing hollow Pass-1-only OCR truncation on large BCTNs.
+
+    When Pass-1 OCR (`pages 1..8`) contains no full Table of Contents, LLM/deterministic TOC routers
+    can emit spans covering only pages `1..8`, causing Pass-2 OCR to run 0 pages and persist an
+    8-page stub as `READY` for a 60–241 page BCTN. This invariant forces fallback to full-coverage OCR.
+    """
+    if not section_spans or not span_page_map:
+        return False, "TOC_EMPTY_SPANS"
+    if doc_type not in ("BCTN", "CAO_BACH") or total_pages < 30:
+        return True, "OK"
+
+    mapped_pages = sorted(span_page_map.keys())
+    max_mapped = mapped_pages[-1]
+    non_excl_pages = [p for p, sp in span_page_map.items() if sp.slot != "EXCLUDE"]
+    if not non_excl_pages:
+        return False, "TOC_ALL_EXCLUDED"
+
+    # Real BCTN Tables of Contents span well past the midpoint of the PDF
+    if max_mapped < int(total_pages * 0.55):
+        return False, f"TOC_MAX_PAGE_TOO_LOW({max_mapped}/{total_pages})"
+
+    pass1_set = set(pass1_pages)
+    uncovered_non_excl = [p for p in non_excl_pages if p not in pass1_set]
+    min_expected_non_excl = max(15, int(total_pages * 0.18))
+    if len(uncovered_non_excl) < 8 and len(non_excl_pages) < min_expected_non_excl:
+        return (
+            False,
+            f"TOC_HOLLOW_PASS2_COVERAGE(uncovered={len(uncovered_non_excl)},kept={len(non_excl_pages)}/{total_pages})",
+        )
+
+    return True, "OK"
+
+
+def _sanitize_bctn_llm_bctc_spans(
+    span_by_pdf_page: dict[int, TocSectionSpan],
+    *,
+    cleaned_page_texts: dict[int, str],
+    embedded_bctc_start: int | None,
+    embedded_bctc_end: int | None,
+    total_pages: int,
+) -> int:
+    """Enforce deterministic FS-anchor authority over LLM/TOC `BCTC_AUDITED` spans inside a `BCTN`.
+
+    Popping over-claimed `BCTC_AUDITED` entries returns those pages to Path 3 deterministic 3-Way
+    Triage (`BCTN_CORE` / `BCTN_PR` / `ESG`) instead of swallowing an entire BCTN into `BCTC_AUDITED`.
+    """
+    if not span_by_pdf_page:
+        return 0
+    removed = 0
+
+    if embedded_bctc_start is not None and embedded_bctc_end is not None:
+        early_bctc_pages = [
+            p
+            for p, sp in span_by_pdf_page.items()
+            if sp.slot == "BCTC_AUDITED" and p < embedded_bctc_start
+        ]
+        # Keep early BCTC pages ONLY if they are overwhelmingly verified FS pages (e.g. a standalone
+        # BCTC PDF misfiled under Vietstock's BCTN category), never on narrative BCTN chapters.
+        if early_bctc_pages:
+            early_strong = sum(
+                1 for p in early_bctc_pages if _is_strong_fs_page(cleaned_page_texts.get(p, ""))
+            )
+            early_is_verified_fs = len(early_bctc_pages) >= 4 and early_strong >= max(
+                4, int(len(early_bctc_pages) * 0.50)
+            )
+            if not early_is_verified_fs:
+                for p in early_bctc_pages:
+                    if p >= embedded_bctc_start - 3 and _is_strong_fs_page(
+                        cleaned_page_texts.get(p, "")
+                    ):
+                        continue
+                    span_by_pdf_page.pop(p, None)
+                    removed += 1
+
+        late_bctc_pages = [
+            p
+            for p, sp in span_by_pdf_page.items()
+            if sp.slot == "BCTC_AUDITED" and p > embedded_bctc_end
+        ]
+        for p in late_bctc_pages:
+            if not _is_strong_fs_page(cleaned_page_texts.get(p, "")):
+                span_by_pdf_page.pop(p, None)
+                removed += 1
+        return removed
+
+    # No deterministic embedded BCTC was detected: verify any large/early LLM BCTC_AUDITED claim
+    bctc_pages = sorted(p for p, sp in span_by_pdf_page.items() if sp.slot == "BCTC_AUDITED")
+    if not bctc_pages:
+        return 0
+    min_bctc_start = max(15, int(total_pages * 0.25))
+    overlaps_early = bctc_pages[0] < min_bctc_start
+    dominates_doc = len(cleaned_page_texts) >= 20 and len(bctc_pages) > int(
+        len(cleaned_page_texts) * 0.75
+    )
+    if overlaps_early or dominates_doc or len(bctc_pages) >= 4:
+        strong_hits = sum(
+            1 for p in bctc_pages if _is_strong_fs_page(cleaned_page_texts.get(p, ""))
+        )
+        if strong_hits < max(2, int(len(bctc_pages) * 0.20)):
+            for p in bctc_pages:
+                span_by_pdf_page.pop(p, None)
+                removed += 1
+    return removed
+
+
+def _extract_digital_page_text(
+    page: fitz.Page,
+    *,
+    left_sidebar_x: float,
+    two_col_crop: tuple[float, float] | None = None,
+) -> str:
+    """Extract clean reading-order text from a digital PDF page, handling 2-col VI/EN crops, sidebars & spreads."""
+    rect = page.rect
+    w, h = float(rect.width), float(rect.height)
+    if two_col_crop is not None:
+        keep_x0 = max(0.0, min(w, float(two_col_crop[0])))
+        keep_x1 = max(keep_x0 + 10.0, min(w, float(two_col_crop[1])))
+        txt = page.get_text("text", clip=fitz.Rect(keep_x0, 0.0, keep_x1, h)) or ""
+        return normalize_ctg_font_quirks(txt.strip())
+    # Apply sidebar cutoff ONLY on matching widescreen pages (never chop a portrait page in hybrid PDFs!)
+    effective_sidebar = left_sidebar_x if (w > h * 1.25 and 0.0 < left_sidebar_x < w * 0.30) else 0.0
+    if w > h * 1.25 and effective_sidebar == 0.0:
+        words = page.get_text("words")
+        mid = w / 2.0
+        # Require a true central gutter (zero words straddling `mid +- 6pt`, and text on both halves)
+        # so single-column widescreen slides (e.g. MWG BCTN p.74) are never sliced mid-word.
+        crossing = sum(1 for wd in words if wd[0] < mid + 6.0 and wd[2] > mid - 6.0)
+        left_cnt = sum(1 for wd in words if wd[2] <= mid - 6.0)
+        right_cnt = sum(1 for wd in words if wd[0] >= mid + 6.0)
+        if crossing == 0 and left_cnt >= 5 and right_cnt >= 5:
+            left_txt = page.get_text("text", clip=fitz.Rect(0.0, 0.0, mid, h)) or ""
+            right_txt = page.get_text("text", clip=fitz.Rect(mid, 0.0, w, h)) or ""
+            return normalize_ctg_font_quirks(f"{left_txt.strip()}\n\n{right_txt.strip()}".strip())
+    if effective_sidebar > 0.0:
+        txt = page.get_text("text", clip=fitz.Rect(effective_sidebar, 0.0, w, h)) or ""
+        return normalize_ctg_font_quirks(txt.strip())
+    return normalize_ctg_font_quirks((page.get_text("text") or "").strip())
+
+
+_DIGITAL_TABLE_NUM_CUE_RE = re.compile(r"\b\d{1,3}(?:[.,]\d{3})+\b")
+_MAX_PDFPLUMBER_PAGE_STREAM_BYTES = 350_000
+_MAX_DIGITAL_TABLE_ENRICH_SECONDS = 30.0
+
+
+def _render_extracted_table_as_html(extracted: dict[str, Any]) -> str:
+    """Serialize a `table_engine` 2D table dict into clean HTML `<table>` for R2 Markdown persistence."""
+    import html as html_lib
+
+    headers = [str(h or "").strip() for h in (extracted.get("headers") or [])]
+    rows = extracted.get("rows") or []
+    if not headers or not rows:
+        return ""
+    parts = ["<table><thead><tr>"]
+    for h in headers:
+        parts.append(f"<th>{html_lib.escape(h)}</th>")
+    parts.append("</tr></thead><tbody>")
+    for r in rows:
+        parts.append("<tr>")
+        for cell in r:
+            if isinstance(cell, dict):
+                val = cell.get("raw_text") if "raw_text" in cell else cell.get("raw", "")
+            else:
+                val = str(cell or "")
+            parts.append(f"<td>{html_lib.escape(str(val or '').strip())}</td>")
+        parts.append("</tr>")
+    parts.append("</tbody></table>")
+    return "".join(parts)
+
+
+def _enrich_digital_pages_with_html_tables(
+    pdf_bytes: bytes,
+    page_texts: dict[int, str],
+    *,
+    digital_pages: list[int],
+    left_sidebar_x: float,
+    two_col_crops: dict[int, tuple[float, float]] | None = None,
+) -> int:
+    """Reconstruct structured HTML `<table>` blocks on numeric digital pages via `pdfplumber` + `table_engine`.
+
+    Fixes PyMuPDF vertical column dumps on Digital BCTN embedded financial statements (e.g. FPT/CTG/PVT)
+    so the cleaned `.md` files stored on R2 carry machine-readable 2D tables directly.
+    """
+    if not pdf_bytes or not digital_pages:
+        return 0
+    candidate_pages = [
+        pno
+        for pno in digital_pages
+        if pno in page_texts
+        and "<table" not in page_texts[pno].lower()
+        and len(_DIGITAL_TABLE_NUM_CUE_RE.findall(page_texts[pno])) >= 6
+    ]
+    if not candidate_pages:
+        return 0
+    # Pre-filter vector-explosion graphic pages (>1.5 MB PDF content stream, e.g. Adobe Illustrator BCTNs)
+    # where pure-Python pdfminer.six inside pdfplumber spins 8-15s/page (~20+ min/doc) on decorative paths.
+    try:
+        probe_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        try:
+            safe_candidates: list[int] = []
+            skipped_heavy = 0
+            for pno in candidate_pages:
+                if not (1 <= pno <= probe_doc.page_count):
+                    continue
+                pg_fitz = probe_doc[pno - 1]
+                stream_sz = len(pg_fitz.read_contents())
+                if stream_sz <= _MAX_PDFPLUMBER_PAGE_STREAM_BYTES:
+                    for xo in pg_fitz.get_xobjects()[:16]:
+                        try:
+                            stream_sz += len(probe_doc.xref_stream(xo[0]) or b"")
+                        except Exception:  # noqa: BLE001
+                            continue
+                        if stream_sz > _MAX_PDFPLUMBER_PAGE_STREAM_BYTES:
+                            break
+                if stream_sz > _MAX_PDFPLUMBER_PAGE_STREAM_BYTES:
+                    skipped_heavy += 1
+                    continue
+                safe_candidates.append(pno)
+            if skipped_heavy:
+                log.info(
+                    "Skipped pdfplumber enrichment on %d vector-heavy graphic pages (>%dKB stream); "
+                    "retaining clean PyMuPDF digital text.",
+                    skipped_heavy,
+                    _MAX_PDFPLUMBER_PAGE_STREAM_BYTES // 1024,
+                )
+            candidate_pages = safe_candidates
+        finally:
+            probe_doc.close()
+    except Exception:  # noqa: BLE001
+        pass
+    if not candidate_pages:
+        return 0
+    try:
+        import io as _io
+        import time as _time
+
+        import pdfplumber
+
+        from sag_api.research.input_inspector import split_virtual_pages
+        from sag_api.research.table_engine import extract_tables_with_lattice_fallback
+    except Exception:  # noqa: BLE001
+        return 0
+
+    injected_count = 0
+    enrich_deadline = _time.monotonic() + _MAX_DIGITAL_TABLE_ENRICH_SECONDS
+    try:
+        with pdfplumber.open(_io.BytesIO(pdf_bytes)) as pdf:
+            total_p = len(pdf.pages)
+            for pno in candidate_pages:
+                if _time.monotonic() >= enrich_deadline:
+                    log.warning(
+                        "Digital HTML table enrichment hit %.0fs budget after %d tables; "
+                        "keeping digital text for remaining pages.",
+                        _MAX_DIGITAL_TABLE_ENRICH_SECONDS,
+                        injected_count,
+                    )
+                    break
+                if not (1 <= pno <= total_p):
+                    continue
+                pg = pdf.pages[pno - 1]
+                w, h = float(pg.width), float(pg.height)
+                eff_sidebar = (
+                    left_sidebar_x if (w > h * 1.25 and 0.0 < left_sidebar_x < w * 0.30) else 0.0
+                )
+                vpages = split_virtual_pages(
+                    pg,
+                    left_sidebar_x=eff_sidebar,
+                    two_col_crop=(two_col_crops or {}).get(pno),
+                )
+                page_html_tables: list[str] = []
+                for vp in vpages:
+                    try:
+                        cropped = pg.crop(vp.bbox)
+                        extracted_list = extract_tables_with_lattice_fallback(cropped)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    for extracted in extracted_list:
+                        rows = extracted.get("rows") or []
+                        num_cells = sum(
+                            1
+                            for r in rows
+                            for c in r[1:]
+                            if isinstance(c, dict) and c.get("numeric_value") is not None
+                        )
+                        if len(rows) < 2 or num_cells < 4:
+                            continue
+                        tbl_html = _render_extracted_table_as_html(extracted)
+                        if tbl_html:
+                            page_html_tables.append(tbl_html)
+                if page_html_tables:
+                    # Keep concise heading/context lines from digital text and append clean HTML tables
+                    # so vertical-dumped raw table cells don't duplicate or confuse downstream RAG.
+                    raw_lines = [ln.strip() for ln in page_texts[pno].splitlines() if ln.strip()]
+                    table_token_bag: set[str] = set()
+                    for th in page_html_tables:
+                        for num_tok in _DIGITAL_TABLE_NUM_CUE_RE.findall(th):
+                            table_token_bag.add(num_tok)
+                    kept_context: list[str] = []
+                    for ln in raw_lines:
+                        if ln in table_token_bag or re.fullmatch(r"[\d.,()%\-\s]+", ln):
+                            continue
+                        kept_context.append(ln)
+                    header_block = "\n".join(kept_context[:18]).strip()
+                    tables_joined = "\n\n".join(page_html_tables)
+                    page_texts[pno] = (
+                        f"{header_block}\n\n{tables_joined}".strip()
+                        if header_block
+                        else tables_joined
+                    )
+                    injected_count += len(page_html_tables)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Digital HTML table enrichment skipped due to pdfplumber error: %s", exc)
+    return injected_count
+
+
+_SLICE_SCRUB_CATALOG_KEYS: tuple[str, ...] = (
+    "StructTreeRoot",
+    "Outlines",
+    "Names",
+    "Dests",
+    "Metadata",
+    "PieceInfo",
+    "OCProperties",
+    "AcroForm",
+    "MarkInfo",
+    "PageLabels",
+    "Threads",
+)
+
+
+def _slice_pdf_pages(pdf_bytes: bytes, page_numbers: list[int]) -> bytes:
+    """Create a compact in-memory sub-PDF containing only 1-based `page_numbers`.
+
+    Scrubs catalog-level back-references (`/StructTreeRoot`, `/Outlines`, etc.) before
+    `Document.select()` + `tobytes(garbage=2, deflate=True)` so tagged Illustrator BCTNs
+    (e.g. 177 MB SSI BCTN with 72k xrefs) drop unreferenced pages in <0.5s instead of
+    retaining all 177 MB and hanging in O(N^2) `garbage=3` deduplication.
+    """
+    if not pdf_bytes or not page_numbers:
+        return pdf_bytes
+    src = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        total_pages = len(src)
+        valid_zero_based = [pno - 1 for pno in page_numbers if 1 <= pno <= total_pages]
+        if not valid_zero_based:
+            return pdf_bytes
+        if len(valid_zero_based) == total_pages and valid_zero_based == list(range(total_pages)):
+            return pdf_bytes
+        cat = src.pdf_catalog()
+        if cat:
+            for key in _SLICE_SCRUB_CATALOG_KEYS:
+                try:
+                    src.xref_set_key(cat, key, "null")
+                except Exception:  # noqa: BLE001
+                    pass
+        src.select(valid_zero_based)
+        return src.tobytes(garbage=2, deflate=True)
+    finally:
+        src.close()
+
+
+def _detect_trailing_scan_block(
+    scan_pages: list[int],
+    total_pages: int,
+    *,
+    digital_clean_pages: list[int] | None = None,
+) -> list[int]:
+    """Detect a contiguous trailing scanned BCTC attached to a predominantly-digital BCTN (e.g. HPG p.90–141).
+
+    Strict preconditions prevent mistaking a mostly-scanned/BAD_FONT BCTN (e.g. POW 0-dig/2-bad/97-scan)
+    for a trailing BCTC appendix:
+    - Trailing block must have >= 15 scan pages in a >= 30 page document.
+    - Block must start at or after `max(20, int(total_pages * 0.35))`.
+    - Block must not exceed `65%` of total document pages.
+    - When `digital_clean_pages` is provided, the prefix before `block[0]` must be predominantly
+      digital (`>= 15` digital pages and `>= 50%` of prefix pages).
+    """
+    if len(scan_pages) < 15 or total_pages < 30:
+        return []
+    ordered = sorted(set(scan_pages))
+    if ordered[-1] < total_pages - 2:
+        return []
+    block = [ordered[-1]]
+    for pno in reversed(ordered[:-1]):
+        if block[-1] - pno <= 2:
+            block.append(pno)
+        else:
+            break
+    block.reverse()
+    if len(block) < 15:
+        return []
+    min_start = max(20, int(total_pages * 0.35))
+    if block[0] < min_start:
+        return []
+    if len(block) > int(total_pages * 0.65):
+        return []
+    if digital_clean_pages is not None:
+        prefix_len = max(1, block[0] - 1)
+        prefix_dig = sum(1 for p in digital_clean_pages if 1 <= p < block[0])
+        if prefix_dig < 15 or prefix_dig < prefix_len * 0.50:
+            return []
+    return block
+
+
+def _calibrate_branch_c_from_ocr(
+    ocr_pages: dict[int, str],
+    *,
+    inspection: InspectionResult,
+    n_pages: int,
+) -> PageOffsetCalibration:
+    """Calibrate Branch C (100% scan) offset using Pass-1 OCR edge page numbers & spread ratio."""
+    is_spread_doc = n_pages > 0 and inspection.spread_pages >= n_pages * 0.60
+    offsets: list[float] = []
+    for pno, txt in sorted(ocr_pages.items()):
+        lines = [ln.strip() for ln in (txt or "").splitlines() if ln.strip()]
+        if not lines:
+            continue
+        edge_lines = lines[:2] + lines[-2:]
+        for ln in edge_lines:
+            cleaned = ln.strip("|-–—[]() ")
+            if re.fullmatch(r"\d{1,3}", cleaned):
+                printed = int(cleaned)
+                if 1 <= printed <= max(n_pages * 2, 400):
+                    if is_spread_doc:
+                        off = float(2 * pno - printed)
+                        if abs(off) <= 20:
+                            offsets.append(off)
+                            break
+                    else:
+                        off = float(pno - printed)
+                        if abs(off) <= 20:
+                            offsets.append(off)
+                            break
+    if offsets:
+        med_off = float(median(offsets))
+        return PageOffsetCalibration(
+            mode="SPREAD_A3" if is_spread_doc else "SINGLE_PAGE",
+            offset=med_off,
+            sample_pairs=len(offsets),
+            confidence=round(min(0.85, 0.4 + 0.15 * len(offsets)), 3),
+        )
+    if is_spread_doc:
+        return PageOffsetCalibration(mode="SPREAD_A3", offset=0.0, sample_pairs=0, confidence=0.5)
+    return PageOffsetCalibration(mode="IDENTITY", offset=0.0, sample_pairs=0, confidence=0.0)
+
+
+async def build_research_sub_documents(
+    *,
+    ticker: str,
+    pdf_bytes: bytes,
+    doc_type: str,
+    published_date: date | None,
+    title: str = "",
+    source_url: str = "",
+    fiscal_year: int | None = None,
+    fiscal_quarter: int | None = None,
+    ocr_adapter: OcrAdapterProtocol | None = None,
+    toc_router: TocRouterProtocol | None = None,
+    toc_scan_limit: int = 5,
+    max_targeted_ocr_pages: int = 200,
+    max_bctc_ocr_pages: int = 320,
+    keep_all_bctc_notes: bool = True,
+    skip_trailing_scanned_bctc: bool = False,
+) -> ResearchInputBuildResult:
+    """Build 4 Natural Document Classes (`BCTN_CORE`, `BCTN_PR`, `BCTC_AUDITED`, `AGM_TARGETS`/`QUARTER_NOTES`)
+    with 0%-drop BCTC guarantee, running header removal, native Markdown heading normalization,
+    and full `DocumentCoverageAudit`.
+    """
+    if published_date is None:
+        raise MissingPublishedDateError(
+            f"Missing published_date for {ticker} ({doc_type}); failing closed."
+        )
+
+    canonical_doc_type = normalize_doc_type(doc_type, title=title)
+    resolved_fy = fiscal_year or parse_fiscal_year_from_meta(title, source_url) or published_date.year
+    resolved_fq = (
+        fiscal_quarter
+        if fiscal_quarter is not None
+        else parse_fiscal_quarter_from_meta(title, source_url)
+    )
+    valid_from_dt = datetime(
+        published_date.year, published_date.month, published_date.day, tzinfo=UTC
+    )
+
+    try:
+        candidates = unwrap_pdf_candidates(pdf_bytes, doc_type=canonical_doc_type)
+    except ZipExtractionError as exc:
+        if "EXCLUDED_FULL_ENGLISH_DOCUMENT" in str(exc):
+            raise InputBuildError(
+                f"EXCLUDED_FULL_ENGLISH_DOCUMENT for {ticker} ({canonical_doc_type}): {exc}"
+            ) from exc
+        raise InputBuildError(f"Archive extraction failed for {ticker}: {exc}") from exc
+
+    # Archive Candidate Fallback (No Premature Tombstone): if candidate #1 inside a multi-PDF archive
+    # turns out to be full-English (digital or via Pass-1 OCR canary), try remaining candidates first.
+    last_english_exc: InputBuildError | None = None
+    for cand_idx, (cand_bytes, cand_is_zip, cand_entry, cand_entries) in enumerate(candidates[:4]):
+        try:
+            return await _build_unwrapped_research_sub_documents(
+                ticker=ticker,
+                unwrapped_bytes=cand_bytes,
+                is_archive=cand_is_zip,
+                chosen_entry=cand_entry,
+                archive_entries=cand_entries,
+                canonical_doc_type=canonical_doc_type,
+                published_date=published_date,
+                resolved_fy=resolved_fy,
+                resolved_fq=resolved_fq,
+                valid_from_dt=valid_from_dt,
+                title=title,
+                source_url=source_url,
+                ocr_adapter=ocr_adapter,
+                toc_router=toc_router,
+                toc_scan_limit=toc_scan_limit,
+                max_targeted_ocr_pages=max_targeted_ocr_pages,
+                max_bctc_ocr_pages=max_bctc_ocr_pages,
+                keep_all_bctc_notes=keep_all_bctc_notes,
+                skip_trailing_scanned_bctc=skip_trailing_scanned_bctc,
+            )
+        except InputBuildError as exc:
+            if "EXCLUDED_FULL_ENGLISH" in str(exc) and cand_idx + 1 < min(len(candidates), 4):
+                log.warning(
+                    "Archive candidate #%d (%s) for %s (%s) was full-English; falling back to next candidate",
+                    cand_idx + 1,
+                    cand_entry,
+                    ticker,
+                    canonical_doc_type,
+                )
+                last_english_exc = exc
+                continue
+            raise
+    assert last_english_exc is not None
+    raise last_english_exc
+
+
+async def _build_unwrapped_research_sub_documents(
+    *,
+    ticker: str,
+    unwrapped_bytes: bytes,
+    is_archive: bool,
+    chosen_entry: str | None,
+    archive_entries: list[str],
+    canonical_doc_type: str,
+    published_date: date,
+    resolved_fy: int,
+    resolved_fq: int,
+    valid_from_dt: datetime,
+    title: str = "",
+    source_url: str = "",
+    ocr_adapter: OcrAdapterProtocol | None = None,
+    toc_router: TocRouterProtocol | None = None,
+    toc_scan_limit: int = 5,
+    max_targeted_ocr_pages: int = 200,
+    max_bctc_ocr_pages: int = 320,
+    keep_all_bctc_notes: bool = True,
+    skip_trailing_scanned_bctc: bool = False,
+) -> ResearchInputBuildResult:
+    inspection = inspect_pdf_bytes(unwrapped_bytes, source_url=source_url, doc_type=canonical_doc_type)
+    if is_archive:
+        inspection.is_zip = True
+        inspection.chosen_entry = chosen_entry
+        inspection.zip_entries = list(archive_entries)
+    if inspection.doc_class == "EXCLUDED_ENGLISH" or inspection.error == "EXCLUDED_FULL_ENGLISH_DOCUMENT":
+        raise InputBuildError(
+            f"EXCLUDED_FULL_ENGLISH_DOCUMENT for {ticker} ({canonical_doc_type})"
+        )
+    if inspection.error:
+        raise InputBuildError(f"PDF inspection failed for {ticker}: {inspection.error}")
+
+    build_res = ResearchInputBuildResult(
+        ticker=ticker.upper(),
+        doc_type=canonical_doc_type,
+        routed_branch=inspection.routed_branch,
+        inspection=inspection,
+        follow_up_urls=list(inspection.embedded_urls),
+    )
+
+    if inspection.doc_class == "NOTICE_ONLY":
+        build_res.coverage_audit = DocumentCoverageAudit(
+            total_pdf_pages=inspection.pages,
+            digital_clean_pages=inspection.digital_clean_pages,
+            scan_pages=inspection.scan_pages,
+            bad_font_pages=inspection.bad_font_pages,
+        )
+        return build_res
+
+    doc = fitz.open(stream=unwrapped_bytes, filetype="pdf")
+    if len(doc) == 0:
+        doc.close()
+        raise InputBuildError(f"Unwrapped PDF has 0 pages for {ticker}; failing closed.")
+
+    page_texts: dict[int, str] = {}
+    page_bold_headings: dict[int, set[str]] = {}
+    page_large_titles: dict[int, set[str]] = {}
+    ocr_pages_used = 0
+    ocr_truncated_count = 0
+    calibration = PageOffsetCalibration()
+    section_spans: list[TocSectionSpan] = []
+    spans_already_pdf = False
+    localization_method = "NATIVE_4CLASS_DETERMINISTIC"
+    trailing_scanned_bctc_pages: list[int] = []
+
+    try:
+        n_pages = len(doc)
+        triage_by_page = {pt.page_no: pt for pt in inspection.page_triage}
+        calibration = calibrate_printed_to_pdf_mapping(doc)
+
+        if inspection.routed_branch == "C":
+            if ocr_adapter is None:
+                raise InputBuildError(
+                    f"Scan PDF ({ticker}, {n_pages}p, {canonical_doc_type}) requires OcrAdapterProtocol; "
+                    "silent MarkItDown fallback is forbidden."
+                )
+
+            if canonical_doc_type in (
+                "BCTC",
+                "NQ_DHDCD",
+                "TAI_LIEU_DHDCD",
+                "LATEST_QUARTER",
+                "GIAI_TRINH",
+                "TY_LE_AT_TC",
+            ):
+                # 0%-drop OCR for scanned BCTC / AGM / Quarter filings (auto-sliced at 120p in MinerUOcrAdapter)
+                if canonical_doc_type in ("BCTC", "LATEST_QUARTER", "GIAI_TRINH", "TY_LE_AT_TC"):
+                    ocr_cap = max_bctc_ocr_pages
+                elif canonical_doc_type in ("NQ_DHDCD", "TAI_LIEU_DHDCD"):
+                    ocr_cap = max(max_targeted_ocr_pages, 300)
+                else:
+                    ocr_cap = max(max_targeted_ocr_pages, 200)
+                if n_pages > ocr_cap:
+                    ocr_truncated_count = n_pages - ocr_cap
+                    log.warning(
+                        "OCR cap (%d) truncated %d trailing pages for %s (%s, %dp)",
+                        ocr_cap,
+                        ocr_truncated_count,
+                        ticker,
+                        canonical_doc_type,
+                        n_pages,
+                    )
+                all_targets = list(range(1, min(n_pages, ocr_cap) + 1))
+                # Only run a separate 2-page English Canary OCR round-trip when title/URL is
+                # ambiguous (no Vietnamese diacritics & no `/VN/` path). Unambiguously Vietnamese
+                # filings save a full MinerU VLM GPU queue cycle (post-OCR language gate still runs!).
+                _has_unambiguous_vn_meta = bool(
+                    (source_url or "").startswith(("http://", "https://"))
+                    and (
+                        "/vn/" in (source_url or "").lower()
+                        or re.search(r"[ăâđêôơưà-ỹĂÂĐÊÔƠƯÀ-Ỹ]", title or "")
+                    )
+                )
+                if len(all_targets) >= 4 and not _has_unambiguous_vn_meta:
+                    canary_pages = all_targets[1:3] if len(all_targets) >= 3 else all_targets[:2]
+                    try:
+                        canary_ocr = await ocr_adapter.ocr_pdf_pages(
+                            _slice_pdf_pages(unwrapped_bytes, canary_pages),
+                            canary_pages,
+                            language="vi",
+                        )
+                    except Exception as exc:
+                        raise InputBuildError(
+                            f"Canary {canonical_doc_type} OCR failed for {ticker}: {exc}"
+                        ) from exc
+                    ocr_pages_used += len(canary_pages)
+                    page_texts.update(canary_ocr)
+                    canary_classes = {
+                        p: classify_text_language(canary_ocr.get(p, "")).lang_class
+                        for p in canary_pages
+                    }
+                    canary_verdict, _ = resolve_english_pages_to_drop(canary_classes, canary_ocr)
+                    if canary_verdict == "FULL_ENGLISH":
+                        raise InputBuildError(
+                            f"EXCLUDED_FULL_ENGLISH_SCAN for {ticker} ({canonical_doc_type}) "
+                            f"detected via {len(canary_pages)}-page canary"
+                        )
+                remaining_full = [p for p in all_targets if p not in page_texts]
+                if remaining_full:
+                    try:
+                        full_ocr = await ocr_adapter.ocr_pdf_pages(
+                            _slice_pdf_pages(unwrapped_bytes, remaining_full),
+                            remaining_full,
+                            language="vi",
+                        )
+                    except Exception as exc:
+                        raise InputBuildError(
+                            f"Full {canonical_doc_type} OCR failed for {ticker}: {exc}"
+                        ) from exc
+                    ocr_pages_used += len(remaining_full)
+                    page_texts.update(full_ocr)
+                localization_method = f"FULL_{canonical_doc_type}_OCR"
+            else:
+                # 2-Pass TOC-First OCR for 100% scanned BCTNs (avoids OCRing 150 pages of ESG/photos)
+                eff_toc_limit = max(toc_scan_limit, 8) if n_pages >= 60 else toc_scan_limit
+                toc_pages = list(range(1, min(n_pages, eff_toc_limit) + 1))
+                try:
+                    toc_ocr = await ocr_adapter.ocr_pdf_pages(
+                        _slice_pdf_pages(unwrapped_bytes, toc_pages),
+                        toc_pages,
+                        language="vi",
+                    )
+                except Exception as exc:
+                    raise InputBuildError(f"Pass-1 TOC OCR failed for {ticker}: {exc}") from exc
+                ocr_pages_used += len(toc_pages)
+                page_texts.update(toc_ocr)
+                toc_classes = {
+                    p: classify_text_language(toc_ocr.get(p, "")).lang_class for p in toc_pages
+                }
+                toc_verdict, _ = resolve_english_pages_to_drop(toc_classes, toc_ocr)
+                if toc_verdict == "FULL_ENGLISH":
+                    raise InputBuildError(
+                        f"EXCLUDED_FULL_ENGLISH_SCAN for {ticker} ({canonical_doc_type}) "
+                        f"detected via Pass-1 TOC canary"
+                    )
+
+                # Calibrate printed->PDF offset from Pass-1 OCR + A3 spread ratio when digital calibration was IDENTITY
+                if calibration.mode == "IDENTITY":
+                    calibration = _calibrate_branch_c_from_ocr(
+                        toc_ocr,
+                        inspection=inspection,
+                        n_pages=n_pages,
+                    )
+
+                toc_joined = "\n".join(toc_ocr.get(p, "") for p in toc_pages)
+                if toc_router is not None and toc_joined.strip():
+                    section_spans = await toc_router.route_toc(
+                        ticker=ticker.upper(),
+                        doc_type=canonical_doc_type,
+                        toc_or_outline_text=toc_joined,
+                        total_pdf_pages=n_pages,
+                    )
+                    if section_spans:
+                        localization_method = "LLM_TOC_ROUTER"
+                if not section_spans:
+                    section_spans = parse_toc_section_spans(
+                        toc_joined, max_pages=n_pages, doc_type=canonical_doc_type
+                    )
+                    if section_spans:
+                        localization_method = "DETERMINISTIC_TOC"
+
+                if section_spans:
+                    span_page_map = _map_spans_to_pdf_pages(
+                        section_spans, calibration=calibration, max_pages=n_pages
+                    )
+                    toc_ok, toc_reason = _validate_toc_spans_for_pass2_ocr(
+                        section_spans,
+                        span_page_map=span_page_map,
+                        pass1_pages=toc_pages,
+                        total_pages=n_pages,
+                        doc_type=canonical_doc_type,
+                    )
+                    if not toc_ok:
+                        log.warning(
+                            "Rejecting incomplete %s TOC spans for %s (%dp, reason=%s); "
+                            "falling back to full-coverage OCR",
+                            localization_method,
+                            ticker,
+                            n_pages,
+                            toc_reason,
+                        )
+                        section_spans = []
+                        localization_method = "NATIVE_4CLASS_DETERMINISTIC"
+                        target_pages = []
+                    else:
+                        target_pages = sorted(
+                            pno for pno, sp in span_page_map.items() if sp.slot != "EXCLUDE"
+                        )
+                else:
+                    target_pages = parse_toc_target_pages(
+                        toc_joined, max_pages=n_pages, calibration=calibration
+                    )
+                    if (
+                        canonical_doc_type in ("BCTN", "CAO_BACH")
+                        and n_pages >= 30
+                        and target_pages
+                        and (
+                            max(target_pages) < int(n_pages * 0.55)
+                            or len([p for p in target_pages if p not in toc_pages]) < 8
+                        )
+                    ):
+                        target_pages = []
+
+                if not target_pages:
+                    target_pages = [
+                        p for p in range(1, min(n_pages, max_targeted_ocr_pages) + 1) if p not in toc_pages
+                    ]
+                ocr_budget = (
+                    max_bctc_ocr_pages
+                    if any(sp.slot == "BCTC_AUDITED" for sp in section_spans)
+                    else max_targeted_ocr_pages
+                )
+                uncovered_targets = [p for p in target_pages if p not in page_texts]
+                if len(uncovered_targets) > ocr_budget:
+                    ocr_truncated_count += len(uncovered_targets) - ocr_budget
+                    log.warning(
+                        "Pass-2 OCR budget (%d) truncated %d target pages for %s (%s)",
+                        ocr_budget,
+                        len(uncovered_targets) - ocr_budget,
+                        ticker,
+                        canonical_doc_type,
+                    )
+                remaining_targets = uncovered_targets[:ocr_budget]
+                if remaining_targets:
+                    try:
+                        pass2_ocr = await ocr_adapter.ocr_pdf_pages(
+                            _slice_pdf_pages(unwrapped_bytes, remaining_targets),
+                            remaining_targets,
+                            language="vi",
+                        )
+                    except Exception as exc:
+                        raise InputBuildError(f"Pass-2 targeted OCR failed for {ticker}: {exc}") from exc
+                    ocr_pages_used += len(remaining_targets)
+                    page_texts.update(pass2_ocr)
+        else:
+            # Digital / Hybrid / BadFont: skip pre-detected English pages at 0đ, crop 2-col VI/EN pages,
+            # extract clean digital pages at 0đ, and route Vietnamese BAD_FONT / scanned BCTC to OCR.
+            pre_english_drop_set = set(inspection.english_page_numbers)
+            ocr_needed: list[int] = []
+            for pno in range(1, n_pages + 1):
+                if pno in pre_english_drop_set:
+                    build_res.excluded_pages[pno] = "ENGLISH_TRANSLATION_PAGE"
+                    continue
+                t_info = triage_by_page.get(pno)
+                if t_info and t_info.triage_class == "DIGITAL_CLEAN":
+                    pg = doc[pno - 1]
+                    page_texts[pno] = _extract_digital_page_text(
+                        pg,
+                        left_sidebar_x=inspection.auto_sidebar_x,
+                        two_col_crop=inspection.bilingual_two_col_crops.get(pno),
+                    )
+                    large_h, bold_h = extract_page_heading_styles(
+                        pg, left_sidebar_x=inspection.auto_sidebar_x
+                    )
+                    page_large_titles[pno] = large_h
+                    page_bold_headings[pno] = bold_h
+                else:
+                    ocr_needed.append(pno)
+
+            # Reconstruct structured HTML `<table>` blocks on numeric digital pages (fixes PyMuPDF vertical dumps)
+            digital_extracted_pages = [p for p in range(1, n_pages + 1) if p in page_texts]
+            if digital_extracted_pages and canonical_doc_type in (
+                "BCTN",
+                "BCTC",
+                "LATEST_QUARTER",
+                "NQ_DHDCD",
+                "TAI_LIEU_DHDCD",
+            ):
+                await asyncio.to_thread(
+                    _enrich_digital_pages_with_html_tables,
+                    unwrapped_bytes,
+                    page_texts,
+                    digital_pages=digital_extracted_pages,
+                    left_sidebar_x=inspection.auto_sidebar_x,
+                    two_col_crops=inspection.bilingual_two_col_crops,
+                )
+
+            trailing_scanned_bctc_pages = (
+                [
+                    p
+                    for p in _detect_trailing_scan_block(
+                        inspection.scan_page_numbers,
+                        n_pages,
+                        digital_clean_pages=inspection.digital_clean_page_numbers,
+                    )
+                    if p not in pre_english_drop_set
+                ]
+                if canonical_doc_type == "BCTN"
+                else []
+            )
+
+            if skip_trailing_scanned_bctc and trailing_scanned_bctc_pages:
+                trailing_drop_set = set(trailing_scanned_bctc_pages)
+                ocr_needed = [p for p in ocr_needed if p not in trailing_drop_set]
+                for pno in trailing_scanned_bctc_pages:
+                    build_res.excluded_pages[pno] = "DEFERRED_TO_STANDALONE_BCTC"
+                trailing_scanned_bctc_pages = []
+
+            if ocr_needed:
+                bad_font_set = set(inspection.bad_font_page_numbers)
+                must_ocr_set: set[int] = {p for p in ocr_needed if p in bad_font_set}
+                if canonical_doc_type in (
+                    "BCTC",
+                    "NQ_DHDCD",
+                    "TAI_LIEU_DHDCD",
+                    "LATEST_QUARTER",
+                    "GIAI_TRINH",
+                    "TY_LE_AT_TC",
+                ):
+                    must_ocr_set.update(ocr_needed)
+                elif trailing_scanned_bctc_pages:
+                    must_ocr_set.update(trailing_scanned_bctc_pages)
+                elif inspection.routed_branch in ("B", "D"):
+                    must_ocr_set.update(ocr_needed)
+                must_ocr = [p for p in ocr_needed if p in must_ocr_set]
+
+                if (
+                    canonical_doc_type in ("BCTC", "LATEST_QUARTER", "GIAI_TRINH", "TY_LE_AT_TC")
+                    or bool(trailing_scanned_bctc_pages)
+                ):
+                    ocr_cap = max_bctc_ocr_pages
+                elif canonical_doc_type in ("NQ_DHDCD", "TAI_LIEU_DHDCD"):
+                    ocr_cap = max(max_targeted_ocr_pages, 300)
+                else:
+                    ocr_cap = max(max_targeted_ocr_pages, 200)
+
+                # Pass-1 TOC-First for large BAD_FONT / Hybrid BCTNs (prevents VCI 214p -> 2 cover pages!)
+                if (
+                    canonical_doc_type in ("BCTN", "CAO_BACH")
+                    and len(must_ocr) > 40
+                    and ocr_adapter is not None
+                ):
+                    toc_window = max(toc_scan_limit, 8)
+                    pass1_toc_pages = [p for p in must_ocr if p <= toc_window]
+                    if pass1_toc_pages:
+                        try:
+                            p1_ocr = await ocr_adapter.ocr_pdf_pages(
+                                _slice_pdf_pages(unwrapped_bytes, pass1_toc_pages),
+                                pass1_toc_pages,
+                                language="vi",
+                            )
+                        except Exception as exc:
+                            raise InputBuildError(
+                                f"Pass-1 BAD_FONT TOC OCR failed for {ticker}: {exc}"
+                            ) from exc
+                        ocr_pages_used += len(pass1_toc_pages)
+                        page_texts.update(p1_ocr)
+                        if calibration.mode == "IDENTITY":
+                            calibration = _calibrate_branch_c_from_ocr(
+                                p1_ocr,
+                                inspection=inspection,
+                                n_pages=n_pages,
+                            )
+                        toc_joined_bf = "\n".join(
+                            page_texts.get(p, "") for p in range(1, min(n_pages, toc_window) + 1)
+                        )
+                        if toc_router is not None and toc_joined_bf.strip():
+                            section_spans = await toc_router.route_toc(
+                                ticker=ticker.upper(),
+                                doc_type=canonical_doc_type,
+                                toc_or_outline_text=toc_joined_bf,
+                                total_pdf_pages=n_pages,
+                            )
+                            if section_spans:
+                                localization_method = "LLM_TOC_ROUTER"
+                        if not section_spans:
+                            section_spans = parse_toc_section_spans(
+                                toc_joined_bf, max_pages=n_pages, doc_type=canonical_doc_type
+                            )
+                            if section_spans:
+                                localization_method = "DETERMINISTIC_TOC"
+                        if section_spans:
+                            sp_map = _map_spans_to_pdf_pages(
+                                section_spans, calibration=calibration, max_pages=n_pages
+                            )
+                            toc_ok, toc_reason = _validate_toc_spans_for_pass2_ocr(
+                                section_spans,
+                                span_page_map=sp_map,
+                                pass1_pages=pass1_toc_pages,
+                                total_pages=n_pages,
+                                doc_type=canonical_doc_type,
+                            )
+                            if not toc_ok:
+                                log.warning(
+                                    "Rejecting incomplete %s BAD_FONT TOC spans for %s (%dp, reason=%s); "
+                                    "falling back to full-coverage OCR",
+                                    localization_method,
+                                    ticker,
+                                    n_pages,
+                                    toc_reason,
+                                )
+                                section_spans = []
+                                localization_method = "NATIVE_4CLASS_DETERMINISTIC"
+                                must_ocr = [p for p in must_ocr if p not in page_texts]
+                            else:
+                                localized_targets = [
+                                    p
+                                    for p in must_ocr
+                                    if p not in page_texts
+                                    and (p in sp_map and sp_map[p].slot != "EXCLUDE")
+                                ]
+                                if localized_targets:
+                                    must_ocr = localized_targets
+                                    if any(sp.slot == "BCTC_AUDITED" for sp in section_spans):
+                                        ocr_cap = max(ocr_cap, max_bctc_ocr_pages)
+                                else:
+                                    must_ocr = [p for p in must_ocr if p not in page_texts]
+                        else:
+                            must_ocr = [p for p in must_ocr if p not in page_texts]
+
+                if len(must_ocr) > ocr_cap:
+                    ocr_truncated_count += len(must_ocr) - ocr_cap
+                    log.warning(
+                        "Targeted OCR cap (%d) truncated %d pages for %s (%s)",
+                        ocr_cap,
+                        len(must_ocr) - ocr_cap,
+                        ticker,
+                        canonical_doc_type,
+                    )
+                must_ocr = must_ocr[:ocr_cap]
+                if must_ocr:
+                    if ocr_adapter is None:
+                        if inspection.doc_class == "BAD_FONT" or bad_font_set:
+                            raise InputBuildError(
+                                f"BAD_FONT pages {sorted(bad_font_set)} require OcrAdapterProtocol; fail-closed."
+                            )
+                    else:
+                        try:
+                            ocr_res = await ocr_adapter.ocr_pdf_pages(
+                                _slice_pdf_pages(unwrapped_bytes, must_ocr),
+                                must_ocr,
+                                language="vi",
+                            )
+                        except Exception as exc:
+                            raise InputBuildError(f"Targeted OCR failed for {ticker}: {exc}") from exc
+                        ocr_pages_used += len(must_ocr)
+                        page_texts.update(ocr_res)
+
+            # Layer 1A -> 1B -> 1C localization (BCTN / CAO_BACH only — skip if BAD_FONT TOC-First already routed!)
+            if canonical_doc_type in ("BCTN", "CAO_BACH") and not section_spans:
+                bm_spans = extract_pdf_outline_spans(doc, doc_type=canonical_doc_type)
+                if bm_spans:
+                    section_spans = bm_spans
+                    spans_already_pdf = True
+                    localization_method = "PDF_BOOKMARKS"
+                else:
+                    digest, is_explicit_toc = extract_toc_or_heading_digest(doc, page_texts)
+                    if toc_router is not None and digest:
+                        llm_spans = await toc_router.route_toc(
+                            ticker=ticker.upper(),
+                            doc_type=canonical_doc_type,
+                            toc_or_outline_text=digest,
+                            total_pdf_pages=n_pages,
+                        )
+                        if llm_spans:
+                            section_spans = llm_spans
+                            spans_already_pdf = not is_explicit_toc
+                            localization_method = "LLM_TOC_ROUTER"
+                    if not section_spans and is_explicit_toc:
+                        det_spans = parse_toc_section_spans(
+                            digest, max_pages=n_pages, doc_type=canonical_doc_type
+                        )
+                        if det_spans:
+                            section_spans = det_spans
+                            spans_already_pdf = False
+                            localization_method = "DETERMINISTIC_TOC"
+    finally:
+        n_pages_total = len(doc)
+        doc.close()
+
+    # Post-OCR per-page language check: catches scanned English translation pages (tail, alternating, or full-EN)
+    if page_texts:
+        post_page_classes = {
+            pno: classify_text_language(txt).lang_class for pno, txt in sorted(page_texts.items())
+        }
+        post_verdict, post_en_drop = resolve_english_pages_to_drop(post_page_classes, page_texts)
+        if post_verdict == "FULL_ENGLISH":
+            raise InputBuildError(
+                f"EXCLUDED_FULL_ENGLISH_SCAN for {ticker} ({canonical_doc_type})"
+            )
+        for pno in post_en_drop:
+            page_texts.pop(pno, None)
+            build_res.excluded_pages[pno] = "ENGLISH_TRANSLATION_PAGE"
+
+    # Auto-strip repeating running headers/nav-tabs/footers across all extracted pages (zero-hardcode)
+    # Preserving the FIRST occurrence of each major FS H1 (prevents stripping first THUYẾT MINH BCTC)
+    running_keys = detect_repeating_running_lines(page_texts)
+    running_lines_stripped = 0
+    cleaned_page_texts: dict[int, str] = {}
+    preserved_fs_h1_seen: set[str] = set()
+    line_doc_freq: Counter[str] = Counter()
+    for pno in sorted(page_texts):
+        raw_txt = page_texts[pno]
+        cleaned_txt, stripped_n = strip_running_lines(
+            raw_txt,
+            running_keys,
+            preserve_first_fs_heading_seen=preserved_fs_h1_seen,
+        )
+        cleaned_page_texts[pno] = cleaned_txt
+        running_lines_stripped += stripped_n
+        seen_ln: set[str] = set()
+        for ln in cleaned_txt.splitlines():
+            s = re.sub(r"\s+", " ", ln.strip()).lower()
+            if 4 <= len(s) <= 130 and s not in seen_ln:
+                seen_ln.add(s)
+                line_doc_freq[s] += 1
+
+    # Detect embedded Audited Financial Statements span `(start, end)` inside BCTN filings
+    embedded_bctc_start: int | None = None
+    embedded_bctc_end: int | None = None
+    if canonical_doc_type == "BCTN":
+        bctc_span = detect_embedded_bctc_span(cleaned_page_texts, n_pages_total)
+        if bctc_span is not None:
+            embedded_bctc_start, embedded_bctc_end = bctc_span
+        elif trailing_scanned_bctc_pages:
+            # Only fall back to trailing scan span if OCR'd trailing pages actually show FS/audit evidence
+            fs_hits = sum(
+                1
+                for p in trailing_scanned_bctc_pages
+                if p in cleaned_page_texts and _is_strong_fs_page(cleaned_page_texts[p])
+            )
+            if fs_hits >= 2:
+                embedded_bctc_start = trailing_scanned_bctc_pages[0]
+                embedded_bctc_end = trailing_scanned_bctc_pages[-1]
+
+    span_by_pdf_page = (
+        _map_spans_to_pdf_pages(
+            section_spans,
+            calibration=calibration,
+            max_pages=n_pages_total,
+            already_pdf_indexed=spans_already_pdf,
+        )
+        if section_spans
+        else {}
+    )
+    if canonical_doc_type == "BCTN" and span_by_pdf_page:
+        sanitized_n = _sanitize_bctn_llm_bctc_spans(
+            span_by_pdf_page,
+            cleaned_page_texts=cleaned_page_texts,
+            embedded_bctc_start=embedded_bctc_start,
+            embedded_bctc_end=embedded_bctc_end,
+            total_pages=n_pages_total,
+        )
+        if sanitized_n > 0:
+            log.warning(
+                "Sanitized %d over-claimed BCTC_AUDITED TOC span pages for %s (%dp, embedded=%s..%s)",
+                sanitized_n,
+                ticker,
+                n_pages_total,
+                embedded_bctc_start,
+                embedded_bctc_end,
+            )
+
+    slot_chunks: dict[str, list[tuple[int, str]]] = {}
+    pr_chunks: list[str] = []
+    tt200_policy_pages: list[int] = []
+    all_normalized_headings: list[str] = []
+    bctc_total_pages = 0
+    bctc_kept_pages = 0
+    # Stateful heading normalization state per logical sub-document
+    bctc_heading_state: dict[str, Any] = {}
+    bctn_heading_state: dict[str, Any] = {}
+    # Stateful chapter mode for BCTN multi-page ESG / PR continuation
+    sticky_bctn_mode: Literal["CORE", "PR", "ESG"] = "CORE"
+    post_bctc_esg_appendix = False
+    pr_streak = 0
+
+    for pno in sorted(cleaned_page_texts):
+        txt = (cleaned_page_texts[pno] or "").strip()
+        if not txt:
+            continue
+
+        # ── Fast Path 1: Standalone BCTC or Embedded BCTC section inside BCTN (0%-Drop Guarantee) ──
+        mapped_span = span_by_pdf_page.get(pno)
+        in_embedded_span = (
+            embedded_bctc_start is not None
+            and embedded_bctc_end is not None
+            and embedded_bctc_start <= pno <= embedded_bctc_end
+        )
+        in_bctc_zone = (
+            canonical_doc_type == "BCTC"
+            or in_embedded_span
+            or (mapped_span is not None and mapped_span.slot == "BCTC_AUDITED")
+        )
+        if in_bctc_zone:
+            if len(txt) < 30:
+                build_res.excluded_pages[pno] = "EMPTY_OR_COVER"
+                continue
+            bctc_total_pages += 1
+            if _is_tt200_policy_only_page(txt):
+                tt200_policy_pages.append(pno)
+                if not keep_all_bctc_notes:
+                    build_res.excluded_pages[pno] = "TT200_POLICY_BOILERPLATE"
+                    continue
+            norm_txt, page_h = normalize_financial_markdown_headings(
+                txt,
+                bold_lines=page_bold_headings.get(pno),
+                large_title_lines=page_large_titles.get(pno),
+                is_bctc=True,
+                state=bctc_heading_state,
+            )
+            all_normalized_headings.extend(page_h)
+            slot_chunks.setdefault("BCTC_AUDITED", []).append((pno, norm_txt))
+            bctc_kept_pages += 1
+            continue
+
+        # ── Fast Path 2: AGM / Quarterly / Explanation filings ──
+        if canonical_doc_type in (
+            "NQ_DHDCD",
+            "TAI_LIEU_DHDCD",
+            "LATEST_QUARTER",
+            "GIAI_TRINH",
+            "TY_LE_AT_TC",
+        ):
+            bp_reason = classify_page_boilerplate(txt, doc_type=canonical_doc_type)
+            if bp_reason is not None:
+                build_res.excluded_pages[pno] = bp_reason
+                continue
+            is_agm_doc = canonical_doc_type in ("NQ_DHDCD", "TAI_LIEU_DHDCD")
+            target_slot = "AGM_TARGETS" if is_agm_doc else "QUARTER_NOTES"
+            norm_txt, page_h = normalize_financial_markdown_headings(
+                txt,
+                bold_lines=page_bold_headings.get(pno),
+                large_title_lines=page_large_titles.get(pno),
+                is_bctc=not is_agm_doc,
+                state=bctc_heading_state if not is_agm_doc else bctn_heading_state,
+                line_doc_freq=line_doc_freq,
+            )
+            all_normalized_headings.extend(page_h)
+            slot_chunks.setdefault(target_slot, []).append((pno, norm_txt))
+            continue
+
+        # ── Path 3: BCTN / CAO_BACH 3-Way Triage (`BCTN_CORE` / `BCTN_PR` / `EXCLUDE`) ──
+        # Drop back-cover contact pages and standalone post-BCTC ESG/Sustainability report appendices cleanly
+        if embedded_bctc_end is not None and pno > embedded_bctc_end:
+            raw_post_txt = page_texts.get(pno, "")
+            raw_post_flat = re.sub(r"\s+", " ", f"{raw_post_txt[:1000]} {txt[:800]}")
+            if post_bctc_esg_appendix and not _is_strong_fs_page(txt):
+                build_res.excluded_pages[pno] = "POST_BCTC_ESG_APPENDIX"
+                continue
+            if re.search(
+                r"(?:báo\s+cáo\s+phát\s+triển\s+bền\s+vững|sustainability\s+report|"
+                r"esg\s+report|quản\s+trị\s+bền\s+vững|tăng\s+trưởng\s+bền\s+vững)",
+                raw_post_flat,
+                re.IGNORECASE,
+            ):
+                post_bctc_esg_appendix = True
+                sticky_bctn_mode = "ESG"
+                build_res.excluded_pages[pno] = "POST_BCTC_ESG_APPENDIX"
+                continue
+            if (
+                len(txt) < 420
+                and (len(txt) < 80 or _BACK_COVER_CONTACT_RE.search(txt))
+                and not _page_has_financial_table_shield(txt)
+            ):
+                build_res.excluded_pages[pno] = "FILLER_NON_CORE"
+                continue
+
+        has_fin_shield = _page_has_financial_table_shield(txt)
+        if mapped_span is not None:
+            if mapped_span.slot == "EXCLUDE" and not has_fin_shield:
+                build_res.excluded_pages[pno] = f"TOC_EXCLUDE:{mapped_span.title[:48]}"
+                sticky_bctn_mode = "ESG"
+                continue
+            if mapped_span.slot == "BCTN_PR" and not has_fin_shield:
+                build_res.excluded_pages[pno] = f"PR_LETTER:{mapped_span.title[:48]}"
+                pr_chunks.append(f"<!-- PAGE {pno} -->\n{txt}")
+                slot_chunks.setdefault("BCTN_PR", []).append((pno, txt))
+                sticky_bctn_mode = "PR"
+                continue
+            # Otherwise BCTN_CORE
+            norm_txt, page_h = normalize_financial_markdown_headings(
+                txt,
+                bold_lines=page_bold_headings.get(pno),
+                large_title_lines=page_large_titles.get(pno),
+                is_bctc=False,
+                state=bctn_heading_state,
+                line_doc_freq=line_doc_freq,
+            )
+            all_normalized_headings.extend(page_h)
+            slot_chunks.setdefault("BCTN_CORE", []).append((pno, norm_txt))
+            sticky_bctn_mode = "CORE"
+            pr_streak = 0
+            continue
+
+        # Deterministic 3-Way Triage with sticky ESG/PR continuation & Financial-Table Shield
+        bp_reason = classify_page_boilerplate(txt, doc_type=canonical_doc_type)
+        if bp_reason == "EMPTY_OR_COVER":
+            build_res.excluded_pages[pno] = bp_reason
+            continue
+        if bp_reason == "PR_LETTER":
+            build_res.excluded_pages[pno] = bp_reason
+            pr_chunks.append(f"<!-- PAGE {pno} -->\n{txt}")
+            slot_chunks.setdefault("BCTN_PR", []).append((pno, txt))
+            sticky_bctn_mode = "PR"
+            pr_streak = 1
+            continue
+        if bp_reason in ("ESG_CHARITY", "FILLER_NON_CORE"):
+            build_res.excluded_pages[pno] = bp_reason
+            if bp_reason == "ESG_CHARITY":
+                sticky_bctn_mode = "ESG"
+            continue
+
+        title_zone = _extract_heading_zone(txt, max_lines=4, max_chars=300)
+        exits_non_core = has_fin_shield or bool(_CORE_BCTN_EXIT_RE.search(title_zone))
+        if sticky_bctn_mode == "ESG" and not exits_non_core:
+            build_res.excluded_pages[pno] = "ESG_CONTINUATION"
+            continue
+        if sticky_bctn_mode == "PR" and not exits_non_core and pr_streak < 5:
+            build_res.excluded_pages[pno] = "PR_LETTER_CONTINUATION"
+            pr_chunks.append(f"<!-- PAGE {pno} -->\n{txt}")
+            slot_chunks.setdefault("BCTN_PR", []).append((pno, txt))
+            pr_streak += 1
+            continue
+
+        sticky_bctn_mode = "CORE"
+        pr_streak = 0
+        norm_txt, page_h = normalize_financial_markdown_headings(
+            txt,
+            bold_lines=page_bold_headings.get(pno),
+            large_title_lines=page_large_titles.get(pno),
+            is_bctc=False,
+            state=bctn_heading_state,
+            line_doc_freq=line_doc_freq,
+        )
+        all_normalized_headings.extend(page_h)
+        slot_chunks.setdefault("BCTN_CORE", []).append((pno, norm_txt))
+
+    # Build final ordered SubDocumentBundles (4 Natural Classes)
+    for slot in ALL_SUB_DOC_SLOTS:
+        chunks = slot_chunks.get(slot)
+        if not chunks:
+            continue
+        seen_p: set[int] = set()
+        ordered_chunks: list[tuple[int, str]] = []
+        for pno, body in sorted(chunks, key=lambda item: item[0]):
+            if pno not in seen_p:
+                seen_p.add(pno)
+                ordered_chunks.append((pno, body))
+        page_nums = [p for p, _ in ordered_chunks]
+        md_parts = [f"<!-- PAGE {p} -->\n{body}" for p, body in ordered_chunks]
+        raw_md_content = "\n\n".join(md_parts)
+        md_content, _clean_stats = clean_bilingual_markdown(raw_md_content)
+        if not md_content.strip():
+            continue
+        build_res.sub_documents.append(
+            SubDocumentBundle(
+                project_id=ticker.upper(),
+                sub_doc_slot=slot,
+                half_life_days=SLOT_HALF_LIFE_DAYS[slot],
+                fiscal_year=resolved_fy,
+                fiscal_quarter=resolved_fq,
+                doc_type=canonical_doc_type,
+                published_date=published_date,
+                valid_from=valid_from_dt,
+                routed_branch=inspection.routed_branch,
+                page_numbers=page_nums,
+                markdown_content=md_content,
+                content_hash=hashlib.sha256(md_content.encode("utf-8")).hexdigest(),
+                ocr_pages_used=ocr_pages_used,
+                source_url=source_url,
+                title=title or f"{ticker.upper()} {canonical_doc_type} FY{resolved_fy}",
+            )
+        )
+
+    # Flag missing BCTC warning when BCTC lacks financial statements OR trailing scanned BCTC was skipped without OCR
+    audited_fs_missing_warning = False
+    if canonical_doc_type == "BCTC":
+        bctc_bundle = next((b for b in build_res.sub_documents if b.sub_doc_slot == "BCTC_AUDITED"), None)
+        if bctc_bundle is None or not _FINANCIAL_SHIELD_RE.search(bctc_bundle.markdown_content):
+            audited_fs_missing_warning = True
+            build_res.missing_core_slots.append("BCTC_AUDITED")
+    elif canonical_doc_type == "BCTN":
+        if "BCTC_AUDITED" not in slot_chunks:
+            build_res.missing_core_slots.append("BCTC_AUDITED")
+            if trailing_scanned_bctc_pages and ocr_adapter is None:
+                audited_fs_missing_warning = True
+        if n_pages_total >= 40 and "BCTN_CORE" not in slot_chunks:
+            build_res.missing_core_slots.append("BCTN_CORE")
+
+    # Compute transparent Coverage Audit metrics
+    dropped_counter: Counter[str] = Counter()
+    pure_dropped_pages = 0
+    for reason in build_res.excluded_pages.values():
+        short_reason = reason.split(":")[0]
+        dropped_counter[short_reason] += 1
+        if not short_reason.startswith("PR_LETTER"):
+            pure_dropped_pages += 1
+
+    bctn_core_n = len(slot_chunks.get("BCTN_CORE", []))
+    bctn_pr_n = len(slot_chunks.get("BCTN_PR", []))
+    agm_q_n = len(slot_chunks.get("AGM_TARGETS", [])) + len(slot_chunks.get("QUARTER_NOTES", []))
+    bctn_narrative_total = bctn_core_n + bctn_pr_n + pure_dropped_pages
+    noise_red_pct = (
+        round((pure_dropped_pages / bctn_narrative_total) * 100.0, 1)
+        if (canonical_doc_type == "BCTN" and bctn_narrative_total > 0)
+        else 0.0
+    )
+    bctc_cov_pct = (
+        round((bctc_kept_pages / bctc_total_pages) * 100.0, 2)
+        if bctc_total_pages > 0
+        else 100.0
+    )
+
+    dedup_headings: list[str] = []
+    seen_h: set[str] = set()
+    for h in all_normalized_headings:
+        hk = h.lower()
+        if hk not in seen_h:
+            seen_h.add(hk)
+            dedup_headings.append(h)
+
+    raw_pr_md = "\n\n".join(pr_chunks)
+    build_res.pr_narrative_markdown = (
+        clean_bilingual_markdown(raw_pr_md)[0] if raw_pr_md else ""
+    )
+    build_res.ocr_pages_used = ocr_pages_used
+    build_res.localization_method = localization_method
+    build_res.page_calibration = calibration
+    build_res.section_spans = section_spans
+    build_res.coverage_audit = DocumentCoverageAudit(
+        total_pdf_pages=n_pages_total,
+        digital_clean_pages=inspection.digital_clean_pages,
+        scan_pages=inspection.scan_pages,
+        bad_font_pages=inspection.bad_font_pages,
+        bctn_core_pages=bctn_core_n,
+        bctn_pr_pages=bctn_pr_n,
+        bctc_audited_pages=bctc_kept_pages,
+        agm_or_quarter_pages=agm_q_n,
+        dropped_pages=pure_dropped_pages,
+        noise_reduction_pct=noise_red_pct,
+        embedded_bctc_start_page=embedded_bctc_start,
+        embedded_bctc_end_page=embedded_bctc_end,
+        bctc_total_pages=bctc_total_pages,
+        bctc_kept_pages=bctc_kept_pages,
+        bctc_notes_coverage_pct=bctc_cov_pct,
+        tt200_policy_pages=tt200_policy_pages,
+        running_lines_stripped_count=running_lines_stripped,
+        normalized_headings_count=len(dedup_headings),
+        sample_headings=dedup_headings[:25],
+        dropped_by_reason=dict(dropped_counter),
+        audited_fs_missing_warning=audited_fs_missing_warning,
+        ocr_truncated_warning=ocr_truncated_count > 0,
+        ocr_truncated_page_count=ocr_truncated_count,
+    )
+    return build_res

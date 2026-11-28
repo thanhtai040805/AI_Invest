@@ -1,9 +1,9 @@
-"""EngineManager —— quản lý vòng đời và lời gọi của `DataEngine` zleap-sag.
+"""EngineManager —— 管理 zleap-sag `DataEngine` 的生命周期与调用。
 
-Mỗi nguồn (source_config_id) tương ứng với một instance `DataEngine` (ngữ nghĩa engine «một instance một nguồn»).
-Engine được dựng theo nhu cầu và lưu cache; mỗi nguồn một khóa tuần tự hóa đọc/ghi trên nguồn đó. Cổng chặn đọc/ghi vòng đời cho phép
-engine đã dựng chạy song song chéo nguồn; xử lý tài liệu dùng loader/extractor độc lập song song cùng nguồn. Khi tạo, trục xuất hoặc
-đóng engine sẽ chờ mọi thao tác đang diễn ra kết thúc.
+每个信源（source_config_id）对应一个 `DataEngine` 实例（引擎「一实例一源」的语义）。
+引擎按需构造并缓存；每源一把锁串行化该源上的读写。生命周期读写闸门允许
+已构造引擎跨源并发；文档处理使用独立 loader/extractor 同源并发。创建、逐出或
+关闭引擎时会等待所有在途操作结束。
 """
 
 from __future__ import annotations
@@ -21,13 +21,29 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
+import httpx
 from zleap.sag import DataEngine
+from zleap.sag.pipeline import SearchOptions, SearchRequest, SearchScope
 
 from sag_api.core.config import Settings
 from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
 from sag_api.core.logging import get_logger
-from sag_api.enums import SEARCH_STRATEGIES, normalize_search_strategy
+from sag_api.enums import (
+    SEARCH_STRATEGIES,
+    SEARCH_STRATEGY_REQUIREMENTS,
+    normalize_search_strategy,
+)
+from sag_api.sag._timings_probe import (
+    capture_scope as _timings_capture_scope,
+)
+from sag_api.sag._timings_probe import (
+    install_engine_timings_probe as _install_timings_probe,
+)
+from sag_api.sag._timings_probe import (
+    release_scope as _timings_release_scope,
+)
 from sag_api.sag.config_builder import build_engine_config
 from sag_api.sag.dto import (
     EntityInfo,
@@ -55,6 +71,35 @@ log = get_logger("sag")
 StageCallback = Callable[[str], Awaitable[None]]
 CheckpointCallback = Callable[[ProcessCheckpoint], Awaitable[None]]
 PauseCheck = Callable[[], Awaitable[bool]]
+
+_SQLITE_LOCK_RETRIES = 4
+
+
+async def _commit_with_sqlite_lock_retry(session: Any, pending: Any | None = None) -> None:
+    """Commit one SQLite write through short-lived writer contention.
+
+    PostgreSQL and non-lock failures are never retried. After a failed commit,
+    SQLAlchemy rolls pending inserts out of the unit of work, so callers may pass
+    the row that must be re-added before the next attempt.
+    """
+    from sqlalchemy.exc import OperationalError
+
+    for attempt in range(_SQLITE_LOCK_RETRIES):
+        try:
+            await session.commit()
+            return
+        except OperationalError as error:
+            locked = "database is locked" in str(error).lower()
+            if not locked or attempt == _SQLITE_LOCK_RETRIES - 1:
+                raise
+            await session.rollback()
+            if pending is not None:
+                session.add(pending)
+            await asyncio.sleep(0.08 * (2**attempt))
+
+
+class _DocumentAdmissionYielded(Exception):
+    """A processor waiting to enter the engine yielded to a control intent."""
 
 
 def _urlsafe_encode(value: bytes) -> str:
@@ -152,6 +197,7 @@ class _Slot:
     idle: asyncio.Event = field(default_factory=asyncio.Event)
     concurrent_allowed: asyncio.Event = field(default_factory=asyncio.Event)
     concurrent_users: int = 0
+    maintenance_requests: int = 0
     last_used: float = field(default_factory=time.monotonic)
     closing: bool = False
 
@@ -204,36 +250,151 @@ class _EngineLifecycleGate:
 
 
 class EngineManager:
+    supports_document_source_exclusions = True
+
     def __init__(self, settings: Settings):
         self._settings = settings
         self._slots: dict[str, _Slot] = {}
+        self._search_unit_qdrant_client: httpx.AsyncClient | None = None
+        self._search_unit_qdrant_client_config: tuple[str, str | None, float] | None = None
+        self._search_unit_qdrant_client_lock = asyncio.Lock()
+        self._canonical_embeddings: dict[str, Any] = {}
+        self._canonical_embedding_lock = asyncio.Lock()
         self._create_lock = asyncio.Lock()
+        # SQLite permits one writer at a time.  Keep local document mutations
+        # serialized across source slots; server databases retain full concurrency.
+        self._sqlite_document_mutation_lock = asyncio.Lock()
         self._lifecycle_gate = _EngineLifecycleGate()
         self._cache_size = max(1, settings.engine_cache_size)
         self._schema_ready = False
         self._universe_indexes_ready = False
+        # 一次性 monkey-patch zleap 检索链,把每 step 的 `_timings` 送回 SearchOutcome.stats
+        # 0.8.2 检索模块已重写,probe 内部 ImportError 时静默跳过(REQ-7 待 zleap 内置耗时统计)。
+        _install_timings_probe()
 
-    async def _ensure_universe_query_indexes(self) -> None:
+    async def get_search_unit_qdrant_client(self) -> httpx.AsyncClient:
+        """Return a runtime-managed HTTP client for canonical SearchUnit queries."""
+        url = self._settings.sag_qdrant_url.rstrip("/")
+        api_key = self._settings.sag_qdrant_api_key
+        timeout = max(1.0, float(self._settings.search_source_timeout))
+        client_config = (url, api_key, timeout)
+        async with self._search_unit_qdrant_client_lock:
+            if self._search_unit_qdrant_client_config != client_config:
+                await self._close_search_unit_qdrant_client_locked()
+            if self._search_unit_qdrant_client is None:
+                from sag_api.sag.search_unit_store import SearchIndexUnavailable
+
+                headers = {"api-key": api_key} if api_key else {}
+                try:
+                    per_request_timeout = httpx.Timeout(
+                        min(timeout, 25.0),
+                        connect=min(timeout, 8.0),
+                    )
+                    pool_limits = httpx.Limits(
+                        max_connections=20,
+                        max_keepalive_connections=10,
+                        keepalive_expiry=45.0,
+                    )
+                    self._search_unit_qdrant_client = httpx.AsyncClient(
+                        base_url=url,
+                        headers=headers,
+                        timeout=per_request_timeout,
+                        limits=pool_limits,
+                    )
+                except httpx.InvalidURL:
+                    raise SearchIndexUnavailable(
+                        "Search index request configuration is invalid"
+                    ) from None
+                self._search_unit_qdrant_client_config = client_config
+            return self._search_unit_qdrant_client
+
+    async def get_routing_snapshot(
+        self,
+        *,
+        query: str,
+        scopes: list[dict[str, object]],
+        planner: dict[str, object],
+        query_vector_tasks_by_scope: Any = None,
+        timeout_seconds: float | None = None,
+        as_of_ts: int | None = None,
+    ) -> Any:
+        """Capture durable tree/search/ACL pins for one complete request."""
+        del planner  # The immutable tree snapshot is independent of strategy planning.
+        from sag_api.services.tree_query_snapshot_service import acquire_tree_query_snapshot
+
+        return await acquire_tree_query_snapshot(
+            query=query,
+            scopes=scopes,
+            query_vector_tasks_by_scope=query_vector_tasks_by_scope,
+            timeout_seconds=timeout_seconds,
+            as_of_ts=as_of_ts,
+        )
+
+    async def release_routing_snapshot(self, snapshot_id: str) -> None:
+        """Release request leases after the Qdrant reads using their pinned slot finish."""
+        from sag_api.services.tree_query_snapshot_service import release_tree_query_snapshot
+
+        await release_tree_query_snapshot(snapshot_id)
+
+    async def _close_search_unit_qdrant_client_locked(self) -> None:
+        client = self._search_unit_qdrant_client
+        self._search_unit_qdrant_client = None
+        self._search_unit_qdrant_client_config = None
+        if client is not None:
+            await client.aclose()
+
+
+    async def _relational_session_factory(
+        self, source_config_id: str, source: Source | None = None
+    ) -> Any:
+        """0.8.2 起 zleap 无全局会话工厂;经引擎注入的 RelationalStore 访问关系库。"""
+        slot = await self._slot(source_config_id, source)
+        return slot.engine.resources.relational.session_factory()
+
+    async def _vector_store(self, source_config_id: str, source: Source | None = None) -> Any:
+        """0.8.2 起向量访问经引擎注入的 VectorStore(替代 get_vector_client)。"""
+        slot = await self._slot(source_config_id, source)
+        return slot.engine.resources.vector
+
+    async def get_sag_embedding(self, source_config_id: str = "__knowledge__", source: Source | None = None) -> Any:
+        """Canonical embeddings reuse SDK clients without bootstrapping legacy event storage."""
+        from zleap.sag.core.adapters.limited import LimitedEmbeddingAdapter
+        from zleap.sag.core.ai.factory import create_embedding_client
+        from zleap.sag.runtime import RuntimeGovernor
+
+        config = self._config_for(source)
+        embedding_config = {**config.embedding.model_dump(), "max_retries": self._settings.embedding_max_retries}
+        key = hashlib.sha256(repr(sorted(embedding_config.items())).encode()).hexdigest()
+        async with self._canonical_embedding_lock:
+            if key not in self._canonical_embeddings:
+                client = await create_embedding_client(embedding_config=embedding_config)
+                embedding = LimitedEmbeddingAdapter(client, RuntimeGovernor(config.runtime_limits))
+                for name in ("model", "base_url", "dimensions", "max_tokens"):
+                    setattr(embedding, name, getattr(client, name, None))
+                self._configure_embedding_client(embedding)
+                self._canonical_embeddings[key] = embedding
+            return self._canonical_embeddings[key]
+
+    async def _ensure_universe_query_indexes(self, engine: Any) -> None:
         """Best-effort composite indexes for bounded timeline and neighbor reads."""
         if self._universe_indexes_ready:
             return
         self._universe_indexes_ready = True
         try:
             from sqlalchemy import Index, func
-            from zleap.sag.db import get_engine
             from zleap.sag.db.models import EventEntity, SourceEvent
 
             specs = (
                 (
                     "idx_universe_event_timeline",
-                    SourceEvent.source_config_id,
+                    SourceEvent.data_source_id,
                     SourceEvent.start_time,
                     SourceEvent.created_time,
                     SourceEvent.id,
                 ),
                 (
                     "idx_universe_event_category_timeline",
-                    SourceEvent.source_config_id,
+                    SourceEvent.data_source_id,
                     SourceEvent.category,
                     SourceEvent.start_time,
                     SourceEvent.created_time,
@@ -267,7 +428,7 @@ class EngineManager:
                         )
 
                     table = quote(SourceEvent.__table__.name)
-                    source = quote(SourceEvent.source_config_id.name)
+                    source = quote(SourceEvent.data_source_id.name)
                     category = quote(SourceEvent.category.name)
                     start = quote(SourceEvent.start_time.name)
                     created = quote(SourceEvent.created_time.name)
@@ -304,42 +465,201 @@ class EngineManager:
                     )
                     Index(
                         "idx_universe_event_effective_timeline",
-                        SourceEvent.source_config_id,
+                        SourceEvent.data_source_id,
                         event_time,
                         SourceEvent.id,
                     ).create(sync_connection, checkfirst=True)
                     Index(
                         "idx_universe_event_category_effective_timeline",
-                        SourceEvent.source_config_id,
+                        SourceEvent.data_source_id,
                         SourceEvent.category,
                         event_time,
                         SourceEvent.id,
                     ).create(sync_connection, checkfirst=True)
 
-            async with get_engine().begin() as connection:
+            async with engine.resources.relational.engine().begin() as connection:
                 await connection.run_sync(create_missing)
         except Exception:  # noqa: BLE001 - indexes are an optimization, never availability
-            log.exception("Tạo chỉ mục truy vấn vũ trụ tri thức thất bại, tiếp tục dùng chỉ mục hiện có")
+            log.exception("创建知识宇宙查询索引失败，继续使用现有索引")
+
+    # 门面策略(sag_api 对外) → zleap engine 实际接收的策略名。
+    # 门面提供更细粒度的可选项(如 multi_es_fast/precise),而 zleap 上游 mode
+    # 默认已经是 fast;此处保留翻译点是为了给后续 precise 变体和 telemetry 区分留位置。
+    _FACADE_TO_ZLEAP_STRATEGY: dict[str, str] = {
+        "vector": "vector",
+        "multi": "full_expand",
+        "multi_es_fast": "pruned_expand_rff",
+    }
+
+    _VECTOR_PROVIDER_LEXICAL_SUPPORT: dict[str, bool] = {
+        "es": True,
+        "pgvector": False,
+        "qdrant": False,
+        "oceanbase": False,
+    }
+
+    def _vector_provider_supports_lexical(self) -> bool:
+        return self._VECTOR_PROVIDER_LEXICAL_SUPPORT.get(self._settings.sag_vector_provider, False)
+
+    def _strategy_missing_capabilities(self, strategy: str) -> tuple[str, ...]:
+        requirements = SEARCH_STRATEGY_REQUIREMENTS.get(strategy, frozenset())
+        missing: list[str] = []
+        for capability in requirements:
+            if capability == "lexical_search" and not self._vector_provider_supports_lexical():
+                missing.append(capability)
+        return tuple(missing)
 
     def _effective_search_strategy(self, requested: str | None) -> str:
-        """Chỉ cho phép hai mức nhanh/chính xác, và tương thích với atomic trong cấu hình nội bộ đang tồn tại."""
+        """校验请求的门面策略。未识别或能力不满足时按配置策略回退,再兜底 vector。"""
         raw = requested or self._settings.search_strategy
         strategy = normalize_search_strategy(raw)
         if strategy in SEARCH_STRATEGIES:
-            if strategy != raw:
-                log.info("Chiến lược tìm kiếm cũ %s đã thực thi theo chế độ chính xác multi", raw)
-            return strategy
+            missing = self._strategy_missing_capabilities(strategy)
+            if not missing:
+                if strategy != raw:
+                    log.info("旧检索策略 %s 已按精确模式 multi 执行", raw)
+                return strategy
+            log.warning(
+                "策略 %s 所需能力缺失(%s, provider=%s),按后台默认策略回退",
+                strategy,
+                ",".join(missing),
+                self._settings.sag_vector_provider,
+            )
+        else:
+            log.warning("忽略不支持的检索策略 %s", raw)
         fallback = normalize_search_strategy(self._settings.search_strategy)
-        if fallback not in SEARCH_STRATEGIES:
+        if fallback not in SEARCH_STRATEGIES or self._strategy_missing_capabilities(fallback):
             fallback = "vector"
-        log.warning("Bỏ qua chiến lược tìm kiếm không hỗ trợ %s, đổi dùng %s", raw, fallback)
         return fallback
+
+    def _zleap_engine_strategy(self, facade_strategy: str) -> str:
+        """把门面策略翻译成 zleap DataEngine.search 认识的名字。"""
+        return self._FACADE_TO_ZLEAP_STRATEGY.get(facade_strategy, facade_strategy)
+
+    @classmethod
+    def _capability_disabled_reason(cls, capability: str, provider: str) -> tuple[str, str] | None:
+        """给定缺失的能力名 + 当前 provider,产出 (reason_code, 用户可读文案)。"""
+        if capability == "lexical_search":
+            return (
+                "vector_provider_lacks_lexical",
+                f"当前向量存储 ({provider}) 不支持 BM25 词法检索,无法启用 multi_es 系列策略。",
+            )
+        return None
+
+    @classmethod
+    def strategies_capability_report(cls, settings: Settings) -> dict[str, Any]:
+        """探测每个门面策略在当前部署下是否可用,供 /capabilities 直接透传给前端。
+
+        无需持有 EngineManager 实例——所有判据只来自 settings。
+        """
+        provider = settings.sag_vector_provider
+        supports_lexical = cls._VECTOR_PROVIDER_LEXICAL_SUPPORT.get(provider, False)
+        enabled: list[str] = []
+        disabled: dict[str, dict[str, str]] = {}
+        for strategy in sorted(SEARCH_STRATEGIES):
+            requirements = SEARCH_STRATEGY_REQUIREMENTS.get(strategy, frozenset())
+            missing: list[tuple[str, str]] = []
+            for capability in requirements:
+                if capability == "lexical_search" and not supports_lexical:
+                    reason = cls._capability_disabled_reason(capability, provider)
+                    if reason is not None:
+                        missing.append(reason)
+            if missing:
+                # 只呈现第一个原因即可满足 UI 灰置 + tooltip 展示。
+                reason_code, message = missing[0]
+                disabled[strategy] = {"reason": reason_code, "message": message}
+            else:
+                enabled.append(strategy)
+        return {"enabled": enabled, "disabled": disabled}
 
     def _config_for(self, source: Source | None) -> Any:
         overrides = None
         if source is not None and source.config:
             overrides = source.config.get("engine")
         return build_engine_config(self._settings, overrides=overrides)
+
+    def _configure_embedding_request_dimensions(self, engine: DataEngine) -> None:
+        """Apply the narrow provider workaround after schema initialization and attach shared cache.
+
+        zleap-sag 0.12.0 shares ``EmbeddingConfig.dimensions`` between vector
+        schema creation and the OpenAI-compatible request body. SiliconFlow's
+        BAAI/bge-m3 returns a fixed 1024-dimensional vector but rejects the
+        optional request parameter. Keep the configured 1024 for schema setup,
+        then omit it from only this verified incompatible request path.
+        """
+        res = getattr(engine, "_resources", None)
+        if res is None:
+            try:
+                res = getattr(engine, "resources", None)
+            except Exception:
+                res = None
+        emb = getattr(res, "embedding", None)
+        self._configure_embedding_client(emb)
+
+    def _configure_embedding_client(self, emb: Any) -> None:
+        if emb is not None:
+            if getattr(emb, "max_tokens", 512) <= 512:
+                emb.max_tokens = 8192
+            for attr_name in ("inner", "_inner", "client", "_client", "_delegate"):
+                inner_emb = getattr(emb, attr_name, None)
+                if inner_emb is not None and getattr(inner_emb, "max_tokens", 512) <= 512:
+                    inner_emb.max_tokens = 8192
+        from sag_api.core.token_usage import wrap_embedding_client_with_cache_and_metering
+        wrap_embedding_client_with_cache_and_metering(emb, default_model=self._settings.embedding_model)
+        if emb is not None and not getattr(emb, "_sag_shared_cache_wrapped", False):
+            from sag_api.services.search_index_service import (
+                get_cached_text_embedding,
+                put_cached_text_embedding,
+            )
+
+            orig_generate = emb.generate
+            orig_batch_generate = emb.batch_generate
+
+            async def _cached_generate(text: str) -> list[float]:
+                cached = get_cached_text_embedding(text)
+                if cached is not None:
+                    return cached
+                vec = await orig_generate(text)
+                if vec:
+                    put_cached_text_embedding(text, vec)
+                return vec
+
+            async def _cached_batch_generate(texts: list[str]) -> list[list[float]]:
+                if not texts:
+                    return []
+                results: list[list[float] | None] = [None] * len(texts)
+                missing_by_text: dict[str, list[int]] = {}
+                for idx, txt in enumerate(texts):
+                    cached = get_cached_text_embedding(txt)
+                    if cached is not None:
+                        results[idx] = cached
+                    else:
+                        missing_by_text.setdefault(txt, []).append(idx)
+                if missing_by_text:
+                    unique_missing = list(missing_by_text.keys())
+                    fetched = await orig_batch_generate(unique_missing)
+                    for txt, vec in zip(unique_missing, fetched, strict=True):
+                        if vec:
+                            put_cached_text_embedding(txt, vec)
+                        for m_idx in missing_by_text[txt]:
+                            results[m_idx] = vec
+                return [vec or [] for vec in results]
+
+            emb.generate = _cached_generate
+            emb.batch_generate = _cached_batch_generate
+            emb._sag_shared_cache_wrapped = True
+
+        if self._settings.embedding_dimensions is not None:
+            return
+        hostname = (urlparse(self._settings.effective_embedding_base_url or "").hostname or "").lower()
+        model = self._settings.embedding_model.strip().lower()
+        if hostname not in ("api.siliconflow.com", "api.siliconflow.cn") or model != "baai/bge-m3":
+            return
+        if emb is not None:
+            emb.dimensions = None
+            inner = getattr(emb, "inner", None)
+            if inner is not None:
+                inner.dimensions = None
 
     async def _ensure_engine_schema(self, engine: DataEngine) -> None:
         if self._schema_ready:
@@ -353,9 +673,9 @@ class EngineManager:
             with map_sag_errors(stage=ErrorStage.PERSIST):
                 await engine.init_schema()
         except SQLAlchemyError as error:
-            log.exception("Khởi tạo cấu trúc cơ sở dữ liệu knowledge engine thất bại")
+            log.exception("知识引擎数据库结构初始化失败")
             raise UpstreamError(
-                "Khởi tạo engine nguồn thất bại, vui lòng thử lại sau",
+                "信源引擎初始化失败，请稍后重试",
                 layer=ErrorLayer.STORE,
                 stage=ErrorStage.PERSIST,
             ) from error
@@ -365,52 +685,69 @@ class EngineManager:
         self,
         source_config_id: str,
         source: Source | None = None,
+        engine: Any | None = None,
     ) -> None:
         """Ensure the zleap-sag parent row exists before derived data is written.
 
-        ``DataEngine.start()`` initializes storage schemas but does not create a
-        ``SourceConfig`` row. The upstream ``ingest()`` convenience method normally
-        creates it; our incremental processor uses the lower-level loader directly,
-        so the adapter must preserve that invariant itself.
+        0.8.2 把 0.7.1 的 ``SourceConfig`` 换成 ``DataSource``,且无全局会话工厂;
+        这里经注入的 engine 访问关系库。SAG 专属的 octx 向量复用元数据
+        (原 target_config)改存 SAG 元库 ``Source.config``,不再写入 zleap 库
+        (迁移注记:向量复用信任暂降级为关闭,导出走向量重建的安全路径)。
         """
         from sqlalchemy.exc import IntegrityError, SQLAlchemyError
-        from zleap.sag.db import SourceConfig, get_session_factory
+        from zleap.sag.db import DataSource
+
+        source_config_id = source_config_id.strip()
+        effective_engine = engine
+        if effective_engine is None:
+            slot = await self._slot(source_config_id, source)
+            effective_engine = slot.engine
 
         name = str(getattr(source, "name", "") or f"sag-{source_config_id[-8:]}")[:100]
         description = str(getattr(source, "description", "") or "created by sag EngineManager")[:255]
         try:
-            session_factory = get_session_factory()
+            session_factory = effective_engine.resources.relational.session_factory()
             async with session_factory() as session:
-                if await session.get(SourceConfig, source_config_id) is not None:
+                existing = await session.get(DataSource, source_config_id)
+                if existing is not None:
                     return
-                session.add(
-                    SourceConfig(
-                        id=source_config_id,
-                        name=name,
-                        description=description,
-                        target_config={},
-                    )
+                data_source = DataSource(
+                    id=source_config_id,
+                    name=name,
+                    description=description,
                 )
+                session.add(data_source)
                 try:
-                    await session.commit()
+                    await _commit_with_sqlite_lock_retry(session, data_source)
                 except IntegrityError:
                     # Another process may have provisioned the same source between
                     # our read and insert. Treat that race as success only when the
                     # parent row is now present.
                     await session.rollback()
-                    if await session.get(SourceConfig, source_config_id) is None:
+                    if await session.get(DataSource, source_config_id) is None:
                         raise
         except SQLAlchemyError as error:
             from sag_api.core.errors import UpstreamError
 
-            log.exception("Khởi tạo bản ghi cha của nguồn thất bại source_config_id=%s", source_config_id)
+            log.exception("信源父记录初始化失败 source_config_id=%s", source_config_id)
             raise UpstreamError(
-                "Khởi tạo engine nguồn thất bại, vui lòng thử lại sau",
+                "信源引擎初始化失败，请稍后重试",
                 layer=ErrorLayer.STORE,
                 stage=ErrorStage.PERSIST,
             ) from error
 
+    async def _configure_sqlite_document_store(self, engine: Any) -> None:
+        """Apply bounded writer contention settings to zleap's SQLite store."""
+        if self._settings.sag_relational_provider not in (None, "sqlite"):
+            return
+        from sqlalchemy import text
+
+        async with engine.resources.relational.session_factory()() as session:
+            await session.execute(text("PRAGMA journal_mode=WAL"))
+            await session.execute(text("PRAGMA busy_timeout=30000"))
+
     async def _slot(self, source_config_id: str, source: Source | None = None) -> _Slot:
+        source_config_id = source_config_id.strip()
         slot = self._slots.get(source_config_id)
         if slot is not None and not slot.closing:
             slot.last_used = time.monotonic()
@@ -419,25 +756,31 @@ class EngineManager:
             slot = self._slots.get(source_config_id)
             if slot is None or slot.closing:
                 async with self._lifecycle_gate.write():
-                    log.info("Dựng engine source_config_id=%s", source_config_id)
+                    log.info("构造引擎 source_config_id=%s", source_config_id)
                     config = self._config_for(source)
                     engine = DataEngine(
                         config,
-                        source_config_id=source_config_id,
+                        data_source_id=source_config_id,
                         health_check=False,
                     )
                     with map_sag_errors(stage=ErrorStage.CONFIG):
-                        await engine.start()
-                    try:
+                        # 0.8.2:pgvector/oceanbase 等向量后端在 start() 前必须先
+                        # init_schema() 显式创建关系表与向量模式对象,否则 start()
+                        # 抛 StorageInitializationRequiredError。
                         await self._ensure_engine_schema(engine)
-                        await self._ensure_source_config(source_config_id, source)
-                        await self._ensure_universe_query_indexes()
+                        self._configure_embedding_request_dimensions(engine)
+                        await engine.start()
+                        self._configure_embedding_request_dimensions(engine)
+                        await self._configure_sqlite_document_store(engine)
+                    try:
+                        await self._ensure_source_config(source_config_id, source, engine)
+                        await self._ensure_universe_query_indexes(engine)
                     except Exception:
                         try:
                             await engine.aclose()
                         except Exception:  # noqa: BLE001 - preserve provisioning error
                             log.exception(
-                                "Ngoại lệ khi đóng engine sau lỗi khởi tạo source_config_id=%s",
+                                "初始化失败后的引擎关闭异常 source_config_id=%s",
                                 source_config_id,
                             )
                         raise
@@ -469,18 +812,18 @@ class EngineManager:
                 return
 
     async def _evict_lru(self, *, keep: str) -> None:
-        """Khi vượt giới hạn cache thì trục xuất slot engine lâu nhất chưa dùng và đang rảnh (chưa giữ khóa).
+        """超过缓存上限时逐出最久未用、且当前空闲（未持锁）的引擎槽。
 
-        Được gọi trong `_create_lock`. Slot đang giữ khóa được bỏ qua——nguồn đang phục vụ không bị ngắt.
+        在 `_create_lock` 内调用。持锁中的槽跳过——正在服务的源不被打断。
         """
         while len(self._slots) > self._cache_size:
             candidates = [
                 (s.last_used, scid)
                 for scid, s in self._slots.items()
-                if scid != keep and not s.lock.locked() and s.concurrent_users == 0
+                if (scid != keep and not s.lock.locked() and s.concurrent_users == 0 and s.maintenance_requests == 0)
             ]
             if not candidates:
-                break  # Các slot còn lại đều bận, tạm không trục xuất
+                break  # 其余都在忙，暂不逐出
             _, victim = min(candidates)
             slot = self._slots.pop(victim)
             slot.closing = True
@@ -488,13 +831,13 @@ class EngineManager:
                 await slot.idle.wait()
                 async with slot.lock:
                     await slot.engine.aclose()
-                log.info("LRU trục xuất engine source_config_id=%s (giới hạn cache %d)", victim, self._cache_size)
+                log.info("LRU 逐出引擎 source_config_id=%s（缓存上限 %d）", victim, self._cache_size)
             except Exception as e:  # noqa: BLE001
-                log.warning("Trục xuất engine thất bại %s: %s", victim, e)
+                log.warning("逐出引擎失败 %s: %s", victim, e)
 
     @asynccontextmanager
     async def use(self, source_config_id: str, source: Source | None = None):
-        """Lấy engine của nguồn này và giữ khóa của nó (tuần tự hóa thao tác trên nguồn)."""
+        """取得该源的引擎并持有其锁（串行化本源上的操作）。"""
         while True:
             slot = await self._slot(source_config_id, source)
             async with self._lifecycle_gate.read():
@@ -510,14 +853,26 @@ class EngineManager:
                 return
 
     @asynccontextmanager
-    async def use_concurrently(self, source_config_id: str, source: Source | None = None):
-        """Lấy tài nguyên dùng chung nhưng không tuần tự hóa xử lý tài liệu; loader/extractor độc lập cách ly trạng thái biến đổi."""
+    async def use_concurrently(
+        self,
+        source_config_id: str,
+        source: Source | None = None,
+        *,
+        should_pause: PauseCheck | None = None,
+    ):
+        """取得共享资源但不串行化文档处理；独立 loader/extractor 隔离可变状态。"""
         while True:
             slot = await self._slot(source_config_id, source)
             # Maintenance waiters must not hold the global lifecycle read gate;
             # otherwise a configuration reset could be delayed by work that has
             # not actually started yet.
-            await slot.concurrent_allowed.wait()
+            while not slot.concurrent_allowed.is_set():
+                if should_pause is not None and await should_pause():
+                    raise _DocumentAdmissionYielded
+                try:
+                    await asyncio.wait_for(slot.concurrent_allowed.wait(), timeout=0.1)
+                except TimeoutError:
+                    continue
             async with self._lifecycle_gate.read():
                 async with slot.state_lock:
                     if slot.closing or not slot.concurrent_allowed.is_set():
@@ -535,8 +890,97 @@ class EngineManager:
                 return
 
     async def provision(self, source_config_id: str, source: Source | None = None) -> None:
-        """Đảm bảo schema engine của nguồn và bản ghi cha sẵn sàng (idempotent)."""
+        """确保该源的引擎 schema 与父记录就绪（幂等）。"""
         await self._slot(source_config_id, source)
+
+    async def get_sag_session_factory(self, source_config_id: str, source: Source | None = None):
+        """Return the relational factory owned by an initialized SAG runtime."""
+        slot = await self._slot(source_config_id, source)
+        return slot.engine.resources.relational.session_factory()
+
+    @asynccontextmanager
+    async def maintenance(self, source_config_id: str, source: Source | None = None):
+        """Drain document processors and hold an exclusive OCTX mutation window."""
+        await self.begin_document_maintenance(source_config_id, source)
+        try:
+            while True:
+                slot = await self._slot(source_config_id, source)
+                async with self._lifecycle_gate.read():
+                    await slot.lock.acquire()
+                    if slot.closing:
+                        slot.lock.release()
+                        continue
+                    try:
+                        yield slot.engine
+                    finally:
+                        slot.lock.release()
+                    return
+        finally:
+            await self.end_document_maintenance(source_config_id, source)
+
+    async def begin_document_maintenance(
+        self,
+        source_config_id: str,
+        source: Source | None = None,
+    ) -> None:
+        """Stop admitting processors and wait until existing users drain.
+
+        The wait deliberately happens outside the job worker pool. The caller
+        owns one maintenance request until ``end_document_maintenance``.
+        """
+        is_project_source = bool(source is not None and (source.config or {}).get("is_project_source"))
+        if (
+            is_project_source
+            and not self._settings.document_event_extraction_enabled
+            and self._slots.get(source_config_id) is None
+        ):
+            return
+        while True:
+            try:
+                slot = await self._slot(source_config_id, source)
+            except Exception as slot_exc:
+                if is_project_source and "sag_schema_meta" in str(slot_exc):
+                    log.warning(
+                        "Skipping legacy DataEngine maintenance fence for project source %s "
+                        "(sag_schema_meta uninitialized)",
+                        source_config_id,
+                    )
+                    return
+                raise
+            registered = False
+            try:
+                async with slot.state_lock:
+                    if slot.closing:
+                        continue
+                    slot.maintenance_requests += 1
+                    slot.concurrent_allowed.clear()
+                    registered = True
+                await slot.idle.wait()
+                if slot.closing:
+                    await self.end_document_maintenance(source_config_id)
+                    continue
+                return
+            except BaseException:
+                if registered:
+                    async with slot.state_lock:
+                        slot.maintenance_requests = max(0, slot.maintenance_requests - 1)
+                        if slot.maintenance_requests == 0:
+                            slot.concurrent_allowed.set()
+                raise
+
+    async def end_document_maintenance(
+        self,
+        source_config_id: str,
+        source: Source | None = None,
+    ) -> None:
+        """Release one source-maintenance request and resume admission."""
+        slot = self._slots.get(source_config_id)
+        if slot is None:
+            return
+        async with slot.state_lock:
+            slot.maintenance_requests = max(0, slot.maintenance_requests - 1)
+            if slot.maintenance_requests == 0 and not slot.closing:
+                slot.concurrent_allowed.set()
 
     async def delete_document_data(
         self,
@@ -545,7 +989,7 @@ class EngineManager:
         *,
         source: Source | None = None,
     ) -> None:
-        """Xóa dữ liệu dẫn xuất chunk, sự kiện, quan hệ và thực thể mồ côi của một tài liệu."""
+        """删除一篇文档的块、事件、关系及孤立实体派生数据。"""
         from sag_api.sag.document_cleanup import delete_document_records
 
         while True:
@@ -565,14 +1009,17 @@ class EngineManager:
                         deleted = await delete_document_records(
                             source_config_id,
                             document_source_id,
+                            session_factory=slot.engine.resources.relational.session_factory(),
+                            vector_store=slot.engine.resources.vector,
                         )
                 finally:
                     async with slot.state_lock:
-                        slot.concurrent_allowed.set()
+                        if slot.maintenance_requests == 0:
+                            slot.concurrent_allowed.set()
                     slot.lock.release()
                 break
         log.info(
-            "Dữ liệu dẫn xuất tài liệu đã dọn source_config_id=%s document_source_id=%s chunks=%d events=%d relations=%d entities=%d",
+            "文档派生数据已清理 source_config_id=%s document_source_id=%s chunks=%d events=%d relations=%d entities=%d",
             source_config_id,
             document_source_id,
             len(deleted.chunk_ids),
@@ -593,9 +1040,10 @@ class EngineManager:
         should_pause: PauseCheck | None = None,
         max_concurrency: int | None = None,
         document_title: str | None = None,
-        doc_type: str | None = None,
+        original_path: str | None = None,
+        document_version_id: str | None = None,
     ) -> ProcessOutcome:
-        """Xử lý độc lập một tài liệu; các tài liệu cùng nguồn chạy song song, chunk hoàn thành là lưu điểm dừng."""
+        """独立处理一篇文档；同源文档可并行，chunk 完成即保存断点。"""
 
         async def ignore_checkpoint(_checkpoint: ProcessCheckpoint) -> None:
             return None
@@ -603,26 +1051,68 @@ class EngineManager:
         async def never_pause() -> bool:
             return False
 
-        with map_sag_errors(stage=ErrorStage.EXTRACT):
-            async with self.use_concurrently(source_config_id, source) as engine:
-                processor = IncrementalDocumentProcessor(
-                    engine,
-                    source_config_id,
-                    max_concurrency=max_concurrency or self._settings.document_extract_concurrency,
-                    chunk_max_tokens=self._settings.document_chunk_max_tokens,
-                    chunk_mode=self._settings.document_chunk_mode,
-                    document_title=document_title,
-                    enable_strict_filtering=self._settings.document_strict_filtering,
-                    doc_type=doc_type,
-                )
+        effective_checkpoint = checkpoint or ProcessCheckpoint()
+        effective_should_pause = should_pause or never_pause
 
-                return await processor.process(
-                    path,
-                    checkpoint=checkpoint or ProcessCheckpoint(),
-                    on_checkpoint=on_checkpoint or ignore_checkpoint,
-                    should_pause=should_pause or never_pause,
-                    on_stage=on_stage,
-                )
+        def paused_outcome() -> ProcessOutcome:
+            return ProcessOutcome(
+                source_id=effective_checkpoint.source_id,
+                chunk_count=len(effective_checkpoint.chunk_ids),
+                event_count=effective_checkpoint.event_count,
+                chunk_ids=list(effective_checkpoint.chunk_ids),
+                event_ids=list(effective_checkpoint.event_ids),
+                processed_chunk_ids=list(effective_checkpoint.processed_chunk_ids),
+                eventless_chunk_ids=list(effective_checkpoint.eventless_chunk_ids),
+                token_usage=effective_checkpoint.token_usage,
+                paused=True,
+            )
+
+        with map_sag_errors(stage=ErrorStage.EXTRACT):
+            if await effective_should_pause():
+                return paused_outcome()
+            try:
+                async with self.use_concurrently(
+                    source_config_id,
+                    source,
+                    should_pause=effective_should_pause,
+                ) as engine:
+                    processor = IncrementalDocumentProcessor(
+                        engine,
+                        source_config_id,
+                        max_concurrency=max_concurrency or self._settings.document_extract_concurrency,
+                        chunk_max_tokens=self._settings.document_chunk_max_tokens,
+                        chunk_mode=self._settings.document_chunk_mode,
+                        document_title=document_title,
+                        max_entities_per_event=(
+                            8 if self._settings.document_extraction_profile == "concise" else 20
+                        ),
+                        write_event_entity_vectors=self._settings.document_write_event_entity_vectors,
+                        enable_strict_filtering=self._settings.document_strict_filtering,
+                        event_entity_attempts=self._settings.document_event_entity_attempts,
+                        extraction_profile=self._settings.document_extraction_profile,
+                        document_version_id=document_version_id,
+                        extract_events=self._settings.document_event_extraction_enabled,
+                    )
+                    if self._settings.sag_relational_provider in (None, "sqlite"):
+                        async with self._sqlite_document_mutation_lock:
+                            return await processor.process(
+                                path,
+                                checkpoint=effective_checkpoint,
+                                on_checkpoint=on_checkpoint or ignore_checkpoint,
+                                should_pause=effective_should_pause,
+                                on_stage=on_stage,
+                                original_path=original_path,
+                            )
+                    return await processor.process(
+                        path,
+                        checkpoint=effective_checkpoint,
+                        on_checkpoint=on_checkpoint or ignore_checkpoint,
+                        should_pause=effective_should_pause,
+                        on_stage=on_stage,
+                        original_path=original_path,
+                    )
+            except _DocumentAdmissionYielded:
+                return paused_outcome()
 
     async def _search_raw(
         self,
@@ -633,18 +1123,42 @@ class EngineManager:
         strategy: str,
         top_k: int,
     ) -> SearchOutcome:
-        """Một lần tìm kiếm (có thời hạn mỗi nguồn). Hết thời gian thì ném asyncio.TimeoutError."""
+        """单次检索（带每源时限）。超时抛 asyncio.TimeoutError。
+
+        strategy 是门面名(vector/multi/multi_es_fast);进入 zleap 前翻译成引擎名。
+        """
         timeout = max(1.0, self._settings.search_source_timeout)
+        engine_strategy = self._zleap_engine_strategy(strategy)
 
         async def run() -> Any:
             # The timeout must include waiting for the per-source lock. Otherwise
             # concurrent searches can queue forever before the timed region starts.
             with map_sag_errors(stage=ErrorStage.RETRIEVE):
                 async with self.use(source_config_id, source) as engine:
-                    return await engine.search(query, strategy=strategy, top_k=top_k)
+                    return await engine.search(
+                        SearchRequest(
+                            query=query,
+                            scope=SearchScope(data_source_ids=(source_config_id,)),
+                            options=SearchOptions(
+                                strategy=engine_strategy,
+                                top_k=top_k,
+                                return_type="chunk",
+                            ),
+                        )
+                    )
 
-        result = await asyncio.wait_for(run(), timeout)
-        return SearchOutcome.from_result(result)
+        # 开一个 timings 桶,捕获 zleap 检索链内部的每 step 耗时(见 _timings_probe)。
+        bucket, token = _timings_capture_scope()
+        try:
+            result = await asyncio.wait_for(run(), timeout)
+        finally:
+            _timings_release_scope(token)
+        outcome = SearchOutcome.from_result(result)
+        if bucket:
+            merged_stats = dict(outcome.stats)
+            merged_stats["engine_timings"] = dict(bucket)
+            outcome = SearchOutcome(query=outcome.query, sections=outcome.sections, stats=merged_stats)
+        return outcome
 
     async def search(
         self,
@@ -655,10 +1169,10 @@ class EngineManager:
         strategy: str | None = None,
         top_k: int | None = None,
     ) -> SearchOutcome:
-        """Tìm kiếm (bản chống chịu): khi chế độ chính xác hết thời gian/lỗi/kết quả rỗng thì quay về chế độ nhanh.
+        """检索（韧性版）：精确模式超时/失败/空结果时回退快速模式。
 
-        Phía truy vấn của chế độ chính xác có trích xuất thực thể LLM (chậm và có thể lỗi phải thử lại); nguồn thiếu lớp vector sự kiện cũng chạy không.
-        Việc quay về hội tụ sự suy biến này thành một lần truy xuất vector nhanh, có thể tắt qua `search_fallback_vector=false`.
+        精确模式的查询侧含 LLM 实体抽取（慢且可能失败重试）；事件向量层缺失的源也会空转。
+        回退把这类退化收敛为一次快速向量检索，可经 `search_fallback_vector=false` 关闭。
         """
         strategy = self._effective_search_strategy(strategy)
         top_k = top_k or self._settings.search_top_k
@@ -675,12 +1189,12 @@ class EngineManager:
                         "fallback_used": False,
                     },
                 )
-            log.info("Tìm kiếm chính xác trả kết quả rỗng, quay về tìm kiếm nhanh source_config_id=%s", source_config_id)
+            log.info("精确检索空结果，回退快速检索 source_config_id=%s", source_config_id)
         except TimeoutError:
             if strategy == "vector" or not self._settings.search_fallback_vector:
                 raise
             log.warning(
-                "Tìm kiếm hết thời gian (%.0fs) quay về vector source_config_id=%s strategy=%s",
+                "检索超时(%.0fs) 回退 vector source_config_id=%s strategy=%s",
                 self._settings.search_source_timeout,
                 source_config_id,
                 strategy,
@@ -689,7 +1203,7 @@ class EngineManager:
             if strategy == "vector" or not self._settings.search_fallback_vector:
                 raise
             log.warning(
-                "Tìm kiếm lỗi quay về vector source_config_id=%s strategy=%s err=%s",
+                "检索失败回退 vector source_config_id=%s strategy=%s err=%s",
                 source_config_id,
                 strategy,
                 getattr(e, "message", None) or e,
@@ -713,21 +1227,51 @@ class EngineManager:
         *,
         strategy: str | None = None,
         top_k: int | None = None,
+        exclude_source_ids_by_config: dict[str, tuple[str, ...]] | None = None,
     ) -> SearchOutcome:
-        """Tìm kiếm trong giới hạn ứng viên và song song thống nhất; một nguồn lỗi không ảnh hưởng kết quả chung."""
+        """在统一候选与并发边界内检索；单源失败不影响整体结果。"""
         strategy = self._effective_search_strategy(strategy)
         top_k = top_k or self._settings.search_top_k
         per_source_k = max(top_k, 4)
         requested_sources = len(targets)
-        targets = targets[: self._settings.search_source_candidate_limit]
+        if (
+            self._settings.search_source_candidate_limit
+            and requested_sources > self._settings.search_source_candidate_limit
+        ):
+            from sag_api.core.errors import ValidationError
 
-        if strategy == "vector" and targets:
+            raise ValidationError("Search source budget exceeded; narrow the requested source scope")
+        has_exclusions = any(source_ids for source_ids in (exclude_source_ids_by_config or {}).values())
+
+        if (strategy == "vector" or has_exclusions) and targets:
             try:
-                return await self._search_chunk_vectors(
+                outcome = await self._search_chunk_vectors(
                     targets,
                     query,
                     top_k=top_k,
                     requested_sources=requested_sources,
+                    exclude_source_ids_by_config=exclude_source_ids_by_config,
+                )
+                if has_exclusions and strategy != "vector":
+                    return SearchOutcome(
+                        query=outcome.query,
+                        sections=outcome.sections,
+                        stats={
+                            **outcome.stats,
+                            "requested_strategy": strategy,
+                            "effective_strategy": "vector",
+                            "fallback_used": True,
+                        },
+                    )
+                return SearchOutcome(
+                    query=outcome.query,
+                    sections=outcome.sections,
+                    stats={
+                        **outcome.stats,
+                        "requested_strategy": strategy,
+                        "effective_strategy": strategy,
+                        "fallback_used": False,
+                    },
                 )
             except asyncio.CancelledError:
                 raise
@@ -735,7 +1279,7 @@ class EngineManager:
                 # The lexical branch in ``retrieve_relevant_sections`` is already
                 # running in parallel. Return control to it instead of paying a
                 # second timeout in the legacy per-source vector path.
-                log.warning("Truy hồi vector khối chunk hết thời gian, giữ kết quả từ vựng song song")
+                log.warning("批量块向量召回超时，保留并行词法结果")
                 return SearchOutcome(
                     query=query,
                     sections=[],
@@ -744,13 +1288,34 @@ class EngineManager:
                         "sources_requested": requested_sources,
                         "source_limit_applied": requested_sources > len(targets),
                         "candidates": 0,
-                        "chunk_recall": "batch-vector-timeout",
+                        "chunk_recall": (
+                            "batch-vector-prefilter-timeout" if has_exclusions else "batch-vector-timeout"
+                        ),
                     },
                 )
             except Exception as error:  # noqa: BLE001
+                if has_exclusions:
+                    log.warning(
+                        "带删除屏障的批量块召回失败，不回退未过滤检索：%s",
+                        error,
+                    )
+                    return SearchOutcome(
+                        query=query,
+                        sections=[],
+                        stats={
+                            "sources": len(targets),
+                            "sources_requested": requested_sources,
+                            "source_limit_applied": requested_sources > len(targets),
+                            "candidates": 0,
+                            "requested_strategy": strategy,
+                            "effective_strategy": "vector",
+                            "fallback_used": True,
+                            "chunk_recall": "batch-vector-prefilter-failed",
+                        },
+                    )
                 # Keep the established per-source engine path as a compatibility
                 # fallback for storage providers that cannot do a filtered batch kNN.
-                log.warning("Truy hồi vector khối chunk thất bại, quay về tìm kiếm từng nguồn: %s", error)
+                log.warning("批量块向量召回失败，回退逐信源检索：%s", error)
 
         semaphore = asyncio.Semaphore(self._settings.search_source_concurrency)
 
@@ -760,7 +1325,7 @@ class EngineManager:
                     outcome = await self.search(scid, query, source=source, strategy=strategy, top_k=per_source_k)
                     return scid, outcome
                 except Exception as e:  # noqa: BLE001
-                    log.warning("Tìm kiếm fan-out thất bại %s: %s", scid, getattr(e, "message", None) or e)
+                    log.warning("fan-out 检索失败 %s：%s", scid, getattr(e, "message", None) or e)
                     return None
 
         results = await asyncio.gather(*(_one(scid, src) for scid, src in targets))
@@ -772,7 +1337,7 @@ class EngineManager:
                 continue
             scid, outcome = result
             for sec in outcome.sections:
-                # Một số backend vector không điền ngược nguồn; khi gộp chéo nguồn thì bổ sung để MCP/UI ghi chú đúng.
+                # 部分向量后端不会回填来源；跨源聚合时补齐，供 MCP/UI 正确标注。
                 if not sec.source_config_id:
                     sec.source_config_id = scid
                 if sec.chunk_id:
@@ -817,29 +1382,66 @@ class EngineManager:
         *,
         top_k: int,
         requested_sources: int,
+        exclude_source_ids_by_config: dict[str, tuple[str, ...]] | None = None,
     ) -> SearchOutcome:
         """Recall chunks across all selected sources with one query embedding."""
 
         sources_by_config = {source_config_id: source for source_config_id, source in targets}
         source_config_ids = list(sources_by_config)
         await self._ensure_read_runtime(sources_by_config)
+        from zleap.sag.core.adapters.models import Filter, VectorQuery
 
-        from zleap.sag.core.storage.client import get_es_client
-        from zleap.sag.core.storage.repositories.source_chunk_repository import (
-            SourceChunkRepository,
-        )
-        from zleap.sag.modules.load.processor import DocumentProcessor
-
-        async def recall() -> list[dict[str, Any]]:
-            query_vector = await DocumentProcessor().generate_embedding(query)
-            repository = SourceChunkRepository(get_es_client())
-            return await repository.search_similar_by_content(
-                query_vector=query_vector,
-                k=top_k,
-                source_config_ids=source_config_ids,
+        async def recall() -> tuple[list[Any], dict[str, float]]:
+            timings: dict[str, float] = {}
+            t0 = time.perf_counter()
+            # 0.8.2:向量检索经引擎注入的 VectorStore,payload 键为 data_source_id。
+            primary_config_id = source_config_ids[0]
+            slot = await self._slot(primary_config_id, sources_by_config[primary_config_id])
+            engine = slot.engine
+            from sag_api.core.token_usage import token_usage_scope
+            with token_usage_scope(component="query_embedding"):
+                query_vector = await engine.resources.embedding.generate(query)
+            timings["vector.embedding"] = round((time.perf_counter() - t0) * 1000, 2)
+            t1 = time.perf_counter()
+            exclusions = {
+                source_config_id: tuple(
+                    sorted({value.strip() for value in source_ids if isinstance(value, str) and value.strip()})
+                )
+                for source_config_id in source_config_ids
+                if (
+                    source_ids := (exclude_source_ids_by_config or {}).get(
+                        source_config_id,
+                        (),
+                    )
+                )
+            }
+            exclusions = {
+                source_config_id: source_ids for source_config_id, source_ids in exclusions.items() if source_ids
+            }
+            filters = [Filter.one_of("data_source_id", tuple(source_config_ids))]
+            if exclusions:
+                exclusion_pairs = [
+                    Filter.all(
+                        Filter.eq("data_source_id", source_config_id),
+                        Filter.one_of("source_id", tuple(source_ids)),
+                    )
+                    for source_config_id, source_ids in exclusions.items()
+                ]
+                filters.append(Filter.negate(Filter.any(*exclusion_pairs)))
+            hits = await engine.resources.vector.query(
+                "source_chunks",
+                VectorQuery(
+                    vector=query_vector,
+                    vector_field="content_vector",
+                    filters=Filter.all(*filters),
+                    limit=top_k,
+                ),
             )
+            timings["vector.search"] = round((time.perf_counter() - t1) * 1000, 2)
+            timings["vector.total"] = round((time.perf_counter() - t0) * 1000, 2)
+            return hits, timings
 
-        hits = await asyncio.wait_for(
+        hits, batch_timings = await asyncio.wait_for(
             recall(),
             timeout=max(1.0, self._settings.search_source_timeout),
         )
@@ -847,22 +1449,20 @@ class EngineManager:
         sections: dict[tuple[str, str], RetrievedSection] = {}
         loose: list[RetrievedSection] = []
         for hit in hits:
-            source_config_id = str(hit.get("source_config_id") or "").strip()
+            payload = dict(getattr(hit, "payload", None) or {})
+            source_config_id = str(payload.get("data_source_id") or "").strip()
             if source_config_id not in allowed_sources:
                 continue
-            try:
-                score = float(hit.get("_score") or hit.get("score") or 0.0)
-            except (TypeError, ValueError):
-                continue
+            score = float(getattr(hit, "score", 0.0) or 0.0)
             if not math.isfinite(score):
                 continue
             section = RetrievedSection(
-                chunk_id=str(hit.get("chunk_id") or "").strip() or None,
-                heading=str(hit.get("heading") or "").strip(),
-                content=str(hit.get("content") or "").strip(),
+                chunk_id=str(getattr(hit, "id", "") or "").strip() or None,
+                heading=str(payload.get("heading") or "").strip(),
+                content=str(payload.get("content") or "").strip(),
                 score=max(0.0, min(1.0, score)),
-                rank=int(hit.get("rank") or 0),
-                source_id=str(hit.get("source_id") or "").strip() or None,
+                rank=int(payload.get("rank") or 0),
+                source_id=str(payload.get("source_id") or "").strip() or None,
                 source_config_id=source_config_id,
             )
             if not section.chunk_id:
@@ -886,6 +1486,7 @@ class EngineManager:
                 "source_limit_applied": requested_sources > len(targets),
                 "candidates": len(sections) + len(loose),
                 "chunk_recall": "batch-vector",
+                "engine_timings": batch_timings,
             },
         )
 
@@ -912,32 +1513,39 @@ class EngineManager:
 
         bounded_limit = max(
             1,
-            min(int(limit or self._settings.search_top_k), 50),
+            min(int(limit or self._settings.search_unit_candidate_limit), self._settings.search_unit_candidate_limit),
         )
-        candidate_limit = min(200, max(bounded_limit * 4, 24))
+        candidate_limit = min(self._settings.search_unit_candidate_limit, bounded_limit * 4)
 
         await self._ensure_read_runtime(sources_by_config)
-
-        from zleap.sag.core.storage.client import get_es_client
-        from zleap.sag.core.storage.repositories.event_repository import (
-            EventVectorRepository,
-        )
-        from zleap.sag.modules.load.processor import DocumentProcessor
+        from zleap.sag.core.adapters.models import Filter, VectorQuery
 
         async def recall_vectors() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-            query_vector = await DocumentProcessor().generate_embedding(query)
-            repository = EventVectorRepository(get_es_client())
+            slot = await self._slot(source_config_ids[0], sources_by_config[source_config_ids[0]])
+            engine = slot.engine
+            from sag_api.core.token_usage import token_usage_scope
+            with token_usage_scope(component="query_embedding"):
+                query_vector = await engine.resources.embedding.generate(query)
+            store = engine.resources.vector
+            filters = Filter.one_of("data_source_id", tuple(source_config_ids))
+
+            async def channel(field: str, k: int) -> list[dict[str, Any]]:
+                hits = await store.query(
+                    "event_vectors_wide",
+                    VectorQuery(vector=query_vector, vector_field=field, filters=filters, limit=k),
+                )
+                return [
+                    {
+                        "event_id": str(getattr(hit, "id", "")),
+                        "source_config_id": str((getattr(hit, "payload", None) or {}).get("data_source_id") or ""),
+                        "score": float(getattr(hit, "score", 0.0) or 0.0),
+                    }
+                    for hit in hits
+                ]
+
             return await asyncio.gather(
-                repository.search_similar_by_title(
-                    query_vector=query_vector,
-                    k=candidate_limit,
-                    source_config_ids=source_config_ids,
-                ),
-                repository.search_similar_by_content(
-                    query_vector=query_vector,
-                    k=candidate_limit,
-                    source_config_ids=source_config_ids,
-                ),
+                channel("title_vector", candidate_limit),
+                channel("content_vector", candidate_limit),
             )
 
         title_hits, content_hits = await asyncio.wait_for(
@@ -1034,19 +1642,18 @@ class EngineManager:
         )
 
         from sqlalchemy import and_, func, or_, select
-        from zleap.sag.db import get_session_factory
         from zleap.sag.db.models import Entity, EventEntity, SourceEvent
 
         section_filters = [
             and_(
-                SourceEvent.source_config_id == source_config_id,
+                SourceEvent.data_source_id == source_config_id,
                 SourceEvent.chunk_id.in_(chunk_ids),
             )
             for source_config_id, chunk_ids in chunk_ids_by_config.items()
         ]
         event_filters = [
             and_(
-                SourceEvent.source_config_id == source_config_id,
+                SourceEvent.data_source_id == source_config_id,
                 SourceEvent.id.in_(event_ids),
             )
             for source_config_id, event_ids in direct_event_ids_by_config.items()
@@ -1068,7 +1675,7 @@ class EngineManager:
         chunk_rank = (
             func.row_number()
             .over(
-                partition_by=(SourceEvent.source_config_id, SourceEvent.chunk_id),
+                partition_by=(SourceEvent.data_source_id, SourceEvent.chunk_id),
                 order_by=(SourceEvent.rank.asc(), SourceEvent.id.asc()),
             )
             .label("chunk_rank")
@@ -1076,7 +1683,7 @@ class EngineManager:
         ranked_events = (
             select(
                 SourceEvent.id.label("id"),
-                SourceEvent.source_config_id.label("source_config_id"),
+                SourceEvent.data_source_id.label("source_config_id"),
                 SourceEvent.source_id.label("source_id"),
                 SourceEvent.title.label("title"),
                 SourceEvent.summary.label("summary"),
@@ -1101,7 +1708,7 @@ class EngineManager:
                 rank_condition,
                 ranked_events.c.id.in_(direct_event_ids),
             )
-        sf = get_session_factory()
+        sf = await self._relational_session_factory(source_config_id)
         async with sf() as session:
             event_rows = (
                 (
@@ -1136,7 +1743,7 @@ class EngineManager:
             )
             selected_direct_keys = {(row["source_config_id"], row["id"]) for row in direct_rows}
 
-            # Mỗi chunk tương quan cao đóng góp một sự kiện trước, rồi vào vòng tiếp theo, tránh một chunk dài chiếm hết kết quả.
+            # 每个高相关分块先贡献一个事件，再进入下一轮，避免单个长分块占满结果。
             ordered_chunk_keys = sorted(
                 chunk_scores,
                 key=lambda key: (-chunk_scores[key], key[0], key[1]),
@@ -1155,7 +1762,7 @@ class EngineManager:
                     break
                 depth += 1
 
-            # Upload trùng hoặc chunk chồng lấn sẽ trích xuất ra sự kiện trùng tên; cùng một nguồn chỉ giữ một bản tương quan cao nhất.
+            # 重复上传或重叠分块会抽取出同名事件；同一信源只保留相关度最高的一条。
             seen_titles: set[tuple[str, str]] = set()
             event_rows = []
             for row in [
@@ -1175,7 +1782,7 @@ class EngineManager:
                     id=row["id"],
                     source_config_id=row["source_config_id"],
                     source_id=row["source_id"],
-                    title=row["title"] or "Sự kiện chưa đặt tên",
+                    title=row["title"] or "未命名事件",
                     summary=str(row["summary"] or "")[:800],
                     content=str(row["content"] or "")[:4000],
                     category=row["category"] or "",
@@ -1215,7 +1822,7 @@ class EngineManager:
                     .join(Entity, Entity.id == EventEntity.entity_id)
                     .where(
                         EventEntity.event_id.in_(event_ids),
-                        Entity.source_config_id.in_(requested_config_ids),
+                        Entity.data_source_id.in_(requested_config_ids),
                     )
                     .order_by(EventEntity.weight.desc(), EventEntity.created_time.asc())
                     .limit(association_limit)
@@ -1274,14 +1881,13 @@ class EngineManager:
         types: list[str] | None = None,
         limit: int = 100,
     ) -> list[EntityInfo]:
-        """Đọc đồ thị sự kiện–thực thể của nguồn này, sắp theo độ nóng (số sự kiện liên quan). Có dữ liệu sau khi extract."""
-        await self._slot(source_config_id, source)  # Đảm bảo engine / DB đã khởi tạo
+        """读取该源的事件—实体图谱，按热度（关联事件数）排序。extract 后才有数据。"""
+        await self._slot(source_config_id, source)  # 确保引擎 / DB 已初始化
         from sqlalchemy import func, select
-        from zleap.sag.db import get_session_factory
         from zleap.sag.db.models import Entity, EventEntity
 
         heat = func.count(EventEntity.id)
-        conds = [Entity.source_config_id == source_config_id]
+        conds = [Entity.data_source_id == source_config_id]
         if types:
             conds.append(Entity.type.in_(list(types)))
         stmt = (
@@ -1292,7 +1898,7 @@ class EngineManager:
             .order_by(heat.desc())
             .limit(limit)
         )
-        sf = get_session_factory()
+        sf = await self._relational_session_factory(source_config_id)
         async with sf() as s:
             rows = (await s.execute(stmt)).all()
         return [
@@ -1316,29 +1922,28 @@ class EngineManager:
         entity_limit: int = 1_000,
         expected_event_count: int | None = None,
     ) -> SourceGraphInfo:
-        """Đọc đồ thị sự kiện–thực thể cân bằng theo tài liệu trong ngân sách hiển thị.
+        """按展示预算读取一个按文档均衡的事件—实体图谱。
 
-        Đồ thị chỉ đọc source_id của engine tương ứng với tài liệu đang hiển thị. Sự kiện dùng xếp hạng cửa sổ luân phiên các tài liệu,
-        tránh một văn bản dài chiếm hết hạn mức; cạnh liên kết ưu tiên bao phủ và giới hạn mật độ, tránh đồ thị cơ số cao làm nghẽn trình duyệt.
+        图谱只读取本次展示文档对应的引擎 source_id。事件使用窗口排名轮询各文档，
+        避免单篇长文占满配额；关联边覆盖优先并限制密度，避免高基数图谱拖垮浏览器。
         """
         await self._slot(source_config_id, source)
         from sqlalchemy import func, select, update
-        from zleap.sag.db import get_session_factory
         from zleap.sag.db.models import Entity, EventEntity, SourceEvent
 
-        sf = get_session_factory()
+        sf = await self._relational_session_factory(source_config_id)
         async with sf() as s:
             if not source_ids:
                 return SourceGraphInfo()
 
             event_scope = (
-                SourceEvent.source_config_id == source_config_id,
+                SourceEvent.data_source_id == source_config_id,
                 SourceEvent.source_id.in_(source_ids),
             )
             visible_event = SourceEvent.status.is_(None) | (SourceEvent.status != "DELETED")
 
-            # Phiên bản cũ trích xuất theo điểm dừng lưu từng chunk, nhưng upstream xem mỗi lần lưu là thay toàn bộ bài, khiến chunk trước bị ẩn.
-            # Chỉ khi số hoàn thành Web chứng minh mọi sự kiện trong engine thuộc lần trích xuất này mới sửa, tránh khôi phục bản cũ.
+            # 旧版断点抽取逐块保存，上游却把每次保存都视为整篇替换，导致先前块被隐藏。
+            # 只有 Web 完成数能证明引擎中的全部事件属于本次抽取时才修复，避免恢复旧版本。
             if expected_event_count and expected_event_count > 0:
                 total_event_count, visible_event_count = (
                     await s.execute(
@@ -1359,13 +1964,13 @@ class EngineManager:
                     )
                     await s.commit()
                     log.warning(
-                        "Đã khôi phục sự kiện bị upstream ẩn khi trích xuất theo chunk source_config_id=%s count=%d",
+                        "已恢复分块抽取中被上游隐藏的事件 source_config_id=%s count=%d",
                         source_config_id,
                         int(repaired.rowcount or 0),
                     )
 
-            # Tổng thực thể phải khớp với phạm vi tài liệu hiện tại; nếu không bộ lọc đơn tài liệu sẽ lấy số
-            # thực thể của toàn nguồn làm mẫu số, hiển thị sai thành “đã cắt ngắn”.
+            # 实体总量必须与当前文档范围一致；否则单文档筛选会把整个信源的
+            # 实体数当成分母，错误显示为“已截断”。
             total_entities = int(
                 (
                     await s.execute(
@@ -1377,7 +1982,7 @@ class EngineManager:
                 or 0
             )
 
-            # Mỗi tài liệu lấy các sự kiện có rank nhỏ trước, rồi luân phiên giữa các tài liệu, cân bằng nút gốc phân cấp và độ bao phủ.
+            # 每个文档先取 rank 较小的事件，再在文档之间轮询，兼顾层级根节点与覆盖面。
             source_rank = (
                 func.row_number()
                 .over(
@@ -1422,7 +2027,7 @@ class EngineManager:
                     id=row["id"],
                     source_config_id=source_config_id,
                     source_id=row["source_id"],
-                    title=row["title"] or "Sự kiện chưa đặt tên",
+                    title=row["title"] or "未命名事件",
                     summary=str(row["summary"] or "")[:800],
                     category=row["category"] or "",
                     rank=int(row["rank"] or 0),
@@ -1452,14 +2057,14 @@ class EngineManager:
                     .join(Entity, Entity.id == EventEntity.entity_id)
                     .where(
                         EventEntity.event_id.in_(event_ids),
-                        Entity.source_config_id == source_config_id,
+                        Entity.data_source_id == source_config_id,
                     )
                     .order_by(EventEntity.weight.desc(), EventEntity.created_time.asc())
                     .limit(association_limit)
                 )
             ).all()
 
-        # Độ nóng được tính trong lát cắt đồ thị hiện tại; ưu tiên giữ thực thể xuất hiện chéo sự kiện.
+        # 热度在当前图谱切片中计算；优先保留跨事件出现的实体。
         heat: dict[str, int] = {}
         entity_rows: dict[str, tuple[str, str, str]] = {}
         for _event_id, entity_id, _weight, _description, name, kind, entity_description in association_rows:
@@ -1527,10 +2132,9 @@ class EngineManager:
         source: Source | None = None,
         limit: int = 20,
     ) -> list[str]:
-        """Đoạn văn bản của các sự kiện liên quan tới một thực thể (dùng để tạo tính cách)."""
+        """某实体关联事件的文本片段（用于生成人格）。"""
         await self._slot(source_config_id, source)
         from sqlalchemy import select
-        from zleap.sag.db import get_session_factory
         from zleap.sag.db.models import EventEntity, SourceEvent
 
         stmt = (
@@ -1539,7 +2143,7 @@ class EngineManager:
             .where(EventEntity.entity_id == entity_id)
             .limit(limit)
         )
-        sf = get_session_factory()
+        sf = await self._relational_session_factory(source_config_id)
         snippets: list[str] = []
         async with sf() as s:
             for title, summary, content in (await s.execute(stmt)).all():
@@ -1559,14 +2163,13 @@ class EngineManager:
         """Return aggregate-only statistics; never materialize event/entity rows."""
         await self._slot(source_config_id, source)
         from sqlalchemy import case, func, select
-        from zleap.sag.db import get_session_factory
         from zleap.sag.db.models import Entity, EventEntity, SourceEvent
 
         buckets = max(1, min(int(bucket_count), 24))
         categories = max(0, min(int(category_limit), 16))
         event_time = func.coalesce(SourceEvent.start_time, SourceEvent.created_time)
         active_event = SourceEvent.status.is_(None) | (SourceEvent.status != "DELETED")
-        sf = get_session_factory()
+        sf = await self._relational_session_factory(source_config_id)
         async with sf() as session:
             event_count, min_time, max_time = (
                 await session.execute(
@@ -1575,7 +2178,7 @@ class EngineManager:
                         func.min(event_time),
                         func.max(event_time),
                     ).where(
-                        SourceEvent.source_config_id == source_config_id,
+                        SourceEvent.data_source_id == source_config_id,
                         active_event,
                     )
                 )
@@ -1583,7 +2186,7 @@ class EngineManager:
             entity_count = int(
                 (
                     await session.execute(
-                        select(func.count(Entity.id)).where(Entity.source_config_id == source_config_id)
+                        select(func.count(Entity.id)).where(Entity.data_source_id == source_config_id)
                     )
                 ).scalar_one()
                 or 0
@@ -1593,8 +2196,8 @@ class EngineManager:
                 .join(SourceEvent, SourceEvent.id == EventEntity.event_id)
                 .join(Entity, Entity.id == EventEntity.entity_id)
                 .where(
-                    SourceEvent.source_config_id == source_config_id,
-                    Entity.source_config_id == source_config_id,
+                    SourceEvent.data_source_id == source_config_id,
+                    Entity.data_source_id == source_config_id,
                     active_event,
                 )
                 .distinct()
@@ -1605,12 +2208,12 @@ class EngineManager:
             )
             category_rows = []
             if categories:
-                category = func.coalesce(func.nullif(SourceEvent.category, ""), "Chưa phân loại")
+                category = func.coalesce(func.nullif(SourceEvent.category, ""), "未分类")
                 category_rows = (
                     await session.execute(
                         select(category, func.count(SourceEvent.id).label("count"))
                         .where(
-                            SourceEvent.source_config_id == source_config_id,
+                            SourceEvent.data_source_id == source_config_id,
                             active_event,
                         )
                         .group_by(category)
@@ -1642,7 +2245,7 @@ class EngineManager:
                     bucket_values = (
                         await session.execute(
                             select(*count_columns).where(
-                                SourceEvent.source_config_id == source_config_id,
+                                SourceEvent.data_source_id == source_config_id,
                                 active_event,
                             )
                         )
@@ -1660,7 +2263,7 @@ class EngineManager:
             event_count=int(event_count or 0),
             entity_count=entity_count,
             relation_count=relation_count,
-            category_counts={str(label or "Chưa phân loại"): int(count or 0) for label, count in category_rows},
+            category_counts={str(label or "未分类"): int(count or 0) for label, count in category_rows},
             time_buckets=time_buckets,
         )
 
@@ -1691,7 +2294,7 @@ class EngineManager:
                     .where(
                         EventEntity.entity_id.in_(entity_ids),
                         EventEntity.created_time <= as_of_db,
-                        SourceEvent.source_config_id == source_config_id,
+                        SourceEvent.data_source_id == source_config_id,
                         event_time <= as_of_db,
                         SourceEvent.created_time <= as_of_db,
                         (SourceEvent.status.is_(None) | (SourceEvent.status != "DELETED")),
@@ -1733,7 +2336,7 @@ class EngineManager:
             .where(
                 EventEntity.event_id.in_(event_ids),
                 EventEntity.created_time <= as_of_db,
-                Entity.source_config_id == source_config_id,
+                Entity.data_source_id == source_config_id,
                 Entity.created_time <= as_of_db,
             )
             .group_by(EventEntity.event_id, EventEntity.entity_id)
@@ -1771,7 +2374,7 @@ class EngineManager:
                 .join(Entity, Entity.id == ranked_relations.c.entity_id)
                 .where(
                     ranked_relations.c.relation_rank <= bounded_entities,
-                    Entity.source_config_id == source_config_id,
+                    Entity.data_source_id == source_config_id,
                 )
                 .order_by(
                     ranked_relations.c.event_id,
@@ -1800,9 +2403,9 @@ class EngineManager:
                 {
                     "id": entity_id,
                     "kind": "entity",
-                    "label": row.name or "Thực thể chưa đặt tên",
+                    "label": row.name or "未命名实体",
                     "description": str(row.entity_description or "")[:800],
-                    "category": row.type or "Thực thể",
+                    "category": row.type or "实体",
                     "chunk_id": None,
                     "start_time": None,
                     "importance": max(
@@ -1827,9 +2430,9 @@ class EngineManager:
             {
                 "id": str(event["id"]),
                 "kind": "event",
-                "label": event.get("title") or "Sự kiện chưa đặt tên",
+                "label": event.get("title") or "未命名事件",
                 "description": str(event.get("summary") or "")[:800],
-                "category": event.get("category") or "Sự kiện",
+                "category": event.get("category") or "事件",
                 "chunk_id": event.get("chunk_id"),
                 "start_time": _utc_time(event.get("start_time") or event.get("event_time")),
                 "importance": max(
@@ -1865,7 +2468,6 @@ class EngineManager:
         """
         await self._slot(source_config_id, source)
         from sqlalchemy import and_, func, or_, select
-        from zleap.sag.db import get_session_factory
         from zleap.sag.db.models import SourceEvent
 
         bounded_limit = max(1, min(int(limit), 24))
@@ -1916,7 +2518,7 @@ class EngineManager:
         as_of_db = _database_time(as_of)
         event_time = func.coalesce(SourceEvent.start_time, SourceEvent.created_time)
         filters = [
-            SourceEvent.source_config_id == source_config_id,
+            SourceEvent.data_source_id == source_config_id,
             (SourceEvent.status.is_(None) | (SourceEvent.status != "DELETED")),
             event_time <= as_of_db,
             SourceEvent.created_time <= as_of_db,
@@ -1962,7 +2564,7 @@ class EngineManager:
             else (event_time.asc(), SourceEvent.rank.desc(), SourceEvent.id.desc())
         )
 
-        sf = get_session_factory()
+        sf = await self._relational_session_factory(source_config_id)
         async with sf() as session:
             event_rows = (
                 await session.execute(
@@ -1989,16 +2591,13 @@ class EngineManager:
             # an event's depth is its position in the canonical order. One count
             # for the page head; the page itself is contiguous in that order.
             base_filters = [
-                SourceEvent.source_config_id == source_config_id,
+                SourceEvent.data_source_id == source_config_id,
                 (SourceEvent.status.is_(None) | (SourceEvent.status != "DELETED")),
                 event_time <= as_of_db,
                 SourceEvent.created_time <= as_of_db,
             ]
             total_events = int(
-                await session.scalar(
-                    select(func.count()).select_from(SourceEvent).where(*base_filters)
-                )
-                or 0
+                await session.scalar(select(func.count()).select_from(SourceEvent).where(*base_filters)) or 0
             )
             first_ordinal = 0
             head = page[0] if page else None
@@ -2161,7 +2760,6 @@ class EngineManager:
         """Read one explicit hop with a hard cap and stable keyset cursor."""
         await self._slot(source_config_id, source)
         from sqlalchemy import and_, func, or_, select
-        from zleap.sag.db import get_session_factory
         from zleap.sag.db.models import Entity, EventEntity, SourceEvent
 
         hard_limit = 8 if node_kind == "event" else 4
@@ -2208,7 +2806,7 @@ class EngineManager:
             self._settings.secret_key,
         )
 
-        sf = get_session_factory()
+        sf = await self._relational_session_factory(source_config_id)
         async with sf() as session:
             as_of_db = _database_time(as_of)
             if node_kind == "event":
@@ -2227,7 +2825,7 @@ class EngineManager:
                             SourceEvent.start_time,
                         ).where(
                             SourceEvent.id == node_id,
-                            SourceEvent.source_config_id == source_config_id,
+                            SourceEvent.data_source_id == source_config_id,
                             (SourceEvent.status.is_(None) | (SourceEvent.status != "DELETED")),
                             event_time <= as_of_db,
                             SourceEvent.created_time <= as_of_db,
@@ -2256,7 +2854,7 @@ class EngineManager:
                             .select_from(unique_event_relations)
                             .join(Entity, Entity.id == unique_event_relations.c.entity_id)
                             .where(
-                                Entity.source_config_id == source_config_id,
+                                Entity.data_source_id == source_config_id,
                                 Entity.created_time <= as_of_db,
                             )
                         )
@@ -2292,7 +2890,7 @@ class EngineManager:
                         .join(Entity, Entity.id == unique_event_relations.c.entity_id)
                         .where(
                             *filters,
-                            Entity.source_config_id == source_config_id,
+                            Entity.data_source_id == source_config_id,
                             Entity.created_time <= as_of_db,
                         )
                         .order_by(
@@ -2330,9 +2928,9 @@ class EngineManager:
                     anchor={
                         "id": anchor.id,
                         "kind": "event",
-                        "label": anchor.title or "Sự kiện chưa đặt tên",
+                        "label": anchor.title or "未命名事件",
                         "description": str(anchor.summary or "")[:800],
-                        "category": anchor.category or "Sự kiện",
+                        "category": anchor.category or "事件",
                         "chunk_id": anchor.chunk_id,
                         "start_time": anchor.start_time,
                         "related_count": related_count,
@@ -2341,9 +2939,9 @@ class EngineManager:
                         {
                             "id": row.entity_id,
                             "kind": "entity",
-                            "label": row.name or "Thực thể chưa đặt tên",
+                            "label": row.name or "未命名实体",
                             "description": str(row.entity_description or "")[:800],
-                            "category": row.type or "Thực thể",
+                            "category": row.type or "实体",
                             "weight": _weight(row.weight),
                             "related_count": entity_counts.get(str(row.entity_id), 0),
                             "relation_description": str(row.relation_description or "")[:240],
@@ -2373,7 +2971,7 @@ class EngineManager:
                 await session.execute(
                     select(Entity.id, Entity.name, Entity.type, Entity.description).where(
                         Entity.id == node_id,
-                        Entity.source_config_id == source_config_id,
+                        Entity.data_source_id == source_config_id,
                         Entity.created_time <= as_of_db,
                     )
                 )
@@ -2397,7 +2995,7 @@ class EngineManager:
             )
             effective_after = after
             base_filters = [
-                SourceEvent.source_config_id == source_config_id,
+                SourceEvent.data_source_id == source_config_id,
                 (SourceEvent.status.is_(None) | (SourceEvent.status != "DELETED")),
                 event_time <= as_of_db,
                 SourceEvent.created_time <= as_of_db,
@@ -2538,9 +3136,9 @@ class EngineManager:
                 anchor={
                     "id": anchor.id,
                     "kind": "entity",
-                    "label": anchor.name or "Thực thể chưa đặt tên",
+                    "label": anchor.name or "未命名实体",
                     "description": str(anchor.description or "")[:800],
-                    "category": anchor.type or "Thực thể",
+                    "category": anchor.type or "实体",
                     "related_count": related_count,
                 },
                 neighbors=[
@@ -2565,10 +3163,9 @@ class EngineManager:
         """Read node metadata only; graph neighborhoods are served by universe_expand."""
         await self._slot(source_config_id, source)
         from sqlalchemy import select
-        from zleap.sag.db import get_session_factory
         from zleap.sag.db.models import Entity, SourceEvent
 
-        sf = get_session_factory()
+        sf = await self._relational_session_factory(source_config_id)
         async with sf() as session:
             if node_kind == "event":
                 event = (
@@ -2584,7 +3181,7 @@ class EngineManager:
                             SourceEvent.start_time,
                         ).where(
                             SourceEvent.id == node_id,
-                            SourceEvent.source_config_id == source_config_id,
+                            SourceEvent.data_source_id == source_config_id,
                             (SourceEvent.status.is_(None) | (SourceEvent.status != "DELETED")),
                         )
                     )
@@ -2597,7 +3194,7 @@ class EngineManager:
                     "id": event.id,
                     "kind": "event",
                     "source_ref_id": event.source_id,
-                    "label": event.title or "Sự kiện chưa đặt tên",
+                    "label": event.title or "未命名事件",
                     # summary is the compact graph-card copy; content is the
                     # extracted event detail shown after opening the node.
                     "description": (content or summary)[:4000],
@@ -2612,7 +3209,7 @@ class EngineManager:
                 await session.execute(
                     select(Entity.id, Entity.name, Entity.type, Entity.description).where(
                         Entity.id == node_id,
-                        Entity.source_config_id == source_config_id,
+                        Entity.data_source_id == source_config_id,
                     )
                 )
             ).one_or_none()
@@ -2621,9 +3218,9 @@ class EngineManager:
             return {
                 "id": entity.id,
                 "kind": "entity",
-                "label": entity.name or "Thực thể chưa đặt tên",
+                "label": entity.name or "未命名实体",
                 "description": str(entity.description or "")[:4000],
-                "category": entity.type or "Thực thể",
+                "category": entity.type or "实体",
             }
 
     async def list_chunk_headings(
@@ -2634,13 +3231,12 @@ class EngineManager:
         doc_sag_id: str | None = None,
         limit: int = 300,
     ) -> list[dict]:
-        """Đề cương chunk: heading + rank (có thể giới hạn một tài liệu), phục vụ MCP outline."""
+        """分块大纲：heading + rank（可限定单文档），供 MCP outline。"""
         await self._slot(source_config_id, source)
         from sqlalchemy import select
-        from zleap.sag.db import get_session_factory
         from zleap.sag.db.models import SourceChunk
 
-        conds = [SourceChunk.source_config_id == source_config_id]
+        conds = [SourceChunk.data_source_id == source_config_id]
         if doc_sag_id:
             conds.append(SourceChunk.source_id == doc_sag_id)
         stmt = (
@@ -2649,7 +3245,7 @@ class EngineManager:
             .order_by(SourceChunk.rank)
             .limit(limit)
         )
-        sf = get_session_factory()
+        sf = await self._relational_session_factory(source_config_id)
         async with sf() as s:
             rows = (await s.execute(stmt)).all()
         return [{"chunk_id": cid, "heading": (h or "").strip(), "rank": int(r or 0)} for cid, h, r in rows]
@@ -2661,18 +3257,17 @@ class EngineManager:
         *,
         source: Source | None = None,
     ) -> str | None:
-        """Đọc toàn bộ Markdown đã lưu khi nhập kho thành công; không tồn tại hoặc nội dung rỗng thì trả None."""
+        """读取成功入库时保存的整篇 Markdown；不存在或内容为空时返回 None。"""
         await self._slot(source_config_id, source)
         from sqlalchemy import select
-        from zleap.sag.db import get_session_factory
         from zleap.sag.db.models import Article
 
-        sf = get_session_factory()
+        sf = await self._relational_session_factory(source_config_id)
         async with sf() as session:
             content = await session.scalar(
                 select(Article.content).where(
                     Article.id == article_id,
-                    Article.source_config_id == source_config_id,
+                    Article.data_source_id == source_config_id,
                 )
             )
         return str(content) if content else None
@@ -2684,28 +3279,39 @@ class EngineManager:
         *,
         source: Source | None = None,
         limit: int = 20,
+        exclude_source_ids: tuple[str, ...] = (),
     ) -> list[dict]:
-        """Khớp văn bản chính xác (LIKE, không phân biệt hoa thường): tìm kiếm xác định ngoài truy xuất ngữ nghĩa."""
+        """精确文本匹配（LIKE，大小写不敏感）：语义检索之外的确定性查找。"""
         await self._ensure_read_runtime({source_config_id: source})
         from sqlalchemy import select
-        from zleap.sag.db import get_session_factory
         from zleap.sag.db.models import SourceChunk
 
         needle = pattern.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        excluded = tuple(
+            sorted({value.strip() for value in exclude_source_ids if isinstance(value, str) and value.strip()})
+        )
+        conditions = [
+            SourceChunk.data_source_id == source_config_id,
+            SourceChunk.content.ilike(f"%{needle}%", escape="\\"),
+        ]
+        if excluded:
+            conditions.append(SourceChunk.source_id.not_in(excluded))
         stmt = (
-            select(SourceChunk.id, SourceChunk.heading, SourceChunk.content)
-            .where(
-                SourceChunk.source_config_id == source_config_id,
-                SourceChunk.content.ilike(f"%{needle}%", escape="\\"),
+            select(
+                SourceChunk.id,
+                SourceChunk.heading,
+                SourceChunk.content,
+                SourceChunk.source_id,
             )
+            .where(*conditions)
             .order_by(SourceChunk.rank)
             .limit(limit)
         )
-        sf = get_session_factory()
+        sf = await self._relational_session_factory(source_config_id)
         async with sf() as s:
             rows = (await s.execute(stmt)).all()
         out = []
-        for cid, heading, content in rows:
+        for cid, heading, content, document_source_id in rows:
             text = content or ""
             lowered = text.lower()
             needle = pattern.lower()
@@ -2725,7 +3331,7 @@ class EngineManager:
             prefix = text[prefix_start:best]
             dates = list(
                 re.finditer(
-                    r"20\d{2}(?:năm\s*\d{1,2}.\d{1,2}.\d{1,2}|[-/]\d{1,2}[-/]\d{1,2})",
+                    r"20\d{2}(?:年\d{1,2}月\d{1,2}日|[-/]\d{1,2}[-/]\d{1,2})",
                     prefix,
                 )
             )
@@ -2747,6 +3353,7 @@ class EngineManager:
                     "chunk_id": cid,
                     "heading": display_heading,
                     "snippet": snippet,
+                    "source_id": document_source_id,
                 }
             )
         return out
@@ -2758,21 +3365,20 @@ class EngineManager:
         *,
         source: Source | None = None,
     ):
-        """Đọc nguyên văn đầy đủ của một chunk (truy nguồn trích dẫn/tìm kiếm). Không tồn tại thì trả None."""
+        """读取某分块的完整原文（引用/搜索溯源）。不存在返回 None。"""
         from sag_api.sag.dto import ChunkInfo
 
         await self._slot(source_config_id, source)
         from sqlalchemy import select
-        from zleap.sag.db import get_session_factory
         from zleap.sag.db.models import SourceChunk
 
-        sf = get_session_factory()
+        sf = await self._relational_session_factory(source_config_id)
         async with sf() as s:
             row = (
                 await s.execute(
                     select(SourceChunk).where(
                         SourceChunk.id == chunk_id,
-                        SourceChunk.source_config_id == source_config_id,
+                        SourceChunk.data_source_id == source_config_id,
                     )
                 )
             ).scalar_one_or_none()
@@ -2786,7 +3392,7 @@ class EngineManager:
         )
 
     async def release(self, source_config_id: str) -> None:
-        """Đóng và gỡ slot engine của một nguồn (gọi khi xóa nguồn; idempotent)."""
+        """关闭并移除某源的引擎槽（信源删除时调用；幂等）。"""
         async with self._create_lock:
             async with self._lifecycle_gate.write():
                 slot = self._slots.pop(source_config_id, None)
@@ -2795,13 +3401,20 @@ class EngineManager:
                 slot.closing = True
                 try:
                     await slot.idle.wait()
-                    async with slot.lock:  # Chờ các thao tác đang diễn ra kết thúc
+                    async with slot.lock:  # 等待在途操作结束
                         await slot.engine.aclose()
                 except Exception as e:  # noqa: BLE001
-                    log.warning("Giải phóng engine thất bại %s: %s", source_config_id, e)
+                    log.warning("释放引擎失败 %s: %s", source_config_id, e)
 
     async def aclose_all(self) -> None:
-        # Đánh dấu và gỡ trước, chặn yêu cầu mới lấy được slot sắp đóng; lần lượt chờ thao tác đang diễn ra hoàn tất.
+        async with self._canonical_embedding_lock:
+            for embedding in self._canonical_embeddings.values():
+                try:
+                    await embedding.close()
+                except Exception as error:
+                    log.warning("canonical embedding close failed error_type=%s", type(error).__name__)
+            self._canonical_embeddings.clear()
+        # 先标记并摘除，阻止新请求拿到即将关闭的槽；逐槽等待在途操作完成。
         async with self._create_lock:
             async with self._lifecycle_gate.write():
                 slots = list(self._slots.items())
@@ -2814,4 +3427,9 @@ class EngineManager:
                         async with slot.lock:
                             await slot.engine.aclose()
                     except Exception as e:  # noqa: BLE001
-                        log.warning("Đóng engine thất bại %s: %s", scid, e)
+                        log.warning("关闭引擎失败 %s: %s", scid, e)
+        async with self._search_unit_qdrant_client_lock:
+            try:
+                await self._close_search_unit_qdrant_client_locked()
+            except Exception as error:  # noqa: BLE001 - do not log client configuration
+                log.warning("canonical Qdrant client close failed error_type=%s", type(error).__name__)

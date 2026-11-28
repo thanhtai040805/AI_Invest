@@ -11,7 +11,7 @@ referenced document actually describes the behavior being changed:
 | Change area | Likely reference |
 |---|---|
 | Services, ports, protocols, network boundaries, gateway routes | `docs/architecture/IT_SYSTEM_ARCHITECTURE.md` and relevant diagrams |
-| BCTC ingestion, MinerU OCR, SAG hashing, GIL/MOAT, quant debate, HOSE execution | `docs/architecture/PROJECT_MEMORY.md` and `docs/diagrams/paper-grade-algorithmic-data-flow.html` |
+| BCTC/BCTN ingestion, MinerU OCR, SAG Knowledge Routing RAG, MOAT Stock Research, quant debate, HOSE execution | `docs/architecture/PROJECT_MEMORY.md` and `docs/diagrams/paper-grade-algorithmic-data-flow.html` |
 | Prisma/SQLAlchemy schema or migrations | Persistence documentation and relevant entity/store diagrams |
 | HOSE settlement, price bands, risk model | Project memory and relevant risk documentation/diagrams |
 

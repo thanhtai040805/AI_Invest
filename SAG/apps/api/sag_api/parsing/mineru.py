@@ -1,25 +1,25 @@
-"""Bộ adapter 302.AI MinerU 2.x.
+"""MinerU Official API v4 core utilities, SSRF guards, and disk-streamed ZIP page-marker extraction.
 
-Giao diện MinerU của 302 chỉ nhận URL PDF công khai, do đó file cục bộ được upload qua `/302/upload-file`
-trước, rồi tạo task phân tích và polling. Tài liệu chính thức khai báo rộng rãi phản hồi thành công là JSON string;
-ở đây tương thích đồng thời chuỗi, JSON lồng nhau và các wrapper object thường gặp, để tiếp nhận mượt sự tiến hóa của phản hồi máy chủ.
+This module intentionally exposes only the MinerU Official API v4 client (`MinerUClient` ->
+`OfficialMinerUClient`) alongside shared streaming ZIP extraction and `<!-- PAGE N -->`
+restoration helpers. Legacy 302.AI MinerU endpoints have been removed.
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
+import html
 import io
 import ipaddress
 import json
+import logging
 import os
 import re
 import socket
-import time
+import tempfile
 import zipfile
-from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable
-from typing import Any, AsyncIterator, Literal, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -29,654 +29,169 @@ from sag_api.core.errors import (
     ConfigurationError,
     ServiceUnavailableError,
     UpstreamError,
-    ValidationError,
 )
+
+if TYPE_CHECKING:
+    from sag_api.parsing.mineru_official import OfficialMinerUClient
 
 StateCallback = Callable[[dict[str, Any]], Awaitable[None]]
+PauseCallback = Callable[[], Awaitable[bool]]
 
-_PENDING_STATES = {
-    "created",
-    "pending",
-    "queued",
-    "queueing",
-    "running",
-    "processing",
-    "converting",
-    "in_progress",
-}
-_FAILED_STATES = {"failed", "failure", "error", "cancelled", "canceled"}
-_DONE_STATES = {"done", "success", "succeeded", "completed", "finished"}
-_RESULT_URL_KEYS = (
-    "full_zip_url",
-    "zip_url",
-    "download_url",
-    "result_url",
-    "markdown_url",
-    "md_url",
-    "file_url",
-)
-_MARKDOWN_KEYS = ("markdown", "md_content", "markdown_content", "content")
-
-_submit_windows: dict[str, deque[float]] = defaultdict(deque)
-_submit_window_lock: asyncio.Lock | None = None
-_key_semaphores: dict[str, asyncio.Semaphore] = {}
-_key_semaphore_lock: asyncio.Lock | None = None
-_key_pool_index = 0
+log = logging.getLogger(__name__)
 
 
-async def _wait_for_submit_slot(api_key: str) -> None:
-    """Throttle MinerU submit calls without slowing result polling."""
-    global _submit_window_lock
-    limit = max(1, int(os.getenv("MINERU_SUBMIT_RPM", "240")))
-    if _submit_window_lock is None:
-        _submit_window_lock = asyncio.Lock()
-    while True:
-        async with _submit_window_lock:
-            now = time.monotonic()
-            window = _submit_windows[hashlib.sha256(api_key.encode()).hexdigest()[:12]]
-            while window and now - window[0] >= 60.0:
-                window.popleft()
-            if len(window) < limit:
-                window.append(now)
-                return
-            wait_for = max(0.05, 60.0 - (now - window[0]))
-        await asyncio.sleep(wait_for)
-
-
-def _select_mineru_key(settings: Settings) -> str:
-    global _key_pool_index
-    pool = settings.mineru_key_pool
-    if not pool:
-        return ""
-    key = pool[_key_pool_index % len(pool)]
-    _key_pool_index += 1
-    return key
-
-
-async def _key_slot(api_key: str, concurrency: int | None = None) -> asyncio.Semaphore:
-    """Return the bounded concurrency slot for one MinerU account."""
-    global _key_semaphore_lock
-    if _key_semaphore_lock is None:
-        _key_semaphore_lock = asyncio.Lock()
-    key_id = hashlib.sha256(api_key.encode()).hexdigest()[:12]
-    limit = max(1, int(concurrency or os.getenv("MINERU_KEY_CONCURRENCY", "5")))
-    async with _key_semaphore_lock:
-        semaphore = _key_semaphores.get(key_id)
-        if semaphore is None:
-            semaphore = asyncio.Semaphore(limit)
-            _key_semaphores[key_id] = semaphore
-        return semaphore
+class ParsePaused(Exception):
+    """Cooperative pause/yield signal raised during long-running MinerU polling."""
 
 
 class MinerUClient:
-    def __init__(self, settings: Settings):
-        if not settings.mineru_configured:
-            raise ConfigurationError("MinerU chưa được cấu hình Base URL và API Key")
-        self._base_url = str(settings.mineru_base_url).rstrip("/")
-        parsed_base = urlparse(self._base_url)
-        if parsed_base.scheme not in {"http", "https"} or not parsed_base.hostname:
-            raise ConfigurationError("MinerU Base URL phải là địa chỉ HTTP(S) hợp lệ")
-        if parsed_base.hostname in {"api.302.ai", "api.302ai.cn"} and parsed_base.scheme != "https":
-            raise ConfigurationError("302 MinerU Base URL phải dùng HTTPS")
-        self._api_key = _select_mineru_key(settings)
-        self._version = settings.mineru_version
-        self._parse_method = settings.mineru_parse_method
-        self._model_version = getattr(settings, "mineru_model_version", "vlm")
-        self._language = getattr(settings, "mineru_language", "latin")
-        self._mode = getattr(settings, "mineru_mode", "precision")
-        self._layout_model = getattr(settings, "mineru_layout_model", "doclayout_yolo")
-        self._enable_table = getattr(settings, "mineru_enable_table", True)
-        self._enable_formula = getattr(settings, "mineru_enable_formula", True)
-        self._request_timeout = max(1.0, settings.mineru_request_timeout)
-        self._poll_interval = max(0.05, settings.mineru_poll_interval)
-        self._poll_timeout = max(self._poll_interval, settings.mineru_poll_timeout)
-        self._result_limit = max(1, settings.mineru_result_max_mb) * 1024 * 1024
-        self._key_concurrency = max(
-            1,
-            int(getattr(settings, "mineru_key_concurrency", os.getenv("MINERU_KEY_CONCURRENCY", "5"))),
-        )
-        self._direct_url_enabled = bool(getattr(settings, "mineru_direct_url", True))
-        self._direct_url_max_mb = max(1, int(getattr(settings, "mineru_direct_url_max_mb", 200)))
-        self._direct_url_max_pages = max(1, int(getattr(settings, "mineru_direct_url_max_pages", 600)))
-        self._is_opendatalab = "mineru.net" in self._base_url or "opendatalab" in self._base_url
+    """Factory entrypoint returning the MinerU Official API v4 client exclusively."""
 
-    @property
-    def signature(self) -> str:
-        return f"mineru-{self._version}-{self._parse_method}-{self._model_version}-{self._language}"
+    def __new__(cls, settings: Settings) -> OfficialMinerUClient:
+        from sag_api.parsing.mineru_official import OfficialMinerUClient
 
-    def _url(self, path: str) -> str:
-        return f"{self._base_url}/{path.lstrip('/')}"
+        return OfficialMinerUClient(settings)
 
-    @property
-    def _headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self._api_key}"}
 
-    async def parse(
-        self,
-        path: str,
-        *,
-        state: dict[str, Any] | None = None,
-        on_state: StateCallback | None = None,
-    ) -> str:
-        semaphore = await _key_slot(self._api_key, self._key_concurrency)
-        async with semaphore:
-            if self._is_opendatalab:
-                return await self._parse_opendatalab(path, state=state, on_state=on_state)
-            return await self._parse_302(path, state=state, on_state=on_state)
-
-    async def parse_url(
-        self,
-        source_url: str,
-        filename: str = "document.pdf",
-        *,
-        state: dict[str, Any] | None = None,
-        on_state: StateCallback | None = None,
-    ) -> str:
-        """Submit a public PDF URL to MinerU Precision without staging the PDF locally."""
-        if not self._is_opendatalab:
-            raise ValidationError("MinerU direct URL chỉ được hỗ trợ bởi Precision API mineru.net")
-        if not self._direct_url_enabled:
-            raise ValidationError("MinerU direct URL đang bị tắt")
-        if not _is_http_url(source_url):
-            raise ValidationError("source_url phải là địa chỉ HTTP(S) hợp lệ")
-        semaphore = await _key_slot(self._api_key, self._key_concurrency)
-        async with semaphore:
-            return await self._parse_opendatalab_url(
-                source_url,
-                filename,
-                state=state,
-                on_state=on_state,
-            )
-
-    async def _parse_opendatalab_url(
-        self,
-        source_url: str,
-        filename: str,
-        *,
-        state: dict[str, Any] | None = None,
-        on_state: StateCallback | None = None,
-    ) -> str:
-        state = dict(state or {})
-        task_id = state.get("task_id")
-        if not isinstance(task_id, str) or not task_id.strip():
-            await _wait_for_submit_slot(self._api_key)
-            is_ocr = self._parse_method == "ocr" or self._mode == "precision"
-            payload = {
-                "url": source_url,
-                "model_version": self._model_version,
-                "is_ocr": is_ocr,
-                "enable_table": self._enable_table,
-                "enable_formula": self._enable_formula,
-                "language": self._language,
-            }
-            try:
-                async with httpx.AsyncClient(timeout=self._request_timeout) as client:
-                    response = await client.post(
-                        self._url("/api/v4/extract/task"),
-                        headers=self._headers,
-                        json=payload,
-                    )
-            except httpx.TimeoutException as exc:
-                raise ServiceUnavailableError(
-                    f"MinerU direct URL timeout source={source_url}"
-                ) from exc
-            except httpx.RequestError as exc:
-                raise ServiceUnavailableError(
-                    f"Không thể kết nối MinerU direct URL source={source_url}: {exc}"
-                ) from exc
-
-            response = self._checked(response, "Đăng ký MinerU direct URL")
-            response_payload = _response_payload(response)
-            task_id = _find_task_id(response_payload)
-            if not task_id:
-                raise UpstreamError(
-                    f"MinerU direct URL không trả về task_id source={source_url}: {response_payload}"
-                )
-            state["task_id"] = task_id
-            state["source_url"] = source_url
-            state["filename"] = filename
-            state["mineru_mode"] = "direct"
-            if on_state:
-                await on_state(dict(state))
-
-        markdown = await self._poll_opendatalab_url(
-            str(task_id), source_url=source_url, on_state=on_state
-        )
-        if on_state:
-            await on_state({**state, "status": "done", "mineru_mode": "direct"})
-        return markdown
-
-    async def _poll_opendatalab_url(
-        self,
-        task_id: str,
-        *,
-        source_url: str,
-        on_state: StateCallback | None = None,
-    ) -> str:
-        deadline = time.monotonic() + self._poll_timeout
-        task_url_path = f"/api/v4/extract/task/{task_id}"
-        last_status: str | None = None
-        started_at = time.monotonic()
-        while True:
-            try:
-                async with httpx.AsyncClient(timeout=self._request_timeout) as client:
-                    response = await client.get(self._url(task_url_path), headers=self._headers)
-            except httpx.TimeoutException as exc:
-                raise ServiceUnavailableError(
-                    f"MinerU direct URL poll timeout task={task_id} source={source_url}"
-                ) from exc
-            except httpx.RequestError as exc:
-                raise ServiceUnavailableError(
-                    f"Không thể poll MinerU direct URL task={task_id}: {exc}"
-                ) from exc
-
-            response = self._checked(response, "Poll MinerU direct URL")
-            payload = _response_payload(response)
-            data = payload.get("data") if isinstance(payload, dict) and isinstance(payload.get("data"), dict) else payload
-            if isinstance(data, dict):
-                status = str(data.get("state") or data.get("status") or "").strip().lower()
-                if status and status != last_status:
-                    last_status = status
-                    if on_state:
-                        await on_state(
-                            {
-                                "task_id": task_id,
-                                "source_url": source_url,
-                                "provider_state": status,
-                                "poll_elapsed_seconds": round(time.monotonic() - started_at, 1),
-                            }
-                        )
-                if status in _DONE_STATES:
-                    result_url = _find_http_url(data, preferred=_RESULT_URL_KEYS)
-                    if result_url:
-                        return await self._download_markdown(result_url)
-                    for key in _MARKDOWN_KEYS:
-                        if isinstance(data.get(key), str) and data[key].strip():
-                            return _require_markdown(data[key])
-                    raise UpstreamError(
-                        f"MinerU direct URL báo hoàn tất nhưng thiếu kết quả task={task_id}"
-                    )
-                if status in _FAILED_STATES:
-                    error = data.get("err_msg") or data.get("error") or data.get("message") or "Lỗi không xác định"
-                    raise UpstreamError(
-                        f"MinerU direct URL phân tích thất bại task={task_id} source={source_url}: {error}"
-                    )
-
-            if time.monotonic() >= deadline:
-                raise ServiceUnavailableError(
-                    f"MinerU direct URL chờ phân tích hết thời gian task={task_id} source={source_url}"
-                )
-            await asyncio.sleep(self._poll_interval)
-
-    async def _parse_opendatalab(
-        self,
-        path: str,
-        *,
-        state: dict[str, Any] | None = None,
-        on_state: StateCallback | None = None,
-    ) -> str:
-        state = dict(state or {})
-        batch_id = state.get("batch_id") or state.get("task_id")
-        if not isinstance(batch_id, str) or not batch_id.strip():
-            batch_id = await self._upload_and_create_batch_opendatalab(path)
-            state["task_id"] = batch_id
-            state["batch_id"] = batch_id
-            if on_state:
-                await on_state(dict(state))
-
-        markdown = await self._poll_opendatalab(str(batch_id))
-        if on_state:
-            await on_state({**state, "status": "done"})
-        return markdown
-
-    async def _upload_and_create_batch_opendatalab(self, path: str) -> str:
+async def download_mineru_result_markdown(
+    url: str,
+    *,
+    request_timeout: float,
+    result_limit: int,
+) -> str:
+    """Stream MinerU `full_zip_url` (or Markdown payload) to a temporary disk file in 64 KB
+    chunks without forwarding API credentials, avoiding holding large image-heavy ZIPs in RAM.
+    """
+    temp_path: str | None = None
+    try:
         try:
-            if not os.path.isfile(path):
-                raise UpstreamError(f"Không tìm thấy file PDF: {path}")
-            if os.path.getsize(path) > 200 * 1024 * 1024:
-                raise ValidationError("File PDF vượt quá giới hạn 200MB của OpenDataLab MinerU")
-        except OSError as exc:
-            raise UpstreamError(f"Không thể đọc PDF cần phân tích: {exc}") from exc
-
-        file_name = os.path.basename(path)
-        data_id = f"doc_{hashlib.md5(path.encode()).hexdigest()[:8]}"
-        is_ocr = self._parse_method == "ocr" or self._mode == "precision"
-
-        file_config = {
-            "name": file_name,
-            "data_id": data_id,
-            "is_ocr": is_ocr,
-            "language": self._language,
-            "enable_table": self._enable_table,
-            "enable_formula": self._enable_formula,
-            "layout_model": self._layout_model,
-            "model_version": self._model_version,
-        }
-        payload = {
-            "files": [file_config],
-            "is_ocr": is_ocr,
-            "language": self._language,
-            "enable_table": self._enable_table,
-            "model_version": self._model_version,
-            "version": "v4",
-        }
-
-        batch_url_path = "/api/v4/file-urls/batch" if not self._base_url.endswith("/api/v4") else "/file-urls/batch"
-        try:
-            await _wait_for_submit_slot(self._api_key)
-            async with httpx.AsyncClient(timeout=self._request_timeout) as client:
-                resp = await client.post(
-                    self._url(batch_url_path),
-                    headers=self._headers,
-                    json=payload,
-                )
-        except httpx.TimeoutException as exc:
-            raise ServiceUnavailableError("Đăng ký batch tải file lên MinerU hết thời gian") from exc
-        except httpx.RequestError as exc:
-            raise ServiceUnavailableError(f"Không thể kết nối tới OpenDataLab MinerU: {exc}") from exc
-
-        resp = self._checked(resp, "Đăng ký batch OpenDataLab")
-        res_data = _response_payload(resp)
-        if isinstance(res_data, dict) and res_data.get("code") not in (0, 200, None):
-            raise UpstreamError(f"MinerU từ chối đăng ký batch: {res_data.get('msg')}")
-
-        data_obj = res_data.get("data") if isinstance(res_data, dict) and isinstance(res_data.get("data"), dict) else res_data
-        batch_id = data_obj.get("batch_id") if isinstance(data_obj, dict) else None
-        file_urls = data_obj.get("file_urls") if isinstance(data_obj, dict) else None
-        if not batch_id or not file_urls or not isinstance(file_urls, list) or not file_urls[0]:
-            raise UpstreamError(f"OpenDataLab không trả về batch_id hoặc OSS Presigned URL hợp lệ: {res_data}")
-
-        upload_url = file_urls[0]
-
-        async def file_chunks() -> AsyncIterator[bytes]:
-            with open(path, "rb") as source:
-                while True:
-                    chunk = source.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    yield chunk
-
-        try:
-            async with httpx.AsyncClient(timeout=self._request_timeout) as client:
-                put_resp = await client.put(upload_url, content=file_chunks())
-                if put_resp.status_code not in (200, 201):
-                    raise UpstreamError(f"Upload PDF lên OSS MinerU thất bại (HTTP {put_resp.status_code})")
-        except OSError as exc:
-            raise UpstreamError(f"Không thể đọc file PDF để upload: {exc}") from exc
-        except httpx.TimeoutException as exc:
-            raise ServiceUnavailableError("Upload PDF lên OSS MinerU hết thời gian") from exc
-        except httpx.RequestError as exc:
-            raise ServiceUnavailableError(f"Không thể kết nối tới OSS MinerU: {exc}") from exc
-
-        return str(batch_id)
-
-    async def _poll_opendatalab(self, batch_id: str) -> str:
-        deadline = time.monotonic() + self._poll_timeout
-        results_url_path = f"/api/v4/extract-results/batch/{batch_id}" if not self._base_url.endswith("/api/v4") else f"/extract-results/batch/{batch_id}"
-        while True:
-            try:
-                async with httpx.AsyncClient(timeout=self._request_timeout) as client:
-                    resp = await client.get(
-                        self._url(results_url_path),
-                        headers=self._headers,
-                    )
-            except httpx.TimeoutException as exc:
-                raise ServiceUnavailableError("Truy vấn trạng thái phân tích MinerU hết thời gian") from exc
-            except httpx.RequestError as exc:
-                raise ServiceUnavailableError(f"Không thể truy vấn trạng thái MinerU: {exc}") from exc
-
-            resp = self._checked(resp, "Truy vấn kết quả OpenDataLab")
-            res_data = _response_payload(resp)
-            data_obj = res_data.get("data") if isinstance(res_data, dict) and isinstance(res_data.get("data"), dict) else res_data
-            extract_results = data_obj.get("extract_result") if isinstance(data_obj, dict) else None
-
-            if isinstance(extract_results, list) and extract_results:
-                first_item = extract_results[0]
-                state = first_item.get("state", "").lower()
-                if state == "done":
-                    full_zip_url = first_item.get("full_zip_url")
-                    if not full_zip_url:
-                        raise UpstreamError("MinerU báo done nhưng không có full_zip_url")
-                    return await self._download_markdown(full_zip_url)
-                if state in {"failed", "error"}:
-                    err_msg = first_item.get("err_msg") or first_item.get("message") or "Lỗi xử lý file PDF"
-                    raise UpstreamError(f"MinerU phân tích thất bại: {err_msg}")
-
-            if time.monotonic() >= deadline:
-                raise ServiceUnavailableError(
-                    f"MinerU chờ phân tích hết thời gian (batch {batch_id}), nền sẽ tiếp tục thử lại"
-                )
-            await asyncio.sleep(self._poll_interval)
-
-    async def _parse_302(
-        self,
-        path: str,
-        *,
-        state: dict[str, Any] | None = None,
-        on_state: StateCallback | None = None,
-    ) -> str:
-        state = dict(state or {})
-        upload_url = state.get("upload_url")
-        if not isinstance(upload_url, str) or not _is_http_url(upload_url):
-            upload_url = await self._upload(path)
-            state["upload_url"] = upload_url
-            if on_state:
-                await on_state(dict(state))
-
-        task_id = state.get("task_id")
-        if not isinstance(task_id, str) or not task_id.strip():
-            created_kind, created_value = await self._create_task(upload_url)
-            if created_kind == "url":
-                markdown = await self._download_markdown(created_value)
-                if on_state:
-                    await on_state({**state, "status": "done"})
-                return markdown
-            if created_kind == "markdown":
-                if on_state:
-                    await on_state({**state, "status": "done"})
-                return _require_markdown(created_value)
-            task_id = created_value
-            state["task_id"] = task_id
-            if on_state:
-                await on_state(dict(state))
-
-        markdown = await self._poll(str(task_id))
-        if on_state:
-            await on_state({**state, "status": "done"})
-        return markdown
-
-    async def _upload(self, path: str) -> str:
-        try:
-            if os.path.getsize(path) > 50 * 1024 * 1024:
-                raise ValidationError("Giao diện upload file của 302 giới hạn PDF không quá 50MB")
-        except OSError as exc:
-            raise UpstreamError(f"Không thể đọc PDF cần phân tích: {exc}") from exc
-        try:
-            async with httpx.AsyncClient(timeout=self._request_timeout) as client:
-                with open(path, "rb") as source:
-                    response = await client.post(
-                        self._url("/302/upload-file"),
-                        headers=self._headers,
-                        files={"file": (os.path.basename(path), source, "application/pdf")},
-                    )
-        except OSError as exc:
-            raise UpstreamError(f"Không thể đọc PDF cần phân tích: {exc}") from exc
-        except httpx.TimeoutException as exc:
-            raise ServiceUnavailableError("Upload PDF lên 302 hết thời gian") from exc
-        except httpx.RequestError as exc:
-            raise ServiceUnavailableError(f"Không thể upload PDF lên 302: {exc}") from exc
-        response = self._checked(response, "Upload PDF")
-        payload = _response_payload(response)
-        upload_url = _find_http_url(
-            payload, preferred=("data", "file_url", "url", "download_url")
-        )
-        if not upload_url:
-            raise UpstreamError("Upload file 302 thành công, nhưng trong phản hồi không có URL file")
-        return upload_url
-
-    async def _create_task(
-        self, upload_url: str
-    ) -> tuple[Literal["task", "url", "markdown"], str]:
-        response = await self._api_request(
-            "POST",
-            "/302/v2/mineru/task",
-            json={
-                "pdf_url": upload_url,
-                "parse_method": self._parse_method,
-                "version": self._version,
-            },
-        )
-        payload = _response_payload(response)
-        if isinstance(payload, str):
-            kind, value = _interpret_poll_payload(payload, "")
-            if kind in {"url", "markdown"}:
-                return kind, value
-            if kind == "failed":
-                raise UpstreamError(f"MinerU tạo task thất bại: {value}")
-        task_id = _find_task_id(payload)
-        if task_id:
-            return "task", task_id
-        kind, value = _interpret_poll_payload(payload, "")
-        if kind in {"url", "markdown"}:
-            return kind, value
-        if kind == "failed":
-            raise UpstreamError(f"MinerU tạo task thất bại: {value}")
-        raise UpstreamError("MinerU đã nhận yêu cầu, nhưng trong phản hồi không có task ID")
-
-    async def _poll(self, task_id: str) -> str:
-        deadline = time.monotonic() + self._poll_timeout
-        while True:
-            response = await self._api_request(
-                "GET", "/302/v2/mineru/task", params={"task_id": task_id}
-            )
-            kind, value = _interpret_poll_payload(_response_payload(response), task_id)
-            if kind == "markdown":
-                return _require_markdown(value)
-            if kind == "url":
-                return await self._download_markdown(value)
-            if kind == "failed":
-                raise UpstreamError(f"MinerU phân tích thất bại: {value}")
-            if time.monotonic() >= deadline:
-                raise ServiceUnavailableError(
-                    f"MinerU chờ phân tích hết thời gian (task {task_id}), nền sẽ tiếp tục thử lại"
-                )
-            await asyncio.sleep(self._poll_interval)
-
-    async def _download_markdown(self, url: str) -> str:
-        # Địa chỉ kết quả thường nằm ở file.302.ai; không chuyển tiếp API Key tới địa chỉ tải của bên thứ ba.
-        try:
-            async with httpx.AsyncClient(timeout=self._request_timeout) as client:
+            async with httpx.AsyncClient(timeout=request_timeout) as client:
                 current_url = url
-                for redirect_count in range(6):
-                    await self._validate_result_url(
-                        current_url, require_official_host=redirect_count == 0
-                    )
+                for _redirect_count in range(6):
+                    await validate_public_result_url(current_url)
                     async with client.stream(
                         "GET", current_url, follow_redirects=False
                     ) as response:
                         if response.is_redirect and response.headers.get("location"):
                             current_url = urljoin(current_url, response.headers["location"])
                             continue
-                        content = await self._read_result_response(response)
+                        temp_path, magic_prefix = await _stream_result_to_temp_file(
+                            response, result_limit=result_limit
+                        )
                         content_type = response.headers.get("content-type", "").lower()
                         response_url = str(response.url)
                         encoding = response.encoding or "utf-8"
                         break
                 else:
-                    raise UpstreamError("Tải kết quả MinerU bị redirect quá nhiều lần")
+                    raise UpstreamError("MinerU Official 结果下载重定向次数过多")
         except httpx.TimeoutException as exc:
-            raise ServiceUnavailableError("Tải kết quả phân tích MinerU hết thời gian") from exc
+            raise ServiceUnavailableError("下载 MinerU Official 解析结果超时") from exc
         except httpx.RequestError as exc:
-            raise ServiceUnavailableError(f"Không thể tải kết quả phân tích MinerU: {exc}") from exc
+            raise ServiceUnavailableError(f"无法下载 MinerU Official 解析结果：{exc}") from exc
 
+        assert temp_path is not None
         suffix = os.path.splitext(urlparse(response_url).path)[1].lower()
-        if content.startswith(b"PK\x03\x04") or suffix == ".zip" or "zip" in content_type:
-            return _markdown_from_zip(content, self._result_limit)
-
-        text = content.decode(encoding, errors="replace")
-        if "json" in content_type or suffix == ".json":
-            try:
-                kind, value = _interpret_poll_payload(json.loads(text), "")
-            except json.JSONDecodeError:
-                pass
-            else:
-                if kind == "markdown":
-                    return _require_markdown(value)
-                if kind == "url" and value != url:
-                    return await self._download_markdown(value)
-                if kind == "failed":
-                    raise UpstreamError(f"MinerU phân tích thất bại: {value}")
-        return _require_markdown(text)
-
-    async def _read_result_response(self, response: httpx.Response) -> bytes:
-        if not response.is_success:
-            error_body = bytearray()
-            async for chunk in response.aiter_bytes():
-                error_body.extend(chunk)
-                if len(error_body) >= min(self._result_limit, 64 * 1024):
-                    break
-            self._raise_status(
-                response.status_code,
-                "Tải kết quả phân tích",
-                _error_message_bytes(bytes(error_body)),
+        if magic_prefix.startswith(b"PK\x03\x04") or suffix == ".zip" or "zip" in content_type:
+            return await asyncio.to_thread(
+                _markdown_from_zip_path, temp_path, result_limit
             )
-        declared = response.headers.get("content-length")
-        if declared and declared.isdigit() and int(declared) > self._result_limit:
-            raise UpstreamError("Kết quả phân tích MinerU vượt kích thước cho phép")
-        chunks = bytearray()
+
+        raw_bytes = await asyncio.to_thread(_read_file_bounded, temp_path, result_limit)
+    finally:
+        if temp_path:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+    text = raw_bytes.decode(encoding, errors="replace")
+    return _require_markdown(text)
+
+
+async def _stream_result_to_temp_file(
+    response: httpx.Response,
+    *,
+    result_limit: int,
+) -> tuple[str, bytes]:
+    if not response.is_success:
+        error_body = bytearray()
         async for chunk in response.aiter_bytes():
-            chunks.extend(chunk)
-            if len(chunks) > self._result_limit:
-                raise UpstreamError("Kết quả phân tích MinerU vượt kích thước cho phép")
-        return bytes(chunks)
-
-    async def _validate_result_url(self, url: str, *, require_official_host: bool) -> None:
-        parsed = urlparse(url)
-        host = (parsed.hostname or "").lower().rstrip(".")
-        if parsed.scheme not in {"http", "https"} or not host or parsed.username or parsed.password:
-            raise UpstreamError("MinerU trả về URL kết quả không an toàn")
-        try:
-            port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        except ValueError as exc:
-            raise UpstreamError("MinerU trả về URL kết quả không an toàn") from exc
-
-        base_host = (urlparse(self._base_url).hostname or "").lower().rstrip(".")
-        official_base = base_host in {"api.302.ai", "api.302ai.cn"}
-        official_result = host in {"302.ai", "302ai.cn"} or host.endswith(
-            (".302.ai", ".302ai.cn")
+            error_body.extend(chunk)
+            if len(error_body) >= min(result_limit, 64 * 1024):
+                break
+        raise_mineru_http_status(
+            response.status_code,
+            "下载解析结果",
+            _error_message_bytes(bytes(error_body)),
         )
-        if require_official_host and official_base:
-            if parsed.scheme != "https" or not official_result:
-                raise UpstreamError("302 MinerU trả về URL kết quả không đáng tin cậy")
-            return
-        await _assert_public_host(host, port)
+    declared = response.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > result_limit:
+        raise UpstreamError("MinerU Official 解析结果超过允许大小")
 
-    async def _api_request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+    fd, temp_path = tempfile.mkstemp(prefix=".mineru-res-", suffix=".bin")
+    out_file = os.fdopen(fd, "wb")
+    total = 0
+    magic = bytearray()
+    try:
+        async for chunk in response.aiter_bytes(64 * 1024):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > result_limit:
+                raise UpstreamError("MinerU Official 解析结果超过允许大小")
+            if len(magic) < 16:
+                needed = 16 - len(magic)
+                magic.extend(chunk[:needed])
+            await asyncio.to_thread(out_file.write, chunk)
+        await asyncio.to_thread(out_file.close)
+    except Exception:
         try:
-            async with httpx.AsyncClient(timeout=self._request_timeout) as client:
-                response = await client.request(
-                    method, self._url(path), headers=self._headers, **kwargs
-                )
-        except httpx.TimeoutException as exc:
-            raise ServiceUnavailableError("Yêu cầu MinerU hết thời gian") from exc
-        except httpx.RequestError as exc:
-            raise ServiceUnavailableError(f"Không thể kết nối MinerU: {exc}") from exc
-        return self._checked(response, "Gọi MinerU")
+            out_file.close()
+        except OSError:
+            pass
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+        raise
+    return temp_path, bytes(magic)
 
-    @staticmethod
-    def _checked(response: httpx.Response, action: str) -> httpx.Response:
-        if response.is_success:
-            return response
-        message = _error_message(response)
-        MinerUClient._raise_status(response.status_code, action, message)
 
-    @staticmethod
-    def _raise_status(status_code: int, action: str, message: str) -> NoReturn:
-        if status_code in {401, 403}:
-            raise ConfigurationError(f"{action} xác thực thất bại, vui lòng kiểm tra MinerU API Key")
-        if status_code == 429 or status_code >= 500:
-            raise ServiceUnavailableError(f"{action} tạm không khả dụng ({status_code}): {message}")
-        raise UpstreamError(f"{action} thất bại ({status_code}): {message}")
+async def validate_public_result_url(url: str) -> None:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if parsed.scheme not in {"http", "https"} or not host or parsed.username or parsed.password:
+        raise UpstreamError("MinerU Official 返回了不安全的结果 URL")
+    try:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError as exc:
+        raise UpstreamError("MinerU Official 返回了不安全的结果 URL") from exc
+    await _assert_public_host(host, port)
+
+
+def check_mineru_response(response: httpx.Response, action: str) -> httpx.Response:
+    if response.is_success:
+        return response
+    message = _error_message(response)
+    raise_mineru_http_status(response.status_code, action, message)
+
+
+def raise_mineru_http_status(status_code: int, action: str, message: str) -> NoReturn:
+    if status_code in {401, 403}:
+        raise ConfigurationError(
+            f"{action}鉴权失败，请检查 SAG_MINERU_OFFICIAL_API_TOKEN"
+        )
+    if status_code == 429 or status_code >= 500:
+        raise ServiceUnavailableError(f"{action}暂时不可用（{status_code}）：{message}")
+    raise UpstreamError(f"{action}失败（{status_code}）：{message}")
+
+
+def _read_file_bounded(path: str, limit: int) -> bytes:
+    with open(path, "rb") as f:
+        data = f.read(limit + 1)
+    if len(data) > limit:
+        raise UpstreamError("MinerU Official 解析结果超过允许大小")
+    return data
 
 
 def _response_payload(response: httpx.Response) -> Any:
@@ -702,140 +217,6 @@ def _unwrap_json(payload: Any) -> Any:
             break
         payload = decoded
     return payload
-
-
-def _find_task_id(payload: Any) -> str | None:
-    payload = _unwrap_json(payload)
-    if isinstance(payload, str):
-        value = payload.strip()
-        return value if value and not _is_http_url(value) and not _looks_like_markdown(value) else None
-    if isinstance(payload, dict):
-        for key in ("task_id", "taskId", "request_id", "id"):
-            value = payload.get(key)
-            if isinstance(value, (str, int)) and str(value).strip():
-                return str(value).strip()
-        for key in ("data", "result", "task"):
-            if key in payload:
-                found = _find_task_id(payload[key])
-                if found:
-                    return found
-    return None
-
-
-def _interpret_poll_payload(
-    payload: Any, task_id: str
-) -> tuple[Literal["pending", "failed", "url", "markdown"], str]:
-    payload = _unwrap_json(payload)
-    if isinstance(payload, str):
-        value = payload.strip()
-        lower = value.lower().replace("-", "_").replace(" ", "_")
-        if _is_http_url(value):
-            return "url", value
-        if lower in _PENDING_STATES or value == task_id:
-            return "pending", value
-        if lower in _FAILED_STATES or any(
-            token in lower for token in ("failed", "error", "lỗi")
-        ):
-            return "failed", value or "Lỗi không xác định"
-        if re.fullmatch(r"(?:A\d{4}|-\d{5})", value, flags=re.IGNORECASE):
-            return "failed", f"Mã lỗi {value}"
-        if _looks_like_markdown(value):
-            return "markdown", value
-        return "pending", value
-
-    if isinstance(payload, dict):
-        status = _find_nested_string(
-            payload, ("status", "state", "task_status", "taskState")
-        )
-        normalized = (status or "").lower().replace("-", "_").replace(" ", "_")
-        code = payload.get("code")
-        if code is not None and str(code).lower() not in {"0", "200", "ok", "success"}:
-            message = _find_error_message(payload)
-            return "failed", message or f"Mã lỗi {code}"
-        if normalized in _FAILED_STATES:
-            error = _find_error_message(payload)
-            return "failed", error or status or "Lỗi không xác định"
-        if normalized in _PENDING_STATES:
-            return "pending", status or "pending"
-
-        url = _find_http_url(payload, preferred=_RESULT_URL_KEYS)
-        if not url and normalized in _DONE_STATES:
-            url = _find_http_url(payload, preferred=("url",))
-        if not url and not status:
-            url = _url_from_result_wrapper(payload)
-        if url:
-            return "url", url
-        markdown = _find_markdown(payload)
-        if markdown:
-            return "markdown", markdown
-
-        if normalized in _DONE_STATES:
-            return "failed", "Task đã hoàn thành, nhưng trong phản hồi không có Markdown hoặc địa chỉ tải"
-        return "pending", status or "pending"
-
-    if isinstance(payload, list):
-        for item in payload:
-            kind, value = _interpret_poll_payload(item, task_id)
-            if kind != "pending":
-                return kind, value
-    return "pending", "pending"
-
-
-def _find_http_url(payload: Any, *, preferred: tuple[str, ...]) -> str | None:
-    payload = _unwrap_json(payload)
-    if isinstance(payload, str):
-        value = payload.strip()
-        return value if _is_http_url(value) else None
-    if isinstance(payload, dict):
-        for key in preferred:
-            if key in payload:
-                found = _find_http_url(payload[key], preferred=preferred)
-                if found:
-                    return found
-        # Tiếp tục vào object/array tìm khóa đích lồng nhau, nhưng không nhầm
-        # các chuỗi tùy ý như pdf_url đầu vào thành kết quả phân tích.
-        for value in payload.values():
-            if isinstance(value, (dict, list)):
-                found = _find_http_url(value, preferred=preferred)
-                if found:
-                    return found
-    if isinstance(payload, list):
-        for value in payload:
-            found = _find_http_url(value, preferred=preferred)
-            if found:
-                return found
-    return None
-
-
-def _find_markdown(payload: Any) -> str | None:
-    if isinstance(payload, dict):
-        for key in _MARKDOWN_KEYS:
-            value = _unwrap_json(payload.get(key))
-            if isinstance(value, str) and _looks_like_markdown(value):
-                return value.strip()
-        for value in payload.values():
-            if isinstance(value, (dict, list)):
-                found = _find_markdown(value)
-                if found:
-                    return found
-    elif isinstance(payload, list):
-        for value in payload:
-            found = _find_markdown(value)
-            if found:
-                return found
-    return None
-
-
-def _url_from_result_wrapper(payload: dict[str, Any]) -> str | None:
-    for key in ("data", "result", "output"):
-        value = _unwrap_json(payload.get(key))
-        if isinstance(value, str) and _is_http_url(value.strip()):
-            return value.strip()
-        if isinstance(value, dict):
-            nested = _url_from_result_wrapper(value)
-            if nested:
-                return nested
-    return None
 
 
 def _find_error_message(payload: Any) -> str | None:
@@ -864,39 +245,13 @@ def _find_key_string(payload: Any, key: str) -> str | None:
     return None
 
 
-def _find_nested_string(payload: Any, keys: tuple[str, ...]) -> str | None:
-    if isinstance(payload, dict):
-        for key in keys:
-            value = payload.get(key)
-            if isinstance(value, (str, int, float)) and str(value).strip():
-                return str(value).strip()
-        for value in payload.values():
-            if isinstance(value, (dict, list)):
-                found = _find_nested_string(value, keys)
-                if found:
-                    return found
-    elif isinstance(payload, list):
-        for value in payload:
-            found = _find_nested_string(value, keys)
-            if found:
-                return found
-    return None
-
-
-def _looks_like_markdown(value: str) -> bool:
-    text = value.strip()
-    return bool(text) and ("\n" in text or text.startswith(("# ", "## ", "---\n")))
-
-
-def _is_http_url(value: str) -> bool:
-    parsed = urlparse(value)
-    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+_FAKE_IP_POOL = ipaddress.ip_network("198.18.0.0/15")
 
 
 async def _assert_public_host(host: str, port: int) -> None:
-    """Từ chối loopback, mạng riêng, link-local và địa chỉ dành riêng, giảm rủi ro SSRF khi tải kết quả."""
+    """Reject loopback, private, link-local, and reserved addresses to prevent SSRF."""
     if host == "localhost" or host.endswith((".localhost", ".local", ".internal")):
-        raise UpstreamError("URL kết quả MinerU trỏ tới địa chỉ nội bộ hoặc mạng nội bộ")
+        raise UpstreamError("MinerU 结果 URL 指向了本地或内网地址")
     try:
         literal = ipaddress.ip_address(host)
     except ValueError:
@@ -905,46 +260,252 @@ async def _assert_public_host(host: str, port: int) -> None:
                 socket.getaddrinfo, host, port, type=socket.SOCK_STREAM
             )
         except OSError as exc:
-            raise ServiceUnavailableError(f"Không thể phân giải tên miền kết quả MinerU: {host}") from exc
+            raise ServiceUnavailableError(f"无法解析 MinerU 结果域名：{host}") from exc
         addresses = {record[4][0] for record in records}
         if not addresses:
-            raise ServiceUnavailableError(f"Không thể phân giải tên miền kết quả MinerU: {host}") from None
+            raise ServiceUnavailableError(f"无法解析 MinerU 结果域名：{host}") from None
         resolved = [ipaddress.ip_address(address) for address in addresses]
     else:
         resolved = [literal]
-    if any(not address.is_global for address in resolved):
-        raise UpstreamError("URL kết quả MinerU trỏ tới địa chỉ nội bộ hoặc mạng nội bộ")
+    if any(not address.is_global and address not in _FAKE_IP_POOL for address in resolved):
+        raise UpstreamError("MinerU 结果 URL 指向了本地或内网地址")
 
 
 def _require_markdown(value: str) -> str:
     markdown = value.strip()
     if not markdown:
-        raise UpstreamError("Kết quả phân tích tài liệu rỗng")
+        raise UpstreamError("文档解析结果为空")
     return markdown + "\n"
+
+
+def _markdown_from_zip_path(zip_path: str, size_limit: int) -> str:
+    try:
+        with zipfile.ZipFile(zip_path, "r") as archive:
+            return _markdown_from_zip_archive(archive, size_limit)
+    except zipfile.BadZipFile as exc:
+        raise UpstreamError("MinerU 返回的结果压缩包已损坏") from exc
 
 
 def _markdown_from_zip(content: bytes, size_limit: int) -> str:
     try:
         with zipfile.ZipFile(io.BytesIO(content)) as archive:
-            candidates = [
-                info
-                for info in archive.infolist()
-                if not info.is_dir() and info.filename.lower().endswith((".md", ".markdown"))
-            ]
-            if not candidates:
-                raise UpstreamError("Trong file zip kết quả MinerU không có file Markdown")
-            candidates.sort(
-                key=lambda info: (
-                    os.path.basename(info.filename).lower() not in {"full.md", "full.markdown"},
-                    -info.file_size,
-                )
-            )
-            chosen = candidates[0]
-            if chosen.file_size > size_limit:
-                raise UpstreamError("Kết quả Markdown của MinerU vượt kích thước cho phép")
-            return _require_markdown(archive.read(chosen).decode("utf-8", errors="replace"))
+            return _markdown_from_zip_archive(archive, size_limit)
     except zipfile.BadZipFile as exc:
-        raise UpstreamError("File zip kết quả MinerU trả về đã hỏng") from exc
+        raise UpstreamError("MinerU 返回的结果压缩包已损坏") from exc
+
+
+def _markdown_from_zip_archive(archive: zipfile.ZipFile, size_limit: int) -> str:
+    infos = [info for info in archive.infolist() if not info.is_dir()]
+    md_candidates = [
+        info
+        for info in infos
+        if info.filename.lower().endswith((".md", ".markdown"))
+    ]
+    content_list_candidates = [
+        info
+        for info in infos
+        if os.path.basename(info.filename).lower().endswith("content_list.json")
+        and info.file_size <= min(size_limit, 32 * 1024 * 1024)
+    ]
+    content_list_candidates.sort(
+        key=lambda info: (
+            os.path.basename(info.filename).lower() != "content_list.json",
+            -info.file_size,
+        )
+    )
+    content_list: list[Any] | None = None
+    if content_list_candidates:
+        try:
+            parsed_json = json.loads(
+                archive.read(content_list_candidates[0]).decode("utf-8", errors="replace")
+            )
+            if isinstance(parsed_json, list):
+                content_list = parsed_json
+        except (ValueError, OSError):
+            content_list = None
+
+    if md_candidates:
+        md_candidates.sort(
+            key=lambda info: (
+                os.path.basename(info.filename).lower() not in {"full.md", "full.markdown"},
+                -info.file_size,
+            )
+        )
+        chosen = md_candidates[0]
+        if chosen.file_size > size_limit:
+            raise UpstreamError("MinerU Markdown 结果超过允许大小")
+        raw_md = archive.read(chosen).decode("utf-8", errors="replace")
+        if content_list:
+            raw_md = _inject_page_markers_from_content_list(raw_md, content_list)
+        return _require_markdown(raw_md)
+
+    if content_list:
+        synthesized = _synthesize_markdown_from_content_list(content_list)
+        if synthesized.strip():
+            return _require_markdown(synthesized)
+
+    raise UpstreamError("MinerU 结果压缩包中没有 Markdown 文件")
+
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_MD_DECORATION_RE = re.compile(r"^[#>*\-\d.\s|`]+")
+
+
+def _normalize_anchor_line(text: str) -> str:
+    cleaned = _HTML_TAG_RE.sub(" ", text)
+    cleaned = html.unescape(cleaned)
+    cleaned = _MD_DECORATION_RE.sub("", cleaned.strip())
+    return " ".join(cleaned.split()).casefold()
+
+
+def _extract_item_snippets(item: dict[str, Any]) -> list[str]:
+    snippets: list[str] = []
+    for key in ("text", "table_caption", "img_caption", "table_body", "latex"):
+        val = item.get(key)
+        if isinstance(val, list):
+            val = " ".join(str(x) for x in val if x)
+        if not isinstance(val, str) or not val.strip():
+            continue
+        for raw_line in val.splitlines():
+            norm = _normalize_anchor_line(raw_line)
+            if len(norm) >= 4:
+                snippets.append(norm[:96])
+                if len(snippets) >= 3:
+                    return snippets
+    return snippets
+
+
+def _inject_page_markers_from_content_list(
+    raw_md: str, content_list: list[Any]
+) -> str:
+    """Monotonically inject `<!-- PAGE N -->` boundaries into `full.md` using MinerU's
+    0-indexed `page_idx` from `content_list.json` while preserving 100% of `full.md` text.
+    """
+    if not raw_md.strip() or "<!-- PAGE " in raw_md.upper():
+        return raw_md
+
+    page_anchors: dict[int, list[str]] = {}
+    ordered_pages: list[int] = []
+    for item in content_list:
+        if not isinstance(item, dict):
+            continue
+        raw_page = item.get("page_idx")
+        if not isinstance(raw_page, int) or raw_page < 0:
+            continue
+        page_no = raw_page + 1
+        if page_no not in page_anchors:
+            page_anchors[page_no] = []
+            ordered_pages.append(page_no)
+        if len(page_anchors[page_no]) < 8:
+            for snip in _extract_item_snippets(item):
+                if snip not in page_anchors[page_no]:
+                    page_anchors[page_no].append(snip)
+                    if len(page_anchors[page_no]) >= 8:
+                        break
+
+    if not ordered_pages:
+        return raw_md
+
+    ordered_pages = sorted(set(ordered_pages))
+    first_page = ordered_pages[0]
+    if len(ordered_pages) == 1:
+        return f"<!-- PAGE {first_page} -->\n\n{raw_md}"
+
+    md_lines = raw_md.splitlines()
+    norm_md_lines: list[str] = []
+    safe_break_line: list[bool] = []
+    in_fence = False
+    prev_is_table = False
+    html_table_depth = 0
+    html_table_open_re = re.compile(r"<table\b", re.IGNORECASE)
+    html_table_close_re = re.compile(r"</table\s*>", re.IGNORECASE)
+
+    for line in md_lines:
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            safe_break_line.append((not in_fence) and html_table_depth == 0)
+            in_fence = not in_fence
+            prev_is_table = False
+            norm_md_lines.append("")
+            continue
+        is_table_row = stripped.startswith("|") and stripped.endswith("|")
+        # Allow inserting a page marker right before the FIRST row of a Markdown/HTML table, never mid-table
+        is_safe = (not in_fence) and (html_table_depth == 0) and (not (is_table_row and prev_is_table))
+        safe_break_line.append(is_safe)
+        prev_is_table = is_table_row
+        if not in_fence:
+            opens = len(html_table_open_re.findall(line))
+            closes = len(html_table_close_re.findall(line))
+            if opens or closes:
+                html_table_depth = max(0, html_table_depth + opens - closes)
+        norm_md_lines.append(_normalize_anchor_line(line) if stripped else "")
+
+    insert_before: dict[int, list[int]] = {0: [first_page]}
+    cursor = 0
+    total_lines = len(md_lines)
+
+    for page_no in ordered_pages[1:]:
+        anchors = page_anchors.get(page_no) or []
+        matched_idx: int | None = None
+        for anchor in anchors:
+            if not anchor:
+                continue
+            for idx in range(cursor, total_lines):
+                if not safe_break_line[idx]:
+                    continue
+                target = norm_md_lines[idx]
+                if not target:
+                    continue
+                if anchor in target or (len(target) >= 12 and target in anchor):
+                    matched_idx = idx
+                    break
+            if matched_idx is not None:
+                break
+        if matched_idx is not None:
+            insert_before.setdefault(matched_idx, []).append(page_no)
+            cursor = matched_idx + 1
+
+    output_lines: list[str] = []
+    for idx, line in enumerate(md_lines):
+        for p_no in insert_before.get(idx, ()):
+            output_lines.append(f"<!-- PAGE {p_no} -->")
+            output_lines.append("")
+        output_lines.append(line)
+    return "\n".join(output_lines)
+
+
+def _synthesize_markdown_from_content_list(content_list: list[Any]) -> str:
+    parts: list[str] = []
+    current_page: int | None = None
+    for item in content_list:
+        if not isinstance(item, dict):
+            continue
+        raw_page = item.get("page_idx")
+        if isinstance(raw_page, int) and raw_page >= 0:
+            page_no = raw_page + 1
+            if page_no != current_page:
+                current_page = page_no
+                parts.append(f"<!-- PAGE {page_no} -->")
+        item_type = str(item.get("type") or "text").lower()
+        text = str(item.get("text") or "").strip()
+        if item_type == "text" and text:
+            level = item.get("text_level")
+            if isinstance(level, int) and 1 <= level <= 6:
+                parts.append(f"{'#' * level} {text}")
+            else:
+                parts.append(text)
+        elif item_type == "table":
+            caption = item.get("table_caption")
+            if isinstance(caption, list) and caption:
+                parts.append(" ".join(str(c).strip() for c in caption if c))
+            elif isinstance(caption, str) and caption.strip():
+                parts.append(caption.strip())
+            body = str(item.get("table_body") or "").strip()
+            if body:
+                parts.append(body)
+        elif text:
+            parts.append(text)
+    return "\n\n".join(p for p in parts if p)
 
 
 def _error_message(response: httpx.Response) -> str:
@@ -962,7 +523,7 @@ def _error_message(response: httpx.Response) -> str:
 def _error_message_bytes(content: bytes) -> str:
     text = content.decode("utf-8", errors="replace").strip()
     if not text:
-        return "Phản hồi rỗng"
+        return "空响应"
     try:
         payload = json.loads(text)
     except json.JSONDecodeError:

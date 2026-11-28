@@ -1,12 +1,12 @@
-"""Trừu tượng hóa Connector — giao diện pluggable của tầng thu thập.
+"""连接器抽象 —— 采集层的可插拔接口。
 
-Một "connector" chịu trách nhiệm biến nguồn thông tin bên ngoài thành file cục bộ để engine xử lý:
+一个「连接器」负责把外部信息源变成可交给引擎处理的本地文件：
 
-- **Tĩnh** (ví dụ upload file): tài liệu do người dùng đẩy trực tiếp, `supports_sync=False`.
-- **Động** (ví dụ Web / Notion / S3, mở rộng sau): triển khai `discover()` liệt kê tài liệu từ xa,
-  `fetch()` kéo về cục bộ, được task `sync_source` gọi định kỳ.
+- **静态**（如文件上传）：文档由用户直接推送，`supports_sync=False`。
+- **动态**（如 Web / Notion / S3，后续拓展）：实现 `discover()` 列举远端文档、
+  `fetch()` 拉取到本地，由 `sync_source` 任务周期性调用。
 
-Thêm connector = kế thừa `Connector` triển khai phương thức + đăng ký trong `registry`, không cần sửa logic tầng trên.
+新增连接器 = 继承 `Connector` 实现方法 + 在 `registry` 注册，无需改动上层逻辑。
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from sag_api.enums import ConnectorKind
 
 @dataclass
 class ConfigField:
-    """Mô tả mục cấu hình của connector (để frontend render form động)."""
+    """连接器配置项描述（供前端动态渲染表单）。"""
 
     key: str
     label: str
@@ -50,7 +50,7 @@ class ConnectorMeta:
 
 @dataclass
 class DiscoveredDoc:
-    """Một tài liệu từ xa được connector động phát hiện."""
+    """动态连接器发现的一篇远端文档。"""
 
     external_id: str
     filename: str
@@ -60,7 +60,7 @@ class DiscoveredDoc:
 
 @dataclass
 class LocalFile:
-    """File đã tải về cục bộ, sẵn sàng giao cho engine ingest."""
+    """已落到本地、可交给引擎 ingest 的文件。"""
 
     path: str
     filename: str
@@ -69,22 +69,22 @@ class LocalFile:
 
 
 class Connector(ABC):
-    """Lớp cơ sở của mọi connector."""
+    """所有连接器的基类。"""
 
     meta: ConnectorMeta
 
     def validate_config(self, config: dict[str, Any]) -> None:
-        """Kiểm tra cấu hình nguồn; nếu không hợp lệ sẽ ném `ValidationError`. Mặc định kiểm tra các trường bắt buộc."""
+        """校验信源配置；不合法时抛 `ValidationError`。默认校验必填项。"""
         from sag_api.core.errors import ValidationError
 
         for f in self.meta.config_fields:
             if f.required and not (config or {}).get(f.key):
-                raise ValidationError(f"Thiếu mục cấu hình bắt buộc: {f.label} ({f.key})")
+                raise ValidationError(f"缺少必填配置项：{f.label}（{f.key}）")
 
     async def discover(self, config: dict[str, Any]) -> list[DiscoveredDoc]:
-        """Liệt kê tài liệu từ xa (connector động triển khai)."""
+        """列举远端文档（动态连接器实现）。"""
         raise NotImplementedError
 
     async def fetch(self, config: dict[str, Any], doc: DiscoveredDoc) -> LocalFile:
-        """Kéo một tài liệu từ xa về cục bộ (connector động triển khai)."""
+        """把一篇远端文档拉取到本地（动态连接器实现）。"""
         raise NotImplementedError

@@ -8,13 +8,120 @@ patching ``site-packages``.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from sag_api.core.config import Settings
 
 _COMPLETION_CALL_TYPES = {"completion", "acompletion"}
 _DEEPSEEK_V4_MODELS = {"deepseek-v4-flash", "deepseek-v4-pro"}
+_DEEPINFRA_FLEX_MODELS = {
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-0731",
+    "glm-4.7-flash",
+}
+_DISABLE_THINKING_CHAT_TEMPLATE_PREFIXES = (
+    "glm-4.7-flash",
+    "glm-5.3-flash",
+    "ling-3.0-flash",
+)
+
+
+@dataclass(frozen=True)
+class CapabilityKey:
+    provider: str
+    base_url: str
+    model: str
+
+
+class StructuredOutputCapabilityCache:
+    def __init__(self) -> None:
+        self._modes: dict[CapabilityKey, str] = {}
+        self._locks: dict[CapabilityKey, asyncio.Lock] = {}
+
+    def get(self, key: CapabilityKey) -> str | None:
+        return self._modes.get(key)
+
+    def mark(self, key: CapabilityKey, mode: str) -> None:
+        self._modes[key] = mode
+
+    def probe_lock(self, key: CapabilityKey) -> asyncio.Lock:
+        lock = self._locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[key] = lock
+        return lock
+
+
+def _capability_key(request: Mapping[str, Any], settings: Settings) -> CapabilityKey:
+    model = str(request.get("model") or settings.routed_llm_model)
+    explicit_provider = request.get("custom_llm_provider")
+    provider = str(
+        explicit_provider
+        or (model.split("/", 1)[0] if "/" in model else settings.llm_provider)
+    ).casefold()
+    base_url = str(
+        request.get("api_base")
+        or request.get("base_url")
+        or settings.llm_base_url
+        or ""
+    ).rstrip("/").casefold()
+    return CapabilityKey(provider, base_url, model.casefold())
+
+
+def _json_schema_request(request: Mapping[str, Any]) -> bool:
+    response_format = request.get("response_format")
+    return (
+        isinstance(response_format, Mapping)
+        and response_format.get("type") == "json_schema"
+    )
+
+
+def _with_json_object(request: Mapping[str, Any]) -> dict[str, Any]:
+    changed = dict(request)
+    changed["response_format"] = {"type": "json_object"}
+    return changed
+
+
+def _status_code(error: Exception) -> int | None:
+    direct = getattr(error, "status_code", None)
+    response = getattr(error, "response", None)
+    value = direct if direct is not None else getattr(response, "status_code", None)
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def should_downgrade_json_schema(
+    error: Exception,
+    request: Mapping[str, Any],
+    settings: Settings,
+) -> bool:
+    if settings.llm_structured_output_mode != "auto":
+        return False
+    if not _json_schema_request(request) or _status_code(error) not in {400, 422}:
+        return False
+    summary = str(error).casefold()
+    # The request check above already proves the rejected format was
+    # ``json_schema``.  Some OpenAI-compatible gateways (including DeepSeek
+    # v4 Flash) only report that the response_format *type* is unavailable,
+    # without echoing the concrete type name.
+    names_structured_output = "json_schema" in summary or "response_format" in summary
+    unsupported = any(
+        phrase in summary
+        for phrase in (
+            "not supported",
+            "unsupported",
+            "does not support",
+            "isn't supported",
+            "not support",
+            "unavailable",
+        )
+    )
+    return names_structured_output and unsupported
 
 
 def _thinking_override(extra_body: object) -> bool | None:
@@ -39,7 +146,25 @@ def _is_openai_route(model: str, settings: Settings) -> bool:
 
 def _is_deepseek_v4(model: str) -> bool:
     model_id = model.rsplit("/", 1)[-1].casefold()
-    return model_id in _DEEPSEEK_V4_MODELS
+    return (
+        model_id in _DEEPSEEK_V4_MODELS
+        or model_id.startswith("deepseek-v4-flash")
+        or model_id.startswith("deepseek-v4-pro")
+    )
+
+
+def _is_deepinfra_base_url(base_url: str) -> bool:
+    return "deepinfra" in base_url.casefold()
+
+
+def _supports_deepinfra_flex(model: str) -> bool:
+    model_id = model.rsplit("/", 1)[-1].casefold()
+    return model_id in _DEEPINFRA_FLEX_MODELS
+
+
+def _needs_chat_template_disable_thinking(model: str) -> bool:
+    model_id = model.rsplit("/", 1)[-1].casefold()
+    return any(model_id.startswith(prefix) for prefix in _DISABLE_THINKING_CHAT_TEMPLATE_PREFIXES)
 
 
 def _with_allowed_openai_param(request: dict[str, Any], name: str) -> None:
@@ -72,18 +197,52 @@ def apply_litellm_completion_policy(
         normalized["extra_body"] = dict(settings.llm_extra_body)
 
     model = str(normalized.get("model") or settings.routed_llm_model)
+    base_url = str(
+        normalized.get("api_base")
+        or normalized.get("base_url")
+        or settings.llm_base_url
+        or ""
+    ).casefold()
+    thinking = _thinking_override(normalized.get("extra_body"))
     if _is_deepseek_v4(model):
         extra_body = dict(normalized.get("extra_body") or {})
-        extra_body["thinking"] = {"type": "disabled"}
+        if thinking is True:
+            extra_body["enable_thinking"] = True
+            template_kwargs = dict(extra_body.get("chat_template_kwargs") or {})
+            template_kwargs["enable_thinking"] = True
+            extra_body["chat_template_kwargs"] = template_kwargs
+            extra_body.pop("thinking", None)
+        else:
+            extra_body["thinking"] = {"type": "disabled"}
         normalized["extra_body"] = extra_body
 
-    thinking = _thinking_override(normalized.get("extra_body"))
-    if "reasoning_effort" not in normalized:
-        if thinking is False or (thinking is None and "qwen" in model.casefold()):
+    if thinking is None and _needs_chat_template_disable_thinking(model):
+        extra_body = dict(normalized.get("extra_body") or {})
+        template_kwargs = dict(extra_body.get("chat_template_kwargs") or {})
+        template_kwargs.setdefault("enable_thinking", False)
+        extra_body["chat_template_kwargs"] = template_kwargs
+        normalized["extra_body"] = extra_body
+
+    if _is_deepinfra_base_url(base_url) and _supports_deepinfra_flex(model):
+        extra_body = dict(normalized.get("extra_body") or {})
+        extra_body.setdefault("service_tier", "flex")
+        normalized["extra_body"] = extra_body
+
+    if thinking is False or (thinking is None and "qwen" in model.casefold()):
+        if "reasoning_effort" not in normalized:
             normalized["reasoning_effort"] = "none"
+        if "qwen" in model.casefold() and "siliconflow" in base_url:
+            extra_body = dict(normalized.get("extra_body") or {})
+            extra_body.setdefault("enable_thinking", False)
+            normalized["extra_body"] = extra_body
 
     if "reasoning_effort" in normalized and _is_openai_route(model, settings):
         _with_allowed_openai_param(normalized, "reasoning_effort")
+    if normalized.get("stream") is True:
+        if "stream_options" not in normalized:
+            normalized["stream_options"] = {"include_usage": True}
+        elif normalized["stream_options"] is None:
+            normalized.pop("stream_options", None)
     return normalized
 
 
@@ -106,6 +265,44 @@ def install_litellm_policy(settings: Settings) -> Any:
 
     callback = MuseLiteLLMPolicy()
     litellm.callbacks.append(callback)
+    original_acompletion = litellm.acompletion
+    cache = StructuredOutputCapabilityCache()
+
+    async def sag_acompletion(*args: Any, **kwargs: Any) -> Any:
+        kwargs = apply_litellm_completion_policy(settings, kwargs)
+        if settings.llm_structured_output_mode != "auto" or not _json_schema_request(
+            kwargs
+        ):
+            return await original_acompletion(*args, **kwargs)
+        key = _capability_key(kwargs, settings)
+        known = cache.get(key)
+        if known == "json_object":
+            return await original_acompletion(*args, **_with_json_object(kwargs))
+        if known == "json_schema":
+            return await original_acompletion(*args, **kwargs)
+
+        async with cache.probe_lock(key):
+            known = cache.get(key)
+            if known == "json_object":
+                return await original_acompletion(*args, **_with_json_object(kwargs))
+            if known == "json_schema":
+                return await original_acompletion(*args, **kwargs)
+            try:
+                result = await original_acompletion(*args, **kwargs)
+            except Exception as error:
+                if not should_downgrade_json_schema(error, kwargs, settings):
+                    raise
+                cache.mark(key, "json_object")
+                return await original_acompletion(
+                    *args, **_with_json_object(kwargs)
+                )
+            cache.mark(key, "json_schema")
+            return result
+
+    callback._sag_original_acompletion = original_acompletion
+    callback._sag_acompletion = sag_acompletion
+    callback._sag_structured_output_cache = cache
+    litellm.acompletion = sag_acompletion
     return callback
 
 
@@ -114,5 +311,9 @@ def uninstall_litellm_policy(callback: Any) -> None:
 
     import litellm
 
+    wrapper = getattr(callback, "_sag_acompletion", None)
+    original = getattr(callback, "_sag_original_acompletion", None)
+    if wrapper is not None and original is not None and litellm.acompletion is wrapper:
+        litellm.acompletion = original
     if callback in litellm.callbacks:
         litellm.callbacks.remove(callback)

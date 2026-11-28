@@ -825,7 +825,7 @@
         <span class="hud-text hud-text-auto">Vòng lặp Hot-Path 12 Agent tự hành khép kín (24s loop): Hạt lượng tử Quantum đang chạy qua từng Agent để kích hoạt toán học tương ứng...</span>
         <span class="hud-text hud-text-static">Chế độ xem tĩnh: Toàn bộ 12 Agent định vị theo 4 tầng thể chế phân quyền, bảo đảm tuân thủ 6 Hard Laws và vi cấu trúc HOSE.</span>
         <span class="hud-text hud-text-s1">BƯỚC 1: AGENT-01 (MARKET SURVEILLANCE) &mdash; Ước lượng Sticky HMM Regime 3 trạng thái, GJR-GARCH(1,1) &amp; CSAD bầy đàn HOSE.</span>
-        <span class="hud-text hud-text-s2">BƯỚC 2: AGENT-02 (UNIVERSE DISCOVERY) &mdash; Quét 406 mã HOSE, thanh lọc Lớp 0 Beneish M &le; -1.78 và loại bỏ rút ruột GIL.</span>
+        <span class="hud-text hud-text-s2">BƯỚC 2: AGENT-02 (UNIVERSE DISCOVERY) &mdash; Quét 406 mã HOSE, thanh lọc Lớp 0 Beneish M &le; -1.78, kiểm toán UNQUALIFIED và thanh khoản ADTV20.</span>
         <span class="hud-text hud-text-s3">BƯỚC 3: AGENT-03 (EQUITY RESEARCH) &mdash; Động cơ 6 nhân tố F1-F6 chấm điểm CSS &ge; 65.0, tuyển chọn Conviction Tier B/A/A+.</span>
         <span class="hud-text hud-text-s4">BƯỚC 4: AGENT-04 (INVESTMENT THESIS) &mdash; Hiến pháp Điều 3: Ba tín hiệu độc lập, định giá P_target = 0.5 P/E + 0.5 EV, kịch bản Pre-Mortem.</span>
         <span class="hud-text hud-text-s5">BƯỚC 5: AGENT-05 (COUNTER THESIS) &mdash; Tranh biện đối nghịch Devil's Advocate, thang điểm CTS = (Base + ML) &times; M, bẫy Bull-trap và giải chấp chéo.</span>
@@ -929,7 +929,7 @@
               <text x="14" y="52" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• 406 Mã HOSE Hard Sieve Filter</text>
               <text x="14" y="70" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Cổng Lớp 0: Beneish M-Score &le; -1.78</text>
               <text x="14" y="88" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Thanh khoản bắt buộc ADTV20 &ge; 15 tỷ VND</text>
-              <text x="14" y="106" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Đồ thị GIL chống Rút ruột vốn (No Catastrophic)</text>
+              <text x="14" y="106" font-family="Geist" font-size="11.5" font-weight="500" fill="#334155">• Kiểm toán UNQUALIFIED &amp; Trạng thái NORMAL</text>
               <rect x="14" y="114" width="302" height="14" rx="3" fill="#ffffff" opacity="0.9" />
               <text x="20" y="125" font-family="Geist Mono" font-size="9" font-weight="600" fill="#0369a1">Output: Universe Group A (Elite) &amp; Group B</text>
             </g>
@@ -1423,7 +1423,7 @@ Output: Regime Context {Target Cash %, Distribution Days, Halted Stocks}
       <div class="drawer-body">
         <div class="drawer-section">
           <h4 class="drawer-section-title">Nhiệm Vụ Nghiệp Vụ &amp; Trách Nhiệm Thể Chế</h4>
-          <p>Thực hiện nhiệm vụ người gác cổng Lớp 0 (Layer-0 Gatekeeper). Quét toàn bộ 406 mã cổ phiếu trên sàn HOSE, loại trừ vĩnh viễn các doanh nghiệp có rủi ro gian lận BCTC qua mô hình Beneish M-Score kép, thanh lọc các mã thiếu thanh khoản hoặc có nguy cơ rút ruột vốn theo đồ thị GIL.</p>
+          <p>Thực hiện nhiệm vụ người gác cổng Lớp 0 (Layer-0 Gatekeeper). Quét toàn bộ 406 mã cổ phiếu trên sàn HOSE, loại trừ vĩnh viễn các doanh nghiệp có rủi ro gian lận BCTC qua mô hình Beneish M-Score kép, thanh lọc các mã thiếu thanh khoản, trạng thái cảnh báo/kiểm soát hoặc ý kiến kiểm toán ngoại trừ.</p>
         </div>
         <div class="drawer-section">
           <h4 class="drawer-section-title">Công Thức Toán Học &amp; Giải Thuật Ngầm</h4>
@@ -1446,7 +1446,7 @@ Output: Regime Context {Target Cash %, Distribution Days, Halted Stocks}
             <li><span class="param-key">Thanh khoản tối thiểu</span><span class="param-val">ADTV20 &ge; 15,000,000,000 VND</span></li>
             <li><span class="param-key">Thời gian niêm yết</span><span class="param-val">&ge; 12 Tháng (Đảm bảo mẫu ADF)</span></li>
             <li><span class="param-key">Audit Opinion</span><span class="param-val">UNQUALIFIED (Chấp nhận toàn phần)</span></li>
-            <li><span class="param-key">Cờ Rút Ruột GIL</span><span class="param-val">GIL Flag != CATASTROPHIC</span></li>
+            <li><span class="param-key">Trạng thái giao dịch</span><span class="param-val">Trading Status == NORMAL</span></li>
           </ul>
         </div>
         <div class="drawer-section">

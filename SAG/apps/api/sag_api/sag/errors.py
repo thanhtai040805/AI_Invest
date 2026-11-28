@@ -1,4 +1,4 @@
-"""Dịch họ `SagError` của zleap-sag thành các ngoại lệ miền sag."""
+"""把 zleap-sag 的 `SagError` 家族翻译为 sag 领域异常。"""
 
 from __future__ import annotations
 
@@ -22,18 +22,18 @@ from sag_api.core.errors import (
     ValidationError,
 )
 
-try:  # jsonschema là phụ thuộc chuyển tiếp của việc kiểm tra structured-output trong zleap-sag
+try:  # jsonschema 是 zleap-sag structured-output 校验的传递依赖
     from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
-except Exception:  # noqa: BLE001 - khi thiếu phụ thuộc thì thoái lui thành sentinel không bao giờ khớp
+except Exception:  # noqa: BLE001 - 依赖缺失时退化为不可能匹配的哨兵
     JsonSchemaValidationError = ()  # type: ignore[assignment]
 
 
 @contextmanager
 def map_sag_errors(*, stage: ErrorStage = ErrorStage.UNKNOWN):
-    """Ngoại lệ engine xảy ra trong context này sẽ được dịch thành ApiError kèm layer/stage.
+    """在此上下文内发生的引擎异常会被翻译成带 layer/stage 的 ApiError。
 
-    ``stage`` do phía gọi truyền vào theo khâu của chuỗi xử lý hiện tại (ví dụ process_document chủ yếu bao phủ
-    extract, search bao phủ retrieve), khiến lỗi được dịch mang dấu khâu chính xác.
+    ``stage`` 由调用方按当前链路环节传入（如 process_document 主要覆盖
+    extract，search 覆盖 retrieve），使翻译出的错误携带准确的环节标记。
     """
     try:
         yield
@@ -44,20 +44,25 @@ def map_sag_errors(*, stage: ErrorStage = ErrorStage.UNKNOWN):
     except InvalidInputError as e:
         raise ValidationError(str(e), layer=ErrorLayer.ENGINE, stage=stage) from e
     except RetryableError as e:
-        # Giới hạn tốc độ / hết thời gian / upstream tạm không khả dụng —— có thể thử lại
+        # 限流 / 超时 / 上游暂不可用 —— 可重试
         raise ServiceUnavailableError(str(e), layer=ErrorLayer.ENGINE, stage=stage) from e
     except NonRetryableError as e:
         raise ValidationError(str(e), layer=ErrorLayer.ENGINE, stage=stage) from e
     except JsonSchemaValidationError as e:  # type: ignore[misc]
-        # Kiểm tra schema structured-output thất bại (như minItems của references):
-        # loại này không thuộc họ SagError, trước đây từng lọt ra thành Exception trần. Gốc là
-        # mô hình không xuất theo schema → xếp vào lớp LLM, khâu kế thừa stage phía gọi truyền vào.
+        # structured-output schema 校验失败（如 references 的 minItems）：
+        # 这类不属于 SagError 家族，历史上会漏出为裸 Exception。根子在
+        # 模型没按 schema 输出 → 归到 LLM 层，环节沿用调用方传入的 stage。
         message = getattr(e, "message", None) or str(e)
         raise ValidationError(
-            f"Đầu ra mô hình không khớp schema structured-output: {message}",
+            f"模型输出不符合结构化 schema：{message}",
             code=ErrorCode.SCHEMA_VALIDATION_ERROR,
             layer=ErrorLayer.LLM,
             stage=stage,
         ) from e
     except SagError as e:
-        raise UpstreamError(str(e), layer=ErrorLayer.ENGINE, stage=stage) from e
+        raise UpstreamError(
+            str(e),
+            layer=ErrorLayer.ENGINE,
+            stage=stage,
+            retryable=e.retryable,
+        ) from e

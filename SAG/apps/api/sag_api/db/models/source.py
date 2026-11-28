@@ -9,7 +9,7 @@ from sag_api.enums import ConnectorKind, SourceStatus, SourceType
 
 
 class Source(IDMixin, TimestampMixin, Base):
-    """Nguồn — tương ứng 1-1 với một nguồn dữ liệu của zleap-sag (source_config_id)."""
+    """信源 —— 与 zleap-sag 的一个数据源（source_config_id）一一对应。"""
 
     __tablename__ = "sources"
 
@@ -22,9 +22,9 @@ class Source(IDMixin, TimestampMixin, Base):
         SAEnum(ConnectorKind, native_enum=False, length=32),
         default=ConnectorKind.FILE_UPLOAD,
     )
-    # Định danh nguồn dữ liệu của zleap-sag (một instance một nguồn)
+    # zleap-sag 数据源标识（一实例一源）
     sag_source_config_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    # Cấu hình connector + ghi đè engine (ví dụ per-source language / entity_types)
+    # 连接器配置 + 引擎覆盖（如 per-source language / entity_types）
     config: Mapped[dict] = mapped_column("config_json", JSON, default=dict)
     status: Mapped[SourceStatus] = mapped_column(
         SAEnum(SourceStatus, native_enum=False, length=16), default=SourceStatus.ACTIVE
@@ -32,3 +32,5 @@ class Source(IDMixin, TimestampMixin, Base):
     document_count: Mapped[int] = mapped_column(Integer, default=0)
     chunk_count: Mapped[int] = mapped_column(Integer, default=0)
     event_count: Mapped[int] = mapped_column(Integer, default=0)
+
+

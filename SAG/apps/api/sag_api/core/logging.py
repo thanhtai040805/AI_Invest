@@ -1,4 +1,4 @@
-"""Cấu hình log nhẹ + middleware theo dõi request."""
+"""轻量日志配置 + 请求追踪中间件。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from starlette.types import ASGIApp
 
 _CONFIGURED = False
 
-# ID theo dõi của request hiện tại, để log và xử lý lỗi tham chiếu
+# 当前请求的追踪 id，供日志与错误处理引用
 request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="-")
 
 
@@ -32,12 +32,12 @@ def configure_logging(level: str = "INFO") -> None:
     root = logging.getLogger()
     root.setLevel(level)
     root.handlers = [handler]
-    # Giảm nhiễu từ bên thứ ba, và cấm model client xuất toàn bộ prompt/nội dung ở chế độ DEBUG.
+    # 降低第三方噪音，并禁止模型客户端在 DEBUG 模式输出完整提示词/正文。
     for noisy in (
         "httpx",
         "httpcore",
         "openai",
-        "lancedb",
+        "sse_starlette.sse",
         "aiosqlite",
         "LiteLLM",
         "LiteLLM Router",
@@ -53,7 +53,7 @@ def get_logger(name: str) -> logging.Logger:
 
 
 class _RequestIdFilter(logging.Filter):
-    """Chèn id request hiện tại vào mỗi bản ghi log; khi không nằm trong ngữ cảnh request thì là '-'."""
+    """把当前请求 id 注入每条日志记录，未在请求上下文时为 '-'。"""
 
     def filter(self, record: logging.LogRecord) -> bool:
         record.request_id = request_id_var.get()
@@ -61,7 +61,7 @@ class _RequestIdFilter(logging.Filter):
 
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
-    """Gán id theo dõi cho mỗi request: đầu vào lấy X-Request-Id hoặc tạo mới, đầu ra ghi ngược vào header phản hồi."""
+    """为每个请求分配追踪 id：入站取 X-Request-Id 或新生成，出站回写响应头。"""
 
     def __init__(self, app: ASGIApp) -> None:
         super().__init__(app)

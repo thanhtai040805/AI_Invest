@@ -1,204 +1,335 @@
-"""Application settings for SAG v2.
+"""应用配置（pydantic-settings）。
 
-SAG v2 is a financial evidence engine for three issuer document roles. Runtime
-API/worker deployments use PostgreSQL/pgvector. SQLite is only tolerated behind
-an explicit test/legacy flag for short-lived compatibility checks and snapshot
-export tooling.
+所有配置项均可通过环境变量 `SAG_*` 或 `.env` 覆盖。设计上区分三类后端：
+
+- **sag 元数据库**（用户 / 信源 / 文档 / 会话）：`database_url`
+- **zleap-sag 存储**（分块 / 向量 / 事件图谱）：`sag_*` + `data_dir`
+- **LLM / embedding**（抽取与答案生成）：`llm_*` / `embedding_*`
+- **文档解析**（PDF / Office 等转 Markdown）：`document_parser` / `mineru_*`
+
+默认配置：PostgreSQL 元数据 + Qdrant 向量存储。
 """
 
 from __future__ import annotations
 
 import json
 from functools import lru_cache
+from pathlib import Path
 from typing import Annotated, Literal
+from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import AliasChoices, Field, PrivateAttr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from sag_api.core.model_providers import ModelProviderId, get_model_provider
 from sag_api.enums import SearchStrategy, normalize_search_strategy
 
-_PLACEHOLDER = "not-configured"
 _DEFAULT_LLM_PROVIDER = get_model_provider("openai")
+FIXED_SEARCH_TOP_K = 5
+
+
+def _resolve_default_env_file() -> Path:
+    """Resolve the repository dotenv without depending on the process cwd."""
+    module_path = Path(__file__).resolve()
+    for parent in module_path.parents:
+        if (parent / "compose.yaml").is_file():
+            return parent / ".env"
+    # Installed/container builds receive configuration through process env.
+    # Still allow a deployment-local dotenv in the working directory.
+    return Path.cwd() / ".env"
+
+
+_DEFAULT_ENV_FILE = _resolve_default_env_file()
 
 
 class Settings(BaseSettings):
+    _active_data_dir: str | None = PrivateAttr(default=None)
+
     model_config = SettingsConfigDict(
         env_prefix="SAG_",
-        env_file=".env",
+        env_file=_DEFAULT_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
     )
 
-    # ── Ứng dụng ────────────────────────────────────────────────────────────
+    # ── 应用 ────────────────────────────────────────────────────────────
     app_name: str = "sag"
     environment: Literal["dev", "prod"] = "dev"
     debug: bool = True
     secret_key: str = "dev-insecure-secret-change-me-in-production-0123456789"
-    service_token: str | None = None
-    admin_token: str | None = None
-    access_token_expire_minutes: int = 60 * 24 * 7  # 7 ngày
-    # Múi giờ hiển thị nghiệp vụ; timestamp cơ sở dữ liệu và API luôn dùng UTC.
+    access_token_expire_minutes: int = 60 * 24 * 7  # 7 天
+    # continuum delegates interactive sign-in to Continuum; local/password are standalone modes.
+    auth_mode: Literal["local", "password", "continuum"] = "local"
+    # Comma-separated SAG user IDs permitted to change deployment-wide model settings.
+    model_config_operator_ids: str = ""
+    # 业务展示时区；数据库与 API 时间戳始终使用 UTC。
     timezone: str = "Asia/Ho_Chi_Minh"
-    # NoDecode cho phép giá trị phân tách bằng dấu phẩy đi vào validator bên dưới trước, tránh nguồn settings ép giải mã theo JSON.
-    cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["http://localhost:3000"])
-    # Khi tắt chỉ cho phép người dùng đầu tiên đăng ký (hướng dẫn triển khai), các yêu cầu khác trả về 403
+    # NoDecode 让逗号分隔值先进入下方 validator，避免 settings 源强制按 JSON 解码。
+    cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["http://localhost:3002"])
+    # 关闭后仅允许首个用户注册（部署引导），其余返回 403
     allow_registration: bool = True
-    # Khóa dịch vụ riêng cho cuộc gọi kho tri thức ngoài của Dify; khi chưa cấu hình endpoint tương thích từ chối phục vụ.
+    # Dify 外部知识库调用的专用服务密钥；未配置时兼容端点拒绝服务。
     dify_api_key: str | None = None
-    # Truy vấn Dify mặc định ưu tiên truy hồi vector độ trễ thấp; có thể đặt thành multi để bật mở rộng thực thể và xếp hạng lại bằng LLM.
+    # Continuum-signed assertion used only for evidence authorization. Missing
+    # trust configuration keeps evidence APIs fail-closed instead of enabling
+    # a local-user/global-search fallback.
+    principal_assertion_issuer: str | None = None
+    principal_assertion_audience: str = "sag-api"
+    principal_assertion_jwks_url: str | None = None
+    principal_assertion_max_lifetime_seconds: int = Field(default=120, ge=1, le=300)
+    principal_assertion_clock_skew_seconds: int = Field(default=5, ge=0, le=30)
+    principal_assertion_jwks_cache_ttl_seconds: int = Field(default=60, ge=1, le=60)
+    principal_assertion_max_project_ids: int = Field(default=256, ge=1, le=4096)
+    # Shared only between Continuum BE and this API for project-scoped BFF calls.
+    bff_service_token: str | None = None
+    # 供桌面端启动时写入本地 DSH 连接文件的公开地址与可选文件位置。
+    dsh_public_url: str = "http://127.0.0.1:8000"
+    dsh_connection_file: str | None = None
+    dsh_local_discovery: bool = False
+    dsh_local_discovery_bind_address: str = "127.0.0.1"
+    # Dify 检索默认优先低延迟向量召回；可显式设为 multi 启用实体扩展与 LLM 精排。
     dify_search_strategy: SearchStrategy = "vector"
 
-    # ── Database ───────────────────────────────────────────────────
-    database_url: str = "postgresql+asyncpg://sag:sag@localhost:5432/sag"
-    # Read-only market master used for deterministic BS/IS/CF denominators.
-    market_database_url: str = "postgresql+asyncpg://postgres:123@localhost:5432/aiinvest"
-    allow_sqlite_runtime: bool = False
+    # ── sag 元数据库 ───────────────────────────────────────────────────
+    database_url: str = "postgresql+asyncpg://aiinvest_sag:aiinvest_sag@localhost:55432/aiinvest_sag"
+    core_database_url: str | None = None
 
-    # ── Storage ────────────────────────────────────────────────────────────
-    data_dir: str = "./.data/engine"
-    upload_dir: str = "./.data/uploads"
-    # SAG owns durable Markdown artifacts. ai-engine only reads them and
-    # removes legacy PDF staging objects during migration.
-    r2_write_canonical_markdown: bool = True
-    r2_canonical_prefix: str = "bctc"
-    max_upload_mb: int = 25  # giới hạn upload mỗi file
-    process_documents_inline: bool = True
-    processing_lease_seconds: int = Field(default=120, ge=30, le=7200)
-    processing_heartbeat_seconds: float = Field(default=30.0, ge=5.0, le=300.0)
-    processing_run_timeout_seconds: int = Field(default=1000, ge=30, le=7200)
-    processing_max_attempts: int = Field(default=2, ge=1, le=10)
-    worker_poll_seconds: float = Field(default=2.0, ge=0.1, le=60.0)
-    job_concurrency: int = 2  # độ đồng thời xử lý nền
-    # Keep background jobs below the PostgreSQL pool capacity. Long-running
-    # MinerU calls must not exhaust DB connections for status updates.
-    db_pool_size: int = Field(default=12, ge=1, le=100)
-    db_max_overflow: int = Field(default=4, ge=0, le=100)
-    db_pool_timeout: float = Field(default=30.0, ge=1.0, le=300.0)
-    document_extract_concurrency: int = Field(default=30, ge=1, le=50)  # độ đồng thời trích xuất chunk cho mỗi tài liệu
-    document_chunk_max_tokens: int = Field(default=1_000_000, ge=100, le=2_000_000)
-    document_chunk_mode: Literal["standard", "heading_strict", "full"] = "full"
-
-
-    # Tài liệu upload đã có yêu cầu lọc theo loại tri thức riêng; mặc định tắt bộ lọc nghiêm ngặt dựa trên tiêu đề/tóm tắt của thượng nguồn,
-    # tránh nội dung sách không có tóm tắt hoặc thiếu tiêu đề bị nhận nhầm là nhiễu.
+    # ── 存储 ────────────────────────────────────────────────────────────
+    data_dir: str = "./.data/engine"  # OCTX、上传文件和运行时状态
+    upload_dir: str = "./.data/uploads"  # 上传原始文件落盘
+    max_upload_mb: int = 25  # 单文件上传上限
+    job_concurrency: int = 4  # 后台处理并发
+    knowledge_worker_enabled: bool = True
+    knowledge_graph_timeout_seconds: int = Field(default=300, ge=1)
+    knowledge_foundation_timeout_seconds: float | None = Field(default=None, gt=0)
+    knowledge_concurrency: int = Field(default=4, ge=1, le=16)
+    knowledge_queue_capacity: int = Field(default=256, ge=1, le=10000)
+    # Phase 5 runs FOUNDATION (deterministic E0/E1 + DenseGraph) exclusively; E2 LLM enrichment
+    # was removed based on 81-file RetrievalCI A/B benchmark evidence (docs/adr-remove-e2-llm-enrichment.md).
+    document_extract_concurrency: int = Field(default=6, ge=1, le=50)  # 单文档 chunk 抽取并发
+    document_event_extraction_enabled: bool = False
+    document_chunk_max_tokens: int = Field(default=1_000, ge=100, le=100_000)
+    document_chunk_mode: Literal["standard", "heading_strict"] = "standard"
+    document_extraction_profile: Literal["standard", "concise"] = "concise"
+    document_write_event_entity_vectors: bool = False
+    document_event_entity_attempts: int = Field(default=2, ge=1, le=3)
+    # 上传文档已有独立的知识型过滤要求；默认关闭上游基于标题/摘要的严格过滤，
+    # 避免无摘要或标题缺失的书籍正文被误判为噪音。
     document_strict_filtering: bool = False
-    job_max_attempts: int = 3  # số lần thử tối đa cho lỗi có thể thử lại (gồm lần đầu)
-    engine_cache_size: int = 16  # giới hạn LRU của slot engine (vượt giới hạn sẽ đuổi cái dùng lâu nhất)
-    engine_warmup_count: int = 4  # số engine nguồn gần nhất được làm nóng lúc khởi động
-    # SAG v2 chỉ nhận Markdown canonical hoặc PDF cần parse qua MinerU.
+    job_max_attempts: int = 3  # 可重试失败的最大尝试次数（含首次）
+    engine_cache_size: int = 16  # 引擎槽 LRU 上限（超限逐出最久未用）
+    engine_warmup_count: int = 4  # 启动时预热最近使用的信源引擎数
+    # 允许上传的扩展名白名单（小写，含点）；空集合表示不限制
     allowed_upload_exts: set[str] = {
         ".md",
         ".markdown",
+        ".txt",
+        ".text",
         ".pdf",
+        ".docx",
+        ".doc",
+        ".pptx",
+        ".ppt",
+        ".xls",
+        ".xlsx",
+        ".odt",
+        ".ods",
+        ".odp",
+        ".rtf",
+        ".csv",
+        ".tsv",
+        ".html",
+        ".htm",
+        ".json",
+        ".yaml",
+        ".yml",
+        ".xml",
+        ".drawio",
+        ".sql",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        ".epub",
     }
 
-    # ── Production retrieval backend ───────────────────────────────────────
-    sag_vector_provider: Literal["pgvector", "es", "oceanbase"] = "pgvector"
-    sag_relational_provider: Literal["postgres", "mysql", "oceanbase"] | None = "postgres"
-    sag_language: Literal["vi", "en", "zh"] = "vi"
+    # ── OCTX 信源导入导出 ───────────────────────────────────────────────
+    # 压缩包在一次性受限子进程中校验/打包；这些值是部署可调的硬上限，
+    # 不能只依赖 OCTX SDK 默认值或请求层 Content-Length。
+    octx_max_upload_mb: int = Field(default=2048, ge=1)
+    octx_max_entries: int = Field(default=10_000, ge=1)
+    octx_max_file_mb: int = Field(default=512, ge=1)
+    octx_max_uncompressed_mb: int = Field(default=4096, ge=1)
+    octx_max_compression_ratio: float = Field(default=100, gt=0)
+    octx_max_jsonl_line_mb: int = Field(default=16, ge=1)
+    octx_max_jsonl_records: int = Field(default=1_000_000, ge=1)
+    octx_max_issues: int = Field(default=1000, ge=1)
+    octx_worker_memory_mb: int = Field(default=2048, ge=128)
+    octx_worker_timeout_seconds: int = Field(default=1800, ge=1)
+    octx_transfer_ttl_hours: int = Field(default=24, ge=1)
+    octx_rollback_retention_days: int = Field(default=7, ge=0)
+    # OCTX 向量复用是可关闭的兼容加速层；关闭后沿用现有 Embedding 重建路径。
+    octx_arrow_vector_reuse_enabled: bool = True
+    octx_reused_vector_batch_size: int = Field(default=500, ge=50, le=2000)
+    octx_vector_progress_interval_seconds: float = Field(default=1.0, ge=0.1, le=10.0)
 
-    @field_validator("sag_language", mode="before")
-    @classmethod
-    def _normalize_language(cls, value: object) -> object:
-        if isinstance(value, str):
-            val = value.strip().lower()
-            if val in ("zh", "cn", "zh-cn"):
-                return "vi"
-            return val
-        return value
+    # ── zleap-sag 后端选择 ─────────────────────────────────────────────
+    sag_vector_provider: Literal["es", "pgvector", "qdrant", "oceanbase"] = "qdrant"
+    sag_relational_provider: Literal["sqlite", "postgres", "mysql", "oceanbase"] = "postgres"
+    sag_language: Literal["en", "zh", "vi"] = "vi"
 
-    # PostgreSQL/pgvector connection details for deployments that compose DB URLs from fields.
+    # PostgreSQL 元数据连接字段
     sag_pg_host: str = "localhost"
-    sag_pg_port: int = 5432
-    sag_pg_user: str = "sag"
-    sag_pg_password: str = "sag"
-    sag_pg_database: str = "sag"
+    sag_pg_port: int = 55432
+    sag_pg_user: str = "aiinvest_sag"
+    sag_pg_password: str = "aiinvest_sag"
+    sag_pg_database: str = "aiinvest_sag"
+    sag_qdrant_url: str = "http://localhost:6333"
+    sag_qdrant_api_key: str | None = None
+    # Shared multi-tenant Qdrant collection partitioned by `project_id` (`is_tenant=true`).
+    sag_qdrant_shared_collection: str | None = "aiinvest_search_units"
+    sag_qdrant_on_disk: bool = True
+    sag_qdrant_scalar_quantization: bool = True
 
-    # ── LLM (sinh câu trả lời + trích xuất) ─────────────────────────────────────────
-    # Giao thức, quy tắc route và giá trị mặc định kỹ thuật được bảng model_providers duy trì thống nhất.
+    # ── LLM（答案生成 + 抽取）─────────────────────────────────────────
+    # 协议、路由规则和技术默认值统一由 model_providers 注册表维护。
     llm_provider: ModelProviderId = _DEFAULT_LLM_PROVIDER.id
     llm_base_url: str | None = _DEFAULT_LLM_PROVIDER.default_base_url
     llm_api_key: str | None = None
-    # Không default: thiếu SAG_LLM_MODEL phải lỗi ngay lúc khởi động thay vì
-    # lặng lẽ chạy bằng model trong catalog.
-    llm_model: str = Field(description="Model LLM chung (vd openai/deepseek-ai/DeepSeek-V4-Flash)")
+    llm_model: str = _DEFAULT_LLM_PROVIDER.default_model
     llm_temperature: float = _DEFAULT_LLM_PROVIDER.default_temperature
-    # None means do not send an application-level output cap; let the provider
-    # use the model/API limit. This is important for full-document extraction.
-    llm_max_tokens: int | None = None
+    llm_max_tokens: int = 20_000
     llm_context_window: int = _DEFAULT_LLM_PROVIDER.default_context_window
-    llm_timeout_ms: int = Field(default=900_000, ge=1_000, le=900_000)
-    llm_max_retries: int = Field(default=0, ge=0, le=10)
-    business_quality_retrieval_top_k: int = Field(default=8, ge=1, le=50)
-    business_quality_retrieval_max_tokens: int = Field(default=2500, ge=256, le=8000)
-    # Bên triển khai có thể khóa tường minh cấu hình kết nối LLM; các SAG_LLM_* thông thường chỉ là giá trị mặc định lần khởi động đầu.
+    llm_timeout_ms: int = Field(default=60_000, ge=1_000, le=600_000)
+    llm_max_retries: int = Field(default=2, ge=0, le=10)
+    # auto 首选 json_schema，仅在网关明确返回“不支持”时按接入能力缓存降级。
+    llm_structured_output_mode: Literal[
+        "auto", "json_schema", "json_object", "prompt_only"
+    ] = "auto"
+    # 部署方可显式锁定 LLM 接入配置；普通 SAG_LLM_* 仅作为首次启动默认值。
     lock_llm_config: bool = False
-    # Request body bổ sung truyền tiếp tới chat/completions (JSON), ví dụ {"enable_thinking": false};
-    # khi chưa cấu hình, với các model họ qwen sẽ tắt suy luận thống nhất qua LiteLLM reasoning_effort=none.
+    # 透传给 chat/completions 的额外请求体（JSON），如 {"enable_thinking": false}；
+    # 未配置时对 qwen 系模型通过 LiteLLM reasoning_effort=none 统一关闭思考。
     llm_extra_body: dict | None = None
-    extraction_audit_enabled: bool = False
 
-    # ── Model trích xuất Graph riêng (tùy chọn; mặc định tái dùng llm_model) ────────
-    extraction_llm_model: str | None = None
-    extraction_llm_base_url: str | None = None
-    extraction_llm_api_key: str | None = None
-
-    # ── Model Agent suy luận riêng (tùy chọn; mặc định tái dùng llm_model) ────────
-    agent_llm_model: str | None = None
-    agent_llm_base_url: str | None = None
-    agent_llm_api_key: str | None = None
-
-    # ── Embedding (tương thích OpenAI; chỉ provider OpenAI mới tái dùng được cấu hình sinh) ───────
-    embedding_model: str = "openai/Qwen/Qwen3-Embedding-8B"
-    embedding_base_url: str | None = "https://api.siliconflow.com/v1"
+    # ── Embedding（OpenAI-compatible；仅 OpenAI provider 可复用生成配置）───────
+    embedding_model: str = "Qwen/Qwen3-Embedding-0.6B"
+    embedding_base_url: str | None = "https://api.deepinfra.com/v1/openai"
     embedding_api_key: str | None = None
-    embedding_dimensions: int | None = None
-    embedding_enabled: bool = False
+    embedding_dimensions: int | None = 1024
+    # Per-engine embedding HTTP concurrency. llama.cpp --parallel 1 cannot
+    # absorb the zleap default of 8; queued batches hit the client timeout
+    # and the indexer rolls the whole document back.
+    embedding_concurrency: int = Field(default=6, ge=1, le=64)
+    embedding_timeout: int = Field(default=60, ge=5, le=600)
+    embedding_max_retries: int = Field(default=3, ge=0, le=10)
 
-    # ── Phân tích tài liệu (chuyển thống nhất sang Markdown canonical trước khi phân tích) ─────────────────
-    # auto: PDF ưu tiên MinerU; production không được giả lập extraction khi parser/LLM thiếu cấu hình.
+    # ── 文档解析（进入 zleap-sag 前统一转为 Markdown）─────────────────
+    # auto：PDF 优先 MinerU，未配置或 MinerU 失败时回退本地 MarkItDown。
     document_parser: Literal["auto", "markitdown", "mineru"] = "auto"
+    mineru_provider: Literal["official"] = "official"
     mineru_base_url: str | None = "https://mineru.net"
-    mineru_api_key: str | None = None
-    mineru_api_keys: str | None = None
-    mineru_version: str = "4.0"
-    mineru_parse_method: Literal["auto", "txt", "ocr"] = "ocr"
-    mineru_model_version: Literal["pipeline", "vlm"] = "vlm"
-    mineru_language: str = "latin"
-    mineru_mode: Literal["precision", "flash"] = "precision"
-    mineru_layout_model: str = "doclayout_yolo"
-    mineru_enable_table: bool = True
-    mineru_enable_formula: bool = True
-    mineru_request_timeout: float = 60.0
-    mineru_poll_interval: float = 2.0
-    mineru_poll_timeout: float = 1800.0
-    mineru_result_max_mb: int = 100
-    mineru_key_concurrency: int = Field(default=5, ge=1, le=50)
-    mineru_chunk_max_mb: int = Field(default=20, ge=1, le=200)
-    mineru_chunk_max_pages: int = Field(default=180, ge=1, le=600)
-    mineru_chunk_trigger_pages: int = Field(default=200, ge=1, le=600)
-    mineru_direct_url: bool = True
-    mineru_direct_url_max_mb: int = Field(default=200, ge=1, le=200)
-    mineru_direct_url_max_pages: int = Field(default=600, ge=1, le=600)
+    mineru_official_api_token: str | None = None
+    mineru_official_api_token_0: str | None = None
+    mineru_official_api_token_1: str | None = None
+    mineru_official_api_token_2: str | None = None
+    mineru_official_api_token_3: str | None = None
+    mineru_official_api_tokens: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    mineru_per_token_concurrency: int = Field(default=8, ge=1, le=64)
+    mineru_ocr_chunk_pages: int = Field(default=20, ge=2, le=200)
 
-    # ── Mặc định truy vấn ────────────────────────────────────────────────────────
-    search_strategy: SearchStrategy = "vector"
-    search_top_k: int = 8
-    # Truy vấn toàn kho chọn trước các nguồn ứng viên giới hạn; phạm vi @ tường minh cũng được bảo vệ bởi giới hạn cứng này.
-    search_source_candidate_limit: int = Field(default=16, ge=1, le=256)
+    mineru_official_model: Literal["pipeline", "vlm"] = "vlm"
+    mineru_parse_method: Literal["auto", "txt", "ocr"] = "auto"
+    mineru_request_timeout: float = 60.0
+    mineru_poll_interval: float = 3.0
+    mineru_poll_timeout: float = 900.0
+    mineru_result_max_mb: int = 100
+
+    # ── R2 Object Ingest, Cleaned Markdown Cache & Multi-Lane Parsing ──
+    r2_account_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("SAG_R2_ACCOUNT_ID", "R2_ACCOUNT_ID"),
+    )
+    r2_endpoint_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("SAG_R2_ENDPOINT_URL", "R2_ENDPOINT_URL"),
+    )
+    r2_bucket_name: str = Field(
+        default="aiinvest-bctc-prod",
+        validation_alias=AliasChoices("SAG_R2_BUCKET_NAME", "R2_BUCKET_NAME"),
+    )
+    r2_token: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("SAG_R2_TOKEN", "R2_TOKEN", "CLOUDFLARE_API_TOKEN"),
+    )
+    r2_access_key_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("SAG_R2_ACCESS_KEY_ID", "R2_ACCESS_KEY_ID"),
+    )
+    r2_secret_access_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("SAG_R2_SECRET_ACCESS_KEY", "R2_SECRET_ACCESS_KEY"),
+    )
+    r2_md_local_cache_dir: str | None = Field(
+        default="./.data/r2-md-cache",
+        validation_alias=AliasChoices("SAG_R2_MD_LOCAL_CACHE_DIR", "R2_MD_LOCAL_CACHE_DIR"),
+    )
+    object_ingest_allowed_hosts: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: [".r2.cloudflarestorage.com"]
+    )
+    object_ingest_allow_private_hosts_in_dev: bool = False
+    object_ingest_timeout_seconds: float = Field(default=120.0, ge=5.0, le=900.0)
+    local_parse_workers: int = Field(default=2, ge=1, le=16)
+    local_parse_timeout_seconds: float = Field(default=90.0, ge=5.0, le=600.0)
+    local_parse_max_tasks_per_child: int = Field(default=25, ge=1, le=500)
+    mineru_io_concurrency: int = Field(default=16, ge=1, le=128)
+    fast_parse_concurrency: int = Field(default=16, ge=1, le=128)
+    per_project_heavy_parse_limit: int = Field(default=3, ge=1, le=32)
+    excel_max_rows_per_sheet: int = Field(default=5000, ge=10, le=100_000)
+    excel_max_cols_per_sheet: int = Field(default=64, ge=4, le=512)
+    remote_snapshot_gc_enabled: bool = True
+
+    # ── 检索默认 ────────────────────────────────────────────────────────
+    # multi_es_fast：默认策略。相关率平均比 vector 高 ~14 个百分点；
+    # vector store 不支持 lexical(pgvector/qdrant/oceanbase) 时由 engine_manager 自动降级为 vector。
+    search_strategy: SearchStrategy = "multi_es_fast"
+    search_top_k: int = Field(default=8, ge=1)  # Initial adaptive search breadth, not a final result cap.
+    research_search_top_k: int = Field(default=10, ge=1, le=32)
+    research_brain_mode: Literal["brief_centric", "agent_loop"] = "brief_centric"
+    # Optional scope budget rejects oversized scopes instead of silently truncating sources.
+    search_source_candidate_limit: int = Field(default=0, ge=0)  # 0 = all authorized sources.
     search_source_concurrency: int = Field(default=4, ge=1, le=32)
-    # Chế độ chính xác (multi) bao gồm vòng LLM phía truy vấn; hết thời gian/lỗi/kết quả rỗng tự động quay về chế độ nhanh (vector).
-    search_source_timeout: float = 12.0
+    # Hard cap for canonical SearchUnits hydrated and reranked across all scopes.
+    search_unit_candidate_limit: int = Field(default=1024, ge=1)
+    search_rerank_min_remaining_seconds: float = Field(default=0.1, ge=0.0, le=2.0)
+    search_tree_profile_limit: int = Field(default=8192, ge=256, le=16384)
+    # Keep part of the routed query's deadline available to its ACL-scoped global escape.
+    search_tree_escape_reserve_seconds: float = Field(default=1.5, ge=0.1, le=10.0)
+    search_tree_snapshot_timeout: float = Field(default=3.0, ge=0.05, le=10.0)
+    # Exact, profile-content-addressed route decisions only. Semantic matching
+    # and answer/evidence caching have no enablement path in this release.
+    search_route_decision_cache_enabled: bool = False
+    # Diversity knobs are retrieval quality parameters, not answerability/confidence thresholds.
+    search_mmr_diversity_weight: float = Field(default=0.5, ge=0.0, le=1.0)
+    search_near_duplicate_similarity: float = Field(default=0.98, ge=0.9, le=1.0)
+    search_doc_admission_ratio: float = Field(default=0.75, ge=0.0, le=1.0)
+    search_same_doc_penalty_weight: float = Field(default=0.06, ge=0.0, le=0.5)
+    search_chinese_segmentation_enabled: bool = False
+    # 精确模式（multi）含查询侧 LLM 往返；超时/失败/空结果自动回退快速模式（vector）。
+    search_source_timeout: float = 25.0
     search_fallback_vector: bool = True
 
-    # ── Vũ trụ tri thức ──────────────────────────────────────────────────────────
-    # Máy chủ gửi thống nhất ngưỡng độ sâu (LOD) và ngân sách cảnh, frontend không còn rải rác ngưỡng hardcode.
+    # ── 检索评测 ────────────────────────────────────────────────────────
+    # LLM-as-judge 在评测端点/CLI 里默认开启；线上或不想烧 token 时可临时关闭。
+    eval_llm_judge_enabled: bool = True
+
+    # ── 知识宇宙 ──────────────────────────────────────────────────────────
+    # 服务端统一下发景深门与场景预算，前端不再散落硬编码阈值。
     universe_manifest_source_limit: int = Field(default=256, ge=16, le=2048)
     universe_timeline_event_page_size: int = Field(default=20, ge=10, le=50)
-    # Dòng thời gian chỉ trả về một màn hình chiếu dữ kiện của sự kiện; vùng lân cận đầy đủ được tải phân trang bằng khám phá tường minh.
+    # 时间线只返回事件的一屏事实投影；完整邻域由显式探索分页加载。
     universe_event_entity_limit: int = Field(default=8, ge=4, le=8)
     universe_lod_orbit_px: int = Field(default=72, ge=24, le=240)
     universe_lod_near_px: int = Field(default=180, ge=64, le=640)
@@ -215,16 +346,100 @@ class Settings(BaseSettings):
     universe_planet_radius_max: float = Field(default=132.0, ge=48.0, le=360.0)
     universe_planet_radius_scale: float = Field(default=22.0, ge=2.0, le=80.0)
 
-    # ── Vòng lặp Agent ──────────────────────────────────────────────────────
-    agent_max_steps: int = 6  # số vòng gọi công cụ tối đa (cận trên cho truy vấn nhiều vòng)
-    history_keep_recent: int = 8  # số tin nhắn gần đây giữ nguyên văn khi nén lịch sử
-    # Chỉ nạp cửa sổ giới hạn gần đây; hội thoại cũ hơn nên vào tóm tắt cuộn, không phát lại toàn bảng.
+    # ── Agent 循环 ──────────────────────────────────────────────────────
+    agent_max_steps: int = 6  # 工具调用最大轮数（多轮检索的上界）
+    history_keep_recent: int = 8  # 历史压缩时原文保留的最近消息数
+    # 只装载最近有界窗口；更旧对话应进入滚动摘要，不做全表回放。
     history_load_limit: int = Field(default=200, ge=1, le=1000)
+    decision_provider: Literal["siliconflow", "disabled"] = "disabled"
+    decision_model: str = Field(default="Kev-4b", min_length=1, max_length=200)
+    decision_timeout_seconds: float = Field(default=4.5, ge=0.5, le=15.0)
+    siliconflow_base_url: str = "https://api.siliconflow.com/v1"
+    siliconflow_api_key: str | None = None
 
-    @field_validator("cors_origins", mode="before")
+    # ── Cross-Encoder Reranker (Online Reranking for Research Chat; safe no-op when API key is unset) ──
+    rerank_provider: Literal["siliconflow", "deepinfra", "disabled"] = "deepinfra"
+    rerank_model: str = Field(default="Qwen/Qwen3-Reranker-0.6B", min_length=1, max_length=200)
+    rerank_base_url: str | None = None
+    rerank_api_key: str | None = None
+    rerank_timeout_seconds: float = Field(default=2.5, ge=0.5, le=15.0)
+    rerank_min_score: float = Field(default=0.15, ge=0.0, le=1.0)
+
+    # ── SAG-Native User Memory & Linked Sessions (Tri-Temporal Mem0-g) ────────
+    user_memory_mode: Literal["off", "shadow", "on"] = "on"
+    user_memory_qdrant_collection: str = "aiinvest_user_memories"
+    user_memory_extractor_model: str | None = None
+    user_memory_worker_enabled: bool = True
+    user_memory_debounce_seconds: float = Field(default=8.0, ge=0.0, le=120.0)
+    user_memory_max_items_per_user: int = Field(default=2000, ge=10, le=50000)
+    user_memory_max_episodes_per_user: int = Field(default=500, ge=10, le=20000)
+
+    @field_validator("siliconflow_base_url")
+    @classmethod
+    def _validate_siliconflow_base_url(cls, value: str) -> str:
+        normalized = value.strip().rstrip("/")
+        parsed = urlsplit(normalized)
+        if (
+            parsed.scheme.lower() != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path != "/v1"
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("siliconflow_base_url must be an HTTPS /v1 base URL without credentials")
+        return normalized
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_decision_config(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        provider = data.get("decision_provider")
+        normalized_provider = provider.strip().lower() if isinstance(provider, str) else provider
+        has_sf_key = any(
+            isinstance(k, str)
+            and k.lower() in ("siliconflow_api_key", "sag_siliconflow_api_key")
+            and isinstance(v, str)
+            and bool(v.strip())
+            for k, v in data.items()
+        )
+        if normalized_provider in ("laya", "openrouter"):
+            data["decision_provider"] = "siliconflow"
+        elif normalized_provider is None or normalized_provider == "":
+            data["decision_provider"] = "siliconflow" if has_sf_key else "disabled"
+        if normalized_provider in ("laya", "openrouter") or data.get("decision_model") == "typesafe/jev-1.14":
+            data["decision_model"] = "Kev-4b"
+
+        # Support arbitrary indexed MinerU tokens (`mineru_official_api_token_4`, `_5`, ...) beyond `_0.._3`
+        extra_indexed: list[tuple[int, str]] = []
+        for raw_k, raw_v in data.items():
+            if not isinstance(raw_k, str) or not isinstance(raw_v, str):
+                continue
+            lower_k = raw_k.lower()
+            prefix = "mineru_official_api_token_"
+            if lower_k.startswith(prefix):
+                suffix = lower_k[len(prefix) :]
+                if suffix.isdigit() and int(suffix) >= 4 and raw_v.strip():
+                    extra_indexed.append((int(suffix), raw_v.strip()))
+        if extra_indexed:
+            extra_indexed.sort(key=lambda item: item[0])
+            existing_list = data.get("mineru_official_api_tokens")
+            merged: list[str] = []
+            if isinstance(existing_list, list):
+                merged.extend(str(x).strip() for x in existing_list if str(x).strip())
+            elif isinstance(existing_list, str) and existing_list.strip():
+                merged.extend(p.strip() for p in existing_list.split(",") if p.strip())
+            merged.extend(tok for _, tok in extra_indexed)
+            data["mineru_official_api_tokens"] = merged
+        return data
+
+    @field_validator("cors_origins", "object_ingest_allowed_hosts", "mineru_official_api_tokens", mode="before")
     @classmethod
     def _split_origins(cls, v: object) -> object:
-        """Cho phép cấu hình nguồn CORS bằng chuỗi phân tách dấu phẩy."""
+        """允许用逗号分隔的字符串配置 CORS 源。"""
         if isinstance(v, str):
             v = v.strip()
             if not v:
@@ -234,11 +449,105 @@ class Settings(BaseSettings):
             return [o.strip() for o in v.split(",") if o.strip()]
         return v
 
+    @field_validator("mineru_provider", mode="before")
+    @classmethod
+    def _normalize_mineru_provider(cls, _value: object) -> str:
+        """系统仅使用 MinerU Official API v4；旧配置值自动归一为 official。"""
+        return "official"
+
+    @field_validator("mineru_base_url", mode="before")
+    @classmethod
+    def _normalize_mineru_base_url(cls, value: object) -> object:
+        """空串或遗留 302 端点自动迁移至 MinerU 官方地址 https://mineru.net。"""
+        if value is None:
+            return None
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return "https://mineru.net"
+            host = (urlsplit(stripped).hostname or "").lower()
+            if host in {"api.302ai.cn", "api.302.ai"}:
+                return "https://mineru.net"
+            return stripped
+        return value
+
+    @field_validator(
+        "mineru_official_api_token",
+        "mineru_official_api_token_0",
+        "mineru_official_api_token_1",
+        "mineru_official_api_token_2",
+        "mineru_official_api_token_3",
+        "sag_qdrant_api_key",
+        "core_database_url",
+        "siliconflow_api_key",
+        "rerank_base_url",
+        "rerank_api_key",
+        "r2_account_id",
+        "r2_endpoint_url",
+        "r2_token",
+        "r2_access_key_id",
+        "r2_secret_access_key",
+        "r2_md_local_cache_dir",
+        mode="before",
+    )
+    @classmethod
+    def _blank_optional_secret_as_none(cls, value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped or None
+        return value
+
+    @field_validator("r2_bucket_name", mode="before")
+    @classmethod
+    def _blank_r2_bucket_name_as_default(cls, value: object) -> object:
+        if value is None:
+            return "aiinvest-bctc-prod"
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped or "aiinvest-bctc-prod"
+        return value
+
+    @field_validator("sag_qdrant_url", mode="before")
+    @classmethod
+    def _blank_qdrant_url_as_default(cls, value: object) -> object:
+        if value is None:
+            return "http://localhost:6333"
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped or "http://localhost:6333"
+        return value
+
+    @field_validator("embedding_dimensions", mode="before")
+    @classmethod
+    def _blank_embedding_dimensions_as_none(cls, value: object) -> object:
+        """compose 以 ${SAG_EMBEDDING_DIMENSIONS} 透传、变量未设置时注入空串，等价于未配置。"""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     @field_validator("search_strategy", mode="before")
     @classmethod
     def _normalize_legacy_search_strategy(cls, value: object) -> object:
-        # Tương thích biến môi trường trước khi nâng cấp; API công khai không còn chấp nhận atomic.
+        # 兼容升级前的环境变量；公开 API 已不再接受 atomic。
         return normalize_search_strategy(value) if isinstance(value, str) else value
+
+    @field_validator("sag_qdrant_shared_collection", mode="before")
+    @classmethod
+    def _normalize_sag_qdrant_shared_collection(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    @field_validator("sag_language", mode="before")
+    @classmethod
+    def _normalize_sag_language(cls, value: object) -> str:
+        if value is None:
+            return "vi"
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            return normalized or "vi"
+        return str(value)
 
     @field_validator("timezone")
     @classmethod
@@ -247,83 +556,117 @@ class Settings(BaseSettings):
         try:
             ZoneInfo(normalized)
         except (ZoneInfoNotFoundError, ValueError) as error:
-            raise ValueError("timezone phải là múi giờ IANA hợp lệ") from error
+            raise ValueError("timezone must be a valid IANA timezone") from error
         return normalized
 
+    @field_validator("principal_assertion_issuer")
+    @classmethod
+    def _validate_principal_assertion_issuer(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized or normalized != value or len(normalized) > 512:
+            raise ValueError("principal_assertion_issuer must be a non-empty exact identifier")
+        return normalized
+
+    @field_validator("principal_assertion_audience")
+    @classmethod
+    def _validate_principal_assertion_audience(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized or normalized != value or len(normalized) > 256:
+            raise ValueError("principal_assertion_audience must be a non-empty exact identifier")
+        return normalized
+
+    @field_validator("principal_assertion_jwks_url")
+    @classmethod
+    def _validate_principal_assertion_jwks_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        parsed = urlsplit(normalized)
+        if (
+            normalized != value
+            or parsed.scheme.lower() != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("principal_assertion_jwks_url must be a fixed HTTPS URL without credentials")
+        return normalized
+
+    @field_validator("bff_service_token")
+    @classmethod
+    def _validate_bff_service_token(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value.strip():
+            return None
+        if not value or value != value.strip() or len(value) < 32:
+            raise ValueError("bff_service_token must contain at least 32 non-padded characters")
+        return value
+
+    @field_validator("dsh_public_url")
+    @classmethod
+    def _validate_dsh_public_url(cls, value: str) -> str:
+        """Normalize the trusted HTTP base used in the on-disk DSH descriptor."""
+        raw = value.strip()
+        parsed = urlsplit(raw)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("dsh_public_url must be an absolute HTTP(S) URL")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("dsh_public_url must not contain credentials")
+        if parsed.query or parsed.fragment:
+            raise ValueError("dsh_public_url must not contain query or fragment")
+        path = parsed.path.rstrip("/")
+        if "//" in path:
+            raise ValueError("dsh_public_url path must not contain consecutive slashes")
+        try:
+            port = parsed.port
+        except ValueError as error:
+            raise ValueError("dsh_public_url port is invalid") from error
+        hostname = parsed.hostname.lower()
+        host = f"[{hostname}]" if ":" in hostname else hostname
+        authority = f"{host}:{port}" if port is not None else host
+        return urlunsplit((parsed.scheme.lower(), authority, path, "", ""))
+
     @model_validator(mode="after")
-    def _validate_runtime_database(self) -> "Settings":
-        url = self.database_url.strip().lower()
-        if url.startswith("sqlite") and not self.allow_sqlite_runtime:
-            raise ValueError(
-                "SAG runtime no longer supports SQLite by default. "
-                "Use postgresql+asyncpg://... for API/worker/E2E. "
-                "Set SAG_ALLOW_SQLITE_RUNTIME=true only for isolated tests or legacy snapshot export checks."
-            )
+    def _require_production_storage_backends(self) -> Settings:
         if self.environment == "prod":
-            if url.startswith("sqlite"):
-                raise ValueError("SAG production requires PostgreSQL/pgvector; SQLite is not allowed in prod.")
-            if not url.startswith("postgresql+asyncpg://"):
-                raise ValueError("SAG production database_url must use postgresql+asyncpg://.")
-            if not self.service_token or len(self.service_token) < 32:
-                raise ValueError("SAG production requires a strong SAG_SERVICE_TOKEN with at least 32 characters.")
-            insecure = {
-                "dev-insecure-secret-change-me-in-production-0123456789",
-                "please-change-this-in-production-0123456789",
-                "dev-secret-change-me",
-            }
-            if len(self.secret_key) < 32 or self.secret_key in insecure:
-                raise ValueError("SAG production requires a non-default SAG_SECRET_KEY with at least 32 characters.")
+            if urlsplit(self.database_url).scheme != "postgresql+asyncpg":
+                raise ValueError("SAG_DATABASE_URL must use PostgreSQL with asyncpg in prod")
+            if self.sag_relational_provider != "postgres":
+                raise ValueError("SAG_SAG_RELATIONAL_PROVIDER must be postgres in prod")
+            if self.sag_vector_provider != "qdrant":
+                raise ValueError("SAG_SAG_VECTOR_PROVIDER must be qdrant in prod")
+            qdrant_url = urlsplit(self.sag_qdrant_url)
+            if qdrant_url.scheme not in {"http", "https"} or not qdrant_url.hostname:
+                raise ValueError("SAG_SAG_QDRANT_URL must be an absolute HTTP(S) URL in prod")
         return self
 
     @property
+    def effective_data_dir(self) -> str:
+        """当前进程实际使用的引擎目录；未切换时沿用配置值。"""
+        return self._active_data_dir or self.data_dir
+
+    def activate_data_dir(self, path: str | Path) -> None:
+        """记录存储引导选定的有效引擎目录，不改写持久配置。"""
+        self._active_data_dir = str(Path(path).expanduser().resolve())
+
+    @property
     def llm_configured(self) -> bool:
-        """LLM đã được cấu hình hay chưa (quyết định trích xuất / hỏi đáp có thực sự chạy được không)."""
+        """LLM 是否已配置（决定抽取 / 问答能否真正运行）。"""
         return bool(self.llm_api_key)
 
     @property
     def routed_llm_model(self) -> str:
-        """Tên route LiteLLM dùng cho chuỗi gọi thống nhất."""
+        """统一调用链使用的 LiteLLM 路由名。"""
         return get_model_provider(self.llm_provider).route_model(self.llm_model)
 
     @property
-    def routed_extraction_llm_model(self) -> str:
-        """Tên route LiteLLM dùng cho trích xuất Graph."""
-        model = self.extraction_llm_model if (self.extraction_llm_model and self.extraction_llm_model != _PLACEHOLDER) else self.llm_model
-        return get_model_provider(self.llm_provider).route_model(model)
-
-    @property
-    def effective_extraction_llm_base_url(self) -> str | None:
-        return self.extraction_llm_base_url or self.llm_base_url
-
-    @property
-    def effective_extraction_llm_api_key(self) -> str | None:
-        if self.extraction_llm_api_key and self.extraction_llm_api_key != _PLACEHOLDER:
-            return self.extraction_llm_api_key
-        # An explicitly separate extraction endpoint must never inherit the
-        # agent/retrieval provider's credentials.
-        if self.extraction_llm_base_url:
-            return None
-        return self.llm_api_key
-
-    @property
-    def routed_agent_llm_model(self) -> str:
-        """Tên route LiteLLM dùng cho Agent suy luận."""
-        model = self.agent_llm_model if (self.agent_llm_model and self.agent_llm_model != _PLACEHOLDER and "YOUR_TENCENT" not in self.agent_llm_model) else self.llm_model
-        return get_model_provider(self.llm_provider).route_model(model)
-
-    @property
-    def effective_agent_llm_base_url(self) -> str | None:
-        return self.agent_llm_base_url or self.llm_base_url
-
-    @property
-    def effective_agent_llm_api_key(self) -> str | None:
-        if self.agent_llm_api_key and self.agent_llm_api_key != _PLACEHOLDER and "YOUR_TENCENT" not in self.agent_llm_api_key:
-            return self.agent_llm_api_key
-        return self.llm_api_key
-
-    @property
     def effective_llm_temperature(self) -> float:
-        """Áp dụng ràng buộc khả năng lấy mẫu của provider hiện tại."""
+        """应用当前 provider 的采样能力约束。"""
         return get_model_provider(self.llm_provider).resolve_temperature(self.llm_temperature)
 
     @property
@@ -337,23 +680,71 @@ class Settings(BaseSettings):
         return self.embedding_base_url or (self.llm_base_url if provider.can_reuse_embedding_credentials else None)
 
     @property
-    def routed_embedding_model(self) -> str:
-        provider = get_model_provider(self.llm_provider)
-        return provider.route_model(self.embedding_model) if provider.can_reuse_embedding_credentials else self.embedding_model
+    def effective_mineru_official_api_tokens(self) -> tuple[str, ...]:
+        """Ordered, deduplicated MinerU Official API v4 token pool (`_0`, `_1`, ..., list, single)."""
+        ordered: list[str] = []
+        seen: set[str] = set()
+
+        def _push(raw: str | None) -> None:
+            if not raw:
+                return
+            for part in str(raw).split(","):
+                tok = part.strip()
+                if tok and tok not in seen:
+                    seen.add(tok)
+                    ordered.append(tok)
+
+        for indexed in (
+            self.mineru_official_api_token_0,
+            self.mineru_official_api_token_1,
+            self.mineru_official_api_token_2,
+            self.mineru_official_api_token_3,
+        ):
+            _push(indexed)
+        for item in self.mineru_official_api_tokens:
+            _push(item)
+        _push(self.mineru_official_api_token)
+        return tuple(ordered)
+
+    @property
+    def effective_mineru_io_concurrency(self) -> int:
+        token_count = max(1, len(self.effective_mineru_official_api_tokens))
+        return min(128, max(self.mineru_io_concurrency, token_count * self.mineru_per_token_concurrency))
+
+    @property
+    def effective_per_project_mineru_limit(self) -> int:
+        token_count = max(1, len(self.effective_mineru_official_api_tokens))
+        return min(64, self.per_project_heavy_parse_limit * token_count)
 
     @property
     def mineru_configured(self) -> bool:
-        """MinerU có endpoint và khóa gọi được hay không."""
-        return bool(self.mineru_base_url and self.mineru_key_pool)
+        """MinerU 是否具备可调用的端点与密钥。"""
+        return bool(self.mineru_base_url and self.effective_mineru_official_api_tokens)
 
     @property
-    def mineru_key_pool(self) -> tuple[str, ...]:
-        values = [self.mineru_api_key or "", *(self.mineru_api_keys or "").split(",")]
-        return tuple(dict.fromkeys(value.strip() for value in values if value and value.strip()))
+    def r2_remote_configured(self) -> bool:
+        """Cloudflare R2 清洗后 Markdown 缓存是否具备远程 S3 或 REST 凭据。"""
+        has_s3 = bool(
+            (self.r2_endpoint_url or self.r2_account_id)
+            and self.r2_access_key_id
+            and self.r2_secret_access_key
+        )
+        has_token = bool(self.r2_account_id and self.r2_token)
+        return has_s3 or has_token
+
+    @property
+    def effective_rerank_api_key(self) -> str | None:
+        if self.rerank_api_key:
+            return self.rerank_api_key
+        if self.rerank_provider == "siliconflow":
+            return self.siliconflow_api_key
+        if self.rerank_provider == "deepinfra":
+            return self.llm_api_key or self.embedding_api_key
+        return None
 
     @property
     def effective_document_parser(self) -> Literal["markitdown", "mineru"]:
-        """Ưu tiên phân tích tự động hiện tại; file cụ thể vẫn do dịch vụ phân tích route theo định dạng."""
+        """当前自动解析偏好；具体文件仍由解析服务按格式路由。"""
         if self.document_parser == "markitdown":
             return "markitdown"
         return "mineru" if self.mineru_configured else "markitdown"

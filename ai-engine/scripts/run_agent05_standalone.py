@@ -3,7 +3,7 @@
 Kiểm thử vận hành độc lập Agent 05 trên dữ liệu thực tế và CSDL PostgreSQL:
 1. Tự động tìm kiếm hoặc nạp Investment Thesis mới nhất từ CSDL (`investment_theses`).
 2. Nạp dữ liệu thị trường thực tế (Giá realtime/EOD, Volume, MA20, P/E, P/B, HMM Regime).
-3. Thẩm định đồ thị sở hữu chéo GIL từ SAG FastMCP (kèm cơ chế bảo vệ khi mạng lỗi).
+3. Kiểm định các yếu tố rủi ro định lượng độc lập (Beneish, phải thu, thanh khoản, vĩ mô, độ mới dữ liệu).
 4. Tính toán định lượng 3-Tier Counter-Thesis Score (CTS):
    - Base CTS: Rủi ro kinh doanh (45%) + Rủi ro thị trường (35%) + Rủi ro mô hình (20%)
    - ML Interaction Multiplier: Quét các cặp rủi ro cộng hưởng phi tuyến
@@ -24,10 +24,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from datetime import datetime, timezone
-import json
 import os
 import sys
+from datetime import UTC, datetime
 
 # Đảm bảo đường dẫn import cho ai-engine
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -37,20 +36,20 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
+import app.domain.agents  # noqa: F401  # Tự động đăng ký 12 agents vào AgentRegistry
 from app.core.registry import AgentRegistry
-import app.domain.agents  # Tự động đăng ký 12 agents vào AgentRegistry
+from app.domain.repositories.financial_repository import FinancialRepository
 from app.domain.repositories.intelligence_repository import IntelligenceRepository
 from app.domain.repositories.market_data_repository import MarketDataRepository
-from app.domain.repositories.financial_repository import FinancialRepository
 from app.infrastructure.database.pg_pool import get_conn
 
 
 async def run_agent05_standalone(ticker: str):
     ticker = ticker.upper().strip()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     print("=" * 80)
-    print(f" [AGENT 05: COUNTER THESIS AGENT - DEVIL'S ADVOCATE] -- STANDALONE RUN")
+    print(" [AGENT 05: COUNTER THESIS AGENT - DEVIL'S ADVOCATE] -- STANDALONE RUN")
     print(f" Ticker: {ticker} | Timestamp: {now.strftime('%Y-%m-%d %H:%M:%S UTC')}")
     print("=" * 80)
 
@@ -116,7 +115,6 @@ async def run_agent05_standalone(ticker: str):
         return
 
     result_data = dispatch_res.get("result", {}).get("data", {})
-    trace_data = dispatch_res.get("result", {}).get("trace", {})
 
     verdict = result_data.get("verdict", "UNKNOWN")
     cts_score = float(result_data.get("cts_score", 0.0))
@@ -127,7 +125,7 @@ async def run_agent05_standalone(ticker: str):
     is_cap = result_data.get("is_capitulation_rebound", False)
 
     print("\n" + "-" * 80)
-    print(f" KẾT QUẢ PHẢN BIỆN (DEVIL'S ADVOCATE REPORT)")
+    print(" KẾT QUẢ PHẢN BIỆN (DEVIL'S ADVOCATE REPORT)")
     print("-" * 80)
     print(f"  * PHÁN QUYẾT CUỐI CÙNG   : [{verdict}]")
     print(f"  * ĐIỂM FINAL CTS         : {cts_score:.1f} / 100.0 (Ngưỡng: <=30 PROCEED | 31-60 CONDITIONAL | >60 BLOCK)")
@@ -168,18 +166,17 @@ async def run_agent05_standalone(ticker: str):
         if db_verdict:
             print(f"   [OK] Đã xác nhận lưu phán quyết vào `counter_thesis_verdicts` (thesis_id: {thesis_id})")
         else:
-            print(f"   [X] Không tìm thấy bản ghi trong `counter_thesis_verdicts`")
+            print("   [X] Không tìm thấy bản ghi trong `counter_thesis_verdicts`")
 
         updated_thesis = intel_repo.get_latest_investment_thesis(ticker)
         if updated_thesis:
             print(f"   [OK] Đã cập nhật trạng thái `investment_theses.status` -> '{updated_thesis.get('status')}'")
 
         # Kiểm tra audit log
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT count(*) FROM log_counter_thesis WHERE thesis_id = %s;", (thesis_id,))
-                cnt = cur.fetchone()[0]
-                print(f"   [OK] Đã ghi nhận {cnt} bản ghi audit trail vào `log_counter_thesis`")
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM log_counter_thesis WHERE thesis_id = %s;", (thesis_id,))
+            cnt = cur.fetchone()[0]
+            print(f"   [OK] Đã ghi nhận {cnt} bản ghi audit trail vào `log_counter_thesis`")
 
     print("\n" + "=" * 80)
     print(f" HOÀN TẤT STANDALONE PRODUCTION RUN CHO AGENT-05 ({ticker})")

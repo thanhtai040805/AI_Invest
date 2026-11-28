@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Paper-Grade Algorithmic &amp; Data Representation Flow · AIInvest</title>
+  <title>Paper-Grade Algorithmic &amp; Data Representation Flow · AIInvest SAG v2</title>
   <link
     href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&amp;family=Geist+Mono:wght@400;500;600;700&amp;family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&amp;display=swap"
     rel="stylesheet" />
@@ -17,15 +17,15 @@
       --color-soft: #64748b;
       --color-rule: #cbd5e1;
       --color-accent: #ea580c;
-      /* Coral focal (Focal 1: Hybrid Fusion) */
+      /* Coral focal (Focal 1: Table-Safe MMR & Synthesis) */
       --color-link: #0284c7;
-      /* Dense vector cyan/blue */
+      /* Dense vector & 2D table cyan/blue */
       --color-indigo: #7c3aed;
-      /* Hypergraph & Relational violet */
+      /* 3-Layer KG & Leiden violet */
       --color-emerald: #16a34a;
       /* Verified Evidence Green (Focal 2) */
       --color-rose: #e11d48;
-      /* Forensic Veto Crimson */
+      /* Calculator & Discrepancy Alert Crimson */
       --font-serif: 'Newsreader', Georgia, serif;
       --font-sans: 'Geist', -apple-system, system-ui, sans-serif;
       --font-mono: 'Geist Mono', monospace;
@@ -74,7 +74,7 @@
       font-size: 14px;
       line-height: 1.55;
       color: var(--color-muted);
-      max-width: 84ch;
+      max-width: 88ch;
     }
 
     .diagram-container {
@@ -95,13 +95,11 @@
     /* Motion System & Instant Readability */
     .motion-ready [data-motion-item] {
       opacity: 1;
-      /* 100% visible and sharp when first opened */
       transform: none;
       transition: opacity var(--motion-step) var(--motion-ease),
         filter var(--motion-step) var(--motion-ease);
     }
 
-    /* Dim unreached items ONLY during active stepping or playback */
     .motion-ready.is-playing [data-motion-item]:not(.is-visible),
     .motion-ready[data-frame="step"] [data-motion-item]:not(.is-visible) {
       opacity: 0.22;
@@ -120,7 +118,6 @@
       filter: drop-shadow(0 0 12px rgba(234, 88, 12, 0.45));
     }
 
-    /* Dynamic Flow Connectors - Synchronized Opacity with Flow Steps */
     .flow-step {
       transition: opacity var(--motion-step) var(--motion-ease);
     }
@@ -129,7 +126,6 @@
       transition: opacity var(--motion-step) var(--motion-ease);
     }
 
-    /* Dim future connector steps when actively stepping or playing */
     .motion-ready.is-playing .flow-step,
     .motion-ready[data-frame="step"] .flow-step {
       opacity: 0.16;
@@ -140,7 +136,6 @@
       opacity: 0;
     }
 
-    /* Cumulative step-by-step reveal of connector arrows */
     [data-step-current="1"] .flow-step-1,
     [data-step-current="2"] .flow-step-1,
     [data-step-current="2"] .flow-step-2,
@@ -185,7 +180,6 @@
       opacity: 1 !important;
     }
 
-    /* Active step glow */
     [data-step-current="1"] .flow-step-1,
     [data-step-current="2"] .flow-step-2,
     [data-step-current="3"] .flow-step-3,
@@ -195,7 +189,6 @@
       filter: drop-shadow(0 0 6px rgba(234, 88, 12, 0.4));
     }
 
-    /* Vibrant Flow Streaming Lines */
     @keyframes flowStream {
       from {
         stroke-dashoffset: 36;
@@ -283,13 +276,11 @@
       animation: beaconGlow 2.5s ease-in-out infinite;
     }
 
-    /* Traveling Arrow Particle Styling */
     .traveling-arrow {
       pointer-events: none;
       filter: drop-shadow(0 0 2px rgba(15, 23, 42, 0.35));
     }
 
-    /* Playback Controls */
     [data-motion-controls] {
       display: none;
       align-items: center;
@@ -366,7 +357,6 @@
       font: 500 12px/1.4 var(--font-mono);
     }
 
-    /* Interactive Inspector Drawer & Backdrop */
     .interactive-node {
       cursor: pointer;
       transition: transform 0.18s ease, filter 0.18s ease;
@@ -376,7 +366,6 @@
       filter: drop-shadow(0 4px 14px rgba(2, 132, 199, 0.35));
     }
 
-    /* Slide-Over Inspector Drawer (:target based, zero JS) */
     .inspector-backdrop {
       position: fixed;
       inset: 0;
@@ -486,7 +475,6 @@
       color: #475569;
     }
 
-    /* Strict Rule: Fresh light pastel background, NEVER black/dark background */
     .drawer-code {
       background: #f8fafc;
       color: #0369a1;
@@ -545,7 +533,6 @@
       filter: drop-shadow(0 4px 12px rgba(2, 132, 199, 0.3));
     }
 
-    /* Dynamic Flow Opacity in Step Mode: Inactive paths dim to 0.14 */
     [data-motion-root][data-frame="step"] [data-motion-item]:not(.is-current) {
       opacity: 0.14 !important;
       transition: opacity 0.28s ease;
@@ -635,19 +622,24 @@
     <main data-motion-root data-motion-mode="step" data-step-count="6" data-step-current="6" data-frame="static"
       data-static-frame="complete">
       <div class="header">
-        <p class="eyebrow">NeurIPS / SIGMOD Scientific Methodology Format · AIInvest Research</p>
+        <p class="eyebrow">NeurIPS / SIGMOD Scientific Methodology Format · AIInvest SAG v2 (Phase 1)</p>
         <h1>Paper-Grade Algorithmic &amp; Data Representation Flow</h1>
-        <p class="subtitle">Dual-phase mathematical transformation: Ingestion AST parsing, line-by-line SHA-256 quote
-          hashing, bipartite hypergraph projection, and fork-join hybrid retrieval with dynamic queue accumulation.</p>
+        <p class="subtitle">SAG v2 Phase 1 Stock Research &amp; Enterprise Analysis AI Chat (Option A+ Unified Multi-Tenant
+          Knowledge Chamber + Layered Cross-Company Bridge): HOSE 4-branch bilingual triage (0 LLM), Dual-Rep 2D Table
+          Engine, Shared Qdrant 1024d + VN-Dot BM25 + mentioned_tickers (bypassing Leiden branch_local), Bi-Temporal
+          3-Layer KG, Dual-Channel PRIMARY + CROSS-REF Retrieval, Sandboxed Calculator, and SHA-256 quote_hash
+          Verification (Rule 06: 12 Agents &amp; GIL remain SAG_CLOSED).</p>
       </div>
 
       <div class="diagram-container">
         <svg viewBox="0 0 1140 920" xmlns="http://www.w3.org/2000/svg" role="img"
           aria-labelledby="paper-flow-title paper-flow-desc">
-          <title id="paper-flow-title">Paper-Grade Algorithmic and Data Representation Flow</title>
-          <desc id="paper-flow-desc">Scientific methodology diagram displaying dual-phase data transformations from raw
-            financial PDF ingestion, AST decomposition, optional embedding, and online parallel fork-join retrieval,
-            forensic calculations, and verified evidence context.</desc>
+          <title id="paper-flow-title">SAG v2 Phase 1 Algorithmic and Data Representation Flow</title>
+          <desc id="paper-flow-desc">Scientific methodology diagram displaying dual-phase SAG v2 data transformations:
+            Phase 1 offline HOSE input triage, 4 Natural Document Classes canonical sub-documents, Dual-Representation 2D financial tables + grouped table_card SearchUnits,
+            Qdrant 1024d + VN-Dot BM25 hybrid indexing with bi-temporal valid_to_ts, and Zero-Hardcode 3-Layer Knowledge Graph; Phase 2 online 7-stage
+            SSE Research Chat (GENERAL/MOAT) multi-hop retrieval, HippoRAG 2 + bridge Hop-2 + KG hops, sandboxed Python calculation, quote_hash verification,
+            and ChatGPT-style /research-chat Evidence Drawer Gate (12 Decision Agents and GIL remain closed under Rule 06).</desc>
 
           <defs>
             <marker id="paper-flow-arrow" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
@@ -675,19 +667,18 @@
           <!-- ════════════════════════════════════════════════════════════════ -->
           <rect x="24" y="32" width="1092" height="376" rx="8" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.3"
             stroke-dasharray="6,4" />
-          <rect x="40" y="40" width="460" height="20" rx="4" fill="#e2e8f0" stroke="#94a3b8" stroke-width="0.8" />
+          <rect x="40" y="40" width="520" height="20" rx="4" fill="#e2e8f0" stroke="#94a3b8" stroke-width="0.8" />
           <text x="50" y="54" fill="#334155" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="700"
-            letter-spacing="0.14em">PHASE 1: OFFLINE INGESTION, STRUCTURAL PARSING &amp; DUAL-STORE ENCODING</text>
+            letter-spacing="0.11em">PHASE 1: OFFLINE HOSE INGEST (0 LLM), DUAL-REP TABLES &amp; 3-LAYER KG</text>
 
-          <!-- CONNECTORS: Phase 1 (Flow-Synchronized Connectors) -->
-          <!-- Step 1 Arrow: Node 1 -> Node 2 (Horizontal x=176 to x=232, y=148) -->
+          <!-- CONNECTORS: Phase 1 -->
           <g class="flow-step flow-step-1">
             <path d="M176 148 H232" fill="none" stroke="rgba(148,163,184,0.3)" stroke-width="3" />
             <path id="path-p1-1" class="flow-active" d="M176 148 H232" fill="none" stroke="#64748b" stroke-width="2.2"
               marker-end="url(#paper-flow-arrow)" />
-            <rect x="180" y="130" width="48" height="13" rx="2" fill="#e2e8f0" stroke="#94a3b8" stroke-width="0.8" />
+            <rect x="178" y="130" width="52" height="13" rx="2" fill="#e2e8f0" stroke="#94a3b8" stroke-width="0.8" />
             <text x="204" y="140" fill="#334155" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="600"
-              text-anchor="middle" letter-spacing="0.06em">[1:1 RAW]</text>
+              text-anchor="middle" letter-spacing="0.06em">[A/B/C/D]</text>
             <g class="traveling-arrow">
               <polygon points="-5 -4, 4 0, -5 4" fill="#64748b">
                 <animateMotion dur="1.1s" repeatCount="indefinite" path="M176 148 H232" rotate="auto" />
@@ -695,14 +686,13 @@
             </g>
           </g>
 
-          <!-- Step 2 Arrow: Node 2 -> Node 3 (Horizontal x=384 to x=440, y=148) -->
           <g class="flow-step flow-step-2">
             <path d="M384 148 H440" fill="none" stroke="rgba(192,132,252,0.25)" stroke-width="3" />
             <path id="path-p1-2" class="flow-active" d="M384 148 H440" fill="none" stroke="#a855f7" stroke-width="2.2"
               marker-end="url(#paper-flow-arrow)" />
-            <rect x="388" y="130" width="48" height="13" rx="2" fill="#f5d0fe" stroke="#c084fc" stroke-width="0.8" />
+            <rect x="386" y="130" width="52" height="13" rx="2" fill="#f5d0fe" stroke="#c084fc" stroke-width="0.8" />
             <text x="412" y="140" fill="#701a75" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="600"
-              text-anchor="middle" letter-spacing="0.06em">[1:N AST]</text>
+              text-anchor="middle" letter-spacing="0.06em">[4-CLASS]</text>
             <g class="traveling-arrow">
               <polygon points="-5 -4, 4 0, -5 4" fill="#a855f7">
                 <animateMotion dur="1.1s" repeatCount="indefinite" path="M384 148 H440" rotate="auto" />
@@ -710,16 +700,14 @@
             </g>
           </g>
 
-          <!-- Step 3 Connectors: Dual-Store Split -->
-          <!-- Fork Path 1A: Node 3 -> Node 4A (Top Semantic Path) -->
           <g class="flow-step flow-step-3">
             <path d="M596 132 H624 Q632 132 632 124 V108 Q632 100 640 100 H668" fill="none" stroke="rgba(2,132,199,0.2)"
               stroke-width="3" />
             <path id="path-p1-3a" class="flow-active-link" d="M596 132 H624 Q632 132 632 124 V108 Q632 100 640 100 H668"
               fill="none" stroke="#0284c7" stroke-width="2.2" marker-end="url(#paper-flow-arrow-link)" />
-            <rect x="606" y="88" width="52" height="13" rx="2" fill="#bae6fd" stroke="#38bdf8" stroke-width="0.8" />
+            <rect x="602" y="88" width="60" height="13" rx="2" fill="#bae6fd" stroke="#38bdf8" stroke-width="0.8" />
             <text x="632" y="98" fill="#0369a1" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="700"
-              text-anchor="middle" letter-spacing="0.06em">[1:N CHUNK]</text>
+              text-anchor="middle" letter-spacing="0.04em">[CARDS+DP]</text>
             <g class="traveling-arrow">
               <polygon points="-5 -4, 4 0, -5 4" fill="#0284c7">
                 <animateMotion dur="1.3s" repeatCount="indefinite"
@@ -727,20 +715,18 @@
               </polygon>
             </g>
 
-            <!-- Arrow 4A -> Store 1 (Vector Space) -->
             <path d="M856 100 H896" fill="none" stroke="rgba(2,132,199,0.2)" stroke-width="3" />
             <path id="path-p1-4a" class="flow-active-link" d="M856 100 H896" fill="none" stroke="#0284c7"
               stroke-width="2.2" marker-end="url(#paper-flow-arrow-link)" />
             <rect x="858" y="82" width="36" height="13" rx="2" fill="#bae6fd" stroke="#38bdf8" stroke-width="0.8" />
             <text x="876" y="92" fill="#0369a1" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="700"
-              text-anchor="middle" letter-spacing="0.06em">[BATCH]</text>
+              text-anchor="middle" letter-spacing="0.06em">[1024D]</text>
             <g class="traveling-arrow">
               <polygon points="-5 -4, 4 0, -5 4" fill="#0284c7">
                 <animateMotion dur="0.9s" repeatCount="indefinite" path="M856 100 H896" rotate="auto" />
               </polygon>
             </g>
 
-            <!-- Fork Path 1B: Node 3 -> Node 4B (Bottom Symbolic Path) -->
             <path d="M596 164 H624 Q632 164 632 172 V272 Q632 280 640 280 H668" fill="none"
               stroke="rgba(124,58,237,0.2)" stroke-width="3" />
             <path id="path-p1-3b" class="flow-active-graph"
@@ -748,7 +734,7 @@
               stroke-width="2.2" marker-end="url(#paper-flow-arrow-graph)" />
             <rect x="600" y="220" width="64" height="13" rx="2" fill="#ddd6fe" stroke="#a78bfa" stroke-width="0.8" />
             <text x="632" y="230" fill="#5b21b6" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="700"
-              text-anchor="middle" letter-spacing="0.06em">[M:N HYPER]</text>
+              text-anchor="middle" letter-spacing="0.04em">[L1-L3 KG]</text>
             <g class="traveling-arrow">
               <polygon points="-5 -4, 4 0, -5 4" fill="#7c3aed">
                 <animateMotion dur="1.5s" repeatCount="indefinite"
@@ -756,13 +742,12 @@
               </polygon>
             </g>
 
-            <!-- Arrow 4B -> Store 2 (Financial Graph) -->
             <path d="M856 280 H896" fill="none" stroke="rgba(124,58,237,0.2)" stroke-width="3" />
             <path id="path-p1-4b" class="flow-active-graph" d="M856 280 H896" fill="none" stroke="#7c3aed"
               stroke-width="2.2" marker-end="url(#paper-flow-arrow-graph)" />
             <rect x="858" y="262" width="36" height="13" rx="2" fill="#ddd6fe" stroke="#a78bfa" stroke-width="0.8" />
             <text x="876" y="272" fill="#5b21b6" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="700"
-              text-anchor="middle" letter-spacing="0.06em">[REL:FK]</text>
+              text-anchor="middle" letter-spacing="0.06em">[PIT]</text>
             <g class="traveling-arrow">
               <polygon points="-5 -4, 4 0, -5 4" fill="#7c3aed">
                 <animateMotion dur="0.9s" repeatCount="indefinite" path="M856 280 H896" rotate="auto" />
@@ -770,16 +755,14 @@
             </g>
           </g>
 
-          <!-- Step 4 Cross-Phase Store Query Connectors -->
           <g class="flow-step flow-step-4">
-            <!-- Phase 1 Store 1 to Phase 2 Node 6A -->
             <path d="M994 146 V472 Q994 480 986 480 H468 V508" fill="none" stroke="rgba(2,132,199,0.2)"
               stroke-width="2.6" />
             <path class="flow-active-link" d="M994 146 V472 Q994 480 986 480 H468 V508" fill="none" stroke="#0284c7"
               stroke-width="2" marker-end="url(#paper-flow-arrow-link)" />
-            <rect x="910" y="442" width="76" height="13" rx="2" fill="#bae6fd" stroke="#38bdf8" stroke-width="0.8" />
-            <text x="948" y="452" fill="#0369a1" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="700"
-              text-anchor="middle" letter-spacing="0.06em">[ANN INDEX]</text>
+            <rect x="902" y="442" width="84" height="13" rx="2" fill="#bae6fd" stroke="#38bdf8" stroke-width="0.8" />
+            <text x="944" y="452" fill="#0369a1" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="700"
+              text-anchor="middle" letter-spacing="0.04em">[QDRANT + TBL]</text>
             <g class="traveling-arrow">
               <polygon points="-5 -4, 4 0, -5 4" fill="#0284c7">
                 <animateMotion dur="2.4s" repeatCount="indefinite" path="M994 146 V472 Q994 480 986 480 H468 V508"
@@ -787,14 +770,13 @@
               </polygon>
             </g>
 
-            <!-- Phase 1 Store 2 to Phase 2 Node 6C -->
             <path d="M994 326 V716 Q994 724 986 724 H468" fill="none" stroke="rgba(124,58,237,0.2)"
               stroke-width="2.6" />
             <path class="flow-active-graph" d="M994 326 V716 Q994 724 986 724 H468" fill="none" stroke="#7c3aed"
               stroke-width="2" marker-end="url(#paper-flow-arrow-graph)" />
-            <rect x="910" y="682" width="76" height="13" rx="2" fill="#ddd6fe" stroke="#a78bfa" stroke-width="0.8" />
-            <text x="948" y="692" fill="#5b21b6" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="700"
-              text-anchor="middle" letter-spacing="0.06em">[GRAPH QUERY]</text>
+            <rect x="902" y="682" width="84" height="13" rx="2" fill="#ddd6fe" stroke="#a78bfa" stroke-width="0.8" />
+            <text x="944" y="692" fill="#5b21b6" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="700"
+              text-anchor="middle" letter-spacing="0.04em">[KG + LEIDEN]</text>
             <g class="traveling-arrow">
               <polygon points="-5 -4, 4 0, -5 4" fill="#7c3aed">
                 <animateMotion dur="2.6s" repeatCount="indefinite" path="M994 326 V716 Q994 724 986 724 H468"
@@ -804,160 +786,156 @@
           </g>
 
           <!-- NODES: Phase 1 -->
-          <!-- Node 1: Raw Ingress Corpus (Step 1) -->
+          <!-- Node 1: HOSE Input Gate (Step 1) -->
           <g data-motion-item data-step="1" class="interactive-node" data-node-id="node-corpus"
-            aria-label="Step 1: Raw financial report ingestion">
-            <!-- Fresh Soft Slate Card -->
-            <rect x="44" y="96" width="132" height="106" rx="6" fill="#f1f5f9" stroke="#64748b" stroke-width="1.8" />
-            <path d="M44 102 A6 6 0 0 1 50 96 H170 A6 6 0 0 1 176 102 V122 H44 Z" fill="#e2e8f0" />
-            <text x="110" y="113" fill="#1e293b" font-size="10.5" font-weight="700" font-family="'Geist', sans-serif"
-              text-anchor="middle">Raw BCTC Corpus</text>
-            <!-- Badge & Glyph -->
-            <rect x="52" y="128" width="38" height="13" rx="2" fill="#bae6fd" stroke="#38bdf8" stroke-width="0.8" />
-            <text x="71" y="138" fill="#0369a1" font-size="7" font-family="'Geist Mono', monospace" font-weight="700"
-              text-anchor="middle" letter-spacing="0.08em">CORPUS</text>
-            <!-- Document Glyph -->
-            <path d="M150 128 H162 V142 H150 Z" fill="#ffffff" stroke="#64748b" stroke-width="1" />
-            <path d="M153 132 H159 M153 135 H159 M153 138 H157" stroke="#0284c7" stroke-width="1" />
-            <!-- Card Content -->
-            <text x="110" y="156" fill="#0f172a" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="600"
-              text-anchor="middle">Triple Golden Set (PDF)</text>
-            <text x="110" y="171" fill="#0284c7" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
-              text-anchor="middle">BACKBONE · QTR · CG</text>
-            <text x="110" y="187" fill="#475569" font-size="7.5" font-family="'Geist Mono', monospace"
-              text-anchor="middle">IngestionGuard: ADTV &gt; 5B</text>
+            aria-label="Step 1: HOSE Input Selector and Inspector">
+            <a href="#inspect-node-corpus" class="node-anchor" aria-label="Inspect HOSE Input Selector and Inspector">
+              <rect x="44" y="96" width="132" height="106" rx="6" fill="#f1f5f9" stroke="#64748b" stroke-width="1.8" />
+              <path d="M44 102 A6 6 0 0 1 50 96 H170 A6 6 0 0 1 176 102 V122 H44 Z" fill="#e2e8f0" />
+              <text x="110" y="113" fill="#1e293b" font-size="10.5" font-weight="700" font-family="'Geist', sans-serif"
+                text-anchor="middle">HOSE Input Gate</text>
+              <rect x="52" y="128" width="42" height="13" rx="2" fill="#bae6fd" stroke="#38bdf8" stroke-width="0.8" />
+              <text x="73" y="138" fill="#0369a1" font-size="7" font-family="'Geist Mono', monospace" font-weight="700"
+                text-anchor="middle" letter-spacing="0.06em">0 LLM</text>
+              <path d="M150 128 H162 V142 H150 Z" fill="#ffffff" stroke="#64748b" stroke-width="1" />
+              <path d="M153 132 H159 M153 135 H159 M153 138 H157" stroke="#0284c7" stroke-width="1" />
+              <text x="110" y="156" fill="#0f172a" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
+                text-anchor="middle">3 Core + 2 Cond (No CG)</text>
+              <text x="110" y="171" fill="#0284c7" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="600"
+                text-anchor="middle">NOTICE &lt;15p · BAD_FONT</text>
+              <text x="110" y="187" fill="#475569" font-size="7.5" font-family="'Geist Mono', monospace"
+                text-anchor="middle">Zip-Slip · PIT PubDate</text>
+            </a>
           </g>
 
-          <!-- Node 2: MinerU OCR & Noise Sanitizer (Step 1) -->
+          <!-- Node 2: Hybrid OCR & 2D Table Engine (Step 1) -->
           <g data-motion-item data-step="1" class="interactive-node" data-node-id="node-mineru"
-            aria-label="Step 1: MinerU OCR extraction and boilerplate sanitization">
-            <!-- Fresh Soft Fuchsia Card -->
-            <rect x="232" y="96" width="152" height="106" rx="6" fill="#fae8ff" stroke="#c084fc" stroke-width="1.8" />
-            <path d="M232 102 A6 6 0 0 1 238 96 H378 A6 6 0 0 1 384 102 V122 H232 Z" fill="#f5d0fe" />
-            <text x="308" y="113" fill="#701a75" font-size="10.5" font-weight="700" font-family="'Geist', sans-serif"
-              text-anchor="middle">MinerU OCR Engine</text>
-            <!-- Badge & Glyph -->
-            <rect x="240" y="128" width="34" height="13" rx="2" fill="#e879f9" />
-            <text x="257" y="138" fill="#ffffff" font-size="7" font-family="'Geist Mono', monospace" font-weight="700"
-              text-anchor="middle" letter-spacing="0.08em">OCR-MD</text>
-            <!-- Table Glyph -->
-            <rect x="354" y="128" width="18" height="13" rx="1" fill="#ffffff" stroke="#c084fc" stroke-width="1" />
-            <line x1="354" y1="133" x2="372" y2="133" stroke="#c084fc" stroke-width="0.8" />
-            <line x1="360" y1="128" x2="360" y2="141" stroke="#c084fc" stroke-width="0.8" />
-            <!-- Content -->
-            <text x="308" y="156" fill="#0f172a" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="600"
-              text-anchor="middle">Markdown Table + Data Gate</text>
-            <text x="308" y="171" fill="#9333ea" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
-              text-anchor="middle">vi &gt; en Reject · Source Fallback</text>
-            <text x="308" y="187" fill="#475569" font-size="7.5" font-family="'Geist Mono', monospace"
-              text-anchor="middle">R2 Gate · SAG closed · Evidence boundary</text>
+            aria-label="Step 1B: Hybrid OCR and Dual-Representation Financial Table Engine">
+            <a href="#inspect-node-mineru" class="node-anchor" aria-label="Inspect Hybrid OCR and 2D Table Engine">
+              <rect x="232" y="96" width="152" height="106" rx="6" fill="#fae8ff" stroke="#c084fc" stroke-width="1.8" />
+              <path d="M232 102 A6 6 0 0 1 238 96 H378 A6 6 0 0 1 384 102 V122 H232 Z" fill="#f5d0fe" />
+              <text x="308" y="113" fill="#701a75" font-size="10.5" font-weight="700" font-family="'Geist', sans-serif"
+                text-anchor="middle">Hybrid OCR &amp; Tables</text>
+              <rect x="240" y="128" width="46" height="13" rx="2" fill="#e879f9" />
+              <text x="263" y="138" fill="#ffffff" font-size="7" font-family="'Geist Mono', monospace" font-weight="700"
+                text-anchor="middle" letter-spacing="0.06em">VI+TABLE</text>
+              <rect x="354" y="128" width="18" height="13" rx="1" fill="#ffffff" stroke="#c084fc" stroke-width="1" />
+              <line x1="354" y1="133" x2="372" y2="133" stroke="#c084fc" stroke-width="0.8" />
+              <line x1="360" y1="128" x2="360" y2="141" stroke="#c084fc" stroke-width="0.8" />
+              <text x="308" y="156" fill="#0f172a" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
+                text-anchor="middle">pdfplumber + MinerU (latin)</text>
+              <text x="308" y="171" fill="#9333ea" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="600"
+                text-anchor="middle">Unmerge + (Tiếp theo)</text>
+              <text x="308" y="187" fill="#475569" font-size="7.5" font-family="'Geist Mono', monospace"
+                text-anchor="middle">Sanity &lt;=0.5% · Fail-Closed</text>
+            </a>
           </g>
 
-          <!-- Node 3: Tree Decomposition & Quote Hashing (Step 2) -->
+          <!-- Node 3: 4 Natural Classes & Canonical Hasher (Step 2) -->
           <g data-motion-item data-step="2" class="interactive-node" data-node-id="node-ast"
-            aria-label="Step 2: AST Tree decomposition and line-by-line SHA-256 quote hashing">
-            <!-- Fresh Soft Teal Card -->
-            <rect x="440" y="96" width="156" height="106" rx="6" fill="#ccfbf1" stroke="#2dd4bf" stroke-width="1.8" />
-            <path d="M440 102 A6 6 0 0 1 446 96 H590 A6 6 0 0 1 596 102 V122 H440 Z" fill="#99f6e4" />
-            <text x="518" y="113" fill="#115e59" font-size="10.5" font-weight="700" font-family="'Geist', sans-serif"
-              text-anchor="middle">AST Tree &amp; Hasher</text>
-            <!-- Badge -->
-            <rect x="448" y="128" width="46" height="13" rx="2" fill="#14b8a6" />
-            <text x="471" y="138" fill="#ffffff" font-size="7" font-family="'Geist Mono', monospace" font-weight="700"
-              text-anchor="middle" letter-spacing="0.08em">PARSER</text>
-            <!-- Hash Pill -->
-            <rect x="556" y="128" width="32" height="13" rx="2" fill="#f0fdfa" stroke="#14b8a6" stroke-width="0.8" />
-            <text x="572" y="138" fill="#0f766e" font-size="8" font-family="'Geist Mono', monospace" font-weight="700"
-              text-anchor="middle">#256</text>
-            <!-- Content -->
-            <text x="518" y="156" fill="#0f172a" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="600"
-              text-anchor="middle">Hierarchical Heading Regex</text>
-            <text x="518" y="171" fill="#475569" font-size="8" font-family="'Geist Mono', monospace"
-              text-anchor="middle">#, ##, Roman I-V, ThuyetMinh</text>
-            <text x="518" y="187" fill="#0f766e" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="700"
-              text-anchor="middle">quote_hash = SHA-256(line)</text>
+            aria-label="Step 2: 4 Natural Document Classes, Bi-Temporal Lineage and SHA-256 quote_hash">
+            <a href="#inspect-node-ast" class="node-anchor" aria-label="Inspect 4 Natural Document Classes Canonical and Quote Hasher">
+              <rect x="440" y="96" width="156" height="106" rx="6" fill="#ccfbf1" stroke="#2dd4bf" stroke-width="1.8" />
+              <path d="M440 102 A6 6 0 0 1 446 96 H590 A6 6 0 0 1 596 102 V122 H440 Z" fill="#99f6e4" />
+              <text x="518" y="113" fill="#115e59" font-size="10.5" font-weight="700" font-family="'Geist', sans-serif"
+                text-anchor="middle">4-Class &amp; Hasher</text>
+              <rect x="448" y="128" width="46" height="13" rx="2" fill="#14b8a6" />
+              <text x="471" y="138" fill="#ffffff" font-size="7" font-family="'Geist Mono', monospace" font-weight="700"
+                text-anchor="middle" letter-spacing="0.06em">CANON</text>
+              <rect x="556" y="128" width="32" height="13" rx="2" fill="#f0fdfa" stroke="#14b8a6" stroke-width="0.8" />
+              <text x="572" y="138" fill="#0f766e" font-size="8" font-family="'Geist Mono', monospace" font-weight="700"
+                text-anchor="middle">PIT</text>
+              <text x="518" y="156" fill="#0f172a" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
+                text-anchor="middle">4 Classes + &lt;!-- PAGE N --&gt;</text>
+              <text x="518" y="171" fill="#475569" font-size="7.5" font-family="'Geist Mono', monospace"
+                text-anchor="middle">table_card · MinHash Dedup</text>
+              <text x="518" y="187" fill="#0f766e" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="700"
+                text-anchor="middle">valid_from/to · quote_hash</text>
+            </a>
           </g>
 
-          <!-- Semantic Path 3A: Chunker and Vector Store (Step 3) -->
+          <!-- Semantic Path 3A: Row Cards, DP Chunks & Vector+Table Store (Step 3) -->
           <g data-motion-item data-step="3"
-            aria-label="Step 3A: Semantic window chunking and dense vector space storage">
-            <!-- Node 4A: Fresh Soft Sky Blue Card -->
+            aria-label="Step 3A: Table-Safe DP Chunking, Row-Linearized Cards, VN-Dot BM25 and Qdrant 1024d">
             <g class="interactive-node" data-node-id="node-chunker">
-              <a href="#inspect-node-chunker" class="node-anchor" aria-label="Khảo sát chi tiết Semantic Chunking Window"><rect x="668" y="62" width="188" height="76" rx="6" fill="#dbeafe" stroke="#60a5fa" stroke-width="1.8" />
-              <path d="M668 68 A6 6 0 0 1 674 62 H850 A6 6 0 0 1 856 68 V84 H668 Z" fill="#bfdbfe" />
-              <text x="762" y="77" fill="#1e40af" font-size="10" font-weight="700" font-family="'Geist', sans-serif"
-                text-anchor="middle">Semantic Chunking Window</text>
-              <text x="762" y="100" fill="#0c4a6e" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="600"
-                text-anchor="middle">W_max = 2800 · Overlap = 320</text>
-              <text x="762" y="115" fill="#2563eb" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
-                text-anchor="middle">Policy: repeat_header · Batch B=32</text>
-              <text x="762" y="129" fill="#475569" font-size="7" font-family="'Geist Mono', monospace"
-                text-anchor="middle">Deterministic Boundary Verification</text>
-            </g></a>
+              <a href="#inspect-node-chunker" class="node-anchor" aria-label="Inspect Table-Safe DP and Row-Linearized Cards">
+                <rect x="668" y="62" width="188" height="76" rx="6" fill="#dbeafe" stroke="#60a5fa" stroke-width="1.8" />
+                <path d="M668 68 A6 6 0 0 1 674 62 H850 A6 6 0 0 1 856 68 V84 H668 Z" fill="#bfdbfe" />
+                <text x="762" y="77" fill="#1e40af" font-size="10" font-weight="700" font-family="'Geist', sans-serif"
+                  text-anchor="middle">Row Cards &amp; DP Chunks</text>
+                <text x="762" y="100" fill="#0c4a6e" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
+                  text-anchor="middle">Table-Safe DP · Row Cards</text>
+                <text x="762" y="115" fill="#2563eb" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
+                  text-anchor="middle">VN-Dot BM25 (16.012.813)</text>
+                <text x="762" y="129" fill="#475569" font-size="7" font-family="'Geist Mono', monospace"
+                  text-anchor="middle">Qwen3-Embedding-0.6B (1024d)</text>
+              </a>
+            </g>
 
-            <!-- Store 1: Fresh Soft Cyan Vector Space (Light, Vibrant, Zero Black) -->
             <g class="interactive-node" data-node-id="node-vector-store">
-              <a href="#inspect-node-vector-store" class="node-anchor" aria-label="Khảo sát chi tiết Dense Vector Space"><rect x="896" y="56" width="196" height="92" rx="6" fill="#e0f2fe" stroke="#0284c7" stroke-width="2"
-                class="store-breathing" />
-              <path d="M896 62 A6 6 0 0 1 902 56 H1086 A6 6 0 0 1 1092 62 V80 H896 Z" fill="#bae6fd" />
-              <text x="994" y="73" fill="#0369a1" font-size="10.5" font-weight="700" font-family="'Geist', sans-serif"
-                text-anchor="middle">Dense Vector Space (1024-d)</text>
-              <!-- 3D Vector Coordinate Glyph -->
-              <g transform="translate(1048, 86)">
-                <line x1="0" y1="20" x2="22" y2="20" stroke="#0284c7" stroke-width="1.2" />
-                <line x1="0" y1="20" x2="0" y2="2" stroke="#0284c7" stroke-width="1.2" />
-                <line x1="0" y1="20" x2="-10" y2="28" stroke="#0284c7" stroke-width="1.2" />
-                <line x1="0" y1="20" x2="16" y2="6" stroke="#ea580c" stroke-width="1.8" />
-                <line x1="0" y1="20" x2="8" y2="15" stroke="#0284c7" stroke-width="1.8" />
-              </g></a>
-              <text x="968" y="98" fill="#0c4a6e" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="700"
-                text-anchor="middle">Milvus / PGVector (1024-d)</text>
-              <text x="968" y="113" fill="#0284c7" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
-                text-anchor="middle">HNSW Cosine sim(v_Q, v_i)</text>
-              <text x="968" y="128" fill="#475569" font-size="7.5" font-family="'Geist Mono', monospace"
-                text-anchor="middle">embedding_chunks (Optional)</text>
+              <a href="#inspect-node-vector-store" class="node-anchor" aria-label="Inspect Qdrant 1024d and sag_extracted_tables Store">
+                <rect x="896" y="56" width="196" height="92" rx="6" fill="#e0f2fe" stroke="#0284c7" stroke-width="2"
+                  class="store-breathing" />
+                <path d="M896 62 A6 6 0 0 1 902 56 H1086 A6 6 0 0 1 1092 62 V80 H896 Z" fill="#bae6fd" />
+                <text x="994" y="73" fill="#0369a1" font-size="10.5" font-weight="700" font-family="'Geist', sans-serif"
+                  text-anchor="middle">Qdrant + 2D Table Store</text>
+                <g transform="translate(1048, 86)">
+                  <line x1="0" y1="20" x2="22" y2="20" stroke="#0284c7" stroke-width="1.2" />
+                  <line x1="0" y1="20" x2="0" y2="2" stroke="#0284c7" stroke-width="1.2" />
+                  <line x1="0" y1="20" x2="-10" y2="28" stroke="#0284c7" stroke-width="1.2" />
+                  <line x1="0" y1="20" x2="16" y2="6" stroke="#ea580c" stroke-width="1.8" />
+                  <line x1="0" y1="20" x2="8" y2="15" stroke="#0284c7" stroke-width="1.8" />
+                </g>
+                <text x="968" y="98" fill="#0c4a6e" font-size="8" font-family="'Geist Mono', monospace" font-weight="700"
+                  text-anchor="middle">Shared Qdrant Chamber + BM25</text>
+                <text x="968" y="113" fill="#0284c7" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="600"
+                  text-anchor="middle">mentioned_tickers · 2D Tables</text>
+                <text x="968" y="128" fill="#475569" font-size="7" font-family="'Geist Mono', monospace"
+                  text-anchor="middle">PIT [valid_from, valid_to) Index</text>
+              </a>
             </g>
           </g>
 
-          <!-- Symbolic Path 3B: Hypergraph and Financial Graph Store (Step 3) -->
+          <!-- Symbolic Path 3B: DenseGraph, Leiden Tree & 3-Layer KG Store (Step 3) -->
           <g data-motion-item data-step="3"
-            aria-label="Step 3B: Bipartite hypergraph projection into financial graph storage">
-            <!-- Node 4B: Fresh Soft Lavender Card -->
+            aria-label="Step 3B: DenseGraph, Leiden Routing Tree and Zero-Hardcode 3-Layer Knowledge Graph">
             <g class="interactive-node" data-node-id="node-hypergraph">
-              <a href="#inspect-node-hypergraph" class="node-anchor" aria-label="Khảo sát chi tiết Hypergraph Bipartite Projection"><rect x="668" y="242" width="188" height="76" rx="6" fill="#ede9fe" stroke="#a78bfa" stroke-width="1.8" />
-              <path d="M668 248 A6 6 0 0 1 674 242 H850 A6 6 0 0 1 856 248 V264 H668 Z" fill="#ddd6fe" />
-              <text x="762" y="257" fill="#5b21b6" font-size="10" font-weight="700" font-family="'Geist', sans-serif"
-                text-anchor="middle">Hypergraph Projection</text>
-              <text x="762" y="280" fill="#312e81" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="600"
-                text-anchor="middle">Bipartite Events → Entities (M:N)</text>
-              <text x="762" y="295" fill="#7c3aed" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
-                text-anchor="middle">DiGraph G=(V,E) · deterministic compiler · role-gated RPT</text>
-              <text x="762" y="309" fill="#475569" font-size="7" font-family="'Geist Mono', monospace"
-                text-anchor="middle">Tarjan Directed Cycle Detection</text>
-            </g></a>
+              <a href="#inspect-node-hypergraph" class="node-anchor" aria-label="Inspect DenseGraph, Leiden Tree and 3-Layer KG Builders">
+                <rect x="668" y="242" width="188" height="76" rx="6" fill="#ede9fe" stroke="#a78bfa" stroke-width="1.8" />
+                <path d="M668 248 A6 6 0 0 1 674 242 H850 A6 6 0 0 1 856 248 V264 H668 Z" fill="#ddd6fe" />
+                <text x="762" y="257" fill="#5b21b6" font-size="10" font-weight="700" font-family="'Geist', sans-serif"
+                  text-anchor="middle">DenseGraph + 3-Layer KG</text>
+                <text x="762" y="280" fill="#312e81" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
+                  text-anchor="middle">E0/E1 · TM Bridge · Leiden</text>
+                <text x="762" y="295" fill="#7c3aed" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="600"
+                  text-anchor="middle">EntityLinker + HAC/BH-FDR</text>
+                <text x="762" y="309" fill="#475569" font-size="7" font-family="'Geist Mono', monospace"
+                  text-anchor="middle">Mutual k-NN True-Peer (0 Hardcode)</text>
+              </a>
+            </g>
 
-            <!-- Store 2: Fresh Soft Violet Financial Knowledge Graph (Light, Vibrant, Zero Black) -->
             <g class="interactive-node" data-node-id="node-graph-store">
-              <a href="#inspect-node-graph-store" class="node-anchor" aria-label="Khảo sát chi tiết Relational Knowledge Graph"><rect x="896" y="236" width="196" height="92" rx="6" fill="#f3e8ff" stroke="#7c3aed" stroke-width="2"
-                class="store-breathing-graph" />
-              <path d="M896 242 A6 6 0 0 1 902 236 H1086 A6 6 0 0 1 1092 242 V260 H896 Z" fill="#e9d5ff" />
-              <text x="994" y="253" fill="#6b21a8" font-size="10.5" font-weight="700" font-family="'Geist', sans-serif"
-                text-anchor="middle">Financial Graph (Symbolic)</text>
-              <!-- Circular Graph Glyph -->
-              <g transform="translate(1048, 268)">
-                <circle cx="8" cy="6" r="4.5" fill="#ffffff" stroke="#7c3aed" stroke-width="1.3" />
-                <circle cx="20" cy="18" r="4.5" fill="#ffedd5" stroke="#ea580c" stroke-width="1.3" />
-                <circle cx="2" cy="22" r="4" fill="#ffffff" stroke="#64748b" stroke-width="1.1" />
-                <line x1="11" y1="9" x2="17" y2="15" stroke="#7c3aed" stroke-width="1.2" />
-                <line x1="5" y1="8" x2="3" y2="18" stroke="#64748b" stroke-width="1.1" />
-                <line x1="6" y1="21" x2="16" y2="19" stroke="#ea580c" stroke-width="1.2" />
-              </g></a>
-              <text x="968" y="278" fill="#581c87" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="700"
-                text-anchor="middle">PostgreSQL / NetworkX DiGraph</text>
-              <text x="968" y="293" fill="#7c3aed" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
-                text-anchor="middle">evidence_spans · document_facts</text>
-              <text x="968" y="308" fill="#475569" font-size="7.5" font-family="'Geist Mono', monospace"
-                text-anchor="middle">GilGraphCompiler · grounded edges</text>
+              <a href="#inspect-node-graph-store" class="node-anchor" aria-label="Inspect 3-Layer KG and Leiden Store in PostgreSQL 16">
+                <rect x="896" y="236" width="196" height="92" rx="6" fill="#f3e8ff" stroke="#7c3aed" stroke-width="2"
+                  class="store-breathing-graph" />
+                <path d="M896 242 A6 6 0 0 1 902 236 H1086 A6 6 0 0 1 1092 242 V260 H896 Z" fill="#e9d5ff" />
+                <text x="994" y="253" fill="#6b21a8" font-size="10.5" font-weight="700" font-family="'Geist', sans-serif"
+                  text-anchor="middle">3-Layer KG &amp; Leiden (PG)</text>
+                <g transform="translate(1048, 268)">
+                  <circle cx="8" cy="6" r="4.5" fill="#ffffff" stroke="#7c3aed" stroke-width="1.3" />
+                  <circle cx="20" cy="18" r="4.5" fill="#ffedd5" stroke="#ea580c" stroke-width="1.3" />
+                  <circle cx="2" cy="22" r="4" fill="#ffffff" stroke="#64748b" stroke-width="1.1" />
+                  <line x1="11" y1="9" x2="17" y2="15" stroke="#7c3aed" stroke-width="1.2" />
+                  <line x1="5" y1="8" x2="3" y2="18" stroke="#64748b" stroke-width="1.1" />
+                  <line x1="6" y1="21" x2="16" y2="19" stroke="#ea580c" stroke-width="1.2" />
+                </g>
+                <text x="968" y="278" fill="#581c87" font-size="8" font-family="'Geist Mono', monospace" font-weight="700"
+                  text-anchor="middle">kg_nodes · kg_edges</text>
+                <text x="968" y="293" fill="#7c3aed" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="600"
+                  text-anchor="middle">macro_snapshots · SLOT A/B</text>
+                <text x="968" y="308" fill="#475569" font-size="7" font-family="'Geist Mono', monospace"
+                  text-anchor="middle">effective_from &lt;= as_of</text>
+              </a>
             </g>
           </g>
 
@@ -965,31 +943,29 @@
           <!-- DUAL-PHASE INTERFACE SEPARATOR                                   -->
           <!-- ════════════════════════════════════════════════════════════════ -->
           <line x1="24" y1="424" x2="1116" y2="424" stroke="#94a3b8" stroke-width="1.4" />
-          <rect x="360" y="413" width="420" height="22" rx="4" fill="#f1f5f9" stroke="#0284c7" stroke-width="1.2" />
+          <rect x="330" y="413" width="480" height="22" rx="4" fill="#f1f5f9" stroke="#0284c7" stroke-width="1.2" />
           <text x="570" y="428" fill="#0369a1" font-size="9" font-family="'Geist Mono', monospace" font-weight="700"
-            text-anchor="middle" letter-spacing="0.14em">OFFLINE DUAL-STORE ──▶ ONLINE INFERENCE INTERFACE</text>
+            text-anchor="middle" letter-spacing="0.11em">OFFLINE SAG v2 STORES ──▶ ONLINE RESEARCH CHAT (PHASE 1)</text>
 
           <!-- ════════════════════════════════════════════════════════════════ -->
-          <!-- PHASE 2: ONLINE INFERENCE, FORK-JOIN & CONTEXT (Lower Half)     -->
+          <!-- PHASE 2: ONLINE RESEARCH CHAT ORCHESTRATION (Lower Half)         -->
           <!-- ════════════════════════════════════════════════════════════════ -->
           <rect x="24" y="444" width="1092" height="396" rx="8" fill="#fffaf5" stroke="#fb923c" stroke-width="1.3"
             stroke-dasharray="6,4" />
-          <rect x="40" y="452" width="490" height="20" rx="4" fill="#ffedd5" stroke="#fb923c" stroke-width="0.8" />
+          <rect x="40" y="452" width="560" height="20" rx="4" fill="#ffedd5" stroke="#fb923c" stroke-width="0.8" />
           <text x="50" y="466" fill="#9a3412" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="700"
-            letter-spacing="0.14em">PHASE 2: ONLINE INFERENCE, PARALLEL FORK-JOIN &amp; CONTEXT CONVERGENCE</text>
+            letter-spacing="0.11em">PHASE 2: ONLINE SSE RESEARCH CHAT, PYTHON CALC &amp; QUOTE_HASH GATE</text>
 
-          <!-- CONNECTORS: Phase 2 (Flow-Synchronized Connectors) -->
-          <!-- Step 4 Forks: From Query Node into 3 branches -->
+          <!-- CONNECTORS: Phase 2 -->
           <g class="flow-step flow-step-4">
-            <!-- Branch 2A (Top: Dense Vector Retrieval at y=544) -->
             <path d="M176 624 H200 Q208 624 208 616 V552 Q208 544 216 544 H236" fill="none" stroke="rgba(2,132,199,0.2)"
               stroke-width="3" />
             <path id="path-p2-fork1" class="flow-active-link"
               d="M176 624 H200 Q208 624 208 616 V552 Q208 544 216 544 H236" fill="none" stroke="#0284c7"
               stroke-width="2.2" marker-end="url(#paper-flow-arrow-link)" />
-            <rect x="186" y="532" width="44" height="13" rx="2" fill="#bae6fd" stroke="#38bdf8" stroke-width="0.8" />
-            <text x="208" y="542" fill="#0369a1" font-size="7" font-family="'Geist Mono', monospace" font-weight="700"
-              text-anchor="middle" letter-spacing="0.06em">[DENSE]</text>
+            <rect x="180" y="532" width="56" height="13" rx="2" fill="#bae6fd" stroke="#38bdf8" stroke-width="0.8" />
+            <text x="208" y="542" fill="#0369a1" font-size="6.8" font-family="'Geist Mono', monospace" font-weight="700"
+              text-anchor="middle" letter-spacing="0.03em">[CHAMBER]</text>
             <g class="traveling-arrow">
               <polygon points="-5 -4, 4 0, -5 4" fill="#0284c7">
                 <animateMotion dur="1.2s" repeatCount="indefinite"
@@ -997,28 +973,26 @@
               </polygon>
             </g>
 
-            <!-- Branch 2B (Middle: Sparse Lexical Grep at y=640) -->
-            <path d="M176 640 H236" fill="none" stroke="rgba(148,163,184,0.3)" stroke-width="3" />
-            <path id="path-p2-fork2" class="flow-active" d="M176 640 H236" fill="none" stroke="#64748b"
-              stroke-width="2.2" marker-end="url(#paper-flow-arrow)" />
-            <rect x="186" y="622" width="44" height="13" rx="2" fill="#e2e8f0" stroke="#94a3b8" stroke-width="0.8" />
-            <text x="208" y="632" fill="#334155" font-size="7" font-family="'Geist Mono', monospace" font-weight="700"
-              text-anchor="middle" letter-spacing="0.06em">[SPARSE]</text>
+            <path d="M176 640 H236" fill="none" stroke="rgba(124,58,237,0.25)" stroke-width="3" />
+            <path id="path-p2-fork2" class="flow-active-graph" d="M176 640 H236" fill="none" stroke="#7c3aed"
+              stroke-width="2.2" marker-end="url(#paper-flow-arrow-graph)" />
+            <rect x="184" y="622" width="48" height="13" rx="2" fill="#ddd6fe" stroke="#a78bfa" stroke-width="0.8" />
+            <text x="208" y="632" fill="#5b21b6" font-size="7" font-family="'Geist Mono', monospace" font-weight="700"
+              text-anchor="middle" letter-spacing="0.04em">[2-HOP]</text>
             <g class="traveling-arrow">
-              <polygon points="-5 -4, 4 0, -5 4" fill="#64748b">
+              <polygon points="-5 -4, 4 0, -5 4" fill="#7c3aed">
                 <animateMotion dur="1.0s" repeatCount="indefinite" path="M176 640 H236" rotate="auto" />
               </polygon>
             </g>
 
-            <!-- Branch 2C (Bottom: Deterministic Forensics at y=736) -->
             <path d="M176 656 H200 Q208 656 208 664 V728 Q208 736 216 736 H236" fill="none" stroke="rgba(225,29,72,0.2)"
               stroke-width="3" />
             <path id="path-p2-fork3" class="flow-active-accent"
               d="M176 656 H200 Q208 656 208 664 V728 Q208 736 216 736 H236" fill="none" stroke="#e11d48"
               stroke-width="2.2" marker-end="url(#paper-flow-arrow-accent)" />
-            <rect x="184" y="724" width="48" height="13" rx="2" fill="#fecdd3" stroke="#fb7185" stroke-width="0.8" />
+            <rect x="182" y="724" width="52" height="13" rx="2" fill="#fecdd3" stroke="#fb7185" stroke-width="0.8" />
             <text x="208" y="734" fill="#9f1239" font-size="7" font-family="'Geist Mono', monospace" font-weight="700"
-              text-anchor="middle" letter-spacing="0.06em">[FORENSIC]</text>
+              text-anchor="middle" letter-spacing="0.04em">[HYDRATE]</text>
             <g class="traveling-arrow">
               <polygon points="-5 -4, 4 0, -5 4" fill="#e11d48">
                 <animateMotion dur="1.2s" repeatCount="indefinite"
@@ -1027,9 +1001,7 @@
             </g>
           </g>
 
-          <!-- Step 5 Connectors: Join from 3 Branches into Node 7 (Hybrid Fusion) -->
           <g class="flow-step flow-step-5">
-            <!-- From 2A (x=468, y=544 -> x=536, y=624) -->
             <path d="M468 544 H496 Q504 544 504 552 V616 Q504 624 512 624 H536" fill="none" stroke="rgba(2,132,199,0.2)"
               stroke-width="3" />
             <path id="path-p2-join1" class="flow-active-link"
@@ -1045,28 +1017,26 @@
               </polygon>
             </g>
 
-            <!-- From 2B (x=468, y=640 -> x=536, y=640) -->
-            <path d="M468 640 H536" fill="none" stroke="rgba(148,163,184,0.3)" stroke-width="3" />
-            <path id="path-p2-join2" class="flow-active" d="M468 640 H536" fill="none" stroke="#64748b"
-              stroke-width="2.2" marker-end="url(#paper-flow-arrow)" />
-            <rect x="478" y="622" width="44" height="13" rx="2" fill="#e2e8f0" stroke="#94a3b8" stroke-width="0.8" />
-            <text x="500" y="632" fill="#334155" font-size="7" font-family="'Geist Mono', monospace" font-weight="700"
+            <path d="M468 640 H536" fill="none" stroke="rgba(124,58,237,0.25)" stroke-width="3" />
+            <path id="path-p2-join2" class="flow-active-graph" d="M468 640 H536" fill="none" stroke="#7c3aed"
+              stroke-width="2.2" marker-end="url(#paper-flow-arrow-graph)" />
+            <rect x="478" y="622" width="44" height="13" rx="2" fill="#ddd6fe" stroke="#a78bfa" stroke-width="0.8" />
+            <text x="500" y="632" fill="#5b21b6" font-size="7" font-family="'Geist Mono', monospace" font-weight="700"
               text-anchor="middle" letter-spacing="0.06em">[JOIN-2]</text>
             <g class="traveling-arrow">
-              <polygon points="-5 -4, 4 0, -5 4" fill="#64748b">
+              <polygon points="-5 -4, 4 0, -5 4" fill="#7c3aed">
                 <animateMotion dur="1.0s" repeatCount="indefinite" path="M468 640 H536" rotate="auto" />
               </polygon>
             </g>
 
-            <!-- From 2C (x=468, y=736 -> x=536, y=656) -->
             <path d="M468 736 H496 Q504 736 504 728 V664 Q504 656 512 656 H536" fill="none" stroke="rgba(234,88,12,0.2)"
               stroke-width="3" />
             <path id="path-p2-join3" class="flow-active-accent"
               d="M468 736 H496 Q504 736 504 728 V664 Q504 656 512 656 H536" fill="none" stroke="#ea580c"
               stroke-width="2.2" marker-end="url(#paper-flow-arrow-accent)" />
-            <rect x="478" y="724" width="44" height="13" rx="2" fill="#fed7aa" stroke="#fb923c" stroke-width="0.8" />
+            <rect x="476" y="724" width="48" height="13" rx="2" fill="#fed7aa" stroke="#fb923c" stroke-width="0.8" />
             <text x="500" y="734" fill="#9a3412" font-size="7" font-family="'Geist Mono', monospace" font-weight="700"
-              text-anchor="middle" letter-spacing="0.06em">[VETO-3]</text>
+              text-anchor="middle" letter-spacing="0.04em">[CALC+MMR]</text>
             <g class="traveling-arrow">
               <polygon points="-5 -4, 4 0, -5 4" fill="#ea580c">
                 <animateMotion dur="1.2s" repeatCount="indefinite"
@@ -1075,175 +1045,169 @@
             </g>
           </g>
 
-          <!-- Step 6 Final Connector: From Node 7 (Hybrid Fusion) -> Node 8 (Verified Context) -->
           <g class="flow-step flow-step-6">
-            <path d="M828 640 H884" fill="none" stroke="rgba(234,88,12,0.25)" stroke-width="3.4" />
-            <path id="path-p2-final" class="flow-active-accent" d="M828 640 H884" fill="none" stroke="#ea580c"
-              stroke-width="2.6" marker-end="url(#paper-flow-arrow-accent)" />
-            <rect x="832" y="622" width="48" height="13" rx="2" fill="#fed7aa" stroke="#fb923c" stroke-width="0.8" />
-            <text x="856" y="632" fill="#9a3412" font-size="7" font-family="'Geist Mono', monospace" font-weight="700"
-              text-anchor="middle" letter-spacing="0.06em">[TOP-K RERANK]</text>
+            <path d="M828 640 H884" fill="none" stroke="rgba(22,163,74,0.25)" stroke-width="3.4" />
+            <path id="path-p2-final" class="flow-active-emerald" d="M828 640 H884" fill="none" stroke="#16a34a"
+              stroke-width="2.6" marker-end="url(#paper-flow-arrow-emerald)" />
+            <rect x="832" y="622" width="48" height="13" rx="2" fill="#bbf7d0" stroke="#16a34a" stroke-width="0.8" />
+            <text x="856" y="632" fill="#166534" font-size="7" font-family="'Geist Mono', monospace" font-weight="700"
+              text-anchor="middle" letter-spacing="0.04em">[VERIFY]</text>
             <g class="traveling-arrow">
-              <polygon points="-6 -5, 5 0, -6 5" fill="#ea580c">
+              <polygon points="-6 -5, 5 0, -6 5" fill="#16a34a">
                 <animateMotion dur="0.9s" repeatCount="indefinite" path="M828 640 H884" rotate="auto" />
               </polygon>
             </g>
           </g>
 
           <!-- NODES: Phase 2 -->
-          <!-- Node 5: User Query Ingress & Parsing (Step 4) -->
+          <!-- Node 5: Research Chat Query & Planner (Step 4) -->
           <g data-motion-item data-step="4" class="interactive-node" data-node-id="node-query"
-            aria-label="Step 4: Natural language query ingress and multi-signal normalization">
-            <!-- Fresh Soft Amber Card -->
-            <rect x="44" y="588" width="132" height="106" rx="6" fill="#fef3c7" stroke="#f59e0b" stroke-width="1.8" />
-            <path d="M44 594 A6 6 0 0 1 50 588 H170 A6 6 0 0 1 176 594 V614 H44 Z" fill="#fde68a" />
-            <text x="110" y="605" fill="#92400e" font-size="10.5" font-weight="700" font-family="'Geist', sans-serif"
-              text-anchor="middle">User Query Ingress</text>
-            <!-- Badge & Glyph -->
-            <rect x="52" y="620" width="34" height="13" rx="2" fill="#f59e0b" />
-            <text x="69" y="630" fill="#ffffff" font-size="7" font-family="'Geist Mono', monospace" font-weight="700"
-              text-anchor="middle" letter-spacing="0.08em">QUERY</text>
-            <circle cx="152" cy="626" r="5" fill="none" stroke="#d97706" stroke-width="1.3" />
-            <line x1="156" y1="630" x2="161" y2="635" stroke="#d97706" stroke-width="1.4" />
-            <!-- Content -->
-            <text x="110" y="648" fill="#0f172a" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="600"
-              text-anchor="middle">Q_raw Normalization</text>
-            <text x="110" y="662" fill="#0284c7" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
-              text-anchor="middle">Noise Strip · Top 4 Terms</text>
-            <text x="110" y="675" fill="#7c3aed" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="600"
-              text-anchor="middle">Entity Conf &gt;= 0.70 Match</text>
-            <text x="110" y="688" fill="#475569" font-size="7.5" font-family="'Geist Mono', monospace"
-              text-anchor="middle">Fiscal Meta: Year, Quarter</text>
+            aria-label="Step 4: Vietnamese QueryAnalysis, True-Peer expansion and Express 150s SSE Gateway">
+            <a href="#inspect-node-query" class="node-anchor" aria-label="Inspect Research Chat Query and Planner">
+              <rect x="44" y="588" width="132" height="106" rx="6" fill="#fef3c7" stroke="#f59e0b" stroke-width="1.8" />
+              <path d="M44 594 A6 6 0 0 1 50 588 H170 A6 6 0 0 1 176 594 V614 H44 Z" fill="#fde68a" />
+              <text x="110" y="605" fill="#92400e" font-size="10.5" font-weight="700" font-family="'Geist', sans-serif"
+                text-anchor="middle">Query &amp; SSE Gateway</text>
+              <rect x="52" y="620" width="44" height="13" rx="2" fill="#f59e0b" />
+              <text x="74" y="630" fill="#ffffff" font-size="7" font-family="'Geist Mono', monospace" font-weight="700"
+                text-anchor="middle" letter-spacing="0.06em">SSE 150S</text>
+              <circle cx="152" cy="626" r="5" fill="none" stroke="#d97706" stroke-width="1.3" />
+              <line x1="156" y1="630" x2="161" y2="635" stroke="#d97706" stroke-width="1.4" />
+              <text x="110" y="648" fill="#0f172a" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
+                text-anchor="middle">QueryAnalysis (vi)</text>
+              <text x="110" y="662" fill="#0284c7" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="600"
+                text-anchor="middle">recency · 9T/2026 · TM 12</text>
+              <text x="110" y="675" fill="#7c3aed" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="600"
+                text-anchor="middle">GENERAL / MOAT (&lt;=6 Tickers)</text>
+              <text x="110" y="688" fill="#475569" font-size="7.5" font-family="'Geist Mono', monospace"
+                text-anchor="middle">PIT as_of_date · BFF Auth</text>
+            </a>
           </g>
 
-          <!-- Node 6 (A, B, C): Parallel Multi-Signal Retrieval Branches (Step 4) -->
+          <!-- Node 6 (A, B, C): Parallel Multi-Signal Retrieval, KG Hop & Hydration/Calc (Step 4) -->
           <g data-motion-item data-step="4"
-            aria-label="Step 4B: Parallel multi-signal retrieval branches (Dense, Sparse, and Forensic)">
-            <!-- Node 6A: Fresh Soft Sky Retrieval -->
+            aria-label="Step 4B: Parallel Leiden/Qdrant PIT retrieval, HippoRAG 2 + 3-Layer KG hops, and Table Hydration/Calculator">
             <g class="interactive-node" data-node-id="node-dense-retrieval">
-              <a href="#inspect-node-dense-retrieval" class="node-anchor" aria-label="Khảo sát chi tiết Branch 1: Dense Vector Retrieval"><rect x="236" y="506" width="232" height="76" rx="6" fill="#e0f2fe" stroke="#38bdf8" stroke-width="1.8" />
-              <path d="M236 512 A6 6 0 0 1 242 506 H462 A6 6 0 0 1 468 512 V528 H236 Z" fill="#bae6fd" />
-              <text x="352" y="522" fill="#0369a1" font-size="10" font-weight="700" font-family="'Geist', sans-serif"
-                text-anchor="middle">Branch 1: Dense Vector Retrieval</text>
-              <text x="352" y="546" fill="#0c4a6e" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="600"
-                text-anchor="middle">Cosine: sim(v_Q, v_i) = (v_Q · v_i) / ||v||</text>
-              <text x="352" y="562" fill="#0284c7" font-size="8" font-family="'Geist Mono', monospace" font-weight="700"
-                text-anchor="middle">Dynamic Cutoff: max(0.35, top_raw * 0.68)</text>
-              <text x="352" y="574" fill="#475569" font-size="7" font-family="'Geist Mono', monospace"
-                text-anchor="middle">Top-K Candidate Extraction (K=32)</text>
-            </g></a>
+              <a href="#inspect-node-dense-retrieval" class="node-anchor" aria-label="Inspect Branch 1: Leiden Beam and Qdrant PIT Search">
+                <rect x="236" y="506" width="232" height="76" rx="6" fill="#e0f2fe" stroke="#38bdf8" stroke-width="1.8" />
+                <path d="M236 512 A6 6 0 0 1 242 506 H462 A6 6 0 0 1 468 512 V528 H236 Z" fill="#bae6fd" />
+                <text x="352" y="522" fill="#0369a1" font-size="10" font-weight="700" font-family="'Geist', sans-serif"
+                  text-anchor="middle">Branch 1: Dual-Channel Chamber</text>
+                <text x="352" y="546" fill="#0c4a6e" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
+                  text-anchor="middle">PRIMARY + CROSS-REF (Bypass Leiden)</text>
+                <text x="352" y="561" fill="#0284c7" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="700"
+                  text-anchor="middle">1024d Cosine + VN-Dot BM25 · Open Univ</text>
+                <text x="352" y="574" fill="#475569" font-size="7" font-family="'Geist Mono', monospace"
+                  text-anchor="middle">Bi-Temporal PIT: valid_from &lt;= as_of &lt; valid_to</text>
+              </a>
+            </g>
 
-            <!-- Node 6B: Fresh Soft Slate Grep -->
             <g class="interactive-node" data-node-id="node-lexical-retrieval">
-              <a href="#inspect-node-lexical-retrieval" class="node-anchor" aria-label="Khảo sát chi tiết Branch 2: Sparse Lexical Grep"><rect x="236" y="602" width="232" height="76" rx="6" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.8" />
-              <path d="M236 608 A6 6 0 0 1 242 602 H462 A6 6 0 0 1 468 608 V624 H236 Z" fill="#e2e8f0" />
-              <text x="352" y="618" fill="#334155" font-size="10" font-weight="700" font-family="'Geist', sans-serif"
-                text-anchor="middle">Branch 2: Sparse Lexical Grep</text>
-              <text x="352" y="642" fill="#0f172a" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="600"
-                text-anchor="middle">+0.55 Phrase · +0.35 Term Match Ratio</text>
-              <text x="352" y="658" fill="#0284c7" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
-                text-anchor="middle">Entity Boost: Ticker +0.20 · Brand/Proj +0.25</text>
-              <text x="352" y="670" fill="#475569" font-size="7" font-family="'Geist Mono', monospace"
-                text-anchor="middle">Exact Match Grounding Anchor</text>
-            </g></a>
+              <a href="#inspect-node-lexical-retrieval" class="node-anchor" aria-label="Inspect Branch 2: HippoRAG 2 and 3-Layer KG Hops">
+                <rect x="236" y="602" width="232" height="76" rx="6" fill="#f3e8ff" stroke="#a78bfa" stroke-width="1.8" />
+                <path d="M236 608 A6 6 0 0 1 242 602 H462 A6 6 0 0 1 468 608 V624 H236 Z" fill="#e9d5ff" />
+                <text x="352" y="618" fill="#5b21b6" font-size="10" font-weight="700" font-family="'Geist', sans-serif"
+                  text-anchor="middle">Branch 2: HippoRAG 2 + 3-Layer KG</text>
+                <text x="352" y="642" fill="#312e81" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
+                  text-anchor="middle">Cross-Class + Bridge Hop-2 (PIT Bi-Temporal)</text>
+                <text x="352" y="657" fill="#7c3aed" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="600"
+                  text-anchor="middle">Macro HAC/FDR (CONFIRMED_BOTH) + Peer</text>
+                <text x="352" y="670" fill="#475569" font-size="7" font-family="'Geist Mono', monospace"
+                  text-anchor="middle">SUPPLIER / CUSTOMER / CREDITOR / TM-Bridge</text>
+              </a>
+            </g>
 
-            <!-- Node 6C: Fresh Soft Rose Forensics -->
             <g class="interactive-node" data-node-id="node-forensic-guard">
-              <title>GIL guard: validated same-period flow graph; only circular flow blocks, abnormal flow goes to review.</title>
-              <a href="#inspect-node-forensic-guard" class="node-anchor" aria-label="Khảo sát chi tiết Branch 3: Deterministic Forensics"><rect x="236" y="698" width="232" height="76" rx="6" fill="#ffe4e6" stroke="#fb7185" stroke-width="1.8" />
-              <path d="M236 704 A6 6 0 0 1 242 698 H462 A6 6 0 0 1 468 704 V720 H236 Z" fill="#fecdd3" />
-              <text x="352" y="714" fill="#9f1239" font-size="10" font-weight="700" font-family="'Geist', sans-serif"
-                text-anchor="middle">Branch 3: Deterministic Forensics</text>
-              <text x="352" y="738" fill="#881337" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="700"
-                text-anchor="middle">GIL: Flow Signal Only | Coverage is audit metadata</text>
-              <text x="352" y="754" fill="#e11d48" font-size="8" font-family="'Geist Mono', monospace" font-weight="700"
-                text-anchor="middle">Beneish M8 &gt; -1.78 · Sloan Accruals &lt; -0.10</text>
-              <text x="352" y="766" fill="#475569" font-size="7" font-family="'Geist Mono', monospace"
-                text-anchor="middle">Missing data = coverage only · Circular flow = BLOCK · Other flow = REVIEW</text>
-            </g></a>
+              <a href="#inspect-node-forensic-guard" class="node-anchor" aria-label="Inspect Branch 3: Full-Table Hydration, Calculator and Discrepancy">
+                <rect x="236" y="698" width="232" height="76" rx="6" fill="#ffe4e6" stroke="#fb7185" stroke-width="1.8" />
+                <path d="M236 704 A6 6 0 0 1 242 698 H462 A6 6 0 0 1 468 704 V720 H236 Z" fill="#fecdd3" />
+                <text x="352" y="714" fill="#9f1239" font-size="10" font-weight="700" font-family="'Geist', sans-serif"
+                  text-anchor="middle">Branch 3: Hydration &amp; Calculator</text>
+                <text x="352" y="738" fill="#881337" font-size="8" font-family="'Geist Mono', monospace" font-weight="700"
+                  text-anchor="middle">Full-Table 2D Hydration (VERIFIED only)</text>
+                <text x="352" y="753" fill="#e11d48" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="700"
+                  text-anchor="middle">AST Python Calculator (Zero eval / Zero Math)</text>
+                <text x="352" y="766" fill="#475569" font-size="7" font-family="'Geist Mono', monospace"
+                  text-anchor="middle">0-LLM PR-vs-Audit Discrepancy Detector</text>
+              </a>
+            </g>
           </g>
 
-          <!-- Node 7: Convergence, Hybrid Score Fusion & Queue Accumulator (FOCAL 1 - Step 5) -->
+          <!-- Node 7: Table-Safe MMR, A7 Quality & DeepSeek-V4 Synthesis (FOCAL 1 - Step 5) -->
           <g data-motion-item data-step="5" class="interactive-node" data-node-id="node-fusion"
-            aria-label="Step 5: Hybrid score fusion, time-decay multiplier and queue accumulation">
-            <!-- Fresh Soft Peach Card with Vibrant Accent Border -->
-            <rect x="536" y="570" width="292" height="140" rx="8" fill="#ffedd5" stroke="#ea580c" stroke-width="2.2"
-              class="pulse-focal" />
-            <path d="M536 578 A8 8 0 0 1 544 570 H820 A8 8 0 0 1 828 578 V596 H536 Z" fill="#fed7aa" />
-            <text x="682" y="589" fill="#9a3412" font-size="11.5" font-weight="700" font-family="'Geist', sans-serif"
-              text-anchor="middle">Hybrid Fusion &amp; Reranker (FOCAL 1)</text>
-            <!-- Queue Accumulator Badge -->
-            <rect x="656" y="604" width="164" height="16" rx="3" fill="#ea580c" />
-            <text x="738" y="616" fill="#ffffff" font-size="7.5" font-family="'Geist Mono', monospace"
-              text-anchor="middle" font-weight="700" letter-spacing="0.04em">QUEUE: 32 → 24 → 8 CHUNKS</text>
-
-            <text x="682" y="632" fill="#7c2d12" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="600"
-              text-anchor="middle">S_comb = min(1.0, 0.5*S_raw + 0.2*S_rank +</text>
-            <text x="682" y="646" fill="#7c2d12" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="600"
-              text-anchor="middle">0.3*S_lexical + 0.15_exact) * λ_freshness</text>
-            <text x="682" y="664" fill="#0284c7" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
-              text-anchor="middle">Freshness λ: Fresh 1.15 · Active 0.90 · Expired 0.10</text>
-            <text x="682" y="679" fill="#ea580c" font-size="8" font-family="'Geist Mono', monospace" font-weight="700"
-              text-anchor="middle">Relevance Gate: Exact | S_lex &gt;= 0.2 | S_raw &gt;= floor</text>
-            <text x="682" y="694" fill="#475569" font-size="7.5" font-family="'Geist Mono', monospace"
-              text-anchor="middle">Boilerplate Filter: Marker count &lt; 2 · Rank Sort Top-K</text>
+            aria-label="Step 5: Table-Safe Jaccard MMR, A7 Quality Gate, 3-Layer Abstention and DeepSeek-V4-Flash Synthesis">
+            <a href="#inspect-node-fusion" class="node-anchor" aria-label="Inspect Table-Safe MMR and DeepSeek Synthesis">
+              <rect x="536" y="570" width="292" height="140" rx="8" fill="#ffedd5" stroke="#ea580c" stroke-width="2.2"
+                class="pulse-focal" />
+              <path d="M536 578 A8 8 0 0 1 544 570 H820 A8 8 0 0 1 828 578 V596 H536 Z" fill="#fed7aa" />
+              <text x="682" y="589" fill="#9a3412" font-size="11.5" font-weight="700" font-family="'Geist', sans-serif"
+                text-anchor="middle">Table-Safe MMR &amp; Synthesis (FOCAL 1)</text>
+              <rect x="646" y="604" width="174" height="16" rx="3" fill="#ea580c" />
+              <text x="733" y="616" fill="#ffffff" font-size="7.5" font-family="'Geist Mono', monospace"
+                text-anchor="middle" font-weight="700" letter-spacing="0.04em">DEEPSEEK-V4-FLASH SSE</text>
+              <text x="682" y="634" fill="#7c2d12" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
+                text-anchor="middle">Table-Safe MMR: (period, slot, table_id) diff guard</text>
+              <text x="682" y="650" fill="#7c2d12" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
+                text-anchor="middle">A7 Quality: half_life = 365 / 180 / 90 days</text>
+              <text x="682" y="666" fill="#0284c7" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
+                text-anchor="middle">3-Layer Abstention -&gt; declared_blindspots[]</text>
+              <text x="682" y="682" fill="#ea580c" font-size="8" font-family="'Geist Mono', monospace" font-weight="700"
+                text-anchor="middle">Grounded Prompt: CalcTrace + Discrepancy + KG</text>
+              <text x="682" y="697" fill="#475569" font-size="7.5" font-family="'Geist Mono', monospace"
+                text-anchor="middle">DeepInfra OpenAI-Compatible · token_usage.py</text>
+            </a>
           </g>
 
-          <!-- Node 8: Verified Evidence Context (FOCAL 2 - Step 6) -->
+          <!-- Node 8: quote_hash Post-Verifier & /research-chat Gate (FOCAL 2 - Step 6) -->
           <g data-motion-item data-step="6" class="interactive-node" data-node-id="node-verified-evidence"
-            aria-label="Step 6: Verified evidence context with immutable SHA-256 line citation dispatched to Quant Agents">
-            <!-- Fresh Soft Emerald Card with Vibrant Green Border -->
-            <rect x="884" y="570" width="220" height="140" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="2.2"
-              class="pulse-focal" />
-            <path d="M884 578 A8 8 0 0 1 892 570 H1096 A8 8 0 0 1 1104 578 V596 H884 Z" fill="#bbf7d0" />
-            <text x="994" y="589" fill="#166534" font-size="11.5" font-weight="700" font-family="'Geist', sans-serif"
-              text-anchor="middle">Verified Evidence (FOCAL 2)</text>
-            <!-- Verified Shield Glyph -->
-            <path d="M1084 606 L1092 609 V616 C1092 621 1088 624 1084 626 C1080 624 1076 621 1076 616 V609 Z"
-              fill="#ffffff" stroke="#16a34a" stroke-width="1.3" />
-            <path d="M1081 616 L1083 618 L1087 613" fill="none" stroke="#16a34a" stroke-width="1.4" />
-            <!-- Content -->
-            <text x="994" y="622" fill="#15803d" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="700"
-              text-anchor="middle">Line Anchored [L_start : L_end]</text>
-            <text x="994" y="638" fill="#0f172a" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="700"
-              text-anchor="middle">quote_hash SHA-256 Verified</text>
-            <text x="994" y="656" fill="#334155" font-size="8" font-family="'Geist Mono', monospace" font-weight="600"
-              text-anchor="middle">Citations [1], [2] Grounded State</text>
-            <text x="994" y="672" fill="#0284c7" font-size="8" font-family="'Geist Mono', monospace" font-weight="700"
-              text-anchor="middle">Dispatches to 12 Quant Agents</text>
-            <text x="994" y="688" fill="#166534" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="600"
-              text-anchor="middle">Forensic Veto + Half-Kelly Sizing</text>
+            aria-label="Step 6: SHA-256 quote_hash Post-Verifier and ChatGPT-Style Research Chat Exit Gate G1 to G5">
+            <a href="#inspect-node-verified-evidence" class="node-anchor" aria-label="Inspect quote_hash Verifier and Research Chat Gate">
+              <rect x="884" y="570" width="220" height="140" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="2.2"
+                class="pulse-focal" />
+              <path d="M884 578 A8 8 0 0 1 892 570 H1096 A8 8 0 0 1 1104 578 V596 H884 Z" fill="#bbf7d0" />
+              <text x="994" y="589" fill="#166534" font-size="11.5" font-weight="700" font-family="'Geist', sans-serif"
+                text-anchor="middle">Verified Chat Gate (FOCAL 2)</text>
+              <path d="M1084 606 L1092 609 V616 C1092 621 1088 624 1084 626 C1080 624 1076 621 1076 616 V609 Z"
+                fill="#ffffff" stroke="#16a34a" stroke-width="1.3" />
+              <path d="M1081 616 L1083 618 L1087 613" fill="none" stroke="#16a34a" stroke-width="1.4" />
+              <text x="994" y="622" fill="#15803d" font-size="8" font-family="'Geist Mono', monospace" font-weight="700"
+                text-anchor="middle">quote_hash + Numeric Claim Audit</text>
+              <text x="994" y="638" fill="#0f172a" font-size="8" font-family="'Geist Mono', monospace" font-weight="700"
+                text-anchor="middle">ChatGPT UI + Slide-Over Evidence Drawer</text>
+              <text x="994" y="655" fill="#334155" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="600"
+                text-anchor="middle">Core PG: sag_chat_eval_feedback</text>
+              <text x="994" y="671" fill="#0284c7" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="700"
+                text-anchor="middle">Exit Gate: G1-G5 (&gt;=40 Sessions)</text>
+              <text x="994" y="688" fill="#e11d48" font-size="7.5" font-family="'Geist Mono', monospace" font-weight="700"
+                text-anchor="middle">Rule 06: 12 Agents &amp; GIL CLOSED</text>
+            </a>
           </g>
 
           <!-- ════════════════════════════════════════════════════════════════ -->
-          <!-- LEGEND STRIP (Horizontal at bottom)                              -->
+          <!-- LEGEND STRIP                                                     -->
           <!-- ════════════════════════════════════════════════════════════════ -->
           <line x1="24" y1="856" x2="1116" y2="856" stroke="#94a3b8" stroke-width="1.2" />
           <text x="24" y="872" fill="#0f172a" font-size="8.5" font-family="'Geist Mono', monospace" font-weight="700"
-            letter-spacing="0.14em">LEGEND &amp; MATHEMATICAL TAXONOMY</text>
+            letter-spacing="0.14em">LEGEND &amp; PHASE 1 TAXONOMY</text>
 
-          <!-- Legend Item 1: Dense Vector Stream -->
-          <line x1="270" y1="869" x2="300" y2="869" stroke="#0284c7" stroke-width="2.5" stroke-dasharray="6,4" />
-          <circle cx="285" cy="869" r="3" fill="#0284c7" />
-          <text x="306" y="873" fill="#334155" font-size="8" font-family="'Geist Mono', monospace"
-            font-weight="600">Dense Vector Path (1024-d Cosine)</text>
+          <line x1="240" y1="869" x2="270" y2="869" stroke="#0284c7" stroke-width="2.5" stroke-dasharray="6,4" />
+          <circle cx="255" cy="869" r="3" fill="#0284c7" />
+          <text x="276" y="873" fill="#334155" font-size="8" font-family="'Geist Mono', monospace"
+            font-weight="600">Qdrant 1024d + VN-Dot + 2D Tables</text>
 
-          <!-- Legend Item 2: Hypergraph Symbolic Stream -->
-          <line x1="510" y1="869" x2="540" y2="869" stroke="#7c3aed" stroke-width="2.5" stroke-dasharray="6,4" />
-          <circle cx="525" cy="869" r="3" fill="#7c3aed" />
-          <text x="546" y="873" fill="#334155" font-size="8" font-family="'Geist Mono', monospace"
-            font-weight="600">Bipartite Hypergraph (M:N DiGraph)</text>
+          <line x1="490" y1="869" x2="520" y2="869" stroke="#7c3aed" stroke-width="2.5" stroke-dasharray="6,4" />
+          <circle cx="505" cy="869" r="3" fill="#7c3aed" />
+          <text x="526" y="873" fill="#334155" font-size="8" font-family="'Geist Mono', monospace"
+            font-weight="600">Leiden + HippoRAG 2 + 3-Layer KG</text>
 
-          <!-- Legend Item 3: Forensic Veto & Accruals -->
-          <line x1="750" y1="869" x2="780" y2="869" stroke="#e11d48" stroke-width="2.5" stroke-dasharray="6,4" />
-          <circle cx="765" cy="869" r="3" fill="#e11d48" />
-          <text x="786" y="873" fill="#334155" font-size="8" font-family="'Geist Mono', monospace"
-            font-weight="600">Forensic Hard Veto (GIL / M8 / Sloan)</text>
+          <line x1="740" y1="869" x2="770" y2="869" stroke="#e11d48" stroke-width="2.5" stroke-dasharray="6,4" />
+          <circle cx="755" cy="869" r="3" fill="#e11d48" />
+          <text x="776" y="873" fill="#334155" font-size="8" font-family="'Geist Mono', monospace"
+            font-weight="600">Python Calc + Discrepancy Gate</text>
 
-          <!-- Legend Item 4: Focal Convergence -->
-          <rect x="990" y="864" width="10" height="10" rx="2" fill="#ea580c" />
-          <text x="1006" y="873" fill="#ea580c" font-size="8" font-family="'Geist Mono', monospace"
-            font-weight="700">Focal Convergence Anchor</text>
+          <rect x="975" y="864" width="10" height="10" rx="2" fill="#16a34a" />
+          <text x="991" y="873" fill="#166534" font-size="8" font-family="'Geist Mono', monospace"
+            font-weight="700">quote_hash + Exit Gate G1-G5</text>
         </svg>
       </div>
 
@@ -1270,365 +1234,414 @@
         <span><strong>Tương tác Khảo sát:</strong> Nhấp (Click) vào bất kỳ hộp thuật toán, trạm dữ liệu hoặc kho lưu trữ nào trên sơ đồ để mở <strong>Bảng Khảo Sát Chi Tiết (Inspector Drawer)</strong> hiển thị công thức toán học ngầm, điều kiện biên và liên kết mã nguồn gốc.</span>
       </div>
 
-      <!-- Slide-over Inspector Drawers for Detailed Component Exploration (:target CSS, zero JS) -->
-<a href="#!" id="inspector-backdrop" class="inspector-backdrop" aria-label="Đóng bảng chi tiết"></a>
+      <!-- Slide-over Inspector Drawers (:target CSS, zero JS) -->
+      <a href="#!" id="inspector-backdrop" class="inspector-backdrop" aria-label="Đóng bảng chi tiết"></a>
+
       <aside id="inspect-node-corpus" class="inspector-drawer" role="dialog" aria-labelledby="title-node-corpus">
         <div class="drawer-header">
           <div>
-            <span class="drawer-badge">Offline ETL · Step 1</span>
-            <h3 id="title-node-corpus" class="drawer-title">Raw Financial BCTC Corpus Ingress</h3>
+            <span class="drawer-badge">HOSE Input Layer · Step 1</span>
+            <h3 id="title-node-corpus" class="drawer-title">HOSE Input Selector &amp; Inspector (0 LLM)</h3>
           </div>
           <a href="#!" class="drawer-close" aria-label="Đóng bảng chi tiết">✕</a>
         </div>
         <div class="drawer-body">
           <div class="drawer-section">
-            <label class="drawer-label">Thuật toán &amp; Công thức toán học ngầm</label>
-            <pre class="drawer-code"><code>Input: raw_pdf: bytes | S_0 = (DocumentMetadata, PDFByteStream)
-Filter: ADTV &gt; 5 Billion VND</code></pre>
+            <label class="drawer-label">Thuật toán &amp; Quy tắc Chọn lọc</label>
+            <pre class="drawer-code"><code>Inputs = 3 Core (CoreDB 5Y, BCTN 4 parts, Consolidated Notes 7 parts)
+       + 2 Conditional (agm_resolution, LATEST_QUARTER)
+Excluded: SEPARATE holding, governance_report, analyst_report, news
+Gates: pages &gt;= 15 (else NOTICE_ONLY) · vn_readability &gt;= 0.72 (else BAD_FONT)</code></pre>
           </div>
           <div class="drawer-section">
-            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên trong Code</label>
-            <div class="drawer-text">Lọc thanh khoản: ADTV &gt; 5 Tỷ VND (Top cổ phiếu thanh khoản HOSE/HNX). Bộ 3 tài liệu vàng (Triple Golden Set): BCTC kiểm toán năm (Backbone) + BCTC quý 4 gần nhất + Báo cáo Quản trị công ty (CG).</div>
+            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên</label>
+            <div class="drawer-text">Khử trùng BCTN/BCTC khi BCTN đã nhúng trọn kiểm toán độc lập; giải nén `.zip` có chặn Zip-Slip &amp; giới hạn byte; suy luận `effective_published_at` chuẩn PIT (`announcement_date -&gt; signing_date -&gt; filing_date -&gt; published_date`, fail-closed `MissingPublishedDateError`); fallback URL 404 đa nguồn và định tuyến 4 Nhánh (A/B/C/D).</div>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Hình thái Dữ liệu (I/O Morphology)</label>
-            <div class="drawer-text">PDF Binary Stream → Byte Buffer → Language Identification Gate</div>
+            <div class="drawer-text">Core DB + R2 PDF / ZIP → Triaged Virtual Pages &amp; 4-Branch Extraction Plan</div>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Liên kết Mã nguồn gốc</label>
-            <div class="drawer-code-link">📄 <code>ai-engine/app/infrastructure/mineru_ocr.py</code></div>
+            <div class="drawer-code-link">📄 <code>SAG/apps/api/sag_api/research/input_selector.py</code> &amp; <code>input_inspector.py</code></div>
           </div>
         </div>
       </aside>
+
       <aside id="inspect-node-mineru" class="inspector-drawer" role="dialog" aria-labelledby="title-node-mineru">
         <div class="drawer-header">
           <div>
-            <span class="drawer-badge">Offline OCR · Step 1</span>
-            <h3 id="title-node-mineru" class="drawer-title">MinerU OCR & Noise Sanitizer</h3>
+            <span class="drawer-badge">Hybrid OCR &amp; Table Engine · Step 1</span>
+            <h3 id="title-node-mineru" class="drawer-title">Hybrid OCR (vi) &amp; 2D Financial Table Engine</h3>
           </div>
           <a href="#!" class="drawer-close" aria-label="Đóng bảng chi tiết">✕</a>
         </div>
         <div class="drawer-body">
           <div class="drawer-section">
-            <label class="drawer-label">Thuật toán &amp; Công thức toán học ngầm</label>
-            <pre class="drawer-code"><code>T_markdown = MinerU(PDF_bytes, mode="layout_aware")
-Gate: English -&gt; next source candidate; missing R2 -&gt; retry source</code></pre>
+            <label class="drawer-label">Thuật toán &amp; Cổng Kiểm Định Số Học</label>
+            <pre class="drawer-code"><code>Digital: pdfplumber (lattice -&gt; stream + bbox reconstructor, 0đ)
+Scan: 2-pass TOC-First MinerU (language="vi", NO silent MarkItDown fallback)
+Unmerge: HTML rowspan/colspan -&gt; col_path · Cross-Page "(Tiếp theo)" Stitch
+Sanity: |sum(sub_rows) - total| / max(|total|, 1) &lt;= 0.005 (else TABLE_UNVERIFIED)</code></pre>
           </div>
           <div class="drawer-section">
-            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên trong Code</label>
-            <div class="drawer-text">Language Gate: vi &gt; en (bảo đảm văn bản tiếng Việt). Giữ nguyên toàn vẹn cấu trúc bảng biểu Markdown Table phức tạp; loại bỏ triệt để các trang disclaimer và boilerplate vô thưởng vô phạt.</div>
+            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên</label>
+            <div class="drawer-text">Khóa đơn vị tiền tệ (`tỷ=1e9`, `triệu=1e6`, `nghìn=1e3`, `VND=1`, tách riêng `USD`), chuẩn hóa số Việt `(56.500) -&gt; -56500.0` bằng `detect_table_locale`. Nếu bảng Digital trượt Sanity Gate -&gt; đẩy trang sang MinerU; nếu vẫn trượt -&gt; gán `TABLE_UNVERIFIED` và cấm Calculator nội suy.</div>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Hình thái Dữ liệu (I/O Morphology)</label>
-            <div class="drawer-text">PDF Bytes → Structured Markdown AST với bảng biểu nguyên vẹn</div>
+            <div class="drawer-text">PDF Pages / HTML Tables → Normalized 2D Matrix (`ExtractedTableRecord`) + `table_hash` SHA-256</div>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Liên kết Mã nguồn gốc</label>
-            <div class="drawer-code-link">📄 <code>ai-engine/app/infrastructure/mineru_ocr.py:extract_markdown()</code></div>
+            <div class="drawer-code-link">📄 <code>SAG/apps/api/sag_api/research/table_engine.py</code> &amp; <code>parsing/service.py</code></div>
           </div>
         </div>
       </aside>
+
       <aside id="inspect-node-ast" class="inspector-drawer" role="dialog" aria-labelledby="title-node-ast">
         <div class="drawer-header">
           <div>
-            <span class="drawer-badge">Structural Parser · Step 2</span>
-            <h3 id="title-node-ast" class="drawer-title">AST Tree Decomposition & Quote Hasher</h3>
+            <span class="drawer-badge">Canonical &amp; Bi-Temporal · Step 2</span>
+            <h3 id="title-node-ast" class="drawer-title">4 Natural Document Classes &amp; Quote Hasher</h3>
           </div>
           <a href="#!" class="drawer-close" aria-label="Đóng bảng chi tiết">✕</a>
         </div>
         <div class="drawer-body">
           <div class="drawer-section">
-            <label class="drawer-label">Thuật toán &amp; Công thức toán học ngầm</label>
-            <pre class="drawer-code"><code>H_tree = ParseHierarchy(T_markdown, regex="^(#|##|###|[I-V]+\\.)")
-For line in H_tree: quote_hash = SHA-256(normalize(line))</code></pre>
+            <label class="drawer-label">Thuật toán &amp; Neo Trang / PIT</label>
+            <pre class="drawer-code"><code>Classes: BCTN_CORE &amp; BCTC_AUDITED (365d), BCTN_PR (365d), AGM_TARGETS (180d), QUARTER_NOTES (90d)
+Page Anchor: "&lt;!-- PAGE N --&gt;" -&gt; CanonicalBlock(page_from, page_to) + block_type="table_card"
+Dedup: 4-Tier (File SHA-256, Block hash, 128-perm MD5 MinHash, Table-Safe Jaccard Guard)
+PIT: DocumentVersion.valid_from = source_published_at, valid_to_ts stamped on SUPERSEDED</code></pre>
           </div>
           <div class="drawer-section">
-            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên trong Code</label>
-            <div class="drawer-text">Phân tích phân cấp 5 bậc tiêu đề; mỗi dòng văn bản được gán mã băm bất biến SHA-256(line) nhằm triệt tiêu hoàn toàn khả năng bịa đặt trích dẫn (hallucination guard).</div>
+            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên</label>
+            <div class="drawer-text">Mỗi lớp tài liệu tự nhiên (vẫn tương thích ngược đọc hộc cũ `S01..S13`) là một `document_version_id` độc lập dưới `project_id={ticker}`, giữ nguyên cấu trúc Thuyết minh BCTC (`0` Notes lọt dưới LCTT) và chuẩn hóa tiêu đề Markdown (`&lt; 12%` trên `BCTN_CORE`). Khi có báo cáo đính chính (`SUPERSEDED`), hệ thống đóng `valid_to_ts` tại chỗ thay vì xóa điểm lịch sử để hỗ trợ Replay PIT không rò rỉ.</div>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Hình thái Dữ liệu (I/O Morphology)</label>
-            <div class="drawer-text">Markdown String → Hierarchical AST Nodes + SHA-256 Checksums</div>
+            <div class="drawer-text">Sub-Doc Markdown → `CanonicalBlock[]` + `DocumentVersion(valid_from)` + `content_hash`</div>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Liên kết Mã nguồn gốc</label>
-            <div class="drawer-code-link">📄 <code>ai-engine/app/application/bctc_to_sag_pipeline.py:parse_ast()</code></div>
+            <div class="drawer-code-link">📄 <code>SAG/apps/api/sag_api/research/input_builder.py</code> &amp; <code>services/document_service.py</code></div>
           </div>
         </div>
       </aside>
+
       <aside id="inspect-node-chunker" class="inspector-drawer" role="dialog" aria-labelledby="title-node-chunker">
         <div class="drawer-header">
           <div>
-            <span class="drawer-badge">Segmentation · Step 3A</span>
-            <h3 id="title-node-chunker" class="drawer-title">Semantic Chunking Window</h3>
+            <span class="drawer-badge">Dual Representation · Step 3A</span>
+            <h3 id="title-node-chunker" class="drawer-title">Table-Safe DP Chunks &amp; Row-Linearized Cards</h3>
           </div>
           <a href="#!" class="drawer-close" aria-label="Đóng bảng chi tiết">✕</a>
         </div>
         <div class="drawer-body">
           <div class="drawer-section">
-            <label class="drawer-label">Thuật toán &amp; Công thức toán học ngầm</label>
-            <pre class="drawer-code"><code>Chunk_i = SlideWindow(Tokens, W_max=2800, Overlap=320, policy="repeat_header")</code></pre>
+            <label class="drawer-label">Thuật toán &amp; Chuẩn hóa BM25 Tiếng Việt (`P4`)</label>
+            <pre class="drawer-code"><code>Prose: Local-Cohesion Semantic DP (table blocks bypass DP splitting)
+Tables: Row-Linearized Search Cards (header + period + unit + table_id)
+VN-Dot BM25: "16.012.813" -&gt; "16012813" (preserves "15.29%" &amp; "1.2.3")
+Embed: Qwen/Qwen3-Embedding-0.6B (1024d, DeepInfra)</code></pre>
           </div>
           <div class="drawer-section">
-            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên trong Code</label>
-            <div class="drawer-text">Kích thước cửa sổ: W_max = 2800 tokens, bước gối Overlap = 320 tokens. Batch size B = 32. Lặp lại tiêu đề cha để bảo toàn ngữ cảnh cục bộ.</div>
+            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên</label>
+            <div class="drawer-text">Không bao giờ cắt đôi bảng số trong bước chunking văn xuôi. Thẻ `Row-Linearized Search Card` mang trọn ngữ cảnh tiêu đề cột, đơn vị tính và `table_id` để BM25 (`k1=1.5, b=0.75, avg_doc_len=256.0`) và vector 1024d bắt trúng từng dòng chỉ tiêu.</div>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Hình thái Dữ liệu (I/O Morphology)</label>
-            <div class="drawer-text">AST Nodes → Disjoint Overlapping Token Chunks kèm Section Metadata</div>
+            <div class="drawer-text">Canonical Blocks + 2D Tables → Dense[1024] + Sparse BM25 `SearchUnit`s</div>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Liên kết Mã nguồn gốc</label>
-            <div class="drawer-code-link">📄 <code>ai-engine/app/application/bctc_to_sag_pipeline.py:create_chunks()</code></div>
+            <div class="drawer-code-link">📄 <code>SAG/apps/api/sag_api/services/search_index_service.py</code> &amp; <code>research/table_engine.py</code></div>
           </div>
         </div>
       </aside>
+
       <aside id="inspect-node-vector-store" class="inspector-drawer" role="dialog" aria-labelledby="title-node-vector-store">
         <div class="drawer-header">
           <div>
-            <span class="drawer-badge">Vector DB · Step 3A</span>
-            <h3 id="title-node-vector-store" class="drawer-title">Dense Vector Space (1024-d)</h3>
+            <span class="drawer-badge">Dual Store A · Step 3A</span>
+            <h3 id="title-node-vector-store" class="drawer-title">Qdrant Hybrid (1024d) &amp; `sag_extracted_tables` (PG16)</h3>
           </div>
           <a href="#!" class="drawer-close" aria-label="Đóng bảng chi tiết">✕</a>
         </div>
         <div class="drawer-body">
           <div class="drawer-section">
-            <label class="drawer-label">Thuật toán &amp; Công thức toán học ngầm</label>
-            <pre class="drawer-code"><code>v_i = EmbeddingModel(Chunk_i) ∈ ℝ^{1024}
-Distance: D_cosine(u, v) = 1 - (u · v) / (||u|| ||v||)</code></pre>
+            <label class="drawer-label">Schema &amp; Payload Indexes (`P5` + Migration `0013`)</label>
+            <pre class="drawer-code"><code>Qdrant collection: aiinvest_search_units (is_tenant project_id, 1024d Cosine + bm25_sparse)
+PAYLOAD_INDEX_FIELDS: valid_from_ts, valid_to_ts, fiscal_year, fiscal_quarter,
+  doc_type, sub_doc_slot, sector_group, table_id, mentioned_tickers (0 LLM, 0% hardcoded)
+PG16: sag_extracted_tables (headers_json, rows_json, column_roles, unit_multiplier,
+  verification_status, sanity_error_ratio, table_hash, valid_from) — joined with active PIT DocumentVersion</code></pre>
           </div>
           <div class="drawer-section">
-            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên trong Code</label>
-            <div class="drawer-text">Chỉ mục HNSW: M=16, efConstruction=200; lưu trữ trong PostgreSQL PGVector / Milvus với 1024 chiều. Chỉ mục hóa theo từng mã cổ phiếu và niên độ tài chính.</div>
+            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên</label>
+            <div class="drawer-text">Option A+ Layer 1: Toàn bộ SearchUnit văn xuôi và `table_card` của mọi mã cùng nằm trong buồng Qdrant đa tenant có lọc PIT hai chiều `valid_from_ts &lt;= as_of_ts &lt; valid_to_ts` (cập nhật `valid_to_ts` trên mọi phiên bản khi `SUPERSEDED` hoặc `REVOKED`). `SQLAlchemyTableStore` luôn join `DocumentVersion` + `Document.is_active` để chặn bảng hết hiệu lực.</div>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Hình thái Dữ liệu (I/O Morphology)</label>
-            <div class="drawer-text">Text Chunk → Float32[1024] Dense Vector Index</div>
+            <div class="drawer-text">Indexed Vector Payloads (Qdrant v1.14.1) + Relational 2D Tables (PostgreSQL 16)</div>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Liên kết Mã nguồn gốc</label>
-            <div class="drawer-code-link">📄 <code>ai-engine/app/infrastructure/milvus_repository.py</code></div>
+            <div class="drawer-code-link">📄 <code>SAG/apps/api/sag_api/sag/search_unit_store.py</code> &amp; <code>migrations/0013_stock_research_tables_and_kg.sql</code></div>
           </div>
         </div>
       </aside>
+
       <aside id="inspect-node-hypergraph" class="inspector-drawer" role="dialog" aria-labelledby="title-node-hypergraph">
         <div class="drawer-header">
           <div>
-            <span class="drawer-badge">Knowledge Graph · Step 3B</span>
-            <h3 id="title-node-hypergraph" class="drawer-title">Hypergraph Bipartite Projection</h3>
+            <span class="drawer-badge">0-Hardcode KG &amp; Leiden · Step 3B</span>
+            <h3 id="title-node-hypergraph" class="drawer-title">DenseGraph (`A2..A4`) &amp; 3-Layer Zero-Hardcode KG</h3>
           </div>
           <a href="#!" class="drawer-close" aria-label="Đóng bảng chi tiết">✕</a>
         </div>
         <div class="drawer-body">
           <div class="drawer-section">
-            <label class="drawer-label">Thuật toán &amp; Công thức toán học ngầm</label>
-            <pre class="drawer-code"><code>G = (V_entity, V_event, E_hyper)
-E_hyper = (Entity_A, Entity_B, TransactionValue_VND, PercentageEquity)</code></pre>
+            <label class="drawer-label">Thuật toán Đồ thị Nội mã &amp; Liên ngành</label>
+            <pre class="drawer-code"><code>DenseGraph (A3/A4): TM-{num}, B0x-DN/HN, TT334, ~120 VN aliases
+  temporal floor &gt;= 0.50, Plan(T-1)&lt;-&gt;Actual(T)=1.0, Note citation=0.85
+Leiden Tree (A2): target=6, max=20, resolution=0.08, Blue-Green SLOT_A/B
+KG Engine 1: Entity-Linker (stocks+instrument_master) + Sector Roll-up
+KG Engine 2: QE grid + Newey-West HAC + BH-FDR + Tercile Sign Stability
+KG Engine 3: Sim = 0.45 BizVec + 0.30 MacroBeta + 0.25 FinStruct (k=6)</code></pre>
           </div>
           <div class="drawer-section">
-            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên trong Code</label>
-            <div class="drawer-text">Ngưỡng giao dịch bên liên quan (RPT): Giá trị ≥ 5% vốn chủ sở hữu hoặc bảo lãnh vay vốn công ty con. Kích hoạt giải thuật Tarjan Directed Cycle Detection.</div>
+            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên</label>
+            <div class="drawer-text">Tuyệt đối không hardcode danh sách ngành/đối thủ/vĩ mô. Engine 2 chạy thuần `numpy/pandas/math` (không dùng `scipy`/`statsmodels`/`sklearn`), đối chiếu thống kê với thuyết minh `S10` để gán `CONFIRMED_BOTH`, `QUANT_DOC_NEUTRAL`, hoặc `CONFLICT_FLAG`.</div>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Hình thái Dữ liệu (I/O Morphology)</label>
-            <div class="drawer-text">Extracted Text Mentions → NetworkX Bipartite Hypergraph Representation</div>
+            <div class="drawer-text">E0/E1 Units + Core DB 10Y Macro/Financials → Hierarchical Leiden Tree + 3-Layer KG</div>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Liên kết Mã nguồn gốc</label>
-            <div class="drawer-code-link">📄 <code>ai-engine/app/application/sag_pipeline.py:build_hypergraph()</code></div>
+            <div class="drawer-code-link">📄 <code>SAG/apps/api/sag_api/research/kg_{entity_linker,macro_coupling,true_peer}.py</code></div>
           </div>
         </div>
       </aside>
+
       <aside id="inspect-node-graph-store" class="inspector-drawer" role="dialog" aria-labelledby="title-node-graph-store">
         <div class="drawer-header">
           <div>
-            <span class="drawer-badge">Graph Store · Step 3B</span>
-            <h3 id="title-node-graph-store" class="drawer-title">Relational Financial Knowledge Graph</h3>
+            <span class="drawer-badge">Dual Store B · Step 3B</span>
+            <h3 id="title-node-graph-store" class="drawer-title">3-Layer KG &amp; Leiden Store (`sag-postgres` 0013)</h3>
           </div>
           <a href="#!" class="drawer-close" aria-label="Đóng bảng chi tiết">✕</a>
         </div>
         <div class="drawer-body">
           <div class="drawer-section">
-            <label class="drawer-label">Thuật toán &amp; Công thức toán học ngầm</label>
-            <pre class="drawer-code"><code>SELECT * FROM document_relations WHERE relation_type IN ("OWNS", "LOANS", "GUARANTEES")</code></pre>
+            <label class="drawer-label">Schema &amp; Ràng buộc PIT</label>
+            <pre class="drawer-code"><code>Tables: kg_nodes, kg_edges, macro_sensitivity_snapshots (Bi-Temporal Versioned)
+Filter: effective_from &lt;= as_of_date &lt; valid_to (closes prior valid_to, NEVER overwrites)
+Intra-Ticker Layer 2: KnowledgeUnitEdge (linked_table_ids &lt;-&gt; table_card HippoRAG-2 hops)</code></pre>
           </div>
           <div class="drawer-section">
-            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên trong Code</label>
-            <div class="drawer-text">Lưu trữ thực thể quan hệ trên PostgreSQL: bảng evidence_spans, document_facts, document_relations kết nối khóa ngoại chặt chẽ.</div>
+            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên</label>
+            <div class="drawer-text">Lưu trữ toàn bộ nút (`COMPANY`, `SECTOR`, `MACRO_FACTOR`, `COMMODITY`, `CHANNEL`, `GEOGRAPHY`), cạnh (`MACRO`, `VALUE_CHAIN`, `TRUE_PEER`) và snapshot độ nhạy vĩ mô kèm `beta`, `p_value`, `fdr_q_value`, `tercile_stable`, `verification_tier`.</div>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Hình thái Dữ liệu (I/O Morphology)</label>
-            <div class="drawer-text">Hypergraph Edges → Relational Tuples with Foreign Key Anchors</div>
+            <div class="drawer-text">PIT-Indexed Relational Knowledge Graph + Blue-Green Routing Manifests</div>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Liên kết Mã nguồn gốc</label>
-            <div class="drawer-code-link">📄 <code>ai-engine/app/infrastructure/db/models.py</code></div>
+            <div class="drawer-code-link">📄 <code>SAG/apps/api/sag_api/research/kg_store.py</code> &amp; <code>db/models/stock_research.py</code></div>
           </div>
         </div>
       </aside>
+
       <aside id="inspect-node-query" class="inspector-drawer" role="dialog" aria-labelledby="title-node-query">
         <div class="drawer-header">
           <div>
-            <span class="drawer-badge">Online Trigger · Step 4</span>
-            <h3 id="title-node-query" class="drawer-title">User Query Ingress & Intent Parser</h3>
+            <span class="drawer-badge">Online Gateway · Step 4</span>
+            <h3 id="title-node-query" class="drawer-title">QueryAnalysis (vi) &amp; Express 60s SSE Gateway</h3>
           </div>
           <a href="#!" class="drawer-close" aria-label="Đóng bảng chi tiết">✕</a>
         </div>
         <div class="drawer-body">
           <div class="drawer-section">
-            <label class="drawer-label">Thuật toán &amp; Công thức toán học ngầm</label>
-            <pre class="drawer-code"><code>Q_norm = CleanQuery(Q_raw); Entities = MatchEntity(Q_norm, threshold=0.70)
-v_Q = EmbeddingModel(Q_norm) ∈ ℝ^{1024}</code></pre>
+            <label class="drawer-label">Thuật toán &amp; Bảo mật BFF (`A6` + Phase 4 Pre-Retrieval)</label>
+            <pre class="drawer-code"><code>QueryAnalysis(vi): Multi-turn Rewrite, Clause Decomposition, recency_intent, TM 12, B09-DN/HN
+Modes: GENERAL (free-form multi-hop, BCTN_PR soft prior) | MOAT (broker checklist)
+Scope: Optional ticker -> Dynamic DB/History/Universe resolver (project_id="all", allowed="*", &lt;= 6 tickers)
+BFF Proxy: SagResearchChatService (timeout=60000ms, org_id=SAG_RESEARCH_ORG_ID | "aiinvest-default")</code></pre>
           </div>
           <div class="drawer-section">
-            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên trong Code</label>
-            <div class="drawer-text">Độ tin cậy nhận diện thực thể: Entity Confidence ≥ 0.70. Bóc tách metadata năm tài chính, quý, và mã chứng khoán trọng tâm.</div>
+            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên</label>
+            <div class="drawer-text">Chặn tối đa 6 mã cho mỗi truy vấn đa mã (`MAX_TICKERS_PER_REQUEST = 6`, fail-closed 400 nếu vượt). Fail-closed `503` khi thiếu `SAG_BFF_SERVICE_TOKEN`. Các `GET /research-chat/*` được miễn giới hạn `aiLimiter` (10 req/60s) để Inspector tải mượt.</div>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Hình thái Dữ liệu (I/O Morphology)</label>
-            <div class="drawer-text">Raw User String → Structured Query Intent + v_Q ∈ ℝ^{1024}</div>
+            <div class="drawer-text">User Query + `as_of_date` → Authenticated SSE Stream (`stage`, `delta`, `done`, `error`)</div>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Liên kết Mã nguồn gốc</label>
-            <div class="drawer-code-link">📄 <code>ai-engine/app/presentation/api/query_router.py</code></div>
+            <div class="drawer-code-link">📄 <code>back-end/src/services/sagResearchChat.service.ts</code> &amp; <code>sag_api/services/query_analysis.py</code></div>
           </div>
         </div>
       </aside>
+
       <aside id="inspect-node-dense-retrieval" class="inspector-drawer" role="dialog" aria-labelledby="title-node-dense-retrieval">
         <div class="drawer-header">
           <div>
             <span class="drawer-badge">Parallel Branch 1 · Step 4</span>
-            <h3 id="title-node-dense-retrieval" class="drawer-title">Branch 1: Dense Vector Retrieval</h3>
+            <h3 id="title-node-dense-retrieval" class="drawer-title">Branch 1: Option A+ Dual-Channel Chamber (`PRIMARY` + `CROSS-REF`)</h3>
           </div>
           <a href="#!" class="drawer-close" aria-label="Đóng bảng chi tiết">✕</a>
         </div>
         <div class="drawer-body">
           <div class="drawer-section">
-            <label class="drawer-label">Thuật toán &amp; Công thức toán học ngầm</label>
-            <pre class="drawer-code"><code>S_raw(i) = (v_Q · v_i) / (||v_Q|| ||v_i||)
-Cutoff: S_raw ≥ max(0.35, 0.68 * S_top)</code></pre>
+            <label class="drawer-label">Thuật toán Truy hồi 1 Buồng Kiến Thức Chung Có Phân Lớp</label>
+            <pre class="drawer-code"><code>Tier-0 Gate: Kev-4b short-circuit -&gt; Brief-Centric Brain (ResearchBrief + 0-token PIT/ACL Validator)
+Candidate &amp; Quant: 0-Token FactSet Locator (anchor/net-cash) + Premise Check + Parallel Claim Cards
+Push-Down Search: search_disclosures -&gt; 1 Qdrant /points/query/batch + Compact Doc Mini-Reader
+Synthesis &amp; Audit: Verdict-Card Synthesis + Stage 7 Audit + 1-Pass Surgical Flagged-Line Repair
+CROSS-REF: mentioned_tickers CONTAINS target AND project_id != target + PIT KG partners</code></pre>
           </div>
           <div class="drawer-section">
-            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên trong Code</label>
-            <div class="drawer-text">Ngưỡng cắt tương đối động: Sàn cứng 0.35, ngưỡng tương đối bằng 68% điểm số cao nhất (S_top). Trích xuất tối đa K=32 ứng viên.</div>
+            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên</label>
+            <div class="drawer-text">Bỏ cổng Leiden `branch_local` trên luồng Research Chat (tránh cắt hash UUIDv5 / rò rỉ `dense_medoid` tương lai). Truy hồi lai Dense `1024d` (`Qwen3-Embedding-0.6B`) + Sparse `bm25_sparse` (VN-Dot `P4`) dưới lọc PIT nghiêm ngặt `valid_from_ts &lt;= as_of_ts &lt; valid_to_ts`. Dữ liệu `[CROSS-REF]` tuyệt đối không được nạp vào bảng kiểm toán hay Python Calculator của mã chính.</div>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Hình thái Dữ liệu (I/O Morphology)</label>
-            <div class="drawer-text">Query Vector → Top-32 Candidate Chunks by Cosine Similarity</div>
+            <div class="drawer-text">Query Vector + Sparse Terms + PIT Mask → Seed `SearchUnit`s &amp; `table_id`s</div>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Liên kết Mã nguồn gốc</label>
-            <div class="drawer-code-link">📄 <code>ai-engine/app/application/retrieval_service.py:dense_search()</code></div>
+            <div class="drawer-code-link">📄 <code>SAG/apps/api/sag_api/services/query_routing_service.py</code> &amp; <code>search_unit_retrieval_service.py</code></div>
           </div>
         </div>
       </aside>
+
       <aside id="inspect-node-lexical-retrieval" class="inspector-drawer" role="dialog" aria-labelledby="title-node-lexical-retrieval">
         <div class="drawer-header">
           <div>
             <span class="drawer-badge">Parallel Branch 2 · Step 4</span>
-            <h3 id="title-node-lexical-retrieval" class="drawer-title">Branch 2: Sparse Lexical Grep</h3>
+            <h3 id="title-node-lexical-retrieval" class="drawer-title">Branch 2: HippoRAG 2 (`A1`) + 3-Layer KG Hops</h3>
           </div>
           <a href="#!" class="drawer-close" aria-label="Đóng bảng chi tiết">✕</a>
         </div>
         <div class="drawer-body">
           <div class="drawer-section">
-            <label class="drawer-label">Thuật toán &amp; Công thức toán học ngầm</label>
-            <pre class="drawer-code"><code>S_lex = 0.55 * PhraseMatchRatio + 0.35 * TermMatchRatio + Boost(Ticker, Project)</code></pre>
+            <label class="drawer-label">Thuật toán Mở rộng Đa bước Nội mã &amp; Liên mã</label>
+            <pre class="drawer-code"><code>Intra-Ticker HippoRAG 2 + Bridge Hop-2 (valid_from_ts &lt;= as_of_ts &lt; valid_to_ts):
+  1) Lineage (CONTRADICTS / SUPERSEDES)  2) DenseGraph edges + Dense/Sparse Subqueries
+  3) Bridge Entity (df &lt;= clip(0.08*|V|, 3, 10))  4) 1-Round Conditional TM-{num} Hop-2
+Inter-Ticker KG Hop (effective_from &lt;= as_of_date &lt; valid_to):
+  Macro sensitivity (CONFIRMED_BOTH) + Value-chain + True-Peer cluster</code></pre>
           </div>
           <div class="drawer-section">
-            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên trong Code</label>
-            <div class="drawer-text">Trọng số cộng hưởng: Khớp cụm từ +0.55, Khớp từ đơn +0.35, Boost mã chứng khoán +0.20, Boost tên dự án/thương hiệu +0.25.</div>
+            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên</label>
+            <div class="drawer-text">Mọi bước nhảy xuyên lớp tài liệu (`BCTN_CORE -&gt; BCTC_AUDITED -&gt; AGM_TARGETS -&gt; QUARTER_NOTES`) và xuyên đồ thị vĩ mô/đối thủ đều kiểm tra PIT kép (trong SQL/Qdrant và Python), cân bằng ngân sách theo mã &amp; câu hỏi con (`top_k = 10..24`), ngăn `100%` rò rỉ dữ liệu sau `as_of_date`.</div>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Hình thái Dữ liệu (I/O Morphology)</label>
-            <div class="drawer-text">Query Tokens → Exact Phrase Inverted Index Matches</div>
+            <div class="drawer-text">Seed Units + Ticker/Macro Context → Expanded Cross-Slot Evidence &amp; `graph_hops[]`</div>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Liên kết Mã nguồn gốc</label>
-            <div class="drawer-code-link">📄 <code>ai-engine/app/application/retrieval_service.py:lexical_search()</code></div>
+            <div class="drawer-code-link">📄 <code>SAG/apps/api/sag_api/services/search_unit_retrieval_service.py</code> &amp; <code>research/kg_store.py</code></div>
           </div>
         </div>
       </aside>
+
       <aside id="inspect-node-forensic-guard" class="inspector-drawer" role="dialog" aria-labelledby="title-node-forensic-guard">
         <div class="drawer-header">
           <div>
-            <span class="drawer-badge">Safety Guard · Step 4</span>
-            <h3 id="title-node-forensic-guard" class="drawer-title">Branch 3: Forensic Hard-Law & Veto Gate</h3>
+            <span class="drawer-badge">Parallel Branch 3 · Step 4</span>
+            <h3 id="title-node-forensic-guard" class="drawer-title">Branch 3: Table Hydration, Sandboxed Calc &amp; Discrepancy</h3>
           </div>
           <a href="#!" class="drawer-close" aria-label="Đóng bảng chi tiết">✕</a>
         </div>
         <div class="drawer-body">
           <div class="drawer-section">
-            <label class="drawer-label">Thuật toán &amp; Công thức toán học ngầm</label>
-            <pre class="drawer-code"><code>If HasCycle(Tarjan(G_RPT)) OR (RPT_Ratio &gt; 0.25) OR (M8 &gt; -1.78) → HARD VETO</code></pre>
+            <label class="drawer-label">Thuật toán Tính toán An toàn &amp; Đối chất (`0 LLM`)</label>
+            <pre class="drawer-code"><code>Hydration: SQL push-down (year, quarter, sub_doc_slot) on sag_extracted_tables
+Analyst Tools: 5 Deterministic Engines (FactSet, KPIs, Risk, Peer, AGM) -&gt; [CALC-*]
+Calculator: ast.parse(expr, mode="eval") over SAFE_FUNCTIONS (fail-closed TOOL_FAILED)
+Discrepancy: Period-aligned (ticker, year, quarter) PR vs VERIFIED BCTC (excl. AGM)</code></pre>
           </div>
           <div class="drawer-section">
-            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên trong Code</label>
-            <div class="drawer-text">Beneish M-Score &gt; -1.78 (Cảnh báo gian lận sổ sách), Sloan Accruals &lt; -0.10 (Chất lượng lợi nhuận thấp), Biên độ sàn 2 phiên HOSE 13.51%. Khóa lệnh ngay lập tức khi vi phạm.</div>
+            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên</label>
+            <div class="drawer-text">Cấm tuyệt đối LLM tự nhẩm phép tính (`Zero Mental Math`). Bảng `TABLE_UNVERIFIED` bị gắn cờ cảnh báo đỏ và bị chặn khỏi Python Calculator (`UnverifiedTableInputError`). Mâu thuẫn biên gộp/lợi nhuận/kế hoạch tạo `DiscrepancyAlert` tự động.</div>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Hình thái Dữ liệu (I/O Morphology)</label>
-            <div class="drawer-text">Graph Relational Cycles → Deterministic Binary Veto Signal (PASS / VETO)</div>
+            <div class="drawer-text">`table_id[]` + Core DB → `hydrated_tables[]`, `calculator_traces[]`, `discrepancy_alerts[]`</div>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Liên kết Mã nguồn gốc</label>
-            <div class="drawer-code-link">📄 <code>ai-engine/app/domain/rules/forensic_veto.py</code></div>
+            <div class="drawer-code-link">📄 <code>SAG/apps/api/sag_api/research/calculator.py</code> &amp; <code>discrepancy_detector.py</code></div>
           </div>
         </div>
       </aside>
+
       <aside id="inspect-node-fusion" class="inspector-drawer" role="dialog" aria-labelledby="title-node-fusion">
         <div class="drawer-header">
           <div>
-            <span class="drawer-badge">Convergence Anchor · Step 5</span>
-            <h3 id="title-node-fusion" class="drawer-title">Hybrid Score Fusion & Queue Accumulator</h3>
+            <span class="drawer-badge">Synthesis &amp; Abstention · Step 5</span>
+            <h3 id="title-node-fusion" class="drawer-title">Table-Safe MMR (`A5`), `A7` Quality &amp; DeepSeek-V4</h3>
           </div>
           <a href="#!" class="drawer-close" aria-label="Đóng bảng chi tiết">✕</a>
         </div>
         <div class="drawer-body">
           <div class="drawer-section">
-            <label class="drawer-label">Thuật toán &amp; Công thức toán học ngầm</label>
-            <pre class="drawer-code"><code>S_comb = min(1.0, 0.50*S_raw + 0.20*S_rank + 0.30*S_lex + 0.15_exact) * λ_freshness
-λ_freshness: Fresh=1.15, Active=0.90, Expired=0.10</code></pre>
+            <label class="drawer-label">Thuật toán Đa dạng hóa &amp; Chống Ảo giác</label>
+            <pre class="drawer-code"><code>MMR(i) = (1-lambda)*s_i - lambda*max J(i,j)^2 - w_doc*count_doc(i)
+  Table-Safe (A5): Prefix (fiscal_year, quarter, slot, table_id) + numeric diff guard
+A7 Quality: freshness(u) = 2^(-delta_days / half_life), half_life in {365, 180, 90}
+Synthesis: deepseek-ai/DeepSeek-V4-Flash-0731 (DeepInfra) + 3-Layer Abstention</code></pre>
           </div>
           <div class="drawer-section">
-            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên trong Code</label>
-            <div class="drawer-text">Bộ đếm dồn ứ hàng đợi: Nén từ 32 ứng viên → 24 ứng viên → 8 chunks chất lượng cao nhất. Loại bỏ các chunks có chứa từ ngữ boilerplate lặp lại.</div>
+            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên</label>
+            <div class="drawer-text">Ngăn Jaccard MMR gộp nhầm bảng so sánh 2024 vs 2025. Khi thiếu bằng chứng (hoặc phát hiện cụm từ từ chối tiếng Việt không có `[n]` citation), hệ thống kích hoạt `no_answer` hoặc đẩy vào `declared_blindspots[]`.</div>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Hình thái Dữ liệu (I/O Morphology)</label>
-            <div class="drawer-text">32 Multi-Branch Chunks → 8 High-Signal Ranked Chunks</div>
+            <div class="drawer-text">Evidence Pack + Hydrated Tables + CalcTrace + KG → Streamed Markdown Draft</div>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Liên kết Mã nguồn gốc</label>
-            <div class="drawer-code-link">📄 <code>ai-engine/app/application/retrieval_service.py:fuse_and_rerank()</code></div>
+            <div class="drawer-code-link">📄 <code>SAG/apps/api/sag_api/services/retrieval_service.py</code> &amp; <code>research/chat_orchestrator.py</code></div>
           </div>
         </div>
       </aside>
+
       <aside id="inspect-node-verified-evidence" class="inspector-drawer" role="dialog" aria-labelledby="title-node-verified-evidence">
         <div class="drawer-header">
           <div>
-            <span class="drawer-badge">Execution Anchor · Step 6</span>
-            <h3 id="title-node-verified-evidence" class="drawer-title">Verified Evidence Context Assembly</h3>
+            <span class="drawer-badge">Verification &amp; Exit Gate · Step 6</span>
+            <h3 id="title-node-verified-evidence" class="drawer-title">`quote_hash` Post-Verifier &amp; Phase 1 Exit Gate</h3>
           </div>
           <a href="#!" class="drawer-close" aria-label="Đóng bảng chi tiết">✕</a>
         </div>
         <div class="drawer-body">
           <div class="drawer-section">
-            <label class="drawer-label">Thuật toán &amp; Công thức toán học ngầm</label>
-            <pre class="drawer-code"><code>Context = AssertAll(Chunk_i.hash == SHA256(RawSlice(L_start, L_end)))
-Dispatched to: Half-Kelly Engine f* = 0.5 * ((b*p - q) / b)</code></pre>
+            <label class="drawer-label">Thuật toán Kiểm chứng &amp; Tiêu chí G1–G5</label>
+            <pre class="drawer-code"><code>Verify(c): sha256(normalize_ws(quote)) == c.quote_hash
+  AND normalize_ws(quote) in canonical_blocks[c.doc_ver_id] (page &amp; slot match)
+  AND claim_aligned(answer_sentence, section[c]) (else CITATION_CONTENT_MISMATCH)
+  AND partitioned_numeric_audit(owner_ticker, unit_class in {PERCENT,MULTIPLE,MONETARY,RAW})
+  AND c.published_date &lt;= as_of_date  (else [UNVERIFIED_CLAIM] + Inline Warning Banner)
+Exit Gate: G1&gt;=98% · G2&gt;=98% · G3=100% (excl. short-circuits) · G4=0% PIT leak (incl. SCR) · G5&gt;=90% PASS</code></pre>
           </div>
           <div class="drawer-section">
-            <label class="drawer-label">Ngưỡng tham số &amp; Điều kiện biên trong Code</label>
-            <div class="drawer-text">Khẳng định 100% trích dẫn neo dòng [L_start : L_end] khớp mã băm SHA-256. Phân phối ngữ cảnh tinh khiết cho 12 Quant Agents và Engine quản trị vị thế Half-Kelly.</div>
+            <label class="drawer-label">Ngưỡng tham số &amp; Ranh giới Rule 06</label>
+            <div class="drawer-text">Hiển thị trên UI phong cách ChatGPT `/research-chat` (thanh lịch sử trái thu gọn + luồng chat trung tâm tự do + Ngăn Bằng chứng trượt phải mở theo `[C#]`/`[TBL]`/`[CALC]`/`[KG]` + `sag_chat_eval_feedback` trên Core PG). Theo Rule 06 thu hẹp, **12 Decision Agents (`ai-engine`) và GIL vẫn đóng (`SAG_CLOSED`)** cho tới khi vượt đủ 5 tiêu chí G1–G5 mới mở Pha 2.</div>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Hình thái Dữ liệu (I/O Morphology)</label>
-            <div class="drawer-text">Clean Verified Facts → Downstream Quant Decision Context</div>
+            <div class="drawer-text">Verified Answer + `ResearchChatMetadata` JSONB → `/research-chat` Audit UI</div>
           </div>
           <div class="drawer-section">
             <label class="drawer-label">Liên kết Mã nguồn gốc</label>
-            <div class="drawer-code-link">📄 <code>ai-engine/app/application/bctc_to_sag_pipeline.py:assemble_context()</code></div>
+            <div class="drawer-code-link">📄 <code>SAG/apps/api/sag_api/research/quote_verifier.py</code> &amp; <code>front-end/src/components/research-chat/</code></div>
           </div>
         </div>
       </aside>

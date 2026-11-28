@@ -1,8 +1,8 @@
-"""Nhận diện mã hóa file văn bản và chuẩn hóa UTF-8.
+"""文本文件编码识别与 UTF-8 规范化。
 
-``Response.text()`` của trình duyệt và Markdown loader của zleap-sag đều lấy UTF-8 làm ranh giới;
-bản thân file upload có thể đến từ GBK/GB18030, Big5, Shift-JIS hoặc Windows-1252.
-Ở đây giữ nguyên byte gốc, chỉ sinh văn bản Unicode tin cậy cho việc phân tích và xem trước.
+浏览器 ``Response.text()`` 和 zleap-sag 的 Markdown loader 都以 UTF-8 为边界；
+上传文件本身则可能来自 GBK/GB18030、Big5、Shift-JIS 或 Windows-1252。
+这里保留原始字节，只为解析与预览生成可靠的 Unicode 文本。
 """
 
 from __future__ import annotations
@@ -18,6 +18,11 @@ _PLAIN_TEXT_SUFFIXES = {
     ".txt",
     ".text",
     ".log",
+    ".yaml",
+    ".yml",
+    ".sql",
+    ".drawio",
+    ".rtf",
 }
 _TEXT_PREVIEW_SUFFIXES = _PLAIN_TEXT_SUFFIXES | {
     ".csv",
@@ -38,7 +43,7 @@ _TEXT_APPLICATION_TYPES = {
 
 
 class TextDecodingError(ValueError):
-    """Byte của file không thể nhận diện một cách tin cậy thành văn bản."""
+    """文件字节无法被可靠地识别为文本。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,7 +143,7 @@ def decode_text_bytes(data: bytes) -> DecodedText:
             continue
         return decoded
 
-    raise TextDecodingError("Không thể nhận diện mã hóa văn bản một cách tin cậy")
+    raise TextDecodingError("无法可靠识别文本编码")
 
 
 def _bom_encoding(data: bytes) -> str | None:
@@ -160,7 +165,7 @@ def _decode_candidate(data: bytes, encoding: str, *, strict: bool) -> DecodedTex
     try:
         text = data.decode(encoding, errors=errors)
     except UnicodeDecodeError as error:
-        raise TextDecodingError(f"Văn bản không phải mã hóa {encoding} hợp lệ") from error
+        raise TextDecodingError(f"文本不是有效的 {encoding} 编码") from error
     _assert_text_quality(text)
     return DecodedText(text, encoding, text.count("�"))
 
@@ -169,16 +174,16 @@ def _assert_text_quality(text: str) -> None:
     if not text:
         return
     if "\x00" in text:
-        raise TextDecodingError("File chứa byte NUL, trông không giống văn bản")
+        raise TextDecodingError("文件包含 NUL 字节，不像文本")
     controls = sum(
         1
         for char in text
         if char not in "\t\n\r" and unicodedata.category(char) in {"Cc", "Cs"}
     )
     if controls > max(2, len(text) // 100):
-        raise TextDecodingError("File chứa quá nhiều ký tự điều khiển, trông không giống văn bản")
+        raise TextDecodingError("文件包含过多控制字符，不像文本")
     if text.count("�") > max(8, len(text) // 100):
-        raise TextDecodingError("Tỷ lệ văn bản giải mã bị hỏng quá cao")
+        raise TextDecodingError("文本解码损坏比例过高")
 
 
 def _east_asian_count(text: str) -> int:

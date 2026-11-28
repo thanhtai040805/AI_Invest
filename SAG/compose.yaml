@@ -1,0 +1,154 @@
+name: aiinvest-sag
+
+# Standalone Knowledge Routing RAG stack for AIInvest Stock Research / MOAT.
+# Uses PostgreSQL 16 (source of truth) + Qdrant (vector accelerator).
+services:
+  db:
+    image: postgres:16
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${SAG_PG_PORT:-55432}:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-aiinvest_sag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aiinvest_sag}
+      POSTGRES_DB: ${POSTGRES_DB:-aiinvest_sag}
+    volumes:
+      - aiinvest_sag_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aiinvest_sag} -d ${POSTGRES_DB:-aiinvest_sag}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:v1.14.1
+    mem_limit: 1g
+    # Local fallback only. Set SAG_SAG_QDRANT_URL / SAG_SAG_QDRANT_API_KEY to use Qdrant Cloud.
+    environment:
+      - QDRANT__STORAGE__ON_DISK_PAYLOAD=true
+      # Pass through only when explicitly defined; an empty QDRANT__SERVICE__API_KEY="" enables 401 auth in Qdrant v1.14+
+      - QDRANT__SERVICE__API_KEY
+    volumes:
+      - aiinvest_sag_qdrantdata:/qdrant/storage
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${QDRANT_PORT:-16333}:6333"
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    environment:
+      SAG_ENVIRONMENT: ${SAG_ENVIRONMENT:-dev}
+      SAG_DEBUG: "false"
+      SAG_SECRET_KEY: ${SAG_SECRET_KEY:-dev-insecure-secret-change-me-in-production-0123456789}
+      SAG_CORS_ORIGINS: ${SAG_CORS_ORIGINS:-http://localhost:3000}
+      SAG_AUTH_MODE: ${SAG_AUTH_MODE:-continuum}
+      SAG_BFF_SERVICE_TOKEN: ${SAG_BFF_SERVICE_TOKEN:-}
+      SAG_ALLOW_REGISTRATION: ${SAG_ALLOW_REGISTRATION:-false}
+      SAG_DECISION_MODEL: ${SAG_DECISION_MODEL:-Kev-4b}
+      SAG_SILICONFLOW_BASE_URL: ${SAG_SILICONFLOW_BASE_URL:-https://api.siliconflow.com/v1}
+      SAG_SILICONFLOW_API_KEY: ${SAG_SILICONFLOW_API_KEY:-}
+      SAG_RERANK_MODEL: ${SAG_RERANK_MODEL:-Qwen/Qwen3-Reranker-0.6B}
+      SAG_RERANK_BASE_URL: ${SAG_RERANK_BASE_URL:-}
+      SAG_RERANK_API_KEY: ${SAG_RERANK_API_KEY:-${DEEPINFRA_API_KEY:-}}
+      SAG_USER_MEMORY_QDRANT_COLLECTION: ${SAG_USER_MEMORY_QDRANT_COLLECTION:-aiinvest_user_memories}
+      SAG_USER_MEMORY_EXTRACTOR_MODEL: ${SAG_USER_MEMORY_EXTRACTOR_MODEL:-}
+      SAG_USER_MEMORY_WORKER_ENABLED: ${SAG_USER_MEMORY_WORKER_ENABLED:-true}
+      SAG_USER_MEMORY_DEBOUNCE_SECONDS: ${SAG_USER_MEMORY_DEBOUNCE_SECONDS:-8.0}
+      SAG_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-aiinvest_sag}:${POSTGRES_PASSWORD:-aiinvest_sag}@db:5432/${POSTGRES_DB:-aiinvest_sag}
+      SAG_CORE_DATABASE_URL: ${SAG_CORE_DATABASE_URL:-}
+      SAG_DATA_DIR: /data/engine
+      SAG_UPLOAD_DIR: /data/uploads
+      SAG_SAG_VECTOR_PROVIDER: qdrant
+      SAG_SAG_RELATIONAL_PROVIDER: postgres
+      SAG_SAG_QDRANT_URL: ${SAG_SAG_QDRANT_URL:-http://qdrant:6333}
+      SAG_SAG_QDRANT_API_KEY: ${SAG_SAG_QDRANT_API_KEY:-}
+      SAG_SAG_QDRANT_SHARED_COLLECTION: ${SAG_SAG_QDRANT_SHARED_COLLECTION:-aiinvest_search_units}
+      SAG_SAG_QDRANT_ON_DISK: ${SAG_SAG_QDRANT_ON_DISK:-true}
+      SAG_SAG_QDRANT_SCALAR_QUANTIZATION: ${SAG_SAG_QDRANT_SCALAR_QUANTIZATION:-true}
+      SAG_SAG_PG_HOST: db
+      SAG_SAG_PG_PORT: "5432"
+      SAG_SAG_PG_USER: ${POSTGRES_USER:-aiinvest_sag}
+      SAG_SAG_PG_PASSWORD: ${POSTGRES_PASSWORD:-aiinvest_sag}
+      SAG_SAG_PG_DATABASE: ${POSTGRES_DB:-aiinvest_sag}
+      SAG_SAG_LANGUAGE: ${SAG_SAG_LANGUAGE:-vi}
+      SAG_LLM_PROVIDER: ${SAG_LLM_PROVIDER:-openai}
+      SAG_LLM_BASE_URL: ${SAG_LLM_BASE_URL:-https://api.deepinfra.com/v1/openai}
+      SAG_LLM_API_KEY: ${SAG_LLM_API_KEY:-${DEEPINFRA_API_KEY:-}}
+      SAG_LLM_MODEL: ${SAG_LLM_MODEL:-deepseek-ai/DeepSeek-V4-Flash}
+      SAG_LLM_MAX_TOKENS: ${SAG_LLM_MAX_TOKENS:-20000}
+      SAG_LLM_TIMEOUT_MS: ${SAG_LLM_TIMEOUT_MS:-60000}
+      SAG_LLM_MAX_RETRIES: ${SAG_LLM_MAX_RETRIES:-2}
+      SAG_LLM_STRUCTURED_OUTPUT_MODE: ${SAG_LLM_STRUCTURED_OUTPUT_MODE:-auto}
+      SAG_LOCK_LLM_CONFIG: ${SAG_LOCK_LLM_CONFIG:-false}
+      SAG_EMBEDDING_MODEL: ${SAG_EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
+      SAG_EMBEDDING_BASE_URL: ${SAG_EMBEDDING_BASE_URL:-https://api.deepinfra.com/v1/openai}
+      SAG_EMBEDDING_API_KEY: ${SAG_EMBEDDING_API_KEY:-${DEEPINFRA_API_KEY:-}}
+      SAG_EMBEDDING_DIMENSIONS: ${SAG_EMBEDDING_DIMENSIONS:-1024}
+      SAG_EMBEDDING_CONCURRENCY: ${SAG_EMBEDDING_CONCURRENCY:-6}
+      SAG_EMBEDDING_TIMEOUT: ${SAG_EMBEDDING_TIMEOUT:-60}
+      SAG_EMBEDDING_MAX_RETRIES: ${SAG_EMBEDDING_MAX_RETRIES:-3}
+      SAG_DOCUMENT_PARSER: ${SAG_DOCUMENT_PARSER:-auto}
+      SAG_MINERU_PROVIDER: official
+      SAG_MINERU_BASE_URL: ${SAG_MINERU_BASE_URL:-https://mineru.net}
+      SAG_MINERU_OFFICIAL_API_TOKEN: ${SAG_MINERU_OFFICIAL_API_TOKEN:-${SAG_MINERU_API_KEY:-}}
+      SAG_MINERU_OFFICIAL_API_TOKEN_0: ${SAG_MINERU_OFFICIAL_API_TOKEN_0:-}
+      SAG_MINERU_OFFICIAL_API_TOKEN_1: ${SAG_MINERU_OFFICIAL_API_TOKEN_1:-}
+      SAG_MINERU_OFFICIAL_API_TOKEN_2: ${SAG_MINERU_OFFICIAL_API_TOKEN_2:-}
+      SAG_MINERU_OFFICIAL_API_TOKENS: ${SAG_MINERU_OFFICIAL_API_TOKENS:-}
+      SAG_MINERU_PER_TOKEN_CONCURRENCY: ${SAG_MINERU_PER_TOKEN_CONCURRENCY:-8}
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+      R2_ENDPOINT_URL: ${R2_ENDPOINT_URL:-}
+      R2_BUCKET_NAME: ${R2_BUCKET_NAME:-aiinvest-bctc-prod}
+      R2_TOKEN: ${R2_TOKEN:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      SAG_R2_MD_LOCAL_CACHE_DIR: ${SAG_R2_MD_LOCAL_CACHE_DIR:-/data/r2-md-cache}
+      SAG_MINERU_OFFICIAL_MODEL: ${SAG_MINERU_OFFICIAL_MODEL:-vlm}
+      SAG_MINERU_PARSE_METHOD: ${SAG_MINERU_PARSE_METHOD:-auto}
+      SAG_OBJECT_INGEST_ALLOWED_HOSTS: ${SAG_OBJECT_INGEST_ALLOWED_HOSTS:-.r2.cloudflarestorage.com}
+      SAG_OBJECT_INGEST_ALLOW_PRIVATE_HOSTS_IN_DEV: ${SAG_OBJECT_INGEST_ALLOW_PRIVATE_HOSTS_IN_DEV:-false}
+      SAG_OBJECT_INGEST_TIMEOUT_SECONDS: ${SAG_OBJECT_INGEST_TIMEOUT_SECONDS:-120}
+      SAG_LOCAL_PARSE_WORKERS: ${SAG_LOCAL_PARSE_WORKERS:-2}
+      SAG_LOCAL_PARSE_TIMEOUT_SECONDS: ${SAG_LOCAL_PARSE_TIMEOUT_SECONDS:-90}
+      SAG_LOCAL_PARSE_MAX_TASKS_PER_CHILD: ${SAG_LOCAL_PARSE_MAX_TASKS_PER_CHILD:-25}
+      SAG_MINERU_IO_CONCURRENCY: ${SAG_MINERU_IO_CONCURRENCY:-16}
+      SAG_FAST_PARSE_CONCURRENCY: ${SAG_FAST_PARSE_CONCURRENCY:-16}
+      SAG_PER_PROJECT_HEAVY_PARSE_LIMIT: ${SAG_PER_PROJECT_HEAVY_PARSE_LIMIT:-3}
+      SAG_REMOTE_SNAPSHOT_GC_ENABLED: ${SAG_REMOTE_SNAPSHOT_GC_ENABLED:-true}
+      SAG_DOCUMENT_CHUNK_MAX_TOKENS: ${SAG_DOCUMENT_CHUNK_MAX_TOKENS:-1000}
+      SAG_DOCUMENT_CHUNK_MODE: ${SAG_DOCUMENT_CHUNK_MODE:-standard}
+      SAG_JOB_MAX_ATTEMPTS: ${SAG_JOB_MAX_ATTEMPTS:-3}
+      SAG_KNOWLEDGE_WORKER_ENABLED: ${SAG_KNOWLEDGE_WORKER_ENABLED:-true}
+      SAG_TIMEZONE: ${SAG_TIMEZONE:-Asia/Ho_Chi_Minh}
+      SAG_KNOWLEDGE_CONCURRENCY: ${SAG_KNOWLEDGE_CONCURRENCY:-4}
+      SAG_KNOWLEDGE_QUEUE_CAPACITY: ${SAG_KNOWLEDGE_QUEUE_CAPACITY:-256}
+      SAG_KNOWLEDGE_GRAPH_TIMEOUT_SECONDS: ${SAG_KNOWLEDGE_GRAPH_TIMEOUT_SECONDS:-300}
+      SAG_ENGINE_CACHE_SIZE: ${SAG_ENGINE_CACHE_SIZE:-16}
+      SAG_ENGINE_WARMUP_COUNT: ${SAG_ENGINE_WARMUP_COUNT:-4}
+    volumes:
+      - aiinvest_sag_data:/data
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${API_PORT:-18000}:8000"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import urllib.request,sys;
+          sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/v1/system/health').status==200 else 1)"
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  aiinvest_sag_pgdata:
+  aiinvest_sag_qdrantdata:
+  aiinvest_sag_data:

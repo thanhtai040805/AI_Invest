@@ -1,16 +1,23 @@
-"""Các enum dùng chung giữa các tầng (model / schema / service đều import được, không tác dụng phụ)."""
+"""跨层共享的枚举（模型 / schema / 服务均可导入，无副作用）。"""
 
 from __future__ import annotations
 
 from enum import StrEnum
 from typing import Literal
 
-SearchStrategy = Literal["vector", "multi"]
-SEARCH_STRATEGIES = frozenset({"vector", "multi"})
+SearchStrategy = Literal["vector", "multi", "multi_es_fast"]
+SEARCH_STRATEGIES = frozenset({"vector", "multi", "multi_es_fast"})
+
+# 策略对底层引擎能力的依赖。缺失能力的部署会在 UI 灰置该选项；后端调用则拒绝。
+SEARCH_STRATEGY_REQUIREMENTS: dict[str, frozenset[str]] = {
+    "vector": frozenset(),
+    "multi": frozenset(),
+    "multi_es_fast": frozenset({"lexical_search"}),
+}
 
 
 def normalize_search_strategy(value: str) -> str:
-    """Chuyển chiến lược tìm kiếm atomic đã ngừng sang tìm kiếm chính xác; giá trị khác giao cho caller kiểm tra."""
+    """把已下线的原子检索迁移到精确检索；其他值交给调用方校验。"""
     return "multi" if value == "atomic" else value
 
 
@@ -24,10 +31,10 @@ class SourceType(StrEnum):
 class ConnectorKind(StrEnum):
     FILE_UPLOAD = "file_upload"
     WEB = "web"
-    # Dự trữ: NOTION = "notion"; S3 = "s3"; CONFLUENCE = "confluence"; ...
+    # 预留：NOTION = "notion"; S3 = "s3"; CONFLUENCE = "confluence"; ...
 
 
-# Connector → loại nguồn mặc định
+# 连接器 → 默认信源类型
 CONNECTOR_SOURCE_TYPE = {
     ConnectorKind.FILE_UPLOAD: SourceType.DOCUMENT,
     ConnectorKind.WEB: SourceType.WEB,
@@ -41,104 +48,29 @@ class SourceStatus(StrEnum):
 
 
 class DocumentStatus(StrEnum):
-    QUEUED = "QUEUED"
-    PROCESSING = "PROCESSING"
-    OCR_READY = "OCR_READY"
-    READY = "READY"
-    FAILED = "FAILED"
-    CANCELLED = "CANCELLED"
-    # Legacy values kept only so old rows can still hydrate while v2 cuts over.
-    PENDING = "pending"
-    LOADING = "loading"
-    EXTRACTING = "extracting"
-    PAUSED = "paused"
-
-
-class DocumentRole(StrEnum):
-    ANNUAL_BACKBONE = "ANNUAL_BACKBONE"
-    LATEST_QUARTER = "LATEST_QUARTER"
-    GOVERNANCE_REPORT = "GOVERNANCE_REPORT"
-
-
-class ProcessingStageStatus(StrEnum):
-    PENDING = "PENDING"
-    RUNNING = "RUNNING"
-    COMPLETE = "COMPLETE"
-    INCOMPLETE = "INCOMPLETE"
-    EXTRACTION_INCOMPLETE = "EXTRACTION_INCOMPLETE"
-    FAILED = "FAILED"
-    SKIPPED_DUPLICATE = "SKIPPED_DUPLICATE"
-
-
-class EntityType(StrEnum):
-    ISSUER = "issuer"
-    SUBSIDIARY = "subsidiary"
-    AFFILIATE = "affiliate"
-    RELATED_PARTY = "related_party"
-    PERSON = "person"
-    BANK = "bank"
-    STATE_BODY = "state_body"
-    CUSTOMER = "customer"
-    SUPPLIER = "supplier"
-    PROJECT = "project"
-    BRAND = "brand"
-    OTHER = "other"
-
-
-class FactType(StrEnum):
-    EQUITY = "equity"
-    REVENUE = "revenue"
-    PROFIT = "profit"
-    CAPACITY = "capacity"
-    OWNERSHIP_BALANCE = "ownership_balance"
-    LOAN_BALANCE = "loan_balance"
-    RECEIVABLE_BALANCE = "receivable_balance"
-    PAYABLE_BALANCE = "payable_balance"
-    GUARANTEE_BALANCE = "guarantee_balance"
-    DIVIDEND = "dividend"
-    RELATED_PARTY_EXPOSURE = "related_party_exposure"
-    OTHER = "other"
-
-
-class RelationType(StrEnum):
-    OWNS = "owns"
-    INVESTS_IN = "invests_in"
-    LENDS_TO = "lends_to"
-    CREDITOR_OF = "creditor_of"
-    GUARANTEES_FOR = "guarantees_for"
-    TRANSACTS_WITH = "transacts_with"
-    MANAGES = "manages"
-    CONTROLS = "controls"
-    AFFILIATED_WITH = "affiliated_with"
-    OTHER = "other"
-
-
-class AssessmentStatus(StrEnum):
-    COMPLETE = "COMPLETE"
-    PARTIAL = "PARTIAL"
-    INSUFFICIENT = "INSUFFICIENT"
-
-
-class GILFlag(StrEnum):
-    PASS = "PASS"
-    WARNING = "WARNING"
-    CATASTROPHIC = "CATASTROPHIC"
-    DATA_INSUFFICIENT = "DATA_INSUFFICIENT"
-
-
-class ValidationStatus(StrEnum):
-    PENDING = "PENDING"
-    VALIDATED = "VALIDATED"
-    REJECTED = "REJECTED"
-    NEEDS_REVIEW = "NEEDS_REVIEW"
+    PENDING = "pending"        # 已登记，待处理
+    LOADING = "loading"        # ingest 中（解析 → 分块 → 入库 → 向量）
+    EXTRACTING = "extracting"  # extract 中（事件 / 实体抽取）
+    PAUSING = "pausing"        # 已收到停止命令，等待在途分块完成
+    PAUSED = "paused"          # 抽取已暂停，可从 chunk 断点继续
+    DELETING = "deleting"      # 已收到删除命令，后台正在停止并清理
+    DELETE_FAILED = "delete_failed"
+    READY = "ready"            # 处理完成，可检索
+    FAILED = "failed"
 
 
 class JobType(StrEnum):
     PROCESS_DOCUMENT = "process_document"
-    OCR_FROM_OBJECT = "ocr_from_object"
-    OCR_FROM_URL = "ocr_from_url"
+    REPROCESS_DOCUMENT = "reprocess_document"
+    DELETE_DOCUMENT = "delete_document"
     SYNC_SOURCE = "sync_source"
     INDEX_UNIVERSE = "index_universe"
+    REBUILD_UNIVERSE_TREE = "rebuild_universe_tree"
+    OCTX_PREFLIGHT = "octx_preflight"
+    OCTX_IMPORT = "octx_import"
+    OCTX_EXPORT = "octx_export"
+    OCTX_GC_INSTALLATION = "octx_gc_installation"
+    OCTX_GC_TRANSFER = "octx_gc_transfer"
 
 
 class JobStatus(StrEnum):
@@ -155,6 +87,62 @@ class MessageRole(StrEnum):
     SYSTEM = "system"
 
 
+class MessageStatus(StrEnum):
+    OK = "ok"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 class BindingTargetType(StrEnum):
     SOURCE = "source"
-    MCP_SERVER = "mcp_server"  # Phase C: gắn MCP server làm nguồn công cụ
+    MCP_SERVER = "mcp_server"  # Phase C：挂载 MCP server 作为工具来源
+
+
+class OctxAssetOwnership(StrEnum):
+    LOCAL = "local"
+    IMPORTED = "imported"
+
+
+class OctxReleaseOrigin(StrEnum):
+    IMPORT = "import"
+    EXPORT = "export"
+
+
+class OctxInstallationStatus(StrEnum):
+    SHADOW = "shadow"
+    ACTIVE = "active"
+    RETAINED = "retained"
+    GC = "gc"
+    FAILED = "failed"
+
+
+class OctxTransferDirection(StrEnum):
+    IMPORT = "import"
+    EXPORT = "export"
+
+
+class OctxImportAction(StrEnum):
+    UPDATE = "update"
+    NEW = "new"
+    CANCEL = "cancel"
+
+
+class OctxExportAction(StrEnum):
+    EXPORT_READY_ONLY = "export_ready_only"
+    CANCEL = "cancel"
+
+
+class OctxTransferStatus(StrEnum):
+    UPLOADED = "uploaded"
+    VALIDATING = "validating"
+    DECISION_REQUIRED = "decision_required"
+    QUEUED = "queued"
+    IMPORTING = "importing"
+    INDEXING = "indexing"
+    SWITCHING = "switching"
+    EXPORTING = "exporting"
+    PACKAGING = "packaging"
+    READY = "ready"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    EXPIRED = "expired"

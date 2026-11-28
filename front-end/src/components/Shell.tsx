@@ -16,6 +16,7 @@ import {
   Compass,
   Cpu,
   Layers,
+  MessageSquareText,
   PanelLeftClose,
   PanelLeftOpen,
   Search,
@@ -46,6 +47,7 @@ const nav: NavGroup[] = [
     items: [
       { label: "AI War Room", route: "/agent", icon: Cpu },
       { label: "Hồ sơ Luận điểm", route: "/research", icon: BookOpenText },
+      { label: "Chat Phân tích AI", route: "/research-chat", icon: MessageSquareText },
       { label: "Bộ lọc HOSE", route: "/discovery", icon: Compass },
       { label: "Dòng tiền Ngành", route: "/sectors", icon: Layers },
     ],
@@ -861,12 +863,13 @@ export function Shell({ children }: { children: ReactNode }) {
   }, [overlayOpen])
 
   const activeIdx = modalState.symbol ? modalState.symbols.indexOf(modalState.symbol) : -1
+  const isCleanChatRoute = path === "/research-chat" || path.startsWith("/research-chat/")
 
   return (
     <div className="flex min-h-dvh bg-paper">
       <Sidebar suppressTips={overlayOpen} />
       <div className="flex-1 flex flex-col min-w-0 bg-paper">
-        <TopBar onSearch={() => setCmd(true)} />
+        {!isCleanChatRoute && <TopBar onSearch={() => setCmd(true)} />}
         <main className="flex-1 min-w-0 bg-paper">{children}</main>
       </div>
       {cmd && <CommandPalette onClose={() => setCmd(false)} />}

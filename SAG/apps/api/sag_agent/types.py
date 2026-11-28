@@ -32,6 +32,7 @@ class EventType(StrEnum):
     TURN_STARTED = "turn.started"
     TURN_COMPLETED = "turn.completed"
     MESSAGE_STARTED = "message.started"
+    REASONING_DELTA = "message.reasoning_delta"
     MESSAGE_DELTA = "message.delta"
     MESSAGE_COMPLETED = "message.completed"
     TOOL_STARTED = "tool.started"
@@ -226,9 +227,11 @@ class Usage:
 @dataclass(frozen=True, slots=True)
 class ModelChunk:
     text_delta: str = ""
+    reasoning_delta: str = ""
     tool_calls: tuple[ToolCall, ...] = ()
     finish_reason: str | None = None
     usage: Usage | None = None
+    has_pending_tool_call: bool = False
 
 
 @runtime_checkable

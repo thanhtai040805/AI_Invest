@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -19,6 +19,7 @@ class ConnectorOut(BaseModel):
 class SourceCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str = ""
+    project_id: str | None = Field(default=None, min_length=1, max_length=256)
     connector_kind: ConnectorKind = ConnectorKind.FILE_UPLOAD
     config: dict[str, Any] = Field(default_factory=dict)
 
@@ -43,3 +44,7 @@ class SourceOut(BaseModel):
     event_count: int
     created_at: datetime
     updated_at: datetime
+
+
+class SourceCreateOut(SourceOut):
+    mapping_state: Literal["PENDING"] = "PENDING"

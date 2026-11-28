@@ -1,9 +1,9 @@
-"""Trừu tượng hóa công cụ —— đơn vị năng lực có thể gắn vào Agent.
+"""工具抽象 —— Agent 可挂载的能力单元。
 
-Thiết kế đồng bộ với `connectors/`：một「công cụ」tự mô tả（name + tham số JSON-Schema），
-đăng ký qua registry；vòng lặp Agent đưa schema công cụ cho LLM（native function-calling），
-rồi dispatch tool_call của LLM tới công cụ tương ứng. Truy vấn chỉ là một trong các công cụ tích hợp，
-công cụ MCP bên ngoài sau khi thích ứng giao diện tương tự thì hoàn toàn giống công cụ tích hợp với Agent.
+设计对齐 `connectors/`：一个「工具」自描述（name + JSON-Schema 参数），
+经注册表登记；Agent 循环把工具 schema 交给 LLM（native function-calling），
+再把 LLM 的 tool_call 派发到对应工具执行。检索只是内置的其中一个工具，
+外部 MCP 工具适配成同一接口后与内置工具对 Agent 完全一致。
 """
 
 from __future__ import annotations
@@ -13,13 +13,14 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from sag_api.core.principal_assertion import VerifiedPrincipal
     from sag_api.db.models import Agent, Source
     from sag_api.sag import EngineManager
 
 
 @dataclass
 class ToolMeta:
-    """Tự mô tả công cụ. `parameters` là JSON-Schema（object），cho mô hình function-calling."""
+    """工具自描述。`parameters` 为 JSON-Schema（object），供模型 function-calling。"""
 
     name: str
     description: str
@@ -38,19 +39,25 @@ class ToolMeta:
 
 @dataclass
 class ToolContext:
-    """Ngữ cảnh runtime cần cho việc thực thi công cụ（do vòng lặp Agent tiêm vào，tương tự tiêm singleton của job handler）."""
+    """工具执行所需的运行时上下文（由 Agent 循环注入，类比 job handler 的单例注入）。"""
 
     engine_manager: EngineManager
     sources: list[Source] = field(default_factory=list)
+    principal: VerifiedPrincipal | None = None
     persona: dict[str, Any] = field(default_factory=dict)
     agent: Agent | None = None
-    # Độ lệch số hiệu bằng chứng toàn cục：vòng lặp đặt trước mỗi lần dispatch，đảm bảo [n] tăng dần không trùng qua các lượt
+    # High-water mark for citation numbering; survives context-window pruning.
     citation_offset: int = 0
+    # Recomputed by the agent host's per-turn context budget guard.
+    evidence_token_budget: int | None = None
+    search_context_called: bool = False
+    search_context_no_answer_reason: str | None = None
+    search_context_unavailable: bool = False
 
 
 @dataclass
 class ToolResult:
-    """Kết quả thực thi công cụ. `content` trả về cho mô hình；`citations` cho UI truy vết；`data` kèm cấu trúc."""
+    """工具执行结果。`content` 回填给模型；`citations` 供 UI 溯源；`data` 结构化附带。"""
 
     content: str
     citations: list[dict] = field(default_factory=list)
@@ -58,11 +65,11 @@ class ToolResult:
 
 
 class Tool(ABC):
-    """Lớp cơ sở của mọi công cụ. Thêm công cụ mới = kế thừa + triển khai invoke + đăng ký trong registry."""
+    """所有工具的基类。新增工具 = 继承 + 实现 invoke + 在 registry 注册。"""
 
     meta: ToolMeta
 
     @abstractmethod
     async def invoke(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        """Thực thi công cụ. Tham số đã do mô hình đưa ra（hoặc tự gieo），trả về kết quả có thể điền ngược."""
+        """执行工具。参数已由模型给出（或自动播种），返回可回填的结果。"""
         raise NotImplementedError

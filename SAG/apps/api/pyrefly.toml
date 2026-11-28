@@ -1,0 +1,5 @@
+project-includes = ["sag_api", "tests"]
+project-excludes = ["**/.venv/**", "**/__pycache__/**"]
+search-path = ["."]
+python-interpreter-path = ".venv/Scripts/python.exe"
+disable-type-errors-in-ide = true

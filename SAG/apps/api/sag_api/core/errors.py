@@ -1,14 +1,14 @@
-"""Ngoại lệ miền sag — không phụ thuộc framework, tầng route ánh xạ thống nhất thành phản hồi HTTP.
+"""sag 领域异常 —— 与框架无关，路由层统一映射为 HTTP 响应。
 
-Dịch vụ miền chỉ ném các ngoại lệ này; tầng adapter `sag/` chịu trách nhiệm dịch họ `SagError` của `zleap-sag` sang đây.
+领域服务只抛这些异常；`sag/` 适配层负责把 `zleap-sag` 的 `SagError` 家族翻译到这里。
 
-Mỗi ngoại lệ mang ba chiều:
-- ``code``: mã lỗi ngữ nghĩa HTTP (trường lịch sử, tương thích ngược, logic frontend vẫn dùng).
-- ``layer``: trách nhiệm thuộc về ai (ai nên điều tra), xem :class:`ErrorLayer`.
-- ``stage``: khâu trong chuỗi xử lý (bước nào hỏng), xem :class:`ErrorStage`.
-Ngoài ra có ``retryable`` cho biết có thể thử lại an toàn hay không. layer/stage/retryable có thể được ghi đè lúc khởi tạo
-theo điểm xảy ra thực tế — cùng một ``ValidationError`` ở giai đoạn extract và giai đoạn upload
-nên mang stage khác nhau.
+每个异常带三个维度：
+- ``code``：HTTP 语义错误码（历史字段，向后兼容，前端逻辑沿用）。
+- ``layer``：责任归属（谁该排查），见 :class:`ErrorLayer`。
+- ``stage``：链路环节（哪一步崩），见 :class:`ErrorStage`。
+另有 ``retryable`` 标识是否可安全重试。layer/stage/retryable 可在构造时按
+实际发生点覆盖 —— 同一个 ``ValidationError`` 在 extract 阶段和 upload 阶段
+应打上不同的 stage。
 """
 
 from __future__ import annotations
@@ -16,8 +16,31 @@ from __future__ import annotations
 from sag_api.core.error_taxonomy import ErrorCode, ErrorLayer, ErrorStage
 
 
+def is_retryable_error(error: BaseException) -> bool:
+    """Preserve transient causes across service boundaries; explicit fatal decisions win."""
+    import httpx
+    from sqlalchemy.exc import OperationalError
+
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        explicit = getattr(error, "__dict__", {}).get("retryable")
+        if isinstance(explicit, bool):
+            return explicit
+        if isinstance(error, (ValueError, PermissionError)):
+            return False
+        if isinstance(error, httpx.HTTPStatusError):
+            return error.response.status_code in (408, 429) or error.response.status_code >= 500
+        if (getattr(error, "retryable", False)
+                or isinstance(error, (TimeoutError, httpx.TransportError, OperationalError,
+                                      ServiceUnavailableError, UpstreamError))):
+            return True
+        error = error.__cause__
+    return False
+
+
 class ApiError(Exception):
-    """Lớp cơ sở của mọi ngoại lệ miền sag."""
+    """所有 sag 领域异常的基类。"""
 
     status_code: int = 500
     code: str = ErrorCode.INTERNAL_ERROR
@@ -46,7 +69,7 @@ class ApiError(Exception):
         super().__init__(self.message)
 
     def to_envelope(self, *, request_id: str | None = None) -> dict:
-        """Tuần tự hóa thành "envelope" lỗi có cấu trúc dùng cho phản hồi/log."""
+        """序列化为响应/日志用的结构化错误信封。"""
         error: dict[str, object] = {
             "code": self.code,
             "message": self.message,
@@ -60,28 +83,35 @@ class ApiError(Exception):
 
 
 class NotFoundError(ApiError):
-    """Tài nguyên được yêu cầu không tồn tại."""
+    """请求的资源不存在。"""
 
     status_code = 404
     code = ErrorCode.NOT_FOUND
 
 
 class ConflictError(ApiError):
-    """Xung đột tài nguyên (ví dụ tạo trùng)."""
+    """资源冲突（如重复创建）。"""
 
     status_code = 409
     code = ErrorCode.CONFLICT
 
 
+class BadRequestError(ApiError):
+    """客户端请求参数非法（HTTP 400）。"""
+
+    status_code = 400
+    code = ErrorCode.VALIDATION_ERROR
+
+
 class ValidationError(ApiError):
-    """Kiểm tra đầu vào thất bại."""
+    """输入校验失败。"""
 
     status_code = 422
     code = ErrorCode.VALIDATION_ERROR
 
 
 class AuthError(ApiError):
-    """Chưa xác thực hoặc chứng chỉ không hợp lệ."""
+    """未认证或凭证无效。"""
 
     status_code = 401
     code = ErrorCode.UNAUTHORIZED
@@ -90,7 +120,7 @@ class AuthError(ApiError):
 
 
 class ForbiddenError(ApiError):
-    """Không có quyền truy cập tài nguyên này."""
+    """无权访问该资源。"""
 
     status_code = 403
     code = ErrorCode.FORBIDDEN
@@ -99,7 +129,7 @@ class ForbiddenError(ApiError):
 
 
 class ConfigurationError(ApiError):
-    """Thiếu cấu hình cần thiết (ví dụ chưa cấu hình LLM)."""
+    """缺少必要配置（如未配置 LLM）。"""
 
     status_code = 400
     code = ErrorCode.CONFIGURATION_ERROR
@@ -108,7 +138,7 @@ class ConfigurationError(ApiError):
 
 
 class UpstreamError(ApiError):
-    """Nguồn thượng nguồn (LLM / engine) trả về lỗi."""
+    """上游（LLM / 引擎）返回错误。"""
 
     status_code = 502
     code = ErrorCode.UPSTREAM_ERROR
@@ -116,7 +146,7 @@ class UpstreamError(ApiError):
 
 
 class ServiceUnavailableError(ApiError):
-    """Tạm thời không khả dụng (có thể thử lại, ví dụ giới hạn tốc độ / hết thời gian chờ)."""
+    """暂时不可用（可重试，如限流 / 超时）。"""
 
     status_code = 503
     code = ErrorCode.SERVICE_UNAVAILABLE

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
 import hashlib
 import json
 import math
@@ -36,8 +35,7 @@ from sag_api.db.models import (
 )
 from sag_api.enums import JobStatus, JobType
 from sag_api.jobs import JobQueue
-if TYPE_CHECKING:
-    from sag_api.sag import EngineManager
+from sag_api.sag import EngineManager
 
 _GOLDEN_ANGLE = math.pi * (3 - math.sqrt(5))
 _UNIVERSE_SCHEDULE_LOCKS: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
@@ -80,7 +78,7 @@ async def _source_graph_revision(
             )
         ).one_or_none()
         if source_state is None:
-            raise NotFoundError("Nguồn thông tin không tồn tại")
+            raise NotFoundError("信息源不存在")
         overview_id = await revision_session.scalar(
             select(UniverseOverview.id)
         .where(
@@ -410,7 +408,7 @@ async def rebuild_universe_overview(
                 await session.commit()
         except Exception:  # noqa: BLE001 - preserve the original build failure
             await session.rollback()
-            log.exception("Ghi trạng thái thất bại khi xây dựng vũ trụ tri thức lại thất bại overview=%s", overview_id)
+            log.exception("记录知识宇宙构建失败状态时再次失败 overview=%s", overview_id)
         raise
 
     # Activation is already committed. Retention cleanup is deliberately
@@ -419,7 +417,7 @@ async def rebuild_universe_overview(
         await _cleanup_old_overviews(session, user_id, overview_id)
     except Exception:  # noqa: BLE001 - a valid active overview remains usable
         await session.rollback()
-        log.exception("Dọn snapshot vũ trụ tri thức cũ thất bại active_overview=%s", overview_id)
+        log.exception("清理旧知识宇宙快照失败 active_overview=%s", overview_id)
     return overview
 
 
@@ -643,7 +641,7 @@ async def universe_expand(
     """Resolve a source-qualified node and return one bounded factual hop."""
     source = await session.get(Source, source_id)
     if source is None:
-        raise NotFoundError("Nguồn thông tin không tồn tại")
+        raise NotFoundError("信息源不存在")
     source_revision = await _source_graph_revision(
         user_id=user_id,
         source_id=source.id,
@@ -664,25 +662,25 @@ async def universe_expand(
                 before=before,
             )
     except TimeoutError as error:
-        raise ServiceUnavailableError("Truy vấn lân cận tri thức hết thời gian, vui lòng thu hẹp phạm vi thời gian rồi thử lại") from error
+        raise ServiceUnavailableError("知识邻域查询超时，请缩小时间范围后重试") from error
     except ValueError as error:
         if "revision" in str(error):
             raise ConflictError(
-                "Dữ liệu đồ thị tri thức đã cập nhật, vui lòng bắt đầu lại phần khám phá hiện tại",
+                "知识图谱数据已更新，请重新开始当前探索",
                 code=ErrorCode.SNAPSHOT_CHANGED,
             ) from error
-        raise ValidationError("Con trỏ vũ trụ tri thức không hợp lệ hoặc không khớp") from error
+        raise ValidationError("无效或不匹配的知识宇宙游标") from error
     except TypeError as error:
-        raise ValidationError("Con trỏ vũ trụ tri thức không hợp lệ hoặc không khớp") from error
+        raise ValidationError("无效或不匹配的知识宇宙游标") from error
     if expansion is None:
-        raise NotFoundError("Điểm sao tri thức không còn tồn tại")
+        raise NotFoundError("知识星点已不存在")
     committed_revision = await _source_graph_revision(
         user_id=user_id,
         source_id=source.id,
     )
     if committed_revision != source_revision:
         raise ConflictError(
-            "Dữ liệu đồ thị tri thức đã cập nhật, vui lòng bắt đầu lại phần khám phá hiện tại",
+            "知识图谱数据已更新，请重新开始当前探索",
             code=ErrorCode.SNAPSHOT_CHANGED,
         )
 
@@ -775,7 +773,7 @@ async def universe_timeline(
     """Load one stable, recent-to-old source timeline page with bounded context."""
     source = await session.get(Source, source_id)
     if source is None:
-        raise NotFoundError("Nguồn thông tin không tồn tại")
+        raise NotFoundError("信息源不存在")
     source_revision = await _source_graph_revision(
         user_id=user_id,
         source_id=source.id,
@@ -793,23 +791,23 @@ async def universe_timeline(
                 source_revision=source_revision,
             )
     except TimeoutError as error:
-        raise ServiceUnavailableError("Truy vấn dòng thời gian tri thức hết thời gian, vui lòng thử lại sau") from error
+        raise ServiceUnavailableError("知识时间轴查询超时，请稍后重试") from error
     except ValueError as error:
         if "revision" in str(error):
             raise ConflictError(
-                "Dữ liệu đồ thị tri thức đã cập nhật, vui lòng làm mới dòng thời gian rồi tiếp tục",
+                "知识图谱数据已更新，请刷新时间轴后继续",
                 code=ErrorCode.SNAPSHOT_CHANGED,
             ) from error
-        raise ValidationError("Con trỏ dòng thời gian tri thức không hợp lệ hoặc không khớp") from error
+        raise ValidationError("无效或不匹配的知识时间轴游标") from error
     except TypeError as error:
-        raise ValidationError("Con trỏ dòng thời gian tri thức không hợp lệ hoặc không khớp") from error
+        raise ValidationError("无效或不匹配的知识时间轴游标") from error
     committed_revision = await _source_graph_revision(
         user_id=user_id,
         source_id=source.id,
     )
     if committed_revision != source_revision:
         raise ConflictError(
-            "Dữ liệu đồ thị tri thức đã cập nhật, vui lòng làm mới dòng thời gian rồi tiếp tục",
+            "知识图谱数据已更新，请刷新时间轴后继续",
             code=ErrorCode.SNAPSHOT_CHANGED,
         )
     page_signature = "|".join(
@@ -882,7 +880,7 @@ async def universe_node_detail(
 ) -> dict[str, Any]:
     source = await session.get(Source, source_id)
     if source is None:
-        raise NotFoundError("Nguồn thông tin không tồn tại")
+        raise NotFoundError("信息源不存在")
     try:
         async with asyncio.timeout(8.0):
             detail = await engine_manager.universe_node_detail(
@@ -892,9 +890,9 @@ async def universe_node_detail(
                 source=source,
             )
     except TimeoutError as error:
-        raise ServiceUnavailableError("Đọc điểm sao tri thức hết thời gian, vui lòng thử lại sau") from error
+        raise ServiceUnavailableError("知识星点读取超时，请稍后重试") from error
     if detail is None:
-        raise NotFoundError("Điểm sao tri thức không còn tồn tại")
+        raise NotFoundError("知识星点已不存在")
 
     evidence = None
     chunk_id = detail.get("chunk_id")
@@ -925,7 +923,7 @@ async def universe_node_detail(
         "kind": node_kind,
         "source_id": source.id,
         "source_name": source.name,
-        "label": detail.get("label") or "Điểm sao chưa đặt tên",
+        "label": detail.get("label") or "未命名星点",
         "description": detail.get("description") or "",
         "category": detail.get("category", ""),
         "start_time": detail.get("start_time"),
@@ -1073,7 +1071,7 @@ async def save_exploration(
     relations: list[dict],
     evidence: list[dict],
 ) -> tuple[ExplorationSession, ExplorationStep]:
-    title = query.strip()[:80] or "Khám phá mới"
+    title = query.strip()[:80] or "新探索"
     exploration = ExplorationSession(
         user_id=user_id,
         title=title,
@@ -1120,7 +1118,7 @@ async def get_exploration(
 ) -> tuple[ExplorationSession, list[ExplorationStep]]:
     exploration = await session.get(ExplorationSession, exploration_id)
     if exploration is None or exploration.user_id != user_id:
-        raise NotFoundError("Bản ghi khám phá không tồn tại")
+        raise NotFoundError("探索记录不存在")
     steps = list(
         (
             await session.execute(

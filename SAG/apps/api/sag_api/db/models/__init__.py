@@ -1,31 +1,57 @@
-"""Nhập gộp các model ORM — đảm bảo Base.metadata đăng ký toàn bộ bảng."""
+"""ORM models aggregate import — ensures Base.metadata registers all tables."""
 
 from sag_api.db.models.agent import Agent, AgentBinding, Message, Thread
-from sag_api.db.models.document import (
-    AssessmentRun,
-    Document,
-    DocumentAsset,
-    DocumentFacet,
-    DocumentEntity,
-    DocumentEvidenceChunk,
-    DocumentFact,
-    DocumentRelation,
-    DocumentTreeNode,
-    EmbeddingChunk,
-    Entity,
-    EntityAlias,
-    EntityMention,
-    EvidenceSpan,
-    Fact,
-    Issuer,
-    Observation,
-    ProcessingRun,
-    Relation,
-    ReviewQueueItem,
-)
+from sag_api.db.models.answer_actions import AnswerFeedback, AnswerShare
+from sag_api.db.models.document import Document
 from sag_api.db.models.job import Job
+from sag_api.db.models.knowledge import (
+    KnowledgeEvidence,
+    KnowledgeGraphBuild,
+    KnowledgeJob,
+    KnowledgeQueueControl,
+    KnowledgeTreeNode,
+    KnowledgeUnit,
+    KnowledgeUnitEdge,
+)
+from sag_api.db.models.knowledge_quality import (
+    KnowledgeGap,
+    KnowledgeGapQuestion,
+    KnowledgeQualityAssessment,
+    KnowledgeQueryDemandDaily,
+)
+from sag_api.db.models.mind_map import ProjectMindMapSnapshot
+from sag_api.db.models.octx import (
+    OctxAsset,
+    OctxDocumentBinding,
+    OctxInstallation,
+    OctxOperationLease,
+    OctxRelease,
+    OctxSourceBinding,
+    OctxTransfer,
+)
+from sag_api.db.models.research import ResearchTask
+from sag_api.db.models.routing_rag import (
+    CanonicalBlock,
+    DocumentVersion,
+    IngestionRun,
+    KnowledgeGraphEdge,
+    ProjectSearchState,
+    SearchUnit,
+    SourceSnapshot,
+    StageRun,
+    TreeManifest,
+    TreeRoutingProfile,
+    TreeSnapshotLease,
+)
 from sag_api.db.models.setting import Setting
 from sag_api.db.models.source import Source
+from sag_api.db.models.source_project_mapping import SourceProjectMapping
+from sag_api.db.models.stock_research import (
+    KgEdge,
+    KgNode,
+    MacroSensitivitySnapshot,
+    SagExtractedTable,
+)
 from sag_api.db.models.universe import (
     ExplorationSession,
     ExplorationStep,
@@ -34,39 +60,74 @@ from sag_api.db.models.universe import (
     UniversePartition,
 )
 from sag_api.db.models.user import User
+from sag_api.db.models.user_memory import (
+    UserMemoryAuditLog,
+    UserMemoryEdge,
+    UserMemoryEntity,
+    UserMemoryEpisode,
+    UserMemoryItem,
+    UserMemoryJob,
+)
 
 __all__ = [
     "Agent",
     "AgentBinding",
-    "AssessmentRun",
+    "AnswerFeedback",
+    "AnswerShare",
+    "CanonicalBlock",
     "Document",
-    "DocumentAsset",
-    "DocumentFacet",
-    "DocumentEntity",
-    "DocumentEvidenceChunk",
-    "DocumentFact",
-    "DocumentRelation",
-    "DocumentTreeNode",
-    "EmbeddingChunk",
-    "Entity",
-    "EntityAlias",
-    "EntityMention",
-    "EvidenceSpan",
-    "Fact",
-    "Issuer",
-    "Job",
-    "Message",
-    "Observation",
-    "ProcessingRun",
-    "Relation",
-    "ReviewQueueItem",
-    "Setting",
-    "Source",
-    "Thread",
-    "User",
+    "DocumentVersion",
     "ExplorationSession",
     "ExplorationStep",
+    "IngestionRun",
+    "Job",
+    "KgEdge",
+    "KgNode",
+    "KnowledgeGraphEdge",
+    "KnowledgeEvidence",
+    "KnowledgeGap",
+    "KnowledgeGapQuestion",
+    "KnowledgeGraphBuild",
+    "KnowledgeJob",
+    "KnowledgeQueueControl",
+    "KnowledgeQualityAssessment",
+    "KnowledgeQueryDemandDaily",
+    "KnowledgeTreeNode",
+    "KnowledgeUnit",
+    "KnowledgeUnitEdge",
+    "MacroSensitivitySnapshot",
+    "Message",
+    "OctxAsset",
+    "OctxDocumentBinding",
+    "OctxInstallation",
+    "OctxOperationLease",
+    "OctxRelease",
+    "OctxSourceBinding",
+    "OctxTransfer",
+    "ProjectMindMapSnapshot",
+    "ProjectSearchState",
+    "ResearchTask",
+    "SagExtractedTable",
+    "SearchUnit",
+    "Setting",
+    "Source",
+    "SourceProjectMapping",
+    "SourceSnapshot",
+    "StageRun",
+    "Thread",
+    "TreeManifest",
+    "TreeRoutingProfile",
+    "TreeSnapshotLease",
     "UniverseDirtySource",
     "UniverseOverview",
     "UniversePartition",
+    "User",
+    "UserMemoryAuditLog",
+    "UserMemoryEdge",
+    "UserMemoryEntity",
+    "UserMemoryEpisode",
+    "UserMemoryItem",
+    "UserMemoryJob",
 ]
+
+

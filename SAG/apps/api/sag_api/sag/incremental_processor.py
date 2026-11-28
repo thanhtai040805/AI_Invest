@@ -1,37 +1,64 @@
-"""Lớp adapter song song, tiến độ và điểm dừng của zleap-sag.
+"""zleap-sag 0.8.2 管线适配层。
 
-DataEngine phía trên chỉ lộ extract cả bài; ở đây tách việc trích xuất thành các task chunk độc lập,
-mỗi chunk lưu thành công là lưu điểm dừng ngay, khi tạm dừng hoặc thử lại thì tiếp tục từ điểm dừng đã xác nhận gần nhất.
+0.8.2 将 load/extract 收敛为显式管线,本模块是 SAG 文档处理(ingest+extract)
+与 zleap 管线公开 API 之间的适配:
+
+- ``engine.ingest(...)``:Parse → Chunk → Index,返回 ``ChunkSetRef``
+  (含 source_id / chunk_ids / generation_id / chunk_version);
+- ``engine.extract(ref, ExtractionOptions, observer, cancellation)``:
+  整批抽取,返回 ``EventSetRef``(event_ids / entity_ids / stats)。
+
+SAG 职责(保留):断点持久化、暂停/取消、进度映射、与 Job 系统的对接。
+zleap 职责(0.8.2 已内置,不再由 SAG 实现):实体数契约
+(``ExtractionLimits.min_entities_per_event=1``)、修复重试(``max_retries``)、
+无效事项过滤(``is_valid``)、代际替换语义。
+
+临时行为差异(与 0.7.1 相比,带 REQ 标记,待 zleap 需求落地后消除):
+
+- REQ-1/2(事件粒度过滤与修复):0.8.2 的契约校验与修复重试是批次粒度,
+  SAG 不再做逐事件过滤(0.7.1 的 ``_require_event_entities`` /
+  ``guarded_save_events`` monkeypatch 已删除);一个 chunk 修复耗尽会拒绝整批。
+- REQ-3(逐块断点):0.8.2 一次 extract 覆盖全部 chunks(单代提交),
+  SAG 不再逐块持久化断点;暂停/取消后恢复会整批重跑(LLM 成本回归)。
+  zleap 提供代际 durable prepare/commit 公开入口后恢复逐块断点。
+- REQ-4/5(schema 强化与 SQLite int64 防护):0.7.1 的
+  ``_strengthen_event_entity_schema`` / ``_install_sqlite_integer_guard``
+  monkeypatch 目标在 0.8.2 已不可达,shim 删除,待 zleap 内置。
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable
+from hashlib import sha256
 from pathlib import Path
-from typing import Any, Literal, cast
-
+from typing import Any
 
 from zleap.sag import DataEngine
-from zleap.sag.modules.extract.config import ExtractConfig
-from zleap.sag.modules.extract.extractor import EventExtractor
-from zleap.sag.modules.load.config import DocumentLoadConfig
-from zleap.sag.models.entity import CustomEntityType
-from zleap.sag.modules.load.loader import DocumentLoader
-from zleap.sag.modules.load.parser import MarkdownParser
-from zleap.sag.modules.load.chunking.types import ChunkDraft, ChunkingResult
+from zleap.sag.pipeline import (
+    CancellationToken,
+    ChunkItem,
+    ChunkOptions,
+    ChunkSet,
+    ChunkSetRef,
+    ChunkStats,
+    DocumentSource,
+    ExtractionExecutionOptions,
+    ExtractionLimits,
+    ExtractionOptions,
+    FileSource,
+    IndexOptions,
+    RelatedEventContextOptions,
+    SourceDescriptor,
+    SourceReference,
+    SourceType,
+    WriteStatus,
+)
+from zleap.sag.pipeline.errors import PipelineCancelledError
+from zleap.sag.pipeline.events import StageEvent, StageEventType, StageName
 
 from sag_api.core.logging import get_logger
 from sag_api.sag.dto import ProcessCheckpoint, ProcessOutcome
-from sag_api.sag.financial_ontology import (
-    FinancialEntityType,
-    _ENTITY_TYPE_DESCRIPTIONS,
-    extract_fiscal_metadata,
-    get_financial_extraction_prompt,
-    infer_doc_type,
-)
-
 
 CheckpointCallback = Callable[[ProcessCheckpoint], Awaitable[None]]
 PauseCheck = Callable[[], Awaitable[bool]]
@@ -39,294 +66,33 @@ StageCallback = Callable[[str], Awaitable[None]]
 
 log = get_logger("sag.incremental")
 
-_SQLITE_INTEGER_MIN = -(2**63)
-_SQLITE_INTEGER_MAX = 2**63 - 1
-
-_KNOWLEDGE_EVENT_REQUIREMENTS = """
-QUY TẮC SAG v2 KHI TRÍCH XUẤT TÀI LIỆU BCTC/BCQT:
-1. Markdown gốc là nguồn dữ liệu bất biến. KHÔNG chép lại toàn bộ nội dung, KHÔNG chép lại toàn bộ bảng trong output.
-2. Output chỉ là manifest ngắn cho các facts/relations/entities quan trọng phục vụ Business Quality và GIL. Trường content chỉ tóm tắt ngắn bằng tiếng Việt và nêu evidence anchor; nội dung chi tiết được hydrate bằng line span ở tầng SAG v2.
-3. Không bắt buộc một heading tạo một event. Chỉ tạo item khi có thông tin định lượng, quan hệ sở hữu/dòng vốn, giao dịch bên liên quan hoặc quản trị rõ ràng.
-4. Mỗi item phải có reference tới đoạn/mục thực tế trong tài liệu; nếu không xác minh được reference thì bỏ item đó.
-5. Taxonomy được phép dùng OTHER khi dữ liệu không khớp nhóm chuyên biệt; không ép dữ liệu mơ hồ thành quan hệ vốn.
-6. Không tự suy diễn điểm Business Quality/GIL. Thiếu dữ liệu phải thể hiện là thiếu dữ liệu, không coi là PASS.
-""".strip()
+def detect_document_language(text: str, configured: str | None = None) -> str:
+    """Resolve extraction prompt language. Chinese ('zh') is disabled to prevent language drift."""
+    return "en"
 
 
+_KNOWLEDGE_EVENT_REQUIREMENTS = {
+    "en": (
+        'For books, reports, papers, and other non-news documents, an "event" also includes\n'
+        "independently understandable viewpoints, facts, definitions, mechanisms, causal\n"
+        "relationships, arguments, and conclusions. It does not need to include a date, a person's\n"
+        "action, or a news event.\n"
+        "Only tables of contents, headers, footers, advertisements, corrupted text, standalone links,\n"
+        "or fragments genuinely unrelated to the document topic may return an empty result. Retain at\n"
+        "least one valid top-level event whenever the main text contains reusable knowledge.\n"
+        "Keep each event's content concise (1 to 3 factual sentences preserving exact numbers, metrics,\n"
+        "and identifiers) rather than copying the entire chunk verbatim.\n"
+        "Every entity must strictly use\n"
+        '{"type":"entity type","name":"entity name","description":"role description"}.\n'
+        "Valid entity types are: person, organization, location, topic, product, time, event, other "
+        "(use 'topic' or 'other' for laws, regulations, tasks, metrics, or concepts).\n"
+        "Do not use an entity type as a field name. For example, do not output\n"
+        '{"location":"Middle East","name":"Middle East","description":"region"}.'
+    ),
+}
 
-class _FallbackTitleMarkdownParser(MarkdownParser):
-    """Preserve Muse's logical filename when converted Markdown has no H1.
-    Hỗ trợ chế độ 'full' gom toàn bộ tài liệu BCTC/BCQT thành ĐÚNG 1 CHUNK DUY NHẤT để xử lý 1 Prompt.
-    """
-
-    def __init__(
-        self,
-        fallback_title: str,
-        max_tokens: int = 1_000_000,
-        chunk_mode: str = "standard",
-    ) -> None:
-        super().__init__(max_tokens=max_tokens, chunk_mode="standard")
-        self._fallback_title = fallback_title.strip()
-        self._is_full_mode = (chunk_mode == "full" or max_tokens >= 200_000)
-
-    def extract_title(self, content: str) -> str:
-        title = super().extract_title(content)
-        if title.strip().casefold() == "untitled" and self._fallback_title:
-            return self._fallback_title
-        return title
-
-    async def parse_content_with_plan_async(
-        self,
-        content: str,
-        source_path: Path | None = None,
-    ) -> ChunkingResult:
-        if self._is_full_mode:
-            result = await self.chunking_pipeline.run_async(content, source_path=source_path)
-            title = self.extract_title(content) or self._fallback_title or "Tài liệu tài chính"
-            all_section_indices = [s.order_index for s in result.article_sections]
-            full_chunk = ChunkDraft(
-                rank=0,
-                heading=title,
-                content=content,
-                raw_content=content,
-                chunk_type="FULL_DOCUMENT",
-                section_order_indices=all_section_indices,
-                metadata={"is_full_document": True, "title": title},
-            )
-            result.source_chunks = [full_chunk]
-            self._last_chunking_result = result
-            return result
-        elif self.chunk_mode == "heading_strict":
-            result = self._parse_content_heading_strict(content, source_path)
-        else:
-            result = await self.chunking_pipeline.run_async(content, source_path=source_path)
-        self._last_chunking_result = result
-        return result
-
-
-class _SAGDocumentLoader(DocumentLoader):
-    """DocumentLoader đảm bảo dùng đúng custom parser và không bị giới hạn hardcode 1000 tokens/chunk."""
-
-    async def load_file(self, *args: Any, **kwargs: Any) -> Any:
-        kwargs["max_tokens"] = None
-        kwargs["chunk_mode"] = None
-        return await super().load_file(*args, **kwargs)
-
-
-def _llm_chat_owner(client: Any) -> Any:
-    """Tìm client zleap-sag trong cùng nhất thực sự thực thi chat."""
-    current = client
-    seen: set[int] = set()
-    while id(current) not in seen:
-        seen.add(id(current))
-        nested = getattr(current, "client", None)
-        if nested is None or not callable(getattr(nested, "chat", None)):
-            break
-        current = nested
-    return current
-
-
-def _usage_value(value: Any, field: str) -> int:
-    raw = value.get(field, 0) if isinstance(value, Mapping) else getattr(value, field, 0)
-    try:
-        return int(raw or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
-def _response_token_usage(response: Any) -> int:
-    for value in (
-        response,
-        getattr(response, "usage", None),
-        getattr(response, "usage_metadata", None),
-    ):
-        if value is None:
-            continue
-        total = _usage_value(value, "total_tokens")
-        if total > 0:
-            return total
-        input_tokens = _usage_value(value, "prompt_tokens") or _usage_value(value, "input_tokens")
-        output_tokens = _usage_value(value, "completion_tokens") or _usage_value(value, "output_tokens")
-        if input_tokens + output_tokens > 0:
-            return input_tokens + output_tokens
-    return 0
-
-
-def _entity_types_from_messages(messages: object) -> set[str]:
-    """Read the current extraction request's explicit entity-type vocabulary."""
-
-    if not isinstance(messages, list):
-        return set()
-    for message in reversed(messages):
-        content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
-        if not isinstance(content, str):
-            continue
-        try:
-            payload = json.loads(content)
-        except json.JSONDecodeError:
-            continue
-        data = payload.get("data") if isinstance(payload, dict) else None
-        meta = data.get("meta") if isinstance(data, dict) else None
-        entity_types = meta.get("entity_types") if isinstance(meta, dict) else None
-        if not isinstance(entity_types, list):
-            continue
-        return {
-            item["type"].strip()
-            for item in entity_types
-            if isinstance(item, dict) and isinstance(item.get("type"), str) and item["type"].strip()
-        }
-    return set()
-
-
-def _normalize_event_entity_aliases(event: object, allowed_types: set[str]) -> int:
-    """Chỉ chuẩn hóa một lỗi gõ rõ ràng của mô hình trước khi SAG kiểm tra schema.
-
-    Một số mô hình tương thích OpenAI thỉnh thoảng xuất
-    ``{"location": "Trung Đông", "name": "Trung Đông", ...}`` thay vì đặt
-    ``location`` vào trường ``type`` bắt buộc.  Chúng ta chỉ viết lại khi có
-    đúng một khóa bất ngờ, khóa đó nằm trong từ vựng loại được cho phép của yêu cầu này,
-    và giá trị của nó bằng ``name``; các đối tượng mơ hồ hoặc không đầy đủ
-    được giữ nguyên và vẫn sẽ trượt kiểm tra của SAG.
-    """
-
-    if not isinstance(event, dict):
-        return 0
-    normalized = 0
-    entities = event.get("entities")
-    if isinstance(entities, list):
-        for entity in entities:
-            if not isinstance(entity, dict) or "type" in entity:
-                continue
-            name = entity.get("name")
-            description = entity.get("description")
-            if not isinstance(name, str) or not isinstance(description, str):
-                continue
-            aliases = [key for key in entity if key not in {"name", "description"}]
-            if len(aliases) != 1:
-                continue
-            alias = aliases[0]
-            alias_value = entity.get(alias)
-            if not isinstance(alias, str) or alias.strip() not in allowed_types:
-                continue
-            if not isinstance(alias_value, str) or alias_value.strip() != name.strip():
-                continue
-            entity.pop(alias)
-            entity["type"] = alias.strip()
-            normalized += 1
-
-    children = event.get("children")
-    if isinstance(children, list):
-        for child in children:
-            normalized += _normalize_event_entity_aliases(child, allowed_types)
-    return normalized
-
-
-def _value_overflows_sqlite_integer(value: object, entity_type: object) -> bool:
-    """Match zleap-sag numeric parsing, then check SQLite's signed range."""
-
-    if isinstance(value, bool):
-        return False
-    if isinstance(value, int):
-        return not _SQLITE_INTEGER_MIN <= value <= _SQLITE_INTEGER_MAX
-    if not isinstance(value, str):
-        return False
-    from zleap.sag.modules.extract.parser import EntityValueParser
-
-    parse = getattr(EntityValueParser, "_sag_original_parse", EntityValueParser.parse)
-    parsed = parse(EntityValueParser(), value, entity_type=entity_type if isinstance(entity_type, str) else None)
-    return bool(
-        parsed
-        and parsed.get("type") == "int"
-        and not _SQLITE_INTEGER_MIN <= int(parsed["value"]) <= _SQLITE_INTEGER_MAX
-    )
-
-
-def _install_sqlite_integer_guard() -> None:
-    """Guard zleap-sag's parser at the same boundary that persists Entity.int_value."""
-
-    from zleap.sag.modules.extract.parser import EntityValueParser
-
-    if getattr(EntityValueParser, "_sag_sqlite_integer_guard_installed", False):
-        return
-    original_parse = EntityValueParser.parse
-
-    def guarded_parse(self: Any, text: str, *args: Any, **kwargs: Any):
-        result = original_parse(self, text, *args, **kwargs)
-        if result and result.get("type") == "int" and _value_overflows_sqlite_integer(result.get("value"), None):
-            return {**result, "type": "text", "value": str(text), "unit": None}
-        return result
-
-    EntityValueParser.parse = guarded_parse
-    EntityValueParser._sag_original_parse = original_parse
-    EntityValueParser._sag_sqlite_integer_guard_installed = True
-    log.warning("Đã bật bảo vệ tương thích phạm vi số nguyên SQLite của zleap-sag")
-
-
-_install_sqlite_integer_guard()
-
-
-def _normalize_event_entity_values(event: object) -> int:
-    """Downgrade integer entities that SQLite cannot store without losing their text."""
-
-    if not isinstance(event, dict):
-        return 0
-    normalized = 0
-    entities = event.get("entities")
-    if isinstance(entities, list):
-        for entity in entities:
-            if not isinstance(entity, dict) or entity.get("value_type") == "text":
-                continue
-            candidate = entity.get("value") if entity.get("value_type") == "int" else entity.get("name")
-            if _value_overflows_sqlite_integer(candidate, entity.get("type")):
-                entity["value_type"] = "text"
-                normalized += 1
-
-    children = event.get("children")
-    if isinstance(children, list):
-        for child in children:
-            normalized += _normalize_event_entity_values(child)
-    return normalized
-
-
-def _normalize_extraction_response(response: Any, allowed_types: set[str]) -> int:
-    """Normalize response fields that would otherwise fail upstream persistence."""
-
-    content = getattr(response, "content", None)
-    if not isinstance(content, str):
-        return 0
-    candidate = content.strip()
-    fenced = candidate.startswith("```") and candidate.endswith("```")
-    if fenced:
-        lines = candidate.splitlines()
-        if len(lines) < 3 or lines[0].strip().casefold() not in {"```", "```json"}:
-            return 0
-        candidate = "\n".join(lines[1:-1]).strip()
-    try:
-        payload = json.loads(candidate)
-    except json.JSONDecodeError:
-        return 0
-    if not isinstance(payload, dict):
-        return 0
-    data = payload.get("data")
-    items = data.get("items") if isinstance(data, dict) else None
-    if not isinstance(items, list):
-        return 0
-
-    normalized = sum(
-        _normalize_event_entity_aliases(item, allowed_types) + _normalize_event_entity_values(item) for item in items
-    )
-    if normalized:
-        response.content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    return normalized
-
-
-def _first_task_error(group: BaseExceptionGroup) -> Exception:
-    for error in group.exceptions:
-        if isinstance(error, BaseExceptionGroup):
-            return _first_task_error(error)
-        if isinstance(error, Exception):
-            return error
-    return RuntimeError(str(group))
+# 进度观察节流:避免把 zleap 的每个 progress 事件都转换成一次 DB 断点写入。
+_PROGRESS_COMMIT_EVERY = 5
 
 
 class IncrementalDocumentProcessor:
@@ -336,23 +102,56 @@ class IncrementalDocumentProcessor:
         source_config_id: str,
         *,
         max_concurrency: int,
-        chunk_max_tokens: int = 1_000_000,
-        chunk_mode: Literal["standard", "heading_strict", "full"] = "full",
+        chunk_max_tokens: int = 1_000,
+        chunk_mode: str = "standard",
         document_title: str | None = None,
+        max_entities_per_event: int = 20,
+        write_event_entity_vectors: bool = False,
         enable_strict_filtering: bool = False,
-        doc_type: str | None = None,
+        event_entity_attempts: int = 2,
+        extraction_profile: str = "concise",
+        document_version_id: str | None = None,
+        extract_events: bool = False,
     ) -> None:
         self._engine = engine
         self._source_config_id = source_config_id
         self._max_concurrency = max(1, min(100, max_concurrency))
         self._chunk_max_tokens = chunk_max_tokens
-        self._chunk_mode = chunk_mode
+        self._chunk_mode = chunk_mode if chunk_mode in {"standard", "heading_strict"} else "standard"
         self._document_title = (document_title or "").strip()
-        self._enable_strict_filtering = enable_strict_filtering
-        self._doc_type = doc_type or infer_doc_type(document_title)
-        self._fiscal_meta = extract_fiscal_metadata(self._document_title)
+        self._max_entities_per_event = max(1, min(20, max_entities_per_event))
+        self._write_event_entity_vectors = bool(write_event_entity_vectors)
+        self._extraction_profile = extraction_profile if extraction_profile in {"standard", "concise"} else "concise"
+        self._document_version_id = document_version_id
+        self._extract_events = extract_events
+        self._detected_language: str | None = None
 
+        # 0.8.2 已内置契约与修复重试,以下 0.7.1 参数仅保留接口兼容:
+        # - enable_strict_filtering → zleap 无对应开关(REQ 待对齐),忽略并记录;
+        # - event_entity_attempts → zleap ExtractionOptions.max_retries(默认 5)接管。
+        if enable_strict_filtering:
+            log.warning("0.8.2 无严格过滤开关,忽略 enable_strict_filtering(REQ 待对齐)")
+        self._event_entity_attempts = max(1, min(3, event_entity_attempts))
 
+    async def _sample_language(self, path: str | Path | None) -> None:
+        if path is not None:
+            file_path = Path(path)
+            try:
+                if file_path.is_file():
+                    def _read_head() -> str:
+                        with file_path.open("r", encoding="utf-8", errors="ignore") as f:
+                            return f.read(4096)
+
+                    sample = await asyncio.to_thread(_read_head)
+                    if sample.strip():
+                        self._detected_language = detect_document_language(sample)
+                        return
+            except Exception:  # noqa: BLE001
+                pass
+        if self._document_title:
+            self._detected_language = detect_document_language(self._document_title)
+
+    # ── 主流程 ────────────────────────────────────────────────────────────
     async def process(
         self,
         path: str | Path | None,
@@ -361,62 +160,42 @@ class IncrementalDocumentProcessor:
         on_checkpoint: CheckpointCallback,
         should_pause: PauseCheck,
         on_stage: StageCallback | None = None,
+        original_path: str | Path | None = None,
     ) -> ProcessOutcome:
         current = checkpoint.model_copy(deep=True)
+        await self._sample_language(path)
+
+        # 阶段 1:解析 → 切块 → 落库(仅在断点尚未建立时)
         if not current.chunk_ids:
             if path is None:
-                raise RuntimeError("Tài liệu chưa được chia chunk, không thể tiếp tục từ điểm dừng")
+                raise RuntimeError("文档尚未切片，无法从断点继续")
             if on_stage:
                 await on_stage("loading")
-            
-            is_full = self._chunk_mode == "full" or self._chunk_max_tokens >= 200_000
-            parser_mode = "full" if is_full else self._chunk_mode
+            await self._ingest(current, path, on_checkpoint, original_path=original_path)
 
-            parser_inst = _FallbackTitleMarkdownParser(
-                fallback_title=self._document_title or "",
-                max_tokens=self._chunk_max_tokens,
-                chunk_mode=parser_mode,
-            )
-            loader = _SAGDocumentLoader(parser=parser_inst)
-            loaded = await loader.load(
-                DocumentLoadConfig(
-                    path=str(path),
-                    source_config_id=self._source_config_id,
-                )
-            )
-            current.source_id = getattr(loaded, "source_id", None)
-            current.chunk_ids = list(getattr(loaded, "chunk_ids", []) or [])
-            log.info(
-                "Đã tải tài liệu thành công: source_id=%s, chunk_count=%d (mode=%s, is_full=%s)",
-                current.source_id,
-                len(current.chunk_ids),
-                self._chunk_mode,
-                is_full,
-            )
-            current.processed_chunk_ids = []
-            current.event_count = 0
-            current.event_ids = []
-            current.eventless_chunk_ids = []
-            current.token_usage = 0
-            await on_checkpoint(current.model_copy(deep=True))
+        chunk_set = self._chunk_set_ref(current)
 
+        if not self._extract_events:
+            return ProcessOutcome(
+                source_id=current.source_id,
+                chunk_count=len(current.chunk_ids),
+                chunk_ids=list(current.chunk_ids),
+            )
+
+        # 阶段 2:整批抽取(0.8.2 批次粒度;REQ-3 落地前不逐块断点)
         if on_stage:
             await on_stage("extracting")
+        cancelled, events = await self._extract(current, chunk_set, should_pause, on_checkpoint)
+        paused = cancelled or bool(current.processed_chunk_ids) and len(current.processed_chunk_ids) < len(
+            current.chunk_ids
+        )
 
-        processed = set(current.processed_chunk_ids)
-        remaining = [chunk_id for chunk_id in current.chunk_ids if chunk_id not in processed]
-        if remaining and not await should_pause():
-            await self._extract_remaining(
-                remaining,
-                current=current,
-                on_checkpoint=on_checkpoint,
-                should_pause=should_pause,
-            )
+        if not cancelled and events is not None:
+            current.event_ids = list(events.event_ids)
+            current.event_count = events.event_count
+            current.processed_chunk_ids = list(chunk_set.chunk_ids)
+            await on_checkpoint(current.model_copy(deep=True))
 
-        await self._restore_checkpoint_events(current.event_ids)
-        paused = len(current.processed_chunk_ids) < len(current.chunk_ids)
-        if not paused:
-            await self._normalize_event_ranks(current.chunk_ids)
         return ProcessOutcome(
             source_id=current.source_id,
             chunk_count=len(current.chunk_ids),
@@ -429,221 +208,362 @@ class IncrementalDocumentProcessor:
             paused=paused,
         )
 
-    async def _extract_remaining(
+    async def _ingest_from_canonical_search_units(
         self,
-        chunk_ids: list[str],
-        *,
         current: ProcessCheckpoint,
+        descriptor: SourceDescriptor,
         on_checkpoint: CheckpointCallback,
-        should_pause: PauseCheck,
-    ) -> None:
-        queue: asyncio.Queue[str] = asyncio.Queue()
-        for chunk_id in chunk_ids:
-            queue.put_nowait(chunk_id)
-        checkpoint_lock = asyncio.Lock()
+    ) -> bool:
+        """Reuse canonical SearchUnits from Phase 2C so the document is never chunked twice."""
+        if not self._document_version_id or not hasattr(self._engine, "_index"):
+            return False
+        relational = getattr(getattr(self._engine, "resources", None), "relational", None)
+        if relational is None or not callable(getattr(relational, "session_factory", None)):
+            return False
 
-        async def worker() -> None:
-            while not queue.empty():
-                if await should_pause():
-                    return
-                try:
-                    chunk_id = queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    return
-                try:
-                    event_ids, token_usage = await self._extract_chunk(chunk_id)
-                    async with checkpoint_lock:
-                        if chunk_id in current.processed_chunk_ids:
-                            continue
-                        current.processed_chunk_ids.append(chunk_id)
-                        current.event_ids.extend(event_ids)
-                        current.event_count += len(event_ids)
-                        if event_ids:
-                            if chunk_id in current.eventless_chunk_ids:
-                                current.eventless_chunk_ids.remove(chunk_id)
-                        elif chunk_id not in current.eventless_chunk_ids:
-                            current.eventless_chunk_ids.append(chunk_id)
-                        current.token_usage += token_usage
-                        # zleap-sag replaces an article's visible event set on
-                        # every chunk save. Restore the complete checkpoint
-                        # before publishing its counters so `/graph` can read
-                        # every event the document detail has just announced.
-                        await self._restore_checkpoint_events(current.event_ids)
-                        await on_checkpoint(current.model_copy(deep=True))
-                finally:
-                    queue.task_done()
-
-        worker_count = min(self._max_concurrency, len(chunk_ids))
-        try:
-            async with asyncio.TaskGroup() as group:
-                for _ in range(worker_count):
-                    group.create_task(worker())
-        except ExceptionGroup as errors:
-            # TaskGroup bọc ngoại lệ SAG/LLM của từng chunk thành ExceptionGroup chung; sau khi giải bọc
-            # EngineManager mới ánh xạ được loại có thể thử lại, tài liệu và Job cũng lưu được nguyên nhân lỗi thật.
-            raise _first_task_error(errors) from errors
-
-    async def _extract_chunk(self, chunk_id: str) -> tuple[list[str], int]:
-        template = getattr(self._engine, "_extractor", None)
-        if template is None:
-            raise RuntimeError("Engine trích xuất chưa được khởi tạo")
-        extractor = EventExtractor(
-            prompt_manager=template.prompt_manager,
-            model_config=template.model_config,
-        )
-
-        token_usage = 0
-        chunk_failure: Exception | None = None
-        client = await extractor._get_llm_client()
-        chat_owner = _llm_chat_owner(client)
-        original_chat = chat_owner.chat
-
-        async def tracked_chat(*args: Any, **kwargs: Any):
-            nonlocal token_usage
-            response = await original_chat(*args, **kwargs)
-            used = _response_token_usage(response)
-            if used <= 0:
-                messages = args[0] if args else kwargs.get("messages", [])
-                input_chars = sum(
-                    len(
-                        str(
-                            message.get("content", "") if isinstance(message, dict) else getattr(message, "content", "")
-                        )
-                    )
-                    for message in messages
-                )
-                used = max(1, (input_chars + len(str(getattr(response, "content", ""))) + 2) // 3)
-            token_usage += used
-            messages = args[0] if args else kwargs.get("messages", [])
-            normalized_entities = _normalize_extraction_response(
-                response,
-                _entity_types_from_messages(messages),
-            )
-            if normalized_entities:
-                log.info(
-                    "Đã chuẩn hóa trường loại thực thể của mô hình chunk=%s count=%d",
-                    chunk_id,
-                    normalized_entities,
-                )
-            return response
-
-        # Lớp xử lý theo lô zleap-sag 0.7.x ghi nhận ngoại lệ đơn chunk thành thất bại rồi trả về danh sách rỗng, phía gọi
-        # do đó không phân biệt được "không có sự kiện bình thường" và "LLM/Schema thất bại". Muse mỗi lần chỉ giao cho
-        # extractor này một chunk, có thể ghi nhận ngoại lệ gốc ở ranh giới instance và sau khi extract() trả về
-        # ném lại, tránh ghi chunk thất bại vào điểm dừng thành công. Không cần sửa site-packages.
-        original_extract_from_chunk: Callable[..., Awaitable[Any]] | None = getattr(
-            extractor, "extract_from_chunk", None
-        )
-        if callable(original_extract_from_chunk):
-
-            async def tracked_extract_from_chunk(*args: Any, **kwargs: Any) -> Any:
-                nonlocal chunk_failure
-                try:
-                    target = cast(Callable[..., Awaitable[Any]], original_extract_from_chunk)
-                    return await target(*args, **kwargs)
-                except Exception as error:  # noqa: BLE001 - Giữ nguyên loại ngoại lệ gốc SAG
-                    chunk_failure = error
-                    raise
-
-            extractor.extract_from_chunk = tracked_extract_from_chunk
-
-
-        chat_owner.chat = tracked_chat
-        meta_hints = []
-        if getattr(self, "_fiscal_meta", None):
-            if self._fiscal_meta.get("ticker"):
-                meta_hints.append(f"Mã Ticker niêm yết: {self._fiscal_meta['ticker']}")
-            if self._fiscal_meta.get("period_label"):
-                meta_hints.append(f"Kỳ báo cáo: {self._fiscal_meta['period_label']}")
-            if self._fiscal_meta.get("report_scope"):
-                meta_hints.append(f"Loại BCTC: {self._fiscal_meta['report_scope']}")
-        meta_context = ("\n[BỐI CẢNH BÁO CÁO TÀI CHÍNH]\n" + "\n".join(f"- {h}" for h in meta_hints)) if meta_hints else ""
-
-        is_full = self._chunk_mode == "full" or self._chunk_max_tokens >= 200_000
-        prompt_requirements = (
-            f"{_KNOWLEDGE_EVENT_REQUIREMENTS}{meta_context}\n\n"
-            f"{get_financial_extraction_prompt(self._doc_type, is_full_document=is_full)}"
-        )
-        custom_entity_types = [
-            CustomEntityType(
-                type=e.value,
-                name=e.value,
-                description=_ENTITY_TYPE_DESCRIPTIONS.get(e.value, e.value),
-            )
-            for e in FinancialEntityType
-        ]
-        try:
-            events = await extractor.extract(
-                ExtractConfig(
-                    source_config_id=self._source_config_id,
-                    chunk_ids=[chunk_id],
-                    max_concurrency=1,
-                    custom_requirements=prompt_requirements,
-                    custom_entity_types=custom_entity_types,
-                    enable_strict_filtering=self._enable_strict_filtering,
-                )
-            )
-
-
-            if chunk_failure is not None:
-                raise chunk_failure
-        finally:
-            chat_owner.chat = original_chat
-        return [event.id for event in events], token_usage
-
-    async def _restore_checkpoint_events(self, event_ids: list[str]) -> None:
-        """Sau khi các chunk nộp xong, khôi phục toàn bộ sự kiện mà điểm dừng hiện tại đã tạo ra.
-
-        zleap-sag mỗi lần lưu đều thay thế sự kiện của toàn bài; khi lớp adapter điểm dừng nộp từng chunk,
-        chunk nộp sau sẽ đánh dấu sự kiện của chunk trước là đã xóa, vì vậy phải khôi phục thống nhất theo điểm dừng.
-        """
-        if not event_ids:
-            return
-        from sqlalchemy import update
-        from zleap.sag.db import SourceEvent, get_session_factory
-
-        unique_ids = list(dict.fromkeys(event_ids))
-        session_factory = get_session_factory()
-        async with session_factory() as session:
-            for offset in range(0, len(unique_ids), 500):
-                batch = unique_ids[offset : offset + 500]
-                await session.execute(
-                    update(SourceEvent)
-                    .where(
-                        SourceEvent.source_config_id == self._source_config_id,
-                        SourceEvent.id.in_(batch),
-                        SourceEvent.status == "DELETED",
-                    )
-                    .values(status="COMPLETED")
-                )
-            await session.commit()
-
-    async def _normalize_event_ranks(self, chunk_ids: list[str]) -> None:
-        if not chunk_ids:
-            return
         from sqlalchemy import select
-        from zleap.sag.db import SourceEvent, get_session_factory
+        from sag_api.db.models.routing_rag import CanonicalBlock, SearchUnit
 
-        chunk_order = {chunk_id: index for index, chunk_id in enumerate(chunk_ids)}
-        session_factory = get_session_factory()
+        session_factory = relational.session_factory()
         async with session_factory() as session:
-            rows = list(
+            blocks = list(
                 (
-                    await session.execute(
-                        select(SourceEvent).where(
-                            SourceEvent.source_config_id == self._source_config_id,
-                            SourceEvent.chunk_id.in_(chunk_ids),
+                    await session.scalars(
+                        select(CanonicalBlock)
+                        .where(CanonicalBlock.document_version_id == self._document_version_id)
+                        .order_by(CanonicalBlock.ordinal)
+                    )
+                ).all()
+            )
+            units = list(
+                (
+                    await session.scalars(
+                        select(SearchUnit).where(
+                            SearchUnit.document_version_id == self._document_version_id
                         )
                     )
-                ).scalars()
+                ).all()
             )
-            rows.sort(
-                key=lambda event: (
-                    chunk_order.get(event.chunk_id or "", len(chunk_order)),
-                    int(event.rank or 0),
-                    event.id,
+        if not blocks or not units:
+            return False
+
+        block_index_by_id = {b.id: idx for idx, b in enumerate(blocks)}
+        units.sort(key=lambda u: block_index_by_id.get(u.block_from_id, 0))
+
+        chunk_items: list[ChunkItem] = []
+        for idx, unit in enumerate(units):
+            start_idx = block_index_by_id.get(unit.block_from_id, 0)
+            end_idx = block_index_by_id.get(unit.block_to_id, start_idx)
+            unit_blocks = blocks[start_idx : end_idx + 1]
+            combined_text = "\n\n".join(b.normalized_text for b in unit_blocks if b.normalized_text).strip()
+            if not combined_text:
+                continue
+            heading = (unit.section_path or self._document_title or f"Section {idx + 1}").strip()[:500]
+            rank = len(chunk_items)
+            chunk_items.append(
+                ChunkItem(
+                    client_key=f"chunk-{rank}",
+                    rank=rank,
+                    heading=heading,
+                    content=combined_text,
+                    raw_content=combined_text,
+                    chunk_type="TEXT",
+                    references=(
+                        SourceReference(
+                            reference_type="block",
+                            key=str(unit.id),
+                            order=rank,
+                            metadata={},
+                        ),
+                    ),
+                    sections=(),
+                    token_count=unit.token_count,
+                    metadata={
+                        "search_unit_id": str(unit.id),
+                        "section_path": unit.section_path or "",
+                    },
                 )
             )
-            for rank, event in enumerate(rows):
-                event.rank = rank
-            await session.commit()
+
+        if not chunk_items:
+            return False
+
+        index_descriptor = descriptor.model_copy(
+            update={"data_source_id": self._source_config_id}
+        )
+        if getattr(self._engine, "_components", None) is None and callable(
+            getattr(self._engine, "_ensure_source", None)
+        ):
+            self._engine._data_source_id = self._source_config_id
+            await self._engine._ensure_source()
+
+        source_version = sha256(
+            "\n".join(u.content_hash for u in units).encode("utf-8")
+        ).hexdigest()[:32]
+        chunk_version = sha256(
+            f"canonical-search-units:{self._document_version_id}:{len(chunk_items)}".encode("utf-8")
+        ).hexdigest()[:32]
+
+        chunk_set_input = ChunkSet(
+            descriptor=index_descriptor,
+            source_version=source_version,
+            chunk_version=chunk_version,
+            chunks=tuple(chunk_items),
+            units=(),
+            stats=ChunkStats(
+                input_units=len(blocks),
+                chunk_count=len(chunk_items),
+                token_count=sum(item.token_count or 0 for item in chunk_items),
+            ),
+            metadata={"chunker_implementation": "canonical_search_units_v1"},
+        )
+        chunk_set = await self._engine._index(
+            chunk_set_input,
+            index_descriptor,
+            IndexOptions(
+                embedding_batch_size=100,
+                vector_batch_size=500,
+            ),
+        )
+        current.source_id = chunk_set.source_id
+        current.chunk_ids = list(chunk_set.chunk_ids)
+        current.generation_id = chunk_set.generation_id
+        current.chunk_version = chunk_set.chunk_version
+        current.source_version = chunk_set.source_version
+        current.processed_chunk_ids = []
+        current.event_count = 0
+        current.event_ids = []
+        current.eventless_chunk_ids = []
+        current.token_usage = 0
+        if current.source_id:
+            try:
+                from sqlalchemy import update
+                from sag_api.db.models import Document
+
+                async with session_factory() as session:
+                    ver = await session.get(
+                        __import__("sag_api.db.models", fromlist=["DocumentVersion"]).DocumentVersion,
+                        self._document_version_id,
+                    )
+                    if ver and ver.document_id:
+                        await session.execute(
+                            update(Document)
+                            .where(Document.id == ver.document_id, Document.sag_source_id.is_(None))
+                            .values(sag_source_id=str(current.source_id))
+                        )
+                        await session.commit()
+            except Exception:  # noqa: BLE001
+                pass
+        await on_checkpoint(current.model_copy(deep=True))
+        log.info(
+            "Reused canonical SearchUnits for SAG index source_config_id=%s source_id=%s chunks=%d",
+            self._source_config_id,
+            current.source_id,
+            len(current.chunk_ids),
+        )
+        return True
+
+    async def _ingest(
+        self,
+        current: ProcessCheckpoint,
+        path: str | Path,
+        on_checkpoint: CheckpointCallback,
+        *,
+        original_path: str | Path | None = None,
+    ) -> None:
+        """Parse → Chunk → Index;把 ChunkSetRef 的定位信息固化进断点。"""
+        descriptor = SourceDescriptor(
+            source_type=SourceType.ARTICLE,
+            title=self._document_title or None,
+        )
+        is_spreadsheet = original_path is not None and Path(original_path).suffix.lower() in {".xls", ".xlsx"}
+        if not is_spreadsheet and await self._ingest_from_canonical_search_units(
+            current, descriptor, on_checkpoint
+        ):
+            return
+
+        source: str | DocumentSource = str(path)
+        if is_spreadsheet and original_path is not None:
+            original = Path(original_path)
+            # Canonical Markdown alone cannot recover merged cells or record boundaries.
+            content = await asyncio.to_thread(Path(path).read_text, encoding="utf-8")
+            original_bytes = await asyncio.to_thread(original.read_bytes)
+            source = DocumentSource(
+                content=content,
+                original_file=FileSource(path=str(original), format_hint=original.suffix.lower().lstrip(".")),
+                original_sha256=sha256(original_bytes).hexdigest(),
+                descriptor=descriptor,
+                format_hint="markdown",
+            )
+        chunk_set = await self._engine.ingest(
+            source,
+            descriptor=descriptor,
+            chunk_options=ChunkOptions(
+                # heading_strict in 0.12.0 drops record-group metadata.
+                strategy="standard" if isinstance(source, DocumentSource) else self._chunk_mode,  # type: ignore[arg-type]
+                max_tokens=self._chunk_max_tokens,
+            ),
+            index_options=IndexOptions(
+                embedding_batch_size=100,
+                vector_batch_size=500,
+            ),
+        )
+        current.source_id = chunk_set.source_id
+        current.chunk_ids = list(chunk_set.chunk_ids)
+        current.generation_id = chunk_set.generation_id
+        current.chunk_version = chunk_set.chunk_version
+        current.source_version = chunk_set.source_version
+        current.processed_chunk_ids = []
+        current.event_count = 0
+        current.event_ids = []
+        current.eventless_chunk_ids = []
+        current.token_usage = 0
+        if current.source_id and self._document_version_id:
+            try:
+                from sqlalchemy import update
+                from sag_api.core.db import SessionLocal
+                from sag_api.db.models import Document, DocumentVersion
+
+                async with SessionLocal() as session:
+                    ver = await session.get(DocumentVersion, self._document_version_id)
+                    if ver and ver.document_id:
+                        await session.execute(
+                            update(Document)
+                            .where(Document.id == ver.document_id, Document.sag_source_id.is_(None))
+                            .values(sag_source_id=str(current.source_id))
+                        )
+                        await session.commit()
+            except Exception:  # noqa: BLE001
+                pass
+        await on_checkpoint(current.model_copy(deep=True))
+        log.info(
+            "文档切片完成 source_config_id=%s source_id=%s chunks=%d generation=%s",
+            self._source_config_id,
+            current.source_id,
+            len(current.chunk_ids),
+            current.generation_id,
+        )
+
+    def _chunk_set_ref(self, current: ProcessCheckpoint) -> ChunkSetRef:
+        """从断点重建 ChunkSetRef；普通 ingest 的 generation_id 可为空。"""
+        if not current.chunk_version:
+            raise RuntimeError("断点缺少 chunk_version，无法重建 ChunkSetRef；请重新处理文档")
+        if current.source_id is None:
+            raise RuntimeError("断点缺少 source_id，无法重建 ChunkSetRef")
+        return ChunkSetRef(
+            data_source_id=self._source_config_id,
+            source_type=SourceType.ARTICLE,
+            source_id=current.source_id,
+            source_version=current.source_version or "",
+            chunk_version=current.chunk_version,
+            generation_id=current.generation_id,
+            chunk_ids=tuple(current.chunk_ids),
+            client_key_to_chunk_id={},
+            relation_status=WriteStatus.SUCCEEDED,
+            vector_status=WriteStatus.SUCCEEDED,
+        )
+
+    async def _extract(
+        self,
+        current: ProcessCheckpoint,
+        chunk_set: ChunkSetRef,
+        should_pause: PauseCheck,
+        on_checkpoint: CheckpointCallback,
+    ) -> tuple[bool, Any]:
+        """整批抽取;暂停由 CancellationToken + 后台轮询驱动,进度经 observer 透出。"""
+        prompt_manager = getattr(self._engine.resources, "prompts", None)
+        if (
+            prompt_manager is not None
+            and getattr(prompt_manager, "language", None) != "en"
+            and hasattr(prompt_manager, "templates")
+            and hasattr(prompt_manager, "template_data")
+            and hasattr(prompt_manager, "load_templates")
+        ):
+            prompt_manager.language = "en"
+            prompt_manager.templates.clear()
+            prompt_manager.template_data.clear()
+            prompt_manager.load_templates()
+        requirements = _KNOWLEDGE_EVENT_REQUIREMENTS["en"]
+
+        is_concise = self._extraction_profile == "concise"
+        concise_rule = (
+            "Extract at most 3 high-signal events per chunk and at most 8 core entities per event; "
+            "keep event content brief (1-2 sentences) and entity descriptions concise (under 15 words)."
+        )
+        rules = (requirements, concise_rule) if is_concise else (requirements,)
+        options = ExtractionOptions(
+            source_type="article",
+            contract="minimal" if is_concise else "rich",
+            max_retries=self._event_entity_attempts,
+            # Keep (20, 1, 20) so zleap.sag's ExtractionPromptComposer preserves few-shot JSON examples
+            limits=ExtractionLimits(
+                max_events_per_chunk=20,
+                min_entities_per_event=1,
+                max_entities_per_event=20,
+            ),
+            related_events=RelatedEventContextOptions(
+                enabled=not is_concise,
+            ),
+            execution=ExtractionExecutionOptions(
+                max_concurrency=self._max_concurrency,
+                embedding_batch_size=100,
+                vector_batch_size=500,
+                write_entity_vectors=self._write_event_entity_vectors,
+                write_event_entity_vectors=self._write_event_entity_vectors,
+            ),
+            guidance_rules=rules,
+        )
+        cancellation = CancellationToken()
+
+        async def poll_pause() -> None:
+            while not cancellation.is_cancelled:
+                try:
+                    if await should_pause():
+                        cancellation.cancel()
+                        return
+                except Exception:  # noqa: BLE001 - 暂停探测失败按不暂停处理
+                    pass
+                await asyncio.sleep(1.0)
+
+        poller = asyncio.create_task(poll_pause())
+        last_committed_progress = -1
+
+        async def observer(event: StageEvent) -> None:
+            nonlocal last_committed_progress
+            if event.stage != StageName.EXTRACT or event.type != StageEventType.PROGRESS:
+                return
+            completed = event.completed or 0
+            total = event.total or len(chunk_set.chunk_ids)
+            if completed < last_committed_progress:
+                return
+            current.processed_chunk_ids = list(chunk_set.chunk_ids[:completed])
+            if total and (completed % _PROGRESS_COMMIT_EVERY == 0 or completed >= total):
+                last_committed_progress = completed
+                await on_checkpoint(current.model_copy(deep=True))
+
+        try:
+            events = await self._engine.extract(
+                chunk_set,
+                options,
+                observer=observer,
+                cancellation=cancellation,
+            )
+        except PipelineCancelledError:
+            log.info("抽取已取消 source_config_id=%s", self._source_config_id)
+            return True, None
+        except asyncio.CancelledError:
+            raise
+        finally:
+            poller.cancel()
+            try:
+                await poller
+            except BaseException:  # noqa: BLE001 - 取消后的 CancelledError 也属预期
+                pass
+
+        stats = dict(getattr(events, "stats", {}) or {})
+        current.token_usage = int(stats.get("token_usage", 0) or 0)
+        # 0.8.2 统计含 zero_event_chunks(整批抽取下语义与 0.7.1 的逐块 eventless 对齐)
+        zero_chunks = stats.get("zero_event_chunks", [])
+        if isinstance(zero_chunks, (list, tuple)):
+            current.eventless_chunk_ids = [str(item) for item in zero_chunks]
+        return False, events

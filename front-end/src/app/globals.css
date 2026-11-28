@@ -360,3 +360,9 @@ body {
 ::selection {
   background: color-mix(in srgb, var(--color-mineral) 22%, transparent);
 }
+
+button:focus:not(:focus-visible),
+[role='tab']:focus:not(:focus-visible),
+a:focus:not(:focus-visible) {
+  outline: none;
+}

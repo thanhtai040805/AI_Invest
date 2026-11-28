@@ -13,3 +13,5 @@ class User(IDMixin, TimestampMixin, Base):
     password_hash: Mapped[str] = mapped_column(String(255))
     name: Mapped[str] = mapped_column(String(120), default="")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
