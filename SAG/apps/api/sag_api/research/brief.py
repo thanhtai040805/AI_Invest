@@ -132,12 +132,20 @@ _FACT_SYNONYMS: dict[str, str] = {
 
 _KPI_SYNONYMS: dict[str, str] = {
     "revenue_growth": "top_line_growth_yoy",
+    "revenue_growth_yoy": "top_line_growth_yoy",
     "revenue_yoy": "top_line_growth_yoy",
+    "rev_growth": "top_line_growth_yoy",
+    "sales_growth": "top_line_growth_yoy",
     "toi_growth": "top_line_growth_yoy",
     "net_income_yoy": "npat_growth_yoy",
+    "net_income_growth": "npat_growth_yoy",
+    "net_profit_growth": "npat_growth_yoy",
     "npat_yoy": "npat_growth_yoy",
+    "npat_growth": "npat_growth_yoy",
     "profit_growth": "npat_growth_yoy",
+    "profit_growth_yoy": "npat_growth_yoy",
     "earnings_growth": "npat_growth_yoy",
+    "bottom_line_growth": "npat_growth_yoy",
     "gpm": "gross_margin",
     "npm": "net_margin",
     "de": "debt_to_equity",
@@ -221,20 +229,23 @@ BRIEF_STATIC_SYSTEM_PROMPT = (
     "'Doanh nghiệp thép nào biên gộp cao nhất?'): đặt `\"tickers\": []`, `\"anchor_ticker\": null`, và điền "
     "`\"candidate_search\"` với `criteria` định lượng (ví dụ rẻ so với tiền mặt: `net_cash_to_market_cap >= 0.25` "
     "hoặc `cash_to_market_cap >= 0.30`, `sort_by: \"net_cash_to_market_cap\"`, `sort_dir: \"desc\"`).\n"
-    "4. Tư duy Chuyên gia Phân tích (KẾT HỢP SỐ LIỆU ĐỊNH LƯỢNG ↔ BẢN CHẤT THUYẾT MINH TÀI LIỆU):\n"
+    "4. Tư duy Chuyên gia Phân tích (KHAI THÁC SÂU CẢ SỐ LIỆU ĐỊNH LƯỢNG LẪN ĐỘNG LỰC KINH DOANH ĐA TẦNG):\n"
     "   - Khi phân tích chi tiết, đánh giá sức khỏe, triển vọng hoặc mức độ phù hợp đầu tư của doanh nghiệp đã có "
     "tài liệu PDF/Qdrant, TUYỆT ĐỐI KHÔNG lập đề bài chỉ toàn phép tính số học khô khan! BẮT BUỘC kết hợp:\n"
-    "     + Số liệu định lượng (`fact:*`, `kpi:*`, `risk`, `peers`, `agm`) VÀ\n"
-    "     + Ít nhất 1–2 ý đọc thuyết minh gốc (`doc:QUARTER_NOTES|giải trình biến động doanh thu lợi nhuận hợp nhất`, "
-    "`doc:BCTC_AUDITED|cấu trúc tập đoàn công ty con liên kết`, `doc:BCTN_CORE|lợi thế cạnh tranh động lực`) "
-    "để bóc tách nguyên nhân thật sự đằng sau con số (ví dụ: thay đổi phạm vi hợp nhất/tách công ty con sang liên kết, "
-    "sự phân hóa giữa mảng cốt lõi và mảng phụ, hay lợi nhuận bất thường một lần).\n"
+    "     + Số liệu định lượng (`fact:*`, `kpi:*`, `risk`, `peers`, `agm`),\n"
+    "     + Giải trình quý & cấu trúc hợp nhất/khoản mục (`doc:QUARTER_NOTES,BCTC_AUDITED|giải trình biến động "
+    "doanh thu lợi nhuận hợp nhất báo cáo bộ phận`), VÀ\n"
+    "     + Động lực tăng trưởng dài hạn, cơ cấu mảng/thị trường & định hướng Ban lãnh đạo "
+    "(`doc:BCTN_CORE,AGM_TARGETS|phân tích theo khối động lực tăng trưởng thị trường chiến lược thảo luận`).\n"
+    "   - Phân biệt rõ câu hỏi KHÁCH QUAN vs. KHẨU VỊ CÁ NHÂN: Nếu nhà đầu tư hỏi phân tích khách quan về doanh nghiệp "
+    "('Phân tích chi tiết mã FPT quý gần nhất', 'VHM quý này ổn không?'), hãy giữ `user_concern` và `answer_shape` "
+    "(`health_check`) tập trung khách quan vào bức tranh kinh doanh & tài chính toàn diện của doanh nghiệp — CHỈ đưa "
+    "`mem` vào trọng tâm khi người hỏi hỏi về mức độ phù hợp với bản thân/danh mục hoặc sàng lọc không nêu tiêu chí!\n"
     "   - Xử lý mơ hồ (`ambiguities` & `needs_clarification`): CHỈ đặt `\"needs_clarification\": true` khi câu hỏi "
     "KHÔNG có mã cổ phiếu (cả ở lượt hiện tại lẫn mạch hội thoại đang dở), KHÔNG có ngành, KHÔNG có tiêu chí tài chính "
     "nào, và KHÔNG có tiêu chí cá nhân trong bộ nhớ (ví dụ: 'Cổ phiếu nào tốt?'). Nếu ĐÃ có mã hoặc tiêu chí cá nhân "
     "trong bộ nhớ (`USER_INVESTING_CRITERIA`), BẮT BUỘC đặt `\"needs_clarification\": false` và trả lời ngay!\n"
-    "5. Từ điển bằng chứng hợp lệ trong `evidence` của mỗi ý (1..4 mục mỗi ý, ưu tiên `fact:*`/`kpi:*`/`risk` "
-    "0-token trước, chỉ dùng `doc:*` khi thực sự cần đọc thuyết minh/BCTN/ĐHĐCĐ):\n"
+    "5. Từ điển bằng chứng hợp lệ trong `evidence` của mỗi ý (1..5 mục mỗi ý):\n"
     "   - `fact:<id>`: `revenue_net`, `gross_profit`, `operating_profit`, `pbt`, `npat`, `npat_parent`, `cfo`, "
     "`capex`, `total_assets`, `equity`, `cash_and_equivalents`, `st_investments`, `inventory`, `st_receivables`, "
     "`st_borrowings`, `lt_borrowings`, `advances_from_customers`, `interest_expense`; Ngân hàng: `nii`, "
@@ -554,11 +565,11 @@ def canonicalize_evidence_spec(raw_ev: Any) -> tuple[str | None, str | None]:
         return f"table:{stmt}", None
 
     if low.startswith("fact:"):
-        raw_id = low.split(":", 1)[1].strip()
+        raw_id = re.split(r"[><=]", low.split(":", 1)[1].strip(), maxsplit=1)[0].strip()
         mapped_fact = _METRIC_SYNONYMS.get(raw_id, _FACT_SYNONYMS.get(raw_id, raw_id))
         if mapped_fact in CATALOG_BY_ID:
             return f"fact:{mapped_fact}", None
-        mapped_kpi = _KPI_SYNONYMS.get(raw_id, raw_id)
+        mapped_kpi = _KPI_SYNONYMS.get(raw_id, mapped_fact)
         if mapped_kpi in KPI_BY_ID:
             return f"kpi:{mapped_kpi}", None
         if mapped_fact in COMPOSITE_CANDIDATE_METRICS:
@@ -566,11 +577,13 @@ def canonicalize_evidence_spec(raw_ev: Any) -> tuple[str | None, str | None]:
         return None, f"Chỉ tiêu `{txt}` không nằm trong danh mục chuẩn FactSet/KPI."
 
     if low.startswith("kpi:"):
-        raw_id = low.split(":", 1)[1].strip()
+        raw_id = re.split(r"[><=]", low.split(":", 1)[1].strip(), maxsplit=1)[0].strip()
         mapped_kpi = _KPI_SYNONYMS.get(raw_id, raw_id)
         if mapped_kpi in KPI_BY_ID:
             return f"kpi:{mapped_kpi}", None
         mapped_fact = _METRIC_SYNONYMS.get(raw_id, _FACT_SYNONYMS.get(raw_id, raw_id))
+        if mapped_fact in KPI_BY_ID:
+            return f"kpi:{mapped_fact}", None
         if mapped_fact in CATALOG_BY_ID:
             return f"fact:{mapped_fact}", None
         if mapped_fact in COMPOSITE_CANDIDATE_METRICS:
@@ -582,12 +595,12 @@ def canonicalize_evidence_spec(raw_ev: Any) -> tuple[str | None, str | None]:
         if "|" in rest:
             slot_part, query_part = rest.split("|", 1)
         else:
-            slot_part, query_part = "QUARTER_NOTES,BCTC_AUDITED", rest
+            slot_part, query_part = "QUARTER_NOTES,BCTC_AUDITED,BCTN_CORE,AGM_TARGETS", rest
         raw_slot_tokens = [s.strip() for s in slot_part.split(",") if s.strip()]
         valid_slots: list[str] = []
         for tok in raw_slot_tokens:
             if tok.upper() in {"ANY", "ALL", "*"}:
-                valid_slots.extend(["QUARTER_NOTES", "BCTC_AUDITED"])
+                valid_slots.extend(["QUARTER_NOTES", "BCTC_AUDITED", "BCTN_CORE", "AGM_TARGETS"])
                 continue
             try:
                 valid_slots.extend(normalize_disclosure_slots([tok]))
@@ -595,7 +608,7 @@ def canonicalize_evidence_spec(raw_ev: Any) -> tuple[str | None, str | None]:
                 continue
         dedup_slots = list(dict.fromkeys(s for s in valid_slots if s in CANONICAL_DISCLOSURE_SLOTS))
         if not dedup_slots:
-            dedup_slots = ["QUARTER_NOTES", "BCTC_AUDITED"]
+            dedup_slots = ["QUARTER_NOTES", "BCTC_AUDITED", "BCTN_CORE", "AGM_TARGETS"]
         clean_q = re.sub(r"\s+", " ", query_part).strip() or "thuyết minh báo cáo tài chính"
         return f"doc:{','.join(dedup_slots)}|{clean_q[:160]}", None
 
@@ -813,8 +826,27 @@ def validate_research_brief(
                     doc_count += 1
                 ev_clean.append(canon)
             if not ev_clean:
-                errors.append(f"Ý `{cid}` ('{stmt[:60]}') không có loại bằng chứng hợp lệ nào.")
-                continue
+                if tickers and dropped_by_claim_id.get(cid):
+                    stmt_low = stmt.lower()
+                    if any(
+                        kw in stmt_low
+                        for kw in ("tăng trưởng", "lợi nhuận", "doanh thu", "sinh lời", "cagr", "kỳ vọng")
+                    ):
+                        ev_clean = [
+                            "fact:npat",
+                            "fact:revenue_net",
+                            "kpi:npat_growth_yoy",
+                            "kpi:top_line_growth_yoy",
+                        ]
+                    else:
+                        ev_clean = ["risk"]
+                    warnings.append(
+                        f"Ý `{cid}` chỉ chứa chỉ tiêu chưa hỗ trợ -> chuyển sang kiểm chứng BCTC/rủi ro gần nhất "
+                        "và giữ trạng thái `PARTIAL`."
+                    )
+                else:
+                    errors.append(f"Ý `{cid}` ('{stmt[:60]}') không có loại bằng chứng hợp lệ nào.")
+                    continue
             norm_period, p_warn = clamp_period_to_pit(
                 str(item.get("period")) if item.get("period") is not None else None,
                 as_of_date,
@@ -1037,6 +1069,7 @@ def build_fallback_brief(
     query: str,
     as_of_date: date,
     explicit_tickers: Sequence[str] = (),
+    fallback_tickers: Sequence[str] = (),
     catalog_profiles: Sequence[Mapping[str, Any]] = (),
     allowed_project_ids: frozenset[str] | set[str] = frozenset({"*"}),
     chat_mode: str = "GENERAL",
@@ -1053,7 +1086,7 @@ def build_fallback_brief(
         if str(p.get("ticker") or "").strip()
     }
     detected: list[str] = []
-    for t in explicit_tickers:
+    for t in (*explicit_tickers, *fallback_tickers):
         sym = t.strip().upper()
         if sym and ("*" in allowed_project_ids or sym in allowed_project_ids) and sym not in detected:
             detected.append(sym)
@@ -1110,6 +1143,7 @@ async def create_and_validate_brief(
     available_tickers: Sequence[str] = (),
     catalog_profiles: Sequence[Mapping[str, Any]] = (),
     explicit_tickers: Sequence[str] = (),
+    fallback_tickers: Sequence[str] = (),
     chat_mode: str = "GENERAL",
     session_context: str = "",
     memory_context: str = "",
@@ -1229,6 +1263,7 @@ async def create_and_validate_brief(
         query=query,
         as_of_date=as_of_date,
         explicit_tickers=explicit_tickers,
+        fallback_tickers=fallback_tickers,
         catalog_profiles=catalog_profiles,
         allowed_project_ids=allowed_project_ids,
         chat_mode=chat_mode,

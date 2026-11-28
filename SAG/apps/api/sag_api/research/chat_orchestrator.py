@@ -339,6 +339,7 @@ class SQLAlchemyTableStore:
         fiscal_year: int | None = None,
         fiscal_quarter: int | None = None,
         sub_doc_slot: str | None = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         from sag_api.db.models import Document, DocumentVersion
         from sag_api.db.models.stock_research import SagExtractedTable
@@ -374,7 +375,21 @@ class SQLAlchemyTableStore:
         if clean_ids:
             stmt = (
                 base_stmt.where(SagExtractedTable.table_id.in_(clean_ids), *pit_filters)
-                .order_by(SagExtractedTable.fiscal_year.desc(), SagExtractedTable.page_from.asc())
+                .order_by(
+                    SagExtractedTable.fiscal_year.desc(),
+                    SagExtractedTable.fiscal_quarter.desc(),
+                    SagExtractedTable.page_from.asc(),
+                )
+            )
+        elif limit is not None and limit > 0:
+            stmt = (
+                base_stmt.where(SagExtractedTable.project_id.in_(clean_tickers), *pit_filters)
+                .order_by(
+                    SagExtractedTable.fiscal_year.desc(),
+                    SagExtractedTable.fiscal_quarter.desc(),
+                    SagExtractedTable.page_from.asc(),
+                )
+                .limit(int(limit))
             )
         else:
             from sqlalchemy import case
@@ -388,6 +403,7 @@ class SQLAlchemyTableStore:
                 .order_by(
                     verified_first.asc(),
                     SagExtractedTable.fiscal_year.desc(),
+                    SagExtractedTable.fiscal_quarter.desc(),
                     SagExtractedTable.page_from.asc(),
                 )
                 .limit(fetch_cap)

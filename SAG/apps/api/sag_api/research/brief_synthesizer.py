@@ -186,19 +186,35 @@ SYNTHESIS_STATIC_SYSTEM_PROMPT = (
     "   - Trình bày bảng Markdown gọn khi có từ 3 chỉ tiêu hoặc nhiều kỳ/nhiều mã trở lên để dễ đọc.\n"
     "2. KỶ LUẬT SỐ HỌC & TRÍCH DẪN TUYỆT ĐỐI (ZERO MENTAL MATH):\n"
     "   - CHỈ dùng các con số đã xuất hiện nguyên văn trong các Thẻ kết luận bên dưới.\n"
-    "   - TUYỆT ĐỐI KHÔNG tự cộng nhẩm, trừ nhẩm hoặc nhân chia thêm bất kỳ con số mới nào ngoài thẻ "
+    "   - TUYỆT ĐỐI KHÔNG tự cộng nhẩm, trừ nhẩm, chia nhẩm tỷ lệ làm tròn (ví dụ `50%`) hay tự bịa khoảng ước lượng "
+    "(ví dụ `15-18%` khi thẻ chỉ ghi `+15,0%` và `+15,8%`) — bắt buộc viết ĐÚNG con số cụ thể trong thẻ "
     "(đặc biệt: KHÔNG cộng các khoản mục con trong thuyết minh nợ vay vào tổng vay ngắn hạn trên CĐKT).\n"
-    "   - Mọi câu có số liệu tài chính BẮT BUỘC gắn kèm mã nguồn gốc có sẵn trong thẻ (`[CALC-*]`, `[C#]`, "
-    "`[TBL:*]`, `[SCR:*]`, `[KG:*]`, `[MEM:*]`, `[PORT:*]`). TUYỆT ĐỐI KHÔNG gắn mã ý nội bộ của đề bài "
-    "(`[P1]`, `[K1]`..`[K6]`) vào câu trả lời. Không tự bịa mã không tồn tại.\n"
-    "3. TƯ DUY ĐỐI CHIẾU SỐ LIỆU ↔ BẢN CHẤT KẾ TOÁN & TIÊU CHÍ NHÀ ĐẦU TƯ:\n"
-    "   - Khi Thẻ kết luận có trích dẫn thuyết minh `[C#]` giải thích sự thay đổi phạm vi hợp nhất "
-    "(ví dụ: tách/ngừng hợp nhất công ty con chuyển sang công ty liên kết), phân hóa giữa các mảng kinh doanh "
-    "hoặc khoản mục bất thường, BẮT BUỘC đặt con số kế toán bề mặt `[CALC-*]` cạnh bản chất so sánh tương đương "
-    "(like-for-like) `[C#]` ngay trong phần mở đầu — tuyệt đối không kết luận hời hợt rằng doanh nghiệp suy yếu "
-    "nếu mảng lõi và số tương đương vẫn tăng trưởng!\n"
-    "   - Khi có tiêu chí cá nhân của nhà đầu tư (`[MEM:M#]` hoặc câu trả lời làm rõ ở lượt trước), "
-    "hãy đối chiếu trực diện từng tiêu chí với bằng chứng thực tế.\n"
+    "   - Mọi câu và mọi hàng trong bảng Markdown có số liệu tài chính BẮT BUỘC gắn kèm mã nguồn gốc trực tiếp ngay "
+    "trên hàng/câu đó (`[CALC-*]`, `[C#]`, `[TBL:*]`, `[SCR:*]`, `[KG:*]`, `[MEM:*]`, `[PORT:*]`) — KHÔNG để dòng bảng "
+    "chứa số liệu trơ trọi rồi mới ghi `*Nguồn: [C#]*` ở dòng dưới; khi nhắc tới ngưỡng kỳ vọng của nhà đầu tư "
+    "(như `10-15%/năm`) phải gắn `[MEM:M#]`, KHÔNG gắn `[CALC-*]` của doanh nghiệp vào con số mục tiêu cá nhân! "
+    "Khi gợi ý mở rộng sàng lọc sang các mã khác ngoài thẻ, chỉ nêu tên mã, TUYỆT ĐỐI KHÔNG kèm con số ước lượng "
+    "(như `ROE ~16%`) chưa có trong thẻ. TUYỆT ĐỐI KHÔNG gắn mã ý nội bộ của đề bài (`[P1]`, `[K1]`..`[K6]`).\n"
+    "3. TƯ DUY ĐỐI CHIẾU BẢN CHẤT KẾ TOÁN, ĐỘNG LỰC MẢNG KINH DOANH & GIẢI PHẪU THUYẾT MINH:\n"
+    "   - Khi Thẻ kết luận có trích dẫn thuyết minh `[C#]` hoặc phân rã mảng `[CALC-*]` giải thích sự thay đổi phạm vi "
+    "hợp nhất (ví dụ: tách/ngừng hợp nhất công ty con sang công ty liên kết), BẮT BUỘC đặt con số kế toán bề mặt "
+    "cạnh con số so sánh tương đương (like-for-like) `[C#]` ngay từ phần mở đầu — tuyệt đối không phán hời hợt rằng "
+    "doanh nghiệp suy yếu nếu mảng lõi và số tương đương vẫn tăng trưởng!\n"
+    "   - KHAI THÁC TỐI ĐA ĐỘNG LỰC KINH DOANH & THUYẾT MINH TRỌNG YẾU: Khi Thẻ kết luận chứa phân rã mảng kinh doanh "
+    "(tỷ trọng doanh thu, biên lợi nhuận bộ phận, độ mở rộng biên `bps`, tăng trưởng từng mảng), chi tiết thị trường "
+    "& sản phẩm chiến lược từ BCTN/ĐHĐCĐ (như Chuyển đổi số, thị trường Nhật/Mỹ, Nhà máy AI, ý kiến Ban lãnh đạo) hoặc "
+    "giải phẫu khoản mục trọng yếu (như tỷ trọng tiền gửi có kỳ hạn & ngoại tệ trong Đầu tư tài chính ngắn hạn), BẮT "
+    "BUỘC đưa các luận cứ sắc bén này thành trọng tâm bài phân tích — TUYỆT ĐỐI KHÔNG viết câu chung chung kiểu "
+    "'cần tìm hiểu rõ cấu trúc khoản mục này' khi Thẻ kết luận ĐÃ giải phẫu sẵn cấu trúc đó!\n"
+    "   - KỶ LUẬT ĐA LƯỢT & KHẨU VỊ CÁ NHÂN:\n"
+    "     + Mỗi lượt trả lời PHẢI viết mới trực diện cho câu hỏi hiện tại từ `<VERIFIED_CLAIM_CARDS>` của lượt này; "
+    "TUYỆT ĐỐI KHÔNG chép lại bảng biểu hay bố cục y hệt lượt trước, và CHỈ gắn các mã `[CALC-*]`, `[C#]`, `[TBL:*]`, "
+    "`[SCR:*]`, `[MEM:M#]` có mặt trong lượt hiện tại!\n"
+    "     + Nếu câu hỏi là phân tích khách quan về doanh nghiệp ('Phân tích chi tiết FPT quý gần nhất'), hãy trình bày "
+    "khách quan bức tranh kinh doanh & tài chính trước (không biến tiêu đề thành 'phù hợp với mục tiêu của bạn'); "
+    "khi câu hỏi hỏi về mức độ phù hợp nắm giữ / khẩu vị cá nhân / lọc cổ phiếu, hãy đối chiếu trực diện từng tiêu chí "
+    "và gắn mã `[MEM:M#]` ngay tại mệnh đề nhắc tới con số mục tiêu của nhà đầu tư (như `10-15%/năm [MEM:M1]`, "
+    "`trên 5 năm [MEM:M1]`).\n"
     "4. TRUNG THỰC VỚI KHOẢNG TRỐNG DỮ LIỆU:\n"
     "   - Ý nào thẻ ghi chưa có dữ liệu (`NO_DATA`) hoặc một phần chỉ tiêu chưa có trong kho PIT (`PARTIAL`, "
     "ví dụ chưa có hệ số beta biến động giá cổ phiếu), phải nói thẳng chỉ tiêu nào đã kiểm chứng được và chỉ tiêu nào "
@@ -535,10 +551,15 @@ async def repair_stage7_flagged_lines(
                 ev_lines.append(f"[{cid}] {desc}: {kv}")
     if sections_by_cid:
         ev_lines.append("=== ĐOẠN TÀI LIỆU [C#] GỐC ===")
-        for cid, sec in list(sections_by_cid.items())[:8]:
+        cited_in_draft = list(dict.fromkeys(re.findall(r"\[(C\d+)(?:\s+UNVERIFIED_CLAIM)?\]", answer_text or "")))
+        ordered_cids = [c for c in cited_in_draft if c in sections_by_cid] + [
+            c for c in sections_by_cid if c not in cited_in_draft
+        ]
+        for cid in ordered_cids[:18]:
+            sec = sections_by_cid[cid]
             tk = getattr(sec, "ticker", "") if not isinstance(sec, Mapping) else sec.get("ticker", "")
             body = getattr(sec, "content", "") if not isinstance(sec, Mapping) else sec.get("content", "")
-            ev_lines.append(f"[{cid}] ({tk}) {str(body).strip()[:320]}")
+            ev_lines.append(f"[{cid}] ({tk}) {str(body).strip()[:600]}")
 
     repair_user_msg = (
         "CÁC DÒNG CẦN SỬA:\n"
@@ -778,13 +799,17 @@ async def run_brief_centric_turn(
     async def _on_synth_reasoning(r_delta: str) -> None:
         await _emit_synth_r(synth_r_buf.push(r_delta))
 
-    from sag_api.research.session_memory import build_conversation_prefix_messages
+    from sag_api.research.session_memory import (
+        build_conversation_prefix_messages,
+        build_synthesis_history_messages,
+    )
 
     history_msgs, rolling_summary, _ = build_conversation_prefix_messages(
         ctx.session_ledger,
         verbatim_token_budget=16_000,
         keep_recent_token_budget=10_000,
     )
+    synth_history_msgs = build_synthesis_history_messages(ctx.session_ledger)
     # Compact state pointer only when quarantined turns or screening leaderboard exist
     session_ctx = (
         ctx.session_ledger.to_prompt_context(include_recent_pairs=False, max_recent_pairs=0)
@@ -792,6 +817,27 @@ async def run_brief_centric_turn(
         else ""
     )
     mem_ctx = "\n".join(b for b in (ctx.tier0_memory_prompt, ctx.tier2_memory_prompt) if b)
+    q_low = (query or "").lower()
+    has_pivot_cue = any(
+        cue in q_low
+        for cue in (
+            "bỏ ",
+            "quên ",
+            "đổi sang",
+            "chuyển sang",
+            "lọc giúp",
+            "sàng lọc",
+            "tìm giúp",
+            "cổ phiếu nào",
+            "ngân hàng nào",
+            "mã nào",
+        )
+    )
+    session_fallback_tickers = (
+        tuple(ctx.session_ledger.active_episode_tickers[:2])
+        if (not explicit_tickers and ctx.session_ledger.active_episode_tickers and not has_pivot_cue)
+        else ()
+    )
 
     # ── Steps (1) & (2): Create & Deterministically Validate ResearchBrief ────
     if on_stage is not None:
@@ -805,6 +851,7 @@ async def run_brief_centric_turn(
         available_tickers=sorted(ctx.available_tickers),
         catalog_profiles=ctx.catalog_profiles,
         explicit_tickers=explicit_tickers,
+        fallback_tickers=session_fallback_tickers,
         chat_mode=ctx.chat_mode,
         session_context=session_ctx,
         memory_context=mem_ctx,
@@ -1007,7 +1054,7 @@ async def run_brief_centric_turn(
         exec_result=exec_res,
         ctx=ctx,
         model=model,
-        history_messages=history_msgs,
+        history_messages=synth_history_msgs,
         pit_adjustments=val_out.pit_adjustments,
         attach_disclaimer=bool(route_decision.get("attach_investment_disclaimer")),
         enable_thinking=True,

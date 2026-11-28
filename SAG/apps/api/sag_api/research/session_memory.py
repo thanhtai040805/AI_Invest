@@ -707,3 +707,95 @@ def build_conversation_prefix_messages(
         out_msgs.append(AgentMessage(role="user", content=t.user_content))
         out_msgs.append(AgentMessage(role="assistant", content=t.assistant_content))
     return out_msgs, rolling_summary, refreshed
+
+
+_PRIOR_TURN_BADGE_RE = re.compile(
+    r"\[(?:C\d+(?:\s+UNVERIFIED_CLAIM)?|CALC-\d+|TBL:[^\]]+|SCR:[^\]]+|KG:[^\]]+|DISC-\d+|MEM:[^\]]+|PORT:[^\]]+|SESS:[^\]]+)\]"
+)
+_PRIOR_TURN_METRIC_FIG_RE = re.compile(
+    r"[+-]?\d+(?:[.,]\d+)*\s*(?:%|bps|điểm\s+cơ\s+bản|x|lần|tỷ(?:\s*đồng)?|triệu(?:\s*đồng|\s*USD)?|nghìn\s*tỷ|USD)(?![a-zA-ZÀ-ỹ])",
+    re.IGNORECASE,
+)
+
+
+def _summarize_assistant_turn_without_badges(turn: SessionTurnRecord, *, max_chars: int = 420) -> str:
+    """Distill a prior assistant reply into badge-free, number-free qualitative context for Stage 6.
+
+    Prevents Stage 6 from lazily echoing prior Markdown tables, copying stale `[C#]`/`[CALC-*]` IDs,
+    OR repeating un-badged numbers from earlier turns that are not in the current turn's VerdictCards.
+    (Stage 1 Brief Planner still receives 100% verbatim `build_conversation_prefix_messages`.)
+    """
+    if turn.clarifying_question:
+        return f"Hệ thống đã hỏi làm rõ: {turn.clarifying_question}"
+
+    kept_lines: list[str] = []
+    for raw_ln in (turn.assistant_content or "").splitlines():
+        ln = raw_ln.strip()
+        if not ln:
+            continue
+        if ln.startswith("|") or ln.startswith("> ⚠️") or ln.startswith("---"):
+            continue
+        cleaned = _PRIOR_TURN_BADGE_RE.sub("", ln)
+        cleaned = _PRIOR_TURN_METRIC_FIG_RE.sub("[số liệu lượt trước]", cleaned)
+        cleaned = re.sub(r"^#{1,4}\s*", "", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if cleaned:
+            kept_lines.append(cleaned)
+        if sum(len(x) for x in kept_lines) >= max_chars:
+            break
+
+    head_meta: list[str] = []
+    if turn.primary_ticker:
+        head_meta.append(f"Mã chính: {turn.primary_ticker}")
+    elif turn.tickers:
+        head_meta.append(f"Mã: {', '.join(turn.tickers[:4])}")
+    if turn.screened_tickers:
+        head_meta.append(f"Ứng viên lọc: {', '.join(turn.screened_tickers[:6])}")
+    if turn.user_concern:
+        head_meta.append(f"Trọng tâm đã giải quyết: {turn.user_concern}")
+
+    body = " | ".join(kept_lines)[:max_chars].rstrip()
+    prefix = f"[Tóm tắt kết luận Lượt {turn.turn_index} ({'; '.join(head_meta)})]: " if head_meta else (
+        f"[Tóm tắt kết luận Lượt {turn.turn_index}]: "
+    )
+    return f"{prefix}{body}" if body else prefix.rstrip(": ")
+
+
+def build_synthesis_history_messages(
+    ledger: FinancialZeroMemLedger,
+    *,
+    max_recent_turns: int = 6,
+) -> list[Any]:
+    """Build badge-scrubbed, table-free conversational history specifically for Stage 6 Synthesis.
+
+    - Stage 1 (`create_research_brief`) receives `build_conversation_prefix_messages` (full verbatim).
+    - Stage 6 (`synthesize_from_verdict_cards`) receives verbatim `user` queries paired with clean,
+      badge-free executive summaries of prior `assistant` replies so it writes a fresh answer from the
+      current turn's `<VERIFIED_CLAIM_CARDS>` without echoing old tables or leaking stale `[C11]` IDs.
+    """
+    from sag_agent.types import AgentMessage
+
+    complete_turns = [t for t in ledger.valid_turns if t.user_content and t.assistant_content]
+    if not complete_turns:
+        return []
+
+    out: list[Any] = []
+    older = complete_turns[:-max_recent_turns] if len(complete_turns) > max_recent_turns else []
+    recent = complete_turns[-max_recent_turns:]
+    if older:
+        older_lines = [
+            "<EARLIER_SESSION_TURNS_SUMMARY>",
+            *(
+                f"- Lượt {t.turn_index}: Hỏi '{_compact_assistant_excerpt(t.user_content, max_chars=180)}' -> "
+                f"{_summarize_assistant_turn_without_badges(t, max_chars=220)}"
+                for t in older[-12:]
+            ),
+            "</EARLIER_SESSION_TURNS_SUMMARY>",
+        ]
+        out.append(AgentMessage(role="user", content="\n".join(older_lines)))
+        out.append(AgentMessage(role="assistant", content="Đã nắm tóm tắt các lượt trao đổi đầu phiên."))
+
+    for t in recent:
+        out.append(AgentMessage(role="user", content=t.user_content))
+        out.append(AgentMessage(role="assistant", content=_summarize_assistant_turn_without_badges(t)))
+    return out

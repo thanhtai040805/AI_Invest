@@ -911,7 +911,9 @@ def _collect_typed_calc_kg_and_screen_numbers(
                     mult = float(inp.get("unit_multiplier") or 1.0)
                     iv = abs(float(inp["value"]))
                     u_str = str(inp.get("unit") or "").lower()
-                    if u_str in ("ratio", "percent", "%", "pct") or "%" in key_low:
+                    if u_str == "bps" or key_low.endswith("_bps"):
+                        bucket["PERCENT"].extend([iv, iv / 100.0])
+                    elif u_str in ("ratio", "percent", "%", "pct") or "%" in key_low:
                         bucket["PERCENT"].extend([iv, iv * 100.0, iv * 10000.0])
                     elif u_str in ("x", "multiple"):
                         bucket["MULTIPLE"].append(iv)
@@ -1005,7 +1007,7 @@ _MEMORY_NUMERIC_ELIGIBLE_TYPES: frozenset[str] = frozenset(
 )
 _INNERMOST_PAREN_RE = re.compile(r"\(([^()]+)\)")
 _CLAUSE_SPLIT_RE = re.compile(
-    r"(?:(?<!\d),(?!\d)|[;—–]|\s+-\s+|(?<=\])\s*:\s*|(?<=\])(?=\s+[^\[\s]))"
+    r"(?:(?<!\d),(?!\d)|;|(?<!\d)[—–](?!\d)|\s+-\s+|(?<=\])\s*:\s*|(?<=\])(?=\s+[^\[\s]))"
 )
 
 
@@ -1298,6 +1300,7 @@ def verify_numeric_claims_against_evidence(
 
     section_typed: dict[str, dict[str, list[float]]] = {}
     section_owner: dict[str, str] = {}
+    section_span: dict[str, tuple[str, str, int, int]] = {}
     all_sections_by_ticker: dict[str, dict[str, list[float]]] = {}
     known_tickers: set[str] = set()
 
@@ -1305,15 +1308,22 @@ def verify_numeric_claims_against_evidence(
         if isinstance(sec, Mapping):
             blob = f"{sec.get('heading', '')} {sec.get('content', '')}"
             owner = str(sec.get("ticker") or sec.get("project_id") or "*").strip().upper() or "*"
+            doc_id = str(sec.get("doc_id") or sec.get("document_version_id") or "").strip()
+            p_from = int(sec.get("page_from") or sec.get("page") or 0)
+            p_to = int(sec.get("page_to") or p_from or 0)
         else:
             blob = f"{getattr(sec, 'heading', '')} {getattr(sec, 'content', '')}"
             owner = (
                 str(getattr(sec, "ticker", None) or getattr(sec, "project_id", None) or "*").strip().upper()
                 or "*"
             )
+            doc_id = str(getattr(sec, "doc_id", None) or getattr(sec, "document_version_id", None) or "").strip()
+            p_from = int(getattr(sec, "page_from", None) or getattr(sec, "page", None) or 0)
+            p_to = int(getattr(sec, "page_to", None) or p_from or 0)
         typed_nums = _extract_typed_numbers_from_text(blob)
         section_typed[str(cid)] = typed_nums
         section_owner[str(cid)] = owner
+        section_span[str(cid)] = (owner, doc_id, p_from, p_to)
         if owner != "*":
             known_tickers.add(owner)
         _merge_typed_pools(all_sections_by_ticker.setdefault(owner, _new_typed_pool()), typed_nums)
@@ -1360,12 +1370,29 @@ def verify_numeric_claims_against_evidence(
         out: list[float] = []
 
         if cited_cids:
+            expanded_cids: list[str] = []
             for cid in cited_cids:
                 c_owner = section_owner.get(cid, "*")
                 if single_tk and c_owner != "*" and c_owner != single_tk:
                     continue
-                if cid in section_typed:
-                    out.extend(_extract_bucket_values(section_typed[cid], unit_class))
+                if cid not in section_typed:
+                    continue
+                if cid not in expanded_cids:
+                    expanded_cids.append(cid)
+                # Include stitched ±1-page continuation chunks of the EXACT same (owner, doc_id)
+                _, c_doc, c_pf, c_pt = section_span.get(cid, ("*", "", 0, 0))
+                if c_doc and c_pf > 0:
+                    for sib_id, (s_owner, s_doc, s_pf, s_pt) in section_span.items():
+                        if (
+                            sib_id not in expanded_cids
+                            and s_owner == c_owner
+                            and s_doc == c_doc
+                            and s_pf > 0
+                            and (abs(s_pf - c_pt) <= 1 or abs(c_pf - s_pt) <= 1)
+                        ):
+                            expanded_cids.append(sib_id)
+            for cid in expanded_cids:
+                out.extend(_extract_bucket_values(section_typed[cid], unit_class))
         else:
             for tk, b in all_sections_by_ticker.items():
                 if single_tk and tk != "*" and tk != single_tk:

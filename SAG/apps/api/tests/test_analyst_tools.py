@@ -214,7 +214,7 @@ async def test_l2_stage7_accepts_tool_kpi_and_rejects_altered_number(sample, fs)
 async def test_l2_cash_flow_kpi_is_evaluated_on_audited_fy(sample) -> None:
     tctx, _evidence, _ = _make(sample)
     res = await get_sector_kpis_tool.execute({"tickers": ["PNJ"], "kpi_ids": ["cfo_to_npat"]}, tctx)
-    assert "evaluated on FY2025" in res.content
+    assert "đánh giá trên báo cáo năm FY2025" in res.content
 
 
 async def test_l2_fact_sheet_values_equal_fact_layer_and_cache_avoids_refetch(sample, fs) -> None:

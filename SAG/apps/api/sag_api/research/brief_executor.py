@@ -30,7 +30,10 @@ from sag_api.research.analytics import (
     PeriodRef,
     PlanTarget,
     compute_kpi,
+    compute_multi_quarter_trajectory,
     earnings_quality,
+    extract_balance_sheet_note_breakdowns,
+    extract_segment_drivers,
     latest_analysis_period,
     peer_compare,
     plan_vs_actual,
@@ -83,17 +86,21 @@ _POSITIVE_PREMISE_RE = re.compile(
 )
 
 MINI_READER_STATIC_SYSTEM_PROMPT = (
-    "Bạn là Chuyên viên Đọc Kiểm Toán BCTC & Thuyết Minh (Forensic Disclosure Mini-Reader) của AIInvest.\n"
-    "Nhiệm vụ: chỉ dựa trên các đoạn tài liệu `[C#]` được cung cấp, trích xuất dữ kiện chính xác để trả lời "
-    "ĐÚNG MỘT Ý nhỏ (`claim`) và xuất ra ĐÚNG MỘT JSON (không viết văn bản ngoài JSON, không tự cộng trừ nhẩm).\n\n"
+    "Bạn là Chuyên viên Đọc Kiểm Toán BCTC, BCTN & ĐHĐCĐ (Forensic Disclosure Mini-Reader) của AIInvest.\n"
+    "Nhiệm vụ: dựa trên các đoạn tài liệu `[C#]` được cung cấp, trích xuất ĐẦY ĐỦ các dữ kiện giàu giá trị phân tích "
+    "nhất cho ý (`claim`) và xuất ra ĐÚNG MỘT JSON (không viết văn bản ngoài JSON, không tự cộng trừ nhẩm).\n\n"
     "QUY TẮC BẮT BUỘC:\n"
-    "1. Mọi con số hoặc sự kiện trích ra trong `findings` PHẢI có sẵn nguyên bản trong đoạn `[C#]` và gắn ngay "
-    "mã `[C#]` tương ứng ở cuối câu (ví dụ: `\"Vay ngắn hạn ngân hàng chịu lãi suất 5,5% - 7,2%/năm [C2].\"`).\n"
-    "2. TUYỆT ĐỐI KHÔNG tự cộng các khoản mục con trong thuyết minh vào số tổng trên Bảng cân đối kế toán "
+    "1. Ưu tiên bóc tách tối đa các chi tiết kinh doanh & kế toán đắt giá có trong `[C#]` (tối đa 7 dòng `findings`): "
+    "doanh thu/lợi nhuận/tỷ trọng từng khối hoặc mảng sản phẩm (ví dụ Chuyển đổi số, CNTT nước ngoài, bán lẻ, dự án), "
+    "thị trường trọng điểm (Nhật Bản, Mỹ, EU, nội địa), hợp đồng ký mới/backlog, nhà máy/công nghệ chiến lược, "
+    "ý kiến trả lời của Ban lãnh đạo tại ĐHĐCĐ, và bản chất thay đổi phương pháp hợp nhất/cơ sở tương đương.\n"
+    "2. Mọi con số hoặc sự kiện trong `findings` PHẢI có sẵn nguyên bản trong đoạn `[C#]` và gắn mã `[C#]` ở cuối câu "
+    "(ví dụ: `\"Doanh thu Chuyển đổi số đạt 16.751 tỷ đồng (+16,8%), chiếm 47,3% CNTT nước ngoài [C2].\"`).\n"
+    "3. TUYỆT ĐỐI KHÔNG tự cộng các khoản mục con trong thuyết minh vào số tổng trên Bảng cân đối kế toán "
     "(tránh lỗi cộng trùng nợ dài hạn đến hạn trả vào tổng vay ngắn hạn).\n"
-    "3. Nếu các đoạn `[C#]` không chứa thông tin trả lời cho ý này, đặt `\"status\": \"NO_DATA\"` và ghi rõ "
+    "4. Nếu các đoạn `[C#]` không chứa thông tin trả lời cho ý này, đặt `\"status\": \"NO_DATA\"` và ghi rõ "
     "khoảng trống, KHÔNG suy đoán.\n"
-    "4. Chỉ điền `anomaly_followup_query` (chuỗi từ khóa VAS ngắn < 10 từ) KHI VÀ CHỈ KHI đoạn `[C#]` nhắc tới "
+    "5. Chỉ điền `anomaly_followup_query` (chuỗi từ khóa VAS ngắn < 10 từ) KHI VÀ CHỈ KHI đoạn `[C#]` nhắc tới "
     "một mã thuyết minh khác đang mâu thuẫn trực tiếp với số liệu và chưa có trong đoạn hiện tại; "
     "còn lại để `null`.\n\n"
     "CẤU TRÚC JSON ĐẦU RA:\n"
@@ -198,7 +205,7 @@ class ClaimVerdictCard:
         head = f"### [{self.claim_id}] {role_lbl}{p_lbl} — Trạng thái: {self.status}{esc_lbl}\nĐề bài: {self.statement}"
         body = "\n".join(f"- {ln}" for ln in self.summary_lines) if self.summary_lines else "- Không có dữ liệu PIT."
         if self.verbatim_quotes:
-            q_block = "\n".join(f"  > {q}" for q in self.verbatim_quotes[:2])
+            q_block = "\n".join(f"  > {q}" for q in self.verbatim_quotes[:4])
             return f"{head}\n{body}\n- Trích nguyên văn báo cáo gốc:\n{q_block}"
         return f"{head}\n{body}"
 
@@ -638,15 +645,24 @@ async def locate_candidates(
         tk = r["ticker"]
         m_vals = r["metrics"]
         m_units = r["units"]
+        c_inputs: dict[str, dict[str, Any]] = {
+            k: {"value": v, "unit": m_units.get(k) or "NUMBER"}
+            for k, v in m_vals.items()
+            if v is not None
+        }
+        c_inputs["evaluated_universe_count"] = {"value": float(len(batch_tickers)), "unit": "NUMBER"}
+        c_inputs["strict_matched_count"] = {"value": float(len(strict_matches)), "unit": "NUMBER"}
+        for cr in cand_spec.criteria:
+            if cr.ref == "literal" and cr.value is not None:
+                c_inputs[f"target_{cr.metric}"] = {
+                    "value": float(cr.value),
+                    "unit": m_units.get(cr.metric) or "NUMBER",
+                }
         saved_c = await ctx.evidence.register_calculator_trace(
             {
                 "formula": "candidate_locator_metrics",
                 "description": f"Chỉ tiêu định vị ứng viên {tk} (PIT {ctx.as_of_date.isoformat()})",
-                "inputs": {
-                    k: {"value": v, "unit": m_units.get(k) or "NUMBER"}
-                    for k, v in m_vals.items()
-                    if v is not None
-                },
+                "inputs": c_inputs,
                 "result": m_vals.get(sort_key),
                 "formatted": fmt_value(m_vals.get(sort_key), m_units.get(sort_key, "")),
                 "ticker": tk,
@@ -900,12 +916,14 @@ async def _run_quant_specs_for_claim(
                         ta_val = ta_r.fact.value
                         cs_parts: list[str] = []
                         for bs_item in (
+                            "cash_and_equivalents",
+                            "st_investments",
                             "st_receivables",
                             "lt_receivables",
                             "inventory",
-                            "cash_and_equivalents",
                             "st_borrowings",
                             "lt_borrowings",
+                            "equity",
                         ):
                             if bs_item not in fact_items or bs_item not in applicable:
                                 continue
@@ -1397,9 +1415,25 @@ async def _run_quant_specs_for_claim(
                 tid = tbl.get("table_id")
                 if tid:
                     badges.append(f"[TBL:{tid}]")
+                    row_previews: list[str] = []
+                    for rw in (tbl.get("rows") or ())[:5]:
+                        if isinstance(rw, Mapping) and rw.get("label"):
+                            vals_s = ", ".join(str(v) for v in (rw.get("values") or ())[:3] if v is not None)
+                            if vals_s:
+                                row_previews.append(f"{rw['label']}: {vals_s}")
+                        elif isinstance(rw, list) and len(rw) >= 2:
+                            r_lbl = str(rw[0].get("raw_text") if isinstance(rw[0], Mapping) else rw[0] or "").strip()
+                            r_vals = [
+                                str(c.get("raw_text") if isinstance(c, Mapping) else c or "").strip()
+                                for c in rw[1:4]
+                            ]
+                            r_vals = [v for v in r_vals if v and v != "-"]
+                            if r_lbl and r_vals:
+                                row_previews.append(f"{r_lbl}: {', '.join(r_vals)}")
+                    preview_tail = f" -> {' | '.join(row_previews)}" if row_previews else ""
                     lines.append(
                         f"[TBL:{tid}] Bảng 2D {tbl.get('project_id')}: {tbl.get('title')} "
-                        f"({tbl.get('verification_status')})"
+                        f"({tbl.get('verification_status')}){preview_tail}"
                     )
             if on_tool_result is not None:
                 await on_tool_result(
@@ -1656,7 +1690,9 @@ def _evaluate_premise_direction(
 
 def _parse_doc_spec(doc_ev: str, default_period: str | None) -> tuple[list[str], list[int], list[int], str]:
     rest = doc_ev.split(":", 1)[1] if ":" in doc_ev else doc_ev
-    slot_part, query_part = rest.split("|", 1) if "|" in rest else ("QUARTER_NOTES,BCTC_AUDITED", rest)
+    slot_part, query_part = (
+        rest.split("|", 1) if "|" in rest else ("QUARTER_NOTES,BCTC_AUDITED,BCTN_CORE,AGM_TARGETS", rest)
+    )
     slots = normalize_disclosure_slots([s.strip() for s in slot_part.split(",") if s.strip()])
     years: list[int] = []
     quarters: list[int] = []
@@ -1735,7 +1771,7 @@ async def _run_doc_mini_reader(
             years_filter=years,
             quarters_filter=quarters,
             include_cross_ref=enable_xref,
-            top_k=5,
+            top_k=7,
         )
         tool_calls += 1
         widened = False
@@ -1752,7 +1788,7 @@ async def _run_doc_mini_reader(
                 years_filter=[],
                 quarters_filter=[],
                 include_cross_ref=enable_xref,
-                top_k=5,
+                top_k=7,
             )
             tool_calls += 1
 
@@ -1805,9 +1841,26 @@ async def _run_doc_mini_reader(
     def _collect_verbatim_excerpts(prefer_text: str) -> list[str]:
         cited_nums = [int(m.group(1)) for m in re.finditer(r"\[C(\d+)\]", prefer_text)]
         fallback_nums = [int(b.strip("[]C")) for b in gathered_cids if b.startswith("[C") and b.strip("[]C").isdigit()]
-        ordered_nums = list(dict.fromkeys([*cited_nums, *fallback_nums]))[:2]
+        # Preserve citation priority while maximizing slot diversity (QUARTER_NOTES + BCTN_CORE + AGM_TARGETS)
+        all_nums = list(dict.fromkeys([*cited_nums, *fallback_nums]))
+        selected_nums: list[int] = []
+        seen_slots: set[str] = set()
+        for c_num in all_nums:
+            if 1 <= c_num <= len(ctx.evidence.sections):
+                sl = str(getattr(ctx.evidence.sections[c_num - 1], "sub_doc_slot", "") or "")
+                if sl and sl not in seen_slots:
+                    seen_slots.add(sl)
+                    selected_nums.append(c_num)
+                if len(selected_nums) >= 4:
+                    break
+        for c_num in all_nums:
+            if len(selected_nums) >= 4:
+                break
+            if c_num not in selected_nums:
+                selected_nums.append(c_num)
+
         excerpts: list[str] = []
-        for c_num in ordered_nums:
+        for c_num in selected_nums:
             if 1 <= c_num <= len(ctx.evidence.sections):
                 sec = ctx.evidence.sections[c_num - 1]
                 tk_s = getattr(sec, "ticker", "") or ""
@@ -1815,7 +1868,7 @@ async def _run_doc_mini_reader(
                 pg_s = getattr(sec, "page_from", 1) or 1
                 raw_body = re.sub(r"\s+", " ", str(getattr(sec, "content", "") or "")).strip()
                 if raw_body:
-                    excerpts.append(f"[C{c_num}] ({tk_s} {slot_s} tr.{pg_s}): {raw_body[:700]}")
+                    excerpts.append(f"[C{c_num}] ({tk_s} {slot_s} tr.{pg_s}): {raw_body[:750]}")
         return excerpts
 
     quant_hint = "\n".join(quant_context_lines[:3]) if quant_context_lines else "Không có số định lượng đi kèm."
@@ -1879,11 +1932,11 @@ async def _run_doc_mini_reader(
         usage=usage_to_dict(usage),
         model_status=raw_status,
         status=status,
-        findings=findings[:5],
+        findings=findings[:7],
         anomaly_followup_query=followup,
         gathered_citations=gathered_cids,
     )
-    return status, findings[:5], gathered_cids, verbatim_quotes, followup, usage, tool_calls
+    return status, findings[:7], gathered_cids, verbatim_quotes, followup, usage, tool_calls
 
 
 async def execute_brief_claims(
@@ -1908,6 +1961,143 @@ async def execute_brief_claims(
             fs = await _fact_set(ctx, tickers)
         except Exception:  # noqa: BLE001
             fs = None
+
+    # Deterministic 0-Token Business-Driver, Segment-Margin, Note-Anatomy & Multi-Slot Strategic Sweep:
+    # Unlocks `sag_extracted_tables` (`4. Báo cáo bộ phận`, `6. Đầu tư tài chính / Liên kết`) + 4Q trajectory
+    # + `BCTN_CORE` / `AGM_TARGETS` strategic drivers automatically on company analysis turns!
+    driver_lines_by_claim: dict[str, list[str]] = {}
+    driver_badges_by_claim: dict[str, list[str]] = {}
+    auto_strategic_doc_claim_id: str | None = None
+    is_broad_company_analysis = (
+        bool(brief.claims)
+        and len(tickers) <= 3
+        and brief.entities.candidate_search is None
+        and brief.answer_shape in {
+            "health_check",
+            "verdict_with_reasons",
+            "premise_audit_and_explanation",
+            "peer_head_to_head",
+        }
+    )
+    if is_broad_company_analysis:
+        from sag_api.research.chat_orchestrator import SQLAlchemyTableStore
+
+        primary_driver_claim = next(
+            (
+                cl
+                for cl in brief.claims
+                if any(
+                    k in ev
+                    for ev in cl.evidence
+                    for k in ("revenue", "top_line", "npat", "roe", "gross_margin", "doc:")
+                )
+            ),
+            brief.claims[0],
+        )
+        bs_driver_claim = next(
+            (
+                cl
+                for cl in brief.claims
+                if any(
+                    k in ev
+                    for ev in cl.evidence
+                    for k in (
+                        "st_investments",
+                        "cash",
+                        "borrowings",
+                        "debt",
+                        "total_assets",
+                        "current_ratio",
+                        "equity",
+                    )
+                )
+            ),
+            primary_driver_claim,
+        )
+
+        # Check if any doc-bearing claim already searches BCTN_CORE or AGM_TARGETS; if not, complement that doc claim!
+        doc_bearing_claims = [cl for cl in brief.claims if any(ev.startswith("doc:") for ev in cl.evidence)]
+        has_bctn_or_agm_doc = any(
+            ev.startswith("doc:") and ("BCTN_CORE" in ev or "AGM_TARGETS" in ev)
+            for cl in doc_bearing_claims
+            for ev in cl.evidence
+        )
+        if (
+            doc_bearing_claims
+            and not has_bctn_or_agm_doc
+            and any(not ctx.available_tickers or t in ctx.available_tickers for t in tickers[:2])
+        ):
+            auto_strategic_doc_claim_id = doc_bearing_claims[0].id
+
+        for tk_drv in tickers[:2]:
+            # 1) Multi-quarter trajectory from FactSet (0 SQL, 0 LLM)
+            if fs is not None and tk_drv in fs.templates:
+                traj = compute_multi_quarter_trajectory(fs, tk_drv)
+                if traj is not None:
+                    saved_tr = await ctx.evidence.register_calculator_trace(traj["calc_trace"])
+                    tr_cid = str(saved_tr["calc_id"])
+                    driver_lines_by_claim.setdefault(primary_driver_claim.id, []).append(
+                        f"[{tr_cid}] {traj['summary_line']}"
+                    )
+                    driver_badges_by_claim.setdefault(primary_driver_claim.id, []).append(f"[{tr_cid}]")
+
+            # 2) Segment & Balance-Sheet Note Breakdowns from `sag_extracted_tables` (1 PIT SQL query, 0 LLM)
+            if ctx.available_tickers and tk_drv not in ctx.available_tickers and ctx.table_store_override is None:
+                continue
+            tk_tables: list[dict[str, Any]] = []
+            try:
+                if ctx.table_store_override is not None:
+                    tk_tables = await ctx.table_store_override.get_tables(
+                        table_ids=[],
+                        tickers=[tk_drv],
+                        as_of_date=ctx.as_of_date,
+                        tenant_id=ctx.tenant_id,
+                        limit=60,
+                    )
+                else:
+                    async with ctx.session_factory() as tbl_sess:
+                        if tbl_sess is not None:
+                            t_store = SQLAlchemyTableStore(tbl_sess)
+                            tk_tables = await t_store.get_tables(
+                                table_ids=[],
+                                tickers=[tk_drv],
+                                as_of_date=ctx.as_of_date,
+                                tenant_id=ctx.tenant_id,
+                                limit=60,
+                            )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("BusinessDriverEngine table load skipped for %s: %s", tk_drv, exc)
+                tk_tables = []
+
+            if tk_tables:
+                seg_drivers = extract_segment_drivers(tk_tables, tk_drv, fs=fs)
+                note_drivers = extract_balance_sheet_note_breakdowns(fs, tk_tables, tk_drv)
+                used_tids = {
+                    d["table_id"] for d in [*seg_drivers, *note_drivers] if d.get("table_id")
+                }
+                if used_tids:
+                    await ctx.evidence.register_tables(
+                        [t for t in tk_tables if str(t.get("table_id") or "") in used_tids][:6]
+                    )
+                for sd in seg_drivers[:5]:
+                    saved_sd = await ctx.evidence.register_calculator_trace(sd["calc_trace"])
+                    sd_cid = str(saved_sd["calc_id"])
+                    driver_lines_by_claim.setdefault(primary_driver_claim.id, []).append(
+                        f"[{sd_cid}] {tk_drv} · {sd['summary_line']}"
+                    )
+                    driver_badges_by_claim.setdefault(primary_driver_claim.id, []).append(f"[{sd_cid}]")
+                for nd in note_drivers[:4]:
+                    saved_nd = await ctx.evidence.register_calculator_trace(nd["calc_trace"])
+                    nd_cid = str(saved_nd["calc_id"])
+                    target_cid = (
+                        primary_driver_claim.id
+                        if nd.get("kind") == "associates_rollforward"
+                        else bs_driver_claim.id
+                    )
+                    driver_lines_by_claim.setdefault(target_cid, []).append(
+                        f"[{nd_cid}] {tk_drv} · {nd['summary_line']}"
+                    )
+                    driver_badges_by_claim.setdefault(target_cid, []).append(f"[{nd_cid}]")
 
     # Deterministic 0-Token Accounting / Growth Divergence Auto-Probe:
     # When an indexed ticker exhibits |rev_yoy| >= 15%, |npat_yoy| >= 15%, or opposite-sign revenue vs NPAT YoY
@@ -1992,6 +2182,11 @@ async def execute_brief_claims(
             on_stage=on_stage,
         )
         summary_lines = list(quant_lines)
+        if claim.id in driver_lines_by_claim:
+            summary_lines.extend(driver_lines_by_claim[claim.id])
+            for db_tag in driver_badges_by_claim.get(claim.id, ()):
+                if db_tag not in badges:
+                    badges.append(db_tag)
         c_usage = Usage()
         c_tools = 0
         doc_followup: str | None = None
@@ -2022,6 +2217,17 @@ async def execute_brief_claims(
             doc_specs = [
                 "doc:QUARTER_NOTES,BCTC_AUDITED|"
                 "giải trình biến động doanh thu lợi nhuận cơ cấu hợp nhất công ty con liên kết bộ phận"
+            ]
+        if (
+            not is_premise
+            and doc_specs
+            and claim.id == auto_strategic_doc_claim_id
+            and len(doc_specs) < MAX_DOC_SPECS_PER_CLAIM
+        ):
+            doc_specs = [
+                *doc_specs,
+                "doc:BCTN_CORE,AGM_TARGETS|"
+                "phân tích kết quả theo khối chuyển đổi số thị trường trọng điểm chiến lược nhà máy AI thảo luận ĐHĐCĐ",
             ]
         doc_status: VerdictStatus | None = None
         verbatim_quotes: list[str] = []

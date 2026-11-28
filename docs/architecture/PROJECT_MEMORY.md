@@ -756,6 +756,15 @@ AIInvest is an autonomous quantitative investment and stock-research organizatio
   - Upgraded `SAGRetrieverAdapter.retrieve_disclosures()` with `0`-LLM Section-Sibling Stitching (`<= 2,500` chars across adjacent `CanonicalBlock`s sharing `section_path`) and 1-Hop `KnowledgeUnitEdge`/entity bridging (`hipporag_hops=1`, `100%` Stage 7 `quote_hash` verified).
   - Attached verbatim `[C#]` quotes onto `ClaimVerdictCard.render_for_synthesis()`, added deterministic `0`-token `QUARTER_NOTES` variance auto-probe when `|rev_yoy| >= 15%` or `|npat_yoy| >= 15%`, enabled single-ticker auto-peer resolution (`peer_compare(..., period=...)`), enforced honest `PARTIAL`/`NO_DATA` card status on dropped specs (`dropped_by_claim_id`), scoped `locate_candidates` `qualitative_query` to quantitative winners, added protocol-level JSON cutoff + Unicode word-boundary scrubbing in `_ReasoningWordStreamBuffer`, and localized `compute_kpi` detail strings to Vietnamese.
 
+## 2026-11-28 — Deterministic `BusinessDriverEngine`, Multi-Slot Strategic Sweep & Badge-Safe Multi-Turn Synthesis
+
+- **Deterministic Business-Driver, Segment-Margin & Note-Anatomy Engine (`sag_api/research/analytics/business_drivers.py`, wired into `brief_executor.py`)**:
+  - Unlocked the 4,000+ extracted 2D note tables in `sag_extracted_tables` with `0` LLM tokens and strict `<= 0.5%` horizontal row conservation (`extract_segment_drivers`), comparative prior-period segment pairing (segment revenue share, operating margin `%` & `bps` expansion, YoY growth, and deconsolidated segment -> Associate Profit scope-shift bridge), `extract_balance_sheet_note_breakdowns` (ST financial investments term-deposit `%`, FX deposit currency mix, and Associate/JV roll-forward), and `compute_multi_quarter_trajectory` (4Q margin & CIR trajectory).
+- **Multi-Slot Qualitative Sweep & Wider Mini-Reader Funnel (`brief.py`, `brief_executor.py`, `chat_orchestrator.py`)**:
+  - Added chronological `limit` support to `SQLAlchemyTableStore.get_tables`, expanded default/wildcard `doc:*` slot coverage across `QUARTER_NOTES,BCTC_AUDITED,BCTN_CORE,AGM_TARGETS`, auto-attached complementary `BCTN_CORE,AGM_TARGETS` strategic driver sweeps on broad company analyses, and widened Mini-Reader slot-balanced verbatim excerpts (`<= 4`).
+- **Badge-Safe Multi-Turn Stage 6 History (`session_memory.py`, `brief_synthesizer.py`)**:
+  - Added `build_synthesis_history_messages()` so Stage 1 (`create_research_brief`) retains full verbatim conversation prefixes while Stage 6 (`synthesize_from_verdict_cards`) receives badge-scrubbed, table-free executive turn summaries — eliminating Turn-2 layout echoing and cross-turn `[C#]`/`[CALC-*]` ID contamination, and calibrating objective company analysis vs. personal `[MEM:M#]` suitability framing.
+
 
 
 

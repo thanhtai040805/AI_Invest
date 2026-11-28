@@ -4,6 +4,11 @@
 - `engines`: earnings quality, red-flag scan, peer comparison, plan-vs-actual.
 """
 
+from sag_api.research.analytics.business_drivers import (
+    compute_multi_quarter_trajectory,
+    extract_balance_sheet_note_breakdowns,
+    extract_segment_drivers,
+)
 from sag_api.research.analytics.engines import (
     PlanTarget,
     RedFlag,
@@ -32,7 +37,10 @@ __all__ = [
     "RedFlag",
     "compute_kpi",
     "compute_kpi_pack",
+    "compute_multi_quarter_trajectory",
     "earnings_quality",
+    "extract_balance_sheet_note_breakdowns",
+    "extract_segment_drivers",
     "latest_analysis_period",
     "peer_compare",
     "plan_vs_actual",

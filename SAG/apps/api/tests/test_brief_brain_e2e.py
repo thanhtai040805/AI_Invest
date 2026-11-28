@@ -1046,24 +1046,25 @@ async def test_antigravity_multiturn_prefix_reversal_and_always_on_user_memory_h
 
     monkeypatch.setattr("sag_api.services.decision_router.aroute_research_query", _low_conf_none_mem)
 
+    today_iso = date.today().isoformat()
     prior_history = [
         {
             "role": "user",
             "content": "Phân tích chi tiết mã VHM",
-            "turn_as_of_date": "2026-11-26",
+            "turn_as_of_date": today_iso,
             "primary_ticker": "VHM",
         },
         {
             "role": "assistant",
             "content": "VHM Q3/2026 có LNST đạt 8.980 tỷ đồng.",
-            "turn_as_of_date": "2026-11-26",
+            "turn_as_of_date": today_iso,
             "primary_ticker": "VHM",
         },
-        {"role": "user", "content": "Có nên đầu tư dài hạn không?", "turn_as_of_date": "2026-11-26"},
+        {"role": "user", "content": "Có nên đầu tư dài hạn không?", "turn_as_of_date": today_iso},
         {
             "role": "assistant",
             "content": "Bạn cho mình biết khẩu vị rủi ro và thời gian nắm giữ nhé?",
-            "turn_as_of_date": "2026-11-26",
+            "turn_as_of_date": today_iso,
             "primary_ticker": "VHM",
         },
     ]
@@ -1076,7 +1077,7 @@ async def test_antigravity_multiturn_prefix_reversal_and_always_on_user_memory_h
             json={
                 "query": "Mình thích ổn định thôi",
                 "mode": "GENERAL",
-                "as_of_date": "2026-11-26",
+                "as_of_date": today_iso,
                 "history": prior_history,
             },
         )
@@ -1094,7 +1095,7 @@ async def test_antigravity_multiturn_prefix_reversal_and_always_on_user_memory_h
             json={
                 "query": "Thôi bỏ VHM đi, lọc giúp mình doanh nghiệp khác ROE tốt",
                 "mode": "GENERAL",
-                "as_of_date": "2026-11-26",
+                "as_of_date": today_iso,
                 "history": prior_history,
             },
         )
