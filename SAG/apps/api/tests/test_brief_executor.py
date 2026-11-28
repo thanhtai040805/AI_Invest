@@ -75,6 +75,10 @@ class _BankAndCorpCoreReader:
         del as_of_date, tickers
         return {"ACB": 115_000e9, "MBB": 135_000e9, "WEAKB": 30_000e9, "CASHCO": 10_000e9}
 
+    async def fetch_pit_market_and_macro_tape(self, as_of_date, *, tickers=None):
+        del as_of_date, tickers
+        return {}
+
     async def fetch_pit_financial_statements(
         self,
         as_of_date,

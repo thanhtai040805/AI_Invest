@@ -1435,6 +1435,67 @@ async def _load_document_pages_for_kg(
     ]
 
 
+async def _load_extracted_tables_for_kg(
+    session: AsyncSession,
+    *,
+    tickers: Sequence[str],
+    as_of_date: date,
+    tenant_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Load PIT-valid `SagExtractedTable` rows for subsidiary/associate ownership extraction."""
+    from datetime import UTC, datetime
+
+    from sag_api.db.models import Document, DocumentVersion
+    from sag_api.db.models.stock_research import SagExtractedTable
+
+    norm_tks = [t.strip().upper() for t in tickers if t and t.strip()]
+    if not norm_tks:
+        return []
+    cutoff_dt = datetime(as_of_date.year, as_of_date.month, as_of_date.day, 23, 59, 59, tzinfo=UTC)
+    stmt = (
+        select(
+            SagExtractedTable.table_id,
+            SagExtractedTable.project_id,
+            SagExtractedTable.document_version_id,
+            SagExtractedTable.sub_doc_slot,
+            SagExtractedTable.table_title,
+            SagExtractedTable.section_path,
+            SagExtractedTable.page_from,
+            SagExtractedTable.headers_json,
+            SagExtractedTable.rows_json,
+            SagExtractedTable.valid_from,
+        )
+        .join(DocumentVersion, DocumentVersion.id == SagExtractedTable.document_version_id)
+        .join(Document, Document.id == DocumentVersion.document_id)
+        .where(
+            SagExtractedTable.project_id.in_(norm_tks),
+            SagExtractedTable.valid_from <= cutoff_dt,
+            Document.is_active.is_(True),
+            DocumentVersion.status != "REVOKED",
+            DocumentVersion.valid_from <= cutoff_dt,
+            DocumentVersion.valid_to > cutoff_dt,
+        )
+    )
+    if tenant_id:
+        stmt = stmt.where(Document.tenant_id == tenant_id)
+    rows = (await session.execute(stmt)).all()
+    return [
+        {
+            "table_id": r[0],
+            "project_id": r[1],
+            "document_version_id": r[2],
+            "sub_doc_slot": r[3],
+            "table_title": r[4],
+            "section_path": r[5],
+            "page_from": r[6],
+            "headers_json": r[7],
+            "rows_json": r[8],
+            "valid_from": r[9],
+        }
+        for r in rows
+    ]
+
+
 async def refresh_research_knowledge_graph(
     session: AsyncSession,
     *,
@@ -1447,7 +1508,10 @@ async def refresh_research_knowledge_graph(
     """Production 3-Layer KG refresher wiring Entity Linker, Macro HAC/FDR, and True-Peer into `SQLAlchemyKGStore`."""
     import asyncio
 
-    from sag_api.research.kg_entity_linker import extract_document_micro_edges_from_pages
+    from sag_api.research.kg_entity_linker import (
+        extract_corporate_structure_from_tables,
+        extract_document_micro_edges_from_pages,
+    )
     from sag_api.research.kg_macro_coupling import (
         reconcile_macro_with_audited_docs,
         run_cross_sector_coupling,
@@ -1518,12 +1582,26 @@ async def refresh_research_knowledge_graph(
         as_of_date=as_of_date,
         tenant_id=tenant_id,
     )
+    struct_tables = await _load_extracted_tables_for_kg(
+        session,
+        tickers=norm_tickers,
+        as_of_date=as_of_date,
+        tenant_id=tenant_id,
+    )
 
     def _compute_all_layers() -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], int]:
         nodes = build_kg_nodes_from_universe(stocks_df, macro_indicators, as_of_date)
         edges: list[dict[str, Any]] = []
         macro_snaps: list[dict[str, Any]] = []
         peer_clusters = 0
+
+        corp_nodes, corp_edges = extract_corporate_structure_from_tables(
+            struct_tables,
+            stocks_df=stocks_df,
+            as_of_date=as_of_date,
+        )
+        nodes.extend(corp_nodes)
+        edges.extend(corp_edges)
 
         micro_edges, sector_edges, doc_disclosures = extract_document_micro_edges_from_pages(
             stocks_df,

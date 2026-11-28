@@ -922,3 +922,295 @@ def extract_document_micro_edges_from_pdfs(
             doc.close()
 
     return extract_document_micro_edges_from_pages(stocks_df, pages, as_of_date)
+
+
+_CORP_TABLE_SIGNAL_RE = re.compile(
+    r"(?:công\s+ty\s+con|công\s+ty\s+liên\s+kết|liên\s+doanh|cấu\s+trúc\s+tập\s+đoàn|"
+    r"tỷ\s+lệ\s+(?:phần\s+)?sở\s+hữu|%\s*sở\s+hữu|tỷ\s+lệ\s+lợi\s+ích|tỷ\s+lệ\s+(?:phần\s+|quyền\s+)?biểu\s+quyết)",
+    re.IGNORECASE | re.UNICODE,
+)
+_CORP_TABLE_EXCLUDE_RE = re.compile(
+    r"(?:xây\s+dựng\s+cơ\s+bản|tài\s+sản\s+cố\s+định|hàng\s+tồn\s+kho|chi\s+phí\s+trả\s+trước|"
+    r"vay\s+và\s+nợ|phải\s+trả\s+người\s+bán|doanh\s+thu\s+chưa\s+thực\s+hiện)",
+    re.IGNORECASE | re.UNICODE,
+)
+_PCT_NUM_RE = re.compile(r"(\d{1,3}(?:[.,]\d{1,4})?)\s*%?")
+_PAREN_ACRONYM_RE = re.compile(r"\(\s*([A-Z][A-Za-z0-9&\-\s]{1,24})\s*\)")
+
+
+def _cell_text(raw_cell: Any) -> str:
+    if isinstance(raw_cell, Mapping):
+        for k in ("raw_text", "label", "text", "value"):
+            v = raw_cell.get(k)
+            if v is not None and str(v).strip():
+                return str(v).strip()
+        num = raw_cell.get("numeric_value")
+        return str(num) if num is not None else ""
+    return str(raw_cell or "").strip()
+
+
+def _normalize_table_row_cells(raw_row: Any) -> list[str]:
+    if isinstance(raw_row, Mapping):
+        lbl = _cell_text(raw_row.get("label"))
+        vals = [_cell_text(c) for c in (raw_row.get("values") or ())]
+        return [lbl, *vals]
+    if isinstance(raw_row, (list, tuple)):
+        return [_cell_text(c) for c in raw_row]
+    return []
+
+
+def _parse_ownership_pct(raw_cell: Any) -> float | None:
+    if isinstance(raw_cell, Mapping):
+        nv = raw_cell.get("numeric_value")
+        rt = str(raw_cell.get("raw_text") or "")
+        if isinstance(nv, (int, float)) and not isinstance(nv, bool):
+            fv = float(nv)
+            if "%" in rt and 0.0 < fv <= 1.0:
+                return round(fv * 100.0, 4)
+            if 0.0 < fv <= 100.0:
+                return round(fv, 4)
+    txt = _cell_text(raw_cell)
+    if not txt or txt in {"-", "—", "–", "N/A"}:
+        return None
+    has_pct = "%" in txt
+    cleaned = txt.replace("%", "").strip()
+    # Skip large monetary amounts masquerading as percentages
+    if not has_pct and re.search(r"\d{1,3}(?:[.,]\d{3}){2,}", cleaned):
+        return None
+    m = _PCT_NUM_RE.fullmatch(cleaned) or (_PCT_NUM_RE.search(cleaned) if has_pct else None)
+    if not m:
+        return None
+    num_str = m.group(1)
+    if "," in num_str and "." in num_str:
+        num_str = num_str.replace(".", "").replace(",", ".")
+    elif "," in num_str:
+        num_str = num_str.replace(",", ".")
+    try:
+        val = float(num_str)
+    except ValueError:
+        return None
+    if 0.0 < val <= 100.0:
+        return round(val, 4)
+    return None
+
+
+def extract_corporate_structure_from_tables(
+    tables: Iterable[Mapping[str, Any]],
+    *,
+    stocks_df: pd.DataFrame,
+    as_of_date: date,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Deterministically extract subsidiary & associate `kg_nodes` + `kg_edges` from Note 1 ownership tables.
+
+    - `0` LLM tokens; `100%` Point-in-Time safe (`table.valid_from.date() <= as_of_date`).
+    - Links listed subsidiaries/associates directly to `TICKER:<SYM>` and creates `CORP_ENTITY:<HASH>`
+      nodes (`SUBSIDIARY` / `ASSOCIATE`) for crown-jewel unlisted subsidiaries (e.g. `FTEL`, `FPT Software`,
+      `Long Châu`, `Bách Hóa Xanh`, `TCBS`, `ACBS`).
+    """
+    compiled_issuers = (
+        compile_issuer_registry_from_rows(stocks_df.to_dict(orient="records"))
+        if not stocks_df.empty
+        else []
+    )
+    known_symbols = (
+        {str(s).strip().upper() for s in stocks_df["symbol"].dropna().tolist()}
+        if not stocks_df.empty and "symbol" in stocks_df.columns
+        else set()
+    )
+
+    nodes_by_id: dict[str, dict[str, Any]] = {}
+    edges_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+    for tbl in tables:
+        parent_tk = str(tbl.get("project_id") or tbl.get("ticker") or "").strip().upper()
+        if not parent_tk:
+            continue
+        vf_raw = tbl.get("valid_from")
+        if vf_raw is None:
+            continue
+        if hasattr(vf_raw, "date"):
+            vf_date = vf_raw.date()
+        else:
+            vf_date = date.fromisoformat(str(vf_raw)[:10])
+        if vf_date > as_of_date:
+            continue
+
+        title = normalize_ws(repair_pdf_font_quirks(str(tbl.get("table_title") or "")))
+        sec_path = normalize_ws(repair_pdf_font_quirks(str(tbl.get("section_path") or "")))
+        headers = [normalize_ws(repair_pdf_font_quirks(_cell_text(h))) for h in (tbl.get("headers_json") or ())]
+        rows = tbl.get("rows_json") or ()
+        if not headers or not rows:
+            continue
+
+        hdr_joined = " | ".join(headers)
+        meta_blob = f"{title} :: {sec_path} :: {hdr_joined}"
+        if not _CORP_TABLE_SIGNAL_RE.search(meta_blob):
+            continue
+        if _CORP_TABLE_EXCLUDE_RE.search(f"{title} :: {sec_path}") and not any(
+            k in hdr_joined.lower() for k in ("tỷ lệ sở hữu", "tỷ lệ lợi ích", "tỷ lệ biểu quyết", "% sở hữu")
+        ):
+            continue
+
+        # Identify column indices: entity name, principal activity, ownership/voting %
+        name_col: int | None = None
+        activity_col: int | None = None
+        pct_cols: list[int] = []
+        for idx, h in enumerate(headers):
+            hl = h.lower()
+            if name_col is None and any(
+                k in hl for k in ("tên công ty", "công ty con", "công ty liên kết", "tên đơn vị", "khoản đầu tư")
+            ):
+                name_col = idx
+            elif name_col is None and hl in {"công ty", "đơn vị"}:
+                name_col = idx
+            if activity_col is None and any(k in hl for k in ("hoạt động chính", "lĩnh vực", "ngành nghề")):
+                activity_col = idx
+            if any(k in hl for k in ("sở hữu", "lợi ích", "biểu quyết")):
+                pct_cols.append(idx)
+
+        if name_col is None:
+            # Fallback: column 1 if column 0 is STT, else column 0
+            h0 = headers[0].lower()
+            name_col = 1 if (h0 in {"stt", "tt", "no", "no."} and len(headers) > 1) else 0
+        if not pct_cols:
+            # Require explicit ownership/voting columns OR explicit subsidiary/associate table heading with % cells
+            if not any(k in f"{title} {sec_path}".lower() for k in ("công ty con", "công ty liên kết")):
+                continue
+
+        default_rel = (
+            "ASSOCIATE_OF"
+            if ("liên kết" in f"{title} {sec_path}".lower() and "công ty con" not in title.lower())
+            else "OWNS_SUBSIDIARY"
+        )
+
+        for raw_row in rows:
+            row_cells = _normalize_table_row_cells(raw_row)
+            raw_seq = (
+                [raw_row.get("label"), *(raw_row.get("values") or ())]
+                if isinstance(raw_row, Mapping)
+                else list(raw_row)
+                if isinstance(raw_row, (list, tuple))
+                else []
+            )
+            if not row_cells or name_col >= len(row_cells):
+                continue
+            raw_name = normalize_ws(repair_pdf_font_quirks(row_cells[name_col]))
+            if len(raw_name) < 6 or len(raw_name) > 180:
+                continue
+            low_name = raw_name.lower()
+            if any(
+                low_name.startswith(p)
+                for p in ("cộng", "tổng", "trong đó", "số lượng", "stt", "a.", "b.", "i.", "ii.")
+            ) and not any(c in low_name for c in ("công ty", "ctcp", "tnhh", "ngân hàng", "chứng khoán")):
+                continue
+            if not any(
+                c in low_name
+                for c in ("công ty", "ctcp", "tnhh", "ngân hàng", "tập đoàn", "nhà máy", "viện", "trường", "quỹ")
+            ):
+                continue
+
+            pct_val: float | None = None
+            for pc in pct_cols:
+                if pc < len(raw_seq):
+                    parsed_p = _parse_ownership_pct(raw_seq[pc])
+                    if parsed_p is not None:
+                        pct_val = parsed_p
+                        break
+            if pct_val is None and not pct_cols:
+                for idx_c, cell in enumerate(raw_seq):
+                    if idx_c != name_col and "%" in _cell_text(cell):
+                        parsed_p = _parse_ownership_pct(cell)
+                        if parsed_p is not None:
+                            pct_val = parsed_p
+                            break
+
+            if pct_val is not None:
+                rel_type = "OWNS_SUBSIDIARY" if pct_val > 50.0 else "ASSOCIATE_OF"
+            else:
+                rel_type = default_rel
+
+            activity = (
+                normalize_ws(repair_pdf_font_quirks(row_cells[activity_col]))
+                if activity_col is not None and activity_col < len(row_cells)
+                else ""
+            )
+
+            # Check if this entity maps to a listed ticker KNOWN in `stocks_df` (strictly prevents FK drift!)
+            matched_listed: str | None = None
+            ac_m = _PAREN_ACRONYM_RE.search(raw_name)
+            acronym = ac_m.group(1).strip() if ac_m else ""
+            if acronym.upper() in known_symbols and acronym.upper() != parent_tk:
+                matched_listed = acronym.upper()
+            elif compiled_issuers and known_symbols:
+                ext_tks = [
+                    t
+                    for t in extract_mentioned_tickers(
+                        raw_name,
+                        own_ticker=parent_tk,
+                        known_tickers=known_symbols,
+                        compiled_issuers=compiled_issuers,
+                        max_tickers=2,
+                    )
+                    if t in known_symbols
+                ]
+                if len(ext_tks) == 1:
+                    matched_listed = ext_tks[0]
+
+            src_node = f"TICKER:{parent_tk}"
+            if matched_listed:
+                dst_node = f"TICKER:{matched_listed}"
+            else:
+                norm_slug = re.sub(r"[^a-z0-9]+", "_", _norm_ascii_corp(raw_name)).strip("_")[:48]
+                short_h = hashlib.sha256(_norm_ascii_corp(raw_name).encode("utf-8")).hexdigest()[:8]
+                dst_node = f"CORP:{parent_tk}:{norm_slug[:28]}_{short_h}"
+                node_type = "SUBSIDIARY" if rel_type == "OWNS_SUBSIDIARY" else "ASSOCIATE"
+                prev_n = nodes_by_id.get(dst_node)
+                if prev_n is None or vf_date >= date.fromisoformat(prev_n["effective_from"]):
+                    nodes_by_id[dst_node] = {
+                        "node_id": dst_node,
+                        "node_type": node_type,
+                        "label": raw_name,
+                        "ticker": None,
+                        "metadata_json": {
+                            "parent_ticker": parent_tk,
+                            "acronym": acronym or None,
+                            "principal_activity": activity or None,
+                            "ownership_pct": pct_val,
+                        },
+                        "effective_from": vf_date.isoformat(),
+                        "valid_to": _MAX_VALID_TO.isoformat(),
+                    }
+
+            edge_key = (src_node, dst_node, rel_type)
+            prev_e = edges_by_key.get(edge_key)
+            if prev_e is None or vf_date >= date.fromisoformat(prev_e["effective_from"]):
+                weight = round(min(1.0, (pct_val / 100.0) if pct_val is not None else 0.75), 4)
+                edges_by_key[edge_key] = {
+                    "edge_id": str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{src_node}:{dst_node}:{rel_type}")),
+                    "src_node_id": src_node,
+                    "dst_node_id": dst_node,
+                    "relation_type": rel_type,
+                    "layer": "VALUE_CHAIN",
+                    "direction": "DIRECTED",
+                    "weight": max(0.35, weight),
+                    "verification_tier": "TABLE_VERIFIED",
+                    "evidence_json": {
+                        "entity_name": raw_name,
+                        "acronym": acronym or None,
+                        "ownership_pct": pct_val,
+                        "principal_activity": activity or None,
+                        "table_id": str(tbl.get("table_id") or ""),
+                        "document_version_id": str(tbl.get("document_version_id") or ""),
+                        "sub_doc_slot": str(tbl.get("sub_doc_slot") or ""),
+                        "page_no": int(tbl.get("page_from") or 1),
+                    },
+                    "effective_from": vf_date.isoformat(),
+                    "valid_to": _MAX_VALID_TO.isoformat(),
+                }
+
+    return list(nodes_by_id.values()), list(edges_by_key.values())
+
+
+def _norm_ascii_corp(text: str) -> str:
+    folded = unicodedata.normalize("NFD", str(text or "")).replace("đ", "d").replace("Đ", "d")
+    return folded.encode("ascii", "ignore").decode("ascii").lower().strip()

@@ -26,15 +26,16 @@ flowchart LR
   GW -->|"Socket.IO user:{id}\nportfolio:order_updated"| U
 ```
 
-### 1.2 Luồng Nhận Thức Phân Tích SAG v2 Brief-Centric & 2-Tier Memory (`SAG/apps/api/sag_api/research/`)
+### 1.2 Luồng Nhận Thức Phân Tích SAG V3.1 Epistemic Foundation & Buy-Side Triangle (`SAG/apps/api/sag_api/research/`)
 
 ```mermaid
 flowchart LR
-  UI["Giao diện /research-chat\nSSE Live Thinking & Evidence Drawer"] -->|"POST /api/v1/ai/research-chat/stream\n120-msg History + Checkpoint"| BFF["Express 4 BFF Gateway\nsagResearchChat.service.ts"]
+  UI["Giao diện /research-chat\nSSE Live Thinking & Evidence Drawer\n(Tables · Citations · 3-Layer KG)"] -->|"POST /api/v1/ai/research-chat/stream\n120-msg History + Checkpoint"| BFF["Express 4 BFF Gateway\nsagResearchChat.service.ts"]
   BFF -->|"Tier-0 Kev-4b Gate +\nAlways-On UserMemory Recall"| MEM["2-Tier Session & User Memory\n<=16K Verbatim Prefix + Checkpoint\n+ FinancialZeroMemLedger + Mem0-g"]
-  MEM --> S1["Stage 1: ResearchBrief\nPremises · Claims · Candidate Search\n0-Token Validator"]
-  S1 --> S2["Stage 2-5: Parallel Claim Executor\nCore PG FactSet · KPI · Peer · Divergence Probe\n+ Qdrant Disclosures (Section Stitch + 1-Hop UnitEdge)"]
-  S2 --> S6["Stage 6-7: Grounded Synthesis & Audit\nVerbatim [C#] Quotes · Clause Numeric Gate\n+ 1-Pass Surgical Repair"]
+  MEM --> S0["Stage 0: Scope-Gated Pulse & Story Spine\nCOMPANY / SECTOR / MARKET / OPEN\n+ 360° Deduplicated Relationship Map (0 LLM)"]
+  S0 --> S1["Stage 1: Buy-Side Brief Architect\nStory · 2-Sided Relationships · Cash Proof\n0-Token Validator & Smart Wave-1 Gate"]
+  S1 --> S2["Stage 2-5: Single-Wave Parallel Executor\nFactSet · BusinessDriverEngine · Auto 3-Layer KG\n+ Qdrant Disclosures (Discourse Q&A Stitch + 3-Hop Value-Gradient PPR)"]
+  S2 --> S6["Stage 6-7: Thesis-First Synthesis & Audit\nVerbatim [C#] Quotes · % Col & KG Ownership Gate\n+ Authoritative 1-Pass Surgical Repair"]
   S6 --> UI
 ```
 

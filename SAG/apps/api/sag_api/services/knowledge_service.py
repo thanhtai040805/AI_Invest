@@ -221,6 +221,109 @@ def _extract_vn_accounting_citations(text: str) -> set[str]:
     return refs
 
 
+STRUCTURAL_SIGNAL_KINDS: tuple[str, ...] = (
+    "AGM_QA",
+    "CONSOLIDATION_SCOPE",
+    "SEGMENT_MDNA",
+    "STRATEGIC_CAPEX",
+    "AUDIT_GOVERNANCE_FLAG",
+)
+
+_BOILERPLATE_STUB_RE = re.compile(
+    r"^(?:trong\s+đó|cộng|tổng\s+cộng|số\s+cuối\s+kỳ|số\s+đầu\s+năm|số\s+đầu\s+kỳ|"
+    r"thuyết\s+minh\s+báo\s+cáo\s+tài\s+chính(?:\s+hợp\s+nhất)?(?:\s+giữa\s+niên\s+độ)?(?:\s*\(tiếp\s*theo\))?|"
+    r"đơn\s+vị\s+tính\s*:\s*[^\n]{1,40})[\s:.;,\-]*$",
+    re.IGNORECASE | re.UNICODE,
+)
+_BOILERPLATE_TEMPLATE_SENTENCE_RE = re.compile(
+    r"^(?:các\s+thuyết\s+minh\s+(?:báo\s+cáo\s+tài\s+chính\s+)?đính\s+kèm\s+là\s+(?:một\s+)?bộ\s+phận\s+hợp\s+thành|"
+    r"theo\s+ý\s+kiến\s+của\s+chúng\s+tôi,\s+báo\s+cáo\s+tài\s+chính\s+(?:hợp\s+nhất\s+|riêng\s+)?đã\s+phản\s+ánh\s+trung\s+thực\s+và\s+hợp\s+lý|"
+    r"trách\s+nhiệm\s+của\s+ban\s+(?:tổng\s+)?giám\s+đốc\s+đối\s+với\s+báo\s+cáo\s+tài\s+chính|"
+    r"trách\s+nhiệm\s+của\s+kiểm\s+toán\s+viên\s+là\s+đưa\s+ra\s+ý\s+kiến)",
+    re.IGNORECASE | re.UNICODE,
+)
+_AGM_QA_RE = re.compile(
+    r"(?:phần\s+thảo\s+luận|phiên\s+thảo\s+luận|hỏi\s*[-–/]\s*đáp|cổ\s+đông\s+(?:hỏi|đặt\s+câu\s+hỏi|ý\s+kiến)|"
+    r"đoàn\s+chủ\s+tịch\s+(?:trả\s+lời|giải\s+đáp)|chủ\s+tọa\s+(?:trả\s+lời|giải\s+đáp)|"
+    r"ông/bà\s+[^\n]{2,40}\s+trả\s+lời|(?:ông|bà)\s+[A-ZÀ-Ỹ][^\n]{2,45}\s+(?:trả\s+lời|chia\s+sẻ\s+tại\s+đại\s+hội))",
+    re.IGNORECASE | re.UNICODE,
+)
+_CONSOLIDATION_SCOPE_RE = re.compile(
+    r"(?:cấu\s+trúc\s+tập\s+đoàn|chấm\s+dứt\s+hợp\s+nhất|hủy\s+hợp\s+nhất|mất\s+quyền\s+kiểm\s+soát|"
+    r"chuyển\s+giao\s+(?:quyền\s+kiểm\s+soát|vốn\s+nhà\s+nước|[\d,.]+\s*%\s*vốn)|"
+    r"bàn\s+giao\s+[\d,.]+\s*%\s*vốn|thoái\s+vốn\s+tại|tăng\s+tỷ\s+lệ\s+sở\s+hữu\s+tại|"
+    r"chuyển\s+từ\s+công\s+ty\s+con\s+sang\s+công\s+ty\s+liên\s+kết|"
+    r"ghi\s+nhận\s+là\s+công\s+ty\s+liên\s+kết)",
+    re.IGNORECASE | re.UNICODE,
+)
+_SEGMENT_MDNA_RE = re.compile(
+    r"(?:phân\s+tích\s+(?:kết\s+quả\s+)?theo\s+(?:khối|mảng|lĩnh\s+vực)|báo\s+cáo\s+bộ\s+phận|"
+    r"giải\s+trình\s+biến\s+động\s+(?:kết\s+quả|doanh\s+thu|lợi\s+nhuận)|"
+    r"(?:khối|mảng)\s+[^\n]{2,40}\s+(?:đạt|ghi\s+nhận)\s+doanh\s+thu|"
+    r"thị\s+trường\s+(?:nhật\s+bản|mỹ|hoa\s+kỳ|châu\s+âu|apec|apac|nước\s+ngoài|nội\s+địa)\s+tăng\s+trưởng|"
+    r"doanh\s+thu\s+ký\s+mới|backlog|đơn\s+hàng\s+ký\s+mới)",
+    re.IGNORECASE | re.UNICODE,
+)
+_STRATEGIC_CAPEX_RE = re.compile(
+    r"(?:nhà\s+máy\s+(?:ai|thép|mới|sản\s+xuất)|khu\s+liên\s+hợp|dự\s+án\s+trọng\s+điểm|"
+    r"trung\s+tâm\s+dữ\s+liệu|data\s+center|công\s+suất\s+thiết\s+kế|đầu\s+tư\s+chiều\s+sâu|"
+    r"hợp\s+tác\s+chiến\s+lược|mở\s+mới\s+\d+\s+(?:cửa\s+hàng|nhà\s+thuốc|siêu\s+thị))",
+    re.IGNORECASE | re.UNICODE,
+)
+_AUDIT_GOVERNANCE_RE = re.compile(
+    r"(?:vấn\s+đề\s+cần\s+nhấn\s+mạnh|ý\s+kiến\s+kiểm\s+toán\s+ngoại\s+trừ|"
+    r"nghi\s+ngờ\s+đáng\s+kể\s+về\s+khả\s+năng\s+hoạt\s+động\s+liên\s+tục|"
+    r"báo\s+cáo\s+của\s+ban\s+kiểm\s+soát|sự\s+kiện\s+phát\s+sinh\s+sau\s+ngày\s+kết\s+thúc|"
+    r"giao\s+dịch\s+trọng\s+yếu\s+với\s+các\s+bên\s+liên\s+quan)",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def is_accounting_boilerplate_unit(text: str, section_path: str = "") -> bool:
+    """Return True if passage is a short accounting stub or standard audit-template boilerplate (`0` LLM)."""
+    clean = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not clean:
+        return True
+    if len(clean) <= 95 and _BOILERPLATE_STUB_RE.match(clean):
+        return True
+    if len(clean) <= 360 and _BOILERPLATE_TEMPLATE_SENTENCE_RE.match(clean):
+        # Preserve qualified/emphasis audit paragraphs that flag specific exceptions
+        low = clean.lower()
+        if not any(k in low for k in ("ngoại trừ", "nhấn mạnh", "lưu ý người đọc", "điều chỉnh hồi tố")):
+            return True
+    return False
+
+
+def classify_structural_signals(
+    text: str,
+    section_path: str = "",
+    *,
+    sub_doc_slot: str | None = None,
+) -> list[str]:
+    """Deterministically tag high-signal corporate disclosure passages (`0` LLM tokens)."""
+    clean = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(clean) < 40 or is_accounting_boilerplate_unit(clean, section_path):
+        return []
+    sec_txt = re.sub(r"\s+", " ", str(section_path or "")).strip()
+    combined = f"{sec_txt} :: {clean}"
+    slot_up = str(sub_doc_slot or "").strip().upper()
+    signals: list[str] = []
+
+    if _AGM_QA_RE.search(combined) or (
+        slot_up == "AGM_TARGETS" and any(k in sec_txt.lower() for k in ("thảo luận", "hỏi đáp", "ý kiến cổ đông"))
+    ):
+        signals.append("AGM_QA")
+    if _CONSOLIDATION_SCOPE_RE.search(combined):
+        signals.append("CONSOLIDATION_SCOPE")
+    if _SEGMENT_MDNA_RE.search(combined):
+        signals.append("SEGMENT_MDNA")
+    if _STRATEGIC_CAPEX_RE.search(combined):
+        signals.append("STRATEGIC_CAPEX")
+    if _AUDIT_GOVERNANCE_RE.search(combined):
+        signals.append("AUDIT_GOVERNANCE_FLAG")
+    return signals
+
+
 def _unit_slot_and_year(unit: KnowledgeUnit) -> tuple[str, int]:
     prov = unit.provenance_json or {}
     slot = str(prov.get("sub_doc_slot") or "").strip().upper()
@@ -583,6 +686,8 @@ def extract_e0_e1(
     *,
     dense: Sequence[float] | None = None,
     extra_entities: Sequence[str] = (),
+    sub_doc_slot: str = "",
+    discourse_ctx: object = None,
 ) -> tuple[list[dict], dict]:
     text, anchor = block.normalized_text, (block.source_anchor or "").strip() or f"block-{block.ordinal}"
     facts: list[dict] = []
@@ -638,7 +743,10 @@ def extract_e0_e1(
         (f for f in facts if f["kind"] in {"entity", "alias"}),
         key=lambda f: (f["start"], f["end"]),
     )
-    labels = sorted({str(f["label"]) for f in entity_facts})
+    inherited_ents: tuple[str, ...] = ()
+    if discourse_ctx is not None:
+        inherited_ents = tuple(getattr(discourse_ctx, "inherited_entities", ()) or ())
+    labels = sorted({*(str(f["label"]) for f in entity_facts), *(str(e) for e in inherited_ents if e)})
 
     # Guarantee at least one anchored quote per KnowledgeUnit for provenance/contradiction verification
     # without bloating KnowledgeEvidence with per-sentence claims or synthetic CO_OCCURS pairs.
@@ -665,7 +773,31 @@ def extract_e0_e1(
         + (0.25 if block.block_type in {"code", "table"} else 0.0)
         + min(0.30, len(tokens) / 48.0),
     )
-    return facts, {
+    structural_signals = classify_structural_signals(
+        text, block.section_path or "", sub_doc_slot=sub_doc_slot or None
+    )
+    epistemic_meta: dict[str, object] | None = None
+    if sub_doc_slot or discourse_ctx is not None:
+        from sag_api.research.epistemic_foundation import compute_epistemic_profile
+
+        epistemic_meta = compute_epistemic_profile(
+            text,
+            block.section_path or "",
+            sub_doc_slot=sub_doc_slot,
+            block_type=block.block_type or "paragraph",
+            structural_signals=structural_signals,
+            discourse_ctx=discourse_ctx,  # type: ignore[arg-type]
+            is_boilerplate=is_accounting_boilerplate_unit(text, block.section_path or ""),
+        )
+        if epistemic_meta["tier"] == 0:
+            structural_signals = []
+        elif (
+            epistemic_meta.get("discourse_role") in ("EXECUTIVE_ANSWER", "PROMPT_QUESTION")
+            and "AGM_QA" not in structural_signals
+        ):
+            structural_signals = [*structural_signals, "AGM_QA"]
+
+    features_out: dict[str, object] = {
         "dense": dense_list,
         "sparse": sparse,
         "entities": labels,
@@ -673,6 +805,11 @@ def extract_e0_e1(
         "local_confidence": confidence,
         "importance": importance,
     }
+    if structural_signals:
+        features_out["structural_signals"] = structural_signals
+    if epistemic_meta is not None:
+        features_out["epistemic"] = epistemic_meta
+    return facts, features_out
 
 
 def evidence_payload(fact: dict, provenance: dict, valid_from: datetime, valid_to: datetime) -> dict:
@@ -1076,6 +1213,17 @@ async def rebuild_knowledge_version(
     )
     skip_raw_tables = has_verified_table_cards and has_non_table_prose
 
+    sub_doc_slot_str = str(base.get("sub_doc_slot") or "").strip()
+    discourse_by_block_id: dict[str, object] = {}
+    if sub_doc_slot_str:
+        from sag_api.research.epistemic_foundation import build_document_discourse_contexts
+
+        discourse_by_block_id = build_document_discourse_contexts(
+            blocks,
+            version_id=version_id,
+            sub_doc_slot=sub_doc_slot_str,
+        )
+
     units = []
     updated_unit_ids: list[str] = []
     new_evidence_rows: list[KnowledgeEvidence] = []
@@ -1115,7 +1263,14 @@ async def rebuild_knowledge_version(
             dense_vec = [float(v) for v in unit.features_json.get("dense", ())]
         else:
             dense_vec = None
-        facts, features = extract_e0_e1(block, config, dense=dense_vec, extra_entities=bridged_entities)
+        facts, features = extract_e0_e1(
+            block,
+            config,
+            dense=dense_vec,
+            extra_entities=bridged_entities,
+            sub_doc_slot=sub_doc_slot_str,
+            discourse_ctx=discourse_by_block_id.get(block.id),
+        )
         if (
             unit
             and unit.input_checksum == input_hash
@@ -1267,6 +1422,27 @@ def graph_payload(units: list[KnowledgeUnit], config: KnowledgeConfig = Knowledg
             return re.sub(r"[\s_-]+", " ", str(raw_e).casefold()).strip()
 
         unit_map = {u.id: u for u in rows}
+        has_epistemic = any(isinstance((u.features_json or {}).get("epistemic"), Mapping) for u in rows)
+        epistemic_by_uid: dict[str, tuple[int, float, set[str], str | None]] = {}
+        if has_epistemic:
+            for u in rows:
+                ep = (u.features_json or {}).get("epistemic")
+                if isinstance(ep, Mapping):
+                    epistemic_by_uid[u.id] = (
+                        int(ep.get("tier") or 0),
+                        float(ep.get("insight_score") or 0.0),
+                        {str(f) for f in (ep.get("facets") or ()) if f},
+                        str(ep["discourse_id"]) if ep.get("discourse_id") else None,
+                    )
+                else:
+                    epistemic_by_uid[u.id] = (1, 0.35, set(), None)
+
+        boilerplate_ids = {
+            u.id
+            for u in rows
+            if is_accounting_boilerplate_unit(u.text, str((u.provenance_json or {}).get("section_path") or ""))
+            or (has_epistemic and epistemic_by_uid[u.id][0] == 0)
+        }
         prepared_dense = {u.id: _prepare_dense(u.features_json.get("dense", [])) for u in rows}
         token_counts = {u.id: terms(u.text + " " + u.provenance_json["section_path"]) for u in rows}
         df = Counter(t for counts in token_counts.values() for t in counts)
@@ -1277,6 +1453,8 @@ def graph_payload(units: list[KnowledgeUnit], config: KnowledgeConfig = Knowledg
         avg_len = sum(sum(c.values()) for c in token_counts.values()) / len(rows) or 1
         postings: dict[tuple, list[str]] = defaultdict(list)
         for unit in rows:
+            if unit.id in boilerplate_ids:
+                continue
             features, provenance = unit.features_json, unit.provenance_json
             keys = [("term", t) for t in sorted(token_counts[unit.id], key=lambda t: (df[t], t))[: config.max_terms]]
             keys += [("entity", e) for e in sorted(norm_ents_by_unit[unit.id])] + [
@@ -1287,6 +1465,10 @@ def graph_payload(units: list[KnowledgeUnit], config: KnowledgeConfig = Knowledg
                 ("document", provenance["document_id"]),
                 ("temporal", unit.valid_from.date().isoformat()),
             ]
+            if has_epistemic:
+                u_disc = epistemic_by_uid[unit.id][3]
+                if u_disc:
+                    keys.append(("discourse", u_disc))
             for linked_tid in provenance.get("linked_table_ids") or ():
                 if isinstance(linked_tid, str) and linked_tid:
                     keys.append(("table", linked_tid))
@@ -1307,6 +1489,8 @@ def graph_payload(units: list[KnowledgeUnit], config: KnowledgeConfig = Knowledg
                 by_unit[unit_id].append(key)
         pairs = set()
         for unit in rows:
+            if unit.id in boilerplate_ids:
+                continue
             votes: Counter = Counter()
             for key in sorted(by_unit[unit.id], key=lambda k: (len(postings[k]), str(k))):
                 ids = postings[key]
@@ -1318,6 +1502,35 @@ def graph_payload(units: list[KnowledgeUnit], config: KnowledgeConfig = Knowledg
                         votes[other] += 1
             for other, _ in sorted(votes.items(), key=lambda item: (-item[1], item[0]))[: config.candidate_limit]:
                 pairs.add(tuple(sorted((unit.id, other))))
+
+        # Bipartite Epistemic-Upgrade Candidate Injection:
+        # Guarantee every non-boilerplate unit sharing an Economic Facet evaluates edges against the
+        # Top-18 highest-insight Tier-2/3 narrative mechanisms of that facet (bypassing UUID-order blindspots).
+        if has_epistemic:
+            peaks_by_facet: dict[str, list[tuple[float, str]]] = defaultdict(list)
+            for u in rows:
+                if u.id in boilerplate_ids:
+                    continue
+                t_u, ins_u, facs_u, _ = epistemic_by_uid[u.id]
+                if t_u >= 2 and ins_u >= 0.68:
+                    for fid in facs_u:
+                        peaks_by_facet[fid].append((ins_u, u.id))
+            top_peaks_by_facet = {
+                fid: [uid for _, uid in sorted(plist, key=lambda x: (-x[0], x[1]))[:18]]
+                for fid, plist in peaks_by_facet.items()
+            }
+            for u in rows:
+                if u.id in boilerplate_ids:
+                    continue
+                _, _, facs_u, disc_u = epistemic_by_uid[u.id]
+                for fid in facs_u:
+                    for p_uid in top_peaks_by_facet.get(fid, ()):
+                        if p_uid != u.id:
+                            pairs.add(tuple(sorted((u.id, p_uid))))
+                if disc_u:
+                    for other_id in postings.get(("discourse", disc_u), ()):
+                        if other_id != u.id:
+                            pairs.add(tuple(sorted((u.id, other_id))))
 
         def bm25(query: Counter, target: Counter, df=df, size=len(rows), avg_len=avg_len) -> float:
             length = sum(target.values())
@@ -1391,9 +1604,35 @@ def graph_payload(units: list[KnowledgeUnit], config: KnowledgeConfig = Knowledg
             else:
                 citation_score = None
 
+            sem_sc = _prepared_cosine(prepared_dense[left], prepared_dense[right])
+            lex_sc = max(0.0, min(1.0, (value - q05) / (q95 - q05))) if q95 > q05 else float(value > 0)
+            if has_epistemic:
+                t_a, ins_a, facs_a, disc_a = epistemic_by_uid[left]
+                t_b, ins_b, facs_b, disc_b = epistemic_by_uid[right]
+                shared_facs = facs_a & facs_b
+                if disc_a and disc_a == disc_b:
+                    # Direct Discourse Q&A / Proposal Continuity (Question <-> Executive Reply)
+                    structure = max(structure, 0.96)
+                    entity = max(entity or 0.0, 0.92)
+                    lex_sc = max(lex_sc, 0.72)
+                elif (
+                    max(t_a, t_b) >= 2
+                    and abs(ins_a - ins_b) >= 0.22
+                    and shared_facs
+                    and (sem_sc is None or sem_sc >= 0.52)
+                ):
+                    # Bipartite Epistemic-Upgrade Bridge (Accounting Symptom <-> Business Mechanism)
+                    high_ins = max(ins_a, ins_b)
+                    structure = max(structure, 0.78 if not same_doc else 0.82)
+                    entity = max(
+                        entity or 0.0,
+                        min(0.95, 0.56 + 0.12 * len(shared_facs) + 0.24 * high_ins),
+                    )
+                    lex_sc = max(lex_sc, min(0.84, 0.40 + 0.36 * high_ins))
+
             signals = {
-                "semantic": _prepared_cosine(prepared_dense[left], prepared_dense[right]),
-                "lexical": max(0.0, min(1.0, (value - q05) / (q95 - q05))) if q95 > q05 else float(value > 0),
+                "semantic": sem_sc,
+                "lexical": lex_sc,
                 "entity": entity,
                 "structure": structure,
                 "temporal": temporal_score,
@@ -1413,7 +1652,9 @@ def graph_payload(units: list[KnowledgeUnit], config: KnowledgeConfig = Knowledg
                 )
         degree: Counter = Counter()
         same_doc_degree: Counter = Counter()
+        tier1_echo_degree: Counter = Counter()
         max_same_doc_degree = max(1, config.max_degree // 2)
+        max_tier1_echo_degree = max(2, config.max_degree // 3)
         for edge in sorted(candidates, key=lambda e: (-e["weight"], e["source"], e["target"])):
             u_src, u_tgt = edge["source"], edge["target"]
             if degree[u_src] >= config.max_degree or degree[u_tgt] >= config.max_degree:
@@ -1427,10 +1668,23 @@ def graph_payload(units: list[KnowledgeUnit], config: KnowledgeConfig = Knowledg
                 or same_doc_degree[u_tgt] >= max_same_doc_degree
             ):
                 continue
+            if has_epistemic:
+                ts_a, _, _, d_a = epistemic_by_uid[u_src]
+                ts_b, _, _, d_b = epistemic_by_uid[u_tgt]
+                is_tier1_echo = ts_a <= 1 and ts_b <= 1 and not (d_a and d_a == d_b)
+                if is_tier1_echo and (
+                    tier1_echo_degree[u_src] >= max_tier1_echo_degree
+                    or tier1_echo_degree[u_tgt] >= max_tier1_echo_degree
+                ):
+                    continue
+            else:
+                is_tier1_echo = False
             output.append(edge)
             degree.update((u_src, u_tgt))
             if is_same_doc:
                 same_doc_degree.update((u_src, u_tgt))
+            if is_tier1_echo:
+                tier1_echo_degree.update((u_src, u_tgt))
     tenant, project = next(iter(scopes))
     return {
         "contract": "knowledge-graph.v1",

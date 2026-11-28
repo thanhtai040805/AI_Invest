@@ -161,6 +161,8 @@ class GraphHopItem(BaseModel):
     tercile_stable: bool | None = None
     verification_tier: str
     effective_from: str
+    ownership_pct: float | None = None
+    note_channel: str | None = None
 
 
 class DiscrepancyAlertItem(BaseModel):

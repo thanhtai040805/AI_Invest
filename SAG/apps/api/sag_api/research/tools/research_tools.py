@@ -1002,29 +1002,110 @@ async def query_knowledge_graph_tool(
     async with ctx.session_factory() as isolated_session:
         store = ctx.kg_store_override or SQLAlchemyKGStore(isolated_session)
 
+        from sag_api.research.market_pulse import _MACRO_LABEL_VI, _canonical_corp_entity_key
+
         for tk in target_tickers:
             sub = await store.get_subgraph_for_ticker(tk, ctx.as_of_date)
-            for edge in (sub.get("edges") or ())[:limit]:
+            node_lookup: dict[str, tuple[str, str]] = {}
+            for nd in sub.get("nodes") or ():
+                if isinstance(nd, Mapping) and nd.get("node_id"):
+                    nid_s = str(nd["node_id"])
+                    node_lookup[nid_s] = (str(nd.get("label") or nid_s), str(nd.get("ticker") or "").strip().upper())
+
+            def _fmt_kg_endpoint(
+                nid_raw: str,
+                *,
+                pct_opt: float | None = None,
+                n_lookup: Mapping[str, tuple[str, str]] = node_lookup,
+            ) -> str:
+                lbl_h, n_tk = n_lookup.get(nid_raw, ("", ""))
+                if nid_raw.upper().startswith("TICKER:"):
+                    sym_c = n_tk or nid_raw.split(":", 1)[1].strip().upper()
+                    base = f"TICKER:{sym_c} ({lbl_h})" if lbl_h and lbl_h.upper() != sym_c else f"TICKER:{sym_c}"
+                elif nid_raw.upper().startswith("MACRO:"):
+                    m_key = nid_raw.split(":", 1)[1]
+                    m_vi = _MACRO_LABEL_VI.get(m_key, lbl_h or m_key)
+                    base = f"MACRO:{m_key} ({m_vi})" if m_vi != m_key else nid_raw
+                else:
+                    base = lbl_h or nid_raw
+                if pct_opt is not None:
+                    return f"{base} (sở hữu {pct_opt:.2f}%)"
+                return base
+
+            raw_edges = list(sub.get("edges") or ())
+            by_layer: dict[str, list[dict[str, Any]]] = {"VALUE_CHAIN": [], "TRUE_PEER": [], "MACRO": []}
+            seen_vc_keys: set[str] = set()
+            for e_item in raw_edges:
+                l_raw = str(e_item.get("layer") or "VALUE_CHAIN")
+                l_key = l_raw if l_raw in by_layer else "VALUE_CHAIN"
+                if l_key == "VALUE_CHAIN":
+                    dst_raw = str(e_item.get("dst_node_id") or "")
+                    dst_lbl_h = node_lookup.get(dst_raw, (dst_raw, ""))[0]
+                    dedup_k = f"{e_item.get('relation_type')}:{_canonical_corp_entity_key(dst_lbl_h)}"
+                    if dedup_k in seen_vc_keys:
+                        continue
+                    seen_vc_keys.add(dedup_k)
+                by_layer[l_key].append(e_item)
+
+            vc_q = max(2, (limit + 1) // 2)
+            peer_q = max(1, limit // 3)
+            macro_q = max(1, limit - vc_q - peer_q)
+            balanced_edges: list[dict[str, Any]] = [
+                *by_layer["VALUE_CHAIN"][:vc_q],
+                *by_layer["TRUE_PEER"][:peer_q],
+                *by_layer["MACRO"][:macro_q],
+            ]
+            if len(balanced_edges) < limit:
+                chosen_ids = {id(x) for x in balanced_edges}
+                for extra_e in (
+                    *by_layer["VALUE_CHAIN"][vc_q:],
+                    *by_layer["MACRO"][macro_q:],
+                    *by_layer["TRUE_PEER"][peer_q:],
+                ):
+                    if id(extra_e) not in chosen_ids:
+                        balanced_edges.append(extra_e)
+                        if len(balanced_edges) >= limit:
+                            break
+
+            for edge in balanced_edges[:limit]:
                 layer = str(edge.get("layer") or "VALUE_CHAIN")
+                layer_norm = layer if layer in {"MACRO", "VALUE_CHAIN", "TRUE_PEER"} else "VALUE_CHAIN"
                 tier = str(edge.get("verification_tier") or "DOC_ONLY")
+                ev_j = edge.get("evidence_json") if isinstance(edge.get("evidence_json"), Mapping) else {}
+                raw_pct = ev_j.get("ownership_pct")
+                own_pct = float(raw_pct) if isinstance(raw_pct, (int, float)) and 0 < float(raw_pct) <= 100.0 else None
+                ch_name = str(ev_j.get("channel") or "").strip() or None
+                raw_beta = edge.get("beta")
+                is_qual_macro = layer_norm == "MACRO" and (
+                    ch_name == "AUDITED_NOTE" or (isinstance(raw_beta, (int, float)) and abs(float(raw_beta)) < 1e-9)
+                )
+                eff_beta = None if is_qual_macro else raw_beta
+                src_disp = _fmt_kg_endpoint(str(edge.get("src_node_id") or ""))
+                dst_disp = _fmt_kg_endpoint(str(edge.get("dst_node_id") or ""), pct_opt=own_pct)
                 hop = {
-                    "layer": layer if layer in {"MACRO", "VALUE_CHAIN", "TRUE_PEER"} else "VALUE_CHAIN",
-                    "src_label": str(edge.get("src_node_id") or ""),
+                    "layer": layer_norm,
+                    "src_label": src_disp,
                     "relation_type": str(edge.get("relation_type") or ""),
-                    "dst_label": str(edge.get("dst_node_id") or ""),
-                    "beta": edge.get("beta"),
+                    "dst_label": dst_disp,
+                    "beta": eff_beta,
                     "p_value": edge.get("p_value"),
                     "fdr_q_value": edge.get("fdr_q_value"),
                     "tercile_stable": edge.get("tercile_stable"),
                     "verification_tier": tier,
                     "effective_from": str(edge.get("effective_from") or ctx.as_of_date.isoformat()),
+                    "ownership_pct": own_pct,
+                    "note_channel": ch_name,
                 }
                 new_hops.append(hop)
-                beta_str = f" | beta={hop['beta']:.3f}" if isinstance(hop["beta"], (int, float)) else ""
-                p_str = f" | p={hop['p_value']:.4f}" if isinstance(hop["p_value"], (int, float)) else ""
+                if is_qual_macro:
+                    qual_note = " | ghi nhận độ nhạy tại thuyết minh rủi ro BCTC kiểm toán"
+                else:
+                    beta_str = f" | beta={eff_beta:.3f}" if isinstance(eff_beta, (int, float)) else ""
+                    p_str = f" | p={hop['p_value']:.4f}" if isinstance(hop["p_value"], (int, float)) else ""
+                    qual_note = f"{beta_str}{p_str}"
                 lines.append(
-                    f"[KG:{hop['layer']}|{tier}] {hop['src_label']} --{hop['relation_type']}--> "
-                    f"{hop['dst_label']}{beta_str}{p_str} (eff={hop['effective_from']})"
+                    f"[KG:{hop['layer']}|{tier}] {src_disp} --{hop['relation_type']}--> "
+                    f"{dst_disp}{qual_note} (eff={hop['effective_from']})"
                 )
             for snap in (sub.get("macro_snapshots") or ())[:limit]:
                 tier = str(snap.get("verification_tier") or "QUANT_ONLY")
@@ -1106,6 +1187,8 @@ async def query_knowledge_graph_tool(
                     "dst_label": str(h.get("dst_label") or ""),
                     "beta": h.get("beta"),
                     "verification_tier": str(h.get("verification_tier") or "DOC_ONLY"),
+                    "ownership_pct": h.get("ownership_pct"),
+                    "note_channel": h.get("note_channel"),
                 }
                 for h in added[:8]
             ],

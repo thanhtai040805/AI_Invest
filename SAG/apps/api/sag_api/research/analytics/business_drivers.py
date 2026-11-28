@@ -372,6 +372,9 @@ def extract_segment_drivers(
             {
                 "kind": "segment_driver",
                 "table_id": curr["table_id"],
+                "segment_name": seg["name"],
+                "margin_delta_bps": margin_bps,
+                "rev_yoy": rev_yoy,
                 "summary_line": summary_line,
                 "calc_trace": {
                     "formula": "segment_horizontal_verified_decomposition",

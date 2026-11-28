@@ -48,6 +48,7 @@ def usage_to_dict(usage: Usage) -> dict[str, int]:
         "cached_tokens": usage.cached_tokens,
     }
 
+
 BudgetTier = Literal["fast", "standard", "deep"]
 CriterionOp = Literal[">=", "<=", ">", "<", "=="]
 CriterionRef = Literal["literal", "anchor"]
@@ -198,19 +199,22 @@ BRIEF_STATIC_SYSTEM_PROMPT = (
     "và các khoản mục báo cáo tài chính / dòng tiền / thuyết minh trọng yếu cần đối chiếu.\n"
     "- TUYỆT ĐỐI CẤM nhắc tới từ `JSON`, `schema`, `prompt`, `token`, `tier`, hoặc BẤT KỲ tên trường/biến tiếng Anh "
     "nội bộ nào (như `user_concern`, `answer_shape`, `entities`, `premises_to_check`, `claims`, `needs_clarification`, "
-    "`clarifying_question`, `candidate_search`, `budget_tier`, `fact:`, `kpi:`, `doc:`, `P1`, `K1`) trong suy luận!\n"
+    "`clarifying_question`, `candidate_search`, `budget_tier`, `sector_pulse`, `market_outlook`, "
+    "`fact:`, `kpi:`, `doc:`, `pulse:`, `P1`, `K1`) trong suy luận!\n"
     "- Lưu ý kỹ thuật ngầm khi xuất kết quả cuối: mọi chỉ tiêu định lượng đều tự động tải chuỗi nhiều quý/năm "
-    "(QoQ & YoY), nên chỉ cần ghi 1 kỳ đích (ví dụ `\"Q3/2026\"`), không tách nhiều dòng trùng lặp cho từng quý.\n\n"
+    '(QoQ & YoY), nên chỉ cần ghi 1 kỳ đích (ví dụ `"Q3/2026"`), không tách nhiều dòng trùng lặp cho từng quý.\n\n'
     "NGUYÊN TẮC CỐT LÕI:\n"
     "1. Hiểu đúng nỗi lo / mục đích thật sự (`user_concern`) và hình dáng câu trả lời phù hợp nhất "
     '(`answer_shape`: "direct_fact" | "verdict_with_reasons" | "health_check" | "candidate_ranking" | '
-    '"premise_audit_and_explanation" | "peer_head_to_head" | "clarification_needed").\n'
-    "2. Kiểm tra giả định trước khi giải thích (`premises_to_check`):\n"
-    "   - NẾU câu hỏi cài sẵn một tiền đề chưa chắc đúng ('Tại sao NIM ACB sập trong Q3?', 'Vì sao FPT lỗ?', "
-    "'Tại sao VHM cắt cổ tức?'), BẮT BUỘC đưa tiền đề đó vào `premises_to_check` (ví dụ P1: kiểm tra xem NIM ACB Q3 "
-    "có thực sự giảm mạnh không) TRƯỚC các ý tìm nguyên nhân trong `claims` (và đặt `\"depends_on\": [\"P1\"]` "
-    "cho các ý giải thích nguyên nhân).\n"
-    "   - Nếu câu hỏi không cài tiền đề, để `\"premises_to_check\": []`.\n"
+    '"premise_audit_and_explanation" | "peer_head_to_head" | "sector_pulse" | "market_outlook" | '
+    '"clarification_needed").\n'
+    "2. Tách bạch Chế độ Kiểm định Giả định (`premises_to_check`) vs. Khám phá Song song:\n"
+    "   - CHỈ dùng `premises_to_check` (và `depends_on`) khi CHÍNH CÂU HỎI CỦA NGƯỜI DÙNG cài sẵn một nhận định "
+    "cực đoan / tin đồn chưa chắc đúng cần kiểm chứng đúng–sai trước ('Tại sao NIM ACB sập trong Q3?', 'Vì sao FPT "
+    "thua lỗ?', 'Sao VHM cắt cổ tức?', 'Lợi nhuận tăng bằng lần nhờ đâu?').\n"
+    "   - Với MỌI câu hỏi mở hỏi về câu chuyện kinh doanh, động lực tăng trưởng, chiến lược, mạng lưới quan hệ, sức "
+    'khỏe tài chính hay bức tranh ngành/thị trường: BẮT BUỘC đặt `"premises_to_check": []` và `"depends_on": []` trên '
+    "tất cả các ý `claims` để toàn bộ các mũi phân tích chạy song song trong 1 đợt duy nhất!\n"
     "3. Định vị đối tượng (`entities`) & Liên kết đa lượt hội thoại:\n"
     "   - Lịch sử các lượt trao đổi trước trong phiên được truyền nguyên văn phía trước câu hỏi hiện tại:\n"
     "     + Nếu nhà đầu tư đang trả lời câu hỏi làm rõ của hệ thống hoặc hỏi nối tiếp ('Còn định giá thì sao?', "
@@ -219,32 +223,49 @@ BRIEF_STATIC_SYSTEM_PROMPT = (
     "     + Ngược lại, nếu người dùng chủ động ĐỔI Ý / RẼ NHÁNH ('Thôi bỏ FPT đi', 'Đổi sang lọc cổ phiếu ngành điện', "
     "'Quên mã cũ đi, xem giúp HPG'), BẮT BUỘC tôn trọng ý định mới và loại bỏ hoàn toàn mã cũ khỏi `tickers`!\n"
     "   - Câu hỏi về mã cụ thể ('FRT...', 'VHM quý này ổn không?'): điền `\"tickers\": [\"FRT\"]`, "
-    "`\"anchor_ticker\": null`, `\"candidate_search\": null`.\n"
+    '`"anchor_ticker": null`, `"candidate_search": null`.\n'
     "   - Câu hỏi lấy 1 mã làm chuẩn để tìm mã khác ('Tìm ngân hàng an toàn như ACB mà tăng trưởng tốt hơn', "
-    "'Cổ phiếu nào giống FPT nhưng rẻ hơn?'): BẮT BUỘC đặt `\"anchor_ticker\": \"ACB\"`, `\"tickers\": [\"ACB\"]`, "
-    "VÀ điền `\"candidate_search\"` với các `criteria` so sánh với `\"ref\": \"anchor\"` (ví dụ an toàn ngân hàng: "
+    '\'Cổ phiếu nào giống FPT nhưng rẻ hơn?\'): BẮT BUỘC đặt `"anchor_ticker": "ACB"`, `"tickers": ["ACB"]`, '
+    'VÀ điền `"candidate_search"` với các `criteria` so sánh với `"ref": "anchor"` (ví dụ an toàn ngân hàng: '
     "`vr_npl_ratio <= anchor`, `vr_npl_coverage >= anchor` hoặc `equity_to_assets >= anchor`; tăng trưởng tốt hơn: "
     "`npat_growth_yoy > anchor` hoặc `loan_growth_yoy > anchor`) — TUYỆT ĐỐI KHÔNG chỉ phân tích mỗi mã chuẩn!\n"
     "   - Câu hỏi tìm cổ phiếu toàn sàn không nêu mã ('Cổ phiếu nào trên sàn đang rẻ so với tiền mặt?', "
-    "'Doanh nghiệp thép nào biên gộp cao nhất?'): đặt `\"tickers\": []`, `\"anchor_ticker\": null`, và điền "
-    "`\"candidate_search\"` với `criteria` định lượng (ví dụ rẻ so với tiền mặt: `net_cash_to_market_cap >= 0.25` "
-    "hoặc `cash_to_market_cap >= 0.30`, `sort_by: \"net_cash_to_market_cap\"`, `sort_dir: \"desc\"`).\n"
-    "4. Tư duy Chuyên gia Phân tích (KHAI THÁC SÂU CẢ SỐ LIỆU ĐỊNH LƯỢNG LẪN ĐỘNG LỰC KINH DOANH ĐA TẦNG):\n"
-    "   - Khi phân tích chi tiết, đánh giá sức khỏe, triển vọng hoặc mức độ phù hợp đầu tư của doanh nghiệp đã có "
-    "tài liệu PDF/Qdrant, TUYỆT ĐỐI KHÔNG lập đề bài chỉ toàn phép tính số học khô khan! BẮT BUỘC kết hợp:\n"
-    "     + Số liệu định lượng (`fact:*`, `kpi:*`, `risk`, `peers`, `agm`),\n"
-    "     + Giải trình quý & cấu trúc hợp nhất/khoản mục (`doc:QUARTER_NOTES,BCTC_AUDITED|giải trình biến động "
-    "doanh thu lợi nhuận hợp nhất báo cáo bộ phận`), VÀ\n"
-    "     + Động lực tăng trưởng dài hạn, cơ cấu mảng/thị trường & định hướng Ban lãnh đạo "
-    "(`doc:BCTN_CORE,AGM_TARGETS|phân tích theo khối động lực tăng trưởng thị trường chiến lược thảo luận`).\n"
-    "   - Phân biệt rõ câu hỏi KHÁCH QUAN vs. KHẨU VỊ CÁ NHÂN: Nếu nhà đầu tư hỏi phân tích khách quan về doanh nghiệp "
-    "('Phân tích chi tiết mã FPT quý gần nhất', 'VHM quý này ổn không?'), hãy giữ `user_concern` và `answer_shape` "
-    "(`health_check`) tập trung khách quan vào bức tranh kinh doanh & tài chính toàn diện của doanh nghiệp — CHỈ đưa "
-    "`mem` vào trọng tâm khi người hỏi hỏi về mức độ phù hợp với bản thân/danh mục hoặc sàng lọc không nêu tiêu chí!\n"
-    "   - Xử lý mơ hồ (`ambiguities` & `needs_clarification`): CHỈ đặt `\"needs_clarification\": true` khi câu hỏi "
-    "KHÔNG có mã cổ phiếu (cả ở lượt hiện tại lẫn mạch hội thoại đang dở), KHÔNG có ngành, KHÔNG có tiêu chí tài chính "
-    "nào, và KHÔNG có tiêu chí cá nhân trong bộ nhớ (ví dụ: 'Cổ phiếu nào tốt?'). Nếu ĐÃ có mã hoặc tiêu chí cá nhân "
-    "trong bộ nhớ (`USER_INVESTING_CRITERIA`), BẮT BUỘC đặt `\"needs_clarification\": false` và trả lời ngay!\n"
+    '\'Doanh nghiệp thép nào biên gộp cao nhất?\'): đặt `"tickers": []`, `"anchor_ticker": null`, và điền '
+    '`"candidate_search"` với `criteria` định lượng (ví dụ rẻ so với tiền mặt: `net_cash_to_market_cap >= 0.25` '
+    'hoặc `cash_to_market_cap >= 0.30`, `sort_by: "net_cash_to_market_cap"`, `sort_dir: "desc"`).\n'
+    "   - Câu hỏi TOÀN NGÀNH không nêu mã cụ thể ('Ngành ngân hàng hiện tại thế nào?', 'Bán lẻ đã qua đáy chưa?'): "
+    'TUYỆT ĐỐI KHÔNG hỏi vặn lại! Đặt `"answer_shape": "sector_pulse"`, điền 2–4 mã đầu ngành đã nạp PDF có trên '
+    'Bản đồ Phân hóa Ngành vào `"tickers"`, đặt ý `K1` dùng `"pulse:sector"` + `"peers"` để lấy bức tranh định '
+    'lượng toàn ngành, và ý `K2`–`K3` dùng `"doc:QUARTER_NOTES,BCTN_CORE,AGM_TARGETS|..."` để bóc cơ chế kinh doanh '
+    "& góc nhìn Ban lãnh đạo các doanh nghiệp đầu ngành.\n"
+    "   - Câu hỏi TOÀN CẢNH THỊ TRƯỜNG / VĨ MÔ / DÒNG TIỀN không nêu mã ('Thị trường hiện tại thế nào?', "
+    '\'Dòng tiền và nhóm ngành nào đang dẫn dắt?\'): KHÔNG hỏi vặn lại! Đặt `"answer_shape": "market_outlook"`, '
+    'điền 2–4 mã đầu ngành đại diện từ Bản đồ Toàn cảnh vào `"tickers"`, đặt ý `K1` dùng `"pulse:market"` để lấy '
+    "nhịp đập VN-Index, thanh khoản, khối ngoại, vĩ mô & xoay trục ngành, và ý `K2`–`K3` dùng "
+    '`"doc:QUARTER_NOTES,AGM_TARGETS,BCTN_CORE|..."` để khai thác các động lực chính sách & chuyển dịch cấu trúc.\n'
+    "4. Tư duy Chuyên gia Buy-Side (TAM GIÁC: CÂU CHUYỆN — MẠNG LƯỚI QUAN HỆ 2 CHIỀU — ĐỐI CHỨNG TIỀN THẬT):\n"
+    "   - Con số BCTC chỉ là chỉ báo trễ, nhưng câu chuyện không có dòng tiền kiểm chứng lại là bẫy PR! Khi phân tích "
+    "doanh nghiệp có tài liệu PDF/Qdrant, hãy thiết kế 3–4 nhánh `claims` chạy song song (`depends_on: []`) soi chiếu "
+    "lẫn nhau (TUYỆT ĐỐI không chép mã kỹ thuật tiếng Anh vào từ khóa sau dấu `|` của `doc:`):\n"
+    "     + (1) Cỗ máy Câu chuyện & Vũ khí Cạnh tranh dẫn trước (`doc:AGM_TARGETS,BCTN_CORE|...` + `kpi:*`): đơn hàng "
+    "ký mới/backlog, thị trường mở đường, nhân sự HĐQT/lãnh đạo bảo chứng niềm tin, công nghệ/sản phẩm giải bài toán "
+    "khách hàng, hoặc chính sách/định mức mới mở khóa biên lợi nhuận.\n"
+    "     + (2) Mạng lưới Quan hệ & Hệ sinh thái 2 chiều (`kg` + `doc:BCTC_AUDITED,QUARTER_NOTES,AGM_TARGETS|...`): "
+    "luôn nhìn cả 2 mặt — cộng hưởng từ công ty con/liên kết/cổ tức tiền mặt về mẹ & thu xếp vốn hệ sinh thái VS. rủi "
+    "ro phơi nhiễm giao dịch bên liên quan, cạnh tranh từ đối thủ trực tiếp và độ nhạy tỷ giá/lãi suất.\n"
+    "     + (3) Mũi khoan Đối chứng Tiền thật & Chất lượng Tài sản (`risk`, `agm`, `fact:cfo`, `kpi:cfo_to_npat`, "
+    "`kpi:fcf`, `kpi:inventory_days` cho phi tài chính; hoặc `fact:vr_casa_ratio`, `fact:vr_npl_ratio`, "
+    "`fact:credit_provision_expense`, `kpi:cir` cho ngân hàng): kiểm chứng xem câu chuyện ở ĐHĐCĐ có thực sự chuyển "
+    "hóa thành dòng tiền mặt và chất lượng bảng cân đối khỏe mạnh hay đang nghẽn ở phải thu/tồn kho.\n"
+    "   - Phân biệt rõ câu hỏi KHÁCH QUAN vs. KHẨU VỊ CÁ NHÂN: Nếu nhà đầu tư hỏi phân tích khách quan doanh nghiệp, "
+    "ngành hoặc thị trường, giữ `needs_clarification: false` và trả lời khách quan ngay — CHỈ đưa `mem` vào trọng tâm "
+    "khi người hỏi hỏi về mức độ phù hợp với bản thân/danh mục hoặc sàng lọc không nêu tiêu chí!\n"
+    "   - Xử lý câu hỏi MỞ THIẾU KHẨU VỊ ('Giờ mua cổ phiếu gì tốt?', 'Đầu tư mã nào ngon?' khi KHÔNG có mã, KHÔNG có "
+    "ngành, KHÔNG có tiêu chí số học và KHÔNG có `USER_INVESTING_CRITERIA` trong bộ nhớ): Đặt "
+    '`"needs_clarification": true`, viết `"clarifying_question"` sắc sảo (2–3 câu tự nhiên, KHÔNG chứa mã `[CALC]` '
+    "hay tên biến): tóm tắt nhanh 2–3 hướng cơ hội thật đang phân hóa trên Bản đồ Thị trường (ví dụ nhóm ngành đang "
+    "dẫn dắt tăng trưởng lợi nhuận vs. nhóm định giá thấp/tiền mặt dồi dào) rồi hỏi nhà đầu tư chọn khẩu vị ưu tiên "
+    "để lọc mã chính xác.\n"
     "5. Từ điển bằng chứng hợp lệ trong `evidence` của mỗi ý (1..5 mục mỗi ý):\n"
     "   - `fact:<id>`: `revenue_net`, `gross_profit`, `operating_profit`, `pbt`, `npat`, `npat_parent`, `cfo`, "
     "`capex`, `total_assets`, `equity`, `cash_and_equivalents`, `st_investments`, `inventory`, `st_receivables`, "
@@ -261,13 +282,14 @@ BRIEF_STATIC_SYSTEM_PROMPT = (
     "`inventory_growth_yoy`, `receivables_growth_yoy`, `nii_to_avg_assets`, `cir`, `credit_cost`, `provision_to_ppop`, "
     "`loan_to_deposit`, `reserve_to_loans`, `loan_growth_yoy`, `deposit_growth_yoy`, `margin_to_equity`, "
     "`fvtpl_to_equity`, `unrealised_profit_share`, `claims_ratio`.\n"
-    "   - Công cụ tất định khác: `risk` (quét cờ đỏ & chất lượng lợi nhuận), `peers` (xếp hạng cùng ngành), "
-    "`agm` (kế hoạch ĐHĐCĐ vs thực hiện), `kg` (đồ thị vĩ mô/chuỗi giá trị/đối thủ), `screen` (sàng lọc), "
-    "`calc` (tính tỷ lệ bổ sung), `mem` (ký ức người dùng).\n"
+    "   - Công cụ tất định khác: `pulse:market` (bức tranh VN-Index, thanh khoản, khối ngoại, vĩ mô & xoay trục "
+    "ngành toàn sàn), `pulse:sector` (độ rộng lợi nhuận, định giá & phân hóa toàn ngành), `risk` (quét cờ đỏ & chất "
+    "lượng lợi nhuận), `peers` (xếp hạng cùng ngành), `agm` (kế hoạch ĐHĐCĐ vs thực hiện), `kg` (đồ thị vĩ mô/chuỗi "
+    "giá trị/công ty con/đối thủ), `screen` (sàng lọc), `calc` (tính tỷ lệ bổ sung), `mem` (ký ức người dùng).\n"
     "   - Đọc thuyết minh/tài liệu: `doc:<SLOT>|<cụm từ khóa VAS hoặc chủ đề cần tìm>`, với `<SLOT>` thuộc "
     "`QUARTER_NOTES`, `BCTC_AUDITED`, `BCTN_CORE`, `BCTN_PR`, `AGM_TARGETS` (ví dụ: "
-    "`\"doc:QUARTER_NOTES|vay ngắn hạn lãi suất mục đích vay\"`, "
-    "`\"doc:BCTC_AUDITED|giao dịch bên liên quan phải thu\"`).\n\n"
+    '`"doc:QUARTER_NOTES|vay ngắn hạn lãi suất mục đích vay"`, '
+    '`"doc:BCTC_AUDITED|giao dịch bên liên quan phải thu"`).\n\n'
     "CẤU TRÚC JSON BẮT BUỘC:\n"
     "{\n"
     '  "user_concern": "chuỗi 1 câu ngắn gọn",\n'
@@ -298,7 +320,7 @@ BRIEF_STATIC_SYSTEM_PROMPT = (
     '  "qualitative_query": null,\n'
     '  "limit": 4\n'
     "}\n"
-    "(Lưu ý: nếu lọc theo ngưỡng số cố định thì đặt `\"ref\": \"literal\"` và `\"value\": 0.25` dạng thập phân cho %)."
+    '(Lưu ý: nếu lọc theo ngưỡng số cố định thì đặt `"ref": "literal"` và `"value": 0.25` dạng thập phân cho %).'
 )
 
 
@@ -544,6 +566,18 @@ def canonicalize_evidence_spec(raw_ev: Any) -> tuple[str | None, str | None]:
     prefix_head = low.split(":", 1)[0].strip() if ":" in low else low
     hint = txt.split(":", 1)[1].strip() if ":" in txt else ""
 
+    if prefix_head in {"pulse", "market_pulse", "sector_pulse"}:
+        if prefix_head == "market_pulse":
+            return "pulse:market", None
+        if prefix_head == "sector_pulse":
+            sec_arg = hint.split("|", 1)[-1].strip() if hint else ""
+            return (f"pulse:sector|{sec_arg[:60]}" if sec_arg else "pulse:sector"), None
+        low_hint = hint.lower()
+        if low_hint.startswith("sector"):
+            rest_sec = hint.split("|", 1)[1].strip() if "|" in hint else ""
+            return (f"pulse:sector|{rest_sec[:60]}" if rest_sec else "pulse:sector"), None
+        return "pulse:market", None
+
     if prefix_head in {"risk", "risks", "red_flags", "earnings_quality", "scan_financial_risks"}:
         return "risk", None
     if prefix_head in {"peers", "peer", "compare_peers"}:
@@ -666,9 +700,7 @@ def validate_research_brief(
         budget_tier = "standard"
 
     profile_by_tk: dict[str, Mapping[str, Any]] = {
-        str(p.get("ticker") or "").strip().upper(): p
-        for p in catalog_profiles
-        if str(p.get("ticker") or "").strip()
+        str(p.get("ticker") or "").strip().upper(): p for p in catalog_profiles if str(p.get("ticker") or "").strip()
     }
     known_set: set[str] | None = None
     if known_universe_tickers:
@@ -690,9 +722,11 @@ def validate_research_brief(
         return sym
 
     ent_raw = payload.get("entities") if isinstance(payload.get("entities"), Mapping) else {}
-    raw_tks = ent_raw.get("tickers") if isinstance(ent_raw.get("tickers"), Sequence) and not isinstance(
-        ent_raw.get("tickers"), str
-    ) else []
+    raw_tks = (
+        ent_raw.get("tickers")
+        if isinstance(ent_raw.get("tickers"), Sequence) and not isinstance(ent_raw.get("tickers"), str)
+        else []
+    )
     tickers: list[str] = []
     for t in [*explicit_tickers, *raw_tks]:
         ct = _clean_ticker(t)
@@ -708,11 +742,11 @@ def validate_research_brief(
     cand_raw = ent_raw.get("candidate_search")
     cand_spec: CandidateSearchSpec | None = None
     if isinstance(cand_raw, Mapping):
-        raw_sectors = [
-            str(s).strip()
-            for s in (cand_raw.get("sectors") or ())
-            if str(s).strip()
-        ] if isinstance(cand_raw.get("sectors"), Sequence) and not isinstance(cand_raw.get("sectors"), str) else []
+        raw_sectors = (
+            [str(s).strip() for s in (cand_raw.get("sectors") or ()) if str(s).strip()]
+            if isinstance(cand_raw.get("sectors"), Sequence) and not isinstance(cand_raw.get("sectors"), str)
+            else []
+        )
         raw_tmpl = str(cand_raw.get("template") or "").strip().upper() or None
         if raw_tmpl not in {"CORPORATE", "BANK", "SECURITIES", "INSURANCE"}:
             if raw_tmpl:
@@ -877,28 +911,28 @@ def validate_research_brief(
         cap=CLAIM_BUDGET_BY_TIER[budget_tier],
     )
 
-    ambiguities = [
-        str(a).strip()
-        for a in (payload.get("ambiguities") or ())
-        if isinstance(a, str) and a.strip()
-    ] if isinstance(payload.get("ambiguities"), Sequence) and not isinstance(payload.get("ambiguities"), str) else []
+    ambiguities = (
+        [str(a).strip() for a in (payload.get("ambiguities") or ()) if isinstance(a, str) and a.strip()]
+        if isinstance(payload.get("ambiguities"), Sequence) and not isinstance(payload.get("ambiguities"), str)
+        else []
+    )
 
-    assumptions = [
-        str(a).strip()
-        for a in (payload.get("assumptions") or ())
-        if isinstance(a, str) and a.strip()
-    ] if isinstance(payload.get("assumptions"), Sequence) and not isinstance(payload.get("assumptions"), str) else []
+    assumptions = (
+        [str(a).strip() for a in (payload.get("assumptions") or ()) if isinstance(a, str) and a.strip()]
+        if isinstance(payload.get("assumptions"), Sequence) and not isinstance(payload.get("assumptions"), str)
+        else []
+    )
 
     needs_clarification = bool(payload.get("needs_clarification", False))
     clarifying_question = str(payload.get("clarifying_question") or "").strip() or None
 
+    has_pulse_claim = any(ev.startswith("pulse") for c in [*premises, *claims] for ev in c.evidence)
     has_actionable_target = bool(
         tickers
         or anchor_ticker
-        or (
-            cand_spec is not None
-            and (cand_spec.criteria or cand_spec.qualitative_query or cand_spec.sectors)
-        )
+        or has_pulse_claim
+        or answer_shape in {"sector_pulse", "market_outlook"}
+        or (cand_spec is not None and (cand_spec.criteria or cand_spec.qualitative_query or cand_spec.sectors))
     )
     if has_actionable_target:
         # Code guardrail: NEVER block with a clarification question when concrete tickers or screening criteria exist!
@@ -979,12 +1013,11 @@ def build_brief_user_prompt(
     catalog_profiles: Sequence[Mapping[str, Any]] = (),
     session_context: str = "",
     memory_context: str = "",
+    scope_briefing_context: str = "",
 ) -> str:
-    """Build a compact (~250-450 token) user prompt for Step (1) Brief generation."""
+    """Build a compact user prompt for Step (1) Brief generation with Scope-Gated Pulse/Pointers."""
     profile_map = {
-        str(p.get("ticker") or "").strip().upper(): p
-        for p in catalog_profiles
-        if str(p.get("ticker") or "").strip()
+        str(p.get("ticker") or "").strip().upper(): p for p in catalog_profiles if str(p.get("ticker") or "").strip()
     }
     candidate_tokens = set(t.strip().upper() for t in explicit_tickers if t.strip())
     for m in _TICKER_TOKEN_RE.finditer(query.upper()):
@@ -1016,6 +1049,8 @@ def build_brief_user_prompt(
             + ", ".join(sorted(available_tickers)[:40])
             + " (Lưu ý: số liệu BCTC định lượng `FactSet`/`KPI` phủ toàn bộ ~400 mã trên sàn trong Core PG)."
         )
+    if scope_briefing_context:
+        lines.append(f"- Dữ liệu Thực địa PIT theo Ống kính Câu hỏi:\n{scope_briefing_context[:2600]}")
     if session_context:
         lines.append(f"- Con trỏ trạng thái phiên:\n{session_context[:1800]}")
     if memory_context:
@@ -1073,17 +1108,17 @@ def build_fallback_brief(
     catalog_profiles: Sequence[Mapping[str, Any]] = (),
     allowed_project_ids: frozenset[str] | set[str] = frozenset({"*"}),
     chat_mode: str = "GENERAL",
+    scope_lens: str = "COMPANY",
+    bellwether_tickers: Sequence[str] = (),
 ) -> ResearchBrief:
     """Deterministic 0-LLM fallback after 2 invalid LLM briefs.
 
     - With concrete tickers: a generic, explicitly-labeled health-check brief on those tickers.
-    - Without tickers: NEVER invent screening criteria (that silently answers a different question);
-      ask the user one clarifying question instead.
+    - With SECTOR or MARKET lens: an actionable sector/market pulse + bellwether disclosure brief.
+    - Open subjective without tickers: NEVER invent screening criteria; ask one clarifying question.
     """
     profile_map = {
-        str(p.get("ticker") or "").strip().upper(): p
-        for p in catalog_profiles
-        if str(p.get("ticker") or "").strip()
+        str(p.get("ticker") or "").strip().upper(): p for p in catalog_profiles if str(p.get("ticker") or "").strip()
     }
     detected: list[str] = []
     for t in (*explicit_tickers, *fallback_tickers):
@@ -1094,6 +1129,45 @@ def build_fallback_brief(
         sym = m.group(1)
         if sym in profile_map and ("*" in allowed_project_ids or sym in allowed_project_ids) and sym not in detected:
             detected.append(sym)
+
+    ly, lq = latest_closed_quarter_for_pit(as_of_date)
+    p_lbl = f"Q{lq}/{ly}"
+
+    if not detected and scope_lens in ("SECTOR", "MARKET"):
+        bells = [
+            b.strip().upper()
+            for b in bellwether_tickers
+            if b.strip() and ("*" in allowed_project_ids or b.strip().upper() in allowed_project_ids)
+        ][:4]
+        is_sec = scope_lens == "SECTOR"
+        claims_fb = [
+            ClaimSpec(
+                id="K1",
+                statement=(
+                    "Độ rộng lợi nhuận, định giá và sự phân hóa giữa nhóm dẫn dắt và suy yếu trong ngành"
+                    if is_sec
+                    else "Nhịp đập VN-Index, thanh khoản, khối ngoại và ma trận phân hóa các nhóm ngành"
+                ),
+                evidence=["pulse:sector" if is_sec else "pulse:market"],
+                period=p_lbl,
+            )
+        ]
+        if bells:
+            claims_fb.append(
+                ClaimSpec(
+                    id="K2",
+                    statement="Động lực kinh doanh, cơ chế chính sách & góc nhìn Ban lãnh đạo từ nhóm đầu ngành",
+                    evidence=[f"doc:QUARTER_NOTES,BCTN_CORE,AGM_TARGETS|{query.strip()[:100]}"],
+                    period=p_lbl,
+                )
+            )
+        return ResearchBrief(
+            user_concern=query.strip()[:180],
+            answer_shape="sector_pulse" if is_sec else "market_outlook",
+            entities=BriefEntities(tickers=bells),
+            claims=claims_fb,
+            budget_tier="standard",
+        )
 
     if not detected:
         return ResearchBrief(
@@ -1108,9 +1182,6 @@ def build_fallback_brief(
             ),
             budget_tier="fast",
         )
-
-    ly, lq = latest_closed_quarter_for_pit(as_of_date)
-    p_lbl = f"Q{lq}/{ly}"
     return ResearchBrief(
         user_concern=query.strip()[:180],
         answer_shape="verdict_with_reasons",
@@ -1147,6 +1218,9 @@ async def create_and_validate_brief(
     chat_mode: str = "GENERAL",
     session_context: str = "",
     memory_context: str = "",
+    scope_briefing_context: str = "",
+    scope_lens: str = "COMPANY",
+    bellwether_tickers: Sequence[str] = (),
     history_messages: Sequence[AgentMessage] = (),
     enable_thinking: bool = False,
     on_reasoning_delta: Callable[[str], Awaitable[None]] | None = None,
@@ -1163,6 +1237,7 @@ async def create_and_validate_brief(
         catalog_profiles=catalog_profiles,
         session_context=session_context,
         memory_context=memory_context,
+        scope_briefing_context=scope_briefing_context,
     )
     emit_trace(
         trace,
@@ -1267,6 +1342,8 @@ async def create_and_validate_brief(
         catalog_profiles=catalog_profiles,
         allowed_project_ids=allowed_project_ids,
         chat_mode=chat_mode,
+        scope_lens=scope_lens,
+        bellwether_tickers=bellwether_tickers,
     )
     retry_outcome.fallback_used = True
     retry_outcome.fallback_mode = "clarification" if fb.needs_clarification else "generic_ticker_health_check"

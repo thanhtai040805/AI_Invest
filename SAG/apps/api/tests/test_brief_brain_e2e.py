@@ -73,6 +73,10 @@ class _VhmCoreReader:
         del as_of_date, tickers
         return {"VHM": 180_000e9}
 
+    async def fetch_pit_market_and_macro_tape(self, as_of_date, *, tickers=None):
+        del as_of_date, tickers
+        return {}
+
     async def fetch_pit_financial_ratios(self, as_of_date, *, tickers=None, lookback_years=7):
         del as_of_date, tickers, lookback_years
         return []

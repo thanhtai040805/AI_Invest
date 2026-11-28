@@ -574,6 +574,14 @@ class CoreMetricsReaderProtocol(Protocol):
     ) -> dict[str, float]:
         ...
 
+    async def fetch_pit_market_and_macro_tape(
+        self,
+        as_of_date: date,
+        *,
+        tickers: Sequence[str] | None = None,
+    ) -> dict[str, Any]:
+        ...
+
 
 class AsyncPGCoreMetricsReader:
     """Pooled, strictly read-only (`default_transaction_read_only = on`) Core PG reader."""
@@ -926,6 +934,224 @@ class AsyncPGCoreMetricsReader:
             mc = _finite_float(r.get("market_cap"))
             if sym and mc is not None and mc > 0:
                 out[sym] = mc
+        return out
+
+    async def fetch_pit_market_and_macro_tape(
+        self,
+        as_of_date: date,
+        *,
+        tickers: Sequence[str] | None = None,
+    ) -> dict[str, Any]:
+        """Fetch strictly PIT-gated (`<= as_of_date`) VN-Index, liquidity, breadth, foreign flow, regime & macro."""
+        del tickers
+        pool = await self._get_pool()
+        min_px_date = as_of_date - timedelta(days=140)
+        min_macro_date = as_of_date - timedelta(days=120)
+
+        vni_sql = """
+            SELECT date, close_unadj, close_adj, volume_total, adtv20_continuous
+            FROM market_data_daily
+            WHERE ticker = 'VNINDEX'
+              AND date <= $1
+              AND date >= $2
+            ORDER BY date DESC
+            LIMIT 70
+        """
+        breadth_and_sec_sql = """
+            WITH recent_dates AS (
+                SELECT DISTINCT date
+                FROM market_data_daily
+                WHERE date <= $1
+                  AND date >= $2
+                  AND ticker <> 'VNINDEX'
+                ORDER BY date DESC
+                LIMIT 22
+            ),
+            bounds AS (
+                SELECT MAX(date) AS d0,
+                       (SELECT date FROM recent_dates ORDER BY date DESC OFFSET 1 LIMIT 1) AS d1,
+                       MIN(date) AS d21
+                FROM recent_dates
+            ),
+            px AS (
+                SELECT UPPER(TRIM(m.ticker)) AS ticker,
+                       m.date,
+                       COALESCE(NULLIF(m.close_adj, 0), NULLIF(m.close_unadj, 0)) AS px_val
+                FROM market_data_daily m
+                JOIN bounds b ON m.date IN (b.d0, b.d1, b.d21)
+                WHERE m.ticker <> 'VNINDEX'
+            ),
+            piv AS (
+                SELECT ticker,
+                       MAX(CASE WHEN px.date = b.d0 THEN px.px_val END) AS p0,
+                       MAX(CASE WHEN px.date = b.d1 THEN px.px_val END) AS p1,
+                       MAX(CASE WHEN px.date = b.d21 THEN px.px_val END) AS p21,
+                       MAX(b.d0) AS latest_d
+                FROM px
+                CROSS JOIN bounds b
+                GROUP BY ticker
+            )
+            SELECT p.ticker,
+                   NULLIF(TRIM(s.sector), '') AS sector,
+                   p.p0,
+                   p.p1,
+                   p.p21,
+                   p.latest_d
+            FROM piv p
+            LEFT JOIN stocks s ON UPPER(TRIM(s.symbol)) = p.ticker
+            WHERE p.p0 IS NOT NULL
+        """
+        foreign_sql = """
+            WITH f_dates AS (
+                SELECT DISTINCT trade_date
+                FROM foreign_flow
+                WHERE trade_date <= $1
+                  AND trade_date >= $2
+                ORDER BY trade_date DESC
+                LIMIT 20
+            ),
+            ranked_d AS (
+                SELECT trade_date, ROW_NUMBER() OVER (ORDER BY trade_date DESC) AS rn
+                FROM f_dates
+            )
+            SELECT COALESCE(NULLIF(TRIM(s.sector), ''), 'UNKNOWN') AS sector,
+                   SUM(CASE WHEN rd.rn <= 5 THEN COALESCE(ff.net_value, 0) ELSE 0 END) AS net_5d,
+                   SUM(COALESCE(ff.net_value, 0)) AS net_20d
+            FROM foreign_flow ff
+            JOIN ranked_d rd ON rd.trade_date = ff.trade_date
+            LEFT JOIN stocks s ON UPPER(TRIM(s.symbol)) = UPPER(TRIM(ff.symbol))
+            GROUP BY 1
+        """
+        regime_sql = """
+            SELECT date, current_regime, vix_vn_analog, breadth_above_ma50_pct
+            FROM market_regimes
+            WHERE date <= $1
+            ORDER BY date DESC
+            LIMIT 1
+        """
+        macro_sql = """
+            SELECT indicator_name, indicator_date, value, unit
+            FROM macro_indicators
+            WHERE indicator_date <= $1
+              AND indicator_date >= $2
+              AND indicator_name = ANY($3::text[])
+              AND value IS NOT NULL
+            ORDER BY indicator_name ASC, indicator_date DESC
+        """
+        macro_keys = [
+            "usd_vnd_exchange",
+            "vninbr_interbank_rate",
+            "vnintr_interest_rate",
+            "oil_price_brent",
+            "usd_10y_yield",
+            "gold_price_vnd",
+        ]
+
+        async with pool.acquire() as conn:
+            vni_rows = await conn.fetch(vni_sql, as_of_date, min_px_date)
+            bs_rows = await conn.fetch(breadth_and_sec_sql, as_of_date, min_px_date)
+            ff_rows = await conn.fetch(foreign_sql, as_of_date, min_px_date)
+            reg_row = await conn.fetchrow(regime_sql, as_of_date)
+            mac_rows = await conn.fetch(macro_sql, as_of_date, min_macro_date, macro_keys)
+
+        out: dict[str, Any] = {}
+        if vni_rows:
+            r0 = vni_rows[0]
+            c0 = _finite_float(r0.get("close_unadj")) or _finite_float(r0.get("close_adj"))
+            out["latest_trade_date"] = r0["date"]
+            out["vnindex_close"] = c0
+            if c0 and len(vni_rows) >= 2:
+                c1 = _finite_float(vni_rows[1].get("close_unadj")) or _finite_float(vni_rows[1].get("close_adj"))
+                if c1 and c1 > 0:
+                    out["vnindex_ret_1d"] = (c0 - c1) / c1
+            if c0 and len(vni_rows) >= 21:
+                c21 = _finite_float(vni_rows[20].get("close_unadj")) or _finite_float(vni_rows[20].get("close_adj"))
+                if c21 and c21 > 0:
+                    out["vnindex_ret_1m"] = (c0 - c21) / c21
+            if c0 and len(vni_rows) >= 60:
+                idx_3m = min(len(vni_rows) - 1, 62)
+                c63 = _finite_float(vni_rows[idx_3m].get("close_unadj")) or _finite_float(
+                    vni_rows[idx_3m].get("close_adj")
+                )
+                if c63 and c63 > 0:
+                    out["vnindex_ret_3m"] = (c0 - c63) / c63
+            vol0 = _finite_float(r0.get("volume_total"))
+            adtv20 = _finite_float(r0.get("adtv20_continuous"))
+            if vol0 and adtv20 and adtv20 > 0:
+                out["liquidity_vs_20d_ratio"] = vol0 / adtv20
+            elif vol0 and len(vni_rows) >= 5:
+                vols = [_finite_float(vr.get("volume_total")) for vr in vni_rows[:20]]
+                valid_vols = [v for v in vols if v and v > 0]
+                if valid_vols:
+                    out["liquidity_vs_20d_ratio"] = vol0 / (sum(valid_vols) / len(valid_vols))
+
+        adv = 0
+        dec = 0
+        sec_rets_map: dict[str, list[float]] = defaultdict(list)
+        for r in bs_rows:
+            if "latest_trade_date" not in out and r.get("latest_d") is not None:
+                out["latest_trade_date"] = r["latest_d"]
+            p0 = _finite_float(r.get("p0"))
+            p1 = _finite_float(r.get("p1"))
+            p21 = _finite_float(r.get("p21"))
+            if p0 and p1 and p1 > 0:
+                if p0 > p1 * 1.0001:
+                    adv += 1
+                elif p0 < p1 * 0.9999:
+                    dec += 1
+            sec = str(r.get("sector") or "").strip().upper()
+            if sec and p0 and p21 and p21 > 0:
+                sec_rets_map[sec].append((p0 - p21) / p21)
+        if adv or dec:
+            out["advancers"] = adv
+            out["decliners"] = dec
+        out["sector_ret_1m"] = {
+            sc: sorted(vals)[len(vals) // 2] for sc, vals in sec_rets_map.items() if vals
+        }
+
+        f5_total = 0.0
+        f20_total = 0.0
+        f5_by_sec: dict[str, float] = {}
+        for r in ff_rows:
+            n5 = _finite_float(r.get("net_5d")) or 0.0
+            n20 = _finite_float(r.get("net_20d")) or 0.0
+            f5_total += n5
+            f20_total += n20
+            sec = str(r.get("sector") or "").strip().upper()
+            if sec and sec != "UNKNOWN":
+                f5_by_sec[sec] = n5
+        if ff_rows:
+            out["foreign_net_5d_vnd"] = f5_total
+            out["foreign_net_20d_vnd"] = f20_total
+            out["foreign_net_5d_by_sector"] = f5_by_sec
+
+        if reg_row is not None:
+            out["regime"] = {
+                "date": reg_row["date"],
+                "current_regime": str(reg_row["current_regime"] or ""),
+                "vix_vn_analog": _finite_float(reg_row.get("vix_vn_analog")),
+                "breadth_above_ma50_pct": _finite_float(reg_row.get("breadth_above_ma50_pct")),
+            }
+
+        mac_grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for r in mac_rows:
+            mac_grouped[str(r["indicator_name"])].append(dict(r))
+        mac_out: dict[str, dict[str, Any]] = {}
+        for mk, mlist in mac_grouped.items():
+            latest_val = _finite_float(mlist[0].get("value"))
+            latest_d = mlist[0].get("indicator_date")
+            if latest_val is None or latest_d is None:
+                continue
+            ref_idx = min(len(mlist) - 1, 20)
+            prev_val = _finite_float(mlist[ref_idx].get("value")) if len(mlist) >= 2 else None
+            chg_1m = ((latest_val - prev_val) / abs(prev_val)) if (prev_val and abs(prev_val) > 1e-9) else None
+            mac_out[mk] = {
+                "latest": latest_val,
+                "date": latest_d,
+                "change_1m_pct": chg_1m,
+                "unit": str(mlist[0].get("unit") or ""),
+            }
+        out["macro"] = mac_out
         return out
 
 

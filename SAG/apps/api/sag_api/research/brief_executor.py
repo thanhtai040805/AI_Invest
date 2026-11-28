@@ -68,7 +68,7 @@ logger = logging.getLogger(__name__)
 VerdictStatus = Literal["CONFIRMED", "REFUTED", "PARTIAL", "NO_DATA"]
 
 MAX_CANDIDATE_BATCH = 500
-MAX_MINI_READER_CONCURRENCY = 3
+MAX_MINI_READER_CONCURRENCY = 5
 MAX_ESCALATION_CLAIMS = 2
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
@@ -86,27 +86,38 @@ _POSITIVE_PREMISE_RE = re.compile(
 )
 
 MINI_READER_STATIC_SYSTEM_PROMPT = (
-    "Bạn là Chuyên viên Đọc Kiểm Toán BCTC, BCTN & ĐHĐCĐ (Forensic Disclosure Mini-Reader) của AIInvest.\n"
-    "Nhiệm vụ: dựa trên các đoạn tài liệu `[C#]` được cung cấp, trích xuất ĐẦY ĐỦ các dữ kiện giàu giá trị phân tích "
-    "nhất cho ý (`claim`) và xuất ra ĐÚNG MỘT JSON (không viết văn bản ngoài JSON, không tự cộng trừ nhẩm).\n\n"
+    "Bạn là Chuyên gia Giải mã Cơ chế Kinh doanh, Quan hệ Hệ sinh thái & Đối chứng Thực chất "
+    "(Buy-Side Mechanism & Forensic Disclosure Mini-Reader) của AIInvest.\n"
+    "Nhiệm vụ: dựa trên các đoạn tài liệu `[C#]` được cung cấp, bóc tách ĐẦY ĐỦ cả CƠ CHẾ TẠO TIỀN, MỐI QUAN HỆ "
+    "CHỦ THỂ lẫn ĐIỀU KIỆN / RỦI RO ĐÁNH ĐỔI cho ý (`claim`) và xuất ra ĐÚNG MỘT JSON (không viết văn bản ngoài JSON, "
+    "không tự cộng trừ nhẩm).\n\n"
     "QUY TẮC BẮT BUỘC:\n"
-    "1. Ưu tiên bóc tách tối đa các chi tiết kinh doanh & kế toán đắt giá có trong `[C#]` (tối đa 7 dòng `findings`): "
-    "doanh thu/lợi nhuận/tỷ trọng từng khối hoặc mảng sản phẩm (ví dụ Chuyển đổi số, CNTT nước ngoài, bán lẻ, dự án), "
-    "thị trường trọng điểm (Nhật Bản, Mỹ, EU, nội địa), hợp đồng ký mới/backlog, nhà máy/công nghệ chiến lược, "
-    "ý kiến trả lời của Ban lãnh đạo tại ĐHĐCĐ, và bản chất thay đổi phương pháp hợp nhất/cơ sở tương đương.\n"
-    "2. Mọi con số hoặc sự kiện trong `findings` PHẢI có sẵn nguyên bản trong đoạn `[C#]` và gắn mã `[C#]` ở cuối câu "
-    "(ví dụ: `\"Doanh thu Chuyển đổi số đạt 16.751 tỷ đồng (+16,8%), chiếm 47,3% CNTT nước ngoài [C2].\"`).\n"
-    "3. TUYỆT ĐỐI KHÔNG tự cộng các khoản mục con trong thuyết minh vào số tổng trên Bảng cân đối kế toán "
-    "(tránh lỗi cộng trùng nợ dài hạn đến hạn trả vào tổng vay ngắn hạn).\n"
-    "4. Nếu các đoạn `[C#]` không chứa thông tin trả lời cho ý này, đặt `\"status\": \"NO_DATA\"` và ghi rõ "
+    "1. LĂNG KÍNH 2 MẶT CHUẨN BUY-SIDE (tối đa 7 dòng `findings`; đặt `\"status\": \"CONFIRMED\"` khi đoạn `[C#]` có "
+    "bằng chứng trực tiếp làm rõ cơ chế/câu hỏi, `\"REFUTED\"` khi số liệu bác bỏ thẳng giả định sai, `\"PARTIAL\"` "
+    "khi mới rõ một vế): Với mỗi điểm dữ liệu đắt giá trong `[C#]`, hãy giữ trọn cả 2 mặt:\n"
+    "   (a) Cỗ máy tạo tiền & Mạng lưới quan hệ: nhân sự chiến lược HĐQT/lãnh đạo bảo chứng, khách hàng/thị trường "
+    "mở đường, công nghệ/sản phẩm giải bài toán cụ thể, chính sách định mức giá mới, và vai trò của công ty con/liên "
+    "kết/đối tác hệ sinh thái;\n"
+    "   (b) Đối chứng thực chất & Rủi ro đi kèm: bản chất pháp lý/kế toán của thay đổi hợp nhất (ai chuyển giao cho "
+    "ai, tác động lên dòng cổ tức tiền mặt thật vs. bút toán sổ sách), áp lực chi phí đầu vào/vốn lưu động, phơi "
+    "nhiễm bên liên quan hoặc điều kiện thận trọng mà Ban lãnh đạo nêu tại ĐHĐCĐ.\n"
+    "2. Mọi con số hoặc sự kiện trong `findings` PHẢI có sẵn nguyên bản trong đoạn `[C#]`, giữ rõ mốc kỳ tài liệu "
+    "(ví dụ `FY2025` vs `ĐHĐCĐ 2026` vs `Q3/2026` để không gán nhầm diễn biến năm cũ cho kỳ mới), và gắn mã `[C#]` "
+    'ở cuối câu (ví dụ: `"Tại ĐHĐCĐ 2026, Ban lãnh đạo cho biết Chính phủ bỏ tính đơn giá nhân công theo lương cơ '
+    'bản giúp biên lợi nhuận dự án CNTT trong nước cải thiện mạnh [C2]."`).\n'
+    "3. TUYỆT ĐỐI KHÔNG tự tính nhẩm `% tăng/giảm` (`+141%`, `+68%`, `giảm 98%`), hệ số `gấp X lần` hay `chiếm Y%` "
+    "từ hai cột số tuyệt đối nếu con số `%` đó chưa in sẵn nguyên văn trong `[C#]` (hãy ghi trực tiếp hai con số gốc, "
+    "ví dụ `tăng từ 891 lên 2.149 [C3]`); KHÔNG tự chia 1.000 làm tròn đổi `triệu đồng` sang `tỷ đồng` (nếu bảng ghi "
+    "`2.136.412 triệu đồng` thì giữ nguyên `2.136.412 triệu đồng [C#]`); và KHÔNG tự cộng khoản mục con vào số tổng.\n"
+    '4. Nếu các đoạn `[C#]` không chứa thông tin trả lời cho ý này, đặt `"status": "NO_DATA"` và ghi rõ '
     "khoảng trống, KHÔNG suy đoán.\n"
-    "5. Chỉ điền `anomaly_followup_query` (chuỗi từ khóa VAS ngắn < 10 từ) KHI VÀ CHỈ KHI đoạn `[C#]` nhắc tới "
-    "một mã thuyết minh khác đang mâu thuẫn trực tiếp với số liệu và chưa có trong đoạn hiện tại; "
-    "còn lại để `null`.\n\n"
+    "5. Điền `anomaly_followup_query` (chuỗi từ khóa VAS/chủ đề ngắn < 12 từ) khi đoạn `[C#]` nhắc tới "
+    "một mã thuyết minh khác, một văn bản/sự kiện chuyển giao vốn hoặc một biến động lớn chưa có lời "
+    "giải thích nguyên nhân trong các đoạn hiện tại; còn lại để `null`.\n\n"
     "CẤU TRÚC JSON ĐẦU RA:\n"
     "{\n"
     '  "status": "CONFIRMED | REFUTED | PARTIAL | NO_DATA",\n'
-    '  "findings": ["dòng sự kiện 1 kèm [C#]", "dòng sự kiện 2 kèm [C#]"],\n'
+    '  "findings": ["dòng nhân quả & số liệu 1 kèm [C#]", "dòng nhân quả & số liệu 2 kèm [C#]"],\n'
     '  "anomaly_followup_query": null\n'
     "}"
 )
@@ -405,12 +416,24 @@ def _check_criterion(
 async def locate_candidates(
     brief: ResearchBrief,
     ctx: ResearchToolContext,
+    *,
+    pulse_bundle: Any = None,
 ) -> LocatedTargets:
-    """Component (3): Resolve explicit tickers, anchor-benchmark peers, or open-universe candidates (0 tokens)."""
+    """Component (3): Resolve explicit tickers, sector/market bellwethers, or open-universe candidates (0 tokens)."""
     cand_spec = brief.entities.candidate_search
     anchor = brief.entities.anchor_ticker
     if cand_spec is None:
         base_tks = list(brief.entities.tickers)[:6]
+        if (
+            not base_tks
+            and pulse_bundle is not None
+            and getattr(pulse_bundle, "target_tickers", None)
+            and (
+                brief.answer_shape in {"sector_pulse", "market_outlook"}
+                or any(ev.startswith("pulse") for c in [*brief.premises_to_check, *brief.claims] for ev in c.evidence)
+            )
+        ):
+            base_tks = list(pulse_bundle.target_tickers)[:5]
         missing_docs = [t for t in base_tks if ctx.available_tickers and t not in ctx.available_tickers]
         cov_note = (
             f"Lưu ý phạm vi tài liệu: {', '.join(missing_docs)} có số liệu BCTC định lượng Core PG nhưng "
@@ -646,9 +669,7 @@ async def locate_candidates(
         m_vals = r["metrics"]
         m_units = r["units"]
         c_inputs: dict[str, dict[str, Any]] = {
-            k: {"value": v, "unit": m_units.get(k) or "NUMBER"}
-            for k, v in m_vals.items()
-            if v is not None
+            k: {"value": v, "unit": m_units.get(k) or "NUMBER"} for k, v in m_vals.items() if v is not None
         }
         c_inputs["evaluated_universe_count"] = {"value": float(len(batch_tickers)), "unit": "NUMBER"}
         c_inputs["strict_matched_count"] = {"value": float(len(strict_matches)), "unit": "NUMBER"}
@@ -772,11 +793,13 @@ async def _run_quant_specs_for_claim(
     fs: FactSet | None,
     located: LocatedTargets,
     ctx: ResearchToolContext,
+    pulse_bundle: Any = None,
+    pulse_cache_holder: dict[str, tuple[list[str], list[str]]] | None = None,
     on_tool_call: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     on_tool_result: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     on_stage: Callable[[str, str, str], Awaitable[None]] | None = None,
 ) -> tuple[list[str], list[str], str | None]:
-    """Execute all 0-token deterministic specs (`fact:*`, `kpi:*`, `risk`, `peers`, `agm`, `kg`, `screen`, `table:*`).
+    """Execute all 0-token deterministic specs (`pulse:*`, `fact:*`, `kpi:*`, `risk`, `peers`, `agm`, `kg`, `screen`).
 
     Returns `(summary_lines, badges, anomaly_escalation_query_or_None)`.
     """
@@ -785,6 +808,7 @@ async def _run_quant_specs_for_claim(
     badges: list[str] = []
     escalation_hint: str | None = None
 
+    pulse_specs = [ev for ev in claim.evidence if ev.startswith("pulse")]
     fact_items = [ev.split(":", 1)[1] for ev in claim.evidence if ev.startswith("fact:")]
     kpi_items = [ev.split(":", 1)[1] for ev in claim.evidence if ev.startswith("kpi:")]
     wants_risk = "risk" in claim.evidence
@@ -794,7 +818,7 @@ async def _run_quant_specs_for_claim(
     kg_specs = [ev for ev in claim.evidence if ev == "kg" or ev.startswith("kg:")]
     table_specs = [ev for ev in claim.evidence if ev.startswith("table:")]
     wants_mem = "mem" in claim.evidence
-    has_fin_quant = bool(fact_items or kpi_items or wants_risk or wants_peers or wants_agm)
+    has_fin_quant = bool(pulse_specs or fact_items or kpi_items or wants_risk or wants_peers or wants_agm)
     quant_call_id = f"quant-{claim.id}"
     if has_fin_quant:
         primary_tool = (
@@ -809,6 +833,8 @@ async def _run_quant_specs_for_claim(
             else "get_financial_statements"
         )
         spec_preview_parts: list[str] = []
+        if pulse_specs:
+            spec_preview_parts.append("Tổng hợp Ngành/Thị trường PIT")
         if fact_items:
             spec_preview_parts.append(f"BCTC ({', '.join(fact_items[:4])})")
         if kpi_items:
@@ -836,6 +862,20 @@ async def _run_quant_specs_for_claim(
                     "args_preview": " · ".join(spec_preview_parts),
                 }
             )
+
+    if pulse_specs and pulse_bundle is not None:
+        from sag_api.research.market_pulse import register_pulse_evidence_into_ledger
+
+        if pulse_cache_holder is not None and "registered" in pulse_cache_holder:
+            p_lines, p_badges = pulse_cache_holder["registered"]
+        else:
+            p_lines, p_badges = await register_pulse_evidence_into_ledger(pulse_bundle, ctx.evidence)
+            if pulse_cache_holder is not None:
+                pulse_cache_holder["registered"] = (p_lines, p_badges)
+        lines.extend(p_lines)
+        for pb in p_badges:
+            if pb not in badges:
+                badges.append(pb)
 
     if wants_screen and located.summary_lines:
         lines.extend(located.summary_lines[:6])
@@ -1040,8 +1080,7 @@ async def _run_quant_specs_for_claim(
 
                 if fact_objs:
                     trace_inputs: dict[str, Any] = {
-                        f"{f.item}@{f.period_label}": {"value": f.value, "unit": f.unit}
-                        for f in fact_objs
+                        f"{f.item}@{f.period_label}": {"value": f.value, "unit": f.unit} for f in fact_objs
                     }
                     trace_inputs.update(common_size_inputs)
                     saved_fs = await ctx.evidence.register_calculator_trace(
@@ -1081,8 +1120,7 @@ async def _run_quant_specs_for_claim(
                         badges.append(f"[{cid}]")
                         extra = f" ({kv.detail})" if kv.detail else ""
                         lines.append(
-                            f"[{cid}] {tk} · {kv.label_vi} ({kv.period}): "
-                            f"{fmt_value(kv.value, kv.unit)}{extra}"
+                            f"[{cid}] {tk} · {kv.label_vi} ({kv.period}): {fmt_value(kv.value, kv.unit)}{extra}"
                         )
                     elif kv.status is KpiStatus.INSUFFICIENT_DATA:
                         lines.append(f"{tk} · {kv.label_vi}: thiếu dữ liệu ({kv.detail})")
@@ -1296,6 +1334,7 @@ async def _run_quant_specs_for_claim(
 
     # 6) Knowledge Graph 3-layer query (`0` LLM tokens)
     if kg_specs and ctx.enable_kg and tickers:
+
         async def _noop(_p: Any) -> None:
             return None
 
@@ -1375,6 +1414,7 @@ async def _run_quant_specs_for_claim(
 
     # 7) Hydrated 2D PDF tables (`0` LLM tokens)
     if table_specs and tickers:
+
         async def _noop_t(_p: Any) -> None:
             return None
 
@@ -1424,8 +1464,7 @@ async def _run_quant_specs_for_claim(
                         elif isinstance(rw, list) and len(rw) >= 2:
                             r_lbl = str(rw[0].get("raw_text") if isinstance(rw[0], Mapping) else rw[0] or "").strip()
                             r_vals = [
-                                str(c.get("raw_text") if isinstance(c, Mapping) else c or "").strip()
-                                for c in rw[1:4]
+                                str(c.get("raw_text") if isinstance(c, Mapping) else c or "").strip() for c in rw[1:4]
                             ]
                             r_vals = [v for v in r_vals if v and v != "-"]
                             if r_lbl and r_vals:
@@ -1550,9 +1589,7 @@ def _evaluate_premise_direction(
                 rel_chg = (cur.value - prev.value) / abs(prev.value)
                 abs_chg = cur.value - prev.value
                 # For percentage ratios like NIM (~0.035), a 'collapse' implies >= 35 bps or >=10% rel drop
-                is_collapse = (
-                    (abs_chg <= -0.0035 and rel_chg <= -0.10) if cur.unit == "RATIO" else (rel_chg <= -0.15)
-                )
+                is_collapse = (abs_chg <= -0.0035 and rel_chg <= -0.10) if cur.unit == "RATIO" else (rel_chg <= -0.15)
                 payload = {
                     "formula": (
                         f"({item_id}@{cur.period_label} - {item_id}@{prev.period_label}) / abs({prev.period_label})"
@@ -1688,7 +1725,12 @@ def _evaluate_premise_direction(
     return None, None, None
 
 
+_LEAKED_FACET_CODE_RE = re.compile(r"\bF[1-8]_[A-Z0-9_]+\b")
+
+
 def _parse_doc_spec(doc_ev: str, default_period: str | None) -> tuple[list[str], list[int], list[int], str]:
+    from sag_api.research.market_pulse import _SIGNAL_LABEL_VI
+
     rest = doc_ev.split(":", 1)[1] if ":" in doc_ev else doc_ev
     slot_part, query_part = (
         rest.split("|", 1) if "|" in rest else ("QUARTER_NOTES,BCTC_AUDITED,BCTN_CORE,AGM_TARGETS", rest)
@@ -1704,7 +1746,182 @@ def _parse_doc_spec(doc_ev: str, default_period: str | None) -> tuple[list[str],
             quarters = [int(qm.group(1))]
         elif fym and "QUARTER_NOTES" not in slots:
             years = [int(fym.group(1))]
-    return slots, years, quarters, query_part.strip()
+    leaked_facets = _LEAKED_FACET_CODE_RE.findall(query_part)
+    cleaned_q = re.sub(r"\s+", " ", _LEAKED_FACET_CODE_RE.sub(" ", query_part)).strip()
+    if not cleaned_q and leaked_facets:
+        cleaned_q = _SIGNAL_LABEL_VI.get(leaked_facets[0], "cơ chế kinh doanh và thuyết minh trọng yếu")
+    return slots, years, quarters, cleaned_q
+
+
+async def _inject_pointer_seed_sections(
+    *,
+    ctx: ResearchToolContext,
+    doc_tickers: Sequence[str],
+    slots_list: Sequence[str],
+    claim_statement: str,
+    pulse_bundle: Any,
+) -> tuple[str, list[str]]:
+    """Pointer-Guided Seed Injection (`0` LLM tokens, `100%` CanonicalBlock SHA-256 verified).
+
+    Surfaces high-signal `StructuralPointer` passages (`AGM_QA`, `CONSOLIDATION_SCOPE`, `SEGMENT_MDNA`,
+    `STRATEGIC_CAPEX`) directly from SAG's deterministic index when broad/sector/market queries lack
+    narrow lexical keywords or when Qdrant is unconfigured/misses the AGM/Note section.
+    """
+    if pulse_bundle is None or not getattr(pulse_bundle, "structural_pointers", None):
+        return "", []
+    from datetime import datetime
+
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from sag_api.db.models import Document, DocumentVersion, KnowledgeUnit
+    from sag_api.research.chat_orchestrator import RetrievedResearchSection, load_canonical_blocks_for_versions
+
+    want_tks = {t.upper() for t in doc_tickers if t}
+    slots_up = {s.upper() for s in slots_list if s}
+    stmt_low = (claim_statement or "").lower()
+    is_causal_or_story_claim = any(
+        k in stmt_low
+        for k in (
+            "động lực",
+            "biên",
+            "chiến lược",
+            "cạnh tranh",
+            "thị trường",
+            "hợp nhất",
+            "liên kết",
+            "công ty con",
+            "đhđcđ",
+            "cổ đông",
+            "lãnh đạo",
+            "rủi ro",
+            "tăng trưởng",
+            "đầu tư",
+        )
+    )
+    matched_ptrs = [
+        p
+        for p in pulse_bundle.structural_pointers
+        if p.ticker in want_tks
+        and (
+            not slots_up
+            or p.sub_doc_slot in slots_up
+            or (is_causal_or_story_claim and p.sub_doc_slot in ("AGM_TARGETS", "BCTN_CORE", "BCTC_AUDITED"))
+        )
+    ][:5]
+    if not matched_ptrs:
+        return "", []
+
+    ver_ids = sorted({p.document_version_id for p in matched_ptrs if p.document_version_id})
+    if not ver_ids:
+        return "", []
+
+    try:
+        async with ctx.session_factory() as sess:
+            if not isinstance(sess, AsyncSession):
+                return "", []
+            blocks_map = await load_canonical_blocks_for_versions(sess, ver_ids, as_of_date=ctx.as_of_date)
+            ver_meta_rows = (
+                await sess.execute(
+                    select(
+                        DocumentVersion.id,
+                        DocumentVersion.document_id,
+                        DocumentVersion.source_published_at,
+                        DocumentVersion.valid_from,
+                    )
+                    .join(Document, Document.id == DocumentVersion.document_id)
+                    .where(DocumentVersion.id.in_(ver_ids), Document.is_active.is_(True))
+                )
+            ).all()
+            ku_rows = {
+                str(u.id): u
+                for u in (
+                    await sess.scalars(
+                        select(KnowledgeUnit).where(
+                            KnowledgeUnit.id.in_([p.unit_id for p in matched_ptrs]),
+                            KnowledgeUnit.is_current.is_(True),
+                        )
+                    )
+                ).all()
+            }
+    except Exception:  # noqa: BLE001
+        return "", []
+
+    ver_doc_pub: dict[str, tuple[str, date]] = {}
+    for vid, did, spub, vfrom in ver_meta_rows:
+        dt = spub or vfrom
+        pd_val = dt.date() if isinstance(dt, datetime) else date.fromisoformat(str(dt)[:10])
+        if pd_val <= ctx.as_of_date:
+            ver_doc_pub[str(vid)] = (str(did or ""), pd_val)
+
+    from sag_api.research.epistemic_foundation import is_residual_english_mirror
+    from sag_api.research.market_pulse import _format_slot_period_stamp
+
+    new_secs: list[RetrievedResearchSection] = []
+    for p in matched_ptrs:
+        dp = ver_doc_pub.get(p.document_version_id)
+        ku_obj = ku_rows.get(p.unit_id)
+        if dp is None or ku_obj is None:
+            continue
+        full_txt = str(ku_obj.text or "").strip()
+        p_from_val = p.page_from
+        p_to_val = p.page_from
+        b_from = p.block_ids[0] if p.block_ids else None
+        b_to = p.block_ids[-1] if p.block_ids else None
+        if p.block_ids and p.document_version_id in blocks_map:
+            want_bids = set(p.block_ids)
+            stitched_blks = [
+                vb
+                for vb in blocks_map[p.document_version_id]
+                if vb.block_id in want_bids
+                and not (p.sub_doc_slot and is_residual_english_mirror(vb.normalized_text))
+            ]
+            if stitched_blks:
+                full_txt = "\n\n".join(vb.normalized_text.strip() for vb in stitched_blks)[:2800]
+                p_from_val = min(vb.page_from for vb in stitched_blks)
+                p_to_val = max(vb.page_to for vb in stitched_blks)
+                b_from = stitched_blks[0].block_id or b_from
+                b_to = stitched_blks[-1].block_id or b_to
+        if not full_txt:
+            continue
+        stamp = _format_slot_period_stamp(p.sub_doc_slot, p.fiscal_year, p.fiscal_quarter)
+        hd_stamped = f"[{stamp}] {p.section_path}" if stamp and stamp not in p.section_path else p.section_path
+        new_secs.append(
+            RetrievedResearchSection(
+                ticker=p.ticker,
+                doc_id=dp[0],
+                document_version_id=p.document_version_id,
+                sub_doc_slot=p.sub_doc_slot,
+                page_from=p_from_val,
+                page_to=p_to_val,
+                published_date=dp[1],
+                content=full_txt,
+                heading=hd_stamped,
+                table_id=None,
+                routing_slot=p.sub_doc_slot,
+                hipporag_hops=1,
+                score=0.82,
+                block_from_id=b_from,
+                block_to_id=b_to,
+                fiscal_year=p.fiscal_year,
+                fiscal_quarter=p.fiscal_quarter,
+                evidence_origin="PRIMARY",
+            )
+        )
+    if not new_secs:
+        return "", []
+
+    assigned = await ctx.evidence.register_sections(new_secs, canonical_blocks=blocks_map, hipporag_hops=1)
+    fmt_blocks: list[str] = []
+    cids: list[str] = []
+    for cid, sec in assigned:
+        tag = f"[{cid}]"
+        if tag not in cids:
+            cids.append(tag)
+        fmt_blocks.append(
+            f"[{cid}] ({sec.ticker} | {sec.sub_doc_slot} | tr.{sec.page_from} | {sec.heading}):\n{sec.content[:1800]}"
+        )
+    return "\n\n".join(fmt_blocks), cids
 
 
 async def _run_doc_mini_reader(
@@ -1716,6 +1933,7 @@ async def _run_doc_mini_reader(
     ctx: ResearchToolContext,
     model: ModelProvider,
     reader_sem: asyncio.Semaphore,
+    pulse_bundle: Any = None,
     on_tool_call: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     on_tool_result: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     trace: TraceSink | None = None,
@@ -1740,7 +1958,7 @@ async def _run_doc_mini_reader(
     tool_calls = 0
     enable_xref = len(doc_tickers) <= 2
 
-    for idx, dspec in enumerate(doc_specs[:MAX_DOC_SPECS_PER_CLAIM], 1):
+    async def _run_single_dspec(idx: int, dspec: str) -> tuple[str | None, list[str], dict[str, Any], int]:
         slots, years, quarters, q_txt = _parse_doc_spec(dspec, claim.period)
         call_id = f"doc-{claim.id}-{idx}"
         if on_tool_call is not None:
@@ -1773,9 +1991,8 @@ async def _run_doc_mini_reader(
             include_cross_ref=enable_xref,
             top_k=7,
         )
-        tool_calls += 1
+        local_calls = 1
         widened = False
-        # If strict quarter/year filter yielded 0 chunks, widen once without year/quarter lock (0 LLM tokens!)
         if res.details.get("returned_count", 0) == 0 and (years or quarters):
             widened = True
             res = await _execute_disclosure_search(
@@ -1790,7 +2007,7 @@ async def _run_doc_mini_reader(
                 include_cross_ref=enable_xref,
                 top_k=7,
             )
-            tool_calls += 1
+            local_calls += 1
 
         dur_ms = int((time.perf_counter() - t0) * 1000)
         if on_tool_result is not None:
@@ -1811,27 +2028,56 @@ async def _run_doc_mini_reader(
                     "selected_documents": list(res.details.get("selected_documents") or ())[:8],
                 }
             )
+        local_cids: list[str] = []
+        snip_txt: str | None = None
         if res.details.get("returned_count", 0) > 0:
-            snippet_blocks.append(res.content)
+            snip_txt = res.content
             for doc in res.details.get("selected_documents") or ():
                 cid = str(doc.get("citation_id") or "")
-                if cid and f"[{cid}]" not in gathered_cids:
-                    gathered_cids.append(f"[{cid}]")
-        search_log.append(
-            {
-                "doc_spec": dspec,
-                "tickers": doc_tickers,
-                "slots": slots,
-                "fiscal_years": years,
-                "fiscal_quarters": quarters,
-                "query": q_txt,
-                "widened_period_filter": widened,
-                "returned_count": res.details.get("returned_count", 0),
-                "crag_grade": res.details.get("crag_grade"),
-                "selected_documents": list(res.details.get("selected_documents") or ())[:8],
-                "duration_ms": dur_ms,
-            }
-        )
+                if cid and f"[{cid}]" not in local_cids:
+                    local_cids.append(f"[{cid}]")
+        log_entry = {
+            "doc_spec": dspec,
+            "tickers": doc_tickers,
+            "slots": slots,
+            "fiscal_years": years,
+            "fiscal_quarters": quarters,
+            "query": q_txt,
+            "widened_period_filter": widened,
+            "returned_count": res.details.get("returned_count", 0),
+            "crag_grade": res.details.get("crag_grade"),
+            "selected_documents": list(res.details.get("selected_documents") or ())[:8],
+            "duration_ms": dur_ms,
+        }
+        return snip_txt, local_cids, log_entry, local_calls
+
+    dspec_outcomes = await asyncio.gather(
+        *(_run_single_dspec(idx, ds) for idx, ds in enumerate(doc_specs[:MAX_DOC_SPECS_PER_CLAIM], 1))
+    )
+    for snip_txt, local_cids, log_entry, local_calls in dspec_outcomes:
+        tool_calls += local_calls
+        search_log.append(log_entry)
+        if snip_txt:
+            snippet_blocks.append(snip_txt)
+        for lc in local_cids:
+            if lc not in gathered_cids:
+                gathered_cids.append(lc)
+
+    # Pointer-Guided Seed Injection: guarantee high-signal `AGM_QA` / `CONSOLIDATION_SCOPE` / `SEGMENT_MDNA`
+    # passages enter the reader window with verified `CanonicalBlock` provenance even on zero-seed queries!
+    all_req_slots = [s for ds in doc_specs[:MAX_DOC_SPECS_PER_CLAIM] for s in _parse_doc_spec(ds, claim.period)[0]]
+    seed_txt, seed_cids = await _inject_pointer_seed_sections(
+        ctx=ctx,
+        doc_tickers=doc_tickers,
+        slots_list=all_req_slots,
+        claim_statement=claim.statement,
+        pulse_bundle=pulse_bundle,
+    )
+    if seed_txt:
+        snippet_blocks.append(seed_txt)
+        for scid in seed_cids:
+            if scid not in gathered_cids:
+                gathered_cids.append(scid)
 
     if not snippet_blocks:
         no_snip = f"Không tìm thấy đoạn thuyết minh phù hợp trong phạm vi PIT {ctx.as_of_date.isoformat()}."
@@ -1851,10 +2097,10 @@ async def _run_doc_mini_reader(
                 if sl and sl not in seen_slots:
                     seen_slots.add(sl)
                     selected_nums.append(c_num)
-                if len(selected_nums) >= 4:
+                if len(selected_nums) >= 5:
                     break
         for c_num in all_nums:
-            if len(selected_nums) >= 4:
+            if len(selected_nums) >= 5:
                 break
             if c_num not in selected_nums:
                 selected_nums.append(c_num)
@@ -1868,7 +2114,7 @@ async def _run_doc_mini_reader(
                 pg_s = getattr(sec, "page_from", 1) or 1
                 raw_body = re.sub(r"\s+", " ", str(getattr(sec, "content", "") or "")).strip()
                 if raw_body:
-                    excerpts.append(f"[C{c_num}] ({tk_s} {slot_s} tr.{pg_s}): {raw_body[:750]}")
+                    excerpts.append(f"[C{c_num}] ({tk_s} {slot_s} tr.{pg_s}): {raw_body[:1100]}")
         return excerpts
 
     quant_hint = "\n".join(quant_context_lines[:3]) if quant_context_lines else "Không có số định lượng đi kèm."
@@ -1878,15 +2124,27 @@ async def _run_doc_mini_reader(
         f"Ngữ cảnh số liệu BCTC chuẩn hóa đã biết:\n{quant_hint}\n\n"
         f"Các đoạn tài liệu gốc vừa truy xuất:\n" + "\n\n".join(snippet_blocks)
     )
-    async with reader_sem:
-        raw_json, usage = await _collect_model_text(
-            model,
-            (
-                AgentMessage(role="system", content=MINI_READER_STATIC_SYSTEM_PROMPT),
-                AgentMessage(role="user", content=user_msg),
-            ),
-            turn=1,
+    try:
+        async with reader_sem:
+            async with asyncio.timeout(30.0):
+                raw_json, usage = await _collect_model_text(
+                    model,
+                    (
+                        AgentMessage(role="system", content=MINI_READER_STATIC_SYSTEM_PROMPT),
+                        AgentMessage(role="user", content=user_msg),
+                    ),
+                    turn=1,
+                )
+    except TimeoutError:
+        fb_quotes = _collect_verbatim_excerpts("")
+        fb_lines = [q[:420] for q in fb_quotes[:3]] or ["Đã trích xuất trực tiếp đoạn báo cáo gốc liên quan."]
+        _trace_reader(
+            outcome="READER_TIMEOUT_VERBATIM_FALLBACK",
+            status="PARTIAL",
+            findings=fb_lines,
+            gathered_citations=gathered_cids,
         )
+        return ("PARTIAL", fb_lines, gathered_cids, fb_quotes, None, Usage(), tool_calls)
 
     parsed = _parse_json_obj(raw_json)
     if not parsed:
@@ -1915,11 +2173,7 @@ async def _run_doc_mini_reader(
     status: VerdictStatus = (
         raw_status if raw_status in ("CONFIRMED", "REFUTED", "PARTIAL", "NO_DATA") else "PARTIAL"  # type: ignore[assignment]
     )
-    findings = [
-        str(f).strip()
-        for f in (parsed.get("findings") or ())
-        if isinstance(f, str) and f.strip()
-    ]
+    findings = [str(f).strip() for f in (parsed.get("findings") or ()) if isinstance(f, str) and f.strip()]
     followup = str(parsed.get("anomaly_followup_query") or "").strip() or None
     if not findings and status != "NO_DATA":
         status = "NO_DATA"
@@ -1945,8 +2199,11 @@ async def execute_brief_claims(
     located: LocatedTargets,
     ctx: ResearchToolContext,
     model: ModelProvider,
+    pulse_bundle: Any = None,
     dropped_by_claim_id: Mapping[str, Sequence[str]] | None = None,
     overall_deadline_mono: float | None = None,
+    exec_deadline_mono: float | None = None,
+    partial_sink: BriefExecutionResult | None = None,
     on_stage: Callable[[str, str, str], Awaitable[None]] | None = None,
     on_thought: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     on_tool_call: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
@@ -1955,6 +2212,8 @@ async def execute_brief_claims(
 ) -> BriefExecutionResult:
     """Components (4) & (5): Premise-first + Parallel Per-Claim Execution + Code-Owned 1-Hop Escalation."""
     tickers = located.analysis_tickers
+    pulse_cache_holder: dict[str, tuple[list[str], list[str]]] = {}
+    quant_anomaly_by_claim: dict[str, str] = {}
     fs: FactSet | None = None
     if ctx.core_reader is not None and tickers:
         try:
@@ -1972,7 +2231,8 @@ async def execute_brief_claims(
         bool(brief.claims)
         and len(tickers) <= 3
         and brief.entities.candidate_search is None
-        and brief.answer_shape in {
+        and brief.answer_shape
+        in {
             "health_check",
             "verdict_with_reasons",
             "premise_audit_and_explanation",
@@ -2029,6 +2289,100 @@ async def execute_brief_claims(
         ):
             auto_strategic_doc_claim_id = doc_bearing_claims[0].id
 
+        # 0) Automatic 3-Layer Relationship Graph Sweep (`0` LLM tokens) when no claim explicitly called `kg`!
+        has_explicit_kg_spec = any(
+            ev == "kg" or ev.startswith("kg:")
+            for cl in [*brief.premises_to_check, *brief.claims]
+            for ev in cl.evidence
+        )
+        if ctx.enable_kg and tickers and not has_explicit_kg_spec:
+            eco_claim = next(
+                (
+                    cl
+                    for cl in brief.claims
+                    if any(
+                        kw in cl.statement.lower()
+                        for kw in (
+                            "công ty con",
+                            "liên kết",
+                            "hợp nhất",
+                            "hệ sinh thái",
+                            "quan hệ",
+                            "đối thủ",
+                            "bảo hiểm",
+                            "chứng khoán",
+                            "rủi ro",
+                        )
+                    )
+                ),
+                brief.claims[-1],
+            )
+
+            async def _noop_auto_kg(_p: Any) -> None:
+                return None
+
+            auto_kg_cid = f"kg-auto-{eco_claim.id}"
+            tctx_kg = ToolContext(
+                run_id="brief-auto-kg",
+                tool_call_id=auto_kg_cid,
+                data=ctx,
+                cancellation=CancellationToken(),
+                _on_progress=_noop_auto_kg,
+            )
+            if on_tool_call is not None:
+                await on_tool_call(
+                    {
+                        "id": auto_kg_cid,
+                        "call_id": auto_kg_cid,
+                        "type": "tool_call",
+                        "turn": 1,
+                        "tool": "query_knowledge_graph",
+                        "label": "Quét bản đồ quan hệ hệ sinh thái, đối thủ & vĩ mô 3 tầng",
+                        "stage": "graph_hop",
+                        "status": "running",
+                        "tickers": list(tickers[:2]),
+                        "args_preview": f"Mã {', '.join(tickers[:2])} · 3 tầng (Hệ sinh thái, Đối thủ, Vĩ mô)",
+                    }
+                )
+            t_akg = time.perf_counter()
+            try:
+                kg_auto_res = await query_knowledge_graph_tool.execute(
+                    {"tickers": list(tickers[:2]), "limit": 8},
+                    tctx_kg,
+                )
+                auto_hops = list(kg_auto_res.details.get("kg_hops") or ())[:8]
+                for ah in auto_hops:
+                    b_tag = f"[KG:{ah.get('layer')}|{ah.get('verification_tier')}]"
+                    qual_tail = (
+                        " (ghi nhận độ nhạy tại thuyết minh rủi ro BCTC)"
+                        if ah.get("note_channel") == "AUDITED_NOTE" and ah.get("beta") is None
+                        else (f" (beta={ah['beta']:.2f})" if isinstance(ah.get("beta"), (int, float)) else "")
+                    )
+                    driver_lines_by_claim.setdefault(eco_claim.id, []).append(
+                        f"{b_tag} {ah.get('src_label')} --({ah.get('relation_type')})--> "
+                        f"{ah.get('dst_label')}{qual_tail}"
+                    )
+                    driver_badges_by_claim.setdefault(eco_claim.id, []).append(b_tag)
+                if on_tool_result is not None:
+                    await on_tool_result(
+                        {
+                            "id": auto_kg_cid,
+                            "call_id": auto_kg_cid,
+                            "type": "tool_call",
+                            "turn": 1,
+                            "tool": "query_knowledge_graph",
+                            "label": "Quét bản đồ quan hệ hệ sinh thái, đối thủ & vĩ mô 3 tầng",
+                            "stage": "graph_hop",
+                            "status": "done",
+                            "duration_ms": int((time.perf_counter() - t_akg) * 1000),
+                            "returned_count": len(auto_hops),
+                            "summary": f"Đã nạp {len(auto_hops)} mối liên hệ 3 tầng (Hệ sinh thái, Đối thủ, Vĩ mô)",
+                            "kg_hops": auto_hops,
+                        }
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Auto 3-layer KG sweep skipped: %s", exc)
+
         for tk_drv in tickers[:2]:
             # 1) Multi-quarter trajectory from FactSet (0 SQL, 0 LLM)
             if fs is not None and tk_drv in fs.templates:
@@ -2072,9 +2426,7 @@ async def execute_brief_claims(
             if tk_tables:
                 seg_drivers = extract_segment_drivers(tk_tables, tk_drv, fs=fs)
                 note_drivers = extract_balance_sheet_note_breakdowns(fs, tk_tables, tk_drv)
-                used_tids = {
-                    d["table_id"] for d in [*seg_drivers, *note_drivers] if d.get("table_id")
-                }
+                used_tids = {d["table_id"] for d in [*seg_drivers, *note_drivers] if d.get("table_id")}
                 if used_tids:
                     await ctx.evidence.register_tables(
                         [t for t in tk_tables if str(t.get("table_id") or "") in used_tids][:6]
@@ -2086,18 +2438,32 @@ async def execute_brief_claims(
                         f"[{sd_cid}] {tk_drv} · {sd['summary_line']}"
                     )
                     driver_badges_by_claim.setdefault(primary_driver_claim.id, []).append(f"[{sd_cid}]")
+                    bps_d = sd.get("margin_delta_bps")
+                    if isinstance(bps_d, (int, float)) and abs(float(bps_d)) >= 150:
+                        quant_anomaly_by_claim.setdefault(
+                            primary_driver_claim.id,
+                            f"nguyên nhân biến động biên lợi nhuận mảng {sd.get('segment_name') or ''} thảo luận ĐHĐCĐ",
+                        )
+                    elif sd.get("kind") == "segment_scope_shift":
+                        quant_anomaly_by_claim.setdefault(
+                            primary_driver_claim.id,
+                            "phạm vi hợp nhất chuyển giao quyền kiểm soát công ty liên kết cổ tức ĐHĐCĐ",
+                        )
                 for nd in note_drivers[:4]:
                     saved_nd = await ctx.evidence.register_calculator_trace(nd["calc_trace"])
                     nd_cid = str(saved_nd["calc_id"])
                     target_cid = (
-                        primary_driver_claim.id
-                        if nd.get("kind") == "associates_rollforward"
-                        else bs_driver_claim.id
+                        primary_driver_claim.id if nd.get("kind") == "associates_rollforward" else bs_driver_claim.id
                     )
                     driver_lines_by_claim.setdefault(target_cid, []).append(
                         f"[{nd_cid}] {tk_drv} · {nd['summary_line']}"
                     )
                     driver_badges_by_claim.setdefault(target_cid, []).append(f"[{nd_cid}]")
+                    if nd.get("kind") == "associates_rollforward":
+                        quant_anomaly_by_claim.setdefault(
+                            target_cid,
+                            "cấu trúc tập đoàn chuyển giao quyền kiểm soát công ty liên kết cổ tức ĐHĐCĐ",
+                        )
 
     # Deterministic 0-Token Accounting / Growth Divergence Auto-Probe:
     # When an indexed ticker exhibits |rev_yoy| >= 15%, |npat_yoy| >= 15%, or opposite-sign revenue vs NPAT YoY
@@ -2177,6 +2543,8 @@ async def execute_brief_claims(
             fs=fs,
             located=located,
             ctx=ctx,
+            pulse_bundle=pulse_bundle,
+            pulse_cache_holder=pulse_cache_holder,
             on_tool_call=on_tool_call,
             on_tool_result=on_tool_result,
             on_stage=on_stage,
@@ -2241,6 +2609,7 @@ async def execute_brief_claims(
                 ctx=ctx,
                 model=model,
                 reader_sem=reader_sem,
+                pulse_bundle=pulse_bundle,
                 on_tool_call=on_tool_call,
                 on_tool_result=on_tool_result,
                 trace=trace,
@@ -2323,7 +2692,11 @@ async def execute_brief_claims(
         else:
             final_status = "NO_DATA"
 
-        esc_q = doc_followup or (risk_followup if not doc_specs else None)
+        covered_slots_now = {str(getattr(s, "sub_doc_slot", "") or "").upper() for s in ctx.evidence.sections}
+        auto_anom_q = quant_anomaly_by_claim.get(claim.id)
+        if auto_anom_q and ("AGM_TARGETS" in covered_slots_now and "BCTC_AUDITED" in covered_slots_now):
+            auto_anom_q = None
+        esc_q = doc_followup or auto_anom_q or (risk_followup if not doc_specs else None)
         card = ClaimVerdictCard(
             claim_id=claim.id,
             is_premise=is_premise,
@@ -2337,54 +2710,74 @@ async def execute_brief_claims(
         )
         if on_thought is not None:
             await on_thought(_card_thought_payload(card))
+        if partial_sink is not None:
+            if is_premise:
+                partial_sink.premise_cards.append(card)
+            else:
+                partial_sink.claim_cards.append(card)
+            partial_sink.usage = partial_sink.usage.plus(c_usage)
+            partial_sink.tool_calls_count += c_tools
         return card, c_usage, c_tools
 
-    # 1) Execute `premises_to_check` FIRST
+    # 1) Smart Wave-1 Parallelization:
+    #    Only directional premises (`_NEGATIVE_PREMISE_RE` | `_POSITIVE_PREMISE_RE`) can ever evaluate to
+    #    `REFUTED` in `_evaluate_premise_direction()`. Descriptive non-directional premises cannot refute
+    #    downstream claims, so claims depending solely on non-directional premises run concurrently in Wave 1!
     premise_cards: list[ClaimVerdictCard] = []
     refuted_map: dict[str, str] = {}
-    if brief.premises_to_check:
-        prem_outcomes = await asyncio.gather(
-            *(
-                _evaluate_one_claim(p, is_premise=True, refuted_premises={})
-                for p in brief.premises_to_check
-            )
-        )
-        for p_card, p_usage, p_tools in prem_outcomes:
+    falsifiable_pids = {
+        p.id
+        for p in brief.premises_to_check
+        if _NEGATIVE_PREMISE_RE.search(p.statement) or _POSITIVE_PREMISE_RE.search(p.statement)
+    }
+    indep_claims = [c for c in brief.claims if not (set(c.depends_on) & falsifiable_pids)]
+    dep_claims = [c for c in brief.claims if set(c.depends_on) & falsifiable_pids]
+    cards_by_cid: dict[str, ClaimVerdictCard] = {}
+
+    if brief.premises_to_check or indep_claims:
+        wave1_tasks = [
+            *(_evaluate_one_claim(p, is_premise=True, refuted_premises={}) for p in brief.premises_to_check),
+            *(_evaluate_one_claim(c, is_premise=False, refuted_premises={}) for c in indep_claims),
+        ]
+        wave1_outcomes = await asyncio.gather(*wave1_tasks)
+        n_prem = len(brief.premises_to_check)
+        for p_card, p_usage, p_tools in wave1_outcomes[:n_prem]:
             premise_cards.append(p_card)
             total_usage = total_usage.plus(p_usage)
             total_tool_calls += p_tools
             if p_card.status == "REFUTED":
                 refuted_map[p_card.claim_id] = p_card.summary_lines[0] if p_card.summary_lines else "Bác bỏ"
-
-    # 2) Execute all `claims` IN PARALLEL
-    claim_cards: list[ClaimVerdictCard] = []
-    if brief.claims:
-        claim_outcomes = await asyncio.gather(
-            *(
-                _evaluate_one_claim(c, is_premise=False, refuted_premises=refuted_map)
-                for c in brief.claims
-            )
-        )
-        for c_card, c_usage, c_tools in claim_outcomes:
-            claim_cards.append(c_card)
+        for c_card, c_usage, c_tools in wave1_outcomes[n_prem:]:
+            cards_by_cid[c_card.claim_id] = c_card
             total_usage = total_usage.plus(c_usage)
             total_tool_calls += c_tools
 
-    # 3) Code-Controlled Selective 1-Hop Escalation (HARD CAP: max 1 round, max 2 claims, >=35s remaining)
+    if dep_claims:
+        dep_outcomes = await asyncio.gather(
+            *(_evaluate_one_claim(c, is_premise=False, refuted_premises=refuted_map) for c in dep_claims)
+        )
+        for c_card, c_usage, c_tools in dep_outcomes:
+            cards_by_cid[c_card.claim_id] = c_card
+            total_usage = total_usage.plus(c_usage)
+            total_tool_calls += c_tools
+
+    claim_cards: list[ClaimVerdictCard] = [cards_by_cid[c.id] for c in brief.claims if c.id in cards_by_cid]
+
+    # 3) Code-Controlled Selective 1-Hop Escalation (HARD CAP: max 1 round, max 2 claims, >=38s overall & >=28s exec)
     escalations_run = 0
-    remaining_s = (
-        (overall_deadline_mono - asyncio.get_running_loop().time())
-        if overall_deadline_mono is not None
-        else 60.0
-    )
+    now_mono = asyncio.get_running_loop().time()
+    remaining_s = (overall_deadline_mono - now_mono) if overall_deadline_mono is not None else 60.0
+    remaining_exec_s = (exec_deadline_mono - now_mono) if exec_deadline_mono is not None else 60.0
     escalation_candidates = [
         c
         for c in claim_cards
         if c.escalation_query
         and c.status != "REFUTED"
+        and len(tickers) <= 2
+        and brief.answer_shape not in ("sector_pulse", "market_outlook")
         and any(not ctx.available_tickers or t in ctx.available_tickers for t in tickers)
     ][:MAX_ESCALATION_CLAIMS]
-    will_escalate = bool(escalation_candidates) and remaining_s >= 35.0
+    will_escalate = bool(escalation_candidates) and remaining_s >= 38.0 and remaining_exec_s >= 28.0
     emit_trace(
         trace,
         "escalation.decision",
@@ -2416,8 +2809,8 @@ async def execute_brief_claims(
             assert card.escalation_query is not None
             probe_claim = ClaimSpec(
                 id=f"{card.claim_id}-hop2",
-                statement=f"Đào sâu thuyết minh kiểm chứng dấu hiệu bất thường cho {card.claim_id}: {card.statement}",
-                evidence=[f"doc:QUARTER_NOTES,BCTC_AUDITED|{card.escalation_query}"],
+                statement=f"Đào sâu nguyên nhân nhân quả & giải trình ĐHĐCĐ cho {card.claim_id}: {card.statement}",
+                evidence=[f"doc:AGM_TARGETS,BCTC_AUDITED,BCTN_CORE,QUARTER_NOTES|{card.escalation_query}"],
                 period=card.period,
             )
             _, f_lines, f_badges, f_quotes, _, f_usage, f_tools = await _run_doc_mini_reader(
@@ -2428,6 +2821,7 @@ async def execute_brief_claims(
                 ctx=ctx,
                 model=model,
                 reader_sem=reader_sem,
+                pulse_bundle=pulse_bundle,
                 on_tool_call=on_tool_call,
                 on_tool_result=on_tool_result,
                 trace=trace,

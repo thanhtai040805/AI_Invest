@@ -749,6 +749,43 @@ def _merge_typed_pools(target: dict[str, list[float]], src: Mapping[str, Sequenc
             target[cls_name].extend(vals)
 
 
+_EXPLICIT_PCT_LABEL_RE = re.compile(
+    r"\(\s*%\s*\)\s*[:|=]?\s*([+-]?\d[\d.,]*)",
+    re.IGNORECASE,
+)
+
+
+def _extract_markdown_pct_column_numbers(raw: str) -> list[float]:
+    """Extract cell numbers belonging specifically to Markdown table columns whose header contains `%`."""
+    if "|" not in raw or "%" not in raw:
+        return []
+    out: list[float] = []
+    pct_col_idxs: set[int] = set()
+    for line in raw.splitlines():
+        s = line.strip()
+        if s.count("|") < 3 or not s.endswith("|"):
+            pct_col_idxs.clear()
+            continue
+        s_tbl = s[s.find("|") :]
+        cells = [c.strip() for c in s_tbl.strip("|").split("|")]
+        if all(not c or set(c) <= {"-", ":", " "} for c in cells):
+            continue
+        if any("%" in c for c in cells) and not any(
+            re.fullmatch(r"[+-]?\d[\d.,]*%?", c) for c in cells if c
+        ):
+            pct_col_idxs = {idx for idx, c in enumerate(cells) if "%" in c}
+            continue
+        if pct_col_idxs:
+            for idx in pct_col_idxs:
+                if idx < len(cells):
+                    cell_txt = cells[idx].strip("() ")
+                    for v in _parse_number_variants(cell_txt, include_ambiguous=True):
+                        av = abs(v)
+                        if av <= 500.0:
+                            out.append(av)
+    return out
+
+
 def _extract_typed_numbers_from_text(text: str) -> dict[str, list[float]]:
     """Extract numbers tagged by UnitClass (`PERCENT`, `MULTIPLE`, `MONETARY`, `RAW`) from prose."""
     typed = _new_typed_pool()
@@ -770,6 +807,14 @@ def _extract_typed_numbers_from_text(text: str) -> dict[str, list[float]]:
                 typed["RAW"].extend(_expand_numeric_scales(av))
             else:
                 typed["RAW"].extend(_expand_numeric_scales(av))
+
+    # Recognize explicit `(%) : 110,5` table_card pairs & Markdown `%`-header columns (zero VND laundering)
+    for m_lbl in _EXPLICIT_PCT_LABEL_RE.finditer(raw):
+        for v in _parse_number_variants(m_lbl.group(1), include_ambiguous=True):
+            av = abs(v)
+            if av <= 500.0:
+                typed["PERCENT"].extend([av, av * 100.0] if av <= 2.0 else [av])
+    typed["PERCENT"].extend(_extract_markdown_pct_column_numbers(raw))
 
     for m in _GENERIC_NUMBER_RE.finditer(raw):
         for v in _parse_number_variants(m.group(1), include_ambiguous=True):
@@ -933,18 +978,36 @@ def _collect_typed_calc_kg_and_screen_numbers(
         src_lbl = str(hop.get("src_label") if isinstance(hop, Mapping) else getattr(hop, "src_label", "") or "")
         dst_lbl = str(hop.get("dst_label") if isinstance(hop, Mapping) else getattr(hop, "dst_label", "") or "")
         owner = "*"
-        for lbl in (dst_lbl, src_lbl):
-            if lbl.upper().startswith("TICKER:"):
-                owner = lbl.split(":", 1)[1].strip().upper() or "*"
+        for lbl in (src_lbl, dst_lbl):
+            m_tk = re.search(r"\bTICKER:([A-Z0-9]{2,10})\b", lbl, re.IGNORECASE)
+            if m_tk:
+                owner = m_tk.group(1).strip().upper() or "*"
                 break
-        bucket = by_ticker.setdefault(owner, _new_typed_pool())
+        stat_vals: list[float] = []
         for attr in ("beta", "p_value", "fdr_q_value"):
             val = hop.get(attr) if isinstance(hop, Mapping) else getattr(hop, attr, None)
             if isinstance(val, (int, float)) and not isinstance(val, bool):
-                fv = abs(float(val))
-                bucket["RAW"].append(fv)
-                bucket["MULTIPLE"].append(fv)
-                bucket["PERCENT"].extend([fv, fv * 100.0])
+                stat_vals.append(abs(float(val)))
+        own_pct = hop.get("ownership_pct") if isinstance(hop, Mapping) else getattr(hop, "ownership_pct", None)
+        valid_own_pct = (
+            abs(float(own_pct))
+            if (
+                owner != "*"
+                and isinstance(own_pct, (int, float))
+                and not isinstance(own_pct, bool)
+                and 0.0 < float(own_pct) <= 100.0
+            )
+            else None
+        )
+        if not stat_vals and valid_own_pct is None:
+            continue
+        bucket = by_ticker.setdefault(owner, _new_typed_pool())
+        for fv in stat_vals:
+            bucket["RAW"].append(fv)
+            bucket["MULTIPLE"].append(fv)
+            bucket["PERCENT"].extend([fv, fv * 100.0])
+        if valid_own_pct is not None:
+            bucket["PERCENT"].extend([valid_own_pct, valid_own_pct / 100.0])
 
     for row in screening_results or ():
         if not isinstance(row, Mapping):
@@ -989,11 +1052,20 @@ def _number_supported_by_pool(
     return False
 
 
+_SUBSIDIARY_BRAND_RE = re.compile(
+    r"\bFPT\s+(?:Long\s+Châu|Shop|Retail)\b",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
 def _detect_single_owner_ticker(seg: str, known_tickers: set[str]) -> str | None:
     if not known_tickers:
         return None
+    # Prevent retail brand names ("FPT Long Châu", "FPT Shop", "FPT Retail" = FRT) from misbinding to parent FPT
+    frt_repl = " FRT " if "FRT" in known_tickers else " "
+    norm_seg = _SUBSIDIARY_BRAND_RE.sub(frt_repl, seg or "")
     found: list[str] = []
-    for m in _EXPLICIT_TICKER_TOKEN_RE.finditer(seg or ""):
+    for m in _EXPLICIT_TICKER_TOKEN_RE.finditer(norm_seg):
         cand = m.group(1)
         if cand in _NON_TICKER_CAP_WORDS:
             continue
@@ -1301,18 +1373,21 @@ def verify_numeric_claims_against_evidence(
     section_typed: dict[str, dict[str, list[float]]] = {}
     section_owner: dict[str, str] = {}
     section_span: dict[str, tuple[str, str, int, int]] = {}
+    section_raw_upper: dict[str, str] = {}
     all_sections_by_ticker: dict[str, dict[str, list[float]]] = {}
     known_tickers: set[str] = set()
 
     for cid, sec in sections_by_cid.items():
         if isinstance(sec, Mapping):
             blob = f"{sec.get('heading', '')} {sec.get('content', '')}"
+            xref_t = str(sec.get("cross_ref_target") or "")
             owner = str(sec.get("ticker") or sec.get("project_id") or "*").strip().upper() or "*"
             doc_id = str(sec.get("doc_id") or sec.get("document_version_id") or "").strip()
             p_from = int(sec.get("page_from") or sec.get("page") or 0)
             p_to = int(sec.get("page_to") or p_from or 0)
         else:
             blob = f"{getattr(sec, 'heading', '')} {getattr(sec, 'content', '')}"
+            xref_t = str(getattr(sec, "cross_ref_target", "") or "")
             owner = (
                 str(getattr(sec, "ticker", None) or getattr(sec, "project_id", None) or "*").strip().upper()
                 or "*"
@@ -1324,6 +1399,7 @@ def verify_numeric_claims_against_evidence(
         section_typed[str(cid)] = typed_nums
         section_owner[str(cid)] = owner
         section_span[str(cid)] = (owner, doc_id, p_from, p_to)
+        section_raw_upper[str(cid)] = f"{blob} {xref_t}".upper()
         if owner != "*":
             known_tickers.add(owner)
         _merge_typed_pools(all_sections_by_ticker.setdefault(owner, _new_typed_pool()), typed_nums)
@@ -1374,7 +1450,11 @@ def verify_numeric_claims_against_evidence(
             for cid in cited_cids:
                 c_owner = section_owner.get(cid, "*")
                 if single_tk and c_owner != "*" and c_owner != single_tk:
-                    continue
+                    # Allow explicit related-party / CROSS-REF citations whose own text mentions `single_tk`,
+                    # while strictly blocking cross-ticker numeric laundering from unrelated filings!
+                    raw_up = section_raw_upper.get(cid, "")
+                    if not re.search(rf"\b{re.escape(single_tk)}\b", raw_up):
+                        continue
                 if cid not in section_typed:
                     continue
                 if cid not in expanded_cids:

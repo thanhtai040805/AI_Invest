@@ -70,6 +70,8 @@ _REASONING_INLINE_SUBS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"`?direct_fact`?(?![^\W_])", re.IGNORECASE), "tra cứu số liệu trực tiếp"),
     (re.compile(r"`?candidate_ranking`?(?![^\W_])", re.IGNORECASE), "sàng lọc doanh nghiệp"),
     (re.compile(r"`?peer_head_to_head`?(?![^\W_])", re.IGNORECASE), "so sánh cùng ngành"),
+    (re.compile(r"`?sector_pulse`?(?![^\W_])", re.IGNORECASE), "bức tranh phân hóa ngành"),
+    (re.compile(r"`?market_outlook`?(?![^\W_])", re.IGNORECASE), "toàn cảnh thị trường"),
     (re.compile(r"`?premise_audit_and_explanation`?(?![^\W_])", re.IGNORECASE), "kiểm chứng giả định"),
     (
         re.compile(r"`?needs_clarification`?\s*(?::\s*(?:true|false))?(?![^\W_])", re.IGNORECASE),
@@ -82,6 +84,7 @@ _REASONING_INLINE_SUBS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"`?budget_tier`?(?![^\W_])", re.IGNORECASE), "mức độ phân tích"),
     (re.compile(r"(?<![^\W_])Budget\s+tier\s*:\s*\w+(?![^\W_])", re.IGNORECASE), ""),
     (re.compile(r"`?(?:fact|kpi):[a-z0-9_]+`?(?![^\W_])", re.IGNORECASE), "chỉ tiêu tài chính"),
+    (re.compile(r"`?pulse:(?:market|sector)(?:\|[^`\n\r]*)?`?", re.IGNORECASE), "bức tranh ngành và thị trường"),
     (
         re.compile(
             r"`?doc:(?:QUARTER_NOTES|BCTC_AUDITED|BCTN_CORE|BCTN_PR|AGM_TARGETS)(?:,[A-Z_]+)*(?:\|[^`\n\r]*)?`?",
@@ -156,6 +159,7 @@ class _ReasoningWordStreamBuffer:
         self._buf = ""
         return humanize_visible_reasoning(rem)
 
+
 _ANSWER_SHAPE_VN: dict[str, str] = {
     "direct_fact": "Tra cứu số liệu trực tiếp",
     "verdict_with_reasons": "Đánh giá trực diện kèm luận cứ",
@@ -163,6 +167,8 @@ _ANSWER_SHAPE_VN: dict[str, str] = {
     "candidate_ranking": "Sàng lọc và xếp hạng doanh nghiệp",
     "premise_audit_and_explanation": "Kiểm chứng giả định trước khi giải thích nguyên nhân",
     "peer_head_to_head": "So sánh đối đầu giữa các doanh nghiệp cùng ngành",
+    "sector_pulse": "Phân tích độ rộng, phân hóa toàn ngành & động lực doanh nghiệp đầu ngành",
+    "market_outlook": "Toàn cảnh nhịp đập thị trường, xoay trục ngành & động lực vĩ mô",
     "clarification_needed": "Cần làm rõ nhu cầu",
 }
 
@@ -186,26 +192,43 @@ SYNTHESIS_STATIC_SYSTEM_PROMPT = (
     "   - Trình bày bảng Markdown gọn khi có từ 3 chỉ tiêu hoặc nhiều kỳ/nhiều mã trở lên để dễ đọc.\n"
     "2. KỶ LUẬT SỐ HỌC & TRÍCH DẪN TUYỆT ĐỐI (ZERO MENTAL MATH):\n"
     "   - CHỈ dùng các con số đã xuất hiện nguyên văn trong các Thẻ kết luận bên dưới.\n"
-    "   - TUYỆT ĐỐI KHÔNG tự cộng nhẩm, trừ nhẩm, chia nhẩm tỷ lệ làm tròn (ví dụ `50%`) hay tự bịa khoảng ước lượng "
-    "(ví dụ `15-18%` khi thẻ chỉ ghi `+15,0%` và `+15,8%`) — bắt buộc viết ĐÚNG con số cụ thể trong thẻ "
-    "(đặc biệt: KHÔNG cộng các khoản mục con trong thuyết minh nợ vay vào tổng vay ngắn hạn trên CĐKT).\n"
+    "   - TUYỆT ĐỐI KHÔNG tự cộng nhẩm, trừ nhẩm, KHÔNG tự lấy hai con số chia nhau để viết thêm `% tăng/giảm` "
+    "(`+141%`, `+68%`, `giảm 98%`), hệ số `gấp ~X lần` hay `chiếm Y%` chưa in sẵn trong `[CALC-*]` hoặc nguyên văn "
+    "`[C#]` (ví dụ bảng chỉ có `891` và `2.149` thì viết `tăng từ 891 lên 2.149 [C#]`, CẤM tự tính `+141%`); KHÔNG tự "
+    "chia 1.000 làm tròn đổi `triệu đồng` sang `tỷ đồng` (giữ nguyên con số + đơn vị gốc trong `[C#]`); và KHÔNG tự "
+    "bịa khoảng ước lượng (`15-18%`).\n"
     "   - Mọi câu và mọi hàng trong bảng Markdown có số liệu tài chính BẮT BUỘC gắn kèm mã nguồn gốc trực tiếp ngay "
     "trên hàng/câu đó (`[CALC-*]`, `[C#]`, `[TBL:*]`, `[SCR:*]`, `[KG:*]`, `[MEM:*]`, `[PORT:*]`) — KHÔNG để dòng bảng "
     "chứa số liệu trơ trọi rồi mới ghi `*Nguồn: [C#]*` ở dòng dưới; khi nhắc tới ngưỡng kỳ vọng của nhà đầu tư "
     "(như `10-15%/năm`) phải gắn `[MEM:M#]`, KHÔNG gắn `[CALC-*]` của doanh nghiệp vào con số mục tiêu cá nhân! "
     "Khi gợi ý mở rộng sàng lọc sang các mã khác ngoài thẻ, chỉ nêu tên mã, TUYỆT ĐỐI KHÔNG kèm con số ước lượng "
     "(như `ROE ~16%`) chưa có trong thẻ. TUYỆT ĐỐI KHÔNG gắn mã ý nội bộ của đề bài (`[P1]`, `[K1]`..`[K6]`).\n"
-    "3. TƯ DUY ĐỐI CHIẾU BẢN CHẤT KẾ TOÁN, ĐỘNG LỰC MẢNG KINH DOANH & GIẢI PHẪU THUYẾT MINH:\n"
-    "   - Khi Thẻ kết luận có trích dẫn thuyết minh `[C#]` hoặc phân rã mảng `[CALC-*]` giải thích sự thay đổi phạm vi "
-    "hợp nhất (ví dụ: tách/ngừng hợp nhất công ty con sang công ty liên kết), BẮT BUỘC đặt con số kế toán bề mặt "
-    "cạnh con số so sánh tương đương (like-for-like) `[C#]` ngay từ phần mở đầu — tuyệt đối không phán hời hợt rằng "
-    "doanh nghiệp suy yếu nếu mảng lõi và số tương đương vẫn tăng trưởng!\n"
-    "   - KHAI THÁC TỐI ĐA ĐỘNG LỰC KINH DOANH & THUYẾT MINH TRỌNG YẾU: Khi Thẻ kết luận chứa phân rã mảng kinh doanh "
-    "(tỷ trọng doanh thu, biên lợi nhuận bộ phận, độ mở rộng biên `bps`, tăng trưởng từng mảng), chi tiết thị trường "
-    "& sản phẩm chiến lược từ BCTN/ĐHĐCĐ (như Chuyển đổi số, thị trường Nhật/Mỹ, Nhà máy AI, ý kiến Ban lãnh đạo) hoặc "
-    "giải phẫu khoản mục trọng yếu (như tỷ trọng tiền gửi có kỳ hạn & ngoại tệ trong Đầu tư tài chính ngắn hạn), BẮT "
-    "BUỘC đưa các luận cứ sắc bén này thành trọng tâm bài phân tích — TUYỆT ĐỐI KHÔNG viết câu chung chung kiểu "
-    "'cần tìm hiểu rõ cấu trúc khoản mục này' khi Thẻ kết luận ĐÃ giải phẫu sẵn cấu trúc đó!\n"
+    "3. KỂ CÂU CHUYỆN KINH DOANH THUYẾT PHỤC (THESIS-FIRST, KHÔNG ĐỌC VẸT BẢNG KẾ TOÁN):\n"
+    "   - Con số kế toán chỉ là cái bóng kết quả; sức thuyết phục của bài phân tích nằm ở **CỖ MÁY KINH DOANH** "
+    "đằng sau con số! Thay vì liệt kê rời rạc từng tỷ số kế toán, hãy dẫn dắt mạch lạc theo cơ chế tạo tiền:\n"
+    "     + **Cỗ máy tăng trưởng & Vũ khí cạnh tranh thực địa:** Đơn hàng ký mới/backlog, thị trường mở đường "
+    "(Nhật, Hàn, nội địa...), nhân sự chiến lược trong HĐQT/Ban điều hành bảo chứng niềm tin khách hàng, sản phẩm "
+    "& công nghệ giải bài toán cụ thể của khách hàng (như chuyển đổi hệ thống di sản sang hợp đồng trọn gói, mở chuỗi, "
+    "thu xếp vốn hệ sinh thái, chiến dịch hút CASA), hoặc thay đổi định mức/chính sách của Nhà nước mở khóa biên lợi "
+    "nhuận (`[C#]`) — đặt ngay cạnh bảng số liệu bộ phận `[CALC-*]` để số liệu và câu chuyện soi sáng cho nhau!\n"
+    "     + **Bản chất sự kiện cấu trúc & Tiền thật của cổ đông:** Khi có biến động hợp nhất / chuyển giao vốn Nhà "
+    "nước / lập công ty con hay liên kết mới, phải giải thích rõ *ai chuyển giao cho ai, theo văn bản nào, tác động "
+    "thực tế tới Bảng cân đối, lợi nhuận cổ đông công ty mẹ và dòng tiền cổ tức tiền mặt hàng năm ra sao* (`[C#]`), "
+    "đồng thời đặt số bề mặt cạnh số tương đương (like-for-like).\n"
+    "     + **Khớp đúng cung thời gian (`2025 -> 2026 Inflection Arc`):** Chú ý nhãn kỳ tài liệu (`[BCTN thực hiện "
+    "FY2025]` vs `[ĐHĐCĐ 2026]` vs `[BCTC Q3/2026]`). Tuyệt đối KHÔNG lấy nguyên nhân giảm biên của năm 2025 gán nhầm "
+    "cho cú bật biên của 9T/2026 — hãy nối thành mạch chuyển pha tự nhiên (*'Năm 2025 biên từng nén do..., nhưng bước "
+    "sang 2026 đã đảo chiều tăng nhờ...'*).\n"
+    "     + **Kỷ luật phân bổ vốn & Mũi nhọn mới:** Phản ánh trực diện quan điểm trả lời chất vấn ĐHĐCĐ của Ban lãnh "
+    "đạo về kỷ luật đầu tư CAPEX (như khai thác hiệu suất nhà máy hiện hữu trước khi mở mới) và đặt cược dài hạn.\n"
+    "   - VỚI CÂU HỎI NGÀNH (`sector_pulse`) HOẶC TOÀN THỊ TRƯỜNG (`market_outlook`):\n"
+    "     + Mở đầu bằng bức tranh định lượng thực tế (nhịp đập VN-Index, thanh khoản, khối ngoại, độ rộng lợi nhuận "
+    "toàn ngành/toàn sàn và bảng phân hóa nhóm dẫn dắt vs. suy yếu kèm `[CALC-*]` / `[SCR:*]`).\n"
+    "     + Kết nối trực tiếp sang các cơ chế chính sách, chuyển dịch cấu trúc và góc nhìn Ban lãnh đạo từ thuyết minh "
+    "& ĐHĐCĐ của các doanh nghiệp đầu ngành (`[C#]`) để giải thích *tại sao* có sự phân hóa đó.\n"
+    "     + TÁCH BẠCH MINH BẠCH PHẠM VI MẪU: Nêu rõ đâu là độ rộng định lượng trên toàn bộ `N` mã của ngành/sàn "
+    "(từ Core PG), và đâu là dẫn chứng thuyết minh sâu từ nhóm `M` doanh nghiệp đầu ngành đã công bố hồ sơ PDF — "
+    "không ngoại suy phát ngôn riêng lẻ của vài mã đầu ngành thành toàn bộ các mã chưa nạp PDF.\n"
     "   - KỶ LUẬT ĐA LƯỢT & KHẨU VỊ CÁ NHÂN:\n"
     "     + Mỗi lượt trả lời PHẢI viết mới trực diện cho câu hỏi hiện tại từ `<VERIFIED_CLAIM_CARDS>` của lượt này; "
     "TUYỆT ĐỐI KHÔNG chép lại bảng biểu hay bố cục y hệt lượt trước, và CHỈ gắn các mã `[CALC-*]`, `[C#]`, `[TBL:*]`, "
@@ -224,13 +247,16 @@ SYNTHESIS_STATIC_SYSTEM_PROMPT = (
 
 REPAIR_STATIC_SYSTEM_PROMPT = (
     "Bạn là Kiểm toán viên Chuẩn hóa Báo cáo (Stage 7 Forensic Auditor & Surgical Editor) của AIInvest.\n"
-    "Một vài dòng trong bản nháp vừa bị hệ thống kiểm toán Stage 7 gắn cờ (do tự cộng nhẩm ra số không khớp "
-    "bằng chứng, thiếu mã trích dẫn `[CALC-*]`/`[C#]`, hoặc gắn nhầm mã trích dẫn).\n\n"
+    "Một vài dòng trong bản nháp vừa bị hệ thống kiểm toán Stage 7 gắn cờ (do tự chia nhẩm ra `% tăng/giảm` không có "
+    "trong báo cáo gốc, tự làm tròn đổi `triệu đồng` sang `tỷ đồng`, thiếu mã `[CALC-*]`/`[C#]`, hoặc gắn nhầm mã).\n\n"
     "NHIỆM VỤ:\n"
-    "- Chỉ sửa ĐÚNG các dòng bị gắn cờ được gửi kèm bên dưới dựa trên Thẻ kết luận & Danh sách `[CALC-*]`/`[C#]` gốc.\n"
-    "- Giữ nguyên định dạng đầu dòng (bullet `- `, `* `, tiêu đề `###`, hoặc dòng bảng `|...|`).\n"
-    "- Thay thế mọi con số tự cộng nhẩm / sai lệch bằng ĐÚNG con số chuẩn trong `[CALC-*]` hoặc `[C#]` kèm mã thẻ.\n"
-    "- Nếu một con số không có trong bằng chứng gốc, hãy xóa con số chưa kiểm chứng đó hoặc ghi rõ chưa có số PIT.\n"
+    "- Chỉ sửa ĐÚNG các dòng bị gắn cờ bên dưới dựa TUYỆT ĐỐI trên `[CALC-*]` gốc và nguyên văn `[C#]` gốc.\n"
+    "- Giữ nguyên định dạng đầu dòng (bullet `- `, `* `, tiêu đề `###`, hoặc dòng bảng `|...|` đúng số cột).\n"
+    "- Với mọi con số `%` hoặc hệ số bị gắn cờ `không khớp bằng chứng gốc` (ví dụ `+141%`, `+68%`, `giảm 98%`), BẮT "
+    "BUỘC XÓA BỎ con số `%` tự tính nhẩm đó và chỉ giữ con số tuyệt đối có thật trong `[C#]`/`[CALC-*]` (nếu là cột "
+    "`Tăng trưởng` trong bảng mà `[C#]` không có cột `%`, ghi `—` hoặc chênh lệch mô tả không kèm số `%`).\n"
+    "- Với con số tiền tệ bị gắn cờ do tự đổi đơn vị làm tròn (`2.136 tỷ` từ bảng `triệu đồng`), đổi lại đúng nguyên "
+    "văn con số + đơn vị trong `[C#]` (hoặc xóa nếu không tìm thấy nguyên văn).\n"
     "- Xuất ra ĐÚNG MỘT JSON theo mẫu:\n"
     '{"repairs": [{"idx": 0, "fixed_line": "dòng đã sửa chuẩn xác kèm [CALC-*] hoặc [C#]"}]}'
 )
@@ -333,9 +359,7 @@ async def synthesize_from_verdict_cards(
     gate = SentenceStreamGate(
         valid_cid_ceiling=lambda: len(ctx.evidence.sections),
         valid_calc_ids=lambda: {
-            str(c.get("calc_id") or "")
-            for c in ctx.evidence.calculator_traces
-            if c.get("calc_id")
+            str(c.get("calc_id") or "") for c in ctx.evidence.calculator_traces if c.get("calc_id")
         },
         valid_memory_ids=lambda: set(ctx.evidence.recalled_memories.keys()),
         valid_portfolio_symbols=lambda: set(ctx.evidence.portfolio_snapshots.keys()),
@@ -398,11 +422,7 @@ async def synthesize_from_verdict_cards(
                 streamed_any = True
                 await on_delta(tail_out)
 
-    valid_calcs = {
-        str(c.get("calc_id") or "")
-        for c in ctx.evidence.calculator_traces
-        if c.get("calc_id")
-    }
+    valid_calcs = {str(c.get("calc_id") or "") for c in ctx.evidence.calculator_traces if c.get("calc_id")}
     raw_answer = strip_reasoning_tags("".join(emitted_chunks).strip())
     cleaned_answer = _INLINE_CALC_BADGE_RE.sub(
         lambda m: m.group(0) if m.group(1) in valid_calcs else "",
@@ -525,15 +545,14 @@ async def repair_stage7_flagged_lines(
 
     target_items = [
         {"idx": l_idx, "flagged_line": lines[l_idx], "issues": issues}
-        for l_idx, issues in sorted(flagged_indices.items())[:6]
+        for l_idx, issues in sorted(flagged_indices.items())[:12]
     ]
-    dropped_targets = [l_idx for l_idx, _ in sorted(flagged_indices.items())[6:]]
+    dropped_targets = [l_idx for l_idx, _ in sorted(flagged_indices.items())[12:]]
 
     ev_lines: list[str] = []
-    if verdict_cards:
-        ev_lines.append("=== THẺ KẾT LUẬN ĐÃ KIỂM CHỨNG ===")
-        for card in verdict_cards:
-            ev_lines.append(card.render_for_synthesis())
+    # Authoritative Stage-7 numeric ground truth ONLY (`[CALC-*]` + verbatim `[C#]` quotes).
+    # Never feed `verdict_cards.summary_lines` here because a Mini-Reader mental-% summary line is
+    # precisely what Stage 7 may have flagged!
     if calculator_traces:
         ev_lines.append("=== CHỈ TIÊU [CALC-*] GỐC ===")
         for c in list(calculator_traces)[:28]:
@@ -545,8 +564,7 @@ async def repair_stage7_flagged_lines(
                 ev_lines.append(f"[{cid}] {desc}: {fmt}")
             elif isinstance(inps, Mapping) and inps:
                 kv = "; ".join(
-                    f"{k}={v.get('value') if isinstance(v, Mapping) else v}"
-                    for k, v in list(inps.items())[:12]
+                    f"{k}={v.get('value') if isinstance(v, Mapping) else v}" for k, v in list(inps.items())[:12]
                 )
                 ev_lines.append(f"[{cid}] {desc}: {kv}")
     if sections_by_cid:
@@ -559,7 +577,12 @@ async def repair_stage7_flagged_lines(
             sec = sections_by_cid[cid]
             tk = getattr(sec, "ticker", "") if not isinstance(sec, Mapping) else sec.get("ticker", "")
             body = getattr(sec, "content", "") if not isinstance(sec, Mapping) else sec.get("content", "")
-            ev_lines.append(f"[{cid}] ({tk}) {str(body).strip()[:600]}")
+            ev_lines.append(f"[{cid}] ({tk}) {str(body).strip()[:1800]}")
+    elif verdict_cards:
+        ev_lines.append("=== TRÍCH ĐOẠN NGUYÊN VĂN TRONG THẺ ===")
+        for card in verdict_cards:
+            for vq in getattr(card, "verbatim_quotes", ()) or ():
+                ev_lines.append(str(vq))
 
     repair_user_msg = (
         "CÁC DÒNG CẦN SỬA:\n"
@@ -839,6 +862,16 @@ async def run_brief_centric_turn(
         else ()
     )
 
+    # ── Step (0): Deterministic Scope-Gated Pulse & Structural Pointer Map (`0` LLM tokens) ─
+    from sag_api.research.market_pulse import build_scope_gated_briefing
+
+    pulse_bundle = await build_scope_gated_briefing(
+        ctx,
+        query=query,
+        explicit_tickers=explicit_tickers,
+        fallback_tickers=session_fallback_tickers,
+    )
+
     # ── Steps (1) & (2): Create & Deterministically Validate ResearchBrief ────
     if on_stage is not None:
         await on_stage("routing", "running", "Đang lập đề bài phân tích & kiểm tra ràng buộc PIT...")
@@ -855,6 +888,9 @@ async def run_brief_centric_turn(
         chat_mode=ctx.chat_mode,
         session_context=session_ctx,
         memory_context=mem_ctx,
+        scope_briefing_context=pulse_bundle.briefing_text,
+        scope_lens=pulse_bundle.lens,
+        bellwether_tickers=pulse_bundle.bellwether_tickers,
         history_messages=history_msgs,
         enable_thinking=True,
         on_reasoning_delta=_on_brief_reasoning,
@@ -908,10 +944,7 @@ async def run_brief_centric_turn(
                 "turn": 1,
                 "kind": "plan",
                 "title": "Khung kiểm chứng dữ liệu",
-                "text": (
-                    f"Trọng tâm: {brief.user_concern}\n"
-                    + "\n".join(f"• {ln}" for ln in all_claims_preview[:6])
-                ),
+                "text": (f"Trọng tâm: {brief.user_concern}\n" + "\n".join(f"• {ln}" for ln in all_claims_preview[:6])),
             }
         )
 
@@ -948,7 +981,7 @@ async def run_brief_centric_turn(
     if on_stage is not None:
         await on_stage("retrieval", "running", "Đang định vị đối tượng & thu thập bằng chứng song song...")
 
-    located = await locate_candidates(brief, ctx)
+    located = await locate_candidates(brief, ctx, pulse_bundle=pulse_bundle)
     emit_trace(
         trace,
         "locator",
@@ -1013,7 +1046,9 @@ async def run_brief_centric_turn(
         )
 
     # ── Steps (4) & (5): Premise Check + Parallel Claim Execution + Verdict Cards ─
-    exec_budget = max(2.0, (overall_deadline_mono - asyncio.get_running_loop().time()) * 0.68)
+    now_exec_start = asyncio.get_running_loop().time()
+    exec_budget = max(2.0, (overall_deadline_mono - now_exec_start) * 0.68)
+    partial_exec = BriefExecutionResult(located=located)
     try:
         async with asyncio.timeout(exec_budget):
             exec_res = await execute_brief_claims(
@@ -1021,8 +1056,11 @@ async def run_brief_centric_turn(
                 located=located,
                 ctx=ctx,
                 model=model,
+                pulse_bundle=pulse_bundle,
                 dropped_by_claim_id=val_out.dropped_by_claim_id,
                 overall_deadline_mono=overall_deadline_mono,
+                exec_deadline_mono=now_exec_start + exec_budget,
+                partial_sink=partial_exec,
                 on_stage=on_stage,
                 on_thought=_record_thought,
                 on_tool_call=_record_tool_call,
@@ -1037,7 +1075,11 @@ async def run_brief_centric_turn(
                 "scope": "brief_executor",
             }
         )
-        exec_res = BriefExecutionResult(located=located)
+        order_p = {p.id: i for i, p in enumerate(brief.premises_to_check)}
+        order_c = {c.id: i for i, c in enumerate(brief.claims)}
+        partial_exec.premise_cards.sort(key=lambda x: order_p.get(x.claim_id, 999))
+        partial_exec.claim_cards.sort(key=lambda x: order_c.get(x.claim_id, 999))
+        exec_res = partial_exec
 
     total_usage = total_usage.plus(exec_res.usage)
     if on_stage is not None:
@@ -1071,8 +1113,7 @@ async def run_brief_centric_turn(
             {
                 "code": "AGENT_SYNTHESIS_TIMEOUT_PARTIAL",
                 "reason": (
-                    f"Bước tổng hợp chạm ngưỡng thời gian {overall_timeout_seconds:.0f}s; "
-                    "đã giữ phần nội dung đã xuất."
+                    f"Bước tổng hợp chạm ngưỡng thời gian {overall_timeout_seconds:.0f}s; đã giữ phần nội dung đã xuất."
                 ),
                 "scope": "brief_synthesizer",
             }
