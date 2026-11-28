@@ -150,6 +150,22 @@ def test_published_date_trap_parser_and_fail_closed():
         resolve_effective_published_at(title="BCTC năm 2025")
 
 
+def test_pre_2005_historical_fiscal_year_trap_and_unanchored_guard():
+    """Regression for VAB (2004) & VCB (2002): anchored pre-2005 years trap without hurting unanchored tokens."""
+    for yr in (1999, 2002, 2004):
+        title = f"Báo cáo tài chính năm {yr} (đã kiểm toán)"
+        assert parse_fiscal_year_from_meta(title) == yr
+        res = resolve_effective_published_at(published_date="2026-09-17", title=title)
+        assert res.parsed_fiscal_year == yr
+        assert res.is_trapped is True
+        assert any(flag.startswith("PUBLISHED_DATE_TRAP") for flag in res.trap_flags)
+
+    # Unanchored pre-2005 document/resolution numbers MUST NOT override a real 2025 filing year
+    assert parse_fiscal_year_from_meta("CV 2001/HĐQT - Báo cáo tài chính năm 2025") == 2025
+    assert parse_fiscal_year_from_meta("Số 1998/CBTT - Nghị quyết ĐHĐCĐ 2026") == 2026
+    assert parse_fiscal_year_from_meta("Thông báo số 2003/TB-CT") is None
+
+
 @pytest.mark.asyncio
 async def test_multi_source_404_fallback():
     class _FakeFetcher:

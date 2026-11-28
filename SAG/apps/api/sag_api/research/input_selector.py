@@ -213,13 +213,13 @@ def parse_fiscal_year_from_meta(title: str, url: str = "") -> int | None:
         if not src:
             continue
         m = re.search(
-            r"(?:năm|nam|bctn|bctc|agm|dhdcd|đhđcđ|fy|q[1-4])[\s_\-]*(20(?:0[5-9]|1\d|2\d|3[0-5]))(?![0-9])",
+            r"(?:năm|nam|bctn|bctc|agm|dhdcd|đhđcđ|fy|q[1-4])[\s_\-]*(199\d|20(?:[0-2]\d|3[0-5]))(?![0-9])",
             src,
             re.IGNORECASE,
         )
         if m:
             yr = int(m.group(1))
-            if 2005 <= yr <= 2035:
+            if 1990 <= yr <= 2035:
                 return yr
         # Prefer standalone fiscal year tokens not glued to ISO YYYY-MM-DD dates if possible
         m_non_date = re.search(
