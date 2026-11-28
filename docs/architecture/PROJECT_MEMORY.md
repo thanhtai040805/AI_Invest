@@ -799,6 +799,17 @@ AIInvest is an autonomous quantitative investment and stock-research organizatio
   - Upgraded `query_knowledge_graph_tool` (`research_tools.py`) to balance quotas across `VALUE_CHAIN` + `TRUE_PEER` + `MACRO`, resolve human Vietnamese `KgNode.label` while preserving `TICKER:<SYM>` prefixes, and expose `ownership_pct` + `note_channel` on `GraphHopItem`.
   - Reframed `brief.py` & `MINI_READER_STATIC_SYSTEM_PROMPT` onto the **Buy-Side Triangle (`Câu chuyện — Mạng lưới Quan hệ 2 chiều — Đối chứng Tiền thật`)**, unlocked single-wave concurrent execution (`Wave 1`) for claims depending solely on non-directional premises (`prems=0` across `3/3` open benchmarks), parallelized per-claim `doc_specs` retrieval with a `30s` bounded verbatim-quote fallback, added automatic `0`-LLM 3-layer KG sweeps on company turns (`38` live `graph_hops` lighting up `InspectorGraphTab.tsx`), and hardened `quote_verifier.py` for `[KG:...]` `ownership_pct`, related-party `[C#]` disclosures, and `FPT Long Châu`/`FPT Shop` brand-owner resolution (`test_v31_buy_side_workflow_and_kg.py` `6/6` PASS).
 
+## 2026-11-28 — Phase A 120/120 HOSE R2 Clean Document Corpus Complete (`vn-clean-v3`)
+
+- **Remaining 11 BCTN Filings Completed & Verified Live on Cloudflare R2 (`aiinvest-bctc-prod`)**:
+  - Executed 3-key parallel OCR (`conc=9`) for all 11 remaining/hollow BCTN filings (`POW, ANV, DCL, DGC, GAS, LDG, DCM, PVD, TPB, VOS, VSC`), with deterministic TOC coverage-floor guards (`_validate_toc_spans_for_pass2_ocr`) catching and repairing incomplete Pass-1 spans (`GAS 18/115`, `LDG 1/106`, `VOS 10/80`, `PVD 14/204`, `DCM 8/241`, `TPB 36/79`) plus full 99-page deterministic OCR for `POW` (`65p BCTN_CORE + 1p BCTN_PR + 30p BCTC_AUDITED`).
+- **Pre-2005 Anchored Fiscal-Year PIT Trap Fix & Final 3-Ticker Cleanup (`27b03f4`, `input_selector.py`, `test_research_input_and_tables.py`)**:
+  - Extended ONLY the anchored fiscal-year regex (`năm|nam|bctn|bctc|agm|dhdcd|đhđcđ|fy|q[1-4]`) in `parse_fiscal_year_from_meta()` from `2005..2035` to `1990..2035` (keeping unanchored 4-digit tokens at `2005..2035` so document/resolution numbers like `CV 2001/HĐQT` cannot trigger false traps), verified via `38/38` SAG selector/research tests + `6/6` `ai-engine` Rule 06 separation tests + `ruff` `0` errors.
+  - Purged the final 3 stale R2 prefixes and verified live via remote S3 GET (`local_cache_dir=""`): `GVR` BCTN repaired (`11p -> 77p BCTN_CORE` + unlocked `63p` standalone FY2025 `BCTC_AUDITED`), `VAB` stale `2004` manifest removed & replaced by `53p` FY2025 consolidated `BCTC_AUDITED`, and `VCB` stale `2002` manifest removed & upgraded with `81p` standalone FY2025 consolidated `BCTC_AUDITED`.
+- **Final Verified 120-Ticker R2 Corpus Totals (`PHASE_A_120_COMPLETE`)**:
+  - **`120/120`** HOSE tickers · **`738`** manifests (`2` valid English tombstones on `BSI`/`VND` `TY_LE_AT_TC`) · **`908`** cleaned Markdown files (**`135.77 MB`**) · `0` errors · `0` old-year (`<= 2022`) traps · `0` hollow Pass-1 BCTNs · `100%` `<!-- PAGE N -->` anchors · `100%` `BCTC_AUDITED` `0%-drop` coverage.
+  - Slot coverage: `BCTC_AUDITED: 120/120`, `QUARTER_NOTES: 120/120`, `AGM_TARGETS: 120/120`, `BCTN_CORE: 119/120` (only `SBT` lacks BCTN due to 2-page `NOTICE_ONLY` Vietstock source), `BCTN_PR: 77/120`. Ready for 0-OCR Phase B indexing directly from R2 on PROD.
+
 
 
 
